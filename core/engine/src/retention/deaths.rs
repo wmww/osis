@@ -397,6 +397,22 @@ fn carriers(core: &Core, tid: &Tid, ak: &Ak, dot: &osis_crdt::Dot, at: Ts) -> Ve
 /// body, first and last so far, on every held body with a relative bound carrying the write;
 /// drops bodies past keep at most (spec/commits.md §5).
 pub(crate) fn note_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, deaths: &[Death]) -> Result<()> {
+    // a write a replay plays only with the state (its own commit dropped without a residue, or
+    // never held) may have dated a held body that arrived after the drop; once dead in the state
+    // a replay dates that body at a later superseder: replay
+    if !deaths.is_empty()
+        && let Some(b) = first_bare(tx, tid, ak)?
+    {
+        for d in deaths.iter().filter(|d| d.stamp.ts >= b) {
+            let own = match tx.core.commit_of(tid, ak, &d.stamp.dot) {
+                Some(x) => plays_own(tx, tid, ak, &x)?,
+                None => false,
+            };
+            if !own {
+                return mark_deaths_due(tx, tid, ak);
+            }
+        }
+    }
     let mut bodies = BTreeSet::new();
     for d in deaths {
         for (c, ai) in carriers(tx.core, tid, ak, &d.stamp.dot, d.at) {
@@ -497,6 +513,10 @@ pub(crate) fn settle_due(tx: &mut Tx<'_>) -> Result<()> {
             rejudge_deaths(tx, &tid, &ak)?;
             continue;
         };
+        #[cfg(debug_assertions)]
+        if items.iter().any(|i| matches!(i, Due::Late(..))) {
+            check_window(tx, &tid, &ak)?;
+        }
         let recheck = items.iter().filter_map(|i| match i {
             Due::Recheck(c, ai) => Some((*c, *ai)),
             _ => None,
@@ -535,7 +555,10 @@ pub(crate) fn rejudge_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> 
 
 /// Joins `f` into `st`, collecting its deaths. A snapshot's (`copies`) copy of a write already
 /// dead in the replay is not dated again (two snapshots carrying a write whose own commit is
-/// not held: the later one would date it at a later winner).
+/// not held: the later one would date it at a later winner): a death whose stamp died before
+/// and that the snapshot holds a write of (`holds_stamp`; not merely a record keyed by its dot,
+/// such as an entry it removed: a write sharing a dead write's stamp then dies here for the
+/// first time, order seed 7855).
 fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<Death>, dead: &mut BTreeSet<Stamp>) {
     let mut ch = Changes::new();
     let g = copies.then(|| f.clone());
@@ -543,7 +566,7 @@ fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<Death>, d
     for d in ch.into_deaths() {
         if let Some(g) = &g
             && dead.contains(&d.stamp)
-            && g.holds_dots(&|x| x == d.stamp.dot.owner())
+            && g.holds_stamp(&d.stamp)
         {
             continue;
         }
@@ -822,21 +845,23 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
     for (c, ai) in &judged {
         set_deaths(tx, tid, ak, c, *ai, got.get(&(*c, *ai)).copied())?;
     }
-    #[cfg(debug_assertions)]
-    {
-        // every held bounded body as a replay of every body dates it
-        let want = replayed(tx, tid, ak)?;
-        let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&k).into_iter().flatten().map(|x| x.1).collect();
-        for c in held {
-            let Some(ai) = bounded_part(tx.core, &c, tid, ak) else { continue };
-            let have = death_of(tx, tid, ak, &c, ai)?.map(|d| (d.first, d.last));
-            debug_assert!(have == want.get(&(c, ai)).copied(), "window deaths of {c:?} on {tid:?} {ak:?}: {have:?}, a whole replay {:?}", want.get(&(c, ai)));
-        }
-        // the last-death rows are what the records give
-        let fresh = fresh_rows(tx, tid, ak)?;
-        debug_assert!(rows_from(tx, tid, ak, Ts::default())? == Some(fresh), "last deaths of {tid:?} {ak:?} differ from the records");
-    }
     Ok(Some(judged.into_iter().collect()))
+}
+
+/// Debug builds, after a window (also one that judged nothing): every held bounded body of
+/// `(tid, ak)` dated as a whole replay dates it, and the last-death rows are the records'.
+#[cfg(debug_assertions)]
+fn check_window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+    let want = replayed(tx, tid, ak)?;
+    let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+    for c in held {
+        let Some(ai) = bounded_part(tx.core, &c, tid, ak) else { continue };
+        let have = death_of(tx, tid, ak, &c, ai)?.map(|d| (d.first, d.last));
+        debug_assert!(have == want.get(&(c, ai)).copied(), "window deaths of {c:?} on {tid:?} {ak:?}: {have:?}, a whole replay {:?}", want.get(&(c, ai)));
+    }
+    let fresh = fresh_rows(tx, tid, ak)?;
+    debug_assert!(rows_from(tx, tid, ak, Ts::default())? == Some(fresh), "last deaths of {tid:?} {ak:?} differ from the records");
+    Ok(())
 }
 
 /// The lowest stamp of a write of `(tid, ak)` that a replay plays after a late delta at

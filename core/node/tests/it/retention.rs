@@ -1032,7 +1032,9 @@ fn late_deltas_windowed_alike_random_spec_crdt_4_8() {
     let mut reached: std::collections::BTreeMap<&'static str, u64> = Default::default();
     osis_node::costs::take();
     for seed in start..start + n.unwrap_or(24) {
-        strays_history(seed, end, &mut reached);
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| strays_history(seed, end, &mut reached))).is_err() {
+            panic!("strays seed {seed} failed (replay: OSIS_STRAYS_START={seed} OSIS_STRAYS_SEEDS=1)");
+        }
     }
     println!("{reached:?}");
     if default {
@@ -1044,11 +1046,14 @@ fn late_deltas_windowed_alike_random_spec_crdt_4_8() {
 
 // as above, seeds that failed: 1018, a held snapshot between a stray and the late delta gained
 // a death (no record before; on main too); 2392, the winner a late join met was a stray, which
-// the replay met after another superseder past the hint
+// the replay met after another superseder past the hint; 21812, an in-order write killed a
+// write dropped without a residue (played with the state) that had dated a late body, which
+// kept that death while a replay dated it at the in-order write, and a later window rested on
+// it; 1427 (deaths compared at the end), the same with a dropped snapshot's copy
 #[test]
 fn late_deltas_windowed_found_histories_spec_crdt_4_8() {
-    for seed in [1018, 2392] {
-        strays_history(seed, false, &mut Default::default());
+    for (seed, end) in [(1018, false), (2392, false), (21812, false), (1427, true)] {
+        strays_history(seed, end, &mut Default::default());
     }
 }
 
