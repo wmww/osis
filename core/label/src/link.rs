@@ -3,7 +3,7 @@
 
 use crate::addr::{Address, address_from_value};
 use osis_base::base64url;
-use crate::auth::{get_bytes, get_uint};
+use crate::cbor::{bytes, get_bytes, get_tid, get_uint, tid};
 use crate::Error;
 use osis_base::cbor::{Limits, decode, encode};
 use osis_base::format::MAX_URL_BYTES;
@@ -52,10 +52,6 @@ pub struct RecoveryCard {
     pub person: Tid,
     pub home_label: LabelId,
     pub servers: Vec<Address>,
-}
-
-fn tid(t: &Tid) -> Value {
-    Value::Bytes(t.as_bytes().to_vec())
 }
 
 fn check_url(u: &str) -> Result<(), Error> {
@@ -107,14 +103,14 @@ impl ShareLink {
                 return Err(Error::Malformed("more than 4 relays"));
             }
             p.relays.iter().try_for_each(|r| check_url(r))?;
-            peers.push(Value::List(vec![Value::Bytes(p.dialable.to_vec()), Value::List(p.relays.iter().map(|r| Value::Str(r.clone())).collect())]));
+            peers.push(Value::List(vec![bytes(&p.dialable), Value::List(p.relays.iter().map(|r| Value::Str(r.clone())).collect())]));
         }
         let mut v = vec![
             Value::Int(FORMAT),
-            Value::Bytes(self.seed.expose().to_vec()),
+            bytes(self.seed.expose()),
             tid(&self.target),
             tid(&self.k),
-            Value::Bytes(self.k_label.0.to_vec()),
+            bytes(&self.k_label.0),
             servers_value(&self.servers)?,
             Value::List(peers),
         ];
@@ -163,8 +159,8 @@ impl ShareLink {
             .collect::<Result<_, _>>()?;
         Ok(ShareLink {
             seed: Secret32::from_bytes(get_bytes(seed, "link seed")?),
-            target: Tid::from_bytes(get_bytes(target, "link target")?),
-            k: Tid::from_bytes(get_bytes(k, "link k")?),
+            target: get_tid(target, "link target")?,
+            k: get_tid(k, "link k")?,
             k_label: LabelId(get_bytes(k_label, "link label")?),
             servers: get_servers(servers)?,
             peers,
@@ -192,9 +188,9 @@ impl RecoveryCard {
         }
         Ok(Value::List(vec![
             Value::Int(FORMAT),
-            Value::Bytes(self.seed.expose().to_vec()),
+            bytes(self.seed.expose()),
             tid(&self.person),
-            Value::Bytes(self.home_label.0.to_vec()),
+            bytes(&self.home_label.0),
             servers_value(&self.servers)?,
         ]))
     }
@@ -210,7 +206,7 @@ impl RecoveryCard {
         }
         Ok(RecoveryCard {
             seed: Secret32::from_bytes(get_bytes(seed, "card seed")?),
-            person: Tid::from_bytes(get_bytes(person, "card person")?),
+            person: get_tid(person, "card person")?,
             home_label: LabelId(get_bytes(home, "card label")?),
             servers,
         })

@@ -2,7 +2,7 @@
 //! (`Label`, `StepRecord`, `Labels`); this module converts records to verified steps and claim
 //! sets and back.
 
-use crate::step::{ClaimSet, Step, StepId, path_to};
+use crate::step::{ClaimSet, Step, StepId};
 use crate::Error;
 pub use osis_schema::core_types::{LABEL, Label, Labels, StepRecord};
 use std::collections::BTreeMap;
@@ -15,8 +15,13 @@ pub fn step_record(step: &Step, claims: Option<&ClaimSet>) -> StepRecord {
 /// Parses a record: canonical step bytes, and a claim set that hashes to the step's (spec/sync.md
 /// §5: a set MUST hash to its step's).
 pub fn parse_record(r: &StepRecord) -> Result<(Step, Option<ClaimSet>), Error> {
-    let step = Step::parse(&r.step)?;
-    let claims = r.claims.as_deref().map(ClaimSet::parse).transpose()?;
+    parse_step(&r.step, r.claims.as_deref())
+}
+
+/// `parse_record` of the canonical bytes of a step and its claim set.
+pub(crate) fn parse_step(step: &[u8], claims: Option<&[u8]>) -> Result<(Step, Option<ClaimSet>), Error> {
+    let step = Step::parse(step)?;
+    let claims = claims.map(ClaimSet::parse).transpose()?;
     if claims.as_ref().is_some_and(|c| c.hash() != step.claims_hash) {
         return Err(Error::Verify("claim set does not hash to the step's"));
     }
@@ -34,12 +39,6 @@ pub fn label_steps(label: &Label) -> Result<BTreeMap<StepId, (Step, Option<Claim
         out.insert(StepId(*id), (s, c));
     }
     Ok(out)
-}
-
-/// The verified path from the genesis step to `head` through a label's steps.
-pub fn label_path(label: &Label, head: &StepId) -> Result<Vec<Step>, Error> {
-    let steps: BTreeMap<StepId, Step> = label_steps(label)?.into_iter().map(|(k, (s, _))| (k, s)).collect();
-    path_to(&steps, head)
 }
 
 /// Steps no other step of the label names as `prev`: the tips of each branch.
@@ -73,7 +72,8 @@ mod tests {
         label.steps.insert(s2.id().0, step_record(&s2, None));
         let back = Label::from_value(&label.to_value()).unwrap();
         assert_eq!(back, label);
-        assert_eq!(label_path(&label, &s1.id()).unwrap(), vec![s0.clone(), s1.clone()]);
+        let steps: BTreeMap<StepId, Step> = label_steps(&label).unwrap().into_iter().map(|(k, (s, _))| (k, s)).collect();
+        assert_eq!(crate::step::path_to(&steps, &s1.id()).unwrap(), vec![s0.clone(), s1.clone()]);
         let mut t = tips(&label).unwrap();
         t.sort();
         let mut want = vec![s1.id(), s2.id()];

@@ -127,27 +127,16 @@ impl<'a> BlobWriter<'a> {
     /// A reusable old chunk: held, intact, equal bytes, and kept by the re-encryption rule.
     fn reuse_chunk(&mut self, hash: &[u8; 32], bytes: &[u8]) -> Result<Option<Link>, Error> {
         let Some(old) = self.reuse.and_then(|r| r.chunks.get(hash)).copied() else { return Ok(None) };
-        let blob = match self.store.fetch(&old.blob) {
-            Ok(b) => b,
-            Err(Error::Storage) => return Err(Error::Storage),
-            Err(_) => return Ok(None),
-        };
-        if old.suite != SUITE_1 || crate::blob::blob_id(&blob) != old.blob {
-            return Ok(None);
-        }
+        let held = open_held(self.store, &old)?;
         let Some(blind) = self.reuse.and_then(|r| r.blinds.get(&old.blob)) else { return Ok(None) };
-        Ok(match open(&blob, &Secret32::from_bytes(old.key)) {
-            Ok((prefix, pt)) if pt == bytes && self.framing.keeps(&prefix, blind) => Some(old),
+        Ok(match held {
+            Some((prefix, pt)) if pt == bytes && self.framing.keeps(&prefix, blind) => Some(old),
             _ => None,
         })
     }
 
     pub fn written(&self) -> &[Written] {
         &self.written
-    }
-
-    pub fn into_written(self) -> Vec<Written> {
-        self.written
     }
 
     /// Frames `plaintext` as a blob whose link carries `hash`.
@@ -194,6 +183,19 @@ impl PageSink for BlobWriter<'_> {
     }
 }
 
+/// The blob of `link` if held, intact and opening under its key; only `Storage` fails.
+fn open_held(fetch: &mut dyn BlobFetch, link: &Link) -> Result<Option<(Prefix, Vec<u8>)>, Error> {
+    let blob = match fetch.fetch(&link.blob) {
+        Ok(b) => b,
+        Err(Error::Storage) => return Err(Error::Storage),
+        Err(_) => return Ok(None),
+    };
+    if link.suite != SUITE_1 || crate::blob::blob_id(&blob) != link.blob {
+        return Ok(None);
+    }
+    Ok(open(&blob, &Secret32::from_bytes(link.key)).ok())
+}
+
 /// Digest of a node's exact links (a node is reused only over the very blobs it links; its
 /// content hash covers the lengths).
 fn kids_digest(kids: &[Kid]) -> [u8; 32] {
@@ -224,8 +226,6 @@ impl Reuse {
     /// introduced a blob (none: never kept). Only `Storage` fails.
     pub fn index(root: &Link, framing: Framing, fetch: &mut dyn BlobFetch, blind_of: &mut dyn FnMut(&BlobId) -> Option<[u8; 16]>, params: ChunkParams, max_len: usize) -> Result<Reuse, Error> {
         let mut r = Reuse { framing, chunks: HashMap::new(), nodes: HashMap::new(), blinds: HashMap::new() };
-        let framing = r.framing.clone();
-        let framing = &framing;
         let mut budget = (max_len / params.min.max(1)).saturating_add(1);
         let mut stack = vec![(*root, None)];
         let mut seen = std::collections::HashSet::new();
@@ -233,8 +233,8 @@ impl Reuse {
             if !seen.insert(link.hash) {
                 continue;
             }
-            let Some((prefix, level, kids)) = Self::node(framing, fetch, &link, expect)? else { continue };
-            if blind_of(&link.blob).is_some_and(|b| framing.keeps(&prefix, &b)) {
+            let Some((prefix, level, kids)) = Self::node(&r.framing, fetch, &link, expect)? else { continue };
+            if blind_of(&link.blob).is_some_and(|b| r.framing.keeps(&prefix, &b)) {
                 r.nodes.insert(link.hash, (link, kids_digest(&kids)));
             }
             for (l, _) in kids.into_iter().rev() {
@@ -256,15 +256,7 @@ impl Reuse {
     }
 
     fn node(framing: &Framing, fetch: &mut dyn BlobFetch, link: &Link, expect: Option<u64>) -> Result<Option<(Prefix, u64, Vec<Kid>)>, Error> {
-        let blob = match fetch.fetch(&link.blob) {
-            Ok(b) => b,
-            Err(Error::Storage) => return Err(Error::Storage),
-            Err(_) => return Ok(None),
-        };
-        if link.suite != SUITE_1 || crate::blob::blob_id(&blob) != link.blob {
-            return Ok(None);
-        }
-        let Ok((prefix, pt)) = open(&blob, &Secret32::from_bytes(link.key)) else { return Ok(None) };
+        let Some((prefix, pt)) = open_held(fetch, link)? else { return Ok(None) };
         let Ok((level, kids)) = parse_node(&pt) else { return Ok(None) };
         if expect.is_some_and(|e| e != level) || node_hash(&framing.dedup, level, &kids) != link.hash {
             return Ok(None);
@@ -369,7 +361,7 @@ mod tests {
         let d = data(5_000, 2);
         let mut w = BlobWriter::new(&f, &mut store, &mut rng);
         let root = write_tree(&mut w, SMALL, &d).unwrap();
-        let written = w.into_written();
+        let written = w.written().to_vec();
         assert_eq!(written.len(), store.0.len());
         for wr in &written {
             let p = Prefix::parse(&store.0[&wr.id]).unwrap();
@@ -455,7 +447,7 @@ mod tests {
         let mut rng = SeededRng::from_u64(12);
         let mut w = BlobWriter::new(&f, &mut store, &mut rng).with_page_params(params);
         let bytes = encode_snapshot(&snap, &cx, Some(&mut w)).unwrap();
-        let written = w.into_written();
+        let written = w.written().to_vec();
         assert!(written.len() > 3);
         for wr in &written {
             let p = Prefix::parse(&store.0[&wr.id]).unwrap();

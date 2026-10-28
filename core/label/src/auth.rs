@@ -3,50 +3,13 @@
 //! signal publish authorization, deletes by the label delete key or by a delete-key signature.
 
 use crate::blob::{Level, Prefix};
+use crate::cbor::{bytes, get_bytes, get_key, get_opt, get_uint, opt, uint};
 use crate::step::{ClaimSet, Step, StepId};
 use crate::Error;
 use osis_base::cbor::encode;
 use osis_base::{BlobId, LabelId, Value, WallMs};
 use osis_crypto::{DeleteSecret, Domain, LabelRole, Signature, SigningSecret, VerifyingKey, open_digest, sign_open, static_entry, verify_delete, verify_open};
 use osis_schema::core_types::SecretBox;
-
-fn bytes(b: &[u8]) -> Value {
-    Value::Bytes(b.to_vec())
-}
-
-pub(crate) fn get_bytes<const N: usize>(v: &Value, what: &'static str) -> Result<[u8; N], Error> {
-    match v {
-        Value::Bytes(b) => b.as_slice().try_into().map_err(|_| Error::Malformed(what)),
-        _ => Err(Error::Malformed(what)),
-    }
-}
-
-pub(crate) fn get_uint(v: &Value, what: &'static str) -> Result<u64, Error> {
-    match v {
-        Value::Int(n) => u64::try_from(*n).map_err(|_| Error::Malformed(what)),
-        _ => Err(Error::Malformed(what)),
-    }
-}
-
-pub(crate) fn uint(n: u64) -> Result<Value, Error> {
-    Ok(Value::Int(i64::try_from(n).map_err(|_| Error::TooLarge("int"))?))
-}
-
-/// `Opt(X)` as a list of zero or one item.
-pub(crate) fn get_opt<'a>(v: &'a Value, what: &'static str) -> Result<Option<&'a Value>, Error> {
-    match v {
-        Value::List(l) => match l.as_slice() {
-            [] => Ok(None),
-            [x] => Ok(Some(x)),
-            _ => Err(Error::Malformed(what)),
-        },
-        _ => Err(Error::Malformed(what)),
-    }
-}
-
-pub(crate) fn opt(v: Option<Value>) -> Value {
-    Value::List(v.into_iter().collect())
-}
 
 /// Open proof (spec/wire.md §11.2): `[0, sync_pk, sig] | [1, step_id, claim_pk, sig] |
 /// [2, signing_pk, sig] | [3, dialable_pk, sig]`.
@@ -88,7 +51,7 @@ impl Proof {
 
     pub fn from_value(v: &Value) -> Result<Proof, Error> {
         let Value::List(items) = v else { return Err(Error::Malformed("proof")) };
-        let key = |v: &Value| VerifyingKey::from_bytes(&get_bytes(v, "proof key")?).map_err(|_| Error::Malformed("proof key"));
+        let key = |v: &Value| get_key(v, "proof key");
         let sig = |v: &Value| get_bytes(v, "proof signature").map(Signature);
         Ok(match items.as_slice() {
             [Value::Int(0), pk, s] => Proof::Sync { pk: key(pk)?, sig: sig(s)? },
@@ -180,10 +143,6 @@ pub fn verify_stamp(head_write: &VerifyingKey, label: &LabelId, blob: &BlobId, w
 /// A deposit signature by the deposit key under `"osis v1 deposit"`.
 pub fn sign_deposit(deposit: &SigningSecret, label: &LabelId, blob: &BlobId, wrap: &[u8]) -> Signature {
     deposit.sign(Domain::Deposit, &entry_digest(label, blob, wrap))
-}
-
-pub fn verify_deposit(head_deposit: &VerifyingKey, label: &LabelId, blob: &BlobId, wrap: &[u8], sig: &Signature) -> Result<(), Error> {
-    head_deposit.verify(Domain::Deposit, &entry_digest(label, blob, wrap), sig).map_err(|_| Error::Verify("deposit signature"))
 }
 
 /// Which key authorizes a signal publish: 0 the label's write key, 1 its deposit key.
@@ -386,9 +345,10 @@ mod tests {
         let stamp = sign_stamp(&write, &l, &b, &w);
         verify_stamp(&s0.keys.write, &l, &b, &w, &stamp).unwrap();
         assert!(verify_stamp(&s0.keys.sync, &l, &b, &w, &stamp).is_err());
-        assert!(verify_deposit(&s0.keys.write, &l, &b, &w, &stamp).is_err());
+        let digest = entry_digest(&l, &b, &w);
+        assert!(s0.keys.write.verify(Domain::Deposit, &digest, &stamp).is_err());
         let dep = osis_crypto::deposit_key(&g.deposit, &l);
-        verify_deposit(&s0.keys.deposit, &l, &b, &w, &sign_deposit(&dep, &l, &b, &w)).unwrap();
+        s0.keys.deposit.verify(Domain::Deposit, &digest, &sign_deposit(&dep, &l, &b, &w)).unwrap();
         let a = PublishAuth::sign(PublishKey::Deposit, &dep, &l, &b, &w);
         a.verify(&s0, &b, &w).unwrap();
         assert_eq!(PublishAuth::from_value(&a.to_value()).unwrap(), a);

@@ -3,7 +3,7 @@
 //! commit layout, kept here).
 
 use crate::addr::{Address, address_from_value};
-use crate::auth::get_bytes;
+use crate::cbor::{bytes, get_bytes, get_key, get_opt, get_tid, tid};
 use crate::blob::Prefix;
 use crate::step::OBJECT_LIMITS;
 use crate::Error;
@@ -38,10 +38,10 @@ impl InboxPayload {
     pub fn to_value(&self) -> Value {
         let things = self.things.iter().map(|t| {
             Value::List(vec![
-                Value::Bytes(t.tid.as_bytes().to_vec()),
-                Value::Bytes(t.label.0.to_vec()),
+                tid(&t.tid),
+                bytes(&t.label.0),
                 Value::List(t.servers.iter().map(Codec::to_value).collect()),
-                Value::List(t.delete_keys.iter().map(|(a, w)| Value::List(vec![Value::Bytes(a.to_bytes().to_vec()), Value::Bytes(w.to_bytes().to_vec())])).collect()),
+                Value::List(t.delete_keys.iter().map(|(a, w)| Value::List(vec![bytes(&a.to_bytes()), bytes(&w.to_bytes())])).collect()),
             ])
         });
         Value::List(vec![self.commit.clone(), Value::List(things.collect())])
@@ -54,8 +54,8 @@ impl InboxPayload {
         for t in things {
             let Value::List(f) = t else { return Err(Error::Malformed("inbox thing")) };
             let [tid, label, Value::List(servers), keys] = f.as_slice() else { return Err(Error::Malformed("inbox thing")) };
-            let key = |v: &Value| VerifyingKey::from_bytes(&get_bytes(v, "inbox delete key")?).map_err(|_| Error::Malformed("inbox delete key"));
-            let delete_keys = match crate::auth::get_opt(keys, "inbox delete keys")? {
+            let key = |v: &Value| get_key(v, "inbox delete key");
+            let delete_keys = match get_opt(keys, "inbox delete keys")? {
                 None => None,
                 Some(Value::List(ks)) => match ks.as_slice() {
                     [a, w] => Some((key(a)?, key(w)?)),
@@ -63,7 +63,7 @@ impl InboxPayload {
                 },
                 Some(_) => return Err(Error::Malformed("inbox delete keys")),
             };
-            let tid = Tid::from_bytes(get_bytes(tid, "inbox tid")?);
+            let tid = get_tid(tid, "inbox tid")?;
             if out.last().is_some_and(|p| p.tid >= tid) {
                 return Err(Error::Malformed("inbox things not sorted by tid"));
             }

@@ -3,8 +3,10 @@
 //! `Importer` verifies paths, stamps and blob IDs as a server does and yields the events a
 //! peer's log would.
 
-use crate::auth::{get_bytes, get_opt, get_uint, opt, uint, verify_stamp};
+use crate::auth::verify_stamp;
+use crate::cbor::{bytes, get_bytes, get_opt, get_uint, opt, uint};
 use crate::blob::{blob_id, check_size};
+use crate::labels::parse_step;
 use crate::step::{ClaimSet, OBJECT_LIMITS, Step, verify_path};
 use crate::Error;
 use osis_base::cbor::{decode, encode};
@@ -32,10 +34,6 @@ pub enum Record {
     TimedDelete { label: LabelId, blob: BlobId, at: WallMs },
     /// A record of a kind this build does not know: skipped.
     Unknown(u64),
-}
-
-fn bytes(b: &[u8]) -> Value {
-    Value::Bytes(b.to_vec())
 }
 
 impl Record {
@@ -91,16 +89,12 @@ impl Record {
 fn path_step(v: &Value) -> Result<(Step, Option<ClaimSet>), Error> {
     let Value::List(f) = v else { return Err(Error::Malformed("path step")) };
     let [Value::Bytes(s), c] = f.as_slice() else { return Err(Error::Malformed("path step")) };
-    let step = Step::parse(s)?;
     let claims = match get_opt(c, "path claim set")? {
-        Some(Value::Bytes(c)) => Some(ClaimSet::parse(c)?),
+        Some(Value::Bytes(c)) => Some(c.as_slice()),
         Some(_) => return Err(Error::Malformed("path claim set")),
         None => None,
     };
-    if claims.as_ref().is_some_and(|c| c.hash() != step.claims_hash) {
-        return Err(Error::Verify("claim set does not hash to the step's"));
-    }
-    Ok((step, claims))
+    parse_step(s, claims)
 }
 
 fn frame_out(w: &mut dyn Write, v: &Value) -> Result<(), Error> {
