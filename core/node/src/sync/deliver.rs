@@ -76,7 +76,7 @@ impl SyncEngine {
             c.timed_sent.retain(|(l, _)| !gone(l));
             c.reopens.retain(|l, _| !gone(l));
         }
-        self.label_actors.retain(|l, _| !gone(l));
+        self.synced.actors.retain(|l, _| !gone(l));
         self.passes.retain(|(_, l), _| !gone(l));
         self.peer_received.retain(|l, _| !gone(l));
         self.served_cache = None;
@@ -308,7 +308,7 @@ impl SyncState for SyncEngine {
     fn complete_pass(&self, actor: &Tid) -> bool {
         let since = self.membership_seen.get(actor).copied().unwrap_or(0);
         let mut any = false;
-        for (l, (a, servers)) in &self.label_actors {
+        for (l, (a, servers)) in &self.synced.actors {
             if a != actor {
                 continue;
             }
