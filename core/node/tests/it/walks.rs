@@ -17,7 +17,6 @@ use osis_node::{Config, Engine, Mutation};
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
 use osis_store::{Fault, Faults, MemoryBackend, MemoryRoot};
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 struct Rng(u64);
@@ -658,7 +657,6 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool) -> ([usize; 4], us
     lp.sync_all().unwrap();
     let mut moves = 0;
     let (mut moved, mut double_imports) = (Vec::new(), 0);
-    let mut foreign: BTreeSet<osis_base::CommitId> = BTreeSet::new();
     for step in 0..60 {
         let i = rng.below(3) as usize;
         let t = things[rng.below(things.len() as u64) as usize];
@@ -713,22 +711,12 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool) -> ([usize; 4], us
             }
             15 if max_moves > 1 && moves > 0 => {
                 let c = *things.last().unwrap();
-                match doubles.then(|| rng.below(3)) {
-                    Some(0) => {
-                        // the creator's hostile second import: each origin listed twice on a copy
-                        let (o, c) = moved[rng.below(moved.len() as u64) as usize];
-                        if lp.peers[0].engine.reimport(&o, &c).is_ok_and(|v| !v.is_empty()) {
-                            double_imports += 1;
-                        }
+                if doubles && rng.below(3) == 0 {
+                    // the creator's hostile second import: each origin listed twice on a copy
+                    let (o, c) = moved[rng.below(moved.len() as u64) as usize];
+                    if lp.peers[0].engine.reimport(&o, &c).is_ok_and(|v| !v.is_empty()) {
+                        double_imports += 1;
                     }
-                    Some(1) => {
-                        // another node's import into a copy: bad input everywhere else
-                        let (o, c) = moved[rng.below(moved.len() as u64) as usize];
-                        if let Ok(v) = lp.peers[i.max(1)].engine.reimport(&o, &c) {
-                            foreign.extend(v);
-                        }
-                    }
-                    _ => {}
                 }
                 let a = ["/t/keptset", "/t/gonemap", "/t/tags"][rng.below(3) as usize];
                 let _ = lp.peers[i].engine.snapshot(&c, &ak(a));
@@ -761,22 +749,7 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool) -> ([usize; 4], us
         }
         lp.peers[i].clock.advance(1 + rng.below(3));
     }
-    // as `sync_all`, refusing only the foreign imports
-    for _ in 0..3 {
-        for (a, b) in [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)] {
-            for p in lp.packages(a).unwrap() {
-                match lp.deliver(b, &p) {
-                    Err(e) if foreign.contains(&p.id) && e.class() == osis_base::ErrorClass::BadInput => {}
-                    r => {
-                        r.unwrap();
-                    }
-                }
-            }
-        }
-    }
-    if !foreign.is_empty() {
-        eprintln!("seed {seed}: {} foreign imports", foreign.len());
-    }
+    lp.sync_all().unwrap();
     for i in 0..3 {
         let r = reached(&lp.peers[i].engine);
         for k in 0..4 {
