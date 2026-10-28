@@ -232,26 +232,6 @@ fn shows(e: &SeqElem, text: bool) -> (bool, Option<char>) {
     (shown, ch)
 }
 
-/// One block of a sequence's placement, for a node keeping its visible elements by index
-/// (notes/node.md, Paged state).
-#[derive(Clone, Debug)]
-pub struct PlacedBlock(Arc<Block>);
-
-impl PlacedBlock {
-    /// Visible elements in the block.
-    pub fn shown(&self) -> usize {
-        self.0.shown
-    }
-    /// The visible elements in order.
-    pub fn visible(&self) -> impl Iterator<Item = &Dot> + '_ {
-        self.0.rows.iter().filter(|r| r.shown).map(|r| &r.dot)
-    }
-    /// Every placed node in order, hidden ones included: first element, element count, shown.
-    pub fn rows(&self) -> impl Iterator<Item = (&Dot, u64, bool)> + '_ {
-        self.0.rows.iter().map(|r| (&r.dot, r.span, r.shown))
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 struct Block {
     rows: Vec<Row>,
@@ -473,11 +453,6 @@ impl Placement {
             skip = 0;
         }
         out
-    }
-
-    /// The blocks in order.
-    pub(crate) fn blocks(&self) -> Vec<PlacedBlock> {
-        self.order.iter().filter_map(|b| self.blocks.get(*b)).map(|x| PlacedBlock(x.clone())).collect()
     }
 
     /// Visible nodes in order.
@@ -1015,11 +990,6 @@ impl Lin {
         let at = Lin::map_of(&placed, p.cap);
         let newest = elems.values().flat_map(|e| e.pos.iter().map(|x| &x.0)).max().cloned();
         Lin { p, waiting: placed.waiting, cyc, at, origin: next_origin(), part: None, newest }
-    }
-
-    /// Whether an anchor names no element (a write waits for its creation).
-    pub(crate) fn waits(&self) -> bool {
-        !self.waiting.is_empty()
     }
 
     // ---- the stored form (`SeqPlace`): blocks by arena id, dot-map chunks by first dot

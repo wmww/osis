@@ -74,7 +74,6 @@ pub use state::MemberRef;
 pub use seq::{Anchor, Seq, SeqContent, SeqElem};
 pub use seq_diff::{EditWindow, edit_window};
 pub use seq_ops::cut_dots;
-pub use seq_lin::PlacedBlock;
 pub use seq_place::{PlaceBlock, PlaceDiff, PlaceMisses, PlaceRow, PlaceTop, SeqPlace};
 pub use stamp::{CounterRange, Dot, Interner, Source, SourceKind, Stamp};
 pub use view::{AnyView, View};
