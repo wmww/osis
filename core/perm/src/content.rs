@@ -4,7 +4,7 @@
 
 use crate::graph::{EdgesAt, View};
 use crate::timeline::{At, Timeline};
-use crate::types::{Dots, Edge, Point};
+use crate::types::{earliest, Dots, Edge, Point};
 use osis_base::{CommitId, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -173,13 +173,6 @@ impl Timeline {
             }
         }
         None
-    }
-}
-
-fn earliest(a: Option<WallMs>, b: Option<WallMs>) -> Option<WallMs> {
-    match (a, b) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
     }
 }
 

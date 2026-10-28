@@ -13,7 +13,7 @@
 use crate::graph::{Dense, View};
 use crate::held::{HeldSet, MemoryHeldSet};
 use crate::timeline::{At, Timeline};
-use crate::types::{Edge, Point, RosterSnapshot, WriteId};
+use crate::types::{put, Edge, Point, RosterSnapshot, WriteId};
 use crate::walk;
 use osis_base::{CommitId, Role, Tid};
 use std::collections::{BTreeMap, BTreeSet};
@@ -55,15 +55,7 @@ struct Chains {
 impl Chains {
     fn new(tl: &Timeline) -> Chains {
         let mut cur: BTreeMap<(Tid, Tid), Edge> = tl.walked.initial.iter().map(|(m, t, e)| ((*m, *t), *e)).collect();
-        let prev = tl
-            .walked
-            .history
-            .iter()
-            .map(|c| match c.edge {
-                Some(e) => cur.insert((c.member, c.target), e),
-                None => cur.remove(&(c.member, c.target)),
-            })
-            .collect();
+        let prev = tl.walked.history.iter().map(|c| put(&mut cur, (c.member, c.target), c.edge)).collect();
         Chains { dense: tl.input.dense(&tl.walked.initial), h: 0, prev, at: None, roles: BTreeMap::new(), backs: BTreeMap::new() }
     }
 

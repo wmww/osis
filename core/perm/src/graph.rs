@@ -2,7 +2,7 @@
 //! the widest path over membership edges and owner links, effective invite, authority class.
 
 use crate::held::HeldSet;
-use crate::types::Edge;
+use crate::types::{earliest, mark, put, Edge};
 use osis_base::format::MAX_OWNER_DEPTH;
 use osis_base::{CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
@@ -187,10 +187,7 @@ impl Edges {
                     Some((p, _)) if same(&p.0, &old_t) => p.1.clone(),
                     _ => {
                         let mut v = old_t.as_deref().cloned().unwrap_or_default();
-                        match e {
-                            Some(e) => v.insert(*m, *e),
-                            None => v.remove(m),
-                        };
+                        put(&mut v, *m, *e);
                         (!v.is_empty()).then(|| Arc::new(v))
                     }
                 };
@@ -198,21 +195,12 @@ impl Edges {
                     Some((_, p)) if same(&p.0, &old_m) => p.1.clone(),
                     _ => {
                         let mut v = old_m.as_deref().cloned().unwrap_or_default();
-                        match e {
-                            Some(_) => v.insert(*t),
-                            None => v.remove(t),
-                        };
+                        mark(&mut v, *t, e.is_some());
                         (!v.is_empty()).then(|| Arc::new(v))
                     }
                 };
-                match &new_t {
-                    Some(v) => s.by_target.insert(*t, v.clone()),
-                    None => s.by_target.remove(t),
-                };
-                match &new_m {
-                    Some(v) => s.by_member.insert(*m, v.clone()),
-                    None => s.by_member.remove(m),
-                };
+                put(&mut s.by_target, *t, new_t.clone());
+                put(&mut s.by_member, *m, new_m.clone());
                 let x = ((old_t, new_t), (old_m, new_m));
                 match last.get_mut(j) {
                     Some(l) => *l = x,
@@ -255,7 +243,7 @@ fn has(mask: &[u64; 4], t: &Tid) -> bool {
     mask.get(i).is_some_and(|w| w & m != 0)
 }
 
-fn mark(mask: &mut [u64; 4], t: &Tid) {
+fn set_bit(mask: &mut [u64; 4], t: &Tid) {
     let (i, m) = bit(t);
     if let Some(w) = mask.get_mut(i) {
         *w |= m;
@@ -272,8 +260,8 @@ impl Overlay {
             }
             Err(i) => self.set.insert(i, (member, target, edge)),
         }
-        mark(&mut self.members, &member);
-        mark(&mut self.targets, &target);
+        set_bit(&mut self.members, &member);
+        set_bit(&mut self.targets, &target);
     }
     fn is_empty(&self) -> bool {
         self.set.is_empty()
@@ -432,9 +420,7 @@ impl Dense {
                 }
                 for (t, edge) in self.out.get(e).into_iter().flatten() {
                     if edge.alive_at(Some(ts)) {
-                        if let Some(u) = edge.until {
-                            expires = Some(expires.map_or(u, |e| e.min(u)));
-                        }
+                        expires = earliest(expires, edge.until);
                         relax(*t, level.min(edge.role), &mut stack);
                     }
                 }
@@ -466,9 +452,7 @@ impl Dense {
             }
             for (t, edge) in self.out.get(e).into_iter().flatten() {
                 if edge.alive_at(Some(ts)) {
-                    if let Some(u) = edge.until {
-                        expires = Some(expires.map_or(u, |e| e.min(u)));
-                    }
+                    expires = earliest(expires, edge.until);
                     raise(*t, level.min(edge.role), &mut stack);
                 }
             }
@@ -616,9 +600,7 @@ impl<'a> View<'a> {
                 }
                 self.each_target(&e, |t, edge| {
                     if edge.alive_at(self.ts) {
-                        if let Some(u) = edge.until {
-                            expires = Some(expires.map_or(u, |e| e.min(u)));
-                        }
+                        expires = earliest(expires, edge.until);
                         relax(*t, level.min(edge.role), &mut stack);
                     }
                 });
@@ -652,9 +634,7 @@ impl<'a> View<'a> {
             }
             self.each_target(&e, |t, edge| {
                 if edge.alive_at(self.ts) {
-                    if let Some(u) = edge.until {
-                        expires = Some(expires.map_or(u, |e| e.min(u)));
-                    }
+                    expires = earliest(expires, edge.until);
                     raise(*t, level.min(edge.role), &mut stack);
                 }
             });

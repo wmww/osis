@@ -24,7 +24,7 @@
 use crate::content::{overlapping, Range};
 use crate::graph::{Class, Dense, Edges, Owners, Reads, Standing, View};
 use crate::held::HeldSet;
-use crate::types::{lowers, Dots, Edge, EdgeOp, Frontier, MembershipCommit, Point, RosterSnapshot, WriteId, MEMBERS};
+use crate::types::{earliest, lowers, mark, pop, put, Dots, Edge, EdgeOp, Frontier, MembershipCommit, Point, RosterSnapshot, WriteId, MEMBERS};
 use osis_base::{CommitId, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -599,7 +599,7 @@ impl Walked {
             log.push(Undo::Applied(id, was));
             // as `Pass::change` with no audit: the key's state at the end is its state here
             let old = self.edges.get(&o.member, &o.target).copied().filter(|_| !self.rest.dead.contains(&key));
-            let was = if new.is_some_and(|e| !e.alive_at(Some(p.ts))) { !self.rest.dead.insert(key) } else { self.rest.dead.remove(&key) };
+            let was = mark(&mut self.rest.dead, key, new.is_some_and(|e| !e.alive_at(Some(p.ts))));
             log.push(Undo::Dead(key, was));
             let explicit = matches!(attr, Attr::By(Class::Chain | Class::Edge));
             let restores = old.is_some() || self.rest.prior.contains_key(&key);
@@ -813,23 +813,10 @@ impl Walked {
             cur.splice(at..at, v);
         }
         for (k, (dead, prior, prior_node, setter)) in own.keys {
-            if dead {
-                self.rest.dead.insert(k);
-            } else {
-                self.rest.dead.remove(&k);
-            }
-            match prior {
-                Some(e) => self.rest.prior.insert(k, e),
-                None => self.rest.prior.remove(&k),
-            };
-            match prior_node {
-                Some(m) => self.rest.prior_node.insert(k, m),
-                None => self.rest.prior_node.remove(&k),
-            };
-            match setter {
-                Some(w) => self.rest.setter.insert(k, w),
-                None => self.rest.setter.remove(&k),
-            };
+            mark(&mut self.rest.dead, k, dead);
+            put(&mut self.rest.prior, k, prior);
+            put(&mut self.rest.prior_node, k, prior_node);
+            put(&mut self.rest.setter, k, setter);
         }
         for (k, e) in own.edges {
             self.edges.set(k.0, k.1, e);
@@ -1548,66 +1535,26 @@ impl<'a> Pass<'a> {
                     self.edges.set(m, t, e);
                 }
                 Undo::Dead(k, on) => {
-                    if on {
-                        self.dead.insert(k);
-                    } else {
-                        self.dead.remove(&k);
-                    }
+                    mark(&mut self.dead, k, on);
                 }
                 Undo::Setter(k, w) => {
-                    match w {
-                        Some(w) => self.setter.insert(k, w),
-                        None => self.setter.remove(&k),
-                    };
+                    put(&mut self.setter, k, w);
                 }
                 Undo::Prior(k, e) => {
-                    match e {
-                        Some(e) => self.prior.insert(k, e),
-                        None => self.prior.remove(&k),
-                    };
+                    put(&mut self.prior, k, e);
                 }
                 Undo::PriorNode(k, m) => {
-                    match m {
-                        Some(m) => self.prior_node.insert(k, m),
-                        None => self.prior_node.remove(&k),
-                    };
+                    put(&mut self.prior_node, k, m);
                 }
                 Undo::Applied(id, a) => {
-                    match a {
-                        Some(a) => self.applied.insert(id, a),
-                        None => self.applied.remove(&id),
-                    };
+                    put(&mut self.applied, id, a);
                 }
                 Undo::Candidate(c, a) => {
-                    match a {
-                        Some(a) => self.candidates.insert(c, a),
-                        None => self.candidates.remove(&c),
-                    };
+                    put(&mut self.candidates, c, a);
                 }
-                Undo::ByAuthorTarget(k) => {
-                    if let Some(v) = self.by_author_target.get_mut(&k) {
-                        v.pop();
-                        if v.is_empty() {
-                            self.by_author_target.remove(&k);
-                        }
-                    }
-                }
-                Undo::Demotion(k) => {
-                    if let Some(v) = self.demotions.get_mut(&k) {
-                        v.pop();
-                        if v.is_empty() {
-                            self.demotions.remove(&k);
-                        }
-                    }
-                }
-                Undo::Fall(k) => {
-                    if let Some(v) = self.falls.get_mut(&k) {
-                        v.pop();
-                        if v.is_empty() {
-                            self.falls.remove(&k);
-                        }
-                    }
-                }
+                Undo::ByAuthorTarget(k) => pop(&mut self.by_author_target, &k),
+                Undo::Demotion(k) => pop(&mut self.demotions, &k),
+                Undo::Fall(k) => pop(&mut self.falls, &k),
             }
         }
         match &mut self.untouched {
@@ -1631,23 +1578,17 @@ impl<'a> Pass<'a> {
     }
 
     fn set_dead(&mut self, k: (Tid, Tid), on: bool) {
-        let was = if on { !self.dead.insert(k) } else { self.dead.remove(&k) };
+        let was = mark(&mut self.dead, k, on);
         self.log.push(Undo::Dead(k, was));
     }
 
     fn set_setter(&mut self, k: (Tid, Tid), w: Option<WriteId>) {
-        let was = match w {
-            Some(w) => self.setter.insert(k, w),
-            None => self.setter.remove(&k),
-        };
+        let was = put(&mut self.setter, k, w);
         self.log.push(Undo::Setter(k, was));
     }
 
     fn set_prior(&mut self, k: (Tid, Tid), e: Option<Edge>) -> Option<Edge> {
-        let was = match e {
-            Some(e) => self.prior.insert(k, e),
-            None => self.prior.remove(&k),
-        };
+        let was = put(&mut self.prior, k, e);
         self.log.push(Undo::Prior(k, was));
         was
     }
@@ -1716,10 +1657,7 @@ impl<'a> Pass<'a> {
                         e
                     }
                 };
-                r.exp = match (r.exp, e) {
-                    (Some(a), Some(b)) => Some(a.min(b)),
-                    (a, b) => a.or(b),
-                };
+                r.exp = earliest(r.exp, e);
             }
         }
     }
