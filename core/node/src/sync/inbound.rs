@@ -498,22 +498,28 @@ impl SyncEngine {
     /// before apply, spec/sync.md §6; the chunks of other large values stay lazy).
     fn fetch_waiting(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let waiting: Vec<osis_base::CommitId> = self.engine.pending().into_iter().filter(|(_, r)| *r == crate::Reason::WaitBlobs).map(|(c, _)| c).collect();
-        let mut missing = Vec::new();
+        let mut missing = BTreeSet::new();
         for c in waiting {
             let Some(bytes) = self.engine.commit_bytes(&c)? else { continue };
             let Ok(cb) = osis_commit::CommitBlob::decode(&bytes) else { continue };
-            for ch in &cb.header.chunks {
-                // asked of the label whether or not an entry was seen (an unstamped one that
-                // opened under nothing is not kept, `drop_unvouched`)
-                if !self.missing.contains(&(conn, ch.blob)) && !self.engine.has_blob(&ch.blob) && self.fetching.insert(ch.blob, conn).is_none() {
-                    missing.push(ch.blob);
-                }
-            }
+            // asked of the label whether or not an entry was seen (an unstamped one that opened
+            // under nothing is not kept, `drop_unvouched`)
+            missing.extend(cb.header.chunks.iter().map(|ch| ch.blob).filter(|b| !self.engine.has_blob(b)));
         }
-        if !missing.is_empty() {
-            self.command(conn, Command::Fetch { label: l, ids: missing }, out)?;
+        self.fetch_on(conn, l, missing, out)
+    }
+
+    /// Fetches `ids` under `l` on `conn`, but those asked for already and those its server did
+    /// not deliver.
+    pub(crate) fn fetch_on(&mut self, conn: ConnId, l: LabelId, ids: impl IntoIterator<Item = BlobId>, out: &mut Vec<super::Action>) -> Result<()> {
+        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.missing.contains(&(conn, *b)) && !self.fetching.contains_key(b)).collect();
+        if ids.is_empty() {
+            return Ok(());
         }
-        Ok(())
+        for b in &ids {
+            self.fetching.insert(*b, conn);
+        }
+        self.command(conn, Command::Fetch { label: l, ids }, out)
     }
 
     /// Entry `b` under `l` is no longer at `server`: once no server holds it, the entry goes

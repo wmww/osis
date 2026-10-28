@@ -12,8 +12,12 @@
 //! nothing for it and found nothing waiting (no send, delete or relay wait outstanding); so a
 //! pass over the set acts as a full pass would.
 
-use crate::labeling::HeadKeys;
-use osis_base::{Ak, BlobId, CommitId, Tid};
+use super::pass::{is_card, is_snapshot};
+use super::state::Kind;
+use super::{ConnId, SyncEngine};
+use crate::error::Result;
+use crate::labeling::{Body, BodyCtx, HeadKeys};
+use osis_base::{Ak, BlobId, CommitId, LabelId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -200,7 +204,7 @@ pub(crate) enum Scope {
 }
 
 impl Scope {
-    pub fn all(&self) -> bool {
+    pub fn is_all(&self) -> bool {
         matches!(self, Scope::All)
     }
 
@@ -275,12 +279,6 @@ impl Note {
     }
 }
 
-use super::state::Kind;
-use super::{ConnId, SyncEngine};
-use crate::error::Result;
-use crate::labeling::{Body, BodyCtx};
-use osis_base::LabelId;
-
 impl SyncEngine {
     /// Readies work set `w` of label `l` of `g` for a pass: due times and waited-on aspect
     /// states move their commits in, touched aspects, things and the closure's changes expand
@@ -329,9 +327,9 @@ impl SyncEngine {
             let me = self.engine.tid();
             for c in &w.commits {
                 let Some(h) = self.engine.header(c) else { continue };
-                let snapshot = matches!(h.kind, osis_commit::Kind::ContentSnapshot | osis_commit::Kind::MembershipSnapshot);
+                let snapshot = is_snapshot(h.kind);
                 for a in &h.aspects {
-                    let card = a.tid == h.author && h.author != me && matches!(a.ak.as_str(), "/node" | "/reach" | "/keys");
+                    let card = a.tid == h.author && h.author != me && is_card(a.ak.as_str());
                     if snapshot || card {
                         w.aspects.insert((a.tid, a.ak.clone()));
                     }
@@ -502,7 +500,7 @@ impl SyncEngine {
                 w.unjudged.remove(c);
                 continue;
             };
-            if matches!(h.kind, osis_commit::Kind::ContentSnapshot | osis_commit::Kind::MembershipSnapshot) {
+            if is_snapshot(h.kind) {
                 for a in &h.aspects {
                     let set = w.snaps.entry((a.tid, a.ak.clone())).or_default();
                     set.retain(|(_, x)| x != c);
@@ -517,7 +515,7 @@ impl SyncEngine {
             } else {
                 w.unjudged.remove(c);
             }
-            if h.author != me && !blobs.is_empty() && h.aspects.iter().any(|x| x.tid == h.author && matches!(x.ak.as_str(), "/node" | "/reach" | "/keys")) {
+            if h.author != me && !blobs.is_empty() && h.aspects.iter().any(|x| x.tid == h.author && is_card(x.ak.as_str())) {
                 w.cards.insert(*c);
             } else {
                 w.cards.remove(c);
