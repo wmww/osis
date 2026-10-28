@@ -476,7 +476,7 @@ pub(crate) fn overlay(acc: Fragment, d: Fragment, w: &Writer) -> Fragment {
 }
 
 /// A later reset drops the batch's earlier content below it (same commit, same stamp).
-fn start<T>(a: Meta, items: BTreeMap<Dot, T>, b: Meta) -> (Meta, BTreeMap<Dot, T>) {
+fn start<K: Ord, T>(a: Meta, items: BTreeMap<K, T>, b: Meta) -> (Meta, BTreeMap<K, T>) {
     if b.reset.is_some() {
         return (Meta { reset: b.reset, w: b.w }, BTreeMap::new());
     }
@@ -518,7 +518,7 @@ fn keep_present(meta: &mut Meta, empty: bool, w: &Writer) {
 }
 
 fn overlay_children(am: Meta, ac: BTreeMap<u64, Fragment>, bm: Meta, bc: BTreeMap<u64, Fragment>, w: &Writer) -> (Meta, BTreeMap<u64, Fragment>) {
-    let (meta, mut children) = if bm.reset.is_some() { (Meta { reset: bm.reset, w: bm.w }, BTreeMap::new()) } else { (Meta { reset: am.reset, w: bm.w.or(am.w) }, ac) };
+    let (meta, mut children) = start(am, ac, bm);
     for (k, f) in bc {
         let merged = match children.remove(&k) {
             Some(prev) => overlay(prev, f, w),

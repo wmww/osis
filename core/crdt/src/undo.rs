@@ -4,7 +4,8 @@
 
 use crate::error::Error;
 use crate::fragment::{Bag, Elem, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Struct};
-use crate::ops::{PathSeg, Writer, create, present_slot, remove, replace};
+use crate::ops::{PathSeg, Writer, create, key_state, present_slot, remove, replace};
+use crate::state::MemberRef;
 use crate::seq;
 use crate::stamp::{CounterRange, Dot, Source, Stamp};
 use crate::view::View;
@@ -19,21 +20,15 @@ pub trait UndoBuffer {
 /// The pre-commit state itself is an undo buffer.
 impl UndoBuffer for Fragment {
     fn before(&self, path: &[PathSeg]) -> Option<Fragment> {
-        let mut cur = self.clone();
-        for seg in path {
-            let next = match (seg, cur.chosen()) {
-                (PathSeg::Field(id), Fragment::Struct(s)) => s.fields.get(id).cloned(),
-                (PathSeg::Case(id), Fragment::Enum(e)) => e.payloads.get(id).cloned(),
-                (PathSeg::Key(k), Fragment::Map(m)) => {
-                    let d = m.live_dots(k).first().map(|d| (*d).clone());
-                    d.and_then(|d| m.entries.get(&d)).and_then(|e| e.frag.as_deref().cloned())
-                }
-                (PathSeg::Index(i), Fragment::Seq(s)) => seq::element_at(&s, *i).and_then(|(_, c)| c),
-                _ => None,
-            };
-            cur = next?;
+        let Some((seg, rest)) = path.split_first() else { return Some(self.clone()) };
+        let MemberRef::Frag(f) = self.chosen_member() else { return None };
+        match (seg, f) {
+            (PathSeg::Field(id), Fragment::Struct(s)) => s.fields.get(id)?.before(rest),
+            (PathSeg::Case(id), Fragment::Enum(e)) => e.payloads.get(id)?.before(rest),
+            (PathSeg::Key(k), Fragment::Map(m)) => m.entries.get(*m.live_dots(k).first()?)?.frag.as_deref()?.before(rest),
+            (PathSeg::Index(i), Fragment::Seq(s)) => seq::element_at(s, *i)?.1?.before(rest),
+            _ => None,
         }
-        Some(cur)
     }
 }
 
@@ -118,12 +113,8 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                     let ev = view.element();
                     for e in prev.elems.values() {
                         let Some(v) = e.frag.as_ref().and_then(|f| f.read()) else { continue };
-                        let d = w.fresh().dot;
-                        let f = match &ev {
-                            Some(ev) => create(w, ev, &v)?,
-                            None => Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: r.clone(), value: Some(v) }) }),
-                        };
-                        elems.insert(d, Elem { reset: None, frag: Some(Box::new(f)) });
+                        let (d, e) = contribution(w, ev.as_ref(), v, &r)?;
+                        elems.insert(d, e);
                     }
                 }
             } else {
@@ -139,12 +130,8 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                             _ => None,
                         };
                         if let Some(v) = v {
-                            let nd = w.fresh().dot;
-                            let f = match &ev {
-                                Some(ev) => create(w, ev, &v)?,
-                                None => Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: r.clone(), value: Some(v) }) }),
-                            };
-                            elems.insert(nd, Elem { reset: None, frag: Some(Box::new(f)) });
+                            let (d, e) = contribution(w, ev.as_ref(), v, &r)?;
+                            elems.insert(d, e);
                         }
                     }
                 }
@@ -292,14 +279,18 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
 /// live entries (§5.6 path ops), or the entry alone if none is live.
 fn entry_frag(p: &Fragment, d: &Dot, k: &osis_base::Value) -> Option<Fragment> {
     let Fragment::Map(m) = p else { return None };
-    let mut acc: Option<Fragment> = None;
-    for f in m.live_dots(k).into_iter().filter_map(|x| m.entries.get(x)?.frag.as_deref()) {
-        match &mut acc {
-            Some(a) => a.join_into(f.clone(), None, &mut crate::changes::Changes::new()),
-            None => acc = Some(f.clone()),
-        }
-    }
-    acc.or_else(|| m.entries.get(d).and_then(|e| e.frag.as_deref().cloned()))
+    key_state(m, &m.live_dots(k)).or_else(|| m.entries.get(d)?.frag.as_deref().cloned())
+}
+
+/// A new bag contribution of `v` with a fresh dot: created under the element view, else a
+/// register write at the undo's stamp `r`.
+fn contribution<V: View>(w: &mut Writer, ev: Option<&V>, v: osis_base::Value, r: &Stamp) -> Result<(Dot, Elem), Error> {
+    let d = w.fresh().dot;
+    let f = match ev {
+        Some(ev) => create(w, ev, &v)?,
+        None => Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: r.clone(), value: Some(v) }) }),
+    };
+    Ok((d, Elem { reset: None, frag: Some(Box::new(f)) }))
 }
 
 /// The buffer below a map entry: paths are relative to the entry the undone write edited.

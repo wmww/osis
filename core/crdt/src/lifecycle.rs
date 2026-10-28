@@ -2,7 +2,7 @@
 //! dot, and whether that may be done in place.
 
 use crate::changes::Changes;
-use crate::fragment::{Bag, Elem, Fragment, Map, Set, Slots};
+use crate::fragment::{Bag, Elem, Fragment, Map, Register, Set, Slots};
 use crate::seq;
 use crate::stamp::{Dot, Stamp};
 use std::collections::BTreeMap;
@@ -19,23 +19,19 @@ impl Fragment {
 
     pub(crate) fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool) {
         let exp = |d: &Dot| expired(d.owner());
+        let reg = |r: &mut Register| {
+            if let Some(w) = &mut r.write
+                && exp(&w.stamp.dot)
+            {
+                w.value = None;
+            }
+        };
         match self {
-            Fragment::Slots(Slots { reg, members }) => {
-                if let Some(r) = reg
-                    && let Some(w) = &mut r.write
-                    && exp(&w.stamp.dot)
-                {
-                    w.value = None;
-                }
+            Fragment::Slots(Slots { reg: r, members }) => {
+                r.iter_mut().for_each(reg);
                 members.values_mut().for_each(|f| f.strip_values(expired));
             }
-            Fragment::Register(r) => {
-                if let Some(w) = &mut r.write
-                    && exp(&w.stamp.dot)
-                {
-                    w.value = None;
-                }
-            }
+            Fragment::Register(r) => reg(r),
             Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => {
                 elems.values_mut().filter_map(|e| e.frag.as_mut()).for_each(|f| f.strip_values(expired))
             }

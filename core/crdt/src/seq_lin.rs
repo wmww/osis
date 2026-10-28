@@ -158,12 +158,8 @@ impl Partial {
     }
     /// Sets the dot ranges whose records are loaded (`[lo, hi)`, `None` unbounded).
     pub(crate) fn set_cover(&self, mut ranges: Vec<(Option<Dot>, Option<Dot>)>) {
-        ranges.sort_by(|a, b| match (&a.0, &b.0) {
-            (None, None) => std::cmp::Ordering::Equal,
-            (None, _) => std::cmp::Ordering::Less,
-            (_, None) => std::cmp::Ordering::Greater,
-            (Some(x), Some(y)) => x.cmp(y),
-        });
+        // an unbounded `lo` (`None`) first
+        ranges.sort_by(|a, b| a.0.cmp(&b.0));
         let mut out: Vec<(Option<Dot>, Option<Dot>)> = Vec::with_capacity(ranges.len());
         for (lo, hi) in ranges {
             if let Some(l) = out.last_mut() {
