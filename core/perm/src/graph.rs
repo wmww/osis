@@ -492,15 +492,21 @@ impl Reads {
     /// Standing of `x` on the thing `n` these are of, given `x`'s roles.
     pub fn standing(&self, x: &Tid, best: &BTreeMap<Tid, Role>, n: &Tid) -> Standing {
         let role = best.get(n).copied();
-        let class = if self.top == Some(*x) || self.up.iter().any(|y| best.get(y) == Some(&Role::Admin)) {
-            Class::Chain
-        } else if role == Some(Role::Admin) {
-            Class::Edge
-        } else {
-            let inv = self.invites.iter().filter_map(|(m, e)| Some(e.invite?.min(*best.get(m)?).min(e.role))).max();
-            inv.map_or(Class::None, Class::Invite)
-        };
+        let chain = self.top == Some(*x) || self.up.iter().any(|y| best.get(y) == Some(&Role::Admin));
+        let class = class_of(chain, role, || self.invites.iter().filter_map(|(m, e)| Some(e.invite?.min(*best.get(m)?).min(e.role))).max());
         Standing { class, role }
+    }
+}
+
+/// Authority class from its parts (§5.1 step 3): admin on the owner chain (or its top), the
+/// role on the thing, the effective invite there.
+fn class_of(chain: bool, role: Option<Role>, invite: impl FnOnce() -> Option<Role>) -> Class {
+    if chain {
+        Class::Chain
+    } else if role == Some(Role::Admin) {
+        Class::Edge
+    } else {
+        invite().map_or(Class::None, Class::Invite)
     }
 }
 
@@ -701,14 +707,7 @@ impl<'a> View<'a> {
     /// Standing on `n` from its parts: whether the node is admin on `n`'s owner chain, its role
     /// on `n`, and its roles on `n`'s members (for the invite).
     pub fn standing_from(&self, chain: bool, role: Option<Role>, best: &BTreeMap<Tid, Role>, n: &Tid) -> Standing {
-        let class = if chain {
-            Class::Chain
-        } else if role == Some(Role::Admin) {
-            Class::Edge
-        } else {
-            self.invite(best, n).map_or(Class::None, Class::Invite)
-        };
-        Standing { class, role }
+        Standing { class: class_of(chain, role, || self.invite(best, n)), role }
     }
 
     /// Things reachable from `start` (included) by owner links and edges of any role and
