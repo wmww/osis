@@ -103,14 +103,45 @@ type Judged = (Hold, bool, Vec<(Tid, Ak)>);
 struct J {
     scope: Scope,
     left: Left,
-    /// The label's snapshots by aspect.
-    snaps: BTreeMap<(Tid, Ak), Vec<CommitId>>,
+    snaps: Snaps,
     bodies: Vec<Body>,
     /// The commits of the scope when the bodies were taken (`judge_touched`).
     judged: BTreeSet<CommitId>,
     unsettled: Unsettled,
     snapping: Unsettled,
     replaced: bool,
+}
+
+/// A label's snapshots by aspect (`drop_label_covered`).
+type Snaps = BTreeMap<(Tid, Ak), Vec<CommitId>>;
+
+/// A pass's label of group `g` at `server` (`None`: the local pass) and head, with the keys
+/// this node may use there (`usable_keys`).
+struct Head {
+    g: Tid,
+    l: LabelId,
+    server: Option<ServerKey>,
+    id: osis_label::StepId,
+    keys: HeadKeys,
+    read_ok: bool,
+}
+
+impl Head {
+    fn at<'a>(&'a self, snaps: &'a Snaps, settled: bool) -> At<'a> {
+        At { g: self.g, l: self.l, server: self.server, keys: &self.keys, snaps, settled }
+    }
+}
+
+/// Where entries are judged (`judge`, `deletable` and below): label `l` of `g` at `server`
+/// (`None`: this node's own served state, where every entry counts as present), under the
+/// head's keys, with the label's snapshots and whether the view is settled.
+struct At<'a> {
+    g: Tid,
+    l: LabelId,
+    server: Option<ServerKey>,
+    keys: &'a HeadKeys,
+    snaps: &'a Snaps,
+    settled: bool,
 }
 
 /// A deposited entry due for promotion: (blob, entry, commit, its parts).
@@ -167,7 +198,8 @@ impl SyncEngine {
         if self.reregister(conn, l, out)? {
             return Ok(());
         }
-        self.with_work(&g, Some(conn), l, |s, ctx, w| s.judge_label(conn, server, g, l, ctx, keys, read_ok, head.id(), w, out))
+        let p = Head { g, l, server: Some(server), id: head.id(), keys, read_ok };
+        self.with_work(&g, Some(conn), l, |s, ctx, w| s.judge_label(conn, &p, ctx, w, out))
     }
 
     /// Runs a pass of `l` of `g` over its work set (`conn` `None`: the local pass): the closure
@@ -219,8 +251,9 @@ impl SyncEngine {
 
     /// The pass after the keys and registration (`pass`): over what work set `w` names, or
     /// everything when it says so or an input of the pass changed (`work`).
-    #[allow(clippy::too_many_arguments)]
-    fn judge_label(&mut self, conn: ConnId, server: ServerKey, g: Tid, l: LabelId, ctx: &BodyCtx, keys: HeadKeys, read_ok: bool, head: osis_label::StepId, w: &mut Work, out: &mut Vec<super::Action>) -> Result<()> {
+    fn judge_label(&mut self, conn: ConnId, p: &Head, ctx: &BodyCtx, w: &mut Work, out: &mut Vec<super::Action>) -> Result<()> {
+        let (g, l, keys, read_ok) = (p.g, p.l, &p.keys, p.read_ok);
+        let Some(server) = p.server else { return Ok(()) };
         let (full, scope) = self.begin(&g, &l, w, &ctx.closure);
         self.refetch(conn, server, l, w, out)?;
         // commits the refetch applied may move the closure or published groups: judged with
@@ -232,8 +265,8 @@ impl SyncEngine {
         } else {
             ctx
         };
-        let J { mut scope, mut left, snaps, mut bodies, judged, unsettled, snapping, replaced } = self.judging(Some(conn), &g, l, ctx, &keys, read_ok, head, w, scope, full)?;
-        let mut sends: Vec<Out> = self.body_sends(Some(&server), &g, l, &keys, read_ok, &bodies, &snaps, &snapping, &mut left)?;
+        let J { mut scope, mut left, snaps, mut bodies, judged, unsettled, snapping, replaced } = self.judging(Some(conn), p, ctx, w, scope, full)?;
+        let mut sends: Vec<Out> = self.body_sends(p, &bodies, &snaps, &snapping, &mut left)?;
         // parked commits travel like at a blind node: stamped entries are relayed (spec/versioning.md §2)
         for id in self.state.of_kind(&l, 4) {
             if self.state.entries.get(&(l, id)).is_some_and(|e| e.stamp.is_some()) {
@@ -247,7 +280,7 @@ impl SyncEngine {
                 let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
                 held = self.certificates(&g, l, false, &authors)?;
                 let tight = self.lc(conn, &l).and_then(|x| x.budget).is_some_and(|b| b < self.cfg.tight_budget);
-                self.heartbeat(&g, l, &keys, tight)?;
+                self.heartbeat(&g, l, keys, tight)?;
             } else if !self.may_rotate_read(&g) {
                 // the revokes of departures inside members only: they tell the label's rotators
                 // what keeps its epoch uncovered (spec/permissions.md §4 exception)
@@ -260,12 +293,29 @@ impl SyncEngine {
         // every certificate copy this node placed here: chain, card, flows' placements,
         // promoted deposits' chains (those placed just now included)
         self.pull(Some(conn), &g, l, &mut scope, w);
-        let certs: Vec<(BlobId, Option<CommitId>)> = self
-            .cert_entries(&l, &scope)
-            .into_iter()
-            .filter_map(|id| self.state.entries.get(&(l, id)).map(|e| (id, if let Kind::Commit { commit, .. } = &e.kind { Some(*commit) } else { None })))
-            .collect();
-        for (id, c) in certs {
+        sends.extend(self.cert_sends(l, &scope));
+        // a replaced label with everything to hold already there (`retire_at`)
+        let quiet = replaced && sends.iter().all(|o| self.state.is_present(&server, &l, &o.id) || self.state.gone.contains(&(server, l, o.id)));
+        self.send(conn, p, sends, &held, &mut left, out)?;
+        let settled = unsettled.is_empty();
+        self.pull(Some(conn), &g, l, &mut scope, w);
+        self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
+        self.deletions(conn, &p.at(&snaps, settled), &bodies, &scope, &mut left, out)?;
+        if quiet && settled {
+            self.retire_at(server, &g, l)?;
+        }
+        self.reseal(&g, w)?;
+        w.leave(left);
+        Ok(())
+    }
+
+    /// Every certificate copy this node placed under `l` in `scope` to send: chain, card, flows'
+    /// placements, promoted deposits' chains.
+    fn cert_sends(&self, l: LabelId, scope: &Scope) -> Vec<Out> {
+        let mut sends = Vec::new();
+        for id in self.cert_entries(&l, scope) {
+            let Some(e) = self.state.entries.get(&(l, id)) else { continue };
+            let c = if let Kind::Commit { commit, .. } = &e.kind { Some(*commit) } else { None };
             let beat = c.and_then(|c| self.engine.header(&c)).is_some_and(|h| h.aspects.iter().any(|a| a.ak.as_str() == "/seen"));
             let prio = if c.is_some_and(|c| self.first.contains(&c)) {
                 0
@@ -276,8 +326,17 @@ impl SyncEngine {
             };
             sends.push(Out { prio, id, fresh: false, of: Some(c.map_or(Touch::Blob(id), Touch::Commit)) });
         }
-        // a replaced label with everything to hold already there (`retire_at`)
-        let quiet = replaced && sends.iter().all(|o| self.state.is_present(&server, &l, &o.id) || self.state.gone.contains(&(server, l, o.id)));
+        sends
+    }
+
+    /// Sends what a pass at `conn`'s server found to send, by priority: what the server lacks
+    /// and is not in flight, stamped when this node writes (promoting due deposits too), else
+    /// relayed with its stamp, else deposited (this node's own membership writes queued in the
+    /// outbox). This node's write waits while a certificate copy of its chain is `held`. What the
+    /// server lacks is judged again next pass (`left`).
+    fn send(&mut self, conn: ConnId, p: &Head, mut sends: Vec<Out>, held: &BTreeSet<CommitId>, left: &mut Left, out: &mut Vec<super::Action>) -> Result<()> {
+        let (g, l, keys) = (p.g, p.l, &p.keys);
+        let Some(server) = p.server else { return Ok(()) };
         sends.sort_by_key(|o| o.prio);
         let raw = self.raw_now();
         let mut seen = BTreeSet::new();
@@ -355,15 +414,6 @@ impl SyncEngine {
         for (blob, wrap, sig) in deposits {
             self.command(conn, Command::Deposit { label: l, blob, wrap, sig }, out)?;
         }
-        let settled = unsettled.is_empty();
-        self.pull(Some(conn), &g, l, &mut scope, w);
-        self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
-        self.deletions(conn, server, l, &g, &keys, &bodies, &snaps, settled, &scope, &mut left, out)?;
-        if quiet && settled {
-            self.retire_at(server, &g, l)?;
-        }
-        self.reseal(&g, w)?;
-        w.leave(left);
         Ok(())
     }
 
@@ -379,28 +429,29 @@ impl SyncEngine {
     /// scope with what touched the set meanwhile, the unsettled sets and the inputs taken
     /// (`take_inputs`), the label's snapshots with the bodies they cover dropped, and the bodies
     /// of the scope. A server's entries get their linked prefixes checked.
-    #[allow(clippy::too_many_arguments)]
-    fn judging(&mut self, conn: Option<ConnId>, g: &Tid, l: LabelId, ctx: &BodyCtx, keys: &HeadKeys, read_ok: bool, head: osis_label::StepId, w: &mut Work, mut scope: Scope, full: bool) -> Result<J> {
+    fn judging(&mut self, conn: Option<ConnId>, p: &Head, ctx: &BodyCtx, w: &mut Work, mut scope: Scope, full: bool) -> Result<J> {
+        let (g, l, keys) = (&p.g, p.l, &p.keys);
         self.pull(conn, g, l, &mut scope, w);
         if conn.is_some() {
             self.check_linked_prefixes(l, &scope)?;
         }
         let fetching = w.unopened.iter().any(|b| self.fetching(b));
-        let (unsettled, snapping) = self.unsettled_sets(!w.unopened.is_empty(), fetching)?;
+        let sets = self.unsettled_sets(!w.unopened.is_empty(), fetching)?;
         let replaced = self.is_replaced(g, &l);
         let inputs = Inputs {
-            head: Some(head),
+            head: Some(p.id),
             epochs: keys.epochs,
-            roles: Inputs::roles(keys, read_ok),
+            roles: Inputs::roles(keys, p.read_ok),
             replaced,
             actor: self.engine.group_actor(g),
             published: ctx.published.clone(),
             may_rotate: self.may_rotate_read(g),
             held: self.engine.epochs(g),
         };
-        if self.take_inputs(g, &l, w, &mut scope, full, inputs, &unsettled, &snapping) && !full && conn.is_some() {
+        if self.take_inputs(p, w, &mut scope, full, inputs, &sets) && !full && conn.is_some() {
             self.check_linked_prefixes(l, &scope)?;
         }
+        let (unsettled, snapping) = sets;
         let mut left = Left::default();
         let entries = w.snaps.clone();
         let snaps = self.drop_label_covered(&entries, &mut scope, &mut left)?;
@@ -427,8 +478,7 @@ impl SyncEngine {
     /// settled (becoming unsettled only withholds actions, and what is outside the set has none
     /// outstanding), and so are the commits of aspects that became or stopped being unsettled.
     /// Returns whether the pass judges everything.
-    #[allow(clippy::too_many_arguments)]
-    fn take_inputs(&mut self, g: &Tid, l: &LabelId, w: &mut Work, scope: &mut Scope, mut full: bool, inputs: Inputs, unsettled: &Unsettled, snapping: &Unsettled) -> bool {
+    fn take_inputs(&mut self, p: &Head, w: &mut Work, scope: &mut Scope, mut full: bool, inputs: Inputs, (unsettled, snapping): &(Unsettled, Unsettled)) -> bool {
         let flags = (unsettled.is_empty(), !snapping.contains(&None));
         let release = w.settled.is_some_and(|(s, n)| !s && flags.0 || !n && flags.1);
         w.settled = Some(flags);
@@ -440,7 +490,7 @@ impl SyncEngine {
             full = true;
             *scope = Scope::All;
             let closure = w.closure.clone();
-            self.go_full(g, l, w, &closure);
+            self.go_full(&p.g, &p.l, w, &closure);
         }
         w.inputs = Some(inputs);
         if let Scope::Some { commits, .. } = scope {
@@ -542,17 +592,17 @@ impl SyncEngine {
             return Ok(());
         }
         // the label's work set, as at a server (`judge_label`)
-        let head = head.id();
-        self.with_work(&g, None, l, |s, ctx, w| s.judge_local(g, l, ctx, &keys, read_ok, head, w))
+        let p = Head { g, l, server: None, id: head.id(), keys, read_ok };
+        self.with_work(&g, None, l, |s, ctx, w| s.judge_local(&p, ctx, w))
     }
 
     /// The local pass after the keys and the step (`local_pass`), over what work set `w`
     /// names, or everything when it says so or an input of the pass changed.
-    #[allow(clippy::too_many_arguments)]
-    fn judge_local(&mut self, g: Tid, l: LabelId, ctx: &BodyCtx, keys: &HeadKeys, read_ok: bool, head: osis_label::StepId, w: &mut Work) -> Result<()> {
+    fn judge_local(&mut self, p: &Head, ctx: &BodyCtx, w: &mut Work) -> Result<()> {
+        let (g, l, keys) = (p.g, p.l, &p.keys);
         let (full, scope) = self.begin(&g, &l, w, &ctx.closure);
-        let J { mut scope, mut left, snaps, mut bodies, judged, snapping, .. } = self.judging(None, &g, l, ctx, keys, read_ok, head, w, scope, full)?;
-        let sends = self.body_sends(None, &g, l, keys, read_ok, &bodies, &snaps, &snapping, &mut left)?;
+        let J { mut scope, mut left, snaps, mut bodies, judged, snapping, .. } = self.judging(None, p, ctx, w, scope, full)?;
+        let sends = self.body_sends(p, &bodies, &snaps, &snapping, &mut left)?;
         let ours: BTreeSet<BlobId> = sends.iter().filter(|o| o.fresh).map(|o| o.id).collect();
         self.inbox_copies(&g, l)?;
         let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
@@ -576,7 +626,7 @@ impl SyncEngine {
         }
         let settled = self.unsettled_of(!w.unopened.is_empty())?.is_empty();
         self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
-        self.local_deletions(&g, l, keys, &bodies, &snaps, settled, &scope, &mut left)?;
+        self.local_deletions(&p.at(&snaps, settled), &bodies, &scope, &mut left)?;
         w.leave(left);
         Ok(())
     }
@@ -589,8 +639,8 @@ impl SyncEngine {
     /// chunk, an inbox blob); chunks of dropped deltas go, and the blobs a gone certificate copy
     /// linked. Removed entries are tombstoned (`State::remove_entry`), expired ones not. What
     /// waits goes into `left`.
-    #[allow(clippy::too_many_arguments)]
-    fn local_deletions(&mut self, g: &Tid, l: LabelId, keys: &HeadKeys, bodies: &[Body], snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, settled: bool, scope: &Scope, left: &mut Left) -> Result<()> {
+    fn local_deletions(&mut self, at: &At, bodies: &[Body], scope: &Scope, left: &mut Left) -> Result<()> {
+        let (l, settled) = (at.l, at.settled);
         let ids: Vec<BlobId> = self.scope_entries(&l, scope).into_iter().filter(|id| self.state.entries.contains_key(&(l, *id)) && !self.state.present_anywhere(&l, id)).collect();
         self.stats.entries += ids.len() as u64;
         let now = self.now();
@@ -600,7 +650,7 @@ impl SyncEngine {
             let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
             let held = self.engine.has_blob(&id);
             if let Kind::Commit { commit, .. } = e.kind {
-                let fate = self.deletable(None, &l, g, &id, &e, keys, &desired, snaps, settled, true, &mut note)?;
+                let fate = self.deletable(at, &id, &e, &desired, true, &mut note)?;
                 note.leave(commit, left);
                 if !settled {
                     left.held_back.insert(commit);
@@ -758,7 +808,7 @@ impl SyncEngine {
     /// bodies they cover (spec/sync.md §7), so every right holder holding the same snapshots
     /// drops alike; a snapshot judges every body of its aspect when in `scope`, else the bodies
     /// `scope` names. Dropped bodies join `scope`. Returns the label's snapshots by aspect.
-    pub(super) fn drop_label_covered(&mut self, entries: &BTreeMap<(Tid, Ak), BTreeSet<(BlobId, CommitId)>>, scope: &mut Scope, left: &mut Left) -> Result<BTreeMap<(Tid, Ak), Vec<CommitId>>> {
+    pub(super) fn drop_label_covered(&mut self, entries: &BTreeMap<(Tid, Ak), BTreeSet<(BlobId, CommitId)>>, scope: &mut Scope, left: &mut Left) -> Result<Snaps> {
         let snaps: BTreeMap<(Tid, Ak), Vec<CommitId>> = entries.iter().map(|(k, v)| (k.clone(), v.iter().map(|(_, c)| *c).collect())).collect();
         let mut dropped = BTreeSet::new();
         for ((t, a), ss) in &snaps {
@@ -789,8 +839,8 @@ impl SyncEngine {
     /// state, any entry), else a fresh placement when this node may upload or deposit it, with
     /// the blobs it links when this node writes. Another node's body not at `server` waits for
     /// its author or a co-writer (`relay_due`).
-    #[allow(clippy::too_many_arguments)]
-    fn body_sends(&mut self, server: Option<&ServerKey>, g: &Tid, l: LabelId, keys: &HeadKeys, read_ok: bool, bodies: &[Body], snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, snapping: &Unsettled, left: &mut Left) -> Result<Vec<Out>> {
+    fn body_sends(&mut self, p: &Head, bodies: &[Body], snaps: &Snaps, snapping: &Unsettled, left: &mut Left) -> Result<Vec<Out>> {
+        let (g, l, keys, read_ok, server) = (&p.g, p.l, &p.keys, p.read_ok, p.server.as_ref());
         let mut sends = Vec::new();
         self.stats.bodies += bodies.len() as u64;
         let mut note = Note::default();
@@ -865,16 +915,15 @@ impl SyncEngine {
     /// body goes only with a carrier (`carried`; else a covering snapshot is asked for,
     /// `snapshot_first`, when `carrier`) and by a delete item this node can make. `server`
     /// `None`: this node's own served state.
-    #[allow(clippy::too_many_arguments)]
-    fn deletable(&mut self, server: Option<&ServerKey>, l: &LabelId, g: &Tid, id: &BlobId, e: &Entry, keys: &HeadKeys, desired: &Desired, snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, settled: bool, carrier: bool, note: &mut Note) -> Result<Fate> {
-        let Some((Hold::MustNot(why), live, aspects)) = self.judge(server, l, g, id, e, desired, snaps, settled, note)? else { return Ok(Fate::Keep) };
+    fn deletable(&mut self, at: &At, id: &BlobId, e: &Entry, desired: &Desired, carrier: bool, note: &mut Note) -> Result<Fate> {
+        let Some((Hold::MustNot(why), live, aspects)) = self.judge(at, id, e, desired, note)? else { return Ok(Fate::Keep) };
         if why == Why::Expired {
             return Ok(Fate::Expired);
         }
         let (carried, need) = match why {
             _ if !live => (true, Vec::new()),
             Why::Duplicate | Why::StrictSubset => (true, Vec::new()),
-            _ => self.carried(server, g, l, e, snaps)?,
+            _ => self.carried(at, e)?,
         };
         if !may_delete(why, live, carried) {
             if carrier && let Kind::Commit { commit, .. } = &e.kind {
@@ -884,7 +933,7 @@ impl SyncEngine {
             note.waits.extend(aspects);
             return Ok(Fate::Wait);
         }
-        Ok(match self.delete_for(keys, l, id, e, None)? {
+        Ok(match self.delete_for(at.keys, &at.l, id, e, None)? {
             Some(item) => Fate::Delete(why, item),
             None => {
                 note.keyless = true;
@@ -968,7 +1017,7 @@ impl SyncEngine {
         let bodies = self.bodies_under(&g, l)?;
         let mut w = Work::fresh();
         self.rebuild(&g, l, &mut w);
-        let snaps: BTreeMap<(Tid, Ak), Vec<CommitId>> = w.snaps.iter().map(|(k, v)| (k.clone(), v.iter().map(|(_, c)| *c).collect())).collect();
+        let snaps: Snaps = w.snaps.iter().map(|(k, v)| (k.clone(), v.iter().map(|(_, c)| *c).collect())).collect();
         let fetching = w.unopened.iter().any(|b| self.fetching(b));
         let (unsettled, snapping) = self.unsettled_sets(!w.unopened.is_empty(), fetching)?;
         v.unsettled = unsettled.iter().cloned().collect();
@@ -980,8 +1029,9 @@ impl SyncEngine {
         }
         let desired = desired(&bodies);
         let entries: Vec<(BlobId, Entry)> = self.state.label_entries(l).map(|(b, e)| (b, e.clone())).collect();
+        let at = At { g, l: *l, server: Some(*server), keys: &keys, snaps: &snaps, settled: unsettled.is_empty() };
         for (id, e) in entries {
-            if let Fate::Delete(why, _) = self.deletable(Some(server), l, &g, &id, &e, &keys, &desired, &snaps, unsettled.is_empty(), false, &mut note)? {
+            if let Fate::Delete(why, _) = self.deletable(&at, &id, &e, &desired, false, &mut note)? {
                 v.must_not.push((id, format!("{why:?}")));
             }
         }
@@ -1237,7 +1287,7 @@ impl SyncEngine {
     /// established uncovered by the label's snapshots. Must-hold: the parts a blob of the commit
     /// must hold to hold the body (all of them before keep-at-least, else those of the aspects
     /// no snapshot covers).
-    fn must_hold(&mut self, b: &Body, snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, unsettled: &Unsettled, note: &mut Note) -> Result<Option<Vec<(usize, usize)>>> {
+    fn must_hold(&mut self, b: &Body, snaps: &Snaps, unsettled: &Unsettled, note: &mut Note) -> Result<Option<Vec<(usize, usize)>>> {
         let Some(h) = self.engine.header(&b.commit) else { return Ok(None) };
         let aspects: Vec<(Tid, Ak)> = b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
         let now = self.now();
@@ -1296,7 +1346,7 @@ impl SyncEngine {
 
     /// Whether every part's aspect of commit `c` is covered by a snapshot under the label
     /// (`snaps`).
-    fn parts_covered(&mut self, snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)], note: &mut Note) -> Result<bool> {
+    fn parts_covered(&mut self, snaps: &Snaps, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)], note: &mut Note) -> Result<bool> {
         for (ai, _) in parts {
             let Some(a) = h.aspects.get(*ai) else { return Ok(false) };
             let mut ok = false;
@@ -1746,8 +1796,8 @@ impl SyncEngine {
     /// Facts about an entry under the label (spec/sync.md §6): `None` when this node cannot
     /// judge it (may-hold). `server` `None`: this node's own served state (every entry counts
     /// as present).
-    #[allow(clippy::too_many_arguments)]
-    fn judge(&mut self, server: Option<&ServerKey>, l: &LabelId, g: &Tid, id: &BlobId, e: &Entry, desired: &Desired, snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, settled: bool, note: &mut Note) -> Result<Option<Judged>> {
+    fn judge(&mut self, at: &At, id: &BlobId, e: &Entry, desired: &Desired, note: &mut Note) -> Result<Option<Judged>> {
+        let (g, l, server, snaps, settled) = (&at.g, &at.l, at.server.as_ref(), at.snaps, at.settled);
         let now = self.now();
         let Kind::Commit { commit, parts, .. } = &e.kind else { return Ok(None) };
         let Some(m) = self.engine.core.commits.get(commit).cloned() else { return Ok(None) };
@@ -1819,7 +1869,7 @@ impl SyncEngine {
             } else {
                 // another node's card nobody needs any more goes (spec/permissions.md §4), and
                 // a certificate copy nobody completes (`orphan`)
-                if settled && (self.stale_card(server, l, g, commit, &h, parts) || self.orphan(server, l, g, id, commit, &h, parts, note)?) {
+                if settled && (self.stale_card(at, commit, &h, parts) || self.orphan(at, id, commit, &h, parts, note)?) {
                     return Ok(Some((Hold::MustNot(Why::Outside), false, aspects)));
                 }
                 // other certificates (membership-class, node cards, heartbeats) are not ours to judge
@@ -1873,7 +1923,8 @@ impl SyncEngine {
     /// and each is superseded by a newer commit on that aspect present here under `l`, or, for
     /// `/node` and `/reach`, the node departed (a departed node is never dialed; its `/keys`
     /// stays while chains of its old writes may need it).
-    fn stale_card(&mut self, server: Option<&ServerKey>, l: &LabelId, g: &Tid, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)]) -> bool {
+    fn stale_card(&mut self, at: &At, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)]) -> bool {
+        let (g, l, server) = (&at.g, &at.l, at.server.as_ref());
         let me = self.engine.tid();
         let aks: BTreeSet<&str> = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).filter(|a| a.tid == h.author).map(|a| a.ak.as_str()).collect();
         let all_card = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).all(|a| a.tid == h.author && is_card(a.ak.as_str()));
@@ -1920,10 +1971,10 @@ impl SyncEngine {
     /// since nobody is obliged to complete it and a verifier would hold it pending for ever.
     /// Judged only on a commit this node applied (it knows the author and the chain), and not on
     /// a deposit there: promotion completes or leaves those (spec/sync.md §5).
-    #[allow(clippy::too_many_arguments)]
-    fn orphan(&mut self, server: Option<&ServerKey>, l: &LabelId, g: &Tid, id: &BlobId, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)], note: &mut Note) -> Result<bool> {
+    fn orphan(&mut self, at: &At, id: &BlobId, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)], note: &mut Note) -> Result<bool> {
+        let (g, l) = (&at.g, &at.l);
         // this node's own served state: its chain completion runs at servers only
-        let Some(server) = server else { return Ok(false) };
+        let Some(server) = &at.server else { return Ok(false) };
         let actor = self.engine.group_actor(g);
         if h.author == self.engine.tid() || self.state.deposited.contains(&(*server, *l, *id)) || self.engine.core.may_read(&h.author, &actor) {
             return Ok(false);
@@ -1936,8 +1987,9 @@ impl SyncEngine {
     /// Deletes must-not-hold entries present at the server, carriers first (spec/sync.md §6,
     /// §7); timed deletes for bodies under a relative keep-at-most (spec/commits.md §5). Judges
     /// the entries and bodies of `scope`; what waits goes into `left`.
-    #[allow(clippy::too_many_arguments)]
-    fn deletions(&mut self, conn: ConnId, server: ServerKey, l: LabelId, g: &Tid, keys: &HeadKeys, bodies: &[Body], snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, settled: bool, scope: &Scope, left: &mut Left, out: &mut Vec<super::Action>) -> Result<()> {
+    fn deletions(&mut self, conn: ConnId, at: &At, bodies: &[Body], scope: &Scope, left: &mut Left, out: &mut Vec<super::Action>) -> Result<()> {
+        let (g, l, keys, settled) = (&at.g, at.l, at.keys, at.settled);
+        let Some(server) = at.server else { return Ok(()) };
         let ids: Vec<BlobId> = match scope {
             Scope::All => self.state.present_at(&server, &l),
             Scope::Some { .. } => self.scope_entries(&l, scope).into_iter().filter(|b| self.state.is_present(&server, &l, b)).collect(),
@@ -1958,7 +2010,7 @@ impl SyncEngine {
             let id = *id;
             let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
             let Kind::Commit { commit, .. } = e.kind else { continue };
-            let fate = self.deletable(Some(&server), &l, g, &id, &e, keys, &desired, snaps, settled, true, &mut note)?;
+            let fate = self.deletable(at, &id, &e, &desired, true, &mut note)?;
             note.leave(commit, left);
             if !settled {
                 left.held_back.insert(commit);
@@ -1986,12 +2038,12 @@ impl SyncEngine {
         left.blobs.extend(waiting);
         let wants: Vec<BlobId> = std::mem::take(&mut self.tree_wants).into_iter().filter(|b| self.state.is_present(&server, &l, b)).collect();
         self.fetch_on(conn, l, wants, out)?;
-        for (id, (c, ch)) in &chunks {
+        for (id, chunk) in &chunks {
             left.blobs.insert(*id);
             if busy(self, id) {
                 continue;
             }
-            if let Some(item) = self.chunk_delete(conn, keys, &l, id, c, ch, out)? {
+            if let Some(item) = self.chunk_delete(conn, keys, &l, id, chunk, out)? {
                 send(self, *id);
                 items.push(item);
             }
@@ -2092,7 +2144,8 @@ impl SyncEngine {
     /// A kept delta's: a blob of the commit holding it that is not must-not-hold (the dropping
     /// node's rewrite, `carried_by`) or a snapshot covering it; none is asked for while this node
     /// has such a blob placed. A dropped delta's: the snapshot that covered it when it was dropped.
-    fn carried(&mut self, server: Option<&ServerKey>, g: &Tid, l: &LabelId, e: &Entry, snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>) -> Result<(bool, Vec<(Tid, Ak)>)> {
+    fn carried(&mut self, at: &At, e: &Entry) -> Result<(bool, Vec<(Tid, Ak)>)> {
+        let (g, l, server) = (&at.g, &at.l, at.server.as_ref());
         let Kind::Commit { commit, parts, .. } = &e.kind else { return Ok((false, Vec::new())) };
         let Some(m) = self.engine.core.commits.get(commit).cloned() else { return Ok((false, Vec::new())) };
         let x = self.engine.group_actor(g);
@@ -2105,7 +2158,7 @@ impl SyncEngine {
                 continue;
             }
             let dropped = m.dropped.contains(p);
-            if !dropped && self.carried_by(server, g, l, commit, &[*p]) || self.snapshot_carries(server, l, commit, &t, &a, dropped, snaps)? {
+            if !dropped && self.carried_by(server, g, l, commit, &[*p]) || self.snapshot_carries(at, commit, &t, &a, dropped)? {
                 continue;
             }
             all = false;
@@ -2121,8 +2174,8 @@ impl SyncEngine {
     /// checks only the frontier) the snapshot that covered it when it was dropped, or one
     /// covered-equal to that whose frontier holds the body's counters (a co-writer's that went
     /// up in its place).
-    #[allow(clippy::too_many_arguments)]
-    fn snapshot_carries(&mut self, server: Option<&ServerKey>, l: &LabelId, body: &CommitId, t: &Tid, a: &Ak, dropped: bool, snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>) -> Result<bool> {
+    fn snapshot_carries(&mut self, at: &At, body: &CommitId, t: &Tid, a: &Ak, dropped: bool) -> Result<bool> {
+        let (l, server, snaps) = (&at.l, at.server.as_ref(), at.snaps);
         let carrier = self.carrier_of(body, t, a);
         let candidates: Vec<CommitId> = match carrier {
             None if dropped => Vec::new(),
@@ -2240,8 +2293,7 @@ impl SyncEngine {
 
     /// A delete item for a dropped chunk: the label delete key, else a delete key of its delta
     /// (signed for the salt in its prefix; a chunk never fetched is fetched first).
-    #[allow(clippy::too_many_arguments)]
-    fn chunk_delete(&mut self, conn: ConnId, keys: &HeadKeys, l: &LabelId, id: &BlobId, c: &CommitId, ch: &osis_commit::ChunkEntry, out: &mut Vec<super::Action>) -> Result<Option<osis_label::DeleteItem>> {
+    fn chunk_delete(&mut self, conn: ConnId, keys: &HeadKeys, l: &LabelId, id: &BlobId, (c, ch): &(CommitId, osis_commit::ChunkEntry), out: &mut Vec<super::Action>) -> Result<Option<osis_label::DeleteItem>> {
         if keys.delete.is_some() {
             return Ok(delete_item(keys, l, *id, None, None, &[]));
         }
