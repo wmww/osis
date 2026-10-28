@@ -488,8 +488,7 @@ pub struct Core {
     /// only commits whose things' owner chains are known are kept.
     pub bodies: BTreeMap<CommitId, Vec<crate::labeling::Body>>,
     /// `Engine::body_live` per body, forgotten per aspect when its state changes (`forget_live`)
-    /// and wholly on rollback
-    /// (`touch`, `rollback`).
+    /// and wholly on rollback.
     pub live_bodies: BTreeMap<(CommitId, Tid, Ak), bool>,
     /// Bumped whenever a transaction changes the indexes or a state, or rolls back: caches
     /// derived from them (the sync engine's co-readers) compare it.
@@ -571,6 +570,14 @@ impl Core {
     /// Whether some validity waits for `rejudge_all`.
     pub fn stale(&self) -> bool {
         self.stale_all || !self.stale_things.is_empty() || !self.stale_commits.is_empty()
+    }
+
+    /// Drops what is derived from the state of `(tid, ak)` (a write changes it).
+    fn state_changed(&mut self, tid: &Tid, ak: &Ak) {
+        self.forget_live(tid, ak);
+        if osis_schema::core_types::is_membership_class(ak.as_str()) {
+            self.membership_changed();
+        }
     }
 
     /// Forgets the cached liveness of every body with a delta on `(tid, ak)` (its state
@@ -791,6 +798,11 @@ impl Tx<'_> {
         Ok(())
     }
 
+    /// Whether the state of `(tid, ak)` is paged with some page not loaded.
+    fn held_in_part(&self, tid: &Tid, ak: &Ak) -> bool {
+        self.core.pages.get(&(*tid, ak.clone())).is_some_and(|i| !i.whole())
+    }
+
     /// Runs `g` on the cached state of `(tid, ak)` (taken out of the cache meanwhile) and its page
     /// index; nothing for an unpaged state.
     fn with_pages<T>(&mut self, tid: &Tid, ak: &Ak, g: impl FnOnce(&mut Transaction<'_>, &mut pages::PageIndex, &mut Fragment) -> Result<T>) -> Result<Option<T>> {
@@ -805,7 +817,7 @@ impl Tx<'_> {
     /// Loads the whole state of `(tid, ak)` into the cache.
     pub fn load(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
         self.load_lazy(tid, ak)?;
-        if self.core.pages.get(&(*tid, ak.clone())).is_some_and(|i| !i.whole()) {
+        if self.held_in_part(tid, ak) {
             self.with_pages(tid, ak, |txn, idx, f| pages::load_all(txn, tid, ak, idx, f))?;
         }
         Ok(())
@@ -814,7 +826,7 @@ impl Tx<'_> {
     /// Loads what ops at `paths` (op path segments) read and write (`pages::ensure_path`).
     pub fn ensure_paths(&mut self, tid: &Tid, ak: &Ak, paths: &[Vec<osis_crdt::PathSeg>]) -> Result<()> {
         self.load_lazy(tid, ak)?;
-        if !self.core.pages.get(&(*tid, ak.clone())).is_some_and(|i| !i.whole()) {
+        if !self.held_in_part(tid, ak) {
             return Ok(());
         }
         let ok = self.with_pages(tid, ak, |txn, idx, f| {
@@ -835,7 +847,7 @@ impl Tx<'_> {
     /// stored placements (`pages::attach_ops`); `false`: load whole instead.
     pub(crate) fn attach_ops(&mut self, tid: &Tid, ak: &Ak, ops: &[osis_crdt::PathOp], edits: &[Option<large::ListEdit>]) -> Result<bool> {
         self.load_lazy(tid, ak)?;
-        if !self.core.pages.get(&(*tid, ak.clone())).is_some_and(|i| !i.whole()) {
+        if !self.held_in_part(tid, ak) {
             return Ok(false);
         }
         Ok(self.with_pages(tid, ak, |txn, idx, f| pages::attach_ops(txn, tid, ak, idx, f, ops, edits))? == Some(true))
@@ -855,7 +867,7 @@ impl Tx<'_> {
         self.load_lazy(tid, ak)?;
         let k = (*tid, ak.clone());
         let mut damaged = None;
-        if self.core.pages.get(&k).is_some_and(|i| !i.whole()) {
+        if self.held_in_part(tid, ak) {
             match self.with_pages(tid, ak, |txn, idx, f| pages::seq_range(txn, tid, ak, idx, f, path, r.clone()))? {
                 // an empty sequence reads whole (its presence)
                 Some(pages::Ranged::Read(p, dots, total)) if total > 0 => {
@@ -880,7 +892,7 @@ impl Tx<'_> {
     /// `None`: everything).
     pub fn ensure_touch(&mut self, tid: &Tid, ak: &Ak, touch: &pages::Touch) -> Result<()> {
         self.load_lazy(tid, ak)?;
-        if !self.core.pages.get(&(*tid, ak.clone())).is_some_and(|i| !i.whole()) {
+        if !self.held_in_part(tid, ak) {
             return Ok(());
         }
         let ok = match touch {
@@ -901,17 +913,14 @@ impl Tx<'_> {
     /// The whole state of `(tid, ak)`.
     pub fn state(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<&Fragment>> {
         self.load(tid, ak)?;
-        Ok(self.core.states.get(&(*tid, ak.clone())).and_then(Option::as_ref))
+        Ok(self.cached(tid, ak))
     }
 
     /// Writes a whole state (keeping the unit's undo buffer unless `clear_undo`); `f` is the
     /// whole state.
     pub fn set_state(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, shred: Shred, clear_undo: bool) -> Result<()> {
         self.core.touch();
-        self.core.forget_live(tid, ak);
-        if osis_schema::core_types::is_membership_class(ak.as_str()) {
-            self.core.membership_changed();
-        }
+        self.core.state_changed(tid, ak);
         self.core.wrote((*tid, ak.clone()));
         let mut unit = self.txn.get_aspect(tid, ak)?.unwrap_or_default();
         let (bytes, idx) = pages::write_full(&mut self.txn, tid, ak, f.as_ref(), pages::is_paged(&unit.state), &self.core.key_salt)?;
@@ -939,10 +948,7 @@ impl Tx<'_> {
     /// else is written whole (the pages not loaded joined in first). The caller has noted the
     /// state as written (`Core::written`).
     pub fn set_state_touched(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, touch: &pages::Touch, shred: Shred) -> Result<()> {
-        self.core.forget_live(tid, ak);
-        if osis_schema::core_types::is_membership_class(ak.as_str()) {
-            self.core.membership_changed();
-        }
+        self.core.state_changed(tid, ak);
         let k = (*tid, ak.clone());
         if let (Some(st), Some(idx), Some(touch)) = (&f, self.core.pages.get_mut(&k), touch)
             && let Some(unit_state) = pages::write_touched(&mut self.txn, idx, tid, ak, st, touch, shred)?
@@ -967,38 +973,21 @@ impl Tx<'_> {
     /// body destroys every local copy; the state's content is unchanged). A paged state rewrites
     /// the pages holding the bodies' dots and its skeleton; anything else is rewritten whole.
     pub fn shred_bodies(&mut self, tid: &Tid, ak: &Ak, bodies: &[Fragment]) -> Result<()> {
-        self.load_lazy(tid, ak)?;
-        let k = (*tid, ak.clone());
-        let touches: Option<Vec<osis_crdt::PagedTouch>> = match self.core.pages.get(&k) {
-            Some(idx) => bodies.iter().map(|d| pages::touch_of(d, Some(idx))).collect(),
-            None => None,
-        };
-        if let Some(touches) = touches {
-            for t in &touches {
-                self.ensure_touch(tid, ak, &Some(t.clone()))?;
-            }
-            self.core.touch();
-            self.core.wrote(k.clone());
-            let done = self.with_pages(tid, ak, |txn, idx, f| {
-                for t in &touches {
-                    if pages::write_touched(txn, idx, tid, ak, f, t, Shred::Yes)?.is_none() {
-                        return Ok(false);
-                    }
+        let done = self.rewrite_bodies(tid, ak, bodies, |txn, idx, f, touches| {
+            for t in touches {
+                if pages::write_touched(txn, idx, tid, ak, f, t, Shred::Yes)?.is_none() {
+                    return Ok(false);
                 }
-                pages::unindex(txn, idx, tid, ak, f, bodies)?;
-                let mut unit = txn.get_aspect(tid, ak)?.unwrap_or_default();
-                unit.state = pages::skeleton_unit(f, idx)?;
-                unit.undo.clear();
-                txn.put_aspect(tid, ak, &unit, Shred::Yes)?;
-                Ok(true)
-            })?;
-            if done == Some(true) {
-                return Ok(());
             }
+            pages::unindex(txn, idx, tid, ak, f, bodies)?;
+            Ok(true)
+        })?;
+        if !done {
+            self.load(tid, ak)?;
+            let st = self.take_cached(tid, ak);
+            self.set_state(tid, ak, st, Shred::Yes, true)?;
         }
-        self.load(tid, ak)?;
-        let st = self.core.states.get(&k).cloned().flatten();
-        self.set_state(tid, ak, st, Shred::Yes, true)
+        Ok(())
     }
 
     /// Holds value-less the writes of `(tid, ak)` that `owned` owns (a delta expired or
@@ -1006,49 +995,60 @@ impl Tx<'_> {
     /// owning them (where they lie). A paged state strips and rewrites only their pages and
     /// its skeleton; anything else is rewritten whole.
     pub fn strip_bodies(&mut self, tid: &Tid, ak: &Ak, bodies: &[Fragment], owned: &crate::engine::Owned) -> Result<()> {
+        let pred = |d: &osis_crdt::Dot| owned.owns(d);
+        let done = self.rewrite_bodies(tid, ak, bodies, |txn, idx, f, touches| pages::strip_touched(txn, idx, tid, ak, f, touches, &pred))?;
+        if !done {
+            self.load(tid, ak)?;
+            if let Some(mut st) = self.take_cached(tid, ak) {
+                st.strip(&pred);
+                self.set_state(tid, ak, Some(st), Shred::Yes, true)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// For a paged state: loads the pages `bodies` touch, runs `rewrite` on them, then writes
+    /// the skeleton with the undo buffer cleared, all shredded. `false`: not paged, or `rewrite`
+    /// found it does not fit the pages (the caller writes whole).
+    fn rewrite_bodies(&mut self, tid: &Tid, ak: &Ak, bodies: &[Fragment], rewrite: impl FnOnce(&mut Transaction<'_>, &mut pages::PageIndex, &mut Fragment, &[osis_crdt::PagedTouch]) -> Result<bool>) -> Result<bool> {
         self.load_lazy(tid, ak)?;
         let k = (*tid, ak.clone());
         let touches: Option<Vec<osis_crdt::PagedTouch>> = match self.core.pages.get(&k) {
             Some(idx) => bodies.iter().map(|d| pages::touch_of(d, Some(idx))).collect(),
             None => None,
         };
-        let pred = |d: &osis_crdt::Dot| owned.owns(d);
-        if let Some(touches) = touches {
-            for t in &touches {
-                self.ensure_touch(tid, ak, &Some(t.clone()))?;
-            }
-            self.core.touch();
-            self.core.wrote(k.clone());
-            let done = self.with_pages(tid, ak, |txn, idx, f| {
-                if !pages::strip_touched(txn, idx, tid, ak, f, &touches, &pred)? {
-                    return Ok(false);
-                }
-                let mut unit = txn.get_aspect(tid, ak)?.unwrap_or_default();
-                unit.state = pages::skeleton_unit(f, idx)?;
-                unit.undo.clear();
-                txn.put_aspect(tid, ak, &unit, Shred::Yes)?;
-                Ok(true)
-            })?;
-            if done == Some(true) {
-                return Ok(());
-            }
+        let Some(touches) = touches else { return Ok(false) };
+        for t in &touches {
+            self.ensure_touch(tid, ak, &Some(t.clone()))?;
         }
-        self.load(tid, ak)?;
-        if let Some(mut st) = self.core.states.get(&k).cloned().flatten() {
-            st.strip(&pred);
-            self.set_state(tid, ak, Some(st), Shred::Yes, true)?;
-        }
-        Ok(())
+        self.core.touch();
+        self.core.wrote(k);
+        let done = self.with_pages(tid, ak, |txn, idx, f| {
+            if !rewrite(txn, idx, f, &touches)? {
+                return Ok(false);
+            }
+            let mut unit = txn.get_aspect(tid, ak)?.unwrap_or_default();
+            unit.state = pages::skeleton_unit(f, idx)?;
+            unit.undo.clear();
+            txn.put_aspect(tid, ak, &unit, Shred::Yes)?;
+            Ok(true)
+        })?;
+        Ok(done == Some(true))
+    }
+
+    /// Takes the cached state of `(tid, ak)` out of the cache, to be written back (`set_state`
+    /// notes it written first, so a failure evicts it).
+    fn take_cached(&mut self, tid: &Tid, ak: &Ak) -> Option<Fragment> {
+        self.core.states.get_mut(&(*tid, ak.clone())).and_then(Option::take)
     }
 
     pub fn unit(&mut self, tid: &Tid, ak: &Ak) -> Result<AspectUnit> {
         Ok(self.txn.get_aspect(tid, ak)?.unwrap_or_default())
     }
 
-    /// Writes a commit record: what the engine indexes of it (`index::record_head`: received,
-    /// origin, dropped parts, per part its validity and roles) and its blob.
-    /// Writes a commit record, and for a membership commit its `node/edges` row (`edges`: what
-    /// the caller already read of `blob` with `edge_parts_of`, else decoded here).
+    /// Writes a commit record (`index::record_head`: received, origin, dropped parts; then its
+    /// blob), and for a membership commit its `node/edges` row (`edges`: what the caller already
+    /// read of `blob` with `edge_parts_of`, else decoded here).
     pub(crate) fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, edges: Option<&crate::apply::validity::EdgeParts>) -> Result<()> {
         self.core.bodies.remove(id);
         self.core.mark_changed(*id);
