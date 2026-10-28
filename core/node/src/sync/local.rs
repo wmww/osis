@@ -314,19 +314,15 @@ impl SyncEngine {
         let ks = keys.read.as_ref().ok_or(Error::Misuse("recipient has no read keyset"))?;
         let ct::KemKey::X25519MlKem768(kb) = &ks.kem_key;
         let kem = osis_crypto::KemPublicKey::from_slice(kb)?;
-        let mut inbox = keys.inbox.clone();
-        let mut cur = *recipient;
-        let mut owner = *recipient;
-        for _ in 0..64 {
+        let mut inbox = keys.inbox.clone().map(|i| (i, *recipient));
+        let chain: Vec<Tid> = self.engine.owner_chain(recipient).skip(1).collect();
+        for t in chain {
             if inbox.is_some() {
                 break;
             }
-            let Some(up) = self.engine.owner(&cur) else { break };
-            cur = up;
-            inbox = self.engine.get_typed(&cur, &ct::KEYS)?.and_then(|k| k.inbox);
-            owner = cur;
+            inbox = self.engine.get_typed(&t, &ct::KEYS)?.and_then(|k| k.inbox).map(|i| (i, t));
         }
-        let inbox = inbox.ok_or(Error::Misuse("recipient has no inbox"))?;
+        let (inbox, owner) = inbox.ok_or(Error::Misuse("recipient has no inbox"))?;
         let mut things: Vec<InboxThing> = Vec::new();
         let tids: BTreeSet<Tid> = cut.header.aspects.iter().map(|a| a.tid).collect();
         for t in tids {

@@ -992,17 +992,12 @@ impl SyncEngine {
             self.resealed.insert(c);
             // the member of the actor the node reads through: itself or up its owner chain
             let members: BTreeSet<Tid> = self.engine.core.current_members(&a).into_iter().map(|x| x.0).collect();
-            let mut cur = Some(node);
-            for _ in 0..16 {
-                let Some(t) = cur else { break };
-                if members.contains(&t) {
-                    // a node that may not re-seal that member leaves it to one that may
-                    if let Ok(done) = self.engine.reshare(&a, &t) {
-                        self.take_done(done)?;
-                    }
-                    break;
-                }
-                cur = self.engine.owner(&t);
+            // a node that may not re-seal that member leaves it to one that may
+            let member = self.engine.owner_chain(&node).find(|t| members.contains(t));
+            if let Some(t) = member
+                && let Ok(done) = self.engine.reshare(&a, &t)
+            {
+                self.take_done(done)?;
             }
         }
         Ok(())

@@ -599,17 +599,7 @@ impl SyncEngine {
         if own(actor) {
             return true;
         }
-        let owned = |t: &Tid| {
-            let mut cur = self.engine.owner(t).filter(|o| o != t);
-            for _ in 0..16 {
-                match cur {
-                    Some(x) if own(&x) => return true,
-                    Some(x) => cur = self.engine.owner(&x).filter(|o| *o != x),
-                    None => return false,
-                }
-            }
-            false
-        };
+        let owned = |t: &Tid| self.engine.owner_chain(t).skip(1).any(|x| own(&x));
         self.engine.core.current_members(actor).iter().all(|(m, _, _)| own(m) || self.state.contacts.contains(m) || depth > 0 && owned(m) && self.contacts_only(m, depth - 1))
     }
 

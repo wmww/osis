@@ -334,17 +334,7 @@ impl SyncEngine {
         }
         let published = self.engine.published_under(g);
         let engine = &self.engine;
-        let under = |t: &Tid| {
-            let mut cur = Some(*t);
-            for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
-                let Some(c) = cur else { break };
-                if actors.contains(&c) {
-                    return true;
-                }
-                cur = engine.owner(&c);
-            }
-            false
-        };
+        let under = |t: &Tid| engine.owner_chain(t).any(|c| actors.contains(&c));
         let mut hit = false;
         for t in closure.iter().chain(published.iter()) {
             if moved.contains(t) || !actors.is_empty() && under(t) {
