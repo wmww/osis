@@ -220,10 +220,59 @@ fn next_bounded(core: &Core, tid: &Tid, ak: &Ak, after: (Ts, CommitId)) -> Optio
 pub(crate) fn note_indexed(core: &mut Core, id: &CommitId, h: &crate::engine::View) {
     for a in h.aspects.iter().filter(|a| a.bounded) {
         let k = (a.tid, a.ak.clone());
-        if core.ix.first_bounded.get(&k).is_some_and(|f| f.is_none_or(|f| (h.ts, *id) < f)) {
-            core.ix.first_bounded.insert(k, Some((h.ts, *id)));
+        let Some(&old) = core.ix.first_bounded.get(&k) else { continue };
+        if old.is_some_and(|f| f <= (h.ts, *id)) {
+            continue;
+        }
+        core.ix.first_bounded.insert(k.clone(), Some((h.ts, *id)));
+        // every commit dropped between the new first and the old one has no residue (none was
+        // kept or left before a held bounded body sorting at or before it)
+        if let (Some(old), Some(&bare)) = (old, core.ix.first_bare.get(&k)) {
+            let mut low = bare;
+            // the commit itself is not in `commits` yet
+            for (ts, c) in core.ix.by_aspect.get(&k).into_iter().flat_map(|s| s.range((h.ts, *id)..old)).filter(|x| x.1 != *id) {
+                if held_part(core, c, &a.tid, &a.ak).is_none() {
+                    let t = if copies(core, c) { Ts::default() } else { *ts };
+                    low = Some(low.map_or(t, |l| l.min(t)));
+                }
+            }
+            core.ix.first_bare.insert(k, low);
+        } else {
+            core.ix.first_bare.remove(&k);
         }
     }
+}
+
+/// The lowest stamp of a write of `(tid, ak)` the state plays (last, in a replay) that a commit
+/// dropped without a residue at or after the first held bounded body gives: the first such
+/// node-form commit's `ts`, or the lowest `Ts` for a snapshot or import (copies of any stamp);
+/// cached (`Core::first_bare`). A drop leaves a residue when a held bounded body sorts at or
+/// before it, so such a commit comes from a held bounded body arriving older than the drop
+/// (`note_indexed`), or from a part dropped with no body to keep. Cost when not cached: the
+/// aspect's commits from the first held bounded body (in memory), a residue read per dropped
+/// one up to the first without one.
+fn first_bare(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Ts>> {
+    let k = (*tid, ak.clone());
+    if let Some(b) = tx.core.ix.first_bare.get(&k) {
+        return Ok(*b);
+    }
+    let _s = crate::costs::span("deaths: first bare");
+    let Some(first) = first_bounded(tx.core, tid, ak) else { return Ok(None) };
+    let core = &*tx.core;
+    let dropped: Vec<(Ts, CommitId)> = core.ix.by_aspect.get(&k).into_iter().flat_map(|s| s.range(first..)).filter(|(_, c)| held_part(core, c, tid, ak).is_none()).copied().collect();
+    let mut out = None;
+    for (ts, c) in dropped {
+        // after the first node-form one only a snapshot or import can give a lower stamp
+        if (out.is_none() || copies(tx.core, &c)) && !plays_own(tx, tid, ak, &c)? {
+            if copies(tx.core, &c) {
+                out = Some(Ts::default());
+                break;
+            }
+            out = out.or(Some(ts));
+        }
+    }
+    tx.core.ix.first_bare.insert(k, out);
+    Ok(out)
 }
 
 /// Before part `ai` of `c` drops (`drop_part`): keeps its deltas' writes (`bodies`) value-less
@@ -240,6 +289,13 @@ pub(crate) fn keep_residue(tx: &mut Tx<'_>, c: &CommitId, ai: usize, bodies: &[F
     let me = (ts, *c);
     let first = first_bounded(tx.core, &tid, &ak);
     let next = if first == Some(me) { next_bounded(tx.core, &tid, &ak, me) } else { first };
+    if next.is_some_and(|n| n.0 <= ts) && bodies.is_empty() {
+        // nothing to keep: a stray for `first_bare`
+        if let Some(&b) = tx.core.ix.first_bare.get(&(tid, ak.clone())) {
+            let t = if copies(tx.core, c) { Ts::default() } else { ts };
+            tx.core.ix.first_bare.insert((tid, ak.clone()), Some(b.map_or(t, |b| b.min(t))));
+        }
+    }
     if next.is_some_and(|n| n.0 <= ts)
         && let Some((b, rest)) = bodies.split_first()
     {
@@ -255,15 +311,18 @@ pub(crate) fn keep_residue(tx: &mut Tx<'_>, c: &CommitId, ai: usize, bodies: &[F
             f.remove_writes(&|d| core.commit_of(&tid, &ak, d).is_some_and(|x| x != *c && (held_part(core, &x, &tid, &ak).is_some() || kept.contains(&x))));
         }
         f.strip(&|_| true);
-        // none for a snapshot's or import's left empty: a window meeting it joins the state
-        if !(f.is_empty() && copies(tx.core, c)) {
-            tx.txn.put_local(&records::dropped_key(&tid, &ak, ts, c), &crate::engine::state::encode(&f)?, Shred::No)?;
-        }
+        // a snapshot's or import's left empty is kept too: none means its copies play with the
+        // state, last (`strays_from`)
+        tx.txn.put_local(&records::dropped_key(&tid, &ak, ts, c), &crate::engine::state::encode(&f)?, Shred::No)?;
     }
     if first == Some(me) {
         let gone: Vec<(Ts, CommitId)> = tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flat_map(|s| s.range(me..)).take_while(|x| next.is_none_or(|n| x.0 < n.0)).copied().collect();
         for (t, x) in gone {
             tx.txn.remove_local(&records::dropped_key(&tid, &ak, t, &x), Shred::Yes)?;
+        }
+        // a known first bare commit before the new first is no longer one
+        if tx.core.ix.first_bare.get(&(tid, ak.clone())).is_some_and(|b| b.is_some_and(|b| next.is_none_or(|n| b < n.0))) {
+            tx.core.ix.first_bare.remove(&(tid, ak.clone()));
         }
         tx.core.ix.first_bounded.insert((tid, ak), next);
     }
@@ -282,6 +341,7 @@ pub(crate) fn drop_residues(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         tx.txn.remove_local(&k, Shred::Yes)?;
     }
     tx.core.ix.first_bounded.remove(&(*tid, ak.clone()));
+    tx.core.ix.first_bare.remove(&(*tid, ak.clone()));
     clear_rows(tx, tid, ak, Shred::Yes)
 }
 
@@ -585,14 +645,18 @@ fn death_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) -> Res
 /// Exact (the records before the batch being exact): a write dies only at a greater stamp, so a
 /// late delta L changes only bodies sorting at or before it, and only their writes that died
 /// after its `ts` (their last death is later) or were live (its join killed them: `Killed`);
-/// its own writes die at or before the winner its join met (`Hint`). A snapshot or import
-/// sorting after L carries older writes: L may date one of them earlier, before the snapshot,
+/// its own writes die at or before the winner its join met (`Hint`); and their writes a replay
+/// dated at a write it plays after its stamp (`strays_from`), which L may now claim first (a
+/// held snapshot between that stamp and L may then gain a death: `None`; and when the winner
+/// L's join met may be such a write, a replay meets it later, so the window runs to the last
+/// body). A snapshot or import sorting after L carries older writes: L may date one of them earlier, before the snapshot,
 /// which then loses that death; one with no death after L's `ts` has none to lose. Every write
 /// of a body in the window dies at the same superseder as in a replay of every body, since
 /// nothing before the window's start supersedes it. Cost: the bodies from the first judged one
 /// to the latest death among them, the snapshots and imports after it, the state where a
 /// dropped body has no residue, plus the held records before the last late delta (under 64)
-/// or the last-death rows from the first late `ts`.
+/// or the last-death rows from the first late `ts` (or the lowest stray stamp), plus
+/// `strays_from`'s.
 fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<Vec<(CommitId, usize)>>> {
     let late: Vec<(Ts, CommitId)> = items.iter().filter_map(|i| if let Due::Late(t, c) = i { Some((*t, *c)) } else { None }).collect();
     let (Some(t_min), Some(t_max)) = (late.iter().map(|x| x.0).min(), late.iter().map(|x| x.0).max()) else { return Ok(Some(Vec::new())) };
@@ -604,6 +668,20 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
     let mut judge: BTreeMap<(Ts, CommitId), usize> = BTreeMap::new();
     // bodies at or before a late delta with a death after the first one
     let before: Vec<(Ts, CommitId)> = tx.core.ix.by_aspect.get(&k).into_iter().flat_map(|s| s.range(..=(t_max, HI))).take(LASTS_MIN).copied().collect();
+    // a copy playing after its stamp may have dated a death before `t_min` that a late delta
+    // now claims first: bodies dying from the lowest such stamp are judged too
+    let stray = strays_from(tx, tid, ak, t_min, t_max)?;
+    let lo = stray.map_or(t_min, |s| s.min(t_min));
+    // a stray dated a write before a held snapshot that carries it, and a late delta after it
+    // may now: the snapshot gains that death, from no record or one before `lo`
+    if let Some(s) = stray.filter(|s| *s <= t_max)
+        && tx.core.ix.copies.get(&k).into_iter().flat_map(|x| x.range((s, LO)..=(t_max, HI))).any(|(_, c)| bounded_part(tx.core, c, tid, ak).is_some())
+    {
+        return Ok(None);
+    }
+    if lo < t_min {
+        drop(crate::costs::span(if lo == Ts::default() { "deaths: window strays, every body" } else { "deaths: window strays" }));
+    }
     let dying: Vec<(Ts, Ts, CommitId)> = if before.len() < LASTS_MIN {
         // few bodies before: their records, without loading the index
         let mut v = Vec::new();
@@ -616,9 +694,9 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
         }
         v
     } else {
-        dying_after(tx, tid, ak, t_min)?
+        dying_after(tx, tid, ak, lo)?
     };
-    let dying = dying.into_iter().filter(|x| x.0 > t_min && x.1 <= t_max);
+    let dying = dying.into_iter().filter(|x| (x.0 > t_min || (lo < t_min && x.0 >= lo)) && x.1 <= t_max);
     for (last, ts, c) in dying {
         let Some(ai) = bounded_part(tx.core, &c, tid, ak) else { continue };
         judge.insert((ts, c), ai);
@@ -634,10 +712,17 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
         }
         judge.insert((ts, c), ai);
     }
-    for i in items {
-        if let Due::Hint(t) = i {
-            u = u.max(*t);
-        }
+    let hint = items.iter().filter_map(|i| if let Due::Hint(t) = i { Some(*t) } else { None }).max();
+    if let Some(h) = hint {
+        u = u.max(h);
+    }
+    // the winner a late delta's join met may be a stray, which a replay meets later (after
+    // other superseders, or with the state): its own writes may die past the hint, so the
+    // window plays every body after its start
+    if stray.is_some_and(|s| hint.is_some_and(|h| s <= h))
+        && let Some(&(last, _)) = tx.core.ix.by_aspect.get(&k).and_then(|x| x.last())
+    {
+        u = u.max(last);
     }
     let Some(&(t_start, _)) = judge.keys().next() else { return Ok(Some(Vec::new())) };
     // A snapshot's or import's record spans every write it carries, from before the window too:
@@ -752,6 +837,74 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
         debug_assert!(rows_from(tx, tid, ak, Ts::default())? == Some(fresh), "last deaths of {tid:?} {ak:?} differ from the records");
     }
     Ok(Some(judged.into_iter().collect()))
+}
+
+/// The lowest stamp of a write of `(tid, ak)` that a replay plays after a late delta at
+/// `t_min` although it sorts before it: a copy in a snapshot or import sorting after `t_min`
+/// whose own commit does not play it (never held: `Core::carried`; a commit-form source not
+/// playing its own, `Core::authors`; a node-form commit dropped without a residue), or a live
+/// write of a commit dropped without a residue (the state plays last). A whole replay dates a
+/// write such a one superseded at the late delta when that also supersedes it and plays first,
+/// so a body whose last death is from that stamp may change though it died before `t_min`
+/// (walks seed 7204), and a held snapshot between the stamp and the late delta may gain the
+/// death (`None` from the window; the retention.rs differential, seed 1018). `None` also when no
+/// held bounded body sorts at or before `t_max`. A dropped snapshot after `t_min` gives its residue's stamps; an import
+/// after it, or a snapshot or import dropped without a residue from the first held bounded body
+/// (its copies play with the state), the lowest `Ts` (`first_bare`). `None`: no such write.
+/// Cost: `first_bare`'s (cached), and with a snapshot or import after `t_min`: those, a residue
+/// read per dropped one, the carried groups and the thing's commit-form sources (a residue read
+/// per one of the aspect not held).
+fn strays_from(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, t_min: Ts, t_max: Ts) -> Result<Option<Ts>> {
+    let k = (*tid, ak.clone());
+    // only a held bounded body sorting before a late delta can change
+    if first_bounded(tx.core, tid, ak).is_none_or(|f| f.0 > t_max) {
+        return Ok(None);
+    }
+    let mut lo: Option<Ts> = None;
+    let mut low = |t: Ts| lo = Some(lo.map_or(t, |l| l.min(t)));
+    // commits dropped without a residue from the first held bounded body (none before it
+    // supersedes a write of one): their live writes, or copies, play with the state, last
+    if let Some(b) = first_bare(tx, tid, ak)? {
+        low(b);
+    }
+    let snaps: Vec<(Ts, CommitId)> = tx.core.ix.copies.get(&k).into_iter().flat_map(|s| s.range((t_min, LO)..)).copied().collect();
+    if snaps.is_empty() {
+        return Ok(lo);
+    }
+    for (ts, s) in &snaps {
+        if held_part(tx.core, s, tid, ak).is_some() {
+            if tx.core.ix.commits.get(s).is_none_or(|m| !crate::apply::is_kind_snapshot(m.header.kind)) {
+                return Ok(Some(Ts::default()));
+            }
+            continue;
+        }
+        // dropped: its residue's copies (those whose own commit played them were left out),
+        // or with none, the state's
+        let Some(b) = tx.txn.get_local(&records::dropped_key(tid, ak, *ts, s))? else { return Ok(Some(Ts::default())) };
+        for (_, t) in crate::engine::state::decode(&b)?.writes() {
+            match t {
+                Some(t) => low(t),
+                None => return Ok(Some(Ts::default())),
+            }
+        }
+    }
+    if let Some(v) = tx.core.ix.carried.get(&k) {
+        for g in v.iter().filter(|g| snaps.iter().any(|x| x.1 == g.snap)) {
+            low(g.ts);
+        }
+    }
+    let srcs: Vec<(CommitId, Ts)> = tx.core.ix.authors.range((*tid, LO)..=(*tid, HI)).map(|(k, v)| (k.1, v.1)).collect();
+    for (x, ts) in srcs {
+        let own = match tx.core.ix.commits.get(&x) {
+            None => false,
+            Some(m) if m.header.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak) => plays_own(tx, tid, ak, &x)?,
+            Some(m) => m.header.aspects.iter().any(|a| a.tid == *tid),
+        };
+        if !own {
+            low(ts);
+        }
+    }
+    Ok(lo)
 }
 
 /// Whether `c`'s own position plays its writes on `(tid, ak)`: held, or a residue.

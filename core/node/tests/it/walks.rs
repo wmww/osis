@@ -587,8 +587,11 @@ fn open_equals_rebuild_random_histories() {
     for seed in start..start + seeds {
         random_history(seed, &mut most, 1);
     }
-    // the histories reach drops, invalid parts, roster snapshots and chunks
-    assert!(most.iter().all(|n| *n > 0), "reached (dropped, invalid, roster snapshots, chunks): {most:?}");
+    // the default seeds reach drops, invalid parts, roster snapshots and chunks (other ranges,
+    // a one-seed repro say, pass or fail on their own)
+    if std::env::var_os("OSIS_WALKS_START").is_none() && std::env::var_os("OSIS_WALKS_SEEDS").is_none() {
+        assert!(most.iter().all(|n| *n > 0), "reached (dropped, invalid, roster snapshots, chunks): {most:?}");
+    }
 }
 
 // as above: seeds where a snapshot of the moved thing carried imported writes whose origin

@@ -671,6 +671,52 @@ fn late_entry_creator_dies_at_carried_nested_write_spec_crdt_4_8() {
     assert_eq!(e.deaths(&a, &t, &k).unwrap(), Some((tb, tb)));
 }
 
+// spec/crdt.md §4.8, §8: on a kept register A, then X (a writer's), then a compaction snapshot
+// S carrying X; node 3 holds A and S but never X, so a replay dates A at S's copy of X. L, a
+// third writer's write between X and S, arrives late: a replay plays L before S's copy and
+// dates A at L, though A died before L's `ts`; the window judges A too (walks seed 7204: the
+// window kept A at X).
+#[test]
+fn late_delta_preempts_carried_superseder_spec_crdt_4_8() {
+    let mut lp = net(4, 85);
+    let t = new_thing(&mut lp, 0);
+    for i in [1, 2] {
+        let p = lp.peers[i].engine.tid();
+        set_edge(&mut lp.peers[0].engine, t, p, Some(edge(Role::Write)), None);
+    }
+    sync(&mut lp, 0, 1);
+    sync(&mut lp, 0, 2);
+    let k = ak("/t/kept");
+    lp.advance(10);
+    let a = set(&mut lp, 0, t, &KEPT, "a");
+    sync(&mut lp, 0, 2);
+    lp.advance(10);
+    let x = set(&mut lp, 1, t, &KEPT, "x");
+    sync(&mut lp, 1, 0);
+    lp.advance(10);
+    let l = set(&mut lp, 2, t, &KEPT, "l");
+    lp.advance(10);
+    lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    let (tx, tl) = (lp.peers[0].engine.header(&x).unwrap().ts, lp.peers[2].engine.header(&l).unwrap().ts);
+    for p in packages(&mut lp, 0).iter().filter(|p| p.id != x) {
+        lp.deliver(3, p).unwrap();
+    }
+    assert_eq!(lp.peers[3].engine.deaths(&a, &t, &k).unwrap(), Some((tx, tx)));
+    let (pl, rest): (Vec<_>, Vec<_>) = packages(&mut lp, 2).into_iter().partition(|p| p.id == l);
+    for p in &rest {
+        lp.deliver(3, p).unwrap();
+    }
+    osis_node::costs::take();
+    lp.deliver(3, &pl[0]).unwrap();
+    let e = &mut lp.peers[3].engine;
+    assert_eq!(e.deaths(&a, &t, &k).unwrap(), Some((tl, tl)));
+    let costs: Vec<&str> = osis_node::costs::take().into_iter().map(|x| x.0).collect();
+    assert!(costs.contains(&"deaths: window over copies"), "{costs:?}");
+    assert!(!costs.contains(&"deaths: whole replay"), "{costs:?}");
+    e.replay_deaths(&t, &k).unwrap();
+    assert_eq!(e.deaths(&a, &t, &k).unwrap(), Some((tl, tl)));
+}
+
 // notes/local-store.md (rebuildable indexes), spec/crdt.md §4.8: the last-death rows of a kept
 // register follow its death records; rows that do not parse are rebuilt by the next window that
 // reads them, and a rebuild of the persisted index writes them again from the records.
@@ -907,4 +953,234 @@ fn replay_dates_at_carried_write_in_held_entry_spec_crdt_4_8() {
     assert!(e.header(&x).is_none() && e.holds_body(&s1, &t, &k) && e.holds_body(&y, &t, &k));
     e.replay_deaths(&t, &k).unwrap();
     assert_eq!(e.deaths(&a, &t, &k).unwrap(), Some((tx, tx)));
+}
+
+// spec/crdt.md §4.8: on a kept map node 3 holds snapshot S (carrying X, a put it never holds)
+// and drops it with no held bounded body before it: no residue, so a replay plays X with the
+// state, last. Z (another key, after L) arrives, then A (older than S; X dates it), then L,
+// late, between S and Z: a replay plays L before the state and dates A at L, though A died
+// before L's `ts`; the window judges A too (was: kept A at X).
+#[test]
+fn late_delta_preempts_state_played_copy_spec_crdt_4_8() {
+    use osis_crdt::PathSeg;
+    let mut lp = net(4, 87);
+    let t = new_thing(&mut lp, 0);
+    for i in [1, 2] {
+        let p = lp.peers[i].engine.tid();
+        set_edge(&mut lp.peers[0].engine, t, p, Some(edge(Role::Write)), None);
+    }
+    sync(&mut lp, 0, 1);
+    sync(&mut lp, 0, 2);
+    let k = ak("/t/map");
+    let key = |n: &str| vec![PathSeg::Key(s(n))];
+    lp.advance(10);
+    let a = map_op(&mut lp, 0, t, key("k1"), item("a", 1));
+    sync(&mut lp, 0, 1);
+    sync(&mut lp, 0, 2);
+    lp.advance(10);
+    let x = map_op(&mut lp, 1, t, key("k1"), item("x", 2));
+    sync(&mut lp, 1, 0);
+    lp.advance(10);
+    let s1 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.advance(10);
+    let l = map_op(&mut lp, 2, t, key("k1"), item("l", 3));
+    lp.advance(10);
+    let z = map_op(&mut lp, 0, t, key("k2"), item("z", 4));
+    let mut all = packages(&mut lp, 0);
+    all.extend(packages(&mut lp, 2));
+    let mut seen = std::collections::BTreeSet::new();
+    all.retain(|p| seen.insert(p.id) && p.id != x);
+    let pa = all.iter().find(|p| p.id == a).unwrap().clone();
+    let pl = all.iter().find(|p| p.id == l).unwrap().clone();
+    let pz = all.iter().find(|p| p.id == z).unwrap().clone();
+    for p in all.iter().filter(|p| ![a, l, z].contains(&p.id)) {
+        lp.deliver(3, p).unwrap();
+    }
+    let e = &mut lp.peers[3].engine;
+    assert!(e.header(&x).is_none() && e.holds_body(&s1, &t, &k));
+    e.drop_body(&s1, &t, &k).unwrap();
+    assert_eq!(e.residue_bytes(&t, &k).unwrap(), 0);
+    lp.deliver(3, &pz).unwrap();
+    lp.deliver(3, &pa).unwrap();
+    let tx = lp.peers[1].engine.header(&x).unwrap().ts;
+    assert_eq!(lp.peers[3].engine.deaths(&a, &t, &k).unwrap(), Some((tx, tx)));
+    osis_node::costs::take();
+    lp.deliver(3, &pl).unwrap();
+    let costs: Vec<&str> = osis_node::costs::take().into_iter().map(|x| x.0).collect();
+    assert!(costs.contains(&"deaths: window") && !costs.contains(&"deaths: whole replay"), "{costs:?}");
+    let tl = lp.peers[2].engine.header(&l).unwrap().ts;
+    let e = &mut lp.peers[3].engine;
+    let got = e.deaths(&a, &t, &k).unwrap();
+    e.replay_deaths(&t, &k).unwrap();
+    assert_eq!((got, e.deaths(&a, &t, &k).unwrap()), (Some((tl, tl)), Some((tl, tl))), "tx {tx:?} tl {tl:?}");
+}
+
+// spec/crdt.md §4.8 (deaths a function of the held set): random histories on a kept register,
+// a kept set and a kept map by four writers with compaction snapshots (peer 3's writes reach
+// node 4 only as snapshot copies, some others' never), delivered to node 4 in a random order
+// with snapshots and writes dropped as they come (with or without a residue) and replays
+// batched: every window is checked against a whole replay (debug builds), and the deaths at
+// the end against one. The default seeds must reach windows over stray copies, among them one
+// that judges every body. Seeds: OSIS_STRAYS_START, OSIS_STRAYS_SEEDS.
+#[test]
+fn late_deltas_windowed_alike_random_spec_crdt_4_8() {
+    let env = |k: &str| std::env::var(k).ok().and_then(|s| s.parse::<u64>().ok());
+    let (start, n) = (env("OSIS_STRAYS_START"), env("OSIS_STRAYS_SEEDS"));
+    let default = start.is_none() && n.is_none();
+    let end = std::env::var_os("OSIS_STRAYS_END").is_some();
+    let start = start.unwrap_or(0);
+    let mut reached: std::collections::BTreeMap<&'static str, u64> = Default::default();
+    osis_node::costs::take();
+    for seed in start..start + n.unwrap_or(24) {
+        strays_history(seed, end, &mut reached);
+    }
+    println!("{reached:?}");
+    if default {
+        for k in ["deaths: window", "deaths: window strays", "deaths: window strays, every body"] {
+            assert!(reached.get(k).is_some_and(|n| *n > 0), "not reached: {k} ({reached:?})");
+        }
+    }
+}
+
+// as above, seeds that failed: 1018, a held snapshot between a stray and the late delta gained
+// a death (no record before; on main too); 2392, the winner a late join met was a stray, which
+// the replay met after another superseder past the hint
+#[test]
+fn late_deltas_windowed_found_histories_spec_crdt_4_8() {
+    for seed in [1018, 2392] {
+        strays_history(seed, false, &mut Default::default());
+    }
+}
+
+/// One history of `late_deltas_windowed_alike_random_*`; adds the window spans it ran to
+/// `reached`.
+fn strays_history(seed: u64, end: bool, reached: &mut std::collections::BTreeMap<&'static str, u64>) {
+    use osis_crdt::PathSeg;
+    osis_node::costs::take();
+    let mut r = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    let mut below = |n: u64| {
+        r ^= r << 13;
+        r ^= r >> 7;
+        r ^= r << 17;
+        r % n
+    };
+    let mut lp = net(5, 1000 + seed);
+    let t = new_thing(&mut lp, 0);
+    for i in 1..4 {
+        let p = lp.peers[i].engine.tid();
+        set_edge(&mut lp.peers[0].engine, t, p, Some(edge(Role::Write)), None);
+    }
+    for i in 1..5 {
+        sync(&mut lp, 0, i);
+    }
+    let aks = [ak("/t/kept"), ak("/t/keptset"), ak("/t/map")];
+    let (mut writes, mut snaps) = (Vec::new(), Vec::new());
+    for _ in 0..28 {
+        let x = below(100);
+        let i = below(4) as usize;
+        if x < 55 {
+            let v = format!("v{}", below(3));
+            let mut m = Mutation::new();
+            match below(3) {
+                0 => {
+                    m.set(t, &KEPT, &s(&v)).unwrap();
+                }
+                1 => {
+                    m.op(t, &KEPTSET, PathOp { path: Vec::new(), op: if below(3) == 0 { Op::Remove(s(&v)) } else { Op::Add(s(&v)) } }).unwrap();
+                }
+                _ => {
+                    let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, at_least: osis_schema::Bound { abs: None, rel: Some(3_600_000) }, at_most: osis_schema::Bound::default() };
+                    m.retention(t, &MAP, keep).unwrap();
+                    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s(&v))], op: Op::Set(item("e", below(9) as i64)) }).unwrap();
+                }
+            }
+            // a remove of nothing writes no commit
+            if let Some(c) = lp.peers[i].commit(m).unwrap() {
+                writes.push((i, c));
+            }
+        } else if x < 72 {
+            let j = below(4) as usize;
+            if j != i {
+                sync(&mut lp, i, j);
+            }
+        } else if x < 88 {
+            let a = below(3) as usize;
+            if let Some(c) = lp.peers[i].engine.snapshot(&t, &aks[a]).unwrap() {
+                snaps.push((c, a));
+            }
+        }
+        lp.advance(1 + below(12));
+    }
+    let mut all = Vec::new();
+    for i in 0..4 {
+        all.extend(packages(&mut lp, i));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let withheld: std::collections::BTreeSet<osis_base::CommitId> = writes.iter().filter(|(i, _)| *i == 3 || below(7) == 0).map(|x| x.1).collect();
+    all.retain(|p| seen.insert(p.id) && lp.peers[4].engine.header(&p.id).is_none() && !withheld.contains(&p.id));
+    let mode = below(3);
+    if mode != 1 {
+        for i in (1..all.len()).rev() {
+            all.swap(i, below(i as u64 + 1) as usize);
+        }
+        if mode == 2 {
+            // snapshots first: they drop before any body older than them arrives (no residue)
+            all.sort_by_key(|p| !snaps.iter().any(|x| x.0 == p.id));
+        }
+    } else {
+        // newest first, roughly: snapshots drop before older bodies arrive (no residue)
+        let ts = |lp: &osis_node::local_peer::LocalPeer, c: &osis_base::CommitId| (0..4).find_map(|i| lp.peers[i].engine.header(c)).map(|h| h.ts);
+        all.sort_by_key(|p| std::cmp::Reverse(ts(&lp, &p.id)));
+        let n = all.len();
+        for _ in 0..n / 3 {
+            let i = below(n as u64) as usize;
+            all.swap(i, (i + 1).min(n - 1));
+        }
+    }
+    let mut deferred = false;
+    for p in &all {
+        if below(4) == 0 {
+            deferred = !deferred;
+            lp.peers[4].engine.defer_deaths(deferred).unwrap();
+        }
+        let _ = lp.deliver(4, p);
+        let e = &mut lp.peers[4].engine;
+        if let Some(&(c, a)) = snaps.iter().find(|x| x.0 == p.id)
+            && below(3) == 0
+            && e.holds_body(&c, &t, &aks[a])
+        {
+            e.drop_body(&c, &t, &aks[a]).unwrap();
+        }
+        if below(5) == 0
+            && let Some(&(c, a)) = snaps.get(below(snaps.len().max(1) as u64) as usize)
+            && e.holds_body(&c, &t, &aks[a])
+        {
+            e.drop_body(&c, &t, &aks[a]).unwrap();
+        }
+        if below(12) == 0
+            && let Some(&(_, c)) = writes.get(below(writes.len() as u64) as usize)
+        {
+            for a in &aks {
+                if e.holds_body(&c, &t, a) {
+                    e.drop_body(&c, &t, a).unwrap();
+                }
+            }
+        }
+    }
+    let e = &mut lp.peers[4].engine;
+    e.defer_deaths(false).unwrap();
+    let ids: Vec<osis_base::CommitId> = writes.iter().map(|x| x.1).chain(snaps.iter().map(|x| x.0)).filter(|c| e.header(c).is_some()).collect();
+    // the in-order path may keep a death a whole replay dates later (issues/deaths-dropped-
+    // superseder.md: a body arriving after a stray's snapshot dropped without a residue)
+    for a in aks.iter().filter(|_| end) {
+        let have: Vec<_> = ids.iter().map(|c| e.deaths(c, &t, a).ok()).collect();
+        e.replay_deaths(&t, a).unwrap();
+        let want: Vec<_> = ids.iter().map(|c| e.deaths(c, &t, a).ok()).collect();
+        assert_eq!(have, want, "seed {seed} {a:?}");
+    }
+    for (k, _, c) in osis_node::costs::take() {
+        if k.starts_with("deaths: window") {
+            *reached.entry(k).or_default() += c;
+        }
+    }
 }
