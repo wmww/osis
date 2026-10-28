@@ -4,3 +4,4 @@
 - `cargo test` blocks briefly on the package-cache lock while another cargo in the same worktree runs a test binary; harmless.
 - Review: `tools/wt claim` warned wt3's target was 8 GB (stacked generations); not deleted mid-review (a cold rebuild costs more than the disk for one task).
 - Review: to compare old and new harness outputs without building main, build main's order.rs once in the worktree and copy the test binary to scratch; both then run side by side.
+- Review: after rebasing onto main's feature-unification change the gate left wt3's target at 12 GB; deleted it per notes/build.md (next claim builds cold).
