@@ -2,18 +2,12 @@
 //! spec/commits.md §5; spec/wire.md §4, §5).
 
 use crate::blob::{CommitBlob, Part, encode_parts};
-use crate::cbor::array_head;
 use crate::header::{AspectEntry, DeleteKey, Header, retention_value};
 use crate::Error;
-use osis_base::format::MAX_BLOB;
-use osis_crypto::padme;
+use osis_base::cbor::head_len;
+use osis_base::format::{COMMITMENT_LEN, MAX_BLOB, PREFIX_FIXED_LEN};
 use osis_schema::Retention;
 use std::collections::BTreeMap;
-
-/// AEAD tag bytes after the padded plaintext.
-const TAG_LEN: usize = 16;
-/// Fixed prefix bytes before the commitments (spec/wire.md §5).
-const PREFIX_FIXED: usize = 26;
 
 /// One blob of a commit: the deltas of one (readable subset, retention class), or a size split
 /// of one.
@@ -25,7 +19,7 @@ pub struct Projection<K> {
     /// Prefix expiry.
     pub expires: Option<u64>,
     /// Header delete keys the class calls for; the prefix commits to them under the blob's salt
-    /// ([`crate::Prefix::from_keys`]).
+    /// ([`crate::Prefix`]).
     pub keys: Vec<DeleteKey>,
     /// `(ai, di)` of the deltas held.
     pub parts: Vec<(usize, usize)>,
@@ -35,22 +29,12 @@ pub struct Projection<K> {
 
 /// Whole blob size for a plaintext length and commitment count.
 fn blob_len(plain: usize, commitments: usize) -> usize {
-    PREFIX_FIXED.saturating_add(33usize.saturating_mul(commitments)).saturating_add(padme(plain.saturating_add(1))).saturating_add(TAG_LEN)
-}
-
-fn head_len(n: usize) -> usize {
-    let mut v = Vec::new();
-    array_head(n, &mut v);
-    v.len()
+    osis_crypto::blob_len(PREFIX_FIXED_LEN.saturating_add(COMMITMENT_LEN.saturating_mul(commitments)), plain)
 }
 
 /// Encoded length of one part.
 fn part_len(p: &Part) -> usize {
-    let mut v = Vec::new();
-    array_head(3, &mut v);
-    osis_base::cbor::encode_into(&crate::cbor::uidx(p.ai), &mut v);
-    osis_base::cbor::encode_into(&crate::cbor::uidx(p.di), &mut v);
-    v.len().saturating_add(p.delta.len())
+    (head_len(3) + head_len(p.ai as u64) + head_len(p.di as u64)).saturating_add(p.delta.len())
 }
 
 /// Plaintext bytes outside the parts list: outer head, header, signature.
@@ -116,7 +100,7 @@ pub fn project_resolved<K: Ord + Clone>(c: &CommitBlob, resolved: &Header, reade
         let ai = parts.first().map_or(0, |p| p.ai);
         let retention = resolved.aspects.get(ai).map(|a| a.retention).unwrap_or_default();
         let (_, keys) = prefix_inputs(resolved, &[(ai, 0)])?;
-        let fits = |n: usize, body: usize| blob_len(fixed.saturating_add(head_len(n)).saturating_add(body), keys.len()) <= MAX_BLOB;
+        let fits = |n: usize, body: usize| blob_len(fixed.saturating_add(head_len(n as u64)).saturating_add(body), keys.len()) <= MAX_BLOB;
         let mut groups: Vec<Vec<&Part>> = Vec::new();
         let mut cur: Vec<&Part> = Vec::new();
         let mut body = 0usize;

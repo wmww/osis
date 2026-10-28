@@ -18,7 +18,7 @@ mod secret;
 mod sign;
 
 pub use aead::WRAP_LEN;
-pub use blob::{blob_id, decrypt_blob, encrypt_blob, filler_wrap, open_inbox, pad, padme, seal_inbox, unpad, unwrap, wrap};
+pub use blob::{blob_id, blob_len, decrypt_blob, encrypt_blob, filler_wrap, open_inbox, pad, padme, seal_inbox, unpad, unwrap, wrap};
 pub use delete::{DeleteSecret, blind, commitment, verify_delete};
 pub use boxes::{BoxForm, BoxItem, BoxSlot, Epoch, open_box, open_history, open_symmetric_box, seal_box, seal_history, wrap_symmetric_box};
 pub use error::Error;

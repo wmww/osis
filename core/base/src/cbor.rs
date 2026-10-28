@@ -8,13 +8,13 @@ use crate::{Classified, ErrorClass};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-const MAJOR_UINT: u8 = 0;
-const MAJOR_NINT: u8 = 1;
-const MAJOR_BYTES: u8 = 2;
-const MAJOR_TEXT: u8 = 3;
-const MAJOR_ARRAY: u8 = 4;
-const MAJOR_MAP: u8 = 5;
-const MAJOR_TAG: u8 = 6;
+pub const MAJOR_UINT: u8 = 0;
+pub const MAJOR_NINT: u8 = 1;
+pub const MAJOR_BYTES: u8 = 2;
+pub const MAJOR_TEXT: u8 = 3;
+pub const MAJOR_ARRAY: u8 = 4;
+pub const MAJOR_MAP: u8 = 5;
+pub const MAJOR_TAG: u8 = 6;
 const FALSE: u8 = 0xf4;
 const TRUE: u8 = 0xf5;
 const FLOAT64: u8 = 0xfb;
@@ -143,7 +143,8 @@ pub fn encode(v: &Value) -> Vec<u8> {
     out
 }
 
-fn head(out: &mut Vec<u8>, major: u8, arg: u64) {
+/// Appends the canonical (shortest) head of an item of major type `major` with argument `arg`.
+pub fn head(out: &mut Vec<u8>, major: u8, arg: u64) {
     let m = major << 5;
     // Shortest form (RFC 8949 §4.2.1). Truncating casts are guarded by the ranges.
     match arg {
@@ -161,6 +162,17 @@ fn head(out: &mut Vec<u8>, major: u8, arg: u64) {
             out.push(m | 27);
             out.extend(arg.to_be_bytes());
         }
+    }
+}
+
+/// Length of the canonical head with argument `arg`.
+pub fn head_len(arg: u64) -> usize {
+    match arg {
+        0..=23 => 1,
+        24..=0xff => 2,
+        0x100..=0xffff => 3,
+        0x1_0000..=0xffff_ffff => 5,
+        _ => 9,
     }
 }
 

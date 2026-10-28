@@ -75,27 +75,6 @@ pub(crate) fn as_opt(v: &Value) -> Result<Option<&Value>, Error> {
     }
 }
 
-/// Length of the CBOR head of an array of `n` items (major type 4).
-pub(crate) fn array_head(n: usize, out: &mut Vec<u8>) {
-    let n = n as u64;
-    match n {
-        0..24 => out.push(0x80 | n as u8),
-        24..256 => out.extend_from_slice(&[0x98, n as u8]),
-        256..65536 => {
-            out.push(0x99);
-            out.extend_from_slice(&(n as u16).to_be_bytes());
-        }
-        _ if n <= u64::from(u32::MAX) => {
-            out.push(0x9a);
-            out.extend_from_slice(&(n as u32).to_be_bytes());
-        }
-        _ => {
-            out.push(0x9b);
-            out.extend_from_slice(&n.to_be_bytes());
-        }
-    }
-}
-
 /// Strictly ascending (sorted, distinct) by a key.
 pub(crate) fn strictly_ascending<T, K: Ord>(items: &[T], key: impl Fn(&T) -> K) -> bool {
     items.windows(2).all(|w| match w {

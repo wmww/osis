@@ -1,8 +1,9 @@
 //! Commit blob plaintext `[Header, signature, [Part*]]` (spec/wire.md §4).
 
-use crate::cbor::{array_head, as_idx, as_list, strictly_ascending, uidx};
+use crate::cbor::{as_idx, as_list, strictly_ascending};
 use crate::header::{Header, LIMITS};
 use crate::Error;
+use osis_base::cbor::{MAJOR_ARRAY, MAJOR_UINT, encode_into, head};
 use osis_base::{CommitId, Value};
 use osis_crypto::Signature;
 
@@ -77,14 +78,14 @@ impl CommitBlob {
 /// canonical items.
 pub(crate) fn encode_parts<'a>(header: &[u8], sig: &Signature, parts: impl ExactSizeIterator<Item = &'a Part>) -> Vec<u8> {
     let mut out = Vec::new();
-    array_head(3, &mut out);
+    head(&mut out, MAJOR_ARRAY, 3);
     out.extend_from_slice(header);
-    osis_base::cbor::encode_into(&sig.to_value(), &mut out);
-    array_head(parts.len(), &mut out);
+    encode_into(&sig.to_value(), &mut out);
+    head(&mut out, MAJOR_ARRAY, parts.len() as u64);
     for p in parts {
-        array_head(3, &mut out);
-        osis_base::cbor::encode_into(&uidx(p.ai), &mut out);
-        osis_base::cbor::encode_into(&uidx(p.di), &mut out);
+        head(&mut out, MAJOR_ARRAY, 3);
+        head(&mut out, MAJOR_UINT, p.ai as u64);
+        head(&mut out, MAJOR_UINT, p.di as u64);
         out.extend_from_slice(&p.delta);
     }
     out
