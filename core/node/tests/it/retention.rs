@@ -626,11 +626,49 @@ fn late_delta_before_snapshot_windowed_spec_crdt_4_8() {
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.deaths(&adds[3], &t, &k).unwrap(), Some((tl, tl)));
     let costs: Vec<&str> = osis_node::costs::take().into_iter().map(|x| x.0).collect();
-    assert!(costs.contains(&"deaths: window over copies"), "{costs:?}");
+    assert!(costs.contains(&"deaths: window skips copies"), "{costs:?}");
     assert!(!costs.contains(&"deaths: whole replay"), "{costs:?}");
     e.replay_deaths(&t, &k).unwrap();
     assert_eq!(e.deaths(&adds[3], &t, &k).unwrap(), Some((tl, tl)));
     assert!(e.last_deaths_stale().unwrap().is_empty());
+}
+
+// spec/crdt.md §4.8, §8: a snapshot's copy of a write nested in an entry another held commit
+// created (a put into the key's live entry) supersedes that commit's write there; delivered the
+// snapshot first, the late creator dies at the carried write, as in a replay of every body (was:
+// the window dropped the entry's content with the creator's copies, order seed 7233).
+#[test]
+fn late_entry_creator_dies_at_carried_nested_write_spec_crdt_4_8() {
+    let mut lp = net(2, 84);
+    let t = new_thing(&mut lp, 0);
+    let k = ak("/t/gonemap");
+    let put = |lp: &mut osis_node::local_peer::LocalPeer, v: &str| {
+        let mut m = Mutation::new();
+        m.op(t, &GONEMAP, PathOp { path: vec![osis_crdt::PathSeg::Key(s("a"))], op: Op::Set(s(v)) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    let a = put(&mut lp, "one");
+    lp.advance(10);
+    let b = put(&mut lp, "two");
+    let tb = lp.peers[0].engine.header(&b).unwrap().ts;
+    lp.advance(10);
+    lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.deaths(&a, &t, &k).unwrap(), Some((tb, tb)));
+    for p in packages(&mut lp, 0).iter().filter(|p| p.id != a && p.id != b) {
+        lp.deliver(1, p).unwrap();
+    }
+    let pa = packages(&mut lp, 0).into_iter().find(|p| p.id == a).unwrap();
+    osis_node::costs::take();
+    lp.deliver(1, &pa).unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert!(e.holds_body(&a, &t, &k));
+    assert_eq!(e.deaths(&a, &t, &k).unwrap(), Some((tb, tb)));
+    // the snapshot carries a write never held here, stamped after the late one: it plays
+    let costs: Vec<&str> = osis_node::costs::take().into_iter().map(|x| x.0).collect();
+    assert!(costs.contains(&"deaths: window over copies"), "{costs:?}");
+    assert!(!costs.contains(&"deaths: whole replay"), "{costs:?}");
+    e.replay_deaths(&t, &k).unwrap();
+    assert_eq!(e.deaths(&a, &t, &k).unwrap(), Some((tb, tb)));
 }
 
 // notes/local-store.md (rebuildable indexes), spec/crdt.md §4.8: the last-death rows of a kept
@@ -721,7 +759,7 @@ fn late_deltas_before_two_snapshots_alike_spec_crdt_4_8() {
     let deaths = |e: &mut osis_node::Engine| ids.iter().map(|c| e.deaths(c, &t, &k).unwrap()).collect::<Vec<_>>();
     let want = deaths(&mut lp.peers[0].engine);
     let costs: Vec<&str> = osis_node::costs::take().into_iter().map(|x| x.0).collect();
-    assert!(costs.contains(&"deaths: window over copies"), "{costs:?}");
+    assert!(costs.contains(&"deaths: window skips copies"), "{costs:?}");
     assert!(!costs.contains(&"deaths: whole replay"), "{costs:?}");
     assert!(want.iter().any(|d| d.is_some()));
     // other orders: the late writer's commits first, or after the owner's

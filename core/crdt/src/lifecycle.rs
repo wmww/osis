@@ -71,6 +71,17 @@ impl Fragment {
     /// Removes every write whose owner dot (`Derived` dots: the underlying dot) matches `pred`,
     /// in place: un-merge of single deltas (spec/permissions.md §5.2, spec/crdt.md §4.6).
     pub fn remove_dots(&mut self, pred: &dyn Fn(&Dot) -> bool) {
+        self.remove_dots_in(pred, false);
+    }
+
+    /// Removes exactly the writes whose owner dot matches `pred`, keeping others' writes nested
+    /// in a record a matching dot created (a map entry's or list element's content): a
+    /// snapshot's copies of writes played elsewhere, the others still superseding there.
+    pub fn remove_writes(&mut self, pred: &dyn Fn(&Dot) -> bool) {
+        self.remove_dots_in(pred, true);
+    }
+
+    pub(crate) fn remove_dots_in(&mut self, pred: &dyn Fn(&Dot) -> bool, nested: bool) {
         let bad = |s: &Option<Stamp>| s.as_ref().is_some_and(|s| pred(s.dot.owner()));
         match self {
             Fragment::Slots(_) => {
@@ -79,11 +90,11 @@ impl Fragment {
                 let mut ch = Changes::new();
                 if let Some(r) = reg {
                     let mut f = Fragment::Register(r);
-                    f.remove_dots(pred);
+                    f.remove_dots_in(pred, nested);
                     out.join_into(f, None, &mut ch);
                 }
                 for (_, mut f) in members {
-                    f.remove_dots(pred);
+                    f.remove_dots_in(pred, nested);
                     out.join_into(f, None, &mut ch);
                 }
                 *self = out;
@@ -108,9 +119,9 @@ impl Fragment {
             }
         }
         match self {
-            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => remove_dots_elems(elems, pred),
+            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => remove_dots_elems(elems, pred, nested),
             Fragment::Struct(s) => s.fields.retain(|_, f| {
-                f.remove_dots(pred);
+                f.remove_dots_in(pred, nested);
                 !f.is_empty()
             }),
             Fragment::Enum(e) => {
@@ -118,7 +129,7 @@ impl Fragment {
                     e.case = None;
                 }
                 e.payloads.retain(|_, f| {
-                    f.remove_dots(pred);
+                    f.remove_dots_in(pred, nested);
                     !f.is_empty()
                 });
             }
@@ -126,10 +137,13 @@ impl Fragment {
                 if en.reset.as_ref().is_some_and(|r| pred(r.dot.owner())) {
                     en.reset = None;
                 }
-                if pred(d.owner()) {
+                if pred(d.owner()) && nested {
+                    en.created = None;
+                }
+                if pred(d.owner()) && !nested {
                     en.frag = None;
                 } else if let Some(f) = &mut en.frag {
-                    f.remove_dots(pred);
+                    f.remove_dots_in(pred, nested);
                     if f.is_empty() {
                         en.frag = None;
                     }
@@ -140,7 +154,7 @@ impl Fragment {
                 }
                 en.reset.is_some() || en.frag.is_some()
             }),
-            Fragment::Seq(s) => seq::remove_dots(s, pred),
+            Fragment::Seq(s) => seq::remove_dots(s, pred, nested),
             Fragment::Register(_) | Fragment::Slots(_) => {}
         }
     }
@@ -212,15 +226,15 @@ impl Fragment {
     }
 }
 
-fn remove_dots_elems(elems: &mut BTreeMap<Dot, Elem>, pred: &dyn Fn(&Dot) -> bool) {
+fn remove_dots_elems(elems: &mut BTreeMap<Dot, Elem>, pred: &dyn Fn(&Dot) -> bool, nested: bool) {
     elems.retain(|d, el| {
         if el.reset.as_ref().is_some_and(|r| pred(r.dot.owner())) {
             el.reset = None;
         }
-        if pred(d.owner()) {
+        if pred(d.owner()) && !nested {
             el.frag = None;
         } else if let Some(f) = &mut el.frag {
-            f.remove_dots(pred);
+            f.remove_dots_in(pred, nested);
             if f.is_empty() {
                 el.frag = None;
             }
