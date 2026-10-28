@@ -11,7 +11,7 @@ use osis_base::{CommitId, Tid, Ts, Value, WallMs};
 use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
 use osis_node::Mutation;
 use osis_schema::core_types::{GROUP, is_membership_class};
-use osis_schema::{AspectKey, CaseId, Codec, Path, Retention, Step, type_at, validate_write};
+use osis_schema::{AspectKey, CaseId, Codec, Path, PathError, Retention, Step, type_at, validate_write};
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::time::Duration;
@@ -407,7 +407,8 @@ impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
         let mut p = self.path.clone();
         p.0.extend(extra);
         let (t, _) = type_at(s, ty, &p)?;
-        validate_write(s, v, &t)?;
+        // the error's path from the aspect's root, not from this position
+        validate_write(s, v, &t).map_err(|e| PathError::new(Path(self.path.0.iter().cloned().chain(e.path.0.iter().cloned()).collect()), e.kind))?;
         Ok(())
     }
 
