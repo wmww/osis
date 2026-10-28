@@ -56,33 +56,36 @@ impl Try {
     }
 }
 
-/// Depth of each step from the genesis step (unreachable steps: none).
-fn depths(gl: &GroupLabel) -> BTreeMap<StepId, usize> {
-    let mut d = BTreeMap::new();
-    for id in gl.steps.keys() {
-        let mut n = 0usize;
-        let mut cur = Some(*id);
-        while let Some(c) = cur {
-            let Some((s, _)) = gl.steps.get(&c) else { break };
-            n += 1;
-            cur = s.prev;
-            if n > gl.steps.len() {
-                break;
-            }
+/// Recorded steps by ID with their claim sets (`GroupLabel::steps`).
+pub(crate) type Steps = BTreeMap<StepId, (Step, Option<ClaimSet>)>;
+
+/// The recorded steps from `tip` back to the first one not recorded, oldest first; `None` on a
+/// cycle.
+pub(crate) fn path_to(steps: &Steps, tip: StepId) -> Option<Vec<&(Step, Option<ClaimSet>)>> {
+    let mut path = Vec::new();
+    let mut cur = Some(tip);
+    while let Some(c) = cur {
+        let Some(x) = steps.get(&c) else { break };
+        if path.len() >= steps.len() {
+            return None;
         }
-        d.insert(*id, n);
+        path.push(x);
+        cur = x.0.prev;
     }
-    d
+    path.reverse();
+    Some(path)
+}
+
+/// The path to the deepest step that reaches a genesis step (the lowest ID among equals).
+pub(crate) fn deepest_path(steps: &Steps) -> Option<Vec<&(Step, Option<ClaimSet>)>> {
+    let rooted = |p: &Vec<&(Step, Option<ClaimSet>)>| p.first().is_some_and(|(s, _)| s.prev.is_none());
+    steps.keys().rev().filter_map(|id| path_to(steps, *id).filter(rooted)).max_by_key(Vec::len)
 }
 
 impl SyncEngine {
     /// X25519 keys this node may be listed by in a claim set: its own, and the read-role KEM
-    /// key of every held read epoch of the actors it holds secrets of (spec/sync.md §2).
-    fn claim_keys(&self) -> Vec<X25519Secret> {
-        self.claim_keys_of(None)
-    }
-
-    /// `claim_keys` of the actors in `only` (this node's own key if it is one), when given.
+    /// key of every held read epoch of the actors it holds secrets of (spec/sync.md §2); of the
+    /// actors in `only` (this node's own key if it is one), when given.
     fn claim_keys_of(&self, only: Option<&std::collections::BTreeSet<Tid>>) -> Vec<X25519Secret> {
         let mut v = Vec::new();
         if only.is_none_or(|o| o.contains(&self.engine.tid())) {
@@ -129,9 +132,8 @@ impl SyncEngine {
         {
             v.push(Try::Sync { step: Some(h), index, key });
         }
-        let d = depths(&gl);
         let mut steps: Vec<(&Step, &Option<ClaimSet>)> = gl.steps.values().map(|(s, c)| (s, c)).collect();
-        steps.sort_by_key(|(s, _)| std::cmp::Reverse(d.get(&s.id()).copied().unwrap_or(0)));
+        steps.sort_by_cached_key(|(s, _)| std::cmp::Reverse(path_to(&gl.steps, s.id()).map_or(0, |p| p.len())));
         for (s, _) in &steps {
             if let Some(key) = sync_key(s, index)
                 && !v.iter().any(|t| matches!(t, Try::Sync { key: k, .. } if k.verifying_key() == key.verifying_key()))
@@ -139,7 +141,7 @@ impl SyncEngine {
                 v.push(Try::Sync { step: Some((*s).clone()), index, key });
             }
         }
-        let xs = self.claim_keys();
+        let xs = self.claim_keys_of(None);
         for (s, set) in &steps {
             for x in &xs {
                 let Ok(key) = s.claim_key(x) else { continue };
@@ -250,10 +252,7 @@ impl SyncEngine {
             && let Some(lc) = self.lc_mut(conn, &l)
         {
             lc.entry_box = Some(b);
-            lc.phase = Phase::Verifying;
-            lc.head = Some(head);
-            lc.path.clear();
-            return self.command(conn, Command::Path { label: l, after: None }, out);
+            return self.verify_path(conn, l, head, out);
         }
         if let Some(Try::Sync { step: None, index, .. }) = &tried
             && let Some(lc) = self.lc_mut(conn, &l)
@@ -267,6 +266,11 @@ impl SyncEngine {
         if !walked && (recorded || known || tried_step) {
             return self.accept_head(conn, l, head, out);
         }
+        self.verify_path(conn, l, head, out)
+    }
+
+    /// Asks for the server's whole path to verify `head` (`path_steps`).
+    fn verify_path(&mut self, conn: ConnId, l: LabelId, head: Step, out: &mut Vec<super::Action>) -> Result<()> {
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.phase = Phase::Verifying;
             lc.head = Some(head);
@@ -379,17 +383,11 @@ impl SyncEngine {
 
     /// The head is good: derive its keys, subscribe, sync.
     fn accept_head(&mut self, conn: ConnId, l: LabelId, head: Step, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
-        let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
-        let (g, index) = (lc.group, lc.index.unwrap_or(0));
-        let keys = self.engine.head_keys(&g, index, &head)?;
-        self.state.set_head(server, l, &head);
-        self.reopens.remove(&(conn, l));
         let head_id = head.id();
+        self.set_head(conn, l, head)?;
+        self.reopens.remove(&(conn, l));
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.phase = Phase::Open;
-            lc.head = Some(head);
-            lc.keys = keys;
             lc.tries.clear();
         }
         if self.cfg.subscribe {
@@ -536,22 +534,8 @@ impl SyncEngine {
     fn register_path(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(g) = self.lc(conn, &l).map(|x| x.group) else { return Ok(()) };
         let Some(gl) = self.group_label(&g, &l) else { return self.drop_try(conn, l, out) };
-        let d = depths(&gl);
-        let Some(tip) = d.iter().max_by_key(|(id, n)| (**n, std::cmp::Reverse(**id))).map(|(id, _)| *id) else { return self.drop_try(conn, l, out) };
-        let mut path = Vec::new();
-        let mut cur = Some(tip);
-        while let Some(c) = cur {
-            let Some((s, set)) = gl.steps.get(&c) else { break };
-            path.push((s.clone(), set.clone()));
-            cur = s.prev;
-            if path.len() > gl.steps.len() {
-                break;
-            }
-        }
-        path.reverse();
-        if path.first().is_none_or(|(s, _)| s.prev.is_some()) {
-            return self.drop_try(conn, l, out);
-        }
+        let Some(path) = deepest_path(&gl.steps) else { return self.drop_try(conn, l, out) };
+        let path: Vec<(Step, Option<ClaimSet>)> = path.into_iter().cloned().collect();
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.phase = Phase::Registering;
             lc.path = path.iter().map(|(s, _)| s.clone()).collect();
@@ -584,10 +568,13 @@ impl SyncEngine {
         }
         steps.push(step.clone());
         self.record_steps(&g, &l, &steps, Some((step.id(), set)))?;
-        self.accept_registered(conn, l, step, out)
+        self.set_head(conn, l, step)?;
+        self.run_dirty(out)
     }
 
-    fn accept_registered(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
+    /// Takes `step` as the head of `l` on `conn`: its keys derived, recorded for the server, a
+    /// pass wanted.
+    pub(crate) fn set_head(&mut self, conn: ConnId, l: LabelId, step: Step) -> Result<()> {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
         let (g, index) = (lc.group, lc.index.unwrap_or(0));
@@ -598,7 +585,7 @@ impl SyncEngine {
             lc.keys = keys;
             lc.dirty = true;
         }
-        self.run_dirty(out)
+        Ok(())
     }
 
     /// A Register was answered with the server's head: open again (the head changed under us).

@@ -455,20 +455,11 @@ impl SyncEngine {
         if cur.as_ref().is_some_and(|h| h.id() == step.id()) {
             return Ok(());
         }
-        let (g, index) = (lc.group, lc.index.unwrap_or(0));
+        let g = lc.group;
         match cur {
             Some(h) if step.verify_child(&h).is_ok() => {
                 self.record_steps(&g, &l, &[h, step.clone()], None)?;
-                let keys = self.engine.head_keys(&g, index, &step)?;
-                if let Some(s) = self.conns.get(&conn).map(|c| c.server) {
-                    self.state.set_head(s, l, &step);
-                }
-                if let Some(lc) = self.lc_mut(conn, &l) {
-                    lc.head = Some(step);
-                    lc.keys = keys;
-                    lc.dirty = true;
-                }
-                Ok(())
+                self.set_head(conn, l, step)
             }
             _ => self.reopen(conn, l, out),
         }
