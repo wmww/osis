@@ -353,15 +353,13 @@ fn resolve<'s, V: View>(w: &mut Writer, s: Option<&'s Fragment>, a: Option<&Frag
                         return Err(Error::Mismatch("no live entry with that key: put the whole value"));
                     }
                     let mut w2 = w.clone();
-                    let d = w2.fresh().dot;
-                    let c = match (&op.op, put, rest.is_empty()) {
-                        (_, Some(v), _) | (crate::ops::Op::Set(v), None, true) => Some(crate::ops::create(&mut w2, &vview, v)?),
-                        _ => resolve(&mut w2, None, None, None, rest, op, &vview, false, None)?,
-                    };
-                    let Some(c) = c else { return Ok(None) };
+                    let en = crate::ops::new_entry(&mut w2, k.clone(), |w2| match (&op.op, put, rest.is_empty()) {
+                        (_, Some(v), _) | (crate::ops::Op::Set(v), None, true) => crate::ops::create(w2, &vview, v).map(Some),
+                        _ => resolve(w2, None, None, None, rest, op, &vview, false, None),
+                    })?;
+                    let Some(en) = en else { return Ok(None) };
                     *w = w2;
-                    let created = Some(Stamp::new(w.ts(), d.src.clone(), d.ctr));
-                    Some(Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)), created })]))))
+                    Some(Fragment::Map(Map::new(Meta::default(), BTreeMap::from([en]))))
                 }
             }
         }

@@ -101,7 +101,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             if b.meta.reset.is_some() {
                 // §5.2: cancel the undone commit's own contribution, re-add the pre-reset live ones
                 for d in b.elems.keys().filter(|d| u.made(d)) {
-                    elems.insert(d.clone(), Elem { reset: Some(r.clone()), frag: None });
+                    elems.insert(d.clone(), Elem::tomb(&r));
                 }
                 if let Some(Fragment::Bag(prev)) = buffer.before(path).map(|f| f.chosen()) {
                     let ev = view.element();
@@ -116,7 +116,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                 let ev = view.element();
                 for (d, e) in &b.elems {
                     if e.frag.is_some() && u.made(d) {
-                        elems.insert(d.clone(), Elem { reset: Some(r.clone()), frag: None });
+                        elems.insert(d.clone(), Elem::tomb(&r));
                     } else if e.reset.is_some() {
                         // the undone commit cancelled a contribution (an undo): re-add it (redo)
                         let v = match &prev {
@@ -140,7 +140,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             let mut elems = BTreeMap::new();
             for (d, e) in &x.elems {
                 if e.frag.is_some() && u.made(d) {
-                    elems.insert(d.clone(), Elem { reset: Some(r.clone()), frag: None });
+                    elems.insert(d.clone(), Elem::tomb(&r));
                 } else if e.reset.is_some() {
                     // re-add the removed value with a fresh dot
                     let v = match &prev {
@@ -171,7 +171,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             let mut removed: BTreeMap<osis_base::Value, Fragment> = BTreeMap::new();
             for (d, e) in &m.entries {
                 if e.frag.is_some() && u.made(d) {
-                    entries.insert(d.clone(), Entry { reset: Some(r.clone()), key: None, frag: None, created: None });
+                    entries.insert(d.clone(), Entry::tomb(&r));
                 } else if let (Some(f), Some(k)) = (&e.frag, &e.key) {
                     // a nested edit into an existing entry
                     path.push(PathSeg::Key(k.clone()));
@@ -197,8 +197,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             }
             for (k, f) in removed {
                 let Some(v) = f.read() else { continue };
-                let (d, e) = crate::ops::new_entry(w, k, |w| create(w, &vview, &v))?;
-                entries.insert(d, e);
+                entries.extend(crate::ops::new_entry(w, k, |w| create(w, &vview, &v).map(Some))?);
             }
             Fragment::Map(Map::new(Meta::default(), entries))
         }

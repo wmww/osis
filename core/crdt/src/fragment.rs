@@ -112,6 +112,13 @@ pub struct Elem {
     pub(crate) frag: Option<Box<Fragment>>,
 }
 
+impl Elem {
+    /// A tombstone: reset `r`, no content.
+    pub(crate) fn tomb(r: &Stamp) -> Elem {
+        Elem { reset: Some(r.clone()), frag: None }
+    }
+}
+
 /// A map entry (§5.6). `key` is `None` for tombstones and value-less creations. `created` is
 /// the creation write's stamp (its dot is the entry's), kept while it survives pruning and the
 /// entry holds content (§5.6).
@@ -121,6 +128,13 @@ pub struct Entry {
     pub(crate) key: Option<Value>,
     pub(crate) frag: Option<Box<Fragment>>,
     pub(crate) created: Option<Stamp>,
+}
+
+impl Entry {
+    /// A tombstone: reset `r`, no key or content.
+    pub(crate) fn tomb(r: &Stamp) -> Entry {
+        Entry { reset: Some(r.clone()), ..Entry::default() }
+    }
 }
 
 /// Counter, max, min (§5.2).
