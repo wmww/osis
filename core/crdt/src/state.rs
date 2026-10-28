@@ -49,20 +49,44 @@ fn join_stamp(s: &mut Option<Stamp>, d: Option<Stamp>, ch: &mut Changes) -> bool
     }
 }
 
+/// A register or case write: its stamp, and whether it carries its value (§4.7).
+trait Write {
+    fn stamp(&self) -> &Stamp;
+    fn valued(&self) -> bool;
+}
+
+impl Write for RegWrite {
+    fn stamp(&self) -> &Stamp {
+        &self.stamp
+    }
+    fn valued(&self) -> bool {
+        self.value.is_some()
+    }
+}
+
+impl Write for CaseWrite {
+    fn stamp(&self) -> &Stamp {
+        &self.stamp
+    }
+    fn valued(&self) -> bool {
+        self.case.is_some()
+    }
+}
+
 /// Register-like join: greater stamp wins; of two copies of one write the valued one (§4.7).
-fn join_write<T: PartialEq>(s: &mut Option<(Stamp, Option<T>)>, d: Option<(Stamp, Option<T>)>, ch: &mut Changes) {
+fn join_write<W: Write>(s: &mut Option<W>, d: Option<W>, ch: &mut Changes) {
     let Some(d) = d else { return };
     match s {
-        Some(x) if x.0 == d.0 => {
-            if x.1.is_none() && d.1.is_some() {
-                x.1 = d.1;
+        Some(x) if x.stamp() == d.stamp() => {
+            if !x.valued() && d.valued() {
+                *x = d;
                 ch.touch();
             }
         }
-        Some(x) if x.0 > d.0 => ch.died(&d.0, x.0.ts),
+        Some(x) if x.stamp() > d.stamp() => ch.died(d.stamp(), x.stamp().ts),
         _ => {
             if let Some(x) = s.as_ref() {
-                ch.died(&x.0, d.0.ts);
+                ch.died(x.stamp(), d.stamp().ts);
             }
             *s = Some(d);
             ch.touch();
@@ -70,17 +94,14 @@ fn join_write<T: PartialEq>(s: &mut Option<(Stamp, Option<T>)>, d: Option<(Stamp
     }
 }
 
-fn reg_pair(w: Option<RegWrite>) -> Option<(Stamp, Option<Value>)> {
-    w.map(|w| (w.stamp, w.value))
-}
-fn reg_unpair(p: Option<(Stamp, Option<Value>)>) -> Option<RegWrite> {
-    p.map(|(stamp, value)| RegWrite { stamp, value })
-}
-fn case_pair(w: Option<CaseWrite>) -> Option<(Stamp, Option<u64>)> {
-    w.map(|w| (w.stamp, w.case))
-}
-fn case_unpair(p: Option<(Stamp, Option<u64>)>) -> Option<CaseWrite> {
-    p.map(|(stamp, case)| CaseWrite { stamp, case })
+/// Drops write `w` if it does not survive `e`, recording its death.
+fn prune_write<W: Write>(w: &mut Option<W>, e: Option<&Stamp>, ch: &mut Changes) {
+    if let (Some(x), Some(e)) = (w.as_ref(), e)
+        && x.stamp() < e
+    {
+        ch.died(x.stamp(), e.ts);
+        *w = None;
+    }
 }
 
 /// Joins a composite's reset and `W` under the parent's effective reset. Returns the effective
@@ -195,6 +216,15 @@ fn join_elems(s: &mut BTreeMap<Dot, Elem>, d: BTreeMap<Dot, Elem>, e: Option<&St
             }
         }
     }
+}
+
+/// Joins a set or bag (its reset, `W` and elements) under the parent's effective reset.
+fn join_coll(meta: &mut Meta, elems: &mut BTreeMap<Dot, Elem>, dm: Meta, de: BTreeMap<Dot, Elem>, e_parent: Option<&Stamp>, ch: &mut Changes) {
+    let (e, raised) = join_meta(meta, dm, e_parent, ch);
+    if raised {
+        prune_elems(elems, e.as_ref(), ch);
+    }
+    join_elems(elems, de, e.as_ref(), ch);
 }
 
 /// Prunes a map entry; the key goes with the content (content-free tombstone, §5.6).
@@ -337,28 +367,18 @@ impl Fragment {
             (Fragment::Register(mut a), Fragment::Register(b)) => {
                 join_stamp(&mut a.reset, b.reset, ch);
                 prune_stamp(&mut a.reset, e_parent, ch);
-                let mut w = reg_pair(a.write.take());
-                join_write(&mut w, reg_pair(b.write), ch);
-                a.write = reg_unpair(w);
+                join_write(&mut a.write, b.write, ch);
                 let e = max_opt(e_parent.cloned(), a.reset.clone());
                 prune_write(&mut a.write, e.as_ref(), ch);
                 drop_implied_reset(&mut a, ch);
                 Fragment::Register(a)
             }
             (Fragment::Bag(mut a), Fragment::Bag(b)) if a.kind == b.kind => {
-                let (e, raised) = join_meta(&mut a.meta, b.meta, e_parent, ch);
-                if raised {
-                    prune_elems(&mut a.elems, e.as_ref(), ch);
-                }
-                join_elems(&mut a.elems, b.elems, e.as_ref(), ch);
+                join_coll(&mut a.meta, &mut a.elems, b.meta, b.elems, e_parent, ch);
                 Fragment::Bag(a)
             }
             (Fragment::Set(mut a), Fragment::Set(b)) => {
-                let (e, raised) = join_meta(&mut a.meta, b.meta, e_parent, ch);
-                if raised {
-                    prune_elems(&mut a.elems, e.as_ref(), ch);
-                }
-                join_elems(&mut a.elems, b.elems, e.as_ref(), ch);
+                join_coll(&mut a.meta, &mut a.elems, b.meta, b.elems, e_parent, ch);
                 Fragment::Set(a)
             }
             (Fragment::Struct(mut a), Fragment::Struct(b)) => {
@@ -374,10 +394,8 @@ impl Fragment {
                 if raised {
                     prune_children(&mut a.payloads, e.as_ref(), ch);
                 }
-                let mut c = case_pair(a.case.take());
-                join_write(&mut c, case_pair(b.case), ch);
-                a.case = case_unpair(c);
-                prune_case(&mut a.case, e.as_ref(), ch);
+                join_write(&mut a.case, b.case, ch);
+                prune_write(&mut a.case, e.as_ref(), ch);
                 join_children(&mut a.payloads, b.payloads, e.as_ref(), ch);
                 Fragment::Enum(a)
             }
@@ -422,7 +440,7 @@ impl Fragment {
             }
             Fragment::Enum(s) => {
                 let e = prune_meta(&mut s.meta, e_parent, ch);
-                prune_case(&mut s.case, e.as_ref(), ch);
+                prune_write(&mut s.case, e.as_ref(), ch);
                 prune_children(&mut s.payloads, e.as_ref(), ch);
             }
             Fragment::Map(m) => {
@@ -483,7 +501,7 @@ impl Fragment {
     pub(crate) fn reset(&self) -> Option<Stamp> {
         match self {
             Fragment::Register(r) => r.reset.clone(),
-            Fragment::Slots(s) => s.reg.iter().map(|r| r.reset.clone()).chain(s.members.values().map(|f| f.reset())).fold(None, max_opt),
+            Fragment::Slots(s) => slots_reset(s.reg.as_ref(), &s.members, None),
             f => f.meta().and_then(|m| m.reset.clone()),
         }
     }
@@ -516,7 +534,6 @@ impl Fragment {
     pub(crate) fn set_reset(&mut self, r: Option<Stamp>) {
         match self {
             Fragment::Register(x) => x.reset = r,
-            Fragment::Slots(_) => {}
             f => {
                 if let Some(m) = f.meta_mut() {
                     m.reset = r;
@@ -731,21 +748,19 @@ fn drop_implied_reset(r: &mut Register, ch: &mut Changes) {
     }
 }
 
-fn prune_write(w: &mut Option<RegWrite>, e: Option<&Stamp>, ch: &mut Changes) {
-    if let (Some(x), Some(e)) = (w.as_ref(), e)
-        && x.stamp < *e
-    {
-        ch.died(&x.stamp, e.ts);
-        *w = None;
-    }
+/// The effective reset of a position with register slot `reg` and `members` under `e_parent`:
+/// the greatest of them (§7).
+fn slots_reset(reg: Option<&Register>, members: &BTreeMap<Encoding, Fragment>, e_parent: Option<&Stamp>) -> Option<Stamp> {
+    reg.map(|r| r.reset.clone()).into_iter().chain(members.values().map(Fragment::reset)).fold(e_parent.cloned(), max_opt)
 }
 
-fn prune_case(c: &mut Option<CaseWrite>, e: Option<&Stamp>, ch: &mut Changes) {
-    if let (Some(x), Some(e)) = (c.as_ref(), e)
-        && x.stamp < *e
-    {
-        ch.died(&x.stamp, e.ts);
-        *c = None;
+/// `join_into` of two registers.
+fn join_regs(a: Register, b: Register, ch: &mut Changes) -> Register {
+    let mut f = Fragment::Register(a);
+    f.join_into(Fragment::Register(b), None, ch);
+    match f {
+        Fragment::Register(r) => r,
+        _ => Register::default(),
     }
 }
 
@@ -778,7 +793,7 @@ fn uncached(f: &Fragment) -> Fragment {
 /// The effective reset `E` of `Slots` state `sa` when joining `b` leaves its register and `E` as
 /// they are; `None` when the position must be re-embedded and pruned whole.
 fn kept_reset(sa: &Slots, b: &Fragment, e_parent: Option<&Stamp>) -> Option<Option<Stamp>> {
-    let e = sa.reg.iter().map(|r| r.reset.clone()).chain(sa.members.values().map(Fragment::reset)).fold(e_parent.cloned(), max_opt);
+    let e = slots_reset(sa.reg.as_ref(), &sa.members, e_parent);
     let raises = |x: Option<Stamp>| x.is_some_and(|x| e.as_ref().is_none_or(|e| x > *e));
     let keeps = match b {
         Fragment::Register(rb) => sa.reg.as_ref().is_some_and(|ra| reg_absorbs(ra, rb)),
@@ -796,11 +811,7 @@ fn join_slots_kept(mut sa: Slots, b: Fragment, e: Option<&Stamp>, ch: &mut Chang
     let (rb, mb) = parts(b);
     if let (Some(ra), Some(rb)) = (sa.reg.as_mut(), rb) {
         // the state's write wins or ties: only the loser's death and nothing else
-        let mut f = Fragment::Register(std::mem::take(ra));
-        f.join_into(Fragment::Register(rb), None, ch);
-        if let Fragment::Register(r) = f {
-            *ra = r;
-        }
+        *ra = join_regs(std::mem::take(ra), rb, ch);
     }
     for (k, fb) in mb {
         match sa.members.get_mut(&k) {
@@ -834,14 +845,7 @@ fn join_slots_whole(a: Fragment, b: Fragment, e_parent: Option<&Stamp>, ch: &mut
     let (rb, mb) = parts(b);
     let reg = match (ra, rb) {
         (None, x) | (x, None) => x,
-        (Some(x), Some(y)) => {
-            let mut f = Fragment::Register(x);
-            f.join_into(Fragment::Register(y), None, ch);
-            match f {
-                Fragment::Register(r) => Some(r),
-                _ => None,
-            }
-        }
+        (Some(x), Some(y)) => Some(join_regs(x, y, ch)),
     };
     for (k, fb) in mb {
         match ma.get_mut(&k) {
@@ -868,8 +872,7 @@ pub(crate) fn prune_slots(reg: Option<Register>, members: BTreeMap<Encoding, Fra
             }
         }
     }
-    let resets = reg.iter().map(|r| r.reset.clone()).chain(members.values().map(|f| f.reset()));
-    let e = resets.fold(e_parent.cloned(), max_opt);
+    let e = slots_reset(reg.as_ref(), &members, e_parent);
     let fix = |mut f: Fragment, ch: &mut Changes| {
         f.prune(e.as_ref(), ch);
         f
