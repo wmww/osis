@@ -8,6 +8,7 @@
 
 use crate::common;
 use common::*;
+use osis_base::Classified;
 use osis_base::{Clock, ManualClock, Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::SeededRng;
@@ -16,6 +17,7 @@ use osis_node::{Config, Engine, Mutation};
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
 use osis_store::{Fault, Faults, MemoryBackend, MemoryRoot};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 struct Rng(u64);
@@ -656,6 +658,7 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool) -> ([usize; 4], us
     lp.sync_all().unwrap();
     let mut moves = 0;
     let (mut moved, mut double_imports) = (Vec::new(), 0);
+    let mut foreign: BTreeSet<osis_base::CommitId> = BTreeSet::new();
     for step in 0..60 {
         let i = rng.below(3) as usize;
         let t = things[rng.below(things.len() as u64) as usize];
@@ -710,12 +713,22 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool) -> ([usize; 4], us
             }
             15 if max_moves > 1 && moves > 0 => {
                 let c = *things.last().unwrap();
-                if doubles && rng.below(3) == 0 {
-                    // a hostile second import: each origin listed twice on a copy
-                    let (o, c) = moved[rng.below(moved.len() as u64) as usize];
-                    if lp.peers[0].engine.reimport(&o, &c).is_ok_and(|v| !v.is_empty()) {
-                        double_imports += 1;
+                match doubles.then(|| rng.below(3)) {
+                    Some(0) => {
+                        // the creator's hostile second import: each origin listed twice on a copy
+                        let (o, c) = moved[rng.below(moved.len() as u64) as usize];
+                        if lp.peers[0].engine.reimport(&o, &c).is_ok_and(|v| !v.is_empty()) {
+                            double_imports += 1;
+                        }
                     }
+                    Some(1) => {
+                        // another node's import into a copy: bad input everywhere else
+                        let (o, c) = moved[rng.below(moved.len() as u64) as usize];
+                        if let Ok(v) = lp.peers[i.max(1)].engine.reimport(&o, &c) {
+                            foreign.extend(v);
+                        }
+                    }
+                    _ => {}
                 }
                 let a = ["/t/keptset", "/t/gonemap", "/t/tags"][rng.below(3) as usize];
                 let _ = lp.peers[i].engine.snapshot(&c, &ak(a));
@@ -748,7 +761,22 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool) -> ([usize; 4], us
         }
         lp.peers[i].clock.advance(1 + rng.below(3));
     }
-    lp.sync_all().unwrap();
+    // as `sync_all`, refusing only the foreign imports
+    for _ in 0..3 {
+        for (a, b) in [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)] {
+            for p in lp.packages(a).unwrap() {
+                match lp.deliver(b, &p) {
+                    Err(e) if foreign.contains(&p.id) && e.class() == osis_base::ErrorClass::BadInput => {}
+                    r => {
+                        r.unwrap();
+                    }
+                }
+            }
+        }
+    }
+    if !foreign.is_empty() {
+        eprintln!("seed {seed}: {} foreign imports", foreign.len());
+    }
     for i in 0..3 {
         let r = reached(&lp.peers[i].engine);
         for k in 0..4 {
@@ -836,10 +864,10 @@ fn carried_imports_judged_without_the_import_spec_perm_5_2() {
     assert_eq!(states(&mut lp.peers[3].engine, &[t, copy, p]), full, "then alike with them");
 }
 
-// spec/requirements.md, Decentralization; spec/permissions.md §7: a hostile writer imports t
-// into its copy a second time, so two held imports list each origin; the least by (`ts`, ID)
-// names the author its carried writes are judged as, whichever arrived last, and each owns the
-// origin's writes on its aspects. Two nodes taking the imports in either order, and a
+// spec/requirements.md, Decentralization; spec/permissions.md §7: the copy's hostile creator
+// imports t into it a second time, so two held imports list each origin; the least by (`ts`,
+// ID) names the author its carried writes are judged as, whichever arrived last, and each owns
+// the origin's writes on its aspects. Two nodes taking the imports in either order, and a
 // snapshot of the copy, agree (claims, carried writes, states) and equal their rebuilds, also
 // where the snapshot comes before either import (its `Authors` naming the least is not refused
 // where the other import is held: issues/snapshot-authors-refusal-order.md).
@@ -855,15 +883,13 @@ fn double_import_alike_in_both_orders_spec_perm_7() {
     add_tag(&mut lp, 0, t, "b");
     lp.sync_all().unwrap();
     let (copy, first) = lp.peers[0].engine.move_thing(&t, a).unwrap();
-    set_edge(&mut lp.peers[0].engine, copy, x, Some(edge(Role::Write)), None);
-    lp.sync(0, 1).unwrap();
-    // peer 1 imports t again: each origin listed twice on the copy
-    let second = lp.peers[1].engine.reimport(&t, &copy).unwrap();
+    lp.peers[0].clock.advance(1_000);
+    // peer 0 imports t again: each origin listed twice on the copy
+    let second = lp.peers[0].engine.reimport(&t, &copy).unwrap();
     assert!(!first.is_empty() && !second.is_empty());
-    let pk = lp.packages(1).unwrap();
-    let dup = pk.iter().filter(|p| second.contains(&p.id)).cloned().collect::<Vec<_>>();
     let pk0 = lp.packages(0).unwrap();
-    let (imp, rest): (Vec<_>, Vec<_>) = pk0.iter().cloned().partition(|p| first.contains(&p.id));
+    let dup = pk0.iter().filter(|p| second.contains(&p.id)).cloned().collect::<Vec<_>>();
+    let (imp, rest): (Vec<_>, Vec<_>) = pk0.iter().filter(|&p| !second.contains(&p.id)).cloned().partition(|p| first.contains(&p.id));
     for p in &rest {
         for i in 2..6 {
             lp.deliver(i, p).unwrap();
@@ -876,9 +902,6 @@ fn double_import_alike_in_both_orders_spec_perm_7() {
         }
     }
     // peer 0 holds both and snapshots the copy's tags
-    for p in &dup {
-        lp.deliver(0, p).unwrap();
-    }
     let snap = lp.peers[0].engine.snapshot(&copy, &ak("/t/tags")).unwrap().unwrap();
     let pk0 = lp.packages(0).unwrap();
     let sp: Vec<_> = pk0.iter().filter(|p| p.id == snap).cloned().collect();
@@ -904,10 +927,10 @@ fn double_import_alike_in_both_orders_spec_perm_7() {
 }
 
 // spec/requirements.md, Out of scope ("malicious readers can only waste storage");
-// spec/permissions.md §5.2, §7: an import into a copy by a node without write on it is invalid
-// and changes nothing, whatever origins it lists. Fails: issues/invalid-import-strips-origin.md.
+// spec/permissions.md §7: an import into a copy by a node other than its creator (here a writer
+// demoted to reader, unaware) is bad input and changes nothing, whatever origins it lists. It
+// stripped the copy's imported writes (issues/invalid-import-strips-origin.md).
 #[test]
-#[ignore]
 fn invalid_reimport_changes_nothing_spec_perm_7() {
     let mut lp = LocalPeer::new(3, 0xd0b2, T0).unwrap();
     lp.sync_all().unwrap();
@@ -929,7 +952,125 @@ fn invalid_reimport_changes_nothing_spec_perm_7() {
     assert!(!second.is_empty());
     let pk = lp.packages(1).unwrap();
     for p in pk.iter().filter(|p| second.contains(&p.id)) {
-        lp.deliver(2, p).unwrap();
+        assert_eq!(lp.deliver(2, p).unwrap_err().class(), osis_base::ErrorClass::BadInput, "not the copy's creator");
     }
     assert_eq!(states(&mut lp.peers[2].engine, &[t, copy]), before, "an invalid import changes nothing");
+}
+
+// spec/permissions.md §7, spec/crdt.md §8 `Authors`: a node holding a snapshot of a copy but
+// not the move's imports judges the imported writes it carries by the snapshot's entry. An
+// import by another node (a reader of the copy) is refused, so it does not become the claim:
+// it re-attributed those writes to itself, judged invalid there, and they vanished.
+#[test]
+fn foreign_import_does_not_claim_carried_writes_spec_perm_7() {
+    let mut lp = LocalPeer::new(3, 0xd0b3, T0).unwrap();
+    lp.sync_all().unwrap();
+    let (a, x) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+    let t = new_thing(&mut lp, 0);
+    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    add_tag(&mut lp, 0, t, "a");
+    lp.sync_all().unwrap();
+    let (copy, imports) = lp.peers[0].engine.move_thing(&t, a).unwrap();
+    set_edge(&mut lp.peers[0].engine, copy, x, Some(edge(Role::Read)), None);
+    lp.peers[0].engine.snapshot(&copy, &ak("/t/tags")).unwrap().unwrap();
+    // peer 2: everything but the imports; peer 1 (a reader of the copy): everything
+    let pk0 = lp.packages(0).unwrap();
+    for p in &pk0 {
+        lp.deliver(1, p).unwrap();
+        if !imports.contains(&p.id) {
+            lp.deliver(2, p).unwrap();
+        }
+    }
+    let tags = ak("/t/tags");
+    let shown = lp.peers[2].engine.get(&copy, &tags).unwrap();
+    assert!(format!("{shown:?}").contains("\"a\""), "the snapshot's carried writes, judged by its entry: {shown:?}");
+    let line = |e: &Engine, k: &str| e.index_digest().lines().find(|l| l.starts_with(k)).unwrap_or_default().to_string();
+    let (authors, carried) = (line(&lp.peers[2].engine, "authors "), line(&lp.peers[2].engine, "carried "));
+    let before = states(&mut lp.peers[2].engine, &[t, copy]);
+    let foreign = lp.peers[1].engine.reimport(&t, &copy).unwrap();
+    assert!(!foreign.is_empty());
+    let pk1 = lp.packages(1).unwrap();
+    for p in pk1.iter().filter(|p| foreign.contains(&p.id)) {
+        assert_eq!(lp.deliver(2, p).unwrap_err().class(), osis_base::ErrorClass::BadInput, "not the copy's creator");
+    }
+    assert_eq!((line(&lp.peers[2].engine, "authors "), line(&lp.peers[2].engine, "carried ")), (authors, carried), "the claim stays the snapshot's");
+    assert_eq!(states(&mut lp.peers[2].engine, &[t, copy]), before);
+    open_equals_rebuild_any(&mut lp.peers[2].engine, &[t, copy], "after the foreign import");
+}
+
+// spec/crdt.md §8 `Authors`, spec/permissions.md §5.2, §7: the claim for an origin's writes a
+// snapshot of a copy carries, where no held import has that aspect, is the least held import;
+// a lesser valid import arriving after a greater invalid one changes it, re-judging the carried
+// writes (they come back). The copy's creator moved t (`x` on the list, `r` on the register),
+// snapshotted the list, saw `x` deleted on t, then re-imported twice (the list no longer
+// shown: those imports lack it), the second time after its admin edge on the copy's owner
+// was removed. Nodes taking the re-imports in either order agree with each other and with
+// their rebuilds.
+#[test]
+fn lesser_import_after_snapshot_changes_the_claim_spec_perm_7() {
+    let mut lp = LocalPeer::new(5, 0xd0b4, T0).unwrap();
+    lp.sync_all().unwrap();
+    let a = lp.peers[0].engine.tid();
+    // P owned by peer 2, peer 0 admin on it; t is peer 0's
+    let p = new_thing(&mut lp, 2);
+    set_edge(&mut lp.peers[2].engine, p, a, Some(edge(Role::Admin)), None);
+    let t = new_thing(&mut lp, 0);
+    lp.sync_all().unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &LIST, &Value::List(vec![s("x")])).unwrap();
+    m.set(t, &REG, &s("r")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let (copy, _) = lp.peers[0].engine.move_thing(&t, p).unwrap();
+    let list = ak("/t/list");
+    lp.peers[0].engine.snapshot(&copy, &list).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &LIST, PathOp { path: Vec::new(), op: Op::Delete { at: 0, len: 1 } }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.peers[0].clock.advance(1_000);
+    let lesser = lp.peers[0].engine.reimport(&t, &copy).unwrap();
+    // peer 2 removes peer 0 from P with what it received; peer 0, unaware, imports once more
+    lp.sync(0, 2).unwrap();
+    let scope = osis_perm::DemotionScope { membership: [(a, [p].into())].into(), content: [(a, [p, copy].into())].into() };
+    let now = lp.peers[2].engine.now();
+    let f = lp.peers[2].engine.frontier(&scope, now).unwrap();
+    set_edge(&mut lp.peers[2].engine, p, a, None, Some(f.to_value()));
+    lp.peers[0].clock.advance(1_000);
+    let greater = lp.peers[0].engine.reimport(&t, &copy).unwrap();
+    assert!(!lesser.is_empty() && !greater.is_empty());
+    let pk0 = lp.packages(0).unwrap();
+    let (l, g): (Vec<_>, Vec<_>) = pk0.iter().filter(|x| lesser.contains(&x.id) || greater.contains(&x.id)).cloned().partition(|x| lesser.contains(&x.id));
+    // peers 3 and 4 hold everything but the imports first: the first move's never reach them,
+    // so the list's writes the snapshot carries are judged by the claim
+    let import = |e: &Engine, id| e.header(id).is_some_and(|h| h.kind == osis_commit::Kind::Import);
+    let pk2 = lp.packages(2).unwrap();
+    let rest: Vec<_> = pk0.iter().chain(&pk2).filter(|x| !import(&lp.peers[0].engine, &x.id)).cloned().collect();
+    for i in [3, 4] {
+        for x in &rest {
+            lp.deliver(i, x).unwrap();
+        }
+    }
+    let line = |e: &Engine, k: &str| e.index_digest().lines().find(|l| l.starts_with(k)).unwrap_or_default().to_string();
+    let shows = |e: &mut Engine| format!("{:?}", e.get(&copy, &list).unwrap()).contains("\"x\"");
+    // peer 3: the greater (invalid) import, then the lesser; peer 4 the other way round
+    for x in &g {
+        lp.deliver(3, x).unwrap();
+    }
+    assert!(line(&lp.peers[3].engine, "carried ").contains("Commit"), "the list's writes are carried: {}", line(&lp.peers[3].engine, "carried "));
+    assert!(!shows(&mut lp.peers[3].engine), "judged as the invalid import's");
+    open_equals_rebuild_any(&mut lp.peers[3].engine, &[t, copy, p], "greater import only");
+    for x in &l {
+        lp.deliver(3, x).unwrap();
+    }
+    assert!(shows(&mut lp.peers[3].engine), "judged as the lesser, valid import's");
+    for x in l.iter().chain(&g) {
+        lp.deliver(4, x).unwrap();
+    }
+    for k in ["authors ", "imports ", "carried "] {
+        assert_eq!(line(&lp.peers[3].engine, k), line(&lp.peers[4].engine, k), "{k}");
+    }
+    assert_eq!(states(&mut lp.peers[3].engine, &[t, copy, p]), states(&mut lp.peers[4].engine, &[t, copy, p]));
+    for i in [3, 4] {
+        open_equals_rebuild_any(&mut lp.peers[i].engine, &[t, copy, p], &format!("peer {i}"));
+    }
 }

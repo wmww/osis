@@ -402,7 +402,13 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
 impl Engine {
     /// A new thing owned by `owner`, created by `m` (spec/data-model.md §1).
     pub fn new_thing(&mut self, m: &mut Mutation, owner: Tid) -> Tid {
-        m.create(crate::identity::thing_record(owner, &mut *self.rng))
+        m.create(crate::identity::thing_record(owner, None, &mut *self.rng))
+    }
+
+    /// A new copy owned by `owner` that this node creates and imports into (spec/permissions.md §7).
+    pub(crate) fn new_copy(&mut self, m: &mut Mutation, owner: Tid) -> Tid {
+        let me = self.core.id.tid();
+        m.create(crate::identity::thing_record(owner, Some(me), &mut *self.rng))
     }
 
     /// Commits `m`; `None` when it changes nothing.

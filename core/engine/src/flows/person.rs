@@ -134,7 +134,7 @@ fn create_person_in(tx: &mut Tx<'_>, r: Tid, seed: &Secret32, servers: &[Address
     let rkeys = KeyActorKeys::from_seed(seed);
     let mut m = Mutation::new();
     m.create(key_actor_record(&rkeys, seed));
-    let p = m.create(thing_record(r, &mut *tx.rng));
+    let p = m.create(thing_record(r, None, &mut *tx.rng));
     m.sign_as(r);
     key_actor_keys(&mut m, r, &rkeys)?;
     let me = tx.core.id.tid();

@@ -192,7 +192,8 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
     }
     let node = tx.core.id.tid();
     let ts = tx.core.hlc.next();
-    for d in &deltas {
+    // a hostile test writer (`Engine::reimport`) imports without rights too
+    for d in deltas.iter().filter(|_| !tx.core.skip_writer_rules) {
         crate::engine::write::check_authority(tx.core, tx.core.id.tid(), &Default::default(), &d.tid, d.ak.as_str(), ts)?;
     }
     let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Node, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: vec![Origin { commit: *c, author: h.author, actor: h.actor, ts: h.ts }], signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
@@ -236,7 +237,8 @@ impl Engine {
             return Err(Error::Misuse("a held thing already continues it"));
         }
         let mut m = Mutation::new();
-        let copy = self.new_thing(&mut m, owner);
+        // the copy names this node its creator: only its imports apply to it
+        let copy = self.new_copy(&mut m, owner);
         m.set(copy, &ct::WAS, &t)?;
         // one local transaction: the copy, `/was` and every import (spec/permissions.md §7)
         let out = self.run(|tx| {
@@ -246,11 +248,15 @@ impl Engine {
         Ok((copy, out))
     }
 
-    /// Imports `t`'s held history into the existing copy `copy` again, as a hostile writer
-    /// breaking spec/permissions.md §7 ("a move is one import by one node") would. Tests only.
+    /// Imports `t`'s held history into the existing copy `copy` again, as a hostile node
+    /// breaking spec/permissions.md §7 ("a move is one import by one node") would, whether or
+    /// not it created the copy or may write it (the writer-side rules are off for it). Tests only.
     #[doc(hidden)]
     pub fn reimport(&mut self, t: &Tid, copy: &Tid) -> Result<Vec<CommitId>> {
-        self.run(|tx| import_all(tx, t, copy))
+        let was = std::mem::replace(&mut self.core.skip_writer_rules, true);
+        let out = self.run(|tx| import_all(tx, t, copy));
+        self.core.skip_writer_rules = was;
+        out
     }
 }
 

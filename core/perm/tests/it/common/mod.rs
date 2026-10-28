@@ -45,7 +45,7 @@ pub fn key_actors(n: usize, salt: u8) -> Vec<(Tid, CreationRecord)> {
 pub fn thing_record(owner: Tid, i: u64) -> (Tid, CreationRecord) {
     let mut nonce = [7u8; 32];
     nonce[..8].copy_from_slice(&i.to_be_bytes());
-    let rec = CreationRecord::Thing { owner, nonce };
+    let rec = CreationRecord::Thing { owner, nonce, creator: None };
     (rec.tid(), rec)
 }
 

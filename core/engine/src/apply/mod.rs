@@ -185,6 +185,17 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             return Ok(Exam::Pending(Reason::MissingChain(h.author)));
         }
     }
+    // an import applies only to a copy its author created (spec/permissions.md §7; tests let a
+    // local writer break this, to test receivers)
+    if h.kind == osis_commit::Kind::Import && !(tx.core.skip_writer_rules && h.author == tx.core.id.tid()) {
+        for a in &h.aspects {
+            if let Some(r) = record(&a.tid)
+                && !matches!(r, CreationRecord::Thing { creator: Some(c), .. } if c == h.author)
+            {
+                return Err(Error::BadInput("an import into a thing its author did not create"));
+            }
+        }
+    }
     // a part that does not hash to its header entry is dropped alone (spec/commits.md §4)
     let bad: Vec<(usize, usize)> = blob
         .parts
