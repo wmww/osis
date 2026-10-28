@@ -209,3 +209,34 @@ impl WriteId {
 
 /// The `/members` AK.
 pub const MEMBERS: &str = "/members";
+
+/// Sets `k` to `v` in `m` (`None`: removes it); the value before.
+pub(crate) fn put<K: Ord, V>(m: &mut std::collections::BTreeMap<K, V>, k: K, v: Option<V>) -> Option<V> {
+    match v {
+        Some(v) => m.insert(k, v),
+        None => m.remove(&k),
+    }
+}
+
+/// Pops the last element of `m[k]`, removing the entry once empty.
+pub(crate) fn pop<K: Ord, V>(m: &mut std::collections::BTreeMap<K, Vec<V>>, k: &K) {
+    if let Some(v) = m.get_mut(k) {
+        v.pop();
+        if v.is_empty() {
+            m.remove(k);
+        }
+    }
+}
+
+/// The earlier of two optional expiries.
+pub(crate) fn earliest(a: Option<osis_base::WallMs>, b: Option<osis_base::WallMs>) -> Option<osis_base::WallMs> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Puts `k` in `s` or takes it out (`on`); whether it was in.
+pub(crate) fn mark<K: Ord>(s: &mut std::collections::BTreeSet<K>, k: K, on: bool) -> bool {
+    if on { !s.insert(k) } else { s.remove(&k) }
+}
