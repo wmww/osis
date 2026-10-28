@@ -354,7 +354,7 @@ pub(crate) fn linked_frontiers_capped(tx: &mut Tx<'_>, h: &Header, parts: &EdgeP
                 out.frontiers.insert(hash, f);
             }
             None => {
-                let later = tx.core.timelines.get(&tid).and_then(|tl| tl.epoch_start(&tid)).and_then(|c| tx.core.commits.get(&c)).is_some_and(|m| m.header.ts > h.ts);
+                let later = tx.core.timelines.get(&tid).and_then(|tl| tl.epoch_start(&tid)).and_then(|c| tx.core.commits.get(&c)).is_some_and(|m| m.view.ts > h.ts);
                 if later {
                     out.superseded.insert(tid);
                 } else {
