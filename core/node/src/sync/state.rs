@@ -385,7 +385,8 @@ impl State {
                 }
                 b"r" => s.reach_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
                 b"o" => {
-                    let (k, o) = decode_out(rest, &v)?;
+                    // not rebuildable: a record that does not decode fails the load, named
+                    let (k, o) = decode_out(rest, &v).map_err(|_| Error::Corrupt("sync outbox record"))?;
                     s.outbox.insert(k, o);
                 }
                 b"q" => {
@@ -1061,6 +1062,21 @@ mod tests {
         .unwrap();
         let s = State::load(e).unwrap();
         assert!(s.sent_inbox.is_empty());
+    }
+
+    // spec: none (local store format): a queued deposit record that does not decode fails the
+    // load with a named error, never a panic or a silent drop.
+    #[test]
+    fn corrupt_outbox_record_fails_load() {
+        let mut lp = crate::local_peer::LocalPeer::new(1, 962, osis_base::WallMs(1_700_000_000_000)).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let k = key(OUTBOX, &[&[7u8; 32], &[8u8; 32]]);
+        e.run(|tx| {
+            tx.txn.put_local(&k, b"short", Shred::No)?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(matches!(State::load(e), Err(Error::Corrupt("sync outbox record"))));
     }
 
     // spec: none (engine/sync seam): node-sync's records stay installed across a reload (a
