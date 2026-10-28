@@ -1465,7 +1465,9 @@ impl Lin {
         moves.sort();
         for (stamp, dot, anchor) in moves {
             *work += each;
-            if !self.place_moved(elems, &dot, stamp, anchor, fresh.as_ref(), work) {
+            // onto a new element: its run's next element (a newer stamp) may be a sibling
+            let fresh = fresh.as_ref().filter(|_| !matches!(&anchor, Anchor::Dot(x) if new.contains_key(x)));
+            if !self.place_moved(elems, &dot, stamp, anchor, fresh, work) {
                 return false;
             }
         }

@@ -1980,6 +1980,32 @@ fn newest_stamp_skips_children_records_spec_6_1() {
     assert!(fewer >= 10 && with < without, "{with} pages with the bound, {without} without, fewer in {fewer} joins");
 }
 
+/// §6.1 (siblings by edge stamp, newest first): a commit inserting x, moving an element right
+/// after x, then inserting y right after x (y newest, x's run continues with it) places y
+/// before the moved element; joined into a placed copy (whole and held in part) it follows
+/// as a whole pass does, though the move is newer than everything before the commit.
+#[test]
+fn newest_move_onto_new_element_spec_6_1() {
+    let view = text_view();
+    let mut w = Writer::new(ts(1 << 16), node(1), 1);
+    let text: String = (0..300).map(|i| (b'a' + (i % 26) as u8) as char).collect();
+    let st = create(&mut w, &view, &s(&text)).unwrap();
+    let mut b = Batch::new(&st, Writer::new(ts(1000 << 16), node(9), 1));
+    for op in [Op::Insert { at: 10, items: vec![s("x")] }, Op::Move { at: 50, len: 1, to: 11 }, Op::Insert { at: 11, items: vec![s("y")] }] {
+        b.apply(&PathOp { path: Vec::new(), op }, &view).unwrap();
+    }
+    let (d, _) = b.finish().unwrap();
+    let (Fragment::Seq(sq), Fragment::Seq(ds)) = (&st, &d) else { panic!() };
+    assert!(crate::tests_seq::partial_follow(sq, ds, 8).is_some());
+    let mut j = st.clone();
+    let _ = j.read();
+    j.join(d);
+    assert!(matches!(&j, Fragment::Seq(x) if x.lin_check() == Some(true)));
+    let Some(Value::Str(got)) = j.read() else { panic!() };
+    // index 50 after the insert: text's 49th char
+    assert_eq!(got[9..13], format!("jxy{}", &text[49..50]));
+}
+
 /// §5.7 Ops, §8 (`seq_place`, notes/api.md `edit`): the list form of
 /// `edit_on_partial_placement_loads_its_window_spec_5_7`: on a list of many blocks held in part,
 /// an edit against the current read loads only the blocks and records around its change
