@@ -761,7 +761,7 @@ impl SyncEngine {
         }
         // a queued deposit's answer
         let now = self.raw_now();
-        if let Some(o) = self.outbox.get_mut(&(server, b)).filter(|o| o.sent.is_some()) {
+        if let Some(o) = self.outbox.get_mut(&(server, l, b)).filter(|o| o.sent.is_some()) {
             let retry = matches!(code, Code::UNKNOWN_LABEL | Code::RATE_LIMITED | Code::BUDGET_FULL | Code::NOT_HEAD);
             o.tries += 1;
             o.sent = None;
@@ -774,8 +774,8 @@ impl SyncEngine {
                 if retry {
                     self.diag(format!("deposit under {l:?} dropped after {} refusals (code {})", tries - 1, code.0));
                 }
-                self.outbox.remove(&(server, b));
-                self.state.remove_out(&server, &b);
+                self.outbox.remove(&(server, l, b));
+                self.state.remove_out(&server, &l, &b);
             }
         }
         match code {

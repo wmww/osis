@@ -302,7 +302,7 @@ pub struct SyncEngine {
     diagnostics: Vec<String>,
     /// Where each queued deposit (`State::outbox`: inbox blobs, a non-writer's own writes)
     /// stands: waiting for its server, or sent and not answered yet.
-    pub(crate) outbox: BTreeMap<(ServerKey, osis_base::BlobId), local::Outgoing>,
+    pub(crate) outbox: BTreeMap<(ServerKey, LabelId, osis_base::BlobId), local::Outgoing>,
     /// Deposits for a label this node syncs with nobody: logged here, as a peer's deposit would
     /// be (`send_outbox`).
     pub(crate) local_inbox: Vec<(LabelId, Vec<u8>, [u8; osis_crypto::WRAP_LEN])>,
@@ -1477,18 +1477,51 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
-    // spec/sync.md §6: a fetch in flight on a connection its session closed (a request timeout)
-    // is asked again on the next connection; the closed one is never answered.
+    // spec/sync.md §6: a fetch or deposit in flight on a connection that ended (its session
+    // closed it, say on a request timeout, or the transport went down) is asked again on the
+    // next connection; the ended one is never answered.
     #[test]
     fn closed_session_forgets_its_fetches_spec_sync_6() {
-        let lp = crate::local_peer::LocalPeer::new(1, 964, osis_base::WallMs(1_700_000_000_000)).unwrap();
+        for down in [false, true] {
+            let lp = crate::local_peer::LocalPeer::new(1, 964, osis_base::WallMs(1_700_000_000_000)).unwrap();
+            let p = lp.peers.into_iter().next().unwrap();
+            let server = Address { url: "quic://server:1".into(), key: [7; 32] };
+            let cfg = SyncConfig { servers: vec![server.clone()], ..SyncConfig::default() };
+            let mut s = SyncEngine::new(p.engine, p.clock, Box::new(osis_crypto::SeededRng::from_u64(965)), cfg).unwrap();
+            let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
+            let b = osis_base::BlobId([1; 32]);
+            s.fetching.insert(b, conn);
+            let d = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
+            s.queue_deposit(LabelId([1; 16]), std::slice::from_ref(&server), &d, vec![9; 40], [3; osis_crypto::WRAP_LEN]);
+            for o in s.outbox.values_mut() {
+                o.sent = Some(conn);
+            }
+            if down {
+                s.handle(Event::Down { conn });
+            } else {
+                s.outputs(conn, vec![ClientOutput::Close], &mut Vec::new()).unwrap();
+            }
+            assert!(!s.fetching.contains_key(&b));
+            assert!(s.outbox.values().all(|o| o.sent.is_none()), "the deposit goes again");
+            assert_eq!(s.deliveries_pending(), 1);
+        }
+    }
+
+    // spec/sync.md §5: a deposit is kept until each of its servers answers it, also across a
+    // restart; one blob queued under two labels at one server is two deposits.
+    #[test]
+    fn one_blob_queued_under_two_labels_spec_sync_5() {
+        let lp = crate::local_peer::LocalPeer::new(1, 966, osis_base::WallMs(1_700_000_000_000)).unwrap();
         let p = lp.peers.into_iter().next().unwrap();
-        let cfg = SyncConfig { servers: vec![Address { url: "quic://server:1".into(), key: [7; 32] }], ..SyncConfig::default() };
-        let mut s = SyncEngine::new(p.engine, p.clock, Box::new(osis_crypto::SeededRng::from_u64(965)), cfg).unwrap();
-        let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
-        let b = osis_base::BlobId([1; 32]);
-        s.fetching.insert(b, conn);
-        s.outputs(conn, vec![ClientOutput::Close], &mut Vec::new()).unwrap();
-        assert!(!s.fetching.contains_key(&b));
+        let server = Address { url: "quic://server:1".into(), key: [7; 32] };
+        let mut s = SyncEngine::new(p.engine, p.clock, Box::new(osis_crypto::SeededRng::from_u64(967)), SyncConfig::default()).unwrap();
+        let d = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
+        for l in [LabelId([1; 16]), LabelId([2; 16])] {
+            s.queue_deposit(l, std::slice::from_ref(&server), &d, vec![9; 40], [3; osis_crypto::WRAP_LEN]);
+        }
+        assert_eq!(s.deliveries_pending(), 2);
+        s.state.flush(&mut s.engine).unwrap();
+        let back = State::load(&mut s.engine).unwrap();
+        assert_eq!(back.outbox.len(), 2, "both survive a restart");
     }
 }

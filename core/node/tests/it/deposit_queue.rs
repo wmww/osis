@@ -95,6 +95,35 @@ fn queued_deposit_survives_forgetting_spec_sync_5() {
     assert_eq!(copies(&mut net, 0, &l, &c), 1, "the deposit reached the label");
 }
 
+// spec/sync.md §5: a queued deposit survives a crash: sent and not answered (or never sent)
+// when the node restarts, it goes again and lands once.
+#[test]
+fn queued_deposit_survives_a_restart_spec_sync_5() {
+    for sent in [false, true] {
+        let mut net = Net::new();
+        let sv = net.add_server();
+        for i in 0..3 {
+            net.node(40 + i, &[sv]);
+        }
+        let (_, l, c, done) = invite(&mut net, sv);
+        let before = log(&net, sv, &l);
+        let acts = net.sync(1).carry_out(done).unwrap();
+        assert!(net.sync(1).deliveries_pending() > 0);
+        if sent {
+            net.actions(1, acts);
+        }
+        net.restart(1, 88);
+        assert!(net.sync(1).deliveries_pending() > 0, "sent {sent}: the deposit reloaded");
+        for _ in 0..3 {
+            net.run();
+            net.advance(61_000);
+        }
+        assert_eq!(net.sync(1).deliveries_pending(), 0, "sent {sent}: answered");
+        assert_eq!(copies(&mut net, 0, &l, &c), 1, "sent {sent}: one entry of the grant under the label");
+        assert_eq!(log(&net, sv, &l).1, before.1, "sent {sent}: no second encryption deposited");
+    }
+}
+
 fn carry(net: &mut Net, n: usize, done: osis_node::flows::Done) {
     let acts = net.sync(n).carry_out(done).unwrap();
     net.actions(n, acts);

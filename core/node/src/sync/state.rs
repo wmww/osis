@@ -197,7 +197,7 @@ pub struct State {
     /// `TOMBSTONE_LIFETIME` (spec/sync.md §5), so a peer cannot replay a deleted body.
     pub tombs: BTreeMap<(LabelId, BlobId), u64>,
     /// Inbox blobs not yet answered by their server, by (server, blob).
-    pub outbox: BTreeMap<(ServerKey, BlobId), OutRec>,
+    pub outbox: BTreeMap<(ServerKey, LabelId, BlobId), OutRec>,
     /// Corrected wall ms of the running `handle` (tombstone times).
     pub now: u64,
     /// Things forgotten whose opened inbox blobs are not yet checked (`y/f`).
@@ -853,15 +853,15 @@ impl State {
     pub fn add_out(&mut self, o: OutRec) {
         let id = osis_label::blob_id(&o.blob);
         let v = Wr::new().raw(&o.label.0).bytes(o.server.url.as_bytes()).raw(&o.server.key).raw(&o.wrap).raw(&o.sig.0).bytes(&o.blob).take();
-        self.put(key(OUTBOX, &[&o.server.key, &id.0]), v);
-        self.outbox.insert((o.server.key, id), o);
+        self.put(key(OUTBOX, &[&o.server.key, &o.label.0, &id.0]), v);
+        self.outbox.insert((o.server.key, o.label, id), o);
         self.version += 1;
     }
 
-    pub fn remove_out(&mut self, s: &ServerKey, b: &BlobId) {
-        if self.outbox.remove(&(*s, *b)).is_some() {
+    pub fn remove_out(&mut self, s: &ServerKey, l: &LabelId, b: &BlobId) {
+        if self.outbox.remove(&(*s, *l, *b)).is_some() {
             self.version += 1;
-            self.del(key(OUTBOX, &[s, &b.0]));
+            self.del(key(OUTBOX, &[s, &l.0, &b.0]));
         }
     }
 
@@ -993,11 +993,14 @@ fn note_unsent_tx(tx: &mut Tx<'_>, member: Tid, commit: CommitId, things: Vec<Ti
     Ok(())
 }
 
-fn decode_out(k: &[u8], v: &[u8]) -> Result<((ServerKey, BlobId), OutRec)> {
+fn decode_out(k: &[u8], v: &[u8]) -> Result<((ServerKey, LabelId, BlobId), OutRec)> {
     let mut r = Rd::new(k);
-    let key = (r.arr()?, BlobId(r.arr()?));
+    let key = (r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?));
     let mut x = Rd::new(v);
     let label = LabelId(x.arr()?);
+    if !r.is_empty() || label != key.1 {
+        return Err(Error::Corrupt("outbox"));
+    }
     let url = String::from_utf8(x.bytes()?.to_vec()).map_err(|_| Error::Corrupt("outbox"))?;
     let server = Address { url, key: x.arr()? };
     let wrap = x.arr()?;
