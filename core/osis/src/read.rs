@@ -91,23 +91,20 @@ impl Reader<'_> {
         self.e.resolve(&t, &t)
     }
 
-    /// The raw stored value: tids resolved, large values still links.
-    pub(crate) fn raw_value(&mut self, tid: Tid, ak: &Ak) -> Result<Option<Value>> {
-        self.raw(tid, ak)
+    /// The stored value of `tid` resolved (returned too), large values still links.
+    pub(crate) fn raw(&mut self, tid: Tid, ak: &Ak) -> Result<(Tid, Option<Value>)> {
+        let tid = self.resolve(tid);
+        Ok((tid, self.e.get(&tid, ak)?))
     }
 
-    fn raw(&mut self, tid: Tid, ak: &Ak) -> Result<Option<Value>> {
-        let tid = self.resolve(tid);
-        Ok(self.e.get(&tid, ak)?)
+    fn materialize(&mut self, tid: &Tid, v: Value) -> Result<Value> {
+        materialize(self.e, tid, v, self.limit)
     }
 
     /// The whole value of an aspect, untyped, materialized up to the bound.
     pub fn value(&mut self, tid: Tid, ak: &Ak) -> Result<Option<Value>> {
-        let tid = self.resolve(tid);
-        match self.e.get(&tid, ak)? {
-            Some(v) => Ok(Some(materialize(self.e, &tid, v, self.limit)?)),
-            None => Ok(None),
-        }
+        let (tid, v) = self.raw(tid, ak)?;
+        v.map(|v| self.materialize(&tid, v)).transpose()
     }
 
     /// A typed read (spec/versioning.md §5): `None` when absent.
@@ -121,22 +118,21 @@ impl Reader<'_> {
     /// The value at `path` inside an aspect (typed projection through the key's schema when it
     /// has one); `None` when the path leads nowhere. Only that position is materialized.
     pub fn get_path<K: AspectKey>(&mut self, tid: Tid, key: &K, path: &Path) -> Result<Option<Value>> {
-        let Some(raw) = self.raw(tid, &ak_of(key)?)? else { return Ok(None) };
-        let tid = self.resolve(tid);
+        let (tid, Some(raw)) = self.raw(tid, &ak_of(key)?)? else { return Ok(None) };
         let (Some(s), Some(ty)) = (key.schema(), key.ty()) else {
             let Some(sub) = value_at(&raw, path) else { return Ok(None) };
-            return Ok(Some(materialize(self.e, &tid, sub.clone(), self.limit)?));
+            return Ok(Some(self.materialize(&tid, sub.clone())?));
         };
         let t = type_at(s, ty, path)?.0;
         if let Some(sub) = value_at(&raw, path) {
-            let sub = materialize(self.e, &tid, sub.clone(), self.limit)?;
+            let sub = self.materialize(&tid, sub.clone())?;
             return Ok(Some(typed_read(s, &sub, &t)?));
         }
         // an absent struct field reads as its default (spec/versioning.md §5): project the parent
         let Some((Step::Field(id), parent)) = path.0.split_last() else { return Ok(None) };
         let parent = Path(parent.to_vec());
         let Some(sub) = value_at(&raw, &parent) else { return Ok(None) };
-        let sub = materialize(self.e, &tid, sub.clone(), self.limit)?;
+        let sub = self.materialize(&tid, sub.clone())?;
         let projected = typed_read(s, &sub, &type_at(s, ty, &parent)?.0)?;
         Ok(value_at(&projected, &Path(vec![Step::Field(*id)])).cloned())
     }
@@ -397,7 +393,6 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
         }))
     }
 }
-
 
 /// A position inside an aspect's value.
 pub struct PathRef<'a, 'd, K> {
