@@ -17,7 +17,7 @@ fn tree_reader_bounded() {
     use osis_base::format::CHUNK_MIN;
     let d = sec(0xd0, &t(2));
     let mut m = MemoryBlobs::default();
-    let none = Prefix { salt: [0; 16], expiry: None, commitments: vec![] };
+    let none = Prefix { salt: [0; 16], blind: [0; 16], expiry: None, keys: vec![] };
     let chunk = vec![0u8; CHUNK_MIN];
     let (cid, _) = m.put(&none, &chunk).unwrap();
     let cl = Link { hash: link_hash(&d, &chunk), blob: cid, suite: 1, key: [0; 32] };
@@ -38,7 +38,7 @@ fn tree_reader_bounded() {
 fn tree_short_nonfinal_chunk_rejected() {
     let d = sec(0xd0, &t(2));
     let mut m = MemoryBlobs::default();
-    let none = Prefix { salt: [0; 16], expiry: None, commitments: vec![] };
+    let none = Prefix { salt: [0; 16], blind: [0; 16], expiry: None, keys: vec![] };
     let chunk = vec![7u8; 1024];
     let (cid, _) = m.put(&none, &chunk).unwrap();
     let cl = Link { hash: link_hash(&d, &chunk), blob: cid, suite: 1, key: [0; 32] };

@@ -39,8 +39,7 @@ pub struct Sealed {
 /// Frames a body as a fresh blob: random salt and key, prefix from its class (spec/sync.md §1).
 pub fn seal_body(b: &Body, rng: &mut dyn CryptoRngCore) -> Result<Sealed> {
     let salt = osis_label::Prefix::random_salt(rng);
-    let p = osis_commit::Prefix::from_keys(salt, &b.blind, b.expires, &b.keys)?;
-    let prefix = osis_label::Prefix::new(p.salt, p.expiry.map(WallMs), p.commitments)?;
+    let prefix = osis_label::Prefix::for_delete_keys(salt, &b.blind, b.expires.map(WallMs), &b.keys)?;
     let (key, blob) = osis_label::frame(&prefix, &b.plaintext, rng)?;
     Ok(Sealed { id: osis_label::blob_id(&blob), blob, key, salt })
 }
@@ -57,7 +56,6 @@ pub fn open_commit(blob: &[u8], key: &Secret32) -> Result<(Vec<u8>, CommitBlob)>
         return Ok((pt, c));
     }
     let (expiry, keys) = osis_commit::prefix_inputs(&c.header, &parts)?;
-    let keys = keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<Vec<_>, osis_commit::Error>>()?;
     if !parts.is_empty() && !prefix.agrees(expiry.map(WallMs), &c.header.blind, &keys) {
         return Err(Error::BadInput("blob prefix disagrees with its header"));
     }

@@ -4,7 +4,7 @@ use crate::header::{DeleteKey, Kind};
 use crate::retention::delete_levels;
 use crate::Error;
 use osis_base::Tid;
-use osis_crypto::{Secret32, VerifyingKey, commitment};
+use osis_crypto::{Secret32, VerifyingKey};
 use osis_schema::Retention;
 
 /// What a writer supplies (osis-keys and the node implement it).
@@ -36,26 +36,13 @@ pub fn delete_keys(s: &dyn Secrets, tid: &Tid, r: &Retention, kind: Kind) -> Res
         .collect()
 }
 
-/// Clear blob prefix inputs (spec/wire.md §5); osis-label lays them out.
+/// Clear blob prefix inputs (spec/wire.md §5): osis-label commits to `keys`, each blinded by
+/// `salt` and the header's `blind` (spec/crypto.md §7), and lays the prefix out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Prefix {
     pub salt: [u8; 16],
+    pub blind: [u8; 16],
     /// Expiry `T`, wall ms.
     pub expiry: Option<u64>,
-    /// Commitments, levels strictly ascending.
-    pub commitments: Vec<[u8; 33]>,
-}
-
-impl Prefix {
-    /// Prefix of a blob serving deltas whose delete keys are `keys`, each blinded by `salt` and
-    /// the header's `blind`.
-    pub fn from_keys(salt: [u8; 16], blind: &[u8; 16], expiry: Option<u64>, keys: &[DeleteKey]) -> Result<Prefix, Error> {
-        let mut commitments = keys.iter().map(|k| Ok(commitment(k.level, &k.verifying_key()?, &salt, blind)?)).collect::<Result<Vec<_>, Error>>()?;
-        commitments.sort_unstable();
-        commitments.dedup();
-        if commitments.windows(2).any(|w| matches!(w, [a, b] if a[0] == b[0])) {
-            return Err(Error::Invalid("two delete keys at one level in one blob"));
-        }
-        Ok(Prefix { salt, expiry, commitments })
-    }
+    pub keys: Vec<DeleteKey>,
 }

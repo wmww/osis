@@ -44,7 +44,7 @@ pub struct ListBlobs<'t, 'a, 'r> {
 
 impl osis_commit::BlobSink for ListBlobs<'_, '_, '_> {
     fn put(&mut self, prefix: &osis_commit::Prefix, plaintext: &[u8]) -> Result<(BlobId, [u8; 32]), osis_commit::Error> {
-        let p = osis_label::Prefix::new(prefix.salt, prefix.expiry.map(WallMs), prefix.commitments.clone()).map_err(|_| osis_commit::Error::Storage("prefix"))?;
+        let p = osis_label::Prefix::for_delete_keys(prefix.salt, &prefix.blind, prefix.expiry.map(WallMs), &prefix.keys).map_err(|_| osis_commit::Error::Storage("prefix"))?;
         let (key, blob) = osis_label::frame(&p, plaintext, self.rng).map_err(|_| osis_commit::Error::Storage("frame"))?;
         let id = osis_label::blob_id(&blob);
         osis_label::BlobSink::put(&mut self.blobs, id, blob).map_err(|_| osis_commit::Error::Storage("blob"))?;
