@@ -1,7 +1,7 @@
 //! osis-cli: the command-line tool `osis` over the `osis` API, for scripts, debugging and agents.
 //! One invocation opens the store, acts, closes. Text forms that read back what they print,
 //! `--json` for machines, exit codes by error category. Design: notes/cli.md.
-//! Layer 9 (notes/architecture.md). Plan: notes/cli.md.
+//! Layer 9 (notes/architecture.md).
 #![forbid(unsafe_code)]
 // The binary's crate: panics on programmer errors are allowed (notes/architecture.md §3).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
@@ -319,17 +319,11 @@ impl Ctx<'_> {
 
     /// The `--timeout` bound (default 30 s; `0`: none).
     pub fn timeout(&self) -> anyhow::Result<Option<Duration>> {
-        self.timeout_or(Some(Duration::from_secs(30)))
+        timeout_of(&self.g, Some(DEFAULT_WAIT))
     }
 
     pub fn timeout_or(&self, default: Option<Duration>) -> anyhow::Result<Option<Duration>> {
-        match &self.g.timeout {
-            None => Ok(default),
-            Some(s) => Ok(match parse_dur(s)? {
-                d if d.is_zero() => None,
-                d => Some(d),
-            }),
-        }
+        timeout_of(&self.g, default)
     }
 
     /// Resolves a tid argument: `osis://…`, bare, `me`, `node`, `home`, `$var`.
@@ -349,8 +343,7 @@ impl Ctx<'_> {
     /// The key for an AK: typed by a registered schema unless `--raw`.
     pub fn key(&self, ak: &str) -> anyhow::Result<Key> {
         if self.g.raw {
-            let a = osis::Ak::new(ak).map_err(|_| usage(format!("bad AK {ak:?}")))?;
-            Ok(Key::new(a, None))
+            Ok(Key::new(parse_ak(ak, "AK")?, None))
         } else {
             self.db.key(ak).map_err(|_| usage(format!("bad AK {ak:?}")))
         }
@@ -367,6 +360,37 @@ impl Ctx<'_> {
         let al = |w: &str| self.alias(w);
         text::parse(&src, ty, &al).map_err(|e| usage(format!("bad value {src:?}: {e}")))
     }
+}
+
+/// Waits for other nodes without `--timeout`.
+pub(crate) const DEFAULT_WAIT: Duration = Duration::from_secs(30);
+
+/// The `--timeout` bound (`0`: none), else `default`.
+pub(crate) fn timeout_of(g: &Global, default: Option<Duration>) -> anyhow::Result<Option<Duration>> {
+    match &g.timeout {
+        None => Ok(default),
+        Some(s) => Ok(Some(parse_dur(s)?).filter(|d| !d.is_zero())),
+    }
+}
+
+/// An AK or signal kind argument.
+pub(crate) fn parse_ak(s: &str, what: &str) -> anyhow::Result<osis::Ak> {
+    osis::Ak::new(s).map_err(|_| usage(format!("bad {what} {s:?}")))
+}
+
+/// The schema type of a key's aspect (`Ty` for parsing and printing).
+pub(crate) fn key_ty(key: &Key) -> text::Ty<'_> {
+    ty_in(key, osis::AspectKey::ty(key))
+}
+
+/// A type `t` of `key`'s schema.
+pub(crate) fn ty_in<'a>(key: &'a Key, t: Option<&'a osis_schema::Type>) -> text::Ty<'a> {
+    key.schema().zip(t).map(|(s, t)| (&**s, t))
+}
+
+/// An optional timestamp flag.
+pub(crate) fn opt_ts(s: &Option<String>) -> anyhow::Result<Option<osis::WallMs>> {
+    Ok(s.as_deref().map(parse_ts).transpose()?.map(osis::WallMs))
 }
 
 /// A duration flag: `30s`, `5m`, `1h30m`, or `0`.

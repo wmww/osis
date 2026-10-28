@@ -5,11 +5,11 @@ use crate::args::*;
 use crate::json::{self, J};
 use crate::text::{self, Ty};
 use crate::write::{self, Did};
-use crate::{Ctx, StoreSel, exit, open, parse_dur, parse_ts, usage};
+use crate::{Ctx, StoreSel, exit, key_ty, open, opt_ts, parse_ak, ty_in, usage};
 use anyhow::{Context as _, anyhow};
 use osis::{
     AspectKey, Change, CommitId, Demotion, EdgeOpts, EntryState, Error, HistoryQuery, Key, LinkOpts, Lower, Osis, Role, Schema, Source, SyncScope, Target, Tid, Ts, UndoScope,
-    Value, WaitForSync, WallMs,
+    Value, WaitForSync,
 };
 use std::future::Future;
 use std::io::BufRead;
@@ -26,6 +26,10 @@ pub fn role_text(r: Role) -> &'static str {
     }
 }
 
+fn edge_opts(until: &Option<String>, invite: &Option<String>) -> anyhow::Result<EdgeOpts> {
+    Ok(EdgeOpts { until: opt_ts(until)?, invite: invite.as_deref().map(parse_role).transpose()? })
+}
+
 fn parse_role(s: &str) -> anyhow::Result<Role> {
     match s {
         "read" => Ok(Role::Read),
@@ -37,6 +41,12 @@ fn parse_role(s: &str) -> anyhow::Result<Role> {
 
 pub fn commit_text(c: &CommitId) -> String {
     osis_schema::osis_base::hex::encode(&c.0)
+}
+
+/// Prints a commit id (nothing when nothing changed).
+fn emit_commit(ctx: &mut Ctx<'_>, c: Option<CommitId>) -> anyhow::Result<()> {
+    let c = c.map(|c| commit_text(&c));
+    ctx.emit(&c.iter().cloned().collect::<Vec<_>>(), J::obj([("commit", J::opt(c.map(J::str)))]))
 }
 
 fn parse_commit(s: &str) -> anyhow::Result<CommitId> {
@@ -102,11 +112,11 @@ fn wait<T>(ctx: &Ctx<'_>, f: impl Future<Output = osis::Result<T>>) -> anyhow::R
 fn demotion(d: &DemoteFlags, ctx: &Ctx<'_>) -> anyhow::Result<Demotion> {
     let sync = match d.sync.as_deref() {
         None | Some("required") => WaitForSync::Required,
-        Some("try") => WaitForSync::Try(ctx.timeout()?.unwrap_or(Duration::from_secs(30))),
+        Some("try") => WaitForSync::Try(ctx.timeout()?.unwrap_or(crate::DEFAULT_WAIT)),
         Some("skip") => WaitForSync::Skip,
         Some(o) => return Err(usage(format!("--sync: required, try or skip (got {o:?})"))),
     };
-    let backdate = d.backdate.as_deref().map(parse_ts).transpose()?.map(WallMs);
+    let backdate = opt_ts(&d.backdate)?;
     Ok(Demotion { sync, backdate })
 }
 
@@ -114,7 +124,7 @@ fn scope(ctx: &Ctx<'_>, s: &Scope) -> anyhow::Result<UndoScope> {
     match (&s.thing, s.aspect.is_empty(), &s.group) {
         (Some(t), true, None) => Ok(UndoScope::Thing(ctx.tid(t)?)),
         (None, false, None) => Ok(UndoScope::Aspects(
-            s.aspect.chunks(2).map(|p| Ok((ctx.tid(&p[0])?, osis::Ak::new(&p[1]).map_err(|_| usage(format!("bad AK {:?}", p[1])))?))).collect::<anyhow::Result<_>>()?,
+            s.aspect.chunks(2).map(|p| Ok((ctx.tid(&p[0])?, parse_ak(&p[1], "AK")?))).collect::<anyhow::Result<_>>()?,
         )),
         (None, true, Some(g)) => Ok(UndoScope::Group(ctx.tid(g)?)),
         _ => Err(usage("give exactly one scope: --thing T, --aspect T AK..., --group G")),
@@ -123,10 +133,6 @@ fn scope(ctx: &Ctx<'_>, s: &Scope) -> anyhow::Result<UndoScope> {
 
 fn servers(ctx: &mut Ctx<'_>, list: &[String]) -> anyhow::Result<Vec<osis::ServerAddr>> {
     list.iter().map(|s| Ok(ctx.arg_text(s)?.parse::<osis::ServerAddr>()?)).collect()
-}
-
-fn ty_of(key: &Key) -> Ty<'_> {
-    key.schema().zip(key.ty()).map(|(s, t)| (&**s, t))
 }
 
 /// A value as text or JSON at a key's type (`--raw`: numbered).
@@ -211,7 +217,7 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
             let mut cfg = crate::config(&sel, &g, true);
             cfg.servers = seed(server)?;
             let card: osis::RecoveryCard = crate::arg_text(&mut *stdin, card)?.parse()?;
-            let t = Ctx::timeout_flag(&g)?;
+            let t = crate::timeout_of(&g, Some(crate::DEFAULT_WAIT))?;
             match block_on(Osis::restore(cfg, &card), t) {
                 Some(r) => r?,
                 None => return Err(exit(6, "timed out")),
@@ -245,15 +251,6 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
     drop(ctx);
     let closed = db.close();
     r.and(closed.map_err(Into::into))
-}
-
-impl Ctx<'_> {
-    fn timeout_flag(g: &crate::args::Global) -> anyhow::Result<Option<Duration>> {
-        match &g.timeout {
-            None => Ok(Some(Duration::from_secs(30))),
-            Some(s) => Ok(Some(parse_dur(s)?).filter(|d| !d.is_zero())),
-        }
-    }
 }
 
 /// Runs one write command as its own commit; prints the commit id (and a created tid).
@@ -335,7 +332,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Watch { t, ak, count } => watch(ctx, &t, ak.as_deref(), count),
         Cmd::Signal(SignalCmd::Send { t, kind, value, to }) => {
             let t = ctx.tid(&t)?;
-            let k = osis::Ak::new(&kind).map_err(|_| usage(format!("bad signal kind {kind:?}")))?;
+            let k = parse_ak(&kind, "signal kind")?;
             let st = signal_type(ctx, &kind);
             let v = ctx.value(&value, st.as_ref().map(|(s, t)| (&**s, t)))?;
             let target = match to {
@@ -350,7 +347,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Redo { scope: s } => undo(ctx, &s, true),
         Cmd::UndoCommit { id } => {
             let c = db.undo_commit(parse_commit(&id)?)?;
-            ctx.emit(&[commit_text(&c.commit)], J::obj([("commit", J::str(commit_text(&c.commit)))]))
+            emit_commit(ctx, Some(c.commit))
         }
         Cmd::Groups { t } => {
             let gs = db.groups_of(ctx.tid(&t)?);
@@ -387,18 +384,14 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let r = db.role_on(ctx.tid(&t)?);
             ctx.emit(&[r.map_or("none", role_text).to_string()], J::obj([("role", J::opt(r.map(|r| J::str(role_text(r)))))]))
         }
-        Cmd::Grant { t, member, role, until, invite } => {
-            let opts = EdgeOpts { until: until.as_deref().map(parse_ts).transpose()?.map(WallMs), invite: invite.as_deref().map(parse_role).transpose()? };
-            Ok(db.grant(ctx.tid(&t)?, ctx.tid(&member)?, parse_role(&role)?, opts)?)
-        }
+        Cmd::Grant { t, member, role, until, invite } => Ok(db.grant(ctx.tid(&t)?, ctx.tid(&member)?, parse_role(&role)?, edge_opts(&until, &invite)?)?),
         Cmd::Edge { t, member, role, until, invite } => {
             let (t, m) = (ctx.tid(&t)?, ctx.tid(&member)?);
             let role = match role {
                 Some(r) => parse_role(&r)?,
                 None => db.roster(t).get(&m).map(|e| e.role).ok_or_else(|| exit(3, "no such edge"))?,
             };
-            let opts = EdgeOpts { until: until.as_deref().map(parse_ts).transpose()?.map(WallMs), invite: invite.as_deref().map(parse_role).transpose()? };
-            Ok(db.change_edge(t, m, role, opts)?)
+            Ok(db.change_edge(t, m, role, edge_opts(&until, &invite)?)?)
         }
         Cmd::Demote { t, member, role, d } => {
             let to = if role == "remove" { Lower::Remove } else { Lower::To(parse_role(&role)?) };
@@ -407,7 +400,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Leave { t } => Ok(db.leave(ctx.tid(&t)?)?),
         Cmd::Link(LinkCmd::Make { t, role, until, single_use }) => {
-            let l = db.make_link(ctx.tid(&t)?, parse_role(&role)?, LinkOpts { until: until.as_deref().map(parse_ts).transpose()?.map(WallMs), single_use, direct: false })?;
+            let l = db.make_link(ctx.tid(&t)?, parse_role(&role)?, LinkOpts { until: opt_ts(&until)?, single_use, direct: false })?;
             ctx.emit(&[l.to_string()], J::obj([("link", J::str(l.to_string()))]))
         }
         Cmd::Link(LinkCmd::Redeem { link }) => {
@@ -471,16 +464,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let timeout = ctx.timeout_or(None)?;
             stream_lines(ctx, &rx, None, timeout)
         }
-        Cmd::Sync { group } => {
-            let s = match group {
-                Some(g) => SyncScope::Group(ctx.tid(&g)?),
-                None => SyncScope::All,
-            };
-            db.sync_now()?;
-            let t = ctx.timeout()?.unwrap_or(FOREVER);
-            wait(ctx, db.wait_synced(s, t))
-        }
-        Cmd::Wait { group } => {
+        // `wait_synced` asks the servers to sync first: `sync` and `wait` are one call
+        Cmd::Sync { group } | Cmd::Wait { group } => {
             let s = match group {
                 Some(g) => SyncScope::Group(ctx.tid(&g)?),
                 None => SyncScope::All,
@@ -567,7 +552,7 @@ fn get(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, stream: bool, l
         }
     };
     let Some(v) = v else { return Err(exit(3, "")) };
-    let (s, j) = show_value(ctx, &v, key.schema().zip(pty.as_ref()).map(|(s, t)| (&**s, t)));
+    let (s, j) = show_value(ctx, &v, ty_in(&key, pty.as_ref()));
     ctx.emit(&[s], j)
 }
 
@@ -578,7 +563,7 @@ fn edit(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, base: Option<S
     let t = ctx.tid(t)?;
     let key = ctx.key(ak)?;
     let db = ctx.db.clone();
-    let ty = ty_of(&key);
+    let ty = key_ty(&key);
     let (base, new) = match base {
         Some(b) => {
             let base = ctx.value(&b, ty)?;
@@ -599,8 +584,7 @@ fn edit(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, base: Option<S
     let mut w = db.write();
     w.at(t, key.clone()).edit(&base, &new)?;
     let done = w.commit()?;
-    let commit = done.map(|c| commit_text(&c.commit));
-    ctx.emit(&commit.iter().cloned().collect::<Vec<_>>(), J::obj([("commit", J::opt(commit.map(J::str)))]))
+    emit_commit(ctx, done.map(|c| c.commit))
 }
 
 /// Where `edit`'s temp file goes: the per-user runtime directory (owner-only, usually in
@@ -682,7 +666,7 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     for ak in &aks {
         let key = ctx.key(ak.as_str())?;
         let (s, j) = match db.get(t, key.clone()) {
-            Ok(Some(v)) => show_value(ctx, &v, ty_of(&key)),
+            Ok(Some(v)) => show_value(ctx, &v, key_ty(&key)),
             Ok(None) => ("(absent)".to_string(), J::Null),
             Err(e) => (format!("(error: {e})"), J::obj([("error", J::str(e.to_string()))])),
         };
@@ -710,7 +694,7 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
 
 fn change_line(ctx: &Ctx<'_>, c: &Change<Value>) -> String {
     let key = ctx.key(c.ak.as_str()).ok();
-    let ty = key.as_ref().and_then(ty_of);
+    let ty = key.as_ref().and_then(key_ty);
     let (src, info) = match &c.source {
         Source::Initial => ("initial", None),
         Source::Local(i) => ("local", Some(i)),
@@ -748,6 +732,11 @@ fn change_line(ctx: &Ctx<'_>, c: &Change<Value>) -> String {
 
 /// Prints lines from `rx` until `count` lines, the timeout, or the senders are gone.
 fn stream_lines(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<String>, count: Option<usize>, timeout: Option<Duration>) -> anyhow::Result<()> {
+    stream(ctx, rx, count, timeout, |_, l| l)
+}
+
+/// `stream_lines` over items printed by `line`.
+fn stream<T>(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<T>, count: Option<usize>, timeout: Option<Duration>, line: impl Fn(&Ctx<'_>, T) -> String) -> anyhow::Result<()> {
     let end = deadline(timeout);
     let mut n = 0;
     while count.is_none_or(|c| n < c) {
@@ -756,7 +745,8 @@ fn stream_lines(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<String>, count: Option<us
             Some(e) => rx.recv_timeout(e.saturating_duration_since(Instant::now())),
         };
         match r {
-            Ok(l) => {
+            Ok(x) => {
+                let l = line(ctx, x);
                 ctx.line(&l)?;
                 ctx.out.flush()?;
                 n += 1;
@@ -774,7 +764,7 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, count: Option<usize>) -> 
     let (tx, rx) = mpsc::channel::<Change<Value>>();
     let _sub = match ak {
         Some(ak) => {
-            let key = Key::new(osis::Ak::new(ak).map_err(|_| usage(format!("bad AK {ak:?}")))?, None);
+            let key = Key::new(parse_ak(ak, "AK")?, None);
             db.at(t, key).on_change(move |_, c| {
                 let _ = tx.send(c);
             })?
@@ -783,25 +773,8 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, count: Option<usize>) -> 
             let _ = tx.send(c);
         }),
     };
-    let end = deadline(ctx.timeout_or(None)?);
-    let mut n = 0;
-    while count.is_none_or(|c| n < c) {
-        let r = match end {
-            None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
-            Some(e) => rx.recv_timeout(e.saturating_duration_since(Instant::now())),
-        };
-        match r {
-            Ok(c) => {
-                let l = change_line(ctx, &c);
-                ctx.line(&l)?;
-                ctx.out.flush()?;
-                n += 1;
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) if count.is_some() => return Err(exit(6, format!("timed out after {n} change(s)"))),
-            Err(_) => return Ok(()),
-        }
-    }
-    Ok(())
+    let timeout = ctx.timeout_or(None)?;
+    stream(ctx, &rx, count, timeout, |ctx, c| change_line(ctx, &c))
 }
 
 /// The schema type of a signal kind, if a registered schema declares it.
@@ -815,7 +788,7 @@ fn signal_type(ctx: &Ctx<'_>, kind: &str) -> Option<(Arc<Schema>, osis_schema::T
 fn listen(ctx: &mut Ctx<'_>, t: &str, kind: &str, in_group: bool, count: Option<usize>) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     let t = ctx.tid(t)?;
-    let k = osis::Ak::new(kind).map_err(|_| usage(format!("bad signal kind {kind:?}")))?;
+    let k = parse_ak(kind, "signal kind")?;
     let st = signal_type(ctx, kind);
     let (raw, json_out) = (ctx.g.raw, ctx.g.json);
     let (tx, rx) = mpsc::channel::<String>();
@@ -850,7 +823,7 @@ fn state_text(s: EntryState) -> &'static str {
 
 fn history(ctx: &mut Ctx<'_>, s: &Scope, max: usize, before: Option<String>) -> anyhow::Result<()> {
     let sc = scope(ctx, s)?;
-    let before = before.as_deref().map(parse_ts).transpose()?.and_then(|ms| Ts::make(WallMs(ms), 0));
+    let before = opt_ts(&before)?.and_then(|ms| Ts::make(ms, 0));
     let hs = ctx.db.history(&sc, HistoryQuery { limit: max, before })?;
     let raw = ctx.g.raw;
     let lines = hs
@@ -882,7 +855,7 @@ fn undo(ctx: &mut Ctx<'_>, s: &Scope, redo: bool) -> anyhow::Result<()> {
     let sc = scope(ctx, s)?;
     let r = if redo { ctx.db.redo(&sc)? } else { ctx.db.undo(&sc)? };
     match r {
-        Some(c) => ctx.emit(&[commit_text(&c.commit)], J::obj([("commit", J::str(commit_text(&c.commit)))])),
+        Some(c) => emit_commit(ctx, Some(c.commit)),
         None => Err(exit(3, if redo { "nothing to redo" } else { "nothing to undo" })),
     }
 }
@@ -1031,10 +1004,7 @@ fn serve(g: &crate::args::Global, config: &Option<std::path::PathBuf>, listen: &
             let text = std::fs::read_to_string(f).map_err(|e| usage(format!("{}: {e}", f.display())))?;
             osis_server::config::parse(&text).map_err(|e| usage(format!("{}: {e}", f.display())))?
         }
-        None => {
-            let data = data.clone().unwrap_or_else(|| osis_server::config::DEFAULT_DATA.into());
-            osis_server::Config { listen: "quic://127.0.0.1:0".into(), key: data.join("server.key"), data, peers: Vec::new(), policy: osis_server::Policy::default() }
-        }
+        None => osis_server::Config { listen: "quic://127.0.0.1:0".into(), key: Default::default(), data: osis_server::config::DEFAULT_DATA.into(), peers: Vec::new(), policy: osis_server::Policy::default() },
     };
     if let Some(l) = listen {
         cfg.listen = l.clone();
@@ -1042,11 +1012,10 @@ fn serve(g: &crate::args::Global, config: &Option<std::path::PathBuf>, listen: &
     if let Some(d) = data {
         cfg.data = d.clone();
     }
-    if let Some(k) = key {
-        cfg.key = k.clone();
-    }
-    if config.is_none() && key.is_none() {
-        cfg.key = cfg.data.join("server.key");
+    match key {
+        Some(k) => cfg.key = k.clone(),
+        None if config.is_none() => cfg.key = cfg.data.join("server.key"),
+        None => {}
     }
     std::fs::create_dir_all(&cfg.data).map_err(|e| anyhow!("{}: {e}", cfg.data.display()))?;
     let quiet = g.quiet;
@@ -1064,10 +1033,16 @@ fn serve(g: &crate::args::Global, config: &Option<std::path::PathBuf>, listen: &
     .map_err(|e| anyhow!(e))
 }
 
-fn schema_check(g: &crate::args::Global, file: &std::path::Path, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+/// Reads and parses a schema file (exit 7 when it does not parse); returns its file name too.
+fn read_schema(file: &std::path::Path) -> anyhow::Result<(String, Schema)> {
     let src = std::fs::read_to_string(file).map_err(|e| usage(format!("{}: {e}", file.display())))?;
     let name = file.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
     let s = osis_schema::parse(&name, &src).map_err(|e| exit(7, e.to_string()))?;
+    Ok((name, s))
+}
+
+fn schema_check(g: &crate::args::Global, file: &std::path::Path, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+    let (name, s) = read_schema(file)?;
     let lock = file.with_file_name(format!("{name}.lock"));
     let status = match std::fs::read_to_string(&lock) {
         Ok(t) => {
@@ -1079,11 +1054,10 @@ fn schema_check(g: &crate::args::Global, file: &std::path::Path, out: &mut dyn s
         }
         Err(_) => "no lock",
     };
-    let line = format!("ok revision {} {status}", s.revision);
     if g.json {
         writeln!(out, "{}", J::obj([("revision", J::int(s.revision)), ("status", J::str(status))]).text())?;
     } else {
-        writeln!(out, "{line}")?;
+        writeln!(out, "ok revision {} {status}", s.revision)?;
     }
     Ok(())
 }
@@ -1109,9 +1083,7 @@ fn schema_reg(sel: &StoreSel, file: &std::path::Path, add: bool) -> anyhow::Resu
     let abs = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let mut list = crate::registered(d)?;
     if add {
-        let src = std::fs::read_to_string(&abs).map_err(|e| usage(format!("{}: {e}", abs.display())))?;
-        let name = abs.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-        osis_schema::parse(&name, &src).map_err(|e| exit(7, e.to_string()))?;
+        read_schema(&abs)?;
         if !list.contains(&abs) {
             list.push(abs);
         }
