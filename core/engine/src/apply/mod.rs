@@ -740,7 +740,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         })?;
         let mut bodies = Vec::new();
         let mut snaps = Vec::new();
-        for (received, origin, dropped, mut blob) in recs {
+        for (head, mut blob) in recs {
             if !blob.header.is_resolved()
                 && let Some(dedup) = tx.core.dedup(&blob.header.actor)
             {
@@ -749,8 +749,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let id = blob.id();
             let h = Arc::new(blob.header.clone());
             let valid = vec![true; h.aspects.len()];
-            let missing = (0..h.aspects.len()).filter(|ai| !blob.parts.iter().any(|p| p.ai == *ai) && !dropped.iter().any(|x| x.0 == *ai)).collect();
-            let m = Meta::new(h.clone(), received, origin, valid, dropped, missing);
+            let missing = (0..h.aspects.len()).filter(|ai| !blob.parts.iter().any(|p| p.ai == *ai) && !head.dropped.iter().any(|x| x.0 == *ai)).collect();
+            let m = Meta::new(h.clone(), valid, head, missing);
             atomic::index_commit(tx.core, &id, &m.view);
             validity::note_authors(tx.core, &id, &h, &[]).map_err(|_| Error::Corrupt("commit authors"))?;
             tx.core.ix.commits.insert(id, m);

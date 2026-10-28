@@ -394,3 +394,63 @@ fn text_fully_erased_kept_to_grace_bound_spec_commits_5() {
     assert_eq!(ec.get(&t, &ak).unwrap().unwrap_or(s("")), s(""));
     assert!(!ec.holds_body(&typed, &t, &ak));
 }
+
+// spec/commits.md §5 (a dropped body's liveness counts every write the state holds by dot, bare
+// anchors too), spec/sync.md §7 (a body with live writes is deleted at a label only while
+// another entry carries them): under keep at most 0, a word typed, the text reset, compacted,
+// reset again: the snapshot's only live records are the first word's bare anchors (no `ts`).
+// At the bound it drops with them live and the carrier written then is lost on its way to the
+// server: the snapshot stays at the server until the carrier is there (was: judged dead once
+// dropped, deleted without a carrier, and the label lost the anchors a fresh node needs to
+// place concurrent inserts).
+#[test]
+fn dropped_snapshot_waits_for_lost_carrier_spec_sync_7() {
+    use osis_crdt::{Op, PathOp};
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let g = net.group(a, &[], &[sv]);
+    let t = net.item(a, g, g, "x");
+    let ak = Ak::new(GONETEXT.ak()).unwrap();
+    let edit = |net: &mut Net, op: Option<Op>| {
+        let mut m = Mutation::new();
+        match op {
+            Some(op) => m.op(t, &GONETEXT, PathOp { path: Vec::new(), op }).unwrap(),
+            None => m.remove_aspect(t, &GONETEXT).unwrap(),
+        };
+        net.engine(a).commit(m).unwrap().unwrap();
+        net.run();
+    };
+    edit(&mut net, Some(Op::Insert { at: 0, items: vec![s("SECRET")] }));
+    edit(&mut net, None);
+    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let snaps = snapshots(&mut net, a, &t, &ak);
+    assert_eq!(snaps.len(), 1);
+    let s1 = snaps[0];
+    let l = net.label(a);
+    let at_server = blobs(&mut net, a, &l, &s1);
+    assert!(!at_server.is_empty() && at_server.iter().all(|b| net.server_ids(sv, &l).contains(b)), "the snapshot is at the server");
+    edit(&mut net, Some(Op::Insert { at: 0, items: vec![s("two")] }));
+    edit(&mut net, None);
+    assert!(net.engine(a).holds_body(&s1, &t, &ak) && net.engine(a).body_live(&s1, &t, &ak).unwrap(), "the anchors are live writes");
+    net.lose_uploads.insert(a);
+    net.advance(61 * 60_000);
+    net.run();
+    assert!(!net.engine(a).holds_body(&s1, &t, &ak), "dropped at the bound");
+    assert!(net.engine(a).body_live(&s1, &t, &ak).unwrap(), "dropped live, its anchors still in the state");
+    assert!(snapshots(&mut net, a, &t, &ak).len() > 1, "a carrier written");
+    let ids = net.server_ids(sv, &l);
+    assert!(at_server.iter().all(|b| ids.contains(b)), "kept at the server while the carrier is not there");
+    net.lose_uploads.clear();
+    net.advance(60_000);
+    net.run();
+    let ids = net.server_ids(sv, &l);
+    assert!(at_server.iter().all(|b| !ids.contains(b)), "deleted once the carrier is there");
+    let carried = snapshots(&mut net, a, &t, &ak).into_iter().filter(|c| *c != s1).any(|c| {
+        let bs = blobs(&mut net, a, &l, &c);
+        !bs.is_empty() && bs.iter().all(|b| ids.contains(b))
+    });
+    assert!(carried, "a carrier is at the server");
+}

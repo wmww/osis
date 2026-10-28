@@ -232,7 +232,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     let uncarried = validity::uncarry(tx.core, &id, &h, &|ai| parts.iter().any(|p| p.0 == ai));
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.iter().any(|p| p.0 == *ai)).collect();
-    let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), dropped: BTreeSet::new(), missing };
+    let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), dropped: BTreeSet::new(), missing, live_drops: BTreeSet::new() };
     tx.core.ix.commits.insert(id, meta.clone());
     tx.core.index_validity(&id);
 
@@ -756,6 +756,7 @@ pub(crate) fn unmerge_fell(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, fell: Option<Fra
 /// author's valid deltas, dropped bodies included, keep theirs).
 pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let st = rebuilt(tx, tid, ak, None)?;
+    crate::retention::note_revived(tx, tid, ak, st.as_ref())?;
     tx.set_state(tid, ak, st, Shred::Yes, false)
 }
 

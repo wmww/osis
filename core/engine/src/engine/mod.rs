@@ -70,12 +70,15 @@ pub struct Meta {
     /// may still arrive late, or never (spec/permissions.md §5.2: a snapshot's copies of their
     /// writes count).
     pub missing: BTreeSet<usize>,
+    /// Aspects of a compaction snapshot whose body had a write in the state when dropped (its
+    /// frontiers went with it, spec/commits.md §5; `retention::snapshot_live` starts from this).
+    pub live_drops: BTreeSet<usize>,
 }
 
 impl Meta {
     /// A commit's meta from its decoded header.
-    pub fn new(header: Arc<Header>, received: WallMs, origin: Origin, valid: Vec<bool>, dropped: BTreeSet<(usize, usize)>, missing: BTreeSet<usize>) -> Meta {
-        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received, origin, valid, dropped, missing }
+    pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
+        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, missing, live_drops: head.live_drops }
     }
 }
 
@@ -420,8 +423,8 @@ indexes! {
 /// A held compaction snapshot of an aspect: `ts`, ID, frontiers.
 pub(crate) type HeldSnapshot = (Ts, CommitId, osis_crdt::Frontiers);
 
-/// A decoded commit record: received, origin, dropped parts, blob.
-pub(crate) type CommitRecord = (WallMs, Origin, BTreeSet<(usize, usize)>, CommitBlob);
+/// A decoded commit record: its head (received, origin, dropped parts) and blob.
+pub(crate) type CommitRecord = (index::RecordHead, CommitBlob);
 
 /// In-memory state over the store: caches and indexes, rebuilt by `load`. The indexes are
 /// journaled (`journal`): a failed transaction undoes its own changes to them.
@@ -1037,7 +1040,8 @@ impl Tx<'_> {
         Ok(self.txn.get_aspect(tid, ak)?.unwrap_or_default())
     }
 
-    /// Writes a commit record (`index::record_head`: received, origin, dropped parts; then its
+    /// Writes a commit record (`index::record_head`: received, origin, dropped parts and which
+    /// were live; then its
     /// blob), and for a membership commit its `node/edges` row (`edges`: what the caller already
     /// read of `blob` with `edge_parts_of`, else decoded here).
     pub(crate) fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, edges: Option<&crate::apply::validity::EdgeParts>) -> Result<()> {
@@ -1067,7 +1071,7 @@ impl Tx<'_> {
 
     pub fn get_commit(&mut self, id: &CommitId) -> Result<Option<CommitBlob>> {
         let Some(v) = self.txn.get_local(&records::commit_key(id))? else { return Ok(None) };
-        Ok(Some(decode_commit_record(&v)?.3))
+        Ok(Some(decode_commit_record(&v)?.1))
     }
 
     /// Scans local records under `prefix` (keys returned without it).
@@ -1125,11 +1129,11 @@ pub(crate) fn clear_table(txn: &mut Transaction<'_>, t: osis_store::Table, start
     }
 }
 
-/// `(received, origin, dropped, blob)`.
+/// `(head, blob)`.
 pub(crate) fn decode_commit_record(v: &[u8]) -> Result<CommitRecord> {
     let (head, rest) = index::parse_head(v)?;
     let blob = CommitBlob::decode(rest).map_err(|_| Error::Corrupt("commit blob"))?;
-    Ok((head.received, head.origin, head.dropped, blob))
+    Ok((head, blob))
 }
 
 /// One node's engine.

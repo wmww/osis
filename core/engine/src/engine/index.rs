@@ -442,11 +442,12 @@ pub(crate) fn load_edges(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::ap
 }
 
 /// What of a commit its record holds ahead of its blob (version 1): received, origin, dropped
-/// parts.
+/// parts, the aspects among them dropped live (`Meta::live_drops`).
 pub(crate) struct RecordHead {
     pub received: WallMs,
     pub origin: Origin,
     pub dropped: BTreeSet<(usize, usize)>,
+    pub live_drops: BTreeSet<usize>,
 }
 
 pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
@@ -457,6 +458,10 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
     w = w.u32(m.dropped.len() as u32);
     for (a, d) in &m.dropped {
         w = w.u32(*a as u32).u32(*d as u32);
+    }
+    w = w.u32(m.live_drops.len() as u32);
+    for a in &m.live_drops {
+        w = w.u32(*a as u32);
     }
     w.take()
 }
@@ -552,7 +557,11 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
     for _ in 0..r.u32()? {
         dropped.insert((r.u32()? as usize, r.u32()? as usize));
     }
-    Ok((RecordHead { received, origin, dropped }, r.rest()))
+    let mut live_drops = BTreeSet::new();
+    for _ in 0..r.u32()? {
+        live_drops.insert(r.u32()? as usize);
+    }
+    Ok((RecordHead { received, origin, dropped, live_drops }, r.rest()))
 }
 
 /// Writes the given changes (`all`: everything) of the indexes to the persisted index.
@@ -742,7 +751,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             return Err(Error::Corrupt("meta row"));
         }
         crate::apply::index_commit(tx.core, &id, &view);
-        tx.core.ix.commits.insert(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, missing });
+        tx.core.ix.commits.insert(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, missing, live_drops: head.live_drops });
         tx.core.index_validity(&id);
     }
     drop(_ms);
