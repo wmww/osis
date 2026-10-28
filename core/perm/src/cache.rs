@@ -16,7 +16,7 @@ use crate::graph::{Class, Edges, Owner, Owners};
 use crate::held::HeldSet;
 use crate::timeline::Timeline;
 use crate::types::{Dots, Edge, Frontier, MembershipCommit, Point, RosterSnapshot, WriteId};
-use crate::walk::{Applied, Attr, Change, Demotion, Fall, Input, Outcome, Rest, Undo, Walked};
+use crate::walk::{Applied, Attr, Change, Demotion, Fall, Input, Outcome, Undo, Walked};
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -373,7 +373,7 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
             w.class(f.held);
         }
     }
-    let r = &wk.rest;
+    let r = wk;
     w.len(r.prior.len());
     for (k, e) in &r.prior {
         w.pair(k);
@@ -788,7 +788,6 @@ fn walk(r: &mut R<'_>, input: &Input) -> Option<Outcome> {
     if !r.b.is_empty() {
         return None;
     }
-    let rest = Rest { prior, dead, prior_node, by_author_target, setter, candidates, log, marks, found };
-    let walked = Walked { initial, history, edges, applied, demotions, falls, rest };
+    let walked = Walked { initial, history, edges, applied, demotions, falls, prior, dead, prior_node, by_author_target, setter, candidates, log, marks, found };
     Some(Outcome { walked, dropped, epoch_starts, passes, epoch_changed, reach, items: None, common: None })
 }
