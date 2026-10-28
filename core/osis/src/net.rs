@@ -298,12 +298,14 @@ impl crate::Osis {
         let now = self.inner.clock.now_wall_ms().0;
         let deadline = timeout.map(|d| now.saturating_add(u64::try_from(d.as_millis()).unwrap_or(u64::MAX)));
         let mut w = Waiter { check, deadline, slot: slot.clone() };
-        self.locked(|l| {
-            if !w.poll(&mut l.sync, &l.status, now) {
+        let waiting = self.locked(|l| {
+            let done = w.poll(&mut l.sync, &l.status, now);
+            if !done {
                 l.waiters.push(w);
             }
+            !done
         });
-        if let Some(d) = timeout {
+        if let (true, Some(d)) = (waiting, timeout) {
             self.inner.net.timer(d);
         }
         Pending { slot }
