@@ -19,40 +19,26 @@ impl Default for Fragment {
     }
 }
 
-/// Drops `s` if it does not survive `e`, recording its death.
-fn prune_stamp(s: &mut Option<Stamp>, e: Option<&Stamp>, ch: &mut Changes) {
-    if let (Some(x), Some(e)) = (s.as_ref(), e)
-        && x < e
-    {
-        ch.died(x, e.ts);
-        *s = None;
-    }
-}
-
-/// Joins a reset-like stamp (greatest wins; the loser dies).
-fn join_stamp(s: &mut Option<Stamp>, d: Option<Stamp>, ch: &mut Changes) -> bool {
-    let Some(d) = d else { return false };
-    match s {
-        Some(x) if *x == d => false,
-        Some(x) if *x > d => {
-            ch.died(&d, x.ts);
-            false
-        }
-        _ => {
-            if let Some(x) = s.as_ref() {
-                ch.died(x, d.ts);
-            }
-            *s = Some(d);
-            ch.touch();
-            true
-        }
-    }
-}
-
-/// A register or case write: its stamp, and whether it carries its value (§4.7).
-trait Write {
+/// A last-writer-wins write: its stamp, and whether it carries its value (only register and
+/// case writes go value-less, §4.7). Resets, `W`, flags, creations.
+pub(crate) trait Write {
     fn stamp(&self) -> &Stamp;
-    fn valued(&self) -> bool;
+    fn valued(&self) -> bool {
+        true
+    }
+}
+
+impl Write for Stamp {
+    fn stamp(&self) -> &Stamp {
+        self
+    }
+}
+
+/// A flag write or a creation (`(stamp, anchor)`) of a sequence element.
+impl<T> Write for (Stamp, T) {
+    fn stamp(&self) -> &Stamp {
+        &self.0
+    }
 }
 
 impl Write for RegWrite {
@@ -73,29 +59,35 @@ impl Write for CaseWrite {
     }
 }
 
-/// Register-like join: greater stamp wins; of two copies of one write the valued one (§4.7).
-fn join_write<W: Write>(s: &mut Option<W>, d: Option<W>, ch: &mut Changes) {
-    let Some(d) = d else { return };
+/// Last-writer-wins join: greater stamp wins and the loser dies; of two copies of one write the
+/// valued one (§4.7). Whether `d` took the place.
+pub(crate) fn join_write<W: Write>(s: &mut Option<W>, d: Option<W>, ch: &mut Changes) -> bool {
+    let Some(d) = d else { return false };
     match s {
         Some(x) if x.stamp() == d.stamp() => {
             if !x.valued() && d.valued() {
                 *x = d;
                 ch.touch();
             }
+            false
         }
-        Some(x) if x.stamp() > d.stamp() => ch.died(d.stamp(), x.stamp().ts),
+        Some(x) if x.stamp() > d.stamp() => {
+            ch.died(d.stamp(), x.stamp().ts);
+            false
+        }
         _ => {
             if let Some(x) = s.as_ref() {
                 ch.died(x.stamp(), d.stamp().ts);
             }
             *s = Some(d);
             ch.touch();
+            true
         }
     }
 }
 
 /// Drops write `w` if it does not survive `e`, recording its death.
-fn prune_write<W: Write>(w: &mut Option<W>, e: Option<&Stamp>, ch: &mut Changes) {
+pub(crate) fn prune_write<W: Write>(w: &mut Option<W>, e: Option<&Stamp>, ch: &mut Changes) {
     if let (Some(x), Some(e)) = (w.as_ref(), e)
         && x.stamp() < e
     {
@@ -107,20 +99,20 @@ fn prune_write<W: Write>(w: &mut Option<W>, e: Option<&Stamp>, ch: &mut Changes)
 /// Joins a composite's reset and `W` under the parent's effective reset. Returns the effective
 /// reset `E` and whether the own reset rose (existing children then need pruning).
 fn join_meta(s: &mut Meta, d: Meta, e_parent: Option<&Stamp>, ch: &mut Changes) -> (Option<Stamp>, bool) {
-    let raised = join_stamp(&mut s.reset, d.reset, ch);
-    prune_stamp(&mut s.reset, e_parent, ch);
+    let raised = join_write(&mut s.reset, d.reset, ch);
+    prune_write(&mut s.reset, e_parent, ch);
     let e = max_opt(e_parent.cloned(), s.reset.clone());
-    join_stamp(&mut s.w, d.w, ch);
-    prune_stamp(&mut s.w, e.as_ref(), ch);
+    join_write(&mut s.w, d.w, ch);
+    prune_write(&mut s.w, e.as_ref(), ch);
     (e, raised)
 }
 
 /// Prunes a composite's own reset (a nested reset below the parent's is a pruned write, §4.2)
 /// and `W`; returns `E`.
 fn prune_meta(m: &mut Meta, e_parent: Option<&Stamp>, ch: &mut Changes) -> Option<Stamp> {
-    prune_stamp(&mut m.reset, e_parent, ch);
+    prune_write(&mut m.reset, e_parent, ch);
     let e = max_opt(e_parent.cloned(), m.reset.clone());
-    prune_stamp(&mut m.w, e.as_ref(), ch);
+    prune_write(&mut m.w, e.as_ref(), ch);
     e
 }
 
@@ -183,7 +175,7 @@ fn join_opt(s: &mut Option<Box<Fragment>>, d: Option<Box<Fragment>>, e: Option<&
 
 /// Prunes a set or bag element; `false` when the record goes (§4.2).
 fn prune_elem(el: &mut Elem, e: Option<&Stamp>, ch: &mut Changes) -> bool {
-    prune_stamp(&mut el.reset, e, ch);
+    prune_write(&mut el.reset, e, ch);
     let ee = max_opt(e.cloned(), el.reset.clone());
     prune_opt(&mut el.frag, ee.as_ref(), ch);
     el.reset.is_some() || el.frag.is_some()
@@ -197,8 +189,8 @@ fn join_elems(s: &mut BTreeMap<Dot, Elem>, d: BTreeMap<Dot, Elem>, e: Option<&St
     for (dot, mut de) in d {
         match s.get_mut(&dot) {
             Some(se) => {
-                let raised = join_stamp(&mut se.reset, de.reset, ch);
-                prune_stamp(&mut se.reset, e, ch);
+                let raised = join_write(&mut se.reset, de.reset, ch);
+                prune_write(&mut se.reset, e, ch);
                 let ee = max_opt(e.cloned(), se.reset.clone());
                 if raised {
                     prune_opt(&mut se.frag, ee.as_ref(), ch);
@@ -229,10 +221,10 @@ fn join_coll(meta: &mut Meta, elems: &mut BTreeMap<Dot, Elem>, dm: Meta, de: BTr
 
 /// Prunes a map entry; the key goes with the content (content-free tombstone, §5.6).
 fn prune_entry(en: &mut Entry, e: Option<&Stamp>, ch: &mut Changes) -> bool {
-    prune_stamp(&mut en.reset, e, ch);
+    prune_write(&mut en.reset, e, ch);
     let ee = max_opt(e.cloned(), en.reset.clone());
     prune_opt(&mut en.frag, ee.as_ref(), ch);
-    prune_stamp(&mut en.created, ee.as_ref(), ch);
+    prune_write(&mut en.created, ee.as_ref(), ch);
     if en.frag.is_none() {
         en.key = None;
         en.created = None;
@@ -250,8 +242,8 @@ fn join_entries(m: &mut Map, d: BTreeMap<Dot, Entry>, e: Option<&Stamp>, ch: &mu
 fn join_entry(s: &mut BTreeMap<Dot, Entry>, dot: Dot, mut de: Entry, e: Option<&Stamp>, ch: &mut Changes) {
     match s.get_mut(&dot) {
         Some(se) => {
-            let raised = join_stamp(&mut se.reset, de.reset, ch);
-            prune_stamp(&mut se.reset, e, ch);
+            let raised = join_write(&mut se.reset, de.reset, ch);
+            prune_write(&mut se.reset, e, ch);
             let ee = max_opt(e.cloned(), se.reset.clone());
             if raised {
                 prune_opt(&mut se.frag, ee.as_ref(), ch);
@@ -261,12 +253,12 @@ fn join_entry(s: &mut BTreeMap<Dot, Entry>, dot: Dot, mut de: Entry, e: Option<&
                 ch.touch();
             }
             if raised {
-                prune_stamp(&mut se.created, ee.as_ref(), ch);
+                prune_write(&mut se.created, ee.as_ref(), ch);
             }
             join_opt(&mut se.frag, de.frag, ee.as_ref(), ch);
             let mut dc = de.created;
-            prune_stamp(&mut dc, ee.as_ref(), ch);
-            join_stamp(&mut se.created, dc, ch);
+            prune_write(&mut dc, ee.as_ref(), ch);
+            join_write(&mut se.created, dc, ch);
             if se.frag.is_none() {
                 se.key = None;
                 se.created = None;
@@ -365,8 +357,8 @@ impl Fragment {
         let this = std::mem::take(self);
         *self = match (this, other) {
             (Fragment::Register(mut a), Fragment::Register(b)) => {
-                join_stamp(&mut a.reset, b.reset, ch);
-                prune_stamp(&mut a.reset, e_parent, ch);
+                join_write(&mut a.reset, b.reset, ch);
+                prune_write(&mut a.reset, e_parent, ch);
                 join_write(&mut a.write, b.write, ch);
                 let e = max_opt(e_parent.cloned(), a.reset.clone());
                 prune_write(&mut a.write, e.as_ref(), ch);
@@ -425,7 +417,7 @@ impl Fragment {
     pub fn prune(&mut self, e_parent: Option<&Stamp>, ch: &mut Changes) {
         match self {
             Fragment::Register(r) => {
-                prune_stamp(&mut r.reset, e_parent, ch);
+                prune_write(&mut r.reset, e_parent, ch);
                 let e = max_opt(e_parent.cloned(), r.reset.clone());
                 prune_write(&mut r.write, e.as_ref(), ch);
                 drop_implied_reset(r, ch);
