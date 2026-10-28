@@ -184,7 +184,8 @@ pub(crate) enum Phase {
 /// Counters of the work passes did (`SyncEngine::pass_stats`; scale checks).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PassStats {
-    /// Passes at servers, and how many judged everything.
+    /// Passes at servers and local passes (labels served with no server), and how many judged
+    /// everything.
     pub passes: u64,
     pub full: u64,
     /// Bodies judged for upload, entries judged for deletion.
