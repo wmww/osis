@@ -1307,3 +1307,389 @@ fn saved_walk_restored_after_a_node_joined_spec_permissions_5_1() {
     assert_eq!(inc.restored(), 1);
     assert!(check(&held, &inc, &nodes).is_none(), "{:?}", check(&held, &inc, &nodes));
 }
+
+/// Random histories built for the placement paths' corners (spec/permissions.md §5.1 steps
+/// 2-5, §6): no writes before the late ones (a late write is often its author's first on its
+/// target, so falls before the old first write appear), ties in ts, an owner chain through
+/// things (a doc owned by a team, a sub-doc by the doc) and things as members, invites,
+/// `until`, removals, two-op commits, late writes by the key actor at the top, sometimes an
+/// epoch start with an audited ledger (virtual writes with a frontier) held from the start,
+/// and `/created` records of named things and of new nodes arriving late, with commits or
+/// alone; restarts from saved walks now and then. Equal to an evaluation from scratch after
+/// every arrival. Returns (updates `append` did alone, commits placed without walking again).
+fn adversarial_corners(samples: u64, seed: u64) -> (usize, usize) {
+    use osis_base::Role::{Admin, Read, Write};
+    let seed = seeded(seed);
+    let mut rng = Rng(seed);
+    let (mut appended, mut placed) = (0, 0);
+    for s in 0..samples {
+        let mut w = World::new();
+        let mut n = w.nodes(6);
+        let k = n[0];
+        let g = w.thing(k);
+        let team = w.thing(k);
+        let doc = w.thing(team);
+        let sub = w.thing(doc);
+        let extra = [w.nodes_salted(1, 0x77)[0], key_actors(1, 0x78)[0].0];
+        let targets = [g, g, team, doc, sub];
+        let members = [team, doc];
+        w.set(k, g, n[1], edge(Admin), 1, &[]);
+        w.set(k, g, n[2], edge(Admin), 1, &[]);
+        w.set(k, team, n[3], edge(Admin), 1, &[]);
+        w.set(k, g, team, edge([Admin, Write, Read][rng.below(3)]), 1, &[]);
+        let mut late = Vec::new();
+        if rng.below(3) == 0 {
+            // an epoch start whose ledger records audited demotions before it
+            let thing = [g, team][rng.below(2)];
+            let a = n[1 + rng.below(3)];
+            let ledger: Vec<LedgerSpec> = (0..1 + rng.below(2)).map(|_| {
+                let t0 = 2 + rng.below(6) as u64;
+                (n[3 + rng.below(3)], [Write, Admin][rng.below(2)], (rng.below(2) == 0).then_some((t0, a, None)), (t0 + 1 + rng.below(6) as u64, a, None), rng.below(3) != 0)
+            }).collect();
+            let roster = [(n[1], osis_perm::Edge::new(Admin)), (n[3], osis_perm::Edge::new([Write, Admin][rng.below(2)])), (team, osis_perm::Edge::new(Write))];
+            let recv: Vec<(Tid, u64)> = n.iter().map(|x| (*x, rng.below(20) as u64)).collect();
+            let id = w.snapshot_l(k, thing, &roster, &ledger, 8 + rng.below(12) as u64, &recv);
+            if rng.below(4) == 0 {
+                late.push(id);
+            }
+        }
+        let op = |rng: &mut Rng, n: &[Tid]| {
+            let target = targets[rng.below(targets.len())];
+            let member = match rng.below(12) {
+                0 | 1 => members[rng.below(members.len())],
+                2 => extra[rng.below(2)],
+                _ => n[1 + rng.below(5)],
+            };
+            let until = (rng.below(4) == 0).then(|| 3 + rng.below(25) as u64);
+            let role = [Read, Write, Admin, Admin][rng.below(4)];
+            let e = match rng.below(8) {
+                0..=2 => None,
+                3 => edge_inv(role, Some([Read, Write, Admin][rng.below(3)].min(role)), until),
+                _ => edge_inv(role, None, until),
+            };
+            (target, member, e)
+        };
+        // admins and the team's admin edge removed and given back: classes fall and return
+        let toggle = |rng: &mut Rng, n: &[Tid]| {
+            let (target, member) = [(g, n[1]), (g, n[2]), (team, n[3]), (g, team), (team, n[4]), (doc, n[5])][rng.below(6)];
+            (target, member, [None, edge(Admin), edge(Write)][rng.below(3)])
+        };
+        for _ in 0..10 + rng.below(16) {
+            let author = match rng.below(12) {
+                0 => extra[rng.below(2)],
+                1 | 2 => k,
+                _ => n[1 + rng.below(5)],
+            };
+            let mut ops = vec![if rng.below(3) == 0 { toggle(&mut rng, &n) } else { op(&mut rng, &n) }];
+            if rng.below(4) == 0 {
+                let o = op(&mut rng, &n);
+                if (o.0, o.1) != (ops[0].0, ops[0].1) {
+                    ops.push(o);
+                }
+            }
+            // few distinct ts: ties ordered by node, then commit ID
+            let t = 2 + rng.below(18) as u64;
+            let recv: Vec<(Tid, u64)> = if rng.below(3) == 0 { Vec::new() } else { n.iter().map(|x| (*x, rng.below(24) as u64)).collect() };
+            let id = w.commit(author, t, &ops, &recv);
+            if rng.below(2) == 0 {
+                late.push(id);
+            }
+        }
+        // `/created` records held late: a team or doc the history names, the node with one
+        let mut created_late: Vec<(Tid, usize)> = Vec::new();
+        for t in [team, doc, extra[0]] {
+            if rng.below(3) == 0 {
+                created_late.push((t, rng.below(late.len() + 1)));
+            }
+        }
+        n.extend(extra);
+        let order = rng.perm(late.len());
+        let mut skip: BTreeSet<_> = late.iter().copied().collect();
+        let mut prev = held_at(&w, &skip, &created_late, 0);
+        let mut inc = Timelines::new();
+        inc.update(&prev);
+        let mut i = 0;
+        while i < order.len() {
+            let take = if rng.below(3) == 0 { 1 + rng.below(3) } else { 1 };
+            let step = i + 1;
+            // (half the time the `/created` records of this step alone first)
+            if rng.below(2) == 0 && created_late.iter().any(|c| c.1 == step) {
+                let held = held_at(&w, &skip, &created_late, step);
+                inc.update_touched(&held, &touched(&prev, &held));
+                if let Some(d) = check(&held, &inc, &n) {
+                    panic!("seed {seed:#x} sample {s} arrival {i} (records alone): {d}");
+                }
+                prev = held;
+            }
+            for j in order.iter().skip(i).take(take) {
+                skip.remove(&late[*j]);
+            }
+            i += take;
+            let held = held_at(&w, &skip, &created_late, step);
+            inc.update_touched(&held, &touched(&prev, &held));
+            appended += inc.appended();
+            placed += inc.placed();
+            if let Some(d) = check(&held, &inc, &n) {
+                panic!("seed {seed:#x} sample {s} arrival {i}: {d}");
+            }
+            if rng.below(5) == 0 {
+                let mut disk = Disk::new();
+                store(&mut disk, inc.to_save(SALT, 1, true));
+                inc = reopen(&held, &disk, SALT);
+                if let Some(d) = check(&held, &inc, &n) {
+                    panic!("seed {seed:#x} sample {s} arrival {i} after a restart: {d}");
+                }
+            }
+            prev = held;
+        }
+        let held = w.held();
+        inc.update_touched(&held, &touched(&prev, &held));
+        if let Some(d) = check(&held, &inc, &n) {
+            panic!("seed {seed:#x} sample {s} (all records): {d}");
+        }
+    }
+    (appended, placed)
+}
+
+/// §5.1 steps 2-5, §6: late arrivals at the placement paths' corners equal from scratch.
+#[test]
+fn append_corners_equals_from_scratch_spec_permissions_5_1() {
+    let (appended, placed) = adversarial_corners(12, 0x5eed_0315);
+    eprintln!("appended {appended} placed {placed}");
+    assert!(appended > 0 && placed > 0, "{appended} {placed}");
+}
+
+#[test]
+#[ignore]
+fn append_corners_equals_from_scratch_large() {
+    let (appended, placed) = adversarial_corners(3_000, 0x5eed_0316);
+    eprintln!("appended {appended} placed {placed}");
+    assert!(placed > 1_000, "{appended} {placed}");
+}
+
+/// §5.1 step 5: the cost guard on re-judging later items in a shadow (`SHADOW_SHARE`) only
+/// chooses between two exact paths: the same random late arrivals with every shadow placement
+/// declined (the walk goes on from the write) and with none declined for its cost equal an
+/// evaluation from scratch, and the first places fewer.
+#[cfg(debug_assertions)]
+#[test]
+fn shadow_cost_guard_changes_no_outcome_spec_permissions_5_1() {
+    let mut placed = Vec::new();
+    for on in [Some(true), Some(false)] {
+        osis_perm::force_shadow_guard(on);
+        let (_, p) = adversarial_corners(6, 0x5eed_0317);
+        let (_, q) = adversarial_shapes(2, 0x5eed_0318);
+        placed.push(p + q);
+    }
+    osis_perm::force_shadow_guard(None);
+    assert!(placed[0] < placed[1], "{placed:?}");
+}
+
+/// §5.1 step 5: a late admin grant to a team whose members write on the thing in every later
+/// commit (each later item re-judged): with 600 later items the cost guard walks on from the
+/// write; with the guard off it is placed by re-judging them. Both equal an evaluation from
+/// scratch.
+#[cfg(debug_assertions)]
+#[test]
+fn long_rest_both_paths_equal_spec_permissions_5_1() {
+    use osis_base::Role::{Admin, Read, Write};
+    let mut w = World::new();
+    let n = w.nodes(8);
+    let k = n[0];
+    let g = w.thing(k);
+    let team = w.thing(k);
+    w.set(k, g, n[1], edge(Admin), 1, &[]);
+    w.set(k, team, n[1], edge(Admin), 1, &[]);
+    w.set(k, team, n[2], edge(Write), 1, &[]);
+    w.set(n[1], g, n[3], edge(Read), 2, &[]);
+    for i in 0..600u64 {
+        let m = n[3 + (i % 5) as usize];
+        w.set(n[1], g, m, if i % 3 == 0 { None } else { edge([Read, Write][(i % 2) as usize]) }, 10 + i, &[]);
+    }
+    let late = w.set(k, g, team, edge(Admin), 5, &[]);
+    let skip = BTreeSet::from([late]);
+    let prev = w.held_without(&skip);
+    let held = w.held();
+    let mut placed = Vec::new();
+    for on in [None, Some(false)] {
+        osis_perm::force_shadow_guard(on);
+        let mut inc = Timelines::new();
+        inc.update(&prev);
+        let c = inc.update_touched(&held, &touched(&prev, &held));
+        assert!(c.evaluated.is_empty(), "{c:?}");
+        assert_eq!(inc.appended(), 1);
+        placed.push(inc.placed());
+        assert!(check(&held, &inc, &n).is_none(), "{on:?}: {:?}", check(&held, &inc, &n));
+    }
+    osis_perm::force_shadow_guard(None);
+    assert_eq!(placed, [0, 1]);
+}
+
+/// Random histories of admins removed and given back by the key actor (directly and through a
+/// team), with rare writes of their own on the group, a doc it owns and the team: a late write
+/// is often its author's first on its target, and the class falls between it and the old first
+/// write are recorded only with it (spec/permissions.md §5.1 step 4); frontiers cover some of
+/// them, so some of those falls drop it. Ties in ts. Equal to an evaluation from scratch after
+/// every arrival. Returns (updates `append` did alone, commits placed without walking again).
+fn adversarial_falls(samples: u64, seed: u64) -> (usize, usize) {
+    use osis_base::Role::{Admin, Read, Write};
+    let seed = seeded(seed);
+    let mut rng = Rng(seed);
+    let (mut appended, mut placed) = (0, 0);
+    for s in 0..samples {
+        let mut w = World::new();
+        let n = w.nodes(6);
+        let k = n[0];
+        let g = w.thing(k);
+        let doc = w.thing(g);
+        let team = w.thing(k);
+        for x in &n[1..3] {
+            w.set(k, g, *x, edge(Admin), 1, &[]);
+        }
+        w.set(k, g, team, edge(Admin), 1, &[]);
+        w.set(k, team, n[3], edge(Admin), 1, &[]);
+        w.set(k, team, n[4], edge(Write), 1, &[]);
+        let mut late = Vec::new();
+        for _ in 0..12 + rng.below(16) {
+            let t = 2 + rng.below(14) as u64;
+            let recv: Vec<(Tid, u64)> = if rng.below(2) == 0 { Vec::new() } else { n.iter().map(|x| (*x, rng.below(18) as u64)).collect() };
+            let id = if rng.below(5) < 3 {
+                // the key actor (or an admin) takes a class away or gives it back
+                let author = if rng.below(4) == 0 { n[1 + rng.below(2)] } else { k };
+                let (target, member) = [(g, n[1]), (g, n[2]), (g, team), (team, n[3]), (team, n[4]), (doc, n[3])][rng.below(6)];
+                let e = [None, None, edge(Admin), edge(Write), edge_inv(Admin, None, Some(t + 1 + rng.below(6) as u64))][rng.below(5)];
+                w.set(author, target, member, e, t, &recv)
+            } else {
+                let author = n[1 + rng.below(4)];
+                let target = [g, doc, doc, team][rng.below(4)];
+                let member = n[1 + rng.below(5)];
+                let e = [None, edge(Read), edge(Write), edge(Admin), edge_inv(Write, Some(Read), None)][rng.below(5)];
+                w.set(author, target, member, e, t, &recv)
+            };
+            if rng.below(2) == 0 {
+                late.push(id);
+            }
+        }
+        let order = rng.perm(late.len());
+        let mut skip: BTreeSet<_> = late.iter().copied().collect();
+        let mut prev = w.held_without(&skip);
+        let mut inc = Timelines::new();
+        inc.update(&prev);
+        let mut i = 0;
+        while i < order.len() {
+            let take = if rng.below(4) == 0 { 2 } else { 1 };
+            for j in order.iter().skip(i).take(take) {
+                skip.remove(&late[*j]);
+            }
+            i += take;
+            let held = w.held_without(&skip);
+            inc.update_touched(&held, &touched(&prev, &held));
+            appended += inc.appended();
+            placed += inc.placed();
+            if let Some(d) = check(&held, &inc, &n) {
+                panic!("seed {seed:#x} sample {s} arrival {i}: {d}");
+            }
+            prev = held;
+        }
+    }
+    (appended, placed)
+}
+
+/// §5.1 steps 2-5: late writes before class falls of their author, through `update_touched`,
+/// equal from scratch.
+#[test]
+fn append_falls_equals_from_scratch_spec_permissions_5_1() {
+    let (appended, placed) = adversarial_falls(15, 0x5eed_0319);
+    eprintln!("appended {appended} placed {placed}");
+    assert!(appended > 0 && placed > 0, "{appended} {placed}");
+}
+
+#[test]
+#[ignore]
+fn append_falls_equals_from_scratch_large() {
+    let (appended, placed) = adversarial_falls(3_000, 0x5eed_031a);
+    eprintln!("appended {appended} placed {placed}");
+    assert!(placed > 1_000, "{appended} {placed}");
+}
+
+/// §1, §5.1 step 4: a thing named as a member by a write that a later fall drops (a node
+/// until its `/created` says it is owned) gets its `/created` late: the walk goes on from the
+/// dropped write, which is dropped again; and with a late write before it in the same update.
+/// Equal to an evaluation from scratch, not evaluated anew.
+#[test]
+fn created_late_for_a_dropped_write_spec_permissions_5_1() {
+    use osis_base::Role::{Admin, Read};
+    for with_commit in [false, true] {
+        let mut w = World::new();
+        let n = w.nodes(4);
+        let (k, a) = (n[0], n[1]);
+        let g = w.thing(k);
+        let team = w.thing(k);
+        let doc = w.thing(team);
+        w.set(k, g, a, edge(Admin), 1, &[]);
+        w.set(k, team, n[2], edge(Admin), 1, &[]);
+        for i in 0..20u64 {
+            w.set(a, g, n[3], edge(Read), 2 + i, &[]);
+        }
+        let dropped = w.set(a, g, doc, edge(Read), 30, &[]);
+        w.set(k, g, a, None, 40, &[]);
+        w.set(n[2], doc, n[3], edge(Read), 45, &[]);
+        let late = w.set(k, g, n[2], edge(Admin), 25, &[]);
+        let mut prev = w.held_without(&BTreeSet::from([late]));
+        prev.created.remove(&doc);
+        let mut inc = Timelines::new();
+        inc.update(&prev);
+        let full = Timeline::evaluate(&prev);
+        assert!(full.dropped().contains_key(&WriteId::Op(dropped, 0)), "the fall drops it");
+        let mut held = if with_commit { w.held() } else { w.held_without(&BTreeSet::from([late])) };
+        held.created.insert(doc, w.created[&doc].clone());
+        let c = inc.update_touched(&held, &touched(&prev, &held));
+        assert!(c.evaluated.is_empty(), "{with_commit}: {c:?}");
+        assert!(check(&held, &inc, &n).is_none(), "{with_commit}: {:?}", check(&held, &inc, &n));
+        assert!(Timeline::evaluate(&held).dropped().contains_key(&WriteId::Op(dropped, 0)));
+    }
+}
+
+/// §5.1 step 4: falls of a late write's author recorded only with it (its first write on the
+/// thing moved earlier), at items sharing a ts with other authors' writes and with the late
+/// write's own: in timeline order, before the falls recorded after the old first write, and
+/// one of them dropping the late write (not covered) so the walk goes on from that item. Each
+/// equals an evaluation from scratch.
+#[test]
+fn falls_before_old_first_write_spec_permissions_5_1() {
+    use osis_base::Role::{Admin, Read, Write};
+    for covered in [true, false] {
+        let mut w = World::new();
+        let n = w.nodes(5);
+        let (k, a, b) = (n[0], n[1], n[2]);
+        let g = w.thing(k);
+        let doc = w.thing(g);
+        w.set(k, g, a, edge(Admin), 1, &[]);
+        w.set(k, g, b, edge(Admin), 1, &[]);
+        w.set(b, doc, n[3], edge(Read), 2, &[]);
+        // a's class on doc falls (admin taken by k, given back; then by b) twice before its old
+        // first write at 20, at ts shared with b's writes, then again after it; k's frontier
+        // covers the late write, b's only when `covered`
+        let recv: &[(Tid, u64)] = if covered { &[(k, 6), (b, 6)] } else { &[(k, 6)] };
+        let late = w.set(a, doc, n[4], edge(Write), 5, recv);
+        for (t, by) in [(8u64, k), (12, b)] {
+            w.set(b, doc, n[3], edge(Write), t, &[]);
+            w.set(by, g, a, None, t, &[]);
+            w.set(k, g, a, edge(Admin), t + 1, &[]);
+        }
+        w.set(a, doc, n[3], edge(Read), 20, &[(k, 21), (b, 21)]);
+        w.set(k, g, a, None, 25, &[(k, 26)]);
+        w.set(b, doc, n[3], None, 26, &[]);
+        let prev = w.held_without(&BTreeSet::from([late]));
+        let mut inc = Timelines::new();
+        inc.update(&prev);
+        let held = w.held();
+        let c = inc.update_touched(&held, &touched(&prev, &held));
+        assert!(c.evaluated.is_empty(), "{c:?}");
+        assert_eq!(inc.appended(), 1);
+        assert!(check(&held, &inc, &n).is_none(), "{covered}: {:?}", check(&held, &inc, &n));
+        let full = Timeline::evaluate(&held);
+        assert_eq!(full.falls(&a, &doc).len(), 3, "{covered}: {:?}", full.falls(&a, &doc));
+        assert_eq!(full.dropped().contains_key(&WriteId::Op(late, 0)), !covered);
+    }
+}
