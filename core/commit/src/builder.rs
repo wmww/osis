@@ -191,9 +191,9 @@ impl CommitBuilder {
             let dedup = secrets.dedup(&self.actor).ok_or(Error::Build("dedup secret of the actor not supplied"))?;
             let mut written = Vec::new();
             let mut prefix = || {
-                let mut s = [0u8; 16];
-                rng.fill_bytes(&mut s);
-                Prefix::from_keys(s, &blind, list_expiry, &list_keys)
+                let mut salt = [0u8; 16];
+                rng.fill_bytes(&mut salt);
+                Prefix { salt, blind, expiry: list_expiry, keys: list_keys.clone() }
             };
             let mut rec = Recording { sink: &mut *sink, written: &mut written };
             let link = write_list(&bytes, &dedup, &mut rec, &mut prefix)?;

@@ -41,6 +41,12 @@ impl Prefix {
         Prefix::new(salt, expiry, cs)
     }
 
+    /// `for_keys` of a commit's delete keys (osis-commit's `Prefix` inputs).
+    pub fn for_delete_keys(salt: [u8; 16], hb: &[u8; 16], expiry: Option<WallMs>, keys: &[osis_commit::DeleteKey]) -> Result<Prefix, Error> {
+        let keys = keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<Result<Vec<_>, osis_commit::Error>>()?;
+        Prefix::for_keys(salt, hb, expiry, &keys)
+    }
+
     /// A random salt.
     pub fn random_salt(rng: &mut dyn CryptoRngCore) -> [u8; 16] {
         let mut s = [0u8; 16];
@@ -128,8 +134,8 @@ impl Prefix {
     /// Whether this prefix is what an encryption of a commit's deltas computes (spec/commits.md
     /// §4, spec/sync.md §1): the same expiry, and exactly the commitments of `keys` under this
     /// salt and the header's blind `hb`. A mismatch makes the commit blob bad input.
-    pub fn agrees(&self, expiry: Option<WallMs>, hb: &[u8; 16], keys: &[(Level, VerifyingKey)]) -> bool {
-        Prefix::for_keys(self.salt, hb, expiry, keys).is_ok_and(|p| p == *self)
+    pub fn agrees(&self, expiry: Option<WallMs>, hb: &[u8; 16], keys: &[osis_commit::DeleteKey]) -> bool {
+        Prefix::for_delete_keys(self.salt, hb, expiry, keys).is_ok_and(|p| p == *self)
     }
 }
 
@@ -272,12 +278,13 @@ mod tests {
         let k = osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([1; 32])).verifying_key();
         let k3 = osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([2; 32])).verifying_key();
         let hb = [6u8; 16];
+        let dk = |l, k: &VerifyingKey| osis_commit::DeleteKey::new(l, k);
         let p = Prefix::for_keys(salt, &hb, Some(WallMs(10)), &[(2, k)]).unwrap();
-        assert!(p.agrees(Some(WallMs(10)), &hb, &[(2, k)]));
-        assert!(!p.agrees(None, &hb, &[(2, k)]));
-        assert!(!p.agrees(Some(WallMs(10)), &hb, &[(3, k)]));
-        assert!(!p.agrees(Some(WallMs(10)), &hb, &[(2, k3)]));
-        assert!(!p.agrees(Some(WallMs(10)), &[7; 16], &[(2, k)]));
+        assert!(p.agrees(Some(WallMs(10)), &hb, &[dk(2, &k)]));
+        assert!(!p.agrees(None, &hb, &[dk(2, &k)]));
+        assert!(!p.agrees(Some(WallMs(10)), &hb, &[dk(3, &k)]));
+        assert!(!p.agrees(Some(WallMs(10)), &hb, &[dk(2, &k3)]));
+        assert!(!p.agrees(Some(WallMs(10)), &[7; 16], &[dk(2, &k)]));
         assert!(!p.agrees(Some(WallMs(10)), &hb, &[]));
         assert_eq!(p.key_at(2), Some(osis_crypto::blind(&k, &salt, &hb).to_bytes()));
         // Repeated pairs on either side give one commitment; two keys at one level are refused.
@@ -286,6 +293,15 @@ mod tests {
         // another salt or header blind, another blinded key
         assert_ne!(Prefix::for_keys([5; 16], &hb, None, &[(2, k)]).unwrap().key_at(2), p.key_at(2));
         assert_ne!(Prefix::for_keys(salt, &[8; 16], None, &[(2, k)]).unwrap().key_at(2), p.key_at(2));
+        // a commit's delete keys give the same prefix; a delete signature under that salt and
+        // blind verifies under the committed key
+        let d = osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([1; 32]));
+        assert_eq!(Prefix::for_delete_keys(salt, &hb, Some(WallMs(10)), &[dk(2, &k)]).unwrap(), p);
+        assert!(Prefix::for_delete_keys(salt, &hb, None, &[dk(2, &k), dk(2, &k3)]).is_err());
+        let key = p.key_at(2).unwrap();
+        osis_crypto::verify_delete(&key, &[4; 32], &d.sign(&salt, &hb, &[4; 32])).unwrap();
+        assert!(osis_crypto::verify_delete(&key, &[4; 32], &d.sign(&[3; 16], &hb, &[4; 32])).is_err());
+        assert!(osis_crypto::verify_delete(&key, &[4; 32], &d.sign(&salt, &[1; 16], &[4; 32])).is_err());
     }
 
     // spec/crypto.md §5: a reader tries its read secrets newest first; a filler opens under none.

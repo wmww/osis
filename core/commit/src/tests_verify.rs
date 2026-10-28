@@ -1,6 +1,6 @@
 //! Delete keys, commit blobs, delta verification (spec/crypto.md §7, spec/wire.md §4, spec/commits.md §4).
 
-use crate::tests::{dkey, sample_header, t, ts};
+use crate::tests::{sample_header, t, ts};
 use crate::*;
 use osis_base::{Classified, ErrorClass, Tid, Ts, Value};
 use osis_crdt::{AnyView, Delta, Interner, Source, Writer, create, encode_delta};
@@ -52,23 +52,6 @@ fn delete_levels_by_retention() {
     assert_eq!(lv(PurgeBy::Writer, Kind::Content), vec![1, 2, 3]);
     assert_eq!(lv(PurgeBy::Writer, Kind::Import), vec![1, 3]);
     assert!(delete_keys(&TestSecrets { admin: false }, &t(3), &Retention::default(), Kind::Content).is_err());
-}
-
-// spec/crypto.md §7, spec/wire.md §5: commitments are the delete keys blinded by the prefix
-// salt, levels ascending; a signature by the delete key under that salt verifies.
-#[test]
-fn prefix_commitments() {
-    let d = DeleteSecret::derive(&Secret32::from_bytes([1; 32]));
-    let hb = [6u8; 16];
-    let p = Prefix::from_keys([9; 16], &hb, Some(5), &[DeleteKey::new(2, &d.verifying_key()), dkey(1, 2)]).unwrap();
-    assert_eq!(p.commitments.len(), 2);
-    assert_eq!((p.commitments[0][0], p.commitments[1][0]), (1, 2));
-    let key: [u8; 32] = p.commitments[1][1..].try_into().unwrap();
-    osis_crypto::verify_delete(&key, &[4; 32], &d.sign(&[9; 16], &hb, &[4; 32])).unwrap();
-    assert!(osis_crypto::verify_delete(&key, &[4; 32], &d.sign(&[3; 16], &hb, &[4; 32])).is_err());
-    assert!(osis_crypto::verify_delete(&key, &[4; 32], &d.sign(&[9; 16], &[1; 16], &[4; 32])).is_err());
-    // two keys at one level cannot share a blob
-    assert!(Prefix::from_keys([9; 16], &hb, None, &[dkey(2, 1), dkey(2, 2)]).is_err());
 }
 
 /// A valid one-aspect content commit over a register delta, its blob and author key.

@@ -92,10 +92,10 @@ fn list_overflow_links() {
     assert!(!built.list_blobs.is_empty());
     assert_eq!(built.list_blobs.len(), sink.blobs.len());
     assert!(h.encode().len() < CHUNK_THRESHOLD);
-    // header-list blobs carry the level-2 commitment only (spec/wire.md §5)
+    // header-list blobs carry the level-2 commitment only (spec/wire.md §5), under the header's blind
     for (p, _) in sink.blobs.values() {
-        assert_eq!(p.commitments.len(), 1);
-        assert_eq!(p.commitments[0][0], 2);
+        assert_eq!(p.keys.iter().map(|k| k.level).collect::<Vec<_>>(), vec![2]);
+        assert_eq!(p.blind, h.blind);
     }
     let bytes = built.commit.encode();
     let mut back = CommitBlob::decode(&bytes).unwrap();
@@ -120,7 +120,7 @@ fn small_linked_list_rejected() {
     let mut salt = 0u8;
     let link = write_list(&bytes, &d, &mut sink, &mut || {
         salt += 1;
-        Ok(Prefix { salt: [salt; 16], expiry: None, commitments: vec![] })
+        Prefix { salt: [salt; 16], blind: [0; 16], expiry: None, keys: vec![] }
     })
     .unwrap();
     assert_eq!(read_list(&link, &d, &mut sink, MAX_LIST_BYTES).unwrap(), bytes);
@@ -293,9 +293,8 @@ fn build_import() {
     verify_blob(&c, &key().verifying_key(), &dedup, None).unwrap();
 }
 
-// spec/wire.md §4, §5, spec/crypto.md §7: the chunk list holds, per introduced blob, the
-// indices of its delta's delete keys in the header; a chunk framed with those keys commits to
-// each blinded by its own salt.
+// spec/wire.md §4, §5: the chunk list holds, per introduced blob, the indices of its delta's
+// delete keys in the header.
 #[test]
 fn chunk_list() {
     let mut b = content(1);
@@ -308,9 +307,5 @@ fn chunk_list() {
         assert_eq!(c.keys, h.aspects[0].keys);
         let keys: Vec<DeleteKey> = c.keys.iter().map(|i| h.keys[*i]).collect();
         assert_eq!(keys.iter().map(|k| k.level).collect::<Vec<_>>(), vec![1, 2, 3]);
-        let prefix = Prefix::from_keys([1; 16], &h.blind, None, &keys).unwrap();
-        for (x, k) in prefix.commitments.iter().zip(&keys) {
-            assert_eq!(x[1..], osis_crypto::blind(&k.verifying_key().unwrap(), &[1; 16], &h.blind).to_bytes());
-        }
     }
 }

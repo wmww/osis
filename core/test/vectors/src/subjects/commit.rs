@@ -244,8 +244,9 @@ fn more_accepted() -> Vec<Record> {
     for (i, id) in bl.list_blobs.iter().enumerate() {
         let (p, plain) = &sink.blobs[id];
         // level-2 commitments only (spec/wire.md §5)
-        assert!(p.commitments.len() == 1 && p.commitments.iter().all(|x| x[0] == 2));
-        r = r.with(&format!("list-blob-{i}"), format!("{} {} {} {}", hex(&id.0), hex(&p.salt), hex(&p.commitments.concat()), hex(plain)));
+        let framed = osis_label::Prefix::for_delete_keys(p.salt, &p.blind, p.expiry.map(WallMs), &p.keys).unwrap();
+        assert!(framed.commitments().len() == 1 && framed.commitments().iter().all(|x| x[0] == 2));
+        r = r.with(&format!("list-blob-{i}"), format!("{} {} {} {}", hex(&id.0), hex(&p.salt), hex(&framed.commitments().concat()), hex(plain)));
     }
     out.push(r.with("header", hex(&c.header.encode())).with("commit-id", hex(&c.id().0)).with("signature", hex(&c.signature.0)).with("blob", hex(&c.encode())));
     out

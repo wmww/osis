@@ -49,12 +49,12 @@ impl BlobSource for MemoryBlobs {
 struct ListSink<'a> {
     dedup: &'a Secret32,
     sink: &'a mut dyn BlobSink,
-    prefix: &'a mut dyn FnMut() -> Result<Prefix, Error>,
+    prefix: &'a mut dyn FnMut() -> Prefix,
 }
 
 impl ListSink<'_> {
     fn put(&mut self, hash: [u8; 32], plaintext: &[u8]) -> Result<Link, Error> {
-        let (blob, key) = self.sink.put(&(self.prefix)()?, plaintext)?;
+        let (blob, key) = self.sink.put(&(self.prefix)(), plaintext)?;
         Ok(Link { hash, blob, suite: 1, key })
     }
 }
@@ -78,7 +78,7 @@ impl LinkSource for ListSource<'_> {
 
 /// Writes the chunk tree of a header list's bytes and returns its root link (empty input: one
 /// empty chunk). `prefix` gives each blob's prefix inputs (a fresh salt each call).
-pub fn write_list(bytes: &[u8], dedup: &Secret32, sink: &mut dyn BlobSink, prefix: &mut dyn FnMut() -> Result<Prefix, Error>) -> Result<Link, Error> {
+pub fn write_list(bytes: &[u8], dedup: &Secret32, sink: &mut dyn BlobSink, prefix: &mut dyn FnMut() -> Prefix) -> Result<Link, Error> {
     tree::write_tree(&mut ListSink { dedup, sink, prefix }, ChunkParams::FORMAT, bytes)
 }
 

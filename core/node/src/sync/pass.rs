@@ -1089,10 +1089,7 @@ impl SyncEngine {
             let Some(h) = self.engine.header(&c) else { continue };
             self.prefix_checked.insert(b);
             let agrees = match (osis_label::Prefix::parse(&bytes), osis_commit::prefix_inputs(&h, &parts)) {
-                (Ok(p), Ok((expiry, keys))) => {
-                    let keys: std::result::Result<Vec<_>, _> = keys.iter().map(|k| k.verifying_key().map(|v| (k.level, v))).collect();
-                    parts.is_empty() || keys.is_ok_and(|k| p.agrees(expiry.map(WallMs), &h.blind, &k))
-                }
+                (Ok(p), Ok((expiry, keys))) => parts.is_empty() || p.agrees(expiry.map(WallMs), &h.blind, &keys),
                 _ => false,
             };
             if !agrees {
