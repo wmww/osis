@@ -1,10 +1,9 @@
 //! `--json` output (notes/cli.md, JSON mapping): a small JSON tree and writer, and the value
 //! mapping (named with a schema, else ids).
 
-use crate::text::{Ty, float_text, quote};
-use osis::{Schema, Tid, Value};
+use crate::text::{Kind, Ty, float_text, kind_of, quote};
+use osis::{Tid, Value};
 use osis_schema::osis_base::base64url;
-use osis_schema::{StructType, Type};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum J {
@@ -82,7 +81,11 @@ fn b64(b: &[u8]) -> J {
 /// The JSON form of a value. Timestamps and durations stay ms ints.
 pub fn value(v: &Value, ty: Ty<'_>) -> J {
     let s = ty.map(|(s, _)| s);
-    let st = ty.and_then(|(s, t)| struct_of(s, t));
+    let kind = kind_of(ty);
+    let elem = match &kind {
+        Kind::List(e) | Kind::Set(e) => Some(e),
+        _ => None,
+    };
     match v {
         Value::Int(i) => J::int(*i),
         Value::Float(f) => {
@@ -94,32 +97,29 @@ pub fn value(v: &Value, ty: Ty<'_>) -> J {
         Value::Bytes(b) => J::obj([("$blob", b64(b))]),
         Value::Tid(t) => J::tid(*t),
         Value::Enum(c, p) => {
-            let (name, pt) = enum_case(ty, *c);
-            let mut f = vec![("$case".to_string(), name)];
+            let case = match &kind {
+                Kind::Enum(e) => e.cases.get(c),
+                _ => None,
+            };
+            let mut f = vec![("$case".to_string(), case.map_or_else(|| J::int(*c), |c| J::str(c.name.clone())))];
             if let Some(p) = p {
-                f.push(("$payload".into(), value(p, s.zip(pt.as_ref()))));
+                f.push(("$payload".into(), value(p, s.zip(case.and_then(|c| c.payload.as_ref())))));
             }
             J::Obj(f)
         }
-        Value::List(l) => {
-            let et = ty.and_then(|(s, t)| crate::text::inner_types(s, t).0);
-            J::Arr(l.iter().map(|x| value(x, s.zip(et.as_ref()))).collect())
-        }
-        Value::Set(x) => {
-            let et = ty.and_then(|(s, t)| crate::text::inner_types(s, t).0);
-            J::obj([("$set", J::Arr(x.iter().map(|x| value(x, s.zip(et.as_ref()))).collect()))])
-        }
+        Value::List(l) => J::Arr(l.iter().map(|x| value(x, s.zip(elem))).collect()),
+        Value::Set(x) => J::obj([("$set", J::Arr(x.iter().map(|x| value(x, s.zip(elem))).collect()))]),
         Value::Map(m) => {
-            let (kt, vt) = match ty {
-                Some((s, t)) => crate::text::inner_types(s, t),
-                None => (None, None),
+            let (st, kt, vt) = match &kind {
+                Kind::Struct(st) => (Some(st), None, None),
+                Kind::Map(k, v) => (None, Some(k), Some(v)),
+                _ => (None, None, None),
             };
-            let vty = |k: &Value| -> Option<Type> {
-                match (&st, k) {
-                    (Some(st), Value::Int(i)) => u64::try_from(*i).ok().and_then(|id| st.fields.get(&id)).map(|f| f.ty.clone()),
-                    _ => vt.clone(),
-                }
+            let field = |k: &Value| match (st, k) {
+                (Some(st), Value::Int(i)) => u64::try_from(*i).ok().and_then(|id| st.fields.get(&id)),
+                _ => None,
             };
+            let vty = |k: &Value| s.zip(if st.is_some() { field(k).map(|f| &f.ty) } else { vt });
             // A typed struct is an object by field name; a map is an object only when every key
             // is a string and none is a marker, so an object never reads as a marker form.
             let is_struct = st.is_some() && m.keys().all(|k| matches!(k, Value::Int(i) if *i >= 0));
@@ -128,42 +128,20 @@ pub fn value(v: &Value, ty: Ty<'_>) -> J {
                 J::Obj(
                     m.iter()
                         .map(|(k, v)| {
-                            let name = match (k, &st) {
-                                (Value::Str(x), _) => x.clone(),
-                                (Value::Int(i), Some(st)) => u64::try_from(*i).ok().and_then(|id| st.fields.get(&id)).map_or_else(|| i.to_string(), |f| f.name.clone()),
-                                (k, _) => crate::text::print(k, None),
+                            let name = match k {
+                                Value::Str(x) => x.clone(),
+                                Value::Int(i) if st.is_some() => field(k).map_or_else(|| i.to_string(), |f| f.name.clone()),
+                                k => crate::text::print(k, None),
                             };
-                            (name, value(v, s.zip(vty(k).as_ref())))
+                            (name, value(v, vty(k)))
                         })
                         .collect(),
                 )
             } else {
-                J::obj([(
-                    "$map",
-                    J::Arr(m.iter().map(|(k, v)| J::Arr(vec![value(k, s.zip(kt.as_ref())), value(v, s.zip(vty(k).as_ref()))])).collect()),
-                )])
+                J::obj([("$map", J::Arr(m.iter().map(|(k, v)| J::Arr(vec![value(k, s.zip(kt)), value(v, vty(k))])).collect()))])
             }
         }
         Value::Link(_) => J::Null,
         Value::Unknown(u) => J::obj([("$tag", J::int(u.tag())), ("$bytes", b64(u.content().as_bytes()))]),
     }
-}
-
-/// The struct type behind `t`, if it is one.
-fn struct_of(s: &Schema, t: &Type) -> Option<StructType> {
-    match s.expand(t).ok()?.as_ref() {
-        Type::Struct(st) => Some(st.clone()),
-        _ => None,
-    }
-}
-
-fn enum_case(ty: Ty<'_>, c: u64) -> (J, Option<Type>) {
-    if let Some((s, t)) = ty
-        && let Ok(e) = s.expand(t)
-        && let Type::Enum(e) = e.as_ref()
-        && let Some(case) = e.cases.get(&c)
-    {
-        return (J::str(case.name.clone()), case.payload.clone());
-    }
-    (J::int(c), None)
 }

@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub type Ty<'a> = Option<(&'a Schema, &'a Type)>;
 
 /// What a type means for the text form.
-enum Kind {
+pub(crate) enum Kind {
     Timestamp,
     Duration,
     Struct(StructType),
@@ -50,7 +50,7 @@ fn kind(s: &Schema, t: &Type) -> Kind {
     Kind::Plain
 }
 
-fn kind_of(ty: Ty<'_>) -> Kind {
+pub(crate) fn kind_of(ty: Ty<'_>) -> Kind {
     match ty {
         Some((s, t)) => kind(s, t),
         None => Kind::Plain,
