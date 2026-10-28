@@ -86,6 +86,8 @@ pub(crate) struct Work {
     pub settled: Option<(bool, bool)>,
     /// Commits whose verdict changes at a time (raw-free corrected wall ms).
     pub due: BTreeMap<u64, BTreeSet<CommitId>>,
+    /// Other entries whose verdict changes at a time (a local pass: a prefix's expiry).
+    pub due_blobs: BTreeMap<u64, BTreeSet<BlobId>>,
     /// Commits whose verdict waits on an aspect's state (liveness).
     pub waits: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
     /// Keep-at-most bodies before their timed delete: a valid write changes their bound or
@@ -136,6 +138,7 @@ impl Work {
             held_back: BTreeSet::new(),
             settled: None,
             due: BTreeMap::new(),
+            due_blobs: BTreeMap::new(),
             waits: BTreeMap::new(),
             at_most: BTreeMap::new(),
             links: BTreeMap::new(),
@@ -163,6 +166,30 @@ impl Work {
         self.moved.extend(o.moved);
         self.actors.extend(o.actors);
         self.keys |= o.keys;
+    }
+
+    /// Takes what pass left to do (`Left`) as the next pass's set.
+    pub fn leave(&mut self, left: Left) {
+        self.full = false;
+        self.commits = left.commits;
+        self.blobs = left.blobs;
+        for (t, cs) in left.due {
+            self.due.entry(t).or_default().extend(cs);
+        }
+        for (t, bs) in left.due_blobs {
+            self.due_blobs.entry(t).or_default().extend(bs);
+        }
+        for (k, cs) in left.waits {
+            self.waits.entry(k).or_default().extend(cs);
+        }
+        for (k, cs) in left.at_most {
+            self.at_most.entry(k).or_default().extend(cs);
+        }
+        for (b, cs) in left.links {
+            self.links.entry(b).or_default().extend(cs);
+        }
+        self.keyless.extend(left.keyless);
+        self.held_back.extend(left.held_back);
     }
 }
 
@@ -192,6 +219,7 @@ pub(crate) struct Left {
     pub commits: BTreeSet<CommitId>,
     pub blobs: BTreeSet<BlobId>,
     pub due: BTreeMap<u64, BTreeSet<CommitId>>,
+    pub due_blobs: BTreeMap<u64, BTreeSet<BlobId>>,
     pub waits: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
     pub at_most: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
     pub links: BTreeMap<BlobId, BTreeSet<CommitId>>,
@@ -262,6 +290,10 @@ impl SyncEngine {
         let later = w.due.split_off(&now.saturating_add(1));
         for (_, cs) in std::mem::replace(&mut w.due, later) {
             w.commits.extend(cs);
+        }
+        let later = w.due_blobs.split_off(&now.saturating_add(1));
+        for (_, bs) in std::mem::replace(&mut w.due_blobs, later) {
+            w.blobs.extend(bs);
         }
         for k in std::mem::take(&mut w.states).into_iter().chain(w.aspects.iter().cloned()) {
             if let Some(cs) = w.waits.remove(&k) {
@@ -432,6 +464,7 @@ impl SyncEngine {
         w.whole.clear();
         w.links.clear();
         w.due.clear();
+        w.due_blobs.clear();
         w.moved.clear();
         w.actors.clear();
         w.keys = false;
@@ -516,9 +549,14 @@ impl SyncEngine {
 
     /// Takes in what changed during this pass so far (entries opened, copies placed): judged
     /// in the rest of the pass, and again by the next.
-    pub(super) fn pull(&mut self, conn: ConnId, g: &Tid, l: LabelId, scope: &mut Scope, w: &mut Work) {
+    /// `conn` `None`: the label's local pass (`SyncEngine::local_work`).
+    pub(super) fn pull(&mut self, conn: Option<ConnId>, g: &Tid, l: LabelId, scope: &mut Scope, w: &mut Work) {
         self.spread_touches();
-        let Some((mut cs, bs)) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).map(|lc| (lc.work.commits.clone(), lc.work.blobs.clone())) else { return };
+        let meanwhile = match conn {
+            Some(conn) => self.conns.get(&conn).and_then(|c| c.labels.get(&l)).map(|lc| &lc.work),
+            None => self.local_work.get(&l),
+        };
+        let Some((mut cs, bs)) = meanwhile.map(|w| (w.commits.clone(), w.blobs.clone())) else { return };
         cs.extend(self.commits_of(&l, &bs));
         self.aggregate(g, &l, w, &cs, &bs);
         if let Scope::Some { commits, blobs } = scope {

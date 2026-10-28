@@ -70,6 +70,8 @@ pub struct Net {
     pub sent_bytes: usize,
     /// Every dial: (node, address).
     pub dialed: Vec<(usize, Address)>,
+    /// Nodes added from now on judge everything at every pass (`SyncConfig::full_passes`).
+    pub full_passes: bool,
     /// Nodes whose Upload requests to servers are lost on the way (never answered).
     pub lose_uploads: BTreeSet<usize>,
     /// Time spent in each node's `handle` and in the hubs (scale tests).
@@ -83,7 +85,7 @@ pub fn server_key(i: usize) -> [u8; 32] {
 
 impl Net {
     pub fn new() -> Net {
-        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), lose_uploads: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO }
+        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO }
     }
 
     pub fn now(&self) -> u64 {
@@ -122,6 +124,7 @@ impl Net {
     }
 
     pub fn add_node(&mut self, seed: u64, cfg: SyncConfig) -> usize {
+        let cfg = SyncConfig { full_passes: cfg.full_passes || self.full_passes, ..cfg };
         let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
         let c: Arc<dyn Clock> = self.clock.clone();
         let engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c.clone(), Box::new(SeededRng::from_u64(seed))).unwrap();

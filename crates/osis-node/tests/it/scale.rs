@@ -738,6 +738,42 @@ fn sync_pass_cost() {
     }
 }
 
+// spec/sync.md §5 (member peer), §6; spec/requirements.md, Scale: a change to a label served
+// with no server costs its local passes O(change). A dialable node and a writer, a label at no
+// server holding N content commits (100 things); then one more write: the passes it causes at
+// the serving node (time; passes, full, bodies, entries). `OSIS_SCALE_MAX` caps N (default 10^4).
+#[test]
+#[ignore = "tier 2"]
+fn sync_local_pass_cost() {
+    let max: usize = std::env::var("OSIS_SCALE_MAX").ok().and_then(|s| s.parse().ok()).unwrap_or(10_000);
+    let d = |x: osis_node::sync::PassStats, y: osis_node::sync::PassStats| (y.passes - x.passes, y.full - x.full, y.bodies - x.bodies, y.entries - x.entries);
+    let mut n = 1_000;
+    while n <= max {
+        let mut net = net::Net::new();
+        let a = net.node(1, &[]);
+        let b = net.node(2, &[]);
+        let acts = net.sync(a).publish_reach([0xa1; 32], Vec::new()).unwrap();
+        net.actions(a, acts);
+        let g = net.group(a, &[(b, Role::Read)], &[]);
+        let things: Vec<Tid> = (0..100).map(|i| net.item(a, g, g, &format!("t{i}"))).collect();
+        let t0 = Instant::now();
+        for i in 0..n {
+            net.write(a, things[i % things.len()], &format!("v{i}"));
+        }
+        net.run();
+        let fill = t0.elapsed();
+        net.advance(61_000);
+        let s0 = net.sync(a).pass_stats();
+        let t1 = Instant::now();
+        net.write(a, things[0], "one more");
+        net.run();
+        let one = t1.elapsed();
+        let s1 = net.sync(a).pass_stats();
+        println!("local label of {n} commits (fill {fill:?}): one more write {one:?}, (passes, full, bodies, entries) {:?}", d(s0, s1));
+        n *= 10;
+    }
+}
+
 // spec/sync.md §6, §7; spec/permissions.md §4; spec/requirements.md, Scale: a membership change
 // re-judges only the labels whose verdicts can read it. 10 labels of `OSIS_SCALE_LABEL` (default
 // 10^3) content commits each at one server, a writer and a reader; then an edge write on an
