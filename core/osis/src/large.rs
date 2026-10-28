@@ -177,8 +177,7 @@ impl Osis {
     fn raw_at<K: AspectKey>(&self, tid: Tid, key: &K, path: &Path) -> Result<Option<(Tid, Value)>> {
         let ak = ak_of(key)?;
         self.read(|r| {
-            let tid = r.resolve(tid);
-            let Some(v) = r.raw_value(tid, &ak)? else { return Ok(None) };
+            let (tid, Some(v)) = r.raw(tid, &ak)? else { return Ok(None) };
             Ok(osis_schema::value_at(&v, path).cloned().map(|x| (tid, x)))
         })
     }
