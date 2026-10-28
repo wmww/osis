@@ -3,7 +3,7 @@
 //! notices and carries out the outputs.
 
 use crate::Error;
-use crate::frame::{FrameDecoder, encode_frame};
+use crate::frame::{FrameDecoder, encode_frame, send};
 use crate::hello::{Hello, PROTOCOL_VERSION, negotiate};
 use crate::msg::*;
 use crate::rbsr;
@@ -155,6 +155,21 @@ pub struct ServerConnection {
     member: Option<[u8; 32]>,
 }
 
+/// The label's parsed path, reloaded when the head changed; none for an unknown label.
+fn cached<'a>(cache: &'a mut HashMap<LabelId, Cached>, store: &dyn LabelStore, label: &LabelId) -> Result<Option<&'a Cached>, StoreError> {
+    let Some(head) = store.head(label)? else {
+        cache.remove(label);
+        return Ok(None);
+    };
+    if cache.get(label).is_none_or(|c| c.head != head) {
+        if cache.len() >= MAX_CACHED {
+            cache.clear();
+        }
+        cache.insert(*label, Cached::new(head, store.path(label)?));
+    }
+    Ok(cache.get(label))
+}
+
 /// Replay cursor ID of a log (spec/wire.md §11.2).
 pub fn replay_id(log_id: &[u8; 16]) -> [u8; 16] {
     let h = osis_base::hash::hash(&[REPLAY.as_bytes(), &log_id[..]].concat());
@@ -295,19 +310,8 @@ impl ServerConnection {
         }
     }
 
-    /// The label's parsed path, reloaded when the head changed; none for an unknown label.
     fn cached(&mut self, store: &dyn LabelStore, label: &LabelId) -> Result<Option<&Cached>, StoreError> {
-        let Some(head) = store.head(label)? else {
-            self.cache.remove(label);
-            return Ok(None);
-        };
-        if self.cache.get(label).is_none_or(|c| c.head != head) {
-            if self.cache.len() >= MAX_CACHED {
-                self.cache.clear();
-            }
-            self.cache.insert(*label, Cached::new(head, store.path(label)?));
-        }
-        Ok(self.cache.get(label))
+        cached(&mut self.cache, store, label)
     }
 
     fn head(&mut self, store: &dyn LabelStore, label: &LabelId) -> Result<Option<Step>, StoreError> {
@@ -322,11 +326,8 @@ impl ServerConnection {
             M::Register { id, label, step, claim_set } => self.register(store, id, label, step, claim_set, out)?,
             M::Path { id, label, after } => self.path(store, id, label, after)?,
             M::Upload { id, label, entries } => {
-                let mut codes = Vec::with_capacity(entries.len());
-                for e in &entries {
-                    codes.push(self.accept(store, now, &label, &e.blob, e.wrap, Some(e.stamp))?);
-                }
-                changed(&codes, &label, out);
+                let ids: Vec<BlobId> = entries.iter().map(|e| osis_label::blob_id(&e.blob)).collect();
+                let codes = self.accept_all(store, now, &label, &entries, &ids, out)?;
                 let head = if codes.contains(&Code::NOT_HEAD) { self.head(store, &label)? } else { None };
                 M::Status { id, codes, head }
             }
@@ -338,7 +339,7 @@ impl ServerConnection {
                 let mut code = c.check(Key::Deposit, Domain::Deposit, &entry_digest(&label, &blob_id, &wrap), &sig);
                 let head = if code == Code::NOT_HEAD { c.head_step().cloned() } else { None };
                 if code == Code::OK {
-                    code = self.accept(store, now, &label, &blob, wrap, None)?;
+                    code = self.accept(store, now, &label, blob_id, &blob, wrap, None)?;
                 }
                 changed(&[code], &label, out);
                 let b = store.budget(&label)?;
@@ -399,9 +400,8 @@ impl ServerConnection {
     }
 
     fn open(&mut self, store: &dyn LabelStore, id: Id, label: LabelId, proof: Proof) -> Result<Message, StoreError> {
-        let Some(c) = self.cached(store, &label)? else { return Ok(Message::Error { id, code: Code::UNKNOWN_LABEL }) };
-        let path = c.path.clone();
-        let head_id = c.head;
+        let Some(c) = cached(&mut self.cache, store, &label)? else { return Ok(Message::Error { id, code: Code::UNKNOWN_LABEL }) };
+        let (path, head_id) = (&c.path, c.head);
         if !self.opened.contains(&label) && self.opened.len() >= MAX_OPEN_LABELS {
             return Ok(Message::Error { id, code: Code::RATE_LIMITED });
         }
@@ -430,7 +430,7 @@ impl ServerConnection {
             None => None,
         };
         let claims = |s: &StepId| set.as_ref().filter(|(id, _)| id == s).map(|(_, c)| c.as_ref());
-        Ok(match evaluate_open(&path, &claims, &proof, &self.cfg.challenge, &self.cfg.static_key) {
+        Ok(match evaluate_open(path, &claims, &proof, &self.cfg.challenge, &self.cfg.static_key) {
             OpenOutcome::Opened(entry_box) => match path.last() {
                 Some(head) => {
                     self.opened.insert(label);
@@ -570,14 +570,11 @@ impl ServerConnection {
             Some(_) => return Ok(invalid),
         };
         self.inline.insert(label, inline_limit);
-        for e in &entries {
-            self.cross(osis_label::blob_id(&e.blob));
+        let ids: Vec<BlobId> = entries.iter().map(|e| osis_label::blob_id(&e.blob)).collect();
+        for b in &ids {
+            self.cross(*b);
         }
-        let mut codes = Vec::with_capacity(entries.len());
-        for e in &entries {
-            codes.push(self.accept(store, now, &label, &e.blob, e.wrap, Some(e.stamp))?);
-        }
-        changed(&codes, &label, out);
+        let codes = self.accept_all(store, now, &label, &entries, &ids, out)?;
         let mut want = Vec::new();
         for g in &gained {
             if store.entry(&label, g)?.is_none() && !store.tombstoned(&label, g)? {
@@ -585,7 +582,7 @@ impl ServerConnection {
             }
         }
         // The requester holds what it gained and what it just sent: no add events for those.
-        let gained: HashSet<BlobId> = gained.into_iter().chain(entries.iter().map(|e| osis_label::blob_id(&e.blob))).collect();
+        let gained: HashSet<BlobId> = gained.into_iter().chain(ids).collect();
         let budget = REPLY_BUDGET.saturating_sub(40 * want.len() + 10 * codes.len());
         let (mut events, mut used, mut more) = (Vec::new(), 0, false);
         let cursor = match from {
@@ -687,12 +684,22 @@ impl ServerConnection {
         Ok(())
     }
 
+    /// The stamped entries of an Upload or Sync (`ids`: their blob IDs), one code each.
+    fn accept_all(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, entries: &[Entry], ids: &[BlobId], out: &mut Vec<ServerOutput>) -> Result<Vec<Code>, StoreError> {
+        let mut codes = Vec::with_capacity(entries.len());
+        for (e, b) in entries.iter().zip(ids) {
+            codes.push(self.accept(store, now, label, *b, &e.blob, e.wrap, Some(e.stamp))?);
+        }
+        changed(&codes, label, out);
+        Ok(codes)
+    }
+
     /// Upload (stamp) or deposit (no stamp, already authorized) of one entry (spec/sync.md §5).
-    fn accept(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, blob: &[u8], wrap: Wrap, stamp: Option<Signature>) -> Result<Code, StoreError> {
-        // An oversized blob never gets here: the message decoder refuses it (`field_sizes`).
+    #[allow(clippy::too_many_arguments)]
+    fn accept(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_id: BlobId, blob: &[u8], wrap: Wrap, stamp: Option<Signature>) -> Result<Code, StoreError> {
+        // An oversized blob never gets here: the message decoder refuses it (msg tests `field_sizes`).
         debug_assert!(blob.len() <= osis_base::format::MAX_BLOB);
         let Some(c) = self.cached(store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
-        let blob_id = osis_label::blob_id(blob);
         if let Some(stamp) = stamp {
             let code = c.check(Key::Write, Domain::Upload, &entry_digest(label, &blob_id, &wrap), &stamp);
             if code != Code::OK {
@@ -742,10 +749,6 @@ impl ServerConnection {
             _ => store.delete(label, &item.blob, now),
         }
     }
-}
-
-fn send<O: From<Vec<u8>>>(out: &mut Vec<O>, msg: Message) {
-    out.push(O::from(encode_frame(&msg.encode())));
 }
 
 impl From<Vec<u8>> for ServerOutput {
