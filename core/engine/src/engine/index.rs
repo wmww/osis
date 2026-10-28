@@ -851,7 +851,7 @@ impl super::Engine {
         let c = &self.core;
         let mut out = String::new();
         for (id, m) in c.commits.iter() {
-            let _ = writeln!(out, "commit {id:?} {:?} {:?} {:?} {:?}", m.valid, m.dropped, m.received, m.origin);
+            let _ = writeln!(out, "commit {id:?} {:?} {:?} {:?} {:?} {:?}", m.valid, m.dropped, m.received, m.origin, m.view);
         }
         let held = osis_perm::HeldSet::things(&c.held);
         for t in held {
@@ -862,6 +862,7 @@ impl super::Engine {
             ss.sort();
             let _ = writeln!(out, "held {t:?} {cs:?} {ss:?} {:?}", c.held.created(&t).is_some());
         }
+        let _ = writeln!(out, "by_thing {:?}\nby_chunk {:?}", *c.by_thing, *c.by_chunk);
         let _ = writeln!(out, "by_aspect {:?}\ninvalid {:?}\nranges {:?}", *c.by_aspect, *c.invalid, *c.ranges);
         let _ = writeln!(out, "rotation_role {:?}\ngrant_overreach {:?}\nbox_keys {:?}\nboxes_to {:?}", *c.rotation_role, *c.grant_overreach, *c.box_keys, *c.boxes_to);
         let _ = writeln!(out, "epoch_intro {:?}\nbox_written {:?}\nown_keys {:?}", *c.epoch_intro, *c.box_written, *c.own_keys);
