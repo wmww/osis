@@ -190,7 +190,7 @@ impl Fragment {
         }
     }
     /// Caches `p` as the placement of the sequence here (`None`: drops it). A text's visible
-    /// chars are set from the records first when `p` is whole.
+    /// chars come from `fill_chars`.
     pub fn set_seq_place(&mut self, p: Option<SeqPlace>) {
         if let Fragment::Seq(s) = self {
             s.set_lin(p.map(|p| p.0));

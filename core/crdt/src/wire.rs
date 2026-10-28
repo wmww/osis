@@ -151,7 +151,7 @@ pub struct Enc<'p> {
     src_idx: HashMap<Source, u64>,
     commits: Vec<CommitEntry>,
     commit_idx: HashMap<(Ts, Source), u64>,
-    pub(crate) pages: Option<&'p mut dyn PageSink>,
+    pages: Option<&'p mut dyn PageSink>,
     kind: DeltaKind,
     /// Elements in runs without `Content` so far (§3.3 rule 7), pages included.
     bare: u64,
