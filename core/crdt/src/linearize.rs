@@ -61,7 +61,7 @@ impl Graph<'_> {
         let (real, virt) = self.dots.split_at(self.real);
         // the node at or before `x` holds it if `x` is in its span
         let i = real.partition_point(|d| *d <= x).checked_sub(1);
-        let held = i.filter(|i| real.get(*i).zip(self.spans.get(*i)).is_some_and(|(d, n)| d.src == x.src && x.ctr - d.ctr < *n));
+        let held = i.filter(|i| real.get(*i).zip(self.spans.get(*i)).is_some_and(|(d, n)| crate::seq_span::holds(d, *n, x)));
         held.or_else(|| virt.binary_search(&x).ok().map(|j| self.real + j))
     }
     fn compute(&self, i: usize) -> Edge {
@@ -79,7 +79,7 @@ impl Graph<'_> {
     }
     /// `lookup` for an anchor of node `i`: typing anchors at the node just before in dot order.
     fn lookup_near(&self, x: &Dot, i: usize) -> Option<usize> {
-        let held = |j: usize| j < self.real && self.dots.get(j).zip(self.spans.get(j)).is_some_and(|(d, n)| d.src == x.src && d.ctr <= x.ctr && x.ctr - d.ctr < *n);
+        let held = |j: usize| j < self.real && self.dots.get(j).zip(self.spans.get(j)).is_some_and(|(d, n)| crate::seq_span::holds(d, *n, x));
         match i.checked_sub(1) {
             Some(j) if held(j) => Some(j),
             _ => self.lookup(x),

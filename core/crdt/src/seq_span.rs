@@ -48,10 +48,15 @@ pub(crate) fn uniform(d: &Dot, e: &SeqElem) -> bool {
         }
 }
 
+/// Whether a record (or row) of `span` elements starting at `k` holds `d`.
+pub(crate) fn holds(k: &Dot, span: u64, d: &Dot) -> bool {
+    k.src == d.src && d.ctr.checked_sub(k.ctr).is_some_and(|o| o < span)
+}
+
 /// The record holding `d`.
 pub(crate) fn find<'a>(m: &'a Elems, d: &Dot) -> Option<(&'a Dot, &'a SeqElem)> {
     let (k, e) = m.range(..=d).next_back()?;
-    (k.src == d.src && d.ctr - k.ctr < e.span).then_some((k, e))
+    holds(k, e.span, d).then_some((k, e))
 }
 
 /// Element records looked up by dot: a sequence's own, or a state's under a batch's
@@ -87,7 +92,7 @@ impl Recs for Elems {
 /// Splits the record holding `x` and a dot before it, so a record starts at `x`.
 fn split_plain(m: &mut Elems, x: &Dot) {
     let Some((k, e)) = m.range(..x).next_back() else { return };
-    if k.src != x.src || x.ctr - k.ctr >= e.span {
+    if !holds(k, e.span, x) {
         return;
     }
     let (k, off) = (k.clone(), x.ctr - k.ctr);
@@ -110,7 +115,7 @@ pub(crate) fn split_at(m: &mut Elems, x: &Dot) {
 /// Whether a new record `(d, span)` would overlap a record of `m` or break the invariant.
 pub(crate) fn overlaps(m: &Elems, d: &Dot, span: u64) -> bool {
     let last = nth(d, span - 1);
-    let straddles = |x: &Dot| m.range(..x).next_back().is_some_and(|(k, e)| k.src == x.src && x.ctr - k.ctr < e.span);
+    let straddles = |x: &Dot| m.range(..x).next_back().is_some_and(|(k, e)| holds(k, e.span, x));
     m.range(d..=&last).next().is_some() || straddles(d) || matches!(d.src.kind(), SourceKind::Derived(u) if straddles(&nth(u, 1)))
 }
 
