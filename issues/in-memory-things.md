@@ -2,7 +2,7 @@
 > Summary: The owner wants apps to be able to hold state that is neither persisted nor synced (UI state, scratch models) through the same `osis` API as durable data, and to switch a thing between the two cheaply, so one state system serves everything. Today "not synced" already falls out of placement (a thing in no labeled group is not synced, spec/sync.md §5), the store has an in-memory backend only for whole test databases (`MemStore`), and nothing makes a single thing volatile. Design belongs to the API pass; no wire impact unless a volatile thing can be placed in a synced group.
 > Tags: api, node, owner-call
 
-What exists: `Place::In(group)` decides sync; a thing in no labeled group is local and durable. `MemStore` (crates/osis) backs a whole database in memory (tests). Synthetic local aspects (`/tid`, `/aspects`, `/groups`) are computed, never stored.
+What exists: `Place::In(group)` decides sync; a thing in no labeled group is local and durable. `MemStore` (core/osis) backs a whole database in memory (tests). Synthetic local aspects (`/tid`, `/aspects`, `/groups`) are computed, never stored.
 
 Questions for the API pass:
 - Unit of volatility: per thing (simplest: a creation option `Volatile`, kept in the node's memory tables, never written to the store), per aspect (a schema flag like `synthetic`, so one thing mixes durable and scratch fields), or per owner (everything under a volatile actor is volatile).

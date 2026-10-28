@@ -1,0 +1,29 @@
+# Every vector file and its status (core/test/vectors/README.md, "Manifest and freezing").
+#   <path> provisional
+#   <path> frozen <blake3 of the file> <FORMAT_CHANGES.md entry>
+#   <path> pending <who or what produces it>
+cbor/values.vec provisional
+padme/padme.vec provisional
+tid/thing.vec provisional
+tid/key-actor.vec provisional
+kdf/purposes.vec provisional
+keys/seed.vec provisional
+box/boxes.vec provisional
+wrap/wrap.vec provisional
+delete/keys.vec provisional
+sign/signatures.vec provisional
+blob/prefix.vec provisional
+blob/blobs.vec provisional
+chunker/gear.vec provisional
+chunker/tree.vec provisional
+chunker/pages.vec provisional
+commit/headers.vec provisional
+step/steps.vec provisional
+inbox/inbox.vec provisional
+signal/signal.vec provisional
+link/link.vec provisional
+schema/core.vec provisional
+proto/messages.vec provisional
+proto/reconcile.vec provisional
+bundle/bundle.vec provisional
+lan/announce.vec provisional

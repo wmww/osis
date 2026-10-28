@@ -13,13 +13,13 @@ osis (Open Structured Information System) is a decentralized database optimized 
 The MVP is built: every subsystem of the spec is implemented and tested (final report, deviations and open issues: notes/mvp-progress.md). Design is settled; byte layouts are in spec/wire.md; conformance vectors are all provisional until the first stable release (nothing is frozen or logged as a format change before then).
 
 Code map (crate DAG and rules: notes/architecture.md):
-- `crates/`: osis-core (values, CBOR, ids, chunker), -crypto, -crdt, -schema, -perm, -store (encrypted local store), -commit, -keys, -label (blobs, labels, steps, large values), -proto (sans-I/O sync protocol), -transport (in-process, QUIC, iroh, LAN), -server (blind node), -node (engine, sync engine, membership flows), `osis` (the app API), osis-cli (binary `osis`), osis-bench.
-- `crates/osis-std` the first-party schemas and scenario tests (notes/std.md); `sim/` the deterministic simulator (notes/testing.md); `vectors/` conformance vectors; `fuzz/` cargo-fuzz targets; `models/` crdt and membership reference models, TLA+ `sync` and `rotation`; `tools/` policy.py, spec_map.py, fixpoint.
+- `core/` (package names keep the `osis-` prefix): `base` osis-core (values, CBOR, ids, chunker), -crypto, -crdt, -schema, -perm, -store (encrypted local store), -commit, -keys, -label (blobs, labels, steps, large values), -proto (sans-I/O sync protocol), -transport (in-process, QUIC, iroh, LAN), -server (blind node), -node (engine, sync engine, membership flows), `osis` (the app API), `bench` osis-bench. `cli/` osis-cli (binary `osis`).
+- `crates/osis-std` the first-party schemas and scenario tests (notes/std.md); `core/test/sim/` the deterministic simulator (notes/testing.md); `core/test/vectors/` conformance vectors; `core/test/fuzz/` cargo-fuzz targets; `core/test/crdt-model` and `core/test/membership-model` reference models, `core/test/tla` TLA+ `sync`, `rotation` and `membership`; `tools/` policy.py, spec_map.py, fixpoint.
 
 What runs where (details and latest numbers: notes/testing.md):
 - Tier 1, `cargo test --workspace`: everything below the sim's long scenarios; green.
 - Tier 2, `cargo test --workspace -- --ignored --skip sweep --skip scale:: --skip bench::` (those timing checks by hand in release): scale checks, budgets, long sim scenarios, the localhost CLI session; known failures each have an issue.
-- Nightly: fuzzing, `sim-sweep`, `models/tla/run.sh small`, coverage.
+- Nightly: fuzzing, `sim-sweep`, `core/test/tla/run.sh small`, coverage.
 - Behind features, off by default: QUIC (`quic`; the CLI and server binary have it on), the redb file store (`file-store`/`file-backend`), iroh P2P (`iroh`, transport and node only), LAN announcements (`lan`). Tests of those run with `cargo test-net` (tier 2).
 
 How to run:
@@ -27,7 +27,7 @@ How to run:
 - Server: `cargo run --bin osis-server -- --help` (or `osis serve`); prints `quic://host:port#key`.
 - Standard data scenarios: osis-std's tests in `cargo test --workspace`.
 - Sim: `cargo run --bin sim-sweep -- --seeds N --budget-secs T`; replay a failing seed with `osis_sim::replay("<scenario>", <seed>)`.
-- Models: `models/tla/run.sh small` (Java); their tests run in `cargo test --workspace`; `cargo run --bin membership-model`.
+- Models: `core/test/tla/run.sh small` (Java); their tests run in `cargo test --workspace`; `cargo run --bin membership-model`.
 
 Known open (issues/): owner tradeoffs stated in user terms (crdt-undo-absent-positions, aspect-key-format); cost residues (perm-eval-cost, node-core-gaps, node-sequences-not-paged, crdt-seq-linearization-cost); rough edges (node-sync-gaps, link-race-edge-only-pending); api-deferred (queries are a design pass), in-memory-things; tests-unbuilt (10^4-seed sweep, model refactors).
 

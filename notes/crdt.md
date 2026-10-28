@@ -1,5 +1,5 @@
 # CRDTs and commits: rationale
-> Summary: Why spec/crdt.md and spec/commits.md look the way they do: owner decisions, design choices with reasons, known anomalies, rejected alternatives, implementation hints, the reference model `models/crdt/` and its tests, text size measurements, worked examples (cited by tests), research pointers.
+> Summary: Why spec/crdt.md and spec/commits.md look the way they do: owner decisions, design choices with reasons, known anomalies, rejected alternatives, implementation hints, the reference model `core/test/crdt-model/` and its tests, text size measurements, worked examples (cited by tests), research pointers.
 
 ## Owner decisions
 - One conflict rule everywhere: every state element carries a timestamp and an author dot, later wins, removal is a reset. No causal contexts; no multi-value register.
@@ -114,7 +114,7 @@
 - **Verify** (`verify.rs`): `verify_part` (delta hash under the thing's dedup secret, then osis-crdt decode against `delta_ctx`: own source = author node or `Commit(id)`, header range, kind) and `verify_blob` (signature, `validate`, every part).
 - **Projection** (`project.rs`): `project(commit, readers: Fn(ai) -> K)`; class = (K, retention, expiry, aspect delete-key indices), so distinct delete bases split classes; size split greedy in aspect order with exact blob sizes (prefix, Padmé, tag). `prefix_inputs(header, parts)` is what any blob of the commit must carry (label's prefix-vs-header check, rewrites). `rewrite` keeps header and signature.
 
-## Reference model (`models/crdt/`)
+## Reference model (`core/test/crdt-model/`)
 A small, slow, obviously-correct implementation of spec/crdt.md: `State` (fully resolved stamps), join, prune, read, the ops, un-merge, the wire encoder/decoder (own canonical CBOR subset), embeddings, diff. Not the implementation; the implementation will be tested against it. Property tests (`tests/props.rs`):
 - convergence under random delivery orders, duplication and omitted prefixes: equal reads and equal encoded states;
 - join laws on random states, within and across encodings (every association and order of three states);
@@ -130,7 +130,7 @@ Decoder differential (osis-crdt `tests_decoder.rs`): random histories' writer de
 Not modeled: the schema projection of the diff (the model's diff is untyped); un-merge by re-joining held bodies (the model removes writes in place, which the spec permits only where it gives the same result); writes below their own reset at a root position (both decoders accept them, the implementation by re-encoding).
 
 ## Text size
-Benchmark `models/crdt/src/bin/text_bench.rs`: Kleppmann's automerge-paper trace (259,778 single-character edits, final text 104,852 bytes, 182k elements of which 77k deleted), one writer, net effect per commit, encoded as a foreign node's snapshot. Target was 1.5–3x the plain text. The figures predate the §4.5 rule "omit a created-and-removed element only once nothing anchors at it" (`text_bench` now follows it); not re-measured, the trace is not in the repo (the synthetic typist of osis-bench gives 2.89x and 6.73x under the new rule, re-measured at hardening).
+Benchmark `core/test/crdt-model/src/bin/text_bench.rs`: Kleppmann's automerge-paper trace (259,778 single-character edits, final text 104,852 bytes, 182k elements of which 77k deleted), one writer, net effect per commit, encoded as a foreign node's snapshot. Target was 1.5–3x the plain text. The figures predate the §4.5 rule "omit a created-and-removed element only once nothing anchors at it" (`text_bench` now follows it); not re-measured, the trace is not in the repo (the synthetic typist of osis-bench gives 2.89x and 6.73x under the new rule, re-measured at hardening).
 
 | edits per commit | commits | commit table | runs | flag writes | snapshot | ratio |
 |---|---|---|---|---|---|---|
@@ -145,7 +145,7 @@ Kept from tuning: deleted elements carry no content on the wire (182k → 6k run
 Accepted (spec/requirements.md, Scale): about 13 bytes per commit forever, so clients commit per editing pause. Stability-based GC (drop per-commit stamps once every writer acknowledged) would need every writer's frontier and stall on offline members, which the requirements forbid ("whether others are alive is never a protocol condition").
 
 ## Worked examples
-Dots `a1`, `b3` (source letter, counter); stamps `(t, dot)`. Tests in `models/crdt/tests/props.rs` cite these.
+Dots `a1`, `b3` (source letter, counter); stamps `(t, dot)`. Tests in `core/test/crdt-model/tests/props.rs` cite these.
 - **Typing**: a at t=1 types `FOOBAR`: run `[1, 6, [0, [[0, 6]]], "FOOBAR", [], []]`. F=a1→HEAD, O₁=a2→a1, O₂=a3→a2, B=a4→a3, A=a5→a4, R=a6→a5.
 - **Concurrent inserts at one anchor**: b at t=2 inserts `x` after O₂ (`[1, 1, [[1,3], [[0, 1]]], "x", [], []]`, sources `[a]`); c at t=3 inserts `y` after O₂. Children of O₂: y, x, B → FOOyxBAR.
 - **Move with a concurrent insert**: from FOOBAR, b at t=2 inserts x after O₂ (x=b1→a3); a at t=3 moves FOO to the end: roots [F], pred HEAD, outside [B]. Writes B→HEAD (3,a7), F→R (3,a8). Read: BARFOOx.

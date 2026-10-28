@@ -44,7 +44,7 @@ No registry exists, so namespace collisions between schemas are detected (schema
 Example: spreadsheet thing = group of two axis things, each a group of row/column things, each a group of cells (each cell in two groups). Nothing is in a group by being owned (owner): apps place things explicitly (spec/requirements.md, Offline and network).
 
 ## Schema DSL (`*.osis` files; implemented in osis-schema)
-Rust-like syntax, hand-written recursive-descent parser (no parser libraries, owner decision); grammar in `crates/osis-schema/src/parse.rs`. Two passes: the first collects items, the second types field defaults against the then-known types. `///` docs attach to the next item (type, field, case, aspect, signal), `//!` to the schema, and are kept in the schema value. Errors carry file, line, column; validation errors point at the item. No `load_schema!()` proc macro (compile time; codegen covers it).
+Rust-like syntax, hand-written recursive-descent parser (no parser libraries, owner decision); grammar in `core/schema/src/parse.rs`. Two passes: the first collects items, the second types field defaults against the then-known types. `///` docs attach to the next item (type, field, case, aspect, signal), `//!` to the schema, and are kept in the schema value. Errors carry file, line, column; validation errors point at the item. No `load_schema!()` proc macro (compile time; codegen covers it).
 ```
 //! Notes app schema.
 schema 0x7f3a9c21e0d84b6a9b1c5e2d4f607a83;   // 16 bytes, random, minted once
@@ -69,7 +69,7 @@ signal /note/typing: struct { 0 who: tid, 1 at: timestamp };
 - Aspect attributes: flags `ro`, `synthetic`, `guaranteed`, `indexed`; `by: nobody|admin|author|writer` (default `author`); `keep_at_least:`/`keep_at_most:` a duration (relative, after replaced) and/or `abs <wall ms>`; `expires: <duration>`. Durations `250ms`, `10s`, `5m`, `12h`, `30d`. Trailing commas everywhere.
 - Default literals: numbers, strings, `0x` bytes, `true`/`false`, case names with optional `(payload)`, `[..]` for lists and sets, `{k: v}` for maps and structs (fields by name or ID; omitted fields take their defaults). A tid default is its text form.
 - Validation: names resolve with the right arity; IDs unique, never both declared and reserved; `succeeds` names an ID of the same struct/enum; wrappers (`counter`/`max`/`min` of int or float only, `text`, `markdown`) never inside set elements or map keys (also through named and parametric types); named types must reach a structure (`type a = a;` fails); defaults typed; core AKs (one segment) only in the core schema (ID 0); a relative `keep_at_most` needs `by: writer`.
-- Schema value (spec/data-model.md §10): every field written, `none` included, docs included; the meta-schema is `crates/osis-schema/schemas/meta.osis` (local ID `ff..ff`, never written anywhere). Lock files hold the canonical bytes so the checker can compare; the codegen bin publishes them.
+- Schema value (spec/data-model.md §10): every field written, `none` included, docs included; the meta-schema is `core/schema/schemas/meta.osis` (local ID `ff..ff`, never written anywhere). Lock files hold the canonical bytes so the checker can compare; the codegen bin publishes them.
 - `creation` is the one struct the type system cannot express (fields 0 and 1 exclusive): typed keys read `/created` through `CreationRecord` (`Codec::CHECKS_ITSELF`).
 
 ## Storage

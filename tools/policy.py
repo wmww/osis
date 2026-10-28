@@ -53,7 +53,7 @@ for m in members:
     rel = os.path.relpath(m, ROOT)
     man = load(os.path.join(m, "Cargo.toml"))
     lints = man.get("lints", {})
-    is_model = rel.startswith("models/")
+    is_model = rel.startswith(("core/test/crdt-model", "core/test/membership-model"))
     if is_model:
         if lints.get("rust", {}).get("unsafe_code") != "forbid":
             errs.append(f"{rel}: model needs [lints.rust] unsafe_code = \"forbid\"")

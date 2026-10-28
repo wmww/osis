@@ -2,7 +2,7 @@
 > Summary: The implementation's shape: crate map and layer DAG, the fixed abstractions (traits) other crates code against, error classes and pervasive rules, build and test performance rules, dependency allowlist, conventions, and the public surfaces of osis-core and osis-schema. Reopen a fixed item only through an issue.
 
 ## 1. Crate map
-Workspace root `Cargo.toml`: members `crates/*`, `models/crdt`, `models/membership`, `vectors`, `sim`; `fuzz/` is excluded (cargo-fuzz); `models/tla` holds TLA+ specs, no crate. Internal crates are `[workspace.dependencies]`; members write `osis-core.workspace = true`. A new crate needs a line here.
+Workspace root `Cargo.toml`: members `core/*` (library crates in unprefixed directories: `core/base` is osis-core), `core/test/{sim,vectors,crdt-model,membership-model}`, `cli`, `crates/osis-std`; `core/test` is excluded otherwise: `core/test/fuzz/` (cargo-fuzz, own workspace), `core/test/tla` (TLA+ specs, no crate). Internal crates are `[workspace.dependencies]`; members write `osis-core.workspace = true`. A new crate needs a line here.
 
 | layer | crate | plan(s) | contents |
 |---|---|---|---|
@@ -21,12 +21,12 @@ Workspace root `Cargo.toml`: members `crates/*`, `models/crdt`, `models/membersh
 | 7 | `osis-node` | node-core, node-sync, membership-flows | engine, apply, retention, labeling, sync engine, flows; default feature `driver` (tokio driver, transport `link`); `quic`, `iroh`, `lan` (the driver's LAN loop), `relay` (tier-2 relay tests); phase timers `osis_node::costs` (always compiled, recording on a thread once it calls `costs::take`) |
 | 8 | `osis` | api | public API; the only crate apps depend on: the handle owns the node's `SyncEngine`; sync runs on a tokio driver (`Runtime::Tokio`/`Own`) over osis-transport `link` sessions (`quic` feature for `Transport::Quic`; `iroh` adds co-readers over iroh, `lan` the LAN loop; `file-store` for the redb store) |
 | 9 | `osis-cli` | cli | binary `osis` (osis `file-store` + `quic`, server `bin`) |
-| 9 | `osis-vectors` (`vectors/`) | test-infra | conformance vector format, runner, generator, freeze check, fuzz seed corpora |
+| 9 | `osis-vectors` (`core/test/vectors/`) | test-infra | conformance vector format, runner, generator, freeze check, fuzz seed corpora |
 | 9 | `osis-bench` | test-infra | bench harness (no deps) and benches; size budgets (tier 2) |
-| 9 | `osis-sim` (`sim/`) | sim | deterministic simulator; `world`: `Osis` handles and in-memory hubs under one manual clock (the example apps' tests) |
+| 9 | `osis-sim` (`core/test/sim/`) | sim | deterministic simulator; `world`: `Osis` handles and in-memory hubs under one manual clock (the example apps' tests) |
 | 9 | `osis-std` | (notes/std.md) | first-party schemas (contact, event) as typed keys, and the scenario tests of the standard data (notes, tags, contact, event); depends on osis (osis-schema to build, osis-sim to test) |
-| - | `crdt-model` (`models/crdt`) | | reference model of spec/crdt.md (notes/crdt.md) |
-| - | `membership-model` (`models/membership`) | | model of the membership rules (notes/permissions.md) |
+| - | `crdt-model` (`core/test/crdt-model`) | | reference model of spec/crdt.md (notes/crdt.md) |
+| - | `membership-model` (`core/test/membership-model`) | | model of the membership rules (notes/permissions.md) |
 
 **Layer DAG** (each crate depends only on crates in earlier layers, not necessarily all): core; crypto, crdt, perm, transport (core only); schema (core, crdt); store (core, crypto); commit (core, crypto, crdt, schema); keys (core, crypto, schema, perm); label (core, crypto, crdt, schema, commit: re-exports commit's chunk trees, implements crdt's `PageSink`/`PageSource`); proto (core, crypto, schema, label); server (core, crypto, label, proto, store, transport); node (everything below except server: core, crypto, crdt, schema, commit, perm, keys, label, store, proto, transport); osis (node, plus core, crypto (`os-rng`), crdt, schema, commit, label, store, transport for types it re-exports or passes through and its driver); cli (osis, schema, server); sim (osis, node, server, store, plus core, crypto, crdt, schema, commit, label, proto for setup, adversaries and checks); examples (osis; osis-schema to build, osis-sim to test); bench (core, crypto, crdt, commit); vectors (core, crypto, crdt, schema, commit, label, proto). perm consumes abstract edge-write records, not commit headers. No crate depends on `osis` or `osis-node` except cli, sim and examples. osis-node and osis take osis-server as a dev-dependency (tests against a real hub; node's `quic` feature turns on server `quic`). Models are dev-dependencies of the crates they check only, and use no workspace lints.
 
@@ -75,7 +75,7 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `subtle` 2.6 (crypto; no default features; already in the tree via the dalek crates): `ConstantTimeEq` for `Secret32`.
 - `rand_core` 0.6 (crypto; no default features; re-exported as `osis_crypto::{CryptoRngCore, RngCore, CryptoRng}`; other crates use the re-export): the injected-rng trait, the version the dalek 2.x crates use. `getrandom` comes only through osis-crypto's `os-rng` feature (`rand_core/getrandom`, `osis_crypto::OsRng`), for drivers; `cargo tree -p osis-store` has no getrandom.
 - `proptest` (dev: core, crypto, crdt, schema, store, commit, keys, label, proto, server, cli; crdt-model has its own `"1"` line): property tests. 1.12 brings `rand` 0.10 and `getrandom` 0.4 into test builds only.
-- `libfuzzer-sys` 0.4 (`fuzz/` only, outside the workspace): cargo-fuzz harness.
+- `libfuzzer-sys` 0.4 (`core/test/fuzz/` only, outside the workspace): cargo-fuzz harness.
 - `redb` 2.6 (store, feature `file-backend`; `default-features = false`): the file backend. Pure Rust, no C toolchain (rusqlite bundles SQLite: slower build, C), MSRV within ours; holds only ciphertext, so its engine never needs to erase (notes/local-store.md).
 - `quinn` 0.11 (transport, feature `quic`; no default features, `runtime-tokio`, `rustls-ring`): QUIC for direct server connections (spec/sync.md §10). Chosen over Noise-over-TCP: native streams, flow control, keep-alive and connection migration, the same stack iroh builds on; the cost is build time, kept off default builds.
 - `rustls` 0.23 (transport, feature `quic`; no default features, `ring`, `std`): TLS 1.3 with RFC 7250 raw Ed25519 public keys (no certificates, no rcgen/webpki roots); custom verifiers pin the server key.
