@@ -361,8 +361,6 @@ impl SyncEngine {
         }
         for c in old {
             out.push(Action::Close { conn: c });
-            self.fetching.retain(|_, x| *x != c);
-            self.reopens.retain(|(x, _), _| *x != c);
             self.lost(c);
         }
         // the peer is connected: no pause from the closed route

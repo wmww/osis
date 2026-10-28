@@ -127,7 +127,7 @@ impl SyncEngine {
         if !read_ok {
             keys.sync_established = false;
         }
-        if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+        if let Some(lc) = self.lc_mut(conn, &l) {
             lc.keys = keys.clone();
         }
         // certificate copies that waited for the rotation just run
@@ -152,12 +152,12 @@ impl SyncEngine {
         // what an earlier pass of this step changed in the engine (a carrier snapshot written)
         self.engine_events()?;
         self.spread_touches();
-        let Some(mut w) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)).map(|lc| std::mem::replace(&mut lc.work, Work::idle(false))) else { return Ok(()) };
+        let Some(mut w) = self.lc_mut(conn, &l).map(|lc| std::mem::replace(&mut lc.work, Work::idle(false))) else { return Ok(()) };
         let r = self.judge_label(conn, server, g, l, &ctx, keys, read_ok, head.map(|h| h.id()), &mut w, out);
         if r.is_err() {
             w.full = true;
         }
-        if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+        if let Some(lc) = self.lc_mut(conn, &l) {
             let meanwhile = std::mem::replace(&mut lc.work, Work::idle(false));
             w.merge(meanwhile);
             lc.work = w;
@@ -239,7 +239,7 @@ impl SyncEngine {
                 self.inbox_copies(&g, l)?;
                 let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
                 held = self.certificates(&g, l, false, &authors)?;
-                let tight = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).and_then(|x| x.budget).is_some_and(|b| b < self.cfg.tight_budget);
+                let tight = self.lc(conn, &l).and_then(|x| x.budget).is_some_and(|b| b < self.cfg.tight_budget);
                 self.heartbeat(&g, l, &keys, tight)?;
             } else if !self.may_rotate_read(&g) {
                 // the revokes of departures inside members only: they tell the label's rotators
@@ -1720,7 +1720,7 @@ impl SyncEngine {
                 x
             }
         };
-        if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+        if let Some(lc) = self.lc_mut(conn, &l) {
             lc.registering = Some((step.clone(), set.clone()));
         }
         self.command(conn, Command::Register { label: l, step, claim_set: Some(set) }, out)?;

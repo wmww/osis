@@ -204,11 +204,10 @@ impl SyncEngine {
 
     /// Sends the next open attempt; none left: failed (stranded after a refused claim).
     fn try_next(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) else { return Ok(()) };
+        let Some(lc) = self.lc_mut(conn, &l) else { return Ok(()) };
         if lc.tries.is_empty() {
-            lc.phase = Phase::Failed;
-            lc.last_sync = self.clock.now_wall_ms().0;
             let (g, claimed) = (lc.group, lc.tried_claim);
+            self.fail(conn, l);
             if claimed {
                 self.stranded(conn, g, l, out)?;
             }
@@ -225,6 +224,15 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// No key opens `l` on `conn`: tried again from scratch after `resync_ms`.
+    fn fail(&mut self, conn: ConnId, l: LabelId) {
+        let now = self.raw_now();
+        if let Some(lc) = self.lc_mut(conn, &l) {
+            lc.phase = Phase::Failed;
+            lc.last_sync = now;
+        }
+    }
+
     fn current_try(&self, conn: ConnId, l: &LabelId) -> Option<Try> {
         self.conns.get(&conn)?.labels.get(l)?.tries.first().cloned()
     }
@@ -232,14 +240,14 @@ impl SyncEngine {
     /// Opened at `head`: accept it when recorded or known, else verify the server's path.
     pub(crate) fn opened(&mut self, conn: ConnId, l: LabelId, head: Step, entry_box: Option<SecretBox>, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
-        let Some(lc) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)) else { return Ok(()) };
+        let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
         let g = lc.group;
         let tried = lc.tries.first().cloned();
         // a static entry: the head's entry box carries the read secret of the registered epoch;
         // a sealed box is unauthenticated, so the head's path is verified first and the secret
         // must derive the head's sync key (`path_steps`, `static_secret`)
         if let (Some(Try::Static { .. }), Some(b)) = (&tried, entry_box)
-            && let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l))
+            && let Some(lc) = self.lc_mut(conn, &l)
         {
             lc.entry_box = Some(b);
             lc.phase = Phase::Verifying;
@@ -248,18 +256,18 @@ impl SyncEngine {
             return self.command(conn, Command::Path { label: l, after: None }, out);
         }
         if let Some(Try::Sync { step: None, index, .. }) = &tried
-            && let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l))
+            && let Some(lc) = self.lc_mut(conn, &l)
         {
             lc.index = Some(*index);
         }
         let recorded = self.group_label(&g, &l).is_some_and(|gl| gl.steps.contains_key(&head.id()));
         let known = self.state.heads.get(&(server, l)).is_some_and(|h| h.id() == head.id());
         let tried_step = tried.as_ref().and_then(Try::step).is_some_and(|s| s.id() == head.id());
-        let walked = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).is_some_and(|x| x.walk.is_some());
+        let walked = self.lc(conn, &l).is_some_and(|x| x.walk.is_some());
         if !walked && (recorded || known || tried_step) {
             return self.accept_head(conn, l, head, out);
         }
-        if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+        if let Some(lc) = self.lc_mut(conn, &l) {
             lc.phase = Phase::Verifying;
             lc.head = Some(head);
             lc.path.clear();
@@ -268,14 +276,14 @@ impl SyncEngine {
     }
 
     pub(crate) fn path_steps(&mut self, conn: ConnId, l: LabelId, steps: Vec<Step>, more: bool, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) else { return Ok(()) };
+        let Some(lc) = self.lc_mut(conn, &l) else { return Ok(()) };
         // an opened head confirmed: steps registered since the Open reply move it on (the
         // session follows `more`)
         if lc.phase == Phase::Open {
             for s in steps {
                 self.new_head(conn, l, s, out)?;
             }
-            let open = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).is_some_and(|x| x.phase == Phase::Open);
+            let open = self.lc(conn, &l).is_some_and(|x| x.phase == Phase::Open);
             if more && !open {
                 self.command(conn, Command::StopPath { label: l }, out)?;
             }
@@ -331,11 +339,7 @@ impl SyncEngine {
                 if more {
                     self.command(conn, Command::StopPath { label: l }, out)?;
                 }
-                let now = self.raw_now();
-                if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
-                    lc.phase = Phase::Failed;
-                    lc.last_sync = now;
-                }
+                self.fail(conn, l);
                 Ok(())
             }
         }
@@ -346,7 +350,7 @@ impl SyncEngine {
     /// its epoch; anything else is a forged box). False when it does not.
     fn static_secret(&mut self, conn: ConnId, l: LabelId, g: &Tid, head: &Step, b: &SecretBox) -> Result<bool> {
         let Some(Try::Static { kem, .. }) = self.current_try(conn, &l) else { return Ok(false) };
-        let index = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).and_then(|x| x.index);
+        let index = self.lc(conn, &l).and_then(|x| x.index);
         let (e, secret) = match osis_label::open_entry_box(b, head, osis_label::EntryKey::Kem(&kem)) {
             Ok((Some(e), secret)) => (e, secret),
             Ok((None, _)) => {
@@ -366,7 +370,7 @@ impl SyncEngine {
             self.diag("entry box secret does not derive the head's sync key".into());
             return Ok(false);
         };
-        if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+        if let Some(lc) = self.lc_mut(conn, &l) {
             lc.index = Some(i);
         }
         self.engine.learn_read_secret(g, e, secret)?;
@@ -376,13 +380,13 @@ impl SyncEngine {
     /// The head is good: derive its keys, subscribe, sync.
     fn accept_head(&mut self, conn: ConnId, l: LabelId, head: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
-        let Some(lc) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)) else { return Ok(()) };
+        let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
         let (g, index) = (lc.group, lc.index.unwrap_or(0));
         let keys = self.engine.head_keys(&g, index, &head)?;
         self.state.set_head(server, l, &head);
         self.reopens.remove(&(conn, l));
         let head_id = head.id();
-        if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+        if let Some(lc) = self.lc_mut(conn, &l) {
             lc.phase = Phase::Open;
             lc.head = Some(head);
             lc.keys = keys;
@@ -406,7 +410,7 @@ impl SyncEngine {
             // a hinted label (no recorded steps, so no parent to verify under): walk on, and
             // verify the server's whole path once a key opens it (`opened`)
             if let Some(Try::Sync { step: None, index, .. }) = &tried
-                && let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l))
+                && let Some(lc) = self.lc_mut(conn, &l)
             {
                 lc.index = Some(*index);
                 lc.walk = Some(step.clone());
@@ -419,7 +423,7 @@ impl SyncEngine {
             self.diag("walked step does not verify under its parent".into());
             return self.drop_try(conn, l, out);
         }
-        let Some(lc) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)) else { return Ok(()) };
+        let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
         let g = lc.group;
         self.record_steps(&g, &l, &[parent, step.clone()], None)?;
         self.walk_on(conn, l, step, out)
@@ -431,7 +435,7 @@ impl SyncEngine {
     /// pending sources only the commits of inbox blobs naming the thing),
     /// so a server handing out a step of its choosing learns no other actor's pseudonym.
     fn walk_on(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(lc) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)) else { return Ok(()) };
+        let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
         let (g, index, hinted) = (lc.group, lc.index.unwrap_or(0), lc.walk.is_some());
         let only = if hinted {
             // the pending commits of the inbox blobs naming the thing: nothing else unverified
@@ -457,7 +461,7 @@ impl SyncEngine {
                 front.push(Try::Claim { step: step.clone(), key });
             }
         }
-        if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+        if let Some(lc) = self.lc_mut(conn, &l) {
             lc.tries.remove(0);
             front.append(&mut lc.tries);
             lc.tries = front;
@@ -466,7 +470,7 @@ impl SyncEngine {
     }
 
     fn drop_try(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l))
+        if let Some(lc) = self.lc_mut(conn, &l)
             && !lc.tries.is_empty()
         {
             lc.tries.remove(0);
@@ -485,12 +489,12 @@ impl SyncEngine {
             self.timed_sent.retain(|(c, x, _)| *c != conn || *x != l);
             self.deleting.retain(|(c, x, _), _| *c != conn || *x != l);
         }
-        let phase = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).map(|x| x.phase.clone());
+        let phase = self.lc(conn, &l).map(|x| x.phase.clone());
         match (kind, phase) {
             (4, Some(Phase::Opening)) if code == Code::UNKNOWN_LABEL => self.register_path(conn, l, out),
             (4, Some(Phase::Opening)) => self.drop_try(conn, l, out),
             (7, _) => {
-                if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+                if let Some(lc) = self.lc_mut(conn, &l) {
                     lc.registering = None;
                 }
                 self.reopen(conn, l, out)
@@ -499,7 +503,7 @@ impl SyncEngine {
             // the opened head is no longer on the server's path
             (8, Some(Phase::Open)) => self.reopen(conn, l, out),
             (15, _) => {
-                if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+                if let Some(lc) = self.lc_mut(conn, &l) {
                     lc.syncing = false;
                 }
                 self.diag(format!("sync refused: code {}", code.0));
@@ -516,15 +520,11 @@ impl SyncEngine {
     /// More than `MAX_REOPENS` in a row (refused registrations, stale heads) waits for the
     /// retry timer instead.
     pub(crate) fn reopen(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(g) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).map(|x| x.group) else { return Ok(()) };
+        let Some(g) = self.lc(conn, &l).map(|x| x.group) else { return Ok(()) };
         let n = self.reopens.entry((conn, l)).or_insert(0);
         *n += 1;
         if *n > MAX_REOPENS {
-            let now = self.raw_now();
-            if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
-                lc.phase = Phase::Failed;
-                lc.last_sync = now;
-            }
+            self.fail(conn, l);
             self.diag(format!("label {l:?}: reopened {MAX_REOPENS} times, retrying later"));
             return Ok(());
         }
@@ -534,7 +534,7 @@ impl SyncEngine {
     /// The server does not hold the label: register the recorded path from the genesis step
     /// along the deepest branch (relayable by any node, spec/sync.md §5), then open.
     fn register_path(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(g) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).map(|x| x.group) else { return Ok(()) };
+        let Some(g) = self.lc(conn, &l).map(|x| x.group) else { return Ok(()) };
         let Some(gl) = self.group_label(&g, &l) else { return self.drop_try(conn, l, out) };
         let d = depths(&gl);
         let Some(tip) = d.iter().max_by_key(|(id, n)| (**n, std::cmp::Reverse(**id))).map(|(id, _)| *id) else { return self.drop_try(conn, l, out) };
@@ -552,7 +552,7 @@ impl SyncEngine {
         if path.first().is_none_or(|(s, _)| s.prev.is_some()) {
             return self.drop_try(conn, l, out);
         }
-        if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+        if let Some(lc) = self.lc_mut(conn, &l) {
             lc.phase = Phase::Registering;
             lc.path = path.iter().map(|(s, _)| s.clone()).collect();
         }
@@ -565,7 +565,7 @@ impl SyncEngine {
     /// A Register was accepted: the next step of a path registration, or the child step a pass
     /// issued.
     pub(crate) fn registered(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) else { return Ok(()) };
+        let Some(lc) = self.lc_mut(conn, &l) else { return Ok(()) };
         if lc.phase == Phase::Registering {
             if !lc.path.is_empty() {
                 lc.path.remove(0);
@@ -589,11 +589,11 @@ impl SyncEngine {
 
     fn accept_registered(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
-        let Some(lc) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)) else { return Ok(()) };
+        let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
         let (g, index) = (lc.group, lc.index.unwrap_or(0));
         let keys = self.engine.head_keys(&g, index, &step)?;
         self.state.set_head(server, l, &step);
-        if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+        if let Some(lc) = self.lc_mut(conn, &l) {
             lc.head = Some(step);
             lc.keys = keys;
             lc.dirty = true;
@@ -603,7 +603,7 @@ impl SyncEngine {
 
     /// A Register was answered with the server's head: open again (the head changed under us).
     pub(crate) fn head_reply(&mut self, conn: ConnId, l: LabelId, _head: Step, out: &mut Vec<super::Action>) -> Result<()> {
-        if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+        if let Some(lc) = self.lc_mut(conn, &l) {
             lc.registering = None;
         }
         self.reopen(conn, l, out)

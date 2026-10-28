@@ -459,7 +459,7 @@ impl SyncEngine {
 
     /// A new head in a server's log: a child of the current one moves on; anything else reopens.
     pub(crate) fn new_head(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(lc) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)) else { return Ok(()) };
+        let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
         let cur = lc.head.clone();
         if cur.as_ref().is_some_and(|h| h.id() == step.id()) {
             return Ok(());
@@ -472,7 +472,7 @@ impl SyncEngine {
                 if let Some(s) = self.conns.get(&conn).map(|c| c.server) {
                     self.state.set_head(s, l, &step);
                 }
-                if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+                if let Some(lc) = self.lc_mut(conn, &l) {
                     lc.head = Some(step);
                     lc.keys = keys;
                     lc.dirty = true;
@@ -486,7 +486,7 @@ impl SyncEngine {
     /// A Sync ran through its last page: the pass at this server is complete.
     pub(crate) fn synced(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
-        if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+        if let Some(lc) = self.lc_mut(conn, &l) {
             lc.syncing = false;
             lc.synced = true;
             lc.dirty = true;
@@ -665,7 +665,7 @@ impl SyncEngine {
         if !need.is_empty() {
             self.command(conn, Command::Fetch { label: l, ids: need }, out)?;
         }
-        if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+        if let Some(lc) = self.lc_mut(conn, &l) {
             lc.syncing = true;
         }
         self.command(conn, Command::Sync { label: l, cursor: None, inline_limit: 0, entries: Vec::new(), gained: Vec::new() }, out)
@@ -691,7 +691,7 @@ impl SyncEngine {
                 }
                 Code::TOMBSTONED => {
                     self.state.set_gone(server, l, b);
-                    if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+                    if let Some(lc) = self.lc_mut(conn, &l) {
                         lc.dirty = true;
                     }
                 }
@@ -708,7 +708,7 @@ impl SyncEngine {
             }
         }
         // carriers just went up: deletions waiting for them may go now
-        if grew && let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+        if grew && let Some(lc) = self.lc_mut(conn, &l) {
             lc.dirty = true;
         }
         if stale && let Some(h) = head {
@@ -745,9 +745,9 @@ impl SyncEngine {
             }
         }
         // a replaced label is judged done after its deletions (`retire_at`): pass again
-        if let Some(g) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).map(|x| x.group)
+        if let Some(g) = self.lc(conn, &l).map(|x| x.group)
             && self.is_replaced(&g, &l)
-            && let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l))
+            && let Some(lc) = self.lc_mut(conn, &l)
         {
             lc.dirty = true;
         }
@@ -770,7 +770,7 @@ impl SyncEngine {
     pub(crate) fn budget(&mut self, conn: ConnId, l: LabelId, b: BlobId, code: Code, entries_left: u64, head: Option<Step>, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
         self.sent.remove(&(conn, l, b));
-        if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+        if let Some(lc) = self.lc_mut(conn, &l) {
             lc.budget = Some(entries_left);
         }
         if let Some((_, mut o)) = self.inbox_sent.remove(&(server, b)) {

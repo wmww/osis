@@ -226,6 +226,18 @@ pub(crate) struct LConn {
     pub writers: Vec<osis_crypto::VerifyingKey>,
 }
 
+impl LConn {
+    /// The log was read to its end and nothing runs: a pass may start.
+    fn ready(&self) -> bool {
+        self.synced && !self.syncing && self.registering.is_none()
+    }
+
+    /// Ready, with no pass wanted.
+    fn idle(&self) -> bool {
+        self.ready() && !self.dirty
+    }
+}
+
 pub(crate) struct Conn {
     /// A server's address key, or a co-reader node's dialable key (its LAN address may present
     /// another transport key).
@@ -260,12 +272,12 @@ pub struct LabelStatus {
 /// A body: its commit and parts `(ai, di)`.
 type BodyKey = (osis_base::CommitId, Vec<(usize, usize)>);
 
-/// The sync engine of one node.
 /// First back-off after re-encrypting an aspect's deleted chunks, and its cap (local policy:
 /// a server deleting each fresh chunk drives at most this rate of commits).
 pub(crate) const RELINK_BACKOFF_MS: u64 = 3_600_000;
 pub(crate) const RELINK_BACKOFF_MAX_MS: u64 = 7 * 24 * 3_600_000;
 
+/// The sync engine of one node.
 pub struct SyncEngine {
     pub(crate) engine: Engine,
     events: Receiver<crate::Event>,
@@ -539,6 +551,15 @@ impl SyncEngine {
         &self.cfg
     }
 
+    /// Label `l` on connection `conn`.
+    pub(crate) fn lc(&self, conn: ConnId, l: &LabelId) -> Option<&LConn> {
+        self.conns.get(&conn)?.labels.get(l)
+    }
+
+    pub(crate) fn lc_mut(&mut self, conn: ConnId, l: &LabelId) -> Option<&mut LConn> {
+        self.conns.get_mut(&conn)?.labels.get_mut(l)
+    }
+
     /// Raw wall ms (sessions and timers).
     pub(crate) fn raw_now(&self) -> u64 {
         self.clock.now_wall_ms().0
@@ -649,11 +670,7 @@ impl SyncEngine {
                     self.outputs(conn, o, out)?;
                 }
             }
-            Event::Down { conn } => {
-                self.fetching.retain(|_, c| *c != conn);
-                self.reopens.retain(|(c, _), _| *c != conn);
-                self.lost(conn);
-            }
+            Event::Down { conn } => self.lost(conn),
         }
         // the step's deaths replays before its passes: they mark the bodies whose deaths moved
         self.engine.settle_deaths()?;
@@ -674,9 +691,11 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// A dialed connection ended: redial after the retry pause.
-    fn lost(&mut self, conn: ConnId) {
+    /// A dialed connection ended (or was closed here): redial after the retry pause.
+    pub(crate) fn lost(&mut self, conn: ConnId) {
         // requests not answered go again on the next connection
+        self.fetching.retain(|_, c| *c != conn);
+        self.reopens.retain(|(c, _), _| *c != conn);
         self.sent.retain(|(c, _, _), _| *c != conn);
         self.timed_sent.retain(|(c, _, _)| *c != conn);
         self.deleting.retain(|(c, _, _), _| *c != conn);
@@ -901,7 +920,7 @@ impl SyncEngine {
                     Phase::Failed => st.stranded = true,
                     Phase::Open => {
                         st.open += 1;
-                        if x.synced && !x.syncing && !x.dirty && x.registering.is_none() && c.session.outstanding() == 0 {
+                        if x.idle() && c.session.outstanding() == 0 {
                             st.idle += 1;
                         }
                         if x.synced {
@@ -1038,8 +1057,6 @@ impl SyncEngine {
         let gone: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.peer && !wanted.contains(&c.server)).map(|(id, _)| *id).collect();
         for conn in gone {
             out.push(Action::Close { conn });
-            self.fetching.retain(|_, c| *c != conn);
-            self.reopens.retain(|(c, _), _| *c != conn);
             self.lost(conn);
         }
     }
@@ -1107,7 +1124,8 @@ impl SyncEngine {
     fn session_event(&mut self, conn: ConnId, e: ClientEvent, out: &mut Vec<Action>) -> Result<()> {
         use ClientEvent as E;
         match e {
-            E::Ready { .. } => self.ready(conn, out)?,
+            // Hellos done: every label this server holds starts opening
+            E::Ready { .. } => self.add_new_labels(out)?,
             E::ClockOffset { offset_ms, .. } => {
                 if let Some(c) = self.conns.get_mut(&conn) {
                     c.offset = Some(offset_ms);
@@ -1131,7 +1149,7 @@ impl SyncEngine {
             E::Events { label, .. } if !self.conns.get(&conn).is_some_and(|c| c.labels.contains_key(&label)) => self.diag("server pushed a label not opened".into()),
             // a session not open yet: a push left from an earlier session (a forgotten label's,
             // a reopen's) would move the cursor past what its replay has not listed
-            E::Events { label, .. } if !self.conns.get(&conn).and_then(|c| c.labels.get(&label)).is_some_and(|x| x.phase == Phase::Open) => {}
+            E::Events { label, .. } if !self.lc(conn, &label).is_some_and(|x| x.phase == Phase::Open) => {}
             E::Events { label, events, cursor } => {
                 if !events.is_empty() {
                     self.received_from(conn, label);
@@ -1156,7 +1174,7 @@ impl SyncEngine {
                     self.fetching.remove(&f.blob_id);
                     gone |= self.missing.insert((conn, f.blob_id));
                 }
-                if gone && let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&label)) {
+                if gone && let Some(lc) = self.lc_mut(conn, &label) {
                     lc.dirty = true;
                 }
                 let evs: Vec<osis_proto::Event> = items.into_iter().filter_map(|f| f.entry.map(|(blob, wrap, stamp)| osis_proto::Event::Added { blob_id: f.blob_id, blob: Some(blob), wrap, stamp })).collect();
@@ -1171,12 +1189,6 @@ impl SyncEngine {
             E::PeerError(e) => self.diag(format!("server: {e}")),
         }
         Ok(())
-    }
-
-    /// Hellos done: every label this server holds (by the labels' server lists, or a hint)
-    /// starts opening.
-    fn ready(&mut self, _conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
-        self.add_new_labels(out)
     }
 
     /// Labels to open, with their group and server keys: the synced labels and inbox hints.
@@ -1231,10 +1243,10 @@ impl SyncEngine {
         let todo: Vec<(ConnId, LabelId)> = self
             .conns
             .iter()
-            .flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.dirty && l.synced && !l.syncing && l.phase == Phase::Open && l.registering.is_none()).map(move |(lid, _)| (*id, *lid)))
+            .flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.dirty && l.phase == Phase::Open && l.ready()).map(move |(lid, _)| (*id, *lid)))
             .collect();
         for (conn, label) in todo {
-            if let Some(l) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&label)) {
+            if let Some(l) = self.lc_mut(conn, &label) {
                 l.dirty = false;
             }
             self.pass(conn, label, out)?;
@@ -1282,9 +1294,9 @@ impl SyncEngine {
             self.local_dirty = true;
         }
         for (conn, label) in resync {
-            if !self.cfg.subscribe || self.conns.get(&conn).and_then(|c| c.labels.get(&label)).is_some_and(|l| !l.synced) {
+            if !self.cfg.subscribe || self.lc(conn, &label).is_some_and(|l| !l.synced) {
                 self.sync_label(conn, label, out)?;
-            } else if let Some(l) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&label)) {
+            } else if let Some(l) = self.lc_mut(conn, &label) {
                 // subscribed: a pass now and then (heartbeats, timed bounds)
                 l.last_sync = now;
                 l.dirty = true;
@@ -1383,8 +1395,6 @@ impl SyncEngine {
         self.conns.values().filter(|c| c.server == *server).flat_map(|c| c.labels.iter().filter(|(_, l)| l.phase == Phase::Open).map(|(id, _)| *id)).collect()
     }
 
-    /// Whether every open label on every connection has completed a pass and nothing is
-    /// outstanding (tests, simulator quiescence).
     /// A digest of this node's sync state (simulator determinism checks): entries with their
     /// wraps, stamps and kinds, presence, deposits, tombstones, timed deletes, certificates,
     /// carriers, blob records, and which of the blobs they name the store holds.
@@ -1422,8 +1432,10 @@ impl SyncEngine {
         self.stats
     }
 
+    /// Whether every open label on every connection has completed a pass and nothing is
+    /// outstanding (tests, simulator quiescence).
     pub fn is_idle(&self) -> bool {
-        self.conns.values().all(|c| c.session.outstanding() == 0 && c.labels.values().all(|l| l.phase != Phase::Open || (l.synced && !l.syncing && !l.dirty && l.registering.is_none())))
+        self.conns.values().all(|c| c.session.outstanding() == 0 && c.labels.values().all(|l| l.phase != Phase::Open || l.idle()))
     }
 
     /// A one-line summary of each label on each connection (tests, diagnostics).
@@ -1473,5 +1485,26 @@ impl SyncEngine {
     /// Signals received since the last call.
     pub fn take_signals(&mut self) -> Vec<osis_label::SignalBody> {
         std::mem::take(&mut self.signals)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    // spec/sync.md §6: a fetch in flight on a connection its session closed (a request timeout)
+    // is asked again on the next connection; the closed one is never answered.
+    #[test]
+    fn closed_session_forgets_its_fetches_spec_sync_6() {
+        let lp = crate::local_peer::LocalPeer::new(1, 964, osis_base::WallMs(1_700_000_000_000)).unwrap();
+        let p = lp.peers.into_iter().next().unwrap();
+        let cfg = SyncConfig { servers: vec![Address { url: "quic://server:1".into(), key: [7; 32] }], ..SyncConfig::default() };
+        let mut s = SyncEngine::new(p.engine, p.clock, Box::new(osis_crypto::SeededRng::from_u64(965)), cfg).unwrap();
+        let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
+        let b = osis_base::BlobId([1; 32]);
+        s.fetching.insert(b, conn);
+        s.outputs(conn, vec![ClientOutput::Close], &mut Vec::new()).unwrap();
+        assert!(!s.fetching.contains_key(&b));
     }
 }
