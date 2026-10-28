@@ -12,7 +12,10 @@ doctest = false
 [dependencies]
 
 [dev-dependencies]
-proptest = "1"
+proptest.workspace = true
+# Feature pins (notes/build.md, Feature unification): as the workspace enables them under proptest.
+rand.workspace = true
+libc.workspace = true
 
 [[bin]]
 name = "text-bench"

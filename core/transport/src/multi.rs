@@ -1,19 +1,17 @@
 //! `Multi`: one transport over several, picked by URL scheme (spec/sync.md §10): `mem://` to
-//! `InProcess`, `quic://` to `Quic` (feature `quic`), `peer://` to `Iroh` (feature `iroh`), else to
+//! `InProcess`, `quic://` to `Quic`, `peer://` to `Iroh` (feature `iroh`), else to
 //! `InProcess` (which finds a `peer://` listener by key). A scheme without its transport is
 //! `UnknownScheme`. Lets one driver reach servers and peers.
 
 use crate::{Address, Connection, Error, InProcess, ListenConfig, Listener, MemConn, MemListener, MemRecv, MemSend, PublicKey, RecvStream, SendStream, StaticSecret, Transport};
 #[cfg(feature = "iroh")]
 use crate::{Iroh, IrohConn, IrohListener, IrohRecv, IrohSend};
-#[cfg(feature = "quic")]
 use crate::{Quic, QuicConn, QuicListener, QuicRecv, QuicSend};
 
 /// The transports a `Multi` dispatches to; `None`: that scheme is unknown.
 #[derive(Clone, Default)]
 pub struct Multi {
     pub mem: Option<InProcess>,
-    #[cfg(feature = "quic")]
     pub quic: Option<Quic>,
     #[cfg(feature = "iroh")]
     pub iroh: Option<Iroh>,
@@ -21,7 +19,6 @@ pub struct Multi {
 
 enum Pick<'a> {
     Mem(&'a InProcess),
-    #[cfg(feature = "quic")]
     Quic(&'a Quic),
     #[cfg(feature = "iroh")]
     Iroh(&'a Iroh),
@@ -32,7 +29,6 @@ impl Multi {
         let scheme = url.split_once("://").map(|(s, _)| s).ok_or_else(|| Error::BadUrl(url.to_owned()))?;
         let unknown = || Error::UnknownScheme(scheme.to_owned());
         match scheme {
-            #[cfg(feature = "quic")]
             "quic" => self.quic.as_ref().map(Pick::Quic).ok_or_else(unknown),
             #[cfg(feature = "iroh")]
             crate::PEER_SCHEME if self.iroh.is_some() => self.iroh.as_ref().map(Pick::Iroh).ok_or_else(unknown),
@@ -47,7 +43,6 @@ macro_rules! either {
     ($name:ident, $mem:ty, $quic:ty, $iroh:ty) => {
         pub enum $name {
             Mem($mem),
-            #[cfg(feature = "quic")]
             Quic($quic),
             #[cfg(feature = "iroh")]
             Iroh($iroh),
@@ -59,7 +54,6 @@ macro_rules! each {
     ($v:expr, $x:ident => $body:expr) => {
         match $v {
             Self::Mem($x) => $body,
-            #[cfg(feature = "quic")]
             Self::Quic($x) => $body,
             #[cfg(feature = "iroh")]
             Self::Iroh($x) => $body,
@@ -83,7 +77,6 @@ impl From<MemConn> for MultiConn {
         MultiConn::Mem(c)
     }
 }
-#[cfg(feature = "quic")]
 impl From<QuicConn> for MultiConn {
     fn from(c: QuicConn) -> Self {
         MultiConn::Quic(c)
@@ -103,7 +96,6 @@ impl Transport for Multi {
     async fn dial(&self, addr: &Address) -> Result<MultiConn, Error> {
         Ok(match self.pick(&addr.url)? {
             Pick::Mem(t) => MultiConn::Mem(t.dial(addr).await?),
-            #[cfg(feature = "quic")]
             Pick::Quic(t) => MultiConn::Quic(t.dial(addr).await?),
             #[cfg(feature = "iroh")]
             Pick::Iroh(t) => MultiConn::Iroh(t.dial(addr).await?),
@@ -113,7 +105,6 @@ impl Transport for Multi {
     async fn dial_as(&self, addr: &Address, secret: &StaticSecret) -> Result<MultiConn, Error> {
         Ok(match self.pick(&addr.url)? {
             Pick::Mem(t) => MultiConn::Mem(t.dial_as(addr, secret).await?),
-            #[cfg(feature = "quic")]
             Pick::Quic(t) => MultiConn::Quic(t.dial_as(addr, secret).await?),
             #[cfg(feature = "iroh")]
             Pick::Iroh(t) => MultiConn::Iroh(t.dial_as(addr, secret).await?),
@@ -123,7 +114,6 @@ impl Transport for Multi {
     async fn listen(&self, cfg: ListenConfig) -> Result<MultiListener, Error> {
         Ok(match self.pick(&cfg.url)? {
             Pick::Mem(t) => MultiListener::Mem(t.listen(cfg).await?),
-            #[cfg(feature = "quic")]
             Pick::Quic(t) => MultiListener::Quic(t.listen(cfg).await?),
             #[cfg(feature = "iroh")]
             Pick::Iroh(t) => MultiListener::Iroh(t.listen(cfg).await?),
@@ -158,7 +148,6 @@ impl Connection for MultiConn {
     async fn open_stream(&self) -> Result<(MultiSend, MultiRecv), Error> {
         Ok(match self {
             Self::Mem(c) => c.open_stream().await.map(|(s, r)| (MultiSend::Mem(s), MultiRecv::Mem(r)))?,
-            #[cfg(feature = "quic")]
             Self::Quic(c) => c.open_stream().await.map(|(s, r)| (MultiSend::Quic(s), MultiRecv::Quic(r)))?,
             #[cfg(feature = "iroh")]
             Self::Iroh(c) => c.open_stream().await.map(|(s, r)| (MultiSend::Iroh(s), MultiRecv::Iroh(r)))?,
@@ -168,7 +157,6 @@ impl Connection for MultiConn {
     async fn accept_stream(&self) -> Result<(MultiSend, MultiRecv), Error> {
         Ok(match self {
             Self::Mem(c) => c.accept_stream().await.map(|(s, r)| (MultiSend::Mem(s), MultiRecv::Mem(r)))?,
-            #[cfg(feature = "quic")]
             Self::Quic(c) => c.accept_stream().await.map(|(s, r)| (MultiSend::Quic(s), MultiRecv::Quic(r)))?,
             #[cfg(feature = "iroh")]
             Self::Iroh(c) => c.accept_stream().await.map(|(s, r)| (MultiSend::Iroh(s), MultiRecv::Iroh(r)))?,
@@ -205,7 +193,7 @@ mod tests {
     // spec/sync.md §10: the URL scheme picks the transport; `peer://` without iroh goes to the
     // in-process listener of that key; a scheme without its transport is unknown (parked).
     #[test]
-    #[allow(clippy::needless_update)] // the other fields exist with features `quic`, `iroh`
+    #[allow(clippy::needless_update)] // the other fields exist with feature `iroh`
     fn dispatch_by_scheme_spec_sync_10() {
         let net = Net::new(3);
         let mut sched = Sched::new(3, Some(net.clone()));

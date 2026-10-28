@@ -20,24 +20,17 @@ osis-label.workspace = true
 osis-proto.workspace = true
 osis-store.workspace = true
 osis-transport.workspace = true
-tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
-tokio = { workspace = true, features = ["rt", "macros"] }
 
 [features]
 default = ["driver"]
 # The async driver and network adapter (tokio); off, the crate is the sans-I/O store and hub.
-driver = ["dep:tokio", "osis-transport/link"]
-# The QUIC transport (spec/sync.md §10).
-quic = ["driver", "osis-transport/quic"]
-# The redb file backend (notes/architecture.md §4: off by default).
-file-backend = ["osis-store/file-backend"]
-# The `osis-server` binary: QUIC, file backend, OS randomness, multi-thread runtime, signals.
-bin = ["quic", "file-backend", "osis-crypto/os-rng", "tokio/signal"]
+driver = ["dep:tokio"]
 
 [[bin]]
 name = "osis-server"
 test = false
-required-features = ["bin"]
+required-features = ["driver"]

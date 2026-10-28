@@ -20,7 +20,7 @@ What runs where (details and latest numbers: notes/testing.md):
 - Tier 1, `cargo test --workspace`: everything below the sim's long scenarios; green.
 - Tier 2, `cargo test --workspace -- --ignored --skip sweep --skip scale:: --skip bench::` (those timing checks by hand in release): scale checks, budgets, long sim scenarios, the localhost CLI session; known failures each have an issue.
 - Nightly: fuzzing, `sim-sweep`, `core/test/tla/run.sh small`, coverage.
-- Behind features, off by default: QUIC (`quic`; the CLI and server binary have it on), the redb file store (`file-store`/`file-backend`), iroh P2P (`iroh`, transport and node only), LAN announcements (`lan`). Tests of those run with `cargo test-net` (tier 2).
+- Behind features, off by default: iroh P2P (`iroh`, transport and node only), LAN announcements (`lan`). Tests of those run with `cargo test-net` (tier 2). QUIC and the redb file store are always built.
 
 How to run:
 - CLI: `cargo run --bin osis -- --help`; `osis -s DIR init`, writes, `osis serve` for a local server (notes/cli.md).

@@ -68,10 +68,8 @@ impl RootStorage for MemoryRoot {
     }
 }
 
-#[cfg(feature = "file-backend")]
 pub use file::FileRoot;
 
-#[cfg(feature = "file-backend")]
 mod file {
     use super::*;
     use std::fs::{File, OpenOptions};
@@ -196,7 +194,7 @@ mod file {
     }
 }
 
-#[cfg(all(test, feature = "file-backend"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

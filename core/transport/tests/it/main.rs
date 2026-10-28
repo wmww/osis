@@ -4,5 +4,4 @@
 mod common;
 mod manage;
 mod mem;
-#[cfg(feature = "quic")]
 mod quic;

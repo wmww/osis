@@ -15,8 +15,8 @@ workspace = true
 
 [dependencies]
 osis-base.workspace = true
-blake3 = { workspace = true, features = ["zeroize"] }
-ed25519-dalek = { workspace = true, features = ["hazmat", "digest"] }
+blake3.workspace = true
+ed25519-dalek.workspace = true
 curve25519-dalek.workspace = true
 x25519-dalek.workspace = true
 libcrux-ml-kem.workspace = true
@@ -24,10 +24,6 @@ chacha20poly1305.workspace = true
 zeroize.workspace = true
 rand_core.workspace = true
 subtle.workspace = true
-
-[features]
-# OS randomness for drivers (node, server, cli); libraries take an injected rng.
-os-rng = ["rand_core/getrandom"]
 
 [dev-dependencies]
 proptest.workspace = true

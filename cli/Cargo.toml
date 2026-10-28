@@ -19,9 +19,9 @@ test = false
 path = "src/main.rs"
 
 [dependencies]
-osis = { workspace = true, features = ["file-store", "quic"] }
+osis.workspace = true
 osis-schema.workspace = true
-osis-server = { workspace = true, features = ["bin"] }
+osis-server.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 

@@ -14,12 +14,8 @@ test = false
 workspace = true
 
 [features]
-# `Store::Dir`: the redb file store (notes/architecture.md §4: heavy deps off by default).
-file-store = ["osis-store/file-backend"]
-# `Transport::Quic`: direct server connections over QUIC (spec/sync.md §10).
-quic = ["osis-transport/quic"]
 # Co-readers over iroh beside QUIC servers (`Transport::Quic`; spec/sync.md §5, §10).
-iroh = ["quic", "osis-transport/iroh", "osis-node/iroh"]
+iroh = ["osis-transport/iroh", "osis-node/iroh"]
 # The LAN loop: per-network keys and announcements (spec/sync.md §10).
 lan = ["iroh", "osis-node/lan"]
 
@@ -31,9 +27,9 @@ osis-schema.workspace = true
 osis-commit.workspace = true
 osis-label.workspace = true
 osis-store.workspace = true
-osis-crypto = { workspace = true, features = ["os-rng"] }
-osis-transport = { workspace = true, features = ["link"] }
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time"] }
+osis-crypto.workspace = true
+osis-transport.workspace = true
+tokio.workspace = true
 
 [build-dependencies]
 osis-schema.workspace = true
@@ -41,4 +37,3 @@ osis-schema.workspace = true
 [dev-dependencies]
 osis-server.workspace = true
 osis-sim.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }

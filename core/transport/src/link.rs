@@ -1,4 +1,4 @@
-//! Sessions over any `Transport` for tokio drivers (feature `link`): a `Link` is one stream's two
+//! Sessions over any `Transport` for tokio drivers: a `Link` is one stream's two
 //! directions as channel ends, with pump tasks between them and the stream. The dialer opens one
 //! stream per session and closes the connection when the session ends; the accepting side takes
 //! every stream the dialer opens as a session (spec/sync.md §10), finishes its side when a session

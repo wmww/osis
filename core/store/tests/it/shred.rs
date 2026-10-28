@@ -229,7 +229,6 @@ fn unshredded_large_overwrite_is_unrecoverable_after_a_later_shred() {
 }
 
 // spec/requirements.md, Deletion: the file backend holds ciphertext only.
-#[cfg(feature = "file-backend")]
 #[test]
 fn file_backend_holds_no_plaintext() {
     let dev = FileDevice::new("shred");

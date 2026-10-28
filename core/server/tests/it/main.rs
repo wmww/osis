@@ -5,10 +5,9 @@ mod common;
 mod bounds;
 #[cfg(feature = "driver")]
 mod driver;
-#[cfg(feature = "file-backend")]
 mod file;
 mod hub;
 mod hygiene;
 mod limits;
-#[cfg(feature = "quic")]
+#[cfg(feature = "driver")]
 mod quic;

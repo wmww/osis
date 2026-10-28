@@ -1,4 +1,4 @@
-//! `Quic`: direct server transport, `quic://host:port` (feature `quic`; spec/sync.md §10).
+//! `Quic`: direct server transport, `quic://host:port` (spec/sync.md §10).
 //! QUIC v1 (quinn) with TLS 1.3 (rustls, ring provider), ALPN `osis`, both sides authenticated by
 //! RFC 7250 raw Ed25519 public keys: the server's is its address key (pinned by the client), the
 //! client's a fresh key per connection. No certificates, no CA. Needs a tokio runtime.

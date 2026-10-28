@@ -29,7 +29,6 @@ pub use rng::SeededRng;
 pub use secret::Secret32;
 pub use sign::{Domain, Signature, SigningSecret, VerifyingKey};
 
-#[cfg(feature = "os-rng")]
 pub use rand_core::OsRng;
 pub use rand_core::{CryptoRng, CryptoRngCore, Error as RngError, RngCore};
 pub use zeroize::Zeroizing;

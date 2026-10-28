@@ -12,6 +12,11 @@ workspace = true
 
 [dependencies]
 blake3.workspace = true
+# Feature pins, unused here (notes/build.md, Feature unification): the features crates higher up
+# enable on these, so that a `-p` build of any crate unifies like the workspace.
+zeroize.workspace = true
+rand.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

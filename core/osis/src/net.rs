@@ -57,9 +57,8 @@ impl ManualNet {
 /// How servers and co-reader nodes are dialed (spec/sync.md §10).
 #[derive(Clone)]
 pub enum Transport {
-    /// Servers over QUIC (feature `quic`); co-readers over iroh (feature `iroh`, through
+    /// Servers over QUIC; co-readers over iroh (feature `iroh`, through
     /// `Config.relays`), on the LAN too with feature `lan`. Without `iroh` no co-reader is dialed.
-    #[cfg(feature = "quic")]
     Quic,
     /// In-process endpoints for servers and co-readers (tests).
     InProcess(osis_transport::InProcess),
@@ -68,7 +67,6 @@ pub enum Transport {
 impl std::fmt::Debug for Transport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            #[cfg(feature = "quic")]
             Transport::Quic => f.write_str("Quic"),
             Transport::InProcess(_) => f.write_str("InProcess"),
         }
@@ -153,7 +151,6 @@ impl Net {
                 multi.mem = Some(t);
                 (Some(url), false)
             }
-            #[cfg(feature = "quic")]
             Some(Transport::Quic) | None => {
                 multi.quic = Some(osis_transport::Quic::new());
                 #[cfg(feature = "iroh")]
@@ -164,8 +161,6 @@ impl Net {
                 #[cfg(not(feature = "iroh"))]
                 (None, false)
             }
-            #[cfg(not(feature = "quic"))]
-            None => return Err(Error::Invalid("a runtime needs a transport (Config.transport; QUIC needs feature `quic`)".into())),
         };
         handle.spawn(driver::run_host(host, multi, Vec::new(), clock, rx, log));
         match reach {

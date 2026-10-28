@@ -54,13 +54,11 @@ impl Device for MemDevice {
     }
 }
 
-#[cfg(feature = "file-backend")]
 pub struct FileDevice {
     pub dir: std::path::PathBuf,
     pub faults: Faults,
 }
 
-#[cfg(feature = "file-backend")]
 impl FileDevice {
     /// A redb file and a file root in a fresh temp directory (tier-1 disk rule: own temp dir only).
     pub fn new(name: &str) -> FileDevice {
@@ -72,14 +70,12 @@ impl FileDevice {
     }
 }
 
-#[cfg(feature = "file-backend")]
 impl Drop for FileDevice {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
-#[cfg(feature = "file-backend")]
 impl Device for FileDevice {
     fn backend(&self) -> Box<dyn Backend> {
         let b = osis_store::RedbBackend::open(&self.dir.join("db")).unwrap();
@@ -100,7 +96,6 @@ impl Device for FileDevice {
 pub fn devices(name: &str) -> Vec<Box<dyn Device>> {
     #[allow(unused_mut)]
     let mut v: Vec<Box<dyn Device>> = vec![Box::new(MemDevice::new())];
-    #[cfg(feature = "file-backend")]
     v.push(Box::new(FileDevice::new(name)));
     let _ = name;
     v

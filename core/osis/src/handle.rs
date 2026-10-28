@@ -46,8 +46,7 @@ impl MemStore {
 #[derive(Clone, Debug)]
 pub enum StoreAt {
     Memory(MemStore),
-    /// A directory (feature `file-store`): `db.redb` and the key root `root`.
-    #[cfg(feature = "file-store")]
+    /// A directory: `db.redb` and the key root `root`.
     Dir(std::path::PathBuf),
 }
 
@@ -63,7 +62,7 @@ pub struct Config {
     pub seed: Option<u64>,
     /// Where background sync runs (default `Runtime::None`: no network).
     pub runtime: Runtime,
-    /// How servers and co-reader nodes are dialed (default: QUIC with feature `quic`).
+    /// How servers and co-reader nodes are dialed (default: QUIC).
     pub transport: Option<Transport>,
     /// Sync with co-reader nodes directly (spec/sync.md §5, §10; default on): listen with the
     /// dialable key, publish `/reach`, and with feature `lan` announce on the LAN.
@@ -89,7 +88,6 @@ impl Config {
         Config { store, materialize_limit: DEFAULT_LIMIT, clock: None, seed: None, runtime: Runtime::None, transport: None, peers: true, relays: Vec::new(), servers: Vec::new(), idle_commit: DEFAULT_IDLE_COMMIT, wait_timeout: DEFAULT_WAIT }
     }
 
-    #[cfg(feature = "file-store")]
     pub fn dir(path: impl Into<std::path::PathBuf>) -> Config {
         Config::at(StoreAt::Dir(path.into()))
     }
@@ -184,7 +182,6 @@ pub(crate) const LINKS: &str = "links";
 fn parts(cfg: &Config) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_store::RootStorage>)> {
     match &cfg.store {
         StoreAt::Memory(m) => Ok((Box::new(m.backend.clone()), Box::new(m.root.clone()))),
-        #[cfg(feature = "file-store")]
         StoreAt::Dir(p) => {
             let mut d = std::fs::DirBuilder::new();
             d.recursive(true);
@@ -292,7 +289,6 @@ impl Osis {
     pub(crate) fn start(mut sync: SyncEngine, clock: Arc<dyn Clock>, cfg: &Config, me: Tid) -> Result<Osis> {
         // a store made before its files were created owner-only: tightened where possible
         // (best effort), else reported
-        #[cfg(feature = "file-store")]
         if let StoreAt::Dir(p) = &cfg.store {
             for f in [p.clone(), p.join("db.redb"), p.join("root")] {
                 if let Some(why) = osis_store::restrict_to_owner(&f) {

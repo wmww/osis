@@ -23,8 +23,22 @@ if [ -z "$seeds" ]; then
   fi
 fi
 t0=$(date +%s)
+# Feature unification is selection-invariant (notes/build.md, Feature unification): after the
+# whole-workspace build, building any one member alone compiles nothing.
+unification_check() {
+  cargo build --workspace --all-targets --locked --quiet
+  bad=0
+  for p in $(cargo metadata --no-deps --format-version 1 --locked | python3 -c 'import json, sys; print(" ".join(p["name"] for p in json.load(sys.stdin)["packages"]))'); do
+    out=$(cargo build -p "$p" --all-targets --locked 2>&1) || { printf '%s\n' "$out"; return 1; }
+    c=$(printf '%s\n' "$out" | sed -n 's/^ *Compiling \([^ ]*\).*/\1/p' | tr '\n' ' ')
+    [ -z "$c" ] || { echo "   $p alone compiles: $c"; bad=$((bad + 1)); }
+  done
+  echo "   $bad offenders"
+  [ "$bad" -eq 0 ]
+}
 step() { printf '== %s\n' "$*"; s=$(date +%s); "$@"; printf '   (%ss)\n' $(( $(date +%s) - s )); }
 step cargo test --workspace --locked
+step unification_check
 step cargo clippy --workspace --all-targets --locked -- -D warnings
 step cargo clippy-net --locked -- -D warnings
 step python3 tools/policy.py

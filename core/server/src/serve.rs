@@ -1,4 +1,4 @@
-//! The binary's main as a call (feature `bin`): the `osis-server` binary and the CLI's `osis
+//! The binary's main as a call: the `osis-server` binary and the CLI's `osis
 //! serve` run a blind node on the redb file backend over QUIC until Ctrl-C (SIGINT).
 
 use crate::{BackendStore, Config, Control, Endpoint, Hub, Log, driver};

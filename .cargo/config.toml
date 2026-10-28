@@ -4,8 +4,8 @@
 # Networking code (QUIC, iroh, LAN, relay): the one feature set its tier-2 tests and lints use.
 # Dev profile like every other per-branch command: no release set outside explicit benches.
 [alias]
-test-net = "test --workspace --features osis/lan,osis-node/quic,osis-node/relay"
-clippy-net = "clippy --workspace --all-targets --features osis/lan,osis-node/quic,osis-node/relay"
+test-net = "test --workspace --features osis/lan,osis-node/relay"
+clippy-net = "clippy --workspace --all-targets --features osis/lan,osis-node/relay"
 
 # Test tier 1 defaults (notes/architecture.md §4). An explicit environment value wins.
 [env]
