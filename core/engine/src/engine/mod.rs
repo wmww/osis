@@ -748,14 +748,7 @@ impl Tx<'_> {
             return Ok(());
         }
         let f = match self.txn.get_aspect(tid, ak)? {
-            Some(mut u) if pages::is_paged(&u.state) => {
-                // an earlier build's layout is laid out anew, once
-                if let Some(whole) = pages::legacy(&mut self.txn, tid, ak, &u.state)? {
-                    self.core.touch();
-                    self.core.wrote(k.clone());
-                    u.state = pages::write_full(&mut self.txn, tid, ak, Some(&whole), true, &self.core.key_salt)?.0;
-                    self.txn.put_aspect(tid, ak, &u, Shred::No)?;
-                }
+            Some(u) if pages::is_paged(&u.state) => {
                 let (f, idx) = pages::open(&u.state, &self.core.key_salt)?;
                 self.core.pages.insert(k.clone(), idx);
                 Some(f)

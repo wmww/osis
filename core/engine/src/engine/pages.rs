@@ -32,8 +32,8 @@ const STATE_TABLE: u8 = 0;
 const KEY_TABLE: u8 = 1;
 /// The aspect table holding the placement of its paged sequences (`write_placement`).
 const PLACE_TABLE: u8 = 2;
-/// The unit state tag of this layout (`legacy` reads the earlier ones).
-const TAG: i64 = 7;
+/// The unit state tag of a paged state (an unpaged state starts with bytes).
+const TAG: i64 = 1;
 
 /// A path with the keys of its entry steps (to rebuild an entry's key from a page alone).
 type KeyedPath = Vec<(Step, Option<Value>, Option<osis_crdt::Stamp>)>;
@@ -203,9 +203,7 @@ fn steps(p: &KeyedPath) -> Vec<Step> {
     p.iter().map(|(s, _, _)| s.clone()).collect()
 }
 
-/// Unit state of a paged state: `[7, skeleton, [[set ID, path, encoding]*]]` (earlier builds':
-/// `3`, the key index hashed unkeyed; `4`, no set values indexed, link keys hashed whole; `5`,
-/// no sequence placement; `6`, the placement as runs of the order only).
+/// Unit state of a paged state: `[1, skeleton, [[set ID, path, encoding]*]]`.
 /// Unpaged states start `[bytes, ...]`.
 fn unit_state(skeleton: &Fragment, idx: &PageIndex) -> Result<Vec<u8>> {
     let sets = idx.sets.values().map(|s| Value::List(vec![uint(u64::from(s.id)), path_value(&s.path), uint(u64::from(s.enc.id()))])).collect();
@@ -259,16 +257,12 @@ fn key_row(set: &PageSet, k: &Value, d: Option<&Dot>) -> Vec<u8> {
 
 /// Opens a paged state: its skeleton and index, no page loaded yet.
 pub fn open(unit_state: &[u8], salt: &[u8; 32]) -> Result<(Fragment, PageIndex)> {
-    open_tagged(unit_state, salt, TAG)
-}
-
-fn open_tagged(unit_state: &[u8], salt: &[u8; 32], tag: i64) -> Result<(Fragment, PageIndex)> {
     let bad = || Error::Corrupt("state");
     let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: unit_state.len() };
     let v = osis_base::decode(unit_state, &lim).map_err(|_| bad())?;
     let Value::List(items) = v else { return Err(bad()) };
     let [Value::Int(t), Value::Bytes(skel), Value::List(list)] = items.as_slice() else { return Err(bad()) };
-    if *t != tag {
+    if *t != TAG {
         return Err(bad());
     }
     let f = decode(skel)?;
@@ -283,37 +277,6 @@ fn open_tagged(unit_state: &[u8], salt: &[u8; 32], tag: i64) -> Result<(Fragment
         idx.sets.insert(s, PageSet::new(u32::try_from(*id).map_err(|_| bad())?, *salt, path, enc));
     }
     Ok((f, idx))
-}
-
-/// A paged state in an earlier build's layout (`[1]`: a root collection; `[2, skeleton]`: a
-/// struct with paged fields; pages in the state table, each a fragment; `[3, ...]` to
-/// `[6, ...]`: this layout with an earlier index or placement), joined whole; `None` for any
-/// other unit state.
-pub fn legacy(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, unit_state: &[u8]) -> Result<Option<Fragment>> {
-    // the tag is the array's first byte item
-    if !matches!(unit_state.get(1), Some(1..=6)) {
-        return Ok(None);
-    }
-    // set paths nest (fields, entries)
-    let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: unit_state.len() };
-    let Ok(Value::List(items)) = osis_base::decode(unit_state, &lim) else { return Ok(None) };
-    let mut f = match items.as_slice() {
-        [Value::Int(1)] => Fragment::default(),
-        [Value::Int(2), Value::Bytes(s)] => decode(s)?,
-        [Value::Int(t @ (3..=6)), ..] => {
-            // loading reads pages only, never the index
-            let (mut f, mut idx) = open_tagged(unit_state, &[0; 32], *t)?;
-            load_all(txn, tid, ak, &mut idx, &mut f)?;
-            return Ok(Some(f));
-        }
-        _ => return Ok(None),
-    };
-    let t = table(txn, tid, ak)?;
-    scan_table(txn, t, &[], None, |_, v| {
-        f.join(decode(&v)?);
-        Ok(())
-    })?;
-    Ok(Some(f))
 }
 
 fn table(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak) -> Result<Table> {
@@ -605,7 +568,7 @@ fn walk(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, idx: &mut PageI
 // included, with its depth, parent and edge, in blocks with their visible counts and least
 // depths, and a dot → block map in chunks by dot) in the aspect's placement table:
 // - top (`set ‖ 0`): `[cap, map entries, [waiting dot*], [broken-cycle dot*], groups, newest]`,
-//   newest `[ts, dot]` a stamp at or above every position write's, or `[]` (absent in older tops);
+//   newest `[ts, dot]` a stamp at or above every position write's, or `[]`;
 // - group (`set ‖ 0 ‖ u32 index`): `[[block ID, rows, shown, least depth, shift]*]`, the blocks
 //   in order, `GROUP` per row;
 // - block (`set ‖ 1 ‖ u64 ID`): `[[source*], [row*]]`, a row `[source, ctr, span or n, flags,
@@ -849,20 +812,14 @@ fn chunks_row(t: &PlaceTop) -> Vec<u8> {
 
 /// The top and chunk list of a stored placement (`None`: damaged).
 fn parse_top(top: &[u8], groups: &[Vec<u8>], chunks: &[u8]) -> Option<PlaceTop> {
-    let mut row = decode_row(top)?;
-    // the newest position write's stamp (none in tops written before it)
-    let newest = match row.len() {
-        6 => match row.pop()? {
-            Value::List(x) if x.is_empty() => None,
-            Value::List(x) => match x.as_slice() {
-                [Value::Int(ts), d] => Some(osis_crdt::Stamp { ts: osis_base::Ts::from_u64(u64::try_from(*ts).ok()?)?, dot: dot_of(d).ok()? }),
-                _ => return None,
-            },
-            _ => return None,
-        },
-        _ => None,
+    let row = decode_row(top)?;
+    let [cap, map_len, Value::List(waiting), Value::List(cyc), ng, Value::List(newest)] = <[Value; 6]>::try_from(row).ok()? else { return None };
+    // the newest position write's stamp
+    let newest = match newest.as_slice() {
+        [] => None,
+        [Value::Int(ts), d] => Some(osis_crdt::Stamp { ts: osis_base::Ts::from_u64(u64::try_from(*ts).ok()?)?, dot: dot_of(d).ok()? }),
+        _ => return None,
     };
-    let [cap, map_len, Value::List(waiting), Value::List(cyc), ng] = <[Value; 5]>::try_from(row).ok()? else { return None };
     let n = |v: &Value| int(v).and_then(|x| usize::try_from(x).ok());
     let dots = |x: &[Value]| x.iter().map(|d| dot_of(d).ok()).collect::<Option<Vec<_>>>();
     if n(&ng)? != groups.len() {
@@ -1761,54 +1718,6 @@ mod tests {
         assert!(writes > 10, "{writes} writes");
         assert_eq!(mism, 0);
     }
-    // spec: none (local store layout); notes/local-store.md (Units): a state paged in an earlier build's layout (`[1]` with pages
-    // of the root collection by page ID) is read whole and laid out anew.
-    #[test]
-    fn legacy_layout_relaid_spec_requirements_scale() {
-        let mut rng = osis_crypto::SeededRng::from_u64(79);
-        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([4; 15]), osis_base::Ak::new("/app/old").unwrap());
-        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), Source::node(Tid::from_bytes([1; 15])), 1);
-        let st = create(&mut w, &AnyView, &ints(6000, 1)).unwrap();
-        let mut txn = store.transaction(&mut rng).unwrap();
-        let t = txn.create_table(&tid, &ak, STATE_TABLE).unwrap();
-        let dots = st.elem_dots(None, None);
-        let mid = dots.get(dots.len() / 2).cloned();
-        let halves = [st.elem_range(None, mid.as_ref(), true).unwrap(), st.elem_range(mid.as_ref(), None, false).unwrap()];
-        for (i, h) in halves.iter().enumerate() {
-            txn.table_put(t, &[&[0u8][..], &(i as u64).to_be_bytes()].concat(), encode(h).unwrap(), Shred::No).unwrap();
-        }
-        let old = osis_base::encode(&Value::List(vec![Value::Int(1)]));
-        assert!(is_paged(&old));
-        let whole = legacy(&mut txn, &tid, &ak, &old).unwrap().unwrap();
-        assert_eq!(whole, st);
-        let (unit, idx) = write_full(&mut txn, &tid, &ak, Some(&whole), true, &SALT).unwrap();
-        assert!(idx.is_some());
-        assert_eq!(legacy(&mut txn, &tid, &ak, &unit).unwrap(), None, "the new layout is not legacy");
-        let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-        load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
-        assert_eq!(f, st);
-        // the layout before set values were indexed (`[4, ...]`) is read whole too
-        let mut old4 = unit.clone();
-        assert_eq!(old4[1], TAG as u8);
-        old4[1] = 4;
-        assert!(open(&old4, &SALT).is_err());
-        // its index rows (an earlier hashing) go; the new layout indexes anew
-        let kt = txn.table(&tid, &ak, KEY_TABLE).unwrap().unwrap();
-        txn.table_put(kt, &[0, 0, 0, 0, 1, 2, 3], Vec::new(), Shred::No).unwrap();
-        let rows = |txn: &mut Transaction<'_>| txn.table(&tid, &ak, KEY_TABLE).unwrap().map_or(0, |t| txn.table_range(t, &[], None, 10_000).unwrap().len());
-        assert_eq!(rows(&mut txn), 6001);
-        let whole4 = legacy(&mut txn, &tid, &ak, &old4).unwrap().unwrap();
-        assert_eq!(whole4, st);
-        let (unit5, _) = write_full(&mut txn, &tid, &ak, Some(&whole4), true, &SALT).unwrap();
-        assert_eq!(rows(&mut txn), 6000);
-        let (mut f, mut idx) = open(&unit5, &SALT).unwrap();
-        let k = PathSeg::Key(Value::Int(4321));
-        assert!(ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, std::slice::from_ref(&k)).unwrap());
-        assert!(!idx.whole());
-        assert_eq!(f.at(&[k]).and_then(|x| x.read()), Some(Value::Int(4321)));
-    }
-
     // spec: none (local store paging, for the Scale requirements: a change costs O(change) at any
     // depth, peer input never causes unbounded work); notes/local-store.md (Units): a state with large collections inside map
     // entries pages each of them. Random edits, each made in a fresh session that loads only the
@@ -2057,7 +1966,7 @@ mod tests {
         let mut received: Vec<(Fragment, osis_crdt::CounterRange)> = Vec::new();
         let (mut in_place, mut kept, mut fresh_item, mut rebuilt, mut cold, mut kept_placement) = (0, 0, n, 0, 0, 0);
         let idx_of = |unit: &[u8]| open(unit, &SALT).unwrap().1;
-        let mut kinds = [0usize; 4];
+        let mut kinds = [0usize; 3];
         for step in 0..if reset { 48 } else { 36 } {
             ts += 1 << 16;
             // the running session (its placement invalidated already, or not) or a fresh one
@@ -2070,7 +1979,7 @@ mod tests {
             };
             let kind = r(12);
             if kind >= 8 && !received.is_empty() || kind >= 10 {
-                let k = (kind - 8) as usize;
+                let k = ((kind - 8) as usize).min(2);
                 kinds[k] += 1;
                 match k {
                     // an expiry or purge of a received body: its writes held value-less
@@ -2099,21 +2008,10 @@ mod tests {
                         }
                     }
                     // a validity rebuild: the whole state written again
-                    2 => {
+                    _ => {
                         load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
                         let (u, i) = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
                         unit = u;
-                        idx = i.unwrap();
-                    }
-                    // the layout before the placement (tag 5): laid out anew, then edited on
-                    _ => {
-                        let mut old5 = unit.clone();
-                        old5[1] = 5;
-                        txn.drop_table(&tid, &ak, PLACE_TABLE).unwrap();
-                        let w5 = legacy(&mut txn, &tid, &ak, &old5).unwrap().unwrap();
-                        let (u, i) = write_full(&mut txn, &tid, &ak, Some(&w5), true, &SALT).unwrap();
-                        unit = u;
-                        f = w5;
                         idx = i.unwrap();
                     }
                 }
@@ -2243,7 +2141,7 @@ mod tests {
         assert!(kept >= 4, "{kept} steps in a running session");
         assert!(rebuilt >= 4, "{rebuilt} placements rebuilt");
         assert!(cold >= 4 && kept_placement >= 20, "{cold} edits through the stored placement, {kept_placement} writes kept it");
-        assert!(kinds.iter().all(|k| *k >= 1), "strip, shred, validity rebuild, legacy: {kinds:?}");
+        assert!(kinds.iter().all(|k| *k >= 1), "strip, shred, validity rebuild: {kinds:?}");
     }
 
     /// The placement of the sequence (field 1) of `f` by a whole pass of a fresh copy.
@@ -2590,8 +2488,7 @@ mod tests {
     }
 
     // spec/crdt.md §6 (the placement is a function of state); notes/local-store.md (Units): a
-    // sequence's stored placement is rebuildable: a state of the layout before it (unit tag 5) is laid out anew
-    // with it; a damaged or missing summary or block row reads as damaged, and laid out anew
+    // sequence's stored placement is rebuildable: a damaged or missing summary or block row reads as damaged, and laid out anew
     // from the whole sequence it reads by index again.
     #[test]
     fn seq_placement_rebuilt_spec_crdt_6() {
@@ -2615,15 +2512,6 @@ mod tests {
                 Ranged::Unpaged => panic!("paged"),
             }
         };
-        assert_eq!(read(&mut txn, &unit).as_deref(), Some(&want[100..200]));
-        // the layout before (tag 5, no placement table) is read whole and laid out anew
-        let mut old5 = unit.clone();
-        old5[1] = 5;
-        txn.drop_table(&tid, &ak, PLACE_TABLE).unwrap();
-        assert!(open(&old5, &SALT).is_err());
-        let whole5 = legacy(&mut txn, &tid, &ak, &old5).unwrap().unwrap();
-        assert_eq!(whole5, st);
-        let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&whole5), true, &SALT).unwrap();
         assert_eq!(read(&mut txn, &unit).as_deref(), Some(&want[100..200]));
         // damaged rows: the summary, then a block row gone
         let pt = txn.table(&tid, &ak, PLACE_TABLE).unwrap().unwrap();
@@ -2654,8 +2542,7 @@ mod tests {
     // damaged stored block or dot-map chunk (garbage, truncated, another block's rows) never
     // panics or misplaces: a cold op writes what it writes on the whole state, a received join
     // keeps the state exact, and the next read by index reads the whole pass's order (laid out
-    // anew if needed); a state of the layout before (unit tag 6, its placement rows of that
-    // layout) is read whole and laid out anew.
+    // anew if needed).
     #[test]
     fn seq_placement_damaged_rows_spec_crdt_6() {
         let mut rng = osis_crypto::SeededRng::from_u64(197);
@@ -2683,7 +2570,7 @@ mod tests {
                 Ranged::Unpaged => panic!("paged"),
             }
         };
-        for damage in 0..5u64 {
+        for damage in 0..4u64 {
             let (unit, idx) = write_full(&mut txn, &tid, &ak, Some(&st), true, &SALT).unwrap();
             let set = idx.unwrap().sets.into_values().find(is_seq).unwrap();
             let pt = txn.table(&tid, &ak, PLACE_TABLE).unwrap().unwrap();
@@ -2698,7 +2585,6 @@ mod tests {
             let other = top.blocks.iter().find(|x| x.len != b.len || x.shown != b.shown || x.min != b.min).unwrap().id;
             let key = place_key(&set, 1, b.id as u64);
             let bytes = txn.table_get(pt, &key).unwrap().unwrap();
-            let mut unit = unit;
             match damage {
                 0 => {
                     txn.table_put(pt, &key, vec![0xff, 1], Shred::No).unwrap();
@@ -2715,18 +2601,7 @@ mod tests {
                     let o = txn.table_get(pt, &c).unwrap().unwrap();
                     txn.table_put(pt, &c, o[..o.len() / 2].to_vec(), Shred::No).unwrap();
                 }
-                5.. => unreachable!(),
-                4 => {
-                    // the layout before: tag 6, its top `[next row ID, waits, groups]`
-                    unit[1] = 6;
-                    txn.table_put(pt, &place_key(&set, 0, 0), osis_base::encode(&Value::List(vec![uint(5), Value::Bool(false), Value::List(Vec::new())])), Shred::No).unwrap();
-                    assert!(open(&unit, &SALT).is_err());
-                    let whole = legacy(&mut txn, &tid, &ak, &unit).unwrap().unwrap();
-                    assert_eq!(whole.read(), st.read());
-                    let (u, _) = write_full(&mut txn, &tid, &ak, Some(&whole), true, &SALT).unwrap();
-                    assert_eq!(read_all(&mut txn, &u), vis_whole(&st), "tag 6 laid out anew");
-                    continue;
-                }
+                4.. => unreachable!(),
             }
             // a cold insert at element 150, then a received delete there
             let ops = [PathOp { path: field(), op: Op::Insert { at: 150, items: seq_items(true, damage, 2) } }];

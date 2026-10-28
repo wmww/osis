@@ -33,8 +33,6 @@ const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/", env!("OSIS_INDEX_R
 /// `View` (a membership commit's frontier and every chunk list with it), so an open indexes and adapts the commit
 /// without decoding its header.
 pub(super) const METAS: &[u8] = b"node/metas";
-/// Earlier builds' per-commit rows: the part bytes alone (read by `old_judgments` only).
-const PARTS: &[u8] = b"node/parts";
 // The derived indexes live in rebuildable store index tables of their own (a node's local
 // records table is not deepened by them).
 const BOX_KEYS: &[u8] = b"node/box keys";
@@ -542,12 +540,10 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
     Ok((parts, super::View { ts, kind, form, author, actor, linked, aspects, frontier, chunks }))
 }
 
-/// A commit record's head and its blob bytes (version 2 heads, of earlier builds, carry part
-/// bytes, skipped).
+/// A commit record's head and its blob bytes.
 pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
     let mut r = records::Rd::new(v);
-    let version = r.u8()?;
-    if version != 1 && version != 2 {
+    if r.u8()? != 1 {
         return Err(Error::Corrupt("commit record version"));
     }
     let received = WallMs(r.u64()?);
@@ -555,11 +551,6 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
     let mut dropped = BTreeSet::new();
     for _ in 0..r.u32()? {
         dropped.insert((r.u32()? as usize, r.u32()? as usize));
-    }
-    if version == 2 {
-        for _ in 0..r.u32()? {
-            r.u8()?;
-        }
     }
     Ok((RecordHead { received, origin, dropped }, r.rest()))
 }
@@ -675,20 +666,14 @@ pub(crate) type OldJudgments = (BTreeMap<CommitId, Vec<bool>>, BTreeMap<(Tid, os
 
 pub(crate) fn old_judgments(tx: &mut Tx<'_>) -> Option<OldJudgments> {
     let mut parts = BTreeMap::new();
-    // this layout, else an earlier build's part bytes alone
-    for (name, meta) in [(METAS, true), (PARTS, false)] {
-        let t = tx.txn.index(name).ok()?;
-        scan_table(&mut tx.txn, t, &[], None, |k, v| {
-            let p = if meta { parse_meta_row(&v)?.0 } else { v.as_slice() };
-            let id = CommitId(k.as_slice().try_into().map_err(|_| Error::Corrupt("meta row key"))?);
-            parts.insert(id, p.iter().map(|p| p & 1 != 0).collect());
-            Ok(())
-        })
-        .ok()?;
-        if !parts.is_empty() {
-            break;
-        }
-    }
+    let t = tx.txn.index(METAS).ok()?;
+    scan_table(&mut tx.txn, t, &[], None, |k, v| {
+        let p = parse_meta_row(&v)?.0;
+        let id = CommitId(k.as_slice().try_into().map_err(|_| Error::Corrupt("meta row key"))?);
+        parts.insert(id, p.iter().map(|p| p & 1 != 0).collect());
+        Ok(())
+    })
+    .ok()?;
     let mut carried = BTreeMap::new();
     for (k, v) in scan::<(Tid, osis_base::Ak)>(tx, CARRIED).ok()? {
         carried.insert(k, dec(&v).ok()?);
