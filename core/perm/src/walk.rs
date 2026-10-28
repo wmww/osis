@@ -553,9 +553,9 @@ impl Walked {
             // (the top of a thing's owner chain holds the chain class on it throughout)
             for (t, q) in moved.iter().filter(|(t, _)| input.owners.chain(t).1 != Some(c.author)) {
                 let back = input.ever_back([*t]);
-                let end = q.map_or(items.list.len(), |q| items.list.partition_point(|a| a.0 <= q));
+                let end = q.map_or(items.list.len(), |q| items.list.partition_point(|a| a.point <= q));
                 for (j, x) in items.list.iter().enumerate().take(end).skip(i) {
-                    let audits = match &x.4 {
+                    let audits = match &x.item {
                         Item::Commit(d) => d.ops.iter().enumerate().any(|(k, o)| {
                             let explicit = u32::try_from(k).is_ok_and(|k| self.applied.get(&WriteId::Op(d.id, k)).is_some_and(|a| matches!(a.attr, Attr::By(Class::Chain | Class::Edge))));
                             explicit && reach.contains(&o.member) && back.contains(&o.target)
@@ -708,7 +708,7 @@ impl Walked {
                 // its target reaches nothing in F (a standing there reads roles only on what
                 // the thing's owner chain and members reach, all in F if any is)
                 if !dep.contains(&j) {
-                    let (mt, ts) = match items.list.get(j).map(|x| &x.4) {
+                    let (mt, ts) = match items.list.get(j).map(|x| &x.item) {
                         Some(Item::Commit(d)) => (d.ops.first().map(|o| (o.member, o.target)), d.ts),
                         Some(Item::Virtual(v)) => (Some((v.member, v.thing)), v.point.ts),
                         _ => (None, p.ts),
@@ -739,7 +739,7 @@ impl Walked {
                     break;
                 };
                 // the falls of its author where its first write moved: not in the walk yet
-                let q = items.list.get(j).map_or(p, |x| x.0);
+                let q = items.list.get(j).map_or(p, |x| x.point);
                 let new_fall = |k: &(Tid, Tid)| k.0 == c.author && moved.get(&k.1).is_some_and(|f| f.is_none_or(|f| q <= f));
                 with.records.retain(|(fall, k)| !(*fall && new_fall(k)));
                 let found: Vec<((Tid, Tid), Vec<Fall>)> = with.falls.iter().filter(|(k, _)| new_fall(k)).map(|(k, v)| (*k, v.clone())).collect();
@@ -752,7 +752,7 @@ impl Walked {
                     extra.extend(v.into_iter().map(|f| (j, k, f)));
                 }
             }
-            (own, extra, stop.and_then(|j| items.list.get(j)).map(|x| x.0))
+            (own, extra, stop.and_then(|j| items.list.get(j)).map(|x| x.point))
         };
         // the falls `moved` brings: before every recorded one (none was up to the old first
         // write), undo entries at the end of their items' log segments
@@ -870,7 +870,7 @@ impl Walked {
         let (l, h) = self.rest.marks.get(j).copied().unwrap_or(end);
         let (l1, h1) = self.rest.marks.get(j + 1).copied().unwrap_or(end);
         let log = self.rest.log.get(l..l1).unwrap_or_default();
-        let Some((q, _, _, _, item)) = items.list.get(j) else {
+        let Some(Entry { point: q, item }) = items.list.get(j) else {
             return Effects { history: Vec::new(), log: Vec::new(), records: Vec::new(), applied: Vec::new(), demotions: BTreeMap::new(), falls: BTreeMap::new() };
         };
         // (demotions, falls) each key got here, and at this point before
@@ -882,7 +882,7 @@ impl Walked {
                 _ => {}
             }
         }
-        let first = items.list.partition_point(|a| a.0 < *q);
+        let first = items.list.partition_point(|a| a.point < *q);
         let from = self.rest.marks.get(first).map_or(l, |m| m.0);
         let mut before: BTreeMap<(Tid, Tid), (usize, usize)> = BTreeMap::new();
         for u in self.rest.log.get(from..l).unwrap_or_default() {
@@ -968,7 +968,7 @@ impl Walked {
             let fa = fa.get_or_insert_with(|| input.ever_forward(a.iter().copied()));
             u8::from(fa.contains(m) && bf.get_or_insert_with(|| input.ever_back(f.iter().copied())).contains(t))
         };
-        for (j, (_, _, _, _, item)) in rest.iter().enumerate() {
+        for (j, Entry { item, .. }) in rest.iter().enumerate() {
             let reads = match item {
                 Item::Commit(d) => {
                     if d.ops.iter().any(|o| keys.contains(&(o.member, o.target))) {
@@ -1488,7 +1488,7 @@ impl<'a> Pass<'a> {
         let (l, h) = (self.log.len(), self.history.len());
         // (the roles cached before it hold again once it is undone)
         let roles = self.roles.clone();
-        let item = &items.list.get(j)?.4;
+        let item = &items.list.get(j)?.item;
         if self.step(item) || !self.fresh.is_empty() {
             return None;
         }
@@ -2024,18 +2024,24 @@ pub(crate) fn judge(view: &View<'_>, old: Option<&Edge>, c: &MembershipCommit, k
 /// and snapshot.
 pub(crate) struct Items {
     initial: Edges,
-    list: Vec<(Point, u8, Tid, Tid, Item)>,
+    list: Vec<Entry>,
+}
+
+/// An item of a walk at its point.
+struct Entry {
+    point: Point,
+    item: Item,
 }
 
 impl Items {
     /// The items at point `q` (a commit or snapshot, then ledger writes keyed there).
     fn at(&self, q: Point) -> std::ops::Range<usize> {
-        self.list.partition_point(|a| a.0 < q)..self.list.partition_point(|a| a.0 <= q)
+        self.list.partition_point(|a| a.point < q)..self.list.partition_point(|a| a.point <= q)
     }
 
     /// How many items are before point `q`.
     pub fn list_before(&self, q: Point) -> usize {
-        self.list.partition_point(|a| a.0 < q)
+        self.list.partition_point(|a| a.point < q)
     }
 
     /// Whether the initial edges (an epoch start's roster) name one of `ts`.
@@ -2053,21 +2059,20 @@ impl Items {
             }
             Item::Virtual(v) => ts.contains(&v.thing) || ts.contains(&v.member) || v.audit.as_ref().is_some_and(|a| ts.contains(&a.0)),
         };
-        self.list.iter().take_while(|a| until.is_none_or(|u| a.0 < u)).find(|a| names(&a.4)).map(|a| a.0)
+        self.list.iter().take_while(|a| until.is_none_or(|u| a.point < u)).find(|a| names(&a.item)).map(|a| a.point)
     }
 
-    /// Where commit `c` goes in the list.
+    /// Where commit `c` goes in the list (before the ledger writes keyed at its point).
     pub fn place(&self, c: &MembershipCommit) -> usize {
-        let k = (c.point(), 1, Tid::from_bytes([0; 15]), Tid::from_bytes([0; 15]));
-        self.list.partition_point(|a| (a.0, a.1, a.2, a.3) < k)
+        self.list_before(c.point())
     }
 
     /// The index of commit or snapshot `id` of `input` (points are unique, so it is where its
     /// point goes).
     pub fn index(&self, input: &Input, id: &CommitId) -> Option<usize> {
         let p = input.commits.get(id).map(|c| c.point()).or_else(|| input.snaps.get(id).map(|s| s.point()))?;
-        let i = self.list.partition_point(|a| (a.0, a.1) < (p, 1));
-        match &self.list.get(i)?.4 {
+        let i = self.list_before(p);
+        match &self.list.get(i)?.item {
             Item::Commit(c) if c.id == *id => Some(i),
             Item::Snap(s) if s.id == *id => Some(i),
             _ => None,
@@ -2076,17 +2081,15 @@ impl Items {
 
     /// Adds commits not yet listed, in order: O(log n) each at the end, else O(n) (a move).
     pub fn add(&mut self, new: &[Arc<MembershipCommit>]) {
-        let zero = Tid::from_bytes([0; 15]);
         for c in new {
             let i = self.place(c);
-            self.list.insert(i, (c.point(), 1, zero, zero, Item::Commit(c.clone())));
+            self.list.insert(i, Entry { point: c.point(), item: Item::Commit(c.clone()) });
         }
     }
 }
 
 pub(crate) fn items(input: &Input, epoch: &BTreeMap<Tid, CommitId>) -> Items {
-    let mut list: Vec<(Point, u8, Tid, Tid, Item)> = Vec::new();
-    let zero = Tid::from_bytes([0; 15]);
+    let mut list: Vec<Entry> = Vec::new();
     let mut initial = Edges::default();
     for (thing, sid) in epoch {
         let Some(s) = input.snaps.get(sid) else { continue };
@@ -2103,16 +2106,20 @@ pub(crate) fn items(input: &Input, epoch: &BTreeMap<Tid, CommitId>) -> Items {
             }
             // just after the commit its key names (whose writes on the thing S ignores), so
             // that commit's writes on other things are judged as in the full history
-            list.push((v.point, 2, v.thing, v.member, Item::Virtual(v)));
+            list.push(Entry { point: v.point, item: Item::Virtual(v) });
         }
     }
     for c in input.commits.values() {
-        list.push((c.point(), 1, zero, zero, Item::Commit(c.clone())));
+        list.push(Entry { point: c.point(), item: Item::Commit(c.clone()) });
     }
     for s in input.snaps.values() {
-        list.push((s.point(), 1, zero, zero, Item::Snap(s.clone())));
+        list.push(Entry { point: s.point(), item: Item::Snap(s.clone()) });
     }
-    list.sort_by_key(|a| (a.0, a.1, a.2, a.3));
+    // a commit or snapshot first, then the ledger writes keyed at its point
+    list.sort_by_key(|a| match &a.item {
+        Item::Virtual(v) => (a.point, Some((v.thing, v.member))),
+        _ => (a.point, None),
+    });
     Items { initial, list }
 }
 
@@ -2143,8 +2150,8 @@ impl Pass<'_> {
     fn walk(&mut self, items: &Items, from: usize) -> Step {
         self.rollback(from);
         self.fresh.clear();
-        for (_, _, _, _, item) in items.list.iter().skip(from) {
-            if self.step(item) {
+        for e in items.list.iter().skip(from) {
+            if self.step(&e.item) {
                 let first = self.fresh.iter().filter_map(|w| items.index(self.input, &w.commit())).min();
                 return Step::Restart(first.unwrap_or(0));
             }
@@ -2196,7 +2203,7 @@ fn drive(input: &Input, resume: Option<Resume>) -> Outcome {
         Some(r) => {
             (epoch, epoch_changed) = (r.epoch_starts, r.epoch_changed);
             it = r.items.unwrap_or_else(|| items(input, &epoch));
-            from = it.list.partition_point(|x| x.0 < r.from);
+            from = it.list.partition_point(|x| x.point < r.from);
             let (mut walked, mut dropped) = (r.walked, r.dropped);
             // The drops found before the first found by a write at or after `r.from` are found
             // again from scratch (every walk up to them saw only items before `r.from`); the
@@ -2225,7 +2232,7 @@ fn drive(input: &Input, resume: Option<Resume>) -> Outcome {
             match p.walk(&it, from) {
                 Step::Done => break,
                 Step::Restart(i) => {
-                    reach = reach.max(p.marks.len().checked_sub(1).and_then(|k| it.list.get(k)).map(|x| x.0));
+                    reach = reach.max(p.marks.len().checked_sub(1).and_then(|k| it.list.get(k)).map(|x| x.point));
                     from = i;
                 }
             }
