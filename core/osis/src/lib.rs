@@ -255,7 +255,7 @@ pub use error::{Error, Result};
 pub use handle::{CLOSE_WAIT, Config, DEFAULT_IDLE_COMMIT, DEFAULT_WAIT, DEFAULT_LIMIT, MemStore, Osis, StoreAt, WeakOsis};
 pub use net::{GroupPolicy, ManualNet, Runtime, Transport};
 pub use person::{Joining, OFFER_LIFETIME_MS, PairOffer, PairReply, PairRequest};
-pub use keys::{Key, SignalKey, core};
+pub use keys::{Key, core};
 pub use large::ValueStream;
 pub use read::{AspectRef, Created, Edge, PathRef, Reader, Roster};
 pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupSync, LinkInfo, LinkOpts, Lower, PRESYNC_WAIT, RecoveryCard, ServerAddr, ShareLink, Status, SyncScope, SyncState, WaitForSync};
@@ -267,7 +267,7 @@ pub use write::{AspectWrite, Committed, PathWrite, Place, Write};
 
 pub use osis_base::{Ak, Clock, CommitId, CreationRecord, ManualClock, Role, Tid, Ts, Value, WallMs};
 pub use osis_node::{Cause, Diagnostic, DiagnosticKind};
-pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError, Retention, Schema, Signal, Step, p};
+pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError, Retention, Schema, Signal, SignalKey, Step, p};
 
 /// The schema layer, for generated code (`use osis::schema as osis_schema;`).
 pub use osis_schema as schema;

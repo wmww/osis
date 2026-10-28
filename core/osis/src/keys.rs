@@ -1,8 +1,8 @@
-//! Keys (notes/api.md Keys): typed `Aspect<T>`/`Signal<T>` from codegen, `Ak` untyped, and
-//! `Key`, typed by a schema registered at run time (CLIs, tools; `Osis::key`).
+//! `Key`: an aspect key typed by a schema registered at run time (CLIs, tools; `Osis::key`), and
+//! the core keys. Typed `Aspect<T>`/`Signal<T>` come from codegen (osis-schema).
 
 use osis_base::{Ak, Value};
-use osis_schema::{AspectKey, Codec, PathError, Schema, Signal, typed_read};
+use osis_schema::{AspectKey, Codec, PathError, Schema, typed_read};
 use std::sync::Arc;
 
 /// An aspect key whose schema is known only at run time. Reads are typed reads projected back
@@ -48,47 +48,6 @@ impl AspectKey for Key {
     }
     fn encode(&self, t: &Value) -> Value {
         t.clone()
-    }
-}
-
-/// A signal kind (spec/data-model.md §2): `Signal<T>` from codegen or an untyped `Ak`.
-pub trait SignalKey {
-    type T;
-    fn kind(&self) -> &str;
-    fn encode(&self, t: &Self::T) -> Value;
-    fn decode(&self, v: &Value) -> Result<Self::T, PathError>;
-    fn validate(&self, v: &Value) -> Result<(), PathError>;
-}
-
-impl<T: Codec> SignalKey for Signal<T> {
-    type T = T;
-    fn kind(&self) -> &str {
-        Signal::kind(self)
-    }
-    fn encode(&self, t: &T) -> Value {
-        Signal::encode(self, t)
-    }
-    fn decode(&self, v: &Value) -> Result<T, PathError> {
-        Signal::decode(self, v)
-    }
-    fn validate(&self, v: &Value) -> Result<(), PathError> {
-        Signal::validate(self, v)
-    }
-}
-
-impl SignalKey for Ak {
-    type T = Value;
-    fn kind(&self) -> &str {
-        self.as_str()
-    }
-    fn encode(&self, t: &Value) -> Value {
-        t.clone()
-    }
-    fn decode(&self, v: &Value) -> Result<Value, PathError> {
-        Ok(v.clone())
-    }
-    fn validate(&self, _: &Value) -> Result<(), PathError> {
-        Ok(())
     }
 }
 

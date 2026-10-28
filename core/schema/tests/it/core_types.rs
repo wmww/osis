@@ -159,7 +159,7 @@ fn key_defaults_and_identity_spec_commits_5() {
     assert_eq!(GROUP.schema_ref(), Some((CORE_SCHEMA_ID, CORE_SCHEMA_REVISION)));
     let untyped = Ak::new("/x/y").unwrap();
     assert_eq!((untyped.schema_ref(), untyped.defaults()), (None, AspectDefaults::default()));
-    assert_eq!(untyped.decode(&Value::Int(3)).unwrap(), Value::Int(3));
+    assert_eq!(AspectKey::decode(&untyped, &Value::Int(3)).unwrap(), Value::Int(3));
     assert!(core_schema().aspects["/tid"].flags.contains(&Flag::Synthetic));
     assert!(core_schema().aspects["/created"].flags.contains(&Flag::Guaranteed));
 }
