@@ -143,7 +143,7 @@ fn encode_run(text: bool, run: &[Piece], content: Option<Vec<Value>>, cx: &mut E
         } else if !run.iter().any(|p| has_content(p.1)) {
             Value::List(Vec::new())
         } else if text {
-            Value::Str(run.iter().filter(|p| has_content(p.1)).filter_map(|p| if let SeqContent::Char(c) = p.1.content { Some(c) } else { None }).collect())
+            Value::Str(run.iter().filter(|p| has_content(p.1)).filter_map(|p| p.1.char()).collect())
         } else {
             let mut fs = Vec::with_capacity(run.len());
             for p in run {

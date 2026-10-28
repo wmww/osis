@@ -509,10 +509,8 @@ impl World {
             Ok(b.finish())
         };
         let Ok(want) = run(&st, w()) else { return };
-        // held in part: the same delta, loading what it misses (a node loads a `Set` whole,
-        // notes/node.md Paged state; issues/crdt-text-read-in-part.md)
+        // held in part: the same delta, loading what it misses
         if per > 0
-            && !pops.iter().any(|o| matches!(o.op, Op::Set(_)))
             && let Fragment::Seq(sq) = &st
         {
             let mut pg = Pager::new(sq, usize::from(per));

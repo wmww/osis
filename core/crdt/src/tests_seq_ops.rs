@@ -1629,11 +1629,12 @@ fn resolved_ops_on_embedded_text_and_skew_spec_6_1() {
 /// §5.7 Ops, §6, §8 (`seq_place`): ops by index (insert, delete, move, paste; two in one commit)
 /// on a sequence held in part as a node holds a paged one (records in pages, the placement's
 /// blocks and dot-map chunks loaded on a miss and the ops run again) write what they write on
-/// the whole state, loading part of it.
+/// the whole state, loading part of it; so do an edit and a `Set`, and a read held in part
+/// reads the whole one once what it missed is loaded.
 #[test]
 fn index_ops_on_partial_placement_match_whole_spec_5_7() {
     let mut r = crate::testutil::rng(43);
-    let (mut runs, mut moves, mut multi, mut loaded, mut total, mut edits, mut wholes) = (0, 0, 0, 0, 0, 0, 0);
+    let (mut runs, mut moves, mut multi, mut loaded, mut total, mut edits, mut sets, mut wholes) = (0, 0, 0, 0, 0, 0, 0, 0);
     for round in 0..80 {
         let mut stale = None;
         let text = round % 2 == 0;
@@ -1682,6 +1683,13 @@ fn index_ops_on_partial_placement_match_whole_spec_5_7() {
                     edits += 1;
                 }
             }
+            // a `Set` (a whole-value diff, §9), after the other ops
+            if r.chance(1, 4)
+                && let Some(base) = st.read()
+            {
+                ops.push(Op::Set(edited(&mut r, &base, &ty)));
+                sets += 1;
+            }
             if k == 0 {
                 stale = st.read();
             }
@@ -1695,7 +1703,8 @@ fn index_ops_on_partial_placement_match_whole_spec_5_7() {
                 b.finish()
             };
             let want = run(&st);
-            let mut pg = crate::tests_seq::Pager::new(&sq, 1 + r.below(8));
+            let per = 1 + r.below(8);
+            let mut pg = crate::tests_seq::Pager::new(&sq, per);
             let mut got = None;
             for _ in 0..64 {
                 got = run(&pg.part());
@@ -1705,21 +1714,66 @@ fn index_ops_on_partial_placement_match_whole_spec_5_7() {
             }
             assert!(got == want, "round {round} step {k}: {ops:?}\n got {got:?}\n want {want:?}");
             runs += 1;
-            wholes += pg.whole_passes;
-            // (an edit against a stale read, or after another op, loads whole)
-            if !ops.iter().any(|o| matches!(o, Op::Edit { .. })) {
+            // (a `Set` diffs the whole read, which may take a whole pass)
+            if !ops.iter().any(|o| matches!(o, Op::Set(_))) {
+                wholes += pg.whole_passes;
+            }
+            // (an edit against a stale read, or after another op, and a `Set` load whole)
+            if !ops.iter().any(|o| matches!(o, Op::Edit { .. } | Op::Set(_))) {
                 loaded += pg.whole.top().blocks.len() - pg.p.stubs().0.len();
                 total += pg.whole.top().blocks.len();
             }
+            let mut rp = crate::tests_seq::Pager::new(&sq, per);
+            let mut read = None;
+            for _ in 0..64 {
+                read = rp.part().read();
+                if !rp.absorb() {
+                    break;
+                }
+            }
+            assert_eq!(read, st.read(), "round {round} step {k}: read held in part");
             if let Some((d, _)) = want {
                 st.join(d);
             }
         }
     }
-    assert!(runs > 200 && moves > 50 && multi > 50 && edits > 50, "{runs} runs, {moves} moves, {multi} two-op commits, {edits} edits");
+    assert!(runs > 200 && moves > 50 && multi > 50 && edits > 50 && sets > 50, "{runs} runs, {moves} moves, {multi} two-op commits, {edits} edits, {sets} sets");
     // ops whose layered follow or placement fails other than by a miss: rare
     assert!(wholes * 40 <= runs, "{wholes} of {runs} runs by a whole pass");
     assert!(loaded * 4 < total * 3, "{loaded} of {total} blocks loaded");
+}
+
+/// §5.7 Read, §9: a text whose placement is held in part reads a char from its record when the
+/// row keeps none (stored rows keep none), or misses, so a `Set` there writes what it writes on
+/// the whole, alone and after an insert in the same commit (fuzz: seq_ops).
+#[test]
+fn set_on_partial_text_matches_whole_spec_5_7() {
+    let view = text_view();
+    for ops in [vec![Op::Set(s(""))], vec![Op::Insert { at: 0, items: vec![s("x")] }, Op::Set(s(""))], vec![Op::Insert { at: 1, items: vec![s("bc")] }, Op::Set(s("bd"))]] {
+        let mut st = Fragment::default();
+        st.join(create(&mut Writer::new(ts(1 << 16), node(1), 1), &view, &s("a")).unwrap());
+        let Fragment::Seq(sq) = &st else { panic!() };
+        let run = |f: &Fragment| {
+            let mut b = Batch::new(f, Writer::new(ts(2 << 16), node(2), 1));
+            for o in &ops {
+                b.apply(&PathOp { path: Vec::new(), op: o.clone() }, &view).ok()?;
+            }
+            b.finish()
+        };
+        let want = run(&st);
+        let mut pg = crate::tests_seq::Pager::new(sq, 1);
+        let mut got = None;
+        for _ in 0..64 {
+            got = run(&pg.part());
+            if !pg.absorb() {
+                break;
+            }
+        }
+        assert!(got == want, "{ops:?}\n got {got:?}\n want {want:?}");
+        let mut f = st.clone();
+        f.join(got.unwrap().0);
+        assert_eq!(f.read(), ops.last().map(|o| if let Op::Set(v) = o { v.clone() } else { unreachable!() }));
+    }
 }
 
 /// `base` with one random change: a splice of a text, an item removed, replaced or inserted in

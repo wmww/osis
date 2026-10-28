@@ -169,6 +169,10 @@ impl Seq {
 
 impl SeqElem {
     /// An empty record (a delta's element edit or flag write fills it).
+    /// A text element's char, if it holds one.
+    pub(crate) fn char(&self) -> Option<char> {
+        if let SeqContent::Char(c) = self.content { Some(c) } else { None }
+    }
     pub(crate) fn bare() -> SeqElem {
         SeqElem { created: None, content: SeqContent::None, pos: Vec::new(), deleted: None, span: 1 }
     }
@@ -546,7 +550,13 @@ pub(crate) fn prune_reset(s: &mut Seq, e: Option<&Stamp>, ch: &mut Changes) {
 }
 
 /// Greatest stamp inside the elements; with `valued`, only presence-counting writes (§4.3).
+/// Records held in part: a look at every record, unless nothing is placed.
 pub(crate) fn inner_max(s: &Seq, valued: bool) -> Option<Stamp> {
+    if let Some(p) = &s.part
+        && s.lin.get().is_none_or(|l| l.p.len() > 0)
+    {
+        p.all();
+    }
     let mut m: Option<Stamp> = None;
     for (d, e) in &s.elems {
         let creation = !valued || e.creation_counts();
@@ -592,9 +602,18 @@ fn any_written(m: &Elems) -> bool {
     })
 }
 
-/// Whether any record exists (emptiness, §4.2).
+/// Whether any record exists (emptiness, §4.2). Records held in part (a placement held in part
+/// attached) exist if anything is placed; without a placement the lookup misses them all.
 pub(crate) fn has_records(s: &Seq) -> bool {
-    !s.elems.is_empty()
+    if !s.elems.is_empty() {
+        return true;
+    }
+    let Some(p) = &s.part else { return false };
+    if let Some(l) = s.lin.get() {
+        return l.p.len() > 0;
+    }
+    p.all();
+    false
 }
 
 /// Visible elements in order: not deleted, with content that reads (§5.7 Read). Never inside a
@@ -814,9 +833,15 @@ impl Vis {
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Dot> + '_ {
         self.0.p.vis().map(|r| &r.dot)
     }
-    /// Visible elements and, in a text, their chars.
-    pub(crate) fn rows(&self) -> impl Iterator<Item = &crate::seq_lin::Row> + '_ {
-        self.0.p.vis()
+    /// Visible text elements of `s` (whose placement this is) with their chars: a row's own,
+    /// else (a placement held in part keeps none in its stored rows) its record's, a miss noted
+    /// outside the pages loaded; an element whose char is missed is left out.
+    pub(crate) fn chars<'a, S: SeqRead + ?Sized>(&'a self, s: &'a S) -> impl Iterator<Item = (&'a Dot, char)> + 'a {
+        let part = self.0.partial().is_some();
+        self.0.p.vis().filter_map(move |r| {
+            let c = r.ch.or_else(|| part.then(|| s.rec(&r.dot)).flatten().and_then(SeqElem::char));
+            Some((&r.dot, c?))
+        })
     }
 }
 
@@ -832,7 +857,7 @@ pub(crate) fn is_visible(e: &SeqElem, text: bool) -> bool {
 pub(crate) fn read(s: &Seq) -> Option<Value> {
     let vis = visible(s);
     Some(if s.text {
-        Value::Str(vis.rows().filter_map(|r| r.ch).collect())
+        Value::Str(vis.chars(s).map(|x| x.1).collect())
     } else {
         // visible elements mostly follow each other in dot order (a run typed or pasted): step
         // to the next record, searching only where the order jumps
@@ -843,6 +868,10 @@ pub(crate) fn read(s: &Seq) -> Option<Value> {
             if cur.is_none_or(|c| c.0 != d) {
                 it = s.elems.range::<Dot, _>(d..);
                 cur = it.next().filter(|c| c.0 == d);
+                if cur.is_none() {
+                    // held in part: a record outside the pages loaded is a miss
+                    s.uncovered(d);
+                }
             }
             if let Some((_, SeqElem { content: SeqContent::Frag(f), .. })) = cur
                 && let Some(v) = f.read()
