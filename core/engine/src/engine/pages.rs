@@ -1332,14 +1332,7 @@ fn write_set(txn: &mut Transaction<'_>, t: Table, kt: Table, set: &mut PageSet, 
     let per = (n * page_bytes(set) / size).max(1);
     let dots = c.elem_dots(None, None);
     set.loaded.clear();
-    let chunks: Vec<&[Dot]> = if dots.is_empty() { vec![&[]] } else { dots.chunks(per).collect() };
-    for (i, chunk) in chunks.into_iter().enumerate() {
-        let lo = if i == 0 { None } else { chunk.first().cloned() };
-        let r = (lo, dots.get((i + 1) * per).cloned());
-        let key = set.row_key(r.0.as_ref());
-        txn.table_put(t, &key, page_row(&r, &page(c, nested, &r)?)?, Shred::No)?;
-        set.loaded.insert(key, r);
-    }
+    write_pieces(txn, t, set, c, nested, &dots, per, &(None, None), Shred::No)?;
     set.whole = true;
     // the tables were created for this write
     index_keys(txn, kt, set, c, &mut dots.iter(), true)
@@ -1441,20 +1434,28 @@ fn rewrite_set(txn: &mut Transaction<'_>, t: Table, kt: Table, set: &mut PageSet
             continue;
         }
         let per = ds.len().div_ceil(bytes.len().div_ceil(page_bytes(set))).max(1);
-        let pieces: Vec<&[Dot]> = ds.chunks(per).collect();
-        let n = pieces.len();
-        for (i, chunk) in pieces.into_iter().enumerate() {
-            let lo = if i == 0 { r.0.clone() } else { chunk.first().cloned() };
-            let hi = if i + 1 == n { r.1.clone() } else { ds.get((i + 1) * per).cloned() };
-            let pr = (lo, hi);
-            let pk = set.row_key(pr.0.as_ref());
-            // elements moving to another row: the old versions go shredded, so a later shred of
-            // a moved element's row reaches every copy
-            txn.table_put(t, &pk, page_row(&pr, &page(c, nested, &pr)?)?, Shred::Yes)?;
-            set.loaded.insert(pk, pr);
-        }
+        // elements moving to another row: the old versions go shredded, so a later shred of a
+        // moved element's row reaches every copy
+        write_pieces(txn, t, set, c, nested, &ds, per, &r, Shred::Yes)?;
     }
     Ok(true)
+}
+
+/// Writes the elements `ds` of `c` (those of range `r`) as pages of `per` elements, noted
+/// loaded; one empty page when there are none.
+#[allow(clippy::too_many_arguments)]
+fn write_pieces(txn: &mut Transaction<'_>, t: Table, set: &mut PageSet, c: &Fragment, nested: &Paths, ds: &[Dot], per: usize, r: &Range, shred: Shred) -> Result<()> {
+    let pieces: Vec<&[Dot]> = if ds.is_empty() { vec![&[]] } else { ds.chunks(per).collect() };
+    let n = pieces.len();
+    for (i, chunk) in pieces.into_iter().enumerate() {
+        let lo = if i == 0 { r.0.clone() } else { chunk.first().cloned() };
+        let hi = if i + 1 == n { r.1.clone() } else { ds.get((i + 1) * per).cloned() };
+        let pr = (lo, hi);
+        let pk = set.row_key(pr.0.as_ref());
+        txn.table_put(t, &pk, page_row(&pr, &page(c, nested, &pr)?)?, shred)?;
+        set.loaded.insert(pk, pr);
+    }
+    Ok(())
 }
 
 /// Rewrites what `touch` says changed in the paged state `f` (holding at least the pages
