@@ -237,9 +237,12 @@ pub(crate) fn copies_check(seed: u64, ty: &Ty) {
     for c in &commits {
         state.join(frag(&c.delta));
     }
+    // a snapshot of the state holds them as the state does
+    let snap = crate::tests_seq::via_snapshot(&state);
     for c in &commits {
         let range = [(source(&c.w.source), c.w.lo, c.w.hi())];
         assert!(state.copies_within(&[&frag(&c.delta)], &in_ranges(&range)), "the state's copies of a commit's writes");
+        assert!(snap.copies_within(&[&frag(&c.delta)], &in_ranges(&range)), "a snapshot's copies of a commit's writes");
     }
     for _ in 0..4 {
         let pick: Vec<bool> = commits.iter().map(|_| r.chance(1, 2)).collect();

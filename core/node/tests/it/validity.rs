@@ -1319,6 +1319,10 @@ fn snapshot_copy_of_a_delta_never_held_counts_spec_perm_5_2() {
         let i = feed(&mut lp, 0x5f40 + k as u64, seq);
         assert!(lp.peers[i].engine.header(&c).is_some(), "order {k}: C applied");
         assert_eq!(states(&mut lp.peers[i].engine, &[t]), want, "order {k}");
+        if k < 2 {
+            // C's `/x/m` body holds no delta here: covered (spec/commits.md §5)
+            assert_eq!(lp.peers[i].engine.covered(&snap, &c, &t, &m_ak).unwrap(), Some(true), "order {k}");
+        }
     }
     // forged: where C's delta is held, whichever came first
     for (k, seq) in [vec![&ck.bytes[..], &forged[..]], vec![&forged[..], &ck.bytes[..]], vec![&forged[..], &partial[..], &ck.bytes[..]], vec![&partial[..], &forged[..], &ck.bytes[..]]].iter().enumerate() {
@@ -1361,4 +1365,95 @@ fn forged_snapshot_covers_nothing_spec_commits_5() {
     assert_eq!(e.covered(&honest, &c, &t, &m_ak).unwrap(), Some(true), "the honest snapshot covers C");
     assert_eq!(e.covered(&f, &c, &t, &m_ak).unwrap(), Some(false), "the forged one does not");
     assert_eq!(e.covered(&honest, &f, &t, &m_ak).unwrap(), Some(true), "the honest snapshot covers the forged one");
+}
+
+// spec/requirements.md, Out of scope ("malicious readers can only waste storage"); spec/permissions.md
+// §5.2: a reader's snapshot carrying the owner's register write under a counter the owner never
+// used, stamped now, should change nothing; it shows (issues/snapshot-copy-residue.md, unheld dots).
+#[test]
+#[ignore = "issues/snapshot-copy-residue.md"]
+fn snapshot_forging_unused_dot_shows_spec_perm_5_2() {
+    use osis_crdt::{Source, Writer, create};
+    let mut lp = net(3, 0x5f71);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let (a, r) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("real")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    for i in 1..3 {
+        sync(&mut lp, 0, i);
+    }
+    let reg = ak("/t/reg");
+    lp.advance(1_000);
+    let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
+    let mut w = Writer::new(now, Source::node(a), 1 << 40);
+    let f = create(&mut w, &osis_crdt::AnyView, &s("zzz forged")).unwrap();
+    let forged = forge_snapshot(&mut lp, 1, t, &reg, now, f);
+    let got = lp.peers[2].engine.ingest(&forged, Vec::new());
+    assert_eq!(lp.peers[2].engine.get(&t, &reg).unwrap(), Some(s("real")), "{got:?}");
+}
+
+// spec/permissions.md §5.2, §7, spec/commits.md §5: the import's body dropped (covered by the
+// owner's snapshot), a reader's snapshot then carrying an extra element under `Commit(C)` should
+// change nothing; it shows (issues/snapshot-copy-residue.md, dropped delta).
+#[test]
+#[ignore = "issues/snapshot-copy-residue.md"]
+fn snapshot_forging_dropped_import_dot_shows_spec_perm_5_2() {
+    use osis_crdt::{Batch, Op, PathOp, Source, Writer};
+    let mut lp = net(3, 0x5f72);
+    lp.sync_all().unwrap();
+    let a = lp.peers[0].engine.tid();
+    let r = lp.peers[1].engine.tid();
+    let t = new_thing(&mut lp, 0);
+    let mut m = Mutation::new();
+    m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s("a")) }).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let (copy, imports) = lp.peers[0].engine.move_thing(&t, a).unwrap();
+    set_edge(&mut lp.peers[0].engine, copy, r, Some(edge(Role::Read)), None);
+    let tags = ak("/t/tags");
+    lp.advance(1_000);
+    let honest = lp.peers[0].engine.snapshot(&copy, &tags).unwrap().unwrap();
+    for i in 1..3 {
+        sync(&mut lp, 0, i);
+    }
+    let imp = *imports.iter().find(|i| lp.peers[0].engine.header(i).unwrap().origins.iter().any(|o| o.commit == c)).unwrap();
+    let ih = lp.peers[0].engine.header(&imp).unwrap();
+    assert_eq!(lp.peers[2].engine.covered(&honest, &imp, &copy, &tags).unwrap(), Some(true));
+    lp.peers[2].engine.drop_body(&imp, &copy, &tags).unwrap();
+    let before = lp.peers[2].engine.get(&copy, &tags).unwrap();
+    let ch = lp.peers[0].engine.header(&c).unwrap();
+    let hi = ch.aspects.iter().find(|x| x.tid == t && x.ak == tags).unwrap().hi;
+    let cur = lp.peers[1].engine.state(&copy, &tags).unwrap().unwrap().clone();
+    let mut batch = Batch::new(&cur, Writer::new(ch.ts, Source::commit(c), hi + 10));
+    batch.apply(&PathOp { path: Vec::new(), op: Op::Add(s("evil")) }, &osis_crdt::AnyView).unwrap();
+    let (extra, _) = batch.finish().unwrap();
+    let mut f = cur;
+    f.join(extra);
+    lp.advance(1_000);
+    let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
+    let forged = forge_snapshot_full(&mut lp, 1, copy, &tags, now, f, osis_crdt::Frontiers::default(), BTreeMap::from([(c, (a, ih.ts))]));
+    let got = lp.peers[2].engine.ingest(&forged, Vec::new());
+    assert_eq!(lp.peers[2].engine.get(&copy, &tags).unwrap(), before, "{got:?}");
+}
+
+// spec/commits.md §5 (covered): an honest snapshot covers a commit writing inside an entry an
+// earlier commit created (the body repeats the entry's record without its creation, which the
+// snapshot holds: that record is no write of the body's), and a body this node holds no delta of.
+#[test]
+fn snapshot_covers_write_inside_earlier_entry_spec_commits_5() {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    let mut lp = net(1, 0x5f73);
+    let t = new_thing(&mut lp, 0);
+    let map = ak("/t/map");
+    let mut m = Mutation::new();
+    m.set(t, &MAP, &Value::Map(BTreeMap::from([(s("k"), item("x", 1))]))).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("k")), PathSeg::Field(1)], op: Op::Set(Value::Int(2)) }).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(1_000);
+    let snap = lp.peers[0].engine.snapshot(&t, &map).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.covered(&snap, &c, &t, &map).unwrap(), Some(true));
 }

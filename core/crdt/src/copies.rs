@@ -203,43 +203,52 @@ impl Fragment {
     }
 
     /// Removes every write whose owner dot `pred` accepts, element and entry creations with
-    /// their keys, chars and anchors included, keeping others' writes nested in what they
-    /// created: a snapshot's copies of writes whose own commit supplies them
-    /// (spec/permissions.md §5.2).
+    /// their chars and anchors included, keeping others' writes nested in what they created,
+    /// with the entry's key (their records repeat it, spec/crdt.md §3.2): a snapshot's copies
+    /// of writes whose own commit supplies them (spec/permissions.md §5.2).
     pub fn strip_copies(&mut self, pred: &dyn Fn(&Dot) -> bool) {
         self.remove_dots_in(pred, true);
-        self.drop_creations(pred);
+        self.drop_creations(pred, false);
     }
 
-    pub(crate) fn drop_creations(&mut self, pred: &dyn Fn(&Dot) -> bool) {
+    /// `strip_copies`, the keys of the entries `pred` accepts included: copies found to differ
+    /// from their delta (`copies_outside`), whose key may be forged too.
+    pub fn strip_forged(&mut self, pred: &dyn Fn(&Dot) -> bool) {
+        self.remove_dots_in(pred, true);
+        self.drop_creations(pred, true);
+    }
+
+    pub(crate) fn drop_creations(&mut self, pred: &dyn Fn(&Dot) -> bool, keys: bool) {
         match self {
             Fragment::Register(_) => {}
             Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => {
                 for x in elems.values_mut().filter_map(|e| e.frag.as_deref_mut()) {
-                    x.drop_creations(pred);
+                    x.drop_creations(pred, keys);
                 }
             }
             Fragment::Struct(Struct { fields: m, .. }) | Fragment::Enum(Enum { payloads: m, .. }) => {
                 for x in m.values_mut() {
-                    x.drop_creations(pred);
+                    x.drop_creations(pred, keys);
                 }
             }
+            // an entry's creation went with `remove_dots_in`
             Fragment::Map(m) => {
                 for (d, e) in m.entries.iter_mut() {
-                    if pred(d.owner()) {
+                    if keys && pred(d.owner()) {
                         e.key = None;
-                        e.created = None;
                     }
                     if let Some(x) = e.frag.as_deref_mut() {
-                        x.drop_creations(pred);
+                        x.drop_creations(pred, keys);
                     }
                 }
-                m.reindex();
+                if keys {
+                    m.reindex();
+                }
             }
-            Fragment::Seq(s) => crate::seq::drop_creations(s, pred),
+            Fragment::Seq(s) => crate::seq::drop_creations(s, pred, keys),
             Fragment::Slots(Slots { members, .. }) => {
                 for x in members.values_mut() {
-                    x.drop_creations(pred);
+                    x.drop_creations(pred, keys);
                 }
             }
         }

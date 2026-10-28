@@ -1046,7 +1046,7 @@ fn char_at(dot: Dot, t: u64, at: Anchor, c: char) -> SeqElem {
     SeqElem { created: Some((s.clone(), at.clone())), content: SeqContent::Char(c), pos: vec![(s, at)], deleted: None, span: 1 }
 }
 /// Through a snapshot: uniform stretches become range records.
-fn via_snapshot(f: &Fragment) -> Fragment {
+pub(crate) fn via_snapshot(f: &Fragment) -> Fragment {
     decode_snapshot(&snapshot_of(f), &snap_cx(), &mut Interner::new(), None).unwrap().fragment
 }
 /// `op` applied by node 4 at t = 9: the delta and the joined state.

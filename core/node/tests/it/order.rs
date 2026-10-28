@@ -911,6 +911,12 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     // peer 1's creation arriving invalid un-merged both, and nothing replayed the deaths
     let h = vec![Nested { by: 1, other: 2, t: 7, k: 1, text: false, compact: false, also: false }, Send { from: 1, to: 0, back: 0 }, Edge { by: 2, t: 2, member: 1, role: Some(Role::Read) }, Write { by: 0, t: 0, op: 22, k: 1, v: 9 }];
     cases.push((1173, h, SMALL));
+    // seed 93004 (spec/permissions.md §5.2): C's slot reset prunes its own nested entries'
+    // creations; B's write inside them survives, held only in B's snapshot. Stripping the
+    // snapshot's copies of C's writes also took the entries' keys, which B's records repeat:
+    // with C held first the entries lost their keys, with the snapshot first they kept them
+    let h = vec![Write { by: 1, t: 5, op: 3, k: 2, v: 6 }, Write { by: 1, t: 1, op: 5, k: 2, v: 7 }, Write { by: 1, t: 5, op: 0, k: 1, v: 9 }, Send { from: 1, to: 2, back: 2 }, Sync { from: 2, to: 0 }, Nested { by: 0, other: 2, t: 4, k: 2, text: false, compact: true, also: true }, New { by: 0, parent: 5, write: false }];
+    cases.push((93004, h, LARGE));
     // in parallel: the slowest test of the module otherwise
     let idx: Vec<u64> = (0..cases.len() as u64).collect();
     let results = par_map(&idx, threads("OSIS_ORDER_THREADS"), |i| {
