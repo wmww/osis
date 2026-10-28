@@ -16,6 +16,7 @@ Below the title each note, issue and specs should contain a one-line `> Summary:
 - You own the code.
 - Coordinators spawn worker and reviewer agents as `model: "opus"`, always.
 - Code should be built in simple, safe Rust wherever that's the right tool for the job.
+- No backward compatibility with earlier builds until the owner opens the stability discussion: no legacy readers, migrations, old-format fallbacks, version shims or "accepted, pre-release" carry-overs in code, protocol, schemas, stores or spec. Change formats in place; data from an older commit may fail to load. (The forward-compat design in spec/requirements.md Versioning, e.g. tolerating unknown data from newer nodes, is a feature, not cruft.)
 - Refactor freely as needed. don't trust that existing code/comments/notes are necessarily correct, or existing design decisions are optimal.
 - Unless otherwise asked, commit, pull --rebase and push when you've completed your task.
 - Commit to the current branch unless asked, don't make feature branches.
