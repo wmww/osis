@@ -9,6 +9,7 @@
 //! needs (`ensure_*`), or all of them (`load_all`) where the whole state is needed.
 
 use super::state::{decode, encode};
+use super::{clear_table, scan_table};
 use crate::error::{Error, Result};
 use osis_base::format::PAGE_TARGET;
 use osis_base::{Ak, Tid, Value};
@@ -318,18 +319,11 @@ pub fn legacy(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, unit_state: &[u8]) 
         _ => return Ok(None),
     };
     let t = table(txn, tid, ak)?;
-    let mut from = Vec::new();
-    loop {
-        let rows = txn.table_range(t, &from, None, 256)?;
-        let n = rows.len();
-        for (k, v) in rows {
-            from = [k.as_slice(), &[0]].concat();
-            f.join(decode(&v)?);
-        }
-        if n < 256 {
-            return Ok(Some(f));
-        }
-    }
+    scan_table(txn, t, &[], None, |_, v| {
+        f.join(decode(&v)?);
+        Ok(())
+    })?;
+    Ok(Some(f))
 }
 
 fn table(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak) -> Result<Table> {
@@ -375,29 +369,7 @@ pub fn load_all(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageInd
     }
     let t = table(txn, tid, ak)?;
     for set in idx.sets.values_mut() {
-        if set.whole {
-            continue;
-        }
-        let end = (set.id.saturating_add(1)).to_be_bytes();
-        let mut from = set.prefix();
-        loop {
-            let rows = txn.table_range(t, &from, Some(&end), 256)?;
-            let n = rows.len();
-            for (k, v) in rows {
-                from = [k.as_slice(), &[0]].concat();
-                join_row(f, set, k, &v)?;
-            }
-            if n < 256 {
-                break;
-            }
-        }
-        if !set.loaded.contains_key(&set.prefix()) {
-            return Err(Error::Corrupt("first state page missing"));
-        }
-        set.whole = true;
-        if is_seq(set) {
-            place_whole(txn, tid, ak, set, f)?;
-        }
+        ensure_set(txn, tid, ak, t, set, f)?;
     }
     Ok(())
 }
@@ -421,19 +393,9 @@ fn ensure_span(txn: &mut Transaction<'_>, t: Table, set: &mut PageSet, f: &mut F
     if set.whole || b <= a {
         return Ok(());
     }
-    let mut from = [set.row_key(Some(a)), vec![0]].concat();
+    let from = [set.row_key(Some(a)), vec![0]].concat();
     let end = [set.row_key(Some(b)), vec![0]].concat();
-    loop {
-        let rows = txn.table_range(t, &from, Some(&end), 256)?;
-        let n = rows.len();
-        for (k, v) in rows {
-            from = [k.as_slice(), &[0]].concat();
-            join_row(f, set, k, &v)?;
-        }
-        if n < 256 {
-            return Ok(());
-        }
-    }
+    scan_table(txn, t, &from, Some(&end), |k, v| join_row(f, set, k, &v))
 }
 
 /// Loads the first page of `set` (it holds records as long as the collection is paged:
@@ -447,23 +409,15 @@ fn ensure_first(txn: &mut Transaction<'_>, t: Table, set: &mut PageSet, f: &mut 
     join_row(f, set, k, &v)
 }
 
-/// Loads every page of the set at `p`.
+/// Loads every page of `set`.
 fn ensure_set(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut PageSet, f: &mut Fragment) -> Result<()> {
     if set.whole {
         return Ok(());
     }
-    let end = (set.id.saturating_add(1)).to_be_bytes();
-    let mut from = set.prefix();
-    loop {
-        let rows = txn.table_range(t, &from, Some(&end), 256)?;
-        let n = rows.len();
-        for (k, v) in rows {
-            from = [k.as_slice(), &[0]].concat();
-            join_row(f, set, k, &v)?;
-        }
-        if n < 256 {
-            break;
-        }
+    let (start, end) = (set.prefix(), set.id.saturating_add(1).to_be_bytes());
+    scan_table(txn, t, &start, Some(&end), |k, v| join_row(f, set, k, &v))?;
+    if !set.loaded.contains_key(&start) {
+        return Err(Error::Corrupt("first state page missing"));
     }
     set.whole = true;
     if is_seq(set) {
@@ -560,21 +514,13 @@ fn key_dots(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &PageSet, k: &Va
     // every row of the key: the dot after the prefix is a CBOR array (first byte below 0xff)
     let end = [start.as_slice(), &[0xff]].concat();
     let mut out = Vec::new();
-    let mut from = start.clone();
-    loop {
-        let rows = txn.table_range(t, &from, Some(&end), 256)?;
-        let n = rows.len();
-        for (key, _) in rows {
-            from = [key.as_slice(), &[0]].concat();
-            let Some(tail) = key.get(start.len()..) else { continue };
-            let lim = osis_base::Limits { max_depth: 8, max_bytes: tail.len() };
-            let v = osis_base::decode(tail, &lim).map_err(|_| Error::Corrupt("state key index"))?;
-            out.push(dot_of(&v)?);
-        }
-        if n < 256 {
-            break;
-        }
-    }
+    scan_table(txn, t, &start, Some(&end), |key, _| {
+        let Some(tail) = key.get(start.len()..) else { return Ok(()) };
+        let lim = osis_base::Limits { max_depth: 8, max_bytes: tail.len() };
+        let v = osis_base::decode(tail, &lim).map_err(|_| Error::Corrupt("state key index"))?;
+        out.push(dot_of(&v)?);
+        Ok(())
+    })?;
     Ok(out)
 }
 
@@ -968,20 +914,12 @@ fn held(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet) -> Res
     if let Some(pt) = txn.table(tid, ak, PLACE_TABLE)?
         && let (Some(top), Some(chunks)) = (txn.table_get(pt, &place_key(set, 0, 0))?, txn.table_get(pt, &place_key(set, 2, 0))?)
     {
-        let mut from = place_key(set, 4, 0);
         let end = [set.prefix(), vec![1]].concat();
         let mut groups = Vec::new();
-        loop {
-            let rows = txn.table_range(pt, &from, Some(&end), 256)?;
-            let n = rows.len();
-            for (k, v) in rows {
-                from = [k.as_slice(), &[0]].concat();
-                groups.push((k, v));
-            }
-            if n < 256 {
-                break;
-            }
-        }
+        scan_table(txn, pt, &place_key(set, 4, 0), Some(&end), |k, v| {
+            groups.push((k, v));
+            Ok(())
+        })?;
         // in order, none missing
         let ok = groups.iter().enumerate().all(|(i, (k, _))| *k == place_key(set, 4, i as u64));
         let rows: Vec<Vec<u8>> = groups.into_iter().map(|x| x.1).collect();
@@ -1124,16 +1062,7 @@ fn invalidate_placement(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut
 
 /// Drops every placement row of `set`.
 fn clear_placement(txn: &mut Transaction<'_>, pt: Table, set: &PageSet, shred: Shred) -> Result<()> {
-    let end = (set.id.saturating_add(1)).to_be_bytes();
-    loop {
-        let rows = txn.table_range(pt, &set.prefix(), Some(&end), 256)?;
-        if rows.is_empty() {
-            return Ok(());
-        }
-        for (k, _) in rows {
-            txn.table_remove(pt, &k, shred)?;
-        }
-    }
+    clear_table(txn, pt, &set.prefix(), &set.id.saturating_add(1).to_be_bytes(), shred)
 }
 
 /// Once every page of the paged sequence `set` is loaded: its placement as stored, loaded whole

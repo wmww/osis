@@ -336,9 +336,6 @@ macro_rules! journaled {
 /// A held compaction snapshot of an aspect: `ts`, ID, frontiers.
 pub(crate) type HeldSnapshot = (Ts, CommitId, osis_crdt::Frontiers);
 
-/// A scan callback: key (without prefix), value.
-type ScanFn<'f> = dyn FnMut(&[u8], Vec<u8>) -> Result<()> + 'f;
-
 /// A decoded commit record: received, origin, dropped parts, blob.
 pub(crate) type CommitRecord = (WallMs, Origin, BTreeSet<(usize, usize)>, CommitBlob);
 
@@ -1084,7 +1081,19 @@ impl Tx<'_> {
 
     /// Scans local records under `prefix` (keys returned without it).
     pub fn scan(&mut self, prefix: &[u8], mut f: impl FnMut(&[u8], Vec<u8>) -> Result<()>) -> Result<()> {
-        scan_local(&mut self.txn, prefix, &mut f)
+        let mut from: Vec<u8> = Vec::new();
+        loop {
+            let page = self.txn.scan_local(prefix, &from, SCAN_PAGE)?;
+            let n = page.len();
+            for (k, v) in page {
+                let tail = k.get(prefix.len()..).unwrap_or_default();
+                from = [tail, &[0]].concat();
+                f(tail, v)?;
+            }
+            if n < SCAN_PAGE {
+                return Ok(());
+            }
+        }
     }
 
     pub fn now(&self) -> WallMs {
@@ -1092,18 +1101,35 @@ impl Tx<'_> {
     }
 }
 
-fn scan_local(txn: &mut Transaction<'_>, prefix: &[u8], f: &mut ScanFn<'_>) -> Result<()> {
-    let mut from: Vec<u8> = Vec::new();
+/// Rows read per store call by the scans.
+const SCAN_PAGE: usize = 256;
+
+/// Calls `f` on every row of table `t` from `start` up to `end` (exclusive), a page of rows
+/// per store call.
+pub(crate) fn scan_table(txn: &mut Transaction<'_>, t: osis_store::Table, start: &[u8], end: Option<&[u8]>, mut f: impl FnMut(Vec<u8>, Vec<u8>) -> Result<()>) -> Result<()> {
+    let mut from = start.to_vec();
     loop {
-        let page = txn.scan_local(prefix, &from, 256)?;
-        let n = page.len();
-        for (k, v) in page {
-            let tail = k.get(prefix.len()..).unwrap_or_default();
-            from = [tail, &[0]].concat();
-            f(tail, v)?;
+        let rows = txn.table_range(t, &from, end, SCAN_PAGE)?;
+        let n = rows.len();
+        for (k, v) in rows {
+            from = [k.as_slice(), &[0]].concat();
+            f(k, v)?;
         }
-        if n < 256 {
+        if n < SCAN_PAGE {
             return Ok(());
+        }
+    }
+}
+
+/// Removes every row of table `t` from `start` up to `end` (exclusive).
+pub(crate) fn clear_table(txn: &mut Transaction<'_>, t: osis_store::Table, start: &[u8], end: &[u8], shred: Shred) -> Result<()> {
+    loop {
+        let rows = txn.table_range(t, start, Some(end), SCAN_PAGE)?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        for (k, _) in rows {
+            txn.table_remove(t, &k, shred)?;
         }
     }
 }
