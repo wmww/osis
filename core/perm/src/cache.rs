@@ -464,7 +464,7 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
         w.len(*l);
         w.len(*h);
     }
-    // D in the order the walks found it (`Rest::found`)
+    // D in the order the walks found it (`Walked::found`)
     w.len(r.found.len());
     for id in &r.found {
         w.wid(id);
