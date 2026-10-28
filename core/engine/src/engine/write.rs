@@ -472,24 +472,18 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             Kind::Content => Some(framing_for(tx.core, &plan, &published, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?.2),
             _ => None,
         };
-        // a paged state loads what the ops address (map keys, fields, set values: a large one
-        // by its link, as the state holds it), else whole
+        // what the ops address (map keys, fields, set values: a large one by its link, as the
+        // state holds it)
         let paths = match &framing {
             Some(f) => super::pages::op_paths(&am.ops, &mut |v| super::large::lookup_form(v, &f.dedup))?,
             None => super::pages::op_paths(&am.ops, &mut |v| Ok(v.clone()))?,
         };
-        // ops by index into paged sequences: on the pages loaded, through their stored placements
         // a list edit's items by content hash and its window (what the pages it needs follow from)
         let edits = match &framing {
             Some(f) => super::large::list_edits(&am.ops, am.schema.as_deref(), ak.as_str(), &f.dedup)?,
             None => Vec::new(),
         };
-        let partial = paths.is_none() && tx.attach_ops(&tid, &ak, &am.ops, &edits)?;
-        match paths {
-            _ if partial => {}
-            Some(paths) => tx.ensure_paths(&tid, &ak, &paths)?,
-            None => tx.load(&tid, &ak)?,
-        }
+        let attached = tx.load_for_ops(&tid, &ak, paths, &am.ops, &edits)?;
         // large atomic values become chunk trees before the ops resolve
         let mut chunks = Vec::new();
         if let Some(framing) = &framing {
@@ -512,31 +506,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
                 None => run_ops(state, w, &am.ops, &AnyView),
             }
         };
-        let mut out = run(tx);
-        if partial {
-            // run again while it missed rows, chunks or pages (what it missed loaded), at most
-            // `OP_RUNS` times, then on the whole state
-            let mut runs = 1;
-            loop {
-                let more = tx.absorb(&tid, &ak)?;
-                if more == Some(false) {
-                    break;
-                }
-                let whole = more.is_none() || runs >= super::pages::OP_RUNS;
-                if whole {
-                    if more.is_some() {
-                        let _s = crate::costs::span("paged op whole: runs");
-                    }
-                    tx.load(&tid, &ak)?;
-                }
-                out = run(tx);
-                if whole {
-                    break;
-                }
-                runs += 1;
-            }
-        }
-        let out = out?;
+        let out = tx.run_attached(&tid, &ak, attached, run)??;
         let w2 = Writer::new(ts, own_source(m.form, node), lo);
         let out = match (out, m.dead_resets.get(&(tid, ak.clone())).filter(|d| !d.is_empty())) {
             (o, None) => o,
