@@ -9,6 +9,8 @@
 //! also with multi-aspect commits split into a part and late parts): every
 //! order must give the same per-delta verdicts, reads and states of every aspect, rosters,
 //! pending set, persisted index and timelines, and a reopen and a rebuild must give them too.
+//! Short focused histories (bounded writes, compactions, undo, demotions, late writes) are also
+//! checked in every arrival order of every held set. Seeds run on a thread per core.
 
 use crate::common;
 use common::*;
@@ -509,19 +511,46 @@ fn perms(n: usize) -> Vec<Vec<usize>> {
     out
 }
 
+/// How much of the order space a check covers.
+#[derive(Clone, Copy, Debug)]
+struct Cfg {
+    /// Every order of the held commits after the setup when there are at most this many.
+    all_up_to: usize,
+    /// `all_up_to` applies to partial held sets too (else to the whole set only).
+    every_held: bool,
+    /// Random shuffles of each held set.
+    random: usize,
+    /// Partial held sets.
+    subsets: usize,
+    /// How many of each held set's orders are tried again with late parts.
+    split: usize,
+    /// A seed's orders are independent tasks (each late-parts order split by its own rng), run
+    /// on `threads` threads; else they run in turn, split by one rng.
+    par_orders: bool,
+    /// Set by `run`: the threads a seed's orders share (cores over the seeds run at once).
+    threads: usize,
+}
+
+const SMALL: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 1, split: 2, par_orders: false, threads: 1 };
+const LARGE: Cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1 };
+/// Every order of every held set, every order with late parts too (6 commits: up to 720 orders).
+const EXHAUST: Cfg = Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, par_orders: true, threads: 1 };
+/// The same up to 5 commits (120 orders), for tier 1.
+const EXHAUST_SMALL: Cfg = Cfg { all_up_to: 5, subsets: 1, ..EXHAUST };
+
 /// The arrival orders of `held` tried: as made (the reference), reversed, every order of the
-/// commits after the setup when they are all held and at most `all_up_to`, and `random`
-/// shuffles of everything.
-fn orders(played: &Played, held: &[usize], all_up_to: usize, random: usize, rng: &mut Rng) -> Vec<Vec<usize>> {
+/// held commits after the setup when there are at most `all_up_to` (and the whole set is held,
+/// unless `every_held`), and `random` shuffles of everything.
+fn orders(played: &Played, held: &[usize], cfg: Cfg, rng: &mut Rng) -> Vec<Vec<usize>> {
     let n = held.len();
     let mut out = vec![held.to_vec(), held.iter().rev().copied().collect()];
-    let rest = played.packs.len() - played.base;
-    if n == played.packs.len() && rest <= all_up_to {
-        for p in perms(rest) {
-            out.push((0..played.base).chain(p.into_iter().map(|i| played.base + i)).collect());
+    let rest: Vec<usize> = held.iter().copied().filter(|&i| i >= played.base).collect();
+    if (n == played.packs.len() || cfg.every_held) && rest.len() <= cfg.all_up_to {
+        for p in perms(rest.len()) {
+            out.push((0..played.base).chain(p.into_iter().map(|i| rest[i])).collect());
         }
     }
-    for _ in 0..random {
+    for _ in 0..cfg.random {
         let mut o = held.to_vec();
         for i in (1..n).rev() {
             o.swap(i, rng.below(i as u64 + 1) as usize);
@@ -547,83 +576,112 @@ fn held_sets(played: &Played, subsets: usize, rng: &mut Rng) -> Vec<Vec<usize>> 
     out
 }
 
-/// Checks one history; the first mismatch found, described (a panic counts, so it shrinks).
-fn check(seed: u64, steps: &[Step], all_up_to: usize, random: usize, subsets: usize) -> Result<usize, String> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check_orders(seed, steps, all_up_to, random, subsets))).unwrap_or_else(|e| {
+/// Checks one history; the number of orders tried, or the first mismatch found, described (a
+/// panic counts, so it shrinks).
+fn check(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
+    caught(|| check_orders(seed, steps, cfg))
+}
+
+/// `f`, a panic as an error.
+fn caught<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|e| {
         let msg = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
         Err(format!("panicked: {msg}"))
     })
 }
 
-fn check_orders(seed: u64, steps: &[Step], all_up_to: usize, random: usize, subsets: usize) -> Result<usize, String> {
+fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
     let played = play(seed, steps);
     let mut rng = Rng(seed ^ 0x0de5_ab1e | 1);
     let mut tried = 0;
     let mut full: Option<Vec<(&'static str, String)>> = None;
-    for held in held_sets(&played, subsets, &mut rng) {
+    let n = played.packs.len();
+    let split = played.packs.iter().any(|pk| osis_commit::CommitBlob::decode(&pk.bytes).is_ok_and(|b| b.parts.iter().any(|x| x.ai != b.parts[0].ai)));
+    for held in held_sets(&played, cfg.subsets, &mut rng) {
+        let of = format!("held {held:?} of {n} commits (base {})", played.base);
         // a partial set, then the rest (both ways), ends where the whole set does
         if let Some(f) = &full {
-            let rest: Vec<usize> = (0..played.packs.len()).filter(|i| !held.contains(i)).collect();
+            let rest: Vec<usize> = (0..n).filter(|i| !held.contains(i)).collect();
             for order in [held.iter().chain(&rest).copied().collect::<Vec<_>>(), held.iter().chain(rest.iter().rev()).copied().collect()] {
                 let mut p = deliver(&played, &order);
                 if let Some(d) = first_diff(f, &judged(&mut p, &played.things)) {
-                    return Err(format!("held {held:?}, then the rest: {d}"));
+                    return Err(format!("{of}, then the rest: order {order:?} vs the whole set as made: {d}"));
                 }
             }
         }
-        let orders = orders(&played, &held, all_up_to, random, &mut rng);
+        let orders = orders(&played, &held, cfg, &mut rng);
         tried += orders.len();
-        let mut want: Option<Vec<(&'static str, String)>> = None;
-        for (k, order) in orders.iter().enumerate() {
+        // the reference, as made: a whole replay, a reopen from the persisted index and a
+        // rebuild judge alike (an open re-examines what pends)
+        let mut p = deliver(&played, &orders[0]);
+        let want = judged(&mut p, &played.things);
+        if let Some(d) = replay_differs(&mut p) {
+            return Err(format!("{of}, as made: a whole replay differs: {d}"));
+        }
+        p.engine.reload_index().unwrap();
+        p.engine.reexamine().unwrap();
+        if let Some(d) = first_diff(&want, &judged(&mut p, &played.things)) {
+            return Err(format!("{of}, as made: reopen differs: {d}"));
+        }
+        p.engine.rebuild_index().unwrap();
+        p.engine.reexamine().unwrap();
+        if let Some(d) = first_diff(&want, &judged(&mut p, &played.things)) {
+            return Err(format!("{of}, as made: rebuild differs: {d}"));
+        }
+        if std::env::var("OSIS_ORDER_STATS").is_ok() {
+            let idx = &want[0].1;
+            let invalid = idx.lines().filter(|l| l.starts_with("commit ") && l.contains("false")).count();
+            let carried = idx.lines().find(|l| l.starts_with("carried ")).map_or(0, |l| l.matches("invalid: [").count() - l.matches("invalid: []").count());
+            eprintln!("seed {seed}: {} of {} commits held ({} base), {} with an invalid part, {} carried groups with invalid writes, {} pending, {} things", held.len(), n, played.base, invalid, carried, want[4].1.lines().count(), played.things.len());
+        }
+        if full.is_none() {
+            full = Some(want.clone());
+        }
+        // order `k` alike (and alike after a reopen), or with late parts (split by `rng`) alike
+        let one = |k: usize, split_rng: Option<&mut Rng>| -> Result<(), String> {
+            let order = &orders[k];
+            let vs = format!("{of}: order #0 (as made, want) {held:?} vs order #{k}");
+            if let Some(rng) = split_rng {
+                let mut p = deliver_split(&played, order, rng);
+                return match first_diff(&want, &judged(&mut p, &played.things)).or_else(|| replay_differs(&mut p)) {
+                    Some(d) => Err(format!("{vs} with late parts (got) {order:?}: {d}")),
+                    None => Ok(()),
+                };
+            }
             let mut p = deliver(&played, order);
             let got = judged(&mut p, &played.things);
             if let Some(d) = replay_differs(&mut p) {
-                return Err(format!("held {held:?}, order #{k} {order:?}: a whole replay differs: {d}"));
+                return Err(format!("{of}, order #{k} {order:?}: a whole replay differs: {d}"));
             }
-            if want.is_some() {
-                // every order reopens alike too
-                p.engine.reload_index().unwrap();
-                p.engine.reexamine().unwrap();
-                if let Some(d) = first_diff(&got, &judged(&mut p, &played.things)) {
-                    return Err(format!("held {held:?}, order #{k} {order:?}: reopen differs: {d}"));
-                }
+            p.engine.reload_index().unwrap();
+            p.engine.reexamine().unwrap();
+            if let Some(d) = first_diff(&got, &judged(&mut p, &played.things)) {
+                return Err(format!("{of}, order #{k} {order:?}: reopen differs: {d}"));
             }
-            let Some(w) = &want else {
-                // the reference: a reopen from the persisted index and a rebuild judge alike
-                // (an open re-examines what pends)
-                p.engine.reload_index().unwrap();
-                p.engine.reexamine().unwrap();
-                if let Some(d) = first_diff(&got, &judged(&mut p, &played.things)) {
-                    return Err(format!("held {held:?}: reopen differs: {d}"));
-                }
-                p.engine.rebuild_index().unwrap();
-                p.engine.reexamine().unwrap();
-                if let Some(d) = first_diff(&got, &judged(&mut p, &played.things)) {
-                    return Err(format!("held {held:?}: rebuild differs: {d}"));
-                }
-                if std::env::var("OSIS_ORDER_STATS").is_ok() {
-                    let idx = &got[0].1;
-                    let invalid = idx.lines().filter(|l| l.starts_with("commit ") && l.contains("false")).count();
-                    let carried = idx.lines().find(|l| l.starts_with("carried ")).map_or(0, |l| l.matches("invalid: [").count() - l.matches("invalid: []").count());
-                    eprintln!("seed {seed}: {} of {} commits held ({} base), {} with an invalid part, {} carried groups with invalid writes, {} pending, {} things", held.len(), played.packs.len(), played.base, invalid, carried, got[4].1.lines().count(), played.things.len());
-                }
-                if full.is_none() {
-                    full = Some(got.clone());
-                }
-                want = Some(got);
-                continue;
-            };
-            if let Some(d) = first_diff(w, &got) {
-                return Err(format!("held {held:?} of {} commits (base {}), order #{k} {order:?}: {d}", played.packs.len(), played.base));
+            match first_diff(&want, &got) {
+                Some(d) => Err(format!("{vs} (got) {order:?}: {d}")),
+                None => Ok(()),
             }
-        }
-        // the first two orders with late parts
-        if let Some(w) = &want {
-            for (k, order) in orders.iter().take(2).enumerate() {
-                let mut p = deliver_split(&played, order, &mut rng);
-                if let Some(d) = first_diff(w, &judged(&mut p, &played.things)).or_else(|| replay_differs(&mut p)) {
-                    return Err(format!("held {held:?}, order #{k} {order:?} with late parts: {d}"));
-                }
+        };
+        // late parts only matter when a commit has parts on several aspects
+        let splits = if split { cfg.split.min(orders.len()) } else { 0 };
+        if cfg.par_orders {
+            // tasks: orders 1.. as they are, then 0.. with late parts, each split by its own rng
+            let tasks: Vec<u64> = (1..orders.len() + splits).map(|x| x as u64).collect();
+            let base = rng.0;
+            let errs = par_map(&tasks, cfg.threads, |x| {
+                let x = x as usize;
+                caught(|| if x < orders.len() { one(x, None) } else { one(x - orders.len(), Some(&mut Rng(base ^ (x as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1))) })
+            });
+            if let Some(e) = errs.into_iter().find_map(Result::err) {
+                return Err(e);
+            }
+        } else {
+            for k in 1..orders.len() {
+                one(k, None)?;
+            }
+            for k in 0..splits {
+                one(k, Some(&mut rng))?;
             }
         }
     }
@@ -631,13 +689,13 @@ fn check_orders(seed: u64, steps: &[Step], all_up_to: usize, random: usize, subs
 }
 
 /// Drops steps while the history still fails; the shortest failing history found.
-fn shrink(seed: u64, mut steps: Vec<Step>, all_up_to: usize, random: usize, subsets: usize) -> (Vec<Step>, String) {
-    let mut err = check(seed, &steps, all_up_to, random, subsets).unwrap_err();
+fn shrink(seed: u64, mut steps: Vec<Step>, cfg: Cfg) -> (Vec<Step>, String) {
+    let mut err = check(seed, &steps, cfg).unwrap_err();
     let mut i = 0;
     while i < steps.len() {
         let mut fewer = steps.clone();
         fewer.remove(i);
-        match check(seed, &fewer, all_up_to, random, subsets) {
+        match check(seed, &fewer, cfg) {
             Err(e) => {
                 steps = fewer;
                 err = e;
@@ -648,46 +706,159 @@ fn shrink(seed: u64, mut steps: Vec<Step>, all_up_to: usize, random: usize, subs
     (steps, err)
 }
 
-fn history(seed: u64, len: usize) -> Vec<Step> {
+fn history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     (0..len).map(|_| random_step(&mut rng)).collect()
 }
 
+/// A short history aimed at deaths and validity together: writes of two bounded aspects
+/// (keep-at-most ones by the owner, keep-at-least ones mostly by the others), their compactions, undo, demotions
+/// and grants, nested writes under others' entries, one clock pulled ahead (a write made later
+/// by a peer behind sorts earlier), sends and syncs. Cut to the longest prefix making at most
+/// `cfg.all_up_to` commits after the setup (a prefix of a history plays as its start).
+fn focused_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
+    let mut rng = Rng(seed.wrapping_mul(0xa076_1d64_78bd_642f) | 1);
+    // two bounded aspects per history, so writes, compactions and undos meet
+    const BOUNDED: [u8; 10] = [16, 17, 18, 19, 20, 21, 22, 23, 24, 26];
+    let ops = [rng.pick(&BOUNDED), rng.pick(&BOUNDED)];
+    let steps: Vec<Step> = (0..len)
+        .map(|_| {
+            let by = rng.below(3) as usize;
+            let t = rng.below(2) as usize;
+            let op = rng.pick(&ops);
+            match rng.below(20) {
+                0..=6 => Step::Write { by: if (17..=20).contains(&op) || rng.below(3) == 0 { 0 } else { 1 + rng.below(2) as usize }, t, op, k: rng.below(2) as u8, v: rng.below(10) as u8 },
+                7 | 8 => Step::Compact { by: rng.pick(&[0, 0, by]), t, op },
+                9 | 10 => Step::Undo { by: rng.pick(&[0, by]), back: rng.below(3) as u8 },
+                11 | 12 => Step::Demote { by: rng.pick(&[0, 0, 2]), t, member: rng.pick(&[1, 2]), at: rng.below(4) as u8, to_read: rng.below(3) == 0 },
+                13 => Step::Edge { by: 0, t, member: rng.pick(&[1, 2]), role: rng.pick(&[None, Some(Role::Read), Some(Role::Write)]) },
+                14 => Step::Nested { by, other: (by + 1 + rng.below(2) as usize) % 3, t, k: rng.below(2) as u8, text: rng.below(2) == 0, compact: rng.below(2) == 0, also: rng.below(3) == 0 },
+                15 | 16 => Step::Advance { who: Some(rng.below(3) as usize), ms: 1 + rng.below(3_000) },
+                17 => Step::Advance { who: None, ms: HOUR / 4 + rng.below(HOUR) },
+                18 => {
+                    let from = rng.below(3) as usize;
+                    Step::Send { from, to: (from + 1 + rng.below(2) as usize) % 3, back: rng.below(2) as u8 }
+                }
+                _ => {
+                    let from = rng.below(3) as usize;
+                    Step::Sync { from, to: (from + 1 + rng.below(2) as usize) % 3 }
+                }
+            }
+        })
+        .collect();
+    // commits made grow with the prefix: the longest prefix within the bound
+    let fits = |k: usize| {
+        let p = play(seed, &steps[..k]);
+        p.packs.len() - p.base <= cfg.all_up_to
+    };
+    let (mut lo, mut hi) = (0, steps.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if fits(mid) { lo = mid } else { hi = mid - 1 }
+    }
+    steps[..lo].to_vec()
+}
+
+/// A thread per core (`OSIS_ORDER_THREADS` overrides).
+fn threads() -> usize {
+    std::env::var("OSIS_ORDER_THREADS").ok().and_then(|x| x.parse().ok()).unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+}
+
+/// `f` over `items` on up to `threads` threads, results in order.
+fn par_map<T: Send>(items: &[u64], threads: usize, f: impl Fn(u64) -> T + Sync) -> Vec<T> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let threads = threads.clamp(1, items.len().max(1));
+    let next = AtomicUsize::new(0);
+    let (f, next) = (&f, &next);
+    let mut out: Vec<(usize, T)> = std::thread::scope(|s| {
+        let hs: Vec<_> = (0..threads)
+            .map(|_| {
+                s.spawn(move || {
+                    let mut mine = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(&x) = items.get(i) else { break };
+                        mine.push((i, f(x)));
+                    }
+                    mine
+                })
+            })
+            .collect();
+        hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    });
+    out.sort_by_key(|x| x.0);
+    out.into_iter().map(|x| x.1).collect()
+}
+
+/// Checks the histories `gen` makes from `seeds` (one seed per task, a thread per core), shrinks
+/// every failing one and reports them all, each with the command that replays it.
 /// `OSIS_ORDER_SEED=n` runs only seed n; `OSIS_ORDER_START=n`, `OSIS_ORDER_SEEDS=n` and
-/// `OSIS_ORDER_LEN=n` set the first seed, how many seeds and steps.
-fn run(seeds: std::ops::Range<u64>, len: usize, all_up_to: usize, random: usize, subsets: usize) {
+/// `OSIS_ORDER_LEN=n` set the first seed, how many seeds and steps; a seed's history and orders
+/// depend on the seed, the length and the test alone.
+fn run(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: fn(u64, usize, Cfg) -> Vec<Step>) {
     let env = |k: &str| std::env::var(k).ok().and_then(|x| x.parse::<u64>().ok());
     let only = env("OSIS_ORDER_SEED");
     let start = env("OSIS_ORDER_START").unwrap_or(seeds.start);
     let seeds = start..env("OSIS_ORDER_SEEDS").map_or(start + (seeds.end - seeds.start), |n| start + n);
     let len = env("OSIS_ORDER_LEN").map_or(len, |n| n as usize);
-    let mut fails = Vec::new();
     let seeds: Vec<u64> = match only {
         Some(o) => vec![o],
         None => seeds.collect(),
     };
-    for seed in seeds {
-        let steps = history(seed, len);
-        if check(seed, &steps, all_up_to, random, subsets).is_err() {
-            let (steps, err) = shrink(seed, steps, all_up_to, random, subsets);
-            fails.push(format!("seed {seed}: vec!{steps:?}\n{err}"));
+    let settings: Vec<String> = std::env::vars().filter(|(k, _)| k.starts_with("OSIS_ORDER_")).map(|(k, v)| format!("{k}={v}")).collect();
+    let t0 = std::time::Instant::now();
+    // seeds on a thread per core; with fewer seeds than cores, a seed's orders share the rest
+    let outer = threads().min(seeds.len()).max(1);
+    let cfg = Cfg { threads: if cfg.par_orders { threads().div_ceil(outer) } else { 1 }, ..cfg };
+    let results = par_map(&seeds, outer, |seed| {
+        let steps = generate(seed, len, cfg);
+        if std::env::var("OSIS_ORDER_STATS").is_ok() {
+            eprintln!("seed {seed}: vec!{steps:?}");
         }
-    }
-    assert!(fails.is_empty(), "{} histories judged differently by arrival order:\n{}", fails.len(), fails.join("\n\n"));
+        let r = check(seed, &steps, cfg);
+        let fail = r.as_ref().is_err().then(|| {
+            let (steps, err) = shrink(seed, steps, cfg);
+            let msg = format!("seed {seed} (replay: OSIS_ORDER_SEED={seed} OSIS_ORDER_LEN={len} cargo test --workspace --test it order::{name} -- --include-ignored; shrunk for check({seed}, &h, {cfg:?})): h = vec!{steps:?}\n{err}");
+            eprintln!("{msg}\n");
+            msg
+        });
+        (r.unwrap_or(0), fail)
+    });
+    let tried: usize = results.iter().map(|x| x.0).sum();
+    let fails: Vec<String> = results.into_iter().filter_map(|x| x.1).collect();
+    eprintln!("order::{name}: {} seeds from {}, {len} steps, {tried} orders in the passing ones, {} failing, {:.1} s (settings: {settings:?})", seeds.len(), seeds.first().copied().unwrap_or(0), fails.len(), t0.elapsed().as_secs_f64());
+    assert!(fails.is_empty(), "{} of {} histories judged differently by arrival order (settings: {settings:?}):\n{}", fails.len(), seeds.len(), fails.join("\n\n"));
 }
 
 // spec/requirements.md Decentralization, spec/permissions.md §5 and §5.2, spec/crdt.md §4.6:
 // small histories, every arrival order of what follows the setup, plus shuffles of everything.
 #[test]
 fn arrival_order_alike_small_spec_permissions_5_2() {
-    run(0..4, 8, 4, 2, 1);
+    run("arrival_order_alike_small_spec_permissions_5_2", 0..4, 8, SMALL, history);
 }
 
 // The same at size: long histories, random orders.
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_alike_large_spec_permissions_5_2() {
-    run(1000..1060, 60, 0, 8, 4);
+    run("arrival_order_alike_large_spec_permissions_5_2", 1000..1060, 60, LARGE, history);
+}
+
+// spec/requirements.md Decentralization, spec/crdt.md §4.8: short histories mixing bounded
+// writes, compactions, undo, demotions and late writes, every arrival order of every held set,
+// each with late parts too.
+#[test]
+fn arrival_order_exhaustive_small_spec_crdt_4_8() {
+    run("arrival_order_exhaustive_small_spec_crdt_4_8", 0..3, 30, EXHAUST_SMALL, focused_history);
+}
+
+// The same over more histories, up to 6 commits. Seeds 2000..2200 found 2018, 2022, 2098,
+// 2120, 2157 and 2197, all issues/deaths-dropped-superseder.md (an owner call): the default
+// range starts after the first two, so a new failure here is new.
+#[test]
+#[ignore = "tier 2"]
+fn arrival_order_exhaustive_large_spec_crdt_4_8() {
+    run("arrival_order_exhaustive_large_spec_crdt_4_8", 2023..2063, 30, EXHAUST, focused_history);
 }
 
 // spec/crdt.md §4.8 (a write dies at the earliest `ts` among the applied commits superseding
@@ -730,22 +901,34 @@ fn check_deaths(seed: u64, steps: &[Step]) {
 #[test]
 fn arrival_order_found_histories_spec_crdt_4_6() {
     use Step::*;
+    let mut cases = Vec::new();
     let h = vec![Nested { by: 2, other: 1, t: 6, k: 0, text: false, compact: true, also: false }, New { by: 2, parent: 1, write: true }, Send { from: 1, to: 0, back: 1 }, Edge { by: 0, t: 2, member: 2, role: Some(Role::Read) }];
-    check(1038, &h, 0, 8, 4).unwrap();
+    cases.push((1038, h, LARGE));
     // seed 1558: C lowers its own edge (a nested write into the roster snapshot's entry) with a
     // clock behind A's, so it sorts before that snapshot: an open read it first and left it
     // waiting for the entry's creation, which a fresh apply had resolved
     let h = vec![Demote { by: 0, t: 5, member: 1, at: 4, to_read: false }, Roster { by: 0, t: 4 }, Sync { from: 0, to: 1 }, Demote { by: 0, t: 6, member: 2, at: 1, to_read: false }, Sync { from: 1, to: 2 }, Write { by: 0, t: 7, op: 7, k: 0, v: 4 }, Send { from: 0, to: 2, back: 0 }, Edge { by: 2, t: 4, member: 2, role: Some(Role::Read) }];
-    check(1558, &h, 0, 8, 4).unwrap();
+    cases.push((1558, h, LARGE));
     // seed 1053 (spec/crdt.md §4.8): two writes of a keep-at-most-0 register with one `ts`; the
     // later by commit ID lost by dot and died on arrival, and its drop went before its own
     // record was written, which then held it undropped (a reopen disagreed)
     let h = vec![Write { by: 2, t: 4, op: 18, k: 2, v: 4 }, Write { by: 1, t: 6, op: 18, k: 1, v: 4 }];
-    check(1053, &h, 0, 8, 4).unwrap();
+    cases.push((1053, h, LARGE));
     // seed 1173 (spec/crdt.md §4.8): peer 0's kept write inside peer 1's entry dies at peer 2's;
     // peer 1's creation arriving invalid un-merged both, and nothing replayed the deaths
     let h = vec![Nested { by: 1, other: 2, t: 7, k: 1, text: false, compact: false, also: false }, Send { from: 1, to: 0, back: 0 }, Edge { by: 2, t: 2, member: 1, role: Some(Role::Read) }, Write { by: 0, t: 0, op: 22, k: 1, v: 9 }];
-    check(1173, &h, 4, 2, 1).unwrap();
+    cases.push((1173, h, SMALL));
+    // in parallel: the slowest test of the module otherwise
+    let idx: Vec<u64> = (0..cases.len() as u64).collect();
+    let results = par_map(&idx, threads(), |i| {
+        let (seed, h, cfg) = &cases[i as usize];
+        check(*seed, h, *cfg)
+    });
+    for (r, (seed, ..)) in results.into_iter().zip(&cases) {
+        if let Err(e) = r {
+            panic!("seed {seed}: {e}");
+        }
+    }
 }
 
 // spec/commits.md §5 (dropping a body destroys every local index entry derived from it),
@@ -756,7 +939,7 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
 fn dropped_snapshot_rebuilds_alike_spec_commits_5() {
     use Step::*;
     let h = vec![Write { by: 0, t: 2, op: 18, k: 2, v: 3 }, Compact { by: 0, t: 3, op: 18 }, Demote { by: 0, t: 3, member: 1, at: 3, to_read: false }, Undo { by: 0, back: 2 }];
-    check(1291, &h, 0, 8, 4).unwrap();
+    check(1291, &h, LARGE).unwrap();
     // the dropped snapshot keeps no frontier, so its liveness comes from its `ts`: the undo's
     // reset is stamped after it (not live, as with its frontier)
     let played = play(1291, &h);
@@ -766,3 +949,4 @@ fn dropped_snapshot_rebuilds_alike_spec_commits_5() {
     assert!(!p.engine.holds_body(&snap, &a.tid, &a.ak), "the snapshot dropped dead");
     assert!(!p.engine.body_live(&snap, &a.tid, &a.ak).unwrap(), "the undo reset it");
 }
+

@@ -50,7 +50,7 @@ Quiet machine, warm worktree, after the fixes this note records. If your numbers
 | release `cargo test --release --workspace --no-run`: clean / after an edit (thin LTO relinks every test binary) | about 5 / 4 min at load 10-16; faster quiet |
 | release, one crate: `cargo test --release -p osis-node --test it --no-run` clean / after an osis-node edit | 2.9 / 1.7 min at load 20-30 (no other test binary relinks) |
 | `unification_check` in the gate (after the build) | 7 s |
-| tier-2 oracle `order::arrival_order_alike_large` | about 2 min |
+| tier-2 oracles `order::arrival_order_alike_large` / `order::arrival_order_exhaustive_large` | 18 s / 2 min on 16 threads (300 / 200 seeds: 104 s / 13 min) |
 | tier 2 as a whole | over 25 min: a few single-threaded tests run alone at the tail of each binary; run it in the background, once per round |
 | a task worktree's `target/` after a gate | about 5.5 GB; 6 with clippy-net; +0.7 GB release; flat afterwards (±0.1 GB per edit cycle) |
 | test executables | 32, about 0.8 GB; an osis-node or osis-engine edit relinks the ten above it inside the build |
