@@ -32,15 +32,8 @@ impl Core {
         let mut chain = Vec::new();
         let mut cur = *tid;
         for _ in 0..MAX_CHAIN {
-            let held = (cur == self.id.tid()).then(|| self.id.epochs()).or_else(|| self.key_actors.get(&cur).map(|k| k.epochs()));
+            let held = (cur == self.id.tid()).then(|| self.id.epochs()).or_else(|| self.key_actors.get(&cur).map(|k| k.epochs())).or_else(|| self.secrets.get(&cur).cloned());
             if let Some(mut e) = held {
-                for t in chain.iter().rev() {
-                    e = ActorEpochs::derived(&e, t);
-                }
-                return Some(e);
-            }
-            if let Some(e) = self.secrets.get(&cur) {
-                let mut e = e.clone();
                 for t in chain.iter().rev() {
                     e = ActorEpochs::derived(&e, t);
                 }
@@ -249,9 +242,7 @@ impl Core {
     pub(crate) fn observe_keys(&mut self, actor: &Tid, keys: &Keys) {
         if keys.read.is_some() || keys.write.is_some() || keys.admin.is_some() {
             // its published delete keys replace any inbox hint
-            if self.delete_hints.contains_key(actor) {
-                self.delete_hints.remove(actor);
-            }
+            self.delete_hints.remove(actor);
             if self.own_keys.insert(*actor) {
                 // reader actors of things below it change
                 self.bodies.clear();
@@ -319,6 +310,10 @@ pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::en
             }
         }
     }
+    if !need.is_empty() {
+        // the keys an inbox payload named stand in until `/keys` arrives
+        tx.core.promote_hints();
+    }
     let mut out = BTreeMap::new();
     for (b, r) in need {
         let keys = Core::keys_in(tx, &b)?;
@@ -327,8 +322,6 @@ pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::en
             Some(SigningKey::Ed25519(k)) => VerifyingKey::from_slice(&k).ok(),
             _ => None,
         };
-        // else the keys an inbox payload named, until `/keys` arrives
-        tx.core.promote_hints();
         let hinted = || match tx.core.delete_hints.get(&b) {
             Some(Value::List(x)) => x.get(usize::from(r != Role::Admin)).and_then(|v| if let Value::Bytes(k) = v { VerifyingKey::from_slice(k).ok() } else { None }),
             _ => None,
@@ -348,7 +341,7 @@ pub(crate) fn own_delete_keys(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result
         return Ok(None);
     }
     let published = published_keys(tx, &Default::default(), [*t])?;
-    let key = |r: Role| e.as_ref().and_then(|e| e.role(r).newest_held().map(|(_, s)| DeleteSecret::derive(s).verifying_key())).or_else(|| published.get(&(b, r)).copied());
+    let key = |r: Role| e.as_ref().and_then(|e| newest_delete_key(e, r)).or_else(|| published.get(&(b, r)).copied());
     Ok(key(Role::Admin).zip(key(Role::Write)))
 }
 
@@ -420,7 +413,7 @@ impl osis_commit::Secrets for CommitSecrets<'_> {
         // cannot sign as an actor it does not act for)
         match self.core.delete_base(&self.actor)? {
             DeleteBase::KeyActor(k) => self.chain_holder().then_some(k),
-            DeleteBase::Actor(_, e) => e?.write.newest_held().map(|(_, s)| DeleteSecret::derive(s).verifying_key()),
+            DeleteBase::Actor(_, e) => newest_delete_key(&e?, Role::Write),
         }
     }
     fn write_key(&self, tid: &Tid) -> Option<VerifyingKey> {
@@ -449,9 +442,14 @@ impl CommitSecrets<'_> {
     fn key(&self, tid: &Tid, r: Role) -> Option<VerifyingKey> {
         match base_of(self.core, self.created, tid)? {
             DeleteBase::KeyActor(k) => Some(k),
-            DeleteBase::Actor(b, e) => e.and_then(|e| e.role(r).newest_held().map(|(_, s)| DeleteSecret::derive(s).verifying_key())).or_else(|| self.published.get(&(b, r)).copied()),
+            DeleteBase::Actor(b, e) => e.and_then(|e| newest_delete_key(&e, r)).or_else(|| self.published.get(&(b, r)).copied()),
         }
     }
+}
+
+/// The delete key of the newest held secret of role `r` (spec/crypto.md §7).
+fn newest_delete_key(e: &ActorEpochs, r: Role) -> Option<VerifyingKey> {
+    e.role(r).newest_held().map(|(_, s)| DeleteSecret::derive(s).verifying_key())
 }
 
 // ---- local encoding of held epochs (the store's actor secrets unit)
@@ -504,10 +502,8 @@ pub(crate) const MAX_READING_ACTORS: usize = 64;
 /// The live entries of history keys holding several in a `/secrets` state (puts of one key by
 /// different writers): readers try each, so a newer entry does not hide the genuine box.
 pub(crate) fn history_alts(f: &osis_crdt::Fragment) -> HistoryAlts {
-    use osis_crdt::{Encoding, Fragment, MemberRef};
     let mut out = HistoryAlts::new();
-    let Some(MemberRef::Frag(Fragment::Struct(st))) = f.slot(Encoding::Struct) else { return out };
-    let Some(MemberRef::Frag(Fragment::Map(m))) = st.field(1).and_then(|x| x.slot(Encoding::Map)) else { return out };
+    let Some(m) = history_map(f) else { return out };
     let mut by_key: std::collections::BTreeMap<Value, Vec<Vec<u8>>> = std::collections::BTreeMap::new();
     for (_, _, k, frag) in m.entries() {
         if let (Some(k), Some(Value::Bytes(b))) = (k, frag.and_then(osis_crdt::Fragment::read)) {
