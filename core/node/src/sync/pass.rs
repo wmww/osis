@@ -93,6 +93,9 @@ enum AtMost {
 /// A timed delete due: the entry and its time (`keep_at_most_due`).
 type TimedDue = Option<(Entry, u64)>;
 
+/// Aspects not settled yet (`None`: every aspect; `SyncEngine::unsettled_sets`).
+type Unsettled = BTreeSet<Option<(Tid, Ak)>>;
+
 /// A judged entry: the rule's answer, whether it may carry live writes, its aspects.
 type Judged = (Hold, bool, Vec<(Tid, Ak)>);
 
@@ -105,8 +108,8 @@ struct J {
     bodies: Vec<Body>,
     /// The commits of the scope when the bodies were taken (`judge_touched`).
     judged: BTreeSet<CommitId>,
-    unsettled: BTreeSet<Option<(Tid, Ak)>>,
-    snapping: BTreeSet<Option<(Tid, Ak)>>,
+    unsettled: Unsettled,
+    snapping: Unsettled,
     replaced: bool,
 }
 
@@ -178,7 +181,7 @@ impl SyncEngine {
         // what an earlier pass of this step changed in the engine (a carrier snapshot written)
         self.engine_events()?;
         self.spread_touches();
-        let Some(mut w) = self.work_mut(conn, l).map(|x| std::mem::take(x)) else { return Ok(()) };
+        let Some(mut w) = self.work_mut(conn, l).map(std::mem::take) else { return Ok(()) };
         let r = f(self, &ctx, &mut w);
         if r.is_err() {
             w.full = true;
@@ -424,7 +427,7 @@ impl SyncEngine {
     /// outstanding), and so are the commits of aspects that became or stopped being unsettled.
     /// Returns whether the pass judges everything.
     #[allow(clippy::too_many_arguments)]
-    fn take_inputs(&mut self, g: &Tid, l: &LabelId, w: &mut Work, scope: &mut Scope, mut full: bool, inputs: Inputs, unsettled: &BTreeSet<Option<(Tid, Ak)>>, snapping: &BTreeSet<Option<(Tid, Ak)>>) -> bool {
+    fn take_inputs(&mut self, g: &Tid, l: &LabelId, w: &mut Work, scope: &mut Scope, mut full: bool, inputs: Inputs, unsettled: &Unsettled, snapping: &Unsettled) -> bool {
         let flags = (unsettled.is_empty(), !snapping.contains(&None));
         let release = w.settled.is_some_and(|(s, n)| !s && flags.0 || !n && flags.1);
         w.settled = Some(flags);
@@ -786,7 +789,7 @@ impl SyncEngine {
     /// the blobs it links when this node writes. Another node's body not at `server` waits for
     /// its author or a co-writer (`relay_due`).
     #[allow(clippy::too_many_arguments)]
-    fn body_sends(&mut self, server: Option<&ServerKey>, g: &Tid, l: LabelId, keys: &HeadKeys, read_ok: bool, bodies: &[Body], snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, snapping: &BTreeSet<Option<(Tid, Ak)>>, left: &mut Left) -> Result<Vec<Out>> {
+    fn body_sends(&mut self, server: Option<&ServerKey>, g: &Tid, l: LabelId, keys: &HeadKeys, read_ok: bool, bodies: &[Body], snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, snapping: &Unsettled, left: &mut Left) -> Result<Vec<Out>> {
         let mut sends = Vec::new();
         self.stats.bodies += bodies.len() as u64;
         let mut note = Note::default();
@@ -1060,7 +1063,7 @@ impl SyncEngine {
     /// Aspects this node cannot judge deletions on yet: those of pending commits; every aspect
     /// (`None` in the set) while an entry of the label opens under a held secret and is not
     /// applied (`unopened`: a snapshot not fetched or applied yet, spec/sync.md §6: may-hold).
-    pub(super) fn unsettled_of(&mut self, unopened: bool) -> Result<BTreeSet<Option<(Tid, Ak)>>> {
+    pub(super) fn unsettled_of(&mut self, unopened: bool) -> Result<Unsettled> {
         Ok(self.unsettled_sets(unopened, false)?.0)
     }
 
@@ -1070,7 +1073,7 @@ impl SyncEngine {
     /// fetched (`fetching`; it may be a snapshot). Other pending commits settle nothing there (two
     /// writers' pending commits otherwise withheld exactly what the other waited for), nor do
     /// entries that do not open as a commit or whose bytes no server delivers.
-    pub(super) fn unsettled_sets(&mut self, unopened: bool, fetching: bool) -> Result<(BTreeSet<Option<(Tid, Ak)>>, BTreeSet<Option<(Tid, Ak)>>)> {
+    pub(super) fn unsettled_sets(&mut self, unopened: bool, fetching: bool) -> Result<(Unsettled, Unsettled)> {
         let (mut all, mut snaps) = (BTreeSet::new(), BTreeSet::new());
         for (c, r) in self.engine.pending() {
             if r == crate::Reason::Parked {
@@ -1232,7 +1235,7 @@ impl SyncEngine {
     /// established uncovered by the label's snapshots. Must-hold: the parts a blob of the commit
     /// must hold to hold the body (all of them before keep-at-least, else those of the aspects
     /// no snapshot covers).
-    fn must_hold(&mut self, b: &Body, snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, unsettled: &BTreeSet<Option<(Tid, Ak)>>, note: &mut Note) -> Result<Option<Vec<(usize, usize)>>> {
+    fn must_hold(&mut self, b: &Body, snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, unsettled: &Unsettled, note: &mut Note) -> Result<Option<Vec<(usize, usize)>>> {
         let Some(h) = self.engine.header(&b.commit) else { return Ok(None) };
         let aspects: Vec<(Tid, Ak)> = b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
         let now = self.now();
