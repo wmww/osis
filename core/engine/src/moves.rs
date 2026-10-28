@@ -241,20 +241,32 @@ impl Engine {
         // one local transaction: the copy, `/was` and every import (spec/permissions.md §7)
         let out = self.run(|tx| {
             crate::engine::write::commit_in(tx, m)?;
-            let carriers = carriers(tx, &t)?;
-            let mut live = BTreeMap::new();
-            let mut shown = BTreeMap::new();
-            let mut origins: Vec<(Ts, CommitId)> = tx.core.ix.by_aspect.iter().filter(|((x, _), _)| *x == t).flat_map(|(_, s)| s.iter().copied()).collect();
-            origins.sort();
-            origins.dedup();
-            let mut out = Vec::new();
-            for (_, c) in origins {
-                if let Some(id) = import_one(tx, &t, &copy, &c, &carriers, &mut live, &mut shown)? {
-                    out.push(id);
-                }
-            }
-            Ok(out)
+            import_all(tx, &t, &copy)
         })?;
         Ok((copy, out))
     }
+
+    /// Imports `t`'s held history into the existing copy `copy` again, as a hostile writer
+    /// breaking spec/permissions.md §7 ("a move is one import by one node") would. Tests only.
+    #[doc(hidden)]
+    pub fn reimport(&mut self, t: &Tid, copy: &Tid) -> Result<Vec<CommitId>> {
+        self.run(|tx| import_all(tx, t, copy))
+    }
+}
+
+/// One import commit per held origin commit of `t`, into `copy`.
+fn import_all(tx: &mut Tx<'_>, t: &Tid, copy: &Tid) -> Result<Vec<CommitId>> {
+    let carriers = carriers(tx, t)?;
+    let mut live = BTreeMap::new();
+    let mut shown = BTreeMap::new();
+    let mut origins: Vec<(Ts, CommitId)> = tx.core.ix.by_aspect.iter().filter(|((x, _), _)| x == t).flat_map(|(_, s)| s.iter().copied()).collect();
+    origins.sort();
+    origins.dedup();
+    let mut out = Vec::new();
+    for (_, c) in origins {
+        if let Some(id) = import_one(tx, t, copy, &c, &carriers, &mut live, &mut shown)? {
+            out.push(id);
+        }
+    }
+    Ok(out)
 }

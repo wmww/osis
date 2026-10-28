@@ -762,20 +762,15 @@ pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> Vec<(
 }
 
 /// Whether a held commit owns the writes of source `Commit(c)` on `(tid, ak)` (spec/permissions.md
-/// §5.2): `c` itself where it is a commit-form commit with that aspect, else a held import of it with that aspect (§7),
-/// found at the import's `ts` (`Core::authors`, which a held import sets). A function of the
-/// held set: a held commit `c` without the aspect (an import's origin on the moved thing) owns
-/// nothing there.
+/// §5.2): `c` itself where it is a commit-form commit with that aspect, else any held import of
+/// it with that aspect (§7, `Core::imports`). A function of the held set: a held commit `c`
+/// without the aspect (an import's origin on the moved thing) owns nothing there.
 fn owns_source(core: &Core, tid: &Tid, ak: &Ak, c: &CommitId) -> bool {
-    let own = |m: &Meta| m.view.form == Form::Commit && m.view.kind.has_own_writes() && m.view.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak);
-    if core.ix.commits.get(c).is_some_and(own) {
+    let has = |m: &Meta| m.view.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak);
+    if core.ix.commits.get(c).is_some_and(|m| m.view.form == Form::Commit && m.view.kind.has_own_writes() && has(m)) {
         return true;
     }
-    let Some((_, ts)) = core.ix.authors.get(&(*tid, *c)) else { return false };
-    let (lo, hi) = ((*ts, CommitId([0; 32])), (*ts, CommitId([0xff; 32])));
-    core.ix.copies.get(&(*tid, ak.clone())).is_some_and(|s| {
-        s.range(lo..=hi).any(|(_, i)| core.ix.commits.get(i).is_some_and(|m| m.view.kind == Kind::Import && m.header.origins.iter().any(|o| o.commit == *c)))
-    })
+    core.ix.imports.get(&(*tid, *c)).is_some_and(|s| s.iter().any(|(_, i, _)| core.ix.commits.get(i).is_some_and(has)))
 }
 
 /// The counters of carried group `c` of `(tid, ak)` invalid as their author's writes (§5.2),
@@ -813,7 +808,8 @@ pub(crate) fn carried_invalid(core: &Core, tid: &Tid, ak: &Ak, c: &Carried) -> V
 }
 
 /// Records whom commit-form writes on the commit's things are judged as (`Core::authors`): a
-/// commit-form commit's author, an import's origins as the importer, a snapshot's `Authors`.
+/// commit-form commit's author, an import's origins as the least held import's importer
+/// (`Core::imports`), a snapshot's `Authors`.
 /// A snapshot naming another author or `ts` than a held commit or an earlier snapshot, lacking
 /// the author of a commit-form write it carries, or carrying a `ts` for a dot of a held commit
 /// other than that commit's, is bad input (spec/crdt.md §8).
@@ -823,8 +819,17 @@ pub(crate) fn note_authors(core: &mut Core, id: &CommitId, h: &Header, parts: &[
         held.extend(h.aspects.iter().map(|a| ((a.tid, *id), (h.author, h.ts))));
     }
     if h.kind == Kind::Import {
+        // of several imports of one origin on a thing the least by (`ts`, ID) names its
+        // author, unless the origin itself is held there (spec/permissions.md §7)
         for a in &h.aspects {
-            held.extend(h.origins.iter().map(|o| ((a.tid, o.commit), (h.author, h.ts))));
+            for o in &h.origins {
+                let k = (a.tid, o.commit);
+                core.ix.imports.insert(k, (h.ts, *id, h.author));
+                let own = core.ix.commits.get(&o.commit).is_some_and(|m| m.view.form == Form::Commit && m.view.kind.has_own_writes() && m.view.aspects.iter().any(|x| x.tid == a.tid));
+                if let (false, Some((ts, _, n))) = (own, core.ix.imports.get(&k).and_then(|s| s.first())) {
+                    held.push((k, (*n, *ts)));
+                }
+            }
         }
     }
     for (k, v) in held {

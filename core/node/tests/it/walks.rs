@@ -585,7 +585,7 @@ fn open_equals_rebuild_random_histories() {
     let (start, seeds) = (env("OSIS_WALKS_START", 0), env("OSIS_WALKS_SEEDS", 4));
     let mut most = [0usize; 4];
     for seed in start..start + seeds {
-        random_history(seed, &mut most, 1);
+        let _ = random_history(seed, &mut most, 1, false);
     }
     // the default seeds reach drops, invalid parts, roster snapshots and chunks (other ranges,
     // a one-seed repro say, pass or fail on their own)
@@ -599,28 +599,38 @@ fn open_equals_rebuild_random_histories() {
 #[test]
 fn open_equals_rebuild_random_histories_carried_imports() {
     for seed in [261, 377] {
-        random_history(seed, &mut [0; 4], 1);
+        let _ = random_history(seed, &mut [0; 4], 1, false);
     }
 }
 
 // as above with moves weighted up (copies of copies, their aspects snapshotted); seeds 6013,
 // 6106 and 6305 failed on issues/carried-import-order.md (about one seed in ten did; one in 200
-// without the weighting). OSIS_WALKS_MOVES_START, OSIS_WALKS_MOVES_SEEDS run others.
+// without the weighting). With hostile second imports into a copy (spec/permissions.md §7):
+// seeds DOUBLES (both failed while the last import to arrive named the author), and every
+// seed of OSIS_WALKS_MOVES_START, OSIS_WALKS_MOVES_SEEDS.
 #[test]
 fn open_equals_rebuild_random_histories_moves() {
+    const DOUBLES: [u64; 2] = [6012, 6036];
     let env = |k: &str| std::env::var(k).ok().and_then(|s| s.parse::<u64>().ok());
-    let seeds: Vec<u64> = match (env("OSIS_WALKS_MOVES_START"), env("OSIS_WALKS_MOVES_SEEDS")) {
-        (Some(a), n) => (a..a + n.unwrap_or(1)).collect(),
-        _ => vec![6013, 6106, 6305],
+    let seeds: Vec<(u64, bool)> = match (env("OSIS_WALKS_MOVES_START"), env("OSIS_WALKS_MOVES_SEEDS")) {
+        (Some(a), n) => (a..a + n.unwrap_or(1)).map(|s| (s, true)).collect(),
+        _ => [6013, 6106, 6305].map(|s| (s, false)).into_iter().chain(DOUBLES.map(|s| (s, true))).collect(),
     };
-    for seed in seeds {
-        random_history(seed, &mut [0; 4], 3);
+    let mut doubled = 0;
+    for (seed, doubles) in seeds {
+        let n = random_history(seed, &mut [0; 4], 3, doubles);
+        if n > 0 {
+            eprintln!("seed {seed}: {n} double imports");
+        }
+        doubled += n;
     }
+    assert!(doubled > 0 || env("OSIS_WALKS_MOVES_START").is_some(), "no double import");
 }
 
 /// One random history of `open_equals_rebuild_random_histories` with up to `max_moves` moves (more
-/// than one: moves from step 10, moved things snapshotted more); raises `most` to what it reached.
-fn random_history(seed: u64, most: &mut [usize; 4], max_moves: usize) {
+/// than one: moves from step 10, moved things snapshotted more), and with `doubles` sometimes a
+/// second import of a moved thing into its copy; raises `most` to what it reached.
+fn random_history(seed: u64, most: &mut [usize; 4], max_moves: usize, doubles: bool) -> usize {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut lp = LocalPeer::new(3, 0x7a1c + seed, T0).unwrap();
     lp.sync_all().unwrap();
@@ -632,6 +642,7 @@ fn random_history(seed: u64, most: &mut [usize; 4], max_moves: usize) {
     }
     lp.sync_all().unwrap();
     let mut moves = 0;
+    let (mut moved, mut double_imports) = (Vec::new(), 0);
     for step in 0..60 {
         let i = rng.below(3) as usize;
         let t = things[rng.below(things.len() as u64) as usize];
@@ -680,11 +691,19 @@ fn random_history(seed: u64, most: &mut [usize; 4], max_moves: usize) {
             x @ (9 | 14) if moves < max_moves && if max_moves > 1 { step > 10 } else { x == 9 && step > 20 } => {
                 if let Ok((copy, _)) = lp.peers[0].engine.move_thing(&t, ids[0]) {
                     things.push(copy);
+                    moved.push((t, copy));
                     moves += 1;
                 }
             }
             15 if max_moves > 1 && moves > 0 => {
                 let c = *things.last().unwrap();
+                if doubles && rng.below(3) == 0 {
+                    // a hostile second import: each origin listed twice on a copy
+                    let (o, c) = moved[rng.below(moved.len() as u64) as usize];
+                    if lp.peers[0].engine.reimport(&o, &c).is_ok_and(|v| !v.is_empty()) {
+                        double_imports += 1;
+                    }
+                }
                 let a = ["/t/keptset", "/t/gonemap", "/t/tags"][rng.below(3) as usize];
                 let _ = lp.peers[i].engine.snapshot(&c, &ak(a));
             }
@@ -724,6 +743,7 @@ fn random_history(seed: u64, most: &mut [usize; 4], max_moves: usize) {
         }
         open_equals_rebuild_any(&mut lp.peers[i].engine, &things, &format!("seed {seed} end, peer {i}"));
     }
+    double_imports
 }
 
 // spec/requirements.md, Decentralization; spec/permissions.md §5.2, §7: a snapshot of a moved
@@ -801,4 +821,64 @@ fn carried_imports_judged_without_the_import_spec_perm_5_2() {
         lp.deliver(3, x).unwrap();
     }
     assert_eq!(states(&mut lp.peers[3].engine, &[t, copy, p]), full, "then alike with them");
+}
+
+// spec/requirements.md, Decentralization; spec/permissions.md §7: a hostile writer imports t
+// into its copy a second time, so two held imports list each origin; the least by (`ts`, ID)
+// names the author its carried writes are judged as, whichever arrived last, and each owns the
+// origin's writes on its aspects. Two nodes taking the imports in either order, and a
+// snapshot of the copy, agree (claims, carried writes, states) and equal their rebuilds.
+#[test]
+fn double_import_alike_in_both_orders_spec_perm_7() {
+    let mut lp = LocalPeer::new(4, 0xd0b1, T0).unwrap();
+    lp.sync_all().unwrap();
+    let (a, x) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+    let t = new_thing(&mut lp, 0);
+    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    add_tag(&mut lp, 1, t, "a");
+    add_tag(&mut lp, 0, t, "b");
+    lp.sync_all().unwrap();
+    let (copy, first) = lp.peers[0].engine.move_thing(&t, a).unwrap();
+    set_edge(&mut lp.peers[0].engine, copy, x, Some(edge(Role::Write)), None);
+    lp.sync(0, 1).unwrap();
+    // peer 1 imports t again: each origin listed twice on the copy
+    let second = lp.peers[1].engine.reimport(&t, &copy).unwrap();
+    assert!(!first.is_empty() && !second.is_empty());
+    let pk = lp.packages(1).unwrap();
+    let dup = pk.iter().filter(|p| second.contains(&p.id)).cloned().collect::<Vec<_>>();
+    let pk0 = lp.packages(0).unwrap();
+    let (imp, rest): (Vec<_>, Vec<_>) = pk0.iter().cloned().partition(|p| first.contains(&p.id));
+    for p in &rest {
+        lp.deliver(2, p).unwrap();
+        lp.deliver(3, p).unwrap();
+    }
+    // peer 2: the first move, then the second; peer 3 the other way round
+    for (i, ps) in [(2, [&imp, &dup]), (3, [&dup, &imp])] {
+        for p in ps.into_iter().flatten() {
+            assert!(matches!(lp.deliver(i, p).unwrap(), osis_node::Ingested::Applied(_)), "peer {i} applies each import");
+        }
+    }
+    // peer 0 holds both and snapshots the copy's tags
+    for p in &dup {
+        lp.deliver(0, p).unwrap();
+    }
+    let snap = lp.peers[0].engine.snapshot(&copy, &ak("/t/tags")).unwrap().unwrap();
+    let pk0 = lp.packages(0).unwrap();
+    for i in [2, 3] {
+        for p in pk0.iter().filter(|p| p.id == snap) {
+            lp.deliver(i, p).unwrap();
+        }
+    }
+    let line = |e: &Engine, k: &str| e.index_digest().lines().find(|l| l.starts_with(k)).unwrap_or_default().to_string();
+    for k in ["authors ", "imports ", "carried "] {
+        assert_eq!(line(&lp.peers[2].engine, k), line(&lp.peers[3].engine, k), "{k}");
+    }
+    // the first move's imports name the author
+    let h = lp.peers[2].engine.header(&first[0]).unwrap();
+    assert!(line(&lp.peers[2].engine, "authors ").contains(&format!("{:?}", (a, h.ts))), "the least import names the author");
+    assert_eq!(states(&mut lp.peers[2].engine, &[t, copy]), states(&mut lp.peers[3].engine, &[t, copy]));
+    for i in [2, 3] {
+        open_equals_rebuild_any(&mut lp.peers[i].engine, &[t, copy], &format!("peer {i}"));
+    }
 }
