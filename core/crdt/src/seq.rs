@@ -12,6 +12,7 @@ use crate::fragment::{Encoding, Fragment, Meta, Register};
 use crate::seq_lin::{Lin, Partial, Plan};
 use crate::seq_span::{Elems, Recs, chain_cut, coalesce_in, cut_chains, elems_eq, last_of, nth, piece, split_at};
 use crate::stamp::{Dot, Source, SourceKind, Stamp, max_opt};
+use crate::state::{join_write, prune_write};
 use osis_base::Value;
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
@@ -213,27 +214,20 @@ fn prune_elem(d: &Dot, el: &mut SeqElem, text: bool, e: Option<&Stamp>, ch: &mut
 
 /// Prunes the creation, position and flag writes.
 fn prune_fields(d: &Dot, el: &mut SeqElem, e: Option<&Stamp>, ch: &mut Changes) {
-    let Some(e) = e else { return };
-    if el.created.as_ref().is_some_and(|c| c.0 < *e)
-        && let Some((s, _)) = el.created.take()
-    {
-        ch.died(&s, e.ts);
+    prune_write(&mut el.created, e, ch);
+    if let Some(e) = e {
+        el.pos.retain(|(s, _)| {
+            if *s >= *e {
+                return true;
+            }
+            // the creation write's death is reported with `created`
+            if s.dot != *d {
+                ch.died(s, e.ts);
+            }
+            false
+        });
     }
-    el.pos.retain(|(s, _)| {
-        if *s >= *e {
-            return true;
-        }
-        // the creation write's death is reported with `created`
-        if s.dot != *d {
-            ch.died(s, e.ts);
-        }
-        false
-    });
-    if el.deleted.as_ref().is_some_and(|x| x.0 < *e)
-        && let Some((s, _)) = el.deleted.take()
-    {
-        ch.died(&s, e.ts);
-    }
+    prune_write(&mut el.deleted, e, ch);
 }
 
 /// Text content lives and dies with the creation write (§5.7).
@@ -274,34 +268,13 @@ pub(crate) fn top2(s: &mut Vec<(Stamp, Anchor)>) {
     s.truncate(2);
 }
 
-/// Joins a flag or element reset (greatest stamp; the loser dies). Returns whether it rose.
-fn join_flag(s: &mut Option<(Stamp, bool)>, d: Option<(Stamp, bool)>, ch: &mut Changes) -> bool {
-    let Some(d) = d else { return false };
-    match s {
-        Some(x) if x.0 >= d.0 => {
-            if x.0 > d.0 {
-                ch.died(&d.0, x.0.ts);
-            }
-            false
-        }
-        _ => {
-            if let Some(x) = s.as_ref() {
-                ch.died(&x.0, d.0.ts);
-            }
-            *s = Some(d);
-            ch.touch();
-            true
-        }
-    }
-}
-
 /// Joins record `de` into existing record `se` under `e` (§5.7 Join).
 fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Stamp>, ch: &mut Changes) {
     if se.created.is_none() && de.created.is_some() {
         se.created = de.created;
         ch.touch();
     }
-    let raised = join_flag(&mut se.deleted, de.deleted, ch);
+    let raised = join_write(&mut se.deleted, de.deleted, ch);
     if text
         && raised
         && se.flag()
