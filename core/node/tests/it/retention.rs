@@ -1027,12 +1027,11 @@ fn late_deltas_windowed_alike_random_spec_crdt_4_8() {
     let env = |k: &str| std::env::var(k).ok().and_then(|s| s.parse::<u64>().ok());
     let (start, n) = (env("OSIS_STRAYS_START"), env("OSIS_STRAYS_SEEDS"));
     let default = start.is_none() && n.is_none();
-    let end = std::env::var_os("OSIS_STRAYS_END").is_some();
     let start = start.unwrap_or(0);
     let mut reached: std::collections::BTreeMap<&'static str, u64> = Default::default();
     osis_node::costs::take();
     for seed in start..start + n.unwrap_or(24) {
-        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| strays_history(seed, end, &mut reached))).is_err() {
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| strays_history(seed, &mut reached))).is_err() {
             panic!("strays seed {seed} failed (replay: OSIS_STRAYS_START={seed} OSIS_STRAYS_SEEDS=1)");
         }
     }
@@ -1049,20 +1048,20 @@ fn late_deltas_windowed_alike_random_spec_crdt_4_8() {
 // the replay met after another superseder past the hint; 21812, an in-order write killed a
 // write dropped without a residue (played with the state) that had dated a late body, which
 // kept that death while a replay dated it at the in-order write, and a later window rested on
-// it; 1427 (deaths compared at the end), the same with a dropped snapshot's copy; 32432, a body
+// it; 1427 (deaths at the end), the same with a dropped snapshot's copy; 32432, a body
 // superseding a copy a later held snapshot carried (that had not seen it) dropped without a
 // residue, so a replay dated the copy after the snapshot, which gained a death the records
 // lacked; 2423 (at the end), the same
 #[test]
 fn late_deltas_windowed_found_histories_spec_crdt_4_8() {
-    for (seed, end) in [(1018, false), (2392, false), (21812, false), (1427, true), (32432, false), (2423, true)] {
-        strays_history(seed, end, &mut Default::default());
+    for seed in [1018, 2392, 21812, 1427, 32432, 2423] {
+        strays_history(seed, &mut Default::default());
     }
 }
 
 /// One history of `late_deltas_windowed_alike_random_*`; adds the window spans it ran to
 /// `reached`.
-fn strays_history(seed: u64, end: bool, reached: &mut std::collections::BTreeMap<&'static str, u64>) {
+fn strays_history(seed: u64, reached: &mut std::collections::BTreeMap<&'static str, u64>) {
     use osis_crdt::PathSeg;
     osis_node::costs::take();
     let mut r = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
@@ -1178,9 +1177,8 @@ fn strays_history(seed: u64, end: bool, reached: &mut std::collections::BTreeMap
     let e = &mut lp.peers[4].engine;
     e.defer_deaths(false).unwrap();
     let ids: Vec<osis_base::CommitId> = writes.iter().map(|x| x.1).chain(snaps.iter().map(|x| x.0)).filter(|c| e.header(c).is_some()).collect();
-    // the in-order path may keep a death a whole replay dates later (issues/deaths-dropped-
-    // superseder.md: a body arriving after a stray's snapshot dropped without a residue)
-    for a in aks.iter().filter(|_| end) {
+    // the records are what a whole replay gives
+    for a in &aks {
         let have: Vec<_> = ids.iter().map(|c| e.deaths(c, &t, a).ok()).collect();
         e.replay_deaths(&t, a).unwrap();
         let want: Vec<_> = ids.iter().map(|c| e.deaths(c, &t, a).ok()).collect();
