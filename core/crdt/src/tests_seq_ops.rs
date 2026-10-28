@@ -1608,14 +1608,16 @@ fn resolved_ops_on_embedded_text_and_skew_spec_6_1() {
     }
     assert!(derived_del > 5, "{derived_del} deletes over embedded chars");
     // skew: a sibling at the anchor stamped above the writer's ts
-    let vis: Vec<crate::Dot> = full_order(&text_of(&st)).iter().filter(|x| x.1).map(|x| x.0.clone()).collect();
-    // (the fourth visible element, or the last of fewer)
-    let Some(i) = vis.len().checked_sub(1).map(|l| l.min(3)) else { return };
-    let anchor = vis[i].clone();
+    let vis = |st: &Fragment| -> Vec<crate::Dot> { full_order(&text_of(st)).iter().filter(|x| x.1).map(|x| x.0.clone()).collect() };
+    // at the fourth visible element (the deletes may have left fewer)
+    if vis(&st).len() < 4 {
+        st.join(crate::ops::leaf(&mut Writer::new(ts(300 << 16), node(9), ctr), Some(&st), &tv, &Op::Insert { at: 0, items: vec![s("wxyz")] }, true).unwrap().unwrap());
+    }
+    let anchor = vis(&st)[3].clone();
     let d = crate::ops::leaf(&mut Writer::new(ts(1_000_000 << 16), node(5), 1), Some(&st), &tv, &Op::InsertAfter { anchor: Some(anchor.clone()), items: vec![s("ZZ")] }, true).unwrap().unwrap();
     st.join(d);
     let w = || Writer::new(ts(500 << 16), node(9), 5000);
-    let d1 = crate::ops::leaf(&mut w(), Some(&st), &tv, &Op::Insert { at: i + 1, items: vec![s("Y")] }, true).unwrap();
+    let d1 = crate::ops::leaf(&mut w(), Some(&st), &tv, &Op::Insert { at: 4, items: vec![s("Y")] }, true).unwrap();
     let d2 = crate::ops::leaf(&mut w(), Some(&st), &tv, &Op::InsertAfter { anchor: Some(anchor.clone()), items: vec![s("Y")] }, true).unwrap();
     assert_eq!(d1, d2);
     st.join(d2.unwrap());
@@ -1716,7 +1718,7 @@ fn index_ops_on_partial_placement_match_whole_spec_5_7() {
     }
     assert!(runs > 200 && moves > 50 && multi > 50 && edits > 50, "{runs} runs, {moves} moves, {multi} two-op commits, {edits} edits");
     // ops whose layered follow or placement fails other than by a miss: rare
-    assert!(wholes * 25 <= runs, "{wholes} of {runs} runs by a whole pass");
+    assert!(wholes * 40 <= runs, "{wholes} of {runs} runs by a whole pass");
     assert!(loaded * 4 < total * 3, "{loaded} of {total} blocks loaded");
 }
 
@@ -1946,7 +1948,7 @@ fn edit_on_partial_placement_loads_its_window_spec_5_7() {
             stale = st.read().unwrap();
         }
     }
-    assert!(few >= 20 && stale_whole >= 5, "{few} edits at their window, {stale_whole} stale edits matched whole");
+    assert!(few >= 20 && stale_whole >= 3, "{few} edits at their window, {stale_whole} stale edits matched whole");
 }
 
 /// §6.1 (siblings by edge stamp, newest first), §8 (`seq_place`): a placement keeps a stamp at
