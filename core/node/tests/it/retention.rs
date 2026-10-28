@@ -870,3 +870,41 @@ fn late_text_delete_before_snapshot_windowed_spec_crdt_4_8() {
     e.replay_deaths(&t, &k).unwrap();
     assert_eq!(e.deaths(&i1, &t, &k).unwrap(), got);
 }
+
+// spec/crdt.md §4.8, §8: on a kept map X (never held here) writes inside A's entry and a
+// snapshot carries it; Y, later, writes there too. A's field dies at X in a replay of every body
+// (was: the replay dropped X's copy with A's entry and dated it at Y; the state at the end no
+// longer holds X's write).
+#[test]
+fn replay_dates_at_carried_write_in_held_entry_spec_crdt_4_8() {
+    use osis_crdt::PathSeg;
+    let mut lp = net(4, 87);
+    let t = new_thing(&mut lp, 0);
+    for i in [1, 2] {
+        let p = lp.peers[i].engine.tid();
+        set_edge(&mut lp.peers[0].engine, t, p, Some(edge(Role::Write)), None);
+    }
+    sync(&mut lp, 0, 2);
+    let k = ak("/t/map");
+    lp.advance(10);
+    let a = map_op(&mut lp, 0, t, vec![PathSeg::Key(s("k"))], item("a", 1));
+    sync(&mut lp, 0, 2);
+    lp.advance(10);
+    let x = map_op(&mut lp, 2, t, vec![PathSeg::Key(s("k")), PathSeg::Field(1)], Value::Int(2));
+    lp.advance(10);
+    let s1 = lp.peers[2].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.advance(10);
+    let y = map_op(&mut lp, 0, t, vec![PathSeg::Key(s("k")), PathSeg::Field(1)], Value::Int(3));
+    let mut all = packages(&mut lp, 0);
+    all.extend(packages(&mut lp, 2));
+    let mut seen = std::collections::BTreeSet::new();
+    all.retain(|p| seen.insert(p.id) && p.id != x);
+    for p in &all {
+        lp.deliver(3, p).unwrap();
+    }
+    let tx = lp.peers[2].engine.header(&x).unwrap().ts;
+    let e = &mut lp.peers[3].engine;
+    assert!(e.header(&x).is_none() && e.holds_body(&s1, &t, &k) && e.holds_body(&y, &t, &k));
+    e.replay_deaths(&t, &k).unwrap();
+    assert_eq!(e.deaths(&a, &t, &k).unwrap(), Some((tx, tx)));
+}

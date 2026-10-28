@@ -68,6 +68,14 @@ proptest! {
         unmerge_check(seed, &sink_no_seq());
     }
 
+    /// §4.8, §8: a state without a set of commits' writes (`remove_writes`) holds none of them,
+    /// and joined with those commits reads as the state: others' writes nested in their records
+    /// stay.
+    #[test]
+    fn remove_writes_rejoins_spec_4_8(seed in any::<u64>()) {
+        remove_writes_check(seed, &sink_no_seq());
+    }
+
     /// §8: a node bootstrapped from a snapshot and then editing converges with the source node;
     /// frontiers cover every commit.
     #[test]
@@ -145,6 +153,40 @@ pub(crate) fn unmerge_check(seed: u64, ty: &Ty) {
             }
             assert_eq!(fast, want, "in-place un-merge of one delta agrees");
         }
+    }
+}
+
+/// `remove_writes` over a random history of type `ty`: for random sets of its commits.
+pub(crate) fn remove_writes_check(seed: u64, ty: &Ty) {
+    let mut r = Rng(seed | 1);
+    let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
+    let mut state = Fragment::default();
+    for c in &commits {
+        state.join(frag(&c.delta));
+    }
+    for _ in 0..4 {
+        let pick: Vec<bool> = commits.iter().map(|_| r.chance(1, 2)).collect();
+        let ranges: Vec<Range> = commits.iter().zip(&pick).filter(|x| *x.1).map(|(c, _)| (source(&c.w.source), c.w.lo, c.w.hi())).collect();
+        let pred = in_ranges(&ranges);
+        let mut rest = state.clone();
+        rest.remove_writes(&pred);
+        // no stamped write of theirs is left but a sequence element's creation (an anchor)
+        if !matches!(ty, Ty::Text | Ty::List(_)) {
+            let left: Vec<_> = rest.writes().into_iter().filter(|(d, ts)| ts.is_some() && pred(d)).collect();
+            assert!(left.is_empty(), "left {left:?}");
+        }
+        // as a replay plays them: the commits (before the snapshot), then the rest; and after
+        let mut back = Fragment::default();
+        for c in commits.iter().zip(&pick).filter(|x| *x.1) {
+            back.join(frag(&c.0.delta));
+        }
+        back.join(rest.clone());
+        assert_eq!(back.read(), state.read(), "rejoined");
+        let mut after = rest.clone();
+        for c in commits.iter().zip(&pick).filter(|x| *x.1) {
+            after.join(frag(&c.0.delta));
+        }
+        assert_eq!(after.read(), state.read(), "rejoined after");
     }
 }
 

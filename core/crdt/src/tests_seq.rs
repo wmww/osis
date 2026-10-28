@@ -92,6 +92,13 @@ proptest! {
         crate::tests_life::unmerge_check(seed, &Ty::List(Box::new(inner())));
     }
 
+    /// §4.8: `remove_writes` of text and list states, rejoined with the commits, is the state.
+    #[test]
+    fn seq_remove_writes_rejoins_spec_4_8(seed in any::<u64>()) {
+        crate::tests_life::remove_writes_check(seed, &Ty::Text);
+        crate::tests_life::remove_writes_check(seed, &Ty::List(Box::new(inner())));
+    }
+
     /// §8: bootstrap from a text or list snapshot, then concurrent edits, converges.
     #[test]
     fn seq_bootstrap_then_edit_spec_8(seed in any::<u64>()) {
