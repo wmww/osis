@@ -78,7 +78,7 @@ impl Fragment {
     /// content of those it keeps only as anchors (not shown there): an import carries no
     /// element nothing it shows depends on, and no erased content (spec/permissions.md §7).
     pub fn keep_shown(&mut self, shown: &Shown) {
-        self.walk_seqs_mut(&mut |s| {
+        self.seqs_mut(&mut |s| {
             if s.elems().iter().all(|(d, e)| shown.all_kept(d, e.span, !matches!(e.content, SeqContent::None))) {
                 return;
             }
@@ -119,28 +119,7 @@ impl Fragment {
             _ => {}
         }
     }
-
-    fn walk_seqs_mut(&mut self, f: &mut dyn FnMut(&mut Seq)) {
-        match self {
-            Fragment::Seq(s) => {
-                f(s);
-                if s.elems().values().any(|e| matches!(e.content, SeqContent::Frag(_))) {
-                    for e in s.elems_mut().values_mut() {
-                        if let SeqContent::Frag(x) = &mut e.content {
-                            x.walk_seqs_mut(f);
-                        }
-                    }
-                }
-            }
-            Fragment::Struct(s) => s.fields.values_mut().for_each(|x| x.walk_seqs_mut(f)),
-            Fragment::Enum(e) => e.payloads.values_mut().for_each(|x| x.walk_seqs_mut(f)),
-            Fragment::Map(m) => m.entries.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(|x| x.walk_seqs_mut(f)),
-            Fragment::Slots(Slots { members, .. }) => members.values_mut().for_each(|x| x.walk_seqs_mut(f)),
-            _ => {}
-        }
-    }
 }
-
 
 /// A state record for `Fragment::shown`.
 struct Rec {

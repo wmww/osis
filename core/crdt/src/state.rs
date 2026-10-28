@@ -450,23 +450,24 @@ impl Fragment {
         }
     }
 
-    /// Calls `f` on every sequence at any depth, outermost first; `f` gets the records (the
-    /// cached placement is dropped).
-    fn seqs_mut(&mut self, f: &mut dyn FnMut(&mut Seq)) {
+    /// Calls `f` on every sequence at any depth, outermost first (set and bag elements are
+    /// registers). Only `f` and nested list content drop a cached placement.
+    pub(crate) fn seqs_mut(&mut self, f: &mut dyn FnMut(&mut Seq)) {
         match self {
             Fragment::Seq(s) => {
                 f(s);
-                for e in s.elems_mut().values_mut() {
-                    if let SeqContent::Frag(x) = &mut e.content {
-                        x.seqs_mut(f);
+                if s.elems().values().any(|e| matches!(e.content, SeqContent::Frag(_))) {
+                    for e in s.elems_mut().values_mut() {
+                        if let SeqContent::Frag(x) = &mut e.content {
+                            x.seqs_mut(f);
+                        }
                     }
                 }
             }
             Fragment::Struct(Struct { fields: m, .. }) | Fragment::Enum(Enum { payloads: m, .. }) => m.values_mut().for_each(|x| x.seqs_mut(f)),
             Fragment::Map(m) => m.entries.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(|x| x.seqs_mut(f)),
-            Fragment::Set(Set { elems, .. }) | Fragment::Bag(Bag { elems, .. }) => elems.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(|x| x.seqs_mut(f)),
             Fragment::Slots(s) => s.members.values_mut().for_each(|x| x.seqs_mut(f)),
-            Fragment::Register(_) => {}
+            Fragment::Register(_) | Fragment::Set(_) | Fragment::Bag(_) => {}
         }
     }
 
