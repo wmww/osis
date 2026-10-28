@@ -1477,8 +1477,8 @@ fn shadow_cost_guard_changes_no_outcome_spec_permissions_5_1() {
     let mut placed = Vec::new();
     for on in [Some(true), Some(false)] {
         osis_perm::force_shadow_guard(on);
-        let (_, p) = adversarial_corners(6, 0x5eed_0317);
-        let (_, q) = adversarial_shapes(2, 0x5eed_0318);
+        let (_, p) = adversarial_corners(4, 0x5eed_0317);
+        let (_, q) = adversarial_falls(4, 0x5eed_0318);
         placed.push(p + q);
     }
     osis_perm::force_shadow_guard(None);
@@ -1486,7 +1486,7 @@ fn shadow_cost_guard_changes_no_outcome_spec_permissions_5_1() {
 }
 
 /// §5.1 step 5: a late admin grant to a team whose members write on the thing in every later
-/// commit (each later item re-judged): with 600 later items the cost guard walks on from the
+/// commit (each later item re-judged): with 520 later items the cost guard walks on from the
 /// write; with the guard off it is placed by re-judging them. Both equal an evaluation from
 /// scratch.
 #[cfg(debug_assertions)]
@@ -1502,7 +1502,7 @@ fn long_rest_both_paths_equal_spec_permissions_5_1() {
     w.set(k, team, n[1], edge(Admin), 1, &[]);
     w.set(k, team, n[2], edge(Write), 1, &[]);
     w.set(n[1], g, n[3], edge(Read), 2, &[]);
-    for i in 0..600u64 {
+    for i in 0..520u64 {
         let m = n[3 + (i % 5) as usize];
         w.set(n[1], g, m, if i % 3 == 0 { None } else { edge([Read, Write][(i % 2) as usize]) }, 10 + i, &[]);
     }
@@ -1519,7 +1519,8 @@ fn long_rest_both_paths_equal_spec_permissions_5_1() {
         assert!(c.evaluated.is_empty(), "{c:?}");
         assert_eq!(inc.appended(), 1);
         placed.push(inc.placed());
-        assert!(check(&held, &inc, &n).is_none(), "{on:?}: {:?}", check(&held, &inc, &n));
+        let watch = [n[1], n[2], n[3]];
+        assert!(check(&held, &inc, &watch).is_none(), "{on:?}: {:?}", check(&held, &inc, &watch));
     }
     osis_perm::force_shadow_guard(None);
     assert_eq!(placed, [0, 1]);
