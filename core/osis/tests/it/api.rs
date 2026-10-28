@@ -74,7 +74,8 @@ fn typed_keys_and_paths_spec_versioning_5() {
     assert_eq!(db.get(n, ak("/note/title")).unwrap(), Some(Value::Int(3)));
     // a typed write is validated against the writer's schema
     let mut w = db.write();
-    assert!(matches!(w.at(n, notes::TASKS).path(p![0, task::DONE]).set(&s("no")), Err(Error::Type { .. })));
+    let e = w.at(n, notes::TASKS).path(p![0, task::DONE]).set(&s("no")).unwrap_err();
+    assert!(matches!(&e, Error::Type { path, .. } if *path == p![0, task::DONE]), "{e}: the path from the aspect's root");
 }
 
 // notes/api.md Keys: a schema registered at run time types `Key` reads (reader defaults) and
