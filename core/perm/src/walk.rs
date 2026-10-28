@@ -638,7 +638,11 @@ impl Walked {
             let own = explicit && restores && View::new(&input.owners, &at, Some(p.ts)).reach_backward(&o.member).contains(&c.author);
             self.set_edge(key, new);
             at.set(o.member, o.target, new);
-            self.record_change(p, key, old, new, Some(id), explicit.then(|| (c.frontier.clone(), own.then_some(c.author))));
+            if let Some((base, mine, _)) = self.record_change(p, key, old, new, Some(id), explicit.then(|| c.frontier.clone()))
+                && own
+            {
+                self.keep_own(key, c.author, base, &mine);
+            }
         }
         let (log, hist) = (std::mem::replace(&mut self.log, log), std::mem::replace(&mut self.history, hist));
         let (nl, nh) = (log.len(), hist.len());
@@ -946,13 +950,13 @@ impl Walked {
 
     /// The records of a write at `point` by `by` that set edge `key` from `old` (`set_alive`) to
     /// `edge`, the edge itself set: its setter and history change, and the standings kept for
-    /// the next explicit write. `explicit`: an explicit write's frontier and its author when it
-    /// demoted itself (§5.1 step 4); it takes the kept standings and returns them (the base it
-    /// restores, those of single nodes) and whether it lowered the edge as restored.
-    fn record_change(&mut self, point: Point, key: (Tid, Tid), old: Option<Edge>, edge: Option<Edge>, by: Option<WriteId>, explicit: Option<(Option<Arc<Frontier>>, Option<Tid>)>) -> Option<(Option<Edge>, BTreeMap<Tid, Edge>, bool)> {
+    /// the next explicit write. `explicit`: an explicit write's frontier (§5.1 step 4); it
+    /// takes the kept standings and returns them (the base it restores, those of single nodes)
+    /// and whether it lowered the edge as restored (then `keep_own`, after its audit).
+    fn record_change(&mut self, point: Point, key: (Tid, Tid), old: Option<Edge>, edge: Option<Edge>, by: Option<WriteId>, explicit: Option<Option<Arc<Frontier>>>) -> Option<(Option<Edge>, BTreeMap<Tid, Edge>, bool)> {
         let (member, target) = key;
         self.set_setter(key, by);
-        let Some((frontier, own)) = explicit else {
+        let Some(frontier) = explicit else {
             // No audit (self-removal, invite grant, epoch start, ledger end without a frontier):
             // everyone below keeps the standing it had, for the next explicit write.
             self.history.push(Change { point, member, target, edge, explicit: None, audited: None });
@@ -971,12 +975,16 @@ impl Walked {
         let lowered = exceeds(restored, edge, point.ts);
         let audited = restored.filter(|_| lowered).map(|r| r.role);
         self.history.push(Change { point, member, target, edge, explicit: Some(frontier), audited });
-        // the author demoted itself: its own standing is kept for the next explicit write
-        if let (Some(a), Some(b)) = (own, base) {
-            self.log.push(Undo::PriorNode(key, None));
-            self.prior_node.entry(key).or_default().insert(a, join(mine.get(&a).copied(), b));
-        }
         Some((base, mine, lowered))
+    }
+
+    /// After an explicit write on `key` by `author` that demoted itself (`record_change`
+    /// returned `base` and `mine`): its own standing is kept for the next explicit write.
+    fn keep_own(&mut self, key: (Tid, Tid), author: Tid, base: Option<Edge>, mine: &BTreeMap<Tid, Edge>) {
+        if let Some(b) = base {
+            self.log.push(Undo::PriorNode(key, self.prior_node.get(&key).cloned()));
+            self.prior_node.entry(key).or_default().insert(author, join(mine.get(&author).copied(), b));
+        }
     }
 
     /// The items from `i` on that may read what setting edges `keys` changes (`insert`), with
@@ -1645,11 +1653,14 @@ impl<'a> Pass<'a> {
         let restores = old.is_some() || self.w.prior.contains_key(&key);
         let own = auditor.and_then(|a| a.author).filter(|a| restores && self.view(point.ts).reach_backward(&member).contains(a));
         self.set_tracked(member, target, edge, point.ts);
-        let explicit = auditor.map(|a| (a.frontier_arc.clone(), own));
-        match (auditor, self.w.record_change(point, key, old, edge, by, explicit)) {
-            (Some(aud), Some((base, mine, true))) => self.audit_fall(key, base, &mine, point.ts, aud),
-            _ => false,
+        let (Some(aud), Some((base, mine, lowered))) = (auditor, self.w.record_change(point, key, old, edge, by, auditor.map(|a| a.frontier_arc.clone()))) else {
+            return false;
+        };
+        let grew = lowered && self.audit_fall(key, base, &mine, point.ts, aud);
+        if let Some(a) = own {
+            self.w.keep_own(key, a, base, &mine);
         }
+        grew
     }
 
     fn record(&mut self, id: WriteId, a: Applied) {
