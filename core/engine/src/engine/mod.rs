@@ -1115,6 +1115,7 @@ impl Engine {
         fresh.schemas = std::mem::take(&mut self.core.schemas);
         fresh.skip_writer_rules = self.core.skip_writer_rules;
         fresh.walk_cache_min = self.core.walk_cache_min;
+        fresh.sync_records = self.core.sync_records;
         #[cfg(test)]
         {
             fresh.check_ingest = self.core.check_ingest;

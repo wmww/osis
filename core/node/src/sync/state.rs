@@ -1081,6 +1081,19 @@ mod tests {
         assert!(left.is_empty(), "the undecodable record is deleted");
     }
 
+    // spec: none (engine/sync seam): node-sync's records stay installed across a reload (a
+    // forget reloads; a flow or forget after it still writes and drops sync records).
+    #[test]
+    fn sync_records_survive_reload() {
+        let mut lp = crate::local_peer::LocalPeer::new(1, 963, osis_base::WallMs(1_700_000_000_000)).unwrap();
+        let e = &mut lp.peers[0].engine;
+        e.set_sync_records(&Records);
+        e.reload_index().unwrap();
+        assert!(e.core.sync_records.is_some());
+        e.rebuild_index().unwrap();
+        assert!(e.core.sync_records.is_some());
+    }
+
     // spec/sync.md §5: a followed label keeps the key actor it follows for when an inbox
     // payload names the same label first (its static entry is still tried).
     #[test]
