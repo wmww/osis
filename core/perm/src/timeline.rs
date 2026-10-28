@@ -109,7 +109,7 @@ pub(crate) struct Kept {
 
 impl Kept {
     fn of(tl: &mut Timeline) -> Kept {
-        let first_held = std::mem::take(&mut *tl.memo.first_held.lock().unwrap_or_else(|e| e.into_inner()));
+        let first_held = std::mem::take(tl.memo.first_held.get_mut().unwrap_or_else(|e| e.into_inner()));
         Kept { checkpoints: std::mem::take(&mut tl.checkpoints), first_held }
     }
 
@@ -295,12 +295,7 @@ impl Timeline {
             self.input.append(std::slice::from_ref(c));
             let n0 = self.walked.history.len();
             let h = self.walked.rest.marks.get(self.items.place(c)).map_or(n0, |m| m.1);
-            let (base, pos) = self.kept_before(h);
-            let mut before = (*base).clone();
-            drop(base);
-            for x in self.walked.history.iter().take(h).skip(pos) {
-                before.set(x.member, x.target, x.edge);
-            }
+            let before = self.edges_before(h);
             let pl = self.walked.insert(&self.input, &self.items, &self.dropped, &self.epoch_starts, c, before, &first, &fresh);
             match pl {
                 walk::Placement::Idle => {
@@ -368,9 +363,7 @@ impl Timeline {
             self.input.owners.insert(*t, r);
         }
         // the answers `extend` keeps: those found, on other things
-        let mut first_held = std::mem::take(&mut *self.memo.first_held.lock().unwrap_or_else(|e| e.into_inner()));
-        first_held.retain(|(_, t, _), v| v.is_some() && !new.contains(t));
-        self.memo = Memo { first_held: Mutex::new(first_held), ..Memo::default() };
+        self.reset_memo(|(_, t, _), v| v.is_some() && !new.contains(t));
         self.placed = 0;
         Ok(self)
     }
@@ -383,13 +376,17 @@ impl Timeline {
         })
     }
 
-    /// The newest kept edge state at or before history change `h`, and its change index.
-    fn kept_before(&self, h: usize) -> (Arc<Edges>, usize) {
+    /// The edge state before history change `h`, from the newest kept state at or before it.
+    fn edges_before(&self, h: usize) -> Edges {
         let k = self.checkpoints.partition_point(|c| c.0 <= h);
-        match k.checked_sub(1).and_then(|k| self.checkpoints.get(k)) {
-            Some((i, e)) => (e.clone(), *i),
-            None => (Arc::new(self.walked.initial.clone()), 0),
+        let (mut e, pos) = match k.checked_sub(1).and_then(|k| self.checkpoints.get(k)) {
+            Some((i, e)) => ((**e).clone(), *i),
+            None => (self.walked.initial.clone(), 0),
+        };
+        for x in self.walked.history.iter().take(h).skip(pos) {
+            e.set(x.member, x.target, x.edge);
         }
+        e
     }
 
     /// `n` changes were inserted into the history at change `h` (point `p`) by
@@ -430,9 +427,13 @@ impl Timeline {
             }
             debug_assert!(cps.next().is_none(), "kept states past the history");
         }
-        let fh = std::mem::take(&mut *self.memo.first_held.lock().unwrap_or_else(|e| e.into_inner()));
-        let mut fh = fh;
-        fh.retain(|_, v| v.is_some_and(|q| q.is_none_or(|q| q < p)));
+        self.reset_memo(|_, v| v.is_some_and(|q| q.is_none_or(|q| q < p)));
+    }
+
+    /// Drops the memoized answers but the `first_held` ones `keep` keeps.
+    fn reset_memo(&mut self, keep: impl FnMut(&(Tid, Tid, Role), &mut Option<Option<Point>>) -> bool) {
+        let mut fh = std::mem::take(self.memo.first_held.get_mut().unwrap_or_else(|e| e.into_inner()));
+        fh.retain(keep);
         self.memo = Memo { first_held: Mutex::new(fh), ..Memo::default() };
     }
 
@@ -508,12 +509,16 @@ impl Timeline {
         edges.members(thing).filter(|(_, e)| e.alive_at(at.ts)).map(|(m, e)| (*m, *e)).collect()
     }
 
-    /// Standing (class and effective role) of `node` on `thing`.
-    pub fn standing(&self, node: &Tid, thing: &Tid, at: At) -> Standing {
+    /// `f` over the view at `at` and `node`'s roles there.
+    fn with_roles<R>(&self, node: &Tid, at: At, f: impl FnOnce(&View<'_>, &BTreeMap<Tid, Role>) -> R) -> R {
         let edges = self.edges_at(at.point);
         let view = View::at(&self.input.owners, &edges, at.ts);
-        let best = view.roles_from(node);
-        view.standing(node, &best, thing)
+        f(&view, &view.roles_from(node))
+    }
+
+    /// Standing (class and effective role) of `node` on `thing`.
+    pub fn standing(&self, node: &Tid, thing: &Tid, at: At) -> Standing {
+        self.with_roles(node, at, |view, best| view.standing(node, best, thing))
     }
 
     /// Effective role (§1).
@@ -539,10 +544,7 @@ impl Timeline {
 
     /// Effective invite (§2).
     pub fn invite(&self, node: &Tid, thing: &Tid, at: At) -> Option<Role> {
-        let edges = self.edges_at(at.point);
-        let view = View::at(&self.input.owners, &edges, at.ts);
-        let best = view.roles_from(node);
-        view.invite(&best, thing)
+        self.with_roles(node, at, |view, best| view.invite(best, thing))
     }
 
     /// Effective roles of `node` on every thing it reaches.
