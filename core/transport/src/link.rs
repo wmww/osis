@@ -36,11 +36,6 @@ impl LinkTx {
         self.queued.fetch_add(n, Ordering::AcqRel);
         self.tx.send(bytes).is_ok()
     }
-
-    /// Bytes queued and not yet taken by the transport.
-    pub fn queued(&self) -> usize {
-        self.queued.load(Ordering::Acquire)
-    }
 }
 
 /// The receiving end of a link: `None` once the peer finished or the stream failed.
@@ -50,11 +45,6 @@ pub struct LinkRx(mpsc::Receiver<Vec<u8>>);
 impl LinkRx {
     pub async fn recv(&mut self) -> Option<Vec<u8>> {
         self.0.recv().await
-    }
-
-    /// A piece already read, if any.
-    pub fn try_recv(&mut self) -> Option<Vec<u8>> {
-        self.0.try_recv().ok()
     }
 }
 
@@ -125,13 +115,9 @@ pub async fn dial<T: Transport>(t: &T, addr: &Address, secret: Option<&StaticSec
 }
 
 /// Accepts connections on `l` and hands each stream they open to `out` as a session, until
-/// `out` or the listener closes. A connection with no live session for `idle` is closed.
-pub async fn serve<L: Listener>(l: L, idle: Duration, wait: Duration, out: mpsc::Sender<Link>) {
-    serve_max(l, idle, wait, out, usize::MAX).await
-}
-
-/// `serve` with at most `max` connections open at once; more are closed on arrival.
-pub async fn serve_max<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: mpsc::Sender<Link>, max: usize) {
+/// `out` or the listener closes. At most `max` connections are open at once (more are closed on
+/// arrival); one with no live session for `idle` is closed.
+pub async fn serve<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: mpsc::Sender<Link>, max: usize) {
     let open = Arc::new(AtomicUsize::new(0));
     while let Ok(c) = l.accept().await {
         if out.is_closed() {
@@ -181,7 +167,7 @@ mod tests {
         let l = net.endpoint("s").listen(ListenConfig { url: "mem://s".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap();
         let addr = l.address();
         let (out, mut incoming) = mpsc::channel(4);
-        tokio::spawn(serve(l, W, W, out));
+        tokio::spawn(serve(l, W, W, out, usize::MAX));
         let own = StaticSecret::from_bytes([2; 32]);
         let mut a = dial(&net.endpoint("c"), &addr, Some(&own), W).await.unwrap();
         assert_eq!(a.peer_key, addr.key);
@@ -204,6 +190,6 @@ mod tests {
         let t = LinkTx { tx, queued: Arc::new(AtomicUsize::new(0)) };
         assert!(t.send(vec![0; 100], 10));
         assert!(!t.send(vec![0; 1], 10));
-        assert_eq!(t.queued(), 100);
+        assert_eq!(t.queued.load(Ordering::Acquire), 100);
     }
 }
