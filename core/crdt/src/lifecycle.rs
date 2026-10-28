@@ -155,41 +155,35 @@ impl Fragment {
     /// another's (a register, case, reset, `W`, flag or non-creation position write of theirs).
     /// The content of a record they created goes whole either way, so it is not looked into.
     pub fn dots_supersede(&self, pred: &dyn Fn(&Dot) -> bool) -> bool {
-        let a = |s: &Stamp| pred(s.dot.owner());
-        let sub = |f: &Fragment| f.dots_supersede(pred);
-        if self.meta().is_some_and(|m| m.reset.as_ref().is_some_and(a) || m.w.as_ref().is_some_and(a)) {
-            return true;
-        }
-        let reg = |r: &crate::fragment::Register| r.reset.as_ref().is_some_and(a) || r.write.as_ref().is_some_and(|w| a(&w.stamp));
-        match self {
-            Fragment::Register(r) => reg(r),
-            Fragment::Slots(s) => s.reg.as_ref().is_some_and(reg) || s.members.values().any(sub),
-            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => {
-                elems.iter().any(|(d, e)| e.reset.as_ref().is_some_and(a) || (!pred(d.owner()) && e.frag.as_deref().is_some_and(sub)))
-            }
-            Fragment::Struct(s) => s.fields.values().any(sub),
-            Fragment::Enum(e) => e.case.as_ref().is_some_and(|c| a(&c.stamp)) || e.payloads.values().any(sub),
-            Fragment::Map(m) => m.entries.iter().any(|(d, e)| e.reset.as_ref().is_some_and(a) || (!pred(d.owner()) && e.frag.as_deref().is_some_and(sub))),
-            Fragment::Seq(s) => seq::dots_supersede(s, pred),
-        }
+        self.dots_in(pred, false)
     }
 
     /// Whether the fragment holds a write or record `remove_dots(pred)` would remove or change.
     pub fn holds_dots(&self, pred: &dyn Fn(&Dot) -> bool) -> bool {
+        self.dots_in(pred, true)
+    }
+
+    /// `holds_dots` with `holds`, else `dots_supersede`.
+    pub(crate) fn dots_in(&self, pred: &dyn Fn(&Dot) -> bool, holds: bool) -> bool {
         let a = |s: &Stamp| pred(s.dot.owner());
-        let sub = |f: &Fragment| f.holds_dots(pred);
+        let sub = |f: &Fragment| f.dots_in(pred, holds);
         if self.meta().is_some_and(|m| m.reset.as_ref().is_some_and(a) || m.w.as_ref().is_some_and(a)) {
             return true;
         }
-        let reg = |r: &crate::fragment::Register| r.reset.as_ref().is_some_and(a) || r.write.as_ref().is_some_and(|w| a(&w.stamp));
+        let reg = |r: &Register| r.reset.as_ref().is_some_and(a) || r.write.as_ref().is_some_and(|w| a(&w.stamp));
+        // an element or entry: one they created, its reset, its content
+        let rec = |d: &Dot, reset: Option<&Stamp>, f: Option<&Fragment>| {
+            let theirs = pred(d.owner());
+            (holds && theirs) || reset.is_some_and(a) || ((holds || !theirs) && f.is_some_and(sub))
+        };
         match self {
             Fragment::Register(r) => reg(r),
             Fragment::Slots(s) => s.reg.as_ref().is_some_and(reg) || s.members.values().any(sub),
-            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.iter().any(|(d, e)| pred(d.owner()) || e.reset.as_ref().is_some_and(a) || e.frag.as_deref().is_some_and(sub)),
+            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.iter().any(|(d, e)| rec(d, e.reset.as_ref(), e.frag.as_deref())),
             Fragment::Struct(s) => s.fields.values().any(sub),
             Fragment::Enum(e) => e.case.as_ref().is_some_and(|c| a(&c.stamp)) || e.payloads.values().any(sub),
-            Fragment::Map(m) => m.entries.iter().any(|(d, e)| pred(d.owner()) || e.reset.as_ref().is_some_and(a) || e.frag.as_deref().is_some_and(sub)),
-            Fragment::Seq(s) => seq::holds_dots(s, pred),
+            Fragment::Map(m) => m.entries.iter().any(|(d, e)| rec(d, e.reset.as_ref(), e.frag.as_deref())),
+            Fragment::Seq(s) => seq::dots_in(s, pred, holds),
         }
     }
 }

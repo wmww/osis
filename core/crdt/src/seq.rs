@@ -882,23 +882,16 @@ pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, nested: bool
     elems.retain(|d, el| el.keeps(d));
 }
 
-/// `Fragment::dots_supersede` of a sequence: a flag or a position write (other than an element's
-/// own creation, which `remove_dots` keeps) of theirs, or one inside another's list element.
-pub(crate) fn dots_supersede(s: &Seq, pred: &dyn Fn(&Dot) -> bool) -> bool {
+/// `Fragment::dots_in` of a sequence: a flag or a position write of theirs (other than an
+/// element's own creation, which `remove_dots` keeps), or one inside a list element; with
+/// `holds` also content of an element they created, else not inside such an element.
+pub(crate) fn dots_in(s: &Seq, pred: &dyn Fn(&Dot) -> bool, holds: bool) -> bool {
     s.elems().iter().any(|(d, el)| {
-        el.deleted.as_ref().is_some_and(|x| pred(x.0.dot.owner()))
-            || el.pos.iter().any(|p| p.0.dot != *d && pred(p.0.dot.owner()))
-            || (!pred(d.owner()) && matches!(&el.content, SeqContent::Frag(f) if f.dots_supersede(pred)))
-    })
-}
-
-/// `Fragment::holds_dots` of a sequence.
-pub(crate) fn holds_dots(s: &Seq, pred: &dyn Fn(&Dot) -> bool) -> bool {
-    s.elems().iter().any(|(d, el)| {
-        (pred(d.owner()) && !matches!(el.content, SeqContent::None))
+        let theirs = pred(d.owner());
+        (holds && theirs && !matches!(el.content, SeqContent::None))
             || el.deleted.as_ref().is_some_and(|x| pred(x.0.dot.owner()))
             || el.pos.iter().any(|p| p.0.dot != *d && pred(p.0.dot.owner()))
-            || matches!(&el.content, SeqContent::Frag(f) if f.holds_dots(pred))
+            || ((holds || !theirs) && matches!(&el.content, SeqContent::Frag(f) if f.dots_in(pred, holds)))
     })
 }
 
