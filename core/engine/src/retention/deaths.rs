@@ -78,22 +78,20 @@ pub(super) fn rows_from(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, from: Ts) -> Result
     let p = records::aspect_key(&[], tid, ak);
     let t = tx.txn.index(LAST_DEATHS)?;
     let end = [&p[..], &[0xff; 49]].concat();
-    let mut start = [&p[..], &from.to_u64().to_be_bytes()].concat();
-    let mut out = Vec::new();
-    loop {
-        let rows = tx.txn.table_range(t, &start, Some(&end), 256)?;
-        let n = rows.len();
-        for (k, _) in rows {
-            let Some(r) = k.get(p.len()..).filter(|r| r.len() == 48) else { return Ok(None) };
-            let mut r = Rd::new(r);
-            let (Some(last), Some(ts)) = (Ts::from_u64(r.u64()?), Ts::from_u64(r.u64()?)) else { return Ok(None) };
-            out.push((last, ts, CommitId(r.arr()?)));
-            start = [&k[..], &[0]].concat();
-        }
-        if n < 256 {
-            return Ok(Some(out));
-        }
+    let start = [&p[..], &from.to_u64().to_be_bytes()].concat();
+    let mut keys = Vec::new();
+    crate::engine::scan_table(&mut tx.txn, t, &start, Some(&end), |k, _| {
+        keys.push(k);
+        Ok(())
+    })?;
+    let mut out = Vec::with_capacity(keys.len());
+    for k in keys {
+        let Some(r) = k.get(p.len()..).filter(|r| r.len() == 48) else { return Ok(None) };
+        let mut r = Rd::new(r);
+        let (Some(last), Some(ts)) = (Ts::from_u64(r.u64()?), Ts::from_u64(r.u64()?)) else { return Ok(None) };
+        out.push((last, ts, CommitId(r.arr()?)));
     }
+    Ok(Some(out))
 }
 
 /// The rows of `(tid, ak)` from its held bounded bodies' death records.
@@ -115,15 +113,7 @@ fn clear_rows(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, shred: Shred) -> Result<()> {
     let p = records::aspect_key(&[], tid, ak);
     let t = tx.txn.index(LAST_DEATHS)?;
     let end = [&p[..], &[0xff; 49]].concat();
-    loop {
-        let rows = tx.txn.table_range(t, &p, Some(&end), 256)?;
-        if rows.is_empty() {
-            return Ok(());
-        }
-        for (k, _) in rows {
-            tx.txn.table_remove(t, &k, shred)?;
-        }
-    }
+    crate::engine::clear_table(&mut tx.txn, t, &p, &end, shred)
 }
 
 /// Rewrites the rows of `(tid, ak)` from its death records (one did not parse).

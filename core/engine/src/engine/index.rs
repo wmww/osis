@@ -12,7 +12,7 @@
 //! re-judge).
 
 use super::journal::{JMap, JSet, JSetMap};
-use super::{Core, Meta, Tx, records};
+use super::{Core, Meta, Tx, records, scan_table};
 use osis_store::Transaction;
 use crate::error::{Error, Result};
 use crate::events::Origin;
@@ -450,20 +450,13 @@ pub(crate) fn load_edges(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::ap
     let t = tx.txn.index(EDGES)?;
     let lim = |n: usize| osis_base::Limits { max_depth: 2 * osis_base::format::MAX_OBJECT_DEPTH, max_bytes: n };
     let mut out = BTreeMap::new();
-    let mut from = Vec::new();
-    loop {
-        let got = tx.txn.table_range(t, &from, None, 256)?;
-        let n = got.len();
-        for (k, v) in got {
-            from = [k.as_slice(), &[0]].concat();
-            let id = CommitId(k.as_slice().try_into().map_err(|_| Error::Corrupt("edges row key"))?);
-            let v = osis_base::decode(&v, &lim(v.len())).map_err(|_| Error::Corrupt("edges row"))?;
-            out.insert(id, Rec::from(&v).ok_or(Error::Corrupt("edges row"))?);
-        }
-        if n < 256 {
-            return Ok(out);
-        }
-    }
+    scan_table(&mut tx.txn, t, &[], None, |k, v| {
+        let id = CommitId(k.as_slice().try_into().map_err(|_| Error::Corrupt("edges row key"))?);
+        let v = osis_base::decode(&v, &lim(v.len())).map_err(|_| Error::Corrupt("edges row"))?;
+        out.insert(id, Rec::from(&v).ok_or(Error::Corrupt("edges row"))?);
+        Ok(())
+    })?;
+    Ok(out)
 }
 
 /// What of a commit its record holds ahead of its blob (version 1): received, origin, dropped
@@ -693,18 +686,11 @@ pub(crate) fn invalidate(tx: &mut Tx<'_>) -> Result<()> {
 fn scan<T: Rec>(tx: &mut Tx<'_>, name: &[u8]) -> Result<Vec<(T, Vec<u8>)>> {
     let t = tx.txn.index(name)?;
     let mut out = Vec::new();
-    let mut from = Vec::new();
-    loop {
-        let rows = tx.txn.table_range(t, &from, None, 256)?;
-        let n = rows.len();
-        for (k, v) in rows {
-            out.push((dec(&k)?, v));
-            from = [k.as_slice(), &[0]].concat();
-        }
-        if n < 256 {
-            return Ok(out);
-        }
-    }
+    scan_table(&mut tx.txn, t, &[], None, |k, v| {
+        out.push((dec(&k)?, v));
+        Ok(())
+    })?;
+    Ok(out)
 }
 
 /// What the persisted index judged, read before a rebuild replaces it: per commit its parts'
@@ -716,19 +702,13 @@ pub(crate) fn old_judgments(tx: &mut Tx<'_>) -> Option<OldJudgments> {
     // this layout, else an earlier build's part bytes alone
     for (name, meta) in [(METAS, true), (PARTS, false)] {
         let t = tx.txn.index(name).ok()?;
-        let mut from = Vec::new();
-        loop {
-            let got = tx.txn.table_range(t, &from, None, 256).ok()?;
-            let n = got.len();
-            for (k, v) in got {
-                from = [k.as_slice(), &[0]].concat();
-                let p = if meta { parse_meta_row(&v).ok()?.0 } else { v.as_slice() };
-                parts.insert(CommitId(k.as_slice().try_into().ok()?), p.iter().map(|p| p & 1 != 0).collect());
-            }
-            if n < 256 {
-                break;
-            }
-        }
+        scan_table(&mut tx.txn, t, &[], None, |k, v| {
+            let p = if meta { parse_meta_row(&v)?.0 } else { v.as_slice() };
+            let id = CommitId(k.as_slice().try_into().map_err(|_| Error::Corrupt("meta row key"))?);
+            parts.insert(id, p.iter().map(|p| p & 1 != 0).collect());
+            Ok(())
+        })
+        .ok()?;
         if !parts.is_empty() {
             break;
         }
@@ -760,18 +740,10 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     let _ms = crate::costs::span("open: metas");
     let mut rows: BTreeMap<CommitId, Vec<u8>> = BTreeMap::new();
     let t = tx.txn.index(METAS)?;
-    let mut from = Vec::new();
-    loop {
-        let got = tx.txn.table_range(t, &from, None, 256)?;
-        let n = got.len();
-        for (k, v) in got {
-            from = [k.as_slice(), &[0]].concat();
-            rows.insert(CommitId(k.as_slice().try_into().map_err(|_| Error::Corrupt("meta row key"))?), v);
-        }
-        if n < 256 {
-            break;
-        }
-    }
+    scan_table(&mut tx.txn, t, &[], None, |k, v| {
+        rows.insert(CommitId(k.as_slice().try_into().map_err(|_| Error::Corrupt("meta row key"))?), v);
+        Ok(())
+    })?;
     let fault = tx.core.header_fault.clone();
     for (id, head, bytes) in recs {
         let row = rows.remove(&id).ok_or(Error::Corrupt("meta row missing"))?;
