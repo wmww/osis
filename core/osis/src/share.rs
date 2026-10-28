@@ -4,7 +4,7 @@
 //! carries out; calls that wait for another node are `async` (runtime-agnostic futures).
 
 use crate::error::{Error, Result};
-use crate::handle::{LINKS, MadeLink, Osis, save_servers};
+use crate::handle::{LINKS, Locked, MadeLink, Osis, save_servers};
 use crate::watch::{Delivery, Filter, Subscription};
 use crate::write::Place;
 use osis_base::{Ak, Role, Tid, Value, WallMs};
@@ -78,17 +78,26 @@ pub struct LinkInfo {
     pub single_use: bool,
 }
 
+fn bad(what: &str) -> impl Fn(osis_label::Error) -> Error + '_ {
+    move |e| Error::Invalid(format!("{what}: {e}"))
+}
+
+/// A secret-bearing text form: checked when parsed, redacted in `Debug`.
 macro_rules! text_type {
-    ($(#[$m:meta])* $n:ident, $check:expr) => {
+    ($(#[$m:meta])* $n:ident, $inner:ty, $parse:path, $what:literal) => {
         $(#[$m])*
         #[derive(Clone, PartialEq, Eq)]
         pub struct $n(pub(crate) String);
+        impl $n {
+            pub(crate) fn parse(&self) -> Result<$inner> {
+                $parse(&self.0).map_err(bad($what))
+            }
+        }
         impl std::str::FromStr for $n {
             type Err = Error;
             fn from_str(s: &str) -> Result<$n> {
                 let s = s.trim();
-                let check: fn(&str) -> Result<()> = $check;
-                check(s)?;
+                $parse(s).map_err(bad($what))?;
                 Ok($n(s.to_string()))
             }
         }
@@ -97,52 +106,27 @@ macro_rules! text_type {
                 f.write_str(&self.0)
             }
         }
-    };
-}
-
-fn bad(what: &str) -> impl Fn(osis_label::Error) -> Error + '_ {
-    move |e| Error::Invalid(format!("{what}: {e}"))
-}
-
-text_type!(
-    /// A share link (`osis://link/...`): holds the link key's seed.
-    ShareLink,
-    |s| osis_label::ShareLink::from_text(s).map(|_| ()).map_err(bad("link"))
-);
-text_type!(
-    /// A contact card: a read link to the person's profile (spec/sync.md §3).
-    ContactCard,
-    |s| osis_label::ShareLink::from_text(s).map(|_| ()).map_err(bad("contact card"))
-);
-text_type!(
-    /// A recovery card (`osis://card/...`): holds the recovery seed; show or store it, osis
-    /// keeps none of it.
-    RecoveryCard,
-    |s| osis_label::RecoveryCard::from_text(s).map(|_| ()).map_err(bad("recovery card"))
-);
-
-macro_rules! redacted {
-    ($($n:ident),*) => {$(
         impl std::fmt::Debug for $n {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.write_str(concat!(stringify!($n), "(..)"))
             }
         }
-    )*};
-}
-redacted!(ShareLink, ContactCard, RecoveryCard);
-
-impl ShareLink {
-    pub(crate) fn parse(&self) -> Result<osis_label::ShareLink> {
-        osis_label::ShareLink::from_text(&self.0).map_err(bad("link"))
-    }
+    };
 }
 
-impl RecoveryCard {
-    pub(crate) fn parse(&self) -> Result<osis_label::RecoveryCard> {
-        osis_label::RecoveryCard::from_text(&self.0).map_err(bad("recovery card"))
-    }
-}
+text_type!(
+    /// A share link (`osis://link/...`): holds the link key's seed.
+    ShareLink, osis_label::ShareLink, osis_label::ShareLink::from_text, "link"
+);
+text_type!(
+    /// A contact card: a read link to the person's profile (spec/sync.md §3).
+    ContactCard, osis_label::ShareLink, osis_label::ShareLink::from_text, "contact card"
+);
+text_type!(
+    /// A recovery card (`osis://card/...`): holds the recovery seed; show or store it, osis
+    /// keeps none of it.
+    RecoveryCard, osis_label::RecoveryCard, osis_label::RecoveryCard::from_text, "recovery card"
+);
 
 /// A server: transport URL plus its key (`<url>#<base64url key>`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -435,7 +419,7 @@ impl Osis {
     /// `revoke_link`.
     pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<ShareLink> {
         let t = self.resolved(target);
-        let servers: Vec<osis_label::Address> = self.servers()?.into_iter().map(|s| s.0).collect();
+        let servers = self.server_addrs();
         let me = self.me();
         if servers.is_empty() && !opts.direct {
             return Err(Error::Invalid("this database has no servers: a link reaches nobody unless it is direct (LinkOpts.direct)".into()));
@@ -447,8 +431,8 @@ impl Osis {
         let l = osis_node::Identity::from_seed(link.seed.clone()).tid();
         self.locked(|x| {
             x.links.insert(link.k, MadeLink { l, target: t, single_use: opts.single_use, finalized: false, direct: opts.direct, ended: false });
-        });
-        self.save_links()?;
+            save_links(x)
+        })?;
         // K joining the target may rotate this device's reach (the target no longer qualifies,
         // spec/permissions.md §4): the link carries the key it listens with after that
         self.carry(done)?;
@@ -560,7 +544,7 @@ impl Osis {
     /// Finalizes single-use links whose redemption removed the link key (spec/permissions.md
     /// §9), on a roster change of K and for every link at open (`all`). The trigger is K's roster
     /// itself, so a restart re-arms it; `finalized` is persisted.
-    pub(crate) fn upkeep_links(&self, l: &mut crate::handle::Locked, changed: &BTreeSet<Tid>, all: bool) {
+    pub(crate) fn upkeep_links(&self, l: &mut Locked, changed: &BTreeSet<Tid>, all: bool) {
         let me = self.me();
         let due: Vec<(Tid, Tid)> = l.links.iter().filter(|(k, m)| m.single_use && !m.finalized && (all || changed.contains(k))).map(|(k, m)| (*k, m.l)).collect();
         let mut any = false;
@@ -584,41 +568,24 @@ impl Osis {
         // dialable key: rotate it (spec/permissions.md §9), unless a single-use link ended by its
         // redemption (the one who could use it is now a member and keeps the direct path)
         let now = l.engine().now();
-        let ended: Vec<Tid> = l
-            .links
-            .iter()
-            .filter(|(_, m)| m.direct && !m.ended)
-            .map(|(k, m)| (*k, m.l))
-            .collect::<Vec<_>>()
-            .into_iter()
-            .filter(|(k, lk)| l.engine().roster(k).get(lk).is_none_or(|e| e.until.is_some_and(|u| u <= now)))
-            .map(|(k, _)| k)
-            .collect();
-        let rotate = ended.iter().any(|k| l.links.get(k).is_some_and(|m| !(m.single_use && m.finalized)));
-        if rotate {
-            let acts = l.sync.rotate_reach();
-            self.inner.net.apply(acts);
-        }
-        if !ended.is_empty() {
-            for k in ended {
+        let direct: Vec<(Tid, MadeLink)> = l.links.iter().filter(|(_, m)| m.direct && !m.ended).map(|(k, m)| (*k, *m)).collect();
+        let mut rotate = false;
+        for (k, m) in direct {
+            if l.engine().roster(&k).get(&m.l).is_none_or(|e| e.until.is_some_and(|u| u <= now)) {
+                rotate |= !(m.single_use && m.finalized);
                 if let Some(m) = l.links.get_mut(&k) {
                     m.ended = true;
                     any = true;
                 }
             }
         }
-        if any {
-            let v = osis_base::cbor::encode(&links_value(&l.links));
-            if let Err(e) = l.engine().set_app_record(LINKS, &v) {
-                l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::BadInput, tids: Vec::new(), commit: None, peer: None, detail: format!("links record: {e}") });
-            }
+        if rotate {
+            let acts = l.sync.rotate_reach();
+            self.inner.net.apply(acts);
         }
-    }
-
-    pub(crate) fn save_links(&self) -> Result<()> {
-        let v = self.locked(|x| links_value(&x.links));
-        self.engine(|e| e.set_app_record(LINKS, &osis_base::cbor::encode(&v)))?;
-        Ok(())
+        if any && let Err(e) = save_links(l) {
+            l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::BadInput, tids: Vec::new(), commit: None, peer: None, detail: format!("links record: {e}") });
+        }
     }
 
     pub(crate) fn load_links(&self) -> Result<()> {
@@ -650,7 +617,7 @@ impl Osis {
             return Ok(ContactCard(String::from_utf8(b).map_err(|_| Error::Storage("contact record".into()))?));
         }
         let me = self.me();
-        let servers: Vec<osis_label::Address> = self.servers()?.into_iter().map(|s| s.0).collect();
+        let servers = self.server_addrs();
         let p = self.write_with(|w| {
             let p = w.create(me, Place::Unsynced)?;
             w.make_group(p)?;
@@ -692,8 +659,7 @@ impl Osis {
     /// the card reads them.
     pub fn profile(&self) -> Result<Tid> {
         let card = self.contact_card()?;
-        let link = osis_label::ShareLink::from_text(&card.0).map_err(bad("contact card"))?;
-        Ok(link.target)
+        Ok(card.parse()?.target)
     }
 
     /// The profile thing of a person whose card this database imported, if any.
@@ -707,7 +673,7 @@ impl Osis {
     /// written) until the person's `/keys` is here. Returns the person, usable in `grant`. Fails
     /// `Network` after `Config::wait_timeout`; the card's key is forgotten on every outcome.
     pub async fn import_contact(&self, card: &ContactCard) -> Result<Tid> {
-        let link = osis_label::ShareLink::from_text(&card.0).map_err(bad("contact card"))?;
+        let link = card.parse()?;
         let p = link.target;
         let key = self.follow_link(&link)?;
         let found = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -733,10 +699,7 @@ impl Osis {
         r?;
         let who = *crate::watch::lock(&found);
         if let Some(who) = who {
-            self.locked(|l| {
-                let acts = l.sync.set_contact(who, true);
-                self.inner.net.apply(acts);
-            });
+            self.act(|l| l.sync.set_contact(who, true));
             self.engine(|e| e.set_app_record(&format!("{PROFILE_OF}{who}"), p.to_string().as_bytes()))?;
         }
         who.ok_or(Error::Invalid("contact card: no person".into()))
@@ -765,7 +728,11 @@ impl Osis {
 
     /// The servers new labels go to (and kept connected).
     pub fn servers(&self) -> Result<Vec<ServerAddr>> {
-        Ok(self.locked(|x| x.sync.config().servers.iter().cloned().map(ServerAddr).collect()))
+        Ok(self.server_addrs().into_iter().map(ServerAddr).collect())
+    }
+
+    fn server_addrs(&self) -> Vec<osis_label::Address> {
+        self.locked(|x| x.sync.config().servers.clone())
     }
 
     /// Adds a server for new labels (links, `sync`) and keeps a connection to it. The person's
@@ -798,7 +765,7 @@ impl Osis {
             // links and the contact card name their label's servers in their text: they stay
             let mut fixed: BTreeSet<Tid> = x.links.keys().copied().collect();
             if let Some(card) = x.engine().app_record(CONTACT)?
-                && let Ok(l) = osis_label::ShareLink::from_text(&String::from_utf8_lossy(&card))
+                && let Ok(l) = ContactCard(String::from_utf8_lossy(&card).into_owned()).parse()
             {
                 fixed.insert(l.target);
             }
@@ -821,7 +788,7 @@ impl Osis {
         if self.role_on(g) != Some(Role::Admin) {
             return Err(Error::Permission { tid: g, needs: Role::Admin });
         }
-        let servers: Vec<osis_label::Address> = if servers.is_empty() { self.servers()?.into_iter().map(|s| s.0).collect() } else { servers.iter().map(|s| s.0.clone()).collect() };
+        let servers = if servers.is_empty() { self.server_addrs() } else { servers.iter().map(|s| s.0.clone()).collect() };
         self.locked(|x| -> Result<()> {
             if x.engine().group_labels(&g)?.iter().any(|l| !l.replaced) {
                 return Ok(());
@@ -905,10 +872,7 @@ impl Osis {
 
     /// Asks every server to sync every open label now.
     pub fn sync_now(&self) -> Result<()> {
-        self.locked(|x| {
-            let acts = x.sync.sync_now();
-            self.inner.net.apply(acts);
-        });
+        self.act(|x| x.sync.sync_now());
         Ok(())
     }
 
@@ -929,11 +893,7 @@ impl Osis {
     pub fn import_bundle(&self, mut input: impl std::io::Read) -> Result<()> {
         let mut b = Vec::new();
         input.read_to_end(&mut b).map_err(|e| Error::Storage(e.to_string()))?;
-        self.locked(|x| -> Result<()> {
-            let acts = x.sync.import_bundle(&b)?;
-            self.inner.net.apply(acts);
-            Ok(())
-        })
+        self.try_act(|x| Ok(x.sync.import_bundle(&b)?))
     }
 
     /// Moves `tid` to `owner` (spec/permissions.md §7): a copy with a new tid and the held
@@ -947,11 +907,7 @@ impl Osis {
         }
         let (copy, done) = self.engine(|e| e.move_to(&tid, &owner))?;
         self.carry(done)?;
-        let groups = match place {
-            Place::In(g) => vec![g],
-            Place::InAll(gs) => gs,
-            Place::Unsynced => Vec::new(),
-        };
+        let groups = place.groups();
         if !groups.is_empty() {
             self.write_with(|w| {
                 for g in groups {
@@ -1027,8 +983,11 @@ const CONTACT: &str = "contact";
 /// App record prefix: `profile/<person tid>` -> profile tid text, written by `import_contact`.
 const PROFILE_OF: &str = "profile/";
 
-fn links_value(links: &BTreeMap<Tid, MadeLink>) -> Value {
-    Value::List(links.iter().map(|(k, m)| Value::List(vec![Value::Tid(*k), Value::Tid(m.l), Value::Tid(m.target), Value::Bool(m.single_use), Value::Bool(m.finalized), Value::Bool(m.direct), Value::Bool(m.ended)])).collect())
+/// Stores the links made here (one local record).
+fn save_links(l: &mut Locked) -> Result<()> {
+    let v = Value::List(l.links.iter().map(|(k, m)| Value::List(vec![Value::Tid(*k), Value::Tid(m.l), Value::Tid(m.target), Value::Bool(m.single_use), Value::Bool(m.finalized), Value::Bool(m.direct), Value::Bool(m.ended)])).collect());
+    l.engine().set_app_record(LINKS, &osis_base::cbor::encode(&v))?;
+    Ok(())
 }
 
 /// A held link or recovery key, forgotten when the guard goes: every outcome of a waiting call,
@@ -1045,10 +1004,7 @@ impl Drop for KeyGuard {
         if let Some(db) = self.db.upgrade() {
             db.engine(|e| e.drop_key_actor(&self.l));
             if let Some(k) = self.link {
-                db.locked(|x| {
-                    let acts = x.sync.forget_link(k);
-                    db.inner.net.apply(acts);
-                });
+                db.act(|x| x.sync.forget_link(k));
             }
         }
     }

@@ -27,6 +27,16 @@ pub enum Place {
     Unsynced,
 }
 
+impl Place {
+    pub(crate) fn groups(self) -> Vec<Tid> {
+        match self {
+            Place::In(g) => vec![g],
+            Place::InAll(gs) => gs,
+            Place::Unsynced => Vec::new(),
+        }
+    }
+}
+
 /// A committed write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Committed {
@@ -124,12 +134,7 @@ impl<'d> Write<'d> {
             expiry_in(self.db, d)?;
         }
         let owner = self.known(owner)?;
-        let groups = match &place {
-            Place::In(g) => vec![*g],
-            Place::InAll(gs) => gs.clone(),
-            Place::Unsynced => Vec::new(),
-        };
-        let groups = groups.into_iter().map(|g| self.known(g)).collect::<Result<Vec<_>>>()?;
+        let groups = place.groups().into_iter().map(|g| self.known(g)).collect::<Result<Vec<_>>>()?;
         let m = &mut self.m;
         let t = self.db.engine(|e| e.new_thing(m, owner));
         self.created.push(t);
