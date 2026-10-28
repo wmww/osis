@@ -166,6 +166,8 @@ pub struct MemoryLabelStore {
     pub entry_cap: Option<usize>,
     /// (dialable key, label) pairs a member proof opens (`member_open`; member-peer tests).
     pub member_labels: BTreeSet<([u8; 32], LabelId)>,
+    /// `blob` calls so far (cost tests).
+    pub blob_reads: std::cell::Cell<u64>,
 }
 
 /// Deposit budget unit (spec/sync.md §5 recommended minimum).
@@ -280,6 +282,7 @@ impl LabelStore for MemoryLabelStore {
     }
 
     fn blob(&self, blob_id: &BlobId) -> Result<Option<Vec<u8>>, StoreError> {
+        self.blob_reads.set(self.blob_reads.get() + 1);
         Ok(self.blobs.get(blob_id).map(|(b, _)| b.clone()))
     }
 

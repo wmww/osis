@@ -721,23 +721,29 @@ impl ServerConnection {
     /// (checked against the blob prefix's commitment at that level) with the label key the level
     /// needs.
     fn delete(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, item: &DeleteItem) -> Result<Code, StoreError> {
-        let entry = store.entry(label, &item.blob)?;
-        // A delete-key signature is checked against the blob's prefix: without the blob it cannot
-        // be (nor a tombstone revealed).
-        let prefix = match (&item.by, &entry) {
-            (Some(_), Some(_)) => store.blob(&item.blob)?.and_then(|b| server_prefix(&b).ok().flatten()),
-            _ => None,
-        };
         let Some(c) = self.cached(store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
         let Ok(digest) = delete_digest(label, &item.blob, item.at, item.by.map(|b| b.0)) else { return Ok(Code::MALFORMED) };
-        let key = match &item.by {
-            None => Key::Delete,
-            Some((level, dsig)) => match (prefix.as_ref().and_then(|p| p.key_at(*level)), key_for_level(*level)) {
-                (Some(k), Ok(role)) if verify_delete(&k, &digest, dsig).is_ok() => Key::from_role(role),
-                _ => return Ok(Code::REFUSED),
+        let entry = store.entry(label, &item.blob)?;
+        let (key, by) = match &item.by {
+            None => (Key::Delete, None),
+            Some((level, dsig)) => match key_for_level(*level) {
+                Ok(role) => (Key::from_role(role), Some((*level, dsig))),
+                Err(_) => return Ok(Code::REFUSED),
             },
         };
         let code = c.check(key, Domain::Delete, &digest, &item.sig);
+        // A delete-key signature is checked against the blob's prefix: without the blob it cannot
+        // be (nor a tombstone revealed). The blob is read only for an item whose label signature
+        // holds (an unsigned item would cost a blob read of up to MAX_BLOB each).
+        if let Some((level, dsig)) = by {
+            let prefix = match (code, &entry) {
+                (Code::REFUSED, _) | (_, None) => None,
+                _ => store.blob(&item.blob)?.and_then(|b| server_prefix(&b).ok().flatten()),
+            };
+            if !prefix.and_then(|p| p.key_at(level)).is_some_and(|k| verify_delete(&k, &digest, dsig).is_ok()) {
+                return Ok(Code::REFUSED);
+            }
+        }
         if code != Code::OK {
             return Ok(code);
         }
@@ -789,5 +795,29 @@ mod tests {
             assert!(c.crossed.len() <= MAX_CROSSED, "{}", c.crossed.len());
         }
         assert!(!c.is_closed());
+    }
+
+    // spec/sync.md §5 (Delete), spec/requirements.md (peer input never causes unbounded work): items
+    // carrying a delete-key signature but no valid label signature are refused without reading
+    // the blob (up to MAX_BLOB each) for its prefix
+    #[test]
+    fn unsigned_delete_items_read_no_blob() {
+        let f = Fixture::new(0x10);
+        let mut store = MemoryLabelStore::new([1; 32]);
+        store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
+        let e = f.entry(Fixture::blob(1));
+        let blob_id = osis_label::blob_id(&e.blob);
+        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+        let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Message::Upload { id: 1, label: f.label, entries: vec![e] }.encode())));
+        assert!(out.iter().any(|o| matches!(o, ServerOutput::Changed(_))), "uploaded");
+        let dk = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([0x7a; 32]));
+        let mut item = DeleteItem::sign_by(&f.sync, &dk, 2, &[0x7d; 16], &[0x7e; 16], &f.label, blob_id, None).unwrap();
+        item.sig = Signature([0; 64]);
+        store.blob_reads.set(0);
+        let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Message::Delete { id: 2, label: f.label, items: vec![item; 64] }.encode())));
+        let codes = out.iter().find_map(|o| if let ServerOutput::Send(b) = o { if let Ok(Message::Status { codes, .. }) = Message::decode(&b[4..]) { Some(codes) } else { None } } else { None }).unwrap();
+        assert_eq!(codes, vec![Code::REFUSED; 64]);
+        assert_eq!(store.blob_reads.get(), 0);
     }
 }
