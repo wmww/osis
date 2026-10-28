@@ -3,7 +3,8 @@
 
 use crate::changes::Changes;
 use crate::fragment::{Bag, Elem, Fragment, Map, Register, Set, Slots};
-use crate::seq;
+use crate::remap::{Next, Rec, Visit, walk};
+use crate::seq::{self, SeqContent};
 use crate::stamp::{Dot, Stamp};
 use std::collections::BTreeMap;
 
@@ -169,49 +170,64 @@ impl Fragment {
     /// is gone (a removed entry kept for its reset) does not count, nor another write sharing
     /// the dot.
     pub fn holds_stamp(&self, s: &Stamp) -> bool {
-        let eq = |x: &Stamp| x == s;
-        let opt = |x: &Option<Stamp>| x.as_ref().is_some_and(eq);
-        let sub = |f: &Fragment| f.holds_stamp(s);
-        if self.meta().is_some_and(|m| opt(&m.reset) || opt(&m.w)) {
-            return true;
-        }
-        let reg = |r: &Register| opt(&r.reset) || r.write.as_ref().is_some_and(|w| eq(&w.stamp));
-        match self {
-            Fragment::Register(r) => reg(r),
-            Fragment::Slots(x) => x.reg.as_ref().is_some_and(reg) || x.members.values().any(sub),
-            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.values().any(|e| opt(&e.reset) || e.frag.as_deref().is_some_and(sub)),
-            Fragment::Struct(x) => x.fields.values().any(sub),
-            Fragment::Enum(e) => e.case.as_ref().is_some_and(|c| eq(&c.stamp)) || e.payloads.values().any(sub),
-            Fragment::Map(m) => m.entries.values().any(|e| opt(&e.reset) || opt(&e.created) || e.frag.as_deref().is_some_and(sub)),
-            Fragment::Seq(q) => q.elems().iter().any(|(d, el)| {
-                // a range record's creations are its elements' dots at the record's `ts`
-                let created = el.created.as_ref().is_some_and(|(c, _)| eq(c) || (c.ts == s.ts && crate::seq_span::holds(d, el.span, &s.dot)));
-                created || el.pos.iter().any(|p| eq(&p.0)) || el.deleted.as_ref().is_some_and(|x| eq(&x.0)) || matches!(&el.content, crate::seq::SeqContent::Frag(f) if sub(f))
-            }),
-        }
+        walk(&mut HoldsStamp(s), self)
     }
 
     /// `holds_dots` with `holds`, else `dots_supersede`.
     pub(crate) fn dots_in(&self, pred: &dyn Fn(&Dot) -> bool, holds: bool) -> bool {
-        let a = |s: &Stamp| pred(s.dot.owner());
-        let sub = |f: &Fragment| f.dots_in(pred, holds);
-        if self.meta().is_some_and(|m| m.reset.as_ref().is_some_and(a) || m.w.as_ref().is_some_and(a)) {
-            return true;
-        }
-        let reg = |r: &Register| r.reset.as_ref().is_some_and(a) || r.write.as_ref().is_some_and(|w| a(&w.stamp));
-        // an element or entry: one they created, its reset, its content
-        let rec = |d: &Dot, reset: Option<&Stamp>, f: Option<&Fragment>| {
-            let theirs = pred(d.owner());
-            (holds && theirs) || reset.is_some_and(a) || ((holds || !theirs) && f.is_some_and(sub))
+        walk(&mut DotsIn { pred, holds }, self)
+    }
+}
+
+/// `Fragment::holds_stamp`.
+struct HoldsStamp<'a>(&'a Stamp);
+
+impl Visit for HoldsStamp<'_> {
+    fn stamp(&mut self, x: &Stamp) -> bool {
+        x == self.0
+    }
+    fn rec(&mut self, r: Rec<'_>) -> Next {
+        let s = self.0;
+        let hit = match r {
+            Rec::Elem(..) => false,
+            Rec::Entry(_, e) => e.created.as_ref() == Some(s),
+            Rec::Seq(d, el) => {
+                // a range record's creations are its elements' dots at the record's `ts`
+                let created = el.created.as_ref().is_some_and(|(c, _)| c == s || (c.ts == s.ts && crate::seq_span::holds(d, el.span, &s.dot)));
+                created || el.pos.iter().any(|p| p.0 == *s) || el.deleted.as_ref().is_some_and(|x| x.0 == *s)
+            }
         };
-        match self {
-            Fragment::Register(r) => reg(r),
-            Fragment::Slots(s) => s.reg.as_ref().is_some_and(reg) || s.members.values().any(sub),
-            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.iter().any(|(d, e)| rec(d, e.reset.as_ref(), e.frag.as_deref())),
-            Fragment::Struct(s) => s.fields.values().any(sub),
-            Fragment::Enum(e) => e.case.as_ref().is_some_and(|c| a(&c.stamp)) || e.payloads.values().any(sub),
-            Fragment::Map(m) => m.entries.iter().any(|(d, e)| rec(d, e.reset.as_ref(), e.frag.as_deref())),
-            Fragment::Seq(s) => seq::dots_in(s, pred, holds),
+        if hit { Next::Stop } else { Next::On }
+    }
+}
+
+/// `Fragment::dots_in`: their writes, and records they created (`holds`: whose content goes
+/// with them; else not looked into).
+struct DotsIn<'a> {
+    pred: &'a dyn Fn(&Dot) -> bool,
+    holds: bool,
+}
+
+impl Visit for DotsIn<'_> {
+    fn stamp(&mut self, s: &Stamp) -> bool {
+        (self.pred)(s.dot.owner())
+    }
+    fn rec(&mut self, r: Rec<'_>) -> Next {
+        let pred = self.pred;
+        // `own`: whether a record of theirs counts with `holds`; `other`: a write of theirs on it
+        let (d, own, other) = match r {
+            Rec::Elem(d, _) | Rec::Entry(d, _) => (d, true, false),
+            // a sequence element: with content; a flag or a position write of theirs other than
+            // the element's own creation, which `remove_dots` keeps
+            Rec::Seq(d, el) => (d, !matches!(el.content, SeqContent::None), el.deleted.as_ref().is_some_and(|x| pred(x.0.dot.owner())) || el.pos.iter().any(|p| p.0.dot != *d && pred(p.0.dot.owner()))),
+        };
+        let theirs = pred(d.owner());
+        if other || (self.holds && theirs && own) {
+            Next::Stop
+        } else if self.holds || !theirs {
+            Next::On
+        } else {
+            Next::NoContent
         }
     }
 }
