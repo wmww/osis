@@ -1,5 +1,5 @@
 # Tags and the standard core aspects
-> Summary: The user-facing organization layer decided with the owner: toplevel core aspects (`/name`, `/body`, `/tag`; core revision 2), tags as marked groups in a graph (not a tree), sharing a tag per item through one nested roster, recursive sharing semantics, the "only share what you may share" property, the confirmation guideline for first-party apps, the logical-document convention, costs, what examples/tags and notes-app show, and what is still open.
+> Summary: The user-facing organization layer decided with the owner: toplevel core aspects (`/name`, `/body`, `/tag` in the core schema), tags as marked groups in a graph (not a tree), sharing a tag per item through one nested roster, recursive sharing semantics, the "only share what you may share" property, the confirmation guideline for first-party apps, the logical-document convention, costs, what examples/tags and notes-app show, and what is still open.
 
 ## Direction (owner)
 - No standard schema existed; the example apps minted four aspects for "name". The foundation should be settled before stabilizing.
@@ -9,7 +9,7 @@
 - No user-visible "space". Moving a thing to another owner is a copy with a new tid, so users must never be expected to move things between containers; a share is per item, through one roster (below).
 - Chat is thrown out until a good schema is designed (notes/std.md); notes/chat.md keeps the old pattern and its costs.
 
-## Core revision 2 (spec/data-model.md §9, core.osis)
+## Core aspects (spec/data-model.md §9, core.osis)
 ```
 aspect /name: string;                 // what humans call the thing
 aspect /body: markdown;                // freeform content: a note's text, notes on anything

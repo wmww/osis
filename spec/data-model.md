@@ -82,7 +82,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - `/groups` (synthetic) on a thing: the locally known groups containing it, directly or transitively.
 
 ## 9. Core schema
-The core aspects form the core schema, schema ID 16 zero bytes, revision 2, evolving under spec/versioning.md. Exact types below (DSL of notes/data-model.md); `creation`, `signing_key`, `kem_key`, `sealed` are spec/wire.md §3.
+The core aspects form the core schema, schema ID 16 zero bytes, revision 1, evolving under spec/versioning.md. Exact types below (DSL of notes/data-model.md); `creation`, `signing_key`, `kem_key`, `sealed` are spec/wire.md §3.
 
 | AK | type | notes |
 |---|---|---|
