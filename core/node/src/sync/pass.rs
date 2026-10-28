@@ -353,7 +353,7 @@ impl SyncEngine {
                     None => false,
                 };
             }
-            if !seen.insert(o.id) || settled || self.conns.get(&conn).is_some_and(|c| super::in_flight(&c.sent, (l, o.id), raw)) {
+            if !seen.insert(o.id) || settled || self.conns.get(&conn).is_some_and(|c| super::in_flight(&c.req.sent, (l, o.id), raw)) {
                 continue;
             }
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
@@ -406,7 +406,7 @@ impl SyncEngine {
             self.promote(conn, server, &g, l, w, &mut uploads)?;
         }
         if let Some(c) = self.conns.get_mut(&conn) {
-            c.sent.extend(uploads.iter().map(|u| osis_label::blob_id(&u.blob)).chain(deposits.iter().map(|d| osis_label::blob_id(&d.0))).map(|b| ((l, b), raw)));
+            c.req.sent.extend(uploads.iter().map(|u| osis_label::blob_id(&u.blob)).chain(deposits.iter().map(|d| osis_label::blob_id(&d.0))).map(|b| ((l, b), raw)));
         }
         if !uploads.is_empty() {
             self.command(conn, Command::Upload { label: l, entries: uploads }, out)?;
@@ -1051,7 +1051,7 @@ impl SyncEngine {
     /// opened now, or fetched again when their bytes are not here (a fetch lost to a cut or
     /// crash, secrets that arrived later).
     fn refetch(&mut self, conn: ConnId, server: ServerKey, l: LabelId, w: &Work, out: &mut Vec<super::Action>) -> Result<()> {
-        let missing = |s: &Self, b: &BlobId| s.conns.get(&conn).is_some_and(|c| c.missing.contains(b));
+        let missing = |s: &Self, b: &BlobId| s.conns.get(&conn).is_some_and(|c| c.req.missing.contains(b));
         let ids: Vec<BlobId> = w.unopened.iter().filter(|b| !self.fetching(b) && !missing(self, b) && self.state.is_present(&server, &l, b)).copied().collect();
         let (held, want): (Vec<BlobId>, Vec<BlobId>) = ids.into_iter().partition(|b| self.engine.has_blob(b));
         // bytes here but never opened under the secrets held now
@@ -1151,7 +1151,7 @@ impl SyncEngine {
         self.deposit_seen.retain(|k, _| self.state.deposited.contains(k));
         let mut out = Vec::new();
         for (id, e) in ids {
-            if self.conns.get(&conn).is_some_and(|c| super::in_flight(&c.sent, (l, id), raw)) {
+            if self.conns.get(&conn).is_some_and(|c| super::in_flight(&c.req.sent, (l, id), raw)) {
                 continue;
             }
             let seen = *self.deposit_seen.entry((server, l, id)).or_insert(raw);
@@ -1994,10 +1994,10 @@ impl SyncEngine {
         let desired = desired(bodies);
         // deletes in flight on this connection are not sent again (`RESEND_MS`)
         let raw = self.raw_now();
-        let busy = |s: &Self, id: &BlobId| s.conns.get(&conn).is_some_and(|c| super::in_flight(&c.deleting, (l, *id), raw));
+        let busy = |s: &Self, id: &BlobId| s.conns.get(&conn).is_some_and(|c| super::in_flight(&c.req.deleting, (l, *id), raw));
         let send = |s: &mut Self, id: BlobId| {
             if let Some(c) = s.conns.get_mut(&conn) {
-                c.deleting.insert((l, id), raw);
+                c.req.deleting.insert((l, id), raw);
             }
         };
         let mut items = Vec::new();
@@ -2091,7 +2091,7 @@ impl SyncEngine {
             if !self.state.is_present(&server, &l, &id) || self.state.timed.contains(&(server, l, id)) {
                 continue;
             }
-            if self.conns.get(&conn).is_some_and(|c| c.timed_sent.contains(&(l, id))) {
+            if self.conns.get(&conn).is_some_and(|c| c.req.timed_sent.contains(&(l, id))) {
                 left.commits.insert(b.commit);
                 continue;
             }
@@ -2108,7 +2108,7 @@ impl SyncEngine {
                 Some(item) => {
                     left.commits.insert(b.commit);
                     if let Some(c) = self.conns.get_mut(&conn) {
-                        c.timed_sent.insert((l, id));
+                        c.req.timed_sent.insert((l, id));
                     }
                     items.push(item);
                 }

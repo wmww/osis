@@ -115,7 +115,7 @@ impl SyncEngine {
                     }
                     // the server holds it now: fetched there again when wanted
                     if let Some(c) = conn.and_then(|c| self.conns.get_mut(&c)) {
-                        c.missing.remove(&blob_id);
+                        c.req.missing.remove(&blob_id);
                     }
                     // a stamp counts only if it verifies under the head's write key (it is relayed);
                     // a bundle's stamps were checked against its path by the importer
@@ -508,7 +508,7 @@ impl SyncEngine {
     pub(crate) fn fetch_on(&mut self, conn: ConnId, l: LabelId, ids: impl IntoIterator<Item = BlobId>, out: &mut Vec<super::Action>) -> Result<()> {
         let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.fetching(b)).collect();
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
-        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !c.missing.contains(b) && c.fetching.insert(*b)).collect();
+        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !c.req.missing.contains(b) && c.req.fetching.insert(*b)).collect();
         if ids.is_empty() {
             return Ok(());
         }
@@ -667,7 +667,7 @@ impl SyncEngine {
         let mut grew = false;
         for (b, code) in ids.into_iter().zip(codes) {
             if let Some(c) = self.conns.get_mut(&conn) {
-                c.sent.remove(&(l, b));
+                c.req.sent.remove(&(l, b));
             }
             match code {
                 Code::OK => {
@@ -714,8 +714,8 @@ impl SyncEngine {
         for (b, code) in ids.into_iter().zip(codes) {
             // a timed delete is done once the server took it (spec/commits.md §5)
             let timed = self.conns.get_mut(&conn).is_some_and(|c| {
-                c.deleting.remove(&(l, b));
-                c.timed_sent.remove(&(l, b))
+                c.req.deleting.remove(&(l, b));
+                c.req.timed_sent.remove(&(l, b))
             });
             match code {
                 Code::OK => {
@@ -758,7 +758,7 @@ impl SyncEngine {
     pub(crate) fn budget(&mut self, conn: ConnId, l: LabelId, b: BlobId, code: Code, entries_left: u64, head: Option<Step>, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
         let server = c.server;
-        c.sent.remove(&(l, b));
+        c.req.sent.remove(&(l, b));
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.budget = Some(entries_left);
         }

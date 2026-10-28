@@ -71,10 +71,10 @@ impl SyncEngine {
                 self.unsubscribe.insert((*id, *l));
             }
             c.labels.retain(|l, _| !gone(l));
-            c.sent.retain(|(l, _), _| !gone(l));
-            c.deleting.retain(|(l, _), _| !gone(l));
-            c.timed_sent.retain(|(l, _)| !gone(l));
-            c.reopens.retain(|l, _| !gone(l));
+            c.req.sent.retain(|(l, _), _| !gone(l));
+            c.req.deleting.retain(|(l, _), _| !gone(l));
+            c.req.timed_sent.retain(|(l, _)| !gone(l));
+            c.req.reopens.retain(|l, _| !gone(l));
         }
         self.synced.actors.retain(|l, _| !gone(l));
         self.passes.retain(|(_, l), _| !gone(l));
