@@ -1,0 +1,14 @@
+# Engine module cleanup left over
+> Summary: Simplifications of osis-engine `engine/` found in the engine-simplify review and not done: legacy store layouts still read, two "link by content hash" forms, test hooks in src, String aspect keys cloned per lookup, two index-pruning routines, a hand-listed journal, and a long `commit_in`.
+> Tags: engine
+
+No failing test; behaviour-preserving refactors unless noted.
+
+- **Legacy layouts**: `pages::legacy` reads unit tags 1-6, `index::parse_head` record heads of version 2, `old_judgments` the `node/parts` rows, `decode_epochs` the 7- and 8-field epoch items, `parse_top` tops without `newest`. Pre-release, so these could go together, with stores from those builds refused (or rebuilt where the data is rebuildable). Needs an owner decision: it drops read support for old stores.
+- **Two forms of "a link by content hash"**: `pages::ident` (a link becomes `Bytes(hash)`, hashed into key-index rows) and `large::hash_only` (a link with zeroed blob, suite and key, compared in memory). One function would do, but `ident`'s output is hashed into stored index rows, so changing it changes the index (rebuildable: bump the unit `TAG`).
+- **Test hooks in src**: `index.rs` `damage_index`, `damage_walks`, `damage_edges`, `edges_rows`, `index_digest`, `perm_digest`, `headers_decoded`, `reload_index` (same as `reload`), `rebuild_index`; `Engine::forensic_keys`, `waits_bytes`, `set_walk_cache_min`. They are `#[doc(hidden)] pub` because node's `tests/it` calls them; one `testing` module would at least keep them together.
+- **`Ak` is a `String`**: every `Tx` method builds `(Tid, Ak)` keys for `Core::states` and `Core::pages` with `ak.clone()`, several times per op (`load_lazy`, `held_in_part`, `with_pages`, `cached`). An `Arc<str>` or interned aspect key in osis-base would make these copies free.
+- **Two key-index pruning routines**: `pages::strip_touched` records the touched elements' keys before stripping and removes the rows no longer indexed; `pages::unindex` does the same for dropped bodies from the bodies' own keys. Possibly one routine over the bodies (the caller has them), but touched dots and owned dots differ for removals, so it needs a test first.
+- **`Core::new` and `journaled!`**: about 60 fields, a 70-line initializer, and the macro must list every journaled field by hand (a missing one silently breaks rollback). Grouping the journaled indexes in one struct with one `commit`/`rollback` would make that impossible to get wrong.
+- **`commit_in`** (write.rs, about 150 lines): picks framing, decides how to load a paged state (paths, attached ops or whole), chunks large values, runs and re-runs ops, adds dead resets. The loading decision and the run loop could be one `Tx` method.
+- **`steps(&set.path)`** is rebuilt on every page load (`join_row`), attach and prefetch; it is also the set's key in `PageIndex::sets`.
