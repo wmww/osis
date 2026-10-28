@@ -425,7 +425,7 @@ pub fn partial_follow(st: &Seq, d: &Seq, per: usize) -> Option<(usize, usize)> {
 }
 
 /// `partial_follow`, also giving the pages it loaded; without `newest` the stored placement has
-/// no newest-stamp bound (a top written before it).
+/// no newest-stamp bound (`PlaceTop::newest` unknown).
 pub fn partial_follow_in(st: &Seq, d: &Seq, per: usize, newest: bool) -> Option<((usize, usize), usize)> {
     use crate::seq_place::SeqPlace;
     let mut pg = Pager::new(st, per);

@@ -312,13 +312,12 @@ fn decode_entry(b: &[u8]) -> Result<Entry> {
             let salt = r.arr()?;
             Kind::Commit { commit, parts: decode_parts(&mut r)?, salt }
         }
-        // a commit entry stored before entries kept their blob's salt: opened again
-        1 => Kind::Unknown,
+        0 => Kind::Unknown,
         2 => Kind::Inbox(None),
         5 => Kind::Inbox(Some(CommitId(r.arr()?))),
         3 => Kind::Bad,
         4 => Kind::Parked(CommitId(r.arr()?)),
-        _ => Kind::Unknown,
+        _ => return Err(Error::Corrupt("sync entry kind")),
     };
     Ok(Entry { wrap, stamp, cert, kind })
 }
@@ -385,14 +384,10 @@ impl State {
                     s.tombs.insert((LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).u64()?);
                 }
                 b"r" => s.reach_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
-                // a queued deposit that does not decode (an older format) is not sent and goes:
-                // never a failed load
-                b"o" => match decode_out(rest, &v) {
-                    Ok((k, o)) => {
-                        s.outbox.insert(k, o);
-                    }
-                    Err(_) => s.del([b"y/".as_slice(), &k].concat()),
-                },
+                b"o" => {
+                    let (k, o) = decode_out(rest, &v)?;
+                    s.outbox.insert(k, o);
+                }
                 b"q" => {
                     let l = LabelId(r.arr()?);
                     if v.is_empty() {
@@ -1045,15 +1040,12 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
-    // spec: none (local store format): a commit entry keeps its blob's salt (tag 6) and round
-    // trips; one stored before (tag 1, no salt) loads as not opened, never a failed load.
+    // spec: none (local store format): a commit entry keeps its blob's salt and round trips.
     #[test]
-    fn commit_entry_salt_and_older_layout() {
+    fn commit_entry_salt_round_trips() {
         let e = Entry { wrap: [3; WRAP_LEN], stamp: None, cert: false, kind: Kind::Commit { commit: CommitId([1; 32]), parts: vec![(0, 1)], salt: [9; 16] } };
         let back = decode_entry(&encode_entry(&e)).unwrap();
         assert!(matches!(back.kind, Kind::Commit { salt, .. } if salt == [9; 16]));
-        let old = encode_parts(Wr::new().raw(&[3; WRAP_LEN]).u8(0).u8(0).u8(1).raw(&[1; 32]), &[(0, 1)]).take();
-        assert!(matches!(decode_entry(&old).unwrap().kind, Kind::Unknown));
     }
 
     // spec/sync.md §3 (re-sends are the sender's policy): an inbox delivery record that does not
@@ -1069,25 +1061,6 @@ mod tests {
         .unwrap();
         let s = State::load(e).unwrap();
         assert!(s.sent_inbox.is_empty());
-    }
-
-    // spec/sync.md §5: a queued deposit record that does not decode (an older format) is
-    // skipped, never a failed load of the sync state.
-    #[test]
-    fn corrupt_outbox_record_skipped_spec_sync_5() {
-        let mut lp = crate::local_peer::LocalPeer::new(1, 962, osis_base::WallMs(1_700_000_000_000)).unwrap();
-        let e = &mut lp.peers[0].engine;
-        let k = key(OUTBOX, &[&[7u8; 32], &[8u8; 32]]);
-        e.run(|tx| {
-            tx.txn.put_local(&k, b"short", Shred::No)?;
-            Ok(())
-        })
-        .unwrap();
-        let mut s = State::load(e).unwrap();
-        assert!(s.outbox.is_empty());
-        s.flush(e).unwrap();
-        let left = e.run(|tx| Ok(tx.txn.scan_local(OUTBOX, &[], 8)?)).unwrap();
-        assert!(left.is_empty(), "the undecodable record is deleted");
     }
 
     // spec: none (engine/sync seam): node-sync's records stay installed across a reload (a
