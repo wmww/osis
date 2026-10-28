@@ -654,6 +654,9 @@ pub async fn run_host<T: Transport, H: Host>(host: H, transport: T, listeners: V
     while !d.gone {
         let idle = d.idle();
         let lan_on = d.lan_on();
+        // timers wait while control has a message: a `Shutdown` queued just before the runtime
+        // shuts down is seen before a timer of the shut-down runtime is polled (tokio panics)
+        let quiet = control.is_empty();
         tokio::select! {
             Some((key, l)) = link_rx.recv() => d.accepted(key, l),
             Some(ev) = ev_rx.recv() => d.event(ev),
@@ -662,7 +665,7 @@ pub async fn run_host<T: Transport, H: Host>(host: H, transport: T, listeners: V
                     break;
                 }
             }
-            _ = lan_tick_wait(&mut lan_tick, lan_on) => {
+            _ = lan_tick_wait(&mut lan_tick, lan_on), if quiet => {
                 #[cfg(feature = "lan")]
                 d.lan_check().await;
             }
@@ -671,8 +674,8 @@ pub async fn run_host<T: Transport, H: Host>(host: H, transport: T, listeners: V
                 #[cfg(feature = "lan")]
                 d.lan_rejoin(false).await;
             }
-            _ = sleep_until(d.relisten_at) => {}
-            _ = tokio::time::sleep(idle) => {
+            _ = sleep_until(d.relisten_at), if quiet => {}
+            _ = tokio::time::sleep(idle), if quiet => {
                 d.wake = None;
                 d.feed(Event::Tick);
             }

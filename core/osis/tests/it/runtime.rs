@@ -426,3 +426,38 @@ async fn rotate_reach_relistens_in_process_spec_sync_10() {
     .await
     .unwrap();
 }
+
+// notes/api.md Handle and sync: closing a database whose own runtime's driver is inside an
+// engine call (its `block_in_place`) must not let the driver poll a timer of the shut-down
+// runtime ("A Tokio 1.x context was found, but it is being shutdown" on an `osis-sync` thread).
+#[test]
+fn close_while_driver_runs_no_timer_panic() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static PANICS: AtomicUsize = AtomicUsize::new(0);
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |i| {
+        if i.to_string().contains("being shutdown") {
+            PANICS.fetch_add(1, Ordering::SeqCst);
+        }
+        prev(i);
+    }));
+    let net = osis_transport::Net::new(9);
+    std::thread::scope(|sc| {
+        for t in 0..8u64 {
+            let net = net.clone();
+            sc.spawn(move || {
+                for i in 0..40 {
+                    let mut c = Config::at(StoreAt::Memory(MemStore::new()));
+                    c.seed = Some(t * 1000 + i);
+                    c.runtime = Runtime::Own;
+                    c.transport = Some(Transport::InProcess(net.endpoint(&format!("c{t}-{i}"))));
+                    let (db, _) = Osis::create(c).unwrap();
+                    let _ = common::block_on(db.wait_synced(osis::SyncScope::All, Duration::from_secs(1)));
+                    db.close().unwrap();
+                }
+            });
+        }
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(PANICS.load(Ordering::SeqCst), 0);
+}
