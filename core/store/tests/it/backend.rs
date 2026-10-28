@@ -117,7 +117,7 @@ mod file {
     }
 
     // spec/requirements.md Deletion (forward secure: nothing on the device yields what it may no
-    // longer read): store files made before files were created owner-only become so on open.
+    // longer read): existing store files open to group or others become owner-only on open.
     #[cfg(unix)]
     #[test]
     fn existing_store_files_become_owner_only_spec_requirements_deletion() {

@@ -131,7 +131,7 @@ mod file {
             let mut buf = osis_crypto::Zeroizing::new(Vec::new());
             match File::open(&self.path) {
                 Ok(mut f) => {
-                    // a root file made before files were created owner-only becomes so
+                    // a root file open to group or others becomes owner-only
                     let _ = crate::backend::restrict_to_owner(&self.path);
                     f.read_to_end(&mut buf).map_err(io)?;
                 }
