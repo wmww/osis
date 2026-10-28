@@ -106,6 +106,10 @@ impl Header {
         if kind == Kind::RosterSnapshot && self.aspects.windows(2).any(|w| matches!(w, [x, y] if x.tid != y.tid)) {
             return Err(Error::Invalid("roster snapshot of several things"));
         }
+        // an import is judged by its one thing's creation record (spec/permissions.md §7)
+        if kind == Kind::Import && self.aspects.windows(2).any(|w| matches!(w, [x, y] if x.tid != y.tid)) {
+            return Err(Error::Invalid("import on several things"));
+        }
         // one author chain: at most one level-2 key (header-list blobs commit to it alone)
         if self.keys.iter().filter(|k| k.level == 2).count() > 1 {
             return Err(Error::Invalid("more than one level-2 delete key"));

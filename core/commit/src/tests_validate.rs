@@ -66,6 +66,11 @@ fn validate_kinds() {
     assert!(invalid(&x).to_string().contains("origins"));
     x.origins.push(Origin { commit: CommitId([1; 32]), author: t(1), actor: t(2), ts: ts(5) });
     x.validate().unwrap();
+    // spec/permissions.md §7: an import is on one thing
+    let mut y = x.aspects[0].clone();
+    y.tid = t(9);
+    x.aspects.push(y);
+    assert!(invalid(&x).to_string().contains("several things"));
 }
 
 pub(crate) fn membership_header(ak: &str) -> Header {

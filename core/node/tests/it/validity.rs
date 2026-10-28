@@ -1186,3 +1186,77 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
     assert_eq!(seen[0], seen[1], "partial");
     assert!(!seen[0][0].contains("late"), "partial: {}", seen[0][0]);
 }
+
+// spec/requirements.md, Out of scope ("malicious readers can only waste storage"), Decentralization;
+// spec/permissions.md §5.2: a snapshot vouches for nothing. A reader's snapshot carrying another
+// value under the dot and `ts` of a writer's node-form write changes nothing, whether it arrives
+// after that write's commit (peer 2) or before it (peer 3) (issues/snapshot-forged-owned-dots.md).
+#[test]
+#[ignore = "issues/snapshot-forged-owned-dots.md"]
+fn snapshot_forging_held_node_dot_changes_nothing_spec_perm_5_2() {
+    use osis_crdt::{Source, Writer, create};
+    let mut lp = net(4, 0x5f01);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let (a, r) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
+    sync(&mut lp, 0, 3);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("real")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    for i in 1..3 {
+        sync(&mut lp, 0, i);
+    }
+    let h = lp.peers[0].engine.header(&c).unwrap();
+    let lo = h.aspects.iter().find(|x| x.tid == t && x.ak.as_str() == "/t/reg").unwrap().lo;
+    let reg = ak("/t/reg");
+    let before = states(&mut lp.peers[2].engine, &[t]);
+    // the reader re-uses (a, lo) and its ts (another ts is bad input where c is held)
+    let mut w = Writer::new(h.ts, Source::node(a), lo);
+    let f = create(&mut w, &osis_crdt::AnyView, &s("zzz forged")).unwrap();
+    lp.advance(1_000);
+    let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
+    let forged = forge_snapshot(&mut lp, 1, t, &reg, now, f);
+    let got = lp.peers[2].engine.ingest(&forged, Vec::new());
+    assert_eq!(states(&mut lp.peers[2].engine, &[t]), before, "after c: {got:?}");
+    let got = lp.peers[3].engine.ingest(&forged, Vec::new());
+    sync(&mut lp, 0, 3);
+    assert_eq!(states(&mut lp.peers[3].engine, &[t]), before, "before c: {got:?}");
+}
+
+// spec/requirements.md, Out of scope; spec/permissions.md §5.2, §7: a reader's snapshot of a copy
+// carrying an extra element under the source `Commit(C)` of a held valid import of C (a counter C
+// never had) changes nothing (issues/snapshot-forged-owned-dots.md).
+#[test]
+#[ignore = "issues/snapshot-forged-owned-dots.md"]
+fn snapshot_forging_import_dot_changes_nothing_spec_perm_5_2() {
+    use osis_crdt::{Batch, Op, PathOp, Source, Writer};
+    let mut lp = net(3, 0x5f02);
+    lp.sync_all().unwrap();
+    let a = lp.peers[0].engine.tid();
+    let r = lp.peers[1].engine.tid();
+    let t = new_thing(&mut lp, 0);
+    let mut m = Mutation::new();
+    m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s("a")) }).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let (copy, imports) = lp.peers[0].engine.move_thing(&t, a).unwrap();
+    set_edge(&mut lp.peers[0].engine, copy, r, Some(edge(Role::Read)), None);
+    lp.sync_all().unwrap();
+    let tags = ak("/t/tags");
+    let before = states(&mut lp.peers[2].engine, &[t, copy]);
+    let ih = lp.peers[0].engine.header(imports.iter().find(|i| lp.peers[0].engine.header(i).unwrap().origins.iter().any(|o| o.commit == c)).unwrap()).unwrap();
+    let ch = lp.peers[0].engine.header(&c).unwrap();
+    let hi = ch.aspects.iter().find(|x| x.tid == t && x.ak == tags).unwrap().hi;
+    // the reader adds "evil" at (Commit(C), hi + 10) to the copy's state, and snapshots it
+    let cur = lp.peers[1].engine.state(&copy, &tags).unwrap().unwrap().clone();
+    let mut batch = Batch::new(&cur, Writer::new(ch.ts, Source::commit(c), hi + 10));
+    batch.apply(&PathOp { path: Vec::new(), op: Op::Add(s("evil")) }, &osis_crdt::AnyView).unwrap();
+    let (extra, _) = batch.finish().unwrap();
+    let mut f = cur;
+    f.join(extra);
+    lp.advance(1_000);
+    let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
+    let forged = forge_snapshot_full(&mut lp, 1, copy, &tags, now, f, osis_crdt::Frontiers::default(), BTreeMap::from([(c, (a, ih.ts))]));
+    let got = lp.peers[2].engine.ingest(&forged, Vec::new());
+    assert_eq!(states(&mut lp.peers[2].engine, &[t, copy]), before, "a reader's snapshot added an element as the import's: {got:?}, {:?}", lp.peers[2].engine.get(&copy, &tags));
+}

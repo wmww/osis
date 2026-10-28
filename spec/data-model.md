@@ -152,7 +152,7 @@ aspect /name: string;
 aspect /body: markdown;
 aspect /tag: struct { 0 color: option<string> };
 ```
-- `creation`'s fields 0 and 1 are exclusive (spec/wire.md §3): `/created` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
+- `creation`'s fields 0 and 1 are exclusive and field 3 needs field 0 (spec/wire.md §3): `/created` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
 - `option` fields default to `none`. Default retention of `/node`, `/reach`, `/seen`, `/group`, `/name`, `/body` and `/tag`: `author`, no keep bounds; membership-class aspects and `/created` have the fixed retention of spec/commits.md §5.
 - Box payloads, history box layout and AD tuples: spec/wire.md §7.
 

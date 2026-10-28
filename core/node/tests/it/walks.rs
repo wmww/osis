@@ -972,6 +972,48 @@ fn foreign_import_does_not_claim_carried_writes_spec_perm_7() {
     open_equals_rebuild_any(&mut lp.peers[2].engine, &[t, copy], "after the foreign import");
 }
 
+// spec/requirements.md, Decentralization; spec/permissions.md §7, spec/commits.md §4: a foreign
+// import whose parts a node does not hold (the copy not synced) waits for the copy's creation
+// record like one with parts and is then refused. Applied as a bare header it became the claim
+// for the carried writes once the copy arrived (its writes judged as the reader's: gone), while
+// a node that got its parts refused it and showed them.
+#[test]
+fn foreign_import_without_parts_waits_for_the_record_spec_perm_7() {
+    let mut lp = LocalPeer::new(3, 0xd0b5, T0).unwrap();
+    lp.sync_all().unwrap();
+    let (a, x) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+    let t = new_thing(&mut lp, 0);
+    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    add_tag(&mut lp, 0, t, "a");
+    lp.sync_all().unwrap();
+    let (copy, imports) = lp.peers[0].engine.move_thing(&t, a).unwrap();
+    set_edge(&mut lp.peers[0].engine, copy, x, Some(edge(Role::Read)), None);
+    lp.peers[0].engine.snapshot(&copy, &ak("/t/tags")).unwrap().unwrap();
+    let pk0 = lp.packages(0).unwrap();
+    for p in &pk0 {
+        lp.deliver(1, p).unwrap();
+    }
+    // the reader imports t into the copy, so as to be the least import
+    let foreign = lp.peers[1].engine.reimport(&t, &copy).unwrap();
+    assert!(!foreign.is_empty());
+    // peer 2: the foreign imports without parts first, then everything but the move's imports
+    let pk1 = lp.packages(1).unwrap();
+    for p in pk1.iter().filter(|p| foreign.contains(&p.id)) {
+        let mut b = osis_commit::CommitBlob::decode(&p.bytes).unwrap();
+        b.parts.clear();
+        let r = lp.peers[2].engine.ingest(&b.encode(), Vec::new()).unwrap();
+        assert!(matches!(r, osis_node::Ingested::Pending(_, osis_node::Reason::UnknownCreated(c)) if c == copy), "waits for the copy's record: {r:?}");
+    }
+    for p in pk0.iter().filter(|p| !imports.contains(&p.id)) {
+        lp.deliver(2, p).unwrap();
+    }
+    assert!(lp.peers[2].engine.pending().is_empty(), "refused once the record is held");
+    let shown = lp.peers[2].engine.get(&copy, &ak("/t/tags")).unwrap();
+    assert!(format!("{shown:?}").contains("\"a\""), "the snapshot's carried writes, judged by its entry: {shown:?}");
+    open_equals_rebuild_any(&mut lp.peers[2].engine, &[t, copy], "after the foreign import");
+}
+
 // spec/crdt.md §8 `Authors`, spec/permissions.md §5.2, §7: the claim for an origin's writes a
 // snapshot of a copy carries, where no held import has that aspect, is the least held import;
 // a lesser valid import arriving after a greater invalid one changes it, re-judging the carried

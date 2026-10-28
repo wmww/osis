@@ -261,6 +261,11 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     let mut x = content.clone();
     x.origins.push(Origin { commit: CommitId([1; 32]), author: AUTHOR, actor: ACTOR, ts: ts(5) });
     out.push(reject("origins on a non-import", "spec/wire.md §4", &x, "origins"));
+    let mut x = import().header;
+    let mut other = x.aspects[0].clone();
+    other.tid = Tid::from_bytes([0xff; 15]);
+    x.aspects.push(other);
+    out.push(reject("import on several things", "spec/permissions.md §7", &x, "import-things"));
     let frontier = Some(Value::Map(Default::default()));
     let mut x = m.clone();
     x.kind = Kind::MembershipSnapshot;
