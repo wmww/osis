@@ -14,7 +14,7 @@ Read this if you coordinate, if a build or test run feels slow, or if disk is gr
   - tier 1: `cargo test --workspace` (`--no-run` to build; narrow with `--test it <module>::` and name filters; `cargo build --workspace --all-targets` and `cargo run --bin <name>` reuse the artifacts)
   - dev loop on one crate: `cargo test -p <crate>` (narrowed the same way; builds only that crate's tree, the same artifacts the workspace build uses)
   - lint: `cargo clippy --workspace --all-targets -- -D warnings` and `cargo clippy-net -- -D warnings` (the one networking feature set, 73 extra crates built once per worktree)
-  - networking tier 2: `cargo test-net -- --ignored driver:: runtime:: quic relay lan` (always with filters: unfiltered it runs every ignored test, timing budgets included; 84 tests, about 20 s)
+  - networking tier 2: `cargo test-net -- --ignored driver:: runtime:: quic relay lan` (always with filters: unfiltered it runs every ignored test of the workspace in dev, timing budgets included, which takes far longer; 25 tests, about 20 s)
   - sim: `cargo run --bin sim-sweep -- --seeds N --budget-secs T`
   - tier 2 by name: `cargo test --workspace -- --ignored <name>`; the whole set `PROPTEST_CASES=256 cargo test --workspace -- --include-ignored --skip scale:: --skip bench:: --skip budget --skip sweep`
   - release, timing only (`scale::`, `bench::`, `budget*`, cost repros in issues/): `cargo test --release -p <crate> --test it -- --ignored <filter>` (the crate holding the test), in your worktree; keep `target/release` (a few hundred MB), the next timing check is cheaper for it
