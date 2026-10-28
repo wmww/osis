@@ -86,9 +86,12 @@ def release(arg=None):
 
 
 def trim(keep=2):
-    free = sorted((p for p in home.glob("wt*") if not (claims / p.name).exists()),
-                  key=lambda p: int(p.name[2:]))
-    for p in free[int(keep):]:
+    """Remove the free worktrees beyond the <keep> lowest-numbered ones (claimed ones count toward
+    <keep> and are never removed), so two stay warm per device plus whatever running agents hold."""
+    all_ = sorted(home.glob("wt*"), key=lambda p: int(p.name[2:]))
+    for p in all_[int(keep):]:
+        if (claims / p.name).exists():
+            continue
         if not clean(p):
             print(f"wt: {p} is dirty, kept", file=sys.stderr)
             continue
