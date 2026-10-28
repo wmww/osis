@@ -1,6 +1,8 @@
 # Versioning: conventions and rationale
 > Summary: The problem, why the core rules of spec/versioning.md suffice, and the codegen conventions above them (decided with owner): transitions with read/write conversions and `succeeds` links, the timestamp tie-break between forms, the per-write policy for which form to write, blessed paths for hard changes, a worked example, rejected options, what osis-schema implements and what is open.
 
+Pre-release (CLAUDE.md, spec/overview.md): none of this constrains today's formats; they change in place with no readers for earlier builds' data.
+
 ## Problem
 Many apps and app versions share data like a file format. Apps do not always upgrade schemas, users do not always upgrade apps, nodes on different versions must sync, and the sync layer itself must evolve (rarely). Schema maintainers will make arbitrarily large breaking changes; every such change needs a path no harder than the cursed alternative.
 
