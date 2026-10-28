@@ -268,15 +268,20 @@ impl SyncEngine {
         if over > 0 {
             self.diag(format!("label {l:?}: {over} unopened unstamped entries over the cap dropped"));
         }
-        if !gone.is_empty() {
-            self.engine.run(|tx| {
-                for b in &gone {
-                    tx.txn.delete_blob(b);
-                }
-                Ok(())
-            })?;
+        self.delete_blobs(&gone)
+    }
+
+    /// Deletes the bytes of blobs `ids` from the store.
+    pub(crate) fn delete_blobs(&mut self, ids: &[BlobId]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
         }
-        Ok(())
+        self.engine.run(|tx| {
+            for b in ids {
+                tx.txn.delete_blob(b);
+            }
+            Ok(())
+        })
     }
 
     /// Held read secrets of a group, newest first; then those derived from its owner's (a
@@ -443,14 +448,7 @@ impl SyncEngine {
                 gone.push(b);
             }
         }
-        if !gone.is_empty() {
-            self.engine.run(|tx| {
-                for b in &gone {
-                    tx.txn.delete_blob(b);
-                }
-                Ok(())
-            })?;
-        }
+        self.delete_blobs(&gone)?;
         for t in things {
             self.state.forget_done(&t);
         }
@@ -542,11 +540,7 @@ impl SyncEngine {
                 }
             }
             self.state.remove_blob(b);
-            let id = *b;
-            self.engine.run(|tx| {
-                tx.txn.delete_blob(&id);
-                Ok(())
-            })?;
+            self.delete_blobs(&[*b])?;
         }
         Ok(())
     }
@@ -558,11 +552,7 @@ impl SyncEngine {
         if self.state.blobs.contains_key(b) || !self.engine.has_blob(b) || self.state.named(b) || !self.dropped_chunks(&BTreeSet::from([*b]))?.0.contains_key(b) {
             return Ok(());
         }
-        let id = *b;
-        self.engine.run(|tx| {
-            tx.txn.delete_blob(&id);
-            Ok(())
-        })
+        self.delete_blobs(&[*b])
     }
 
     /// Forgets every commit blob holding a delta the engine dropped (purge, expiry, keep at
@@ -590,12 +580,7 @@ impl SyncEngine {
             return Ok(());
         }
         let gone: Vec<BlobId> = self.dropped_chunks(&held)?.0.into_keys().collect();
-        self.engine.run(|tx| {
-            for b in &gone {
-                tx.txn.delete_blob(b);
-            }
-            Ok(())
-        })
+        self.delete_blobs(&gone)
     }
 
     /// Fetches blobs by ID from every open label holding them (lazy chunk reads).
@@ -839,4 +824,3 @@ impl SyncEngine {
         Ok(())
     }
 }
-

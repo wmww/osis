@@ -1467,7 +1467,7 @@ impl SyncEngine {
 
     /// Entries this node knows under a label (tests).
     pub fn entries(&self, l: &LabelId) -> Vec<(osis_base::BlobId, EntryKind)> {
-        self.state.entries.iter().filter(|((x, _), _)| x == l).map(|((_, b), e)| (*b, e.kind.clone())).collect()
+        self.state.label_entries(l).map(|(b, e)| (b, e.kind.clone())).collect()
     }
 
     /// The wrap and stamp this node keeps for an entry (tests).

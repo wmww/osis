@@ -250,6 +250,37 @@ fn decode_parts(r: &mut Rd<'_>) -> Result<Vec<(usize, usize)>> {
     Ok(v)
 }
 
+fn encode_addrs(w: Wr, addrs: &[Address]) -> Wr {
+    let mut w = w.u32(addrs.len() as u32);
+    for a in addrs {
+        w = w.bytes(a.url.as_bytes()).raw(&a.key);
+    }
+    w
+}
+
+fn decode_addrs(r: &mut Rd<'_>, what: &'static str) -> Result<Vec<Address>> {
+    let n = r.u32()?;
+    let mut v = Vec::new();
+    for _ in 0..n {
+        let url = String::from_utf8(r.bytes()?.to_vec()).map_err(|_| Error::Corrupt(what))?;
+        v.push(Address { url, key: r.arr()? });
+    }
+    Ok(v)
+}
+
+fn encode_commits(list: &[CommitId]) -> Vec<u8> {
+    list.iter().flat_map(|c| c.0).collect()
+}
+
+fn decode_commits(v: &[u8]) -> Result<Vec<CommitId>> {
+    let mut x = Rd::new(v);
+    let mut list = Vec::new();
+    while !x.is_empty() {
+        list.push(CommitId(x.arr()?));
+    }
+    Ok(list)
+}
+
 fn encode_entry(e: &Entry) -> Vec<u8> {
     let mut w = Wr::new().raw(&e.wrap).u8(u8::from(e.cert));
     w = match &e.stamp {
@@ -348,13 +379,7 @@ impl State {
                     s.gone.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)));
                 }
                 b"s" => {
-                    let body = CommitId(r.arr()?);
-                    let mut x = Rd::new(&v);
-                    let mut list = Vec::new();
-                    while !x.is_empty() {
-                        list.push(CommitId(x.arr()?));
-                    }
-                    s.carriers.insert(body, list);
+                    s.carriers.insert(CommitId(r.arr()?), decode_commits(&v)?);
                 }
                 b"x" => {
                     s.tombs.insert((LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).u64()?);
@@ -389,13 +414,7 @@ impl State {
                     s.stranded.insert(LabelId(r.arr()?), Rd::new(&v).u64()?);
                 }
                 b"j" => {
-                    let to = r.tid()?;
-                    let mut x = Rd::new(&v);
-                    let mut list = Vec::new();
-                    while !x.is_empty() {
-                        list.push(CommitId(x.arr()?));
-                    }
-                    s.direct.insert(to, list);
+                    s.direct.insert(r.tid()?, decode_commits(&v)?);
                 }
                 b"n" => {
                     s.reach_policy.insert(r.tid()?, v.first() == Some(&1));
@@ -407,12 +426,7 @@ impl State {
                     let k = r.tid()?;
                     let mut x = Rd::new(&v);
                     let target = x.tid()?;
-                    let n = x.u32()?;
-                    let mut peers = Vec::new();
-                    for _ in 0..n {
-                        let url = String::from_utf8(x.bytes()?.to_vec()).map_err(|_| Error::Corrupt("link peer"))?;
-                        peers.push(Address { url, key: x.arr()? });
-                    }
+                    let peers = decode_addrs(&mut x, "link peer")?;
                     s.link_peers.insert(k, LinkPeer { target, peers });
                 }
                 b"d" => {
@@ -422,28 +436,20 @@ impl State {
                     let l = LabelId(r.arr()?);
                     let mut x = Rd::new(&v);
                     let thing = x.tid()?;
-                    let n = x.u32()?;
-                    let mut servers = Vec::new();
-                    for _ in 0..n {
-                        let url = String::from_utf8(x.bytes()?.to_vec()).map_err(|_| Error::Corrupt("hint"))?;
-                        servers.push(Address { url, key: x.arr()? });
-                    }
+                    let servers = decode_addrs(&mut x, "hint")?;
                     let via = if x.is_empty() { None } else { Some(x.tid()?) };
                     s.hints.insert(l, Hint { thing, servers, via });
                 }
                 _ => {}
             }
         }
-        let all: Vec<((LabelId, BlobId), Entry)> = s.entries.iter().map(|(k, e)| (*k, e.clone())).collect();
-        for ((l, b), e) in all {
-            s.index(l, b, &e, true);
+        let entries = std::mem::take(&mut s.entries);
+        for ((l, b), e) in &entries {
+            s.index(*l, *b, e, true);
         }
-        for (sv, l, b) in s.present.clone() {
-            s.present_by.insert((l, b, sv));
-        }
-        for (sv, l, b) in s.gone.clone() {
-            s.gone_by.insert((l, b, sv));
-        }
+        s.entries = entries;
+        s.present_by = s.present.iter().map(|(sv, l, b)| (*l, *b, *sv)).collect();
+        s.gone_by = s.gone.iter().map(|(sv, l, b)| (*l, *b, *sv)).collect();
         Ok(s)
     }
 
@@ -484,6 +490,16 @@ impl State {
             _ => Touch::Blob(b),
         };
         self.touched.insert((l, t));
+    }
+
+    /// The entries under `l`.
+    pub fn label_entries(&self, l: &LabelId) -> impl Iterator<Item = (BlobId, &Entry)> + '_ {
+        self.entries.range((*l, BlobId([0; 32]))..=(*l, BlobId([0xff; 32]))).map(|((_, b), e)| (*b, e))
+    }
+
+    /// The commits with an entry under `l`.
+    pub fn label_commits(&self, l: &LabelId) -> impl Iterator<Item = CommitId> + '_ {
+        self.by_label_commit.range((*l, CommitId([0; 32]))..=(*l, CommitId([0xff; 32]))).map(|((_, c), _)| *c)
     }
 
     /// The commit entries under `l` of commit `c`.
@@ -557,27 +573,24 @@ impl State {
         self.version += 1;
     }
 
+    /// Forgets an entry, tombstoned (`tombs`).
     pub fn remove_entry(&mut self, l: LabelId, b: BlobId) {
-        self.touch(l, b);
-        if let Some(e) = self.entries.remove(&(l, b)) {
-            self.index(l, b, &e, false);
-            self.version += 1;
-            self.del(key(ENTRY, &[&l.0, &b.0]));
-            self.feed.deleted(l, b);
+        if self.drop_entry(l, b) {
             self.put(key(TOMB, &[&l.0, &b.0]), Wr::new().u64(self.now).take());
             self.tombs.insert((l, b), self.now);
         }
     }
 
-    /// Forgets an entry that never counted (junk a server announced): no tombstone.
-    pub fn drop_entry(&mut self, l: LabelId, b: BlobId) {
+    /// Forgets an entry that never counted (junk a server announced, an expired one): no
+    /// tombstone. Whether there was one.
+    pub fn drop_entry(&mut self, l: LabelId, b: BlobId) -> bool {
         self.touch(l, b);
-        if let Some(e) = self.entries.remove(&(l, b)) {
-            self.index(l, b, &e, false);
-            self.version += 1;
-            self.del(key(ENTRY, &[&l.0, &b.0]));
-            self.feed.deleted(l, b);
-        }
+        let Some(e) = self.entries.remove(&(l, b)) else { return false };
+        self.index(l, b, &e, false);
+        self.version += 1;
+        self.del(key(ENTRY, &[&l.0, &b.0]));
+        self.feed.deleted(l, b);
+        true
     }
 
     /// Forgets tombstones past their lifetime.
@@ -708,10 +721,7 @@ impl State {
 
     /// Records the sharer node a followed link names (its K, target and `peer://` addresses).
     pub fn set_link_peer(&mut self, k: Tid, lp: LinkPeer) {
-        let mut w = Wr::new().raw(lp.target.as_bytes()).u32(lp.peers.len() as u32);
-        for a in &lp.peers {
-            w = w.bytes(a.url.as_bytes()).raw(&a.key);
-        }
+        let w = encode_addrs(Wr::new().raw(lp.target.as_bytes()), &lp.peers);
         self.put(key(LINK_PEER, &[k.as_bytes()]), w.take());
         self.link_peers.insert(k, lp);
     }
@@ -781,7 +791,7 @@ impl State {
                 list.push(*c);
             }
         }
-        let v: Vec<u8> = list.iter().flat_map(|c| c.0).collect();
+        let v = encode_commits(list);
         self.put(key(DIRECT, &[to.as_bytes()]), v);
     }
 
@@ -829,7 +839,7 @@ impl State {
         if !list.contains(&snapshot) {
             list.push(snapshot);
         }
-        let v: Vec<u8> = list.iter().flat_map(|c| c.0).collect();
+        let v = encode_commits(list);
         self.put(key(CARRIER, &[&body.0]), v);
     }
 
@@ -861,10 +871,7 @@ impl State {
         if h.via.is_none() {
             h.via = self.hints.get(&l).and_then(|x| x.via);
         }
-        let mut w = Wr::new().raw(h.thing.as_bytes()).u32(h.servers.len() as u32);
-        for a in &h.servers {
-            w = w.bytes(a.url.as_bytes()).raw(&a.key);
-        }
+        let mut w = encode_addrs(Wr::new().raw(h.thing.as_bytes()), &h.servers);
         if let Some(v) = &h.via {
             w = w.raw(v.as_bytes());
         }
@@ -891,7 +898,6 @@ impl State {
         self.by_commit.get(c)?.iter().find(|b| !skip(b) && self.blobs.get(b).is_some_and(|r| !r.cert && r.parts == parts)).copied()
     }
 }
-
 
 /// Removes, shredded, the sync records of what the engine forgets (inside its transaction,
 /// `retention::forget`): everything about `labels`, the blob records of `commits` and of blobs
