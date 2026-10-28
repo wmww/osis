@@ -1242,6 +1242,12 @@ impl Engine {
         self.core.owner(tid)
     }
 
+    /// `tid`, then its owners up the chain: at most `MAX_OWNER_DEPTH` owner links
+    /// (spec/permissions.md §1), so a cycle ends too.
+    pub fn owner_chain(&self, tid: &Tid) -> impl Iterator<Item = Tid> + '_ {
+        std::iter::successors(Some(*tid), |t| self.core.owner(t)).take(osis_base::format::MAX_OWNER_DEPTH + 1)
+    }
+
     /// This node's tid.
     pub fn tid(&self) -> Tid {
         self.core.id.tid()

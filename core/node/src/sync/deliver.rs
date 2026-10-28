@@ -270,13 +270,11 @@ impl SyncEngine {
     /// The actor up `to`'s owner chain whose `/keys` names `label` as its inbox (its deposit
     /// seed signs the deposit).
     pub(crate) fn inbox_owner(&mut self, to: &Tid, label: &LabelId) -> Result<Option<Tid>> {
-        let mut cur = *to;
-        for _ in 0..64 {
-            if self.engine.get_typed(&cur, &ct::KEYS)?.and_then(|k| k.inbox).is_some_and(|i| i.label == *label) {
-                return Ok(Some(cur));
+        let chain: Vec<Tid> = self.engine.owner_chain(to).collect();
+        for t in chain {
+            if self.engine.get_typed(&t, &ct::KEYS)?.and_then(|k| k.inbox).is_some_and(|i| i.label == *label) {
+                return Ok(Some(t));
             }
-            let Some(owner) = self.engine.owner(&cur) else { return Ok(None) };
-            cur = owner;
         }
         Ok(None)
     }
