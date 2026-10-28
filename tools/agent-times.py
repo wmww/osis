@@ -64,15 +64,18 @@ def analyze(path):
     model = 0.0
     last_res = None
     longest = []
+    prev_end = None
     for i in order:
         t, name, inp = uses[i]
+        if prev_end is not None and prev_end > t:  # several calls issued at once run one after another
+            t = prev_end
         if last_res is not None:
-            model += (t - last_res).total_seconds()
+            model += max(0.0, (t - last_res).total_seconds())
             last_res = None
         if i not in res:
             continue
-        d = (res[i][0] - t).total_seconds()
-        last_res = res[i][0]
+        d = max(0.0, (res[i][0] - t).total_seconds())
+        prev_end = last_res = res[i][0]
         r = res[i][1]
         cmd = inp.get("command", "") if isinstance(inp, dict) else ""
         if name != "Bash":
