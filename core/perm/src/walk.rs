@@ -423,6 +423,28 @@ pub(crate) struct Walked {
     pub found: Vec<WriteId>,
 }
 
+/// A commit `c` to place in a walk (`Walked::insert`) and what the walk is over: `input`
+/// (holding `c`), its `items` (not yet listing `c`), D and the epoch starts.
+#[derive(Clone, Copy)]
+pub(crate) struct Place<'a> {
+    pub input: &'a Input,
+    pub items: &'a Items,
+    pub dropped: &'a BTreeMap<WriteId, Point>,
+    pub epoch: &'a BTreeMap<Tid, CommitId>,
+    pub c: &'a MembershipCommit,
+}
+
+/// The later items that may read a placed commit's edges (`Walked::dependents`): `dep`, and
+/// `audited`, those that may only through an audit of a node of `a` (what reaches a member
+/// of its edges) on a thing of `f` (what a target of them reaches).
+#[derive(Default)]
+struct Readers {
+    dep: BTreeSet<usize>,
+    audited: BTreeSet<usize>,
+    a: BTreeSet<Tid>,
+    f: BTreeSet<Tid>,
+}
+
 /// What `Walked::insert` did with a commit new to the walk.
 #[derive(Clone, Copy)]
 pub(crate) enum Placement {
@@ -506,8 +528,8 @@ impl Walked {
     /// its first write moves to `p`, up to the old first one (now recorded). Those items are
     /// walked again in a shadow at their place, with and without its edges (`place_shadowed`);
     /// with none and nothing audited by it, its changes are spliced in directly (`place_plain`).
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn insert(&mut self, input: &Input, items: &Items, dropped: &BTreeMap<WriteId, Point>, epoch: &BTreeMap<Tid, CommitId>, c: &MembershipCommit, before: Edges, first: &BTreeMap<Tid, Option<Point>>, fresh: &BTreeSet<Tid>) -> Placement {
+    pub(crate) fn insert(&mut self, cx: &Place, before: Edges, first: &BTreeMap<Tid, Option<Point>>, fresh: &BTreeSet<Tid>) -> Placement {
+        let Place { input, items, dropped, epoch, c } = *cx;
         let p = c.point();
         if dropped.values().any(|d| *d >= p) {
             return Placement::Declined;
@@ -532,22 +554,22 @@ impl Walked {
         if keys.len() < placed.len() {
             return Placement::Declined;
         }
-        let mut dep: BTreeSet<usize> = BTreeSet::new();
-        let (mut audited, mut a, mut f) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+        let mut r = Readers::default();
         if !placed.is_empty() {
             // the widest role and whether an invite the new values or the old ones (at `p`) hold
             let olds = placed.iter().map(|(_, o, _)| before.get(&o.member, &o.target).copied());
             let vals: Vec<Edge> = olds.chain(placed.iter().map(|(_, o, _)| o.edge)).flatten().collect();
             let level = vals.iter().map(|e| e.role).max().unwrap_or(Role::Read);
             let invite = vals.iter().any(|e| e.invite.is_some());
-            if !self.dependents(input, items, epoch, i, &keys, fresh, level, invite, &mut dep, &mut audited, &mut a, &mut f) {
+            let Some(x) = self.dependents(cx, i, &keys, fresh, level, invite) else {
                 return Placement::Declined;
-            }
+            };
+            r = x;
         }
         // later falls of its author on what it applies on: their audits read it
         for (_, o, _) in &placed {
             for f in self.falls.get(&(c.author, o.target)).into_iter().flatten().filter(|f| f.point >= p) {
-                dep.extend(items.at(f.point));
+                r.dep.extend(items.at(f.point));
             }
         }
         // targets where its author's first held write moves to `p`: falls there up to the old
@@ -569,12 +591,12 @@ impl Walked {
                         Item::Snap(_) => false,
                     };
                     if audits {
-                        dep.insert(j);
+                        r.dep.insert(j);
                     }
                 }
             }
         }
-        if placed.is_empty() && dep.is_empty() && audited.is_empty() {
+        if placed.is_empty() && r.dep.is_empty() && r.audited.is_empty() {
             let m = self.marks.get(i).copied().unwrap_or((self.log.len(), self.history.len()));
             self.marks.insert(i, m);
             return Placement::Idle;
@@ -582,15 +604,15 @@ impl Walked {
         // an explicit write that restores more than it sets audits (no later write on its edge,
         // so its state there is its state at the end)
         let audits = placed.iter().any(|(_, o, attr)| matches!(attr, Attr::By(Class::Chain | Class::Edge)) && exceeds(self.restored((o.member, o.target)), o.edge.map(|e| Edge { since: None, ..e }), p.ts));
-        if !audits && dep.is_empty() && audited.is_empty() {
+        if !audits && r.dep.is_empty() && r.audited.is_empty() {
             return self.place_plain(input, c, i, placed, before);
         }
         // (a cost choice: the items re-judged are the costly ones to walk, mostly audits of
         // many nodes; past an eighth of a long rest, walking on from `c` is cheaper)
-        if too_costly(dep.len() + audited.len(), items.list.len().saturating_sub(i)) {
+        if too_costly(r.dep.len() + r.audited.len(), items.list.len().saturating_sub(i)) {
             return Placement::Declined;
         }
-        self.place_shadowed(input, items, dropped, epoch, c, i, &keys, before, &moved, &dep, &audited, &a, &f)
+        self.place_shadowed(cx, i, &keys, before, &moved, &r)
     }
 
     /// `insert` of `c`'s `placed` writes when nothing later reads them and they audit nothing:
@@ -637,8 +659,9 @@ impl Walked {
     /// `moved`, up to the old first write) at the items checked; when `c` itself drops
     /// anything new, declined; when an item drops more or does otherwise with `c`, the walk
     /// is exact up to it (`From`).
-    #[allow(clippy::too_many_arguments)]
-    fn place_shadowed(&mut self, input: &Input, items: &Items, dropped: &BTreeMap<WriteId, Point>, epoch: &BTreeMap<Tid, CommitId>, c: &MembershipCommit, i: usize, keys: &BTreeSet<(Tid, Tid)>, before: Edges, moved: &BTreeMap<Tid, Option<Point>>, dep: &BTreeSet<usize>, audited: &BTreeSet<usize>, a: &BTreeSet<Tid>, f: &BTreeSet<Tid>) -> Placement {
+    fn place_shadowed(&mut self, cx: &Place, i: usize, keys: &BTreeSet<(Tid, Tid)>, before: Edges, moved: &BTreeMap<Tid, Option<Point>>, r: &Readers) -> Placement {
+        let Place { input, items, dropped, epoch, c } = *cx;
+        let Readers { dep, audited, a, f } = r;
         let p = c.point();
         let end = (self.log.len(), self.history.len());
         let (_, h) = self.marks.get(i).copied().unwrap_or(end);
@@ -956,27 +979,23 @@ impl Walked {
         Some((base, mine, lowered))
     }
 
-    /// The items from `i` on that may read what setting edges `keys` changes (`insert`): into
-    /// `out`, and into `audits` those that may read it only through an audit of a node of
-    /// `a` (A: what reaches a member of `keys`, set here) on a thing of `f` (F: what a target
-    /// of `keys` reaches, set here); false when one writes such an edge
-    /// or is the epoch start of a thing of one. `level` is the widest role among their values
+    /// The items from `i` on that may read what setting edges `keys` changes (`insert`), with
+    /// A (what reaches a member of `keys`) and F (what a target of `keys` reaches); `None` when
+    /// one writes such an edge or is the epoch start of a thing of one. `level` is the widest role among their values
     /// before and after, `invite` whether one has an invite. A path through them is at most
     /// `level` wide, so roles change only up to it: classes (admin on the chain or the thing,
     /// invites) change only through an admin value or an invite, met there or on a member in
     /// F; the role thresholds demotions record (write, admin) only through a value of write or
     /// more. What reaches what changes whatever the roles: an explicit write on (m, t) with
     /// `m` in F asks whether its author reaches `m` (the standing it keeps).
-    #[allow(clippy::too_many_arguments)]
-    fn dependents(&self, input: &Input, items: &Items, epoch: &BTreeMap<Tid, CommitId>, i: usize, keys: &BTreeSet<(Tid, Tid)>, fresh: &BTreeSet<Tid>, level: Role, invite: bool, out: &mut BTreeSet<usize>, audits: &mut BTreeSet<usize>, a: &mut BTreeSet<Tid>, f: &mut BTreeSet<Tid>) -> bool {
+    fn dependents(&self, cx: &Place, i: usize, keys: &BTreeSet<(Tid, Tid)>, fresh: &BTreeSet<Tid>, level: Role, invite: bool) -> Option<Readers> {
+        let Place { input, items, epoch, .. } = *cx;
         let rest = items.list.get(i..).unwrap_or_default();
         if rest.is_empty() {
-            return true;
+            return Some(Readers::default());
         }
-        *a = input.ever_back(keys.iter().map(|k| k.0));
-        let a = &*a;
-        *f = input.ever_forward(keys.iter().map(|k| k.1));
-        let f = &*f;
+        let (a, f) = (input.ever_back(keys.iter().map(|k| k.0)), input.ever_forward(keys.iter().map(|k| k.1)));
+        let (mut dep, mut audited) = (BTreeSet::new(), BTreeSet::new());
         let things: BTreeSet<Tid> = keys.iter().map(|k| k.1).collect();
         let classes = level == Role::Admin || invite || f.iter().any(|t| input.ever.invites.contains(t));
         let roles = classes || level >= Role::Write;
@@ -1001,7 +1020,7 @@ impl Walked {
             let reads = match item {
                 Item::Commit(d) => {
                     if d.ops.iter().any(|o| keys.contains(&(o.member, o.target))) {
-                        return false;
+                        return None;
                     }
                     let author = classes && a.contains(&d.author) && d.ops.iter().any(|o| f.contains(&o.target) || f.contains(&o.member));
                     let ops = d.ops.iter().enumerate().map(|(k, o)| {
@@ -1015,28 +1034,28 @@ impl Walked {
                 }
                 Item::Snap(s) => {
                     if things.contains(&s.thing) && epoch.get(&s.thing) == Some(&s.id) {
-                        return false;
+                        return None;
                     }
                     2 * u8::from(things.contains(&s.thing) || (classes && a.contains(&s.author) && f.contains(&s.thing)))
                 }
                 Item::Virtual(v) => {
                     if keys.contains(&(v.member, v.thing)) {
-                        return false;
+                        return None;
                     }
                     if v.audit.is_some() { explicit(&v.member, &v.thing) } else { 0 }
                 }
             };
             match reads {
                 2 => {
-                    out.insert(i + j);
+                    dep.insert(i + j);
                 }
                 1 => {
-                    audits.insert(i + j);
+                    audited.insert(i + j);
                 }
                 _ => {}
             }
         }
-        true
+        Some(Readers { dep, audited, a, f })
     }
     /// Things (thing, owner) whose owner link is new, none named by the walk's items before
     /// log position `cut` (the walk goes on from there, or `cut` is the log's end): before it

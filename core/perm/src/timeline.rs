@@ -302,7 +302,8 @@ impl Timeline {
             let n0 = self.walked.history.len();
             let h = self.walked.marks.get(self.items.place(c)).map_or(n0, |m| m.1);
             let before = self.edges_before(h);
-            let pl = self.walked.insert(&self.input, &self.items, &self.dropped, &self.epoch_starts, c, before, &first, &fresh);
+            let cx = walk::Place { input: &self.input, items: &self.items, dropped: &self.dropped, epoch: &self.epoch_starts, c };
+            let pl = self.walked.insert(&cx, before, &first, &fresh);
             match pl {
                 walk::Placement::Idle => {
                     self.items.add(std::slice::from_ref(c));
