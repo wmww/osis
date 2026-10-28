@@ -360,11 +360,15 @@ impl crate::Engine {
             return Ok(());
         }
         self.run(|tx| {
-            let cands = &mut tx.core.hint_candidates;
-            if !cands.contains_key(&c) && cands.len() >= MAX_HINT_COMMITS {
-                cands.pop_first();
+            let cands = &mut tx.core.ix.hint_candidates;
+            if !cands.contains_key(&c) {
+                if cands.len() >= MAX_HINT_COMMITS
+                    && let Some(first) = cands.keys().next().copied()
+                {
+                    cands.remove(&first);
+                }
+                cands.insert(c, hints);
             }
-            cands.entry(c).or_insert(hints);
             tx.core.promote_hints();
             Ok(())
         })
@@ -379,9 +383,9 @@ impl Core {
     /// touching it with valid deltas, by an author with admin on it at the commit's `ts`, and
     /// only while no hint and no `/keys` with keysets is held for it (the first stays).
     pub(crate) fn promote_hints(&mut self) {
-        let applied: Vec<CommitId> = self.hint_candidates.keys().filter(|c| self.ix.commits.contains_key(c)).copied().collect();
+        let applied: Vec<CommitId> = self.ix.hint_candidates.keys().filter(|c| self.ix.commits.contains_key(c)).copied().collect();
         for c in applied {
-            let Some(hints) = self.hint_candidates.remove(&c) else { continue };
+            let Some(hints) = self.ix.hint_candidates.remove(&c) else { continue };
             let Some(m) = self.ix.commits.get(&c) else { continue };
             let h = m.header.clone();
             let ok: Vec<(Tid, Value)> = hints

@@ -398,6 +398,11 @@ indexes! {
     pub departures: JMap<Tid, (Vec<osis_keys::Departure>, Option<WallMs>)>,
     /// `/secrets` writes of applied commits waiting for the keys of the boxes they remove.
     pub secrets_unresolved: JMap<(CommitId, usize), crate::apply::keys::Unresolved>,
+    /// Hints of opened inbox payloads whose commit has not applied yet (not persisted).
+    pub hint_candidates: JMap<CommitId, Vec<(Tid, osis_base::Value)>>,
+    /// Things a roster snapshot of which was kept out of perm for a linked frontier not held
+    /// here (`validity::add_membership`): no roster snapshot of them is written.
+    pub frontier_unknown: JSet<Tid>,
 }
 
 /// A held compaction snapshot of an aspect: `ts`, ID, frontiers.
@@ -437,14 +442,9 @@ pub struct Core {
     pub stale_things: BTreeSet<Tid>,
     pub stale_commits: BTreeSet<CommitId>,
     pub stale_all: bool,
-    /// Hints of opened inbox payloads whose commit has not applied yet (not persisted).
-    pub hint_candidates: BTreeMap<CommitId, Vec<(Tid, osis_base::Value)>>,
     /// Linked tenure frontiers decoded (by link content hash) with their canonical size; content
     /// addressed, so never stale.
     pub frontiers: BTreeMap<[u8; 32], (Arc<osis_perm::Frontier>, usize)>,
-    /// Things a roster snapshot of which was kept out of perm for a linked frontier not held
-    /// here (`validity::add_membership`): no roster snapshot of them is written.
-    pub frontier_unknown: BTreeSet<Tid>,
     /// Schemas of local writes (typed views for undo).
     pub schemas: BTreeMap<osis_base::SchemaId, Arc<osis_schema::Schema>>,
     pub events: Events,
@@ -663,9 +663,7 @@ impl Core {
             key_salt,
             ix: Indexes::default(),
             waits: crate::apply::Waits::default(),
-            hint_candidates: BTreeMap::new(),
             frontiers: BTreeMap::new(),
-            frontier_unknown: BTreeSet::new(),
             schemas: BTreeMap::new(),
             events: Events::default(),
             written: Vec::new(),
@@ -1455,5 +1453,111 @@ mod tests {
         assert!(failed >= 6 + pks.len() / 2, "{failed} of {} failed", 6 + pks.len());
         assert_eq!(lp.peers[2].engine.core.ix.commits.len(), lp.peers[0].engine.core.ix.commits.len());
         assert!(lp.peers[2].engine.core.ix.pending.is_empty());
+    }
+
+    // spec/commits.md §4, §5: the same for compaction, keep-at-most drops and expiry by `tick`,
+    // deferred death replays, a commit received a part at a time, and delete-key hints (a
+    // failed promotion keeps its candidate).
+    #[test]
+    fn failed_transaction_restores_indexes_retention_spec_commits_4() {
+        use osis_schema::{Bound, PurgeBy, Retention};
+        let mut lp = LocalPeer::new(3, 952, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let (reg, kept) = (Ak::new("/t/reg").unwrap(), Ak::new("/t/kept").unwrap());
+        let mut failed = 0;
+        let g = failing(&mut lp.peers[0], &mut failed, |e| {
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, a);
+            write(&mut m, t, "new");
+            e.commit(m).map(|_| t)
+        });
+        failing(&mut lp.peers[0], &mut failed, |e| e.commit(member(g, b, Some(Role::Write))));
+        lp.sync(0, 1).unwrap();
+        lp.advance(10);
+        // an older write by 1, delivered last: a replay of the aspect's deaths
+        let mut m = Mutation::new();
+        m.set(g, &kept, &Value::Str("v".into())).unwrap();
+        let v = lp.peers[1].commit(m).unwrap().unwrap();
+        lp.advance(10);
+        let keep0 = Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(0) } };
+        let now = lp.peers[0].engine.now();
+        let two = failing(&mut lp.peers[0], &mut failed, |e| {
+            // two aspects: received a part at a time below; one expires
+            let mut m = Mutation::new();
+            m.retention(g, &kept, keep0).unwrap();
+            m.set(g, &kept, &Value::Str("w".into())).unwrap();
+            write(&mut m, g, "w");
+            m.expires(g, &reg, WallMs(now.0 + 60_000)).unwrap();
+            e.commit(m).map(Option::unwrap)
+        });
+        lp.advance(10);
+        failing(&mut lp.peers[0], &mut failed, |e| {
+            let mut m = Mutation::new();
+            m.set(g, &kept, &Value::Str("y".into())).unwrap();
+            e.commit(m)
+        });
+        failing(&mut lp.peers[0], &mut failed, |e| e.snapshot(&g, &reg));
+        let vpk = lp.packages(1).unwrap().into_iter().find(|p| p.id == v).unwrap();
+        failing(&mut lp.peers[0], &mut failed, |e| e.ingest(&vpk.bytes, vpk.blobs.clone()));
+        // peer 2: the two-aspect commit's parts one at a time, the rest with deaths deferred
+        let pks = lp.packages(0).unwrap();
+        let tpk = pks.iter().find(|p| p.id == two).unwrap().clone();
+        let blob = osis_commit::CommitBlob::decode(&tpk.bytes).unwrap();
+        let first = osis_commit::rewrite(&blob, |ai, _| ai != 0).encode();
+        failing(&mut lp.peers[2], &mut failed, |e| e.defer_deaths(true));
+        for pk in pks.iter().filter(|p| p.id != two) {
+            failing(&mut lp.peers[2], &mut failed, |e| e.ingest(&pk.bytes, pk.blobs.clone()));
+        }
+        failing(&mut lp.peers[2], &mut failed, |e| e.ingest(&first, tpk.blobs.clone()));
+        failing(&mut lp.peers[2], &mut failed, |e| e.ingest(&tpk.bytes, tpk.blobs.clone()));
+        failing(&mut lp.peers[2], &mut failed, |e| e.ingest(&vpk.bytes, vpk.blobs.clone()));
+        failing(&mut lp.peers[2], &mut failed, |e| e.defer_deaths(false));
+        // past the grace and the expiry: drops and expiry run on both
+        lp.advance(2 * 3_600_000);
+        for i in [0, 2] {
+            failing(&mut lp.peers[i], &mut failed, |e| e.tick());
+        }
+        let s = failing(&mut lp.peers[0], &mut failed, |e| e.snapshot(&g, &kept)).unwrap();
+        let spk = lp.peers[0].engine.package(&s).unwrap().unwrap();
+        failing(&mut lp.peers[2], &mut failed, |e| e.ingest(&spk.bytes, spk.blobs.clone()));
+        assert!(failed >= 12, "{failed} failed");
+        assert_eq!(lp.peers[2].engine.get(&g, &kept).unwrap(), lp.peers[0].engine.get(&g, &kept).unwrap());
+        assert!(lp.peers[2].engine.core.ix.pending.is_empty());
+    }
+
+    // spec/wire.md §9: a transaction that promotes delete-key hints and then fails (here by an
+    // error, which leaves the store usable: no reopen drops the candidates) keeps them.
+    #[test]
+    fn failed_promotion_keeps_hint_candidates_spec_wire_9() {
+        let mut lp = LocalPeer::new(2, 953, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let a = lp.peers[0].engine.tid();
+        let mut m = Mutation::new();
+        let g = lp.peers[0].engine.new_thing(&mut m, a);
+        write(&mut m, g, "new");
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        let dk = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([7; 32])).verifying_key();
+        let hint = osis_label::InboxThing { tid: g, label: osis_base::LabelId([0; 16]), servers: Vec::new(), delete_keys: Some((dk, dk)) };
+        let e = &mut lp.peers[1].engine;
+        e.note_delete_hints(c, &[hint]).unwrap();
+        assert_eq!(e.core.ix.hint_candidates.len(), 1);
+        lp.sync(0, 1).unwrap();
+        let e = &mut lp.peers[1].engine;
+        assert!(!e.core.ix.delete_hints.contains_key(&g) && !e.core.ix.own_keys.contains(&g));
+        let r: crate::Result<()> = e.run(|tx| {
+            tx.core.promote_hints();
+            assert!(tx.core.ix.delete_hints.contains_key(&g));
+            Err(crate::Error::Misuse("fails after promoting"))
+        });
+        assert!(r.is_err());
+        assert!(!e.core.ix.delete_hints.contains_key(&g));
+        assert_eq!(e.core.ix.hint_candidates.len(), 1, "the candidate went with the failed transaction");
+        e.run(|tx| {
+            tx.core.promote_hints();
+            Ok(())
+        })
+        .unwrap();
+        assert!(e.core.ix.delete_hints.contains_key(&g));
     }
 }

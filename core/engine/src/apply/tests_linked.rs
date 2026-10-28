@@ -99,7 +99,7 @@ fn load_with_missing_frontier_blob_spec_perm_6() {
         Ok(())
     }).unwrap();
     lp.peers[0].restart(942).unwrap();
-    assert!(lp.peers[0].engine.core.frontier_unknown.contains(&t));
+    assert!(lp.peers[0].engine.core.ix.frontier_unknown.contains(&t));
     assert!(lp.peers[0].engine.roster_snapshot(&t, None).is_err(), "no snapshot from an unknown ledger");
     assert_eq!(tags(&mut lp, 0, t), Some(Value::Set([Value::Str("by x".into())].into())), "the full history still judges it");
 }

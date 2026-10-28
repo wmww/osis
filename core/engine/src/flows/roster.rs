@@ -44,7 +44,7 @@ impl Engine {
             return Err(Error::Permission { tid: t });
         }
         // a ledger whose frontier is not known here would be written without it
-        if self.core.frontier_unknown.contains(&t) {
+        if self.core.ix.frontier_unknown.contains(&t) {
             return Err(Error::Misuse("a roster snapshot of the thing has a linked frontier not held here"));
         }
         // the snapshot compacts the edge history departures are read from: every one must be
