@@ -50,7 +50,7 @@ fn validity(d: &str) -> String {
 fn reopen_same(e: &mut Engine, at: &str) -> usize {
     let (perm, index) = (e.perm_digest(false), e.index_digest());
     assert_eq!(perm, e.perm_digest(true), "{at}: before the reopen");
-    e.reload_index().unwrap();
+    e.reload().unwrap();
     assert_eq!(e.perm_digest(false), perm, "{at}: reopened");
     assert_eq!(e.perm_digest(true), perm, "{at}: from scratch");
     // held commits are listed in arrival order, which an open does not keep
@@ -63,7 +63,7 @@ fn reopen_same(e: &mut Engine, at: &str) -> usize {
 fn reopen_equals_rebuild(e: &mut Engine, at: &str) {
     assert!(e.index_current().unwrap(), "{at}: index not current");
     let rows = e.edges_rows().unwrap();
-    e.reload_index().unwrap();
+    e.reload().unwrap();
     let (perm, index) = (e.perm_digest(false), validity(&e.index_digest()));
     assert_eq!(perm, e.perm_digest(true), "{at}: reopened against from scratch");
     e.rebuild_index().unwrap();
@@ -178,7 +178,7 @@ fn damaged_edge_rows_are_rebuilt() {
         } else {
             e.damage_index(false).unwrap();
         }
-        e.reload_index().unwrap();
+        e.reload().unwrap();
         assert_eq!(e.perm_digest(false), perm, "damage {how}");
         assert_eq!(validity(&e.index_digest()), index, "damage {how}: index");
         assert_eq!(e.edges_rows().unwrap(), rows, "damage {how}: rows");
@@ -341,7 +341,7 @@ fn open_equals_rebuild(e: &mut Engine, things: &[Tid], at: &str) {
 fn open_equals_rebuild_decoding(e: &mut Engine, things: &[Tid], decoded: usize, at: &str) {
     assert!(e.index_current().unwrap(), "{at}: index not current");
     let had = (validity(&e.index_digest()), e.perm_digest(false), states(e, things));
-    e.reload_index().unwrap();
+    e.reload().unwrap();
     assert_eq!(e.headers_decoded(), decoded, "{at}: headers the open decoded");
     assert_eq!((validity(&e.index_digest()), e.perm_digest(false), states(e, things)), had, "{at}: opened from the index");
     e.rebuild_index().unwrap();
@@ -529,7 +529,7 @@ fn open_equals_rebuild_any(e: &mut Engine, things: &[Tid], at: &str) {
     assert!(e.index_current().unwrap(), "{at}: index not current");
     let take = |e: &mut Engine| (validity(&e.index_digest()), e.perm_digest(false), states(e, things));
     let had = take(e);
-    e.reload_index().unwrap();
+    e.reload().unwrap();
     same(&take(e), &had, &format!("{at}: opened from the index"));
     e.rebuild_index().unwrap();
     same(&take(e), &had, &format!("{at}: rebuilt"));

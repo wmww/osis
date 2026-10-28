@@ -469,29 +469,6 @@ impl Engine {
         })
     }
 
-    /// Replays the deaths of `(tid, ak)` from every held body and residue, as a validity flip
-    /// does (tests: the batched and windowed replays must agree with it).
-    #[doc(hidden)]
-    pub fn replay_deaths(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
-        self.settle_deaths()?;
-        let (tid, ak) = (*tid, ak.clone());
-        self.run(|tx| rejudge_deaths(tx, &tid, &ak))
-    }
-
-    /// Bytes of the residues of `(tid, ak)`'s dropped bodies (tests).
-    #[doc(hidden)]
-    pub fn residue_bytes(&mut self, tid: &Tid, ak: &Ak) -> Result<usize> {
-        let p = records::aspect_key(records::DROPPED, tid, ak);
-        self.run(|tx| {
-            let mut n = 0;
-            tx.scan(&p, |k, v| {
-                n += k.len() + v.len();
-                Ok(())
-            })?;
-            Ok(n)
-        })
-    }
-
     /// Keep bounds of a held body (wall ms): (keep at least, keep at most).
     pub fn body_keep(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<osis_commit::retention::Keep> {
         self.settle_deaths()?;

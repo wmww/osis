@@ -16,6 +16,7 @@ mod read;
 pub mod records;
 pub(crate) mod secrets;
 pub(crate) mod state;
+mod testing;
 pub mod write;
 
 pub use large::LiveTrees;
@@ -1171,13 +1172,6 @@ impl Engine {
         self.run(|tx| Ok(tx.txn.get_local(&k)?))
     }
 
-    /// Every key the store's current tree yields: what an attacker holding the device starts
-    /// from. Shredding tests.
-    #[doc(hidden)]
-    pub fn forensic_keys(&mut self) -> Result<Vec<[u8; 32]>> {
-        Ok(self.store.forensic_keys()?)
-    }
-
     /// Writes a local record of the API layer.
     pub fn set_app_record(&mut self, name: &str, value: &[u8]) -> Result<()> {
         let k = [records::APP, name.as_bytes()].concat();
@@ -1213,12 +1207,6 @@ impl Engine {
     /// The corrected wall clock.
     pub fn now(&self) -> WallMs {
         self.core.now()
-    }
-
-    /// About the bytes the pending commits' kept examinations hold (`apply::waits`).
-    #[doc(hidden)]
-    pub fn waits_bytes(&self) -> usize {
-        self.core.waits.bytes()
     }
 
     /// The clock correction from node-sync (spec/sync.md §6).
@@ -1324,8 +1312,9 @@ impl Engine {
     }
 
     /// Rebuilds every in-memory cache and index from the store (keeps identity, clock and
-    /// subscribers).
-    pub(crate) fn reload(&mut self) -> Result<()> {
+    /// subscribers; tests call it for what an open reads).
+    #[doc(hidden)]
+    pub fn reload(&mut self) -> Result<()> {
         let rebuilt = match self.load_fresh(false) {
             Ok(r) => r,
             // a persisted index that does not decode is rebuilt from the commit records

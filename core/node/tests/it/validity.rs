@@ -539,7 +539,7 @@ fn snapshot_before_grant_then_valid_spec_perm_5_2() {
     assert_eq!(tags(&mut lp, 2, d), BTreeSet::new(), "Bob's carried write is invalid without his grant");
     let e = &mut lp.peers[2].engine;
     let before = e.index_digest();
-    e.reload_index().unwrap();
+    e.reload().unwrap();
     assert_eq!(e.index_digest(), before, "loaded from the persisted index");
     e.rebuild_index().unwrap();
     assert_eq!(e.index_digest(), before, "rebuilt from the commit records");

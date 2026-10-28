@@ -57,7 +57,7 @@ fn refused_inbox_deposit_retried_spec_sync_3() {
     let held = |d: String| d.lines().filter(|l| !l.starts_with("held ")).collect::<Vec<_>>().join("\n");
     assert!(e.index_current().unwrap());
     let (perm, index, rows) = (e.perm_digest(false), held(e.index_digest()), e.edges_rows().unwrap());
-    e.reload_index().unwrap();
+    e.reload().unwrap();
     assert_eq!(e.role_on(&g), Some(Role::Read), "reopened");
     assert_eq!((e.perm_digest(false), held(e.index_digest())), (perm.clone(), index.clone()), "reopened");
     e.rebuild_index().unwrap();

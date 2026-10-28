@@ -270,11 +270,11 @@ fn persisted_index_equals_rebuild_spec_perm_5_2() {
     assert_eq!(e.get(&d, &ak("/t/reg")).unwrap(), Some(s("bob before")), "and invalid here");
     let before = e.index_digest();
     assert!(before.contains("false"), "an invalid part is indexed");
-    e.reload_index().unwrap();
+    e.reload().unwrap();
     assert_eq!(e.index_digest(), before, "loaded from the persisted index");
     e.rebuild_index().unwrap();
     assert_eq!(e.index_digest(), before, "rebuilt from the commit records");
-    e.reload_index().unwrap();
+    e.reload().unwrap();
     assert_eq!(e.index_digest(), before, "the rebuilt index persisted");
     // another build's rules (everything valid, states joined so), then a row that does not
     // decode: each open rebuilds, re-tags and re-joins the states judged otherwise
@@ -283,7 +283,7 @@ fn persisted_index_equals_rebuild_spec_perm_5_2() {
         if !garble {
             assert_eq!(e.get(&d, &ak("/t/reg")).unwrap(), Some(s("bob after")), "the old rules' state");
         }
-        e.reload_index().unwrap();
+        e.reload().unwrap();
         assert_eq!(e.index_digest(), before, "rebuilt after damage (garbled: {garble})");
         assert!(e.index_current().unwrap());
         assert_eq!(e.get(&d, &ak("/t/reg")).unwrap(), Some(s("bob before")), "re-joined (garbled: {garble})");

@@ -629,7 +629,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
         if let Some(d) = replay_differs(&mut p) {
             return Err(format!("{of}, as made: a whole replay differs: {d}"));
         }
-        p.engine.reload_index().unwrap();
+        p.engine.reload().unwrap();
         p.engine.reexamine().unwrap();
         if let Some(d) = first_diff(&want, &judged(&mut p, &played.things)) {
             return Err(format!("{of}, as made: reopen differs: {d}"));
@@ -664,7 +664,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
             if let Some(d) = replay_differs(&mut p) {
                 return Err(format!("{of}, order #{k} {order:?}: a whole replay differs: {d}"));
             }
-            p.engine.reload_index().unwrap();
+            p.engine.reload().unwrap();
             p.engine.reexamine().unwrap();
             if let Some(d) = first_diff(&got, &judged(&mut p, &played.things)) {
                 return Err(format!("{of}, order #{k} {order:?}: reopen differs: {d}"));
