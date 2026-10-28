@@ -201,3 +201,6 @@ Nightly `coverage` job: `cargo llvm-cov --workspace`, lcov and summary as artifa
 
 ## Build hygiene
 Moved to notes/build.md: worktrees, the one profile and its command forms, the gate and fast-forward merge, expected costs, and the history of designs tried.
+
+## Performance budgets
+Coordinator-owned targets (owner delegated; prefer simple and verifiable code that meets them over faster intricate code). At 10^4 commits per aspect and 10^4 things per group, release, a quiet box: a single local write, read or received commit under 50 ms; node open under 1 s; one sync pass after one new write under 100 ms; a late or out-of-order commit under 500 ms (a whole replay of one aspect is acceptable here). Rare events (revocation, a roster snapshot, a move) under a few seconds. Work beyond these is not pursued without a realistic scenario missing them; issues that only chase speed below them are closed as within budget.
