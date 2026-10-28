@@ -45,6 +45,8 @@ Quiet machine, warm worktree, after the fixes this note records. If your numbers
 | a task worktree's `target/` after a gate | about 5.5 GB; 6 with clippy-net; +0.7 GB release; flat afterwards (±0.1 GB per edit cycle) |
 | test executables | 32, about 0.8 GB; an osis-node or osis-engine edit relinks the ten above it inside the build |
 
+Load: three cargo invocations each asking for 16 jobs on 8 physical cores reached load 60-80 (one rustc took 15 min of wall for 2.5 min of CPU). On a shared box cap jobs per invocation at the physical core count in the user-level `~/.cargo/config.toml` (`[build] jobs = 8` on this box; it changes no artifacts, so it is not a hygiene violation; never per command). Background and moved commands run at normal priority, measured: there is no idle-priority penalty, only contention.
+
 Signs of unravelling, in the order they appeared last time: a build on a tree that was built minutes ago compiles more than the crates you touched and their dependents; `target/` dirs growing by GB per day; agents' tool calls lasting exactly 10 minutes; a "wait for X" shell loop anywhere; `--jobs`, `--release`, `-p` or `--features` creeping into commands; a timing test running in dev.
 
 ## History (what was tried, briefly)
