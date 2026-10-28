@@ -108,6 +108,8 @@ pub struct Timelines {
     appended: usize,
     /// Commits those placed without walking again.
     placed: usize,
+    /// `append` off: every update takes the general path (tests compare the two).
+    general_only: bool,
 }
 
 /// Walks to write to and delete from a node's cache, by component root (`Timelines::to_save`).
@@ -165,6 +167,13 @@ impl Timelines {
         evaluated
     }
 
+    /// Turns `update_touched`'s fast path (`append`) off, for tests comparing it with the
+    /// general path.
+    #[doc(hidden)]
+    pub fn set_general_only(&mut self, on: bool) {
+        self.general_only = on;
+    }
+
     /// Re-partitions only around `touched` (things whose held inputs changed since the last
     /// update: a commit or snapshot on them added or removed, their `/created` recorded): their
     /// components and every component newly linked to them, so the cost follows the affected
@@ -179,7 +188,7 @@ impl Timelines {
     /// fewer commits of it (then continued by `Timeline::extend`, else evaluated). Equal to
     /// `update_touched` whatever `saved` returns.
     pub fn update_touched_cached(&mut self, held: &dyn HeldSet, touched: &BTreeSet<Tid>, saved: &mut dyn FnMut(&Tid) -> Option<Vec<u8>>, salt: &[u8]) -> Changed {
-        let fast = self.append(held, touched);
+        let fast = if self.general_only { None } else { self.append(held, touched) };
         if let Some((c, things, true)) = &fast {
             self.changed = things.clone();
             self.restored = 0;
@@ -492,7 +501,14 @@ impl Timelines {
                         None => (None, BTreeSet::new()),
                     };
                     let extended = match from {
-                        Some((tl, basis)) => tl.extend(&part).map(|tl| (tl, basis)),
+                        Some((tl, basis)) => {
+                            let tl = tl.extend(&part);
+                            if tl.is_none() && basis > 0 {
+                                // the walk saved under the root is no basis for an evaluation
+                                self.retired.insert(root);
+                            }
+                            tl.map(|tl| (tl, basis))
+                        }
                         None => None,
                     };
                     self.changed.extend(inputs.0.iter().copied());

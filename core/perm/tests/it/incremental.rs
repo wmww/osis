@@ -1701,3 +1701,234 @@ fn falls_before_old_first_write_spec_permissions_5_1() {
         assert_eq!(full.dropped().contains_key(&WriteId::Op(late, 0)), !covered);
     }
 }
+
+/// §1, §5.1: leaves joining an owner chain around `MAX_OWNER_DEPTH` (a deeper thing has no owner
+/// chain, so no role there and no demotion): through `update_touched` equal to from scratch.
+#[test]
+fn leaves_past_owner_depth_spec_permissions_1() {
+    use osis_base::Role::Admin;
+    let mut w = World::new();
+    let n = w.nodes(2);
+    let (k, x) = (n[0], n[1]);
+    let mut chain = vec![w.thing(k)];
+    for _ in 0..osis_base::format::MAX_OWNER_DEPTH + 2 {
+        let t = w.thing(*chain.last().unwrap());
+        chain.push(t);
+    }
+    w.set(k, chain[0], x, edge(Admin), 1, &[]);
+    w.set(k, chain[0], x, None, 5, &[]);
+    let leaves: Vec<Tid> = chain[chain.len() - 6..].to_vec();
+    let mut held = w.held();
+    for l in &leaves {
+        held.created.remove(l);
+    }
+    let mut inc = Timelines::new();
+    inc.update(&held);
+    assert!(check(&held, &inc, &n).is_none());
+    for l in &leaves {
+        let prev = held.clone();
+        held.created.insert(*l, w.created[l].clone());
+        inc.update_touched(&held, &touched_of(&prev, &held));
+        if let Some(d) = check(&held, &inc, &n) {
+            panic!("leaf at {}: {d}", chain.iter().position(|t| t == l).unwrap());
+        }
+    }
+}
+
+/// Saves `inc`'s walks to `disk` (`to_save`, all or the due ones) and checks each saved walk is
+/// under a component's root (its least thing): a walk under a thing that is no root any more
+/// is retired and deleted, never left behind. `stale`: keys from before a restart, exempt
+/// (issues/walk-cache-restart-leak.md).
+fn save_checked(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, disk: &mut Disk, min: usize, all: bool, stale: &BTreeSet<Tid>) -> Option<Tid> {
+    let mut saves = inc.to_save(SALT, min, all);
+    inc.saved(std::mem::take(&mut saves.done));
+    store(disk, saves);
+    // every tid the held set names
+    let mut all: BTreeSet<Tid> = held.things().into_iter().collect();
+    for t in held.things() {
+        if let Some(osis_base::CreationRecord::Thing { owner, .. }) = held.created(&t) {
+            all.insert(owner);
+        }
+        for c in held.edge_commits(&t) {
+            all.insert(c.author);
+            all.extend(c.ops.iter().flat_map(|o| [o.member, o.target]));
+        }
+        for x in held.roster_snapshots(&t) {
+            all.insert(x.author);
+            all.extend(x.roster.keys().copied());
+        }
+    }
+    let mut comps: BTreeMap<*const Timeline, Tid> = BTreeMap::new();
+    for x in all {
+        if let Some(tl) = inc.get(&x) {
+            let r = comps.entry(tl as *const Timeline).or_insert(x);
+            *r = (*r).min(x);
+        }
+    }
+    disk.keys().filter(|r| !stale.contains(*r)).find(|r| !inc.get(r).is_some_and(|tl| comps.get(&(tl as *const Timeline)) == Some(*r))).copied()
+}
+
+/// Random histories biased toward thing creation: owner trees grown as commits arrive (leaves,
+/// chains of new things in one arrival, things created then named by later commits, `/created`
+/// arriving after commits naming the thing, nodes joining), arrivals mixing records and commits,
+/// walks saved now and then, restarts from them. After every arrival the fast path (`append`,
+/// `Timeline::add_leaves`) reports what the general path reports (or less, where that is covered),
+/// equals an evaluation from scratch, and both leave saved walks only under component roots.
+/// Returns the updates the fast path did alone.
+fn creation_histories(samples: u64, seed: u64) -> usize {
+    use osis_base::Role::{Admin, Read, Write};
+    let seed = seeded(seed);
+    let mut rng = Rng(seed);
+    let mut appended = 0;
+    for s in 0..samples {
+        let mut w = World::new();
+        let n = w.nodes(4);
+        let k = n[0];
+        let late_node = w.nodes_salted(1, 0x79)[0];
+        // held from the start: two groups and a team
+        let base = [w.thing(k), w.thing(k), w.thing(n[1])];
+        w.set(k, base[0], n[1], edge(Admin), 1, &[]);
+        w.set(n[1], base[2], n[2], edge(Admin), 1, &[]);
+        w.set(k, base[1], base[2], edge(if rng.below(2) == 0 { Admin } else { Write }), 1, &[]);
+        let start = w.created.clone();
+        let start_commits: BTreeSet<_> = w.commits.iter().map(|c| c.id).collect();
+        // new things, owners among everything so far (chains, siblings, deep trees)
+        let mut things: Vec<Tid> = base.to_vec();
+        let mut fresh = Vec::new();
+        for _ in 0..6 + rng.below(14) {
+            let owner = match rng.below(8) {
+                0 => n[rng.below(3)],
+                1 | 2 if !fresh.is_empty() => fresh[fresh.len() - 1],
+                _ => things[rng.below(things.len())],
+            };
+            let t = w.thing(owner);
+            things.push(t);
+            fresh.push(t);
+        }
+        let mut all_nodes = n.clone();
+        all_nodes.push(late_node);
+        // commits naming old and new things (some new things never named: leaves)
+        let named: Vec<Tid> = things.iter().copied().filter(|_| rng.below(3) != 0).collect();
+        for _ in 0..4 + rng.below(10) {
+            let author = all_nodes[if rng.below(10) == 0 { 4 } else { rng.below(4) }];
+            let target = if rng.below(3) == 0 { base[rng.below(3)] } else { named.get(rng.below(named.len().max(1))).copied().unwrap_or(base[0]) };
+            let member = match rng.below(6) {
+                0 => named.get(rng.below(named.len().max(1))).copied().unwrap_or(base[2]),
+                1 => base[2],
+                _ => all_nodes[rng.below(5)],
+            };
+            let until = (rng.below(4) == 0).then(|| 5 + rng.below(40) as u64);
+            let e = match rng.below(5) {
+                0 => None,
+                _ => edge_inv([Read, Write, Admin][rng.below(3)], None, until),
+            };
+            w.commit(author, 2 + rng.below(40) as u64, &[(target, member, e)], &[]);
+        }
+        if rng.below(5) == 0 {
+            let t = named.first().copied().unwrap_or(base[0]);
+            w.snapshot(k, t, &[(n[1], osis_perm::Edge::new(Admin))], 2 + rng.below(40) as u64, &[]);
+        }
+        // arrivals: each new `/created` and each commit, in random order, 1-4 at a time
+        #[derive(Clone, Copy)]
+        enum Item {
+            Created(Tid),
+            Commit(osis_base::CommitId),
+        }
+        let mut items: Vec<Item> = w.created.keys().filter(|t| !start.contains_key(*t)).map(|t| Item::Created(*t)).collect();
+        items.extend(w.commits.iter().map(|c| c.id).chain(w.snaps.iter().map(|x| x.id)).filter(|id| !start_commits.contains(id)).map(Item::Commit));
+        let order = rng.perm(items.len());
+        let all_ids: BTreeSet<_> = w.commits.iter().map(|c| c.id).chain(w.snaps.iter().map(|x| x.id)).collect();
+        let mut skip: BTreeSet<_> = all_ids.difference(&start_commits).copied().collect();
+        let mut created: BTreeSet<Tid> = start.keys().copied().collect();
+        let held_now = |skip: &BTreeSet<osis_base::CommitId>, created: &BTreeSet<Tid>| {
+            let mut h = w.held_without(skip);
+            h.created.retain(|t, _| created.contains(t));
+            h
+        };
+        let mut prev = held_now(&skip, &created);
+        let (mut fast, mut general) = (Timelines::new(), Timelines::new());
+        general.set_general_only(true);
+        fast.update(&prev);
+        general.update(&prev);
+        let (mut disk, mut gdisk, mut stale) = (Disk::new(), Disk::new(), BTreeSet::new());
+        let min = 1 + rng.below(3);
+        let mut i = 0;
+        while i < order.len() {
+            let take = 1 + rng.below(4);
+            for j in order.iter().skip(i).take(take) {
+                match items[*j] {
+                    Item::Created(t) => {
+                        created.insert(t);
+                    }
+                    Item::Commit(id) => {
+                        skip.remove(&id);
+                    }
+                }
+            }
+            i += take;
+            let held = held_now(&skip, &created);
+            let t = touched(&prev, &held);
+            let a = fast.update_touched(&held, &t);
+            let b = general.update_touched(&held, &t);
+            appended += fast.appended();
+            // The general path may report more: when several old components merge it continues
+            // one and names the others' things. Each must be a node bringing nothing, or owned
+            // under a thing the fast path names (authority there follows its owner's).
+            let fa: BTreeSet<Tid> = a.evaluated.union(&a.extended).copied().collect();
+            let fb: BTreeSet<Tid> = b.evaluated.union(&b.extended).copied().collect();
+            let covered = |x: &Tid| {
+                let mut cur = *x;
+                for _ in 0..64 {
+                    if fa.contains(&cur) {
+                        return true;
+                    }
+                    match held.created(&cur) {
+                        Some(osis_base::CreationRecord::Thing { owner, .. }) => cur = owner,
+                        _ => return cur == *x && held.edge_commits(x).is_empty() && held.roster_snapshots(x).is_empty(),
+                    }
+                }
+                false
+            };
+            assert!(
+                a.evaluated.is_subset(&b.evaluated) && fa.is_subset(&fb) && fb.iter().all(covered),
+                "seed {seed:#x} sample {s} arrival {i}: what changed, fast {a:?} general {b:?}"
+            );
+            if let Some(d) = check_more(&held, &fast, &all_nodes) {
+                panic!("seed {seed:#x} sample {s} arrival {i}: {d}");
+            }
+            // walks saved now and then, kept across restarts: each one under its component's
+            // root once written (a leaf below the root moves it: the old one is retired)
+            if rng.below(3) == 0 {
+                let all = rng.below(4) == 0;
+                let g = save_checked(&mut general, &held, &mut gdisk, min, all, &BTreeSet::new());
+                assert!(g.is_none(), "seed {seed:#x} sample {s} arrival {i}: general: a walk saved under {g:?}, not a root");
+                let f = save_checked(&mut fast, &held, &mut disk, min, all, &stale);
+                assert!(f.is_none(), "seed {seed:#x} sample {s} arrival {i}: a walk saved under {f:?}, not a root");
+            }
+            if rng.below(5) == 0 {
+                fast = reopen(&held, &disk, SALT);
+                stale.extend(disk.keys().copied());
+                if let Some(d) = check_more(&held, &fast, &all_nodes) {
+                    panic!("seed {seed:#x} sample {s} arrival {i} after a restart: {d}");
+                }
+            }
+            prev = held;
+        }
+    }
+    appended
+}
+
+/// §1, §5.1: thing creation arriving among membership commits; the fast path equals the
+/// general path and an evaluation from scratch.
+#[test]
+fn creation_fast_equals_general_spec_permissions_5_1() {
+    let appended = creation_histories(12, 0x5eed_0a01);
+    assert!(appended > 0, "{appended}");
+}
+
+#[test]
+#[ignore]
+fn creation_fast_equals_general_large() {
+    let appended: usize = sharded(1024, 0x5eed_0a02, creation_histories).into_iter().sum();
+    eprintln!("appended {appended}");
+}
