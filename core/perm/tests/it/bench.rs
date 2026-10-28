@@ -311,7 +311,7 @@ fn bench_late_write() {
     // one more write at the end first
     let doc = *w.created.keys().last().unwrap();
     let team = match w.created[&doc] {
-        osis_core::CreationRecord::Thing { owner, .. } => owner,
+        osis_base::CreationRecord::Thing { owner, .. } => owner,
         _ => unreachable!(),
     };
     let mid = n as u64 / 2;
