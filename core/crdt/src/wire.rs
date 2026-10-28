@@ -82,8 +82,9 @@ impl Received {
     pub fn frontiers(&self) -> Frontiers {
         Frontiers(self.0.keys().map(|t| (*t, self.frontier(t))).filter(|x| x.1 > 0).collect())
     }
-    /// A received snapshot closes `[1, ctr]` per frontier.
-    pub fn add_frontiers(&mut self, fr: &Frontiers) {
+    /// A received snapshot closes `[1, ctr]` per frontier (tests).
+    #[cfg(test)]
+    pub(crate) fn add_frontiers(&mut self, fr: &Frontiers) {
         for (t, c) in &fr.0 {
             self.add(*t, CounterRange { lo: 1, hi: c.saturating_add(1) });
         }
@@ -196,7 +197,7 @@ impl<'p> Enc<'p> {
     }
 
     /// Whether `s` is a stamp of this commit.
-    pub fn is_own(&self, s: &Stamp) -> bool {
+    pub(crate) fn is_own(&self, s: &Stamp) -> bool {
         s.ts == self.ts && s.dot.src == self.own
     }
 
@@ -305,7 +306,7 @@ impl<'p> Enc<'p> {
     }
 
     /// `Opt(Stamp)`: a reset `R` or presence `W`.
-    pub fn opt_stamp(&mut self, s: Option<&Stamp>) -> Value {
+    pub(crate) fn opt_stamp(&mut self, s: Option<&Stamp>) -> Value {
         Value::List(s.map(|s| self.stamp(s)).into_iter().collect())
     }
 
@@ -361,7 +362,7 @@ impl<'p> Enc<'p> {
     /// Wire order of dots for sorting element, entry and run arrays (§3.3 rule 2): §2.2 order,
     /// except that the delta's own commit-form source sorts below every other commit, since a
     /// writer does not know its commit ID while encoding.
-    pub fn dot_order(&self, a: &Dot, b: &Dot) -> Ordering {
+    pub(crate) fn dot_order(&self, a: &Dot, b: &Dot) -> Ordering {
         crate::stamp::dot_cmp(a, b, &|x, y| self.src_order(x, y))
     }
 
@@ -531,7 +532,7 @@ impl<'a> Dec<'a> {
     }
 
     /// `Opt(Stamp)`.
-    pub fn opt_stamp(&self, v: &Value) -> Result<Option<Stamp>, Error> {
+    pub(crate) fn opt_stamp(&self, v: &Value) -> Result<Option<Stamp>, Error> {
         match as_array(v)? {
             [] => Ok(None),
             [s] => self.stamp(s).map(Some),

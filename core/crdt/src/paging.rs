@@ -120,7 +120,7 @@ impl Fragment {
     /// element (a reset at the root, another encoding). For a sequence the dots come in pairs,
     /// the first and last element of each delta record (a range record covers the elements
     /// between); joining may split state records there and the records next to them.
-    pub fn touched_elems(&self) -> Option<(bool, Vec<Dot>)> {
+    pub(crate) fn touched_elems(&self) -> Option<(bool, Vec<Dot>)> {
         let meta = self.meta()?;
         if meta.reset.is_some() {
             return None;

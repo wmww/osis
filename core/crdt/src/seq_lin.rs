@@ -182,7 +182,10 @@ impl Partial {
     }
     /// What was missed since the last call (cleared; the cover stays).
     pub(crate) fn take(&self) -> Missed {
-        self.with(|m| Missed { blocks: std::mem::take(&mut m.blocks), chunks: std::mem::take(&mut m.chunks), recs: std::mem::take(&mut m.recs), all: std::mem::take(&mut m.all), whole: std::mem::take(&mut m.whole), count: m.count, work: std::mem::take(&mut m.work), cover: Vec::new() })
+        self.with(|m| {
+            let keep = Missed { count: m.count, cover: std::mem::take(&mut m.cover), ..Missed::default() };
+            std::mem::replace(m, keep)
+        })
     }
 }
 
@@ -1141,6 +1144,7 @@ impl Lin {
 
     /// Whether `o` is the same placement (rows, depths, waiting anchors and broken cycles;
     /// chars aside), both loaded whole.
+    #[cfg(any(test, fuzzing))]
     pub(crate) fn same(&self, o: &Lin) -> bool {
         let key = |(r, d): (&Row, i64)| (r.dot.clone(), r.span, r.created, r.parent.clone(), r.head, r.shown, d);
         self.p.len == o.p.len && self.p.shown == o.p.shown && self.p.iter_depth().map(key).eq(o.p.iter_depth().map(key)) && self.waiting == o.waiting && self.cyc == o.cyc
