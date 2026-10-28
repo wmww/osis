@@ -1,0 +1,11 @@
+#!/bin/sh
+# tools/icount CMD...: CMD's user-space instruction count ("INSTR <n>" on stderr), for old-vs-new
+# comparisons that load on a shared box cannot skew (notes/testing.md). Builds icount.c on first use.
+set -e
+src="$(cd "$(dirname "$0")" && pwd)/icount.c"
+bin="${XDG_CACHE_HOME:-$HOME/.cache}/osis/icount"
+if [ ! -x "$bin" ] || [ "$src" -nt "$bin" ]; then
+    mkdir -p "$(dirname "$bin")"
+    cc -O2 -Wall -o "$bin" "$src"
+fi
+exec "$bin" "$@"
