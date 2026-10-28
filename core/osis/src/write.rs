@@ -350,12 +350,8 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
     /// This write's delta expires at `t` (spec/commits.md §6); default from the key.
     /// Fails the following op with `Invalid` when `t` is not in the future.
     pub fn expires_at(mut self, t: WallMs) -> Self {
-        if self.bad.is_none() && t <= self.w.db.now() {
-            self.bad = Some(Error::Invalid(format!("expiry {} ms is not in the future", t.0)));
-        } else if self.bad.is_none()
-            && let Err(e) = self.w.m.expires(self.tid, &self.key, t)
-        {
-            self.bad = Some(e.into());
+        if self.bad.is_none() {
+            self.bad = if t <= self.w.db.now() { Some(Error::Invalid(format!("expiry {} ms is not in the future", t.0))) } else { self.w.m.expires(self.tid, &self.key, t).err().map(Error::from) };
         }
         self
     }
@@ -380,10 +376,8 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
     /// Retention of this write's delta instead of the key's default (spec/commits.md §5);
     /// checked at commit (`Invalid`).
     pub fn retention(mut self, r: Retention) -> Self {
-        if self.bad.is_none()
-            && let Err(e) = self.w.m.retention(self.tid, &self.key, r)
-        {
-            self.bad = Some(e.into());
+        if self.bad.is_none() {
+            self.bad = self.w.m.retention(self.tid, &self.key, r).err().map(Error::from);
         }
         self
     }
@@ -461,9 +455,7 @@ impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
 
     /// Sets an enum position to `case` with an optional payload.
     pub fn set_case(&mut self, case: CaseId, payload: Option<Value>) -> Result<()> {
-        let v = Value::Enum(case.0, payload.map(Box::new));
-        self.check(None, &v)?;
-        self.at(None, Op::Set(v))
+        self.set_value(Value::Enum(case.0, payload.map(Box::new)))
     }
 
     /// List: inserts `items` before visible index `at`.
