@@ -12,6 +12,7 @@ use crate::stamp::{Dot, Interner, Source, Stamp};
 use crate::wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, NONCE_LEN, Snapshot, as_array, as_uint, uint};
 use osis_base::format::{MAX_BLOB, MAX_OBJECT_DEPTH, MAX_VALUE_DEPTH};
 use osis_base::{Limits, PageCutter, Value};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 const LIMITS: Limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_BLOB };
@@ -41,10 +42,7 @@ pub(crate) fn elems_value(cx: &mut Enc, items: Vec<Value>) -> Result<Value, Erro
     if cx.collecting() {
         return Ok(Value::List(items));
     }
-    match cx.pages.as_mut() {
-        Some(p) => page_array(Some(&mut **p), items),
-        None => page_array(None, items),
-    }
+    page_array(cx.sink(), items)
 }
 
 /// An element array as written (§8, spec/wire.md §6): itself at or below the sink's page target,
@@ -71,10 +69,7 @@ fn page_map(cx: &mut Enc, items: Vec<(Value, Value)>) -> Result<Value, Error> {
             b
         })
         .collect();
-    match cx.pages.as_mut() {
-        Some(p) => paged(Some(&mut **p), items, encoded, whole),
-        None => paged(None, items, encoded, whole),
-    }
+    paged(cx.sink(), items, encoded, whole)
 }
 
 /// Pages `items` (canonical bytes `encoded`) when the plain form `whole(items)` is above the
@@ -162,13 +157,8 @@ fn encode_register(cx: &mut Enc, r: &Register) -> Value {
 pub(crate) fn encode_fragment(cx: &mut Enc, f: &Fragment) -> Result<Value, Error> {
     Ok(match f {
         Fragment::Register(r) => encode_register(cx, r),
-        Fragment::Bag(Bag { kind, meta, elems }) => {
-            let mut a = head(cx, kind.encoding(), meta);
-            a.push(encode_elems(cx, elems)?);
-            Value::List(a)
-        }
-        Fragment::Set(Set { meta, elems }) => {
-            let mut a = head(cx, Encoding::Set, meta);
+        Fragment::Bag(Bag { meta, elems, .. }) | Fragment::Set(Set { meta, elems }) => {
+            let mut a = head(cx, f.encoding(), meta);
             a.push(encode_elems(cx, elems)?);
             Value::List(a)
         }
@@ -358,9 +348,9 @@ fn leaf_pages(cx: &mut Dec, v: &Value, top: &[osis_base::Link]) -> Result<(Vec<V
 
 /// The items of an element array, pages and link pages resolved (§8), and its pages for
 /// `Dec::done` once the items are decoded.
-pub(crate) fn elem_items(cx: &mut Dec, v: &Value) -> Result<(Vec<Value>, Fetched), Error> {
+pub(crate) fn elem_items<'v>(cx: &mut Dec, v: &'v Value) -> Result<(Cow<'v, [Value]>, Fetched), Error> {
     let items = as_array(v)?;
-    let Some(top) = links(items)? else { return Ok((items.to_vec(), Vec::new())) };
+    let Some(top) = links(items)? else { return Ok((Cow::Borrowed(items), Vec::new())) };
     let mut out = Vec::new();
     let (pages, fetched) = leaf_pages(cx, v, &top)?;
     for page in pages {
@@ -369,7 +359,7 @@ pub(crate) fn elem_items(cx: &mut Dec, v: &Value) -> Result<(Vec<Value>, Fetched
             _ => return Err(Error::Malformed("page is not a non-empty array")),
         }
     }
-    Ok((out, fetched))
+    Ok((Cow::Owned(out), fetched))
 }
 
 /// Replays the pages a decode fetched, so the canonical re-encode reproduces their links.
@@ -425,7 +415,7 @@ fn decode_meta(cx: &mut Dec, r: &Value, w: &Value) -> Result<Meta, Error> {
 fn decode_elems(cx: &mut Dec, v: &Value) -> Result<BTreeMap<Dot, Elem>, Error> {
     let mut out = BTreeMap::new();
     let (items, fetched) = elem_items(cx, v)?;
-    for e in &items {
+    for e in items.iter() {
         let [d, r, f] = as_array(e)? else { return Err(Error::Malformed("element")) };
         let dot = cx.dot(d)?;
         let reset = cx.opt_stamp(r)?;
@@ -567,15 +557,16 @@ fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragme
             let meta = decode_meta(cx, r, w)?;
             let mut entries = BTreeMap::new();
             let (items, fetched) = elem_items(cx, es)?;
-            for e in &items {
-                let x = as_array(e)?;
-                let (x, ci) = match x {
-                    [d, Value::Int(_), rest @ ..] => (std::iter::once(d).chain(rest.iter()).cloned().collect::<Vec<Value>>(), x.get(1)),
-                    _ => (x.to_vec(), None),
+            for e in items.iter() {
+                // `[Dot, Ci?, R, Key?, Opt(Fragment)]`: a `Ci` is an int, an `R` an array
+                let (d, ci, rest) = match as_array(e)? {
+                    [d, ci @ Value::Int(_), rest @ ..] => (d, Some(ci), rest),
+                    [d, rest @ ..] => (d, None, rest),
+                    [] => return Err(Error::Malformed("entry")),
                 };
-                let (d, r, key, f) = match x.as_slice() {
-                    [d, r, f] => (d, r, None, f),
-                    [d, r, k, f] => (d, r, Some(k), f),
+                let (r, key, f) = match rest {
+                    [r, f] => (r, None, f),
+                    [r, k, f] => (r, Some(k), f),
                     _ => return Err(Error::Malformed("entry")),
                 };
                 let dot = cx.dot(d)?;
