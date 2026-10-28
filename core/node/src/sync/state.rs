@@ -1097,7 +1097,7 @@ mod tests {
         let mut lp = crate::local_peer::LocalPeer::new(1, 963, osis_base::WallMs(1_700_000_000_000)).unwrap();
         let e = &mut lp.peers[0].engine;
         e.set_sync_records(&Records);
-        e.reload_index().unwrap();
+        e.reload().unwrap();
         assert!(e.core.sync_records.is_some());
         e.rebuild_index().unwrap();
         assert!(e.core.sync_records.is_some());
