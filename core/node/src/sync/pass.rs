@@ -535,7 +535,7 @@ impl SyncEngine {
         if let Some(wk) = &keys.write {
             // stamped as an upload would be; another node's deposits stay deposits
             let cands: Vec<BlobId> = match &scope {
-                Scope::All => self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).map(|((_, id), _)| *id).collect(),
+                Scope::All => self.state.label_entries(&l).map(|(b, _)| b).collect(),
                 Scope::Some { commits, blobs } => {
                     let mut ids: BTreeSet<BlobId> = commits.iter().flat_map(|c| self.state.entries_of(&l, c).map(|(b, _)| b)).collect();
                     ids.extend(blobs.iter().chain(&ours).copied());
@@ -572,7 +572,7 @@ impl SyncEngine {
     #[allow(clippy::too_many_arguments)]
     fn local_deletions(&mut self, g: &Tid, l: LabelId, keys: &HeadKeys, bodies: &[Body], snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, settled: bool, scope: &Scope, left: &mut Left) -> Result<()> {
         let ids: Vec<BlobId> = match scope {
-            Scope::All => self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).map(|((_, id), _)| *id).collect(),
+            Scope::All => self.state.label_entries(&l).map(|(b, _)| b).collect(),
             Scope::Some { commits, blobs } => {
                 let mut ids: BTreeSet<BlobId> = commits.iter().flat_map(|c| self.state.entries_of(&l, c).map(|(b, _)| b)).collect();
                 ids.extend(blobs.iter().copied());
@@ -662,7 +662,7 @@ impl SyncEngine {
         let mut gone = self.copy_links(&l, copied)?;
         gone.retain(|b| !self.state.present_anywhere(&l, b));
         if !gone.is_empty() {
-            let all: Vec<BlobId> = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).map(|((_, id), _)| *id).collect();
+            let all: Vec<BlobId> = self.state.label_entries(&l).map(|(b, _)| b).collect();
             for b in self.linked_by(&l, all)? {
                 gone.remove(&b);
             }
@@ -719,11 +719,7 @@ impl SyncEngine {
         if self.state.blobs.contains_key(id) {
             self.state.remove_blob(id);
         }
-        let b = *id;
-        self.engine.run(|tx| {
-            tx.txn.delete_blob(&b);
-            Ok(())
-        })
+        self.delete_blobs(&[*id])
     }
 
     /// The content snapshots under `l` (`entries`: by aspect, from their entries), this node's
@@ -956,7 +952,7 @@ impl SyncEngine {
             }
         }
         let desired = desired(&bodies);
-        let entries: Vec<(BlobId, Entry)> = self.state.entries.range((*l, BlobId([0; 32]))..).take_while(|((x, _), _)| x == l).map(|((_, b), e)| (*b, e.clone())).collect();
+        let entries: Vec<(BlobId, Entry)> = self.state.label_entries(l).map(|(b, e)| (b, e.clone())).collect();
         for (id, e) in entries {
             if let Fate::Delete(why, _) = self.deletable(Some(server), l, &g, &id, &e, &keys, &desired, &snaps, unsettled.is_empty(), false, &mut note)? {
                 v.must_not.push((id, format!("{why:?}")));
@@ -1029,7 +1025,7 @@ impl SyncEngine {
     fn check_linked_prefixes(&mut self, l: LabelId, scope: &Scope) -> Result<()> {
         type Parts = Vec<(usize, usize)>;
         let commits: Vec<CommitId> = match scope {
-            Scope::All => self.state.by_label_commit.range((l, CommitId([0; 32]))..=(l, CommitId([0xff; 32]))).map(|((_, c), _)| *c).collect(),
+            Scope::All => self.state.label_commits(&l).collect(),
             Scope::Some { commits, .. } => commits.iter().copied().collect(),
         };
         let mut todo: Vec<(BlobId, CommitId, Parts)> = Vec::new();
@@ -1438,7 +1434,7 @@ impl SyncEngine {
         if self.engine.core.secret_actor(g) != Some(*g) || !self.inbox_actors(&l).contains(g) {
             return Ok(());
         }
-        let opened: Vec<(BlobId, CommitId)> = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).filter_map(|((_, b), e)| if let Kind::Inbox(Some(c)) = e.kind { Some((*b, c)) } else { None }).collect();
+        let opened: Vec<(BlobId, CommitId)> = self.state.label_entries(&l).filter_map(|(b, e)| if let Kind::Inbox(Some(c)) = e.kind { Some((b, c)) } else { None }).collect();
         for (b, c) in opened {
             if self.state.certs.contains(&(l, c)) || self.engine.core.pending.contains_key(&c) {
                 continue;

@@ -390,7 +390,7 @@ impl SyncEngine {
         }
         // the label's own commits once: an entry's foreign deltas read their reader actors
         let mut seen: BTreeMap<Tid, bool> = BTreeMap::new();
-        let cs: Vec<CommitId> = self.state.by_label_commit.range((*l, CommitId([0; 32]))..=(*l, CommitId([0xff; 32]))).map(|((_, c), _)| *c).collect();
+        let cs: Vec<CommitId> = self.state.label_commits(l).collect();
         for c in cs {
             let Some(h) = self.engine.header(&c) else { continue };
             let found = h.aspects.iter().any(|a| moved.contains(&a.tid) || !actors.is_empty() && *seen.entry(a.tid).or_insert_with(|| under(&a.tid)));
@@ -487,7 +487,7 @@ impl SyncEngine {
         w.unjudged.clear();
         w.beats.clear();
         w.cards.clear();
-        let cs: BTreeSet<CommitId> = self.state.by_label_commit.range((*l, CommitId([0; 32]))..=(*l, CommitId([0xff; 32]))).map(|((_, c), _)| *c).collect();
+        let cs: BTreeSet<CommitId> = self.state.label_commits(l).collect();
         let bs: BTreeSet<BlobId> = self.state.of_kind(l, 0).into_iter().collect();
         self.aggregate(g, l, w, &cs, &bs);
     }

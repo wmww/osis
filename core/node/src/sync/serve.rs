@@ -403,7 +403,6 @@ impl LabelStore for PeerStore<'_> {
     }
 }
 
-
 impl SyncEngine {
     /// A peer dialed this node: a session on its listener. `local` is the key this node's
     /// listener presented (its dialable key, or a LAN transport key; open signatures bind it),

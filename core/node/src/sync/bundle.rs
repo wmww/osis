@@ -34,13 +34,13 @@ impl SyncEngine {
                     w.record(&Record::Path { label: *l, steps })?;
                 }
             }
-            let entries: Vec<(BlobId, super::state::Entry)> = self.state.entries.iter().filter(|((x, _), _)| x == l).map(|((_, b), e)| (*b, e.clone())).collect();
-            for (b, e) in entries {
+            let entries: Vec<(BlobId, [u8; osis_crypto::WRAP_LEN], Option<osis_crypto::Signature>)> = self.state.label_entries(l).map(|(b, e)| (b, e.wrap, e.stamp)).collect();
+            for (b, wrap, stamp) in entries {
                 let Some(bytes) = self.engine.blob(&b)? else { continue };
                 if sent.insert(b) {
                     w.record(&Record::Blob(bytes))?;
                 }
-                w.record(&Record::Entry { label: *l, blob: b, wrap: e.wrap, stamp: e.stamp })?;
+                w.record(&Record::Entry { label: *l, blob: b, wrap, stamp })?;
             }
         }
         Ok(w.finish()?)

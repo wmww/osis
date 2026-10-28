@@ -83,7 +83,6 @@ const LAN_HEARD: usize = 4;
 /// secret and window.
 pub(crate) type LanTags = BTreeMap<[u8; 16], ([u8; 32], [u8; 32], u64)>;
 
-
 impl SyncEngine {
     /// This node's dialable transport secret (spec/sync.md §10; separate from its signing key):
     /// generated on first use and kept in the local records. The driver listens with it and
