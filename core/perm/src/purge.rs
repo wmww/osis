@@ -1,5 +1,4 @@
-//! Purge rights (spec/permissions.md §8), who may rotate (§3) and who may write the
-//! membership-class aspects (§1).
+//! Purge rights (spec/permissions.md §8) and who may rotate (§3).
 
 use crate::timeline::{At, Timeline};
 use osis_base::{Role, Tid};
@@ -47,9 +46,4 @@ impl Timeline {
         [Role::Read, Role::Write, Role::Admin].into_iter().filter(|x| r >= Some(Role::Write) && Some(*x) <= r).collect()
     }
 
-    /// §1: may `node` write the membership-class aspects of `thing` (admins; invite grants,
-    /// self-removals, rotations and re-seals follow their own rules)?
-    pub fn may_write_membership(&self, node: &Tid, thing: &Tid, at: At) -> bool {
-        self.role(node, thing, at) == Some(Role::Admin)
-    }
 }
