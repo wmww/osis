@@ -13,7 +13,7 @@ use super::{clear_table, scan_table};
 use crate::error::{Error, Result};
 use osis_base::format::PAGE_TARGET;
 use osis_base::{Ak, Tid, Value};
-use osis_crdt::{Dot, Encoding, Fragment, PagedTouch, PathSeg, Paths, PlaceBlock, PlaceMisses, PlaceRow, PlaceTop, SeqPlace, SourceKind, Step};
+use osis_crdt::{Dot, Encoding, Fragment, PagedTouch, PathSeg, Paths, PlaceBlock, PlaceDiff, PlaceMisses, PlaceRow, PlaceTop, SeqPlace, SourceKind, Step};
 use osis_store::{Shred, Table, Transaction};
 use std::collections::BTreeMap;
 use std::ops::Range as Span;
@@ -63,6 +63,10 @@ struct PageSet {
 }
 
 impl PageSet {
+    /// A set with no page loaded and its placement not read.
+    fn new(id: u32, salt: [u8; 32], path: KeyedPath, enc: Encoding) -> PageSet {
+        PageSet { id, salt, path, enc, loaded: BTreeMap::new(), whole: false, place: Place::Unread, groups: Vec::new(), pending: false }
+    }
     fn prefix(&self) -> Vec<u8> {
         self.id.to_be_bytes().to_vec()
     }
@@ -286,7 +290,7 @@ fn open_tagged(unit_state: &[u8], salt: &[u8; 32], tag: i64) -> Result<(Fragment
         let enc = u64::try_from(*enc).ok().and_then(Encoding::from_id).ok_or_else(bad)?;
         let s = steps(&path);
         idx.paths.insert(&s);
-        idx.sets.insert(s, PageSet { id: u32::try_from(*id).map_err(|_| bad())?, salt: *salt, path, enc, loaded: BTreeMap::new(), whole: false, place: Place::Unread, groups: Vec::new(), pending: false });
+        idx.sets.insert(s, PageSet::new(u32::try_from(*id).map_err(|_| bad())?, *salt, path, enc));
     }
     Ok((f, idx))
 }
@@ -375,12 +379,17 @@ fn ensure_dot(txn: &mut Transaction<'_>, t: Table, set: &mut PageSet, f: &mut Fr
     if set.whole || set.loaded_page(d).is_some() {
         return Ok(());
     }
-    let below = txn.table_rank(t, &[set.row_key(Some(d)), vec![0]].concat())?;
-    let (k, v) = txn.table_nth(t, below.checked_sub(1).ok_or(Error::Corrupt("state page missing"))?)?.ok_or(Error::Corrupt("state page missing"))?;
+    let (k, v) = row_below(txn, t, &[set.row_key(Some(d)), vec![0]].concat())?;
     if !k.starts_with(&set.prefix()) {
         return Err(Error::Corrupt("state page missing"));
     }
     join_row(f, set, k, &v)
+}
+
+/// The last row of `t` below `key`.
+fn row_below(txn: &mut Transaction<'_>, t: Table, key: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+    let below = txn.table_rank(t, key)?;
+    txn.table_nth(t, below.checked_sub(1).ok_or(Error::Corrupt("state page missing"))?)?.ok_or(Error::Corrupt("state page missing"))
 }
 
 /// Loads the pages of `set` holding the elements from `a` to `b` (dot order).
@@ -475,8 +484,7 @@ fn prefetch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut P
             break;
         }
     }
-    set.place = Place::Held(pl.clone());
-    attach(f, set, Some(pl));
+    hold(f, set, pl);
     Ok(())
 }
 
@@ -951,6 +959,12 @@ fn cover_of(set: &PageSet) -> Vec<(Option<Dot>, Option<Dot>)> {
     set.loaded.values().cloned().collect()
 }
 
+/// Notes `p` as `set`'s stored placement and attaches it.
+fn hold(f: &mut Fragment, set: &mut PageSet, p: SeqPlace) {
+    set.place = Place::Held(p.clone());
+    attach(f, set, Some(p));
+}
+
 /// Attaches `p` to the sequence of `set` in `f`, its cover the pages loaded.
 fn attach(f: &mut Fragment, set: &PageSet, p: Option<SeqPlace>) {
     if let Some(p) = &p {
@@ -979,39 +993,30 @@ fn write_place(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet,
     let _s = crate::costs::span("placement write");
     let top = cur.top();
     let pt = txn.create_table(tid, ak, PLACE_TABLE)?;
-    match old.and_then(|o| cur.diff(o)) {
-        Some(d) => {
-            for b in &d.blocks {
-                let Some(rows) = cur.rows(*b) else { return Ok(false) };
-                put_place(txn, pt, place_key(set, 1, *b as u64), true, block_row(&rows))?;
-            }
-            for b in &d.gone {
-                txn.table_remove(pt, &place_key(set, 1, *b as u64), shred)?;
-            }
-            for c in &d.chunks {
-                let Some(e) = cur.chunk(c.as_ref()) else { return Ok(false) };
-                put_place(txn, pt, chunk_key(set, c.as_ref()), false, chunk_row(&e))?;
-            }
-            if d.dir {
-                put_place(txn, pt, place_key(set, 2, 0), false, chunks_row(&top))?;
-            }
-        }
+    let d = match old.and_then(|o| cur.diff(o)) {
+        Some(d) => d,
+        None if cur.is_partial() => return Ok(false),
+        // all of it, over nothing
         None => {
-            if cur.is_partial() {
-                return Ok(false);
-            }
             clear_placement(txn, pt, set, shred)?;
-            for b in &top.blocks {
-                let Some(rows) = cur.rows(b.id) else { return Ok(false) };
-                put_place(txn, pt, place_key(set, 1, b.id as u64), true, block_row(&rows))?;
-            }
-            for c in std::iter::once(None).chain(top.chunks.iter().map(Some)) {
-                let Some(e) = cur.chunk(c) else { return Ok(false) };
-                put_place(txn, pt, chunk_key(set, c), false, chunk_row(&e))?;
-            }
-            put_place(txn, pt, place_key(set, 2, 0), false, chunks_row(&top))?;
             set.groups.clear();
+            let chunks = std::iter::once(None).chain(top.chunks.iter().cloned().map(Some)).collect();
+            PlaceDiff { blocks: top.blocks.iter().map(|b| b.id).collect(), gone: Vec::new(), chunks, dir: true }
         }
+    };
+    for b in &d.blocks {
+        let Some(rows) = cur.rows(*b) else { return Ok(false) };
+        put_place(txn, pt, place_key(set, 1, *b as u64), true, block_row(&rows))?;
+    }
+    for b in &d.gone {
+        txn.table_remove(pt, &place_key(set, 1, *b as u64), shred)?;
+    }
+    for c in &d.chunks {
+        let Some(e) = cur.chunk(c.as_ref()) else { return Ok(false) };
+        put_place(txn, pt, chunk_key(set, c.as_ref()), false, chunk_row(&e))?;
+    }
+    if d.dir {
+        put_place(txn, pt, place_key(set, 2, 0), false, chunks_row(&top))?;
     }
     let groups = group_rows(&top);
     for (i, g) in groups.iter().enumerate() {
@@ -1086,8 +1091,7 @@ fn place_whole(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet,
     if let Some(s) = f.at_steps(&at) {
         s.fill_chars(&mut p);
     }
-    set.place = Place::Held(p.clone());
-    attach(f, set, Some(p));
+    hold(f, set, p);
     Ok(())
 }
 
@@ -1172,8 +1176,7 @@ pub fn absorb(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex
         if !absorb_into(txn, t, pt, set, f, &mut p, &m)? {
             return Ok(None);
         }
-        set.place = Place::Held(p.clone());
-        attach(f, set, Some(p));
+        hold(f, set, p);
     }
     Ok(Some(any))
 }
@@ -1368,7 +1371,7 @@ pub fn write_full(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, f: Option<&Frag
     }
     for (i, p) in paged.into_iter().enumerate() {
         let c = f.at_steps(&p).ok_or(Error::Corrupt("state collection"))?;
-        let mut set = PageSet { id: u32::try_from(i).map_err(|_| Error::Corrupt("state sets"))?, salt: *salt, path: keyed(f, &p), enc: c.encoding(), loaded: BTreeMap::new(), whole: false, place: Place::Missing, groups: Vec::new(), pending: false };
+        let mut set = PageSet::new(u32::try_from(i).map_err(|_| Error::Corrupt("state sets"))?, *salt, keyed(f, &p), c.encoding());
         write_set(txn, t, kt, &mut set, c, &idx.nested(&p))?;
         if is_seq(&set) {
             write_placement(txn, tid, ak, &mut set, c, Shred::No)?;
@@ -1381,8 +1384,7 @@ pub fn write_full(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, f: Option<&Frag
 
 /// Points the page before row `key` at `hi` (its successor went).
 fn relink_prev(txn: &mut Transaction<'_>, t: Table, set: &mut PageSet, key: &[u8], hi: Option<Dot>, shred: Shred) -> Result<()> {
-    let below = txn.table_rank(t, key)?;
-    let (pk, v) = txn.table_nth(t, below.checked_sub(1).ok_or(Error::Corrupt("state page missing"))?)?.ok_or(Error::Corrupt("state page missing"))?;
+    let (pk, v) = row_below(txn, t, key)?;
     let ((lo, _), p) = parse_page_row(&v)?;
     let r = (lo, hi);
     txn.table_put(t, &pk, page_row(&r, &p)?, shred)?;
