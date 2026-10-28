@@ -100,16 +100,14 @@ enum Ev {
     Closed(ConnId),
 }
 
-/// Pumps a session's bytes to the driver.
-fn pump(conn: ConnId, mut rx: link::LinkRx, ev: mpsc::Sender<Ev>) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        while let Some(b) = rx.recv().await {
-            if ev.send(Ev::Bytes(conn, b)).await.is_err() {
-                return;
-            }
+/// Forwards a session's bytes to the driver, then its end.
+async fn forward(conn: ConnId, mut rx: link::LinkRx, ev: mpsc::Sender<Ev>) {
+    while let Some(b) = rx.recv().await {
+        if ev.send(Ev::Bytes(conn, b)).await.is_err() {
+            return;
         }
-        let _ = ev.send(Ev::Closed(conn)).await;
-    })
+    }
+    let _ = ev.send(Ev::Closed(conn)).await;
 }
 
 struct Conn {
@@ -267,16 +265,10 @@ impl<T: Transport, H: Host> Driver<T, H> {
                                 return;
                             }
                         };
-                        let Link { tx, mut rx, .. } = link;
-                        if ev.send(Ev::Up(conn, tx)).await.is_err() {
-                            return;
+                        let Link { tx, rx, .. } = link;
+                        if ev.send(Ev::Up(conn, tx)).await.is_ok() {
+                            forward(conn, rx, ev).await;
                         }
-                        while let Some(b) = rx.recv().await {
-                            if ev.send(Ev::Bytes(conn, b)).await.is_err() {
-                                return;
-                            }
-                        }
-                        let _ = ev.send(Ev::Closed(conn)).await;
                     });
                     self.conns.insert(conn, Conn { tx: None, task });
                 }
@@ -396,7 +388,7 @@ impl<T: Transport, H: Host> Driver<T, H> {
             })
         });
         if let Some(conn) = conn {
-            let task = pump(conn, rx, self.ev_tx.clone());
+            let task = tokio::spawn(forward(conn, rx, self.ev_tx.clone()));
             self.conns.insert(conn, Conn { tx: Some(tx), task });
             let conns = &self.conns;
             let v = self.served_by.entry(key).or_default();

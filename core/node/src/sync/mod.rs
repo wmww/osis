@@ -733,21 +733,16 @@ impl SyncEngine {
                 crate::Event::Applied { id, origin, .. } => {
                     changed = true;
                     self.placed_cache.0 = u64::MAX;
-                    if let Some(h) = self.engine.header(&id) {
-                        // a creation record moves the roles downstream of the thing
-                        roots.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "/created").map(|a| a.tid));
-                    }
-                    if let Some(h) = self.engine.header(&id)
-                        && (h.kind.is_membership() || h.aspects.iter().any(|a| a.ak.as_str() == "/label"))
-                    {
+                    let Some(h) = self.engine.header(&id) else { continue };
+                    // a creation record moves the roles downstream of the thing
+                    roots.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "/created").map(|a| a.tid));
+                    let membership = h.kind.is_membership();
+                    if membership || h.aspects.iter().any(|a| a.ak.as_str() == "/label") {
                         self.served_cache = None;
                         self.members_moved = true;
                         self.touched.keys = true;
                     }
-                    if origin == Origin::Remote
-                        && let Some(h) = self.engine.header(&id)
-                        && h.kind.is_membership()
-                    {
+                    if origin == Origin::Remote && membership {
                         self.seq += 1;
                         let at = self.raw_now();
                         for a in &h.aspects {
@@ -954,31 +949,33 @@ impl SyncEngine {
     /// Runs the rotations due before this node encrypts under `g`'s secrets (flows'
     /// `ensure_rotated`, spec/permissions.md §3) and returns the roles it still may not
     /// encrypt under (`placing`).
-    pub(crate) fn uncovered(&mut self, g: &Tid) -> Result<std::collections::BTreeSet<osis_base::Role>> {
-        let Some(a) = self.engine.core.secret_actor(g) else { return Ok(Default::default()) };
-        if self.engine.core.is_key_actor(&a) {
-            return Ok(Default::default());
-        }
-        let (done, still) = self.engine.ensure_rotated(&a)?;
-        self.take_done(done)?;
-        if still.is_empty() {
-            return Ok(still);
-        }
-        self.placing(&a)
+    pub(crate) fn uncovered(&mut self, g: &Tid) -> Result<BTreeSet<osis_base::Role>> {
+        self.uncovered_by(g, true)
     }
 
     /// The roles of `g`'s secret actor this node may not encrypt under now, without rotating.
-    pub(crate) fn uncovered_now(&mut self, g: &Tid) -> Result<std::collections::BTreeSet<osis_base::Role>> {
-        let Some(a) = self.engine.core.secret_actor(g) else { return Ok(Default::default()) };
+    pub(crate) fn uncovered_now(&mut self, g: &Tid) -> Result<BTreeSet<osis_base::Role>> {
+        self.uncovered_by(g, false)
+    }
+
+    fn uncovered_by(&mut self, g: &Tid, rotate: bool) -> Result<BTreeSet<osis_base::Role>> {
+        let Some(a) = self.engine.core.secret_actor(g) else { return Ok(BTreeSet::new()) };
         if self.engine.core.is_key_actor(&a) {
-            return Ok(Default::default());
+            return Ok(BTreeSet::new());
+        }
+        if rotate {
+            let (done, still) = self.engine.ensure_rotated(&a)?;
+            self.take_done(done)?;
+            if still.is_empty() {
+                return Ok(still);
+            }
         }
         self.placing(&a)
     }
 
     /// The roles of `a` uncovered by a known departure, a departure by this node's own
     /// self-removal not counted until that commit is placed (spec/crypto.md §4).
-    fn placing(&mut self, a: &Tid) -> Result<std::collections::BTreeSet<osis_base::Role>> {
+    fn placing(&mut self, a: &Tid) -> Result<BTreeSet<osis_base::Role>> {
         let mut deps = Vec::new();
         for (d, own) in self.engine.run(|tx| crate::rotation::departures_placing(tx, a))? {
             if let Some(c) = own

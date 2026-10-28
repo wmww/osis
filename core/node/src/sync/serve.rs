@@ -210,6 +210,11 @@ fn local(e: crate::Error) -> StoreError {
 }
 
 impl PeerStore<'_> {
+    /// Bytes charged to `key` so far, this request's included.
+    fn used(&self, key: &[u8; 32]) -> u64 {
+        self.charged.get(key).copied().unwrap_or(0).saturating_add(self.used_here.get(key).copied().unwrap_or(0))
+    }
+
     fn blob_len(&self, b: &BlobId) -> std::result::Result<Option<u64>, StoreError> {
         if let Some(n) = self.sizes.borrow().get(b) {
             return Ok(Some(*n));
@@ -294,8 +299,7 @@ impl LabelStore for PeerStore<'_> {
         if !self.entries.contains_key(&(*label, put.blob_id)) {
             let size = put.blob.len() as u64;
             let key = charge_key(self.member, label);
-            let used = self.charged.get(&key).copied().unwrap_or(0).saturating_add(self.used_here.get(&key).copied().unwrap_or(0));
-            if size > self.limit.saturating_sub(used) || size > self.total_left {
+            if size > self.limit.saturating_sub(self.used(&key)) || size > self.total_left {
                 self.acc.full = true;
                 return Ok(if put.stamp.is_some() { Code::STORAGE_CAP } else { Code::BUDGET_FULL });
             }
@@ -312,9 +316,7 @@ impl LabelStore for PeerStore<'_> {
     }
 
     fn budget(&self, label: &LabelId) -> std::result::Result<Budget, StoreError> {
-        let key = charge_key(self.member, label);
-        let used = self.charged.get(&key).copied().unwrap_or(0).saturating_add(self.used_here.get(&key).copied().unwrap_or(0));
-        let bytes_left = self.limit.saturating_sub(used).min(self.total_left);
+        let bytes_left = self.limit.saturating_sub(self.used(&charge_key(self.member, label))).min(self.total_left);
         Ok(Budget { entries_left: bytes_left / ENTRY_UNIT, bytes_left })
     }
 
