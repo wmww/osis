@@ -186,13 +186,14 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         }
     }
     // an import applies only to a copy its author created (spec/permissions.md §7; tests let a
-    // local writer break this, to test receivers)
+    // local writer break this, to test receivers); it waits for the copy's record even where it
+    // holds no part of it, since its header alone names the claim for carried writes
     if h.kind == osis_commit::Kind::Import && !(tx.core.skip_writer_rules && h.author == tx.core.id.tid()) {
         for a in &h.aspects {
-            if let Some(r) = record(&a.tid)
-                && !matches!(r, CreationRecord::Thing { creator: Some(c), .. } if c == h.author)
-            {
-                return Err(Error::BadInput("an import into a thing its author did not create"));
+            match record(&a.tid) {
+                None => return Ok(Exam::Pending(Reason::UnknownCreated(a.tid))),
+                Some(CreationRecord::Thing { creator: Some(c), .. }) if c == h.author => {}
+                Some(_) => return Err(Error::BadInput("an import into a thing its author did not create")),
             }
         }
     }
