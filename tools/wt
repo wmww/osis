@@ -67,9 +67,13 @@ def claim(branch, base="main"):
         tgt = path / "target"
         if tgt.is_dir():
             gb = sum(f.stat().st_size for f in tgt.rglob("*") if f.is_file()) / 2**30
-            if gb > 8:
-                print(f"wt: {tgt} is {gb:.0f} GB (a warm target is about 5-6 GB): stacked artifact generations after a "
-                      f"profile, layout or toolchain change; delete it and rebuild (notes/build.md)", file=sys.stderr)
+            if gb > 12:
+                shutil.rmtree(tgt, ignore_errors=True)
+                print(f"wt: {tgt} was {gb:.0f} GB (a warm target is about 5-6 GB): stacked artifact generations after a "
+                      f"profile, layout, feature or toolchain change; deleted, the first build is cold (notes/build.md)", file=sys.stderr)
+            elif gb > 8:
+                print(f"wt: {tgt} is {gb:.0f} GB (a warm target is about 5-6 GB): stacked artifact generations; it is deleted "
+                      f"automatically above 12 GB, or `rm -rf target` now if you have a few minutes", file=sys.stderr)
     except SystemExit:
         (claims / f"wt{n}").unlink()
         raise

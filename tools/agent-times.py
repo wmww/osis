@@ -25,6 +25,8 @@ since = None
 if "since" in opts:
     h, m = map(int, str(opts["since"]).split(":"))
     since = dt.datetime.now().astimezone().replace(hour=h, minute=m, second=0, microsecond=0)
+    if since > dt.datetime.now().astimezone():  # a time later than now means yesterday
+        since -= dt.timedelta(days=1)
 
 
 def ts(o):
