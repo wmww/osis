@@ -16,24 +16,25 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const SCHEME: &str = "quic";
-/// TLS ALPN protocol ID (spec/sync.md §10).
+/// TLS ALPN protocol ID (spec/sync.md §10), also iroh's.
 pub const ALPN: &[u8] = b"osis";
 /// SNI sent by clients; not checked (the key is).
 const SERVER_NAME: &str = "osis";
-/// Keep-alive so idle subscriptions survive NAT and the idle timeout (provisional).
-const KEEP_ALIVE: Duration = Duration::from_secs(15);
-/// A connection silent this long is dropped (provisional).
-const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// A handshake not done in this time is dropped (provisional).
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+// QUIC settings shared with `iroh` (all provisional):
+/// Keep-alive so idle subscriptions survive NAT and the idle timeout.
+pub(crate) const KEEP_ALIVE: Duration = Duration::from_secs(15);
+/// A connection silent this long is dropped.
+pub(crate) const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Flow-control windows per stream and per connection: the reader drains frames incrementally,
 /// so a window need not hold a whole frame; these bound what a peer makes us buffer.
-const STREAM_WINDOW: u32 = 1 << 20;
-const CONN_WINDOW: u32 = 4 << 20;
-/// Concurrent bidirectional streams a peer may open (provisional).
-const MAX_STREAMS: u32 = 16;
-/// Handshakes in progress per listener (provisional).
-const MAX_INCOMING: usize = 1024;
+pub(crate) const STREAM_WINDOW: u32 = 1 << 20;
+pub(crate) const CONN_WINDOW: u32 = 4 << 20;
+/// Concurrent bidirectional streams a peer may open.
+pub(crate) const MAX_STREAMS: u32 = 16;
+/// Handshakes in progress per listener.
+pub(crate) const MAX_INCOMING: usize = 1024;
 
 /// DER SubjectPublicKeyInfo prefix of an Ed25519 key (RFC 8410).
 const SPKI_PREFIX: [u8; 12] = [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00];

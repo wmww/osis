@@ -21,21 +21,11 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// TLS ALPN protocol ID (as `quic://`, spec/sync.md §10).
-pub const ALPN: &[u8] = b"osis";
+pub use crate::quic::ALPN;
+use crate::quic::{CONN_WINDOW, IDLE_TIMEOUT, KEEP_ALIVE, MAX_INCOMING, MAX_STREAMS, STREAM_WINDOW};
+
 /// A handshake not done in this time is dropped (provisional).
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-/// Concurrent bidirectional streams a peer may open (provisional).
-const MAX_STREAMS: u32 = 16;
-/// Flow-control windows per stream and per connection (as `quic.rs`: the reader drains frames
-/// incrementally).
-const STREAM_WINDOW: u32 = 1 << 20;
-const CONN_WINDOW: u32 = 4 << 20;
-/// Keep-alive and idle timeout (as `quic.rs`, provisional).
-const KEEP_ALIVE: Duration = Duration::from_secs(15);
-const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
-/// Handshakes in progress per listener (as `quic.rs`, provisional); more are refused.
-const MAX_INCOMING: usize = 1024;
 
 /// The P2P transport. Clones share the listening endpoints.
 #[derive(Clone, Default)]
