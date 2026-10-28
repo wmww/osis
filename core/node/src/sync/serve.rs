@@ -157,6 +157,38 @@ pub(crate) struct Served {
     since: u64,
 }
 
+/// Bytes peers uploaded or deposited here, per entry: (peer key, bytes), with running sums per
+/// peer key and in all (stale charges pruned at ticks and when a budget is reached).
+#[derive(Default)]
+pub(crate) struct Charges {
+    by_entry: BTreeMap<(LabelId, BlobId), ([u8; 32], u64)>,
+    per: BTreeMap<[u8; 32], u64>,
+    total: u64,
+    /// When charges were last pruned (raw ms), and whether a budget was reached since.
+    pruned: u64,
+    full: bool,
+}
+
+impl Charges {
+    fn charge(&mut self, l: LabelId, b: BlobId, key: [u8; 32], n: u64) {
+        if let Some((p, old)) = self.by_entry.insert((l, b), (key, n)) {
+            self.uncharge(p, old);
+        }
+        *self.per.entry(key).or_default() += n;
+        self.total = self.total.saturating_add(n);
+    }
+
+    fn uncharge(&mut self, p: [u8; 32], n: u64) {
+        self.total = self.total.saturating_sub(n);
+        if let Some(x) = self.per.get_mut(&p) {
+            *x = x.saturating_sub(n);
+            if *x == 0 {
+                self.per.remove(&p);
+            }
+        }
+    }
+}
+
 /// What a served request accepted, carried out after the server engine returns.
 #[derive(Default)]
 struct Accepted {
@@ -461,24 +493,14 @@ impl SyncEngine {
     /// a server or peer.
     pub(crate) fn prune_charges(&mut self) {
         let st = &self.state;
-        let stale: Vec<(LabelId, BlobId)> = self.charges.keys().filter(|(l, b)| !(st.entries.get(&(*l, *b)).is_some_and(|e| matches!(e.kind, super::state::Kind::Unknown | super::state::Kind::Bad | super::state::Kind::Parked(_))) && !st.present_anywhere(l, b))).copied().collect();
+        let stale: Vec<(LabelId, BlobId)> = self.charges.by_entry.keys().filter(|(l, b)| !(st.entries.get(&(*l, *b)).is_some_and(|e| matches!(e.kind, super::state::Kind::Unknown | super::state::Kind::Bad | super::state::Kind::Parked(_))) && !st.present_anywhere(l, b))).copied().collect();
         for k in stale {
-            if let Some((p, n)) = self.charges.remove(&k) {
-                self.uncharge(p, n);
+            if let Some((p, n)) = self.charges.by_entry.remove(&k) {
+                self.charges.uncharge(p, n);
             }
         }
-        self.charges_pruned = self.raw_now();
-        self.charges_full = false;
-    }
-
-    fn uncharge(&mut self, p: [u8; 32], n: u64) {
-        self.charged_total = self.charged_total.saturating_sub(n);
-        if let Some(x) = self.charged_per.get_mut(&p) {
-            *x = x.saturating_sub(n);
-            if *x == 0 {
-                self.charged_per.remove(&p);
-            }
-        }
+        self.charges.pruned = self.raw_now();
+        self.charges.full = false;
     }
 
     /// Feeds one input to a served session.
@@ -493,11 +515,11 @@ impl SyncEngine {
         }
         let now = self.raw_now();
         // a budget was reached: charges that no longer count go first (at most once a second)
-        if self.charges_full && now >= self.charges_pruned.saturating_add(1000) {
+        if self.charges.full && now >= self.charges.pruned.saturating_add(1000) {
             self.prune_charges();
         }
         let Some(mut s) = self.served.remove(&conn) else { return Ok(()) };
-        let total = self.charged_total;
+        let total = self.charges.total;
         let reach = self.reach_nodes();
         self.state.feed.heads(labels);
         if matches!(input, ServerInput::Bytes(_)) {
@@ -515,7 +537,7 @@ impl SyncEngine {
                 sizes: RefCell::new(&mut self.blob_sizes),
                 now,
                 wall,
-                charged: &self.charged_per,
+                charged: &self.charges.per,
                 limit: self.cfg.peer_bytes,
                 member: s.conn.member(),
                 used_here: BTreeMap::new(),
@@ -531,14 +553,9 @@ impl SyncEngine {
         if !s.conn.is_closed() {
             self.served.insert(conn, s);
         }
-        self.charges_full |= acc.full;
+        self.charges.full |= acc.full;
         for (l, b, n) in acc.charges {
-            let key = charge_key(proven, &l);
-            if let Some((p, old)) = self.charges.insert((l, b), (key, n)) {
-                self.uncharge(p, old);
-            }
-            *self.charged_per.entry(key).or_default() += n;
-            self.charged_total = self.charged_total.saturating_add(n);
+            self.charges.charge(l, b, charge_key(proven, &l), n);
         }
         if !acc.entries.is_empty() && member {
             for (l, _) in &acc.entries {

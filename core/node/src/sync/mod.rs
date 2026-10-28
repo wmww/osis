@@ -44,8 +44,8 @@ pub use state::Kind as EntryKind;
 const RESEND_MS: u64 = 30_000;
 
 /// Whether a request for `k` went out less than `RESEND_MS` before `now`.
-fn in_flight(m: &BTreeMap<(ConnId, LabelId, osis_base::BlobId), u64>, k: &(ConnId, LabelId, osis_base::BlobId), now: u64) -> bool {
-    m.get(k).is_some_and(|t| now < t.saturating_add(RESEND_MS))
+fn in_flight(m: &BTreeMap<(LabelId, osis_base::BlobId), u64>, k: (LabelId, osis_base::BlobId), now: u64) -> bool {
+    m.get(&k).is_some_and(|t| now < t.saturating_add(RESEND_MS))
 }
 
 /// Whether `OSIS_TRACE_UPLOADS` asks for the upload trace (`SyncEngine::trace`).
@@ -250,6 +250,42 @@ pub(crate) struct Conn {
     pub labels: BTreeMap<LabelId, LConn>,
     pub timer: Option<u64>,
     pub offset: Option<i64>,
+    // Requests on this connection not answered yet, and what its server would not deliver:
+    // they go with the connection (asked again on the next one).
+    /// Entries uploaded or deposited, with when (raw ms): passes within `RESEND_MS` skip them
+    /// (a burst of passes sent them all again each time).
+    pub sent: BTreeMap<(LabelId, osis_base::BlobId), u64>,
+    /// Deletes sent: later passes skip them.
+    pub deleting: BTreeMap<(LabelId, osis_base::BlobId), u64>,
+    /// Timed deletes sent: recorded once the server says OK.
+    pub timed_sent: BTreeSet<(LabelId, osis_base::BlobId)>,
+    /// Blobs asked for and not received yet.
+    pub fetching: BTreeSet<osis_base::BlobId>,
+    /// Blobs the server did not deliver when fetched.
+    pub missing: BTreeSet<osis_base::BlobId>,
+    /// Reopens in a row per label.
+    pub reopens: BTreeMap<LabelId, u32>,
+}
+
+impl Conn {
+    fn new(server: ServerKey, address: Address, peer: bool, session: ClientSession) -> Conn {
+        Conn {
+            server,
+            address,
+            peer,
+            session,
+            up: false,
+            labels: BTreeMap::new(),
+            timer: None,
+            offset: None,
+            sent: BTreeMap::new(),
+            deleting: BTreeMap::new(),
+            timed_sent: BTreeSet::new(),
+            fetching: BTreeSet::new(),
+            missing: BTreeSet::new(),
+            reopens: BTreeMap::new(),
+        }
+    }
 }
 
 /// One synced label's state (`SyncEngine::label_status`).
@@ -306,23 +342,12 @@ pub struct SyncEngine {
     /// Deposits for a label this node syncs with nobody: logged here, as a peer's deposit would
     /// be (`send_outbox`).
     pub(crate) local_inbox: Vec<(LabelId, Vec<u8>, [u8; osis_crypto::WRAP_LEN])>,
-    /// Blobs asked for and not received yet.
-    pub(crate) fetching: BTreeMap<osis_base::BlobId, ConnId>,
     /// Tree node blobs a judgment of dropped chunks waits for (`dropped_chunks`); a pass
     /// fetches those its server holds.
     pub(crate) tree_wants: BTreeSet<osis_base::BlobId>,
     /// Blobs each body's deltas link (`pass::body_blobs`), once the walk was complete: a body
     /// never changes.
     pub(crate) body_links: BTreeMap<BodyKey, Vec<osis_base::BlobId>>,
-    /// Entries uploaded or deposited on a connection and not answered yet, with when (raw ms):
-    /// passes within `RESEND_MS` skip them (a burst of passes sent them all again each time).
-    pub(crate) sent: BTreeMap<(ConnId, LabelId, osis_base::BlobId), u64>,
-    /// Blobs a connection's server did not deliver when fetched.
-    pub(crate) missing: BTreeSet<(ConnId, osis_base::BlobId)>,
-    /// Deletes sent and not answered yet: later passes skip them.
-    pub(crate) deleting: BTreeMap<(ConnId, LabelId, osis_base::BlobId), u64>,
-    /// Timed deletes sent and not answered yet: recorded once the server says OK.
-    pub(crate) timed_sent: BTreeSet<(ConnId, LabelId, osis_base::BlobId)>,
     /// Re-encrypting deleted chunks (`Engine::relink`) per aspect: when allowed next, and the
     /// interval after that (doubling, `RELINK_BACKOFF_MS` to `RELINK_BACKOFF_MAX_MS`).
     pub(crate) relink_backoff: BTreeMap<(Tid, osis_base::Ak), (u64, u64)>,
@@ -358,8 +383,6 @@ pub struct SyncEngine {
     /// A self-removal was carried out: its lost secrets are dropped once every label is idle
     /// (it is uploaded by then).
     pub(crate) drop_when_idle: bool,
-    /// Reopens in a row per (connection, label).
-    pub(crate) reopens: BTreeMap<(ConnId, LabelId), u32>,
     /// Sessions of forgotten labels whose pushes the server is still to stop.
     pub(crate) unsubscribe: BTreeSet<(ConnId, LabelId)>,
     /// Labels synced, with the actor their keys derive from and their servers.
@@ -386,25 +409,12 @@ pub struct SyncEngine {
     pub(crate) reach_check: bool,
     /// Served labels, until `/label`, membership or peer steps change.
     pub(crate) served_cache: Option<Arc<BTreeMap<LabelId, serve::ServedLabel>>>,
-    /// Bytes peers uploaded or deposited here, per entry: (peer key, bytes), with running sums
-    /// per peer key and in all (stale charges pruned at ticks and when a budget is reached).
-    pub(crate) charges: BTreeMap<(LabelId, osis_base::BlobId), ([u8; 32], u64)>,
-    pub(crate) charged_per: BTreeMap<[u8; 32], u64>,
-    pub(crate) charged_total: u64,
-    /// When charges were last pruned (raw ms), and whether a budget was reached since.
-    pub(crate) charges_pruned: u64,
-    pub(crate) charges_full: bool,
+    pub(crate) charges: serve::Charges,
     /// The engine's actors with secrets of their own when its events were last taken.
     pub(crate) own_keys: BTreeSet<Tid>,
     /// Sizes of blobs served to peers (memory only; pruned at ticks).
     pub(crate) blob_sizes: BTreeMap<osis_base::BlobId, u64>,
-    /// LAN tags of the co-readers for the cached window and its neighbours, to dialable keys.
-    pub(crate) lan_tags: Option<(u64, peers::LanTags)>,
-    /// `peers()` and the `/reach` holders by dialable key, until a commit applies.
-    pub(crate) peers_cache: Option<Arc<BTreeMap<[u8; 32], peers::Peer>>>,
-    pub(crate) reach_index: Option<Arc<BTreeMap<[u8; 32], Tid>>>,
-    /// (engine generation, minute) the caches above were computed at.
-    pub(crate) peers_key: (u64, u64),
+    pub(crate) peer_cache: peers::PeerCache,
     /// Co-readers this node received entries of a label from (complete passes wait for them
     /// while a connection to them is up, spec/permissions.md §3).
     pub(crate) peer_received: BTreeMap<LabelId, BTreeSet<ServerKey>>,
@@ -465,13 +475,8 @@ impl SyncEngine {
             outbox,
             local_inbox: Vec::new(),
             drop_when_idle: false,
-            fetching: BTreeMap::new(),
             tree_wants: BTreeSet::new(),
             body_links: BTreeMap::new(),
-            sent: BTreeMap::new(),
-            timed_sent: BTreeSet::new(),
-            deleting: BTreeMap::new(),
-            missing: BTreeSet::new(),
             relink_backoff: BTreeMap::new(),
             relink_pending: BTreeSet::new(),
             relink_at: 0,
@@ -488,7 +493,6 @@ impl SyncEngine {
             deposit_seen: BTreeMap::new(),
             resealed: BTreeSet::new(),
             label_actors: BTreeMap::new(),
-            reopens: BTreeMap::new(),
             unsubscribe: BTreeSet::new(),
             served: BTreeMap::new(),
             covered_judged: BTreeSet::new(),
@@ -501,16 +505,9 @@ impl SyncEngine {
             lan_rotate: false,
             reach_check: true,
             served_cache: None,
-            charges: BTreeMap::new(),
-            charged_per: BTreeMap::new(),
-            charged_total: 0,
-            charges_pruned: 0,
-            charges_full: false,
+            charges: serve::Charges::default(),
             blob_sizes: BTreeMap::new(),
-            lan_tags: None,
-            peers_cache: None,
-            reach_index: None,
-            peers_key: (u64::MAX, 0),
+            peer_cache: peers::PeerCache::default(),
             peer_received: BTreeMap::new(),
             membership_at: BTreeMap::new(),
             rotation_at: BTreeMap::new(),
@@ -544,6 +541,18 @@ impl SyncEngine {
     /// Asks for a Tick at raw ms `t` at the latest (`settle_at`).
     pub(crate) fn settle_by(&mut self, t: u64) {
         self.settle_at = Some(self.settle_at.map_or(t, |x| x.min(t)));
+    }
+
+    /// Whether blob `b` was asked for on some connection and not received yet.
+    pub(crate) fn fetching(&self, b: &osis_base::BlobId) -> bool {
+        self.conns.values().any(|c| c.fetching.contains(b))
+    }
+
+    /// Blob `b` arrived, or a server said it does not hold it: no longer in flight.
+    pub(crate) fn fetched(&mut self, b: &osis_base::BlobId) {
+        for c in self.conns.values_mut() {
+            c.fetching.remove(b);
+        }
     }
 
     /// Label `l` on connection `conn`.
@@ -688,13 +697,7 @@ impl SyncEngine {
 
     /// A dialed connection ended (or was closed here): redial after the retry pause.
     pub(crate) fn lost(&mut self, conn: ConnId) {
-        // requests not answered go again on the next connection
-        self.fetching.retain(|_, c| *c != conn);
-        self.reopens.retain(|(c, _), _| *c != conn);
-        self.sent.retain(|(c, _, _), _| *c != conn);
-        self.timed_sent.retain(|(c, _, _)| *c != conn);
-        self.deleting.retain(|(c, _, _), _| *c != conn);
-        self.missing.retain(|(c, _)| *c != conn);
+        // its requests not answered go with it (asked again on the next connection)
         if let Some(c) = self.conns.remove(&conn) {
             // deposits not answered on this connection go out again on the next one
             for o in self.outbox.values_mut().filter(|o| o.sent == Some(conn)) {
@@ -1031,7 +1034,7 @@ impl SyncEngine {
             self.rng.fill_bytes(&mut challenge);
             // the key the transport authenticates (a LAN address presents its own)
             let session = ClientSession::new(ClientConfig { peer_static_key: addr.key, challenge });
-            self.conns.insert(conn, Conn { server: key, address: addr.clone(), peer, session, up: false, labels: BTreeMap::new(), timer: None, offset: None });
+            self.conns.insert(conn, Conn::new(key, addr.clone(), peer, session));
             out.push(Action::Dial { conn, address: addr });
         }
     }
@@ -1160,8 +1163,8 @@ impl SyncEngine {
                 // asked for and not there: not asked again on this connection
                 let mut gone = false;
                 for f in items.iter().filter(|f| f.entry.is_none()) {
-                    self.fetching.remove(&f.blob_id);
-                    gone |= self.missing.insert((conn, f.blob_id));
+                    self.fetched(&f.blob_id);
+                    gone |= self.conns.get_mut(&conn).is_some_and(|c| c.missing.insert(f.blob_id));
                 }
                 if gone && let Some(lc) = self.lc_mut(conn, &label) {
                     lc.dirty = true;
@@ -1276,7 +1279,9 @@ impl SyncEngine {
             .flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.phase == Phase::Failed && l.last_sync.saturating_add(self.cfg.resync_ms) <= now).map(move |(lid, l)| (*id, *lid, l.group)))
             .collect();
         for (conn, label, g) in failed {
-            self.reopens.remove(&(conn, label));
+            if let Some(c) = self.conns.get_mut(&conn) {
+                c.reopens.remove(&label);
+            }
             self.start_label(conn, g, label, out)?;
         }
         if self.local_any && self.local_last.saturating_add(self.cfg.resync_ms) <= now {
@@ -1490,7 +1495,7 @@ mod tests {
             let mut s = SyncEngine::new(p.engine, p.clock, Box::new(osis_crypto::SeededRng::from_u64(965)), cfg).unwrap();
             let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
             let b = osis_base::BlobId([1; 32]);
-            s.fetching.insert(b, conn);
+            s.conns.get_mut(&conn).unwrap().fetching.insert(b);
             let d = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
             s.queue_deposit(LabelId([1; 16]), std::slice::from_ref(&server), &d, vec![9; 40], [3; osis_crypto::WRAP_LEN]);
             for o in s.outbox.values_mut() {
@@ -1501,7 +1506,7 @@ mod tests {
             } else {
                 s.outputs(conn, vec![ClientOutput::Close], &mut Vec::new()).unwrap();
             }
-            assert!(!s.fetching.contains_key(&b));
+            assert!(!s.fetching(&b));
             assert!(s.outbox.values().all(|o| o.sent.is_none()), "the deposit goes again");
             assert_eq!(s.deliveries_pending(), 1);
         }

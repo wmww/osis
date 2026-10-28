@@ -385,7 +385,9 @@ impl SyncEngine {
     fn accept_head(&mut self, conn: ConnId, l: LabelId, head: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let head_id = head.id();
         self.set_head(conn, l, head)?;
-        self.reopens.remove(&(conn, l));
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.reopens.remove(&l);
+        }
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.phase = Phase::Open;
             lc.tries.clear();
@@ -480,12 +482,14 @@ impl SyncEngine {
     pub(crate) fn refused(&mut self, conn: ConnId, l: Option<LabelId>, kind: u64, code: Code, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(l) = l else { return Ok(()) };
         // an upload or deposit refused whole goes again at a later pass; a timed delete too
-        if matches!(kind, 10 | 12) {
-            self.sent.retain(|(c, x, _), _| *c != conn || *x != l);
-        }
-        if kind == 14 {
-            self.timed_sent.retain(|(c, x, _)| *c != conn || *x != l);
-            self.deleting.retain(|(c, x, _), _| *c != conn || *x != l);
+        if let Some(c) = self.conns.get_mut(&conn) {
+            if matches!(kind, 10 | 12) {
+                c.sent.retain(|(x, _), _| *x != l);
+            }
+            if kind == 14 {
+                c.timed_sent.retain(|(x, _)| *x != l);
+                c.deleting.retain(|(x, _), _| *x != l);
+            }
         }
         let phase = self.lc(conn, &l).map(|x| x.phase.clone());
         match (kind, phase) {
@@ -519,7 +523,8 @@ impl SyncEngine {
     /// retry timer instead.
     pub(crate) fn reopen(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(g) = self.lc(conn, &l).map(|x| x.group) else { return Ok(()) };
-        let n = self.reopens.entry((conn, l)).or_insert(0);
+        let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
+        let n = c.reopens.entry(l).or_insert(0);
         *n += 1;
         if *n > MAX_REOPENS {
             self.fail(conn, l);

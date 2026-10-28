@@ -83,6 +83,22 @@ const LAN_HEARD: usize = 4;
 /// secret and window.
 pub(crate) type LanTags = BTreeMap<[u8; 16], ([u8; 32], [u8; 32], u64)>;
 
+/// What `peers()`, `reach_nodes()` and `lan_seen` computed, valid for one (engine generation,
+/// minute) (`peers_fresh`).
+pub(crate) struct PeerCache {
+    key: (u64, u64),
+    pub peers: Option<Arc<BTreeMap<[u8; 32], Peer>>>,
+    reach: Option<Arc<BTreeMap<[u8; 32], Tid>>>,
+    /// LAN tags of the co-readers for the cached window and its neighbours.
+    lan_tags: Option<(u64, LanTags)>,
+}
+
+impl Default for PeerCache {
+    fn default() -> PeerCache {
+        PeerCache { key: (u64::MAX, 0), peers: None, reach: None, lan_tags: None }
+    }
+}
+
 impl SyncEngine {
     /// This node's dialable transport secret (spec/sync.md §10; separate from its signing key):
     /// generated on first use and kept in the local records. The driver listens with it and
@@ -214,7 +230,7 @@ impl SyncEngine {
     /// until a commit applies). A key two node things claim matches neither.
     pub(crate) fn reach_nodes(&mut self) -> Arc<BTreeMap<[u8; 32], Tid>> {
         self.peers_fresh();
-        if let Some(r) = &self.reach_index {
+        if let Some(r) = &self.peer_cache.reach {
             return r.clone();
         }
         let me = self.engine.tid();
@@ -233,7 +249,7 @@ impl SyncEngine {
         }
         m.retain(|k, _| !twice.contains(k));
         let m = Arc::new(m);
-        self.reach_index = Some(m.clone());
+        self.peer_cache.reach = Some(m.clone());
         m
     }
 
@@ -243,7 +259,7 @@ impl SyncEngine {
     /// Cached until the engine's state changes, and at most a minute (edges expire).
     pub fn peers(&mut self) -> Arc<BTreeMap<[u8; 32], Peer>> {
         self.peers_fresh();
-        if let Some(p) = &self.peers_cache {
+        if let Some(p) = &self.peer_cache.peers {
             return p.clone();
         }
         let mut reaches = Vec::new();
@@ -279,7 +295,7 @@ impl SyncEngine {
             }
         }
         let out = Arc::new(out);
-        self.peers_cache = Some(out.clone());
+        self.peer_cache.peers = Some(out.clone());
         out
     }
 
@@ -287,11 +303,8 @@ impl SyncEngine {
     /// changed or a minute passed since they were computed.
     fn peers_fresh(&mut self) {
         let key = (self.engine.core.generation, self.raw_now() / PEERS_TTL_MS);
-        if self.peers_key != key {
-            self.peers_key = key;
-            self.peers_cache = None;
-            self.reach_index = None;
-            self.lan_tags = None;
+        if self.peer_cache.key != key {
+            self.peer_cache = PeerCache { key, ..PeerCache::default() };
         }
     }
 
@@ -480,16 +493,16 @@ impl SyncEngine {
         }
         let window = self.now() / LAN_WINDOW_MS;
         self.peers_fresh();
-        if self.lan_tags.as_ref().is_none_or(|(w, _)| *w != window) {
+        if self.peer_cache.lan_tags.as_ref().is_none_or(|(w, _)| *w != window) {
             let mut tags = BTreeMap::new();
             for (k, p) in self.peers().iter() {
                 for w in [window.saturating_sub(1), window, window.saturating_add(1)] {
                     tags.insert(lan_tag(&p.reach.lan_secret, w.saturating_mul(LAN_WINDOW_MS)), (*k, p.reach.lan_secret, w));
                 }
             }
-            self.lan_tags = Some((window, tags));
+            self.peer_cache.lan_tags = Some((window, tags));
         }
-        let Some((k, secret, w)) = self.lan_tags.as_ref().and_then(|(_, t)| t.get(&a.tag)).copied() else { return (None, Vec::new()) };
+        let Some((k, secret, w)) = self.peer_cache.lan_tags.as_ref().and_then(|(_, t)| t.get(&a.tag)).copied() else { return (None, Vec::new()) };
         let raw = self.raw_now();
         let r = self.lan.entry(k).or_default();
         if r.verified.as_ref() != Some(a) {
@@ -563,7 +576,7 @@ impl SyncEngine {
     }
 
     fn policy_changed(&mut self) -> Vec<Action> {
-        self.peers_cache = None;
+        self.peer_cache.peers = None;
         self.reach_check = true;
         self.handle(Event::Local)
     }

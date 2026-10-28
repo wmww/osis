@@ -294,7 +294,7 @@ impl SyncEngine {
                     None => false,
                 };
             }
-            if !seen.insert(o.id) || settled || super::in_flight(&self.sent, &(conn, l, o.id), raw) {
+            if !seen.insert(o.id) || settled || self.conns.get(&conn).is_some_and(|c| super::in_flight(&c.sent, (l, o.id), raw)) {
                 continue;
             }
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
@@ -346,12 +346,13 @@ impl SyncEngine {
         if let Some(w) = &keys.write {
             self.promote(conn, server, &g, l, w, &mut uploads)?;
         }
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.sent.extend(uploads.iter().map(|u| osis_label::blob_id(&u.blob)).chain(deposits.iter().map(|d| osis_label::blob_id(&d.0))).map(|b| ((l, b), raw)));
+        }
         if !uploads.is_empty() {
-            self.sent.extend(uploads.iter().map(|u| ((conn, l, osis_label::blob_id(&u.blob)), raw)));
             self.command(conn, Command::Upload { label: l, entries: uploads }, out)?;
         }
         for (blob, wrap, sig) in deposits {
-            self.sent.insert((conn, l, osis_label::blob_id(&blob)), raw);
             self.command(conn, Command::Deposit { label: l, blob, wrap, sig }, out)?;
         }
         let settled = unsettled.is_empty();
@@ -384,7 +385,7 @@ impl SyncEngine {
         if conn.is_some() {
             self.check_linked_prefixes(l, &scope)?;
         }
-        let fetching = w.unopened.iter().any(|b| self.fetching.contains_key(b));
+        let fetching = w.unopened.iter().any(|b| self.fetching(b));
         let (unsettled, snapping) = self.unsettled_sets(!w.unopened.is_empty(), fetching)?;
         let replaced = self.is_replaced(g, &l);
         let inputs = Inputs {
@@ -968,7 +969,7 @@ impl SyncEngine {
         let mut w = Work::fresh();
         self.rebuild(&g, l, &mut w);
         let snaps: BTreeMap<(Tid, Ak), Vec<CommitId>> = w.snaps.iter().map(|(k, v)| (k.clone(), v.iter().map(|(_, c)| *c).collect())).collect();
-        let fetching = w.unopened.iter().any(|b| self.fetching.contains_key(b));
+        let fetching = w.unopened.iter().any(|b| self.fetching(b));
         let (unsettled, snapping) = self.unsettled_sets(!w.unopened.is_empty(), fetching)?;
         v.unsettled = unsettled.iter().cloned().collect();
         let mut note = Note::default();
@@ -1005,7 +1006,8 @@ impl SyncEngine {
     /// opened now, or fetched again when their bytes are not here (a fetch lost to a cut or
     /// crash, secrets that arrived later).
     fn refetch(&mut self, conn: ConnId, server: ServerKey, l: LabelId, w: &Work, out: &mut Vec<super::Action>) -> Result<()> {
-        let ids: Vec<BlobId> = w.unopened.iter().filter(|b| !self.fetching.contains_key(b) && !self.missing.contains(&(conn, **b)) && self.state.is_present(&server, &l, b)).copied().collect();
+        let missing = |s: &Self, b: &BlobId| s.conns.get(&conn).is_some_and(|c| c.missing.contains(b));
+        let ids: Vec<BlobId> = w.unopened.iter().filter(|b| !self.fetching(b) && !missing(self, b) && self.state.is_present(&server, &l, b)).copied().collect();
         let (held, want): (Vec<BlobId>, Vec<BlobId>) = ids.into_iter().partition(|b| self.engine.has_blob(b));
         // bytes here but never opened under the secrets held now
         if !held.is_empty() {
@@ -1104,7 +1106,7 @@ impl SyncEngine {
         self.deposit_seen.retain(|k, _| self.state.deposited.contains(k));
         let mut out = Vec::new();
         for (id, e) in ids {
-            if super::in_flight(&self.sent, &(conn, l, id), raw) {
+            if self.conns.get(&conn).is_some_and(|c| super::in_flight(&c.sent, (l, id), raw)) {
                 continue;
             }
             let seen = *self.deposit_seen.entry((server, l, id)).or_insert(raw);
@@ -1944,7 +1946,12 @@ impl SyncEngine {
         let desired = desired(bodies);
         // deletes in flight on this connection are not sent again (`RESEND_MS`)
         let raw = self.raw_now();
-        let busy = |s: &Self, id: &BlobId| super::in_flight(&s.deleting, &(conn, l, *id), raw);
+        let busy = |s: &Self, id: &BlobId| s.conns.get(&conn).is_some_and(|c| super::in_flight(&c.deleting, (l, *id), raw));
+        let send = |s: &mut Self, id: BlobId| {
+            if let Some(c) = s.conns.get_mut(&conn) {
+                c.deleting.insert((l, id), raw);
+            }
+        };
         let mut items = Vec::new();
         let mut note = Note::default();
         for id in &ids {
@@ -1965,7 +1972,7 @@ impl SyncEngine {
                 Fate::Delete(_, item) => {
                     left.commits.insert(commit);
                     if !busy(self, &id) {
-                        self.deleting.insert((conn, l, id), raw);
+                        send(self, id);
                         items.push(item);
                     }
                 }
@@ -1985,7 +1992,7 @@ impl SyncEngine {
                 continue;
             }
             if let Some(item) = self.chunk_delete(conn, keys, &l, id, c, ch, out)? {
-                self.deleting.insert((conn, l, *id), raw);
+                send(self, *id);
                 items.push(item);
             }
         }
@@ -1997,7 +2004,7 @@ impl SyncEngine {
                     continue;
                 }
                 if let Some(item) = delete_item(keys, &l, b, None, None, &[]) {
-                    self.deleting.insert((conn, l, b), raw);
+                    send(self, b);
                     items.push(item);
                 }
             }
@@ -2025,7 +2032,7 @@ impl SyncEngine {
             }
             for b in gone {
                 if let Some(item) = delete_item(keys, &l, b, None, None, &[]) {
-                    self.deleting.insert((conn, l, b), raw);
+                    send(self, b);
                     items.push(item);
                 }
             }
@@ -2036,7 +2043,7 @@ impl SyncEngine {
             if !self.state.is_present(&server, &l, &id) || self.state.timed.contains(&(server, l, id)) {
                 continue;
             }
-            if self.timed_sent.contains(&(conn, l, id)) {
+            if self.conns.get(&conn).is_some_and(|c| c.timed_sent.contains(&(l, id))) {
                 left.commits.insert(b.commit);
                 continue;
             }
@@ -2052,7 +2059,9 @@ impl SyncEngine {
             match self.delete_for(keys, &l, &id, &e, Some(WallMs(t)))? {
                 Some(item) => {
                     left.commits.insert(b.commit);
-                    self.timed_sent.insert((conn, l, id));
+                    if let Some(c) = self.conns.get_mut(&conn) {
+                        c.timed_sent.insert((l, id));
+                    }
                     items.push(item);
                 }
                 None => {
