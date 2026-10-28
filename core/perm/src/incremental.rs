@@ -560,30 +560,26 @@ impl Timelines {
     /// joins it), continued as at run time: over the new leaves (things with only a
     /// `/created` record), then over the commits added since; and how many commits and
     /// snapshots the walk saved under its root covered (0 when saved under another thing).
+    /// Every other walk saved under its things is retired: one under a root that moved
+    /// before the next `to_save` (a restart in between) is found only here.
     fn restore(&mut self, inputs: &Inputs, part: &Part<'_>, saved: &mut dyn FnMut(&Tid) -> Option<Vec<u8>>, salt: &[u8]) -> Option<(Timeline, usize)> {
+        let mut out = None;
         for (j, t) in inputs.0.iter().enumerate() {
             let Some(bytes) = saved(t) else { continue };
-            let Some(s) = cache::parse(&bytes) else {
-                self.retired.insert(*t);
-                continue;
-            };
-            match Self::resume(&s, inputs, part, salt) {
-                Some(tl) => {
-                    self.restored += 1;
-                    if j > 0 {
-                        // overwritten under the root by the next `to_save`
-                        self.retired.insert(*t);
-                        return Some((tl, 0));
-                    }
-                    return Some((tl, s.inputs.1.len()));
-                }
-                // unusable: overwritten or deleted by the next `to_save`
-                None => {
-                    self.retired.insert(*t);
+            if out.is_none()
+                && let Some(s) = cache::parse(&bytes)
+                && let Some(tl) = Self::resume(&s, inputs, part, salt)
+            {
+                self.restored += 1;
+                out = Some((tl, if j == 0 { s.inputs.1.len() } else { 0 }));
+                if j == 0 {
+                    continue;
                 }
             }
+            // not under the root, unusable or not used: deleted or overwritten by the next `to_save`
+            self.retired.insert(*t);
         }
-        None
+        out
     }
 
     fn resume(s: &cache::Saved<'_>, inputs: &Inputs, part: &Part<'_>, salt: &[u8]) -> Option<Timeline> {
