@@ -96,6 +96,20 @@ type TimedDue = Option<(Entry, u64)>;
 /// A judged entry: the rule's answer, whether it may carry live writes, its aspects.
 type Judged = (Hold, bool, Vec<(Tid, Ak)>);
 
+/// What a pass judges once its scope is taken (`SyncEngine::judging`).
+struct J {
+    scope: Scope,
+    left: Left,
+    /// The label's snapshots by aspect.
+    snaps: BTreeMap<(Tid, Ak), Vec<CommitId>>,
+    bodies: Vec<Body>,
+    /// The commits of the scope when the bodies were taken (`judge_touched`).
+    judged: BTreeSet<CommitId>,
+    unsettled: BTreeSet<Option<(Tid, Ak)>>,
+    snapping: BTreeSet<Option<(Tid, Ak)>>,
+    replaced: bool,
+}
+
 /// A deposited entry due for promotion: (blob, entry, commit, its parts).
 type Deposit = (BlobId, Entry, CommitId, Vec<(usize, usize)>);
 
@@ -108,25 +122,10 @@ impl SyncEngine {
         let Some(c) = self.conns.get(&conn) else { return Ok(()) };
         let server = c.server;
         let Some(lc) = c.labels.get(&l) else { return Ok(()) };
-        let (g, head, index) = (lc.group, lc.head.clone(), lc.index.unwrap_or(0));
+        let (g, index) = (lc.group, lc.index.unwrap_or(0));
+        let Some(head) = lc.head.clone() else { return Ok(()) };
         // secrets may have arrived since the head was accepted
-        let mut keys = match &head {
-            Some(h) => self.engine.head_keys(&g, index, h)?,
-            None => return Ok(()),
-        };
-        // never encrypt under an epoch that does not cover a known departure: rotate first
-        // (flows' cascade), else hold back what the uncovered roles would sign or wrap
-        let still = self.uncovered(&g)?;
-        if still.contains(&Role::Write) {
-            keys.write = None;
-        }
-        if still.contains(&Role::Admin) {
-            keys.delete = None;
-        }
-        let read_ok = !still.contains(&Role::Read);
-        if !read_ok {
-            keys.sync_established = false;
-        }
+        let (keys, read_ok) = self.usable_keys(&g, index, &head)?;
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.keys = keys.clone();
         }
@@ -145,24 +144,38 @@ impl SyncEngine {
         if self.reregister(conn, l, out)? {
             return Ok(());
         }
+        self.with_work(&g, Some(conn), l, |s, ctx, w| s.judge_label(conn, server, g, l, ctx, keys, read_ok, head.id(), w, out))
+    }
+
+    /// Runs a pass of `l` of `g` over its work set (`conn` `None`: the local pass): the closure
+    /// synced and the engine's changes spread first; what touches the set during the pass
+    /// collects in its place and joins it after; a failed pass judges everything next time.
+    fn with_work(&mut self, g: &Tid, conn: Option<ConnId>, l: LabelId, f: impl FnOnce(&mut Self, &BodyCtx, &mut Work) -> Result<()>) -> Result<()> {
         // the group's closure, taken once for the pass; atomic apply waits for its deltas
         // (spec/commits.md §4)
-        let ctx = self.engine.body_ctx(&g);
-        self.sync_closure(&g, &ctx.closure)?;
+        let ctx = self.engine.body_ctx(g);
+        self.sync_closure(g, &ctx.closure)?;
         // what an earlier pass of this step changed in the engine (a carrier snapshot written)
         self.engine_events()?;
         self.spread_touches();
-        let Some(mut w) = self.lc_mut(conn, &l).map(|lc| std::mem::replace(&mut lc.work, Work::idle(false))) else { return Ok(()) };
-        let r = self.judge_label(conn, server, g, l, &ctx, keys, read_ok, head.map(|h| h.id()), &mut w, out);
+        let Some(mut w) = self.work_mut(conn, l).map(|x| std::mem::replace(x, Work::idle(false))) else { return Ok(()) };
+        let r = f(self, &ctx, &mut w);
         if r.is_err() {
             w.full = true;
         }
-        if let Some(lc) = self.lc_mut(conn, &l) {
-            let meanwhile = std::mem::replace(&mut lc.work, Work::idle(false));
-            w.merge(meanwhile);
-            lc.work = w;
+        if let Some(x) = self.work_mut(conn, l) {
+            let meanwhile = std::mem::replace(x, w);
+            x.merge(meanwhile);
         }
         r
+    }
+
+    /// The work set of `l` on `conn`, or of its local pass (`None`; made when missing).
+    pub(super) fn work_mut(&mut self, conn: Option<ConnId>, l: LabelId) -> Option<&mut Work> {
+        match conn {
+            Some(c) => self.lc_mut(c, &l).map(|x| &mut x.work),
+            None => Some(self.local_work.entry(l).or_default()),
+        }
     }
 
     /// Atomic apply waits for the deltas of every thing of `g`'s closure (spec/commits.md §4):
@@ -184,10 +197,8 @@ impl SyncEngine {
     /// The pass after the keys and registration (`pass`): over what work set `w` names, or
     /// everything when it says so or an input of the pass changed (`work`).
     #[allow(clippy::too_many_arguments)]
-    fn judge_label(&mut self, conn: ConnId, server: ServerKey, g: Tid, l: LabelId, ctx: &BodyCtx, keys: HeadKeys, read_ok: bool, head: Option<osis_label::StepId>, w: &mut Work, out: &mut Vec<super::Action>) -> Result<()> {
-        let full = self.prepare(&g, &l, w, &ctx.closure);
-        let mut scope = if full { Scope::All } else { Scope::Some { commits: std::mem::take(&mut w.commits), blobs: std::mem::take(&mut w.blobs) } };
-        self.stats.passes += 1;
+    fn judge_label(&mut self, conn: ConnId, server: ServerKey, g: Tid, l: LabelId, ctx: &BodyCtx, keys: HeadKeys, read_ok: bool, head: osis_label::StepId, w: &mut Work, out: &mut Vec<super::Action>) -> Result<()> {
+        let (full, scope) = self.begin(&g, &l, w, &ctx.closure);
         self.refetch(conn, server, l, w, out)?;
         // commits the refetch applied may move the closure or published groups: judged with
         // what holds now, as the inputs record it
@@ -198,35 +209,8 @@ impl SyncEngine {
         } else {
             ctx
         };
-        self.pull(Some(conn), &g, l, &mut scope, w);
-        self.check_linked_prefixes(l, &scope)?;
-        let unsettled = self.unsettled_of(!w.unopened.is_empty())?;
-        let fetching = w.unopened.iter().any(|b| self.fetching.contains_key(b));
-        let snapping = self.unsettled_hold_of(fetching)?;
-        let replaced = self.is_replaced(&g, &l);
-        let inputs = Inputs {
-            head,
-            epochs: keys.epochs,
-            roles: Inputs::roles(&keys, read_ok),
-            replaced,
-            actor: self.engine.group_actor(&g),
-            published: ctx.published.clone(),
-            may_rotate: self.may_rotate_read(&g),
-            held: self.engine.epochs(&g),
-        };
-        if self.take_inputs(&g, &l, w, &mut scope, full, inputs, &unsettled, &snapping) && !full {
-            self.check_linked_prefixes(l, &scope)?;
-        }
-        let mut left = Left::default();
-        let entries = w.snaps.clone();
-        let snaps = self.drop_label_covered(&entries, &mut scope, &mut left)?;
-        let mut bodies = self.bodies_in(ctx, &g, &l, &scope)?;
-        let judged: BTreeSet<CommitId> = match &scope {
-            Scope::Some { commits, .. } => commits.clone(),
-            Scope::All => BTreeSet::new(),
-        };
-        let mut sends: Vec<Out> = Vec::new();
-        sends.extend(self.body_sends(Some(&server), &g, l, &keys, read_ok, &bodies, &snaps, &snapping, &mut left)?);
+        let J { mut scope, mut left, snaps, mut bodies, judged, unsettled, snapping, replaced } = self.judging(Some(conn), &g, l, ctx, &keys, read_ok, head, w, scope, full)?;
+        let mut sends: Vec<Out> = self.body_sends(Some(&server), &g, l, &keys, read_ok, &bodies, &snaps, &snapping, &mut left)?;
         // parked commits travel like at a blind node: stamped entries are relayed (spec/versioning.md §2)
         for id in self.state.of_kind(&l, 4) {
             if self.state.entries.get(&(l, id)).is_some_and(|e| e.stamp.is_some()) {
@@ -349,17 +333,68 @@ impl SyncEngine {
         }
         let settled = unsettled.is_empty();
         self.pull(Some(conn), &g, l, &mut scope, w);
-        // entries touched during the pass are judged against their commits' bodies too
-        if let Scope::Some { commits, .. } = &scope {
-            let more = Scope::Some { commits: commits.difference(&judged).copied().collect(), blobs: BTreeSet::new() };
-            bodies.extend(self.bodies_in(ctx, &g, &l, &more)?);
-        }
+        self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
         self.deletions(conn, server, l, &g, &keys, &bodies, &snaps, settled, &scope, &mut left, out)?;
         if quiet && settled {
             self.retire_at(server, &g, l)?;
         }
         self.reseal(&g, w)?;
         w.leave(left);
+        Ok(())
+    }
+
+    /// Readies `w` for a pass (`prepare`): whether it judges everything, and its scope.
+    fn begin(&mut self, g: &Tid, l: &LabelId, w: &mut Work, closure: &std::sync::Arc<BTreeSet<Tid>>) -> (bool, Scope) {
+        let full = self.prepare(g, l, w, closure);
+        self.stats.passes += 1;
+        let scope = if full { Scope::All } else { Scope::Some { commits: std::mem::take(&mut w.commits), blobs: std::mem::take(&mut w.blobs) } };
+        (full, scope)
+    }
+
+    /// What a pass judges (`judge_label`, `judge_local`; `conn` `None`: the local pass): the
+    /// scope with what touched the set meanwhile, the unsettled sets and the inputs taken
+    /// (`take_inputs`), the label's snapshots with the bodies they cover dropped, and the bodies
+    /// of the scope. A server's entries get their linked prefixes checked.
+    #[allow(clippy::too_many_arguments)]
+    fn judging(&mut self, conn: Option<ConnId>, g: &Tid, l: LabelId, ctx: &BodyCtx, keys: &HeadKeys, read_ok: bool, head: osis_label::StepId, w: &mut Work, mut scope: Scope, full: bool) -> Result<J> {
+        self.pull(conn, g, l, &mut scope, w);
+        if conn.is_some() {
+            self.check_linked_prefixes(l, &scope)?;
+        }
+        let fetching = w.unopened.iter().any(|b| self.fetching.contains_key(b));
+        let (unsettled, snapping) = self.unsettled_sets(!w.unopened.is_empty(), fetching)?;
+        let replaced = self.is_replaced(g, &l);
+        let inputs = Inputs {
+            head: Some(head),
+            epochs: keys.epochs,
+            roles: Inputs::roles(keys, read_ok),
+            replaced,
+            actor: self.engine.group_actor(g),
+            published: ctx.published.clone(),
+            may_rotate: self.may_rotate_read(g),
+            held: self.engine.epochs(g),
+        };
+        if self.take_inputs(g, &l, w, &mut scope, full, inputs, &unsettled, &snapping) && !full && conn.is_some() {
+            self.check_linked_prefixes(l, &scope)?;
+        }
+        let mut left = Left::default();
+        let entries = w.snaps.clone();
+        let snaps = self.drop_label_covered(&entries, &mut scope, &mut left)?;
+        let bodies = self.bodies_in(ctx, g, &l, &scope)?;
+        let judged: BTreeSet<CommitId> = match &scope {
+            Scope::Some { commits, .. } => commits.clone(),
+            Scope::All => BTreeSet::new(),
+        };
+        Ok(J { scope, left, snaps, bodies, judged, unsettled, snapping, replaced })
+    }
+
+    /// Entries touched during the pass are judged against their commits' bodies too: the bodies
+    /// of the commits `scope` gained since `judged`.
+    fn judge_touched(&mut self, ctx: &BodyCtx, g: &Tid, l: &LabelId, scope: &Scope, judged: &BTreeSet<CommitId>, bodies: &mut Vec<Body>) -> Result<()> {
+        if let Scope::Some { commits, .. } = scope {
+            let more = Scope::Some { commits: commits.difference(judged).copied().collect(), blobs: BTreeSet::new() };
+            bodies.extend(self.bodies_in(ctx, g, l, &more)?);
+        }
         Ok(())
     }
 
@@ -427,8 +462,9 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// The keys of `head` this node may use (`pass`: uncovered roles held back), and whether
-    /// read is covered.
+    /// The keys of `head` this node may use, and whether read is covered: never encrypt under an
+    /// epoch that does not cover a known departure, so rotate first (flows' cascade), else hold
+    /// back what the uncovered roles would sign or wrap.
     fn usable_keys(&mut self, g: &Tid, index: u64, head: &osis_label::Step) -> Result<(HeadKeys, bool)> {
         let mut keys = self.engine.head_keys(g, index, head)?;
         let still = self.uncovered(g)?;
@@ -438,7 +474,11 @@ impl SyncEngine {
         if still.contains(&Role::Admin) {
             keys.delete = None;
         }
-        Ok((keys, !still.contains(&Role::Read)))
+        let read_ok = !still.contains(&Role::Read);
+        if !read_ok {
+            keys.sync_established = false;
+        }
+        Ok((keys, read_ok))
     }
 
     /// Whether this node may issue a new step for a label of `g` now: another node's rotation
@@ -477,53 +517,17 @@ impl SyncEngine {
         if !read_ok || keys.epochs[0].is_none() || !(keys.is_writer() || keys.deposit.is_some()) {
             return Ok(());
         }
-        let ctx = self.engine.body_ctx(&g);
-        self.sync_closure(&g, &ctx.closure)?;
-        self.engine_events()?;
-        self.spread_touches();
-        // the label's work set, as at a server (`judge_label`); what touches it meanwhile
-        // collects in its place
-        let mut w = std::mem::replace(self.local_work.entry(l).or_default(), Work::idle(false));
-        let r = self.judge_local(g, l, &ctx, &keys, read_ok, head.id(), &mut w);
-        if r.is_err() {
-            w.full = true;
-        }
-        let meanwhile = std::mem::replace(self.local_work.entry(l).or_default(), Work::idle(false));
-        w.merge(meanwhile);
-        self.local_work.insert(l, w);
-        r
+        // the label's work set, as at a server (`judge_label`)
+        let head = head.id();
+        self.with_work(&g, None, l, |s, ctx, w| s.judge_local(g, l, ctx, &keys, read_ok, head, w))
     }
 
     /// The local pass after the keys and the step (`local_pass`), over what work set `w`
     /// names, or everything when it says so or an input of the pass changed.
     #[allow(clippy::too_many_arguments)]
     fn judge_local(&mut self, g: Tid, l: LabelId, ctx: &BodyCtx, keys: &HeadKeys, read_ok: bool, head: osis_label::StepId, w: &mut Work) -> Result<()> {
-        let full = self.prepare(&g, &l, w, &ctx.closure);
-        let mut scope = if full { Scope::All } else { Scope::Some { commits: std::mem::take(&mut w.commits), blobs: std::mem::take(&mut w.blobs) } };
-        self.stats.passes += 1;
-        self.pull(None, &g, l, &mut scope, w);
-        let unsettled = self.unsettled_of(!w.unopened.is_empty())?;
-        let fetching = w.unopened.iter().any(|b| self.fetching.contains_key(b));
-        let snapping = self.unsettled_hold_of(fetching)?;
-        let inputs = Inputs {
-            head: Some(head),
-            epochs: keys.epochs,
-            roles: Inputs::roles(keys, read_ok),
-            replaced: false,
-            actor: self.engine.group_actor(&g),
-            published: ctx.published.clone(),
-            may_rotate: self.may_rotate_read(&g),
-            held: self.engine.epochs(&g),
-        };
-        self.take_inputs(&g, &l, w, &mut scope, full, inputs, &unsettled, &snapping);
-        let mut left = Left::default();
-        let entries = w.snaps.clone();
-        let snaps = self.drop_label_covered(&entries, &mut scope, &mut left)?;
-        let mut bodies = self.bodies_in(ctx, &g, &l, &scope)?;
-        let judged: BTreeSet<CommitId> = match &scope {
-            Scope::Some { commits, .. } => commits.clone(),
-            Scope::All => BTreeSet::new(),
-        };
+        let (full, scope) = self.begin(&g, &l, w, &ctx.closure);
+        let J { mut scope, mut left, snaps, mut bodies, judged, snapping, .. } = self.judging(None, &g, l, ctx, keys, read_ok, head, w, scope, full)?;
         let sends = self.body_sends(None, &g, l, keys, read_ok, &bodies, &snaps, &snapping, &mut left)?;
         let ours: BTreeSet<BlobId> = sends.iter().filter(|o| o.fresh).map(|o| o.id).collect();
         self.inbox_copies(&g, l)?;
@@ -551,11 +555,7 @@ impl SyncEngine {
             }
         }
         let settled = self.unsettled_of(!w.unopened.is_empty())?.is_empty();
-        // entries touched during the pass are judged against their commits' bodies too
-        if let Scope::Some { commits, .. } = &scope {
-            let more = Scope::Some { commits: commits.difference(&judged).copied().collect(), blobs: BTreeSet::new() };
-            bodies.extend(self.bodies_in(ctx, &g, &l, &more)?);
-        }
+        self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
         self.local_deletions(&g, l, keys, &bodies, &snaps, settled, &scope, &mut left)?;
         w.leave(left);
         Ok(())
@@ -941,10 +941,9 @@ impl SyncEngine {
         let mut w = Work::idle(true);
         self.rebuild(&g, l, &mut w);
         let snaps: BTreeMap<(Tid, Ak), Vec<CommitId>> = w.snaps.iter().map(|(k, v)| (k.clone(), v.iter().map(|(_, c)| *c).collect())).collect();
-        let unsettled = self.unsettled_of(!w.unopened.is_empty())?;
-        v.unsettled = unsettled.iter().cloned().collect();
         let fetching = w.unopened.iter().any(|b| self.fetching.contains_key(b));
-        let snapping = self.unsettled_hold_of(fetching)?;
+        let (unsettled, snapping) = self.unsettled_sets(!w.unopened.is_empty(), fetching)?;
+        v.unsettled = unsettled.iter().cloned().collect();
         let mut note = Note::default();
         for b in &bodies {
             if let Some(needed) = self.must_hold(b, &snaps, &snapping, &mut note)? {
@@ -973,31 +972,6 @@ impl SyncEngine {
 
     pub(crate) fn is_replaced(&mut self, g: &Tid, l: &LabelId) -> bool {
         self.engine.labels_of(g).iter().any(|x| x.id == *l && x.replaced)
-    }
-
-    /// Aspects where a body is not established uncovered yet (spec/sync.md §6), so not
-    /// must-hold: those of pending snapshots (pages not fetched, deltas missing), and every
-    /// aspect (`None`) while an entry of the label that opens under a held secret is being
-    /// fetched (`fetching`; it may be a snapshot). Other pending commits settle nothing (two
-    /// writers' pending commits otherwise withheld exactly what the other waited for), nor do
-    /// entries that do not open as a commit or whose bytes no server delivers.
-    pub(super) fn unsettled_hold_of(&mut self, fetching: bool) -> Result<BTreeSet<Option<(Tid, Ak)>>> {
-        let mut out = BTreeSet::new();
-        if fetching {
-            out.insert(None);
-        }
-        for (c, r) in self.engine.pending() {
-            if r == crate::Reason::Parked {
-                continue;
-            }
-            let Some(bytes) = self.engine.commit_bytes(&c)? else { continue };
-            if let Ok(cb) = osis_commit::CommitBlob::decode(&bytes)
-                && is_snapshot(cb.header.kind)
-            {
-                out.extend(cb.header.aspects.iter().map(|a| Some((a.tid, a.ak.clone()))));
-            }
-        }
-        Ok(out)
     }
 
     /// Entries present at `server` that unwrap under a held read secret and were never opened:
@@ -1069,20 +1043,36 @@ impl SyncEngine {
     /// (`None` in the set) while an entry of the label opens under a held secret and is not
     /// applied (`unopened`: a snapshot not fetched or applied yet, spec/sync.md §6: may-hold).
     pub(super) fn unsettled_of(&mut self, unopened: bool) -> Result<BTreeSet<Option<(Tid, Ak)>>> {
-        let mut out = BTreeSet::new();
+        Ok(self.unsettled_sets(unopened, false)?.0)
+    }
+
+    /// `unsettled_of`, and the aspects where a body is not established uncovered yet (spec/sync.md
+    /// §6), so not must-hold: those of pending snapshots (pages not fetched, deltas missing), and
+    /// every aspect (`None`) while an entry of the label that opens under a held secret is being
+    /// fetched (`fetching`; it may be a snapshot). Other pending commits settle nothing there (two
+    /// writers' pending commits otherwise withheld exactly what the other waited for), nor do
+    /// entries that do not open as a commit or whose bytes no server delivers.
+    pub(super) fn unsettled_sets(&mut self, unopened: bool, fetching: bool) -> Result<(BTreeSet<Option<(Tid, Ak)>>, BTreeSet<Option<(Tid, Ak)>>)> {
+        let (mut all, mut snaps) = (BTreeSet::new(), BTreeSet::new());
         for (c, r) in self.engine.pending() {
             if r == crate::Reason::Parked {
                 continue;
             }
             let Some(bytes) = self.engine.commit_bytes(&c)? else { continue };
-            if let Ok(cb) = osis_commit::CommitBlob::decode(&bytes) {
-                out.extend(cb.header.aspects.iter().map(|a| Some((a.tid, a.ak.clone()))));
+            let Ok(cb) = osis_commit::CommitBlob::decode(&bytes) else { continue };
+            let aspects = cb.header.aspects.iter().map(|a| Some((a.tid, a.ak.clone())));
+            if is_snapshot(cb.header.kind) {
+                snaps.extend(aspects.clone());
             }
+            all.extend(aspects);
         }
         if unopened {
-            out.insert(None);
+            all.insert(None);
         }
-        Ok(out)
+        if fetching {
+            snaps.insert(None);
+        }
+        Ok((all, snaps))
     }
 
     /// Deposited commit entries at `server` a writer may promote now: past this node's wait
