@@ -80,6 +80,32 @@ fn mac(secret: &[u8; 32], purpose: &str, body: &Value) -> Vec<u8> {
     osis_crypto::kdf::kdf(purpose, secret, &encode(body)).expose().to_vec()
 }
 
+/// The message `[1, items.., tag]` with `prefix`; the tag MACs `[1, items..]`.
+fn seal(prefix: &str, secret: &[u8; 32], purpose: &str, items: Vec<Value>) -> String {
+    let mut v = vec![Value::Int(1)];
+    v.extend(items);
+    let tag = mac(secret, purpose, &Value::List(v.clone()));
+    v.push(Value::Bytes(tag));
+    pack(prefix, &Value::List(v))
+}
+
+/// Whether an unpacked message's last item is its tag under `secret`.
+fn tag_ok(secret: &[u8; 32], purpose: &str, items: &[Value]) -> bool {
+    let Some((Value::Bytes(tag), body)) = items.split_last() else { return false };
+    same(&mac(secret, purpose, &Value::List(body.to_vec())), tag)
+}
+
+/// `cfg.servers` plus those of `more` it lacks.
+fn with_servers(cfg: &Config, more: Vec<ServerAddr>) -> Vec<ServerAddr> {
+    let mut servers = cfg.servers.clone();
+    for a in more {
+        if !servers.contains(&a) {
+            servers.push(a);
+        }
+    }
+    servers
+}
+
 fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
@@ -139,9 +165,8 @@ impl Joining {
     /// database, now a device of the person.
     pub fn finish(self, reply: &PairReply) -> Result<Osis> {
         let items = unpack(&reply.0, REPLY)?;
-        let [_, Value::Bytes(grant), pks, Value::Bytes(tag)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing reply".into())) };
-        let body = Value::List(vec![Value::Int(1), Value::Bytes(grant.clone()), pks.clone()]);
-        if !same(&mac(&self.secret, "osis pair reply", &body), tag) {
+        let [_, Value::Bytes(grant), pks, Value::Bytes(_)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing reply".into())) };
+        if !tag_ok(&self.secret, "osis pair reply", &items) {
             return Err(Error::Invalid("pairing reply does not match the offer".into()));
         }
         let grant = CommitId(grant.as_slice().try_into().map_err(|_| Error::Invalid("malformed pairing reply".into()))?);
@@ -171,23 +196,14 @@ impl Osis {
     /// does not open as a database; use a fresh store for the next attempt).
     pub async fn restore(cfg: Config, card: &RecoveryCard) -> Result<Osis> {
         let c = card.parse()?;
-        let mut servers = cfg.servers.clone();
-        for a in &c.servers {
-            let a = ServerAddr(a.clone());
-            if !servers.contains(&a) {
-                servers.push(a);
-            }
-        }
+        let servers = with_servers(&cfg, c.servers.iter().cloned().map(ServerAddr).collect());
         let Fresh { mut sync, clock } = fresh_engine(&cfg, &servers)?;
         let engine = sync.engine_mut();
         let r = engine.hold_key_actor(c.seed.clone())?;
         save_servers(engine, &servers)?;
         let db = Osis::start(sync, clock, &cfg, c.person)?;
         let key = crate::share::KeyGuard { db: db.downgrade(), l: r, link: None };
-        db.locked(|x| {
-            let acts = x.sync.follow(r, c.person, c.home_label, c.servers.clone());
-            db.inner.net.apply(acts);
-        });
+        db.act(|x| x.sync.follow(r, c.person, c.home_label, c.servers.clone()));
         let p = c.person;
         db.wait_until(Some(db.inner.wait_timeout), Box::new(move |s, st| (s.engine().knows(&p) && st.groups.get(&p).is_some_and(|g| g.state == SyncState::Synced)).then_some(Ok(())))).await?;
         let done = db.engine(|e| e.recover(&c, &[], PreSync::Synced))?;
@@ -221,13 +237,12 @@ impl Osis {
     /// with the reply to carry back.
     pub fn pair_accept(&self, req: &PairRequest) -> Result<(Tid, PairReply)> {
         let items = unpack(&req.0, REQUEST)?;
-        let [_, Value::Tid(node), pks, Value::Bytes(tag)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing request".into())) };
-        let body = Value::List(vec![Value::Int(1), Value::Tid(*node), pks.clone()]);
+        let [_, Value::Tid(node), pks, Value::Bytes(_)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing request".into())) };
         let now = self.inner.clock.now_wall_ms().0;
         let secret = self
             .locked(|x| {
                 x.offers.retain(|(_, until)| *until > now);
-                let i = x.offers.iter().position(|(s, _)| same(&mac(s, "osis pair request", &body), tag))?;
+                let i = x.offers.iter().position(|(s, _)| tag_ok(s, "osis pair request", &items))?;
                 Some(x.offers.remove(i).0)
             })
             .ok_or(Error::Invalid("pairing request matches no open offer".into()))?;
@@ -245,11 +260,7 @@ impl Osis {
             let mine = x.sync.take_direct_for(&node);
             Ok((grant, mine))
         })?;
-        let body = Value::List(vec![Value::Int(1), Value::Bytes(grant.0.to_vec()), packages_value(&mine)]);
-        let tag = mac(&secret, "osis pair reply", &body);
-        let Value::List(mut v) = body else { return Err(Error::Invalid("pairing reply".into())) };
-        v.push(Value::Bytes(tag));
-        Ok((node, PairReply(pack(REPLY, &Value::List(v)))))
+        Ok((node, PairReply(seal(REPLY, &secret, "osis pair reply", vec![Value::Bytes(grant.0.to_vec()), packages_value(&mine)]))))
     }
 
     /// Starts pairing this fresh store as a new device of the person that made `offer`: returns
@@ -258,14 +269,8 @@ impl Osis {
         let items = unpack(&offer.0, OFFER)?;
         let [_, Value::Tid(person), Value::Tid(_), Value::Bytes(secret), Value::List(addrs)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing offer".into())) };
         let secret: [u8; 32] = secret.as_slice().try_into().map_err(|_| Error::Invalid("malformed pairing offer".into()))?;
-        let mut servers = cfg.servers.clone();
-        for a in addrs {
-            let Value::Str(s) = a else { return Err(Error::Invalid("malformed pairing offer".into())) };
-            let a: ServerAddr = s.parse()?;
-            if !servers.contains(&a) {
-                servers.push(a);
-            }
-        }
+        let addrs = addrs.iter().map(|a| if let Value::Str(s) = a { s.parse() } else { Err(Error::Invalid("malformed pairing offer".into())) }).collect::<Result<_>>()?;
+        let servers = with_servers(&cfg, addrs);
         let Fresh { sync, clock } = fresh_engine(&cfg, &servers)?;
         let db = Osis::start(sync, clock, &cfg, *person)?;
         let node = db.node();
@@ -277,10 +282,7 @@ impl Osis {
             }
             Ok(v)
         })?;
-        let body = Value::List(vec![Value::Int(1), Value::Tid(node), packages_value(&pks)]);
-        let tag = mac(&secret, "osis pair request", &body);
-        let Value::List(mut v) = body else { return Err(Error::Invalid("pairing request".into())) };
-        v.push(Value::Bytes(tag));
-        Ok(Joining { db, secret, person: *person, request: PairRequest(pack(REQUEST, &Value::List(v))) })
+        let request = PairRequest(seal(REQUEST, &secret, "osis pair request", vec![Value::Tid(node), packages_value(&pks)]));
+        Ok(Joining { db, secret, person: *person, request })
     }
 }
