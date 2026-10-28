@@ -429,7 +429,7 @@ async fn rotate_reach_relistens_in_process_spec_sync_10() {
 
 // notes/api.md Handle and sync: closing a database whose own runtime's driver is inside an
 // engine call (its `block_in_place`) must not let the driver poll a timer of the shut-down
-// runtime ("A Tokio 1.x context was found, but it is being shutdown" on an `osis-sync` thread).
+// runtime (tokio panics "... it is being shutdown" on an `osis-sync` thread). spec: none (an API property)
 #[test]
 fn close_while_driver_runs_no_timer_panic() {
     use std::sync::atomic::{AtomicUsize, Ordering};
