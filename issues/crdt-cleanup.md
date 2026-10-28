@@ -1,16 +1,8 @@
 # osis-crdt cleanup left over
-> Summary: Duplication and loose ends in core/crdt/src a simplify pass found and did not fix: two path walkers (differ at enum cases on purpose), the diff/edit step appliers, several read-only stamp walks, set-element vs map-entry join, repeated "record holding a dot" checks, register clones on `Slots` reads, test-only public API.
+> Summary: Near-parallel code in core/crdt/src judged not worth merging: set-element vs map-entry join and overlay, the mutating stamp walks. Revisit only if one of them grows.
 > Tags: crdt
 
-Behaviour-preserving unless noted; none is a known bug.
+Behaviour-preserving; none is a known bug.
 
-- **Two path walkers** (`UndoBuffer for Fragment::before`, undo.rs; `Fragment::at`, access.rs) walk the same `PathSeg`s. They now agree at a map key (join of the live entries; `undo` never passes a `Key` anyway, it restarts below each entry). They differ on purpose at a `Case`: `at` requires it current, `before` does not (the undone op found it current; a buffer joined from held bodies may show a concurrent case write the writer never saw). Merging them needs a flag for that.
-- **`seq_diff::diff` and `seq_diff::edit`** repeat the step application for text and list (flags for `Del`, nested writes for `Pair`, `insert_runs`), differing only in how an old index finds its current element and anchor. One applier taking those two lookups would halve them.
-- **Read-only stamp walks.** `remap.rs` `Writes` and `Any`, lifecycle `dots_in`, `strip_values`, `remove_dots_in`, `map_dots` each spell out every encoding's stamps. A generic visitor over (stamp, role) could drive at least the read-only ones; mind `Any`'s early exit and no expansion of range records.
-- **Set element vs map entry join** (state.rs `join_elems` / `join_entry`, `prune_elem` / `prune_entry`): the same reset, raise-prune and content join, the entry adding key and creation. Similarly `batch::overlay` for maps repeats `overlay_elems`.
-- **"Record holding a dot"** is re-implemented in `Shown::find`/`find_mut` (shape.rs), `Graph::lookup_near` (linearize.rs), `Lin::holder`, `seq_span::overlaps` and `split_plain`, beside `seq_span::find`.
-- **`batch::resolve`** creates a new map entry by hand (fresh dot, creation stamp) instead of `ops::new_entry`, because its content may be `None`.
-- **Tombstone literals** `Entry { reset: Some(r), key: None, frag: None, created: None }` and `Elem { reset: Some(r), frag: None }` repeat across ops.rs and undo.rs.
-- **Hot path**: `MemberRef::with` wraps a register slot in a cloned `Fragment` per call; `chosen_member` on a `Slots` position calls it per member, and `present`/`inner_any`/`inner_max` of `Slots` do too. A register-aware `all_max`/`present` would avoid the clones.
-- **`seq_lin`**: `Lin::same` is `PartialEq for Lin` without chars; `Partial::take` copies `Missed` field by field.
-- **Public API used only by this crate's tests**: `Received::add_frontiers`, `SeqPlace::same`/`order`, `Lin::same`; `touched_elems`, `Interner::intern`, `Enc::{dot_order, is_own, opt_stamp}` are public but used only inside the crate. `cut_dots` has no caller outside tests yet (a client API for cut/paste).
+- **Set element vs map entry** (state.rs `join_elems` / `join_entry`, `prune_elem` / `prune_entry`; batch.rs `overlay_elems` vs the map arm of `overlay`): the same reset, raise-prune and content join, the entry adding key and creation. A shared `Rec` trait came out line-neutral: the entry's creation prune sits between the content prune and the content join, and `Changes` deaths are ordered, so the hooks cannot collapse. The overlay pair shares about three lines.
+- **Mutating stamp walks** (`map_dots`, `strip_values`, `remove_dots_in`): each changes different parts per encoding (`Slots` rebuilt by join, map keys, sequence records expanded); the read-only walks share `remap::walk`.
