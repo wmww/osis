@@ -297,30 +297,53 @@ fn bench_deltas() {
     eprintln!("{n} edge writes: {} admins' deltas cold {admins:?}, {} members' deltas cold {:?}", deltas.len(), by_members.len(), t1.elapsed());
 }
 
-// spec: none (cost measurement, issues/perm-eval-cost.md): one late write in the middle of the
-// org history placed without a walk (`OSIS_BENCH_N`, default 10^4), for profiling: a read grant
-// on a doc by an admin, through `update_touched`.
+// spec: none (cost measurement, issues/perm-eval-cost.md): late writes in the middle of the org
+// history (`OSIS_BENCH_N`, default 10^4), each through `update_touched` after the ones before it,
+// for profiling: a read grant on a doc by an admin, the removal of an edge held there (an audit),
+// an admin grant, a write grant on a team, and a read grant by the key actor at the top (no
+// earlier write of its own on the doc).
 #[test]
 #[ignore]
 fn bench_late_write() {
     let n: usize = std::env::var("OSIS_BENCH_N").ok().and_then(|v| v.parse().ok()).unwrap_or(10_000);
     let (mut w, nodes) = org(n, &mut Rng(0x5eed_0401));
-    // as `bench_10k_edges`: the late write's author lists it in its later commits' frontiers;
+    // as `bench_10k_edges`: each late write's author lists it in its later commits' frontiers;
     // one more write at the end first
     let doc = *w.created.keys().last().unwrap();
-    let late_id = w.set(nodes[2], doc, nodes[201], edge(Read), n as u64 / 2, &[]);
-    let no_late = std::collections::BTreeSet::from([late_id]);
-    let held = w.held_without(&no_late);
+    let team = match w.created[&doc] {
+        osis_core::CreationRecord::Thing { owner, .. } => owner,
+        _ => unreachable!(),
+    };
+    let mid = n as u64 / 2;
+    // an edge on the doc held just before the middle, by the last write on it
+    let mut last: std::collections::BTreeMap<Tid, Option<osis_perm::Edge>> = std::collections::BTreeMap::new();
+    for c in w.commits.iter().filter(|c| c.t < mid) {
+        for (t, m, e) in &c.ops {
+            if *t == doc && nodes.contains(m) {
+                last.insert(*m, *e);
+            }
+        }
+    }
+    let held_member = last.iter().find(|(_, e)| e.is_some()).map(|(m, _)| *m).unwrap();
+    let cases = [
+        ("a read grant", nodes[2], doc, nodes[201], edge(Read)),
+        ("a removal", nodes[3], doc, held_member, None),
+        ("an admin grant", nodes[4], doc, nodes[202], edge(Admin)),
+        ("a write grant on a team", nodes[5], team, nodes[203], edge(Write)),
+        ("a read grant by the top", nodes[0], doc, nodes[204], edge(Read)),
+    ];
+    let ids: Vec<_> = cases.iter().enumerate().map(|(i, (_, a, t, m, e))| w.set(*a, *t, *m, *e, mid + i as u64, &[])).collect();
+    w.set(nodes[1], doc, nodes[200], edge(Write), n as u64 + 5, &[]);
     let mut inc = Timelines::new();
-    inc.update(&held);
-    let mut w3 = w.clone();
-    w3.set(nodes[1], doc, nodes[200], edge(Write), n as u64 + 5, &[]);
-    let held2 = w3.held_without(&no_late);
-    inc.update(&held2);
-    let held3 = w3.held();
-    let t0 = Instant::now();
-    inc.update_touched(&held3, &std::collections::BTreeSet::from([doc]));
-    let late = t0.elapsed();
-    eprintln!("{n} edge writes: a late write in the middle {late:?} ({} appended, {} placed)", inc.appended(), inc.placed());
-    drop((held, held2));
+    let mut prev = w.held_without(&ids.iter().copied().collect());
+    inc.update(&prev);
+    for (i, (what, _, t, _, _)) in cases.iter().enumerate() {
+        let held = w.held_without(&ids[i + 1..].iter().copied().collect());
+        let t0 = Instant::now();
+        inc.update_touched(&held, &std::collections::BTreeSet::from([*t]));
+        let late = t0.elapsed();
+        eprintln!("{n} edge writes: {what} late in the middle {late:?} ({} appended, {} placed)", inc.appended(), inc.placed());
+        prev = held;
+    }
+    drop(prev);
 }

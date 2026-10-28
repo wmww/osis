@@ -67,13 +67,20 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
 }
 
 /// 1-3 leaves (things only their `/created` names) under random held things, leaves included,
-/// each with the step from which it is held (0: from the start).
+/// and 0-2 things the history names whose `/created` arrives late (§1: their owner links),
+/// each with the step from which its `/created` is held (0: from the start).
 fn add_leaves(w: &mut World, rng: &mut Rng, steps: usize) -> Vec<(Tid, usize)> {
     let mut out = Vec::new();
     for _ in 0..1 + rng.below(3) {
         let owners: Vec<Tid> = w.created.keys().copied().collect();
         let t = w.thing(owners[rng.below(owners.len())]);
         out.push((t, rng.below(steps + 1)));
+    }
+    let named: Vec<Tid> = w.created.iter().filter(|(t, r)| matches!(r, osis_core::CreationRecord::Thing { .. }) && !out.iter().any(|l| l.0 == **t)).map(|(t, _)| *t).collect();
+    for _ in 0..rng.below(3) {
+        if !named.is_empty() {
+            out.push((named[rng.below(named.len())], rng.below(steps + 1)));
+        }
     }
     out
 }
@@ -822,8 +829,9 @@ fn late_writes_placed_in_walk_spec_permissions_5_1() {
 
 /// §5.1 steps 2-4: late writes placed in a history of many kept edge states: near its start,
 /// at its end, forty between the same two kept states (one ts, both authors), several in one
-/// update; then one that supersedes a placed write and a removal of their author, which walk
-/// again from kept states the placements moved. Each equals an evaluation from scratch.
+/// update; then the removal of a placed write's member (an audit nothing later reads: placed)
+/// and a removal of their author, which walks again from kept states the placements moved.
+/// Each equals an evaluation from scratch.
 #[test]
 fn late_writes_across_kept_states_spec_permissions_5_1() {
     use osis_base::Role::{Admin, Read, Write};
@@ -846,7 +854,7 @@ fn late_writes_across_kept_states_spec_permissions_5_1() {
     for j in 0..40 {
         late.push((2 + j / 3, w.set([a, b][j % 2], g, n[8 + j], edge(Read), 201 + 2 * (j % 2) as u64, &[]), true));
     }
-    late.push((20, w.set(b, g, n[6], None, 51, &[]), false));
+    late.push((20, w.set(b, g, n[6], None, 51, &[]), true));
     late.push((21, w.set(k, g, a, None, 199, &[]), false));
     let mut skip: BTreeSet<_> = late.iter().map(|l| l.1).collect();
     let mut prev = w.held_without(&skip);
@@ -1161,4 +1169,141 @@ fn record_replaced_under_its_id_spec_permissions_6() {
         inc.update_touched(&last, &BTreeSet::from([g]));
         assert!(check(&last, &inc, &n).is_none(), "{fuller} (with a new commit): {:?}", check(&last, &inc, &n));
     }
+}
+
+/// §5.1 steps 2-4: late writes in the middle that later items read, placed by walking those
+/// items again at their place (with the write and without; equal, nothing new dropped): an
+/// explicit removal (an audit: the member's demotion recorded at its point), a write by an
+/// admin with no earlier write on the doc whose class there falls later (the fall recorded,
+/// the write covered by the remover's frontier), an admin grant to an admin whose later write
+/// on the doc applies either way. One whose later reader does otherwise (an admin grant to a
+/// node that writes later), and one the later fall drops (not covered), go on from them. Each
+/// equals an evaluation from scratch.
+#[test]
+fn late_writes_read_later_placed_spec_permissions_5_1() {
+    use osis_core::Role::{Admin, Read, Write};
+    let mut w = World::new();
+    let n = w.nodes(12);
+    let (k, a, b) = (n[0], n[1], n[2]);
+    let g = w.thing(k);
+    let d = w.thing(g);
+    let e = w.thing(g);
+    w.set(k, g, a, edge(Admin), 1, &[]);
+    w.set(k, g, b, edge(Admin), 1, &[]);
+    w.set(k, g, n[7], edge(Admin), 2, &[]);
+    w.set(a, g, n[6], edge(Write), 3, &[]);
+    for i in 0..120u64 {
+        let m = n[3 + (i % 3) as usize];
+        let v = match i % 4 {
+            0 => None,
+            1 => edge(Read),
+            _ => edge(Write),
+        };
+        w.set(if i % 2 == 0 { a } else { b }, g, m, v, 10 + 2 * i, &[(m, 10 + 2 * i), (k, 10 + 2 * i)]);
+    }
+    // later readers: b loses admin (its class on d and e falls); n[7] writes on d; n[8] on e
+    w.set(k, g, b, None, 150, &[]);
+    w.set(n[7], d, n[9], edge(Read), 160, &[]);
+    w.set(n[8], e, n[10], edge(Read), 170, &[]);
+    // (late write, placed without a walk)
+    let late = [
+        (w.set(b, g, n[6], None, 101, &[(k, 102)]), true),
+        (w.set(b, d, n[11], edge(Read), 103, &[(k, 104)]), true),
+        (w.set(a, d, n[7], edge(Admin), 105, &[]), true),
+        (w.set(a, e, n[8], edge(Admin), 107, &[]), false),
+        (w.set(b, e, n[11], edge(Read), 109, &[]), false),
+    ];
+    let mut skip: BTreeSet<_> = late.iter().map(|l| l.0).collect();
+    let mut prev = w.held_without(&skip);
+    let mut inc = Timelines::new();
+    inc.update(&prev);
+    for (id, placed) in late {
+        skip.remove(&id);
+        let held = w.held_without(&skip);
+        let c = inc.update_touched(&held, &touched(&prev, &held));
+        assert!(c.evaluated.is_empty(), "{c:?}");
+        assert_eq!(inc.appended(), 1);
+        assert_eq!(inc.placed() == 1, placed, "{id:?}");
+        assert!(check(&held, &inc, &n).is_none(), "{:?}", check(&held, &inc, &n));
+        prev = held;
+    }
+    let full = Timeline::evaluate(&prev);
+    assert!(!full.demotions(&n[6], &g).is_empty(), "the removal demotes");
+    assert!(!full.falls(&b, &d).is_empty(), "b's class on d falls");
+}
+
+/// §1, §5.1: a thing an earlier write names (as member) whose `/created` arrives late, and one
+/// named as target: the walk goes on from the first item naming it (before it, a node's role on
+/// it is its role on its owner), not evaluated anew; equal to an evaluation from scratch.
+#[test]
+fn created_late_after_writes_naming_it_spec_permissions_5_1() {
+    use osis_core::Role::{Admin, Read, Write};
+    let mut w = World::new();
+    let n = w.nodes(6);
+    let (k, a) = (n[0], n[1]);
+    let g = w.thing(k);
+    let team = w.thing(k);
+    let doc = w.thing(team);
+    w.set(k, g, a, edge(Admin), 1, &[]);
+    w.set(k, team, n[5], edge(Admin), 35, &[]);
+    for i in 0..60u64 {
+        w.set(a, g, n[2 + (i % 3) as usize], edge(if i % 2 == 0 { Read } else { Write }), 2 + i, &[]);
+    }
+    w.set(a, g, team, edge(Write), 40, &[]);
+    w.set(n[5], doc, n[4], edge(Write), 45, &[]);
+    for i in 0..10u64 {
+        w.set(a, g, n[2 + (i % 3) as usize], None, 70 + i, &[]);
+    }
+    for late in [team, doc] {
+        let mut prev = w.held();
+        prev.created.remove(&team);
+        prev.created.remove(&doc);
+        let mut inc = Timelines::new();
+        inc.update(&prev);
+        let mut held = w.held();
+        held.created.remove(&[team, doc].into_iter().find(|t| *t != late).unwrap());
+        let c = inc.update_touched(&held, &touched(&prev, &held));
+        assert!(c.evaluated.is_empty(), "{late:?}: {c:?}");
+        assert!(c.extended.contains(&late), "{c:?}");
+        assert!(check(&held, &inc, &n).is_none(), "{:?}", check(&held, &inc, &n));
+        let c = inc.update_touched(&w.held(), &touched(&held, &w.held()));
+        assert!(c.evaluated.is_empty(), "{c:?}");
+        assert!(check(&w.held(), &inc, &n).is_none(), "{:?}", check(&w.held(), &inc, &n));
+    }
+}
+
+/// §5.1 step 5 (notes/local-store.md, rebuildable caches): a walk saved before a new node
+/// joined (its `/created`, a grant to it, a write of its own) and a thing named before its
+/// `/created` arrived is restored and continued, not evaluated anew; equal to an evaluation
+/// from scratch.
+#[test]
+fn saved_walk_restored_after_a_node_joined_spec_permissions_5_1() {
+    use osis_core::Role::{Admin, Read, Write};
+    let mut w = World::new();
+    let n = w.nodes(5);
+    let (k, a) = (n[0], n[1]);
+    let g = w.thing(k);
+    let team = w.thing(k);
+    w.set(k, g, a, edge(Admin), 1, &[]);
+    for i in 0..40u64 {
+        w.set(a, g, n[2 + (i % 3) as usize], edge(if i % 2 == 0 { Read } else { Write }), 2 + i, &[]);
+    }
+    w.set(a, g, team, edge(Read), 30, &[]);
+    let mut held = w.held();
+    held.created.remove(&team);
+    let mut inc = Timelines::new();
+    inc.update(&held);
+    let mut disk = Disk::new();
+    store(&mut disk, inc.to_save(SALT, 1, true));
+    let root = *n.iter().chain([&g, &team]).min().unwrap();
+    let (y, yrec) = key_actors(8, 31).into_iter().find(|(t, _)| *t > root).unwrap();
+    w.created.insert(y, yrec);
+    w.set(a, g, y, edge(Write), 50, &[]);
+    w.set(y, g, y, edge(Read), 51, &[]);
+    let mut nodes = n.clone();
+    nodes.push(y);
+    let held = w.held();
+    let inc = reopen(&held, &disk, SALT);
+    assert_eq!(inc.restored(), 1);
+    assert!(check(&held, &inc, &nodes).is_none(), "{:?}", check(&held, &inc, &nodes));
 }

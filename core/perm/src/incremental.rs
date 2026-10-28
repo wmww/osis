@@ -409,14 +409,15 @@ impl Timelines {
                 Some(x) => x,
                 None => {
                     evaluated += 1;
-                    // a component that only gained commits continues its walk when it can; one
-                    // that only gained new leaves (`/created` of things nothing else names) too
-                    let grown = cache.keys().find(|k| k.0 == inputs.0 && k.2 == inputs.2 && k.1.is_subset(&inputs.1)).cloned();
-                    let leaves = || cache.keys().find(|k| k.1 == inputs.1 && k.0.is_subset(&inputs.0) && k.2.is_subset(&inputs.2) && inputs.2.difference(&k.2).eq(inputs.0.difference(&k.0))).cloned();
-                    let (from, new) = match grown.or_else(leaves) {
+                    // a component that only gained commits, things and `/created` records
+                    // continues its walk when it can (`Timeline::extend`): the one with the most
+                    // commits and snapshots
+                    let grown = cache.keys().filter(|k| k.0.is_subset(&inputs.0) && k.1.is_subset(&inputs.1) && k.2.is_subset(&inputs.2)).max_by_key(|k| k.1.len()).cloned();
+                    let (from, new) = match grown {
                         Some(k) => {
                             let added: BTreeSet<CommitId> = inputs.1.difference(&k.1).copied().collect();
                             let mut new: BTreeSet<Tid> = inputs.0.difference(&k.0).copied().collect();
+                            new.extend(inputs.2.difference(&k.2).copied());
                             for t in &inputs.0 {
                                 if held.edge_commits(t).iter().any(|c| added.contains(&c.id)) {
                                     new.insert(*t);
@@ -509,20 +510,15 @@ impl Timelines {
 
     fn resume(s: &cache::Saved<'_>, inputs: &Inputs, part: &Part<'_>, salt: &[u8]) -> Option<Timeline> {
         let k = &s.inputs;
-        // as `update_region` at run time: new things only by their `/created` (leaves), then
-        // commits added
-        let leaves = inputs.0.difference(&k.0).eq(inputs.2.difference(&k.2));
-        if !(k.0.is_subset(&inputs.0) && k.2.is_subset(&inputs.2) && k.1.is_subset(&inputs.1) && leaves) {
+        // as `update_region` at run time: things, `/created` records and commits added
+        if !(k.0.is_subset(&inputs.0) && k.2.is_subset(&inputs.2) && k.1.is_subset(&inputs.1)) {
             return None;
         }
-        let mut tl = cache::restore(s, part, salt)?;
-        if k.0 != inputs.0 {
-            tl = tl.extend(&cache::Only { held: part, things: &inputs.0, created: &inputs.2, ids: &k.1 })?;
+        let tl = cache::restore(s, part, salt)?;
+        if k == inputs {
+            return Some(tl);
         }
-        if k.1 != inputs.1 {
-            tl = tl.extend(part)?;
-        }
-        Some(tl)
+        tl.extend(part)
     }
 
     /// The walks a node's cache should hold now: components walked anew or continued since the

@@ -165,29 +165,43 @@ impl Timeline {
         }
     }
 
-    /// This timeline for `held`, which holds the same things, `/created` records and roster
-    /// snapshots plus more membership commits and new leaves (things only their `/created`
-    /// names among the held commits and snapshots): the leaves first take their owner's
-    /// demotions (`Walked::alias_leaves`), then the final walk is rolled back to the earliest
-    /// new commit (or the first write a drop found after it dropped, D keeping what was found
-    /// before) and goes on from there instead of starting over (equal to `evaluate`). `None`
-    /// when that does not hold (a new node, a new thing an earlier write names, a membership
-    /// cycle after epoch starts changed, or the inputs differ otherwise): evaluate.
+    /// This timeline for `held`, which holds the same roster snapshots, every membership commit
+    /// walked here, maybe more, and maybe new things, `/created` records and nodes (equal to
+    /// `evaluate`). Before the first point `p` where the walk meets anything new (a new commit,
+    /// or an item naming a thing whose owner link is new, one below it, or a new node), the
+    /// walk is the same but for the demotions on those things: they have no edges there, so a
+    /// node's role on one is its role on its owner (`Walked::alias_leaves`); a new node reaches
+    /// nothing walked there (it owns only such things). So the final walk takes those, is
+    /// rolled back to `p` (or to the first write a drop found after it dropped, D keeping what
+    /// was found before) and goes on from there instead of starting over. `None` when that
+    /// does not hold (other snapshots, a node gone that is not now owned, a new node owning a
+    /// thing walked before, a membership cycle after epoch starts changed, a record changed
+    /// under its ID): evaluate.
     pub fn extend(mut self, held: &dyn HeldSet) -> Option<Timeline> {
         let input = Input::gather(held);
-        // a new author or member could have changed how earlier writes were walked
-        if !input.snaps.keys().eq(self.input.snaps.keys()) || input.nodes != self.input.nodes {
+        if !input.snaps.keys().eq(self.input.snaps.keys()) {
             return None;
         }
         if !self.input.commits.keys().all(|k| input.commits.contains_key(k)) || !self.input.kept_in(&input) {
             return None;
         }
-        let leaves = self.leaves(&input)?;
         let added = input.commits.iter().filter(|(k, _)| !self.input.commits.contains_key(*k)).map(|(_, c)| c.point()).min();
-        let kept = Kept::of(&mut self);
+        let (below, from) = self.joined(&input, added)?;
+        let cut = match from {
+            Some(f) => self.walked.rest.marks.get(self.items.list_before(f)).map_or(self.walked.rest.log.len(), |m| m.0),
+            None => self.walked.rest.log.len(),
+        };
+        let leaves: Vec<(Tid, Tid)> = below.iter().filter_map(|t| input.owners.owner_actor(t).map(|o| (*t, o))).collect();
+        let joins = !below.is_empty() || input.nodes != self.input.nodes;
+        let mut kept = Kept::of(&mut self);
+        // a role through a new owner link may differ from where the walk meets it on, its
+        // history changed there or not; on one of them, from the start
+        if !below.is_empty() {
+            kept.first_held.retain(|(_, t, _), v| !below.contains(t) && v.is_some_and(|q| q.is_none_or(|q| from.is_none_or(|f| q < f))));
+        }
         let Timeline { mut walked, dropped, epoch_starts, passes, epoch_changed, reach, .. } = self;
-        walked.alias_leaves(&leaves, &input.nodes)?;
-        let Some(from) = added else {
+        walked.alias_leaves(&leaves, &input.nodes, cut)?;
+        let Some(from) = from else {
             let common = Some((walked.history.len(), None));
             let out = walk::Outcome { walked, dropped, epoch_starts, passes, epoch_changed, reach, items: None, common };
             return Some(Timeline::from_kept(input, out, Some(kept)));
@@ -198,7 +212,53 @@ impl Timeline {
             return None;
         }
         let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, epoch_changed, from, items: None });
-        Some(Timeline::from_kept(input, out, Some(kept)))
+        let tl = Timeline::from_kept(input, out, Some(kept));
+        #[cfg(debug_assertions)]
+        if joins {
+            tl.walked.check_scratch(&tl.input, &tl.dropped);
+        }
+        Some(tl)
+    }
+
+    /// What `input` (this timeline's, grown) adds that the walk may meet before its new commits
+    /// (from `added`): the things whose owner link is new and every thing below them, and the
+    /// first point where an item walked here names one of them or a new node (`None`: none
+    /// does, and no commit is new). `None` when an owner link is gone, a node is gone that is
+    /// not now owned, or a new node owns a thing not among them.
+    fn joined(&self, input: &Input, added: Option<Point>) -> Option<(BTreeSet<Tid>, Option<Point>)> {
+        if !self.input.owners.links().all(|(t, o)| input.owners.owner(t) == Some(*o)) {
+            return None;
+        }
+        let mut below: BTreeSet<Tid> = input.owners.links().filter(|(t, _)| self.input.owners.owner(t).is_none()).map(|(t, _)| *t).collect();
+        let mut stack: Vec<Tid> = below.iter().copied().collect();
+        while let Some(t) = stack.pop() {
+            for y in input.owners.owned(&t) {
+                if below.insert(*y) {
+                    stack.push(*y);
+                }
+            }
+        }
+        if self.input.nodes.difference(&input.nodes).any(|n| !below.contains(n)) {
+            return None;
+        }
+        let came: Vec<Tid> = input.nodes.difference(&self.input.nodes).filter(|n| !below.contains(n)).copied().collect();
+        if came.iter().any(|n| input.owners.owned(n).iter().any(|y| !below.contains(y))) {
+            return None;
+        }
+        let mut named = below.clone();
+        named.extend(came);
+        if named.is_empty() {
+            return Some((below, added));
+        }
+        // (named by an epoch start's roster: from the start)
+        if self.items.initial_names(&named) {
+            return None;
+        }
+        let first = self.items.first_naming(&named, added);
+        Some((below, match (first, added) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }))
     }
 
     /// This timeline with membership commits `new` added (not held here, on things of this
@@ -226,7 +286,7 @@ impl Timeline {
         self.placed = 0;
         for (j, c) in new.iter().enumerate() {
             let p = c.point();
-            let early = c.ops.iter().all(|o| self.input.first_write.get(&(c.author, o.target)).is_some_and(|q| *q < p));
+            let first: BTreeMap<Tid, Option<Point>> = c.ops.iter().map(|o| (o.target, self.input.first_write.get(&(c.author, o.target)).copied())).collect();
             let mut fresh: BTreeSet<Tid> = c.ops.iter().map(|o| o.member).filter(|m| self.input.owners.owner_actor(m).is_none()).collect();
             fresh.extend(c.ops.iter().map(|o| o.target).filter(|t| self.input.owners.is_key(t)));
             fresh.insert(c.author);
@@ -235,30 +295,48 @@ impl Timeline {
             let n0 = self.walked.history.len();
             let h = self.walked.rest.marks.get(self.items.place(c)).map_or(n0, |m| m.1);
             let (base, pos) = self.kept_before(h);
-            let mut at = EdgesAt::new(&base);
+            let mut before = (*base).clone();
+            drop(base);
             for x in self.walked.history.iter().take(h).skip(pos) {
-                at.set(x.member, x.target, x.edge);
+                before.set(x.member, x.target, x.edge);
             }
-            match self.walked.insert(&self.input, &self.items, &self.dropped, &self.epoch_starts, c, &mut at, early, &fresh) {
+            let pl = self.walked.insert(&self.input, &self.items, &self.dropped, &self.epoch_starts, c, before, &first, &fresh);
+            match pl {
                 walk::Placement::Idle => {
                     self.items.add(std::slice::from_ref(c));
                     self.placed += 1;
                 }
                 walk::Placement::Inserted(h) => {
-                    drop(at);
-                    drop(base);
                     self.items.add(std::slice::from_ref(c));
                     self.inserted(h, self.walked.history.len() - n0, p);
                     self.placed += 1;
                 }
-                walk::Placement::Declined => {
-                    let rest = new.get(j..).unwrap_or_default();
-                    self.input.append(rest.get(1..).unwrap_or_default());
+                walk::Placement::Declined | walk::Placement::From(..) => {
+                    // placed up to a later item: the walk goes on from there (or from a later
+                    // commit of this batch before it)
+                    let (rest, joined, from) = match pl {
+                        walk::Placement::From(h, q) => {
+                            self.items.add(std::slice::from_ref(c));
+                            self.inserted(h, self.walked.history.len() - n0, p);
+                            let rest = new.get(j + 1..).unwrap_or_default();
+                            (rest, rest, rest.first().map_or(q, |r| r.point().min(q)))
+                        }
+                        _ => {
+                            let rest = new.get(j..).unwrap_or_default();
+                            (rest, rest.get(1..).unwrap_or_default(), p)
+                        }
+                    };
+                    self.input.append(joined);
                     self.items.add(rest);
                     let kept = Kept::of(&mut self);
                     let Timeline { input, items, walked, dropped, epoch_starts, epoch_changed, placed, .. } = self;
-                    let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, epoch_changed, from: p, items: Some(items) });
-                    return Ok(Timeline { placed, ..Timeline::from_kept(input, out, Some(kept)) });
+                    let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, epoch_changed, from, items: Some(items) });
+                    let tl = Timeline { placed, ..Timeline::from_kept(input, out, Some(kept)) };
+                    #[cfg(debug_assertions)]
+                    if matches!(pl, walk::Placement::From(..)) {
+                        tl.walked.check_scratch(&tl.input, &tl.dropped);
+                    }
+                    return Ok(tl);
                 }
             }
         }
@@ -324,29 +402,6 @@ impl Timeline {
         let mut fh = fh;
         fh.retain(|_, v| v.is_some_and(|q| q.is_none_or(|q| q < p)));
         self.memo = Memo { first_held: Mutex::new(fh), ..Memo::default() };
-    }
-
-    /// The things `input` adds by their `/created`, with their owners: leaves the walk never
-    /// met, so before any new commit naming one, every node's role on it is its role on its
-    /// owner. `None` when one is not a leaf of the walk (a key actor, or named by a walked
-    /// commit or snapshot).
-    fn leaves(&self, input: &Input) -> Option<Vec<(Tid, Tid)>> {
-        let mut out = Vec::new();
-        for (t, _) in input.owners.links().filter(|(t, _)| self.input.owners.owner(t).is_none()) {
-            out.push((*t, input.owners.owner_actor(t)?));
-        }
-        if out.is_empty() {
-            return Some(out);
-        }
-        let new: BTreeSet<Tid> = out.iter().map(|l| l.0).collect();
-        let named = self.input.commits.values().flat_map(|c| c.ops.iter().flat_map(|o| [o.member, o.target]))
-            .chain(self.input.snaps.values().flat_map(|s| std::iter::once(s.thing).chain(s.roster.keys().copied()).chain(s.ledger.iter().map(|x| x.member))));
-        for t in named {
-            if new.contains(&t) {
-                return None;
-            }
-        }
-        Some(out)
     }
 
     /// Walks the last evaluation or `extend` made (1 when nothing was dropped and no epoch
