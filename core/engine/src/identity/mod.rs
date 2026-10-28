@@ -38,7 +38,8 @@ impl Identity {
     pub fn keys(&self) -> &KeyActorKeys {
         &self.keys
     }
-    pub(crate) fn seed(&self) -> &Secret32 {
+    #[doc(hidden)]
+    pub fn seed(&self) -> &Secret32 {
         &self.seed
     }
     /// The node's own role secrets (never rotated).

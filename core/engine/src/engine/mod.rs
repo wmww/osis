@@ -12,10 +12,10 @@ pub(crate) mod journal;
 pub(crate) mod pages;
 pub(crate) mod large;
 mod read;
-pub(crate) mod records;
+pub mod records;
 pub(crate) mod secrets;
 pub(crate) mod state;
-pub(crate) mod write;
+pub mod write;
 
 pub use large::LiveTrees;
 pub use write::Mutation;
@@ -53,7 +53,7 @@ impl Default for Config {
 
 /// An applied commit as the engine indexes it.
 #[derive(Clone, Debug)]
-pub(crate) struct Meta {
+pub struct Meta {
     pub header: Arc<Header>,
     pub received: WallMs,
     pub origin: Origin,
@@ -66,7 +66,7 @@ pub(crate) struct Meta {
 /// Owner of writes: one delta of one node (`[lo, hi)`), a commit-form commit, or exact dots of
 /// one node (writes snapshots carry, `ctrs` sorted).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Owned {
+pub enum Owned {
     Node { node: Tid, lo: u64, hi: u64 },
     Commit(CommitId),
     Dots { src: osis_crdt::Source, ctrs: Vec<u64> },
@@ -153,7 +153,8 @@ pub(crate) type CommitRecord = (WallMs, Origin, BTreeSet<(usize, usize)>, Commit
 
 /// In-memory state over the store: caches and indexes, rebuilt by `load`. The indexes are
 /// journaled (`journal`): a failed transaction undoes its own changes to them.
-pub(crate) struct Core {
+#[doc(hidden)]
+pub struct Core {
     pub id: Identity,
     pub hlc: Hlc,
     pub states: HashMap<(Tid, Ak), Option<Fragment>>,
@@ -306,10 +307,24 @@ pub(crate) struct Core {
     /// `Engine::published_under` for every actor, with the counts it was taken at (held
     /// records, `own_keys`, `labeled`).
     pub(crate) published: Option<Published>,
+    /// The sync records this engine's transactions write or drop (`SyncRecords`), set by
+    /// node-sync (`Engine::set_sync_records`; `None`: no node-sync, no sync records).
+    pub sync_records: Option<&'static dyn SyncRecords>,
 }
 
 /// `Core::published`: the counts it was taken at, the published things per actor.
 pub(crate) type Published = ((u64, u64, u64), BTreeMap<Tid, std::sync::Arc<BTreeSet<Tid>>>);
+
+/// Node-sync's records that engine transactions touch: an inbox delivery a flow's commit owes
+/// (`flows::edges`) and what forgetting drops (`retention::forget`). Implemented by node-sync.
+pub trait SyncRecords: Sync {
+    /// Records the inbox delivery of `commit` to `member` in the commit's own transaction, so
+    /// a crash before node-sync carries it out loses none.
+    fn note_unsent(&self, tx: &mut Tx<'_>, member: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) -> Result<()>;
+    /// Removes the sync records of what is forgotten (`labels`, `things`, `commits`, `parts`)
+    /// and returns the blobs among those dropped and `extra` that no kept record names.
+    fn forget(&self, tx: &mut Tx<'_>, labels: &BTreeSet<osis_base::LabelId>, things: &BTreeSet<Tid>, commits: &BTreeSet<CommitId>, parts: &BTreeMap<CommitId, BTreeSet<usize>>, extra: BTreeSet<osis_base::BlobId>) -> Result<BTreeSet<osis_base::BlobId>>;
+}
 
 /// What node-sync judges again (`Core::changed`).
 #[derive(Debug, Default)]
@@ -498,6 +513,7 @@ impl Core {
             first_bounded: JMap::default(),
             defer_deaths: false,
             changed: None,
+            sync_records: None,
             live_trees: BTreeMap::new(),
             bodies: BTreeMap::new(),
             live_bodies: BTreeMap::new(),
@@ -540,7 +556,7 @@ impl Core {
 }
 
 /// One transaction with the engine's in-memory state.
-pub(crate) struct Tx<'a> {
+pub struct Tx<'a> {
     pub txn: Transaction<'a>,
     pub core: &'a mut Core,
     pub rng: &'a mut dyn CryptoRngCore,
@@ -832,7 +848,7 @@ impl Tx<'_> {
     /// origin, dropped parts, per part its validity and roles) and its blob.
     /// Writes a commit record, and for a membership commit its `node/edges` row (`edges`: what
     /// the caller already read of `blob` with `edge_parts_of`, else decoded here).
-    pub fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, edges: Option<&crate::apply::validity::EdgeParts>) -> Result<()> {
+    pub(crate) fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, edges: Option<&crate::apply::validity::EdgeParts>) -> Result<()> {
         self.core.bodies.remove(id);
         self.core.mark_changed(*id);
         let v = [index::record_head(meta), blob.encode()].concat();
@@ -900,7 +916,8 @@ pub struct Engine {
     store: Store,
     store_rng: SeededRng,
     rng: Box<dyn CryptoRngCore + Send>,
-    pub(crate) core: Core,
+    #[doc(hidden)]
+    pub core: Core,
     clock: Arc<dyn Clock>,
     cfg: Config,
 }
@@ -1026,13 +1043,18 @@ impl Engine {
         self.core.events.subscribe()
     }
 
+    /// Installs node-sync's records (`Core::sync_records`).
+    pub fn set_sync_records(&mut self, r: &'static dyn SyncRecords) {
+        self.core.sync_records = Some(r);
+    }
+
     /// What changed since the last call (`Core::changed`), keeping it from now on.
-    pub(crate) fn take_changed(&mut self) -> Changed {
+    pub fn take_changed(&mut self) -> Changed {
         self.core.changed.replace(Changed::default()).unwrap_or_default()
     }
 
     /// Runs `f` in one store transaction; events go out once it is durable.
-    pub(crate) fn run<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
+    pub fn run<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
         let _s = crate::costs::span("tx");
         // changes made outside a transaction are not this one's to undo
         self.core.commit_journal();

@@ -181,7 +181,7 @@ pub(crate) fn required_role(ak: &str) -> Role {
     }
 }
 
-pub(crate) fn role_of(core: &Core, node: &Tid, tid: &Tid, ts: Ts) -> Option<Role> {
+pub fn role_of(core: &Core, node: &Tid, tid: &Tid, ts: Ts) -> Option<Role> {
     core.timelines.get(tid)?.role(node, tid, At::now(ts))
 }
 

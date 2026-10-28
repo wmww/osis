@@ -1,5 +1,5 @@
 //! Tags the persisted index (`engine::index`) with a hash of the sources its judgments may
-//! follow from: the `src` of the node and of every `osis-*` crate it depends on (transitively,
+//! follow from: the `src` of the engine and of every `osis-*` crate it depends on (transitively,
 //! through `[dependencies]`), so a change that could change a judgment re-judges
 //! everything once at open, and edits to other crates rebuild nothing here.
 
@@ -28,7 +28,7 @@ fn main() {
     // Relative to the package (a build script's working dir): absolute paths in
     // rerun-if-changed would tie the fingerprint to one checkout path.
     let crates = PathBuf::from("..");
-    let mut names = vec!["osis-node".to_owned()];
+    let mut names = vec!["osis-engine".to_owned()];
     let mut i = 0;
     while let Some(c) = names.get(i).cloned() {
         i += 1;

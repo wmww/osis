@@ -177,7 +177,7 @@ pub(crate) struct Pending {
 
 /// A commit's `/secrets` write that waits for the keys of the boxes it removes.
 #[derive(Clone, Debug)]
-pub(crate) struct Unresolved {
+pub struct Unresolved {
     keys: KeysWrite,
     before: Keys,
 }
@@ -506,7 +506,7 @@ pub(crate) fn pending_secrets_writes(core: &Core, blob: &osis_commit::CommitBlob
 impl crate::engine::Engine {
     /// Records a read secret learned from a label's entry box (a recovery or link key opening
     /// by static entry, spec/sync.md §2): kept for reading, unestablished.
-    pub(crate) fn learn_read_secret(&mut self, g: &Tid, e: osis_crypto::Epoch, secret: osis_crypto::Secret32) -> Result<()> {
+    pub fn learn_read_secret(&mut self, g: &Tid, e: osis_crypto::Epoch, secret: osis_crypto::Secret32) -> Result<()> {
         let g = *g;
         self.run(|tx| {
             tx.core.touch();

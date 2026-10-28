@@ -43,7 +43,7 @@ fn perm_edge(e: &Edge) -> PermEdge {
 
 /// Which parts of a commit an inbox blob carries.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Parts {
+pub enum Parts {
     /// Every part (a grant: the edge and the grantee's boxes; a re-seal).
     All,
     /// The `/members` parts only (a removal: the rotation's boxes are not about the member).
@@ -57,7 +57,7 @@ pub(crate) fn deliver_to(tx: &mut Tx<'_>, member: Tid, c: CommitId, things: &[Ti
     deliver_parts(tx, member, c, things, Parts::All)
 }
 
-pub(crate) fn deliver_parts(tx: &mut Tx<'_>, member: Tid, c: CommitId, things: &[Tid], parts: Parts) -> Result<Vec<Delivery>> {
+pub fn deliver_parts(tx: &mut Tx<'_>, member: Tid, c: CommitId, things: &[Tid], parts: Parts) -> Result<Vec<Delivery>> {
     if tx.core.is_key_actor(&member) {
         let is_node = super::super::flows::is_node(tx, &member)?;
         return Ok(if is_node { vec![Delivery::Direct { to: member, commits: vec![c] }] } else { Vec::new() });
@@ -104,7 +104,9 @@ pub(crate) fn deliver_parts(tx: &mut Tx<'_>, member: Tid, c: CommitId, things: &
     let resend = super::Resend { member, commit: c, things: things.to_vec(), edge_only: parts == Parts::Edge };
     // its record in the commit's own transaction: node-sync sends it from there, also after a
     // crash before `carry_out` (spec/sync.md §3, §5)
-    crate::sync::state::note_unsent_tx(tx, member, c, things.to_vec(), parts == Parts::Edge)?;
+    if let Some(r) = tx.core.sync_records {
+        r.note_unsent(tx, member, c, things.to_vec(), parts == Parts::Edge)?;
+    }
     Ok(vec![Delivery::Inbox { to, inbox, blob, resend }])
 }
 

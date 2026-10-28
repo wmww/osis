@@ -62,3 +62,28 @@ impl osis_commit::BlobSource for TxBlobs<'_, '_> {
         Ok(pt)
     }
 }
+
+impl crate::engine::Engine {
+    /// Stores blob ciphertexts (pages, chunks, commit blobs) by ID.
+    pub fn put_blobs(&mut self, blobs: Vec<(BlobId, Vec<u8>)>) -> crate::error::Result<()> {
+        if blobs.is_empty() {
+            return Ok(());
+        }
+        self.run(|tx| {
+            for (id, b) in blobs {
+                if osis_label::blob_id(&b) == id && tx.txn.read_blob(&id, 0, 0)?.is_none() {
+                    tx.txn.put_blob(&id, b)?;
+                }
+            }
+            Ok(())
+        })?;
+        // a node blob may complete a tree walk that lacked it
+        self.core.live_trees.retain(|_, t| t.missing.is_empty());
+        Ok(())
+    }
+
+    pub fn has_blob(&mut self, id: &BlobId) -> bool {
+        let id = *id;
+        self.run(|tx| Ok(tx.txn.read_blob(&id, 0, 0)?.is_some())).unwrap_or(false)
+    }
+}

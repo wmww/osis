@@ -26,7 +26,7 @@ impl Engine {
     }
 
     /// `latest_on`, written by `author` when given.
-    pub(crate) fn latest_by(&self, tid: &Tid, ak: &str, author: Option<&Tid>) -> Option<CommitId> {
+    pub fn latest_by(&self, tid: &Tid, ak: &str, author: Option<&Tid>) -> Option<CommitId> {
         let k = Ak::new(ak).ok()?;
         let held = self.core.by_aspect.get(&(*tid, k))?;
         held.iter().rev().map(|(_, c)| *c).find(|c| {
@@ -50,7 +50,7 @@ impl Engine {
 
     /// The newest held commit writing `(tid, ak)` with the indexes of its deltas on it (a
     /// grantee's certificate copy names a thing's `/label` and `/created`, spec/sync.md §3).
-    pub(crate) fn aspect_commit(&self, tid: &Tid, ak: &str) -> Option<(CommitId, BTreeSet<usize>)> {
+    pub fn aspect_commit(&self, tid: &Tid, ak: &str) -> Option<(CommitId, BTreeSet<usize>)> {
         let c = self.latest_on(tid, ak)?;
         let h = self.header(&c)?;
         let ais: BTreeSet<usize> = h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *tid && a.ak.as_str() == ak).map(|(i, _)| i).collect();
@@ -127,7 +127,7 @@ impl Engine {
     /// §4): its author's chain certificates to each thing the parts touch, at the commit's
     /// point, minus `parts` themselves. `None` when `c` is not applied here: a node that cannot
     /// verify it cannot tell.
-    pub(crate) fn author_chain(&mut self, c: &CommitId, parts: &Parts) -> Option<BTreeMap<CommitId, Parts>> {
+    pub fn author_chain(&mut self, c: &CommitId, parts: &Parts) -> Option<BTreeMap<CommitId, Parts>> {
         if self.core.pending.contains_key(c) {
             return None;
         }
@@ -254,7 +254,7 @@ impl Engine {
     /// §5): applied, not pending, each aspect valid, and, for a membership commit, each of its
     /// edge ops applied (an aspect is valid while any op on it is: the loser of a single-use
     /// redemption race keeps its valid removal of L beside its void grant).
-    pub(crate) fn judged_valid(&self, c: &CommitId, parts: &[(usize, usize)]) -> bool {
+    pub fn judged_valid(&self, c: &CommitId, parts: &[(usize, usize)]) -> bool {
         let Some(m) = self.core.commits.get(c) else { return false };
         if self.core.pending.contains_key(c) || parts.iter().any(|(ai, _)| !m.valid.get(*ai).copied().unwrap_or(false)) {
             return false;

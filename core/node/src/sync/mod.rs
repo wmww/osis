@@ -431,6 +431,7 @@ impl SyncEngine {
     /// carry it; the correction goes to the engine).
     pub fn new(mut engine: Engine, clock: Arc<dyn Clock>, rng: Box<dyn CryptoRngCore + Send>, cfg: SyncConfig) -> Result<SyncEngine> {
         let events = engine.subscribe();
+        engine.set_sync_records(&state::Records);
         // keeps the changed commits from now on (`Engine::take_changed`)
         engine.take_changed();
         let mut state = State::load(&mut engine)?;

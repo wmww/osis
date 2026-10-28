@@ -719,7 +719,7 @@ fn valid_on(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai
 /// vouches for nothing). Each counter is judged on its own; exactly the invalid dots are
 /// un-merged. A commit-form group (`src` a commit) is judged as that commit's.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Carried {
+pub struct Carried {
     pub snap: CommitId,
     pub src: osis_crdt::Source,
     pub node: Tid,

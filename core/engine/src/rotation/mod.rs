@@ -282,7 +282,7 @@ fn box_knew<'c>(core: &'c Core, a: &Tid) -> impl Fn(&BoxKey, Role, &Epoch) -> bo
 
 /// The roles of `a` that `who` (this node, or a key actor it signs as) may rotate now: write
 /// and above rotates its role and below.
-pub(crate) fn may_rotate(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Role> {
+pub fn may_rotate(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Role> {
     core.timelines.get(a).map(|tl| tl.may_rotate(who, a, At::now(now_ts(core))).into_iter().collect()).unwrap_or_default()
 }
 
@@ -328,7 +328,7 @@ pub(crate) fn uncovered_roles(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Role>
 /// The known departures of `a`, each with the commit that made it when that is this node's
 /// own self-removal (`own_leaving`): node-sync's cover check ignores such a departure until the
 /// commit is placed (spec/crypto.md §4).
-pub(crate) fn departures_placing(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Departure, Option<osis_base::CommitId>)>> {
+pub fn departures_placing(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Departure, Option<osis_base::CommitId>)>> {
     Ok(departures(tx, a)?.into_iter().map(|d| { let c = own_leaving(tx.core, a, &d); (d, c) }).collect())
 }
 
@@ -354,7 +354,7 @@ fn own_leaving(core: &Core, a: &Tid, d: &Departure) -> Option<osis_base::CommitI
     (own && Departure::of_change(op.member, old, new).is_some() && crate::apply::validity::self_removal(core, &mc.author, t, &op.member, mc.ts)).then_some(mc.id)
 }
 
-pub(crate) fn uncovered_roles_of(tx: &mut Tx<'_>, a: &Tid, deps: Vec<Departure>) -> Result<BTreeSet<Role>> {
+pub fn uncovered_roles_of(tx: &mut Tx<'_>, a: &Tid, deps: Vec<Departure>) -> Result<BTreeSet<Role>> {
     if deps.is_empty() {
         return Ok(BTreeSet::new());
     }
@@ -922,7 +922,7 @@ impl Engine {
 
     /// `drop_lost_secrets` (or, `due`, `drop_lost_due`), with what was forgotten (node-sync
     /// drops its label sessions).
-    pub(crate) fn forget_lost(&mut self, due: bool) -> Result<(Vec<Tid>, Forgotten)> {
+    pub fn forget_lost(&mut self, due: bool) -> Result<(Vec<Tid>, Forgotten)> {
         let r = self.run(|tx| if due { drop_lost_due(tx) } else { drop_lost(tx) })?;
         if !r.1.things.is_empty() {
             self.reload()?;
