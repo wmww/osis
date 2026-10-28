@@ -29,6 +29,11 @@ fn unresolved_ak(ak: &str) -> bool {
     matches!(ak, "/tid" | "/created" | "/was" | "/moved")
 }
 
+/// Aspects read from the in-memory indexes, not from a state.
+fn synthetic_ak(ak: &str) -> bool {
+    matches!(ak, "/tid" | "/aspects" | "/groups" | "/members")
+}
+
 /// Navigates a read value along `path` (synthetic aspects).
 fn value_at(v: Value, path: &[osis_crdt::PathSeg]) -> Option<Value> {
     use osis_crdt::PathSeg;
@@ -101,22 +106,21 @@ impl Engine {
             }
             _ => self.run(|tx| Ok(tx.state(&tid, &ak)?.and_then(Fragment::read)))?,
         };
-        Ok(match v {
-            Some(v) if !unresolved_ak(ak.as_str()) => Some(self.core.resolve_value(&tid, v)),
-            v => v,
-        })
+        Ok(self.resolved(&tid, &ak, v))
     }
 
-    /// The value at `path` inside `(tid, ak)` (a field, a map key, a list index, a case payload);
-    /// `None` if absent. A key of a large map costs O(log n), not a read of the whole aspect.
-    pub fn get_at(&mut self, tid: &Tid, ak: &Ak, path: &[osis_crdt::PathSeg]) -> Result<Option<Value>> {
-        if path.is_empty() || matches!(ak.as_str(), "/tid" | "/aspects" | "/groups" | "/members") {
-            return Ok(self.get(tid, ak)?.and_then(|v| value_at(v, path)));
+    /// `v` read from `(tid, ak)` with its tids resolved through moves, unless `ak` names things
+    /// as such.
+    fn resolved(&self, tid: &Tid, ak: &Ak, v: Option<Value>) -> Option<Value> {
+        match v {
+            Some(v) if !unresolved_ak(ak.as_str()) => Some(self.core.resolve_value(tid, v)),
+            v => v,
         }
-        if self.core.created(tid).is_none() {
-            return Ok(None);
-        }
-        // a large map key is held as its link (spec/data-model.md §6)
+    }
+
+    /// `path` with its map keys in the form the state holds them (a large one as its link,
+    /// spec/data-model.md §6).
+    fn lookup_path(&self, tid: &Tid, path: &[osis_crdt::PathSeg]) -> Result<Vec<osis_crdt::PathSeg>> {
         let mut path = path.to_vec();
         if let Some(dedup) = self.core.dedup(tid) {
             for s in &mut path {
@@ -125,38 +129,37 @@ impl Engine {
                 }
             }
         }
-        let path = &path[..];
+        Ok(path)
+    }
+
+    /// The value at `path` inside `(tid, ak)` (a field, a map key, a list index, a case payload);
+    /// `None` if absent. A key of a large map costs O(log n), not a read of the whole aspect.
+    pub fn get_at(&mut self, tid: &Tid, ak: &Ak, path: &[osis_crdt::PathSeg]) -> Result<Option<Value>> {
+        if path.is_empty() || synthetic_ak(ak.as_str()) {
+            return Ok(self.get(tid, ak)?.and_then(|v| value_at(v, path)));
+        }
+        if self.core.created(tid).is_none() {
+            return Ok(None);
+        }
+        let path = self.lookup_path(tid, path)?;
         // a paged state loads only the pages on the path
         let v = self.run(|tx| {
-            tx.ensure_paths(tid, ak, &[path.to_vec()])?;
-            Ok(tx.cached(tid, ak).and_then(|f| f.at(path)).filter(Fragment::present).and_then(|f| f.read()))
+            tx.ensure_paths(tid, ak, std::slice::from_ref(&path))?;
+            Ok(tx.cached(tid, ak).and_then(|f| f.at(&path)).filter(Fragment::present).and_then(|f| f.read()))
         })?;
-        Ok(match v {
-            Some(v) if !unresolved_ak(ak.as_str()) => Some(self.core.resolve_value(tid, v)),
-            v => v,
-        })
+        Ok(self.resolved(tid, ak, v))
     }
 
     /// The visible elements `r` (by index, clamped to the length) of the text or list at `path`
     /// inside `(tid, ak)`: a string or a list; `None` if absent or not a sequence. A large
     /// sequence loads only the pages holding them (spec/crdt.md §6 placement kept per page set).
     pub fn get_range(&mut self, tid: &Tid, ak: &Ak, path: &[osis_crdt::PathSeg], r: std::ops::Range<usize>) -> Result<Option<Value>> {
-        if self.core.created(tid).is_none() || matches!(ak.as_str(), "/tid" | "/aspects" | "/groups" | "/members") {
+        if self.core.created(tid).is_none() || synthetic_ak(ak.as_str()) {
             return Ok(None);
         }
-        let mut path = path.to_vec();
-        if let Some(dedup) = self.core.dedup(tid) {
-            for s in &mut path {
-                if let osis_crdt::PathSeg::Key(k) = s {
-                    *k = super::large::lookup_form(k, &dedup)?;
-                }
-            }
-        }
+        let path = self.lookup_path(tid, path)?;
         let v = self.run(|tx| tx.read_range(tid, ak, &path, r))?;
-        Ok(match v {
-            Some(v) if !unresolved_ak(ak.as_str()) => Some(self.core.resolve_value(tid, v)),
-            v => v,
-        })
+        Ok(self.resolved(tid, ak, v))
     }
 
     /// A typed read (reader defaults, spec/versioning.md §5).
