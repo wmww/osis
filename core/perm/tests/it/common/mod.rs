@@ -437,3 +437,25 @@ pub fn seeded(seed: u64) -> u64 {
         Err(_) => seed,
     }
 }
+
+/// Tier-2 random runs are split into this many shards, each on its own thread with its own
+/// seed (`shard_seed`), so one run uses every core; fixed, so a failure's seed is the same on
+/// every machine.
+pub const SHARDS: u64 = 16;
+
+/// The seed of shard `i` of a run seeded `seed` (before `seeded`).
+pub fn shard_seed(seed: u64, i: u64) -> u64 {
+    seed ^ (i << 40)
+}
+
+/// Runs `run(samples, seed)` as `SHARDS` shards of `samples / SHARDS` (at least one) on
+/// scoped threads, shard i seeded `shard_seed(seed, i)`; returns their results in shard
+/// order. A panicking shard panics the run (its message is printed by the shard's thread).
+pub fn sharded<T: Send>(samples: u64, seed: u64, run: impl Fn(u64, u64) -> T + Sync) -> Vec<T> {
+    let per = (samples / SHARDS).max(1);
+    let run = &run;
+    std::thread::scope(|s| {
+        let hs: Vec<_> = (0..SHARDS).map(|i| s.spawn(move || run(per, shard_seed(seed, i)))).collect();
+        hs.into_iter().map(|h| h.join().unwrap_or_else(|_| panic!("a shard of seed {seed:#x} failed (message above)"))).collect()
+    })
+}

@@ -190,10 +190,11 @@ fn certificates_project_joint() {
     cert_run_joint(80, 0x5eed_0201);
 }
 
+/// 64k samples: a missing later-demotion chain (cert.rs) fails about two seeds in three.
 #[test]
 #[ignore]
 fn certificates_project_joint_large() {
-    cert_run_joint(20_000, 0x5eed_0202);
+    sharded(64_000, 0x5eed_0202, cert_run_joint);
 }
 
 fn cert_run_edges(samples: u64, seed: u64) {
@@ -246,7 +247,7 @@ fn certificates_project_edges() {
 #[test]
 #[ignore]
 fn certificates_project_edges_large() {
-    cert_run_edges(20_000, 0x5eed_0204);
+    sharded(20_000, 0x5eed_0204, cert_run_edges);
 }
 
 /// §8: purge rights by retention, judged at the request's time.
