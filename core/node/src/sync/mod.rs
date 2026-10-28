@@ -313,6 +313,21 @@ type BodyKey = (osis_base::CommitId, Vec<(usize, usize)>);
 pub(crate) const RELINK_BACKOFF_MS: u64 = 3_600_000;
 pub(crate) const RELINK_BACKOFF_MAX_MS: u64 = 7 * 24 * 3_600_000;
 
+/// The labels this node syncs (`SyncEngine::labels`) as last computed, valid while the engine's
+/// generation and the retired labels are unchanged within one step.
+pub(crate) struct Synced {
+    key: (u64, usize),
+    labels: Vec<(Tid, Arc<GroupLabel>)>,
+    /// Per label, the actor its keys derive from and its servers (`complete_pass`).
+    pub actors: BTreeMap<LabelId, (Tid, Vec<ServerKey>)>,
+}
+
+impl Default for Synced {
+    fn default() -> Synced {
+        Synced { key: (u64::MAX, 0), labels: Vec::new(), actors: BTreeMap::new() }
+    }
+}
+
 /// The sync engine of one node.
 pub struct SyncEngine {
     pub(crate) engine: Engine,
@@ -385,8 +400,8 @@ pub struct SyncEngine {
     pub(crate) drop_when_idle: bool,
     /// Sessions of forgotten labels whose pushes the server is still to stop.
     pub(crate) unsubscribe: BTreeSet<(ConnId, LabelId)>,
-    /// Labels synced, with the actor their keys derive from and their servers.
-    pub(crate) label_actors: BTreeMap<LabelId, (Tid, Vec<ServerKey>)>,
+    /// The synced labels as last computed (`labels()`).
+    pub(crate) synced: Synced,
     /// (snapshot, body, aspect) judgments settled with the body kept (spec/sync.md §7); a pair
     /// goes once either body is dropped.
     pub(crate) covered_judged: BTreeSet<(osis_base::CommitId, osis_base::CommitId, Tid, osis_base::Ak)>,
@@ -492,7 +507,7 @@ impl SyncEngine {
             local_work: BTreeMap::new(),
             deposit_seen: BTreeMap::new(),
             resealed: BTreeSet::new(),
-            label_actors: BTreeMap::new(),
+            synced: Synced::default(),
             unsubscribe: BTreeSet::new(),
             served: BTreeMap::new(),
             covered_judged: BTreeSet::new(),
@@ -592,6 +607,7 @@ impl SyncEngine {
             self.wake = None;
             self.last_tick = self.raw_now();
         }
+        self.synced.key.0 = u64::MAX;
         // one deaths replay per aspect per step (`retention::mark_deaths_due`)
         self.engine.core.defer_deaths = true;
         let r = self.step(ev, &mut out);
@@ -679,6 +695,7 @@ impl SyncEngine {
         // the step's deaths replays before its passes: they mark the bodies whose deaths moved
         self.engine.settle_deaths()?;
         self.engine_events()?;
+        self.retire_replaced();
         if std::mem::take(&mut self.members_moved) {
             self.members_changed(out);
             self.reach_check = true;
@@ -868,29 +885,34 @@ impl SyncEngine {
     /// Labels this node syncs: every non-replaced label of a labeled group it holds read
     /// secrets of; an admin also keeps its replaced labels until done with them at every server
     /// (spec/sync.md §2: it places the membership-class commits there, the replacement's
-    /// `/label` among them, and deletes the content entries; `retire_at`).
-    pub fn labels(&mut self) -> Vec<(Tid, std::sync::Arc<GroupLabel>)> {
-        let mut out = Vec::new();
-        for g in self.engine.labeled_groups() {
-            if self.engine.epochs(&g).is_none_or(|e| e.read.held_newest_first().is_empty()) {
-                continue;
+    /// `/label` among them, and deletes the content entries; `retire_at`, `retire_replaced`).
+    pub fn labels(&mut self) -> Vec<(Tid, Arc<GroupLabel>)> {
+        let key = (self.engine.core.generation, self.state.retired.len());
+        if self.synced.key != key {
+            let mut out = Vec::new();
+            for g in self.engine.labeled_groups() {
+                if self.engine.epochs(&g).is_none_or(|e| e.read.held_newest_first().is_empty()) {
+                    continue;
+                }
+                let admin = self.engine.role_on(&g) == Some(osis_base::Role::Admin);
+                out.extend(self.engine.labels_of(&g).into_iter().filter(|l| !l.replaced || admin && !self.state.retired.contains(&l.id)).map(|l| (g, l)));
             }
-            let admin = self.engine.role_on(&g) == Some(osis_base::Role::Admin);
-            for l in self.engine.labels_of(&g) {
-                if l.replaced && admin && !self.state.retired.contains(&l.id) {
-                    // a server where the label was lost may never settle a pass: a bound
-                    let now = self.now();
-                    if self.state.replaced_seen(l.id, now).saturating_add(osis_base::format::MEMBERSHIP_KEEP_MS) <= now {
-                        self.state.retire(l.id);
-                    }
-                }
-                if !l.replaced || admin && !self.state.retired.contains(&l.id) {
-                    out.push((g, l));
-                }
+            let actors = out.iter().map(|(g, l)| (l.id, (self.engine.core.secret_actor(g).unwrap_or(*g), l.servers.iter().map(|a| a.key).collect()))).collect();
+            self.synced = Synced { key, labels: out, actors };
+        }
+        self.synced.labels.clone()
+    }
+
+    /// Retires the replaced labels an admin still syncs once `MEMBERSHIP_KEEP_MS` passed since it
+    /// first saw them replaced: a server where the label was lost may never settle a pass.
+    fn retire_replaced(&mut self) {
+        let now = self.now();
+        let replaced: Vec<LabelId> = self.labels().iter().filter(|(_, l)| l.replaced).map(|(_, l)| l.id).collect();
+        for l in replaced {
+            if self.state.replaced_seen(l, now).saturating_add(osis_base::format::MEMBERSHIP_KEEP_MS) <= now {
+                self.state.retire(l);
             }
         }
-        self.label_actors = out.iter().map(|(g, l)| (l.id, (self.engine.core.secret_actor(g).unwrap_or(*g), l.servers.iter().map(|a| a.key).collect()))).collect();
-        out
     }
 
     /// Where each synced label stands (the API's status): per label, its group, its servers,
