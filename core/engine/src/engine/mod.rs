@@ -798,20 +798,48 @@ impl Tx<'_> {
         Ok(())
     }
 
-    /// Prepares ops by index into paged sequences to run on the pages loaded, through their
-    /// stored placements (`pages::attach_ops`); `false`: load whole instead.
-    pub(crate) fn attach_ops(&mut self, tid: &Tid, ak: &Ak, ops: &[osis_crdt::PathOp], edits: &[Option<large::ListEdit>]) -> Result<bool> {
-        self.load_lazy(tid, ak)?;
-        if !self.held_in_part(tid, ak) {
+    /// Loads what `ops` on `(tid, ak)` read: the `paths` they address, else (ops by index into
+    /// paged sequences, `edits`) the pages they attach to through the stored placements
+    /// (`pages::attach_ops`), else the whole state. Whether they attached (`run_attached`).
+    pub(crate) fn load_for_ops(&mut self, tid: &Tid, ak: &Ak, paths: Option<Vec<Vec<osis_crdt::PathSeg>>>, ops: &[osis_crdt::PathOp], edits: &[Option<large::ListEdit>]) -> Result<bool> {
+        if let Some(paths) = paths {
+            self.ensure_paths(tid, ak, &paths)?;
             return Ok(false);
         }
-        Ok(self.with_pages(tid, ak, |txn, idx, f| pages::attach_ops(txn, tid, ak, idx, f, ops, edits))? == Some(true))
+        self.load_lazy(tid, ak)?;
+        if self.held_in_part(tid, ak) && self.with_pages(tid, ak, |txn, idx, f| pages::attach_ops(txn, tid, ak, idx, f, ops, edits))? == Some(true) {
+            return Ok(true);
+        }
+        self.load(tid, ak)?;
+        Ok(false)
     }
 
-    /// Loads what ops run on the pages loaded missed (`pages::absorb`): `Some(true)` run them
-    /// again, `Some(false)` nothing missed, `None` load whole.
-    pub fn absorb(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
-        Ok(self.with_pages(tid, ak, |txn, idx, f| pages::absorb(txn, tid, ak, idx, f))?.flatten())
+    /// `run` on the state of `(tid, ak)` as loaded; if the ops `attached` (`load_for_ops`), run
+    /// again while it missed rows, chunks or pages (what it missed loaded, `pages::absorb`), at
+    /// most `OP_RUNS` times, then on the whole state.
+    pub(crate) fn run_attached<R>(&mut self, tid: &Tid, ak: &Ak, attached: bool, run: impl Fn(&Tx<'_>) -> R) -> Result<R> {
+        let mut out = run(self);
+        if !attached {
+            return Ok(out);
+        }
+        for runs in 1.. {
+            let more = self.with_pages(tid, ak, |txn, idx, f| pages::absorb(txn, tid, ak, idx, f))?.flatten();
+            if more == Some(false) {
+                break;
+            }
+            let whole = more.is_none() || runs >= pages::OP_RUNS;
+            if whole {
+                if more.is_some() {
+                    let _s = crate::costs::span("paged op whole: runs");
+                }
+                self.load(tid, ak)?;
+            }
+            out = run(self);
+            if whole {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     /// The visible elements `r` (by index, clamped) of the sequence at `path` (op path segments):
