@@ -557,7 +557,7 @@ impl Fragment {
     pub fn written(&self) -> Option<Stamp> {
         match self {
             Fragment::Register(r) => reg_written(r),
-            Fragment::Slots(_) => self.chosen_member().with(Fragment::written),
+            Fragment::Slots(_) => self.chosen_member().written(),
             f => max_opt(f.meta().and_then(|m| m.w.clone()), f.inner_max(true)),
         }
     }
@@ -567,18 +567,19 @@ impl Fragment {
     pub fn present(&self) -> bool {
         match self {
             Fragment::Register(r) => reg_written(r).is_some(),
-            Fragment::Slots(_) => self.chosen_member().with(Fragment::present),
+            Fragment::Slots(_) => self.chosen_member().present(),
             f => f.meta().is_some_and(|m| m.w.is_some()) || f.inner_any(),
         }
     }
 
     /// `inner_max(true).is_some()`, stopping at the first write.
     fn inner_any(&self) -> bool {
-        let child = |f: &Fragment| f.present() || f.reset().is_some();
+        let member = |m: &MemberRef| m.present() || m.reset().is_some();
+        let child = |f: &Fragment| member(&MemberRef::Frag(f));
         let elems_any = |elems: &BTreeMap<Dot, Elem>| elems.values().any(|e| e.reset.is_some() || e.frag.as_deref().is_some_and(child));
         match self {
             Fragment::Register(r) => r.write.as_ref().is_some_and(|w| w.value.is_some()),
-            Fragment::Slots(_) => self.members().into_iter().any(|f| f.with(child)),
+            Fragment::Slots(_) => self.members().iter().any(member),
             Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems_any(elems),
             Fragment::Struct(s) => s.fields.values().any(child),
             Fragment::Enum(s) => s.case.as_ref().is_some_and(|k| k.case.is_some()) || s.payloads.values().any(child),
@@ -590,11 +591,12 @@ impl Fragment {
     /// Greatest stamp inside (children, elements, case), excluding own reset and `W`. With
     /// `valued`, only presence-counting writes (value-less ones are skipped, §4.3, §4.7).
     pub(crate) fn inner_max(&self, valued: bool) -> Option<Stamp> {
-        let child = |f: &Fragment| if valued { max_opt(f.written(), f.reset()) } else { f.all_max() };
+        let member = |m: &MemberRef| if valued { max_opt(m.written(), m.reset()) } else { m.all_max() };
+        let child = |f: &Fragment| member(&MemberRef::Frag(f));
         let elems_max = |elems: &BTreeMap<Dot, Elem>| elems.values().fold(None, |m, e| max_opt(max_opt(m, e.reset.clone()), e.frag.as_deref().and_then(child)));
         match self {
             Fragment::Register(r) => r.write.as_ref().filter(|w| !valued || w.value.is_some()).map(|w| w.stamp.clone()),
-            Fragment::Slots(_) => self.members().into_iter().fold(None, |m, f| max_opt(m, f.with(child))),
+            Fragment::Slots(_) => self.members().iter().fold(None, |x, m| max_opt(x, member(m))),
             Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems_max(elems),
             Fragment::Struct(s) => s.fields.values().fold(None, |m, f| max_opt(m, child(f))),
             Fragment::Enum(s) => {
@@ -623,7 +625,7 @@ impl Fragment {
             Fragment::Enum(s) => s.case.is_none() && s.payloads.values().all(Fragment::is_empty),
             Fragment::Map(m) => m.entries.is_empty(),
             Fragment::Seq(s) => !seq::has_records(s) && seq::inner_max(s, false).is_none(),
-            Fragment::Slots(_) => return self.members().iter().all(|m| m.with(|f| f.is_empty())),
+            Fragment::Slots(_) => return self.members().iter().all(MemberRef::is_empty),
         };
         no_children && self.meta().is_none_or(|m| m.reset.is_none() && m.w.is_none())
     }
@@ -641,7 +643,7 @@ impl Fragment {
             // stamp is at least the register's and it is chosen without a scan
             Fragment::Slots(s) if s.members.len() == 1 => s.members.values().next().map_or(MemberRef::Frag(self), MemberRef::Frag),
             Fragment::Slots(_) => {
-                let key = |m: &MemberRef| (m.with(Fragment::all_max), m.with(Fragment::encoding));
+                let key = |m: &MemberRef| (m.all_max(), m.encoding());
                 let mut best: Option<(MemberRef, _)> = None;
                 for m in self.members() {
                     let k = key(&m);
@@ -661,7 +663,7 @@ impl Fragment {
             return None;
         }
         match self {
-            Fragment::Slots(_) => self.chosen_member().with(Fragment::read),
+            Fragment::Slots(_) => self.chosen_member().read(),
             Fragment::Register(r) => r.write.as_ref().and_then(|w| w.value.clone()),
             Fragment::Bag(b) => read_bag(b),
             Fragment::Struct(s) => Some(Value::Map(
@@ -712,11 +714,34 @@ pub enum MemberRef<'a> {
 }
 
 impl MemberRef<'_> {
-    pub(crate) fn with<T>(&self, f: impl Fn(&Fragment) -> T) -> T {
+    /// `r` on a register slot (not wrapped in a cloned `Fragment`: `Slots` reads call these per
+    /// member), `f` on another member.
+    fn by<T>(&self, r: impl FnOnce(&Register) -> T, f: impl FnOnce(&Fragment) -> T) -> T {
         match self {
-            MemberRef::Reg(r) => f(&Fragment::Register((*r).clone())),
+            MemberRef::Reg(x) => r(x),
             MemberRef::Frag(x) => f(x),
         }
+    }
+    fn written(&self) -> Option<Stamp> {
+        self.by(reg_written, Fragment::written)
+    }
+    fn present(&self) -> bool {
+        self.by(|r| reg_written(r).is_some(), Fragment::present)
+    }
+    fn reset(&self) -> Option<Stamp> {
+        self.by(|r| r.reset.clone(), Fragment::reset)
+    }
+    fn all_max(&self) -> Option<Stamp> {
+        self.by(|r| max_opt(r.write.as_ref().map(|w| w.stamp.clone()), r.reset.clone()), Fragment::all_max)
+    }
+    fn encoding(&self) -> Encoding {
+        self.by(|_| Encoding::Register, Fragment::encoding)
+    }
+    fn is_empty(&self) -> bool {
+        self.by(|r| r.reset.is_none() && r.write.is_none(), Fragment::is_empty)
+    }
+    fn read(&self) -> Option<Value> {
+        self.by(|r| r.write.as_ref().and_then(|w| w.value.clone()), Fragment::read)
     }
     pub fn to_fragment(self) -> Fragment {
         match self {
