@@ -95,7 +95,7 @@ impl SyncEngine {
                 continue;
             }
             let Some(secret) = self.engine.wrap_secret(&g, None)? else { continue };
-            let Some(keys) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).map(|x| x.keys.clone()) else { continue };
+            let Some(keys) = self.lc(conn, &l).map(|x| x.keys.clone()) else { continue };
             let (key, blob) = osis_label::seal_signal(&body, &self.engine.identity().keys().signing, &mut *self.rng)?;
             let id = osis_label::blob_id(&blob);
             let wrap = osis_crypto::wrap(&secret, &id, &key)?;

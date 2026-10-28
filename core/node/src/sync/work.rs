@@ -553,7 +553,7 @@ impl SyncEngine {
     pub(super) fn pull(&mut self, conn: Option<ConnId>, g: &Tid, l: LabelId, scope: &mut Scope, w: &mut Work) {
         self.spread_touches();
         let meanwhile = match conn {
-            Some(conn) => self.conns.get(&conn).and_then(|c| c.labels.get(&l)).map(|lc| &lc.work),
+            Some(conn) => self.lc(conn, &l).map(|lc| &lc.work),
             None => self.local_work.get(&l),
         };
         let Some((mut cs, bs)) = meanwhile.map(|w| (w.commits.clone(), w.blobs.clone())) else { return };

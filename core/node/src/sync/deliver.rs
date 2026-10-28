@@ -24,11 +24,7 @@ impl SyncEngine {
         }
         self.take_done(done)?;
         // placements wait for a pass
-        for c in self.conns.values_mut() {
-            for l in c.labels.values_mut() {
-                l.dirty = true;
-            }
-        }
+        self.mark_dirty();
         Ok(self.handle(super::Event::Local))
     }
 
