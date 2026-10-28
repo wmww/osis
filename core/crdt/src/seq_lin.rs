@@ -969,8 +969,8 @@ pub(crate) enum Plan {
 
 /// The element after `x` when both are inside record `(k, r)`: where a node splits once
 /// something anchors at `x`.
-fn inside(k: &Dot, r: &SeqElem, x: &Dot) -> Option<Dot> {
-    (x.ctr - k.ctr + 1 < r.span).then(|| nth(x, 1))
+fn inside(k: &Dot, span: u64, x: &Dot) -> Option<Dot> {
+    (x.ctr - k.ctr + 1 < span).then(|| nth(x, 1))
 }
 
 /// A row's first element, whether it is visible and its visible char (`flip`).
@@ -1277,7 +1277,7 @@ impl Lin {
                     Anchor::Dot(x) => match self.placed(x)? {
                         Some(cut) => (true, cut),
                         None => match elems.find(x) {
-                            Some((k, r)) => (true, inside(k, r, x)),
+                            Some((k, r)) => (true, inside(k, r.span, x)),
                             // a virtual anchor on `END` (§6.1): it would split nodes of its source
                             None if x.src.is_derived() => return None,
                             None => (false, None),
@@ -1494,7 +1494,7 @@ impl Lin {
         for (gain, (_, a)) in gained.chain(lost) {
             let Anchor::Dot(x) = a else { continue };
             let (k, r) = elems.find(x)?;
-            match inside(k, r, x) {
+            match inside(k, r.span, x) {
                 Some(c) if gain => cuts.push(c),
                 Some(_) => return None,
                 None => {}
@@ -1513,7 +1513,7 @@ impl Lin {
             return (self.part.as_ref().map(|p| p.count()) == before).then_some(None);
         };
         let r = self.p.block(b).get(o)?;
-        Some(Some((x.ctr - r.dot.ctr + 1 < r.span).then(|| nth(x, 1))))
+        Some(Some(inside(&r.dot, r.span, x)))
     }
 
     /// Block and offset of the row holding element `x`.
@@ -1521,7 +1521,7 @@ impl Lin {
         let (k, b) = self.at.at_or_before(x)?;
         let o = self.p.block(b).iter().position(|r| r.dot == *k)?;
         let r = self.p.block(b).get(o)?;
-        (r.dot.src == x.src && x.ctr - r.dot.ctr < r.span).then_some((b, o))
+        crate::seq_span::holds(&r.dot, r.span, x).then_some((b, o))
     }
 
     /// The row holding element `x` (placed), by block and offset, if `x` is its last element.

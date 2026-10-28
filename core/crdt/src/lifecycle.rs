@@ -185,7 +185,7 @@ impl Fragment {
             Fragment::Map(m) => m.entries.values().any(|e| opt(&e.reset) || opt(&e.created) || e.frag.as_deref().is_some_and(sub)),
             Fragment::Seq(q) => q.elems().iter().any(|(d, el)| {
                 // a range record's creations are its elements' dots at the record's `ts`
-                let created = el.created.as_ref().is_some_and(|(c, _)| eq(c) || (c.ts == s.ts && s.dot.src == d.src && s.dot.ctr >= d.ctr && s.dot.ctr - d.ctr < el.span));
+                let created = el.created.as_ref().is_some_and(|(c, _)| eq(c) || (c.ts == s.ts && crate::seq_span::holds(d, el.span, &s.dot)));
                 created || el.pos.iter().any(|p| eq(&p.0)) || el.deleted.as_ref().is_some_and(|x| eq(&x.0)) || matches!(&el.content, crate::seq::SeqContent::Frag(f) if sub(f))
             }),
         }

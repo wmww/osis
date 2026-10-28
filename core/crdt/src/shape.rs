@@ -143,13 +143,13 @@ pub struct Shown {
 
 impl Shown {
     fn find_mut(&mut self, x: &Dot) -> Option<(&Dot, &mut Rec)> {
-        let (d, r) = self.recs.range_mut(..=x.clone()).next_back()?;
-        (d.src == x.src && x.ctr - d.ctr < r.span).then_some((d, r))
+        let (d, r) = self.recs.range_mut(..=x).next_back()?;
+        crate::seq_span::holds(d, r.span, x).then_some((d, r))
     }
 
     fn find(&self, x: &Dot) -> Option<(&Dot, &Rec)> {
-        let (d, r) = self.recs.range(..=x.clone()).next_back()?;
-        (d.src == x.src && x.ctr - d.ctr < r.span).then_some((d, r))
+        let (d, r) = self.recs.range(..=x).next_back()?;
+        crate::seq_span::holds(d, r.span, x).then_some((d, r))
     }
 
     /// From element `x`, at most `max` elements: whether they are kept, how many share that,
