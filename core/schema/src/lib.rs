@@ -30,7 +30,7 @@ pub use codec::{Chunked, Codec};
 pub use codegen::{Generated, generate, generate_file};
 pub use error::{Error, ParseError};
 pub use form::{META_SRC, meta_schema, read_type, type_value};
-pub use keys::{Aspect, AspectKey, Signal};
+pub use keys::{Aspect, AspectKey, Signal, SignalKey};
 pub use lock::{Lock, LockStatus, check_lock};
 pub use parse::parse;
 pub use path::{CaseId, FieldId, Path, PathError, PathErrorKind, Step};
