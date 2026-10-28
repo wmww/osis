@@ -53,7 +53,7 @@ impl Engine {
         let c = &self.core;
         let mut out = String::new();
         for (id, m) in c.ix.commits.iter() {
-            let _ = writeln!(out, "commit {id:?} {:?} {:?} {:?} {:?} {:?}", m.valid, m.dropped, m.received, m.origin, m.view);
+            let _ = writeln!(out, "commit {id:?} {:?} {:?} {:?} {:?} {:?} missing {:?}", m.valid, m.dropped, m.received, m.origin, m.view, m.missing);
         }
         let held = osis_perm::HeldSet::things(&c.ix.held);
         for t in held {

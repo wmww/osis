@@ -107,6 +107,13 @@ proptest! {
         crate::tests_life::holds_stamp_check(seed, &Ty::List(Box::new(inner())));
     }
 
+    /// spec/permissions.md §5.2: `copies_within` and `strip_copies` of text and list states.
+    #[test]
+    fn seq_copies_agree_and_rejoin_spec_perm_5_2(seed in any::<u64>()) {
+        crate::tests_life::copies_check(seed, &Ty::Text);
+        crate::tests_life::copies_check(seed, &Ty::List(Box::new(inner())));
+    }
+
     /// §8: bootstrap from a text or list snapshot, then concurrent edits, converges.
     #[test]
     fn seq_bootstrap_then_edit_spec_8(seed in any::<u64>()) {

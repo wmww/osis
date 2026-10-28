@@ -14,7 +14,7 @@ mod tests_linked;
 mod tests_order;
 
 pub(crate) use waits::Waits;
-pub(crate) use atomic::{apply_verified, forget_snapshot, index_commit, ingest_secrets_keys, invalid_of, rebuild};
+pub(crate) use atomic::{apply_verified, forget_snapshot, index_commit, ingest_secrets_keys, invalid_of, rebuild, strip_held_copies};
 
 use crate::engine::blobs::TxBlobs;
 use crate::engine::{Engine, Meta, Tx, decode_commit_record, records};
@@ -749,7 +749,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let id = blob.id();
             let h = Arc::new(blob.header.clone());
             let valid = vec![true; h.aspects.len()];
-            let m = Meta::new(h.clone(), received, origin, valid, dropped);
+            let missing = (0..h.aspects.len()).filter(|ai| !blob.parts.iter().any(|p| p.ai == *ai) && !dropped.iter().any(|x| x.0 == *ai)).collect();
+            let m = Meta::new(h.clone(), received, origin, valid, dropped, missing);
             atomic::index_commit(tx.core, &id, &m.view);
             validity::note_authors(tx.core, &id, &h, &[]).map_err(|_| Error::Corrupt("commit authors"))?;
             tx.core.ix.commits.insert(id, m);

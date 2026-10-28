@@ -588,7 +588,7 @@ fn open_equals_rebuild_random_histories() {
     let name = "walks::open_equals_rebuild_random_histories";
     let replay = |s: u64| format!("OSIS_WALKS_START={s} OSIS_WALKS_SEEDS=1 cargo test --workspace --test it {name} -- --exact");
     let mut most = [0usize; 4];
-    for (r, _) in run_seeds(name, &seeds, "OSIS_WALKS_THREADS", replay, |seed| random_history(seed, 1, false)) {
+    for (r, _) in run_seeds(name, &seeds, "OSIS_WALKS_THREADS", replay, |seed| random_history(seed, 1, false, false)) {
         for k in 0..4 {
             most[k] = most[k].max(r[k]);
         }
@@ -605,7 +605,7 @@ fn open_equals_rebuild_random_histories() {
 #[test]
 fn open_equals_rebuild_random_histories_carried_imports() {
     for seed in [261, 377] {
-        let _ = random_history(seed, 1, false);
+        let _ = random_history(seed, 1, false, false);
     }
 }
 
@@ -616,8 +616,23 @@ fn open_equals_rebuild_random_histories_carried_imports() {
 #[test]
 fn open_equals_rebuild_random_histories_unkilled_residue() {
     for seed in [40558, 40797] {
-        let _ = random_history(seed, 1, false);
+        let _ = random_history(seed, 1, false, false);
     }
+}
+
+// spec/requirements.md, Decentralization and Out of scope ("malicious readers can only waste
+// storage"); spec/permissions.md §5.2: as above, with nodes taking hostile snapshots that copy a
+// held tag's dot and `ts` with another value, sent on like any commit: open equals rebuild, and
+// once every node holds everything no forged value shows and the tags agree. Seeds:
+// OSIS_WALKS_FORGED_START, OSIS_WALKS_FORGED_SEEDS (default 0..16), a thread per core.
+#[test]
+fn open_equals_rebuild_random_histories_forged() {
+    let env = |k: &str| std::env::var(k).ok().and_then(|s| s.parse::<u64>().ok());
+    let start = env("OSIS_WALKS_FORGED_START").unwrap_or(0);
+    let seeds: Vec<u64> = (start..start + env("OSIS_WALKS_FORGED_SEEDS").unwrap_or(16)).collect();
+    let name = "walks::open_equals_rebuild_random_histories_forged";
+    let replay = |s: u64| format!("OSIS_WALKS_FORGED_START={s} OSIS_WALKS_FORGED_SEEDS=1 cargo test --workspace --test it {name} -- --exact");
+    run_seeds(name, &seeds, "OSIS_WALKS_THREADS", replay, |seed| random_history(seed, 1, false, true));
 }
 
 // as above with moves weighted up (copies of copies, their aspects snapshotted); seeds 6013,
@@ -641,7 +656,7 @@ fn open_equals_rebuild_random_histories_moves() {
     let replay = |s: u64| format!("OSIS_WALKS_MOVES_START={s} OSIS_WALKS_MOVES_DOUBLES={} cargo test --workspace --test it {name} -- --exact", u8::from(doubles[&s]));
     let keys: Vec<u64> = doubles.keys().copied().collect();
     let mut doubled = 0;
-    for (seed, (_, n)) in keys.iter().zip(run_seeds(name, &keys, "OSIS_WALKS_THREADS", replay, |seed| random_history(seed, 3, doubles[&seed]))) {
+    for (seed, (_, n)) in keys.iter().zip(run_seeds(name, &keys, "OSIS_WALKS_THREADS", replay, |seed| random_history(seed, 3, doubles[&seed], false))) {
         if n > 0 {
             eprintln!("seed {seed}: {n} double imports");
         }
@@ -654,8 +669,9 @@ fn open_equals_rebuild_random_histories_moves() {
 /// than one: moves from step 10, moved things snapshotted more), and with `doubles` sometimes a
 /// second import of a moved thing into its copy; returns what it reached on any node (most of
 /// each `reached` count) and how many double imports it made.
-fn random_history(seed: u64, max_moves: usize, doubles: bool) -> ([usize; 4], usize) {
+fn random_history(seed: u64, max_moves: usize, doubles: bool, forge: bool) -> ([usize; 4], usize) {
     let mut most = [0usize; 4];
+    let mut forged = 0usize;
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut lp = LocalPeer::new(3, 0x7a1c + seed, T0).unwrap();
     lp.sync_all().unwrap();
@@ -688,6 +704,13 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool) -> ([usize; 4], us
             5 => {
                 let fill: std::collections::BTreeMap<Value, Value> = (0..40 + rng.below(40)).map(|k| (s(&format!("k{k:03}")), s(&format!("{step}{}", "g".repeat(400))))).collect();
                 m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
+            }
+            6 if forge && rng.below(3) == 0 => {
+                // a hostile snapshot copying another value under a held tag's dot
+                let o = things[rng.below(2) as usize];
+                if forge_tag(&mut lp, i, o, step, &mut rng) {
+                    forged += 1;
+                }
             }
             6 => {
                 let a = ["/t/keptset", "/t/gonemap", "/t/tags"][rng.below(3) as usize];
@@ -768,7 +791,49 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool) -> ([usize; 4], us
         }
         open_equals_rebuild_any(&mut lp.peers[i].engine, &things, &format!("seed {seed} end, peer {i}"));
     }
+    if forge {
+        // every node holds every commit now: forged copies show on no original, and the tags
+        // agree (a copy may hold one its mover imported while it lacked the forged write's own
+        // commit: issues/snapshot-copy-residue.md)
+        let tagged = |lp: &mut LocalPeer, i: usize| things.iter().map(|t| lp.peers[i].engine.get(t, &ak("/t/tags")).unwrap()).collect::<Vec<_>>();
+        let first = tagged(&mut lp, 0);
+        assert!(!format!("{:?}", &first[..2]).contains("forged"), "seed {seed}: a forged copy shows: {first:?}");
+        for i in 1..3 {
+            assert_eq!(tagged(&mut lp, i), first, "seed {seed}: peer {i} differs ({forged} forged)");
+        }
+    }
     (most, double_imports)
+}
+
+/// Peer `i` forges a snapshot of `t`'s `/t/tags`: its state with the value of a held tag (a
+/// node-form commit's element) replaced, under that element's dot and `ts`, and takes it.
+fn forge_tag(lp: &mut LocalPeer, i: usize, t: Tid, step: usize, rng: &mut Rng) -> bool {
+    use osis_crdt::{Batch, Source, Writer};
+    let tags = ak("/t/tags");
+    let e = &lp.peers[i].engine;
+    let held: Vec<(osis_base::Ts, Tid, u64)> = e
+        .commit_ids()
+        .iter()
+        .filter_map(|id| e.header(id))
+        .filter(|h| h.kind == osis_commit::Kind::Content && h.form == osis_commit::Form::Node)
+        .filter_map(|h| h.aspects.iter().find(|a| a.tid == t && a.ak == tags).map(|a| (h.ts, h.author, a.lo)))
+        .collect();
+    if held.is_empty() {
+        return false;
+    }
+    let (ts, author, lo) = held[rng.below(held.len() as u64) as usize];
+    let dot = osis_crdt::Dot::new(Source::node(author), lo);
+    let Some(mut f) = lp.peers[i].engine.state(&t, &tags).unwrap() else { return false };
+    f.strip_copies(&|d| *d == dot);
+    let mut b = Batch::new(&f, Writer::new(ts, Source::node(author), lo));
+    if b.apply(&PathOp { path: Vec::new(), op: Op::Add(s(&format!("forged{step}"))) }, &osis_crdt::AnyView).is_err() {
+        return false;
+    }
+    let Some((extra, _)) = b.finish() else { return false };
+    f.join(extra);
+    let now = osis_base::Ts::make(lp.peers[i].engine.now(), 0).unwrap();
+    let bytes = forge_snapshot(lp, i, t, &tags, now, f);
+    lp.peers[i].engine.ingest(&bytes, Vec::new()).is_ok()
 }
 
 // spec/requirements.md, Decentralization; spec/permissions.md §5.2, §7: a snapshot of a moved

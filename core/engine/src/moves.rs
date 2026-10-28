@@ -216,6 +216,11 @@ fn carriers(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeMap<Ak, Carrier>> {
                 continue;
             }
             let Some(Decoded::Snapshot(s)) = crate::apply::held_parts(tx, &id, ai)?.into_iter().next() else { continue };
+            // a snapshot copying a held write otherwise than its delta holds it gives nothing
+            // (spec/permissions.md §5.2): not a carrier
+            if !copies_held(tx, t, &ak, &s.fragment)? {
+                continue;
+            }
             let carried: BTreeSet<Dot> = s.fragment.writes().into_iter().map(|(d, _)| d).filter(|d| !d.src.is_derived()).collect();
             let rank = carried.into_iter().zip(1u64..).collect();
             out.insert(ak.clone(), Carrier { id, ts, rank, frontiers: s.frontiers });
@@ -223,6 +228,24 @@ fn carriers(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeMap<Ak, Carrier>> {
         }
     }
     Ok(out)
+}
+
+/// Whether snapshot fragment `f` of `(t, ak)` holds its copies of writes whose own delta is
+/// held here as those deltas hold them.
+fn copies_held(tx: &mut Tx<'_>, t: &Tid, ak: &Ak, f: &Fragment) -> Result<bool> {
+    let mut own = Vec::new();
+    let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*t, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+    for c in held {
+        let Some(m) = tx.core.ix.commits.get(&c) else { continue };
+        if m.header.kind.is_compaction() {
+            continue;
+        }
+        let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *t && a.ak == *ak) else { continue };
+        own.extend(crate::apply::held_parts(tx, &c, ai)?.into_iter().map(Decoded::into_fragment));
+    }
+    let own: Vec<&Fragment> = own.iter().collect();
+    let core = &*tx.core;
+    Ok(f.copies_within(&own, &|d| crate::apply::validity::owner_held(core, t, ak, d)))
 }
 
 impl Engine {

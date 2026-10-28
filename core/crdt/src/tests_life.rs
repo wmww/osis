@@ -75,6 +75,14 @@ proptest! {
         remove_writes_check(seed, &sink_no_seq());
     }
 
+    /// spec/permissions.md §5.2: a state holds each commit's writes as its delta does
+    /// (`copies_within`), and without a set of commits' copies (`strip_copies`) rejoined with
+    /// those commits it is the state.
+    #[test]
+    fn copies_agree_and_rejoin_spec_perm_5_2(seed in any::<u64>()) {
+        copies_check(seed, &sink_no_seq());
+    }
+
     /// §8: a node bootstrapped from a snapshot and then editing converges with the source node;
     /// frontiers cover every commit.
     #[test]
@@ -219,6 +227,61 @@ pub(crate) fn remove_writes_check(seed: u64, ty: &Ty) {
         }
         assert_eq!(after.read(), state.read(), "rejoined after");
     }
+}
+
+/// `copies_within` and `strip_copies` over a random history of type `ty`.
+pub(crate) fn copies_check(seed: u64, ty: &Ty) {
+    let mut r = crate::testutil::rng(seed | 1);
+    let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
+    let mut state = Fragment::default();
+    for c in &commits {
+        state.join(frag(&c.delta));
+    }
+    for c in &commits {
+        let range = [(source(&c.w.source), c.w.lo, c.w.hi())];
+        assert!(state.copies_within(&[&frag(&c.delta)], &in_ranges(&range)), "the state's copies of a commit's writes");
+    }
+    for _ in 0..4 {
+        let pick: Vec<bool> = commits.iter().map(|_| r.chance(1, 2)).collect();
+        let ranges: Vec<Range> = commits.iter().zip(&pick).filter(|x| *x.1).map(|(c, _)| (source(&c.w.source), c.w.lo, c.w.hi())).collect();
+        let pred = in_ranges(&ranges);
+        let mut rest = state.clone();
+        rest.strip_copies(&pred);
+        let left: Vec<_> = rest.writes().into_iter().filter(|(d, ts)| ts.is_some() && pred(d)).collect();
+        assert!(left.is_empty(), "left {left:?}");
+        let mut after = rest.clone();
+        for c in commits.iter().zip(&pick).filter(|x| *x.1) {
+            after.join(frag(&c.0.delta));
+        }
+        assert_eq!(after.read(), state.read(), "rejoined");
+    }
+}
+
+/// spec/permissions.md §5.2: a copy of a write with another value, `ts` or position, or a write
+/// under a dot its delta does not use, is not within the delta; a value-less one is.
+#[test]
+fn forged_copies_differ_spec_perm_5_2() {
+    use crate::ops::{Writer, create};
+    use crate::view::AnyView;
+    use std::collections::BTreeMap;
+    let x = Source::node(Tid::from_bytes([1; 15]));
+    let owned = |d: &Dot| d.src == x && d.ctr < 10;
+    let map = |k: &str, v: &str| Value::Map(BTreeMap::from([(Value::Str(k.into()), Value::Str(v.into()))]));
+    let make = |t: u64, v: &Value| create(&mut Writer::new(ts(t), x.clone(), 3), &AnyView, v).unwrap();
+    let delta = make(5, &map("k", "real"));
+    let mut other = make(1, &map("o", "y"));
+    other.map_dots(&|d| Some(Dot::new(Source::node(Tid::from_bytes([2; 15])), d.ctr)));
+    let state = join(&other, &delta);
+    assert!(state.copies_within(&[&delta], &owned), "honest");
+    for (what, f) in [("value", make(5, &map("k", "zzz"))), ("key", make(5, &map("evil", "real"))), ("ts", make(6, &map("k", "real")))] {
+        assert!(!join(&other, &f).copies_within(&[&delta], &owned), "{what}");
+    }
+    let extra = create(&mut Writer::new(ts(5), x.clone(), 7), &AnyView, &map("e", "1")).unwrap();
+    assert!(!join(&state, &extra).copies_within(&[&delta], &owned), "a dot the delta does not use");
+    // value-less (an expiring write a snapshot carries without its value)
+    let mut vl = state.clone();
+    vl.strip(&|d| d.src == x);
+    assert!(vl.copies_within(&[&delta], &owned), "value-less");
 }
 
 /// §8 bootstrap from a snapshot, then concurrent edits of type `ty`.

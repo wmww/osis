@@ -631,13 +631,35 @@ impl Engine {
             }
             let snap: Vec<Fragment> = parts.into_iter().map(Decoded::into_fragment).collect();
             let [snap] = snap.as_slice() else { return Ok(None) };
-            let body: Vec<Fragment> = held.into_iter().map(Decoded::into_fragment).collect();
+            let Some(ix) = crate::apply::validity::copy_index(tx, &s, &tid, &ak, Some(snap))? else { return Ok(None) };
+            let Some(m) = tx.core.ix.commits.get(&c).cloned() else { return Ok(None) };
+            let is_snapshot = m.header.kind.is_compaction();
+            let mut body: Vec<Fragment> = held.into_iter().map(Decoded::into_fragment).collect();
+            // a snapshot body's copies of writes a held delta supplies count for nothing
+            // (spec/permissions.md §5.2): what it must carry is the rest
+            if is_snapshot {
+                for b in &mut body {
+                    crate::apply::strip_held_copies(tx.core, &tid, &ak, b);
+                }
+            }
             let before = crate::engine::state::encode(snap)?;
             let mut j = snap.clone();
-            for b in body {
-                j.join(b);
+            for b in &body {
+                j.join(b.clone());
             }
-            Ok(Some(crate::engine::state::encode(&j)? == before))
+            if crate::engine::state::encode(&j)? != before {
+                return Ok(Some(false));
+            }
+            // the snapshot's copies of the body's writes are the body's (a copy at another
+            // value, `ts` or position, or under a dot the body owns but lacks, joins as unchanged)
+            let mut ranges: Vec<(osis_crdt::Source, u64, u64)> = body.iter().flat_map(|b| b.writes()).map(|(d, _)| (d.src.clone(), d.ctr, d.ctr.saturating_add(1))).collect();
+            if !is_snapshot {
+                ranges.extend(crate::apply::validity::owned_ranges(&m.header, &c, cai));
+            }
+            ranges.sort();
+            ranges.dedup();
+            let body: Vec<&Fragment> = body.iter().collect();
+            Ok(Some(ix.outside(&ranges, &body).is_empty()))
         })
     }
 }

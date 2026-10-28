@@ -882,6 +882,23 @@ pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, nested: bool
     elems.retain(|d, el| el.keeps(d));
 }
 
+/// `Fragment::strip_copies` past `remove_dots`: the creations (anchor and char) of elements a
+/// matching dot created go too, their records staying as anchors.
+pub(crate) fn drop_creations(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool) {
+    for (d, el) in s.elems_mut().iter_mut() {
+        if pred(d.owner()) {
+            el.created = None;
+            el.pos.retain(|p| p.0.dot != *d);
+            if matches!(el.content, SeqContent::Char(_)) {
+                el.content = SeqContent::None;
+            }
+        }
+        if let SeqContent::Frag(f) = &mut el.content {
+            f.drop_creations(pred);
+        }
+    }
+}
+
 /// Elements of the embedding of register `r` into a text slot (§7); the caller sets the reset.
 /// Their stamps `(s.ts, Derived(s.dot), i)` already order right after `s` (`Dot`'s order, §2.2).
 pub(crate) fn embed_text(r: &Register) -> BTreeMap<Dot, SeqElem> {
