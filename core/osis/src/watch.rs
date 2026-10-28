@@ -9,7 +9,7 @@
 
 use crate::error::{Error, Result};
 use crate::handle::{Inner, Osis};
-use osis_core::{Ak, CommitId, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, CommitId, Tid, Ts, Value, WallMs};
 use osis_node::{Cause, Diagnostic, DiagnosticKind, Event, Origin};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;

@@ -2,7 +2,7 @@
 //! (spec/sync.md §4-§9, spec/wire.md §11).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use osis_core::{BlobId, LabelId, Value, WallMs, cbor, hash::hash};
+use osis_base::{BlobId, LabelId, Value, WallMs, cbor, hash::hash};
 use osis_crypto::{Epoch, LabelRole, SeededRng, Secret32, SigningSecret, X25519Secret, label_role_key};
 use osis_label::step::EntryTo;
 use osis_label::{Parent, Prefix, Reader, StepKeys, genesis_label, register, sign_deposit, sign_stamp};
@@ -525,14 +525,14 @@ fn oversized_upload_refused_spec_sync_5() {
     let l = Label::new();
     net.setup(&l);
     let seq = net.store.log_head(&l.id).unwrap().1;
-    let big = l.entry(blob_sized(1, 0, vec![], osis_core::format::MAX_BLOB));
+    let big = l.entry(blob_sized(1, 0, vec![], osis_base::format::MAX_BLOB));
     let body = Message::Upload { id: 77, label: l.id, entries: vec![big] }.encode();
-    assert!(body.len() < osis_core::format::MAX_MESSAGE);
+    assert!(body.len() < osis_base::format::MAX_MESSAGE);
     let so = net.servers[0].handle(T0, &mut net.store, ServerInput::Bytes(encode_frame(&body)));
     net.server_out(0, so);
     let reply: Vec<u8> = net.to_client[0].drain(..).flatten().collect();
     let mut d = FrameDecoder::new();
-    d.set_max(osis_core::format::MAX_MESSAGE);
+    d.set_max(osis_base::format::MAX_MESSAGE);
     d.push(&reply);
     let m = Message::decode(&d.next_frame().unwrap().unwrap()).unwrap();
     assert_eq!(m, Message::Error { id: 77, code: Code::MALFORMED });

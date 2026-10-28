@@ -3,7 +3,7 @@
 
 use crate::seq::Seq;
 use crate::stamp::{Dot, Stamp};
-use osis_core::Value;
+use osis_base::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Merge encoding IDs (§3.1).

@@ -6,8 +6,8 @@
 use crate::Error;
 use crate::dec::{self, Fields, b, opt_v, u};
 use crate::rbsr::{self, Bound};
-use osis_core::format::{MAX_BLOB, MAX_MESSAGE};
-use osis_core::{BlobId, LabelId, Limits, Value, cbor};
+use osis_base::format::{MAX_BLOB, MAX_MESSAGE};
+use osis_base::{BlobId, LabelId, Limits, Value, cbor};
 pub use osis_crypto::Signature;
 pub use osis_label::{ClaimSet, DeleteItem, Proof, PublishAuth, PublishKey, Step, StepId};
 use osis_schema::Codec;

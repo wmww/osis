@@ -6,7 +6,7 @@
 #![forbid(unsafe_code)]
 
 /// Re-exported for generated code.
-pub use osis_core;
+pub use osis_base;
 
 mod check;
 pub mod codec;

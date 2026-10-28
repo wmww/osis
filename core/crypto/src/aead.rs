@@ -53,7 +53,7 @@ mod tests {
     use super::*;
 
     fn hex(s: &str) -> Vec<u8> {
-        osis_core::hex::decode(s).unwrap()
+        osis_base::hex::decode(s).unwrap()
     }
 
     // spec/crypto.md §1: XChaCha20-Poly1305 (draft-irtf-cfrg-xchacha-03 §A.3.1).

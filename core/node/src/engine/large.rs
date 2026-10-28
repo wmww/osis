@@ -10,7 +10,7 @@
 use super::blobs::TxBlobs;
 use super::{Engine, Tx};
 use crate::error::{Error, Result};
-use osis_core::{Ak, BlobId, ChunkParams, CommitId, Link, Role, Tid, Value};
+use osis_base::{Ak, BlobId, ChunkParams, CommitId, Link, Role, Tid, Value};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
 use osis_label::{BlobFetch, BlobReader, BlobWriter, Framing, HashSink, LargeParams, Reuse};
@@ -341,7 +341,7 @@ pub(crate) fn chunk_op(op: &mut PathOp, schema: Option<&Schema>, ak: &str, state
 /// Whether `v`, held atomically (a set element, a map key), is held as a link
 /// (spec/data-model.md §6: above `CHUNK_THRESHOLD`).
 fn atomic_large(v: &Value) -> bool {
-    !matches!(v, Value::Link(_)) && osis_core::encode(v).len() > osis_core::format::CHUNK_THRESHOLD
+    !matches!(v, Value::Link(_)) && osis_base::encode(v).len() > osis_base::format::CHUNK_THRESHOLD
 }
 
 /// What an index lookup finds an atomic value by: a large one by its link (content hash only,
@@ -427,7 +427,7 @@ pub(crate) fn chunk_frontiers(tx: &mut Tx<'_>, ops: &mut [PathOp], framing: &Fra
 /// node and page blobs.
 pub(crate) fn delta_links(tx: &mut Tx<'_>, dedup: &Secret32, delta: &[u8]) -> Result<BTreeSet<BlobId>> {
     let mut out = LiveTrees::default();
-    let Ok(v) = osis_core::decode(delta, &osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: delta.len() }) else { return Ok(out.blobs) };
+    let Ok(v) = osis_base::decode(delta, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: delta.len() }) else { return Ok(out.blobs) };
     let mut roots = Vec::new();
     links_in(&v, &mut roots);
     tree_blobs(tx, dedup, &roots, &mut out)?;
@@ -466,7 +466,7 @@ fn below(blobs: &mut TxBlobs<'_, '_>, dedup: &Secret32, link: &Link) -> Result<O
     if osis_crypto::link_hash(dedup, &pt) != link.hash {
         return Ok(None);
     }
-    let Ok(v) = osis_core::decode(&pt, &osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: pt.len() }) else { return Ok(None) };
+    let Ok(v) = osis_base::decode(&pt, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: pt.len() }) else { return Ok(None) };
     let mut out = Vec::new();
     links_in(&v, &mut out);
     Ok(Some((false, out)))
@@ -677,7 +677,7 @@ impl Engine {
             let mut out = LiveTrees::default();
             for p in &cb.parts {
                 let Some(dedup) = h.aspects.get(p.ai).and_then(|a| tx.core.dedup(&a.tid)) else { continue };
-                let Ok(v) = osis_core::decode(&p.delta, &osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: p.delta.len() }) else { continue };
+                let Ok(v) = osis_base::decode(&p.delta, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: p.delta.len() }) else { continue };
                 let mut roots = Vec::new();
                 links_in(&v, &mut roots);
                 tree_blobs(tx, &dedup, &roots, &mut out)?;

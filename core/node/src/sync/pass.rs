@@ -11,8 +11,8 @@ use super::{ConnId, SyncEngine};
 use crate::error::Result;
 use crate::labeling::{Body, BodyCtx, Facts, HeadKeys, Hold, Parts, Why, classify, delete_item, may_delete, seal_body};
 use osis_commit::Kind as CKind;
-use osis_core::format::HEARTBEAT_MIN_INTERVAL_MS;
-use osis_core::{Ak, BlobId, CommitId, LabelId, Role, Tid, WallMs};
+use osis_base::format::HEARTBEAT_MIN_INTERVAL_MS;
+use osis_base::{Ak, BlobId, CommitId, LabelId, Role, Tid, WallMs};
 use osis_proto::Command;
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
@@ -927,7 +927,7 @@ impl SyncEngine {
                     break;
                 }
                 cur = match self.engine.core.created(&t) {
-                    Some(osis_core::CreationRecord::Thing { owner, .. }) => Some(*owner),
+                    Some(osis_base::CreationRecord::Thing { owner, .. }) => Some(*owner),
                     _ => None,
                 };
             }
@@ -1187,7 +1187,7 @@ impl SyncEngine {
     /// This node's wait before relaying another node's blob `key` (`RELAY_MIN_MS` to
     /// `SETTLE_MS`, fixed per node and blob, so co-writers draw different points).
     fn relay_delay(&self, key: &[u8]) -> u64 {
-        let mut h = osis_core::hash::Hasher::new();
+        let mut h = osis_base::hash::Hasher::new();
         h.update(b"osis relay wait").update(self.engine.tid().as_bytes()).update(key);
         let mut x = [0u8; 8];
         h.finalize_xof(&mut x);
@@ -1637,7 +1637,7 @@ impl SyncEngine {
         }
         // `ts` of the commit: the HLC's next wall time (spec/permissions.md §4)
         let ts = now.max(self.engine.core.hlc.last().wall_ms().0);
-        let life = self.cfg.heartbeat_lifetime_ms.clamp(osis_core::format::HEARTBEAT_MIN_LIFETIME_MS, osis_core::format::HEARTBEAT_MAX_LIFETIME_MS);
+        let life = self.cfg.heartbeat_lifetime_ms.clamp(osis_base::format::HEARTBEAT_MIN_LIFETIME_MS, osis_base::format::HEARTBEAT_MAX_LIFETIME_MS);
         let mut m = crate::Mutation::new();
         // whole: a field left to an earlier heartbeat would go when that one expires (spec/crdt.md §9)
         m.replace(me, &ct::SEEN, &ct::Seen { ts: WallMs(ts), stranded })?;
@@ -1875,7 +1875,7 @@ impl SyncEngine {
         // and proves nothing ("reads no more" alone misjudged such members, spec/sync.md §6)
         let actor = self.engine.group_actor(g);
         let core = &self.engine.core;
-        let now = osis_core::Ts::make(WallMs(self.now()), 0).unwrap_or_default();
+        let now = osis_base::Ts::make(WallMs(self.now()), 0).unwrap_or_default();
         let author = h.author;
         let departed = !core.may_read(&author, &actor)
             && core.timelines.get(&author).is_some_and(|tl| {

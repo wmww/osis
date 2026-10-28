@@ -69,7 +69,7 @@ pub fn undo<V: View>(w: &mut Writer, undone: &Undone, state: &Fragment, buffer: 
     undo_at(w, undone, undone.delta, Some(state), buffer, view, &mut path, true)
 }
 
-fn before_read(buffer: &dyn UndoBuffer, path: &[PathSeg]) -> Option<osis_core::Value> {
+fn before_read(buffer: &dyn UndoBuffer, path: &[PathSeg]) -> Option<osis_base::Value> {
     buffer.before(path).filter(Fragment::present).and_then(|f| f.read())
 }
 
@@ -187,7 +187,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             let mut entries = BTreeMap::new();
             // removed entries, joined per key: a key held by several entries comes back as one
             // (re-adding each at the undo's one stamp would tie their registers)
-            let mut removed: BTreeMap<osis_core::Value, Fragment> = BTreeMap::new();
+            let mut removed: BTreeMap<osis_base::Value, Fragment> = BTreeMap::new();
             for (d, e) in &m.entries {
                 if e.frag.is_some() && u.made(d) {
                     entries.insert(d.clone(), Entry { reset: Some(r.clone()), key: None, frag: None, created: None });
@@ -290,7 +290,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
 
 /// What a nested edit into entry `d` of key `k` saw before the commit: the join of the key's
 /// live entries (§5.6 path ops), or the entry alone if none is live.
-fn entry_frag(p: &Fragment, d: &Dot, k: &osis_core::Value) -> Option<Fragment> {
+fn entry_frag(p: &Fragment, d: &Dot, k: &osis_base::Value) -> Option<Fragment> {
     let Fragment::Map(m) = p else { return None };
     let mut acc: Option<Fragment> = None;
     for f in m.live_dots(k).into_iter().filter_map(|x| m.entries.get(x)?.frag.as_deref()) {

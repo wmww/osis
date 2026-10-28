@@ -2,9 +2,9 @@
 //! static entries, entry boxes (spec/sync.md §2, §5, spec/wire.md §8, §7).
 
 use crate::Error;
-use osis_core::cbor::{Limits, decode, encode};
-use osis_core::format::{MAX_CLAIMS, MAX_MESSAGE, MAX_OBJECT_DEPTH};
-use osis_core::{LabelId, Role, Value};
+use osis_base::cbor::{Limits, decode, encode};
+use osis_base::format::{MAX_CLAIMS, MAX_MESSAGE, MAX_OBJECT_DEPTH};
+use osis_base::{LabelId, Role, Value};
 use osis_crypto::{
     BoxForm, BoxItem, BoxSlot, CryptoRngCore, Domain, Epoch, KemPublicKey, KemSecret, LabelRole, Secret32, Signature, SigningSecret,
     VerifyingKey, X25519Secret, claim_key, deposit_key, label_id, label_role_key, open_box, open_symmetric_box, seal_box, static_entry,
@@ -118,7 +118,7 @@ impl Step {
 
     /// Digest the signature covers: BLAKE3 of the canonical array of the first eight items.
     pub fn digest(&self) -> [u8; 32] {
-        osis_core::hash::hash(&encode(&Value::List(self.unsigned())))
+        osis_base::hash::hash(&encode(&Value::List(self.unsigned())))
     }
 
     pub fn to_value(&self) -> Value {
@@ -132,7 +132,7 @@ impl Step {
     }
 
     pub fn id(&self) -> StepId {
-        StepId(osis_core::hash::hash(&self.to_bytes()))
+        StepId(osis_base::hash::hash(&self.to_bytes()))
     }
 
     pub fn parse(b: &[u8]) -> Result<Step, Error> {
@@ -253,7 +253,7 @@ impl ClaimSet {
 
     /// `claims_hash` = BLAKE3 of the canonical bytes.
     pub fn hash(&self) -> [u8; 32] {
-        osis_core::hash::hash(&self.to_bytes())
+        osis_base::hash::hash(&self.to_bytes())
     }
 
     /// `Malformed` above `MAX_CLAIM_SET` bytes.
@@ -485,7 +485,7 @@ pub(crate) mod tests {
         let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (epoch(0), &g.read), &mut rng).unwrap();
         assert_eq!(s0.label, genesis_label(&g.admin, 0));
         assert_eq!(Step::parse(&s0.to_bytes()).unwrap(), s0);
-        assert_eq!(s0.id().0, osis_core::hash::hash(&s0.to_bytes()));
+        assert_eq!(s0.id().0, osis_base::hash::hash(&s0.to_bytes()));
         assert_eq!(s0.claims_hash, c0.hash());
         assert_eq!(c0.claims.len(), 1);
         s0.verify_genesis().unwrap();

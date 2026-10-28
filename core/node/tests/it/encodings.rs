@@ -4,12 +4,12 @@
 
 use crate::common;
 use common::*;
-use osis_core::{Role, Value};
+use osis_base::{Role, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::Mutation;
 use std::collections::BTreeMap;
 
-fn write_all(m: &mut Mutation, t: osis_core::Tid, n: i64, tag: &str) {
+fn write_all(m: &mut Mutation, t: osis_base::Tid, n: i64, tag: &str) {
     m.set(t, &REG, &s(tag)).unwrap();
     m.op(t, &COUNT, PathOp { path: Vec::new(), op: Op::Inc(Value::Int(n)) }).unwrap();
     m.op(t, &HI, PathOp { path: Vec::new(), op: Op::Inc(Value::Int(n * 10)) }).unwrap();
@@ -130,7 +130,7 @@ fn sequences_converge_spec_crdt_5_7() {
 fn big_list_insert_fits_blobs_spec_crdt_3_3() {
     let mut lp = net(2, 15);
     let t = new_thing(&mut lp, 0);
-    let n = osis_core::format::CHUNK_THRESHOLD - 8;
+    let n = osis_base::format::CHUNK_THRESHOLD - 8;
     let items: Vec<Value> = (0..65).map(|i| s(&format!("{i:03}{}", "z".repeat(n - 3)))).collect();
     let mut m = Mutation::new();
     m.set(t, &LIST, &Value::List(items.clone())).unwrap();
@@ -229,7 +229,7 @@ fn range_delta_rewrites_its_pages_spec_crdt_8() {
     assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/text")).unwrap(), Some(s(&want)));
     // pages hold what a snapshot carries (deleted chars dropped): compare those bytes
     let carried = |f: Option<osis_crdt::Fragment>| {
-        let cx = osis_crdt::DeltaCtx { ts: osis_core::Ts::from_u64(1 << 40).unwrap(), own: osis_crdt::Source::node(b), range: osis_crdt::CounterRange::EMPTY, kind: osis_crdt::DeltaKind::Snapshot };
+        let cx = osis_crdt::DeltaCtx { ts: osis_base::Ts::from_u64(1 << 40).unwrap(), own: osis_crdt::Source::node(b), range: osis_crdt::CounterRange::EMPTY, kind: osis_crdt::DeltaKind::Snapshot };
         let snap = osis_crdt::Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: f.unwrap(), frontiers: Default::default() };
         osis_crdt::encode_snapshot(&snap, &cx, None).unwrap()
     };

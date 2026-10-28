@@ -466,7 +466,7 @@ mod tests {
             let r = handshake(sa, "x", me, Arc::new(Lax(false)), b"nope").await;
             let e = r.err().unwrap();
             assert!(matches!(e, Error::Protocol(_)), "{e:?}");
-            assert_eq!(osis_core::Classified::class(&e), osis_core::ErrorClass::BadInput);
+            assert_eq!(osis_base::Classified::class(&e), osis_base::ErrorClass::BadInput);
         });
     }
 

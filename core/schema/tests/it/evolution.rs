@@ -2,7 +2,7 @@
 //! Schema value form (spec/data-model.md §10), lock files and the additive checker
 //! (spec/versioning.md §4): each rule violated and respected.
 
-use osis_core::{Limits, Value};
+use osis_base::{Limits, Value};
 use osis_schema::*;
 
 const BASE: &str = "\
@@ -37,9 +37,9 @@ fn rules(from: &str, to: &str) -> Vec<Rule> {
 fn value_form_round_trips_spec_data_model_10() {
     for s in [core_schema().clone(), parse("n.osis", include_str!("../../schemas/notes.osis")).unwrap(), meta_schema().clone()] {
         let bytes = s.canonical_bytes();
-        let v = osis_core::decode(&bytes, &Limits::DEFAULT).unwrap();
+        let v = osis_base::decode(&bytes, &Limits::DEFAULT).unwrap();
         assert_eq!(Schema::from_value(&v).unwrap(), s);
-        assert_eq!(s.hash(), osis_core::hash::hash(&bytes));
+        assert_eq!(s.hash(), osis_base::hash::hash(&bytes));
     }
 }
 

@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use crate::net::{Net, Runtime, Transport, Waiter};
 use crate::share::{RecoveryCard, ServerAddr, Status};
 use crate::watch::{Dispatch, Msg, lock};
-use osis_core::{Clock, SystemClock, Tid};
+use osis_base::{Clock, SystemClock, Tid};
 use osis_crypto::{CryptoRngCore, OsRng, SeededRng};
 use osis_node::sync::{Event as SyncEvent, SyncConfig, SyncEngine};
 use osis_node::{Engine, Event};
@@ -214,7 +214,7 @@ fn engine_cfg() -> osis_node::Config {
 
 fn tid_record(e: &mut Engine, name: &str) -> Result<Tid> {
     let b = e.app_record(name)?.ok_or(Error::Storage(format!("no {name} record: not an osis database")))?;
-    let a: [u8; osis_core::format::TID_LEN] = b.as_slice().try_into().map_err(|_| Error::Storage(format!("{name} record")))?;
+    let a: [u8; osis_base::format::TID_LEN] = b.as_slice().try_into().map_err(|_| Error::Storage(format!("{name} record")))?;
     Ok(Tid::from_bytes(a))
 }
 
@@ -526,7 +526,7 @@ impl Osis {
 
     /// The key for `ak`: typed by the registered schema that declares it, else untyped.
     pub fn key(&self, ak: &str) -> Result<crate::Key> {
-        let ak = osis_core::Ak::new(ak).map_err(|_| Error::Invalid(format!("bad AK {ak:?}")))?;
+        let ak = osis_base::Ak::new(ak).map_err(|_| Error::Invalid(format!("bad AK {ak:?}")))?;
         let core = osis_schema::core_schema();
         let schema = if core.aspects.contains_key(ak.as_str()) {
             Some(Arc::new(core.clone()))

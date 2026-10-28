@@ -2,7 +2,7 @@
 //! (spec/sync.md §4). Tier 2 (disk): `cargo test --workspace --test it file:: -- --ignored`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use osis_core::{LabelId, ManualClock, WallMs};
+use osis_base::{LabelId, ManualClock, WallMs};
 use osis_crypto::{SeededRng, Signature};
 use osis_proto::examples::Fixture;
 use osis_proto::{Code, LabelStore, LogRecord, Put};

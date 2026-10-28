@@ -2,7 +2,7 @@
 //! its seeds (osis-vectors `corpus.rs`). Not part of the API.
 
 use crate::{Batch, CounterRange, DeltaCtx, DeltaKind, Encoding, Fragment, Interner, Op, PathOp, Snapshot, Source, View, Writer, decode_snapshot, encode_snapshot};
-use osis_core::{Tid, Ts, Value};
+use osis_base::{Tid, Ts, Value};
 use std::borrow::Cow;
 
 /// A text position's view.

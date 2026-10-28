@@ -2,7 +2,7 @@
 //! thing R through `/was` claims with standing, else `/moved`, at most `RESOLUTION_HOPS` hops.
 
 use crate::timeline::{At, Timeline};
-use osis_core::Tid;
+use osis_base::Tid;
 
 /// `RESOLUTION_HOPS` (spec/wire.md §2).
 pub const RESOLUTION_HOPS: usize = 8;

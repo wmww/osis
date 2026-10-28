@@ -2,12 +2,12 @@
 //! and text forms `osis://link/` / `osis://card/` + unpadded base64url.
 
 use crate::addr::{Address, address_from_value};
-use osis_core::base64url;
+use osis_base::base64url;
 use crate::auth::{get_bytes, get_uint};
 use crate::Error;
-use osis_core::cbor::{Limits, decode, encode};
-use osis_core::format::MAX_URL_BYTES;
-use osis_core::{LabelId, Tid, Value};
+use osis_base::cbor::{Limits, decode, encode};
+use osis_base::format::MAX_URL_BYTES;
+use osis_base::{LabelId, Tid, Value};
 use osis_crypto::Secret32;
 use osis_schema::Codec;
 

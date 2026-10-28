@@ -5,7 +5,7 @@
 
 use crate::common;
 use common::*;
-use osis_core::{Role, Tid, WallMs};
+use osis_base::{Role, Tid, WallMs};
 use osis_keys::aspects::{box_key, history_key, to_schema};
 use osis_keys::{
     ActorEpochs, Departure, Error, KeysWrite, Member, MemoryHeldActors, Opener, Provenance, Recipient, Rotation, box_member, ingest,

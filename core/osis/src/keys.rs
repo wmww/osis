@@ -1,7 +1,7 @@
 //! Keys (notes/api.md Keys): typed `Aspect<T>`/`Signal<T>` from codegen, `Ak` untyped, and
 //! `Key`, typed by a schema registered at run time (CLIs, tools; `Osis::key`).
 
-use osis_core::{Ak, Value};
+use osis_base::{Ak, Value};
 use osis_schema::{AspectKey, Codec, PathError, Schema, Signal, typed_read};
 use std::sync::Arc;
 
@@ -39,7 +39,7 @@ impl AspectKey for Key {
         // `/created` is typed by its exclusivity rule, not the missing-field rule
         // (spec/data-model.md §9).
         if self.schema.as_deref().is_some_and(Schema::is_core) && self.ak.as_str() == "/created" {
-            return <osis_core::CreationRecord as Codec>::from_value(v).map(|_| v.clone());
+            return <osis_base::CreationRecord as Codec>::from_value(v).map(|_| v.clone());
         }
         match (self.schema.as_deref(), AspectKey::ty(self)) {
             (Some(s), Some(t)) => typed_read(s, v, t),

@@ -110,9 +110,9 @@ impl Gen {
             Type::Blob => "Vec<u8>".into(),
             Type::Bool => "bool".into(),
             Type::Int => "i64".into(),
-            Type::Float => format!("{P}::osis_core::Float"),
-            Type::Tid => format!("{P}::osis_core::Tid"),
-            Type::Any => format!("{P}::osis_core::Value"),
+            Type::Float => format!("{P}::osis_base::Float"),
+            Type::Tid => format!("{P}::osis_base::Tid"),
+            Type::Any => format!("{P}::osis_base::Value"),
             Type::Counter(i) | Type::Max(i) | Type::Min(i) => self.rust_type(i, hint, in_collection)?,
             Type::List(e) => format!("Vec<{}>", self.rust_type(e, hint, true)?),
             Type::Set(e) => format!("std::collections::BTreeSet<{}>", self.rust_type(e, hint, true)?),
@@ -219,7 +219,7 @@ impl Gen {
         if let (Some(name), true) = (&it.schema_name, it.params.is_empty() && matches!(body, Type::Struct(_) | Type::Enum(_))) {
             let _ = writeln!(
                 self.out,
-                "impl TryFrom<&{P}::osis_core::Value> for {r} {{\n    type Error = {P}::PathError;\n    /// Typed read through the schema (reader defaults, open structs), then into `{r}`.\n    fn try_from(v: &{P}::osis_core::Value) -> Result<{r}, {P}::PathError> {{\n        let n = {P}::typed_read(SCHEMA.get(), v, &{P}::Type::named({name:?}))?;\n        {P}::Codec::from_value(&n)\n    }}\n}}\nimpl From<&{r}> for {P}::osis_core::Value {{\n    fn from(t: &{r}) -> {P}::osis_core::Value {{\n        {P}::Codec::to_value(t)\n    }}\n}}",
+                "impl TryFrom<&{P}::osis_base::Value> for {r} {{\n    type Error = {P}::PathError;\n    /// Typed read through the schema (reader defaults, open structs), then into `{r}`.\n    fn try_from(v: &{P}::osis_base::Value) -> Result<{r}, {P}::PathError> {{\n        let n = {P}::typed_read(SCHEMA.get(), v, &{P}::Type::named({name:?}))?;\n        {P}::Codec::from_value(&n)\n    }}\n}}\nimpl From<&{r}> for {P}::osis_base::Value {{\n    fn from(t: &{r}) -> {P}::osis_base::Value {{\n        {P}::Codec::to_value(t)\n    }}\n}}",
                 r = it.rust
             );
         }

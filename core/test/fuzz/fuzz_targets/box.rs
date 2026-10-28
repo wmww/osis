@@ -3,7 +3,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use osis_core::{BlobId, Limits, Role, Tid, decode};
+use osis_base::{BlobId, Limits, Role, Tid, decode};
 use osis_crypto::{BoxForm, BoxSlot, Epoch, KeyActorKeys, Secret32, decrypt_blob, open_box, open_history, open_sealed, open_symmetric_box, sealed_from_value, unpad, unwrap};
 use osis_schema::core_types as ct;
 use osis_schema::{AspectKey, Codec};

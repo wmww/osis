@@ -3,7 +3,7 @@
 
 use crate::common;
 use common::*;
-use osis_core::{Role, Tid, Value};
+use osis_base::{Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::SeededRng;
 use osis_keys::{MemberKeys, Provenance, Recipient, Rotation, rotate};
@@ -20,13 +20,13 @@ fn rcpt(lp: &LocalPeer, i: usize, role: Role) -> Recipient {
 }
 
 /// A read rotation of `a` from node 0's view, written as one membership commit.
-fn rotation_commit(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Role>) -> (osis_core::CommitId, Rotation) {
+fn rotation_commit(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Role>) -> (osis_base::CommitId, Rotation) {
     let members = [rcpt(lp, 0, Role::Admin), rcpt(lp, 1, Role::Read)];
     rotation_commit_to(lp, a, seed, roles, &members)
 }
 
 /// A rotation of `a` from node 0's view boxing `members`.
-fn rotation_commit_to(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Role>, members: &[Recipient]) -> (osis_core::CommitId, Rotation) {
+fn rotation_commit_to(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Role>, members: &[Recipient]) -> (osis_base::CommitId, Rotation) {
     let e = &mut lp.peers[0].engine;
     let view = e.epochs(&a).unwrap();
     let state = e.get(&a, &ak("/secrets")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap_or_default();

@@ -1,8 +1,8 @@
 //! Canonical CBOR profile tests (spec/data-model.md §5).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)] // test code
 
-use osis_core::format::{TAG_ENUM, TAG_LINK, TAG_SET, TAG_STRUCT_RESERVED, TAG_TID};
-use osis_core::{BlobId, CanonicalBytes, DecodeError, Float, Limits, Link, Tid, Unknown, Value, decode, decode_prefix, encode};
+use osis_base::format::{TAG_ENUM, TAG_LINK, TAG_SET, TAG_STRUCT_RESERVED, TAG_TID};
+use osis_base::{BlobId, CanonicalBytes, DecodeError, Float, Limits, Link, Tid, Unknown, Value, decode, decode_prefix, encode};
 use proptest::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -150,7 +150,7 @@ proptest! {
 }
 
 fn hex(s: &str) -> Vec<u8> {
-    osis_core::hex::decode(s).unwrap()
+    osis_base::hex::decode(s).unwrap()
 }
 
 fn tag_head(t: u64) -> String {

@@ -11,7 +11,7 @@ use crate::engine::Engine;
 use crate::error::Result;
 use crate::labeling::open_commit;
 use crate::Ingested;
-use osis_core::{BlobId, Classified, CreationRecord, ErrorClass, LabelId, Role, Tid};
+use osis_base::{BlobId, Classified, CreationRecord, ErrorClass, LabelId, Role, Tid};
 use osis_crypto::{Secret32, VerifyingKey, role_kem};
 use osis_label::{PublishAuth, Step};
 use osis_proto::{Code, Command, Cursor, Event as LogEvent};
@@ -70,7 +70,7 @@ impl SyncEngine {
         }
         let backoff = &mut self.relink_backoff;
         let mut next: Option<u64> = None;
-        let mut allow = |t: &Tid, ak: &osis_core::Ak| {
+        let mut allow = |t: &Tid, ak: &osis_base::Ak| {
             let e = backoff.entry((*t, ak.clone())).or_insert((0, RELINK_BACKOFF_MS));
             if now < e.0 {
                 next = Some(next.map_or(e.0, |n| n.min(e.0)));
@@ -416,7 +416,7 @@ impl SyncEngine {
             for s in keys {
                 let kem = role_kem(&s);
                 if let Ok((_, payload)) = osis_label::open_inbox_blob(&bytes, &actor, &kem) {
-                    let pt = osis_core::encode(&payload.commit);
+                    let pt = osis_base::encode(&payload.commit);
                     if let Ok(c) = osis_commit::CommitBlob::decode(&pt) {
                         self.engine.note_delete_hints(c.id(), &payload.things)?;
                     }
@@ -446,7 +446,7 @@ impl SyncEngine {
         let Some(bytes) = self.engine.blob(b)? else { return Ok(None) };
         let opened = self.inbox_of(l).into_iter().flat_map(|(a, keys)| keys.into_iter().map(move |s| (a, s))).find_map(|(a, s)| osis_label::open_inbox_blob(&bytes, &a, &role_kem(&s)).ok());
         let Some((_, payload)) = opened else { return Ok(None) };
-        let Ok(c) = osis_commit::CommitBlob::decode(&osis_core::encode(&payload.commit)) else { return Ok(None) };
+        let Ok(c) = osis_commit::CommitBlob::decode(&osis_base::encode(&payload.commit)) else { return Ok(None) };
         Ok(Some((c.parts.iter().map(|p| p.ai).collect(), payload.things.iter().map(|t| t.tid).collect())))
     }
 
@@ -464,7 +464,7 @@ impl SyncEngine {
             let Some(bytes) = self.engine.blob(&b)? else { continue };
             let opened = self.inbox_of(&l).into_iter().flat_map(|(a, keys)| keys.into_iter().map(move |s| (a, s))).find_map(|(a, s)| osis_label::open_inbox_blob(&bytes, &a, &role_kem(&s)).ok());
             let Some((_, payload)) = opened else { continue };
-            let names = payload.things.iter().any(|t| things.contains(&t.tid)) || osis_commit::CommitBlob::decode(&osis_core::encode(&payload.commit)).is_ok_and(|c| c.header.aspects.iter().any(|a| things.contains(&a.tid)));
+            let names = payload.things.iter().any(|t| things.contains(&t.tid)) || osis_commit::CommitBlob::decode(&osis_base::encode(&payload.commit)).is_ok_and(|c| c.header.aspects.iter().any(|a| things.contains(&a.tid)));
             if names {
                 gone.push(b);
             }
@@ -532,7 +532,7 @@ impl SyncEngine {
     /// Commits wait for pages: fetch the blobs their headers list that are not held (pages
     /// before apply, spec/sync.md §6; the chunks of other large values stay lazy).
     fn fetch_waiting(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let waiting: Vec<osis_core::CommitId> = self.engine.pending().into_iter().filter(|(_, r)| *r == crate::Reason::WaitBlobs).map(|(c, _)| c).collect();
+        let waiting: Vec<osis_base::CommitId> = self.engine.pending().into_iter().filter(|(_, r)| *r == crate::Reason::WaitBlobs).map(|(c, _)| c).collect();
         let mut missing = Vec::new();
         for c in waiting {
             let Some(bytes) = self.engine.commit_bytes(&c)? else { continue };
@@ -594,10 +594,10 @@ impl SyncEngine {
     /// Forgets every commit blob holding a delta the engine dropped (purge, expiry, keep at
     /// most, compaction): key and ciphertext (spec/commits.md §5). Only those of `commits`
     /// when given (the commits a change may have dropped deltas of).
-    pub(crate) fn forget_dropped(&mut self, commits: Option<&BTreeSet<osis_core::CommitId>>) -> Result<()> {
+    pub(crate) fn forget_dropped(&mut self, commits: Option<&BTreeSet<osis_base::CommitId>>) -> Result<()> {
         let dropped = |s: &Self, r: &super::state::BlobRec| s.engine.core.commits.get(&r.commit).is_some_and(|m| r.parts.iter().any(|p| m.dropped.contains(p)));
         let fresh = std::mem::take(&mut self.state.new_blobs);
-        let commits: Option<BTreeSet<osis_core::CommitId>> = commits.map(|c| c.union(&fresh).copied().collect());
+        let commits: Option<BTreeSet<osis_base::CommitId>> = commits.map(|c| c.union(&fresh).copied().collect());
         let commits = commits.as_ref();
         let ids: Vec<BlobId> = match commits {
             None => self.state.blobs.iter().filter(|(_, r)| dropped(self, r)).map(|(id, _)| *id).collect(),
@@ -654,7 +654,7 @@ impl SyncEngine {
     /// Fetches the blobs of one large value's tree that are not held yet (`Engine::tree_missing`:
     /// a read that missed a chunk; spec/sync.md §6), from the open labels holding them; empty
     /// when the tree is whole. Call again after they arrive: fetched nodes list more chunks.
-    pub fn fetch_tree(&mut self, tid: &Tid, link: &osis_core::Link) -> Result<Vec<super::Action>> {
+    pub fn fetch_tree(&mut self, tid: &Tid, link: &osis_base::Link) -> Result<Vec<super::Action>> {
         let ids = self.engine.tree_missing(tid, link)?;
         let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.fetching.contains_key(b)).collect();
         Ok(self.fetch(&ids))
@@ -843,7 +843,7 @@ impl SyncEngine {
         }
         // a replay (a server or relay re-sending a captured signal later) fires nothing
         let (now, at) = (self.engine.now().0, body.ts.wall_ms().0);
-        if at.saturating_add(osis_core::format::MAX_DRIFT_MS) < now || at > now.saturating_add(osis_core::format::MAX_DRIFT_MS) {
+        if at.saturating_add(osis_base::format::MAX_DRIFT_MS) < now || at > now.saturating_add(osis_base::format::MAX_DRIFT_MS) {
             return Ok(());
         }
         let Some(CreationRecord::KeyActor { public_key, .. }) = self.engine.core.created(&body.node).cloned() else { return Ok(()) };

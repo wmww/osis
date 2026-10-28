@@ -1,7 +1,7 @@
 //! File backend over redb (feature `file-backend`; choice recorded in notes/local-store.md).
 
 use crate::backend::{Backend, BackendError, KeyValue, Op, WriteBatch, blob_slice};
-use osis_core::BlobId;
+use osis_base::BlobId;
 use redb::{Database, TableDefinition};
 use std::path::Path;
 

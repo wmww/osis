@@ -2,7 +2,7 @@
 //! derive_key contexts and hash prefixes. Signature domains: `Domain`.
 
 use crate::Secret32;
-use osis_core::Role;
+use osis_base::Role;
 use zeroize::{Zeroize, Zeroizing};
 
 /// `kdf(purpose, secret, input) = keyed_hash(derive_key("osis v1 " + purpose, secret), input)`.

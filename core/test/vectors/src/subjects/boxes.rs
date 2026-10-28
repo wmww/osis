@@ -5,7 +5,7 @@
 use super::{FixedRng, case, generated_header, s32};
 use crate::file::{Record, VecFile};
 use crate::hex;
-use osis_core::{LabelId, Role, Tid, Value, encode};
+use osis_base::{LabelId, Role, Tid, Value, encode};
 use osis_crypto::*;
 
 const EPH: [u8; 32] = [0x0c; 32];

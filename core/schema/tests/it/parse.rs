@@ -2,8 +2,8 @@
 //! DSL parser, validation and the encoding mapping (spec/data-model.md §2, §3, §9;
 //! spec/crdt.md §3.1).
 
-use osis_core::format::{CORE_SCHEMA_ID, CORE_SCHEMA_REVISION, MEMBERSHIP_KEEP_MS};
-use osis_core::{SchemaId, Value};
+use osis_base::format::{CORE_SCHEMA_ID, CORE_SCHEMA_REVISION, MEMBERSHIP_KEEP_MS};
+use osis_base::{SchemaId, Value};
 use osis_crdt::Encoding;
 use osis_schema::*;
 

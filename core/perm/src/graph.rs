@@ -3,8 +3,8 @@
 
 use crate::held::HeldSet;
 use crate::types::Edge;
-use osis_core::format::MAX_OWNER_DEPTH;
-use osis_core::{CreationRecord, Role, Tid, Ts, WallMs};
+use osis_base::format::MAX_OWNER_DEPTH;
+use osis_base::{CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

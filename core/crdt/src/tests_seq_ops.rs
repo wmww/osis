@@ -12,7 +12,7 @@ use crate::wire::{Delta, DeltaCtx, DeltaKind};
 use crdt_model::r#gen::{Rng, random_value};
 use crdt_model::ops::{self as mops, Ty, Writer as MWriter};
 use crdt_model::state::Content;
-use osis_core::{Tid, Value};
+use osis_base::{Tid, Value};
 use proptest::prelude::*;
 
 fn node(n: u8) -> Source {

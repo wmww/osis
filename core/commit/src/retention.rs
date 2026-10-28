@@ -2,8 +2,8 @@
 
 use crate::header::{FOREVER, Header, Kind};
 use crate::Error;
-use osis_core::format::{MEMBERSHIP_KEEP_MS, AT_MOST_GRACE_MS};
-use osis_core::Ts;
+use osis_base::format::{MEMBERSHIP_KEEP_MS, AT_MOST_GRACE_MS};
+use osis_base::Ts;
 use osis_schema::core_types::is_membership_class;
 use osis_schema::{AspectDefaults, Bound, PurgeBy, Retention};
 

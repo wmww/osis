@@ -66,7 +66,7 @@ impl Client {
     }
 
     /// Waits until pushes added `n` entries; returns their blob ids sorted.
-    pub async fn pushed(&mut self, n: usize) -> Vec<osis_core::BlobId> {
+    pub async fn pushed(&mut self, n: usize) -> Vec<osis_base::BlobId> {
         let mut got = vec![];
         while got.len() < n {
             got.extend(super::added(&super::events_of(&self.next().await).0));
@@ -86,7 +86,7 @@ impl Server {
     /// manual clock at `T0`.
     pub async fn start<T: osis_transport::Transport>(transport: T, url: &str, seed: u8, backend: osis_store::MemoryBackend, peers: Vec<osis_label::Address>) -> Server {
         use osis_transport::Listener;
-        let clock = std::sync::Arc::new(osis_core::ManualClock::new(osis_core::WallMs(T0)));
+        let clock = std::sync::Arc::new(osis_base::ManualClock::new(osis_base::WallMs(T0)));
         let store = osis_server::BackendStore::open(backend, clock.clone(), osis_server::Policy::default(), &mut osis_crypto::SeededRng::from_seed([seed; 32])).unwrap();
         let secret = osis_transport::StaticSecret::from_bytes([seed; 32]);
         let listener = transport.listen(osis_transport::ListenConfig { url: url.into(), secret: secret.clone() }).await.unwrap();

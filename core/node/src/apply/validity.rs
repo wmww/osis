@@ -9,7 +9,7 @@ use crate::engine::write::required_role;
 use crate::engine::{Core, Meta, Owned, Tx};
 use crate::error::{Error, Result};
 use osis_commit::{Decoded, Form, Header, Kind};
-use osis_core::{Ak, CommitId, CreationRecord, Role, Tid, Value};
+use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Value};
 use osis_crdt::{Dot, Fragment};
 use osis_perm::{At, Dots, Edge, EdgeOp, Frontier, MembershipCommit, Point, RosterSnapshot, Tenure, Validity, WriteId};
 use osis_schema::core_types as ct;
@@ -251,11 +251,11 @@ const FRONTIERS: &[u8] = b"n/";
 /// tree blobs are listed); an unlisted blob is bad input, never waited for.
 struct Listed<'t, 'a, 'l> {
     blobs: crate::engine::blobs::TxBlobs<'t, 'a>,
-    listed: &'l BTreeSet<osis_core::BlobId>,
+    listed: &'l BTreeSet<osis_base::BlobId>,
 }
 
 impl osis_label::BlobFetch for Listed<'_, '_, '_> {
-    fn fetch(&mut self, id: &osis_core::BlobId) -> std::result::Result<Vec<u8>, osis_label::Error> {
+    fn fetch(&mut self, id: &osis_base::BlobId) -> std::result::Result<Vec<u8>, osis_label::Error> {
         if !self.listed.contains(id) {
             return Err(osis_label::Error::Verify("a linked frontier blob outside the commit's chunk list"));
         }
@@ -278,7 +278,7 @@ pub(crate) struct Linked {
 
 /// One linked frontier: from the in-memory cache, the local record, or its tree (recorded then).
 /// `Ok(None)` while a listed blob is not held. Charges its canonical bytes to `budget`.
-fn linked_frontier(tx: &mut Tx<'_>, tid: &Tid, link: &osis_core::Link, listed: &BTreeSet<osis_core::BlobId>, budget: &mut usize) -> Result<Option<Arc<Frontier>>> {
+fn linked_frontier(tx: &mut Tx<'_>, tid: &Tid, link: &osis_base::Link, listed: &BTreeSet<osis_base::BlobId>, budget: &mut usize) -> Result<Option<Arc<Frontier>>> {
     let charge = |budget: &mut usize, n: usize| -> Result<()> {
         *budget = budget.checked_sub(n).ok_or(Error::BadInput("linked frontiers above MAX_LINKED_FRONTIERS"))?;
         Ok(())
@@ -300,13 +300,13 @@ fn linked_frontier(tx: &mut Tx<'_>, tid: &Tid, link: &osis_core::Link, listed: &
                 Err(osis_label::Error::TooLarge(_)) => return Err(Error::BadInput("linked frontiers above MAX_LINKED_FRONTIERS")),
                 Err(_) => return Err(Error::BadInput("a linked frontier does not read")),
             };
-            let b = osis_core::encode(&v);
+            let b = osis_base::encode(&v);
             tx.txn.put_local(&key, &b, osis_store::Shred::No)?;
             b
         }
     };
     charge(budget, bytes.len())?;
-    let v = osis_core::decode(&bytes, &osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: bytes.len() }).map_err(|_| Error::BadInput("a linked frontier is not canonical"))?;
+    let v = osis_base::decode(&bytes, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: bytes.len() }).map_err(|_| Error::BadInput("a linked frontier is not canonical"))?;
     let f = typed(&v, "frontier").and_then(|v| ct::Frontier::from_value(&v).ok()).ok_or(Error::BadInput("a linked frontier is not a frontier"))?;
     let f = Arc::new(frontier_of(f));
     tx.core.frontiers.insert(link.hash, (f.clone(), bytes.len()));
@@ -316,7 +316,7 @@ fn linked_frontier(tx: &mut Tx<'_>, tid: &Tid, link: &osis_core::Link, listed: &
 /// Resolves the linked frontiers of a roster snapshot's `/tenures` parts (spec/permissions.md
 /// §6): each distinct link (by content hash) read once, within `MAX_LINKED_FRONTIERS`.
 pub(crate) fn linked_frontiers(tx: &mut Tx<'_>, h: &Header, parts: &EdgeParts) -> Result<Linked> {
-    linked_frontiers_capped(tx, h, parts, osis_core::format::MAX_LINKED_FRONTIERS)
+    linked_frontiers_capped(tx, h, parts, osis_base::format::MAX_LINKED_FRONTIERS)
 }
 
 pub(crate) fn linked_frontiers_capped(tx: &mut Tx<'_>, h: &Header, parts: &EdgeParts, cap: usize) -> Result<Linked> {
@@ -324,7 +324,7 @@ pub(crate) fn linked_frontiers_capped(tx: &mut Tx<'_>, h: &Header, parts: &EdgeP
     if h.kind != Kind::RosterSnapshot {
         return Ok(out);
     }
-    let mut links: BTreeMap<[u8; 32], (Tid, osis_core::Link)> = BTreeMap::new();
+    let mut links: BTreeMap<[u8; 32], (Tid, osis_base::Link)> = BTreeMap::new();
     for (ai, ts) in parts.tenures() {
         let Some(a) = h.aspects.get(ai) else { continue };
         for t in ts {
@@ -336,7 +336,7 @@ pub(crate) fn linked_frontiers_capped(tx: &mut Tx<'_>, h: &Header, parts: &EdgeP
     if links.is_empty() {
         return Ok(out);
     }
-    let listed: BTreeSet<osis_core::BlobId> = h.chunks.iter().map(|c| c.blob).collect();
+    let listed: BTreeSet<osis_base::BlobId> = h.chunks.iter().map(|c| c.blob).collect();
     let mut budget = cap;
     for (hash, (tid, l)) in links {
         if !listed.contains(&l.blob) {
@@ -616,7 +616,7 @@ pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<bool> {
 /// counts as invalid, so forgetting a record never makes a deep delta valid). O(`MAX_OWNER_DEPTH`).
 pub(crate) fn too_deep(core: &Core, t: &Tid) -> bool {
     let mut cur = *t;
-    for _ in 0..=osis_core::format::MAX_OWNER_DEPTH {
+    for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
         match core.created(&cur) {
             Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
             Some(CreationRecord::KeyActor { .. }) => return false,
@@ -723,7 +723,7 @@ pub(crate) struct Carried {
     pub snap: CommitId,
     pub src: osis_crdt::Source,
     pub node: Tid,
-    pub ts: osis_core::Ts,
+    pub ts: osis_base::Ts,
     pub ctrs: Vec<u64>,
     pub invalid: Vec<u64>,
 }
@@ -732,8 +732,8 @@ pub(crate) struct Carried {
 /// (source, author node, `ts`) with their exact counters. Every write is judged at the `ts` it
 /// carries (a stamp's, an element creation's); a record carrying none (a tombstone, a bare
 /// anchor) carries no write of its creator.
-pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> Vec<(osis_crdt::Source, Tid, osis_core::Ts, BTreeSet<u64>)> {
-    let mut groups: BTreeMap<(osis_crdt::Source, Tid, osis_core::Ts), BTreeSet<u64>> = BTreeMap::new();
+pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> Vec<(osis_crdt::Source, Tid, osis_base::Ts, BTreeSet<u64>)> {
+    let mut groups: BTreeMap<(osis_crdt::Source, Tid, osis_base::Ts), BTreeSet<u64>> = BTreeMap::new();
     for (d, ts) in f.writes() {
         let Some(ts) = ts else { continue };
         let node = match d.src.kind() {
@@ -790,7 +790,7 @@ pub(crate) fn carried_invalid(core: &Core, tid: &Tid, ak: &Ak, c: &Carried) -> V
 /// the author of a commit-form write it carries, or carrying a `ts` for a dot of a held commit
 /// other than that commit's, is bad input (spec/crdt.md §8).
 pub(crate) fn note_authors(core: &mut Core, id: &CommitId, h: &Header, parts: &[(usize, usize, osis_commit::Decoded)]) -> Result<()> {
-    let mut held: Vec<((Tid, CommitId), (Tid, osis_core::Ts))> = Vec::new();
+    let mut held: Vec<((Tid, CommitId), (Tid, osis_base::Ts))> = Vec::new();
     if h.form == Form::Commit && h.kind.has_own_writes() {
         held.extend(h.aspects.iter().map(|a| ((a.tid, *id), (h.author, h.ts))));
     }
@@ -1118,7 +1118,7 @@ fn fell_bodies(tx: &mut Tx<'_>, parts: &[(CommitId, usize)]) -> Result<Option<Fr
 /// Whether `author` lowering `member`'s edge on `target` at `ts` is a self-removal
 /// (spec/permissions.md §2): its own edge, or its authority on the target comes only through the
 /// member (admin on the member, and no admin on the target without the member's edge).
-pub(crate) fn self_removal(core: &Core, author: &Tid, target: &Tid, member: &Tid, ts: osis_core::Ts) -> bool {
+pub(crate) fn self_removal(core: &Core, author: &Tid, target: &Tid, member: &Tid, ts: osis_base::Ts) -> bool {
     if author == member {
         return true;
     }
@@ -1215,7 +1215,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use crate::local_peer::LocalPeer;
     use crate::Mutation;
-    use osis_core::{Role, Value, WallMs};
+    use osis_base::{Role, Value, WallMs};
     use osis_schema::core_types as ct;
 
     // spec/permissions.md §1, §2: the membership-class aspects are written only by admins, except
@@ -1229,7 +1229,7 @@ mod tests {
         let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
-        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        m.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
         let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
         let done = lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
@@ -1260,7 +1260,7 @@ mod tests {
         let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
-        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        m.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
         let mut m = Mutation::new();
         crate::flows::put_edge(&mut m, t, b, &ct::Edge { role: Role::Write, until: Some(WallMs(1_700_000_100_000)), invite: None, since: None }).unwrap();
@@ -1287,7 +1287,7 @@ mod tests {
         let (a, b, c) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2));
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
-        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        m.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
         let read = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
         lp.peers[0].engine.grant(&t, &b, &ct::Edge { invite: Some(Role::Read), ..read.clone() }).unwrap();
@@ -1329,7 +1329,7 @@ mod tests {
         let b = tid(&mut lp, 1);
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
-        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        m.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
         let read = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
         lp.peers[0].engine.grant(&t, &b, &ct::Edge { invite: Some(Role::Read), ..read.clone() }).unwrap();
@@ -1378,11 +1378,11 @@ mod tests {
         let (a, b, g) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
-        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        m.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
         let read = ct::Edge { role: Role::Read, until: None, invite: Some(Role::Read), since: None };
         lp.peers[0].engine.grant(&t, &b, &read).unwrap();
-        let ak = osis_core::Ak::new("/secrets").unwrap();
+        let ak = osis_base::Ak::new("/secrets").unwrap();
         let st = lp.peers[0].engine.state(&t, &ak).unwrap().unwrap();
         let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         // the admin's own box entry
@@ -1391,7 +1391,7 @@ mod tests {
         let g_key = ct::BoxKey { member: g, role: Role::Read, epoch: a_key.epoch.clone() };
         let schema = osis_schema::core_schema();
         let view = schema.view("/secrets").unwrap();
-        let ts = osis_core::Ts::make(WallMs(1_700_000_000_100), 0).unwrap();
+        let ts = osis_base::Ts::make(WallMs(1_700_000_000_100), 0).unwrap();
         let mut batch = Batch::new(&st, Writer::new(ts, Source::node(b), 1));
         batch.apply(&PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(g_key.to_value())], op: Op::Put(bx.to_value()) }, &view).unwrap();
         let (d, range) = batch.finish().unwrap();
@@ -1409,10 +1409,10 @@ mod tests {
     // every node alike. The writer refuses such a commit.
     #[test]
     fn owner_chain_deeper_than_cap_invalid_spec_permissions_1() {
-        use osis_core::format::MAX_OWNER_DEPTH;
+        use osis_base::format::MAX_OWNER_DEPTH;
         let mut lp = LocalPeer::new(3, 905, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let x = osis_core::Ak::new("/x/a").unwrap();
+        let x = osis_base::Ak::new("/x/a").unwrap();
         let mut owner = lp.peers[0].engine.tid();
         let mut shallow = owner;
         for i in 0..MAX_OWNER_DEPTH {
@@ -1454,14 +1454,14 @@ mod tests {
         let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
-        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        m.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
         let done = lp.peers[0].engine.grant(&t, &b, &ct::Edge { role: Role::Read, until: None, invite: None, since: None }).unwrap();
         let grant = *done.commits.last().unwrap();
         let mut h = (*lp.peers[0].engine.header(&grant).unwrap()).clone();
         let ai = h.aspects.iter().position(|x| x.ak.as_str() == "/secrets").unwrap();
         let core = &mut lp.peers[0].engine.core;
-        let fake = osis_core::CommitId([0xfe; 32]);
+        let fake = osis_base::CommitId([0xfe; 32]);
         super::note_required(core, &h, &fake, &[]);
         assert!(!core.grant_overreach.contains(&(fake, ai)));
         h.aspects[ai].hashes.push([0; 32]);
@@ -1475,7 +1475,7 @@ mod keys_tests {
     #![allow(clippy::unwrap_used)]
     use crate::local_peer::LocalPeer;
     use crate::Mutation;
-    use osis_core::{Role, Value, WallMs};
+    use osis_base::{Role, Value, WallMs};
     use osis_crdt::{Op, PathOp, PathSeg};
     use osis_schema::core_types as ct;
     use osis_schema::Codec;
@@ -1492,7 +1492,7 @@ mod keys_tests {
         let w = lp.peers[1].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
-        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        m.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, since: None }).unwrap();
         lp.sync_all().unwrap();
@@ -1544,7 +1544,7 @@ mod keys_tests {
         let w = lp.peers[1].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
-        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        m.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, since: None }).unwrap();
         lp.sync_all().unwrap();
@@ -1552,7 +1552,7 @@ mod keys_tests {
         let secrets = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         for ak in ["/keys", "/secrets"] {
             let mut m = Mutation::new();
-            m.set(t, &osis_core::Ak::new(ak).unwrap(), &Value::Int(1)).unwrap();
+            m.set(t, &osis_base::Ak::new(ak).unwrap(), &Value::Int(1)).unwrap();
             force(&mut lp, 1, m);
         }
         // a root reset with writer fields only
@@ -1576,14 +1576,14 @@ mod keys_tests {
         let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
-        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        m.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.peers[0].engine.grant(&t, &b, &ct::Edge { role: Role::Read, until: None, invite: Some(Role::Read), since: None }).unwrap();
         lp.sync_all().unwrap();
         let secrets = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let mut m = Mutation::new();
         crate::flows::put_edge(&mut m, t, c, &ct::Edge { role: Role::Read, until: None, invite: None, since: None }).unwrap();
-        m.set(t, &osis_core::Ak::new("/secrets").unwrap(), &Value::Int(1)).unwrap();
+        m.set(t, &osis_base::Ak::new("/secrets").unwrap(), &Value::Int(1)).unwrap();
         force(&mut lp, 1, m);
         lp.sync_all().unwrap();
         assert_eq!(lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap(), secrets);

@@ -12,7 +12,7 @@ use crate::handle::Osis;
 use crate::read::ak_of;
 use crate::watch::{Source, Subscription, lock};
 use crate::write::Committed;
-use osis_core::{Tid, Value};
+use osis_base::{Tid, Value};
 use osis_crdt::{Op, PathOp};
 use osis_schema::{AspectKey, Path, Type};
 use std::ops::Range;

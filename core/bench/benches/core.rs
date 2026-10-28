@@ -1,10 +1,10 @@
-//! osis-core benches: CBOR encode/decode (spec/data-model.md §5), chunker (spec/wire.md §6), tid
+//! osis-base benches: CBOR encode/decode (spec/data-model.md §5), chunker (spec/wire.md §6), tid
 //! derivation (spec/wire.md §3).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis_bench::bench;
-use osis_core::chunker::chunk_lengths;
-use osis_core::{ChunkParams, CreationRecord, Limits, Tid, Value, decode, encode};
+use osis_base::chunker::chunk_lengths;
+use osis_base::{ChunkParams, CreationRecord, Limits, Tid, Value, decode, encode};
 use std::collections::BTreeMap;
 
 /// A struct-like map of 64 fields with text, ints, bytes and a nested list.
@@ -29,7 +29,7 @@ fn main() {
     bench("core/cbor_decode", Some(bytes.len()), || decode(&bytes, &Limits::DEFAULT).unwrap());
 
     let mut data = vec![0u8; 4 << 20];
-    osis_core::hash::Hasher::new().update(b"osis bench chunker").finalize_xof(&mut data);
+    osis_base::hash::Hasher::new().update(b"osis bench chunker").finalize_xof(&mut data);
     bench("core/chunk_4MiB", Some(data.len()), || chunk_lengths(&data, ChunkParams::FORMAT));
 
     let rec = CreationRecord::Thing { owner: Tid::from_bytes([1; 15]), nonce: [2; 32] };

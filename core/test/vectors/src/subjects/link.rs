@@ -4,7 +4,7 @@
 use super::{case, generated_header, s32};
 use crate::file::VecFile;
 use crate::hex;
-use osis_core::{LabelId, Tid, Value, encode};
+use osis_base::{LabelId, Tid, Value, encode};
 use osis_label::{Address, Error, Peer, RecoveryCard, ShareLink};
 use osis_schema::Codec;
 
@@ -47,7 +47,7 @@ pub fn links() -> VecFile {
     let relays = with(6, Value::List(vec![Value::List(vec![Value::Bytes(vec![7; 32]), Value::List(vec![Value::Str("r".into()); 5])])]));
     let long = with(6, Value::List(vec![Value::List(vec![Value::Bytes(vec![7; 32]), Value::List(vec![Value::Str("r".repeat(257))])])]));
     for (name, b, rule) in [("nine addresses", nine, "link-cap"), ("five peers", five, "link-cap"), ("five relays", relays, "link-cap"), ("relay URL of 257 bytes", long, "link-cap")] {
-        assert!(ShareLink::from_value(&osis_core::decode(&b, &osis_core::Limits::DEFAULT).unwrap()).is_err());
+        assert!(ShareLink::from_value(&osis_base::decode(&b, &osis_base::Limits::DEFAULT).unwrap()).is_err());
         cases.push(case(name, SPEC).with("bytes", hex(&b)).with("reject", rule));
     }
     let flagged = |f: i64| {
@@ -56,11 +56,11 @@ pub fn links() -> VecFile {
         encode(&Value::List(items))
     };
     for (name, b) in [("link flags 0 (absent instead)", flagged(0)), ("unknown link flag", flagged(2))] {
-        assert!(ShareLink::from_value(&osis_core::decode(&b, &osis_core::Limits::DEFAULT).unwrap()).is_err());
+        assert!(ShareLink::from_value(&osis_base::decode(&b, &osis_base::Limits::DEFAULT).unwrap()).is_err());
         cases.push(case(name, SPEC).with("bytes", hex(&b)).with("reject", "link-flags"));
     }
     let f2 = with(0, Value::Int(2));
-    assert_eq!(ShareLink::from_value(&osis_core::decode(&f2, &osis_core::Limits::DEFAULT).unwrap()), Err(Error::UnknownFormat(2)));
+    assert_eq!(ShareLink::from_value(&osis_base::decode(&f2, &osis_base::Limits::DEFAULT).unwrap()), Err(Error::UnknownFormat(2)));
     cases.push(case("link format 2", SPEC).with("bytes", hex(&f2)).with("parked", "format"));
     VecFile { header: generated_header("link", SPEC), cases }
 }

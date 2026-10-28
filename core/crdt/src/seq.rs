@@ -12,7 +12,7 @@ use crate::fragment::{Encoding, Fragment, Meta, Register};
 use crate::seq_lin::{Lin, Partial, Plan};
 use crate::seq_span::{Elems, Recs, chain_cut, coalesce_in, cut_chains, elems_eq, last_of, nth, piece, split_at};
 use crate::stamp::{Dot, Source, SourceKind, Stamp, max_opt};
-use osis_core::Value;
+use osis_base::Value;
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 

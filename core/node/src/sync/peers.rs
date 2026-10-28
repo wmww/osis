@@ -8,7 +8,7 @@
 use super::{Action, Event, SyncEngine};
 use crate::error::Result;
 use crate::Mutation;
-use osis_core::{LabelId, Tid};
+use osis_base::{LabelId, Tid};
 use osis_crypto::{Secret32, SigningSecret, VerifyingKey};
 use osis_label::Address;
 use osis_schema::core_types::{self as ct, Reach};
@@ -611,7 +611,7 @@ impl SyncEngine {
 
     /// This node's chain certificates and node card for `g` (`Engine::certificates`), without
     /// its `/reach` commit where `publishes_reach` says no (spec/permissions.md §4).
-    pub(crate) fn card_certificates(&mut self, g: &Tid) -> BTreeMap<osis_core::CommitId, std::collections::BTreeSet<(usize, usize)>> {
+    pub(crate) fn card_certificates(&mut self, g: &Tid) -> BTreeMap<osis_base::CommitId, std::collections::BTreeSet<(usize, usize)>> {
         let mut certs = self.engine.certificates(g);
         if !self.publishes_reach(g) {
             let me = self.engine.tid();

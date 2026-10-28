@@ -5,8 +5,8 @@
 
 use crate::net;
 use net::*;
-use osis_core::format::INBOX_LIFETIME_MS;
-use osis_core::{Ak, BlobId, LabelId, Role, Tid, WallMs};
+use osis_base::format::INBOX_LIFETIME_MS;
+use osis_base::{Ak, BlobId, LabelId, Role, Tid, WallMs};
 use osis_node::flows::{Demotion, PreSync};
 use osis_node::sync::EntryKind;
 use osis_schema::AspectKey;
@@ -19,7 +19,7 @@ revision 1;
 aspect /k/pairs: map<string, string> [by: writer, keep_at_most: 1h];
 "#,
 );
-const KMAP: osis_schema::Aspect<osis_core::Value> = osis_schema::Aspect::new("/k/pairs", &KEEP);
+const KMAP: osis_schema::Aspect<osis_base::Value> = osis_schema::Aspect::new("/k/pairs", &KEEP);
 
 /// Node `a` (dialable: `/reach` published) with group `g` labeled at no server, and `b` a
 /// writer of it.
@@ -122,9 +122,9 @@ fn keep_at_most_body_carried_on_local_label_spec_sync_7() {
     use osis_crdt::{Op, PathOp, PathSeg};
     let (mut net, a, _, g, l) = setup();
     let t = net.item(a, g, g, "x");
-    let k = |x: &str| osis_core::Value::Str(x.into());
+    let k = |x: &str| osis_base::Value::Str(x.into());
     let mut m = osis_node::Mutation::new();
-    m.set(t, &KMAP, &osis_core::Value::Map([(k("k1"), k("v1")), (k("k2"), k("v2"))].into_iter().collect())).unwrap();
+    m.set(t, &KMAP, &osis_base::Value::Map([(k("k1"), k("v1")), (k("k2"), k("v2"))].into_iter().collect())).unwrap();
     let c1 = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let mut m = osis_node::Mutation::new();
@@ -149,7 +149,7 @@ fn keep_at_most_body_carried_on_local_label_spec_sync_7() {
         net.advance(1_000_000);
     }
     let v = net.engine(a).get(&t, &kmap).unwrap().unwrap();
-    assert_eq!(v, osis_core::Value::Map([(k("k1"), k("v1b")), (k("k2"), k("v2"))].into_iter().collect()), "k2 is still read");
+    assert_eq!(v, osis_base::Value::Map([(k("k1"), k("v1b")), (k("k2"), k("v2"))].into_iter().collect()), "k2 is still read");
     assert!(!net.engine(a).holds_body(&c1, &t, &kmap), "dropped at the grace bound");
     assert!(snap(&mut net), "k2 is carried under the label by a snapshot");
 }
@@ -263,9 +263,9 @@ fn local_run(full: bool) -> (Vec<Vec<String>>, Vec<(u64, u64)>) {
     let u = net.item(b, g, g, "y");
     step(&mut net);
     // keep at most: a map body partly replaced
-    let k = |x: &str| osis_core::Value::Str(x.into());
+    let k = |x: &str| osis_base::Value::Str(x.into());
     let mut m = osis_node::Mutation::new();
-    m.set(t, &KMAP, &osis_core::Value::Map([(k("k1"), k("v1")), (k("k2"), k("v2"))].into_iter().collect())).unwrap();
+    m.set(t, &KMAP, &osis_base::Value::Map([(k("k1"), k("v1")), (k("k2"), k("v2"))].into_iter().collect())).unwrap();
     net.engine(a).commit(m).unwrap();
     step(&mut net);
     let mut m = osis_node::Mutation::new();

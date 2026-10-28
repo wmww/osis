@@ -7,7 +7,7 @@
 use crate::common;
 use common::*;
 use osis_commit::PurgeItem;
-use osis_core::{Clock, ManualClock, Tid, Value};
+use osis_base::{Clock, ManualClock, Tid, Value};
 use osis_crypto::SeededRng;
 use osis_node::{Config, Engine, Mutation};
 use osis_store::{Fault, Faults, MemoryBackend, MemoryRoot};
@@ -35,14 +35,14 @@ impl Dev {
     }
 }
 
-fn set(e: &mut Engine, t: Tid, v: &str) -> osis_core::CommitId {
+fn set(e: &mut Engine, t: Tid, v: &str) -> osis_base::CommitId {
     let mut m = Mutation::new();
     m.set(t, &REG, &s(v)).unwrap();
     e.commit(m).unwrap().unwrap()
 }
 
 /// The state before the transaction under test: a thing with a secret write to purge.
-fn setup(dev: &Dev) -> (Engine, Tid, osis_core::CommitId) {
+fn setup(dev: &Dev) -> (Engine, Tid, osis_base::CommitId) {
     let mut e = dev.create();
     let mut m = Mutation::new();
     let me = e.tid();
@@ -55,7 +55,7 @@ fn setup(dev: &Dev) -> (Engine, Tid, osis_core::CommitId) {
     (e, t, secret)
 }
 
-fn purge(t: Tid, secret: osis_core::CommitId) -> Mutation {
+fn purge(t: Tid, secret: osis_base::CommitId) -> Mutation {
     let mut m = Mutation::new();
     m.set(t, &REG, &s("public")).unwrap();
     m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("/t/reg") });

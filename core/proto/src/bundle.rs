@@ -5,7 +5,7 @@
 use crate::Error;
 use crate::client::ClientEvent;
 use crate::msg::Event;
-use osis_core::BlobId;
+use osis_base::BlobId;
 use osis_label::{BundleEvent, BundleReader, Importer};
 use std::collections::HashMap;
 use std::io::Read;

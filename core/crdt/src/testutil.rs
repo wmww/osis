@@ -7,7 +7,7 @@ use crate::stamp::{Dot, Source, Stamp};
 use crdt_model::r#gen::{Rng, random_op};
 use crdt_model::ops::{Ty, Writer as MWriter};
 use crdt_model::state as m;
-use osis_core::{CommitId, Float, Tid, Ts, Value};
+use osis_base::{CommitId, Float, Tid, Ts, Value};
 use std::collections::BTreeMap;
 
 pub fn value(v: &crdt_model::value::Value) -> Value {

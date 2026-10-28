@@ -3,8 +3,8 @@
 
 use crate::Error;
 use crate::cbor::{ak, as_ak, as_bytes, as_idx, as_list, as_opt, as_tid, as_uint, bytes, opt, tid, uidx, uint};
-use osis_core::format::{CHUNK_THRESHOLD, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH};
-use osis_core::{Ak, BlobId, CommitId, Limits, Link, SchemaId, Tid, Ts, Value};
+use osis_base::format::{CHUNK_THRESHOLD, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH};
+use osis_base::{Ak, BlobId, CommitId, Limits, Link, SchemaId, Tid, Ts, Value};
 use osis_crdt::DeltaKind;
 use osis_crypto::{Domain, Signature, SigningSecret, VerifyingKey};
 use osis_schema::{Bound, PurgeBy, Retention};
@@ -268,7 +268,7 @@ fn origin_value(o: &Origin) -> Value {
 
 /// Canonical bytes of `[tid, ak]`, the aspect sort key.
 pub(crate) fn aspect_key(t: &Tid, a: &Ak) -> Vec<u8> {
-    osis_core::encode(&Value::List(vec![tid(t), ak(a)]))
+    osis_base::encode(&Value::List(vec![tid(t), ak(a)]))
 }
 
 impl Header {
@@ -316,12 +316,12 @@ impl Header {
 
     /// Canonical bytes of the header.
     pub fn encode(&self) -> Vec<u8> {
-        osis_core::encode(&self.to_value())
+        osis_base::encode(&self.to_value())
     }
 
     /// Commit ID = BLAKE3(canonical header bytes).
     pub fn id(&self) -> CommitId {
-        CommitId(osis_core::hash::hash(&self.encode()))
+        CommitId(osis_base::hash::hash(&self.encode()))
     }
 
     /// The author's signature over the commit ID.
@@ -462,7 +462,7 @@ impl Header {
                 self.keys = items(inner, as_key_unchecked)?;
                 return Ok(());
             }
-        } else if osis_core::encode(inner).len() > CHUNK_THRESHOLD {
+        } else if osis_base::encode(inner).len() > CHUNK_THRESHOLD {
             return Err(Error::Malformed("inline list above CHUNK_THRESHOLD"));
         }
         self.set_list(f, inner)
@@ -536,7 +536,7 @@ impl Header {
     /// Decodes canonical header bytes (structure only: [`Header::validate`] checks the rules
     /// once linked lists are resolved).
     pub fn decode(b: &[u8]) -> Result<Header, Error> {
-        let v = osis_core::decode(b, &LIMITS)?;
+        let v = osis_base::decode(b, &LIMITS)?;
         let h = Header::from_value(&v)?;
         if h.encode() != b {
             return Err(Error::Malformed("not canonical"));

@@ -8,8 +8,8 @@ use crate::error::{Error, Result};
 use crate::handle::{Fresh, Osis, PERSON, fresh_engine, save_servers};
 use crate::share::{RecoveryCard, ServerAddr, SyncState};
 use crate::Config;
-use osis_core::cbor::{Limits, decode, encode};
-use osis_core::{BlobId, CommitId, Tid, Value, base64url};
+use osis_base::cbor::{Limits, decode, encode};
+use osis_base::{BlobId, CommitId, Tid, Value, base64url};
 use osis_node::flows::PreSync;
 use osis_node::local_peer::Package;
 

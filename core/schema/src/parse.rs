@@ -24,7 +24,7 @@ use crate::error::ParseError;
 use crate::lex::{Tok, Token, lex};
 use crate::schema::{AspectDef, Bound, Flag, PurgeBy, Retention, Schema, SignalDef, TypeDef};
 use crate::types::{Case, EnumType, Field, StructType, Type};
-use osis_core::{SchemaId, Tid, Value};
+use osis_base::{SchemaId, Tid, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Deepest nesting of types and literals in a source file.

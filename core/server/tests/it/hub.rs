@@ -5,7 +5,7 @@
 use crate::common;
 
 use common::*;
-use osis_core::{BlobId, WallMs};
+use osis_base::{BlobId, WallMs};
 use osis_crypto::SigningSecret;
 use osis_proto::msg::{DeleteItem, PublishAuth, PublishKey, Wrap};
 use osis_proto::*;
@@ -118,7 +118,7 @@ fn deletes_and_tombstones() {
     // deleting again is fine; the identical blob is refused while tombstoned, accepted after
     assert_eq!(statuses(&w.run(a, Command::Delete { label: l.id, items: vec![plain_by(&k.delete)] })), vec![Code::OK]);
     assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(plain.clone())] })), vec![Code::TOMBSTONED]);
-    w.advance(osis_core::format::TOMBSTONE_LIFETIME_MS);
+    w.advance(osis_base::format::TOMBSTONE_LIFETIME_MS);
     assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(plain)] })), vec![Code::OK]);
     let ids = osis_proto::LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap();
     assert_eq!(ids, vec![osis_label::blob_id(&blob(12))]);
@@ -198,8 +198,8 @@ fn subscriptions_and_signals() {
     for x in [a, b, c] {
         w.open(x, &l);
     }
-    let ev = w.run(b, Command::Subscribe { labels: vec![l.id, osis_core::LabelId([0xee; 16])] });
-    assert_eq!(ev, vec![ClientEvent::Subscribed { labels: vec![l.id, osis_core::LabelId([0xee; 16])], codes: vec![Code::OK, Code::NOT_OPENED] }]);
+    let ev = w.run(b, Command::Subscribe { labels: vec![l.id, osis_base::LabelId([0xee; 16])] });
+    assert_eq!(ev, vec![ClientEvent::Subscribed { labels: vec![l.id, osis_base::LabelId([0xee; 16])], codes: vec![Code::OK, Code::NOT_OPENED] }]);
     w.run(a, Command::Subscribe { labels: vec![l.id] });
     w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(1))] });
     let (evs, cursor) = events_of(&w.take(b));

@@ -1,7 +1,7 @@
 //! Paths into values (notes/api.md Reads) and typed-read errors that carry them
 //! (spec/versioning.md §5).
 
-use osis_core::{Classified, ErrorClass, Tid, Value};
+use osis_base::{Classified, ErrorClass, Tid, Value};
 use std::fmt;
 
 /// One step into a value.

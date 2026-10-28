@@ -15,7 +15,7 @@ doctest = false
 workspace = true
 
 [dependencies]
-osis-core.workspace = true
+osis-base.workspace = true
 
 [dev-dependencies]
 membership-model.workspace = true

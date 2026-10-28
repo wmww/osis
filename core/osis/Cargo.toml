@@ -25,7 +25,7 @@ lan = ["iroh", "osis-node/lan"]
 
 [dependencies]
 osis-node.workspace = true
-osis-core.workspace = true
+osis-base.workspace = true
 osis-crdt.workspace = true
 osis-schema.workspace = true
 osis-commit.workspace = true

@@ -4,7 +4,7 @@
 use crate::engine::Engine;
 use crate::error::{Error, Result};
 use osis_commit::{CommitBlob, DeleteKey, Kind};
-use osis_core::{BlobId, CommitId, LabelId, Role, Tid, WallMs};
+use osis_base::{BlobId, CommitId, LabelId, Role, Tid, WallMs};
 use osis_crypto::{CryptoRngCore, DeleteSecret, Epoch, LabelRole, Secret32, SigningSecret, deposit_key, label_role_key};
 use osis_keys::{ActorEpochs, WrapEpoch};
 use osis_label::Step;
@@ -337,7 +337,7 @@ impl Engine {
         if e.role(r).is_established(ep) {
             return true;
         }
-        let Some(osis_core::CreationRecord::Thing { owner, .. }) = self.core.created(g) else { return false };
+        let Some(osis_base::CreationRecord::Thing { owner, .. }) = self.core.created(g) else { return false };
         self.epochs(owner).is_some_and(|o| ActorEpochs::derived(&o, g).role(r).is_established(ep))
     }
 
@@ -396,7 +396,7 @@ fn published_by_actor(core: &crate::engine::Core, labeled: &std::collections::BT
     for h in labeled {
         let mut cur = *h;
         for _ in 0..64 {
-            let Some(osis_core::CreationRecord::Thing { owner, .. }) = core.created(&cur) else { break };
+            let Some(osis_base::CreationRecord::Thing { owner, .. }) = core.created(&cur) else { break };
             cur = *owner;
             if labeled.contains(&cur) && core.own_keys.contains(&cur) {
                 if cur != *h {
@@ -426,12 +426,12 @@ mod tests {
         let mut m = Mutation::new();
         let g = e.new_thing(&mut m, me);
         e.commit(m).unwrap();
-        let ak = osis_core::Ak::new("/x/a").unwrap();
+        let ak = osis_base::Ak::new("/x/a").unwrap();
         let mut group = ct::Group::default();
         let add = |e: &mut Engine, group: &mut ct::Group| {
             let mut m = Mutation::new();
             let t = e.new_thing(&mut m, g);
-            m.set(t, &ak, &osis_core::Value::Int(1)).unwrap();
+            m.set(t, &ak, &osis_base::Value::Int(1)).unwrap();
             group.items.insert(t);
             m.set(g, &ct::GROUP, group).unwrap();
             e.commit(m).unwrap().unwrap()

@@ -4,8 +4,8 @@
 
 use crate::net;
 use net::*;
-use osis_core::format::INBOX_LIFETIME_MS;
-use osis_core::{LabelId, Role, Tid};
+use osis_base::format::INBOX_LIFETIME_MS;
+use osis_base::{LabelId, Role, Tid};
 use osis_node::Mutation;
 use osis_node::sync::EntryKind;
 use osis_schema::core_types as ct;
@@ -71,8 +71,8 @@ fn grantee_copy_placed_spec_sync_3() {
     }
     assert_eq!(net.read(b, t), Some(s("for bob")));
     let ids = net.server_ids(sv, &home);
-    let copies: Vec<(osis_core::BlobId, EntryKind)> = net.sync(b).entries(&home).into_iter().filter(|(id, k)| ids.contains(id) && matches!(k, EntryKind::Commit { .. })).collect();
-    let grant: Vec<osis_core::CommitId> = net.engine(b).commit_ids().into_iter().filter(|c| net.engine(b).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == g && x.ak.as_str() == "/members"))).collect();
+    let copies: Vec<(osis_base::BlobId, EntryKind)> = net.sync(b).entries(&home).into_iter().filter(|(id, k)| ids.contains(id) && matches!(k, EntryKind::Commit { .. })).collect();
+    let grant: Vec<osis_base::CommitId> = net.engine(b).commit_ids().into_iter().filter(|c| net.engine(b).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == g && x.ak.as_str() == "/members"))).collect();
     assert!(copies.iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if grant.contains(commit))), "the grant's copy is under Bob's home label");
     let label = copies.iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if net.engine(b).header(commit).is_some_and(|h| h.aspects.iter().any(|x| x.tid == g && x.ak.as_str() == "/label"))));
     assert!(label, "the group's /label commit is copied too");
@@ -183,16 +183,16 @@ fn inbox_copy_names_only_touched_things_spec_sync_3() {
     // Alice pairs her item commit with `things = [p]`, sealed to Bob, deposited in his inbox
     let c = net.engine(a).commit_ids().into_iter().find(|c| net.engine(a).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "/created"))).unwrap();
     let bytes = net.engine(a).commit_bytes(&c).unwrap().unwrap();
-    let commit = osis_core::decode(&bytes, &osis_core::Limits { max_depth: 64, max_bytes: bytes.len() }).unwrap();
+    let commit = osis_base::decode(&bytes, &osis_base::Limits { max_depth: 64, max_bytes: bytes.len() }).unwrap();
     let keys = net.engine(a).get_typed(&bob, &ct::KEYS).unwrap().unwrap();
     let ct::KemKey::X25519MlKem768(kb) = &keys.read.unwrap().kem_key;
     let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
     let payload = osis_label::InboxPayload { commit, things: vec![osis_label::InboxThing { tid: p, label: home, servers: vec![net.address(sv)], delete_keys: None }] };
-    let now = osis_core::WallMs(net.now());
+    let now = osis_base::WallMs(net.now());
     let blob = osis_label::seal_inbox_blob(&bob, &kem, &payload, now, &mut osis_crypto::SeededRng::from_u64(5)).unwrap();
     let id = osis_label::blob_id(&blob);
     net.set_online(b, false);
-    let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(now.0 + osis_core::format::INBOX_LIFETIME_MS) };
+    let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(now.0 + osis_base::format::INBOX_LIFETIME_MS) };
     osis_proto::LabelStore::put(net.servers[sv].hub.store_mut(), &home, put).unwrap();
     net.set_online(b, true);
     for _ in 0..3 {

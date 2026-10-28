@@ -6,7 +6,7 @@
 
 use crate::common;
 use common::*;
-use osis_core::{Clock, ManualClock};
+use osis_base::{Clock, ManualClock};
 use osis_crypto::{RngCore, SeededRng};
 use osis_node::local_peer::LocalPeer;
 use osis_node::{Config, Engine};

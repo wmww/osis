@@ -11,7 +11,7 @@ use super::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use crate::events::Origin;
 use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, PurgeItem, writer_ctx};
-use osis_core::{Ak, CommitId, CreationRecord, Role, SchemaId, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, CommitId, CreationRecord, Role, SchemaId, Tid, Ts, Value, WallMs};
 use osis_crdt::{AnyView, Batch, CounterRange, Delta, Fragment, Op, PathOp, Source, View, Writer, encode_delta};
 use osis_label::{BlobWriter, Framing};
 use osis_perm::At;
@@ -49,7 +49,7 @@ pub struct Mutation {
     /// of an edge already removed (membership flows).
     pub(crate) dead_resets: BTreeMap<(Tid, Ak), Vec<osis_crdt::Dot>>,
     /// Chunk and node blobs never reused, written afresh (`Engine::relink`).
-    pub(crate) fresh: std::collections::BTreeSet<osis_core::BlobId>,
+    pub(crate) fresh: std::collections::BTreeSet<osis_base::BlobId>,
 }
 
 impl Default for Mutation {
@@ -211,7 +211,7 @@ pub(crate) fn check_authority(core: &Core, node: Tid, creates: &[CreationRecord]
 /// within `MAX_OWNER_DEPTH` owner links (spec/permissions.md §1: a write deeper is invalid).
 fn within_depth(core: &Core, creates: &[CreationRecord], tid: &Tid) -> bool {
     let mut cur = *tid;
-    for _ in 0..=osis_core::format::MAX_OWNER_DEPTH {
+    for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
         match creates.iter().find(|r| r.tid() == cur).or_else(|| core.created(&cur)) {
             Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
             Some(CreationRecord::KeyActor { .. }) => return true,
@@ -242,9 +242,9 @@ pub(crate) struct Resolved {
     pub retention: Option<Retention>,
     pub expires: Option<u64>,
     /// A snapshot delta's frontiers and absorbed commits (spec/crdt.md §8).
-    pub frontiers: Option<(osis_crdt::Frontiers, std::collections::BTreeMap<osis_core::CommitId, Tid>)>,
+    pub frontiers: Option<(osis_crdt::Frontiers, std::collections::BTreeMap<osis_base::CommitId, Tid>)>,
     /// Chunk blobs of large values the delta introduces.
-    pub chunks: Vec<osis_core::BlobId>,
+    pub chunks: Vec<osis_base::BlobId>,
     /// Written as one delta per root map entry or set element (a roster snapshot).
     pub split: bool,
 }
@@ -278,7 +278,7 @@ pub(crate) fn draw_blind(rng: &mut dyn osis_crypto::CryptoRngCore) -> [u8; 16] {
 /// §6; spec/crypto.md §7).
 /// `published`: [`super::secrets::published_keys`] of the commit's things.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_core::Role), osis_crypto::VerifyingKey>, tid: &Tid, ak: &Ak, schema: Option<&Schema>, r: Option<Retention>, e: Option<u64>) -> Result<(Retention, Option<u64>, Framing)> {
+pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_base::Role), osis_crypto::VerifyingKey>, tid: &Tid, ak: &Ak, schema: Option<&Schema>, r: Option<Retention>, e: Option<u64>) -> Result<(Retention, Option<u64>, Framing)> {
     let defaults = schema.and_then(|s| s.defaults(ak.as_str()));
     let retention = match plan.kind {
         Kind::ContentSnapshot | Kind::MembershipSnapshot => osis_commit::retention::snapshot_retention(ak.as_str(), defaults.as_ref()),
@@ -300,13 +300,13 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(
 fn own_source(form: Form, node: Tid) -> Source {
     match form {
         Form::Node => Source::node(node),
-        Form::Commit => Source::commit(osis_core::CommitId([0; 32])),
+        Form::Commit => Source::commit(osis_base::CommitId([0; 32])),
     }
 }
 
 /// The `Authors` a snapshot of `tid` carrying `f` names (spec/crdt.md §8): per commit-form
 /// source its recorded author and `ts`; a source of unknown author refuses the snapshot.
-fn snapshot_authors(core: &Core, tid: &Tid, f: &osis_crdt::Fragment) -> Result<BTreeMap<CommitId, (Tid, osis_core::Ts)>> {
+fn snapshot_authors(core: &Core, tid: &Tid, f: &osis_crdt::Fragment) -> Result<BTreeMap<CommitId, (Tid, osis_base::Ts)>> {
     let mut out = BTreeMap::new();
     for (d, _) in f.writes() {
         if let osis_crdt::SourceKind::Commit(c) = d.src.kind() {

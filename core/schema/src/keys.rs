@@ -8,7 +8,7 @@ use crate::schema::{AspectDefaults, Schema};
 use crate::statics::StaticSchema;
 use crate::typed::{typed_read, validate_write};
 use crate::types::Type;
-use osis_core::{Ak, SchemaId, Value};
+use osis_base::{Ak, SchemaId, Value};
 use std::marker::PhantomData;
 
 pub trait AspectKey {

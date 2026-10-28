@@ -5,7 +5,7 @@
 
 use crate::msg::*;
 use crate::rbsr::Bound;
-use osis_core::{BlobId, LabelId, WallMs};
+use osis_base::{BlobId, LabelId, WallMs};
 use osis_crypto::{Epoch, LabelRole, SeededRng, Secret32, SigningSecret, X25519Secret, label_role_key};
 use osis_label::{Parent, Prefix, Reader, StepKeys, genesis_label, register, sign_stamp};
 use osis_label::step::EntryTo;

@@ -2,7 +2,7 @@
 //! serve` run a blind node on the redb file backend over QUIC until Ctrl-C (SIGINT).
 
 use crate::{BackendStore, Config, Control, Endpoint, Hub, Log, driver};
-use osis_core::SystemClock;
+use osis_base::SystemClock;
 use osis_crypto::{OsRng, RngCore};
 use osis_store::RedbBackend;
 use osis_transport::{ListenConfig, Listener, Quic, StaticSecret, Transport};

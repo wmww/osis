@@ -15,7 +15,7 @@ use crate::held::{HeldSet, MemoryHeldSet};
 use crate::timeline::{At, Timeline};
 use crate::types::{Edge, Point, RosterSnapshot, WriteId};
 use crate::walk;
-use osis_core::{CommitId, Role, Tid};
+use osis_base::{CommitId, Role, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

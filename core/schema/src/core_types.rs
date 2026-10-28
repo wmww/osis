@@ -7,7 +7,7 @@ use crate::codec_struct;
 use crate::keys::Aspect;
 use crate::path::{Path, PathError, PathErrorKind};
 use crate::statics::CORE;
-use osis_core::{CommitId, CreationRecord, LabelId, Role, SchemaId, Tid, Ts, Value, WallMs};
+use osis_base::{CommitId, CreationRecord, LabelId, Role, SchemaId, Tid, Ts, Value, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Membership-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.

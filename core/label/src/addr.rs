@@ -1,9 +1,9 @@
 //! Server addresses (spec/sync.md §10, spec/data-model.md §9 `address`): strict value decoding,
-//! the text form (key in osis-core's unpadded base64url).
+//! the text form (key in osis-base's unpadded base64url).
 
 use crate::Error;
-use osis_core::{Value, base64url};
-use osis_core::format::MAX_URL_BYTES;
+use osis_base::{Value, base64url};
+use osis_base::format::MAX_URL_BYTES;
 use osis_schema::Codec;
 pub use osis_schema::core_types::Address;
 

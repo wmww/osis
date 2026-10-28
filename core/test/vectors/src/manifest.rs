@@ -51,7 +51,7 @@ pub fn load() -> Result<Vec<Entry>, String> {
 
 pub fn file_hash(path: &str) -> Result<String, String> {
     let bytes = std::fs::read(root().join(path)).map_err(|e| format!("{path}: {e}"))?;
-    Ok(hex(&osis_core::hash::hash(&bytes)))
+    Ok(hex(&osis_base::hash::hash(&bytes)))
 }
 
 fn vec_files(dir: &Path, base: &Path, out: &mut BTreeSet<String>) {

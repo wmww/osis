@@ -9,7 +9,7 @@ use crdt_model::r#gen::Rng;
 use crdt_model::ops::Ty;
 use crdt_model::stamp::Source as MSource;
 use crdt_model::wire::{Ctx, encode_delta as m_encode_delta};
-use osis_core::{Classified, ErrorClass, Tid, Value};
+use osis_base::{Classified, ErrorClass, Tid, Value};
 use proptest::prelude::*;
 use std::collections::BTreeMap;
 
@@ -27,7 +27,7 @@ fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
     let mut r = Rng(seed | 1);
     // commit-form sources get an author (§8 `Authors`)
     let mau: crdt_model::wire::Authors = sources.iter().filter_map(|s| if let MSource::Commit(c) = s { Some((*c, ([1; 15], 5u64 << 16))) } else { None }).collect();
-    let authors: BTreeMap<osis_core::CommitId, (osis_core::Tid, osis_core::Ts)> = mau.iter().map(|(c, (t, ts))| (osis_core::CommitId(*c), (osis_core::Tid::from_bytes(*t), osis_core::Ts::from_u64(*ts).unwrap()))).collect();
+    let authors: BTreeMap<osis_base::CommitId, (osis_base::Tid, osis_base::Ts)> = mau.iter().map(|(c, (t, ts))| (osis_base::CommitId(*c), (osis_base::Tid::from_bytes(*t), osis_base::Ts::from_u64(*ts).unwrap()))).collect();
     let commits = history_with(&mut r, types, sources, 5);
     let mut state = None;
     for c in &commits {
@@ -126,7 +126,7 @@ pub(crate) fn l(v: Vec<Value>) -> Value {
     Value::List(v)
 }
 pub(crate) fn delta(sources: Vec<Value>, commits: Vec<Value>, f: Value) -> Vec<u8> {
-    osis_core::encode(&l(vec![Value::Bytes(vec![0; 16]), l(sources), l(commits), f]))
+    osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(sources), l(commits), f]))
 }
 fn set_with(elems: Vec<Value>) -> Value {
     l(vec![i(6), l(vec![]), l(vec![]), l(elems)])
@@ -197,7 +197,7 @@ fn rejects_non_canonical_forms_spec_3_3() {
     let own = Value::Bytes(tid(1).as_bytes().to_vec());
     rejects(&delta(vec![own], vec![], set_with(vec![elem(i(3), 1)])), &wcx(), ErrorClass::BadInput);
     // a bad nonce
-    let b = osis_core::encode(&l(vec![Value::Bytes(vec![0; 15]), l(vec![]), l(vec![]), set_with(vec![])]));
+    let b = osis_base::encode(&l(vec![Value::Bytes(vec![0; 15]), l(vec![]), l(vec![]), set_with(vec![])]));
     rejects(&b, &wcx(), ErrorClass::BadInput);
 }
 
@@ -267,7 +267,7 @@ fn snapshot_frontiers_spec_8() {
     // own (Src 0) first; the frontier-only source last in Sources
     let back = decode_snapshot(&b, &scx, &mut Interner::new(), None).unwrap();
     assert_eq!(back, s);
-    let top = osis_core::decode(&b, &osis_core::Limits::DEFAULT).unwrap();
+    let top = osis_base::decode(&b, &osis_base::Limits::DEFAULT).unwrap();
     let Value::List(a) = top else { panic!() };
     assert_eq!(a[4], l(vec![l(vec![i(0), i(3)]), l(vec![i(1), i(7)])]));
     // a commit-form writer (own a commit) cannot be named by a frontier; a zero counter is refused
@@ -305,7 +305,7 @@ fn set_element_is_a_register_spec_3_2() {
     let e = decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap_err();
     assert_eq!(e.class(), ErrorClass::BadInput);
     // a link at a struct, list, set or counter position is refused
-    let link = Value::Link(osis_core::Link { hash: [1; 32], blob: osis_core::BlobId([2; 32]), suite: 1, key: [0; 32] });
+    let link = Value::Link(osis_base::Link { hash: [1; 32], blob: osis_base::BlobId([2; 32]), suite: 1, key: [0; 32] });
     for ty in [pair, Ty::List(Box::new(Ty::Register)), Ty::Set(Box::new(Ty::Register)), Ty::Counter] {
         assert!(create(&mut writer(&mw), &TyView(ty), &link).is_err());
     }

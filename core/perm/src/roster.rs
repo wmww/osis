@@ -13,7 +13,7 @@
 use crate::graph::Class;
 use crate::timeline::{At, Timeline};
 use crate::types::{Edge, Point, Tenure};
-use osis_core::{Role, Tid, Ts};
+use osis_base::{Role, Tid, Ts};
 use std::collections::BTreeMap;
 
 /// The `/members` and `/tenures` state a roster snapshot of a thing carries.

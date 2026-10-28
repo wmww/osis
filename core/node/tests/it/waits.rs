@@ -5,7 +5,7 @@
 use crate::common;
 use common::*;
 use osis_commit::CommitBlob;
-use osis_core::{Tid, Value, WallMs};
+use osis_base::{Tid, Value, WallMs};
 use osis_node::{Ingested, Mutation, Reason};
 
 fn only(bytes: &[u8], h: &osis_commit::Header, keep: impl Fn(Tid, &str) -> bool) -> Vec<u8> {

@@ -2,7 +2,7 @@
 //! (spec/sync.md §2, §5). osis-label derives and uses the keys.
 
 use crate::epoch::{ActorEpochs, RoleEpochs, is_newer};
-use osis_core::Role;
+use osis_base::Role;
 use osis_crypto::{Epoch, LabelRole, Secret32, VerifyingKey, label_role_key};
 
 /// The wrap epoch for an upload.

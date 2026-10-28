@@ -1,8 +1,8 @@
 //! Structure encoding helpers (spec/wire.md §1).
 
 use crate::Error;
-use osis_core::format::TID_LEN;
-use osis_core::{Ak, Tid, Value};
+use osis_base::format::TID_LEN;
+use osis_base::{Ak, Tid, Value};
 
 /// A uint in a structure. Every uint we write is below 2^63 (times, counters, indices).
 pub(crate) fn uint(n: u64) -> Value {

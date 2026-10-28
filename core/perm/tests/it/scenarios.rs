@@ -5,8 +5,8 @@
 use crate::common;
 
 use common::*;
-use osis_core::Role::{Admin, Read, Write};
-use osis_core::{Role, Tid};
+use osis_base::Role::{Admin, Read, Write};
+use osis_base::{Role, Tid};
 use osis_perm::{At, Class, Edge, Timeline, WriteId};
 
 fn eval(w: &World) -> Timeline {

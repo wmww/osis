@@ -2,7 +2,7 @@
 //! Scale checks at the engine (tier 2, release; numbers in notes/testing.md, "Scale checks"):
 //! `cargo test --release --workspace --test it scale:: -- --ignored --nocapture --test-threads 1`.
 
-use osis_core::{Ak, BlobId, Clock, ManualClock, Role, Tid, Value, WallMs};
+use osis_base::{Ak, BlobId, Clock, ManualClock, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::{Epoch, KeyActorKeys, Secret32, SeededRng};
 use osis_keys::{MemberKeys, Recipient, rotate};
@@ -571,7 +571,7 @@ fn demotion_heavy_open() {
     let mut m = Mutation::new();
     let docs: Vec<Tid> = (0..20).map(|_| lp.peers[0].engine.new_thing(&mut m, org)).collect();
     lp.peers[0].engine.commit(m).unwrap();
-    let set = |e: &mut Engine, t: Tid, member: Tid, role: Option<Role>| -> Option<osis_core::CommitId> {
+    let set = |e: &mut Engine, t: Tid, member: Tid, role: Option<Role>| -> Option<osis_base::CommitId> {
         // an edge change is remove + put (spec/permissions.md §2)
         let mut m = Mutation::new();
         m.op(t, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(member)) }).unwrap();
@@ -592,7 +592,7 @@ fn demotion_heavy_open() {
         x ^= x << 17;
         x % k
     };
-    let mut queue: Vec<(usize, osis_core::CommitId)> = Vec::new();
+    let mut queue: Vec<(usize, osis_base::CommitId)> = Vec::new();
     let t0 = Instant::now();
     for i in 0..n {
         for p in &lp.peers {
@@ -880,7 +880,7 @@ fn late_delta_deaths_cost_spec_crdt_4_8() {
             lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
         }
         let pks = lp.packages(1).unwrap();
-        let pk = |c: &osis_core::CommitId| pks.iter().find(|p| p.id == *c).unwrap().clone();
+        let pk = |c: &osis_base::CommitId| pks.iter().find(|p| p.id == *c).unwrap().clone();
         let mut each = Vec::new();
         for c in &late[..5] {
             let t1 = Instant::now();
@@ -985,7 +985,7 @@ fn validity_flip_cost_spec_permissions_5_2() {
 }
 
 /// Sets key `k` of map aspect `asp` of `t` to `v` at node `n`, one commit.
-fn put_key(net: &mut net::Net, n: usize, t: Tid, asp: &Aspect<Value>, k: &str, v: &str) -> osis_core::CommitId {
+fn put_key(net: &mut net::Net, n: usize, t: Tid, asp: &Aspect<Value>, k: &str, v: &str) -> osis_base::CommitId {
     let mut m = Mutation::new();
     m.op(t, asp, PathOp { path: vec![PathSeg::Key(net::s(k))], op: Op::Set(net::s(v)) }).unwrap();
     net.engine(n).commit(m).unwrap().unwrap()

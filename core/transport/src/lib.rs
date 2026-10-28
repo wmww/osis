@@ -72,7 +72,7 @@ pub fn peer_relays(url: &str) -> Option<Vec<String>> {
 
 /// URLs longer than `MAX_URL_BYTES` are refused (spec/wire.md §13).
 pub(crate) fn check_url(url: &str) -> Result<(), Error> {
-    if url.len() > osis_core::format::MAX_URL_BYTES { Err(Error::BadUrl(format!("{} bytes", url.len()))) } else { Ok(()) }
+    if url.len() > osis_base::format::MAX_URL_BYTES { Err(Error::BadUrl(format!("{} bytes", url.len()))) } else { Ok(()) }
 }
 
 /// A listener's static secret: 32 seed bytes from which each transport derives its key pair.

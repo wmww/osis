@@ -2,8 +2,8 @@
 //! trait, which osis-server implements over osis-store, and `MemoryLabelStore` for tests.
 
 use crate::msg::{ClaimSet, Code, Signature, Step, StepId, Wrap};
-use osis_core::format::TOMBSTONE_LIFETIME_MS;
-use osis_core::{BlobId, Classified, ErrorClass, LabelId};
+use osis_base::format::TOMBSTONE_LIFETIME_MS;
+use osis_base::{BlobId, Classified, ErrorClass, LabelId};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -260,7 +260,7 @@ impl LabelStore for MemoryLabelStore {
         let seed = self.seed;
         let s = self.labels.entry(*label).or_insert_with(|| {
             let mut log_id = [0u8; 16];
-            let h = osis_core::hash::hash(&[&seed[..], &label.0[..]].concat());
+            let h = osis_base::hash::hash(&[&seed[..], &label.0[..]].concat());
             log_id.copy_from_slice(h.get(..16).unwrap_or(&[0; 16]));
             LabelState { log_id, ..Default::default() }
         });

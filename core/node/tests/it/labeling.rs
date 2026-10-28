@@ -4,7 +4,7 @@
 
 use crate::net;
 use net::*;
-use osis_core::{Role, WallMs};
+use osis_base::{Role, WallMs};
 use osis_label::Prefix;
 use osis_node::Mutation;
 use osis_node::labeling::{open_commit, seal_body};
@@ -27,7 +27,7 @@ fn shared_folder_entitlement_spec_sync_3() {
     assert!(e.may_read(&g, &inside));
     assert!(!e.may_read(&g, &outside));
     let bodies = e.label_bodies(&g).unwrap();
-    let touched = |t: osis_core::Tid, e: &mut osis_node::Engine| {
+    let touched = |t: osis_base::Tid, e: &mut osis_node::Engine| {
         bodies.iter().any(|b| {
             let h = e.header(&b.commit).unwrap();
             b.parts.iter().any(|(ai, _)| h.aspects[*ai].tid == t)

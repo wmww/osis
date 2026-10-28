@@ -1,7 +1,7 @@
 //! `MemoryBackend` (tests, simulator) and the shared fault plan that also drives `MemoryRoot`.
 
 use crate::backend::{Backend, BackendError, KeyValue, Op, WriteBatch, blob_slice};
-use osis_core::BlobId;
+use osis_base::BlobId;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Bound;
 use std::sync::{Arc, Mutex, MutexGuard};

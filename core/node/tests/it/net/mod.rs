@@ -3,7 +3,7 @@
 //! osis-server `Hub`s over in-memory queues, one manual clock. Group setup stands in for pairing
 //! (direct delivery of the setup commits).
 
-use osis_core::{Clock, CommitId, ManualClock, Role, Tid, Value, WallMs};
+use osis_base::{Clock, CommitId, ManualClock, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::SeededRng;
 use osis_keys::{MemberKeys, Recipient, rotate};
@@ -439,22 +439,22 @@ impl Net {
     }
 
     pub fn read(&mut self, n: usize, t: Tid) -> Option<Value> {
-        let ak = osis_core::Ak::new(REG.ak()).unwrap();
+        let ak = osis_base::Ak::new(REG.ak()).unwrap();
         self.engine(n).get(&t, &ak).unwrap()
     }
 
     /// The registration path a server holds for a label.
-    pub fn server_path(&self, s: usize, l: &osis_core::LabelId) -> Vec<osis_label::Step> {
+    pub fn server_path(&self, s: usize, l: &osis_base::LabelId) -> Vec<osis_label::Step> {
         self.servers[s].hub.store().path(l).unwrap()
     }
 
     /// The first label node `n` syncs.
-    pub fn label(&mut self, n: usize) -> osis_core::LabelId {
+    pub fn label(&mut self, n: usize) -> osis_base::LabelId {
         self.sync(n).labels().into_iter().next().unwrap().1.id
     }
 
     /// Live entry IDs the server holds under a label.
-    pub fn server_ids(&self, s: usize, l: &osis_core::LabelId) -> Vec<osis_core::BlobId> {
+    pub fn server_ids(&self, s: usize, l: &osis_base::LabelId) -> Vec<osis_base::BlobId> {
         self.servers[s].hub.store().live_ids(l).unwrap()
     }
 
@@ -463,7 +463,7 @@ impl Net {
         self.links.iter().find(|((x, _), (y, _))| *x == n && *y == s).map(|((_, c), _)| *c)
     }
 
-    pub fn labels_at(&self, s: usize) -> Vec<osis_core::LabelId> {
+    pub fn labels_at(&self, s: usize) -> Vec<osis_base::LabelId> {
         self.servers[s].hub.store().labels_after(None, 1000).unwrap()
     }
 }

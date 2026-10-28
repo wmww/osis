@@ -4,7 +4,7 @@
 
 use crate::net;
 use net::*;
-use osis_core::{Ak, Role, Value};
+use osis_base::{Ak, Role, Value};
 use osis_node::Mutation;
 use osis_node::sync::{EntryKind, SyncConfig};
 use osis_schema::AspectKey;
@@ -22,7 +22,7 @@ fn diags(net: &mut Net, nodes: &[usize]) {
 }
 
 /// Commits under label `l` that `n` knows, with the aspects their headers touch.
-fn commits_under(net: &mut Net, n: usize, l: &osis_core::LabelId) -> Vec<(osis_core::CommitId, osis_core::Tid, BTreeSet<String>)> {
+fn commits_under(net: &mut Net, n: usize, l: &osis_base::LabelId) -> Vec<(osis_base::CommitId, osis_base::Tid, BTreeSet<String>)> {
     let entries = net.sync(n).entries(l);
     let mut out = Vec::new();
     for (_, k) in entries {
@@ -101,8 +101,8 @@ fn certificates_once_per_label_spec_permissions_4() {
     net.set_online(r, true);
     net.run();
     let l = net.label(a);
-    let ids: BTreeSet<osis_core::BlobId> = net.server_ids(sv, &l).into_iter().collect();
-    let mut held: std::collections::BTreeMap<osis_core::CommitId, Vec<(usize, usize)>> = Default::default();
+    let ids: BTreeSet<osis_base::BlobId> = net.server_ids(sv, &l).into_iter().collect();
+    let mut held: std::collections::BTreeMap<osis_base::CommitId, Vec<(usize, usize)>> = Default::default();
     for (id, k) in net.sync(a).entries(&l) {
         if let EntryKind::Commit { commit, parts, .. } = k
             && ids.contains(&id)
@@ -352,7 +352,7 @@ fn nested_chain_empty_projection_spec_perm_6() {
 
 /// Whether label `l` at server `s` holds a commit carrying a `/label` write the admin `n` made
 /// after `before`.
-fn label_commit_at(net: &mut Net, n: usize, s: usize, l: &osis_core::LabelId, before: &BTreeSet<osis_core::CommitId>) -> bool {
+fn label_commit_at(net: &mut Net, n: usize, s: usize, l: &osis_base::LabelId, before: &BTreeSet<osis_base::CommitId>) -> bool {
     let live: BTreeSet<_> = net.server_ids(s, l).into_iter().collect();
     let entries: Vec<_> = net.sync(n).entries(l).into_iter().filter(|(id, _)| live.contains(id)).collect();
     entries.into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if !before.contains(&commit) && net.engine(n).header(&commit).is_some_and(|h| h.aspects.iter().any(|x| x.ak.as_str() == "/label"))))
@@ -407,7 +407,7 @@ fn replaced_label_retired_with_server_unreachable_spec_sync_2() {
     net.run();
     let labels: BTreeSet<_> = net.sync(a).labels().into_iter().map(|(_, l)| l.id).collect();
     assert_eq!(labels, BTreeSet::from([new, old]), "not done at the unreachable server");
-    net.advance(osis_core::format::MEMBERSHIP_KEEP_MS + 1);
+    net.advance(osis_base::format::MEMBERSHIP_KEEP_MS + 1);
     net.run();
     let labels: Vec<_> = net.sync(a).labels().into_iter().map(|(_, l)| l.id).collect();
     assert_eq!(labels, vec![new], "retired after MEMBERSHIP_KEEP");
@@ -576,7 +576,7 @@ fn purge_shreds_only_unique_chunks_spec_sync_7() {
     m.set(t, &BLOB, &Value::Bytes(v2.clone())).unwrap();
     let c2 = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
-    let ids = |net: &mut Net, c| -> BTreeSet<osis_core::BlobId> { net.engine(a).package(&c).unwrap().unwrap().blobs.into_iter().map(|(id, _)| id).collect() };
+    let ids = |net: &mut Net, c| -> BTreeSet<osis_base::BlobId> { net.engine(a).package(&c).unwrap().unwrap().blobs.into_iter().map(|(id, _)| id).collect() };
     let (first, second) = (ids(&mut net, c1), ids(&mut net, c2));
     let live = net.engine(a).live_trees(&t).unwrap();
     assert!(live.missing.is_empty());
@@ -586,7 +586,7 @@ fn purge_shreds_only_unique_chunks_spec_sync_7() {
     assert!(shared.len() > unique.len() && !unique.is_empty(), "shared {} unique {}", shared.len(), unique.len());
     assert!(second.is_disjoint(&first), "reused chunks are not listed again");
     let l = net.label(a);
-    let at_server = |net: &Net| -> BTreeSet<osis_core::BlobId> { net.server_ids(sv, &l).into_iter().collect() };
+    let at_server = |net: &Net| -> BTreeSet<osis_base::BlobId> { net.server_ids(sv, &l).into_iter().collect() };
     assert!(first.is_subset(&at_server(&net)));
     let mut m = Mutation::new();
     m.set(t, &REG, &s("purged v1")).unwrap();
@@ -609,9 +609,9 @@ fn purge_shreds_only_unique_chunks_spec_sync_7() {
 
 /// Commits in the order server `s` logged their blobs under `l` (blob IDs mapped through node
 /// `n`'s entries; first appearance).
-fn logged_commits(net: &mut Net, s: usize, n: usize, l: &osis_core::LabelId) -> Vec<osis_core::CommitId> {
+fn logged_commits(net: &mut Net, s: usize, n: usize, l: &osis_base::LabelId) -> Vec<osis_base::CommitId> {
     use osis_proto::LabelStore;
-    let of: std::collections::BTreeMap<osis_core::BlobId, osis_core::CommitId> =
+    let of: std::collections::BTreeMap<osis_base::BlobId, osis_base::CommitId> =
         net.sync(n).entries(l).into_iter().filter_map(|(id, k)| if let EntryKind::Commit { commit, .. } = k { Some((id, commit)) } else { None }).collect();
     let log = net.servers[s].hub.store().log_after(l, 0, 100_000).unwrap().unwrap();
     let mut out = Vec::new();
@@ -644,7 +644,7 @@ fn removal_placed_first_under_every_label_spec_perm_3() {
     net.actions(a, acts);
     let t = net.item(a, g, g, "before");
     net.run();
-    let labels: Vec<osis_core::LabelId> = net.sync(a).labels().into_iter().filter(|(x, _)| *x == g).map(|(_, l)| l.id).collect();
+    let labels: Vec<osis_base::LabelId> = net.sync(a).labels().into_iter().filter(|(x, _)| *x == g).map(|(_, l)| l.id).collect();
     assert_eq!(labels.len(), 2);
     assert!(labels.contains(&l1));
     assert_eq!(net.read(c, t), Some(s("before")));
@@ -672,7 +672,7 @@ fn removal_placed_first_under_every_label_spec_perm_3() {
 /// the two commits, the second value, and the first commit's chunks the live tree shares and
 /// does not.
 #[allow(clippy::type_complexity)]
-fn reused_blob(net: &mut Net, a: usize, b: usize, role: Role, sv: usize) -> (osis_core::Tid, Ak, [osis_core::CommitId; 2], Vec<u8>, BTreeSet<osis_core::BlobId>, BTreeSet<osis_core::BlobId>) {
+fn reused_blob(net: &mut Net, a: usize, b: usize, role: Role, sv: usize) -> (osis_base::Tid, Ak, [osis_base::CommitId; 2], Vec<u8>, BTreeSet<osis_base::BlobId>, BTreeSet<osis_base::BlobId>) {
     let g = net.group(a, &[(b, role)], &[sv]);
     let t = net.item(a, g, g, "x");
     let v1 = noise(1 << 20, 7);
@@ -798,7 +798,7 @@ fn lazy_node_shreds_dropped_chunks_spec_sync_7() {
 
 /// Node `n`'s certificate commit by `author` touching `ak` among `n`'s chain certificates for
 /// `g`, with the aspect indexes to carry.
-fn chain_commit(net: &mut Net, n: usize, g: osis_core::Tid, author: osis_core::Tid, ak: &str) -> (osis_core::CommitId, BTreeSet<(usize, usize)>) {
+fn chain_commit(net: &mut Net, n: usize, g: osis_base::Tid, author: osis_base::Tid, ak: &str) -> (osis_base::CommitId, BTreeSet<(usize, usize)>) {
     let certs = net.engine(n).certificates(&g);
     certs
         .into_iter()
@@ -807,8 +807,8 @@ fn chain_commit(net: &mut Net, n: usize, g: osis_core::Tid, author: osis_core::T
 }
 
 /// The entries under `l` that node `n` knows holding commit `c` and present at server `sv`.
-fn entries_of(net: &mut Net, n: usize, sv: usize, l: &osis_core::LabelId, c: &osis_core::CommitId) -> Vec<(osis_core::BlobId, EntryKind)> {
-    let live: BTreeSet<osis_core::BlobId> = net.server_ids(sv, l).into_iter().collect();
+fn entries_of(net: &mut Net, n: usize, sv: usize, l: &osis_base::LabelId, c: &osis_base::CommitId) -> Vec<(osis_base::BlobId, EntryKind)> {
+    let live: BTreeSet<osis_base::BlobId> = net.server_ids(sv, l).into_iter().collect();
     net.sync(n).entries(l).into_iter().filter(|(id, k)| live.contains(id) && matches!(k, EntryKind::Commit { commit, .. } if commit == c)).collect()
 }
 
@@ -939,7 +939,7 @@ fn newcomer_after_rotation_reads_older_copies_spec_crypto_4() {
     net.run();
     // the writer's card went up only under the old epoch
     let (cc, _) = chain_commit(&mut net, w, g, wt, "/node");
-    let cards: Vec<osis_core::BlobId> = net.sync(w).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == cc)).map(|(id, _)| id).collect();
+    let cards: Vec<osis_base::BlobId> = net.sync(w).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == cc)).map(|(id, _)| id).collect();
     let store = net.servers[sv].hub.store();
     assert!(!cards.is_empty() && cards.iter().all(|id| osis_proto::LabelStore::entry(store, &l, id).unwrap().is_some_and(|m| osis_crypto::unwrap(&old, id, &m.wrap).is_ok())));
     net.set_online(r, true);
@@ -975,7 +975,7 @@ fn purged_chunk_reused_concurrently_is_reencrypted_spec_sync_1() {
     let mut m = Mutation::new();
     m.set(t, &BLOB, &Value::Bytes(v2.clone())).unwrap();
     net.engine(b).commit(m).unwrap().unwrap();
-    let first: BTreeSet<osis_core::BlobId> = net.engine(a).package(&c1).unwrap().unwrap().blobs.into_iter().map(|(id, _)| id).collect();
+    let first: BTreeSet<osis_base::BlobId> = net.engine(a).package(&c1).unwrap().unwrap().blobs.into_iter().map(|(id, _)| id).collect();
     let reused: BTreeSet<_> = first.intersection(&net.engine(b).live_trees(&t).unwrap().blobs).copied().collect();
     assert!(!reused.is_empty());
     let mut m = Mutation::new();
@@ -984,7 +984,7 @@ fn purged_chunk_reused_concurrently_is_reencrypted_spec_sync_1() {
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let l = net.label(a);
-    let server: BTreeSet<osis_core::BlobId> = net.server_ids(sv, &l).into_iter().collect();
+    let server: BTreeSet<osis_base::BlobId> = net.server_ids(sv, &l).into_iter().collect();
     assert!(reused.is_disjoint(&server), "the purger deleted the chunks it judged dead");
     net.set_online(b, true);
     // past the redial pause
@@ -1003,7 +1003,7 @@ fn purged_chunk_reused_concurrently_is_reencrypted_spec_sync_1() {
 }
 
 /// Commits `n` authored on `(t, ak)`, with their expiry there.
-fn own_writes(net: &mut Net, n: usize, t: osis_core::Tid, ak: &Ak) -> Vec<Option<u64>> {
+fn own_writes(net: &mut Net, n: usize, t: osis_base::Tid, ak: &Ak) -> Vec<Option<u64>> {
     let me = net.tid(n);
     let ids = net.engine(n).commit_ids();
     ids.iter().filter_map(|c| net.engine(n).header(c)).filter(|h| h.author == me).filter_map(|h| h.aspects.iter().find(|a| a.tid == t && a.ak == *ak).map(|a| a.expires)).collect()
@@ -1011,7 +1011,7 @@ fn own_writes(net: &mut Net, n: usize, t: osis_core::Tid, ak: &Ak) -> Vec<Option
 
 /// A writer `b` edits an untyped `{big, note}` value offline, reusing v1's chunks, while the
 /// admin `a` purges v1 (deleting every chunk at the server) and writes `note` offline.
-fn reuse_race(expires: Option<u64>) -> (Net, [usize; 3], osis_core::Tid, Ak, Vec<u8>) {
+fn reuse_race(expires: Option<u64>) -> (Net, [usize; 3], osis_base::Tid, Ak, Vec<u8>) {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
@@ -1032,7 +1032,7 @@ fn reuse_race(expires: Option<u64>) -> (Net, [usize; 3], osis_core::Tid, Ak, Vec
     let mut m = Mutation::new();
     m.op(t, &doc, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(k("big"))], op: osis_crdt::Op::Set(Value::Bytes(v2.clone())) }).unwrap();
     if let Some(e) = expires {
-        m.expires(t, &doc, osis_core::WallMs(e)).unwrap();
+        m.expires(t, &doc, osis_base::WallMs(e)).unwrap();
     }
     net.engine(b).commit(m).unwrap().unwrap();
     let mut m = Mutation::new();
@@ -1228,9 +1228,9 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     let kem = osis_crypto::KemPublicKey::from_slice(&kb).unwrap();
     let mut rng = osis_crypto::SeededRng::from_u64(7);
     for id in [cc, unrelated] {
-        let commit = osis_core::decode(&net.engine(c).package(&id).unwrap().unwrap().bytes, &osis_core::Limits { max_depth: 512, max_bytes: 1 << 24 }).unwrap();
-        let payload = osis_label::InboxPayload { commit, things: vec![osis_label::InboxThing { tid: g, label: osis_core::LabelId([0; 16]), servers: vec![], delete_keys: Some((ck, ck)) }] };
-        let blob = osis_label::seal_inbox_blob(&bob.person, &kem, &payload, osis_core::WallMs(net.now()), &mut rng).unwrap();
+        let commit = osis_base::decode(&net.engine(c).package(&id).unwrap().unwrap().bytes, &osis_base::Limits { max_depth: 512, max_bytes: 1 << 24 }).unwrap();
+        let payload = osis_label::InboxPayload { commit, things: vec![osis_label::InboxThing { tid: g, label: osis_base::LabelId([0; 16]), servers: vec![], delete_keys: Some((ck, ck)) }] };
+        let blob = osis_label::seal_inbox_blob(&bob.person, &kem, &payload, osis_base::WallMs(net.now()), &mut rng).unwrap();
         let _ = net.engine(b).accept_inbox(&blob);
     }
     net.engine(b).accept_inbox(&genuine).unwrap();

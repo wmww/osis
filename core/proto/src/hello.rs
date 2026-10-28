@@ -2,7 +2,7 @@
 
 use crate::Error;
 use crate::dec::{Fields, b, u, uint};
-use osis_core::{Limits, Value, cbor};
+use osis_base::{Limits, Value, cbor};
 
 /// The protocol version this build speaks (spec/wire.md §11; separate from the format version).
 pub const PROTOCOL_VERSION: u64 = 1;

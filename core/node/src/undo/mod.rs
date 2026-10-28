@@ -9,7 +9,7 @@ use crate::engine::write::{CommitPlan, Resolved, build_and_apply};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use osis_commit::{Decoded, Form, Kind};
-use osis_core::{Ak, CommitId, Tid, Ts};
+use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_crdt::{AnyView, CounterRange, Fragment, PathSeg, Source, Stamp, UndoBuffer, Undone, View, Writer};
 use osis_store::Shred;
 use std::cell::OnceCell;
@@ -239,7 +239,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::in_effect;
-    use osis_core::CommitId;
+    use osis_base::CommitId;
     use std::collections::BTreeMap;
 
     // spec/crdt.md §4.6: a commit is in effect while no undo in effect undoes it: an original

@@ -4,7 +4,7 @@ use crate::tests::{dkey, t, ts};
 use crate::tests_build::{key, rng};
 use crate::tests_verify::{TestSecrets, register_delta};
 use crate::*;
-use osis_core::{Ak, BlobId, CommitId, Link, SchemaId, Tid, Value};
+use osis_base::{Ak, BlobId, CommitId, Link, SchemaId, Tid, Value};
 use osis_schema::{Bound, PurgeBy, Retention};
 use proptest::prelude::*;
 

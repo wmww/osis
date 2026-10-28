@@ -7,7 +7,7 @@
 use crate::engine::{Engine, Tx};
 use crate::engine::records::{Rd, Wr};
 use crate::error::{Error, Result};
-use osis_core::{BlobId, CommitId, LabelId, Tid};
+use osis_base::{BlobId, CommitId, LabelId, Tid};
 use osis_crypto::{Secret32, Signature, WRAP_LEN};
 use osis_label::{Address, Step};
 use osis_proto::Cursor;
@@ -582,7 +582,7 @@ impl State {
 
     /// Forgets tombstones past their lifetime.
     pub fn expire_tombs(&mut self, now: u64) {
-        let old: Vec<(LabelId, BlobId)> = self.tombs.iter().filter(|(_, t)| t.saturating_add(osis_core::format::TOMBSTONE_LIFETIME_MS) <= now).map(|(k, _)| *k).collect();
+        let old: Vec<(LabelId, BlobId)> = self.tombs.iter().filter(|(_, t)| t.saturating_add(osis_base::format::TOMBSTONE_LIFETIME_MS) <= now).map(|(k, _)| *k).collect();
         for (l, b) in old {
             self.tombs.remove(&(l, b));
             self.del(key(TOMB, &[&l.0, &b.0]));
@@ -1038,7 +1038,7 @@ mod tests {
     // decode is skipped, never a failed load of the sync state.
     #[test]
     fn corrupt_delivery_record_skipped_spec_sync_3() {
-        let mut lp = crate::local_peer::LocalPeer::new(1, 961, osis_core::WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = crate::local_peer::LocalPeer::new(1, 961, osis_base::WallMs(1_700_000_000_000)).unwrap();
         let e = &mut lp.peers[0].engine;
         e.run(|tx| {
             tx.txn.put_local(b"y/vjunk", b"not a record", Shred::No)?;
@@ -1053,7 +1053,7 @@ mod tests {
     // skipped, never a failed load of the sync state.
     #[test]
     fn corrupt_outbox_record_skipped_spec_sync_5() {
-        let mut lp = crate::local_peer::LocalPeer::new(1, 962, osis_core::WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = crate::local_peer::LocalPeer::new(1, 962, osis_base::WallMs(1_700_000_000_000)).unwrap();
         let e = &mut lp.peers[0].engine;
         let k = key(OUTBOX, &[&[7u8; 32], &[8u8; 32]]);
         e.run(|tx| {

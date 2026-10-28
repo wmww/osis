@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 /// §5, Depth)? Checked before resolving, which recurses per level.
 fn too_deep(op: &PathOp) -> bool {
     use crate::ops::Op;
-    use osis_core::format::MAX_VALUE_DEPTH;
+    use osis_base::format::MAX_VALUE_DEPTH;
     let Some(room) = MAX_VALUE_DEPTH.checked_sub(op.path.len()) else { return true };
     let keys = op.path.iter().any(|s| matches!(s, PathSeg::Key(k) if k.deeper_than(MAX_VALUE_DEPTH)));
     keys || match &op.op {
@@ -388,7 +388,7 @@ fn resolve<'s, V: View>(w: &mut Writer, s: Option<&'s Fragment>, a: Option<&Frag
 /// join: entries are independent per dot, so this equals a lookup in the whole join, in
 /// O(log n) instead of a copy of the map; a key with one live entry the batch has not written
 /// is read in place (no copy of what it holds).
-fn key_lookup<'s>(s: Option<&'s Fragment>, a: Option<&Fragment>, e: Option<&Stamp>, k: &osis_core::Value) -> Option<(Dot, Option<std::borrow::Cow<'s, Fragment>>)> {
+fn key_lookup<'s>(s: Option<&'s Fragment>, a: Option<&Fragment>, e: Option<&Stamp>, k: &osis_base::Value) -> Option<(Dot, Option<std::borrow::Cow<'s, Fragment>>)> {
     fn map(f: Option<&Fragment>) -> Option<&Map> {
         match f {
             Some(Fragment::Map(m)) => Some(m),

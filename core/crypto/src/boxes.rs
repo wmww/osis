@@ -5,8 +5,8 @@
 use crate::aead::{self, WRAP_LEN, ZERO_NONCE};
 use crate::kdf::{self, kdf};
 use crate::{Error, KemPublicKey, KemSecret, SUITE_1, Secret32, open_sealed, seal};
-use osis_core::cbor::{Limits, decode, encode};
-use osis_core::{LabelId, Role, Tid, Value};
+use osis_base::cbor::{Limits, decode, encode};
+use osis_base::{LabelId, Role, Tid, Value};
 use rand_core::CryptoRngCore;
 use zeroize::Zeroizing;
 

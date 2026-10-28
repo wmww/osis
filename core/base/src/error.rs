@@ -21,11 +21,11 @@ pub trait Classified {
 /// ```
 /// #[derive(Debug)]
 /// enum E { Short, Bad(u8) }
-/// osis_core::impl_error!(E { Short => ("truncated"), Bad(b) => ("bad byte {b:#04x}") });
+/// osis_base::impl_error!(E { Short => ("truncated"), Bad(b) => ("bad byte {b:#04x}") });
 /// assert_eq!(E::Bad(1).to_string(), "bad byte 0x01");
 /// #[derive(Debug)]
 /// struct Invalid;
-/// osis_core::impl_error!(Invalid, "invalid");
+/// osis_base::impl_error!(Invalid, "invalid");
 /// assert_eq!(Invalid.to_string(), "invalid");
 /// ```
 #[macro_export]

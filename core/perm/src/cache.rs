@@ -17,7 +17,7 @@ use crate::held::HeldSet;
 use crate::timeline::Timeline;
 use crate::types::{Dots, Edge, Frontier, MembershipCommit, Point, RosterSnapshot, WriteId};
 use crate::walk::{Applied, Attr, Change, Demotion, Fall, Input, Outcome, Rest, Undo, Walked};
-use osis_core::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
+use osis_base::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -186,7 +186,7 @@ impl W {
 }
 
 /// Hashes the walk's whole input, as the tag covers it.
-fn put_input(h: &mut osis_core::hash::Hasher, owners: &Owners, commits: &BTreeMap<CommitId, Arc<MembershipCommit>>, snaps: &BTreeMap<CommitId, Arc<RosterSnapshot>>) {
+fn put_input(h: &mut osis_base::hash::Hasher, owners: &Owners, commits: &BTreeMap<CommitId, Arc<MembershipCommit>>, snaps: &BTreeMap<CommitId, Arc<RosterSnapshot>>) {
     let mut w = W::default();
     let mut flush = |w: &mut W| {
         h.update(&w.out);
@@ -247,7 +247,7 @@ fn put_input(h: &mut osis_core::hash::Hasher, owners: &Owners, commits: &BTreeMa
 }
 
 fn tag(salt: &[u8], owners: &Owners, commits: &BTreeMap<CommitId, Arc<MembershipCommit>>, snaps: &BTreeMap<CommitId, Arc<RosterSnapshot>>, body: &[u8]) -> [u8; 32] {
-    let mut h = osis_core::hash::Hasher::new();
+    let mut h = osis_base::hash::Hasher::new();
     h.update(FORMAT).update(&(salt.len() as u64).to_le_bytes()).update(salt);
     put_input(&mut h, owners, commits, snaps);
     h.update(body);

@@ -4,7 +4,7 @@
 use crate::common;
 
 use common::*;
-use osis_core::{BlobId, CommitId, LabelId, Ts};
+use osis_base::{BlobId, CommitId, LabelId, Ts};
 use osis_crypto::SeededRng;
 use osis_store::{AspectUnit, Deaths, Error, Fault, MemoryBackend, MemoryRoot, PendingKind, Shred, Store, StoreConfig};
 

@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::read::ak_of;
 use osis_commit::PurgeItem;
-use osis_core::{CommitId, Tid, Ts, Value, WallMs};
+use osis_base::{CommitId, Tid, Ts, Value, WallMs};
 use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
 use osis_node::Mutation;
 use osis_schema::core_types::{GROUP, is_membership_class};

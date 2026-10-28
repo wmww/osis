@@ -5,7 +5,7 @@ use super::{FixedRng, case, generated_header, s32};
 use crate::file::{Record, VecFile};
 use crate::hex;
 use osis_commit::*;
-use osis_core::{Ak, CommitId, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, CommitId, Tid, Ts, Value, WallMs};
 use osis_crdt::{AnyView, Delta, Frontiers, Snapshot, Source, Writer, create, encode_delta, encode_snapshot};
 use osis_crypto::{Secret32, SigningSecret};
 use osis_schema::{PurgeBy, Retention};
@@ -182,14 +182,14 @@ impl osis_crypto::RngCore for Recording {
 impl osis_crypto::CryptoRng for Recording {}
 
 fn more_accepted() -> Vec<Record> {
-    use osis_core::BlobId;
+    use osis_base::BlobId;
     use osis_schema::Bound;
     let mut out = Vec::new();
     // commit form, typed, expiring, absolute bounds, chunks, undoes
     let at = ts(1_700_000_004_000);
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, Form::Commit);
     let mut a = AspectWrite::new(THING, Ak::new("/app/title").unwrap(), 1, 2, delta(Kind::Content, at, Source::node(AUTHOR), 1, Value::Str("typed".into()), 6));
-    a.schema = Some((osis_core::SchemaId([0x27; 16]), 2));
+    a.schema = Some((osis_base::SchemaId([0x27; 16]), 2));
     a.expires = Some(at.wall_ms().0 + 86_400_000);
     a.retention = Retention { by: PurgeBy::Writer, at_least: Bound { abs: Some(1_800_000_000_000), rel: None }, at_most: Bound { abs: Some(1_900_000_000_000), rel: Some(1000) } };
     a.chunks = vec![BlobId([0x28; 32]), BlobId([0x2a; 32])];
@@ -240,7 +240,7 @@ fn more_accepted() -> Vec<Record> {
         .with("dedup", hex(s32(0x30).expose()))
         .with("delete-secrets", format!("1:{} 2:{} 3:{}", hex(s32(0x31).expose()), hex(s32(0x32).expose()), hex(s32(0x33).expose())))
         .with("randomness", hex(&rec.1))
-        .with("aspect-list-blake3", hex(&osis_core::hash::hash(&osis_core::encode(&c.header.list_value(ListField::Aspects).unwrap()))));
+        .with("aspect-list-blake3", hex(&osis_base::hash::hash(&osis_base::encode(&c.header.list_value(ListField::Aspects).unwrap()))));
     for (i, id) in bl.list_blobs.iter().enumerate() {
         let (p, plain) = &sink.blobs[id];
         // level-2 commitments only (spec/wire.md §5)
@@ -252,7 +252,7 @@ fn more_accepted() -> Vec<Record> {
 }
 
 fn more_rejected(content: &Header) -> Vec<Record> {
-    use osis_core::SchemaId;
+    use osis_base::SchemaId;
     let mut out = Vec::new();
     let m = membership().header;
     let mut x = m.clone();
@@ -280,10 +280,10 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     x.schemas = vec![(SchemaId([9; 16]), 1), (SchemaId([1; 16]), 1)];
     out.push(reject("schemas out of order", "spec/wire.md §4", &x, "order"));
     let mut x = content.clone();
-    x.chunks.push(ChunkEntry { blob: osis_core::BlobId([1; 32]), keys: vec![1, 0] });
+    x.chunks.push(ChunkEntry { blob: osis_base::BlobId([1; 32]), keys: vec![1, 0] });
     out.push(reject("chunk delete keys out of order", "spec/wire.md §4", &x, "chunk-keys"));
     let mut x = content.clone();
-    x.chunks.push(ChunkEntry { blob: osis_core::BlobId([1; 32]), keys: vec![9] });
+    x.chunks.push(ChunkEntry { blob: osis_base::BlobId([1; 32]), keys: vec![9] });
     out.push(reject("chunk delete key index out of range", "spec/wire.md §4", &x, "chunk-keys"));
     let mut x = content.clone();
     x.aspects[0].ak = Ak::new("/created").unwrap();

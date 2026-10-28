@@ -4,7 +4,7 @@
 
 use crate::util::Rng;
 use crate::{Address, Connection, Error, RecvStream, SendStream, Transport};
-use osis_core::{Classified, ErrorClass};
+use osis_base::{Classified, ErrorClass};
 use std::future::Future;
 
 /// Exponential backoff with seeded jitter: delay `n` is uniform in `[d/2, d]`, `d = min(base * 2^n, max)`.

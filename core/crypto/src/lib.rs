@@ -42,8 +42,8 @@ const CASE_1: u64 = 1;
 
 /// Bytes of a case 1 agility enum value `1617([1, h'..'])`, of length `len` if given;
 /// another case parks (spec/crypto.md §8).
-fn agility_bytes(v: &osis_core::Value, len: Option<usize>) -> Result<&[u8], Error> {
-    use osis_core::Value;
+fn agility_bytes(v: &osis_base::Value, len: Option<usize>) -> Result<&[u8], Error> {
+    use osis_base::Value;
     let Value::Enum(case, payload) = v else { return Err(Error::Malformed("not an enum")) };
     if *case != CASE_1 {
         return Err(Error::UnknownCase(*case));
@@ -54,6 +54,6 @@ fn agility_bytes(v: &osis_core::Value, len: Option<usize>) -> Result<&[u8], Erro
     }
 }
 
-fn agility_value(bytes: &[u8]) -> osis_core::Value {
-    osis_core::Value::Enum(CASE_1, Some(Box::new(osis_core::Value::Bytes(bytes.to_vec()))))
+fn agility_value(bytes: &[u8]) -> osis_base::Value {
+    osis_base::Value::Enum(CASE_1, Some(Box::new(osis_base::Value::Bytes(bytes.to_vec()))))
 }

@@ -7,7 +7,7 @@ use crate::common;
 
 use common::*;
 use membership_model::{edges, joint, snapshot, Rng};
-use osis_core::Tid;
+use osis_base::Tid;
 use osis_perm::{At, HeldSet, Timeline, Timelines, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -45,8 +45,8 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
                     return Some(format!("role of {n:?} on {t:?} before {:?}", a.point));
                 }
                 // layer 2 there (re-grant's first tenure is carried over `extend`)
-                let p = osis_perm::Point { node: *n, commit: osis_core::CommitId([0xee; 32]), ..a.point };
-                for r in [osis_core::Role::Read, osis_core::Role::Write, osis_core::Role::Admin] {
+                let p = osis_perm::Point { node: *n, commit: osis_base::CommitId([0xee; 32]), ..a.point };
+                for r in [osis_base::Role::Read, osis_base::Role::Write, osis_base::Role::Admin] {
                     if part.delta_valid(p, &t, "/x", osis_perm::Dots::Commit, r) != full.delta_valid(p, &t, "/x", osis_perm::Dots::Commit, r) {
                         return Some(format!("validity of {n:?}'s {r:?} delta on {t:?} at {p:?}"));
                     }
@@ -79,7 +79,7 @@ fn add_leaves(w: &mut World, rng: &mut Rng, steps: usize) -> Vec<(Tid, usize)> {
 }
 
 /// The held set without `skip` and without the leaves not held by `step`.
-fn held_at(w: &World, skip: &BTreeSet<osis_core::CommitId>, leaves: &[(Tid, usize)], step: usize) -> osis_perm::MemoryHeldSet {
+fn held_at(w: &World, skip: &BTreeSet<osis_base::CommitId>, leaves: &[(Tid, usize)], step: usize) -> osis_perm::MemoryHeldSet {
     let mut h = w.held_without(skip);
     for (t, at) in leaves {
         if *at > step {
@@ -183,7 +183,7 @@ fn run(samples: u64, seed: u64) -> usize {
 /// timeline order continues the walk (`extend`), equal to evaluating from scratch.
 #[test]
 fn mutual_admin_teams_extend() {
-    use osis_core::Role::{Admin, Write};
+    use osis_base::Role::{Admin, Write};
     let mut w = World::new();
     let n = w.nodes(4);
     let (k, n1, n2, n3) = (n[0], n[1], n[2], n[3]);
@@ -244,8 +244,8 @@ fn created_late_every_order() {
     let (k, x) = (n[0], n[1]);
     let g = w.thing(k);
     let d = w.thing(g);
-    let c1 = w.set(k, g, x, edge(osis_core::Role::Admin), 10, &[]);
-    let c2 = w.set(x, d, k, edge(osis_core::Role::Write), 11, &[]);
+    let c1 = w.set(k, g, x, edge(osis_base::Role::Admin), 10, &[]);
+    let c2 = w.set(x, d, k, edge(osis_base::Role::Write), 11, &[]);
     // Arrivals: 0 = g's /created, 1 = c1, 2 = c2.
     let perms = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
     for order in perms {
@@ -277,7 +277,7 @@ fn leaves_and_appends_extend() {
     let n = w.nodes(2);
     let (k, x) = (n[0], n[1]);
     let g = w.thing(k);
-    w.set(k, g, x, edge(osis_core::Role::Write), 10, &[]);
+    w.set(k, g, x, edge(osis_base::Role::Write), 10, &[]);
     let leaf = w.thing(k);
     let mut held = w.held();
     held.created.remove(&leaf);
@@ -290,7 +290,7 @@ fn leaves_and_appends_extend() {
     assert_eq!(c.extended, BTreeSet::from([leaf]));
     assert!(check(&held, &inc, &n).is_none());
     let prev = w.held();
-    w.set(k, g, leaf, edge(osis_core::Role::Read), 20, &[]);
+    w.set(k, g, leaf, edge(osis_base::Role::Read), 20, &[]);
     let held = w.held();
     let c = inc.update_touched(&held, &touched_of(&prev, &held));
     assert_eq!(c.extended, BTreeSet::from([g]), "{c:?}");
@@ -305,7 +305,7 @@ fn leaves_and_appends_extend() {
 /// write.
 #[test]
 fn late_write_mid_history_keeps_states_exact() {
-    use osis_core::Role::{Admin, Read, Write};
+    use osis_base::Role::{Admin, Read, Write};
     let mut w = World::new();
     let n = w.nodes(6);
     let k = n[0];
@@ -521,7 +521,7 @@ fn extend_over_commits_and_leaves_together() {
             if rng.below(2) == 0 && !authors.is_empty() {
                 let a = authors[rng.below(authors.len())];
                 let m = nodes[rng.below(nodes.len())];
-                w.set(a, *leaf, m, edge(osis_core::Role::Write), tmax + 1 + k as u64, &[]);
+                w.set(a, *leaf, m, edge(osis_base::Role::Write), tmax + 1 + k as u64, &[]);
             }
         }
         let split = rng.below(order.len() + 1);
@@ -552,7 +552,7 @@ fn extend_over_commits_and_leaves_together() {
 /// step equals an evaluation from scratch.
 #[test]
 fn append_declines_overlapping_ranges_spec_commits_4() {
-    use osis_core::Role::{Admin, Read, Write};
+    use osis_base::Role::{Admin, Read, Write};
     let mut w = World::new();
     let n = w.nodes(4);
     let (k, a) = (n[0], n[1]);
@@ -568,14 +568,14 @@ fn append_declines_overlapping_ranges_spec_commits_4() {
     let steps = [(n[2], Write, (0, 2), true), (n[3], Read, (2, 4), true), (n[2], Read, (3, 5), false), (n[3], Write, (4, 6), false), (n[2], Write, (6, 7), true)];
     for (i, (m, r, (lo, hi), alone)) in steps.into_iter().enumerate() {
         let op = osis_perm::EdgeOp { target: g, member: m, edge: edge(r), dots: osis_perm::Dots::Node { lo, hi } };
-        let id = osis_core::CommitId([0x40 + i as u8; 32]);
+        let id = osis_base::CommitId([0x40 + i as u8; 32]);
         held.add_commit(osis_perm::MembershipCommit { id, ts: ts(10 + i as u64), author: a, actor: a, frontier: None, ops: vec![op] });
         inc.update_touched(&held, &BTreeSet::from([g]));
         assert_eq!(inc.appended() == 1, alone, "step {i}");
         assert!(check(&held, &inc, &n).is_none(), "step {i}: {:?}", check(&held, &inc, &n));
     }
     let full = Timeline::evaluate(&held);
-    assert!(full.membership_commit(&osis_core::CommitId([0x41; 32])).is_none(), "voided");
+    assert!(full.membership_commit(&osis_base::CommitId([0x41; 32])).is_none(), "voided");
 }
 
 /// §5.1 steps 4-5: a write arriving late before a demotion whose audit dropped an earlier write
@@ -583,7 +583,7 @@ fn append_declines_overlapping_ranges_spec_commits_4() {
 /// a later one that keeps the demoted node's class (a second admin edge) undoes the drop.
 #[test]
 fn late_write_before_a_drop_goes_on_spec_permissions_5_1() {
-    use osis_core::Role::{Admin, Read, Write};
+    use osis_base::Role::{Admin, Read, Write};
     let mut w = World::new();
     let n = w.nodes(5);
     let (k, a, b, m) = (n[0], n[1], n[2], n[3]);
@@ -620,7 +620,7 @@ fn late_write_before_a_drop_goes_on_spec_permissions_5_1() {
 /// from scratch.
 #[test]
 fn late_writes_applying_nothing_spec_permissions_5_1() {
-    use osis_core::Role::{Admin, Read, Write};
+    use osis_base::Role::{Admin, Read, Write};
     let mut w = World::new();
     let n = w.nodes(5);
     let (k, a, x) = (n[0], n[1], n[4]);
@@ -660,7 +660,7 @@ fn late_writes_applying_nothing_spec_permissions_5_1() {
 /// y, and stays dropped after k's removal of b drops that grant.
 #[test]
 fn late_write_idle_only_in_final_walk_spec_permissions_5_1() {
-    use osis_core::Role::{Admin, Write};
+    use osis_base::Role::{Admin, Write};
     let mut w = World::new();
     let n = w.nodes(6);
     let (k, a, b, x, y, z) = (n[0], n[1], n[2], n[3], n[4], n[5]);
@@ -687,7 +687,7 @@ fn late_write_idle_only_in_final_walk_spec_permissions_5_1() {
 /// `update_touched`: equal to an evaluation from scratch after every arrival. Returns how many
 /// updates `Timelines::append` did alone.
 fn adversarial(samples: u64, seed: u64) -> usize {
-    use osis_core::Role::{Admin, Read, Write};
+    use osis_base::Role::{Admin, Read, Write};
     let seed = seeded(seed);
     let mut rng = Rng(seed);
     let mut appended = 0;
@@ -775,7 +775,7 @@ fn append_adversarial_equals_from_scratch_large() {
 /// goes on from it. Each equals an evaluation from scratch.
 #[test]
 fn late_writes_placed_in_walk_spec_permissions_5_1() {
-    use osis_core::Role::{Admin, Read, Write};
+    use osis_base::Role::{Admin, Read, Write};
     let mut w = World::new();
     let n = w.nodes(8);
     let (k, a, b) = (n[0], n[1], n[2]);
@@ -826,7 +826,7 @@ fn late_writes_placed_in_walk_spec_permissions_5_1() {
 /// again from kept states the placements moved. Each equals an evaluation from scratch.
 #[test]
 fn late_writes_across_kept_states_spec_permissions_5_1() {
-    use osis_core::Role::{Admin, Read, Write};
+    use osis_base::Role::{Admin, Read, Write};
     let mut w = World::new();
     let n = w.nodes(56);
     let (k, a, b) = (n[0], n[1], n[2]);
@@ -880,7 +880,7 @@ fn late_writes_across_kept_states_spec_permissions_5_1() {
 /// scratch.
 #[test]
 fn new_member_joins_walk_spec_permissions_5_1() {
-    use osis_core::Role::{Admin, Read, Write};
+    use osis_base::Role::{Admin, Read, Write};
     let mut w = World::new();
     let n = w.nodes(4);
     let (k, a) = (n[0], n[1]);
@@ -929,7 +929,7 @@ fn new_member_joins_walk_spec_permissions_5_1() {
 /// later commit on a thing the first named but the update did not touch goes on by `append`.
 #[test]
 fn append_records_every_target_spec_permissions_5_1() {
-    use osis_core::Role::{Admin, Write};
+    use osis_base::Role::{Admin, Write};
     let mut w = World::new();
     let n = w.nodes(4);
     let k = n[0];
@@ -957,7 +957,7 @@ fn check_more(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -
         return Some(d);
     }
     let full = Timeline::evaluate(held);
-    let end = osis_perm::Point { ts: ts(LATE), node: nodes[0], commit: osis_core::CommitId([0xff; 32]) };
+    let end = osis_perm::Point { ts: ts(LATE), node: nodes[0], commit: osis_base::CommitId([0xff; 32]) };
     let mut fresh = Timelines::new();
     fresh.update(held);
     for t in held.things() {
@@ -985,7 +985,7 @@ fn check_more(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -
 /// with restarts from saved walks now and then; equal to an evaluation from scratch after every arrival. Returns (updates `append` did
 /// alone, commits placed without walking again).
 fn adversarial_shapes(samples: u64, seed: u64) -> (usize, usize) {
-    use osis_core::Role::{Admin, Read, Write};
+    use osis_base::Role::{Admin, Read, Write};
     let seed = seeded(seed);
     let mut rng = Rng(seed);
     let (mut appended, mut placed) = (0, 0);
@@ -1113,7 +1113,7 @@ fn append_shapes_equals_from_scratch_large() {
 /// before, and with a cached component of the same IDs, equal to an evaluation from scratch.
 #[test]
 fn record_replaced_under_its_id_spec_permissions_6() {
-    use osis_core::Role::{Admin, Read, Write};
+    use osis_base::Role::{Admin, Read, Write};
     for fuller in [true, false] {
         let mut w = World::new();
         let n = w.nodes(4);

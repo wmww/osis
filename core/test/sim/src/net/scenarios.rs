@@ -8,8 +8,8 @@ use crate::dice::Dice;
 use crate::harness::{ClockSpec, Report, Res};
 use crate::workload;
 use osis_commit::PurgeItem;
-use osis_core::format::MEMBERSHIP_KEEP_MS;
-use osis_core::{Ak, Role, Tid, Value, WallMs};
+use osis_base::format::MEMBERSHIP_KEEP_MS;
+use osis_base::{Ak, Role, Tid, Value, WallMs};
 use osis_node::Mutation;
 use osis_node::flows::PreSync;
 use osis_node::sync::Event;
@@ -66,7 +66,7 @@ pub fn shared_group(sim: &mut NetSim, a: usize, pa: Tid, servers: &[usize], gran
 
 /// A purge of `c`'s `/s/gone` delta on `t` by node `n` (spec/commits.md §5), recorded for the
 /// purge invariant.
-pub fn purge(sim: &mut NetSim, n: usize, c: osis_core::CommitId, t: Tid) -> Res<()> {
+pub fn purge(sim: &mut NetSim, n: usize, c: osis_base::CommitId, t: Tid) -> Res<()> {
     sim.observe()?;
     let gone = ak(sim, &workload::GONE)?;
     let mut m = Mutation::new();
@@ -78,7 +78,7 @@ pub fn purge(sim: &mut NetSim, n: usize, c: osis_core::CommitId, t: Tid) -> Res<
 }
 
 /// Node `n` writes `/s/gone` on `t`.
-pub fn write_gone(sim: &mut NetSim, n: usize, t: Tid, v: &str) -> Res<osis_core::CommitId> {
+pub fn write_gone(sim: &mut NetSim, n: usize, t: Tid, v: &str) -> Res<osis_base::CommitId> {
     let mut m = Mutation::new();
     m.set(t, &workload::GONE, &Value::Str(v.into())).map_err(|e| sim.fail(e.to_string()))?;
     sim.commit(n, m)?.ok_or_else(|| sim.fail("wrote nothing"))
@@ -424,10 +424,10 @@ pub fn grant_lost_on_crash(seed: u64) -> Res<Report> {
 /// content-defined writer must upload for the edit.
 fn new_chunk_bytes(old: &[u8], new: &[u8]) -> u64 {
     let cuts = |d: &[u8]| -> Vec<Vec<u8>> {
-        let e = osis_core::encode(&Value::Bytes(d.to_vec()));
+        let e = osis_base::encode(&Value::Bytes(d.to_vec()));
         let mut out = Vec::new();
         let mut rest = e.as_slice();
-        for n in osis_core::chunker::chunk_lengths(&e, osis_core::ChunkParams::FORMAT) {
+        for n in osis_base::chunker::chunk_lengths(&e, osis_base::ChunkParams::FORMAT) {
             let (c, r) = rest.split_at(n.min(rest.len()));
             out.push(c.to_vec());
             rest = r;
@@ -460,7 +460,7 @@ pub fn large_edits(seed: u64) -> Res<Report> {
     m.set(t, &file, &Value::Bytes(cur.clone())).map_err(|e| sim.fail(e.to_string()))?;
     sim.commit(d0, m)?;
     sim.quiet(40)?;
-    let chunks = osis_core::chunker::chunk_lengths(&osis_core::encode(&Value::Bytes(cur.clone())), osis_core::ChunkParams::FORMAT).len() as u64;
+    let chunks = osis_base::chunker::chunk_lengths(&osis_base::encode(&Value::Bytes(cur.clone())), osis_base::ChunkParams::FORMAT).len() as u64;
     for i in 0..8u64 {
         let n = if i % 2 == 0 { d1 } else { d0 };
         // the editor reads the value whole first

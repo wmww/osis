@@ -8,7 +8,7 @@ use super::{Done, ak};
 use crate::engine::Engine;
 use crate::error::{Error, Result};
 use crate::Mutation;
-use osis_core::{CommitId, Tid};
+use osis_base::{CommitId, Tid};
 use osis_schema::Chunked;
 use osis_schema::core_types::{self as ct, EdgeKey, Members, Tenures};
 
@@ -74,12 +74,12 @@ impl Engine {
             .0
             .iter()
             .filter_map(|x| match &x.frontier {
-                Some(Chunked::Inline(f)) => Some(osis_core::encode(&osis_schema::Codec::to_value(f))),
+                Some(Chunked::Inline(f)) => Some(osis_base::encode(&osis_schema::Codec::to_value(f))),
                 _ => None,
             })
-            .filter(|b| b.len() > osis_core::format::CHUNK_THRESHOLD)
+            .filter(|b| b.len() > osis_base::format::CHUNK_THRESHOLD)
             .collect();
-        if linked.iter().map(Vec::len).sum::<usize>() > osis_core::format::MAX_LINKED_FRONTIERS {
+        if linked.iter().map(Vec::len).sum::<usize>() > osis_base::format::MAX_LINKED_FRONTIERS {
             return Err(Error::Misuse("the ledger's frontiers exceed MAX_LINKED_FRONTIERS"));
         }
         let mut m = Mutation::new();

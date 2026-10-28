@@ -2,7 +2,7 @@
 //! No batch verification: single verification is the only one, so the two trivially agree.
 
 use crate::{Error, Secret32, agility_bytes, agility_value};
-use osis_core::Value;
+use osis_base::Value;
 use std::fmt;
 
 /// Signature domains, one per signed object (spec/crypto.md §2).
@@ -145,10 +145,10 @@ impl Signature {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use osis_core::Classified;
+    use osis_base::Classified;
 
     fn hex<const N: usize>(s: &str) -> [u8; N] {
-        osis_core::hex::decode(s).unwrap().try_into().unwrap()
+        osis_base::hex::decode(s).unwrap().try_into().unwrap()
     }
 
     // spec/crypto.md §1: Ed25519 is RFC 8032 (test 1 of §7.1: empty message).
@@ -221,14 +221,14 @@ mod tests {
     fn agility_values() {
         let sk = SigningSecret::from_seed(&Secret32::from_bytes([5; 32]));
         let pk = sk.verifying_key();
-        let [_, _, _, _, _, _, hi, lo] = osis_core::format::TAG_ENUM.to_be_bytes();
-        assert_eq!(osis_core::encode(&pk.to_value())[..5], [0xd9, hi, lo, 0x82, 0x01]);
+        let [_, _, _, _, _, _, hi, lo] = osis_base::format::TAG_ENUM.to_be_bytes();
+        assert_eq!(osis_base::encode(&pk.to_value())[..5], [0xd9, hi, lo, 0x82, 0x01]);
         assert_eq!(VerifyingKey::from_value(&pk.to_value()), Ok(pk));
         let sig = sk.sign(Domain::Upload, &[0; 32]);
         assert_eq!(Signature::from_value(&sig.to_value()), Ok(sig));
         let other = Value::Enum(2, Some(Box::new(Value::Bytes(vec![0; 32]))));
         let e = VerifyingKey::from_value(&other).unwrap_err();
-        assert_eq!((e, e.class()), (Error::UnknownCase(2), osis_core::ErrorClass::Parked));
+        assert_eq!((e, e.class()), (Error::UnknownCase(2), osis_base::ErrorClass::Parked));
         assert!(Signature::from_value(&pk.to_value()).is_err());
     }
 

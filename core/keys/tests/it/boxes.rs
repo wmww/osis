@@ -3,7 +3,7 @@
 
 use crate::common;
 use common::*;
-use osis_core::Role;
+use osis_base::Role;
 use osis_crypto::{BoxItem, BoxSlot, Secret32, seal_box};
 use osis_keys::aspects::{box_key, history_key, to_schema};
 use osis_keys::{ActorEpochs, Error, MemberKeys, Opener, Recipient, ROLES, box_member, ingest, open_boxes, roles_up_to, rotate};
@@ -12,11 +12,11 @@ use std::collections::BTreeSet;
 
 /// An unchecked source: a pending commit by node `n`.
 fn from(n: u8) -> osis_keys::Unchecked {
-    osis_keys::Unchecked { author: osis_core::Tid::from_bytes([n; 15]), commit: osis_core::CommitId([n; 32]) }
+    osis_keys::Unchecked { author: osis_base::Tid::from_bytes([n; 15]), commit: osis_base::CommitId([n; 32]) }
 }
 
 struct Forked {
-    a: osis_core::Tid,
+    a: osis_base::Tid,
     view: ActorEpochs,
     s: Secrets,
     forks: [osis_crypto::Epoch; 2],
@@ -166,11 +166,11 @@ fn sizes() {
     let (m, me) = (tid(3), person(0x30));
     let w = box_member(&f.a, &f.view, &f.s, &actor_rcpt(m, Role::Read, &me), &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();
     for b in w.boxes.values() {
-        let enc = osis_core::cbor::encode(&osis_schema::Codec::to_value(b));
+        let enc = osis_base::cbor::encode(&osis_schema::Codec::to_value(b));
         assert!((1200..1300).contains(&enc.len()), "{}", enc.len());
     }
     for (k, b) in f.s.boxes.iter().filter(|(k, _)| k.member == tid(2)) {
-        let enc = osis_core::cbor::encode(&osis_schema::Codec::to_value(b));
+        let enc = osis_base::cbor::encode(&osis_schema::Codec::to_value(b));
         assert!(enc.len() < 100, "{k:?} {}", enc.len());
     }
 }
@@ -324,7 +324,7 @@ fn planted_candidate_against_published_keyset_spec_crypto_4() {
 #[test]
 fn unknown_authors_share_one_budget_spec_crypto_4() {
     let ep = osis_crypto::Epoch::new(1, [1; 16]).unwrap();
-    let unknown = |n: u8| osis_keys::Unchecked { author: osis_keys::UNKNOWN_AUTHOR, commit: osis_core::CommitId([n; 32]) };
+    let unknown = |n: u8| osis_keys::Unchecked { author: osis_keys::UNKNOWN_AUTHOR, commit: osis_base::CommitId([n; 32]) };
     let mut a = ActorEpochs::default();
     for n in 0..200u8 {
         a.read.set_reading_secret(ep, Secret32::from_bytes([n; 32]), unknown(n));

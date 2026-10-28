@@ -20,7 +20,7 @@ use crate::backend::{Backend, WriteBatch};
 use crate::codec::{R, W};
 use crate::root::{RootRecord, RootStorage};
 use crate::Error;
-use osis_core::BlobId;
+use osis_base::BlobId;
 use osis_crypto::aead::{self, NONCE_LEN};
 use osis_crypto::{CryptoRngCore, Secret32, Zeroizing};
 use std::collections::{BTreeMap, BTreeSet, HashMap};

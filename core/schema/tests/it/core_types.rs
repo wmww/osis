@@ -2,8 +2,8 @@
 //! Core aspect Rust types and typed keys (spec/data-model.md §9, spec/wire.md §3). Canonical
 //! encodings are core/test/vectors/schema/core.vec (osis-vectors).
 
-use osis_core::format::{CORE_SCHEMA_ID, CORE_SCHEMA_REVISION, MEMBERSHIP_KEEP_MS};
-use osis_core::{Ak, Classified, CommitId, CreationRecord, ErrorClass, LabelId, Limits, Link, BlobId, Role, SchemaId, Tid, Ts, Value, WallMs};
+use osis_base::format::{CORE_SCHEMA_ID, CORE_SCHEMA_REVISION, MEMBERSHIP_KEEP_MS};
+use osis_base::{Ak, Classified, CommitId, CreationRecord, ErrorClass, LabelId, Limits, Link, BlobId, Role, SchemaId, Tid, Ts, Value, WallMs};
 use osis_schema::core_types::*;
 use osis_schema::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,7 +15,7 @@ fn epoch(n: u64) -> Epoch {
     Epoch { n, nonce: [8; 16] }
 }
 fn edge_key() -> EdgeKey {
-    EdgeKey { ts: Ts::make(WallMs(1_700_000_000_000), 3).unwrap(), node: tid(6), commit: osis_core::CommitId([7; 32]) }
+    EdgeKey { ts: Ts::make(WallMs(1_700_000_000_000), 3).unwrap(), node: tid(6), commit: osis_base::CommitId([7; 32]) }
 }
 
 /// (vector name, AK, encoded sample) per core aspect a commit can write.
@@ -75,8 +75,8 @@ fn core_aspects_round_trip_spec_data_model_9() {
             validate_write(sc, &v, &sc.aspects[ak].ty).unwrap_or_else(|e| panic!("{name}: {e}"));
         }
         // ...and survives the canonical round trip through its typed key.
-        let bytes = osis_core::encode(&v);
-        let back = osis_core::decode(&bytes, &Limits::DEFAULT).unwrap();
+        let bytes = osis_base::encode(&v);
+        let back = osis_base::decode(&bytes, &Limits::DEFAULT).unwrap();
         assert_eq!(back, v);
     }
     let samples = samples();

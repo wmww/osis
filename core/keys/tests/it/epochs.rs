@@ -3,7 +3,7 @@
 
 use crate::common;
 use common::*;
-use osis_core::Role;
+use osis_base::Role;
 use osis_crypto::{Secret32, thing_role_secret};
 use osis_keys::aspects::{box_key, history_key};
 use osis_keys::{ActorEpochs, MemberKeys, Opener, Recipient, ROLES, ingest, rotate};
@@ -19,10 +19,10 @@ fn read() -> BTreeSet<Role> {
 }
 
 struct World {
-    a: osis_core::Tid,
-    p: osis_core::Tid,
-    m: osis_core::Tid,
-    l: osis_core::Tid,
+    a: osis_base::Tid,
+    p: osis_base::Tid,
+    m: osis_base::Tid,
+    l: osis_base::Tid,
     pe: ActorEpochs,
     me: ActorEpochs,
     lseed: Secret32,

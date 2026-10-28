@@ -4,7 +4,7 @@
 
 use crate::net;
 use net::*;
-use osis_core::Role;
+use osis_base::Role;
 use osis_label::Address;
 use osis_crypto::{Domain, Secret32, SigningSecret};
 use osis_node::sync::peers::{lan_tag, LAN_WINDOW_MS};

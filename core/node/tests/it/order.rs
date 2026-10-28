@@ -12,7 +12,7 @@
 
 use crate::common;
 use common::*;
-use osis_core::{Ak, CommitId, Role, Tid, Value, WallMs};
+use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::Mutation;
 use osis_node::local_peer::{LocalPeer, Package, Peer};

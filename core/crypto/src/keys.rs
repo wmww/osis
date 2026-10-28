@@ -2,7 +2,7 @@
 
 use crate::kdf::{self, DEDUP, kdf};
 use crate::{Domain, KemSecret, Secret32, Signature, SigningSecret, VerifyingKey};
-use osis_core::{Role, Tid};
+use osis_base::{Role, Tid};
 
 /// A key actor's keys (node, recovery key, link key), all from its 32-byte seed.
 #[derive(Clone, Debug)]

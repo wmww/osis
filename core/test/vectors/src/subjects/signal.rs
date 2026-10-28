@@ -5,7 +5,7 @@
 use super::{FixedRng, case, generated_header, s32};
 use crate::file::VecFile;
 use crate::hex;
-use osis_core::{Ak, LabelId, SchemaId, Tid, Ts, Value, encode};
+use osis_base::{Ak, LabelId, SchemaId, Tid, Ts, Value, encode};
 use osis_crypto::{KeyActorKeys, LabelRole, label_role_key, wrap};
 use osis_label::{PublishAuth, PublishKey, SignalBody, open_signal, seal_signal};
 

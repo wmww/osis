@@ -1,7 +1,7 @@
 //! Unit tests (spec/wire.md §4, spec/commits.md).
 
 use crate::*;
-use osis_core::{Ak, CommitId, SchemaId, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, CommitId, SchemaId, Tid, Ts, Value, WallMs};
 use osis_crypto::{Secret32, SigningSecret};
 use osis_schema::{Bound, PurgeBy, Retention};
 
@@ -56,7 +56,7 @@ fn header_round_trip() {
     let h = sample_header();
     let b = h.encode();
     assert_eq!(Header::decode(&b).unwrap(), h);
-    assert_eq!(h.id().0, osis_core::hash::hash(&b));
+    assert_eq!(h.id().0, osis_base::hash::hash(&b));
 }
 
 // spec/wire.md §4: a stored header (verified on arrival) reads back as `from_value` reads it,
@@ -97,13 +97,13 @@ fn sign_verify() {
 // spec/versioning.md §2 (park unknown), §2 (reject malformed)
 #[test]
 fn version_parks() {
-    use osis_core::{Classified, ErrorClass};
+    use osis_base::{Classified, ErrorClass};
     let mut v = sample_header().to_value();
     if let Value::List(items) = &mut v {
         items[0] = Value::Int(2);
         items.push(Value::Int(0));
     }
-    let e = Header::decode(&osis_core::encode(&v)).unwrap_err();
+    let e = Header::decode(&osis_base::encode(&v)).unwrap_err();
     assert!(matches!(e, Error::UnknownVersion(2)));
     assert_eq!(e.class(), ErrorClass::Parked);
     let mut h = sample_header();
@@ -120,7 +120,7 @@ fn header_rejects_malformed() {
     let mutate = |i: usize, x: Value| {
         let mut it = items.clone();
         it[i] = x;
-        Header::decode(&osis_core::encode(&Value::List(it))).unwrap_err()
+        Header::decode(&osis_base::encode(&Value::List(it))).unwrap_err()
     };
     assert!(matches!(mutate(1, Value::Bytes(vec![0; 14])), Error::Malformed(_)));
     assert!(matches!(mutate(3, Value::Int(6)), Error::Malformed(_)));
@@ -133,7 +133,7 @@ fn header_rejects_malformed() {
     assert!(matches!(mutate(12, Value::List(vec![Value::List(vec![Value::Int(1), Value::Bytes(vec![0; 32])])])), Error::Malformed(_)));
     let mut short = items.clone();
     short.pop();
-    assert!(Header::decode(&osis_core::encode(&Value::List(short))).is_err());
+    assert!(Header::decode(&osis_base::encode(&Value::List(short))).is_err());
     // an aspect without hashes
     let mut h = sample_header();
     h.aspects[0].hashes.clear();

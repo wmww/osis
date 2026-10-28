@@ -7,7 +7,7 @@ use super::blobs::Body;
 use crate::engine::Engine;
 use crate::error::Result;
 use osis_commit::Decoded;
-use osis_core::{Ak, BlobId, CommitId, CreationRecord, Tid};
+use osis_base::{Ak, BlobId, CommitId, CreationRecord, Tid};
 use osis_perm::Point;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -116,7 +116,7 @@ impl Engine {
             };
         }
         if let Some(tl) = self.core.timelines.get(g) {
-            let ts = osis_core::Ts::make(self.now(), 0xffff).unwrap_or_default();
+            let ts = osis_base::Ts::make(self.now(), 0xffff).unwrap_or_default();
             let certs = tl.certificates(&me, g, Point { ts, node: me, commit: CommitId([0xff; 32]) });
             self.cert_parts(&certs, &mut out);
         }
@@ -143,7 +143,7 @@ impl Engine {
             // the owner chains up to their key actors, timeline or not
             for x in [t, &h.author] {
                 let mut cur = Some(*x);
-                for _ in 0..=osis_core::format::MAX_OWNER_DEPTH {
+                for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
                     let Some(y) = cur else { break };
                     cs.created.insert(y);
                     cur = match self.core.created(&y) {
@@ -213,7 +213,7 @@ impl Engine {
                 continue;
             }
             let Some(tl) = self.core.timelines.get(&m) else { continue };
-            let mut newest: Option<(osis_core::Ts, osis_perm::WriteId, CommitId)> = None;
+            let mut newest: Option<(osis_base::Ts, osis_perm::WriteId, CommitId)> = None;
             for wid in tl.applied().keys() {
                 let osis_perm::WriteId::Op(c, i) = wid else { continue };
                 let Some(mc) = tl.membership_commit(c) else { continue };
@@ -344,7 +344,7 @@ impl Engine {
     pub fn linked_blobs(&mut self, c: &CommitId, parts: &Parts) -> Result<BTreeSet<BlobId>> {
         let mut out = BTreeSet::new();
         let Some(h) = self.header(c) else { return Ok(out) };
-        let lists: Vec<osis_core::Link> = osis_commit::ListField::ALL.iter().filter_map(|f| h.links.get(*f).copied()).collect();
+        let lists: Vec<osis_base::Link> = osis_commit::ListField::ALL.iter().filter_map(|f| h.links.get(*f).copied()).collect();
         for l in &lists {
             self.tree_blobs(l, &h.actor, &mut out)?;
         }
@@ -377,7 +377,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use crate::Mutation;
     use crate::local_peer::LocalPeer;
-    use osis_core::{Ak, Role, Value, WallMs};
+    use osis_base::{Ak, Role, Value, WallMs};
     use osis_schema::core_types as ct;
 
     // spec/permissions.md §4 (certificates and cards are the current valid writes), §5.2: a

@@ -4,8 +4,8 @@
 use crate::tests::{t, ts};
 use crate::tests_verify::{TestSecrets, register_delta, sec};
 use crate::*;
-use osis_core::format::{CHUNK_THRESHOLD, MAX_BLOB};
-use osis_core::{Ak, CommitId, Tid, Ts, Value};
+use osis_base::format::{CHUNK_THRESHOLD, MAX_BLOB};
+use osis_base::{Ak, CommitId, Tid, Ts, Value};
 use osis_crdt::{AnyView, Delta, Source, Writer, create, encode_delta};
 use osis_crypto::{SeededRng, Secret32, SigningSecret};
 use osis_schema::{PurgeBy, Retention};
@@ -77,7 +77,7 @@ fn build_membership_and_refusals() {
     assert!(matches!(build(p.clone(), &mut sink), Err(Error::Build(_))));
     p.aspects[0].expires = None;
     let built = build(p, &mut sink).unwrap();
-    assert_eq!(retention::purge_keep_until(&built.commit.header), Some(at.wall_ms().0 + osis_core::format::MEMBERSHIP_KEEP_MS));
+    assert_eq!(retention::purge_keep_until(&built.commit.header), Some(at.wall_ms().0 + osis_base::format::MEMBERSHIP_KEEP_MS));
 }
 
 // spec/wire.md §4, §6: a list above CHUNK_THRESHOLD goes by link to a chunk tree keyed by the
@@ -115,7 +115,7 @@ fn small_linked_list_rejected() {
     let mut sink = MemoryBlobs::default();
     let built = build(content(2), &mut sink).unwrap();
     let mut h = built.commit.header.clone();
-    let bytes = osis_core::encode(&h.list_value(ListField::Aspects).unwrap());
+    let bytes = osis_base::encode(&h.list_value(ListField::Aspects).unwrap());
     let d = sec(0xd0, &t(2));
     let mut salt = 0u8;
     let link = write_list(&bytes, &d, &mut sink, &mut || {
@@ -238,7 +238,7 @@ fn wide_struct_delta_fits_spec_commits_1() {
     let mut w = Writer::new(at, Source::node(t(1)), 1);
     let fragment = create(&mut w, &Wide(true), &v).unwrap();
     let hi = w.range().hi;
-    let small = PageParams { target: 4096, cut: osis_core::ChunkParams { min: 1024, max: 4096, mask_bits: 8 }, fanout: 8 };
+    let small = PageParams { target: 4096, cut: osis_base::ChunkParams { min: 1024, max: 4096, mask_bits: 8 }, fanout: 8 };
     let enc = |params: PageParams| {
         let mut pages = MemoryPages::with_params(params);
         encode_delta(&Delta { nonce: [1; 16], fragment: fragment.clone() }, &writer_ctx(Kind::Content, at, t(1), 1, hi), Some(&mut pages)).unwrap()
@@ -300,7 +300,7 @@ fn build_import() {
 fn chunk_list() {
     let mut b = content(1);
     b.aspects[0].retention = Retention { by: PurgeBy::Writer, ..Default::default() };
-    b.aspects[0].chunks = vec![osis_core::BlobId([9; 32]), osis_core::BlobId([3; 32])];
+    b.aspects[0].chunks = vec![osis_base::BlobId([9; 32]), osis_base::BlobId([3; 32])];
     let built = build(b, &mut MemoryBlobs::default()).unwrap();
     let h = &built.commit.header;
     assert_eq!(h.chunks.iter().map(|c| c.blob.0[0]).collect::<Vec<_>>(), vec![3, 9]);

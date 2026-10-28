@@ -1,6 +1,6 @@
 //! Type model (spec/data-model.md §3), shaped like the schema-as-data `type_expr` (§10).
 
-use osis_core::Value;
+use osis_base::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A type expression. `Named` covers schema types and the standard named types (`option`,

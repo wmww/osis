@@ -4,14 +4,14 @@
 use crate::common;
 use common::*;
 use osis_commit::{CommitBlob, PurgeItem};
-use osis_core::{Role, Value, WallMs};
+use osis_base::{Role, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::local_peer::Package;
 use osis_node::{Ingested, Mutation, Reason};
 use osis_perm::DemotionScope;
 use osis_schema::Codec;
 
-fn set(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_core::Tid, k: &osis_schema::Aspect<Value>, v: &str) -> osis_core::CommitId {
+fn set(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_base::Tid, k: &osis_schema::Aspect<Value>, v: &str) -> osis_base::CommitId {
     let mut m = Mutation::new();
     m.set(t, k, &s(v)).unwrap();
     lp.peers[i].commit(m).unwrap().unwrap()
@@ -347,7 +347,7 @@ fn move_many_bare_anchors_spec_perm_7() {
 /// then "SECRETmid" typed after "head" and "SECRET" deleted (shown "mid" anchors at it);
 /// compacted (the snapshot carries the deleted elements content-less, its bodies dropped) when
 /// `compact`.
-fn deleted_text(lp: &mut osis_node::local_peer::LocalPeer, t: osis_core::Tid, n: usize, kept: usize, compact: bool) {
+fn deleted_text(lp: &mut osis_node::local_peer::LocalPeer, t: osis_base::Tid, n: usize, kept: usize, compact: bool) {
     let mut m = Mutation::new();
     m.set(t, &TEXT, &s("headtail")).unwrap();
     let mut ids = vec![lp.peers[0].commit(m).unwrap().unwrap()];

@@ -3,7 +3,7 @@
 
 use crate::net;
 use net::*;
-use osis_core::{Ak, Value};
+use osis_base::{Ak, Value};
 use osis_node::Mutation;
 use osis_schema::AspectKey;
 
@@ -37,7 +37,7 @@ fn compaction_keeps_bodies_until_keep_at_least_spec_commits_5() {
     let l = net.label(a);
     let ak = Ak::new(KEPT.ak()).unwrap();
     // the blobs carrying the two dead bodies
-    let dead: Vec<osis_core::BlobId> = net.sync(a).entries(&l).into_iter().filter_map(|(id, k)| match k {
+    let dead: Vec<osis_base::BlobId> = net.sync(a).entries(&l).into_iter().filter_map(|(id, k)| match k {
         osis_node::sync::EntryKind::Commit { commit, .. } if bodies[..2].contains(&commit) => Some(id),
         _ => None,
     }).collect();
@@ -51,7 +51,7 @@ fn compaction_keeps_bodies_until_keep_at_least_spec_commits_5() {
     let at = net.server_ids(sv, &l);
     assert!(dead.iter().all(|id| at.contains(id)), "deleted at the blind node before the bound");
     // compaction waits MAX_DRIFT past the bound (spec/sync.md §7)
-    net.advance(86_400_000 + osis_core::format::MAX_DRIFT_MS);
+    net.advance(86_400_000 + osis_base::format::MAX_DRIFT_MS);
     let acts = net.sync(a).compact(&t, &ak).unwrap();
     net.actions(a, acts);
     net.run();
@@ -64,7 +64,7 @@ fn compaction_keeps_bodies_until_keep_at_least_spec_commits_5() {
 }
 
 /// Deletions in server `sv`'s log of label `l`.
-fn deletions(net: &Net, sv: usize, l: &osis_core::LabelId) -> usize {
+fn deletions(net: &Net, sv: usize, l: &osis_base::LabelId) -> usize {
     use osis_proto::{LabelStore, LogRecord};
     let recs = net.servers[sv].hub.store().log_after(l, 0, 1 << 20).unwrap().unwrap_or_default();
     recs.iter().filter(|(_, r)| matches!(r, LogRecord::Deleted(_))).count()
@@ -78,11 +78,11 @@ fn compact_across_skew(a_ahead: bool) -> (usize, usize) {
     let mut net = Net::new();
     let sv = net.add_server();
     let sk = net.add_server();
-    net.servers[sk].skew = osis_core::format::MAX_DRIFT_MS as i64;
+    net.servers[sk].skew = osis_base::format::MAX_DRIFT_MS as i64;
     let (fast, slow): (&[usize], &[usize]) = (&[sv, sk], &[sv]);
     let a = net.node(1, if a_ahead { fast } else { slow });
     let b = net.node(2, if a_ahead { slow } else { fast });
-    let g = net.group(a, &[(b, osis_core::Role::Write)], &[sv]);
+    let g = net.group(a, &[(b, osis_base::Role::Write)], &[sv]);
     let t = net.item(a, g, g, "x");
     let mut bodies = Vec::new();
     for v in ["v1", "v2", "v3"] {

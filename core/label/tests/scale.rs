@@ -3,8 +3,8 @@
 //! notes/testing.md, "Scale checks"): `OSIS_LARGE_MIB=1024 cargo test --workspace
 //! --test scale -- --ignored --nocapture`. Blobs go to files under the target dir.
 
-use osis_core::BlobId;
-use osis_core::hash::Hasher;
+use osis_base::BlobId;
+use osis_base::hash::Hasher;
 use osis_crypto::{Secret32, SeededRng};
 use osis_label::{BlobFetch, BlobReader, BlobSink, BlobWriter, Error, Framing, LargeParams, StringReader, ValueWriter};
 use std::io::Read;
@@ -81,7 +81,7 @@ fn multi_gb_value_streams() {
             max_buffered = max_buffered.max(w.buffered());
         }
         let root = match w.finish(&mut sink).unwrap() {
-            osis_core::Value::Link(l) => l,
+            osis_base::Value::Link(l) => l,
             v => panic!("not a link: {v:?}"),
         };
         (root, sink.written().len(), max_buffered)

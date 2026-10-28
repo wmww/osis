@@ -6,7 +6,7 @@
 use crate::common;
 
 use common::*;
-use osis_core::{BlobId, WallMs};
+use osis_base::{BlobId, WallMs};
 use osis_crypto::SeededRng;
 use osis_label::Prefix;
 use osis_proto::msg::{DeleteItem, PublishAuth, PublishKey};

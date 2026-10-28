@@ -27,7 +27,7 @@ use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use crate::identity::Identity;
 use crate::Mutation;
-use osis_core::{Ak, CommitId, CreationRecord, LabelId, Role, Tid, Value, WallMs};
+use osis_base::{Ak, CommitId, CreationRecord, LabelId, Role, Tid, Value, WallMs};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
 use osis_keys::{KeysWrite, MemberKeys, Recipient, SecretsWrite};
@@ -157,8 +157,8 @@ pub(crate) fn remove_edge(m: &mut Mutation, target: Tid, member: Tid) -> Result<
     Ok(())
 }
 
-pub(crate) fn now_ts(core: &Core) -> osis_core::Ts {
-    osis_core::Ts::make(core.now(), 0).unwrap_or_default()
+pub(crate) fn now_ts(core: &Core) -> osis_base::Ts {
+    osis_base::Ts::make(core.now(), 0).unwrap_or_default()
 }
 
 impl Core {
@@ -325,7 +325,7 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
             break;
         }
         // the boxes keyed to `m`, per actor: from the index of keyed `/secrets` entries
-        let mut per: std::collections::BTreeMap<Tid, Vec<osis_core::Value>> = std::collections::BTreeMap::new();
+        let mut per: std::collections::BTreeMap<Tid, Vec<osis_base::Value>> = std::collections::BTreeMap::new();
         for (a, k) in tx.core.boxes_to.get(&m).into_iter().flatten() {
             if *a != m {
                 per.entry(*a).or_default().push(k.clone());

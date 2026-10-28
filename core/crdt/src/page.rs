@@ -1,8 +1,8 @@
 //! Page storage plugs for paged fragments (spec/crdt.md §8, spec/wire.md §6). osis-label and the
 //! node implement them over blobs; `MemoryPages` serves tests.
 
-use osis_core::format::{PAGE_TARGET, TREE_FANOUT};
-use osis_core::{BlobId, ChunkParams, Classified, ErrorClass, Link};
+use osis_base::format::{PAGE_TARGET, TREE_FANOUT};
+use osis_base::{BlobId, ChunkParams, Classified, ErrorClass, Link};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,7 +15,7 @@ pub enum PageError {
     Storage,
 }
 
-osis_core::impl_error!(PageError {
+osis_base::impl_error!(PageError {
     Missing => ("missing"),
     Corrupt => ("content hash or decryption failed"),
     Storage => ("storage failure"),
@@ -95,7 +95,7 @@ impl MemoryPages {
 
 impl PageSink for MemoryPages {
     fn put(&mut self, plaintext: &[u8]) -> Result<Link, PageError> {
-        let hash = osis_core::hash::hash(plaintext);
+        let hash = osis_base::hash::hash(plaintext);
         self.next += 1;
         let mut blob = [0u8; 32];
         for (b, x) in blob.iter_mut().zip(self.next.to_le_bytes()) {
@@ -112,7 +112,7 @@ impl PageSink for MemoryPages {
 impl PageSource for MemoryPages {
     fn get(&mut self, link: &Link) -> Result<Vec<u8>, PageError> {
         let page = self.pages.get(&link.hash).ok_or(PageError::Missing)?;
-        if osis_core::hash::hash(page) != link.hash {
+        if osis_base::hash::hash(page) != link.hash {
             return Err(PageError::Corrupt);
         }
         Ok(page.clone())

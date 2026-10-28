@@ -10,8 +10,8 @@ use crate::page::{PageError, PageParams, PageSink, PageSource};
 use crate::seq::{self, Seq};
 use crate::stamp::{Dot, Interner, Source, Stamp};
 use crate::wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, NONCE_LEN, Snapshot, as_array, as_uint, uint};
-use osis_core::format::{MAX_BLOB, MAX_OBJECT_DEPTH, MAX_VALUE_DEPTH};
-use osis_core::{Limits, PageCutter, Value};
+use osis_base::format::{MAX_BLOB, MAX_OBJECT_DEPTH, MAX_VALUE_DEPTH};
+use osis_base::{Limits, PageCutter, Value};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 const LIMITS: Limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_BLOB };
@@ -51,7 +51,7 @@ pub(crate) fn elems_value(cx: &mut Enc, items: Vec<Value>) -> Result<Value, Erro
 /// else `[Link+]` to pages, or to link pages when that list is above the target. Pages are put
 /// through the sink; `None` is fine only for an array that does not page.
 pub fn page_array(pages: Option<&mut dyn PageSink>, items: Vec<Value>) -> Result<Value, Error> {
-    let encoded: Vec<Vec<u8>> = items.iter().map(osis_core::encode).collect();
+    let encoded: Vec<Vec<u8>> = items.iter().map(osis_base::encode).collect();
     paged(pages, items, encoded, Value::List)
 }
 
@@ -66,8 +66,8 @@ fn page_map(cx: &mut Enc, items: Vec<(Value, Value)>) -> Result<Value, Error> {
     let encoded: Vec<Vec<u8>> = items
         .iter()
         .map(|(k, v)| {
-            let mut b = osis_core::encode(k);
-            b.extend(osis_core::encode(v));
+            let mut b = osis_base::encode(k);
+            b.extend(osis_base::encode(v));
             b
         })
         .collect();
@@ -94,14 +94,14 @@ fn paged<T>(mut pages: Option<&mut dyn PageSink>, items: Vec<T>, encoded: Vec<Ve
         page.push(item);
         cutter.feed(bytes);
         if cutter.end_element() {
-            links.push(Value::Link(sink.put(&osis_core::encode(&whole(std::mem::take(&mut page))))?));
+            links.push(Value::Link(sink.put(&osis_base::encode(&whole(std::mem::take(&mut page))))?));
         }
     }
     if !page.is_empty() {
-        links.push(Value::Link(sink.put(&osis_core::encode(&whole(page)))?));
+        links.push(Value::Link(sink.put(&osis_base::encode(&whole(page)))?));
     }
     let list = Value::List(links);
-    if osis_core::encode(&list).len() <= params.target {
+    if osis_base::encode(&list).len() <= params.target {
         return Ok(list);
     }
     // link pages: the tree-node grouping rule, level 1 only
@@ -112,14 +112,14 @@ fn paged<T>(mut pages: Option<&mut dyn PageSink>, items: Vec<T>, encoded: Vec<Ve
         let zero = matches!(&l, Value::Link(x) if x.hash.first() == Some(&0));
         group.push(l);
         if (group.len() >= 2 && zero) || group.len() >= params.fanout {
-            groups.push(Value::Link(sink.put(&osis_core::encode(&Value::List(std::mem::take(&mut group))))?));
+            groups.push(Value::Link(sink.put(&osis_base::encode(&Value::List(std::mem::take(&mut group))))?));
         }
     }
     if !group.is_empty() {
-        groups.push(Value::Link(sink.put(&osis_core::encode(&Value::List(group)))?));
+        groups.push(Value::Link(sink.put(&osis_base::encode(&Value::List(group)))?));
     }
     let top = Value::List(groups);
-    if osis_core::encode(&top).len() > params.target {
+    if osis_base::encode(&top).len() > params.target {
         return Err(Error::Mismatch("fragment needs a third page level"));
     }
     Ok(top)
@@ -248,7 +248,7 @@ fn encode_top<'p>(cx: &DeltaCtx, f: &Fragment, frontiers: Option<&Frontiers>, pa
 pub fn encode_delta(d: &Delta, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
     let (enc, frag, _) = encode_top(cx, &d.fragment, None, pages)?;
     let top = Value::List(vec![Value::Bytes(d.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag]);
-    Ok(osis_core::encode(&top))
+    Ok(osis_base::encode(&top))
 }
 
 /// Encodes a snapshot delta (§8). The caller strips values of expiring deltas first (§4.7).
@@ -269,7 +269,7 @@ pub fn encode_snapshot(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageS
     if !authors.is_empty() {
         top.push(Value::List(authors));
     }
-    Ok(osis_core::encode(&Value::List(top)))
+    Ok(osis_base::encode(&Value::List(top)))
 }
 
 // ---- decode
@@ -289,7 +289,7 @@ fn check_value(v: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-fn links(items: &[Value]) -> Result<Option<Vec<osis_core::Link>>, Error> {
+fn links(items: &[Value]) -> Result<Option<Vec<osis_base::Link>>, Error> {
     let n = items.iter().filter(|i| matches!(i, Value::Link(_))).count();
     if n == 0 {
         return Ok(None);
@@ -304,25 +304,25 @@ fn links(items: &[Value]) -> Result<Option<Vec<osis_core::Link>>, Error> {
 /// then link pages. Handed to `Dec::done` after the position's items are decoded, so the
 /// fetched list follows the encoder's order (nested pages first) and the replay gives equal
 /// plaintexts their links back in place.
-pub(crate) type Fetched = Vec<(Vec<u8>, osis_core::Link)>;
+pub(crate) type Fetched = Vec<(Vec<u8>, osis_base::Link)>;
 
 /// Fetches a page. Each blob is read once per delta, so expansion is bounded by the distinct
 /// pages that exist.
-fn fetch_page(cx: &mut Dec, link: &osis_core::Link) -> Result<(Value, Vec<u8>), Error> {
+fn fetch_page(cx: &mut Dec, link: &osis_base::Link) -> Result<(Value, Vec<u8>), Error> {
     if !cx.links_seen.insert(link.blob) {
         return Err(Error::Malformed("a page linked twice"));
     }
     let src = cx.pages.as_mut().ok_or(Error::Page(PageError::Missing))?;
     let bytes = src.get(link)?;
-    let v = osis_core::decode(&bytes, &LIMITS)?;
+    let v = osis_base::decode(&bytes, &LIMITS)?;
     Ok((v, bytes))
 }
 
 /// The leaf pages under a paged position `v` holding links `top`, link pages resolved (§8, at
 /// most two levels).
-fn leaf_pages(cx: &mut Dec, v: &Value, top: &[osis_core::Link]) -> Result<(Vec<Value>, Fetched), Error> {
+fn leaf_pages(cx: &mut Dec, v: &Value, top: &[osis_base::Link]) -> Result<(Vec<Value>, Fetched), Error> {
     let params = cx.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
-    if osis_core::encode(v).len() > params.target {
+    if osis_base::encode(v).len() > params.target {
         return Err(Error::Malformed("link list above the page target"));
     }
     let (mut out, mut leaves, mut link_pages) = (Vec::new(), Vec::new(), Vec::new());
@@ -374,7 +374,7 @@ pub(crate) fn elem_items(cx: &mut Dec, v: &Value) -> Result<(Vec<Value>, Fetched
 
 /// Replays the pages a decode fetched, so the canonical re-encode reproduces their links.
 struct Replay {
-    pages: HashMap<Vec<u8>, VecDeque<osis_core::Link>>,
+    pages: HashMap<Vec<u8>, VecDeque<osis_base::Link>>,
     params: PageParams,
 }
 
@@ -391,8 +391,8 @@ impl Dec<'_> {
 }
 
 impl Replay {
-    fn new(fetched: Vec<(Vec<u8>, osis_core::Link)>, params: PageParams) -> Replay {
-        let mut pages: HashMap<Vec<u8>, VecDeque<osis_core::Link>> = HashMap::new();
+    fn new(fetched: Vec<(Vec<u8>, osis_base::Link)>, params: PageParams) -> Replay {
+        let mut pages: HashMap<Vec<u8>, VecDeque<osis_base::Link>> = HashMap::new();
         for (b, l) in fetched {
             pages.entry(b).or_default().push_back(l);
         }
@@ -401,7 +401,7 @@ impl Replay {
 }
 
 impl PageSink for Replay {
-    fn put(&mut self, plaintext: &[u8]) -> Result<osis_core::Link, PageError> {
+    fn put(&mut self, plaintext: &[u8]) -> Result<osis_base::Link, PageError> {
         self.pages.get_mut(plaintext).and_then(VecDeque::pop_front).ok_or(PageError::Corrupt)
     }
     fn params(&self) -> PageParams {
@@ -667,7 +667,7 @@ fn nonce(v: &Value) -> Result<[u8; NONCE_LEN], Error> {
 
 /// Decodes a delta (§3.2) against its header facts; bad input unless canonical.
 pub fn decode_delta<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Delta, Error> {
-    let top = osis_core::decode(bytes, &LIMITS)?;
+    let top = osis_base::decode(bytes, &LIMITS)?;
     let [n, sources, commits, frag] = as_array(&top)? else { return Err(Error::Malformed("delta arity")) };
     let mut dec = Dec::new(cx, interner, pages);
     dec.load_sources(sources)?;
@@ -681,7 +681,7 @@ pub fn decode_delta<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner,
 
 /// Decodes a snapshot delta (§8); bad input unless canonical.
 pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Snapshot, Error> {
-    let top = osis_core::decode(bytes, &LIMITS)?;
+    let top = osis_base::decode(bytes, &LIMITS)?;
     let (n, sources, commits, frag, fr, ab, au) = match as_array(&top)? {
         [n, sources, commits, frag, fr, ab] => (n, sources, commits, frag, fr, ab, None),
         [n, sources, commits, frag, fr, ab, au] => (n, sources, commits, frag, fr, ab, Some(au)),
@@ -705,7 +705,7 @@ pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Intern
         let [c, a] = as_array(e)? else { return Err(Error::Malformed("absorbed commit")) };
         let (Value::Bytes(c), Value::Tid(a)) = (c, a) else { return Err(Error::Malformed("absorbed commit")) };
         let c = <[u8; 32]>::try_from(c.as_slice()).map_err(|_| Error::Malformed("absorbed commit ID"))?;
-        if absorbed.insert(osis_core::CommitId(c), *a).is_some() {
+        if absorbed.insert(osis_base::CommitId(c), *a).is_some() {
             return Err(Error::Malformed("absorbed commit repeated"));
         }
     }
@@ -715,8 +715,8 @@ pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Intern
         let [i, t, ts] = as_array(e)? else { return Err(Error::Malformed("author")) };
         let i = as_uint(i)?;
         let Value::Bytes(t) = t else { return Err(Error::Malformed("author tid")) };
-        let t = osis_core::Tid::from_bytes(t.as_slice().try_into().map_err(|_| Error::Malformed("author tid"))?);
-        let ts = osis_core::Ts::from_u64(as_uint(ts)?).ok_or(Error::Malformed("author ts"))?;
+        let t = osis_base::Tid::from_bytes(t.as_slice().try_into().map_err(|_| Error::Malformed("author tid"))?);
+        let ts = osis_base::Ts::from_u64(as_uint(ts)?).ok_or(Error::Malformed("author ts"))?;
         let c = dec.source(i)?.as_commit().ok_or(Error::Malformed("author of a non-commit source"))?;
         if i <= last {
             return Err(Error::Malformed("authors out of order"));

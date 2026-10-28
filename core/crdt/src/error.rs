@@ -1,7 +1,7 @@
 //! Errors (notes/architecture.md §3).
 
 use crate::page::PageError;
-use osis_core::{Classified, DecodeError, ErrorClass};
+use osis_base::{Classified, DecodeError, ErrorClass};
 
 #[derive(Debug)]
 pub enum Error {
@@ -17,7 +17,7 @@ pub enum Error {
     Page(PageError),
 }
 
-osis_core::impl_error!(Error {
+osis_base::impl_error!(Error {
     Cbor(e) => ("delta: {e}"),
     Malformed(m) => ("malformed delta: {m}"),
     UnknownEncoding(id) => ("unknown merge encoding {id}"),

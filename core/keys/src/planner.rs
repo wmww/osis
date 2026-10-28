@@ -3,7 +3,7 @@
 
 use crate::covers::Departure;
 use crate::epoch::ROLES;
-use osis_core::{Role, Tid};
+use osis_base::{Role, Tid};
 use osis_perm::{At, Timeline};
 use std::collections::{BTreeMap, BTreeSet};
 

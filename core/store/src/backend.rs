@@ -1,7 +1,7 @@
 //! `Backend`: transactional ordered KV of opaque bytes plus a blob area (notes/architecture.md §2).
 //! Holds ciphertext only; the store above never hands it plaintext (notes/local-store.md).
 
-use osis_core::{BlobId, Classified, ErrorClass};
+use osis_base::{BlobId, Classified, ErrorClass};
 
 /// A backend failure. Always Local (notes/architecture.md §3).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14,7 +14,7 @@ pub enum BackendError {
     Crashed,
 }
 
-osis_core::impl_error!(BackendError {
+osis_base::impl_error!(BackendError {
     Io(m) => ("storage: {m}"),
     Fault => ("injected storage fault"),
     Crashed => ("storage crashed"),

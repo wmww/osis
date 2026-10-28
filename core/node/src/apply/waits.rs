@@ -30,8 +30,8 @@ use super::Reason;
 use crate::engine::{Core, Tx};
 use crate::error::Result;
 use osis_commit::Header;
-use osis_core::format::MAX_DRIFT_MS;
-use osis_core::{Ak, CommitId, Tid, Ts};
+use osis_base::format::MAX_DRIFT_MS;
+use osis_base::{Ak, CommitId, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

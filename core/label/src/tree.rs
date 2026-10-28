@@ -8,7 +8,7 @@ pub use osis_commit::tree::{HashSink, Kid, LinkSource, TreeReader, TreeSink, Tre
 
 use crate::blob::{Level, Prefix, frame, open};
 use crate::Error;
-use osis_core::{BlobId, ChunkParams, Link, WallMs};
+use osis_base::{BlobId, ChunkParams, Link, WallMs};
 use osis_crdt::{PageError, PageParams, PageSink, PageSource};
 use osis_crypto::{CryptoRngCore, SUITE_1, Secret32, VerifyingKey, commitment, link_hash};
 use std::collections::{BTreeSet, HashMap};
@@ -197,7 +197,7 @@ impl PageSink for BlobWriter<'_> {
 /// Digest of a node's exact links (a node is reused only over the very blobs it links; its
 /// content hash covers the lengths).
 fn kids_digest(kids: &[Kid]) -> [u8; 32] {
-    let mut h = osis_core::hash::Hasher::new();
+    let mut h = osis_base::hash::Hasher::new();
     for (l, _) in kids {
         h.update(&l.hash).update(&l.blob.0).update(&[l.suite]).update(&l.key);
     }
@@ -339,7 +339,7 @@ impl PageSource for BlobReader<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use osis_core::{Value, encode};
+    use osis_base::{Value, encode};
     use osis_crypto::SeededRng;
     use proptest::prelude::*;
 
@@ -347,7 +347,7 @@ mod tests {
 
     fn data(n: usize, seed: u8) -> Vec<u8> {
         let mut out = vec![0u8; n];
-        osis_core::hash::Hasher::new().update(&[seed]).finalize_xof(&mut out);
+        osis_base::hash::Hasher::new().update(&[seed]).finalize_xof(&mut out);
         out
     }
 
@@ -442,7 +442,7 @@ mod tests {
     #[test]
     fn paged_snapshot() {
         use osis_crdt::{AnyView, CounterRange, DeltaCtx, DeltaKind, Frontiers, Interner, Snapshot, Source, Writer, create, decode_snapshot, encode_snapshot};
-        use osis_core::{Tid, Ts};
+        use osis_base::{Tid, Ts};
         let params = PageParams { target: 2000, cut: ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8 };
         let ts = Ts::from_u64(1 << 40).unwrap();
         let own = Source::node(Tid::from_bytes([5; 15]));

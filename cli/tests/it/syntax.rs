@@ -6,7 +6,7 @@
 use osis::{Schema, Tid, Value};
 use osis_cli::json;
 use osis_cli::text::{self, no_aliases, parse, print};
-use osis_schema::osis_core::{CanonicalBytes, Unknown};
+use osis_schema::osis_base::{CanonicalBytes, Unknown};
 use proptest::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,7 +24,7 @@ fn floats() -> impl Strategy<Value = Value> {
     ]
 }
 
-/// osis-core's value generator (tests/cbor.rs) without links: the API never returns links.
+/// osis-base's value generator (tests/cbor.rs) without links: the API never returns links.
 fn leaf() -> impl Strategy<Value = Value> {
     prop_oneof![
         any::<i64>().prop_map(Value::Int),

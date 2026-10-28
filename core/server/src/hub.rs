@@ -7,7 +7,7 @@
 
 use crate::replicate::Replicator;
 use crate::store::BackendStore;
-use osis_core::LabelId;
+use osis_base::LabelId;
 use osis_crypto::CryptoRngCore;
 use osis_proto::{ClientInput, ClientOutput, ServerConfig, ServerConnection, ServerInput, ServerOutput};
 use osis_store::Backend;

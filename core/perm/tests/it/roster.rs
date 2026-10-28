@@ -8,8 +8,8 @@ use crate::common;
 
 use common::*;
 use membership_model::{edges, joint, snapshot, Rng};
-use osis_core::Role::{Admin, Write};
-use osis_core::{CommitId, Role, Tid};
+use osis_base::Role::{Admin, Write};
+use osis_base::{CommitId, Role, Tid};
 use osis_perm::{At, Dots, Edge, MemoryHeldSet, Point, Timeline, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -165,7 +165,7 @@ fn run_edges(samples: u64, seed: u64) {
                     membership_model::Role::Write => Write,
                     _ => Role::Read,
                 },
-                until: (e.until != edges::NEVER).then_some(osis_core::WallMs(e.until as u64)),
+                until: (e.until != edges::NEVER).then_some(osis_base::WallMs(e.until as u64)),
                 invite: match e.invite {
                     membership_model::Role::None => None,
                     membership_model::Role::Read => Some(Role::Read),

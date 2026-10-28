@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 //! Shared test setup: a device (backend + root storage) per backend kind.
 
-use osis_core::{Ak, Tid};
+use osis_base::{Ak, Tid};
 use osis_crypto::SeededRng;
 use osis_store::{Backend, Faults, MemoryBackend, MemoryRoot, RootStorage, Store, StoreConfig};
 

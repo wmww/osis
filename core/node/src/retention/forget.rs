@@ -19,7 +19,7 @@ use crate::engine::{Core, Tx};
 use crate::error::Result;
 use crate::events::{Cause, Event};
 use osis_commit::{CommitBlob, Header};
-use osis_core::{Ak, BlobId, CommitId, LabelId, Tid};
+use osis_base::{Ak, BlobId, CommitId, LabelId, Tid};
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 

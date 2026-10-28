@@ -3,7 +3,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use osis_core::{CreationRecord, Limits, decode, encode, hash};
+use osis_base::{CreationRecord, Limits, decode, encode, hash};
 
 fuzz_target!(|data: &[u8]| {
     let Ok(v) = decode(data, &Limits::DEFAULT) else { return };

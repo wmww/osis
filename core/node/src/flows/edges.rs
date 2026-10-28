@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::rotation;
 use crate::Mutation;
 use osis_commit::CommitBlob;
-use osis_core::{CommitId, Role, Tid, WallMs};
+use osis_base::{CommitId, Role, Tid, WallMs};
 use osis_keys::{Departure, ROLES, box_member, roles_up_to};
 use osis_label::{InboxPayload, InboxThing, open_inbox_blob, seal_inbox_blob};
 use osis_perm::{At, Edge as PermEdge};
@@ -85,7 +85,7 @@ pub(crate) fn deliver_parts(tx: &mut Tx<'_>, member: Tid, c: CommitId, things: &
         let keep: BTreeSet<usize> = blob.header.aspects.iter().enumerate().filter(|(_, a)| a.ak.as_str() == "/members").map(|(i, _)| i).collect();
         blob.parts.retain(|p| keep.contains(&p.ai));
     }
-    let commit = osis_core::decode(&blob.encode(), &osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: osis_core::format::MAX_BLOB })
+    let commit = osis_base::decode(&blob.encode(), &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB })
         .map_err(|_| Error::Corrupt("commit blob"))?;
     let mut ts: Vec<InboxThing> = Vec::new();
     let mut seen = BTreeSet::new();
@@ -192,7 +192,7 @@ fn entry_dots(tx: &Tx<'_>, target: &Tid, member: &Tid) -> Vec<osis_crdt::Dot> {
 /// `others`, an explicit removal of those members' edges too, under the same frontier and one
 /// rotation (spec/commits.md §2). Then the inbox copy to each member, and placement before any
 /// other upload under every label the removed parties could read.
-pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, others: &[Tid], frontier: Option<osis_core::Value>) -> Result<Done> {
+pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, others: &[Tid], frontier: Option<osis_base::Value>) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.id.tid());
     let member = d.member;
     let ts = now_ts(tx.core);
@@ -407,7 +407,7 @@ impl Engine {
             }
         }
         let (a, p) = opened.ok_or(Error::Misuse("no held read secret opens this inbox blob"))?;
-        let bytes = osis_core::encode(&p.commit);
+        let bytes = osis_base::encode(&p.commit);
         let id = CommitBlob::decode(&bytes)?.id();
         self.ingest(&bytes, Vec::new())?;
         self.note_delete_hints(id, &p.things)?;

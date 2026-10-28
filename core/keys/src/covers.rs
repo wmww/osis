@@ -2,8 +2,8 @@
 
 use crate::aspects::{box_key, from_schema};
 use crate::epoch::{ActorEpochs, Provenance, ROLES};
-use osis_core::format::MAX_DRIFT_MS;
-use osis_core::{Role, Tid, WallMs};
+use osis_base::format::MAX_DRIFT_MS;
+use osis_base::{Role, Tid, WallMs};
 use osis_crypto::Epoch;
 use osis_schema::core_types::{BoxKey, SecretBox, Secrets};
 use std::collections::{BTreeMap, BTreeSet};

@@ -11,7 +11,7 @@ license = "MIT"
 
 # Every external dependency needs its line in notes/architecture.md (Dependency policy).
 [workspace.dependencies]
-osis-core = { path = "core/base" }
+osis-base = { path = "core/base" }
 osis-crypto = { path = "core/crypto" }
 osis-crdt = { path = "core/crdt" }
 osis-perm = { path = "core/perm" }

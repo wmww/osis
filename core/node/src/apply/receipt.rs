@@ -8,7 +8,7 @@ use crate::engine::records::{self, Rd, Wr};
 use crate::engine::{Engine, Tx};
 use crate::error::Result;
 use osis_commit::{Decoded, Form, Header};
-use osis_core::{Ak, CommitId, Tid, WallMs};
+use osis_base::{Ak, CommitId, Tid, WallMs};
 use osis_perm::DemotionScope;
 use osis_schema::core_types::{Frontier, is_membership_class};
 use osis_store::Shred;

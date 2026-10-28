@@ -7,7 +7,7 @@ use crate::schema::{AspectDef, Bound, Flag, PurgeBy, Retention, Schema, SignalDe
 use crate::statics::StaticSchema;
 use crate::typed::typed_read;
 use crate::types::{Case, EnumType, Field, StructType, Type};
-use osis_core::{SchemaId, Value};
+use osis_base::{SchemaId, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Source of the schema of schemas (spec/data-model.md §10).
@@ -129,12 +129,12 @@ impl Schema {
 
     /// Canonical form: the canonical encoding of `to_value`.
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        osis_core::encode(&self.to_value())
+        osis_base::encode(&self.to_value())
     }
 
     /// Unkeyed BLAKE3 of the canonical form (lock files).
     pub fn hash(&self) -> [u8; 32] {
-        osis_core::hash::hash(&self.canonical_bytes())
+        osis_base::hash::hash(&self.canonical_bytes())
     }
 
     /// Reads a schema value: typed against the schema of schemas, then validated.

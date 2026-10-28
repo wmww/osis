@@ -2,8 +2,8 @@
 //! Hostile schemas end in errors, never in stack overflows or runaway work (notes/architecture.md
 //! §3, no panics on data; spec/data-model.md §3 named and recursive types; spec/versioning.md §4).
 
-use osis_core::Value;
-use osis_core::format::CHUNK_THRESHOLD;
+use osis_base::Value;
+use osis_base::format::CHUNK_THRESHOLD;
 use osis_schema::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;

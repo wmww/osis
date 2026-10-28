@@ -2,11 +2,11 @@
 
 use super::*;
 use crate::msg::Message;
-use osis_core::LabelId;
+use osis_base::LabelId;
 use proptest::prelude::*;
 
 fn id_of(n: u64) -> BlobId {
-    BlobId(osis_core::hash::hash(&n.to_le_bytes()))
+    BlobId(osis_base::hash::hash(&n.to_le_bytes()))
 }
 
 fn set(ns: impl IntoIterator<Item = u64>) -> Vec<BlobId> {
@@ -30,7 +30,7 @@ pub(crate) fn reconcile(a: &[BlobId], b: &[BlobId]) -> (BTreeSet<BlobId>, BTreeS
             let out = respond(b, &ranges).unwrap();
             let rep = Message::ReconcileReply { id: 1, ranges: out };
             let enc = rep.encode();
-            assert!(enc.len() <= osis_core::format::MAX_MESSAGE);
+            assert!(enc.len() <= osis_base::format::MAX_MESSAGE);
             let Ok(Message::ReconcileReply { ranges, .. }) = Message::decode(&enc) else { panic!("reply did not decode") };
             replies.push((token, ranges));
         }
@@ -50,7 +50,7 @@ fn diff(a: &[BlobId], b: &[BlobId]) -> BTreeSet<BlobId> {
 #[test]
 fn fingerprint_is_additive_and_wraps() {
     assert_eq!(fingerprint(&[]), {
-        let h = osis_core::hash::hash(&[0u8; 40]);
+        let h = osis_base::hash::hash(&[0u8; 40]);
         let mut f = [0; 16];
         f.copy_from_slice(&h[..16]);
         f
@@ -61,7 +61,7 @@ fn fingerprint_is_additive_and_wraps() {
     one[0] = 1;
     let mut zero_sum_two = [0u8; 40];
     zero_sum_two[32] = 2;
-    let h = osis_core::hash::hash(&zero_sum_two);
+    let h = osis_base::hash::hash(&zero_sum_two);
     assert_eq!(fingerprint(&[BlobId(one), max]), h[..16]);
     // order-independent
     let s = set(0..50);
@@ -154,7 +154,7 @@ fn million_blob_rounds() {
             let Message::Reconcile { ranges, .. } = req else { unreachable!() };
             let rep = Message::ReconcileReply { id: 1, ranges: respond(&b, &ranges).unwrap() };
             let enc = rep.encode();
-            assert!(enc.len() <= osis_core::format::MAX_MESSAGE);
+            assert!(enc.len() <= osis_base::format::MAX_MESSAGE);
             down += enc.len();
             msgs += 1;
             let Message::ReconcileReply { ranges, .. } = rep else { unreachable!() };
@@ -208,7 +208,7 @@ fn unsolicited_replies_are_dropped() {
 /// IDs `0..n` of the transcript universe: 32-byte slices of BLAKE3 XOF("osis proto reconcile").
 fn universe(n: usize) -> Vec<BlobId> {
     let mut out = vec![0u8; 32 * n];
-    osis_core::hash::Hasher::new().update(b"osis proto reconcile").finalize_xof(&mut out);
+    osis_base::hash::Hasher::new().update(b"osis proto reconcile").finalize_xof(&mut out);
     out.as_chunks::<32>().0.iter().map(|c| BlobId(*c)).collect()
 }
 

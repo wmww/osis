@@ -4,7 +4,7 @@
 
 use super::SyncEngine;
 use crate::error::{Error, Result};
-use osis_core::{BlobId, LabelId};
+use osis_base::{BlobId, LabelId};
 use osis_label::{BundleWriter, Record};
 use osis_proto::ClientEvent;
 use std::collections::BTreeSet;

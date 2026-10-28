@@ -4,13 +4,13 @@
 
 use crate::net;
 use net::*;
-use osis_core::Role;
+use osis_base::Role;
 use osis_node::sync::EntryKind;
 use osis_schema::core_types as ct;
 
 /// Node 0 admin of a group with a label, node 1 a reader with invite read, node 2 a stranger
 /// node 1 knows. Returns (group, its label, node 1's invite grant of node 2).
-fn invite(net: &mut Net, sv: usize) -> (osis_core::Tid, osis_core::LabelId, osis_core::CommitId, osis_node::flows::Done) {
+fn invite(net: &mut Net, sv: usize) -> (osis_base::Tid, osis_base::LabelId, osis_base::CommitId, osis_node::flows::Done) {
     let g = net.group(0, &[(1, Role::Read)], &[sv]);
     let b = net.tid(1);
     let raise = ct::Edge { role: Role::Read, until: None, invite: Some(Role::Read), since: None };
@@ -28,14 +28,14 @@ fn invite(net: &mut Net, sv: usize) -> (osis_core::Tid, osis_core::LabelId, osis
 }
 
 /// Records of the server's log of `l`: (added, deleted).
-fn log(net: &Net, sv: usize, l: &osis_core::LabelId) -> (usize, usize) {
+fn log(net: &Net, sv: usize, l: &osis_base::LabelId) -> (usize, usize) {
     use osis_proto::LabelStore;
     let recs = net.servers[sv].hub.store().log_after(l, 0, 1 << 20).ok().flatten().unwrap_or_default();
     let del = recs.iter().filter(|(_, r)| matches!(r, osis_proto::LogRecord::Deleted(_))).count();
     (recs.len() - del, del)
 }
 
-fn copies(net: &mut Net, n: usize, l: &osis_core::LabelId, c: &osis_core::CommitId) -> usize {
+fn copies(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::CommitId) -> usize {
     net.sync(n).entries(l).iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == c)).count()
 }
 
@@ -101,8 +101,8 @@ fn carry(net: &mut Net, n: usize, done: osis_node::flows::Done) {
 }
 
 /// Blob IDs of node `n`'s entries of commit `c`, over every label it knows of.
-fn entries_of(net: &mut Net, n: usize, c: &osis_core::CommitId) -> Vec<osis_core::BlobId> {
-    let labels: Vec<osis_core::LabelId> = net.sync(n).labels().into_iter().map(|(_, l)| l.id).collect();
+fn entries_of(net: &mut Net, n: usize, c: &osis_base::CommitId) -> Vec<osis_base::BlobId> {
+    let labels: Vec<osis_base::LabelId> = net.sync(n).labels().into_iter().map(|(_, l)| l.id).collect();
     let mut out = Vec::new();
     for l in labels {
         out.extend(net.sync(n).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == c)).map(|(id, _)| id));
@@ -111,21 +111,21 @@ fn entries_of(net: &mut Net, n: usize, c: &osis_core::CommitId) -> Vec<osis_core
 }
 
 /// Every live entry a server holds, over all its labels.
-fn all_ids(net: &Net, sv: usize) -> Vec<osis_core::BlobId> {
+fn all_ids(net: &Net, sv: usize) -> Vec<osis_base::BlobId> {
     net.labels_at(sv).iter().flat_map(|l| net.server_ids(sv, l)).collect()
 }
 
 /// Node `a`'s person shares group T (label at server 0) by a single-use link whose K has its
 /// label at server 1; node `x` (a person too) follows K's label. Returns (a, x, T, link, x's
 /// person, the held link key).
-fn link_setup(net: &mut Net) -> (usize, usize, osis_core::Tid, osis_label::ShareLink, osis_core::Tid, osis_core::Tid) {
+fn link_setup(net: &mut Net) -> (usize, usize, osis_base::Tid, osis_label::ShareLink, osis_base::Tid, osis_base::Tid) {
     net.add_server();
     net.add_server();
     link_setup_at(net, &[1])
 }
 
 /// `link_setup` over the servers `net` has (server 0 the home and T's), K's label at `k`.
-fn link_setup_at(net: &mut Net, k: &[usize]) -> (usize, usize, osis_core::Tid, osis_label::ShareLink, osis_core::Tid, osis_core::Tid) {
+fn link_setup_at(net: &mut Net, k: &[usize]) -> (usize, usize, osis_base::Tid, osis_label::ShareLink, osis_base::Tid, osis_base::Tid) {
     use osis_node::Mutation;
     let s0 = 0;
     let all: Vec<usize> = (0..net.servers.len()).collect();

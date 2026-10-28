@@ -4,7 +4,7 @@
 
 use crate::net;
 use net::*;
-use osis_core::{LabelId, Role};
+use osis_base::{LabelId, Role};
 use osis_crypto::{Secret32, SigningSecret};
 use osis_label::Address;
 use osis_node::sync::{Action, ConnId, EntryKind, Event, SyncConfig};
@@ -210,7 +210,7 @@ fn removed_member_not_dialed_nor_served_spec_sync_5() {
     assert_eq!(net.read(r, t), Some(s("before")));
 }
 
-fn net_label(net: &mut Net, n: usize, g: osis_core::Tid) -> LabelId {
+fn net_label(net: &mut Net, n: usize, g: osis_base::Tid) -> LabelId {
     net.engine(n).group_labels(&g).unwrap()[0].id
 }
 

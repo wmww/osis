@@ -111,7 +111,7 @@ mod file {
             body.extend_from_slice(&seq.to_be_bytes());
             body.extend_from_slice(&r.epoch.to_be_bytes());
             body.extend_from_slice(r.key.expose());
-            let check = osis_core::hash::hash(&body);
+            let check = osis_base::hash::hash(&body);
             body.extend_from_slice(check.get(..8).unwrap_or_default());
             b.copy_from_slice(&body);
             b
@@ -119,7 +119,7 @@ mod file {
 
         fn decode(b: &[u8]) -> Option<(u64, RootRecord)> {
             let (body, check) = b.split_at_checked(SLOT - 8)?;
-            if osis_core::hash::hash(body).get(..8)? != check || body.get(..8)? != MAGIC {
+            if osis_base::hash::hash(body).get(..8)? != check || body.get(..8)? != MAGIC {
                 return None;
             }
             let seq = u64::from_be_bytes(body.get(8..16)?.try_into().ok()?);

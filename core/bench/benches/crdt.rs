@@ -9,7 +9,7 @@ fn main() {
     let edits = synthetic(20_000, 3);
     let (state, _) = replay(&edits, 10);
     let n = match state.read() {
-        Some(osis_core::Value::Str(s)) => s.len(),
+        Some(osis_base::Value::Str(s)) => s.len(),
         _ => 0,
     };
     bench("crdt/text_read", Some(n), || state.read());

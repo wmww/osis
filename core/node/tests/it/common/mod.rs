@@ -2,7 +2,7 @@
 //! Shared test helpers: a test schema with one aspect per encoding, grants, delivery.
 
 use osis_commit::Kind;
-use osis_core::{Ak, CommitId, Role, Tid, Value, WallMs};
+use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::local_peer::{LocalPeer, Package};
 use osis_node::{Engine, Mutation};

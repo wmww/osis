@@ -13,7 +13,7 @@ use super::scenarios::{clock, persons, purge, shared_group, sim, write_gone};
 use super::{Evil, NetSim, NetWeights, Party};
 use crate::dice::Dice;
 use crate::harness::{Report, Res};
-use osis_core::{BlobId, CommitId, Role, Tid};
+use osis_base::{BlobId, CommitId, Role, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Per honest node: the commits it had authored when it first held the removal.
@@ -374,7 +374,7 @@ pub fn deposit_flood(seed: u64) -> Res<Report> {
 
 /// The dedup secret of one thing (the only secret a hand-built commit with `nobody` retention
 /// needs).
-struct Dedup(osis_core::CreationRecord);
+struct Dedup(osis_base::CreationRecord);
 
 impl osis_commit::Secrets for Dedup {
     fn dedup(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
@@ -410,14 +410,14 @@ pub fn equivocating_writer(seed: u64) -> Res<Report> {
     let t = sim.item(a, g)?;
     sim.reconnect_all();
     sim.quiet(40)?;
-    let eq = osis_core::Ak::new("/x/eq").map_err(|e| sim.fail(e.to_string()))?;
+    let eq = osis_base::Ak::new("/x/eq").map_err(|e| sim.fail(e.to_string()))?;
     let mut m = osis_node::Mutation::new();
-    m.set(t, &eq, &osis_core::Value::Str("c1".into())).map_err(|e| sim.fail(e.to_string()))?;
+    m.set(t, &eq, &osis_base::Value::Str("c1".into())).map_err(|e| sim.fail(e.to_string()))?;
     let c1 = sim.commit(b, m)?.ok_or_else(|| sim.fail("wrote nothing"))?;
     sim.run(20)?;
     sim.quiet(40)?;
     for n in [a, b, c] {
-        if sim.engine(n)?.get(&t, &eq).map_err(|e| sim.fail(e.to_string()))? != Some(osis_core::Value::Str("c1".into())) {
+        if sim.engine(n)?.get(&t, &eq).map_err(|e| sim.fail(e.to_string()))? != Some(osis_base::Value::Str("c1".into())) {
             return Err(sim.fail(format!("node {n} does not read c1 before the equivocation")));
         }
     }
@@ -427,9 +427,9 @@ pub fn equivocating_writer(seed: u64) -> Res<Report> {
     let (lo, hi) = (x.lo, x.hi);
     let bt = sim.tid(b)?;
     let wall = sim.engine(b)?.now().0.max(h.ts.wall_ms().0) + 5;
-    let ts = osis_core::Ts::make(osis_core::WallMs(wall), 0).ok_or_else(|| sim.fail("ts out of range"))?;
+    let ts = osis_base::Ts::make(osis_base::WallMs(wall), 0).ok_or_else(|| sim.fail("ts out of range"))?;
     let mut w = Writer::new(ts, Source::node(bt), lo);
-    let f = create(&mut w, &AnyView, &osis_core::Value::Str("c2".into())).map_err(|e| sim.fail(e.to_string()))?;
+    let f = create(&mut w, &AnyView, &osis_base::Value::Str("c2".into())).map_err(|e| sim.fail(e.to_string()))?;
     let delta = encode_delta(&Delta { nonce: [9; 16], fragment: f }, &writer_ctx(Kind::Content, ts, bt, lo, hi), None).map_err(|e| sim.fail(e.to_string()))?;
     let mut aw = AspectWrite::new(t, eq.clone(), lo, hi, delta);
     aw.retention = osis_schema::Retention { by: osis_schema::PurgeBy::Nobody, ..Default::default() };

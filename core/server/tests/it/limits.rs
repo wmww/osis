@@ -5,7 +5,7 @@
 use crate::common;
 
 use common::*;
-use osis_core::LabelId;
+use osis_base::LabelId;
 use osis_proto::msg::DeleteItem;
 use osis_proto::*;
 use osis_server::Policy;

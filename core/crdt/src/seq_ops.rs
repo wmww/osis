@@ -11,7 +11,7 @@ use crate::seq_span::{Elems, elem, expand, nth, split_at};
 use crate::stamp::{Dot, Stamp};
 use crate::undo::Undone;
 use crate::view::View;
-use osis_core::Value;
+use osis_base::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 
@@ -105,7 +105,7 @@ fn dots_of(p: &Placement, r: Range<usize>) -> Vec<Dot> {
 /// §3.3 rule 7: at most `MAX_DELTA_BARE` content-less elements per delta (the caller splits).
 fn check_bare(out: &Seq) -> Result<(), Error> {
     let n = out.elems().values().fold(0u64, |a, e| a.saturating_add(e.span));
-    if n > osis_core::format::MAX_DELTA_BARE {
+    if n > osis_base::format::MAX_DELTA_BARE {
         return Err(Error::Mismatch("move of more than MAX_DELTA_BARE elements"));
     }
     Ok(())
@@ -203,7 +203,7 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&dyn SeqRead>, v
             insert_run(w, &mut out, anchor.clone().map_or(Anchor::Head, Anchor::Dot), cs);
         }
         Op::DeleteDots { dots } => {
-            if dots.len() as u64 > osis_core::format::MAX_DELTA_BARE {
+            if dots.len() as u64 > osis_base::format::MAX_DELTA_BARE {
                 return Err(Error::Mismatch("delete longer than MAX_DELTA_BARE"));
             }
             if !dots.iter().all(|d| s.holds(d)) {
@@ -232,7 +232,7 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&dyn SeqRead>, v
             let r = range_of(l, &vis, *at, *len)?;
             let rows: Vec<&crate::seq_lin::Row> = l.p.iter_from(r.start).take(r.len()).collect();
             let n = rows.iter().fold(0u64, |a, r| a.saturating_add(r.span));
-            if n > osis_core::format::MAX_DELTA_BARE {
+            if n > osis_base::format::MAX_DELTA_BARE {
                 // §3.3 rule 7: the caller splits a delete this long across commits
                 return Err(Error::Mismatch("delete longer than MAX_DELTA_BARE"));
             }

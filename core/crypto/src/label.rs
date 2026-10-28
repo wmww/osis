@@ -3,7 +3,7 @@
 
 use crate::kdf::{self, LABEL_ID, STATIC_CLAIM, kdf};
 use crate::{Domain, Error, Secret32, Signature, SigningSecret, VerifyingKey, X25519Secret};
-use osis_core::{LabelId, Value, encode};
+use osis_base::{LabelId, Value, encode};
 
 /// A label role key and the group role secret it derives from.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -2,7 +2,7 @@
 //! The trait-generic `Backend` suite, run against every backend (notes/architecture.md §2).
 //! spec: none (storage abstraction; spec/commits.md §4 needs atomic batches).
 
-use osis_core::BlobId;
+use osis_base::BlobId;
 use osis_store::{Backend, BackendError, Fault, Faults, MemoryBackend, WriteBatch};
 
 fn suite(b: &mut dyn Backend) {

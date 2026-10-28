@@ -4,7 +4,7 @@
 use crate::fragment::{Fragment, Map};
 use crate::state::MemberRef;
 use crate::stamp::{Dot, Stamp};
-use osis_core::Value;
+use osis_base::Value;
 
 impl Map {
     /// Entries by dot: (dot, entry reset, key if carried, fragment if carried).

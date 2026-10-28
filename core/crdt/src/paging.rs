@@ -7,7 +7,7 @@ use crate::fragment::{Bag, Fragment, Map, Meta, Set, Struct};
 use crate::seq::Seq;
 use crate::state::MemberRef;
 use crate::stamp::{Dot, Stamp};
-use osis_core::Value;
+use osis_base::Value;
 use std::collections::BTreeMap;
 use std::ops::Bound;
 
@@ -79,7 +79,7 @@ impl Fragment {
     }
 
     /// The greatest `ts` of any stamp inside (resets, `W` and value-less writes included).
-    pub fn max_ts(&self) -> Option<osis_core::Ts> {
+    pub fn max_ts(&self) -> Option<osis_base::Ts> {
         self.all_max().map(|s| s.ts)
     }
 

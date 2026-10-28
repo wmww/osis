@@ -2,7 +2,7 @@
 //! `MemoryBackend`) wired by in-memory byte queues; a label with rotations; blobs.
 #![allow(dead_code)]
 
-use osis_core::{BlobId, Clock, LabelId, ManualClock, WallMs, hash::hash};
+use osis_base::{BlobId, Clock, LabelId, ManualClock, WallMs, hash::hash};
 use osis_crypto::{Epoch, LabelRole, SeededRng, Secret32, SigningSecret, X25519Secret, label_role_key};
 use osis_label::step::EntryTo;
 use osis_label::{Parent, Prefix, Reader, StepKeys, genesis_label, register, sign_deposit, sign_stamp};

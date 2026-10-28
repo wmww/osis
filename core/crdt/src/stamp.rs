@@ -1,6 +1,6 @@
 //! Sources, dots, stamps and their total order; counter ranges; source interning (spec/crdt.md §2).
 
-use osis_core::{CommitId, Tid, Ts};
+use osis_base::{CommitId, Tid, Ts};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;

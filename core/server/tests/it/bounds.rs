@@ -6,7 +6,7 @@
 use crate::common;
 
 use common::*;
-use osis_core::{BlobId, ManualClock, WallMs};
+use osis_base::{BlobId, ManualClock, WallMs};
 use osis_crypto::SeededRng;
 use osis_proto::*;
 use osis_server::{BackendStore, Hub, HubOutput, Policy};
@@ -48,7 +48,7 @@ fn partial_frames_bounded() {
     let hub = &mut w.hubs[h];
     // before Hello: a frame header of MAX_MESSAGE closes at once
     hub.accept(now, 1, [1; 32]);
-    let out = hub.input(now, 1, (osis_core::format::MAX_MESSAGE as u32).to_be_bytes().to_vec());
+    let out = hub.input(now, 1, (osis_base::format::MAX_MESSAGE as u32).to_be_bytes().to_vec());
     assert!(out.contains(&HubOutput::Close(1)), "{out:?}");
     assert_eq!(hub.buffered(), 0);
     // after Hello: each connection starts a MAX_MESSAGE frame and sends 8 MiB of it
@@ -56,7 +56,7 @@ fn partial_frames_bounded() {
     for id in 10..14u64 {
         hub.accept(now, id, [id as u8; 32]);
         hub.input(now, id, encode_frame(&Hello::new(now, [2; 32]).encode()));
-        let mut bytes = (osis_core::format::MAX_MESSAGE as u32).to_be_bytes().to_vec();
+        let mut bytes = (osis_base::format::MAX_MESSAGE as u32).to_be_bytes().to_vec();
         bytes.extend(vec![0u8; 8 << 20]);
         let out = hub.input(now, id, bytes);
         closed += out.iter().filter(|o| matches!(o, HubOutput::Close(_))).count();

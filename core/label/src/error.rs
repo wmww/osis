@@ -1,6 +1,6 @@
 //! Label errors and their classes (notes/architecture.md §3).
 
-use osis_core::{Classified, DecodeError, ErrorClass};
+use osis_base::{Classified, DecodeError, ErrorClass};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -25,7 +25,7 @@ pub enum Error {
     Storage,
 }
 
-osis_core::impl_error!(Error {
+osis_base::impl_error!(Error {
     Malformed(what) => ("malformed: {what}"),
     Cbor(e) => ("cbor: {e}"),
     Crypto(e) => ("crypto: {e}"),

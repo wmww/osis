@@ -265,7 +265,7 @@ pub use undo::{DropReason, EntryState, HistoryEntry, HistoryQuery, UndoScope};
 pub use watch::{Change, Changed, CommitInfo, Source, Subscription, Watch};
 pub use write::{AspectWrite, Committed, PathWrite, Place, Write};
 
-pub use osis_core::{Ak, Clock, CommitId, CreationRecord, ManualClock, Role, Tid, Ts, Value, WallMs};
+pub use osis_base::{Ak, Clock, CommitId, CreationRecord, ManualClock, Role, Tid, Ts, Value, WallMs};
 pub use osis_node::{Cause, Diagnostic, DiagnosticKind};
 pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError, Retention, Schema, Signal, Step, p};
 

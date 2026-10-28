@@ -2,7 +2,7 @@
 
 use crate::tests::{dkey, sample_header, t, ts};
 use crate::*;
-use osis_core::{Classified, ErrorClass, Tid, Ts, Value};
+use osis_base::{Classified, ErrorClass, Tid, Ts, Value};
 use osis_crdt::{AnyView, Delta, Interner, Source, Writer, create, encode_delta};
 use osis_crypto::{DeleteSecret, Secret32, SigningSecret, VerifyingKey, delta_hash};
 use osis_schema::{PurgeBy, Retention};
@@ -103,7 +103,7 @@ fn commit_blob_rejects() {
     b.parts.push(b.parts[0].clone());
     assert!(matches!(CommitBlob::decode(&b.encode()), Err(Error::Malformed(_))));
     let (mut b, _) = one_commit();
-    b.parts[0].delta = osis_core::encode(&Value::Int(3));
+    b.parts[0].delta = osis_base::encode(&Value::Int(3));
     assert!(matches!(CommitBlob::decode(&b.encode()), Err(Error::Malformed(_))));
 }
 

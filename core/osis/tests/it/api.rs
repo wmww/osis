@@ -20,7 +20,7 @@ fn s(x: &str) -> Value {
 }
 
 fn task(title: &str) -> Task {
-    Task { title: title.into(), done: false, tags: BTreeSet::new(), priority: None, due: None, status: None, weight: osis::schema::osis_core::Float::new(1.0) }
+    Task { title: title.into(), done: false, tags: BTreeSet::new(), priority: None, due: None, status: None, weight: osis::schema::osis_base::Float::new(1.0) }
 }
 
 // notes/api.md Handle and lifecycle: a new database has a node, a person actor and its home
@@ -226,7 +226,7 @@ fn materialization_bound_spec_data_model_6() {
     cf.materialize_limit = 64 * 1024;
     let db = Osis::create(cf).unwrap().0;
     let k = ak("/t/doc");
-    let big = Value::Bytes(vec![7u8; osis::schema::osis_core::format::CHUNK_THRESHOLD + 1000]);
+    let big = Value::Bytes(vec![7u8; osis::schema::osis_base::format::CHUNK_THRESHOLD + 1000]);
     let mid = Value::Bytes(vec![1u8; 100 * 1024]);
     let mut w = db.write();
     let t = w.create(db.me(), Place::Unsynced).unwrap();
@@ -243,7 +243,7 @@ fn materialization_bound_spec_data_model_6() {
 fn large_value_round_trip_spec_data_model_6() {
     let db = db(1);
     let k = ak("/t/blob");
-    let big = Value::Bytes((0..osis::schema::osis_core::format::CHUNK_THRESHOLD * 2).map(|i| (i % 251) as u8).collect());
+    let big = Value::Bytes((0..osis::schema::osis_base::format::CHUNK_THRESHOLD * 2).map(|i| (i % 251) as u8).collect());
     let mut w = db.write();
     let t = w.create(db.me(), Place::Unsynced).unwrap();
     w.at(t, k.clone()).set(&big).unwrap();

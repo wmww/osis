@@ -3,14 +3,14 @@
 
 use crate::engine::{Core, Engine};
 use crate::error::Result;
-use osis_core::{CreationRecord, LabelId, Role, Tid};
+use osis_base::{CreationRecord, LabelId, Role, Tid};
 use osis_label::{Address, ClaimSet, Step, StepId};
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// Owner chains end at a key actor within `MAX_OWNER_DEPTH` links (spec/permissions.md §1).
-const MAX_CHAIN: usize = osis_core::format::MAX_OWNER_DEPTH + 1;
+const MAX_CHAIN: usize = osis_base::format::MAX_OWNER_DEPTH + 1;
 
 /// A label of a group as its `/label` records it (spec/sync.md §2).
 #[derive(Clone, Debug)]
@@ -75,7 +75,7 @@ impl Core {
                 _ => break,
             }
         }
-        let ts = osis_core::Ts::make(self.now(), 0).unwrap_or_default();
+        let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
         crate::engine::write::role_of(self, x, &a, ts) >= Some(Role::Read)
     }
 }

@@ -15,7 +15,7 @@ doctest = false
 workspace = true
 
 [dependencies]
-osis-core.workspace = true
+osis-base.workspace = true
 osis-crypto.workspace = true
 osis-schema.workspace = true
 osis-proto.workspace = true

@@ -2,7 +2,7 @@
 //! unbounded allocation, work, storage or diagnostics"): replies scripted frame by frame.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use osis_core::{BlobId, LabelId};
+use osis_base::{BlobId, LabelId};
 use osis_proto::rbsr::Bound;
 use osis_proto::*;
 

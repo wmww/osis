@@ -13,7 +13,7 @@
 //! pass over the set acts as a full pass would.
 
 use crate::labeling::HeadKeys;
-use osis_core::{Ak, BlobId, CommitId, Tid};
+use osis_base::{Ak, BlobId, CommitId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -110,7 +110,7 @@ pub(crate) struct Work {
     /// Commit entries judged invalid or not judged yet, with their authors.
     pub unjudged: BTreeMap<CommitId, Tid>,
     /// Other nodes' heartbeats under the label.
-    pub beats: BTreeMap<Tid, BTreeSet<(osis_core::Ts, CommitId)>>,
+    pub beats: BTreeMap<Tid, BTreeSet<(osis_base::Ts, CommitId)>>,
     /// Other nodes' card commits under the label (`stale_card` reads their author's roster).
     pub cards: BTreeSet<CommitId>,
 }
@@ -279,7 +279,7 @@ use super::state::Kind;
 use super::{ConnId, SyncEngine};
 use crate::error::Result;
 use crate::labeling::{Body, BodyCtx};
-use osis_core::LabelId;
+use osis_base::LabelId;
 
 impl SyncEngine {
     /// Readies work set `w` of label `l` of `g` for a pass: due times and waited-on aspect
@@ -370,12 +370,12 @@ impl SyncEngine {
         let core = &self.engine.core;
         let under = |t: &Tid| {
             let mut cur = *t;
-            for _ in 0..=osis_core::format::MAX_OWNER_DEPTH {
+            for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
                 if actors.contains(&cur) {
                     return true;
                 }
                 match core.created(&cur) {
-                    Some(osis_core::CreationRecord::Thing { owner, .. }) => cur = *owner,
+                    Some(osis_base::CreationRecord::Thing { owner, .. }) => cur = *owner,
                     _ => break,
                 }
             }

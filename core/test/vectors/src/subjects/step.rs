@@ -6,7 +6,7 @@
 use super::{FixedRng, case, generated_header, s32};
 use crate::file::{Record, VecFile};
 use crate::hex;
-use osis_core::{LabelId, Value, encode};
+use osis_base::{LabelId, Value, encode};
 use osis_crypto::{Epoch, KeyActorKeys, LabelRole, X25519Secret, label_role_key, static_entry};
 use osis_label::{ClaimSet, EntryKey, EntryTo, Parent, Reader, Step, StepKeys, genesis_label, open_entry_box, register};
 use osis_schema::Codec;

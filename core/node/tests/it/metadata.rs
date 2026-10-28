@@ -7,7 +7,7 @@
 
 use crate::net;
 use net::*;
-use osis_core::{BlobId, CommitId, LabelId, Role, Tid};
+use osis_base::{BlobId, CommitId, LabelId, Role, Tid};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::Mutation;
 use osis_node::sync::EntryKind;
@@ -64,7 +64,7 @@ fn scenario() -> (Net, usize, [usize; 3], Tid, Tid) {
     m.op(t, &BIG, PathOp { path: vec![PathSeg::Key(s(MAP_KEY))], op: Op::Set(s("v")) }).unwrap();
     net.engine(a).commit(m).unwrap();
     net.run();
-    net.advance(osis_core::format::HEARTBEAT_MIN_INTERVAL_MS + 60_000);
+    net.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS + 60_000);
     net.run();
     assert_eq!(net.read(c, t), Some(s(MARK_B)));
     (net, sv, [a, b, c], g, t)
@@ -217,7 +217,7 @@ fn heartbeats_carry_only_seen() {
         for x in &h.aspects {
             assert_eq!((x.ak.as_str(), x.tid), ("/seen", h.author), "a heartbeat carried more than /seen");
             let exp = x.expires.unwrap();
-            assert!(exp >= ts + osis_core::format::HEARTBEAT_MIN_LIFETIME_MS && exp <= ts + osis_core::format::HEARTBEAT_MAX_LIFETIME_MS);
+            assert!(exp >= ts + osis_base::format::HEARTBEAT_MIN_LIFETIME_MS && exp <= ts + osis_base::format::HEARTBEAT_MAX_LIFETIME_MS);
         }
     }
     let want: BTreeSet<Tid> = [b, c].iter().map(|n| net.tid(*n)).collect();

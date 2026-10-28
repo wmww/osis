@@ -7,7 +7,7 @@
 use crate::engine::{Core, Tx};
 use crate::error::Result;
 use osis_commit::{Decoded, Header, Kind};
-use osis_core::{CommitId, Role, Tid, Value};
+use osis_base::{CommitId, Role, Tid, Value};
 use osis_crdt::{Encoding, Fragment, MemberRef};
 use osis_keys::{KeysWrite, ROLES, SecretsWrite};
 use osis_schema::core_types::{self as ct, BoxKey, HistoryKey, Keys, SecretBox};
@@ -78,7 +78,7 @@ pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet
     tx.core.box_written.retain(|(a, _), _| !actors.contains(a));
     for a in actors {
         for ak in ["/secrets", "/keys"] {
-            let ak = osis_core::Ak::new(ak).map_err(|_| crate::Error::Misuse("ak"))?;
+            let ak = osis_base::Ak::new(ak).map_err(|_| crate::Error::Misuse("ak"))?;
             let ids: Vec<CommitId> = tx.core.by_aspect.get(&(*a, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
             for id in ids {
                 let Some(m) = tx.core.commits.get(&id).cloned() else { continue };
@@ -204,7 +204,7 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
                 _ => None,
             })
             .unwrap_or_default();
-        let keys_ak = osis_core::Ak::new("/keys").map_err(|_| crate::Error::Misuse("ak"))?;
+        let keys_ak = osis_base::Ak::new("/keys").map_err(|_| crate::Error::Misuse("ak"))?;
         let before = tx.state(&a.tid, &keys_ak)?.and_then(Fragment::read).and_then(|v| ct::KEYS.decode(&v).ok()).unwrap_or_default();
         out.push(Pending { id: h.id(), ai: *ai, actor: a.tid, keys, before });
     }
@@ -347,7 +347,7 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
             }
         }
     }
-    let keys_ak = osis_core::Ak::new("/keys").map_err(|_| crate::Error::Misuse("ak"))?;
+    let keys_ak = osis_base::Ak::new("/keys").map_err(|_| crate::Error::Misuse("ak"))?;
     let before = tx.state(&a.tid, &keys_ak)?.and_then(Fragment::read).and_then(|v| ct::KEYS.decode(&v).ok()).unwrap_or_default();
     tx.core.touch();
     let e = tx.core.secrets.entry_or_default(a.tid);
@@ -381,7 +381,7 @@ fn write_of_keys(k: &Keys) -> KeysWrite {
 
 fn put_unresolved(tx: &mut Tx<'_>, c: &CommitId, ai: usize, u: &Unresolved) -> Result<()> {
     let v = Value::List(vec![keys_of_write(&u.keys).to_value(), u.before.to_value()]);
-    Ok(tx.txn.put_local(&unresolved_key(c, ai), &osis_core::encode(&v), Shred::No)?)
+    Ok(tx.txn.put_local(&unresolved_key(c, ai), &osis_base::encode(&v), Shred::No)?)
 }
 
 fn remove_unresolved(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
@@ -396,9 +396,9 @@ pub(crate) fn load_unresolved(tx: &mut Tx<'_>) -> Result<()> {
         let mut r = crate::engine::records::Rd::new(k);
         let c = CommitId(r.arr()?);
         let ai = r.u32()? as usize;
-        let lim = osis_core::Limits { max_depth: 32, max_bytes: v.len() };
+        let lim = osis_base::Limits { max_depth: 32, max_bytes: v.len() };
         let bad = || crate::Error::Corrupt("unresolved secrets write");
-        let Value::List(items) = osis_core::decode(&v, &lim).map_err(|_| bad())? else { return Err(bad()) };
+        let Value::List(items) = osis_base::decode(&v, &lim).map_err(|_| bad())? else { return Err(bad()) };
         let [kw, kb] = items.as_slice() else { return Err(bad()) };
         let keys = write_of_keys(&Keys::from_value(kw).map_err(|_| bad())?);
         let before = Keys::from_value(kb).map_err(|_| bad())?;
@@ -528,7 +528,7 @@ mod tests {
         let e = &mut lp.peers[i].engine;
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, owner);
-        m.set(t, &osis_core::Ak::new("/x/reg").unwrap(), &Value::Str("new".into())).unwrap();
+        m.set(t, &osis_base::Ak::new("/x/reg").unwrap(), &Value::Str("new".into())).unwrap();
         e.commit(m).unwrap().unwrap();
         t
     }
@@ -622,7 +622,7 @@ mod tests {
     use crate::engine::secrets::MAX_READING_ACTORS;
     use crate::local_peer::LocalPeer;
     use crate::Mutation;
-    use osis_core::{CommitId, Role, Tid, Value, WallMs};
+    use osis_base::{CommitId, Role, Tid, Value, WallMs};
     use osis_crypto::{Epoch, Secret32};
     use osis_keys::{ActorEpochs, Unchecked};
     use osis_schema::Codec;
@@ -644,7 +644,7 @@ mod tests {
         let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
-        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        m.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
         let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
         let g1 = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
@@ -672,7 +672,7 @@ mod tests {
         lp.sync(1, 0).unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
-        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        m.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
         (lp, t)
     }
@@ -703,10 +703,10 @@ mod tests {
 
     /// A membership commit by peer `by` setting `t`'s `/secrets` to `v`, signed past every
     /// writer rule (its author holds no chain to `t`).
-    fn forge_membership(lp: &mut LocalPeer, by: usize, t: Tid, rec: &osis_core::CreationRecord, v: &Value) -> Vec<u8> {
+    fn forge_membership(lp: &mut LocalPeer, by: usize, t: Tid, rec: &osis_base::CreationRecord, v: &Value) -> Vec<u8> {
         use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
         use osis_crdt::{Delta, Source, Writer, create, encode_delta};
-        struct Dedup(osis_core::CreationRecord);
+        struct Dedup(osis_base::CreationRecord);
         impl osis_commit::Secrets for Dedup {
             fn dedup(&self, _: &Tid) -> Option<Secret32> {
                 Some(osis_crypto::dedup_secret(self.0.nonce()))
@@ -722,10 +722,10 @@ mod tests {
                 Some(osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([2; 32])).verifying_key())
             }
         }
-        let ak = osis_core::Ak::new("/secrets").unwrap();
+        let ak = osis_base::Ak::new("/secrets").unwrap();
         let author = lp.peers[by].engine.tid();
         lp.peers[by].clock.advance(1);
-        let ts = osis_core::Ts::make(lp.peers[by].engine.now(), 0).unwrap();
+        let ts = osis_base::Ts::make(lp.peers[by].engine.now(), 0).unwrap();
         let view = osis_schema::core_schema().view(ak.as_str()).unwrap();
         let own = Source::commit(CommitId([0; 32]));
         let mut w = Writer::new(ts, own.clone(), 1);
@@ -774,7 +774,7 @@ mod tests {
         assert_eq!(candidates(&lp, &t), before, "the pool is full: the grant's candidate waits");
         lp.sync(0, 1).unwrap();
         assert!(!lp.peers[1].engine.core.pending.contains_key(&g), "the grant applied");
-        assert_eq!(lp.peers[1].engine.get(&t, &osis_core::Ak::new("/x/a").unwrap()).unwrap(), Some(Value::Int(1)));
+        assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("/x/a").unwrap()).unwrap(), Some(Value::Int(1)));
     }
 
     // spec/crypto.md §4, spec/permissions.md §3: a pending commit that applies or is dropped

@@ -1,7 +1,7 @@
 //! Bundle import as a peer with no cursor (spec/sync.md §11, spec/wire.md §12).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use osis_core::{Value, WallMs, cbor};
+use osis_base::{Value, WallMs, cbor};
 use osis_crypto::{Secret32, SigningSecret};
 use osis_label::{BundleWriter, Record, sign_stamp};
 use osis_proto::bundle::BundleImport;

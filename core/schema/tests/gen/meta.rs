@@ -25,16 +25,16 @@ pub mod aspect_def {
     pub const SUCCEEDS: osis_schema::FieldId = osis_schema::FieldId(4);
     pub const DOC: osis_schema::FieldId = osis_schema::FieldId(5);
 }
-impl TryFrom<&osis_schema::osis_core::Value> for AspectDef {
+impl TryFrom<&osis_schema::osis_base::Value> for AspectDef {
     type Error = osis_schema::PathError;
     /// Typed read through the schema (reader defaults, open structs), then into `AspectDef`.
-    fn try_from(v: &osis_schema::osis_core::Value) -> Result<AspectDef, osis_schema::PathError> {
+    fn try_from(v: &osis_schema::osis_base::Value) -> Result<AspectDef, osis_schema::PathError> {
         let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("aspect_def"))?;
         osis_schema::Codec::from_value(&n)
     }
 }
-impl From<&AspectDef> for osis_schema::osis_core::Value {
-    fn from(t: &AspectDef) -> osis_schema::osis_core::Value {
+impl From<&AspectDef> for osis_schema::osis_base::Value {
+    fn from(t: &AspectDef) -> osis_schema::osis_base::Value {
         osis_schema::Codec::to_value(t)
     }
 }
@@ -53,16 +53,16 @@ pub mod bound {
     pub const ABS: osis_schema::FieldId = osis_schema::FieldId(0);
     pub const REL: osis_schema::FieldId = osis_schema::FieldId(1);
 }
-impl TryFrom<&osis_schema::osis_core::Value> for Bound {
+impl TryFrom<&osis_schema::osis_base::Value> for Bound {
     type Error = osis_schema::PathError;
     /// Typed read through the schema (reader defaults, open structs), then into `Bound`.
-    fn try_from(v: &osis_schema::osis_core::Value) -> Result<Bound, osis_schema::PathError> {
+    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Bound, osis_schema::PathError> {
         let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("bound"))?;
         osis_schema::Codec::from_value(&n)
     }
 }
-impl From<&Bound> for osis_schema::osis_core::Value {
-    fn from(t: &Bound) -> osis_schema::osis_core::Value {
+impl From<&Bound> for osis_schema::osis_base::Value {
+    fn from(t: &Bound) -> osis_schema::osis_base::Value {
         osis_schema::Codec::to_value(t)
     }
 }
@@ -85,16 +85,16 @@ pub mod case_def {
     pub const SUCCEEDS: osis_schema::FieldId = osis_schema::FieldId(2);
     pub const DOC: osis_schema::FieldId = osis_schema::FieldId(3);
 }
-impl TryFrom<&osis_schema::osis_core::Value> for CaseDef {
+impl TryFrom<&osis_schema::osis_base::Value> for CaseDef {
     type Error = osis_schema::PathError;
     /// Typed read through the schema (reader defaults, open structs), then into `CaseDef`.
-    fn try_from(v: &osis_schema::osis_core::Value) -> Result<CaseDef, osis_schema::PathError> {
+    fn try_from(v: &osis_schema::osis_base::Value) -> Result<CaseDef, osis_schema::PathError> {
         let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("case_def"))?;
         osis_schema::Codec::from_value(&n)
     }
 }
-impl From<&CaseDef> for osis_schema::osis_core::Value {
-    fn from(t: &CaseDef) -> osis_schema::osis_core::Value {
+impl From<&CaseDef> for osis_schema::osis_base::Value {
+    fn from(t: &CaseDef) -> osis_schema::osis_base::Value {
         osis_schema::Codec::to_value(t)
     }
 }
@@ -104,7 +104,7 @@ osis_schema::codec_struct! {
     pub struct FieldDef {
         0 name: String,
         1 r#type: Box<TypeExpr>,
-        2 default: Option<osis_schema::osis_core::Value>,
+        2 default: Option<osis_schema::osis_base::Value>,
         3 succeeds: std::collections::BTreeSet<i64>,
         4 doc: Option<String>,
     }
@@ -119,16 +119,16 @@ pub mod field_def {
     pub const SUCCEEDS: osis_schema::FieldId = osis_schema::FieldId(3);
     pub const DOC: osis_schema::FieldId = osis_schema::FieldId(4);
 }
-impl TryFrom<&osis_schema::osis_core::Value> for FieldDef {
+impl TryFrom<&osis_schema::osis_base::Value> for FieldDef {
     type Error = osis_schema::PathError;
     /// Typed read through the schema (reader defaults, open structs), then into `FieldDef`.
-    fn try_from(v: &osis_schema::osis_core::Value) -> Result<FieldDef, osis_schema::PathError> {
+    fn try_from(v: &osis_schema::osis_base::Value) -> Result<FieldDef, osis_schema::PathError> {
         let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("field_def"))?;
         osis_schema::Codec::from_value(&n)
     }
 }
-impl From<&FieldDef> for osis_schema::osis_core::Value {
-    fn from(t: &FieldDef) -> osis_schema::osis_core::Value {
+impl From<&FieldDef> for osis_schema::osis_base::Value {
+    fn from(t: &FieldDef) -> osis_schema::osis_base::Value {
         osis_schema::Codec::to_value(t)
     }
 }
@@ -168,16 +168,16 @@ pub mod flag {
     pub const GUARANTEED: osis_schema::CaseId = osis_schema::CaseId(2);
     pub const INDEXED: osis_schema::CaseId = osis_schema::CaseId(3);
 }
-impl TryFrom<&osis_schema::osis_core::Value> for Flag {
+impl TryFrom<&osis_schema::osis_base::Value> for Flag {
     type Error = osis_schema::PathError;
     /// Typed read through the schema (reader defaults, open structs), then into `Flag`.
-    fn try_from(v: &osis_schema::osis_core::Value) -> Result<Flag, osis_schema::PathError> {
+    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Flag, osis_schema::PathError> {
         let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("flag"))?;
         osis_schema::Codec::from_value(&n)
     }
 }
-impl From<&Flag> for osis_schema::osis_core::Value {
-    fn from(t: &Flag) -> osis_schema::osis_core::Value {
+impl From<&Flag> for osis_schema::osis_base::Value {
+    fn from(t: &Flag) -> osis_schema::osis_base::Value {
         osis_schema::Codec::to_value(t)
     }
 }
@@ -198,16 +198,16 @@ pub mod retention {
     pub const AT_LEAST: osis_schema::FieldId = osis_schema::FieldId(1);
     pub const AT_MOST: osis_schema::FieldId = osis_schema::FieldId(2);
 }
-impl TryFrom<&osis_schema::osis_core::Value> for Retention {
+impl TryFrom<&osis_schema::osis_base::Value> for Retention {
     type Error = osis_schema::PathError;
     /// Typed read through the schema (reader defaults, open structs), then into `Retention`.
-    fn try_from(v: &osis_schema::osis_core::Value) -> Result<Retention, osis_schema::PathError> {
+    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Retention, osis_schema::PathError> {
         let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("retention"))?;
         osis_schema::Codec::from_value(&n)
     }
 }
-impl From<&Retention> for osis_schema::osis_core::Value {
-    fn from(t: &Retention) -> osis_schema::osis_core::Value {
+impl From<&Retention> for osis_schema::osis_base::Value {
+    fn from(t: &Retention) -> osis_schema::osis_base::Value {
         osis_schema::Codec::to_value(t)
     }
 }
@@ -234,16 +234,16 @@ pub mod schema {
     pub const SIGNALS: osis_schema::FieldId = osis_schema::FieldId(4);
     pub const DOC: osis_schema::FieldId = osis_schema::FieldId(5);
 }
-impl TryFrom<&osis_schema::osis_core::Value> for Schema {
+impl TryFrom<&osis_schema::osis_base::Value> for Schema {
     type Error = osis_schema::PathError;
     /// Typed read through the schema (reader defaults, open structs), then into `Schema`.
-    fn try_from(v: &osis_schema::osis_core::Value) -> Result<Schema, osis_schema::PathError> {
+    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Schema, osis_schema::PathError> {
         let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("schema"))?;
         osis_schema::Codec::from_value(&n)
     }
 }
-impl From<&Schema> for osis_schema::osis_core::Value {
-    fn from(t: &Schema) -> osis_schema::osis_core::Value {
+impl From<&Schema> for osis_schema::osis_base::Value {
+    fn from(t: &Schema) -> osis_schema::osis_base::Value {
         osis_schema::Codec::to_value(t)
     }
 }
@@ -262,16 +262,16 @@ pub mod signal_def {
     pub const TYPE: osis_schema::FieldId = osis_schema::FieldId(0);
     pub const DOC: osis_schema::FieldId = osis_schema::FieldId(1);
 }
-impl TryFrom<&osis_schema::osis_core::Value> for SignalDef {
+impl TryFrom<&osis_schema::osis_base::Value> for SignalDef {
     type Error = osis_schema::PathError;
     /// Typed read through the schema (reader defaults, open structs), then into `SignalDef`.
-    fn try_from(v: &osis_schema::osis_core::Value) -> Result<SignalDef, osis_schema::PathError> {
+    fn try_from(v: &osis_schema::osis_base::Value) -> Result<SignalDef, osis_schema::PathError> {
         let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("signal_def"))?;
         osis_schema::Codec::from_value(&n)
     }
 }
-impl From<&SignalDef> for osis_schema::osis_core::Value {
-    fn from(t: &SignalDef) -> osis_schema::osis_core::Value {
+impl From<&SignalDef> for osis_schema::osis_base::Value {
+    fn from(t: &SignalDef) -> osis_schema::osis_base::Value {
         osis_schema::Codec::to_value(t)
     }
 }
@@ -292,16 +292,16 @@ pub mod type_def {
     pub const BODY: osis_schema::FieldId = osis_schema::FieldId(1);
     pub const DOC: osis_schema::FieldId = osis_schema::FieldId(2);
 }
-impl TryFrom<&osis_schema::osis_core::Value> for TypeDef {
+impl TryFrom<&osis_schema::osis_base::Value> for TypeDef {
     type Error = osis_schema::PathError;
     /// Typed read through the schema (reader defaults, open structs), then into `TypeDef`.
-    fn try_from(v: &osis_schema::osis_core::Value) -> Result<TypeDef, osis_schema::PathError> {
+    fn try_from(v: &osis_schema::osis_base::Value) -> Result<TypeDef, osis_schema::PathError> {
         let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("type_def"))?;
         osis_schema::Codec::from_value(&n)
     }
 }
-impl From<&TypeDef> for osis_schema::osis_core::Value {
-    fn from(t: &TypeDef) -> osis_schema::osis_core::Value {
+impl From<&TypeDef> for osis_schema::osis_base::Value {
+    fn from(t: &TypeDef) -> osis_schema::osis_base::Value {
         osis_schema::Codec::to_value(t)
     }
 }
@@ -397,16 +397,16 @@ pub mod type_expr {
     pub const NAMED: osis_schema::CaseId = osis_schema::CaseId(16);
     pub const PARAM: osis_schema::CaseId = osis_schema::CaseId(17);
 }
-impl TryFrom<&osis_schema::osis_core::Value> for TypeExpr {
+impl TryFrom<&osis_schema::osis_base::Value> for TypeExpr {
     type Error = osis_schema::PathError;
     /// Typed read through the schema (reader defaults, open structs), then into `TypeExpr`.
-    fn try_from(v: &osis_schema::osis_core::Value) -> Result<TypeExpr, osis_schema::PathError> {
+    fn try_from(v: &osis_schema::osis_base::Value) -> Result<TypeExpr, osis_schema::PathError> {
         let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("type_expr"))?;
         osis_schema::Codec::from_value(&n)
     }
 }
-impl From<&TypeExpr> for osis_schema::osis_core::Value {
-    fn from(t: &TypeExpr) -> osis_schema::osis_core::Value {
+impl From<&TypeExpr> for osis_schema::osis_base::Value {
+    fn from(t: &TypeExpr) -> osis_schema::osis_base::Value {
         osis_schema::Codec::to_value(t)
     }
 }

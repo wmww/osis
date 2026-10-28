@@ -3,7 +3,7 @@
 
 use crate::net;
 use net::*;
-use osis_core::{Ak, Role, Value};
+use osis_base::{Ak, Role, Value};
 use osis_schema::AspectKey;
 use osis_node::sync::Event;
 

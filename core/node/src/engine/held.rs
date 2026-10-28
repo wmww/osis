@@ -4,7 +4,7 @@
 //! looked (`take_touched`), so the timelines re-partition only around them.
 
 use super::journal::Journaled;
-use osis_core::{CommitId, CreationRecord, Tid};
+use osis_base::{CommitId, CreationRecord, Tid};
 use osis_perm::{HeldSet, MembershipCommit, RosterSnapshot};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
