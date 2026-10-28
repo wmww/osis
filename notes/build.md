@@ -7,7 +7,7 @@ Read this if you coordinate, if a build or test run feels slow, or if disk is gr
 
 **One idea:** a task is a branch in a warm worktree; the branch proves itself there; main only fast-forwards and is never built.
 
-- **Layout**: `core/` holds the library crates in unprefixed directories with prefixed package names (`core/node` is osis-node, `core/base` osis-base); `core/test/` the test infrastructure (sim, vectors, fuzz, crdt-model, membership-model, tla); `schema/` the first-party schema files; `cli/` the CLI.
+- **Layout**: `core/` holds the library crates in unprefixed directories with prefixed package names (`core/node` is osis-node, `core/engine` osis-engine, `core/base` osis-base); `core/test/` the test infrastructure (sim, vectors, fuzz, crdt-model, membership-model, tla); `schema/` the first-party schema files; `cli/` the CLI.
 - Future projects (apps, tools) are top-level directories depending only on the `osis` crate.
 - **Worktrees** (`tools/wt`): `tools/wt claim <branch> [<base>]` prints a task worktree `.worktrees/wt<N>` (gitignored, inside the repo; the tools that scan sources use explicit roots and never see it). Each has its own in-tree `target/`, kept between tasks, so a task's first build recompiles only what its branch changed: git rewrites only the files that differ, the path is the same, incremental state survives. `tools/wt release` when the branch is committed (it detaches HEAD; the branch is free to merge or delete), `tools/wt list`, `tools/wt trim [keep]`. Policy: two stay warm per device; more are created when more agents run at once and trimmed after. A new worktree builds cold once (about 80 s, 3.6 min through clippy-net). Never share a `target/` between checkouts and never build in the main checkout.
 - **One profile for all per-branch work**: dev. Cargo.toml: workspace crates `opt-level = 1`, `debug = "line-tables-only"`, incremental; dependencies and osis-crypto `opt-level = 2`, no debuginfo; no `split-debuginfo` (its per-build `.dwo` files only accumulate). Debug sections are zlib-compressed at link time (`.cargo/config.toml`, Linux target): the test binaries weigh about 0.65 GB instead of 1.7 GB and backtraces keep file:line; zstd compression is not read by Rust's symbolizer, and `strip = "debuginfo"` would save another 0.3 GB at the price of frame locations. Every new combination of profile, `-p` subset, features, `RUSTFLAGS`, `CARGO_INCREMENTAL` or target dir is another full artifact set, so there are exactly these command forms:
@@ -17,7 +17,7 @@ Read this if you coordinate, if a build or test run feels slow, or if disk is gr
   - sim: `cargo run --bin sim-sweep -- --seeds N --budget-secs T`
   - tier 2 by name: `cargo test --workspace -- --ignored <name>`; the whole set `PROPTEST_CASES=256 cargo test --workspace -- --include-ignored --skip scale:: --skip bench:: --skip budget --skip sweep`
   - release, timing only (`scale::`, `bench::`, `budget*`, cost repros in issues/): `cargo test --release --workspace -- --ignored <filter>`, in your worktree; keep `target/release` (a few hundred MB), the next timing check is cheaper for it
-- **Merge gate** (`tools/gate.sh`, in the worktree after `git rebase main`): `cargo test --workspace --locked`, both clippy runs, `tools/policy.py`, `tools/spec_map.py --uncited` and `--gaps`, `cargo deny check`, then the 30-seed dev sim sweep when the branch touches `core/test/sim/`, osis-node, osis-perm, osis-crdt or Cargo.toml/lock since its merge base (the crates it has caught regressions in; `--sweep-seeds N` forces, 0 skips). Each step prints its wall time. Then `git checkout main && git merge --ff-only <branch> && git push`. `git pull --rebase` everywhere; history is linear. The generated notes/testing-map.md is gitignored, so nothing conflicts on a rebase but real edits.
+- **Merge gate** (`tools/gate.sh`, in the worktree after `git rebase main`): `cargo test --workspace --locked`, both clippy runs, `tools/policy.py`, `tools/spec_map.py --uncited` and `--gaps`, `cargo deny check`, then the 30-seed dev sim sweep when the branch touches `core/test/sim/`, osis-engine, osis-node, osis-perm, osis-crdt or Cargo.toml/lock since its merge base (the crates it has caught regressions in; `--sweep-seeds N` forces, 0 skips). Each step prints its wall time. Then `git checkout main && git merge --ff-only <branch> && git push`. `git pull --rebase` everywhere; history is linear. The generated notes/testing-map.md is gitignored, so nothing conflicts on a rebase but real edits.
 - **Coordinator pattern**: one opus worker per issue group in a worktree; a fresh opus reviewer on the same worktree (correctness review, small fixes committed on the branch, the tier-2 oracles for the area, then the gate); the coordinator fast-forwards main. At most three agents at once; three compiling put a 16-thread laptop at load 20-30.
 - **Waiting**: a command that may pass a few minutes runs with `run_in_background` and is awaited with `claudewait ID` (CLAUDE.md). Never a shell wait loop.
 - **Nothing is swept.** A target stays flat once nothing accumulates in it. If one misbehaves, delete it and take the cold build.
@@ -29,10 +29,12 @@ Quiet machine, warm worktree, after the fixes this note records. If your numbers
 | what | expect |
 |---|---|
 | no-op `cargo build --workspace` / `--all-targets` | 0.4 s / 2 s |
-| edit osis-node, `cargo test --workspace`: build / tests | 8 s / 31 s |
+| one-line edit, `cargo test --workspace --no-run`: osis-node (`sync/`) / osis-engine | 2.5 s (4 crates) / 5.5 s (5 crates); before the split either was 5.5-7.5 s |
+| `cargo test --workspace` tests, built | 31 s |
 | edit osis-crdt or osis-base (bottom of the stack), all targets | 10-16 s |
 | clippy / clippy-net after a one-line edit | 3-7 s / 3.5 s |
 | clean `cargo build --workspace`; then `--all-targets`; first clippy; first clippy-net | 82 s; +53 s; +17 s; +69 s |
+| osis-engine and osis-node from scratch (their incremental state gone) | 27 s: osis-node starts on osis-engine's metadata at 5 s and the two codegen in parallel (one osis-node: 40 s) |
 | gate, warm, without / with the sim sweep | about 1 / 3 min |
 | sim sweep 5 / 30 / 300 seeds | 20 s / 2.2 min / about 20 min |
 | `core/test/tla/run.sh small` | 95 s |
@@ -40,7 +42,7 @@ Quiet machine, warm worktree, after the fixes this note records. If your numbers
 | tier-2 oracle `order::arrival_order_alike_large` | about 2 min |
 | tier 2 as a whole | over 25 min: a few single-threaded tests run alone at the tail of each binary; run it in the background, once per round |
 | a task worktree's `target/` after a gate | about 5.5 GB; 6 with clippy-net; +0.7 GB release; flat afterwards (±0.1 GB per edit cycle) |
-| test executables | 32, about 0.8 GB; an osis-node edit relinks the ten above it inside the 8 s build |
+| test executables | 32, about 0.8 GB; an osis-node or osis-engine edit relinks the ten above it inside the build |
 
 Signs of unravelling, in the order they appeared last time: a build on a tree that was built minutes ago compiles more than the crates you touched and their dependents; `target/` dirs growing by GB per day; agents' tool calls lasting exactly 10 minutes; a "wait for X" shell loop anywhere; `--jobs`, `--release`, `-p` or `--features` creeping into commands; a timing test running in dev.
 
