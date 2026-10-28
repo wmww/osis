@@ -76,7 +76,18 @@ impl std::fmt::Debug for Transport {
 pub(crate) enum Net {
     Off,
     Manual(Mutex<Vec<Action>>),
-    Driver { ctl: mpsc::UnboundedSender<Control>, handle: tokio::runtime::Handle, own: Mutex<Option<tokio::runtime::Runtime>> },
+    Driver { ctl: mpsc::UnboundedSender<Control>, handle: tokio::runtime::Handle, own: Mutex<Option<OwnRt>> },
+}
+
+/// osis's own runtime (`Runtime::Own`), shut down only after the driver task ended: an engine
+/// call runs in `block_in_place`, off the workers, so a shutdown does not wait for it, and the
+/// task polled on after it returns would find the runtime's timers gone (tokio panics).
+pub(crate) struct OwnRt {
+    rt: tokio::runtime::Runtime,
+    /// Disconnects when the driver task ends (or was never spawned).
+    ended: std::sync::mpsc::Receiver<()>,
+    /// The driver task holds this until it ends.
+    task: Option<std::sync::mpsc::Sender<()>>,
 }
 
 impl Drop for Net {
@@ -84,13 +95,29 @@ impl Drop for Net {
         if let Net::Driver { ctl, own, .. } = self {
             // the driver ends now, not when its last timer fires
             let _ = ctl.send(Control::Shutdown);
-            if let Some(rt) = lock(own).take() {
-                // may run on one of its own workers: never block here
-                rt.shutdown_background();
+            if let Some(OwnRt { rt, ended, task }) = lock(own).take() {
+                drop(task);
+                // this drop may run inside the driver's engine call: wait on another thread
+                let job = Arc::new(Mutex::new(Some((rt, ended))));
+                let j = job.clone();
+                let spawned = std::thread::Builder::new().name("osis-sync-stop".into()).spawn(move || {
+                    if let Some((rt, ended)) = lock(&j).take() {
+                        let _ = ended.recv();
+                        rt.shutdown_timeout(STOP_WAIT);
+                    }
+                });
+                if spawned.is_err()
+                    && let Some((rt, _)) = lock(&job).take()
+                {
+                    rt.shutdown_background();
+                }
             }
         }
     }
 }
+
+/// How long the stopping thread lets the workers of osis's own runtime finish their task polls.
+const STOP_WAIT: Duration = Duration::from_secs(5);
 
 impl Net {
     pub fn new(rt: &Runtime) -> Result<(Net, Option<mpsc::UnboundedReceiver<Control>>)> {
@@ -100,7 +127,8 @@ impl Net {
             Runtime::Tokio(h) => (h.clone(), None),
             Runtime::Own => {
                 let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("osis-sync").enable_all().build().map_err(|e| Error::Network(e.to_string()))?;
-                (rt.handle().clone(), Some(rt))
+                let (task, ended) = std::sync::mpsc::channel();
+                (rt.handle().clone(), Some(OwnRt { rt, ended, task: Some(task) }))
             }
         };
         let (ctl, rx) = mpsc::unbounded_channel();
@@ -138,7 +166,7 @@ impl Net {
     /// (registered at `relays`) and publishes `/reach`; with feature `lan` and QUIC it also runs
     /// the LAN loop. Without a co-reader transport no co-reader is dialed.
     pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, transport: Option<Transport>, p2p: bool, relays: Vec<String>, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
-        let Net::Driver { handle, ctl, .. } = self else { return Ok(()) };
+        let Net::Driver { handle, ctl, own } = self else { return Ok(()) };
         let host = OsisHost(db);
         let log: driver::Log = Arc::new(|m: &str| log_line(m));
         let mut multi = osis_transport::Multi::default();
@@ -160,7 +188,11 @@ impl Net {
                 (None, false)
             }
         };
-        handle.spawn(driver::run_host(host, multi, Vec::new(), clock, rx, log));
+        let alive = lock(own).as_mut().and_then(|o| o.task.take());
+        handle.spawn(async move {
+            let _alive = alive;
+            driver::run_host(host, multi, Vec::new(), clock, rx, log).await;
+        });
         match reach {
             Some(url) if p2p => {
                 let _ = ctl.send(Control::Reach { url, relays, reply: None });
