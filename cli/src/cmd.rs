@@ -732,11 +732,11 @@ fn change_line(ctx: &Ctx<'_>, c: &Change<Value>) -> String {
 
 /// Prints lines from `rx` until `count` lines, the timeout, or the senders are gone.
 fn stream_lines(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<String>, count: Option<usize>, timeout: Option<Duration>) -> anyhow::Result<()> {
-    stream(ctx, rx, count, timeout, |_, l| l)
+    stream(ctx, rx, count, timeout, "line", |_, l| l)
 }
 
 /// `stream_lines` over items printed by `line`.
-fn stream<T>(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<T>, count: Option<usize>, timeout: Option<Duration>, line: impl Fn(&Ctx<'_>, T) -> String) -> anyhow::Result<()> {
+fn stream<T>(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<T>, count: Option<usize>, timeout: Option<Duration>, what: &str, line: impl Fn(&Ctx<'_>, T) -> String) -> anyhow::Result<()> {
     let end = deadline(timeout);
     let mut n = 0;
     while count.is_none_or(|c| n < c) {
@@ -751,7 +751,7 @@ fn stream<T>(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<T>, count: Option<usize>, ti
                 ctx.out.flush()?;
                 n += 1;
             }
-            Err(mpsc::RecvTimeoutError::Timeout) if count.is_some() => return Err(exit(6, format!("timed out after {n} line(s)"))),
+            Err(mpsc::RecvTimeoutError::Timeout) if count.is_some() => return Err(exit(6, format!("timed out after {n} {what}(s)"))),
             Err(_) => return Ok(()),
         }
     }
@@ -774,7 +774,7 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, count: Option<usize>) -> 
         }),
     };
     let timeout = ctx.timeout_or(None)?;
-    stream(ctx, &rx, count, timeout, |ctx, c| change_line(ctx, &c))
+    stream(ctx, &rx, count, timeout, "change", |ctx, c| change_line(ctx, &c))
 }
 
 /// The schema type of a signal kind, if a registered schema declares it.

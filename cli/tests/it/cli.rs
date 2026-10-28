@@ -346,6 +346,9 @@ fn watch_initial_plan_cli_4() {
     assert_eq!(o.line(), "initial - - - /a/b 7");
     let o = s.ok(&["--json", "watch", &t, "/a/b", "--count", "1"]);
     assert!(o.line().contains("\"source\":\"initial\"") && o.line().ends_with("\"value\":7}"), "{}", o.out);
+    // --timeout reached with --count unmet: exit 6, naming the changes seen
+    let o = s.call(&["--timeout", "50ms", "watch", &t, "/a/b", "--count", "2"], "");
+    assert_eq!((o.code, o.err.trim()), (6, "error: timed out after 1 change(s)"), "{}", o.out);
 }
 
 const SCHEMA: &str = "schema 0x0123456789abcdef0123456789abcdef;
