@@ -173,7 +173,7 @@ impl Engine {
         let tid = *tid;
         self.run(|tx| {
             let mut aks = Vec::new();
-            let prefix = [b"a/".as_slice(), tid.as_bytes()].concat();
+            let prefix = [records::ASPECTS, tid.as_bytes()].concat();
             tx.scan(&prefix, |k, _| {
                 let mut r = records::Rd::new(k);
                 aks.push(r.ak()?);
@@ -231,7 +231,7 @@ impl Engine {
     pub fn all_aspects(&mut self) -> Result<Vec<(Tid, Ak)>> {
         self.run(|tx| {
             let mut out = Vec::new();
-            tx.scan(b"a/", |k, _| {
+            tx.scan(records::ASPECTS, |k, _| {
                 let mut r = records::Rd::new(k);
                 out.push((r.tid()?, r.ak()?));
                 Ok(())

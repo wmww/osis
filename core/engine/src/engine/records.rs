@@ -13,6 +13,8 @@ pub const HLC: &[u8] = b"hlc";
 pub const COMMIT: &[u8] = b"c/";
 /// Creation records: `t/` + tid.
 pub const CREATED: &[u8] = b"t/";
+/// Aspects with a state (the `/aspects` index): `a/` + aspect key, empty value.
+pub const ASPECTS: &[u8] = b"a/";
 /// Receipt record per aspect: `r/` + aspect key.
 pub const RECEIPT: &[u8] = b"r/";
 /// Value-less deltas per aspect (expired, purged): `v/` + aspect key.
@@ -33,7 +35,8 @@ pub const DROPPED: &[u8] = b"d/";
 /// Records the API layer keeps (identity choices, settings): `u/` + name.
 pub const APP: &[u8] = b"u/";
 
-fn uint(n: u64) -> osis_base::Value {
+/// A count as a value (saturating).
+pub(crate) fn uint(n: u64) -> osis_base::Value {
     osis_base::Value::Int(i64::try_from(n).unwrap_or(i64::MAX))
 }
 
@@ -144,7 +147,8 @@ impl<'a> Rd<'a> {
     pub fn new(b: &'a [u8]) -> Rd<'a> {
         Rd(b)
     }
-    fn take(&mut self, n: usize) -> Result<&'a [u8]> {
+    /// The next `n` bytes.
+    pub fn take(&mut self, n: usize) -> Result<&'a [u8]> {
         let (a, b) = self.0.split_at_checked(n).ok_or(Error::Corrupt("short record"))?;
         self.0 = b;
         Ok(a)
@@ -161,10 +165,6 @@ impl<'a> Rd<'a> {
     }
     pub fn arr<const N: usize>(&mut self) -> Result<[u8; N]> {
         self.take(N)?.try_into().map_err(|_| Error::Corrupt("short record"))
-    }
-    /// The next `n` bytes.
-    pub fn take_raw(&mut self, n: usize) -> Result<&'a [u8]> {
-        self.take(n)
     }
     pub fn bytes(&mut self) -> Result<&'a [u8]> {
         let n = self.u32()? as usize;

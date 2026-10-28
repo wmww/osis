@@ -814,7 +814,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     }
     // derived indexes from states (secrets, own keys: persisted, read again on a rebuild)
     let mut aspects = Vec::new();
-    tx.scan(b"a/", |k, _| {
+    tx.scan(crate::engine::records::ASPECTS, |k, _| {
         let mut r = records::Rd::new(k);
         aspects.push((r.tid()?, r.ak()?));
         Ok(())

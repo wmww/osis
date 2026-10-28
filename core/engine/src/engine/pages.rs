@@ -120,10 +120,6 @@ pub fn is_paged(b: &[u8]) -> bool {
 
 // ---- encodings
 
-fn uint(n: u64) -> Value {
-    Value::Int(i64::try_from(n).unwrap_or(i64::MAX))
-}
-
 /// Order-preserving bytes of a dot (spec/crdt.md §2.2: source kind, source bytes, counter; a
 /// `Derived(d)` dot `i` orders as `(d.source, d.ctr, i)`): fixed-width parts, so byte order is
 /// dot order.
@@ -142,7 +138,7 @@ fn dot_key(d: &Dot, out: &mut Vec<u8>) {
     out.extend_from_slice(&d.ctr.to_be_bytes());
 }
 
-use super::records::{dot_of, dot_value};
+use super::records::{dot_of, dot_value, uint};
 
 fn opt_dot_value(d: Option<&Dot>) -> Value {
     d.map_or(Value::List(Vec::new()), dot_value)
