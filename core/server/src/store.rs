@@ -499,7 +499,7 @@ impl<B: Backend> BackendStore<B> {
             }
         }
         for (label, rows) in by_label {
-            let Some(mut tx) = self.meta(&label).ok().flatten().map(|meta| Tx { label, before: (meta.entries, meta.bytes, false), meta, batch: WriteBatch::new(), grew: false }) else {
+            let Ok(mut tx) = self.tx(&label) else {
                 for (k, _, _) in rows {
                     junk.delete(k);
                 }

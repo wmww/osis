@@ -408,47 +408,42 @@ impl Transport for InProcess {
 
 impl InProcess {
     fn dial_with(&self, addr: &Address, own: Option<PublicKey>) -> Result<MemConn, Error> {
-        {
-            crate::check_url(&addr.url)?;
-            let mut st = lock(&self.net.0);
-            // `peer://`: the listener presenting the key, as P2P transports dial
-            let name = match crate::peer_relays(&addr.url) {
-                Some(_) => match st.listeners.iter().find(|(_, l)| l.key == addr.key) {
-                    Some((n, _)) => n.clone(),
-                    None => return Err(Error::Unreachable(addr.url.clone())),
-                },
-                None => mem_name(&addr.url)?.to_owned(),
-            };
-            let name = name.as_str();
-            let Some(l) = st.listeners.get(name) else { return Err(Error::Unreachable(addr.url.clone())) };
-            let (lend, lkey) = (l.endpoint.clone(), l.key);
-            if st.cut.contains(&pair(&self.name, &lend)) {
-                return Err(Error::Unreachable(addr.url.clone()));
-            }
-            if lkey != addr.key {
-                return Err(Error::KeyMismatch);
-            }
-            let mine = match own {
-                Some(k) => k,
-                None => st.rng.bytes32(),
-            };
-            let id = st.id();
-            st.conns.insert(id, Conn {
-                ends: [self.name.clone(), lend],
-                keys: [mine, lkey],
-                streams: BTreeMap::new(),
-                accept: [VecDeque::new(), VecDeque::new()],
-                accept_waker: [None, None],
-                next_stream: 0,
-                closed: false,
-                dropped: [false, true],
-            });
-            if let Some(l) = st.listeners.get_mut(name) {
-                l.queue.push_back(id);
-                wake(&mut l.waker);
-            }
-            Ok(MemConn(Arc::new(Handle { net: self.net.clone(), id, side: 0, peer: lkey })))
+        crate::check_url(&addr.url)?;
+        let mut st = lock(&self.net.0);
+        // `peer://`: the listener presenting the key, as P2P transports dial
+        let name = match crate::peer_relays(&addr.url) {
+            Some(_) => match st.listeners.iter().find(|(_, l)| l.key == addr.key) {
+                Some((n, _)) => n.clone(),
+                None => return Err(Error::Unreachable(addr.url.clone())),
+            },
+            None => mem_name(&addr.url)?.to_owned(),
+        };
+        let name = name.as_str();
+        let Some(l) = st.listeners.get(name) else { return Err(Error::Unreachable(addr.url.clone())) };
+        let (lend, lkey) = (l.endpoint.clone(), l.key);
+        if st.cut.contains(&pair(&self.name, &lend)) {
+            return Err(Error::Unreachable(addr.url.clone()));
         }
+        if lkey != addr.key {
+            return Err(Error::KeyMismatch);
+        }
+        let mine = own.unwrap_or_else(|| st.rng.bytes32());
+        let id = st.id();
+        st.conns.insert(id, Conn {
+            ends: [self.name.clone(), lend],
+            keys: [mine, lkey],
+            streams: BTreeMap::new(),
+            accept: [VecDeque::new(), VecDeque::new()],
+            accept_waker: [None, None],
+            next_stream: 0,
+            closed: false,
+            dropped: [false, true],
+        });
+        if let Some(l) = st.listeners.get_mut(name) {
+            l.queue.push_back(id);
+            wake(&mut l.waker);
+        }
+        Ok(MemConn(Arc::new(Handle { net: self.net.clone(), id, side: 0, peer: lkey })))
     }
 }
 
