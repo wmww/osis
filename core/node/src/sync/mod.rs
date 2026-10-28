@@ -1534,6 +1534,26 @@ mod tests {
         }
     }
 
+    // spec/sync.md §6: a blob a connection's server did not deliver is not fetched there again
+    // until that server announces it (it holds it now).
+    #[test]
+    fn undelivered_blob_fetched_again_once_announced_spec_sync_6() {
+        let lp = crate::local_peer::LocalPeer::new(1, 968, osis_base::WallMs(1_700_000_000_000)).unwrap();
+        let p = lp.peers.into_iter().next().unwrap();
+        let server = Address { url: "quic://server:1".into(), key: [7; 32] };
+        let cfg = SyncConfig { servers: vec![server], ..SyncConfig::default() };
+        let mut s = SyncEngine::new(p.engine, p.clock, Box::new(osis_crypto::SeededRng::from_u64(969)), cfg).unwrap();
+        let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
+        let (l, b) = (LabelId([1; 16]), osis_base::BlobId([1; 32]));
+        s.conns.get_mut(&conn).unwrap().missing.insert(b);
+        s.fetch_on(conn, l, [b], &mut Vec::new()).unwrap();
+        assert!(!s.fetching(&b), "not asked again");
+        let added = osis_proto::Event::Added { blob_id: b, blob: None, wrap: [3; osis_crypto::WRAP_LEN], stamp: None };
+        s.log_events(Some(conn), l, vec![added], None, &mut Vec::new()).unwrap();
+        s.fetch_on(conn, l, [b], &mut Vec::new()).unwrap();
+        assert!(s.fetching(&b), "asked once announced");
+    }
+
     // spec/sync.md §5: a deposit is kept until each of its servers answers it, also across a
     // restart; one blob queued under two labels at one server is two deposits.
     #[test]
