@@ -51,9 +51,9 @@ Quiet machine, warm worktree, after the fixes this note records. If your numbers
 | release, one crate: `cargo test --release -p osis-node --test it --no-run` clean / after an osis-node edit | 2.9 / 1.7 min at load 20-30 (no other test binary relinks) |
 | `unification_check` in the gate (after the build) | 7 s |
 | tier-2 oracles `order::arrival_order_alike_large` / `order::arrival_order_exhaustive_large` | 18 s / 2 min on 16 threads (300 / 200 seeds: 104 s / 13 min) |
-| tier 2 as a whole | over 25 min: a few single-threaded tests run alone at the tail of each binary; run it in the background, once per round |
+| tier 2 as a whole | not measured since the perm set was sharded (2.4 min) and the budgets moved to release; the remaining single-threaded tails are the crdt decoder differentials at 1024 cases; a periodic check, never per branch |
 | a task worktree's `target/` after a gate | about 5.5 GB; 6 with clippy-net; +0.7 GB release; flat afterwards (±0.1 GB per edit cycle) |
-| test executables | 32, about 0.8 GB; an osis-node or osis-engine edit relinks the ten above it inside the build |
+| test executables | 53 (tests and bins), about 0.65 GB with zlib-compressed debug sections; an osis-node or osis-engine edit relinks the ten above it inside the build |
 
 Load: three cargo invocations each asking for 16 jobs on 8 physical cores reached load 60-80 (one rustc took 15 min of wall for 2.5 min of CPU). On a shared box cap jobs per invocation at the physical core count in the user-level `~/.cargo/config.toml` (`[build] jobs = 8` on this box; it changes no artifacts, so it is not a hygiene violation; never per command). Background and moved commands run at normal priority, measured: there is no idle-priority penalty, only contention.
 
