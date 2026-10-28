@@ -160,3 +160,37 @@ fn undo_chain_stops_at_a_live_change_spec_crdt_4_6() {
     assert_eq!(db.undo_commit(c1.commit), Err(Error::NotUndoable { commit: c1.commit, reason: DropReason::Superseded }));
     assert_eq!(db.get(t, k).unwrap(), Some(Value::Int(1)));
 }
+
+// notes/api.md Attribution, spec/permissions.md §5.2: the API reports only verifiable authorship.
+// B holds A's signed change: history lists it with A's node and `ts`. C holds only A's snapshot
+// of the aspect: the value reads the same, its watch reports the change as the snapshot's (its
+// author, ID and `ts`), and its history claims nothing for the change it never held.
+#[test]
+fn snapshot_only_attribution_api_history() {
+    use osis::Source;
+    let (a, b, c) = (db(1), db(2), db(3));
+    let k = ak("/t/x");
+    let t = a.write_with(|w| w.create(a.me(), Place::Unsynced)).unwrap();
+    deliver(&a, &b);
+    deliver(&a, &c);
+    let done = commit_with(&a, |w| w.at(t, k.clone()).set(&Value::Int(7)));
+    let snap = a.engine(|e| e.snapshot(&t, &k)).unwrap().unwrap();
+    let snap_ts = a.engine(|e| e.header(&snap)).unwrap().ts;
+    assert!(snap_ts > done.ts);
+    deliver(&a, &b);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _s = c.at(t, k.clone()).on_change(move |_, ch| tx.send(ch).unwrap()).unwrap();
+    assert_eq!(recv(&rx).source, Source::Initial);
+    let pks = a.engine(|e| e.commit_ids().iter().filter(|id| **id != done.commit).filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
+    for pk in pks {
+        c.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
+    }
+    let ch = recv(&rx);
+    assert_eq!(ch.value, Ok(Some(Value::Int(7))));
+    assert!(matches!(ch.source, Source::Remote(i) if i.id == snap && i.node == a.node() && i.ts == snap_ts), "{:?}", ch.source);
+    let scope = UndoScope::Thing(t);
+    let hb = b.history(&scope, HistoryQuery::default()).unwrap();
+    assert!(hb.iter().any(|e| e.commit == done.commit && e.node == a.node() && e.ts == done.ts), "{hb:?}");
+    let hc = c.history(&scope, HistoryQuery::default()).unwrap();
+    assert!(hc.iter().all(|e| e.commit != done.commit && e.ts != done.ts), "{hc:?}");
+}

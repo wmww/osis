@@ -1369,10 +1369,9 @@ fn forged_snapshot_covers_nothing_spec_commits_5() {
 
 // spec/requirements.md, Out of scope ("malicious readers can only waste storage"); spec/permissions.md
 // §5.2: a reader's snapshot carrying the owner's register write under a counter the owner never
-// used, stamped now, should change nothing; it shows (issues/snapshot-copy-residue.md, unheld dots).
+// used, stamped now, changes nothing: its author could not write the aspect.
 #[test]
-#[ignore = "issues/snapshot-copy-residue.md"]
-fn snapshot_forging_unused_dot_shows_spec_perm_5_2() {
+fn snapshot_forging_unused_dot_changes_nothing_spec_perm_5_2() {
     use osis_crdt::{Source, Writer, create};
     let mut lp = net(3, 0x5f71);
     lp.sync_all().unwrap();
@@ -1396,11 +1395,10 @@ fn snapshot_forging_unused_dot_shows_spec_perm_5_2() {
 }
 
 // spec/permissions.md §5.2, §7, spec/commits.md §5: the import's body dropped (covered by the
-// owner's snapshot), a reader's snapshot then carrying an extra element under `Commit(C)` should
-// change nothing; it shows (issues/snapshot-copy-residue.md, dropped delta).
+// owner's snapshot), a reader's snapshot then carrying an extra element under `Commit(C)` changes
+// nothing: its author could not write the aspect.
 #[test]
-#[ignore = "issues/snapshot-copy-residue.md"]
-fn snapshot_forging_dropped_import_dot_shows_spec_perm_5_2() {
+fn snapshot_forging_dropped_import_dot_changes_nothing_spec_perm_5_2() {
     use osis_crdt::{Batch, Op, PathOp, Source, Writer};
     let mut lp = net(3, 0x5f72);
     lp.sync_all().unwrap();
@@ -1456,4 +1454,162 @@ fn snapshot_covers_write_inside_earlier_entry_spec_commits_5() {
     lp.advance(1_000);
     let snap = lp.peers[0].engine.snapshot(&t, &map).unwrap().unwrap();
     assert_eq!(lp.peers[0].engine.covered(&snap, &c, &t, &map).unwrap(), Some(true));
+}
+
+// spec/requirements.md, Out of scope; spec/permissions.md §5.2 (a snapshot is valid only if its
+// author could write the aspect at it): a reader's snapshot of the owner's state plus an entry
+// at a counter the owner never used gives nothing, before or after the owner's commit, across a
+// restart, and covers nothing although it copies the commit exactly.
+#[test]
+fn reader_snapshot_gives_nothing_either_order_spec_perm_5_2() {
+    let mut lp = net(4, 0x5f81);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let (a, r) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
+    sync(&mut lp, 0, 3);
+    let m_ak = ak("/x/m");
+    let mut m = Mutation::new();
+    m.set(t, &m_ak, &Value::Map(BTreeMap::from([(s("k"), s("real"))]))).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    for i in 1..3 {
+        sync(&mut lp, 0, i);
+    }
+    let want = lp.peers[0].engine.get(&t, &m_ak).unwrap();
+    lp.advance(1_000);
+    let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
+    let mut f = lp.peers[1].engine.state(&t, &m_ak).unwrap().unwrap().clone();
+    f.join(entry_by(a, now, 1 << 40, "evil", "x"));
+    let forged = forge_snapshot(&mut lp, 1, t, &m_ak, now, f);
+    let fid = match lp.peers[2].engine.ingest(&forged, Vec::new()).unwrap() {
+        Ingested::Applied(id) => id,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(lp.peers[2].engine.get(&t, &m_ak).unwrap(), want, "after the commit");
+    assert_eq!(lp.peers[2].engine.covered(&fid, &c, &t, &m_ak).unwrap(), Some(false), "an invalid snapshot covers nothing");
+    lp.peers[3].engine.ingest(&forged, Vec::new()).unwrap();
+    assert_eq!(lp.peers[3].engine.get(&t, &m_ak).unwrap(), None, "before the commit");
+    sync(&mut lp, 0, 3);
+    assert_eq!(lp.peers[3].engine.get(&t, &m_ak).unwrap(), want, "then the commit");
+    assert_eq!(lp.peers[2].engine.state(&t, &m_ak).unwrap(), lp.peers[3].engine.state(&t, &m_ak).unwrap(), "states alike");
+    lp.peers[3].restart(0x5f82).unwrap();
+    assert_eq!(lp.peers[3].engine.get(&t, &m_ak).unwrap(), want, "after a restart");
+}
+
+// spec/permissions.md §5.1 (frontier), §5.2 (snapshot authority): Carol, a writer, compacts the
+// tags; Dave holds Bob's tag only inside her snapshot. Alice then demotes Carol: with a frontier
+// listing the snapshot (Alice had received it) Dave keeps Bob's tag; with one that does not, the
+// snapshot is stripped like Carol's other writes and Bob's tag goes at Dave (Alice, holding Bob's
+// commit, keeps it), whichever of the snapshot and the demotion Dave gets first, across a restart.
+#[test]
+fn demoted_compactor_snapshot_by_frontier_spec_perm_5_2() {
+    for (covered, demote_first) in [(true, false), (true, true), (false, false), (false, true)] {
+        let (mut lp, d, b, c) = setup(61);
+        add_tag(&mut lp, 0, d, "alice");
+        add_tag(&mut lp, 1, d, "bob");
+        lp.sync_all().unwrap();
+        // Dave gets only what is delivered below
+        lp.peers.push(osis_node::local_peer::Peer::new(6100, lp.peers[0].engine.now()).unwrap());
+        let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "/t/tags"))).collect();
+        lp.advance(DAY);
+        let snap = lp.peers[2].engine.snapshot(&d, &ak("/t/tags")).unwrap().unwrap();
+        sync(&mut lp, 2, 0);
+        lp.advance(DAY);
+        let rv = if covered {
+            let scope = DemotionScope { membership: BTreeMap::from([(c, BTreeSet::from([d]))]), content: BTreeMap::from([(c, BTreeSet::from([d]))]) };
+            let now = lp.peers[0].engine.now();
+            let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
+            assert!(f.commits.contains(&snap), "the frontier lists the snapshot");
+            set_edge(&mut lp.peers[0].engine, d, c, None, Some(f.to_value()))
+        } else {
+            set_edge(&mut lp.peers[0].engine, d, c, None, Some(osis_schema::core_types::Frontier::default().to_value()))
+        };
+        let all = BTreeSet::from(["alice".to_string(), "bob".to_string()]);
+        assert_eq!(tags(&mut lp, 0, d), all, "Alice holds Bob's commit");
+        let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !bob.contains(&p.id)).collect();
+        let (late, early): (Vec<_>, Vec<_>) = pks.into_iter().partition(|p| if demote_first { p.id == snap } else { p.id == rv });
+        for pk in early.iter().chain(&late) {
+            lp.deliver(3, pk).unwrap();
+        }
+        lp.peers[3].engine.reexamine().unwrap();
+        assert!(lp.peers[3].engine.header(&snap).is_some() && lp.peers[3].engine.header(&rv).is_some());
+        assert!(bob.iter().all(|x| lp.peers[3].engine.header(x).is_none()), "Bob's commit is not held");
+        let want = if covered { all.clone() } else { BTreeSet::from(["alice".to_string()]) };
+        let case = format!("covered {covered}, demotion first {demote_first}");
+        assert_eq!(tags(&mut lp, 3, d), want, "{case}");
+        lp.peers[3].restart(6101).unwrap();
+        assert_eq!(tags(&mut lp, 3, d), want, "{case}, after a restart");
+    }
+}
+
+// spec/permissions.md §5.2: a write a valid snapshot gives stays although a reader's snapshot
+// copying it (invalid, so giving none of its writes) is held too, in either order: one carrier's
+// copy never voids another's.
+#[test]
+fn reader_copy_voids_no_valid_carrier_spec_perm_5_2() {
+    for forged_first in [false, true] {
+        let mut lp = net(3, 0x5f83);
+        lp.sync_all().unwrap();
+        let d = new_thing(&mut lp, 0);
+        let (b, r) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
+        set_edge(&mut lp.peers[0].engine, d, r, Some(edge(Role::Read)), None);
+        lp.sync_all().unwrap();
+        add_tag(&mut lp, 1, d, "bob");
+        lp.sync_all().unwrap();
+        let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "/t/tags"))).collect();
+        lp.advance(1_000);
+        let snap = lp.peers[0].engine.snapshot(&d, &ak("/t/tags")).unwrap().unwrap();
+        let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
+        let f = lp.peers[2].engine.state(&d, &ak("/t/tags")).unwrap().unwrap().clone();
+        let forged = forge_snapshot(&mut lp, 2, d, &ak("/t/tags"), now, f);
+        lp.peers.push(osis_node::local_peer::Peer::new(0x5f84, lp.peers[0].engine.now()).unwrap());
+        if forged_first {
+            let _ = lp.peers[3].engine.ingest(&forged, Vec::new());
+        }
+        for pk in packages(&mut lp, 0).into_iter().filter(|p| !bob.contains(&p.id)) {
+            lp.deliver(3, &pk).unwrap();
+        }
+        lp.peers[3].engine.ingest(&forged, Vec::new()).unwrap();
+        lp.peers[3].engine.reexamine().unwrap();
+        assert!(lp.peers[3].engine.header(&snap).is_some() && bob.iter().all(|x| lp.peers[3].engine.header(x).is_none()));
+        assert_eq!(tags(&mut lp, 3, d), BTreeSet::from(["bob".to_string()]), "forged first: {forged_first}");
+        lp.peers[3].restart(0x5f85).unwrap();
+        assert_eq!(tags(&mut lp, 3, d), BTreeSet::from(["bob".to_string()]), "forged first: {forged_first}, after a restart");
+    }
+}
+
+// spec/crdt.md §8 (`Authors`: a carried write is judged per its own snapshot's entry where no
+// held commit claims its source), spec/permissions.md §5.2: a reader's snapshot naming itself,
+// earlier, as the author of a commit-form write a writer's snapshot carries for Alice does not
+// make that write Alice's-invalid, in either order.
+#[test]
+fn reader_claim_judges_only_its_snapshot_spec_crdt_8() {
+    for reader_first in [false, true] {
+        let mut lp = net(3, 0x5f86);
+        lp.sync_all().unwrap();
+        let d = new_thing(&mut lp, 0);
+        let (a, c, r) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        set_edge(&mut lp.peers[0].engine, d, c, Some(edge(Role::Write)), None);
+        set_edge(&mut lp.peers[0].engine, d, r, Some(edge(Role::Read)), None);
+        lp.sync_all().unwrap();
+        lp.advance(1_000);
+        let m_ak = ak("/x/m");
+        let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
+        let early = osis_base::Ts::make(WallMs(lp.peers[1].engine.now().0 - 10), 0).unwrap();
+        let y = osis_base::CommitId([0xC3; 32]);
+        let mut w = osis_crdt::Writer::new(early, osis_crdt::Source::commit(y), 1);
+        let f = osis_crdt::create(&mut w, &osis_crdt::AnyView, &Value::Map(BTreeMap::from([(s("alice"), s("v"))]))).unwrap();
+        let honest = forge_snapshot_full(&mut lp, 1, d, &m_ak, now, f.clone(), Default::default(), BTreeMap::from([(y, (a, now))]));
+        let forged = forge_snapshot_full(&mut lp, 2, d, &m_ak, now, f, Default::default(), BTreeMap::from([(y, (r, early))]));
+        let seq = if reader_first { [&forged, &honest] } else { [&honest, &forged] };
+        for b in seq {
+            lp.peers[0].engine.ingest(b, Vec::new()).unwrap();
+        }
+        let keys = match lp.peers[0].engine.get(&d, &m_ak).unwrap() {
+            Some(Value::Map(m)) => m.into_keys().collect::<BTreeSet<_>>(),
+            _ => BTreeSet::new(),
+        };
+        assert_eq!(keys, BTreeSet::from([s("alice")]), "reader first: {reader_first}");
+    }
 }

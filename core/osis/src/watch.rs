@@ -25,7 +25,8 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// The commit behind a change.
+/// The commit behind a change, as its signed header says: a snapshot or import applied is
+/// reported as itself, never as the writes it carries (notes/api.md Attribution).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommitInfo {
     pub id: CommitId,

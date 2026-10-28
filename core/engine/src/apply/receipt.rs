@@ -139,8 +139,11 @@ pub(crate) fn record(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(usize
             // imports count by commit ID (spec/permissions.md §5.1 frontier coverage)
             r.commits.insert(*id, (h.author, received.0));
         }
+        // an invalid snapshot's frontiers give nothing (spec/permissions.md §5.2)
         for (_, _, d) in parts.iter().filter(|p| p.0 == ai) {
-            if let Decoded::Snapshot(s) = d {
+            if let Decoded::Snapshot(s) = d
+                && super::validity::snapshot_valid(tx.core, id, &a.tid, &a.ak)
+            {
                 for (n, c) in &s.frontiers.0 {
                     r.add(*n, 1, c.saturating_add(1), received.0);
                 }

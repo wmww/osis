@@ -770,7 +770,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 validity::note_authors(tx.core, &id, &b.header, &parts).map_err(|_| Error::Corrupt("snapshot authors"))?;
                 for (ai, _, d) in parts {
                     if let (Some(a), Decoded::Snapshot(s)) = (b.header.aspects.get(ai), d) {
-                        validity::note_carried(tx.core, &a.tid, &a.ak, &id, &s.fragment);
+                        validity::note_carried(tx.core, &a.tid, &a.ak, &id, &s.fragment, &s.authors);
                         atomic::note_snapshot(tx.core, &a.tid, &a.ak, b.header.ts, &id, s.frontiers);
                     }
                 }

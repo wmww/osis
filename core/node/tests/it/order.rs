@@ -949,4 +949,19 @@ fn dropped_snapshot_rebuilds_alike_spec_commits_5() {
     assert!(!p.engine.body_live(&snap, &a.tid, &a.ak).unwrap(), "the undo reset it");
 }
 
+// spec/permissions.md §5.2 (an invalid snapshot gives none of its writes), spec/crdt.md §4.6:
+// order seed 1006, shrunk. Bob's snapshot (invalid after his demotion) carries Alice's entry
+// creation, held before her commit: the un-merge of its dots strips Alice's later write nested in
+// that entry; her creating commit arriving last must give it back (`refill` rebuilds).
+#[test]
+fn invalid_snapshot_owner_late_seed_1006() {
+    let h = vec![Step::Edge { by: 0, t: 0, member: 2, role: None }, Step::Nested { by: 0, other: 1, t: 4, k: 2, text: false, compact: true, also: true }, Step::Write { by: 2, t: 6, op: 12, k: 1, v: 2 }, Step::Write { by: 0, t: 1, op: 18, k: 2, v: 6 }, Step::Demote { by: 0, t: 2, member: 1, at: 5, to_read: true }, Step::Write { by: 0, t: 0, op: 3, k: 2, v: 9 }];
+    check(1006, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1 }).unwrap();
+}
 
+// as above, order seed 1042, shrunk (an in-place un-merge differed from a rebuild).
+#[test]
+fn invalid_snapshot_owner_late_seed_1042() {
+    let h = vec![Step::Nested { by: 0, other: 2, t: 1, k: 0, text: false, compact: true, also: true }, Step::New { by: 0, parent: 3, write: false }, Step::New { by: 0, parent: 6, write: false }, Step::Sync { from: 2, to: 1 }, Step::Demote { by: 2, t: 3, member: 1, at: 3, to_read: true }, Step::Nested { by: 2, other: 1, t: 0, k: 1, text: false, compact: true, also: true }];
+    check(1042, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1 }).unwrap();
+}

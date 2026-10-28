@@ -606,6 +606,10 @@ impl Engine {
         let (s, c, tid, ak) = (*s, *c, *tid, ak.clone());
         self.run(|tx| {
             let (Some(sai), Some(cai)) = (aspect_index(tx, &s, &tid, &ak), aspect_index(tx, &c, &tid, &ak)) else { return Ok(None) };
+            // an invalid snapshot gives nothing, so covers nothing (spec/permissions.md §5.2)
+            if !crate::apply::validity::snapshot_valid(tx.core, &s, &tid, &ak) {
+                return Ok(Some(false));
+            }
             let parts = crate::apply::held_parts(tx, &s, sai)?;
             if let (Some(m), [osis_commit::Decoded::Snapshot(sn)]) = (tx.core.ix.commits.get(&c), parts.as_slice())
                 && m.header.form == osis_commit::Form::Node
