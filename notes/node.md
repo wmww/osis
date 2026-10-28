@@ -1,7 +1,9 @@
-# Node (osis-node)
-> Summary: Module layout and ownership of `osis-node`, the engine's public surface, what it keeps in the store and in memory, and the readings node-core fixed (pending, validity, bodies, receipts, counters). The plans that built it are done; the origin column says which part of the spec each module serves.
+# Node (osis-engine, osis-node)
+> Summary: Module layout and ownership of `osis-engine` and `osis-node`, the hook between them, the engine's public surface, what it keeps in the store and in memory, and the readings node-core fixed (pending, validity, bodies, receipts, counters). The plans that built it are done; the origin column says which part of the spec each module serves.
 
 ## Modules and ownership
+Every module below is in osis-engine (`core/engine`) except `sync/`, which is osis-node (`core/node`); osis-node re-exports the engine's modules and root items at the same paths, so dependents name only `osis_node`. The engine knows nothing of sync, with one hook: `engine::SyncRecords` (`note_unsent`: the inbox delivery a flow's commit owes, written in that commit's transaction; `forget`: the `y/` records `retention::forget` drops), implemented by `sync::state::Records` and installed by `SyncEngine::new` (`Engine::set_sync_records`; an engine never wrapped writes and drops no sync records, like `Core::changed`). The sync layer reaches into `Engine::core` (`Core` is `#[doc(hidden)] pub`) and `Engine::run`; narrowing that to accessors is open. The index tag (`engine::index`, `core/engine/build.rs`) hashes the engine's sources and its dependencies', not sync's.
+
 | module | origin | contents |
 |---|---|---|
 | `engine/` | node-core | `Engine` (create/open, one store transaction per call, caches), `Mutation` and the writing path (`write.rs`), reads and synthetic aspects (`read.rs`), HLC (`clock.rs`), secrets and the commit `Secrets` (`secrets.rs`), local state codec (`state.rs`), paged states with lazy loading (`pages.rs`), journaled indexes (`journal.rs`), perm's held set (`held.rs`), `/groups` (`groups.rs`), the persisted index (`index.rs`), store record layouts (`records.rs`), blob adapters (`blobs.rs`), large values: chunking with reuse in the write path, `live_trees`, `read_large` (`large.rs`) |

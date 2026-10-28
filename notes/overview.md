@@ -49,7 +49,7 @@ Known open (issues/): owner tradeoffs stated in user terms (crdt-undo-absent-pos
 - notes/tags.md: the standard core aspects (`/name`, `/body`, `/tag`), tags as marked groups in a graph, sharing a tag per item through one nested roster, the confirmation guideline.
 - notes/networking.md: transports (iroh, direct servers), official infrastructure, push wake-up proposal, risks.
 - notes/local-store.md: encrypted local store and key-erasure deletion.
-- notes/node.md: osis-node module layout, engine surface, store records, node-core readings.
+- notes/node.md: osis-engine and osis-node module layout, engine surface, store records, node-core readings.
 - notes/cli.md: the `osis` command-line tool (command table, value syntax, JSON, exit codes).
 - notes/std.md: the first-party schemas (notes, contacts, events), the time types, what was left out of vCard and iCalendar, the scenario tests.
 - notes/testing.md: tiers, vectors, fuzzing, simulator, budgets, policy checks; notes/testing-map.md: the generated spec-to-test map.
