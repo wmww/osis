@@ -756,7 +756,7 @@ pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> Vec<(
         let node = match d.src.kind() {
             // a dot a held commit owns is that commit's write, judged with it
             osis_crdt::SourceKind::Node(n) if core.commit_of(tid, ak, &d).is_none() => *n,
-            osis_crdt::SourceKind::Commit(c) if !core.commits.contains_key(c) => match core.authors.get(&(*tid, *c)) {
+            osis_crdt::SourceKind::Commit(c) if !owns_source(core, tid, ak, c) => match core.authors.get(&(*tid, *c)) {
                 Some((n, _)) => *n,
                 None => continue,
             },
@@ -765,6 +765,23 @@ pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> Vec<(
         groups.entry((d.src.clone(), node, ts)).or_default().insert(d.ctr);
     }
     groups.into_iter().map(|((s, n, ts), c)| (s, n, ts, c)).collect()
+}
+
+/// Whether a held commit owns the writes of source `Commit(c)` on `(tid, ak)` (spec/permissions.md
+/// §5.2): `c` itself where it is a commit-form commit with that aspect, else a held import of it with that aspect (§7),
+/// found at the import's `ts` (`Core::authors`, which a held import sets). A function of the
+/// held set: a held commit `c` without the aspect (an import's origin on the moved thing) owns
+/// nothing there.
+fn owns_source(core: &Core, tid: &Tid, ak: &Ak, c: &CommitId) -> bool {
+    let own = |m: &Meta| m.view.form == Form::Commit && m.view.kind.has_own_writes() && m.view.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak);
+    if core.commits.get(c).is_some_and(own) {
+        return true;
+    }
+    let Some((_, ts)) = core.authors.get(&(*tid, *c)) else { return false };
+    let (lo, hi) = ((*ts, CommitId([0; 32])), (*ts, CommitId([0xff; 32])));
+    core.copies.get(&(*tid, ak.clone())).is_some_and(|s| {
+        s.range(lo..=hi).any(|(_, i)| core.commits.get(i).is_some_and(|m| m.view.kind == Kind::Import && m.header.origins.iter().any(|o| o.commit == *c)))
+    })
 }
 
 /// The counters of carried group `c` of `(tid, ak)` invalid as their author's writes (§5.2),
@@ -919,20 +936,21 @@ pub(crate) fn carries_invalid(core: &Core, tid: &Tid, ak: &Ak, snap: &CommitId) 
     core.carried.get(&(*tid, ak.clone())).is_some_and(|v| v.iter().any(|c| c.snap == *snap && !c.invalid.is_empty()))
 }
 
-/// Drops the carried writes a commit now held owns (judged with it): its counters (node form),
-/// its whole source (commit form).
+/// Drops the carried writes a commit now held owns on its aspects (judged with it, as
+/// `owns_source`): its counters (node form), its whole source (commit form), its origins'
+/// sources (an import).
 pub(crate) fn uncarry(core: &mut Core, id: &CommitId, h: &Header) {
-    if !h.kind.has_own_writes() {
+    let mut srcs: Vec<osis_crdt::Source> = h.origins.iter().filter(|_| h.kind == Kind::Import).map(|o| osis_crdt::Source::commit(o.commit)).collect();
+    if h.kind.has_own_writes() && h.form == Form::Commit {
+        srcs.push(osis_crdt::Source::commit(*id));
+    }
+    let node_src = (h.kind.has_own_writes() && h.form == Form::Node).then(|| osis_crdt::Source::node(h.author));
+    if srcs.is_empty() && node_src.is_none() {
         return;
     }
-    let commit_src = osis_crdt::Source::commit(*id);
-    let node_src = osis_crdt::Source::node(h.author);
     for a in &h.aspects {
         let k = (a.tid, a.ak.clone());
-        let owns = |c: &Carried, x: u64| match h.form {
-            Form::Node => c.src == node_src && a.lo <= x && x < a.hi,
-            Form::Commit => c.src == commit_src,
-        };
+        let owns = |c: &Carried, x: u64| srcs.contains(&c.src) || (node_src.as_ref() == Some(&c.src) && a.lo <= x && x < a.hi);
         if !core.carried.get(&k).is_some_and(|v| v.iter().any(|c| c.ctrs.iter().any(|x| owns(c, *x)))) {
             continue;
         }

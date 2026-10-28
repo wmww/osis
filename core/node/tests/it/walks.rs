@@ -554,112 +554,158 @@ fn reached(e: &Engine) -> [usize; 4] {
 // roster snapshots, a move (imports) and late, out-of-order deliveries: at random points a node
 // opened from its persisted index, and then rebuilt from its commit records, equals the running
 // node (views, `by_thing`, `by_chunk`, validity, perm, states). Seeds: OSIS_WALKS_START,
-// OSIS_WALKS_SEEDS; 261 and 377 fail on issues/carried-import-order.md.
+// OSIS_WALKS_SEEDS.
 #[test]
 fn open_equals_rebuild_random_histories() {
     let env = |k: &str, d: u64| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
     let (start, seeds) = (env("OSIS_WALKS_START", 0), env("OSIS_WALKS_SEEDS", 4));
     let mut most = [0usize; 4];
     for seed in start..start + seeds {
-        let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-        let mut lp = LocalPeer::new(3, 0x7a1c + seed, T0).unwrap();
-        lp.sync_all().unwrap();
-        let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
-        let mut things: Vec<Tid> = (0..2).map(|_| new_thing(&mut lp, 0)).collect();
-        for t in things.clone() {
-            set_edge(&mut lp.peers[0].engine, t, ids[1], Some(edge(Role::Write)), None);
-            set_edge(&mut lp.peers[0].engine, t, ids[2], Some(edge(Role::Admin)), None);
-        }
-        lp.sync_all().unwrap();
-        let mut moved = false;
-        for step in 0..60 {
-            let i = rng.below(3) as usize;
-            let t = things[rng.below(things.len() as u64) as usize];
-            let mut m = Mutation::new();
-            match rng.below(16) {
-                0 => {
-                    m.set(t, &BLOB, &big_blob(&mut rng)).unwrap();
-                }
-                1 | 2 => {
-                    m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s(&format!("t{step}"))) }).unwrap();
-                }
-                3 => {
-                    m.op(t, &KEPTSET, PathOp { path: Vec::new(), op: Op::Add(s(&format!("k{step}"))) }).unwrap();
-                }
-                4 => {
-                    m.set(t, &GONE, &s(&format!("g{step}"))).unwrap();
-                }
-                5 => {
-                    let fill: std::collections::BTreeMap<Value, Value> = (0..40 + rng.below(40)).map(|k| (s(&format!("k{k:03}")), s(&format!("{step}{}", "g".repeat(400))))).collect();
-                    m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
-                }
-                6 => {
-                    let a = ["/t/keptset", "/t/gonemap", "/t/tags"][rng.below(3) as usize];
-                    let _ = lp.peers[i].engine.snapshot(&t, &ak(a));
-                }
-                7 => {
-                    // the admin revokes or restores the writer, a revoke with what it received
-                    let role = [None, Some(Role::Read), Some(Role::Write)][rng.below(3) as usize];
-                    m.op(t, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(ids[1])) }).unwrap();
-                    if let Some(e) = role {
-                        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(ids[1]))], op: Op::Set(edge(e).to_value()) }).unwrap();
-                    }
-                    let scope = osis_perm::DemotionScope { membership: [(ids[1], [t].into())].into(), content: [(ids[1], [t].into())].into() };
-                    let now = lp.peers[2].engine.now();
-                    if role != Some(Role::Write)
-                        && let Ok(f) = lp.peers[2].engine.frontier(&scope, now)
-                    {
-                        m.frontier(f.to_value());
-                    }
-                    let _ = lp.peers[2].commit(m);
-                    m = Mutation::new();
-                }
-                8 => {
-                    let _ = lp.peers[i].engine.roster_snapshot(&t, None);
-                }
-                9 if !moved && step > 20 => {
-                    if let Ok((copy, _)) = lp.peers[0].engine.move_thing(&t, ids[0]) {
-                        things.push(copy);
-                        moved = true;
-                    }
-                }
-                10 => lp.advance(1 + rng.below(1_200_000)),
-                11..=13 => {
-                    // some of i's commits, shuffled, to another node
-                    let j = (i + 1 + rng.below(2) as usize) % 3;
-                    let mut pk = lp.packages(i).unwrap();
-                    let n = pk.len();
-                    for k in 0..n {
-                        let r = k + rng.below((n - k) as u64) as usize;
-                        pk.swap(k, r);
-                    }
-                    for p in pk.iter().take(1 + rng.below(n as u64 + 1) as usize) {
-                        let _ = lp.deliver(j, p);
-                    }
-                }
-                _ => {
-                    let e = &mut lp.peers[i].engine;
-                    let r = reached(e);
-                    for k in 0..4 {
-                        most[k] = most[k].max(r[k]);
-                    }
-                    open_equals_rebuild_any(e, &things, &format!("seed {seed} step {step} peer {i}"));
-                }
-            }
-            if !m.is_empty() {
-                let _ = lp.peers[i].commit(m);
-            }
-            lp.peers[i].clock.advance(1 + rng.below(3));
-        }
-        lp.sync_all().unwrap();
-        for i in 0..3 {
-            let r = reached(&lp.peers[i].engine);
-            for k in 0..4 {
-                most[k] = most[k].max(r[k]);
-            }
-            open_equals_rebuild_any(&mut lp.peers[i].engine, &things, &format!("seed {seed} end, peer {i}"));
-        }
+        random_history(seed, &mut most);
     }
     // the histories reach drops, invalid parts, roster snapshots and chunks
     assert!(most.iter().all(|n| *n > 0), "reached (dropped, invalid, roster snapshots, chunks): {most:?}");
+}
+
+// as above: seeds where a snapshot of the moved thing carried imported writes whose origin
+// commit arrived after it (the carried index depended on that order)
+#[test]
+fn open_equals_rebuild_random_histories_carried_imports() {
+    for seed in [261, 377] {
+        random_history(seed, &mut [0; 4]);
+    }
+}
+
+/// One random history of `open_equals_rebuild_random_histories`; raises `most` to what it reached.
+fn random_history(seed: u64, most: &mut [usize; 4]) {
+    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+    let mut lp = LocalPeer::new(3, 0x7a1c + seed, T0).unwrap();
+    lp.sync_all().unwrap();
+    let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+    let mut things: Vec<Tid> = (0..2).map(|_| new_thing(&mut lp, 0)).collect();
+    for t in things.clone() {
+        set_edge(&mut lp.peers[0].engine, t, ids[1], Some(edge(Role::Write)), None);
+        set_edge(&mut lp.peers[0].engine, t, ids[2], Some(edge(Role::Admin)), None);
+    }
+    lp.sync_all().unwrap();
+    let mut moved = false;
+    for step in 0..60 {
+        let i = rng.below(3) as usize;
+        let t = things[rng.below(things.len() as u64) as usize];
+        let mut m = Mutation::new();
+        match rng.below(16) {
+            0 => {
+                m.set(t, &BLOB, &big_blob(&mut rng)).unwrap();
+            }
+            1 | 2 => {
+                m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s(&format!("t{step}"))) }).unwrap();
+            }
+            3 => {
+                m.op(t, &KEPTSET, PathOp { path: Vec::new(), op: Op::Add(s(&format!("k{step}"))) }).unwrap();
+            }
+            4 => {
+                m.set(t, &GONE, &s(&format!("g{step}"))).unwrap();
+            }
+            5 => {
+                let fill: std::collections::BTreeMap<Value, Value> = (0..40 + rng.below(40)).map(|k| (s(&format!("k{k:03}")), s(&format!("{step}{}", "g".repeat(400))))).collect();
+                m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
+            }
+            6 => {
+                let a = ["/t/keptset", "/t/gonemap", "/t/tags"][rng.below(3) as usize];
+                let _ = lp.peers[i].engine.snapshot(&t, &ak(a));
+            }
+            7 => {
+                // the admin revokes or restores the writer, a revoke with what it received
+                let role = [None, Some(Role::Read), Some(Role::Write)][rng.below(3) as usize];
+                m.op(t, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(ids[1])) }).unwrap();
+                if let Some(e) = role {
+                    m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(ids[1]))], op: Op::Set(edge(e).to_value()) }).unwrap();
+                }
+                let scope = osis_perm::DemotionScope { membership: [(ids[1], [t].into())].into(), content: [(ids[1], [t].into())].into() };
+                let now = lp.peers[2].engine.now();
+                if role != Some(Role::Write)
+                    && let Ok(f) = lp.peers[2].engine.frontier(&scope, now)
+                {
+                    m.frontier(f.to_value());
+                }
+                let _ = lp.peers[2].commit(m);
+                m = Mutation::new();
+            }
+            8 => {
+                let _ = lp.peers[i].engine.roster_snapshot(&t, None);
+            }
+            9 if !moved && step > 20 => {
+                if let Ok((copy, _)) = lp.peers[0].engine.move_thing(&t, ids[0]) {
+                    things.push(copy);
+                    moved = true;
+                }
+            }
+            10 => lp.advance(1 + rng.below(1_200_000)),
+            11..=13 => {
+                // some of i's commits, shuffled, to another node
+                let j = (i + 1 + rng.below(2) as usize) % 3;
+                let mut pk = lp.packages(i).unwrap();
+                let n = pk.len();
+                for k in 0..n {
+                    let r = k + rng.below((n - k) as u64) as usize;
+                    pk.swap(k, r);
+                }
+                for p in pk.iter().take(1 + rng.below(n as u64 + 1) as usize) {
+                    let _ = lp.deliver(j, p);
+                }
+            }
+            _ => {
+                let e = &mut lp.peers[i].engine;
+                let r = reached(e);
+                for k in 0..4 {
+                    most[k] = most[k].max(r[k]);
+                }
+                open_equals_rebuild_any(e, &things, &format!("seed {seed} step {step} peer {i}"));
+            }
+        }
+        if !m.is_empty() {
+            let _ = lp.peers[i].commit(m);
+        }
+        lp.peers[i].clock.advance(1 + rng.below(3));
+    }
+    lp.sync_all().unwrap();
+    for i in 0..3 {
+        let r = reached(&lp.peers[i].engine);
+        for k in 0..4 {
+            most[k] = most[k].max(r[k]);
+        }
+        open_equals_rebuild_any(&mut lp.peers[i].engine, &things, &format!("seed {seed} end, peer {i}"));
+    }
+}
+
+// spec/requirements.md, Decentralization; spec/permissions.md §5.2, §7: a snapshot of a moved
+// thing carries imported writes (source `Commit(o)`, o the origin on the old thing); they are
+// the held import's, not carried, whether o arrives before or after the snapshot
+#[test]
+fn carried_imports_alike_in_both_orders() {
+    let mut lp = LocalPeer::new(4, 0xca22, T0).unwrap();
+    lp.sync_all().unwrap();
+    let (a, x) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+    let t = new_thing(&mut lp, 0);
+    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    let o = add_tag(&mut lp, 1, t, "a");
+    let pk = lp.packages(1).unwrap();
+    lp.deliver(0, pk.iter().find(|p| p.id == o).unwrap()).unwrap();
+    let (copy, _) = lp.peers[0].engine.move_thing(&t, a).unwrap();
+    lp.peers[0].engine.snapshot(&copy, &ak("/t/tags")).unwrap();
+    let pk = lp.packages(0).unwrap();
+    let (late, rest): (Vec<_>, Vec<_>) = pk.iter().partition(|p| p.id == o);
+    // peer 2: o last; peer 3: o first
+    for p in rest.iter().chain(&late) {
+        lp.deliver(2, p).unwrap();
+    }
+    for p in late.iter().chain(&rest) {
+        lp.deliver(3, p).unwrap();
+    }
+    let carried = |e: &Engine| e.index_digest().lines().find(|l| l.starts_with("carried ")).unwrap_or_default().to_string();
+    for i in [2, 3] {
+        assert_eq!(carried(&lp.peers[i].engine), "carried {}", "peer {i}: the import's writes are not carried");
+        open_equals_rebuild_any(&mut lp.peers[i].engine, &[t, copy], &format!("peer {i}"));
+    }
 }
