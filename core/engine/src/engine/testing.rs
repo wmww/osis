@@ -45,6 +45,25 @@ impl Engine {
         })
     }
 
+    /// Of the delta of `(tid, ak)` in `c`: whether it is valid and whether its dropped body left
+    /// a residue (tests: the order harness tells the documented keep-at-most differences apart).
+    #[doc(hidden)]
+    pub fn body_facts(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<(bool, bool)>> {
+        let Some(m) = self.core.ix.commits.get(c) else { return Ok(None) };
+        let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { return Ok(None) };
+        let valid = m.valid.get(ai).copied().unwrap_or(true);
+        let p = records::dropped_key(tid, ak, m.header.ts, c);
+        let residue = self.run(|tx| {
+            let mut n = false;
+            tx.scan(&p, |_, _| {
+                n = true;
+                Ok(())
+            })?;
+            Ok(n)
+        })?;
+        Ok(Some((valid, residue)))
+    }
+
     /// A dump of the indexes open rebuilds (tests: a load from the persisted index equals a
     /// rebuild from the commit records).
     #[doc(hidden)]
