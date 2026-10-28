@@ -111,7 +111,7 @@ impl Events {
     }
 
     /// Queues an event; sent by `flush` once the transaction is durable.
-    pub(crate) fn queue(&mut self, e: Event) {
+    pub fn queue(&mut self, e: Event) {
         self.queued.push(e);
     }
 
@@ -121,14 +121,14 @@ impl Events {
     }
 
     /// Sends every queued event, in order; drops subscribers that hung up.
-    pub(crate) fn flush(&mut self) {
+    pub fn flush(&mut self) {
         for e in std::mem::take(&mut self.queued) {
             self.subs.retain(|s| s.send(e.clone()).is_ok());
         }
     }
 
     /// A diagnostic, deduped and rate-limited per peer; sent immediately (no durability).
-    pub(crate) fn diagnostic(&mut self, d: Diagnostic, now: WallMs) {
+    pub fn diagnostic(&mut self, d: Diagnostic, now: WallMs) {
         let key = (d.kind, d.commit, d.tids.clone());
         if self.seen.contains(&key) {
             return;

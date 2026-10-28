@@ -16,7 +16,7 @@ pub(crate) trait Journaled {
 
 /// A map journaling each key's previous value.
 #[derive(Debug)]
-pub(crate) struct JMap<K: Ord + Clone, V: Clone> {
+pub struct JMap<K: Ord + Clone, V: Clone> {
     map: BTreeMap<K, V>,
     log: Vec<(K, Option<V>)>,
 }
@@ -113,7 +113,7 @@ impl<K: Ord + Clone, V: Clone> Journaled for JMap<K, V> {
 
 /// A set journaling each change.
 #[derive(Debug)]
-pub(crate) struct JSet<T: Ord + Clone> {
+pub struct JSet<T: Ord + Clone> {
     set: BTreeSet<T>,
     log: Vec<(T, bool)>,
     /// Counts changes, rollbacks included (`changes`).
@@ -186,7 +186,7 @@ impl<T: Ord + Clone> Journaled for JSet<T> {
 
 /// A map of sets journaling each element change (an emptied set is removed).
 #[derive(Debug)]
-pub(crate) struct JSetMap<K: Ord + Clone, T: Ord + Clone> {
+pub struct JSetMap<K: Ord + Clone, T: Ord + Clone> {
     map: BTreeMap<K, BTreeSet<T>>,
     log: Vec<(K, T, bool)>,
 }
@@ -254,7 +254,7 @@ impl<K: Ord + Clone, T: Ord + Clone> Journaled for JSetMap<K, T> {
 
 /// A map of maps journaling each inner entry's previous value (an emptied inner map is removed).
 #[derive(Debug)]
-pub(crate) struct JNested<K: Ord + Clone, K2: Ord + Clone, V: Clone> {
+pub struct JNested<K: Ord + Clone, K2: Ord + Clone, V: Clone> {
     map: BTreeMap<K, BTreeMap<K2, V>>,
     log: Vec<(K, K2, Option<V>)>,
 }

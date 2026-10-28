@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 const MAX_CHAIN: usize = osis_base::format::MAX_OWNER_DEPTH + 1;
 
 impl Core {
-    pub(crate) fn created(&self, tid: &Tid) -> Option<&CreationRecord> {
+    pub fn created(&self, tid: &Tid) -> Option<&CreationRecord> {
         self.held.created(tid)
     }
 
@@ -353,14 +353,14 @@ pub(crate) fn own_delete_keys(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result
 
 impl crate::Engine {
     /// [`own_delete_keys`] of `t`.
-    pub(crate) fn own_delete_keys(&mut self, t: &Tid) -> Result<Option<(VerifyingKey, VerifyingKey)>> {
+    pub fn own_delete_keys(&mut self, t: &Tid) -> Result<Option<(VerifyingKey, VerifyingKey)>> {
         let t = *t;
         self.run(|tx| own_delete_keys(tx, &t))
     }
 
     /// Notes the delete keys the inbox payload of commit `c` names (spec/wire.md §9) as
     /// candidates: kept only once `c` applies valid ([`Core::promote_hints`]).
-    pub(crate) fn note_delete_hints(&mut self, c: CommitId, things: &[osis_label::InboxThing]) -> Result<()> {
+    pub fn note_delete_hints(&mut self, c: CommitId, things: &[osis_label::InboxThing]) -> Result<()> {
         let hints: Vec<(Tid, Value)> = things.iter().filter_map(|t| t.delete_keys.map(|(a, w)| (t.tid, Value::List(vec![Value::Bytes(a.to_bytes().to_vec()), Value::Bytes(w.to_bytes().to_vec())])))).collect();
         if hints.is_empty() {
             return Ok(());

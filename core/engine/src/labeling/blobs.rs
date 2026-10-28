@@ -64,7 +64,7 @@ pub fn open_commit(blob: &[u8], key: &Secret32) -> Result<(Vec<u8>, CommitBlob)>
 }
 
 /// A group as `Engine::commit_bodies_under` sees it.
-pub(crate) struct BodyCtx {
+pub struct BodyCtx {
     pub closure: std::sync::Arc<std::collections::BTreeSet<Tid>>,
     pub actor: Tid,
     pub published: std::sync::Arc<std::collections::BTreeSet<Tid>>,
@@ -165,12 +165,12 @@ impl Engine {
 
     /// What `commit_bodies_under` needs of a group: its closure, actor and the things its home
     /// label publishes.
-    pub(crate) fn body_ctx(&mut self, g: &Tid) -> BodyCtx {
+    pub fn body_ctx(&mut self, g: &Tid) -> BodyCtx {
         BodyCtx { closure: self.closure(g), actor: self.group_actor(g), published: self.published_under(g) }
     }
 
     /// The bodies of commit `id` a label of the group of `ctx` must hold (`label_bodies_meta`).
-    pub(crate) fn commit_bodies_under(&mut self, ctx: &BodyCtx, id: &CommitId) -> Result<Vec<Body>> {
+    pub fn commit_bodies_under(&mut self, ctx: &BodyCtx, id: &CommitId) -> Result<Vec<Body>> {
         let id = *id;
         let Some(h) = self.header(&id) else { return Ok(Vec::new()) };
         if !ctx.touches(&h) {
@@ -206,7 +206,7 @@ impl Engine {
     /// their `/label`, spec/sync.md §2). Empty unless `g` is an actor with secrets of its own.
     /// Taken for every actor at once, again only when a creation record, `own_keys` or the
     /// labeled things changed (`Core::published`): O(labeled things) per change, not per pass.
-    pub(crate) fn published_under(&mut self, g: &Tid) -> std::sync::Arc<std::collections::BTreeSet<Tid>> {
+    pub fn published_under(&mut self, g: &Tid) -> std::sync::Arc<std::collections::BTreeSet<Tid>> {
         let core = &mut self.core;
         let at = (core.held.generation(), core.own_keys.changes(), core.labeled.changes());
         if core.published.as_ref().is_none_or(|(k, _)| *k != at) {
@@ -245,7 +245,7 @@ impl Engine {
 
     /// Whether these deltas of `c` hold the `/secrets` or `/keys` of the actor `g`'s secrets derive
     /// from (only a blob carrying the boxes takes the rotation's wrap exception).
-    pub(crate) fn carries_secrets(&self, g: &Tid, c: &CommitId, parts: &[(usize, usize)]) -> bool {
+    pub fn carries_secrets(&self, g: &Tid, c: &CommitId, parts: &[(usize, usize)]) -> bool {
         let Some(a) = self.core.secret_actor(g) else { return false };
         let Some(h) = self.header(c) else { return false };
         parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|x| x.tid == a && matches!(x.ak.as_str(), "/secrets" | "/keys"))

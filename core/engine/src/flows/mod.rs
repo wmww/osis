@@ -10,7 +10,7 @@
 //! sends, placement before any other upload). Where a decision needs sync state (a complete pass
 //! of an actor's labels) node-sync implements `SyncState`.
 
-pub(crate) mod edges;
+pub mod edges;
 pub(crate) mod labels;
 pub(crate) mod links;
 pub(crate) mod person;
@@ -168,7 +168,7 @@ impl Core {
     }
 
     /// Effective role of `node` on `tid` now.
-    pub(crate) fn role_now(&self, node: &Tid, tid: &Tid) -> Option<Role> {
+    pub fn role_now(&self, node: &Tid, tid: &Tid) -> Option<Role> {
         crate::engine::write::role_of(self, node, tid, now_ts(self))
     }
 
@@ -180,13 +180,13 @@ impl Core {
         }
     }
 
-    pub(crate) fn is_key_actor(&self, tid: &Tid) -> bool {
+    pub fn is_key_actor(&self, tid: &Tid) -> bool {
         matches!(self.created(tid), Some(CreationRecord::KeyActor { .. }))
     }
 
     /// Current members of `actor` with their role and `until` (alive edges), owner first as
     /// admin.
-    pub(crate) fn current_members(&self, actor: &Tid) -> Vec<(Tid, Role, Option<WallMs>)> {
+    pub fn current_members(&self, actor: &Tid) -> Vec<(Tid, Role, Option<WallMs>)> {
         let mut out = Vec::new();
         if let Some(o) = self.owner(actor) {
             out.push((o, Role::Admin, None));

@@ -29,7 +29,7 @@ const KEPT: [&str; 7] = ["/created", "/members", "/tenures", "/keys", "/label", 
 
 /// What one forgetting removed.
 #[derive(Default)]
-pub(crate) struct Forgotten {
+pub struct Forgotten {
     pub things: BTreeSet<Tid>,
     /// Labels of forgotten groups.
     pub labels: BTreeSet<LabelId>,
@@ -181,7 +181,10 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid]) -> Result<Forgotten> {
         out.labels.extend(crate::flows::labels::labels_in(tx, &g)?);
     }
     // sync records, then the blob ciphertexts nothing kept names
-    let gone = crate::sync::state::forget_records(tx, &out.labels, &out.things, &out.commits, &parts, chunks)?;
+    let gone = match tx.core.sync_records {
+        Some(r) => r.forget(tx, &out.labels, &out.things, &out.commits, &parts, chunks)?,
+        None => chunks,
+    };
     let still: BTreeSet<BlobId> = tx.core.commits.iter().filter(|(c, _)| !out.commits.contains(c)).flat_map(|(_, m)| m.header.chunks.iter().map(|c| c.blob)).collect();
     for b in gone.difference(&still) {
         tx.txn.delete_blob(b);

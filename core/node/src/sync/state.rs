@@ -898,7 +898,7 @@ impl State {
 /// holding forgotten `parts`, carriers and certificates of `commits`, hints naming `things`; adds
 /// `things` to the inbox work list. Returns the blobs among those dropped and `extra` that no
 /// kept entry or blob record names (their ciphertexts may go).
-pub(crate) fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet<Tid>, commits: &BTreeSet<CommitId>, parts: &BTreeMap<CommitId, BTreeSet<usize>>, extra: BTreeSet<BlobId>) -> Result<BTreeSet<BlobId>> {
+fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet<Tid>, commits: &BTreeSet<CommitId>, parts: &BTreeMap<CommitId, BTreeSet<usize>>, extra: BTreeSet<BlobId>) -> Result<BTreeSet<BlobId>> {
     let mut recs = Vec::new();
     tx.scan(b"y/", |k, v| {
         recs.push((k.to_vec(), v));
@@ -978,7 +978,7 @@ fn encode_sent(x: &SentInbox) -> Vec<u8> {
 
 /// `State::note_unsent` inside a flow's transaction (the commit's own): a crash before
 /// `SyncEngine::carry_out` loses no inbox delivery.
-pub(crate) fn note_unsent_tx(tx: &mut Tx<'_>, member: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) -> Result<()> {
+fn note_unsent_tx(tx: &mut Tx<'_>, member: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) -> Result<()> {
     let k = key(SENT_INBOX, &[member.as_bytes(), &commit.0]);
     if tx.txn.get_local(&k)?.is_none() {
         let x = SentInbox { member, commit, things, edge_only, at: 0, tries: 0 };
@@ -1016,6 +1016,19 @@ fn decode_sent(v: &[u8]) -> Result<SentInbox> {
         things.push(r.tid()?);
     }
     Ok(SentInbox { member, commit, things, edge_only, at, tries })
+}
+
+/// The records engine transactions touch (`Engine::set_sync_records`).
+pub(crate) struct Records;
+
+impl crate::engine::SyncRecords for Records {
+    fn note_unsent(&self, tx: &mut Tx<'_>, member: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) -> Result<()> {
+        note_unsent_tx(tx, member, commit, things, edge_only)
+    }
+
+    fn forget(&self, tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet<Tid>, commits: &BTreeSet<CommitId>, parts: &BTreeMap<CommitId, BTreeSet<usize>>, extra: BTreeSet<BlobId>) -> Result<BTreeSet<BlobId>> {
+        forget_records(tx, labels, things, commits, parts, extra)
+    }
 }
 
 #[cfg(test)]

@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 /// What the replay of an aspect's deaths must judge (`Core::deaths_due`; persisted as the
 /// aspect's mark only, which an open reads as `Full`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Due {
+pub enum Due {
     /// Every held body: a validity flip, a snapshot or import, an open.
     Full,
     /// A valid writer delta joined out of `(ts, ID)` order.

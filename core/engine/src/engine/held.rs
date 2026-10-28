@@ -21,7 +21,7 @@ enum Undo {
 type Records = (Option<Arc<MembershipCommit>>, Vec<Arc<RosterSnapshot>>);
 
 #[derive(Debug, Default)]
-pub(crate) struct Held {
+pub struct Held {
     commits: BTreeMap<Tid, Vec<Arc<MembershipCommit>>>,
     snapshots: BTreeMap<Tid, Vec<Arc<RosterSnapshot>>>,
     created: BTreeMap<Tid, CreationRecord>,

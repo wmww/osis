@@ -11,7 +11,7 @@ pub(crate) type Def = (BTreeSet<Tid>, BTreeSet<Tid>);
 
 /// The `/group` definitions and what they derive.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Groups {
+pub struct Groups {
     /// `/group` of each group thing: (items, subgroups).
     pub defs: BTreeMap<Tid, (BTreeSet<Tid>, BTreeSet<Tid>)>,
     /// Subgroup -> groups listing it.

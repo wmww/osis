@@ -375,7 +375,7 @@ impl Engine {
         if on { Ok(()) } else { self.settle_deaths() }
     }
 
-    pub(crate) fn settle_deaths(&mut self) -> Result<()> {
+    pub fn settle_deaths(&mut self) -> Result<()> {
         if self.core.deaths_due.is_empty() {
             return Ok(());
         }
@@ -421,7 +421,7 @@ impl Engine {
     /// The bodies the due keep-at-most timers will drop with a live write, as (commit, every
     /// aspect of the body): a node that may write them snapshots them first (spec/commits.md
     /// §5).
-    pub(crate) fn due_live_drops(&mut self) -> Result<Vec<LiveDrop>> {
+    pub fn due_live_drops(&mut self) -> Result<Vec<LiveDrop>> {
         let due = self.run(|tx| {
             let now = tx.now().0;
             let mut due = Vec::new();
@@ -452,7 +452,7 @@ impl Engine {
     }
 
     /// When the next expiry or keep-at-most timer is due (corrected wall ms).
-    pub(crate) fn next_timer(&mut self) -> Result<Option<u64>> {
+    pub fn next_timer(&mut self) -> Result<Option<u64>> {
         self.run(|tx| {
             let first = tx.txn.scan_local(records::TIMER, &[], 1)?;
             Ok(first.first().and_then(|(k, _)| k.get(records::TIMER.len()..)).and_then(|k| records::parse_timer(k).ok()).map(|(t, _, _)| t))

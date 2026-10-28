@@ -40,14 +40,14 @@ impl GroupLabel {
 impl Core {
     /// The reader actor of `t`, the projection key of its deltas: `t` with secrets of its own,
     /// else the nearest owner-chain actor that has them (a key actor is its own).
-    pub(crate) fn reader_of(&self, t: &Tid) -> Tid {
+    pub fn reader_of(&self, t: &Tid) -> Tid {
         // the actor whose secrets `t`'s derive from, up the owner chain
         self.secret_actor(t).unwrap_or(*t)
     }
 
     /// The actor whose secrets `t`'s derive from: up the owner chain to a thing with secrets of
     /// its own or a key actor.
-    pub(crate) fn secret_actor(&self, t: &Tid) -> Option<Tid> {
+    pub fn secret_actor(&self, t: &Tid) -> Option<Tid> {
         let mut cur = *t;
         for _ in 0..MAX_CHAIN {
             if self.own_keys.contains(&cur) || cur == self.id.tid() {
@@ -63,7 +63,7 @@ impl Core {
 
     /// Whether actor `x` may read thing `t` now: `t`'s secrets derive from `x`'s, or `x` holds
     /// read or above on the actor they derive from (spec/sync.md §3, entitlement).
-    pub(crate) fn may_read(&self, x: &Tid, t: &Tid) -> bool {
+    pub fn may_read(&self, x: &Tid, t: &Tid) -> bool {
         let Some(a) = self.secret_actor(t) else { return false };
         let mut cur = a;
         for _ in 0..MAX_CHAIN {
@@ -110,7 +110,7 @@ impl Engine {
     }
 
     /// `group_labels`, shared: decoded once per write of the `/label` (`Core::labels`).
-    pub(crate) fn labels_of(&mut self, g: &Tid) -> Vec<Arc<GroupLabel>> {
+    pub fn labels_of(&mut self, g: &Tid) -> Vec<Arc<GroupLabel>> {
         if self.core.created(g).is_none() {
             return Vec::new();
         }
