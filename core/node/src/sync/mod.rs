@@ -551,6 +551,11 @@ impl SyncEngine {
         &self.cfg
     }
 
+    /// Asks for a Tick at raw ms `t` at the latest (`settle_at`).
+    pub(crate) fn settle_by(&mut self, t: u64) {
+        self.settle_at = Some(self.settle_at.map_or(t, |x| x.min(t)));
+    }
+
     /// Label `l` on connection `conn`.
     pub(crate) fn lc(&self, conn: ConnId, l: &LabelId) -> Option<&LConn> {
         self.conns.get(&conn)?.labels.get(l)

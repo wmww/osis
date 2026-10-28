@@ -189,7 +189,7 @@ impl SyncEngine {
             }
             return Ok(false);
         }
-        self.settle_at = Some(self.settle_at.map_or(until, |x| x.min(until)));
+        self.settle_by(until);
         Ok(true)
     }
 

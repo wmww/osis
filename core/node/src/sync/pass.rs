@@ -113,8 +113,28 @@ struct J {
 /// A deposited entry due for promotion: (blob, entry, commit, its parts).
 type Deposit = (BlobId, Entry, CommitId, Vec<(usize, usize)>);
 
-fn is_snapshot(k: CKind) -> bool {
+pub(super) fn is_snapshot(k: CKind) -> bool {
     matches!(k, CKind::ContentSnapshot | CKind::MembershipSnapshot)
+}
+
+/// A node card's aspects (spec/permissions.md §4).
+pub(super) fn is_card(ak: &str) -> bool {
+    matches!(ak, "/node" | "/reach" | "/keys")
+}
+
+/// What stays under a replaced label besides membership-class commits (spec/sync.md §2).
+pub(super) fn kept_when_replaced(ak: &str) -> bool {
+    ct::is_membership_class(ak) || matches!(ak, "/created" | "/node" | "/reach" | "/seen")
+}
+
+/// Every part of `h` on the aspects `keep` admits.
+pub(super) fn parts_of(h: &osis_commit::Header, keep: impl Fn(usize) -> bool) -> BTreeSet<(usize, usize)> {
+    h.aspects.iter().enumerate().filter(|(i, _)| keep(*i)).flat_map(|(i, a)| (0..a.hashes.len()).map(move |d| (i, d))).collect()
+}
+
+/// The aspect indexes of `h` on things of `closure` (what the label's closure bodies carry).
+fn inside(h: &osis_commit::Header, closure: &BTreeSet<Tid>) -> BTreeSet<usize> {
+    h.aspects.iter().enumerate().filter(|(_, a)| closure.contains(&a.tid)).map(|(i, _)| i).collect()
 }
 
 impl SyncEngine {
@@ -492,7 +512,7 @@ impl SyncEngine {
         if t <= self.raw_now() {
             return true;
         }
-        self.settle_at = Some(self.settle_at.map_or(t, |x| x.min(t)));
+        self.settle_by(t);
         false
     }
 
@@ -538,14 +558,10 @@ impl SyncEngine {
         self.pull(None, &g, l, &mut scope, w);
         if let Some(wk) = &keys.write {
             // stamped as an upload would be; another node's deposits stay deposits
-            let cands: Vec<BlobId> = match &scope {
-                Scope::All => self.state.label_entries(&l).map(|(b, _)| b).collect(),
-                Scope::Some { commits, blobs } => {
-                    let mut ids: BTreeSet<BlobId> = commits.iter().flat_map(|c| self.state.entries_of(&l, c).map(|(b, _)| b)).collect();
-                    ids.extend(blobs.iter().chain(&ours).copied());
-                    ids.into_iter().collect()
-                }
-            };
+            let mut cands = self.scope_entries(&l, &scope);
+            if !scope.is_all() {
+                cands.extend(&ours);
+            }
             for id in cands {
                 let Some(mut e) = self.state.entries.get(&(l, id)).cloned() else { continue };
                 if e.stamp.is_none() && (e.cert || ours.contains(&id)) {
@@ -571,15 +587,7 @@ impl SyncEngine {
     /// waits goes into `left`.
     #[allow(clippy::too_many_arguments)]
     fn local_deletions(&mut self, g: &Tid, l: LabelId, keys: &HeadKeys, bodies: &[Body], snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, settled: bool, scope: &Scope, left: &mut Left) -> Result<()> {
-        let ids: Vec<BlobId> = match scope {
-            Scope::All => self.state.label_entries(&l).map(|(b, _)| b).collect(),
-            Scope::Some { commits, blobs } => {
-                let mut ids: BTreeSet<BlobId> = commits.iter().flat_map(|c| self.state.entries_of(&l, c).map(|(b, _)| b)).collect();
-                ids.extend(blobs.iter().copied());
-                ids.into_iter().collect()
-            }
-        };
-        let ids: Vec<BlobId> = ids.into_iter().filter(|id| self.state.entries.contains_key(&(l, *id)) && !self.state.present_anywhere(&l, id)).collect();
+        let ids: Vec<BlobId> = self.scope_entries(&l, scope).into_iter().filter(|id| self.state.entries.contains_key(&(l, *id)) && !self.state.present_anywhere(&l, id)).collect();
         self.stats.entries += ids.len() as u64;
         let now = self.now();
         let desired = desired(bodies);
@@ -636,14 +644,7 @@ impl SyncEngine {
         }
         // chunks of dropped deltas (a purge, spec/commits.md §5): those listed by the commits of
         // `scope` and the chunk entries it names
-        let unknown = |s: &Self, b: &BlobId| s.state.entries.get(&(l, *b)).is_some_and(|e| e.kind == Kind::Unknown) && !s.state.present_anywhere(&l, b);
-        let cands: BTreeSet<BlobId> = match scope {
-            Scope::All => self.state.of_kind(&l, 0).into_iter().filter(|b| !self.state.present_anywhere(&l, b)).collect(),
-            Scope::Some { commits, blobs } => {
-                let listed = commits.iter().filter_map(|c| self.engine.header(c)).flat_map(|h| h.chunks.iter().map(|ch| ch.blob).collect::<Vec<_>>());
-                listed.chain(blobs.iter().copied()).filter(|b| unknown(self, b)).collect()
-            }
-        };
+        let cands = self.chunk_entries(&l, scope, |s, b| !s.state.present_anywhere(&l, b));
         let (chunks, waiting) = self.dropped_chunks(&cands)?;
         left.blobs.extend(waiting);
         for b in chunks.into_keys() {
@@ -654,11 +655,7 @@ impl SyncEngine {
         // the blobs certificate copies linked, as a pass at a server deletes them (the bytes
         // stay: they are the engine's own): of the copies in `scope`, of every one when a
         // linked entry is
-        let every = match scope {
-            Scope::Some { blobs, .. } => blobs.iter().any(|b| self.state.cert_entries.contains(&(l, *b))),
-            Scope::All => true,
-        };
-        let copied: Vec<CommitId> = self.state.certs.range((l, CommitId([0; 32]))..=(l, CommitId([0xff; 32]))).map(|(_, c)| *c).filter(|c| every || scope.has(c)).collect();
+        let copied = self.copies_in(&l, scope);
         let mut gone = self.copy_links(&l, copied)?;
         gone.retain(|b| !self.state.present_anywhere(&l, b));
         if !gone.is_empty() {
@@ -674,6 +671,36 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// The entries under `l` in `scope`: every one, or those of its commits and its blobs.
+    fn scope_entries(&self, l: &LabelId, scope: &Scope) -> BTreeSet<BlobId> {
+        match scope {
+            Scope::All => self.state.label_entries(l).map(|(b, _)| b).collect(),
+            Scope::Some { commits, blobs } => commits.iter().flat_map(|c| self.state.entries_of(l, c).map(|(b, _)| b)).chain(blobs.iter().copied()).collect(),
+        }
+    }
+
+    /// Unopened entries under `l` in `scope` that `keep` admits, as chunk candidates
+    /// (`dropped_chunks`): every one, or those its commits list and its blobs.
+    fn chunk_entries(&self, l: &LabelId, scope: &Scope, keep: impl Fn(&Self, &BlobId) -> bool) -> BTreeSet<BlobId> {
+        match scope {
+            Scope::All => self.state.of_kind(l, 0).into_iter().filter(|b| keep(self, b)).collect(),
+            Scope::Some { commits, blobs } => {
+                let listed = commits.iter().filter_map(|c| self.engine.header(c)).flat_map(|h| h.chunks.iter().map(|ch| ch.blob).collect::<Vec<_>>());
+                listed.chain(blobs.iter().copied()).filter(|b| self.state.entries.get(&(*l, *b)).is_some_and(|e| e.kind == Kind::Unknown) && keep(self, b)).collect()
+            }
+        }
+    }
+
+    /// The commits this node placed certificate copies of under `l` whose linked blobs `scope`
+    /// judges: those of its commits, every one when a linked entry is in it.
+    fn copies_in(&self, l: &LabelId, scope: &Scope) -> Vec<CommitId> {
+        let every = match scope {
+            Scope::Some { blobs, .. } => blobs.iter().any(|b| self.state.cert_entries.contains(&(*l, *b))),
+            Scope::All => true,
+        };
+        self.state.certs.range((*l, CommitId([0; 32]))..=(*l, CommitId([0xff; 32]))).map(|(_, c)| *c).filter(|c| every || scope.has(c)).collect()
+    }
+
     /// The entries under `l` that certificate copies of `copied` placed for the blobs they link
     /// (`place_linked`), of the commits no entry under `l` holds any more (spec/sync.md §3).
     fn copy_links(&mut self, l: &LabelId, copied: Vec<CommitId>) -> Result<BTreeSet<BlobId>> {
@@ -683,7 +710,7 @@ impl SyncEngine {
                 continue;
             }
             let Some(h) = self.engine.header(&c) else { continue };
-            let all: BTreeSet<(usize, usize)> = h.aspects.iter().enumerate().flat_map(|(i, a)| (0..a.hashes.len()).map(move |d| (i, d))).collect();
+            let all = parts_of(&h, |_| true);
             for b in self.engine.linked_blobs(&c, &all)? {
                 if self.state.entries.get(&(*l, b)).is_some_and(|e| e.cert && e.kind == Kind::Unknown) {
                     out.insert(b);
@@ -779,7 +806,7 @@ impl SyncEngine {
                 continue;
             }
             // another node's commit not at this server: its author (or a co-writer) first
-            if !entry.is_some_and(|id| server.is_none_or(|s| self.state.is_present(s, &l, &id))) && !self.relay_due(&b.commit) {
+            if !here && !self.relay_due(&b.commit) {
                 left.commits.insert(b.commit);
                 continue;
             }
@@ -984,13 +1011,7 @@ impl SyncEngine {
         if !held.is_empty() {
             self.open_entries(l, &held)?;
         }
-        if want.is_empty() {
-            return Ok(());
-        }
-        for b in &want {
-            self.fetching.insert(*b, conn);
-        }
-        self.command(conn, Command::Fetch { label: l, ids: want }, out)
+        self.fetch_on(conn, l, want, out)
     }
 
     /// Prefix vs header for commit blobs whose header lists went by link (spec/commits.md §4):
@@ -1089,7 +1110,7 @@ impl SyncEngine {
             let seen = *self.deposit_seen.entry((server, l, id)).or_insert(raw);
             let due = seen.saturating_add(self.relay_delay(&id.0));
             if raw < due {
-                self.settle_at = Some(self.settle_at.map_or(due, |x| x.min(due)));
+                self.settle_by(due);
                 continue;
             }
             let Kind::Commit { commit, parts, .. } = &e.kind else { continue };
@@ -1161,7 +1182,7 @@ impl SyncEngine {
         for (x, want) in chain {
             let (_, held) = self.held_parts_at(g, l, &x, &[server])?;
             // closure bodies carry what is on the label's own things
-            let inside: BTreeSet<usize> = self.engine.header(&x).map(|h| h.aspects.iter().enumerate().filter(|(_, a)| closure.contains(&a.tid)).map(|(i, _)| i).collect()).unwrap_or_default();
+            let inside = self.engine.header(&x).map(|h| inside(&h, &closure)).unwrap_or_default();
             let missing: Parts = want.difference(&held).filter(|(ai, _)| !inside.contains(ai)).copied().collect();
             if !missing.is_empty() {
                 out.insert(x, missing);
@@ -1195,7 +1216,7 @@ impl SyncEngine {
             return true;
         }
         let at = self.raw_now().saturating_add(due - now);
-        self.settle_at = Some(self.settle_at.map_or(at, |x| x.min(at)));
+        self.settle_by(at);
         false
     }
 
@@ -1491,7 +1512,7 @@ impl SyncEngine {
             let (mine, have) = self.held_parts(g, l, &c)?;
             // what the label's closure bodies carry is never copied (a copy duplicating closure
             // parts is a strict subset others delete)
-            let inside: BTreeSet<usize> = self.engine.header(&c).map(|h| h.aspects.iter().enumerate().filter(|(_, a)| closure.contains(&a.tid)).map(|(i, _)| i).collect()).unwrap_or_default();
+            let inside = self.engine.header(&c).map(|h| inside(&h, &closure)).unwrap_or_default();
             let missing: BTreeSet<(usize, usize)> = want.difference(&have).filter(|(ai, _)| !inside.contains(ai)).copied().collect();
             // this node's own copy placed before and gone since (deleted at the server): not
             // placed again, but for its own card while it reads the label's actor (admins delete
@@ -1510,7 +1531,7 @@ impl SyncEngine {
                 && (h.frontier.is_some() || missing.iter().all(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "/keys")))
             {
                 let at = self.raw_now().saturating_add(t - now);
-                self.settle_at = Some(self.settle_at.map_or(at, |x| x.min(at)));
+                self.settle_by(at);
                 continue;
             }
             // a copy of this node's commit waits for the commit under its things' labels
@@ -1533,7 +1554,7 @@ impl SyncEngine {
     fn own_card_read(&self, g: &Tid, c: &CommitId, parts: &BTreeSet<(usize, usize)>) -> bool {
         let me = self.engine.tid();
         let Some(h) = self.engine.header(c) else { return false };
-        h.author == me && parts.iter().all(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| a.tid == me && matches!(a.ak.as_str(), "/node" | "/reach" | "/keys"))) && self.engine.core.may_read(&me, &self.engine.group_actor(g))
+        h.author == me && parts.iter().all(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| a.tid == me && is_card(a.ak.as_str()))) && self.engine.core.may_read(&me, &self.engine.group_actor(g))
     }
 
     /// Whether entries under `l` already hold every delta of `c` on aspects `ais` (another
@@ -1541,7 +1562,7 @@ impl SyncEngine {
     /// a duplicate.
     fn held_whole(&mut self, g: &Tid, l: LabelId, c: &CommitId, ais: &BTreeSet<usize>) -> Result<bool> {
         let Some(h) = self.engine.header(c) else { return Ok(false) };
-        let want: BTreeSet<(usize, usize)> = h.aspects.iter().enumerate().filter(|(i, _)| ais.contains(i)).flat_map(|(i, a)| (0..a.hashes.len()).map(move |d| (i, d))).collect();
+        let want = parts_of(&h, |i| ais.contains(&i));
         let (_, held) = self.held_parts(g, l, c)?;
         Ok(want.is_subset(&held))
     }
@@ -1827,7 +1848,6 @@ impl SyncEngine {
         if unknown.is_empty() {
             return Vec::new();
         }
-        let kept = |ak: &str| ct::is_membership_class(ak) || matches!(ak, "/created" | "/node" | "/reach" | "/seen");
         let core = &self.engine.core;
         // the commits listing each (`by_chunk`, their views)
         unknown
@@ -1836,7 +1856,7 @@ impl SyncEngine {
                 let listers = core.by_chunk.get(b).into_iter().flatten().filter_map(|c| core.commits.get(c));
                 let mut any = false;
                 for m in listers {
-                    if m.view.aspects.iter().any(|a| kept(a.ak.as_str())) {
+                    if m.view.aspects.iter().any(|a| kept_when_replaced(a.ak.as_str())) {
                         return false;
                     }
                     any = true;
@@ -1854,7 +1874,7 @@ impl SyncEngine {
     fn stale_card(&mut self, server: Option<&ServerKey>, l: &LabelId, g: &Tid, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)]) -> bool {
         let me = self.engine.tid();
         let aks: BTreeSet<&str> = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).filter(|a| a.tid == h.author).map(|a| a.ak.as_str()).collect();
-        let all_card = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).all(|a| a.tid == h.author && matches!(a.ak.as_str(), "/node" | "/reach" | "/keys"));
+        let all_card = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).all(|a| a.tid == h.author && is_card(a.ak.as_str()));
         if h.author == me || aks.is_empty() || !all_card {
             return false;
         }
@@ -1918,14 +1938,13 @@ impl SyncEngine {
     fn deletions(&mut self, conn: ConnId, server: ServerKey, l: LabelId, g: &Tid, keys: &HeadKeys, bodies: &[Body], snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, settled: bool, scope: &Scope, left: &mut Left, out: &mut Vec<super::Action>) -> Result<()> {
         let ids: Vec<BlobId> = match scope {
             Scope::All => self.state.present_at(&server, &l),
-            Scope::Some { commits, blobs } => {
-                let mut ids: BTreeSet<BlobId> = commits.iter().flat_map(|c| self.state.entries_of(&l, c).map(|(b, _)| b)).collect();
-                ids.extend(blobs.iter().copied());
-                ids.into_iter().filter(|b| self.state.is_present(&server, &l, b)).collect()
-            }
+            Scope::Some { .. } => self.scope_entries(&l, scope).into_iter().filter(|b| self.state.is_present(&server, &l, b)).collect(),
         };
         self.stats.entries += ids.len() as u64;
         let desired = desired(bodies);
+        // deletes in flight on this connection are not sent again (`RESEND_MS`)
+        let raw = self.raw_now();
+        let busy = |s: &Self, id: &BlobId| super::in_flight(&s.deleting, &(conn, l, *id), raw);
         let mut items = Vec::new();
         let mut note = Note::default();
         for id in &ids {
@@ -1945,45 +1964,27 @@ impl SyncEngine {
                 }
                 Fate::Delete(_, item) => {
                     left.commits.insert(commit);
-                    if super::in_flight(&self.deleting, &(conn, l, id), self.raw_now()) {
-                        continue;
+                    if !busy(self, &id) {
+                        self.deleting.insert((conn, l, id), raw);
+                        items.push(item);
                     }
-                    let raw = self.raw_now();
-                    self.deleting.insert((conn, l, id), raw);
-                    items.push(item);
                 }
             }
         }
         // chunks of dropped deltas (spec/commits.md §5: a purge drops every body carrying the
         // values; spec/sync.md §3: chunk blobs belong to the closure): those listed by the
         // commits of `scope` and the chunk entries it names
-        let unknown = |s: &Self, b: &BlobId| s.state.entries.get(&(l, *b)).is_some_and(|e| e.kind == Kind::Unknown) && s.state.is_present(&server, &l, b);
-        let cands: BTreeSet<BlobId> = match scope {
-            Scope::All => self.state.of_kind(&l, 0).into_iter().filter(|b| self.state.is_present(&server, &l, b)).collect(),
-            Scope::Some { commits, blobs } => {
-                let listed = commits.iter().filter_map(|c| self.engine.header(c)).flat_map(|h| h.chunks.iter().map(|ch| ch.blob).collect::<Vec<_>>());
-                listed.chain(blobs.iter().copied()).filter(|b| unknown(self, b)).collect()
-            }
-        };
+        let cands = self.chunk_entries(&l, scope, |s, b| s.state.is_present(&server, &l, b));
         let (chunks, waiting) = self.dropped_chunks(&cands)?;
         left.blobs.extend(waiting);
-        let wants: Vec<BlobId> = std::mem::take(&mut self.tree_wants)
-            .into_iter()
-            .filter(|b| self.state.is_present(&server, &l, b) && !self.missing.contains(&(conn, *b)) && !self.fetching.contains_key(b))
-            .collect();
-        if !wants.is_empty() {
-            for b in &wants {
-                self.fetching.insert(*b, conn);
-            }
-            self.command(conn, Command::Fetch { label: l, ids: wants }, out)?;
-        }
+        let wants: Vec<BlobId> = std::mem::take(&mut self.tree_wants).into_iter().filter(|b| self.state.is_present(&server, &l, b)).collect();
+        self.fetch_on(conn, l, wants, out)?;
         for (id, (c, ch)) in &chunks {
             left.blobs.insert(*id);
-            if super::in_flight(&self.deleting, &(conn, l, *id), self.raw_now()) {
+            if busy(self, id) {
                 continue;
             }
             if let Some(item) = self.chunk_delete(conn, keys, &l, id, c, ch, out)? {
-                let raw = self.raw_now();
                 self.deleting.insert((conn, l, *id), raw);
                 items.push(item);
             }
@@ -1992,11 +1993,10 @@ impl SyncEngine {
         // (spec/sync.md §2: only membership-class commits and certificates stay)
         if keys.delete.is_some() && self.is_replaced(g, &l) {
             for b in self.replaced_leftovers(&server, &l) {
-                if super::in_flight(&self.deleting, &(conn, l, b), self.raw_now()) {
+                if busy(self, &b) {
                     continue;
                 }
                 if let Some(item) = delete_item(keys, &l, b, None, None, &[]) {
-                    let raw = self.raw_now();
                     self.deleting.insert((conn, l, b), raw);
                     items.push(item);
                 }
@@ -2007,16 +2007,12 @@ impl SyncEngine {
         // counts), unless another present entry links them too (roster snapshots sharing tree
         // pages): nothing under the label needs them
         if keys.delete.is_some() {
-            let every = scope.all() || match scope {
-                Scope::Some { blobs, .. } => blobs.iter().any(|b| self.state.cert_entries.contains(&(l, *b))),
-                Scope::All => true,
-            };
-            let copied: Vec<CommitId> = self.state.certs.range((l, CommitId([0; 32]))..=(l, CommitId([0xff; 32]))).map(|(_, c)| *c).filter(|c| every || scope.has(c)).collect();
+            let copied = self.copies_in(&l, scope);
             let mut gone = BTreeSet::new();
             for b in self.copy_links(&l, copied)? {
                 if self.state.is_present(&server, &l, &b) {
                     left.blobs.insert(b);
-                    if !super::in_flight(&self.deleting, &(conn, l, b), self.raw_now()) {
+                    if !busy(self, &b) {
                         gone.insert(b);
                     }
                 }
@@ -2029,7 +2025,6 @@ impl SyncEngine {
             }
             for b in gone {
                 if let Some(item) = delete_item(keys, &l, b, None, None, &[]) {
-                    let raw = self.raw_now();
                     self.deleting.insert((conn, l, b), raw);
                     items.push(item);
                 }
@@ -2198,8 +2193,8 @@ impl SyncEngine {
                 for ch in h.chunks.iter().filter(|ch| ch.blob == *b) {
                     let class: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| a.keys == ch.keys).map(|(ai, _)| ai).collect();
                     let ais: Vec<usize> = if class.is_empty() { (0..h.aspects.len()).collect() } else { class };
-                    let mut parts = ais.iter().flat_map(|ai| (0..h.aspects.get(*ai).map_or(0, |a| a.hashes.len())).map(move |di| (*ai, di))).peekable();
-                    let dropped = parts.peek().is_some() && parts.all(|p| m.dropped.contains(&p));
+                    let parts = parts_of(h, |i| ais.contains(&i));
+                    let dropped = !parts.is_empty() && parts.iter().all(|p| m.dropped.contains(p));
                     if dropped {
                         first.get_or_insert((id, ch.clone()));
                     } else {
@@ -2242,10 +2237,7 @@ impl SyncEngine {
             return Ok(delete_item(keys, l, *id, None, None, &[]));
         }
         let Some(blob) = self.engine.blob(id)? else {
-            if !self.fetching.contains_key(id) && !self.missing.contains(&(conn, *id)) {
-                self.fetching.insert(*id, conn);
-                self.command(conn, Command::Fetch { label: *l, ids: vec![*id] }, out)?;
-            }
+            self.fetch_on(conn, *l, [*id], out)?;
             return Ok(None);
         };
         let Ok(prefix) = osis_label::Prefix::parse(&blob) else { return Ok(None) };
