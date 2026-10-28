@@ -161,6 +161,8 @@ impl Ak {
     pub fn namespace(&self) -> &str {
         self.0.get(1..).unwrap_or("").split('/').next().unwrap_or("")
     }
+    /// Sorts before every key, valid none: the start of a range over one thing's aspects.
+    pub const MIN: Ak = Ak(String::new());
 }
 
 impl fmt::Display for Ak {

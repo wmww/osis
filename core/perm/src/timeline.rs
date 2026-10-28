@@ -344,6 +344,37 @@ impl Timeline {
         Ok(self)
     }
 
+    /// This timeline with things `leaves` new here that only their `/created` names (no item
+    /// names them, they own nothing held): `extend` without gathering the held set again. The
+    /// walk is the same but for their demotions, which are their owners' (`Walked::alias_leaves`).
+    /// `Err(self)`, unchanged, when one is known here, owned by none, or the owner links cycle.
+    pub fn add_leaves(mut self, leaves: &[(Tid, CreationRecord)]) -> Result<Timeline, Box<Timeline>> {
+        let owners = &self.input.owners;
+        let links: Option<Vec<(Tid, Tid)>> = leaves
+            .iter()
+            .map(|(t, r)| match r {
+                CreationRecord::Thing { owner, .. } if owners.owner(t).is_none() && owners.owned(t).is_empty() && !self.input.nodes.contains(t) => Some((*t, *owner)),
+                _ => None,
+            })
+            .collect();
+        let Some(links) = links else { return Err(Box::new(self)) };
+        let new: BTreeSet<Tid> = links.iter().map(|l| l.0).collect();
+        debug_assert!(!self.items.initial_names(&new) && self.items.first_naming(&new, None).is_none(), "a leaf an item names");
+        let cut = self.walked.rest.log.len();
+        if self.walked.alias_leaves(&links, &self.input.nodes, cut).is_none() {
+            return Err(Box::new(self));
+        }
+        for (t, r) in leaves {
+            self.input.owners.insert(*t, r);
+        }
+        // the answers `extend` keeps: those found, on other things
+        let mut first_held = std::mem::take(&mut *self.memo.first_held.lock().unwrap_or_else(|e| e.into_inner()));
+        first_held.retain(|(_, t, _), v| v.is_some() && !new.contains(t));
+        self.memo = Memo { first_held: Mutex::new(first_held), ..Memo::default() };
+        self.placed = 0;
+        Ok(self)
+    }
+
     /// Whether the commits and snapshots `held` holds on `things` are the ones walked here,
     /// with the same content (a record can grow under its ID: a part that arrives late).
     pub(crate) fn holds_same(&self, held: &dyn HeldSet, things: &BTreeSet<Tid>) -> bool {

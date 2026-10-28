@@ -542,6 +542,12 @@ impl Changed {
 pub(crate) type EpochIntro = JMap<(Tid, osis_base::Role, osis_crypto::Epoch), (Ts, Tid, Tid, CommitId)>;
 
 impl Core {
+    /// The held aspects of `t` and their commits (a range of `by_aspect`).
+    pub fn aspects_of(&self, t: &Tid) -> impl Iterator<Item = (&(Tid, Ak), &std::collections::BTreeSet<(Ts, CommitId)>)> {
+        let t = *t;
+        self.by_aspect.range((t, Ak::MIN)..).take_while(move |((x, _), _)| *x == t)
+    }
+
     /// Drops what is derived from rosters, `/secrets` and held epochs (the departures cache):
     /// called wherever those change.
     pub fn membership_changed(&mut self) {
