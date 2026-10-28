@@ -66,12 +66,16 @@ pub struct Meta {
     pub valid: Vec<bool>,
     /// Parts dropped (purge, expiry, keep at most): they count as held.
     pub dropped: BTreeSet<(usize, usize)>,
+    /// Aspects none of whose deltas was ever held here (neither held nor dropped): a part that
+    /// may still arrive late, or never (spec/permissions.md §5.2: a snapshot's copies of their
+    /// writes count).
+    pub missing: BTreeSet<usize>,
 }
 
 impl Meta {
     /// A commit's meta from its decoded header.
-    pub fn new(header: Arc<Header>, received: WallMs, origin: Origin, valid: Vec<bool>, dropped: BTreeSet<(usize, usize)>) -> Meta {
-        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received, origin, valid, dropped }
+    pub fn new(header: Arc<Header>, received: WallMs, origin: Origin, valid: Vec<bool>, dropped: BTreeSet<(usize, usize)>, missing: BTreeSet<usize>) -> Meta {
+        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received, origin, valid, dropped, missing }
     }
 }
 
@@ -487,6 +491,10 @@ pub struct Core {
     /// `Engine::body_live` per body, forgotten per aspect when its state changes (`forget_live`)
     /// and wholly on rollback.
     pub live_bodies: BTreeMap<(CommitId, Tid, Ak), bool>,
+    /// Held snapshots' writes by dot (`validity::differing_copies`: deltas arriving after
+    /// snapshots that copied their writes compare against it). A snapshot never changes, so
+    /// entries never go stale; all go past `COPY_CACHE_MAX` writes.
+    pub copy_index: BTreeMap<(CommitId, Tid, Ak), Arc<osis_crdt::CopyIndex>>,
     /// Bumped whenever a transaction changes the indexes or a state, rolls back, or the caches
     /// reload (it never goes back): caches derived from them (the sync engine's) compare it.
     pub generation: u64,
@@ -685,6 +693,7 @@ impl Core {
             live_trees: BTreeMap::new(),
             bodies: BTreeMap::new(),
             live_bodies: BTreeMap::new(),
+            copy_index: BTreeMap::new(),
             generation: 0,
             labels: BTreeMap::new(),
             published: None,

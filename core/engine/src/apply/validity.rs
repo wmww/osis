@@ -747,11 +747,16 @@ pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> Vec<(
     let mut groups: BTreeMap<(osis_crdt::Source, Tid, osis_base::Ts), BTreeSet<u64>> = BTreeMap::new();
     for (d, ts) in f.writes() {
         let Some(ts) = ts else { continue };
+        // a dot whose own commit's delta was held here is that delta's write (spec/permissions.md
+        // §5.2): not the snapshot's to give while the delta is held (`strip_copies`), judged with
+        // it once dropped
+        if owner_received(core, tid, ak, &d) {
+            continue;
+        }
         let node = match d.src.kind() {
-            // a dot a held commit owns is that commit's write, judged with it
-            osis_crdt::SourceKind::Node(n) if core.commit_of(tid, ak, &d).is_none() => *n,
+            osis_crdt::SourceKind::Node(n) => *n,
             // judged as its commit per the claim (spec/crdt.md §8 `Authors`), at the claim's `ts`
-            osis_crdt::SourceKind::Commit(c) if !owns_source(core, tid, ak, c) => match core.ix.authors.get(&(*tid, *c)) {
+            osis_crdt::SourceKind::Commit(c) => match core.ix.authors.get(&(*tid, *c)) {
                 Some((n, t)) => {
                     groups.entry((d.src.clone(), *n, *t)).or_default().insert(d.ctr);
                     continue;
@@ -765,16 +770,38 @@ pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> Vec<(
     groups.into_iter().map(|((s, n, ts), c)| (s, n, ts, c)).collect()
 }
 
-/// Whether a held commit owns the writes of source `Commit(c)` on `(tid, ak)` (spec/permissions.md
-/// §5.2): `c` itself where it is a commit-form commit with that aspect, else any held import of
-/// it with that aspect (§7, `Core::imports`). A function of the held set: a held commit `c`
-/// without the aspect (an import's origin on the moved thing) owns nothing there.
-fn owns_source(core: &Core, tid: &Tid, ak: &Ak, c: &CommitId) -> bool {
-    let has = |m: &Meta| m.view.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak);
-    if core.ix.commits.get(c).is_some_and(|m| m.view.form == Form::Commit && m.view.kind.has_own_writes() && has(m)) {
-        return true;
+/// Whether some held commit owning dot `d` on `(tid, ak)` (spec/permissions.md §5.2) has its
+/// delta of that aspect as `f` judges it: the node-form commit whose range holds it; for
+/// `Commit(c)`, `c` itself as a commit-form commit with the aspect, else any held import of `c`
+/// with it (§7, `Core::imports`; `c` on the moved thing owns nothing there).
+pub(crate) fn any_owner(core: &Core, tid: &Tid, ak: &Ak, d: &Dot, f: &dyn Fn(&CommitId, &Meta, usize) -> bool) -> bool {
+    let at = |m: &Meta| m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak);
+    let d = d.owner();
+    match d.src.kind() {
+        osis_crdt::SourceKind::Node(_) => core.commit_of(tid, ak, d).is_some_and(|c| core.ix.commits.get(&c).is_some_and(|m| at(m).is_some_and(|ai| f(&c, m, ai)))),
+        osis_crdt::SourceKind::Commit(c) => {
+            if let Some(m) = core.ix.commits.get(c).filter(|m| m.view.form == Form::Commit && m.view.kind.has_own_writes())
+                && let Some(ai) = at(m)
+            {
+                return f(c, m, ai);
+            }
+            core.ix.imports.get(&(*tid, *c)).is_some_and(|s| s.iter().any(|(_, i, _)| core.ix.commits.get(i).is_some_and(|m| at(m).is_some_and(|ai| f(i, m, ai)))))
+        }
+        osis_crdt::SourceKind::Derived(_) => false,
     }
-    core.ix.imports.get(&(*tid, *c)).is_some_and(|s| s.iter().any(|(_, i, _)| core.ix.commits.get(i).is_some_and(has)))
+}
+
+/// Whether the delta owning dot `d` on `(tid, ak)` was ever held here (held or dropped): a
+/// snapshot's copy of it is not carried (`carried_of`).
+pub(crate) fn owner_received(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
+    any_owner(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai))
+}
+
+/// Whether the delta owning dot `d` on `(tid, ak)` is held here (not dropped): the write
+/// counts from it alone, a snapshot's copy of it for nothing (spec/permissions.md §5.2,
+/// `Fragment::strip_copies`).
+pub(crate) fn owner_held(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
+    any_owner(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && !m.dropped.iter().any(|x| x.0 == ai))
 }
 
 /// The counters of carried group `c` of `(tid, ak)` invalid as their author's writes (§5.2),
@@ -851,8 +878,9 @@ fn set_claim(core: &mut Core, k: (Tid, CommitId), v: (Tid, osis_base::Ts)) {
 /// origins as the least held import's importer (`Core::imports`), where neither is held the
 /// least entry by (`ts`, node) of the held snapshots' `Authors`. A function of the held set:
 /// a snapshot entry naming another claim is not refused (the held claim governs). A snapshot
-/// lacking the entry of a commit-form write it carries, or carrying a `ts` for a dot of a held
-/// commit other than that commit's, is bad input.
+/// lacking the entry of a commit-form write it carries is bad input; one copying a held
+/// commit's write otherwise than it holds it is not (its copy counts for nothing where the
+/// delta is held, `owner_held`; is judged as its author's where it never was, `carried_of`).
 pub(crate) fn note_authors(core: &mut Core, id: &CommitId, h: &Header, parts: &[(usize, usize, osis_commit::Decoded)]) -> Result<()> {
     if h.form == Form::Commit && h.kind.has_own_writes() {
         for a in &h.aspects {
@@ -899,27 +927,6 @@ pub(crate) fn note_authors(core: &mut Core, id: &CommitId, h: &Header, parts: &[
                 set_claim(core, k, *v);
             }
         }
-        for (d, ts) in s.fragment.writes() {
-            match d.src.kind() {
-                osis_crdt::SourceKind::Commit(c) => {
-                    if let (Some(ts), Some(m)) = (ts, core.ix.commits.get(c))
-                        && m.header.form == Form::Commit
-                        && m.header.ts != ts
-                    {
-                        return Err(crate::error::Error::BadInput("snapshot ts differs from the held commit's"));
-                    }
-                }
-                osis_crdt::SourceKind::Node(_) => {
-                    if let Some(ts) = ts
-                        && let Some(k) = core.commit_of(&a.tid, &a.ak, &d)
-                        && core.ix.commits.get(&k).is_some_and(|m| m.header.ts != ts)
-                    {
-                        return Err(crate::error::Error::BadInput("snapshot ts differs from the held commit's"));
-                    }
-                }
-                osis_crdt::SourceKind::Derived(_) => {}
-            }
-        }
     }
     Ok(())
 }
@@ -957,27 +964,33 @@ pub(crate) fn carries_invalid(core: &Core, tid: &Tid, ak: &Ak, snap: &CommitId) 
     core.ix.carried.get(&(*tid, ak.clone())).is_some_and(|v| v.iter().any(|c| c.snap == *snap && !c.invalid.is_empty()))
 }
 
-/// Drops the carried writes a commit now held owns on its aspects (judged with it, as
-/// `owns_source`): its counters (node form), its whole source (commit form), its origins'
-/// sources (an import).
-pub(crate) fn uncarry(core: &mut Core, id: &CommitId, h: &Header) {
+/// Drops the carried writes a commit owns on the aspects whose deltas it now holds (`held`;
+/// judged with it, as `owner_received`): its counters (node form), its whole source (commit
+/// form), its origins' sources (an import). Returns, per such aspect, the snapshots whose
+/// copies it dropped: they are compared with the delta (`differing_copies`).
+pub(crate) fn uncarry(core: &mut Core, id: &CommitId, h: &Header, held: &dyn Fn(usize) -> bool) -> Vec<(Tid, Ak, BTreeSet<CommitId>)> {
     let mut srcs: Vec<osis_crdt::Source> = h.origins.iter().filter(|_| h.kind == Kind::Import).map(|o| osis_crdt::Source::commit(o.commit)).collect();
     if h.kind.has_own_writes() && h.form == Form::Commit {
         srcs.push(osis_crdt::Source::commit(*id));
     }
     let node_src = (h.kind.has_own_writes() && h.form == Form::Node).then(|| osis_crdt::Source::node(h.author));
+    let mut out = Vec::new();
     if srcs.is_empty() && node_src.is_none() {
-        return;
+        return out;
     }
-    for a in &h.aspects {
+    for (_, a) in h.aspects.iter().enumerate().filter(|(ai, _)| held(*ai)) {
         let k = (a.tid, a.ak.clone());
         let owns = |c: &Carried, x: u64| srcs.contains(&c.src) || (node_src.as_ref() == Some(&c.src) && a.lo <= x && x < a.hi);
         if !core.ix.carried.get(&k).is_some_and(|v| v.iter().any(|c| c.ctrs.iter().any(|x| owns(c, *x)))) {
             continue;
         }
         let mut v = core.ix.carried.get(&k).cloned().unwrap_or_default();
+        let mut snaps = BTreeSet::new();
         for c in v.iter_mut() {
             let gone: Vec<u64> = c.ctrs.iter().copied().filter(|x| owns(c, *x)).collect();
+            if !gone.is_empty() {
+                snaps.insert(c.snap);
+            }
             c.ctrs.retain(|x| !gone.contains(x));
             c.invalid.retain(|x| !gone.contains(x));
         }
@@ -987,9 +1000,68 @@ pub(crate) fn uncarry(core: &mut Core, id: &CommitId, h: &Header) {
         } else {
             core.ix.carried.insert(k, v);
         }
+        out.push((a.tid, a.ak.clone(), snaps));
+    }
+    out
+}
+
+/// Writes held snapshots' copy indexes may hold in all (`Core::copy_index`).
+const COPY_CACHE_MAX: usize = 1 << 20;
+
+/// The owner dots of commit `id`'s delta `ai` (header `h`) as (source, counters `lo..hi`):
+/// its counter range, its source in commit form, an import's origins' sources.
+pub(crate) fn owned_ranges(h: &Header, id: &CommitId, ai: usize) -> Vec<(osis_crdt::Source, u64, u64)> {
+    if h.kind == Kind::Import {
+        return h.origins.iter().map(|o| (osis_crdt::Source::commit(o.commit), 1, u64::MAX)).collect();
+    }
+    match (h.form, h.aspects.get(ai)) {
+        (_, None) => Vec::new(),
+        (_, Some(_)) if !h.kind.has_own_writes() => Vec::new(),
+        (Form::Node, Some(a)) => vec![(osis_crdt::Source::node(h.author), a.lo, a.hi)],
+        (Form::Commit, Some(_)) => vec![(osis_crdt::Source::commit(*id), 1, u64::MAX)],
     }
 }
 
+/// Held snapshot `s`'s writes on `(tid, ak)` by dot (`Core::copy_index`); `have`: its
+/// fragment, when the caller read it.
+pub(crate) fn copy_index(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak, have: Option<&Fragment>) -> Result<Option<Arc<osis_crdt::CopyIndex>>> {
+    let k = (*s, *tid, ak.clone());
+    if let Some(ix) = tx.core.copy_index.get(&k) {
+        return Ok(Some(ix.clone()));
+    }
+    let ix = match have {
+        Some(f) => Arc::new(f.copy_index()),
+        None => {
+            let Some(sai) = tx.core.ix.commits.get(s).and_then(|m| m.view.aspects.iter().position(|x| x.tid == *tid && x.ak == *ak)) else { return Ok(None) };
+            let Some(f) = super::held_parts(tx, s, sai)?.into_iter().next().map(Decoded::into_fragment) else { return Ok(None) };
+            Arc::new(f.copy_index())
+        }
+    };
+    if tx.core.copy_index.values().map(|x| x.len()).sum::<usize>() + ix.len() > COPY_CACHE_MAX {
+        tx.core.copy_index.clear();
+    }
+    tx.core.copy_index.insert(k, ix.clone());
+    Ok(Some(ix))
+}
+
+/// The dots under which the snapshots `snaps` hold copies of the writes of commit `id`'s delta
+/// `ai` (header `h`, stored) otherwise than that delta holds them (spec/permissions.md §5.2:
+/// another value, `ts` or position, or a dot the delta does not use). Copies a snapshot taken
+/// here before the delta gave the state; a rebuild replaces those with the delta's. O(delta)
+/// once a snapshot is indexed.
+pub(crate) fn differing_copies(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize, snaps: &BTreeSet<CommitId>) -> Result<BTreeSet<Dot>> {
+    let mut out = BTreeSet::new();
+    let Some(a) = h.aspects.get(ai) else { return Ok(out) };
+    let ranges = owned_ranges(h, id, ai);
+    let own: Vec<Fragment> = super::held_parts(tx, id, ai)?.into_iter().map(Decoded::into_fragment).collect();
+    let own: Vec<&Fragment> = own.iter().collect();
+    for s in snaps {
+        if let Some(ix) = copy_index(tx, s, &a.tid, &a.ak, None)? {
+            out.extend(ix.outside(&ranges, &own));
+        }
+    }
+    Ok(out)
+}
 
 /// Re-judges the held deltas whose validity may have changed since the last call: those on the
 /// things whose timeline changed (`Core::stale_things`, filled by `update_timelines`: the things

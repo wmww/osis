@@ -242,3 +242,44 @@ pub fn run_seeds<T: Send>(name: &str, seeds: &[u64], threads_var: &str, replay: 
     }
     results.into_iter().flatten().collect()
 }
+
+/// A content snapshot of `(t, a)` by peer `by` at `ts` carrying `f` (hand-built, unchecked).
+pub fn forge_snapshot(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base::Ak, ts: osis_base::Ts, f: osis_crdt::Fragment) -> Vec<u8> {
+    forge_snapshot_with(lp, by, t, a, ts, f, Default::default())
+}
+
+pub fn forge_snapshot_with(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base::Ak, ts: osis_base::Ts, f: osis_crdt::Fragment, frontiers: osis_crdt::Frontiers) -> Vec<u8> {
+    forge_snapshot_full(lp, by, t, a, ts, f, frontiers, std::collections::BTreeMap::new())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn forge_snapshot_full(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base::Ak, ts: osis_base::Ts, f: osis_crdt::Fragment, frontiers: osis_crdt::Frontiers, authors: std::collections::BTreeMap<osis_base::CommitId, (Tid, osis_base::Ts)>) -> Vec<u8> {
+    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
+    let author = lp.peers[by].engine.tid();
+    let snap = osis_crdt::Snapshot { absorbed: Default::default(), nonce: [7; 16], fragment: f, frontiers, authors };
+    let bytes = osis_crdt::encode_snapshot(&snap, &writer_ctx(Kind::ContentSnapshot, ts, author, 0, 0), None).unwrap();
+    let mut aw = AspectWrite::new(t, a.clone(), 0, 0, bytes);
+    aw.retention = osis_commit::retention::snapshot_retention(a.as_str(), None);
+    let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, author, Form::Node);
+    cb.aspects.push(aw);
+    let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
+    cb.build(&lp.peers[by].engine.identity().keys().signing, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+}
+
+/// Secrets for hand-built commits with `writer` retention: dedup, and made-up delete keys
+/// (servers' business).
+pub struct Keys(pub osis_base::CreationRecord);
+impl osis_commit::Secrets for Keys {
+    fn dedup(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
+        Some(osis_crypto::dedup_secret(self.0.nonce()))
+    }
+    fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
+    }
+    fn chain_key(&self) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([1; 32])).verifying_key())
+    }
+    fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
+    }
+}

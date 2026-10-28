@@ -1102,3 +1102,50 @@ fn sync_aspect_pass_cost() {
     let s7 = stats(&mut net);
     println!("closure of {k} things (setup {setup:?}): one write {w:?}, writer {:?} reader {:?}", d(s6.0, s7.0), d(s6.1, s7.1));
 }
+
+// spec/permissions.md §5.2 (a held delta gives its writes; a snapshot's copies of them taken
+// before it are compared), spec/requirements.md, Scale: a fresh node gets an owner's snapshot of a
+// set of N one-element commits first, then the commits, then a writer's snapshot of the result;
+// each commit compares against the snapshot's copies of its writes (indexed once), so the whole
+// costs O(N log N), not O(N^2). `OSIS_SCALE_N` sets N (default 10^4).
+#[test]
+#[ignore = "tier 2"]
+fn snapshot_first_sync_cost_spec_permissions_5_2() {
+    let n: usize = size("OSIS_SCALE_N", 10_000, 2_000);
+    let mut lp = osis_node::local_peer::LocalPeer::new(2, 45, WallMs(1_700_000_000_000)).unwrap();
+    let me = lp.peers[0].engine.tid();
+    let w = lp.peers[1].engine.tid();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None }.to_value()) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let base = lp.packages(0).unwrap();
+    for i in 0..n {
+        let mut m = Mutation::new();
+        m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(Value::Str(format!("e{i}"))) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+    }
+    let k = ak("/s/tags");
+    let snap = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    let pks = lp.packages(0).unwrap();
+    for p in &base {
+        lp.deliver(1, p).unwrap();
+    }
+    let t0 = Instant::now();
+    lp.deliver(1, pks.iter().find(|p| p.id == snap).unwrap()).unwrap();
+    let first = t0.elapsed();
+    osis_node::costs::take();
+    let t1 = Instant::now();
+    for p in pks.iter().filter(|p| p.id != snap && !base.iter().any(|b| b.id == p.id)) {
+        lp.deliver(1, p).unwrap();
+    }
+    let rest = t1.elapsed();
+    let t2 = Instant::now();
+    lp.peers[1].engine.snapshot(&t, &k).unwrap().unwrap();
+    let again = t2.elapsed();
+    assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), lp.peers[0].engine.get(&t, &k).unwrap());
+    println!("n={n}: the snapshot first {first:?}; then the {n} commits {rest:?}; a snapshot of the result {again:?}");
+    for (k, d, c) in osis_node::costs::take() {
+        println!("  {k}: {d:?} ({c})");
+    }
+}
