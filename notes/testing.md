@@ -133,6 +133,8 @@ Cost (16 threads): `OSIS_ORDER_SEEDS=300` large 104 s wall, 1250 CPU-s (was 710 
 ## Scale checks
 Tier 2 (`#[ignore]`, release), against spec/requirements.md (Scale). Measured at hardening on a shared 4-core box; `OSIS_SCALE_MAX` caps the sizes of the map checks (default 10^6). No perf or ptrace on the box: profile with `valgrind --tool=callgrind` on a release build with `CARGO_PROFILE_RELEASE_DEBUG=line-tables-only` (own target dir), or with `osis_node::costs` phase timers (`costs::span(name)` in the engine, `costs::take()` in a test: the first call turns recording on for its thread).
 
+Old-vs-new speed on a loaded box: wall times swing 2-3x with other agents' load, even for untouched code. Compare user-space instruction counts instead: `tools/icount <test binary> --ignored --exact <name>` (or any command) prints `INSTR <n>` to stderr, counting all threads (perf_event_open; builds tools/icount.c into ~/.cache/osis on first use). Run each build's binary (`target/release/deps/it-*`, copied aside) a few times: counts agree to under 0.1% run to run.
+
 | check | how to run (`cargo test --release -p <crate> <filter> -- --ignored --nocapture`; in a dev build the sizes default smaller, `scale.rs` `size`) | numbers | verdict |
 |---|---|---|---|
 | map edit at the node | `--test it scale::big_map_edit_cost` | one entry edit at 10^4 / 10^5 / 10^6 keys: 1.2 / 1.2 / 1.7 ms, store writes 24 / 34 / 46 KB (paged state; was 71 ms / 0.84 s / 8.6 s and 0.4 / 4.0 / 94.6 MB); a new session's first read of one key and first edit about 2 ms each (was 37 ms / 0.45 s / 4.6 s: every page loaded); fill 0.2 / 2.8 / 46 s (the key index; loaded box), 0.16 / 2.1 s at 10^4 / 10^5 once a fresh write skips the key index read (10^6 not re-measured); commit 299–307 B | pass |
