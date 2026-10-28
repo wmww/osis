@@ -262,7 +262,7 @@ pub(crate) fn keep_residue(tx: &mut Tx<'_>, c: &CommitId, ai: usize, bodies: &[F
             // snapshot's residue would hold the aspect's whole state
             let kept = residue_ids(tx, &tid, &ak)?;
             let core = &*tx.core;
-            f.remove_dots(&|d| core.commit_of(&tid, &ak, d).is_some_and(|x| x != *c && (held_part(core, &x, &tid, &ak).is_some() || kept.contains(&x))));
+            f.remove_writes(&|d| core.commit_of(&tid, &ak, d).is_some_and(|x| x != *c && (held_part(core, &x, &tid, &ak).is_some() || kept.contains(&x))));
         }
         f.strip(&|_| true);
         // none for a snapshot's or import's left empty: a window meeting it joins the state
@@ -539,7 +539,10 @@ fn replayed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeMap<(CommitId, u
         let cp = copies(tx.core, c);
         for mut f in parts {
             let core = &*tx.core;
-            f.remove_dots(&|d| invalid.iter().any(|o| o.owns(d)) || (cp && core.commit_of(tid, ak, d).is_some_and(|x| x != *c && (held_part(core, &x, tid, ak).is_some() || res.contains_key(&x)))));
+            f.remove_dots(&|d| invalid.iter().any(|o| o.owns(d)));
+            if cp {
+                f.remove_writes(&|d| core.commit_of(tid, ak, d).is_some_and(|x| x != *c && (held_part(core, &x, tid, ak).is_some() || res.contains_key(&x))));
+            }
             join(&mut st, f, cp, &mut deaths, &mut dead);
         }
     }
@@ -667,6 +670,8 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
     // be one never held, with a stamp in the window
     let mut fold: Vec<(Ts, CommitId)> = tx.core.by_aspect.get(&k).into_iter().flat_map(|s| s.range((t_start, LO)..=(u, HI))).copied().collect();
     fold.extend(after.iter().filter(|x| x.0 > u));
+    let snaps: Vec<(Ts, CommitId)> = fold.iter().filter(|x| copies(tx.core, &x.1)).copied().collect();
+    let play = playing_copies(tx, tid, ak, t_start, &snaps)?;
     let invalid = crate::apply::invalid_of(tx.core, tid, ak);
     let mut st = Fragment::default();
     let mut deaths = Vec::new();
@@ -676,6 +681,12 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
     let mut gone = false;
     for (ts, c) in &fold {
         let cp = copies(tx.core, c);
+        if cp && !play.contains(c) {
+            drop(crate::costs::span("deaths: window skips copies"));
+            #[cfg(debug_assertions)]
+            plays_nothing(tx, tid, ak, c, t_start, &invalid)?;
+            continue;
+        }
         if cp {
             drop(crate::costs::span("deaths: window over copies"));
         }
@@ -708,7 +719,10 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
                 }
             }
             let core = &*tx.core;
-            f.remove_dots(&|d| invalid.iter().any(|o| o.owns(d)) || (cp && core.commit_of(tid, ak, d).is_some_and(|x| x != *c && plays.get(&x).copied().unwrap_or(false))));
+            f.remove_dots(&|d| invalid.iter().any(|o| o.owns(d)));
+            if cp {
+                f.remove_writes(&|d| core.commit_of(tid, ak, d).is_some_and(|x| x != *c && plays.get(&x).copied().unwrap_or(false)));
+            }
             join(&mut st, f, cp, &mut deaths, &mut dead);
         }
     }
@@ -748,6 +762,88 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
         debug_assert!(rows_from(tx, tid, ak, Ts::default())? == Some(fresh), "last deaths of {tid:?} {ak:?} differ from the records");
     }
     Ok(Some(judged.into_iter().collect()))
+}
+
+/// Whether `c`'s own position plays its writes on `(tid, ak)`: held, or a residue.
+fn plays_own(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId) -> Result<bool> {
+    if held_part(tx.core, c, tid, ak).is_some() {
+        return Ok(true);
+    }
+    let Some(ts) = tx.core.commits.get(c).map(|m| m.header.ts) else { return Ok(false) };
+    Ok(tx.txn.get_local(&records::dropped_key(tid, ak, ts, c))?.is_some())
+}
+
+/// The snapshots and imports among `snaps` of `(tid, ak)` whose copies a window starting at
+/// `t_start` must play: imports, and the snapshots that may carry a copy stamped at or after
+/// `t_start` whose own commit does not play it (neither held nor a residue). The window
+/// removes the copies their own commit plays, and a copy stamped before `t_start` supersedes no
+/// write of a body sorting at or after it, the only writes the window dates (a write dies only
+/// at a greater stamp, spec/crdt.md §4.8), so playing such a snapshot dates none of them. Such
+/// a copy is a write of: a commit never held (`Core::carried`, per snapshot and `ts`); a
+/// node-form commit of the aspect at or after `t_start`, dropped without a residue (no later
+/// than the snapshot: carried writes are stamped no later than it, spec/crdt.md §8); or a
+/// commit-form source of the thing at or after `t_start` (`Core::authors`, a `ts` no lower
+/// than its writes') that is not the thing's own commit on another aspect. Cost: the commits of
+/// the aspect from `t_start` to the last of `snaps` (in memory; a residue read per dropped one,
+/// up to the first without one), the thing's commit-form sources and the carried groups.
+fn playing_copies(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, t_start: Ts, snaps: &[(Ts, CommitId)]) -> Result<BTreeSet<CommitId>> {
+    let mut out: BTreeSet<CommitId> = snaps.iter().filter(|x| tx.core.commits.get(&x.1).is_none_or(|m| !crate::apply::is_kind_snapshot(m.header.kind))).map(|x| x.1).collect();
+    let Some(last) = snaps.iter().map(|x| x.0).max() else { return Ok(out) };
+    // commit-form sources
+    let srcs: Vec<CommitId> = tx.core.authors.range((*tid, LO)..=(*tid, HI)).filter(|(_, v)| v.1 >= t_start).map(|(k, _)| k.1).collect();
+    for x in srcs {
+        let own = match tx.core.commits.get(&x) {
+            None => false,
+            Some(m) if m.header.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak) => plays_own(tx, tid, ak, &x)?,
+            // the thing's own commit on other aspects: none of its writes is on this one
+            Some(m) => m.header.aspects.iter().any(|a| a.tid == *tid),
+        };
+        if !own {
+            out.extend(snaps.iter().map(|x| x.1));
+            return Ok(out);
+        }
+    }
+    // the first node-form commit from `t_start` dropped without a residue
+    let k = (*tid, ak.clone());
+    let range: Vec<(Ts, CommitId)> = tx.core.by_aspect.get(&k).into_iter().flat_map(|s| s.range((t_start, LO)..=(last, HI))).copied().collect();
+    let mut bare = None;
+    for (ts, c) in range {
+        if tx.core.commits.get(&c).is_some_and(|m| m.header.kind.has_own_writes()) && !plays_own(tx, tid, ak, &c)? {
+            bare = Some(ts);
+            break;
+        }
+    }
+    let carried = tx.core.carried.get(&k);
+    for (ts, s) in snaps {
+        if bare.is_some_and(|b| b <= *ts) || carried.is_some_and(|v| v.iter().any(|g| g.snap == *s && g.ts >= t_start)) {
+            out.insert(*s);
+        }
+    }
+    Ok(out)
+}
+
+/// Debug check of a snapshot a window skips (`playing_copies`): with the copies their own commit
+/// plays and the invalid writes removed, it holds no write stamped at or after `t_start`.
+#[cfg(debug_assertions)]
+fn plays_nothing(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, t_start: Ts, invalid: &[crate::engine::Owned]) -> Result<()> {
+    let Some(ai) = held_part(tx.core, c, tid, ak) else { return Ok(()) };
+    for mut f in crate::apply::held_parts(tx, c, ai)?.into_iter().map(frag) {
+        let mut own = BTreeMap::new();
+        for (d, _) in f.writes() {
+            if let Some(x) = tx.core.commit_of(tid, ak, &d).filter(|x| x != c)
+                && !own.contains_key(&x)
+            {
+                let p = plays_own(tx, tid, ak, &x)?;
+                own.insert(x, p);
+            }
+        }
+        let core = &*tx.core;
+        f.remove_dots(&|d| invalid.iter().any(|o| o.owns(d)));
+        f.remove_writes(&|d| core.commit_of(tid, ak, d).is_some_and(|x| x != *c && own.get(&x).copied().unwrap_or(false)));
+        let late: Vec<_> = f.writes().into_iter().filter(|(_, ts)| ts.is_some_and(|t| t >= t_start)).collect();
+        debug_assert!(late.is_empty(), "window skipped {c:?} on {tid:?} {ak:?}, which plays {late:?}");
+    }
+    Ok(())
 }
 
 /// Judges the keep-at-most bounds of the held bodies of `(tid, ak)` under a relative bound

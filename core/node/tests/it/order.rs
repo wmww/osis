@@ -547,8 +547,15 @@ fn held_sets(played: &Played, subsets: usize, rng: &mut Rng) -> Vec<Vec<usize>> 
     out
 }
 
-/// Checks one history; the first mismatch found, described.
+/// Checks one history; the first mismatch found, described (a panic counts, so it shrinks).
 fn check(seed: u64, steps: &[Step], all_up_to: usize, random: usize, subsets: usize) -> Result<usize, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check_orders(seed, steps, all_up_to, random, subsets))).unwrap_or_else(|e| {
+        let msg = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
+        Err(format!("panicked: {msg}"))
+    })
+}
+
+fn check_orders(seed: u64, steps: &[Step], all_up_to: usize, random: usize, subsets: usize) -> Result<usize, String> {
     let played = play(seed, steps);
     let mut rng = Rng(seed ^ 0x0de5_ab1e | 1);
     let mut tried = 0;
@@ -759,4 +766,3 @@ fn dropped_snapshot_rebuilds_alike_spec_commits_5() {
     assert!(!p.engine.holds_body(&snap, &a.tid, &a.ak), "the snapshot dropped dead");
     assert!(!p.engine.body_live(&snap, &a.tid, &a.ak).unwrap(), "the undo reset it");
 }
-
