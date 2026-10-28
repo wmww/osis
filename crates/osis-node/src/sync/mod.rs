@@ -337,6 +337,8 @@ pub struct SyncEngine {
     pub(crate) local_any: bool,
     /// Prefix expiries of entries under labels synced with nobody (raw unix ms; read once).
     pub(crate) local_expiry: BTreeMap<osis_core::BlobId, Option<u64>>,
+    /// The work sets of the local passes, by label (`LConn::work` for a label served here).
+    pub(crate) local_work: BTreeMap<osis_core::LabelId, work::Work>,
     /// When this node first saw each entry deposited at a server (raw ms; the promotion wait).
     pub(crate) deposit_seen: BTreeMap<(ServerKey, LabelId, osis_core::BlobId), u64>,
     /// Stranded heartbeats already answered by a re-seal.
@@ -475,6 +477,7 @@ impl SyncEngine {
             local_last: 0,
             local_any: false,
             local_expiry: BTreeMap::new(),
+            local_work: BTreeMap::new(),
             deposit_seen: BTreeMap::new(),
             resealed: BTreeSet::new(),
             label_actors: BTreeMap::new(),
@@ -823,23 +826,21 @@ impl SyncEngine {
         let t = std::mem::take(&mut self.touched);
         let st = std::mem::take(&mut self.state.touched);
         let carriers = std::mem::take(&mut self.state.touched_commits);
-        for c in self.conns.values_mut() {
-            for (l, lc) in c.labels.iter_mut() {
-                let w = &mut lc.work;
-                w.full |= t.full;
-                w.commits.extend(t.commits.iter().chain(&carriers).copied());
-                w.states.extend(t.states.iter().cloned());
-                w.whole.extend(t.whole.iter().cloned());
-                w.blobs.extend(t.blobs.iter().copied());
-                w.moved.extend(t.moved.iter().copied());
-                w.actors.extend(t.actors.iter().copied());
-                w.keys |= t.keys;
-                for (_, x) in st.range((*l, state::Touch::Commit(osis_core::CommitId([0; 32])))..).take_while(|(x, _)| x == l) {
-                    match x {
-                        state::Touch::Commit(c) => w.commits.insert(*c),
-                        state::Touch::Blob(b) => w.blobs.insert(*b),
-                    };
-                }
+        let conns = self.conns.values_mut().flat_map(|c| c.labels.iter_mut().map(|(l, lc)| (l, &mut lc.work)));
+        for (l, w) in conns.chain(self.local_work.iter_mut()) {
+            w.full |= t.full;
+            w.commits.extend(t.commits.iter().chain(&carriers).copied());
+            w.states.extend(t.states.iter().cloned());
+            w.whole.extend(t.whole.iter().cloned());
+            w.blobs.extend(t.blobs.iter().copied());
+            w.moved.extend(t.moved.iter().copied());
+            w.actors.extend(t.actors.iter().copied());
+            w.keys |= t.keys;
+            for (_, x) in st.range((*l, state::Touch::Commit(osis_core::CommitId([0; 32])))..).take_while(|(x, _)| x == l) {
+                match x {
+                    state::Touch::Commit(c) => w.commits.insert(*c),
+                    state::Touch::Blob(b) => w.blobs.insert(*b),
+                };
             }
         }
     }
