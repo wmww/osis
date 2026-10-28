@@ -3,12 +3,12 @@
 //! the grantee's `/keys`, a removal's new `/keys`), inbox delivery (spec/sync.md §3), label
 //! creation.
 
-use super::state::{Entry, Kind};
+use super::state::{Entry, Kind, ServerKey};
 use super::{Action, ConnId, Phase, SyncEngine};
 use crate::error::{Error, Result};
 use crate::labeling::seal_body;
 use osis_base::format::MAX_DRIFT_MS;
-use osis_base::{Ak, CommitId, LabelId, Role, Tid, Ts, Value};
+use osis_base::{Ak, BlobId, CommitId, LabelId, Role, Tid, Ts, Value};
 use osis_label::{Address, InboxPayload, InboxThing, PublishAuth, PublishKey, SignalBody};
 use osis_perm::{At, PurgeBy};
 use osis_proto::Command;
@@ -23,18 +23,16 @@ pub(crate) const MAX_INBOX_TRIES: u32 = 8;
 /// `INBOX_LIFETIME`).
 const MAX_INBOX_RESENDS: u32 = 3;
 
-/// A deposit waiting for its server (`SyncEngine::queue_deposit`).
-#[derive(Clone)]
+/// Where a queued deposit (`State::outbox`, `SyncEngine::queue_deposit`) stands, in memory: a
+/// restart sends every one again.
+#[derive(Clone, Copy, Default)]
 pub(crate) struct Outgoing {
-    pub label: LabelId,
-    pub server: Address,
-    pub blob: Vec<u8>,
-    pub wrap: [u8; osis_crypto::WRAP_LEN],
-    pub sig: osis_crypto::Signature,
     /// Not sent before this raw wall ms (a refused deposit backs off from `retry_ms`).
     pub after: u64,
     /// Refusals so far (`MAX_INBOX_TRIES` then dropped with a diagnostic).
     pub tries: u32,
+    /// Sent on this connection and not answered yet.
+    pub sent: Option<ConnId>,
 }
 
 impl SyncEngine {
@@ -434,10 +432,10 @@ impl SyncEngine {
     /// (a crash, a cut or forgetting the label does not recall it).
     pub(crate) fn queue_deposit(&mut self, label: LabelId, servers: &[Address], deposit: &osis_crypto::SigningSecret, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN]) {
         let sig = osis_label::sign_deposit(deposit, &label, &osis_label::blob_id(&blob), &wrap);
+        let id = osis_label::blob_id(&blob);
         for server in servers {
-            let o = Outgoing { label, server: server.clone(), blob: blob.clone(), wrap, sig, after: 0, tries: 0 };
-            self.state.add_out(super::state::OutRec { label, server: o.server.clone(), blob: o.blob.clone(), wrap, sig });
-            self.outbox.push(o);
+            self.state.add_out(super::state::OutRec { label, server: server.clone(), blob: blob.clone(), wrap, sig });
+            self.outbox.entry((server.key, id)).or_default();
         }
     }
 
@@ -450,17 +448,20 @@ impl SyncEngine {
         }
         let ready: Vec<(ConnId, [u8; 32])> = self.conns.iter().filter(|(_, c)| c.session.is_ready()).map(|(id, c)| (*id, c.server)).collect();
         let now = self.raw_now();
-        let mut keep = Vec::new();
-        for o in std::mem::take(&mut self.outbox) {
-            let Some((conn, _)) = ready.iter().find(|(_, k)| *k == o.server.key).filter(|_| o.after <= now) else {
-                keep.push(o);
-                continue;
-            };
-            let id = osis_label::blob_id(&o.blob);
-            self.inbox_sent.insert((o.server.key, id), (*conn, o.clone()));
-            self.command(*conn, Command::Deposit { label: o.label, blob: o.blob, wrap: o.wrap, sig: o.sig }, out)?;
+        let due: Vec<((ServerKey, BlobId), ConnId)> = self
+            .outbox
+            .iter()
+            .filter(|(_, o)| o.sent.is_none() && o.after <= now)
+            .filter_map(|(k, _)| ready.iter().find(|(_, s)| *s == k.0).map(|(c, _)| (*k, *c)))
+            .collect();
+        for (k, conn) in due {
+            let Some(o) = self.state.outbox.get(&k) else { continue };
+            let cmd = Command::Deposit { label: o.label, blob: o.blob.clone(), wrap: o.wrap, sig: o.sig };
+            if let Some(m) = self.outbox.get_mut(&k) {
+                m.sent = Some(conn);
+            }
+            self.command(conn, cmd, out)?;
         }
-        self.outbox = keep;
         Ok(())
     }
 }

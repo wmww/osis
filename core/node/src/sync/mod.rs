@@ -300,15 +300,12 @@ pub struct SyncEngine {
     pub(crate) signals: Vec<osis_label::SignalBody>,
     /// Recent diagnostics (also sent as engine events).
     diagnostics: Vec<String>,
-    /// Deposits (inbox blobs, a non-writer's membership writes) waiting for a connection to
-    /// their server.
-    pub(crate) outbox: Vec<local::Outgoing>,
+    /// Where each queued deposit (`State::outbox`: inbox blobs, a non-writer's own writes)
+    /// stands: waiting for its server, or sent and not answered yet.
+    pub(crate) outbox: BTreeMap<(ServerKey, osis_base::BlobId), local::Outgoing>,
     /// Deposits for a label this node syncs with nobody: logged here, as a peer's deposit would
     /// be (`send_outbox`).
     pub(crate) local_inbox: Vec<(LabelId, Vec<u8>, [u8; osis_crypto::WRAP_LEN])>,
-    /// Deposits sent and not answered yet (a label not registered yet, or a rate
-    /// limit, sends them again after `retry_ms`).
-    pub(crate) inbox_sent: BTreeMap<(ServerKey, osis_base::BlobId), (ConnId, local::Outgoing)>,
     /// Blobs asked for and not received yet.
     pub(crate) fetching: BTreeMap<osis_base::BlobId, ConnId>,
     /// Tree node blobs a judgment of dropped chunks waits for (`dropped_chunks`); a pass
@@ -445,7 +442,7 @@ impl SyncEngine {
         engine.take_changed();
         let mut state = State::load(&mut engine)?;
         // deposits not answered before a restart go again
-        let outbox = state.outbox.values().map(|o| local::Outgoing { label: o.label, server: o.server.clone(), blob: o.blob.clone(), wrap: o.wrap, sig: o.sig, after: 0, tries: 0 }).collect();
+        let outbox = state.outbox.keys().map(|k| (*k, local::Outgoing::default())).collect();
         let mut rng = rng;
         rng.fill_bytes(&mut state.feed.log_id);
         Ok(SyncEngine {
@@ -467,7 +464,6 @@ impl SyncEngine {
             diagnostics: Vec::new(),
             outbox,
             local_inbox: Vec::new(),
-            inbox_sent: BTreeMap::new(),
             drop_when_idle: false,
             fetching: BTreeMap::new(),
             tree_wants: BTreeSet::new(),
@@ -707,11 +703,8 @@ impl SyncEngine {
         self.missing.retain(|(c, _)| *c != conn);
         if let Some(c) = self.conns.remove(&conn) {
             // deposits not answered on this connection go out again on the next one
-            let back: Vec<(ServerKey, osis_base::BlobId)> = self.inbox_sent.iter().filter(|(_, (x, _))| *x == conn).map(|(k, _)| *k).collect();
-            for k in back {
-                if let Some((_, o)) = self.inbox_sent.remove(&k) {
-                    self.outbox.push(o);
-                }
+            for o in self.outbox.values_mut().filter(|o| o.sent == Some(conn)) {
+                o.sent = None;
             }
             // a LAN address that never came up: back off that address, not the peer (the next
             // route is dialed at once)
@@ -1347,7 +1340,7 @@ impl SyncEngine {
             at((x as i64).saturating_sub(skew).max(0) as u64);
         }
         // a due inbox blob goes once its server's connection is ready (an event of its own)
-        for o in self.outbox.iter().filter(|o| o.after > now) {
+        for o in self.outbox.values().filter(|o| o.sent.is_none() && o.after > now) {
             at(o.after);
         }
         if let Ok(Some(x)) = self.engine.next_timer() {
@@ -1359,7 +1352,7 @@ impl SyncEngine {
     /// Inbox blobs (grants, notices) not yet sent or not yet answered by a server (the outbox
     /// and the delivery records are stored and restored at open); `wait_synced` waits for none.
     pub fn deliveries_pending(&self) -> usize {
-        self.outbox.len() + self.inbox_sent.len() + self.state.sent_inbox.values().filter(|s| s.at == 0).count()
+        self.outbox.len() + self.state.sent_inbox.values().filter(|s| s.at == 0).count()
     }
 
     /// Asks every connection to sync every open label now.
