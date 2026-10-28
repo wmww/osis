@@ -9,7 +9,7 @@
 use crate::cache::{self, Inputs, Only};
 use crate::held::HeldSet;
 use crate::timeline::Timeline;
-use crate::types::MembershipCommit;
+use crate::types::{MembershipCommit, RosterSnapshot};
 use osis_base::{CommitId, CreationRecord, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -108,24 +108,33 @@ pub struct SaveDone {
     retired: Vec<Tid>,
 }
 
-/// The things `t`'s held inputs link it to (the unions of a partition).
-fn links(held: &dyn HeldSet, t: &Tid) -> Vec<Tid> {
-    let mut out = Vec::new();
-    if let Some(CreationRecord::Thing { owner, .. }) = held.created(t) {
-        out.push(owner);
+/// The unions of the partition that thing `t`'s held inputs make (`created` its record,
+/// `commits` and `snaps` those held of it): with its owner; each edge write's author and
+/// member with its target; a snapshot's author, roster and ledger members with its thing, and
+/// the key's node of a ledger entry with a frontier (a demotion by it, §6).
+fn joins(t: Tid, created: Option<&CreationRecord>, commits: &[Arc<MembershipCommit>], snaps: &[Arc<RosterSnapshot>], mut join: impl FnMut(Tid, Tid)) {
+    if let Some(CreationRecord::Thing { owner, .. }) = created {
+        join(t, *owner);
     }
-    for c in held.edge_commits(t) {
-        out.push(c.author);
+    for c in commits {
         for o in &c.ops {
-            out.push(o.member);
-            out.push(o.target);
+            join(c.author, o.target);
+            join(o.member, o.target);
         }
     }
-    for s in held.roster_snapshots(t) {
-        out.push(s.author);
-        out.extend(s.roster.keys().copied());
-        out.extend(s.ledger.iter().flat_map(|x| [x.member, x.until.node]));
+    for s in snaps {
+        join(s.author, s.thing);
+        let demoters = s.ledger.iter().filter(|x| x.frontier.is_some()).map(|x| &x.until.node);
+        for m in s.roster.keys().chain(s.ledger.iter().map(|x| &x.member)).chain(demoters) {
+            join(*m, s.thing);
+        }
     }
+}
+
+/// The things `t`'s held inputs join it with (`joins`).
+fn links(held: &dyn HeldSet, t: &Tid) -> Vec<Tid> {
+    let mut out = Vec::new();
+    joins(*t, held.created(t).as_ref(), &held.edge_commits(t), &held.roster_snapshots(t), |a, b| out.extend([a, b]));
     out
 }
 
@@ -407,27 +416,13 @@ impl Timelines {
         let mut created: BTreeSet<Tid> = BTreeSet::new();
         for t in &region {
             dsu.find(*t);
-            if let Some(rec) = held.created(t) {
+            let (rec, commits, snaps) = (held.created(t), held.edge_commits(t), held.roster_snapshots(t));
+            joins(*t, rec.as_ref(), &commits, &snaps, |a, b| dsu.union(a, b));
+            if rec.is_some() {
                 created.insert(*t);
-                if let CreationRecord::Thing { owner, .. } = rec {
-                    dsu.union(*t, owner);
-                }
             }
-            for c in held.edge_commits(t) {
-                ids.entry(*t).or_default().insert(c.id);
-                for o in &c.ops {
-                    dsu.union(c.author, o.target);
-                    dsu.union(o.member, o.target);
-                }
-            }
-            for s in held.roster_snapshots(t) {
-                ids.entry(*t).or_default().insert(s.id);
-                dsu.union(s.author, s.thing);
-                // an entry with a frontier is a demotion by its key's node (§6)
-                let demoters = s.ledger.iter().filter(|x| x.frontier.is_some()).map(|x| &x.until.node);
-                for m in s.roster.keys().chain(s.ledger.iter().map(|x| &x.member)).chain(demoters) {
-                    dsu.union(*m, s.thing);
-                }
+            if !commits.is_empty() || !snaps.is_empty() {
+                ids.entry(*t).or_default().extend(commits.iter().map(|c| c.id).chain(snaps.iter().map(|s| s.id)));
             }
         }
         let mut groups: BTreeMap<Tid, Inputs> = BTreeMap::new();
