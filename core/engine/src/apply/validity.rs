@@ -56,12 +56,6 @@ fn dots_of_view(v: &View, ai: usize) -> Dots {
     }
 }
 
-fn fragment(d: &Decoded) -> &Fragment {
-    match d {
-        Decoded::Delta(x) => &x.fragment,
-        Decoded::Snapshot(x) => &x.fragment,
-    }
-}
 
 /// Entries of a `/members` (map) fragment: (dot, key, fragment).
 fn entries(f: &Fragment) -> Vec<(Dot, Option<Value>, Option<Fragment>)> {
@@ -92,7 +86,7 @@ impl EdgeParts {
     pub(crate) fn of(h: &Header, parts: &[(usize, usize, Decoded)]) -> EdgeParts {
         let mut out = Vec::new();
         for (ai, _, d) in parts {
-            let f = fragment(d);
+            let f = d.fragment();
             match h.aspects.get(*ai).map(|a| a.ak.as_str()) {
                 Some("/members") => out.push((
                     *ai,
@@ -224,7 +218,7 @@ pub(crate) fn check_roster_parts(h: &Header, parts: &[(usize, usize, Decoded)]) 
         if a.ak.as_str() != "/members" {
             continue;
         }
-        for m in named_members("/members", fragment(d)) {
+        for m in named_members("/members", d.fragment()) {
             if !seen.insert((a.tid, m)) {
                 return Err(Error::BadInput("a roster snapshot names a member twice"));
             }
@@ -243,7 +237,7 @@ pub(crate) fn check_members_parts(h: &Header, id: &CommitId, parts: &[(usize, us
             continue;
         }
         let own = Owned::of(h, id, *ai);
-        if entries(fragment(d)).iter().any(|(dot, _, f)| f.is_some() && !own.as_ref().is_some_and(|o| o.owns(dot.owner()))) {
+        if entries(d.fragment()).iter().any(|(dot, _, f)| f.is_some() && !own.as_ref().is_some_and(|o| o.owns(dot.owner()))) {
             return Err(Error::BadInput("a /members write inside an entry the delta did not create"));
         }
     }
@@ -541,7 +535,7 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
     core.stale_commits.insert(*id);
     for (ai, _, d) in parts {
         if let Some(a) = h.aspects.get(*ai)
-            && let Some(r) = rotation_required(a.ak.as_str(), fragment(d))
+            && let Some(r) = rotation_required(a.ak.as_str(), d.fragment())
         {
             core.rotation_role.upsert((*id, *ai), || r, |e| *e = (*e).max(r));
         }
@@ -554,7 +548,7 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
         if a.ak.as_str() == "/members" {
-            for (_, k, frag) in entries(fragment(d)) {
+            for (_, k, frag) in entries(d.fragment()) {
                 if let (Some(Value::Tid(m)), Some(e)) = (k, frag.and_then(|f| f.read()).as_ref().and_then(edge_of)) {
                     granted.insert((a.tid, m), e.role);
                 }
@@ -564,7 +558,7 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
         if a.ak.as_str() == "/secrets" {
-            if crate::engine::Owned::of(h, id, *ai).is_some_and(|own| grantee_boxes_only(&a.tid, fragment(d), &granted, &own)) {
+            if crate::engine::Owned::of(h, id, *ai).is_some_and(|own| grantee_boxes_only(&a.tid, d.fragment(), &granted, &own)) {
                 core.grant_overreach.remove(&(*id, *ai));
             } else {
                 core.grant_overreach.insert((*id, *ai));
@@ -1143,7 +1137,7 @@ fn fell_bodies(tx: &mut Tx<'_>, parts: &[(CommitId, usize)]) -> Result<Option<Fr
             return Ok(None);
         }
         for d in &bodies {
-            out.join_into(fragment(d).clone(), None, &mut ch);
+            out.join_into(d.fragment().clone(), None, &mut ch);
         }
     }
     Ok(Some(out))
@@ -1177,7 +1171,7 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usiz
         if a.ak.as_str() != "/members" {
             continue;
         }
-        for (dot, k, frag) in entries(fragment(d)) {
+        for (dot, k, frag) in entries(d.fragment()) {
             match k {
                 Some(Value::Tid(m)) => changed.push((a.tid, m, frag.and_then(|f| f.read()).as_ref().and_then(edge_of))),
                 _ => {

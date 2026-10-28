@@ -103,10 +103,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
                 for c in before {
                     let Some(ci) = tx.core.commits.get(&c).and_then(|m| m.valid.iter().zip(&m.header.aspects).position(|(v, x)| *v && x.tid == a.tid && x.ak == a.ak)) else { continue };
                     for d in crate::apply::held_parts(tx, &c, ci)? {
-                        let d = match d {
-                            Decoded::Delta(x) => x.fragment,
-                            Decoded::Snapshot(x) => x.fragment,
-                        };
+                        let d = d.into_fragment();
                         match &mut f {
                             Some(f) => {
                                 f.join(d);

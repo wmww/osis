@@ -188,7 +188,7 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
         m.dropped.insert((ai, di));
     }
     // the dropped deltas, to find what of the state holds copies of their writes
-    let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(frag).collect();
+    let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect();
     deaths::keep_residue(tx, c, ai, &bodies)?;
     if let Some(blob) = tx.get_commit(c)? {
         let rest = osis_commit::rewrite(&blob, |x, _| x == ai);
@@ -217,7 +217,7 @@ fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(Ti
     let enc = encode_owned(list);
     tx.txn.put_local(&records::aspect_key(records::VALUELESS, &a.tid, &a.ak), &enc, Shred::No)?;
     // the delta's writes lie where it touched the state (a page of a paged state)
-    let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(frag).collect();
+    let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect();
     tx.strip_bodies(&a.tid, &a.ak, &bodies, &o)?;
     Ok(Some(k))
 }
@@ -298,7 +298,7 @@ fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, item: &PurgeItem, c: &CommitId, ai:
         for s in snaps {
             let Some(sai) = aspect_index(tx, &s, &a.tid, &a.ak) else { continue };
             for d in crate::apply::held_parts(tx, &s, sai)? {
-                let f = frag(d);
+                let f = d.into_fragment();
                 let mut g = f.clone();
                 g.strip(&|x| o.owns(x));
                 if g != f {
@@ -652,9 +652,9 @@ impl Engine {
             {
                 return Ok(Some(false));
             }
-            let snap: Vec<Fragment> = parts.into_iter().map(frag).collect();
+            let snap: Vec<Fragment> = parts.into_iter().map(Decoded::into_fragment).collect();
             let [snap] = snap.as_slice() else { return Ok(None) };
-            let body: Vec<Fragment> = held.into_iter().map(frag).collect();
+            let body: Vec<Fragment> = held.into_iter().map(Decoded::into_fragment).collect();
             let before = crate::engine::state::encode(snap)?;
             let mut j = snap.clone();
             for b in body {
@@ -725,7 +725,7 @@ fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, members: &[usize]) -
         // by dot: tombstones and other writes without a `ts` count too
         let live: BTreeSet<osis_crdt::Dot> = writes.into_iter().map(|(d, _)| d).collect();
         for p in parts {
-            if frag(p).writes().into_iter().any(|(d, _)| live.contains(&d)) {
+            if p.into_fragment().writes().into_iter().any(|(d, _)| live.contains(&d)) {
                 return Ok(true);
             }
         }
@@ -733,12 +733,6 @@ fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, members: &[usize]) -
     Ok(false)
 }
 
-pub(crate) fn frag(d: Decoded) -> Fragment {
-    match d {
-        Decoded::Delta(x) => x.fragment,
-        Decoded::Snapshot(x) => x.fragment,
-    }
-}
 
 #[cfg(test)]
 mod tests {

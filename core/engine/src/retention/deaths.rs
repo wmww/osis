@@ -6,11 +6,11 @@
 //! value-less, as its residue (`records::DROPPED`) while a held bounded body sorts at or before
 //! it, so a replay still meets a superseder whose body is gone.
 
-use super::{body_class, bounded, check_at_most, frag, held_part};
+use super::{body_class, bounded, check_at_most, held_part};
 use crate::engine::records::{self, Rd};
 use crate::engine::{Core, Tx};
 use crate::error::Result;
-use osis_commit::Header;
+use osis_commit::{Decoded, Header};
 use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_crdt::{Changes, Death, Fragment, Stamp};
 use osis_store::Shred;
@@ -521,7 +521,7 @@ fn replayed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeMap<(CommitId, u
         let parts: Vec<Fragment> = match held_part(tx.core, c, tid, ak) {
             Some(ai) => {
                 let _s = crate::costs::span("deaths: read bodies");
-                crate::apply::held_parts(tx, c, ai)?.into_iter().map(frag).collect()
+                crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect()
             }
             None => res.get(c).cloned().into_iter().collect(),
         };
@@ -681,7 +681,7 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
             drop(crate::costs::span("deaths: window over copies"));
         }
         let parts: Vec<Fragment> = match held_part(tx.core, c, tid, ak) {
-            Some(ai) => crate::apply::held_parts(tx, c, ai)?.into_iter().map(frag).collect(),
+            Some(ai) => crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect(),
             None => match tx.txn.get_local(&records::dropped_key(tid, ak, *ts, c))? {
                 Some(b) => vec![crate::engine::state::decode(&b)?],
                 None => {
@@ -822,7 +822,7 @@ fn playing_copies(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, t_start: Ts, snaps: &[(Ts
 #[cfg(debug_assertions)]
 fn plays_nothing(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, t_start: Ts, invalid: &[crate::engine::Owned]) -> Result<()> {
     let Some(ai) = held_part(tx.core, c, tid, ak) else { return Ok(()) };
-    for mut f in crate::apply::held_parts(tx, c, ai)?.into_iter().map(frag) {
+    for mut f in crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment) {
         let mut own = BTreeMap::new();
         for (d, _) in f.writes() {
             if let Some(x) = tx.core.commit_of(tid, ak, &d).filter(|x| x != c)
