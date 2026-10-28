@@ -76,15 +76,6 @@ fn anchor(cx: &mut Enc, a: &Anchor) -> Value {
     }
 }
 
-/// The commit index of a stamp as `Enc::stamp` encodes it (`Ci` or `[Ci, ctr]`).
-fn commit_index(v: &Value) -> u64 {
-    let ci = match v {
-        Value::List(a) => a.first(),
-        v => Some(v),
-    };
-    ci.and_then(|c| as_uint(c).ok()).unwrap_or(0)
-}
-
 /// The `[Run*]` array of `s` (before paging), runs in wire order.
 pub(crate) fn encode_elems(s: &Seq, cx: &mut Enc) -> Result<Vec<Value>, Error> {
     let v = cx.sorted(s.elems());
@@ -116,70 +107,69 @@ pub(crate) fn encode_elems(s: &Seq, cx: &mut Enc) -> Result<Vec<Value>, Error> {
 
 /// One run; `content`: its list content already encoded.
 fn encode_run(text: bool, run: &[Piece], content: Option<Vec<Value>>, cx: &mut Enc) -> Result<Value, Error> {
-    {
-        let Some(&(k0, e0, off0, _)) = run.first() else { return Err(Error::Malformed("empty run")) };
-        let n: u64 = run.iter().map(|p| p.3).sum();
-        let first = cx.dot(&nth(k0, off0));
-        let creation = match &e0.created {
-            None => Value::List(Vec::new()),
-            Some((_, a)) => {
-                let a = if off0 == 0 { anchor(cx, a) } else { anchor(cx, &Anchor::Dot(nth(k0, off0 - 1))) };
-                let mut segs: Vec<(u64, u64)> = Vec::new();
-                for &(k, e, off, len) in run {
-                    let Some((st, _)) = &e.created else { continue };
-                    let ci = if off == 0 { commit_index(&cx.stamp(st)) } else { commit_index(&cx.stamp(&Stamp { ts: st.ts, dot: nth(k, off) })) };
-                    match segs.last_mut() {
-                        Some((c, x)) if *c == ci => *x += len,
-                        _ => segs.push((ci, len)),
-                    }
-                }
-                let segs = segs.into_iter().map(|(c, k)| Value::List(vec![uint(c), uint(k)])).collect();
-                Value::List(vec![a, Value::List(segs)])
-            }
-        };
-        // content and extra position writes sit only on single-element records
-        let content = if let Some(fs) = content {
-            Value::List(fs)
-        } else if !run.iter().any(|p| has_content(p.1)) {
-            Value::List(Vec::new())
-        } else if text {
-            Value::Str(run.iter().filter(|p| has_content(p.1)).filter_map(|p| p.1.char()).collect())
-        } else {
-            let mut fs = Vec::with_capacity(run.len());
-            for p in run {
-                if let SeqContent::Frag(f) = &p.1.content {
-                    fs.push(cx.fragment(f)?);
+    let Some(&(k0, e0, off0, _)) = run.first() else { return Err(Error::Malformed("empty run")) };
+    let n: u64 = run.iter().map(|p| p.3).sum();
+    let first = cx.dot(&nth(k0, off0));
+    let creation = match &e0.created {
+        None => Value::List(Vec::new()),
+        Some((_, a)) => {
+            let a = if off0 == 0 { anchor(cx, a) } else { anchor(cx, &Anchor::Dot(nth(k0, off0 - 1))) };
+            let mut segs: Vec<(u64, u64)> = Vec::new();
+            for &(k, e, off, len) in run {
+                let Some((st, _)) = &e.created else { continue };
+                let ci = if off == 0 { cx.commit_of(st) } else { cx.commit_of(&Stamp { ts: st.ts, dot: nth(k, off) }) };
+                let ci = as_uint(&ci).unwrap_or(0);
+                match segs.last_mut() {
+                    Some((c, x)) if *c == ci => *x += len,
+                    _ => segs.push((ci, len)),
                 }
             }
-            Value::List(fs)
-        };
-        let mut posw = Vec::new();
-        let mut flagw: Vec<(u64, u64, &(Stamp, bool))> = Vec::new();
-        let mut idx = 0u64;
-        for &(k, e, _, len) in run {
-            if e.span == 1 {
-                for (st, a) in e.pos.iter().filter(|p| p.0.dot != *k) {
-                    let st = cx.stamp(st);
-                    posw.push(Value::List(vec![uint(idx), st, anchor(cx, a)]));
-                }
-            }
-            if let Some(dl) = &e.deleted {
-                match flagw.last_mut() {
-                    Some((_, to, x)) if *to + 1 == idx && *x == dl => *to = idx + len - 1,
-                    _ => flagw.push((idx, idx + len - 1, dl)),
-                }
-            }
-            idx += len;
+            let segs = segs.into_iter().map(|(c, k)| Value::List(vec![uint(c), uint(k)])).collect();
+            Value::List(vec![a, Value::List(segs)])
         }
-        let mut fw = Vec::with_capacity(flagw.len());
-        for (i, j, (st, b)) in flagw {
-            fw.push(Value::List(vec![uint(i), uint(j), cx.stamp(st), Value::Bool(*b)]));
+    };
+    // content and extra position writes sit only on single-element records
+    let content = if let Some(fs) = content {
+        Value::List(fs)
+    } else if !run.iter().any(|p| has_content(p.1)) {
+        Value::List(Vec::new())
+    } else if text {
+        Value::Str(run.iter().filter(|p| has_content(p.1)).filter_map(|p| p.1.char()).collect())
+    } else {
+        let mut fs = Vec::with_capacity(run.len());
+        for p in run {
+            if let SeqContent::Frag(f) = &p.1.content {
+                fs.push(cx.fragment(f)?);
+            }
         }
-        if matches!(&content, Value::List(x) if x.is_empty()) {
-            cx.note_bare(n)?;
+        Value::List(fs)
+    };
+    let mut posw = Vec::new();
+    let mut flagw: Vec<(u64, u64, &(Stamp, bool))> = Vec::new();
+    let mut idx = 0u64;
+    for &(k, e, _, len) in run {
+        if e.span == 1 {
+            for (st, a) in e.pos.iter().filter(|p| p.0.dot != *k) {
+                let st = cx.stamp(st);
+                posw.push(Value::List(vec![uint(idx), st, anchor(cx, a)]));
+            }
         }
-        Ok(Value::List(vec![first, uint(n), creation, content, Value::List(posw), Value::List(fw)]))
+        if let Some(dl) = &e.deleted {
+            match flagw.last_mut() {
+                Some((_, to, x)) if *to + 1 == idx && *x == dl => *to = idx + len - 1,
+                _ => flagw.push((idx, idx + len - 1, dl)),
+            }
+        }
+        idx += len;
     }
+    let mut fw = Vec::with_capacity(flagw.len());
+    for (i, j, (st, b)) in flagw {
+        fw.push(Value::List(vec![uint(i), uint(j), cx.stamp(st), Value::Bool(*b)]));
+    }
+    if matches!(&content, Value::List(x) if x.is_empty()) {
+        cx.note_bare(n)?;
+    }
+    Ok(Value::List(vec![first, uint(n), creation, content, Value::List(posw), Value::List(fw)]))
 }
 
 fn index(v: &Value, n: u64) -> Result<u64, Error> {

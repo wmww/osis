@@ -278,13 +278,18 @@ impl<'p> Enc<'p> {
 
     /// `Stamp := Ci | [Ci, ctr]`.
     pub fn stamp(&mut self, s: &Stamp) -> Value {
-        let own_commit = s.ts == self.ts && s.dot.src == self.own;
+        let own_commit = self.is_own(s);
         if self.collecting {
             self.note_source(&s.dot.src);
             if !own_commit {
-                match self.commits.iter_mut().find(|c| c.ts == s.ts && c.src == s.dot.src) {
+                // while collecting, `commit_idx` holds positions in `commits`
+                let key = (s.ts, s.dot.src.clone());
+                match self.commit_idx.get(&key).and_then(|i| self.commits.get_mut(*i as usize)) {
                     Some(c) => c.base = c.base.min(s.dot.ctr),
-                    None => self.commits.push(CommitEntry { ts: s.ts, src: s.dot.src.clone(), base: s.dot.ctr }),
+                    None => {
+                        self.commit_idx.insert(key, self.commits.len() as u64);
+                        self.commits.push(CommitEntry { ts: s.ts, src: s.dot.src.clone(), base: s.dot.ctr });
+                    }
                 }
             }
             return uint(0);
