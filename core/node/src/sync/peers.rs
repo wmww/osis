@@ -186,12 +186,6 @@ impl SyncEngine {
         Ok(true)
     }
 
-    /// This node's LAN announcement tag now (spec/sync.md §10), once `/reach` is published.
-    pub fn lan_tag_now(&mut self) -> Option<[u8; 16]> {
-        let r = self.own_reach()?;
-        Some(lan_tag(&r.lan_secret, self.now()))
-    }
-
     /// A fresh transport secret for a LAN listener (one per network join, spec/sync.md §10).
     pub fn lan_secret(&mut self) -> Secret32 {
         let mut b = [0u8; 32];

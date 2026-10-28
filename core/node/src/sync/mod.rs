@@ -537,12 +537,6 @@ impl SyncEngine {
         &mut self.engine
     }
 
-    pub fn into_engine(mut self) -> Engine {
-        // nothing drains the change hook headless
-        self.engine.core.changed = None;
-        self.engine
-    }
-
     pub fn config(&self) -> &SyncConfig {
         &self.cfg
     }
@@ -1383,11 +1377,6 @@ impl SyncEngine {
             }
         }
         self.command(conn, Command::Sync { label, cursor, inline_limit, entries: Vec::new(), gained: Vec::new() }, out)
-    }
-
-    /// Label IDs open on a connection to `server` (tests, diagnostics).
-    pub fn open_labels(&self, server: &ServerKey) -> BTreeSet<LabelId> {
-        self.conns.values().filter(|c| c.server == *server).flat_map(|c| c.labels.iter().filter(|(_, l)| l.phase == Phase::Open).map(|(id, _)| *id)).collect()
     }
 
     /// A digest of this node's sync state (simulator determinism checks): entries with their
