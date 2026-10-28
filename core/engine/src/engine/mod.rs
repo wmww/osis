@@ -1,7 +1,8 @@
 //! The engine: one node's local state over its `Store` (notes/architecture.md §2: the node
 //! talks to `Store` only). Synchronous, no I/O of its own, time from a `Clock`, randomness
 //! injected. Every mutating call runs in one store transaction; engine events are sent after
-//! it is durable. A failed transaction drops the in-memory caches, which reload from the store.
+//! it is durable. A failed transaction undoes its changes to the in-memory indexes (`journal`)
+//! and evicts the states it wrote.
 
 pub(crate) mod blobs;
 pub(crate) mod clock;
