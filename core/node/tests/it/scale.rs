@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Scale checks at the engine (tier 2, release; numbers in notes/testing.md, "Scale checks"):
-//! `cargo test --release --workspace --test it scale:: -- --ignored --nocapture --test-threads 1`.
+//! `cargo test --release -p osis-node --test it -- --ignored --nocapture --test-threads 1 scale::`.
 
 use osis_base::{Ak, BlobId, Clock, ManualClock, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
@@ -81,6 +81,13 @@ const TEXT: Aspect<Value> = Aspect::new("/s/text", &SCALE);
 const TAGS: Aspect<Value> = Aspect::new("/s/tags", &SCALE);
 const KEPT: Aspect<Value> = Aspect::new("/s/kept", &SCALE);
 
+/// A size from `var`, else `release` in a release build and `dev` in a dev one. A dev build
+/// re-examines every pending commit at each re-examination (`check_unchanged`, debug only): a
+/// first sync of 10^4 commits there takes 9 min instead of 30 s.
+fn size(var: &str, release: usize, dev: usize) -> usize {
+    std::env::var(var).ok().and_then(|s| s.parse().ok()).unwrap_or(if cfg!(debug_assertions) { dev } else { release })
+}
+
 fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()
 }
@@ -91,7 +98,7 @@ fn ak(s: &str) -> Ak {
 #[test]
 #[ignore]
 fn big_map_edit_cost() {
-    let max: usize = std::env::var("OSIS_SCALE_MAX").ok().and_then(|s| s.parse().ok()).unwrap_or(1_000_000);
+    let max: usize = size("OSIS_SCALE_MAX", 1_000_000, 1_000_000);
     let a = ak("/app/big");
     let mut n = 10_000;
     while n <= max {
@@ -479,7 +486,8 @@ fn text_range_and_edit_cost() {
 }
 
 // spec/permissions.md §5.1; spec/requirements.md, Scale (no operation O(history)): a membership change while the node
-// holds 10^4 content commits on other things of its own tree, and opening that store.
+// holds 10^4 content commits on other things of its own tree, and opening that store; then 10^4
+// edge writes (`OSIS_SCALE_EDGES`, `OSIS_SCALE_DEMOTE`; 10^3 in a dev build, `size`).
 // spec: none (spec/requirements.md has no numbered sections)
 #[test]
 #[ignore = "tier 2"]
@@ -527,7 +535,7 @@ fn membership_change_and_open_cost() {
     println!("open with 10^4 commits held: {opened:?} (rebuilding the index from every commit record: {:?})", t3.elapsed());
     assert_eq!(e.roster(&things[0]).len(), 1);
     // 10^4 edge writes in the tree's one membership component: 20 members' roles toggled
-    let n: usize = std::env::var("OSIS_SCALE_EDGES").ok().and_then(|s| s.parse().ok()).unwrap_or(10_000);
+    let n: usize = size("OSIS_SCALE_EDGES", 10_000, 1_000);
     let members: Vec<Tid> = (0..20u8).map(|i| Tid::from_bytes([100 + i; 15])).collect();
     osis_node::costs::take();
     let t5 = Instant::now();
@@ -561,7 +569,7 @@ fn membership_change_and_open_cost() {
 /// batches: the owner's open restored from its saved walk against evaluated anew.
 fn demotion_heavy_open() {
     use osis_node::local_peer::LocalPeer;
-    let n: usize = std::env::var("OSIS_SCALE_DEMOTE").ok().and_then(|s| s.parse().ok()).unwrap_or(10_000);
+    let n: usize = size("OSIS_SCALE_DEMOTE", 10_000, 1_000);
     let mut lp = LocalPeer::new(6, 77, WallMs(1_700_000_000_000)).unwrap();
     let admins: Vec<Tid> = (1..6).map(|i| lp.peers[i].engine.tid()).collect();
     let me = lp.peers[0].engine.tid();
@@ -647,11 +655,11 @@ use crate::net;
 // writes N content commits (100 things, N/100 writes each) in a label at one server while a
 // fresh reader syncs: the time at the reader, the writer and the hub, and the engine phases
 // (`osis_node::costs`); then another fresh reader ingests every commit directly (`Engine::ingest`,
-// no sync). `OSIS_SCALE_N` sets N (default 10^4).
+// no sync). `OSIS_SCALE_N` sets N (default 10^4; 10^3 in a dev build, `size`, which checks no budget).
 #[test]
 #[ignore = "tier 2"]
 fn first_sync_cost() {
-    let n: usize = std::env::var("OSIS_SCALE_N").ok().and_then(|s| s.parse().ok()).unwrap_or(10_000);
+    let n: usize = size("OSIS_SCALE_N", 10_000, 1_000);
     let mut net = net::Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
@@ -693,6 +701,9 @@ fn first_sync_cost() {
     // each applied one took 540 s of 580
     let ingest = phases.iter().find(|p| p.0 == "ingest").map(|p| p.1).unwrap_or_default();
     let scale = (n as u64).max(1_000);
+    if cfg!(debug_assertions) {
+        return;
+    }
     assert!(ingest.as_secs() < 30 * scale / 10_000, "ingesting {n} commits took {ingest:?}");
     assert!(first.as_secs() < 60 * scale / 10_000, "first sync of {n} commits took {first:?}");
 }
@@ -700,11 +711,12 @@ fn first_sync_cost() {
 // spec/sync.md §6, §7; spec/requirements.md, Scale: a change costs O(change). A label holding N
 // content commits (100 things, N/100 writes each) at one server, synced by a writer and a
 // reader; then one more write: the passes it causes at both nodes (time, and the entries and
-// bodies they judge) do not grow with N. `OSIS_SCALE_MAX` caps N (default 10^4).
+// bodies they judge) do not grow with N. `OSIS_SCALE_MAX` caps N (default 10^4; 10^3 in a dev
+// build, `size`).
 #[test]
 #[ignore = "tier 2"]
 fn sync_pass_cost() {
-    let max: usize = std::env::var("OSIS_SCALE_MAX").ok().and_then(|s| s.parse().ok()).unwrap_or(10_000);
+    let max: usize = size("OSIS_SCALE_MAX", 10_000, 1_000);
     let mut n = 1_000;
     while n <= max {
         let mut net = net::Net::new();
@@ -745,7 +757,7 @@ fn sync_pass_cost() {
 #[test]
 #[ignore = "tier 2"]
 fn sync_local_pass_cost() {
-    let max: usize = std::env::var("OSIS_SCALE_MAX").ok().and_then(|s| s.parse().ok()).unwrap_or(10_000);
+    let max: usize = size("OSIS_SCALE_MAX", 10_000, 10_000);
     let d = |x: osis_node::sync::PassStats, y: osis_node::sync::PassStats| (y.passes - x.passes, y.full - x.full, y.bodies - x.bodies, y.entries - x.entries);
     let mut n = 1_000;
     while n <= max {
@@ -782,7 +794,7 @@ fn sync_local_pass_cost() {
 #[test]
 #[ignore = "tier 2"]
 fn sync_membership_pass_cost() {
-    let n: usize = std::env::var("OSIS_SCALE_LABEL").ok().and_then(|s| s.parse().ok()).unwrap_or(1_000);
+    let n: usize = size("OSIS_SCALE_LABEL", 1_000, 1_000);
     let mut net = net::Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
@@ -847,7 +859,7 @@ fn sync_membership_pass_cost() {
 #[test]
 #[ignore = "tier 2"]
 fn late_delta_deaths_cost_spec_crdt_4_8() {
-    let n: usize = std::env::var("OSIS_SCALE_N").ok().and_then(|s| s.parse().ok()).unwrap_or(3000);
+    let n: usize = size("OSIS_SCALE_N", 3000, 3000);
     for (name, asp, key, compact) in [("unbounded set", &TAGS, "/s/tags", false), ("keep-at-least set", &KEPT, "/s/kept", false), ("keep-at-least set, compacted", &KEPT, "/s/kept", true)] {
         let mut lp = osis_node::local_peer::LocalPeer::new(2, 41, WallMs(1_700_000_000_000)).unwrap();
         let me = lp.peers[0].engine.tid();
@@ -926,7 +938,7 @@ fn late_delta_deaths_cost_spec_crdt_4_8() {
 #[test]
 #[ignore = "tier 2"]
 fn validity_flip_cost_spec_permissions_5_2() {
-    let n: usize = std::env::var("OSIS_SCALE_N").ok().and_then(|s| s.parse().ok()).unwrap_or(10_000);
+    let n: usize = size("OSIS_SCALE_N", 10_000, 10_000);
     let mut lp = osis_node::local_peer::LocalPeer::new(3, 43, WallMs(1_700_000_000_000)).unwrap();
     let me = lp.peers[0].engine.tid();
     let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
@@ -986,22 +998,32 @@ fn validity_flip_cost_spec_permissions_5_2() {
 
 /// Sets key `k` of map aspect `asp` of `t` to `v` at node `n`, one commit.
 fn put_key(net: &mut net::Net, n: usize, t: Tid, asp: &Aspect<Value>, k: &str, v: &str) -> osis_base::CommitId {
+    put_keys(net, n, t, asp, &[k.to_string()], v)
+}
+
+/// Sets keys `ks` of map aspect `asp` of `t` to `v` at node `n`, one commit.
+fn put_keys(net: &mut net::Net, n: usize, t: Tid, asp: &Aspect<Value>, ks: &[String], v: &str) -> osis_base::CommitId {
     let mut m = Mutation::new();
-    m.op(t, asp, PathOp { path: vec![PathSeg::Key(net::s(k))], op: Op::Set(net::s(v)) }).unwrap();
+    for k in ks {
+        m.op(t, asp, PathOp { path: vec![PathSeg::Key(net::s(k))], op: Op::Set(net::s(v)) }).unwrap();
+    }
     net.engine(n).commit(m).unwrap().unwrap()
 }
 
 // spec/sync.md §6, §7; spec/commits.md §5; spec/requirements.md, Scale: a change to one body of
-// a big aspect judges O(change), not the aspect. N one-key commits on one thing (`OSIS_SCALE_N`,
-// default 10^3) at one server, a writer and a reader: (1) under keep at most (every body live,
-// waiting for its timed delete) one more key, then one overwriting a key (kills one body); (2)
-// under an expiry, an older commit expiring alone; (3) N things in the group, one write (the
-// closure taken once per pass; `OSIS_SCALE_CLOSURE` things, default N). The passes' (passes,
-// full, bodies, entries) at both nodes.
+// a big aspect judges O(change), not the aspect. N keys on one thing (`OSIS_SCALE_N`, default
+// 10^3) in at most 10^3 commits (one key each up to N = 10^3, then N/10^3 per commit: a commit
+// costs its joins at both nodes, about 14 ms per one-key commit at 10^4) at one server, a writer and a
+// reader: (1) under keep at most (every body live, waiting for its timed delete) one more key,
+// then one overwriting a key (kills one body); (2) under an expiry, an older commit expiring
+// alone; (3) N things in the group, one write (the closure taken once per pass;
+// `OSIS_SCALE_CLOSURE` things, default N; created 500 per commit: a commit creating k things
+// costs O(k^2), and each re-evaluates the group's component, O(things): issues/
+// thing-creation-cost.md). The passes' (passes, full, bodies, entries) at both nodes.
 #[test]
 #[ignore = "tier 2"]
 fn sync_aspect_pass_cost() {
-    let n: usize = std::env::var("OSIS_SCALE_N").ok().and_then(|s| s.parse().ok()).unwrap_or(1_000);
+    let n: usize = size("OSIS_SCALE_N", 1_000, 1_000);
     let d = |x: osis_node::sync::PassStats, y: osis_node::sync::PassStats| (y.passes - x.passes, y.full - x.full, y.bodies - x.bodies, y.entries - x.entries);
     let mut net = net::Net::new();
     let sv = net.add_server();
@@ -1015,12 +1037,15 @@ fn sync_aspect_pass_cost() {
     net.run();
     net.advance(1_800_000);
     let t0 = Instant::now();
-    for i in 0..n {
-        put_key(&mut net, a, t, &net::SHORTMAP, &format!("k{i}"), "v");
-        put_key(&mut net, a, u, &net::BRIEFMAP, &format!("k{i}"), "v");
+    let per = n.div_ceil(1_000);
+    let keys: Vec<String> = (0..n).map(|i| format!("k{i}")).collect();
+    for ks in keys.chunks(per) {
+        put_keys(&mut net, a, t, &net::SHORTMAP, ks, "v");
+        put_keys(&mut net, a, u, &net::BRIEFMAP, ks, "v");
     }
     net.run();
     let fill = t0.elapsed();
+    let bodies = n.div_ceil(per);
     net.advance(61_000);
     let stats = |net: &mut net::Net| (net.sync(a).pass_stats(), net.sync(b).pass_stats());
     let s0 = stats(&mut net);
@@ -1036,32 +1061,36 @@ fn sync_aspect_pass_cost() {
     net.run();
     let kill = t2.elapsed();
     let s3 = stats(&mut net);
-    println!("keep-at-most map of {n} live bodies (fill {fill:?}): one more key {one:?}, writer {:?} reader {:?}; overwriting one {kill:?}, writer {:?} reader {:?}", d(s0.0, s1.0), d(s0.1, s1.1), d(s2.0, s3.0), d(s2.1, s3.1));
+    println!("keep-at-most map of {n} keys in {bodies} live bodies (fill {fill:?}): one more key {one:?}, writer {:?} reader {:?}; overwriting one {kill:?}, writer {:?} reader {:?}", d(s0.0, s1.0), d(s0.1, s1.1), d(s2.0, s3.0), d(s2.1, s3.1));
     // the expiring map: its first commit expires alone, the N stay
     let s4 = stats(&mut net);
     let t3 = Instant::now();
     net.advance(1_800_000);
     let exp = t3.elapsed();
     let s5 = stats(&mut net);
-    println!("expiring map of {n} live commits: an older one expiring {exp:?} (in a 30 min tick), writer {:?} reader {:?}", d(s4.0, s5.0), d(s4.1, s5.1));
+    println!("expiring map of {n} keys in {bodies} live commits: an older one expiring {exp:?} (in a 30 min tick), writer {:?} reader {:?}", d(s4.0, s5.0), d(s4.1, s5.1));
     // a big closure
-    let k: usize = std::env::var("OSIS_SCALE_CLOSURE").ok().and_then(|s| s.parse().ok()).unwrap_or(n);
+    let k: usize = size("OSIS_SCALE_CLOSURE", n, n);
+    let t5 = Instant::now();
     let e = net.engine(a);
     let mut items = e.get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
-    let mut m = Mutation::new();
-    for _ in 0..k {
-        let x = e.new_thing(&mut m, g);
-        items.items.insert(x);
+    for i in (0..k).step_by(500) {
+        let mut m = Mutation::new();
+        for _ in i..k.min(i + 500) {
+            let x = e.new_thing(&mut m, g);
+            items.items.insert(x);
+        }
+        m.set(g, &ct::GROUP, &items).unwrap();
+        e.commit(m).unwrap();
     }
-    m.set(g, &ct::GROUP, &items).unwrap();
-    e.commit(m).unwrap();
     net.run();
     net.advance(61_000);
+    let setup = t5.elapsed();
     let s6 = stats(&mut net);
     let t4 = Instant::now();
     net.write(a, t, "one more");
     net.run();
     let w = t4.elapsed();
     let s7 = stats(&mut net);
-    println!("closure of {k} things: one write {w:?}, writer {:?} reader {:?}", d(s6.0, s7.0), d(s6.1, s7.1));
+    println!("closure of {k} things (setup {setup:?}): one write {w:?}, writer {:?} reader {:?}", d(s6.0, s7.0), d(s6.1, s7.1));
 }
