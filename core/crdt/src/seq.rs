@@ -154,6 +154,10 @@ impl Seq {
     fn part(&self) -> Option<Arc<Partial>> {
         self.part.clone()
     }
+    /// The records, misses noted outside the pages loaded.
+    fn covered(&self) -> Covered<'_> {
+        Covered { elems: &self.elems, part: self.part.as_deref() }
+    }
     /// Whether the record lookup of `d` is outside the pages loaded (a miss noted).
     fn uncovered(&self, d: &Dot) -> bool {
         self.part.as_ref().is_some_and(|p| !p.covers(d, d))
@@ -164,7 +168,6 @@ impl Seq {
         self.lin.get().map(|l| **l == Lin::build(&self.elems, self.text) && l.map_ok())
     }
 }
-
 
 // ---- state hooks (§4, §5.7)
 
@@ -343,19 +346,20 @@ impl Recs for Covered<'_> {
     }
 }
 
-/// A dry run's records (`dry_follow`): `top`, holding every record a delta's records touch,
-/// over the state's.
+/// Records `top` over a state's: a dry run's (`dry_follow`), whose `top` holds every record the
+/// delta's records touch, so records are listed from it (`lists`), or a `Layered`'s.
 struct Over<'a> {
     top: &'a Elems,
     base: Covered<'a>,
+    lists: bool,
 }
 
 impl Recs for Over<'_> {
     fn find(&self, d: &Dot) -> Option<(&Dot, &SeqElem)> {
-        crate::seq_span::find(self.top, d).or_else(|| self.base.find(d))
+        self.top.find(d).or_else(|| self.base.find(d))
     }
     fn starting(&self, a: &Dot, b: &Dot) -> Option<Vec<(&Dot, &SeqElem)>> {
-        self.top.starting(a, b)
+        if self.lists { self.top.starting(a, b) } else { None }
     }
 }
 
@@ -389,7 +393,7 @@ fn join_elems_in(s: &mut Seq, d: Seq, e: Option<&Stamp>, ch: &mut Changes, base:
         let n = plans.as_ref().map_or(0, Vec::len);
         if let (Some(ps), Some(l)) = (plans.as_mut(), s.lin.get()) {
             let ok = match base {
-                Some(b) => l.plan(&Over { top: &s.elems, base: Covered { elems: b, part } }, &dot, &de, ps),
+                Some(b) => l.plan(&Over { top: &s.elems, base: Covered { elems: b, part }, lists: true }, &dot, &de, ps),
                 None => l.plan(&Covered { elems: &s.elems, part }, &dot, &de, ps),
             };
             if !ok {
@@ -412,7 +416,7 @@ fn join_elems_in(s: &mut Seq, d: Seq, e: Option<&Stamp>, ch: &mut Changes, base:
     }
     let ok = match (plans, s.lin.get_mut()) {
         (Some(ps), Some(l)) => match base {
-            Some(b) => Arc::make_mut(l).follow(&Over { top: &s.elems, base: Covered { elems: b, part } }, s.text, ps),
+            Some(b) => Arc::make_mut(l).follow(&Over { top: &s.elems, base: Covered { elems: b, part }, lists: true }, s.text, ps),
             None => Arc::make_mut(l).follow(&Covered { elems: &s.elems, part }, s.text, ps),
         },
         _ => false,
@@ -429,47 +433,44 @@ fn join_one(s: &mut Seq, dot: Dot, de: SeqElem, e: Option<&Stamp>, ch: &mut Chan
         join_record(s, dot, de, false, e, ch);
         return;
     }
-    {
-        let span = de.span.max(1);
-        let last = nth(&dot, span - 1);
-        split_at(&mut s.elems, &dot);
-        split_at(&mut s.elems, &nth(&dot, span));
-        // (offset, length, a state record starts there)
-        let mut segs: Vec<(u64, u64, bool)> = Vec::new();
-        let mut cur = 0u64;
-        for (k, ke) in s.elems.range(&dot..=&last) {
-            if k.src == dot.src {
-                let off = k.ctr - dot.ctr;
-                if off > cur {
-                    segs.push((cur, off - cur, false));
-                }
-                segs.push((off, ke.span, true));
-                cur = off.saturating_add(ke.span);
-            } else if let SourceKind::Derived(u) = k.src.kind() {
-                // a `Derived(S, c)` record sits between `(S, c)` and `(S, c + 1)`
-                let cut = u.ctr.saturating_sub(dot.ctr).saturating_add(1).min(span);
-                if cut > cur {
-                    segs.push((cur, cut - cur, false));
-                    cur = cut;
-                }
+    let span = de.span.max(1);
+    let last = nth(&dot, span - 1);
+    split_at(&mut s.elems, &dot);
+    split_at(&mut s.elems, &nth(&dot, span));
+    // (offset, length, a state record starts there)
+    let mut segs: Vec<(u64, u64, bool)> = Vec::new();
+    let mut cur = 0u64;
+    for (k, ke) in s.elems.range(&dot..=&last) {
+        if k.src == dot.src {
+            let off = k.ctr - dot.ctr;
+            if off > cur {
+                segs.push((cur, off - cur, false));
             }
-        }
-        if cur < span {
-            segs.push((cur, span - cur, false));
-        }
-        if let [(0, n, existing)] = segs.as_slice()
-            && *n == span
-        {
-            join_record(s, dot, de, *existing, e, ch);
-        } else {
-            for (off, n, existing) in segs {
-                let (pd, pe) = piece(&dot, &de, off, n);
-                join_record(s, pd, pe, existing, e, ch);
+            segs.push((off, ke.span, true));
+            cur = off.saturating_add(ke.span);
+        } else if let SourceKind::Derived(u) = k.src.kind() {
+            // a `Derived(S, c)` record sits between `(S, c)` and `(S, c + 1)`
+            let cut = u.ctr.saturating_sub(dot.ctr).saturating_add(1).min(span);
+            if cut > cur {
+                segs.push((cur, cut - cur, false));
+                cur = cut;
             }
         }
     }
+    if cur < span {
+        segs.push((cur, span - cur, false));
+    }
+    if let [(0, n, existing)] = segs.as_slice()
+        && *n == span
+    {
+        join_record(s, dot, de, *existing, e, ch);
+    } else {
+        for (off, n, existing) in segs {
+            let (pd, pe) = piece(&dot, &de, off, n);
+            join_record(s, pd, pe, existing, e, ch);
+        }
+    }
 }
-
 
 /// Joins record `de` into the state record at `dot` of the same span (`existing`) or as a new
 /// record, first cutting a creation chain that straddles `e`.
@@ -638,21 +639,6 @@ pub(crate) struct Layered<'s> {
     base_written: OnceLock<bool>,
 }
 
-/// The records of a `Layered`: the batch's over the state's.
-struct Union<'a> {
-    base: Covered<'a>,
-    top: &'a Elems,
-}
-
-impl Recs for Union<'_> {
-    fn find(&self, d: &Dot) -> Option<(&Dot, &SeqElem)> {
-        self.top.find(d).or_else(|| self.base.find(d))
-    }
-    fn starting(&self, _: &Dot, _: &Dot) -> Option<Vec<(&Dot, &SeqElem)>> {
-        None
-    }
-}
-
 impl<'s> Layered<'s> {
     /// `base` ⊔ `d` (a batch's writes, no reset); `None` where the placement cannot follow (the
     /// caller copies instead).
@@ -673,8 +659,7 @@ impl<'s> Layered<'s> {
             // the state's records this one meets go to `top` whole (the join below splits them
             // there), so `top` shadows every element of a record it holds part of
             let last = nth(&dot, de.span.max(1) - 1);
-            let part = self.base.part();
-            let base = Covered { elems: &self.base.elems, part: part.as_deref() };
+            let base = self.base.covered();
             let Some(mut meets) = base.starting(&dot, &last) else { return false };
             meets.extend(base.find(&dot));
             for (k, r) in meets {
@@ -686,7 +671,7 @@ impl<'s> Layered<'s> {
                 return false;
             }
             let n = plans.len();
-            if !self.lin.plan(&Union { base: Covered { elems: &self.base.elems, part: part.as_deref() }, top: &self.top }, &dot, &de, &mut plans) {
+            if !self.lin.plan(&Over { top: &self.top, base: self.base.covered(), lists: false }, &dot, &de, &mut plans) {
                 return false;
             }
             let mut t = Seq::new(self.base.text, Meta::default(), std::mem::take(&mut self.top));
@@ -706,8 +691,7 @@ impl<'s> Layered<'s> {
                 return false;
             }
         }
-        let part = self.base.part();
-        Arc::make_mut(&mut self.lin).follow(&Union { base: Covered { elems: &self.base.elems, part: part.as_deref() }, top: &self.top }, self.base.text, plans)
+        Arc::make_mut(&mut self.lin).follow(&Over { top: &self.top, base: self.base.covered(), lists: false }, self.base.text, plans)
     }
 
     /// Present (§4.3) as the joined state would be.
@@ -764,8 +748,8 @@ impl Foot {
         let dots: Vec<Dot> = d.elems.iter().flat_map(|(k, e)| (0..e.span).map(move |i| nth(k, i))).collect();
         let mut sa = Elems::new();
         for x in &dots {
-            let de = crate::seq_span::elem(&d.elems, x)?;
-            let prev = crate::seq_span::elem(&a.elems, x);
+            let de = d.elems.elem(x)?;
+            let prev = a.elems.elem(x);
             if let Some(p) = &prev {
                 let mut pos = p.pos.clone();
                 pos.extend(de.pos.iter().cloned());
@@ -785,7 +769,7 @@ impl Foot {
 
     /// Whether the net effect `n` holds the joined records at the op's elements.
     pub(crate) fn matches(&self, n: &Seq) -> bool {
-        let sn = self.dots.iter().filter_map(|x| crate::seq_span::elem(&n.elems, x).map(|e| (x.clone(), e.into_owned()))).collect();
+        let sn = self.dots.iter().filter_map(|x| n.elems.elem(x).map(|e| (x.clone(), e.into_owned()))).collect();
         let mut sn = Fragment::Seq(Seq::new(n.text, n.meta.clone(), sn));
         sn.prune(self.e.as_ref(), &mut Changes::new());
         sn == self.j
@@ -855,7 +839,6 @@ pub(crate) fn read(s: &Seq) -> Option<Value> {
         Value::List(out)
     })
 }
-
 
 /// Holds value-carrying writes of expired deltas value-less (§4.7); `expired` gets owner dots.
 pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool) {

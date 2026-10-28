@@ -54,12 +54,6 @@ pub(crate) fn find<'a>(m: &'a Elems, d: &Dot) -> Option<(&'a Dot, &'a SeqElem)> 
     (k.src == d.src && d.ctr - k.ctr < e.span).then_some((k, e))
 }
 
-/// Element `d` (a copy for one inside a range).
-pub(crate) fn elem<'a>(m: &'a Elems, d: &Dot) -> Option<Cow<'a, SeqElem>> {
-    let (k, e) = find(m, d)?;
-    Some(if e.span == 1 { Cow::Borrowed(e) } else { Cow::Owned(piece(k, e, d.ctr - k.ctr, 1).1) })
-}
-
 /// Element records looked up by dot: a sequence's own, or a state's under a batch's
 /// (`seq::Layered`).
 pub(crate) trait Recs {
