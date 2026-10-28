@@ -393,6 +393,10 @@ indexes! {
     /// The first held body with a relative keep bound per aspect, by `(ts, ID)` (`None`: none),
     /// where known (`retention::first_bounded`).
     pub first_bounded: JMap<(Tid, Ak), Option<(Ts, CommitId)>>,
+    /// Per aspect, where known, the lowest stamp a commit dropped without a residue at or after
+    /// its first held bounded body may give a write the state plays (`retention::deaths`
+    /// `first_bare`).
+    pub first_bare: JMap<(Tid, Ak), Option<Ts>>,
     /// `rotation::departures` per actor with the time it holds until (an edge's `until`, a
     /// write's future `ts`); cleared by `membership_changed`.
     pub departures: JMap<Tid, (Vec<osis_keys::Departure>, Option<WallMs>)>,
