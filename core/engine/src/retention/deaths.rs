@@ -827,7 +827,8 @@ fn playing_copies(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, t_start: Ts, snaps: &[(Ts
 }
 
 /// Debug check of a snapshot a window skips (`playing_copies`): with the copies their own commit
-/// plays and the invalid writes removed, it holds no write stamped at or after `t_start`.
+/// plays and the invalid writes removed, it holds no write stamped at or after `t_start` but the
+/// element creations of those commits, which stay as anchors.
 #[cfg(debug_assertions)]
 fn plays_nothing(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, t_start: Ts, invalid: &[crate::engine::Owned]) -> Result<()> {
     let Some(ai) = held_part(tx.core, c, tid, ak) else { return Ok(()) };
@@ -844,7 +845,8 @@ fn plays_nothing(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, t_start: Ts,
         let core = &*tx.core;
         f.remove_dots(&|d| invalid.iter().any(|o| o.owns(d)));
         f.remove_writes(&|d| core.commit_of(tid, ak, d).is_some_and(|x| x != *c && own.get(&x).copied().unwrap_or(false)));
-        let late: Vec<_> = f.writes().into_iter().filter(|(_, ts)| ts.is_some_and(|t| t >= t_start)).collect();
+        // a played element creation stays as an anchor (sequences): not a copy
+        let late: Vec<_> = f.writes().into_iter().filter(|(d, ts)| ts.is_some_and(|t| t >= t_start) && !core.commit_of(tid, ak, d).is_some_and(|x| own.get(&x).copied().unwrap_or(false))).collect();
         debug_assert!(late.is_empty(), "window skipped {c:?} on {tid:?} {ak:?}, which plays {late:?}");
     }
     Ok(())
