@@ -10,7 +10,7 @@ use crate::share::{RecoveryCard, ServerAddr, Status};
 use crate::watch::{Dispatch, Msg, lock};
 use osis_base::{Clock, SystemClock, Tid};
 use osis_crypto::{CryptoRngCore, OsRng, SeededRng};
-use osis_node::sync::{Event as SyncEvent, SyncConfig, SyncEngine};
+use osis_node::sync::{Action, Event as SyncEvent, SyncConfig, SyncEngine};
 use osis_node::{Engine, Event};
 use osis_schema::Schema;
 use osis_schema::core_types as ct;
@@ -377,15 +377,6 @@ impl Osis {
         self.locked(|l| f(&mut l.sync))
     }
 
-    /// Runs `f` on the sync engine and carries out its actions (tests).
-    #[doc(hidden)]
-    pub fn sync_act(&self, f: impl FnOnce(&mut SyncEngine) -> Vec<osis_node::sync::Action>) {
-        self.locked(|l| {
-            let acts = f(&mut l.sync);
-            self.inner.net.apply(acts);
-        })
-    }
-
     /// Calls waiting for another node right now (tests: a dropped future leaves none).
     #[doc(hidden)]
     pub fn waiting(&self) -> usize {
@@ -394,7 +385,7 @@ impl Osis {
 
     /// With `Runtime::Manual`: the network actions queued so far (a test harness carries them).
     #[doc(hidden)]
-    pub fn take_actions(&self) -> Vec<osis_node::sync::Action> {
+    pub fn take_actions(&self) -> Vec<Action> {
         self.inner.net.take()
     }
 
@@ -406,7 +397,7 @@ impl Osis {
 
     /// Runs `f` on the sync engine as the network driver does: its actions go out, and the
     /// events it caused were already seen by the sync engine.
-    pub(crate) fn handled(&self, f: impl FnOnce(&mut Locked) -> Vec<osis_node::sync::Action>) {
+    pub(crate) fn handled(&self, f: impl FnOnce(&mut Locked) -> Vec<Action>) {
         self.locked_in(true, |l| {
             let acts = f(l);
             self.inner.net.apply(acts);
@@ -427,8 +418,8 @@ impl Osis {
         r
     }
 
-    /// Queues events for the dispatcher; returns the things whose roster changed, or `None`
-    /// when there were none.
+    /// Queues events for the dispatcher, collecting the things whose roster changed into
+    /// `roster`; `true` when there were any events.
     fn drain(&self, l: &mut Locked, roster: &mut BTreeSet<Tid>) -> bool {
         let mut any = false;
         while let Ok(e) = l.events.try_recv() {
@@ -479,13 +470,26 @@ impl Osis {
         waiters.retain_mut(|w| !w.poll(sync, status, now));
     }
 
-    /// Carries out a flow's result (deliveries) under the lock.
-    pub(crate) fn carry(&self, done: osis_node::flows::Done) -> Result<()> {
-        self.locked(|l| -> Result<()> {
-            let acts = l.sync.carry_out(done)?;
+    /// Runs `f` under the lock and hands the actions it returns to the network, in order.
+    pub(crate) fn act(&self, f: impl FnOnce(&mut Locked) -> Vec<Action>) {
+        self.locked(|l| {
+            let acts = f(l);
+            self.inner.net.apply(acts);
+        })
+    }
+
+    /// `act` for a fallible `f`.
+    pub(crate) fn try_act(&self, f: impl FnOnce(&mut Locked) -> Result<Vec<Action>>) -> Result<()> {
+        self.locked(|l| {
+            let acts = f(l)?;
             self.inner.net.apply(acts);
             Ok(())
         })
+    }
+
+    /// Carries out a flow's result (deliveries) under the lock.
+    pub(crate) fn carry(&self, done: osis_node::flows::Done) -> Result<()> {
+        self.try_act(|l| Ok(l.sync.carry_out(done)?))
     }
 
     /// Blocks until every callback for changes made so far has run (returns at once on the
@@ -523,9 +527,10 @@ impl Osis {
     /// The key for `ak`: typed by the registered schema that declares it, else untyped.
     pub fn key(&self, ak: &str) -> Result<crate::Key> {
         let ak = osis_base::Ak::new(ak).map_err(|_| Error::Invalid(format!("bad AK {ak:?}")))?;
-        let core = osis_schema::core_schema();
+        static CORE: std::sync::OnceLock<Arc<Schema>> = std::sync::OnceLock::new();
+        let core = CORE.get_or_init(|| Arc::new(osis_schema::core_schema().clone()));
         let schema = if core.aspects.contains_key(ak.as_str()) {
-            Some(Arc::new(core.clone()))
+            Some(core.clone())
         } else {
             lock(&self.inner.schemas).iter().find(|s| s.aspects.contains_key(ak.as_str())).cloned()
         };

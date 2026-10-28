@@ -168,7 +168,6 @@ impl Osis {
         self.undo_one(id)
     }
 
-
     /// Everyone's changes in scope, newest first.
     pub fn history(&self, scope: &UndoScope, q: HistoryQuery) -> Result<Vec<HistoryEntry>> {
         let aks = self.scope_aspects(scope)?;
