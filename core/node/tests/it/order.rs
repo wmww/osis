@@ -10,7 +10,7 @@
 //! order must give the same per-delta verdicts, reads and states of every aspect, rosters,
 //! pending set, persisted index and timelines, and a reopen and a rebuild must give them too.
 //! Short focused histories (bounded writes, compactions, undo, demotions, late writes) are also
-//! checked in every arrival order of every held set. Seeds run on a thread per core.
+//! checked in every arrival order of a few held sets. Seeds run on a thread per core.
 
 use crate::common;
 use common::*;
@@ -533,7 +533,8 @@ struct Cfg {
 
 const SMALL: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 1, split: 2, par_orders: false, threads: 1 };
 const LARGE: Cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1 };
-/// Every order of every held set, every order with late parts too (6 commits: up to 720 orders).
+/// Every order of the whole set and 2 partial sets (`OSIS_ORDER_ALL_HELD`: of every held set),
+/// every order with late parts too (6 commits: up to 720 orders).
 const EXHAUST: Cfg = Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, par_orders: true, threads: 1 };
 /// The same up to 5 commits (120 orders), for tier 1.
 const EXHAUST_SMALL: Cfg = Cfg { all_up_to: 5, subsets: 1, ..EXHAUST };
@@ -562,10 +563,18 @@ fn orders(played: &Played, held: &[usize], cfg: Cfg, rng: &mut Rng) -> Vec<Vec<u
 
 /// The held sets tried: everything, then `subsets` partial ones (alternately without one
 /// writer's commits after the setup, as a node that never heard from it, and without a random
-/// third of them).
+/// third of them); `usize::MAX`: every held set (all of the setup, any of the rest).
 fn held_sets(played: &Played, subsets: usize, rng: &mut Rng) -> Vec<Vec<usize>> {
     let n = played.packs.len();
     let mut out = vec![(0..n).collect::<Vec<_>>()];
+    if subsets == usize::MAX {
+        // every subset of what follows the setup
+        let rest = n - played.base;
+        for m in (0..(1u64 << rest) - 1).rev() {
+            out.push((0..n).filter(|&i| i < played.base || m >> (i - played.base) & 1 == 1).collect());
+        }
+        return out;
+    }
     for j in 0..subsets {
         let peer = rng.below(3) as usize;
         let keep: Vec<usize> = (0..n).filter(|&i| i < played.base || if j % 2 == 0 { played.authors[i] != peer } else { rng.below(3) != 0 }).collect();
@@ -597,7 +606,9 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
     let mut full: Option<Vec<(&'static str, String)>> = None;
     let n = played.packs.len();
     let split = played.packs.iter().any(|pk| osis_commit::CommitBlob::decode(&pk.bytes).is_ok_and(|b| b.parts.iter().any(|x| x.ai != b.parts[0].ai)));
-    for held in held_sets(&played, cfg.subsets, &mut rng) {
+    // `OSIS_ORDER_ALL_HELD`: every held set in exhaustive mode (about 2.3x the time)
+    let subsets = if cfg.every_held && std::env::var("OSIS_ORDER_ALL_HELD").is_ok() { usize::MAX } else { cfg.subsets };
+    for held in held_sets(&played, subsets, &mut rng) {
         let of = format!("held {held:?} of {n} commits (base {})", played.base);
         // a partial set, then the rest (both ways), ends where the whole set does
         if let Some(f) = &full {
@@ -663,8 +674,9 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
                 None => Ok(()),
             }
         };
-        // late parts only matter when a commit has parts on several aspects
-        let splits = if split { cfg.split.min(orders.len()) } else { 0 };
+        // late parts only matter when a commit has parts on several aspects; without one the
+        // sequential modes still deliver the first two again and re-examine (as before)
+        let splits = if split || !cfg.par_orders { cfg.split.min(orders.len()) } else { 0 };
         if cfg.par_orders {
             // tasks: orders 1.. as they are, then 0.. with late parts, each split by its own rng
             let tasks: Vec<u64> = (1..orders.len() + splits).map(|x| x as u64).collect();
@@ -845,8 +857,8 @@ fn arrival_order_alike_large_spec_permissions_5_2() {
 }
 
 // spec/requirements.md Decentralization, spec/crdt.md §4.8: short histories mixing bounded
-// writes, compactions, undo, demotions and late writes, every arrival order of every held set,
-// each with late parts too.
+// writes, compactions, undo, demotions and late writes, every arrival order (the setup first)
+// of the whole set and a partial one, each with late parts too.
 #[test]
 fn arrival_order_exhaustive_small_spec_crdt_4_8() {
     run("arrival_order_exhaustive_small_spec_crdt_4_8", 0..3, 30, EXHAUST_SMALL, focused_history);
