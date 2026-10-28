@@ -54,13 +54,169 @@ impl Default for Config {
 /// An applied commit as the engine indexes it.
 #[derive(Clone, Debug)]
 pub struct Meta {
-    pub header: Arc<Header>,
+    /// What the per-commit indexes read of the header (an open reads it from the index).
+    pub view: Arc<View>,
+    /// Decoded on first use (an open decodes no header the indexes do not need).
+    pub header: LazyHeader,
     pub received: WallMs,
     pub origin: Origin,
     /// Validity per aspect (spec/permissions.md §5.2).
     pub valid: Vec<bool>,
     /// Parts dropped (purge, expiry, keep at most): they count as held.
     pub dropped: BTreeSet<(usize, usize)>,
+}
+
+impl Meta {
+    /// A commit's meta from its decoded header.
+    pub fn new(header: Arc<Header>, received: WallMs, origin: Origin, valid: Vec<bool>, dropped: BTreeSet<(usize, usize)>) -> Meta {
+        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received, origin, valid, dropped }
+    }
+}
+
+/// What the per-commit indexes (`apply::index_commit`, validity, the membership filter) read of
+/// a header; persisted in the commit's parts row (`engine::index`), so an open builds them
+/// without decoding headers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct View {
+    pub ts: Ts,
+    pub kind: osis_commit::Kind,
+    pub form: Form,
+    pub author: Tid,
+    pub actor: Tid,
+    /// Some list goes by link: the header is resolved from blobs at open (decoded there).
+    pub linked: bool,
+    pub aspects: Vec<AspectView>,
+}
+
+/// One aspect entry as `View` keeps it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AspectView {
+    pub tid: Tid,
+    pub ak: Ak,
+    pub lo: u64,
+    pub hi: u64,
+    /// A relative keep bound (`retention::bounded`).
+    pub bounded: bool,
+}
+
+impl View {
+    pub fn of(h: &Header) -> View {
+        View {
+            ts: h.ts,
+            kind: h.kind,
+            form: h.form,
+            author: h.author,
+            actor: h.actor,
+            linked: h.links != osis_commit::Links::default(),
+            aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, bounded: crate::retention::bounded(a) }).collect(),
+        }
+    }
+}
+
+/// A commit's header, decoded from its stored bytes on first use. The bytes hash to the commit
+/// ID and were verified on arrival by a build with these rules (the index tag), so decoding
+/// does not fail; if it does (a bug, damaged memory) the header reads as its view with every
+/// other field empty and the running transaction fails (`Error::Corrupt`).
+#[derive(Clone)]
+pub struct LazyHeader(Lazy);
+
+#[derive(Clone)]
+enum Lazy {
+    Ready(Arc<Header>),
+    Stored(std::sync::OnceLock<Arc<Header>>, Arc<StoredHeader>),
+}
+
+struct StoredHeader {
+    id: CommitId,
+    bytes: Box<[u8]>,
+    view: Arc<View>,
+    fault: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl LazyHeader {
+    pub fn ready(h: Arc<Header>) -> LazyHeader {
+        LazyHeader(Lazy::Ready(h))
+    }
+
+    /// A header held as its canonical bytes (`id`'s), decoded on first use; a failed decode
+    /// sets `fault`.
+    pub(crate) fn stored(id: CommitId, bytes: Box<[u8]>, view: Arc<View>, fault: Arc<std::sync::atomic::AtomicBool>) -> LazyHeader {
+        LazyHeader(Lazy::Stored(std::sync::OnceLock::new(), Arc::new(StoredHeader { id, bytes, view, fault })))
+    }
+
+    pub fn arc(&self) -> Arc<Header> {
+        self.get().clone()
+    }
+
+    /// Whether the header has been decoded (tests).
+    pub fn is_decoded(&self) -> bool {
+        match &self.0 {
+            Lazy::Ready(_) => true,
+            Lazy::Stored(got, _) => got.get().is_some(),
+        }
+    }
+
+    fn get(&self) -> &Arc<Header> {
+        match &self.0 {
+            Lazy::Ready(h) => h,
+            Lazy::Stored(got, s) => got.get_or_init(|| match decode_stored_header(&s.id, &s.bytes) {
+                Some(h) => Arc::new(h),
+                None => {
+                    s.fault.store(true, std::sync::atomic::Ordering::Relaxed);
+                    Arc::new(fallback_header(&s.view))
+                }
+            }),
+        }
+    }
+}
+
+/// The header whose canonical bytes are `bytes`, if they hash to `id` and decode.
+pub(crate) fn decode_stored_header(id: &CommitId, bytes: &[u8]) -> Option<Header> {
+    if osis_base::hash::hash(bytes) != id.0 {
+        return None;
+    }
+    let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: bytes.len() };
+    Header::from_stored_value(&osis_base::decode(bytes, &lim).ok()?).ok()
+}
+
+fn fallback_header(v: &View) -> Header {
+    Header {
+        version: osis_base::format::FORMAT_VERSION,
+        author: v.author,
+        actor: v.actor,
+        kind: v.kind,
+        ts: v.ts,
+        form: v.form,
+        schemas: Vec::new(),
+        aspects: v.aspects.iter().map(|a| osis_commit::AspectEntry { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, retention: Default::default(), expires: None, schema: None, keys: Vec::new(), hashes: Vec::new() }).collect(),
+        chunks: Vec::new(),
+        purge: Vec::new(),
+        undoes: None,
+        blind: [0; 16],
+        keys: Vec::new(),
+        frontier: None,
+        origins: Vec::new(),
+        links: Default::default(),
+    }
+}
+
+impl std::ops::Deref for LazyHeader {
+    type Target = Header;
+    fn deref(&self) -> &Header {
+        self.get()
+    }
+}
+
+impl std::fmt::Debug for LazyHeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Lazy::Ready(h) => h.fmt(f),
+            Lazy::Stored(got, _) => match got.get() {
+                Some(h) => h.fmt(f),
+                None => f.write_str("LazyHeader(not decoded)"),
+            },
+        }
+    }
 }
 
 /// Owner of writes: one delta of one node (`[lo, hi)`), a commit-form commit, or exact dots of
@@ -265,6 +421,9 @@ pub struct Core {
     pub written: Vec<(Tid, Ak)>,
     /// Tests: let local commits break the writer-side membership rules (to test receivers).
     pub skip_writer_rules: bool,
+    /// Set when a lazily held header failed to decode (`LazyHeader`): every later transaction
+    /// fails (`Error::Corrupt`).
+    pub header_fault: Arc<std::sync::atomic::AtomicBool>,
     /// Tests: after each per-entry `/secrets` ingestion, check that ingesting the whole state
     /// learns nothing more (`apply::atomic::observe_secrets_keys`).
     #[cfg(test)]
@@ -505,6 +664,7 @@ impl Core {
             events: Events::default(),
             written: Vec::new(),
             skip_writer_rules: false,
+            header_fault: Arc::default(),
             #[cfg(test)]
             check_ingest: false,
             key_actors: BTreeMap::new(),
@@ -530,7 +690,7 @@ impl Core {
     /// Re-indexes which parts of commit `id` are invalid here (call after setting `Meta::valid`).
     pub fn index_validity(&mut self, id: &CommitId) {
         let Some(m) = self.commits.get(id) else { return };
-        for (ai, a) in m.header.aspects.iter().enumerate() {
+        for (ai, a) in m.view.aspects.iter().enumerate() {
             let k = (a.tid, a.ak.clone());
             if m.valid.get(ai).copied().unwrap_or(false) {
                 self.invalid.remove(&k, id);
@@ -1064,6 +1224,9 @@ impl Engine {
                 let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
                 // the persisted index follows the in-memory indexes in the same transaction
                 let mut r = f(&mut tx);
+                if r.is_ok() && tx.core.header_fault.load(std::sync::atomic::Ordering::Relaxed) {
+                    r = Err(Error::Corrupt("commit record header"));
+                }
                 if r.is_ok() && !tx.core.defer_deaths && !tx.core.deaths_due.is_empty() {
                     r = r.and_then(|v| crate::retention::settle_due(&mut tx).map(|_| v));
                 }

@@ -116,7 +116,7 @@ impl Engine {
         let membership = blob.header.kind.is_membership();
         // linked header lists: classed by the applied (resolved) header
         let resolved = match self.core.commits.get(&id) {
-            Some(m) if !blob.header.is_resolved() => m.header.clone(),
+            Some(m) if !blob.header.is_resolved() => m.header.arc(),
             _ => std::sync::Arc::new(blob.header.clone()),
         };
         let readers: Vec<Tid> = resolved.aspects.iter().map(|a| self.core.reader_of(&a.tid)).collect();

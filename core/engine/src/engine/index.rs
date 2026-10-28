@@ -27,8 +27,11 @@ use std::sync::Arc;
 /// Whether the index on disk was written by a build with these rules.
 const VERSION_KEY: &[u8] = b"i/v";
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/", env!("OSIS_INDEX_RULES"));
-/// Per commit, one byte per part: bit 0 valid, bits 1-2 the rotation role it needs (0 none,
-/// 1 read, 2 write, 3 admin), bit 3 a grant's overreach.
+/// Per commit (`meta_row`): one byte per part (bit 0 valid, bits 1-2 the rotation role it
+/// needs: 0 none, 1 read, 2 write, 3 admin; bit 3 a grant's overreach), then its header's
+/// `View`, so an open indexes the commit without decoding its header.
+const METAS: &[u8] = b"node/metas";
+/// Earlier builds' per-commit rows: the part bytes alone (read by `old_judgments` only).
 const PARTS: &[u8] = b"node/parts";
 // The derived indexes live in rebuildable store index tables of their own (a node's local
 // records table is not deepened by them).
@@ -482,9 +485,11 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
     w.take()
 }
 
-/// A commit's `PARTS` row.
-fn parts_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
-    let mut out = Vec::with_capacity(m.valid.len());
+/// A commit's `METAS` row: version 1, the part count, a byte per part, the view.
+fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
+    let mut out = Vec::with_capacity(64 + 48 * m.valid.len());
+    out.push(1);
+    out.extend_from_slice(&(m.valid.len() as u32).to_be_bytes());
     for (ai, v) in m.valid.iter().enumerate() {
         let role = match core.rotation_role.get(&(*id, ai)) {
             None => 0,
@@ -494,7 +499,43 @@ fn parts_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
         };
         out.push(u8::from(*v) | (role << 1) | (u8::from(core.grant_overreach.contains(&(*id, ai))) << 3));
     }
-    out
+    let v = &m.view;
+    let mut w = records::Wr(out).u64(v.ts.to_u64()).u8(v.kind.id() as u8).u8(match v.form {
+        osis_commit::Form::Node => 0,
+        osis_commit::Form::Commit => 1,
+    });
+    w = w.raw(v.author.as_bytes()).raw(v.actor.as_bytes()).u8(u8::from(v.linked));
+    for a in &v.aspects {
+        let ak = a.ak.as_str().as_bytes();
+        w = w.raw(a.tid.as_bytes()).raw(&(ak.len() as u16).to_be_bytes()).raw(ak).u64(a.lo).u64(a.hi).u8(u8::from(a.bounded));
+    }
+    w.take()
+}
+
+/// A `METAS` row's part bytes and view.
+fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
+    let mut r = records::Rd::new(row);
+    if r.u8()? != 1 {
+        return Err(Error::Corrupt("meta row version"));
+    }
+    let n = r.u32()? as usize;
+    let parts = r.take_raw(n)?;
+    let ts = Ts::from_u64(r.u64()?).ok_or(Error::Corrupt("meta row ts"))?;
+    let kind = osis_commit::Kind::from_id(<u64 as From<u8>>::from(r.u8()?)).ok_or(Error::Corrupt("meta row kind"))?;
+    let form = match r.u8()? {
+        0 => osis_commit::Form::Node,
+        1 => osis_commit::Form::Commit,
+        _ => return Err(Error::Corrupt("meta row form")),
+    };
+    let (author, actor) = (r.tid()?, r.tid()?);
+    let linked = r.u8()? != 0;
+    let mut aspects = Vec::with_capacity(n);
+    for _ in 0..n {
+        let (tid, ak) = (r.tid()?, r.ak()?);
+        aspects.push(super::AspectView { tid, ak, lo: r.u64()?, hi: r.u64()?, bounded: r.u8()? != 0 });
+    }
+    r.end()?;
+    Ok((parts, super::View { ts, kind, form, author, actor, linked, aspects }))
 }
 
 /// A commit record's head and its blob bytes (version 2 heads, of earlier builds, carry part
@@ -533,10 +574,10 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
         s.into_iter().collect()
     };
     if !ids.is_empty() {
-        let t = txn.index(PARTS)?;
+        let t = txn.index(METAS)?;
         for id in &ids {
             match c.commits.get(id) {
-                Some(m) => txn.table_put(t, &id.0, parts_row(c, id, m), Shred::No)?,
+                Some(m) => txn.table_put(t, &id.0, meta_row(c, id, m), Shred::No)?,
                 None => txn.table_remove(t, &id.0, Shred::No)?,
             };
         }
@@ -645,16 +686,23 @@ pub(crate) type OldJudgments = (BTreeMap<CommitId, Vec<bool>>, BTreeMap<(Tid, os
 
 pub(crate) fn old_judgments(tx: &mut Tx<'_>) -> Option<OldJudgments> {
     let mut parts = BTreeMap::new();
-    let t = tx.txn.index(PARTS).ok()?;
-    let mut from = Vec::new();
-    loop {
-        let got = tx.txn.table_range(t, &from, None, 256).ok()?;
-        let n = got.len();
-        for (k, v) in got {
-            from = [k.as_slice(), &[0]].concat();
-            parts.insert(CommitId(k.as_slice().try_into().ok()?), v.iter().map(|p| p & 1 != 0).collect());
+    // this layout, else an earlier build's part bytes alone
+    for (name, meta) in [(METAS, true), (PARTS, false)] {
+        let t = tx.txn.index(name).ok()?;
+        let mut from = Vec::new();
+        loop {
+            let got = tx.txn.table_range(t, &from, None, 256).ok()?;
+            let n = got.len();
+            for (k, v) in got {
+                from = [k.as_slice(), &[0]].concat();
+                let p = if meta { parse_meta_row(&v).ok()?.0 } else { v.as_slice() };
+                parts.insert(CommitId(k.as_slice().try_into().ok()?), p.iter().map(|p| p & 1 != 0).collect());
+            }
+            if n < 256 {
+                break;
+            }
         }
-        if n < 256 {
+        if !parts.is_empty() {
             break;
         }
     }
@@ -665,49 +713,44 @@ pub(crate) fn old_judgments(tx: &mut Tx<'_>) -> Option<OldJudgments> {
     Some((parts, carried))
 }
 
-/// Loads the persisted index into `core`: commit metas (headers resolved), and the indexes
-/// derived from membership bodies.
+/// Loads the persisted index into `core`: commit metas (headers held undecoded, decoded on
+/// first use; those with lists by link resolved now), and the indexes derived from membership
+/// bodies.
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
-    // commit records: the head and the header only, no part decoded
+    // commit records: the head and the header's bytes only, nothing decoded
     let hs = crate::costs::span("open: headers");
-    let mut metas = Vec::new();
+    let mut recs = Vec::new();
     tx.scan(records::COMMIT, |k, v| {
         let id = CommitId(k.try_into().map_err(|_| Error::Corrupt("commit record key"))?);
         let (head, blob) = parse_head(&v)?;
         // the blob is `[header, signature, parts]`: its first item
         let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: blob.len() };
-        let (hv, hb) = osis_base::decode_prefix(blob.get(1..).unwrap_or_default(), &lim).map_err(|_| Error::Corrupt("commit record header"))?;
-        // bytes hashing to the ID are its canonical header: decoded once, never re-encoded
-        if osis_base::hash::hash(hb) != id.0 {
-            return Err(Error::Corrupt("commit record"));
-        }
-        let h = osis_commit::Header::from_stored_value(&hv).map_err(|_| Error::Corrupt("commit record header"))?;
-        metas.push((id, head, h));
+        let hb = osis_base::item_prefix(blob.get(1..).unwrap_or_default(), &lim).map_err(|_| Error::Corrupt("commit record header"))?;
+        recs.push((id, head, Box::<[u8]>::from(hb)));
         Ok(())
     })?;
     drop(hs);
     let _ms = crate::costs::span("open: metas");
     let mut rows: BTreeMap<CommitId, Vec<u8>> = BTreeMap::new();
-    let t = tx.txn.index(PARTS)?;
+    let t = tx.txn.index(METAS)?;
     let mut from = Vec::new();
     loop {
         let got = tx.txn.table_range(t, &from, None, 256)?;
         let n = got.len();
         for (k, v) in got {
             from = [k.as_slice(), &[0]].concat();
-            rows.insert(CommitId(k.as_slice().try_into().map_err(|_| Error::Corrupt("parts row key"))?), v);
+            rows.insert(CommitId(k.as_slice().try_into().map_err(|_| Error::Corrupt("meta row key"))?), v);
         }
         if n < 256 {
             break;
         }
     }
-    for (id, head, mut h) in metas {
-        let parts = rows.remove(&id).ok_or(Error::Corrupt("parts row missing"))?;
-        if parts.len() != h.aspects.len() {
-            return Err(Error::Corrupt("parts row"));
-        }
+    let fault = tx.core.header_fault.clone();
+    for (id, head, bytes) in recs {
+        let row = rows.remove(&id).ok_or(Error::Corrupt("meta row missing"))?;
+        let (parts, view) = parse_meta_row(&row)?;
         let mut valid = Vec::with_capacity(parts.len());
-        for (ai, p) in parts.into_iter().enumerate() {
+        for (ai, p) in parts.iter().enumerate() {
             valid.push(p & 1 != 0);
             if let Some(r) = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from((p >> 1) & 3).wrapping_sub(1)) {
                 tx.core.rotation_role.insert((id, ai), *r);
@@ -716,14 +759,26 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
                 tx.core.grant_overreach.insert((id, ai));
             }
         }
-        if !h.is_resolved()
-            && let Some(dedup) = tx.core.dedup(&h.actor)
-        {
-            h.resolve(&mut super::blobs::TxBlobs::new(&mut tx.txn), &dedup, osis_commit::MAX_LIST_BYTES).map_err(|_| Error::Corrupt("header lists"))?;
+        let view = Arc::new(view);
+        let header = if view.linked || cfg!(debug_assertions) {
+            // lists by link resolve from blobs now; a debug build decodes every header and
+            // checks the persisted view against it
+            let mut h = super::decode_stored_header(&id, &bytes).ok_or(Error::Corrupt("commit record header"))?;
+            if !h.is_resolved()
+                && let Some(dedup) = tx.core.dedup(&h.actor)
+            {
+                h.resolve(&mut super::blobs::TxBlobs::new(&mut tx.txn), &dedup, osis_commit::MAX_LIST_BYTES).map_err(|_| Error::Corrupt("header lists"))?;
+            }
+            debug_assert_eq!(super::View::of(&h), *view, "meta row of {id:?} is stale");
+            if view.linked { super::LazyHeader::ready(Arc::new(h)) } else { super::LazyHeader::stored(id, bytes, view.clone(), fault.clone()) }
+        } else {
+            super::LazyHeader::stored(id, bytes, view.clone(), fault.clone())
+        };
+        if view.aspects.len() != valid.len() {
+            return Err(Error::Corrupt("meta row"));
         }
-        let h = Arc::new(h);
-        crate::apply::index_commit(tx.core, &id, &h);
-        tx.core.commits.insert(id, Meta { header: h, received: head.received, origin: head.origin, valid, dropped: head.dropped });
+        crate::apply::index_commit(tx.core, &id, &view);
+        tx.core.commits.insert(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped });
         tx.core.index_validity(&id);
     }
     drop(_ms);
@@ -810,10 +865,15 @@ impl super::Engine {
                     }
                     tx.set_state(&tid, &ak, (!st.is_empty()).then_some(st), Shred::No, false)?;
                 }
-                let t = tx.txn.index(PARTS)?;
-                let rows: Vec<(CommitId, usize)> = tx.core.commits.iter().map(|(id, m)| (*id, m.valid.len())).collect();
-                for (id, n) in rows {
-                    tx.txn.table_put(t, &id.0, vec![1; n], Shred::No)?;
+                let t = tx.txn.index(METAS)?;
+                let rows: Vec<(CommitId, Vec<u8>)> = tx.core.commits.iter().map(|(id, m)| {
+                    let mut row = meta_row(tx.core, id, m);
+                    // every part valid, nothing else needed
+                    row.iter_mut().skip(5).take(m.valid.len()).for_each(|p| *p = 1);
+                    (*id, row)
+                }).collect();
+                for (id, row) in rows {
+                    tx.txn.table_put(t, &id.0, row, Shred::No)?;
                 }
                 let t = tx.txn.index(CARRIED)?;
                 let keys: Vec<(Tid, osis_base::Ak)> = tx.core.carried.keys().cloned().collect();
@@ -826,7 +886,7 @@ impl super::Engine {
         self.run(|tx| {
             if garble {
                 let Some(id) = tx.core.commits.keys().next().copied() else { return Ok(()) };
-                let t = tx.txn.index(PARTS)?;
+                let t = tx.txn.index(METAS)?;
                 tx.txn.table_put(t, &id.0, vec![1; 300], Shred::No)?;
                 Ok(())
             } else {
@@ -925,6 +985,13 @@ impl super::Engine {
             let t = tx.txn.index(EDGES)?;
             Ok(tx.txn.table_range(t, &[], None, 1 << 20)?)
         })
+    }
+
+    /// Headers decoded so far of commits that are not membership commits (tests: an open from
+    /// the index decodes none).
+    #[doc(hidden)]
+    pub fn content_headers_decoded(&self) -> usize {
+        self.core.commits.values().filter(|m| !m.view.kind.is_membership() && m.header.is_decoded()).count()
     }
 
     /// Whether the persisted index is tagged as this build's (tests).

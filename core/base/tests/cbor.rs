@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)] // test code
 
 use osis_base::format::{TAG_ENUM, TAG_LINK, TAG_SET, TAG_STRUCT_RESERVED, TAG_TID};
-use osis_base::{BlobId, CanonicalBytes, DecodeError, Float, Limits, Link, Tid, Unknown, Value, decode, decode_prefix, encode};
+use osis_base::{BlobId, CanonicalBytes, DecodeError, Float, Limits, Link, Tid, Unknown, Value, decode, decode_prefix, encode, item_prefix};
 use proptest::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -134,6 +134,18 @@ proptest! {
     fn random_bytes(b in prop::collection::vec(any::<u8>(), 0..64)) {
         if let Ok(w) = d(&b) {
             prop_assert_eq!(encode(&w), b);
+        }
+    }
+
+    // §5: an item's extent found by its heads alone is the extent decoding finds, followed by
+    // anything; on random bytes it never panics and agrees wherever decoding accepts.
+    #[test]
+    fn item_prefix_is_decoded_extent(v in value(), tail in prop::collection::vec(any::<u8>(), 0..8), b in prop::collection::vec(any::<u8>(), 0..64)) {
+        let e = encode(&v);
+        let with_tail = [e.as_slice(), &tail].concat();
+        prop_assert_eq!(item_prefix(&with_tail, &Limits::DEFAULT), Ok(e.as_slice()));
+        if let Ok((_, used)) = decode_prefix(&b, &Limits::DEFAULT) {
+            prop_assert_eq!(item_prefix(&b, &Limits::DEFAULT), Ok(used));
         }
     }
 

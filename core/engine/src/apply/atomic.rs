@@ -57,7 +57,7 @@ pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId
 }
 
 /// Adds a commit to the per-aspect and node-form range indexes.
-pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &Header) {
+pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::View) {
     for a in &h.aspects {
         core.by_aspect.insert((a.tid, a.ak.clone()), (h.ts, *id));
         if a.ak.as_str() == "/label" {
@@ -221,10 +221,11 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             now,
         );
     }
-    index_commit(tx.core, &id, &h);
+    let view = Arc::new(crate::engine::View::of(&h));
+    index_commit(tx.core, &id, &view);
     validity::uncarry(tx.core, &id, &h);
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
-    let meta = Meta { header: h.clone(), received, origin, valid: valid.clone(), dropped: BTreeSet::new() };
+    let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), dropped: BTreeSet::new() };
     tx.core.commits.insert(id, meta.clone());
     tx.core.index_validity(&id);
 

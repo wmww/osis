@@ -304,3 +304,139 @@ fn new_things_between_opens_still_restore() {
     }
     assert!(smaller, "no new thing below the saved root");
 }
+
+/// What a node computes, opened from the persisted index and then rebuilt from the commit
+/// records: validity, perm's timelines and the states of `things` all equal what it had; the
+/// open decodes no content commit's header (`LazyHeader`: only membership commits', which perm's
+/// adaptation reads).
+fn open_equals_rebuild(e: &mut Engine, things: &[Tid], at: &str) {
+    assert!(e.index_current().unwrap(), "{at}: index not current");
+    let had = (validity(&e.index_digest()), e.perm_digest(false), states(e, things));
+    e.reload_index().unwrap();
+    assert_eq!(e.content_headers_decoded(), 0, "{at}: the open decoded content headers");
+    assert_eq!((validity(&e.index_digest()), e.perm_digest(false), states(e, things)), had, "{at}: opened from the index");
+    e.rebuild_index().unwrap();
+    assert_eq!((validity(&e.index_digest()), e.perm_digest(false), states(e, things)), had, "{at}: rebuilt");
+}
+
+fn add_tag(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_base::CommitId {
+    let mut m = Mutation::new();
+    m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s(v)) }).unwrap();
+    lp.peers[i].commit(m).unwrap().unwrap()
+}
+
+// spec/requirements.md, Decentralization (a node's judgment of every write is a function of the
+// data it holds); spec/permissions.md §5.2: after a validity flip (a revoke its writer missed), an
+// un-merge (an invalid write arriving), an import (a moved thing), a forget (lost access) and a
+// crash at every write of a transaction, an open from the persisted index computes what a
+// rebuild from the commit records computes
+#[test]
+fn open_equals_rebuild_after_each_kind_of_change() {
+    let mut lp = LocalPeer::new(3, 0x0be2, T0).unwrap();
+    let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, a);
+    lp.peers[0].commit(m).unwrap().unwrap();
+    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, t, c, Some(edge(Role::Admin)), None);
+    lp.sync_all().unwrap();
+    for i in 0..5 {
+        add_tag(&mut lp, 0, t, &format!("e{i}"));
+    }
+    let bs = add_tag(&mut lp, 1, t, "b");
+    let pk1 = lp.packages(1).unwrap();
+    lp.deliver(0, pk1.iter().find(|p| p.id == bs).unwrap()).unwrap();
+    open_equals_rebuild(&mut lp.peers[0].engine, &[t], "before");
+    // C revokes B without having seen B's add: delivered to A, the add turns invalid
+    let scope = osis_perm::DemotionScope { membership: [(b, [t].into())].into(), content: [(b, [t].into())].into() };
+    let now = lp.peers[2].engine.now();
+    let f = lp.peers[2].engine.frontier(&scope, now).unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(b)) }).unwrap();
+    m.frontier(f.to_value());
+    let rv = lp.peers[2].commit(m).unwrap().unwrap();
+    let late = add_tag(&mut lp, 1, t, "late");
+    let (pk2, pk1) = (lp.packages(2).unwrap(), lp.packages(1).unwrap());
+    lp.deliver(0, pk2.iter().find(|p| p.id == rv).unwrap()).unwrap();
+    let tags = |lp: &mut LocalPeer| match lp.peers[0].engine.get(&t, &ak("/t/tags")).unwrap() {
+        Some(Value::Set(s)) => s.len(),
+        _ => 0,
+    };
+    assert_eq!(tags(&mut lp), 5, "the revoke flips B's add invalid");
+    open_equals_rebuild(&mut lp.peers[0].engine, &[t], "validity flip");
+    lp.deliver(0, pk1.iter().find(|p| p.id == late).unwrap()).unwrap();
+    assert_eq!(tags(&mut lp), 5, "B's late add arrives invalid");
+    open_equals_rebuild(&mut lp.peers[0].engine, &[t], "un-merge");
+    // A moves the thing: a copy written as imports, which C receives
+    let (copy, imports) = lp.peers[0].engine.move_thing(&t, a).unwrap();
+    assert!(!imports.is_empty());
+    open_equals_rebuild(&mut lp.peers[0].engine, &[t, copy], "import (writer)");
+    sync(&mut lp, 0, 2);
+    assert!(lp.peers[2].engine.header(&imports[0]).is_some(), "C holds the import");
+    open_equals_rebuild(&mut lp.peers[2].engine, &[t, copy], "import (receiver)");
+}
+
+// spec/requirements.md, Decentralization; spec/permissions.md §3 (drop lost secrets): after a
+// member removed from a thing with secrets of its own forgets what it lost, an open from the
+// persisted index computes what a rebuild from the commit records computes
+#[test]
+fn open_equals_rebuild_after_a_forget() {
+    let mut lp = LocalPeer::new(2, 0xf0e7, T0).unwrap();
+    let servers = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
+    let pa = lp.peers[0].engine.create_person(&servers).unwrap().0.person;
+    let pb = lp.peers[1].engine.create_person(&servers).unwrap().0.person;
+    lp.sync_all().unwrap();
+    let mut m = Mutation::new();
+    let d = lp.peers[0].engine.new_thing(&mut m, pa);
+    m.set(d, &REG, &s("new")).unwrap();
+    lp.peers[0].engine.commit(m).unwrap().unwrap();
+    lp.peers[0].engine.grant(&d, &pb, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("by b")).unwrap();
+    lp.peers[1].engine.commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    open_equals_rebuild(&mut lp.peers[1].engine, &[d], "member");
+    lp.peers[0].engine.demote(&d, &osis_node::flows::Demotion { member: pb, new: None, presync: osis_node::flows::PreSync::Synced }).unwrap();
+    lp.sync_all().unwrap();
+    let (_, gone) = lp.peers[1].engine.forget_lost(true).unwrap();
+    assert!(gone.things.contains(&d), "B forgets the thing");
+    open_equals_rebuild(&mut lp.peers[1].engine, &[d], "forget");
+    open_equals_rebuild(&mut lp.peers[0].engine, &[d], "owner");
+}
+
+// spec/requirements.md, Decentralization; spec/commits.md §4 (all or none): a crash at any
+// durable write of a content commit and then an edge write, then open: what the open from the
+// persisted index computes equals a rebuild of what landed
+#[test]
+fn open_equals_rebuild_after_a_crash() {
+    let mut crashed_any = false;
+    for n in 0.. {
+        let faults = Faults::new();
+        let dev = Dev { backend: MemoryBackend::with_faults(faults.clone()), root: MemoryRoot::with_faults(faults.clone()), faults, clock: Arc::new(ManualClock::new(T0)) };
+        let mut e = dev.create();
+        let me = e.tid();
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, me);
+        m.set(t, &REG, &s("one")).unwrap();
+        e.commit(m).unwrap();
+        try_edge(&mut e, t, Tid::from_bytes([80; 15]), Some(Role::Read));
+        dev.faults.at(n, Fault::Crash);
+        dev.clock.advance(1);
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s("two")).unwrap();
+        m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s("x")) }).unwrap();
+        let _ = e.commit(m);
+        try_edge(&mut e, t, Tid::from_bytes([81; 15]), Some(Role::Write));
+        let crashed = dev.faults.crashed();
+        drop(e);
+        dev.faults.revive();
+        let mut e = dev.open().unwrap();
+        open_equals_rebuild(&mut e, &[t], &format!("crash at write {n}"));
+        if !crashed {
+            break;
+        }
+        crashed_any = true;
+    }
+    assert!(crashed_any);
+}
