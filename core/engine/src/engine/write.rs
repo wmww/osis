@@ -9,7 +9,6 @@ use super::blobs::{ListBlobs, TxBlobs};
 use super::secrets::CommitSecrets;
 use super::{Core, Engine, Tx};
 use crate::error::{Error, Result};
-use crate::events::Origin;
 use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, PurgeItem, writer_ctx};
 use osis_base::{Ak, CommitId, CreationRecord, Role, SchemaId, Tid, Ts, Value, WallMs};
 use osis_crdt::{AnyView, Batch, CounterRange, Delta, Fragment, Op, PathOp, Source, View, Writer, encode_delta};
@@ -397,7 +396,6 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     let id = built.commit.id();
     let received = tx.now();
     crate::apply::apply_local(tx, &built.commit, received)?;
-    let _ = Origin::Local;
     Ok(id)
 }
 
@@ -458,7 +456,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         m.form = Form::Commit;
     }
     let ts = tx.core.hlc.next();
-    let plan = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: m.form, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), origins: Vec::new(), signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
+    let plan = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: m.form, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), origins: Vec::new(), signer: node, blind: draw_blind(&mut *tx.rng) };
     let mut next_ctr = 1u64;
     let mut deltas = Vec::new();
     let published = super::secrets::published_keys(tx, &plan.creates, m.aspects.keys().map(|k| k.0))?;
@@ -477,8 +475,8 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         // a paged state loads what the ops address (map keys, fields, set values: a large one
         // by its link, as the state holds it), else whole
         let paths = match &framing {
-            Some(f) => crate::engine::pages::op_paths(&am.ops, &mut |v| super::large::lookup_form(v, &f.dedup))?,
-            None => crate::engine::pages::op_paths(&am.ops, &mut |v| Ok(v.clone()))?,
+            Some(f) => super::pages::op_paths(&am.ops, &mut |v| super::large::lookup_form(v, &f.dedup))?,
+            None => super::pages::op_paths(&am.ops, &mut |v| Ok(v.clone()))?,
         };
         // ops by index into paged sequences: on the pages loaded, through their stored placements
         // a list edit's items by content hash and its window (what the pages it needs follow from)
@@ -505,34 +503,37 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             Form::Commit => next_ctr,
         };
         let empty = Fragment::default();
-        let state = tx.core.states.get(&(tid, ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
         let view = am.schema.as_ref().and_then(|s| s.view(ak.as_str()));
-        let run = |state: &Fragment, ops: &[PathOp]| match &view {
-            Some(v) => run_ops(state, Writer::new(ts, own_source(m.form, node), lo), ops, v),
-            None => run_ops(state, Writer::new(ts, own_source(m.form, node), lo), ops, &AnyView),
+        let run = |tx: &Tx<'_>| {
+            let state = tx.cached(&tid, &ak).unwrap_or(&empty);
+            let w = Writer::new(ts, own_source(m.form, node), lo);
+            match &view {
+                Some(v) => run_ops(state, w, &am.ops, v),
+                None => run_ops(state, w, &am.ops, &AnyView),
+            }
         };
-        let mut out = run(state, &am.ops);
+        let mut out = run(tx);
         if partial {
-            // run again while it missed rows, chunks or pages (what it missed loaded), else on the
-            // whole state
+            // run again while it missed rows, chunks or pages (what it missed loaded), at most
+            // `OP_RUNS` times, then on the whole state
             let mut runs = 1;
             loop {
-                match tx.absorb(&tid, &ak)? {
-                    Some(false) => break,
-                    Some(true) if runs < crate::engine::pages::OP_RUNS => {}
-                    x => {
-                        if x.is_some() {
-                            let _s = crate::costs::span("paged op whole: runs");
-                        }
-                        tx.load(&tid, &ak)?;
-                        let state = tx.core.states.get(&(tid, ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
-                        out = run(state, &am.ops);
-                        break;
+                let more = tx.absorb(&tid, &ak)?;
+                if more == Some(false) {
+                    break;
+                }
+                let whole = more.is_none() || runs >= super::pages::OP_RUNS;
+                if whole {
+                    if more.is_some() {
+                        let _s = crate::costs::span("paged op whole: runs");
                     }
+                    tx.load(&tid, &ak)?;
+                }
+                out = run(tx);
+                if whole {
+                    break;
                 }
                 runs += 1;
-                let state = tx.core.states.get(&(tid, ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
-                out = run(state, &am.ops);
             }
         }
         let out = out?;
