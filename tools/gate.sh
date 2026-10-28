@@ -3,7 +3,7 @@
 # with its wall time. Run it in the task's worktree after `git rebase main`; main is only ever
 # fast-forwarded, never built. Usage: tools/gate.sh [--sweep-seeds N]   (from the worktree root)
 # The dev sim sweep (30 seeds) runs when the branch touches the simulator or a crate it has
-# caught regressions in (sim/, osis-node, osis-perm, osis-crdt) or Cargo.toml/lock since its
+# caught regressions in (core/test/sim/, osis-node, osis-perm, osis-crdt) or Cargo.toml/lock since its
 # merge base with main (always on main itself); --sweep-seeds N forces N seeds, 0 skips.
 set -e
 seeds=
@@ -16,7 +16,7 @@ if [ -z "$seeds" ]; then
   seeds=30
   base=$(git merge-base HEAD main 2>/dev/null || true)
   if [ -n "$base" ] && [ "$base" != "$(git rev-parse HEAD)" ] && git diff --quiet "$base" -- \
-      Cargo.toml Cargo.lock sim crates/osis-node crates/osis-perm crates/osis-crdt; then
+      Cargo.toml Cargo.lock core/test/sim core/node core/perm core/crdt; then
     seeds=0
   fi
 fi

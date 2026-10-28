@@ -1,0 +1,171 @@
+//! Fuzz seed corpora (core/test/fuzz/README.md), derived from the vector files so every parser starts from
+//! valid and just-invalid inputs. `gen-vectors corpus` writes them to `core/test/fuzz/corpus/<target>/`,
+//! one file per seed named by the first 16 hex digits of its BLAKE3.
+
+use crate::file::VecFile;
+use crate::{root, unhex, xof};
+
+/// Cases of every present vector file of `subject` (all cases, pending included).
+fn cases_of(subject: &str) -> Vec<crate::file::Record> {
+    let dir = root().join(subject);
+    let mut out = Vec::new();
+    let mut paths: Vec<_> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for p in paths {
+        if let Ok(f) = std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|t| VecFile::parse(&t)) {
+            out.extend(f.cases);
+        }
+    }
+    out
+}
+
+fn field_bytes(subject: &str, field: &str) -> Vec<Vec<u8>> {
+    cases_of(subject).iter().filter_map(|c| c.get(field)).filter_map(|h| unhex(h).ok()).collect()
+}
+
+fn field_text(subject: &str, field: &str) -> Vec<Vec<u8>> {
+    cases_of(subject).iter().filter_map(|c| c.get(field)).map(|s| s.as_bytes().to_vec()).collect()
+}
+
+/// `(target, seeds)` for every fuzz target. A new target adds its line here.
+pub fn seeds() -> Vec<(&'static str, Vec<Vec<u8>>)> {
+    let cbor = field_bytes("cbor", "hex");
+    let mut records = field_bytes("tid", "record");
+    records.extend(cbor.iter().cloned());
+    let mut tids = field_text("tid", "text");
+    tids.extend(field_text("tid", "uri"));
+    tids.push(b"AAAAAAAAAAAAAAAAAAAA".to_vec());
+    tids.push(b"osis://_-_-_-_-_-_-_-_-_-_-".to_vec());
+    let mut chunk = vec![3u8];
+    chunk.extend(xof("osis fuzz chunker", 4000));
+    // schema_dsl: a leading 0 byte means a schema value (CBOR), anything else DSL text.
+    let mut schema: Vec<Vec<u8>> = field_bytes("schema", "value").into_iter().map(|v| [vec![0], v].concat()).collect();
+    for src in [osis_schema::CORE_SRC, osis_schema::META_SRC] {
+        schema.push([b"\x01".to_vec(), src.as_bytes().to_vec()].concat());
+    }
+    // proto_frame: message bodies, Hello, and framed bodies.
+    let mut proto = field_bytes("proto", "hex");
+    proto.extend(field_bytes("proto", "frame"));
+    let mut prefixes = field_bytes("blob", "prefix");
+    prefixes.extend(field_bytes("blob", "blob"));
+    prefixes.extend(field_bytes("blob", "padded"));
+    let mut steps = field_bytes("step", "step");
+    steps.extend(field_bytes("step", "claim-set"));
+    let mut signals = field_bytes("signal", "body");
+    signals.extend(field_bytes("signal", "publish-auth"));
+    let mut links = field_bytes("link", "bytes");
+    links.extend(field_text("link", "text").into_iter().map(|t| [vec![0], t].concat()));
+    vec![
+        ("blob_prefix", prefixes),
+        ("step", steps),
+        ("inbox", field_bytes("inbox", "payload")),
+        ("signal", signals),
+        ("link_card", links),
+        ("bundle", field_bytes("bundle", "bundle")),
+        ("cbor_decode", cbor),
+        ("proto_frame", proto),
+        ("schema_dsl", schema),
+        ("creation_record", records),
+        ("tid_parse", tids),
+        ("chunker", vec![vec![0], vec![1; 300], chunk]),
+        ("commit_header", [field_bytes("commit", "header"), field_bytes("commit", "blob")].concat()),
+        ("delta", delta_seeds()),
+        ("seq_follow", seq_follow_seeds()),
+        ("box", [field_bytes("box", "sealed"), field_bytes("box", "wrap"), field_bytes("box", "box"), field_bytes("box", "padded"), field_bytes("box", "sealed-value")].concat()),
+    ]
+}
+
+/// `delta`: a form byte (0 writer delta, 1 snapshot; core/test/fuzz/fuzz_targets/delta.rs fixes the
+/// contexts) and an encoded delta of each encoding's typical values.
+fn delta_seeds() -> Vec<Vec<u8>> {
+    use osis_core::{Tid, Ts, Value};
+    use osis_crdt::{AnyView, CounterRange, Delta, DeltaCtx, DeltaKind, Fragment, Frontiers, Snapshot, Source, Writer, create, encode_delta, encode_snapshot};
+    let ts = Ts::from_u64(1_700_000_000_000 << 16).unwrap_or_default();
+    let s = |x: &str| Value::Str(x.into());
+    let values = [
+        Value::Int(7),
+        s("hello"),
+        Value::Bytes(vec![1, 2, 3]),
+        Value::List(vec![s("a"), s("b"), s("c")]),
+        Value::Map([(s("x"), Value::Int(1)), (s("y"), Value::List(vec![Value::Int(2)]))].into_iter().collect()),
+        Value::Set([Value::Int(1), Value::Int(2)].into_iter().collect()),
+    ];
+    let writer = Source::node(Tid::from_bytes([1; 15]));
+    let mut out = Vec::new();
+    for v in &values {
+        let mut w = Writer::new(ts, writer.clone(), 1);
+        let Ok(fragment) = create(&mut w, &AnyView, v) else { continue };
+        let cx = DeltaCtx { ts, own: writer.clone(), range: CounterRange { lo: 1, hi: 1000 }, kind: DeltaKind::Writer };
+        if let Ok(b) = encode_delta(&Delta { nonce: [1; 16], fragment: fragment.clone() }, &cx, None) {
+            out.push([vec![0], b].concat());
+        }
+        let mut st = Fragment::default();
+        st.join(fragment);
+        let cx = DeltaCtx { ts, own: Source::node(Tid::from_bytes([9; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+        let snap = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [2; 16], fragment: st, frontiers: Frontiers::default() };
+        if let Ok(b) = encode_snapshot(&snap, &cx, None) {
+            out.push([vec![1], b].concat());
+        }
+    }
+    out
+}
+
+/// `seq_follow`: frames of text ops on the target's fixed text (inserts at the ends and inside,
+/// deletes across deleted stretches, moves), each against the state after the frames before.
+fn seq_follow_seeds() -> Vec<Vec<u8>> {
+    use osis_core::Value;
+    use osis_crdt::fuzzing::{TextView, seq_follow_cx, seq_follow_state};
+    use osis_crdt::{Batch, Delta, Op, PathOp, Writer, encode_delta};
+    let s = |x: &str| vec![Value::Str(x.into())];
+    let base = seq_follow_state();
+    let n = match base.read() {
+        Some(Value::Str(t)) => t.chars().count(),
+        _ => 0,
+    };
+    let sets = [
+        vec![Op::Insert { at: 0, items: s("ab") }, Op::Insert { at: n / 2, items: s("cd") }, Op::Insert { at: n, items: s("ef") }],
+        vec![Op::Delete { at: 5, len: 20 }, Op::Insert { at: 6, items: s("x") }],
+        vec![Op::Move { at: 10, len: 15, to: 100 }, Op::Delete { at: 90, len: 30 }],
+        vec![Op::Delete { at: 40, len: 50 }, Op::Move { at: 0, len: 5, to: 30 }, Op::Insert { at: 35, items: s("yz") }],
+    ];
+    let mut out = Vec::new();
+    for set in sets {
+        let mut st = base.clone();
+        let mut input = Vec::new();
+        for (i, op) in set.into_iter().enumerate() {
+            let cx = seq_follow_cx(i as u8, i as u64);
+            let mut b = Batch::new(&st, Writer::new(cx.ts, cx.own.clone(), cx.range.lo));
+            if b.apply(&PathOp { path: vec![], op }, &TextView).is_err() {
+                continue;
+            }
+            let Some((d, _)) = b.finish() else { continue };
+            let Ok(bytes) = encode_delta(&Delta { nonce: [1; 16], fragment: d.clone() }, &cx, None) else { continue };
+            let Ok(len) = u16::try_from(bytes.len()) else { continue };
+            input.extend([i as u8]);
+            input.extend(len.to_le_bytes());
+            input.extend(bytes);
+            st.join(d);
+        }
+        out.push(input);
+    }
+    out
+}
+
+/// Replaces each target's seed directory with the seeds; returns how many files were written.
+pub fn write() -> Result<usize, String> {
+    let base = root().join("../fuzz/corpus");
+    let mut n = 0;
+    for (target, seeds) in seeds() {
+        let dir = base.join(target);
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+        }
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        for s in seeds {
+            let name = &crate::hex(&osis_core::hash::hash(&s))[..16];
+            std::fs::write(dir.join(name), &s).map_err(|e| e.to_string())?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}

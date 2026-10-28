@@ -2,7 +2,7 @@
 > Summary: `osis-cli` (binary `osis`): one invocation opens the store, acts, closes; the command table over the `osis` API (which commands work, which report Unsupported for API pieces not built); the value syntax grammar (read back what it prints, numbered or named); the JSON mapping; exit codes; design decisions and deviations from the original plan.
 
 ## Design
-- **Thin**: a command is one API call plus parsing and printing (`crates/osis-cli/src/cmd.rs`, `write.rs`). Missing API pieces surface as the API's `Unsupported` (exit 1, kind `Unsupported`), never as CLI workarounds. Commands whose API method does not exist yet (`ls`, `backlinks`, `group policy`, `op undelete`; issues/api-deferred.md) report Unsupported from the CLI with the method's name.
+- **Thin**: a command is one API call plus parsing and printing (`cli/src/cmd.rs`, `write.rs`). Missing API pieces surface as the API's `Unsupported` (exit 1, kind `Unsupported`), never as CLI workarounds. Commands whose API method does not exist yet (`ls`, `backlinks`, `group policy`, `op undelete`; issues/api-deferred.md) report Unsupported from the CLI with the method's name.
 - **Store**: `-s DIR` / `OSIS_STORE` / `$XDG_DATA_HOME/osis/default`. Missing (`db.redb` absent) or locked: exit 8. The lock is redb's file lock; the CLI writes its pid to `<store>/pid` after opening so a second opener says `store in use by pid N`. `init` refuses a non-empty directory (exit 8). `<store>/cli.toml` holds registered schema paths (`schemas = [ "…", ]`, one quoted path per line; absolute). No other state.
 - **Entry points**: `osis_cli::main_with(args, stdin, stdout, stderr) -> i32`; `osis_cli::run(args, Option<StoreSel>, Io)` also takes a memory store (tests) and the terminal flag (`edit` opens `$EDITOR` only on a terminal).
 - **Futures** (`restore`, `demote`, `redeem`, `import_contact`, `remove_device`, `revoke_link`, `revoke_joiner`, `wait_synced`): polled on the calling thread by a park/unpark waker with the `--timeout` deadline (exit 6); sync runs on the API's own runtime. Each invocation ends with `Osis::close`, which waits until the store is free.
@@ -68,7 +68,7 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | (internal) | `open`, `close`, `downgrade`, `key`, `at`, `write_with`, `materialize_limit` (`--limit`), `register_schema`, `register_schema_source`; hidden test hooks `sync_engine`, `sync_act`, `take_actions`, `feed`, `waiting` | |
 
 ## Value syntax
-CBOR diagnostic notation narrowed to one printed form per value. Printer: `crates/osis-cli/src/text.rs` `print`; parser `parse`; property test: `parse(print(v)) == v`, numbered and named.
+CBOR diagnostic notation narrowed to one printed form per value. Printer: `cli/src/text.rs` `print`; parser `parse`; property test: `parse(print(v)) == v`, numbered and named.
 ```text
 value  := string | blob | "true" | "false" | int | float | tid | list | map | set | enum | tag | alias
 string := JSON string ("\u" escapes incl. surrogate pairs; printer escapes ", \, controls, DEL)

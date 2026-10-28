@@ -1,5 +1,5 @@
 # CRDT specification
-> Summary: Exact state, wire delta grammar, join, read, ops, undo, un-merge and tombstone rules for every merge encoding; encoding slots and embeddings; paging of large states; structural diff. The reference model `models/crdt/` implements it.
+> Summary: Exact state, wire delta grammar, join, read, ops, undo, un-merge and tombstone rules for every merge encoding; encoding slots and embeddings; paging of large states; structural diff. The reference model `core/test/crdt-model/` implements it.
 
 Two implementations of this document encode any state, delta or snapshot byte-identically (§3.3) and read it identically (§4, §5). It assumes only the commit header fields of §2.4 (spec/commits.md).
 

@@ -13,7 +13,7 @@ tested when a test cites its anchor, issued when an issue in issues/ does.
 A test's citations: `spec/<file>.md §N[.M]` in the comment or attribute lines right above it
 (a bare `§N` refers to the last file named there, else to the file header's); without any, the
 citations of the file's `//!` header (marked inherited). Vector cases cite through `spec:`.
-Exempt from `--uncited`: models/ (oracles, not the implementation) and tests whose comment says
+Exempt from `--uncited`: the models in core/test/ (oracles, not the implementation) and tests whose comment says
 `spec: none` (test infrastructure itself), or that cite nothing in a file whose `//!` header says
 `spec: none` (client surfaces specified in notes/, not spec/).
 
@@ -25,7 +25,8 @@ import glob, os, re, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "notes/testing-map.md")
-SOURCES = ["crates", "vectors", "sim", "models"]
+SOURCES = ["core", "cli", "crates"]
+MODELS = ("core/test/crdt-model/", "core/test/membership-model/")
 # An anchor is a parenthesis right after the section holding no citation of its own; matched by
 # lookahead so citations inside other parentheses are still found.
 CITE = re.compile(r"(spec/[\w-]+\.md)?\s*§\s*(\d+(?:\.\d+)*)(?=\s*\(([^()§]*)\))?")
@@ -72,14 +73,14 @@ def rust_tests():
                     j -= 1
                 comment = " ".join(l.strip().lstrip("/!") for l in reversed(above))
                 own = citations(comment + " " + name.replace("_", " "), header_file)
-                exempt = "spec: none" in comment or top == "models" or (not own and "spec: none" in header)
+                exempt = "spec: none" in comment or rel.startswith(MODELS) or (not own and "spec: none" in header)
                 tests.append({"id": f"{rel}::{name}", "cites": own or header_cites, "inherited": not own, "exempt": exempt})
     return tests
 
 
 def vector_cases():
     out = []
-    for path in sorted(glob.glob(os.path.join(ROOT, "vectors/**/*.vec"), recursive=True)):
+    for path in sorted(glob.glob(os.path.join(ROOT, "core/test/vectors/**/*.vec"), recursive=True)):
         rel = os.path.relpath(path, ROOT)
         for rec in open(path).read().split("\n\n"):
             fields = dict(l.split(": ", 1) for l in rec.splitlines() if ": " in l and not l.startswith("#"))

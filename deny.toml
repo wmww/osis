@@ -1,5 +1,5 @@
 # cargo deny check (notes/testing.md, Policy checks): licences, duplicate versions, advisories,
-# sources. Covers the workspace; fuzz/ is outside it.
+# sources. Covers the workspace; core/test/fuzz/ is outside it.
 
 [graph]
 all-features = true
