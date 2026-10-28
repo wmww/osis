@@ -24,6 +24,9 @@ const LOG_BATCH: usize = 256;
 const OLDER_KEYS: usize = 8;
 /// Labels whose parsed path a connection caches.
 const MAX_CACHED: usize = 4096;
+/// Blob IDs a connection remembers as crossed (an optimization only: past it the set is cleared,
+/// so a peer streaming entries cannot grow it without bound).
+const MAX_CROSSED: usize = 1 << 14;
 /// Domain of replay cursor IDs.
 const REPLAY: &str = "osis v1 replay";
 
@@ -145,7 +148,7 @@ pub struct ServerConnection {
     inline: BTreeMap<LabelId, u64>,
     /// Replays in progress: the log position taken at their start.
     replays: BTreeMap<LabelId, u64>,
-    /// Blobs whose bytes crossed this connection.
+    /// Blobs whose bytes crossed this connection (at most `MAX_CROSSED`): not inlined back.
     crossed: HashSet<BlobId>,
     cache: HashMap<LabelId, Cached>,
     /// Dialable key of the last member proof that opened a label.
@@ -502,7 +505,7 @@ impl ServerConnection {
             }
             used += size;
             if entry.is_some() {
-                self.crossed.insert(blob_id);
+                self.cross(blob_id);
             }
             items.push(Fetched { blob_id, entry });
         }
@@ -529,8 +532,15 @@ impl ServerConnection {
 
     fn take(&mut self, e: &Event) {
         if let Event::Added { blob_id, blob: Some(_), .. } = e {
-            self.crossed.insert(*blob_id);
+            self.cross(*blob_id);
         }
+    }
+
+    fn cross(&mut self, blob_id: BlobId) {
+        if self.crossed.len() >= MAX_CROSSED {
+            self.crossed.clear();
+        }
+        self.crossed.insert(blob_id);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -561,7 +571,7 @@ impl ServerConnection {
         };
         self.inline.insert(label, inline_limit);
         for e in &entries {
-            self.crossed.insert(osis_label::blob_id(&e.blob));
+            self.cross(osis_label::blob_id(&e.blob));
         }
         let mut codes = Vec::with_capacity(entries.len());
         for e in &entries {
@@ -747,5 +757,34 @@ impl From<Vec<u8>> for ServerOutput {
 fn changed(codes: &[Code], label: &LabelId, out: &mut Vec<ServerOutput>) {
     if codes.contains(&Code::OK) && !out.contains(&ServerOutput::Changed(*label)) {
         out.push(ServerOutput::Changed(*label));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+    use super::*;
+    use crate::examples::{CHALLENGE, Fixture, STATIC_KEY};
+    use crate::store::MemoryLabelStore;
+
+    // spec/requirements.md (peer input never causes unbounded allocation): a peer streaming Syncs
+    // of refused entries does not grow the connection's crossed set past its cap
+    #[test]
+    fn crossed_set_bounded() {
+        let f = Fixture::new(0x10);
+        let mut store = MemoryLabelStore::new([1; 32]);
+        store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
+        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        let mut feed = |c: &mut ServerConnection, body: Vec<u8>| c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&body)));
+        feed(&mut c, Hello::new(0, [2; 32]).encode());
+        let out = feed(&mut c, Message::Open { id: 1, label: f.label, proof: Proof::sync(&f.sync, &f.label, &CHALLENGE, &STATIC_KEY) }.encode());
+        assert!(out.iter().any(|o| matches!(o, ServerOutput::Send(b) if matches!(Message::decode(&b[4..]), Ok(Message::Opened { .. })))));
+        let n = MAX_CROSSED / 2 + 1;
+        for round in 0..3u32 {
+            let entries = (0..n).map(|i| Entry { blob: [round.to_be_bytes(), (i as u32).to_be_bytes()].concat(), wrap: [0; WRAP_LEN], stamp: Signature([0; 64]) }).collect();
+            feed(&mut c, Message::Sync { id: 2 + round, label: f.label, cursor: None, inline_limit: 0, entries, gained: vec![] }.encode());
+            assert!(c.crossed.len() <= MAX_CROSSED, "{}", c.crossed.len());
+        }
+        assert!(!c.is_closed());
     }
 }
