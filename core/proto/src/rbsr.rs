@@ -222,11 +222,6 @@ impl Reconciler {
         self.queue.len()
     }
 
-    /// Whether ranges remain to be sent.
-    pub fn has_queued(&self) -> bool {
-        !self.queue.is_empty()
-    }
-
     /// Nothing queued and no batch unanswered.
     pub fn is_done(&self) -> bool {
         self.queue.is_empty() && self.asked.is_empty()

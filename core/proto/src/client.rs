@@ -4,7 +4,7 @@
 //! with the node.
 
 use crate::Error;
-use crate::frame::{FrameDecoder, encode_frame};
+use crate::frame::{FrameDecoder, encode_frame, send};
 use crate::hello::{Hello, OFFSET_DIAGNOSTIC_MS, OffsetSample, PROTOCOL_VERSION, estimate_offset, negotiate};
 use crate::msg::*;
 use crate::rbsr::Reconciler;
@@ -224,9 +224,8 @@ pub struct ClientSession {
     peer: Option<Hello>,
     closed: bool,
     next_id: Id,
-    pending: BTreeMap<Id, Pending>,
-    /// When each pending request was sent.
-    sent_at: BTreeMap<Id, u64>,
+    /// Requests sent and not yet answered, with when they were sent.
+    pending: BTreeMap<Id, (u64, Pending)>,
     /// `now` of the running `handle`.
     now: u64,
     next_ping: u64,
@@ -248,7 +247,6 @@ impl ClientSession {
             closed: false,
             next_id: 0,
             pending: BTreeMap::new(),
-            sent_at: BTreeMap::new(),
             now: 0,
             next_ping: 0,
             timer: 0,
@@ -324,7 +322,7 @@ impl ClientSession {
     }
 
     fn oldest_request(&self) -> Option<u64> {
-        self.sent_at.values().min().copied()
+        self.pending.values().map(|(t, _)| *t).min()
     }
 
     /// Asks for the timer at the next ping or request deadline, if that changed.
@@ -355,8 +353,7 @@ impl ClientSession {
             }
         }
         let id = self.next_id;
-        self.pending.insert(id, pending);
-        self.sent_at.insert(id, self.now);
+        self.pending.insert(id, (self.now, pending));
         send(out, msg(id));
     }
 
@@ -405,8 +402,7 @@ impl ClientSession {
             }
             Command::Fetch { label, ids } => {
                 for chunk in ids.chunks(MAX_ITEMS) {
-                    let ids = chunk.to_vec();
-                    self.request(out, |id| Message::Fetch { id, label, ids: ids.clone() }, Pending::Fetch(label, ids.clone()));
+                    self.request(out, |id| Message::Fetch { id, label, ids: chunk.to_vec() }, Pending::Fetch(label, chunk.to_vec()));
                 }
             }
             Command::Upload { label, entries } => self.upload(label, entries, out),
@@ -436,7 +432,7 @@ impl ClientSession {
             }
             Command::Signal { label, blob, wrap, auth } => send(out, Message::Signal { label, blob, wrap, auth }),
             Command::StopPath { label } => {
-                for p in self.pending.values_mut() {
+                for (_, p) in self.pending.values_mut() {
                     if matches!(p, Pending::Path(l) if *l == label) {
                         *p = Pending::PathStopped(label);
                     }
@@ -538,7 +534,7 @@ impl ClientSession {
                 // while a Sync of the label runs (a replay above all) its pages still bring
                 // entries from before the push: keeping the push's cursor would skip them for
                 // good if the connection ended first
-                let syncing = self.pending.values().any(|p| matches!(p, Pending::Sync { label: l, .. } if *l == label));
+                let syncing = self.pending.values().any(|(_, p)| matches!(p, Pending::Sync { label: l, .. } if *l == label));
                 event(out, ClientEvent::Events { label, events, cursor: (!syncing).then_some(cursor) })
             }
             Message::Signal { label, blob, wrap, auth } => event(out, ClientEvent::Signal { label, blob, wrap, auth }),
@@ -548,8 +544,7 @@ impl ClientSession {
     }
 
     fn reply(&mut self, now: u64, m: Message, out: &mut Vec<ClientOutput>) {
-        self.sent_at.remove(&m.id());
-        let Some(pending) = self.pending.remove(&m.id()) else {
+        let Some((_, pending)) = self.pending.remove(&m.id()) else {
             event(out, ClientEvent::PeerError(Error::Malformed("reply to no request")));
             return;
         };
@@ -562,8 +557,7 @@ impl ClientSession {
                 }
                 self.samples.push_back(OffsetSample { sent, peer: wall_ms, received: now });
                 self.pongs += 1;
-                let samples: Vec<OffsetSample> = self.samples.iter().copied().collect();
-                if let (true, Some(offset_ms)) = (self.pongs >= MIN_PONGS, estimate_offset(&samples)) {
+                if let (true, Some(offset_ms)) = (self.pongs >= MIN_PONGS, estimate_offset(self.samples.make_contiguous())) {
                     event(out, E::ClockOffset { offset_ms, diagnostic: offset_ms.unsigned_abs() > OFFSET_DIAGNOSTIC_MS });
                 }
             }
@@ -648,10 +642,6 @@ impl ClientSession {
             (_, _) => event(out, E::PeerError(Error::Malformed("reply of the wrong kind"))),
         }
     }
-}
-
-fn send<O: From<Vec<u8>>>(out: &mut Vec<O>, msg: Message) {
-    out.push(O::from(encode_frame(&msg.encode())));
 }
 
 fn event(out: &mut Vec<ClientOutput>, e: ClientEvent) {

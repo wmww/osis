@@ -13,6 +13,11 @@ pub fn encode_frame(body: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Frames `msg` as an engine output.
+pub(crate) fn send<O: From<Vec<u8>>>(out: &mut Vec<O>, msg: crate::Message) {
+    out.push(O::from(encode_frame(&msg.encode())));
+}
+
 /// A Hello is at most about 200 bytes (spec/wire.md §11.1: 16 versions); a first frame above
 /// this is malformed.
 pub const MAX_HELLO_BYTES: usize = 256;

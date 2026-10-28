@@ -20,7 +20,7 @@ fn set(ns: impl IntoIterator<Item = u64>) -> Vec<BlobId> {
 pub(crate) fn reconcile(a: &[BlobId], b: &[BlobId]) -> (BTreeSet<BlobId>, BTreeSet<BlobId>, usize) {
     let mut r = Reconciler::new(a);
     let mut rounds = 0;
-    while r.has_queued() {
+    while r.queued() > 0 {
         rounds += 1;
         assert!(rounds < 64, "no convergence");
         let mut replies = Vec::new();
@@ -144,7 +144,7 @@ fn million_blob_rounds() {
     let t = std::time::Instant::now();
     let mut r = Reconciler::new(&a);
     let (mut rounds, mut msgs, mut up, mut down) = (0usize, 0usize, 0usize, 0usize);
-    while r.has_queued() {
+    while r.queued() > 0 {
         rounds += 1;
         assert!(rounds < 64, "no convergence");
         let mut replies = Vec::new();
