@@ -1898,19 +1898,22 @@ fn creation_histories(samples: u64, seed: u64) -> usize {
             let b = general.update_touched(&held, &t);
             appended += fast.appended();
             // The general path may report more: when several old components merge it continues
-            // one and names the others' things. Each must be a node bringing nothing, or owned
-            // under a thing the fast path names (authority there follows its owner's).
+            // one and names the others' things. Each must be owned under a thing the fast path
+            // names (authority there follows its owner's), or it and its owner chain are the
+            // target of no edge (only the chain reaches it: a node bringing nothing, or a thing
+            // such a node owns).
             let fa: BTreeSet<Tid> = a.evaluated.union(&a.extended).copied().collect();
             let fb: BTreeSet<Tid> = b.evaluated.union(&b.extended).copied().collect();
             let covered = |x: &Tid| {
-                let mut cur = *x;
+                let (mut cur, mut bare) = (*x, true);
                 for _ in 0..64 {
                     if fa.contains(&cur) {
                         return true;
                     }
+                    bare &= held.edge_commits(&cur).is_empty() && held.roster_snapshots(&cur).is_empty();
                     match held.created(&cur) {
                         Some(osis_base::CreationRecord::Thing { owner, .. }) => cur = owner,
-                        _ => return cur == *x && held.edge_commits(x).is_empty() && held.roster_snapshots(x).is_empty(),
+                        _ => return bare,
                     }
                 }
                 false
