@@ -300,3 +300,54 @@ macro_rules! codec_struct {
         }
     };
 }
+
+/// An enum with case IDs and its `Codec`: `codec_enum! { pub enum Priority { 0 Low, 3 Custom(x: i64) } }`
+/// (a payload case names a binding for its value). Type parameters must be `Codec`.
+#[macro_export]
+macro_rules! codec_enum {
+    (@pat $n:ident $c:ident) => { $n::$c };
+    (@pat $n:ident $c:ident $x:ident) => { $n::$c($x) };
+    (@to $id:literal) => { $crate::codec::rt::enum_value($id, None) };
+    (@to $id:literal $x:ident) => { $crate::codec::rt::enum_value($id, Some($crate::Codec::to_value($x))) };
+    (@from $v:ident $p:ident $id:literal $n:ident $c:ident) => {
+        if $p.is_none() { Ok($n::$c) } else { Err($crate::codec::rt::unknown_case($v)) }
+    };
+    (@from $v:ident $p:ident $id:literal $n:ident $c:ident $x:ident) => { $crate::codec::rt::payload($id, $p).map($n::$c) };
+    ($(#[$m:meta])* $vis:vis enum $name:ident $(<$($g:ident),*>)? { $($(#[$cm:meta])* $id:literal $c:ident $(($x:ident : $t:ty))?),* $(,)? }) => {
+        $(#[$m])*
+        $vis enum $name $(<$($g),*>)? { $($(#[$cm])* $c $(($t))?),* }
+        impl $(<$($g: $crate::Codec),*>)? $crate::Codec for $name $(<$($g),*>)? {
+            fn to_value(&self) -> $crate::codec::rt::Value {
+                match self {
+                    $($crate::codec_enum!(@pat $name $c $($x)?) => $crate::codec_enum!(@to $id $($x)?),)*
+                }
+            }
+            fn from_value(v: &$crate::codec::rt::Value) -> Result<Self, $crate::PathError> {
+                match v {
+                    $($crate::codec::rt::Value::Enum($id, p) => $crate::codec_enum!(@from v p $id $name $c $($x)?),)*
+                    _ => Err($crate::codec::rt::unknown_case(v)),
+                }
+            }
+        }
+    };
+}
+
+/// `TryFrom<&Value>` through a schema's typed read of its type `name` (reader defaults, open
+/// structs), and `From<&T> for Value`: for generated types.
+#[macro_export]
+macro_rules! named_type {
+    ($t:ident, $name:literal, $schema:path) => {
+        impl TryFrom<&$crate::osis_base::Value> for $t {
+            type Error = $crate::PathError;
+            fn try_from(v: &$crate::osis_base::Value) -> Result<$t, $crate::PathError> {
+                let n = $crate::typed_read($schema.get(), v, &$crate::Type::named($name))?;
+                $crate::Codec::from_value(&n)
+            }
+        }
+        impl From<&$t> for $crate::osis_base::Value {
+            fn from(t: &$t) -> $crate::osis_base::Value {
+                $crate::Codec::to_value(t)
+            }
+        }
+    };
+}

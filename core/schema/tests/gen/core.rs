@@ -17,38 +17,13 @@ pub mod address {
     pub const URL: osis_schema::FieldId = osis_schema::FieldId(0);
     pub const KEY: osis_schema::FieldId = osis_schema::FieldId(1);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for Address {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `Address`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Address, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("address"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&Address> for osis_schema::osis_base::Value {
-    fn from(t: &Address) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(Address, "address", SCHEMA);
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Box {
-    Sealed(BoxSealed),
-    Symmetric(BoxSymmetric),
-}
-impl osis_schema::Codec for Box {
-    fn to_value(&self) -> osis_schema::codec::rt::Value {
-        match self {
-            Box::Sealed(x) => osis_schema::codec::rt::enum_value(0, Some(osis_schema::Codec::to_value(x))),
-            Box::Symmetric(x) => osis_schema::codec::rt::enum_value(1, Some(osis_schema::Codec::to_value(x))),
-        }
-    }
-    fn from_value(v: &osis_schema::codec::rt::Value) -> Result<Self, osis_schema::PathError> {
-        match v {
-            osis_schema::codec::rt::Value::Enum(0, p) => osis_schema::codec::rt::payload(0, p).map(Box::Sealed),
-            osis_schema::codec::rt::Value::Enum(1, p) => osis_schema::codec::rt::payload(1, p).map(Box::Symmetric),
-            _ => Err(osis_schema::codec::rt::unknown_case(v)),
-        }
+osis_schema::codec_enum! {
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum Box {
+        0 Sealed(x: BoxSealed),
+        1 Symmetric(x: BoxSymmetric),
     }
 }
 /// Case IDs of `Box`.
@@ -58,19 +33,7 @@ pub mod box_ {
     pub const SEALED: osis_schema::CaseId = osis_schema::CaseId(0);
     pub const SYMMETRIC: osis_schema::CaseId = osis_schema::CaseId(1);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for Box {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `Box`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Box, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("box"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&Box> for osis_schema::osis_base::Value {
-    fn from(t: &Box) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(Box, "box", SCHEMA);
 
 osis_schema::codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -88,19 +51,7 @@ pub mod box_key {
     pub const ROLE: osis_schema::FieldId = osis_schema::FieldId(1);
     pub const EPOCH: osis_schema::FieldId = osis_schema::FieldId(2);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for BoxKey {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `BoxKey`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<BoxKey, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("box_key"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&BoxKey> for osis_schema::osis_base::Value {
-    fn from(t: &BoxKey) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(BoxKey, "box_key", SCHEMA);
 
 osis_schema::codec_struct! {
     /// Exactly one of fields 0 and 1, field 3 only with 0 (spec/wire.md §3); typed through `CreationRecord`.
@@ -121,19 +72,7 @@ pub mod creation {
     pub const NONCE: osis_schema::FieldId = osis_schema::FieldId(2);
     pub const CREATOR: osis_schema::FieldId = osis_schema::FieldId(3);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for Creation {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `Creation`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Creation, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("creation"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&Creation> for osis_schema::osis_base::Value {
-    fn from(t: &Creation) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(Creation, "creation", SCHEMA);
 
 osis_schema::codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -153,19 +92,7 @@ pub mod edge {
     pub const INVITE: osis_schema::FieldId = osis_schema::FieldId(2);
     pub const SINCE: osis_schema::FieldId = osis_schema::FieldId(3);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for Edge {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `Edge`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Edge, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("edge"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&Edge> for osis_schema::osis_base::Value {
-    fn from(t: &Edge) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(Edge, "edge", SCHEMA);
 
 osis_schema::codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -183,19 +110,7 @@ pub mod edge_key {
     pub const NODE: osis_schema::FieldId = osis_schema::FieldId(1);
     pub const COMMIT: osis_schema::FieldId = osis_schema::FieldId(2);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for EdgeKey {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `EdgeKey`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<EdgeKey, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("edge_key"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&EdgeKey> for osis_schema::osis_base::Value {
-    fn from(t: &EdgeKey) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(EdgeKey, "edge_key", SCHEMA);
 
 osis_schema::codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -211,19 +126,7 @@ pub mod epoch {
     pub const N: osis_schema::FieldId = osis_schema::FieldId(0);
     pub const NONCE: osis_schema::FieldId = osis_schema::FieldId(1);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for Epoch {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `Epoch`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Epoch, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("epoch"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&Epoch> for osis_schema::osis_base::Value {
-    fn from(t: &Epoch) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(Epoch, "epoch", SCHEMA);
 
 osis_schema::codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -239,19 +142,7 @@ pub mod frontier {
     pub const WRITES: osis_schema::FieldId = osis_schema::FieldId(0);
     pub const COMMITS: osis_schema::FieldId = osis_schema::FieldId(1);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for Frontier {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `Frontier`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Frontier, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("frontier"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&Frontier> for osis_schema::osis_base::Value {
-    fn from(t: &Frontier) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(Frontier, "frontier", SCHEMA);
 
 osis_schema::codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -267,19 +158,7 @@ pub mod history_key {
     pub const ROLE: osis_schema::FieldId = osis_schema::FieldId(0);
     pub const EPOCH: osis_schema::FieldId = osis_schema::FieldId(1);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for HistoryKey {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `HistoryKey`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<HistoryKey, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("history_key"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&HistoryKey> for osis_schema::osis_base::Value {
-    fn from(t: &HistoryKey) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(HistoryKey, "history_key", SCHEMA);
 
 osis_schema::codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -295,35 +174,12 @@ pub mod inbox {
     pub const LABEL: osis_schema::FieldId = osis_schema::FieldId(0);
     pub const SERVERS: osis_schema::FieldId = osis_schema::FieldId(1);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for Inbox {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `Inbox`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Inbox, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("inbox"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&Inbox> for osis_schema::osis_base::Value {
-    fn from(t: &Inbox) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(Inbox, "inbox", SCHEMA);
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum KemKey {
-    X25519Mlkem768(Vec<u8>),
-}
-impl osis_schema::Codec for KemKey {
-    fn to_value(&self) -> osis_schema::codec::rt::Value {
-        match self {
-            KemKey::X25519Mlkem768(x) => osis_schema::codec::rt::enum_value(1, Some(osis_schema::Codec::to_value(x))),
-        }
-    }
-    fn from_value(v: &osis_schema::codec::rt::Value) -> Result<Self, osis_schema::PathError> {
-        match v {
-            osis_schema::codec::rt::Value::Enum(1, p) => osis_schema::codec::rt::payload(1, p).map(KemKey::X25519Mlkem768),
-            _ => Err(osis_schema::codec::rt::unknown_case(v)),
-        }
+osis_schema::codec_enum! {
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum KemKey {
+        1 X25519Mlkem768(x: Vec<u8>),
     }
 }
 /// Case IDs of `KemKey`.
@@ -332,19 +188,7 @@ pub mod kem_key {
     use super::*;
     pub const X25519_MLKEM768: osis_schema::CaseId = osis_schema::CaseId(1);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for KemKey {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `KemKey`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<KemKey, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("kem_key"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&KemKey> for osis_schema::osis_base::Value {
-    fn from(t: &KemKey) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(KemKey, "kem_key", SCHEMA);
 
 osis_schema::codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -364,19 +208,7 @@ pub mod keyset {
     pub const SUITE: osis_schema::FieldId = osis_schema::FieldId(2);
     pub const DELETE_KEY: osis_schema::FieldId = osis_schema::FieldId(3);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for Keyset {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `Keyset`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Keyset, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("keyset"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&Keyset> for osis_schema::osis_base::Value {
-    fn from(t: &Keyset) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(Keyset, "keyset", SCHEMA);
 
 osis_schema::codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -396,41 +228,14 @@ pub mod label {
     pub const SERVERS: osis_schema::FieldId = osis_schema::FieldId(2);
     pub const REPLACED: osis_schema::FieldId = osis_schema::FieldId(3);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for Label {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `Label`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Label, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("label"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&Label> for osis_schema::osis_base::Value {
-    fn from(t: &Label) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(Label, "label", SCHEMA);
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Role {
-    Read,
-    Write,
-    Admin,
-}
-impl osis_schema::Codec for Role {
-    fn to_value(&self) -> osis_schema::codec::rt::Value {
-        match self {
-            Role::Read => osis_schema::codec::rt::enum_value(0, None),
-            Role::Write => osis_schema::codec::rt::enum_value(1, None),
-            Role::Admin => osis_schema::codec::rt::enum_value(2, None),
-        }
-    }
-    fn from_value(v: &osis_schema::codec::rt::Value) -> Result<Self, osis_schema::PathError> {
-        match v {
-            osis_schema::codec::rt::Value::Enum(0, None) => Ok(Role::Read),
-            osis_schema::codec::rt::Value::Enum(1, None) => Ok(Role::Write),
-            osis_schema::codec::rt::Value::Enum(2, None) => Ok(Role::Admin),
-            _ => Err(osis_schema::codec::rt::unknown_case(v)),
-        }
+osis_schema::codec_enum! {
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum Role {
+        0 Read,
+        1 Write,
+        2 Admin,
     }
 }
 /// Case IDs of `Role`.
@@ -441,35 +246,12 @@ pub mod role {
     pub const WRITE: osis_schema::CaseId = osis_schema::CaseId(1);
     pub const ADMIN: osis_schema::CaseId = osis_schema::CaseId(2);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for Role {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `Role`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Role, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("role"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&Role> for osis_schema::osis_base::Value {
-    fn from(t: &Role) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(Role, "role", SCHEMA);
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Sealed {
-    X25519Mlkem768(Vec<u8>),
-}
-impl osis_schema::Codec for Sealed {
-    fn to_value(&self) -> osis_schema::codec::rt::Value {
-        match self {
-            Sealed::X25519Mlkem768(x) => osis_schema::codec::rt::enum_value(1, Some(osis_schema::Codec::to_value(x))),
-        }
-    }
-    fn from_value(v: &osis_schema::codec::rt::Value) -> Result<Self, osis_schema::PathError> {
-        match v {
-            osis_schema::codec::rt::Value::Enum(1, p) => osis_schema::codec::rt::payload(1, p).map(Sealed::X25519Mlkem768),
-            _ => Err(osis_schema::codec::rt::unknown_case(v)),
-        }
+osis_schema::codec_enum! {
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum Sealed {
+        1 X25519Mlkem768(x: Vec<u8>),
     }
 }
 /// Case IDs of `Sealed`.
@@ -478,35 +260,12 @@ pub mod sealed {
     use super::*;
     pub const X25519_MLKEM768: osis_schema::CaseId = osis_schema::CaseId(1);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for Sealed {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `Sealed`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Sealed, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("sealed"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&Sealed> for osis_schema::osis_base::Value {
-    fn from(t: &Sealed) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(Sealed, "sealed", SCHEMA);
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SigningKey {
-    Ed25519(Vec<u8>),
-}
-impl osis_schema::Codec for SigningKey {
-    fn to_value(&self) -> osis_schema::codec::rt::Value {
-        match self {
-            SigningKey::Ed25519(x) => osis_schema::codec::rt::enum_value(1, Some(osis_schema::Codec::to_value(x))),
-        }
-    }
-    fn from_value(v: &osis_schema::codec::rt::Value) -> Result<Self, osis_schema::PathError> {
-        match v {
-            osis_schema::codec::rt::Value::Enum(1, p) => osis_schema::codec::rt::payload(1, p).map(SigningKey::Ed25519),
-            _ => Err(osis_schema::codec::rt::unknown_case(v)),
-        }
+osis_schema::codec_enum! {
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum SigningKey {
+        1 Ed25519(x: Vec<u8>),
     }
 }
 /// Case IDs of `SigningKey`.
@@ -515,19 +274,7 @@ pub mod signing_key {
     use super::*;
     pub const ED25519: osis_schema::CaseId = osis_schema::CaseId(1);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for SigningKey {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `SigningKey`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<SigningKey, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("signing_key"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&SigningKey> for osis_schema::osis_base::Value {
-    fn from(t: &SigningKey) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(SigningKey, "signing_key", SCHEMA);
 
 osis_schema::codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -543,19 +290,7 @@ pub mod step_record {
     pub const STEP: osis_schema::FieldId = osis_schema::FieldId(0);
     pub const CLAIMS: osis_schema::FieldId = osis_schema::FieldId(1);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for StepRecord {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `StepRecord`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<StepRecord, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("step_record"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&StepRecord> for osis_schema::osis_base::Value {
-    fn from(t: &StepRecord) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(StepRecord, "step_record", SCHEMA);
 
 osis_schema::codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -577,19 +312,7 @@ pub mod tenure {
     pub const UNTIL: osis_schema::FieldId = osis_schema::FieldId(3);
     pub const FRONTIER: osis_schema::FieldId = osis_schema::FieldId(4);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for Tenure {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `Tenure`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Tenure, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("tenure"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&Tenure> for osis_schema::osis_base::Value {
-    fn from(t: &Tenure) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(Tenure, "tenure", SCHEMA);
 
 osis_schema::codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

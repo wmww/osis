@@ -3,30 +3,13 @@
 /// The schema this module was generated from.
 pub static SCHEMA: osis_schema::StaticSchema = osis_schema::StaticSchema::new("notes.osis", "//! Notes app schema (example; notes/data-model.md).\nschema 0x7f3a9c21e0d84b6a9b1c5e2d4f607a83;   // random, minted once, never changes\nrevision 4;                                   // bumped on every publish\n\ntype priority = enum { 0 low, 1 medium, 2 high, 3 custom(int) };\ntype status = enum { 0 todo, 1 doing, 2 done, 3 blocked };\n\n/// A task inside a note.\ntype task = struct {\n    1 title: string,\n    2 done: bool,\n    3 tags: set<string>,\n    4 priority: option<priority>,     // option defaults to none\n    6 due: option<timestamp>,\n    7 status: option<status> succeeds 2,   // new form for `done`\n    8 weight: float = 1.0,\n    reserved 5,\n};\n\n/// A labelled value; parametric.\ntype tagged<T> = struct { 0 label: string, 1 value: T };\n\n/// Markdown; not guaranteed valid.\naspect /note/body: markdown [indexed];\naspect /note/title: string [indexed];\naspect /note/tasks: list<task>;\naspect /note/views: counter<int>;\naspect /note/last_opened: timestamp [expires: 30d];\naspect /note/pinned: map<tid, tagged<int>> [by: writer, keep_at_most: 0s];\n/// Someone is typing in the note.\nsignal /note/typing: struct { 0 who: tid, 1 at: timestamp };\n");
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Priority {
-    Low,
-    Medium,
-    High,
-    Custom(i64),
-}
-impl osis_schema::Codec for Priority {
-    fn to_value(&self) -> osis_schema::codec::rt::Value {
-        match self {
-            Priority::Low => osis_schema::codec::rt::enum_value(0, None),
-            Priority::Medium => osis_schema::codec::rt::enum_value(1, None),
-            Priority::High => osis_schema::codec::rt::enum_value(2, None),
-            Priority::Custom(x) => osis_schema::codec::rt::enum_value(3, Some(osis_schema::Codec::to_value(x))),
-        }
-    }
-    fn from_value(v: &osis_schema::codec::rt::Value) -> Result<Self, osis_schema::PathError> {
-        match v {
-            osis_schema::codec::rt::Value::Enum(0, None) => Ok(Priority::Low),
-            osis_schema::codec::rt::Value::Enum(1, None) => Ok(Priority::Medium),
-            osis_schema::codec::rt::Value::Enum(2, None) => Ok(Priority::High),
-            osis_schema::codec::rt::Value::Enum(3, p) => osis_schema::codec::rt::payload(3, p).map(Priority::Custom),
-            _ => Err(osis_schema::codec::rt::unknown_case(v)),
-        }
+osis_schema::codec_enum! {
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum Priority {
+        0 Low,
+        1 Medium,
+        2 High,
+        3 Custom(x: i64),
     }
 }
 /// Case IDs of `Priority`.
@@ -38,44 +21,15 @@ pub mod priority {
     pub const HIGH: osis_schema::CaseId = osis_schema::CaseId(2);
     pub const CUSTOM: osis_schema::CaseId = osis_schema::CaseId(3);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for Priority {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `Priority`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Priority, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("priority"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&Priority> for osis_schema::osis_base::Value {
-    fn from(t: &Priority) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(Priority, "priority", SCHEMA);
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Status {
-    Todo,
-    Doing,
-    Done,
-    Blocked,
-}
-impl osis_schema::Codec for Status {
-    fn to_value(&self) -> osis_schema::codec::rt::Value {
-        match self {
-            Status::Todo => osis_schema::codec::rt::enum_value(0, None),
-            Status::Doing => osis_schema::codec::rt::enum_value(1, None),
-            Status::Done => osis_schema::codec::rt::enum_value(2, None),
-            Status::Blocked => osis_schema::codec::rt::enum_value(3, None),
-        }
-    }
-    fn from_value(v: &osis_schema::codec::rt::Value) -> Result<Self, osis_schema::PathError> {
-        match v {
-            osis_schema::codec::rt::Value::Enum(0, None) => Ok(Status::Todo),
-            osis_schema::codec::rt::Value::Enum(1, None) => Ok(Status::Doing),
-            osis_schema::codec::rt::Value::Enum(2, None) => Ok(Status::Done),
-            osis_schema::codec::rt::Value::Enum(3, None) => Ok(Status::Blocked),
-            _ => Err(osis_schema::codec::rt::unknown_case(v)),
-        }
+osis_schema::codec_enum! {
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum Status {
+        0 Todo,
+        1 Doing,
+        2 Done,
+        3 Blocked,
     }
 }
 /// Case IDs of `Status`.
@@ -87,19 +41,7 @@ pub mod status {
     pub const DONE: osis_schema::CaseId = osis_schema::CaseId(2);
     pub const BLOCKED: osis_schema::CaseId = osis_schema::CaseId(3);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for Status {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `Status`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Status, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("status"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&Status> for osis_schema::osis_base::Value {
-    fn from(t: &Status) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(Status, "status", SCHEMA);
 
 osis_schema::codec_struct! {
     /// A labelled value; parametric.
@@ -142,19 +84,7 @@ pub mod task {
     pub const STATUS: osis_schema::FieldId = osis_schema::FieldId(7);
     pub const WEIGHT: osis_schema::FieldId = osis_schema::FieldId(8);
 }
-impl TryFrom<&osis_schema::osis_base::Value> for Task {
-    type Error = osis_schema::PathError;
-    /// Typed read through the schema (reader defaults, open structs), then into `Task`.
-    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Task, osis_schema::PathError> {
-        let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("task"))?;
-        osis_schema::Codec::from_value(&n)
-    }
-}
-impl From<&Task> for osis_schema::osis_base::Value {
-    fn from(t: &Task) -> osis_schema::osis_base::Value {
-        osis_schema::Codec::to_value(t)
-    }
-}
+osis_schema::named_type!(Task, "task", SCHEMA);
 
 osis_schema::codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

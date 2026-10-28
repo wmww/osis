@@ -1,5 +1,5 @@
-//! Code generation from a schema: plain Rust structs and enums with `Codec`
-//! (`codec_struct!` for structs), `TryFrom<&Value>` through the schema's typed read, field and
+//! Code generation from a schema: plain Rust structs and enums with `Codec` (`codec_struct!`,
+//! `codec_enum!`), `TryFrom<&Value>` through the schema's typed read (`named_type!`), field and
 //! case constants for paths, one `Aspect<T>`/`Signal<T>` constant per declared AK and signal kind.
 //! Usable from `build.rs` (`generate`) or the `osis-schema-gen` binary.
 //!
@@ -149,22 +149,17 @@ impl Gen {
 
     fn item(&mut self, it: &Item) -> Result<(), Error> {
         let generics = if it.params.is_empty() { String::new() } else { format!("<{}>", it.params.join(", ")) };
-        let bounds = if it.params.is_empty() {
-            String::new()
-        } else {
-            format!("<{}>", it.params.iter().map(|p| format!("{p}: {P}::Codec")).collect::<Vec<_>>().join(", "))
-        };
         let derive = "#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]";
         // Structs and enums become items; anything else (aliases included) a type alias.
-        let body = it.body.clone();
-        let mut s = String::new();
-        if let Some(d) = &it.doc {
-            doc_lines(&mut s, d, "    ");
-        }
-        match &body {
+        let doc = |out: &mut String, indent: &str| {
+            if let Some(d) = &it.doc {
+                doc_lines(out, d, indent);
+            }
+        };
+        match &it.body {
             Type::Struct(st) => {
                 let _ = writeln!(self.out, "{P}::codec_struct! {{");
-                self.out.push_str(&s);
+                doc(&mut self.out, "    ");
                 let _ = writeln!(self.out, "    {derive}\n    pub struct {}{generics} {{", it.rust);
                 let mut consts = String::new();
                 for (id, f) in &st.fields {
@@ -179,49 +174,37 @@ impl Gen {
                 let _ = writeln!(self.out, "/// Field IDs of `{}`.\npub mod {} {{\n    #[allow(unused_imports)]\n    use super::*;\n{consts}}}", it.rust, snake(&it.rust));
             }
             Type::Enum(en) => {
-                self.out.push_str(&s.replace("    ///", "///"));
-                let _ = writeln!(self.out, "{derive}\npub enum {}{generics} {{", it.rust);
-                let (mut to, mut from, mut consts) = (String::new(), String::new(), String::new());
+                let _ = writeln!(self.out, "{P}::codec_enum! {{");
+                doc(&mut self.out, "    ");
+                let _ = writeln!(self.out, "    {derive}\n    pub enum {}{generics} {{", it.rust);
+                let mut consts = String::new();
                 for (id, c) in &en.cases {
                     let v = camel(&c.name);
                     if let Some(d) = &c.doc {
-                        doc_lines(&mut self.out, d, "    ");
+                        doc_lines(&mut self.out, d, "        ");
                     }
                     match &c.payload {
                         None => {
-                            let _ = writeln!(self.out, "    {v},");
-                            let _ = writeln!(to, "            {}::{v} => {P}::codec::rt::enum_value({id}, None),", it.rust);
-                            let _ = writeln!(from, "            {P}::codec::rt::Value::Enum({id}, None) => Ok({}::{v}),", it.rust);
+                            let _ = writeln!(self.out, "        {id} {v},");
                         }
                         Some(p) => {
                             let t = self.rust_type(p, &format!("{}{v}", it.rust), false)?;
-                            let _ = writeln!(self.out, "    {v}({t}),");
-                            let _ = writeln!(to, "            {}::{v}(x) => {P}::codec::rt::enum_value({id}, Some({P}::Codec::to_value(x))),", it.rust);
-                            let _ = writeln!(from, "            {P}::codec::rt::Value::Enum({id}, p) => {P}::codec::rt::payload({id}, p).map({}::{v}),", it.rust);
+                            let _ = writeln!(self.out, "        {id} {v}(x: {t}),");
                         }
                     }
                     let _ = writeln!(consts, "    pub const {}: {P}::CaseId = {P}::CaseId({id});", c.name.to_uppercase());
                 }
-                let _ = writeln!(self.out, "}}");
-                let _ = writeln!(
-                    self.out,
-                    "impl{bounds} {P}::Codec for {}{generics} {{\n    fn to_value(&self) -> {P}::codec::rt::Value {{\n        match self {{\n{to}        }}\n    }}\n    fn from_value(v: &{P}::codec::rt::Value) -> Result<Self, {P}::PathError> {{\n        match v {{\n{from}            _ => Err({P}::codec::rt::unknown_case(v)),\n        }}\n    }}\n}}",
-                    it.rust
-                );
+                let _ = writeln!(self.out, "    }}\n}}");
                 let _ = writeln!(self.out, "/// Case IDs of `{}`.\npub mod {} {{\n    #[allow(unused_imports)]\n    use super::*;\n{consts}}}", it.rust, snake(&it.rust));
             }
             _ => {
-                let t = self.rust_type(&body, &it.rust, false)?;
-                self.out.push_str(&s.replace("    ///", "///"));
+                let t = self.rust_type(&it.body, &it.rust, false)?;
+                doc(&mut self.out, "");
                 let _ = writeln!(self.out, "pub type {}{generics} = {t};", it.rust);
             }
         }
-        if let (Some(name), true) = (&it.schema_name, it.params.is_empty() && matches!(body, Type::Struct(_) | Type::Enum(_))) {
-            let _ = writeln!(
-                self.out,
-                "impl TryFrom<&{P}::osis_base::Value> for {r} {{\n    type Error = {P}::PathError;\n    /// Typed read through the schema (reader defaults, open structs), then into `{r}`.\n    fn try_from(v: &{P}::osis_base::Value) -> Result<{r}, {P}::PathError> {{\n        let n = {P}::typed_read(SCHEMA.get(), v, &{P}::Type::named({name:?}))?;\n        {P}::Codec::from_value(&n)\n    }}\n}}\nimpl From<&{r}> for {P}::osis_base::Value {{\n    fn from(t: &{r}) -> {P}::osis_base::Value {{\n        {P}::Codec::to_value(t)\n    }}\n}}",
-                r = it.rust
-            );
+        if let (Some(name), true) = (&it.schema_name, it.params.is_empty() && matches!(it.body, Type::Struct(_) | Type::Enum(_))) {
+            let _ = writeln!(self.out, "{P}::named_type!({}, {name:?}, SCHEMA);", it.rust);
         }
         self.out.push('\n');
         Ok(())
