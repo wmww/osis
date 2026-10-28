@@ -759,19 +759,23 @@ impl SyncEngine {
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.budget = Some(entries_left);
         }
-        if let Some((_, mut o)) = self.inbox_sent.remove(&(server, b)) {
+        // a queued deposit's answer
+        let now = self.raw_now();
+        if let Some(o) = self.outbox.get_mut(&(server, b)).filter(|o| o.sent.is_some()) {
             let retry = matches!(code, Code::UNKNOWN_LABEL | Code::RATE_LIMITED | Code::BUDGET_FULL | Code::NOT_HEAD);
             o.tries += 1;
-            if !retry {
-                self.state.remove_out(&server, &b);
-            } else if o.tries > super::local::MAX_INBOX_TRIES {
-                self.diag(format!("deposit under {l:?} dropped after {} refusals (code {})", o.tries - 1, code.0));
-                self.state.remove_out(&server, &b);
-            } else {
+            o.sent = None;
+            let tries = o.tries;
+            if retry && tries <= super::local::MAX_INBOX_TRIES {
                 // retry_ms, doubling per refusal, at most an hour
-                let back = self.cfg.retry_ms.saturating_mul(1u64 << (o.tries - 1).min(20)).min(3_600_000);
-                o.after = self.raw_now().saturating_add(back);
-                self.outbox.push(o);
+                let back = self.cfg.retry_ms.saturating_mul(1u64 << (tries - 1).min(20)).min(3_600_000);
+                o.after = now.saturating_add(back);
+            } else {
+                if retry {
+                    self.diag(format!("deposit under {l:?} dropped after {} refusals (code {})", tries - 1, code.0));
+                }
+                self.outbox.remove(&(server, b));
+                self.state.remove_out(&server, &b);
             }
         }
         match code {
