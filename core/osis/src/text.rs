@@ -61,7 +61,7 @@ fn arm(db: &Osis, st: Weak<Mutex<State>>, b: Bind, d: std::time::Duration) -> bo
                 Some(_) => {
                     s.armed = false;
                     // on failure the edits stay in the buffer; the next edit or commit retries
-                    if let Err(e) = flush(&db, b.tid, &b.key, &b.path, b.seq, &mut s) {
+                    if let Err(e) = flush(&db, &b, &mut s) {
                         uncommitted(&db, b.tid, &e);
                     } else {
                         s.last_edit = None;
@@ -76,17 +76,14 @@ fn arm(db: &Osis, st: Weak<Mutex<State>>, b: Bind, d: std::time::Duration) -> bo
 /// A text buffer bound to a string position of an aspect.
 pub struct TextSession {
     db: Osis,
-    tid: Tid,
-    key: crate::Key,
-    path: Path,
-    seq: bool,
+    b: Bind,
     st: Arc<Mutex<State>>,
     _sub: Option<Subscription>,
 }
 
 impl std::fmt::Debug for TextSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TextSession({} {})", self.tid, self.key.ak)
+        write!(f, "TextSession({} {})", self.b.tid, self.b.key.ak)
     }
 }
 
@@ -96,13 +93,13 @@ fn char_range(s: &str, r: &Range<usize>) -> Result<Range<usize>> {
 }
 
 /// Commits `base -> buf` of a session; `None` when nothing changed.
-fn flush(db: &Osis, tid: Tid, key: &crate::Key, path: &Path, seq: bool, st: &mut State) -> Result<Option<Committed>> {
+fn flush(db: &Osis, b: &Bind, st: &mut State) -> Result<Option<Committed>> {
     if st.buf == st.base {
         return Ok(None);
     }
-    let op = if seq { Op::Edit { base: Value::Str(st.base.clone()), new: Value::Str(st.buf.clone()) } } else { Op::Set(Value::Str(st.buf.clone())) };
+    let op = if b.seq { Op::Edit { base: Value::Str(st.base.clone()), new: Value::Str(st.buf.clone()) } } else { Op::Set(Value::Str(st.buf.clone())) };
     let mut w = db.write();
-    w.raw_op(tid, key, PathOp { path: crate::write::segs(path)?, op })?;
+    w.raw_op(b.tid, &b.key, PathOp { path: crate::write::segs(&b.path)?, op })?;
     let c = w.commit()?;
     st.base = st.buf.clone();
     Ok(c)
@@ -121,18 +118,19 @@ impl Osis {
             Some(_) => return Err(Error::Invalid("not a string".into())),
         };
         let st = Arc::new(Mutex::new(State { base: now.clone(), buf: now, last_edit: None, armed: false, on_remote: None }));
-        let (st2, key2, path2) = (st.clone(), key.clone(), path.clone());
-        let sub = self.at(tid, key.clone()).on_change(move |db, c| {
+        let b = Bind { tid, key, path, seq };
+        let (st2, b2) = (st.clone(), b.clone());
+        let sub = self.at(tid, b.key.clone()).on_change(move |db, c| {
             if !matches!(c.source, Source::Remote(_) | Source::Derived(_)) {
                 return;
             }
             let mut s = lock(&st2);
             // local edits first, rebased by the crdt; then the merged text (edits that cannot
             // be committed are reported and dropped from the buffer: the merged text wins)
-            if let Err(e) = flush(db, tid, &key2, &path2, seq, &mut s) {
+            if let Err(e) = flush(db, &b2, &mut s) {
                 uncommitted(db, tid, &e);
             }
-            let merged = match db.read(|r| r.get_path(tid, &key2, &path2)) {
+            let merged = match db.read(|r| r.get_path(tid, &b2.key, &b2.path)) {
                 Ok(Some(Value::Str(x))) => x,
                 _ => return,
             };
@@ -144,7 +142,7 @@ impl Osis {
                 }
             }
         })?;
-        Ok(TextSession { db: self.clone(), tid, key, path, seq, st, _sub: Some(sub) })
+        Ok(TextSession { db: self.clone(), b, st, _sub: Some(sub) })
     }
 }
 
@@ -163,13 +161,12 @@ impl TextSession {
     fn edit(&self, f: impl FnOnce(&mut String) -> Result<()>) -> Result<()> {
         let mut s = lock(&self.st);
         if s.last_edit.is_some_and(|t| t.elapsed() >= self.db.inner.idle_commit) {
-            flush(&self.db, self.tid, &self.key, &self.path, self.seq, &mut s)?;
+            flush(&self.db, &self.b, &mut s)?;
         }
         f(&mut s.buf)?;
         s.last_edit = Some(Instant::now());
         if !s.armed {
-            let b = Bind { tid: self.tid, key: self.key.clone(), path: self.path.clone(), seq: self.seq };
-            s.armed = arm(&self.db, Arc::downgrade(&self.st), b, self.db.inner.idle_commit);
+            s.armed = arm(&self.db, Arc::downgrade(&self.st), self.b.clone(), self.db.inner.idle_commit);
         }
         Ok(())
     }
@@ -200,7 +197,7 @@ impl TextSession {
     /// Commits what changed since the last commit as one commit.
     pub fn commit(&self) -> Result<Option<Committed>> {
         let mut s = lock(&self.st);
-        let c = flush(&self.db, self.tid, &self.key, &self.path, self.seq, &mut s)?;
+        let c = flush(&self.db, &self.b, &mut s)?;
         s.last_edit = None;
         Ok(c)
     }
