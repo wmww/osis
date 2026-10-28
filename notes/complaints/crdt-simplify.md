@@ -3,3 +3,5 @@
 
 - `tools/wt claim` found wt1's target at 15 GB (stacked generations) and deleted it; the first `cargo test -p osis-crdt` was cold (about 50 s, fine for one crate).
 - Finding dead public API took a script: rustc's dead-code lint does not see `pub` items no other crate calls, so unused API (`Fragment::placement`, `struct_skeleton`, the per-author un-merge) sat unnoticed. `grep -w <fn>` over `git ls-files '*.rs'` outside the crate per public fn worked.
+- `claudewait ID` on a background command of the form `uptime; for ...; done > file; uptime` printed "exit code unknown after 0s, finished earlier" at once, three times, while the loop was still running; I had to wait for the task notification instead.
+- Release A/B timings of `budget_big_*` swing 2-3x between runs at load 5-11; only alternating copies of the two test binaries (`cargo test --release --no-run`, copy `target/release/deps/osis_crdt-*`) gave comparable numbers.
