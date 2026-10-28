@@ -1680,7 +1680,8 @@ impl SyncEngine {
         }
         let (Some(write), Some(head)) = (keys.write.clone(), head) else { return Ok(false) };
         let a = self.engine.core.secret_actor(&g).unwrap_or(g);
-        let ids: Vec<CommitId> = self.engine.core.commits.iter().filter(|(_, m)| m.header.kind.is_membership() && m.header.aspects.iter().any(|x| x.tid == a)).map(|(id, _)| *id).collect();
+        let core = &self.engine.core;
+        let ids: Vec<CommitId> = core.by_thing.get(&a).into_iter().flatten().filter(|c| core.commits.get(c).is_some_and(|m| m.view.kind.is_membership())).copied().collect();
         let mut uploads = Vec::new();
         for id in ids {
             for b in self.engine.bodies(&id)? {
@@ -1841,20 +1842,22 @@ impl SyncEngine {
             return Vec::new();
         }
         let kept = |ak: &str| ct::is_membership_class(ak) || matches!(ak, "/created" | "/node" | "/reach" | "/seen");
-        let mut content = BTreeSet::new();
-        let mut keep = BTreeSet::new();
-        for m in self.engine.core.commits.values() {
-            let h = &m.header;
-            let membership = h.aspects.iter().any(|a| kept(a.ak.as_str()));
-            for ch in h.chunks.iter().filter(|ch| unknown.contains(&ch.blob)) {
-                if membership {
-                    keep.insert(ch.blob);
-                } else {
-                    content.insert(ch.blob);
+        let core = &self.engine.core;
+        // the commits listing each (`by_chunk`, their views)
+        unknown
+            .into_iter()
+            .filter(|b| {
+                let listers = core.by_chunk.get(b).into_iter().flatten().filter_map(|c| core.commits.get(c));
+                let mut any = false;
+                for m in listers {
+                    if m.view.aspects.iter().any(|a| kept(a.ak.as_str())) {
+                        return false;
+                    }
+                    any = true;
                 }
-            }
-        }
-        content.difference(&keep).copied().collect()
+                any
+            })
+            .collect()
     }
 
     /// Whether an entry of commit `c` holding `parts` is another node's card that no member
@@ -2203,17 +2206,8 @@ impl SyncEngine {
         if cands.is_empty() {
             return Ok((out, BTreeSet::new()));
         }
-        if self.listers.is_none() {
-            let mut m: BTreeMap<BlobId, BTreeSet<CommitId>> = BTreeMap::new();
-            for (id, x) in self.engine.core.commits.iter() {
-                for ch in &x.header.chunks {
-                    m.entry(ch.blob).or_default().insert(*id);
-                }
-            }
-            self.listers = Some(m);
-        }
         for b in cands {
-            let listers: Vec<CommitId> = self.listers.as_ref().and_then(|m| m.get(b)).into_iter().flatten().copied().collect();
+            let listers: Vec<CommitId> = self.engine.core.by_chunk.get(b).into_iter().flatten().copied().collect();
             let mut first = None;
             let mut live = false;
             for id in listers {

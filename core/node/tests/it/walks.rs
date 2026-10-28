@@ -307,13 +307,18 @@ fn new_things_between_opens_still_restore() {
 
 /// What a node computes, opened from the persisted index and then rebuilt from the commit
 /// records: validity, perm's timelines and the states of `things` all equal what it had; the
-/// open decodes no content commit's header (`LazyHeader`: only membership commits', which perm's
-/// adaptation reads).
+/// open decodes no header (`LazyHeader`; perm's adaptation reads the views and `node/edges`
+/// rows, a membership commit's frontier among the view).
 fn open_equals_rebuild(e: &mut Engine, things: &[Tid], at: &str) {
+    open_equals_rebuild_decoding(e, things, 0, at);
+}
+
+/// `open_equals_rebuild` where the open decodes `decoded` headers.
+fn open_equals_rebuild_decoding(e: &mut Engine, things: &[Tid], decoded: usize, at: &str) {
     assert!(e.index_current().unwrap(), "{at}: index not current");
     let had = (validity(&e.index_digest()), e.perm_digest(false), states(e, things));
     e.reload_index().unwrap();
-    assert_eq!(e.content_headers_decoded(), 0, "{at}: the open decoded content headers");
+    assert_eq!(e.headers_decoded(), decoded, "{at}: headers the open decoded");
     assert_eq!((validity(&e.index_digest()), e.perm_digest(false), states(e, things)), had, "{at}: opened from the index");
     e.rebuild_index().unwrap();
     assert_eq!((validity(&e.index_digest()), e.perm_digest(false), states(e, things)), had, "{at}: rebuilt");
@@ -439,4 +444,57 @@ fn open_equals_rebuild_after_a_crash() {
         crashed_any = true;
     }
     assert!(crashed_any);
+}
+
+/// A frontier covering `x`'s writes on `t`'s tags up to `n`, padded past `CHUNK_THRESHOLD` when
+/// `big` (it then goes by link).
+fn tags_frontier(t: Tid, x: Tid, n: u64, big: bool) -> ct::Frontier {
+    let tags = |n: u64| std::collections::BTreeMap::from([("/t/tags".to_string(), std::collections::BTreeMap::from([(x, n)]))]);
+    let mut writes = std::collections::BTreeMap::from([(t, tags(n))]);
+    for i in 0..if big { 4000u32 } else { 0 } {
+        let b = i.to_be_bytes();
+        writes.insert(Tid::from_bytes([b[0], b[1], b[2], b[3], 9, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]), tags(5));
+    }
+    ct::Frontier { writes, commits: Default::default() }
+}
+
+// spec/requirements.md, Decentralization; spec/permissions.md §5.1 (a demotion's frontier keeps
+// what the demoter had received), §6 (a roster snapshot's ledger, its large frontiers by link):
+// demotions with an inline and a linked frontier, then a roster snapshot whose ledger links one;
+// an open from the persisted index (perm's adaptation from the views, the frontier among them,
+// and the `node/edges` rows) computes what a rebuild computes and decodes only the snapshot's
+// header (its chunk list holds the linked tenure frontier)
+#[test]
+fn open_equals_rebuild_after_demotions_and_a_roster_snapshot() {
+    let mut lp = LocalPeer::new(2, 0xde70, T0).unwrap();
+    lp.sync_all().unwrap();
+    let (a, x) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, a);
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let demote = |lp: &mut LocalPeer, f: ct::Frontier| {
+        let mut m = Mutation::new();
+        m.op(t, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(x)) }).unwrap();
+        m.frontier(f.to_value());
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    for (n, big) in [(1, false), (2, true)] {
+        set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
+        lp.sync_all().unwrap();
+        let got = add_tag(&mut lp, 1, t, &format!("x{n}"));
+        // a write the demoter has not received: dropped by the frontier
+        add_tag(&mut lp, 1, t, &format!("late{n}"));
+        let pk = lp.packages(1).unwrap();
+        lp.deliver(0, pk.iter().find(|p| p.id == got).unwrap()).unwrap();
+        demote(&mut lp, tags_frontier(t, x, n * 2 - 1, big));
+        open_equals_rebuild(&mut lp.peers[0].engine, &[t], &format!("demotion {n}"));
+        lp.sync_all().unwrap();
+        let Some(Value::Set(tags)) = lp.peers[0].engine.get(&t, &ak("/t/tags")).unwrap() else { panic!("demotion {n}: no tags") };
+        assert!(tags.contains(&s(&format!("x{n}"))) && !tags.contains(&s(&format!("late{n}"))), "demotion {n}: the unreceived write dropped");
+    }
+    let s = *lp.peers[0].engine.roster_snapshot(&t, None).unwrap().commits.last().unwrap();
+    assert!(lp.peers[0].engine.header(&s).is_some_and(|h| !h.chunks.is_empty()), "the ledger links a frontier");
+    open_equals_rebuild_decoding(&mut lp.peers[0].engine, &[t], 1, "roster snapshot");
+    sync(&mut lp, 0, 1);
+    open_equals_rebuild_decoding(&mut lp.peers[1].engine, &[t], 1, "roster snapshot (receiver)");
 }

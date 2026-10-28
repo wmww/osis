@@ -86,6 +86,11 @@ pub struct View {
     /// Some list goes by link: the header is resolved from blobs at open (decoded there).
     pub linked: bool,
     pub aspects: Vec<AspectView>,
+    /// A membership commit's frontier (`validity::header_frontier`; perm's adaptation reads it
+    /// for demotions); `None` on other kinds.
+    pub frontier: Option<Arc<osis_perm::Frontier>>,
+    /// The blobs of the chunk list (`Core::by_chunk`).
+    pub chunks: Vec<osis_base::BlobId>,
 }
 
 /// One aspect entry as `View` keeps it.
@@ -109,6 +114,8 @@ impl View {
             actor: h.actor,
             linked: h.links != osis_commit::Links::default(),
             aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, bounded: crate::retention::bounded(a) }).collect(),
+            frontier: if h.kind == osis_commit::Kind::Membership { crate::apply::validity::header_frontier(h) } else { None },
+            chunks: h.chunks.iter().map(|c| c.blob).collect(),
         }
     }
 }
@@ -255,6 +262,14 @@ impl Owned {
             Form::Commit => Owned::Commit(*id),
         })
     }
+    /// `of` from the commit's `View`.
+    pub fn of_view(v: &View, id: &CommitId, ai: usize) -> Option<Owned> {
+        let a = v.aspects.get(ai)?;
+        Some(match v.form {
+            Form::Node => Owned::Node { node: v.author, lo: a.lo, hi: a.hi },
+            Form::Commit => Owned::Commit(*id),
+        })
+    }
     /// Whether `d` (an owner dot, never `Derived`) belongs to this delta.
     pub fn owns(&self, d: &Dot) -> bool {
         match (self, d.src.kind()) {
@@ -287,6 +302,7 @@ macro_rules! journaled {
         c.snapshots.$m();
         c.carried.$m();
         c.by_thing.$m();
+        c.by_chunk.$m();
         c.ranges.$m();
         c.pending.$m();
         c.syncing.$m();
@@ -363,6 +379,8 @@ pub struct Core {
     pub carried: JMap<(Tid, Ak), Vec<crate::apply::validity::Carried>>,
     /// Held commits per thing they hold a delta of (re-judging a thing's deltas).
     pub by_thing: JSetMap<Tid, CommitId>,
+    /// The commits whose header lists each chunk blob (`View::chunks`).
+    pub by_chunk: JSetMap<osis_base::BlobId, CommitId>,
     /// Node-form ranges per (tid, ak, node): lo -> (hi, commit).
     pub ranges: JNested<(Tid, Ak, Tid), u64, (u64, CommitId)>,
     pub pending: JMap<CommitId, Reason>,
@@ -651,6 +669,7 @@ impl Core {
             snapshots: JMap::default(),
             carried: JMap::default(),
             by_thing: JSetMap::default(),
+            by_chunk: JSetMap::default(),
             ranges: JNested::default(),
             pending: JMap::default(),
             waits: crate::apply::Waits::default(),

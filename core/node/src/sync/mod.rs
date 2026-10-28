@@ -364,9 +364,6 @@ pub struct SyncEngine {
     pub(crate) synced_closures: BTreeMap<Tid, Arc<BTreeSet<Tid>>>,
     /// Engine changes not yet spread to the labels' work sets (`spread_touches`).
     pub(crate) touched: work::Touched,
-    /// The commits whose headers list each chunk blob (`dropped_chunks`; built on first use,
-    /// kept by applied commits).
-    pub(crate) listers: Option<BTreeMap<osis_base::BlobId, BTreeSet<osis_base::CommitId>>>,
     /// Peer sessions this node serves (member peer, spec/sync.md §5).
     pub(crate) served: BTreeMap<ConnId, serve::Served>,
     /// Steps peers registered here since start, by label.
@@ -491,7 +488,6 @@ impl SyncEngine {
             synced_closures: BTreeMap::new(),
             touched: work::Touched::default(),
             own_keys: BTreeSet::new(),
-            listers: None,
             peer_steps: BTreeMap::new(),
             lan: BTreeMap::new(),
             lan_rotate: false,
@@ -723,11 +719,6 @@ impl SyncEngine {
                     if let Some(h) = self.engine.header(&id) {
                         // a creation record moves the roles downstream of the thing
                         roots.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "/created").map(|a| a.tid));
-                        if let Some(ls) = self.listers.as_mut() {
-                            for ch in &h.chunks {
-                                ls.entry(ch.blob).or_default().insert(id);
-                            }
-                        }
                     }
                     if let Some(h) = self.engine.header(&id)
                         && (h.kind.is_membership() || h.aspects.iter().any(|a| a.ak.as_str() == "/label"))

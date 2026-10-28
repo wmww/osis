@@ -9,6 +9,7 @@ use osis_crypto::{CryptoRngCore, DeleteSecret, Epoch, LabelRole, Secret32, Signi
 use osis_keys::{ActorEpochs, WrapEpoch};
 use osis_label::Step;
 use osis_schema::core_types as ct;
+use std::collections::BTreeSet;
 
 /// One projection of a held commit (spec/sync.md §3): the deltas of one (reader actor,
 /// retention class), or a size split of one.
@@ -71,9 +72,9 @@ pub struct BodyCtx {
 }
 
 impl BodyCtx {
-    /// Whether a commit with header `h` may have bodies under the group's labels.
-    pub(crate) fn touches(&self, h: &osis_commit::Header) -> bool {
-        h.aspects.iter().any(|a| self.closure.contains(&a.tid) || self.published.contains(&a.tid) && matches!(a.ak.as_str(), "/label" | "/created"))
+    /// Whether a commit (its `View`) may have bodies under the group's labels.
+    pub(crate) fn touches(&self, v: &crate::engine::View) -> bool {
+        v.aspects.iter().any(|a| self.closure.contains(&a.tid) || self.published.contains(&a.tid) && matches!(a.ak.as_str(), "/label" | "/created"))
     }
 }
 
@@ -152,10 +153,21 @@ impl Engine {
     }
 
     /// `label_bodies` without plaintexts, from a per-commit cache (`Core::bodies`): a pass after a
-    /// change projects only the commits it changed.
+    /// change projects only the commits it changed. The commits are found through `by_thing` and
+    /// `by_aspect` (O(the closure's commits), no header decoded when the cache holds them), in ID
+    /// order.
     pub fn label_bodies_meta(&mut self, g: &Tid) -> Result<Vec<Body>> {
         let ctx = self.body_ctx(g);
-        let ids: Vec<CommitId> = self.core.commits.iter().filter(|(_, m)| ctx.touches(&m.header)).map(|(id, _)| *id).collect();
+        let core = &self.core;
+        let mut ids: BTreeSet<CommitId> = ctx.closure.iter().flat_map(|t| core.by_thing.get(t).into_iter().flatten().copied()).collect();
+        for t in ctx.published.iter() {
+            for ak in ["/label", "/created"] {
+                let Ok(ak) = osis_base::Ak::new(ak) else { continue };
+                ids.extend(core.by_aspect.get(&(*t, ak)).into_iter().flatten().map(|x| x.1));
+            }
+        }
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(ids, core.commits.iter().filter(|(_, m)| ctx.touches(&m.view)).map(|(id, _)| *id).collect::<BTreeSet<_>>(), "label commits by index");
         let mut out = Vec::new();
         for id in ids {
             out.extend(self.commit_bodies_under(&ctx, &id)?);
@@ -172,7 +184,8 @@ impl Engine {
     /// The bodies of commit `id` a label of the group of `ctx` must hold (`label_bodies_meta`).
     pub fn commit_bodies_under(&mut self, ctx: &BodyCtx, id: &CommitId) -> Result<Vec<Body>> {
         let id = *id;
-        let Some(h) = self.header(&id) else { return Ok(Vec::new()) };
+        // the view: the header is decoded only to project bodies the cache misses
+        let Some(h) = self.core.commits.get(&id).map(|m| m.view.clone()) else { return Ok(Vec::new()) };
         if !ctx.touches(&h) {
             return Ok(Vec::new());
         }
