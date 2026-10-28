@@ -658,13 +658,13 @@ pub(crate) fn parse(bytes: &[u8]) -> Option<Saved<'_>> {
     Some(Saved { tag, body, inputs: (things, ids, created), tids, walk: r.b })
 }
 
-/// The held set of `held` restricted to `things`, the `/created` records of `created` and
-/// the commits and snapshots in `ids`.
+/// The held set of `held` restricted to `things`, and to the `/created` records of `created`
+/// and the commits and snapshots in `ids` where given (else all of `things`').
 pub(crate) struct Only<'a> {
     pub held: &'a dyn HeldSet,
     pub things: &'a BTreeSet<Tid>,
-    pub created: &'a BTreeSet<Tid>,
-    pub ids: &'a BTreeSet<CommitId>,
+    pub created: Option<&'a BTreeSet<Tid>>,
+    pub ids: Option<&'a BTreeSet<CommitId>>,
 }
 
 impl HeldSet for Only<'_> {
@@ -675,16 +675,24 @@ impl HeldSet for Only<'_> {
         if !self.things.contains(thing) {
             return Vec::new();
         }
-        self.held.edge_commits(thing).into_iter().filter(|c| self.ids.contains(&c.id)).collect()
+        let mut v = self.held.edge_commits(thing);
+        if let Some(ids) = self.ids {
+            v.retain(|c| ids.contains(&c.id));
+        }
+        v
     }
     fn roster_snapshots(&self, thing: &Tid) -> Vec<Arc<RosterSnapshot>> {
         if !self.things.contains(thing) {
             return Vec::new();
         }
-        self.held.roster_snapshots(thing).into_iter().filter(|s| self.ids.contains(&s.id)).collect()
+        let mut v = self.held.roster_snapshots(thing);
+        if let Some(ids) = self.ids {
+            v.retain(|s| ids.contains(&s.id));
+        }
+        v
     }
     fn created(&self, thing: &Tid) -> Option<CreationRecord> {
-        if self.created.contains(thing) { self.held.created(thing) } else { None }
+        if self.created.unwrap_or(self.things).contains(thing) { self.held.created(thing) } else { None }
     }
 }
 
@@ -692,7 +700,7 @@ impl HeldSet for Only<'_> {
 /// things, `/created` records and commits): `None` unless its tag matches `salt` and the input
 /// `held` gives for exactly those.
 pub(crate) fn restore(s: &Saved<'_>, held: &dyn HeldSet, salt: &[u8]) -> Option<Timeline> {
-    let input = Input::gather(&Only { held, things: &s.inputs.0, created: &s.inputs.2, ids: &s.inputs.1 });
+    let input = Input::gather(&Only { held, things: &s.inputs.0, created: Some(&s.inputs.2), ids: Some(&s.inputs.1) });
     if tag(salt, &input.owners, &input.commits, &input.snaps, s.body)[..] != *s.tag {
         return None;
     }

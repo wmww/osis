@@ -6,10 +6,10 @@
 //! saved walk, or evaluated. Components are independent: no write in one can change authority
 //! in another, so the result equals one evaluation of the whole held set.
 
-use crate::cache::{self, Inputs};
+use crate::cache::{self, Inputs, Only};
 use crate::held::HeldSet;
 use crate::timeline::Timeline;
-use crate::types::{MembershipCommit, RosterSnapshot};
+use crate::types::MembershipCommit;
 use osis_base::{CommitId, CreationRecord, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -44,27 +44,6 @@ impl Dsu {
             let (lo, hi) = if ra < rb { (ra, rb) } else { (rb, ra) };
             self.parent.insert(hi, lo);
         }
-    }
-}
-
-/// The held set of one component.
-struct Part<'a> {
-    held: &'a dyn HeldSet,
-    things: &'a BTreeSet<Tid>,
-}
-
-impl HeldSet for Part<'_> {
-    fn things(&self) -> Vec<Tid> {
-        self.things.iter().copied().collect()
-    }
-    fn edge_commits(&self, thing: &Tid) -> Vec<Arc<MembershipCommit>> {
-        if self.things.contains(thing) { self.held.edge_commits(thing) } else { Vec::new() }
-    }
-    fn roster_snapshots(&self, thing: &Tid) -> Vec<Arc<RosterSnapshot>> {
-        if self.things.contains(thing) { self.held.roster_snapshots(thing) } else { Vec::new() }
-    }
-    fn created(&self, thing: &Tid) -> Option<CreationRecord> {
-        if self.things.contains(thing) { self.held.created(thing) } else { None }
     }
 }
 
@@ -188,12 +167,14 @@ impl Timelines {
     /// fewer commits of it (then continued by `Timeline::extend`, else evaluated). Equal to
     /// `update_touched` whatever `saved` returns.
     pub fn update_touched_cached(&mut self, held: &dyn HeldSet, touched: &BTreeSet<Tid>, saved: &mut dyn FnMut(&Tid) -> Option<Vec<u8>>, salt: &[u8]) -> Changed {
-        let fast = if self.general_only { None } else { self.append(held, touched) };
-        if let Some((c, things, true)) = &fast {
-            self.changed = things.clone();
-            self.restored = 0;
-            return c.clone();
-        }
+        let fast = match if self.general_only { None } else { self.append(held, touched) } {
+            Some((c, things, true)) => {
+                self.changed = things;
+                self.restored = 0;
+                return c;
+            }
+            f => f,
+        };
         let mut region: BTreeSet<Tid> = BTreeSet::new();
         let mut queue: Vec<Tid> = touched.iter().copied().collect();
         while let Some(t) = queue.pop() {
@@ -467,7 +448,7 @@ impl Timelines {
         self.appended = 0;
         self.placed = 0;
         for (root, inputs) in groups {
-            let part = Part { held, things: &inputs.0 };
+            let part = Only { held, things: &inputs.0, created: None, ids: None };
             // the same IDs, and the same records under them (a part may arrive late)
             let hit = match cache.remove(&inputs) {
                 Some((tl, basis, _)) if !tl.holds_same(&part, &inputs.0) => {
@@ -562,7 +543,7 @@ impl Timelines {
     /// snapshots the walk saved under its root covered (0 when saved under another thing).
     /// Every other walk saved under its things is retired: one under a root that moved
     /// before the next `to_save` (a restart in between) is found only here.
-    fn restore(&mut self, inputs: &Inputs, part: &Part<'_>, saved: &mut dyn FnMut(&Tid) -> Option<Vec<u8>>, salt: &[u8]) -> Option<(Timeline, usize)> {
+    fn restore(&mut self, inputs: &Inputs, part: &Only<'_>, saved: &mut dyn FnMut(&Tid) -> Option<Vec<u8>>, salt: &[u8]) -> Option<(Timeline, usize)> {
         let mut out = None;
         for (j, t) in inputs.0.iter().enumerate() {
             let Some(bytes) = saved(t) else { continue };
@@ -582,7 +563,7 @@ impl Timelines {
         out
     }
 
-    fn resume(s: &cache::Saved<'_>, inputs: &Inputs, part: &Part<'_>, salt: &[u8]) -> Option<Timeline> {
+    fn resume(s: &cache::Saved<'_>, inputs: &Inputs, part: &Only<'_>, salt: &[u8]) -> Option<Timeline> {
         let k = &s.inputs;
         // as `update_region` at run time: things, `/created` records and commits added
         if !(k.0.is_subset(&inputs.0) && k.2.is_subset(&inputs.2) && k.1.is_subset(&inputs.1)) {
