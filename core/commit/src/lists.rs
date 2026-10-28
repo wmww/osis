@@ -6,8 +6,8 @@ use crate::header::{Header, ListField};
 use crate::keys::Prefix;
 use crate::tree::{self, LinkSource, TreeSink, node_plaintext};
 use crate::Error;
-use osis_core::format::{CHUNK_THRESHOLD, MAX_OBJECT_DEPTH};
-use osis_core::{BlobId, ChunkParams, Limits, Link, Value};
+use osis_base::format::{CHUNK_THRESHOLD, MAX_OBJECT_DEPTH};
+use osis_base::{BlobId, ChunkParams, Limits, Link, Value};
 use osis_crypto::{Secret32, link_hash};
 use std::collections::HashMap;
 
@@ -30,7 +30,7 @@ pub struct MemoryBlobs {
 
 impl BlobSink for MemoryBlobs {
     fn put(&mut self, prefix: &Prefix, plaintext: &[u8]) -> Result<(BlobId, [u8; 32]), Error> {
-        let mut h = osis_core::hash::Hasher::new();
+        let mut h = osis_base::hash::Hasher::new();
         h.update(&prefix.salt);
         h.update(plaintext);
         let id = BlobId(h.finalize());
@@ -107,7 +107,7 @@ impl Header {
             if bytes.len() <= CHUNK_THRESHOLD {
                 return Err(Error::Malformed("linked list at or below CHUNK_THRESHOLD"));
             }
-            let v = osis_core::decode(&bytes, &Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: bytes.len() })?;
+            let v = osis_base::decode(&bytes, &Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: bytes.len() })?;
             if f != ListField::Frontier && !matches!(v, Value::List(_)) {
                 return Err(Error::Malformed("linked list"));
             }

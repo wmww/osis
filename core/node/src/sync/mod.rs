@@ -27,7 +27,7 @@ use crate::engine::Engine;
 use crate::error::Result;
 use crate::events::{Diagnostic, DiagnosticKind, Origin};
 use crate::labeling::{GroupLabel, HeadKeys};
-use osis_core::{Clock, LabelId, Tid};
+use osis_base::{Clock, LabelId, Tid};
 use osis_crypto::CryptoRngCore;
 use osis_label::{Address, Step};
 use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Command};
@@ -44,7 +44,7 @@ pub use state::Kind as EntryKind;
 const RESEND_MS: u64 = 30_000;
 
 /// Whether a request for `k` went out less than `RESEND_MS` before `now`.
-fn in_flight(m: &BTreeMap<(ConnId, LabelId, osis_core::BlobId), u64>, k: &(ConnId, LabelId, osis_core::BlobId), now: u64) -> bool {
+fn in_flight(m: &BTreeMap<(ConnId, LabelId, osis_base::BlobId), u64>, k: &(ConnId, LabelId, osis_base::BlobId), now: u64) -> bool {
     m.get(k).is_some_and(|t| now < t.saturating_add(RESEND_MS))
 }
 
@@ -113,9 +113,9 @@ impl Default for SyncConfig {
         SyncConfig {
             servers: Vec::new(),
             subscribe: true,
-            inline_limit: osis_core::format::MAX_BLOB as u64,
+            inline_limit: osis_base::format::MAX_BLOB as u64,
             heartbeats: true,
-            heartbeat_lifetime_ms: 2 * osis_core::format::HEARTBEAT_MIN_LIFETIME_MS,
+            heartbeat_lifetime_ms: 2 * osis_base::format::HEARTBEAT_MIN_LIFETIME_MS,
             resync_ms: 60_000,
             retry_ms: 5_000,
             tight_budget: 16,
@@ -258,7 +258,7 @@ pub struct LabelStatus {
 }
 
 /// A body: its commit and parts `(ai, di)`.
-type BodyKey = (osis_core::CommitId, Vec<(usize, usize)>);
+type BodyKey = (osis_base::CommitId, Vec<(usize, usize)>);
 
 /// The sync engine of one node.
 /// First back-off after re-encrypting an aspect's deleted chunks, and its cap (local policy:
@@ -296,38 +296,38 @@ pub struct SyncEngine {
     pub(crate) local_inbox: Vec<(LabelId, Vec<u8>, [u8; osis_crypto::WRAP_LEN])>,
     /// Deposits sent and not answered yet (a label not registered yet, or a rate
     /// limit, sends them again after `retry_ms`).
-    pub(crate) inbox_sent: BTreeMap<(ServerKey, osis_core::BlobId), (ConnId, local::Outgoing)>,
+    pub(crate) inbox_sent: BTreeMap<(ServerKey, osis_base::BlobId), (ConnId, local::Outgoing)>,
     /// Blobs asked for and not received yet.
-    pub(crate) fetching: BTreeMap<osis_core::BlobId, ConnId>,
+    pub(crate) fetching: BTreeMap<osis_base::BlobId, ConnId>,
     /// Tree node blobs a judgment of dropped chunks waits for (`dropped_chunks`); a pass
     /// fetches those its server holds.
-    pub(crate) tree_wants: BTreeSet<osis_core::BlobId>,
+    pub(crate) tree_wants: BTreeSet<osis_base::BlobId>,
     /// Blobs each body's deltas link (`pass::body_blobs`), once the walk was complete: a body
     /// never changes.
-    pub(crate) body_links: BTreeMap<BodyKey, Vec<osis_core::BlobId>>,
+    pub(crate) body_links: BTreeMap<BodyKey, Vec<osis_base::BlobId>>,
     /// Entries uploaded or deposited on a connection and not answered yet, with when (raw ms):
     /// passes within `RESEND_MS` skip them (a burst of passes sent them all again each time).
-    pub(crate) sent: BTreeMap<(ConnId, LabelId, osis_core::BlobId), u64>,
+    pub(crate) sent: BTreeMap<(ConnId, LabelId, osis_base::BlobId), u64>,
     /// Blobs a connection's server did not deliver when fetched.
-    pub(crate) missing: BTreeSet<(ConnId, osis_core::BlobId)>,
+    pub(crate) missing: BTreeSet<(ConnId, osis_base::BlobId)>,
     /// Deletes sent and not answered yet: later passes skip them.
-    pub(crate) deleting: BTreeMap<(ConnId, LabelId, osis_core::BlobId), u64>,
+    pub(crate) deleting: BTreeMap<(ConnId, LabelId, osis_base::BlobId), u64>,
     /// Timed deletes sent and not answered yet: recorded once the server says OK.
-    pub(crate) timed_sent: BTreeSet<(ConnId, LabelId, osis_core::BlobId)>,
+    pub(crate) timed_sent: BTreeSet<(ConnId, LabelId, osis_base::BlobId)>,
     /// Re-encrypting deleted chunks (`Engine::relink`) per aspect: when allowed next, and the
     /// interval after that (doubling, `RELINK_BACKOFF_MS` to `RELINK_BACKOFF_MAX_MS`).
-    pub(crate) relink_backoff: BTreeMap<(Tid, osis_core::Ak), (u64, u64)>,
+    pub(crate) relink_backoff: BTreeMap<(Tid, osis_base::Ak), (u64, u64)>,
     /// Deleted chunks an aspect's back-off holds back, and when to try them again (memory only).
-    pub(crate) relink_pending: BTreeSet<osis_core::BlobId>,
+    pub(crate) relink_pending: BTreeSet<osis_base::BlobId>,
     pub(crate) relink_at: u64,
     /// Servers where a replaced label is done with (`retire_at`).
     pub(crate) retired_at: BTreeSet<(ServerKey, LabelId)>,
     /// Certificate copies waiting for a rotation (group, commit, aspects).
-    pub(crate) deferred: Vec<(Tid, osis_core::CommitId, BTreeSet<usize>)>,
+    pub(crate) deferred: Vec<(Tid, osis_base::CommitId, BTreeSet<usize>)>,
     /// Commit blobs whose every delta was checked against its header hash (`true`) or found
     /// forged (`false`; the entry is `Bad`): only checked blobs stand in for this node's own
     /// uploads or justify deleting another entry (`SyncEngine::genuine`).
-    pub(crate) genuine: BTreeMap<osis_core::BlobId, bool>,
+    pub(crate) genuine: BTreeMap<osis_base::BlobId, bool>,
     /// When a certificate left to its author (`SETTLE_MS`), or another node's body or deposit
     /// left to a co-writer (`RELAY_MIN_MS`), is due again (raw ms).
     pub(crate) settle_at: Option<u64>,
@@ -337,15 +337,15 @@ pub struct SyncEngine {
     pub(crate) local_last: u64,
     pub(crate) local_any: bool,
     /// Prefix expiries of entries under labels synced with nobody (raw unix ms; read once).
-    pub(crate) local_expiry: BTreeMap<osis_core::BlobId, Option<u64>>,
+    pub(crate) local_expiry: BTreeMap<osis_base::BlobId, Option<u64>>,
     /// The work sets of the local passes, by label (`LConn::work` for a label served here).
-    pub(crate) local_work: BTreeMap<osis_core::LabelId, work::Work>,
+    pub(crate) local_work: BTreeMap<osis_base::LabelId, work::Work>,
     /// When this node first saw each entry deposited at a server (raw ms; the promotion wait).
-    pub(crate) deposit_seen: BTreeMap<(ServerKey, LabelId, osis_core::BlobId), u64>,
+    pub(crate) deposit_seen: BTreeMap<(ServerKey, LabelId, osis_base::BlobId), u64>,
     /// Stranded heartbeats already answered by a re-seal.
-    pub(crate) resealed: BTreeSet<osis_core::CommitId>,
+    pub(crate) resealed: BTreeSet<osis_base::CommitId>,
     /// Commits placed before any other upload (`Delivery::First`).
-    pub(crate) first: BTreeSet<osis_core::CommitId>,
+    pub(crate) first: BTreeSet<osis_base::CommitId>,
     /// A self-removal was carried out: its lost secrets are dropped once every label is idle
     /// (it is uploaded by then).
     pub(crate) drop_when_idle: bool,
@@ -357,7 +357,7 @@ pub struct SyncEngine {
     pub(crate) label_actors: BTreeMap<LabelId, (Tid, Vec<ServerKey>)>,
     /// (snapshot, body, aspect) judgments settled with the body kept (spec/sync.md §7); a pair
     /// goes once either body is dropped.
-    pub(crate) covered_judged: BTreeSet<(osis_core::CommitId, osis_core::CommitId, Tid, osis_core::Ak)>,
+    pub(crate) covered_judged: BTreeSet<(osis_base::CommitId, osis_base::CommitId, Tid, osis_base::Ak)>,
     /// What passes did so far (`pass_stats`).
     pub(crate) stats: PassStats,
     /// Each group's closure as last walked (`sync_closure`).
@@ -366,7 +366,7 @@ pub struct SyncEngine {
     pub(crate) touched: work::Touched,
     /// The commits whose headers list each chunk blob (`dropped_chunks`; built on first use,
     /// kept by applied commits).
-    pub(crate) listers: Option<BTreeMap<osis_core::BlobId, BTreeSet<osis_core::CommitId>>>,
+    pub(crate) listers: Option<BTreeMap<osis_base::BlobId, BTreeSet<osis_base::CommitId>>>,
     /// Peer sessions this node serves (member peer, spec/sync.md §5).
     pub(crate) served: BTreeMap<ConnId, serve::Served>,
     /// Steps peers registered here since start, by label.
@@ -382,7 +382,7 @@ pub struct SyncEngine {
     pub(crate) served_cache: Option<Arc<BTreeMap<LabelId, serve::ServedLabel>>>,
     /// Bytes peers uploaded or deposited here, per entry: (peer key, bytes), with running sums
     /// per peer key and in all (stale charges pruned at ticks and when a budget is reached).
-    pub(crate) charges: BTreeMap<(LabelId, osis_core::BlobId), ([u8; 32], u64)>,
+    pub(crate) charges: BTreeMap<(LabelId, osis_base::BlobId), ([u8; 32], u64)>,
     pub(crate) charged_per: BTreeMap<[u8; 32], u64>,
     pub(crate) charged_total: u64,
     /// When charges were last pruned (raw ms), and whether a budget was reached since.
@@ -391,7 +391,7 @@ pub struct SyncEngine {
     /// The engine's actors with secrets of their own when its events were last taken.
     pub(crate) own_keys: BTreeSet<Tid>,
     /// Sizes of blobs served to peers (memory only; pruned at ticks).
-    pub(crate) blob_sizes: BTreeMap<osis_core::BlobId, u64>,
+    pub(crate) blob_sizes: BTreeMap<osis_base::BlobId, u64>,
     /// LAN tags of the co-readers for the cached window and its neighbours, to dialable keys.
     pub(crate) lan_tags: Option<(u64, peers::LanTags)>,
     /// `peers()` and the `/reach` holders by dialable key, until a commit applies.
@@ -410,12 +410,12 @@ pub struct SyncEngine {
     pub(crate) rotation_at: BTreeMap<Tid, u64>,
     /// `placed` answers by commit, valid while `State::version` (the first field) is unchanged and
     /// no engine change came (in memory).
-    pub(crate) placed_cache: (u64, BTreeMap<osis_core::CommitId, bool>),
+    pub(crate) placed_cache: (u64, BTreeMap<osis_base::CommitId, bool>),
     /// When (raw ms) this node, connected, first found each of its commits not placed
     /// (`hold`; in memory, so the wait starts again after a restart).
-    pub(crate) wait_since: BTreeMap<osis_core::CommitId, u64>,
+    pub(crate) wait_since: BTreeMap<osis_base::CommitId, u64>,
     /// Commits whose projections went unplaced past `PLACE_WAIT_MS` (one diagnostic each).
-    pub(crate) late: BTreeSet<osis_core::CommitId>,
+    pub(crate) late: BTreeSet<osis_base::CommitId>,
     /// Per label, the co-readers a complete pass waits for now (`peer_received` narrowed to
     /// those still reading it with a connection up that has it started; set by `handle`).
     pub(crate) pass_peers: BTreeMap<LabelId, BTreeSet<ServerKey>>,
@@ -423,7 +423,7 @@ pub struct SyncEngine {
     pub(crate) members_moved: bool,
     /// Commit blobs with linked header lists whose prefix was checked against the resolved
     /// header (spec/commits.md §4).
-    pub(crate) prefix_checked: BTreeSet<osis_core::BlobId>,
+    pub(crate) prefix_checked: BTreeSet<osis_base::BlobId>,
 }
 
 impl SyncEngine {
@@ -686,7 +686,7 @@ impl SyncEngine {
         self.missing.retain(|(c, _)| *c != conn);
         if let Some(c) = self.conns.remove(&conn) {
             // deposits not answered on this connection go out again on the next one
-            let back: Vec<(ServerKey, osis_core::BlobId)> = self.inbox_sent.iter().filter(|(_, (x, _))| *x == conn).map(|(k, _)| *k).collect();
+            let back: Vec<(ServerKey, osis_base::BlobId)> = self.inbox_sent.iter().filter(|(_, (x, _))| *x == conn).map(|(k, _)| *k).collect();
             for k in back {
                 if let Some((_, o)) = self.inbox_sent.remove(&k) {
                     self.outbox.push(o);
@@ -747,7 +747,7 @@ impl SyncEngine {
                             self.membership_at.insert(actor, at);
                             // only an admin registers its rotation's step: another's (a writer
                             // rotating for a departure) is this admin's to register at once
-                            if a.ak.as_str() == "/secrets" && self.engine.core.role_now(&h.author, &actor) == Some(osis_core::Role::Admin) {
+                            if a.ak.as_str() == "/secrets" && self.engine.core.role_now(&h.author, &actor) == Some(osis_base::Role::Admin) {
                                 self.rotation_at.insert(actor, at);
                             }
                         }
@@ -837,7 +837,7 @@ impl SyncEngine {
             w.moved.extend(t.moved.iter().copied());
             w.actors.extend(t.actors.iter().copied());
             w.keys |= t.keys;
-            for (_, x) in st.range((*l, state::Touch::Commit(osis_core::CommitId([0; 32])))..).take_while(|(x, _)| x == l) {
+            for (_, x) in st.range((*l, state::Touch::Commit(osis_base::CommitId([0; 32])))..).take_while(|(x, _)| x == l) {
                 match x {
                     state::Touch::Commit(c) => w.commits.insert(*c),
                     state::Touch::Blob(b) => w.blobs.insert(*b),
@@ -874,12 +874,12 @@ impl SyncEngine {
             if self.engine.epochs(&g).is_none_or(|e| e.read.held_newest_first().is_empty()) {
                 continue;
             }
-            let admin = self.engine.role_on(&g) == Some(osis_core::Role::Admin);
+            let admin = self.engine.role_on(&g) == Some(osis_base::Role::Admin);
             for l in self.engine.labels_of(&g) {
                 if l.replaced && admin && !self.state.retired.contains(&l.id) {
                     // a server where the label was lost may never settle a pass: a bound
                     let now = self.now();
-                    if self.state.replaced_seen(l.id, now).saturating_add(osis_core::format::MEMBERSHIP_KEEP_MS) <= now {
+                    if self.state.replaced_seen(l.id, now).saturating_add(osis_base::format::MEMBERSHIP_KEEP_MS) <= now {
                         self.state.retire(l.id);
                     }
                 }
@@ -945,7 +945,7 @@ impl SyncEngine {
     /// Runs the rotations due before this node encrypts under `g`'s secrets (flows'
     /// `ensure_rotated`, spec/permissions.md §3) and returns the roles it still may not
     /// encrypt under (`placing`).
-    pub(crate) fn uncovered(&mut self, g: &Tid) -> Result<std::collections::BTreeSet<osis_core::Role>> {
+    pub(crate) fn uncovered(&mut self, g: &Tid) -> Result<std::collections::BTreeSet<osis_base::Role>> {
         let Some(a) = self.engine.core.secret_actor(g) else { return Ok(Default::default()) };
         if self.engine.core.is_key_actor(&a) {
             return Ok(Default::default());
@@ -959,7 +959,7 @@ impl SyncEngine {
     }
 
     /// The roles of `g`'s secret actor this node may not encrypt under now, without rotating.
-    pub(crate) fn uncovered_now(&mut self, g: &Tid) -> Result<std::collections::BTreeSet<osis_core::Role>> {
+    pub(crate) fn uncovered_now(&mut self, g: &Tid) -> Result<std::collections::BTreeSet<osis_base::Role>> {
         let Some(a) = self.engine.core.secret_actor(g) else { return Ok(Default::default()) };
         if self.engine.core.is_key_actor(&a) {
             return Ok(Default::default());
@@ -969,7 +969,7 @@ impl SyncEngine {
 
     /// The roles of `a` uncovered by a known departure, a departure by this node's own
     /// self-removal not counted until that commit is placed (spec/crypto.md §4).
-    fn placing(&mut self, a: &Tid) -> Result<std::collections::BTreeSet<osis_core::Role>> {
+    fn placing(&mut self, a: &Tid) -> Result<std::collections::BTreeSet<osis_base::Role>> {
         let mut deps = Vec::new();
         for (d, own) in self.engine.run(|tx| crate::rotation::departures_placing(tx, a))? {
             if let Some(c) = own
@@ -1088,7 +1088,7 @@ impl SyncEngine {
     fn trace(&self, conn: ConnId, cmd: &Command) {
         let short = |b: &[u8]| b.iter().take(3).map(|x| format!("{x:02x}")).collect::<String>();
         let t4 = |t: &Tid| t.to_string().chars().take(4).collect::<String>();
-        let sent: Vec<(LabelId, osis_core::BlobId, usize, &str)> = match cmd {
+        let sent: Vec<(LabelId, osis_base::BlobId, usize, &str)> = match cmd {
             Command::Upload { label, entries } | Command::Sync { label, entries, .. } => entries.iter().map(|e| (*label, osis_label::blob_id(&e.blob), e.blob.len(), "up")).collect(),
             Command::Deposit { label, blob, .. } => vec![(*label, osis_label::blob_id(blob), blob.len(), "dep")],
             _ => return,
@@ -1334,7 +1334,7 @@ impl SyncEngine {
         }
         let skew = self.now() as i64 - now as i64;
         // an unsent delivery (`at` 0) waits on placement, which wakes by its own events and bound
-        if let Some(x) = self.state.sent_inbox.values().filter(|s| s.at != 0).map(|s| s.at.saturating_add(osis_core::format::INBOX_LIFETIME_MS)).min() {
+        if let Some(x) = self.state.sent_inbox.values().filter(|s| s.at != 0).map(|s| s.at.saturating_add(osis_base::format::INBOX_LIFETIME_MS)).min() {
             at((x as i64).saturating_sub(skew).max(0) as u64);
         }
         // a due inbox blob goes once its server's connection is ready (an event of its own)
@@ -1398,7 +1398,7 @@ impl SyncEngine {
     /// carriers, blob records, and which of the blobs they name the store holds.
     pub fn state_digest(&mut self) -> [u8; 32] {
         let s = &self.state;
-        let mut h = osis_core::hash::Hasher::new();
+        let mut h = osis_base::hash::Hasher::new();
         for ((l, b), e) in &s.entries {
             h.update(format!("e{l:?}{b:?}{:?}{:?}{}{:?}", e.wrap, e.stamp.map(|x| x.0), e.cert, e.kind).as_bytes());
         }
@@ -1417,7 +1417,7 @@ impl SyncEngine {
         for (id, r) in &s.blobs {
             h.update(format!("b{id:?}{:?}{:?}{}", r.commit, r.parts, r.cert).as_bytes());
         }
-        let ids: BTreeSet<osis_core::BlobId> = s.entries.keys().map(|(_, b)| *b).chain(s.blobs.keys().copied()).collect();
+        let ids: BTreeSet<osis_base::BlobId> = s.entries.keys().map(|(_, b)| *b).chain(s.blobs.keys().copied()).collect();
         for b in ids {
             let held = self.engine.has_blob(&b);
             h.update(format!("h{b:?}{held}").as_bytes());
@@ -1462,19 +1462,19 @@ impl SyncEngine {
     }
 
     /// Entries this node knows under a label (tests).
-    pub fn entries(&self, l: &LabelId) -> Vec<(osis_core::BlobId, EntryKind)> {
+    pub fn entries(&self, l: &LabelId) -> Vec<(osis_base::BlobId, EntryKind)> {
         self.state.entries.iter().filter(|((x, _), _)| x == l).map(|((_, b), e)| (*b, e.kind.clone())).collect()
     }
 
     /// The wrap and stamp this node keeps for an entry (tests).
     #[doc(hidden)]
-    pub fn entry_meta(&self, l: &LabelId, b: &osis_core::BlobId) -> Option<([u8; osis_crypto::WRAP_LEN], Option<osis_crypto::Signature>)> {
+    pub fn entry_meta(&self, l: &LabelId, b: &osis_base::BlobId) -> Option<([u8; osis_crypto::WRAP_LEN], Option<osis_crypto::Signature>)> {
         self.state.entries.get(&(*l, *b)).map(|e| (e.wrap, e.stamp))
     }
 
     /// Whether this node still holds a commit blob's key or ciphertext (tests: a dropped body
     /// leaves neither).
-    pub fn holds_blob(&mut self, b: &osis_core::BlobId) -> bool {
+    pub fn holds_blob(&mut self, b: &osis_base::BlobId) -> bool {
         self.state.blobs.contains_key(b) || self.engine.has_blob(b)
     }
 

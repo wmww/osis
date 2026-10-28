@@ -5,7 +5,7 @@
 //! missing field is an error here; typed keys run the typed read first.
 
 use crate::path::{PathError, PathErrorKind, Step};
-use osis_core::{BlobId, CommitId, Float, LabelId, Link, Role, SchemaId, Tid, Ts, Value, WallMs};
+use osis_base::{BlobId, CommitId, Float, LabelId, Link, Role, SchemaId, Tid, Ts, Value, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub trait Codec: Sized {
@@ -248,7 +248,7 @@ impl<T: Codec> Codec for Chunked<T> {
 /// Helpers for `codec_struct!` and generated code. Not a stable API.
 #[doc(hidden)]
 pub mod rt {
-    pub use osis_core::Value;
+    pub use osis_base::Value;
     use super::*;
 
     pub fn struct_value(fields: Vec<(u64, Value)>) -> Value {

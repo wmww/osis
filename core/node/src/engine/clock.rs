@@ -2,7 +2,7 @@
 //! clock, last ts seen)`, `logical` incremented on equal `wall_ms`. A writer that exhausts the
 //! 16 logical bits within one millisecond moves to the next millisecond instead of waiting.
 
-use osis_core::{Clock, Ts, WallMs};
+use osis_base::{Clock, Ts, WallMs};
 use std::sync::Arc;
 
 pub struct Hlc {
@@ -63,7 +63,7 @@ impl Hlc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use osis_core::ManualClock;
+    use osis_base::ManualClock;
 
     // spec/crdt.md §2.2: ts = max(wall, last seen), logical incremented on equal wall_ms.
     #[test]

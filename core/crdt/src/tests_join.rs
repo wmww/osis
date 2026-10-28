@@ -103,7 +103,7 @@ fn model_order_independent_spec_7_large() {
 fn deaths_reported_spec_4_8() {
     use crate::fragment::{RegWrite, Register, Struct};
     use crate::stamp::{Source, Stamp};
-    use osis_core::{Tid, Ts, Value};
+    use osis_base::{Tid, Ts, Value};
     let n = Source::node(Tid::from_bytes([1; 15]));
     let st = |t: u64, c: u64| Stamp::new(Ts::from_u64(t << 16).unwrap(), n.clone(), c);
     let reg = |s: Stamp, v: i64| Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s, value: Some(Value::Int(v)) }) });

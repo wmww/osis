@@ -4,7 +4,7 @@
 use super::{case, generated_header};
 use crate::file::{Record, VecFile};
 use crate::hex;
-use osis_core::{BlobId, Value, cbor};
+use osis_base::{BlobId, Value, cbor};
 use osis_proto::examples::{CHALLENGE, Fixture, STATIC_KEY};
 use osis_proto::{Hello, Message, encode_frame, examples};
 
@@ -144,7 +144,7 @@ pub fn messages() -> VecFile {
     assert!(Hello::decode(&cbor::encode(&h17)).is_err());
     cases.push(case("hello with 17 versions", "spec/wire.md §11.1").with("hex", hex(&cbor::encode(&h17))).with("reject", "cap"));
     cases.push(case("zero-length frame", "spec/wire.md §11.1").with("frame", "00000000").with("reject", "frame-length").with("answer", "2"));
-    let over = u32::try_from(osis_core::format::MAX_MESSAGE + 1).unwrap().to_be_bytes();
+    let over = u32::try_from(osis_base::format::MAX_MESSAGE + 1).unwrap().to_be_bytes();
     cases.push(case("frame of MAX_MESSAGE + 1", "spec/wire.md §11.1").with("frame", hex(&over)).with("reject", "frame-length").with("answer", "2"));
     VecFile { header: generated_header("proto", SPEC), cases }
 }

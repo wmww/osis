@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::handle::{LINKS, MadeLink, Osis, save_servers};
 use crate::watch::{Delivery, Filter, Subscription};
 use crate::write::Place;
-use osis_core::{Ak, Role, Tid, Value, WallMs};
+use osis_base::{Ak, Role, Tid, Value, WallMs};
 use osis_node::flows::{self, PreSync};
 use osis_node::sync::SyncEngine;
 use osis_schema::Codec;
@@ -608,7 +608,7 @@ impl Osis {
             }
         }
         if any {
-            let v = osis_core::cbor::encode(&links_value(&l.links));
+            let v = osis_base::cbor::encode(&links_value(&l.links));
             if let Err(e) = l.engine().set_app_record(LINKS, &v) {
                 l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::BadInput, tids: Vec::new(), commit: None, peer: None, detail: format!("links record: {e}") });
             }
@@ -617,13 +617,13 @@ impl Osis {
 
     pub(crate) fn save_links(&self) -> Result<()> {
         let v = self.locked(|x| links_value(&x.links));
-        self.engine(|e| e.set_app_record(LINKS, &osis_core::cbor::encode(&v)))?;
+        self.engine(|e| e.set_app_record(LINKS, &osis_base::cbor::encode(&v)))?;
         Ok(())
     }
 
     pub(crate) fn load_links(&self) -> Result<()> {
         let Some(b) = self.engine(|e| e.app_record(LINKS))? else { return Ok(()) };
-        let v = osis_core::cbor::decode(&b, &osis_core::cbor::Limits { max_depth: 4, max_bytes: b.len() }).map_err(|_| Error::Storage("links record".into()))?;
+        let v = osis_base::cbor::decode(&b, &osis_base::cbor::Limits { max_depth: 4, max_bytes: b.len() }).map_err(|_| Error::Storage("links record".into()))?;
         let Value::List(items) = v else { return Err(Error::Storage("links record".into())) };
         let mut links = BTreeMap::new();
         for i in items {
@@ -1056,6 +1056,6 @@ impl Drop for KeyGuard {
 
 /// Whether a commit on `k` waits here (pending, not parked: spec/commits.md §4).
 fn pending_on(e: &mut osis_node::Engine, k: &Tid) -> bool {
-    let ids: Vec<osis_core::CommitId> = e.pending().into_iter().filter(|(_, r)| *r != osis_node::Reason::Parked).map(|(c, _)| c).collect();
+    let ids: Vec<osis_base::CommitId> = e.pending().into_iter().filter(|(_, r)| *r != osis_node::Reason::Parked).map(|(c, _)| c).collect();
     ids.iter().any(|c| e.commit_bytes(c).ok().flatten().and_then(|b| osis_commit::CommitBlob::decode(&b).ok()).is_some_and(|cb| cb.header.aspects.iter().any(|a| a.tid == *k)))
 }

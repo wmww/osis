@@ -681,27 +681,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
-name = "osis-commit"
-version = "0.1.0"
-dependencies = [
- "osis-core",
- "osis-crdt",
- "osis-crypto",
- "osis-schema",
-]
-
-[[package]]
-name = "osis-core"
+name = "osis-base"
 version = "0.1.0"
 dependencies = [
  "blake3",
 ]
 
 [[package]]
+name = "osis-commit"
+version = "0.1.0"
+dependencies = [
+ "osis-base",
+ "osis-crdt",
+ "osis-crypto",
+ "osis-schema",
+]
+
+[[package]]
 name = "osis-crdt"
 version = "0.1.0"
 dependencies = [
- "osis-core",
+ "osis-base",
 ]
 
 [[package]]
@@ -713,7 +713,7 @@ dependencies = [
  "curve25519-dalek",
  "ed25519-dalek",
  "libcrux-ml-kem",
- "osis-core",
+ "osis-base",
  "rand_core 0.6.4",
  "subtle",
  "x25519-dalek",
@@ -725,8 +725,8 @@ name = "osis-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
+ "osis-base",
  "osis-commit",
- "osis-core",
  "osis-crdt",
  "osis-crypto",
  "osis-label",
@@ -738,8 +738,8 @@ dependencies = [
 name = "osis-label"
 version = "0.1.0"
 dependencies = [
+ "osis-base",
  "osis-commit",
- "osis-core",
  "osis-crdt",
  "osis-crypto",
  "osis-schema",
@@ -749,7 +749,7 @@ dependencies = [
 name = "osis-proto"
 version = "0.1.0"
 dependencies = [
- "osis-core",
+ "osis-base",
  "osis-crypto",
  "osis-label",
  "osis-schema",
@@ -759,7 +759,7 @@ dependencies = [
 name = "osis-schema"
 version = "0.1.0"
 dependencies = [
- "osis-core",
+ "osis-base",
  "osis-crdt",
 ]
 

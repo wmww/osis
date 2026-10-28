@@ -4,10 +4,10 @@ use crate::error::Error;
 use crate::seq::{Anchor, Seq, SeqContent, SeqElem, top2};
 use crate::seq_span::{nth, overlaps};
 use crate::stamp::{Dot, Stamp};
-use osis_core::Ts;
+use osis_base::Ts;
 use crate::wire::{Dec, DeltaKind, Enc, MAX_RUN, as_array, as_uint, uint};
-use osis_core::Value;
-use osis_core::format::{CHUNK_MAX, MAX_DELTA_BARE};
+use osis_base::Value;
+use osis_base::format::{CHUNK_MAX, MAX_DELTA_BARE};
 
 /// Content goes on the wire for text elements not deleted (rule 5) and for list elements whose
 /// fragment exists.
@@ -101,7 +101,7 @@ pub(crate) fn encode_elems(s: &Seq, cx: &mut Enc) -> Result<Vec<Value>, Error> {
         for (j, p) in run.iter().enumerate() {
             if let SeqContent::Frag(f) = &p.1.content {
                 let v = cx.fragment(f)?;
-                size += osis_core::encode(&v).len();
+                size += osis_base::encode(&v).len();
                 fs.push(v);
             }
             if size >= CHUNK_MAX || j + 1 == run.len() {

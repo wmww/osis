@@ -1,6 +1,6 @@
 //! Errors and their classes (notes/architecture.md §3).
 
-use osis_core::{Classified, ErrorClass, Role};
+use osis_base::{Classified, ErrorClass, Role};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -16,7 +16,7 @@ pub enum Error {
     UnknownSuite(u64),
 }
 
-osis_core::impl_error!(Error {
+osis_base::impl_error!(Error {
     Crypto(e) => ("crypto: {e}"),
     Mismatch(what) => ("box contents contradict its key: {what}"),
     NoEpoch(r) => ("no epoch of role {r:?}"),

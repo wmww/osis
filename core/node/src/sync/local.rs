@@ -7,8 +7,8 @@ use super::state::{Entry, Kind};
 use super::{Action, ConnId, Phase, SyncEngine};
 use crate::error::{Error, Result};
 use crate::labeling::seal_body;
-use osis_core::format::MAX_DRIFT_MS;
-use osis_core::{Ak, CommitId, LabelId, Role, Tid, Ts, Value};
+use osis_base::format::MAX_DRIFT_MS;
+use osis_base::{Ak, CommitId, LabelId, Role, Tid, Ts, Value};
 use osis_label::{Address, InboxPayload, InboxThing, PublishAuth, PublishKey, SignalBody};
 use osis_perm::{At, PurgeBy};
 use osis_proto::Command;
@@ -325,7 +325,7 @@ impl SyncEngine {
             if inbox.is_some() {
                 break;
             }
-            let Some(osis_core::CreationRecord::Thing { owner: up, .. }) = self.engine.core.created(&cur).cloned() else { break };
+            let Some(osis_base::CreationRecord::Thing { owner: up, .. }) = self.engine.core.created(&cur).cloned() else { break };
             cur = up;
             inbox = self.engine.get_typed(&cur, &ct::KEYS)?.and_then(|k| k.inbox);
             owner = cur;
@@ -342,7 +342,7 @@ impl SyncEngine {
                 }
             }
         }
-        let commit = osis_core::decode(&cut.encode(), &osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: osis_core::format::MAX_MESSAGE })
+        let commit = osis_base::decode(&cut.encode(), &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_MESSAGE })
             .map_err(|_| Error::Corrupt("commit blob"))?;
         let payload = InboxPayload { commit, things };
         let blob = osis_label::seal_inbox_blob(recipient, &kem, &payload, self.engine.now(), &mut *self.rng)?;
@@ -357,7 +357,7 @@ impl SyncEngine {
     /// or re-seal) left, is forgotten.
     pub(crate) fn send_inbox(&mut self) -> Result<()> {
         let now = self.now();
-        let due: Vec<super::state::SentInbox> = self.state.sent_inbox.values().filter(|s| s.at == 0 || s.at.saturating_add(osis_core::format::INBOX_LIFETIME_MS) <= now).cloned().collect();
+        let due: Vec<super::state::SentInbox> = self.state.sent_inbox.values().filter(|s| s.at == 0 || s.at.saturating_add(osis_base::format::INBOX_LIFETIME_MS) <= now).cloned().collect();
         for s in due {
             let first = s.at == 0;
             let ts = self.engine.header(&s.commit).map(|h| h.ts);

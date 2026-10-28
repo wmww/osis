@@ -2,7 +2,7 @@
 //! form `succeeds` an old one, and which form(s) a write fills. The core never interprets these;
 //! the `succeeds` links are data in the schema (fields, cases, aspects).
 
-use osis_core::Ts;
+use osis_base::Ts;
 
 /// Which form a read uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

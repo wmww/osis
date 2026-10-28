@@ -15,7 +15,7 @@ use crate::engine::{Core, Engine, Owned, Tx};
 use crate::error::{Error, Result};
 use crate::Mutation;
 use osis_commit::{Decoded, Form, Header, Kind, Origin};
-use osis_core::{Ak, CommitId, SchemaId, Tid, Ts};
+use osis_base::{Ak, CommitId, SchemaId, Tid, Ts};
 use osis_crdt::{Dot, Fragment, Shown, Source, SourceKind};
 use osis_schema::core_types as ct;
 use osis_schema::core_types::is_membership_class;

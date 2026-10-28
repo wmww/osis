@@ -4,7 +4,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use osis_core::{Limits, decode};
+use osis_base::{Limits, decode};
 use osis_schema::{Schema, parse};
 
 fuzz_target!(|data: &[u8]| {

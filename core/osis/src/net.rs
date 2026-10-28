@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use crate::handle::WeakOsis;
 use crate::share::Status;
 use crate::watch::lock;
-use osis_core::Clock;
+use osis_base::Clock;
 use osis_node::sync::driver::{self, Control, Host};
 use osis_node::sync::{Action, SyncEngine};
 use std::future::Future;
@@ -330,7 +330,7 @@ impl crate::Osis {
     /// Sets `group`'s sync policy (stored). Co-readers of groups without `/reach` are not
     /// dialed. When the group's labels already hold this node's `/reach` and it no longer goes
     /// there, the node's reach rotates (`rotate_reach`), so readers there cannot dial it any more.
-    pub fn sync_policy(&self, group: osis_core::Tid, policy: GroupPolicy) {
+    pub fn sync_policy(&self, group: osis_base::Tid, policy: GroupPolicy) {
         self.locked(|l| {
             let acts = l.sync.set_reach_policy(group, policy.publish_reach);
             self.inner.net.apply(acts);

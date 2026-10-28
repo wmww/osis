@@ -2,7 +2,7 @@
 //! Writing path end to end: identity, creation, ops to commits, local apply, events, restart.
 
 use crate::common;
-use osis_core::{Ak, Value, WallMs};
+use osis_base::{Ak, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::local_peer::Peer;
 use osis_node::{Event, Mutation, Origin};
@@ -31,7 +31,7 @@ fn node_identity_spec_dm_1() {
     assert_eq!(p.engine.get(&me, &ak("/tid")).unwrap(), Some(Value::Tid(me)));
     let aspects = p.engine.aspects(&me).unwrap();
     assert!(aspects.contains(&ak("/created")) && aspects.contains(&ak("/node")) && aspects.contains(&ak("/keys")));
-    assert_eq!(p.engine.role_on(&me), Some(osis_core::Role::Admin));
+    assert_eq!(p.engine.role_on(&me), Some(osis_base::Role::Admin));
 }
 
 // spec/crdt.md §4.5, §9; spec/commits.md §1: ops become one commit, applied locally, with an
@@ -243,10 +243,10 @@ fn noise(n: usize, seed: u64) -> Vec<u8> {
 /// content-defined writer must write for the edit.
 fn new_chunk_bytes(old: &[u8], new: &[u8]) -> usize {
     let cuts = |d: &[u8]| -> Vec<Vec<u8>> {
-        let e = osis_core::encode(&Value::Bytes(d.to_vec()));
+        let e = osis_base::encode(&Value::Bytes(d.to_vec()));
         let mut out = Vec::new();
         let mut at = 0;
-        for n in osis_core::chunker::chunk_lengths(&e, osis_core::ChunkParams::FORMAT) {
+        for n in osis_base::chunker::chunk_lengths(&e, osis_base::ChunkParams::FORMAT) {
             out.push(e[at..at + n].to_vec());
             at += n;
         }
@@ -272,7 +272,7 @@ fn large_edit_reuses_chunks_spec_sync_1() {
     let first = p.commit(m).unwrap().unwrap();
     let blobs = |p: &mut Peer, c| p.engine.package(&c).unwrap().unwrap().blobs.iter().map(|(_, b)| b.len()).sum::<usize>();
     let whole = blobs(&mut p, first);
-    let chunks = osis_core::chunker::chunk_lengths(&osis_core::encode(&Value::Bytes(cur.clone())), osis_core::ChunkParams::FORMAT).len();
+    let chunks = osis_base::chunker::chunk_lengths(&osis_base::encode(&Value::Bytes(cur.clone())), osis_base::ChunkParams::FORMAT).len();
     assert!(chunks > 30, "{chunks} chunks");
     for name in ["insert 100 B", "overwrite 256 KiB", "append 10 KB", "delete 50 KB"] {
         let old = cur.clone();
@@ -338,7 +338,7 @@ const WIDE_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/w/wide", 
 // syncs as pages and reads back whole.
 #[test]
 fn wide_struct_paged_fits_spec_commits_1() {
-    use osis_core::format::{CHUNK_THRESHOLD, MAX_BLOB};
+    use osis_base::format::{CHUNK_THRESHOLD, MAX_BLOB};
     let mut p = peer(14);
     let me = p.engine.tid();
     let mut m = Mutation::new();
@@ -412,7 +412,7 @@ fn paged_list_edits_match_whole_spec_crdt_5_7() {
 
 fn list_edits_match_whole(seed: u64, with_large: bool) {
     let small = |id: usize| Value::Str(format!("item {id} of the list"));
-    let big = |id: usize| if with_large { Value::Str(format!("L{id}:{}", "x".repeat(osis_core::format::CHUNK_THRESHOLD + 10))) } else { Value::Str(format!("item {id} (not large)")) };
+    let big = |id: usize| if with_large { Value::Str(format!("L{id}:{}", "x".repeat(osis_base::format::CHUNK_THRESHOLD + 10))) } else { Value::Str(format!("item {id} (not large)")) };
     let (key, a) = (&common::LIST, ak("/t/list"));
     let (mut cold, mut whole) = (peer(seed), peer(seed));
     let me = cold.engine.tid();
@@ -516,7 +516,7 @@ fn edit_of_gone_item_lists_nothing_spec_commits_1() {
     assert!(large || listed == 0, "{listed} blobs listed for a value the list does not hold: {got:?}");
 }
 
-fn op_at(p: &mut Peer, t: osis_core::Tid, a: &Ak, path: Vec<PathSeg>, op: Op) -> bool {
+fn op_at(p: &mut Peer, t: osis_base::Tid, a: &Ak, path: Vec<PathSeg>, op: Op) -> bool {
     let mut m = Mutation::new();
     m.op(t, a, PathOp { path, op }).unwrap();
     p.commit(m).unwrap().is_some()
@@ -528,7 +528,7 @@ fn op_at(p: &mut Peer, t: osis_core::Tid, a: &Ak, path: Vec<PathSeg>, op: Op) ->
 // and paged states, in the session that wrote it and in new ones.
 #[test]
 fn large_values_by_value_spec_crdt_5_5() {
-    let large = |c: &str| Value::Str(c.repeat(osis_core::format::CHUNK_THRESHOLD + 10));
+    let large = |c: &str| Value::Str(c.repeat(osis_base::format::CHUNK_THRESHOLD + 10));
     let links = |v: &Value| match v {
         Value::Set(s) => s.iter().filter(|x| matches!(x, Value::Link(_))).count(),
         Value::Map(m) => m.keys().filter(|x| matches!(x, Value::Link(_))).count(),

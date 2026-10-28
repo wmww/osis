@@ -8,7 +8,7 @@
 
 use crate::common;
 use common::*;
-use osis_core::{Clock, ManualClock, Role, Tid, Value};
+use osis_base::{Clock, ManualClock, Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::SeededRng;
 use osis_node::local_peer::LocalPeer;
@@ -101,7 +101,7 @@ fn history(seed: u64, steps: usize, mut each: impl FnMut(&mut LocalPeer, usize, 
                 let _ = lp.peers[0].engine.roster_snapshot(&doc, None);
                 // a membership snapshot (of the node's `/keys`) reaches perm's inputs too
                 let node = lp.peers[0].engine.tid();
-                if let Ok(Some(_)) = lp.peers[0].engine.snapshot(&node, &osis_core::Ak::new("/keys").unwrap()) {
+                if let Ok(Some(_)) = lp.peers[0].engine.snapshot(&node, &osis_base::Ak::new("/keys").unwrap()) {
                     snapshots += 1;
                 }
             }

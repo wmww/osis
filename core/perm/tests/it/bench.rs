@@ -7,8 +7,8 @@ use crate::common;
 
 use common::*;
 use membership_model::Rng;
-use osis_core::Role::{Admin, Read, Write};
-use osis_core::Tid;
+use osis_base::Role::{Admin, Read, Write};
+use osis_base::Tid;
 use osis_perm::{At, Timeline, Timelines};
 use std::time::Instant;
 
@@ -89,7 +89,7 @@ fn bench_10k_edges() {
         let mut appended = 0;
         let ta = Instant::now();
         for i in 0..100u8 {
-            let id = osis_core::CommitId([i; 32]);
+            let id = osis_base::CommitId([i; 32]);
             let op = osis_perm::EdgeOp { target: doc, member: nodes[210 + usize::from(i % 20)], edge: edge(if i % 2 == 0 { Read } else { Write }), dots: osis_perm::Dots::Commit };
             held3.add_commit(osis_perm::MembershipCommit { id, ts: ts(n as u64 + 100 + u64::from(i)), author: nodes[1], actor: nodes[1], frontier: None, ops: vec![op] });
             inc.update_touched(&held3, &touched);
@@ -97,7 +97,7 @@ fn bench_10k_edges() {
         }
         let appends = ta.elapsed() / 100;
         for i in 0..100u8 {
-            held3.remove(&osis_core::CommitId([i; 32]));
+            held3.remove(&osis_base::CommitId([i; 32]));
         }
         inc.update_touched(&held3, &touched);
         let t3 = Instant::now();
@@ -133,7 +133,7 @@ fn bench_10k_edges() {
             let o = &cm.ops[*k as usize];
             if o.edge.is_some_and(|e| e.role >= Write) && nodes.contains(&o.member) {
                 let p = cm.point();
-                by_members.push((osis_perm::Point { ts: ts(p.ts.wall_ms().0 + 1), node: o.member, commit: osis_core::CommitId([0x11; 32]) }, o.target));
+                by_members.push((osis_perm::Point { ts: ts(p.ts.wall_ms().0 + 1), node: o.member, commit: osis_base::CommitId([0x11; 32]) }, o.target));
             }
         }
         by_members.truncate(1000);
@@ -146,7 +146,7 @@ fn bench_10k_edges() {
         drop(fresh);
         // what a demotion's frontier lists (§5.1): an admin's chain certificates on a doc, at
         // the end and at the middle
-        let end = osis_perm::Point { ts: ts(n as u64 + 10), node: nodes[1], commit: osis_core::CommitId([0xff; 32]) };
+        let end = osis_perm::Point { ts: ts(n as u64 + 10), node: nodes[1], commit: osis_base::CommitId([0xff; 32]) };
         let t8 = Instant::now();
         let certs = tl.certificates(&nodes[1], &doc, end);
         let cert = t8.elapsed();
@@ -183,8 +183,8 @@ fn bench_10k_edges() {
         inc.update(&held4);
         let tl4 = Timeline::evaluate(&held4);
         let most = |things: Vec<Tid>| things.into_iter().map(|t| (nodes.iter().map(|x| tl4.demotions(x, &t).len()).sum::<usize>(), t)).max().unwrap();
-        let teams: Vec<Tid> = w.created.iter().filter(|(_, r)| matches!(r, osis_core::CreationRecord::Thing { owner, .. } if w.created.get(owner).is_some_and(|o| matches!(o, osis_core::CreationRecord::Thing { owner: oo, .. } if !w.created.get(oo).is_some_and(|x| matches!(x, osis_core::CreationRecord::Thing { .. })))))).map(|(t, _)| *t).collect();
-        let docs: Vec<Tid> = w.created.iter().filter(|(t, r)| !teams.contains(t) && matches!(r, osis_core::CreationRecord::Thing { owner, .. } if teams.contains(owner))).map(|(t, _)| *t).collect();
+        let teams: Vec<Tid> = w.created.iter().filter(|(_, r)| matches!(r, osis_base::CreationRecord::Thing { owner, .. } if w.created.get(owner).is_some_and(|o| matches!(o, osis_base::CreationRecord::Thing { owner: oo, .. } if !w.created.get(oo).is_some_and(|x| matches!(x, osis_base::CreationRecord::Thing { .. })))))).map(|(t, _)| *t).collect();
+        let docs: Vec<Tid> = w.created.iter().filter(|(t, r)| !teams.contains(t) && matches!(r, osis_base::CreationRecord::Thing { owner, .. } if teams.contains(owner))).map(|(t, _)| *t).collect();
         for (what, (dn, owner)) in [("team", most(teams)), ("doc", most(docs))] {
             let mut w5 = w4.clone();
             let leaf = w5.thing(owner);
@@ -213,7 +213,7 @@ fn bench_10k_edges() {
 #[test]
 #[ignore]
 fn bench_deep_owner_chain() {
-    for depth in [10usize, osis_core::format::MAX_OWNER_DEPTH] {
+    for depth in [10usize, osis_base::format::MAX_OWNER_DEPTH] {
         let mut w = World::new();
         let nodes = w.nodes(3);
         let mut chain = vec![w.thing(nodes[0])];
@@ -252,7 +252,7 @@ fn bench_certificates() {
     let tl = Timeline::evaluate(&held);
     let eval = te.elapsed();
     let doc = *w.created.keys().last().unwrap();
-    let end = osis_perm::Point { ts: ts(n as u64 + 10), node: nodes[1], commit: osis_core::CommitId([0xff; 32]) };
+    let end = osis_perm::Point { ts: ts(n as u64 + 10), node: nodes[1], commit: osis_base::CommitId([0xff; 32]) };
     let mid = tl.applied().values().nth(tl.applied().len() / 2).map(|a| a.point).unwrap();
     let t0 = Instant::now();
     let certs = tl.certificates(&nodes[1], &doc, end);
@@ -286,7 +286,7 @@ fn bench_deltas() {
         let o = &cm.ops[*k as usize];
         if o.edge.is_some_and(|e| e.role >= Write) && nodes.contains(&o.member) {
             let p = cm.point();
-            by_members.push((osis_perm::Point { ts: ts(p.ts.wall_ms().0 + 1), node: o.member, commit: osis_core::CommitId([0x11; 32]) }, o.target));
+            by_members.push((osis_perm::Point { ts: ts(p.ts.wall_ms().0 + 1), node: o.member, commit: osis_base::CommitId([0x11; 32]) }, o.target));
         }
     }
     by_members.truncate(1000);

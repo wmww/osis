@@ -9,7 +9,7 @@ use osis_keys::ROLES;
 use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use crate::Mutation;
-use osis_core::{LabelId, Role, Tid, Value};
+use osis_base::{LabelId, Role, Tid, Value};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_crypto::{Epoch, KemPublicKey, LabelRole, Secret32, VerifyingKey, label_role_key};
 use osis_keys::{ActorEpochs, registration_epochs};
@@ -69,7 +69,7 @@ fn reader_key(tx: &mut Tx<'_>, m: &Tid) -> Result<Option<ReaderKey>> {
         if super::is_node(tx, m)? {
             return Ok(Some(ReaderKey::Dh(kem.x25519())));
         }
-        let Some(osis_core::CreationRecord::KeyActor { public_key, .. }) = tx.core.created(m) else { return Ok(None) };
+        let Some(osis_base::CreationRecord::KeyActor { public_key, .. }) = tx.core.created(m) else { return Ok(None) };
         let vk = VerifyingKey::from_slice(public_key)?;
         return Ok(Some(ReaderKey::Static(vk, kem)));
     }

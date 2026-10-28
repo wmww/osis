@@ -6,8 +6,8 @@ use crate::harness::{ClockSpec, Config, Failure, NetFaults, Report, Res, Sim, We
 use crate::net::scenarios as net;
 use crate::net::{adversary, library, skew};
 use crate::workload;
-use osis_core::format::MAX_DRIFT_MS;
-use osis_core::{Role, Value};
+use osis_base::format::MAX_DRIFT_MS;
+use osis_base::{Role, Value};
 use osis_node::{Ingested, Mutation, Reason};
 use osis_schema::AspectKey;
 use std::panic::{AssertUnwindSafe, catch_unwind};

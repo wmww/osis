@@ -25,7 +25,7 @@ use crate::content::{overlapping, Range};
 use crate::graph::{Class, Dense, Edges, EdgesAt, Owners, Reads, Standing, View};
 use crate::held::HeldSet;
 use crate::types::{lowers, Dots, Edge, Frontier, MembershipCommit, Point, RosterSnapshot, WriteId, MEMBERS};
-use osis_core::{CommitId, Role, Tid, Ts, WallMs};
+use osis_base::{CommitId, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

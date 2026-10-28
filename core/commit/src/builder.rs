@@ -6,8 +6,8 @@ use crate::project::check_fits;
 use crate::keys::{Prefix, Secrets, delete_keys};
 use crate::lists::{BlobSink, write_list};
 use crate::Error;
-use osis_core::format::{CHUNK_THRESHOLD, FORMAT_VERSION, MAX_BLOB};
-use osis_core::{Ak, BlobId, CommitId, SchemaId, Tid, Ts, Value};
+use osis_base::format::{CHUNK_THRESHOLD, FORMAT_VERSION, MAX_BLOB};
+use osis_base::{Ak, BlobId, CommitId, SchemaId, Tid, Ts, Value};
 use osis_crypto::{CryptoRngCore, SigningSecret, delta_hash};
 use osis_schema::Retention;
 use std::collections::BTreeMap;
@@ -137,7 +137,7 @@ impl CommitBuilder {
         // delete keys: one per distinct (level, key), sorted by canonical bytes
         let mut table: BTreeMap<Vec<u8>, DeleteKey> = BTreeMap::new();
         for k in aspect_keys.iter().flatten() {
-            table.insert(osis_core::encode(&key_value(k)), *k);
+            table.insert(osis_base::encode(&key_value(k)), *k);
         }
         let keys: Vec<DeleteKey> = table.into_values().collect();
         let positions: BTreeMap<DeleteKey, usize> = keys.iter().enumerate().map(|(i, t)| (*t, i)).collect();
@@ -152,7 +152,7 @@ impl CommitBuilder {
         }
         chunks.sort_by_key(|c| c.blob);
         let mut purge = std::mem::take(&mut self.purge);
-        purge.sort_by_cached_key(|p| osis_core::encode(&purge_value(p)));
+        purge.sort_by_cached_key(|p| osis_base::encode(&purge_value(p)));
         let mut origins = std::mem::take(&mut self.origins);
         origins.sort_by_key(|o| o.commit);
 
@@ -184,7 +184,7 @@ impl CommitBuilder {
         let list_keys: Vec<DeleteKey> = header.keys.iter().filter(|k| k.level == 2).copied().collect();
         for f in ListField::ALL {
             let Some(v) = header.list_value(f) else { continue };
-            let bytes = osis_core::encode(&v);
+            let bytes = osis_base::encode(&v);
             if bytes.len() <= CHUNK_THRESHOLD {
                 continue;
             }

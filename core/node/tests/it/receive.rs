@@ -5,8 +5,8 @@
 use crate::common;
 use common::*;
 use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, Form, Kind, MemoryBlobs};
-use osis_core::Classified;
-use osis_core::{Role, Tid, Ts, Value, WallMs};
+use osis_base::Classified;
+use osis_base::{Role, Tid, Ts, Value, WallMs};
 use osis_crdt::{Op, PathOp};
 use osis_crypto::{RngCore, Secret32, SeededRng};
 use osis_node::{Event, Ingested, Mutation, Origin, Reason};
@@ -30,7 +30,7 @@ fn bad_signature_rejected_spec_commits_4() {
     }
     lp.peers[1].drain_events();
     let r = lp.peers[1].engine.ingest(&blob.encode(), Vec::new());
-    assert_eq!(r.unwrap_err().class(), osis_core::ErrorClass::BadInput);
+    assert_eq!(r.unwrap_err().class(), osis_base::ErrorClass::BadInput);
     assert!(lp.peers[1].drain_events().iter().any(|e| matches!(e, Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::BadInput)));
     assert!(lp.peers[1].engine.pending().is_empty());
     assert_eq!(lp.peers[1].engine.commit_ids().len(), 4);
@@ -206,7 +206,7 @@ fn atomic_wait_and_late_delta_spec_commits_4() {
 }
 
 /// Secrets for hand-built commits: dedup, and made-up delete keys (servers' business).
-struct Dedup(Vec<osis_core::CreationRecord>);
+struct Dedup(Vec<osis_base::CreationRecord>);
 impl osis_commit::Secrets for Dedup {
     fn dedup(&self, tid: &Tid) -> Option<Secret32> {
         self.0.iter().find(|r| r.tid() == *tid).map(|r| osis_crypto::dedup_secret(r.nonce()))
@@ -233,7 +233,7 @@ fn parked_spec_versioning_2() {
     let e = &mut lp.peers[0].engine;
     let rec = e.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let ts = Ts::make(WallMs(T0.0 + 10), 0).unwrap();
-    let delta = osis_core::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99)])]));
+    let delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99)])]));
     let mut w = AspectWrite::new(t, ak("/t/future"), 100, 101, delta);
     w.retention = Retention { by: PurgeBy::Nobody, at_least: Bound::default(), at_most: Bound::default() };
     let mut b = CommitBuilder::new(Kind::Content, ts, e.tid(), e.tid(), Form::Node);
@@ -246,13 +246,13 @@ fn parked_spec_versioning_2() {
     assert_eq!(lp.peers[1].engine.pending().len(), 1);
     assert_eq!(lp.peers[1].engine.commit_bytes(&built.commit.id()).unwrap(), Some(bytes));
     // an unknown format version: the header does not even decode
-    let mut v = osis_core::decode(&built.commit.encode(), &osis_core::Limits::DEFAULT).unwrap();
+    let mut v = osis_base::decode(&built.commit.encode(), &osis_base::Limits::DEFAULT).unwrap();
     if let Value::List(items) = &mut v
         && let Some(Value::List(h)) = items.first_mut()
     {
         h[0] = Value::Int(2);
     }
-    let r = lp.peers[1].engine.ingest(&osis_core::encode(&v), Vec::new()).unwrap();
+    let r = lp.peers[1].engine.ingest(&osis_base::encode(&v), Vec::new()).unwrap();
     assert!(matches!(r, Ingested::Parked(_)), "{r:?}");
     // other commits still apply
     let mut m = Mutation::new();

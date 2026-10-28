@@ -5,7 +5,7 @@ use crate::graph::{Class, Edges, EdgesAt, Owners, Standing, View};
 use crate::held::HeldSet;
 use crate::types::{Edge, MembershipCommit, Point, RosterSnapshot, WriteId};
 use crate::walk::{self, Applied, Demotion, Input};
-use osis_core::{CommitId, CreationRecord, Role, Tid, Ts};
+use osis_base::{CommitId, CreationRecord, Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 

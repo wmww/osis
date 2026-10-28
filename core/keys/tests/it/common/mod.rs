@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 //! Shared fixtures: actors with explicit epochs, key actors, recipients.
 
-use osis_core::{Role, Tid};
+use osis_base::{Role, Tid};
 use osis_crypto::{Epoch, KeyActorKeys, Secret32, SeededRng};
 use osis_keys::aspects::keyset;
 use osis_keys::{ActorEpochs, MemberKeys, Provenance, ROLES, Recipient};

@@ -88,7 +88,7 @@ fn seq(s: &mut Seq, f: DotFn<'_>) {
 
 /// Collects the writes of a fragment: every stamp with its `ts`, every element identity
 /// (creation) without one; `Derived` dots as their owner's. Anchors are references, not writes.
-struct Writes<'a>(&'a mut Vec<(Dot, Option<osis_core::Ts>)>);
+struct Writes<'a>(&'a mut Vec<(Dot, Option<osis_base::Ts>)>);
 
 impl Writes<'_> {
     fn stamp(&mut self, s: &Stamp) {
@@ -100,7 +100,7 @@ impl Writes<'_> {
         }
     }
     /// An element identity, with its creation's `ts` where the record carries it.
-    fn elem(&mut self, d: &Dot, ts: Option<osis_core::Ts>) {
+    fn elem(&mut self, d: &Dot, ts: Option<osis_base::Ts>) {
         self.0.push((d.owner().clone(), ts));
     }
     fn frag(&mut self, f: &Fragment) {
@@ -240,7 +240,7 @@ impl Fragment {
     /// `ts` where the record carries it (a map entry's creation, a set or bag element's value
     /// register, a sequence element's creation stamp), else without (tombstones, bare anchors). For judging a snapshot's writes as their
     /// authors' (spec/permissions.md §5.2) and ranking them (§7).
-    pub fn writes(&self) -> Vec<(Dot, Option<osis_core::Ts>)> {
+    pub fn writes(&self) -> Vec<(Dot, Option<osis_base::Ts>)> {
         let mut out = Vec::new();
         Writes(&mut out).frag(self);
         out

@@ -21,10 +21,10 @@ Each target asserts no panic plus the parser's round-trip or consistency propert
 
 | target | parser | crate | status |
 |---|---|---|---|
-| `cbor_decode` | value decoder, `CanonicalBytes`, `decode_prefix` | osis-core | live |
-| `tid_parse` | tid text form | osis-core | live |
-| `creation_record` | creation record read | osis-core | live |
-| `chunker` | chunker bounds, incremental = one-shot | osis-core | live |
+| `cbor_decode` | value decoder, `CanonicalBytes`, `decode_prefix` | osis-base | live |
+| `tid_parse` | tid text form | osis-base | live |
+| `creation_record` | creation record read | osis-base | live |
+| `chunker` | chunker bounds, incremental = one-shot | osis-base | live |
 | `blob_prefix` | blob prefix, unpad | osis-label, osis-crypto | live |
 | `commit_header` | commit header, commit blob plaintext | osis-commit | live |
 | `delta` | delta and snapshot decoders (writer, snapshot, import forms), read and join of what decodes | osis-crdt | live |

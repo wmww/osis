@@ -5,7 +5,7 @@ use crate::blob::{CommitBlob, Part, encode_parts};
 use crate::cbor::array_head;
 use crate::header::{AspectEntry, DeleteKey, Header, retention_value};
 use crate::Error;
-use osis_core::format::MAX_BLOB;
+use osis_base::format::MAX_BLOB;
 use osis_crypto::padme;
 use osis_schema::Retention;
 use std::collections::BTreeMap;
@@ -48,14 +48,14 @@ fn head_len(n: usize) -> usize {
 fn part_len(p: &Part) -> usize {
     let mut v = Vec::new();
     array_head(3, &mut v);
-    osis_core::cbor::encode_into(&crate::cbor::uidx(p.ai), &mut v);
-    osis_core::cbor::encode_into(&crate::cbor::uidx(p.di), &mut v);
+    osis_base::cbor::encode_into(&crate::cbor::uidx(p.ai), &mut v);
+    osis_base::cbor::encode_into(&crate::cbor::uidx(p.di), &mut v);
     v.len().saturating_add(p.delta.len())
 }
 
 /// Plaintext bytes outside the parts list: outer head, header, signature.
 fn fixed_len(c: &CommitBlob) -> usize {
-    1usize.saturating_add(c.header.encode().len()).saturating_add(osis_core::encode(&c.signature.to_value()).len())
+    1usize.saturating_add(c.header.encode().len()).saturating_add(osis_base::encode(&c.signature.to_value()).len())
 }
 
 /// The prefix inputs any blob of `h` holding `parts` must carry: the expiry and the delete keys
@@ -106,7 +106,7 @@ pub fn project_resolved<K: Ord + Clone>(c: &CommitBlob, resolved: &Header, reade
     let mut classes: BTreeMap<Class<K>, Vec<&Part>> = BTreeMap::new();
     for p in &c.parts {
         let a = resolved.aspects.get(p.ai).ok_or(Error::Malformed("part aspect index out of range"))?;
-        let key = (readers(p.ai), osis_core::encode(&retention_value(&a.retention)), a.expires, a.keys.clone());
+        let key = (readers(p.ai), osis_base::encode(&retention_value(&a.retention)), a.expires, a.keys.clone());
         classes.entry(key).or_default().push(p);
     }
     let header = c.header.encode();

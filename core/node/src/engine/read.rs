@@ -5,7 +5,7 @@
 
 use super::{Core, Engine, records};
 use crate::error::{Error, Result};
-use osis_core::{Ak, Role, Tid, Value};
+use osis_base::{Ak, Role, Tid, Value};
 use osis_crdt::Fragment;
 use osis_perm::{At, Edge, MoveIndex};
 use osis_schema::AspectKey;
@@ -53,7 +53,7 @@ impl Core {
             return *t;
         }
         match self.timelines.get(r) {
-            Some(tl) => tl.resolve(&Moves(self), r, t, At::now(osis_core::Ts::make(self.now(), 0).unwrap_or_default())),
+            Some(tl) => tl.resolve(&Moves(self), r, t, At::now(osis_base::Ts::make(self.now(), 0).unwrap_or_default())),
             None => {
                 let mut cur = *t;
                 for _ in 0..osis_perm::RESOLUTION_HOPS {
@@ -79,7 +79,7 @@ impl Core {
     }
 
     pub(crate) fn roster_of(&self, thing: &Tid) -> BTreeMap<Tid, Edge> {
-        let ts = osis_core::Ts::make(self.now(), 0).unwrap_or_default();
+        let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
         self.timelines.get(thing).map(|tl| tl.roster(thing, At::now(ts))).unwrap_or_default()
     }
 }
@@ -201,7 +201,7 @@ impl Engine {
 
     /// This node's effective role on `tid` now.
     pub fn role_on(&self, tid: &Tid) -> Option<Role> {
-        let ts = osis_core::Ts::make(self.now(), 0).unwrap_or_default();
+        let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
         super::write::role_of(&self.core, &self.tid(), tid, ts)
     }
 

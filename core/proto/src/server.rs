@@ -8,8 +8,8 @@ use crate::hello::{Hello, PROTOCOL_VERSION, negotiate};
 use crate::msg::*;
 use crate::rbsr;
 use crate::store::{EntryMeta, LabelStore, LogRecord, Put, StoreError};
-use osis_core::format::MAX_MESSAGE;
-use osis_core::{BlobId, LabelId, WallMs};
+use osis_base::format::MAX_MESSAGE;
+use osis_base::{BlobId, LabelId, WallMs};
 use osis_crypto::{Domain, LabelRole, VerifyingKey, verify_delete};
 use osis_label::auth::delete_digest;
 use osis_label::{OpenOutcome, entry_digest, evaluate_open, key_for_level, server_prefix};
@@ -154,7 +154,7 @@ pub struct ServerConnection {
 
 /// Replay cursor ID of a log (spec/wire.md §11.2).
 pub fn replay_id(log_id: &[u8; 16]) -> [u8; 16] {
-    let h = osis_core::hash::hash(&[REPLAY.as_bytes(), &log_id[..]].concat());
+    let h = osis_base::hash::hash(&[REPLAY.as_bytes(), &log_id[..]].concat());
     let mut id = [0u8; 16];
     id.copy_from_slice(h.get(..16).unwrap_or(&[0; 16]));
     id
@@ -229,7 +229,7 @@ impl ServerConnection {
                 self.decoder.push(&b);
                 while !self.closed {
                     // before the peer's Hello only a Hello-sized frame is taken (spec/wire.md §11.1)
-                    self.decoder.set_max(if self.version.is_some() { osis_core::format::MAX_MESSAGE } else { crate::frame::MAX_HELLO_BYTES });
+                    self.decoder.set_max(if self.version.is_some() { osis_base::format::MAX_MESSAGE } else { crate::frame::MAX_HELLO_BYTES });
                     match self.decoder.next_frame() {
                         Ok(Some(body)) => self.frame(now, store, &body, &mut out),
                         Ok(None) => break,
@@ -680,7 +680,7 @@ impl ServerConnection {
     /// Upload (stamp) or deposit (no stamp, already authorized) of one entry (spec/sync.md §5).
     fn accept(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, blob: &[u8], wrap: Wrap, stamp: Option<Signature>) -> Result<Code, StoreError> {
         // An oversized blob never gets here: the message decoder refuses it (`field_sizes`).
-        debug_assert!(blob.len() <= osis_core::format::MAX_BLOB);
+        debug_assert!(blob.len() <= osis_base::format::MAX_BLOB);
         let Some(c) = self.cached(store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
         let blob_id = osis_label::blob_id(blob);
         if let Some(stamp) = stamp {

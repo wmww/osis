@@ -74,7 +74,7 @@ fn budget_big_map_spec_4_1() {
     use crate::page::MemoryPages;
     use crate::stamp::{Interner, Source};
     use crate::wire::{Delta, DeltaCtx, DeltaKind};
-    use osis_core::{Tid, Ts, Value};
+    use osis_base::{Tid, Ts, Value};
     use std::time::Instant;
     let node = Source::node(Tid::from_bytes([1; 15]));
     let ts = |t: u64| Ts::from_u64(t << 16).unwrap_or_default();

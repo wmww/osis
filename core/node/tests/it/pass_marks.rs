@@ -5,7 +5,7 @@
 
 use crate::net;
 use net::*;
-use osis_core::{CommitId, LabelId, Role, Tid, Value};
+use osis_base::{CommitId, LabelId, Role, Tid, Value};
 use osis_node::Mutation;
 use osis_node::sync::EntryKind;
 
@@ -135,7 +135,7 @@ fn keep_at_most_reset_after_removal_spec_commits_5() {
     map_op(&mut net, a, t, &SHORTMAP, osis_crdt::Op::Remove(s("k1")));
     net.run();
     net.advance(61_000);
-    let ak = osis_core::Ak::new(osis_schema::AspectKey::ak(&SHORTMAP)).unwrap();
+    let ak = osis_base::Ak::new(osis_schema::AspectKey::ak(&SHORTMAP)).unwrap();
     assert!(net.engine(a).deaths(&b, &t, &ak).unwrap().is_some() && net.engine(a).body_live(&b, &t, &ak).unwrap(), "dead, its dot held");
     map_op(&mut net, a, t, &SHORTMAP, osis_crdt::Op::RemoveAspect);
     net.run();

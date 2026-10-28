@@ -1,6 +1,6 @@
 //! The node's error, with the three classes of notes/architecture.md §3.
 
-use osis_core::{Classified, CommitId, ErrorClass, Tid};
+use osis_base::{Classified, CommitId, ErrorClass, Tid};
 
 #[derive(Debug)]
 pub enum Error {
@@ -25,7 +25,7 @@ pub enum Error {
     Corrupt(&'static str),
 }
 
-osis_core::impl_error!(Error {
+osis_base::impl_error!(Error {
     Store(e) => ("store: {e}"),
     Commit(e) => ("commit: {e}"),
     Crdt(e) => ("crdt: {e}"),

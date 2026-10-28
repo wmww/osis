@@ -2,7 +2,7 @@
 
 use crate::tests::{dkey, sample_header, t, ts};
 use crate::*;
-use osis_core::{Ak, CommitId, Value};
+use osis_base::{Ak, CommitId, Value};
 use osis_schema::{Bound, PurgeBy, Retention};
 
 fn invalid(h: &Header) -> Error {
@@ -152,7 +152,7 @@ fn validate_expiry_purge_retention() {
     x.aspects[0].expires = None;
     x.validate().unwrap();
     x.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("/members").unwrap() });
-    x.purge.sort_by_key(|p| osis_core::encode(&crate::header::purge_value(p)));
+    x.purge.sort_by_key(|p| osis_base::encode(&crate::header::purge_value(p)));
     assert!(invalid(&x).to_string().contains("membership"));
     let mut x = h.clone();
     x.aspects[0].retention.at_most.rel = Some(0);
@@ -163,7 +163,7 @@ fn validate_expiry_purge_retention() {
 // snapshot retention from schema defaults, keep bounds, the purge floor.
 #[test]
 fn retention_rules() {
-    use osis_core::format::MEMBERSHIP_KEEP_MS;
+    use osis_base::format::MEMBERSHIP_KEEP_MS;
     use osis_schema::AspectDefaults;
     use retention::*;
     assert_eq!(fixed_retention("/secrets"), Some(MEMBERSHIP_RETENTION));
@@ -205,7 +205,7 @@ fn retention_rules() {
 #[test]
 fn at_most_grace_spec_commits_5() {
     use crate::retention::body_keep;
-    use osis_core::format::AT_MOST_GRACE_MS as G;
+    use osis_base::format::AT_MOST_GRACE_MS as G;
     let r = Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(0) } };
     let h = sample_header();
     let mut s = h.clone();

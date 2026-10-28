@@ -3,7 +3,7 @@
 //! established and not superseded by an established rotation, newest = greatest n, ties by lowest
 //! nonce.
 
-use osis_core::{CommitId, Role, Tid};
+use osis_base::{CommitId, Role, Tid};
 use osis_crypto::{Epoch, Secret32, key_actor_role_secret, thing_role_secret};
 use std::collections::{BTreeMap, BTreeSet};
 

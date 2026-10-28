@@ -6,7 +6,7 @@
 use crate::graph::View;
 use crate::timeline::Timeline;
 use crate::types::Edge;
-use osis_core::{Role, Tid, Ts};
+use osis_base::{Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The aspects a demotion puts in question, per demoted node.

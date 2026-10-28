@@ -8,7 +8,7 @@ use super::{Action, PLACE_WAIT_MS, SyncEngine};
 use crate::error::Result;
 use crate::flows::{Delivery, Done, SyncState};
 use crate::local_peer::Package;
-use osis_core::{CommitId, LabelId, Tid};
+use osis_base::{CommitId, LabelId, Tid};
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 
@@ -281,7 +281,7 @@ impl SyncEngine {
                 return Ok(Some(cur));
             }
             match self.engine.core.created(&cur) {
-                Some(osis_core::CreationRecord::Thing { owner, .. }) => cur = *owner,
+                Some(osis_base::CreationRecord::Thing { owner, .. }) => cur = *owner,
                 _ => return Ok(None),
             }
         }

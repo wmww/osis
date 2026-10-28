@@ -3,7 +3,7 @@
 
 use crate::common;
 use common::*;
-use osis_core::{Role, Tid, WallMs};
+use osis_base::{Role, Tid, WallMs};
 use osis_crypto::Secret32;
 use osis_keys::{
     ActorEpochs, Departure, Member, MemoryHeldActors, MemberKeys, Opener, ROLES, Recipient, box_member, ingest, may_encrypt_under, reseal_needed, roles_up_to, rotate, rotate_first,

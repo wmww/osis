@@ -2,7 +2,7 @@
 //! as the models do (a demoter at t covers what it received before t), commit-form dots.
 #![allow(dead_code)]
 
-use osis_core::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
+use osis_base::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
 use osis_perm::{Dots, Edge, EdgeOp, Frontier, MembershipCommit, MemoryHeldSet, RosterSnapshot, Tenure, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

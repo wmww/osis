@@ -18,7 +18,7 @@
 
 use super::{NetSim, Party};
 use crate::harness::Res;
-use osis_core::{BlobId, LabelId, Role, Tid};
+use osis_base::{BlobId, LabelId, Role, Tid};
 use osis_node::Engine;
 use osis_proto::{LabelStore, LogRecord};
 use std::collections::{BTreeMap, BTreeSet};
@@ -93,10 +93,10 @@ fn state_size(sim: &mut NetSim) -> Res<()> {
 }
 
 /// Per aspect: the deltas a node holds of it (commit, delta index) and its read.
-type AspectView = BTreeMap<(Tid, String), (BTreeSet<(osis_core::CommitId, usize)>, String)>;
+type AspectView = BTreeMap<(Tid, String), (BTreeSet<(osis_base::CommitId, usize)>, String)>;
 
 fn aspect_view(e: &mut Engine) -> Result<AspectView, String> {
-    let mut deltas: BTreeMap<(Tid, String), BTreeSet<(osis_core::CommitId, usize)>> = BTreeMap::new();
+    let mut deltas: BTreeMap<(Tid, String), BTreeSet<(osis_base::CommitId, usize)>> = BTreeMap::new();
     for c in e.commit_ids() {
         let Some(bytes) = e.commit_bytes(&c).map_err(|x| x.to_string())? else { continue };
         let Ok(b) = osis_commit::CommitBlob::decode(&bytes) else { continue };
@@ -283,12 +283,12 @@ fn views(sim: &mut NetSim, g: &Tid) -> Vec<String> {
 
 /// The item commits one node holds and the other lacks, with where they are (failure detail).
 fn gap(sim: &NetSim, m: usize, n: usize, items: &[Tid]) -> String {
-    let held = |i: usize| -> BTreeSet<osis_core::CommitId> {
+    let held = |i: usize| -> BTreeSet<osis_base::CommitId> {
         let Some(e) = sim.nodes.get(i).and_then(|x| x.sync.as_ref()).map(|s| s.engine()) else { return BTreeSet::new() };
         e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.aspects.iter().any(|a| items.contains(&a.tid)))).collect()
     };
     let (hm, hn) = (held(m), held(n));
-    let at = |c: &osis_core::CommitId| -> Vec<String> {
+    let at = |c: &osis_base::CommitId| -> Vec<String> {
         let mut v = Vec::new();
         for ((l, b), (kc, kp)) in &sim.known {
             if kc != c {
@@ -302,8 +302,8 @@ fn gap(sim: &NetSim, m: usize, n: usize, items: &[Tid]) -> String {
         }
         v
     };
-    let pend = |i: usize, c: &osis_core::CommitId| sim.nodes.get(i).and_then(|x| x.sync.as_ref()).and_then(|s| s.engine().pending().into_iter().find(|p| p.0 == *c)).map(|p| format!("{:?}", p.1));
-    let only = |a: &BTreeSet<osis_core::CommitId>, b: &BTreeSet<osis_core::CommitId>, lacks: usize| -> Vec<String> {
+    let pend = |i: usize, c: &osis_base::CommitId| sim.nodes.get(i).and_then(|x| x.sync.as_ref()).and_then(|s| s.engine().pending().into_iter().find(|p| p.0 == *c)).map(|p| format!("{:?}", p.1));
+    let only = |a: &BTreeSet<osis_base::CommitId>, b: &BTreeSet<osis_base::CommitId>, lacks: usize| -> Vec<String> {
         a.difference(b).take(4).map(|c| format!("{c:?} at {:?} pending there {:?}", at(c), pend(lacks, c))).collect()
     };
     format!("only {m}: {:?}; only {n}: {:?}", only(&hm, &hn, n), only(&hn, &hm, m))

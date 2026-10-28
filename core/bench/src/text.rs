@@ -2,7 +2,7 @@
 //! typist shaped like the automerge-paper trace, or that trace itself (`OSIS_TEXT_TRACE`, the
 //! `pos \t del \t "ins"` lines `core/test/crdt-model/src/bin/text_bench.rs` reads).
 
-use osis_core::{Tid, Ts, Value};
+use osis_base::{Tid, Ts, Value};
 use osis_crdt::{Batch, DeltaCtx, DeltaKind, Fragment, Frontiers, Op, PathOp, Snapshot, Source, View, Writer, encode_snapshot};
 
 /// One edit: delete `del` chars at `pos`, then insert `ins` there.
@@ -153,7 +153,7 @@ pub fn final_text(edits: &[Edit]) -> String {
 struct Counting(osis_crdt::MemoryPages, usize);
 
 impl osis_crdt::PageSink for Counting {
-    fn put(&mut self, p: &[u8]) -> Result<osis_core::Link, osis_crdt::PageError> {
+    fn put(&mut self, p: &[u8]) -> Result<osis_base::Link, osis_crdt::PageError> {
         self.1 += p.len();
         self.0.put(p)
     }

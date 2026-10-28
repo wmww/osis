@@ -3,7 +3,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use osis_core::{Limits, Value, decode};
+use osis_base::{Limits, Value, decode};
 use osis_label::{PublishAuth, SignalBody};
 
 fuzz_target!(|data: &[u8]| {

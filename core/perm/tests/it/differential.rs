@@ -7,7 +7,7 @@ use crate::common;
 use common::*;
 use membership_model::shrink::{shrink, Shrink};
 use membership_model::{edges, joint, snapshot, Rng};
-use osis_core::{CommitId, Role, Tid};
+use osis_base::{CommitId, Role, Tid};
 use osis_perm::{At, Edge, Timeline, WriteId};
 
 fn role(r: membership_model::Role) -> Option<Role> {
@@ -161,7 +161,7 @@ struct EdgesWorld {
 fn medge(e: Option<edges::Edge>) -> Option<Edge> {
     e.map(|e| Edge {
         role: role(e.role).unwrap_or(Role::Read),
-        until: (e.until != edges::NEVER).then_some(osis_core::WallMs(e.until as u64)),
+        until: (e.until != edges::NEVER).then_some(osis_base::WallMs(e.until as u64)),
         invite: role(e.invite),
         since: None,
     })

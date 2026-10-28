@@ -21,8 +21,8 @@ use crate::engine::{Engine, Meta, Tx, decode_commit_record, records};
 use crate::error::{Error, Result};
 use crate::events::{Diagnostic, DiagnosticKind, Origin};
 use osis_commit::{CommitBlob, Decoded, Header, Kind, MAX_LIST_BYTES, delta_ctx, verify_part};
-use osis_core::format::MAX_DRIFT_MS;
-use osis_core::{BlobId, Classified, CommitId, CreationRecord, ErrorClass, Tid, Value, WallMs};
+use osis_base::format::MAX_DRIFT_MS;
+use osis_base::{BlobId, Classified, CommitId, CreationRecord, ErrorClass, Tid, Value, WallMs};
 use osis_crdt::Interner;
 use osis_crypto::{VerifyingKey, dedup_secret};
 use osis_label::BlobReader;
@@ -68,11 +68,11 @@ pub(crate) enum Exam {
 
 /// Commit ID of a blob whose header this build cannot decode: BLAKE3 of the header value.
 fn raw_id(bytes: &[u8]) -> Result<CommitId> {
-    let lim = osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: bytes.len() };
-    let v = osis_core::decode(bytes, &lim).map_err(|_| Error::BadInput("commit blob"))?;
+    let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: bytes.len() };
+    let v = osis_base::decode(bytes, &lim).map_err(|_| Error::BadInput("commit blob"))?;
     let Value::List(items) = v else { return Err(Error::BadInput("commit blob")) };
     let h = items.first().ok_or(Error::BadInput("commit blob"))?;
-    Ok(CommitId(osis_core::hash::hash(&osis_core::encode(h))))
+    Ok(CommitId(osis_base::hash::hash(&osis_base::encode(h))))
 }
 
 fn is_missing_page(e: &osis_commit::Error) -> bool {
@@ -122,7 +122,7 @@ fn waits_for_deltas(tx: &mut Tx<'_>, h: &Header, id: &CommitId, missing: impl It
 /// when last examined (`Core::waits`).
 enum Turn {
     Read(Box<CommitBlob>),
-    Waiting((bool, osis_core::Ts)),
+    Waiting((bool, osis_base::Ts)),
 }
 
 /// Checks a commit and decodes its parts, or says why it waits.
@@ -168,7 +168,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         // invalid (`validity::too_deep`, spec/permissions.md §1)
         let mut cur = a.tid;
         let mut chain = vec![cur];
-        for _ in 0..=osis_core::format::MAX_OWNER_DEPTH {
+        for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
             match chain_rec(&cur, tx.core) {
                 Some(CreationRecord::Thing { owner, .. }) => {
                     cur = owner;
@@ -611,7 +611,7 @@ impl Engine {
 
     /// IDs of applied commits, in (`ts`, ID) order.
     pub fn commit_ids(&self) -> Vec<CommitId> {
-        let mut v: Vec<(osis_core::Ts, CommitId)> = self.core.commits.iter().map(|(id, m)| (m.header.ts, *id)).collect();
+        let mut v: Vec<(osis_base::Ts, CommitId)> = self.core.commits.iter().map(|(id, m)| (m.header.ts, *id)).collect();
         v.sort();
         v.into_iter().map(|x| x.1).collect()
     }
@@ -626,7 +626,7 @@ impl Engine {
     /// `/created` is kept forever, so every node reading the thing gets that commit; until it
     /// is here (only a snapshot held) `None`.
     pub fn creation(&self, tid: &Tid) -> Option<Creation> {
-        let ak = osis_core::Ak::new("/created").ok()?;
+        let ak = osis_base::Ak::new("/created").ok()?;
         self.core.by_aspect.get(&(*tid, ak.clone()))?.iter().find_map(|(_, id)| {
             let m = self.core.commits.get(id)?;
             let ai = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == ak)?;
@@ -641,7 +641,7 @@ impl Engine {
 /// decoded), else from every commit record, re-judging every delta. Returns whether it rebuilt
 /// (the persisted index is then to be written).
 /// Rebuilds `(tid, ak)` from its held bodies under the current judgments, and what it derives.
-pub(crate) fn rejoin(tx: &mut Tx<'_>, tid: &Tid, ak: &osis_core::Ak) -> Result<()> {
+pub(crate) fn rejoin(tx: &mut Tx<'_>, tid: &Tid, ak: &osis_base::Ak) -> Result<()> {
     atomic::rebuild(tx, tid, ak)?;
     atomic::observe_state(tx, tid, ak)
 }
@@ -650,17 +650,17 @@ pub(crate) fn rejoin(tx: &mut Tx<'_>, tid: &Tid, ak: &osis_core::Ak) -> Result<(
 /// the aspects whose judgments differ from what the replaced index held (their states follow
 /// the old judgments until rebuilt; every aspect with something invalid when that index does
 /// not decode).
-pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, osis_core::Ak)>>> {
+pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, osis_base::Ak)>>> {
     if let Some(b) = tx.txn.get_local(records::HLC)?
         && let Ok(a) = <[u8; 8]>::try_from(b.as_slice())
-        && let Some(ts) = osis_core::Ts::from_u64(u64::from_be_bytes(a))
+        && let Some(ts) = osis_base::Ts::from_u64(u64::from_be_bytes(a))
     {
         tx.core.hlc.observe(ts);
     }
     let mut created = Vec::new();
     tx.scan(records::CREATED, |_, v| {
-        let lim = osis_core::Limits { max_depth: 8, max_bytes: v.len() };
-        let rec = osis_core::decode(&v, &lim).ok().and_then(|v| CreationRecord::from_value(&v)).ok_or(Error::Corrupt("creation record"))?;
+        let lim = osis_base::Limits { max_depth: 8, max_bytes: v.len() };
+        let rec = osis_base::decode(&v, &lim).ok().and_then(|v| CreationRecord::from_value(&v)).ok_or(Error::Corrupt("creation record"))?;
         created.push(rec);
         Ok(())
     })?;
@@ -707,7 +707,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         // perm's inputs: the edge writes of the membership commits, oldest first, from what the
         // index keeps of their bodies
         let mut edges = crate::engine::index::load_edges(tx)?;
-        let mut ids: Vec<(osis_core::Ts, CommitId)> = tx.core.commits.iter().filter(|(_, m)| m.header.kind.is_membership()).map(|(id, m)| (m.header.ts, *id)).collect();
+        let mut ids: Vec<(osis_base::Ts, CommitId)> = tx.core.commits.iter().filter(|(_, m)| m.header.kind.is_membership()).map(|(id, m)| (m.header.ts, *id)).collect();
         ids.sort();
         for (_, id) in ids {
             let Some(h) = tx.core.commits.get(&id).map(|m| m.header.clone()) else { continue };
@@ -842,7 +842,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     }
     // aspects whose judgments changed with the rules (or that hold anything invalid when the
     // old judgments are unknown)
-    let mut stale: BTreeSet<(Tid, osis_core::Ak)> = BTreeSet::new();
+    let mut stale: BTreeSet<(Tid, osis_base::Ak)> = BTreeSet::new();
     for (id, m) in tx.core.commits.iter() {
         for (ai, a) in m.header.aspects.iter().enumerate() {
             let now = m.valid.get(ai).copied().unwrap_or(false);
@@ -853,7 +853,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         }
     }
     let invalid_of = |v: Option<&Vec<validity::Carried>>| -> BTreeSet<(osis_crdt::Source, u64)> { v.into_iter().flatten().flat_map(|c| c.invalid.iter().map(|x| (c.src.clone(), *x))).collect() };
-    let mut keys: BTreeSet<(Tid, osis_core::Ak)> = tx.core.carried.keys().cloned().collect();
+    let mut keys: BTreeSet<(Tid, osis_base::Ak)> = tx.core.carried.keys().cloned().collect();
     if let Some(o) = &old {
         keys.extend(o.1.keys().cloned());
     }
@@ -926,7 +926,7 @@ pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Creation {
     pub commit: CommitId,
-    pub ts: osis_core::Ts,
+    pub ts: osis_base::Ts,
     pub node: Tid,
     pub actor: Tid,
     pub received: WallMs,
@@ -940,7 +940,7 @@ pub(crate) fn is_kind_snapshot(k: Kind) -> bool {
 mod tests {
     use crate::local_peer::LocalPeer;
     use crate::{Ingested, Mutation};
-    use osis_core::{Ak, Role, Value, WallMs};
+    use osis_base::{Ak, Role, Value, WallMs};
     use osis_crdt::{Op, PathOp, PathSeg};
     use osis_schema::Codec;
     use osis_schema::core_types as ct;
@@ -959,7 +959,7 @@ mod tests {
         m.set(t, &Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
         p0.commit(m).unwrap();
         let b = lp.peers[1].engine.tid();
-        let c = osis_core::Tid::from_bytes([7; 15]);
+        let c = osis_base::Tid::from_bytes([7; 15]);
         let mut m = Mutation::new();
         for x in [b, c] {
             let e = ct::Edge { role: Role::Write, until: None, invite: None, since: None };
@@ -1063,7 +1063,7 @@ mod tests {
             let before = p0.engine.commit_ids().len();
             let mut m = Mutation::new();
             let mut cur = a0;
-            for _ in 0..osis_core::format::MAX_OWNER_DEPTH + extra {
+            for _ in 0..osis_base::format::MAX_OWNER_DEPTH + extra {
                 cur = p0.engine.new_thing(&mut m, cur);
             }
             m.set(cur, &reg, &Value::Int(7)).unwrap();

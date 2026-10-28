@@ -4,7 +4,7 @@
 
 use crate::common;
 use common::*;
-use osis_core::{Clock, CommitId, Role, Tid, Value};
+use osis_base::{Clock, CommitId, Role, Tid, Value};
 use osis_label::Address;
 use osis_node::flows::{Delivery, Demotion, Done, PreSync};
 use osis_node::local_peer::LocalPeer;
@@ -293,10 +293,10 @@ fn persisted_index_equals_rebuild_spec_perm_5_2() {
 /// A peer for forensic and crash checks: small key tree and pages (a shred elsewhere does not
 /// incidentally rotate a leaked copy away), every row recorded, faults injectable.
 fn forensic_peer(seed: u64, faults: &osis_store::Faults) -> osis_node::local_peer::Peer {
-    let clock = std::sync::Arc::new(osis_core::ManualClock::new(T0));
+    let clock = std::sync::Arc::new(osis_base::ManualClock::new(T0));
     let (backend, root) = (osis_store::MemoryBackend::with_faults(faults.clone()), osis_store::MemoryRoot::with_faults(faults.clone()));
     backend.record_history();
-    let c: std::sync::Arc<dyn osis_core::Clock> = clock.clone();
+    let c: std::sync::Arc<dyn osis_base::Clock> = clock.clone();
     let mut engine = osis_node::Engine::create(Box::new(backend.clone()), Box::new(root.clone()), forensic_cfg(), c, Box::new(osis_crypto::SeededRng::from_u64(seed))).unwrap();
     let events = engine.subscribe();
     osis_node::local_peer::Peer { engine, clock, backend, root, events }
@@ -309,7 +309,7 @@ fn forensic_cfg() -> osis_node::Config {
 /// Reopens peer `i` over its durable state.
 fn reopen(lp: &mut LocalPeer, i: usize, seed: u64) -> osis_node::Result<()> {
     let p = &mut lp.peers[i];
-    let c: std::sync::Arc<dyn osis_core::Clock> = p.clock.clone();
+    let c: std::sync::Arc<dyn osis_base::Clock> = p.clock.clone();
     let mut engine = osis_node::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), forensic_cfg(), c, Box::new(osis_crypto::SeededRng::from_u64(seed)))?;
     p.events = engine.subscribe();
     p.engine = engine;
@@ -720,7 +720,7 @@ fn grantor_cannot_backdate_removers_edge_spec_perm_5_1() {
     lp.peers[1].engine.demote(&t, &Demotion { member: pc, new: None, presync: PreSync::Synced }).unwrap();
     let r = lp.peers[1].engine.commit_ids().into_iter().find(|c| lp.peers[1].engine.header(c).unwrap().frontier.is_some()).unwrap();
     assert!(g.iter().all(|c| frontier_ids(&mut lp, 1, &r).contains(c)), "Bob lists the grant he holds");
-    let until = osis_core::WallMs(lp.peers[0].clock.as_ref().now_wall_ms().0 + 3_600_000);
+    let until = osis_base::WallMs(lp.peers[0].clock.as_ref().now_wall_ms().0 + 3_600_000);
     let before = ids(&lp, 2);
     lp.peers[2].engine.grant(&t, &pb, &ct::Edge { role: Role::Admin, until: Some(until), invite: None, since: None }).unwrap();
     let forged = new_ids(&lp, 2, &before);
@@ -923,7 +923,7 @@ fn stolen_device_recovery_spec_perm_9() {
     assert!(lp.peers[3].engine.departures(&p).unwrap().iter().any(|d| d.member == d1));
 }
 
-fn link_spec(target: Tid, role: Role, until: Option<osis_core::WallMs>) -> osis_node::flows::LinkSpec {
+fn link_spec(target: Tid, role: Role, until: Option<osis_base::WallMs>) -> osis_node::flows::LinkSpec {
     osis_node::flows::LinkSpec { target, role, until, servers: servers(), peers: Vec::new(), single_use: false }
 }
 
@@ -1076,7 +1076,7 @@ fn link_bearer_and_until_spec_perm_9() {
     let (mut lp, ps) = people(2, 511);
     let (pa, ps1) = (ps[0], ps[1]);
     let d = thing_of(&mut lp, 0, pa);
-    let until = osis_core::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
+    let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
     let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, Some(until))).unwrap();
     sync(&mut lp, 0, 1);
     let before = lp.peers[1].engine.commit_ids().len();
@@ -1187,7 +1187,7 @@ fn departures_follow_the_clock_spec_crypto_4() {
     let (mut lp, ps) = people(2, 534);
     let (pa, pb) = (ps[0], ps[1]);
     let t = thing_of(&mut lp, 0, pa);
-    let until = osis_core::WallMs(lp.peers[0].engine.now().0 + 5_000);
+    let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 5_000);
     lp.peers[0].engine.grant(&t, &pb, &ct::Edge { role: Role::Read, until: Some(until), invite: None, since: None }).unwrap();
     assert!(lp.peers[0].engine.departures(&t).unwrap().is_empty());
     lp.advance(10_000);
@@ -1643,12 +1643,12 @@ fn backdated_revoke_spec_perm_5_3() {
     let theft = lp.peers[0].engine.now();
     lp.advance(2 * HOUR);
     // the thief winds its clock back to just after the theft
-    lp.peers[0].clock.set(osis_core::WallMs(theft.0 + 60_000));
+    lp.peers[0].clock.set(osis_base::WallMs(theft.0 + 60_000));
     add_tag(&mut lp, 0, u, "forged");
-    lp.peers[0].clock.set(osis_core::WallMs(theft.0 + 3 * HOUR));
+    lp.peers[0].clock.set(osis_base::WallMs(theft.0 + 3 * HOUR));
     sync(&mut lp, 0, 1);
     lp.advance(HOUR);
-    let backdated = PreSync::Backdated(osis_core::WallMs(theft.0 + HOUR / 2));
+    let backdated = PreSync::Backdated(osis_base::WallMs(theft.0 + HOUR / 2));
     lp.peers[1].engine.demote(&p, &Demotion { member: d1, new: None, presync: backdated }).unwrap();
     spread(&mut lp);
     for i in [1, 2] {
@@ -1697,7 +1697,7 @@ fn stale_key_actor_box_after_until_spec_crypto_4() {
     lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Write)).unwrap();
     spread(&mut lp);
     lp.advance(1000);
-    let until = osis_core::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
+    let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
     lp.peers[0].engine.grant(&t, &n3, &ct::Edge { role: Role::Write, until: Some(until), invite: None, since: None }).unwrap();
     lp.peers[1].engine.demote(&t, &Demotion { member: pc, new: Some(edge_of(Role::Read)), presync: PreSync::Synced }).unwrap();
     spread(&mut lp);
@@ -1837,7 +1837,7 @@ fn linked_tenure_frontier_spec_perm_6() {
         writes.insert(Tid::from_bytes([b[0], b[1], b[2], b[3], 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]), tags_of(5));
     }
     let frontier = osis_schema::Codec::to_value(&ct::Frontier { writes, commits: BTreeSet::new() });
-    assert!(osis_core::encode(&frontier).len() > osis_core::format::CHUNK_THRESHOLD);
+    assert!(osis_base::encode(&frontier).len() > osis_base::format::CHUNK_THRESHOLD);
     let demotion = set_edge(&mut lp.peers[0].engine, t, x, None, Some(frontier));
     assert!(lp.peers[0].engine.header(&demotion).unwrap().links.frontier.is_some(), "the header frontier goes by link");
     let done = lp.peers[0].engine.roster_snapshot(&t, None).unwrap();

@@ -1,6 +1,6 @@
 //! Transport errors and their classes (notes/architecture.md §3).
 
-use osis_core::{Classified, ErrorClass};
+use osis_base::{Classified, ErrorClass};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -20,7 +20,7 @@ pub enum Error {
     Io(String),
 }
 
-osis_core::impl_error!(Error {
+osis_base::impl_error!(Error {
     KeyMismatch => ("peer key does not match the pinned key"),
     Protocol(m) => ("transport protocol error: {m}"),
     UnknownScheme(s) => ("unknown transport scheme {s}"),

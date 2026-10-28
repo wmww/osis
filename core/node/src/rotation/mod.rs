@@ -14,7 +14,7 @@ use crate::error::{Error, Result};
 use crate::flows::{self, Delivery, Done, SyncState, now_ts, put_keysets, put_secrets, recipient, save_epochs, secrets_in};
 use crate::Mutation;
 use crate::retention::forget::Forgotten;
-use osis_core::{Role, Tid, Ts, WallMs};
+use osis_base::{Role, Tid, Ts, WallMs};
 use osis_crypto::Epoch;
 use osis_keys::{ActorEpochs, Departure, MemoryHeldActors, ROLES, Recipient, Rotation, rotate, uncovered};
 use osis_perm::{At, WriteId};
@@ -209,7 +209,7 @@ fn presumed_boxes(tx: &mut Tx<'_>, a: &Tid, e: &ActorEpochs, s: &mut osis_schema
     let now = now_ts(tx.core);
     let current: BTreeMap<Tid, Role> = tl.roster(a, At::now(now)).into_iter().map(|(m, x)| (m, x.role)).collect();
     // (member, the role it left and above, the commit that made the departure)
-    let mut left: Vec<(Tid, Role, Option<osis_core::CommitId>)> = Vec::new();
+    let mut left: Vec<(Tid, Role, Option<osis_base::CommitId>)> = Vec::new();
     for wid in tl.applied().keys() {
         let WriteId::Op(c, i) = wid else { continue };
         let Some(mc) = tl.membership_commit(c) else { continue };
@@ -252,7 +252,7 @@ fn presumed_boxes(tx: &mut Tx<'_>, a: &Tid, e: &ActorEpochs, s: &mut osis_schema
 }
 
 /// The box keys commit `c`'s `/secrets` delta on `a` writes, when this node holds that delta.
-fn rotation_boxes(tx: &mut Tx<'_>, a: &Tid, c: &osis_core::CommitId) -> Result<Option<BTreeSet<BoxKey>>> {
+fn rotation_boxes(tx: &mut Tx<'_>, a: &Tid, c: &osis_base::CommitId) -> Result<Option<BTreeSet<BoxKey>>> {
     let Some(ai) = tx.core.commits.get(c).and_then(|m| m.header.aspects.iter().position(|x| x.tid == *a && x.ak.as_str() == "/secrets")) else { return Ok(None) };
     let parts = crate::apply::held_parts(tx, c, ai)?;
     if parts.is_empty() {
@@ -328,7 +328,7 @@ pub(crate) fn uncovered_roles(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Role>
 /// The known departures of `a`, each with the commit that made it when that is this node's
 /// own self-removal (`own_leaving`): node-sync's cover check ignores such a departure until the
 /// commit is placed (spec/crypto.md §4).
-pub(crate) fn departures_placing(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Departure, Option<osis_core::CommitId>)>> {
+pub(crate) fn departures_placing(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Departure, Option<osis_base::CommitId>)>> {
     Ok(departures(tx, a)?.into_iter().map(|d| { let c = own_leaving(tx.core, a, &d); (d, c) }).collect())
 }
 
@@ -336,7 +336,7 @@ pub(crate) fn departures_placing(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Depart
 /// this node's own self-removal (spec/permissions.md §2): the newest applied write on the
 /// member's edge there lowers it and is a commit made here (signed by this node or a key actor
 /// it holds). From stored commits only, so a restart keeps it.
-fn own_leaving(core: &Core, a: &Tid, d: &Departure) -> Option<osis_core::CommitId> {
+fn own_leaving(core: &Core, a: &Tid, d: &Departure) -> Option<osis_base::CommitId> {
     let t = d.via.last().unwrap_or(a);
     let tl = core.timelines.get(t)?;
     let (mc, op) = tl
@@ -494,7 +494,7 @@ pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<
 }
 
 /// The inbox (a node: direct) deliveries of rotation commit `c` of `a` to `members`.
-pub(crate) fn deliver_rotation(tx: &mut Tx<'_>, a: Tid, c: Option<osis_core::CommitId>, members: &[Tid]) -> Result<Vec<Delivery>> {
+pub(crate) fn deliver_rotation(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, members: &[Tid]) -> Result<Vec<Delivery>> {
     let mut out = Vec::new();
     if let Some(c) = c {
         for m in members {
@@ -938,7 +938,7 @@ mod tests {
     use crate::Mutation;
     use crate::flows::{Demotion, PreSync};
     use crate::local_peer::LocalPeer;
-    use osis_core::{Role, Tid, WallMs};
+    use osis_base::{Role, Tid, WallMs};
     use osis_schema::core_types as ct;
 
     /// Delivers every commit of peer `from` to peer `to` without the `/secrets` deltas of `x`

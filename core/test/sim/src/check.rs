@@ -7,8 +7,8 @@
 //! - spec/commits.md §4: pending commits drain once their reasons resolve (at quiescence).
 
 use osis_commit::{Form, Header};
-use osis_core::format::MAX_DRIFT_MS;
-use osis_core::{Ak, CommitId, Tid, Ts, Value};
+use osis_base::format::MAX_DRIFT_MS;
+use osis_base::{Ak, CommitId, Tid, Ts, Value};
 use osis_node::{Engine, Event, Origin, Result};
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -3,7 +3,7 @@
 //! named (a schema type guides both).
 
 use osis::{Schema, Step, Tid, Value};
-use osis_schema::osis_core::{CanonicalBytes, Unknown, base64url, hex};
+use osis_schema::osis_base::{CanonicalBytes, Unknown, base64url, hex};
 use osis_schema::{EnumType, StructType, Type};
 use std::collections::{BTreeMap, BTreeSet};
 

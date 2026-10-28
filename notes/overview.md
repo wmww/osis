@@ -13,7 +13,7 @@ osis (Open Structured Information System) is a decentralized database optimized 
 The MVP is built: every subsystem of the spec is implemented and tested (final report, deviations and open issues: notes/mvp-progress.md). Design is settled; byte layouts are in spec/wire.md; conformance vectors are all provisional until the first stable release (nothing is frozen or logged as a format change before then).
 
 Code map (crate DAG and rules: notes/architecture.md):
-- `core/` (package names keep the `osis-` prefix): `base` osis-core (values, CBOR, ids, chunker), -crypto, -crdt, -schema, -perm, -store (encrypted local store), -commit, -keys, -label (blobs, labels, steps, large values), -proto (sans-I/O sync protocol), -transport (in-process, QUIC, iroh, LAN), -server (blind node), -node (engine, sync engine, membership flows), `osis` (the app API), `bench` osis-bench. `cli/` osis-cli (binary `osis`).
+- `core/` (package names keep the `osis-` prefix): `base` osis-base (values, CBOR, ids, chunker), -crypto, -crdt, -schema, -perm, -store (encrypted local store), -commit, -keys, -label (blobs, labels, steps, large values), -proto (sans-I/O sync protocol), -transport (in-process, QUIC, iroh, LAN), -server (blind node), -node (engine, sync engine, membership flows), `osis` (the app API), `bench` osis-bench. `cli/` osis-cli (binary `osis`).
 - `crates/osis-std` the first-party schemas and scenario tests (notes/std.md); `core/test/sim/` the deterministic simulator (notes/testing.md); `core/test/vectors/` conformance vectors; `core/test/fuzz/` cargo-fuzz targets; `core/test/crdt-model` and `core/test/membership-model` reference models, `core/test/tla` TLA+ `sync`, `rotation` and `membership`; `tools/` policy.py, spec_map.py, fixpoint.
 
 What runs where (details and latest numbers: notes/testing.md):
@@ -35,7 +35,7 @@ Known open (issues/): owner tradeoffs stated in user terms (crdt-undo-absent-pos
 - Workflow: owner and agent iterate by discussion. Notes mark what was the owner's decision, the agent's call or a proposal. Decisions waiting on the owner are issues tagged `owner-call`.
 
 ## Notes
-- notes/architecture.md: crate map and DAG, fixed abstractions, error classes, build and test rules, dependency allowlist, osis-core and osis-schema surfaces, where each crate's notes live.
+- notes/architecture.md: crate map and DAG, fixed abstractions, error classes, build and test rules, dependency allowlist, osis-base and osis-schema surfaces, where each crate's notes live.
 - notes/mvp-progress.md: the MVP final report and how to resume.
 - notes/api.md: the designed API shape (sync data API, typed keys, watches, `Write` with `set`/`edit`, sharing and sync surface), fixed directions, footguns closed, rejected shapes.
 - notes/data-model.md: tids, CBOR, large values, namespaces, schema DSL sketch.

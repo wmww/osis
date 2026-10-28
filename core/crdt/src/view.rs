@@ -2,7 +2,7 @@
 //! `AnyView` is the identity view of untyped writes and `any` positions.
 
 use crate::fragment::Encoding;
-use osis_core::Value;
+use osis_base::Value;
 use std::borrow::Cow;
 
 /// The writer's schema at one position. Children are views too (`Self`), so an implementation

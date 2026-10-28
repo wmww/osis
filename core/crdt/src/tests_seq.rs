@@ -19,7 +19,7 @@ use crdt_model::ops::{self as mops, Ty, Writer as MWriter};
 use crdt_model::stamp::Source as MSource;
 use crdt_model::state::{Content, Frag as MFrag};
 use crdt_model::wire::{Ctx, encode_delta as m_encode_delta, encode_snapshot as m_encode_snapshot};
-use osis_core::{ErrorClass, Value};
+use osis_base::{ErrorClass, Value};
 use proptest::prelude::*;
 
 fn inner() -> Ty {
@@ -117,7 +117,7 @@ proptest! {
         if dead.is_empty() {
             return Ok(());
         }
-        let src = crate::stamp::Source::node(osis_core::Tid::from_bytes([7; 15]));
+        let src = crate::stamp::Source::node(osis_base::Tid::from_bytes([7; 15]));
         let st = crate::stamp::Stamp::new(ts(1 << 30), src.clone(), 1);
         let mut d = crate::seq::Seq::empty(true);
         for x in &dead {
@@ -161,7 +161,7 @@ fn cycle_breaking_is_linear_spec_6_2() {
     use crate::seq::{Anchor, SeqElem};
     use crate::stamp::{Dot, Source, Stamp};
     let (len, k) = (20_000u64, 20_000u64);
-    let a = Source::node(osis_core::Tid::from_bytes([1; 15]));
+    let a = Source::node(osis_base::Tid::from_bytes([1; 15]));
     let st = |t: u64, c: u64| Stamp::new(ts(t << 16), a.clone(), c);
     let mut elems = std::collections::BTreeMap::new();
     let mut prev = Anchor::Head;
@@ -765,7 +765,7 @@ fn rejects_bad_runs_spec_3_3() {
 /// anchors included; a writer's flag writes carry the delta stamp.
 #[test]
 fn rejects_bare_and_oversized_runs_spec_3_3() {
-    let other = osis_core::Tid::from_bytes([9; 15]);
+    let other = osis_base::Tid::from_bytes([9; 15]);
     let srcs = || vec![Value::Bytes(other.as_bytes().to_vec())];
     let flag = || vec![l(vec![i(0), i(65535), i(0), Value::Bool(true)])];
     let runs = |k: i64, f: &dyn Fn() -> Vec<Value>| text_with((0..k).map(|j| run(l(vec![i(1), i(1 + j * 65536)]), 65536, l(vec![]), l(vec![]), vec![], f())).collect());
@@ -797,7 +797,7 @@ fn snapshot_carries_bare_anchors_spec_3_3() {
 /// §3.3 rule 7: a segment's commit has the run's source.
 #[test]
 fn rejects_segment_of_another_source_spec_3_3() {
-    let (a, b) = (osis_core::Tid::from_bytes([1; 15]), osis_core::Tid::from_bytes([2; 15]));
+    let (a, b) = (osis_base::Tid::from_bytes([1; 15]), osis_base::Tid::from_bytes([2; 15]));
     let srcs = vec![Value::Bytes(a.as_bytes().to_vec()), Value::Bytes(b.as_bytes().to_vec())];
     let commits = vec![l(vec![i(1), l(vec![l(vec![i(10), i(0), i(1)])])]), l(vec![i(2), l(vec![l(vec![i(10), i(0), i(1)])])])];
     let with = |ci: i64| {
@@ -817,7 +817,7 @@ fn rejects_derived_creation_in_writer_delta_spec_3_3() {
     rejects(&delta(vec![l(vec![i(0), i(3)])], vec![], f), &wcx(), ErrorClass::BadInput);
     // an anchor at an embedded character is fine
     let f = text_with(vec![run(i(3), 1, l(vec![l(vec![i(2), i(1)]), l(vec![l(vec![i(0), i(1)])])]), s("q"), vec![], vec![])]);
-    let other = osis_core::Tid::from_bytes([9; 15]);
+    let other = osis_base::Tid::from_bytes([9; 15]);
     let srcs = vec![Value::Bytes(other.as_bytes().to_vec()), l(vec![i(1), i(4)])];
     decode_delta(&delta(srcs, vec![], f), &wcx(), &mut Interner::new(), None).unwrap();
 }
@@ -856,7 +856,7 @@ fn cx_of(w: &MWriter) -> DeltaCtx {
     DeltaCtx { ts: ts(w.ts), own: source(&w.source), range: CounterRange { lo: w.lo, hi: w.hi() }, kind: DeltaKind::Writer }
 }
 fn fragment_value(bytes: &[u8]) -> Value {
-    let Value::List(top) = osis_core::decode(bytes, &osis_core::Limits { max_depth: 64, max_bytes: 1 << 20 }).unwrap() else { panic!() };
+    let Value::List(top) = osis_base::decode(bytes, &osis_base::Limits { max_depth: 64, max_bytes: 1 << 20 }).unwrap() else { panic!() };
     top[3].clone()
 }
 
@@ -1000,12 +1000,12 @@ fn unknown_anchor_spec_example() {
 #[test]
 fn text_pages_spec_8() {
     use crate::page::{MemoryPages, PageParams};
-    let params = PageParams { target: 2000, cut: osis_core::ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8 };
+    let params = PageParams { target: 2000, cut: osis_base::ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8 };
     let text: String = (0..1500).map(|k| (b'a' + (k % 26) as u8) as char).collect();
     let (_, mut st) = typed(&text);
     // every third char deleted by its own commit: one run per char
     let Fragment::Seq(s) = &mut st else { panic!() };
-    let b = crate::stamp::Source::node(osis_core::Tid::from_bytes([2; 15]));
+    let b = crate::stamp::Source::node(osis_base::Tid::from_bytes([2; 15]));
     for (k, e) in s.elems_mut().values_mut().enumerate().filter(|(k, _)| k % 3 == 0) {
         e.deleted = Some((crate::stamp::Stamp::new(ts((k as u64 + 2) << 16), b.clone(), k as u64 + 1), true));
     }
@@ -1021,7 +1021,7 @@ fn text_pages_spec_8() {
 // ---- range records (spec/requirements.md Scale: input never causes unbounded allocation)
 
 fn n(b: u8) -> crate::stamp::Source {
-    crate::stamp::Source::node(osis_core::Tid::from_bytes([b; 15]))
+    crate::stamp::Source::node(osis_base::Tid::from_bytes([b; 15]))
 }
 fn st(t: u64, b: u8, c: u64) -> Stamp {
     Stamp::new(ts(t << 16), n(b), c)
@@ -1084,7 +1084,7 @@ fn snapshot_runs_decode_to_ranges_spec_3_2() {
         assert_eq!(snapshot_of(&back), bytes, "{what}");
     }
     // the reset text's run is the attack shape: [Dot, n, [], [], [], []]
-    let v = osis_core::decode(&snapshot_of(&bare), &osis_core::Limits { max_depth: 16, max_bytes: 1 << 20 }).unwrap();
+    let v = osis_base::decode(&snapshot_of(&bare), &osis_base::Limits { max_depth: 16, max_bytes: 1 << 20 }).unwrap();
     let Value::List(top) = v else { panic!("snapshot") };
     let Value::List(f) = &top[3] else { panic!("fragment") };
     assert_eq!(f[3], l(vec![run(l(vec![i(2), i(1)]), 65535, l(vec![]), l(vec![]), vec![], vec![])]));
@@ -1267,9 +1267,9 @@ fn chain_anchored_into_itself_spec_6_2() {
 #[test]
 fn rejects_overlapping_runs_spec_3_3() {
     let runs = vec![run(i(1), 5, l(vec![]), l(vec![]), vec![], vec![]), run(i(3), 5, l(vec![]), l(vec![]), vec![], vec![])];
-    let bytes = osis_core::encode(&l(vec![Value::Bytes(vec![0; 16]), l(vec![]), l(vec![]), text_with(runs), l(vec![])]));
+    let bytes = osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(vec![]), l(vec![]), text_with(runs), l(vec![])]));
     let e = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap_err();
-    assert_eq!(osis_core::Classified::class(&e), ErrorClass::BadInput, "{e}");
+    assert_eq!(osis_base::Classified::class(&e), ErrorClass::BadInput, "{e}");
 }
 
 proptest! {
@@ -1290,7 +1290,7 @@ proptest! {
         for g in [f.clone(), via_snapshot(&f)] {
             let ws: Vec<Dot> = g.writes().into_iter().map(|(d, _)| d).collect();
             for n in 1..=3u8 {
-                let src = crate::stamp::Source::node(osis_core::Tid::from_bytes([n; 15]));
+                let src = crate::stamp::Source::node(osis_base::Tid::from_bytes([n; 15]));
                 for lo in [1u64, 2, 5, 9, 20] {
                     for len in [1u64, 3, 50] {
                         let want = ws.iter().any(|d| d.src == src && lo <= d.ctr && d.ctr < lo + len);

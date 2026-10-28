@@ -4,11 +4,11 @@
 use crate::common;
 use common::*;
 use osis_commit::{Kind, PurgeItem};
-use osis_core::{Role, Value, WallMs};
+use osis_base::{Role, Value, WallMs};
 use osis_crdt::{Op, PathOp};
 use osis_node::{Cause, Event, Mutation};
 
-fn set(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_core::Tid, k: &osis_schema::Aspect<Value>, v: &str) -> osis_core::CommitId {
+fn set(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_base::Tid, k: &osis_schema::Aspect<Value>, v: &str) -> osis_base::CommitId {
     let mut m = Mutation::new();
     m.set(t, k, &s(v)).unwrap();
     lp.peers[i].commit(m).unwrap().unwrap()
@@ -50,7 +50,7 @@ fn first_death_order_independent_spec_crdt_4_8() {
     let k = ak("/t/short");
     assert_eq!(lp.peers[0].engine.deaths(&ids[0], &t, &k).unwrap().map(|d| d.0), Some(ts2));
     let pks = packages(&mut lp, 0);
-    let pk = |c: &osis_core::CommitId| pks.iter().find(|p| p.id == *c).unwrap().clone();
+    let pk = |c: &osis_base::CommitId| pks.iter().find(|p| p.id == *c).unwrap().clone();
     let rest: Vec<_> = pks.iter().filter(|p| !ids.contains(&p.id)).cloned().collect();
     for (to, order) in [(1, [0, 2, 1]), (2, [2, 1, 0])] {
         for p in &rest {
@@ -79,7 +79,7 @@ fn last_death_order_independent_spec_crdt_4_8() {
     let ts: Vec<_> = ids.iter().map(|c| lp.peers[0].engine.header(c).unwrap().ts).collect();
     let k = ak("/t/kept");
     let pks = packages(&mut lp, 0);
-    let pk = |c: &osis_core::CommitId| pks.iter().find(|p| p.id == *c).unwrap().clone();
+    let pk = |c: &osis_base::CommitId| pks.iter().find(|p| p.id == *c).unwrap().clone();
     let rest: Vec<_> = pks.iter().filter(|p| !ids.contains(&p.id)).cloned().collect();
     for (to, order) in [(1, [2, 1, 0]), (2, [0, 2, 1])] {
         for p in &rest {
@@ -417,7 +417,7 @@ fn deaths_alike_after_superseder_dropped_spec_crdt_4_8() {
     let y = set(&mut lp, 0, t, &KEPT, "y");
     let mut pks = packages(&mut lp, 0);
     pks.extend(packages(&mut lp, 1));
-    let pk = |c: &osis_core::CommitId| if *c == w { wpk.clone() } else { pks.iter().find(|p| p.id == *c).unwrap().clone() };
+    let pk = |c: &osis_base::CommitId| if *c == w { wpk.clone() } else { pks.iter().find(|p| p.id == *c).unwrap().clone() };
     let rest: Vec<_> = pks.iter().filter(|p| ![v, x, w, y].contains(&p.id)).cloned().collect();
     let k = ak("/t/kept");
     let mut got = Vec::new();
@@ -437,7 +437,7 @@ fn deaths_alike_after_superseder_dropped_spec_crdt_4_8() {
     assert_eq!(got, vec![Some((tw, tw)); 4]);
 }
 
-fn set_op(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_core::Tid, op: Op) -> osis_core::CommitId {
+fn set_op(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_base::Tid, op: Op) -> osis_base::CommitId {
     let mut m = Mutation::new();
     m.op(t, &KEPTSET, PathOp { path: Vec::new(), op }).unwrap();
     lp.peers[i].commit(m).unwrap().unwrap()
@@ -528,7 +528,7 @@ fn deaths_alike_after_carried_write_dropped_spec_crdt_4_8() {
     assert_eq!(e.deaths(&s1, &t, &k).unwrap(), Some((tz, tz)));
 }
 
-fn map_op(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_core::Tid, path: Vec<osis_crdt::PathSeg>, v: Value) -> osis_core::CommitId {
+fn map_op(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_base::Tid, path: Vec<osis_crdt::PathSeg>, v: Value) -> osis_base::CommitId {
     use osis_schema::{Bound, PurgeBy, Retention};
     let mut m = Mutation::new();
     m.retention(t, &MAP, Retention { by: PurgeBy::Writer, at_least: Bound { abs: None, rel: Some(3_600_000) }, at_most: Bound::default() }).unwrap();

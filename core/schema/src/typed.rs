@@ -6,8 +6,8 @@
 use crate::path::{Path, PathError, PathErrorKind as K, Step};
 use crate::schema::Schema;
 use crate::types::Type;
-use osis_core::Value;
-use osis_core::format::MAX_VALUE_DEPTH;
+use osis_base::Value;
+use osis_base::format::MAX_VALUE_DEPTH;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, PartialEq, Eq)]

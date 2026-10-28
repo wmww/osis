@@ -6,7 +6,7 @@ use crate::engine::{Config, Engine};
 use crate::error::Result;
 use crate::events::Event;
 use crate::{Ingested, Mutation};
-use osis_core::{BlobId, Clock, CommitId, Link, ManualClock, WallMs};
+use osis_base::{BlobId, Clock, CommitId, Link, ManualClock, WallMs};
 use osis_crypto::SeededRng;
 use osis_store::{MemoryBackend, MemoryRoot};
 use std::collections::BTreeSet;
@@ -81,7 +81,7 @@ impl Engine {
         Ok(Some(Package { id: *id, bytes, blobs }))
     }
 
-    pub(crate) fn tree_blobs(&mut self, root: &Link, actor: &osis_core::Tid, out: &mut BTreeSet<BlobId>) -> Result<()> {
+    pub(crate) fn tree_blobs(&mut self, root: &Link, actor: &osis_base::Tid, out: &mut BTreeSet<BlobId>) -> Result<()> {
         struct Rec<'e> {
             e: &'e mut Engine,
             seen: Vec<BlobId>,

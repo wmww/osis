@@ -4,7 +4,7 @@
 use super::generated_header;
 use crate::file::{Record, VecFile};
 use crate::hex;
-use osis_core::{CommitId, CreationRecord, LabelId, Role, SchemaId, Tid, Ts, Value, WallMs, encode};
+use osis_base::{CommitId, CreationRecord, LabelId, Role, SchemaId, Tid, Ts, Value, WallMs, encode};
 use osis_schema::core_types::*;
 use osis_schema::{AspectKey, Chunked, core_schema};
 use std::collections::{BTreeMap, BTreeSet};

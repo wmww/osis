@@ -3,7 +3,7 @@
 
 use crate::common;
 use common::*;
-use osis_core::{Tid, Value};
+use osis_base::{Tid, Value};
 use osis_crdt::{Op, PathOp};
 use osis_node::{Event, Mutation};
 use osis_schema::core_types as ct;

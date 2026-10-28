@@ -3,8 +3,8 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use osis_core::ChunkParams;
-use osis_core::chunker::{Chunker, chunk_lengths};
+use osis_base::ChunkParams;
+use osis_base::chunker::{Chunker, chunk_lengths};
 
 const SMALL: ChunkParams = ChunkParams { min: 64, max: 1024, mask_bits: 8 };
 

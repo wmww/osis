@@ -7,9 +7,9 @@ use crate::auth::get_bytes;
 use crate::blob::Prefix;
 use crate::step::OBJECT_LIMITS;
 use crate::Error;
-use osis_core::cbor::{decode, encode};
-use osis_core::format::INBOX_LIFETIME_MS;
-use osis_core::{LabelId, Tid, Value, WallMs};
+use osis_base::cbor::{decode, encode};
+use osis_base::format::INBOX_LIFETIME_MS;
+use osis_base::{LabelId, Tid, Value, WallMs};
 use osis_crypto::{CryptoRngCore, KemPublicKey, KemSecret, VerifyingKey, open_inbox, seal_inbox};
 use osis_schema::Codec;
 

@@ -5,8 +5,8 @@ use crate::path::{Path, Step};
 use crate::schema::Schema;
 use crate::typed::typed_read_at;
 use crate::types::Type;
-use osis_core::Value;
-use osis_core::format::CHUNK_THRESHOLD;
+use osis_base::Value;
+use osis_base::format::CHUNK_THRESHOLD;
 use osis_crdt::{Encoding, View};
 use std::borrow::Cow;
 
@@ -125,7 +125,7 @@ fn too_big(v: &Value) -> bool {
     };
     match quick {
         Some(n) if n + 9 <= CHUNK_THRESHOLD => false,
-        _ => osis_core::encode(v).len() > CHUNK_THRESHOLD,
+        _ => osis_base::encode(v).len() > CHUNK_THRESHOLD,
     }
 }
 

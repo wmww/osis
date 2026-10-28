@@ -7,7 +7,7 @@ use crate::engine::{Core, Meta, Owned, Tx, records};
 use crate::error::{Error, Result};
 use crate::events::{Cause, Event, Origin};
 use osis_commit::{CommitBlob, Decoded, Form, Header};
-use osis_core::{Ak, CommitId, CreationRecord, Tid, Value, WallMs};
+use osis_base::{Ak, CommitId, CreationRecord, Tid, Value, WallMs};
 use osis_crdt::{Changes, Fragment};
 use osis_store::Shred;
 use std::collections::BTreeSet;
@@ -21,7 +21,7 @@ fn fragment(d: Decoded) -> (Fragment, Option<osis_crdt::Frontiers>) {
 }
 
 /// Notes a held compaction snapshot of `(tid, ak)` with its frontiers.
-pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_core::Ts, id: &CommitId, fr: osis_crdt::Frontiers) {
+pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_base::Ts, id: &CommitId, fr: osis_crdt::Frontiers) {
     // kept in (`ts`, ID) order, so arrival order (a rebuild's is the store's) does not show
     let v = core.snapshots.entry_or_default((*tid, ak.clone()));
     if !v.iter().any(|x| x.1 == *id) {
@@ -171,7 +171,7 @@ fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)]) 
         .and_then(CreationRecord::from_value)
         .ok_or(Error::BadInput("/created"))?;
         if rec.tid() == a.tid {
-            tx.txn.put_local(&[records::CREATED, a.tid.as_bytes()].concat(), &osis_core::encode(&rec.to_value()), Shred::No)?;
+            tx.txn.put_local(&[records::CREATED, a.tid.as_bytes()].concat(), &osis_base::encode(&rec.to_value()), Shred::No)?;
             tx.core.held.create(rec);
             // the reader actor of the thing's deltas is known now
             let touching: Vec<CommitId> = tx.core.by_aspect.iter().filter(|((t, _), _)| *t == a.tid).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
@@ -694,7 +694,7 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 
 /// What `rebuild` writes.
 fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
-    let held: Vec<(osis_core::Ts, CommitId)> = tx.core.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().copied().collect()).unwrap_or_default();
+    let held: Vec<(osis_base::Ts, CommitId)> = tx.core.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().copied().collect()).unwrap_or_default();
     let invalid = invalid_of(tx.core, tid, ak);
     let mut bodies: Vec<Fragment> = Vec::new();
     for (_, c) in held {

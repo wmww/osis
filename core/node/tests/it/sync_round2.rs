@@ -5,7 +5,7 @@
 
 use crate::net;
 use net::*;
-use osis_core::{Ak, Role};
+use osis_base::{Ak, Role};
 use osis_crypto::SeededRng;
 use osis_node::Mutation;
 use osis_node::sync::{Action, EntryKind, Event};
@@ -13,7 +13,7 @@ use osis_proto::{Entry, LabelStore, Put};
 use osis_schema::AspectKey;
 
 /// Blob IDs node `n` knows under `l` holding commit `c`.
-fn blobs_of(net: &mut Net, n: usize, l: &osis_core::LabelId, c: &osis_core::CommitId) -> Vec<osis_core::BlobId> {
+fn blobs_of(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::CommitId) -> Vec<osis_base::BlobId> {
     net.sync(n).entries(l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == c)).map(|(id, _)| id).collect()
 }
 
@@ -195,7 +195,7 @@ fn deposits_in_flight_not_resent_spec_sync_5() {
     net.run();
     net.sent_kinds.clear();
     // a heartbeat is due (no tick: nothing else moves)
-    net.clock.advance(osis_core::format::HEARTBEAT_MIN_INTERVAL_MS + 1);
+    net.clock.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS + 1);
     // a burst of commits reaching the reader, a pass after each, nothing answered in between
     for i in 0..5 {
         let c = net.write(a, t, &format!("w{i}"));

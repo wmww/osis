@@ -3,7 +3,7 @@
 
 use crate::text::{Ty, float_text, quote};
 use osis::{Schema, Tid, Value};
-use osis_schema::osis_core::base64url;
+use osis_schema::osis_base::base64url;
 use osis_schema::{StructType, Type};
 
 #[derive(Clone, Debug, PartialEq)]

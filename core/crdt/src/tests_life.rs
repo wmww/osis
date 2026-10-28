@@ -12,7 +12,7 @@ use crate::ops::{Op, PathOp};
 use crdt_model::r#gen::{Rng, random_op};
 use crdt_model::ops::Ty;
 use crdt_model::stamp::Source as MSource;
-use osis_core::{ChunkParams, Tid, Value};
+use osis_base::{ChunkParams, Tid, Value};
 use proptest::prelude::*;
 use std::collections::BTreeSet;
 
@@ -227,7 +227,7 @@ struct Recording {
     pages: Vec<Vec<u8>>,
 }
 impl PageSink for Recording {
-    fn put(&mut self, p: &[u8]) -> Result<osis_core::Link, crate::PageError> {
+    fn put(&mut self, p: &[u8]) -> Result<osis_base::Link, crate::PageError> {
         self.pages.push(p.to_vec());
         self.inner.put(p)
     }
@@ -250,14 +250,14 @@ fn paging_round_trip_and_bounds_spec_8() {
         // paged iff the plain array is above the target (the 3-element set is not)
         assert_eq!(rec.pages.is_empty(), n == 3, "n = {n}");
         for p in &rec.pages {
-            let v = osis_core::decode(p, &osis_core::Limits::DEFAULT).unwrap();
-            let osis_core::Value::List(items) = &v else { panic!() };
-            let is_links = items.iter().all(|i| matches!(i, osis_core::Value::Link(_)));
+            let v = osis_base::decode(p, &osis_base::Limits::DEFAULT).unwrap();
+            let osis_base::Value::List(items) = &v else { panic!() };
+            let is_links = items.iter().all(|i| matches!(i, osis_base::Value::Link(_)));
             if is_links {
                 assert!(items.len() <= SMALL.fanout);
             } else {
                 // whole elements; a page ends once it reaches the maximum
-                let last = osis_core::encode(items.last().unwrap()).len();
+                let last = osis_base::encode(items.last().unwrap()).len();
                 assert!(p.len() < SMALL.cut.max + last + 8, "page of {} bytes", p.len());
             }
         }
@@ -270,7 +270,7 @@ fn paging_round_trip_and_bounds_spec_8() {
 fn paging_two_levels_and_limit_spec_8() {
     let st = big_set(600, 2);
     let (bytes, mut rec) = paged(&st, SMALL);
-    let has_link_pages = rec.pages.iter().any(|p| matches!(osis_core::decode(p, &osis_core::Limits::DEFAULT), Ok(osis_core::Value::List(i)) if i.iter().all(|x| matches!(x, osis_core::Value::Link(_)))));
+    let has_link_pages = rec.pages.iter().any(|p| matches!(osis_base::decode(p, &osis_base::Limits::DEFAULT), Ok(osis_base::Value::List(i)) if i.iter().all(|x| matches!(x, osis_base::Value::Link(_)))));
     assert!(has_link_pages, "link pages appear above the link target");
     assert_eq!(decode_snapshot(&bytes, &scx(), &mut Interner::new(), Some(&mut rec.inner)).unwrap().fragment, st);
     // a fragment that would need a third level cannot be written
@@ -286,7 +286,7 @@ fn equal_states_equal_pages_spec_8() {
     assert_eq!(a, b);
     let (_, ra) = paged(&a, SMALL);
     let (_, rb) = paged(&b, SMALL);
-    let set = |r: &Recording| r.pages.iter().filter(|p| !matches!(osis_core::decode(p, &osis_core::Limits::DEFAULT), Ok(osis_core::Value::List(i)) if i.iter().all(|x| matches!(x, osis_core::Value::Link(_))))).cloned().collect::<BTreeSet<_>>();
+    let set = |r: &Recording| r.pages.iter().filter(|p| !matches!(osis_base::decode(p, &osis_base::Limits::DEFAULT), Ok(osis_base::Value::List(i)) if i.iter().all(|x| matches!(x, osis_base::Value::Link(_))))).cloned().collect::<BTreeSet<_>>();
     assert_eq!(set(&ra), set(&rb));
 }
 
@@ -356,10 +356,10 @@ fn struct_field_paging_spec_8() {
         assert!(bytes.len() <= SMALL.target || !paged);
         let mut maps = 0;
         for p in &rec.pages {
-            match osis_core::decode(p, &osis_core::Limits::DEFAULT).unwrap() {
+            match osis_base::decode(p, &osis_base::Limits::DEFAULT).unwrap() {
                 Value::Map(m) => {
                     maps += 1;
-                    let last = m.iter().next_back().map(|(k, v)| osis_core::encode(k).len() + osis_core::encode(v).len()).unwrap();
+                    let last = m.iter().next_back().map(|(k, v)| osis_base::encode(k).len() + osis_base::encode(v).len()).unwrap();
                     assert!(p.len() < SMALL.cut.max + last + 8, "page of {} bytes", p.len());
                 }
                 Value::List(items) => assert!(items.iter().all(|i| matches!(i, Value::Link(_))) && items.len() <= SMALL.fanout),
@@ -385,16 +385,16 @@ fn struct_field_paging_rejections_spec_8() {
     let plain = encode_delta(&Delta { nonce: [0; 16], fragment: d }, &cx, Some(&mut MemoryPages::with_params(PageParams { target: usize::MAX, ..SMALL }))).unwrap();
     assert!(decode_delta(&plain, &cx, &mut Interner::new(), Some(&mut rec.inner)).is_err());
     // swap the struct's top field links for crafted pages
-    let top = osis_core::decode(&bytes, &osis_core::Limits::DEFAULT).unwrap();
+    let top = osis_base::decode(&bytes, &osis_base::Limits::DEFAULT).unwrap();
     let with_children = |c: Value| {
         let Value::List(mut a) = top.clone() else { panic!() };
         let Some(Value::List(f)) = a.get_mut(3) else { panic!() };
         f[3] = c;
-        osis_core::encode(&Value::List(a))
+        osis_base::encode(&Value::List(a))
     };
     let mut pages = MemoryPages::with_params(SMALL);
     let field = |i: i64| (Value::Int(i), Value::List(vec![Value::Int(0), Value::List(vec![]), Value::Int(0), Value::Str("v".into())]));
-    let page = |pages: &mut MemoryPages, v: Value| Value::Link(pages.put(&osis_core::encode(&v)).unwrap());
+    let page = |pages: &mut MemoryPages, v: Value| Value::Link(pages.put(&osis_base::encode(&v)).unwrap());
     let a = page(&mut pages, Value::Map([field(5)].into_iter().collect()));
     let b = page(&mut pages, Value::Map([field(2)].into_iter().collect()));
     let empty = page(&mut pages, Value::Map(Default::default()));
@@ -451,7 +451,7 @@ fn list_run_closes_at_chunk_max_spec_3_3() {
     let mut flat = MemoryPages::with_params(PageParams { target: usize::MAX, ..PageParams::FORMAT });
     let bytes = encode_delta(&d, &cx, Some(&mut flat)).unwrap();
     assert_eq!(bytes, mbytes, "the model's bytes");
-    let top = osis_core::decode(&bytes, &osis_core::Limits { max_bytes: usize::MAX, ..osis_core::Limits::DEFAULT }).unwrap();
+    let top = osis_base::decode(&bytes, &osis_base::Limits { max_bytes: usize::MAX, ..osis_base::Limits::DEFAULT }).unwrap();
     let Value::List(a) = top else { panic!() };
     let Some(Value::List(f)) = a.get(3) else { panic!() };
     let Some(Value::List(runs)) = f.get(3) else { panic!() };
@@ -459,7 +459,7 @@ fn list_run_closes_at_chunk_max_spec_3_3() {
     assert_eq!(runs.len(), 22);
     let mut rec = Recording { inner: MemoryPages::new(), pages: Vec::new() };
     let paged = encode_delta(&d, &cx, Some(&mut rec)).unwrap();
-    assert!(rec.pages.iter().all(|p| p.len() < osis_core::format::CHUNK_MAX + 3 * 128 * 1024), "pages {:?}", rec.pages.iter().map(Vec::len).collect::<Vec<_>>());
+    assert!(rec.pages.iter().all(|p| p.len() < osis_base::format::CHUNK_MAX + 3 * 128 * 1024), "pages {:?}", rec.pages.iter().map(Vec::len).collect::<Vec<_>>());
     assert_eq!(decode_delta(&paged, &cx, &mut Interner::new(), Some(&mut rec.inner)).unwrap().fragment, d.fragment);
 }
 
@@ -476,7 +476,7 @@ fn rejects_list_run_past_chunk_max_spec_3_3() {
     let bytes = encode_delta(&d, &cx, Some(&mut flat)).unwrap();
     assert!(decode_delta(&bytes, &cx, &mut Interner::new(), Some(&mut flat)).is_ok());
     // join the runs of 2 into one run of 6
-    let Value::List(mut a) = osis_core::decode(&bytes, &osis_core::Limits::DEFAULT).unwrap() else { panic!() };
+    let Value::List(mut a) = osis_base::decode(&bytes, &osis_base::Limits::DEFAULT).unwrap() else { panic!() };
     let Some(Value::List(f)) = a.get_mut(3) else { panic!() };
     let Some(Value::List(runs)) = f.get_mut(3) else { panic!() };
     assert_eq!(runs.len(), 3);
@@ -491,7 +491,7 @@ fn rejects_list_run_past_chunk_max_spec_3_3() {
     r0[2] = Value::List(vec![Value::Int(0), Value::List(vec![Value::List(vec![Value::Int(0), Value::Int(6)])])]);
     r0[3] = Value::List(all);
     runs.truncate(1);
-    let bad = osis_core::encode(&Value::List(a));
+    let bad = osis_base::encode(&Value::List(a));
     let e = decode_delta(&bad, &cx, &mut Interner::new(), Some(&mut flat)).unwrap_err();
     assert!(e.to_string().contains("not canonical"), "{e}");
 }

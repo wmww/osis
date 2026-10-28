@@ -26,7 +26,7 @@ use crate::events::{Event, Events, Origin};
 use crate::identity::Identity;
 use clock::Hlc;
 use osis_commit::{CommitBlob, Form, Header};
-use osis_core::{Ak, Clock, CommitId, Tid, Ts, WallMs};
+use osis_base::{Ak, Clock, CommitId, Tid, Ts, WallMs};
 use osis_crdt::{Dot, Fragment, SourceKind};
 use osis_crypto::{CryptoRngCore, SeededRng};
 use osis_keys::ActorEpochs;
@@ -213,9 +213,9 @@ pub(crate) struct Core {
     /// Admin and write delete keys of things an inbox payload named (`[admin, write]` bytes),
     /// listed until their `/keys` arrives (spec/crypto.md §7, spec/wire.md §9): taken only from
     /// a commit that applied valid, by an admin of the thing, touching it; the first kept.
-    pub delete_hints: JMap<Tid, osis_core::Value>,
+    pub delete_hints: JMap<Tid, osis_base::Value>,
     /// Hints of opened inbox payloads whose commit has not applied yet (not persisted).
-    pub hint_candidates: BTreeMap<CommitId, Vec<(Tid, osis_core::Value)>>,
+    pub hint_candidates: BTreeMap<CommitId, Vec<(Tid, osis_base::Value)>>,
     /// `/was` index: t -> things whose `/was` reads t.
     pub was: JSetMap<Tid, Tid>,
     /// The `/was` each thing reads.
@@ -228,9 +228,9 @@ pub(crate) struct Core {
     /// Membership commits whose removed keys are not known yet.
     pub unresolved: JSet<CommitId>,
     /// Box keys of keyed `/secrets` entries: (actor, entry dot) -> key.
-    pub box_keys: JMap<(Tid, Dot), osis_core::Value>,
+    pub box_keys: JMap<(Tid, Dot), osis_base::Value>,
     /// Keyed boxes per member: member -> (actor, box key), from `/secrets` entries seen.
-    pub boxes_to: JSetMap<Tid, (Tid, osis_core::Value)>,
+    pub boxes_to: JSetMap<Tid, (Tid, osis_base::Value)>,
     /// The earliest noted commit boxing an epoch or writing its keyset: (actor, role, epoch) ->
     /// (`ts`, author node, actor acted for). What introduced the epoch (`rotation`).
     pub epoch_intro: EpochIntro,
@@ -253,12 +253,12 @@ pub(crate) struct Core {
     /// `/secrets` writes of applied commits waiting for the keys of the boxes they remove.
     pub secrets_unresolved: JMap<(CommitId, usize), crate::apply::keys::Unresolved>,
     /// Roles `/secrets` and `/keys` deltas need (by commit and aspect index).
-    pub rotation_role: JMap<(CommitId, usize), osis_core::Role>,
+    pub rotation_role: JMap<(CommitId, usize), osis_base::Role>,
     /// `/secrets` parts of membership commits that write beyond their grantees' boxes (an invite
     /// grant may carry only those, spec/permissions.md §2).
     pub grant_overreach: JSet<(CommitId, usize)>,
     /// Schemas of local writes (typed views for undo).
-    pub schemas: BTreeMap<osis_core::SchemaId, Arc<osis_schema::Schema>>,
+    pub schemas: BTreeMap<osis_base::SchemaId, Arc<osis_schema::Schema>>,
     pub events: Events,
     /// States the running transaction wrote (dropped from the cache on rollback).
     pub written: Vec<(Tid, Ak)>,
@@ -328,7 +328,7 @@ impl Changed {
 }
 
 /// (actor, role, epoch) -> the commit that introduced it: (ts, author node, actor, commit ID).
-pub(crate) type EpochIntro = JMap<(Tid, osis_core::Role, osis_crypto::Epoch), (Ts, Tid, Tid, CommitId)>;
+pub(crate) type EpochIntro = JMap<(Tid, osis_base::Role, osis_crypto::Epoch), (Ts, Tid, Tid, CommitId)>;
 
 impl Core {
     /// Drops what is derived from rosters, `/secrets` and held epochs (the departures cache):
@@ -436,7 +436,7 @@ impl Core {
     }
 
     fn new(id: Identity, clock: Arc<dyn Clock>) -> Core {
-        let key_salt = osis_core::hash::derive_key("osis node key index", id.seed().expose());
+        let key_salt = osis_base::hash::derive_key("osis node key index", id.seed().expose());
         Core {
             id,
             hlc: Hlc::new(clock, Ts::default()),
@@ -634,7 +634,7 @@ impl Tx<'_> {
     /// a paged one through its placement (`pages::seq_range`), loading only the pages holding
     /// them; else, or where the placement is missing or damaged (then rebuilt), from the whole
     /// sequence. `None` if absent or not a sequence.
-    pub fn read_range(&mut self, tid: &Tid, ak: &Ak, path: &[osis_crdt::PathSeg], r: std::ops::Range<usize>) -> Result<Option<osis_core::Value>> {
+    pub fn read_range(&mut self, tid: &Tid, ak: &Ak, path: &[osis_crdt::PathSeg], r: std::ops::Range<usize>) -> Result<Option<osis_base::Value>> {
         self.load_lazy(tid, ak)?;
         let k = (*tid, ak.clone());
         let mut damaged = None;

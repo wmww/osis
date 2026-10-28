@@ -7,7 +7,7 @@
 use super::{ConnId, LConn, Phase, SyncEngine};
 use crate::error::Result;
 use crate::labeling::{GroupLabel, HeadKeys};
-use osis_core::{LabelId, Tid};
+use osis_base::{LabelId, Tid};
 use osis_crypto::{LabelRole, SigningSecret, X25519Secret, label_role_key, role_kem};
 use osis_label::{ClaimSet, Step, StepId};
 use osis_proto::{Code, Command, OpenKey};
@@ -435,7 +435,7 @@ impl SyncEngine {
         let (g, index, hinted) = (lc.group, lc.index.unwrap_or(0), lc.walk.is_some());
         let only = if hinted {
             // the pending commits of the inbox blobs naming the thing: nothing else unverified
-            let inbox: Vec<(LabelId, osis_core::BlobId, osis_core::CommitId)> = self.state.entries.iter().filter_map(|((x, id), e)| if let super::state::Kind::Inbox(Some(c)) = e.kind { Some((*x, *id, c)) } else { None }).collect();
+            let inbox: Vec<(LabelId, osis_base::BlobId, osis_base::CommitId)> = self.state.entries.iter().filter_map(|((x, id), e)| if let super::state::Kind::Inbox(Some(c)) = e.kind { Some((*x, *id, c)) } else { None }).collect();
             let mut commits = Vec::new();
             for (x, id, c) in inbox {
                 if self.inbox_parts(&x, &id)?.is_some_and(|(_, things)| things.contains(&g)) {
@@ -614,7 +614,7 @@ impl SyncEngine {
     pub(crate) fn record_steps(&mut self, g: &Tid, l: &LabelId, steps: &[Step], claims: Option<(StepId, ClaimSet)>) -> Result<()> {
         let Some(gl) = self.group_label(g, l) else { return Ok(()) };
         let new: Vec<&Step> = steps.iter().filter(|s| !gl.steps.contains_key(&s.id())).collect();
-        if new.is_empty() || self.engine.role_on(g) < Some(osis_core::Role::Admin) {
+        if new.is_empty() || self.engine.role_on(g) < Some(osis_base::Role::Admin) {
             return Ok(());
         }
         let mut m = crate::Mutation::new();

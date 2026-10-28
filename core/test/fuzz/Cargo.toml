@@ -14,7 +14,7 @@ members = ["."]
 
 [dependencies]
 libfuzzer-sys = "0.4"
-osis-core = { path = "../../base" }
+osis-base = { path = "../../base" }
 osis-schema = { path = "../../schema" }
 osis-commit = { path = "../../commit" }
 osis-crypto = { path = "../../crypto" }

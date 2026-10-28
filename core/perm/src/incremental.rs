@@ -8,7 +8,7 @@
 use crate::held::HeldSet;
 use crate::timeline::Timeline;
 use crate::types::{MembershipCommit, RosterSnapshot};
-use osis_core::{CommitId, CreationRecord, Tid};
+use osis_base::{CommitId, CreationRecord, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

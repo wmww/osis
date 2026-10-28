@@ -3,7 +3,7 @@
 use crate::blob::{CommitBlob, Part};
 use crate::header::{Form, Header};
 use crate::Error;
-use osis_core::{CommitId, Tid};
+use osis_base::{CommitId, Tid};
 use osis_crdt::{CounterRange, Delta, DeltaCtx, DeltaKind, Interner, PageSource, Snapshot, Source, decode_delta, decode_snapshot};
 use osis_crypto::{Secret32, VerifyingKey, delta_hash};
 
@@ -26,7 +26,7 @@ pub fn delta_ctx(h: &Header, id: &CommitId, ai: usize, interner: &mut Interner) 
 
 /// The writer-side context for encoding a delta of `kind` in a commit (commit form uses a
 /// placeholder own source: own dots are encoded without it).
-pub fn writer_ctx(kind: crate::Kind, ts: osis_core::Ts, author: Tid, lo: u64, hi: u64) -> DeltaCtx {
+pub fn writer_ctx(kind: crate::Kind, ts: osis_base::Ts, author: Tid, lo: u64, hi: u64) -> DeltaCtx {
     DeltaCtx { ts, own: Source::node(author), range: CounterRange { lo, hi }, kind: kind.delta_kind() }
 }
 

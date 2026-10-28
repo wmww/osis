@@ -5,7 +5,7 @@
 use super::{FixedRng, case, generated_header, s32};
 use crate::file::{Record, VecFile};
 use crate::hex;
-use osis_core::{Link, Value, WallMs, encode};
+use osis_base::{Link, Value, WallMs, encode};
 use osis_crypto::{DeleteSecret, SUITE_1, aead, link_hash, link_tree_hash, pad};
 use osis_label::{Error, Prefix, frame, open, tree::node_plaintext};
 

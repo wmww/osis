@@ -18,7 +18,7 @@ use crate::check::Checker;
 use crate::dice::Dice;
 use crate::harness::{ClockSpec, Failure, Report, Res, T0, wall_of};
 use crate::workload;
-use osis_core::{Clock, CommitId, LabelId, ManualClock, Role, Tid, WallMs};
+use osis_base::{Clock, CommitId, LabelId, ManualClock, Role, Tid, WallMs};
 use osis_crypto::SeededRng;
 use osis_label::Address;
 use osis_node::flows::Done;
@@ -191,7 +191,7 @@ struct Msg {
 }
 
 /// (label, blob) -> (commit, delta parts) of every commit blob a node opened.
-pub type Known = BTreeMap<(LabelId, osis_core::BlobId), (CommitId, Vec<(usize, usize)>)>;
+pub type Known = BTreeMap<(LabelId, osis_base::BlobId), (CommitId, Vec<(usize, usize)>)>;
 
 /// A labeled group the scenario writes to, and the things written.
 #[derive(Clone, Debug)]
@@ -230,9 +230,9 @@ pub struct NetSim {
     /// Every commit blob any node opened under a label: (label, blob) -> (commit, parts).
     pub known: Known,
     /// Purges issued: (commit, thing, aspect).
-    pub purged: Vec<(CommitId, Tid, osis_core::Ak)>,
+    pub purged: Vec<(CommitId, Tid, osis_base::Ak)>,
     /// Tombstones seen per server (cleared when the server loses its data).
-    pub tombs: BTreeMap<usize, BTreeSet<(LabelId, osis_core::BlobId)>>,
+    pub tombs: BTreeMap<usize, BTreeSet<(LabelId, osis_base::BlobId)>>,
     /// Nodes no check expects to read (removed, stranded on purpose).
     pub excused: BTreeSet<usize>,
     /// The person each node is a device of.
@@ -248,12 +248,12 @@ pub struct NetSim {
     /// Commits expected to stay parked at quiescence (version skew: a newer format).
     pub parked_ok: BTreeSet<CommitId>,
     /// Entries each node sent by Upload while `count_uploads` is on: (node, label, blob).
-    pub uploads: Vec<(usize, LabelId, osis_core::BlobId)>,
+    pub uploads: Vec<(usize, LabelId, osis_base::BlobId)>,
     pub count_uploads: bool,
     /// Held-back messages of evil servers per connection.
     held: BTreeMap<(usize, u64), Vec<u8>>,
     /// Blobs whose uploads and deposits by nodes are counted in `sent_watched` (adversaries).
-    pub watched: BTreeSet<osis_core::BlobId>,
+    pub watched: BTreeSet<osis_base::BlobId>,
     pub sent_watched: u64,
 }
 
@@ -273,7 +273,7 @@ fn frames(b: &[u8]) -> String {
 }
 
 /// Uploads and deposits of `watched` blobs among the frames in `b`.
-fn watched_in(watched: &BTreeSet<osis_core::BlobId>, b: &[u8]) -> u64 {
+fn watched_in(watched: &BTreeSet<osis_base::BlobId>, b: &[u8]) -> u64 {
     let mut d = osis_proto::FrameDecoder::default();
     d.push(b);
     let mut n = 0u64;
@@ -1255,7 +1255,7 @@ impl NetSim {
         let e = self.engine(n)?;
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, g);
-        let r = m.set(t, &workload::REG, &osis_core::Value::Str("new".into()));
+        let r = m.set(t, &workload::REG, &osis_base::Value::Str("new".into()));
         r.map_err(|e| self.fail(e.to_string()))?;
         let mut items = self.engine(n)?.get_typed(&g, &ct::GROUP).map_err(|e| self.fail(e.to_string()))?.unwrap_or_default();
         items.items.insert(t);
@@ -1408,7 +1408,7 @@ impl NetSim {
     }
 
     pub fn finish(&mut self) -> Res<Report> {
-        let mut h = osis_core::hash::Hasher::new();
+        let mut h = osis_base::hash::Hasher::new();
         let mut commits = BTreeSet::new();
         for n in 0..self.nodes.len() {
             let Some(s) = self.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { continue };

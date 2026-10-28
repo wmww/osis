@@ -78,7 +78,7 @@ pub fn seeds() -> Vec<(&'static str, Vec<Vec<u8>>)> {
 /// `delta`: a form byte (0 writer delta, 1 snapshot; core/test/fuzz/fuzz_targets/delta.rs fixes the
 /// contexts) and an encoded delta of each encoding's typical values.
 fn delta_seeds() -> Vec<Vec<u8>> {
-    use osis_core::{Tid, Ts, Value};
+    use osis_base::{Tid, Ts, Value};
     use osis_crdt::{AnyView, CounterRange, Delta, DeltaCtx, DeltaKind, Fragment, Frontiers, Snapshot, Source, Writer, create, encode_delta, encode_snapshot};
     let ts = Ts::from_u64(1_700_000_000_000 << 16).unwrap_or_default();
     let s = |x: &str| Value::Str(x.into());
@@ -113,7 +113,7 @@ fn delta_seeds() -> Vec<Vec<u8>> {
 /// `seq_follow`: frames of text ops on the target's fixed text (inserts at the ends and inside,
 /// deletes across deleted stretches, moves), each against the state after the frames before.
 fn seq_follow_seeds() -> Vec<Vec<u8>> {
-    use osis_core::Value;
+    use osis_base::Value;
     use osis_crdt::fuzzing::{TextView, seq_follow_cx, seq_follow_state};
     use osis_crdt::{Batch, Delta, Op, PathOp, Writer, encode_delta};
     let s = |x: &str| vec![Value::Str(x.into())];
@@ -162,7 +162,7 @@ pub fn write() -> Result<usize, String> {
         }
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         for s in seeds {
-            let name = &crate::hex(&osis_core::hash::hash(&s))[..16];
+            let name = &crate::hex(&osis_base::hash::hash(&s))[..16];
             std::fs::write(dir.join(name), &s).map_err(|e| e.to_string())?;
             n += 1;
         }

@@ -4,7 +4,7 @@
 
 use crate::common;
 use common::*;
-use osis_core::{CommitId, CreationRecord, Role, Tid, Ts};
+use osis_base::{CommitId, CreationRecord, Role, Tid, Ts};
 use osis_crypto::{Secret32, label_role_key};
 use osis_keys::{
     ActorEpochs, Departure, Graph, MemoryGraph, PermGraph, WrapEpoch, label_role, lost_access, newer_than_head, plan_departure, plan_inside,
@@ -108,7 +108,7 @@ fn perm_graph() {
     let a2 = held.create(CreationRecord::Thing { owner: d, nonce: [4; 32] });
     held.add_commit(MembershipCommit {
         id: CommitId([9; 32]),
-        ts: Ts::make(osis_core::WallMs(1000), 0).unwrap(),
+        ts: Ts::make(osis_base::WallMs(1000), 0).unwrap(),
         author: d,
         actor: d,
         frontier: None,
@@ -116,7 +116,7 @@ fn perm_graph() {
     });
     let tl = Timeline::evaluate(&held);
     let own = |x: &Tid| *x != t;
-    let g = PermGraph { timeline: &tl, at: At::now(Ts::make(osis_core::WallMs(2000), 0).unwrap()), own_secrets: &own };
+    let g = PermGraph { timeline: &tl, at: At::now(Ts::make(osis_base::WallMs(2000), 0).unwrap()), own_secrets: &own };
     assert_eq!(g.owned(&p), vec![t]);
     assert_eq!(g.edges(&p), vec![(a2, Role::Write)]);
     let plan = plan_departure(&g, p, tid(99), Role::Read, Role::Admin);

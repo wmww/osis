@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::read::{AspectRef, PathRef, ak_of};
 use crate::write::{AspectWrite, PathWrite};
-use osis_core::{Link, Tid, Value};
+use osis_base::{Link, Tid, Value};
 use osis_schema::{AspectKey, Path, Type, type_at};
 use std::io::{Read, Seek, SeekFrom};
 

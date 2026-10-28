@@ -13,7 +13,7 @@ use crate::flows::edges::grant_in;
 use crate::identity::key_actor_record;
 use crate::rotation;
 use crate::Mutation;
-use osis_core::{Role, Tid, Value, WallMs};
+use osis_base::{Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::{KeyActorKeys, Secret32};
 use osis_keys::{MemberKeys, Recipient, box_member, roles_up_to};
@@ -67,7 +67,7 @@ impl Engine {
     fn redeem_in(&mut self, l: Tid, link: &ShareLink, grantee: Tid, single_use: bool) -> Result<Done> {
         let k = link.k;
         let edge = self.roster(&k).get(&l).copied().ok_or(Error::Misuse("the link is no member of K (finalized or unknown)"))?;
-        if !edge.alive_at(Some(osis_core::Ts::make(self.now(), 0).unwrap_or_default())) {
+        if !edge.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())) {
             return Err(Error::Misuse("the link expired"));
         }
         let grant = Edge { role: edge.role, until: None, invite: None, since: None };
@@ -103,7 +103,7 @@ impl Engine {
     }
 }
 
-fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &Secret32) -> Result<(Tid, osis_core::LabelId, Tid, Done)> {
+fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &Secret32) -> Result<(Tid, osis_base::LabelId, Tid, Done)> {
     let me = tx.core.id.tid();
     if tx.core.role_now(&me, &sharer) != Some(Role::Admin) {
         return Err(Error::Permission { tid: sharer });

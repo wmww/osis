@@ -5,7 +5,7 @@
 use crate::aspects::{KeysWrite, SecretsWrite, box_key, from_schema, history_key, keyset, keyset_of, to_schema};
 use crate::epoch::{ActorEpochs, Provenance, ROLES, SUITE, newest_of};
 use crate::Error;
-use osis_core::{Role, Tid};
+use osis_base::{Role, Tid};
 use osis_crypto::{
     BoxItem, BoxSlot, CryptoRngCore, Epoch, KemPublicKey, Secret32, key_actor_role_secret, seal_box, seal_history, wrap_symmetric_box,
 };

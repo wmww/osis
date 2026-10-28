@@ -2,7 +2,7 @@
 //! data, so nothing here is attributed to a peer.
 
 use crate::backend::BackendError;
-use osis_core::{Classified, ErrorClass};
+use osis_base::{Classified, ErrorClass};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -20,7 +20,7 @@ pub enum Error {
     Misuse(&'static str),
 }
 
-osis_core::impl_error!(Error {
+osis_base::impl_error!(Error {
     Backend(e) => ("{e}"),
     Root(e) => ("root storage: {e}"),
     Corrupt(what) => ("store corrupt: {what}"),

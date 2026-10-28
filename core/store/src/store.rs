@@ -9,7 +9,7 @@ use crate::codec::{R, W};
 use crate::pager::{Dirty, Pager, StoreConfig};
 use crate::root::{RootStorage, RootTier};
 use crate::{Error, KeyValue};
-use osis_core::{Ak, BlobId, CommitId, LabelId, Tid, Ts};
+use osis_base::{Ak, BlobId, CommitId, LabelId, Tid, Ts};
 use osis_crypto::CryptoRngCore;
 
 /// Whether an overwrite or removal must make the previous bytes unrecoverable once committed

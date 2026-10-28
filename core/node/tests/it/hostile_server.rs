@@ -6,8 +6,8 @@
 
 use crate::net;
 use net::*;
-use osis_core::format::MAX_DRIFT_MS;
-use osis_core::{Ak, LabelId, Role, Value};
+use osis_base::format::MAX_DRIFT_MS;
+use osis_base::{Ak, LabelId, Role, Value};
 use osis_crypto::{Epoch, LabelRole, Secret32, SeededRng, label_role_key};
 use osis_label::{Parent, StepKeys, genesis_label, register};
 use osis_node::sync::{Action, ConnId, Event, SyncEngine};
@@ -312,7 +312,7 @@ fn purged_chunks_leave_the_server_spec_sync_5() {
     let c = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let l = net.label(a);
-    let chunks: Vec<osis_core::BlobId> = net.engine(a).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    let chunks: Vec<osis_base::BlobId> = net.engine(a).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
     assert!(!chunks.is_empty(), "a chunked value");
     assert!(chunks.iter().all(|id| net.server_ids(sv, &l).contains(id)), "chunks uploaded");
     let mut m = osis_node::Mutation::new();
@@ -343,7 +343,7 @@ fn writer_purge_deletes_chunks_by_delete_key_spec_crypto_7() {
     let c = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let l = net.label(a);
-    let chunks: Vec<osis_core::BlobId> = net.engine(a).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    let chunks: Vec<osis_base::BlobId> = net.engine(a).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
     assert!(!chunks.is_empty(), "a chunked value");
     assert!(chunks.iter().all(|id| net.server_ids(sv, &l).contains(id)), "chunks uploaded");
     // the admin (holder of the delete key) is gone: only the writer's delete key can delete
@@ -381,7 +381,7 @@ fn header_list_chunks_level_2_only_spec_wire_5() {
     let level2 = h.keys.iter().filter(|x| x.level == 2).count();
     assert_eq!(level2, 1);
     assert!(h.keys.iter().any(|x| x.level == 1), "the commit has a thing-admin key");
-    let lists: Vec<osis_core::BlobId> = net.engine(a).package(&c).unwrap().unwrap().blobs.iter().map(|(id, _)| *id).collect();
+    let lists: Vec<osis_base::BlobId> = net.engine(a).package(&c).unwrap().unwrap().blobs.iter().map(|(id, _)| *id).collect();
     assert!(lists.len() > 1, "chunks and a tree node");
     assert!(lists.iter().all(|id| net.server_ids(sv, &l).contains(id)), "header-list blobs uploaded");
     // the commit's own delete secrets per level, found by the header's delete keys
@@ -434,7 +434,7 @@ fn linked_header_prefix_checked_spec_commits_4() {
     let body = net.engine(a).bodies(&c).unwrap().into_iter().next().unwrap();
     let parts = body.parts.clone();
     // the same body under a prefix with another expiry and no commitments
-    let prefix = osis_label::Prefix::new([5; 16], Some(osis_core::WallMs(T0 + 1_000_000_000)), vec![]).unwrap();
+    let prefix = osis_label::Prefix::new([5; 16], Some(osis_base::WallMs(T0 + 1_000_000_000)), vec![]).unwrap();
     let (key, blob) = osis_label::frame(&prefix, &body.plaintext, &mut SeededRng::from_u64(3)).unwrap();
     let id = osis_label::blob_id(&blob);
     let secret = net.engine(a).wrap_secret(&g, Some((&c, &parts))).unwrap().unwrap();
@@ -454,7 +454,7 @@ fn linked_header_prefix_checked_spec_commits_4() {
 }
 
 /// Junk entries under `l`, unstamped or stamped with `stamp_key`, each `tag`-distinct.
-fn junk(l: &LabelId, tag: u8, n: u8, stamp_key: Option<&osis_crypto::SigningSecret>) -> (Vec<osis_core::BlobId>, Message) {
+fn junk(l: &LabelId, tag: u8, n: u8, stamp_key: Option<&osis_crypto::SigningSecret>) -> (Vec<osis_base::BlobId>, Message) {
     let blobs: Vec<Vec<u8>> = (0..n).map(|i| vec![tag, i, 7, 7]).collect();
     let ids = blobs.iter().map(|b| osis_label::blob_id(b)).collect();
     let events = blobs
@@ -532,7 +532,7 @@ fn push(l: LabelId, events: Vec<osis_proto::Event>) -> Vec<u8> {
 }
 
 /// The entries node `n` knows under `l` holding a commit that touches `t`.
-fn entries_of(net: &mut Net, n: usize, l: &LabelId, t: osis_core::Tid) -> Vec<osis_core::BlobId> {
+fn entries_of(net: &mut Net, n: usize, l: &LabelId, t: osis_base::Tid) -> Vec<osis_base::BlobId> {
     let all = net.sync(n).entries(l);
     all.into_iter()
         .filter_map(|(id, k)| match k {
@@ -629,7 +629,7 @@ fn outside_delete_waits_for_settled_view_spec_sync_6() {
     assert!(!ids.is_empty() && ids.iter().all(|i| net.server_ids(sv, &old).contains(i)));
     // a server announces an entry that opens under the group's read secret, without its bytes
     let read = net.engine(a).epochs(&g).unwrap().read.newest_held().unwrap().1.clone();
-    let blocker = osis_core::BlobId([0x99; 32]);
+    let blocker = osis_base::BlobId([0x99; 32]);
     let wrap = osis_crypto::wrap(&read, &blocker, &Secret32::from_bytes([1; 32])).unwrap();
     let conn = net.conn_to(a, sv).expect("connected");
     net.feed(a, Event::Bytes { conn, bytes: push(old, vec![osis_proto::Event::Added { blob_id: blocker, blob: None, wrap, stamp: None }]) });

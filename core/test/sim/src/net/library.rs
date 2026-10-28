@@ -8,7 +8,7 @@ use super::{NetSim, NetWeights, Party};
 use crate::dice::Dice;
 use crate::harness::{Report, Res};
 use crate::workload;
-use osis_core::{CommitId, Role, Tid, Value, WallMs};
+use osis_base::{CommitId, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp};
 use osis_node::Mutation;
 use osis_node::flows::{Demotion, LinkSpec, PreSync};
@@ -697,7 +697,7 @@ pub fn disappearing(seed: u64) -> Res<Report> {
 }
 
 /// No up server holds a live entry, and no honest node a blob, of the `ak` bodies of `commits`.
-fn expired_absent(sim: &mut NetSim, commits: &[CommitId], ak: &osis_core::Ak) -> Res<()> {
+fn expired_absent(sim: &mut NetSim, commits: &[CommitId], ak: &osis_base::Ak) -> Res<()> {
     use osis_proto::LabelStore;
     let known = sim.known.clone();
     for ((l, b), (c, parts)) in known {
@@ -825,12 +825,12 @@ pub fn concurrent_writers(seed: u64) -> Res<Report> {
     sim.settle()?;
     sim.count_uploads = false;
     sim.observe()?;
-    let mut by_blob: std::collections::BTreeMap<(osis_core::LabelId, osis_core::BlobId), BTreeSet<usize>> = Default::default();
+    let mut by_blob: std::collections::BTreeMap<(osis_base::LabelId, osis_base::BlobId), BTreeSet<usize>> = Default::default();
     for (n, l, b) in std::mem::take(&mut sim.uploads) {
         by_blob.entry((l, b)).or_default().insert(n);
     }
-    type BodyKey = (osis_core::LabelId, CommitId, Vec<(usize, usize)>);
-    let mut per_body: std::collections::BTreeMap<BodyKey, BTreeSet<osis_core::BlobId>> = Default::default();
+    type BodyKey = (osis_base::LabelId, CommitId, Vec<(usize, usize)>);
+    let mut per_body: std::collections::BTreeMap<BodyKey, BTreeSet<osis_base::BlobId>> = Default::default();
     // the wait is a spread, not an election: a writer whose view of a promotion lags (its
     // session reopened for a new step) may send too; rare. Every writer's point may fall in
     // one of the sim's 1 s steps (about 1 in 10^4 runs for some blob): never for two blobs

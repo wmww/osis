@@ -2,7 +2,7 @@
 //! spec/data-model.md §9). The node adapts commit headers and deltas into these; perm parses no
 //! bytes. Every record is untrusted: perm never panics on one.
 
-use osis_core::{CommitId, Role, Tid, Ts, WallMs};
+use osis_base::{CommitId, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

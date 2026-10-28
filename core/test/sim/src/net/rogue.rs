@@ -5,7 +5,7 @@
 
 use super::{End, NetSim, Party, Payload};
 use crate::harness::Res;
-use osis_core::{LabelId, Tid};
+use osis_base::{LabelId, Tid};
 use osis_crypto::{Secret32, SigningSecret};
 use osis_label::Step;
 use osis_node::labeling::HeadKeys;
@@ -57,7 +57,7 @@ impl NetSim {
 
     /// Commit `c` is an adversary's counter reuse under an honest node's key: the honest-node
     /// counter check skips it.
-    pub fn equivocation(&mut self, c: osis_core::CommitId) {
+    pub fn equivocation(&mut self, c: osis_base::CommitId) {
         self.check.equivocations.insert(c);
     }
 

@@ -4,7 +4,7 @@
 
 use crate::net;
 use net::*;
-use osis_core::{Role, Value};
+use osis_base::{Role, Value};
 use osis_node::Mutation;
 use osis_node::sync::EntryKind;
 

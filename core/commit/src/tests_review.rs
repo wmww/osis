@@ -5,7 +5,7 @@ use crate::tests_build::{content, key, rng};
 use crate::tests_validate::membership_header;
 use crate::tests_verify::{TestSecrets, register_delta, sec};
 use crate::*;
-use osis_core::{Ak, Link};
+use osis_base::{Ak, Link};
 use osis_crypto::{link_hash, link_tree_hash};
 use osis_schema::{AspectDefaults, PurgeBy, Retention};
 
@@ -14,7 +14,7 @@ use osis_schema::{AspectDefaults, PurgeBy, Retention};
 // capped by the caller's output bound.
 #[test]
 fn tree_reader_bounded() {
-    use osis_core::format::CHUNK_MIN;
+    use osis_base::format::CHUNK_MIN;
     let d = sec(0xd0, &t(2));
     let mut m = MemoryBlobs::default();
     let none = Prefix { salt: [0; 16], expiry: None, commitments: vec![] };
@@ -74,7 +74,7 @@ fn created_rejects_expires() {
 // spec/sync.md §3, spec/wire.md §4: a received blob mixing retention classes is bad input.
 #[test]
 fn prefix_inputs_mixed_class_bad_input() {
-    use osis_core::{Classified, ErrorClass};
+    use osis_base::{Classified, ErrorClass};
     let mut b = content(2);
     b.aspects[0].tid = t(3);
     b.aspects[1].tid = t(3);
@@ -143,7 +143,7 @@ fn expiry_range() {
 fn one_level_2_key() {
     let mut h = sample_header();
     h.keys.push(crate::tests::dkey(2, 9));
-    h.keys.sort_by_key(|k| osis_core::encode(&crate::header::key_value(k)));
+    h.keys.sort_by_key(|k| osis_base::encode(&crate::header::key_value(k)));
     let i = h.keys.iter().position(|k| *k == crate::tests::dkey(1, 1)).unwrap();
     let j = h.keys.iter().position(|k| *k == crate::tests::dkey(2, 2)).unwrap();
     let k = h.keys.iter().position(|k| *k == crate::tests::dkey(2, 9)).unwrap();

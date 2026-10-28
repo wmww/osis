@@ -10,7 +10,7 @@ use crate::flows::edges::{Demotion, PreSync, grant_in};
 use crate::identity::{key_actor_record, thing_record};
 use crate::rotation;
 use crate::Mutation;
-use osis_core::{CommitId, Role, Tid};
+use osis_base::{CommitId, Role, Tid};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::{KeyActorKeys, Secret32};
 use osis_keys::{ActorEpochs, MemberKeys, ROLES, Recipient};
@@ -67,13 +67,13 @@ impl Engine {
         if !self.knows(&n) {
             return Err(Error::UnknownThing(n));
         }
-        let member = self.roster(&p).get(&n).is_some_and(|e| e.alive_at(Some(osis_core::Ts::make(self.now(), 0).unwrap_or_default())));
+        let member = self.roster(&p).get(&n).is_some_and(|e| e.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())));
         let mut done = if member { self.reshare(&p, &n)? } else { self.grant(&p, &n, &admin_edge())? };
         // the person's certificates (this node's card, the chain to the person and its edges)
         // and its `/label` commits, never its content: the new device downloads the rest from
         // the home label
         let mut all: Vec<CommitId> = self.certificates(&p).into_keys().collect();
-        let label = osis_core::Ak::new("/label").map_err(|_| Error::Misuse("ak"))?;
+        let label = osis_base::Ak::new("/label").map_err(|_| Error::Misuse("ak"))?;
         all.extend(self.core.by_aspect.get(&(p, label)).into_iter().flatten().map(|(_, c)| *c));
         all.sort_by_key(|c| self.header(c).map(|h| h.ts));
         for d in &done.deliveries {
@@ -130,7 +130,7 @@ impl Engine {
     }
 }
 
-fn create_person_in(tx: &mut Tx<'_>, r: Tid, seed: &Secret32, servers: &[Address]) -> Result<(Tid, osis_core::LabelId, Option<CommitId>)> {
+fn create_person_in(tx: &mut Tx<'_>, r: Tid, seed: &Secret32, servers: &[Address]) -> Result<(Tid, osis_base::LabelId, Option<CommitId>)> {
     let rkeys = KeyActorKeys::from_seed(seed);
     let mut m = Mutation::new();
     m.create(key_actor_record(&rkeys, seed));

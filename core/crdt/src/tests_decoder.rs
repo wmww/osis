@@ -11,7 +11,7 @@ use crdt_model::ops::Ty;
 use crdt_model::r#gen::{Rng, kitchen_sink};
 use crdt_model::stamp::Source as MSource;
 use crdt_model::cbor::Error as MError;
-use osis_core::Value;
+use osis_base::Value;
 use crdt_model::wire::{Ctx, decode_delta as m_decode_delta, decode_snapshot as m_decode_snapshot};
 use proptest::prelude::*;
 
@@ -119,14 +119,14 @@ fn mutate_at(r: &mut Rng, v: &mut Value, k: &mut usize) -> bool {
 /// re-encoded canonically), so it reaches the decoders' semantic checks; `None` if no node
 /// changed.
 fn mutate_tree(r: &mut Rng, b: &[u8]) -> Option<Vec<u8>> {
-    let mut v = osis_core::decode(b, &osis_core::Limits { max_depth: 512, max_bytes: 1 << 24 }).ok()?;
+    let mut v = osis_base::decode(b, &osis_base::Limits { max_depth: 512, max_bytes: 1 << 24 }).ok()?;
     let n = count(&v);
     for _ in 0..8 {
         let mut w = v.clone();
         let mut k = r.below(n);
         if mutate_at(r, &mut w, &mut k) {
             v = w;
-            return Some(osis_core::encode(&v));
+            return Some(osis_base::encode(&v));
         }
     }
     None
@@ -216,7 +216,7 @@ fn run_past_counter_range_rejected_spec_2_3() {
     let delta = |first: i64, n: i64| {
         let flag = l(vec![int(0), int(n - 1), int(0), Value::Bool(true)]);
         let run = l(vec![int(first), int(n), l(vec![]), l(vec![]), l(vec![]), l(vec![flag])]);
-        osis_core::encode(&l(vec![Value::Bytes(vec![7; 16]), l(vec![]), l(vec![]), l(vec![int(9), l(vec![]), l(vec![]), l(vec![run])])]))
+        osis_base::encode(&l(vec![Value::Bytes(vec![7; 16]), l(vec![]), l(vec![]), l(vec![int(9), l(vec![]), l(vec![]), l(vec![run])])]))
     };
     let both = |b: &[u8]| {
         let imp = decode_delta(b, &writer_cx(&w), &mut Interner::new(), None).is_ok();

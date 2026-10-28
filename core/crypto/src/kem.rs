@@ -4,7 +4,7 @@ use crate::aead::{self, TAG_LEN, ZERO_NONCE};
 use crate::kdf::{HYBRID_KEM, KEM, kdf_xof};
 use crate::{Error, Secret32, agility_bytes, agility_value};
 use libcrux_ml_kem::mlkem768;
-use osis_core::Value;
+use osis_base::Value;
 use rand_core::CryptoRngCore;
 use std::fmt;
 use zeroize::{Zeroize, Zeroizing};
@@ -238,7 +238,7 @@ mod tests {
     use super::*;
 
     fn hex<const N: usize>(s: &str) -> [u8; N] {
-        osis_core::hex::decode(s).unwrap().try_into().unwrap()
+        osis_base::hex::decode(s).unwrap().try_into().unwrap()
     }
 
     // spec/crypto.md §1: X25519 is RFC 7748 (§6.1 Diffie-Hellman example).

@@ -5,7 +5,7 @@
 use super::{case, generated_header, s32};
 use crate::file::VecFile;
 use crate::hex;
-use osis_core::{LabelId, Role, Tid, encode};
+use osis_base::{LabelId, Role, Tid, encode};
 use osis_crypto::*;
 
 pub fn seed() -> VecFile {

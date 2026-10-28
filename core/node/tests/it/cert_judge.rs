@@ -4,7 +4,7 @@
 
 use crate::net;
 use net::*;
-use osis_core::{BlobId, CommitId, LabelId, Role, Tid};
+use osis_base::{BlobId, CommitId, LabelId, Role, Tid};
 use osis_node::flows::{Demotion, PreSync};
 use osis_node::sync::EntryKind;
 
@@ -128,7 +128,7 @@ fn linked_blobs_of_gone_copy_deleted_spec_sync_3() {
     let mut m = osis_node::Mutation::new();
     let p = e.new_thing(&mut m, me);
     for i in 0..800 {
-        m.set(p, &osis_core::Ak::new(format!("/u/{}{i:05}", "a".repeat(100))).unwrap(), &s("v")).unwrap();
+        m.set(p, &osis_base::Ak::new(format!("/u/{}{i:05}", "a".repeat(100))).unwrap(), &s("v")).unwrap();
     }
     let pc = e.commit(m).unwrap().unwrap();
     assert!(net.engine(a).header(&pc).unwrap().links.aspects.is_some(), "the aspect list goes by link");
@@ -172,7 +172,7 @@ fn person(net: &mut Net, n: usize, sv: usize) -> Tid {
 
 /// Admin node `a`'s group at `sv`, granted to node `r`'s person (read, until `until`), `r`'s
 /// card under the group's label: (group, person, label).
-fn person_reader(net: &mut Net, a: usize, r: usize, sv: usize, until: Option<osis_core::WallMs>) -> (Tid, Tid, LabelId) {
+fn person_reader(net: &mut Net, a: usize, r: usize, sv: usize, until: Option<osis_base::WallMs>) -> (Tid, Tid, LabelId) {
     let g = net.group(a, &[], &[sv]);
     let p = person(net, r, sv);
     net.pair(r, a);
@@ -222,7 +222,7 @@ fn until_expired_node_card_deleted_spec_permissions_4() {
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[sv]);
-    let until = osis_core::WallMs(net.now() + 3_600_000);
+    let until = osis_base::WallMs(net.now() + 3_600_000);
     let (_, _, l) = person_reader(&mut net, a, r, sv, Some(until));
     let rt = net.tid(r);
     assert!(!card_entries(&mut net, a, sv, &l, rt, "/reach").is_empty(), "the reader's card is under the group's label");
@@ -312,7 +312,7 @@ fn regrant_after_until_reads_again_spec_permissions_2() {
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[sv]);
-    let until = osis_core::WallMs(net.now() + 3_600_000);
+    let until = osis_base::WallMs(net.now() + 3_600_000);
     let (g, p, l) = person_reader(&mut net, a, r, sv, Some(until));
     let rt = net.tid(r);
     net.clock.advance(3_600_000);

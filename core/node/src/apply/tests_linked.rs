@@ -4,7 +4,7 @@
 
 use crate::local_peer::LocalPeer;
 use crate::{Ingested, Mutation};
-use osis_core::{CommitId, Role, Tid, Ts, Value, WallMs};
+use osis_base::{CommitId, Role, Tid, Ts, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_schema::core_types as ct;
 use osis_schema::Codec;
@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 const T0: WallMs = WallMs(1_700_000_000_000);
 
 fn tags(lp: &mut LocalPeer, i: usize, t: Tid) -> Option<Value> {
-    lp.peers[i].engine.get(&t, &osis_core::Ak::new("/t/tags").unwrap()).unwrap()
+    lp.peers[i].engine.get(&t, &osis_base::Ak::new("/t/tags").unwrap()).unwrap()
 }
 
 /// A frontier covering `x`'s first write on `t`'s `/t/tags`, padded past `CHUNK_THRESHOLD`
@@ -37,12 +37,12 @@ fn demoted_writer() -> (LocalPeer, Tid, Tid, CommitId) {
     let x = lp.peers[1].engine.tid();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
-    m.set(t, &osis_core::Ak::new("/t/reg").unwrap(), &Value::Int(1)).unwrap();
+    m.set(t, &osis_base::Ak::new("/t/reg").unwrap(), &Value::Int(1)).unwrap();
     lp.peers[0].commit(m).unwrap();
     edge(&mut lp, t, x, Some(Role::Write), None);
     lp.sync(0, 1).unwrap();
     let mut m = Mutation::new();
-    m.op(t, &osis_core::Ak::new("/t/tags").unwrap(), PathOp { path: Vec::new(), op: Op::Add(Value::Str("by x".into())) }).unwrap();
+    m.op(t, &osis_base::Ak::new("/t/tags").unwrap(), PathOp { path: Vec::new(), op: Op::Add(Value::Str("by x".into())) }).unwrap();
     lp.peers[1].commit(m).unwrap();
     lp.sync(1, 0).unwrap();
     edge(&mut lp, t, x, None, Some(big_frontier(t, x, 1).to_value()));
@@ -64,7 +64,7 @@ fn edge(lp: &mut LocalPeer, t: Tid, m: Tid, role: Option<Role>, frontier: Option
 }
 
 /// The linked frontiers' tree blobs of commit `c` (its chunk list).
-fn chunk_blobs(lp: &mut LocalPeer, c: &CommitId) -> Vec<osis_core::BlobId> {
+fn chunk_blobs(lp: &mut LocalPeer, c: &CommitId) -> Vec<osis_base::BlobId> {
     lp.peers[0].engine.header(c).unwrap().chunks.iter().map(|x| x.blob).collect()
 }
 
@@ -118,7 +118,7 @@ fn raw_snapshot(lp: &mut LocalPeer, t: Tid, tenures: Vec<Value>) -> CommitId {
 }
 
 fn tenure(member: Tid, frontier: Option<Value>) -> Value {
-    let mut v = ct::Tenure { member, role: Role::Write, since: None, until: ct::EdgeKey { ts: Ts::make(T0, 0).unwrap(), node: member, commit: osis_core::CommitId([0; 32]) }, frontier: None }.to_value();
+    let mut v = ct::Tenure { member, role: Role::Write, since: None, until: ct::EdgeKey { ts: Ts::make(T0, 0).unwrap(), node: member, commit: osis_base::CommitId([0; 32]) }, frontier: None }.to_value();
     if let (Value::Map(m), Some(f)) = (&mut v, frontier) {
         m.insert(Value::Int(4), Value::Enum(1, Some(Box::new(f))));
     }
@@ -145,7 +145,7 @@ fn malformed_linked_frontier_spec_perm_6() {
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
-    let junk = Value::Bytes(vec![9; osis_core::format::CHUNK_THRESHOLD + 10]);
+    let junk = Value::Bytes(vec![9; osis_base::format::CHUNK_THRESHOLD + 10]);
     let c = raw_snapshot(&mut lp, t, vec![tenure(me, Some(junk))]);
     assert!(matches!(deliver_all(&mut lp, &c), Err(crate::Error::BadInput(_))));
 }
@@ -160,7 +160,7 @@ fn unresolvable_linked_frontier_spec_perm_6() {
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
-    let fake = osis_core::Link { hash: [3; 32], blob: osis_core::BlobId([4; 32]), suite: 1, key: [5; 32] };
+    let fake = osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] };
     let c = raw_snapshot(&mut lp, t, vec![tenure(me, Some(Value::Link(fake)))]);
     assert!(matches!(deliver_all(&mut lp, &c), Err(crate::Error::BadInput(_))));
 }
@@ -175,7 +175,7 @@ fn linked_frontier_amplification_bound_spec_perm_6() {
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
     let f1 = big_frontier(t, me, 1).to_value();
-    let size = osis_core::encode(&f1).len();
+    let size = osis_base::encode(&f1).len();
     let same: Vec<Value> = (0..40u8).map(|i| tenure(Tid::from_bytes([i; 15]), Some(f1.clone()))).collect();
     let c = raw_snapshot(&mut lp, t, same);
     let check = |lp: &mut LocalPeer, c: CommitId, cap: usize| {
@@ -239,19 +239,19 @@ fn unreadable_snapshot_certificate_fails_closed_spec_perm_6() {
 // its tenure element is above it, and the snapshot applies elsewhere, judging by that frontier.
 #[test]
 fn tenure_with_frontier_under_threshold_spec_perm_6() {
-    use osis_core::format::CHUNK_THRESHOLD;
+    use osis_base::format::CHUNK_THRESHOLD;
     let mut lp = LocalPeer::new(2, 948, T0).unwrap();
     lp.sync_all().unwrap();
     let me = lp.peers[0].engine.tid();
     let x = lp.peers[1].engine.tid();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
-    m.set(t, &osis_core::Ak::new("/t/reg").unwrap(), &Value::Int(1)).unwrap();
+    m.set(t, &osis_base::Ak::new("/t/reg").unwrap(), &Value::Int(1)).unwrap();
     lp.peers[0].commit(m).unwrap();
     edge(&mut lp, t, x, Some(Role::Write), None);
     lp.sync(0, 1).unwrap();
     let mut m = Mutation::new();
-    m.op(t, &osis_core::Ak::new("/t/tags").unwrap(), PathOp { path: Vec::new(), op: Op::Add(Value::Str("by x".into())) }).unwrap();
+    m.op(t, &osis_base::Ak::new("/t/tags").unwrap(), PathOp { path: Vec::new(), op: Op::Add(Value::Str("by x".into())) }).unwrap();
     lp.peers[1].commit(m).unwrap();
     lp.sync(1, 0).unwrap();
     // the largest frontier of this shape at or under the threshold
@@ -264,7 +264,7 @@ fn tenure_with_frontier_under_threshold_spec_perm_6() {
         }
         f
     };
-    let size = |f: &ct::Frontier| osis_core::encode(&f.to_value()).len();
+    let size = |f: &ct::Frontier| osis_base::encode(&f.to_value()).len();
     // binary search for the most extra entries that fit
     let (mut lo, mut hi) = (0u32, 1u32);
     while size(&frontier(hi)) <= CHUNK_THRESHOLD {
@@ -278,11 +278,11 @@ fn tenure_with_frontier_under_threshold_spec_perm_6() {
     assert!(size(&f) <= CHUNK_THRESHOLD && size(&f) + 64 > CHUNK_THRESHOLD);
     edge(&mut lp, t, x, None, Some(f.to_value()));
     let s = *lp.peers[0].engine.roster_snapshot(&t, None).unwrap().commits.last().unwrap();
-    let ledger = lp.peers[0].engine.get(&t, &osis_core::Ak::new("/tenures").unwrap()).unwrap();
+    let ledger = lp.peers[0].engine.get(&t, &osis_base::Ak::new("/tenures").unwrap()).unwrap();
     let Some(Value::Set(ledger)) = ledger else { panic!("no ledger") };
     let mut links = Vec::new();
     ledger.iter().for_each(|e| crate::engine::large::links_in(e, &mut links));
-    assert!(links.is_empty() && ledger.iter().any(|e| osis_core::encode(e).len() > CHUNK_THRESHOLD), "the tenure element is above the threshold, inline");
+    assert!(links.is_empty() && ledger.iter().any(|e| osis_base::encode(e).len() > CHUNK_THRESHOLD), "the tenure element is above the threshold, inline");
     deliver_all(&mut lp, &s).unwrap();
     assert_eq!(tags(&mut lp, 1, t), Some(Value::Set([Value::Str("by x".into())].into())), "judged by the inline frontier");
 }

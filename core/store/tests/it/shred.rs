@@ -6,7 +6,7 @@
 use crate::common;
 
 use common::*;
-use osis_core::{BlobId, CommitId, LabelId};
+use osis_base::{BlobId, CommitId, LabelId};
 use osis_crypto::SeededRng;
 use osis_store::{AspectUnit, PendingKind, Shred, Store, forensic_node_keys, forensic_open};
 use std::collections::HashSet;

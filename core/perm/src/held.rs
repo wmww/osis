@@ -2,7 +2,7 @@
 //! over its store; `MemoryHeldSet` serves tests. perm holds no state between calls.
 
 use crate::types::{MembershipCommit, RosterSnapshot};
-use osis_core::{CreationRecord, Tid};
+use osis_base::{CreationRecord, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -50,7 +50,7 @@ impl MemoryHeldSet {
         self.snapshots.entry(s.thing).or_default().push(Arc::new(s));
     }
     /// Drops every held commit and snapshot with this ID (as a compacted node would).
-    pub fn remove(&mut self, id: &osis_core::CommitId) {
+    pub fn remove(&mut self, id: &osis_base::CommitId) {
         for v in self.commits.values_mut() {
             v.retain(|c| c.id != *id);
         }

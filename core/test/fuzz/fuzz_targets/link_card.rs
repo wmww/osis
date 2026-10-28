@@ -3,7 +3,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use osis_core::{Limits, decode};
+use osis_base::{Limits, decode};
 use osis_label::{RecoveryCard, ShareLink};
 
 fuzz_target!(|data: &[u8]| {

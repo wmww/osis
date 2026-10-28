@@ -8,7 +8,7 @@
 use crate::common;
 use common::*;
 use osis_commit::PurgeItem;
-use osis_core::{Clock, ManualClock, Tid, Value};
+use osis_base::{Clock, ManualClock, Tid, Value};
 use osis_crypto::SeededRng;
 use osis_node::local_peer::{LocalPeer, Peer};
 use osis_node::{Config, Engine, Mutation};
@@ -37,7 +37,7 @@ fn big(marker: &str) -> String {
     format!("{marker}{}", "x".repeat(400))
 }
 
-fn set(lp: &mut LocalPeer, i: usize, t: Tid, k: &osis_schema::Aspect<Value>, v: &str) -> osis_core::CommitId {
+fn set(lp: &mut LocalPeer, i: usize, t: Tid, k: &osis_schema::Aspect<Value>, v: &str) -> osis_base::CommitId {
     let mut m = Mutation::new();
     m.set(t, k, &s(v)).unwrap();
     lp.peers[i].commit(m).unwrap().unwrap()
@@ -168,7 +168,7 @@ fn expired_entry_paged_unrecoverable_spec_commits_6() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.op(t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("k999"))], op: osis_crdt::Op::Set(s(&big(marker))) }).unwrap();
-    m.expires(t, &BIG, osis_core::WallMs(lp.peers[0].engine.now().0 + 60_000)).unwrap();
+    m.expires(t, &BIG, osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000)).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     filler(&mut lp, 0, 6);
     assert!(recoverable(&mut lp.peers[0], marker.as_bytes()), "the attack finds live content");
@@ -176,7 +176,7 @@ fn expired_entry_paged_unrecoverable_spec_commits_6() {
     lp.peers[0].engine.tick().unwrap();
     assert_eq!(lp.peers[0].engine.get_at(&t, &ak("/t/big"), &[osis_crdt::PathSeg::Key(s("k999"))]).unwrap(), None);
     // the value, the key, nor the key's hash (the paged map's key index): one attack
-    let h = osis_core::hash::hash(&osis_core::encode(&s("k999")));
+    let h = osis_base::hash::hash(&osis_base::encode(&s("k999")));
     let found = plaintexts(&mut lp.peers[0]);
     for (needle, what) in [(marker.as_bytes(), "expired content"), (b"k999".as_slice(), "the expired key"), (h.as_slice(), "the expired key's index row")] {
         assert!(!found.iter().any(|x| contains(x, needle)), "{what} recovered");
@@ -200,7 +200,7 @@ fn expired_element_paged_set_unrecoverable_spec_commits_6() {
         let mut m = Mutation::new();
         m.op(t, &a, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(s(v)) }).unwrap();
         if let Some(e) = exp {
-            m.expires(t, &a, osis_core::WallMs(e)).unwrap();
+            m.expires(t, &a, osis_base::WallMs(e)).unwrap();
         }
         lp.peers[0].commit(m).unwrap()
     };
@@ -320,8 +320,8 @@ fn at_most_zero_live_body_dropped_at_bound_unrecoverable_spec_commits_5() {
         let e = &mut lp.peers[0].engine;
         assert!(e.holds_body(&body, &t, &k), "compact {compact}: the body keeps to the next compaction");
         let first = e.deaths(&body, &t, &k).unwrap().unwrap().0.wall_ms().0;
-        assert_eq!(e.body_keep(&body, &t, &k).unwrap().at_most, Some(first + osis_core::format::AT_MOST_GRACE_MS));
-        lp.advance(osis_core::format::AT_MOST_GRACE_MS + 1);
+        assert_eq!(e.body_keep(&body, &t, &k).unwrap().at_most, Some(first + osis_base::format::AT_MOST_GRACE_MS));
+        lp.advance(osis_base::format::AT_MOST_GRACE_MS + 1);
         lp.peers[0].engine.tick().unwrap();
         assert!(!lp.peers[0].engine.holds_body(&body, &t, &k), "compact {compact}");
         assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "compact {compact}: erased content recovered");

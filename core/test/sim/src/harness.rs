@@ -5,7 +5,7 @@
 use crate::check::{self, Checker};
 use crate::dice::Dice;
 use crate::workload;
-use osis_core::{Classified, Clock, CommitId, ErrorClass, ManualClock, Role, Tid, Value, WallMs};
+use osis_base::{Classified, Clock, CommitId, ErrorClass, ManualClock, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::SeededRng;
 use osis_node::local_peer::{Package, Peer};
@@ -214,7 +214,7 @@ impl Sim {
 
     /// Node `i`'s read of `ak` on `t`.
     pub fn read(&mut self, i: usize, t: Tid, ak: &str) -> Res<Option<Value>> {
-        let ak = osis_core::Ak::new(ak).map_err(|e| self.fail(e.to_string()))?;
+        let ak = osis_base::Ak::new(ak).map_err(|e| self.fail(e.to_string()))?;
         let r = self.engine(i)?.get(&t, &ak);
         r.map_err(|e| self.fail(format!("node {i} read: {e}")))
     }
@@ -606,7 +606,7 @@ impl Sim {
     }
 
     fn finish_report(&mut self) -> Res<()> {
-        let mut h = osis_core::hash::Hasher::new();
+        let mut h = osis_base::hash::Hasher::new();
         let mut commits = BTreeSet::new();
         for i in 0..self.nodes.len() {
             let e = self.engine(i)?;

@@ -10,8 +10,8 @@
 //! `Y t label blob` (tombstone drop), `Z t label step` (claim-set drop);
 //! `Q peer label` replication position; `N` node-wide totals (labels, entries, bytes).
 
-use osis_core::format::{MEMBERSHIP_KEEP_MS, TOMBSTONE_LIFETIME_MS};
-use osis_core::{BlobId, Clock, LabelId};
+use osis_base::format::{MEMBERSHIP_KEEP_MS, TOMBSTONE_LIFETIME_MS};
+use osis_base::{BlobId, Clock, LabelId};
 use osis_crypto::{CryptoRngCore, Signature};
 use osis_proto::msg::{ClaimSet, Code, Step, StepId, WRAP_LEN};
 use osis_proto::{Budget, EntryMeta, LabelStore, LogRecord, Put, StoreError};
@@ -606,7 +606,7 @@ impl<B: Backend> LabelStore for BackendStore<B> {
         let (meta, new) = match self.meta(label)? {
             Some(m) => (m, false),
             None => {
-                let h = osis_core::hash::hash(&[&self.seed[..], &label.0[..]].concat());
+                let h = osis_base::hash::hash(&[&self.seed[..], &label.0[..]].concat());
                 (Meta { log_id: read_arr(&h, 0)?, ..Meta::default() }, true)
             }
         };

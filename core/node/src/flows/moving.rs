@@ -7,7 +7,7 @@ use super::Done;
 use crate::engine::Engine;
 use crate::error::Result;
 use crate::Mutation;
-use osis_core::{Role, Tid};
+use osis_base::{Role, Tid};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_schema::Codec;
 use osis_schema::core_types::{self as ct, Edge};

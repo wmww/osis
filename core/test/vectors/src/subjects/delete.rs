@@ -4,7 +4,7 @@
 use super::{case, generated_header, s32};
 use crate::file::VecFile;
 use crate::hex;
-use osis_core::{BlobId, LabelId, WallMs};
+use osis_base::{BlobId, LabelId, WallMs};
 use osis_crypto::*;
 
 const SPEC: &str = "spec/crypto.md §7";

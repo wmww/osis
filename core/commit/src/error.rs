@@ -1,6 +1,6 @@
 //! Errors (notes/architecture.md §3).
 
-use osis_core::{Classified, DecodeError, ErrorClass};
+use osis_base::{Classified, DecodeError, ErrorClass};
 
 #[derive(Debug)]
 pub enum Error {
@@ -34,7 +34,7 @@ pub enum Error {
     Build(&'static str),
 }
 
-osis_core::impl_error!(Error {
+osis_base::impl_error!(Error {
     Cbor(e) => ("commit: {e}"),
     Malformed(m) => ("malformed commit: {m}"),
     Invalid(m) => ("invalid commit: {m}"),

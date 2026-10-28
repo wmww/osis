@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::watch::lock;
 use crate::write::Committed;
-use osis_core::{Ak, CommitId, Tid, Ts};
+use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_node::Mutation;
 use std::collections::{BTreeMap, BTreeSet};
 

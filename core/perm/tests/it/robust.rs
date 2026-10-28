@@ -7,7 +7,7 @@ use crate::common;
 
 use common::*;
 use membership_model::Rng;
-use osis_core::{Role, Tid, WallMs};
+use osis_base::{Role, Tid, WallMs};
 use osis_perm::{At, Dots, Edge, EdgeOp, Frontier, MembershipCommit, MemoryHeldSet, Point, RosterSnapshot, Tenure, Timeline};
 use std::sync::Arc;
 

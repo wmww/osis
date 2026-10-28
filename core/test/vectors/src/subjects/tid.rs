@@ -3,7 +3,7 @@
 use super::generated_header;
 use crate::file::{Record, VecFile};
 use crate::hex;
-use osis_core::{CreationRecord, Tid, Value, encode};
+use osis_base::{CreationRecord, Tid, Value, encode};
 use std::collections::BTreeMap;
 
 const SPEC: &str = "spec/wire.md §3";
@@ -16,7 +16,7 @@ pub fn thing() -> VecFile {
     let rec = CreationRecord::Thing { owner, nonce };
     let bytes = encode(&rec.to_value());
     let tid = rec.tid();
-    assert_eq!(osis_core::hash::hash(&bytes)[..15], tid.as_bytes()[..], "tid is BLAKE3 of the record");
+    assert_eq!(osis_base::hash::hash(&bytes)[..15], tid.as_bytes()[..], "tid is BLAKE3 of the record");
     let mut cases = vec![
         Record::new()
             .with("case", "ordinary thing")

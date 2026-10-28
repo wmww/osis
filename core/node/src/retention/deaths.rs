@@ -11,7 +11,7 @@ use crate::engine::records::{self, Rd};
 use crate::engine::{Core, Tx};
 use crate::error::Result;
 use osis_commit::Header;
-use osis_core::{Ak, CommitId, Tid, Ts};
+use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_crdt::{Changes, Death, Fragment, Stamp};
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet, HashMap};

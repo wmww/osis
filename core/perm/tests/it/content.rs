@@ -5,8 +5,8 @@
 use crate::common;
 
 use common::*;
-use osis_core::Role::{Admin, Write};
-use osis_core::{Role, Tid};
+use osis_base::Role::{Admin, Write};
+use osis_base::{Role, Tid};
 use osis_perm::{overlapping, Dots, Edge, Point, Range, Timeline, Validity};
 use std::collections::BTreeSet;
 
@@ -234,7 +234,7 @@ fn until_gap_write_finalized_by_frontier() {
 #[cfg(debug_assertions)]
 #[test]
 fn regrant_replay_equals_search() {
-    use osis_core::Role::Read;
+    use osis_base::Role::Read;
     let mut rng = membership_model::Rng(0x5eed_0501);
     for _ in 0..3000 {
         let mut w = World::new();
@@ -252,7 +252,7 @@ fn regrant_replay_equals_search() {
             let author = if rng.below(4) == 0 { n[rng.below(3)] } else { top[&target] };
             let role = [Read, Write, Admin][rng.below(3)];
             let invite = [None, Some(Read), Some(Write), Some(Admin)][rng.below(4)].map(|i: Role| i.min(role));
-            let until = (rng.below(3) == 0).then(|| osis_core::WallMs(k + rng.below(10) as u64));
+            let until = (rng.below(3) == 0).then(|| osis_base::WallMs(k + rng.below(10) as u64));
             let e = (rng.below(4) != 0).then_some(Edge { role, until, invite, since: None });
             if member != target {
                 w.set(author, target, member, e, 1 + k, &[]);

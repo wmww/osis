@@ -6,9 +6,9 @@ use crate::auth::{get_bytes, get_opt, get_uint, opt, uint};
 use crate::blob::{Prefix, frame, open};
 use crate::step::OBJECT_LIMITS;
 use crate::Error;
-use osis_core::cbor::{decode, encode};
-use osis_core::format::MAX_VALUE_DEPTH;
-use osis_core::{Ak, SchemaId, Tid, Ts, Value};
+use osis_base::cbor::{decode, encode};
+use osis_base::format::MAX_VALUE_DEPTH;
+use osis_base::{Ak, SchemaId, Tid, Ts, Value};
 use osis_crypto::{CryptoRngCore, Domain, Secret32, Signature, SigningSecret, VerifyingKey};
 
 /// Largest signal envelope (spec/wire.md §13).
@@ -84,7 +84,7 @@ impl SignalBody {
 
     /// BLAKE3 of the canonical body.
     pub fn digest(&self) -> Result<[u8; 32], Error> {
-        Ok(osis_core::hash::hash(&encode(&self.to_value()?)))
+        Ok(osis_base::hash::hash(&encode(&self.to_value()?)))
     }
 
     pub fn verify(&self, node_key: &VerifyingKey, sig: &Signature) -> Result<(), Error> {
@@ -158,7 +158,7 @@ mod tests {
         plain.schema = None;
         assert_eq!(SignalBody::from_value(&plain.to_value().unwrap()).unwrap(), plain);
         // An envelope with an expiry is not a signal envelope.
-        let p = Prefix::new([0; 16], Some(osis_core::WallMs(9)), vec![]).unwrap();
+        let p = Prefix::new([0; 16], Some(osis_base::WallMs(9)), vec![]).unwrap();
         let pt = encode(&Value::List(vec![body().to_value().unwrap(), sig.to_value()]));
         let (k2, b2) = frame(&p, &pt, &mut rng).unwrap();
         assert!(open_signal(&b2, &k2).is_err());

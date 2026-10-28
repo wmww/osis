@@ -2,7 +2,7 @@
 //! `1..=MAX_MESSAGE`, then one canonical CBOR item.
 
 use crate::Error;
-use osis_core::format::MAX_MESSAGE;
+use osis_base::format::MAX_MESSAGE;
 
 /// Frames `body` (one encoded CBOR item). The caller keeps bodies within `MAX_MESSAGE`.
 pub fn encode_frame(body: &[u8]) -> Vec<u8> {

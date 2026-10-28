@@ -1,5 +1,5 @@
 [package]
-name = "osis-core"
+name = "osis-base"
 description = "Values, canonical CBOR, tids, ids, format constants, chunker, hashing, shared plug traits"
 version.workspace = true
 edition.workspace = true

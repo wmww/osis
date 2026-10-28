@@ -2,7 +2,7 @@
 //! checks"): `cargo test --release --workspace --test it scale::big_map_snapshot_rewrite -- --ignored --nocapture`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use osis_core::{Link, Tid, Ts, Value};
+use osis_base::{Link, Tid, Ts, Value};
 use osis_crdt::{AnyView, CounterRange, DeltaCtx, DeltaKind, Fragment, Frontiers, MemoryPages, PageError, PageSink, Snapshot, Source, Writer, create, encode_snapshot};
 use std::collections::HashSet;
 use std::time::Instant;
@@ -19,7 +19,7 @@ struct Seen {
 impl PageSink for Seen {
     fn put(&mut self, plaintext: &[u8]) -> Result<Link, PageError> {
         self.puts += 1;
-        if self.hashes.insert(osis_core::hash::hash(plaintext)) {
+        if self.hashes.insert(osis_base::hash::hash(plaintext)) {
             self.new_pages += 1;
             self.new_bytes += plaintext.len();
         }

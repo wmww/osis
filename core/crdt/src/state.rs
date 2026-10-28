@@ -8,7 +8,7 @@ use crate::changes::Changes;
 use crate::fragment::{Bag, BagKind, CaseWrite, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
 use crate::seq::{self, Seq, SeqContent};
 use crate::stamp::{Dot, Stamp, max_opt};
-use osis_core::{Float, Value};
+use osis_base::{Float, Value};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 

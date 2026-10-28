@@ -8,7 +8,7 @@ use super::scenarios::{ak, clock, persons, shared_group, sim};
 use super::{NetSim, NetWeights, Party};
 use crate::dice::Dice;
 use crate::harness::{Report, Res};
-use osis_core::{BlobId, CommitId, LabelId, Role, Value};
+use osis_base::{BlobId, CommitId, LabelId, Role, Value};
 use osis_crypto::SeededRng;
 use osis_node::Mutation;
 use osis_proto::{Command, Entry, LabelStore};
@@ -50,22 +50,22 @@ fn rec(fields: &[(i64, &str)]) -> Value {
 /// (a newer build's commit; its signature is not checkable by this build anyway).
 fn future_commit(sim: &mut NetSim, n: usize, c: &CommitId) -> Res<(Vec<u8>, CommitId)> {
     let bytes = sim.engine(n)?.commit_bytes(c).map_err(|e| sim.fail(e.to_string()))?.ok_or_else(|| sim.fail("no commit bytes"))?;
-    let lim = osis_core::cbor::Limits { max_depth: 512, max_bytes: bytes.len() };
-    let mut v = osis_core::cbor::decode(&bytes, &lim).map_err(|e| sim.fail(format!("decode: {e:?}")))?;
+    let lim = osis_base::cbor::Limits { max_depth: 512, max_bytes: bytes.len() };
+    let mut v = osis_base::cbor::decode(&bytes, &lim).map_err(|e| sim.fail(format!("decode: {e:?}")))?;
     if let Value::List(top) = &mut v
         && let Some(Value::List(h)) = top.first_mut()
         && let Some(ver) = h.first_mut()
     {
-        *ver = Value::Int((osis_core::format::FORMAT_VERSION + 1) as i64);
+        *ver = Value::Int((osis_base::format::FORMAT_VERSION + 1) as i64);
     } else {
         return Err(sim.fail("commit plaintext shape"));
     }
     // the commit ID is the header's hash (spec/commits.md §1)
     let id = match &v {
-        Value::List(top) => top.first().map(|h| CommitId(osis_core::hash::hash(&osis_core::cbor::encode(h)))),
+        Value::List(top) => top.first().map(|h| CommitId(osis_base::hash::hash(&osis_base::cbor::encode(h)))),
         _ => None,
     };
-    Ok((osis_core::cbor::encode(&v), id.ok_or_else(|| sim.fail("no header"))?))
+    Ok((osis_base::cbor::encode(&v), id.ok_or_else(|| sim.fail("no header"))?))
 }
 
 /// A newer format (spec/versioning.md §1, §2): a writer of a newer build uploads a commit of
@@ -167,8 +167,8 @@ pub fn newer_schema(seed: u64) -> Res<Report> {
     sim.commit(n, m)?;
     sim.run(40)?;
     sim.quiet(40)?;
-    let rk = osis_core::Ak::new(REC1.ak()).map_err(|e| sim.fail(e.to_string()))?;
-    let nk = osis_core::Ak::new(NEW2.ak()).map_err(|e| sim.fail(e.to_string()))?;
+    let rk = osis_base::Ak::new(REC1.ak()).map_err(|e| sim.fail(e.to_string()))?;
+    let nk = osis_base::Ak::new(NEW2.ak()).map_err(|e| sim.fail(e.to_string()))?;
     let got = sim.engine(a)?.get(&t, &rk).map_err(|e| sim.fail(e.to_string()))?;
     if got != Some(rec(&[(0, "n"), (1, "nb")])) {
         return Err(sim.fail(format!("the old node reads {got:?} of the newer struct")));

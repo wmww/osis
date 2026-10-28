@@ -5,7 +5,7 @@
 use crate::net;
 use net::*;
 use osis_commit::PurgeItem;
-use osis_core::{Ak, Role, Value, WallMs};
+use osis_base::{Ak, Role, Value, WallMs};
 use osis_node::Mutation;
 use osis_node::sync::{EntryKind, Event, SyncConfig};
 use osis_schema::AspectKey;
@@ -21,7 +21,7 @@ fn diags(net: &mut Net, nodes: &[usize]) {
 }
 
 /// Blob IDs node `n` knows under `l` holding commit `c`.
-fn blobs_of(net: &mut Net, n: usize, l: &osis_core::LabelId, c: &osis_core::CommitId) -> Vec<osis_core::BlobId> {
+fn blobs_of(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::CommitId) -> Vec<osis_base::BlobId> {
     net.sync(n).entries(l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == c)).map(|(id, _)| id).collect()
 }
 

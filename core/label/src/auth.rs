@@ -5,8 +5,8 @@
 use crate::blob::{Level, Prefix};
 use crate::step::{ClaimSet, Step, StepId};
 use crate::Error;
-use osis_core::cbor::encode;
-use osis_core::{BlobId, LabelId, Value, WallMs};
+use osis_base::cbor::encode;
+use osis_base::{BlobId, LabelId, Value, WallMs};
 use osis_crypto::{DeleteSecret, Domain, LabelRole, Signature, SigningSecret, VerifyingKey, open_digest, sign_open, static_entry, verify_delete, verify_open};
 use osis_schema::core_types::SecretBox;
 
@@ -164,7 +164,7 @@ pub fn evaluate_open<'a>(
 /// Digest of a stamp, deposit or publish authorization: BLAKE3 of canonical
 /// `[label_id, blob_id, wrap]`.
 pub fn entry_digest(label: &LabelId, blob: &BlobId, wrap: &[u8]) -> [u8; 32] {
-    osis_core::hash::hash(&encode(&Value::List(vec![bytes(&label.0), bytes(&blob.0), bytes(wrap)])))
+    osis_base::hash::hash(&encode(&Value::List(vec![bytes(&label.0), bytes(&blob.0), bytes(wrap)])))
 }
 
 /// A stamp: the label write key's signature under `"osis v1 upload"`.
@@ -259,7 +259,7 @@ pub struct DeleteItem {
 pub fn delete_digest(label: &LabelId, blob: &BlobId, at: Option<WallMs>, level: Option<Level>) -> Result<[u8; 32], Error> {
     let at = at.map(|t| uint(t.0)).transpose()?;
     let v = Value::List(vec![bytes(&label.0), bytes(&blob.0), opt(at), opt(level.map(|l| Value::Int(i64::from(l))))]);
-    Ok(osis_core::hash::hash(&encode(&v)))
+    Ok(osis_base::hash::hash(&encode(&v)))
 }
 
 impl DeleteItem {

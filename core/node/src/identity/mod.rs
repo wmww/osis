@@ -2,7 +2,7 @@
 //! device gives the node's signing and KEM keys, its creation record and tid. Creation records
 //! of new things (spec/data-model.md §1).
 
-use osis_core::{CreationRecord, Tid};
+use osis_base::{CreationRecord, Tid};
 use osis_crypto::{CryptoRngCore, KeyActorKeys, Secret32, creation_nonce};
 use osis_keys::ActorEpochs;
 

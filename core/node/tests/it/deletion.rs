@@ -4,7 +4,7 @@
 
 use crate::net;
 use net::*;
-use osis_core::{Ak, Role};
+use osis_base::{Ak, Role};
 use osis_node::Mutation;
 use osis_node::sync::EntryKind;
 use osis_schema::AspectKey;
@@ -159,12 +159,12 @@ fn timed_delete_spec_sync_5() {
 /// Entries of `kept_record`'s map, 1100 B each: just over a page (`PAGE_TARGET`).
 const RECORD_KEYS: usize = 66;
 
-fn kept_record(net: &mut Net, a: usize, g: osis_core::Tid, asp: &osis_schema::Aspect<osis_core::Value>, marker: &str, compact: bool) -> (osis_core::Tid, Ak, osis_core::LabelId, osis_core::CommitId) {
+fn kept_record(net: &mut Net, a: usize, g: osis_base::Tid, asp: &osis_schema::Aspect<osis_base::Value>, marker: &str, compact: bool) -> (osis_base::Tid, Ak, osis_base::LabelId, osis_base::CommitId) {
     let t = net.item(a, g, g, "x");
-    let mut v: std::collections::BTreeMap<osis_core::Value, osis_core::Value> = (0..RECORD_KEYS).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
+    let mut v: std::collections::BTreeMap<osis_base::Value, osis_base::Value> = (0..RECORD_KEYS).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
     v.insert(s("secret"), s(marker));
     let mut m = Mutation::new();
-    m.set(t, asp, &osis_core::Value::Map(v)).unwrap();
+    m.set(t, asp, &osis_base::Value::Map(v)).unwrap();
     let c0 = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let ak = Ak::new(asp.ak()).unwrap();
@@ -184,29 +184,29 @@ fn kept_record(net: &mut Net, a: usize, g: osis_core::Tid, asp: &osis_schema::As
 }
 
 /// Compaction snapshots node `n` holds of `(t, ak)` (dropped ones keep their header).
-fn snapshots(net: &mut Net, n: usize, t: &osis_core::Tid, ak: &Ak) -> Vec<osis_core::CommitId> {
+fn snapshots(net: &mut Net, n: usize, t: &osis_base::Tid, ak: &Ak) -> Vec<osis_base::CommitId> {
     let e = net.engine(n);
     e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot && h.aspects.iter().any(|x| x.tid == *t && x.ak == *ak))).collect()
 }
 
-fn blobs(net: &mut Net, n: usize, l: &osis_core::LabelId, c: &osis_core::CommitId) -> Vec<osis_core::BlobId> {
+fn blobs(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::CommitId) -> Vec<osis_base::BlobId> {
     net.sync(n).entries(l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == c)).map(|(id, _)| id).collect()
 }
 
 /// Removes the secret entry (an erasing edit: it kills a write the snapshot carries).
-fn erase_secret(net: &mut Net, a: usize, t: osis_core::Tid, asp: &osis_schema::Aspect<osis_core::Value>) {
+fn erase_secret(net: &mut Net, a: usize, t: osis_base::Tid, asp: &osis_schema::Aspect<osis_base::Value>) {
     let mut m = Mutation::new();
     m.op(t, asp, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("secret")) }).unwrap();
     net.engine(a).commit(m).unwrap().unwrap();
 }
 
 /// The keep-at-most maps: at most 0, at most 10 min.
-fn kept_maps() -> [(&'static osis_schema::Aspect<osis_core::Value>, u64); 2] {
+fn kept_maps() -> [(&'static osis_schema::Aspect<osis_base::Value>, u64); 2] {
     [(&GONEMAP, 0), (&SHORTMAP, 600_000)]
 }
 
 /// The cases of the keep-at-most tests: (aspect, D, compacted first).
-fn kept_cases() -> Vec<(&'static osis_schema::Aspect<osis_core::Value>, u64, bool)> {
+fn kept_cases() -> Vec<(&'static osis_schema::Aspect<osis_base::Value>, u64, bool)> {
     kept_maps().into_iter().flat_map(|(asp, d)| [(asp, d, true), (asp, d, false)]).collect()
 }
 
@@ -270,7 +270,7 @@ fn live_body_goes_at_grace_bound_spec_commits_5() {
         erase_secret(&mut net, a, t, asp);
         net.run();
         let at_server = blobs(&mut net, a, &l, &s1);
-        let bound = d + osis_core::format::AT_MOST_GRACE_MS;
+        let bound = d + osis_base::format::AT_MOST_GRACE_MS;
         net.advance(bound / 2);
         assert!(net.engine(a).holds_body(&s1, &t, &ak), "case {i}: kept before the bound");
         assert!(at_server.iter().all(|b| net.server_ids(sv, &l).contains(b)), "case {i}: no timed delete");
@@ -345,7 +345,7 @@ fn text_partly_erased_kept_to_compaction_spec_commits_5() {
     let ec = net.engine(c);
     let got = ec.get(&t, &ak).unwrap().unwrap();
     assert_eq!(got, want);
-    let osis_core::Value::Str(text) = got else { panic!("a text reads as a string") };
+    let osis_base::Value::Str(text) = got else { panic!("a text reads as a string") };
     assert_eq!(text.len(), 5 * chunk - 20);
     assert!(!text.contains(marker));
     assert!(!ec.holds_body(&old, &t, &ak));

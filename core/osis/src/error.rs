@@ -2,7 +2,7 @@
 //! `None`, never as errors; peer-caused problems are diagnostics, never errors.
 
 use crate::undo::DropReason;
-use osis_core::{CommitId, Role, Tid};
+use osis_base::{CommitId, Role, Tid};
 use osis_schema::{Path, PathError};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,7 +34,7 @@ pub enum Error {
     Closed,
 }
 
-osis_core::impl_error!(Error {
+osis_base::impl_error!(Error {
     UnknownThing { tid } => ("unknown thing {tid}"),
     UnknownActor { tid } => ("unknown actor {tid}"),
     Permission { tid, needs } => ("needs {needs:?} on {tid}"),

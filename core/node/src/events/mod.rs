@@ -2,7 +2,7 @@
 //! transaction is durable. The `osis` API builds watches on them; node-sync consumes local
 //! commits from them. Diagnostics are structured, deduped and rate-limited per peer.
 
-use osis_core::{Ak, CommitId, Tid, Ts, WallMs};
+use osis_base::{Ak, CommitId, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -40,9 +40,9 @@ pub enum Event {
     Roster { thing: Tid },
     /// A signal about `tid`, received or sent by this node (node-sync fills it): `from` the
     /// sending node, `actor` the actor it signed for, `target` the one node it is for.
-    Signal { tid: Tid, kind: Ak, from: Tid, actor: Tid, ts: Ts, target: Option<Tid>, value: osis_core::Value },
+    Signal { tid: Tid, kind: Ak, from: Tid, actor: Tid, ts: Ts, target: Option<Tid>, value: osis_base::Value },
     /// Sync status changed (node-sync fills it).
-    SyncStatus { label: osis_core::LabelId, detail: String },
+    SyncStatus { label: osis_base::LabelId, detail: String },
     Diagnostic(Diagnostic),
 }
 

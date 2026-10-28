@@ -4,7 +4,7 @@
 use crate::aspects::{from_schema, history_key, observe_secrets};
 use crate::epoch::{ActorEpochs, Unchecked};
 use crate::Error;
-use osis_core::{Role, Tid};
+use osis_base::{Role, Tid};
 use osis_crypto::{BoxForm, BoxSlot, Epoch, KeyActorKeys, KemSecret, Secret32, key_actor_role_secret, open_box, open_history, open_symmetric_box, role_kem};
 use osis_schema::core_types::{BoxKey, HistoryKey, Sealed, SecretBox, Secrets};
 use std::collections::BTreeMap;

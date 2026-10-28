@@ -5,7 +5,7 @@
 use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, Source, Subscription, Watch, WatchState};
-use osis_core::{Ak, CommitId, Role, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, CommitId, Role, Tid, Ts, Value, WallMs};
 use osis_node::{Diagnostic, Engine};
 use osis_schema::{AspectKey, Codec, Path, Step, type_at, typed_read, value_at};
 use std::collections::BTreeMap;
@@ -57,7 +57,7 @@ fn materialize_in(e: &mut Engine, tid: &Tid, v: Value, limit: usize, budget: &mu
                 osis_node::Error::Label(osis_label::Error::TooLarge(_)) => too_large.clone(),
                 other => other.into(),
             })?;
-            let n = osis_core::cbor::encode(&x).len();
+            let n = osis_base::cbor::encode(&x).len();
             *budget = budget.checked_sub(n).ok_or(too_large)?;
             x
         }
@@ -73,7 +73,7 @@ fn materialize_in(e: &mut Engine, tid: &Tid, v: Value, limit: usize, budget: &mu
 fn materialize(e: &mut Engine, tid: &Tid, v: Value, limit: usize) -> Result<Value> {
     let mut budget = limit;
     let v = materialize_in(e, tid, v, limit, &mut budget)?;
-    if osis_core::cbor::encode(&v).len() > limit {
+    if osis_base::cbor::encode(&v).len() > limit {
         return Err(Error::TooLarge { limit });
     }
     Ok(v)

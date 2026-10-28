@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::keys::SignalKey;
 use crate::watch::{Delivery, Filter, Subscription};
-use osis_core::{Ak, Role, Tid, WallMs};
+use osis_base::{Ak, Role, Tid, WallMs};
 
 /// Who a signal is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

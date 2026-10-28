@@ -10,7 +10,7 @@ use crate::undo::{Undone, undo};
 use crate::view::{AnyView, View};
 use crate::wire::{DeltaCtx, DeltaKind, Frontiers, Snapshot};
 use crdt_model::ops::Ty;
-use osis_core::{ChunkParams, Link, Tid, Value};
+use osis_base::{ChunkParams, Link, Tid, Value};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
@@ -119,7 +119,7 @@ fn scx() -> DeltaCtx {
 /// A snapshot whose root set's element array is `elems`: hand-built bytes.
 fn snapshot_with(elems: Value) -> Vec<u8> {
     let l = Value::List;
-    osis_core::encode(&l(vec![Value::Bytes(vec![0; 16]), l(vec![]), l(vec![]), l(vec![Value::Int(6), l(vec![]), l(vec![]), elems]), l(vec![]), l(vec![])]))
+    osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(vec![]), l(vec![]), l(vec![Value::Int(6), l(vec![]), l(vec![]), elems]), l(vec![]), l(vec![])]))
 }
 
 fn rejects(bytes: &[u8], pages: &mut MemoryPages, why: &str) {
@@ -135,7 +135,7 @@ fn element(i: i64) -> Value {
 #[test]
 fn paging_rejections_spec_8() {
     let mut pages = MemoryPages::with_params(SMALL);
-    let page = pages.put(&osis_core::encode(&Value::List(vec![element(1)]))).unwrap();
+    let page = pages.put(&osis_base::encode(&Value::List(vec![element(1)]))).unwrap();
     // a paged array below the threshold
     rejects(&snapshot_with(Value::List(vec![Value::Link(page)])), &mut pages, "not canonical");
     // links mixed with elements
@@ -143,12 +143,12 @@ fn paging_rejections_spec_8() {
     // one page linked twice
     rejects(&snapshot_with(Value::List(vec![Value::Link(page), Value::Link(page)])), &mut pages, "twice");
     // a third level: a link page of link pages
-    let inner = pages.put(&osis_core::encode(&Value::List(vec![Value::Link(page)]))).unwrap();
-    let outer = pages.put(&osis_core::encode(&Value::List(vec![Value::Link(inner)]))).unwrap();
+    let inner = pages.put(&osis_base::encode(&Value::List(vec![Value::Link(page)]))).unwrap();
+    let outer = pages.put(&osis_base::encode(&Value::List(vec![Value::Link(inner)]))).unwrap();
     rejects(&snapshot_with(Value::List(vec![Value::Link(outer)])), &mut pages, "third");
     // a link page above the fan-out
-    let many: Vec<Link> = (0..9).map(|i| pages.put(&osis_core::encode(&Value::List(vec![element(10 + i)]))).unwrap()).collect();
-    let wide = pages.put(&osis_core::encode(&Value::List(many.into_iter().map(Value::Link).collect()))).unwrap();
+    let many: Vec<Link> = (0..9).map(|i| pages.put(&osis_base::encode(&Value::List(vec![element(10 + i)]))).unwrap()).collect();
+    let wide = pages.put(&osis_base::encode(&Value::List(many.into_iter().map(Value::Link).collect()))).unwrap();
     rejects(&snapshot_with(Value::List(vec![Value::Link(wide)])), &mut pages, "fan-out");
 }
 

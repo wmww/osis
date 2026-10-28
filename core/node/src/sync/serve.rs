@@ -17,8 +17,8 @@ use super::state::Entry;
 use super::{Action, ConnId, SyncEngine};
 use crate::engine::Engine;
 use crate::error::Result;
-use osis_core::format::TOMBSTONE_LIFETIME_MS;
-use osis_core::{BlobId, LabelId};
+use osis_base::format::TOMBSTONE_LIFETIME_MS;
+use osis_base::{BlobId, LabelId};
 use osis_label::{ClaimSet, Step, StepId};
 use osis_proto::{Budget, Code, EntryMeta, LabelStore, LogRecord, Put, ServerConfig, ServerConnection, ServerInput, ServerOutput, StoreError};
 use std::cell::RefCell;
@@ -127,7 +127,7 @@ impl Feed {
 
 /// A served label: its group, its path to the head and the claim sets held.
 pub struct ServedLabel {
-    group: osis_core::Tid,
+    group: osis_base::Tid,
     path: Vec<Step>,
     claims: BTreeMap<StepId, Arc<ClaimSet>>,
 }
@@ -139,7 +139,7 @@ impl ServedLabel {
     }
 
     /// The path to the deepest step of `steps` (the lowest ID among equals).
-    pub(crate) fn new(group: osis_core::Tid, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Option<ServedLabel> {
+    pub(crate) fn new(group: osis_base::Tid, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Option<ServedLabel> {
         let depth = |id: &StepId| {
             let mut n = 0usize;
             let mut cur = Some(*id);
@@ -197,7 +197,7 @@ struct PeerStore<'a> {
     feed: &'a mut Feed,
     labels: &'a BTreeMap<LabelId, ServedLabel>,
     /// Node things by dialable key (`reach_nodes`): whose member proofs count.
-    reach: &'a BTreeMap<[u8; 32], osis_core::Tid>,
+    reach: &'a BTreeMap<[u8; 32], osis_base::Tid>,
     /// Blob sizes seen (`live` reads a blob only once).
     sizes: RefCell<&'a mut BTreeMap<BlobId, u64>>,
     now: u64,

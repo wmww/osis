@@ -21,10 +21,7 @@ fn files(p: &Path, out: &mut Vec<PathBuf>) {
 
 /// A crate's directory under core/: its package name without the `osis-` prefix.
 fn dir(name: &str) -> &str {
-    match name {
-        "osis-core" => "base",
-        n => n.strip_prefix("osis-").unwrap_or(n),
-    }
+    name.strip_prefix("osis-").unwrap_or(name)
 }
 
 fn main() {

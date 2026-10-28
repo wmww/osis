@@ -2,7 +2,7 @@
 //! membership-class aspects (§1).
 
 use crate::timeline::{At, Timeline};
-use osis_core::{Role, Tid};
+use osis_base::{Role, Tid};
 
 /// Who may purge a delta (spec/commits.md §5; wire codes spec/wire.md §1).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]

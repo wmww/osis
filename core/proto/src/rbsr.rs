@@ -3,7 +3,7 @@
 
 use crate::Error;
 use crate::msg::{MAX_RECONCILE_RANGES, Mode, Range};
-use osis_core::BlobId;
+use osis_base::BlobId;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -92,7 +92,7 @@ pub fn fingerprint(ids: &[BlobId]) -> [u8; 16] {
         input.extend_from_slice(&limb.to_le_bytes());
     }
     input.extend_from_slice(&(ids.len() as u64).to_le_bytes());
-    let h = osis_core::hash::hash(&input);
+    let h = osis_base::hash::hash(&input);
     let mut fp = [0u8; 16];
     fp.copy_from_slice(h.get(..16).unwrap_or(&[0; 16]));
     fp

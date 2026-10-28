@@ -38,16 +38,16 @@ pub mod priority {
     pub const HIGH: osis_schema::CaseId = osis_schema::CaseId(2);
     pub const CUSTOM: osis_schema::CaseId = osis_schema::CaseId(3);
 }
-impl TryFrom<&osis_schema::osis_core::Value> for Priority {
+impl TryFrom<&osis_schema::osis_base::Value> for Priority {
     type Error = osis_schema::PathError;
     /// Typed read through the schema (reader defaults, open structs), then into `Priority`.
-    fn try_from(v: &osis_schema::osis_core::Value) -> Result<Priority, osis_schema::PathError> {
+    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Priority, osis_schema::PathError> {
         let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("priority"))?;
         osis_schema::Codec::from_value(&n)
     }
 }
-impl From<&Priority> for osis_schema::osis_core::Value {
-    fn from(t: &Priority) -> osis_schema::osis_core::Value {
+impl From<&Priority> for osis_schema::osis_base::Value {
+    fn from(t: &Priority) -> osis_schema::osis_base::Value {
         osis_schema::Codec::to_value(t)
     }
 }
@@ -87,16 +87,16 @@ pub mod status {
     pub const DONE: osis_schema::CaseId = osis_schema::CaseId(2);
     pub const BLOCKED: osis_schema::CaseId = osis_schema::CaseId(3);
 }
-impl TryFrom<&osis_schema::osis_core::Value> for Status {
+impl TryFrom<&osis_schema::osis_base::Value> for Status {
     type Error = osis_schema::PathError;
     /// Typed read through the schema (reader defaults, open structs), then into `Status`.
-    fn try_from(v: &osis_schema::osis_core::Value) -> Result<Status, osis_schema::PathError> {
+    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Status, osis_schema::PathError> {
         let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("status"))?;
         osis_schema::Codec::from_value(&n)
     }
 }
-impl From<&Status> for osis_schema::osis_core::Value {
-    fn from(t: &Status) -> osis_schema::osis_core::Value {
+impl From<&Status> for osis_schema::osis_base::Value {
+    fn from(t: &Status) -> osis_schema::osis_base::Value {
         osis_schema::Codec::to_value(t)
     }
 }
@@ -127,7 +127,7 @@ osis_schema::codec_struct! {
         4 priority: Option<Priority>,
         6 due: Option<i64>,
         7 status: Option<Status>,
-        8 weight: osis_schema::osis_core::Float,
+        8 weight: osis_schema::osis_base::Float,
     }
 }
 /// Field IDs of `Task`.
@@ -142,16 +142,16 @@ pub mod task {
     pub const STATUS: osis_schema::FieldId = osis_schema::FieldId(7);
     pub const WEIGHT: osis_schema::FieldId = osis_schema::FieldId(8);
 }
-impl TryFrom<&osis_schema::osis_core::Value> for Task {
+impl TryFrom<&osis_schema::osis_base::Value> for Task {
     type Error = osis_schema::PathError;
     /// Typed read through the schema (reader defaults, open structs), then into `Task`.
-    fn try_from(v: &osis_schema::osis_core::Value) -> Result<Task, osis_schema::PathError> {
+    fn try_from(v: &osis_schema::osis_base::Value) -> Result<Task, osis_schema::PathError> {
         let n = osis_schema::typed_read(SCHEMA.get(), v, &osis_schema::Type::named("task"))?;
         osis_schema::Codec::from_value(&n)
     }
 }
-impl From<&Task> for osis_schema::osis_core::Value {
-    fn from(t: &Task) -> osis_schema::osis_core::Value {
+impl From<&Task> for osis_schema::osis_base::Value {
+    fn from(t: &Task) -> osis_schema::osis_base::Value {
         osis_schema::Codec::to_value(t)
     }
 }
@@ -159,7 +159,7 @@ impl From<&Task> for osis_schema::osis_core::Value {
 osis_schema::codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Typing {
-        0 who: osis_schema::osis_core::Tid,
+        0 who: osis_schema::osis_base::Tid,
         1 at: i64,
     }
 }
@@ -174,7 +174,7 @@ pub mod typing {
 /// Markdown; not guaranteed valid.
 pub const BODY: osis_schema::Aspect<String> = osis_schema::Aspect::new("/note/body", &SCHEMA);
 pub const LAST_OPENED: osis_schema::Aspect<i64> = osis_schema::Aspect::new("/note/last_opened", &SCHEMA);
-pub const PINNED: osis_schema::Aspect<std::collections::BTreeMap<osis_schema::osis_core::Tid, Tagged<i64>>> = osis_schema::Aspect::new("/note/pinned", &SCHEMA);
+pub const PINNED: osis_schema::Aspect<std::collections::BTreeMap<osis_schema::osis_base::Tid, Tagged<i64>>> = osis_schema::Aspect::new("/note/pinned", &SCHEMA);
 pub const TASKS: osis_schema::Aspect<Vec<Task>> = osis_schema::Aspect::new("/note/tasks", &SCHEMA);
 pub const TITLE: osis_schema::Aspect<String> = osis_schema::Aspect::new("/note/title", &SCHEMA);
 pub const VIEWS: osis_schema::Aspect<i64> = osis_schema::Aspect::new("/note/views", &SCHEMA);

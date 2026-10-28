@@ -1,7 +1,7 @@
 //! InProcess transport and Sched: the trait contract (spec/sync.md §10) without tokio or sleeps.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use osis_core::{Classified, ErrorClass};
+use osis_base::{Classified, ErrorClass};
 use osis_transport::*;
 use std::cell::RefCell;
 use std::rc::Rc;

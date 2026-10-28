@@ -8,7 +8,7 @@ use crate::ops::{Op, PathOp, PathSeg, Writer};
 use crate::seq::{Anchor, Seq, SeqContent, SeqElem, SeqRead, visible};
 use crate::stamp::Dot;
 use crate::view::View;
-use osis_core::Value;
+use osis_base::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 

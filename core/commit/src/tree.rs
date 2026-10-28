@@ -5,9 +5,9 @@
 //! every content hash and length, and seeks by the lengths the nodes carry.
 
 use crate::Error;
-use osis_core::cbor::{Limits, decode, encode};
-use osis_core::format::{CHUNK_MAX, MAX_BLOB, TREE_FANOUT, TREE_MAX_LEVEL};
-use osis_core::{BlobId, ChunkParams, Chunker, Link, Value};
+use osis_base::cbor::{Limits, decode, encode};
+use osis_base::format::{CHUNK_MAX, MAX_BLOB, TREE_FANOUT, TREE_MAX_LEVEL};
+use osis_base::{BlobId, ChunkParams, Chunker, Link, Value};
 use osis_crypto::{SUITE_1, Secret32, link_hash, link_tree_hash};
 
 /// A child of a tree node: its link and the plaintext length of its subtree.
@@ -347,7 +347,7 @@ mod tests {
 
     fn data(n: usize, seed: u8) -> Vec<u8> {
         let mut out = vec![0u8; n];
-        osis_core::hash::Hasher::new().update(&[seed]).finalize_xof(&mut out);
+        osis_base::hash::Hasher::new().update(&[seed]).finalize_xof(&mut out);
         out
     }
 
@@ -358,7 +358,7 @@ mod tests {
         let d = data(200_000, 1);
         let mut hs = HashSink::new(Secret32::from_bytes([7; 32]));
         let root = write_tree(&mut hs, SMALL, &d).unwrap();
-        assert_eq!(hs.chunks as usize, osis_core::chunker::chunk_lengths(&d, SMALL).len());
+        assert_eq!(hs.chunks as usize, osis_base::chunker::chunk_lengths(&d, SMALL).len());
         let top = hs.nodes.iter().map(|n| n.0).max().unwrap();
         assert!(top >= 2);
         assert_eq!(hs.nodes.iter().filter(|n| n.0 == top).count(), 1);

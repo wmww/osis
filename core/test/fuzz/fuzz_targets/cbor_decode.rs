@@ -3,7 +3,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use osis_core::{CanonicalBytes, Limits, decode, decode_prefix, encode};
+use osis_base::{CanonicalBytes, Limits, decode, decode_prefix, encode};
 
 fuzz_target!(|data: &[u8]| {
     let limits = Limits::DEFAULT;

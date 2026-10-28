@@ -4,7 +4,7 @@
 
 use crate::common;
 use common::*;
-use osis_core::{Role, Tid, WallMs};
+use osis_base::{Role, Tid, WallMs};
 use osis_crypto::{Epoch, Secret32};
 use osis_keys::aspects::box_key;
 use osis_keys::{ActorEpochs, Member, MemberKeys, Opener, Recipient, SecretsWrite, box_member, ingest, reseal_needed, roles_up_to, rotate};

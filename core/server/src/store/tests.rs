@@ -2,7 +2,7 @@
 //! durability, and agreement with osis-proto's reference `MemoryLabelStore`.
 
 use super::*;
-use osis_core::{ManualClock, WallMs};
+use osis_base::{ManualClock, WallMs};
 use osis_crypto::SeededRng;
 use osis_proto::MemoryLabelStore;
 use osis_proto::examples::Fixture;

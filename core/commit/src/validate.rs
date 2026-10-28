@@ -4,7 +4,7 @@ use crate::cbor::strictly_ascending;
 use crate::header::{FOREVER, Header, Kind, aspect_key, key_value, purge_value};
 use crate::retention::{CREATED, check_retention, delete_levels, fixed_retention};
 use crate::Error;
-use osis_core::format::FORMAT_VERSION;
+use osis_base::format::FORMAT_VERSION;
 use osis_schema::PurgeBy;
 use osis_schema::core_types::is_membership_class;
 
@@ -27,8 +27,8 @@ impl Header {
         ord(!self.aspects.is_empty(), "no aspects")?;
         ord(strictly_ascending(&self.aspects, |a| aspect_key(&a.tid, &a.ak)), "aspects not sorted and distinct")?;
         ord(strictly_ascending(&self.chunks, |c| c.blob), "chunks not sorted and distinct")?;
-        ord(strictly_ascending(&self.purge, |p| osis_core::encode(&purge_value(p))), "purge not sorted and distinct")?;
-        ord(strictly_ascending(&self.keys, |t| osis_core::encode(&key_value(t))), "delete keys not sorted and distinct")?;
+        ord(strictly_ascending(&self.purge, |p| osis_base::encode(&purge_value(p))), "purge not sorted and distinct")?;
+        ord(strictly_ascending(&self.keys, |t| osis_base::encode(&key_value(t))), "delete keys not sorted and distinct")?;
         ord(strictly_ascending(&self.origins, |o| o.commit), "origins not sorted and distinct")?;
 
         let kind = self.kind;

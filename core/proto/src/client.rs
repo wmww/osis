@@ -9,7 +9,7 @@ use crate::hello::{Hello, OFFSET_DIAGNOSTIC_MS, OffsetSample, PROTOCOL_VERSION, 
 use crate::msg::*;
 use crate::rbsr::Reconciler;
 use crate::server::REPLY_BUDGET;
-use osis_core::{BlobId, LabelId};
+use osis_base::{BlobId, LabelId};
 use osis_crypto::SigningSecret;
 use std::collections::{BTreeMap, VecDeque};
 
@@ -271,7 +271,7 @@ impl ClientSession {
                 self.decoder.push(&b);
                 while !self.closed {
                     // the peer's first frame is its Hello (spec/wire.md §11.1)
-                    self.decoder.set_max(if self.peer.is_some() { osis_core::format::MAX_MESSAGE } else { crate::frame::MAX_HELLO_BYTES });
+                    self.decoder.set_max(if self.peer.is_some() { osis_base::format::MAX_MESSAGE } else { crate::frame::MAX_HELLO_BYTES });
                     match self.decoder.next_frame() {
                         Ok(Some(body)) => self.frame(now, &body, &mut out),
                         Ok(None) => break,

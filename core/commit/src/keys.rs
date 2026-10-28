@@ -3,7 +3,7 @@
 use crate::header::{DeleteKey, Kind};
 use crate::retention::delete_levels;
 use crate::Error;
-use osis_core::Tid;
+use osis_base::Tid;
 use osis_crypto::{Secret32, VerifyingKey, commitment};
 use osis_schema::Retention;
 

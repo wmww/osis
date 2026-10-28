@@ -5,7 +5,7 @@
 
 use crate::local_peer::{LocalPeer, Package, Peer};
 use crate::Mutation;
-use osis_core::{Ak, Clock, CommitId, Role, Tid, Value, WallMs};
+use osis_base::{Ak, Clock, CommitId, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_perm::DemotionScope;
 use osis_schema::core_types as ct;

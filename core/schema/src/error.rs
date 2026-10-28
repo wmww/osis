@@ -1,7 +1,7 @@
 //! Errors (notes/architecture.md §3).
 
 use crate::path::PathError;
-use osis_core::{Classified, ErrorClass};
+use osis_base::{Classified, ErrorClass};
 
 /// A schema source error at file, line, column.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,7 +38,7 @@ pub enum Error {
     Io(String),
 }
 
-osis_core::impl_error!(Error {
+osis_base::impl_error!(Error {
     Parse(e) => ("{e}"),
     Form(m) => ("schema value: {m}"),
     Lock(m) => ("lock file: {m}"),

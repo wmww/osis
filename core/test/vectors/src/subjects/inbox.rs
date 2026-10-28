@@ -5,7 +5,7 @@
 use super::{FixedRng, case, generated_header, s32};
 use crate::file::VecFile;
 use crate::hex;
-use osis_core::{LabelId, Tid, Value, WallMs, encode};
+use osis_base::{LabelId, Tid, Value, WallMs, encode};
 use osis_crypto::KemSecret;
 use osis_label::{Address, InboxPayload, InboxThing, open_inbox_blob, seal_inbox_blob};
 

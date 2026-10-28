@@ -3,7 +3,7 @@
 //! counters, death records, pending commits and blob ciphertexts, which have their own kinds.
 
 use crate::error::{Error, Result};
-use osis_core::{Ak, CommitId, Tid};
+use osis_base::{Ak, CommitId, Tid};
 
 /// The node's seed.
 pub const SEED: &[u8] = b"seed";
@@ -33,13 +33,13 @@ pub const DROPPED: &[u8] = b"d/";
 /// Records the API layer keeps (identity choices, settings): `u/` + name.
 pub const APP: &[u8] = b"u/";
 
-fn uint(n: u64) -> osis_core::Value {
-    osis_core::Value::Int(i64::try_from(n).unwrap_or(i64::MAX))
+fn uint(n: u64) -> osis_base::Value {
+    osis_base::Value::Int(i64::try_from(n).unwrap_or(i64::MAX))
 }
 
 /// A dot as a value (local records).
-pub fn dot_value(d: &osis_crdt::Dot) -> osis_core::Value {
-    use osis_core::Value;
+pub fn dot_value(d: &osis_crdt::Dot) -> osis_base::Value {
+    use osis_base::Value;
     use osis_crdt::SourceKind;
     let src = match d.src.kind() {
         SourceKind::Node(t) => Value::List(vec![Value::Int(0), Value::Bytes(t.as_bytes().to_vec())]),
@@ -49,8 +49,8 @@ pub fn dot_value(d: &osis_crdt::Dot) -> osis_core::Value {
     Value::List(vec![src, uint(d.ctr)])
 }
 
-pub fn dot_of(v: &osis_core::Value) -> Result<osis_crdt::Dot> {
-    use osis_core::Value;
+pub fn dot_of(v: &osis_base::Value) -> Result<osis_crdt::Dot> {
+    use osis_base::Value;
     use osis_crdt::{Dot, Source};
     let bad = || Error::Corrupt("dot");
     let Value::List(items) = v else { return Err(bad()) };
@@ -75,7 +75,7 @@ pub fn aspect_key(prefix: &[u8], tid: &Tid, ak: &Ak) -> Vec<u8> {
     k
 }
 
-pub fn dropped_key(tid: &Tid, ak: &Ak, ts: osis_core::Ts, id: &CommitId) -> Vec<u8> {
+pub fn dropped_key(tid: &Tid, ak: &Ak, ts: osis_base::Ts, id: &CommitId) -> Vec<u8> {
     let mut k = aspect_key(DROPPED, tid, ak);
     k.extend_from_slice(&ts.to_u64().to_be_bytes());
     k.extend_from_slice(&id.0);

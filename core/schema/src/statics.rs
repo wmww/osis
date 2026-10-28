@@ -3,7 +3,7 @@
 use crate::error::ParseError;
 use crate::parse::parse;
 use crate::schema::Schema;
-use osis_core::SchemaId;
+use osis_base::SchemaId;
 use std::sync::OnceLock;
 
 /// A schema source compiled into the binary. The source was checked when it was embedded

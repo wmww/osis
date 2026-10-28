@@ -4,8 +4,8 @@
 use crate::aead::{self, TAG_LEN, WRAP_LEN, ZERO_NONCE};
 use crate::kdf::{self, kdf};
 use crate::{Error, KemPublicKey, KemSecret, SEALED_OVERHEAD, Secret32, open_sealed, seal};
-use osis_core::format::MAX_BLOB;
-use osis_core::{BlobId, Tid, Value, encode};
+use osis_base::format::MAX_BLOB;
+use osis_base::{BlobId, Tid, Value, encode};
 use rand_core::CryptoRngCore;
 
 /// Padmé length for `l = len(P) + 1` (spec/wire.md §5).

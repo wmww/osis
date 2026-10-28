@@ -1,6 +1,6 @@
 //! Protocol errors and their classes (notes/architecture.md §3).
 
-use osis_core::{Classified, DecodeError, ErrorClass};
+use osis_base::{Classified, DecodeError, ErrorClass};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -22,7 +22,7 @@ pub enum Error {
     Timeout,
 }
 
-osis_core::impl_error!(Error {
+osis_base::impl_error!(Error {
     FrameLength(n) => ("proto: frame length {n} outside 1..=MAX_MESSAGE"),
     Cbor(e) => ("proto: {e}"),
     Malformed(what) => ("proto: malformed {what}"),

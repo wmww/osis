@@ -16,7 +16,7 @@ use super::{Core, Meta, Tx, records};
 use osis_store::Transaction;
 use crate::error::{Error, Result};
 use crate::events::Origin;
-use osis_core::{CommitId, Role, Tid, Ts, Value, WallMs};
+use osis_base::{CommitId, Role, Tid, Ts, Value, WallMs};
 use osis_crdt::Dot;
 use osis_schema::Codec;
 use osis_schema::core_types::BoxKey;
@@ -145,13 +145,13 @@ impl Rec for Dot {
         records::dot_of(v).ok()
     }
 }
-impl Rec for osis_core::Ak {
+impl Rec for osis_base::Ak {
     fn to(&self) -> Value {
         Value::Str(self.as_str().to_string())
     }
     fn from(v: &Value) -> Option<Self> {
         match v {
-            Value::Str(s) => osis_core::Ak::new(s).ok(),
+            Value::Str(s) => osis_base::Ak::new(s).ok(),
             _ => None,
         }
     }
@@ -359,12 +359,12 @@ impl Rec for crate::apply::validity::EdgeParts {
 }
 
 fn enc<T: Rec>(x: &T) -> Vec<u8> {
-    osis_core::encode(&x.to())
+    osis_base::encode(&x.to())
 }
 
 fn dec<T: Rec>(b: &[u8]) -> Result<T> {
-    let lim = osis_core::Limits { max_depth: 16, max_bytes: b.len() };
-    let v = osis_core::decode(b, &lim).map_err(|_| Error::Corrupt("index record"))?;
+    let lim = osis_base::Limits { max_depth: 16, max_bytes: b.len() };
+    let v = osis_base::decode(b, &lim).map_err(|_| Error::Corrupt("index record"))?;
     T::from(&v).ok_or(Error::Corrupt("index record"))
 }
 
@@ -444,7 +444,7 @@ fn write_edges_all(tx: &mut Tx<'_>) -> Result<()> {
 pub(crate) fn load_edges(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::apply::validity::EdgeParts>> {
     let _s = crate::costs::span("open: edges rows");
     let t = tx.txn.index(EDGES)?;
-    let lim = |n: usize| osis_core::Limits { max_depth: 2 * osis_core::format::MAX_OBJECT_DEPTH, max_bytes: n };
+    let lim = |n: usize| osis_base::Limits { max_depth: 2 * osis_base::format::MAX_OBJECT_DEPTH, max_bytes: n };
     let mut out = BTreeMap::new();
     let mut from = Vec::new();
     loop {
@@ -453,7 +453,7 @@ pub(crate) fn load_edges(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::ap
         for (k, v) in got {
             from = [k.as_slice(), &[0]].concat();
             let id = CommitId(k.as_slice().try_into().map_err(|_| Error::Corrupt("edges row key"))?);
-            let v = osis_core::decode(&v, &lim(v.len())).map_err(|_| Error::Corrupt("edges row"))?;
+            let v = osis_base::decode(&v, &lim(v.len())).map_err(|_| Error::Corrupt("edges row"))?;
             out.insert(id, Rec::from(&v).ok_or(Error::Corrupt("edges row"))?);
         }
         if n < 256 {
@@ -641,7 +641,7 @@ fn scan<T: Rec>(tx: &mut Tx<'_>, name: &[u8]) -> Result<Vec<(T, Vec<u8>)>> {
 
 /// What the persisted index judged, read before a rebuild replaces it: per commit its parts'
 /// validity, per aspect its carried groups. `None` when it does not decode.
-pub(crate) type OldJudgments = (BTreeMap<CommitId, Vec<bool>>, BTreeMap<(Tid, osis_core::Ak), Vec<crate::apply::validity::Carried>>);
+pub(crate) type OldJudgments = (BTreeMap<CommitId, Vec<bool>>, BTreeMap<(Tid, osis_base::Ak), Vec<crate::apply::validity::Carried>>);
 
 pub(crate) fn old_judgments(tx: &mut Tx<'_>) -> Option<OldJudgments> {
     let mut parts = BTreeMap::new();
@@ -659,7 +659,7 @@ pub(crate) fn old_judgments(tx: &mut Tx<'_>) -> Option<OldJudgments> {
         }
     }
     let mut carried = BTreeMap::new();
-    for (k, v) in scan::<(Tid, osis_core::Ak)>(tx, CARRIED).ok()? {
+    for (k, v) in scan::<(Tid, osis_base::Ak)>(tx, CARRIED).ok()? {
         carried.insert(k, dec(&v).ok()?);
     }
     Some((parts, carried))
@@ -675,10 +675,10 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         let id = CommitId(k.try_into().map_err(|_| Error::Corrupt("commit record key"))?);
         let (head, blob) = parse_head(&v)?;
         // the blob is `[header, signature, parts]`: its first item
-        let lim = osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: blob.len() };
-        let (hv, hb) = osis_core::decode_prefix(blob.get(1..).unwrap_or_default(), &lim).map_err(|_| Error::Corrupt("commit record header"))?;
+        let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: blob.len() };
+        let (hv, hb) = osis_base::decode_prefix(blob.get(1..).unwrap_or_default(), &lim).map_err(|_| Error::Corrupt("commit record header"))?;
         // bytes hashing to the ID are its canonical header: decoded once, never re-encoded
-        if osis_core::hash::hash(hb) != id.0 {
+        if osis_base::hash::hash(hb) != id.0 {
             return Err(Error::Corrupt("commit record"));
         }
         let h = osis_commit::Header::from_stored_value(&hv).map_err(|_| Error::Corrupt("commit record header"))?;
@@ -745,10 +745,10 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     for (k, v) in scan::<Tid>(tx, DELETE_HINTS)? {
         tx.core.delete_hints.insert(k, dec(&v)?);
     }
-    for (k, v) in scan::<(Tid, osis_core::Ak)>(tx, SNAPSHOTS)? {
+    for (k, v) in scan::<(Tid, osis_base::Ak)>(tx, SNAPSHOTS)? {
         tx.core.snapshots.insert(k, dec(&v)?);
     }
-    for (k, v) in scan::<(Tid, osis_core::Ak)>(tx, CARRIED)? {
+    for (k, v) in scan::<(Tid, osis_base::Ak)>(tx, CARRIED)? {
         tx.core.carried.insert(k, dec(&v)?);
     }
     for (k, v) in scan::<(Tid, CommitId)>(tx, AUTHORS)? {
@@ -795,7 +795,7 @@ impl super::Engine {
             // another build's rules judged differently: every part valid, nothing carried, and
             // the states joined so
             return self.run(|tx| {
-                let aspects: Vec<(Tid, osis_core::Ak)> = tx.core.invalid.keys().cloned().chain(tx.core.carried.keys().cloned()).collect();
+                let aspects: Vec<(Tid, osis_base::Ak)> = tx.core.invalid.keys().cloned().chain(tx.core.carried.keys().cloned()).collect();
                 for (tid, ak) in aspects {
                     let held: Vec<CommitId> = tx.core.by_aspect.get(&(tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
                     let mut st = osis_crdt::Fragment::default();
@@ -816,7 +816,7 @@ impl super::Engine {
                     tx.txn.table_put(t, &id.0, vec![1; n], Shred::No)?;
                 }
                 let t = tx.txn.index(CARRIED)?;
-                let keys: Vec<(Tid, osis_core::Ak)> = tx.core.carried.keys().cloned().collect();
+                let keys: Vec<(Tid, osis_base::Ak)> = tx.core.carried.keys().cloned().collect();
                 for k in keys {
                     tx.txn.table_remove(t, &enc(&k), Shred::No)?;
                 }

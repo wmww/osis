@@ -3,7 +3,7 @@
 //! in under tests/gen, compiled here, and must equal a fresh generation (regenerate:
 //! OSIS_REGEN_VECTORS=1). Typed keys round-trip through spec/versioning.md §5 typed reads.
 
-use osis_core::{Float, Tid, Value};
+use osis_base::{Float, Tid, Value};
 use osis_schema::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -95,7 +95,7 @@ fn generated_core_matches_hand_written_spec_data_model_9() {
     let v = core_gen::GROUP.encode(&g);
     assert_eq!(hw::GROUP.decode(&v).unwrap().items, g.items);
     let r = core_gen::Role::Admin;
-    assert_eq!(Codec::to_value(&r), Codec::to_value(&osis_core::Role::Admin));
+    assert_eq!(Codec::to_value(&r), Codec::to_value(&osis_base::Role::Admin));
 }
 
 #[test]

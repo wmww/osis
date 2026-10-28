@@ -1,7 +1,7 @@
 //! Typed reads of decoded CBOR arrays (spec/wire.md §1: exact positions, stated sizes).
 
 use crate::Error;
-use osis_core::Value;
+use osis_base::Value;
 
 /// Positions of one array, read front to back. `end` checks nothing is left.
 pub(crate) struct Fields {

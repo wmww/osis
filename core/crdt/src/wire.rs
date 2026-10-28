@@ -9,7 +9,7 @@ use crate::error::Error;
 use crate::fragment::Fragment;
 use crate::page::{PageSink, PageSource};
 use crate::stamp::{CounterRange, Dot, Interner, Source, SourceKind, Stamp};
-use osis_core::{CommitId, Tid, Ts, Value, WallMs};
+use osis_base::{CommitId, Tid, Ts, Value, WallMs};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -181,7 +181,7 @@ impl<'p> Enc<'p> {
             return Ok(());
         }
         self.bare = self.bare.saturating_add(n);
-        if self.bare > osis_core::format::MAX_DELTA_BARE {
+        if self.bare > osis_base::format::MAX_DELTA_BARE {
             return Err(Error::Mismatch("more than MAX_DELTA_BARE elements without content"));
         }
         Ok(())
@@ -392,9 +392,9 @@ pub struct Dec<'a> {
     used: BTreeSet<u64>,
     pub(crate) pages: Option<&'a mut dyn PageSource>,
     /// Pages fetched, with their links, for the canonical re-encode.
-    pub(crate) fetched: Vec<(Vec<u8>, osis_core::Link)>,
+    pub(crate) fetched: Vec<(Vec<u8>, osis_base::Link)>,
     /// Blobs of the pages read so far: each at most once.
-    pub(crate) links_seen: std::collections::HashSet<osis_core::BlobId>,
+    pub(crate) links_seen: std::collections::HashSet<osis_base::BlobId>,
     /// Fragment nesting, across pages.
     pub(crate) depth: usize,
     /// Sequence elements in runs without `Content` so far, across pages (§3.3 rule 7).

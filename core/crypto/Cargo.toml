@@ -14,7 +14,7 @@ doctest = false
 workspace = true
 
 [dependencies]
-osis-core.workspace = true
+osis-base.workspace = true
 blake3 = { workspace = true, features = ["zeroize"] }
 ed25519-dalek = { workspace = true, features = ["hazmat", "digest"] }
 curve25519-dalek.workspace = true

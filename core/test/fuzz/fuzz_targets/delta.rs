@@ -5,7 +5,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use osis_core::{Tid, Ts};
+use osis_base::{Tid, Ts};
 use osis_crdt::{CounterRange, DeltaCtx, DeltaKind, Fragment, Interner, MemoryPages, Source, decode_delta, decode_snapshot};
 
 fuzz_target!(|data: &[u8]| {

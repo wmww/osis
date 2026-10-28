@@ -4,8 +4,8 @@
 
 use crate::Error;
 use crate::tree::{LinkSource, TreeReader, TreeSink, TreeWriter, write_tree};
-use osis_core::format::{CHUNK_THRESHOLD, MAX_VALUE_DEPTH};
-use osis_core::{ChunkParams, Limits, Link, Value, decode, encode};
+use osis_base::format::{CHUNK_THRESHOLD, MAX_VALUE_DEPTH};
+use osis_base::{ChunkParams, Limits, Link, Value, decode, encode};
 use osis_crypto::Secret32;
 
 /// Chunking parameters: `FORMAT` on the wire; tests shrink them.
@@ -424,7 +424,7 @@ impl std::io::Seek for StringReader<'_> {
 mod tests {
     use super::*;
     use crate::tree::{BlobReader, BlobWriter, Framing, HashSink, MemoryBlobs};
-    use osis_core::WallMs;
+    use osis_base::WallMs;
     use osis_crypto::SeededRng;
     use proptest::prelude::*;
     use std::io::Read;
@@ -434,7 +434,7 @@ mod tests {
 
     fn data(n: usize, seed: u8) -> Vec<u8> {
         let mut out = vec![0u8; n];
-        osis_core::hash::Hasher::new().update(&[seed, 1]).finalize_xof(&mut out);
+        osis_base::hash::Hasher::new().update(&[seed, 1]).finalize_xof(&mut out);
         out
     }
 
@@ -541,9 +541,9 @@ mod tests {
         let d = data(5000, 5);
         let Value::Link(root) = write_bytes(&mut store, &f, &mut rng, &d, 333) else { panic!() };
         // Opening fetches only the path to the first chunk: blobs arrive one by one on Missing.
-        struct Lazy<'a>(&'a mut MemoryBlobs, Option<osis_core::BlobId>);
+        struct Lazy<'a>(&'a mut MemoryBlobs, Option<osis_base::BlobId>);
         impl crate::tree::BlobFetch for Lazy<'_> {
-            fn fetch(&mut self, id: &osis_core::BlobId) -> Result<Vec<u8>, Error> {
+            fn fetch(&mut self, id: &osis_base::BlobId) -> Result<Vec<u8>, Error> {
                 let r = self.0.fetch(id);
                 if r.is_err() {
                     self.1 = Some(*id);
@@ -592,10 +592,10 @@ mod tests {
     struct Gate<'a> {
         store: &'a mut MemoryBlobs,
         fetches: usize,
-        missing_once: Option<osis_core::BlobId>,
+        missing_once: Option<osis_base::BlobId>,
     }
     impl crate::tree::BlobFetch for Gate<'_> {
-        fn fetch(&mut self, id: &osis_core::BlobId) -> Result<Vec<u8>, Error> {
+        fn fetch(&mut self, id: &osis_base::BlobId) -> Result<Vec<u8>, Error> {
             if self.missing_once == Some(*id) {
                 self.missing_once = None;
                 return Err(Error::Missing);
@@ -649,9 +649,9 @@ mod tests {
         // A blob in the middle of the reading order goes missing once.
         let mut order = Vec::new();
         {
-            struct Log<'a>(&'a mut MemoryBlobs, &'a mut Vec<osis_core::BlobId>);
+            struct Log<'a>(&'a mut MemoryBlobs, &'a mut Vec<osis_base::BlobId>);
             impl crate::tree::BlobFetch for Log<'_> {
-                fn fetch(&mut self, id: &osis_core::BlobId) -> Result<Vec<u8>, Error> {
+                fn fetch(&mut self, id: &osis_base::BlobId) -> Result<Vec<u8>, Error> {
                     self.1.push(*id);
                     crate::tree::BlobFetch::fetch(self.0, id)
                 }
@@ -691,7 +691,7 @@ mod tests {
         use std::cell::Cell;
         struct Count<'a>(&'a MemoryBlobs, &'a Cell<usize>);
         impl crate::tree::BlobFetch for Count<'_> {
-            fn fetch(&mut self, id: &osis_core::BlobId) -> Result<Vec<u8>, Error> {
+            fn fetch(&mut self, id: &osis_base::BlobId) -> Result<Vec<u8>, Error> {
                 self.1.set(self.1.get() + 1);
                 self.0.0.get(id).cloned().ok_or(Error::Missing)
             }
@@ -708,7 +708,7 @@ mod tests {
         // Chunks overlapping the last MiB, and the tree's height.
         let canon = encode(&Value::Bytes(d.clone()));
         let mut end = 0;
-        let lens = osis_core::chunker::chunk_lengths(&canon, ChunkParams::FORMAT);
+        let lens = osis_base::chunker::chunk_lengths(&canon, ChunkParams::FORMAT);
         let in_range = lens.iter().filter(|&&n| {
             end += n;
             end > canon.len() - MIB
@@ -783,7 +783,7 @@ mod tests {
         let mut rng = SeededRng::from_u64(7);
         let n = 200_000;
         // Three levels of open nodes at most here; the bound is below the value's size.
-        let path = 3 * osis_core::format::TREE_FANOUT * std::mem::size_of::<Link>();
+        let path = 3 * osis_base::format::TREE_FANOUT * std::mem::size_of::<Link>();
         assert!(SMALL.chunk.max + path < n);
         let mut bw = BlobWriter::new(&f, &mut store, &mut rng);
         let mut w = ValueWriter::bytes(SMALL, n as u64);

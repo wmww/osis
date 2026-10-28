@@ -10,8 +10,8 @@
 
 use super::state::{decode, encode};
 use crate::error::{Error, Result};
-use osis_core::format::PAGE_TARGET;
-use osis_core::{Ak, Tid, Value};
+use osis_base::format::PAGE_TARGET;
+use osis_base::{Ak, Tid, Value};
 use osis_crdt::{Dot, Encoding, Fragment, PagedTouch, PathSeg, Paths, PlaceBlock, PlaceMisses, PlaceRow, PlaceTop, SeqPlace, SourceKind, Step};
 use osis_store::{Shred, Table, Transaction};
 use std::collections::BTreeMap;
@@ -186,7 +186,7 @@ fn path_of(v: &Value) -> Result<KeyedPath> {
                     let d = dot_of(d)?;
                     let created = match c.as_slice() {
                         [] => None,
-                        [Value::Int(ts)] => Some(osis_crdt::Stamp::new(osis_core::Ts::from_u64(n(ts)?).ok_or_else(bad)?, d.src.clone(), d.ctr)),
+                        [Value::Int(ts)] => Some(osis_crdt::Stamp::new(osis_base::Ts::from_u64(n(ts)?).ok_or_else(bad)?, d.src.clone(), d.ctr)),
                         _ => return Err(bad()),
                     };
                     Ok((Step::Entry(d), k.first().cloned(), created))
@@ -208,17 +208,17 @@ fn steps(p: &KeyedPath) -> Vec<Step> {
 /// Unpaged states start `[bytes, ...]`.
 fn unit_state(skeleton: &Fragment, idx: &PageIndex) -> Result<Vec<u8>> {
     let sets = idx.sets.values().map(|s| Value::List(vec![uint(u64::from(s.id)), path_value(&s.path), uint(u64::from(s.enc.id()))])).collect();
-    Ok(osis_core::encode(&Value::List(vec![Value::Int(TAG), Value::Bytes(encode(skeleton)?), Value::List(sets)])))
+    Ok(osis_base::encode(&Value::List(vec![Value::Int(TAG), Value::Bytes(encode(skeleton)?), Value::List(sets)])))
 }
 
 /// A page row: `[first dot or [], next page's first dot or [], page]`.
 fn page_row(r: &Range, p: &Fragment) -> Result<Vec<u8>> {
-    Ok(osis_core::encode(&Value::List(vec![opt_dot_value(r.0.as_ref()), opt_dot_value(r.1.as_ref()), Value::Bytes(encode(p)?)])))
+    Ok(osis_base::encode(&Value::List(vec![opt_dot_value(r.0.as_ref()), opt_dot_value(r.1.as_ref()), Value::Bytes(encode(p)?)])))
 }
 
 fn parse_page_row(b: &[u8]) -> Result<(Range, Fragment)> {
-    let lim = osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: b.len() };
-    let v = osis_core::decode(b, &lim).map_err(|_| Error::Corrupt("state page"))?;
+    let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: b.len() };
+    let v = osis_base::decode(b, &lim).map_err(|_| Error::Corrupt("state page"))?;
     let Value::List(items) = v else { return Err(Error::Corrupt("state page")) };
     let [lo, hi, Value::Bytes(p)] = items.as_slice() else { return Err(Error::Corrupt("state page")) };
     Ok(((opt_dot_of(lo)?, opt_dot_of(hi)?), decode(p)?))
@@ -257,9 +257,9 @@ fn indexed(c: &Fragment, enc: Encoding, d: &Dot) -> Vec<Value> {
 /// An index row of a paged map or set: set ID, the hash of the key or value, the element's dot.
 fn key_row(set: &PageSet, k: &Value, d: Option<&Dot>) -> Vec<u8> {
     let mut out = set.id.to_be_bytes().to_vec();
-    out.extend_from_slice(&osis_core::hash::keyed_hash(&set.salt, &osis_core::encode(&ident(k))));
+    out.extend_from_slice(&osis_base::hash::keyed_hash(&set.salt, &osis_base::encode(&ident(k))));
     if let Some(d) = d {
-        out.extend_from_slice(&osis_core::encode(&dot_value(d)));
+        out.extend_from_slice(&osis_base::encode(&dot_value(d)));
     }
     out
 }
@@ -273,8 +273,8 @@ pub fn open(unit_state: &[u8], salt: &[u8; 32]) -> Result<(Fragment, PageIndex)>
 
 fn open_tagged(unit_state: &[u8], salt: &[u8; 32], tag: i64) -> Result<(Fragment, PageIndex)> {
     let bad = || Error::Corrupt("state");
-    let lim = osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: unit_state.len() };
-    let v = osis_core::decode(unit_state, &lim).map_err(|_| bad())?;
+    let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: unit_state.len() };
+    let v = osis_base::decode(unit_state, &lim).map_err(|_| bad())?;
     let Value::List(items) = v else { return Err(bad()) };
     let [Value::Int(t), Value::Bytes(skel), Value::List(list)] = items.as_slice() else { return Err(bad()) };
     if *t != tag {
@@ -304,8 +304,8 @@ pub fn legacy(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, unit_state: &[u8]) 
         return Ok(None);
     }
     // set paths nest (fields, entries)
-    let lim = osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: unit_state.len() };
-    let Ok(Value::List(items)) = osis_core::decode(unit_state, &lim) else { return Ok(None) };
+    let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: unit_state.len() };
+    let Ok(Value::List(items)) = osis_base::decode(unit_state, &lim) else { return Ok(None) };
     let mut f = match items.as_slice() {
         [Value::Int(1)] => Fragment::default(),
         [Value::Int(2), Value::Bytes(s)] => decode(s)?,
@@ -567,8 +567,8 @@ fn key_dots(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &PageSet, k: &Va
         for (key, _) in rows {
             from = [key.as_slice(), &[0]].concat();
             let Some(tail) = key.get(start.len()..) else { continue };
-            let lim = osis_core::Limits { max_depth: 8, max_bytes: tail.len() };
-            let v = osis_core::decode(tail, &lim).map_err(|_| Error::Corrupt("state key index"))?;
+            let lim = osis_base::Limits { max_depth: 8, max_bytes: tail.len() };
+            let v = osis_base::decode(tail, &lim).map_err(|_| Error::Corrupt("state key index"))?;
             out.push(dot_of(&v)?);
         }
         if n < 256 {
@@ -764,7 +764,7 @@ impl Srcs {
         Value::List(vec![self.of(&d.src), uint(d.ctr)])
     }
     fn row(self, items: Vec<Value>) -> Vec<u8> {
-        osis_core::encode(&Value::List(vec![Value::List(self.list), Value::List(items)]))
+        osis_base::encode(&Value::List(vec![Value::List(self.list), Value::List(items)]))
     }
 }
 
@@ -787,8 +787,8 @@ fn dot_at(srcs: &[osis_crdt::Source], v: &Value) -> Option<Dot> {
 }
 
 fn decode_row(b: &[u8]) -> Option<Vec<Value>> {
-    let lim = osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: b.len() };
-    match osis_core::decode(b, &lim).ok()? {
+    let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: b.len() };
+    match osis_base::decode(b, &lim).ok()? {
         Value::List(x) => Some(x),
         _ => None,
     }
@@ -894,11 +894,11 @@ fn parse_chunk(b: &[u8]) -> Option<Vec<(Dot, usize)>> {
 fn top_row(t: &PlaceTop, groups: usize) -> Vec<u8> {
     let dots = |x: &[Dot]| Value::List(x.iter().map(dot_value).collect());
     let newest = t.newest.as_ref().map_or(Value::List(Vec::new()), |s| Value::List(vec![uint(s.ts.to_u64()), dot_value(&s.dot)]));
-    osis_core::encode(&Value::List(vec![uint(t.cap as u64), uint(t.map_len as u64), dots(&t.waiting), dots(&t.cyc), uint(groups as u64), newest]))
+    osis_base::encode(&Value::List(vec![uint(t.cap as u64), uint(t.map_len as u64), dots(&t.waiting), dots(&t.cyc), uint(groups as u64), newest]))
 }
 
 fn group_rows(t: &PlaceTop) -> Vec<Vec<u8>> {
-    t.blocks.chunks(GROUP).map(|g| osis_core::encode(&Value::List(g.iter().map(|b| Value::List(vec![uint(b.id as u64), uint(b.len as u64), uint(b.shown as u64), Value::Int(b.min), Value::Int(b.shift)])).collect()))).collect()
+    t.blocks.chunks(GROUP).map(|g| osis_base::encode(&Value::List(g.iter().map(|b| Value::List(vec![uint(b.id as u64), uint(b.len as u64), uint(b.shown as u64), Value::Int(b.min), Value::Int(b.shift)])).collect()))).collect()
 }
 
 fn chunks_row(t: &PlaceTop) -> Vec<u8> {
@@ -915,7 +915,7 @@ fn parse_top(top: &[u8], groups: &[Vec<u8>], chunks: &[u8]) -> Option<PlaceTop> 
         6 => match row.pop()? {
             Value::List(x) if x.is_empty() => None,
             Value::List(x) => match x.as_slice() {
-                [Value::Int(ts), d] => Some(osis_crdt::Stamp { ts: osis_core::Ts::from_u64(u64::try_from(*ts).ok()?)?, dot: dot_of(d).ok()? }),
+                [Value::Int(ts), d] => Some(osis_crdt::Stamp { ts: osis_base::Ts::from_u64(u64::try_from(*ts).ok()?)?, dot: dot_of(d).ok()? }),
                 _ => return None,
             },
             _ => return None,
@@ -1661,7 +1661,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
     use super::*;
     const SALT: [u8; 32] = [9; 32];
-    use osis_core::Ts;
+    use osis_base::Ts;
     use osis_crdt::{AnyView, Batch, Op, PathOp, PathSeg, Source, Writer, create};
     use osis_store::{MemoryBackend, MemoryRoot, Store, StoreConfig};
 
@@ -1677,7 +1677,7 @@ mod tests {
     fn dropped_body_unindexed_spec_commits_5() {
         let mut rng = osis_crypto::SeededRng::from_u64(80);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([5; 15]), osis_core::Ak::new("/app/keys").unwrap());
+        let (tid, ak) = (Tid::from_bytes([5; 15]), osis_base::Ak::new("/app/keys").unwrap());
         let node = Source::node(Tid::from_bytes([1; 15]));
         let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), node.clone(), 1);
         let body = create(&mut w, &AnyView, &ints(6000, 1)).unwrap();
@@ -1712,7 +1712,7 @@ mod tests {
     fn set_value_index_spec_crdt_5_5() {
         let mut rng = osis_crypto::SeededRng::from_u64(81);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([6; 15]), osis_core::Ak::new("/app/set").unwrap());
+        let (tid, ak) = (Tid::from_bytes([6; 15]), osis_base::Ak::new("/app/set").unwrap());
         let node = Source::node(Tid::from_bytes([1; 15]));
         let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), node.clone(), 1);
         let body = create(&mut w, &AnyView, &Value::Set((0..6000).map(Value::Int).collect())).unwrap();
@@ -1742,7 +1742,7 @@ mod tests {
         assert!(key_dots(&mut txn, &tid, &ak, &set, &Value::Int(5)).unwrap().is_empty());
         assert_eq!(key_dots(&mut txn, &tid, &ak, &set, &Value::Int(6)).unwrap().len(), 1);
         // links: by content hash, whatever blob holds the value
-        let link = |b: u8| Value::Link(osis_core::Link { hash: [7; 32], blob: osis_core::BlobId([b; 32]), suite: 1, key: [b; 32] });
+        let link = |b: u8| Value::Link(osis_base::Link { hash: [7; 32], blob: osis_base::BlobId([b; 32]), suite: 1, key: [b; 32] });
         assert_eq!(link(1), link(2));
         assert_eq!(key_row(&set, &link(1), None), key_row(&set, &link(2), None));
         assert_eq!(key_row(&set, &Value::List(vec![link(1)]), None), key_row(&set, &Value::List(vec![link(2)]), None));
@@ -1759,12 +1759,12 @@ mod tests {
     // concurrent writer's elements joined in.
     #[test]
     fn set_index_differential_spec_crdt_5_5() {
-        use osis_core::Float;
+        use osis_base::Float;
         let mut rng = osis_crypto::SeededRng::from_u64(177);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([3; 15]), osis_core::Ak::new("/app/s").unwrap());
+        let (tid, ak) = (Tid::from_bytes([3; 15]), osis_base::Ak::new("/app/s").unwrap());
         let nodes = [Source::node(Tid::from_bytes([1; 15])), Source::node(Tid::from_bytes([2; 15]))];
-        let link = |h: u8, b: u8| Value::Link(osis_core::Link { hash: [h; 32], blob: osis_core::BlobId([b; 32]), suite: 1, key: [b; 32] });
+        let link = |h: u8, b: u8| Value::Link(osis_base::Link { hash: [h; 32], blob: osis_base::BlobId([b; 32]), suite: 1, key: [b; 32] });
         let pool = |i: u64| -> Value {
             match i % 14 {
                 0 => Value::Float(Float::new(0.0)),
@@ -1849,7 +1849,7 @@ mod tests {
     fn legacy_layout_relaid_spec_requirements_scale() {
         let mut rng = osis_crypto::SeededRng::from_u64(79);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([4; 15]), osis_core::Ak::new("/app/old").unwrap());
+        let (tid, ak) = (Tid::from_bytes([4; 15]), osis_base::Ak::new("/app/old").unwrap());
         let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), Source::node(Tid::from_bytes([1; 15])), 1);
         let st = create(&mut w, &AnyView, &ints(6000, 1)).unwrap();
         let mut txn = store.transaction(&mut rng).unwrap();
@@ -1860,7 +1860,7 @@ mod tests {
         for (i, h) in halves.iter().enumerate() {
             txn.table_put(t, &[&[0u8][..], &(i as u64).to_be_bytes()].concat(), encode(h).unwrap(), Shred::No).unwrap();
         }
-        let old = osis_core::encode(&Value::List(vec![Value::Int(1)]));
+        let old = osis_base::encode(&Value::List(vec![Value::Int(1)]));
         assert!(is_paged(&old));
         let whole = legacy(&mut txn, &tid, &ak, &old).unwrap().unwrap();
         assert_eq!(whole, st);
@@ -1901,7 +1901,7 @@ mod tests {
     fn lazy_nested_paging_spec_requirements_scale() {
         let mut rng = osis_crypto::SeededRng::from_u64(77);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([3; 15]), osis_core::Ak::new("/app/nested").unwrap());
+        let (tid, ak) = (Tid::from_bytes([3; 15]), osis_base::Ak::new("/app/nested").unwrap());
         let node = Source::node(Tid::from_bytes([1; 15]));
         let big_set = Value::Set((0..2000).map(|i| Value::Str(format!("s{i}"))).collect());
         let v = Value::Map(
@@ -2104,7 +2104,7 @@ mod tests {
     fn seq_placement_run_with(text: bool, n: u64, reset: bool) {
         let mut rng = osis_crypto::SeededRng::from_u64(181);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([7; 15]), osis_core::Ak::new("/app/seq").unwrap());
+        let (tid, ak) = (Tid::from_bytes([7; 15]), osis_base::Ak::new("/app/seq").unwrap());
         let nodes = [Source::node(Tid::from_bytes([1; 15])), Source::node(Tid::from_bytes([2; 15]))];
         let view = SeqView::Root(text);
         let field = || vec![PathSeg::Field(1)];
@@ -2372,7 +2372,7 @@ mod tests {
     fn seq_cold_edits_keep_placement_spec_crdt_6_1() {
         let mut rng = osis_crypto::SeededRng::from_u64(187);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_core::Ak::new("/app/seq").unwrap());
+        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("/app/seq").unwrap());
         let nodes = [Source::node(Tid::from_bytes([1; 15])), Source::node(Tid::from_bytes([2; 15]))];
         let view = SeqView::Root(true);
         let field = || vec![PathSeg::Field(1)];
@@ -2515,7 +2515,7 @@ mod tests {
     fn seq_index_segment_on_pages_spec_crdt_5_7() {
         let mut rng = osis_crypto::SeededRng::from_u64(193);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_core::Ak::new("/app/seq").unwrap());
+        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("/app/seq").unwrap());
         let node = Source::node(Tid::from_bytes([1; 15]));
         let view = SeqView::Root(false);
         let mut ts = 1u64 << 16;
@@ -2590,7 +2590,7 @@ mod tests {
     fn seq_whole_session_and_hostile_delta_spec_crdt_6_2() {
         let mut rng = osis_crypto::SeededRng::from_u64(191);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_core::Ak::new("/app/seq").unwrap());
+        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("/app/seq").unwrap());
         let me = Source::node(Tid::from_bytes([1; 15]));
         let view = SeqView::Root(true);
         let field = || vec![PathSeg::Field(1)];
@@ -2679,7 +2679,7 @@ mod tests {
     fn seq_placement_rebuilt_spec_crdt_6() {
         let mut rng = osis_crypto::SeededRng::from_u64(185);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([8; 15]), osis_core::Ak::new("/app/seq").unwrap());
+        let (tid, ak) = (Tid::from_bytes([8; 15]), osis_base::Ak::new("/app/seq").unwrap());
         let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), Source::node(Tid::from_bytes([1; 15])), 1);
         let st = create(&mut w, &SeqView::Root(true), &seq_value(true, 6_000)).unwrap();
         let want = vis_whole(&st);
@@ -2742,7 +2742,7 @@ mod tests {
     fn seq_placement_damaged_rows_spec_crdt_6() {
         let mut rng = osis_crypto::SeededRng::from_u64(197);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([7; 15]), osis_core::Ak::new("/app/seq").unwrap());
+        let (tid, ak) = (Tid::from_bytes([7; 15]), osis_base::Ak::new("/app/seq").unwrap());
         let me = Source::node(Tid::from_bytes([1; 15]));
         let view = SeqView::Root(true);
         let field = || vec![PathSeg::Field(1)];
@@ -2801,7 +2801,7 @@ mod tests {
                 4 => {
                     // the layout before: tag 6, its top `[next row ID, waits, groups]`
                     unit[1] = 6;
-                    txn.table_put(pt, &place_key(&set, 0, 0), osis_core::encode(&Value::List(vec![uint(5), Value::Bool(false), Value::List(Vec::new())])), Shred::No).unwrap();
+                    txn.table_put(pt, &place_key(&set, 0, 0), osis_base::encode(&Value::List(vec![uint(5), Value::Bool(false), Value::List(Vec::new())])), Shred::No).unwrap();
                     assert!(open(&unit, &SALT).is_err());
                     let whole = legacy(&mut txn, &tid, &ak, &unit).unwrap().unwrap();
                     assert_eq!(whole.read(), st.read());

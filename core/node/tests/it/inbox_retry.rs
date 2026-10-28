@@ -5,7 +5,7 @@
 
 use crate::net;
 use net::*;
-use osis_core::Role;
+use osis_base::Role;
 use osis_node::Mutation;
 use osis_schema::core_types as ct;
 

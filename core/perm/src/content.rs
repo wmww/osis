@@ -5,7 +5,7 @@
 use crate::graph::{EdgesAt, View};
 use crate::timeline::{At, Timeline};
 use crate::types::{Dots, Edge, Point};
-use osis_core::{CommitId, Role, Tid, Ts, WallMs};
+use osis_base::{CommitId, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A node's roles replayed over the history up to change `pos` (`first_held_uncached`), and

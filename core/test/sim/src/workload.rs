@@ -2,7 +2,7 @@
 //! (sequences wait for crdt-seq). Small value pools make concurrent writes collide.
 
 use crate::dice::Dice;
-use osis_core::{Tid, Value};
+use osis_base::{Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::{Mutation, Result};
 use osis_schema::{Aspect, StaticSchema};

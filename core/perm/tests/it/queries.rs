@@ -6,8 +6,8 @@ use crate::common;
 
 use common::*;
 use membership_model::{edges, joint, Rng};
-use osis_core::Role::{Admin, Read, Write};
-use osis_core::{Role, Tid};
+use osis_base::Role::{Admin, Read, Write};
+use osis_base::{Role, Tid};
 use osis_perm::{verify, At, Edge, MoveIndex, Point, PurgeBy, Timeline, WriteId};
 use std::collections::BTreeMap;
 
@@ -211,7 +211,7 @@ fn cert_run_edges(samples: u64, seed: u64) {
                     membership_model::Role::Write => Write,
                     _ => Read,
                 },
-                until: (e.until != edges::NEVER).then_some(osis_core::WallMs(e.until as u64)),
+                until: (e.until != edges::NEVER).then_some(osis_base::WallMs(e.until as u64)),
                 invite: match e.invite {
                     membership_model::Role::None => None,
                     membership_model::Role::Read => Some(Read),
@@ -371,7 +371,7 @@ fn demotion_scope() {
 /// links; a deeper thing has none, and a chain query walks at most that far.
 #[test]
 fn owner_chain_capped_spec_permissions_1() {
-    use osis_core::format::MAX_OWNER_DEPTH;
+    use osis_base::format::MAX_OWNER_DEPTH;
     let (key, rec) = key_actors(1, 9).remove(0);
     let mut o = osis_perm::Owners::default();
     o.insert(key, &rec);
@@ -403,7 +403,7 @@ fn patched_view_equals_cloned_edges() {
     let pick = |rng: &mut Rng| -> Option<Edge> {
         let role = [Read, Write, Admin][rng.below(3)];
         let invite = [None, Some(Read), Some(Write), Some(Admin)][rng.below(4)].map(|i: Role| i.min(role));
-        let until = (rng.below(3) == 0).then(|| osis_core::WallMs(rng.below(10) as u64));
+        let until = (rng.below(3) == 0).then(|| osis_base::WallMs(rng.below(10) as u64));
         (rng.below(4) != 0).then_some(Edge { role, until, invite, since: None })
     };
     for _ in 0..2000 {

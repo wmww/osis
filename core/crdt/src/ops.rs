@@ -7,7 +7,7 @@ use crate::fragment::{Bag, BagKind, CaseWrite, Elem, Encoding, Entry, Enum, Frag
 use crate::seq;
 use crate::stamp::{CounterRange, Dot, Source, Stamp};
 use crate::view::View;
-use osis_core::{Float, Value};
+use osis_base::{Float, Value};
 use std::collections::BTreeMap;
 
 /// One writer's counters for one aspect's delta in one commit (§2.3). Commit-level writes share
@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 /// source and the delta is re-read with the real one (own dots are `Src` 0 on the wire, §3.2).
 #[derive(Clone, Debug)]
 pub struct Writer {
-    ts: osis_core::Ts,
+    ts: osis_base::Ts,
     src: Source,
     lo: u64,
     next: u64,
@@ -26,11 +26,11 @@ pub struct Writer {
 
 impl Writer {
     /// `lo` is the first unused counter of `src` for this aspect (≥ 1).
-    pub fn new(ts: osis_core::Ts, src: Source, lo: u64) -> Writer {
+    pub fn new(ts: osis_base::Ts, src: Source, lo: u64) -> Writer {
         let lo = lo.max(1);
         Writer { ts, src, lo, next: lo }
     }
-    pub fn ts(&self) -> osis_core::Ts {
+    pub fn ts(&self) -> osis_base::Ts {
         self.ts
     }
     pub fn source(&self) -> &Source {

@@ -6,7 +6,7 @@
 use super::{FixedRng, case, generated_header, s32};
 use crate::file::VecFile;
 use crate::hex;
-use osis_core::{BlobId, WallMs};
+use osis_base::{BlobId, WallMs};
 use osis_crypto::{Epoch, LabelRole, Secret32, WRAP_LEN, label_role_key, wrap};
 use osis_label::{BundleReader, BundleWriter, Importer, Parent, Prefix, Record, StepKeys, frame, genesis_label, register, sign_stamp};
 

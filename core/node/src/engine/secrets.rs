@@ -4,9 +4,9 @@
 //! (spec/crypto.md §7), and the `Secrets` osis-commit asks for when building a commit.
 
 use super::Core;
-use osis_core::CommitId;
+use osis_base::CommitId;
 use crate::error::{Error, Result};
-use osis_core::{CreationRecord, Role, Tid, Value};
+use osis_base::{CreationRecord, Role, Tid, Value};
 use osis_crypto::{DeleteSecret, Epoch, Secret32, VerifyingKey, dedup_secret};
 use osis_keys::{ActorEpochs, HistoryAlts, Opener, Provenance, ROLES, Unchecked};
 use osis_schema::AspectKey;
@@ -14,7 +14,7 @@ use osis_schema::core_types::{Keys, Secrets, SigningKey};
 use std::collections::BTreeMap;
 
 /// Owner chains end at a key actor within `MAX_OWNER_DEPTH` links (spec/permissions.md §1).
-const MAX_CHAIN: usize = osis_core::format::MAX_OWNER_DEPTH + 1;
+const MAX_CHAIN: usize = osis_base::format::MAX_OWNER_DEPTH + 1;
 
 impl Core {
     pub(crate) fn created(&self, tid: &Tid) -> Option<&CreationRecord> {
@@ -497,7 +497,7 @@ pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
             )
         })
         .collect();
-    osis_core::encode(&Value::List(roles))
+    osis_base::encode(&Value::List(roles))
 }
 
 /// Most actors this node holds through reading-only secrets alone (local policy: pending
@@ -564,12 +564,12 @@ pub(crate) fn touched_keys(delta: &osis_crdt::Fragment) -> Option<(Vec<Value>, V
 }
 
 /// The source given a reading-only secret persisted before sources were kept.
-const OLD_SOURCE: Unchecked = Unchecked { author: osis_keys::UNKNOWN_AUTHOR, commit: osis_core::CommitId([0; 32]) };
+const OLD_SOURCE: Unchecked = Unchecked { author: osis_keys::UNKNOWN_AUTHOR, commit: osis_base::CommitId([0; 32]) };
 
 pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
     let bad = || Error::Corrupt("epochs");
-    let lim = osis_core::Limits { max_depth: 16, max_bytes: b.len() };
-    let Value::List(roles) = osis_core::decode(b, &lim).map_err(|_| bad())? else { return Err(bad()) };
+    let lim = osis_base::Limits { max_depth: 16, max_bytes: b.len() };
+    let Value::List(roles) = osis_base::decode(b, &lim).map_err(|_| bad())? else { return Err(bad()) };
     let mut a = ActorEpochs::default();
     for (r, items) in ROLES.iter().zip(roles) {
         let Value::List(items) = items else { return Err(bad()) };
@@ -612,7 +612,7 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
                 let Value::List(c) = c else { return Err(bad()) };
                 let [s, Value::Bytes(author), Value::Bytes(commit)] = c.as_slice() else { return Err(bad()) };
                 let author = Tid::from_bytes(author.as_slice().try_into().map_err(|_| bad())?);
-                let commit = osis_core::CommitId(commit.as_slice().try_into().map_err(|_| bad())?);
+                let commit = osis_base::CommitId(commit.as_slice().try_into().map_err(|_| bad())?);
                 info.reading.push((secret(s)?, Unchecked { author, commit }));
             }
         }
@@ -650,7 +650,7 @@ mod tests {
         let (e1, e2) = (Epoch::new(1, [1; 16]).unwrap(), Epoch::new(2, [2; 16]).unwrap());
         a.read.set_secret(e1, Secret32::from_bytes([1; 32]));
         a.read.set_established(e1, Provenance::Own);
-        let from = |n: u8| Unchecked { author: Tid::from_bytes([n; 15]), commit: osis_core::CommitId([n; 32]) };
+        let from = |n: u8| Unchecked { author: Tid::from_bytes([n; 15]), commit: osis_base::CommitId([n; 32]) };
         a.read.set_reading_secret(e2, Secret32::from_bytes([2; 32]), from(1));
         a.read.set_reading_secret(e2, Secret32::from_bytes([3; 32]), from(2));
         a.read.set_established(e2, Provenance::Chain);
@@ -667,7 +667,7 @@ mod tests {
         let e = Epoch::new(2, [2; 16]).unwrap();
         let item = |ro: bool| Value::List(vec![e.to_wire(), Value::Int(1), Value::List(vec![]), Value::Bool(false), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Bytes(vec![7; 32])]), Value::Bool(ro)]);
         for ro in [true, false] {
-            let b = osis_core::encode(&Value::List(vec![Value::List(vec![item(ro)]), Value::List(vec![]), Value::List(vec![])]));
+            let b = osis_base::encode(&Value::List(vec![Value::List(vec![item(ro)]), Value::List(vec![]), Value::List(vec![])]));
             let a = decode_epochs(&b).unwrap();
             assert_eq!(a.read.is_reading_only(&e), ro);
             assert_eq!(a.read.reading_secrets(&e), vec![&Secret32::from_bytes([7; 32])]);
@@ -687,7 +687,7 @@ mod tests {
         let k = osis_schema::core_types::HistoryKey { role: Role::Read, epoch: osis_keys::aspects::to_schema(&Epoch::new(1, [1; 16]).unwrap()) };
         let mut st = osis_crdt::Fragment::default();
         for (n, b) in [(1u8, 0x11u8), (2, 0x22)] {
-            let ts = osis_core::Ts::make(osis_core::WallMs(u64::from(n) * 1000), 0).unwrap();
+            let ts = osis_base::Ts::make(osis_base::WallMs(u64::from(n) * 1000), 0).unwrap();
             let mut batch = Batch::new(&st, Writer::new(ts, Source::node(Tid::from_bytes([n; 15])), 1));
             batch.apply(&PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(k.to_value())], op: Op::Put(Value::Bytes(vec![b; 8])) }, &view).unwrap();
             st.join(batch.finish().unwrap().0);

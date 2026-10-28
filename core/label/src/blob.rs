@@ -2,8 +2,8 @@
 //! the prefix-versus-header agreement check (spec/commits.md §4) and label wraps (spec/crypto.md §5).
 
 use crate::Error;
-use osis_core::format::{BLOB_FRAMING_VERSION, MAX_BLOB};
-use osis_core::{BlobId, WallMs};
+use osis_base::format::{BLOB_FRAMING_VERSION, MAX_BLOB};
+use osis_base::{BlobId, WallMs};
 use osis_crypto::{CryptoRngCore, Secret32, VerifyingKey, commitment, decrypt_blob, encrypt_blob};
 
 /// Bytes of a prefix before its commitments.
@@ -258,7 +258,7 @@ mod tests {
         let p = Prefix::new(Prefix::random_salt(&mut rng), Some(WallMs(5)), vec![c(3, 3)]).unwrap();
         let (k, blob) = frame(&p, b"chunk", &mut rng).unwrap();
         assert_eq!(open(&blob, &k).unwrap(), (p.clone(), b"chunk".to_vec()));
-        assert_eq!(blob_id(&blob).0, osis_core::hash::hash(&blob));
+        assert_eq!(blob_id(&blob).0, osis_base::hash::hash(&blob));
         assert_eq!(server_prefix(&blob), Ok(Some(p.clone())));
         let mut t = blob.clone();
         t[20] ^= 1;

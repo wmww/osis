@@ -33,7 +33,7 @@ async fn round_trip<T: osis_transport::Transport>(server_ep: T, url: &str, a: Tr
     let secret = StaticSecret::from_bytes([0x52; 32]);
     let listener = server_ep.listen(ListenConfig { url: url.into(), secret: secret.clone() }).await.unwrap();
     let addr = listener.address();
-    let clock: Arc<dyn osis::Clock> = Arc::new(osis_core::SystemClock);
+    let clock: Arc<dyn osis::Clock> = Arc::new(osis_base::SystemClock);
     let store = BackendStore::open(MemoryBackend::new(), clock.clone(), Policy::default(), &mut SeededRng::from_u64(5)).unwrap();
     let hub = Hub::new(store, addr.key, Box::new(SeededRng::from_u64(6)));
     let (sctl, srx) = mpsc::channel(8);
@@ -108,7 +108,7 @@ async fn redeem_over<T: osis_transport::Transport>(server_ep: T, url: &str, a: T
     let secret = StaticSecret::from_bytes([0x53; 32]);
     let listener = server_ep.listen(ListenConfig { url: url.into(), secret: secret.clone() }).await.unwrap();
     let addr = listener.address();
-    let clock: Arc<dyn osis::Clock> = Arc::new(osis_core::SystemClock);
+    let clock: Arc<dyn osis::Clock> = Arc::new(osis_base::SystemClock);
     let store = BackendStore::open(MemoryBackend::new(), clock.clone(), Policy::default(), &mut SeededRng::from_u64(7)).unwrap();
     let hub = Hub::new(store, addr.key, Box::new(SeededRng::from_u64(8)));
     let (sctl, srx) = mpsc::channel(8);
@@ -196,7 +196,7 @@ async fn redeem_direct_in_process_spec_permissions_9() {
     let secret = StaticSecret::from_bytes([0x54; 32]);
     let listener = server_ep.listen(ListenConfig { url: "mem://s".into(), secret: secret.clone() }).await.unwrap();
     let addr = listener.address();
-    let clock: Arc<dyn osis::Clock> = Arc::new(osis_core::SystemClock);
+    let clock: Arc<dyn osis::Clock> = Arc::new(osis_base::SystemClock);
     let store = BackendStore::open(MemoryBackend::new(), clock.clone(), Policy::default(), &mut SeededRng::from_u64(9)).unwrap();
     let hub = Hub::new(store, addr.key, Box::new(SeededRng::from_u64(10)));
     let (sctl, srx) = mpsc::channel(8);
@@ -355,7 +355,7 @@ async fn single_use_direct_keeps_key_in_process_spec_permissions_9() {
     let secret = StaticSecret::from_bytes([0x55; 32]);
     let listener = server_ep.listen(ListenConfig { url: "mem://s".into(), secret: secret.clone() }).await.unwrap();
     let addr = listener.address();
-    let clock: Arc<dyn osis::Clock> = Arc::new(osis_core::SystemClock);
+    let clock: Arc<dyn osis::Clock> = Arc::new(osis_base::SystemClock);
     let store = BackendStore::open(MemoryBackend::new(), clock.clone(), Policy::default(), &mut SeededRng::from_u64(11)).unwrap();
     let hub = Hub::new(store, addr.key, Box::new(SeededRng::from_u64(12)));
     let (sctl, srx) = mpsc::channel(8);

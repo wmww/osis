@@ -8,7 +8,7 @@
 //! multi-thread runtime. The only async code of the crate.
 
 use crate::hub::{ConnId, Hub, HubOutput};
-use osis_core::Clock;
+use osis_base::Clock;
 use osis_label::Address;
 use osis_store::Backend;
 use osis_transport::link::{self, Link, LinkTx};

@@ -5,7 +5,7 @@
 use crate::check::{Rule, Violation, check};
 use crate::error::Error;
 use crate::schema::Schema;
-use osis_core::Limits;
+use osis_base::Limits;
 
 const HEADER: &str = "osis-lock 1";
 
@@ -23,7 +23,7 @@ pub enum LockStatus {
     Unpublished,
 }
 
-use osis_core::hex::{decode as unhex, encode as hex};
+use osis_base::hex::{decode as unhex, encode as hex};
 
 impl Lock {
     pub fn of(schema: &Schema) -> Lock {
@@ -49,10 +49,10 @@ impl Lock {
         let hash = lines.next().and_then(|l| l.strip_prefix("hash ")).and_then(unhex).ok_or_else(|| bad("missing hash"))?;
         let body: String = lines.map(str::trim).collect();
         let bytes = unhex(&body).ok_or_else(|| bad("bad hex"))?;
-        if osis_core::hash::hash(&bytes).as_slice() != hash.as_slice() {
+        if osis_base::hash::hash(&bytes).as_slice() != hash.as_slice() {
             return Err(bad("hash does not match"));
         }
-        let v = osis_core::decode(&bytes, &Limits::DEFAULT).map_err(|e| Error::Lock(e.to_string()))?;
+        let v = osis_base::decode(&bytes, &Limits::DEFAULT).map_err(|e| Error::Lock(e.to_string()))?;
         Ok(Lock { schema: Schema::from_value(&v)? })
     }
 }

@@ -11,7 +11,7 @@
 //! keeps it behind its own lock and hands the driver the actions of its calls).
 
 use super::{Action, ConnId, Event, SyncEngine};
-use osis_core::Clock;
+use osis_base::Clock;
 use osis_transport::link::{self, Link, LinkTx};
 use osis_transport::lan::Announce;
 use osis_transport::{Address, ListenConfig, Listener, StaticSecret, Transport};

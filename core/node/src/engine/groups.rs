@@ -2,7 +2,7 @@
 //! (cycles allowed), contain the thing. Kept incrementally: a `/group` change recomputes only the
 //! changed group and the groups above it (O(their reach)), never every group.
 
-use osis_core::Tid;
+use osis_base::Tid;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -175,7 +175,7 @@ impl super::journal::Journaled for Groups {
 #[cfg(test)]
 mod tests {
     use super::Groups;
-    use osis_core::Tid;
+    use osis_base::Tid;
     use std::collections::{BTreeMap, BTreeSet};
 
     fn t(n: u8) -> Tid {

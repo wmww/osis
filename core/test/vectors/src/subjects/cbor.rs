@@ -3,7 +3,7 @@
 
 use crate::file::VecFile;
 use crate::{diag::diag, unhex};
-use osis_core::{DecodeError, Limits, decode, encode};
+use osis_base::{DecodeError, Limits, decode, encode};
 
 /// Language-neutral rule IDs for rejections (core/test/vectors/README.md).
 pub fn rule(e: &DecodeError) -> &'static str {

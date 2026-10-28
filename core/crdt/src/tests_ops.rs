@@ -9,7 +9,7 @@ use crate::undo::{Undone, undo};
 use crate::view::AnyView;
 use crdt_model::r#gen::{Rng, random_op, random_value};
 use crdt_model::ops::{Ty, Writer as MWriter};
-use osis_core::{Tid, Value};
+use osis_base::{Tid, Value};
 use proptest::prelude::*;
 
 fn read(f: &Fragment) -> Option<Value> {
@@ -333,7 +333,7 @@ fn absent_key_typed_spec_5_6() {
 /// the read shows the lowest live dot's link (§5.5, §5.6).
 #[test]
 fn large_values_equal_by_hash_spec_5_5() {
-    use osis_core::{BlobId, Link};
+    use osis_base::{BlobId, Link};
     let view = AnyView;
     let link = |blob: u8| Value::Link(Link { hash: [9; 32], blob: BlobId([blob; 32]), suite: 1, key: [blob; 32] });
     let a = Source::node(Tid::from_bytes([1; 15]));
@@ -387,7 +387,7 @@ fn remove_then_put_same_key_round_trips_spec_5_6() {
     let mk = |v: u8| Value::Map([(key.clone(), Value::Bytes(vec![v; 4]))].into_iter().collect());
     let mut w = Writer::new(ts(1 << 16), a.clone(), 1);
     let st = create(&mut w, &view, &mk(1)).unwrap();
-    for (src, lo) in [(a.clone(), 2), (Source::node(Tid::from_bytes([2; 15])), 1), (Source::commit(osis_core::CommitId([9; 32])), 1)] {
+    for (src, lo) in [(a.clone(), 2), (Source::node(Tid::from_bytes([2; 15])), 1), (Source::commit(osis_base::CommitId([9; 32])), 1)] {
         let mut batch = Batch::new(&st, Writer::new(ts(5 << 16), src.clone(), lo));
         batch.apply(&PathOp { path: vec![], op: Op::Remove(key.clone()) }, &view).unwrap();
         batch.apply(&PathOp { path: vec![PathSeg::Key(key.clone())], op: Op::Set(Value::Bytes(vec![1; 4])) }, &view).unwrap();

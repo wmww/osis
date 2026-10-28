@@ -38,7 +38,7 @@ fn replaced_register_needs_no_carrier_spec_sync_7() {
 }
 
 /// Server entries of commit `c` under `l`, as node `n` knows them.
-fn at_server(net: &mut Net, n: usize, sv: usize, l: &osis_core::LabelId, c: &osis_core::CommitId) -> Vec<osis_core::BlobId> {
+fn at_server(net: &mut Net, n: usize, sv: usize, l: &osis_base::LabelId, c: &osis_base::CommitId) -> Vec<osis_base::BlobId> {
     let ids = net.server_ids(sv, l);
     net.sync(n).entries(l).into_iter().filter(|(id, k)| ids.contains(id) && matches!(k, EntryKind::Commit { commit, .. } if commit == c)).map(|(id, _)| id).collect()
 }
@@ -53,9 +53,9 @@ fn at_server(net: &mut Net, n: usize, sv: usize, l: &osis_core::LabelId, c: &osi
 // when it comes back (`late_member_judges_backdated_revoke_alike_*`).
 #[test]
 fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
-    use osis_core::Role;
+    use osis_base::Role;
     use osis_node::flows::{Demotion, PreSync};
-    let gone = osis_core::Ak::new("/t/gone").unwrap();
+    let gone = osis_base::Ak::new("/t/gone").unwrap();
     for online in [true, false] {
         let mut net = Net::new();
         let sv = net.add_server();
@@ -86,7 +86,7 @@ fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
         // b revoked from before its write: v2 is void, v1 live again at a
         let bt = net.tid(b);
         net.set_online(b, false);
-        let d = Demotion { member: bt, new: None, presync: PreSync::Backdated(osis_core::WallMs(before)) };
+        let d = Demotion { member: bt, new: None, presync: PreSync::Backdated(osis_base::WallMs(before)) };
         let done = net.engine(a).demote(&g, &d).unwrap();
         let acts = net.sync(a).carry_out(done).unwrap();
         net.actions(a, acts);
@@ -116,7 +116,7 @@ fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
         // revived, v1 has no death (spec/crdt.md §4.8: only applied valid writes supersede),
         // so no keep-at-most bound: the body stays, as at a node that never saw v2 valid
         assert_eq!(net.engine(a).deaths(&c1, &t, &gone).unwrap(), None);
-        net.advance(osis_core::format::AT_MOST_GRACE_MS);
+        net.advance(osis_base::format::AT_MOST_GRACE_MS);
         net.advance(1_000);
         assert_eq!(at_server(&mut net, a, sv, &l, &c1).len(), 1, "kept: v1 is current");
         assert!(net.engine(a).holds_body(&c1, &t, &gone));
@@ -135,7 +135,7 @@ fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
 // walk kept no demotion for it; osis-perm `Walked::alias_leaves`.)
 #[test]
 fn late_member_judges_backdated_revoke_alike_spec_permissions_5() {
-    use osis_core::Role;
+    use osis_base::Role;
     use osis_node::flows::{Demotion, PreSync};
     let mut net = Net::new();
     let sv = net.add_server();
@@ -155,7 +155,7 @@ fn late_member_judges_backdated_revoke_alike_spec_permissions_5() {
     net.advance(1_000);
     let bt = net.tid(b);
     net.set_online(b, false);
-    let d = Demotion { member: bt, new: None, presync: PreSync::Backdated(osis_core::WallMs(before)) };
+    let d = Demotion { member: bt, new: None, presync: PreSync::Backdated(osis_base::WallMs(before)) };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);

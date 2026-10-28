@@ -4,7 +4,7 @@
 
 use crate::net;
 use net::*;
-use osis_core::{Clock, CommitId, Role, Tid, Value};
+use osis_base::{Clock, CommitId, Role, Tid, Value};
 use osis_crypto::SeededRng;
 use osis_label::Address;
 use osis_node::Event as EngineEvent;
@@ -49,7 +49,7 @@ async fn call<R: Send + 'static>(ctl: &mpsc::UnboundedSender<Control>, f: impl F
 }
 
 fn read(s: &mut SyncEngine, t: Tid) -> Option<Value> {
-    s.engine_mut().get(&t, &osis_core::Ak::new("/t/reg").unwrap()).unwrap()
+    s.engine_mut().get(&t, &osis_base::Ak::new("/t/reg").unwrap()).unwrap()
 }
 
 /// Two nodes of one group under the tokio driver converge through the server's driver: the

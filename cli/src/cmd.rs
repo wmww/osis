@@ -36,11 +36,11 @@ fn parse_role(s: &str) -> anyhow::Result<Role> {
 }
 
 pub fn commit_text(c: &CommitId) -> String {
-    osis_schema::osis_core::hex::encode(&c.0)
+    osis_schema::osis_base::hex::encode(&c.0)
 }
 
 fn parse_commit(s: &str) -> anyhow::Result<CommitId> {
-    osis_schema::osis_core::hex::decode(s).and_then(|b| <[u8; 32]>::try_from(b).ok()).map(CommitId).ok_or_else(|| usage(format!("not a commit id (64 hex digits): {s}")))
+    osis_schema::osis_base::hex::decode(s).and_then(|b| <[u8; 32]>::try_from(b).ok()).map(CommitId).ok_or_else(|| usage(format!("not a commit id (64 hex digits): {s}")))
 }
 
 fn ts_text(raw: bool, ms: u64) -> String {
@@ -969,7 +969,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
             for ak in aks {
                 let (changes, size, frag) = db.engine(|e| {
                     let ch = e.changes(&[(t, ak.clone())]);
-                    let size = e.get(&t, &ak).ok().flatten().map(|v| osis_schema::osis_core::encode(&v).len());
+                    let size = e.get(&t, &ak).ok().flatten().map(|v| osis_schema::osis_base::encode(&v).len());
                     let frag = e.state(&t, &ak).ok().flatten().map(|f| format!("{f:?}"));
                     (ch, size, frag)
                 });

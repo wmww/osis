@@ -16,7 +16,7 @@ use crate::engine::{Core, Engine, Owned, Tx};
 use crate::error::{Error, Result};
 use crate::events::{Cause, Event};
 use osis_commit::{Decoded, Form, Header, Kind, PurgeItem};
-use osis_core::{Ak, BlobId, CommitId, Tid, Ts};
+use osis_base::{Ak, BlobId, CommitId, Tid, Ts};
 use osis_crdt::{Fragment, Frontiers};
 use osis_perm::{At, Point, PurgeBy};
 use osis_schema::core_types::is_membership_class;
@@ -93,7 +93,7 @@ fn reader(core: &Core, tid: &Tid) -> Tid {
         return *tid;
     }
     match core.created(tid) {
-        Some(osis_core::CreationRecord::Thing { owner, .. }) => *owner,
+        Some(osis_base::CreationRecord::Thing { owner, .. }) => *owner,
         _ => *tid,
     }
 }
@@ -106,7 +106,7 @@ pub(crate) fn body_class(core: &Core, h: &Header, c: &CommitId, ai: usize) -> (B
     let k = key(me);
     let members: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| key(a) == k).map(|(i, _)| i).collect();
     let first = members.first().copied().unwrap_or(ai) as u32;
-    let mut hs = osis_core::hash::Hasher::new();
+    let mut hs = osis_base::hash::Hasher::new();
     hs.update(&c.0);
     hs.update(&first.to_be_bytes());
     (BlobId(hs.finalize()), members)
@@ -746,7 +746,7 @@ mod tests {
     use crate::Mutation;
     use crate::flows::{Demotion, PreSync};
     use crate::local_peer::LocalPeer;
-    use osis_core::{Ak, Role, Value, WallMs};
+    use osis_base::{Ak, Role, Value, WallMs};
     use osis_schema::core_types as ct;
 
     // spec/crdt.md §4.8 (deaths), notes/node.md Rollback: a late delta reads the last-death
@@ -789,9 +789,9 @@ mod tests {
         lp.deliver(0, &pk(late[1])).unwrap();
         let e = &mut lp.peers[0].engine;
         let r = e.run(|tx| {
-            let before = super::deaths::rows_from(tx, &t, &ak, osis_core::Ts::default())?;
+            let before = super::deaths::rows_from(tx, &t, &ak, osis_base::Ts::default())?;
             super::settle_due(tx)?;
-            assert_ne!(super::deaths::rows_from(tx, &t, &ak, osis_core::Ts::default())?, before, "the replay changes the rows");
+            assert_ne!(super::deaths::rows_from(tx, &t, &ak, osis_base::Ts::default())?, before, "the replay changes the rows");
             Err::<(), _>(crate::error::Error::BadInput("test"))
         });
         assert!(r.is_err());

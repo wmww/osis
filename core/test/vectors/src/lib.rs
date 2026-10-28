@@ -18,15 +18,15 @@ pub fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-pub use osis_core::hex::encode as hex;
+pub use osis_base::hex::encode as hex;
 
 pub fn unhex(s: &str) -> Result<Vec<u8>, String> {
-    osis_core::hex::decode(s).ok_or_else(|| format!("bad hex: {s}"))
+    osis_base::hex::decode(s).ok_or_else(|| format!("bad hex: {s}"))
 }
 
 /// `n` bytes of the unkeyed BLAKE3 XOF of `seed` (the `xof` input form of README.md).
 pub fn xof(seed: &str, n: usize) -> Vec<u8> {
     let mut out = vec![0; n];
-    osis_core::hash::Hasher::new().update(seed.as_bytes()).finalize_xof(&mut out);
+    osis_base::hash::Hasher::new().update(seed.as_bytes()).finalize_xof(&mut out);
     out
 }

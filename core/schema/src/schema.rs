@@ -2,8 +2,8 @@
 //! signal kinds; expansion of named types; validation.
 
 use crate::types::{Case, EnumType, Field, StructType, Type, is_reserved_name};
-use osis_core::format::CORE_SCHEMA_ID;
-use osis_core::{Ak, SchemaId, Value};
+use osis_base::format::CORE_SCHEMA_ID;
+use osis_base::{Ak, SchemaId, Value};
 use osis_crdt::Encoding;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};

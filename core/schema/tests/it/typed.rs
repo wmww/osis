@@ -2,8 +2,8 @@
 //! Typed reads, reader defaults, write validation, the View, large-value positions
 //! (spec/versioning.md §5, spec/crdt.md §9, spec/data-model.md §6), version skew.
 
-use osis_core::format::CHUNK_THRESHOLD;
-use osis_core::{Limits, Tid, Value};
+use osis_base::format::CHUNK_THRESHOLD;
+use osis_base::{Limits, Tid, Value};
 use osis_crdt::{Encoding, View};
 use osis_schema::*;
 use proptest::prelude::*;
@@ -75,7 +75,7 @@ fn typed_read_errors_carry_paths_spec_versioning_5() {
     assert!(e.is_ok());
     let e = typed_read(&v1, &Value::Enum(2, None), &v1.aspects["/n/st"].ty).unwrap_err();
     assert_eq!(e.kind, PathErrorKind::UnknownCase(2));
-    assert_eq!(osis_core::Classified::class(&e), osis_core::ErrorClass::Parked);
+    assert_eq!(osis_base::Classified::class(&e), osis_base::ErrorClass::Parked);
     // Type mismatch at [1].2.
     let bad = st(&[(1, s("b")), (2, Value::Int(1))]);
     let e = typed_read(&v1, &Value::List(vec![good.clone(), bad]), &tasks(&v1)).unwrap_err();
@@ -92,7 +92,7 @@ fn typed_read_errors_carry_paths_spec_versioning_5() {
     assert_eq!(read_path(&v1, &list, &tasks(&v1), &p![1, FieldId(1)]).unwrap(), s("a"));
     assert_eq!(read_path(&v1, &list, &tasks(&v1), &p![5]).unwrap_err().kind, PathErrorKind::NotFound);
     // Unknown tags fail typed reads only.
-    let unknown = Value::Unknown(osis_core::Unknown::new(4000, osis_core::CanonicalBytes::from_value(&Value::Int(1))).unwrap());
+    let unknown = Value::Unknown(osis_base::Unknown::new(4000, osis_base::CanonicalBytes::from_value(&Value::Int(1))).unwrap());
     let e = typed_read(&v1, &unknown, &Type::String).unwrap_err();
     assert_eq!(e.kind, PathErrorKind::UnknownTag(4000));
     assert_eq!(typed_read(&v1, &unknown, &Type::Any).unwrap(), unknown);
@@ -196,7 +196,7 @@ fn large_atomic_positions_spec_data_model_6() {
     assert_eq!(got, want, "text at field 1 never chunks");
     // At the threshold exactly: not chunked.
     let edge = "y".repeat(CHUNK_THRESHOLD - 5); // 5-byte head: 0x7a + 4-byte length
-    assert_eq!(osis_core::encode(&s(&edge)).len(), CHUNK_THRESHOLD);
+    assert_eq!(osis_base::encode(&s(&edge)).len(), CHUNK_THRESHOLD);
     assert!(large_positions(&sc, &s(&edge), &Type::String).is_empty());
     assert_eq!(large_positions(&sc, &s(&format!("{edge}y")), &Type::String).len(), 1);
 }
@@ -261,7 +261,7 @@ proptest! {
         let sc = core_schema();
         let ty = &sc.aspects["/keys"].ty;
         validate_write(sc, &v, ty).unwrap();
-        let back = osis_core::decode(&osis_core::encode(&v), &Limits::DEFAULT).unwrap();
+        let back = osis_base::decode(&osis_base::encode(&v), &Limits::DEFAULT).unwrap();
         prop_assert_eq!(typed_read(sc, &back, ty).unwrap(), v);
     }
 

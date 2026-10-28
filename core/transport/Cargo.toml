@@ -14,7 +14,7 @@ doctest = false
 workspace = true
 
 [dependencies]
-osis-core.workspace = true
+osis-base.workspace = true
 zeroize.workspace = true
 # InProcess keys are Ed25519 like every transport's (a dialable key verifies LAN announcements).
 ed25519-dalek.workspace = true

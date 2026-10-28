@@ -3,7 +3,7 @@
 use crate::cbor::{array_head, as_idx, as_list, strictly_ascending, uidx};
 use crate::header::{Header, LIMITS};
 use crate::Error;
-use osis_core::{CommitId, Value};
+use osis_base::{CommitId, Value};
 use osis_crypto::Signature;
 
 /// One delta of a commit blob: aspect index, index into that aspect's hashes, canonical delta
@@ -37,7 +37,7 @@ impl CommitBlob {
     /// Decodes a commit blob plaintext. Linked header lists stay unresolved; part indices are
     /// checked against the header by [`crate::verify_part`].
     pub fn decode(b: &[u8]) -> Result<CommitBlob, Error> {
-        let v = osis_core::decode(b, &LIMITS)?;
+        let v = osis_base::decode(b, &LIMITS)?;
         let [hv, sv, pv] = as_list(&v)? else { return Err(Error::Malformed("commit blob arity")) };
         let header = Header::from_value(hv)?;
         let signature = Signature::from_value(sv)?;
@@ -47,7 +47,7 @@ impl CommitBlob {
             if !matches!(d, Value::List(_)) {
                 return Err(Error::Malformed("part delta"));
             }
-            parts.push(Part { ai: as_idx(ai)?, di: as_idx(di)?, delta: osis_core::encode(d) });
+            parts.push(Part { ai: as_idx(ai)?, di: as_idx(di)?, delta: osis_base::encode(d) });
         }
         if !strictly_ascending(&parts, |p| (p.ai, p.di)) {
             return Err(Error::Malformed("parts not sorted and distinct"));
@@ -79,12 +79,12 @@ pub(crate) fn encode_parts<'a>(header: &[u8], sig: &Signature, parts: impl Exact
     let mut out = Vec::new();
     array_head(3, &mut out);
     out.extend_from_slice(header);
-    osis_core::cbor::encode_into(&sig.to_value(), &mut out);
+    osis_base::cbor::encode_into(&sig.to_value(), &mut out);
     array_head(parts.len(), &mut out);
     for p in parts {
         array_head(3, &mut out);
-        osis_core::cbor::encode_into(&uidx(p.ai), &mut out);
-        osis_core::cbor::encode_into(&uidx(p.di), &mut out);
+        osis_base::cbor::encode_into(&uidx(p.ai), &mut out);
+        osis_base::cbor::encode_into(&uidx(p.di), &mut out);
         out.extend_from_slice(&p.delta);
     }
     out

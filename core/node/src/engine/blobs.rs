@@ -1,7 +1,7 @@
 //! Blob ciphertexts in the store, behind the traits of osis-label (pages, chunks) and
 //! osis-commit (header-list chunk trees).
 
-use osis_core::{BlobId, Link, WallMs};
+use osis_base::{BlobId, Link, WallMs};
 use osis_crypto::{CryptoRngCore, Secret32};
 use osis_store::Transaction;
 

@@ -11,7 +11,7 @@
 //! one write key: the run's steps, then the live entries stamped under that key.
 
 use crate::store::BackendStore;
-use osis_core::{BlobId, LabelId};
+use osis_base::{BlobId, LabelId};
 use osis_crypto::VerifyingKey;
 use osis_proto::msg::{Entry, Step};
 use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, LabelStore, LogRecord, StoreError};
