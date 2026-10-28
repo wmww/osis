@@ -463,8 +463,10 @@ impl Timelines {
                     evaluated += 1;
                     // a component that only gained commits, things and `/created` records
                     // continues its walk when it can (`Timeline::extend`): the one with the most
-                    // commits and snapshots
-                    let grown = cache.keys().filter(|k| k.0.is_subset(&inputs.0) && k.1.is_subset(&inputs.1) && k.2.is_subset(&inputs.2)).max_by_key(|k| k.1.len()).cloned();
+                    // commits and snapshots, then things (the things of the others are reported
+                    // as new: continuing a lone node over a component without commits would
+                    // report all of that component, as `append` does not)
+                    let grown = cache.keys().filter(|k| k.0.is_subset(&inputs.0) && k.1.is_subset(&inputs.1) && k.2.is_subset(&inputs.2)).max_by_key(|k| (k.1.len(), k.0.len())).cloned();
                     let (from, new) = match grown {
                         Some(k) => {
                             let added: BTreeSet<CommitId> = inputs.1.difference(&k.1).copied().collect();

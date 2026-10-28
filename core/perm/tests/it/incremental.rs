@@ -1898,22 +1898,20 @@ fn creation_histories(samples: u64, seed: u64) -> usize {
             let b = general.update_touched(&held, &t);
             appended += fast.appended();
             // The general path may report more: when several old components merge it continues
-            // one and names the others' things. Each must be owned under a thing the fast path
-            // names (authority there follows its owner's), or it and its owner chain are the
-            // target of no edge (only the chain reaches it: a node bringing nothing, or a thing
-            // such a node owns).
+            // the one with the most commits, then things, and names the others' things. Each
+            // must be a node bringing nothing, or owned under a thing the fast path names
+            // (authority there follows its owner's).
             let fa: BTreeSet<Tid> = a.evaluated.union(&a.extended).copied().collect();
             let fb: BTreeSet<Tid> = b.evaluated.union(&b.extended).copied().collect();
             let covered = |x: &Tid| {
-                let (mut cur, mut bare) = (*x, true);
+                let mut cur = *x;
                 for _ in 0..64 {
                     if fa.contains(&cur) {
                         return true;
                     }
-                    bare &= held.edge_commits(&cur).is_empty() && held.roster_snapshots(&cur).is_empty();
                     match held.created(&cur) {
                         Some(osis_base::CreationRecord::Thing { owner, .. }) => cur = owner,
-                        _ => return bare,
+                        _ => return cur == *x && held.edge_commits(x).is_empty() && held.roster_snapshots(x).is_empty(),
                     }
                 }
                 false
@@ -1944,6 +1942,36 @@ fn creation_histories(samples: u64, seed: u64) -> usize {
         }
     }
     appended
+}
+
+/// §5.1: a lone node's first commit joins it to a component without commits (an owner chain):
+/// the general path continues the larger component and reports the node and the commit's
+/// target, as `append` does, not the target's owners (seed 7301 of
+/// `creation_fast_equals_general_large`: it continued the node's walk and reported them all).
+#[test]
+fn merge_continues_the_larger_component_spec_permissions_5_1() {
+    use osis_base::Role::Write;
+    let mut w = World::new();
+    let mut n = w.nodes(4);
+    n.sort();
+    // the lone node sorts after the owner chain's root, so `{lone}` is the larger key
+    let (owner, lone) = (n[0], n[3]);
+    let a = w.thing(owner);
+    let b = w.thing(a);
+    let c = w.set(lone, b, lone, edge(Write), 1, &[]);
+    let prev = w.held_without(&BTreeSet::from([c]));
+    let held = w.held();
+    for general_only in [false, true] {
+        let mut inc = Timelines::new();
+        inc.set_general_only(general_only);
+        inc.update(&prev);
+        assert!(!std::ptr::eq(inc.get(&lone).unwrap(), inc.get(&b).unwrap()));
+        let ch = inc.update_touched(&held, &touched(&prev, &held));
+        assert!(ch.evaluated.is_empty(), "{ch:?}");
+        let want: BTreeSet<Tid> = if general_only { [lone, b].into() } else { [b].into() };
+        assert_eq!(ch.extended, want, "general only: {general_only}");
+        assert!(check(&held, &inc, &n).is_none(), "{:?}", check(&held, &inc, &n));
+    }
 }
 
 /// §1, §5.1: thing creation arriving among membership commits; the fast path equals the
