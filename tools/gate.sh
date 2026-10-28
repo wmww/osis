@@ -3,7 +3,7 @@
 # with its wall time. Run it in the task's worktree after `git rebase main`; main is only ever
 # fast-forwarded, never built. Usage: tools/gate.sh [--sweep-seeds N]   (from the worktree root)
 # The dev sim sweep runs every scenario at 5 seeds (scenario coverage; seed breadth is the
-# coordinator's 300-seed round run, notes/testing.md) when the branch touches the simulator or a
+# 300-seed periodic check, notes/coordination.md) when the branch touches the simulator or a
 # crate it has caught regressions in (core/test/sim/, osis-engine, osis-node, osis-perm, osis-crdt)
 # or Cargo.toml/lock since its merge base with main (always on main itself);
 # --sweep-seeds N forces N seeds, 0 skips.

@@ -17,8 +17,8 @@ Read this if you coordinate, if a build or test run feels slow, or if disk is gr
   - sim: `cargo run --bin sim-sweep -- --seeds N --budget-secs T`
   - tier 2 by name: `cargo test --workspace -- --ignored <name>`; the whole set `PROPTEST_CASES=256 cargo test --workspace -- --include-ignored --skip scale:: --skip bench:: --skip budget --skip sweep`
   - release, timing only (`scale::`, `bench::`, `budget*`, cost repros in issues/): `cargo test --release --workspace -- --ignored <filter>`, in your worktree; keep `target/release` (a few hundred MB), the next timing check is cheaper for it
-- **Merge gate** (`tools/gate.sh`, in the worktree after `git rebase main`): `cargo test --workspace --locked`, both clippy runs, `tools/policy.py`, `tools/spec_map.py --uncited` and `--gaps`, `cargo deny check`, then the 5-seed dev sim sweep (every scenario; seed breadth is the coordinator's round run) when the branch touches `core/test/sim/`, osis-engine, osis-node, osis-perm, osis-crdt or Cargo.toml/lock since its merge base (the crates it has caught regressions in; `--sweep-seeds N` forces, 0 skips). Each step prints its wall time. Then `git checkout main && git merge --ff-only <branch> && git push`. `git pull --rebase` everywhere; history is linear. The generated notes/testing-map.md is gitignored, so nothing conflicts on a rebase but real edits.
-- **Coordinator pattern**: one opus worker per issue group in a worktree; a fresh opus reviewer on the same worktree (correctness review, small fixes committed on the branch, the tier-2 oracles for the area, then the gate); the coordinator fast-forwards main. At most three agents at once; three compiling put a 16-thread laptop at load 20-30.
+- **Merge gate** (`tools/gate.sh`, in the worktree after `git rebase main`): `cargo test --workspace --locked`, both clippy runs, `tools/policy.py`, `tools/spec_map.py --uncited` and `--gaps`, `cargo deny check`, then the 5-seed dev sim sweep (every scenario; seed breadth is a periodic check) when the branch touches `core/test/sim/`, osis-engine, osis-node, osis-perm, osis-crdt or Cargo.toml/lock since its merge base (the crates it has caught regressions in; `--sweep-seeds N` forces, 0 skips). Each step prints its wall time. Then `git checkout main && git merge --ff-only <branch> && git push`. `git pull --rebase` everywhere; history is linear. The generated notes/testing-map.md is gitignored, so nothing conflicts on a rebase but real edits.
+- **Coordination** (worker, reviewer, fast-forward; periodic checks; the watchdog; complaints): notes/coordination.md.
 - **Waiting**: a command that may pass a few minutes runs with `run_in_background` and is awaited with `claudewait ID` (CLAUDE.md). Never a shell wait loop.
 - **Nothing is swept.** A target stays flat once nothing accumulates in it. If one misbehaves, delete it and take the cold build.
 
@@ -36,7 +36,7 @@ Quiet machine, warm worktree, after the fixes this note records. If your numbers
 | clean `cargo build --workspace`; then `--all-targets`; first clippy; first clippy-net | 82 s; +53 s; +17 s; +69 s |
 | osis-engine and osis-node from scratch (their incremental state gone) | 27 s: osis-node starts on osis-engine's metadata at 5 s and the two codegen in parallel (one osis-node: 40 s) |
 | gate, warm, without / with the 5-seed sim sweep | about 1 / 1.5 min |
-| sim sweep 5 / 30 / 300 seeds | 20 s / 2.2 min / about 20 min (5 in the gate, 300 per round) |
+| sim sweep 5 / 30 / 300 seeds | 20 s / 2.2 min / about 20 min (5 in the gate, 300 per periodic check) |
 | `core/test/tla/run.sh small` | 95 s |
 | release `cargo test --release --workspace --no-run`: clean / after an edit (thin LTO relinks every test binary) | about 5 / 4 min at load 10-16; faster quiet |
 | tier-2 oracle `order::arrival_order_alike_large` | about 2 min |
