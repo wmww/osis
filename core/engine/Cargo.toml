@@ -1,0 +1,25 @@
+[package]
+name = "osis-engine"
+description = "The node's engine: store, apply, retention, membership flows, labeling"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+osis-base.workspace = true
+osis-crypto.workspace = true
+osis-crdt.workspace = true
+osis-schema.workspace = true
+osis-commit.workspace = true
+osis-perm.workspace = true
+osis-keys.workspace = true
+osis-label.workspace = true
+osis-store.workspace = true

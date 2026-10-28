@@ -2693,6 +2693,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "osis-engine"
+version = "0.1.0"
+dependencies = [
+ "osis-base",
+ "osis-commit",
+ "osis-crdt",
+ "osis-crypto",
+ "osis-keys",
+ "osis-label",
+ "osis-perm",
+ "osis-schema",
+ "osis-store",
+]
+
+[[package]]
 name = "osis-keys"
 version = "0.1.0"
 dependencies = [
@@ -2723,6 +2738,7 @@ dependencies = [
  "osis-commit",
  "osis-crdt",
  "osis-crypto",
+ "osis-engine",
  "osis-keys",
  "osis-label",
  "osis-perm",
