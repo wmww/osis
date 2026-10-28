@@ -61,7 +61,6 @@ pub struct Change<T> {
     pub source: Source,
 }
 
-
 /// What a subscription listens to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Filter {
@@ -186,15 +185,11 @@ impl Dispatch {
     }
 }
 
-fn info(id: CommitId, author: Tid, actor: Tid, ts: Ts, received: WallMs) -> CommitInfo {
-    CommitInfo { id, actor, node: author, ts, received }
-}
-
 /// The aspects an event changed, with its source.
 fn aspect_event(m: &Msg) -> Option<(&[(Tid, Ak)], Source)> {
     match m {
         Msg::Event(Event::Applied { id, origin, author, actor, ts, received, changed }) => {
-            let i = info(*id, *author, *actor, *ts, *received);
+            let i = CommitInfo { id: *id, actor: *actor, node: *author, ts: *ts, received: *received };
             Some((changed, if *origin == Origin::Local { Source::Local(i) } else { Source::Remote(i) }))
         }
         Msg::Event(Event::Changed { cause, changed }) => Some((changed, Source::Derived(*cause))),
@@ -375,7 +370,6 @@ impl std::fmt::Debug for Subscription {
         write!(f, "Subscription({:?})", self.id)
     }
 }
-
 
 pub(crate) struct WatchState {
     m: Mutex<WState>,

@@ -44,11 +44,7 @@ impl Osis {
             Target::Node(n) => Some(n),
         };
         let me = self.me();
-        self.locked(|l| -> Result<()> {
-            let acts = l.sync.signal_as(&tid, me, kind, v, target)?;
-            self.inner.net.apply(acts);
-            Ok(())
-        })
+        self.try_act(|l| Ok(l.sync.signal_as(&tid, me, kind, v, target)?))
     }
 
     /// Calls `f` with every signal of kind `key` about `tid`.
