@@ -146,10 +146,11 @@ pub(crate) fn invalid_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<Owned> {
     }
     // writes snapshots carry without their commit that no carrier gives validly (an invalid
     // snapshot gives none of its writes; one carrier's copy does not void another's)
-    let groups = core.ix.carried.get(&(*tid, ak.clone()));
-    let given: BTreeSet<(&osis_crdt::Source, u64)> = groups.into_iter().flatten().flat_map(|c| c.ctrs.iter().filter(|x| !c.invalid.contains(x)).map(move |x| (&c.src, *x))).collect();
-    for c in groups.into_iter().flatten() {
-        let ctrs: Vec<u64> = c.invalid.iter().copied().filter(|x| !given.contains(&(&c.src, *x))).collect();
+    // (every join asks: nothing is collected unless a group holds an invalid counter)
+    let groups = core.ix.carried.get(&(*tid, ak.clone())).map(Vec::as_slice).unwrap_or_default();
+    let gives = |src: &osis_crdt::Source, x: u64| groups.iter().any(|g| g.src == *src && g.ctrs.binary_search(&x).is_ok() && !g.invalid.contains(&x));
+    for c in groups.iter().filter(|c| !c.invalid.is_empty()) {
+        let ctrs: Vec<u64> = c.invalid.iter().copied().filter(|x| !gives(&c.src, *x)).collect();
         if !ctrs.is_empty() {
             out.push(Owned::Dots { src: c.src.clone(), ctrs });
         }

@@ -311,7 +311,9 @@ fn own_source(form: Form, node: Tid) -> Source {
 fn snapshot_authors(core: &Core, tid: &Tid, f: &osis_crdt::Fragment) -> Result<BTreeMap<CommitId, (Tid, osis_base::Ts)>> {
     let mut out = BTreeMap::new();
     for (d, _) in f.writes() {
-        if let osis_crdt::SourceKind::Commit(c) = d.src.kind() {
+        if let osis_crdt::SourceKind::Commit(c) = d.src.kind()
+            && !out.contains_key(c)
+        {
             let v = crate::apply::validity::claim_for(core, tid, c).ok_or(Error::Misuse("a snapshot of a commit-form write whose author is unknown"))?;
             out.insert(*c, v);
         }

@@ -1613,3 +1613,61 @@ fn reader_claim_judges_only_its_snapshot_spec_crdt_8() {
         assert_eq!(keys, BTreeSet::from([s("alice")]), "reader first: {reader_first}");
     }
 }
+
+// spec/permissions.md §5.2 (an invalid snapshot gives nothing), §5.1: a writer's snapshot, made
+// after its author's demotion and backdated before it, carries an extra element under a dropped
+// import's `Commit(C)`. Where the demotion (frontier not listing it) arrived first the element never
+// shows; where the snapshot arrived first it should go once the demotion arrives, but stays
+// (issues/snapshot-copy-residue.md, invalid after joining): one held set, two states.
+#[test]
+#[ignore = "issues/snapshot-copy-residue.md"]
+fn demoted_writer_dropped_dot_copy_stays_spec_perm_5_2() {
+    use osis_crdt::{Batch, Op, PathOp, Source, Writer};
+    let mut lp = net(4, 0x5f87);
+    lp.sync_all().unwrap();
+    let a = lp.peers[0].engine.tid();
+    let w = lp.peers[1].engine.tid();
+    let t = new_thing(&mut lp, 0);
+    let mut m = Mutation::new();
+    m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s("a")) }).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let (copy, imports) = lp.peers[0].engine.move_thing(&t, a).unwrap();
+    set_edge(&mut lp.peers[0].engine, copy, w, Some(edge(Role::Write)), None);
+    let tags = ak("/t/tags");
+    lp.advance(1_000);
+    let honest = lp.peers[0].engine.snapshot(&copy, &tags).unwrap().unwrap();
+    for i in 1..4 {
+        sync(&mut lp, 0, i);
+    }
+    let imp = *imports.iter().find(|i| lp.peers[0].engine.header(i).unwrap().origins.iter().any(|o| o.commit == c)).unwrap();
+    let ih = lp.peers[0].engine.header(&imp).unwrap();
+    for i in 2..4 {
+        assert_eq!(lp.peers[i].engine.covered(&honest, &imp, &copy, &tags).unwrap(), Some(true));
+        lp.peers[i].engine.drop_body(&imp, &copy, &tags).unwrap();
+    }
+    let before = lp.peers[2].engine.get(&copy, &tags).unwrap();
+    let ch = lp.peers[0].engine.header(&c).unwrap();
+    let hi = ch.aspects.iter().find(|x| x.tid == t && x.ak == tags).unwrap().hi;
+    let cur = lp.peers[1].engine.state(&copy, &tags).unwrap().unwrap().clone();
+    let mut batch = Batch::new(&cur, Writer::new(ch.ts, Source::commit(c), hi + 10));
+    batch.apply(&PathOp { path: Vec::new(), op: Op::Add(s("evil")) }, &osis_crdt::AnyView).unwrap();
+    let (extra, _) = batch.finish().unwrap();
+    let mut f = cur;
+    f.join(extra);
+    lp.advance(1_000);
+    let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
+    let forged = forge_snapshot_full(&mut lp, 1, copy, &tags, now, f, osis_crdt::Frontiers::default(), BTreeMap::from([(c, (a, ih.ts))]));
+    lp.advance(1_000);
+    let rv = set_edge(&mut lp.peers[0].engine, copy, w, None, Some(osis_schema::core_types::Frontier::default().to_value()));
+    let rv_pk = packages(&mut lp, 0).into_iter().find(|p| p.id == rv).unwrap();
+    // peer 2: the snapshot first (valid then), then the demotion; peer 3: the other way round
+    lp.peers[2].engine.ingest(&forged, Vec::new()).unwrap();
+    lp.deliver(2, &rv_pk).unwrap();
+    lp.deliver(3, &rv_pk).unwrap();
+    lp.peers[3].engine.ingest(&forged, Vec::new()).unwrap();
+    for i in 2..4 {
+        lp.peers[i].engine.reexamine().unwrap();
+    }
+    assert_eq!(lp.peers[3].engine.get(&copy, &tags).unwrap(), before, "demotion first");
+    assert_eq!(lp.peers[2].engine.get(&copy, &tags).unwrap(), before, "snapshot first");
+}
