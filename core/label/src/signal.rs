@@ -2,7 +2,7 @@
 //! commitments, at most 64 KiB, wrapped under the label; plaintext `[SignalBody, signature]`
 //! signed by the sender node under `"osis v1 signal"`. Publish authorization: `auth::PublishAuth`.
 
-use crate::auth::{get_bytes, get_opt, get_uint, opt, uint};
+use crate::cbor::{bytes, get_bytes, get_opt, get_tid, get_uint, opt, tid, uint};
 use crate::blob::{Prefix, frame, open};
 use crate::step::OBJECT_LIMITS;
 use crate::Error;
@@ -31,17 +31,9 @@ pub struct SignalBody {
     pub value: Value,
 }
 
-fn tid(t: &Tid) -> Value {
-    Value::Bytes(t.as_bytes().to_vec())
-}
-
-fn get_tid(v: &Value, what: &'static str) -> Result<Tid, Error> {
-    Ok(Tid::from_bytes(get_bytes(v, what)?))
-}
-
 impl SignalBody {
     pub fn to_value(&self) -> Result<Value, Error> {
-        let schema = self.schema.map(|(id, rev)| Ok::<_, Error>(Value::List(vec![Value::Bytes(id.0.to_vec()), uint(rev)?]))).transpose()?;
+        let schema = self.schema.map(|(id, rev)| Ok::<_, Error>(Value::List(vec![bytes(&id.0), uint(rev)?]))).transpose()?;
         Ok(Value::List(vec![
             tid(&self.node),
             tid(&self.actor),

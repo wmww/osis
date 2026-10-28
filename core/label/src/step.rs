@@ -1,6 +1,7 @@
 //! Labels: role keys, registration steps, step IDs and paths, claim sets with claim keys and
 //! static entries, entry boxes (spec/sync.md §2, §5, spec/wire.md §8, §7).
 
+use crate::cbor::{bytes, get_bytes, get_key};
 use crate::Error;
 use osis_base::cbor::{Limits, decode, encode};
 use osis_base::format::{MAX_CLAIMS, MAX_MESSAGE, MAX_OBJECT_DEPTH};
@@ -70,21 +71,6 @@ pub fn genesis_label(admin: &Secret32, index: u64) -> LabelId {
 /// epoch a server's head registers (spec/sync.md §2).
 pub fn match_secret<'a>(pk: &VerifyingKey, role: LabelRole, index: u64, candidates: impl IntoIterator<Item = &'a Secret32>) -> Option<usize> {
     candidates.into_iter().position(|s| label_role_key(role, s, index).verifying_key() == *pk)
-}
-
-fn bytes(b: &[u8]) -> Value {
-    Value::Bytes(b.to_vec())
-}
-
-fn get_bytes<const N: usize>(v: &Value, what: &'static str) -> Result<[u8; N], Error> {
-    match v {
-        Value::Bytes(b) => b.as_slice().try_into().map_err(|_| Error::Malformed(what)),
-        _ => Err(Error::Malformed(what)),
-    }
-}
-
-fn get_key(v: &Value, what: &'static str) -> Result<VerifyingKey, Error> {
-    VerifyingKey::from_bytes(&get_bytes(v, what)?).map_err(|_| Error::Malformed(what))
 }
 
 /// Limits for steps, claim sets and the structures holding them (spec/wire.md §13).
