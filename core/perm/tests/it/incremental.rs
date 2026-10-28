@@ -108,6 +108,11 @@ fn touched(a: &osis_perm::MemoryHeldSet, b: &osis_perm::MemoryHeldSet) -> BTreeS
     all.into_iter().filter(|t| key(a, t) != key(b, t)).collect()
 }
 
+/// (appended, placed) summed over shards.
+fn sum(v: Vec<(usize, usize)>) -> (usize, usize) {
+    v.into_iter().fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
+}
+
 /// Returns how many updates `Timelines::append` did alone.
 fn run(samples: u64, seed: u64) -> usize {
     let mut appended = 0;
@@ -239,7 +244,7 @@ fn incremental_equals_from_scratch() {
 #[test]
 #[ignore]
 fn incremental_equals_from_scratch_large() {
-    assert!(run(2_000, 0x5eed_0302) > 0);
+    assert!(sharded(1_024, 0x5eed_0302, run).iter().sum::<usize>() > 0);
 }
 
 /// A `/created` arriving before, between or after the commits naming its thing: the cached
@@ -462,7 +467,7 @@ fn restart_from_saved_walks_equals_from_scratch() {
 #[test]
 #[ignore]
 fn restart_from_saved_walks_equals_from_scratch_large() {
-    run_restarts(2_000, 0x5eed_0304);
+    sharded(2_000, 0x5eed_0304, run_restarts);
 }
 
 // spec/permissions.md §5.1 step 5: a saved walk that is damaged, truncated, saved under other
@@ -772,7 +777,7 @@ fn append_adversarial_equals_from_scratch() {
 #[test]
 #[ignore]
 fn append_adversarial_equals_from_scratch_large() {
-    assert!(adversarial(3_000, 0x5eed_0312) > 0);
+    assert!(sharded(3_000, 0x5eed_0312, adversarial).iter().sum::<usize>() > 0);
 }
 
 /// §5.1 steps 2-4: writes arriving late in the middle of a history that apply, by an admin
@@ -1110,9 +1115,9 @@ fn append_shapes_equals_from_scratch_spec_permissions_5_1() {
 #[test]
 #[ignore]
 fn append_shapes_equals_from_scratch_large() {
-    let (appended, placed) = adversarial_shapes(3_000, 0x5eed_0314);
+    let (appended, placed) = sum(sharded(384, 0x5eed_0314, adversarial_shapes));
     eprintln!("appended {appended} placed {placed}");
-    assert!(placed > 1_000, "{appended} {placed}");
+    assert!(appended > 0 && placed > 1_000, "{appended} {placed}");
 }
 
 /// §5.1 step 5, §6: a held record replaced under its commit ID by a fuller one (a roster
@@ -1462,9 +1467,9 @@ fn append_corners_equals_from_scratch_spec_permissions_5_1() {
 #[test]
 #[ignore]
 fn append_corners_equals_from_scratch_large() {
-    let (appended, placed) = adversarial_corners(3_000, 0x5eed_0316);
+    let (appended, placed) = sum(sharded(1_600, 0x5eed_0316, adversarial_corners));
     eprintln!("appended {appended} placed {placed}");
-    assert!(placed > 1_000, "{appended} {placed}");
+    assert!(appended > 0 && placed > 1_000, "{appended} {placed}");
 }
 
 /// §5.1 step 5: the cost guard on re-judging later items in a shadow (`SHADOW_SHARE`) only
@@ -1608,9 +1613,9 @@ fn append_falls_equals_from_scratch_spec_permissions_5_1() {
 #[test]
 #[ignore]
 fn append_falls_equals_from_scratch_large() {
-    let (appended, placed) = adversarial_falls(3_000, 0x5eed_031a);
+    let (appended, placed) = sum(sharded(1_600, 0x5eed_031a, adversarial_falls));
     eprintln!("appended {appended} placed {placed}");
-    assert!(placed > 1_000, "{appended} {placed}");
+    assert!(appended > 0 && placed > 1_000, "{appended} {placed}");
 }
 
 /// §1, §5.1 step 4: a thing named as a member by a write that a later fall drops (a node

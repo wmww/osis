@@ -147,7 +147,7 @@ fn joint_model_agrees() {
 #[test]
 #[ignore]
 fn joint_model_agrees_large() {
-    joint_run(100_000, 0x5eed_0002);
+    sharded(100_000, 0x5eed_0002, joint_run);
 }
 
 /// An edges-model history: node 0 owns the one target T; genesis edges are its writes at t=0.
@@ -247,7 +247,7 @@ fn edges_model_agrees() {
 #[test]
 #[ignore]
 fn edges_model_agrees_large() {
-    edges_run(100_000, 0x5eed_0004);
+    sharded(100_000, 0x5eed_0004, edges_run);
 }
 
 fn snap_diff(h: &snapshot::SHist) -> Option<String> {
@@ -342,5 +342,5 @@ fn snapshot_model_agrees() {
 #[test]
 #[ignore]
 fn snapshot_model_agrees_large() {
-    snap_run(50_000, 0x5eed_0006);
+    sharded(50_000, 0x5eed_0006, snap_run);
 }

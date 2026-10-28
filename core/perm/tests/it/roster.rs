@@ -147,7 +147,7 @@ fn joint_resnapshot_neutral() {
 #[test]
 #[ignore = "tier 2"]
 fn joint_resnapshot_neutral_large() {
-    run_joint(20_000, 0x5eed_0102);
+    sharded(20_000, 0x5eed_0102, run_joint);
 }
 
 fn run_edges(samples: u64, seed: u64) {
@@ -203,7 +203,7 @@ fn edges_resnapshot_neutral() {
 #[test]
 #[ignore = "tier 2"]
 fn edges_resnapshot_neutral_large() {
-    run_edges(30_000, 0x5eed_0104);
+    sharded(30_000, 0x5eed_0104, run_edges);
 }
 
 fn run_snapshot(samples: u64, seed: u64) {
@@ -271,7 +271,7 @@ fn snapshot_resnapshot_neutral() {
 #[test]
 #[ignore = "tier 2"]
 fn snapshot_resnapshot_neutral_large() {
-    run_snapshot(30_000, 0x5eed_0106);
+    sharded(30_000, 0x5eed_0106, run_snapshot);
 }
 
 /// §6 ledger carried forward whole: a second snapshot keeps the first one's entries verbatim.
