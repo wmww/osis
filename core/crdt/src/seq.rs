@@ -882,19 +882,6 @@ pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, nested: bool
     elems.retain(|d, el| el.keeps(d));
 }
 
-/// `Fragment::dots_in` of a sequence: a flag or a position write of theirs (other than an
-/// element's own creation, which `remove_dots` keeps), or one inside a list element; with
-/// `holds` also content of an element they created, else not inside such an element.
-pub(crate) fn dots_in(s: &Seq, pred: &dyn Fn(&Dot) -> bool, holds: bool) -> bool {
-    s.elems().iter().any(|(d, el)| {
-        let theirs = pred(d.owner());
-        (holds && theirs && !matches!(el.content, SeqContent::None))
-            || el.deleted.as_ref().is_some_and(|x| pred(x.0.dot.owner()))
-            || el.pos.iter().any(|p| p.0.dot != *d && pred(p.0.dot.owner()))
-            || ((holds || !theirs) && matches!(&el.content, SeqContent::Frag(f) if f.dots_in(pred, holds)))
-    })
-}
-
 /// Elements of the embedding of register `r` into a text slot (§7); the caller sets the reset.
 /// Their stamps `(s.ts, Derived(s.dot), i)` already order right after `s` (`Dot`'s order, §2.2).
 pub(crate) fn embed_text(r: &Register) -> BTreeMap<Dot, SeqElem> {
