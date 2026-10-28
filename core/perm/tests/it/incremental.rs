@@ -1315,6 +1315,33 @@ fn saved_walk_restored_after_a_node_joined_spec_permissions_5_1() {
     assert!(check(&held, &inc, &nodes).is_none(), "{:?}", check(&held, &inc, &nodes));
 }
 
+/// Two components with saved walks merge (the root of one is no root any more) and the node
+/// restarts before saving: the walk under the old root is still deleted by the next save.
+#[test]
+fn saved_walk_under_old_root_deleted_after_restart() {
+    use osis_base::Role::{Admin, Write};
+    let mut w = World::new();
+    let n = w.nodes(4);
+    let (g1, g2) = (w.thing(n[0]), w.thing(n[1]));
+    w.set(n[0], g1, n[2], edge(Write), 1, &[]);
+    w.set(n[1], g2, n[3], edge(Write), 2, &[]);
+    let held = w.held();
+    let mut inc = Timelines::new();
+    inc.update(&held);
+    let mut disk = Disk::new();
+    let mut saves = inc.to_save(SALT, 1, true);
+    inc.saved(std::mem::take(&mut saves.done));
+    store(&mut disk, saves);
+    assert_eq!(disk.len(), 2);
+    w.set(n[0], g1, n[1], edge(Admin), 3, &[]);
+    let held = w.held();
+    let inc = reopen(&held, &disk, SALT);
+    assert_eq!(inc.restored(), 1);
+    store(&mut disk, inc.to_save(SALT, 1, false));
+    let root = *n.iter().chain([&g1, &g2]).min().unwrap();
+    assert_eq!(disk.keys().copied().collect::<Vec<_>>(), vec![root]);
+}
+
 /// Random histories built for the placement paths' corners (spec/permissions.md §5.1 steps
 /// 2-5, §6): no writes before the late ones (a late write is often its author's first on its
 /// target, so falls before the old first write appear), ties in ts, an owner chain through
@@ -1737,9 +1764,8 @@ fn leaves_past_owner_depth_spec_permissions_1() {
 
 /// Saves `inc`'s walks to `disk` (`to_save`, all or the due ones) and checks each saved walk is
 /// under a component's root (its least thing): a walk under a thing that is no root any more
-/// is retired and deleted, never left behind. `stale`: keys from before a restart, exempt
-/// (issues/walk-cache-restart-leak.md).
-fn save_checked(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, disk: &mut Disk, min: usize, all: bool, stale: &BTreeSet<Tid>) -> Option<Tid> {
+/// is retired and deleted, never left behind (across restarts too).
+fn save_checked(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, disk: &mut Disk, min: usize, all: bool) -> Option<Tid> {
     let mut saves = inc.to_save(SALT, min, all);
     inc.saved(std::mem::take(&mut saves.done));
     store(disk, saves);
@@ -1765,7 +1791,7 @@ fn save_checked(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, disk: &mut
             *r = (*r).min(x);
         }
     }
-    disk.keys().filter(|r| !stale.contains(*r)).find(|r| !inc.get(r).is_some_and(|tl| comps.get(&(tl as *const Timeline)) == Some(*r))).copied()
+    disk.keys().find(|r| !inc.get(r).is_some_and(|tl| comps.get(&(tl as *const Timeline)) == Some(*r))).copied()
 }
 
 /// Random histories biased toward thing creation: owner trees grown as commits arrive (leaves,
@@ -1850,7 +1876,7 @@ fn creation_histories(samples: u64, seed: u64) -> usize {
         general.set_general_only(true);
         fast.update(&prev);
         general.update(&prev);
-        let (mut disk, mut gdisk, mut stale) = (Disk::new(), Disk::new(), BTreeSet::new());
+        let (mut disk, mut gdisk) = (Disk::new(), Disk::new());
         let min = 1 + rng.below(3);
         let mut i = 0;
         while i < order.len() {
@@ -1900,14 +1926,13 @@ fn creation_histories(samples: u64, seed: u64) -> usize {
             // root once written (a leaf below the root moves it: the old one is retired)
             if rng.below(3) == 0 {
                 let all = rng.below(4) == 0;
-                let g = save_checked(&mut general, &held, &mut gdisk, min, all, &BTreeSet::new());
+                let g = save_checked(&mut general, &held, &mut gdisk, min, all);
                 assert!(g.is_none(), "seed {seed:#x} sample {s} arrival {i}: general: a walk saved under {g:?}, not a root");
-                let f = save_checked(&mut fast, &held, &mut disk, min, all, &stale);
+                let f = save_checked(&mut fast, &held, &mut disk, min, all);
                 assert!(f.is_none(), "seed {seed:#x} sample {s} arrival {i}: a walk saved under {f:?}, not a root");
             }
             if rng.below(5) == 0 {
                 fast = reopen(&held, &disk, SALT);
-                stale.extend(disk.keys().copied());
                 if let Some(d) = check_more(&held, &fast, &all_nodes) {
                     panic!("seed {seed:#x} sample {s} arrival {i} after a restart: {d}");
                 }
