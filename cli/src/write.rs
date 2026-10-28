@@ -3,7 +3,7 @@
 
 use crate::args::{CreateArgs, OpArgs, PlaceArgs, RmArgs, ScriptCmd, ScriptLine, SetArgs, SubCmd, WriteFlags};
 use crate::text::{self, PStep};
-use crate::{Ctx, parse_dur, parse_ts, usage};
+use crate::{Ctx, key_ty, parse_dur, parse_ts, ty_in, usage};
 use clap::Parser;
 use osis::{AspectKey, AspectWrite, CaseId, Error, Key, Path, Place, Retention, Step, Tid, Value, WallMs};
 use osis_schema::{Bound, PurgeBy, Type};
@@ -28,20 +28,13 @@ pub fn place(ctx: &Ctx<'_>, p: &PlaceArgs) -> anyhow::Result<Place> {
     })
 }
 
-/// The schema type of an aspect key, owned.
-fn root_type(key: &Key) -> Option<Type> {
-    key.ty().cloned()
-}
-
 /// Parses a path. `[n]` on an untyped position: for a read, a list index if the saved value
 /// there is a list, else a map key; for a write (`write: true`), a map key, and an error when
 /// the saved value there is a list (untyped lists take no index writes) or when this batch
 /// already wrote the aspect (its pending state is invisible, so the saved one cannot decide).
 pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &Key, s: &str, write: bool) -> anyhow::Result<Path> {
-    let rt = root_type(key);
-    let ty = key.schema().zip(rt.as_ref()).map(|(s, t)| (&**s, t));
     let al = |w: &str| ctx.alias(w);
-    let steps = text::parse_path(s, ty, &al).map_err(|e| usage(format!("bad path {s:?}: {e}")))?;
+    let steps = text::parse_path(s, key_ty(key), &al).map_err(|e| usage(format!("bad path {s:?}: {e}")))?;
     let mut out = Vec::new();
     let mut cur: Option<Option<Value>> = None;
     for st in steps {
@@ -74,8 +67,7 @@ fn type_at(key: &Key, p: &Path) -> Option<Type> {
     text::type_at_path(s, key.ty()?, &p.0)
 }
 
-fn with_flags<'w, 'd>(a: AspectWrite<'w, 'd, Key>, f: &WriteFlags, ctx: &Ctx<'_>, key: &Key) -> anyhow::Result<AspectWrite<'w, 'd, Key>> {
-    let mut a = a;
+fn with_flags<'w, 'd>(mut a: AspectWrite<'w, 'd, Key>, f: &WriteFlags, key: &Key) -> anyhow::Result<AspectWrite<'w, 'd, Key>> {
     if let Some(d) = &f.expires_in {
         a = a.expires_in(parse_dur(d)?);
     }
@@ -86,7 +78,6 @@ fn with_flags<'w, 'd>(a: AspectWrite<'w, 'd, Key>, f: &WriteFlags, ctx: &Ctx<'_>
         let base = key.schema().and_then(|s| s.defaults(key.ak().as_str())).map(|d| d.retention).unwrap_or_default();
         a = a.retention(retention(r, base)?);
     }
-    let _ = ctx;
     Ok(a)
 }
 
@@ -137,8 +128,7 @@ pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &
     }
     for pair in a.pairs.chunks(2) {
         let key = ctx.key(&pair[0])?;
-        let rt = root_type(&key);
-        let v = ctx.value(&pair[1], key.schema().zip(rt.as_ref()).map(|(s, t)| (&**s, t)))?;
+        let v = ctx.value(&pair[1], key_ty(&key))?;
         w.at(t, key).set(&v)?;
     }
     if let Some(n) = &a.as_ {
@@ -157,7 +147,7 @@ fn set(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &SetArgs, replace: bool) -
             [p] => path(ctx, t, &key, p, true)?,
             _ => return Err(usage("--stream takes [PATH] and the value on stdin")),
         };
-        let mut aw = with_flags(w.at(t, key.clone()), &a.w, ctx, &key)?;
+        let mut aw = with_flags(w.at(t, key.clone()), &a.w, &key)?;
         aw.path(p).set_stream(&mut *ctx.stdin)?;
         return Ok(());
     }
@@ -167,8 +157,8 @@ fn set(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &SetArgs, replace: bool) -
         _ => return Err(usage("expected [PATH] VALUE")),
     };
     let pt = type_at(&key, &p);
-    let v = ctx.value(val, key.schema().zip(pt.as_ref()).map(|(s, t)| (&**s, t)))?;
-    let mut aw = with_flags(w.at(t, key.clone()), &a.w, ctx, &key)?;
+    let v = ctx.value(val, ty_in(&key, pt.as_ref()))?;
+    let mut aw = with_flags(w.at(t, key.clone()), &a.w, &key)?;
     match (p.0.is_empty(), replace) {
         (true, false) => aw.set(&v)?,
         (true, true) => aw.replace(&v)?,
@@ -206,36 +196,23 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
     let n = |k: usize| -> anyhow::Result<()> {
         if args.len() == k { Ok(()) } else { Err(usage(format!("{} takes {k} argument(s)", a.op))) }
     };
-    // Parse every argument before borrowing the batch.
-    enum O {
-        Insert(usize, Vec<Value>),
-        Delete(Range<usize>),
-        Move(Range<usize>, usize),
-        Splice(Range<usize>, String),
-        Add(Value),
-        RemoveElem(Value),
-        Put(Value, Value),
-        RemoveKey(Value),
-        Inc(Value),
-        Observe(Value),
-        SetCase(u64, Option<Value>),
-    }
-    let o = match a.op.as_str() {
+    let mut aw = with_flags(w.at(t, key.clone()), &a.w, &key)?;
+    let mut pw = aw.path(p);
+    match a.op.as_str() {
         "insert" => {
             if args.len() < 2 {
                 return Err(usage("insert I V..."));
             }
-            let i = index(&args[0])?;
             let vs = args[1..].iter().map(|v| ctx.value(v, ety)).collect::<anyhow::Result<Vec<_>>>()?;
-            O::Insert(i, vs)
+            pw.insert(index(&args[0])?, &vs)?
         }
         "delete" => {
             n(1)?;
-            O::Delete(range(&args[0])?)
+            pw.delete(range(&args[0])?)?
         }
         "move" => {
             n(2)?;
-            O::Move(range(&args[0])?, index(&args[1])?)
+            pw.move_range(range(&args[0])?, index(&args[1])?)?
         }
         "splice" => {
             n(2)?;
@@ -248,32 +225,32 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
             } else {
                 s
             };
-            O::Splice(range(&args[0])?, s)
+            pw.splice(range(&args[0])?, &s)?
         }
         "undelete" => return Err(Error::Unsupported("undelete (issues/api-deferred.md)").into()),
         "add" => {
             n(1)?;
-            O::Add(ctx.value(&args[0], ety)?)
+            pw.add(&ctx.value(&args[0], ety)?)?
         }
         "remove-elem" => {
             n(1)?;
-            O::RemoveElem(ctx.value(&args[0], ety)?)
+            pw.remove_elem(&ctx.value(&args[0], ety)?)?
         }
         "put" => {
             n(2)?;
-            O::Put(ctx.value(&args[0], ety)?, ctx.value(&args[1], vty)?)
+            pw.put(&ctx.value(&args[0], ety)?, &ctx.value(&args[1], vty)?)?
         }
         "remove-key" => {
             n(1)?;
-            O::RemoveKey(ctx.value(&args[0], ety)?)
+            pw.remove_key(&ctx.value(&args[0], ety)?)?
         }
         "inc" => {
             n(1)?;
-            O::Inc(ctx.value(&args[0], None)?)
+            pw.inc(&ctx.value(&args[0], None)?)?
         }
         "observe" => {
             n(1)?;
-            O::Observe(ctx.value(&args[0], None)?)
+            pw.observe(&ctx.value(&args[0], None)?)?
         }
         "set-case" => {
             if args.is_empty() || args.len() > 2 {
@@ -284,24 +261,9 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
                 Some(v) => Some(ctx.value(v, sch.as_deref().zip(payload_ty.as_ref()))?),
                 None => None,
             };
-            O::SetCase(id, pl)
+            pw.set_case(CaseId(id), pl)?
         }
         other => return Err(usage(format!("unknown op {other:?}"))),
-    };
-    let mut aw = with_flags(w.at(t, key.clone()), &a.w, ctx, &key)?;
-    let mut pw = aw.path(p);
-    match o {
-        O::Insert(i, vs) => pw.insert(i, &vs)?,
-        O::Delete(r) => pw.delete(r)?,
-        O::Move(r, to) => pw.move_range(r, to)?,
-        O::Splice(r, s) => pw.splice(r, &s)?,
-        O::Add(v) => pw.add(&v)?,
-        O::RemoveElem(v) => pw.remove_elem(&v)?,
-        O::Put(k, v) => pw.put(&k, &v)?,
-        O::RemoveKey(k) => pw.remove_key(&k)?,
-        O::Inc(v) => pw.inc(&v)?,
-        O::Observe(v) => pw.observe(&v)?,
-        O::SetCase(id, pl) => pw.set_case(CaseId(id), pl)?,
     }
     Ok(())
 }
@@ -310,21 +272,15 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
 pub fn apply(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mut Did) -> anyhow::Result<()> {
     apply_one(ctx, w, c, did)?;
     // Record what this batch wrote (path resolution must not trust the saved state there).
-    let touched: Vec<(String, String)> = match c {
-        ScriptCmd::Set(a) | ScriptCmd::Replace(a) => vec![(a.t.clone(), a.ak.clone())],
-        ScriptCmd::Rm(a) => vec![(a.t.clone(), a.ak.clone())],
-        ScriptCmd::Op(a) => vec![(a.t.clone(), a.ak.clone())],
-        ScriptCmd::Delete { t } => vec![(t.clone(), String::new())],
-        ScriptCmd::Create(_) => {
-            let t = did.created.last().map(|(_, t)| t.to_uri()).unwrap_or_default();
-            vec![(t, String::new())]
+    let touched = match c {
+        ScriptCmd::Set(SetArgs { t, ak, .. }) | ScriptCmd::Replace(SetArgs { t, ak, .. }) | ScriptCmd::Rm(RmArgs { t, ak, .. }) | ScriptCmd::Op(OpArgs { t, ak, .. }) => {
+            Some((ctx.tid(t)?, ak.clone()))
         }
-        _ => Vec::new(),
+        ScriptCmd::Delete { t } => Some((ctx.tid(t)?, String::new())),
+        ScriptCmd::Create(_) => did.created.last().map(|(_, t)| (*t, String::new())),
+        _ => None,
     };
-    for (t, ak) in touched {
-        let t = ctx.tid(&t)?;
-        ctx.pending.insert((t, ak));
-    }
+    ctx.pending.extend(touched);
     Ok(())
 }
 
