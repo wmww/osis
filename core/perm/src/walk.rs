@@ -437,21 +437,6 @@ pub(crate) enum Placement {
     From(usize, Point),
 }
 
-/// `c`'s own effects in a shadow walk (`Walked::place_shadowed`), to splice in.
-struct Own {
-    log: Vec<Undo>,
-    history: Vec<Change>,
-    demotions: BTreeMap<(Tid, Tid), Vec<Demotion>>,
-    falls: BTreeMap<(Tid, Tid), Vec<Fall>>,
-    applied: BTreeMap<WriteId, Applied>,
-    by_author_target: BTreeMap<(Tid, Tid), Vec<WriteId>>,
-    /// Per edge it set: dead, prior, prior per node, setter after it.
-    keys: BTreeMap<(Tid, Tid), KeyState>,
-    edges: BTreeMap<(Tid, Tid), Option<Edge>>,
-}
-
-type KeyState = (bool, Option<Edge>, Option<BTreeMap<Tid, Edge>>, Option<WriteId>);
-
 /// What one item did to the walk state (`Pass::effects` in a shadow, `Walked::recorded` in
 /// the walk): its edge changes, undo entries (which hold every other state it changed, the
 /// value before), its writes as applied, and the demotions and falls it recorded.
@@ -613,49 +598,27 @@ impl Walked {
     fn place_plain(&mut self, input: &Input, c: &MembershipCommit, i: usize, placed: Vec<(u32, &EdgeOp, Attr)>, mut at: Edges) -> Placement {
         let p = c.point();
         let (l, h) = self.marks.get(i).copied().unwrap_or((self.log.len(), self.history.len()));
-        let (mut log, mut hist) = (Vec::new(), Vec::new());
+        // logged apart, then spliced in at the mark
+        let (log, hist) = (std::mem::take(&mut self.log), std::mem::take(&mut self.history));
         for (k, o, attr) in placed {
             let key = (o.member, o.target);
             let id = WriteId::Op(c.id, k);
             let new = o.edge.map(|e| Edge { since: None, ..e });
             // as `Pass::record`, at its place in walk order
             self.list_write((c.author, o.target), id, p);
-            log.push(Undo::ByAuthorTarget((c.author, o.target)));
+            self.log.push(Undo::ByAuthorTarget((c.author, o.target)));
             let was = self.applied.insert(id, Applied { author: c.author, target: o.target, point: p, attr, dots: o.dots });
-            log.push(Undo::Applied(id, was));
-            // as `Pass::change` with no audit: the key's state at the end is its state here
-            let old = self.edges.get(&o.member, &o.target).copied().filter(|_| !self.dead.contains(&key));
-            let was = mark(&mut self.dead, key, new.is_some_and(|e| !e.alive_at(Some(p.ts))));
-            log.push(Undo::Dead(key, was));
+            self.log.push(Undo::Applied(id, was));
+            // as `Pass::change` (no audit: `insert`): the key's state at the end is its state here
+            let old = self.set_alive(p, key, new);
             let explicit = matches!(attr, Attr::By(Class::Chain | Class::Edge));
             let restores = old.is_some() || self.prior.contains_key(&key);
             let own = explicit && restores && View::new(&input.owners, &at, Some(p.ts)).reach_backward(&o.member).contains(&c.author);
-            log.push(Undo::Edge(o.member, o.target, self.edges.get(&o.member, &o.target).copied()));
-            self.edges.set(o.member, o.target, new);
+            self.set_edge(key, new);
             at.set(o.member, o.target, new);
-            let was = self.setter.insert(key, id);
-            log.push(Undo::Setter(key, was));
-            if !explicit {
-                hist.push(Change { point: p, member: o.member, target: o.target, edge: new, explicit: None, audited: None });
-                if let Some(o) = old {
-                    let pr = self.prior.get(&key).copied();
-                    let was = self.prior.insert(key, join(pr, o));
-                    log.push(Undo::Prior(key, was));
-                }
-                continue;
-            }
-            let all = self.prior.remove(&key);
-            log.push(Undo::Prior(key, all));
-            let mine = self.prior_node.remove(&key);
-            log.push(Undo::PriorNode(key, mine.clone()));
-            let base = restore_base(all, old);
-            hist.push(Change { point: p, member: o.member, target: o.target, edge: new, explicit: Some(c.frontier.clone()), audited: None });
-            if let (true, Some(b)) = (own, base) {
-                let r = join(mine.as_ref().and_then(|m| m.get(&c.author)).copied(), b);
-                log.push(Undo::PriorNode(key, None));
-                self.prior_node.entry(key).or_default().insert(c.author, r);
-            }
+            self.record_change(p, key, old, new, Some(id), explicit.then(|| (c.frontier.clone(), own.then_some(c.author))));
         }
+        let (log, hist) = (std::mem::replace(&mut self.log, log), std::mem::replace(&mut self.history, hist));
         let (nl, nh) = (log.len(), hist.len());
         self.log.splice(l..l, log);
         self.history.splice(h..h, hist);
@@ -680,38 +643,18 @@ impl Walked {
         let end = (self.log.len(), self.history.len());
         let (_, h) = self.marks.get(i).copied().unwrap_or(end);
         let olds: Vec<((Tid, Tid), Option<Edge>)> = keys.iter().map(|k| (*k, before.get(&k.0, &k.1).copied())).collect();
-        let (own, extra, stop) = {
+        let (own, own_edges, extra, stop) = {
             let mut sh = Pass::shadow(input, epoch.clone(), dropped.clone(), before, self);
             // its edges' state at `p` is theirs at the end (no later item writes them)
-            for k in keys {
-                if self.dead.contains(k) {
-                    sh.w.dead.insert(*k);
-                }
-                if let Some(e) = self.prior.get(k) {
-                    sh.w.prior.insert(*k, *e);
-                }
-                if let Some(m) = self.prior_node.get(k) {
-                    sh.w.prior_node.insert(*k, m.clone());
-                }
-                if let Some(w) = self.setter.get(k) {
-                    sh.w.setter.insert(*k, *w);
-                }
-            }
+            sh.w.copy_records(self, keys);
             sh.w.marks.push((0, 0));
             if sh.commit(c) || !sh.fresh.is_empty() {
                 return Placement::Declined;
             }
-            let own = Own {
-                log: std::mem::take(&mut sh.w.log),
-                history: std::mem::take(&mut sh.w.history),
-                demotions: std::mem::take(&mut sh.w.demotions),
-                falls: std::mem::take(&mut sh.w.falls),
-                applied: sh.w.applied.clone(),
-                by_author_target: sh.w.by_author_target.clone(),
-                keys: keys.iter().map(|k| (*k, (sh.w.dead.contains(k), sh.w.prior.get(k).copied(), sh.w.prior_node.get(k).cloned(), sh.w.setter.get(k).copied()))).collect(),
-                edges: keys.iter().map(|k| (*k, sh.w.edges.get(&k.0, &k.1).copied())).collect(),
-            };
-            sh.w.marks.clear();
+            // `c`'s effects; the shadow goes on with its edges and writes (audits read them)
+            let mut own = std::mem::take(&mut sh.w);
+            sh.w = Walked { edges: std::mem::take(&mut own.edges), applied: own.applied.clone(), by_author_target: own.by_author_target.clone(), ..Walked::default() };
+            let own_edges: Vec<((Tid, Tid), Option<Edge>)> = keys.iter().map(|k| (*k, sh.w.edges.get(&k.0, &k.1).copied())).collect();
             let mut extra: Vec<(usize, (Tid, Tid), Fall)> = Vec::new();
             let mut at = h;
             let mut stop = None;
@@ -745,7 +688,7 @@ impl Walked {
                             sh.set_tracked(k.0, k.1, *e, ts);
                         }
                         far = !reached(&sh);
-                        for (k, e) in &own.edges {
+                        for (k, e) in &own_edges {
                             sh.set_tracked(k.0, k.1, *e, ts);
                         }
                     }
@@ -772,7 +715,7 @@ impl Walked {
                     extra.extend(v.into_iter().map(|f| (j, k, f)));
                 }
             }
-            (own, extra, stop.and_then(|j| items.list.get(j)).map(|x| x.point))
+            (own, own_edges, extra, stop.and_then(|j| items.list.get(j)).map(|x| x.point))
         };
         // the falls `moved` brings: before every recorded one (none was up to the old first
         // write), undo entries at the end of their items' log segments
@@ -786,6 +729,7 @@ impl Walked {
             let cur = self.falls.entry(k).or_default();
             cur.splice(0..0, v);
         }
+        self.copy_records(&own, keys);
         let nh = own.history.len();
         let mut c_log = own.log;
         let old = std::mem::take(&mut self.log);
@@ -834,13 +778,7 @@ impl Walked {
             let at = cur.partition_point(|f| f.point < p);
             cur.splice(at..at, v);
         }
-        for (k, (dead, prior, prior_node, setter)) in own.keys {
-            mark(&mut self.dead, k, dead);
-            put(&mut self.prior, k, prior);
-            put(&mut self.prior_node, k, prior_node);
-            put(&mut self.setter, k, setter);
-        }
-        for (k, e) in own.edges {
+        for (k, e) in own_edges {
             self.edges.set(k.0, k.1, e);
         }
         if let Some(q) = stop {
@@ -945,6 +883,77 @@ impl Walked {
         let old = self.edges.get(&key.0, &key.1).copied().filter(|_| !self.dead.contains(&key));
         let base = restore_base(self.prior.get(&key).copied(), old);
         self.prior_node.get(&key).into_iter().flatten().fold(base, |r, (_, e)| Some(join(r, *e)))
+    }
+
+    /// `from`'s edge records (dead, prior, prior per node, setter) of edges `keys`.
+    fn copy_records(&mut self, from: &Walked, keys: &BTreeSet<(Tid, Tid)>) {
+        for k in keys {
+            mark(&mut self.dead, *k, from.dead.contains(k));
+            put(&mut self.prior, *k, from.prior.get(k).copied());
+            put(&mut self.prior_node, *k, from.prior_node.get(k).cloned());
+            put(&mut self.setter, *k, from.setter.get(k).copied());
+        }
+    }
+
+    /// Sets edge `key` (logged; `Pass::set_edge` also keeps its graph).
+    fn set_edge(&mut self, (m, t): (Tid, Tid), e: Option<Edge>) {
+        self.log.push(Undo::Edge(m, t, self.edges.get(&m, &t).copied()));
+        self.edges.set(m, t, e);
+    }
+
+    /// Before a write at `point` sets edge `key` to `edge`: its value (alive: a value already
+    /// expired when written never conferred anything), `key` marked dead when `edge` is.
+    fn set_alive(&mut self, point: Point, key: (Tid, Tid), edge: Option<Edge>) -> Option<Edge> {
+        let old = self.edges.get(&key.0, &key.1).copied().filter(|_| !self.dead.contains(&key));
+        let was = mark(&mut self.dead, key, edge.is_some_and(|e| !e.alive_at(Some(point.ts))));
+        self.log.push(Undo::Dead(key, was));
+        old
+    }
+
+    fn set_setter(&mut self, k: (Tid, Tid), w: Option<WriteId>) {
+        let was = put(&mut self.setter, k, w);
+        self.log.push(Undo::Setter(k, was));
+    }
+
+    fn set_prior(&mut self, k: (Tid, Tid), e: Option<Edge>) -> Option<Edge> {
+        let was = put(&mut self.prior, k, e);
+        self.log.push(Undo::Prior(k, was));
+        was
+    }
+
+    /// The records of a write at `point` by `by` that set edge `key` from `old` (`set_alive`) to
+    /// `edge`, the edge itself set: its setter and history change, and the standings kept for
+    /// the next explicit write. `explicit`: an explicit write's frontier and its author when it
+    /// demoted itself (§5.1 step 4); it takes the kept standings and returns them (the base it
+    /// restores, those of single nodes) and whether it lowered the edge as restored.
+    fn record_change(&mut self, point: Point, key: (Tid, Tid), old: Option<Edge>, edge: Option<Edge>, by: Option<WriteId>, explicit: Option<(Option<Arc<Frontier>>, Option<Tid>)>) -> Option<(Option<Edge>, BTreeMap<Tid, Edge>, bool)> {
+        let (member, target) = key;
+        self.set_setter(key, by);
+        let Some((frontier, own)) = explicit else {
+            // No audit (self-removal, invite grant, epoch start, ledger end without a frontier):
+            // everyone below keeps the standing it had, for the next explicit write.
+            self.history.push(Change { point, member, target, edge, explicit: None, audited: None });
+            if let Some(o) = old {
+                let p = self.prior.get(&key).copied();
+                self.set_prior(key, Some(join(p, o)));
+            }
+            return None;
+        };
+        let all = self.set_prior(key, None);
+        let mine = self.prior_node.remove(&key);
+        self.log.push(Undo::PriorNode(key, mine.clone()));
+        let mine = mine.unwrap_or_default();
+        let base = restore_base(all, old);
+        let restored = mine.values().fold(base, |r, e| Some(join(r, *e)));
+        let lowered = exceeds(restored, edge, point.ts);
+        let audited = restored.filter(|_| lowered).map(|r| r.role);
+        self.history.push(Change { point, member, target, edge, explicit: Some(frontier), audited });
+        // the author demoted itself: its own standing is kept for the next explicit write
+        if let (Some(a), Some(b)) = (own, base) {
+            self.log.push(Undo::PriorNode(key, None));
+            self.prior_node.entry(key).or_default().insert(a, join(mine.get(&a).copied(), b));
+        }
+        Some((base, mine, lowered))
     }
 
     /// The items from `i` on that may read what setting edges `keys` changes (`insert`): into
@@ -1546,37 +1555,8 @@ impl<'a> Pass<'a> {
     }
 
     fn set_edge(&mut self, m: Tid, t: Tid, e: Option<Edge>) {
-        self.w.log.push(Undo::Edge(m, t, self.w.edges.get(&m, &t).copied()));
         self.graph.set(&m, &t, e);
-        self.w.edges.set(m, t, e);
-    }
-
-    fn set_dead(&mut self, k: (Tid, Tid), on: bool) {
-        let was = mark(&mut self.w.dead, k, on);
-        self.w.log.push(Undo::Dead(k, was));
-    }
-
-    fn set_setter(&mut self, k: (Tid, Tid), w: Option<WriteId>) {
-        let was = put(&mut self.w.setter, k, w);
-        self.w.log.push(Undo::Setter(k, was));
-    }
-
-    fn set_prior(&mut self, k: (Tid, Tid), e: Option<Edge>) -> Option<Edge> {
-        let was = put(&mut self.w.prior, k, e);
-        self.w.log.push(Undo::Prior(k, was));
-        was
-    }
-
-    fn take_prior_node(&mut self, k: (Tid, Tid)) -> BTreeMap<Tid, Edge> {
-        let was = self.w.prior_node.remove(&k);
-        self.w.log.push(Undo::PriorNode(k, was.clone()));
-        was.unwrap_or_default()
-    }
-
-    fn insert_prior_node(&mut self, k: (Tid, Tid), node: Tid, e: Edge) {
-        let was = self.w.prior_node.get(&k).cloned();
-        self.w.log.push(Undo::PriorNode(k, was));
-        self.w.prior_node.entry(k).or_default().insert(node, e);
+        self.w.set_edge((m, t), e);
     }
 
     fn view(&self, ts: Ts) -> View<'_> {
@@ -1640,42 +1620,17 @@ impl<'a> Pass<'a> {
     /// away. Returns whether D grew.
     fn change(&mut self, point: Point, (member, target): (Tid, Tid), edge: Option<Edge>, by: Option<WriteId>, auditor: Option<&Auditor>) -> bool {
         let key = (member, target);
-        // A value already expired when written never conferred anything.
-        let old = self.w.edges.get(&member, &target).copied().filter(|_| !self.w.dead.contains(&key));
-        self.set_dead(key, edge.is_some_and(|e| !e.alive_at(Some(point.ts))));
+        let old = self.w.set_alive(point, key, edge);
         // Before the change: does the author reach the member (a demotion of itself)? Only
         // asked when the edge restores something.
         let restores = old.is_some() || self.w.prior.contains_key(&key);
         let own = auditor.and_then(|a| a.author).filter(|a| restores && self.view(point.ts).reach_backward(&member).contains(a));
         self.set_tracked(member, target, edge, point.ts);
-        self.set_setter(key, by);
-        let explicit = auditor.map(|a| a.frontier_arc.clone());
-        let Some(aud) = auditor else {
-            // No audit (self-removal, invite grant, epoch start, ledger end without a frontier):
-            // everyone below keeps the standing it had, for the next explicit write.
-            self.w.history.push(Change { point, member, target, edge, explicit, audited: None });
-            if let Some(o) = old {
-                let p = self.w.prior.get(&key).copied();
-                self.set_prior(key, Some(join(p, o)));
-            }
-            return false;
-        };
-        let all = self.set_prior(key, None);
-        let mine: BTreeMap<Tid, Edge> = self.take_prior_node(key);
-        let base = restore_base(all, old);
-        let restored = mine.values().fold(base, |r, e| Some(join(r, *e)));
-        let lowered = exceeds(restored, edge, point.ts);
-        let audited = restored.filter(|_| lowered).map(|r| r.role);
-        self.w.history.push(Change { point, member, target, edge, explicit, audited });
-        let grew = lowered && self.audit_fall(key, base, &mine, point.ts, aud);
-        if let Some(a) = own {
-            // The author demoted itself: its own standing is kept for the next explicit write.
-            if let Some(b) = base {
-                let r = join(mine.get(&a).copied(), b);
-                self.insert_prior_node(key, a, r);
-            }
+        let explicit = auditor.map(|a| (a.frontier_arc.clone(), own));
+        match (auditor, self.w.record_change(point, key, old, edge, by, explicit)) {
+            (Some(aud), Some((base, mine, true))) => self.audit_fall(key, base, &mine, point.ts, aud),
+            _ => false,
         }
-        grew
     }
 
     fn record(&mut self, id: WriteId, a: Applied) {
@@ -1932,7 +1887,7 @@ impl<'a> Pass<'a> {
             if self.w.edges.get(m, &s.thing) != Some(&e) {
                 self.change(point, (*m, s.thing), Some(e), Some(id), None);
             } else {
-                self.set_setter((*m, s.thing), Some(id));
+                self.w.set_setter((*m, s.thing), Some(id));
             }
         }
     }
