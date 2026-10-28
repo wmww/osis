@@ -361,7 +361,7 @@ fn range_splits_follow_cache_spec_6() {
         t.split += x.split;
         t.missed += x.missed;
     }
-    assert!(t.split >= 50 && t.missed * 20 <= t.split, "{t:?}");
+    assert!(t.split >= 50 && t.missed * 30 <= t.split, "{t:?}");
     assert!(t.kept * 10 >= t.joins * 9, "{t:?}");
 }
 
@@ -397,7 +397,7 @@ fn derived_dots_follow_cache_spec_7() {
         t.derived += x.derived;
         t.missed_derived += x.missed_derived;
     }
-    assert!(t.derived >= 10 && t.missed_derived * 20 <= t.derived, "{t:?}");
+    assert!(t.derived >= 20 && t.missed_derived * 20 <= t.derived, "{t:?}");
 }
 
 /// Tier 2: the differential suite at size (more writers, rounds and seeds).

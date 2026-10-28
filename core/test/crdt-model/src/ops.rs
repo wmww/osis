@@ -376,7 +376,12 @@ pub fn seq_delete(w: &mut Writer, state: &Frag, from: usize, len: usize) -> Opti
     if len == 0 || from + len > vis.len() {
         return None;
     }
-    Some(flag(w, *text, &vis[from..from + len], true, None))
+    // the range: the slice of the full placement order from the first to the last visible element
+    // of the selection, hidden elements inside included
+    let (all, _) = crate::seq::linearize_full(elems);
+    let i0 = all.iter().position(|d| *d == vis[from]).unwrap();
+    let i1 = all.iter().position(|d| *d == vis[from + len - 1]).unwrap();
+    Some(flag(w, *text, &all[i0..=i1], true, None))
 }
 
 /// Undelete the given text dots, carrying their content. Text only: a list element is restored by re-inserting

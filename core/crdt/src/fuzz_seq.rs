@@ -11,7 +11,8 @@
 //! (`partial_follow`); an undo from the delta's footprint equals one from the whole state; a
 //! snapshot round trip keeps the read and re-encodes to the same bytes; a replica every commit
 //! of which has a model form equals the model's state (read only after a snapshot); and at the
-//! end every replica, given every commit, reads the same. The debug comparisons inside the crate
+//! end every replica, given every commit, reads the same (never rebooted: holds the same state).
+//! The debug comparisons inside the crate
 //! (`Batch`'s layered view against state + net effect, the layered placement against a whole
 //! pass, incremental slots join against a whole one) run throughout.
 
@@ -184,7 +185,8 @@ pub fn random_script(r: &mut Rng, steps: usize) -> Script {
                     Step::Ops { r: rr, ops, skew, per }
                 }
                 5 | 6 => Step::Model { r: rr, seed: w(r) },
-                7 => Step::Undo { r: rr, back: b(r) },
+                // half of them the last commit, which an undo restores when nothing joined since
+                7 => Step::Undo { r: rr, back: if r.chance(1, 2) { 0 } else { b(r) } },
                 8 | 9 => Step::Join { to: rr, pick: b(r), n: 1 + r.below(4) as u8, per: if r.chance(1, 2) { 1 + r.below(8) as u8 } else { 0 } },
                 10 => Step::Reboot { r: rr },
                 _ => Step::Bootstrap { r: rr, from: r.below(REPLICAS) as u8 },
@@ -548,21 +550,17 @@ impl World {
         };
         let cx = DeltaCtx { ts: ts(t), own: src.clone(), range, kind: DeltaKind::Writer };
         let (back, bytes) = wired(&d, &cx);
-        // the model writes the same delta for an insert of chars, a move (§5.7)
+        // the model writes the same delta for an insert of chars, a delete, a move (§5.7)
         let mut md = None;
-        if skew == 0 && self.reps[i].tracked && pops.len() == 1 && let Some(ms) = &self.reps[i].ms {
+        if skew == 0 && self.reps[i].tracked && pops.len() == 1 {
+            let ms = self.reps[i].ms.as_ref();
             let mut mw = MWriter::new(self.reps[i].msrc.clone(), t, lo);
-            md = match &pops[0].op {
-                Op::Insert { at, items: v } if !self.list => Some(mops::seq_insert(&mut mw, Some(ms), true, *at, items(v.first().cloned()).iter().filter_map(|c| if let Value::Str(c) = c { c.chars().next() } else { None }).map(Content::Char).collect())),
-                Op::Delete { at, len } => mops::seq_delete(&mut mw, ms, *at, *len),
-                Op::Move { at, len, to } => mops::seq_move(&mut mw, ms, *at, *len, *to),
+            md = match (&pops[0].op, ms) {
+                (Op::Insert { at, items: v }, _) if !self.list => Some(mops::seq_insert(&mut mw, ms, true, *at, items(v.first().cloned()).iter().filter_map(|c| if let Value::Str(c) = c { c.chars().next() } else { None }).map(Content::Char).collect())),
+                (Op::Delete { at, len }, Some(ms)) => mops::seq_delete(&mut mw, ms, *at, *len),
+                (Op::Move { at, len, to }, Some(ms)) => mops::seq_move(&mut mw, ms, *at, *len, *to),
                 _ => None,
             };
-            // a delete flags the hidden elements inside its range too (notes/crdt.md Seq ops),
-            // the model's only the visible ones: the same delta only without such
-            if matches!(pops[0].op, Op::Delete { .. }) && md.as_ref().is_some_and(|x| frag(x) != d) {
-                md = None;
-            }
             if let Some(x) = &md {
                 self.stats.model_ops += 1;
                 assert!(frag(x) == d, "the model writes the same delta: {pops:?}\n model {:?}\n ours {d:?}", frag(x));
@@ -665,6 +663,9 @@ impl World {
         }
         let reads: Vec<Option<Value>> = self.reps.iter().map(|r| r.st.read()).collect();
         assert!(reads.windows(2).all(|w| w[0] == w[1]), "replicas given every commit read the same: {reads:?}");
+        // and, never rebooted (a snapshot drops deleted chars), hold the same state
+        let whole: Vec<&Fragment> = self.reps.iter().filter(|r| r.whole).map(|r| &r.st).collect();
+        assert!(whole.windows(2).all(|w| w[0] == w[1]), "replicas given every commit hold the same state");
     }
 }
 
@@ -691,7 +692,16 @@ mod tests {
             all.joins += x.joins;
             all.model_joins += x.model_joins;
         }
-        assert!(all.commits > 150 && all.partial > 40 && all.one_by_one > 40 && all.model_ops > 10 && all.model_joins > 8 && all.undos > 10 && all.joins > 300, "{all:?}");
+        assert!(all.commits > 150 && all.partial > 40 && all.one_by_one > 40 && all.model_ops > 40 && all.model_joins > 8 && all.undos > 10 && all.restores > 2 && all.joins > 300, "{all:?}");
+    }
+
+    /// §6.2: a move on a replica holding a broken cycle (shrunk from a random script) re-places
+    /// the cycle's elements, so it reads unlike the same move on a plain sequence; it writes the
+    /// model's delta and the replica's state stays the model's.
+    #[test]
+    fn move_beside_broken_cycle_replays_spec_6_2() {
+        let s = Script{list:false,steps:vec![Step::Model{r:2,seed:43984,},Step::Ops{r:1,ops:vec![LocalOp::Insert{at:24797,item:28,},],skew:0,per:0,},Step::Model{r:2,seed:34863,},Step::Ops{r:1,ops:vec![LocalOp::Move{at:8501,len:81,to:16916,},],skew:0,per:0,},Step::Model{r:0,seed:4636,},Step::Ops{r:1,ops:vec![LocalOp::Move{at:56715,len:98,to:39210,},],skew:0,per:0,},Step::Ops{r:1,ops:vec![LocalOp::Move{at:25427,len:172,to:49462,},],skew:0,per:0,},Step::Ops{r:2,ops:vec![LocalOp::Delete{at:24211,len:208,},],skew:0,per:0,},Step::Join{to:0,pick:218,n:1,per:0,},Step::Ops{r:1,ops:vec![LocalOp::Delete{at:10145,len:211,},],skew:0,per:0,},Step::Ops{r:1,ops:vec![LocalOp::Delete{at:22635,len:234,},],skew:0,per:0,},Step::Ops{r:2,ops:vec![LocalOp::Move{at:22605,len:77,to:30330,},],skew:0,per:0,},Step::Model{r:2,seed:34675,},Step::Ops{r:2,ops:vec![LocalOp::Insert{at:34823,item:116,},],skew:0,per:0,},Step::Join{to:0,pick:63,n:1,per:0,},Step::Ops{r:2,ops:vec![LocalOp::Delete{at:34543,len:138,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Insert{at:48798,item:233,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Move{at:4606,len:60,to:40670,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Delete{at:53482,len:91,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Insert{at:16555,item:19,},],skew:0,per:0,},Step::Join{to:1,pick:251,n:2,per:0,},Step::Join{to:0,pick:106,n:4,per:0,},Step::Ops{r:2,ops:vec![LocalOp::Delete{at:57007,len:193,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Insert{at:43702,item:225,},],skew:0,per:0,},Step::Ops{r:1,ops:vec![LocalOp::Move{at:55088,len:176,to:23293,},],skew:0,per:0,},Step::Join{to:0,pick:60,n:4,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Move{at:30935,len:99,to:4073,},],skew:0,per:0,},],};
+        replay(&s);
     }
 
     /// Shrinks the failing script of `OSIS_SHRINK=<seed>` (as `random_scripts_replay_spec_5_7`
