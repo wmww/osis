@@ -386,7 +386,7 @@ impl SyncEngine {
         let head_id = head.id();
         self.set_head(conn, l, head)?;
         if let Some(c) = self.conns.get_mut(&conn) {
-            c.reopens.remove(&l);
+            c.req.reopens.remove(&l);
         }
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.phase = Phase::Open;
@@ -484,11 +484,11 @@ impl SyncEngine {
         // an upload or deposit refused whole goes again at a later pass; a timed delete too
         if let Some(c) = self.conns.get_mut(&conn) {
             if matches!(kind, Request::Upload | Request::Deposit) {
-                c.sent.retain(|(x, _), _| *x != l);
+                c.req.sent.retain(|(x, _), _| *x != l);
             }
             if kind == Request::Delete {
-                c.timed_sent.retain(|(x, _)| *x != l);
-                c.deleting.retain(|(x, _), _| *x != l);
+                c.req.timed_sent.retain(|(x, _)| *x != l);
+                c.req.deleting.retain(|(x, _), _| *x != l);
             }
         }
         let phase = self.lc(conn, &l).map(|x| x.phase.clone());
@@ -524,7 +524,7 @@ impl SyncEngine {
     pub(crate) fn reopen(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(g) = self.lc(conn, &l).map(|x| x.group) else { return Ok(()) };
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
-        let n = c.reopens.entry(l).or_insert(0);
+        let n = c.req.reopens.entry(l).or_insert(0);
         *n += 1;
         if *n > MAX_REOPENS {
             self.fail(conn, l);
