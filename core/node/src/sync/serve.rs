@@ -139,29 +139,8 @@ impl ServedLabel {
     }
 
     /// The path to the deepest step of `steps` (the lowest ID among equals).
-    pub(crate) fn new(group: osis_base::Tid, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Option<ServedLabel> {
-        let depth = |id: &StepId| {
-            let mut n = 0usize;
-            let mut cur = Some(*id);
-            while let Some(c) = cur {
-                let (s, _) = steps.get(&c)?;
-                n += 1;
-                if n > steps.len() {
-                    return None;
-                }
-                cur = s.prev;
-            }
-            Some(n)
-        };
-        let tip = steps.keys().filter_map(|id| depth(id).map(|d| (d, *id))).max_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)))?.1;
-        let mut path = Vec::new();
-        let mut cur = Some(tip);
-        while let Some(c) = cur {
-            let (s, _) = steps.get(&c)?;
-            path.push(s.clone());
-            cur = s.prev;
-        }
-        path.reverse();
+    pub(crate) fn new(group: osis_base::Tid, steps: &super::open::Steps) -> Option<ServedLabel> {
+        let path = super::open::deepest_path(steps)?.into_iter().map(|(s, _)| s.clone()).collect();
         let claims = steps.iter().filter_map(|(id, (_, c))| c.clone().map(|c| (*id, Arc::new(c)))).collect();
         Some(ServedLabel { group, path, claims })
     }

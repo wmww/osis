@@ -20,17 +20,7 @@ impl SyncEngine {
             if let Some(gl) = self.group_label(&g, l) {
                 let head = self.state.heads.iter().filter(|((_, x), _)| x == l).map(|(_, h)| h.id()).find(|h| gl.steps.contains_key(h)).or_else(|| gl.tips().into_iter().next());
                 if let Some(head) = head {
-                    let mut steps = Vec::new();
-                    let mut cur = Some(head);
-                    while let Some(c) = cur {
-                        let Some((s, set)) = gl.steps.get(&c) else { break };
-                        steps.push((s.clone(), set.clone()));
-                        cur = s.prev;
-                        if steps.len() > gl.steps.len() {
-                            return Err(Error::Corrupt("step cycle"));
-                        }
-                    }
-                    steps.reverse();
+                    let steps = super::open::path_to(&gl.steps, head).ok_or(Error::Corrupt("step cycle"))?.into_iter().cloned().collect();
                     w.record(&Record::Path { label: *l, steps })?;
                 }
             }
