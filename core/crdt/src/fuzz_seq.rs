@@ -218,7 +218,7 @@ fn deleted_runs(st: &Fragment) -> Vec<Vec<Dot>> {
     let Fragment::Seq(sq) = st else { return Vec::new() };
     let mut runs: Vec<Vec<Dot>> = vec![vec![]];
     for d in crate::linearize::place(sq.elems(), sq.text).iter().map(|r| r.dot.clone()) {
-        let Some(e) = crate::seq_span::elem(sq.elems(), &d) else { continue };
+        let Some(e) = crate::seq_span::Recs::elem(sq.elems(), &d) else { continue };
         match (e.flag(), &e.content) {
             (true, SeqContent::Char(_)) => runs.last_mut().into_iter().for_each(|x| x.push(d.clone())),
             (true, _) => {}
@@ -231,7 +231,7 @@ fn deleted_runs(st: &Fragment) -> Vec<Vec<Dot>> {
 
 fn char_of(st: &Fragment, d: &Dot) -> Option<Value> {
     let Fragment::Seq(sq) = st else { return None };
-    match crate::seq_span::elem(sq.elems(), d)?.content {
+    match crate::seq_span::Recs::elem(sq.elems(), d)?.content {
         SeqContent::Char(c) => Some(Value::Str(c.into())),
         _ => None,
     }

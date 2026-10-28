@@ -3,13 +3,13 @@
 
 use crate::batch::Batch;
 use crate::error::Error;
-use crate::fragment::{Fragment, Meta};
+use crate::fragment::Fragment;
 use crate::ops::{Op, PathOp, PathSeg, Writer};
 use crate::seq::{Anchor, Seq, SeqContent, SeqElem, SeqRead, visible};
 use crate::stamp::Dot;
 use crate::view::View;
 use osis_base::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::ops::Range;
 
 /// Edits beyond which Myers gives up and treats the rest as replaced (any script is valid, §9).
@@ -183,13 +183,7 @@ fn insert_runs(w: &mut Writer, out: &mut Seq, steps: &[Step], anchor_of: &dyn Fn
         for j in js {
             cs.push(content(w, j)?);
         }
-        let mut prev = anchor_of(a);
-        for c in cs {
-            let st = w.fresh();
-            let d = st.dot.clone();
-            out.elems_mut().insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: c, pos: vec![(st, prev)], deleted: None, span: 1 });
-            prev = Anchor::Dot(d);
-        }
+        crate::seq_ops::insert_run(w, out, anchor_of(a), cs);
     }
     Ok(())
 }
@@ -232,7 +226,7 @@ fn flag(out: &mut Seq, d: Dot, w: &Writer) {
 
 /// Structural diff of present state `s` against `v` (§9 list, text); `None` when nothing changes.
 pub(crate) fn diff<V: View>(w: &mut Writer, s: &Seq, view: &V, v: &Value) -> Result<Option<Seq>, Error> {
-    let mut out = Seq::new(s.text, Meta::default(), BTreeMap::new());
+    let mut out = Seq::empty(s.text);
     if s.text {
         let (vis, old) = text_view(s);
         let new = chars(v)?;
@@ -281,12 +275,12 @@ pub(crate) fn diff<V: View>(w: &mut Writer, s: &Seq, view: &V, v: &Value) -> Res
 
 /// The ops turning sequence value `base` into `new` at `path` (notes/api.md `edit`): one
 /// `Op::Edit`, rebased onto the current sequence when applied.
-pub(crate) fn diff_values<V: View>(base: &Value, new: &Value, _view: &V, path: &[PathSeg]) -> Result<Vec<PathOp>, Error> {
+pub(crate) fn diff_values(base: &Value, new: &Value, path: &[PathSeg]) -> PathOp {
     let op = match (base, new) {
         (Value::Str(_), Value::Str(_)) | (Value::List(_), Value::List(_)) => Op::Edit { base: base.clone(), new: new.clone() },
         _ => Op::Set(new.clone()),
     };
-    Ok(vec![PathOp { path: path.to_vec(), op }])
+    PathOp { path: path.to_vec(), op }
 }
 
 /// Context the current read must match on each side of an edit's changed region for the edit
@@ -429,7 +423,7 @@ fn window<T: PartialEq>(s: &dyn SeqRead, vis: &crate::seq::Vis, base: &[T], mid:
 /// or removed concurrently is never deleted and anchors nothing; a list element changed on both
 /// sides is edited in place when it is the one unmatched element of its gap on each side.
 pub(crate) fn edit<V: View>(w: &mut Writer, s: &dyn SeqRead, view: &V, base: &Value, new: &Value) -> Result<Option<Seq>, Error> {
-    let mut out = Seq::new(s.text(), Meta::default(), BTreeMap::new());
+    let mut out = Seq::empty(s.text());
     let vis = visible(s);
     let part = vis.0.partial().cloned();
     // the read did not match base near the change: void on a sequence held in part (a miss, or

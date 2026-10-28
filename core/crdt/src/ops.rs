@@ -557,7 +557,7 @@ fn diff_values_at<V: View>(base: Option<&Value>, new: &Value, view: &V, path: &m
         (Encoding::Counter, Value::Float(b), Value::Float(n)) => {
             out.push(PathOp { path: path.clone(), op: Op::Inc(Value::Float(Float::new(n.get() - b.get()))) })
         }
-        (Encoding::List | Encoding::Text, b, n) => out.extend(seq::diff_values(b, n, view, path)?),
+        (Encoding::List | Encoding::Text, b, n) => out.push(seq::diff_values(b, n, path)),
         _ => set(path, out),
     }
     Ok(())

@@ -7,7 +7,7 @@ use crate::fragment::{Fragment, Meta};
 use crate::seq_lin::{Lin, Placement, Row};
 use crate::ops::{Op, Writer};
 use crate::seq::{Anchor, Seq, SeqContent, SeqElem, SeqRead, Vis, is_visible, top2, visible};
-use crate::seq_span::{Elems, elem, expand, nth, split_at};
+use crate::seq_span::{Elems, Recs, expand, nth, split_at};
 use crate::stamp::{Dot, Stamp};
 use crate::undo::Undone;
 use crate::view::View;
@@ -15,22 +15,15 @@ use osis_base::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 
-fn delta(text: bool) -> Seq {
-    Seq::new(text, Meta::default(), BTreeMap::new())
-}
-
-/// A creation run of `contents` chained from `anchor` (§5.7 insert); returns the new dots.
-fn insert_run(w: &mut Writer, s: &mut Seq, anchor: Anchor, contents: Vec<SeqContent>) -> Vec<Dot> {
+/// A creation run of `contents` chained from `anchor` (§5.7 insert).
+pub(crate) fn insert_run(w: &mut Writer, s: &mut Seq, anchor: Anchor, contents: Vec<SeqContent>) {
     let mut prev = anchor;
-    let mut out = Vec::with_capacity(contents.len());
     for c in contents {
         let st = w.fresh();
         let d = st.dot.clone();
         s.elems_mut().insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: c, pos: vec![(st, prev)], deleted: None, span: 1 });
-        prev = Anchor::Dot(d.clone());
-        out.push(d);
+        prev = Anchor::Dot(d);
     }
-    out
 }
 
 /// The contents of `items`: chars of strings (text) or created element fragments (list). List
@@ -60,7 +53,7 @@ pub(crate) fn create<V: View>(w: &mut Writer, text: bool, view: &V, v: &Value) -
         _ => return Err(Error::Mismatch("value does not fit the sequence")),
     };
     let cs = contents(w, text, view, items)?;
-    let mut s = delta(text);
+    let mut s = Seq::empty(text);
     if cs.is_empty() {
         s.meta.w = Some(w.delta_stamp());
     } else {
@@ -177,9 +170,9 @@ pub fn cut_dots(state: &Fragment, at: usize, len: usize) -> Result<Vec<Dot>, Err
 
 /// Sequence op against present state `s` (§5.7 Ops); `None` if a no-op.
 pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&dyn SeqRead>, view: &V, op: &Op) -> Result<Option<Seq>, Error> {
-    let empty = delta(text);
+    let empty = Seq::empty(text);
     let s: &dyn SeqRead = s.unwrap_or(&empty);
-    let mut out = delta(text);
+    let mut out = Seq::empty(text);
     match op {
         Op::Insert { at, items } => {
             let anchor = anchor_after(&visible(s), *at)?;
@@ -378,14 +371,14 @@ pub(crate) fn undo<V: View>(w: &mut Writer, undone: &Seq, cur: Option<&Seq>, bef
     let made = |d: &Dot| u.made(d);
     let text = undone.text;
     let r = w.delta_stamp();
-    let mut out = delta(text);
+    let mut out = Seq::empty(text);
     let mut moves: Vec<(Stamp, Dot, Anchor)> = Vec::new();
     let mut reinsert: Vec<(Dot, Value)> = Vec::new();
     let was_visible = |d: &Dot| before.is_none_or(|b| b.elems().get(d).is_some_and(|e| is_visible(e, text)));
     for (dot, el) in &expand(undone.elems().clone()) {
-        let now = cur.and_then(|c| elem(c.elems(), dot));
+        let now = cur.and_then(|c| c.elems().elem(dot));
         let now = now.as_deref();
-        let pre = before.and_then(|b| elem(b.elems(), dot));
+        let pre = before.and_then(|b| b.elems().elem(dot));
         let pre = pre.as_deref();
         if el.created.is_some() && made(dot) {
             // insert: text delete flag, list element reset

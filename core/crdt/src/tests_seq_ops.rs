@@ -94,7 +94,7 @@ fn random_text_op(r: &mut Rng, n: usize, st: &Fragment) -> Op {
             let Fragment::Seq(sq) = st else { return Op::Insert { at: 0, items: vec![s("a")] } };
             let mut runs: Vec<Vec<crate::Dot>> = vec![vec![]];
             for d in crate::linearize::place(sq.elems(), sq.text).iter().map(|r| r.dot.clone()) {
-                let e = crate::seq_span::elem(sq.elems(), &d).unwrap();
+                let e = crate::seq_span::Recs::elem(sq.elems(), &d).unwrap();
                 match (e.flag(), &e.content) {
                     (true, crate::seq::SeqContent::Char(_)) => runs.last_mut().unwrap().push(d),
                     (true, _) => {}
