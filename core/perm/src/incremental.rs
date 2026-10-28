@@ -476,7 +476,13 @@ impl Timelines {
                                 }
                             }
                             // a walk saved under the old root stays a basis only under it
-                            let from = cache.remove(&k).map(|(tl, basis, _)| (tl, if k.0.first() == Some(&root) { basis } else { self.retire(&k, basis) }));
+                            let from = cache.remove(&k).map(|(tl, basis, _)| {
+                                if k.0.first() == Some(&root) {
+                                    return (tl, basis);
+                                }
+                                self.retire(&k, basis);
+                                (tl, 0)
+                            });
                             (from, new)
                         }
                         None => (None, BTreeSet::new()),
@@ -525,15 +531,13 @@ impl Timelines {
         (evaluated, changed)
     }
 
-    /// Notes that the walk saved under `k`'s root (if `basis` says one was) is no longer used;
-    /// returns the basis a component under another root starts from (none).
-    fn retire(&mut self, k: &Inputs, basis: usize) -> usize {
+    /// Notes that the walk saved under `k`'s root (if `basis` says one was) is no longer used.
+    fn retire(&mut self, k: &Inputs, basis: usize) {
         if basis > 0
             && let Some(r) = k.0.first()
         {
             self.retired.insert(*r);
         }
-        0
     }
 
     /// The timeline of a component with no timeline here from a walk saved under one of its
