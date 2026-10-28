@@ -23,6 +23,7 @@ osis-label = { path = "core/label" }
 osis-proto = { path = "core/proto" }
 osis-transport = { path = "core/transport" }
 osis-server = { path = "core/server" }
+osis-engine = { path = "core/engine" }
 osis-node = { path = "core/node" }
 osis = { path = "core/osis" }
 osis-sim = { path = "core/test/sim" }
