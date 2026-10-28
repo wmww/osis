@@ -289,6 +289,13 @@ pub(crate) fn keep_residue(tx: &mut Tx<'_>, c: &CommitId, ai: usize, bodies: &[F
     let me = (ts, *c);
     let first = first_bounded(tx.core, &tid, &ak);
     let next = if first == Some(me) { next_bounded(tx.core, &tid, &ak, me) } else { first };
+    if !next.is_some_and(|n| n.0 <= ts) && !bodies.is_empty() && uncovered_copies_after(tx.core, &tid, &ak, me, ai) {
+        // no residue: a held bounded snapshot or import after it that did not see it may carry
+        // a copy it superseded (stamped below it, its own commit not playing it), which a
+        // replay without it dates at a later superseder, after that snapshot (strays seed
+        // 32432): replay once it is gone
+        mark_deaths_due(tx, &tid, &ak)?;
+    }
     if next.is_some_and(|n| n.0 <= ts) && bodies.is_empty() {
         // nothing to keep: a stray for `first_bare`
         if let Some(&b) = tx.core.ix.first_bare.get(&(tid, ak.clone())) {
@@ -327,6 +334,20 @@ pub(crate) fn keep_residue(tx: &mut Tx<'_>, c: &CommitId, ai: usize, bodies: &[F
         tx.core.ix.first_bounded.insert((tid, ak), next);
     }
     Ok(())
+}
+
+/// Whether a held bounded snapshot or import of `(tid, ak)` sorts after `me` (part `ai`) without
+/// covering it: one whose frontier lacks `me`'s writes (a node-form commit; any other kind, or an
+/// import, counts as not covered).
+fn uncovered_copies_after(core: &Core, tid: &Tid, ak: &Ak, me: (Ts, CommitId), ai: usize) -> bool {
+    let k = (*tid, ak.clone());
+    let Some(m) = core.ix.commits.get(&me.1) else { return false };
+    let hi = m.header.aspects.get(ai).map(|a| a.hi);
+    let node = m.header.form == osis_commit::Form::Node && m.header.kind.has_own_writes();
+    core.ix.copies.get(&k).into_iter().flat_map(|x| x.range(me..)).filter(|x| x.1 != me.1 && bounded_part(core, &x.1, tid, ak).is_some()).any(|(_, s)| {
+        let fr = core.ix.snapshots.get(&k).and_then(|v| v.iter().find(|x| x.1 == *s)).map(|x| &x.2);
+        !(node && fr.is_some_and(|fr| fr.0.get(&m.header.author).is_some_and(|f| hi.is_some_and(|hi| f.saturating_add(1) >= hi))))
+    })
 }
 
 /// Drops every residue of `(tid, ak)` (the aspect is forgotten).

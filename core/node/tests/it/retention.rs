@@ -1049,10 +1049,13 @@ fn late_deltas_windowed_alike_random_spec_crdt_4_8() {
 // the replay met after another superseder past the hint; 21812, an in-order write killed a
 // write dropped without a residue (played with the state) that had dated a late body, which
 // kept that death while a replay dated it at the in-order write, and a later window rested on
-// it; 1427 (deaths compared at the end), the same with a dropped snapshot's copy
+// it; 1427 (deaths compared at the end), the same with a dropped snapshot's copy; 32432, a body
+// superseding a copy a later held snapshot carried (that had not seen it) dropped without a
+// residue, so a replay dated the copy after the snapshot, which gained a death the records
+// lacked; 2423 (at the end), the same
 #[test]
 fn late_deltas_windowed_found_histories_spec_crdt_4_8() {
-    for (seed, end) in [(1018, false), (2392, false), (21812, false), (1427, true)] {
+    for (seed, end) in [(1018, false), (2392, false), (21812, false), (1427, true), (32432, false), (2423, true)] {
         strays_history(seed, end, &mut Default::default());
     }
 }
