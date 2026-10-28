@@ -501,6 +501,7 @@ impl SyncEngine {
         }
         let at = a.address(from);
         let address = Address { url: at.url, key: at.key };
+        let dialed = address.clone();
         if r.failed.contains_key(&address) {
             return (Some(k), Vec::new());
         }
@@ -530,8 +531,7 @@ impl SyncEngine {
         // nothing to do while its pause holds, or while a connection to the peer runs but over
         // a relay, where the LAN route is dialed beside it (`lan_probe`)
         let running = self.conns.values().any(|c| c.server == k);
-        let address = Address { url: a.address(from).url, key: a.key };
-        if running && !self.lan_probe(&k, &address) || !running && self.retry.get(&k).is_some_and(|(_, t)| *t > raw) {
+        if running && !self.lan_probe(&k, &dialed) || !running && self.retry.get(&k).is_some_and(|(_, t)| *t > raw) {
             return (Some(k), Vec::new());
         }
         (Some(k), self.handle(Event::Local))

@@ -68,6 +68,7 @@ impl Inputs {
 }
 
 /// One label's work set at one connection's server (`LConn::work`).
+#[derive(Default)]
 pub(crate) struct Work {
     /// Judge everything next pass.
     pub full: bool,
@@ -119,43 +120,10 @@ pub(crate) struct Work {
     pub cards: BTreeSet<CommitId>,
 }
 
-impl Default for Work {
-    fn default() -> Work {
-        Work::idle(true)
-    }
-}
-
 impl Work {
-    pub fn idle(full: bool) -> Work {
-        Work {
-            full,
-            commits: BTreeSet::new(),
-            blobs: BTreeSet::new(),
-            aspects: BTreeSet::new(),
-            states: BTreeSet::new(),
-            whole: BTreeSet::new(),
-            things: BTreeSet::new(),
-            moved: BTreeSet::new(),
-            actors: BTreeSet::new(),
-            keys: false,
-            keyless: BTreeSet::new(),
-            held_back: BTreeSet::new(),
-            settled: None,
-            due: BTreeMap::new(),
-            due_blobs: BTreeMap::new(),
-            waits: BTreeMap::new(),
-            at_most: BTreeMap::new(),
-            links: BTreeMap::new(),
-            inputs: None,
-            until: None,
-            closure: Arc::new(BTreeSet::new()),
-            unsettled: BTreeSet::new(),
-            snaps: BTreeMap::new(),
-            unopened: BTreeSet::new(),
-            unjudged: BTreeMap::new(),
-            beats: BTreeMap::new(),
-            cards: BTreeSet::new(),
-        }
+    /// A set that judges everything at its first pass (a label opened, a local pass begun).
+    pub fn fresh() -> Work {
+        Work { full: true, ..Work::default() }
     }
 
     /// Takes in what another set collected meanwhile (a pass's own touches).
