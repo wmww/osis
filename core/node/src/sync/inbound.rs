@@ -113,6 +113,10 @@ impl SyncEngine {
                         self.state.set_present(s, l, blob_id, true);
                         self.state.set_deposited(s, l, blob_id, stamp.is_none());
                     }
+                    // the server holds it now: fetched there again when wanted
+                    if let Some(c) = conn.and_then(|c| self.conns.get_mut(&c)) {
+                        c.missing.remove(&blob_id);
+                    }
                     // a stamp counts only if it verifies under the head's write key (it is relayed);
                     // a bundle's stamps were checked against its path by the importer
                     let stamp = stamp.filter(|_| if cur.is_some() { by_head } else { conn.is_none() });
@@ -202,14 +206,8 @@ impl SyncEngine {
         if let Some(c) = conn {
             let g = self.group_of(&l);
             let secrets = g.map(|g| self.read_secrets(&g)).unwrap_or_default();
-            let want: Vec<BlobId> = fetch.into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some()) && !self.fetching(b)).collect();
-            let want: Vec<BlobId> = match self.conns.get_mut(&c) {
-                Some(x) => want.into_iter().filter(|b| x.fetching.insert(*b)).collect(),
-                None => Vec::new(),
-            };
-            if !want.is_empty() {
-                self.command(c, Command::Fetch { label: l, ids: want }, out)?;
-            }
+            let want: Vec<BlobId> = fetch.into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some())).collect();
+            self.fetch_on(c, l, want, out)?;
             self.fetch_waiting(c, l, out)?;
         }
         if pushed && let Some(s) = server {
@@ -504,8 +502,9 @@ impl SyncEngine {
         self.fetch_on(conn, l, missing, out)
     }
 
-    /// Fetches `ids` under `l` on `conn`, but those asked for already and those its server did
-    /// not deliver.
+    /// Fetches `ids` under `l` on `conn`, but those asked for already (on any connection) and
+    /// those its server did not deliver (since it last announced them). Every fetch goes this
+    /// way: a pass waits on the unopened entries in flight (`unsettled_sets`).
     pub(crate) fn fetch_on(&mut self, conn: ConnId, l: LabelId, ids: impl IntoIterator<Item = BlobId>, out: &mut Vec<super::Action>) -> Result<()> {
         let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.fetching(b)).collect();
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
@@ -592,7 +591,8 @@ impl SyncEngine {
         self.delete_blobs(&gone)
     }
 
-    /// Fetches blobs by ID from every open label holding them (lazy chunk reads).
+    /// Fetches blobs by ID from an open label holding them (lazy chunk reads), but those in
+    /// flight.
     pub fn fetch(&mut self, ids: &[BlobId]) -> Vec<super::Action> {
         let mut out = Vec::new();
         let mut todo: Vec<(ConnId, LabelId, Vec<BlobId>)> = Vec::new();
@@ -607,12 +607,10 @@ impl SyncEngine {
                 }
             }
         }
-        let mut asked = BTreeSet::new();
+        // each blob from the first connection whose server may deliver it (`fetch_on` skips
+        // those in flight, so those asked on an earlier one)
         for (conn, l, v) in todo {
-            let v: Vec<BlobId> = v.into_iter().filter(|b| asked.insert(*b)).collect();
-            if !v.is_empty()
-                && let Err(e) = self.command(conn, Command::Fetch { label: l, ids: v }, &mut out)
-            {
+            if let Err(e) = self.fetch_on(conn, l, v, &mut out) {
                 self.diag(format!("fetch: {e}"));
             }
         }
@@ -624,7 +622,6 @@ impl SyncEngine {
     /// when the tree is whole. Call again after they arrive: fetched nodes list more chunks.
     pub fn fetch_tree(&mut self, tid: &Tid, link: &osis_base::Link) -> Result<Vec<super::Action>> {
         let ids = self.engine.tree_missing(tid, link)?;
-        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.fetching(b)).collect();
         Ok(self.fetch(&ids))
     }
 
@@ -656,9 +653,7 @@ impl SyncEngine {
         for b in have {
             self.state.set_present(server, l, b, false);
         }
-        if !need.is_empty() {
-            self.command(conn, Command::Fetch { label: l, ids: need }, out)?;
-        }
+        self.fetch_on(conn, l, need, out)?;
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.syncing = true;
         }
