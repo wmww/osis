@@ -77,5 +77,4 @@ pub use seq_ops::cut_dots;
 pub use seq_place::{PlaceBlock, PlaceDiff, PlaceMisses, PlaceRow, PlaceTop, SeqPlace};
 pub use stamp::{CounterRange, Dot, Interner, Source, SourceKind, Stamp};
 pub use view::{AnyView, View};
-pub use lifecycle::{unmerge, unmerge_in_place};
 pub use wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, Received, MAX_RUN, NONCE_LEN, Snapshot};

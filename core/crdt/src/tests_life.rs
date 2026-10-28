@@ -2,7 +2,6 @@
 
 use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
 use crate::fragment::Fragment;
-use crate::lifecycle::{unmerge, unmerge_in_place};
 use crate::page::{MemoryPages, PageParams, PageSink};
 use crate::stamp::{CounterRange, Dot, Interner, Source};
 use crate::testutil::{TyView, frag, history, mapply, ostate, sink_no_seq, source, ts};
@@ -117,41 +116,42 @@ pub(crate) fn unmerge_check(seed: u64, ty: &Ty) {
     }
     let state = ostate(&mstate);
     let bad = source(&MSource::node(2));
-    let author = |s: &Source| *s == bad;
     if let Some(ms) = &mstate {
         let mut mm = ms.clone();
         mm.unmerge(&|s| *s == MSource::node(2));
         let mut ours = state.clone();
-        ours.remove_author(&author);
-        assert_eq!(ours, frag(&mm), "remove_author equals the model");
+        ours.remove_dots(&|d| d.src == bad);
+        assert_eq!(ours, frag(&mm), "removing an author's writes equals the model");
     }
-    let mut held: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).collect();
-    held.push(state.clone());
-    let u1 = unmerge(held.clone(), &author);
-    held.reverse();
-    let u2 = unmerge(held, &author);
-    assert_eq!(&u1, &u2, "order-independent");
-    let mut fast = state.clone();
-    if unmerge_in_place(&mut fast, &author) {
-        assert_eq!(fast.read(), u1.read(), "fast path agrees");
-    }
-    // per delta (spec/permissions.md §5.2): in place equals the join of the held bodies each
-    // without its writes, unless `dots_supersede` says it may not
+    // an author's writes (§4.6) and one delta's (spec/permissions.md §5.2): the join of the held
+    // bodies each without them is order-independent, and removing them in place equals it unless
+    // `dots_supersede` says it may not
+    let held: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).chain(std::iter::once(state.clone())).collect();
+    type Pred = Box<dyn Fn(&Dot) -> bool>;
+    let mut preds: Vec<Pred> = vec![Box::new(move |d: &Dot| d.src == bad)];
     for c in &commits {
         let (src, lo, hi) = (source(&c.w.source), c.w.lo, c.w.hi());
-        let pred = |d: &Dot| d.src == src && lo <= d.ctr && d.ctr < hi;
-        let mut want = Fragment::default();
-        for mut b in commits.iter().map(|c| frag(&c.delta)).chain(std::iter::once(state.clone())) {
-            b.remove_dots(&pred);
-            want.join(b);
-        }
-        if !state.dots_supersede(&pred) {
+        preds.push(Box::new(move |d: &Dot| d.src == src && lo <= d.ctr && d.ctr < hi));
+    }
+    for pred in &preds {
+        let unmerged = |bodies: &mut dyn Iterator<Item = &Fragment>| {
+            let mut out = Fragment::default();
+            for b in bodies {
+                let mut b = b.clone();
+                b.remove_dots(pred);
+                out.join(b);
+            }
+            out
+        };
+        let want = unmerged(&mut held.iter());
+        assert_eq!(want, unmerged(&mut held.iter().rev()), "order-independent");
+        if !state.dots_supersede(pred) {
             let mut fast = state.clone();
-            if fast.holds_dots(&pred) {
-                fast.remove_dots(&pred);
+            if fast.holds_dots(pred) {
+                fast.remove_dots(pred);
                 fast.prune(None, &mut crate::changes::Changes::new());
             }
-            assert_eq!(fast, want, "in-place un-merge of one delta agrees");
+            assert_eq!(fast, want, "in-place un-merge agrees");
         }
     }
 }
