@@ -364,10 +364,6 @@ impl<B: Backend> BackendStore<B> {
         &self.backend
     }
 
-    pub fn into_backend(self) -> B {
-        self.backend
-    }
-
     pub fn policy(&self) -> &Policy {
         &self.policy
     }

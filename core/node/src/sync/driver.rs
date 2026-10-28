@@ -306,7 +306,7 @@ impl<T: Transport, H: Host> Driver<T, H> {
         let key = addr.key;
         self.unlisten(key);
         let (tx, mut rx) = mpsc::channel::<Link>(64);
-        let serve = tokio::spawn(link::serve_max(l, SERVE_IDLE, FINISH_WAIT, tx, self.max_served));
+        let serve = tokio::spawn(link::serve(l, SERVE_IDLE, FINISH_WAIT, tx, self.max_served));
         let out = self.link_tx.clone();
         let fwd = tokio::spawn(async move {
             while let Some(link) = rx.recv().await {

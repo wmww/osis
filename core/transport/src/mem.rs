@@ -265,12 +265,6 @@ impl Net {
         st.deliver_all();
     }
 
-    pub fn heal_all(&self) {
-        let mut st = lock(&self.0);
-        st.cut.clear();
-        st.deliver_all();
-    }
-
     /// Resets every connection between endpoints `a` and `b`.
     pub fn disconnect(&self, a: &str, b: &str) {
         let mut st = lock(&self.0);

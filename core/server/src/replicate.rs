@@ -100,11 +100,6 @@ impl Replicator {
         }
     }
 
-    /// Whether nothing is queued, enumerating, held back or in flight.
-    pub fn is_idle(&self) -> bool {
-        self.dirty.is_empty() && self.scan.is_none() && self.inflight.is_none() && self.retry.is_empty()
-    }
-
     /// When `handle` should next be called without input: now when work is queued and nothing is
     /// in flight, else the earliest retry.
     pub fn next_due(&self, now: u64) -> Option<u64> {
