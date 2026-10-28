@@ -192,7 +192,6 @@ impl Timeline {
             None => self.walked.rest.log.len(),
         };
         let leaves: Vec<(Tid, Tid)> = below.iter().filter_map(|t| input.owners.owner_actor(t).map(|o| (*t, o))).collect();
-        #[cfg(debug_assertions)]
         let joins = !below.is_empty() || input.nodes != self.input.nodes;
         let mut kept = Kept::of(&mut self);
         // a role through a new owner link may differ from where the walk meets it on, its
@@ -212,13 +211,20 @@ impl Timeline {
         if epoch_changed && input.cyclic() {
             return None;
         }
-        let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, epoch_changed, from, items: None });
+        Some(Timeline::resumed(input, walk::Resume { walked, dropped, epoch_starts, epoch_changed, from, items: None }, kept, joins))
+    }
+
+    /// `walk::resume` of `r` over `input`, carrying `kept`; debug builds check the walk
+    /// against one from scratch when `check`.
+    #[cfg_attr(not(debug_assertions), allow(unused_variables))]
+    fn resumed(input: Input, r: walk::Resume, kept: Kept, check: bool) -> Timeline {
+        let out = walk::resume(&input, r);
         let tl = Timeline::from_kept(input, out, Some(kept));
         #[cfg(debug_assertions)]
-        if joins {
+        if check {
             tl.walked.check_scratch(&tl.input, &tl.dropped);
         }
-        Some(tl)
+        tl
     }
 
     /// What `input` (this timeline's, grown) adds that the walk may meet before its new commits
@@ -326,13 +332,9 @@ impl Timeline {
                     self.items.add(rest);
                     let kept = Kept::of(&mut self);
                     let Timeline { input, items, walked, dropped, epoch_starts, epoch_changed, placed, .. } = self;
-                    let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, epoch_changed, from, items: Some(items) });
-                    let tl = Timeline { placed, ..Timeline::from_kept(input, out, Some(kept)) };
-                    #[cfg(debug_assertions)]
-                    if matches!(pl, walk::Placement::From(..)) {
-                        tl.walked.check_scratch(&tl.input, &tl.dropped);
-                    }
-                    return Ok(tl);
+                    let r = walk::Resume { walked, dropped, epoch_starts, epoch_changed, from, items: Some(items) };
+                    let tl = Timeline::resumed(input, r, kept, matches!(pl, walk::Placement::From(..)));
+                    return Ok(Timeline { placed, ..tl });
                 }
             }
         }
