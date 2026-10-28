@@ -111,7 +111,7 @@ fn reconcile_differences_capped_spec_wire_11_3() {
         }
         let out = reply(&mut c, Message::ReconcileReply { id: rid, ranges: out_ranges });
         replies += 1;
-        if out.iter().any(|o| matches!(o, ClientOutput::Event(ClientEvent::Refused { kind: 17, .. }))) {
+        if out.iter().any(|o| matches!(o, ClientOutput::Event(ClientEvent::Refused { kind: osis_proto::Request::Reconcile, .. }))) {
             abandoned = true;
             break;
         }

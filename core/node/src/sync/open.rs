@@ -10,7 +10,7 @@ use crate::labeling::{GroupLabel, HeadKeys};
 use osis_base::{LabelId, Tid};
 use osis_crypto::{LabelRole, SigningSecret, X25519Secret, label_role_key, role_kem};
 use osis_label::{ClaimSet, Step, StepId};
-use osis_proto::{Code, Command, OpenKey};
+use osis_proto::{Code, Command, OpenKey, Request};
 use osis_schema::core_types::SecretBox;
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_schema::Codec;
@@ -479,32 +479,32 @@ impl SyncEngine {
     }
 
     /// A request about `l` was refused.
-    pub(crate) fn refused(&mut self, conn: ConnId, l: Option<LabelId>, kind: u64, code: Code, out: &mut Vec<super::Action>) -> Result<()> {
+    pub(crate) fn refused(&mut self, conn: ConnId, l: Option<LabelId>, kind: Request, code: Code, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(l) = l else { return Ok(()) };
         // an upload or deposit refused whole goes again at a later pass; a timed delete too
         if let Some(c) = self.conns.get_mut(&conn) {
-            if matches!(kind, 10 | 12) {
+            if matches!(kind, Request::Upload | Request::Deposit) {
                 c.sent.retain(|(x, _), _| *x != l);
             }
-            if kind == 14 {
+            if kind == Request::Delete {
                 c.timed_sent.retain(|(x, _)| *x != l);
                 c.deleting.retain(|(x, _), _| *x != l);
             }
         }
         let phase = self.lc(conn, &l).map(|x| x.phase.clone());
         match (kind, phase) {
-            (4, Some(Phase::Opening)) if code == Code::UNKNOWN_LABEL => self.register_path(conn, l, out),
-            (4, Some(Phase::Opening)) => self.drop_try(conn, l, out),
-            (7, _) => {
+            (Request::Open, Some(Phase::Opening)) if code == Code::UNKNOWN_LABEL => self.register_path(conn, l, out),
+            (Request::Open, Some(Phase::Opening)) => self.drop_try(conn, l, out),
+            (Request::Register, _) => {
                 if let Some(lc) = self.lc_mut(conn, &l) {
                     lc.registering = None;
                 }
                 self.reopen(conn, l, out)
             }
-            (15, _) | (17, _) | (8, _) if code == Code::NOT_OPENED || code == Code::UNKNOWN_LABEL => self.reopen(conn, l, out),
+            (Request::Sync | Request::Reconcile | Request::Path, _) if code == Code::NOT_OPENED || code == Code::UNKNOWN_LABEL => self.reopen(conn, l, out),
             // the opened head is no longer on the server's path
-            (8, Some(Phase::Open)) => self.reopen(conn, l, out),
-            (15, _) => {
+            (Request::Path, Some(Phase::Open)) => self.reopen(conn, l, out),
+            (Request::Sync, _) => {
                 if let Some(lc) = self.lc_mut(conn, &l) {
                     lc.syncing = false;
                 }
@@ -512,7 +512,7 @@ impl SyncEngine {
                 Ok(())
             }
             _ => {
-                self.diag(format!("request kind {kind} refused: code {}", code.0));
+                self.diag(format!("{kind:?} refused: code {}", code.0));
                 Ok(())
             }
         }
