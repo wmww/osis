@@ -162,11 +162,11 @@ fn contribution(w: &mut Writer, kind: BagKind, v: Value) -> Fragment {
 }
 
 /// A new map entry of key `k`: a fresh dot, whose stamp is the creation's (§5.6), holding what
-/// `content` writes after it.
-pub(crate) fn new_entry(w: &mut Writer, k: Value, content: impl FnOnce(&mut Writer) -> Result<Fragment, Error>) -> Result<(Dot, Entry), Error> {
+/// `content` writes after it; `None` if it writes nothing (the dot stays consumed).
+pub(crate) fn new_entry(w: &mut Writer, k: Value, content: impl FnOnce(&mut Writer) -> Result<Option<Fragment>, Error>) -> Result<Option<(Dot, Entry)>, Error> {
     let st = w.fresh();
-    let frag = content(w)?;
-    Ok((st.dot.clone(), Entry { reset: None, key: Some(k), frag: Some(Box::new(frag)), created: Some(st) }))
+    let Some(frag) = content(w)? else { return Ok(None) };
+    Ok(Some((st.dot.clone(), Entry { reset: None, key: Some(k), frag: Some(Box::new(frag)), created: Some(st) })))
 }
 
 fn with_w(w: &Writer, empty: bool) -> Meta {
@@ -212,8 +212,7 @@ pub fn create<V: View>(w: &mut Writer, view: &V, v: &Value) -> Result<Fragment, 
             let vv = view.element().ok_or(Error::Mismatch("map without value type"))?;
             let mut entries = BTreeMap::new();
             for (k, val) in kv {
-                let (d, e) = new_entry(w, k.clone(), |w| create(w, &vv, val))?;
-                entries.insert(d, e);
+                entries.extend(new_entry(w, k.clone(), |w| create(w, &vv, val).map(Some))?);
             }
             Fragment::Map(Map::new(meta, entries))
         }
@@ -241,7 +240,7 @@ pub fn remove(w: &Writer, enc: Encoding) -> Result<Fragment, Error> {
 /// whatever their liveness here (an explicit removal of an edge already removed).
 pub fn reset_entries(w: &Writer, dots: &[Dot]) -> Fragment {
     let r = w.delta_stamp();
-    let entries = dots.iter().map(|d| (d.clone(), Entry { reset: Some(r.clone()), key: None, frag: None, created: None })).collect();
+    let entries = dots.iter().map(|d| (d.clone(), Entry::tomb(&r))).collect();
     Fragment::Map(Map::new(Meta::default(), entries))
 }
 
@@ -358,7 +357,7 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
             for (d, p) in &live {
                 // opaque elements are never removed (§9)
                 if p.as_ref().is_some_and(|p| !items.contains(p)) {
-                    elems.insert((*d).clone(), Elem { reset: Some(r.clone()), frag: None });
+                    elems.insert((*d).clone(), Elem::tomb(&r));
                 }
             }
             for it in items {
@@ -380,7 +379,7 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
             for (k, _, dots) in &keyed {
                 if k.as_ref().is_some_and(|k| !kv.contains_key(k)) {
                     for d in dots.iter() {
-                        entries.insert((*d).clone(), Entry { reset: Some(r.clone()), key: None, frag: None, created: None });
+                        entries.insert((*d).clone(), Entry::tomb(&r));
                     }
                 }
             }
@@ -397,8 +396,7 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
                     }
                 }
                 if !matched {
-                    let (d, e) = new_entry(w, k.clone(), |w| create(w, &vview, val))?;
-                    entries.insert(d, e);
+                    entries.extend(new_entry(w, k.clone(), |w| create(w, &vview, val).map(Some))?);
                 }
             }
             Fragment::Map(Map::new(Meta::default(), entries))
@@ -449,7 +447,7 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
                     let elems: BTreeMap<Dot, Elem> = live_elems(&s.elems)
                         .into_iter()
                         .filter(|(_, v)| projected(&ev, v).as_ref() == Some(x))
-                        .map(|(d, _)| (d.clone(), Elem { reset: Some(r.clone()), frag: None }))
+                        .map(|(d, _)| (d.clone(), Elem::tomb(&r)))
                         .collect();
                     Ok((!elems.is_empty()).then(|| Fragment::Set(Set { meta: Meta::default(), elems })))
                 }
@@ -459,7 +457,7 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
                         .into_iter()
                         .filter(|(k, _)| projected(&kv, k).as_ref() == Some(x))
                         .flat_map(|(_, ds)| ds)
-                        .map(|d| (d.clone(), Entry { reset: Some(r.clone()), key: None, frag: None, created: None }))
+                        .map(|d| (d.clone(), Entry::tomb(&r)))
                         .collect();
                     Ok((!entries.is_empty()).then(|| Fragment::Map(Map::new(Meta::default(), entries))))
                 }
