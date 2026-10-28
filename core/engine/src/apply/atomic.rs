@@ -71,6 +71,9 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
             core.ranges.insert((a.tid, a.ak.clone(), h.author), a.lo, (a.hi, *id));
         }
     }
+    for b in &h.chunks {
+        core.by_chunk.insert(*b, *id);
+    }
     crate::retention::note_indexed(core, id, h);
 }
 
@@ -197,9 +200,10 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     // creation records first: perm and dedup secrets need them
     let mut held_changed = note_created(tx, &h, &parts)?;
     validity::note_authors(tx.core, &id, &h, &parts)?;
+    let view = Arc::new(crate::engine::View::of(&h));
     if h.kind.is_membership() {
         validity::note_required(tx.core, &h, &id, &parts);
-        validity::add_membership(tx, &h, &id, &validity::EdgeParts::of(&h, &parts))?;
+        validity::add_membership(tx, &view, Some(&h), &id, &validity::EdgeParts::of(&h, &parts))?;
         held_changed = true;
     }
     if held_changed {
@@ -221,7 +225,6 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             now,
         );
     }
-    let view = Arc::new(crate::engine::View::of(&h));
     index_commit(tx.core, &id, &view);
     validity::uncarry(tx.core, &id, &h);
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
@@ -468,7 +471,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     }
     if edges && let Some(all) = &all {
         tx.core.held.remove(id);
-        validity::add_membership(tx, &h, id, all)?;
+        validity::add_membership(tx, &meta.view, Some(&h), id, all)?;
         held_changed = true;
     }
     if held_changed {

@@ -94,6 +94,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid]) -> Result<Forgotten> {
     // commit records: forgotten parts out, shredded; a commit left with none is deleted
     let mut parts: BTreeMap<CommitId, BTreeSet<usize>> = BTreeMap::new();
     let mut chunks: BTreeSet<BlobId> = BTreeSet::new();
+    // rare (lost access): decodes every header
     let ids: Vec<CommitId> = tx.core.commits.keys().copied().collect();
     for id in ids {
         let Some(m) = tx.core.commits.get(&id).cloned() else { continue };
@@ -185,8 +186,11 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid]) -> Result<Forgotten> {
         Some(r) => r.forget(tx, &out.labels, &out.things, &out.commits, &parts, chunks)?,
         None => chunks,
     };
-    let still: BTreeSet<BlobId> = tx.core.commits.iter().filter(|(c, _)| !out.commits.contains(c)).flat_map(|(_, m)| m.header.chunks.iter().map(|c| c.blob)).collect();
-    for b in gone.difference(&still) {
+    // a blob a kept commit lists stays
+    let core = &*tx.core;
+    let still = |b: &BlobId| core.by_chunk.get(b).is_some_and(|cs| cs.iter().any(|c| !out.commits.contains(c)));
+    let gone: Vec<BlobId> = gone.into_iter().filter(|b| !still(b)).collect();
+    for b in &gone {
         tx.txn.delete_blob(b);
     }
     // the API's watches see the loss

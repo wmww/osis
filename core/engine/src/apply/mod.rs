@@ -710,12 +710,13 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         let mut ids: Vec<(osis_base::Ts, CommitId)> = tx.core.commits.iter().filter(|(_, m)| m.view.kind.is_membership()).map(|(id, m)| (m.view.ts, *id)).collect();
         ids.sort();
         for (_, id) in ids {
-            let Some(h) = tx.core.commits.get(&id).map(|m| m.header.arc()) else { continue };
+            // the view, not the header (decoded only for a roster snapshot's linked frontiers)
+            let Some(v) = tx.core.commits.get(&id).map(|m| m.view.clone()) else { continue };
             let parts = edges.remove(&id).ok_or(Error::Corrupt("edges row missing"))?;
             // every row is what its record reads now (rewritten with it: late parts, drops)
             #[cfg(debug_assertions)]
             debug_assert_eq!(parts, edge_parts(tx, &id)?, "node/edges row of {id:?} is stale");
-            validity::add_membership(tx, &h, &id, &parts)?;
+            validity::add_membership(tx, &v, None, &id, &parts)?;
         }
         drop(_s);
     } else {
@@ -778,7 +779,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                         }
                     }
                 }
-                validity::add_membership(tx, &b.header, &id, &validity::EdgeParts::of(&b.header, &parts))?;
+                let v = tx.core.commits.get(&id).map(|m| m.view.clone()).ok_or(Error::Corrupt("commit meta"))?;
+                validity::add_membership(tx, &v, Some(&b.header), &id, &validity::EdgeParts::of(&b.header, &parts))?;
             }
         }
     }
@@ -845,7 +847,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     // old judgments are unknown)
     let mut stale: BTreeSet<(Tid, osis_base::Ak)> = BTreeSet::new();
     for (id, m) in tx.core.commits.iter() {
-        for (ai, a) in m.header.aspects.iter().enumerate() {
+        for (ai, a) in m.view.aspects.iter().enumerate() {
             let now = m.valid.get(ai).copied().unwrap_or(false);
             let was = old.as_ref().map(|o| o.0.get(id).and_then(|v| v.get(ai)).copied().unwrap_or(true));
             if was.map_or(!now, |w| w != now) {

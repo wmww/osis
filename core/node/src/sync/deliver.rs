@@ -64,7 +64,6 @@ impl SyncEngine {
         self.state = super::state::State::load(&mut self.engine)?;
         // what the passes knew of entries is gone with them: everything is judged again
         self.touched.full = true;
-        self.listers = None;
         self.state.feed = feed;
         self.state.now = now;
         let gone = |l: &LabelId| f.labels.contains(l);

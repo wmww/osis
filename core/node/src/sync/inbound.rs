@@ -582,6 +582,7 @@ impl SyncEngine {
         }
         // chunks of dropped deltas no label entry names (never uploaded, or deleted everywhere)
         let listed: BTreeSet<BlobId> = match commits {
+            // full passes: decodes only the headers of commits with dropped parts
             None => self.engine.core.commits.values().filter(|m| !m.dropped.is_empty()).flat_map(|m| m.header.chunks.iter().map(|c| c.blob)).collect(),
             Some(cs) => cs.iter().filter_map(|c| self.engine.core.commits.get(c)).filter(|m| !m.dropped.is_empty()).flat_map(|m| m.header.chunks.iter().map(|c| c.blob)).collect(),
         };

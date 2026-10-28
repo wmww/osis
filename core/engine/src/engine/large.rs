@@ -363,13 +363,11 @@ pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp],
     // what the ops address is loaded (`commit_in`)
     tx.load_lazy(tid, ak)?;
     let state = tx.core.states.get(&(*tid, ak.clone())).and_then(Option::as_ref);
-    // the blind of the header that introduced each held commit's chunks: a reused blob's
-    // commitments are checked under it (spec/sync.md §1), built once when a tree is reused
+    // the blind of the header that introduced a held commit's chunk: a reused blob's
+    // commitments are checked under it (spec/sync.md §1); of several listing it, the greatest ID
+    // (`by_chunk`: one header decoded)
     let core = &*tx.core;
-    let mut introduced: Option<std::collections::HashMap<BlobId, [u8; 16]>> = None;
-    let mut blind_of = |b: &BlobId| -> Option<[u8; 16]> {
-        introduced.get_or_insert_with(|| core.commits.values().flat_map(|m| m.header.chunks.iter().map(|c| (c.blob, m.header.blind))).collect()).get(b).copied()
-    };
+    let mut blind_of = |b: &BlobId| -> Option<[u8; 16]> { core.by_chunk.get(b)?.iter().next_back().and_then(|c| core.commits.get(c)).map(|m| m.header.blind) };
     let mut blobs = TxBlobs::new(&mut tx.txn);
     let rng = &mut *tx.rng;
     let max = usize::try_from(MAX_REUSE).unwrap_or(usize::MAX);
@@ -565,7 +563,8 @@ impl Engine {
         }
         let me = self.tid();
         // reuse links within one position of one aspect: the aspects of the commits listing it
-        let cands: BTreeSet<(Tid, Ak)> = self.core.commits.values().filter(|m| m.header.chunks.iter().any(|c| held.contains(&c.blob))).flat_map(|m| m.header.aspects.iter().map(|a| (a.tid, a.ak.clone()))).collect();
+        let core = &self.core;
+        let cands: BTreeSet<(Tid, Ak)> = held.iter().flat_map(|b| core.by_chunk.get(b).into_iter().flatten()).filter_map(|c| core.commits.get(c)).flat_map(|m| m.view.aspects.iter().map(|a| (a.tid, a.ak.clone()))).collect();
         let now = self.now().0;
         let mut m = super::Mutation::new();
         m.fresh.clone_from(&held);

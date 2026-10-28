@@ -228,6 +228,7 @@ impl Engine {
     /// excluded. Redo stack: its undo commits not undone themselves.
     pub fn undo_stack(&self, actor: &Tid, scope: &[(Tid, Ak)]) -> (Vec<CommitId>, Vec<CommitId>) {
         let all = self.changes(scope);
+        // on demand, O(commits): decodes every header the first time
         let undone: BTreeSet<CommitId> = self.core.commits.values().filter_map(|m| m.header.undoes).collect();
         let mine = all.iter().filter(|c| c.2 == *actor && !undone.contains(&c.0));
         let undo = mine.clone().filter(|c| c.4.is_none()).map(|c| c.0).collect();

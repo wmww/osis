@@ -6,7 +6,7 @@
 //! osis-commit cannot see (spec/commits.md §2).
 
 use crate::engine::write::required_role;
-use crate::engine::{Core, Meta, Owned, Tx};
+use crate::engine::{Core, Meta, Owned, Tx, View};
 use crate::error::{Error, Result};
 use osis_commit::{Decoded, Form, Header, Kind};
 use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Value};
@@ -44,6 +44,13 @@ pub(crate) fn header_frontier(h: &Header) -> Option<Arc<Frontier>> {
 
 fn dots_of(h: &Header, ai: usize) -> Dots {
     match (h.form, h.aspects.get(ai)) {
+        (Form::Node, Some(a)) if a.lo < a.hi => Dots::Node { lo: a.lo, hi: a.hi },
+        _ => Dots::Commit,
+    }
+}
+
+fn dots_of_view(v: &View, ai: usize) -> Dots {
+    match (v.form, v.aspects.get(ai)) {
         (Form::Node, Some(a)) if a.lo < a.hi => Dots::Node { lo: a.lo, hi: a.hi },
         _ => Dots::Commit,
     }
@@ -363,11 +370,21 @@ pub(crate) fn linked_frontiers_capped(tx: &mut Tx<'_>, h: &Header, parts: &EdgeP
 /// snapshot's thing whose linked frontier is not held here (an applied commit whose tree went:
 /// store loss, a partial import) is kept out of perm, never audited by an empty frontier, and
 /// `roster_snapshot` refuses it (`Core::frontier_unknown`).
-pub(crate) fn add_membership(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &EdgeParts) -> Result<()> {
+///
+/// Reads the commit's `View` (`v`); its header (`h`, else decoded from `Core::commits`) only
+/// for a roster snapshot whose tenures link their frontiers (the chunk list), so an open adapts
+/// without decoding headers.
+pub(crate) fn add_membership(tx: &mut Tx<'_>, v: &View, h: Option<&Header>, id: &CommitId, parts: &EdgeParts) -> Result<()> {
     tx.core.stale_commits.insert(*id);
-    let linked = match linked_frontiers(tx, h, parts) {
+    let links = v.kind == Kind::RosterSnapshot && parts.tenures().any(|(_, ts)| ts.iter().any(|t| matches!(t.frontier, Some(osis_schema::Chunked::Link(_)))));
+    let found = if links && h.is_none() { tx.core.commits.get(id).map(|m| m.header.arc()) } else { None };
+    let linked = match h.or(found.as_deref()) {
+        Some(h) if links => linked_frontiers(tx, h, parts),
+        _ => Ok(Linked::default()),
+    };
+    let linked = match linked {
         Ok(l) => l,
-        Err(_) if tx.core.skip_writer_rules && h.author == tx.core.id.tid() => Linked::default(),
+        Err(_) if tx.core.skip_writer_rules && v.author == tx.core.id.tid() => Linked::default(),
         Err(e) => return Err(e),
     };
     if !linked.waiting.is_empty() {
@@ -375,14 +392,14 @@ pub(crate) fn add_membership(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: 
         tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::BadInput, tids: linked.waiting.iter().copied().collect(), commit: Some(*id), peer: None, detail: "a roster snapshot's linked frontier is not held: kept out of the timeline".into() }, now);
         tx.core.frontier_unknown.extend(linked.waiting.iter().copied());
     }
-    add_membership_in(tx.core, h, id, parts, &linked);
+    add_membership_in(tx.core, v, id, parts, &linked);
     Ok(())
 }
 
-fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &EdgeParts, linked: &Linked) {
+fn add_membership_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgeParts, linked: &Linked) {
     for (ai, es) in parts.members() {
         if let Some(a) = h.aspects.get(ai) {
-            note_keys(core, &a.tid, es, Owned::of(h, id, ai).as_ref());
+            note_keys(core, &a.tid, es, Owned::of_view(h, id, ai).as_ref());
         }
     }
     match h.kind {
@@ -393,7 +410,7 @@ fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &EdgePar
             let mut known = true;
             for (ai, es) in parts.members() {
                 let Some(a) = h.aspects.get(ai) else { continue };
-                let (v, k) = edge_ops(core, &a.tid, es, dots_of(h, ai), Owned::of(h, id, ai).as_ref());
+                let (v, k) = edge_ops(core, &a.tid, es, dots_of_view(h, ai), Owned::of_view(h, id, ai).as_ref());
                 ops.extend(v);
                 known &= k;
             }
@@ -410,7 +427,7 @@ fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &EdgePar
             if ops.is_empty() {
                 core.held.remove(id);
             } else {
-                core.held.add_commit(MembershipCommit { id: *id, ts: h.ts, author: h.author, actor: h.actor, frontier: header_frontier(h), ops });
+                core.held.add_commit(MembershipCommit { id: *id, ts: h.ts, author: h.author, actor: h.actor, frontier: h.frontier.clone(), ops });
             }
         }
         Kind::RosterSnapshot => {
@@ -420,7 +437,7 @@ fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &EdgePar
                 let e = by_thing.entry(a.tid).or_insert_with(|| (BTreeMap::new(), Vec::new(), Dots::Commit));
                 match p {
                     EdgePart::Members(es) => {
-                        e.2 = dots_of(h, *ai);
+                        e.2 = dots_of_view(h, *ai);
                         for (_, k, v) in es {
                             if let (Some(m), Some(Some(edge))) = (k, v) {
                                 e.0.insert(*m, *edge);
@@ -602,10 +619,10 @@ pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<bool> {
     let ids: Vec<CommitId> = tx.core.unresolved.iter().copied().collect();
     let mut any = false;
     for id in ids {
-        let Some(h) = tx.core.commits.get(&id).map(|m| m.header.clone()) else { continue };
+        let Some(v) = tx.core.commits.get(&id).map(|m| m.view.clone()) else { continue };
         let parts = super::edge_parts(tx, &id)?;
         let before = tx.core.held.edge_commit(&id).map(|c| c.ops.clone());
-        add_membership(tx, &h, &id, &parts)?;
+        add_membership(tx, &v, None, &id, &parts)?;
         any |= tx.core.held.edge_commit(&id).map(|c| &c.ops) != before.as_ref();
     }
     Ok(any)
@@ -985,6 +1002,7 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
             }
         };
         if all {
+            // after a rebuild only (its headers are decoded)
             for (id, m) in core.commits.iter() {
                 one(id, m, true);
             }
@@ -1063,7 +1081,7 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
             tx.core.mark_changed(c);
         }
     }
-    // what was not re-judged has not changed
+    // what was not re-judged has not changed (debug builds: decodes every header)
     #[cfg(debug_assertions)]
     for (id, m) in tx.core.commits.iter() {
         let now: Vec<bool> = (0..m.header.aspects.len()).map(|ai| part_valid(tx.core, &m.header, id, ai)).collect();

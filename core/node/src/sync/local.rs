@@ -408,8 +408,9 @@ impl SyncEngine {
     /// by the member, for it, or by a node with a role on it (its devices).
     fn acted(&self, member: &Tid, since: Ts) -> bool {
         let tl = self.engine.core.timelines.get(member);
+        // the views: O(commits) without decoding headers
         self.engine.core.commits.values().any(|m| {
-            let h = &m.header;
+            let h = &m.view;
             h.ts > since && (h.author == *member || h.actor == *member || tl.is_some_and(|tl| tl.role(&h.author, member, At::now(h.ts)).is_some()))
         })
     }

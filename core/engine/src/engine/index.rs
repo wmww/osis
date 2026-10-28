@@ -29,7 +29,8 @@ const VERSION_KEY: &[u8] = b"i/v";
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/", env!("OSIS_INDEX_RULES"));
 /// Per commit (`meta_row`): one byte per part (bit 0 valid, bits 1-2 the rotation role it
 /// needs: 0 none, 1 read, 2 write, 3 admin; bit 3 a grant's overreach), then its header's
-/// `View`, so an open indexes the commit without decoding its header.
+/// `View` (a membership commit's frontier and every chunk list with it), so an open indexes and adapts the commit
+/// without decoding its header.
 const METAS: &[u8] = b"node/metas";
 /// Earlier builds' per-commit rows: the part bytes alone (read by `old_judgments` only).
 const PARTS: &[u8] = b"node/parts";
@@ -434,7 +435,7 @@ pub(crate) fn remove_edges(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
 
 /// Every membership commit's `EDGES` row, from its record (after a rebuild).
 fn write_edges_all(tx: &mut Tx<'_>) -> Result<()> {
-    let ids: Vec<CommitId> = tx.core.commits.iter().filter(|(_, m)| m.header.kind.is_membership()).map(|(id, _)| *id).collect();
+    let ids: Vec<CommitId> = tx.core.commits.iter().filter(|(_, m)| m.view.kind.is_membership()).map(|(id, _)| *id).collect();
     for id in ids {
         let parts = crate::apply::edge_parts(tx, &id)?;
         put_edges(tx, &id, &parts, Shred::No)?;
@@ -509,6 +510,17 @@ fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
         let ak = a.ak.as_str().as_bytes();
         w = w.raw(a.tid.as_bytes()).raw(&(ak.len() as u16).to_be_bytes()).raw(ak).u64(a.lo).u64(a.hi).u8(u8::from(a.bounded));
     }
+    w = w.u32(v.chunks.len() as u32);
+    for b in &v.chunks {
+        w = w.raw(&b.0);
+    }
+    match &v.frontier {
+        None => w = w.u8(0),
+        Some(f) => {
+            let f = osis_schema::core_types::Frontier { writes: f.writes.clone(), commits: f.commits.clone() };
+            w = w.u8(1).bytes(&osis_base::encode(&f.to_value()));
+        }
+    }
     w.take()
 }
 
@@ -534,8 +546,23 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
         let (tid, ak) = (r.tid()?, r.ak()?);
         aspects.push(super::AspectView { tid, ak, lo: r.u64()?, hi: r.u64()?, bounded: r.u8()? != 0 });
     }
+    let mut chunks = Vec::new();
+    for _ in 0..r.u32()? {
+        chunks.push(osis_base::BlobId(r.arr()?));
+    }
+    let frontier = match r.u8()? {
+        0 => None,
+        1 => {
+            let b = r.bytes()?;
+            let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: b.len() };
+            let v = osis_base::decode(b, &lim).map_err(|_| Error::Corrupt("meta row frontier"))?;
+            let f = osis_schema::core_types::Frontier::from_value(&v).map_err(|_| Error::Corrupt("meta row frontier"))?;
+            Some(Arc::new(osis_perm::Frontier { writes: f.writes, commits: f.commits }))
+        }
+        _ => return Err(Error::Corrupt("meta row frontier")),
+    };
     r.end()?;
-    Ok((parts, super::View { ts, kind, form, author, actor, linked, aspects }))
+    Ok((parts, super::View { ts, kind, form, author, actor, linked, aspects, frontier, chunks }))
 }
 
 /// A commit record's head and its blob bytes (version 2 heads, of earlier builds, carry part
@@ -987,11 +1014,11 @@ impl super::Engine {
         })
     }
 
-    /// Headers decoded so far of commits that are not membership commits (tests: an open from
-    /// the index decodes none).
+    /// Headers decoded so far of commits without a list by link (tests: an open from the index
+    /// decodes none; those with one are resolved from blobs at open).
     #[doc(hidden)]
-    pub fn content_headers_decoded(&self) -> usize {
-        self.core.commits.values().filter(|m| !m.view.kind.is_membership() && m.header.is_decoded()).count()
+    pub fn headers_decoded(&self) -> usize {
+        self.core.commits.values().filter(|m| !m.view.linked && m.header.is_decoded()).count()
     }
 
     /// Whether the persisted index is tagged as this build's (tests).
