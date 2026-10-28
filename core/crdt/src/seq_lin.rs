@@ -1136,7 +1136,7 @@ impl Lin {
     /// Sets the visible chars of a text's loaded rows from its records (the stored form keeps
     /// none).
     pub(crate) fn fill_chars(&mut self, elems: &Elems) {
-        let want = |r: &Row| if r.shown { elems.get(&r.dot).and_then(|e| if let SeqContent::Char(c) = e.content { Some(c) } else { None }) } else { None };
+        let want = |r: &Row| if r.shown { elems.get(&r.dot).and_then(SeqElem::char) } else { None };
         for b in self.p.order.clone() {
             if !self.p.blocks.get(b).is_some_and(|x| x.stub.is_none() && x.rows.iter().any(|r| r.ch != want(r))) {
                 continue;

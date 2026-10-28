@@ -211,7 +211,7 @@ fn items(v: &Value) -> Result<&[Value], Error> {
 /// Visible text elements and their chars.
 fn text_view(s: &dyn SeqRead) -> (Vec<Dot>, Vec<char>) {
     let vis = visible(s);
-    vis.rows().map(|r| (r.dot.clone(), r.ch.unwrap_or_default())).unzip()
+    vis.chars(s).map(|(d, c)| (d.clone(), c)).unzip()
 }
 
 /// Visible list elements: dot, content and projected read (`None`: opaque, §9).
