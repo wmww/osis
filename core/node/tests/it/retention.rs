@@ -1030,11 +1030,9 @@ fn late_deltas_windowed_alike_random_spec_crdt_4_8() {
     let start = start.unwrap_or(0);
     let mut reached: std::collections::BTreeMap<&'static str, u64> = Default::default();
     osis_node::costs::take();
-    for seed in start..start + n.unwrap_or(24) {
-        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| strays_history(seed, &mut reached))).is_err() {
-            panic!("strays seed {seed} failed (replay: OSIS_STRAYS_START={seed} OSIS_STRAYS_SEEDS=1)");
-        }
-    }
+    // every failing seed is reported
+    let failed: Vec<u64> = (start..start + n.unwrap_or(24)).filter(|&seed| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| strays_history(seed, &mut reached))).is_err()).collect();
+    assert!(failed.is_empty(), "strays seeds failed: {failed:?} (replay one: OSIS_STRAYS_START=<seed> OSIS_STRAYS_SEEDS=1)");
     println!("{reached:?}");
     if default {
         for k in ["deaths: window", "deaths: window strays", "deaths: window strays, every body"] {
