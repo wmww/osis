@@ -2619,6 +2619,7 @@ dependencies = [
  "osis-node",
  "osis-schema",
  "osis-server",
+ "osis-sim",
  "osis-store",
  "osis-transport",
  "tokio",
@@ -2790,15 +2791,6 @@ dependencies = [
  "osis-schema",
  "osis-server",
  "osis-store",
-]
-
-[[package]]
-name = "osis-std"
-version = "0.1.0"
-dependencies = [
- "osis",
- "osis-schema",
- "osis-sim",
 ]
 
 [[package]]

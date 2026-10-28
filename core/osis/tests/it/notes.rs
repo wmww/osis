@@ -2,7 +2,7 @@
 //! its notes. Tier 1.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use crate::common;
+use crate::scenario as common;
 use common::*;
 use osis::core::{BODY, GROUP, NAME};
 use osis::{Error, Osis, Path, Place, Result, Role, SyncScope, Tid, UndoScope};

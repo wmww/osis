@@ -2,7 +2,7 @@
 //! share, tag-owned things, ownership transfer. Tier 1 (the slower cases tier 2).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use crate::common;
+use crate::scenario as common;
 use common::*;
 use osis::core::{BODY, GROUP, NAME, TAG, Tag};
 use osis::{Demotion, EdgeOpts, Error, Lower, Osis, Place, Result, Role, Tid};
