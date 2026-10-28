@@ -827,10 +827,12 @@ fn carried_imports_judged_without_the_import_spec_perm_5_2() {
 // into its copy a second time, so two held imports list each origin; the least by (`ts`, ID)
 // names the author its carried writes are judged as, whichever arrived last, and each owns the
 // origin's writes on its aspects. Two nodes taking the imports in either order, and a
-// snapshot of the copy, agree (claims, carried writes, states) and equal their rebuilds.
+// snapshot of the copy, agree (claims, carried writes, states) and equal their rebuilds, also
+// where the snapshot comes before either import (its `Authors` naming the least is not refused
+// where the other import is held: issues/snapshot-authors-refusal-order.md).
 #[test]
 fn double_import_alike_in_both_orders_spec_perm_7() {
-    let mut lp = LocalPeer::new(4, 0xd0b1, T0).unwrap();
+    let mut lp = LocalPeer::new(6, 0xd0b1, T0).unwrap();
     lp.sync_all().unwrap();
     let (a, x) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
     let t = new_thing(&mut lp, 0);
@@ -850,8 +852,9 @@ fn double_import_alike_in_both_orders_spec_perm_7() {
     let pk0 = lp.packages(0).unwrap();
     let (imp, rest): (Vec<_>, Vec<_>) = pk0.iter().cloned().partition(|p| first.contains(&p.id));
     for p in &rest {
-        lp.deliver(2, p).unwrap();
-        lp.deliver(3, p).unwrap();
+        for i in 2..6 {
+            lp.deliver(i, p).unwrap();
+        }
     }
     // peer 2: the first move, then the second; peer 3 the other way round
     for (i, ps) in [(2, [&imp, &dup]), (3, [&dup, &imp])] {
@@ -865,20 +868,55 @@ fn double_import_alike_in_both_orders_spec_perm_7() {
     }
     let snap = lp.peers[0].engine.snapshot(&copy, &ak("/t/tags")).unwrap().unwrap();
     let pk0 = lp.packages(0).unwrap();
-    for i in [2, 3] {
-        for p in pk0.iter().filter(|p| p.id == snap) {
-            lp.deliver(i, p).unwrap();
+    let sp: Vec<_> = pk0.iter().filter(|p| p.id == snap).cloned().collect();
+    // peer 4: the second move, the snapshot, the first; peer 5: the snapshot, then both
+    for (i, ps) in [(2, vec![&sp]), (3, vec![&sp]), (4, vec![&dup, &sp, &imp]), (5, vec![&sp, &dup, &imp])] {
+        for p in ps.into_iter().flatten() {
+            assert!(matches!(lp.deliver(i, p).unwrap(), osis_node::Ingested::Applied(_)), "peer {i} applies {:?}", p.id);
         }
     }
     let line = |e: &Engine, k: &str| e.index_digest().lines().find(|l| l.starts_with(k)).unwrap_or_default().to_string();
-    for k in ["authors ", "imports ", "carried "] {
-        assert_eq!(line(&lp.peers[2].engine, k), line(&lp.peers[3].engine, k), "{k}");
+    for i in 3..6 {
+        for k in ["authors ", "imports ", "carried "] {
+            assert_eq!(line(&lp.peers[2].engine, k), line(&lp.peers[i].engine, k), "peer {i}: {k}");
+        }
+        assert_eq!(states(&mut lp.peers[2].engine, &[t, copy]), states(&mut lp.peers[i].engine, &[t, copy]), "peer {i}");
     }
     // the first move's imports name the author
     let h = lp.peers[2].engine.header(&first[0]).unwrap();
     assert!(line(&lp.peers[2].engine, "authors ").contains(&format!("{:?}", (a, h.ts))), "the least import names the author");
-    assert_eq!(states(&mut lp.peers[2].engine, &[t, copy]), states(&mut lp.peers[3].engine, &[t, copy]));
-    for i in [2, 3] {
+    for i in 2..6 {
         open_equals_rebuild_any(&mut lp.peers[i].engine, &[t, copy], &format!("peer {i}"));
     }
+}
+
+// spec/requirements.md, Out of scope ("malicious readers can only waste storage");
+// spec/permissions.md §5.2, §7: an import into a copy by a node without write on it is invalid
+// and changes nothing, whatever origins it lists. Fails: issues/invalid-import-strips-origin.md.
+#[test]
+#[ignore]
+fn invalid_reimport_changes_nothing_spec_perm_7() {
+    let mut lp = LocalPeer::new(3, 0xd0b2, T0).unwrap();
+    lp.sync_all().unwrap();
+    let (a, x) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+    let t = new_thing(&mut lp, 0);
+    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    add_tag(&mut lp, 1, t, "a");
+    add_tag(&mut lp, 0, t, "b");
+    lp.sync_all().unwrap();
+    let (copy, _) = lp.peers[0].engine.move_thing(&t, a).unwrap();
+    set_edge(&mut lp.peers[0].engine, copy, x, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    // peer 1 is demoted to reader before it imports t into the copy again, unaware
+    set_edge(&mut lp.peers[0].engine, copy, x, Some(edge(Role::Read)), None);
+    lp.sync(0, 2).unwrap();
+    let before = states(&mut lp.peers[2].engine, &[t, copy]);
+    let second = lp.peers[1].engine.reimport(&t, &copy).unwrap();
+    assert!(!second.is_empty());
+    let pk = lp.packages(1).unwrap();
+    for p in pk.iter().filter(|p| second.contains(&p.id)) {
+        lp.deliver(2, p).unwrap();
+    }
+    assert_eq!(states(&mut lp.peers[2].engine, &[t, copy]), before, "an invalid import changes nothing");
 }

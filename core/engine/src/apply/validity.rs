@@ -750,8 +750,12 @@ pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> Vec<(
         let node = match d.src.kind() {
             // a dot a held commit owns is that commit's write, judged with it
             osis_crdt::SourceKind::Node(n) if core.commit_of(tid, ak, &d).is_none() => *n,
+            // judged as its commit per the claim (spec/crdt.md §8 `Authors`), at the claim's `ts`
             osis_crdt::SourceKind::Commit(c) if !owns_source(core, tid, ak, c) => match core.ix.authors.get(&(*tid, *c)) {
-                Some((n, _)) => *n,
+                Some((n, t)) => {
+                    groups.entry((d.src.clone(), *n, *t)).or_default().insert(d.ctr);
+                    continue;
+                }
                 None => continue,
             },
             _ => continue,
@@ -807,47 +811,58 @@ pub(crate) fn carried_invalid(core: &Core, tid: &Tid, ak: &Ak, c: &Carried) -> V
     }
 }
 
-/// Records whom commit-form writes on the commit's things are judged as (`Core::authors`): a
-/// commit-form commit's author, an import's origins as the least held import's importer
-/// (`Core::imports`), a snapshot's `Authors`.
-/// A snapshot naming another author or `ts` than a held commit or an earlier snapshot, lacking
-/// the author of a commit-form write it carries, or carrying a `ts` for a dot of a held commit
-/// other than that commit's, is bad input (spec/crdt.md §8).
-pub(crate) fn note_authors(core: &mut Core, id: &CommitId, h: &Header, parts: &[(usize, usize, osis_commit::Decoded)]) -> Result<()> {
-    let mut held: Vec<((Tid, CommitId), (Tid, osis_base::Ts))> = Vec::new();
-    if h.form == Form::Commit && h.kind.has_own_writes() {
-        held.extend(h.aspects.iter().map(|a| ((a.tid, *id), (h.author, h.ts))));
+/// The claim a held commit makes for source `Commit(c)` on `tid` (spec/permissions.md §7):
+/// `c` itself as a commit-form commit with a delta on `tid`, else the least held import of it
+/// there by (`ts`, ID). A snapshot's `Authors` entry counts only where this is none.
+fn held_claim(core: &Core, tid: &Tid, c: &CommitId) -> Option<(Tid, osis_base::Ts)> {
+    if let Some(m) = core.ix.commits.get(c).filter(|m| m.view.form == Form::Commit && m.view.kind.has_own_writes() && m.view.aspects.iter().any(|x| x.tid == *tid)) {
+        return Some((m.view.author, m.view.ts));
     }
-    if h.kind == Kind::Import {
-        // of several imports of one origin on a thing the least by (`ts`, ID) names its
-        // author, unless the origin itself is held there (spec/permissions.md §7)
+    core.ix.imports.get(&(*tid, *c)).and_then(|s| s.first()).map(|(ts, _, n)| (*n, *ts))
+}
+
+/// Sets the claim for `k`; the groups recorded under another claim follow it, re-judged with
+/// the thing (`rejudge_all`: their writes may rise or fall in the state).
+fn set_claim(core: &mut Core, k: (Tid, CommitId), v: (Tid, osis_base::Ts)) {
+    if core.ix.authors.get(&k) == Some(&v) {
+        return;
+    }
+    core.ix.authors.insert(k, v);
+    let src = osis_crdt::Source::commit(k.1);
+    let ks: Vec<(Tid, Ak)> = core.ix.carried.keys().filter(|x| x.0 == k.0).cloned().collect();
+    for ak in ks {
+        let Some(mut gs) = core.ix.carried.get(&ak).cloned() else { continue };
+        if !gs.iter().any(|g| g.src == src) {
+            continue;
+        }
+        for g in gs.iter_mut().filter(|g| g.src == src) {
+            (g.node, g.ts) = v;
+        }
+        core.ix.carried.insert(ak, gs);
+        core.stale_things.insert(k.0);
+    }
+}
+
+/// Records whom commit-form writes on the commit's things are judged as (`Core::authors`,
+/// spec/crdt.md §8, spec/permissions.md §7): a commit-form commit's author, an import's
+/// origins as the least held import's importer (`Core::imports`), where neither is held the
+/// least entry by (`ts`, node) of the held snapshots' `Authors`. A function of the held set:
+/// a snapshot entry naming another claim is not refused (the held claim governs). A snapshot
+/// lacking the entry of a commit-form write it carries, or carrying a `ts` for a dot of a held
+/// commit other than that commit's, is bad input.
+pub(crate) fn note_authors(core: &mut Core, id: &CommitId, h: &Header, parts: &[(usize, usize, osis_commit::Decoded)]) -> Result<()> {
+    if h.form == Form::Commit && h.kind.has_own_writes() {
         for a in &h.aspects {
-            for o in &h.origins {
-                let k = (a.tid, o.commit);
-                core.ix.imports.insert(k, (h.ts, *id, h.author));
-                let own = core.ix.commits.get(&o.commit).is_some_and(|m| m.view.form == Form::Commit && m.view.kind.has_own_writes() && m.view.aspects.iter().any(|x| x.tid == a.tid));
-                if let (false, Some((ts, _, n))) = (own, core.ix.imports.get(&k).and_then(|s| s.first())) {
-                    held.push((k, (*n, *ts)));
-                }
-            }
+            set_claim(core, (a.tid, *id), (h.author, h.ts));
         }
     }
-    for (k, v) in held {
-        if core.ix.authors.get(&k) != Some(&v) {
-            core.ix.authors.insert(k, v);
-            // groups recorded under another claim follow the held commit
-            let ks: Vec<(Tid, Ak)> = core.ix.carried.keys().filter(|x| x.0 == k.0).cloned().collect();
-            for ak in ks {
-                let Some(mut gs) = core.ix.carried.get(&ak).cloned() else { continue };
-                let src = osis_crdt::Source::commit(k.1);
-                if !gs.iter().any(|g| g.src == src) {
-                    continue;
+    if h.kind == Kind::Import {
+        for a in &h.aspects {
+            for o in &h.origins {
+                core.ix.imports.insert((a.tid, o.commit), (h.ts, *id, h.author));
+                if let Some(v) = held_claim(core, &a.tid, &o.commit) {
+                    set_claim(core, (a.tid, o.commit), v);
                 }
-                for g in gs.iter_mut().filter(|g| g.src == src) {
-                    (g.node, g.ts) = v;
-                    g.invalid = carried_invalid(core, &ak.0, &ak.1, g);
-                }
-                core.ix.carried.insert(ak, gs);
             }
         }
     }
@@ -865,21 +880,25 @@ pub(crate) fn note_authors(core: &mut Core, id: &CommitId, h: &Header, parts: &[
     }
     for (ai, _, d) in parts {
         let (osis_commit::Decoded::Snapshot(s), Some(a)) = (d, h.aspects.get(*ai)) else { continue };
+        for (d, _) in s.fragment.writes() {
+            if let osis_crdt::SourceKind::Commit(c) = d.src.kind()
+                && !s.authors.contains_key(c)
+            {
+                return Err(crate::error::Error::BadInput("snapshot without the author of a commit-form write"));
+            }
+        }
         for (c, v) in &s.authors {
-            match core.ix.authors.get(&(a.tid, *c)) {
-                Some(x) if x != v => return Err(crate::error::Error::BadInput("snapshot author differs from the held one")),
-                Some(_) => {}
-                None => {
-                    core.ix.authors.insert((a.tid, *c), *v);
-                }
+            let k = (a.tid, *c);
+            if held_claim(core, &k.0, c).is_some() {
+                continue;
+            }
+            if core.ix.authors.get(&k).is_none_or(|x| (v.1, v.0) < (x.1, x.0)) {
+                set_claim(core, k, *v);
             }
         }
         for (d, ts) in s.fragment.writes() {
             match d.src.kind() {
                 osis_crdt::SourceKind::Commit(c) => {
-                    if !core.ix.authors.contains_key(&(a.tid, *c)) {
-                        return Err(crate::error::Error::BadInput("snapshot without the author of a commit-form write"));
-                    }
                     if let (Some(ts), Some(m)) = (ts, core.ix.commits.get(c))
                         && m.header.form == Form::Commit
                         && m.header.ts != ts
