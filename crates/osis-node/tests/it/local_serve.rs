@@ -5,6 +5,7 @@
 
 use crate::net;
 use net::*;
+use osis_core::format::INBOX_LIFETIME_MS;
 use osis_core::{Ak, BlobId, LabelId, Role, Tid, WallMs};
 use osis_node::flows::{Demotion, PreSync};
 use osis_node::sync::EntryKind;
@@ -340,3 +341,53 @@ fn local_work_sets_match_full_passes_spec_sync_5() {
     assert!(wp.iter().zip(&fp).all(|(w, f)| w.0 < f.0 && w.1 == f.1), "fewer full passes with work sets: {wp:?} vs {fp:?}");
 }
 
+
+/// A person created with no server at dialable node `a`, and an inbox blob delivered to it
+/// (its home label is served with no server, so the blob is logged there); the served state of
+/// the home label after delivery, then after each of `waits` advances.
+fn local_inbox_run(full: bool, waits: &[u64]) -> Vec<Vec<String>> {
+    let mut net = Net::new();
+    net.full_passes = full;
+    let a = net.node(1, &[]);
+    let acts = net.sync(a).publish_reach([0xa1; 32], Vec::new()).unwrap();
+    net.actions(a, acts);
+    let (alice, done) = net.engine(a).create_person(&[]).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let home = alice.card.home_label;
+    assert!(net.sync(a).labels().iter().any(|(_, x)| x.id == home && x.servers.is_empty()), "home label served with no server");
+    let e = net.engine(a);
+    let mut m = osis_node::Mutation::new();
+    let t = e.new_thing(&mut m, alice.person);
+    m.set(t, &REG, &s("for the inbox")).unwrap();
+    let c = e.commit(m).unwrap().unwrap();
+    net.run();
+    let ai = net.engine(a).header(&c).unwrap().aspects.iter().position(|x| x.tid == t && x.ak.as_str() == REG.ak()).unwrap();
+    let acts = net.sync(a).deliver_inbox(&alice.person, &c, &[ai].into()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let mut steps = vec![served(&mut net, &[a], &home)];
+    for &ms in waits {
+        net.advance(ms);
+        steps.push(served(&mut net, &[a], &home));
+    }
+    steps
+}
+
+// spec/sync.md §3 (an inbox blob expires at its prefix's T), §5 (member peer: served as a
+// server's sync would leave it): an inbox blob logged under a label served with no server
+// goes at its expiry, with local passes over work sets as with passes judging everything.
+#[test]
+fn local_inbox_blob_expires_spec_sync_5() {
+    let waits = [31_000, INBOX_LIFETIME_MS / 2, INBOX_LIFETIME_MS / 2 + 1_000, 31_000];
+    let work = local_inbox_run(false, &waits);
+    let full = local_inbox_run(true, &waits);
+    let inbox = |s: &[String]| s.iter().filter(|x| x.contains("Inbox")).count();
+    assert_eq!(inbox(&work[1]), 1, "the inbox blob served before it expires: {:?}", work[1]);
+    assert_eq!(inbox(&work[2]), 1, "and still at half its life");
+    assert_eq!(inbox(&work[3]), 0, "gone past its expiry: {:?}", work[3]);
+    for (i, (w, f)) in work.iter().zip(&full).enumerate() {
+        assert_eq!(w, f, "step {i}: work sets vs full passes");
+    }
+}
