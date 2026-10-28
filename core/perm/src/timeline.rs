@@ -192,6 +192,7 @@ impl Timeline {
             None => self.walked.rest.log.len(),
         };
         let leaves: Vec<(Tid, Tid)> = below.iter().filter_map(|t| input.owners.owner_actor(t).map(|o| (*t, o))).collect();
+        #[cfg(debug_assertions)]
         let joins = !below.is_empty() || input.nodes != self.input.nodes;
         let mut kept = Kept::of(&mut self);
         // a role through a new owner link may differ from where the walk meets it on, its
