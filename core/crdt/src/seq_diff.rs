@@ -167,26 +167,6 @@ fn script(n_old: usize, n_new: usize, keep: &[(usize, usize)], pair: bool) -> Ve
     out
 }
 
-/// Turns the inserts of a script into creation runs, one per gap.
-fn insert_runs(w: &mut Writer, out: &mut Seq, steps: &[Step], anchor_of: &dyn Fn(Option<usize>) -> Anchor, content: &mut dyn FnMut(&mut Writer, usize) -> Result<SeqContent, Error>) -> Result<(), Error> {
-    let mut groups: Vec<(Option<usize>, Vec<usize>)> = Vec::new();
-    for s in steps {
-        if let Step::Ins(a, j) = s {
-            match groups.last_mut() {
-                Some((ga, js)) if ga == a => js.push(*j),
-                _ => groups.push((*a, vec![*j])),
-            }
-        }
-    }
-    for (a, js) in groups {
-        let mut cs = Vec::with_capacity(js.len());
-        for j in js {
-            cs.push(content(w, j)?);
-        }
-        crate::seq_ops::insert_run(w, out, anchor_of(a), cs);
-    }
-    Ok(())
-}
 
 fn chars(v: &Value) -> Result<Vec<char>, Error> {
     match v {
@@ -220,57 +200,82 @@ fn list_view<V: View>(s: &dyn SeqRead, ev: &V) -> Vec<(Dot, Option<Fragment>, Op
         .collect()
 }
 
-fn flag(out: &mut Seq, d: Dot, w: &Writer) {
-    out.elems_mut().insert(d, SeqElem { deleted: Some((w.delta_stamp(), true)), ..SeqElem::bare() });
+/// The content inserted for new index `j`: its char.
+fn char_at(n: &[char]) -> impl FnMut(&mut Writer, usize) -> Result<SeqContent, Error> + '_ {
+    |_, j| Ok(n.get(j).map_or(SeqContent::None, |c| SeqContent::Char(*c)))
+}
+
+/// The content inserted for new index `j`: its list item, created under element view `ev`.
+fn item_at<'a, V: View>(ev: &'a V, n: &'a [Value]) -> impl FnMut(&mut Writer, usize) -> Result<SeqContent, Error> + 'a {
+    move |w, j| {
+        let item = n.get(j).ok_or(Error::Mismatch("index"))?;
+        Ok(SeqContent::Frag(Box::new(crate::ops::create(w, ev, item)?)))
+    }
+}
+
+/// A pair's nested write, from the element's content and its old and new index.
+type PairFn<'a> = &'a mut dyn FnMut(&mut Writer, Option<&Fragment>, usize, usize) -> Result<Option<Fragment>, Error>;
+
+/// The delta of `steps`, old indices found through `rb`: a delete flags, a pair writes what
+/// `pair` gives, the inserts become creation runs of `content`; `None` when it writes nothing.
+fn apply(w: &mut Writer, text: bool, steps: &[Step], rb: &Rebase, pair: PairFn, content: &mut dyn FnMut(&mut Writer, usize) -> Result<SeqContent, Error>) -> Result<Option<Seq>, Error> {
+    let mut out = Seq::empty(text);
+    for st in steps {
+        match st {
+            Step::Pair(i, j) => {
+                let Some((d, f)) = rb.paired(*i) else { continue };
+                if let Some(c) = pair(w, f.as_ref(), *i, *j)? {
+                    out.elems_mut().insert(d.clone(), SeqElem { content: SeqContent::Frag(Box::new(c)), ..SeqElem::bare() });
+                }
+            }
+            Step::Del(i) => {
+                if let Some((d, _)) = rb.get(*i) {
+                    out.elems_mut().insert(d.clone(), SeqElem { deleted: Some((w.delta_stamp(), true)), ..SeqElem::bare() });
+                }
+            }
+            _ => {}
+        }
+    }
+    // the inserts: creation runs, one per gap
+    let mut groups: Vec<(Option<usize>, Vec<usize>)> = Vec::new();
+    for s in steps {
+        if let Step::Ins(a, j) = s {
+            match groups.last_mut() {
+                Some((ga, js)) if ga == a => js.push(*j),
+                _ => groups.push((*a, vec![*j])),
+            }
+        }
+    }
+    for (a, js) in groups {
+        let mut cs = Vec::with_capacity(js.len());
+        for j in js {
+            cs.push(content(w, j)?);
+        }
+        crate::seq_ops::insert_run(w, &mut out, rb.anchor(a), cs);
+    }
+    Ok((!out.elems().is_empty()).then_some(out))
 }
 
 /// Structural diff of present state `s` against `v` (§9 list, text); `None` when nothing changes.
 pub(crate) fn diff<V: View>(w: &mut Writer, s: &Seq, view: &V, v: &Value) -> Result<Option<Seq>, Error> {
-    let mut out = Seq::empty(s.text);
     if s.text {
         let (vis, old) = text_view(s);
         let new = chars(v)?;
         let steps = script(old.len(), new.len(), &lcs(&old, &new, |a, b| a == b), false);
-        for st in &steps {
-            if let Step::Del(i) = st
-                && let Some(d) = vis.get(*i)
-            {
-                flag(&mut out, d.clone(), w);
-            }
-        }
-        let anchor_of = |a: Option<usize>| a.and_then(|i| vis.get(i)).cloned().map_or(Anchor::Head, Anchor::Dot);
-        insert_runs(w, &mut out, &steps, &anchor_of, &mut |_, j| Ok(new.get(j).map_or(SeqContent::None, |c| SeqContent::Char(*c))))?;
+        let rb = Rebase::read(vis.into_iter().map(|d| (d, None)).collect());
+        apply(w, true, &steps, &rb, &mut |_, _, _, _| Ok(None), &mut char_at(&new))
     } else {
         let ev = view.element().ok_or(Error::Mismatch("list without element type"))?;
         let new = items(v)?;
         // opaque elements keep their place and are never touched (§9)
-        let all = list_view(s, &ev);
-        let old: Vec<&(Dot, Option<Fragment>, Option<Value>)> = all.iter().filter(|x| x.2.is_some()).collect();
-        let keep = lcs(&old, new, |a, b| a.2.as_ref() == Some(b));
-        let steps = script(old.len(), new.len(), &keep, true);
-        for st in &steps {
-            match st {
-                Step::Pair(i, j) => {
-                    let (Some((d, f, _)), Some(item)) = (old.get(*i), new.get(*j)) else { continue };
-                    if let Some(c) = crate::ops::diff(w, f.as_ref(), &ev, item)? {
-                        out.elems_mut().insert(d.clone(), SeqElem { content: SeqContent::Frag(Box::new(c)), ..SeqElem::bare() });
-                    }
-                }
-                Step::Del(i) => {
-                    if let Some((d, _, _)) = old.get(*i) {
-                        flag(&mut out, d.clone(), w);
-                    }
-                }
-                _ => {}
-            }
-        }
-        let anchor_of = |a: Option<usize>| a.and_then(|i| old.get(i)).map_or(Anchor::Head, |x| Anchor::Dot(x.0.clone()));
-        insert_runs(w, &mut out, &steps, &anchor_of, &mut |w, j| {
-            let item = new.get(j).ok_or(Error::Mismatch("index"))?;
-            Ok(SeqContent::Frag(Box::new(crate::ops::create(w, &ev, item)?)))
-        })?;
+        let (cur, old): (Vec<_>, Vec<Value>) = list_view(s, &ev).into_iter().filter_map(|(d, f, p)| Some(((d, f), p?))).unzip();
+        let steps = script(old.len(), new.len(), &lcs(&old, new, |a, b| a == b), true);
+        let mut pair = |w: &mut Writer, f: Option<&Fragment>, _, j: usize| match new.get(j) {
+            Some(item) => crate::ops::diff(w, f, &ev, item),
+            None => Ok(None),
+        };
+        apply(w, false, &steps, &Rebase::read(cur), &mut pair, &mut item_at(&ev, new))
     }
-    Ok((!out.elems().is_empty()).then_some(out))
 }
 
 /// The ops turning sequence value `base` into `new` at `path` (notes/api.md `edit`): one
@@ -295,7 +300,8 @@ thread_local! {
     pub(crate) static WINDOWED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Where `edit` finds base's elements in the current read.
+/// Where a script's old indices find their current elements: the read itself (`diff`), or
+/// base's elements in the current read (`edit`).
 struct Rebase {
     /// Current elements: dot and list content.
     cur: Vec<(Dot, Option<Fragment>)>,
@@ -308,6 +314,10 @@ struct Rebase {
 }
 
 impl Rebase {
+    /// Old index `i` is element `i` of the read (`diff`).
+    fn read(cur: Vec<(Dot, Option<Fragment>)>) -> Rebase {
+        Rebase { cur, to_cur: None, lo: 0, changed: HashMap::new() }
+    }
     fn exact(&self, i: usize) -> Option<usize> {
         match &self.to_cur {
             None => i.checked_sub(self.lo).filter(|k| *k < self.cur.len()),
@@ -423,7 +433,6 @@ fn window<T: PartialEq>(s: &dyn SeqRead, vis: &crate::seq::Vis, base: &[T], mid:
 /// or removed concurrently is never deleted and anchors nothing; a list element changed on both
 /// sides is edited in place when it is the one unmatched element of its gap on each side.
 pub(crate) fn edit<V: View>(w: &mut Writer, s: &dyn SeqRead, view: &V, base: &Value, new: &Value) -> Result<Option<Seq>, Error> {
-    let mut out = Seq::empty(s.text());
     let vis = visible(s);
     let part = vis.0.partial().cloned();
     // the read did not match base near the change: void on a sequence held in part (a miss, or
@@ -451,14 +460,7 @@ pub(crate) fn edit<V: View>(w: &mut Writer, s: &dyn SeqRead, view: &V, base: &Va
                 Rebase { cur: dots.into_iter().map(|d| (d, None)).collect(), to_cur: Some(to_cur), lo: 0, changed: HashMap::new() }
             }
         };
-        for st in &steps {
-            if let Step::Del(i) = st
-                && let Some((d, _)) = rb.get(*i)
-            {
-                flag(&mut out, d.clone(), w);
-            }
-        }
-        insert_runs(w, &mut out, &steps, &|a| rb.anchor(a), &mut |_, j| Ok(n.get(j).map_or(SeqContent::None, |c| SeqContent::Char(*c))))?;
+        apply(w, true, &steps, &rb, &mut |_, _, _, _| Ok(None), &mut char_at(&n))
     } else {
         let ev = view.element().ok_or(Error::Mismatch("list without element type"))?;
         let (b, n) = (items(base)?, items(new)?);
@@ -488,28 +490,12 @@ pub(crate) fn edit<V: View>(w: &mut Writer, s: &dyn SeqRead, view: &V, base: &Va
                 Rebase { cur: cur.into_iter().map(|(d, f, _)| (d, f)).collect(), to_cur: Some(keep.into_iter().collect()), lo: 0, changed }
             }
         };
-        for st in &steps {
-            match st {
-                Step::Pair(i, j) => {
-                    let (Some((d, f)), Some(bv), Some(nv)) = (rb.paired(*i), b.get(*i), n.get(*j)) else { continue };
-                    if let Some(c) = nested_edit(w, f.as_ref(), &ev, bv, nv)? {
-                        out.elems_mut().insert(d.clone(), SeqElem { content: SeqContent::Frag(Box::new(c)), ..SeqElem::bare() });
-                    }
-                }
-                Step::Del(i) => {
-                    if let Some((d, _)) = rb.get(*i) {
-                        flag(&mut out, d.clone(), w);
-                    }
-                }
-                _ => {}
-            }
-        }
-        insert_runs(w, &mut out, &steps, &|a| rb.anchor(a), &mut |w, j| {
-            let item = n.get(j).ok_or(Error::Mismatch("index"))?;
-            Ok(SeqContent::Frag(Box::new(crate::ops::create(w, &ev, item)?)))
-        })?;
+        let mut pair = |w: &mut Writer, f: Option<&Fragment>, i: usize, j: usize| match (b.get(i), n.get(j)) {
+            (Some(bv), Some(nv)) => nested_edit(w, f, &ev, bv, nv),
+            _ => Ok(None),
+        };
+        apply(w, false, &steps, &rb, &mut pair, &mut item_at(&ev, n))
     }
-    Ok((!out.elems().is_empty()).then_some(out))
 }
 
 /// `edit(base, new)` of one list element, resolved against its current content.
