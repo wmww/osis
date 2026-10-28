@@ -227,8 +227,8 @@ fn next_bounded(core: &Core, tid: &Tid, ak: &Ak, after: (Ts, CommitId)) -> Optio
 }
 
 /// A commit just indexed (`apply::index_commit`): the first held bounded body of its aspects.
-pub(crate) fn note_indexed(core: &mut Core, id: &CommitId, h: &Header) {
-    for a in h.aspects.iter().filter(|a| bounded(a)) {
+pub(crate) fn note_indexed(core: &mut Core, id: &CommitId, h: &crate::engine::View) {
+    for a in h.aspects.iter().filter(|a| a.bounded) {
         let k = (a.tid, a.ak.clone());
         if core.first_bounded.get(&k).is_some_and(|f| f.is_none_or(|f| (h.ts, *id) < f)) {
             core.first_bounded.insert(k, Some((h.ts, *id)));

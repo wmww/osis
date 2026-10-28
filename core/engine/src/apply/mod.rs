@@ -374,7 +374,7 @@ impl Engine {
     /// secret) or the resolved header is unknown.
     pub fn parts_genuine(&self, blob: &CommitBlob) -> Option<bool> {
         let h = match self.core.commits.get(&blob.id()) {
-            Some(m) => m.header.clone(),
+            Some(m) => m.header.arc(),
             None if blob.header.is_resolved() => Arc::new(blob.header.clone()),
             None => return None,
         };
@@ -611,14 +611,14 @@ impl Engine {
 
     /// IDs of applied commits, in (`ts`, ID) order.
     pub fn commit_ids(&self) -> Vec<CommitId> {
-        let mut v: Vec<(osis_base::Ts, CommitId)> = self.core.commits.iter().map(|(id, m)| (m.header.ts, *id)).collect();
+        let mut v: Vec<(osis_base::Ts, CommitId)> = self.core.commits.iter().map(|(id, m)| (m.view.ts, *id)).collect();
         v.sort();
         v.into_iter().map(|x| x.1).collect()
     }
 
     /// The header of an applied commit.
     pub fn header(&self, id: &CommitId) -> Option<Arc<Header>> {
-        self.core.commits.get(id).map(|m| m.header.clone())
+        self.core.commits.get(id).map(|m| m.header.arc())
     }
 
     /// The commit that created `tid`: the oldest held commit carrying its `/created` that is
@@ -707,10 +707,10 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         // perm's inputs: the edge writes of the membership commits, oldest first, from what the
         // index keeps of their bodies
         let mut edges = crate::engine::index::load_edges(tx)?;
-        let mut ids: Vec<(osis_base::Ts, CommitId)> = tx.core.commits.iter().filter(|(_, m)| m.header.kind.is_membership()).map(|(id, m)| (m.header.ts, *id)).collect();
+        let mut ids: Vec<(osis_base::Ts, CommitId)> = tx.core.commits.iter().filter(|(_, m)| m.view.kind.is_membership()).map(|(id, m)| (m.view.ts, *id)).collect();
         ids.sort();
         for (_, id) in ids {
-            let Some(h) = tx.core.commits.get(&id).map(|m| m.header.clone()) else { continue };
+            let Some(h) = tx.core.commits.get(&id).map(|m| m.header.arc()) else { continue };
             let parts = edges.remove(&id).ok_or(Error::Corrupt("edges row missing"))?;
             // every row is what its record reads now (rewritten with it: late parts, drops)
             #[cfg(debug_assertions)]
@@ -736,9 +736,10 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let id = blob.id();
             let h = Arc::new(blob.header.clone());
             let valid = vec![true; h.aspects.len()];
-            atomic::index_commit(tx.core, &id, &h);
+            let m = Meta::new(h.clone(), received, origin, valid, dropped);
+            atomic::index_commit(tx.core, &id, &m.view);
             validity::note_authors(tx.core, &id, &h, &[]).map_err(|_| Error::Corrupt("commit authors"))?;
-            tx.core.commits.insert(id, Meta { header: h, received, origin, valid, dropped });
+            tx.core.commits.insert(id, m);
             if is_kind_snapshot(blob.header.kind) {
                 snaps.push(blob.clone());
             }

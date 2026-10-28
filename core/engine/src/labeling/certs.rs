@@ -331,7 +331,7 @@ impl Engine {
         }
         let membership = cut.header.kind.is_membership();
         let resolved = match self.core.commits.get(&id) {
-            Some(m) if !cut.header.is_resolved() => m.header.clone(),
+            Some(m) if !cut.header.is_resolved() => m.header.arc(),
             _ => std::sync::Arc::new(cut.header.clone()),
         };
         let ps = osis_commit::project_resolved(&cut, &resolved, |_| ())?;

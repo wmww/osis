@@ -14,7 +14,7 @@ mod ids;
 mod time;
 mod value;
 
-pub use cbor::{CanonicalBytes, DecodeError, Limits, decode, decode_prefix, encode};
+pub use cbor::{CanonicalBytes, DecodeError, Limits, decode, decode_prefix, encode, item_prefix};
 pub use chunker::{ChunkParams, Chunker, PageCutter};
 pub use error::{Classified, ErrorClass};
 pub use ids::{Ak, AkError, BlobId, CommitId, CreationRecord, LabelId, Link, Role, SchemaId, Tid, TidParseError};

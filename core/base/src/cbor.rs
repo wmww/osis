@@ -276,6 +276,14 @@ pub fn decode_prefix<'a>(input: &'a [u8], limits: &Limits) -> Result<(Value, &'a
     Ok((v, input.get(..d.pos).unwrap_or(input)))
 }
 
+/// The bytes of the one item at the start of `input`, found by its heads alone: nothing is
+/// decoded or checked inside it (for bytes verified otherwise, e.g. by their hash).
+pub fn item_prefix<'a>(input: &'a [u8], limits: &Limits) -> Result<&'a [u8], DecodeError> {
+    let mut d = Decoder::new(input, limits);
+    d.skip(0)?;
+    Ok(input.get(..d.pos).unwrap_or(input))
+}
+
 struct Decoder<'a> {
     /// Input cut at `max_bytes`.
     buf: &'a [u8],
@@ -365,6 +373,41 @@ impl<'a> Decoder<'a> {
             return Err(DecodeError::TooDeep);
         }
         self.deepest = self.deepest.max(level);
+        Ok(())
+    }
+
+    /// Steps over one item inside `depth` arrays, maps and tags.
+    fn skip(&mut self, depth: usize) -> Result<(), DecodeError> {
+        let ib = self.byte()?;
+        match ib >> 5 {
+            MAJOR_UINT | MAJOR_NINT => {
+                self.arg(ib)?;
+            }
+            MAJOR_BYTES | MAJOR_TEXT => {
+                let n = self.len(ib, 1)?;
+                self.take(n)?;
+            }
+            m @ (MAJOR_ARRAY | MAJOR_MAP) => {
+                self.enter(depth + 1)?;
+                let per = if m == MAJOR_MAP { 2 } else { 1 };
+                let n = self.len(ib, per)?;
+                for _ in 0..n * per {
+                    self.skip(depth + 1)?;
+                }
+            }
+            MAJOR_TAG => {
+                self.arg(ib)?;
+                self.enter(depth + 1)?;
+                self.skip(depth + 1)?;
+            }
+            _ => match ib {
+                FALSE | TRUE => {}
+                FLOAT64 => {
+                    self.take(8)?;
+                }
+                _ => return Err(DecodeError::BadSimple),
+            },
+        }
         Ok(())
     }
 

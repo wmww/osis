@@ -162,6 +162,10 @@ impl<'a> Rd<'a> {
     pub fn arr<const N: usize>(&mut self) -> Result<[u8; N]> {
         self.take(N)?.try_into().map_err(|_| Error::Corrupt("short record"))
     }
+    /// The next `n` bytes.
+    pub fn take_raw(&mut self, n: usize) -> Result<&'a [u8]> {
+        self.take(n)
+    }
     pub fn bytes(&mut self) -> Result<&'a [u8]> {
         let n = self.u32()? as usize;
         self.take(n)
