@@ -212,7 +212,7 @@ pub(crate) fn place_idx(elems: &Elems) -> Placed<'_> {
 }
 
 /// Places the elements of a sequence (§6), by dot.
-#[cfg(test)]
+#[cfg(any(test, fuzzing))]
 pub(crate) fn place(elems: &Elems, text: bool) -> crate::seq_lin::Placement {
     crate::seq_lin::Placement::of(&place_idx(elems), text)
 }

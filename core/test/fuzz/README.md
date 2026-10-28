@@ -29,6 +29,7 @@ Each target asserts no panic plus the parser's round-trip or consistency propert
 | `commit_header` | commit header, commit blob plaintext | osis-commit | live |
 | `delta` | delta and snapshot decoders (writer, snapshot, import forms), read and join of what decodes | osis-crdt | live |
 | `seq_follow` | text writer deltas joined into a fixed text with range records; the cached placement's read equals a whole pass's (snapshot round trip) | osis-crdt | live |
+| `seq_ops` | `arbitrary` op scripts on three replicas of a text or list (local ops, several per commit, skewed clocks; model commits; undos; joins in any order with duplicates; snapshot round trips and bootstraps) replayed by `osis_crdt::fuzzing::replay`: against crdt-model (state, read, delta bytes), a plain sequence, one-by-one commits, the wire, placements held in part, the crate's debug comparisons; no committed corpus | osis-crdt (`--cfg fuzzing`) | live |
 | `join` | `arbitrary` states, join laws | osis-crdt | planned |
 | `page` | page and link page | osis-crdt, osis-label | planned |
 | `box` | sealed, `/secrets`, symmetric and history box openers, wrap, blob decrypt, unpad (fixed keys); `/secrets` and `/keys` value decoders | osis-crypto, osis-schema | live |
@@ -38,6 +39,9 @@ Each target asserts no panic plus the parser's round-trip or consistency propert
 | `proto_frame` | frame codec, Hello, each message | osis-proto | live |
 | `bundle` | bundle reader, importer | osis-label | live |
 | `schema_dsl` | schema DSL parser, schema-as-data | osis-schema | live |
+
+## `seq_ops`
+Its inputs are op scripts (`arbitrary`); libFuzzer's length control keeps them short (a few steps) for minutes, so for long histories add `-max_len=512 -len_control=0`. A crash's script: `cargo +nightly fuzz fmt --fuzz-dir . seq_ops <artifact>` prints it; paste it into a `fuzz_seq` test as a `Script` literal (or reproduce with `fuzz_seq::tests::shrink_script`, notes/testing.md). First run, 600 s on a loaded 16-thread laptop: 129k scripts (700/s at first, 215/s on average as scripts grew), coverage 149 → 10,000 edges in about a minute, 12,800 at the end, 2,000 corpus units, no crash.
 
 ## Adding a target
 In the plan step that lands the parser: add `fuzz_targets/<target>.rs` and its `[[bin]]` in `Cargo.toml` (path dependency on the crate), its seeds in osis-vectors `corpus.rs`, run `gen-vectors corpus`, flip its row here to live, and smoke-run it with `-- -runs=1000`. The nightly workflow fuzzes every target `cargo fuzz list` prints.

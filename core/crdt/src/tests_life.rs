@@ -9,7 +9,7 @@ use crate::testutil::{TyView, frag, history, mapply, ostate, sink_no_seq, source
 use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Received, Snapshot};
 use crate::Batch;
 use crate::ops::{Op, PathOp};
-use crdt_model::r#gen::{Rng, random_op};
+use crdt_model::r#gen::random_op;
 use crdt_model::ops::Ty;
 use crdt_model::stamp::Source as MSource;
 use osis_base::{ChunkParams, Tid, Value};
@@ -32,7 +32,7 @@ fn join(a: &Fragment, b: &Fragment) -> Fragment {
 type Three = (Vec<Fragment>, Vec<crdt_model::state::Frag>, Vec<Range>, Vec<(MSource, u64, u64)>);
 
 fn three(seed: u64, ty: &Ty) -> Three {
-    let mut r = Rng(seed | 1);
+    let mut r = crate::testutil::rng(seed | 1);
     let mut ours = Vec::new();
     let mut models = Vec::new();
     let mut ranges = Vec::new();
@@ -87,7 +87,7 @@ proptest! {
 /// §4.7 laws of `strip` over random states of type `ty`.
 pub(crate) fn expiry_laws(seed: u64, ty: &Ty) {
     let (s, m, ranges, mranges) = three(seed, ty);
-    let mut r = Rng(seed ^ 0x55);
+    let mut r = crate::testutil::rng(seed ^ 0x55);
     let pick: Vec<bool> = ranges.iter().map(|_| r.chance(1, 2)).collect();
     let expired: Vec<Range> = ranges.iter().zip(&pick).filter(|x| *x.1).map(|x| x.0.clone()).collect();
     let mexpired: Vec<(MSource, u64, u64)> = mranges.iter().zip(&pick).filter(|x| *x.1).map(|x| x.0.clone()).collect();
@@ -109,7 +109,7 @@ pub(crate) fn expiry_laws(seed: u64, ty: &Ty) {
 
 /// §4.6 un-merge over a random history of type `ty`.
 pub(crate) fn unmerge_check(seed: u64, ty: &Ty) {
-    let mut r = Rng(seed | 1);
+    let mut r = crate::testutil::rng(seed | 1);
     let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
     let mut mstate = None;
     for c in &commits {
@@ -158,7 +158,7 @@ pub(crate) fn unmerge_check(seed: u64, ty: &Ty) {
 
 /// `remove_writes` over a random history of type `ty`: for random sets of its commits.
 pub(crate) fn remove_writes_check(seed: u64, ty: &Ty) {
-    let mut r = Rng(seed | 1);
+    let mut r = crate::testutil::rng(seed | 1);
     let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
     let mut state = Fragment::default();
     for c in &commits {
@@ -192,7 +192,7 @@ pub(crate) fn remove_writes_check(seed: u64, ty: &Ty) {
 
 /// §8 bootstrap from a snapshot, then concurrent edits of type `ty`.
 pub(crate) fn bootstrap_check(seed: u64, ty: &Ty) {
-    let mut r = Rng(seed | 1);
+    let mut r = crate::testutil::rng(seed | 1);
     let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
     let mut a = Fragment::default();
     let mut received = Received::new();
@@ -242,7 +242,7 @@ const SMALL: PageParams = PageParams { target: 2000, cut: ChunkParams { min: 128
 fn big_set(n: usize, order_seed: u64) -> Fragment {
     let node = |i: u8| Source::node(Tid::from_bytes([i; 15]));
     let mut idx: Vec<usize> = (0..n).collect();
-    let mut r = Rng(order_seed | 1);
+    let mut r = crate::testutil::rng(order_seed | 1);
     for k in (1..idx.len()).rev() {
         idx.swap(k, r.below(k + 1));
     }

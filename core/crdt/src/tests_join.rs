@@ -3,14 +3,13 @@
 
 use crate::fragment::Fragment;
 use crate::testutil::{frag, history, mapply, ostate, sink_no_seq, value};
-use crdt_model::r#gen::Rng;
 use crdt_model::ops::Ty;
 use proptest::prelude::*;
 
 /// Delivers the history in a random order with duplicates to the model and to the
 /// implementation in lockstep; states and reads must agree after every join.
 pub(crate) fn lockstep(seed: u64, types: &[Ty], n: usize, rounds: usize) {
-    let mut r = Rng(seed | 1);
+    let mut r = crate::testutil::rng(seed | 1);
     let commits = history(&mut r, types, n, rounds);
     let mut reference = None;
     for c in &commits {
@@ -73,7 +72,7 @@ fn model_order_independent(seeds: u64) {
     let mixes = [vec![a, b], vec![Ty::Register, Ty::Counter, set, Ty::Max, map, Ty::Min], vec![sink_no_seq(), Ty::Register, Ty::Counter]];
     for (mi, types) in mixes.iter().enumerate() {
         for seed in 0..seeds {
-            let mut r = Rng(seed | 1);
+            let mut r = crate::testutil::rng(seed | 1);
             let commits = history(&mut r, types, types.len().max(3), 5);
             let (mut s1, mut s2) = (None, None);
             for c in &commits {

@@ -882,6 +882,10 @@ impl DotMap {
             let lo = if chunks.is_empty() { None } else { c.first().map(|x| x.0.clone()) };
             chunks.push(MapChunk { lo, e: Some(Arc::new(c)) });
         }
+        // the first chunk is there even when empty: a placement loaded from its top has it
+        if chunks.is_empty() {
+            chunks.push(MapChunk { lo: None, e: Some(Arc::default()) });
+        }
         DotMap { chunks, len, part: None }
     }
     fn size(len: usize) -> usize {
@@ -936,7 +940,7 @@ impl DotMap {
             }
         }
     }
-    #[cfg(test)]
+    #[cfg(any(test, fuzzing))]
     fn len(&self) -> usize {
         self.len
     }
@@ -1202,7 +1206,7 @@ impl Lin {
     }
 
     /// The dot map names each row's block, and the counts add up (tests).
-    #[cfg(test)]
+    #[cfg(any(test, fuzzing))]
     pub(crate) fn map_ok(&self) -> bool {
         let p = &self.p;
         let counts = p.order.iter().all(|b| p.blocks.get(*b).is_some_and(|x| x.shown == x.rows.iter().filter(|r| r.shown).count() && x.min == x.rows.iter().map(|r| r.depth).min().unwrap_or(i64::MAX)));

@@ -22,7 +22,7 @@ proptest! {
     #[test]
     fn diff_matches_model_spec_9(seed in any::<u64>()) {
         let ty = sink_no_seq();
-        let mut r = Rng(seed | 1);
+        let mut r = crate::testutil::rng(seed | 1);
         let commits = history(&mut r, std::slice::from_ref(&ty), 2, 3);
         let mut mstate = None;
         for c in &commits {
@@ -54,7 +54,7 @@ proptest! {
     fn batch_is_net_effect_spec_4_5(seed in any::<u64>()) {
         let ty = sink_no_seq();
         let view = TyView(ty.clone());
-        let mut r = Rng(seed | 1);
+        let mut r = crate::testutil::rng(seed | 1);
         let commits = history(&mut r, std::slice::from_ref(&ty), 1, 3);
         let mut mstate = None;
         for c in &commits {
@@ -92,7 +92,7 @@ proptest! {
     #[test]
     fn undo_restores_spec_4_6(seed in any::<u64>()) {
         let ty = sink_no_seq();
-        let mut r = Rng(seed | 1);
+        let mut r = crate::testutil::rng(seed | 1);
         let commits = history(&mut r, std::slice::from_ref(&ty), 1, 3);
         let mut mstate = None;
         for c in &commits {
@@ -132,7 +132,7 @@ proptest! {
     fn diff_values_spec_9(seed in any::<u64>()) {
         let ty = sink_no_seq();
         let view = TyView(ty.clone());
-        let mut r = Rng(seed | 1);
+        let mut r = crate::testutil::rng(seed | 1);
         let base = value(&random_value(&mut r, &ty, 0));
         let new = value(&random_value(&mut r, &ty, 0));
         let node = Source::node(Tid::from_bytes([3; 15]));
@@ -434,7 +434,7 @@ proptest! {
     #[test]
     fn key_index_matches_scan_spec_5_6(seed in any::<u64>()) {
         let ty = sink_no_seq();
-        let mut r = Rng(seed | 1);
+        let mut r = crate::testutil::rng(seed | 1);
         let commits = history(&mut r, std::slice::from_ref(&ty), 3, 4);
         let mut s = Fragment::default();
         for c in &commits {

@@ -31,8 +31,16 @@ mod undo;
 mod view;
 mod wire;
 
-#[cfg(test)]
+// test support, also built for the fuzz targets (`--cfg fuzzing`, core/test/fuzz); test code
+// for clippy's no-panic lints, which see only `cfg(test)`
+#[cfg(any(test, fuzzing))]
+#[cfg_attr(fuzzing, allow(dead_code))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 mod testutil;
+#[cfg(any(test, fuzzing))]
+#[cfg_attr(fuzzing, allow(dead_code))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
+mod fuzz_seq;
 #[cfg(test)]
 mod tests_join;
 #[cfg(test)]

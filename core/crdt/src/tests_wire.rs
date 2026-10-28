@@ -5,7 +5,6 @@ use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot}
 use crate::stamp::{CounterRange, Interner, Source};
 use crate::testutil::{frag, history_with, mapply, sink_no_seq, source, ts};
 use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Snapshot};
-use crdt_model::r#gen::Rng;
 use crdt_model::ops::Ty;
 use crdt_model::stamp::Source as MSource;
 use crdt_model::wire::{Ctx, encode_delta as m_encode_delta};
@@ -24,7 +23,7 @@ pub(crate) fn snap_cx() -> DeltaCtx {
 /// Every delta of a random history, node or commit form, encodes byte-identically with the model
 /// and decodes back to itself under the writer's header; snapshots of the joined state likewise.
 fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
-    let mut r = Rng(seed | 1);
+    let mut r = crate::testutil::rng(seed | 1);
     // commit-form sources get an author (§8 `Authors`)
     let mau: crdt_model::wire::Authors = sources.iter().filter_map(|s| if let MSource::Commit(c) = s { Some((*c, ([1; 15], 5u64 << 16))) } else { None }).collect();
     let authors: BTreeMap<osis_base::CommitId, (osis_base::Tid, osis_base::Ts)> = mau.iter().map(|(c, (t, ts))| (osis_base::CommitId(*c), (osis_base::Tid::from_bytes(*t), osis_base::Ts::from_u64(*ts).unwrap()))).collect();
@@ -90,7 +89,7 @@ proptest! {
     /// §3.3 rule 7: mutated valid deltas are rejected or decode, never panic.
     #[test]
     fn mutated_delta_never_panics_spec_3_3(seed in any::<u64>(), pos in any::<usize>(), byte in any::<u8>()) {
-        let mut r = Rng(seed | 1);
+        let mut r = crate::testutil::rng(seed | 1);
         let commits = history_with(&mut r, &[sink_no_seq()], vec![MSource::node(1)], 2);
         for c in &commits {
             let cx = writer_cx(&c.w);

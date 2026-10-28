@@ -16,6 +16,10 @@ workspace = true
 [dependencies]
 osis-base.workspace = true
 
+# test support built into the fuzz targets (src/testutil.rs, src/fuzz_seq.rs)
+[target.'cfg(fuzzing)'.dependencies]
+crdt-model.workspace = true
+
 [dev-dependencies]
 crdt-model.workspace = true
 proptest.workspace = true
