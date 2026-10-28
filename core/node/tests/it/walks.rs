@@ -186,6 +186,30 @@ fn damaged_edge_rows_are_rebuilt() {
     }
 }
 
+// spec: none (notes/node.md, Open): a reopen of the caches never takes the engine's generation
+// back, so a cache keyed on it (the sync engine's labels) is never taken for current afterwards
+#[test]
+fn reload_never_takes_generation_back() {
+    let mut lp = LocalPeer::new(1, 0x6e7e, T0).unwrap();
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let me = e.tid();
+    let t = e.new_thing(&mut m, me);
+    e.commit(m).unwrap();
+    for i in 0..10u8 {
+        try_edge(e, t, Tid::from_bytes([60 + i; 15]), Some(Role::Read));
+    }
+    for rebuild in [false, true] {
+        let before = e.core.generation;
+        if rebuild {
+            e.rebuild_index().unwrap();
+        } else {
+            e.reload_index().unwrap();
+        }
+        assert!(e.core.generation > before, "rebuild {rebuild}: {} after {before}", e.core.generation);
+    }
+}
+
 // spec: none (local store cache, notes/local-store.md): a saved walk truncated, with a flipped
 // bit, or saved under other rules is not used: the open evaluates anew (the same timelines) and
 // saves it again, so the next open restores it

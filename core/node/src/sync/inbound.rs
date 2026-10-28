@@ -653,6 +653,12 @@ impl SyncEngine {
         for b in have {
             self.state.set_present(server, l, b, false);
         }
+        // the server holds them now: undelivered before or not, asked again (like an announce)
+        if let Some(c) = self.conns.get_mut(&conn) {
+            for b in &need {
+                c.req.missing.remove(b);
+            }
+        }
         self.fetch_on(conn, l, need, out)?;
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.syncing = true;

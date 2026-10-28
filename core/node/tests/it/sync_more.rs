@@ -413,6 +413,40 @@ fn replaced_label_retired_with_server_unreachable_spec_sync_2() {
     assert_eq!(labels, vec![new], "retired after MEMBERSHIP_KEEP");
 }
 
+// spec/sync.md §2 (replacement), spec/permissions.md §2 (`until`): an admin keeps a replaced
+// label only while it is admin; once its admin edge passes its `until` the label is no longer
+// synced, also when nothing else changed since the synced labels were last listed.
+#[test]
+fn replaced_label_dropped_when_admin_edge_expires_spec_sync_2() {
+    let mut net = Net::new();
+    let (s0, s1) = (net.add_server(), net.add_server());
+    let a = net.node(1, &[s0, s1]);
+    let b = net.node(2, &[s0, s1]);
+    let g = net.group(a, &[], &[s0, s1]);
+    net.pair(b, a);
+    let until = osis_base::WallMs(net.now() + 3_600_000);
+    let bt = net.tid(b);
+    let done = net.engine(a).grant(&g, &bt, &ct::Edge { role: Role::Admin, until: Some(until), invite: None, since: None }).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.pair(a, b);
+    net.run();
+    assert_eq!(net.engine(b).role_on(&g), Some(Role::Admin));
+    let old = net.label(b);
+    // the old label never settles at a server b cannot reach: b keeps it
+    net.set_online(b, false);
+    net.blocked.insert((b, s1));
+    net.set_online(b, true);
+    let (new, _) = net.sync(b).replace_label(&g, &old).unwrap();
+    net.run();
+    let labels: BTreeSet<_> = net.sync(b).labels().into_iter().map(|(_, l)| l.id).collect();
+    assert_eq!(labels, BTreeSet::from([new, old]), "kept by the admin");
+    net.clock.set(osis_base::WallMs(until.0 + 1));
+    assert_ne!(net.engine(b).role_on(&g), Some(Role::Admin), "the edge passed its until");
+    let labels: BTreeSet<_> = net.sync(b).labels().into_iter().map(|(_, l)| l.id).collect();
+    assert_eq!(labels, BTreeSet::from([new]), "no longer admin: the replaced label goes");
+}
+
 // spec/sync.md §3 (inbox), spec/crypto.md §4 (secrets of a pending commit kept for reading;
 // decided): a grant reaches another person's device only as an inbox
 // blob; it opens the pending grant's boxes, reaches the group's label from the blob's hints,

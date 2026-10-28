@@ -297,10 +297,10 @@ type BodyKey = (osis_base::CommitId, Vec<(usize, usize)>);
 pub(crate) const RELINK_BACKOFF_MS: u64 = 3_600_000;
 pub(crate) const RELINK_BACKOFF_MAX_MS: u64 = 7 * 24 * 3_600_000;
 
-/// The labels this node syncs (`SyncEngine::labels`) as last computed, valid while the engine's
-/// generation and the retired labels are unchanged within one step.
+/// The labels this node syncs (`SyncEngine::labels`) as last computed, valid within one step
+/// while the engine's generation, the retired labels and the time are unchanged.
 pub(crate) struct Synced {
-    key: (u64, usize),
+    key: (u64, usize, u64),
     labels: Vec<(Tid, Arc<GroupLabel>)>,
     /// Per label, the actor its keys derive from and its servers (`complete_pass`).
     pub actors: BTreeMap<LabelId, (Tid, Vec<ServerKey>)>,
@@ -308,7 +308,7 @@ pub(crate) struct Synced {
 
 impl Default for Synced {
     fn default() -> Synced {
-        Synced { key: (u64::MAX, 0), labels: Vec::new(), actors: BTreeMap::new() }
+        Synced { key: (u64::MAX, 0, 0), labels: Vec::new(), actors: BTreeMap::new() }
     }
 }
 
@@ -635,6 +635,8 @@ impl SyncEngine {
     }
 
     fn step(&mut self, ev: Event, out: &mut Vec<Action>) -> Result<()> {
+        // before the event uses a label (`group_of`), and again after the engine's changes
+        self.retire_replaced();
         match ev {
             Event::Tick => {
                 // the carrier of a live write goes before its body (spec/commits.md §5)
@@ -871,20 +873,37 @@ impl SyncEngine {
     /// (spec/sync.md §2: it places the membership-class commits there, the replacement's
     /// `/label` among them, and deletes the content entries; `retire_at`, `retire_replaced`).
     pub fn labels(&mut self) -> Vec<(Tid, Arc<GroupLabel>)> {
-        let key = (self.engine.core.generation, self.state.retired.len());
-        if self.synced.key != key {
-            let mut out = Vec::new();
-            for g in self.engine.labeled_groups() {
-                if self.engine.epochs(&g).is_none_or(|e| e.read.held_newest_first().is_empty()) {
-                    continue;
-                }
-                let admin = self.engine.role_on(&g) == Some(osis_base::Role::Admin);
-                out.extend(self.engine.labels_of(&g).into_iter().filter(|l| !l.replaced || admin && !self.state.retired.contains(&l.id)).map(|l| (g, l)));
+        // the inputs: engine state, retirements, and the time (an admin edge's `until`)
+        let now = self.now();
+        let key = (self.engine.core.generation, self.state.retired.len(), now);
+        if self.synced.key == key {
+            #[cfg(debug_assertions)]
+            {
+                let ids = |v: &[(Tid, Arc<GroupLabel>)]| v.iter().map(|(g, l)| (*g, l.id, l.replaced)).collect::<Vec<_>>();
+                let fresh = self.compute_labels(now);
+                assert_eq!(ids(&fresh), ids(&self.synced.labels), "labels() cached");
             }
-            let actors = out.iter().map(|(g, l)| (l.id, (self.engine.core.secret_actor(g).unwrap_or(*g), l.servers.iter().map(|a| a.key).collect()))).collect();
-            self.synced = Synced { key, labels: out, actors };
+        } else {
+            let labels = self.compute_labels(now);
+            let actors = labels.iter().map(|(g, l)| (l.id, (self.engine.core.secret_actor(g).unwrap_or(*g), l.servers.iter().map(|a| a.key).collect()))).collect();
+            self.synced = Synced { key, labels, actors };
         }
         self.synced.labels.clone()
+    }
+
+    /// `labels`, computed with roles at `now`.
+    fn compute_labels(&mut self, now: u64) -> Vec<(Tid, Arc<GroupLabel>)> {
+        let ts = osis_base::Ts::make(osis_base::WallMs(now), 0).unwrap_or_default();
+        let me = self.engine.tid();
+        let mut out = Vec::new();
+        for g in self.engine.labeled_groups() {
+            if self.engine.epochs(&g).is_none_or(|e| e.read.held_newest_first().is_empty()) {
+                continue;
+            }
+            let admin = crate::engine::write::role_of(&self.engine.core, &me, &g, ts) == Some(osis_base::Role::Admin);
+            out.extend(self.engine.labels_of(&g).into_iter().filter(|l| !l.replaced || admin && !self.state.retired.contains(&l.id)).map(|l| (g, l)));
+        }
+        out
     }
 
     /// Retires the replaced labels an admin still syncs once `MEMBERSHIP_KEEP_MS` passed since it
@@ -1536,6 +1555,11 @@ mod tests {
         s.log_events(Some(conn), l, vec![added], None, &mut Vec::new()).unwrap();
         s.fetch_on(conn, l, [b], &mut Vec::new()).unwrap();
         assert!(s.fetching(&b), "asked once announced");
+        // likewise when a reconciliation finds the server holding it
+        let b2 = osis_base::BlobId([2; 32]);
+        s.conns.get_mut(&conn).unwrap().req.missing.insert(b2);
+        s.reconciled(conn, l, vec![b2], Vec::new(), &mut Vec::new()).unwrap();
+        assert!(s.fetching(&b2), "asked once reconciled");
     }
 
     // spec/sync.md §5: a deposit is kept until each of its servers answers it, also across a

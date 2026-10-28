@@ -491,8 +491,8 @@ pub struct Core {
     /// `Engine::body_live` per body, forgotten per aspect when its state changes (`forget_live`)
     /// and wholly on rollback.
     pub live_bodies: BTreeMap<(CommitId, Tid, Ak), bool>,
-    /// Bumped whenever a transaction changes the indexes or a state, or rolls back: caches
-    /// derived from them (the sync engine's co-readers) compare it.
+    /// Bumped whenever a transaction changes the indexes or a state, rolls back, or the caches
+    /// reload (it never goes back): caches derived from them (the sync engine's) compare it.
     pub generation: u64,
     /// `Engine::labels_of` per group: dropped when its `/label` state is written (`wrote`) and
     /// on rollback.
@@ -1356,6 +1356,8 @@ impl Engine {
         fresh.skip_writer_rules = self.core.skip_writer_rules;
         fresh.walk_cache_min = self.core.walk_cache_min;
         fresh.sync_records = self.core.sync_records;
+        // caches keyed on it (the sync engine's labels and co-readers) never see an old value again
+        fresh.generation = self.core.generation.wrapping_add(1);
         #[cfg(test)]
         {
             fresh.check_ingest = self.core.check_ingest;
