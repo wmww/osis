@@ -1051,10 +1051,12 @@ fn late_deltas_windowed_alike_random_spec_crdt_4_8() {
 // it; 1427 (deaths at the end), the same with a dropped snapshot's copy; 32432, a body
 // superseding a copy a later held snapshot carried (that had not seen it) dropped without a
 // residue, so a replay dated the copy after the snapshot, which gained a death the records
-// lacked; 2423 (at the end), the same
+// lacked; 2423 (at the end), the same; 67421 (at the end), a write dropped without a residue
+// before the first held bounded body superseded a copy in a later held snapshot that had not
+// seen it, and an in-order write killed it: a replay then dated the copy at that write
 #[test]
 fn late_deltas_windowed_found_histories_spec_crdt_4_8() {
-    for seed in [1018, 2392, 21812, 1427, 32432, 2423] {
+    for seed in [1018, 2392, 21812, 1427, 32432, 2423, 67421] {
         strays_history(seed, &mut Default::default());
     }
 }
