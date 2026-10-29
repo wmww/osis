@@ -107,6 +107,10 @@ pub(crate) struct Lane {
     /// statuses are the lane's, never a sync record's.
     pub uploads: BTreeSet<(ConnId, LabelId, BlobId)>,
     pub deletes: BTreeSet<(ConnId, LabelId, BlobId)>,
+    /// Entries forgotten while their upload was in flight on a connection: deleted there once
+    /// the upload is answered OK (else a slow server kept every covered entry), and not taken
+    /// back meanwhile from a peer that has it (it is no longer covered by anything held).
+    pub orphans: BTreeMap<(LabelId, BlobId, ConnId), osis_label::DeleteItem>,
     /// (server, label) reconciled since start, and the reconciliations running (`sync_label`).
     pub reconciled: BTreeSet<(ServerKey, LabelId)>,
     pub reconciling: BTreeSet<(ConnId, LabelId)>,
@@ -267,21 +271,38 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// What has an own ephemeral upload in flight on some connection (sent, not answered): the
-    /// groups of the labels with an own plain entry in flight, the actors with an own presence
-    /// entry in flight. Their next writes wait and join (`Engine::take_ephemeral_if`) until the
-    /// answer (or the connection's end), so a node sends at most one such commit per label and
-    /// kind per round trip whatever its write rate (spec/sync.md §9).
+    /// What waits for an own ephemeral upload in flight (sent, not answered): the groups of the
+    /// labels where every connection the label is open on has an own plain entry in flight, the
+    /// actors whose own presence entries are in flight on every connection of every label their
+    /// presence commit went under. Their next writes wait and join (`Engine::take_ephemeral_if`)
+    /// until an answer (or a connection's end) frees one, so a node sends about one such commit
+    /// per label and kind per round trip of its fastest connection, whatever its write rate,
+    /// and a slow or silent connection holds up nothing another one can carry (spec/sync.md §9).
+    /// A thing under several labels waits while any of them is busy.
     fn eph_busy(&self) -> (BTreeSet<Tid>, BTreeSet<Tid>) {
-        let (mut groups, mut actors) = (BTreeSet::new(), BTreeSet::new());
+        let mut plain: BTreeMap<LabelId, (Option<Tid>, BTreeSet<ConnId>)> = BTreeMap::new();
+        let mut pres: BTreeMap<Tid, (BTreeSet<CommitId>, BTreeSet<(LabelId, ConnId)>)> = BTreeMap::new();
         for (c, l, b) in &self.eph.uploads {
             let Some(e) = self.eph.entries.get(&(*l, *b)).filter(|e| e.own) else { continue };
             if e.presence {
-                actors.insert(e.actor);
-            } else if let Some(x) = self.conns.get(c).and_then(|x| x.labels.get(l)) {
-                groups.insert(x.group);
+                let p = pres.entry(e.actor).or_default();
+                p.0.insert(e.commit);
+                p.1.insert((*l, *c));
+            } else {
+                let p = plain.entry(*l).or_default();
+                p.0 = p.0.or_else(|| self.conns.get(c).and_then(|x| x.labels.get(l)).map(|x| x.group));
+                p.1.insert(*c);
             }
         }
+        let groups = plain.iter().filter(|(l, (_, cs))| self.eph_conns(l).iter().all(|(c, _, _)| cs.contains(c))).filter_map(|(_, (g, _))| *g).collect();
+        let actors = pres
+            .into_iter()
+            .filter(|(_, (commits, busy))| {
+                let labels: BTreeSet<LabelId> = commits.iter().filter_map(|c| self.eph.by_commit.get(c)).flatten().map(|(l, _)| *l).collect();
+                labels.iter().all(|l| self.eph_conns(l).iter().all(|(c, _, _)| busy.contains(&(*l, *c))))
+            })
+            .map(|(a, _)| a)
+            .collect();
         (groups, actors)
     }
 
@@ -538,8 +559,8 @@ impl SyncEngine {
     }
 
     /// Statuses of lane uploads; the rest are returned for the durable path.
-    pub(crate) fn eph_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>) -> (Vec<BlobId>, Vec<Code>) {
-        let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return (ids, codes) };
+    pub(crate) fn eph_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>, out: &mut Vec<Action>) -> Result<(Vec<BlobId>, Vec<Code>)> {
+        let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok((ids, codes)) };
         let mut rest = (Vec::new(), Vec::new());
         for (b, code) in ids.into_iter().zip(codes) {
             let lane = self.eph.uploads.remove(&(conn, l, b)) || (self.eph.entries.contains_key(&(l, b)) && !self.state.entries.contains_key(&(l, b)));
@@ -549,7 +570,13 @@ impl SyncEngine {
                 continue;
             }
             if !self.eph.entries.contains_key(&(l, b)) {
-                // a relay-only entry, or one forgotten meanwhile
+                // a relay-only entry, or one forgotten meanwhile: deleted now that it is there
+                if let Some(item) = self.eph.orphans.remove(&(l, b, conn))
+                    && code == Code::OK
+                {
+                    self.eph.deletes.insert((conn, l, b));
+                    self.command(conn, Command::Delete { label: l, items: vec![item] }, out)?;
+                }
                 continue;
             }
             match code {
@@ -573,7 +600,7 @@ impl SyncEngine {
                 c => self.diag(format!("ephemeral upload refused: code {}", c.0)),
             }
         }
-        rest
+        Ok(rest)
     }
 
     /// An ephemeral or relay-only entry arrived under `l` (a log event, a fetch, a peer's
@@ -595,6 +622,10 @@ impl SyncEngine {
             && class == Class::Presence
         {
             self.eph.served_src.entry((l, b)).or_default().insert(c);
+        }
+        // an own entry forgotten while its upload was in flight (being deleted where it lands)
+        if self.eph.orphans.range((l, b, 0)..).next().is_some_and(|((l2, b2, _), _)| (*l2, *b2) == (l, b)) {
+            return Ok(());
         }
         if self.eph.entries.contains_key(&(l, b)) || self.eph.pending.contains_key(&(l, b)) {
             if let Some(s) = server {
@@ -780,13 +811,18 @@ impl SyncEngine {
                 self.state.feed.deleted(l, b);
                 let dks = self.engine.ephemeral_delete_secrets_for(&e.tid, &e.actor, &e.keys);
                 for (conn, server, hk) in self.eph_conns(&l) {
+                    let present = self.eph.present.remove(&(server, l, b));
                     // another's presence entry is its author's to delete
-                    if !self.eph.present.remove(&(server, l, b)) || e.foreign_presence() {
+                    if e.foreign_presence() || !(present || self.eph.uploads.contains(&(conn, l, b))) {
                         continue;
                     }
                     if let Some(item) = delete_item(&hk, &l, b, None, Some((&e.salt, &e.blind)), &dks) {
-                        self.eph.deletes.insert((conn, l, b));
-                        self.command(conn, Command::Delete { label: l, items: vec![item] }, out)?;
+                        if present {
+                            self.eph.deletes.insert((conn, l, b));
+                            self.command(conn, Command::Delete { label: l, items: vec![item] }, out)?;
+                        } else {
+                            self.eph.orphans.insert((l, b, conn), item);
+                        }
                     }
                 }
             }
@@ -809,6 +845,7 @@ impl SyncEngine {
         self.eph.reconciling.retain(|(c, _)| *c != conn);
         self.eph.uploads.retain(|(c, _, _)| *c != conn);
         self.eph.deletes.retain(|(c, _, _)| *c != conn);
+        self.eph.orphans.retain(|(_, _, c), _| *c != conn);
     }
 
     /// A session this node served ended: the presence entries it uploaded lose it as a source.

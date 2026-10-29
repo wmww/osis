@@ -1223,3 +1223,29 @@ fn signals_not_held_back_spec_sync_9() {
     assert_eq!(got.len(), 5, "{got:?}");
     assert_eq!(net.eph_read(b, w, STATE), Some(s("busy")));
 }
+
+// spec/sync.md §9 (own plain writes wait only while every connection of the label has an own
+// upload unanswered): with one server slow to answer, each edit reaches B through the other at
+// once
+#[test]
+fn slow_server_holds_nothing_back_spec_sync_9() {
+    let mut net = Net::new();
+    let (fast, slow) = (net.add_server(), net.add_server());
+    let a = net.node(1, &[fast, slow]);
+    let b = net.node(2, &[fast]);
+    let g = net.group(a, &[(b, Role::Write)], &[fast, slow]);
+    net.run();
+    let w = window(&mut net, a, g, "shared");
+    net.run();
+    net.held_servers.insert(slow);
+    let mut want = BTreeMap::new();
+    for i in 0..5 {
+        note(&mut net, a, w, &format!("k{i}"), &format!("v{i}"));
+        want.insert(format!("k{i}"), format!("v{i}"));
+        net.run();
+        assert_eq!(notes(&mut net, b, w), want, "edit {i} reached B through the fast server");
+    }
+    net.release();
+    net.run();
+    assert_eq!(notes(&mut net, b, w), want);
+}

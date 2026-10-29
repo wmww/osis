@@ -724,7 +724,7 @@ impl SyncEngine {
     pub(crate) fn entry_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>, head: Option<Step>, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
         let stale_head = codes.contains(&Code::NOT_HEAD);
-        let (ids, codes) = self.eph_status(conn, l, ids, codes);
+        let (ids, codes) = self.eph_status(conn, l, ids, codes, out)?;
         if ids.is_empty() && !stale_head {
             return Ok(());
         }

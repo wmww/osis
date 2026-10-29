@@ -493,3 +493,25 @@ proptest! {
         }
     }
 }
+
+// spec/sync.md §5 (servers may rate-limit deletes; a presence entry's leaves no tombstone):
+// deletes of presence entries are not counted against the label's delete rate (an author
+// replaces its presence entry per update), other ephemeral deletes still are
+#[test]
+fn presence_deletes_not_rate_limited() {
+    let mut e = env(Policy { deletes: 2, ..Policy::default() });
+    let l = e.f.label;
+    let blobs: Vec<Vec<u8>> = (0..10).map(|n| eph_blob(n, 64)).collect();
+    for b in &blobs[..6] {
+        assert_eq!(e.store.put(&l, Put { presence: true, ..eph_put(b, None) }).unwrap(), Code::OK);
+    }
+    for b in &blobs[6..] {
+        assert_eq!(e.store.put(&l, eph_put(b, None)).unwrap(), Code::OK);
+    }
+    for b in &blobs[..6] {
+        assert_eq!(e.store.delete(&l, &osis_label::blob_id(b), T0).unwrap(), Code::OK);
+    }
+    assert_eq!(e.store.delete(&l, &osis_label::blob_id(&blobs[6]), T0).unwrap(), Code::OK);
+    assert_eq!(e.store.delete(&l, &osis_label::blob_id(&blobs[7]), T0).unwrap(), Code::OK);
+    assert_eq!(e.store.delete(&l, &osis_label::blob_id(&blobs[8]), T0).unwrap(), Code::RATE_LIMITED);
+}

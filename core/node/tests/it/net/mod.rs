@@ -74,6 +74,8 @@ pub struct Net {
     pub full_passes: bool,
     /// Nodes whose Upload requests to servers are lost on the way (never answered).
     pub lose_uploads: BTreeSet<usize>,
+    /// Servers whose messages to nodes are held back until `release` (a slow server).
+    pub held_servers: BTreeSet<usize>,
     /// Time spent in each node's `handle` and in the hubs (scale tests).
     pub busy: BTreeMap<usize, std::time::Duration>,
     pub hub_busy: std::time::Duration,
@@ -85,7 +87,7 @@ pub fn server_key(i: usize) -> [u8; 32] {
 
 impl Net {
     pub fn new() -> Net {
-        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO }
+        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), held_servers: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO }
     }
 
     pub fn now(&self) -> u64 {
@@ -319,7 +321,12 @@ impl Net {
             match o {
                 HubOutput::Send(hc, bytes) => {
                     if let Some(((n, c), _)) = self.links.iter().find(|(_, (x, h))| *x == s && *h == hc) {
-                        self.queue.push_back(Msg::ToNode(*n, *c, bytes));
+                        let m = Msg::ToNode(*n, *c, bytes);
+                        if self.held_servers.contains(&s) {
+                            self.held_msgs.push(m);
+                        } else {
+                            self.queue.push_back(m);
+                        }
                     }
                 }
                 HubOutput::Close(hc) => {
@@ -333,9 +340,10 @@ impl Net {
         }
     }
 
-    /// Delivers the peer bytes held back (`held` is cleared).
+    /// Delivers the peer and server bytes held back (`held` and `held_servers` are cleared).
     pub fn release(&mut self) {
         self.held.clear();
+        self.held_servers.clear();
         self.queue.extend(self.held_msgs.drain(..));
     }
 
