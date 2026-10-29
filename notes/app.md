@@ -36,7 +36,17 @@
 - A toolkit swap rewrites driver and widgets only; state and behavior survive. The earlier idea of a separate "view model" crate dissolves into the view-state schema plus the actions crate.
 
 ## Web mockup
-`app/mockup/` (plain HTML/CSS/JS, no deps, no osis; serve the directory, e.g. `python3 -m http.server`) explores look and layout before building in kit. Owner brief: things and scopes (tags, views) are fungible tiles in one list or grid; an ordered favorites list; one search over names, content and scopes; with a view open and room enough, a left bar holds search and favorites. The look should feel like what 1996, 2006, 2016 and 2026 thought 2026 would be: colored gradient backgrounds or abstract shapes, a little Apple liquid glass (never at a perf cost), almost no Material. Six proposed looks behind a switcher (Dusk, Glass, Aero, Workstation, Memphis, Pearl), each with light and dark variants (owner: whatever we pick needs both; mode is separate from look, Light/Dark/Auto), all custom properties in looks.css over one layout in style.css; owner feedback pending.
+`app/mockup/` (plain HTML/CSS/JS, no deps, no osis; serve the directory, e.g. `python3 -m http.server`) explores look and layout before building in kit. Owner brief: things and scopes (tags, views) are fungible tiles in one list or grid; an ordered favorites list; one search over names, content and scopes; with a view open and room enough, a left bar holds search and favorites. The look should feel like what 1996, 2006, 2016 and 2026 thought 2026 would be: colored gradient backgrounds or abstract shapes, a little Apple liquid glass (never at a perf cost), almost no Material. All look values are custom properties in looks.css over one layout in style.css.
+
+Owner feedback on the first six looks:
+- Themes: wanted. Every look needs light and dark (mode is separate from the look: Light/Dark/Auto).
+- Dusk, Glass, Aero and Pearl read as tweaks of one thing; Glass preferred, with a less rounded sidebar selection and simpler, more vivid color. Dusk, Aero and Pearl were dropped (in git history); Glass, Workstation, Memphis remain.
+- Tone down the amount of UI (not the color): simpler backgrounds, fewer bordered elements.
+- Undecided whether the background follows the look (Workstation's synth sun suits it) or the content (color and shapes fade to what is open). The mockup has both behind a switcher: content mode takes up to three colors from the open thing and what it holds or links, and moves Glass's color fields per thing.
+
+Open theme questions (owner: surface now, decide later, not worth much effort yet):
+- Customization depth: a fixed compiled-in set, editable colors and a few properties, both (pick a base, adjust), or full styling. Leaning: a theme is data (tokens plus a few enumerated style choices such as corner shape, border/shadow kind, blur, background recipe), stored in osis so it syncs; no full CSS.
+- Same themes on every platform: free with one codebase; a web build on DOM elements would map the same tokens to CSS, which stays easy only if themes stay data rather than per-theme widget code.
 
 ## kit and app (owner)
 Two top-level projects, `kit/` (package `osis-kit`) and `app/` (`osis-app`).
