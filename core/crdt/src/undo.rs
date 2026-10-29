@@ -129,10 +129,10 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
     let slot = slot.as_deref();
     let out = match o {
         Fragment::Register(reg) => {
-            if reg.reset.is_some() {
-                if let Some(f) = undo_reset(w, buffer, view, path)? {
-                    return Ok(Some(f));
-                }
+            if reg.reset.is_some()
+                && let Some(f) = undo_reset(w, buffer, view, path)?
+            {
+                return Ok(Some(f));
             }
             let Some(ow) = &reg.write else { return Ok(None) };
             // only if the undone write still wins, or an undo in effect restored its value
@@ -187,10 +187,10 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             Fragment::Bag(Bag { kind: b.kind, meta: Meta::default(), elems })
         }
         Fragment::Set(x) => {
-            if x.meta.reset.is_some() {
-                if let Some(f) = undo_reset(w, buffer, view, path)? {
-                    return Ok(Some(f));
-                }
+            if x.meta.reset.is_some()
+                && let Some(f) = undo_reset(w, buffer, view, path)?
+            {
+                return Ok(Some(f));
             }
             let prev = buffer.before(path).map(|f| f.chosen());
             let mut elems = BTreeMap::new();
@@ -212,10 +212,10 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             Fragment::Set(Set { meta: Meta::default(), elems })
         }
         Fragment::Map(m) => {
-            if m.meta.reset.is_some() {
-                if let Some(f) = undo_reset(w, buffer, view, path)? {
-                    return Ok(Some(f));
-                }
+            if m.meta.reset.is_some()
+                && let Some(f) = undo_reset(w, buffer, view, path)?
+            {
+                return Ok(Some(f));
             }
             let vview = view.element().ok_or(Error::Mismatch("map without value type"))?;
             let prev = buffer.before(path).map(|f| f.chosen());
@@ -260,10 +260,10 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             Fragment::Map(Map::new(Meta::default(), entries))
         }
         Fragment::Struct(x) => {
-            if x.meta.reset.is_some() {
-                if let Some(f) = undo_reset(w, buffer, view, path)? {
-                    return Ok(Some(f));
-                }
+            if x.meta.reset.is_some()
+                && let Some(f) = undo_reset(w, buffer, view, path)?
+            {
+                return Ok(Some(f));
             }
             let mut fields = BTreeMap::new();
             for (id, f) in &x.fields {
@@ -305,10 +305,10 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             Fragment::Enum(Enum { meta: Meta::default(), case: None, payloads })
         }
         Fragment::Seq(x) => {
-            if x.meta.reset.is_some() {
-                if let Some(f) = undo_reset(w, buffer, view, path)? {
-                    return Ok(Some(f));
-                }
+            if x.meta.reset.is_some()
+                && let Some(f) = undo_reset(w, buffer, view, path)?
+            {
+                return Ok(Some(f));
             }
             let cur = match &slot {
                 Some(Fragment::Seq(c)) => Some(c),
