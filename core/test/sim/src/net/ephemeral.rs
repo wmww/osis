@@ -554,8 +554,8 @@ pub fn check(sim: &mut NetSim) -> Res<()> {
     let ups: Vec<usize> = (0..sim.nodes.len()).filter(|n| sim.is_up(*n)).collect();
     for n in ups {
         for (actor, held, cover, largest) in sim.engine(n)?.own_ephemeral_load() {
-            if held > 2 * cover + largest {
-                return Err(sim.fail(format!("node {n} holds {held} B of own ephemeral commits for {actor}, more than twice their {cover} B cover and one {largest} B commit")));
+            if held > osis_node::ephemeral::COVER_FACTOR * cover + largest {
+                return Err(sim.fail(format!("node {n} holds {held} B of own ephemeral commits for {actor}, more than `COVER_FACTOR` times their {cover} B cover and one {largest} B commit")));
             }
         }
     }

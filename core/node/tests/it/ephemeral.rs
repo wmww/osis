@@ -923,7 +923,7 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     // and one in flight
     for n in &nodes {
         for (actor, held, cover, largest) in net.engine(*n).own_ephemeral_load() {
-            assert!(held <= 2 * cover + largest, "seed {seed}: node {n} holds {held} B of own commits for {actor:?}, cover {cover} B\n{}", log.join("\n"));
+            assert!(held <= osis_node::ephemeral::COVER_FACTOR * cover + largest, "seed {seed}: node {n} holds {held} B of own commits for {actor:?}, cover {cover} B\n{}", log.join("\n"));
         }
     }
     // presence: every holder reads exactly the live cursors (their authors are all connected;
