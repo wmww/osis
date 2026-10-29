@@ -34,5 +34,5 @@ An aspect's wire type never changes; a different type is a new AK. Enum cases ar
 - **Open structs**: state may hold field IDs a schema does not know. They are preserved, joined and ignored by typed reads.
 - Writes are validated against the writer's schema; every field the writer's schema declares is required at write time.
 - **Reader defaults**: a field with a declared constant default reads as the default when absent. A default is never materialized: the structural diff writes nothing for an absent field whose new value equals its default (spec/crdt.md §9).
-- A typed read MUST fail, with the path, on an unknown enum case, a type mismatch or a missing field without default. Typed reads are also available per path. Untyped reads of any stored data always succeed.
+- A typed read of stored data with an unknown enum case, a type mismatch or a missing field without default MUST NOT be taken as a value of the type: it reads as absent and reports the path as a diagnostic (stored data is other writers' input). Typed reads are also available per path, so one bad element leaves the others readable. Untyped reads of any stored data always succeed.
 - A writer never removes or rewrites data its schema cannot read, except by an explicit replace (spec/crdt.md §9).

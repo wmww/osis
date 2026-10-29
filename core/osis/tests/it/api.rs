@@ -48,9 +48,10 @@ fn create_and_reopen_spec_api_handle() {
     assert!(Osis::open(cfg(3, MemStore::new(), &c)).is_err());
 }
 
-// spec/versioning.md §5, notes/api.md Keys: typed keys from codegen read and write typed
-// values; per-path typed reads; a typed read of mistyped data fails with the path while the
-// untyped read works.
+// spec/versioning.md §5, notes/api.md Keys, Typed reads: typed keys from codegen read and
+// write typed values; per-path typed reads; a typed read of mistyped data reads as absent with
+// a `Mismatch` diagnostic naming the path, while the untyped read works; one bad element of a
+// list fails the whole typed read but not a path read of another element.
 #[test]
 fn typed_keys_and_paths_spec_versioning_5() {
     let db = db(1);
@@ -68,11 +69,30 @@ fn typed_keys_and_paths_spec_versioning_5() {
     db.write_with(|w| w.at(n, notes::TASKS).path(p![0, task::DONE]).set(&true)).unwrap();
     assert!(db.get(n, notes::TASKS).unwrap().unwrap()[0].done);
     // mistyped data: untyped write of an int under a string AK
+    let (tx, diags) = std::sync::mpsc::channel();
+    let _d = db.on_diagnostic(move |_, d| {
+        if d.kind == osis::DiagnosticKind::Mismatch {
+            tx.send(d).unwrap();
+        }
+    });
     db.write_with(|w| w.at(n, ak("/note/title")).set(&Value::Int(3))).unwrap();
-    let e = db.get(n, notes::TITLE).unwrap_err();
-    assert!(matches!(e, Error::Type { .. }));
-    assert_eq!(e.to_string(), "type error at (root): expected string", "the path once");
+    assert_eq!(db.get(n, notes::TITLE).unwrap(), None, "absent, not an error");
+    let d = recv(&diags);
+    assert_eq!((d.tids, d.detail.as_str()), (vec![n], "/note/title: type error at (root): expected string"));
     assert_eq!(db.get(n, ak("/note/title")).unwrap(), Some(Value::Int(3)));
+    // one element of another shape (as a newer revision's enum case would be)
+    let Value::List(mut l) = osis::schema::AspectKey::encode(&notes::TASKS, &vec![task("milk"), task("eggs")]) else { panic!() };
+    let Some(Value::Map(m)) = l.get_mut(1) else { panic!() };
+    m.insert(Value::Int(1), Value::Int(7));
+    db.write_with(|w| w.at(n, ak("/note/tasks")).set(&Value::List(l))).unwrap();
+    assert_eq!(db.get(n, notes::TASKS).unwrap(), None);
+    let at = db.at(n, notes::TASKS);
+    assert_eq!(at.path(p![0, task::TITLE]).get::<String>().unwrap().as_deref(), Some("milk"));
+    assert_eq!(at.path(p![1, task::TITLE]).get::<String>().unwrap(), None);
+    assert_eq!(at.path(p![1]).get_value().unwrap(), None);
+    assert_eq!(at.path(p![0]).get::<Task>().unwrap().map(|t| t.title).as_deref(), Some("milk"));
+    // a path the schema does not have is the caller's mistake: an error
+    assert!(matches!(at.path(osis::Path(vec![osis::Step::Index(0), osis::Step::Field(99)])).get_value(), Err(Error::Type { .. })));
     // a typed write is validated against the writer's schema
     let mut w = db.write();
     let e = w.at(n, notes::TASKS).path(p![0, task::DONE]).set(&s("no")).unwrap_err();
@@ -811,6 +831,70 @@ fn owner_created_now_api_reads() {
     let other = common::db(2);
     assert_eq!(db.owner_of(other.me()), None);
     assert_eq!(db.created(other.me()), None);
+}
+
+// notes/api.md Reads (`changed`): a thing's last content change, shown at `min(ts, received)`:
+// the creation until content changes; placement is no change of the item nor of the group's
+// content; a device whose clock runs ahead dates its change at its receipt here, and the
+// latest shown change wins over one with a higher `ts`; a delete is a change; an ephemeral
+// thing reports its creation.
+#[test]
+fn changed_content_only_api_reads() {
+    let (ca, cb) = (clock(), clock());
+    let a = Osis::create(cfg(1, MemStore::new(), &ca)).unwrap().0;
+    let j = Osis::pair(cfg(2, MemStore::new(), &cb), &a.pair_offer().unwrap()).unwrap();
+    let (_, reply) = a.pair_accept(j.request()).unwrap();
+    let b = j.finish(&reply).unwrap();
+    let t = a
+        .write_with(|w| {
+            let t = w.create_durable(a.me())?;
+            w.place(t, a.home())?;
+            Ok(t)
+        })
+        .unwrap();
+    assert_eq!(a.changed(t), a.created(t));
+    ca.advance(10);
+    a.write_with(|w| w.at(t, ak("/t/x")).set(&s("1"))).unwrap();
+    let ch = a.changed(t).unwrap();
+    assert_eq!((ch.commit, ch.shown()), (Some(newest(&a, t)), osis::WallMs(T0 + 10)));
+    assert_ne!(a.created(t), Some(ch));
+    // placement: neither the item's nor the group's content
+    let home = a.changed(a.home());
+    ca.advance(10);
+    let g = a.write_with(|w| w.create_durable(a.me())).unwrap();
+    a.write_with(|w| {
+        w.place(t, g)?;
+        w.unplace(t, a.home())
+    })
+    .unwrap();
+    assert_eq!((a.changed(t), a.changed(a.home())), (Some(ch), home));
+    // b's clock runs 30 min ahead (within MAX_DRIFT): its change shows at its receipt here
+    deliver(&a, &b);
+    cb.advance(30 * 60_000);
+    b.write_with(|w| w.at(t, ak("/t/x")).set(&s("2"))).unwrap();
+    deliver(&b, &a);
+    let ch = a.changed(t).unwrap();
+    assert_eq!((ch.node, ch.ts.wall_ms(), ch.shown()), (b.node(), osis::WallMs(T0 + 30 * 60_000), osis::WallMs(T0 + 20)));
+    // a's next change: its ts follows b's (the clock rule), shown latest at its receipt
+    ca.advance(10);
+    a.write_with(|w| w.at(t, ak("/t/y")).set(&s("3"))).unwrap();
+    let ch = a.changed(t).unwrap();
+    assert_eq!((ch.node, ch.shown()), (a.node(), osis::WallMs(T0 + 30)));
+    ca.advance(10);
+    a.write_with(|w| w.delete(t)).unwrap();
+    assert!(!a.knows(t));
+    assert_eq!(a.changed(t).unwrap().shown(), osis::WallMs(T0 + 40), "a delete is a change");
+    let mut w = a.write();
+    let e = w.create(a.me()).unwrap();
+    w.at(e, osis::Lifetimes::ephemeral(ak("/t/x"))).set(&s("draft")).unwrap();
+    w.commit().unwrap();
+    assert!(a.created(e).unwrap().commit.is_none());
+    assert_eq!(a.changed(e), a.created(e));
+}
+
+/// The newest held commit on `t` here.
+fn newest(db: &Osis, t: osis::Tid) -> osis::CommitId {
+    db.commits(&osis::CommitQuery::new().scope(osis::Scope::Thing(t)).limit(1)).unwrap()[0].commit.id.commit().unwrap()
 }
 
 // spec/crdt.md §5.6 (a path op into a key with no live entry creates it; concurrent creations

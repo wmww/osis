@@ -7,7 +7,7 @@ use crate::handle::Osis;
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, Source, Subscription, Watch, WatchState};
 use osis_base::{Ak, CommitId, Role, Tid, Ts, Value, WallMs};
 use osis_node::{Diagnostic, Engine};
-use osis_schema::{AspectKey, Codec, Path, Step, type_at, typed_read, value_at};
+use osis_schema::{AspectKey, Codec, Path, PathError, Step, type_at, typed_read, value_at};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -21,13 +21,13 @@ pub struct Edge {
     pub invite: Option<Role>,
 }
 
-/// When a thing was created (`Osis::created`).
+/// A thing's time (`Osis::created`, `Osis::changed`): the commit, its author and when.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Created {
-    /// The creating commit (never a compaction snapshot, which carries `/created` too); `None`
-    /// while the thing is ephemeral (`ts`, `node`, `actor` then from the creating batch).
+pub struct Stamp {
+    /// The commit (never a compaction snapshot); `None` for an ephemeral thing's creation
+    /// (`ts`, `node`, `actor` then from the creating batch).
     pub commit: Option<CommitId>,
-    /// Its `ts`: the same on every node.
+    /// Its `ts`: the author's clock, the same on every node.
     pub ts: Ts,
     /// The authoring node and the actor it wrote for.
     pub node: Tid,
@@ -36,11 +36,16 @@ pub struct Created {
     pub received: WallMs,
 }
 
-impl Created {
-    /// Display time for feeds: `min(ts, received)` (a sender's clock may run ahead).
+impl Stamp {
+    /// The time to show and sort by: `min(ts, received)` (an author's clock may run ahead;
+    /// one more than `MAX_DRIFT` ahead is not applied until it is no longer, spec/crdt.md §2.2).
     pub fn shown(&self) -> WallMs {
         self.ts.wall_ms().min(self.received)
     }
+}
+
+fn stamp(c: osis_node::Creation) -> Stamp {
+    Stamp { commit: c.commit, ts: c.ts, node: c.node, actor: c.actor, received: c.received }
 }
 
 /// The groups a thing is in (`Osis::groups_of`), each list in tid order.
@@ -93,6 +98,18 @@ fn materialize(e: &mut Engine, tid: &Tid, v: Value, limit: usize) -> Result<Valu
     Ok(v)
 }
 
+/// The diagnostic for a stored value of `tid`'s `ak` that a typed read could not decode.
+pub(crate) fn mismatch(tid: Tid, ak: &Ak, e: &PathError) -> Diagnostic {
+    Diagnostic { kind: osis_node::DiagnosticKind::Mismatch, tids: vec![tid], commit: None, peer: None, detail: format!("{ak}: type error at {}: {}", e.path, e.kind) }
+}
+
+/// A typed decode of stored data (notes/api.md Typed reads): a value that does not match the
+/// reader's type reads as absent and reports a `Mismatch` diagnostic. Stored data is others'
+/// input; a caller cannot act on an error (the untyped read shows the value).
+pub(crate) fn lenient<T>(tid: Tid, ak: &Ak, r: std::result::Result<T, PathError>, report: impl FnOnce(Diagnostic)) -> Option<T> {
+    r.map_err(|e| report(mismatch(tid, ak, &e))).ok()
+}
+
 /// A consistent view for several reads (`Osis::read`); also what every single read uses.
 pub struct Reader<'a> {
     e: &'a mut Engine,
@@ -121,18 +138,27 @@ impl Reader<'_> {
         v.map(|v| self.materialize(&tid, v)).transpose()
     }
 
-    /// A typed read (spec/versioning.md §5): `None` when absent.
+    /// A typed read (spec/versioning.md §5): `None` when absent, and when the stored value
+    /// does not match the key's type (a `Mismatch` diagnostic).
     pub fn get<K: AspectKey>(&mut self, tid: Tid, key: &K) -> Result<Option<K::T>> {
-        match self.value(tid, &ak_of(key)?)? {
-            Some(v) => Ok(Some(key.decode(&v)?)),
-            None => Ok(None),
-        }
+        let ak = ak_of(key)?;
+        let Some(v) = self.value(tid, &ak)? else { return Ok(None) };
+        let t = self.resolve(tid);
+        Ok(lenient(t, &ak, key.decode(&v), |d| self.e.report(d)))
+    }
+
+    /// `v` if it decodes through `key`, else `None` with a `Mismatch` diagnostic.
+    pub(crate) fn checked<K: AspectKey>(&mut self, tid: Tid, ak: &Ak, key: &K, v: Result<Option<Value>>) -> Result<Option<Value>> {
+        Ok(v?.filter(|x| lenient(tid, ak, key.decode(x), |d| self.e.report(d)).is_some()))
     }
 
     /// The value at `path` inside an aspect (typed projection through the key's schema when it
-    /// has one); `None` when the path leads nowhere. Only that position is materialized.
+    /// has one); `None` when the path leads nowhere or the value there does not match the
+    /// schema (a `Mismatch` diagnostic). A path the schema does not have fails `Type`. Only
+    /// that position is materialized.
     pub fn get_path<K: AspectKey>(&mut self, tid: Tid, key: &K, path: &Path) -> Result<Option<Value>> {
-        let (tid, Some(raw)) = self.raw(tid, &ak_of(key)?)? else { return Ok(None) };
+        let ak = ak_of(key)?;
+        let (tid, Some(raw)) = self.raw(tid, &ak)? else { return Ok(None) };
         let (Some(s), Some(ty)) = (key.schema(), key.ty()) else {
             let Some(sub) = value_at(&raw, path) else { return Ok(None) };
             return Ok(Some(self.materialize(&tid, sub.clone())?));
@@ -140,14 +166,15 @@ impl Reader<'_> {
         let t = type_at(s, ty, path)?.0;
         if let Some(sub) = value_at(&raw, path) {
             let sub = self.materialize(&tid, sub.clone())?;
-            return Ok(Some(typed_read(s, &sub, &t)?));
+            return Ok(lenient(tid, &ak, typed_read(s, &sub, &t), |d| self.e.report(d)));
         }
         // an absent struct field reads as its default (spec/versioning.md §5): project the parent
         let Some((Step::Field(id), parent)) = path.0.split_last() else { return Ok(None) };
         let parent = Path(parent.to_vec());
         let Some(sub) = value_at(&raw, &parent) else { return Ok(None) };
         let sub = self.materialize(&tid, sub.clone())?;
-        let projected = typed_read(s, &sub, &type_at(s, ty, &parent)?.0)?;
+        let pt = type_at(s, ty, &parent)?.0;
+        let Some(projected) = lenient(tid, &ak, typed_read(s, &sub, &pt), |d| self.e.report(d)) else { return Ok(None) };
         Ok(value_at(&projected, &Path(vec![Step::Field(*id)])).cloned())
     }
 
@@ -195,12 +222,21 @@ impl Reader<'_> {
         self.e.owner(&self.resolve(tid)).map(|o| self.resolve(o))
     }
 
-    /// The commit that created the thing (`Created`; a timeline sorts by `shown()`; an
-    /// ephemeral thing's batch, `commit: None`); `None` while it is unknown or only a snapshot carrying its `/created` is here. Follows moves: a
-    /// moved thing reports its copy's creation, the move.
-    pub fn created(&self, tid: Tid) -> Option<Created> {
-        let c = self.e.creation(&self.resolve(tid))?;
-        Some(Created { commit: c.commit, ts: c.ts, node: c.node, actor: c.actor, received: c.received })
+    /// When the thing was created: the oldest valid commit carrying its `/created` that is no
+    /// snapshot (an ephemeral thing's batch, `commit: None`); `None` while it is unknown or
+    /// only a snapshot carrying its `/created` is here. Follows moves: a moved thing reports
+    /// its copy's creation, the move.
+    pub fn created(&self, tid: Tid) -> Option<Stamp> {
+        self.e.creation(&self.resolve(tid)).map(stamp)
+    }
+
+    /// When the thing's content last changed: of the held changes, reverts and imports
+    /// writing its aspects (not `/created`, `/group` or membership-class ones: placement and
+    /// sharing are no content change; not ephemeral writes), the one with the latest
+    /// `shown()`, else its creation. A delete is a change. A change known here only from a
+    /// snapshot is not seen (notes/api.md Attribution). Follows moves.
+    pub fn changed(&self, tid: Tid) -> Option<Stamp> {
+        self.e.changed(&self.resolve(tid)).map(stamp)
     }
 }
 
@@ -252,9 +288,14 @@ impl Osis {
         self.read(|r| r.owner_of(tid))
     }
 
-    /// The commit that created the thing (`Reader::created`).
-    pub fn created(&self, tid: Tid) -> Option<Created> {
+    /// When the thing was created (`Reader::created`).
+    pub fn created(&self, tid: Tid) -> Option<Stamp> {
         self.read(|r| r.created(tid))
+    }
+
+    /// When the thing's content last changed (`Reader::changed`).
+    pub fn changed(&self, tid: Tid) -> Option<Stamp> {
+        self.read(|r| r.changed(tid))
     }
 
     /// The corrected wall clock (spec/sync.md §6): the time the database stamps commits with,
@@ -391,18 +432,21 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
         let ak = ak_of(&self.key)?;
         let tid = self.db.read(|r| r.resolve(self.tid));
         let mut state = None;
+        let key = self.key.clone();
         let sub = self.db.subscribe(Filter::Aspect(tid, ak.clone()), false, |r| {
-            let st = WatchState::new(r.value(tid, &ak));
+            let v = r.value(tid, &ak);
+            let st = WatchState::new(r.checked(tid, &ak, &key, v));
             state = Some(st.clone());
-            Box::new(move |_, d| {
+            let key = key.clone();
+            Box::new(move |db, d| {
                 if let Delivery::Aspect { value, .. } = d {
-                    st.update(value);
+                    st.update(db.read(|r| r.checked(tid, &ak, &key, value)));
                 }
             })
         });
         let state = state.ok_or(Error::Closed)?;
-        let key = self.key.clone();
-        Ok(Watch::new(state, Arc::new(move |v: &Value| Ok(key.decode(v)?)), sub))
+        // the held value decoded when stored: a mismatch was reported and stored as absent
+        Ok(Watch::new(state, Arc::new(move |v: &Value| key.decode(v).ok()), sub))
     }
 
     /// Calls `f` once with the value at registration (`Source::Initial`, through the
@@ -413,16 +457,17 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
         let ak = ak_of(&self.key)?;
         let tid = self.db.read(|r| r.resolve(self.tid));
         let key = self.key.clone();
-        let decode = move |v: Result<Option<Value>>| v.and_then(|o| o.map(|x| key.decode(&x).map_err(Error::from)).transpose());
+        let ak2 = ak.clone();
+        let decode = move |db: &Osis, v: Result<Option<Value>>| Ok(v?.and_then(|x| lenient(tid, &ak2, key.decode(&x), |d| db.engine(|e| e.report(d)))));
         Ok(self.db.subscribe(Filter::Aspect(tid, ak.clone()), true, move |r| {
             let mut last = r.value(tid, &ak);
             Box::new(move |db, d| match d {
-                Delivery::Initial => f(db, Change { tid, ak: ak.clone(), value: decode(last.clone()), source: Source::Initial }),
+                Delivery::Initial => f(db, Change { tid, ak: ak.clone(), value: decode(db, last.clone()), source: Source::Initial }),
                 Delivery::Aspect { tid, source, value, .. } if value.is_err() || value != last => {
                     last = value.clone();
-                    f(db, Change { tid, ak: ak.clone(), value: decode(value), source });
+                    f(db, Change { tid, ak: ak.clone(), value: decode(db, value), source });
                 }
-                Delivery::Fired { tid, source, value, .. } => f(db, Change { tid, ak: ak.clone(), value: decode(Ok(Some(value))), source }),
+                Delivery::Fired { tid, source, value, .. } => f(db, Change { tid, ak: ak.clone(), value: decode(db, Ok(Some(value))), source }),
                 _ => {}
             })
         }))
@@ -445,11 +490,12 @@ impl<'d, K: AspectKey> PathRef<'_, 'd, K> {
         self.a.db.read(|r| r.get_path(self.a.tid, &self.a.key, &self.path))
     }
 
-    /// The value at the path as `U`; one bad element of a large collection fails alone.
+    /// The value at the path as `U`; one bad element of a large collection reads as absent
+    /// alone (a `Mismatch` diagnostic).
     pub fn get<U: Codec>(&self) -> Result<Option<U>> {
-        match self.get_value()? {
-            Some(v) => Ok(Some(U::from_value(&v)?)),
-            None => Ok(None),
-        }
+        let Some(v) = self.get_value()? else { return Ok(None) };
+        let db = self.a.db;
+        let (tid, ak) = (db.read(|r| r.resolve(self.a.tid)), ak_of(&self.a.key)?);
+        Ok(lenient(tid, &ak, U::from_value(&v), |d| db.engine(|e| e.report(d))))
     }
 }

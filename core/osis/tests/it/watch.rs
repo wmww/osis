@@ -355,3 +355,91 @@ fn watch_follows_move() {
     let last = rx.try_iter().last().unwrap();
     assert_eq!((last.tid, last.value), (m, Ok(Some(Value::Int(3)))));
 }
+
+// notes/api.md Typed reads: a watch and an `on_change` of a typed key read a stored value of
+// another type as absent (the untyped value stays readable).
+#[test]
+fn mistyped_value_watches_absent() {
+    let db = db(1);
+    let t = thing(&db);
+    db.write_with(|w| w.at(t, notes::TITLE).set(&"a".to_string())).unwrap();
+    let w = db.at(t, notes::TITLE).watch().unwrap();
+    let (tx, rx) = channel();
+    let _s = db.at(t, notes::TITLE).on_change(move |_, c| tx.send(c.value).unwrap()).unwrap();
+    assert_eq!(recv(&rx), Ok(Some("a".to_string())));
+    db.write_with(|x| x.at(t, ak("/note/title")).set(&Value::Int(3))).unwrap();
+    assert_eq!(recv(&rx), Ok(None));
+    db.settle();
+    assert!(w.try_changed());
+    assert_eq!(w.current(), Ok(None));
+    db.write_with(|x| x.at(t, notes::TITLE).set(&"b".to_string())).unwrap();
+    assert_eq!(recv(&rx), Ok(Some("b".to_string())));
+}
+
+// notes/api.md Watching: with `Dispatcher::Pump` callbacks run only inside `settle`, on the
+// calling thread, in order; the wake callback fires once per batch of due callbacks; inside a
+// callback `settle` returns at once, `close` fails, a write's callback runs in the same pump,
+// and a subscription dropped there stops.
+#[test]
+fn pump_dispatcher_runs_callbacks_in_settle() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let mut c = cfg(1, MemStore::new(), &clock());
+    let w2 = wakes.clone();
+    c.dispatch = osis::Dispatcher::Pump(Arc::new(move || {
+        w2.fetch_add(1, Ordering::SeqCst);
+    }));
+    let db = Osis::create(c).unwrap().0;
+    db.settle();
+    let k = ak("/t/x");
+    let t = thing(&db);
+    db.settle();
+    let base = wakes.load(Ordering::SeqCst);
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let me = std::thread::current().id();
+    let c2 = calls.clone();
+    let k2 = k.clone();
+    let _s = db
+        .at(t, k.clone())
+        .on_change(move |db, c| {
+            db.settle();
+            assert!(db.clone().close().is_err());
+            if c.value == Ok(Some(Value::Int(1))) {
+                db.write_with(|w| w.at(t, k2.clone()).set(&Value::Int(2))).unwrap();
+            }
+            c2.lock().unwrap().push((std::thread::current().id(), c.value.unwrap()));
+        })
+        .unwrap();
+    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap();
+    assert!(calls.lock().unwrap().is_empty(), "nothing runs before settle");
+    assert_eq!(wakes.load(Ordering::SeqCst), base + 1, "one wake for the batch");
+    db.settle();
+    assert_eq!(*calls.lock().unwrap(), vec![(me, None), (me, Some(Value::Int(1))), (me, Some(Value::Int(2)))], "on this thread, in order");
+    db.settle();
+    assert_eq!(calls.lock().unwrap().len(), 3);
+    // a subscription dropped inside a callback stops
+    let n = Arc::new(Mutex::new(0));
+    let slot: Arc<Mutex<Option<osis::Subscription>>> = Arc::new(Mutex::new(None));
+    let (n2, slot2) = (n.clone(), slot.clone());
+    let s = db
+        .at(t, k.clone())
+        .on_change(move |_, _| {
+            *n2.lock().unwrap() += 1;
+            drop(slot2.lock().unwrap().take());
+        })
+        .unwrap();
+    *slot.lock().unwrap() = Some(s);
+    db.settle();
+    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(3))).unwrap();
+    db.settle();
+    assert_eq!(*n.lock().unwrap(), 1);
+    // another thread's settle pumps too
+    let db2 = db.clone();
+    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(4))).unwrap();
+    let other = std::thread::spawn(move || {
+        db2.settle();
+        std::thread::current().id()
+    });
+    let id = other.join().unwrap();
+    assert_eq!(calls.lock().unwrap().last(), Some(&(id, Some(Value::Int(4)))));
+}

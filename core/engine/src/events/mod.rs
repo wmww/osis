@@ -110,6 +110,10 @@ pub enum DiagnosticKind {
     /// Ephemeral data was not synced or not applied: a server's or this node's ephemeral cap
     /// was reached, or an ephemeral commit could not be built (notes/ephemeral.md Bounds).
     EphemeralRefused,
+    /// A typed read found a stored value that does not match the reader's type (another
+    /// writer's data, a newer schema revision's enum case); it read as absent (the `osis` API,
+    /// spec/versioning.md §5; `tids`: the thing).
+    Mismatch,
     /// A local storage condition: a store file or directory readable by others whose mode
     /// could not be tightened (the `osis` file store).
     Storage,

@@ -687,7 +687,11 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
         let key = ctx.key(ak.as_str())?;
         let (s, j) = match db.get(t, key.clone()) {
             Ok(Some(v)) => show_value(ctx, &v, key_ty(&key)),
-            Ok(None) => ("(absent)".to_string(), J::Null),
+            // a value its schema does not read (a `Mismatch` diagnostic): shown untyped
+            Ok(None) => match db.get(t, ak.clone()) {
+                Ok(Some(v)) => show_value(ctx, &v, None),
+                _ => ("(absent)".to_string(), J::Null),
+            },
             Err(e) => (format!("(error: {e})"), J::obj([("error", J::str(e.to_string()))])),
         };
         lines.push(format!("{}\t{}", ak.as_str(), truncate(s, width)));
@@ -702,7 +706,10 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     lines.push(format!("subgroup_of\t{}", uris(&groups.subgroup_of)));
     lines.push(format!("role\t{}", role.map_or("none", role_text)));
     lines.push(format!("owner\t{}", owner.map_or("none".into(), |o| o.to_uri())));
-    lines.push(format!("created\t{}", created.map_or("unknown".into(), |c| format!("{} by {}", ts_text(ctx.g.raw, ts_of(c.ts)), c.node.to_uri()))));
+    let changed = db.changed(t);
+    let stamp = |c: Option<osis::Stamp>| c.map_or("unknown".into(), |c| format!("{} by {}", ts_text(ctx.g.raw, ts_of(c.ts)), c.node.to_uri()));
+    lines.push(format!("created\t{}", stamp(created)));
+    lines.push(format!("changed\t{}", stamp(changed)));
     let j = J::obj([
         ("tid", J::tid(t)),
         ("aspects", J::Obj(fields)),
@@ -711,9 +718,14 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
         ("subgroup_of", J::Arr(groups.subgroup_of.iter().map(|g| J::tid(*g)).collect())),
         ("role", J::opt(role.map(|r| J::str(role_text(r))))),
         ("owner", J::opt(owner.map(J::tid))),
-        ("created", J::opt(created.map(|c| J::obj([("commit", J::opt(c.commit.map(|x| J::str(commit_text(&x))))), ("node", J::tid(c.node)), ("ts", J::int(ts_of(c.ts)))])))),
+        ("created", J::opt(created.map(stamp_json))),
+        ("changed", J::opt(changed.map(stamp_json))),
     ]);
     ctx.emit(&lines, j)
+}
+
+fn stamp_json(c: osis::Stamp) -> J {
+    J::obj([("commit", J::opt(c.commit.map(|x| J::str(commit_text(&x))))), ("node", J::tid(c.node)), ("ts", J::int(ts_of(c.ts)))])
 }
 
 fn change_line(ctx: &Ctx<'_>, c: &Change<Value>) -> String {

@@ -652,6 +652,39 @@ impl Engine {
             (!is_kind_snapshot(m.header.kind) && m.valid.get(ai).copied().unwrap_or(false)).then(|| Creation { commit: Some(*id), ts: m.header.ts, node: m.header.author, actor: m.header.actor, received: m.received })
         })
     }
+
+    /// The thing's last content change: of the held content commits (changes, reverts,
+    /// imports) validly writing one of its aspects other than `/created`, `/group` and the
+    /// membership-class ones, the one shown latest by `min(ts, received)` (an author's clock may
+    /// run ahead; `received` is this node's), else its creation. Snapshots are no change, and
+    /// ephemeral writes do not count (an ephemeral thing reports its creation).
+    pub fn changed(&self, tid: &Tid) -> Option<Creation> {
+        let shown = |c: &Creation| c.ts.wall_ms().min(c.received);
+        let mut best = self.creation(tid);
+        let aspects = self.core.ix.by_aspect.range((*tid, osis_base::Ak::MIN)..).take_while(|((t, _), _)| t == tid);
+        for ((_, ak), ids) in aspects {
+            let a = ak.as_str();
+            if a == "/created" || a == "/group" || osis_schema::core_types::is_membership_class(a) {
+                continue;
+            }
+            for (ts, id) in ids.iter().rev() {
+                // shown <= ts: nothing older can be shown later than the best so far
+                if best.as_ref().is_some_and(|b| ts.wall_ms() <= shown(b)) {
+                    break;
+                }
+                let Some(m) = self.core.ix.commits.get(id) else { continue };
+                let valid = m.header.aspects.iter().enumerate().any(|(ai, x)| x.tid == *tid && x.ak == *ak && m.valid.get(ai).copied().unwrap_or(false));
+                if !matches!(m.header.kind, Kind::Content | Kind::Import) || !valid {
+                    continue;
+                }
+                let c = Creation { commit: Some(*id), ts: m.header.ts, node: m.header.author, actor: m.header.actor, received: m.received };
+                if best.as_ref().is_none_or(|b| shown(&c) > shown(b)) {
+                    best = Some(c);
+                }
+            }
+        }
+        best
+    }
 }
 
 /// Rebuilds the engine's indexes from the store (open, and after forgetting): from the persisted
@@ -929,7 +962,7 @@ pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize)
     }
 }
 
-/// When a thing was created (`Engine::creation`).
+/// A commit as a thing's time (`Engine::creation`, `Engine::changed`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Creation {
     /// `None` while the thing is ephemeral (notes/ephemeral.md).

@@ -7,7 +7,7 @@
 use crate::error::{Error, Result};
 use crate::net::{Net, Runtime, Transport, Waiter};
 use crate::share::{RecoveryCard, ServerAddr, Status};
-use crate::watch::{Dispatch, Msg, lock};
+use crate::watch::{Dispatch, Dispatcher, Msg, lock};
 use osis_base::{Clock, SystemClock, Tid};
 use osis_crypto::{CryptoRngCore, OsRng, SeededRng};
 use osis_node::sync::{Action, Event as SyncEvent, SyncConfig, SyncEngine};
@@ -79,6 +79,8 @@ pub struct Config {
     /// Bytes of this session's ephemeral changes kept for undo (default 16 MiB); older ones are
     /// `NotUndoable{Compacted}` (notes/ephemeral.md Bounds).
     pub ephemeral_history: usize,
+    /// Where watch callbacks run (default: a dispatcher thread).
+    pub dispatch: Dispatcher,
 }
 
 impl Config {
@@ -88,7 +90,7 @@ impl Config {
     }
 
     pub fn at(store: StoreAt) -> Config {
-        Config { store, materialize_limit: DEFAULT_LIMIT, clock: None, seed: None, runtime: Runtime::None, transport: None, peers: true, relays: Vec::new(), servers: Vec::new(), idle_commit: DEFAULT_IDLE_COMMIT, wait_timeout: DEFAULT_WAIT, ephemeral_history: osis_node::engine::DEFAULT_EPHEMERAL_HISTORY }
+        Config { store, materialize_limit: DEFAULT_LIMIT, clock: None, seed: None, runtime: Runtime::None, transport: None, peers: true, relays: Vec::new(), servers: Vec::new(), idle_commit: DEFAULT_IDLE_COMMIT, wait_timeout: DEFAULT_WAIT, ephemeral_history: osis_node::engine::DEFAULT_EPHEMERAL_HISTORY, dispatch: Dispatcher::Thread }
     }
 
     pub fn dir(path: impl Into<std::path::PathBuf>) -> Config {
@@ -297,12 +299,12 @@ impl Osis {
         }
         let node = sync.engine().tid();
         let events = sync.engine_mut().subscribe();
-        let (dispatch, queue) = Dispatch::new();
+        let dispatch = Dispatch::new(&cfg.dispatch);
         let (net, ctl) = Net::new(&cfg.runtime)?;
         let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new() };
         let (closed, closing) = std::sync::mpsc::channel();
         let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, wait_timeout: cfg.wait_timeout, clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, closing: Mutex::new(Some(closing)), _closed: closed });
-        inner.dispatch.spawn(queue, Arc::downgrade(&inner))?;
+        inner.dispatch.start(Arc::downgrade(&inner))?;
         if let Some(ctl) = ctl {
             inner.net.spawn_driver(ctl, cfg.transport.clone(), cfg.peers, cfg.relays.clone(), clock, WeakOsis(Arc::downgrade(&inner)))?;
         }
@@ -328,7 +330,7 @@ impl Osis {
     /// durable). Returns once it is closed, so the store can be opened again at once (with
     /// `Runtime::Tokio`, also once its sync task ended, so the app may shut that runtime down); while
     /// other handles keep it open, it returns after `CLOSE_WAIT`. From a callback (the
-    /// dispatcher thread, which holds the database while it runs) it fails `Invalid` at once:
+    /// dispatcher, which holds the database while it runs) it fails `Invalid` at once:
     /// drop the handle instead.
     pub fn close(self) -> Result<()> {
         if self.inner.dispatch.shared.on_dispatcher() {
@@ -499,12 +501,14 @@ impl Osis {
         self.try_act(|l| Ok(l.sync.carry_out(done)?))
     }
 
-    /// Blocks until every callback for changes made so far has run (returns at once on the
-    /// dispatcher thread). Tests and scripts use it to wait without sleeping. Never call it
-    /// inside an `Osis::read` or `Osis::engine` closure: the dispatcher may need the lock
+    /// Returns once every callback for changes made so far has run: with
+    /// `Dispatcher::Thread` it waits for the dispatcher thread (tests and scripts wait this
+    /// way without sleeping); with `Dispatcher::Pump` it runs them on this thread, which is
+    /// how the app pumps (after its wake callback). Returns at once inside a callback. Never
+    /// call it inside an `Osis::read` or `Osis::engine` closure: a callback may need the lock
     /// that closure holds (deadlock).
     pub fn settle(&self) {
-        self.inner.dispatch.settle();
+        self.inner.dispatch.settle(Arc::downgrade(&self.inner));
     }
 
     /// Registers a schema: typed views for its AKs (`key`), undo and snapshot defaults.

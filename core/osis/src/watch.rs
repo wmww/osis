@@ -1,5 +1,7 @@
-//! Watching (notes/api.md Watching): one dispatcher thread per database runs every callback, in
-//! commit order, after the commit is durable, never under a lock. Engine events are drained into
+//! Watching (notes/api.md Watching): one dispatcher per database runs every callback, in
+//! commit order, after the commit is durable, never under a lock. Its driver is a thread osis
+//! starts (`Dispatcher::Thread`) or whichever thread calls `Osis::settle` (`Dispatcher::Pump`,
+//! woken by the app's callback); both run the same `Pump::step`. Engine events are drained into
 //! the dispatcher's queue under the engine lock, each with a sequence number; a subscription
 //! ignores messages queued before it registered, so a watch taken atomically with the current
 //! value misses nothing and sees nothing twice. A call reads the aspect's latest state
@@ -16,7 +18,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::task::{Context, Poll, Waker};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
@@ -58,7 +60,8 @@ pub enum Source {
 pub struct Change<T> {
     pub tid: Tid,
     pub ak: Ak,
-    /// The value now (`None`: absent), or why it cannot be read (`TooLarge`, `Type`).
+    /// The value now (`None`: absent, or not matching the key's type: a `Mismatch`
+    /// diagnostic), or why it cannot be read (`TooLarge`, `Storage`).
     pub value: Result<Option<T>>,
     pub source: Source,
 }
@@ -111,6 +114,28 @@ pub(crate) struct Registry {
     subs: BTreeMap<u64, Arc<Sub>>,
 }
 
+/// Where watch callbacks run (`Config::dispatch`, notes/api.md Watching).
+#[derive(Clone, Default)]
+pub enum Dispatcher {
+    /// On a dispatcher thread the database starts (the default).
+    #[default]
+    Thread,
+    /// On the thread that calls `Osis::settle` (an app's UI thread), which then runs every
+    /// callback due. `wake` is called once when callbacks become due after the last `settle`
+    /// began, on whatever thread queued them, possibly under the database lock: it must only
+    /// arrange for a `settle` soon (post an event to the UI loop), never call the database.
+    Pump(Arc<dyn Fn() + Send + Sync>),
+}
+
+impl std::fmt::Debug for Dispatcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Dispatcher::Thread => "Thread",
+            Dispatcher::Pump(_) => "Pump",
+        })
+    }
+}
+
 /// State shared by the database, the dispatcher and subscriptions.
 #[derive(Default)]
 pub(crate) struct Shared {
@@ -118,40 +143,70 @@ pub(crate) struct Shared {
     /// The thread holding the engine lock, if any (a subscription dropped there must not wait
     /// for an in-flight call: that call may be waiting for the engine lock).
     pub holder: Mutex<Option<ThreadId>>,
-    thread: OnceLock<ThreadId>,
+    /// The thread running callbacks: the dispatcher thread, or the one inside a pumping
+    /// `settle`.
+    thread: Mutex<Option<ThreadId>>,
 }
 
 impl Shared {
     pub(crate) fn on_dispatcher(&self) -> bool {
-        self.thread.get() == Some(&std::thread::current().id())
+        *lock(&self.thread) == Some(std::thread::current().id())
     }
 }
 
-/// The dispatcher's sending side, kept by the database.
+/// The dispatcher's sending side, kept by the database, with the queue until a thread takes it
+/// (`Dispatcher::Thread`) or for `settle` to pump (`Dispatcher::Pump`).
 pub(crate) struct Dispatch {
     tx: Sender<(u64, Msg)>,
     pub shared: Arc<Shared>,
+    pump: Mutex<Option<Pump>>,
+    /// `Dispatcher::Pump`'s wake, and whether it was called since the last pump began.
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
+    due: AtomicBool,
 }
 
-pub(crate) type Queue = Receiver<(u64, Msg)>;
+type Queue = Receiver<(u64, Msg)>;
 
 impl Dispatch {
-    pub fn new() -> (Dispatch, Queue) {
+    pub fn new(mode: &Dispatcher) -> Dispatch {
         let (tx, rx) = channel();
-        (Dispatch { tx, shared: Arc::default() }, rx)
+        let wake = match mode {
+            Dispatcher::Thread => None,
+            Dispatcher::Pump(w) => Some(w.clone()),
+        };
+        Dispatch { tx, shared: Arc::default(), pump: Mutex::new(Some(Pump::new(rx))), wake, due: AtomicBool::new(false) }
     }
 
-    /// Starts the dispatcher thread; it runs until the database closes.
-    pub fn spawn(&self, rx: Queue, db: Weak<Inner>) -> Result<()> {
+    /// With `Dispatcher::Thread`, starts the dispatcher thread; it runs until the database
+    /// closes.
+    pub fn start(&self, db: Weak<Inner>) -> Result<()> {
+        if self.wake.is_some() {
+            return Ok(());
+        }
+        let Some(mut p) = lock(&self.pump).take() else { return Ok(()) };
         let sh = self.shared.clone();
-        let h = std::thread::Builder::new().name("osis-dispatch".into()).spawn(move || run(rx, sh, db)).map_err(|e| Error::Storage(e.to_string()))?;
-        let _ = self.shared.thread.set(h.thread().id());
+        // the thread records itself before its first message, so no call runs unrecognized
+        let (ready, started) = channel();
+        std::thread::Builder::new()
+            .name("osis-dispatch".into())
+            .spawn(move || {
+                *lock(&sh.thread) = Some(std::thread::current().id());
+                let _ = ready.send(());
+                while p.step(&sh, &db, true) {}
+            })
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        let _ = started.recv();
         Ok(())
     }
 
     /// Queues a message with sequence number `seq` (taken under the engine lock).
     pub fn send(&self, seq: u64, m: Msg) {
         let _ = self.tx.send((seq, m));
+        if let Some(w) = &self.wake
+            && !self.due.swap(true, Ordering::AcqRel)
+        {
+            w();
+        }
     }
 
     /// Registers a callback for messages from sequence `since` on.
@@ -163,15 +218,34 @@ impl Dispatch {
         Subscription { shared: Arc::downgrade(&self.shared), id: Some(id) }
     }
 
-    /// Blocks until every message queued so far has been dispatched.
-    pub fn settle(&self) {
+    /// Returns once every message queued so far has been dispatched: waits for the thread,
+    /// or pumps on this one (after another thread's pump in progress). At once on the
+    /// dispatcher.
+    pub fn settle(&self, db: Weak<Inner>) {
         if self.shared.on_dispatcher() {
             return;
         }
-        let (tx, rx) = channel();
-        if self.tx.send((0, Msg::Barrier(tx))).is_ok() {
-            let _ = rx.recv();
+        if self.wake.is_none() {
+            let (tx, rx) = channel();
+            if self.tx.send((0, Msg::Barrier(tx))).is_ok() {
+                let _ = rx.recv();
+            }
+            return;
         }
+        let mut q = lock(&self.pump);
+        let Some(p) = q.as_mut() else { return };
+        // a guard: a panic past `call`'s catch leaves no thread marked as the dispatcher
+        struct Pumping<'a>(&'a Shared);
+        impl Drop for Pumping<'_> {
+            fn drop(&mut self) {
+                *lock(&self.0.thread) = None;
+            }
+        }
+        *lock(&self.shared.thread) = Some(std::thread::current().id());
+        let _g = Pumping(&self.shared);
+        // reset before draining: a message queued after the drain's last look wakes again
+        self.due.swap(false, Ordering::AcqRel);
+        while p.step(&self.shared, &db, false) {}
     }
 }
 
@@ -248,38 +322,50 @@ fn targets(db: &Osis, sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
     }
 }
 
-fn run(rx: Queue, sh: Arc<Shared>, db: Weak<Inner>) {
-    let mut buf: VecDeque<(u64, Msg)> = VecDeque::new();
+/// The dispatcher's state: the queue, the messages taken from it early (a coalesced read shows
+/// their effect), and what coalesced calls already showed.
+pub(crate) struct Pump {
+    rx: Queue,
+    buf: VecDeque<(u64, Msg)>,
     // (subscription, tid, ak) -> last sequence number a coalesced call already showed
-    let mut covered: HashMap<(u64, Tid, Ak), u64> = HashMap::new();
-    loop {
-        let (seq, m) = match buf.pop_front() {
-            Some(x) => x,
-            None => match rx.recv() {
-                Ok(x) => x,
-                Err(_) => return,
-            },
+    covered: HashMap<(u64, Tid, Ak), u64>,
+}
+
+impl Pump {
+    fn new(rx: Queue) -> Pump {
+        Pump { rx, buf: VecDeque::new(), covered: HashMap::new() }
+    }
+
+    /// Dispatches the next message, waiting for one if `wait`; `false` when there was none
+    /// (or the database closed).
+    fn step(&mut self, sh: &Shared, db: &Weak<Inner>, wait: bool) -> bool {
+        let next = match self.buf.pop_front() {
+            Some(x) => Some(x),
+            None if wait => self.rx.recv().ok(),
+            None => self.rx.try_recv().ok(),
         };
+        let Some((seq, m)) = next else { return false };
         if let Msg::Barrier(done) = m {
             let _ = done.send(());
-            continue;
+            return true;
         }
-        let Some(inner) = db.upgrade() else { continue };
+        let Some(inner) = db.upgrade() else { return true };
         let db = Osis::from_inner(inner);
-        covered.retain(|_, c| *c >= seq);
-        for (s, pre) in targets(&db, &sh, seq, &m) {
+        self.covered.retain(|_, c| *c >= seq);
+        for (s, pre) in targets(&db, sh, seq, &m) {
             let d = match pre {
                 Pre::Ready(d) => d,
                 Pre::Aspect { tid, ak, mut source } => {
                     let key = (s.id, tid, ak.clone());
-                    if covered.contains_key(&key) {
+                    if self.covered.contains_key(&key) {
                         continue;
                     }
                     // read under the engine lock, queueing every event whose effect it shows;
                     // the call carries the source of the newest such event for this aspect
+                    let (rx, buf) = (&self.rx, &mut self.buf);
                     let value = db.value_with(tid, &ak, || buf.extend(rx.try_iter()));
                     let mut last = seq;
-                    for (s2, m2) in &buf {
+                    for (s2, m2) in &self.buf {
                         if let Some((changed, src)) = aspect_event(m2)
                             && changed.iter().any(|(t, a)| *t == tid && *a == ak)
                         {
@@ -288,17 +374,18 @@ fn run(rx: Queue, sh: Arc<Shared>, db: Weak<Inner>) {
                         }
                     }
                     if last > seq {
-                        covered.insert(key, last);
+                        self.covered.insert(key, last);
                     }
                     Delivery::Aspect { tid, ak, source, value }
                 }
             };
             call(&db, &s, d);
         }
+        true
     }
 }
 
-/// Runs one callback; a panic is caught, reported as a diagnostic, and the dispatcher lives on.
+/// Runs one callback; a panic is caught and reported as a diagnostic, and dispatch goes on.
 fn call(db: &Osis, s: &Sub, d: Delivery) {
     if s.removed.load(Ordering::Acquire) {
         return;
@@ -388,7 +475,9 @@ impl WatchState {
     }
 }
 
-type Decode<T> = Arc<dyn Fn(&Value) -> Result<T> + Send + Sync>;
+/// The typed view of a held value (`None`: it does not decode; the watch stores such a value
+/// as absent, so this is a fallback).
+type Decode<T> = Arc<dyn Fn(&Value) -> Option<T> + Send + Sync>;
 
 /// A watched aspect: the latest value, taken atomically with the subscription (notes/api.md
 /// Watching). Holds only the latest value; unsubscribes when dropped.
@@ -408,7 +497,7 @@ impl<T> Watch<T> {
     pub fn current(&self) -> Result<Option<T>> {
         let s = lock(&self.state.m);
         match &s.value {
-            Ok(Some(v)) => (self.decode)(v).map(Some),
+            Ok(Some(v)) => Ok((self.decode)(v)),
             Ok(None) => Ok(None),
             Err(e) => Err(e.clone()),
         }
