@@ -103,7 +103,7 @@ The properties above hold for any use of the data. The only usage rules are:
 - Readers only read: posting into a shared space needs write on its actor.
 - Every write is attributable to a signing key actor (normally a device) and verifiable. Hiding authorship is a deliberate choice, never the default.
 - Rights held by different parties never combine into a right neither has alone.
-- Whether an edit by a revoked member counts is judged by what the revoker had received, never by the author's own timestamps. Edits the revoker had not received when it revoked are lost until re-grant.
+- Whether an edit by a revoked member counts is judged by what the revoker had received, never by the author's own timestamps. Edits the revoker had not received when it revoked are lost until re-grant, except those another writer compacted before it learned of the revocation, which stay.
 - A removal nobody stamps (a timed grant ending, a self-removal, a link expiring) cuts off nothing by itself: until another member publishes an explicit demotion, the member's own timestamps decide, within the allowed clock drift.
 - The owner may restart a thing's membership history at a roster snapshot; a membership write ordered before the snapshot that it did not include is lost.
 - A share link is a bearer secret. One joiner is revoked only together with the link; the remaining joiners get a new one.
