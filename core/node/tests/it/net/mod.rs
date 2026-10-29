@@ -346,24 +346,39 @@ impl Net {
             i += 1;
             self.steps += 1;
             assert!(i < max, "no quiescence after {max} messages");
-            match m {
-                Msg::Up(n, c) => self.feed(n, Event::Up { conn: c }),
-                Msg::ToHub(s, hc, b) => {
-                    let now = self.now_at(s);
-                    let t = std::time::Instant::now();
-                    let out = self.servers[s].hub.input(now, hc, b);
-                    self.hub_busy += t.elapsed();
-                    self.hub_out(s, out);
-                }
-                Msg::ToNode(n, c, b) => self.feed(n, Event::Bytes { conn: c, bytes: b }),
-                Msg::Close(n, c) => self.feed(n, Event::Down { conn: c }),
-            }
-            for s in 0..self.servers.len() {
+            self.deliver(m);
+        }
+    }
+
+    /// Delivers the messages queued now; what they cause waits for the next round (one hop of
+    /// latency per round).
+    pub fn round(&mut self) {
+        let n = self.queue.len();
+        for _ in 0..n {
+            let Some(m) = self.queue.pop_front() else { break };
+            self.steps += 1;
+            self.deliver(m);
+        }
+    }
+
+    fn deliver(&mut self, m: Msg) {
+        match m {
+            Msg::Up(n, c) => self.feed(n, Event::Up { conn: c }),
+            Msg::ToHub(s, hc, b) => {
                 let now = self.now_at(s);
-                if self.servers[s].hub.next_due(now).is_some_and(|t| t <= now) {
-                    let out = self.servers[s].hub.tick(now);
-                    self.hub_out(s, out);
-                }
+                let t = std::time::Instant::now();
+                let out = self.servers[s].hub.input(now, hc, b);
+                self.hub_busy += t.elapsed();
+                self.hub_out(s, out);
+            }
+            Msg::ToNode(n, c, b) => self.feed(n, Event::Bytes { conn: c, bytes: b }),
+            Msg::Close(n, c) => self.feed(n, Event::Down { conn: c }),
+        }
+        for s in 0..self.servers.len() {
+            let now = self.now_at(s);
+            if self.servers[s].hub.next_due(now).is_some_and(|t| t <= now) {
+                let out = self.servers[s].hub.tick(now);
+                self.hub_out(s, out);
             }
         }
     }

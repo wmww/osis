@@ -670,11 +670,13 @@ fn removed_member_covered_writes_stay_spec_permissions_5_2() {
 /// writes, partitions (offline, one server blocked), node restarts and server restarts; after
 /// healing every holder reads the same notes.
 fn random_window_run(seed: u64) {
-    random_window_run_on(seed, false)
+    random_window_run_on(seed, false, false)
 }
 
 /// `single`: one server only, always with the small cap (what it holds is all others get).
-fn random_window_run_on(seed: u64, single: bool) {
+/// `inflight`: half the steps end after one hop of delivery instead of settling, so later
+/// writes meet uploads still in flight (coalesced, spec/sync.md §9).
+fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
     let mut rnd = move |n: u64| {
         x ^= x << 13;
@@ -704,6 +706,14 @@ fn random_window_run_on(seed: u64, single: bool) {
         y ^= y >> 7;
         y ^= y << 17;
         y % n
+    };
+    // in-flight steps from a stream of their own as well
+    let mut z = seed.wrapping_mul(0x94d0_49bb_1331_11eb) | 1;
+    let mut irnd = move || {
+        z ^= z << 13;
+        z ^= z >> 7;
+        z ^= z << 17;
+        z % 2 == 0
     };
     for step in 0..40 {
         let p = nodes[prnd(4) as usize];
@@ -765,7 +775,15 @@ fn random_window_run_on(seed: u64, single: bool) {
                 continue;
             }
         }
-        net.run();
+        if inflight && irnd() {
+            log.push("one hop".into());
+            for n in &nodes {
+                net.feed(*n, Event::Local);
+            }
+            net.round();
+        } else {
+            net.run();
+        }
     }
     net.blocked.clear();
     for n in &nodes {
@@ -814,7 +832,7 @@ fn str_map(v: Option<Value>) -> BTreeMap<String, String> {
 #[test]
 fn random_window_one_capped_server_spec_sync_9() {
     for seed in [10, 63, 105, 162] {
-        random_window_run_on(seed, true);
+        random_window_run_on(seed, true, false);
     }
 }
 
@@ -827,7 +845,7 @@ fn random_window_one_capped_server_large() {
     let n: u64 = std::env::var("OSIS_EPH_SEEDS").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
     for seed in start..start + n {
         eprintln!("seed {seed}");
-        random_window_run_on(seed, true);
+        random_window_run_on(seed, true, false);
     }
 }
 
@@ -849,6 +867,27 @@ fn random_window_converges_large() {
     for seed in start..start + n {
         eprintln!("seed {seed}");
         random_window_run(seed);
+    }
+}
+
+// the same with half the steps ending while messages are in flight, so writes meet unanswered
+// uploads and are coalesced (spec/sync.md §9)
+#[test]
+fn random_window_inflight_spec_sync_9() {
+    for seed in 0..4 {
+        random_window_run_on(seed, false, true);
+    }
+}
+
+// the same over more seeds (tier 2): OSIS_EPH_SEEDS (default 200) from OSIS_EPH_START
+#[test]
+#[ignore]
+fn random_window_inflight_large() {
+    let start: u64 = std::env::var("OSIS_EPH_START").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let n: u64 = std::env::var("OSIS_EPH_SEEDS").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
+    for seed in start..start + n {
+        eprintln!("seed {seed}");
+        random_window_run_on(seed, false, true);
     }
 }
 
@@ -1119,4 +1158,68 @@ fn server_cap_stuck_entry_no_churn_spec_sync_9() {
     let fits = bytes_under_stuck_entry(100);
     let stuck = bytes_under_stuck_entry(7_000);
     assert!(stuck < fits + fits / 4, "{stuck} bytes sent with a refused entry held, {fits} without");
+}
+
+/// Upload messages nodes sent so far (osis-proto message kind 10).
+fn uploads_sent(net: &Net) -> usize {
+    net.sent_kinds.get(&10).copied().unwrap_or(0)
+}
+
+// spec/sync.md §9 (own plain writes made while an upload of the label is unanswered join the next
+// commit): a burst of note edits during one upload in flight goes up as two commits, and both
+// holders converge on every edit; B, also writing meanwhile, merges with it
+#[test]
+fn burst_coalesced_while_upload_in_flight_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "shared");
+    net.run();
+    let up = uploads_sent(&net);
+    let mut want = BTreeMap::new();
+    for i in 0..20 {
+        note(&mut net, a, w, &format!("k{i}"), &format!("v{i}"));
+        want.insert(format!("k{i}"), format!("v{i}"));
+    }
+    // overwrites inside the burst: the latest wins
+    note(&mut net, a, w, "k3", "last");
+    want.insert("k3".into(), "last".into());
+    assert_eq!(uploads_sent(&net) - up, 1, "one upload in flight, the rest wait");
+    note(&mut net, b, w, "b", "from b");
+    want.insert("b".into(), "from b".into());
+    net.run();
+    assert_eq!(uploads_sent(&net) - up, 3, "A's first edit, A's other 20 in one commit, B's");
+    assert_eq!(notes(&mut net, a, w), want);
+    assert_eq!(notes(&mut net, b, w), want);
+    // a restarted holder gets the same back from the server
+    net.restart(b, 21);
+    net.advance(10_000);
+    assert_eq!(notes(&mut net, b, w), want);
+}
+
+// spec/sync.md §9: signals are never held back or merged: each signal write sent while a plain
+// upload of the label is in flight is its own relay-only commit at once, and each fires once at B
+#[test]
+fn signals_not_held_back_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let w = window(&mut net, a, g, "busy");
+    let up = uploads_sent(&net);
+    let rb = net.listen(b);
+    for i in 0..5 {
+        net.eph_write(a, t, &ukey("/t/ring", Lifetime::Signal), s(&format!("ding {i}")));
+    }
+    assert_eq!(uploads_sent(&net) - up, 5, "one relay-only upload per signal, none waits");
+    net.run();
+    let got: Vec<Value> = fired(&rb).into_iter().filter(|(x, ak, _, _)| *x == t && ak == "/t/ring").map(|(_, _, v, _)| v).collect();
+    assert_eq!(got.len(), 5, "{got:?}");
+    assert_eq!(net.eph_read(b, w, STATE), Some(s("busy")));
 }

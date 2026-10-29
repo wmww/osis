@@ -242,7 +242,8 @@ impl SyncEngine {
         if let Some(c) = self.engine.compact_ephemeral(None, false)? {
             commits.push(c);
         }
-        commits.extend(self.engine.take_ephemeral()?);
+        let (busy, busy_presence) = self.eph_busy();
+        commits.extend(self.engine.take_ephemeral_if(&busy, &busy_presence)?);
         self.eph_presence(out)?;
         // what a compaction covers goes first: deleted before its cover goes up on the same
         // connection, so a server at its cap takes the cover
@@ -264,6 +265,24 @@ impl SyncEngine {
             }
         }
         Ok(())
+    }
+
+    /// What has an own ephemeral upload in flight on some connection (sent, not answered): the
+    /// groups of the labels with an own plain entry in flight, the actors with an own presence
+    /// entry in flight. Their next writes wait and join (`Engine::take_ephemeral_if`) until the
+    /// answer (or the connection's end), so a node sends at most one such commit per label and
+    /// kind per round trip whatever its write rate (spec/sync.md §9).
+    fn eph_busy(&self) -> (BTreeSet<Tid>, BTreeSet<Tid>) {
+        let (mut groups, mut actors) = (BTreeSet::new(), BTreeSet::new());
+        for (c, l, b) in &self.eph.uploads {
+            let Some(e) = self.eph.entries.get(&(*l, *b)).filter(|e| e.own) else { continue };
+            if e.presence {
+                actors.insert(e.actor);
+            } else if let Some(x) = self.conns.get(c).and_then(|x| x.labels.get(l)) {
+                groups.insert(x.group);
+            }
+        }
+        (groups, actors)
     }
 
     /// Entries whose commit was waiting for its author's record: held now, they join the lane

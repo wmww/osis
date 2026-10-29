@@ -132,6 +132,9 @@ pub(crate) struct Remote {
     pub presence_sent: BTreeMap<Tid, u64>,
     /// Held presence commits by the end of their lease (`ts + MAX_LEASE`).
     pub leases: BTreeMap<u64, BTreeSet<CommitId>>,
+    /// Own writes, signals or keep-alives noted since the last `take_ephemeral_if` (what it held
+    /// back goes when the sync layer's upload in flight is answered, not on a new local event).
+    pub noted: bool,
 }
 
 /// Whether a cover `cover` may absorb `covered` (spec/sync.md §9): a presence commit only its
@@ -203,10 +206,11 @@ impl Engine {
         t == g || self.closure(g).contains(t) || self.groups_of(t).contains(g)
     }
 
-    /// Whether own ephemeral writes or signals wait to be sent (`take_ephemeral`).
+    /// Whether own ephemeral writes or signals were noted since the last take, or a thing with
+    /// ephemeral state entered a labeled closure (`take_ephemeral_if`).
     pub fn has_unsent(&self) -> bool {
         let r = &self.eph.remote;
-        !(r.unsent.is_empty() && r.signals.is_empty() && r.records.is_empty() && r.presence_dirty.is_empty()) || r.local.iter().any(|t| self.ephemeral_synced(t))
+        r.noted || r.local.iter().any(|t| self.ephemeral_synced(t))
     }
 
     /// Notes an own ephemeral write for sync: it joins `unsent` (a presence write marks its
@@ -214,6 +218,7 @@ impl Engine {
     pub(super) fn note_written(&mut self, tid: &Tid, ak: &Ak, delta: &Fragment, expires: Option<u64>, presence: bool, actor: Tid) {
         if self.ephemeral_synced(tid) {
             let r = &mut self.eph.remote;
+            r.noted = true;
             if presence {
                 r.presence.insert((*tid, ak.clone()), actor);
                 r.presence_dirty.insert(actor);
@@ -231,6 +236,7 @@ impl Engine {
     /// Notes an own signal write for sync (things in a labeled closure only).
     pub(super) fn note_signal(&mut self, tid: &Tid, ak: &Ak, v: &Value, ts: Ts, actor: Tid) {
         if self.ephemeral_synced(tid) {
+            self.eph.remote.noted = true;
             self.eph.remote.signals.push((*tid, ak.clone(), v.clone(), ts, actor));
             if self.eph.things.contains_key(tid) {
                 self.eph.remote.records.insert(*tid);
@@ -243,10 +249,22 @@ impl Engine {
         self.eph.remote.local.insert(*tid);
     }
 
-    /// Builds the ephemeral commits of everything unsent: one relay-only commit for the signals,
-    /// one per expiry for state (with the records of the ephemeral things they touch), and the
-    /// whole state of things that entered a labeled closure. Each is held here.
+    /// Builds the ephemeral commits of everything unsent (`take_ephemeral_if` holding nothing
+    /// back).
     pub fn take_ephemeral(&mut self) -> Result<Vec<EphCommit>> {
+        self.take_ephemeral_if(&BTreeSet::new(), &BTreeSet::new())
+    }
+
+    /// Builds the ephemeral commits of what is unsent: one relay-only commit per actor for the
+    /// signals, one per actor and expiry for state (with the records of the ephemeral things they
+    /// touch), and the whole state of things that entered a labeled closure; the presence commits
+    /// due. Each is held here. Held back (coalescing while the sync layer has an own ephemeral
+    /// upload in flight, spec/sync.md §9): the plain writes and records of things in the closure
+    /// of a group in `busy`, and the presence commits of the actors in `busy_presence`; they
+    /// stay unsent, later writes join them (a presence commit carries the whole own state
+    /// anyway), and they go with a later take. Signals are never held back.
+    pub fn take_ephemeral_if(&mut self, busy: &BTreeSet<Tid>, busy_presence: &BTreeSet<Tid>) -> Result<Vec<EphCommit>> {
+        self.eph.remote.noted = false;
         let entered: Vec<Tid> = self.eph.remote.local.iter().filter(|t| self.ephemeral_synced(t)).copied().collect();
         for t in entered {
             self.eph.remote.local.remove(&t);
@@ -280,8 +298,17 @@ impl Engine {
                 out.push(c);
             }
         }
-        let unsent = std::mem::take(&mut self.eph.remote.unsent);
-        let records = std::mem::take(&mut self.eph.remote.records);
+        let held_back = |e: &Engine, t: &Tid| busy.iter().any(|g| e.in_ephemeral_closure(g, t));
+        let mut unsent = std::mem::take(&mut self.eph.remote.unsent);
+        let mut records = std::mem::take(&mut self.eph.remote.records);
+        if !busy.is_empty() {
+            let (back, go): (BTreeMap<_, _>, BTreeMap<_, _>) = unsent.into_iter().partition(|((t, _), _)| held_back(self, t));
+            unsent = go;
+            self.eph.remote.unsent = back;
+            let (back, go): (BTreeSet<Tid>, BTreeSet<Tid>) = records.into_iter().partition(|t| held_back(self, t));
+            records = go;
+            self.eph.remote.records = back;
+        }
         let mut by_class: BTreeMap<(Tid, Option<u64>), Vec<EphDelta>> = BTreeMap::new();
         for ((tid, ak), m) in unsent {
             for ((actor, exp), f) in m {
@@ -302,7 +329,7 @@ impl Engine {
                 out.push(c);
             }
         }
-        out.extend(self.take_presence()?);
+        out.extend(self.take_presence(busy_presence)?);
         Ok(out)
     }
 
@@ -315,9 +342,11 @@ impl Engine {
     /// Builds the due presence commits: per actor, one carrying this node's own state of every
     /// presence aspect last written for that actor (of things that sync), absorbing the presence
     /// commits this node authored for that actor before, so a holder keeps one per author.
-    fn take_presence(&mut self) -> Result<Vec<EphCommit>> {
+    /// Actors in `busy` stay due.
+    fn take_presence(&mut self, busy: &BTreeSet<Tid>) -> Result<Vec<EphCommit>> {
         let mut out = Vec::new();
-        let dirty = std::mem::take(&mut self.eph.remote.presence_dirty);
+        let (back, dirty): (BTreeSet<Tid>, BTreeSet<Tid>) = std::mem::take(&mut self.eph.remote.presence_dirty).into_iter().partition(|a| busy.contains(a));
+        self.eph.remote.presence_dirty = back;
         if dirty.is_empty() {
             return Ok(out);
         }
@@ -364,6 +393,7 @@ impl Engine {
             let live = self.eph.remote.presence.iter().filter(|(_, a)| **a == actor).any(|((t, ak), _)| self.own_state(t, ak).is_some_and(|f| f.present()));
             if live {
                 self.eph.remote.presence_dirty.insert(actor);
+                self.eph.remote.noted = true;
                 // not again until it was sent
                 self.eph.remote.presence_sent.insert(actor, now);
             } else {
