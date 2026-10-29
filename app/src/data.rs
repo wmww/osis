@@ -543,11 +543,15 @@ impl Data {
         let share = self.share_reach(t, tag)?.is_some();
         // a revocation of this very access may be running on another device: grant it again,
         // so the merge keeps the tag's edge (a grant after the removal it did not see)
-        let regrant = !share && self.db.role_on(t) == Some(Role::Admin) && self.pending_revokes()?.contains(&(t, tag));
+        let waiting = self.pending_revokes()?.contains(&(t, tag));
+        let regrant = !share && waiting && self.db.role_on(t) == Some(Role::Admin);
         let nest = self.get(t, TAG)?.is_some();
         self.db.write_with(|w| if nest { w.add_subgroup(tag, t) } else { w.place(t, tag) })?;
         if regrant {
             self.db.grant(t, tag, Role::Write, EdgeOpts::default())?;
+        }
+        // re-tagged: the entry is moot (elsewhere a thing still in the tag only waits, `revoke_moot`)
+        if waiting {
             self.drop_revoke(t, tag)?;
         }
         if share {
@@ -636,23 +640,18 @@ impl Data {
     /// tag's members still reach `t` that way.
     /// `sync` is core's pre-sync rule (the app passes the default, `Required`: offline, the
     /// removal fails `Unsynced` and nothing changes).
-    /// A re-tag while it runs (the edge still live, so `add_tag` granted nothing) gets the
-    /// tag's edge back once the demotion lands: placed in a shared tag stays shared.
+    /// A re-tag that lands during the pre-sync ends tagged but unshared: granting again after
+    /// the demotion fails (issues/tag-regrant-after-revoke.md), and a grant the other device
+    /// has not seen when it takes the thing out again would share it after that removal.
     pub async fn revoke(&self, t: Tid, tag: Tid, sync: osis::WaitForSync) -> std::result::Result<(), RevokeError> {
         if !self.revoke_needed(t, tag).map_err(RevokeError::Failed)? {
             return Ok(());
         }
-        let r = match self.db.demote(t, tag, osis::Lower::Remove, osis::Demotion { sync, backdate: None }).await {
+        match self.db.demote(t, tag, osis::Lower::Remove, osis::Demotion { sync, backdate: None }).await {
             Ok(()) => Ok(()),
             Err(Error::Invalid(m)) if m.contains("reaches") => Err(RevokeError::Kept(m)),
-            Err(e) => return Err(RevokeError::Failed(e)),
-        };
-        let (subs, items) = self.tag_contents(tag).map_err(RevokeError::Failed)?;
-        let now = self.db.now();
-        if (subs.contains(&t) || items.contains(&t)) && self.db.role_on(t) == Some(Role::Admin) && !self.db.roster(t).get(&tag).is_some_and(|e| live(e, now)) {
-            self.db.grant(t, tag, Role::Write, EdgeOpts::default()).map_err(RevokeError::Failed)?;
+            Err(e) => Err(RevokeError::Failed(e)),
         }
-        r
     }
 
     // ---- revocations still to do (durable, synced on the app group: notes/app.md)
@@ -699,6 +698,17 @@ impl Data {
     /// things, and revocations another device already did, do not.
     pub fn revoke_applies(&self, t: Tid, tag: Tid) -> Result<bool> {
         Ok(self.things()?.contains(&t) && self.revoke_needed(t, tag)?)
+    }
+
+    /// Whether a waiting revocation can be dropped without running: the thing is gone, or the
+    /// tag's direct access is (another device took it back), or it is not mine to change. A thing
+    /// still under the tag is not moot: this device may not have seen the removal yet (it is
+    /// written on the tag, the entry on the app group), so the entry waits; a re-tag drops it
+    /// (`add_tag`).
+    pub fn revoke_moot(&self, t: Tid, tag: Tid) -> Result<bool> {
+        let db = &self.db;
+        let direct = db.roster(t).get(&tag).is_some_and(|e| live(e, db.now()));
+        Ok(!(self.things()?.contains(&t) && direct && db.role_on(t) == Some(Role::Admin) && db.member_path(t, tag) == vec![(t, tag)]))
     }
 
     /// Takes `t` out of `tag` (it stays in the app group): unplaces a thing, un-nests a tag.

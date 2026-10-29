@@ -39,14 +39,13 @@ const RAIL_LIST: Slot = ("rail-list", WidgetTag::new("rail-list"));
 const RAIL_NEW: Slot = ("rail-new", WidgetTag::new("rail-new"));
 const PANE_EXTRA: Slot = ("pane-extra", WidgetTag::new("pane-extra"));
 const META: Slot = ("meta", WidgetTag::new("meta"));
-/// Holds the status label (a tag cannot be given together with properties).
 /// Backoff of a failing revocation, doubling per failure up to `RETRY_MAX` (minor consequence:
 /// it is taken back that much later, retried at the first sync after the wait). At 0 a
 /// persistent failure retries on every sync, which its own pre-sync triggers (a loop); at
 /// infinity it waits for a restart or another tag removal.
 const RETRY_FIRST: std::time::Duration = std::time::Duration::from_secs(1);
 const RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(300);
-
+/// Holds the status label (a tag cannot be given together with properties).
 const STATUS: WidgetTag<SizedBox> = WidgetTag::new("status");
 const STAR: WidgetTag<IconButton> = WidgetTag::new("star");
 
@@ -483,13 +482,22 @@ impl Ui {
             if self.revoking.contains(&(t, g)) || self.revoke_backoff.get(&(t, g)).is_some_and(|b| now < b.1) {
                 continue;
             }
-            match self.data.revoke_applies(t, g) {
-                Ok(false) => {
+            match self.data.revoke_moot(t, g) {
+                Ok(true) => {
                     if let Err(e) = self.data.drop_revoke(t, g) {
                         self.notify(ctx, format!("error: {e}"));
                     }
                     continue;
                 }
+                Err(e) => {
+                    self.notify(ctx, format!("error: {e}"));
+                    continue;
+                }
+                Ok(false) => {}
+            }
+            match self.data.revoke_applies(t, g) {
+                // still under the tag here: kept until the removal arrives or a re-tag drops it
+                Ok(false) => continue,
                 Err(e) => {
                     self.notify(ctx, format!("error: {e}"));
                     continue;
@@ -522,7 +530,7 @@ impl Ui {
             Err(crate::data::RevokeError::Failed(e)) => {
                 // each attempt's pre-sync makes the next sync, which would retry it at once
                 let fails = self.revoke_backoff.get(&(t, g)).map_or(0, |b| b.0).saturating_add(1);
-                let wait = RETRY_FIRST.saturating_mul(1u32 << fails.min(16)).min(RETRY_MAX);
+                let wait = RETRY_FIRST.saturating_mul(1u32 << (fails - 1).min(16)).min(RETRY_MAX);
                 self.revoke_backoff.insert((t, g), (fails, std::time::Instant::now() + wait));
                 self.notify(ctx, format!("could not take back {gn}'s access to {tn} yet ({e}); retried after the next sync"));
                 return;
