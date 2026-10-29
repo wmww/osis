@@ -1,5 +1,5 @@
 # The first-party app
-> Summary: Design direction for the first-party osis app over osis and schema/ (decided with the owner, pre-prototype): data-oriented UX (things with facet views, lenses, tags as filters), the look (color from the user's tags, flatish), state kept in osis including view state, the layer split (osis state, toolkit-free actions crate, Masonry driver and widgets), the kit/app split (osis-kit toolkit and osis-app in their own Cargo workspace), the toolkit decision (Masonry without Xilem) with the alternatives weighed, the platform work accepted, and the prototype order.
+> Summary: Design direction for the first-party osis app over osis and schema/ (decided with the owner, pre-prototype): data-oriented UX (things with facet views, lenses, tags as filters), the look (color from the user's tags, flatish), state kept in osis including view state, the layer split (osis state, toolkit-free actions crate, Masonry driver and widgets), the kit/app split (osis-kit toolkit and osis-app in their own Cargo workspace), the toolkit decision (Masonry without Xilem) with the alternatives weighed, the platform work accepted, the prototype order, and the first prototype as built (kit module map, the notes app, patches, what it showed).
 
 ## Direction (owner)
 - Fresh and timeless, not a bundle of generic apps over osis types. Bright colors, flatish but not distinctly flat, its own look rather than the native aesthetic.
@@ -44,7 +44,7 @@ Two top-level projects, `kit/` (package `osis-kit`) and `app/` (`osis-app`).
 - kit does not abstract over the osis API. Over Masonry: no wrapper for now; kit re-exports it (`kit::masonry`, one pinned version) and apps use its types directly. Design an abstraction only if we actually change base, knowing both sides.
 - **osis-app**: facet views, lenses, home, create flow, the actions crate, the view-state schema.
 - **Own Cargo workspace** for kit and app, depending on core by path: keeps the GUI stack (wgpu, Vello, winit) out of core's builds, gate and feature unification, and puts `[patch]` entries for forked crates at the GUI workspace root. Costs a second `target/` per worktree. Machine-load limits (notes/coordination.md) still count GUI agents.
-- Gate split by changed paths: issues/gate-per-project.md.
+- Gate split by changed paths (notes/build.md, Components pay for themselves).
 
 ## Toolkit: Masonry without Xilem
 Masonry is a retained widget tree designed to sit under other frontends; Xilem's job is to own app state and diff it into Masonry. With osis owning the state and delivering fine-grained changes (watches per aspect, live queries over a visible range), Xilem solves a problem we do not have. What we get: Vello (2D, GPU compute; vello_hybrid for low-end GPUs and WebGL, vello_cpu as a no-GPU fallback), Parley (the best Rust text stack: rich layout, IME), AccessKit designed in, a renderer abstraction, and a funded multi-contributor org.
@@ -71,3 +71,29 @@ Parley's plain editor exists; rich editing does not. The markdown editor is ours
 2. An Android build within the first few iterations so the convergent layout stays honest.
 3. Time and People lenses, search, the schema fallback view.
 4. iOS shell, web, durable view-state spec.
+
+## Prototype (as built)
+First prototype: osis-kit plus a stripped-down notes app, proving the stack end to end; not the final UI (plain Masonry look, plain-text body). Two app instances on two paired devices syncing through a local `osis serve` show each other's creates, renames, body edits and deletes live.
+
+**Workspace**: kit/Cargo.toml is the GUI workspace root (notes/build.md). Masonry `=0.4.0`, masonry_winit `=0.4.0` (wgpu 26, Vello 0.6, Parley 0.6, winit 0.30).
+
+**kit modules**:
+- `marshal`: `mailbox(waker) -> (Mailbox<M>, Inbox<M>)`. osis callbacks `post` from the dispatcher thread; the first post since the last drain calls `Wake` once; the UI thread `drain`s in post order. Until osis has a pump-on-the-UI-thread mode, the one cross-thread hop.
+- `window`: `App` (event loop, window id, `waker()`), `Waker` (sends a `Wakeup` action through masonry_winit's `MasonryUserEvent::Action`, the only user event it routes to the driver), `run`. Wakes sent before the window exists are dropped by masonry_winit: a driver drains and re-posts in `AppDriver::on_start`.
+- `list`: `reconcile(old, new) -> Vec<Op>` over `(key, value)` rows (removes back to front, then one pass keeping, moving up or inserting; `Update` where the value changed); `apply` for plain vectors; `KeyedList<K>` applies ops to a Masonry `Flex` (no spacers) and maps row widget ids back to keys. Masonry cannot move a widget between slots, so a move rebuilds that row.
+- `theme`: `Theme` tokens (base, row, selected colors, gap, pad); `properties()` is Masonry's default set today. The own look replaces values here.
+- `widgets`: `row` / `set_row` (a list row button with selection tint).
+- kit re-exports `masonry` and `masonry_winit`; it has no osis dependency yet (nothing in it needs one).
+
+**app** (`osis-app DIR [--server ADDR]...`; opens or creates the store, `Runtime::Own` over QUIC):
+- `notes` (actions, toolkit-free): notes are `/name` + `/body` things owned by `me()` in the internal notes group, a group that is both an item (its own aspects sync) and a subgroup (its items sync) of home, marked by the app schema's `/osis-app/notes` (app/schema/osis-app.osis, keys by `generate_file` in build.rs). A group's members are its items and its subgroups' members, not its items' items: placing notes in a group that is only an item of home leaves them unsynced (osis reports `NotSynced`; the app shows diagnostics in its status line). Every marked group in home's subgroups is read (two devices racing at first start each make one); new notes and the selection go to the smallest tid. Selection is durable view state: `/osis-app/selected: map<tid, tid>` (device node -> note) on that group, until ephemeral data lands.
+- `ui`: watches (home's `/group`, each notes group's `/group` and selection, each note's `/name`) post `Changed`; the UI re-reads everything and reconciles (O(notes) per change: no queries yet). The editor is two `TextSession`s (name, body); typing is spliced into them (one commit per pause), `on_remote` resets the widget text. So the list shows a rename only after the session's idle commit (2 s).
+- Tests: kit/tests/it (`list`, `marshal`), app/tests/it (`notes` over an in-memory database). The window was checked by hand with the gui-testing skill.
+
+**Patches** (kit/patches/, `[patch.crates-io]` in kit/Cargo.toml; each with a `.diff` against upstream beside it): `masonry_winit` 0.4.0: its clipboard was copypasta's X11 context, `unwrap`ped at startup, so the app panicked on a Wayland-only session (no `DISPLAY`); now the Wayland clipboard over the event loop's own connection, else X11, else a no-op. Upstream candidate. Upgrading Masonry means re-vendoring and re-applying.
+
+**What the prototype showed** (asks of core: issues tagged `core-ask`):
+- The watch-driven model works with very little driver code; the cost is in re-reading (no queries) and one subscription per visible note.
+- `TextSession::on_remote` gives only the merged text, so a remote edit moves the caret to the end; a session dropped after `delete` commits its pending text and resurrects the thing (the app closes the editor before deleting).
+- No well-known per-app root: the app finds its group by scanning home and tolerates duplicates.
+- Masonry 0.4: `TextInput`/`TextArea` do not fill a flex slot by themselves (`SizedBox::expand`); `Portal` content needs `content_must_fill`; `reset_text` drops the selection; user events can only reach the driver as `Action`s.

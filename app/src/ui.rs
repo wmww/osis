@@ -30,6 +30,8 @@ pub enum Msg {
     Changed,
     /// A text session merged a remote edit into the open note's name or body.
     Remote(Tid),
+    /// An osis diagnostic (a thing that will not sync, a callback that panicked, ...).
+    Diagnostic(String),
 }
 
 /// The open note's text sessions: typing goes there, one commit per pause.
@@ -57,7 +59,10 @@ pub struct Ui {
     list: KeyedList<Tid>,
     /// The rows as shown: (note, (name, selected)).
     shown: Vec<(Tid, (String, bool))>,
-    home_sub: Option<Subscription>,
+    /// Home's items and diagnostics.
+    _subs: Vec<Subscription>,
+    /// The last diagnostic, shown in the status line.
+    diag: Option<String>,
     group_subs: BTreeMap<Tid, (Subscription, Subscription)>,
     name_subs: BTreeMap<Tid, Subscription>,
     editor: Option<Editor>,
@@ -74,8 +79,12 @@ fn sub_changed(db: &Osis, t: Tid, key: impl osis::AspectKey + Clone + Send + 'st
 
 impl Ui {
     pub fn new(notes: Notes, window: WindowId, mb: Mailbox<Msg>, inbox: Inbox<Msg>, theme: Theme, ids: Ids) -> Ui {
-        let home_sub = sub_changed(&notes.db, notes.db.home(), GROUP, &mb);
-        Ui { notes, window, mb, inbox, theme, ids, list: KeyedList::default(), shown: Vec::new(), home_sub, group_subs: BTreeMap::new(), name_subs: BTreeMap::new(), editor: None }
+        let mut subs: Vec<Subscription> = sub_changed(&notes.db, notes.db.home(), GROUP, &mb).into_iter().collect();
+        let m = mb.clone();
+        subs.push(notes.db.on_diagnostic(move |_, d| {
+            m.post(Msg::Diagnostic(format!("{:?}: {}", d.kind, d.detail)));
+        }));
+        Ui { notes, window, mb, inbox, theme, ids, list: KeyedList::default(), shown: Vec::new(), _subs: subs, diag: None, group_subs: BTreeMap::new(), name_subs: BTreeMap::new(), editor: None }
     }
 
     /// Keeps a subscription per key in `want`, dropping the rest.
@@ -94,14 +103,13 @@ impl Ui {
     fn refresh(&mut self, ctx: &mut DriverCtx<'_, '_>) {
         let r = self.refresh_inner(ctx);
         let status = match r {
-            Ok(n) => format!("{n} notes · device {}", short(self.notes.db.node())),
+            Ok(n) => format!("{n} notes · device {}{}", short(self.notes.db.node()), self.diag.as_deref().map(|d| format!(" · {d}")).unwrap_or_default()),
             Err(e) => format!("error: {e}"),
         };
         ctx.render_root(self.window).edit_widget_with_tag(STATUS, |mut l| Label::set_text(&mut l, status));
     }
 
     fn refresh_inner(&mut self, ctx: &mut DriverCtx<'_, '_>) -> osis::Result<usize> {
-        let _ = &self.home_sub;
         let db = self.notes.db.clone();
         let groups = self.notes.groups()?;
         let mb = self.mb.clone();
@@ -231,6 +239,10 @@ impl AppDriver for Ui {
             for m in self.inbox.drain() {
                 match m {
                     Msg::Changed => changed = true,
+                    Msg::Diagnostic(d) => {
+                        self.diag = Some(d);
+                        changed = true;
+                    }
                     Msg::Remote(t) => {
                         if let Some(e) = self.editor.as_ref().filter(|e| e.note == t) {
                             let (n, b) = (e.name.text(), e.body.text());
