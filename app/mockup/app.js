@@ -16,6 +16,8 @@
   // a custom theme saved before a parameter existed takes that parameter from the first built-in
   let custom = store.get('custom', null);
   if (custom) custom = { ...THEMES[0], ...custom, id: 'custom' };
+  // ...and an enum value that no longer exists falls back the same way
+  if (custom) for (const p of THEME_PARAMS) if (p.opts && !p.opts.includes(custom[p.k])) custom[p.k] = THEMES[0][p.k];
   const themes = () => custom ? [...THEMES, custom] : THEMES;
   let themeId = store.get('theme', 'frost');
   if (!themes().some(x => x.id === themeId)) themeId = 'frost';
@@ -386,8 +388,7 @@
     const th = theme(), b = document.body;
     for (const p of THEME_PARAMS) {
       if (p.opts) b.dataset[p.k] = th[p.k];
-      else if (th[p.k] === 'auto') b.style.removeProperty('--p-' + p.k.replace(/[A-Z]/g, c => '-' + c.toLowerCase()));
-      else b.style.setProperty('--p-' + p.k.replace(/[A-Z]/g, c => '-' + c.toLowerCase()), th[p.k]);
+      else for (const k of p.keys || [p.k]) b.style.setProperty('--p-' + k.replace(/[A-Z]/g, c => '-' + c.toLowerCase()), th[k]);
     }
     applyBg(current());
   }
@@ -407,7 +408,7 @@
   const resolvedMode = () => mode === 'auto' ? (darkMq.matches ? 'dark' : 'light') : mode;
   function setMode(m) { mode = m; store.set('mode', m); renderLooks(); }
   darkMq.addEventListener('change', () => { if (mode === 'auto') renderLooks(); });
-  // colours: a swatch opens a hue/saturation/lightness picker below its row; an 'auto' colour follows the text colour
+  // colours come in light and dark pairs; a swatch opens a hue/saturation/lightness picker below its row
   let pickOpen = null;
   function hexToHsl(hex) {
     const n = parseInt(hex.slice(1), 16), [r, g, b] = [n >> 16, n >> 8 & 255, n & 255].map(v => v / 255);
@@ -427,20 +428,14 @@
       `linear-gradient(90deg, hsl(${h} 0% ${l}%), hsl(${h} 100% ${l}%))`,
       `linear-gradient(90deg, #000, hsl(${h} ${sat}% 50%), #fff)`];
   }
-  function picker(p, v) {
+  function picker(k, v) {
     const hsl = hexToHsl(v), tr = pickerTracks(...hsl);
-    return `<div class="lk-picker" data-for="${p.k}">${['H', 'S', 'L'].map((n, i) => `<label><span>${n}</span><input type="range" class="lk-hsl" data-hsl="${p.k}" min="0" max="${i ? 100 : 360}" value="${hsl[i]}" style="background:${tr[i]}"></label>`).join('')}
-      <input class="lk-hex" data-hex="${p.k}" value="${v}" spellcheck="false" maxlength="7"></div>`;
+    return `<div class="lk-picker" data-for="${k}">${['H', 'S', 'L'].map((n, i) => `<label><span>${n}</span><input type="range" class="lk-hsl" data-hsl="${k}" min="0" max="${i ? 100 : 360}" value="${hsl[i]}" style="background:${tr[i]}"></label>`).join('')}
+      <input class="lk-hex" data-hex="${k}" value="${v}" spellcheck="false" maxlength="7"></div>`;
   }
   function control(p, v) {
     if (p.opts) return `<select data-p="${p.k}">${p.opts.map(o => `<option${o === v ? ' selected' : ''}>${o}</option>`).join('')}</select>`;
-    if (p.type === 'color') {
-      const auto = v === 'auto';
-      const sw = `<button class="lk-sw${pickOpen === p.k ? ' on' : ''}" data-lk="pick-${p.k}" style="background:${v}" aria-label="Pick ${esc(p.label)}"></button>`;
-      if (!p.auto) return `<span class="lk-color">${sw}</span>`;
-      // 'auto' follows the text colour (so it changes with light and dark); 'custom' opens a fixed colour
-      return `<span class="lk-color"><span class="lk-seg">${['text', 'custom'].map(m => `<button data-lk="auto-${p.k}-${m}" class="${(m === 'text') === auto ? 'on' : ''}">${m === 'text' ? 'Text' : 'Custom'}</button>`).join('')}</span>${auto ? '' : sw}</span>`;
-    }
+    if (p.type === 'color2') return `<span class="lk-color">${p.keys.map((k, i) => `<span class="lk-sw-l">${i ? 'dark' : 'light'}</span><button class="lk-sw${pickOpen === k ? ' on' : ''}" data-lk="pick-${k}" style="background:${v[i]}" aria-label="Pick ${esc(p.label)} (${i ? 'dark' : 'light'})"></button>`).join('')}</span>`;
     return `<span class="lk-range"><input type="range" data-p="${p.k}" min="${p.min}" max="${p.max}" step="${p.step}" value="${v}"><output>${v}</output></span>`;
   }
   function renderLooks() {
@@ -453,7 +448,7 @@
         <div class="lk-list">${themes().map((x, i) => `<button class="lk-opt${x === th ? ' on' : ''}" data-lk="theme-${x.id}"><span class="lk-n">${i + 1}</span><span>${esc(x.name)}</span></button>`).join('')}</div>
         <p class="lk-desc">${esc(th.desc)}</p>
         <button class="lk-edit" data-lk="edit" aria-expanded="${editOpen}">${editOpen ? '▾' : '▸'} Edit parameters${th === custom ? '' : ' (makes a custom copy)'}</button>
-        ${editOpen ? `<div class="lk-params">${THEME_PARAMS.map(p => `<div class="lk-row"><span>${p.label}</span>${control(p, th[p.k])}</div>${pickOpen === p.k && isHex(th[p.k]) ? picker(p, th[p.k]) : ''}`).join('')}</div>
+        ${editOpen ? `<div class="lk-params">${THEME_PARAMS.map(p => `<div class="lk-row"><span>${p.label}</span>${control(p, p.keys ? p.keys.map(k => th[k]) : th[p.k])}</div>${p.keys?.includes(pickOpen) && isHex(th[pickOpen]) ? picker(pickOpen, th[pickOpen]) : ''}`).join('')}</div>
           <button class="lk-copy" data-lk="copy">Copy theme as JSON</button>` : ''}
         <p class="lk-keys">Keys: 1–7 or [ ] themes · d light/dark · / search</p>
       </div>`;
@@ -466,12 +461,6 @@
     else if (k === 'edit') { editOpen = !editOpen; store.set('editOpen', editOpen); renderLooks(); }
     else if (k === 'copy') { const { id, desc, ...params } = theme(); navigator.clipboard?.writeText(JSON.stringify(params, null, 1)).then(() => { b.textContent = 'Copied'; }, () => {}); }
     else if (k.startsWith('pick-')) { pickOpen = pickOpen === k.slice(5) ? null : k.slice(5); renderLooks(); }
-    else if (k.startsWith('auto-')) {
-      const [, key, m] = k.split('-'), cur = theme()[key];
-      if (m === 'text') { setParam(key, 'auto'); pickOpen = null; }
-      else if (cur === 'auto') { setParam(key, resolvedMode() === 'dark' ? '#f1f1f6' : '#16151c'); pickOpen = key; }
-      renderLooks();
-    }
     else if (k.startsWith('mode-')) setMode(k.slice(5));
     else if (k.startsWith('theme-')) setTheme(k.slice(6));
   });
