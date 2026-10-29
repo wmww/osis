@@ -101,6 +101,14 @@ pub enum NewKind {
 /// Colours a new tag takes, in turn.
 pub const TAG_COLORS: [&str; 8] = ["#ef4444", "#f59e0b", "#22c55e", "#06b6d4", "#3b82f6", "#8b5cf6", "#ec4899", "#64748b"];
 
+/// Why taking back a tag's access did not happen.
+#[derive(Debug)]
+pub enum RevokeError {
+    /// The tag still reaches the thing another way (its direct edge may be gone).
+    Kept(String),
+    Failed(Error),
+}
+
 /// Who can see a thing (notes/app.md Model: every thing shows it).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Reach {
@@ -561,6 +569,46 @@ impl Data {
             self.share_below(s, seen)?;
         }
         Ok(())
+    }
+
+    /// Whether `t` is anywhere under `tag` (an item or sub-tag of it or of a tag below it).
+    pub fn under(&self, tag: Tid, t: Tid) -> Result<bool> {
+        let mut seen = BTreeSet::new();
+        let mut todo = vec![tag];
+        while let Some(g) = todo.pop() {
+            if !seen.insert(g) {
+                continue;
+            }
+            let (subs, items) = self.tag_contents(g)?;
+            if subs.contains(&t) || items.contains(&t) {
+                return Ok(true);
+            }
+            todo.extend(subs);
+        }
+        Ok(false)
+    }
+
+    /// After `remove_tag(t, tag)`: whether the access tagging gave should go. Only the tag's own
+    /// live edge on `t`, only when that is how the tag reaches `t` (a direct edge, nothing
+    /// longer), when `t` is no longer anywhere under the tag, and when it is mine to change.
+    pub fn revoke_needed(&self, t: Tid, tag: Tid) -> Result<bool> {
+        let db = &self.db;
+        let direct = db.roster(t).get(&tag).is_some_and(|e| live(e, db.now()));
+        Ok(direct && db.role_on(t) == Some(Role::Admin) && db.member_path(t, tag) == vec![(t, tag)] && !self.under(tag, t)?)
+    }
+
+    /// Ends the tag's edge on `t` (async: a pre-sync, then the demotion, and `t` rotates its
+    /// secrets). Run off the UI thread (kit `tasks`). When the tag also reaches `t` another way
+    /// (through another actor), core removes the direct edge and refuses the rest: `Kept`, the
+    /// tag's members still reach `t` that way.
+    /// `sync` is core's pre-sync rule (the app passes the default, `Required`: offline, the
+    /// removal fails `Unsynced` and nothing changes).
+    pub async fn revoke(&self, t: Tid, tag: Tid, sync: osis::WaitForSync) -> std::result::Result<(), RevokeError> {
+        match self.db.demote(t, tag, osis::Lower::Remove, osis::Demotion { sync, backdate: None }).await {
+            Ok(()) => Ok(()),
+            Err(Error::Invalid(m)) if m.contains("reaches") => Err(RevokeError::Kept(m)),
+            Err(e) => Err(RevokeError::Failed(e)),
+        }
     }
 
     /// Takes `t` out of `tag` (it stays in the app group): unplaces a thing, un-nests a tag.

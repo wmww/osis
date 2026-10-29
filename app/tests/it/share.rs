@@ -170,3 +170,45 @@ fn nesting_a_tag_shares_below() {
     a.remove_tag(deeper, inner).unwrap();
     assert!(a.tag_contents(inner).unwrap().0.is_empty(), "un-nested");
 }
+
+/// Removing a tag takes back the access tagging gave, and only that: not while the thing is
+/// still under the tag another way (here: in a sub-tag of it).
+#[test]
+fn removing_a_tag_revokes_only_its_own_access() {
+    use osis::WaitForSync::Skip;
+    use osis_kit::tasks::block_on;
+    // no servers here: the pre-sync is skipped (the app uses core's default, Required)
+    let (a, b) = two_people();
+    let shared = shared_tag(&a, &b, Role::Read);
+    let n = a.create(NewKind::Note).unwrap();
+    a.add_tag(n, shared).unwrap();
+    sync(&a, &b);
+    assert_eq!(b.db.role_on(n), Some(Role::Read));
+    // still under the tag through a sub-tag: kept
+    let sub = a.create(NewKind::Tag).unwrap();
+    a.add_tag(sub, shared).unwrap();
+    a.add_tag(n, sub).unwrap();
+    a.remove_tag(n, shared).unwrap();
+    assert!(!a.revoke_needed(n, shared).unwrap(), "still under the tag through the sub-tag");
+    a.remove_tag(n, sub).unwrap();
+    // as the UI does: removing it from the sub-tag takes back the sub-tag's access first
+    assert!(a.revoke_needed(n, sub).unwrap());
+    block_on(a.revoke(n, sub, Skip)).unwrap();
+    assert!(a.revoke_needed(n, shared).unwrap());
+    block_on(a.revoke(n, shared, Skip)).unwrap();
+    assert!(a.db.roster(n).get(&shared).is_none_or(|e| e.until.is_some()), "the tag's edge on the note ended");
+    assert!(!a.revoke_needed(n, shared).unwrap(), "nothing left to take back");
+    assert_eq!(a.reach(n).unwrap().who(), "Only you");
+    // a thing never shared through the tag: nothing to do
+    let m = a.create(NewKind::Note).unwrap();
+    assert!(!a.revoke_needed(m, shared).unwrap());
+    // reached another way too (a sub-tag's edge left in place): it stays reachable
+    let k = a.create(NewKind::Note).unwrap();
+    a.add_tag(k, shared).unwrap();
+    a.add_tag(k, sub).unwrap();
+    a.db.write_with(|w| w.unplace(k, shared).and_then(|()| w.unplace(k, sub))).unwrap();
+    assert!(a.revoke_needed(k, shared).unwrap());
+    let r = block_on(a.revoke(k, shared, Skip));
+    assert!(matches!(r, Err(osis_app::data::RevokeError::Kept(_))), "{r:?}");
+    assert!(!a.db.member_path(k, shared).is_empty(), "the tag still reaches it through the sub-tag");
+}

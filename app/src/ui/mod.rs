@@ -55,6 +55,8 @@ pub enum Msg {
     Remote(Tid),
     /// An osis diagnostic (a thing that will not sync, a callback that panicked, ...).
     Diagnostic(String),
+    /// A background task (kit `tasks`) finished: what to show in the status line.
+    Task(String),
 }
 
 /// What a press on a widget does.
@@ -169,6 +171,8 @@ pub struct Ui {
     /// Each slot's form inputs in order, and those of the slot being built.
     slot_inputs: HashMap<&'static str, Vec<WidgetId>>,
     building_inputs: Vec<WidgetId>,
+    /// The latest background task's progress or outcome, kept in the status line.
+    notice: Option<String>,
     /// Focus the title once the next screen is built (a thing just made).
     focus_title: bool,
     editor: Option<Editor>,
@@ -210,6 +214,7 @@ impl Ui {
             building_inputs: Vec::new(),
             reorder_grids: Default::default(),
             focus_title: false,
+            notice: None,
             editor: None,
             subs: BTreeMap::new(),
             _diag_sub: diag_sub,
@@ -287,7 +292,10 @@ impl Ui {
         }
         self.watch()?;
         if rebuild || self.diag.is_some() {
-            let s = format!("device {}{}", short(self.data.db.node()), self.diag.as_deref().map(|d| format!(" · {d}")).unwrap_or_default());
+            let mut s = format!("device {}{}", short(self.data.db.node()), self.diag.as_deref().map(|d| format!(" · {d}")).unwrap_or_default());
+            if let Some(n) = &self.notice {
+                s = format!("{n} · {s}");
+            }
             self.status(ctx, s);
         }
         Ok(())
@@ -407,6 +415,38 @@ impl Ui {
         self.slots.insert(key, c);
     }
 
+    /// After a tag was removed from `t`: takes back the access tagging gave, when nothing else
+    /// keeps it (`Data::revoke_needed`), in a background task; progress and the outcome show in
+    /// the status line.
+    fn revoke_later(&mut self, ctx: &mut DriverCtx<'_, '_>, t: Tid, g: Tid) -> osis::Result<()> {
+        if !self.data.revoke_needed(t, g)? {
+            return Ok(());
+        }
+        let (tn, gn) = (self.data.name(t)?, self.data.name(g)?);
+        let label = |n: &str| if n.is_empty() { "Untitled".to_string() } else { n.to_string() };
+        let (tn, gn) = (label(&tn), label(&gn));
+        let n = format!("Taking back {gn}'s access to {tn}…");
+        self.status(ctx, n.clone());
+        self.notice = Some(n);
+        let data = self.data.clone();
+        let mb = self.mb.clone();
+        let started = osis_kit::tasks::spawn(
+            "revoke",
+            move || async move { data.revoke(t, g, osis::WaitForSync::Required).await },
+            move |r| {
+                mb.post(Msg::Task(match r {
+                    Ok(()) => format!("{gn} no longer reaches {tn}"),
+                    Err(crate::data::RevokeError::Kept(_)) => format!("{gn} still reaches {tn} another way: access kept"),
+                    Err(crate::data::RevokeError::Failed(e)) => format!("could not take back {gn}'s access to {tn}: {e}"),
+                }));
+            },
+        );
+        if !started {
+            self.status(ctx, "could not start a background task".into());
+        }
+        Ok(())
+    }
+
     /// Saves a form input's text unless it is what was saved last.
     fn save_input(&mut self, ctx: &mut DriverCtx<'_, '_>, id: WidgetId) {
         let Some(f) = self.field_inputs.get_mut(&id) else { return };
@@ -504,7 +544,7 @@ impl Ui {
                 self.view.pending = None;
                 Ok(())
             }
-            Act::RemoveTag(t, g) => self.data.remove_tag(t, g),
+            Act::RemoveTag(t, g) => self.data.remove_tag(t, g).and_then(|()| self.revoke_later(ctx, t, g)),
             Act::Week(n) => {
                 self.view.week = n;
                 Ok(())
@@ -638,6 +678,11 @@ impl AppDriver for Ui {
                         changed = true;
                     }
                     Msg::Remote(t) => self.remote(ctx, t),
+                    Msg::Task(s) => {
+                        self.status(ctx, s.clone());
+                        self.notice = Some(s);
+                        changed = true;
+                    }
                 }
             }
             if changed {
