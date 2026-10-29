@@ -13,20 +13,23 @@ use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-fn fragment(d: Decoded) -> (Fragment, Option<osis_crdt::Frontiers>) {
+/// A snapshot part's frontiers and `Absorbed`.
+type Gives = (osis_crdt::Frontiers, Vec<(CommitId, Tid)>);
+
+fn fragment(d: Decoded) -> (Fragment, Option<Gives>) {
     match d {
         Decoded::Delta(x) => (x.fragment, None),
-        Decoded::Snapshot(x) => (x.fragment, Some(x.frontiers)),
+        Decoded::Snapshot(x) => (x.fragment, Some((x.frontiers, x.absorbed.into_iter().collect()))),
     }
 }
 
-/// Notes a held compaction snapshot of `(tid, ak)` with its frontiers.
-pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_base::Ts, id: &CommitId, fr: osis_crdt::Frontiers) {
+/// Notes a held compaction snapshot of `(tid, ak)` with its frontiers and `Absorbed`.
+pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_base::Ts, id: &CommitId, (fr, abs): Gives) {
     // kept in (`ts`, ID) order, so arrival order (a rebuild's is the store's) does not show
     let v = core.ix.snapshots.entry_or_default((*tid, ak.clone()));
     if !v.iter().any(|x| x.1 == *id) {
         let at = v.partition_point(|x| (x.0, x.1) < (ts, *id));
-        v.insert(at, (ts, *id, fr));
+        v.insert(at, (ts, *id, fr, abs));
     }
 }
 
@@ -178,7 +181,7 @@ pub(crate) fn invalid_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<Owned> {
 /// `f`). Whether the part, `valid`, carries writes of deltas invalid here: they count again, and
 /// others' writes nested under them come back only from their bodies, so the aspect is rebuilt
 /// (spec/crdt.md §4.6).
-fn note_snapshot_part(core: &mut Core, a: &osis_commit::AspectEntry, ts: osis_base::Ts, id: &CommitId, f: &Fragment, fr: osis_crdt::Frontiers, valid: bool) -> bool {
+fn note_snapshot_part(core: &mut Core, a: &osis_commit::AspectEntry, ts: osis_base::Ts, id: &CommitId, f: &Fragment, fr: Gives, valid: bool) -> bool {
     note_snapshot(core, &a.tid, &a.ak, ts, id, fr);
     validity::note_carried(core, &a.tid, &a.ak, id, f);
     if !valid {

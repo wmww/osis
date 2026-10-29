@@ -41,7 +41,7 @@ fn carriers(core: &Core, tid: &Tid, ak: &Ak, dot: &osis_crdt::Dot, at: Ts) -> Ve
         out.push((c, ai));
     }
     if let osis_crdt::SourceKind::Node(n) = dot.owner().src.kind() {
-        for (ts, s, fr) in core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten() {
+        for (ts, s, fr, _) in core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten() {
             // an invalid snapshot carries nothing (spec/permissions.md §5.2)
             if *ts < at
                 && fr.0.get(n).is_some_and(|f| *f >= dot.owner().ctr)

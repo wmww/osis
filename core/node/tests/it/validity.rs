@@ -2285,3 +2285,47 @@ fn missing_snapshot_not_covered_by_older_spec_perm_5_2() {
     lp.peers[i].engine.reexamine().unwrap();
     assert!(tags(&mut lp, i, d).contains("bob"), "S1 back");
 }
+
+// spec/permissions.md §5.2 (an invalid snapshot's frontiers count as not received), §5.1
+// (frontier): Bob's tag reaches a fresh node only through Carol's snapshot S; Alice removes
+// Carol with a frontier not listing S. Whether S came first (valid, then invalid) or after the
+// removal, the fresh node's frontier for Bob covers none of his writes, also after a restart.
+#[test]
+fn flipped_snapshot_frontiers_not_received_alike_spec_perm_5_2() {
+    let (mut lp, d, b, c) = setup(0x5fc0);
+    add_tag(&mut lp, 1, d, "bob");
+    sync(&mut lp, 1, 2);
+    let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b)).collect();
+    lp.advance(1_000);
+    let snap = lp.peers[2].engine.snapshot(&d, &ak("/t/tags")).unwrap().unwrap();
+    sync(&mut lp, 2, 0);
+    lp.advance(DAY);
+    // Alice removes Carol without listing S
+    let scope = DemotionScope { membership: BTreeMap::from([(c, BTreeSet::from([d]))]), content: BTreeMap::from([(c, BTreeSet::from([d]))]) };
+    let now = lp.peers[0].engine.now();
+    let mut f = lp.peers[0].engine.frontier(&scope, now).unwrap();
+    f.commits.remove(&snap);
+    set_edge(&mut lp.peers[0].engine, d, c, None, Some(f.to_value()));
+    let rv = *lp.peers[0].engine.commit_ids().iter().max_by_key(|x| lp.peers[0].engine.header(x).unwrap().ts).unwrap();
+    let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !bob.contains(&p.id)).collect();
+    let pk = |id| pks.iter().find(|p| p.id == id).unwrap().clone();
+    let base: Vec<_> = pks.iter().filter(|p| p.id != snap && p.id != rv).cloned().collect();
+    let of_bob = DemotionScope { membership: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
+    let mut got = Vec::new();
+    for (n, order) in [[snap, rv], [rv, snap]].into_iter().enumerate() {
+        let i = lp.peers.len();
+        lp.peers.push(osis_node::local_peer::Peer::new(0x5fc1 + n as u64, lp.peers[0].engine.now()).unwrap());
+        for p in base.iter().cloned().chain(order.iter().map(|id| pk(*id))) {
+            lp.deliver(i, &p).unwrap();
+        }
+        lp.peers[i].engine.reexamine().unwrap();
+        assert!(tags(&mut lp, i, d).is_empty(), "order {order:?}");
+        let now = lp.peers[i].engine.now();
+        let f = lp.peers[i].engine.frontier(&of_bob, now).unwrap();
+        lp.peers[i].restart(0x5fc3 + n as u64).unwrap();
+        assert_eq!(lp.peers[i].engine.frontier(&of_bob, now).unwrap(), f, "order {order:?}, restarted");
+        got.push(f);
+    }
+    assert_eq!(got[1], osis_schema::core_types::Frontier::default(), "removal first");
+    assert_eq!(got[0], got[1], "snapshot first, then the removal");
+}
