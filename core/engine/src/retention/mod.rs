@@ -719,8 +719,8 @@ fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
 /// Whether a compaction snapshot carries a write still in this node's state (`body_live`): held,
 /// a write it carries (by dot) is there. Dropped, its frontiers went with the body (spec/commits.md
 /// §5), so whether it was live then is kept (`Meta::live_drops`): dropped dead it stays dead
-/// (a write leaves the state only by dying, being purged or turning invalid, and comes back
-/// only by a validity flip, `note_revived`; undo and redo write new dots); dropped live, it is
+/// (undo and redo write new dots; a write a validity flip brings back comes from a held body,
+/// which carries it at blind nodes itself); dropped live, it is
 /// live while the state holds a write stamped at or before its `ts` (the header's `ts` bounds
 /// what it carried) or one without a `ts` (a tombstone or bare anchor it may carry): an
 /// over-approximation, so its delete at blind nodes waits for a carrier (spec/sync.md §7).
@@ -754,40 +754,6 @@ fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, members: &[usize]) -
         }
     }
     Ok(false)
-}
-
-/// Before a rebuild of `(tid, ak)` writes `next`: a snapshot of it dropped dead counts as dropped
-/// live from now on when the rebuild brings back a write (a validity flip) stamped at or before
-/// its `ts` or without one, since it may have carried it (`snapshot_live`).
-pub(crate) fn note_revived(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, next: Option<&Fragment>) -> Result<()> {
-    let Some(next) = next else { return Ok(()) };
-    let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().map(|x| x.1).collect()).unwrap_or_default();
-    let dead: Vec<(CommitId, usize, Ts)> = held
-        .into_iter()
-        .filter_map(|c| {
-            let m = tx.core.ix.commits.get(&c)?;
-            let ai = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak)?;
-            (m.header.kind.is_compaction() && m.dropped.contains(&(ai, 0)) && !m.live_drops.contains(&ai)).then_some((c, ai, m.header.ts))
-        })
-        .collect();
-    if dead.is_empty() {
-        return Ok(());
-    }
-    let before: BTreeSet<osis_crdt::Dot> = tx.state(tid, ak)?.map(|s| s.writes().into_iter().map(|(d, _)| d).collect()).unwrap_or_default();
-    let back: Vec<Option<Ts>> = next.writes().into_iter().filter(|(d, _)| !before.contains(d)).map(|(_, t)| t).collect();
-    for (c, ai, ts) in dead {
-        if !back.iter().any(|t| t.is_none_or(|t| t <= ts)) {
-            continue;
-        }
-        let Some(mut m) = tx.core.ix.commits.get(&c).cloned() else { continue };
-        m.live_drops.insert(ai);
-        if let Some(blob) = tx.get_commit(&c)? {
-            tx.put_commit(&c, &blob, &m, Shred::No, None)?;
-        }
-        tx.core.ix.commits.insert(c, m);
-        tx.core.forget_live(tid, ak);
-    }
-    Ok(())
 }
 
 #[cfg(test)]
