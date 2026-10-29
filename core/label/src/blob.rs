@@ -14,18 +14,20 @@ pub type Level = u8;
 
 /// A blob's class (spec/wire.md §5, spec/sync.md §1): what a blind node does with it. Durable
 /// blobs are stored; ephemeral ones are held in memory only; relay-only ones are pushed to the
-/// label's current subscribers and held by nobody.
+/// label's current subscribers and held by nobody; presence ones are ephemeral entries a server
+/// deletes when the connection that uploaded them closes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Class {
     #[default]
     Durable = 0,
     Ephemeral = 1,
     Relay = 2,
+    Presence = 3,
 }
 
 impl Class {
     pub fn from_byte(b: u8) -> Option<Class> {
-        [Class::Durable, Class::Ephemeral, Class::Relay].into_iter().find(|c| *c as u8 == b)
+        [Class::Durable, Class::Ephemeral, Class::Relay, Class::Presence].into_iter().find(|c| *c as u8 == b)
     }
 
     /// The class of a commit blob carrying a header with this ephemeral marker.
@@ -34,7 +36,13 @@ impl Class {
             None => Class::Durable,
             Some(osis_commit::EphClass::Plain) => Class::Ephemeral,
             Some(osis_commit::EphClass::Relay) => Class::Relay,
+            Some(osis_commit::EphClass::Presence) => Class::Presence,
         }
+    }
+
+    /// Held in memory as an entry: ephemeral or presence.
+    pub fn in_memory(self) -> bool {
+        matches!(self, Class::Ephemeral | Class::Presence)
     }
 }
 
@@ -262,13 +270,13 @@ mod tests {
         let none = Prefix::new([0; 16], None, vec![]).unwrap();
         assert_eq!(none.to_bytes()[17..27], [0; 10]);
         assert_eq!(Prefix::parse(&none.to_bytes()).unwrap().expiry(), None);
-        for c in [Class::Ephemeral, Class::Relay] {
+        for c in [Class::Ephemeral, Class::Relay, Class::Presence] {
             let e = none.clone().with_class(c);
             assert_eq!(e.to_bytes()[25], c as u8);
             assert_eq!(Prefix::parse(&e.to_bytes()).unwrap().class(), c);
         }
         let mut bad = none.to_bytes();
-        bad[25] = 3;
+        bad[25] = 4;
         assert_eq!(Prefix::parse(&bad), Err(Error::Malformed("blob class")));
     }
 

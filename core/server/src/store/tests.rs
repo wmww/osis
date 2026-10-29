@@ -35,7 +35,7 @@ fn blob(n: u8) -> Vec<u8> {
 }
 
 fn put(b: &[u8], stamped: bool, expiry: Option<u64>) -> Put<'_> {
-    Put { blob_id: osis_label::blob_id(b), blob: b, wrap: [b.len() as u8; WRAP_LEN], stamp: stamped.then_some(Signature([b.len() as u8; 64])), expiry, ephemeral: false }
+    Put { blob_id: osis_label::blob_id(b), blob: b, wrap: [b.len() as u8; WRAP_LEN], stamp: stamped.then_some(Signature([b.len() as u8; 64])), expiry, ephemeral: false, presence: false }
 }
 
 fn id(n: u8) -> BlobId {

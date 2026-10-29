@@ -658,14 +658,25 @@ impl NetSim {
                 self.push(0, e, at, Payload::Down);
             }
             End::Hub(s, hc) => {
-                if let Some(h) = self.servers.get_mut(s).and_then(|x| x.hub.as_mut()) {
-                    h.closed(hc);
-                }
+                let now = self.now();
+                let out = self.servers.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.closed(now, hc)).unwrap_or_default();
+                self.hub_outputs(s, out);
             }
         }
     }
 
     fn hub_out(&mut self, s: usize, out: Vec<HubOutput>) -> Res<()> {
+        self.hub_outputs(s, out);
+        if self.servers.get(s).is_some_and(|x| x.up && x.faults.crashed()) {
+            self.report.server_crashes = self.report.server_crashes.saturating_add(1);
+            self.note(format!("server {s} crashed mid-write"));
+            self.server_down(s)?;
+        }
+        Ok(())
+    }
+
+    /// Carries out a hub's outputs (a crash mid-write is `hub_out`'s to act on).
+    fn hub_outputs(&mut self, s: usize, out: Vec<HubOutput>) {
         for o in out {
             match o {
                 HubOutput::Send(hc, bytes) => {
@@ -692,12 +703,6 @@ impl NetSim {
                 }
             }
         }
-        if self.servers.get(s).is_some_and(|x| x.up && x.faults.crashed()) {
-            self.report.server_crashes = self.report.server_crashes.saturating_add(1);
-            self.note(format!("server {s} crashed mid-write"));
-            self.server_down(s)?;
-        }
-        Ok(())
     }
 
     /// What an evil server sends instead of `bytes` on connection `hc`.

@@ -147,6 +147,7 @@ pub fn headers() -> VecFile {
     let e = ephemeral(osis_commit::EphClass::Plain);
     cases.push(record("ephemeral commit", "spec/wire.md §4; spec/commits.md §2", &e));
     cases.push(record("relay-only commit", "spec/wire.md §4; spec/commits.md §2", &ephemeral(osis_commit::EphClass::Relay)));
+    cases.push(record("presence commit", "spec/wire.md §4; spec/commits.md §2", &ephemeral(osis_commit::EphClass::Presence)));
     let mut purged = c.clone();
     purged.parts.clear();
     cases.push(case("header-only purge rewrite", "spec/wire.md §4; spec/commits.md §5").with("blob", hex(&purged.encode())).with("commit-id", hex(&c.id().0)));
@@ -348,11 +349,14 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     let mut x = ephemeral(osis_commit::EphClass::Relay).header;
     x.aspects[0].expires = Some(x.ts.wall_ms().0 + 1);
     out.push(reject("relay-only commit with an expiry", "spec/commits.md §2", &x, "ephemeral"));
+    let mut x = ephemeral(osis_commit::EphClass::Presence).header;
+    x.aspects[0].expires = Some(x.ts.wall_ms().0 + 1);
+    out.push(reject("presence commit with an expiry", "spec/commits.md §2", &x, "ephemeral"));
     let mut v = e.to_value();
     if let Value::List(items) = &mut v
         && let Some(m) = items.last_mut()
     {
-        *m = Value::List(vec![Value::Int(2)]);
+        *m = Value::List(vec![Value::Int(3)]);
     }
     let bytes = osis_base::encode(&v);
     assert!(Header::decode(&bytes).is_err());

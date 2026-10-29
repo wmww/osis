@@ -52,6 +52,7 @@ pub fn prefixes() -> VecFile {
     cases.push(prefix_case("one commitment, expiry", &Prefix::new(salt, Some(WallMs(1_700_000_000_000)), vec![c(2, 0x22)]).unwrap()));
     cases.push(prefix_case("ephemeral class", &Prefix::new(salt, None, vec![]).unwrap().with_class(osis_label::Class::Ephemeral)));
     cases.push(prefix_case("relay-only class", &Prefix::new(salt, None, vec![]).unwrap().with_class(osis_label::Class::Relay)));
+    cases.push(prefix_case("presence class", &Prefix::new(salt, None, vec![]).unwrap().with_class(osis_label::Class::Presence)));
     // Commitments derived from (level, delete key) pairs under the prefix salt.
     let keys: Vec<(u8, osis_crypto::VerifyingKey)> = [(1u8, 0x23u8), (2, 0x24), (3, 0x25)].iter().map(|(l, b)| (*l, DeleteSecret::derive(&s32(*b)).verifying_key())).collect();
     let hb = [0x26u8; 16];
@@ -74,8 +75,8 @@ pub fn prefixes() -> VecFile {
     b[60] = 4;
     cases.push(reject("commitment level 4", &b, "prefix-level"));
     let mut b = base.clone();
-    b[25] = 3;
-    cases.push(reject("class 3", &b, "prefix-class"));
+    b[25] = 4;
+    cases.push(reject("class 4", &b, "prefix-class"));
     let mut b = Prefix::new(salt, None, vec![]).unwrap().to_bytes();
     b[26] = 4;
     for i in 1..=4u8 {

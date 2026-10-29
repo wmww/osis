@@ -196,11 +196,20 @@ impl Net {
         let mine: Vec<(ConnId, (usize, u64))> = self.links.iter().filter(|((x, _), _)| *x == n).map(|((_, c), v)| (*c, *v)).collect();
         for (c, (s, hc)) in mine {
             self.links.remove(&(n, c));
-            self.servers[s].hub.closed(hc);
+            let now = self.now_at(s);
+            let out = self.servers[s].hub.closed(now, hc);
+            self.hub_out(s, out);
             if let Some(sy) = self.nodes[n].sync.as_mut() {
                 sy.handle(Event::Down { conn: c });
             }
         }
+    }
+
+    /// Node `n` drops off the network without its servers noticing (a crash behind a half-open
+    /// connection): its links go, the hubs keep their side open; the node is offline.
+    pub fn vanish(&mut self, n: usize) {
+        self.links.retain(|(x, _), _| *x != n);
+        self.nodes[n].online = false;
     }
 
     pub fn set_online(&mut self, n: usize, on: bool) {
@@ -293,7 +302,9 @@ impl Net {
                 }
                 Action::Close { conn } => {
                     if let Some((s, hc)) = self.links.remove(&(n, conn)) {
-                        self.servers[s].hub.closed(hc);
+                        let now = self.now_at(s);
+                        let out = self.servers[s].hub.closed(now, hc);
+                        self.hub_out(s, out);
                     }
                 }
                 Action::Wake { at } => self.nodes[n].wake = Some(at),

@@ -121,9 +121,12 @@ impl World {
         l.open = false;
         for e in [l.a, l.b] {
             if let End::Hub(h, c) = e {
-                self.hubs[h].closed(c);
+                let now = self.now();
+                let out = self.hubs[h].closed(now, c);
+                self.hub_out(h, out);
             }
         }
+        self.pump();
     }
 
     fn route(&mut self, from: End, bytes: Vec<u8>) {

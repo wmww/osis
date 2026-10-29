@@ -63,16 +63,18 @@ impl Kind {
 }
 
 /// The header's ephemeral marker (spec/commits.md §1, §2; spec/wire.md §4): an ephemeral
-/// commit holding state (`Plain`), or a relay-only one carrying signals.
+/// commit holding state (`Plain`), a relay-only one carrying signals, or a presence one (state
+/// tied to its author's connection, uploaded by its author only, leased).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EphClass {
     Plain = 0,
     Relay = 1,
+    Presence = 2,
 }
 
 impl EphClass {
     pub fn from_id(id: u64) -> Option<EphClass> {
-        [EphClass::Plain, EphClass::Relay].into_iter().find(|c| *c as u64 == id)
+        [EphClass::Plain, EphClass::Relay, EphClass::Presence].into_iter().find(|c| *c as u64 == id)
     }
 }
 

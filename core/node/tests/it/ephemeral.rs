@@ -14,14 +14,14 @@ use osis_store::Backend;
 use std::collections::BTreeMap;
 
 /// The label write key node `n` stamps with (the group's newest write epoch, label index 0).
-fn write_key(net: &mut Net, n: usize, g: Tid) -> osis_crypto::SigningSecret {
+pub(crate) fn write_key(net: &mut Net, n: usize, g: Tid) -> osis_crypto::SigningSecret {
     let w = net.engine(n).epochs(&g).unwrap().write.newest_held().unwrap().1.clone();
     osis_crypto::label_role_key(osis_crypto::LabelRole::Write, &w, 0)
 }
 
 /// Seals ephemeral commit `c` under `g`'s label as node `w` would, stamped with `stamp` when
 /// given: (blob ID, the log event a server pushes).
-fn sealed(net: &mut Net, w: usize, g: Tid, c: &osis_commit::CommitBlob, stamp: Option<&osis_crypto::SigningSecret>, seed: u64) -> (osis_base::BlobId, osis_proto::Event) {
+pub(crate) fn sealed(net: &mut Net, w: usize, g: Tid, c: &osis_commit::CommitBlob, stamp: Option<&osis_crypto::SigningSecret>, seed: u64) -> (osis_base::BlobId, osis_proto::Event) {
     let p = osis_commit::project(c, |_| ()).unwrap().remove(0);
     let class = osis_label::Class::of_marker(c.header.ephemeral);
     let body = osis_node::labeling::Body { commit: c.id(), reader: g, parts: p.parts, expires: p.expires, keys: p.keys, blind: c.header.blind, plaintext: p.plaintext, membership: false };
@@ -35,7 +35,7 @@ fn sealed(net: &mut Net, w: usize, g: Tid, c: &osis_commit::CommitBlob, stamp: O
 
 /// Server `sv` pushes `events` of label `l` to node `n` (a replay or a hostile server's push);
 /// the node's actions.
-fn push(net: &mut Net, n: usize, sv: usize, l: osis_base::LabelId, events: Vec<osis_proto::Event>) -> Vec<osis_node::sync::Action> {
+pub(crate) fn push(net: &mut Net, n: usize, sv: usize, l: osis_base::LabelId, events: Vec<osis_proto::Event>) -> Vec<osis_node::sync::Action> {
     let conn = net.conn_to(n, sv).unwrap();
     let cursor = osis_proto::Cursor { log_id: [0; 16], seq: 0 };
     let bytes = osis_proto::encode_frame(&osis_proto::Message::Push { label: l, events, cursor }.encode());
@@ -63,6 +63,7 @@ fn sent(acts: &[osis_node::sync::Action], conn: osis_node::sync::ConnId) -> Vec<
 
 const STATE: &str = "/win/state";
 const NOTES: &str = "/win/notes";
+const CURSOR: &str = "/win/cursor";
 
 fn eph(ak: &str) -> osis_schema::Untyped {
     ukey(ak, Lifetime::Ephemeral)
@@ -112,7 +113,7 @@ fn map(kv: &[(&str, &str)]) -> BTreeMap<String, String> {
     kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
 }
 
-fn rows(b: &osis_store::MemoryBackend) -> usize {
+pub(crate) fn rows(b: &osis_store::MemoryBackend) -> usize {
     b.scan(&[], None, usize::MAX).unwrap().len()
 }
 
@@ -694,7 +695,27 @@ fn random_window_run_on(seed: u64, single: bool) {
     net.run();
     let mut restarts = 100;
     let mut log = Vec::new();
+    // each node's live cursor: its last presence write since its last restart
+    let mut cursors: BTreeMap<usize, String> = BTreeMap::new();
+    // presence writes come from their own stream, so a seed's other steps stay what they were
+    let mut y = seed.wrapping_mul(0xd1b5_4a32_d192_ed03) | 1;
+    let mut prnd = move |n: u64| {
+        y ^= y << 13;
+        y ^= y >> 7;
+        y ^= y << 17;
+        y % n
+    };
     for step in 0..40 {
+        let p = nodes[prnd(4) as usize];
+        if prnd(4) == 0 && (net.engine(p).ephemeral_thing(&w).is_some() || net.eph_read(p, w, STATE).is_some()) {
+            // p's cursor, keyed by p
+            let v = format!("c{step}");
+            log.push(format!("{p} cursor {v}"));
+            let mut m = Mutation::new();
+            m.op(w, &ukey(CURSOR, Lifetime::Presence), PathOp { path: vec![PathSeg::Key(s(&p.to_string()))], op: Op::Set(s(&v)) }).unwrap();
+            net.engine(p).write(m).unwrap();
+            cursors.insert(p, v);
+        }
         let n = nodes[rnd(4) as usize];
         match rnd(10) {
             0..=4 => {
@@ -728,6 +749,7 @@ fn random_window_run_on(seed: u64, single: bool) {
             7 => {
                 restarts += 1;
                 log.push(format!("{n} restarts"));
+                cursors.remove(&n);
                 let on = net.nodes[n].online;
                 net.restart(n, restarts);
                 net.set_online(n, on);
@@ -765,6 +787,26 @@ fn random_window_run_on(seed: u64, single: bool) {
     for n in &holders[1..] {
         assert_eq!(notes(&mut net, *n, w), first, "seed {seed}: node {n} differs from node {h0}\n{}", log.join("\n"));
     }
+    // presence: every holder reads exactly the live cursors (their authors are all connected;
+    // presence has its own room at a server, apart from the capped ephemeral state)
+    let want: BTreeMap<String, String> = cursors.iter().filter(|(n, _)| holders.contains(n)).map(|(n, v)| (n.to_string(), v.clone())).collect();
+    for n in &holders {
+        assert_eq!(str_map(net.eph_read(*n, w, CURSOR)), want, "seed {seed}: node {n}'s cursors\n{}", log.join("\n"));
+    }
+}
+
+/// A `map<string, string>` value as a map (absent: empty).
+fn str_map(v: Option<Value>) -> BTreeMap<String, String> {
+    match v {
+        Some(Value::Map(m)) => m
+            .into_iter()
+            .filter_map(|(k, v)| match (k, v) {
+                (Value::Str(k), Value::Str(v)) => Some((k, v)),
+                _ => None,
+            })
+            .collect(),
+        _ => BTreeMap::new(),
+    }
 }
 
 // the same with one server at a small cap, at seeds where a holder's concurrent cover stayed
@@ -784,6 +826,7 @@ fn random_window_one_capped_server_large() {
     let start: u64 = std::env::var("OSIS_EPH_START").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     let n: u64 = std::env::var("OSIS_EPH_SEEDS").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
     for seed in start..start + n {
+        eprintln!("seed {seed}");
         random_window_run_on(seed, true);
     }
 }
@@ -804,6 +847,7 @@ fn random_window_converges_large() {
     let start: u64 = std::env::var("OSIS_EPH_START").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     let n: u64 = std::env::var("OSIS_EPH_SEEDS").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
     for seed in start..start + n {
+        eprintln!("seed {seed}");
         random_window_run(seed);
     }
 }

@@ -110,7 +110,9 @@ impl World {
             let mine: Vec<(ConnId, (usize, u64))> = self.links.iter().filter(|((d, _), _)| *d == i).map(|((_, c), v)| (*c, *v)).collect();
             for (c, (s, hc)) in mine {
                 self.links.remove(&(i, c));
-                self.servers[s].hub.closed(hc);
+                let now = self.now();
+                let out = self.servers[s].hub.closed(now, hc);
+                self.hub_out(s, out);
                 db.feed(Event::Down { conn: c });
             }
             db.take_actions();
@@ -140,7 +142,9 @@ impl World {
                 }
                 Action::Close { conn } => {
                     if let Some((s, hc)) = self.links.remove(&(d, conn)) {
-                        self.servers[s].hub.closed(hc);
+                        let now = self.now();
+                        let out = self.servers[s].hub.closed(now, hc);
+                        self.hub_out(s, out);
                     }
                 }
                 Action::Wake { .. } | Action::Reach => {}

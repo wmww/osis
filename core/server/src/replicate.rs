@@ -8,7 +8,8 @@
 //! time; its position is stored when every request of it was answered without a retryable
 //! refusal (codes 4, 12), else the label is retried with backoff from the same position.
 //! A log that no longer reaches the acknowledged position is replayed per run of steps with
-//! one write key: the run's steps, then the live entries stamped under that key.
+//! one write key: the run's steps, then the live entries stamped under that key. Presence entries
+//! are not replicated.
 
 use crate::store::BackendStore;
 use osis_base::{BlobId, LabelId};
@@ -17,6 +18,12 @@ use osis_proto::msg::{Entry, Step};
 use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, LabelStore, LogRecord, StoreError};
 use osis_store::Backend;
 use std::collections::{BTreeMap, BTreeSet};
+
+/// A presence entry is never replicated: only its author uploads it, tied to its connection
+/// (spec/sync.md §5); a copy at a peer server would outlive the author's departure.
+fn is_presence(blob: &[u8]) -> bool {
+    osis_label::Prefix::parse(blob).is_ok_and(|p| p.class() == osis_label::Class::Presence)
+}
 
 /// Log records or entries read per batch.
 const BATCH_RECORDS: usize = 256;
@@ -282,6 +289,9 @@ impl Replicator {
                 continue;
             }
             let Some(blob) = store.blob(&id)? else { continue };
+            if is_presence(&blob) {
+                continue;
+            }
             bytes += blob.len();
             entries.push(Entry { blob, wrap: m.wrap, stamp });
             if bytes >= BATCH_BYTES {
@@ -316,6 +326,7 @@ impl Replicator {
                         && m.add_seq == seq
                         && store.origin(label, &id) != Some(self.peer)
                         && let (Some(stamp), Some(blob)) = (m.stamp, store.blob(&id)?)
+                        && !is_presence(&blob)
                     {
                         bytes += blob.len();
                         entries.push(Entry { blob, wrap: m.wrap, stamp });

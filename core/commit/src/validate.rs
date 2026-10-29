@@ -147,8 +147,8 @@ impl Header {
             if !self.chunks.is_empty() || !self.purge.is_empty() || self.undoes.is_some() || self.links != crate::header::Links::default() {
                 return Err(Error::Invalid("ephemeral commit with chunks, a purge, an undo or linked lists"));
             }
-            if c == crate::header::EphClass::Relay && self.aspects.iter().any(|a| a.expires.is_some()) {
-                return Err(Error::Invalid("relay-only commit with an expiry"));
+            if c != crate::header::EphClass::Plain && self.aspects.iter().any(|a| a.expires.is_some()) {
+                return Err(Error::Invalid("relay-only or presence commit with an expiry"));
             }
         }
         Ok(())

@@ -72,6 +72,15 @@ impl SyncEngine {
 
     /// Log events of a Sync reply, a push, a fetch or a bundle (`conn` none).
     pub(crate) fn log_events(&mut self, conn: Option<ConnId>, l: LabelId, events: Vec<LogEvent>, cursor: Option<Cursor>, out: &mut Vec<super::Action>) -> Result<()> {
+        self.log_events_from(conn, None, l, events, cursor, out)
+    }
+
+    /// `log_events`, of entries a session this node serves (`served`) uploaded.
+    pub(crate) fn log_events_from(&mut self, conn: Option<ConnId>, served: Option<ConnId>, l: LabelId, events: Vec<LogEvent>, cursor: Option<Cursor>, out: &mut Vec<super::Action>) -> Result<()> {
+        let from = match served {
+            Some(c) => super::ephemeral::RelayFrom::Served(c),
+            None => super::ephemeral::RelayFrom::Server(conn.and_then(|c| self.conns.get(&c)).map(|c| c.server)),
+        };
         let server: Option<ServerKey> = conn.and_then(|c| self.conns.get(&c)).map(|c| c.server);
         let mut blobs = Vec::new();
         let mut touched = Vec::new();
@@ -111,7 +120,7 @@ impl SyncEngine {
                         c.req.missing.remove(&blob_id);
                         c.req.fetching.remove(&blob_id);
                     }
-                    self.eph_added(super::ephemeral::RelayFrom::Server(server), l, blob_id, blob, wrap, stamp, class, out)?;
+                    self.eph_added(from, l, blob_id, blob, wrap, stamp, class, out)?;
                     continue;
                 }
                 LogEvent::Added { blob_id, blob: None, .. } if self.eph.entries.contains_key(&(l, blob_id)) => {

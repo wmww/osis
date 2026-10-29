@@ -9,7 +9,12 @@
 //! flips rebuilds the aspects it touches from the own writes and the valid held parts (un-merge,
 //! spec/crdt.md §4.6). A held commit is dropped once valid held commits list it as absorbed on
 //! every aspect it touches (a compaction, `compact_ephemeral`). Relay-only commits are delivered
-//! once (`delivered`, bounded) and held by nobody.
+//! once (`delivered`, bounded) and held by nobody. Presence commits carry an author's whole own
+//! state of its presence aspects, each covering (absorbing) its author's earlier ones; they carry
+//! no other node's writes, are never compacted, and go (un-merged) at their lease
+//! (`ts + MAX_LEASE`) or when the sync layer finds no server or peer holding them
+//! (`drop_ephemeral_presence`); an author with live presence values sends a fresh one every
+//! `KEEPALIVE`.
 
 use super::{Eph, EphAspect, EphThing};
 use crate::engine::Engine;
@@ -17,7 +22,7 @@ use crate::engine::secrets::{CommitSecrets, published_keys};
 use crate::engine::write::{Creates, required_role, run_ops};
 use crate::error::{Error, Result};
 use crate::events::{ChangeId, Event, Origin};
-use osis_base::format::{MAX_DRIFT_MS, MAX_OWNER_DEPTH};
+use osis_base::format::{KEEPALIVE_MS, MAX_DRIFT_MS, MAX_LEASE_MS, MAX_OWNER_DEPTH};
 use osis_base::{Ak, CommitId, CreationRecord, Tid, Ts, Value};
 use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, EphClass, Form, Header, Kind, MemoryBlobs};
 use osis_crdt::{AnyView, Fragment, Frontiers, Interner, Op, PathOp, Snapshot, Source, SourceKind, Writer};
@@ -124,6 +129,25 @@ pub(crate) struct Remote {
     pub delivered_floor: BTreeMap<Tid, u64>,
     /// `Core::generation` when held validity was last judged.
     pub judged_at: u64,
+    /// Own presence aspects of things that sync, with the actor of their last write.
+    pub presence: BTreeMap<(Tid, Ak), Tid>,
+    /// Actors whose presence commit is due (a write, a keep-alive, a thing entering a closure).
+    pub presence_dirty: BTreeSet<Tid>,
+    /// Per actor, when its last presence commit was built (wall ms; keep-alive).
+    pub presence_sent: BTreeMap<Tid, u64>,
+    /// Held presence commits by the end of their lease (`ts + MAX_LEASE`).
+    pub leases: BTreeMap<u64, BTreeSet<CommitId>>,
+}
+
+/// Whether a cover `cover` may absorb `covered` (spec/sync.md §9): a presence commit only its
+/// author's earlier presence commits, a plain one only plain ones.
+fn may_absorb(cover: &Header, covered: &Header) -> bool {
+    let p = Some(EphClass::Presence);
+    match (cover.ephemeral == p, covered.ephemeral == p) {
+        (true, true) => cover.author == covered.author,
+        (false, false) => true,
+        _ => false,
+    }
 }
 
 /// What became of a received ephemeral commit.
@@ -187,14 +211,19 @@ impl Engine {
     /// Whether own ephemeral writes or signals wait to be sent (`take_ephemeral`).
     pub fn has_unsent(&self) -> bool {
         let r = &self.eph.remote;
-        !(r.unsent.is_empty() && r.signals.is_empty() && r.records.is_empty()) || r.local.iter().any(|t| self.ephemeral_synced(t))
+        !(r.unsent.is_empty() && r.signals.is_empty() && r.records.is_empty() && r.presence_dirty.is_empty()) || r.local.iter().any(|t| self.ephemeral_synced(t))
     }
 
-    /// Notes an own ephemeral write for sync: it joins `unsent` when the thing syncs, else the
-    /// thing waits in `local`.
-    pub(super) fn note_written(&mut self, tid: &Tid, ak: &Ak, delta: &Fragment, expires: Option<u64>, actor: Tid) {
+    /// Notes an own ephemeral write for sync: it joins `unsent` (a presence write marks its
+    /// actor's presence commit due) when the thing syncs, else the thing waits in `local`.
+    pub(super) fn note_written(&mut self, tid: &Tid, ak: &Ak, delta: &Fragment, expires: Option<u64>, presence: bool, actor: Tid) {
         if self.ephemeral_synced(tid) {
             let r = &mut self.eph.remote;
+            if presence {
+                r.presence.insert((*tid, ak.clone()), actor);
+                r.presence_dirty.insert(actor);
+                return;
+            }
             r.unsent.entry((*tid, ak.clone())).or_default().entry((actor, expires)).or_default().join(delta.clone());
             if self.eph.things.contains_key(tid) {
                 self.eph.remote.records.insert(*tid);
@@ -229,9 +258,15 @@ impl Engine {
             if self.eph.things.contains_key(&t) {
                 self.eph.remote.records.insert(t);
             }
-            let aspects: Vec<(Ak, Fragment)> = self.eph.aspects.get(&t).map(|m| m.iter().map(|(ak, a)| (ak.clone(), whole_unexpiring(a, &self.eph.src))).collect()).unwrap_or_default();
+            let aspects: Vec<(Ak, Fragment, bool)> = self.eph.aspects.get(&t).map(|m| m.iter().map(|(ak, a)| (ak.clone(), whole_unexpiring(a, &self.eph.src), a.presence)).collect()).unwrap_or_default();
             let me = self.tid();
-            for (ak, f) in aspects {
+            for (ak, f, presence) in aspects {
+                if presence {
+                    let r = &mut self.eph.remote;
+                    r.presence.entry((t, ak)).or_insert(me);
+                    r.presence_dirty.insert(me);
+                    continue;
+                }
                 self.eph.remote.unsent.entry((t, ak)).or_default().entry((me, None)).or_default().join(f);
             }
         }
@@ -272,7 +307,115 @@ impl Engine {
                 out.push(c);
             }
         }
+        out.extend(self.take_presence()?);
         Ok(out)
+    }
+
+    /// The own writes of `(t, ak)` alone (others' held parts left out).
+    fn own_state(&self, t: &Tid, ak: &Ak) -> Option<Fragment> {
+        let a = self.eph.aspects.get(t)?.get(ak)?;
+        Some(a.own.clone().unwrap_or_else(|| a.state.clone()))
+    }
+
+    /// Builds the due presence commits: per actor, one carrying this node's own state of every
+    /// presence aspect last written for that actor (of things that sync), absorbing the presence
+    /// commits this node authored for that actor before, so a holder keeps one per author.
+    fn take_presence(&mut self) -> Result<Vec<EphCommit>> {
+        let mut out = Vec::new();
+        let dirty = std::mem::take(&mut self.eph.remote.presence_dirty);
+        if dirty.is_empty() {
+            return Ok(out);
+        }
+        // a thing that left every labeled closure: its presence goes again when it enters one
+        let left: Vec<(Tid, Ak)> = self.eph.remote.presence.keys().filter(|(t, _)| !self.ephemeral_synced(t)).cloned().collect();
+        for (t, ak) in left {
+            self.eph.remote.presence.remove(&(t, ak));
+            self.eph.remote.local.insert(t);
+        }
+        let me = self.tid();
+        let now = self.now().0;
+        for actor in dirty {
+            let keys: Vec<(Tid, Ak)> = self.eph.remote.presence.iter().filter(|(_, a)| **a == actor).map(|(k, _)| k.clone()).collect();
+            let deltas: Vec<EphDelta> = keys.iter().filter_map(|(t, ak)| self.own_state(t, ak).map(|f| (*t, ak.clone(), f, None))).collect();
+            let mut absorbed: BTreeMap<(Tid, Ak), BTreeSet<CommitId>> = BTreeMap::new();
+            for (id, h) in &self.eph.remote.held {
+                if h.header.ephemeral == Some(EphClass::Presence) && h.header.author == me && h.header.actor == actor {
+                    for p in &h.parts {
+                        if let Some(a) = h.header.aspects.get(p.ai) {
+                            absorbed.entry((a.tid, a.ak.clone())).or_default().insert(*id);
+                        }
+                    }
+                }
+            }
+            if deltas.is_empty() {
+                self.eph.remote.presence_sent.remove(&actor);
+                continue;
+            }
+            let records: BTreeSet<Tid> = keys.iter().map(|(t, _)| *t).filter(|t| self.eph.things.contains_key(t)).collect();
+            if let Some(c) = self.build_ephemeral(EphClass::Presence, actor, deltas, &records, &absorbed)? {
+                out.push(c);
+            }
+            self.eph.remote.presence_sent.insert(actor, now);
+        }
+        Ok(out)
+    }
+
+    /// Keep-alives due by `now`: an actor with live own presence values gets a fresh presence
+    /// commit (its lease starts over); one without stops being refreshed. Held presence commits
+    /// past their lease go (un-merged).
+    pub(super) fn tick_presence(&mut self, now: u64) {
+        let due: Vec<Tid> = self.eph.remote.presence_sent.iter().filter(|(_, t)| t.saturating_add(KEEPALIVE_MS) <= now).map(|(a, _)| *a).collect();
+        for actor in due {
+            let live = self.eph.remote.presence.iter().filter(|(_, a)| **a == actor).any(|((t, ak), _)| self.own_state(t, ak).is_some_and(|f| f.present()));
+            if live {
+                self.eph.remote.presence_dirty.insert(actor);
+                // not again until it was sent
+                self.eph.remote.presence_sent.insert(actor, now);
+            } else {
+                self.eph.remote.presence_sent.remove(&actor);
+            }
+        }
+        while let Some(entry) = self.eph.remote.leases.first_entry() {
+            if *entry.key() > now {
+                break;
+            }
+            for id in entry.remove() {
+                self.drop_ephemeral_presence(&id);
+            }
+        }
+    }
+
+    /// Drops held presence commit `id` (its lease ended, or no server or peer the sync layer syncs
+    /// its labels with holds it any longer, spec/sync.md §9): its writes go (un-merge, the aspects
+    /// rebuilt from the own writes and the other valid held parts, spec/crdt.md §4.6); queued for
+    /// `take_dropped_ephemeral`. A remote change naming the commit fires for what it changed.
+    pub fn drop_ephemeral_presence(&mut self, id: &CommitId) {
+        let Some(h) = self.eph.remote.held.get(id) else { return };
+        if h.header.ephemeral != Some(EphClass::Presence) {
+            return;
+        }
+        let header = h.header.clone();
+        let own = h.own;
+        let aspects: Vec<(Tid, Ak)> = h.parts.iter().filter_map(|p| header.aspects.get(p.ai)).filter(|a| a.ak.as_str() != CREATED.ak()).map(|a| (a.tid, a.ak.clone())).collect();
+        self.forget_held(id);
+        let mut changed = Vec::new();
+        for (t, ak) in aspects {
+            let before = self.eph.state(&t, &ak).cloned();
+            self.rebuild_aspect(&t, &ak);
+            if self.eph.state(&t, &ak) != before.as_ref() {
+                changed.push((t, ak));
+            }
+        }
+        if !changed.is_empty() && !own {
+            let received = self.now();
+            self.core.events.queue(Event::Ephemeral { id: ChangeId::Commit(*id), origin: Origin::Remote, author: header.author, actor: header.actor, ts: header.ts, received, changed, signals: Vec::new() });
+            self.core.events.flush();
+        }
+    }
+
+    /// Whether held ephemeral commit `id` is a presence commit.
+    pub fn ephemeral_is_presence(&self, id: &CommitId) -> bool {
+        self.eph.remote.held.get(id).is_some_and(|h| h.header.ephemeral == Some(EphClass::Presence))
     }
 
     /// The `/created` fragment of ephemeral thing `t`: a register write of its record under the
@@ -389,7 +532,7 @@ impl Engine {
         };
         let blob = built.commit;
         let id = blob.id();
-        if class == EphClass::Plain {
+        if class != EphClass::Relay {
             let mut interner = Interner::new();
             let mut held_parts = Vec::new();
             let header = Arc::new(blob.header.clone());
@@ -404,11 +547,17 @@ impl Engine {
             let bytes = held_parts.iter().map(|p| p.fragment.approx_bytes()).sum();
             self.claim(&id, &held_parts);
             self.eph.remote.held.insert(id, Held { header, parts: held_parts, own: true, bytes });
+            let presence = class == EphClass::Presence;
+            if presence {
+                self.eph.remote.leases.entry(ts.wall_ms().0.saturating_add(MAX_LEASE_MS)).or_default().insert(id);
+            }
             for (i, a) in blob.header.aspects.iter().enumerate() {
                 if let Some(t) = a.expires {
                     self.eph.remote.timers.entry(t).or_default().insert((id, i));
                 }
-                self.eph.aspects.entry(a.tid).or_default().entry(a.ak.clone()).or_default().parts.insert((id, i));
+                let ea = self.eph.aspects.entry(a.tid).or_default().entry(a.ak.clone()).or_default();
+                ea.parts.insert((id, i));
+                ea.presence |= presence && a.ak.as_str() != CREATED.ak();
             }
             if !absorbed.is_empty() {
                 self.drop_absorbed();
@@ -485,6 +634,8 @@ impl Engine {
             }
             let ok = match p.authors.get(c) {
                 Some((node, _)) if *node == h.author => true,
+                // a presence commit carries its author's writes only (spec/sync.md §9)
+                Some(_) if h.ephemeral == Some(EphClass::Presence) => false,
                 Some((node, ts)) => self.eph_write_valid(&a.tid, a.ak.as_str(), *node, *ts, c, carried),
                 None => false,
             };
@@ -526,7 +677,7 @@ impl Engine {
     /// (a replay of a covered commit is not held again).
     fn eph_covered(&self, id: &CommitId, h: &Header, ais: &[usize]) -> bool {
         let mut on: BTreeSet<(Tid, &Ak)> = BTreeSet::new();
-        for x in self.eph.remote.held.values() {
+        for x in self.eph.remote.held.values().filter(|x| may_absorb(&x.header, h)) {
             for p in x.parts.iter().filter(|p| p.valid && p.absorbed.contains(id)) {
                 if let Some(a) = x.header.aspects.get(p.ai) {
                     on.insert((a.tid, &a.ak));
@@ -551,8 +702,8 @@ impl Engine {
                 return Ok(EphIngest::Dropped { absorbed: false });
             }
         } else {
-            // not held, nor spread (spec/sync.md §9)
-            if at > now.saturating_add(MAX_DRIFT_MS) {
+            // not held, nor spread (spec/sync.md §9); a presence commit past its lease neither
+            if at > now.saturating_add(MAX_DRIFT_MS) || (class == EphClass::Presence && at.saturating_add(MAX_LEASE_MS) <= now) {
                 return Ok(EphIngest::Dropped { absorbed: false });
             }
             if let Some(held) = self.eph.remote.held.get(&id) {
@@ -660,6 +811,11 @@ impl Engine {
             }
         }
         let header = Arc::new(h);
+        let presence = class == EphClass::Presence;
+        let first = !self.eph.remote.held.contains_key(&id);
+        if presence && first {
+            self.eph.remote.leases.entry(at.saturating_add(MAX_LEASE_MS)).or_default().insert(id);
+        }
         let mut parts = self.eph.remote.held.remove(&id).map(|x| x.parts).unwrap_or_default();
         let mut changed = Vec::new();
         let mut fresh = Vec::new();
@@ -680,6 +836,7 @@ impl Engine {
             let src = self.eph.src.clone();
             let ea = self.eph.aspects.entry(a.tid).or_default().entry(a.ak.clone()).or_default();
             ea.parts.insert((id, ai));
+            ea.presence |= presence && a.ak.as_str() != CREATED.ak();
             if let Some(f) = counted
                 && a.ak.as_str() != CREATED.ak()
             {
@@ -747,7 +904,8 @@ impl Engine {
                     && !p.absorbed.is_empty()
                     && let Some(a) = h.header.aspects.get(p.ai)
                 {
-                    covers.entry((a.tid, a.ak.clone())).or_default().extend(p.absorbed.iter().copied());
+                    let ok = p.absorbed.iter().filter(|c| r.held.get(c).is_some_and(|x| may_absorb(&h.header, &x.header))).copied();
+                    covers.entry((a.tid, a.ak.clone())).or_default().extend(ok);
                 }
             }
         }
@@ -770,6 +928,15 @@ impl Engine {
     /// Forgets held commit `id` (its writes stay in the state); queued for `take_dropped_ephemeral`.
     fn forget_held(&mut self, id: &CommitId) {
         let Some(h) = self.eph.remote.held.remove(id) else { return };
+        if h.header.ephemeral == Some(EphClass::Presence) {
+            let lease = h.header.ts.wall_ms().0.saturating_add(MAX_LEASE_MS);
+            if let Some(s) = self.eph.remote.leases.get_mut(&lease) {
+                s.remove(id);
+                if s.is_empty() {
+                    self.eph.remote.leases.remove(&lease);
+                }
+            }
+        }
         self.unclaim(id, &h.parts);
         for p in &h.parts {
             if let Some(a) = h.header.aspects.get(p.ai) {
@@ -991,7 +1158,7 @@ impl Engine {
             for (ak, ea) in m {
                 // one held part is what a compaction would make again: forcing it would loop
                 // (a server refusing the cover, compacted into the next cover)
-                if ea.parts.len() < 2 || !ea.expiring.is_empty() || ak.as_str() == CREATED.ak() {
+                if ea.parts.len() < 2 || !ea.expiring.is_empty() || ea.presence || ak.as_str() == CREATED.ak() {
                     continue;
                 }
                 let held_bytes: usize = ea.parts.iter().filter_map(|(id, _)| self.eph.remote.held.get(id)).map(|h| h.bytes / h.parts.len().max(1)).sum();
@@ -1014,6 +1181,9 @@ impl Engine {
         // the held commits wholly on picked aspects
         let mut absorbed: BTreeMap<(Tid, Ak), BTreeSet<CommitId>> = BTreeMap::new();
         for (id, h) in &self.eph.remote.held {
+            if h.header.ephemeral == Some(EphClass::Presence) {
+                continue;
+            }
             let all = h.parts.iter().all(|p| h.header.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == CREATED.ak() || picked_set.contains(&(a.tid, a.ak.clone()))));
             if !all {
                 continue;
@@ -1057,6 +1227,15 @@ impl Engine {
         self.eph.next = r.hi;
         let me = self.tid();
         self.build_ephemeral(EphClass::Plain, me, vec![(tid, ak.clone(), f, None)], &BTreeSet::new(), &BTreeMap::new())
+    }
+
+    /// Tests: a presence commit by this node carrying the whole joined ephemeral state of
+    /// `(tid, ak)`, others' writes included (a forged keep-alive of someone else's presence).
+    #[doc(hidden)]
+    pub fn forge_presence_carrying(&mut self, tid: Tid, ak: &Ak) -> Result<Option<EphCommit>> {
+        let Some(f) = self.eph.state(&tid, ak).cloned() else { return Ok(None) };
+        let me = self.tid();
+        self.build_ephemeral(EphClass::Presence, me, vec![(tid, ak.clone(), f, None)], &BTreeSet::new(), &BTreeMap::new())
     }
 
     /// Held ephemeral commits and their approximate bytes (tests, diagnostics).

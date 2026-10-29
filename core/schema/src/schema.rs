@@ -316,6 +316,9 @@ impl Schema {
             if def.lifetime() == Lifetime::Signal && def.expires.is_some() {
                 bad(&item, "a signal has no value to expire".into());
             }
+            if def.lifetime() == Lifetime::Presence && def.expires.is_some() {
+                bad(&item, "a presence value lives while its author is connected: no expiry".into());
+            }
             for s in &def.succeeds {
                 if s == ak || Ak::new(s.as_str()).is_err() {
                     bad(&item, format!("invalid succeeds {s}"));
