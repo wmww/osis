@@ -65,4 +65,4 @@ Every delta carries **retention** on the wire: who may purge it, how long its bo
 - Blind nodes delete the blob at T unattended (spec/sync.md §5).
 
 ## 7. Undo
-- An undo commit sets `undoes` to the undone commit's ID; its deltas are chosen per spec/crdt.md §4.6. A commit whose body was dropped cannot be undone. Redo is an undo of the undo commit.
+- An undo commit (a revert) sets `undoes` to the undone commit's ID; its deltas are chosen per spec/crdt.md §4.6. A commit whose body was dropped cannot be undone. Redo is an undo of the undo commit.
