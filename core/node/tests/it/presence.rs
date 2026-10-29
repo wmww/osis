@@ -324,6 +324,45 @@ fn replayed_presence_dies_at_lease_spec_sync_9() {
     assert_eq!(presence_held(&mut net, b), 0);
 }
 
+// spec/sync.md §6 (a node's first sync after start reconciles the live sets), §9 (a node drops
+// another's presence commit once no server it syncs the label with holds it): A's cursor reaches
+// a restarted B from one server while B's reconciliation with the other (which never had it) is
+// unanswered; the reply does not make B count that server as holding it, so the cursor goes at
+// B when A leaves
+#[test]
+fn entry_arriving_during_reconcile_not_present_spec_sync_9() {
+    let mut net = Net::new();
+    let (s0, s1) = (net.add_server(), net.add_server());
+    let a = net.node(1, &[s0, s1]);
+    let b = net.node(2, &[s0, s1]);
+    let (_, t) = setup(&mut net, a, &[(b, Role::Write)], &[s0, s1]);
+    net.blocked.insert((a, s1));
+    net.drop_link(a, s1);
+    net.run();
+    net.restart(b, 22);
+    // B's reconciliations go out; s1's answers wait
+    let sent = |net: &Net| net.sent_kinds.get(&17).copied().unwrap_or(0);
+    let before = sent(&net);
+    net.feed(b, osis_node::sync::Event::Local);
+    for _ in 0..100 {
+        if sent(&net) >= before + 2 {
+            break;
+        }
+        net.round();
+    }
+    assert_eq!(sent(&net), before + 2, "B reconciles at both servers");
+    net.held_servers.insert(s1);
+    net.eph_write(a, t, &cursor(), s("a@1"));
+    net.run();
+    assert_eq!(at(&mut net, b, t), Some(s("a@1")), "from s0");
+    net.release();
+    net.run();
+    assert_eq!(at(&mut net, b, t), Some(s("a@1")));
+    net.set_online(a, false);
+    net.run();
+    assert_eq!(at(&mut net, b, t), None, "gone with A's connection: s1 never held it");
+}
+
 // spec/sync.md §9 (restart): an author's restart ends its presence everywhere (its connection
 // closed; its new session has no presence); a holder's restart gets the live presence back
 #[test]

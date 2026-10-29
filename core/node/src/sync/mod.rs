@@ -1437,14 +1437,15 @@ impl SyncEngine {
             self.eph.announced.insert((conn, label));
         }
         if many || (cursor.is_some() && !self.eph.reconciled.contains(&(server, label))) {
-            if self.eph.reconciling.contains(&(conn, label)) {
+            if self.eph.reconciling.contains_key(&(conn, label)) {
                 return Ok(());
             }
+            let listed: BTreeSet<osis_base::BlobId> = SyncEngine::eph_entries_of(&self.eph, &label).map(|(b, _)| b).collect();
             let mut ids = self.state.present_at(&server, &label);
-            ids.extend(self.eph.entries.range((label, osis_base::BlobId([0; 32]))..).take_while(|((x, _), _)| *x == label).map(|((_, b), _)| *b));
+            ids.extend(listed.iter().copied());
             ids.sort();
             ids.dedup();
-            self.eph.reconciling.insert((conn, label));
+            self.eph.reconciling.insert((conn, label), listed);
             return self.command(conn, Command::Reconcile { label, ids }, out);
         }
         // a replay lists the live entries only: presence starts over from it (a cursor lost in a

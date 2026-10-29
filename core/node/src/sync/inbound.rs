@@ -683,17 +683,23 @@ impl SyncEngine {
     /// metadata Sync for a fresh cursor.
     pub(crate) fn reconciled(&mut self, conn: ConnId, l: LabelId, need: Vec<BlobId>, have: Vec<BlobId>, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
-        // held ephemeral entries: the peer lacks those in `have` (they go up), holds the rest
-        if self.eph.reconciling.contains(&(conn, l)) {
+        // held ephemeral entries the reconciled set listed: the peer lacks those in `have` (they
+        // go up), holds the rest; one kept since and not seen there (from another server) goes up
+        // too (another's presence entry: neither, `eph_upload`)
+        if let Some(listed) = self.eph.reconciling.get(&(conn, l)) {
             let lacks: BTreeSet<BlobId> = have.iter().copied().collect();
             let held: Vec<BlobId> = SyncEngine::eph_entries_of(&self.eph, &l).map(|(b, _)| b).collect();
             let mut up = Vec::new();
+            let mut holds = Vec::new();
             for b in held {
-                if lacks.contains(&b) {
+                if lacks.contains(&b) || !(listed.contains(&b) || self.eph.present.contains(&(server, l, b))) {
                     up.push(b);
-                } else {
-                    self.eph.present.insert((server, l, b));
+                } else if listed.contains(&b) {
+                    holds.push(b);
                 }
+            }
+            for b in holds {
+                self.eph.present.insert((server, l, b));
             }
             if let Some(keys) = self.lc(conn, &l).map(|x| x.keys.clone()) {
                 self.eph_upload(conn, l, &up, &keys, out)?;
@@ -710,7 +716,7 @@ impl SyncEngine {
         }
         self.fetch_on(conn, l, need, out)?;
         // a reconciliation after a start: the cursor stays (`sync_label`)
-        if self.eph.reconciling.remove(&(conn, l)) {
+        if self.eph.reconciling.remove(&(conn, l)).is_some() {
             self.eph.reconciled.insert((server, l));
             return self.sync_label(conn, l, out);
         }
