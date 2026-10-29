@@ -122,8 +122,8 @@ pub enum Dispatcher {
     Thread,
     /// On the thread that calls `Osis::settle` (an app's UI thread), which then runs every
     /// callback due. `wake` is called once when callbacks become due after the last `settle`
-    /// began, on whatever thread queued them, possibly under the database lock: it must only
-    /// arrange for a `settle` soon (post an event to the UI loop), never call the database.
+    /// began, on whatever thread queued them, after the database lock is released: it should
+    /// only arrange for a `settle` soon (post an event to the UI loop).
     Pump(Arc<dyn Fn() + Send + Sync>),
 }
 
@@ -160,9 +160,11 @@ pub(crate) struct Dispatch {
     tx: Sender<(u64, Msg)>,
     pub shared: Arc<Shared>,
     pump: Mutex<Option<Pump>>,
-    /// `Dispatcher::Pump`'s wake, and whether it was called since the last pump began.
+    /// `Dispatcher::Pump`'s wake, whether it was owed since the last pump began, and whether
+    /// it is owed but not yet called (`send` runs under the engine lock; `wake` after it).
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
     due: AtomicBool,
+    owed: AtomicBool,
 }
 
 type Queue = Receiver<(u64, Msg)>;
@@ -174,7 +176,7 @@ impl Dispatch {
             Dispatcher::Thread => None,
             Dispatcher::Pump(w) => Some(w.clone()),
         };
-        Dispatch { tx, shared: Arc::default(), pump: Mutex::new(Some(Pump::new(rx))), wake, due: AtomicBool::new(false) }
+        Dispatch { tx, shared: Arc::default(), pump: Mutex::new(Some(Pump::new(rx))), wake, due: AtomicBool::new(false), owed: AtomicBool::new(false) }
     }
 
     /// With `Dispatcher::Thread`, starts the dispatcher thread; it runs until the database
@@ -199,11 +201,19 @@ impl Dispatch {
         Ok(())
     }
 
-    /// Queues a message with sequence number `seq` (taken under the engine lock).
+    /// Queues a message with sequence number `seq` (taken under the engine lock; the lock's
+    /// holder calls `wake` once it released the lock).
     pub fn send(&self, seq: u64, m: Msg) {
         let _ = self.tx.send((seq, m));
+        if self.wake.is_some() && !self.due.swap(true, Ordering::AcqRel) {
+            self.owed.store(true, Ordering::Release);
+        }
+    }
+
+    /// Calls `Dispatcher::Pump`'s wake if a `send` owes it; called with the engine lock released.
+    pub fn wake(&self) {
         if let Some(w) = &self.wake
-            && !self.due.swap(true, Ordering::AcqRel)
+            && self.owed.swap(false, Ordering::AcqRel)
         {
             w();
         }

@@ -377,19 +377,26 @@ fn mistyped_value_watches_absent() {
 }
 
 // notes/api.md Watching: with `Dispatcher::Pump` callbacks run only inside `settle`, on the
-// calling thread, in order; the wake callback fires once per batch of due callbacks; inside a
-// callback `settle` returns at once, `close` fails, a write's callback runs in the same pump,
-// and a subscription dropped there stops.
+// calling thread, in order; the wake callback fires once per batch of due callbacks, outside the
+// database lock; inside a callback `settle` returns at once, `close` fails, a write's callback
+// runs in the same pump, and a subscription dropped there stops.
 #[test]
 fn pump_dispatcher_runs_callbacks_in_settle() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let wakes = Arc::new(AtomicUsize::new(0));
     let mut c = cfg(1, MemStore::new(), &clock());
     let w2 = wakes.clone();
+    // the wake runs after the database lock is released: calling the database there is safe
+    let weak: Arc<std::sync::OnceLock<osis::WeakOsis>> = Arc::default();
+    let weak2 = weak.clone();
     c.dispatch = osis::Dispatcher::Pump(Arc::new(move || {
         w2.fetch_add(1, Ordering::SeqCst);
+        if let Some(db) = weak2.get().and_then(|w| w.upgrade()) {
+            db.read(|_| ());
+        }
     }));
     let db = Osis::create(c).unwrap().0;
+    weak.set(db.downgrade()).unwrap();
     db.settle();
     let k = ak("/t/x");
     let t = thing(&db);

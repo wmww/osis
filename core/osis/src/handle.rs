@@ -422,6 +422,8 @@ impl Osis {
         let r = f(&mut g);
         self.after(&mut g, handled);
         *lock(holder) = None;
+        drop(g);
+        self.inner.dispatch.wake();
         r
     }
 
