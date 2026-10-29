@@ -5,7 +5,7 @@
 use crate::scenario as common;
 use common::*;
 use osis::core::{BODY, GROUP, NAME};
-use osis::{Error, Osis, Path, Place, Result, Role, SyncScope, Tid, UndoScope};
+use osis::{Error, Osis, Path, Place, Result, Role, SyncScope, Tid, Scope};
 use osis_sim::world::World;
 use std::time::Duration;
 
@@ -43,11 +43,11 @@ fn type_text(db: &Osis, note: Tid, at: usize, text: &str) -> Result<()> {
 }
 
 fn undo(db: &Osis, note: Tid) -> Result<bool> {
-    Ok(db.undo(&UndoScope::Thing(note))?.is_some())
+    Ok(db.undo(&Scope::Thing(note))?.is_some())
 }
 
 fn redo(db: &Osis, note: Tid) -> Result<bool> {
-    Ok(db.redo(&UndoScope::Thing(note))?.is_some())
+    Ok(db.redo(&Scope::Thing(note))?.is_some())
 }
 
 fn add_device(existing: &Osis, cfg: osis::Config) -> Result<Osis> {
@@ -180,6 +180,6 @@ fn local_undo_redo_and_history() {
     assert_eq!(title(&db, note).unwrap().as_deref(), Some("b"));
     type_text(&db, note, 0, "y").unwrap();
     assert!(!redo(&db, note).unwrap(), "a new change clears redo");
-    let h = db.history(&UndoScope::Thing(note), Default::default()).unwrap();
+    let h = db.commits(&osis::CommitQuery::new().scope(Scope::Thing(note))).unwrap();
     assert!(h.len() >= 4, "{h:?}");
 }

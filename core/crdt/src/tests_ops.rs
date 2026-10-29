@@ -579,7 +579,11 @@ fn absent_spots() -> (TyView, Fragment) {
 }
 
 fn absent_spot_ops() -> Vec<(&'static str, PathOp)> {
-    let one = || Value::Str("a".into());
+    absent_spot_ops_of("a")
+}
+
+fn absent_spot_ops_of(item: &str) -> Vec<(&'static str, PathOp)> {
+    let one = || Value::Str(item.into());
     vec![
         ("struct field set", PathOp { path: vec![PathSeg::Field(2)], op: Op::Add(one()) }),
         ("enum payload set", PathOp { path: vec![PathSeg::Field(3), PathSeg::Case(1), PathSeg::Field(2)], op: Op::Add(one()) }),
@@ -601,13 +605,13 @@ fn undo_makes_absent_again_spec_4_6() {
     }
 }
 
-/// §4.6 "Absent before": the reset also drops a concurrent older write into the spot; a write
-/// newer than the undo survives.
+/// §4.6 "Absent before": the reset also drops a concurrent older write into the spot arriving
+/// later; a write newer than the undo survives, and one already held blocks the reset.
 #[test]
 fn undo_absent_before_wipes_concurrent_spec_4_6() {
     let (view, s) = absent_spots();
     let other = Source::node(Tid::from_bytes([2; 15]));
-    for (name, op) in absent_spot_ops() {
+    for ((name, op), (_, op_b)) in absent_spot_ops().into_iter().zip(absent_spot_ops_of("b")) {
         let (_, ud, _) = commit_and_undo(&view, &s, op.clone());
         for (at, survives) in [(4u64, false), (7, true)] {
             // node 2 writes into the same spot without seeing node 1's commit
@@ -626,6 +630,9 @@ fn undo_absent_before_wipes_concurrent_spec_4_6() {
             }
             let want = if survives { only2.read() } else { s.read() };
             assert_eq!(all.read(), want, "{name} at {at}");
+            // node 2's write already here when undoing: not wiped, only node 1's write goes
+            let (_, _, s2) = commit_and_undo(&view, &only2, op_b.clone());
+            assert_eq!(s2.read(), only2.read(), "{name} at {at}, seen");
         }
     }
 }

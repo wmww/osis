@@ -3,7 +3,7 @@
 
 mod common;
 mod api;
-mod history;
+mod commits;
 mod runtime;
 mod sharing;
 mod sync;

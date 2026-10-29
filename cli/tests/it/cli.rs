@@ -194,10 +194,10 @@ fn write_script_atomic_plan_cli_4() {
     assert_eq!(s.ok(&["get", &n, "/note/m", "[\"k\"]"]).line(), format!("[{n}, {me}]"));
     // the third line fails: nothing of the script is committed
     let bad = "create --owner me --in home --as x /a/b 1\nset $x /a/c 2\nset osis://AAAAAAAAAAAAAAAAAAAA /a/b 1\n";
-    let before = s.ok(&["history", "--group", "home"]).out;
+    let before = s.ok(&["commits", "--group", "home"]).out;
     let o = s.call(&["write"], bad);
     assert_eq!(o.code, 3, "{}", o.err);
-    assert_eq!(s.ok(&["history", "--group", "home"]).out, before);
+    assert_eq!(s.ok(&["commits", "--group", "home"]).out, before);
     // a script parse error is usage, reported once
     let o = s.call(&["write"], "frobnicate x\n");
     assert_eq!(o.code, 2);
@@ -221,13 +221,13 @@ fn untyped_index_paths_notes_cli() {
     s.ok(&["set", &t, "/x/m", "[1]", "\"b\""]);
     assert_eq!(s.ok(&["get", &t, "/x/m"]).line(), "{1: \"b\"}");
     // in a script, an aspect written by an earlier line cannot be resolved against saved state
-    let before = s.ok(&["history", "--group", "home"]).out;
+    let before = s.ok(&["commits", "--group", "home"]).out;
     let o = s.call(&["write"], &format!("set {t} /x/m {{1: \"c\"}}\nset {t} /x/m [1] \"d\"\n"));
     assert_eq!(o.code, 2, "{}", o.err);
     assert!(o.err.contains("line 2") && o.err.contains("earlier in this batch"), "{}", o.err);
     let o = s.call(&["write"], "create --owner me --in home --as a /x/l [1, 2]\nset $a /x/l [0] 5\n");
     assert_eq!(o.code, 2, "{}", o.err);
-    assert_eq!(s.ok(&["history", "--group", "home"]).out, before);
+    assert_eq!(s.ok(&["commits", "--group", "home"]).out, before);
 }
 
 // notes/cli.md Design `--timeout 0` = no timeout; waits take it without overflow.
@@ -242,25 +242,33 @@ fn timeout_zero_plan_cli_2() {
     assert_eq!(s.code(&["diag", "--since", "0"]), 2, "--since is gone");
 }
 
-// notes/cli.md Command table History and undo.
+// notes/cli.md Command table Commits and undo: the query's filters, undo, redo, revert.
 #[test]
-fn history_undo_redo_plan_cli_4() {
+fn commits_undo_redo_plan_cli_4() {
     let s = S::mem();
     let t = s.thing();
     s.ok(&["set", &t, "/a/x", "1"]);
     s.ok(&["set", &t, "/a/x", "2"]);
-    let h = s.ok(&["history", "--thing", &t]).out;
+    let h = s.ok(&["commits", "--thing", &t]).out;
     assert_eq!(h.lines().count(), 3, "{h}");
-    assert!(h.lines().all(|l| l.contains(" undoable ")), "{h}");
+    assert!(h.lines().all(|l| l.contains(" change in-effect ")), "{h}");
     s.ok(&["undo", "--thing", &t]);
     assert_eq!(s.ok(&["get", &t, "/a/x"]).line(), "1");
+    let undone = s.ok(&["commits", "--thing", &t, "--in-effect", "false"]).out;
+    let undone = undone.split(' ').next().unwrap();
+    let rev = s.ok(&["commits", "--reverts", undone]).out;
+    assert_eq!(rev.lines().count(), 1, "{rev}");
+    assert!(rev.contains(" revert in-effect reverts="), "{rev}");
     s.ok(&["redo", "--aspect", &t, "/a/x"]);
     assert_eq!(s.ok(&["get", &t, "/a/x"]).line(), "2");
-    let newest = s.ok(&["history", "--thing", &t, "--max", "1"]).out;
+    assert_eq!(s.ok(&["commits", "--thing", &t, "--kind", "revert"]).out.lines().count(), 2);
+    let newest = s.ok(&["commits", "--thing", &t, "--max", "1"]).out;
     let id = newest.split(' ').next().unwrap();
-    s.ok(&["undo-commit", id]);
+    assert_eq!(s.ok(&["commits", "--thing", &t, "--after", id]).out.lines().count(), 4);
+    s.ok(&["revert", id]);
     assert_eq!(s.ok(&["get", &t, "/a/x"]).line(), "1");
     assert_eq!(s.code(&["undo", "--thing", &t, "--group", "home"]), 2);
+    assert_eq!(s.code(&["commits", "--kind", "nope"]), 2);
     s.ok(&["set", &t, "/a/x", "3"]);
     assert_eq!(s.code(&["redo", "--thing", &t]), 3, "nothing to redo after a new change");
 }
@@ -433,7 +441,7 @@ fn inspect_and_diag_plan_cli_4() {
     assert!(shown.contains("owner\tosis://") && shown.contains("created\t"), "{shown}");
     assert!(!s.ok(&["now"]).out.trim().is_empty());
     assert!(s.ok(&["inspect", "actor", "me"]).out.starts_with("actor osis://"));
-    let id = s.ok(&["history", "--thing", &t]).out.split(' ').next().unwrap().to_string();
+    let id = s.ok(&["commits", "--thing", &t]).out.split(' ').next().unwrap().to_string();
     assert!(s.ok(&["inspect", "commit", &id]).out.contains("Header"));
     s.ok(&["diag"]);
 }

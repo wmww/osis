@@ -227,7 +227,7 @@ fn paged_state_edits_and_restart() {
     m.op(t, &am, PathOp { path: vec![PathSeg::Key(Value::Int(5))], op: Op::Set(Value::Int(-5)) }).unwrap();
     let id = p.commit(m).unwrap().unwrap();
     assert_ne!(p.engine.get(&t, &am).unwrap(), before);
-    p.engine.undo(&id).unwrap();
+    p.engine.revert(&id).unwrap();
     assert_eq!(p.engine.get(&t, &am).unwrap(), before);
     assert!(last_edit.is_some());
 }
@@ -634,7 +634,7 @@ fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
     // undo the last edits (a delete, two inserts), newest first, each in a new session
     for (id, before) in done.into_iter().rev().take(3) {
         restart(&mut p);
-        p.engine.undo(&id).unwrap().unwrap();
+        p.engine.revert(&id).unwrap().unwrap();
         model = before;
     }
     restart(&mut p);

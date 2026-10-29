@@ -90,10 +90,11 @@
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
-//! # Undo
-//! Undo and redo act on this actor's own changes in a scope; `history` lists everyone's.
+//! # Commits, undo, redo, revert
+//! `commits` queries the held commits (anyone's); undo and redo revert this actor's own
+//! newest change or undo in a scope; `revert` reverts any commit.
 //! ```
-//! # use osis::{Config, Osis, Place, Ak, Value, UndoScope};
+//! # use osis::{Config, Osis, Place, Ak, Value, Scope, CommitQuery, CommitKind};
 //! # let db = Osis::create(Config::memory())?.0;
 //! let k = Ak::new("/app/x").unwrap();
 //! let mut w = db.write();
@@ -101,9 +102,11 @@
 //! w.at(t, k.clone()).set(&Value::Int(1))?;
 //! w.commit()?;
 //! db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(2)))?;
-//! db.undo(&UndoScope::Thing(t))?;
+//! let u = db.undo(&Scope::Thing(t))?.unwrap();
 //! assert_eq!(db.get(t, k.clone())?, Some(Value::Int(1)));
-//! db.redo(&UndoScope::Thing(t))?;
+//! let undos = db.commits(&CommitQuery::new().scope(Scope::Thing(t)).kind(CommitKind::Revert))?;
+//! assert_eq!(undos[0].commit.id, u.commit);
+//! db.redo(&Scope::Thing(t))?;
 //! assert_eq!(db.get(t, k)?, Some(Value::Int(2)));
 //! # Ok::<(), osis::Error>(())
 //! ```
@@ -247,7 +250,7 @@ mod read;
 mod share;
 mod signal;
 mod text;
-mod undo;
+mod commits;
 mod watch;
 mod write;
 
@@ -261,7 +264,7 @@ pub use read::{AspectRef, Created, Edge, PathRef, Reader, Roster};
 pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupSync, LinkInfo, LinkOpts, Lower, PRESYNC_WAIT, RecoveryCard, ServerAddr, ShareLink, Status, SyncScope, SyncState, WaitForSync};
 pub use signal::{SignalEvent, Target};
 pub use text::TextSession;
-pub use undo::{DropReason, EntryState, HistoryEntry, HistoryQuery, UndoScope};
+pub use commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Scope};
 pub use watch::{Change, Changed, CommitInfo, Source, Subscription, Watch};
 pub use write::{AspectWrite, Committed, PathWrite, Place, Write};
 

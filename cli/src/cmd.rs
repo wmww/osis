@@ -8,7 +8,7 @@ use crate::write::{self, Did};
 use crate::{Ctx, StoreSel, exit, key_ty, open, opt_ts, parse_ak, ty_in, usage};
 use anyhow::{Context as _, anyhow};
 use osis::{
-    AspectKey, Change, CommitId, Demotion, EdgeOpts, EntryState, Error, HistoryQuery, Key, LinkOpts, Lower, Osis, Role, Schema, Source, SyncScope, Target, Tid, Ts, UndoScope,
+    AspectKey, Change, CommitId, CommitKind, CommitQuery, Demotion, EdgeOpts, Error, Key, LinkOpts, Lower, Osis, Role, Schema, Source, SyncScope, Target, Tid, Ts,
     Value, WaitForSync,
 };
 use std::future::Future;
@@ -120,14 +120,20 @@ fn demotion(d: &DemoteFlags, ctx: &Ctx<'_>) -> anyhow::Result<Demotion> {
     Ok(Demotion { sync, backdate })
 }
 
-fn scope(ctx: &Ctx<'_>, s: &Scope) -> anyhow::Result<UndoScope> {
+fn scope(ctx: &Ctx<'_>, s: &Scope) -> anyhow::Result<osis::Scope> {
+    opt_scope(ctx, s)?.ok_or_else(|| usage("give exactly one scope: --thing T, --aspect T AK..., --group G"))
+}
+
+/// At most one scope.
+fn opt_scope(ctx: &Ctx<'_>, s: &Scope) -> anyhow::Result<Option<osis::Scope>> {
     match (&s.thing, s.aspect.is_empty(), &s.group) {
-        (Some(t), true, None) => Ok(UndoScope::Thing(ctx.tid(t)?)),
-        (None, false, None) => Ok(UndoScope::Aspects(
+        (None, true, None) => Ok(None),
+        (Some(t), true, None) => Ok(Some(osis::Scope::Thing(ctx.tid(t)?))),
+        (None, false, None) => Ok(Some(osis::Scope::Aspects(
             s.aspect.chunks(2).map(|p| Ok((ctx.tid(&p[0])?, parse_ak(&p[1], "AK")?))).collect::<anyhow::Result<_>>()?,
-        )),
-        (None, true, Some(g)) => Ok(UndoScope::Group(ctx.tid(g)?)),
-        _ => Err(usage("give exactly one scope: --thing T, --aspect T AK..., --group G")),
+        ))),
+        (None, true, Some(g)) => Ok(Some(osis::Scope::Group(ctx.tid(g)?))),
+        _ => Err(usage("give at most one scope: --thing T, --aspect T AK..., --group G")),
     }
 }
 
@@ -342,11 +348,21 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             Ok(db.send_signal(t, &k, &v, target)?)
         }
         Cmd::Signal(SignalCmd::Listen { t, kind, in_group, count }) => listen(ctx, &t, &kind, in_group, count),
-        Cmd::History { scope: s, max, before } => history(ctx, &s, max, before),
+        Cmd::Commits { scope: s, actor, kind, reverts, reverted_by, in_effect, since, until, after, max } => {
+            let mut q = CommitQuery { scope: opt_scope(ctx, &s)?, in_effect, limit: max, ..CommitQuery::default() };
+            q.actors = actor.iter().map(|a| ctx.tid(a)).collect::<anyhow::Result<_>>()?;
+            q.kinds = kind.iter().map(|k| kind_of(k)).collect::<anyhow::Result<_>>()?;
+            q.reverts = reverts.as_deref().map(parse_commit).transpose()?;
+            q.reverted_by = reverted_by.as_deref().map(parse_commit).transpose()?;
+            q.after = after.as_deref().map(parse_commit).transpose()?;
+            q.since = opt_ts(&since)?.and_then(|ms| Ts::make(ms, 0));
+            q.until = opt_ts(&until)?.and_then(|ms| Ts::make(ms, 0));
+            commits(ctx, &q)
+        }
         Cmd::Undo { scope: s } => undo(ctx, &s, false),
         Cmd::Redo { scope: s } => undo(ctx, &s, true),
-        Cmd::UndoCommit { id } => {
-            let c = db.undo_commit(parse_commit(&id)?)?;
+        Cmd::Revert { id } => {
+            let c = db.revert(parse_commit(&id)?)?;
             emit_commit(ctx, Some(c.commit))
         }
         Cmd::Groups { t } => {
@@ -812,38 +828,50 @@ fn listen(ctx: &mut Ctx<'_>, t: &str, kind: &str, in_group: bool, count: Option<
     stream_lines(ctx, &rx, count, timeout)
 }
 
-fn state_text(s: EntryState) -> &'static str {
-    match s {
-        EntryState::Undoable => "undoable",
-        EntryState::Undone => "undone",
-        EntryState::Dropped(osis::DropReason::Compacted) => "dropped-compacted",
-        EntryState::Dropped(osis::DropReason::Superseded) => "dropped-superseded",
-    }
+const KINDS: [(&str, CommitKind); 5] =
+    [("change", CommitKind::Change), ("revert", CommitKind::Revert), ("membership", CommitKind::Membership), ("snapshot", CommitKind::Snapshot), ("import", CommitKind::Import)];
+
+fn kind_of(s: &str) -> anyhow::Result<CommitKind> {
+    KINDS.iter().find(|k| k.0 == s).map(|k| k.1).ok_or_else(|| usage(format!("unknown commit kind {s:?}: change, revert, membership, snapshot or import")))
 }
 
-fn history(ctx: &mut Ctx<'_>, s: &Scope, max: usize, before: Option<String>) -> anyhow::Result<()> {
-    let sc = scope(ctx, s)?;
-    let before = opt_ts(&before)?.and_then(|ms| Ts::make(ms, 0));
-    let hs = ctx.db.history(&sc, HistoryQuery { limit: max, before })?;
+fn kind_text(k: CommitKind) -> &'static str {
+    KINDS.iter().find(|x| x.1 == k).map_or("?", |x| x.0)
+}
+
+/// One line per commit: id, ts, actor, node, kind, in-effect or reverted, flags, aspects.
+fn commits(ctx: &mut Ctx<'_>, q: &CommitQuery) -> anyhow::Result<()> {
+    let cs = ctx.db.commits(q)?;
     let raw = ctx.g.raw;
-    let lines = hs
+    let lines = cs
         .iter()
-        .map(|h| {
-            let aks: Vec<String> = h.aspects.iter().map(|(t, a)| format!("{}{}", t.to_uri(), a.as_str())).collect();
-            format!("{} {} {} {} {} {}", commit_text(&h.commit), ts_text(raw, ts_of(h.ts)), h.actor.to_uri(), h.node.to_uri(), state_text(h.state), aks.join(","))
+        .map(|c| {
+            let aks: Vec<String> = c.aspects.iter().map(|(t, a)| format!("{}{}", t.to_uri(), a.as_str())).collect();
+            let i = &c.commit;
+            let mut l = format!("{} {} {} {} {} {}", commit_text(&i.id), ts_text(raw, ts_of(i.ts)), i.actor.to_uri(), i.node.to_uri(), kind_text(c.kind), if c.in_effect { "in-effect" } else { "reverted" });
+            if let Some(r) = &c.reverts {
+                l += &format!(" reverts={}", commit_text(r));
+            }
+            if c.dropped {
+                l += " dropped";
+            }
+            l + " " + &aks.join(",")
         })
         .collect::<Vec<_>>();
     let j = J::Arr(
-        hs.iter()
-            .map(|h| {
+        cs.iter()
+            .map(|c| {
                 J::obj([
-                    ("commit", J::str(commit_text(&h.commit))),
-                    ("ts", J::int(ts_of(h.ts))),
-                    ("actor", J::tid(h.actor)),
-                    ("node", J::tid(h.node)),
-                    ("state", J::str(state_text(h.state))),
-                    ("undoes", J::opt(h.undoes.as_ref().map(|c| J::str(commit_text(c))))),
-                    ("aspects", J::Arr(h.aspects.iter().map(|(t, a)| J::Arr(vec![J::tid(*t), J::str(a.as_str())])).collect())),
+                    ("commit", J::str(commit_text(&c.commit.id))),
+                    ("ts", J::int(ts_of(c.commit.ts))),
+                    ("actor", J::tid(c.commit.actor)),
+                    ("node", J::tid(c.commit.node)),
+                    ("kind", J::str(kind_text(c.kind))),
+                    ("in_effect", J::Bool(c.in_effect)),
+                    ("reverts", J::opt(c.reverts.as_ref().map(|r| J::str(commit_text(r))))),
+                    ("reverted_by", J::Arr(c.reverted_by.iter().map(|r| J::str(commit_text(r))).collect())),
+                    ("dropped", J::Bool(c.dropped)),
+                    ("aspects", J::Arr(c.aspects.iter().map(|(t, a)| J::Arr(vec![J::tid(*t), J::str(a.as_str())])).collect())),
                 ])
             })
             .collect(),
@@ -941,14 +969,15 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
             let aks = db.aspects(t)?;
             for ak in aks {
                 let (changes, size, frag) = db.engine(|e| {
-                    let ch = e.changes(&[(t, ak.clone())]);
+                    let ch = e.held_commits(Some(&[(t, ak.clone())]));
                     let size = e.get(&t, &ak).ok().flatten().map(|v| osis_schema::osis_base::encode(&v).len());
                     let frag = e.state(&t, &ak).ok().flatten().map(|f| format!("{f:?}"));
                     (ch, size, frag)
                 });
                 lines.push(format!("aspect {} commits={} stored_size={}", ak.as_str(), changes.len(), size.map_or("-".into(), |s| s.to_string())));
-                for (id, node, actor, ts, undoes) in changes {
-                    lines.push(format!("  commit {} ts={} actor={} node={}{}", commit_text(&id), ts_of(ts), actor.to_uri(), node.to_uri(), undoes.map_or(String::new(), |u| format!(" undoes={}", commit_text(&u)))));
+                for c in changes {
+                    let h = &c.header;
+                    lines.push(format!("  commit {} kind={:?} ts={} actor={} node={}{}", commit_text(&c.id), h.kind, ts_of(h.ts), h.actor.to_uri(), h.author.to_uri(), h.undoes.map_or(String::new(), |u| format!(" undoes={}", commit_text(&u)))));
                 }
                 if let Some(f) = frag {
                     lines.push(format!("  state {f}"));

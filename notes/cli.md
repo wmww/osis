@@ -9,7 +9,7 @@
 - **Streaming** (`watch`, `signal listen`, `roster --watch`, `diag --follow`, `daemon`, `serve`): until `--count`, `--timeout` or SIGINT (default action: the process dies; commits are already durable). Streaming commands have no default timeout; `--timeout` reached with `--count` unmet: exit 6, without `--count`: exit 0. Other waits default to 30 s. `--timeout 0` is no deadline (deadlines use checked arithmetic; the API's `Duration`-taking `wait_synced` gets a 100-year bound).
 - **Named keys**: `db.key(ak)` types an AK by a registered schema (`schema add`, `--schema FILE`) or the core schema. Reads print named forms through the typed view (reader defaults filled); `--raw` uses the untyped key: stored value, numbered forms, ms. Writes through a typed key are validated (exit 5); `--raw` writes untyped.
 - **Paths**: typed positions follow the type. `[n]` on an untyped position: `get` reads the saved value (a list: index; else map key). Writes (`set`, `replace`, `rm`, `op`, script lines) take it as a map key, and refuse it (exit 2) when the saved value there is a list (untyped lists take no index writes; register a schema) or when the same batch already wrote that aspect or created/deleted the thing (`write` scripts: the pending state is invisible to reads, so the saved state cannot decide). Never a silent map write over a list.
-- **Commit ids** print as 64 lower-case hex digits (input for `undo-commit`, `inspect commit`).
+- **Commit ids** print as 64 lower-case hex digits (input for `revert`, `commits --reverts/--reverted-by/--after`, `inspect commit`).
 - **`write` scripts**: lines are tokenized at whitespace outside quotes and brackets, so a value is one token with its quotes kept; a token wholly in single quotes loses them (`''` is the root path). `$NAME` (from `create --as NAME`) works as a tid argument and inside values. Errors from a line's arguments carry `line N`; rights and unknown things are checked at commit (no line). Output: the commit id (or `-`), then `NAME<TAB>tid` per bound name.
 - **`edit` on a terminal**: the value goes to a new temp file (`create_new`, random name, mode 0600, in `$XDG_RUNTIME_DIR` when set), then `$EDITOR`; the file is removed whatever the editor does.
 - **Delivering commands** (`grant`, `edge`, `leave`, `link make`, `card show`, `group sync`): their API call queues inbox deposits or a new label's first commits that the engine holds only in memory, so they open with sync on and end with `sync_now` + `wait_synced(All)` within `--timeout` (exit 6 "done locally, not yet at the servers"); skipped for a store without servers. Other writes stay local and go out with the next networked command.
@@ -18,7 +18,7 @@
 - **`inspect`** is `Debug` dumps over `Osis::engine()` (commits per aspect, CRDT state, items of a group, pending commits, actor epochs, headers). Not stable.
 
 ## Deviations from the original design (the deleted CLI plan)
-- `history --limit N` is `--max N` (`--limit` is the global materialization bound).
+- `commits --limit N` is `--max N` (`--limit` is the global materialization bound).
 - `same` false exits 3 (§6 table) rather than 1 (§4 text).
 - `edit` takes the whole aspect: the API's `edit(base, new)` has no path form.
 - `-v` is accepted and ignored (no engine log sink yet); `-q` silences `serve`'s log.
@@ -51,7 +51,7 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `ls G` / `backlinks T` | query / backlinks | 2nd (no API yet) |
 | `watch T [AK]` | `at().on_change` / `watch_thing` | now |
 | `signal send` / `signal listen [--in]` | `send_signal` / `on_signal`, `on_signal_in` | now |
-| `history` / `undo` / `redo` / `undo-commit` | `history` / `undo` / `redo` / `undo_commit` | now |
+| `commits [SCOPE] [--actor A] [--kind K] [--reverts C] [--reverted-by C] [--in-effect B] [--since/--until TS] [--after C] [--max N]` / `undo` / `redo` / `revert C` | `commits` / `undo` / `redo` / `revert` | now |
 | `place` / `unplace` / `sub add/rm` / `groups` | `Write::place/unplace/add_subgroup/remove_subgroup`, `groups_of` | now |
 | `roster T [--watch]` / `role T` / `via T MEMBER` | `roster`, `watch_roster` / `role_on` / `member_path` | now |
 | `now` | `now` | now |

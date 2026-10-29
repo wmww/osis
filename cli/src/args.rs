@@ -54,7 +54,7 @@ pub struct WriteFlags {
     pub retention: Option<String>,
 }
 
-/// Undo and history scope.
+/// Commit query and undo scope.
 #[derive(Args, Debug, Clone, Default)]
 pub struct Scope {
     /// Every aspect of a thing
@@ -203,14 +203,34 @@ pub enum Cmd {
     /// Signals
     #[command(subcommand)]
     Signal(SignalCmd),
-    /// Everyone's changes in scope, newest first
-    History {
+    /// Held commits (anyone's), newest first
+    Commits {
         #[command(flatten)]
         scope: Scope,
-        #[arg(long = "max", value_name = "N", default_value_t = 100)]
-        max: usize,
+        /// By this actor (repeatable)
+        #[arg(long, value_name = "A")]
+        actor: Vec<String>,
+        /// change, revert, membership, snapshot or import (repeatable)
+        #[arg(long, value_name = "KIND")]
+        kind: Vec<String>,
+        /// Reverts of commit C
+        #[arg(long, value_name = "C")]
+        reverts: Option<String>,
+        /// The commit C reverts
+        #[arg(long, value_name = "C")]
+        reverted_by: Option<String>,
+        /// Only commits in effect (true) or reverted (false)
+        #[arg(long, value_name = "BOOL")]
+        in_effect: Option<bool>,
         #[arg(long, value_name = "TS")]
-        before: Option<String>,
+        since: Option<String>,
+        #[arg(long, value_name = "TS")]
+        until: Option<String>,
+        /// Page after commit C
+        #[arg(long, value_name = "C")]
+        after: Option<String>,
+        #[arg(long = "max", value_name = "N")]
+        max: Option<usize>,
     },
     /// Undo this person's newest change in scope
     Undo {
@@ -222,8 +242,8 @@ pub enum Cmd {
         #[command(flatten)]
         scope: Scope,
     },
-    /// Undo any change by commit id
-    UndoCommit { id: String },
+    /// Revert any change by commit id
+    Revert { id: String },
     /// Place T into group G
     Place { t: String, g: String },
     /// Remove T from group G
