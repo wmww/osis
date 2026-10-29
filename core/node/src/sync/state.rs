@@ -199,7 +199,9 @@ pub struct State {
     /// Commits whose body entry (not a certificate copy) left a label by a delete, by when
     /// (`remove_entry`): such a body is not placed there again while its live writes are carried
     /// (spec/sync.md §6). In memory, from `tombs` at load where the blob's record is known;
-    /// forgotten with the tombstone.
+    /// forgotten with the tombstone (`TOMBSTONE_LIFETIME`, minor consequence: at 0 a right
+    /// holder whose bounds are dated later re-uploads it every pass until its own bound, at
+    /// infinity memory grows with deletions; live writes are carried either way).
     pub deleted: BTreeMap<(LabelId, CommitId), u64>,
     /// Inbox blobs not yet answered by their server, by (server, blob).
     pub outbox: BTreeMap<(ServerKey, LabelId, BlobId), OutRec>,

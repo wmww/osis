@@ -133,11 +133,13 @@ pub(crate) fn bounded(a: &osis_commit::AspectEntry) -> bool {
     a.retention.at_least.rel.is_some() || a.retention.at_most.rel.is_some()
 }
 
-/// The aspect index of `(tid, ak)` in held commit `c`, if that part is not dropped.
+/// The aspect index of `(tid, ak)` in held commit `c`, if that part is held (not dropped, not
+/// still to arrive).
 pub(crate) fn held_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> {
     let m = core.ix.commits.get(c)?;
     let ai = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak)?;
-    (!m.dropped.contains(&(ai, 0))).then_some(ai)
+    // a part that never arrived (`missing`, a late part) is not held
+    (!m.dropped.contains(&(ai, 0)) && !m.missing.contains(&ai)).then_some(ai)
 }
 
 pub(crate) fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {

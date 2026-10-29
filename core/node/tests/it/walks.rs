@@ -609,13 +609,22 @@ fn open_equals_rebuild_random_histories_carried_imports() {
     }
 }
 
-// as above, spec/crdt.md §4.8: seeds where a keep-at-most-0 body died and dropped (a residue),
-// its killer turned invalid, and a late body older than it arrived: a replay dates the late body
-// at the residue, which the state no longer held, so the late join met no winner and the window
-// played only the late body (debug check)
+// as above, spec/crdt.md §4.8: seeds where a keep-at-most-0 body died and dropped, its killer
+// turned invalid, and a late body older than it arrived (they failed under the old exact dating
+// of dropped bodies)
 #[test]
 fn open_equals_rebuild_random_histories_unkilled_residue() {
     for seed in [40558, 40797] {
+        let _ = random_history(seed, 1, false, false);
+    }
+}
+
+// as above, spec/commits.md §5: seeds where a write of a keep-at-most-0 map died while its part
+// had not arrived (a late part): the death went to that unheld part and dropped it, so the part
+// was both dropped and missing in place, dropped only after a rebuild (737046 on main too)
+#[test]
+fn open_equals_rebuild_random_histories_unheld_part_dies() {
+    for seed in [737046, 737257] {
         let _ = random_history(seed, 1, false, false);
     }
 }
