@@ -62,12 +62,13 @@ pub fn prefix_inputs(h: &Header, parts: &[(usize, usize)]) -> Result<(Option<u64
     Ok((blob_expiry(h, c), keys))
 }
 
-/// The prefix expiry of a blob holding aspect `a` of `h`: the aspect's `expires`, or for a
-/// relay-only commit (which has none) `ts + MAX_DRIFT`, the end of its replay window
-/// (spec/wire.md §5, spec/sync.md §9).
+/// The prefix expiry of a blob holding aspect `a` of `h`: the aspect's `expires`; for a
+/// relay-only commit (which has none) `ts + MAX_DRIFT`, the end of its replay window; for a
+/// presence commit (none either) `ts + MAX_LEASE`, its lease (spec/wire.md §5, spec/sync.md §9).
 pub fn blob_expiry(h: &Header, a: &AspectEntry) -> Option<u64> {
     match h.ephemeral {
         Some(crate::EphClass::Relay) => Some(h.ts.wall_ms().0.saturating_add(MAX_DRIFT_MS)),
+        Some(crate::EphClass::Presence) => Some(h.ts.wall_ms().0.saturating_add(osis_base::format::MAX_LEASE_MS)),
         _ => a.expires,
     }
 }

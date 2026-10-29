@@ -113,7 +113,9 @@ impl<B: Backend> Driver<B> {
                 let _ = d.send(());
             }
         }
-        self.hub.closed(id);
+        let now = self.now();
+        let out = blocking(|| self.hub.closed(now, id));
+        self.apply(out);
     }
 
     fn apply(&mut self, out: Vec<HubOutput>) {

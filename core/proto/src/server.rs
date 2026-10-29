@@ -165,7 +165,17 @@ pub struct ServerConnection {
     cache: HashMap<LabelId, Cached>,
     /// Dialable key of the last member proof that opened a label.
     member: Option<[u8; 32]>,
+    /// Presence entries uploaded on this connection (spec/sync.md §5): removed when it closes
+    /// (and no other connection uploaded them); pruned of entries gone at `prune_at`.
+    presence: BTreeSet<(LabelId, BlobId)>,
+    prune_at: usize,
 }
+
+/// Presence uploads a connection remembers before it first drops those no longer held.
+/// Performance switch: pruning keeps the set at about twice the live entries (bounded by the
+/// ephemeral caps); 0 prunes at every upload, infinity never (a connection replacing its
+/// presence would grow the set without bound).
+const PRESENCE_PRUNE: usize = 1024;
 
 /// The label's parsed path, reloaded when the head changed; none for an unknown label.
 fn cached<'a>(cache: &'a mut HashMap<LabelId, Cached>, store: &dyn LabelStore, label: &LabelId) -> Result<Option<&'a Cached>, StoreError> {
@@ -222,7 +232,15 @@ impl ServerConnection {
             crossed: HashSet::new(),
             cache: HashMap::new(),
             member: None,
+            presence: BTreeSet::new(),
+            prune_at: PRESENCE_PRUNE,
         }
+    }
+
+    /// Presence entries uploaded on this connection (some may be gone since): the server removes
+    /// them when it closes, unless another open connection uploaded them too (spec/sync.md §5).
+    pub fn presence(&self) -> &BTreeSet<(LabelId, BlobId)> {
+        &self.presence
     }
 
     /// The dialable key of the last member proof that opened a label here (spec/sync.md §5).
@@ -745,7 +763,24 @@ impl ServerConnection {
         if store.tombstoned(label, &blob_id)? {
             return Ok(Code::TOMBSTONED);
         }
-        store.put(label, Put { blob_id, blob, wrap, stamp, expiry, ephemeral: class == Class::Ephemeral })
+        let presence = class == Class::Presence;
+        let code = store.put(label, Put { blob_id, blob, wrap, stamp, expiry, ephemeral: class.in_memory(), presence })?;
+        if presence && code == Code::OK {
+            self.presence.insert((*label, blob_id));
+            if self.presence.len() > self.prune_at {
+                let mut gone = Vec::new();
+                for (l, b) in &self.presence {
+                    if store.entry(l, b)?.is_none() {
+                        gone.push((*l, *b));
+                    }
+                }
+                for k in gone {
+                    self.presence.remove(&k);
+                }
+                self.prune_at = self.presence.len().saturating_mul(2).max(PRESENCE_PRUNE);
+            }
+        }
+        Ok(code)
     }
 
     /// One Delete item (spec/sync.md §5): by the head's delete key, or by a level's delete key

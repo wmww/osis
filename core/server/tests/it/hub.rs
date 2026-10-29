@@ -330,6 +330,51 @@ fn ephemeral_entries_in_memory() {
     assert_eq!(sorted(want), sorted(ids));
 }
 
+// spec/sync.md §5 (presence entries): a presence entry goes when every connection that uploaded it
+// has closed, pushed to subscribers as a deletion; it leaves no tombstone (its author uploads it
+// again on reconnect); it is never replicated to a peer server (a plain ephemeral entry is)
+#[test]
+fn presence_entries_tied_to_connection_spec_sync_5() {
+    let mut w = World::new();
+    let (h, h2) = (w.add_hub(Policy::default()), w.add_hub(Policy::default()));
+    // clients before any peer link: client index = link index
+    let (a, b, c) = (w.connect(h), w.connect(h), w.connect(h));
+    let l = Label::new(3);
+    w.setup(a, &l);
+    for x in [a, b, c] {
+        w.open(x, &l);
+    }
+    w.run(c, Command::Subscribe { labels: vec![l.id] });
+    let p = classed(1, osis_label::Class::Presence);
+    let e = classed(2, osis_label::Class::Ephemeral);
+    let (pid, eid) = (osis_label::blob_id(&p), osis_label::blob_id(&e));
+    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(p.clone()), l.entry(e.clone())] })), vec![Code::OK, Code::OK]);
+    assert_eq!(statuses(&w.run(b, Command::Upload { label: l.id, entries: vec![l.entry(p.clone())] })), vec![Code::OK]);
+    let (pushed, _) = events_of(&w.take(c));
+    assert_eq!(sorted(added(&pushed)), sorted(vec![pid, eid]));
+    // not replicated
+    let link = w.peer(h, h2);
+    let d = w.connect(h2);
+    w.open(d, &l);
+    let (evs, _) = events_of(&w.run(d, sync(l.id, None, vec![], vec![])));
+    assert_eq!(added(&evs), vec![eid], "the plain ephemeral entry is replicated, the presence one not");
+    w.cut(link);
+    // a closes: b uploaded it too, it stays
+    w.cut(a);
+    let (evs, _) = events_of(&w.run(c, sync(l.id, None, vec![], vec![])));
+    assert_eq!(sorted(added(&evs)), sorted(vec![pid, eid]));
+    w.take(c);
+    w.cut(b);
+    let (pushed, _) = events_of(&w.take(c));
+    assert_eq!(pushed, vec![Event::Deleted(pid)], "pushed as a deletion when the last uploader left");
+    let (evs, _) = events_of(&w.run(c, sync(l.id, None, vec![], vec![])));
+    assert_eq!(added(&evs), vec![eid], "the plain one stays");
+    // no tombstone: its author uploads it again
+    let a2 = w.connect(h);
+    w.open(a2, &l);
+    assert_eq!(statuses(&w.run(a2, Command::Upload { label: l.id, entries: vec![l.entry(p.clone())] })), vec![Code::OK]);
+}
+
 // spec/sync.md §5: blind-to-blind replication is push only: steps with claim sets and stamped entries reach the peer; deposits and deletions do not travel
 #[test]
 fn two_servers_replicate() {

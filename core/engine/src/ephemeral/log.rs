@@ -251,7 +251,7 @@ impl Engine {
                 let r = w.range();
                 self.eph.next = r.hi;
                 let pre = state.footprint(&delta);
-                out.push(Resolved { tid: la.tid, ak: la.ak, delta, range: (r.lo, r.hi), expires: None, log: Some((pre, la.schema)) });
+                out.push(Resolved { tid: la.tid, ak: la.ak, delta, range: (r.lo, r.hi), expires: None, presence: false, log: Some((pre, la.schema)) });
             }
         }
         Ok(out)

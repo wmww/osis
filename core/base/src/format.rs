@@ -65,6 +65,17 @@ pub const MAX_RELAY_BLOB: usize = 64 * KIB;
 /// A commit more than this ahead of the receiver's wall clock is parked (spec/wire.md §2,
 /// spec/crdt.md §2.2). fixed.
 pub const MAX_DRIFT_MS: u64 = HOUR_MS;
+/// A presence commit's lease: it goes at its `ts` plus this, at servers and holders alike, when
+/// its author's departure went unnoticed (a half-open connection) (spec/wire.md §2, spec/sync.md
+/// §9). fixed. Owner-agreed tradeoff: 0 makes every presence value vanish at once (or needs
+/// constant keep-alives); infinity keeps a crashed author's presence forever at a server that
+/// never sees its connection close.
+pub const MAX_LEASE_MS: u64 = 20 * MINUTE_MS;
+/// An author with live presence values sends a fresh presence commit this often, so its lease
+/// never runs out while it is connected (spec/wire.md §2, spec/sync.md §9). fixed. Owner-agreed
+/// tradeoff, below `MAX_LEASE` by the slack a late or slow upload needs: 0 is constant traffic;
+/// at or above `MAX_LEASE` a live author's presence lapses between refreshes.
+pub const KEEPALIVE_MS: u64 = 15 * MINUTE_MS;
 /// Membership deltas are kept at least this long after replaced (spec/wire.md §2,
 /// spec/commits.md §5). fixed.
 pub const MEMBERSHIP_KEEP_MS: u64 = 90 * DAY_MS;

@@ -422,6 +422,12 @@ impl LabelStore for PeerStore<'_> {
         Ok(out)
     }
 
+    /// Unused: the sync engine drops a presence entry a session uploaded once no source holds
+    /// it (`eph_served_gone`, `eph_presence`).
+    fn presence_gone(&mut self, _label: &LabelId, _blob_id: &BlobId) -> std::result::Result<bool, StoreError> {
+        Ok(false)
+    }
+
     fn relay(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, _now: u64) -> std::result::Result<osis_proto::RelayVerdict, StoreError> {
         // expiry is wall time: the corrected clock
         Ok(self.relays.admit(label, blob_id, size, expiry, self.wall))
@@ -460,6 +466,7 @@ impl SyncEngine {
             match idle {
                 Some(old) => {
                     self.served.remove(&old);
+                    self.eph_served_gone(old);
                     out.push(Action::Close { conn: old });
                 }
                 None => {
@@ -576,7 +583,9 @@ impl SyncEngine {
         let peer = s.conn.member().unwrap_or(s.peer);
         let proven = s.conn.member();
         let member = proven.is_some_and(|k| reach.contains_key(&k));
-        if !s.conn.is_closed() {
+        if s.conn.is_closed() {
+            self.eph_served_gone(conn);
+        } else {
             self.served.insert(conn, s);
         }
         self.charges.full |= acc.full;
@@ -604,7 +613,7 @@ impl SyncEngine {
         }
         for (l, evs) in by_label {
             // stamps were checked against the served head by the server engine
-            self.log_events(None, l, evs, None, out)?;
+            self.log_events_from(None, Some(conn), l, evs, None, out)?;
         }
         let mut relays = Vec::new();
         for o in outputs {
@@ -650,6 +659,7 @@ impl SyncEngine {
             .collect();
         for c in stale {
             self.served.remove(&c);
+            self.eph_served_gone(c);
             out.push(Action::Close { conn: c });
         }
     }
@@ -685,6 +695,7 @@ impl SyncEngine {
         let stale: Vec<ConnId> = self.served.iter().filter(|(_, s)| s.last.saturating_add(idle) <= now || s.conn.opened().is_empty() && s.since.saturating_add(open) <= now).map(|(c, _)| *c).collect();
         for c in stale {
             self.served.remove(&c);
+            self.eph_served_gone(c);
             out.push(Action::Close { conn: c });
         }
         let wall = self.state.now;

@@ -13,7 +13,7 @@ use std::sync::Arc;
 const T0: u64 = 1_700_000_000_000;
 
 fn put(b: &[u8]) -> Put<'_> {
-    Put { blob_id: osis_label::blob_id(b), blob: b, wrap: [1; 49], stamp: Some(Signature([2; 64])), expiry: None, ephemeral: false }
+    Put { blob_id: osis_label::blob_id(b), blob: b, wrap: [1; 49], stamp: Some(Signature([2; 64])), expiry: None, ephemeral: false, presence: false }
 }
 
 // spec/sync.md §4: registration path, entries, pending deletions, tombstones and the log persist in the file; a reopened node resumes sweeps

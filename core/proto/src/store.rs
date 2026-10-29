@@ -49,7 +49,8 @@ pub enum LogRecord {
 
 /// An entry to add or replace, already authorized by the engine. An ephemeral entry
 /// (`ephemeral`, from the blob's prefix class) is held in memory only, under a per-label byte
-/// cap (spec/sync.md §4, §5).
+/// cap (spec/sync.md §4, §5); a presence entry (`presence`, ephemeral too) is removed when the
+/// connections that uploaded it have closed (`presence_gone`) and leaves no tombstone.
 #[derive(Clone, Copy, Debug)]
 pub struct Put<'a> {
     pub blob_id: BlobId,
@@ -58,6 +59,7 @@ pub struct Put<'a> {
     pub stamp: Option<Signature>,
     pub expiry: Option<u64>,
     pub ephemeral: bool,
+    pub presence: bool,
 }
 
 /// What remains of a label's deposit budget.
@@ -117,7 +119,8 @@ pub trait LabelStore {
     /// something changed.
     fn put(&mut self, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError>;
     fn budget(&self, label: &LabelId) -> Result<Budget, StoreError>;
-    /// Removes an entry, leaving a tombstone, and logs the deletion (or refuses, e.g. code 4).
+    /// Removes an entry, leaving a tombstone (none for a presence entry), and logs the deletion
+    /// (or refuses, e.g. code 4).
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError>;
     /// Sets a pending deletion time (the earliest wins) and logs it if it changed.
     fn schedule_delete(&mut self, label: &LabelId, blob_id: &BlobId, at: u64) -> Result<Code, StoreError>;
@@ -130,6 +133,10 @@ pub trait LabelStore {
     fn live_by_id(&self, label: &LabelId, after: Option<&BlobId>, max: usize) -> Result<Vec<(BlobId, EntryMeta)>, StoreError>;
     /// IDs of the live entries, sorted.
     fn live_ids(&self, label: &LabelId) -> Result<Vec<BlobId>, StoreError>;
+    /// Removes presence entry `blob_id` once every connection that uploaded it has closed
+    /// (spec/sync.md §5): logged, no tombstone (only its author uploads it, again on reconnect).
+    /// Whether a presence entry was held.
+    fn presence_gone(&mut self, label: &LabelId, blob_id: &BlobId) -> Result<bool, StoreError>;
     /// Admits a stamped relay-only upload (spec/sync.md §5; `RelayGate::admit`).
     fn relay(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, now: u64) -> Result<crate::RelayVerdict, StoreError>;
 }
@@ -145,9 +152,10 @@ struct LabelState {
     /// Records at or below this sequence number were dropped.
     horizon: u64,
     next_seq: u64,
-    /// Ephemeral entries and their bytes.
+    /// Ephemeral entries and their bytes; the presence ones among them.
     ephemeral: BTreeSet<BlobId>,
     ephemeral_bytes: u64,
+    presence: BTreeSet<BlobId>,
 }
 
 impl LabelState {
@@ -234,6 +242,7 @@ impl MemoryLabelStore {
             let due: Vec<BlobId> = s.entries.iter().filter(|(_, (m, _))| m.pending_delete.is_some_and(|t| t <= now)).map(|(k, _)| *k).collect();
             s.tombstones.retain(|_, t| t.saturating_add(TOMBSTONE_LIFETIME_MS) > now);
             for id in &expired {
+                s.presence.remove(id);
                 if let Some((m, _)) = s.entries.remove(id)
                     && s.ephemeral.remove(id)
                 {
@@ -320,6 +329,9 @@ impl LabelStore for MemoryLabelStore {
             }
             s.ephemeral_bytes += put.blob.len() as u64;
             s.ephemeral.insert(put.blob_id);
+            if put.presence {
+                s.presence.insert(put.blob_id);
+            }
         }
         if put.stamp.is_none() {
             let (n, bytes) = Self::deposited(s);
@@ -354,10 +366,27 @@ impl LabelStore for MemoryLabelStore {
         if s.ephemeral.remove(blob_id) {
             s.ephemeral_bytes = s.ephemeral_bytes.saturating_sub(m.size);
         }
-        s.tombstones.insert(*blob_id, now);
+        if !s.presence.remove(blob_id) {
+            s.tombstones.insert(*blob_id, now);
+        }
         s.append(LogRecord::Deleted(*blob_id));
         self.unref(blob_id);
         Ok(Code::OK)
+    }
+
+    fn presence_gone(&mut self, label: &LabelId, blob_id: &BlobId) -> Result<bool, StoreError> {
+        let Some(s) = self.labels.get_mut(label) else { return Ok(false) };
+        if !s.presence.remove(blob_id) {
+            return Ok(false);
+        }
+        if let Some((m, _)) = s.entries.remove(blob_id)
+            && s.ephemeral.remove(blob_id)
+        {
+            s.ephemeral_bytes = s.ephemeral_bytes.saturating_sub(m.size);
+        }
+        s.append(LogRecord::Deleted(*blob_id));
+        self.unref(blob_id);
+        Ok(true)
     }
 
     fn schedule_delete(&mut self, label: &LabelId, blob_id: &BlobId, at: u64) -> Result<Code, StoreError> {

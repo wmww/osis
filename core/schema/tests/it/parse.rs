@@ -171,6 +171,7 @@ fn validation_rules_spec_data_model_3() {
         ("aspect /x/a: int [ephemeral, signal];", "at most one of"),
         ("aspect /x/a: int [presence, by: admin];", "durable aspects only"),
         ("aspect /x/a: int [signal, expires: 5s];", "no value to expire"),
+        ("aspect /x/a: int [presence, expires: 5s];", "no expiry"),
     ] {
         let e = err(src);
         assert!(e.msg.contains(needle), "{src}: {e}");

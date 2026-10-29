@@ -51,6 +51,9 @@ struct EphAspect {
     own: Option<Fragment>,
     /// Held ephemeral commit parts on this aspect: (commit, aspect index).
     parts: BTreeSet<(CommitId, usize)>,
+    /// A presence aspect (written with that lifetime, or held from presence commits): its own
+    /// writes go out as presence commits and it is never compacted.
+    presence: bool,
 }
 
 /// The engine's ephemeral state.
@@ -114,6 +117,8 @@ pub(crate) struct Resolved {
     delta: Fragment,
     range: (u64, u64),
     expires: Option<u64>,
+    /// A write of a presence aspect.
+    presence: bool,
     /// For the undo log: the touched positions before the write and the writer's schema.
     log: Option<(Fragment, Option<Arc<Schema>>)>,
 }
@@ -266,6 +271,11 @@ impl Engine {
                 self.eph.next = first;
                 return Err(Error::Misuse("an expiry must be in the future"));
             }
+            // a presence value lives while its author is connected (notes/ephemeral.md Presence)
+            if am.lifetime == Lifetime::Presence && expires.is_some() {
+                self.eph.next = first;
+                return Err(Error::Misuse("a presence write takes no expiry"));
+            }
             // resolved against the joined state (a conversion's reset against the ephemeral
             // side); the ephemeral side alone (borrowed) when no durable delta is held
             let durable = match if op.conversion { Ok(None) } else { self.durable_state(tid, ak) } {
@@ -303,7 +313,7 @@ impl Engine {
             if let Some((delta, r)) = out {
                 let log = (!op.conversion).then(|| (base.footprint(&delta), am.schema.clone()));
                 self.eph.next = r.hi;
-                resolved.push(Resolved { tid: *tid, ak: ak.clone(), delta, range: (r.lo, r.hi), expires, log });
+                resolved.push(Resolved { tid: *tid, ak: ak.clone(), delta, range: (r.lo, r.hi), expires, presence: am.lifetime == Lifetime::Presence, log });
             }
         }
         let free = std::mem::take(&mut m.free);
@@ -351,7 +361,8 @@ impl Engine {
             if let Some((pre, schema)) = r.log {
                 logged.push(log::LogAspect { tid: r.tid, ak: r.ak.clone(), delta: r.delta.clone(), range: CounterRange { lo: r.range.0, hi: r.range.1 }, pre, schema });
             }
-            written.push((r.tid, r.ak.clone(), r.delta.clone(), r.expires));
+            a.presence |= r.presence;
+            written.push((r.tid, r.ak.clone(), r.delta.clone(), r.expires, a.presence));
             if let Some(o) = &mut a.own {
                 o.join(r.delta.clone());
             }
@@ -368,8 +379,8 @@ impl Engine {
             }
             changed.push((r.tid, r.ak));
         }
-        for (t, ak, delta, expires) in &written {
-            self.note_written(t, ak, delta, *expires, actor);
+        for (t, ak, delta, expires, presence) in &written {
+            self.note_written(t, ak, delta, *expires, *presence, actor);
         }
         for (t, ak, v) in &signals {
             self.note_signal(t, ak, v, ts, actor);
@@ -420,6 +431,7 @@ impl Engine {
         for t in &gone {
             self.eph.things.remove(t);
             self.eph.remote.local.remove(t);
+            self.eph.remote.presence.retain(|(x, _), _| x != t);
             self.eph.defs.remove(t);
             if let Some(m) = self.eph.aspects.remove(t) {
                 for (ak, a) in m {
@@ -466,7 +478,9 @@ impl Engine {
 
     /// When the next ephemeral expiry is due (corrected wall ms).
     pub fn next_ephemeral_timer(&self) -> Option<u64> {
-        [self.eph.timers.keys().next(), self.eph.remote.timers.keys().next()].into_iter().flatten().min().copied()
+        let r = &self.eph.remote;
+        let keepalive = r.presence_sent.values().min().map(|t| t.saturating_add(osis_base::format::KEEPALIVE_MS));
+        [self.eph.timers.keys().next().copied(), r.timers.keys().next().copied(), r.leases.keys().next().copied(), keepalive].into_iter().flatten().min()
     }
 
     /// Runs the ephemeral expiries due by the corrected clock: their value-carrying writes are
@@ -495,6 +509,7 @@ impl Engine {
             }
         }
         changed.extend(self.tick_remote(now));
+        self.tick_presence(now);
         if !changed.is_empty() {
             self.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
             self.core.events.flush();

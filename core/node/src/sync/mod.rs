@@ -678,6 +678,7 @@ impl SyncEngine {
             Event::Bytes { conn, bytes } if self.served.contains_key(&conn) => self.serve(conn, osis_proto::ServerInput::Bytes(bytes), out)?,
             Event::Down { conn } if self.served.contains_key(&conn) => {
                 self.served.remove(&conn);
+                self.eph_served_gone(conn);
             }
             Event::Bytes { conn, bytes } => {
                 let now = self.raw_now();
