@@ -281,13 +281,14 @@ impl SyncEngine {
     /// A thing under several labels waits while any of them is busy.
     fn eph_busy(&self) -> (BTreeSet<Tid>, BTreeSet<Tid>) {
         let mut plain: BTreeMap<LabelId, (Option<Tid>, BTreeSet<ConnId>)> = BTreeMap::new();
-        let mut pres: BTreeMap<Tid, (BTreeSet<CommitId>, BTreeSet<(LabelId, ConnId)>)> = BTreeMap::new();
+        // per actor its presence commits in flight, and where
+        let mut pres: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
+        let mut pres_at: BTreeSet<(Tid, LabelId, ConnId)> = BTreeSet::new();
         for (c, l, b) in &self.eph.uploads {
             let Some(e) = self.eph.entries.get(&(*l, *b)).filter(|e| e.own) else { continue };
             if e.presence {
-                let p = pres.entry(e.actor).or_default();
-                p.0.insert(e.commit);
-                p.1.insert((*l, *c));
+                pres.entry(e.actor).or_default().insert(e.commit);
+                pres_at.insert((e.actor, *l, *c));
             } else {
                 let p = plain.entry(*l).or_default();
                 p.0 = p.0.or_else(|| self.conns.get(c).and_then(|x| x.labels.get(l)).map(|x| x.group));
@@ -297,9 +298,9 @@ impl SyncEngine {
         let groups = plain.iter().filter(|(l, (_, cs))| self.eph_conns(l).iter().all(|(c, _, _)| cs.contains(c))).filter_map(|(_, (g, _))| *g).collect();
         let actors = pres
             .into_iter()
-            .filter(|(_, (commits, busy))| {
+            .filter(|(a, commits)| {
                 let labels: BTreeSet<LabelId> = commits.iter().filter_map(|c| self.eph.by_commit.get(c)).flatten().map(|(l, _)| *l).collect();
-                labels.iter().all(|l| self.eph_conns(l).iter().all(|(c, _, _)| busy.contains(&(*l, *c))))
+                labels.iter().all(|l| self.eph_conns(l).iter().all(|(c, _, _)| pres_at.contains(&(*a, *l, *c))))
             })
             .map(|(a, _)| a)
             .collect();

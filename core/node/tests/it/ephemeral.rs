@@ -675,7 +675,8 @@ fn random_window_run(seed: u64) {
 
 /// `single`: one server only, always with the small cap (what it holds is all others get).
 /// `inflight`: half the steps end after one hop of delivery instead of settling, so later
-/// writes meet uploads still in flight (coalesced, spec/sync.md §9).
+/// writes meet uploads still in flight (coalesced, spec/sync.md §9), and the second server is
+/// at times slow (its messages held back for some steps).
 fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
     let mut rnd = move |n: u64| {
@@ -713,7 +714,7 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
         z ^= z << 13;
         z ^= z >> 7;
         z ^= z << 17;
-        z % 2 == 0
+        z.is_multiple_of(2)
     };
     for step in 0..40 {
         let p = nodes[prnd(4) as usize];
@@ -775,6 +776,16 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
                 continue;
             }
         }
+        // a slow server: its answers and pushes held back for a while
+        if inflight && !single && irnd() && irnd() {
+            if net.held_servers.remove(&s2) {
+                log.push(format!("server {s2} answers"));
+                net.release();
+            } else {
+                log.push(format!("server {s2} slow"));
+                net.held_servers.insert(s2);
+            }
+        }
         if inflight && irnd() {
             log.push("one hop".into());
             for n in &nodes {
@@ -786,6 +797,7 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
         }
     }
     net.blocked.clear();
+    net.release();
     for n in &nodes {
         net.set_online(*n, true);
     }
@@ -810,6 +822,14 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     let want: BTreeMap<String, String> = cursors.iter().filter(|(n, _)| holders.contains(n)).map(|(n, v)| (n.to_string(), v.clone())).collect();
     for n in &holders {
         assert_eq!(str_map(net.eph_read(*n, w, CURSOR)), want, "seed {seed}: node {n}'s cursors\n{}", log.join("\n"));
+    }
+    // and no server keeps a covered presence entry: at most one per live cursor
+    let l = net.label(h0);
+    for sv in &servers {
+        let store = net.servers[*sv].hub.store();
+        let ids = osis_proto::LabelStore::live_ids(store, &l).unwrap_or_default();
+        let presence = ids.iter().filter(|b| osis_proto::LabelStore::blob(store, b).ok().flatten().and_then(|x| osis_label::Prefix::parse(&x).ok()).is_some_and(|p| p.class() == osis_label::Class::Presence)).count();
+        assert!(presence <= cursors.len(), "seed {seed}: server {sv} holds {presence} presence entries for {} cursors\n{}", cursors.len(), log.join("\n"));
     }
 }
 
