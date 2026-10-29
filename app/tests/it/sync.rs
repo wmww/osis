@@ -15,12 +15,18 @@ fn cfg(seed: u64, clock: &Arc<ManualClock>) -> Config {
 
 /// Two devices of one person, paired; nothing synced yet beyond the pairing.
 fn two() -> (Data, Data) {
+    let (a, b, _) = two_clocked();
+    (a, b)
+}
+
+/// `two`, with the clock both read.
+fn two_clocked() -> (Data, Data, Arc<ManualClock>) {
     let clock = Arc::new(ManualClock::new(WallMs(1_760_000_000_000)));
     let a = Osis::create(cfg(1, &clock)).unwrap().0;
     let j = Osis::pair(cfg(2, &clock), &a.pair_offer().unwrap()).unwrap();
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let b = j.finish(&reply).unwrap();
-    (Data::new(a), Data::new(b))
+    (Data::new(a), Data::new(b), clock)
 }
 
 fn deliver(from: &Osis, to: &Osis) {
@@ -359,4 +365,188 @@ fn reorder_against_concurrent_unfavorite() {
     sync(&a, &b);
     assert_eq!(a.favorites().unwrap(), b.favorites().unwrap());
     assert_eq!(a.favorites().unwrap().len(), f.len());
+}
+
+/// Two devices fill in different fields of a contact's absent org (and names) at once: both
+/// fields survive, whichever device writes later (a whole-struct write with defaults would
+/// overwrite the other's field with an empty one).
+#[test]
+fn contact_fields_of_an_absent_struct_race() {
+    use osis_app::contact::{NAMES, ORG};
+    use osis_app::data::NewKind;
+    use osis_app::fields::FormRow;
+    for later_is_b in [false, true] {
+        let (a, b, clock) = two_clocked();
+        a.main_group().unwrap();
+        let c = a.create(NewKind::Contact).unwrap();
+        a.db.write_with(|w| w.at(c, NAMES).remove()).unwrap();
+        sync(&a, &b);
+        let act = |d: &Data, label: &str| d.contact_form(c).unwrap().into_iter().find(|r: &FormRow| r.label == label).unwrap().act;
+        let (first, second) = if later_is_b { (&a, &b) } else { (&b, &a) };
+        first.form_apply(c, &act(first, "Title"), "Gardener").unwrap();
+        first.form_apply(c, &act(first, "Given name"), "Theo").unwrap();
+        clock.advance(1000);
+        second.form_apply(c, &act(second, "Organisation"), "Acme").unwrap();
+        second.form_apply(c, &act(second, "Family name"), "Lind").unwrap();
+        sync(&a, &b);
+        for d in [&a, &b] {
+            let org = d.get(c, ORG).unwrap().unwrap();
+            assert_eq!((org.title.as_str(), org.name.as_str()), ("Gardener", "Acme"));
+            let n = d.get(c, NAMES).unwrap().unwrap();
+            assert_eq!((n.given.as_deref(), n.family.as_deref()), (Some("Theo"), Some("Lind")));
+        }
+    }
+}
+
+/// Renaming an email on one device while the other relabels it: one entry under the new
+/// address. (The relabel is a field write into the renamed-away entry, which brings that entry
+/// back with the field alone: spec'd CRDT behaviour, notes/crdt.md Known anomalies.)
+#[test]
+fn email_rename_against_concurrent_edits() {
+    use osis_app::contact::EMAILS;
+    use osis_app::data::NewKind;
+    use osis_app::fields::FormAct;
+    let (a, b, clock) = two_clocked();
+    a.main_group().unwrap();
+    let c = a.create(NewKind::Contact).unwrap();
+    let add = |d: &Data| d.contact_form(c).unwrap().into_iter().find(|r| matches!(r.act, FormAct::AddKey { ak: "/contact/emails" })).unwrap().act;
+    let email = |d: &Data, v: &str| d.contact_form(c).unwrap().into_iter().find(|r| r.value == v).unwrap().act;
+    a.form_apply(c, &add(&a), "x@a.org").unwrap();
+    sync(&a, &b);
+    // both rename the same address: both new ones stay (no data lost)
+    a.form_apply(c, &email(&a, "x@a.org"), "y@a.org").unwrap();
+    clock.advance(10);
+    b.form_apply(c, &email(&b, "x@a.org"), "z@a.org").unwrap();
+    sync(&a, &b);
+    let keys = |d: &Data| d.get(c, EMAILS).unwrap().unwrap_or_default().into_keys().collect::<Vec<_>>();
+    assert_eq!(keys(&a), keys(&b));
+    assert_eq!(keys(&a), vec!["y@a.org".to_string(), "z@a.org".to_string()]);
+    // a stale row (its address removed elsewhere meanwhile) saved: the new address is added
+    let stale = email(&a, "y@a.org");
+    b.form_apply(c, &email(&b, "y@a.org"), "").unwrap();
+    sync(&a, &b);
+    a.form_apply(c, &stale, "w@a.org").unwrap();
+    sync(&a, &b);
+    assert_eq!(keys(&b), vec!["w@a.org".to_string(), "z@a.org".to_string()]);
+}
+
+/// An "All fields" edit of one field and a nudge of the same aspect on the other device: both
+/// survive (the nudge's whole-value write diffs against what it read).
+#[test]
+fn field_edit_and_nudge_merge() {
+    use osis_app::data::NewKind;
+    use osis_app::event::{START, Start};
+    let (a, b, clock) = two_clocked();
+    a.main_group().unwrap();
+    let e = a.create(NewKind::Event).unwrap();
+    sync(&a, &b);
+    let Some(Start::At(w0)) = a.get(e, START).unwrap() else { panic!() };
+    let rows = a.field_rows(e).unwrap();
+    let zone = rows.iter().find(|r| r.ak == "/event/start" && r.label == "zone").unwrap().clone();
+    a.set_field(e, &zone, "Europe/Berlin").unwrap();
+    clock.advance(10);
+    b.nudge(e, osis_app::time::HOUR, 0).unwrap();
+    sync(&a, &b);
+    for d in [&a, &b] {
+        let Some(Start::At(w)) = d.get(e, START).unwrap() else { panic!() };
+        assert_eq!((w.time, w.zone.as_deref()), (w0.time + osis_app::time::HOUR, Some("Europe/Berlin")));
+    }
+}
+
+/// Adversarial favorites interleavings: concurrent moves of one entry, a move against a
+/// remove-and-re-add, moves onto entries held in the other group's list. Both devices end with
+/// one order, without duplicates, and a removal is never undone by a move.
+#[test]
+fn favorites_moves_adversarial() {
+    for round in 0..4 {
+        let (a, b, clock) = two_clocked();
+        let ga = a.main_group().unwrap();
+        let gb = b.main_group().unwrap();
+        // entries in both groups' lists
+        let na: Vec<Tid> = (0..3).map(|_| a.create_note().unwrap()).collect();
+        let nb: Vec<Tid> = (0..3).map(|_| b.create_note().unwrap()).collect();
+        for n in &na {
+            a.toggle_favorite(*n).unwrap();
+        }
+        for n in &nb {
+            b.toggle_favorite(*n).unwrap();
+        }
+        sync(&a, &b);
+        assert_ne!(ga, gb);
+        let f = a.favorites().unwrap();
+        assert_eq!(f, b.favorites().unwrap());
+        let len = f.len();
+        let pos = |d: &Data, t: Tid| d.favorites().unwrap().iter().position(|x| *x == t).unwrap();
+        match round {
+            0 => {
+                // the same entry moved both ways at once
+                a.move_favorite(pos(&a, nb[0]), 0).unwrap();
+                clock.advance(5);
+                b.move_favorite(pos(&b, nb[0]), len - 1).unwrap();
+            }
+            1 => {
+                // a moves while b removes then re-adds it (the re-add is a new entry at the end)
+                a.move_favorite(pos(&a, na[2]), 0).unwrap();
+                b.toggle_favorite(na[2]).unwrap();
+                b.toggle_favorite(na[2]).unwrap();
+            }
+            2 => {
+                // every entry dragged to the front on one side, the back on the other
+                for t in na.iter().chain(&nb) {
+                    a.move_favorite(pos(&a, *t), 0).unwrap();
+                    b.move_favorite(pos(&b, *t), len - 1).unwrap();
+                    clock.advance(1);
+                }
+            }
+            _ => {
+                // b removes an entry a moves past, and a removes one b moves onto
+                a.move_favorite(pos(&a, na[0]), len - 1).unwrap();
+                b.toggle_favorite(na[1]).unwrap();
+                b.move_favorite(pos(&b, nb[2]), pos(&b, na[2])).unwrap();
+                a.toggle_favorite(na[2]).unwrap();
+            }
+        }
+        sync(&a, &b);
+        let fa = a.favorites().unwrap();
+        assert_eq!(fa, b.favorites().unwrap(), "round {round}");
+        let mut dedup = fa.clone();
+        dedup.sort();
+        dedup.dedup();
+        assert_eq!(dedup.len(), fa.len(), "round {round}: duplicates {fa:?}");
+        match round {
+            1 => assert!(fa.contains(&na[2]), "re-added"),
+            3 => assert!(!fa.contains(&na[1]) && !fa.contains(&na[2]), "removals win"),
+            _ => assert_eq!(fa.len(), len, "round {round}"),
+        }
+        // the moved order is reachable: moving an entry to the very front puts it there (when
+        // it is in the main group's list, which shows first)
+        let main = a.main_group().unwrap();
+        let own = if main == ga { na[0] } else { nb[0] };
+        if fa.contains(&own) {
+            a.move_favorite(pos(&a, own), 0).unwrap();
+            assert_eq!(a.favorites().unwrap()[0], own, "round {round}");
+        }
+    }
+}
+
+/// A favorite held in the other group's list cannot move ahead of the main group's entries:
+/// the move is limited to its own list (no copying between groups). The order stays put
+/// rather than jumping somewhere unasked.
+#[test]
+fn favorite_from_the_other_group_moves_within_its_list() {
+    let (a, b) = two();
+    let ga = a.main_group().unwrap();
+    let gb = b.main_group().unwrap();
+    let (small, big) = if ga < gb { (&a, &b) } else { (&b, &a) };
+    let m = small.create_note().unwrap();
+    small.toggle_favorite(m).unwrap();
+    let n = big.create_note().unwrap();
+    big.toggle_favorite(n).unwrap();
+    sync(&a, &b);
+    let f = a.favorites().unwrap();
+    let i = f.iter().position(|x| *x == n).unwrap();
+    assert!(i > f.iter().position(|x| *x == m).unwrap(), "the other group's extras follow");
+    a.move_favorite(i, 0).unwrap();
+    let after = a.favorites().unwrap();
+    assert_eq!(after.len(), f.len());
 }

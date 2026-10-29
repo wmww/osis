@@ -1,8 +1,8 @@
 //! The schema fallback view (notes/app.md Model): every aspect of a thing, read and edited from
 //! its schema-declared type alone. Values are flattened into rows down to scalars (structs by
 //! field, maps by key, enum payloads, `option`s as their value or empty); a scalar row is
-//! edited as text and written at its path. Lists, sets, counters and untyped values are shown,
-//! not edited.
+//! edited as text and written at its path. Lists, sets, counters, texts and untyped values are
+//! shown, not edited.
 
 use crate::data::Data;
 use osis::schema::{Schema, Step, Type};
@@ -72,7 +72,11 @@ impl Data {
                 Edit::Text => Value::Str(text.to_string()),
                 Edit::Int => Value::Int(text.parse().map_err(|_| osis::Error::Invalid(format!("{text:?} is not a whole number")))?),
                 Edit::Float => Value::Float(osis::schema::osis_base::Float::new(text.parse().map_err(|_| osis::Error::Invalid(format!("{text:?} is not a number")))?)),
-                Edit::Bool => Value::Bool(matches!(text.to_lowercase().as_str(), "true" | "yes" | "1" | "on")),
+                Edit::Bool => Value::Bool(match text.to_lowercase().as_str() {
+                    "true" | "yes" | "1" | "on" => true,
+                    "false" | "no" | "0" | "off" => false,
+                    _ => return Err(osis::Error::Invalid(format!("{text:?}: true or false"))),
+                }),
                 Edit::Case => {
                     let schema = key.schema().cloned().ok_or_else(|| osis::Error::Invalid("untyped".into()))?;
                     let ty = type_at(&schema, &row.ak, &row.path, row.optional).ok_or_else(|| osis::Error::Invalid("no type".into()))?;
@@ -217,7 +221,10 @@ fn flatten(s: &Schema, ak: &str, declared: &Type, v: Option<&Value>, path: Path,
 /// How a scalar type is edited; `None` for a composite.
 fn scalar(t: &Type) -> Option<Edit> {
     Some(match t {
-        Type::String | Type::Text => Edit::Text,
+        Type::String => Edit::Text,
+        // a text (a body) is edited in its own session, which merges per character; a
+        // one-line row would also flatten its lines
+        Type::Text => Edit::None,
         Type::Int => Edit::Int,
         Type::Float => Edit::Float,
         Type::Bool => Edit::Bool,
@@ -297,13 +304,9 @@ impl Data {
         use crate::contact::Labeled;
         let text = text.trim();
         match act {
-            FormAct::Field(row) => {
-                // a field of an absent struct: write the whole struct with its defaults first
-                if !row.path.steps().is_empty() && self.db.get(t, self.db.key(&row.ak)?)?.is_none() {
-                    self.init_struct(t, &row.ak)?;
-                }
-                self.set_field(t, row, text)
-            }
+            // a field of an absent struct is written alone (reads fill the others from defaults):
+            // writing the whole struct first would overwrite a concurrent write to a sibling
+            FormAct::Field(row) => self.set_field(t, row, text),
             FormAct::RenameKey { ak, old } => {
                 let key = self.db.key(ak)?;
                 let entry: Labeled = self.db.at(t, key.clone()).path(Path::root().push(old.as_str())).get()?.unwrap_or(Labeled { label: String::new(), pref: false });
@@ -325,15 +328,6 @@ impl Data {
                 let key = self.db.key(ak)?;
                 self.db.write_with(|w| w.at(t, key.clone()).path(Path::root()).put(&text.to_string(), &Labeled { label: String::new(), pref: false }))
             }
-        }
-    }
-
-    fn init_struct(&self, t: Tid, ak: &str) -> Result<()> {
-        use crate::contact::{NAMES, Names, ORG, Org};
-        match ak {
-            "/contact/names" => self.db.write_with(|w| w.at(t, NAMES).set(&Names { given: None, family: None, middle: None, prefix: None, suffix: None })),
-            "/contact/org" => self.db.write_with(|w| w.at(t, ORG).set(&Org { name: String::new(), department: String::new(), title: String::new() })),
-            _ => Ok(()),
         }
     }
 }
