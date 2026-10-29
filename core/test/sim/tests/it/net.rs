@@ -192,17 +192,18 @@ fn ephemeral() {
 }
 
 // spec/sync.md §9 (holders upload what a server lacks): a plain entry the capped server refused
-// went up again once others' deletions made room (it stayed out for good: divergence at
+// went up again, at the periodic pass, once others made room (it stayed out for good: divergence at
 // quiescence).
 #[test]
 fn ephemeral_capped_seed_14() {
     ok("ephemeral_capped", 14);
 }
 
-// spec/sync.md §9 (compaction on a cap refusal): a refused cover is compacted into a fresh cover
-// at every refusal (message storm).
+// spec/sync.md §9 (compaction on a cap refusal): a holder's refused cover cannot absorb another's
+// cover that also carries a one-part aspect, so its writes stay out (it was a message storm: a
+// fresh cover compacted at every refusal, fixed).
 #[test]
-#[ignore = "issues/eph-cover-livelock.md"]
+#[ignore = "issues/eph-cover-cannot-absorb.md"]
 fn repro_ephemeral_seed_83() {
     ok("ephemeral", 83);
 }

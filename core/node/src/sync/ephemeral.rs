@@ -107,10 +107,9 @@ pub(crate) struct Lane {
     /// statuses are the lane's, never a sync record's.
     pub uploads: BTreeSet<(ConnId, LabelId, BlobId)>,
     pub deletes: BTreeSet<(ConnId, LabelId, BlobId)>,
-    /// Plain entries a server refused for its cap, per connection, with the deletions under the
-    /// label still to wait for and the wait after the next refusal: uploaded there again once
-    /// its log showed that many deletions (room may have been made; `eph_room`).
-    pub capped: BTreeMap<(ConnId, LabelId, BlobId), (u32, u32)>,
+    /// Plain entries a server refused for its cap, per connection: uploaded there again at the
+    /// periodic pass (`eph_retry`).
+    pub capped: BTreeSet<(ConnId, LabelId, BlobId)>,
     /// Entries forgotten while their upload was in flight on a connection: deleted there once
     /// the upload is answered OK (else a slow server kept every covered entry), and not taken
     /// back meanwhile from a peer that has it (it is no longer covered by anything held).
@@ -141,12 +140,6 @@ pub(crate) struct Lane {
 /// authors could fill what honest ones need; infinity (none): an honest commit arriving before
 /// its author's record is lost until then.
 const PENDING_SHARE: u64 = 4;
-
-/// The most deletions an entry a server refused for its cap waits for before it goes up again
-/// (the wait doubles per refusal from 1). Performance switch: 1, an entry that never fits goes
-/// up at every deletion under the label; infinity, a retry may wait for more deletions than ever
-/// come (a new connection starts the wait over).
-const RETRY_WAIT_MAX: u32 = 64;
 
 /// Relay-only entries remembered as received, node-wide, until their prefix expiry. Resource
 /// bound against hostile writers: past it the earliest-expiring is forgotten and its expiry
@@ -603,10 +596,7 @@ impl SyncEngine {
                     self.eph_report(&l, "a server's presence cap was reached: this node's presence is not seen there");
                 }
                 Code::STORAGE_CAP => {
-                    // a retry refused again waits for twice the deletions: an entry that never
-                    // fits goes up a logarithmic number of times, not at every deletion
-                    let next = self.eph.capped.get(&(conn, l, b)).map_or(1, |x| x.1.saturating_mul(2).min(RETRY_WAIT_MAX));
-                    self.eph.capped.insert((conn, l, b), (next, next));
+                    self.eph.capped.insert((conn, l, b));
                     self.eph.server_full.insert(l);
                     if self.eph.entries.get(&(l, b)).is_some_and(|e| e.own && self.engine.ephemeral_is_cover(&e.commit)) {
                         self.eph.own_full.entry(l).or_default().insert(server);
@@ -796,21 +786,13 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// The peer on `conn` deleted an entry under `l`: the entries it refused there for its cap
-    /// whose wait ran out go up again (a refusal re-arms it, doubled).
-    pub(crate) fn eph_room(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<Action>) -> Result<()> {
-        let mut ids = Vec::new();
-        for ((_, _, b), (wait, _)) in self.eph.capped.range_mut((conn, l, BlobId([0; 32]))..).take_while(|((c, x, _), _)| *c == conn && *x == l) {
-            *wait = wait.saturating_sub(1);
-            if *wait == 0 {
-                ids.push(*b);
-            }
-        }
-        if ids.is_empty() {
-            return Ok(());
-        }
-        let ids: Vec<BlobId> = ids.into_iter().filter(|b| self.eph.entries.contains_key(&(l, *b))).collect();
-        if let Some(keys) = self.lc(conn, &l).map(|x| x.keys.clone()) {
+    /// Entries the peer on `conn` refused under `l` for its cap go up again (the periodic pass:
+    /// others' compactions or expiries may have made room).
+    pub(crate) fn eph_retry(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<Action>) -> Result<()> {
+        let ids: Vec<BlobId> = self.eph.capped.range((conn, l, BlobId([0; 32]))..).take_while(|(c, x, _)| *c == conn && *x == l).map(|x| x.2).filter(|b| self.eph.entries.contains_key(&(l, *b))).collect();
+        if !ids.is_empty()
+            && let Some(keys) = self.lc(conn, &l).map(|x| x.keys.clone())
+        {
             self.eph_upload(conn, l, &ids, &keys, out)?;
         }
         Ok(())
@@ -884,7 +866,7 @@ impl SyncEngine {
         self.eph.reconciling.retain(|(c, _), _| *c != conn);
         self.eph.uploads.retain(|(c, _, _)| *c != conn);
         self.eph.deletes.retain(|(c, _, _)| *c != conn);
-        self.eph.capped.retain(|(c, _, _), _| *c != conn);
+        self.eph.capped.retain(|(c, _, _)| *c != conn);
         self.eph.orphans.retain(|(_, _, c), _| *c != conn);
     }
 

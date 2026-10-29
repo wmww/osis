@@ -1172,13 +1172,54 @@ fn bytes_under_stuck_entry(stuck: usize) -> usize {
 // spec/sync.md §9 (compaction on a cap refusal): an own entry the server refuses for good (one
 // write over the cap) does not make its holder compact and re-upload it at every other node's
 // write (it did: 5.5x the bytes, one forced compaction per foreign write); only another holder's
-// cover re-arms a compaction for an own refused cover; the refused entry goes up again after 1, 2,
-// 4.. deletions under the label (room may have been made: `eph_room`), a few times here
+// cover re-arms a compaction for an own refused cover
 #[test]
 fn server_cap_stuck_entry_no_churn_spec_sync_9() {
     let fits = bytes_under_stuck_entry(100);
     let stuck = bytes_under_stuck_entry(7_000);
-    assert!(stuck < fits + fits / 2, "{stuck} bytes sent with a refused entry held, {fits} without");
+    assert!(stuck < fits + fits / 4, "{stuck} bytes sent with a refused entry held, {fits} without");
+}
+
+/// Node `n` sets `ak` of `w` to `len` bytes, expiring `ms` from now (never compacted).
+fn expiring(net: &mut Net, n: usize, w: Tid, ak: &str, len: usize, ms: u64) {
+    let mut m = Mutation::new();
+    m.set(w, &eph(ak), &s(&"x".repeat(len))).unwrap();
+    m.expires(w, &eph(ak), osis_base::WallMs(net.now() + ms)).unwrap();
+    net.engine(n).write(m).unwrap();
+    local(net, n);
+}
+
+// spec/sync.md §9 (holders upload what a server lacks): an entry a full server refused, that no
+// compaction can cover (it expires), goes up again once room is made without a deletion (b's
+// entries expire there), at the periodic pass (it stayed out until a reconnect: sim
+// `ephemeral_capped` seed 14)
+#[test]
+fn server_cap_refused_entry_retried_spec_sync_9() {
+    let cap = 8_000;
+    let mut net = Net::new();
+    let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: cap, ..osis_server::Policy::default() });
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(a);
+    let held = |net: &Net| net.servers[sv].hub.store().ephemeral_bytes(&l);
+    // b fills it with entries that expire soon, until one is refused
+    for i in 0.. {
+        assert!(i < 20, "nothing refused under a {cap} B cap");
+        let before = held(&net);
+        expiring(&mut net, b, t, &format!("/win/b{i}"), 1_500, 20_000);
+        net.run();
+        if held(&net) == before {
+            break;
+        }
+    }
+    expiring(&mut net, a, t, "/win/a", 1_500, 600_000);
+    net.run();
+    assert!(net.eph_read(b, t, "/win/a").is_none(), "refused ({} B held, cap {cap})", held(&net));
+    net.advance(61_000);
+    assert!(net.eph_read(b, t, "/win/a").is_some(), "a's write reached b");
 }
 
 /// Upload messages nodes sent so far (osis-proto message kind 10).

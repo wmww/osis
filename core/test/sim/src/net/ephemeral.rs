@@ -3,8 +3,9 @@
 //! durable items of them, and their invariants at quiescence (`check`):
 //! - convergence among holders (spec/requirements.md Ephemeral data): every member node of the
 //!   group reads the same ephemeral state of a durable item; a window is held by every member
-//!   node or by none (lost only when every member node and every server restarted since it was
-//!   made), and its holders read the same state; expired writes read absent everywhere.
+//!   node or by none (none only if every node seen holding it restarted since: a server's copy
+//!   is not tracked, so a node failing to fetch it back after all holders restarted passes),
+//!   and its holders read the same state; expired writes read absent everywhere.
 //! - presence (spec/sync.md §9 Presence commits): a holder reads exactly the live cursors of the
 //!   authors it shares a server with (its own included); a server keeps at most one presence
 //!   entry per live author it serves.
