@@ -975,6 +975,12 @@ impl Engine {
     /// commit of their current states, listing the held commits it covers as absorbed, which
     /// are dropped here (`take_dropped_ephemeral`). `None` when nothing is compacted.
     pub fn compact_ephemeral(&mut self, scope: Option<&BTreeSet<Tid>>, force: bool) -> Result<Option<EphCommit>> {
+        self.compact_ephemeral_if(scope, force, &|_| true)
+    }
+
+    /// `compact_ephemeral`, made only when some commit it would cover satisfies `frees` (the
+    /// sync layer: one held where a server refused, so deleting it there makes room).
+    pub fn compact_ephemeral_if(&mut self, scope: Option<&BTreeSet<Tid>>, force: bool, frees: &dyn Fn(&CommitId) -> bool) -> Result<Option<EphCommit>> {
         let me = self.tid();
         let ts = Ts::make(self.now(), 0).unwrap_or_default();
         let mut picked: Vec<(Tid, Ak)> = Vec::new();
@@ -1022,7 +1028,8 @@ impl Engine {
         // replaces: made again and again (a part of a commit that also touches an aspect not
         // picked stays, so the aspect keeps two parts), it looped, each cover refused by a full
         // server (random_window_converges_large 61365)
-        if absorbed.values().flatten().collect::<BTreeSet<_>>().len() < 2 {
+        let covered: BTreeSet<&CommitId> = absorbed.values().flatten().collect();
+        if covered.len() < 2 || !covered.iter().any(|c| frees(c)) {
             return Ok(None);
         }
         let deltas: Vec<EphDelta> = picked.iter().filter_map(|(t, ak)| self.eph.state(t, ak).map(|f| (*t, ak.clone(), f.clone(), None))).collect();

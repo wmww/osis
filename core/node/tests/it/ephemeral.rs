@@ -371,6 +371,33 @@ fn server_cap_below_state_reports_spec_sync_5() {
     assert!(refused, "reported");
 }
 
+// notes/ephemeral.md Bounds (server cap): one write too large for the cap has nothing to compact
+// (one held part): the label reports and that write stays out of the server, the defined outcome;
+// later writes that fit still sync
+#[test]
+fn server_cap_one_huge_write_reports_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: 4_000, ..osis_server::Policy::default() });
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let rx = net.listen(a);
+    let mut m = Mutation::new();
+    m.op(w, &eph("/win/big"), PathOp { path: Vec::new(), op: Op::Set(s(&"x".repeat(6_000))) }).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    let refused = rx.try_iter().any(|e| matches!(e, osis_node::Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::EphemeralRefused));
+    assert!(refused, "reported");
+    assert_eq!(net.eph_read(b, w, "/win/big"), None);
+    note(&mut net, a, w, "k", "v");
+    net.run();
+    assert_eq!(notes(&mut net, b, w), map(&[("k", "v")]), "a later write that fits syncs");
+}
+
 // notes/ephemeral.md Bounds (node ephemeral bytes per label held from others): a writer flooding
 // a label with ephemeral commits fills at most the cap at another node; the rest is refused
 // (`EphemeralRefused`)
@@ -642,6 +669,11 @@ fn removed_member_writes_not_laundered_spec_permissions_5_2() {
 /// writes, partitions (offline, one server blocked), node restarts and server restarts; after
 /// healing every holder reads the same notes.
 fn random_window_run(seed: u64) {
+    random_window_run_on(seed, false)
+}
+
+/// `single`: one server only, always with the small cap (what it holds is all others get).
+fn random_window_run_on(seed: u64, single: bool) {
     let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
     let mut rnd = move |n: u64| {
         x ^= x << 13;
@@ -651,11 +683,12 @@ fn random_window_run(seed: u64) {
     };
     let mut net = Net::new();
     // odd seeds: a small ephemeral cap at the first server forces compactions
-    let s1 = if seed % 2 == 1 { net.add_server_with(osis_server::Policy { ephemeral_bytes: 6_000, ..osis_server::Policy::default() }) } else { net.add_server() };
+    let s1 = if single || seed % 2 == 1 { net.add_server_with(osis_server::Policy { ephemeral_bytes: 6_000, ..osis_server::Policy::default() }) } else { net.add_server() };
     let s2 = net.add_server();
-    let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &[s1, s2])).collect();
+    let servers: Vec<usize> = if single { vec![s1] } else { vec![s1, s2] };
+    let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &servers)).collect();
     let members: Vec<(usize, Role)> = nodes[1..].iter().map(|n| (*n, Role::Write)).collect();
-    let g = net.group(nodes[0], &members, &[s1, s2]);
+    let g = net.group(nodes[0], &members, &servers);
     net.run();
     let w = window(&mut net, nodes[0], g, "w");
     net.run();
@@ -680,7 +713,7 @@ fn random_window_run(seed: u64) {
                 net.set_online(n, on);
             }
             6 => {
-                let s = if rnd(2) == 0 { s1 } else { s2 };
+                let s = if rnd(2) == 0 || single { s1 } else { s2 };
                 let blocked = !net.blocked.remove(&(n, s));
                 if blocked {
                     net.blocked.insert((n, s));
@@ -700,7 +733,7 @@ fn random_window_run(seed: u64) {
                 net.set_online(n, on);
             }
             8 if rnd(4) == 0 => {
-                let s = if rnd(2) == 0 { s1 } else { s2 };
+                let s = if rnd(2) == 0 || single { s1 } else { s2 };
                 log.push(format!("server {s} restarts"));
                 net.restart_server(s);
             }
@@ -724,13 +757,34 @@ fn random_window_run(seed: u64) {
         // lost only when no node holds it (spec/requirements.md Ephemeral data): every node and
         // both servers restarted
         let restarted = |who: &str| log.iter().any(|l| *l == format!("{who} restarts"));
-        let all = nodes.iter().all(|n| restarted(&n.to_string())) && [s1, s2].iter().all(|s| restarted(&format!("server {s}")));
+        let all = nodes.iter().all(|n| restarted(&n.to_string())) && servers.iter().all(|s| restarted(&format!("server {s}")));
         assert!(all, "seed {seed}: nobody holds the window\n{}", log.join("\n"));
         return;
     };
     let first = notes(&mut net, h0, w);
     for n in &holders[1..] {
         assert_eq!(notes(&mut net, *n, w), first, "seed {seed}: node {n} differs from node {h0}\n{}", log.join("\n"));
+    }
+}
+
+// the same with one server at a small cap, at seeds where a holder's concurrent cover stayed
+// refused while the server held another's, and its writes with it (no further forced compaction)
+#[test]
+fn random_window_one_capped_server_spec_sync_9() {
+    for seed in [10, 63, 105, 162] {
+        random_window_run_on(seed, true);
+    }
+}
+
+// the same with one server at a small cap: holders converge through what it holds (compaction
+// under a full server must neither loop nor stop with a holder's writes refused)
+#[test]
+#[ignore]
+fn random_window_one_capped_server_large() {
+    let start: u64 = std::env::var("OSIS_EPH_START").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let n: u64 = std::env::var("OSIS_EPH_SEEDS").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
+    for seed in start..start + n {
+        random_window_run_on(seed, true);
     }
 }
 
