@@ -69,9 +69,9 @@ for m in members:
                 continue
             external.setdefault(name, rel)
     for src in glob.glob(os.path.join(m, "**/*.rs"), recursive=True):
-        srel = os.path.relpath(src, ROOT)
-        if "/target/" in srel or "/patches/" in srel:
+        if os.path.relpath(src, m).startswith(("target/", "patches/")):
             continue
+        srel = os.path.relpath(src, ROOT)
         text = open(src).read()
         for i, line in enumerate(text.splitlines(), 1):
             if UNSAFE.search(line.split("//", 1)[0]):
