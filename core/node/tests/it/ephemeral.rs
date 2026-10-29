@@ -278,7 +278,8 @@ fn removed_writer_ephemeral_unmerged_spec_permissions_5_2() {
 #[test]
 fn server_cap_compaction_frees_it_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: 3_000, ..osis_server::Policy::default() });
+    // a few entries with their per-entry overhead (about 900 bytes each)
+    let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: 6_000, ..osis_server::Policy::default() });
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -290,7 +291,7 @@ fn server_cap_compaction_frees_it_spec_sync_5() {
         net.run();
     }
     let l = net.label(a);
-    assert!(net.servers[sv].hub.store().ephemeral_bytes(&l) <= 3_000);
+    assert!(net.servers[sv].hub.store().ephemeral_bytes(&l) <= 6_000);
     assert!(net.engine(a).held_ephemeral().len() < 30, "compacted: {}", net.engine(a).held_ephemeral().len());
     let want: BTreeMap<String, String> = (0..30).map(|i| (format!("k{i}"), "v".to_string())).collect();
     assert_eq!(notes(&mut net, b, w), want);
@@ -298,6 +299,28 @@ fn server_cap_compaction_frees_it_spec_sync_5() {
     net.restart(b, 23);
     net.advance(10_000);
     assert_eq!(notes(&mut net, b, w), want);
+}
+
+// a server cap too small for the compacted state: the writer compacts, the cover is refused, and
+// it reports instead of compacting the cover into the next cover forever (a livelock found while
+// charging per-entry overhead at servers)
+#[test]
+fn server_cap_below_state_reports_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: 2_500, ..osis_server::Policy::default() });
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let rx = net.listen(a);
+    let w = window(&mut net, a, g, "busy");
+    net.run();
+    for i in 0..30 {
+        note(&mut net, a, w, &format!("k{i}"), "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv");
+        net.run();
+    }
+    let refused = rx.try_iter().any(|e| matches!(e, osis_node::Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::EphemeralRefused));
+    assert!(refused, "reported");
 }
 
 // notes/ephemeral.md Bounds (node ephemeral bytes per label held from others): a writer flooding
