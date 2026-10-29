@@ -413,17 +413,17 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
     // carried writes whose own commit is not held: the oracle takes those commits too where
     // they are plain writes (no membership part, no creation), so its recompute plays them at
     // their own `ts`; more superseders date no later, so `dating` stays sound
-    let want: BTreeSet<(Tid, osis_base::Ts)> = aspects.iter().flat_map(|(t, a)| p.engine.carried_writes(t, a)).collect();
+    let want: BTreeSet<(Tid, Ak, osis_crdt::Dot)> = aspects.iter().flat_map(|(t, a)| p.engine.carried_dots(t, a).into_iter().map(|d| (*t, a.clone(), d))).collect();
     if !want.is_empty() {
         let whole = deliver(played, &(0..played.packs.len()).collect::<Vec<_>>());
         for (i, pk) in played.packs.iter().enumerate() {
             let Some(h) = whole.engine.header(&pk.id) else { continue };
-            if !held.contains(&i) && want.contains(&(h.author, h.ts)) && !h.kind.is_membership() && h.kind.has_own_writes() && h.aspects.iter().all(|a| a.ak.as_str() != "/created") {
+            if !held.contains(&i) && common::owns_carried(&h, &pk.id, &want) && !h.kind.is_membership() && h.kind.has_own_writes() && h.aspects.iter().all(|a| a.ak.as_str() != "/created") {
                 let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
             }
         }
     }
-    let carried: BTreeSet<(Tid, Ak)> = aspects.iter().filter(|(t, a)| !p.engine.carried_writes(t, a).is_empty()).cloned().collect();
+    let carried: BTreeSet<(Tid, Ak)> = aspects.iter().filter(|(t, a)| !p.engine.carried_dots(t, a).is_empty()).cloned().collect();
     for (t, a) in aspects {
         p.engine.replay_deaths(&t, &a).unwrap();
     }

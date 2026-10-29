@@ -92,11 +92,10 @@ fn schema_of(h: &Header, ai: usize) -> Option<(SchemaId, u64)> {
     h.aspects.get(ai)?.schema.and_then(|i| h.schemas.get(i)).copied()
 }
 
-/// Writes the importer does not import (spec/permissions.md §7): values of deltas with an
-/// expiry, purged ones, and those invalid here.
+/// Writes the importer does not import from a valid snapshot (spec/permissions.md §7): values
+/// of deltas with an expiry and purged ones (it vouches for the rest, §5.2).
 fn excluded(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> Vec<Owned> {
-    let mut out = crate::apply::invalid_of(tx.core, tid, ak);
-    out.extend(tx.core.ix.valueless.get(&(*tid, ak.clone())).into_iter().flatten().cloned());
+    let mut out: Vec<Owned> = tx.core.ix.valueless.get(&(*tid, ak.clone())).into_iter().flatten().cloned().collect();
     for (_, c) in tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten() {
         let Some(m) = tx.core.ix.commits.get(c) else { continue };
         let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
@@ -154,8 +153,8 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
             None => continue,
         };
         if snapshot {
-            // not imported: expiring, purged and invalid writes it carries, and those beyond its
-            // frontier whose own commit is imported
+            // not imported: expiring and purged writes it carries, and those beyond its frontier
+            // whose own commit is imported
             let out = excluded(tx, &a.tid, &a.ak);
             let (core, s) = (&*tx.core, carrier);
             f.remove_dots(&|d| out.iter().any(|o| o.owns(d)) || (s.is_some_and(|s| !s.covers_dot(d)) && from_own(core, &a.tid, &a.ak, d)));

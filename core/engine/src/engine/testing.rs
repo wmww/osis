@@ -32,11 +32,11 @@ impl Engine {
         self.run(|tx| crate::retention::rejudge_deaths(tx, &tid, &ak))
     }
 
-    /// The writes of `(tid, ak)` held snapshots carry whose own commit is not held, as (author
-    /// node, `ts`) (tests: a recompute plays them at their snapshot, not at their own `ts`).
+    /// The owner dots of the writes of `(tid, ak)` held snapshots carry whose own delta was
+    /// never received (tests: a recompute plays them at their snapshot, not at their own `ts`).
     #[doc(hidden)]
-    pub fn carried_writes(&self, tid: &Tid, ak: &osis_base::Ak) -> Vec<(Tid, osis_base::Ts)> {
-        self.core.ix.carried.get(&(*tid, ak.clone())).into_iter().flatten().map(|g| (g.node, g.ts)).collect()
+    pub fn carried_dots(&self, tid: &Tid, ak: &osis_base::Ak) -> Vec<osis_crdt::Dot> {
+        self.core.ix.carried.get(&(*tid, ak.clone())).into_iter().flatten().flat_map(|g| g.ctrs.iter().map(|x| osis_crdt::Dot::new(g.src.clone(), *x))).collect()
     }
 
     /// Keeps every body past its keep-at-most bound (tests: an oracle for the earliest
@@ -55,15 +55,12 @@ impl Engine {
         Some(m.valid.get(ai).copied().unwrap_or(true))
     }
 
-    /// The writes of `(tid, ak)` judged invalid here: per held invalid delta its commit and `ts`,
-    /// per snapshot carrying invalid writes of a commit it lacks the snapshot and their `ts`.
-    /// Tests: the order harness tells the documented keep-at-most difference apart.
+    /// The held deltas of `(tid, ak)` judged invalid here, with their `ts`. Tests: the order
+    /// harness tells the documented keep-at-most difference apart.
     #[doc(hidden)]
     pub fn invalid_writes(&self, tid: &Tid, ak: &Ak) -> Vec<(CommitId, osis_base::Ts)> {
         let k = (*tid, ak.clone());
-        let mut out: Vec<(CommitId, osis_base::Ts)> = self.core.ix.by_aspect.get(&k).into_iter().flatten().filter(|(_, c)| self.body_valid(c, tid, ak) == Some(false)).map(|(ts, c)| (*c, *ts)).collect();
-        out.extend(self.core.ix.carried.get(&k).into_iter().flatten().filter(|c| !c.invalid.is_empty()).map(|c| (c.snap, c.ts)));
-        out
+        self.core.ix.by_aspect.get(&k).into_iter().flatten().filter(|(_, c)| self.body_valid(c, tid, ak) == Some(false)).map(|(ts, c)| (*c, *ts)).collect()
     }
 
     /// A dump of the indexes open rebuilds (tests: a load from the persisted index equals a
@@ -90,7 +87,7 @@ impl Engine {
         let _ = writeln!(out, "rotation_role {:?}\ngrant_overreach {:?}\nbox_keys {:?}\nboxes_to {:?}", *c.ix.rotation_role, *c.ix.grant_overreach, *c.ix.box_keys, *c.ix.boxes_to);
         let _ = writeln!(out, "epoch_intro {:?}\nbox_written {:?}\nown_keys {:?}", *c.ix.epoch_intro, *c.ix.box_written, *c.ix.own_keys);
         let _ = writeln!(out, "member_keys {:?}\nunresolved {:?}\nwas {:?}\nmoved {:?}\ngroups {:?}", *c.ix.member_keys, *c.ix.unresolved, *c.ix.was, *c.ix.moved, c.ix.groups.of);
-        let _ = writeln!(out, "secrets {:?}\nvoid {:?}\nvalueless {:?}\nsnapshots {:?}\ncarried {:?}\nauthors {:?}\nimports {:?}", *c.ix.secrets, *c.ix.void, *c.ix.valueless, *c.ix.snapshots, *c.ix.carried, *c.ix.authors, *c.ix.imports);
+        let _ = writeln!(out, "secrets {:?}\nvoid {:?}\nvalueless {:?}\nsnapshots {:?}\ncarried {:?}\nimports {:?}", *c.ix.secrets, *c.ix.void, *c.ix.valueless, *c.ix.snapshots, *c.ix.carried, *c.ix.imports);
         out
     }
 
@@ -242,6 +239,13 @@ impl Engine {
     #[doc(hidden)]
     pub fn index_current(&mut self) -> Result<bool> {
         self.run(current)
+    }
+
+    /// Rebuilds the state of `(tid, ak)` from its held bodies and current state, as a validity
+    /// flip does (tests: equals the state kept incrementally).
+    #[doc(hidden)]
+    pub fn rebuild_state(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
+        self.run(|tx| crate::apply::rebuild(tx, tid, ak))
     }
 
     /// Rebuilds the in-memory indexes from the commit records (and the persisted index), as a

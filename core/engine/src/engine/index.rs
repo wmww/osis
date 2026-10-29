@@ -43,7 +43,6 @@ const OWN_KEYS: &[u8] = b"node/own keys";
 const DELETE_HINTS: &[u8] = b"node/delete hints";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
 pub(super) const CARRIED: &[u8] = b"node/carried";
-const AUTHORS: &[u8] = b"node/authors";
 const IMPORTS: &[u8] = b"node/imports";
 /// Per membership commit, what perm's adaptation reads of its held `/members` and `/tenures`
 /// parts (`validity::EdgeParts`): written with the commit record (`Tx::put_commit`), so an open
@@ -204,12 +203,12 @@ fn uints_of(v: &Value) -> Option<Vec<u64>> {
 }
 impl Rec for crate::apply::validity::Carried {
     fn to(&self) -> Value {
-        Value::List(vec![self.snap.to(), self.src.to(), self.node.to(), self.ts.to(), uints(&self.ctrs), uints(&self.invalid)])
+        Value::List(vec![self.snap.to(), self.src.to(), uints(&self.ctrs)])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(x) = v else { return None };
-        let [snap, src, n, ts, ctrs, invalid] = x.as_slice() else { return None };
-        Some(crate::apply::validity::Carried { snap: <CommitId as Rec>::from(snap)?, src: <osis_crdt::Source as Rec>::from(src)?, node: <Tid as Rec>::from(n)?, ts: <Ts as Rec>::from(ts)?, ctrs: uints_of(ctrs)?, invalid: uints_of(invalid)? })
+        let [snap, src, ctrs] = x.as_slice() else { return None };
+        Some(crate::apply::validity::Carried { snap: <CommitId as Rec>::from(snap)?, src: <osis_crdt::Source as Rec>::from(src)?, ctrs: uints_of(ctrs)? })
     }
 }
 impl Rec for () {
@@ -594,7 +593,6 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_map(txn, DELETE_HINTS, &c.ix.delete_hints, all)?;
     put_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
     put_map(txn, CARRIED, &c.ix.carried, all)?;
-    put_map(txn, AUTHORS, &c.ix.authors, all)?;
     put_setmap(txn, IMPORTS, &c.ix.imports, all)?;
     // after the indexes and in their transaction: a saved walk never runs ahead of the
     // commits it covers
@@ -669,8 +667,8 @@ fn scan<T: Rec>(tx: &mut Tx<'_>, name: &[u8]) -> Result<Vec<(T, Vec<u8>)>> {
 }
 
 /// What the persisted index judged, read before a rebuild replaces it: per commit its parts'
-/// validity, per aspect its carried groups. `None` when it does not decode.
-pub(crate) type OldJudgments = (BTreeMap<CommitId, Vec<bool>>, BTreeMap<(Tid, osis_base::Ak), Vec<crate::apply::validity::Carried>>);
+/// validity. `None` when it does not decode.
+pub(crate) type OldJudgments = BTreeMap<CommitId, Vec<bool>>;
 
 pub(crate) fn old_judgments(tx: &mut Tx<'_>) -> Option<OldJudgments> {
     let mut parts = BTreeMap::new();
@@ -682,11 +680,7 @@ pub(crate) fn old_judgments(tx: &mut Tx<'_>) -> Option<OldJudgments> {
         Ok(())
     })
     .ok()?;
-    let mut carried = BTreeMap::new();
-    for (k, v) in scan::<(Tid, osis_base::Ak)>(tx, CARRIED).ok()? {
-        carried.insert(k, dec(&v).ok()?);
-    }
-    Some((parts, carried))
+    Some(parts)
 }
 
 /// Loads the persisted index into `core`: commit metas (headers held undecoded, decoded on
@@ -777,9 +771,6 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     }
     for (k, v) in scan::<(Tid, osis_base::Ak)>(tx, CARRIED)? {
         tx.core.ix.carried.insert(k, dec(&v)?);
-    }
-    for (k, v) in scan::<(Tid, CommitId)>(tx, AUTHORS)? {
-        tx.core.ix.authors.insert(k, dec(&v)?);
     }
     for ((k, x), _) in scan::<((Tid, CommitId), (osis_base::Ts, CommitId, Tid))>(tx, IMPORTS)? {
         tx.core.ix.imports.insert(k, x);

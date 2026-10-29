@@ -197,11 +197,18 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
         tx.put_commit(c, &rest, &m, Shred::Yes, None)?;
     }
     let (body, _) = body_class(tx.core, &m.header, c, ai);
+    let vouched = m.header.kind.is_compaction() && m.valid.get(ai).copied().unwrap_or(false);
     tx.core.ix.commits.insert(*c, m);
     crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, c);
     tx.core.forget_live(&a.tid, &a.ak);
     tx.txn.drop_body(&body, &[(a.tid, a.ak.clone())])?;
-    tx.shred_bodies(&a.tid, &a.ak, &bodies)
+    tx.shred_bodies(&a.tid, &a.ak, &bodies)?;
+    // a valid snapshot dropped vouches no more for invalid deltas' writes it carried
+    // (spec/permissions.md §5.2)
+    if vouched && !crate::apply::invalid_of(tx.core, &a.tid, &a.ak).is_empty() && crate::apply::unmerge_fell(tx, &a.tid, &a.ak, None)? {
+        tx.core.mark_aspect_changed(&a.tid, &a.ak);
+    }
+    Ok(())
 }
 
 /// Holds the value-carrying writes of a delta value-less from now on (spec/crdt.md §4.7).
@@ -643,11 +650,12 @@ impl Engine {
             let Some(m) = tx.core.ix.commits.get(&c).cloned() else { return Ok(None) };
             let is_snapshot = m.header.kind.is_compaction();
             let mut body: Vec<Fragment> = held.into_iter().map(Decoded::into_fragment).collect();
-            // a snapshot body's copies of writes a held delta supplies count for nothing
-            // (spec/permissions.md §5.2): what it must carry is the rest
+            // a snapshot body's copies of writes a received valid delta supplies count for
+            // nothing (spec/permissions.md §5.2): what it must carry is the rest, its copies of
+            // invalid deltas' writes included (it vouches for them)
             if is_snapshot {
                 for b in &mut body {
-                    crate::apply::strip_held_copies(tx.core, &tid, &ak, b);
+                    crate::apply::strip_copies_where(tx.core, &tid, &ak, b, &|_, m, ai| m.valid.get(ai).copied().unwrap_or(false));
                 }
             }
             let before = crate::engine::state::encode(snap)?;

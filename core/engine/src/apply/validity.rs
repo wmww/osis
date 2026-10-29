@@ -678,8 +678,8 @@ impl<'a> Judge<'a> {
         let Some(a) = h.aspects.get(ai) else { return false };
         let ak = a.ak.as_str();
         // `/created` hashes to its tid; edge writes are layer 1 (reads go through the timeline); a
-        // compaction snapshot is judged as its author's write (below), its carried writes also
-        // each as their claimed author's (`Carried`, spec/permissions.md §5.2)
+        // compaction snapshot is judged as its author's write (below), which vouches for every
+        // write it carries (spec/permissions.md §5.2)
         if ak == "/created" {
             return true;
         }
@@ -731,54 +731,29 @@ fn valid_on(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai
     tl.delta_valid(point, &a.tid, ak, dots, required) == Validity::Valid
 }
 
-/// Writes a held compaction snapshot carries while their own commit is not held here, per
-/// snapshot (`snap`): one group per source and `ts`, its claimed author node, the exact
-/// counters (sorted), and those the snapshot does not give (spec/permissions.md §5.2): all of
-/// them when the snapshot is invalid (its author could not write the aspect at it), else those
-/// invalid as their claimed author's writes, each counter judged on its own. A dot no carrier
-/// gives is un-merged (`atomic::invalid_of`). A commit-form group (`src` a commit) is judged as
-/// that commit's per the held claim, else the snapshot's own `Authors` entry.
+/// Writes a held compaction snapshot holds under dots whose owning delta was never received here
+/// (`owner_received`), per snapshot and source, counters sorted: the snapshots to compare with
+/// that delta once it arrives (`uncarry`, `differing_copies`), and what a snapshot gave alone
+/// when it turns invalid (`given_alone`). Kept for every held snapshot whatever its validity, in
+/// (snapshot, source) order whatever the arrival order. Nothing is judged per write: a valid
+/// snapshot vouches for every write it carries (spec/permissions.md §5.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Carried {
     pub snap: CommitId,
     pub src: osis_crdt::Source,
-    pub node: Tid,
-    pub ts: osis_base::Ts,
     pub ctrs: Vec<u64>,
-    pub invalid: Vec<u64>,
 }
 
-/// The writes of snapshot fragment `f` of `(tid, ak)` whose commit is not held, grouped by
-/// (source, author node, `ts`) with their exact counters. Every write is judged at the `ts` it
-/// carries (a stamp's, an element creation's); a record carrying none (a tombstone, a bare
-/// anchor) carries no write of its creator. A `Commit(c)` write is judged per the held claim
-/// for `c`, else per the snapshot's own `Authors` entry (`authors`): another snapshot's claim
-/// never judges this one's writes.
-pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment, authors: &BTreeMap<CommitId, (Tid, osis_base::Ts)>) -> Vec<(osis_crdt::Source, Tid, osis_base::Ts, BTreeSet<u64>)> {
-    let mut groups: BTreeMap<(osis_crdt::Source, Tid, osis_base::Ts), BTreeSet<u64>> = BTreeMap::new();
+/// The writes of snapshot fragment `f` of `(tid, ak)` whose owning delta was never received
+/// here, by source. A record carrying no `ts` (a tombstone, a bare anchor) carries no write.
+fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> BTreeMap<osis_crdt::Source, BTreeSet<u64>> {
+    let mut out: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
     for (d, ts) in f.writes() {
-        let Some(ts) = ts else { continue };
-        // a dot whose own commit's delta was held here is that delta's write (spec/permissions.md
-        // §5.2): not the snapshot's to give while the delta is held (`strip_copies`), judged with
-        // it once dropped
-        if owner_received(core, tid, ak, &d) {
-            continue;
+        if ts.is_some() && !d.src.is_derived() && !owner_received(core, tid, ak, &d) {
+            out.entry(d.src.clone()).or_default().insert(d.ctr);
         }
-        let node = match d.src.kind() {
-            osis_crdt::SourceKind::Node(n) => *n,
-            // judged as its commit per the claim (spec/crdt.md §8 `Authors`), at the claim's `ts`
-            osis_crdt::SourceKind::Commit(c) => match held_claim(core, tid, c).or_else(|| authors.get(c).copied()) {
-                Some((n, t)) => {
-                    groups.entry((d.src.clone(), n, t)).or_default().insert(d.ctr);
-                    continue;
-                }
-                None => continue,
-            },
-            _ => continue,
-        };
-        groups.entry((d.src.clone(), node, ts)).or_default().insert(d.ctr);
     }
-    groups.into_iter().map(|((s, n, ts), c)| (s, n, ts, c)).collect()
+    out
 }
 
 /// Whether some held commit owning dot `d` on `(tid, ak)` (spec/permissions.md §5.2) has its
@@ -802,57 +777,16 @@ pub(crate) fn any_owner(core: &Core, tid: &Tid, ak: &Ak, d: &Dot, f: &dyn Fn(&Co
     }
 }
 
-/// Whether the delta owning dot `d` on `(tid, ak)` was ever held here (held or dropped): a
-/// snapshot's copy of it is not carried (`carried_of`).
+/// Whether the delta owning dot `d` on `(tid, ak)` was ever held here (held or dropped): the
+/// write counts from that delta alone, a snapshot's copy of it for nothing (spec/permissions.md
+/// §5.2, `Fragment::strip_copies`).
 pub(crate) fn owner_received(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
     any_owner(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai))
 }
 
-/// Whether the delta owning dot `d` on `(tid, ak)` is held here (not dropped): the write
-/// counts from it alone, a snapshot's copy of it for nothing (spec/permissions.md §5.2,
-/// `Fragment::strip_copies`).
+/// Whether the delta owning dot `d` on `(tid, ak)` is held here (not dropped).
 pub(crate) fn owner_held(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
     any_owner(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && !m.dropped.iter().any(|x| x.0 == ai))
-}
-
-/// The counters of carried group `c` of `(tid, ak)` invalid as their author's writes (§5.2),
-/// each judged at the group's `ts` like a delta of its own (commit form: as its commit).
-/// Validity only falls once with the counter (a demotion's frontier covers a prefix), so the
-/// ends decide where they agree and a binary search finds the split otherwise.
-pub(crate) fn carried_invalid(core: &Core, tid: &Tid, ak: &Ak, c: &Carried) -> Vec<u64> {
-    if ak.as_str() == "/created" {
-        return Vec::new();
-    }
-    if !snapshot_valid(core, &c.snap, tid, ak) {
-        return c.ctrs.clone();
-    }
-    let Some(tl) = core.timelines.get(tid).filter(|_| !too_deep(core, tid)) else { return c.ctrs.clone() };
-    let required = required_role(ak.as_str());
-    if let osis_crdt::SourceKind::Commit(id) = c.src.kind() {
-        // judged as the commit the claim names: a held import by its own ID (a demotion's
-        // frontier lists it), else C's
-        let claim = core.ix.imports.get(&(*tid, *id)).and_then(|s| s.first()).filter(|x| (x.2, x.0) == (c.node, c.ts)).map_or(*id, |x| x.1);
-        let point = Point { ts: c.ts, node: c.node, commit: claim };
-        return if tl.delta_valid(point, tid, ak.as_str(), Dots::Commit, required) == Validity::Valid { Vec::new() } else { c.ctrs.clone() };
-    }
-    // no commit ID is known: the point sorts before the author's commits at that `ts`
-    let point = Point { ts: c.ts, node: c.node, commit: CommitId([0; 32]) };
-    let ok = |x: u64| x.checked_add(1).is_some_and(|hi| tl.delta_valid(point, tid, ak.as_str(), Dots::Node { lo: x, hi }, required) == Validity::Valid);
-    let (Some(first), Some(last)) = (c.ctrs.first().copied(), c.ctrs.last().copied()) else { return Vec::new() };
-    match (ok(first), ok(last)) {
-        (true, true) => Vec::new(),
-        (false, false) if c.ctrs.iter().all(|x| !ok(*x)) => c.ctrs.clone(),
-        (true, false) => {
-            // the first invalid counter
-            let (mut lo, mut hi) = (0usize, c.ctrs.len() - 1);
-            while lo + 1 < hi {
-                let mid = lo + (hi - lo) / 2;
-                if c.ctrs.get(mid).copied().is_some_and(ok) { lo = mid } else { hi = mid }
-            }
-            c.ctrs.get(hi..).map(<[u64]>::to_vec).unwrap_or_default()
-        }
-        _ => c.ctrs.iter().copied().filter(|x| !ok(*x)).collect(),
-    }
 }
 
 /// Whether held snapshot `snap`'s part on `(tid, ak)` is valid (`Judge::part`: its author could
@@ -867,84 +801,18 @@ pub(crate) fn invalid_snapshot(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) ->
     core.ix.commits.get(c).is_some_and(|m| super::is_kind_snapshot(m.view.kind)) && !snapshot_valid(core, c, tid, ak)
 }
 
-/// The claim a held commit makes for source `Commit(c)` on `tid` (spec/permissions.md §7):
-/// `c` itself as a commit-form commit with a delta on `tid`, else the least held import of it
-/// there by (`ts`, ID). A snapshot's `Authors` entry counts only where this is none.
-fn held_claim(core: &Core, tid: &Tid, c: &CommitId) -> Option<(Tid, osis_base::Ts)> {
-    if let Some(m) = core.ix.commits.get(c).filter(|m| m.view.form == Form::Commit && m.view.kind.has_own_writes() && m.view.aspects.iter().any(|x| x.tid == *tid)) {
-        return Some((m.view.author, m.view.ts));
-    }
-    core.ix.imports.get(&(*tid, *c)).and_then(|s| s.first()).map(|(ts, _, n)| (*n, *ts))
-}
-
-/// The claim a snapshot written here names for source `Commit(c)` on `tid` (spec/crdt.md §8):
-/// the held claim, else the least (`ts`, node) under which a valid held snapshot gives some of
-/// its writes (`Carried`), else the least entry of any held snapshot (`Core::authors`; copies
-/// in the state from snapshots dropped since). A claim only an invalid snapshot makes is never
-/// repeated while a valid one gives these writes.
-pub(crate) fn claim_for(core: &Core, tid: &Tid, c: &CommitId) -> Option<(Tid, osis_base::Ts)> {
-    if let Some(v) = held_claim(core, tid, c) {
-        return Some(v);
-    }
-    let src = osis_crdt::Source::commit(*c);
-    let given = core.ix.carried.range((*tid, Ak::MIN)..).take_while(|(k, _)| k.0 == *tid).flat_map(|(k, gs)| gs.iter().map(move |g| (k, g)));
-    let best = given.filter(|(k, g)| g.src == src && g.invalid.len() < g.ctrs.len() && snapshot_valid(core, &g.snap, &k.0, &k.1)).map(|(_, g)| (g.ts, g.node)).min();
-    best.map(|(t, n)| (n, t)).or_else(|| core.ix.authors.get(&(*tid, *c)).copied())
-}
-
-/// Sets the claim for `k`; for a held claim (`held`) the groups recorded under another claim
-/// follow it, re-judged with the thing (`rejudge_all`: their writes may rise or fall in the
-/// state). A snapshot's entry judges only that snapshot's groups (`carried_of`).
-fn set_claim(core: &mut Core, k: (Tid, CommitId), v: (Tid, osis_base::Ts), held: bool) {
-    if core.ix.authors.get(&k) == Some(&v) && !held {
-        return;
-    }
-    core.ix.authors.insert(k, v);
-    if !held {
-        return;
-    }
-    let src = osis_crdt::Source::commit(k.1);
-    let ks: Vec<(Tid, Ak)> = core.ix.carried.range((k.0, Ak::MIN)..).take_while(|(x, _)| x.0 == k.0).map(|(x, _)| x.clone()).collect();
-    for ak in ks {
-        // only groups of this source recorded under another claim move (checked before cloning)
-        if !core.ix.carried.get(&ak).is_some_and(|gs| gs.iter().any(|g| g.src == src && (g.node, g.ts) != v)) {
-            continue;
-        }
-        let Some(mut gs) = core.ix.carried.get(&ak).cloned() else { continue };
-        for g in gs.iter_mut().filter(|g| g.src == src) {
-            (g.node, g.ts) = v;
-        }
-        core.ix.carried.insert(ak, gs);
-        core.stale_things.insert(k.0);
-    }
-}
-
-/// Records whom commit-form writes on the commit's things are judged as (`Core::authors`,
-/// spec/crdt.md §8, spec/permissions.md §7): a commit-form commit's author, an import's
-/// origins as the least held import's importer (`Core::imports`), where neither is held the
-/// least entry by (`ts`, node) of the held snapshots' `Authors`. A function of the held set:
-/// a snapshot entry naming another claim is not refused (the held claim governs). A snapshot
-/// lacking the entry of a commit-form write it carries is bad input; one copying a held
-/// commit's write otherwise than it holds it is not (its copy counts for nothing where the
-/// delta is held, `owner_held`; is judged as its author's where it never was, `carried_of`).
-pub(crate) fn note_authors(core: &mut Core, id: &CommitId, h: &Header, parts: &[(usize, usize, osis_commit::Decoded)]) -> Result<()> {
-    if h.form == Form::Commit && h.kind.has_own_writes() {
-        for a in &h.aspects {
-            set_claim(core, (a.tid, *id), (h.author, h.ts), true);
-        }
-    }
+/// Records the held imports per (thing, origin) (`Core::imports`: which delta owns a `Commit`
+/// source's writes on a thing, spec/permissions.md §7), and refuses carried writes stamped after
+/// the commit carrying them (spec/crdt.md §8, §7): a node's next stamp exceeds every stamp it
+/// holds (§2.2).
+pub(crate) fn note_imports(core: &mut Core, id: &CommitId, h: &Header, parts: &[(usize, usize, osis_commit::Decoded)]) -> Result<()> {
     if h.kind == Kind::Import {
         for a in &h.aspects {
             for o in &h.origins {
                 core.ix.imports.insert((a.tid, o.commit), (h.ts, *id, h.author));
-                if let Some(v) = held_claim(core, &a.tid, &o.commit) {
-                    set_claim(core, (a.tid, o.commit), v, true);
-                }
             }
         }
     }
-    // carried writes are stamped no later than the commit carrying them (spec/crdt.md §8,
-    // spec/permissions.md §7), so a node's next stamp exceeds every stamp it holds (§2.2)
     for (_, _, d) in parts {
         let carried = match d {
             osis_commit::Decoded::Snapshot(s) => Some(&s.fragment),
@@ -955,68 +823,46 @@ pub(crate) fn note_authors(core: &mut Core, id: &CommitId, h: &Header, parts: &[
             return Err(crate::error::Error::BadInput("carried write stamped after its commit"));
         }
     }
-    for (ai, _, d) in parts {
-        let (osis_commit::Decoded::Snapshot(s), Some(a)) = (d, h.aspects.get(*ai)) else { continue };
-        for (d, _) in s.fragment.writes() {
-            if let osis_crdt::SourceKind::Commit(c) = d.src.kind()
-                && !s.authors.contains_key(c)
-            {
-                return Err(crate::error::Error::BadInput("snapshot without the author of a commit-form write"));
-            }
-        }
-        for (c, v) in &s.authors {
-            let k = (a.tid, *c);
-            if held_claim(core, &k.0, c).is_some() {
-                continue;
-            }
-            if core.ix.authors.get(&k).is_none_or(|x| (v.1, v.0) < (x.1, x.0)) {
-                set_claim(core, k, *v, false);
-            }
-        }
-    }
     Ok(())
 }
 
-/// Records and judges the writes snapshot `snap`'s fragment `f` of `(tid, ak)` carries without
-/// their commit (any snapshot held, whatever its validity); whether the aspect's judged set
-/// changed.
-pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, snap: &CommitId, f: &Fragment, authors: &BTreeMap<CommitId, (Tid, osis_base::Ts)>) -> bool {
+/// Records the writes snapshot `snap`'s fragment `f` of `(tid, ak)` carries whose owning delta
+/// was never received here (any snapshot held, whatever its validity).
+pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, snap: &CommitId, f: &Fragment) {
     let k = (*tid, ak.clone());
     let before = core.ix.carried.get(&k).cloned().unwrap_or_default();
     let mut cur: Vec<Carried> = before.iter().filter(|c| c.snap != *snap).cloned().collect();
-    for (src, node, ts, ctrs) in carried_of(core, tid, ak, f, authors) {
-        let mut c = Carried { snap: *snap, src, node, ts, ctrs: ctrs.into_iter().collect(), invalid: Vec::new() };
-        c.invalid = carried_invalid(core, tid, ak, &c);
-        cur.push(c);
-    }
+    cur.extend(carried_of(core, tid, ak, f).into_iter().map(|(src, ctrs)| Carried { snap: *snap, src, ctrs: ctrs.into_iter().collect() }));
     // in one order whatever order the snapshots arrived in
-    cur.sort_by(|x, y| (x.snap, &x.src, x.node, x.ts).cmp(&(y.snap, &y.src, y.node, y.ts)));
+    cur.sort_by(|x, y| (x.snap, &x.src).cmp(&(y.snap, &y.src)));
     if cur == before {
-        return false;
+        return;
     }
     if cur.is_empty() {
         core.ix.carried.remove(&k);
     } else {
         core.ix.carried.insert(k, cur);
     }
-    true
 }
 
-/// Whether snapshot `snap` carries writes on `(tid, ak)` that are invalid here: they may
-/// already sit in the state, joined from other bodies (another's write nested under an entry
-/// creation repeats its key), so the aspect is rebuilt (un-merge is a function of the held set,
-/// spec/crdt.md §4.6).
-pub(crate) fn carries_invalid(core: &Core, tid: &Tid, ak: &Ak, snap: &CommitId) -> bool {
-    core.ix.carried.get(&(*tid, ak.clone())).is_some_and(|v| v.iter().any(|c| c.snap == *snap && !c.invalid.is_empty()))
+/// The writes of held snapshot `snap` on `(tid, ak)` whose owning delta was never received and
+/// that no other held valid snapshot carries: what it alone gave, which go when it turns invalid
+/// (spec/permissions.md §5.2).
+pub(crate) fn given_alone(core: &Core, tid: &Tid, ak: &Ak, snap: &CommitId) -> Vec<Owned> {
+    let gs = core.ix.carried.get(&(*tid, ak.clone())).map(Vec::as_slice).unwrap_or_default();
+    let other = |src: &osis_crdt::Source, x: u64| gs.iter().any(|g| g.snap != *snap && g.src == *src && g.ctrs.binary_search(&x).is_ok() && snapshot_valid(core, &g.snap, tid, ak));
+    gs.iter()
+        .filter(|g| g.snap == *snap)
+        .map(|g| Owned::Dots { src: g.src.clone(), ctrs: g.ctrs.iter().copied().filter(|x| !other(&g.src, *x)).collect() })
+        .filter(|o| !matches!(o, Owned::Dots { ctrs, .. } if ctrs.is_empty()))
+        .collect()
 }
 
-/// Drops the carried writes a commit owns on the aspects whose deltas it now holds (`held`;
-/// judged with it, as `owner_received`): its counters (node form), its whole source (commit
-/// form), its origins' sources (an import). Returns, per such aspect, the snapshots whose
-/// copies it dropped (they are compared with the delta, `differing_copies`) and whether a
-/// dropped counter was invalid (its un-merge stripped others' writes nested under it, which
-/// the delta, if valid, gives back: `atomic::refill` rebuilds).
-pub(crate) fn uncarry(core: &mut Core, id: &CommitId, h: &Header, held: &dyn Fn(usize) -> bool) -> Vec<(Tid, Ak, BTreeSet<CommitId>, bool)> {
+/// Drops the carried writes a commit owns on the aspects whose deltas it now holds (`held`):
+/// its counters (node form), its whole source (commit form), its origins' sources (an import).
+/// Returns, per such aspect, the snapshots whose copies it dropped: they are compared with the
+/// delta (`differing_copies`).
+pub(crate) fn uncarry(core: &mut Core, id: &CommitId, h: &Header, held: &dyn Fn(usize) -> bool) -> Vec<(Tid, Ak, BTreeSet<CommitId>)> {
     let mut srcs: Vec<osis_crdt::Source> = h.origins.iter().filter(|_| h.kind == Kind::Import).map(|o| osis_crdt::Source::commit(o.commit)).collect();
     if h.kind.has_own_writes() && h.form == Form::Commit {
         srcs.push(osis_crdt::Source::commit(*id));
@@ -1028,21 +874,19 @@ pub(crate) fn uncarry(core: &mut Core, id: &CommitId, h: &Header, held: &dyn Fn(
     }
     for (_, a) in h.aspects.iter().enumerate().filter(|(ai, _)| held(*ai)) {
         let k = (a.tid, a.ak.clone());
-        let owns = |c: &Carried, x: u64| srcs.contains(&c.src) || (node_src.as_ref() == Some(&c.src) && a.lo <= x && x < a.hi);
-        if !core.ix.carried.get(&k).is_some_and(|v| v.iter().any(|c| c.ctrs.iter().any(|x| owns(c, *x)))) {
+        let owns = |src: &osis_crdt::Source, x: u64| srcs.contains(src) || (node_src.as_ref() == Some(src) && a.lo <= x && x < a.hi);
+        if !core.ix.carried.get(&k).is_some_and(|v| v.iter().any(|c| c.ctrs.iter().any(|x| owns(&c.src, *x)))) {
             continue;
         }
         let mut v = core.ix.carried.get(&k).cloned().unwrap_or_default();
         let mut snaps = BTreeSet::new();
-        let mut stripped = false;
         for c in v.iter_mut() {
-            let gone: Vec<u64> = c.ctrs.iter().copied().filter(|x| owns(c, *x)).collect();
-            if !gone.is_empty() {
+            let n = c.ctrs.len();
+            let src = c.src.clone();
+            c.ctrs.retain(|x| !owns(&src, *x));
+            if c.ctrs.len() != n {
                 snaps.insert(c.snap);
             }
-            stripped |= gone.iter().any(|x| c.invalid.contains(x));
-            c.ctrs.retain(|x| !gone.contains(x));
-            c.invalid.retain(|x| !gone.contains(x));
         }
         v.retain(|c| !c.ctrs.is_empty());
         if v.is_empty() {
@@ -1050,7 +894,7 @@ pub(crate) fn uncarry(core: &mut Core, id: &CommitId, h: &Header, held: &dyn Fn(
         } else {
             core.ix.carried.insert(k, v);
         }
-        out.push((a.tid, a.ak.clone(), snaps, stripped));
+        out.push((a.tid, a.ak.clone(), snaps));
     }
     out
 }
@@ -1094,6 +938,30 @@ pub(crate) fn copy_index(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak, have
     Ok(Some(ix))
 }
 
+/// The dots among those `owned` matches under which a held valid snapshot of `(tid, ak)` holds a
+/// write: those writes count whatever their own delta's validity, as the snapshot's writer
+/// vouched for them (spec/permissions.md §5.2). `have`: valid snapshots' fragments the caller
+/// read, by commit.
+pub(crate) fn vouched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owned: &[Owned], have: &BTreeMap<CommitId, &Fragment>) -> Result<BTreeSet<Dot>> {
+    let mut out = BTreeSet::new();
+    if owned.is_empty() {
+        return Ok(out);
+    }
+    let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|s| s.1).filter(|s| snapshot_valid(tx.core, s, tid, ak)).collect();
+    for s in snaps {
+        let Some(ix) = copy_index(tx, &s, tid, ak, have.get(&s).copied())? else { continue };
+        for o in owned {
+            let (src, lo, hi) = match o {
+                Owned::Node { node, lo, hi } => (osis_crdt::Source::node(*node), *lo, *hi),
+                Owned::Commit(c) => (osis_crdt::Source::commit(*c), 0, u64::MAX),
+                Owned::Dots { src, ctrs } => (src.clone(), ctrs.first().copied().unwrap_or(0), ctrs.last().map_or(0, |x| x.saturating_add(1))),
+            };
+            out.extend(ix.dots_in(&src, lo, hi).filter(|d| o.owns(d)).cloned());
+        }
+    }
+    Ok(out)
+}
+
 /// The dots under which the snapshots `snaps` hold copies of the writes of commit `id`'s delta
 /// `ai` (header `h`, stored) otherwise than that delta holds them (spec/permissions.md §5.2:
 /// another value, `ts` or position, or a dot the delta does not use). Copies a snapshot taken
@@ -1117,9 +985,8 @@ pub(crate) fn differing_copies(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: u
 /// things whose timeline changed (`Core::stale_things`, filled by `update_timelines`: the things
 /// of components evaluated anew, and below what a continued walk touched), the commits whose
 /// other inputs changed (`stale_commits`: void, required roles, overreach), every one after a
-/// rebuild at open (`stale_all`); so the cost follows the change, not the held set. Writes
-/// snapshots carry without their commit on those things too. Rebuilds aspects whose validity
-/// flipped; returns them.
+/// rebuild at open (`stale_all`); so the cost follows the change, not the held set. Rebuilds
+/// aspects whose validity flipped; returns them.
 pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     let _s = crate::costs::span("rejudge");
     if resolve_unresolved(tx)? {
@@ -1211,35 +1078,6 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
         tx.core.mark_changed(id);
     }
     drop(judge);
-    // writes carried by snapshots without their commit, on the same things
-    let mut carried_fell: BTreeSet<(Tid, Ak)> = BTreeSet::new();
-    let aspects: Vec<(Tid, Ak)> = tx.core.ix.carried.keys().filter(|(t, _)| all || things.contains(t)).cloned().collect();
-    let mut snaps: BTreeSet<CommitId> = BTreeSet::new();
-    for k in aspects {
-        let Some(mut v) = tx.core.ix.carried.get(&k).cloned() else { continue };
-        let mut any = false;
-        for c in v.iter_mut() {
-            let now = carried_invalid(tx.core, &k.0, &k.1, c);
-            if now != c.invalid {
-                if c.invalid.iter().any(|x| !now.contains(x)) {
-                    rose.insert(k.clone());
-                }
-                // carried writes lie anywhere: no body to find their pages by
-                fell.remove(&k);
-                carried_fell.insert(k.clone());
-                c.invalid = now;
-                any = true;
-                snaps.insert(c.snap);
-            }
-        }
-        if any {
-            tx.core.ix.carried.insert(k.clone(), v);
-            flipped.insert(k);
-        }
-        for c in std::mem::take(&mut snaps) {
-            tx.core.mark_changed(c);
-        }
-    }
     // what was not re-judged has not changed (debug builds: decodes every header)
     #[cfg(debug_assertions)]
     for (id, m) in tx.core.ix.commits.iter() {
@@ -1251,13 +1089,17 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
     }
     if rebuild {
         for (tid, ak) in &flipped {
-            if rose.contains(&(*tid, ak.clone())) {
+            let k = (*tid, ak.clone());
+            // a snapshot turned invalid gives nothing: what it alone gave goes (its writer no
+            // longer vouches for it, spec/permissions.md §5.2), and with it its vouching
+            let snaps: Vec<CommitId> = fell.get(&k).into_iter().flatten().filter(|(c, _)| tx.core.ix.commits.get(c).is_some_and(|m| super::is_kind_snapshot(m.view.kind))).map(|x| x.0).collect();
+            if rose.contains(&k) || !snaps.is_empty() {
                 let _s = crate::costs::span("rejudge: rebuild");
-                super::rebuild(tx, tid, ak)?;
+                let gone: Vec<Owned> = snaps.iter().flat_map(|s| given_alone(tx.core, tid, ak, s)).collect();
+                super::atomic::rebuild_without(tx, tid, ak, &gone)?;
             } else {
                 let _s = crate::costs::span("rejudge: unmerge");
-                let k = (*tid, ak.clone());
-                let bodies = if carried_fell.contains(&k) { None } else { fell_bodies(tx, fell.get(&k).map(Vec::as_slice).unwrap_or_default())? };
+                let bodies = fell_bodies(tx, fell.get(&k).map(Vec::as_slice).unwrap_or_default())?;
                 super::atomic::unmerge_fell(tx, tid, ak, bodies)?;
             }
             crate::retention::mark_deaths_due(tx, tid, ak)?;

@@ -283,3 +283,16 @@ impl osis_commit::Secrets for Keys {
         Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
     }
 }
+
+/// Whether commit `id` (header `h`) owns one of `dots`, carried writes by aspect
+/// (`Engine::carried_dots`): its node-form range on the aspect holds one, or a commit-form dot
+/// names it.
+pub fn owns_carried(h: &osis_commit::Header, id: &CommitId, dots: &std::collections::BTreeSet<(Tid, Ak, osis_crdt::Dot)>) -> bool {
+    h.aspects.iter().any(|a| {
+        dots.iter().filter(|(t, k, _)| *t == a.tid && *k == a.ak).any(|(_, _, d)| match d.src.kind() {
+            osis_crdt::SourceKind::Node(n) => h.form == osis_commit::Form::Node && *n == h.author && a.lo <= d.ctr && d.ctr < a.hi,
+            osis_crdt::SourceKind::Commit(c) => c == id,
+            osis_crdt::SourceKind::Derived(_) => false,
+        })
+    })
+}

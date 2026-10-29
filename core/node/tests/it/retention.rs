@@ -641,9 +641,9 @@ fn dating_history(seed: u64) {
     }
     // a recompute plays a carried write whose own commit is not held at its snapshot: node 5
     // takes those commits too (each writes one aspect), so it plays every write at its own `ts`
-    let carried: std::collections::BTreeSet<(osis_base::Tid, osis_base::Ts)> = aks.iter().flat_map(|a| lp.peers[5].engine.carried_writes(&t, a)).collect();
-    let ts_of = |lp: &osis_node::local_peer::LocalPeer, c: &osis_base::CommitId| (0..4).find_map(|i| lp.peers[i].engine.header(c)).map(|h| (h.author, h.ts));
-    let extra: Vec<_> = all.iter().filter(|p| withheld.contains(&p.id) && ts_of(&lp, &p.id).is_some_and(|x| carried.contains(&x))).cloned().collect();
+    let carried: std::collections::BTreeSet<(osis_base::Tid, osis_base::Ak, osis_crdt::Dot)> = aks.iter().flat_map(|a| lp.peers[5].engine.carried_dots(&t, a).into_iter().map(|d| (t, a.clone(), d))).collect();
+    let header = |lp: &osis_node::local_peer::LocalPeer, c: &osis_base::CommitId| (0..4).find_map(|i| lp.peers[i].engine.header(c));
+    let extra: Vec<_> = all.iter().filter(|p| withheld.contains(&p.id) && header(&lp, &p.id).is_some_and(|h| crate::common::owns_carried(&h, &p.id, &carried))).cloned().collect();
     for p in &extra {
         let _ = lp.deliver(5, p);
     }
