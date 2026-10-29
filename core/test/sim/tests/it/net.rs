@@ -164,3 +164,13 @@ fn large_edits() {
 fn stranded_reseal_seed_23() {
     ok("stranded_reseal", 23);
 }
+
+// spec/permissions.md §5.2, spec/commits.md §5: sweep seed 15110 (and 15061 before
+// ac49b521), a revoked member's removal un-merged at a node that had applied it valid lost the
+// element whose delta its covering snapshot replaced; the tier-1 reduction is
+// osis-node `validity::covered_drop_restored_after_remover_revoked_alike_spec_perm_5_2`.
+#[test]
+#[ignore = "tier 2"]
+fn work_sets_seed_15110() {
+    ok("work_sets", 15110);
+}

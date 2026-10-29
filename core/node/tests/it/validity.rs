@@ -1955,3 +1955,59 @@ fn invalidated_copy_of_shared_dot_goes_alike_spec_perm_5_2() {
     assert_eq!(got[1], BTreeSet::from(["bob".to_string()]), "removal first");
     assert_eq!(got[0], got[1], "Carol's copy first, then the removal");
 }
+
+// spec/permissions.md §5.2, spec/crdt.md §4.6: Alice's element, its delta dropped as covered by
+// her snapshot S, is removed by Bob, whose revoke then voids the removal. A node that applied
+// the removal while valid and one that got the revoke first both read the element: the rebuild
+// takes it again from S's copy, the dropped delta giving nothing (was
+// issues/sim-work-sets-tag-lost.md, sim work_sets seeds 15061, 15110).
+#[test]
+fn covered_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
+    let mut lp = net(2, 0x5f8a);
+    lp.sync_all().unwrap();
+    let d = new_thing(&mut lp, 0);
+    let b = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
+    add_tag(&mut lp, 0, d, "ash");
+    let tags_ak = ak("/t/tags");
+    let added: BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|x| lp.peers[0].engine.header(x).is_some_and(|h| h.kind == osis_commit::Kind::Content && h.aspects.iter().any(|a| a.ak == tags_ak))).collect();
+    lp.advance(1_000);
+    let snap = lp.peers[0].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let before = packages(&mut lp, 0);
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.op(d, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("ash")) }).unwrap();
+    let rm = lp.peers[1].commit(m).unwrap().unwrap();
+    let rm_pk = packages(&mut lp, 1).into_iter().find(|p| p.id == rm).unwrap();
+    lp.advance(1_000);
+    revoke(&mut lp, 0, d, b); // without having seen the removal
+    let known: BTreeSet<_> = before.iter().map(|p| p.id).collect();
+    let rv: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !known.contains(&p.id)).collect();
+    let mut got = Vec::new();
+    for (i, removal_first) in [(2, true), (3, false)] {
+        lp.peers.push(osis_node::local_peer::Peer::new(0x5f8b + i as u64, lp.peers[0].engine.now()).unwrap());
+        for pk in &before {
+            lp.deliver(i, pk).unwrap();
+        }
+        for c in &added {
+            assert_eq!(lp.peers[i].engine.covered(&snap, c, &d, &tags_ak).unwrap(), Some(true));
+            lp.peers[i].engine.drop_body(c, &d, &tags_ak).unwrap();
+        }
+        if removal_first {
+            lp.deliver(i, &rm_pk).unwrap();
+            assert!(tags(&mut lp, i, d).is_empty(), "the removal applied while valid");
+        }
+        for pk in &rv {
+            lp.deliver(i, pk).unwrap();
+        }
+        if !removal_first {
+            lp.deliver(i, &rm_pk).unwrap();
+        }
+        lp.peers[i].engine.reexamine().unwrap();
+        got.push((tags(&mut lp, i, d), lp.peers[i].engine.state(&d, &tags_ak).unwrap()));
+    }
+    assert_eq!(got[0].0, BTreeSet::from(["ash".to_string()]), "removal applied, then voided");
+    assert_eq!(got[1].0, got[0].0, "removal arrived voided");
+    assert_eq!(got[1].1, got[0].1, "one state");
+}

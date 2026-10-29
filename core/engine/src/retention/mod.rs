@@ -187,6 +187,17 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
     if m.header.kind.is_compaction() && snapshot_live(tx, &m.header, c, &[ai])? {
         m.live_drops.insert(ai);
     }
+    // the held valid snapshots covering it: their copies of its writes stay its writes
+    let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).filter(|s| s != c).collect();
+    let mut by = BTreeSet::new();
+    for s in snaps {
+        if covered(tx, &s, c, &a.tid, &a.ak)? == Some(true) {
+            by.insert(s);
+        }
+    }
+    if !by.is_empty() {
+        m.covered_by.insert(ai, by);
+    }
     for di in 0..n {
         m.dropped.insert((ai, di));
     }
@@ -612,7 +623,15 @@ impl Engine {
     /// `None` when either is not held (nothing is established).
     pub fn covered(&mut self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
         let (s, c, tid, ak) = (*s, *c, *tid, ak.clone());
-        self.run(|tx| {
+        self.run(|tx| covered(tx, &s, &c, &tid, &ak))
+    }
+}
+
+/// `Engine::covered` in `tx`.
+fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
+    let (s, c, tid, ak) = (*s, *c, *tid, ak.clone());
+    {
+        {
             let (Some(sai), Some(cai)) = (aspect_index(tx, &s, &tid, &ak), aspect_index(tx, &c, &tid, &ak)) else { return Ok(None) };
             // an invalid snapshot gives nothing, so covers nothing (spec/permissions.md §5.2)
             if !crate::apply::validity::snapshot_valid(tx.core, &s, &tid, &ak) {
@@ -680,7 +699,7 @@ impl Engine {
             let body: Vec<&Fragment> = body.iter().collect();
             let Some(ix) = crate::apply::validity::copy_index(tx, &s, &tid, &ak, Some(snap))? else { return Ok(None) };
             Ok(Some(ix.outside(&ranges, &body).is_empty()))
-        })
+        }
     }
 }
 

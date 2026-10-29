@@ -262,7 +262,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     let uncarried = validity::uncarry(tx.core, &id, &h, &|ai| parts.iter().any(|p| p.0 == ai));
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.iter().any(|p| p.0 == *ai)).collect();
-    let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), dropped: BTreeSet::new(), missing, live_drops: BTreeSet::new() };
+    let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), dropped: BTreeSet::new(), missing, live_drops: BTreeSet::new(), covered_by: BTreeMap::new() };
     tx.core.ix.commits.insert(id, meta.clone());
     tx.core.index_validity(&id);
 
@@ -787,6 +787,29 @@ pub(crate) fn rebuild_without(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned
     tx.set_state(tid, ak, st, Shred::Yes, false)
 }
 
+/// Whether snapshot `s` covered dropped part `ai` of `c` when it dropped, or covered a dropped
+/// snapshot that did, and so on (`Meta::covered_by`).
+fn covers_dropped(core: &Core, c: &CommitId, ai: usize, s: &CommitId) -> bool {
+    let Some(ca) = core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)) else { return false };
+    let at = |x: &CommitId| -> Vec<CommitId> {
+        let Some(m) = core.ix.commits.get(x) else { return Vec::new() };
+        let Some(xai) = m.view.aspects.iter().position(|a| a.tid == ca.tid && a.ak == ca.ak) else { return Vec::new() };
+        m.covered_by.get(&xai).map(|v| v.iter().copied().collect()).unwrap_or_default()
+    };
+    let mut seen = BTreeSet::new();
+    let mut todo = at(c);
+    while let Some(x) = todo.pop() {
+        if x == *s {
+            return true;
+        }
+        // a coverer dropped in turn: its coverers carry what it carried
+        if seen.insert(x) {
+            todo.extend(at(&x));
+        }
+    }
+    false
+}
+
 /// What `rebuild_without` writes; `forged`: the dots whose copies in the state a snapshot gave
 /// against their held delta (`refill`), which that delta gives again.
 fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, forged: Option<&BTreeSet<osis_crdt::Dot>>, gone: &[Owned]) -> Result<Option<Fragment>> {
@@ -812,18 +835,22 @@ fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, forged: Option<&BTreeSet<osis_cr
     };
     tx.load(tid, ak)?;
     let mut current = tx.core.states.get(&(*tid, ak.clone())).cloned().flatten();
-    // a snapshot's copies of writes whose own delta was received count for nothing
-    // (spec/permissions.md §5.2)
     let core = &*tx.core;
-    for (f, _) in bodies.iter_mut().filter(|b| b.1.is_some()) {
-        strip_received_copies(core, tid, ak, f);
-    }
     if let Some(c) = current.as_mut() {
         if let Some(forged) = forged {
             c.strip_forged(&|d| forged.contains(d) && validity::owner_received(core, tid, ak, d));
         }
         if !gone.is_empty() {
             c.strip_copies(&|d| gone.iter().any(|o| o.owns(d)));
+        }
+    }
+    // a snapshot's copies of writes whose own delta was received count for nothing, except a
+    // covering snapshot's of a dropped delta: they are its writes, which the state may have lost
+    // to a write since invalid (spec/permissions.md §5.2, spec/commits.md §5)
+    for (f, s) in bodies.iter_mut() {
+        let Some(s) = *s else { continue };
+        if f.holds_owned(&|src, lo, hi| core_holds_owner(core, tid, ak, src, lo, hi)) {
+            f.strip_copies(&|d| validity::any_owner(core, tid, ak, d, &|c, m, ai| !m.missing.contains(&ai) && !(m.dropped.iter().any(|x| x.0 == ai) && covers_dropped(core, c, ai, &s))));
         }
     }
     let mut st = Fragment::default();
