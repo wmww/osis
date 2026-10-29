@@ -9,17 +9,17 @@
 
   const LOOKS = [
     { id: 'dusk', name: 'Dusk', era: 'the blend',
-      desc: 'Deep gradient wallpaper with grain, solid tinted cards with a 2006 gloss line, crisp 2016 type, 1996 rings and dot grids. Needs no blur: the cheapest of the rich looks.' },
+      desc: 'Gradient wallpaper with grain (dawn in light, dusk in dark), solid tinted cards with a 2006 gloss line, crisp 2016 type, 1996 rings and dot grids. Needs no blur: the cheapest of the rich looks.' },
     { id: 'glass', name: 'Glass', era: '2026',
       desc: 'Bright colour-orb wallpaper, frosted panels, pill controls, round icons. The blur costs GPU work whenever anything behind it moves: toggle it off to see the fallback.' },
     { id: 'aero', name: 'Aero', era: '2006',
-      desc: 'Sky gradient and a hill, gel tiles with a hard gloss line, bubbles, glossy pill buttons. 2006 imagining the future.' },
+      desc: 'Sky and a hill (a night sky in dark), gel tiles with a hard gloss line, bubbles, glossy pill buttons. 2006 imagining the future.' },
     { id: 'workstation', name: 'Workstation', era: '1996',
-      desc: 'Bevelled lavender-grey panels on a neon grid with a striped synth sun, title-bar strips, tag colour as a thick stripe. 1996 imagining the future.' },
+      desc: 'Bevelled panels on a grid with a striped synth sun (neon in dark), title-bar strips, tag colour as a thick stripe. 1996 imagining the future.' },
     { id: 'memphis', name: 'Memphis', era: '2016, loud',
-      desc: 'Flat taken loud: cream paper, thick outlines, hard offset shadows, Memphis shapes. No blur, no gradients: the cheapest look.' },
+      desc: 'Flat taken loud: paper, thick outlines, hard offset shadows, Memphis shapes. No blur, no gradients: the cheapest look.' },
     { id: 'pearl', name: 'Pearl', era: 'calm light',
-      desc: 'White cards with iridescent edges and a sheen on hover, pastel pearl shapes. The quiet option.' },
+      desc: 'Cards with iridescent edges and a sheen on hover, pearl shapes (black pearl in dark). The quiet option.' },
   ];
 
   const things = DATA.things;
@@ -30,6 +30,8 @@
   if (!LOOKS.some(l => l.id === look)) look = 'dusk';
   let blur = store.get('blur', true);
   let looksOpen = store.get('looksOpen', true);
+  let mode = store.get('mode', 'auto');
+  if (!['auto', 'light', 'dark'].includes(mode)) mode = 'auto';
   let q = '';
   let focusTitle = false;
 
@@ -334,6 +336,7 @@
     if (e.key === '/') { e.preventDefault(); if (routeId()) openSpot(); else $('#home-q').focus(); }
     else if (e.key === ']' || e.key === '[') setLook(LOOKS[(LOOKS.findIndex(l => l.id === look) + (e.key === ']' ? 1 : LOOKS.length - 1)) % LOOKS.length].id);
     else if (/^[1-9]$/.test(e.key) && LOOKS[e.key - 1]) setLook(LOOKS[e.key - 1].id);
+    else if (e.key === 'd') setMode(resolvedMode() === 'dark' ? 'light' : 'dark');
   });
   window.addEventListener('hashchange', () => { closeSpot(); render(); window.scrollTo(0, 0); });
 
@@ -370,16 +373,24 @@
     document.body.dataset.look = id;
     renderLooks();
   }
+  // mode: 'auto' follows the system; the resolved light/dark goes on body[data-mode]
+  const darkMq = matchMedia('(prefers-color-scheme: dark)');
+  const resolvedMode = () => mode === 'auto' ? (darkMq.matches ? 'dark' : 'light') : mode;
+  function setMode(m) { mode = m; store.set('mode', m); renderLooks(); }
+  darkMq.addEventListener('change', () => { if (mode === 'auto') renderLooks(); });
   function renderLooks() {
     const cur = LOOKS.find(l => l.id === look);
+    const rm = resolvedMode();
+    document.body.dataset.mode = rm;
     document.body.classList.toggle('noblur', !blur);
     looksEl.classList.toggle('open', looksOpen);
-    looksEl.innerHTML = `<button class="lk-toggle" data-lk="toggle" aria-expanded="${looksOpen}">Look: <b>${cur.name}</b><span class="lk-caret">${looksOpen ? '▾' : '▴'}</span></button>
+    looksEl.innerHTML = `<button class="lk-toggle" data-lk="toggle" aria-expanded="${looksOpen}">Look: <b>${cur.name}</b><span class="lk-mode">${rm}</span><span class="lk-caret">${looksOpen ? '▾' : '▴'}</span></button>
       <div class="lk-body">
+        <div class="lk-modes" role="group" aria-label="Light or dark">${['light', 'dark', 'auto'].map(m => `<button class="lk-m${m === mode ? ' on' : ''}" data-lk="mode-${m}">${m[0].toUpperCase() + m.slice(1)}</button>`).join('')}</div>
         <div class="lk-list">${LOOKS.map((l, i) => `<button class="lk-opt${l.id === look ? ' on' : ''}" data-lk="${l.id}"><span class="lk-n">${i + 1}</span><span>${l.name}</span><small>${l.era}</small></button>`).join('')}</div>
         <p class="lk-desc">${cur.desc}</p>
         <label class="lk-blur"><input type="checkbox" data-lk="blur"${blur ? ' checked' : ''}> Background blur</label>
-        <p class="lk-keys">Keys: 1–6 or [ ] switch looks · / search</p>
+        <p class="lk-keys">Keys: 1–6 or [ ] switch looks · d light/dark · / search</p>
       </div>`;
   }
   looksEl.addEventListener('click', e => {
@@ -387,6 +398,7 @@
     const k = b.dataset.lk;
     if (k === 'toggle') { looksOpen = !looksOpen; store.set('looksOpen', looksOpen); renderLooks(); }
     else if (k === 'blur') { blur = b.checked; store.set('blur', blur); renderLooks(); }
+    else if (k.startsWith('mode-')) setMode(k.slice(5));
     else setLook(k);
   });
 
