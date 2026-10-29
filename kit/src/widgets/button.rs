@@ -90,6 +90,10 @@ impl Widget for IconButton {
             let r = RoundedRect::from_rect(size.to_rect(), look.theme.radius * 0.6);
             scene.fill(Fill::NonZero, Affine::IDENTITY, fade(look.fg, if ctx.is_active() { 0.12 } else { 0.07 }), None, &r);
         }
+        if ctx.is_focus_target() {
+            let r = RoundedRect::from_rect(size.to_rect().inset(-1.0), look.theme.radius * 0.6);
+            scene.stroke(&masonry::kurbo::Stroke::new(2.0), Affine::IDENTITY, look.accent, None, &r);
+        }
         let s = 20.0;
         let c = if self.on { look.accent } else { look.fg };
         self.icon.paint(scene, ((size.width - s) / 2.0, (size.height - s) / 2.0), s, c, self.on);

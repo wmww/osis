@@ -22,6 +22,8 @@ osis-kit = { path = "." }
 # One pinned Masonry (notes/app.md Toolkit); re-exported as osis_kit::masonry.
 masonry = "=0.4.0"
 masonry_winit = "=0.4.0"
+# Civil time and the system time zone for calendar views (notes/architecture.md).
+jiff = "0.2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

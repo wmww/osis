@@ -23,6 +23,7 @@ path = "src/main.rs"
 [dependencies]
 osis.workspace = true
 osis-kit.workspace = true
+jiff.workspace = true
 
 [build-dependencies]
 osis-schema.workspace = true

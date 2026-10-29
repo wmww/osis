@@ -11,7 +11,7 @@ use osis_kit::masonry::properties::types::{CrossAxisAlignment, Length};
 use osis_kit::masonry::widgets::Flex;
 use osis_kit::theme::parse;
 use osis_kit::widgets::style::{self, Text};
-use osis_kit::widgets::{Chip, ChipMark, TileGrid, TileIcon, TileStyle, Wrap};
+use osis_kit::widgets::{Chip, ChipMark, Panel, PanelKind, TileGrid, TileIcon, TileStyle, Wrap};
 
 /// How a run of tiles is laid out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +57,8 @@ pub enum Block {
     Label(String),
     Tiles { tiles: Vec<Tile>, grid: Grid, new: bool },
     Chips(Vec<ChipM>),
+    /// Calendar days: a label, whether it is today, the events.
+    Days(Vec<(String, bool, Vec<Tile>)>),
 }
 
 /// What a slot shows.
@@ -149,6 +151,17 @@ impl Ui {
             Kind::Event => {
                 if let Some(s) = d.get(t, crate::event::START)? {
                     c.line(crate::data::fmt_when(&s, d.get(t, crate::event::END)?.as_ref()));
+                    use crate::time::{DAY, HOUR, MINUTE};
+                    let mut chips = vec![ChipM::action(Icon::Back, "Day earlier", Act::Nudge(t, -DAY, 0)), ChipM::action(Icon::Plus, "Day later", Act::Nudge(t, DAY, 0))];
+                    if matches!(s, crate::event::Start::At(_)) {
+                        chips.extend([
+                            ChipM::action(Icon::Clock, "−1 h", Act::Nudge(t, -HOUR, 0)),
+                            ChipM::action(Icon::Clock, "+1 h", Act::Nudge(t, HOUR, 0)),
+                            ChipM::action(Icon::Clock, "Shorter", Act::Nudge(t, 0, -30 * MINUTE)),
+                            ChipM::action(Icon::Clock, "Longer", Act::Nudge(t, 0, 30 * MINUTE)),
+                        ]);
+                    }
+                    c.blocks.push(Block::Chips(chips));
                 }
             }
             Kind::Contact => {
@@ -175,6 +188,50 @@ impl Ui {
                     c.line("Nothing tagged yet.");
                 }
                 c.tiles(tiles(d, &items)?, Grid::Cards);
+                return Ok(c);
+            }
+            Kind::View(View::Calendar) => {
+                use crate::time::{DAY, monday_of, now_local};
+                let now = now_local();
+                let monday = monday_of(now) + self.view.week * 7 * DAY;
+                let w = self.view.week;
+                c.blocks.push(Block::Chips(vec![
+                    ChipM::action(Icon::Back, "Earlier", Act::Week(w - 1)),
+                    ChipM::action(Icon::Calendar, "This week", Act::Week(0)),
+                    ChipM::action(Icon::Plus, "Later", Act::Week(w + 1)),
+                ]));
+                c.label(&format!("{} – {}", crate::data::fmt_day(monday / DAY), crate::data::fmt_day(monday / DAY + 6)));
+                let mut days = Vec::new();
+                for (day, evs) in d.week(monday)? {
+                    let mut ts = Vec::new();
+                    for e in evs {
+                        let mut tile = d.tile(e)?;
+                        let (s, _, all_day) = d.span(e)?.unwrap_or((day, day, true));
+                        let place = d.get(e, crate::event::LOCATION)?.filter(|p| !p.is_empty());
+                        let time = if all_day || s < day { "All day".to_string() } else { crate::data::fmt_time(s) };
+                        tile.sub = match place {
+                            Some(p) => format!("{time} · {p}"),
+                            None => time,
+                        };
+                        ts.push(tile);
+                    }
+                    days.push((crate::data::fmt_day(day / DAY), now.div_euclid(DAY) == day / DAY, ts));
+                }
+                c.blocks.push(Block::Days(days));
+                return Ok(c);
+            }
+            Kind::View(View::Tags) => {
+                let tree = d.tag_tree()?;
+                if tree.is_empty() {
+                    c.line("No tags yet.");
+                }
+                c.tiles(tiles(d, &tree.iter().map(|(g, _)| *g).collect::<Vec<_>>())?, Grid::Cards);
+                for (g, subs) in &tree {
+                    if !subs.is_empty() {
+                        c.label(&format!("In {}", d.name(*g)?));
+                        c.tiles(tiles(d, subs)?, Grid::Rows);
+                    }
+                }
                 return Ok(c);
             }
             Kind::View(v) => {
@@ -268,6 +325,24 @@ impl Ui {
                         let w = NewWidget::new(osis_kit::widgets::Tile::new(TileStyle::New, TileIcon::Icon(Icon::Plus), "New", "Note, event, person, tag", None, look.clone()));
                         self.acts.insert(w.id(), Act::New);
                         g = g.with_child(w);
+                    }
+                    col = col.with_child(NewWidget::new(g));
+                }
+                Block::Days(days) => {
+                    let mut g = TileGrid::new(look.clone(), 118.0).max_cols(7).gap(8.0);
+                    for (label, today, evs) in days {
+                        let mut day = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(4.0)));
+                        day = day.with_child(style::label(&look, label, if *today { Text::Body } else { Text::Muted }));
+                        if evs.is_empty() {
+                            day = day.with_child(style::label(&look, "Free", Text::Small));
+                        }
+                        for t in evs {
+                            let w = NewWidget::new(osis_kit::widgets::Tile::new(TileStyle::Row, TileIcon::Bar, &t.name, &t.sub, t.color.as_deref().and_then(parse), look.clone()));
+                            self.acts.insert(w.id(), Act::Open(t.tid));
+                            day = day.with_child(w);
+                        }
+                        let kind = if *today { PanelKind::Field } else { PanelKind::Inset };
+                        g = g.with_child(NewWidget::new(Panel::new(NewWidget::new(day), look.clone(), kind, (10.0, 8.0))));
                     }
                     col = col.with_child(NewWidget::new(g));
                 }

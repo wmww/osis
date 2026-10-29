@@ -381,7 +381,14 @@ impl Data {
             Kind::View(v) => {
                 let n = self.view_items(v)?.len();
                 match v {
-                    View::Calendar => count(n, "event", "events"),
+                    View::Calendar => {
+                        let monday = crate::time::monday_of(crate::time::now_local());
+                        let mut this_week = BTreeSet::new();
+                        for (_, evs) in self.week(monday)? {
+                            this_week.extend(evs);
+                        }
+                        format!("{} this week", count(this_week.len(), "event", "events"))
+                    }
                     View::People => count(n, "person", "people"),
                     View::Tags => count(n, "tag", "tags"),
                     View::Recent => "Last touched first".into(),
@@ -552,6 +559,81 @@ impl Data {
             Some(ms) => format!("Edited {}", ago(self.db.now().0.saturating_sub(ms))),
             None => "Not saved yet".into(),
         }
+    }
+
+    // ---- events
+
+    /// An event's span in local wall time (`time::span`); `None` when not scheduled.
+    pub fn span(&self, t: Tid) -> Result<Option<(i64, i64, bool)>> {
+        let Some(s) = self.get(t, crate::event::START)? else { return Ok(None) };
+        Ok(Some(crate::time::span(&s, self.get(t, crate::event::END)?.as_ref())))
+    }
+
+    /// The seven days from `monday` (local wall ms), each with the events touching it, by start.
+    pub fn week(&self, monday: i64) -> Result<Vec<(i64, Vec<Tid>)>> {
+        use crate::time::DAY;
+        let mut evs = Vec::new();
+        for t in self.view_items(&View::Calendar)? {
+            if let Some((s, e, _)) = self.span(t)? {
+                evs.push((s, e, t));
+            }
+        }
+        evs.sort();
+        Ok((0..7)
+            .map(|i| {
+                let day = monday + i * DAY;
+                let on: Vec<Tid> = evs.iter().filter(|(s, e, _)| *s < day + DAY && (*e > day || *s >= day)).map(|(_, _, t)| *t).collect();
+                (day, on)
+            })
+            .collect())
+    }
+
+    /// Moves an event's start by `by` ms and lengthens it by `longer` ms (not below 15 min; a
+    /// day event moves by whole days). Writes through `edit`, so a concurrent change to another
+    /// part survives.
+    pub fn nudge(&self, t: Tid, by: i64, longer: i64) -> Result<()> {
+        use crate::event::{END, End, START, Start};
+        use crate::time::{DAY, MINUTE};
+        let Some(start) = self.get(t, START)? else { return Ok(()) };
+        let end = self.get(t, END)?;
+        let (s, e, _) = crate::time::span(&start, end.as_ref());
+        let (new_start, new_end) = match &start {
+            Start::At(w) => {
+                let ns = Start::At(crate::event::Wall { time: w.time.saturating_add(by), zone: w.zone.clone() });
+                let len = (e - s).saturating_add(longer).max(15 * MINUTE);
+                (ns, Some(End::After(len)))
+            }
+            Start::Day(d) => {
+                let days = by.div_euclid(DAY);
+                let span = ((e - s) / DAY).max(1).saturating_add(longer.div_euclid(DAY)).max(1);
+                let nd = d.saturating_add(days);
+                (Start::Day(nd), if span > 1 { Some(End::Day(nd + span - 1)) } else { None })
+            }
+        };
+        self.db.write_with(|w| {
+            w.at(t, START).set(&new_start)?;
+            match (&end, &new_end) {
+                (_, Some(ne)) => w.at(t, END).set(ne),
+                (Some(_), None) => w.at(t, END).remove(),
+                (None, None) => Ok(()),
+            }
+        })
+    }
+
+    /// Top-level tags (in no other tag), each with its subtags; by name.
+    pub fn tag_tree(&self) -> Result<Vec<(Tid, Vec<Tid>)>> {
+        let tags = self.all_tags()?;
+        let mut inner = BTreeSet::new();
+        for g in &tags {
+            inner.extend(self.tag_contents(*g)?.0);
+        }
+        // a cycle of tags has no top: show them all then
+        let top: Vec<Tid> = if tags.iter().all(|g| inner.contains(g)) { tags.clone() } else { tags.iter().copied().filter(|g| !inner.contains(g)).collect() };
+        let mut out = Vec::new();
+        for g in top {
+            out.push((g, self.tag_contents(g)?.0));
+        }
+        Ok(out)
     }
 
     // ---- favorites
@@ -744,7 +826,7 @@ impl Data {
         let db = &self.db;
         let node = db.node();
         let n_tags = if kind == NewKind::Tag { self.all_tags()?.len() } else { 0 };
-        let now = i64::try_from(db.now().0).unwrap_or(0);
+        let now = crate::time::now_local();
         db.write_with(|w| {
             let t = w.create(db.me())?;
             w.at(t, NAME).set(&String::new())?;
@@ -950,21 +1032,22 @@ pub fn fmt_time(ms: i64) -> String {
 }
 
 /// An event's time as one line: "Mon 14 Oct · 09:30–09:45", "Mon 14 Oct" for a day.
+/// In the viewer's local time (`time::span`).
 pub fn fmt_when(start: &crate::event::Start, end: Option<&crate::event::End>) -> String {
-    use crate::event::{End, Start};
-    const DAY: i64 = 86_400_000;
-    match start {
-        Start::At(w) => {
-            let s = format!("{} · {}", fmt_day(w.time.div_euclid(DAY)), fmt_time(w.time));
-            match end {
-                Some(End::At(e)) => format!("{s}–{}", fmt_time(e.time)),
-                Some(End::After(d)) => format!("{s}–{}", fmt_time(w.time.saturating_add(*d))),
-                _ => s,
-            }
-        }
-        Start::Day(d) => match end {
-            Some(End::Day(e)) if e > d => format!("{} – {}", fmt_day(*d), fmt_day(*e)),
-            _ => fmt_day(*d),
-        },
+    use crate::time::DAY;
+    let (s, e, all_day) = crate::time::span(start, end);
+    let (sd, ed) = (s.div_euclid(DAY), (e - 1).max(s).div_euclid(DAY));
+    if all_day {
+        return if ed > sd { format!("{} – {}", fmt_day(sd), fmt_day(ed)) } else { fmt_day(sd) };
     }
+    let mut out = format!("{} · {}", fmt_day(sd), fmt_time(s));
+    if e > s {
+        out.push('–');
+        if e.div_euclid(DAY) != sd {
+            out.push_str(&fmt_day(e.div_euclid(DAY)));
+            out.push(' ');
+        }
+        out.push_str(&fmt_time(e));
+    }
+    out
 }

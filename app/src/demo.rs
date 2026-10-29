@@ -82,15 +82,6 @@ impl Ctx<'_, '_> {
     }
 }
 
-/// This week's Monday 00:00 as a floating wall time (`localtime` ms), from `now_ms` (UTC; the
-/// zone offset is ignored until the app reads the local zone).
-pub fn monday_of(now_ms: i64) -> i64 {
-    let days = now_ms.div_euclid(DAY_MS);
-    // 1970-01-01 was a Thursday
-    let weekday = (days + 3).rem_euclid(7);
-    (days - weekday) * DAY_MS
-}
-
 /// Adds the demo data unless this person has it already; returns whether it added it.
 pub fn add(data: &Data) -> Result<bool> {
     if data.has_demo()? {
@@ -98,7 +89,7 @@ pub fn add(data: &Data) -> Result<bool> {
     }
     let group = data.main_group()?;
     let db = &data.db;
-    let monday = monday_of(i64::try_from(db.now().0).unwrap_or(0));
+    let monday = crate::time::monday_of(crate::time::now_local());
     let views: Vec<Tid> = data.views()?.into_iter().map(|(_, t)| t).collect();
     // the person's own favorites stay, after the demo's
     let had = data.favorites()?;
