@@ -10,7 +10,7 @@
 //! A thing is whatever its aspects make it (`Kind`); things and scopes (tags, views) are shown
 //! alike as tiles (`Tile`).
 
-use crate::schema::{APP, COLOR, DEMO, FAVORITES, MODE, Mode, OPEN, THEME, VIEW, View};
+use crate::schema::{REVOKE, Revoke, APP, COLOR, DEMO, FAVORITES, MODE, Mode, OPEN, THEME, VIEW, View};
 use osis::core::{BODY, GROUP, NAME, TAG};
 use osis::{AspectKey, ChangeId, CommitKind, CommitQuery, Config, Edge, EdgeOpts, Error, Osis, Result, Role, Runtime, Scope, ServerAddr, Tid, Transport, p};
 use std::collections::{BTreeMap, BTreeSet};
@@ -609,6 +609,52 @@ impl Data {
             Err(Error::Invalid(m)) if m.contains("reaches") => Err(RevokeError::Kept(m)),
             Err(e) => Err(RevokeError::Failed(e)),
         }
+    }
+
+    // ---- revocations still to do (durable, synced on the app group: notes/app.md)
+
+    /// The revocations waiting (thing, tag), from every app group.
+    pub fn pending_revokes(&self) -> Result<Vec<(Tid, Tid)>> {
+        let mut out = BTreeSet::new();
+        for g in self.groups()? {
+            for r in self.get(g, REVOKE)?.unwrap_or_default() {
+                out.insert((r.thing, r.tag));
+            }
+        }
+        Ok(out.into_iter().collect())
+    }
+
+    /// Records that the tag's access to `t` is to be taken back (until `drop_revoke`).
+    pub fn queue_revoke(&self, t: Tid, tag: Tid) -> Result<()> {
+        let g = self.main_group()?;
+        self.db.write_with(|w| w.at(g, REVOKE).path(p![]).add(&Revoke { thing: t, tag }))
+    }
+
+    /// Forgets a revocation, on every app group holding it.
+    pub fn drop_revoke(&self, t: Tid, tag: Tid) -> Result<()> {
+        let r = Revoke { thing: t, tag };
+        let mut gs = Vec::new();
+        for g in self.groups()? {
+            if self.get(g, REVOKE)?.is_some_and(|s| s.contains(&r)) {
+                gs.push(g);
+            }
+        }
+        if gs.is_empty() {
+            return Ok(());
+        }
+        self.db.write_with(|w| {
+            for g in &gs {
+                w.at(*g, REVOKE).path(p![]).remove_elem(&r)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Whether a waiting revocation still applies: the thing exists and the tag still has the
+    /// access tagging gave and nothing else keeps it (`revoke_needed`). Re-tagged or deleted
+    /// things, and revocations another device already did, do not.
+    pub fn revoke_applies(&self, t: Tid, tag: Tid) -> Result<bool> {
+        Ok(self.things()?.contains(&t) && self.revoke_needed(t, tag)?)
     }
 
     /// Takes `t` out of `tag` (it stays in the app group): unplaces a thing, un-nests a tag.

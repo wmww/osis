@@ -212,3 +212,29 @@ fn removing_a_tag_revokes_only_its_own_access() {
     assert!(matches!(r, Err(osis_app::data::RevokeError::Kept(_))), "{r:?}");
     assert!(!a.db.member_path(k, shared).is_empty(), "the tag still reaches it through the sub-tag");
 }
+
+/// Waiting revocations: queued, still applying until done, dropped when the thing is re-tagged
+/// or deleted, and visible on the person's other app group.
+#[test]
+fn waiting_revocations() {
+    let (a, b) = two_people();
+    let shared = shared_tag(&a, &b, Role::Read);
+    let n = a.create(NewKind::Note).unwrap();
+    a.add_tag(n, shared).unwrap();
+    a.remove_tag(n, shared).unwrap();
+    assert!(a.revoke_needed(n, shared).unwrap());
+    a.queue_revoke(n, shared).unwrap();
+    a.queue_revoke(n, shared).unwrap();
+    assert_eq!(a.pending_revokes().unwrap(), vec![(n, shared)], "once");
+    assert!(a.revoke_applies(n, shared).unwrap());
+    // re-tagged: no longer applies
+    a.add_tag(n, shared).unwrap();
+    assert!(!a.revoke_applies(n, shared).unwrap());
+    a.remove_tag(n, shared).unwrap();
+    assert!(a.revoke_applies(n, shared).unwrap());
+    // deleted: no longer applies
+    a.delete(n).unwrap();
+    assert!(!a.revoke_applies(n, shared).unwrap());
+    a.drop_revoke(n, shared).unwrap();
+    assert!(a.pending_revokes().unwrap().is_empty());
+}

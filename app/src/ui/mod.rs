@@ -55,8 +55,10 @@ pub enum Msg {
     Remote(Tid),
     /// An osis diagnostic (a thing that will not sync, a callback that panicked, ...).
     Diagnostic(String),
-    /// A background task (kit `tasks`) finished: what to show in the status line.
-    Task(String),
+    /// A revocation task finished: (thing, tag, outcome).
+    Revoked(Tid, Tid, Result<(), crate::data::RevokeError>),
+    /// A sync with a server succeeded (retry waiting revocations).
+    Synced,
 }
 
 /// What a press on a widget does.
@@ -173,6 +175,11 @@ pub struct Ui {
     building_inputs: Vec<WidgetId>,
     /// The latest background task's progress or outcome, kept in the status line.
     notice: Option<String>,
+    /// Revocations with a task running.
+    revoking: BTreeSet<(Tid, Tid)>,
+    /// The waiting revocations were tried since start.
+    started: bool,
+    _status_sub: Subscription,
     /// Focus the title once the next screen is built (a thing just made).
     focus_title: bool,
     editor: Option<Editor>,
@@ -191,6 +198,16 @@ impl Ui {
             m.post(Msg::Diagnostic(format!("{:?}: {}", d.kind, d.detail)));
         });
         let look = Arc::new(Look::new(&theme, mode == Mode::Dark, None));
+        // a sync that succeeds is the moment to retry waiting revocations
+        let m = mb.clone();
+        let mut synced = 0usize;
+        let status_sub = data.db.watch_status(move |_, st| {
+            let n = st.groups.values().filter(|g| g.state == osis::SyncState::Synced).count();
+            if n > synced {
+                m.post(Msg::Synced);
+            }
+            synced = n;
+        });
         Ui {
             data,
             window,
@@ -215,6 +232,9 @@ impl Ui {
             reorder_grids: Default::default(),
             focus_title: false,
             notice: None,
+            revoking: BTreeSet::new(),
+            started: false,
+            _status_sub: status_sub,
             editor: None,
             subs: BTreeMap::new(),
             _diag_sub: diag_sub,
@@ -415,36 +435,83 @@ impl Ui {
         self.slots.insert(key, c);
     }
 
-    /// After a tag was removed from `t`: takes back the access tagging gave, when nothing else
-    /// keeps it (`Data::revoke_needed`), in a background task; progress and the outcome show in
-    /// the status line.
+    /// After a tag was removed from `t`: when nothing else keeps the access tagging gave
+    /// (`Data::revoke_needed`), records that it is to be taken back and starts on it.
     fn revoke_later(&mut self, ctx: &mut DriverCtx<'_, '_>, t: Tid, g: Tid) -> osis::Result<()> {
-        if !self.data.revoke_needed(t, g)? {
-            return Ok(());
-        }
-        let (tn, gn) = (self.data.name(t)?, self.data.name(g)?);
-        let label = |n: &str| if n.is_empty() { "Untitled".to_string() } else { n.to_string() };
-        let (tn, gn) = (label(&tn), label(&gn));
-        let n = format!("Taking back {gn}'s access to {tn}…");
-        self.status(ctx, n.clone());
-        self.notice = Some(n);
-        let data = self.data.clone();
-        let mb = self.mb.clone();
-        let started = osis_kit::tasks::spawn(
-            "revoke",
-            move || async move { data.revoke(t, g, osis::WaitForSync::Required).await },
-            move |r| {
-                mb.post(Msg::Task(match r {
-                    Ok(()) => format!("{gn} no longer reaches {tn}"),
-                    Err(crate::data::RevokeError::Kept(_)) => format!("{gn} still reaches {tn} another way: access kept"),
-                    Err(crate::data::RevokeError::Failed(e)) => format!("could not take back {gn}'s access to {tn}: {e}"),
-                }));
-            },
-        );
-        if !started {
-            self.status(ctx, "could not start a background task".into());
+        if self.data.revoke_needed(t, g)? {
+            self.data.queue_revoke(t, g)?;
+            self.retry_revokes(ctx);
         }
         Ok(())
+    }
+
+    fn names(&self, t: Tid, g: Tid) -> (String, String) {
+        let label = |x: Tid| self.data.name(x).ok().filter(|n| !n.is_empty()).unwrap_or_else(|| "Untitled".into());
+        (label(t), label(g))
+    }
+
+    fn notify(&mut self, ctx: &mut DriverCtx<'_, '_>, n: String) {
+        self.status(ctx, n.clone());
+        self.notice = Some(n);
+    }
+
+    /// Works through the waiting revocations (on start, after each successful sync, after a tag
+    /// is removed): drops those that no longer apply, starts a background task for each other
+    /// one not already running; progress and outcomes go to the status line.
+    fn retry_revokes(&mut self, ctx: &mut DriverCtx<'_, '_>) {
+        let pending = match self.data.pending_revokes() {
+            Ok(p) => p,
+            Err(e) => return self.notify(ctx, format!("error: {e}")),
+        };
+        for (t, g) in pending {
+            if self.revoking.contains(&(t, g)) {
+                continue;
+            }
+            match self.data.revoke_applies(t, g) {
+                Ok(false) => {
+                    if let Err(e) = self.data.drop_revoke(t, g) {
+                        self.notify(ctx, format!("error: {e}"));
+                    }
+                    continue;
+                }
+                Err(e) => {
+                    self.notify(ctx, format!("error: {e}"));
+                    continue;
+                }
+                Ok(true) => {}
+            }
+            let (tn, gn) = self.names(t, g);
+            self.notify(ctx, format!("Taking back {gn}'s access to {tn}…"));
+            let data = self.data.clone();
+            let mb = self.mb.clone();
+            let started = osis_kit::tasks::spawn("revoke", move || async move { data.revoke(t, g, osis::WaitForSync::Required).await }, move |r| {
+                mb.post(Msg::Revoked(t, g, r));
+            });
+            if started {
+                self.revoking.insert((t, g));
+            } else {
+                self.notify(ctx, "could not start a background task".into());
+            }
+        }
+    }
+
+    /// A revocation task's outcome: done (or kept another way) drops it; a failure stays
+    /// queued for the next retry.
+    fn revoked(&mut self, ctx: &mut DriverCtx<'_, '_>, t: Tid, g: Tid, r: Result<(), crate::data::RevokeError>) {
+        self.revoking.remove(&(t, g));
+        let (tn, gn) = self.names(t, g);
+        let n = match r {
+            Ok(()) => format!("{gn} no longer reaches {tn}"),
+            Err(crate::data::RevokeError::Kept(_)) => format!("{gn} still reaches {tn} another way: access kept"),
+            Err(crate::data::RevokeError::Failed(e)) => {
+                self.notify(ctx, format!("could not take back {gn}'s access to {tn} yet ({e}); retried after the next sync"));
+                return;
+            }
+        };
+        if let Err(e) = self.data.drop_revoke(t, g) {
+            return self.notify(ctx, format!("error: {e}"));
+        }
+        self.notify(ctx, n);
     }
 
     /// Saves a form input's text unless it is what was saved last.
@@ -678,15 +745,18 @@ impl AppDriver for Ui {
                         changed = true;
                     }
                     Msg::Remote(t) => self.remote(ctx, t),
-                    Msg::Task(s) => {
-                        self.status(ctx, s.clone());
-                        self.notice = Some(s);
+                    Msg::Revoked(t, g, r) => {
+                        self.revoked(ctx, t, g, r);
                         changed = true;
                     }
+                    Msg::Synced => self.retry_revokes(ctx),
                 }
             }
             if changed {
                 self.refresh(ctx, false);
+            }
+            if !std::mem::replace(&mut self.started, true) {
+                self.retry_revokes(ctx);
             }
         } else if action.is::<Press>() {
             if let Some(a) = self.acts.get(&id).cloned() {
