@@ -65,11 +65,18 @@ fn neutral(w: &World, thing: Tid, author: Tid, things: &[Tid], probes: &[Point])
     if before == after && before == compacted {
         return None;
     }
-    // a snapshot may repair sticky residue (core/test/tla/membership MC_sticky_snap): it
-    // undoes a residue drop, and the repair may cascade (writes the repaired one enabled apply,
-    // and may genuinely drop others); compacted or not, the answers agree
-    let undone: BTreeSet<WriteId> = after.applied.iter().chain(&compacted.applied).filter(|w| !before.applied.contains(w)).copied().collect();
-    if after == compacted && undone.intersection(&residue).next().is_some() {
+    // a snapshot may repair sticky residue (core/test/tla/membership MC_sticky_snap), and the
+    // repair may cascade (writes the repaired one enabled apply, and may genuinely drop others).
+    // Up to the first changed write both walks see the same state, so that write's status
+    // differs only by D: it must be a residue drop the snapshot undid. Compacted or not alike.
+    let at = |x: &WriteId| match x {
+        WriteId::Op(c, _) => tl.membership_commit(c).map(|m| m.point()),
+        WriteId::Snapshot(c) => tl.roster_snapshot(c).map(|s| s.point()),
+    };
+    let changed: Vec<(Option<Point>, WriteId)> = before.applied.symmetric_difference(&after.applied).map(|x| (at(x), *x)).collect();
+    let first = changed.iter().map(|c| c.0).min();
+    let repaired = |x: &WriteId| residue.contains(x) && after.applied.contains(x);
+    if after == compacted && first.is_some_and(|f| f.is_some() && changed.iter().filter(|c| c.0 == f).all(|c| repaired(&c.1))) {
         RESIDUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return None;
     }
