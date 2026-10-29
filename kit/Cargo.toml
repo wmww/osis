@@ -1,0 +1,67 @@
+# The GUI workspace (notes/app.md, kit and app): osis-kit and osis-app, apart from the core
+# workspace at the repo root so the GUI stack stays out of core's builds, gate and feature
+# unification. This manifest is its root (Cargo.lock and target/ live in kit/); `[patch]` entries
+# for forked low-level crates go here. Core crates come in by path: only osis and osis-schema.
+[workspace]
+resolver = "2"
+members = [".", "../app"]
+# a bare `cargo build` in kit/ builds the app too
+default-members = [".", "../app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+
+# Every external dependency needs its line in notes/architecture.md (Dependency policy).
+[workspace.dependencies]
+osis = { path = "../core/osis" }
+osis-schema = { path = "../core/schema" }
+osis-kit = { path = "." }
+# One pinned Masonry (notes/app.md Toolkit); re-exported as osis_kit::masonry.
+masonry = "=0.4.0"
+masonry_winit = "=0.4.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+# No panics on data (notes/architecture.md §3). Tests are exempt via the repo's clippy.toml.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+
+[profile.dev]
+debug = "line-tables-only"
+opt-level = 1
+
+# Dependencies optimized: wgpu, Vello and the osis crypto are slow unoptimized.
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
+
+[package]
+name = "osis-kit"
+description = "The first-party UI toolkit over Masonry: windowing, the osis-Masonry driver, widgets, theme"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+test = false
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+masonry.workspace = true
+masonry_winit.workspace = true
+
+# Patched low-level crates, vendored in patches/ (notes/app.md, Patches).
+[patch.crates-io]
+masonry_winit = { path = "patches/masonry_winit" }
