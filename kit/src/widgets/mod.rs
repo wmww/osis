@@ -15,7 +15,7 @@ pub use chip::{Chip, ChipMark, ChipPress};
 pub use grid::TileGrid;
 pub use limit::Limit;
 pub use panel::{Panel, PanelKind};
-pub use root::{Resized, Root};
+pub use root::Root;
 pub use tile::{Tile, TileIcon, TileStyle};
 pub use wrap::Wrap;
 
