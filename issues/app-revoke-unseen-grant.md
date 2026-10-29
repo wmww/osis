@@ -1,6 +1,6 @@
 # A removal that sees a placement but not its grant leaves the thing shared
 > Summary: Placing a thing into a shared tag and granting the tag are separate commits on separate labels. A device that has the placement but not the grant, and takes the thing out of the tag, queues no revocation (no live edge there); when the grant arrives it stands, and the tag's members reach a thing the user took out.
-> Tags: app, permissions, security
+> Tags: core-ask, app, permissions, security
 
 Repro: `app/tests/it/share.rs` `removal_missing_a_later_grant` (ignored): one device has taken the access back, the other (not aware) re-tags and grants again, the first sees the placement only and the user removes the thing again.
 
