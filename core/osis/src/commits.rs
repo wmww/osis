@@ -1,19 +1,24 @@
 //! The commit query, and undo, redo and revert over it (notes/api.md Commits; spec/commits.md
-//! §7, spec/crdt.md §4.6). Everything is derived from the held commits, nothing is stored: a
-//! revert is a commit naming the commit it reverts; a commit is in effect while no revert in
-//! effect names it; undo and redo pick a commit by query and revert it.
+//! §7, spec/crdt.md §4.6). Everything is derived from the held commits and this session's
+//! ephemeral undo log (notes/ephemeral.md), nothing is stored: a revert is a change naming the
+//! change it reverts; a change is in effect while no revert in effect names it; undo and redo
+//! pick a change by query and revert it.
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::watch::{CommitInfo, lock};
 use crate::write::Committed;
-use osis_base::{Ak, CommitId, Tid, Ts};
+use osis_base::{Ak, Tid, Ts};
 use osis_commit::Kind;
-use osis_node::Mutation;
+use osis_node::ChangeId;
+use osis_node::ephemeral::Reverted;
 use osis_node::undo::HeldCommit;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Which aspects a query, undo or redo ranges over; resolved when used.
+/// Which aspects a query, undo or redo ranges over; resolved when used. `Thing` and `Group`
+/// cover durable aspects and ephemeral things (and the ephemeral side of `/group`); an
+/// ephemeral aspect of a durable thing (a cursor, a selection) is in scope only when named by
+/// `Aspects`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Scope {
     /// Every aspect of a thing (a document).
@@ -24,7 +29,7 @@ pub enum Scope {
     Group(Tid),
 }
 
-/// What a commit is, from its header.
+/// What a change is, from its header or the ephemeral undo log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CommitKind {
     /// A content change.
@@ -37,9 +42,12 @@ pub enum CommitKind {
     Snapshot,
     /// An import after a move.
     Import,
+    /// An own ephemeral-only batch of this session: a change, or a revert (`reverts`).
+    Ephemeral,
 }
 
-/// A filter over the held commits. Empty fields match everything; results are newest first.
+/// A filter over the held commits and this session's ephemeral changes. Empty fields match
+/// everything; results are newest first.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CommitQuery {
     pub scope: Option<Scope>,
@@ -47,17 +55,17 @@ pub struct CommitQuery {
     pub actors: Vec<Tid>,
     /// Of any of these kinds.
     pub kinds: Vec<CommitKind>,
-    /// Reverts of this commit.
-    pub reverts: Option<CommitId>,
-    /// The commit this one reverts.
-    pub reverted_by: Option<CommitId>,
+    /// Reverts of this change.
+    pub reverts: Option<ChangeId>,
+    /// The change this one reverts.
+    pub reverted_by: Option<ChangeId>,
     pub in_effect: Option<bool>,
     /// `ts >= since`.
     pub since: Option<Ts>,
     /// `ts < until`.
     pub until: Option<Ts>,
-    /// Paging: only commits after this one in result order (older).
-    pub after: Option<CommitId>,
+    /// Paging: only changes after this one in result order (older).
+    pub after: Option<ChangeId>,
     pub limit: Option<usize>,
 }
 
@@ -77,12 +85,12 @@ impl CommitQuery {
         self.kinds.push(k);
         self
     }
-    pub fn reverts(mut self, c: CommitId) -> Self {
-        self.reverts = Some(c);
+    pub fn reverts(mut self, c: impl Into<ChangeId>) -> Self {
+        self.reverts = Some(c.into());
         self
     }
-    pub fn reverted_by(mut self, c: CommitId) -> Self {
-        self.reverted_by = Some(c);
+    pub fn reverted_by(mut self, c: impl Into<ChangeId>) -> Self {
+        self.reverted_by = Some(c.into());
         self
     }
     pub fn in_effect(mut self, b: bool) -> Self {
@@ -97,8 +105,8 @@ impl CommitQuery {
         self.until = Some(ts);
         self
     }
-    pub fn after(mut self, c: CommitId) -> Self {
-        self.after = Some(c);
+    pub fn after(mut self, c: impl Into<ChangeId>) -> Self {
+        self.after = Some(c.into());
         self
     }
     pub fn limit(mut self, n: usize) -> Self {
@@ -107,28 +115,30 @@ impl CommitQuery {
     }
 }
 
-/// Why a commit cannot be reverted.
+/// Why a change cannot be reverted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DropReason {
-    /// A body of it was dropped (compaction, keep-at-most, purge): spec/crdt.md §4.6.
+    /// A body of it was dropped (compaction, keep-at-most, purge: spec/crdt.md §4.6), or an
+    /// ephemeral change left the undo log (`Config::ephemeral_history`).
     Compacted,
     /// Reverting it writes nothing: everything it wrote was superseded since (spec/crdt.md §4.6).
     Superseded,
 }
 
-/// One held commit, attributed by its own signed header only (a change known only from a
-/// snapshot has no entry: notes/api.md Attribution), with its relations among held commits.
+/// One change: a held commit, attributed by its own signed header only (a change known only
+/// from a snapshot has no entry: notes/api.md Attribution), or an own ephemeral change of this
+/// session; with its relations among them. A batch with both halves is its commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitEntry {
     pub commit: CommitInfo,
     pub kind: CommitKind,
-    /// The commit it reverts.
-    pub reverts: Option<CommitId>,
-    /// Held reverts of it, oldest first.
-    pub reverted_by: Vec<CommitId>,
+    /// The change it reverts.
+    pub reverts: Option<ChangeId>,
+    /// Known reverts of it, oldest first.
+    pub reverted_by: Vec<ChangeId>,
     /// No revert in effect reverts it.
     pub in_effect: bool,
-    /// Aspects it validly touches (in the query's scope, if any).
+    /// Aspects it validly touches (in the query's scope, if any), its ephemeral ones included.
     pub aspects: Vec<(Tid, Ak)>,
     /// A body in `aspects` is gone: reverting fails `NotUndoable(Compacted)`.
     pub dropped: bool,
@@ -144,6 +154,14 @@ fn kind_of(h: &osis_commit::Header) -> CommitKind {
     }
 }
 
+/// The change a commit header reverts.
+fn undoes(h: &osis_commit::Header) -> Option<ChangeId> {
+    h.undoes.filter(|_| h.kind == Kind::Content).map(ChangeId::Commit)
+}
+
+/// A resolved scope.
+type Aspects = Vec<(Tid, Ak)>;
+
 /// Query results before filtering, with what undo and redo need: the revert depth (0 for a
 /// change, odd for an undo, even above 0 for a redo).
 struct Found {
@@ -153,25 +171,33 @@ struct Found {
 
 impl Osis {
     fn scope_aspects(&self, s: &Scope) -> Result<Vec<(Tid, Ak)>> {
-        let all = || -> Result<Vec<(Tid, Ak)>> { self.engine(|e| e.all_aspects()).map_err(Error::from) };
+        let things = |keep: &dyn Fn(&osis_node::Engine, &Tid) -> bool| -> Result<Vec<(Tid, Ak)>> {
+            self.engine(|e| {
+                let mut out: Vec<(Tid, Ak)> = e.all_aspects()?.into_iter().filter(|(t, _)| keep(e, t)).collect();
+                out.extend(e.ephemeral_scope_keys().into_iter().filter(|(t, _)| keep(e, t)));
+                Ok::<_, osis_node::Error>(out)
+            })
+            .map_err(Error::from)
+        };
         Ok(match s {
             Scope::Aspects(v) => v.iter().map(|(t, a)| (self.read(|r| r.resolve(*t)), a.clone())).collect(),
             Scope::Thing(t) => {
                 let t = self.read(|r| r.resolve(*t));
-                all()?.into_iter().filter(|(x, _)| *x == t).collect()
+                things(&|_, x| *x == t)?
             }
             Scope::Group(g) => {
                 let g = self.read(|r| r.resolve(*g));
-                all()?.into_iter().filter(|(x, _)| *x == g || self.groups_of(*x).contains(&g)).collect()
+                things(&|e, x| *x == g || e.groups_of(x).contains(&g))?
             }
         })
     }
 
-    /// The held commits in `scope`, newest first, with relations judged over every held commit
-    /// that can revert one of them (a revert touches only aspects its target touched).
-    fn found(&self, scope: Option<&Scope>) -> Result<Vec<Found>> {
+    /// The changes in `scope`, newest first, with relations judged over every held commit that
+    /// can revert one of them (a revert touches only aspects its target touched) and every
+    /// logged ephemeral change. Also the scope's aspects.
+    fn found(&self, scope: Option<&Scope>) -> Result<(Vec<Found>, Option<Aspects>)> {
         let aks = scope.map(|s| self.scope_aspects(s)).transpose()?;
-        Ok(self.engine(|e| {
+        let found = self.engine(|e| {
             let base = e.held_commits(aks.as_deref());
             let related: Vec<HeldCommit> = match &aks {
                 Some(_) => {
@@ -180,32 +206,91 @@ impl Osis {
                 }
                 None => base.clone(),
             };
-            // reverters per commit, oldest first; in effect decided newest first (reverters are
-            // newer than what they revert)
-            let mut by: BTreeMap<CommitId, Vec<CommitId>> = BTreeMap::new();
-            for c in related.iter().rev() {
-                if let Some(t) = c.header.undoes.filter(|_| c.header.kind == Kind::Content) {
-                    by.entry(t).or_default().push(c.id);
-                }
+            let log = e.ephemeral_log();
+            let in_scope: Option<BTreeSet<&(Tid, Ak)>> = aks.as_ref().map(|a| a.iter().collect());
+            // the entries: held commits in scope, then logged changes with an aspect in scope
+            // (a batch with both halves joins its commit's entry)
+            let mut entries: BTreeMap<(Ts, ChangeId), CommitEntry> = BTreeMap::new();
+            let mut at: BTreeMap<ChangeId, Ts> = BTreeMap::new();
+            for c in base {
+                let h = &c.header;
+                let id = ChangeId::Commit(c.id);
+                at.insert(id, h.ts);
+                entries.insert(
+                    (h.ts, id),
+                    CommitEntry {
+                        commit: CommitInfo { id, actor: h.actor, node: h.author, ts: h.ts, received: c.received },
+                        kind: kind_of(h),
+                        reverts: undoes(h),
+                        reverted_by: Vec::new(),
+                        in_effect: true,
+                        dropped: c.aspects.iter().any(|a| !a.2 && a.1.as_str() != "/created"),
+                        aspects: c.aspects.into_iter().map(|(t, a, _)| (t, a)).collect(),
+                    },
+                );
             }
-            let mut out_of: BTreeSet<CommitId> = BTreeSet::new();
-            for c in &related {
-                if !out_of.contains(&c.id)
-                    && let Some(t) = c.header.undoes
+            for l in &log {
+                let asp: Vec<(Tid, Ak)> = l.aspects.iter().filter(|k| in_scope.as_ref().is_none_or(|s| s.contains(k))).cloned().collect();
+                if asp.is_empty() {
+                    continue;
+                }
+                if let Some(ts) = at.get(&l.id)
+                    && let Some(en) = entries.get_mut(&(*ts, l.id))
                 {
-                    out_of.insert(t);
+                    en.aspects.extend(asp);
+                    continue;
+                }
+                let (kind, actor, node, ts) = match l.id {
+                    ChangeId::Commit(c) => match e.header(&c) {
+                        Some(h) => (kind_of(&h), h.actor, h.author, h.ts),
+                        None => continue,
+                    },
+                    ChangeId::Ephemeral(_) => (CommitKind::Ephemeral, l.actor, e.tid(), l.ts),
+                };
+                at.insert(l.id, ts);
+                entries.insert((ts, l.id), CommitEntry { commit: CommitInfo { id: l.id, actor, node, ts, received: l.received }, kind, reverts: l.reverts, reverted_by: Vec::new(), in_effect: true, dropped: false, aspects: asp });
+            }
+            // relations over the related commits and the whole log, oldest first
+            let mut rel: BTreeMap<(Ts, ChangeId), Option<ChangeId>> = related.iter().map(|c| ((c.header.ts, ChangeId::Commit(c.id)), undoes(&c.header))).collect();
+            for l in &log {
+                let ts = match l.id {
+                    ChangeId::Commit(c) => e.header(&c).map_or(l.ts, |h| h.ts),
+                    ChangeId::Ephemeral(_) => l.ts,
+                };
+                let r = rel.entry((ts, l.id)).or_default();
+                *r = r.or(l.reverts);
+            }
+            let mut by: BTreeMap<ChangeId, Vec<ChangeId>> = BTreeMap::new();
+            for ((_, id), r) in &rel {
+                if let Some(t) = r {
+                    by.entry(*t).or_default().push(*id);
                 }
             }
-            // revert depth: one more than the target's; a commit reverting nothing (or not held) is 0
-            let mut depth: BTreeMap<CommitId, usize> = BTreeMap::new();
-            let mut depth_of = |id: CommitId| {
+            // in effect decided newest first (reverters are newer than what they revert)
+            let mut out_of: BTreeSet<ChangeId> = BTreeSet::new();
+            for ((_, id), r) in rel.iter().rev() {
+                if !out_of.contains(id)
+                    && let Some(t) = r
+                {
+                    out_of.insert(*t);
+                }
+            }
+            let reverts: BTreeMap<ChangeId, Option<ChangeId>> = rel.iter().map(|((_, id), r)| (*id, *r)).collect();
+            // revert depth: one more than the target's; a change reverting nothing (or not
+            // known) is 0
+            let mut depth: BTreeMap<ChangeId, usize> = BTreeMap::new();
+            let mut depth_of = |id: ChangeId| {
                 let (mut chain, mut cur) = (Vec::new(), id);
                 let hit = loop {
                     if let Some(d) = depth.get(&cur) {
                         break Some(*d);
                     }
                     chain.push(cur);
-                    match e.header(&cur).and_then(|h| h.undoes) {
+                    let next = match reverts.get(&cur) {
+                        Some(r) => *r,
+                        None => cur.commit().and_then(|c| e.header(&c)).and_then(|h| undoes(&h)),
+                    };
+                    match next {
                         Some(u) => cur = u,
                         None => break None,
                     }
@@ -215,31 +300,27 @@ impl Osis {
                 }
                 depth.get(&id).copied().unwrap_or_default()
             };
-            base.into_iter()
-                .map(|c| {
-                    let h = &c.header;
-                    let entry = CommitEntry {
-                        commit: CommitInfo { id: osis_node::ChangeId::Commit(c.id), actor: h.actor, node: h.author, ts: h.ts, received: c.received },
-                        kind: kind_of(h),
-                        reverts: h.undoes,
-                        reverted_by: by.remove(&c.id).unwrap_or_default(),
-                        in_effect: !out_of.contains(&c.id),
-                        dropped: c.aspects.iter().any(|a| !a.2 && a.1.as_str() != "/created"),
-                        aspects: c.aspects.into_iter().map(|(t, a, _)| (t, a)).collect(),
-                    };
-                    Found { depth: depth_of(c.id), entry }
+            entries
+                .into_values()
+                .rev()
+                .map(|mut entry| {
+                    let id = entry.commit.id;
+                    entry.reverted_by = by.remove(&id).unwrap_or_default();
+                    entry.in_effect = !out_of.contains(&id);
+                    Found { depth: depth_of(id), entry }
                 })
                 .collect()
-        }))
+        });
+        Ok((found, aks))
     }
 
-    /// Held commits matching `q`, newest first (by `ts`, then ID).
+    /// Changes matching `q`, newest first (by `ts`, then ID).
     pub fn commits(&self, q: &CommitQuery) -> Result<Vec<CommitEntry>> {
-        let mut found = self.found(q.scope.as_ref())?;
+        let (mut found, _) = self.found(q.scope.as_ref())?;
         if let Some(a) = q.after {
-            match found.iter().position(|f| f.entry.commit.id == osis_node::ChangeId::Commit(a)) {
+            match found.iter().position(|f| f.entry.commit.id == a) {
                 Some(i) => drop(found.drain(..=i)),
-                None => return Err(Error::Invalid("`after` names no commit in the query's scope".into())),
+                None => return Err(Error::Invalid("`after` names no change in the query's scope".into())),
             }
         }
         Ok(found
@@ -271,10 +352,11 @@ impl Osis {
         self.step(scope, true)
     }
 
-    /// Reverts any held change or revert this node may write (an admin reverting someone else's).
-    /// Ephemeral changes have no undo log yet (`Invalid`).
-    pub fn revert(&self, id: osis_node::ChangeId) -> Result<Committed> {
-        let Some(id) = id.commit() else { return Err(Error::Invalid("an ephemeral change cannot be reverted yet".into())) };
+    /// Reverts any held change or revert this node may write (an admin reverting someone
+    /// else's), or an own ephemeral change of this session (with both halves, a batch reverts
+    /// as one). An ephemeral change without a log here (another node's, or from before a
+    /// restart) is `Invalid`.
+    pub fn revert(&self, id: ChangeId) -> Result<Committed> {
         let _g = lock(&self.inner.undo);
         self.revert_one(id)
     }
@@ -283,32 +365,42 @@ impl Osis {
     fn step(&self, scope: &Scope, redo: bool) -> Result<Option<Committed>> {
         let _g = lock(&self.inner.undo);
         let me = self.me();
-        let found = self.found(Some(scope))?;
-        let mut mine = found.iter().filter(|f| f.entry.commit.actor == me && matches!(f.entry.kind, CommitKind::Change | CommitKind::Revert));
+        let (found, aks) = self.found(Some(scope))?;
+        let mut mine = found.iter().filter(|f| f.entry.commit.actor == me && matches!(f.entry.kind, CommitKind::Change | CommitKind::Revert | CommitKind::Ephemeral));
         let target = if redo {
-            mine.take_while(|f| f.entry.kind == CommitKind::Revert).find(|f| f.entry.in_effect && f.depth % 2 == 1)
+            mine.take_while(|f| f.depth > 0).find(|f| f.entry.in_effect && f.depth % 2 == 1)
         } else {
             mine.find(|f| f.entry.in_effect && f.depth % 2 == 0)
         };
-        target.and_then(|f| f.entry.commit.id.commit()).map(|c| self.revert_one(c)).transpose()
+        // a newer own ephemeral change that left the undo log: it cannot be reverted, and
+        // nothing older is instead (for redo: a change clears redo)
+        let gone = self.engine(|e| e.ephemeral_dropped(aks.as_deref().unwrap_or_default()));
+        if let Some((ts, id, revert)) = gone
+            && target.is_none_or(|f| f.entry.commit.ts < ts)
+        {
+            return if redo && !revert { Ok(None) } else { Err(Error::NotUndoable { commit: id, reason: DropReason::Compacted }) };
+        }
+        target.map(|f| self.revert_one(f.entry.commit.id)).transpose()
     }
 
     /// The revert of `target`, or why there is none (never a partial revert).
-    fn revert_one(&self, target: CommitId) -> Result<Committed> {
-        let mut m = Mutation::new();
-        m.act_as(self.me()).undo(target);
+    fn revert_one(&self, target: ChangeId) -> Result<Committed> {
+        let me = self.me();
         let blocked = |reason| Error::NotUndoable { commit: target, reason };
         self.engine(|e| {
-            let h = e.header(&target).ok_or_else(|| Error::Invalid("unknown commit".into()))?;
-            if h.kind != Kind::Content {
-                return Err(Error::Invalid("only changes and reverts are reverted".into()));
+            if let ChangeId::Commit(c) = target {
+                let h = e.header(&c).ok_or_else(|| Error::Invalid("unknown commit".into()))?;
+                if h.kind != Kind::Content {
+                    return Err(Error::Invalid("only changes and reverts are reverted".into()));
+                }
+                if h.aspects.iter().any(|a| a.ak.as_str() != "/created" && !e.holds_body(&c, &a.tid, &a.ak)) {
+                    return Err(blocked(DropReason::Compacted));
+                }
             }
-            if h.aspects.iter().any(|a| a.ak.as_str() != "/created" && !e.holds_body(&target, &a.tid, &a.ak)) {
-                return Err(blocked(DropReason::Compacted));
-            }
-            match e.commit(m)? {
-                Some(id) => Ok(Committed { id: osis_node::ChangeId::Commit(id), ts: e.header(&id).map(|h| h.ts).unwrap_or_default() }),
-                None => Err(blocked(DropReason::Superseded)),
+            match e.revert_change(target, me)? {
+                Reverted::Written(w) => Ok(Committed { id: w.id, ts: w.ts }),
+                Reverted::Superseded => Err(blocked(DropReason::Superseded)),
+                Reverted::Compacted => Err(blocked(DropReason::Compacted)),
             }
         })
     }

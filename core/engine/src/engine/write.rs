@@ -56,7 +56,7 @@ pub struct Mutation {
     pub(crate) dead_resets: BTreeMap<(Tid, Ak), Vec<osis_crdt::Dot>>,
     /// Chunk and node blobs never reused, written afresh (`Engine::relink`).
     pub(crate) fresh: std::collections::BTreeSet<osis_base::BlobId>,
-    /// Things `Engine::write` persists with this batch if ephemeral (the item of a group op).
+    /// Things `Engine::write` persists with this batch if ephemeral.
     pub(crate) persist: std::collections::BTreeSet<Tid>,
     /// Ephemeral things deleted by this batch: freed after it (`Engine::write`).
     pub(crate) free: std::collections::BTreeSet<Tid>,
@@ -125,8 +125,8 @@ impl Mutation {
         Ok(e)
     }
 
-    /// Persists `tid` with this batch if it is ephemeral (`Engine::write`): the item of a group
-    /// op (until ephemeral placements exist, notes/ephemeral.md step 2).
+    /// Persists `tid` with this batch if it is ephemeral (`Engine::write`): a membership
+    /// operation's or a move's target, persisted by a content commit first.
     pub fn persist(&mut self, tid: Tid) -> &mut Self {
         self.persist.insert(tid);
         self
@@ -498,7 +498,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         false => Kind::Content,
     };
     if let Some(u) = m.undoes {
-        return crate::undo::undo_in(tx, u, m.actor.unwrap_or(node)).map(Some).or_else(|e| match e {
+        return crate::undo::undo_in(tx, u, m.actor.unwrap_or(node), m.ts).map(Some).or_else(|e| match e {
             Error::Misuse("nothing to undo") => Ok(None),
             e => Err(e),
         });

@@ -88,6 +88,11 @@ impl Groups {
         }
     }
 
+    /// The groups listing `g` as a subgroup.
+    pub(crate) fn parents_of(&self, g: &Tid) -> impl Iterator<Item = Tid> + '_ {
+        self.parents.get(g).into_iter().flatten().copied()
+    }
+
     /// The closure of `g`: itself and every thing it contains.
     pub fn closure(&self, g: &Tid) -> Arc<BTreeSet<Tid>> {
         self.closures.get(g).cloned().unwrap_or_else(|| Arc::new(BTreeSet::from([*g])))

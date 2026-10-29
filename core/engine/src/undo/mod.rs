@@ -80,14 +80,14 @@ fn undo_delta<V: View>(w: &mut Writer, undone: &Undone, state: &Fragment, buf: &
 }
 
 /// Builds and applies the undo commit of `target` (spec/crdt.md §4.6).
-pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<CommitId> {
+pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<Ts>) -> Result<CommitId> {
     let m = tx.core.ix.commits.get(&target).cloned().ok_or(Error::UnknownCommit(target))?;
     let h = m.header.clone();
     if !matches!(h.kind, Kind::Content) {
         return Err(Error::Misuse("only content commits are undone here"));
     }
     let node = tx.core.id.tid();
-    let ts = tx.core.hlc.next();
+    let ts = ts.unwrap_or_else(|| tx.core.hlc.next());
     let mut deltas = Vec::new();
     for (ai, a) in h.aspects.iter().enumerate() {
         // a commit whose body was dropped cannot be undone (spec/commits.md §7)
@@ -193,9 +193,9 @@ fn chain_judge(core: &crate::engine::Core, tid: &Tid, ak: &Ak, after: (Ts, Commi
 
 /// Whether commit `c` is in effect: no undo commit in effect undoes it. The undo relation is a
 /// tree (an undo names an older commit by hash), walked without recursion.
-fn in_effect(c: &CommitId, undoers: &BTreeMap<CommitId, Vec<CommitId>>) -> bool {
-    let mut memo: BTreeMap<CommitId, bool> = BTreeMap::new();
-    let mut entered: BTreeSet<CommitId> = BTreeSet::new();
+pub(crate) fn in_effect<K: Ord + Copy>(c: &K, undoers: &BTreeMap<K, Vec<K>>) -> bool {
+    let mut memo: BTreeMap<K, bool> = BTreeMap::new();
+    let mut entered: BTreeSet<K> = BTreeSet::new();
     let mut stack = vec![(*c, false)];
     while let Some((x, done)) = stack.pop() {
         let us = undoers.get(&x).map(Vec::as_slice).unwrap_or_default();
@@ -227,7 +227,7 @@ impl Engine {
     pub fn revert(&mut self, target: &CommitId) -> Result<Option<CommitId>> {
         let t = *target;
         let me = self.tid();
-        match self.run(|tx| undo_in(tx, t, me)) {
+        match self.run(|tx| undo_in(tx, t, me, None)) {
             Err(Error::Misuse("nothing to undo")) => Ok(None),
             r => r.map(Some),
         }

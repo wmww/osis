@@ -542,8 +542,12 @@ fn not_synced_diagnostic_spec_api_diagnostics() {
     let mut w = db.write();
     let g = w.create(db.me()).unwrap();
     w.make_group(g).unwrap();
-    let home_item = w.create_in(db.me(), &[db.home()]).unwrap();
-    let lost = w.create_in(db.me(), &[g]).unwrap();
+    // durable things: an ephemeral placement is no `NotSynced` matter (nothing leaves the
+    // device anyway); placing a durable thing persists the group
+    let home_item = w.create_durable(db.me()).unwrap();
+    w.place(home_item, db.home()).unwrap();
+    let lost = w.create_durable(db.me()).unwrap();
+    w.place(lost, g).unwrap();
     w.commit().unwrap();
     db.settle();
     let got: Vec<osis::Tid> = rx.try_iter().flatten().collect();

@@ -89,9 +89,9 @@ fn undo_blocked_by_dropped_body_spec_commits_7() {
     db.write_with(|w| w.at(t, a.clone()).set(&Value::Int(1))).unwrap();
     let newest = commit_with(&db, |w| w.at(t, b.clone()).set(&Value::Int(1))).id.commit().unwrap();
     db.engine(|e| e.drop_body(&newest, &t, &b)).unwrap();
-    assert_eq!(db.undo(&Scope::Thing(t)), Err(Error::NotUndoable { commit: newest, reason: DropReason::Compacted }));
+    assert_eq!(db.undo(&Scope::Thing(t)), Err(Error::NotUndoable { commit: osis::ChangeId::Commit(newest), reason: DropReason::Compacted }));
     assert_eq!(db.get(t, a).unwrap(), Some(Value::Int(1)));
-    assert_eq!(db.revert(osis::ChangeId::Commit(newest)), Err(Error::NotUndoable { commit: newest, reason: DropReason::Compacted }));
+    assert_eq!(db.revert(osis::ChangeId::Commit(newest)), Err(Error::NotUndoable { commit: osis::ChangeId::Commit(newest), reason: DropReason::Compacted }));
 }
 
 // notes/node.md: an undo mutation carries nothing else.
@@ -130,9 +130,9 @@ fn query_relations_spec_crdt_4_6() {
     let h = db.commits(&all).unwrap();
     let entry = |c: osis::CommitId| h.iter().find(|e| e.commit.id == osis::ChangeId::Commit(c)).unwrap().clone();
     assert!(!entry(c2.id.commit().unwrap()).in_effect);
-    assert_eq!(entry(c2.id.commit().unwrap()).reverted_by, vec![u.id.commit().unwrap()]);
+    assert_eq!(entry(c2.id.commit().unwrap()).reverted_by, vec![u.id]);
     assert!(entry(u.id.commit().unwrap()).in_effect && entry(c1.id.commit().unwrap()).in_effect);
-    assert_eq!((entry(u.id.commit().unwrap()).kind, entry(u.id.commit().unwrap()).reverts), (CommitKind::Revert, Some(c2.id.commit().unwrap())));
+    assert_eq!((entry(u.id.commit().unwrap()).kind, entry(u.id.commit().unwrap()).reverts), (CommitKind::Revert, Some(c2.id)));
     assert_eq!(entry(c1.id.commit().unwrap()).kind, CommitKind::Change);
     assert_eq!(h.first().map(|e| e.commit.id), Some(u.id));
     let paged = db.commits(&all.clone().after(u.id.commit().unwrap()).limit(1)).unwrap();
@@ -259,7 +259,7 @@ fn find_another_actors_revert_api_commits() {
     let found = alice.commits(&CommitQuery::new().reverts(c.id.commit().unwrap())).unwrap();
     assert_eq!(found.iter().map(|e| (e.commit.id, e.commit.actor)).collect::<Vec<_>>(), vec![(r.id, bob.me())]);
     let mine = alice.commits(&CommitQuery::new().scope(Scope::Thing(t)).actor(alice.me()).kind(CommitKind::Change)).unwrap();
-    assert!(mine.iter().any(|e| e.commit.id == c.id && !e.in_effect && e.reverted_by == vec![r.id.commit().unwrap()]));
+    assert!(mine.iter().any(|e| e.commit.id == c.id && !e.in_effect && e.reverted_by == vec![r.id]));
     assert_eq!(alice.undo(&Scope::Aspects(vec![(t, k.clone())])).unwrap(), None, "alice's change is out of effect");
     // bob's revert is a revert: his undo skips it, his redo reverts it
     assert_eq!(bob.undo(&Scope::Thing(t)).unwrap(), None, "bob made no change");
@@ -284,7 +284,7 @@ fn undo_chain_stops_at_a_live_change_spec_crdt_4_6() {
     commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(5)));
     db.undo(&Scope::Thing(t)).unwrap().unwrap();
     assert_eq!(db.get(t, k.clone()).unwrap(), Some(Value::Int(1)));
-    assert_eq!(db.revert(c1.id), Err(Error::NotUndoable { commit: c1.id.commit().unwrap(), reason: DropReason::Superseded }));
+    assert_eq!(db.revert(c1.id), Err(Error::NotUndoable { commit: c1.id, reason: DropReason::Superseded }));
     assert_eq!(db.get(t, k).unwrap(), Some(Value::Int(1)));
 }
 

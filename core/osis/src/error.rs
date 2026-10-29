@@ -2,7 +2,8 @@
 //! `None`, never as errors; peer-caused problems are diagnostics, never errors.
 
 use crate::commits::DropReason;
-use osis_base::{CommitId, Role, Tid};
+use osis_base::{Role, Tid};
+use osis_node::ChangeId;
 use osis_schema::{Path, PathError};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,7 +20,7 @@ pub enum Error {
     TooLarge { limit: usize },
     /// The newest change in an undo or redo scope cannot be undone (its body was dropped, or a
     /// register it wrote is no longer its winner). Nothing older is undone instead.
-    NotUndoable { commit: CommitId, reason: DropReason },
+    NotUndoable { commit: ChangeId, reason: DropReason },
     /// A demotion's pre-sync could not reach these groups.
     Unsynced { groups: Vec<Tid> },
     /// A malformed argument: value, link, card, path, op, retention.

@@ -640,6 +640,7 @@ impl Osis {
             w.make_group(p)?;
             Ok(p)
         })?;
+        self.persist(&[p])?;
         self.locked(|x| -> Result<()> {
             // secrets of its own before the label, as `sync()` does
             let done = x.engine().give_own_secrets(&p)?;

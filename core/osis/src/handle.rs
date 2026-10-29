@@ -76,6 +76,9 @@ pub struct Config {
     /// How long a call that waits for another node (`redeem`, `import_contact`, `restore`)
     /// waits before failing `Network`.
     pub wait_timeout: Duration,
+    /// Bytes of this session's ephemeral changes kept for undo (default 16 MiB); older ones are
+    /// `NotUndoable{Compacted}` (notes/ephemeral.md Bounds).
+    pub ephemeral_history: usize,
 }
 
 impl Config {
@@ -85,7 +88,7 @@ impl Config {
     }
 
     pub fn at(store: StoreAt) -> Config {
-        Config { store, materialize_limit: DEFAULT_LIMIT, clock: None, seed: None, runtime: Runtime::None, transport: None, peers: true, relays: Vec::new(), servers: Vec::new(), idle_commit: DEFAULT_IDLE_COMMIT, wait_timeout: DEFAULT_WAIT }
+        Config { store, materialize_limit: DEFAULT_LIMIT, clock: None, seed: None, runtime: Runtime::None, transport: None, peers: true, relays: Vec::new(), servers: Vec::new(), idle_commit: DEFAULT_IDLE_COMMIT, wait_timeout: DEFAULT_WAIT, ephemeral_history: osis_node::engine::DEFAULT_EPHEMERAL_HISTORY }
     }
 
     pub fn dir(path: impl Into<std::path::PathBuf>) -> Config {
@@ -205,8 +208,8 @@ fn clock(cfg: &Config) -> Arc<dyn Clock> {
     cfg.clock.clone().unwrap_or_else(|| Arc::new(SystemClock))
 }
 
-fn engine_cfg() -> osis_node::Config {
-    osis_node::Config { software: format!("osis {}", env!("CARGO_PKG_VERSION")), ..Default::default() }
+fn engine_cfg(cfg: &Config) -> osis_node::Config {
+    osis_node::Config { software: format!("osis {}", env!("CARGO_PKG_VERSION")), ephemeral_history: cfg.ephemeral_history, ..Default::default() }
 }
 
 fn tid_record(e: &mut Engine, name: &str) -> Result<Tid> {
@@ -243,7 +246,7 @@ fn sync_over(engine: Engine, clock: &Arc<dyn Clock>, cfg: &Config, servers: &[Se
 pub(crate) fn fresh_engine(cfg: &Config, servers: &[ServerAddr]) -> Result<Fresh> {
     let (b, r) = parts(cfg)?;
     let clock = clock(cfg);
-    let engine = Engine::create(b, r, engine_cfg(), clock.clone(), rng(cfg, 0))?;
+    let engine = Engine::create(b, r, engine_cfg(cfg), clock.clone(), rng(cfg, 0))?;
     Ok(Fresh { sync: sync_over(engine, &clock, cfg, servers)?, clock })
 }
 
@@ -273,7 +276,7 @@ impl Osis {
     pub fn open(cfg: Config) -> Result<Osis> {
         let (b, r) = parts(&cfg)?;
         let clock = clock(&cfg);
-        let mut e = Engine::open(b, r, engine_cfg(), clock.clone(), rng(&cfg, 0))?;
+        let mut e = Engine::open(b, r, engine_cfg(&cfg), clock.clone(), rng(&cfg, 0))?;
         let me = tid_record(&mut e, PERSON)?;
         let servers = load_servers(&mut e)?.unwrap_or_else(|| cfg.servers.clone());
         let sync = sync_over(e, &clock, &cfg, &servers)?;

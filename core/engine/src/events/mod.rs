@@ -42,6 +42,12 @@ pub enum ChangeId {
     Ephemeral(EphemeralId),
 }
 
+impl From<CommitId> for ChangeId {
+    fn from(c: CommitId) -> ChangeId {
+        ChangeId::Commit(c)
+    }
+}
+
 impl ChangeId {
     /// The commit, unless the change was ephemeral only.
     pub fn commit(&self) -> Option<CommitId> {
@@ -92,6 +98,9 @@ pub enum DiagnosticKind {
     /// A thing was placed only in groups whose closure no synced group holds (the `osis` API,
     /// spec/requirements.md Offline and network).
     NotSynced,
+    /// A persisted thing's ephemeral placement stayed ephemeral: this node may not write the
+    /// group (notes/ephemeral.md Ephemeral placements; `tids`: item, group).
+    PlacementNotPersisted,
     /// A demotion was stamped without its pre-sync (spec/permissions.md §5.3).
     Unsynced,
     /// This node cannot open a label it should read: it waits for a re-seal
