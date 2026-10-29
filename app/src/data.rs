@@ -835,8 +835,22 @@ impl Data {
         for g in &tags {
             inner.extend(self.tag_contents(*g)?.0);
         }
-        // a cycle of tags has no top: show them all then
-        let top: Vec<Tid> = if tags.iter().all(|g| inner.contains(g)) { tags.clone() } else { tags.iter().copied().filter(|g| !inner.contains(g)).collect() };
+        let mut top: Vec<Tid> = tags.iter().copied().filter(|g| !inner.contains(g)).collect();
+        // a cycle of tags under no top tag has no top: its first tag (by name) stands for it
+        let mut reached: BTreeSet<Tid> = BTreeSet::new();
+        let mut todo = top.clone();
+        for g in &tags {
+            if todo.is_empty() && !reached.contains(g) {
+                top.push(*g);
+                todo.push(*g);
+            }
+            while let Some(x) = todo.pop() {
+                if reached.insert(x) {
+                    todo.extend(self.tag_contents(x)?.0);
+                }
+            }
+        }
+        self.sort_by_name(&mut top)?;
         let mut out = Vec::new();
         for g in top {
             out.push((g, self.tag_contents(g)?.0));

@@ -200,3 +200,47 @@ fn nudge_keeps_the_end_form() {
     d.nudge(e, -DAY, HOUR).unwrap();
     d.week(monday_of(0)).unwrap();
 }
+
+/// A period's days count and stop in date order whatever the rule's order: the 1st and the last
+/// of a month (the set holds -1 before 1), every Monday and Tuesday of a month.
+#[test]
+fn days_of_a_period_in_date_order() {
+    use osis_app::event::{RepeatFreq, RepeatWeekdays, Weekday};
+    use osis_app::time::occurrences;
+    let oct1 = 20_727; // Thursday 2026-10-01
+    let mut r = rep(RepeatFreq::Monthly);
+    r.monthdays = [1, -1].into_iter().collect();
+    let o = occurrences(&Start::Day(oct1), None, &r, oct1 * DAY, (oct1 + 7) * DAY, &[]);
+    assert_eq!(o.iter().map(|x| x.1 / DAY - oct1).collect::<Vec<_>>(), vec![0], "the 1st, in a window before the 31st");
+    r.count = Some(2);
+    let o = occurrences(&Start::Day(oct1), None, &r, oct1 * DAY, (oct1 + 40) * DAY, &[]);
+    assert_eq!(o.iter().map(|x| x.1 / DAY - oct1).collect::<Vec<_>>(), vec![0, 30], "the first two are Oct 1 and Oct 31");
+    let mut r = rep(RepeatFreq::Monthly);
+    r.weekdays = [Weekday::Mon, Weekday::Tue].into_iter().map(|day| RepeatWeekdays { day, nth: None }).collect();
+    let o = occurrences(&Start::Day(oct1), None, &r, oct1 * DAY, (oct1 + 7) * DAY, &[]);
+    assert_eq!(o.iter().map(|x| x.1 / DAY - oct1).collect::<Vec<_>>(), vec![4, 5], "Mon 5 and Tue 6 Oct");
+    // the same day twice (the 31st and the last) is one occurrence
+    let mut r = rep(RepeatFreq::Monthly);
+    r.monthdays = [31, -1].into_iter().collect();
+    assert_eq!(occurrences(&Start::Day(oct1), None, &r, (oct1 + 30) * DAY, (oct1 + 31) * DAY, &[]).len(), 1);
+}
+
+/// A New York series seen from Berlin: the US changes clocks three weeks before the EU, so a
+/// weekly 09:00 meeting shows at 15:00, then 14:00 for three weeks, then 15:00 again; its day
+/// choices are New York days (a Friday 20:00 there is Saturday in Berlin).
+#[test]
+fn series_in_another_zone_than_the_viewer() {
+    use osis_app::event::{RepeatFreq, RepeatWeekdays, Weekday};
+    use osis_app::time::occurrences_in;
+    let berlin = jiff::tz::TimeZone::get("Europe/Berlin").unwrap();
+    let mon = 20_507; // Monday 2026-02-23
+    let ny = |t| Start::At(Wall { time: t, zone: Some("America/New_York".into()) });
+    let o = occurrences_in(&ny(mon * DAY + 9 * HOUR), Some(&End::After(HOUR)), &rep(RepeatFreq::Weekly), mon * DAY, (mon + 6 * 7) * DAY, &[], &berlin);
+    let hours: Vec<i64> = o.iter().map(|x| x.1.rem_euclid(DAY) / HOUR).collect();
+    assert_eq!(hours, vec![15, 15, 14, 14, 14, 15], "US DST from 8 Mar, EU from 29 Mar");
+    assert!(o.iter().all(|x| x.2 - x.1 == HOUR));
+    let mut r = rep(RepeatFreq::Weekly);
+    r.weekdays = [RepeatWeekdays { day: Weekday::Fri, nth: None }].into_iter().collect();
+    let o = occurrences_in(&ny(mon * DAY + 20 * HOUR), Some(&End::After(HOUR)), &r, mon * DAY, (mon + 7) * DAY, &[], &berlin);
+    assert_eq!(o.iter().map(|x| (x.1.div_euclid(DAY) - mon, x.1.rem_euclid(DAY) / HOUR)).collect::<Vec<_>>(), vec![(5, 2)], "Saturday 02:00 in Berlin");
+}
