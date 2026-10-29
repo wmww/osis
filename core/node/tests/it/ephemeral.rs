@@ -981,10 +981,20 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
             panic!("seed {seed}: the full server keeps entries {stale:?} no node holds (cap {cap})\n{}\n{}", log.join("\n"), lane_dump(&mut net, &nodes, &servers, &l, w));
         }
     }
-    let first = notes(&mut net, h0, w);
-    for n in &holders[1..] {
-        if !refused && notes(&mut net, *n, w) != first {
-            panic!("seed {seed}: node {n} differs from node {h0} (cap {cap})\n{}\n{}", log.join("\n"), lane_dump(&mut net, &nodes, &servers, &l, w));
+    // past a refusal, holders of the same plain commits still read alike (a node's state is its
+    // own commits and the valid ones it received)
+    let held = |net: &mut Net, n: usize| -> BTreeSet<osis_base::CommitId> {
+        let e = net.engine(n);
+        e.held_ephemeral().into_iter().map(|x| x.0).filter(|c| !e.ephemeral_is_presence(c)).collect()
+    };
+    let mut reads: Vec<(usize, BTreeMap<String, String>, BTreeSet<osis_base::CommitId>)> = Vec::new();
+    for n in &holders {
+        reads.push((*n, notes(&mut net, *n, w), held(&mut net, *n)));
+    }
+    for (n, got, h) in &reads[1..] {
+        let Some((m, want, _)) = reads.iter().find(|(_, _, h2)| !refused || h2 == h) else { continue };
+        if got != want {
+            panic!("seed {seed}: node {n} differs from node {m} (cap {cap})\n{}\n{}", log.join("\n"), lane_dump(&mut net, &nodes, &servers, &l, w));
         }
     }
     // spec/sync.md §9 (own compaction): each writer's own held commits within twice their cover

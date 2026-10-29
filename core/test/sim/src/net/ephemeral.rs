@@ -597,6 +597,17 @@ pub fn check(sim: &mut NetSim) -> Res<()> {
         for comp in sim.eph_components(g, hs, &lossy) {
             eph_alike(sim, t, &comp)?;
         }
+        // whatever connects them: holders of the same plain commits read alike (a node's state
+        // is its own commits and the valid ones it received; checks past a lossy server too)
+        let mut by: BTreeMap<BTreeSet<osis_base::CommitId>, Vec<usize>> = BTreeMap::new();
+        for n in hs {
+            let e = sim.engine(*n)?;
+            let held: BTreeSet<osis_base::CommitId> = e.held_ephemeral().into_iter().map(|x| x.0).filter(|c| !e.ephemeral_is_presence(c)).collect();
+            by.entry(held).or_default().push(*n);
+        }
+        for same in by.into_values().filter(|x| x.len() > 1) {
+            eph_alike(sim, t, &same)?;
+        }
     }
     sim.presence_ok(&holders, !lossy.is_empty())?;
     Ok(())
