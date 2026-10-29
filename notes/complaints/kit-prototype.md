@@ -8,3 +8,4 @@
 - `claudewait` is not on PATH on this box (not in ~/.local/bin either): waiting on a background gate fell back to task notifications.
 - With deny missing, timing a gate run per project needed `--base REV` plus throwaway probe commits; the core run stops at deny before the GUI `cargo check` (about 1 s warm, run by hand).
 - Review: `git diff --name-only` follows renames by default, so a core file moved into kit/ listed only the kit path and the gate skipped core; now `--no-renames`, with `tools/gate_select_test.sh` (fabricated histories against `gate.sh --plan`).
+- Second review: `gate_select_test.sh` ran its subdirectory case in a `( ... )` subshell, so a FAIL there never reached the exit code; `git diff --name-only` quotes non-ASCII names (`"kit/\303\251.rs"`), which sent a kit-only change down the core path. Both fixed, with cases.

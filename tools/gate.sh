@@ -33,17 +33,19 @@ core=1
 gui=1
 if [ -z "$all" ] && [ -n "$base" ] && [ "$base" != "$(git rev-parse HEAD)" ]; then
   # changed paths since the merge base, committed or not; a rename counts as delete + add, so a
-  # file moved out of core into kit/ still selects the core steps
+  # file moved out of core into kit/ still selects the core steps; a name git quotes (non-ASCII,
+  # control characters) starts with '"'
   changed=$(git diff --no-renames --name-only "$base" --)
   changed="$changed
 $(git ls-files --others --exclude-standard)"
-  printf '%s\n' "$changed" | grep -q -v -e '^kit/' -e '^app/' -e '^$' || core=
-  printf '%s\n' "$changed" | grep -q -e '^kit/' -e '^app/' || gui=
+  printf '%s\n' "$changed" | grep -q -v -e '^"\{0,1\}kit/' -e '^"\{0,1\}app/' -e '^$' || core=
+  printf '%s\n' "$changed" | grep -q -e '^"\{0,1\}kit/' -e '^"\{0,1\}app/' || gui=
 fi
 if [ -z "$seeds" ]; then
   seeds=5
-  if [ -n "$base" ] && [ "$base" != "$(git rev-parse HEAD)" ] && git diff --quiet "$base" -- \
-      Cargo.toml Cargo.lock core/test/sim core/engine core/node core/perm core/crdt; then
+  sweep_paths="Cargo.toml Cargo.lock core/test/sim core/engine core/node core/perm core/crdt"
+  if [ -n "$base" ] && [ "$base" != "$(git rev-parse HEAD)" ] && git diff --quiet "$base" -- $sweep_paths \
+      && [ -z "$(git ls-files --others --exclude-standard -- $sweep_paths)" ]; then
     seeds=0
   fi
 fi
