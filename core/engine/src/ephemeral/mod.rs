@@ -12,7 +12,7 @@ mod place;
 mod remote;
 
 pub use log::{LoggedChange, Reverted};
-pub use remote::{COMPACT_FLOOR, EphCommit, EphIngest, MAX_DELIVERED};
+pub use remote::{ENTRY_CHARGE, EphCommit, EphIngest, MAX_DELIVERED};
 
 use crate::engine::write::{AspectMut, Records, check_authority_with, role_with, run_ops};
 use crate::engine::{Engine, Mutation};

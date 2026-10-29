@@ -111,6 +111,16 @@ impl Engine {
         Ok(self.resolved(&tid, &ak, v))
     }
 
+    /// The durable side of `(tid, ak)` alone, as `get` reads it (tests: what durable commits
+    /// decide, whatever ephemeral state joins it; `None` for an ephemeral thing).
+    pub fn get_durable(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Value>> {
+        if self.core.created(tid).is_none() {
+            return Ok(None);
+        }
+        let v = self.run(|tx| Ok(tx.state(tid, ak)?.and_then(Fragment::read)))?;
+        Ok(self.resolved(tid, ak, v))
+    }
+
     /// `v` read from `(tid, ak)` with its tids resolved through moves, unless `ak` names things
     /// as such.
     fn resolved(&self, tid: &Tid, ak: &Ak, v: Option<Value>) -> Option<Value> {

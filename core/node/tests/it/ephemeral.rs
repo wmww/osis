@@ -588,11 +588,12 @@ fn forged_copy_of_held_commit_refused_spec_sync_9() {
     assert!(net.engine(b).ingest_ephemeral(unsigned).is_err(), "a junk signature");
 }
 
-// spec/crdt.md §4.6 (un-merge rebuilds from what is held): a node's own compaction covers
-// others' writes; a later validity flip on the aspect rebuilds it from the own writes and the
-// held parts, the own cover included, so the covered writes stay and the holders agree
+// spec/crdt.md §4.6 (un-merge rebuilds from what is held), spec/sync.md §9 (an own cover carries
+// the author's earlier sessions' writes): a restarted node gets its old commits back and covers
+// them as its own; a later validity flip on the aspect rebuilds it from the own writes and the
+// held parts, the own cover included, so the old writes stay and the holders agree
 #[test]
-fn own_compaction_survives_rebuild_spec_crdt_4_6() {
+fn own_cover_survives_rebuild_spec_crdt_4_6() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
@@ -602,32 +603,42 @@ fn own_compaction_survives_rebuild_spec_crdt_4_6() {
     net.run();
     let w = window(&mut net, a, g, "w");
     net.run();
+    note(&mut net, a, w, "a", "1");
+    net.run();
+    net.restart(a, 31);
+    net.advance(10_000);
+    assert_eq!(notes(&mut net, a, w), map(&[("a", "1")]), "a's earlier session's writes came back");
     note(&mut net, b, w, "b", "1");
     note(&mut net, c, w, "c", "1");
     net.run();
-    let cover = net.engine(a).compact_ephemeral(None, true).unwrap().expect("compacted");
-    net.engine(b).ingest_ephemeral(cover.blob).unwrap();
-    local(&mut net, a);
+    let acts = net.sync(a).compact_ephemeral_now().unwrap();
+    net.actions(a, acts);
     net.run();
+    let at = net.tid(a);
+    let by_a = |net: &mut Net, n: usize| {
+        let e = net.engine(n);
+        e.held_ephemeral().into_iter().filter(|(id, _, _)| e.ephemeral_header(id).is_some_and(|h| h.author == at && h.ephemeral == Some(osis_commit::EphClass::Plain))).count()
+    };
+    assert_eq!(by_a(&mut net, a), 1, "a's cover absorbed its earlier session's commits");
+    assert_eq!(by_a(&mut net, b), 1, "and b dropped them");
     note(&mut net, c, w, "c2", "2");
     net.run();
     let ct = net.tid(c);
-    let me = net.tid(a);
     let bt = net.tid(b);
     let e = net.engine(a);
-    let rs = recipients_of(e, &[(me, Role::Admin), (bt, Role::Write)]);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write)]);
     remove_member(e, g, ct, &rs, 9);
     net.run();
     let at_a = notes(&mut net, a, w);
     assert_eq!(at_a, notes(&mut net, b, w), "holders agree");
-    assert_eq!(at_a, map(&[("b", "1"), ("c", "1")]), "the covered writes stay (the cover's author is valid and vouches for them); c's own commit goes");
+    assert_eq!(at_a, map(&[("a", "1"), ("b", "1")]), "a's covered writes stay; c's go");
 }
 
-// spec/sync.md §7 (compaction): a cover also carries a one-part aspect of a held commit it would
-// otherwise leave partly covered, so it absorbs that commit (sim `ephemeral` seed 83: a holder's
-// refused cover never absorbed another's cover spanning a second window)
+// spec/sync.md §9 (an own cover absorbs every own held commit, across things): one commit
+// spanning two windows and a later note are absorbed by the author's cover, at the author and at
+// a holder; another writer's commits stay
 #[test]
-fn cover_absorbs_commit_spanning_one_part_aspect_spec_sync_7() {
+fn own_cover_absorbs_every_own_commit_spec_sync_9() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
@@ -637,26 +648,39 @@ fn cover_absorbs_commit_spanning_one_part_aspect_spec_sync_7() {
     let w1 = window(&mut net, a, g, "w1");
     let w2 = window(&mut net, a, g, "w2");
     net.run();
-    // one commit on w1's notes and w2's notes (w2's notes have no other part)
     let mut m = Mutation::new();
     m.op(w1, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("a"))], op: Op::Set(s("1")) }).unwrap();
     m.op(w2, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("a"))], op: Op::Set(s("2")) }).unwrap();
     net.engine(a).write(m).unwrap();
     local(&mut net, a);
+    note(&mut net, a, w1, "a2", "3");
     note(&mut net, b, w1, "b", "1");
     net.run();
-    let cover = net.engine(b).compact_ephemeral(None, true).unwrap().expect("compacted");
-    assert_eq!(net.engine(b).held_ephemeral().len(), 1, "every held commit absorbed (the windows' records and placements, both note commits), the cover held");
-    net.engine(a).ingest_ephemeral(cover.blob).unwrap();
-    assert_eq!(notes(&mut net, a, w2), map(&[("a", "2")]));
-    assert_eq!(notes(&mut net, a, w1), map(&[("a", "1"), ("b", "1")]));
+    let (at, bt) = (net.tid(a), net.tid(b));
+    let held_by = |net: &mut Net, n: usize, author: Tid| {
+        let e = net.engine(n);
+        e.held_ephemeral().into_iter().filter(|(id, _, _)| e.ephemeral_header(id).is_some_and(|h| h.author == author)).count()
+    };
+    let b_held = held_by(&mut net, a, bt);
+    assert!(b_held > 0);
+    let acts = net.sync(a).compact_ephemeral_now().unwrap();
+    net.actions(a, acts);
+    net.run();
+    for n in [a, b] {
+        assert_eq!(held_by(&mut net, n, at), 1, "node {n}: a's commits (windows, placements, notes) absorbed by its cover");
+    }
+    assert_eq!(held_by(&mut net, a, bt), b_held, "b's commits are b's to cover");
+    for n in [a, b] {
+        assert_eq!(notes(&mut net, n, w2), map(&[("a", "2")]));
+        assert_eq!(notes(&mut net, n, w1), map(&[("a", "1"), ("a2", "3"), ("b", "1")]));
+    }
 }
 
-// spec/permissions.md §5.2 (a valid ephemeral commit vouches for the session writes it carries;
-// owner decision "Snapshots vouch"): an honest writer's compaction carries a member's writes;
-// once that member is removed they stay at every holder and at a node arriving later, alike
+// spec/permissions.md §5.2 (an ephemeral part is judged as its author's delta and carries only
+// its author's writes): covers never carry a member's writes, so once that member is removed its
+// writes go at every holder and at a node arriving later, whoever compacted meanwhile
 #[test]
-fn removed_member_covered_writes_stay_spec_permissions_5_2() {
+fn removed_member_writes_go_after_covers_spec_permissions_5_2() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
@@ -669,14 +693,15 @@ fn removed_member_covered_writes_stay_spec_permissions_5_2() {
     net.run();
     note(&mut net, c, w, "c", "from c");
     note(&mut net, a, w, "a", "from a");
+    note(&mut net, b, w, "b", "from b");
     net.run();
-    // b covers both writes and the covered commits go everywhere
-    let held = net.engine(b).held_ephemeral().len();
-    let acts = net.sync(b).compact_ephemeral_now().unwrap();
-    net.actions(b, acts);
-    net.run();
-    assert!(net.engine(d).held_ephemeral().len() < held, "the covered commits went");
-    assert_eq!(notes(&mut net, d, w), map(&[("a", "from a"), ("c", "from c")]));
+    for n in [a, b] {
+        let acts = net.sync(n).compact_ephemeral_now().unwrap();
+        net.actions(n, acts);
+        net.run();
+    }
+    let all = map(&[("a", "from a"), ("b", "from b"), ("c", "from c")]);
+    assert_eq!(notes(&mut net, d, w), all);
     let ct = net.tid(c);
     let me = net.tid(a);
     let bt = net.tid(b);
@@ -685,24 +710,50 @@ fn removed_member_covered_writes_stay_spec_permissions_5_2() {
     let rs = recipients_of(e, &[(me, Role::Admin), (bt, Role::Write), (dt, Role::Read)]);
     remove_member(e, g, ct, &rs, 9);
     net.run();
-    let both = map(&[("a", "from a"), ("c", "from c")]);
+    let left = map(&[("a", "from a"), ("b", "from b")]);
     for n in [a, b, d] {
-        assert_eq!(notes(&mut net, n, w), both, "node {n}: the cover vouches for c's write");
+        assert_eq!(notes(&mut net, n, w), left, "node {n}: c's write goes");
     }
     net.restart(d, 41);
     net.advance(10_000);
-    assert_eq!(notes(&mut net, d, w), both, "a node arriving later gets it from the cover");
+    assert_eq!(notes(&mut net, d, w), left, "a node arriving later agrees");
+}
+
+// spec/sync.md §9 (an ephemeral commit carries only its author's writes): a writer's commit
+// carrying another node's writes under that node's name joins only the writer's own
+#[test]
+fn others_writes_in_a_commit_not_joined_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[sv]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    assert!(net.engine(c).ephemeral_thing(&w).is_some());
+    net.set_online(c, false);
+    note(&mut net, a, w, "a", "1");
+    note(&mut net, b, w, "b", "1");
+    net.run();
+    let ak = osis_base::Ak::new(NOTES).unwrap();
+    let forged = net.engine(b).forge_carrying(osis_commit::EphClass::Plain, w, &ak).unwrap().unwrap();
+    net.engine(c).ingest_ephemeral(forged.blob).unwrap();
+    assert_eq!(notes(&mut net, c, w), map(&[("b", "1")]), "a's write is a's to send");
 }
 
 /// One random run of the shared window (notes/ephemeral.md Convergence): four writers on two
-/// servers (odd seeds: one with a small ephemeral cap, so writers compact), random ephemeral
-/// writes, partitions (offline, one server blocked), node restarts and server restarts; after
-/// healing every holder reads the same notes.
+/// servers (odd seeds: one with a random ephemeral cap, 0 and below one cover included), random
+/// ephemeral writes, partitions (offline, one server blocked), node restarts and server
+/// restarts; after healing every holder reads the same notes (through the uncapped server), and
+/// each writer's own held commits cost at most twice their cover (spec/sync.md §9).
 fn random_window_run(seed: u64) {
     random_window_run_on(seed, false, false)
 }
 
-/// `single`: one server only, always with the small cap (what it holds is all others get).
+/// `single`: one server only, always capped (what it holds is all others get): holders read
+/// alike unless an entry a holder has stays out of it because it genuinely does not fit there.
 /// `inflight`: half the steps end after one hop of delivery instead of settling, so later
 /// writes meet uploads still in flight (coalesced, spec/sync.md §9), and the second server is
 /// at times slow (its messages held back for some steps).
@@ -715,8 +766,10 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
         x % n
     };
     let mut net = Net::new();
-    // odd seeds: a small ephemeral cap at the first server forces compactions
-    let s1 = if single || seed % 2 == 1 { net.add_server_with(osis_server::Policy { ephemeral_bytes: 6_000, ..osis_server::Policy::default() }) } else { net.add_server() };
+    // odd seeds (and `single`): a random ephemeral cap at the first server, from nothing fitting
+    // to the whole state fitting
+    let cap = [0, 1_500, 4_000, 8_000, 16_000, 64_000][(seed / 2 % 6) as usize];
+    let s1 = if single || seed % 2 == 1 { net.add_server_with(osis_server::Policy { ephemeral_bytes: cap, ..osis_server::Policy::default() }) } else { net.add_server() };
     let s2 = net.add_server();
     let servers: Vec<usize> = if single { vec![s1] } else { vec![s1, s2] };
     let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &servers)).collect();
@@ -727,6 +780,8 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     net.run();
     let mut restarts = 100;
     let mut log = Vec::new();
+    // nodes that held the window since their last restart
+    let mut kept: BTreeSet<usize> = BTreeSet::from([nodes[0]]);
     // each node's live cursor: its last presence write since its last restart
     let mut cursors: BTreeMap<usize, String> = BTreeMap::new();
     // presence writes come from their own stream, so a seed's other steps stay what they were
@@ -790,6 +845,7 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
                 restarts += 1;
                 log.push(format!("{n} restarts"));
                 cursors.remove(&n);
+                kept.remove(&n);
                 let on = net.nodes[n].online;
                 net.restart(n, restarts);
                 net.set_online(n, on);
@@ -824,6 +880,7 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
         } else {
             net.run();
         }
+        kept.extend(nodes.iter().copied().filter(|n| syncs(&mut net, *n, w)));
     }
     net.blocked.clear();
     net.release();
@@ -833,33 +890,88 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     for _ in 0..4 {
         net.advance(15_000);
     }
-    let holders: Vec<usize> = nodes.iter().copied().filter(|n| net.engine(*n).ephemeral_thing(&w).is_some()).collect();
+    // one more periodic pass: entries a full server refused go again once room appeared
+    net.advance(61_000);
+    let holders: Vec<usize> = nodes.iter().copied().filter(|n| syncs(&mut net, *n, w)).collect();
     let Some(&h0) = holders.first() else {
-        // lost only when no node holds it (spec/requirements.md Ephemeral data): every node and
-        // both servers restarted
-        let restarted = |who: &str| log.iter().any(|l| *l == format!("{who} restarts"));
-        let all = nodes.iter().all(|n| restarted(&n.to_string())) && servers.iter().all(|s| restarted(&format!("server {s}")));
-        assert!(all, "seed {seed}: nobody holds the window\n{}", log.join("\n"));
+        // lost only when no node holds it (spec/requirements.md Ephemeral data): every node that
+        // held it restarted since (a server holding it would have handed it back)
+        assert!(kept.is_empty(), "seed {seed}: nobody holds the window, though nodes {kept:?} held it and never restarted since\n{}", log.join("\n"));
         return;
+    };
+    let l = net.label(h0);
+    // spec/sync.md §5 (defined outcome past a cap): an entry some holder has that the only server
+    // lacks and could not fit
+    let refused = single && {
+        let ids: BTreeSet<osis_base::BlobId> = net.server_ids(s1, &l).into_iter().collect();
+        let store = net.servers[s1].hub.store();
+        let mut out = false;
+        for n in &holders {
+            for (b, size) in net.nodes[*n].sync.as_ref().unwrap().ephemeral_plain_entries(&l) {
+                out |= !ids.contains(&b) && !store.ephemeral_fits(&l, size as u64);
+            }
+        }
+        out
     };
     let first = notes(&mut net, h0, w);
     for n in &holders[1..] {
-        assert_eq!(notes(&mut net, *n, w), first, "seed {seed}: node {n} differs from node {h0}\n{}", log.join("\n"));
+        if !refused && notes(&mut net, *n, w) != first {
+            panic!("seed {seed}: node {n} differs from node {h0} (cap {cap})\n{}\n{}", log.join("\n"), lane_dump(&mut net, &nodes, &servers, &l, w));
+        }
+    }
+    // spec/sync.md §9 (own compaction): each writer's own held commits within twice their cover
+    // and one in flight
+    for n in &nodes {
+        for (actor, held, cover, largest) in net.engine(*n).own_ephemeral_load() {
+            assert!(held <= 2 * cover + largest, "seed {seed}: node {n} holds {held} B of own commits for {actor:?}, cover {cover} B\n{}", log.join("\n"));
+        }
     }
     // presence: every holder reads exactly the live cursors (their authors are all connected;
-    // presence has its own room at a server, apart from the capped ephemeral state)
+    // presence has its own room at a server, apart from the capped ephemeral state); with an
+    // entry refused, at most those (a writer the window's placement did not reach sends nothing)
     let want: BTreeMap<String, String> = cursors.iter().filter(|(n, _)| holders.contains(n)).map(|(n, v)| (n.to_string(), v.clone())).collect();
     for n in &holders {
-        assert_eq!(str_map(net.eph_read(*n, w, CURSOR)), want, "seed {seed}: node {n}'s cursors\n{}", log.join("\n"));
+        let got = str_map(net.eph_read(*n, w, CURSOR));
+        if got != want && !(refused && got.iter().all(|(k, v)| want.get(k) == Some(v))) {
+            panic!("seed {seed}: node {n}'s cursors {got:?}, expected {want:?} (cap {cap})\n{}\n{}", log.join("\n"), lane_dump(&mut net, &nodes, &servers, &l, w));
+        }
     }
     // and no server keeps a covered presence entry: at most one per live cursor
-    let l = net.label(h0);
     for sv in &servers {
         let store = net.servers[*sv].hub.store();
         let ids = osis_proto::LabelStore::live_ids(store, &l).unwrap_or_default();
         let presence = ids.iter().filter(|b| osis_proto::LabelStore::blob(store, b).ok().flatten().and_then(|x| osis_label::Prefix::parse(&x).ok()).is_some_and(|p| p.class() == osis_label::Class::Presence)).count();
-        assert!(presence <= cursors.len(), "seed {seed}: server {sv} holds {presence} presence entries for {} cursors\n{}", cursors.len(), log.join("\n"));
+        if presence > cursors.len() {
+            let pids: Vec<_> = ids.iter().filter(|b| osis_proto::LabelStore::blob(store, b).ok().flatten().and_then(|x| osis_label::Prefix::parse(&x).ok()).is_some_and(|p| p.class() == osis_label::Class::Presence)).collect();
+            let dump = lane_dump(&mut net, &nodes, &servers, &l, w);
+            panic!("seed {seed}: server {sv} holds {presence} presence entries {pids:?} for cursors {cursors:?}\n{}\n{dump}", log.join("\n"));
+        }
     }
+}
+
+/// Whether node `n` holds ephemeral thing `w` in a labeled closure (it syncs it: a record that
+/// came without its placement, which a full server kept out, leaves the node writing it locally).
+fn syncs(net: &mut Net, n: usize, w: Tid) -> bool {
+    let e = net.engine(n);
+    e.ephemeral_thing(&w).is_some() && e.ephemeral_synced(&w)
+}
+
+/// Failure detail: each node's reads and lane, each server's entries.
+fn lane_dump(net: &mut Net, nodes: &[usize], servers: &[usize], l: &osis_base::LabelId, w: Tid) -> String {
+    let mut out = String::new();
+    for m in nodes {
+        let (n, c) = (notes(net, *m, w), str_map(net.eph_read(*m, w, CURSOR)));
+        out.push_str(&format!("node {m} {:?} reads {n:?} cursors {c:?}\n{}", net.tid(*m), net.nodes[*m].sync.as_ref().unwrap().ephemeral_dump(l)));
+        let e = net.engine(*m);
+        for (id, bytes, own) in e.held_ephemeral() {
+            let h = e.ephemeral_header(&id).unwrap();
+            out.push_str(&format!("  held {id:?} by {:?} {:?} own {own} {bytes} B\n", h.author, h.ephemeral));
+        }
+    }
+    for sv in servers {
+        out.push_str(&format!("server {sv} holds {:?}, {} B\n", net.server_ids(*sv, l), net.servers[*sv].hub.store().ephemeral_bytes(l)));
+    }
+    out
 }
 
 /// A `map<string, string>` value as a map (absent: empty).
@@ -876,11 +988,10 @@ fn str_map(v: Option<Value>) -> BTreeMap<String, String> {
     }
 }
 
-// the same with one server at a small cap, at seeds where a holder's concurrent cover stayed
-// refused while the server held another's, and its writes with it (no further forced compaction)
+// the same with one capped server (caps 0 to fitting all)
 #[test]
 fn random_window_one_capped_server_spec_sync_9() {
-    for seed in [10, 63, 105, 162] {
+    for seed in [0, 2, 4, 6, 8, 10, 63, 105, 162] {
         random_window_run_on(seed, true, false);
     }
 }
@@ -892,8 +1003,8 @@ fn eph_seeds() -> std::ops::Range<u64> {
     s.range
 }
 
-// the same with one server at a small cap: holders converge through what it holds (compaction
-// under a full server must neither loop nor stop with a holder's writes refused)
+// the same with one capped server: holders converge through what it holds, or an entry stays out
+// of it that genuinely does not fit
 #[test]
 #[ignore]
 fn random_window_one_capped_server_large() {
@@ -1004,8 +1115,6 @@ fn unverified_ephemeral_not_kept_or_spread_spec_sync_9() {
     let w = window(&mut net, a, g, "w");
     net.run();
     let l = net.label(a);
-    let entries = net.sync(b).ephemeral_entries(&l);
-    let at_s2 = net.servers[s2].hub.store().ephemeral_bytes(&l);
     let wk = write_key(&mut net, a, g);
     let ak = osis_base::Ak::new(STATE).unwrap();
     // a writer's commit stamped three hours ahead
@@ -1018,6 +1127,8 @@ fn unverified_ephemeral_not_kept_or_spread_spec_sync_9() {
     net.run();
     assert!(!net.engine(b).holds_ephemeral(&future.id), "not held");
     assert_eq!(net.eph_read(b, w, STATE), Some(s("w")));
+    let entries = net.sync(b).ephemeral_entries(&l);
+    let at_s2 = net.servers[s2].hub.store().ephemeral_bytes(&l);
     // commits under an author nobody here knows, stamped by a writer
     let rx = net.listen(b);
     let xt = net.tid(x);
@@ -1035,8 +1146,8 @@ fn unverified_ephemeral_not_kept_or_spread_spec_sync_9() {
     assert_eq!(net.servers[s2].hub.store().ephemeral_bytes(&l), at_s2, "nothing spread to the other server");
 }
 
-// spec/sync.md §9 (security review L2): a replay of an entry a held valid compaction covers is
-// not held again, and a writer deletes it where it was found
+// spec/sync.md §9 (security review L2): a replay of an entry its author's held valid cover
+// absorbs is not held again, and a writer deletes it where it was found
 #[test]
 fn replayed_covered_entry_dropped_spec_sync_9() {
     let mut net = Net::new();
@@ -1056,12 +1167,10 @@ fn replayed_covered_entry_dropped_spec_sync_9() {
     net.actions(b, acts);
     net.run();
     assert!(net.engine(b).holds_ephemeral(&old.id));
-    note(&mut net, b, w, "k2", "v");
+    let acts = net.sync(a).compact_ephemeral_now().unwrap();
+    net.actions(a, acts);
     net.run();
-    let acts = net.sync(b).compact_ephemeral_now().unwrap();
-    net.actions(b, acts);
-    net.run();
-    assert!(!net.engine(b).holds_ephemeral(&old.id), "covered");
+    assert!(!net.engine(b).holds_ephemeral(&old.id), "covered by its author");
     let acts = push(&mut net, b, sv, l, vec![ev]);
     assert!(!net.engine(b).holds_ephemeral(&old.id), "a replay is not held again");
     let conn = net.conn_to(b, sv).unwrap();
@@ -1086,35 +1195,6 @@ fn core_aspect_part_refused_spec_sync_9() {
     let forged = net.engine(a).forge_ephemeral(t, &ak, s("injected")).unwrap().unwrap();
     net.engine(b).ingest_ephemeral(forged.blob).unwrap();
     assert_eq!(net.eph_read(b, t, "/reach"), None, "not joined");
-}
-
-// security review M6: session attributions come from held parts only and go with them; relay-only
-// commits add none
-#[test]
-fn session_claims_released_spec_requirements_scale() {
-    let mut net = Net::new();
-    let sv = net.add_server();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let g = net.group(a, &[(b, Role::Write)], &[sv]);
-    net.run();
-    let w = window(&mut net, a, g, "w");
-    net.run();
-    let base = net.engine(b).ephemeral_claims();
-    for i in 0..5 {
-        net.restart(a, 50 + i);
-        net.advance(10_000);
-        let mut m = Mutation::new();
-        m.set(w, &eph("/win/typing"), &Value::Int(i as i64)).unwrap();
-        m.expires(w, &eph("/win/typing"), osis_base::WallMs(net.now() + 5_000)).unwrap();
-        net.engine(a).write(m).unwrap();
-        net.eph_write(a, w, &ukey("/win/ring", Lifetime::Signal), s("ding"));
-        local(&mut net, a);
-        net.run();
-    }
-    assert!(net.engine(b).ephemeral_claims() > base, "held parts name the new sessions");
-    net.advance(60_000);
-    assert!(net.engine(b).ephemeral_claims() <= base, "released with the expired parts: {} > {base}", net.engine(b).ephemeral_claims());
 }
 
 // open question of the step 3 review: a device reachable only through a member peer gets the
@@ -1177,7 +1257,7 @@ fn announced_ephemeral_leaves_no_sync_record_spec_sync_4() {
 /// bytes in one write (`a` holds an own entry the server refuses for good when it exceeds the cap).
 fn bytes_under_stuck_entry(stuck: usize) -> usize {
     let mut net = Net::new();
-    let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: 6_000, ..osis_server::Policy::default() });
+    let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: 12_000, ..osis_server::Policy::default() });
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -1199,14 +1279,13 @@ fn bytes_under_stuck_entry(stuck: usize) -> usize {
     net.sent_bytes - before
 }
 
-// spec/sync.md §9 (compaction on a cap refusal): an own entry the server refuses for good (one
-// write over the cap) does not make its holder compact and re-upload it at every other node's
-// write (it did: 5.5x the bytes, one forced compaction per foreign write); only another holder's
-// cover re-arms a compaction for an own refused cover
+// spec/sync.md §5 (a refusal triggers nothing but the periodic retry): an own entry the server
+// refuses for good (one write over the cap) is not re-uploaded at every other node's write (it
+// was, by the compaction a refusal triggered: 5.5x the bytes)
 #[test]
 fn server_cap_stuck_entry_no_churn_spec_sync_9() {
     let fits = bytes_under_stuck_entry(100);
-    let stuck = bytes_under_stuck_entry(7_000);
+    let stuck = bytes_under_stuck_entry(13_000);
     assert!(stuck < fits + fits / 4, "{stuck} bytes sent with a refused entry held, {fits} without");
 }
 

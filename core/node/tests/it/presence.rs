@@ -253,8 +253,7 @@ fn keepalive_outlives_lease_no_idle_traffic_spec_sync_9() {
     assert_eq!(at(&mut net, b, t), Some(s("a@1")), "kept past the first commit's lease");
     assert_eq!(presence_held(&mut net, b), 1, "the fresh commit covers the old one");
     assert_eq!(presence_held(&mut net, a), 1);
-    let l = net.label(a);
-    assert!(net.servers[sv].hub.store().ephemeral_bytes(&l) > 0);
+    assert!(net.servers[sv].hub.store().ephemeral_total() > 0);
 }
 
 // spec/sync.md §9 (presence travels from its author only): a holder bridging two servers does not
@@ -283,7 +282,7 @@ fn non_author_cannot_carry_presence_spec_sync_9() {
     assert_eq!(at(&mut net, c, t), None, "presence is not");
     // b forges a presence commit of its own carrying a's cursor writes, uploaded to server 2
     let ak = osis_base::Ak::new(CURSOR).unwrap();
-    let forged = net.engine(b).forge_presence_carrying(t, &ak).unwrap().unwrap();
+    let forged = net.engine(b).forge_carrying(osis_commit::EphClass::Presence, t, &ak).unwrap().unwrap();
     let wk = write_key(&mut net, b, g);
     let (_, ev) = sealed(&mut net, b, g, &forged.blob, Some(&wk), 5);
     let l = net.label(b);

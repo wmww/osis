@@ -110,7 +110,9 @@ fn aspect_view(e: &mut Engine) -> Result<AspectView, String> {
     }
     let mut out = AspectView::new();
     for (t, a) in e.all_aspects().map_err(|x| x.to_string())? {
-        let v = e.get(&t, &a).map_err(|x| x.to_string())?;
+        // an aspect with an ephemeral side (`/group`): its durable side alone (the ephemeral
+        // one converges only where server caps let it through, `ephemeral::check`)
+        let v = if e.has_ephemeral(&t, &a) { e.get_durable(&t, &a) } else { e.get(&t, &a) }.map_err(|x| x.to_string())?;
         let k = (t, a.as_str().to_string());
         out.insert(k.clone(), (deltas.remove(&k).unwrap_or_default(), format!("{v:?}")));
     }

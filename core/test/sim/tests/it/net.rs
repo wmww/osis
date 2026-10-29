@@ -193,24 +193,22 @@ fn ephemeral() {
 
 // spec/sync.md §9 (holders upload what a server lacks): a plain entry the capped server refused
 // went up again, at the periodic pass, once others made room (it stayed out for good: divergence at
-// quiescence).
+// quiescence). Seeds of the fixed-cap runs; the cap is random now.
 #[test]
 fn ephemeral_capped_seed_14() {
     ok("ephemeral_capped", 14);
 }
 
-// spec/sync.md §9 (compaction on a cap refusal): a holder's cover refused at a full server must
-// absorb the cover held there although that one also carries a one-part aspect (its writes stayed
-// out; before that, a message storm: a fresh cover compacted at every refusal).
+// spec/sync.md §9: a run where covers absorbing others' commits left one stuck at the full server
+// (before own covers).
 #[test]
 fn ephemeral_seed_83() {
     ok("ephemeral", 83);
 }
 
-// spec/sync.md §9 (compaction on a cap refusal): node 1's notes commit stays out at the full
-// capped server, which holds node 1's `/created`-only commits no cover absorbs (pre-existing).
+// spec/sync.md §9: a run where the full server held `/created`-only commits no cover absorbed
+// (before own covers).
 #[test]
-#[ignore = "issues/eph-capped-created-remnants.md"]
-fn repro_ephemeral_capped_seed_2400045() {
+fn ephemeral_capped_seed_2400045() {
     ok("ephemeral_capped", 2400045);
 }
