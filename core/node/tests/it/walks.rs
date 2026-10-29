@@ -725,8 +725,8 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool, forge: bool) -> ([
             6 => {
                 let a = ak(["/t/keptset", "/t/gonemap", "/t/tags"][rng.below(3) as usize]);
                 let e = &mut lp.peers[i].engine;
-                // not with forged snapshots: a forged one covers the delta whose dot it copies
-                // (issues/forged-cover.md)
+                // not with forged snapshots: a forged copy under the dot of a body dropped before
+                // others got it shows where the original never arrived (issues/forged-cover.md)
                 if let Ok(Some(snap)) = e.snapshot(&t, &a)
                     && !forge
                     && rng.below(2) == 0

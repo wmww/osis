@@ -712,6 +712,11 @@ fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> R
     if !crate::apply::validity::snapshot_valid(tx.core, &s, &tid, &ak) {
         return Ok(Some(false));
     }
+    // a snapshot body still to arrive (or missing again, `uncover`): nothing is established
+    // without its content (a delta's frontier or absorbed check below stands alone)
+    if tx.core.ix.commits.get(&c).is_some_and(|m| m.view.kind.is_compaction() && m.missing.contains(&cai)) {
+        return Ok(None);
+    }
     let parts = crate::apply::held_parts(tx, &s, sai)?;
     if let (Some(m), [osis_commit::Decoded::Snapshot(sn)]) = (tx.core.ix.commits.get(&c), parts.as_slice())
         && m.header.form == osis_commit::Form::Node

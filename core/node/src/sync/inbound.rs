@@ -589,12 +589,15 @@ impl SyncEngine {
     /// The entries of commits with a part missing again (`Changed::undropped`: dropped under a
     /// cover since turned invalid, spec/permissions.md §5.2) whose bytes and wrap went with the
     /// drop: unopened again, so a pass fetches them where present (`refetch`), the reply bringing
-    /// the wrap back. A body deleted everywhere comes back only as a holder's new upload.
-    pub(crate) fn reopen_undropped(&mut self, commits: &BTreeSet<osis_base::CommitId>) {
-        if commits.is_empty() {
+    /// the wrap back. A body deleted everywhere comes back only as a holder's new upload. `None`:
+    /// every commit (at start: a crash may have come between the engine's change and this).
+    pub(crate) fn reopen_undropped(&mut self, commits: Option<&BTreeSet<osis_base::CommitId>>) {
+        if commits.is_some_and(BTreeSet::is_empty) {
             return;
         }
-        let ids: Vec<(LabelId, BlobId)> = self.state.entries.iter().filter(|((_, b), e)| matches!(&e.kind, Kind::Commit { commit, .. } if commits.contains(commit)) && !self.state.blobs.contains_key(b)).map(|(k, _)| *k).collect();
+        let ix = &self.engine.core.ix;
+        let again = |c: &osis_base::CommitId, parts: &[(usize, usize)]| commits.is_none_or(|cs| cs.contains(c)) && ix.commits.get(c).is_some_and(|m| parts.iter().any(|p| m.missing.contains(&p.0)));
+        let ids: Vec<(LabelId, BlobId)> = self.state.entries.iter().filter(|((_, b), e)| !self.state.blobs.contains_key(b) && matches!(&e.kind, Kind::Commit { commit, parts, .. } if again(commit, parts))).map(|(k, _)| *k).collect();
         for (l, b) in ids {
             if let Some(mut e) = self.state.entries.get(&(l, b)).cloned() {
                 e.kind = Kind::Unknown;

@@ -2157,3 +2157,131 @@ fn chained_cover_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
     assert_eq!(got[0].0, BTreeSet::from(["ash".to_string(), "elm".to_string()]), "removal applied, then voided");
     assert_eq!(got[1], got[0], "removal arrived voided");
 }
+
+fn latest_of(lp: &mut LocalPeer, i: usize) -> osis_base::CommitId {
+    *lp.peers[i].engine.commit_ids().iter().max_by_key(|x| lp.peers[i].engine.header(x).unwrap().ts).unwrap()
+}
+
+// spec/permissions.md §5.2: the cover's validity flips back. Bob (admin) removes Carol before
+// seeing her S2, which covers Alice's S1; Alice removes Bob before seeing that removal, so it is
+// void and S2 valid again. A node that dropped S1 under S2 and got Bob's removal first has S1
+// missing; once Alice's removal arrives (S2 valid again), and again once S1 is fetched, it reads
+// what nodes that never dropped S1 read, whichever removal they got first.
+#[test]
+fn cover_drop_coverer_flips_back_alike_spec_perm_5_2() {
+    let (mut lp, d, b, c) = setup(0x5fe0);
+    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Admin)), None);
+    lp.sync_all().unwrap();
+    let tags_ak = ak("/t/tags");
+    add_tag(&mut lp, 0, d, "ash");
+    let ash = latest_of(&mut lp, 0);
+    lp.advance(1_000);
+    let s1 = lp.peers[0].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
+    sync(&mut lp, 0, 2);
+    add_tag(&mut lp, 2, d, "cy");
+    lp.advance(1_000);
+    let s2 = lp.peers[2].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
+    lp.advance(1_000);
+    revoke(&mut lp, 1, d, c);
+    let by_bob = latest_of(&mut lp, 1);
+    lp.advance(1_000);
+    revoke(&mut lp, 0, d, b);
+    let by_alice = latest_of(&mut lp, 0);
+    let mut all: BTreeMap<osis_base::CommitId, _> = BTreeMap::new();
+    let mut order = Vec::new();
+    for i in 0..3 {
+        for p in packages(&mut lp, i) {
+            if !all.contains_key(&p.id) {
+                order.push(p.id);
+                all.insert(p.id, p);
+            }
+        }
+    }
+    // Alice's tag reaches the fresh nodes only inside S1 and S2
+    let base: Vec<_> = order.iter().filter(|x| ![by_bob, by_alice, ash].contains(x)).copied().collect();
+    let mut got = Vec::new();
+    // (drop S1, Bob's removal first)
+    for (n, (drop, bob_first)) in [(true, true), (false, true), (false, false), (true, false)].into_iter().enumerate() {
+        let i = lp.peers.len();
+        lp.peers.push(osis_node::local_peer::Peer::new(0x5fe1 + n as u64, lp.peers[0].engine.now()).unwrap());
+        for x in &base {
+            lp.deliver(i, &all[x]).unwrap();
+        }
+        if drop {
+            let e = &mut lp.peers[i].engine;
+            assert_eq!(e.covered(&s2, &s1, &d, &tags_ak).unwrap(), Some(true), "S2 covers S1");
+            e.drop_body(&s1, &d, &tags_ak).unwrap();
+        }
+        let (first, second) = if bob_first { (by_bob, by_alice) } else { (by_alice, by_bob) };
+        lp.deliver(i, &all[&first]).unwrap();
+        lp.peers[i].engine.reexamine().unwrap();
+        if bob_first {
+            let want: BTreeSet<String> = if drop { BTreeSet::new() } else { BTreeSet::from(["ash".to_string()]) };
+            assert_eq!(tags(&mut lp, i, d), want, "drop {drop}: S2 invalid");
+        }
+        lp.deliver(i, &all[&second]).unwrap();
+        lp.peers[i].engine.reexamine().unwrap();
+        let mid = (tags(&mut lp, i, d), lp.peers[i].engine.state(&d, &tags_ak).unwrap());
+        if drop && bob_first {
+            // S1 back (a late part); node-sync would drop it again under S2
+            lp.deliver(i, &all[&s1]).unwrap();
+            lp.peers[i].engine.reexamine().unwrap();
+        }
+        let t = (tags(&mut lp, i, d), lp.peers[i].engine.state(&d, &tags_ak).unwrap());
+        assert_eq!(mid, t, "drop {drop}, Bob first {bob_first}: S1 fetched again");
+        lp.peers[i].engine.rebuild_state(&d, &tags_ak).unwrap();
+        assert_eq!((tags(&mut lp, i, d), lp.peers[i].engine.state(&d, &tags_ak).unwrap()), t, "drop {drop}, Bob first {bob_first}: rebuilt");
+        lp.peers[i].restart(0x5ff1 + n as u64).unwrap();
+        assert_eq!((tags(&mut lp, i, d), lp.peers[i].engine.state(&d, &tags_ak).unwrap()), t, "drop {drop}, Bob first {bob_first}: restarted");
+        got.push(t);
+    }
+    assert_eq!(got[1].0, BTreeSet::from(["ash".to_string(), "cy".to_string()]), "S1 held throughout");
+    for (n, g) in got.iter().enumerate() {
+        assert_eq!(g, &got[1], "case {n}");
+    }
+}
+
+// spec/permissions.md §5.2, spec/sync.md §7: as `coverer_demoted_after_cover_drop_alike_*`, with
+// an older valid snapshot S0 of Alice's that lacks Bob's tag. S1 missing again (S2 invalid) is no
+// body S0 covers: a compactor judging it against S0 keeps it, so once fetched again it gives
+// Bob's tag as at a node that never dropped it.
+#[test]
+fn missing_snapshot_not_covered_by_older_spec_perm_5_2() {
+    let (mut lp, d, b, c) = setup(0x6000);
+    let tags_ak = ak("/t/tags");
+    add_tag(&mut lp, 0, d, "ash");
+    let s0 = lp.peers[0].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
+    lp.advance(1_000);
+    add_tag(&mut lp, 1, d, "bob");
+    lp.sync_all().unwrap();
+    let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak == tags_ak))).collect();
+    lp.advance(1_000);
+    let s1 = lp.peers[0].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
+    sync(&mut lp, 0, 2);
+    lp.advance(1_000);
+    add_tag(&mut lp, 2, d, "cy");
+    let s2 = lp.peers[2].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
+    lp.advance(DAY);
+    revoke(&mut lp, 0, d, c);
+    let rv = latest_of(&mut lp, 0);
+    sync(&mut lp, 0, 2);
+    let pks: Vec<_> = packages(&mut lp, 2).into_iter().filter(|p| !bob.contains(&p.id)).collect();
+    let pk = |id| pks.iter().find(|p| p.id == id).unwrap().clone();
+    let i = lp.peers.len();
+    lp.peers.push(osis_node::local_peer::Peer::new(0x6001, lp.peers[0].engine.now()).unwrap());
+    for p in pks.iter().filter(|p| p.id != rv) {
+        lp.deliver(i, p).unwrap();
+    }
+    let e = &mut lp.peers[i].engine;
+    assert_eq!(e.covered(&s0, &s1, &d, &tags_ak).unwrap(), Some(false), "S0 lacks Bob's tag");
+    assert_eq!(e.covered(&s2, &s1, &d, &tags_ak).unwrap(), Some(true), "S2 covers S1");
+    e.drop_body(&s1, &d, &tags_ak).unwrap();
+    lp.deliver(i, &pk(rv)).unwrap();
+    lp.peers[i].engine.reexamine().unwrap();
+    assert!(!tags(&mut lp, i, d).contains("bob"), "S1 missing");
+    let e = &mut lp.peers[i].engine;
+    assert_ne!(e.covered(&s0, &s1, &d, &tags_ak).unwrap(), Some(true), "S0 does not cover missing S1");
+    lp.deliver(i, &pk(s1)).unwrap();
+    lp.peers[i].engine.reexamine().unwrap();
+    assert!(tags(&mut lp, i, d).contains("bob"), "S1 back");
+}
