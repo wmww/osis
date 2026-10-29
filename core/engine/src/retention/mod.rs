@@ -818,13 +818,14 @@ fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     Ok(false)
 }
 
-/// Whether a compaction snapshot carries a write still in this node's state (`body_live`): held,
-/// a write it carries (by dot) is there. Dropped, its frontiers went with the body (spec/commits.md
+/// Whether a compaction snapshot carries a write still live in this node's state (`body_live`;
+/// live writes as for deltas, `Fragment::live_writes`: no element or entry tombstone): held, a
+/// write it carries (by dot) is there. Dropped, its frontiers went with the body (spec/commits.md
 /// §5), so whether it was live then is kept (`Meta::live_drops`): dropped dead it stays dead
 /// (undo and redo write new dots; a write a validity flip brings back comes from a held body,
 /// which carries it at blind nodes itself); dropped live, it is
 /// live while the state holds a write stamped at or before its `ts` (the header's `ts` bounds
-/// what it carried) or one without a `ts` (a tombstone or bare anchor it may carry): an
+/// what it carried) or one without a `ts` (a bare anchor it may carry): an
 /// over-approximation, so its delete at blind nodes waits for a carrier (spec/sync.md §7).
 /// Never held: a write stamped at or before its `ts`.
 fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, members: &[usize]) -> Result<bool> {
@@ -839,7 +840,7 @@ fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, members: &[usize]) -
         }
         tx.load(&a.tid, &a.ak)?;
         let Some(Some(st)) = tx.core.states.get(&k) else { continue };
-        let writes = st.writes();
+        let writes = st.live_writes();
         if parts.is_empty() {
             let tsless = dropped.contains(&(*x, 0));
             if writes.iter().any(|(_, t)| t.map_or(tsless, |t| t <= h.ts)) {
@@ -847,10 +848,10 @@ fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, members: &[usize]) -
             }
             continue;
         }
-        // by dot: tombstones and other writes without a `ts` count too
+        // by dot: bare anchors and other writes without a `ts` count too
         let live: BTreeSet<osis_crdt::Dot> = writes.into_iter().map(|(d, _)| d).collect();
         for p in parts {
-            if p.into_fragment().writes().into_iter().any(|(d, _)| live.contains(&d)) {
+            if p.into_fragment().live_writes().into_iter().any(|(d, _)| live.contains(&d)) {
                 return Ok(true);
             }
         }

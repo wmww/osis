@@ -550,6 +550,46 @@ fn keep_at_most_zero_late_body_dropped_on_arrival_spec_commits_5() {
     assert_eq!(e.get(&t, &ak("/t/gone")).unwrap(), Some(s("final")));
 }
 
+// spec/commits.md §5 (keep at most: a tombstone is no live write): a compaction snapshot carrying a
+// keep-at-most map entry, then the entry removed. The tombstone left is keyed by the entry's dot
+// but holds the remover's reset, so the snapshot has no live write: under at most 0 it drops with
+// the removal; under 10m, held, it is due at the removal plus 10m with no grace; dropped live
+// before the removal, it is live no more.
+#[test]
+fn snapshot_of_removed_entry_no_live_write_spec_commits_5() {
+    use osis_crdt::PathSeg;
+    for (k, name, zero, dropped) in [(&GONEMAP, "/t/gonemap", true, false), (&SHORTMAP, "/t/shortmap", false, false), (&SHORTMAP, "/t/shortmap", false, true)] {
+        let mut lp = net(1, 57);
+        let t = new_thing(&mut lp, 0);
+        let a = ak(name);
+        let mut m = Mutation::new();
+        m.op(t, k, PathOp { path: vec![PathSeg::Key(s("k1"))], op: Op::Set(s("v")) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.advance(5);
+        let snap = lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
+        lp.advance(5);
+        let e = &mut lp.peers[0].engine;
+        assert!(e.body_live(&snap, &t, &a).unwrap(), "carries the entry");
+        if dropped {
+            e.drop_body(&snap, &t, &a).unwrap();
+            assert!(!e.holds_body(&snap, &t, &a) && e.body_live(&snap, &t, &a).unwrap(), "dropped live");
+        }
+        let mut m = Mutation::new();
+        m.op(t, k, PathOp { path: Vec::new(), op: Op::Remove(s("k1")) }).unwrap();
+        let rm = lp.peers[0].commit(m).unwrap().unwrap();
+        let e = &mut lp.peers[0].engine;
+        if zero {
+            assert!(!e.holds_body(&snap, &t, &a), "dropped with the removal");
+        } else if dropped {
+            assert!(!e.body_live(&snap, &t, &a).unwrap(), "dropped live, live no more");
+        } else {
+            assert!(e.holds_body(&snap, &t, &a) && !e.body_live(&snap, &t, &a).unwrap(), "held, no live write");
+            let ts = e.header(&rm).unwrap().ts;
+            assert_eq!(e.body_keep(&snap, &t, &a).unwrap().at_most, Some(ts.wall_ms().0 + 600_000), "no grace");
+        }
+    }
+}
+
 // spec/commits.md §5, spec/crdt.md §4.8 (deaths dated per node, never early): random histories
 // on a kept register, a kept set, a kept map and a keep-at-most-10m register by four writers
 // with compaction snapshots (peer 3's writes reach node 4 only as snapshot copies, some others'

@@ -694,4 +694,6 @@ fn entry_tombstone_is_no_live_write_spec_commits_5() {
     st.join(rm);
     assert!(st.holds_owned(&owned), "the tombstone is keyed by the entry's dot");
     assert!(!st.holds_owned_write(&owned), "but holds no write of its creator");
+    let ours = |w: Vec<(crate::Dot, Option<osis_base::Ts>)>| w.iter().any(|(d, _)| owned(&d.src, d.ctr, d.ctr + 1));
+    assert!(ours(st.writes()) && !ours(st.live_writes()), "live_writes agrees");
 }

@@ -153,7 +153,9 @@ pub(crate) fn walk(v: &mut dyn Visit, f: &Fragment) -> bool {
 
 /// Collects the writes of a fragment: every stamp with its `ts`, every element identity
 /// (creation) without one; `Derived` dots as their owner's. Anchors are references, not writes.
-struct Writes(Vec<(Dot, Option<osis_base::Ts>)>);
+/// `live` (as `Any`'s): a set or bag element or map entry record counts only while it holds its
+/// creation.
+struct Writes(Vec<(Dot, Option<osis_base::Ts>)>, bool);
 
 impl Visit for Writes {
     fn stamp(&mut self, s: &Stamp) -> bool {
@@ -164,6 +166,8 @@ impl Visit for Writes {
     /// element's writes per element.
     fn rec(&mut self, r: Rec<'_>) -> Next {
         match r {
+            Rec::Elem(_, x) if self.1 && x.frag.is_none() => {}
+            Rec::Entry(_, e) if self.1 && e.created.is_none() => {}
             Rec::Elem(d, x) => {
                 // the value register is written only by the element's creation (§5.5)
                 let ts = match x.frag.as_deref() {
@@ -240,7 +244,16 @@ impl Fragment {
     /// register, a sequence element's creation stamp), else without (tombstones, bare anchors). For judging a snapshot's writes as their
     /// authors' (spec/permissions.md §5.2) and ranking them (§7).
     pub fn writes(&self) -> Vec<(Dot, Option<osis_base::Ts>)> {
-        let mut w = Writes(Vec::new());
+        let mut w = Writes(Vec::new(), false);
+        walk(&mut w, self);
+        w.0
+    }
+
+    /// `writes` less element and entry tombstones (spec/commits.md §5, live writes; as
+    /// `holds_owned_write` judges them): a tombstone holds the remover's reset, listed as its
+    /// own stamp, not the creation.
+    pub fn live_writes(&self) -> Vec<(Dot, Option<osis_base::Ts>)> {
+        let mut w = Writes(Vec::new(), true);
         walk(&mut w, self);
         w.0
     }
