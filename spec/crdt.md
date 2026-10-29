@@ -19,6 +19,7 @@ Notation: `[a, b]` is a CBOR array, `{k: v}` a CBOR map (int keys, sorted), `Opt
 A **source** is who minted a run of counters:
 - `Node(tid)`: a node's signing identity (15-byte tid). Counters are per (aspect, node), contiguous, starting at 1, never reused. A node that cannot be sure of its last counter for an aspect (restored from backup, lost state) must not write node-form dots for that aspect again; it uses commit form.
 - `Commit(id)`: the commit itself (32-byte commit ID). Counters are per commit, contiguous from 1 across all the commit's deltas (aspects get disjoint ranges). The header marks the form once per commit; a commit uses one form for all its writes.
+- Ephemeral writes (spec/data-model.md §2) use a `Commit` source whose 32 bytes are a random session drawn by the writing node at each start, counters contiguous from 1 across the session's writes; no commit carries it.
 - `Derived(dot)`: synthetic, never written by any writer. Produced only by lattice embeddings (§7) that need several identities out of a single register write with dot `dot`. Counters start at 1. Belongs to the author of `dot` for attribution, frontiers and un-merge.
 
 A **dot** is `(source, counter)`, counter ≥ 1. A dot identifies one write forever, and doubles as the identity of the element it created.

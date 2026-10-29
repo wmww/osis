@@ -10,6 +10,7 @@
 - An actor's owner is implicitly its admin and cannot be removed by other admins. Other admins are equal and may remove each other.
 - The membership-class aspects of a thing (spec/data-model.md §9) are written only by its admins, whatever other role a node holds, except invite grants and self-removals (§2), and what rotations and re-seals write into `/secrets` and `/keys` (§3).
 - Group membership (`/group`) grants no rights.
+- An ephemeral thing (spec/data-model.md §1) has no membership-class aspects: a node's role on it is its role on a new thing owned by the nearest durable thing on its owner chain. Ephemeral writes need the role the durable write would need.
 
 ## 2. Membership writes
 - Grant, change and removal of an edge are writes to the target's `/members`, each in its own membership commit (spec/commits.md §2), by a node with admin on the target. A removal of an absent edge is an edge write too (a reset of the member's entry). A grant or change is remove + put: a reset of every entry of the member the writer holds, live or not, and a new entry holding the whole edge (spec/crdt.md §5.6 `remove`, then `put` of an absent key). A `/members` delta writing inside an entry it does not create is bad input (judged from the delta and its header: the entry's dot is outside the delta's own dots). A reset of an entry whose creation the reader does not hold names no member until that creation is held.
