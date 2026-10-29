@@ -87,12 +87,26 @@ fn seq(s: &mut Seq, f: DotFn<'_>) {
 }
 
 /// A record a write walk (`walk`) meets, before its reset and content.
+#[derive(Clone, Copy)]
 pub(crate) enum Rec<'a> {
     Elem(&'a Dot, &'a Elem),
     Entry(&'a Dot, &'a Entry),
     /// A sequence record (a range one too): its creation, position and flag writes are the
     /// visitor's to look at.
     Seq(&'a Dot, &'a SeqElem),
+}
+
+impl Rec<'_> {
+    /// A set or bag element or map entry tombstone: it holds the remover's reset, not the
+    /// creation, so it is no live write (spec/commits.md §5); a sequence record never is one (an
+    /// anchor, spec/crdt.md §5.7).
+    fn tomb(self) -> bool {
+        match self {
+            Rec::Elem(_, x) => x.frag.is_none(),
+            Rec::Entry(_, e) => e.created.is_none(),
+            Rec::Seq(..) => false,
+        }
+    }
 }
 
 /// What a walk does after a visitor looked at a record.
@@ -153,8 +167,7 @@ pub(crate) fn walk(v: &mut dyn Visit, f: &Fragment) -> bool {
 
 /// Collects the writes of a fragment: every stamp with its `ts`, every element identity
 /// (creation) without one; `Derived` dots as their owner's. Anchors are references, not writes.
-/// `live` (as `Any`'s): a set or bag element or map entry record counts only while it holds its
-/// creation.
+/// `live`: tombstones (`Rec::tomb`) are left out.
 struct Writes(Vec<(Dot, Option<osis_base::Ts>)>, bool);
 
 impl Visit for Writes {
@@ -166,8 +179,7 @@ impl Visit for Writes {
     /// element's writes per element.
     fn rec(&mut self, r: Rec<'_>) -> Next {
         match r {
-            Rec::Elem(_, x) if self.1 && x.frag.is_none() => {}
-            Rec::Entry(_, e) if self.1 && e.created.is_none() => {}
+            _ if self.1 && r.tomb() => {}
             Rec::Elem(d, x) => {
                 // the value register is written only by the element's creation (§5.5)
                 let ts = match x.frag.as_deref() {
@@ -192,7 +204,7 @@ impl Visit for Writes {
 }
 
 /// `Fragment::holds_owned`: owner dot ranges against a predicate, stopping at the first hit;
-/// `live`: a set or bag element or map entry record counts only while it holds its creation.
+/// `live`: tombstones (`Rec::tomb`) are left out.
 struct Any<'a>(&'a dyn Fn(&Source, u64, u64) -> bool, bool);
 
 impl Any<'_> {
@@ -211,9 +223,8 @@ impl Visit for Any<'_> {
     }
     fn rec(&mut self, r: Rec<'_>) -> Next {
         let hit = match r {
-            // a tombstone (`[dot, reset]`) holds the remover's reset, not the creation
-            Rec::Elem(d, e) => (!self.1 || e.frag.is_some()) && self.range(d, 1),
-            Rec::Entry(d, e) => (!self.1 || e.created.is_some()) && self.range(d, 1),
+            _ if self.1 && r.tomb() => false,
+            Rec::Elem(d, _) | Rec::Entry(d, _) => self.range(d, 1),
             // a range record's creations are its elements' dots, its other stamps shared
             Rec::Seq(d, e) => self.range(d, e.span) || e.pos.iter().any(|(st, _)| st.dot != *d && self.range(&st.dot, 1)) || e.deleted.as_ref().is_some_and(|(st, _)| self.range(&st.dot, 1)),
         };
