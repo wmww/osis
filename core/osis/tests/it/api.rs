@@ -838,6 +838,7 @@ fn owner_created_now_api_reads() {
 // content; a device whose clock runs ahead dates its change at its receipt here, and the
 // latest shown change wins over one with a higher `ts`; a delete is a change; an ephemeral
 // thing reports its creation.
+// spec: none (API surface, notes/api.md)
 #[test]
 fn changed_content_only_api_reads() {
     let (ca, cb) = (clock(), clock());
