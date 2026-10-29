@@ -23,7 +23,7 @@ use osis_kit::masonry::core::{ErasedAction, NewWidget, Widget, WidgetId, WidgetT
 use osis_kit::masonry::widgets::{Label, SizedBox, TextAction, TextArea};
 use osis_kit::masonry_winit::app::{AppDriver, DriverCtx, WindowId};
 use osis_kit::theme::{Look, Mode, Theme, parse};
-use osis_kit::widgets::{ChipPress, IconButton, Press, Root};
+use osis_kit::widgets::{ChipPress, IconButton, Press, Reorder, Root};
 use osis_kit::masonry_winit::winit::dpi::PhysicalSize;
 use osis_kit::masonry_winit::winit::window::Theme as WinitTheme;
 use osis_kit::window::Wakeup;
@@ -150,6 +150,8 @@ pub struct Ui {
     acts: HashMap<WidgetId, Act>,
     /// What the × of a removable chip does.
     remove_acts: HashMap<WidgetId, Act>,
+    /// The grids whose `Reorder` reorders the favorites.
+    reorder_grids: std::collections::HashSet<WidgetId>,
     /// Form inputs (the fallback view, a contact's fields): what each saves on Enter.
     field_inputs: HashMap<WidgetId, (Tid, crate::fields::FormAct)>,
     /// Focus the title once the next screen is built (a thing just made).
@@ -188,6 +190,7 @@ impl Ui {
             acts: HashMap::new(),
             remove_acts: HashMap::new(),
             field_inputs: HashMap::new(),
+            reorder_grids: Default::default(),
             focus_title: false,
             editor: None,
             subs: BTreeMap::new(),
@@ -305,6 +308,7 @@ impl Ui {
         self.acts.clear();
         self.remove_acts.clear();
         self.field_inputs.clear();
+        self.reorder_grids.clear();
         self.slots.clear();
         self.search_ids.clear();
         if self.editor.as_ref().map(|e| Screen::Thing(e.tid)) != Some(screen) {
@@ -589,6 +593,13 @@ impl AppDriver for Ui {
         } else if action.is::<Press>() {
             if let Some(a) = self.acts.get(&id).cloned() {
                 self.press(ctx, a);
+            }
+        } else if let Some(Reorder { from, to }) = action.downcast_ref::<Reorder>().copied() {
+            if self.reorder_grids.contains(&id) {
+                if let Err(e) = self.data.move_favorite(from, to) {
+                    self.status(ctx, format!("error: {e}"));
+                }
+                self.refresh(ctx, false);
             }
         } else if let Some(p) = action.downcast_ref::<ChipPress>().copied() {
             let a = match p {

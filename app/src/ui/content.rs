@@ -55,7 +55,8 @@ pub enum Block {
     Line(String),
     /// A section heading.
     Label(String),
-    Tiles { tiles: Vec<Tile>, grid: Grid, new: bool },
+    /// `favorites`: the favorites, in order, dragged to reorder.
+    Tiles { tiles: Vec<Tile>, grid: Grid, new: bool, favorites: bool },
     Chips(Vec<ChipM>),
     /// Calendar days: a label, whether it is today, the events.
     Days(Vec<(String, bool, Vec<Tile>)>),
@@ -79,7 +80,7 @@ impl Content {
         self.blocks.push(Block::Line(s.into()));
     }
     fn tiles(&mut self, tiles: Vec<Tile>, grid: Grid) {
-        self.blocks.push(Block::Tiles { tiles, grid, new: false });
+        self.blocks.push(Block::Tiles { tiles, grid, new: false, favorites: false });
     }
 }
 
@@ -131,7 +132,7 @@ impl Ui {
             return Ok(c);
         }
         c.label("Favorites");
-        c.blocks.push(Block::Tiles { tiles: tiles(d, &d.favorites()?)?, grid, new: !rail });
+        c.blocks.push(Block::Tiles { tiles: tiles(d, &d.favorites()?)?, grid, new: !rail, favorites: true });
         if self.view.creating && !rail {
             c.blocks.push(new_kinds());
         }
@@ -306,7 +307,7 @@ impl Ui {
             match b {
                 Block::Line(s) => col = col.with_child(style::label(&look, s, Text::Muted)),
                 Block::Label(s) => col = col.with_child(style::label(&look, s, Text::Section)),
-                Block::Tiles { tiles, grid, new } => {
+                Block::Tiles { tiles, grid, new, favorites } => {
                     if tiles.is_empty() && !new {
                         continue;
                     }
@@ -321,12 +322,20 @@ impl Ui {
                         self.acts.insert(w.id(), Act::Open(t.tid));
                         g = g.with_child(w);
                     }
+                    if *favorites {
+                        g = g.reorderable(usize::from(*new));
+                    }
                     if *new {
                         let w = NewWidget::new(osis_kit::widgets::Tile::new(TileStyle::New, TileIcon::Icon(Icon::Plus), "New", "Note, event, person, tag", None, look.clone()));
                         self.acts.insert(w.id(), Act::New);
                         g = g.with_child(w);
                     }
-                    col = col.with_child(NewWidget::new(g));
+                    let g = NewWidget::new(g);
+                    if *favorites {
+                        self.acts.insert(g.id(), Act::None);
+                        self.reorder_grids.insert(g.id());
+                    }
+                    col = col.with_child(g);
                 }
                 Block::Days(days) => {
                     let mut g = TileGrid::new(look.clone(), 118.0).max_cols(7).gap(8.0);

@@ -34,9 +34,17 @@ fn create_open_favorite_delete() {
     assert!(d.things().unwrap().contains(&t));
     d.toggle_favorite(t).unwrap();
     assert_eq!(d.favorites().unwrap().last(), Some(&t));
-    let n = d.favorites().unwrap().len();
+    let before = d.favorites().unwrap();
+    let n = before.len();
     d.move_favorite(n - 1, 0).unwrap();
     assert_eq!(d.favorites().unwrap().first(), Some(&t));
+    d.move_favorite(0, 2).unwrap();
+    let mut want = before.clone();
+    want.pop();
+    want.insert(2, t);
+    assert_eq!(d.favorites().unwrap(), want, "moved to the middle");
+    d.move_favorite(2, n - 1).unwrap();
+    assert_eq!(d.favorites().unwrap(), before, "and back to the end");
     d.set_open(None).unwrap();
     assert_eq!(d.opened().unwrap(), None);
     d.set_open(Some(t)).unwrap();

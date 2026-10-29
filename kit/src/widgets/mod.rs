@@ -12,7 +12,7 @@ mod wrap;
 
 pub use button::IconButton;
 pub use chip::{Chip, ChipMark, ChipPress};
-pub use grid::TileGrid;
+pub use grid::{Reorder, TileGrid};
 pub use limit::Limit;
 pub use panel::{Panel, PanelKind};
 pub use root::Root;
