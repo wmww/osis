@@ -50,6 +50,7 @@ Owner direction so far:
 A theme is a set of parameters, not code: notes/theming.md (the system, its goals, the parameter list). The mockup's engine.css and themes.js are its reference implementation.
 
 ## kit and app (owner)
+- An app's own per-person data (favorites, view state, themes) lives in an internal group found by scanning home's subgroups for the app's marker aspect, reading the union and writing to the smallest tid (owner: a well-known per-app thing is incoherent, since a tid depends on its owner's key; the scan is the convention).
 Two top-level projects, `kit/` (package `osis-kit`) and `app/` (`osis-app`).
 - **osis-kit**: the first-party UI toolkit over Masonry (or another base if Masonry fails us). Holds windowing and platform shells (the iOS shell too), the osis-Masonry driver, the look (theme tokens, tag tinting, card styling), common widgets (markdown editor, text, lists), generic osis widgets needing only the osis API (schema fallback view, who-can-see display, share confirmation dialog), and the patches we carry to low-level crates. A small special-purpose app that looks and feels like the main one depends on kit alone.
 - kit does not abstract over the osis API. Over Masonry: no wrapper for now; kit re-exports it (`kit::masonry`, one pinned version) and apps use its types directly. Design an abstraction only if we actually change base, knowing both sides.

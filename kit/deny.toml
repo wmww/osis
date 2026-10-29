@@ -29,10 +29,8 @@ allow = [
     "Zlib",
     "CC0-1.0",
     "Unicode-3.0",
-]
-exceptions = [
-    { crate = "clipboard-win", allow = ["BSL-1.0"] },
-    { crate = "error-code", allow = ["BSL-1.0"] },
+    # Boost: permissive, no attribution in binaries (owner: fine for any crate)
+    "BSL-1.0",
 ]
 
 [licenses.private]
