@@ -7,16 +7,21 @@
 //! persists) and its ephemeral half (applied after; nothing applies if the commit fails).
 //! Restart forgets everything here.
 
+mod log;
+mod place;
+
+pub use log::{LoggedChange, Reverted};
+
 use crate::engine::write::{AspectMut, Records, check_authority_with, role_with, run_ops};
 use crate::engine::{Engine, Mutation};
 use crate::error::{Error, Result};
-use crate::events::{Cause, ChangeId, EphemeralId, Event, Origin};
+use crate::events::{Cause, ChangeId, Diagnostic, DiagnosticKind, EphemeralId, Event, Origin};
 use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs};
-use osis_crdt::{AnyView, Fragment, Op, Source, Writer};
-use osis_schema::Lifetime;
-use osis_schema::AspectKey;
+use osis_crdt::{AnyView, CounterRange, Fragment, Op, PathOp, Source, Writer};
 use osis_schema::core_types::{CREATED, GROUP};
+use osis_schema::{AspectKey, Lifetime, Schema};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 
 /// An ephemeral thing: its creation record and the batch that made it (`Engine::creation`).
 #[derive(Clone, Debug)]
@@ -51,6 +56,10 @@ pub struct Eph {
     aspects: HashMap<Tid, BTreeMap<Ak, EphAspect>>,
     /// Expiry times and the aspects with writes expiring then.
     timers: BTreeMap<u64, BTreeSet<(Tid, Ak)>>,
+    /// The ephemeral side of each `/group` that has one, as read (`groups_of`).
+    defs: BTreeMap<Tid, place::Def>,
+    /// Own batches for undo.
+    log: log::Log,
 }
 
 /// A batch written by `Engine::write`.
@@ -63,7 +72,7 @@ pub struct Written {
 impl Eph {
     /// Empty, under a new random session.
     pub fn new(session: [u8; 32]) -> Eph {
-        Eph { session, src: Source::commit(CommitId(session)), next: 1, batches: 0, things: HashMap::new(), aspects: HashMap::new(), timers: BTreeMap::new() }
+        Eph { session, src: Source::commit(CommitId(session)), next: 1, batches: 0, things: HashMap::new(), aspects: HashMap::new(), timers: BTreeMap::new(), defs: BTreeMap::new(), log: log::Log::default() }
     }
 
     fn state(&self, tid: &Tid, ak: &Ak) -> Option<&Fragment> {
@@ -75,13 +84,25 @@ impl Eph {
     }
 }
 
+/// One ephemeral aspect write of a batch, before resolution.
+pub(crate) struct EphOp {
+    pub tid: Tid,
+    pub ak: Ak,
+    pub am: AspectMut,
+    /// The reset of a placement made durable by this batch: resolved against the ephemeral
+    /// side alone and not logged for undo.
+    pub conversion: bool,
+}
+
 /// One resolved ephemeral aspect write of a batch.
-struct Resolved {
+pub(crate) struct Resolved {
     tid: Tid,
     ak: Ak,
     delta: Fragment,
     range: (u64, u64),
     expires: Option<u64>,
+    /// For the undo log: the touched positions before the write and the writer's schema.
+    log: Option<(Fragment, Option<Arc<Schema>>)>,
 }
 
 impl Engine {
@@ -134,46 +155,50 @@ impl Engine {
     }
 
     /// Writes `m`: its durable half as one commit (with the creation records of the ephemeral
-    /// things it persists, notes/ephemeral.md Persistence), then its ephemeral half in memory.
-    /// Validated as a whole: when the commit or any op fails, nothing applies. `None` when
-    /// nothing changes.
+    /// things it persists and their placements made durable, notes/ephemeral.md Persistence),
+    /// then its ephemeral half in memory. Validated as a whole: when the commit or any op
+    /// fails, nothing applies. `None` when nothing changes.
     pub fn write(&mut self, mut m: Mutation) -> Result<Option<Written>> {
         let node = self.tid();
         let actor = m.actor.unwrap_or(node);
-        let mut eph_ops: Vec<((Tid, Ak), AspectMut)> = Vec::new();
-        for (k, a) in std::mem::take(&mut m.aspects) {
+        let mut eph_ops: Vec<EphOp> = Vec::new();
+        let mut gops: Vec<(Tid, AspectMut)> = Vec::new();
+        for ((tid, ak), a) in std::mem::take(&mut m.aspects) {
+            let group = ak.as_str() == GROUP.ak();
             if a.lifetime.is_durable() {
-                m.aspects.insert(k, a);
+                if group {
+                    gops.push((tid, a));
+                } else {
+                    m.aspects.insert((tid, ak), a);
+                }
+            } else if group {
+                return Err(Error::Misuse("/group takes ephemeral writes through group ops only"));
             } else {
-                eph_ops.push((k, a));
+                eph_ops.push(EphOp { tid, ak, am: a, conversion: false });
             }
         }
-        // what the durable half persists: each ephemeral thing it writes or places, with its
-        // ephemeral owner chain (the durable set stays closed under owner)
-        let mut persisted: BTreeSet<Tid> = BTreeSet::new();
-        let roots: BTreeSet<Tid> = m.aspects.keys().map(|k| k.0).chain(m.persist.iter().copied()).collect();
-        for t in roots {
-            let mut cur = t;
-            while !persisted.contains(&cur) {
-                let rec = match m.creates.get(&cur) {
-                    Some(r) => r.clone(),
-                    None => match self.eph.things.get(&cur) {
-                        Some(e) => e.record.clone(),
-                        None => break,
-                    },
-                };
-                persisted.insert(cur);
-                m.creates.insert(cur, rec.clone());
-                match rec {
-                    CreationRecord::Thing { owner, .. } => cur = owner,
-                    CreationRecord::KeyActor { .. } => break,
-                }
+        // what the durable half persists: each ephemeral thing it writes, persists or places
+        // durably, with its ephemeral owner chain (the durable set stays closed under owner),
+        // and the groups its placements convert into
+        let plan = self.place_plan(&m, gops)?;
+        let gak = place::group_ak()?;
+        for (g, am) in plan.durable {
+            m.aspects.insert((g, gak.clone()), am);
+        }
+        eph_ops.extend(plan.eph);
+        let refused = plan.refused;
+        let persisted = plan.persisted;
+        for t in &persisted {
+            if !m.creates.contains_key(t)
+                && let Some(e) = self.eph.things.get(t)
+            {
+                m.creates.insert(*t, e.record.clone());
             }
         }
         let fresh: BTreeMap<Tid, CreationRecord> = m.creates.iter().filter(|(t, _)| !persisted.contains(t)).map(|(t, r)| (*t, r.clone())).collect();
         m.creates.retain(|t, _| persisted.contains(t));
         let durable = !(m.creates.is_empty() && m.aspects.is_empty() && m.purge.is_empty() && m.dead_resets.is_empty() && m.undoes.is_none());
-        if eph_ops.is_empty() && fresh.is_empty() && m.free.is_empty() {
+        if eph_ops.is_empty() && fresh.is_empty() && m.free.is_empty() && refused.is_empty() {
             // the common durable write: no ephemeral half
             let Some(id) = self.commit(m)? else { return Ok(None) };
             for t in &persisted {
@@ -195,16 +220,12 @@ impl Engine {
             for t in fresh.keys() {
                 check_authority_with(&self.core, node, records, t, CREATED.ak(), ts)?;
             }
-            for ((tid, ak), am) in &eph_ops {
+            for op in &eph_ops {
+                let (tid, ak, am) = (&op.tid, &op.ak, &op.am);
                 if records(tid).is_none() && self.core.created(tid).is_none() {
                     return Err(Error::UnknownThing(*tid));
                 }
                 check_authority_with(&self.core, node, records, tid, ak.as_str(), ts)?;
-                // the closure and `groups_of` read the durable side only until ephemeral
-                // placements (notes/ephemeral.md step 2)
-                if ak.as_str() == GROUP.ak() {
-                    return Err(Error::Misuse("/group is written durably (group ops)"));
-                }
                 if am.retention.is_some() {
                     return Err(Error::Misuse("retention applies to durable writes only"));
                 }
@@ -222,7 +243,8 @@ impl Engine {
                 }
             }
         }
-        for ((tid, ak), am) in &eph_ops {
+        for op in &eph_ops {
+            let (tid, ak, am) = (&op.tid, &op.ak, &op.am);
             if am.lifetime == Lifetime::Signal {
                 continue;
             }
@@ -231,9 +253,9 @@ impl Engine {
                 self.eph.next = first;
                 return Err(Error::Misuse("an expiry must be in the future"));
             }
-            // resolved against the joined state; the ephemeral side alone (borrowed) when no
-            // durable delta of the aspect is held
-            let durable = match self.durable_state(tid, ak) {
+            // resolved against the joined state (a conversion's reset against the ephemeral
+            // side); the ephemeral side alone (borrowed) when no durable delta is held
+            let durable = match if op.conversion { Ok(None) } else { self.durable_state(tid, ak) } {
                 Ok(d) => d,
                 Err(e) => {
                     self.eph.next = first;
@@ -266,8 +288,9 @@ impl Engine {
                 }
             };
             if let Some((delta, r)) = out {
+                let log = (!op.conversion).then(|| (base.footprint(&delta), am.schema.clone()));
                 self.eph.next = r.hi;
-                resolved.push(Resolved { tid: *tid, ak: ak.clone(), delta, range: (r.lo, r.hi), expires });
+                resolved.push(Resolved { tid: *tid, ak: ak.clone(), delta, range: (r.lo, r.hi), expires, log });
             }
         }
         let free = std::mem::take(&mut m.free);
@@ -291,12 +314,28 @@ impl Engine {
         for (t, record) in fresh {
             self.eph.things.insert(t, EphThing { record, ts, node, actor, received: now });
         }
+        for (item, group) in refused {
+            self.report(Diagnostic { kind: DiagnosticKind::PlacementNotPersisted, tids: vec![item, group], commit, peer: None, detail: "a persisted thing's placement stays ephemeral: this node may not write the group".into() });
+        }
+        Ok(self.apply_ephemeral(commit, resolved, free, signals, created, ts, actor, None))
+    }
+
+    /// Applies a batch's resolved ephemeral writes (cannot fail), frees `free`, logs the batch
+    /// for undo and queues its event. Its id: the commit when it had a durable half.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_ephemeral(&mut self, commit: Option<CommitId>, resolved: Vec<Resolved>, free: BTreeSet<Tid>, signals: Vec<(Tid, Ak, Value)>, created: bool, ts: Ts, actor: Tid, reverts: Option<ChangeId>) -> Option<Written> {
+        let node = self.tid();
+        let now = self.now();
         let mut changed = Vec::new();
+        let mut logged = Vec::new();
         for r in resolved {
             let src = self.eph.src.clone();
             let a = self.eph.aspects.entry(r.tid).or_default().entry(r.ak.clone()).or_default();
             let expired = a.expired.clone();
             let strip = !expired.is_empty() && r.delta.holds_dots(&|d| d.src == src && expired.iter().any(|(lo, hi)| *lo <= d.ctr && d.ctr < *hi));
+            if let Some((pre, schema)) = r.log {
+                logged.push(log::LogAspect { tid: r.tid, ak: r.ak.clone(), delta: r.delta.clone(), range: CounterRange { lo: r.range.0, hi: r.range.1 }, pre, schema });
+            }
             a.state.join(r.delta);
             if strip {
                 a.state.strip(&|d| d.src == src && expired.iter().any(|(lo, hi)| *lo <= d.ctr && d.ctr < *hi));
@@ -305,26 +344,31 @@ impl Engine {
                 a.expiring.entry(t).or_default().push(r.range);
                 self.eph.timers.entry(t).or_default().insert((r.tid, r.ak.clone()));
             }
+            if r.ak.as_str() == GROUP.ak() {
+                self.refresh_def(&r.tid, &r.ak);
+            }
             changed.push((r.tid, r.ak));
         }
-        self.free_things(&free, &mut changed);
+        let gone = self.free_things(&free, ts, &mut changed);
+        logged.retain(|a| !gone.contains(&a.tid));
         let id = match commit {
             Some(c) => ChangeId::Commit(c),
-            None if changed.is_empty() && signals.is_empty() && !created => return Ok(None),
+            None if changed.is_empty() && signals.is_empty() && !created => return None,
             None => {
                 self.eph.batches += 1;
                 ChangeId::Ephemeral(EphemeralId { session: self.eph.session, n: self.eph.batches })
             }
         };
+        self.log_push(id, reverts, actor, ts, now, logged);
         if !(changed.is_empty() && signals.is_empty()) {
             self.core.events.queue(Event::Ephemeral { id, origin: Origin::Local, author: node, actor, ts, received: now, changed, signals });
             self.core.events.flush();
         }
-        Ok(Some(Written { id, ts }))
+        Some(Written { id, ts })
     }
 
     /// The durable state of `(tid, ak)` when a delta of it is held (no store access otherwise).
-    fn durable_state(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
+    pub(crate) fn durable_state(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
         if !self.has_durable(tid, ak) {
             return Ok(None);
         }
@@ -333,12 +377,13 @@ impl Engine {
     }
 
     /// Frees ephemeral things deleted by a batch, with the ephemeral things they own: records,
-    /// states and timers go, the tids read unknown (notes/ephemeral.md Deletion; nothing syncs
-    /// ephemeral things yet, so no holder could revive them).
-    fn free_things(&mut self, free: &BTreeSet<Tid>, changed: &mut Vec<(Tid, Ak)>) {
+    /// states, timers, undo entries and their ephemeral placements go (resets at `ts`), the tids
+    /// read unknown (notes/ephemeral.md Deletion; nothing syncs ephemeral things yet, so no
+    /// holder could revive them).
+    fn free_things(&mut self, free: &BTreeSet<Tid>, ts: Ts, changed: &mut Vec<(Tid, Ak)>) -> BTreeSet<Tid> {
         let mut gone: BTreeSet<Tid> = free.iter().filter(|t| self.eph.things.contains_key(t)).copied().collect();
         if gone.is_empty() {
-            return;
+            return gone;
         }
         loop {
             let more: Vec<Tid> = self.eph.things.iter().filter(|(t, e)| !gone.contains(t) && matches!(&e.record, CreationRecord::Thing { owner, .. } if gone.contains(owner))).map(|(t, _)| *t).collect();
@@ -349,6 +394,7 @@ impl Engine {
         }
         for t in &gone {
             self.eph.things.remove(t);
+            self.eph.defs.remove(t);
             if let Some(m) = self.eph.aspects.remove(t) {
                 for (ak, a) in m {
                     if a.state.present() {
@@ -357,8 +403,36 @@ impl Engine {
                 }
             }
         }
+        self.eph.log.forget(&|t| gone.contains(t));
+        // their ephemeral placements in groups that stay
+        let unplace: Vec<(Tid, Vec<PathOp>)> = self
+            .eph
+            .defs
+            .iter()
+            .filter(|(g, _)| !gone.contains(g))
+            .map(|(g, (items, subs))| (*g, place::unplace_ops(items, subs, &gone)))
+            .filter(|(_, ops)| !ops.is_empty())
+            .collect();
+        let core = osis_schema::core_schema();
+        let view = core.view(GROUP.ak());
+        for (g, ops) in unplace {
+            let Some((gak, a)) = self.eph.aspects.get_mut(&g).and_then(|m| m.iter_mut().find(|(k, _)| k.as_str() == GROUP.ak())) else { continue };
+            let w = Writer::new(ts, self.eph.src.clone(), self.eph.next);
+            let out = match &view {
+                Some(v) => run_ops(&a.state, w, &ops, v),
+                None => run_ops(&a.state, w, &ops, &AnyView),
+            };
+            if let Ok(Some((delta, r))) = out {
+                self.eph.next = r.hi;
+                a.state.join(delta);
+                let gak = gak.clone();
+                self.refresh_def(&g, &gak);
+                changed.push((g, gak));
+            }
+        }
         changed.sort();
         changed.dedup();
+        gone
     }
 
     /// When the next ephemeral expiry is due (corrected wall ms).
@@ -382,6 +456,9 @@ impl Engine {
                 let Some(ranges) = a.expiring.remove(&t) else { continue };
                 a.state.strip(&|d| d.src == src && ranges.iter().any(|(lo, hi)| *lo <= d.ctr && d.ctr < *hi));
                 a.expired.extend(ranges);
+                if ak.as_str() == GROUP.ak() {
+                    self.refresh_def(&tid, &ak);
+                }
                 changed.insert((tid, ak));
             }
         }
@@ -398,7 +475,7 @@ impl Engine {
             "/tid" => Some(Value::Tid(*tid)),
             "/created" => Some(th.record.to_value()),
             "/aspects" => Some(Value::Set(self.eph.present(tid).into_iter().map(|a| Value::Str(a.as_str().to_string())).collect())),
-            "/groups" => Some(Value::Set(Default::default())),
+            "/groups" => Some(Value::Set(self.groups_of(tid).into_iter().map(Value::Tid).collect())),
             "/members" => None,
             _ => self.eph.state(tid, ak).and_then(Fragment::read),
         })

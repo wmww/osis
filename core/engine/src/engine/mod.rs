@@ -45,11 +45,17 @@ pub struct Config {
     /// `/node` software revision.
     pub software: String,
     pub store: StoreConfig,
+    /// Bytes of own ephemeral batches kept for undo (notes/ephemeral.md Bounds): older ones are
+    /// not undoable.
+    pub ephemeral_history: usize,
 }
+
+/// `Config::ephemeral_history` by default.
+pub const DEFAULT_EPHEMERAL_HISTORY: usize = 16 << 20;
 
 impl Default for Config {
     fn default() -> Config {
-        Config { software: format!("osis-node {}", env!("CARGO_PKG_VERSION")), store: StoreConfig::default() }
+        Config { software: format!("osis-node {}", env!("CARGO_PKG_VERSION")), store: StoreConfig::default(), ephemeral_history: DEFAULT_EPHEMERAL_HISTORY }
     }
 }
 
@@ -1140,7 +1146,7 @@ pub struct Engine {
     /// Ephemeral things and aspects, in memory (`crate::ephemeral`).
     pub(crate) eph: crate::ephemeral::Eph,
     clock: Arc<dyn Clock>,
-    cfg: Config,
+    pub(crate) cfg: Config,
 }
 
 /// A random session for this open's ephemeral writes.

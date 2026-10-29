@@ -90,7 +90,7 @@ fn two_people_three_devices_one_server_localhost() {
     assert_eq!(osis(&a1, &["device", "ls"]).lines().count(), 2);
 
     // Alice shares a group by link; Bob redeems it
-    let g = osis(&a1, &["create", "--owner", "me", "--in", "home", "--group"]);
+    let g = osis(&a1, &["create", "--owner", "me", "--in", "home", "--group", "/t/made", "true"]);
     osis(&a1, &["group", "sync", &g]);
     let t = osis(&a1, &["create", "--owner", &g, "--in", &g, "/t/x", "\"hello\""]);
     let link = osis(&a1, &["link", "make", &g, "write"]);

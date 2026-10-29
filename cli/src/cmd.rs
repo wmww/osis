@@ -278,7 +278,7 @@ fn one_write(ctx: &mut Ctx<'_>, c: ScriptCmd) -> anyhow::Result<()> {
     let created = did.created.first().map(|(_, t)| *t);
     // a new thing with no durable data lives in this process's memory only
     if created.is_some_and(|t| db.created(t).is_some_and(|c| c.commit.is_none())) {
-        return Err(usage("a new thing with no durable data is gone when this command exits: give AK V, --in G or --group (or use `write`)"));
+        return Err(usage("a new thing with no durable data is gone when this command exits: give AK V (or use `write`)"));
     }
     let mut lines = Vec::new();
     if let Some(t) = created {
@@ -364,9 +364,9 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let mut q = CommitQuery { scope: opt_scope(ctx, &s)?, in_effect, limit: max, ..CommitQuery::default() };
             q.actors = actor.iter().map(|a| ctx.tid(a)).collect::<anyhow::Result<_>>()?;
             q.kinds = kind.iter().map(|k| kind_of(k)).collect::<anyhow::Result<_>>()?;
-            q.reverts = reverts.as_deref().map(parse_commit).transpose()?;
-            q.reverted_by = reverted_by.as_deref().map(parse_commit).transpose()?;
-            q.after = after.as_deref().map(parse_commit).transpose()?;
+            q.reverts = reverts.as_deref().map(parse_commit).transpose()?.map(osis::ChangeId::Commit);
+            q.reverted_by = reverted_by.as_deref().map(parse_commit).transpose()?.map(osis::ChangeId::Commit);
+            q.after = after.as_deref().map(parse_commit).transpose()?.map(osis::ChangeId::Commit);
             q.since = opt_ts(&since)?.and_then(|ms| Ts::make(ms, 0));
             q.until = opt_ts(&until)?.and_then(|ms| Ts::make(ms, 0));
             commits(ctx, &q)
@@ -840,8 +840,8 @@ fn listen(ctx: &mut Ctx<'_>, t: &str, kind: &str, in_group: bool, count: Option<
     stream_lines(ctx, &rx, count, timeout)
 }
 
-const KINDS: [(&str, CommitKind); 5] =
-    [("change", CommitKind::Change), ("revert", CommitKind::Revert), ("membership", CommitKind::Membership), ("snapshot", CommitKind::Snapshot), ("import", CommitKind::Import)];
+const KINDS: [(&str, CommitKind); 6] =
+    [("change", CommitKind::Change), ("revert", CommitKind::Revert), ("membership", CommitKind::Membership), ("snapshot", CommitKind::Snapshot), ("import", CommitKind::Import), ("ephemeral", CommitKind::Ephemeral)];
 
 fn kind_of(s: &str) -> anyhow::Result<CommitKind> {
     KINDS.iter().find(|k| k.0 == s).map(|k| k.1).ok_or_else(|| usage(format!("unknown commit kind {s:?}: change, revert, membership, snapshot or import")))
@@ -862,7 +862,7 @@ fn commits(ctx: &mut Ctx<'_>, q: &CommitQuery) -> anyhow::Result<()> {
             let i = &c.commit;
             let mut l = format!("{} {} {} {} {} {}", change_text(&i.id), ts_text(raw, ts_of(i.ts)), i.actor.to_uri(), i.node.to_uri(), kind_text(c.kind), if c.in_effect { "in-effect" } else { "reverted" });
             if let Some(r) = &c.reverts {
-                l += &format!(" reverts={}", commit_text(r));
+                l += &format!(" reverts={}", change_text(r));
             }
             if c.dropped {
                 l += " dropped";
@@ -880,8 +880,8 @@ fn commits(ctx: &mut Ctx<'_>, q: &CommitQuery) -> anyhow::Result<()> {
                     ("node", J::tid(c.commit.node)),
                     ("kind", J::str(kind_text(c.kind))),
                     ("in_effect", J::Bool(c.in_effect)),
-                    ("reverts", J::opt(c.reverts.as_ref().map(|r| J::str(commit_text(r))))),
-                    ("reverted_by", J::Arr(c.reverted_by.iter().map(|r| J::str(commit_text(r))).collect())),
+                    ("reverts", J::opt(c.reverts.as_ref().map(|r| J::str(change_text(r))))),
+                    ("reverted_by", J::Arr(c.reverted_by.iter().map(|r| J::str(change_text(r))).collect())),
                     ("dropped", J::Bool(c.dropped)),
                     ("aspects", J::Arr(c.aspects.iter().map(|(t, a)| J::Arr(vec![J::tid(*t), J::str(a.as_str())])).collect())),
                 ])

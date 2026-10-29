@@ -11,7 +11,7 @@ use osis_perm::{At, Edge, MoveIndex};
 use osis_schema::AspectKey;
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 struct Moves<'c>(&'c Core);
 
@@ -100,7 +100,7 @@ impl Engine {
         let v = match ak.as_str() {
             "/tid" => Some(Value::Tid(tid)),
             "/aspects" => Some(Value::Set(self.aspects(&tid)?.into_iter().map(|a| Value::Str(a.as_str().to_string())).collect())),
-            "/groups" => Some(Value::Set(self.core.ix.groups.of.get(&tid).into_iter().flatten().map(|g| Value::Tid(*g)).collect())),
+            "/groups" => Some(Value::Set(self.groups_of(&tid).into_iter().map(Value::Tid).collect())),
             "/members" => {
                 let r = self.core.roster_of(&tid);
                 (!r.is_empty()).then(|| Value::Map(r.iter().map(|(m, e)| (Value::Tid(*m), edge_value(e))).collect()))
@@ -215,11 +215,6 @@ impl Engine {
         }
         out.sort();
         Ok(out)
-    }
-
-    /// Groups containing the thing, transitively (`/groups`).
-    pub fn groups_of(&self, tid: &Tid) -> BTreeSet<Tid> {
-        self.core.ix.groups.of.get(tid).cloned().unwrap_or_default()
     }
 
     /// The membership timeline's roster of `thing` (spec/permissions.md §2).

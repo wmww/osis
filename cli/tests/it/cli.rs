@@ -52,7 +52,7 @@ impl S {
     }
 
     fn thing(&self) -> String {
-        self.ok(&["create", "--owner", "me", "--in", "home"]).line().to_string()
+        self.ok(&["create", "--owner", "me", "--in", "home", "/t/made", "true"]).line().to_string()
     }
 }
 
@@ -278,7 +278,8 @@ fn commits_undo_redo_plan_cli_4() {
 fn groups_and_moves_plan_cli_4() {
     let s = S::mem();
     assert_eq!(s.code(&["create", "--owner", "me"]), 2, "nothing durable: gone at exit");
-    let g = s.ok(&["create", "--owner", "me", "--group"]).line().to_string();
+    assert_eq!(s.code(&["create", "--owner", "me", "--in", "home", "--group"]), 2, "an ephemeral group, placed ephemerally");
+    let g = s.ok(&["create", "--owner", "me", "--group", "/t/made", "true"]).line().to_string();
     let t = s.thing();
     s.ok(&["place", &t, &g]);
     assert!(s.ok(&["groups", &t]).out.contains(&g));
@@ -315,7 +316,7 @@ fn stream_and_len_plan_cli_4() {
 #[test]
 fn sharing_commands_local_plan_cli_4() {
     let s = S::mem();
-    let g = s.ok(&["create", "--owner", "me", "--in", "home", "--group"]).line().to_string();
+    let g = s.ok(&["create", "--owner", "me", "--in", "home", "--group", "/t/made", "true"]).line().to_string();
     s.ok(&["group", "sync", &g]);
     // spec/permissions.md §9: without servers a link reaches nobody unless direct (opt-in)
     assert_eq!(s.code(&["link", "make", &g, "write", "--single-use"]), 7);

@@ -5,6 +5,7 @@ mod common;
 mod api;
 mod commits;
 mod ephemeral;
+mod ephemeral_undo;
 mod runtime;
 mod sharing;
 mod sync;

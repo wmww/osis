@@ -106,8 +106,8 @@ impl<'d> Write<'d> {
 
     /// A new thing owned by `owner` (fixed forever; needs write on it). It is ephemeral (in
     /// memory, gone at restart) until its first durable write, which persists it with its owner
-    /// chain, keeping its tid; placing it into a group persists it too (for now). Group ops in
-    /// the same batch place it atomically.
+    /// chain and its placements, keeping its tid. Group ops in the same batch place it
+    /// atomically; placing an ephemeral thing is an ephemeral write of the group.
     pub fn create(&mut self, owner: Tid) -> Result<Tid> {
         let owner = self.known(owner)?;
         let m = &mut self.m;
@@ -147,17 +147,15 @@ impl<'d> Write<'d> {
         let g = self.known(g)?;
         let member = self.resolve(member);
         self.group_expiry(g, exp)?;
+        // an ephemeral item's placement is an ephemeral write (notes/ephemeral.md Ephemeral
+        // placements): `Engine::write` splits the group ops by what persists
         self.m.op(g, &GROUP, group_op(items, member, add))?;
-        // a durable group add naming an ephemeral thing persists it (until ephemeral
-        // placements, notes/ephemeral.md step 2)
-        if add {
-            self.m.persist(member);
-        }
         Ok(())
     }
 
-    /// Adds `tid` to the items of group `g`. A thing whose groups then include no synced one
-    /// gets a `NotSynced` diagnostic after commit.
+    /// Adds `tid` to the items of group `g`: an ephemeral write while `tid` stays ephemeral
+    /// (made durable when it persists), else a durable one (persisting `g`). A durable thing
+    /// whose groups then include no synced one gets a `NotSynced` diagnostic after commit.
     pub fn place(&mut self, tid: Tid, g: Tid) -> Result<()> {
         self.place_expiring(tid, g, None)
     }
@@ -248,7 +246,7 @@ fn not_synced(e: &mut osis_node::Engine, placed: &[Tid]) {
     }
     let labeled = e.labeled_groups();
     for t in placed {
-        if labeled.contains(t) || e.groups_of(t).iter().any(|g| labeled.contains(g)) {
+        if e.ephemeral_thing(t).is_some() || labeled.contains(t) || e.groups_of(t).iter().any(|g| labeled.contains(g)) {
             continue;
         }
         e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t], commit: None, peer: None, detail: "placed only in groups no synced group holds: it stays on this device".into() });
