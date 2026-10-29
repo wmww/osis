@@ -1429,8 +1429,13 @@ impl SyncEngine {
             self.eph.reconciled.insert((server, label));
         }
         // marked reconciled when the reply arrives (`reconciled`): a connection ending first
-        // reconciles again on the next one
-        if cursor.is_some() && !self.eph.reconciled.contains(&(server, label)) {
+        // reconciles again on the next one. More ephemeral entries than a Sync's gained list
+        // takes: reconciled too, so only what the peer lacks goes up (`reconciled`)
+        let many = !self.eph.announced.contains(&(conn, label)) && SyncEngine::eph_entries_of(&self.eph, &label).nth(osis_proto::msg::MAX_GAINED).is_some();
+        if many {
+            self.eph.announced.insert((conn, label));
+        }
+        if many || (cursor.is_some() && !self.eph.reconciled.contains(&(server, label))) {
             if self.eph.reconciling.contains(&(conn, label)) {
                 return Ok(());
             }

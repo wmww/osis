@@ -111,7 +111,7 @@ impl SyncEngine {
                         c.req.missing.remove(&blob_id);
                         c.req.fetching.remove(&blob_id);
                     }
-                    self.eph_added(server, l, blob_id, blob, wrap, stamp, class, out)?;
+                    self.eph_added(super::ephemeral::RelayFrom::Server(server), l, blob_id, blob, wrap, stamp, class, out)?;
                     continue;
                 }
                 LogEvent::Added { blob_id, blob: None, .. } if self.eph.entries.contains_key(&(l, blob_id)) => {
@@ -674,6 +674,22 @@ impl SyncEngine {
     /// metadata Sync for a fresh cursor.
     pub(crate) fn reconciled(&mut self, conn: ConnId, l: LabelId, need: Vec<BlobId>, have: Vec<BlobId>, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
+        // held ephemeral entries: the peer lacks those in `have` (they go up), holds the rest
+        if self.eph.reconciling.contains(&(conn, l)) {
+            let lacks: BTreeSet<BlobId> = have.iter().copied().collect();
+            let held: Vec<BlobId> = SyncEngine::eph_entries_of(&self.eph, &l).map(|(b, _)| b).collect();
+            let mut up = Vec::new();
+            for b in held {
+                if lacks.contains(&b) {
+                    up.push(b);
+                } else {
+                    self.eph.present.insert((server, l, b));
+                }
+            }
+            if let Some(keys) = self.lc(conn, &l).map(|x| x.keys.clone()) {
+                self.eph_upload(conn, l, &up, &keys, out)?;
+            }
+        }
         for b in have {
             self.state.set_present(server, l, b, false);
         }

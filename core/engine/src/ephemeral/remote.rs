@@ -28,9 +28,11 @@ use osis_schema::core_types::{CREATED, GROUP, is_membership_class};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
-/// Relay-only commit IDs remembered as delivered (notes/ephemeral.md Bounds): past this count the
-/// oldest is forgotten, so a duplicate over a second server may fire twice; resource bound
-/// against a hostile writer (0: no dedup, infinity: unbounded memory).
+/// Relay-only commit IDs remembered as delivered (notes/ephemeral.md Bounds). Resource bound
+/// against a hostile writer: past it the oldest is forgotten and its `ts` becomes a floor, at or
+/// below which relay-only commits are dropped, so none fires twice (0: every relay-only commit
+/// older than the newest delivered is dropped; infinity: memory grows with every signal of the
+/// replay window).
 pub const MAX_DELIVERED: usize = 1 << 16;
 
 /// Held bytes of an aspect's ephemeral bodies above which a writer compacts it, besides the
@@ -44,13 +46,46 @@ type EphDelta = (Tid, Ak, Fragment, Option<u64>);
 /// Unsent own deltas of one aspect by (actor written for, expiry).
 type Unsent = BTreeMap<(Tid, Option<u64>), Fragment>;
 
+/// One held part of an ephemeral commit (in memory).
+pub(crate) struct HeldPart {
+    pub ai: usize,
+    pub fragment: Fragment,
+    /// The commits it lists as absorbed.
+    pub absorbed: BTreeSet<CommitId>,
+    /// Its `Authors`: the node each session's writes are judged as, and at which `ts`.
+    pub authors: BTreeMap<CommitId, (Tid, Ts)>,
+    /// The sessions whose writes it carries.
+    pub srcs: BTreeSet<CommitId>,
+    /// Valid here (spec/permissions.md §5.2).
+    pub valid: bool,
+    /// Carried sessions whose writes are invalid here (judged as their `Authors` node's):
+    /// not joined.
+    pub bad: BTreeSet<CommitId>,
+}
+
+impl HeldPart {
+    fn new(ai: usize, s: Snapshot) -> HeldPart {
+        let srcs = s.fragment.writes().into_iter().filter_map(|(d, _)| if let SourceKind::Commit(c) = d.src.author().kind() { Some(*c) } else { None }).collect();
+        HeldPart { ai, fragment: s.fragment, absorbed: s.absorbed.into_keys().collect(), authors: s.authors, srcs, valid: true, bad: BTreeSet::new() }
+    }
+
+    /// The writes that count here: none when invalid, else all but the invalid sessions'.
+    fn counted(&self) -> Option<Fragment> {
+        if !self.valid {
+            return None;
+        }
+        let mut f = self.fragment.clone();
+        if !self.bad.is_empty() {
+            f.strip_copies(&|d| matches!(d.src.author().kind(), SourceKind::Commit(c) if self.bad.contains(c)));
+        }
+        Some(f)
+    }
+}
+
 /// A held ephemeral commit (in memory).
 pub(crate) struct Held {
     pub header: Arc<Header>,
-    /// (aspect index, fragment, the commits it lists as absorbed) per part held.
-    pub parts: Vec<(usize, Fragment, BTreeSet<CommitId>)>,
-    /// Per part: valid here (spec/permissions.md §5.2).
-    pub valid: Vec<bool>,
+    pub parts: Vec<HeldPart>,
     /// Built by this node (its writes are in the own state already).
     pub own: bool,
     /// The approximate bytes of its parts.
@@ -72,16 +107,20 @@ pub(crate) struct Remote {
     pub local: BTreeSet<Tid>,
     /// The ephemeral commit records.
     pub held: BTreeMap<CommitId, Held>,
-    /// Commits whose author's record, or a part's thing's, is not here yet (bounded by the sync
-    /// layer's caps), retried when the durable state changes.
-    pub pending: BTreeMap<CommitId, CommitBlob>,
-    /// Ephemeral sessions and the node an `Authors` entry named for them.
-    pub sessions: BTreeMap<CommitId, Tid>,
+    /// Commits whose author's record, or a part's thing's, is not here yet, with the things
+    /// whose records they wait for (bounded by the sync layer, which forgets what it drops),
+    /// retried when one of those records arrives.
+    pub pending: BTreeMap<CommitId, (CommitBlob, BTreeSet<Tid>)>,
+    /// Per ephemeral session, the held commits whose parts name it in `Authors` (attribution
+    /// of carried writes when this node compacts); released with them.
+    pub claims: BTreeMap<CommitId, BTreeSet<CommitId>>,
     /// Expiry times of held parts.
     pub timers: BTreeMap<u64, BTreeSet<(CommitId, usize)>>,
     /// Relay-only commits delivered, oldest first, with their `ts` (wall ms).
     pub delivered: VecDeque<(CommitId, u64)>,
     pub delivered_set: BTreeSet<CommitId>,
+    /// Relay-only commits at or below this `ts` (wall ms) are dropped (`MAX_DELIVERED`).
+    pub delivered_floor: u64,
     /// `Core::generation` when held validity was last judged.
     pub judged_at: u64,
 }
@@ -89,12 +128,16 @@ pub(crate) struct Remote {
 /// What became of a received ephemeral commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EphIngest {
-    /// Held (new parts joined, or nothing new).
+    /// Verified and held (new parts joined, or nothing new).
     Held { new: bool },
-    /// Signals delivered (relay-only), or nothing: a duplicate or stale.
-    Delivered { fired: bool },
-    /// Waits for its author's record.
+    /// A relay-only commit verified for the first time: its valid signals delivered (`fired`).
+    Relayed { fired: bool },
+    /// Waits for its author's record (not verified yet; kept apart, `pending_ephemeral`).
     Pending,
+    /// Not held: a relay-only duplicate or one outside its window, a commit more than
+    /// `MAX_DRIFT` ahead, or one valid held commits list as absorbed on every aspect it touches
+    /// (`absorbed`: a writer may delete its entry where it found it).
+    Dropped { absorbed: bool },
 }
 
 /// An ephemeral commit built here: its ID, class and blob (header and parts).
@@ -291,15 +334,29 @@ impl Engine {
         cx.own = Source::commit(CommitId([0; 32]));
         let mut writes = Vec::with_capacity(parts.len());
         let own_session = self.eph.session;
-        for (tid, ak, fragment, expires) in parts {
+        for (tid, ak, mut fragment, expires) in parts {
             let mut authors = BTreeMap::new();
+            let mut unknown = BTreeSet::new();
             for (d, _) in fragment.writes() {
                 if let SourceKind::Commit(c) = d.src.author().kind()
                     && !authors.contains_key(c)
+                    && !unknown.contains(c)
                 {
-                    let node = if c.0 == own_session { me } else { self.eph.remote.sessions.get(c).copied().unwrap_or(me) };
-                    authors.insert(*c, (node, ts));
+                    let node = if c.0 == own_session { Some(me) } else { self.claim_of(c) };
+                    match node {
+                        Some(n) => {
+                            authors.insert(*c, (n, ts));
+                        }
+                        None => {
+                            unknown.insert(*c);
+                        }
+                    }
                 }
+            }
+            // writes no held valid part attributes are not carried (attributing them to this
+            // node would vouch for them, spec/permissions.md §5.2)
+            if !unknown.is_empty() {
+                fragment.strip_copies(&|d| matches!(d.src.author().kind(), SourceKind::Commit(c) if unknown.contains(c)));
             }
             let absorbed_here: BTreeMap<CommitId, Tid> = absorbed.get(&(tid, ak.clone())).into_iter().flatten().filter_map(|c| self.eph.remote.held.get(c).map(|h| (*c, h.header.author))).collect();
             let mut nonce = [0u8; osis_crdt::NONCE_LEN];
@@ -334,14 +391,18 @@ impl Engine {
         if class == EphClass::Plain {
             let mut interner = Interner::new();
             let mut held_parts = Vec::new();
+            let header = Arc::new(blob.header.clone());
+            let empty = BTreeMap::new();
             for p in &blob.parts {
                 let cx = osis_commit::delta_ctx(&blob.header, &id, p.ai, &mut interner)?;
                 let s = osis_crdt::decode_snapshot(&p.delta, &cx, &mut interner, None)?;
-                held_parts.push((p.ai, s.fragment, s.absorbed.into_keys().collect()));
+                let mut hp = HeldPart::new(p.ai, s);
+                self.judge_part(&header, &id, &mut hp, true, &empty);
+                held_parts.push(hp);
             }
-            let n = held_parts.len();
-            let bytes = held_parts.iter().map(|(_, f, _)| f.approx_bytes()).sum();
-            self.eph.remote.held.insert(id, Held { header: Arc::new(blob.header.clone()), parts: held_parts, valid: vec![true; n], own: true, bytes });
+            let bytes = held_parts.iter().map(|p| p.fragment.approx_bytes()).sum();
+            self.claim(&id, &held_parts);
+            self.eph.remote.held.insert(id, Held { header, parts: held_parts, own: true, bytes });
             for (i, a) in blob.header.aspects.iter().enumerate() {
                 if let Some(t) = a.expires {
                     self.eph.remote.timers.entry(t).or_default().insert((id, i));
@@ -365,38 +426,113 @@ impl Engine {
     }
 
     /// Whether part `ai` of ephemeral commit `h` is valid here (spec/permissions.md §5.2): judged
-    /// as its author's snapshot delta at its `ts`, by commit ID; on an ephemeral thing, as a
-    /// write on a new thing owned by its nearest durable thing (spec/permissions.md §1). Unknown
-    /// records count as invalid until they arrive.
+    /// as its author's snapshot delta at its `ts`, by commit ID. Membership-class aspects and
+    /// the other core aspects but `/group` (spec/data-model.md §8) take no ephemeral part;
+    /// `/created` is always valid (it must hash to its tid).
     fn eph_part_valid(&self, h: &Header, id: &CommitId, ai: usize, carried: &BTreeMap<Tid, CreationRecord>) -> bool {
         let Some(a) = h.aspects.get(ai) else { return false };
         let ak = a.ak.as_str();
-        if is_membership_class(ak) {
-            return false;
-        }
         if ak == CREATED.ak() {
             return true;
         }
-        // up the ephemeral chain to the nearest durable thing; an ephemeral owner that is the
-        // author makes it admin there
-        let mut cur = a.tid;
+        if is_membership_class(ak) || (is_core_aspect(ak) && ak != GROUP.ak()) {
+            return false;
+        }
+        self.eph_write_valid(&a.tid, ak, h.author, h.ts, id, carried)
+    }
+
+    /// Whether a write on `(tid, ak)` by `node` at `ts`, judged by commit ID `commit`, is valid
+    /// here (spec/permissions.md §5.2); on an ephemeral thing, as a write on a new thing owned
+    /// by its nearest durable thing (spec/permissions.md §1), an ephemeral owner that is `node`
+    /// making it valid. Unknown records count as invalid until they arrive.
+    fn eph_write_valid(&self, tid: &Tid, ak: &str, node: Tid, ts: Ts, commit: &CommitId, carried: &BTreeMap<Tid, CreationRecord>) -> bool {
+        let mut cur = *tid;
         for _ in 0..=MAX_OWNER_DEPTH {
             if self.core.created(&cur).is_some() {
                 if crate::apply::validity::too_deep(&self.core, &cur) {
                     return false;
                 }
                 let Some(tl) = self.core.timelines.get(&cur) else { return false };
-                let point = Point { ts: h.ts, node: h.author, commit: *id };
+                let point = Point { ts, node, commit: *commit };
                 return tl.delta_valid(point, &cur, ak, Dots::Commit, required_role(ak)) == Validity::Valid;
             }
             match self.record_of(&cur, carried) {
-                Some(CreationRecord::Thing { owner, .. }) if *owner == h.author => return true,
+                Some(CreationRecord::Thing { owner, .. }) if *owner == node => return true,
                 Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
-                Some(CreationRecord::KeyActor { .. }) => return cur == h.author,
+                Some(CreationRecord::KeyActor { .. }) => return cur == node,
                 None => return false,
             }
         }
         false
+    }
+
+    /// Judges a held part (spec/permissions.md §5.2): the part as its commit's author's delta
+    /// (own parts: valid), then each carried session's writes as its `Authors` node's, by the
+    /// session (which no frontier lists: a demotion invalidates the demoted node's carried
+    /// writes as it does its own ephemeral commits); a session with no `Authors` entry is
+    /// invalid. The author's own sessions go with the part.
+    fn judge_part(&self, h: &Header, id: &CommitId, p: &mut HeldPart, own: bool, carried: &BTreeMap<Tid, CreationRecord>) {
+        p.valid = own || self.eph_part_valid(h, id, p.ai, carried);
+        p.bad.clear();
+        let Some(a) = h.aspects.get(p.ai) else { return };
+        if !p.valid || a.ak.as_str() == CREATED.ak() {
+            return;
+        }
+        for c in &p.srcs {
+            if c.0 == self.eph.session {
+                continue;
+            }
+            let ok = match p.authors.get(c) {
+                Some((node, _)) if *node == h.author => true,
+                Some((node, ts)) => self.eph_write_valid(&a.tid, a.ak.as_str(), *node, *ts, c, carried),
+                None => false,
+            };
+            if !ok {
+                p.bad.insert(*c);
+            }
+        }
+    }
+
+    /// Notes the sessions held parts of commit `id` attribute.
+    fn claim(&mut self, id: &CommitId, parts: &[HeldPart]) {
+        for p in parts {
+            for c in p.authors.keys() {
+                self.eph.remote.claims.entry(*c).or_default().insert(*id);
+            }
+        }
+    }
+
+    /// The node session `c`'s writes are attributed to when this node carries them: named by a
+    /// held part that is valid and does not judge them invalid, a commit naming itself first.
+    fn claim_of(&self, c: &CommitId) -> Option<Tid> {
+        let r = &self.eph.remote;
+        let mut other = None;
+        for id in r.claims.get(c)? {
+            let Some(h) = r.held.get(id) else { continue };
+            for p in h.parts.iter().filter(|p| p.valid && !p.bad.contains(c)) {
+                if let Some((node, _)) = p.authors.get(c) {
+                    if *node == h.header.author {
+                        return Some(*node);
+                    }
+                    other.get_or_insert(*node);
+                }
+            }
+        }
+        other
+    }
+
+    /// Whether valid held commits list `id` as absorbed on every aspect its parts `ais` are on
+    /// (a replay of a covered commit is not held again).
+    fn eph_covered(&self, id: &CommitId, h: &Header, ais: &[usize]) -> bool {
+        let mut on: BTreeSet<(Tid, &Ak)> = BTreeSet::new();
+        for x in self.eph.remote.held.values() {
+            for p in x.parts.iter().filter(|p| p.valid && p.absorbed.contains(id)) {
+                if let Some(a) = x.header.aspects.get(p.ai) {
+                    on.insert((a.tid, &a.ak));
+                }
+            }
+        }
+        !on.is_empty() && ais.iter().all(|ai| h.aspects.get(*ai).is_some_and(|a| on.contains(&(a.tid, &a.ak))))
     }
 
     /// Receives an ephemeral commit blob (verified here; the blob's prefix was checked by the
@@ -409,17 +545,25 @@ impl Engine {
         let at = h.ts.wall_ms().0;
         if class == EphClass::Relay {
             // its only replay window (notes/ephemeral.md Signals)
-            if self.eph.remote.delivered_set.contains(&id) || at.saturating_add(MAX_DRIFT_MS) < now || at > now.saturating_add(MAX_DRIFT_MS) {
-                return Ok(EphIngest::Delivered { fired: false });
+            let r = &self.eph.remote;
+            if r.delivered_set.contains(&id) || at <= r.delivered_floor || at.saturating_add(MAX_DRIFT_MS) < now || at > now.saturating_add(MAX_DRIFT_MS) {
+                return Ok(EphIngest::Dropped { absorbed: false });
             }
         } else {
+            // not held, nor spread (spec/sync.md §9)
             if at > now.saturating_add(MAX_DRIFT_MS) {
-                return Ok(EphIngest::Held { new: false });
+                return Ok(EphIngest::Dropped { absorbed: false });
             }
             if let Some(held) = self.eph.remote.held.get(&id) {
-                let have: BTreeSet<usize> = held.parts.iter().map(|p| p.0).collect();
+                let have: BTreeSet<usize> = held.parts.iter().map(|p| p.ai).collect();
                 if blob.parts.iter().all(|p| have.contains(&p.ai)) {
                     return Ok(EphIngest::Held { new: false });
+                }
+            } else {
+                // the ID commits to the header: no verification needed to recognize a replay
+                let ais: Vec<usize> = blob.parts.iter().map(|p| p.ai).collect();
+                if self.eph_covered(&id, &h, &ais) {
+                    return Ok(EphIngest::Dropped { absorbed: true });
                 }
             }
         }
@@ -427,9 +571,10 @@ impl Engine {
             Some(CreationRecord::KeyActor { public_key, .. }) => VerifyingKey::from_slice(public_key)?,
             Some(_) => return Err(Error::BadInput("author is not a key actor")),
             None => {
-                if class == EphClass::Plain {
-                    self.eph.remote.pending.insert(id, blob);
+                if class == EphClass::Relay {
+                    return Ok(EphIngest::Dropped { absorbed: false });
                 }
+                self.eph.remote.pending.insert(id, (blob, BTreeSet::from([h.author])));
                 return Ok(EphIngest::Pending);
             }
         };
@@ -455,11 +600,11 @@ impl Engine {
         }
         let mut decoded = Vec::with_capacity(blob.parts.len());
         // a part on a thing whose record is not here yet waits (`rejudge_ephemeral` retries)
-        let mut waits = false;
+        let mut waits: BTreeSet<Tid> = BTreeSet::new();
         for p in &blob.parts {
             let Some(a) = h.aspects.get(p.ai) else { continue };
             let Some(rec) = self.record_of(&a.tid, &carried) else {
-                waits = true;
+                waits.insert(a.tid);
                 continue;
             };
             let dedup = dedup_secret(rec.nonce());
@@ -468,19 +613,14 @@ impl Engine {
                 osis_commit::Decoded::Delta(_) => return Err(Error::BadInput("ephemeral commit with a writer delta")),
             }
         }
-        for (_, s) in &decoded {
-            for (c, (node, _)) in &s.authors {
-                if c.0 != self.eph.session {
-                    self.eph.remote.sessions.entry(*c).or_insert(*node);
-                }
-            }
-        }
         if class == EphClass::Relay {
-            self.eph.remote.delivered_set.insert(id);
-            self.eph.remote.delivered.push_back((id, at));
-            while self.eph.remote.delivered.len() > MAX_DELIVERED || self.eph.remote.delivered.front().is_some_and(|(_, t)| t.saturating_add(MAX_DRIFT_MS) < now) {
-                if let Some((c, _)) = self.eph.remote.delivered.pop_front() {
-                    self.eph.remote.delivered_set.remove(&c);
+            let r = &mut self.eph.remote;
+            r.delivered_set.insert(id);
+            r.delivered.push_back((id, at));
+            while r.delivered.len() > MAX_DELIVERED || r.delivered.front().is_some_and(|(_, t)| t.saturating_add(MAX_DRIFT_MS) < now) {
+                if let Some((c, t)) = r.delivered.pop_front() {
+                    r.delivered_set.remove(&c);
+                    r.delivered_floor = r.delivered_floor.max(t);
                 }
             }
             let mut signals = Vec::new();
@@ -499,7 +639,7 @@ impl Engine {
                 self.core.events.queue(Event::Ephemeral { id: ChangeId::Commit(id), origin: Origin::Remote, author: h.author, actor: h.actor, ts: h.ts, received, changed: Vec::new(), signals });
                 self.core.events.flush();
             }
-            return Ok(EphIngest::Delivered { fired });
+            return Ok(EphIngest::Relayed { fired });
         }
         // the records of ephemeral things it brings
         let received = self.now();
@@ -510,36 +650,33 @@ impl Engine {
             }
         }
         let header = Arc::new(h);
-        let held = self.eph.remote.held.remove(&id);
-        let (mut parts, mut valid) = match held {
-            Some(x) => (x.parts, x.valid),
-            None => (Vec::new(), Vec::new()),
-        };
+        let mut parts = self.eph.remote.held.remove(&id).map(|x| x.parts).unwrap_or_default();
         let mut changed = Vec::new();
+        let mut fresh = Vec::new();
         for (ai, s) in decoded {
-            if parts.iter().any(|p| p.0 == ai) {
+            if parts.iter().any(|p| p.ai == ai) {
                 continue;
             }
             let Some(a) = header.aspects.get(ai) else { continue };
             if a.expires.is_some_and(|t| t <= now) {
                 continue;
             }
-            let ok = self.eph_part_valid(&header, &id, ai, &carried);
-            let k = parts.len();
-            parts.push((ai, s.fragment.clone(), s.absorbed.keys().copied().collect()));
-            valid.push(ok);
+            let mut hp = HeldPart::new(ai, s);
+            self.judge_part(&header, &id, &mut hp, false, &carried);
             if let Some(t) = a.expires {
                 self.eph.remote.timers.entry(t).or_default().insert((id, ai));
             }
+            let counted = hp.counted();
             let src = self.eph.src.clone();
             let ea = self.eph.aspects.entry(a.tid).or_default().entry(a.ak.clone()).or_default();
             ea.parts.insert((id, ai));
-            let _ = k;
-            if ok && a.ak.as_str() != CREATED.ak() {
+            if let Some(f) = counted
+                && a.ak.as_str() != CREATED.ak()
+            {
                 if ea.own.is_none() {
                     ea.own = Some(ea.state.clone());
                 }
-                ea.state.join(s.fragment);
+                ea.state.join(f);
                 strip_own_expired(ea, &src);
                 if a.ak.as_str() == GROUP.ak() {
                     let (t, ak) = (a.tid, a.ak.clone());
@@ -547,13 +684,16 @@ impl Engine {
                 }
                 changed.push((a.tid, a.ak.clone()));
             }
+            fresh.push(hp);
         }
-        let bytes = parts.iter().map(|(_, f, _)| f.approx_bytes()).sum();
+        self.claim(&id, &fresh);
+        parts.extend(fresh);
+        let bytes = parts.iter().map(|p| p.fragment.approx_bytes()).sum();
         let new = !changed.is_empty();
-        let absorbs = parts.iter().any(|(_, _, a)| !a.is_empty());
-        self.eph.remote.held.insert(id, Held { header: header.clone(), parts, valid, own: false, bytes });
-        if waits {
-            self.eph.remote.pending.insert(id, blob);
+        let absorbs = parts.iter().any(|p| !p.absorbed.is_empty());
+        self.eph.remote.held.insert(id, Held { header: header.clone(), parts, own: false, bytes });
+        if !waits.is_empty() {
+            self.eph.remote.pending.insert(id, (blob, waits));
         }
         if absorbs {
             self.drop_absorbed();
@@ -574,12 +714,12 @@ impl Engine {
         let r = &self.eph.remote;
         let mut covers: BTreeMap<(Tid, Ak), BTreeSet<CommitId>> = BTreeMap::new();
         for h in r.held.values() {
-            for ((ai, _, abs), ok) in h.parts.iter().zip(&h.valid) {
-                if *ok
-                    && !abs.is_empty()
-                    && let Some(a) = h.header.aspects.get(*ai)
+            for p in &h.parts {
+                if p.valid
+                    && !p.absorbed.is_empty()
+                    && let Some(a) = h.header.aspects.get(p.ai)
                 {
-                    covers.entry((a.tid, a.ak.clone())).or_default().extend(abs.iter().copied());
+                    covers.entry((a.tid, a.ak.clone())).or_default().extend(p.absorbed.iter().copied());
                 }
             }
         }
@@ -590,7 +730,7 @@ impl Engine {
             .held
             .iter()
             .filter(|(id, h)| {
-                h.parts.iter().all(|(ai, _, _)| h.header.aspects.get(*ai).is_some_and(|a| covers.get(&(a.tid, a.ak.clone())).is_some_and(|c| c.contains(id))))
+                h.parts.iter().all(|p| h.header.aspects.get(p.ai).is_some_and(|a| covers.get(&(a.tid, a.ak.clone())).is_some_and(|c| c.contains(id))))
             })
             .map(|(id, _)| *id)
             .collect();
@@ -602,19 +742,34 @@ impl Engine {
     /// Forgets held commit `id` (its writes stay in the state); queued for `take_dropped_ephemeral`.
     fn forget_held(&mut self, id: &CommitId) {
         let Some(h) = self.eph.remote.held.remove(id) else { return };
-        for (ai, _, _) in &h.parts {
-            if let Some(a) = h.header.aspects.get(*ai) {
+        self.unclaim(id, &h.parts);
+        for p in &h.parts {
+            if let Some(a) = h.header.aspects.get(p.ai) {
                 if let Some(ea) = self.eph.aspects.get_mut(&a.tid).and_then(|m| m.get_mut(&a.ak)) {
-                    ea.parts.remove(&(*id, *ai));
+                    ea.parts.remove(&(*id, p.ai));
                 }
                 if let Some(t) = a.expires
                     && let Some(s) = self.eph.remote.timers.get_mut(&t)
                 {
-                    s.remove(&(*id, *ai));
+                    s.remove(&(*id, p.ai));
                 }
             }
         }
         self.eph.dropped.push(*id);
+    }
+
+    /// Releases the session claims of commit `id`'s parts `parts`.
+    fn unclaim(&mut self, id: &CommitId, parts: &[HeldPart]) {
+        for p in parts {
+            for c in p.authors.keys() {
+                if let Some(s) = self.eph.remote.claims.get_mut(c) {
+                    s.remove(id);
+                    if s.is_empty() {
+                        self.eph.remote.claims.remove(c);
+                    }
+                }
+            }
+        }
     }
 
     /// The held ephemeral commits dropped since the last call (covered by a compaction): the
@@ -681,33 +836,30 @@ impl Engine {
         for t in durable {
             self.eph.things.remove(&t);
         }
-        let pending: Vec<CommitId> = self.eph.remote.pending.keys().copied().collect();
-        for c in pending {
-            if let Some(b) = self.eph.remote.pending.remove(&c)
+        // only what waits for a record that arrived (the rest costs nothing to keep waiting)
+        let empty = BTreeMap::new();
+        let ready: Vec<CommitId> = self.eph.remote.pending.iter().filter(|(_, (_, needs))| needs.iter().any(|t| self.record_of(t, &empty).is_some())).map(|(c, _)| *c).collect();
+        for c in ready {
+            if let Some((b, _)) = self.eph.remote.pending.remove(&c)
                 && let Err(e) = self.ingest_ephemeral(b)
             {
                 self.report_eph(&format!("ephemeral commit {c:?}: {e}"));
             }
         }
-        let empty = BTreeMap::new();
         let mut flips: BTreeSet<(Tid, Ak)> = BTreeSet::new();
         let ids: Vec<CommitId> = self.eph.remote.held.keys().copied().collect();
         for id in ids {
-            let Some(h) = self.eph.remote.held.get(&id) else { continue };
-            if h.own {
-                continue;
-            }
-            let header = h.header.clone();
-            let now: Vec<bool> = h.parts.iter().map(|(ai, _, _)| self.eph_part_valid(&header, &id, *ai, &empty)).collect();
-            let Some(h) = self.eph.remote.held.get_mut(&id) else { continue };
-            for (k, ((ai, _, _), ok)) in h.parts.iter().zip(&now).enumerate() {
-                if h.valid.get(k) != Some(ok)
-                    && let Some(a) = header.aspects.get(*ai)
+            let Some(mut h) = self.eph.remote.held.remove(&id) else { continue };
+            for p in h.parts.iter_mut() {
+                let before = (p.valid, p.bad.clone());
+                self.judge_part(&h.header, &id, p, h.own, &empty);
+                if (p.valid, &p.bad) != (before.0, &before.1)
+                    && let Some(a) = h.header.aspects.get(p.ai)
                 {
                     flips.insert((a.tid, a.ak.clone()));
                 }
             }
-            h.valid = now;
+            self.eph.remote.held.insert(id, h);
         }
         let mut changed = Vec::new();
         for (t, ak) in flips {
@@ -731,11 +883,8 @@ impl Engine {
         for (id, ai) in &ea.parts {
             // own held commits too: an own compaction's cover carries others' writes
             let Some(h) = r.held.get(id) else { continue };
-            if let Some(k) = h.parts.iter().position(|p| p.0 == *ai)
-                && h.valid.get(k).copied().unwrap_or(false)
-                && let Some((_, frag, _)) = h.parts.get(k)
-            {
-                f.join(frag.clone());
+            if let Some(c) = h.parts.iter().find(|p| p.ai == *ai).and_then(HeldPart::counted) {
+                f.join(c);
             }
         }
         let src = self.eph.src.clone();
@@ -759,13 +908,13 @@ impl Engine {
             let (_, parts) = entry.remove_entry();
             for (id, ai) in parts {
                 let Some(h) = self.eph.remote.held.get_mut(&id) else { continue };
-                let Some(k) = h.parts.iter().position(|p| p.0 == ai) else { continue };
-                let (_, frag, _) = h.parts.remove(k);
-                h.valid.remove(k);
+                let Some(k) = h.parts.iter().position(|p| p.ai == ai) else { continue };
+                let part = h.parts.remove(k);
                 let header = h.header.clone();
                 let empty = h.parts.is_empty();
+                self.unclaim(&id, std::slice::from_ref(&part));
                 let Some(a) = header.aspects.get(ai) else { continue };
-                let dots: BTreeSet<osis_crdt::Dot> = frag.writes().into_iter().map(|(d, _)| d).collect();
+                let dots: BTreeSet<osis_crdt::Dot> = part.fragment.writes().into_iter().map(|(d, _)| d).collect();
                 if let Some(ea) = self.eph.aspects.get_mut(&a.tid).and_then(|m| m.get_mut(&a.ak)) {
                     ea.parts.remove(&(id, ai));
                     ea.state.strip(&|d| dots.contains(d));
@@ -826,12 +975,12 @@ impl Engine {
         // the held commits wholly on picked aspects
         let mut absorbed: BTreeMap<(Tid, Ak), BTreeSet<CommitId>> = BTreeMap::new();
         for (id, h) in &self.eph.remote.held {
-            let all = h.parts.iter().all(|(ai, _, _)| h.header.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == CREATED.ak() || picked_set.contains(&(a.tid, a.ak.clone()))));
+            let all = h.parts.iter().all(|p| h.header.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == CREATED.ak() || picked_set.contains(&(a.tid, a.ak.clone()))));
             if !all {
                 continue;
             }
-            for (ai, _, _) in &h.parts {
-                if let Some(a) = h.header.aspects.get(*ai) {
+            for p in &h.parts {
+                if let Some(a) = h.header.aspects.get(p.ai) {
                     absorbed.entry((a.tid, a.ak.clone())).or_default().insert(*id);
                 }
             }
@@ -876,6 +1025,23 @@ impl Engine {
         }
         self.eph.dropped.retain(|c| !ids.contains(c));
     }
+
+    /// Whether an ephemeral commit waits for its author's record (not verified yet).
+    pub fn pending_ephemeral(&self, id: &CommitId) -> bool {
+        self.eph.remote.pending.contains_key(id) && !self.eph.remote.held.contains_key(id)
+    }
+
+    /// Forgets a waiting ephemeral commit (the sync layer dropped its blob).
+    pub fn forget_pending_ephemeral(&mut self, id: &CommitId) {
+        if !self.eph.remote.held.contains_key(id) {
+            self.eph.remote.pending.remove(id);
+        }
+    }
+
+    /// Ephemeral sessions with attributions held (tests: released with their commits).
+    pub fn ephemeral_claims(&self) -> usize {
+        self.eph.remote.claims.len()
+    }
 }
 
 /// The whole state of an aspect without the values of own writes that expire (a snapshot never
@@ -904,4 +1070,9 @@ impl Eph {
     pub fn remote_bytes(&self) -> usize {
         self.remote.held.values().filter(|h| !h.own).map(|h| h.bytes).sum()
     }
+}
+
+/// Whether `ak` is a core aspect (one segment, spec/data-model.md §9) rather than a schema's.
+fn is_core_aspect(ak: &str) -> bool {
+    ak.matches('/').count() == 1
 }
