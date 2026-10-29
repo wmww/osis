@@ -315,7 +315,10 @@ fn open_engine(backend: &MemoryBackend, root: &MemoryRoot, clock: &Arc<ManualClo
     let c: Arc<dyn Clock> = clock.clone();
     let rng = Box::new(SeededRng::from_u64(seed));
     if create {
-        Engine::create(Box::new(backend.clone()), Box::new(root.clone()), osis_node::Config::default(), c, rng)
+        let mut e = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), osis_node::Config::default(), c, rng)?;
+        // every node knows the workload's schema (compaction needs it, spec/commits.md §5)
+        e.register_schema(Arc::new(crate::workload::SIM.get().clone()))?;
+        Ok(e)
     } else {
         Engine::open(Box::new(backend.clone()), Box::new(root.clone()), osis_node::Config::default(), c, rng)
     }

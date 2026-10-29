@@ -143,7 +143,10 @@ impl Data {
     pub fn new(db: Osis) -> Data {
         // the schemas the app shows, so `db.key` types their aspects (the fallback view)
         for s in [&crate::schema::SCHEMA, &crate::event::SCHEMA, &crate::contact::SCHEMA] {
-            db.register_schema(s.get().clone());
+            // a store error here shows again at the first write
+            if let Err(e) = db.register_schema(s.get().clone()) {
+                eprintln!("osis-app: schema: {e}");
+            }
         }
         Data { db }
     }

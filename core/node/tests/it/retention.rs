@@ -620,6 +620,7 @@ fn dating_history(seed: u64) {
         r % n
     };
     let mut lp = net(6, 1000 + seed);
+    know_schema(&mut lp);
     lp.peers[5].engine.keep_bodies(true);
     let t = new_thing(&mut lp, 0);
     for i in 1..4 {

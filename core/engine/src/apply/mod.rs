@@ -748,6 +748,14 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         Ok(())
     })?;
     tx.core.ix.secrets.extend(secrets);
+    let mut schemas = Vec::new();
+    tx.scan(records::SCHEMAS, |_, v| {
+        let bad = |_| Error::Corrupt("schema");
+        let v = osis_base::decode(&v, &osis_base::Limits::default()).map_err(bad)?;
+        schemas.push(osis_schema::Schema::from_value(&v).map_err(|_| Error::Corrupt("schema"))?);
+        Ok(())
+    })?;
+    tx.core.schemas.extend(schemas.into_iter().map(|s| (s.id, std::sync::Arc::new(s))));
     let fast = !rebuild && crate::engine::index::current(tx)?;
     let old = if fast { None } else { crate::engine::index::old_judgments(tx) };
     if fast {

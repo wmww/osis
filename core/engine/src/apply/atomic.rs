@@ -531,6 +531,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let mut vouching: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     // deaths after the commit's record: they may drop its own body (dead on arrival)
     let mut joined: Vec<(Tid, Ak, bool, Vec<osis_crdt::Death>)> = Vec::new();
+    let late: Vec<usize> = parts.iter().map(|p| p.0).collect();
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(ai) else { continue };
         let (mut f, fr) = fragment(d);
@@ -564,6 +565,10 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         if *snap {
             crate::retention::note_copies(tx, id, tid, ak)?;
         }
+    }
+    // a late snapshot part carrying values a held purge request purged (spec/commits.md §5)
+    for ai in late {
+        crate::retention::drop_purged_snapshot(tx, id, ai)?;
     }
     if edges && let Some(all) = &all {
         tx.core.ix.held.remove(id);

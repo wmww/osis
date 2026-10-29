@@ -343,6 +343,12 @@ fn expire(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid,
     drop_part(tx, c, ai)
 }
 
+/// Does a held delta of `(tid, ak)` name a schema (snapshots included)?
+fn typed(core: &Core, tid: &Tid, ak: &Ak) -> bool {
+    let commits = core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter_map(|(_, c)| core.ix.commits.get(c));
+    commits.into_iter().any(|m| m.header.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak && a.schema.is_some()))
+}
+
 fn purge_by(p: osis_schema::PurgeBy) -> PurgeBy {
     PurgeBy::from_code(p as u64).unwrap_or(PurgeBy::Nobody)
 }
@@ -425,6 +431,47 @@ fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, item: &PurgeItem, c: &CommitId, ai:
     Ok(())
 }
 
+/// Drops held snapshot part `(s, sai)` if it carries a value of a delta a held purge request
+/// purges (spec/commits.md §5): `purge_one` judges the snapshots held when the request or the
+/// named delta arrives; this one a snapshot part arriving after both.
+pub(crate) fn drop_purged_snapshot(tx: &mut Tx<'_>, s: &CommitId, sai: usize) -> Result<()> {
+    let Some(sm) = tx.core.ix.commits.get(s).cloned() else { return Ok(()) };
+    let Some(a) = sm.header.aspects.get(sai).cloned() else { return Ok(()) };
+    if !crate::apply::is_kind_snapshot(sm.header.kind) {
+        return Ok(());
+    }
+    let mut owned = Vec::new();
+    for pc in purge_requests(tx, &a.tid, &a.ak)? {
+        let Some(p) = tx.core.ix.commits.get(&pc).map(|m| m.header.clone()) else { continue };
+        for item in &p.purge {
+            let named: Vec<CommitId> = match item {
+                PurgeItem::Commit { commit, .. } => vec![*commit],
+                PurgeItem::Aspect { .. } => tx.core.ix.by_aspect.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).collect(),
+            };
+            for c in named.into_iter().filter(|c| c != s) {
+                let (Some(m), Some(ai)) = (tx.core.ix.commits.get(&c).cloned(), aspect_index(tx, &c, &a.tid, &a.ak)) else { continue };
+                if purge_allowed(tx.core, &p, &pc, item, &m.header, &c, ai)
+                    && let Some(o) = Owned::of(&m.header, &c, ai)
+                {
+                    owned.push(o);
+                }
+            }
+        }
+    }
+    if owned.is_empty() {
+        return Ok(());
+    }
+    for d in crate::apply::held_parts(tx, s, sai)? {
+        let f = d.into_fragment();
+        let mut g = f.clone();
+        g.strip(&|x| owned.iter().any(|o| o.owns(x)));
+        if g != f {
+            return drop_part(tx, s, sai);
+        }
+    }
+    Ok(())
+}
+
 /// After a commit applied: its expiry (now or by timer), its purge request against held
 /// deltas, and earlier purge requests against its deltas.
 pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
@@ -447,6 +494,7 @@ pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(T
                     purge_one(tx, &pc, &item, id, ai, &mut purged)?;
                 }
             }
+            drop_purged_snapshot(tx, id, ai)?;
         }
     }
     if !h.purge.is_empty() {
@@ -703,8 +751,13 @@ impl Engine {
                 }
             }
             let kind = if is_membership_class(ak.as_str()) { Kind::MembershipSnapshot } else { Kind::ContentSnapshot };
-            // the schema's default bounds: core, or a registered schema declaring the AK
+            // the schema's default bounds: core, or a known schema declaring the AK; none for an
+            // untyped aspect (no held delta names a schema), and no snapshot for a typed one
+            // whose schema this node does not know (spec/commits.md §5)
             let schema = if ak.is_core() { Some(std::sync::Arc::new(osis_schema::core_schema().clone())) } else { tx.core.schemas.values().find(|s| s.aspects.contains_key(ak.as_str())).cloned() };
+            if schema.is_none() && typed(tx.core, &tid, &ak) {
+                return Ok(None);
+            }
             let plan = CommitPlan { kind, ts, actor: node, form: Form::Node, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng) };
             let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema, schema_ref: None, retention: None, expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new(), split: false };
             build_and_apply(tx, plan, vec![d]).map(Some)

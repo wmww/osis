@@ -115,6 +115,14 @@ pub fn set_edge(e: &mut Engine, thing: Tid, member: Tid, edge: Option<ct::Edge>,
     e.commit(m).unwrap().unwrap()
 }
 
+/// Registers the test schema at every peer of `lp` (a snapshot needs the schema of a typed
+/// aspect, spec/commits.md §5).
+pub fn know_schema(lp: &mut LocalPeer) {
+    for p in &mut lp.peers {
+        p.engine.register_schema(std::sync::Arc::new(TEST.get().clone())).unwrap();
+    }
+}
+
 /// Delivers every commit of `from` to `to`.
 pub fn sync(lp: &mut LocalPeer, from: usize, to: usize) {
     lp.sync(from, to).unwrap();

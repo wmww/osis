@@ -29,6 +29,8 @@ pub const SYNCING: &[u8] = b"s/";
 pub const VOID: &[u8] = b"o/";
 /// Aspects whose deaths wait for a recompute (`retention::settle_deaths`): `e/` + aspect key.
 pub const DEATHS_DUE: &[u8] = b"e/";
+/// Schemas this node registered or wrote with: `d/` + schema ID, the schema's canonical form.
+pub const SCHEMAS: &[u8] = b"d/";
 /// Records the API layer keeps (identity choices, settings): `u/` + name.
 pub const APP: &[u8] = b"u/";
 
