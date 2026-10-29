@@ -119,11 +119,10 @@ fn map_op(net: &mut Net, n: usize, t: Tid, asp: &osis_schema::Aspect<Value>, op:
 }
 
 // spec/commits.md §5 (keep at most: a body with no live write goes at its bound by a timed
-// delete, spec/sync.md §5): a body whose entry was removed (dead, its dot still held by the
-// tombstone) loses its last held dot when the map is reset; that write kills nothing new, yet
-// the body must be judged again.
+// delete, spec/sync.md §5): a body whose entry was removed is dead with no live write (the
+// tombstone keyed by its dot holds the remover's reset, not its creation), so no grace.
 #[test]
-fn keep_at_most_reset_after_removal_spec_commits_5() {
+fn keep_at_most_removed_entry_no_live_write_spec_commits_5() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
@@ -136,10 +135,7 @@ fn keep_at_most_reset_after_removal_spec_commits_5() {
     net.run();
     net.advance(61_000);
     let ak = osis_base::Ak::new(osis_schema::AspectKey::ak(&SHORTMAP)).unwrap();
-    assert!(net.engine(a).deaths(&b, &t, &ak).unwrap().is_some() && net.engine(a).body_live(&b, &t, &ak).unwrap(), "dead, its dot held");
-    map_op(&mut net, a, t, &SHORTMAP, osis_crdt::Op::RemoveAspect);
-    net.run();
-    assert!(!net.engine(a).body_live(&b, &t, &ak).unwrap());
+    assert!(net.engine(a).deaths(&b, &t, &ak).unwrap().is_some() && !net.engine(a).body_live(&b, &t, &ak).unwrap(), "dead, no live write");
     let l = net.label(a);
     assert_eq!(at_server(&mut net, a, sv, &l, &b), 1);
     // past the removal plus 10 min (no grace: no live write): the timed delete went up

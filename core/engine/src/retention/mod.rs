@@ -714,7 +714,7 @@ fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
             tx.ensure_touch(&a.tid, &a.ak, t)?;
         }
         let Some(Some(st)) = tx.core.states.get(&(a.tid, a.ak.clone())) else { continue };
-        if st.holds_owned(&|src, lo, hi| o.owns_range(src, lo, hi)) {
+        if st.holds_owned_write(&|src, lo, hi| o.owns_range(src, lo, hi)) {
             return Ok(true);
         }
     }

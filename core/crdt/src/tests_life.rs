@@ -160,6 +160,8 @@ pub(crate) fn unmerge_check(seed: u64, ty: &Ty) {
         mm.unmerge(&|s| *s == MSource::node(2));
         let mut ours = state.clone();
         ours.remove_dots(&|d| d.src == bad);
+        // canonical once pruned (`remove_dots` keeps creations for a join)
+        ours.prune(None, &mut crate::Changes::new());
         assert_eq!(ours, frag(&mm), "removing an author's writes equals the model");
     }
     // an author's writes (§4.6) and one delta's (spec/permissions.md §5.2): the join of the held
@@ -662,7 +664,34 @@ fn stripped_entry_keeps_others_creation_spec_perm_5_2() {
     let mut then = snap.clone();
     then.join(w2.clone());
     assert_eq!(first, then, "the delta first, the stripped snapshot after; the snapshot first");
+    // an un-merge of another author's dots (a rebuild) keeps the creation for the join too
+    let mut unmerged = stripped.clone();
+    unmerged.remove_dots(&|d| d.src == Source::node(Tid::from_bytes([3; 15])));
+    let mut later = w2.clone();
+    later.join(unmerged);
+    assert_eq!(later, then, "removing others' dots kept the creation");
     let mut alone = Fragment::default();
     alone.join(stripped);
     assert!(alone.read().is_none_or(|v| v == Value::Map(BTreeMap::new())), "a creation alone joins nothing: {alone:?}");
+}
+
+/// spec/commits.md §5 (a body's live writes): a removed map entry's tombstone, keyed by its dot,
+/// holds the remover's reset, not the creator's write.
+#[test]
+fn entry_tombstone_is_no_live_write_spec_commits_5() {
+    use crate::ops::{Writer, create};
+    use crate::view::AnyView;
+    use osis_base::{Tid, Value};
+    use std::collections::BTreeMap;
+    let (a, b) = (Source::node(Tid::from_bytes([1; 15])), Source::node(Tid::from_bytes([2; 15])));
+    let k = Value::Str("k".into());
+    let mut st = create(&mut Writer::new(ts(1), a.clone(), 1), &AnyView, &Value::Map(BTreeMap::from([(k.clone(), Value::Int(1))]))).unwrap();
+    let owned = |s: &Source, lo: u64, _: u64| *s == a && lo <= 1;
+    assert!(st.holds_owned_write(&owned));
+    let mut batch = Batch::new(&st, Writer::new(ts(2), b, 1));
+    batch.apply(&PathOp { path: vec![], op: Op::Remove(k) }, &AnyView).unwrap();
+    let (rm, _) = batch.finish().unwrap();
+    st.join(rm);
+    assert!(st.holds_owned(&owned), "the tombstone is keyed by the entry's dot");
+    assert!(!st.holds_owned_write(&owned), "but holds no write of its creator");
 }

@@ -32,11 +32,13 @@ impl Engine {
         self.run(|tx| crate::retention::rejudge_deaths(tx, &tid, &ak))
     }
 
-    /// The owner dots of the writes of `(tid, ak)` held snapshots carry whose own delta was
-    /// never received (tests: a recompute plays them at their snapshot, not at their own `ts`).
+    /// The owner dots of the writes of `(tid, ak)` held valid snapshots carry whose own delta
+    /// was never received (tests: a recompute plays them at their snapshot, not at their own
+    /// `ts`; an invalid snapshot gives nothing, spec/permissions.md §5.2).
     #[doc(hidden)]
     pub fn carried_dots(&self, tid: &Tid, ak: &osis_base::Ak) -> Vec<osis_crdt::Dot> {
-        self.core.ix.carried.get(&(*tid, ak.clone())).into_iter().flatten().flat_map(|g| g.ctrs.iter().map(|x| osis_crdt::Dot::new(g.src.clone(), *x))).collect()
+        let groups = self.core.ix.carried.get(&(*tid, ak.clone())).into_iter().flatten();
+        groups.filter(|g| !crate::apply::validity::invalid_snapshot(&self.core, &g.snap, tid, ak)).flat_map(|g| g.ctrs.iter().map(|x| osis_crdt::Dot::new(g.src.clone(), *x))).collect()
     }
 
     /// Keeps every body past its keep-at-most bound (tests: an oracle for the earliest

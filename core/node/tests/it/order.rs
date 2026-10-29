@@ -493,7 +493,9 @@ fn facts_text(e: &mut osis_node::Engine) -> String {
             let approx = a.retention.at_most.rel.is_some();
             let valid = e.body_valid(&id, &a.tid, &a.ak).unwrap();
             let held = e.holds_body(&id, &a.tid, &a.ak);
-            let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}|{:?}|{approx}", a.tid, a.ak.as_str(), h.ts);
+            // the node-form counters its writes own (`-`: commit form, a snapshot)
+            let owns = if h.form == osis_commit::Form::Node && a.lo < a.hi { format!("N{:?}:{}-{}", h.author, a.lo, a.hi) } else { "-".into() };
+            let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}|{:?}|{approx}|{owns}", a.tid, a.ak.as_str(), h.ts);
             aspects.insert((a.tid, a.ak.clone()));
         }
     }
@@ -561,6 +563,34 @@ struct Fact {
     /// Under a relative keep at most: dropped by the node's own dating (at most 0 with a live
     /// write: at its grace bound; without one `dating` checks it dropped).
     approx: bool,
+    /// The node-form counters its writes own: `NTid(author):lo-hi`, or `-`.
+    owns: String,
+}
+
+impl Fact {
+    /// Whether a dot as a state prints it (`NTid(..):ctr`) is one of this body's.
+    fn owns_dot(&self, dot: &str) -> bool {
+        let (Some((src, r)), Some((d, ctr))) = (self.owns.rsplit_once(':'), dot.rsplit_once(':')) else { return false };
+        let (Some((lo, hi)), Ok(ctr)) = (r.split_once('-'), ctr.parse::<u64>()) else { return false };
+        src == d && lo.parse::<u64>().is_ok_and(|lo| lo <= ctr) && hi.parse::<u64>().is_ok_and(|hi| ctr < hi)
+    }
+}
+
+/// The dots of the creation stamps in a state's text (`created: Some((ts, dot))`), and the text
+/// with every one of them blanked.
+fn creations(state: &str) -> (Vec<String>, String) {
+    const AT: &str = "created: Some((";
+    let (mut dots, mut out, mut rest) = (Vec::new(), String::new(), state);
+    while let Some(i) = rest.find(AT) {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i + AT.len()..];
+        let Some(j) = tail.find("))") else { break };
+        dots.push(tail[..j].split_once(", ").map_or("", |x| x.1).to_string());
+        out.push_str("created: None");
+        rest = &tail[j + 2..];
+    }
+    out.push_str(rest);
+    (dots, out)
 }
 
 type BodyKey = (String, String, String);
@@ -581,7 +611,7 @@ fn facts_of(j: &[(&'static str, String)]) -> (Facts, Invalid) {
             continue;
         }
         let b = |i: usize| f[i] == "true";
-        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { at_most: b(3), held: b(4), valid: b(5), ts: ts_of(f[6]), approx: b(7) });
+        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { at_most: b(3), held: b(4), valid: b(5), ts: ts_of(f[6]), approx: b(7), owns: f[8].into() });
     }
     (out, inv)
 }
@@ -609,8 +639,12 @@ fn flip(w: &Facts, g: &Facts, inv: &Invalid, k: &BodyKey) -> bool {
 /// validity flip: a body dropped at one node and held at the other where a write of its aspect
 /// is invalid (a drop made before its killer, or its own write, turned invalid stays): its
 /// commit line's dropped parts, and that aspect's reads and state (where the kept body's write
-/// is back). Anything else is a failure.
-fn alike(want: &[(&'static str, String)], got: &[(&'static str, String)]) -> Option<String> {
+/// is back). Also a drop, then a validity flip and back (`flips`: a body of the aspect is judged
+/// otherwise with one commit of the held set missing, so some arrival order flipped it): the
+/// states may then differ in the creation stamps of map entries whose body (keep at most) the
+/// node lacking the stamp dropped (an un-merge leaving the entry with no content took the
+/// creation; the flip back gave the content alone), reads alike. Anything else is a failure.
+fn alike(want: &[(&'static str, String)], got: &[(&'static str, String)], flips: &dyn Fn(&str, &str) -> bool) -> Option<String> {
     let ((wf, inv), (gf, _)) = (facts_of(want), facts_of(got));
     if wf.keys().ne(gf.keys()) {
         return first_diff(&want[want.len() - 1..], &got[got.len() - 1..]);
@@ -651,8 +685,15 @@ fn alike(want: &[(&'static str, String)], got: &[(&'static str, String)]) -> Opt
                 }).collect()
             };
             let (a, b) = (keyed(&xl), keyed(&yl));
+            // only creation stamps of bodies dropped where they are missing, after a flip
+            let stamps_only = |k: &(String, String)| -> bool {
+                let (Some(x), Some(y)) = (a.get(k), b.get(k)) else { return false };
+                let ((xd, xs), (yd, ys)) = (creations(x), creations(y));
+                let dropped = |dot: &String, facts: &Facts| facts.iter().any(|(b, f)| b.1 == k.0 && b.2 == k.1 && f.at_most && !f.held && f.owns_dot(dot));
+                *name == "states" && xs == ys && xd.iter().filter(|d| !yd.contains(d)).all(|d| dropped(d, &gf)) && yd.iter().filter(|d| !xd.contains(d)).all(|d| dropped(d, &wf)) && flips(&k.0, &k.1)
+            };
             for k in a.keys().chain(b.keys()) {
-                if a.get(k) != b.get(k) && !flipped.contains(k) {
+                if a.get(k) != b.get(k) && !flipped.contains(k) && !stamps_only(k) {
                     return Some(format!("{name} on {k:?}:\n  want {:?}\n  got  {:?}", a.get(k), b.get(k)));
                 }
             }
@@ -813,6 +854,18 @@ fn held_sets(played: &Played, subsets: usize, rng: &mut Rng) -> Vec<Vec<usize>> 
 
 /// Checks one history; the number of orders tried, or the first mismatch found, described (a
 /// panic counts, so it shrinks).
+/// Whether some arrival order of `held` flips the validity of a body of `(tid, ak)` (as
+/// `facts_text` prints them) on the way: one commit of the set missing, a body is judged
+/// otherwise. Costly (a delivery per commit): asked only about a difference found.
+fn flips(played: &Played, held: &[usize], tid: &str, ak: &str) -> bool {
+    let facts = |set: &[usize]| facts_of(&[("facts", facts_text(&mut deliver(played, set).engine))]).0;
+    let full = facts(held);
+    held.iter().filter(|i| **i >= played.base).any(|i| {
+        let less: Vec<usize> = held.iter().copied().filter(|x| x != i).collect();
+        facts(&less).iter().any(|(k, f)| k.1 == tid && k.2 == ak && full.get(k).is_some_and(|w| w.valid != f.valid))
+    })
+}
+
 fn check(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
     caught(|| check_orders(seed, steps, cfg))
 }
@@ -834,7 +887,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
             let rest: Vec<usize> = (0..n).filter(|i| !held.contains(i)).collect();
             for order in [held.iter().chain(&rest).copied().collect::<Vec<_>>(), held.iter().chain(rest.iter().rev()).copied().collect()] {
                 let mut p = deliver(&played, &order);
-                if let Some(d) = alike(f, &judged(&mut p, &played)) {
+                if let Some(d) = alike(f, &judged(&mut p, &played), &|t, a| flips(&played, &(0..n).collect::<Vec<_>>(), t, a)) {
                     return Err(format!("{of}, then the rest: order {order:?} vs the whole set as made: {d}"));
                 }
             }
@@ -856,7 +909,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
         p.engine.rebuild_index().unwrap();
         p.engine.reexamine().unwrap();
         // a rebuild recomputes deaths from the held bodies: dated otherwise, never earlier
-        if let Some(d) = alike(&now, &judged_now(&mut p, &played.things)).or_else(|| dating(&mut p, &o, played.now)) {
+        if let Some(d) = alike(&now, &judged_now(&mut p, &played.things), &|_, _| false).or_else(|| dating(&mut p, &o, played.now)) {
             return Err(format!("{of}, as made: rebuild differs: {d}"));
         }
         let mut want = now;
@@ -876,7 +929,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
             let vs = format!("{of}: order #0 (as made, want) {held:?} vs order #{k}");
             if let Some(rng) = split_rng {
                 let mut p = deliver_split(&played, order, rng);
-                return match dating(&mut p, &o, played.now).or_else(|| alike(&want, &judged(&mut p, &played))) {
+                return match dating(&mut p, &o, played.now).or_else(|| alike(&want, &judged(&mut p, &played), &|t, a| flips(&played, &held, t, a))) {
                     Some(d) => Err(format!("{vs} with late parts (got) {order:?}: {d}")),
                     None => Ok(()),
                 };
@@ -892,7 +945,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
                 return Err(format!("{of}, order #{k} {order:?}: reopen differs: {d}"));
             }
             got.insert(0, ("index", index_later(&mut p, &played)));
-            match alike(&want, &got) {
+            match alike(&want, &got, &|t, a| flips(&played, &held, t, a)) {
                 Some(d) => Err(format!("{vs} (got) {order:?}: {d}")),
                 None => Ok(()),
             }
@@ -1143,6 +1196,18 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     cases.push((12161, h, LARGE));
     let h = vec![Edge { by: 0, t: 5, member: 1, role: Some(Role::Write) }, Nested { by: 0, other: 2, t: 2, k: 1, text: false, compact: true, also: true }, Edge { by: 0, t: 1, member: 2, role: None }, Write { by: 1, t: 5, op: 6, k: 1, v: 4 }, Edge { by: 2, t: 3, member: 1, role: Some(Role::Write) }, Write { by: 1, t: 4, op: 16, k: 0, v: 7 }, Nested { by: 1, other: 0, t: 0, k: 1, text: false, compact: true, also: true }];
     cases.push((12236, h, LARGE));
+    // seed 61165 (spec/permissions.md §5.2, spec/crdt.md §7): A's entry, its creation held only
+    // through C's snapshot, holds two encodings (a `Slots` position) with A's later writes in
+    // its inner entries. Stripping the snapshot's copies of those writes re-joined the slots and
+    // pruned the inner creations it keeps for the join; removing an invalid delta's dots from
+    // the stripped snapshot (a rebuild after a flip) pruned them too: one held set, two states
+    let h = vec![New { by: 0, parent: 0, write: false }, Write { by: 0, t: 5, op: 15, k: 0, v: 5 }, Write { by: 0, t: 5, op: 1, k: 1, v: 3 }, Roster { by: 0, t: 2 }, Demote { by: 2, t: 4, member: 1, at: 2, to_read: true }, Nested { by: 0, other: 1, t: 6, k: 2, text: false, compact: true, also: true }, Write { by: 0, t: 6, op: 3, k: 0, v: 5 }, Send { from: 0, to: 2, back: 0 }, Write { by: 0, t: 3, op: 19, k: 1, v: 8 }, Write { by: 0, t: 4, op: 16, k: 0, v: 2 }, Demote { by: 0, t: 2, member: 1, at: 5, to_read: false }, Write { by: 2, t: 6, op: 7, k: 2, v: 0 }, Edge { by: 0, t: 4, member: 1, role: Some(Role::Write) }, Nested { by: 0, other: 2, t: 2, k: 0, text: false, compact: true, also: false }];
+    cases.push((61165, h, LARGE));
+    // seed 583175 (spec/permissions.md §5.2): B's snapshot, invalid, carries A's removal that is
+    // not held; the oracle took A's commit as if a valid snapshot carried it and dated C's
+    // removal dead at it (an invalid snapshot gives nothing: `carried_dots` skips it)
+    let h = vec![Demote { by: 2, t: 3, member: 1, at: 3, to_read: false }, Nested { by: 1, other: 2, t: 4, k: 1, text: false, compact: true, also: false }, Edge { by: 0, t: 3, member: 2, role: Some(Role::Write) }, Sync { from: 2, to: 1 }, Demote { by: 0, t: 5, member: 2, at: 4, to_read: false }, Advance { who: Some(0), ms: 1093 }, Sync { from: 1, to: 0 }, Write { by: 0, t: 3, op: 25, k: 1, v: 5 }, Send { from: 0, to: 1, back: 2 }, Edge { by: 0, t: 2, member: 2, role: Some(Role::Admin) }, Edge { by: 0, t: 2, member: 2, role: None }, Sync { from: 1, to: 2 }, Send { from: 0, to: 1, back: 2 }, Compact { by: 1, t: 2, op: 22 }, Write { by: 2, t: 0, op: 25, k: 1, v: 9 }];
+    cases.push((583175, h, LARGE));
     // in parallel: the slowest test of the module otherwise
     let idx: Vec<u64> = (0..cases.len() as u64).collect();
     let results = par_map(&idx, threads("OSIS_ORDER_THREADS"), |i| {
@@ -1215,13 +1280,13 @@ fn drop_before_flip_tolerated_spec_commits_5() {
     let want = judged(&mut deliver(&played, &made), &played);
     let got = judged(&mut deliver(&played, &made.iter().rev().copied().collect::<Vec<_>>()), &played);
     assert!(first_diff(&want, &got).is_some(), "the orders differ");
-    assert_eq!(alike(&want, &got), None);
+    assert_eq!(alike(&want, &got, &|_, _| false), None);
     // with every write judged valid, the same difference is a failure
     // with every write judged valid, or the invalid ones stamped before every body (none can
     // have killed it), the same difference is a failure
     let edit = |j: &[(&'static str, String)], f: &dyn Fn(Vec<&str>) -> Option<String>| -> Vec<(&'static str, String)> { j.iter().map(|(n, t)| (*n, if *n == "facts" { t.lines().filter_map(|l| f(l.split('|').collect())).collect::<Vec<_>>().join("\n") } else { t.clone() })).collect() };
     let all_valid = |f: Vec<&str>| (f[0] != "inv").then(|| format!("{}|true|{}", f[..5].join("|"), f[6..].join("|")));
-    assert!(alike(&edit(&want, &all_valid), &edit(&got, &all_valid)).is_some(), "a drop difference with no invalid write passed");
+    assert!(alike(&edit(&want, &all_valid), &edit(&got, &all_valid), &|_, _| false).is_some(), "a drop difference with no invalid write passed");
     let early = |mut f: Vec<&str>| {
         if f[0] == "inv" {
             f[4] = "Ts(0)";
@@ -1229,5 +1294,53 @@ fn drop_before_flip_tolerated_spec_commits_5() {
         Some(f.join("|"))
     };
     assert!(edit(&want, &early).iter().any(|(n, t)| *n == "facts" && t.contains("inv|")), "an invalid write");
-    assert!(alike(&edit(&want, &early), &edit(&got, &early)).is_some(), "a drop difference with only earlier invalid writes passed");
+    assert!(alike(&edit(&want, &early), &edit(&got, &early), &|_, _| false).is_some(), "a drop difference with only earlier invalid writes passed");
+}
+
+// spec/commits.md §5 (under at most 0 the kill that leaves a body no live write drops it in that
+// transaction): order seed 64197. A's write of a keep-at-most-0 map entry, undone (a reset of the
+// entry): the tombstone left, keyed by the entry's dot, counted as a live write of the body, so
+// it was kept to its grace bound; a later reset of the whole map (undoing A's first write,
+// absent before) pruned the tombstone and left a dead body held.
+#[test]
+fn undone_entry_body_dropped_at_once_spec_commits_5() {
+    use Step::*;
+    let h = vec![Write { by: 0, t: 1, op: 19, k: 0, v: 3 }, Write { by: 0, t: 1, op: 19, k: 1, v: 6 }, Undo { by: 0, back: 0 }, Undo { by: 0, back: 2 }];
+    check(64197, &h, LARGE).unwrap();
+    // the write and its undo alone: the body drops with the undo
+    let played = play(64197, &h);
+    let b = played.base;
+    let p = deliver(&played, &(0..b + 3).collect::<Vec<_>>());
+    let w = &played.packs[b + 1].id;
+    let a = p.engine.header(w).unwrap().aspects[0].clone();
+    assert!(!p.engine.holds_body(w, &a.tid, &a.ak), "an entry's tombstone is no write of its creator");
+}
+
+// spec/commits.md §5 (a drop is final: nodes holding the same commits may differ in whether a
+// dropped body's writes are in the state), order seeds 47289 and 583188. B's entry in a
+// keep-at-most-0 map (its body dropped once B's own later write inside it killed the value, the
+// bound passed); B's later write is valid with every commit held, invalid before the re-grant:
+// where it arrived valid, then turned invalid and valid again, the un-merge left the entry no
+// content and so took its creation, and the write came back alone. Reads agree; `alike`
+// accepts the states' creation stamps only where such a flip is reachable.
+#[test]
+fn creation_lost_by_drop_then_flip_tolerated_spec_commits_5() {
+    use Step::*;
+    let h = vec![Write { by: 1, t: 6, op: 19, k: 0, v: 3 }, Demote { by: 0, t: 4, member: 1, at: 5, to_read: false }, Write { by: 1, t: 4, op: 19, k: 0, v: 1 }, Advance { who: None, ms: 4484944 }, Edge { by: 0, t: 6, member: 1, role: Some(Role::Admin) }];
+    check(47289, &h, LARGE).unwrap();
+    let h2 = vec![Demote { by: 0, t: 5, member: 2, at: 3, to_read: true }, Edge { by: 2, t: 3, member: 1, role: Some(Role::Write) }, Roster { by: 0, t: 0 }, Roster { by: 0, t: 5 }, Write { by: 2, t: 0, op: 19, k: 2, v: 1 }, New { by: 2, parent: 6, write: false }, Roster { by: 2, t: 1 }, Edge { by: 0, t: 0, member: 1, role: Some(Role::Admin) }, Compact { by: 1, t: 0, op: 0 }, Sync { from: 2, to: 0 }, Edge { by: 0, t: 1, member: 2, role: Some(Role::Admin) }, Write { by: 2, t: 1, op: 6, k: 0, v: 5 }, Send { from: 2, to: 1, back: 2 }, Write { by: 1, t: 3, op: 6, k: 1, v: 0 }, Write { by: 1, t: 6, op: 6, k: 2, v: 7 }, Edge { by: 0, t: 6, member: 2, role: Some(Role::Admin) }, Edge { by: 2, t: 3, member: 1, role: Some(Role::Write) }, Sync { from: 0, to: 1 }, Write { by: 1, t: 4, op: 19, k: 2, v: 6 }, Advance { who: None, ms: 5488242 }];
+    check(583188, &h2, LARGE).unwrap();
+    // B's later write first, the demotion, the re-grant: only the creation stamp differs, and
+    // only a reachable flip excuses it
+    let played = play(47289, &h);
+    let b = played.base;
+    let made: Vec<usize> = (0..played.packs.len()).collect();
+    let mut order: Vec<usize> = (0..b).collect();
+    order.extend([b, b + 2, b + 1, b + 3]);
+    let want = judged(&mut deliver(&played, &made), &played);
+    let got = judged(&mut deliver(&played, &order), &played);
+    let differs = alike(&want, &got, &|_, _| false).expect("the creation stamp differs");
+    assert!(differs.contains("states on") && differs.contains("created: None"), "{differs}");
+    assert!(played.things.iter().any(|t| flips(&played, &made, &format!("{t:?}"), "/t/gonemap")), "a flip is reachable");
+    assert_eq!(alike(&want, &got, &|t, a| flips(&played, &made, t, a)), None);
 }

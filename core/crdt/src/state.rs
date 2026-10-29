@@ -287,7 +287,7 @@ fn parts(f: Fragment) -> (Option<Register>, BTreeMap<Encoding, Fragment>) {
 
 /// The canonical position from its members: empty members go, a lone member stands alone,
 /// nothing is an empty register (§7 Canonical form).
-fn assemble(reg: Option<Register>, mut members: BTreeMap<Encoding, Fragment>) -> Fragment {
+pub(crate) fn assemble(reg: Option<Register>, mut members: BTreeMap<Encoding, Fragment>) -> Fragment {
     let reg = reg.filter(|r| !Fragment::Register(r.clone()).is_empty());
     members.retain(|_, f| !f.is_empty() && !reg.as_ref().is_some_and(|r| below_embedding(f, r)));
     let mut it = members.into_iter();

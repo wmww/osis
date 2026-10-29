@@ -61,7 +61,9 @@ impl Fragment {
     }
 
     /// Removes every write whose owner dot (`Derived` dots: the underlying dot) matches `pred`,
-    /// in place: un-merge of single deltas (spec/permissions.md §5.2, spec/crdt.md §4.6).
+    /// in place: un-merge of single deltas (spec/permissions.md §5.2, spec/crdt.md §4.6). The
+    /// result is for a join or a `prune`, which give it canonical form (it may keep a map entry
+    /// holding only its creation, and a `Slots` position without its register's embedding).
     pub fn remove_dots(&mut self, pred: &dyn Fn(&Dot) -> bool) {
         self.remove_dots_in(pred, false);
     }
@@ -77,19 +79,24 @@ impl Fragment {
         let bad = |s: &Option<Stamp>| s.as_ref().is_some_and(|s| pred(s.dot.owner()));
         match self {
             Fragment::Slots(_) => {
+                // in place, not re-joined: a join would prune the creations kept below (a map
+                // entry holding only its creation); the consumer's join or prune embeds and
+                // prunes (§7)
                 let Fragment::Slots(Slots { reg, members }) = std::mem::take(self) else { return };
-                let mut out = Fragment::default();
-                let mut ch = Changes::new();
-                if let Some(r) = reg {
-                    let mut f = Fragment::Register(r);
+                let reg = reg.map(|mut r| {
+                    if bad(&r.reset) {
+                        r.reset = None;
+                    }
+                    if r.write.as_ref().is_some_and(|w| pred(w.stamp.dot.owner())) {
+                        r.write = None;
+                    }
+                    r
+                });
+                let members = members.into_iter().map(|(k, mut f)| {
                     f.remove_dots_in(pred, nested);
-                    out.join_into(f, None, &mut ch);
-                }
-                for (_, mut f) in members {
-                    f.remove_dots_in(pred, nested);
-                    out.join_into(f, None, &mut ch);
-                }
-                *self = out;
+                    (k, f)
+                });
+                *self = crate::state::assemble(reg, members.collect());
                 return;
             }
             Fragment::Register(r) => {
@@ -129,26 +136,25 @@ impl Fragment {
                 if en.reset.as_ref().is_some_and(|r| pred(r.dot.owner())) {
                     en.reset = None;
                 }
-                if pred(d.owner()) && nested {
+                if pred(d.owner()) {
                     en.created = None;
+                    if !nested {
+                        en.frag = None;
+                    }
                 }
-                if pred(d.owner()) && !nested {
-                    en.frag = None;
-                } else if let Some(f) = &mut en.frag {
+                if let Some(f) = &mut en.frag {
                     f.remove_dots_in(pred, nested);
                     if f.is_empty() {
                         en.frag = None;
                     }
                 }
-                // removing writes exactly keeps an entry's creation whose own dot stays, though
-                // nothing else is left in it: a join gives it to the entry where another body
-                // holds content, and prunes it otherwise (§5.6)
-                let creation = nested && en.created.is_some();
-                if en.frag.is_none() && !creation {
+                // an entry's creation whose own dot stays is kept, though nothing else is left
+                // in it: a join gives it to the entry where another body holds content, and
+                // prunes it otherwise (§5.6); so the result is joined or pruned before use
+                if en.frag.is_none() && en.created.is_none() {
                     en.key = None;
-                    en.created = None;
                 }
-                en.reset.is_some() || en.frag.is_some() || creation
+                en.reset.is_some() || en.frag.is_some() || en.created.is_some()
             }),
             Fragment::Seq(s) => seq::remove_dots(s, pred, nested),
             Fragment::Register(_) | Fragment::Slots(_) => {}
