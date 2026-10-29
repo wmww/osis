@@ -1,5 +1,5 @@
 # Text sessions: caret mapping and resurrection after delete
-> Summary: Two gaps the notes app hit in `TextSession`: `on_remote` reports only the merged text (no edits), so a UI cannot keep the caret across a remote edit; a session dropped after its thing was deleted commits its pending text and recreates the thing.
+> Summary: Two gaps the notes app hit in `TextSession`: `on_remote` reports only the merged text (no edits), so a UI cannot keep the caret across a remote edit; a session dropped after its thing was deleted commits its pending text and recreates the thing (also after a remote delete: an invisible orphan body). The app diffs whole widget text into splices because of the first.
 > Tags: core-ask, api, owner-call
 
 Owner: to be handled later on the core side; app work lives with both meanwhile.
