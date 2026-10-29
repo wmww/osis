@@ -7,21 +7,18 @@
     set(k, v) { try { localStorage.setItem('osis-mockup:' + k, JSON.stringify(v)); } catch { /* private mode */ } },
   };
 
-  const LOOKS = [
-    { id: 'glass', name: 'Glass', desc: 'Frosted panels over a softly shaded field of the main colour. The blur costs GPU work whenever anything behind it moves: toggle it off to see the fallback.' },
-    { id: 'aero', name: 'Aero', desc: 'Dusk and Aero merged: a sky in the main colour with grain, a light swoosh and glass bubbles; gel tiles and controls with a gloss line.' },
-    { id: 'workstation', name: 'Workstation', desc: 'Bevelled panels on a grid with a striped sun, title-bar strips, tag colour as a thick stripe.' },
-    { id: 'memphis', name: 'Memphis', desc: 'Flat taken loud: paper, thick outlines, hard offset shadows, three shapes in shades of the main colour.' },
-    { id: 'slate', name: 'Slate', desc: 'Square and flat: solid colour tiles (the first favorite is wide), light big type, the kind of thing written huge behind everything.' },
-    { id: 'cel', name: 'Cel', desc: 'Flat and simple on white or dark grey; colour on tiles and accents, a slanted selection, halftone and speed lines.' },
-  ];
 
   const things = DATA.things;
   const byId = new Map(things.map(t => [t.id, t]));
   const get = id => byId.get(id);
   let favs = store.get('favs', DATA.favorites).filter(id => byId.has(id));
-  let look = store.get('look', 'glass');
-  if (!LOOKS.some(l => l.id === look)) look = 'glass';
+  // themes: the built-ins plus one custom theme made by editing any of them (themes.js)
+  let custom = store.get('custom', null);
+  const themes = () => custom ? [...THEMES, custom] : THEMES;
+  let themeId = store.get('theme', 'frost');
+  if (!themes().some(x => x.id === themeId)) themeId = 'frost';
+  const theme = () => themes().find(x => x.id === themeId);
+  let editOpen = store.get('editOpen', false);
   let blur = store.get('blur', true);
   let looksOpen = store.get('looksOpen', true);
   let mode = store.get('mode', 'auto');
@@ -267,7 +264,7 @@
   const recentView = t => viewHead(t) + `<div class="grid">${things.filter(x => x.edited).sort((a, b) => b.edited - a.edited).map(x => tile(x, { sub: esc(ago(x.edited)) })).join('')}</div>`;
 
   // ---------- main colour and background seed, both from the open thing
-  // main: the thing's own colour, else the first colour among what it holds or links; none keeps the look's default
+  // main: the thing's own colour, else the first colour among what it holds or links, else the theme's
   function mainColor(t) {
     let near = [t, ...tagsOf(t), ...(t.with || []).map(get).filter(Boolean)];
     if (t.kind === 'tag') near = [t, ...subTags(t), ...itemsIn(t)];
@@ -278,16 +275,13 @@
     return near.map(tintOf).find(Boolean) || null;
   }
   const kindKey = t => !t ? 'home' : t.kind === 'view' ? t.view : t.kind;
-  const KIND_WORD = { home: 'home', note: 'note', event: 'event', contact: 'person', tag: 'tag', calendar: 'calendar', people: 'people', tags: 'tags', recent: 'recent' };
   function applyBg(t) {
-    const st = document.body.style, c = t && mainColor(t);
-    if (c) st.setProperty('--main', c); else st.removeProperty('--main');
-    // four seeds in [0, 1) hashed from the id: each thing keeps its own arrangement of the look's background
+    const st = document.body.style;
+    st.setProperty('--main', (t && mainColor(t)) || theme().main);
+    // four seeds in [0, 1) hashed from the id: each thing keeps its own arrangement of the theme's background
     let h = [...(t ? t.id : 'home')].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) >>> 0, 7);
     for (let i = 1; i <= 4; i++) { h = (h * 1103515245 + 12345) >>> 0; st.setProperty('--s' + i, ((h >>> 8) % 1000) / 1000); }
-    const k = kindKey(t);
-    document.body.dataset.kind = k;
-    $('#bg').dataset.word = KIND_WORD[k];
+    document.body.dataset.kind = kindKey(t);
   }
 
   // ---------- render
@@ -353,8 +347,8 @@
     }
     if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === '/') { e.preventDefault(); if (routeId()) openSpot(); else $('#home-q').focus(); }
-    else if (e.key === ']' || e.key === '[') setLook(LOOKS[(LOOKS.findIndex(l => l.id === look) + (e.key === ']' ? 1 : LOOKS.length - 1)) % LOOKS.length].id);
-    else if (/^[1-9]$/.test(e.key) && LOOKS[e.key - 1]) setLook(LOOKS[e.key - 1].id);
+    else if (e.key === ']' || e.key === '[') { const l = themes(); setTheme(l[(l.indexOf(theme()) + (e.key === ']' ? 1 : l.length - 1)) % l.length].id); }
+    else if (/^[1-9]$/.test(e.key) && themes()[e.key - 1]) setTheme(themes()[e.key - 1].id);
     else if (e.key === 'd') setMode(resolvedMode() === 'dark' ? 'light' : 'dark');
   });
   window.addEventListener('hashchange', () => { closeSpot(); render(); window.scrollTo(0, 0); });
@@ -386,30 +380,49 @@
     store.set('favs', favs);
   });
 
-  // ---------- look switcher
-  function setLook(id) {
-    look = id; store.set('look', id);
-    document.body.dataset.look = id;
-    renderLooks();
+  // ---------- theme: enums go on body[data-*], numbers and colours on --p-*; engine.css does the rest
+  function applyTheme() {
+    const th = theme(), b = document.body;
+    for (const p of THEME_PARAMS) {
+      if (p.opts) b.dataset[p.k] = th[p.k];
+      else if (p.k !== 'main') b.style.setProperty('--p-' + p.k.replace(/[A-Z]/g, c => '-' + c.toLowerCase()), th[p.k]);
+    }
+    applyBg(current());
   }
+  function setTheme(id) { themeId = id; store.set('theme', id); applyTheme(); renderLooks(); }
+  // editing a built-in theme forks it into the custom theme
+  function setParam(k, v) {
+    if (theme() !== custom) { custom = { ...theme(), id: 'custom', name: 'Custom', desc: 'Your edit of ' + theme().name + '.' }; themeId = 'custom'; store.set('theme', 'custom'); }
+    custom[k] = v; store.set('custom', custom);
+    applyTheme();
+  }
+
+  // ---------- switcher
   // mode: 'auto' follows the system; the resolved light/dark goes on body[data-mode]
   const darkMq = matchMedia('(prefers-color-scheme: dark)');
   const resolvedMode = () => mode === 'auto' ? (darkMq.matches ? 'dark' : 'light') : mode;
   function setMode(m) { mode = m; store.set('mode', m); renderLooks(); }
   darkMq.addEventListener('change', () => { if (mode === 'auto') renderLooks(); });
+  function control(p, v) {
+    if (p.opts) return `<select data-p="${p.k}">${p.opts.map(o => `<option${o === v ? ' selected' : ''}>${o}</option>`).join('')}</select>`;
+    if (p.type === 'color') return `<input type="color" data-p="${p.k}" value="${v}">`;
+    return `<span class="lk-range"><input type="range" data-p="${p.k}" min="${p.min}" max="${p.max}" step="${p.step}" value="${v}"><output>${v}</output></span>`;
+  }
   function renderLooks() {
-    const cur = LOOKS.find(l => l.id === look);
-    const rm = resolvedMode();
+    const th = theme(), rm = resolvedMode();
     document.body.dataset.mode = rm;
     document.body.classList.toggle('noblur', !blur);
     looksEl.classList.toggle('open', looksOpen);
-    looksEl.innerHTML = `<button class="lk-toggle" data-lk="toggle" aria-expanded="${looksOpen}">Look: <b>${cur.name}</b><span class="lk-mode">${rm}</span><span class="lk-caret">${looksOpen ? '▾' : '▴'}</span></button>
+    looksEl.innerHTML = `<button class="lk-toggle" data-lk="toggle" aria-expanded="${looksOpen}">Theme: <b>${esc(th.name)}</b><span class="lk-mode">${rm}</span><span class="lk-caret">${looksOpen ? '▾' : '▴'}</span></button>
       <div class="lk-body">
         <div class="lk-modes" role="group" aria-label="Light or dark">${['light', 'dark', 'auto'].map(m => `<button class="lk-m${m === mode ? ' on' : ''}" data-lk="mode-${m}">${m[0].toUpperCase() + m.slice(1)}</button>`).join('')}</div>
-        <div class="lk-list">${LOOKS.map((l, i) => `<button class="lk-opt${l.id === look ? ' on' : ''}" data-lk="${l.id}"><span class="lk-n">${i + 1}</span><span>${l.name}</span></button>`).join('')}</div>
-        <p class="lk-desc">${cur.desc}</p>
+        <div class="lk-list">${themes().map((x, i) => `<button class="lk-opt${x === th ? ' on' : ''}" data-lk="theme-${x.id}"><span class="lk-n">${i + 1}</span><span>${esc(x.name)}</span></button>`).join('')}</div>
+        <p class="lk-desc">${esc(th.desc)}</p>
+        <button class="lk-edit" data-lk="edit" aria-expanded="${editOpen}">${editOpen ? '▾' : '▸'} Edit parameters${th === custom ? '' : ' (makes a custom copy)'}</button>
+        ${editOpen ? `<div class="lk-params">${THEME_PARAMS.map(p => `<label><span>${p.label}</span>${control(p, th[p.k])}</label>`).join('')}</div>
+          <button class="lk-copy" data-lk="copy">Copy theme as JSON</button>` : ''}
         <label class="lk-blur"><input type="checkbox" data-lk="blur"${blur ? ' checked' : ''}> Background blur</label>
-        <p class="lk-keys">Keys: 1–6 or [ ] looks · d light/dark · / search</p>
+        <p class="lk-keys">Keys: 1–7 or [ ] themes · d light/dark · / search</p>
       </div>`;
   }
   looksEl.addEventListener('click', e => {
@@ -417,11 +430,21 @@
     const k = b.dataset.lk;
     if (k === 'toggle') { looksOpen = !looksOpen; store.set('looksOpen', looksOpen); renderLooks(); }
     else if (k === 'blur') { blur = b.checked; store.set('blur', blur); renderLooks(); }
+    else if (k === 'edit') { editOpen = !editOpen; store.set('editOpen', editOpen); renderLooks(); }
+    else if (k === 'copy') { const { id, desc, ...params } = theme(); navigator.clipboard?.writeText(JSON.stringify(params, null, 1)).then(() => { b.textContent = 'Copied'; }, () => {}); }
     else if (k.startsWith('mode-')) setMode(k.slice(5));
-    else setLook(k);
+    else if (k.startsWith('theme-')) setTheme(k.slice(6));
   });
+  // apply while dragging; rebuild the switcher once the change settles (a fork renames the theme)
+  looksEl.addEventListener('input', e => {
+    const el = e.target, p = THEME_PARAMS.find(x => x.k === el.dataset.p); if (!p) return;
+    const v = p.type === 'range' ? Number(el.value) : el.value;
+    if (el.nextElementSibling?.tagName === 'OUTPUT') el.nextElementSibling.textContent = v;
+    setParam(p.k, v);
+  });
+  looksEl.addEventListener('change', e => { if (e.target.dataset.p) renderLooks(); });
 
-  document.body.dataset.look = look;
+  applyTheme();
   renderLooks();
   render();
 })();
