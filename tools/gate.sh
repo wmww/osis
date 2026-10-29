@@ -1,7 +1,7 @@
 #!/bin/sh
 # The merge gate (notes/build.md): every check in order, failing fast, each
 # with its wall time. Run it in the task's worktree after `git rebase main`; main is only ever
-# fast-forwarded, never built. Usage: tools/gate.sh [--sweep-seeds N]   (from the worktree root)
+# fast-forwarded, never built. Usage: tools/gate.sh [--sweep-seeds N] [--all] [--base REV]   (from the worktree root)
 # The dev sim sweep runs every scenario at 5 seeds (scenario coverage; seed breadth is the
 # 300-seed periodic check, notes/coordination.md) when the branch touches the simulator or a
 # crate it has caught regressions in (core/test/sim/, osis-engine, osis-node, osis-perm, osis-crdt)
@@ -10,18 +10,21 @@
 # Per project (notes/build.md, Merge gate): the GUI workspace (kit/, app/; root manifest kit/Cargo.toml)
 # has its own steps. A diff touching only kit/ or app/ runs only the GUI steps; any other diff runs
 # the core steps plus a `cargo check` of the GUI workspace (an osis API change must not silently
-# break the app); both, both. On main itself, or with --all, everything runs.
+# break the app); both, both. On main itself, or with --all, everything runs. --base REV compares
+# against REV instead of the merge base with main (to time one project's steps).
 set -e
 seeds=
 all=
+base=
 while [ $# -gt 0 ]; do
   case "$1" in
-    --sweep-seeds) case "$2" in ''|*[!0-9]*) echo "usage: $0 [--sweep-seeds N] [--all]" >&2; exit 2;; esac; seeds=$2; shift 2 ;;
+    --sweep-seeds) case "$2" in ''|*[!0-9]*) echo "usage: $0 [--sweep-seeds N] [--all] [--base REV]" >&2; exit 2;; esac; seeds=$2; shift 2 ;;
     --all) all=1; shift ;;
-    *) echo "usage: $0 [--sweep-seeds N] [--all]" >&2; exit 2 ;;
+    --base) base=$(git rev-parse --verify "$2^{commit}") || exit 2; shift 2 ;;
+    *) echo "usage: $0 [--sweep-seeds N] [--all] [--base REV]" >&2; exit 2 ;;
   esac
 done
-base=$(git merge-base HEAD main 2>/dev/null || true)
+[ -n "$base" ] || base=$(git merge-base HEAD main 2>/dev/null || true)
 core=1
 gui=1
 if [ -z "$all" ] && [ -n "$base" ] && [ "$base" != "$(git rev-parse HEAD)" ]; then
