@@ -1039,3 +1039,40 @@ fn announced_ephemeral_leaves_no_sync_record_spec_sync_4() {
     assert!(after.is_empty(), "ephemeral entries left sync records: {after:?}");
     assert!(net.sync(b).ephemeral_entries(&l) >= 2);
 }
+
+/// Bytes nodes send to the server while `b` writes 20 notes one by one, after `a` wrote `stuck`
+/// bytes in one write (`a` holds an own entry the server refuses for good when it exceeds the cap).
+fn bytes_under_stuck_entry(stuck: usize) -> usize {
+    let mut net = Net::new();
+    let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: 6_000, ..osis_server::Policy::default() });
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let mut m = Mutation::new();
+    m.op(w, &eph("/win/big"), PathOp { path: Vec::new(), op: Op::Set(s(&"x".repeat(stuck))) }).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    let before = net.sent_bytes;
+    for i in 0..20 {
+        note(&mut net, b, w, &format!("k{i}"), "v");
+        net.run();
+    }
+    let want: BTreeMap<String, String> = (0..20).map(|i| (format!("k{i}"), "v".to_string())).collect();
+    assert_eq!(notes(&mut net, a, w), want);
+    net.sent_bytes - before
+}
+
+// spec/sync.md §9 (compaction on a cap refusal): an own entry the server refuses for good (one
+// write over the cap) does not make its holder compact and re-upload it at every other node's
+// write (it did: 5.5x the bytes, one forced compaction per foreign write); only another holder's
+// cover re-arms a compaction for an own refused cover
+#[test]
+fn server_cap_stuck_entry_no_churn_spec_sync_9() {
+    let fits = bytes_under_stuck_entry(100);
+    let stuck = bytes_under_stuck_entry(7_000);
+    assert!(stuck < fits + fits / 4, "{stuck} bytes sent with a refused entry held, {fits} without");
+}
