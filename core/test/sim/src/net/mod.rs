@@ -9,6 +9,7 @@
 
 pub mod adversary;
 pub mod check;
+pub mod ephemeral;
 pub mod library;
 pub mod rogue;
 pub mod scenarios;
@@ -34,6 +35,8 @@ use std::sync::mpsc::Receiver;
 const TRACE: usize = 60;
 /// Messages one settle may deliver before it calls the run a storm.
 const STORM: u64 = 5_000;
+/// Extra delay of a slow server's messages, at most (off while calm).
+const SLOW_MS: u64 = 30_000;
 
 /// Faults on connections, per message sent (off during quiescence).
 #[derive(Clone, Copy, Debug, Default)]
@@ -59,11 +62,15 @@ pub struct NetWeights {
     pub server_restart: u32,
     pub partition: u32,
     pub heal: u32,
+    /// A random ephemeral, presence or signal write (`ephemeral::random_write`).
+    pub ephemeral: u32,
+    /// A random server turns slow (its messages delayed by up to `SLOW_MS`) or fast again.
+    pub slow: u32,
 }
 
 impl Default for NetWeights {
     fn default() -> NetWeights {
-        NetWeights { write: 3, deliver: 12, tick: 2, crash: 0, restart: 0, server_crash: 0, server_restart: 0, partition: 0, heal: 0 }
+        NetWeights { write: 3, deliver: 12, tick: 2, crash: 0, restart: 0, server_crash: 0, server_restart: 0, partition: 0, heal: 0, ephemeral: 0, slow: 0 }
     }
 }
 
@@ -135,6 +142,9 @@ pub struct NetServer {
     pub evil: Option<Evil>,
     /// Messages it sent per connection (an evil server replays them).
     sent: BTreeMap<u64, Vec<Vec<u8>>>,
+    pub policy: Policy,
+    /// Its messages are delayed by up to `SLOW_MS` (while not calm).
+    pub slow: bool,
 }
 
 /// A dishonest server's behavior on what it sends (adversary scenarios): per message, silently
@@ -255,6 +265,8 @@ pub struct NetSim {
     /// Blobs whose uploads and deposits by nodes are counted in `sent_watched` (adversaries).
     pub watched: BTreeSet<osis_base::BlobId>,
     pub sent_watched: u64,
+    /// What scenarios wrote ephemerally, for the ephemeral invariants (`ephemeral::check`).
+    pub eph: ephemeral::Track,
 }
 
 /// The proto messages in a run of bytes, shortened (trace only).
@@ -264,10 +276,15 @@ fn frames(b: &[u8]) -> String {
     let mut v = Vec::new();
     while let Ok(Some(f)) = d.next_frame() {
         let s = match osis_proto::Message::decode(&f) {
+            // uploads by blob ID and class
+            Ok(osis_proto::Message::Upload { label, entries, .. }) => {
+                let es: Vec<String> = entries.iter().map(|e| format!("{:?} {:?} {} B", osis_label::blob_id(&e.blob), osis_label::Prefix::parse(&e.blob).map(|p| p.class()), e.blob.len())).collect();
+                format!("Upload {label:?} {es:?}")
+            }
             Ok(m) => format!("{m:?}"),
             Err(_) => format!("<{} bytes>", f.len()),
         };
-        v.push(s.chars().take(110).collect::<String>());
+        v.push(s.chars().take(160).collect::<String>());
     }
     if v.is_empty() { format!("<{} bytes>", b.len()) } else { v.join(" | ") }
 }
@@ -342,6 +359,7 @@ impl NetSim {
             held: BTreeMap::new(),
             watched: BTreeSet::new(),
             sent_watched: 0,
+            eph: ephemeral::Track::default(),
         }
     }
 
@@ -371,11 +389,17 @@ impl NetSim {
     // ---- servers
 
     pub fn add_server(&mut self) -> Res<usize> {
+        let policy = self.cfg.policy.clone();
+        self.add_server_with(policy)
+    }
+
+    /// A server with its own policy (caps).
+    pub fn add_server_with(&mut self, policy: Policy) -> Res<usize> {
         let i = self.servers.len();
         let key = server_key(i);
         let faults = Faults::new();
         let backend = MemoryBackend::with_faults(faults.clone());
-        self.servers.push(NetServer { hub: None, backend, faults, key, address: Address { url: format!("quic://server{i}:1"), key }, peers: Vec::new(), up: false, evil: None, sent: BTreeMap::new() });
+        self.servers.push(NetServer { hub: None, backend, faults, key, address: Address { url: format!("quic://server{i}:1"), key }, peers: Vec::new(), up: false, evil: None, sent: BTreeMap::new(), policy, slow: false });
         self.start_server(i)?;
         Ok(i)
     }
@@ -383,8 +407,8 @@ impl NetSim {
     fn start_server(&mut self, s: usize) -> Res<()> {
         let seed = self.dice.u64();
         let clock: Arc<dyn Clock> = self.server_clock.clone();
-        let policy = self.cfg.policy.clone();
         let sv = self.server(s)?;
+        let policy = sv.policy.clone();
         sv.faults.revive();
         let store = BackendStore::open(sv.backend.clone(), clock, policy, &mut SeededRng::from_u64(seed));
         let store = store.map_err(|e| self.fail(format!("server {s} open: {e}")))?;
@@ -509,6 +533,9 @@ impl NetSim {
         let evs: Vec<osis_node::Event> = node.events.as_ref().map(|r| r.try_iter().collect()).unwrap_or_default();
         let diags = node.sync.as_mut().map(|s| s.take_diagnostics()).unwrap_or_default();
         for ev in evs {
+            if let osis_node::Event::Ephemeral { signals, .. } = &ev {
+                self.eph_signals(n, signals)?;
+            }
             let r = match self.nodes.get(n).and_then(|x| x.sync.as_ref()) {
                 Some(s) => self.check.event(n, s.engine(), &ev),
                 None => Ok(()),
@@ -623,7 +650,10 @@ impl NetSim {
             self.cut(id);
             return;
         }
-        let delay = if self.calm { 0 } else { self.dice.below(f.max_delay_ms.saturating_add(1)) };
+        let mut delay = if self.calm { 0 } else { self.dice.below(f.max_delay_ms.saturating_add(1)) };
+        if !self.calm && self.slow_sender(id, to) {
+            delay = delay.saturating_add(self.dice.below(SLOW_MS));
+        }
         let dir = usize::from(self.links.get(&id).is_some_and(|l| l.acceptor == to));
         let mut at = self.elapsed.saturating_add(delay);
         if let Some(l) = self.links.get_mut(&id)
@@ -640,6 +670,13 @@ impl NetSim {
             self.push(id, to, at, copy);
         }
         self.push(id, to, at, what);
+    }
+
+    /// Whether the end sending on link `id` towards `to` is a slow server.
+    fn slow_sender(&self, id: u64, to: End) -> bool {
+        let Some(l) = self.links.get(&id) else { return false };
+        let from = if l.acceptor == to { l.dialer } else { l.acceptor };
+        matches!(from, End::Hub(s, _) if self.servers.get(s).is_some_and(|x| x.slow))
     }
 
     /// Cuts a link: both ends learn it is gone.
@@ -760,6 +797,8 @@ impl NetSim {
                 }
             }
         }
+        // its own presence state goes with it (notes/ephemeral.md Presence)
+        self.eph.cursors.retain(|k, _| k.1 != n);
         let node = self.node(n)?;
         node.up = false;
         node.sync = None;
@@ -780,6 +819,7 @@ impl NetSim {
         let engine = open_engine(&b, &r, &c, seed, false).map_err(|e| self.fail(format!("node {n} reopen: {e}")))?;
         self.report.restarts = self.report.restarts.saturating_add(1);
         self.note(format!("node {n} restarted"));
+        *self.eph.boots.entry(Party::N(n)).or_default() += 1;
         self.boot(n, engine)
     }
 
@@ -811,6 +851,7 @@ impl NetSim {
 
     pub fn restart_server(&mut self, s: usize) -> Res<()> {
         self.note(format!("server {s} restarted"));
+        *self.eph.boots.entry(Party::S(s)).or_default() += 1;
         self.report.restarts = self.report.restarts.saturating_add(1);
         self.start_server(s)
     }
@@ -823,6 +864,7 @@ impl NetSim {
         sv.backend = MemoryBackend::with_faults(sv.faults.clone());
         self.tombs.remove(&s);
         self.note(format!("server {s} lost its data"));
+        *self.eph.boots.entry(Party::S(s)).or_default() += 1;
         self.start_server(s)
     }
 
@@ -961,7 +1003,7 @@ impl NetSim {
         let any_down = self.nodes.iter().any(|n| !n.up && !n.lost);
         let server_down = self.servers.iter().any(|s| !s.up);
         let gate = |on: bool, x: u32| if on { x } else { 0 };
-        let options: [(u32, u8); 9] = [
+        let options: [(u32, u8); 11] = [
             (gate(!calm, w.write), 0),
             (gate(!self.queue.is_empty(), w.deliver), 1),
             (w.tick.max(1), 2),
@@ -971,6 +1013,8 @@ impl NetSim {
             (gate(server_down, w.server_restart), 6),
             (gate(!calm, w.partition), 7),
             (gate(!self.blocked.is_empty(), w.heal), 8),
+            (gate(!calm, w.ephemeral), 9),
+            (gate(!calm, w.slow), 10),
         ];
         let total: u64 = options.iter().map(|o| u64::from(o.0)).sum();
         let mut r = self.dice.below(total);
@@ -1002,6 +1046,17 @@ impl NetSim {
                 }
             }
             7 => self.random_partition(),
+            9 => self.random_ephemeral()?,
+            10 => {
+                let ns = self.servers.len();
+                if ns > 0 {
+                    let s = self.dice.index(ns);
+                    let sv = self.server(s)?;
+                    sv.slow = !sv.slow;
+                    let slow = sv.slow;
+                    self.note(format!("server {s} slow {slow}"));
+                }
+            }
             8 => {
                 let b: Vec<(Party, Party)> = self.blocked.iter().copied().collect();
                 if let Some(p) = self.dice.pick(&b).copied() {
@@ -1014,6 +1069,7 @@ impl NetSim {
                 self.advance(dt)?;
             }
         }
+        self.eph_holding();
         Ok(())
     }
 
@@ -1345,6 +1401,9 @@ impl NetSim {
         self.calm = true;
         self.blocked.clear();
         self.flush_held();
+        for sv in &mut self.servers {
+            sv.slow = false;
+        }
         for s in 0..self.servers.len() {
             if !self.servers.get(s).is_some_and(|x| x.up) {
                 self.restart_server(s)?;

@@ -317,8 +317,8 @@ fn slots_unmerge_keeps_member_creation_spec_7() {
 // and an undelete repeating another char: the char goes with the greater creation, so a repeated
 // char folded in before the greater creation arrives is lost on one path and kept on the other.
 #[test]
-#[ignore]
-fn forged_creation_ts_undelete_char() {
+#[ignore = "issues/forged-creation-copies.md"]
+fn repro_forged_creation_ts_undelete_char() {
     use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
     let d = Dot::new(Source::node(Tid::from_bytes([5; 15])), 1);
     let s1 = Stamp { ts: ts(1 << 16), dot: d.clone() };

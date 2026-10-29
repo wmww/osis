@@ -73,6 +73,7 @@
 | compaction at twice the state and above `COMPACT_FLOOR` 64 KiB of held bodies per aspect | performance switch | compaction per write / bodies pile up until a cap |
 | server log numbers reserved per disk write (`SEQ_BLOCK` 1024) | performance switch | a meta write per ephemeral upload / a restart skips that many numbers (harmless) |
 | server in-memory ephemeral log records per label (`EPH_LOG_KEEP` 2^16, charged to the label) | resource bound: a cursor below the trimmed log gets the live entries added since (deletions trimmed are not repeated), never a reconciliation | every cursor misses deletions / log memory grows with uploads |
+| `RETRY_WAIT_MAX` 64: an entry a server refused for its cap goes up there again after 1, 2, 4.. deletions under the label on that connection (`eph_room`; before, it stayed out until a reconnect: sim `ephemeral_capped` 14) | performance switch | an entry that never fits goes up at every deletion / a retry may wait for deletions that never come (a new connection restarts the wait) |
 | `ephemeral_history` 16 MiB (config) | resource bound: older batches not undoable | no ephemeral undo / log grows with edits |
 Local ephemeral memory is the app's; no cap. State grows with edits and removals while held (tombstones), as durable state does.
 

@@ -615,6 +615,8 @@ impl<B: Backend> BackendStore<B> {
         if self.eph.labels.get(label).is_some_and(|e| e.log.len() > EPH_LOG_KEEP) {
             self.eph.trim_log(label);
         }
+        // a record no upload made room for (a deletion's) stays within the cap: older records go
+        while self.eph.labels.get(label).is_some_and(|e| e.bytes > self.policy.ephemeral_bytes) && self.eph.trim_log(label) {}
         Ok(seq)
     }
 
