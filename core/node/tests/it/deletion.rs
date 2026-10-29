@@ -454,3 +454,92 @@ fn dropped_snapshot_waits_for_lost_carrier_spec_sync_7() {
     });
     assert!(carried, "a carrier is at the server");
 }
+
+// spec/commits.md §5 (a snapshot's bounds come from the writes it carries; a node that may write
+// the aspect writes the carrier before dropping a body with live writes), spec/sync.md §7: the
+// typed writer of a keep-at-most record goes away; another writer, which never knew the schema,
+// erases an entry with an untyped edit and at the bound writes the carrier, with the record's
+// bound, and deletes the replaced body at the server (was: no snapshot without the schema, so
+// the body stayed).
+#[test]
+fn carrier_by_writer_without_schema_spec_commits_5() {
+    use osis_crdt::{Op, PathOp};
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let (t, ak, l, c0) = kept_record(&mut net, a, g, &SHORTMAP, "ERASED-3c5f", false);
+    net.run();
+    let _gone = net.take(a);
+    let mut m = Mutation::new();
+    m.op(t, &ak, PathOp { path: Vec::new(), op: Op::Remove(s("secret")) }).unwrap();
+    net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    assert_eq!(net.engine(b).get_at(&t, &ak, &[osis_crdt::PathSeg::Key(s("secret"))]).unwrap(), None);
+    let at_server = blobs(&mut net, b, &l, &c0);
+    assert!(!at_server.is_empty());
+    let n = snapshots(&mut net, b, &t, &ak).len();
+    net.advance(600_000 + osis_base::format::AT_MOST_GRACE_MS + 1);
+    net.run();
+    assert!(!net.engine(b).body_not_dropped(&c0, &t, &ak), "dropped at the bound");
+    let snaps = snapshots(&mut net, b, &t, &ak);
+    assert_eq!(snaps.len(), n + 1, "one carrier");
+    let r = net.engine(b).header(&snaps[n]).unwrap().aspects[0].retention;
+    assert_eq!(r.at_most.rel, Some(600_000), "the record's bound");
+    let ids = net.server_ids(sv, &l);
+    assert!(at_server.iter().all(|x| !ids.contains(x)), "deleted at the server");
+}
+
+// spec/commits.md §5 (purge: a writer holding no covering snapshot after applying the request
+// re-snapshots; a snapshot's bounds come from the writes it carries): the typed writer of a
+// keep-at-most record, compacted, goes away; another writer, which never knew the schema,
+// erases the secret entry with an untyped edit purging the entry's commit: the snapshot carrying
+// the secret drops, a new one carries the live entries with the record's bound, and neither the
+// secret's commit nor the old snapshot stays at the server.
+#[test]
+fn purge_resnapshot_by_writer_without_schema_spec_commits_5() {
+    use osis_crdt::{Op, PathOp};
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[sv]);
+    net.blocked.insert((c, sv));
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    let ak = Ak::new(SHORTMAP.ak()).unwrap();
+    let v: std::collections::BTreeMap<osis_base::Value, osis_base::Value> = (0..4).map(|i| (s(&format!("k{i}")), s("f"))).collect();
+    let mut m = Mutation::new();
+    m.set(t, &SHORTMAP, &osis_base::Value::Map(v)).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &SHORTMAP, PathOp { path: vec![osis_crdt::PathSeg::Key(s("secret"))], op: Op::Put(s("PURGED-51d2")) }).unwrap();
+    let c1 = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let l = net.label(a);
+    let s1 = snapshots(&mut net, a, &t, &ak)[0];
+    let _gone = net.take(a);
+    let at_server: Vec<_> = [c1, s1].iter().flat_map(|x| blobs(&mut net, b, &l, x)).collect();
+    assert!(!blobs(&mut net, b, &l, &s1).is_empty());
+    assert!(at_server.iter().all(|x| net.server_ids(sv, &l).contains(x)));
+    let mut m = Mutation::new();
+    m.op(t, &ak, PathOp { path: Vec::new(), op: Op::Remove(s("secret")) }).unwrap();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c1, tid: t, ak: ak.clone() });
+    net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    assert!(!net.engine(b).body_not_dropped(&s1, &t, &ak), "the snapshot carrying the secret dropped");
+    let snaps: Vec<_> = snapshots(&mut net, b, &t, &ak).into_iter().filter(|x| *x != s1).collect();
+    assert_eq!(snaps.len(), 1, "re-snapshotted");
+    assert_eq!(net.engine(b).header(&snaps[0]).unwrap().aspects[0].retention.at_most.rel, Some(600_000), "the record's bound");
+    let ids = net.server_ids(sv, &l);
+    assert!(at_server.iter().all(|x| !ids.contains(x)), "the purged bodies left the server");
+    net.blocked.clear();
+    net.advance(10_000);
+    let ec = net.engine(c);
+    assert_eq!(ec.get_at(&t, &ak, &[osis_crdt::PathSeg::Key(s("k2"))]).unwrap(), Some(s("f")));
+    assert_eq!(ec.get_at(&t, &ak, &[osis_crdt::PathSeg::Key(s("secret"))]).unwrap(), None);
+}

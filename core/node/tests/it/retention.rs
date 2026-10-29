@@ -342,8 +342,6 @@ fn deaths_alike_after_carried_write_dropped_spec_crdt_4_8() {
     let kc = set(&mut lp, 0, t, &KEPT, "k");
     sync(&mut lp, 0, 1);
     sync(&mut lp, 0, 2);
-    // peer 2's typed write registers the schema its snapshot takes bounds from
-    set(&mut lp, 2, t, &REG, "r");
     lp.advance(10);
     let s1 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
     lp.advance(10);
@@ -620,7 +618,6 @@ fn dating_history(seed: u64) {
         r % n
     };
     let mut lp = net(6, 1000 + seed);
-    know_schema(&mut lp);
     lp.peers[5].engine.keep_bodies(true);
     let t = new_thing(&mut lp, 0);
     for i in 1..4 {

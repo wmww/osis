@@ -93,7 +93,7 @@ fn snapshot() -> CommitBlob {
     let bytes = encode_snapshot(&s, &writer_ctx(Kind::ContentSnapshot, at, AUTHOR, 0, 0), None).unwrap();
     let mut b = CommitBuilder::new(Kind::ContentSnapshot, at, AUTHOR, ACTOR, Form::Node);
     let mut a = AspectWrite::new(THING, Ak::new("/app/title").unwrap(), 0, 0, bytes);
-    a.retention = retention::snapshot_retention("/app/title", None);
+    a.retention = retention::snapshot_retention("/app/title", [], 0);
     b.aspects.push(a);
     built(b)
 }

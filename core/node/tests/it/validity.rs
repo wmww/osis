@@ -39,7 +39,6 @@ fn revoke(lp: &mut LocalPeer, admin: usize, t: Tid, member: Tid) {
 fn setup(seed: u64) -> (LocalPeer, Tid, Tid, Tid) {
     let mut lp = net(3, seed);
     lp.sync_all().unwrap();
-    know_schema(&mut lp);
     let d = new_thing(&mut lp, 0);
     let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
     set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);

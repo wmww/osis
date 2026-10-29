@@ -52,14 +52,29 @@ pub fn write_retention(ak: &str, defaults: Option<&AspectDefaults>, set: Option<
     Ok(r)
 }
 
-/// Retention of a compaction-snapshot delta: `writer` with the schema's default bounds for the
-/// aspect (never a commit's own); membership-class aspects keep their fixed retention.
-pub fn snapshot_retention(ak: &str, defaults: Option<&AspectDefaults>) -> Retention {
+/// Retention of a compaction-snapshot delta (spec/commits.md §5): an aspect with fixed retention
+/// keeps it; any other is `writer` with, over `own` (the retentions standing for the writes the
+/// snapshot carries live), the longest relative keep at least (no absolute one), and the
+/// strictest keep at most: the shortest relative bound and the earliest absolute bound after
+/// `now` (the snapshot's wall ms; one passed binds nothing).
+pub fn snapshot_retention(ak: &str, own: impl IntoIterator<Item = Retention>, now: u64) -> Retention {
     if let Some(f) = fixed_retention(ak) {
         return f;
     }
-    let d = defaults.map(|d| d.retention).unwrap_or_default();
-    Retention { by: PurgeBy::Writer, at_least: d.at_least, at_most: d.at_most }
+    let (mut at_least, mut at_most) = (Bound::default(), Bound::default());
+    for r in own {
+        at_least.rel = at_least.rel.max(r.at_least.rel);
+        let m = r.at_most;
+        at_most.rel = match (at_most.rel, m.rel) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        at_most.abs = match (at_most.abs, m.abs.filter(|t| *t > now)) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+    }
+    Retention { by: PurgeBy::Writer, at_least, at_most }
 }
 
 /// Expiry of a write: an explicit T, else the schema's default duration from the write's `ts`.

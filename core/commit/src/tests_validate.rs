@@ -189,9 +189,14 @@ fn retention_rules() {
     assert!(write_retention("/members", None, Some(Retention::default())).is_err());
     let bad = Retention { by: PurgeBy::Author, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(1) } };
     assert!(write_retention("/app/x", None, Some(bad)).is_err());
-    let s = snapshot_retention("/app/x", Some(&d));
-    assert_eq!((s.by, s.at_least), (PurgeBy::Writer, d.retention.at_least));
-    assert_eq!(snapshot_retention("/keys", Some(&d)), MEMBERSHIP_RETENTION);
+    // the own deltas' longest relative keep at least (no absolute one) and strictest keep at
+    // most (a passed absolute bound binds nothing)
+    let own = |least: Bound, abs: Option<u64>, rel: Option<u64>| Retention { by: PurgeBy::Author, at_least: least, at_most: Bound { abs, rel } };
+    let none = Bound::default();
+    let s = snapshot_retention("/app/x", [own(Bound { abs: Some(900), rel: Some(5) }, Some(500), Some(30)), own(none, Some(300), None), own(Bound { abs: None, rel: Some(7) }, Some(20), Some(10))], 100);
+    assert_eq!(s, Retention { by: PurgeBy::Writer, at_least: Bound { abs: None, rel: Some(7) }, at_most: Bound { abs: Some(300), rel: Some(10) } });
+    assert_eq!(snapshot_retention("/app/x", [], 100), Retention { by: PurgeBy::Writer, ..Default::default() });
+    assert_eq!(snapshot_retention("/keys", [own(none, None, Some(1))], 0), MEMBERSHIP_RETENTION);
     let r = Retention { by: PurgeBy::Writer, at_least: Bound { abs: Some(100), rel: Some(50) }, at_most: Bound { abs: Some(400), rel: Some(10) } };
     assert_eq!(keep_at_least(&r, None), 100);
     assert_eq!(keep_at_least(&r, Some(80)), 130);
