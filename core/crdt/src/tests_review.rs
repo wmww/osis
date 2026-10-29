@@ -100,7 +100,7 @@ fn bag_redo_spec_4_6() {
     let u1 = undo(&mut wu, &Undone { delta: &s0, source: &node, range: CounterRange { lo: 1, hi: 2 }, restored: &|_| false }, &s0, &Fragment::default(), &view).unwrap().unwrap();
     let mut s1 = s0.clone();
     s1.join(u1.clone());
-    assert_eq!(s1.read(), Some(Value::Int(0)));
+    assert_eq!(s1.read(), None, "absent before (§4.6)");
     let mut wr = Writer::new(ts(30 << 16), node.clone(), 3);
     let redo = undo(&mut wr, &Undone { delta: &u1, source: &node, range: wu.range(), restored: &|_| false }, &s1, &s0, &view).unwrap().unwrap();
     let mut s2 = s1.clone();
