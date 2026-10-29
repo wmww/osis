@@ -1198,13 +1198,15 @@ impl Engine {
         // cover would otherwise leave partly covered is carried too, so the cover absorbs that
         // commit (else a holder whose cover a full server refused never absorbs the cover held
         // there spanning another one-part aspect, sim `ephemeral` seed 83)
+        // (each commit judged once: whether all its aspects are compactable does not change)
         let mut picked_set: BTreeSet<(Tid, Ak)> = due.iter().cloned().collect();
+        let mut judged: BTreeSet<CommitId> = BTreeSet::new();
         let mut work = due;
         while let Some((t, ak)) = work.pop() {
             let Some(ea) = self.eph.aspects.get(&t).and_then(|m| m.get(&ak)) else { continue };
             for (id, _) in &ea.parts {
                 let Some(h) = self.eph.remote.held.get(id) else { continue };
-                if h.header.ephemeral == Some(EphClass::Presence) {
+                if h.header.ephemeral == Some(EphClass::Presence) || !judged.insert(*id) {
                     continue;
                 }
                 let keys: Vec<(Tid, Ak)> = h.parts.iter().filter_map(|p| h.header.aspects.get(p.ai)).filter(|a| a.ak.as_str() != CREATED.ak()).map(|a| (a.tid, a.ak.clone())).collect();
