@@ -11,6 +11,7 @@ mod deposit_queue;
 #[cfg(feature = "driver")]
 mod driver;
 mod encodings;
+mod ephemeral;
 mod flows;
 mod hostile_server;
 mod inbox_life;
