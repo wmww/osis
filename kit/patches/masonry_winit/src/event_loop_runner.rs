@@ -712,6 +712,10 @@ impl MasonryState<'_> {
                 window
                     .render_root
                     .handle_window_event(WindowEvent::Resize(size));
+                app_driver.on_resized(window.id, &mut DriverCtx::new(self, event_loop), size);
+            }
+            WinitWindowEvent::ThemeChanged(theme) => {
+                app_driver.on_theme_changed(window.id, &mut DriverCtx::new(self, event_loop), theme);
             }
             WinitWindowEvent::Ime(ime) => {
                 let ime = winit_ime_to_masonry(ime);
