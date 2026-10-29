@@ -8,5 +8,6 @@ pub mod received;
 pub mod seq;
 pub mod stamp;
 pub mod state;
+pub mod undo;
 pub mod value;
 pub mod wire;
