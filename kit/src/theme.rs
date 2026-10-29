@@ -291,22 +291,34 @@ pub fn neutral() -> Color {
     hex("#8b90a0")
 }
 
-/// Parses `#rrggbb` (any CSS colour); `None` when it is not one.
+/// Parses `#rrggbb` (any CSS colour), opaque and clamped into sRGB: a content colour comes from
+/// synced data and must not make the background or accent transparent or out of range. `None`
+/// when it is not one.
 pub fn parse(s: &str) -> Option<Color> {
-    parse_color(s).ok().map(|c| c.to_alpha_color::<Srgb>())
+    let [r, g, b, _] = parse_color(s).ok()?.to_alpha_color::<Srgb>().components;
+    if ![r, g, b].iter().all(|x| x.is_finite()) {
+        return None;
+    }
+    Some(Color::new([r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0), 1.0]))
 }
 
-/// `a` mixed toward `b` by `t` (0: `a`, 1: `b`), in Oklab, alpha too.
+/// `a` mixed toward `b` by `t` (0: `a`, 1: `b`; NaN: `a`), in Oklab, alpha too, clamped into
+/// sRGB (an Oklab line between two sRGB colours can leave it).
 pub fn mix(a: Color, b: Color, t: f64) -> Color {
-    let t = t.clamp(0.0, 1.0) as f32;
+    let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) as f32 };
     let (a, b): (AlphaColor<Oklab>, AlphaColor<Oklab>) = (a.convert(), b.convert());
-    let c = a.lerp_rect(b, t);
-    c.convert()
+    srgb(a.lerp_rect(b, t))
+}
+
+/// `c` in sRGB, clamped into its gamut.
+fn srgb(c: AlphaColor<Oklab>) -> Color {
+    let c: Color = c.convert();
+    Color::new(c.components.map(|x| if x.is_nan() { 0.0 } else { x.clamp(0.0, 1.0) }))
 }
 
 /// `c` at alpha `a` times its own.
 pub fn fade(c: Color, a: f64) -> Color {
-    c.multiply_alpha(a.clamp(0.0, 1.0) as f32)
+    c.multiply_alpha(if a.is_nan() { 0.0 } else { a.clamp(0.0, 1.0) as f32 })
 }
 
 /// Oklab lightness of `c` (0 black .. 1 white).
@@ -362,7 +374,14 @@ impl Look {
 
     /// The fill of a card (tile, chip, selection) of colour `tint` (`None`: neutral).
     pub fn card(&self, tint: Option<Color>) -> Color {
-        let tint = tint.unwrap_or_else(neutral);
+        let mut tint = tint.unwrap_or_else(neutral);
+        if self.on_card_white() {
+            // white text needs a dark enough card: a pale tag colour (synced, any colour) is
+            // darkened to at most this lightness
+            let mut o: AlphaColor<Oklab> = tint.convert();
+            o.components[0] = o.components[0].min(0.62);
+            tint = srgb(o);
+        }
         // a card on an opaque panel steps away from the panel's surface
         let step = if self.dark { Color::WHITE } else { hex("#3a3f55") };
         let card_surface = mix(self.surface, step, 0.05 * self.theme.panel_opacity);
@@ -403,6 +422,7 @@ impl Look {
     /// The heading weight for a role whose base is `base` and that moves `per` per unit of the
     /// theme's weight.
     pub fn weight(&self, base: f64, per: f64, lo: f64, hi: f64) -> f32 {
-        (base + self.theme.weight * per).clamp(lo, hi) as f32
+        let w = base + self.theme.weight * per;
+        (if w.is_nan() { base } else { w }).clamp(lo, hi) as f32
     }
 }
