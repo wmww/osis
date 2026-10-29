@@ -534,6 +534,32 @@ fn ephemeral_part_waits_for_its_record_spec_sync_9() {
     assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(Value::Int(7)));
 }
 
+// spec/commits.md §4, spec/sync.md §9 (only verified commits are held and spread): another blob
+// of a held ephemeral commit, the same header with a junk delta or signature, is refused
+#[test]
+fn forged_copy_of_held_commit_refused_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let t = net.item(a, g, g, "durable");
+    net.run();
+    let mut m = Mutation::new();
+    m.set(t, &eph("/doc/cursor"), &Value::Int(7)).unwrap();
+    net.engine(a).write(m).unwrap();
+    let cs = net.engine(a).take_ephemeral().unwrap();
+    let blob = cs[0].blob.clone();
+    assert_eq!(net.engine(b).ingest_ephemeral(blob.clone()).unwrap(), osis_node::ephemeral::EphIngest::Held { new: true });
+    assert_eq!(net.engine(b).ingest_ephemeral(blob.clone()).unwrap(), osis_node::ephemeral::EphIngest::Held { new: false }, "a true copy");
+    let mut junk = blob.clone();
+    junk.parts[0].delta.push(0);
+    assert!(net.engine(b).ingest_ephemeral(junk).is_err(), "a junk delta");
+    let mut unsigned = blob;
+    unsigned.signature = osis_crypto::Signature([0; 64]);
+    assert!(net.engine(b).ingest_ephemeral(unsigned).is_err(), "a junk signature");
+}
+
 // spec/crdt.md §4.6 (un-merge rebuilds from what is held): a node's own compaction covers
 // others' writes; a later validity flip on the aspect rebuilds it from the own writes and the
 // held parts, the own cover included, so the covered writes stay and the holders agree

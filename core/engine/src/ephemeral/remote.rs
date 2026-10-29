@@ -557,6 +557,10 @@ impl Engine {
             if let Some(held) = self.eph.remote.held.get(&id) {
                 let have: BTreeSet<usize> = held.parts.iter().map(|p| p.ai).collect();
                 if blob.parts.iter().all(|p| have.contains(&p.ai)) {
+                    // another blob of a held commit: its signature and deltas are checked
+                    // still, or a forged blob (the header with junk parts) would be kept and
+                    // served on as this commit's
+                    self.check_copy(&blob)?;
                     return Ok(EphIngest::Held { new: false });
                 }
             } else {
@@ -707,6 +711,24 @@ impl Engine {
         Ok(EphIngest::Held { new })
     }
 
+    /// Checks a blob of a held ephemeral commit: its author's signature and each part's delta
+    /// hash (spec/commits.md §4).
+    fn check_copy(&self, blob: &CommitBlob) -> Result<()> {
+        let h = &blob.header;
+        let Some(CreationRecord::KeyActor { public_key, .. }) = self.core.created(&h.author) else { return Err(Error::BadInput("author is not a key actor")) };
+        osis_commit::verify_signature(&blob.id(), &blob.signature, &VerifyingKey::from_slice(public_key)?)?;
+        let empty = BTreeMap::new();
+        for p in &blob.parts {
+            let a = h.aspects.get(p.ai).ok_or(Error::BadInput("part aspect index"))?;
+            let rec = self.record_of(&a.tid, &empty).ok_or(Error::BadInput("part on a thing without a record"))?;
+            let want = a.hashes.get(p.di).ok_or(Error::BadInput("part delta index"))?;
+            if osis_crypto::delta_hash(&dedup_secret(rec.nonce()), &p.delta) != *want {
+                return Err(Error::BadInput("part does not match its delta hash"));
+            }
+        }
+        Ok(())
+    }
+
     /// Drops held commits that valid held commits list as absorbed on every aspect they touch
     /// (a compaction covers them); their parts' writes stay in the state through the cover.
     /// Returns the dropped IDs (`take_dropped_ephemeral`).
@@ -781,6 +803,11 @@ impl Engine {
     /// Whether an ephemeral commit is held here.
     pub fn holds_ephemeral(&self, id: &CommitId) -> bool {
         self.eph.remote.held.contains_key(id)
+    }
+
+    /// Whether held ephemeral commit `id` is a compaction's cover (lists commits it absorbs).
+    pub fn ephemeral_is_cover(&self, id: &CommitId) -> bool {
+        self.eph.remote.held.get(id).is_some_and(|h| h.parts.iter().any(|p| !p.absorbed.is_empty()))
     }
 
     /// The header of a held ephemeral commit.
@@ -984,6 +1011,13 @@ impl Engine {
                     absorbed.entry((a.tid, a.ak.clone())).or_default().insert(*id);
                 }
             }
+        }
+        // a cover that absorbs fewer than two held commits holds no fewer entries than it
+        // replaces: made again and again (a part of a commit that also touches an aspect not
+        // picked stays, so the aspect keeps two parts), it looped, each cover refused by a full
+        // server (random_window_converges_large 61365)
+        if absorbed.values().flatten().collect::<BTreeSet<_>>().len() < 2 {
+            return Ok(None);
         }
         let deltas: Vec<EphDelta> = picked.iter().filter_map(|(t, ak)| self.eph.state(t, ak).map(|f| (*t, ak.clone(), f.clone(), None))).collect();
         let records: BTreeSet<Tid> = picked.iter().map(|(t, _)| *t).filter(|t| self.eph.things.contains_key(t)).collect();
