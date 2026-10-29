@@ -1067,6 +1067,10 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
                 if matches!(x.ak.as_str(), "/secrets" | "/keys") {
                     intro_flips.insert(x.tid);
                 }
+                // a snapshot's frontiers count as received while it is valid (`receipt::received`)
+                if super::is_kind_snapshot(h.kind) {
+                    tx.core.waits.wake(&x.tid, &x.ak);
+                }
             }
         }
         m.valid = now;

@@ -353,8 +353,9 @@ indexes! {
     /// Held imports per thing and origin: (thing, origin) -> import: the deltas owning the
     /// origin's writes there (spec/permissions.md §7).
     pub imports: JSetMap<(Tid, CommitId), CommitId>,
-    /// Compaction snapshots held per aspect, with their frontiers: the bodies carrying a write
-    /// besides its own (deaths, spec/commits.md §5).
+    /// Compaction snapshots held per aspect, with their frontiers and `Absorbed`: the bodies
+    /// carrying a write besides its own (deaths, spec/commits.md §5); what valid ones count as
+    /// received (`receipt::received`).
     pub snapshots: JMap<(Tid, Ak), Vec<HeldSnapshot>>,
     /// Writes held snapshots carry whose own delta was never received, per aspect
     /// (`validity::Carried`).
@@ -421,8 +422,8 @@ indexes! {
     pub frontier_unknown: JSet<Tid>,
 }
 
-/// A held compaction snapshot of an aspect: `ts`, ID, frontiers.
-pub(crate) type HeldSnapshot = (Ts, CommitId, osis_crdt::Frontiers);
+/// A held compaction snapshot of an aspect: `ts`, ID, frontiers, `Absorbed` (commit, author).
+pub(crate) type HeldSnapshot = (Ts, CommitId, osis_crdt::Frontiers, Vec<(CommitId, Tid)>);
 
 /// A decoded commit record: its head (received, origin, dropped parts) and blob.
 pub(crate) type CommitRecord = (index::RecordHead, CommitBlob);

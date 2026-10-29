@@ -1,8 +1,11 @@
 //! The receipt record (spec/permissions.md §5.1, notes/permissions.md Revocation): per aspect
 //! and author node, the counter ranges received with their receipt time, plus commit-form
-//! commits by ID; snapshot frontiers add `[1, ctr]` (spec/crdt.md §8). Adjacent ranges merge
-//! with the later time (a coarser record only shrinks a frontier). Pending and parked commits
-//! are not received. Demotions read it "as of T" for their frontier.
+//! commits by ID. Adjacent ranges merge with the later time (a coarser record only shrinks a
+//! frontier). Pending and parked commits are not received. Held snapshots' frontiers (`[1,
+//! ctr]`) and `Absorbed` (spec/crdt.md §8) are not recorded: `received` adds those of the
+//! snapshots valid now, at their receipt time, so a snapshot turning invalid takes them back
+//! whatever the arrival order (spec/permissions.md §5.2). Demotions read it "as of T" for their
+//! frontier.
 
 use crate::engine::records::{self, Rd, Wr};
 use crate::engine::{Engine, Tx};
@@ -122,7 +125,33 @@ fn put(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, r: &Receipt) -> Result<()> {
     Ok(tx.txn.put_local(&records::aspect_key(records::RECEIPT, tid, ak), &r.encode(), Shred::No)?)
 }
 
-/// Records what an applied commit's held parts gave this node.
+/// What this node had received of `(tid, ak)` by `as_of`: the record's entries received by
+/// then, plus the frontiers and `Absorbed` of the held snapshots valid now that it received by
+/// then (an invalid one's count as not received, spec/permissions.md §5.2).
+pub(crate) fn received(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, as_of: u64) -> Result<Receipt> {
+    let mut r = get(tx, tid, ak)?;
+    for v in r.nodes.values_mut() {
+        v.retain(|x| x.2 <= as_of);
+    }
+    r.commits.retain(|_, x| x.1 <= as_of);
+    let core = &*tx.core;
+    for (_, s, fr, abs) in core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten() {
+        let Some(at) = core.ix.commits.get(s).map(|m| m.received.0) else { continue };
+        if at > as_of || !super::validity::snapshot_valid(core, s, tid, ak) {
+            continue;
+        }
+        for (n, c) in &fr.0 {
+            r.add(*n, 1, c.saturating_add(1), at);
+        }
+        for (c, a) in abs {
+            r.commits.entry(*c).or_insert((*a, at));
+        }
+    }
+    Ok(r)
+}
+
+/// Records what an applied commit's held parts gave this node (a snapshot: its ID; what it
+/// carries counts through `received`).
 pub(crate) fn record(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)], received: WallMs) -> Result<()> {
     let held: BTreeSet<usize> = parts.iter().map(|p| p.0).collect();
     for ai in held {
@@ -139,29 +168,16 @@ pub(crate) fn record(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(usize
             // imports count by commit ID (spec/permissions.md §5.1 frontier coverage)
             r.commits.insert(*id, (h.author, received.0));
         }
-        // an invalid snapshot's frontiers give nothing (spec/permissions.md §5.2)
-        for (_, _, d) in parts.iter().filter(|p| p.0 == ai) {
-            if let Decoded::Snapshot(s) = d
-                && super::validity::snapshot_valid(tx.core, id, &a.tid, &a.ak)
-            {
-                for (n, c) in &s.frontiers.0 {
-                    r.add(*n, 1, c.saturating_add(1), received.0);
-                }
-                for (c, a) in &s.absorbed {
-                    r.commits.entry(*c).or_insert((*a, received.0));
-                }
-            }
-        }
         put(tx, &a.tid, &a.ak, &r)?;
     }
     Ok(())
 }
 
 impl Engine {
-    /// The receipt record of one aspect.
+    /// What this node received of one aspect, held valid snapshots' frontiers included.
     pub fn receipt(&mut self, tid: &Tid, ak: &Ak) -> Result<Receipt> {
         let (tid, ak) = (*tid, ak.clone());
-        self.run(|tx| get(tx, &tid, &ak))
+        self.run(|tx| received(tx, &tid, &ak, u64::MAX))
     }
 
     /// The frontier a demotion stamped now must embed (spec/permissions.md §5.1): per aspect the
@@ -185,13 +201,13 @@ impl Engine {
         self.run(|tx| {
             let mut f = Frontier::default();
             for (node, t, ak) in aspects {
-                let r = get(tx, &t, &ak)?;
+                let r = received(tx, &t, &ak, as_of.0)?;
                 let c = r.contiguous(&node, as_of.0);
                 if c > 0 {
                     f.writes.entry(t).or_default().entry(ak.as_str().to_string()).or_default().insert(node, c);
                 }
-                for (id, (a, at)) in &r.commits {
-                    if *a == node && *at <= as_of.0 {
+                for (id, (a, _)) in &r.commits {
+                    if *a == node {
                         f.commits.insert(*id);
                     }
                 }
