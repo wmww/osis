@@ -240,6 +240,134 @@ fn log_horizon() {
     assert_eq!(e.store.live_ids(&l).unwrap().len(), 20);
 }
 
+fn eph_put(b: &[u8], expiry: Option<u64>) -> Put<'_> {
+    Put { ephemeral: true, ..put(b, true, expiry) }
+}
+
+fn eph_blob(n: u32, len: usize) -> Vec<u8> {
+    let mut b = vec![0u8; len.max(8)];
+    b[0] = 1;
+    b[1..5].copy_from_slice(&n.to_le_bytes());
+    b
+}
+
+// ephemeral security review H2: a stranger looping upload and delete of ephemeral entries on its
+// own label grows no memory without bound: tombstones and log records are charged to the label's
+// cap, deletes are rate-limited, tombstones go after `EPH_TOMBSTONE_MS`, and the due-time index
+// empties
+#[test]
+fn ephemeral_churn_memory_bounded() {
+    let cap = 64 << 10;
+    let mut e = env(Policy { ephemeral_bytes: cap, deletes: 200, ..Policy::default() });
+    let l = e.f.label;
+    let mut codes = BTreeMap::new();
+    for n in 0..5_000u32 {
+        let b = eph_blob(n, 40);
+        let c = e.store.put(&l, eph_put(&b, None)).unwrap();
+        *codes.entry(("put", c.0)).or_insert(0) += 1;
+        let c = e.store.delete(&l, &osis_label::blob_id(&b), T0).unwrap();
+        *codes.entry(("delete", c.0)).or_insert(0) += 1;
+        assert!(e.store.ephemeral_bytes(&l) <= cap, "charged within the cap");
+    }
+    assert!(codes.contains_key(&("delete", Code::RATE_LIMITED.0)), "{codes:?}");
+    assert!(codes.contains_key(&("put", Code::STORAGE_CAP.0)), "full of live entries: {codes:?}");
+    e.clock.advance(EPH_TOMBSTONE_MS + 61_000);
+    let now = e.clock.now_wall_ms().0;
+    e.store.sweep(now, usize::MAX).unwrap();
+    let left = e.store.ephemeral_bytes(&l);
+    let live = e.store.eph.labels.get(&l).map_or(0, |x| x.entries.len()) as u64;
+    assert!(e.store.eph.labels.get(&l).is_none_or(|x| x.tombstones.is_empty()), "tombstones dropped");
+    assert!(left <= live * (48 + ENTRY_OVERHEAD) + EPH_LOG_KEEP as u64 * REC_OVERHEAD, "{left}");
+    assert!(e.store.eph.due.len() as u64 <= live, "due index holds only live entries' times");
+    // a deleted entry stays refused for the tombstone's lifetime only
+    let mut e = env(Policy::default());
+    let l = e.f.label;
+    let now = e.clock.now_wall_ms().0;
+    let b = eph_blob(99_999, 40);
+    e.store.put(&l, eph_put(&b, None)).unwrap();
+    e.store.delete(&l, &osis_label::blob_id(&b), now).unwrap();
+    assert!(e.store.tombstoned(&l, &osis_label::blob_id(&b)).unwrap());
+    e.clock.advance(EPH_TOMBSTONE_MS);
+    e.store.sweep(e.clock.now_wall_ms().0, usize::MAX).unwrap();
+    assert!(!e.store.tombstoned(&l, &osis_label::blob_id(&b)).unwrap());
+}
+
+// ephemeral security review M4: a stranger filling the node-wide ephemeral cap with its own
+// labels does not lock another label out: the label charged most gives way (oldest first)
+#[test]
+fn ephemeral_total_evicts_largest_label() {
+    let per = 32 << 10;
+    let mut e = env(Policy { ephemeral_bytes: per, ephemeral_total: 4 * per, ..Policy::default() });
+    let mut strangers = Vec::new();
+    for i in 0..6u8 {
+        let f = Fixture::new(0x20 + 6 * i);
+        e.store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
+        strangers.push(f.label);
+    }
+    let mut n = 0u32;
+    for l in &strangers {
+        for _ in 0..40 {
+            n += 1;
+            e.store.put(l, eph_put(&eph_blob(n, 1_000), None)).unwrap();
+        }
+    }
+    assert!(e.store.ephemeral_total() <= 4 * per);
+    let honest = e.f.label;
+    for k in 0..10u32 {
+        assert_eq!(e.store.put(&honest, eph_put(&eph_blob(1_000_000 + k, 500), None)).unwrap(), Code::OK, "the honest label gets in");
+    }
+    assert!(e.store.ephemeral_total() <= 4 * per);
+    assert_eq!(e.store.eph.labels.get(&honest).map_or(0, |x| x.entries.len()), 10);
+}
+
+// ephemeral security review M7: ephemeral churn takes sequence numbers from the label's log but
+// neither trims durable records nor sends a durable cursor back to reconciliation
+#[test]
+fn ephemeral_churn_keeps_durable_cursors() {
+    let mut e = env(Policy { log_keep: 8, deletes: u32::MAX, ..Policy::default() });
+    let l = e.f.label;
+    for n in 0..4 {
+        e.store.put(&l, put(&blob(n), true, None)).unwrap();
+    }
+    let (_, cursor) = e.store.log_head(&l).unwrap();
+    for n in 0..(EPH_LOG_KEEP as u32) {
+        let b = eph_blob(n, 40);
+        e.store.put(&l, eph_put(&b, None)).unwrap();
+        e.store.delete(&l, &osis_label::blob_id(&b), T0).unwrap();
+    }
+    e.store.put(&l, put(&blob(9), true, None)).unwrap();
+    let recs = e.store.log_after(&l, cursor, usize::MAX).unwrap().expect("the cursor still reaches");
+    assert!(recs.iter().any(|(_, r)| *r == LogRecord::Added(id(9))));
+    assert!(e.store.log_after(&l, 0, usize::MAX).unwrap().is_some(), "4 durable records + head: under log_keep");
+    // a live ephemeral entry whose add record was trimmed still reaches an old cursor
+    let live = eph_blob(7_777_777, 40);
+    e.store.put(&l, eph_put(&live, None)).unwrap();
+    for n in 0..(EPH_LOG_KEEP as u32) {
+        let b = eph_blob(8_000_000 + n, 40);
+        e.store.put(&l, eph_put(&b, None)).unwrap();
+        e.store.delete(&l, &osis_label::blob_id(&b), T0).unwrap();
+    }
+    let recs = e.store.log_after(&l, cursor, usize::MAX).unwrap().unwrap();
+    assert!(recs.iter().any(|(_, r)| *r == LogRecord::Added(osis_label::blob_id(&live))));
+}
+
+// ENTRY_OVERHEAD, TOMB_OVERHEAD, REC_OVERHEAD count what the in-memory structures cost (each
+// map entry with about half again for B-tree slack or hash load)
+#[test]
+fn overheads_cover_the_structures() {
+    use std::mem::size_of;
+    let slack = |n: usize| (n * 3 / 2) as u64;
+    let entry = slack(size_of::<(BlobId, EphEntry)>())
+        + slack(size_of::<(BlobId, (Vec<u8>, usize))>() + 1)
+        + slack(size_of::<(u64, BlobId)>())
+        + 2 * slack(size_of::<(u64, LabelId, BlobId)>())
+        + slack(size_of::<((LabelId, BlobId), [u8; 32])>() + 1);
+    assert!(entry <= ENTRY_OVERHEAD, "{entry}");
+    let tomb = slack(size_of::<(BlobId, u64)>()) + slack(size_of::<(u64, LabelId, BlobId)>());
+    assert!(tomb <= TOMB_OVERHEAD, "{tomb}");
+    assert!(slack(size_of::<(u64, EphRec)>()) <= REC_OVERHEAD, "{}", size_of::<(u64, EphRec)>());
+}
+
 // spec/sync.md §4: `live_by_id` pages ascending from after a given ID
 #[test]
 fn live_by_id_pages() {

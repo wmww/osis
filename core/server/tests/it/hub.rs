@@ -293,7 +293,8 @@ fn relay_replay_flood_bounded_spec_sync_5() {
 #[test]
 fn ephemeral_entries_in_memory() {
     let mut w = World::new();
-    let policy = Policy { ephemeral_bytes: 150, ..Policy::default() };
+    // two entries fit with their per-entry overhead (about 900 bytes each), three do not
+    let policy = Policy { ephemeral_bytes: 2_000, ..Policy::default() };
     let h = w.add_hub(policy.clone());
     let (a, b) = (w.connect(h), w.connect(h));
     let l = Label::new(3);
@@ -306,7 +307,8 @@ fn ephemeral_entries_in_memory() {
     assert_eq!(statuses(&ev), vec![Code::OK, Code::OK, Code::STORAGE_CAP], "the third is over the cap");
     let reserve = w.backends[h].scan(&[], None, usize::MAX).unwrap().len();
     assert_eq!(reserve, rows, "only the label meta row changed (sequence reservation)");
-    assert_eq!(w.hubs[h].store().ephemeral_bytes(&l.id), (eph[0].len() + eph[1].len()) as u64);
+    let charged = w.hubs[h].store().ephemeral_bytes(&l.id);
+    assert!(charged > (eph[0].len() + eph[1].len()) as u64 && charged <= 2_000, "blobs and their overhead: {charged}");
     let (evs, cursor) = events_of(&w.run(b, sync(l.id, None, vec![], vec![])));
     let ids: Vec<BlobId> = eph[..2].iter().map(|e| osis_label::blob_id(e)).collect();
     assert_eq!(sorted(added(&evs)), sorted(ids.clone()));

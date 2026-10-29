@@ -801,7 +801,9 @@ impl Engine {
                 continue;
             }
             for (ak, ea) in m {
-                if ea.parts.is_empty() || !ea.expiring.is_empty() || ak.as_str() == CREATED.ak() {
+                // one held part is what a compaction would make again: forcing it would loop
+                // (a server refusing the cover, compacted into the next cover)
+                if ea.parts.len() < 2 || !ea.expiring.is_empty() || ak.as_str() == CREATED.ak() {
                     continue;
                 }
                 let held_bytes: usize = ea.parts.iter().filter_map(|(id, _)| self.eph.remote.held.get(id)).map(|h| h.bytes / h.parts.len().max(1)).sum();
