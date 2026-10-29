@@ -604,7 +604,9 @@ fn deaths_never_early_random_spec_commits_5() {
     let start = env("OSIS_STRAYS_START").unwrap_or(0);
     let n = env("OSIS_STRAYS_SEEDS").unwrap_or(24);
     // every failing seed is reported
+    let t0 = std::time::Instant::now();
     let failed: Vec<u64> = (start..start + n).filter(|&seed| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dating_history(seed))).is_err()).collect();
+    eprintln!("deaths_never_early_random: {n} seeds from {start}, {} failing, {:.1} s", failed.len(), t0.elapsed().as_secs_f64());
     assert!(failed.is_empty(), "seeds failed: {failed:?} (replay one: OSIS_STRAYS_START=<seed> OSIS_STRAYS_SEEDS=1)");
 }
 
