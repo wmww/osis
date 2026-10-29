@@ -572,3 +572,31 @@ fn favorite_twice_then_moved() {
     a.move_favorite(i, f.len() - 1).unwrap();
     assert_eq!(a.favorites().unwrap().last(), Some(&n), "{:?}", a.favorites().unwrap());
 }
+
+/// A form saved on focus loss after its thing was deleted (here, or concurrently on the other
+/// device) must not bring the thing back into the app.
+#[test]
+fn form_save_after_a_delete() {
+    use osis_app::data::NewKind;
+    use osis_app::fields::FormRow;
+    let (a, b) = two();
+    a.main_group().unwrap();
+    let c = a.create(NewKind::Contact).unwrap();
+    sync(&a, &b);
+    let act = |d: &Data| d.contact_form(c).unwrap().into_iter().find(|r: &FormRow| r.label == "Title").unwrap().act;
+    let on_a = act(&a);
+    // deleted elsewhere, saved here before hearing of it
+    b.delete(c).unwrap();
+    let _ = a.form_apply(c, &on_a, "Gardener");
+    sync(&a, &b);
+    for d in [&a, &b] {
+        assert!(!d.things().unwrap().contains(&c), "a concurrent field write does not revive it");
+    }
+    // deleted here, the stale form saved afterwards
+    let c2 = a.create(NewKind::Contact).unwrap();
+    let on = a.contact_form(c2).unwrap().into_iter().find(|r: &FormRow| r.label == "Title").unwrap().act;
+    a.delete(c2).unwrap();
+    let _ = a.form_apply(c2, &on, "Gardener");
+    assert!(!a.things().unwrap().contains(&c2));
+    assert!(a.opened().unwrap().is_none());
+}

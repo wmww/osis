@@ -238,3 +238,177 @@ fn waiting_revocations() {
     a.drop_revoke(n, shared).unwrap();
     assert!(a.pending_revokes().unwrap().is_empty());
 }
+
+/// Alice on two paired devices and Bob; every node holds the others' commits after `sync3`.
+fn alice_twice_and_bob() -> (Data, Data, Data) {
+    let clock = Arc::new(ManualClock::new(WallMs(1_760_000_000_000)));
+    let a = Osis::create(cfg(1, &clock)).unwrap().0;
+    let j = Osis::pair(cfg(3, &clock), &a.pair_offer().unwrap()).unwrap();
+    let (_, reply) = a.pair_accept(j.request()).unwrap();
+    let a2 = Data::new(j.finish(&reply).unwrap());
+    let a = Data::new(a);
+    let b = Data::new(Osis::create(cfg(2, &clock)).unwrap().0);
+    a.main_group().unwrap();
+    b.main_group().unwrap();
+    sync3(&a, &a2, &b);
+    (a, a2, b)
+}
+
+fn sync3(a: &Data, a2: &Data, b: &Data) {
+    for _ in 0..2 {
+        sync(a, a2);
+        sync(a, b);
+        sync(a2, b);
+    }
+}
+
+/// Removing a thing from the sub-tag after removing it from the tag: the tag's own edge is no
+/// longer kept by anything and must be among what the removal takes back.
+#[test]
+fn removal_after_a_kept_one_takes_back_the_parents_edge() {
+    let (a, b) = two_people();
+    let shared = shared_tag(&a, &b, Role::Read);
+    let sub = a.create(NewKind::Tag).unwrap();
+    let n = a.create(NewKind::Note).unwrap();
+    a.add_tag(n, shared).unwrap();
+    a.add_tag(sub, shared).unwrap();
+    a.add_tag(n, sub).unwrap();
+    a.remove_tag(n, shared).unwrap();
+    assert!(a.revocations_after_removal(n).unwrap().is_empty(), "still under the tag through the sub-tag");
+    a.remove_tag(n, sub).unwrap();
+    assert_eq!(a.revocations_after_removal(n).unwrap(), std::collections::BTreeSet::from([(n, shared), (n, sub)]));
+    // un-nesting the sub-tag also frees what only it kept under the tag
+    let k = a.create(NewKind::Note).unwrap();
+    a.add_tag(k, shared).unwrap();
+    a.add_tag(k, sub).unwrap();
+    a.remove_tag(k, shared).unwrap();
+    a.remove_tag(sub, shared).unwrap();
+    let r = a.revocations_after_removal(sub).unwrap();
+    assert!(r.contains(&(sub, shared)) && r.contains(&(k, shared)), "{r:?}");
+}
+
+/// Nested several levels and in a cycle, a thing is still under the tag: nothing is taken back.
+#[test]
+fn deep_and_cyclic_nesting_keeps_access() {
+    let (a, b) = two_people();
+    let shared = shared_tag(&a, &b, Role::Read);
+    let (x, y, z) = (a.create(NewKind::Tag).unwrap(), a.create(NewKind::Tag).unwrap(), a.create(NewKind::Tag).unwrap());
+    let n = a.create(NewKind::Note).unwrap();
+    a.add_tag(n, shared).unwrap();
+    a.add_tag(x, shared).unwrap();
+    a.add_tag(y, x).unwrap();
+    a.add_tag(z, y).unwrap();
+    a.add_tag(x, z).unwrap(); // a cycle x -> y -> z -> x
+    a.add_tag(n, z).unwrap();
+    a.remove_tag(n, shared).unwrap();
+    assert!(a.under(shared, n).unwrap());
+    assert!(!a.revoke_needed(n, shared).unwrap());
+    assert!(a.revocations_after_removal(n).unwrap().is_empty());
+}
+
+/// The tag's edge goes, never an edge Bob holds himself on the same thing.
+#[test]
+fn revoking_a_tag_keeps_a_direct_share() {
+    use osis::WaitForSync::Skip;
+    use osis_kit::tasks::block_on;
+    let (a, b) = two_people();
+    let shared = shared_tag(&a, &b, Role::Read);
+    let n = a.create(NewKind::Note).unwrap();
+    a.db.grant(n, b.db.me(), Role::Read, EdgeOpts::default()).unwrap();
+    a.add_tag(n, shared).unwrap();
+    a.remove_tag(n, shared).unwrap();
+    assert!(a.revoke_needed(n, shared).unwrap());
+    block_on(a.revoke(n, shared, Skip)).unwrap();
+    assert!(a.db.roster(n).contains_key(&b.db.me()), "Bob's own edge stays");
+    sync(&a, &b);
+    assert_eq!(b.db.role_on(n), Some(Role::Read));
+}
+
+/// Re-tagging while the revocation runs (the tag's edge still live, so the re-tag grants
+/// nothing): once the revocation lands, the thing is placed in the tag and must still reach it.
+#[test]
+fn retag_during_a_revocation_keeps_access() {
+    use osis::WaitForSync::Skip;
+    use osis_kit::tasks::block_on;
+    let (a, b) = two_people();
+    let shared = shared_tag(&a, &b, Role::Read);
+    let n = a.create(NewKind::Note).unwrap();
+    a.add_tag(n, shared).unwrap();
+    a.remove_tag(n, shared).unwrap();
+    assert!(a.revoke_applies(n, shared).unwrap());
+    // the UI checked and started the task; the user puts it back before it ran
+    a.add_tag(n, shared).unwrap();
+    block_on(a.revoke(n, shared, Skip)).unwrap();
+    assert_eq!(a.tags_of(n).unwrap(), vec![shared]);
+    assert!(!a.db.member_path(n, shared).is_empty(), "placed in the shared tag but no longer shared");
+    sync(&a, &b);
+    assert_eq!(b.db.role_on(n), Some(Role::Read));
+}
+
+/// Both of Alice's devices run the same waiting revocation before hearing of each other: the
+/// result merges, Bob reaches the thing no more, and the entry is moot on both.
+#[test]
+fn two_devices_revoke_the_same_entry() {
+    use osis::WaitForSync::Skip;
+    use osis_kit::tasks::block_on;
+    let (a, a2, b) = alice_twice_and_bob();
+    let shared = shared_tag(&a, &b, Role::Read);
+    let n = a.create(NewKind::Note).unwrap();
+    a.add_tag(n, shared).unwrap();
+    sync3(&a, &a2, &b);
+    assert_eq!(b.db.role_on(n), Some(Role::Read));
+    a.remove_tag(n, shared).unwrap();
+    a.queue_revoke(n, shared).unwrap();
+    sync3(&a, &a2, &b);
+    assert_eq!(a2.pending_revokes().unwrap(), vec![(n, shared)]);
+    assert!(a2.revoke_applies(n, shared).unwrap());
+    block_on(a.revoke(n, shared, Skip)).unwrap();
+    block_on(a2.revoke(n, shared, Skip)).unwrap();
+    sync3(&a, &a2, &b);
+    for d in [&a, &a2] {
+        assert!(d.db.member_path(n, shared).is_empty());
+        assert!(!d.revoke_applies(n, shared).unwrap());
+        assert_eq!(d.reach(n).unwrap().who(), "Only you");
+    }
+    assert_eq!(b.db.role_on(n), None, "Bob no longer reaches it");
+    // the merged rotations leave the thing writable and synced between the devices (what Bob
+    // can decrypt is not testable here: `deliver` hands over plaintext commits)
+    a2.db.write_with(|w| w.at(n, NAME).set(&"after".to_string())).unwrap();
+    sync3(&a, &a2, &b);
+    assert_eq!(a.name(n).unwrap(), "after");
+}
+
+/// Re-tagged on Alice's other device while the first one revokes, before either hears of the
+/// other: after the merge the thing is in the tag and the tag's members reach it.
+#[test]
+fn retag_on_another_device_during_a_revocation() {
+    use osis::WaitForSync::Skip;
+    use osis_kit::tasks::block_on;
+    let (a, a2, b) = alice_twice_and_bob();
+    let shared = shared_tag(&a, &b, Role::Read);
+    let n = a.create(NewKind::Note).unwrap();
+    a.add_tag(n, shared).unwrap();
+    a.remove_tag(n, shared).unwrap();
+    a.queue_revoke(n, shared).unwrap();
+    sync3(&a, &a2, &b);
+    for first in [true, false] {
+        if first {
+            a2.add_tag(n, shared).unwrap();
+        }
+        block_on(a.revoke(n, shared, Skip)).unwrap();
+        if !first {
+            a2.add_tag(n, shared).unwrap();
+        }
+        sync3(&a, &a2, &b);
+        assert_eq!(a.tags_of(n).unwrap(), vec![shared]);
+        assert!(!a.db.member_path(n, shared).is_empty(), "placed in the shared tag but no longer shared");
+        // again, the other way round
+        a.remove_tag(n, shared).unwrap();
+        a.queue_revoke(n, shared).unwrap();
+        sync3(&a, &a2, &b);
+    }
+    a2.add_tag(n, shared).unwrap();
+    sync3(&a, &a2, &b);
+    assert_eq!(a.tags_of(n).unwrap(), vec![shared]);
+    assert!(!a.db.member_path(n, shared).is_empty(), "placed in the shared tag but no longer shared");
+}

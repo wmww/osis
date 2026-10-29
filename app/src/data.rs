@@ -541,8 +541,15 @@ impl Data {
     /// may not share (not admin) stays out.
     pub fn add_tag(&self, t: Tid, tag: Tid) -> Result<()> {
         let share = self.share_reach(t, tag)?.is_some();
+        // a revocation of this very access may be running on another device: grant it again,
+        // so the merge keeps the tag's edge (a grant after the removal it did not see)
+        let regrant = !share && self.db.role_on(t) == Some(Role::Admin) && self.pending_revokes()?.contains(&(t, tag));
         let nest = self.get(t, TAG)?.is_some();
         self.db.write_with(|w| if nest { w.add_subgroup(tag, t) } else { w.place(t, tag) })?;
+        if regrant {
+            self.db.grant(t, tag, Role::Write, EdgeOpts::default())?;
+            self.drop_revoke(t, tag)?;
+        }
         if share {
             self.db.grant(t, tag, Role::Write, EdgeOpts::default())?;
             if nest {
@@ -597,18 +604,55 @@ impl Data {
         Ok(direct && db.role_on(t) == Some(Role::Admin) && db.member_path(t, tag) == vec![(t, tag)] && !self.under(tag, t)?)
     }
 
+    /// After a removal of `t` from a tag: every (thing, tag) whose access should go
+    /// (`revoke_needed`), over `t` and, for a tag, everything below it, against each tag holding a
+    /// live edge on them. Not only the tag just removed: one kept earlier because the thing was
+    /// still below it another way (a sub-tag) may be free now.
+    pub fn revocations_after_removal(&self, t: Tid) -> Result<BTreeSet<(Tid, Tid)>> {
+        let now = self.db.now();
+        let mut out = BTreeSet::new();
+        let mut seen = BTreeSet::new();
+        let mut todo = vec![t];
+        while let Some(x) = todo.pop() {
+            if !seen.insert(x) {
+                continue;
+            }
+            for (m, e) in self.db.roster(x) {
+                if live(&e, now) && self.db.knows(m) && self.get(m, TAG)?.is_some() && self.revoke_needed(x, m)? {
+                    out.insert((x, m));
+                }
+            }
+            if self.get(x, TAG)?.is_some() {
+                let (subs, items) = self.tag_contents(x)?;
+                todo.extend(subs.into_iter().chain(items));
+            }
+        }
+        Ok(out)
+    }
+
     /// Ends the tag's edge on `t` (async: a pre-sync, then the demotion, and `t` rotates its
     /// secrets). Run off the UI thread (kit `tasks`). When the tag also reaches `t` another way
     /// (through another actor), core removes the direct edge and refuses the rest: `Kept`, the
     /// tag's members still reach `t` that way.
     /// `sync` is core's pre-sync rule (the app passes the default, `Required`: offline, the
     /// removal fails `Unsynced` and nothing changes).
+    /// A re-tag while it runs (the edge still live, so `add_tag` granted nothing) gets the
+    /// tag's edge back once the demotion lands: placed in a shared tag stays shared.
     pub async fn revoke(&self, t: Tid, tag: Tid, sync: osis::WaitForSync) -> std::result::Result<(), RevokeError> {
-        match self.db.demote(t, tag, osis::Lower::Remove, osis::Demotion { sync, backdate: None }).await {
+        if !self.revoke_needed(t, tag).map_err(RevokeError::Failed)? {
+            return Ok(());
+        }
+        let r = match self.db.demote(t, tag, osis::Lower::Remove, osis::Demotion { sync, backdate: None }).await {
             Ok(()) => Ok(()),
             Err(Error::Invalid(m)) if m.contains("reaches") => Err(RevokeError::Kept(m)),
-            Err(e) => Err(RevokeError::Failed(e)),
+            Err(e) => return Err(RevokeError::Failed(e)),
+        };
+        let (subs, items) = self.tag_contents(tag).map_err(RevokeError::Failed)?;
+        let now = self.db.now();
+        if (subs.contains(&t) || items.contains(&t)) && self.db.role_on(t) == Some(Role::Admin) && !self.db.roster(t).get(&tag).is_some_and(|e| live(e, now)) {
+            self.db.grant(t, tag, Role::Write, EdgeOpts::default()).map_err(RevokeError::Failed)?;
         }
+        r
     }
 
     // ---- revocations still to do (durable, synced on the app group: notes/app.md)
