@@ -249,3 +249,32 @@ fn same_stamp_substitution_diverges() {
     y.join(alice);
     assert_eq!(x.read(), y.read(), "join is order dependent for same-stamp writes");
 }
+
+/// spec/permissions.md §5.2, §7: an un-merge at a `Slots` position whose register is older than
+/// a map member's entry creation keeps that creation for the join (the member is not judged below
+/// the register's embedding while it holds a creation another body's content needs).
+#[test]
+fn slots_unmerge_keeps_member_creation_spec_7() {
+    use crate::fragment::{Entry, Map};
+    let (a, b) = (st(2, 1, 1), st(3, 2, 1));
+    let k = Value::Str("k".into());
+    let inner = |created: Option<Stamp>| {
+        let e = Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(Fragment::Register(reg(b.clone(), 7)))), created };
+        Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(a.dot.clone(), e)])))
+    };
+    let mut full = Fragment::default();
+    full.join(Fragment::Slots(Slots { reg: Some(reg(st(1, 3, 1), 5)), members: BTreeMap::from([(Encoding::Map, inner(Some(a.clone())))]) }));
+    assert!(matches!(full, Fragment::Slots(_)), "{full:?}");
+    let bdelta = inner(None);
+    let mut stripped = full.clone();
+    stripped.strip_copies(&|d| d.src == b.dot.src);
+    assert!(matches!(&stripped, Fragment::Slots(s) if s.members.contains_key(&Encoding::Map)), "{stripped:?}");
+    let mut un = stripped.clone();
+    un.remove_dots(&|d| d.src == Source::node(Tid::from_bytes([4; 15])));
+    assert_eq!(un, stripped, "nothing of the fourth author");
+    for (name, x) in [("stripped", stripped), ("stripped, un-merged", un)] {
+        let mut y = bdelta.clone();
+        y.join(x);
+        assert_eq!(y, full, "{name}");
+    }
+}
