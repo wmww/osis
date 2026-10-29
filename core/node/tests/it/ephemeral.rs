@@ -365,10 +365,11 @@ fn signal_once_to_connected_devices_spec_sync_5() {
     net.set_online(c, false);
     net.run();
     let held = (rows(&net.servers[s1].backend), rows(&net.servers[s2].backend));
-    let (rb, rc) = (net.listen(b), net.listen(c));
+    let (ra, rb, rc) = (net.listen(a), net.listen(b), net.listen(c));
     net.eph_write(a, t, &ukey("/t/ring", Lifetime::Signal), s("ding"));
     net.run();
     assert_eq!(fired(&rb).len(), 1, "once, though both servers pushed it");
+    assert_eq!(fired(&ra).len(), 1, "once at the sender (no echo)");
     assert_eq!((rows(&net.servers[s1].backend), rows(&net.servers[s2].backend)), held, "no server holds it");
     let l = net.label(a);
     assert_eq!(net.servers[s1].hub.store().ephemeral_bytes(&l), 0);
@@ -461,3 +462,194 @@ fn ephemeral_part_waits_for_its_record_spec_sync_9() {
     assert_eq!(net.read(b, t), Some(s("durable")));
     assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(Value::Int(7)));
 }
+
+// spec/crdt.md §4.6 (un-merge rebuilds from what is held): a node's own compaction covers
+// others' writes; a later validity flip on the aspect rebuilds it from the own writes and the
+// held parts, the own cover included, so the covered writes stay and the holders agree
+#[test]
+fn own_compaction_survives_rebuild_spec_crdt_4_6() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[sv]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    note(&mut net, b, w, "b", "1");
+    note(&mut net, c, w, "c", "1");
+    net.run();
+    let cover = net.engine(a).compact_ephemeral(None, true).unwrap().expect("compacted");
+    net.engine(b).ingest_ephemeral(cover.blob).unwrap();
+    local(&mut net, a);
+    net.run();
+    note(&mut net, c, w, "c2", "2");
+    net.run();
+    let ct = net.tid(c);
+    let me = net.tid(a);
+    let bt = net.tid(b);
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(me, Role::Admin), (bt, Role::Write)]);
+    remove_member(e, g, ct, &rs, 9);
+    net.run();
+    let at_a = notes(&mut net, a, w);
+    assert_eq!(at_a, notes(&mut net, b, w), "holders agree");
+    assert_eq!(at_a, map(&[("b", "1"), ("c", "1")]), "the covered writes stay (the cover's author is valid); c's later write goes");
+}
+
+/// One random run of the shared window (notes/ephemeral.md Convergence): four writers on two
+/// servers (odd seeds: one with a small ephemeral cap, so writers compact), random ephemeral
+/// writes, partitions (offline, one server blocked), node restarts and server restarts; after
+/// healing every holder reads the same notes.
+fn random_window_run(seed: u64) {
+    let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    let mut rnd = move |n: u64| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x % n
+    };
+    let mut net = Net::new();
+    // odd seeds: a small ephemeral cap at the first server forces compactions
+    let s1 = if seed % 2 == 1 { net.add_server_with(osis_server::Policy { ephemeral_bytes: 6_000, ..osis_server::Policy::default() }) } else { net.add_server() };
+    let s2 = net.add_server();
+    let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &[s1, s2])).collect();
+    let members: Vec<(usize, Role)> = nodes[1..].iter().map(|n| (*n, Role::Write)).collect();
+    let g = net.group(nodes[0], &members, &[s1, s2]);
+    net.run();
+    let w = window(&mut net, nodes[0], g, "w");
+    net.run();
+    let mut restarts = 100;
+    let mut log = Vec::new();
+    for step in 0..40 {
+        let n = nodes[rnd(4) as usize];
+        match rnd(10) {
+            0..=4 => {
+                if net.engine(n).ephemeral_thing(&w).is_some() || net.eph_read(n, w, STATE).is_some() {
+                    let (k, v) = (format!("k{}", rnd(5)), format!("v{step}"));
+                    log.push(format!("{n} writes {k}={v}"));
+                    // not `note`: an offline node must not see events (its dials would hang)
+                    let mut m = Mutation::new();
+                    m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(&k))], op: Op::Set(s(&v)) }).unwrap();
+                    net.engine(n).write(m).unwrap();
+                }
+            }
+            5 => {
+                let on = !net.nodes[n].online;
+                log.push(format!("{n} online {on}"));
+                net.set_online(n, on);
+            }
+            6 => {
+                let s = if rnd(2) == 0 { s1 } else { s2 };
+                let blocked = !net.blocked.remove(&(n, s));
+                if blocked {
+                    net.blocked.insert((n, s));
+                    if net.conn_to(n, s).is_some() {
+                        let on = net.nodes[n].online;
+                        net.set_online(n, false);
+                        net.set_online(n, on);
+                    }
+                }
+                log.push(format!("{n} blocked from {s} {blocked}"));
+            }
+            7 => {
+                restarts += 1;
+                log.push(format!("{n} restarts"));
+                let on = net.nodes[n].online;
+                net.restart(n, restarts);
+                net.set_online(n, on);
+            }
+            8 if rnd(4) == 0 => {
+                let s = if rnd(2) == 0 { s1 } else { s2 };
+                log.push(format!("server {s} restarts"));
+                net.restart_server(s);
+            }
+            _ => {
+                log.push("advance".into());
+                net.advance(1_000 + rnd(20_000));
+                continue;
+            }
+        }
+        net.run();
+    }
+    net.blocked.clear();
+    for n in &nodes {
+        net.set_online(*n, true);
+    }
+    for _ in 0..4 {
+        net.advance(15_000);
+    }
+    let holders: Vec<usize> = nodes.iter().copied().filter(|n| net.engine(*n).ephemeral_thing(&w).is_some()).collect();
+    let first = notes(&mut net, holders[0], w);
+    for n in &holders[1..] {
+        assert_eq!(notes(&mut net, *n, w), first, "seed {seed}: node {n} differs from node {}\n{}", holders[0], log.join("\n"));
+    }
+}
+
+// notes/ephemeral.md Convergence (randomized): holders of a shared window converge after random
+// writes, partitions and restarts heal
+#[test]
+fn random_window_converges_spec_sync_6() {
+    for seed in 0..4 {
+        random_window_run(seed);
+    }
+}
+
+// the same over more seeds (tier 2): OSIS_EPH_SEEDS (default 200) from OSIS_EPH_START
+#[test]
+#[ignore]
+fn random_window_converges_large() {
+    let start: u64 = std::env::var("OSIS_EPH_START").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let n: u64 = std::env::var("OSIS_EPH_SEEDS").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
+    for seed in start..start + n {
+        random_window_run(seed);
+    }
+}
+
+// spec/data-model.md §1 (two nodes persisting one ephemeral thing both carry its record,
+// idempotent): a synced window under an ephemeral workspace is persisted by both members while
+// apart; on reconnect both hold one durable thing (same tid, chain durable), one placement, and
+// the ephemeral aspects still merged
+#[test]
+fn concurrent_persist_one_thing_spec_data_model_1() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let ws = e.new_thing(&mut m, g);
+    let w = e.new_thing(&mut m, ws);
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+    m.set(w, &eph(STATE), &s("draft")).unwrap();
+    e.write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert!(net.engine(b).ephemeral_thing(&w).is_some());
+    net.set_online(b, false);
+    for (n, v) in [(a, "from a"), (b, "from b")] {
+        let mut m = Mutation::new();
+        m.set(w, &REG, &s(v)).unwrap();
+        net.engine(n).write(m).unwrap();
+        assert!(net.engine(n).core.created(&ws).is_some(), "the chain persisted at {n}");
+    }
+    note(&mut net, a, w, "a", "1");
+    let mut m = Mutation::new();
+    m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("b"))], op: Op::Set(s("2")) }).unwrap();
+    net.engine(b).write(m).unwrap();
+    net.run();
+    net.set_online(b, true);
+    net.advance(10_000);
+    net.advance(10_000);
+    for n in [a, b] {
+        assert!(net.engine(n).ephemeral_thing(&w).is_none() && net.engine(n).ephemeral_thing(&ws).is_none(), "durable at {n}");
+        assert_eq!(net.engine(n).groups_of(&w).iter().filter(|x| **x == g).count(), 1);
+        assert_eq!(notes(&mut net, n, w), map(&[("a", "1"), ("b", "2")]));
+        assert_eq!(net.eph_read(n, w, STATE), Some(s("draft")));
+    }
+    assert_eq!(net.read(a, w), net.read(b, w));
+}
+
