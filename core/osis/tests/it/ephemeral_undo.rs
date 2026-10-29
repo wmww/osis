@@ -209,3 +209,33 @@ trait Tap: Sized {
     }
 }
 impl Tap for osis::Write<'_> {}
+
+// notes/ephemeral.md Step 2 as built (Open): undoing the save of a placed draft reverts its
+// durable writes, the placement's durable add included; the thing stays durable, so its
+// ephemeral placement is not restored (it would vanish at restart and never convert). Redo
+// puts it back. spec/crdt.md §4.6
+#[test]
+fn undo_of_save_removes_the_placement_spec_crdt_4_6() {
+    let db = setup(9);
+    let draft = ak("/app/draft").ephemeral();
+    let body = ak("/app/body");
+    let (f, e) = db
+        .write_with(|w| {
+            let f = w.create_durable(db.me())?;
+            w.make_group(f)?;
+            let e = w.create(db.me())?;
+            w.place(e, f)?;
+            w.at(e, draft.clone()).set(&Value::Int(1))?;
+            Ok((f, e))
+        })
+        .unwrap();
+    db.write_with(|w| w.at(e, body.clone()).set(&Value::Int(1))).unwrap();
+    assert!(db.groups_of(e).contains(&f));
+    db.undo(&Scope::Thing(e)).unwrap().unwrap();
+    assert!(db.groups_of(e).is_empty() && db.get(e, body.clone()).unwrap().is_none());
+    assert!(db.created(e).unwrap().commit.is_some(), "still durable");
+    // the draft's batch wrote an ephemeral aspect of what is now a durable thing: out of scope
+    assert_eq!(db.undo(&Scope::Thing(e)).unwrap(), None);
+    db.redo(&Scope::Thing(e)).unwrap().unwrap();
+    assert!(db.groups_of(e).contains(&f) && db.get(e, body.clone()).unwrap() == int(1));
+}

@@ -754,3 +754,112 @@ fn placement_not_persisted_without_write_on_group_spec_permissions_1() {
     assert!(group_of(&bob, g).items.contains(&t), "still placed, ephemerally");
     assert!(!durable_items(&bob, g).contains(&t));
 }
+
+// notes/ephemeral.md Ephemeral placements: persisting an item placed with an expiry in an
+// ephemeral group persists the group in the same commit whatever the tid order (its empty
+// `/group` takes the placement's expiry, which removes no value of it), and it stays a group
+// after the placement expires. spec/crdt.md §4.7, spec/data-model.md §8
+#[test]
+fn expiring_placement_persists_ephemeral_group_spec_data_model_8() {
+    for order in 0..4 {
+        let (db, c) = setup(40 + order);
+        let (g, x) = db
+            .write_with(|w| {
+                let a = w.create(db.me())?;
+                let b = w.create(db.me())?;
+                let (g, x) = if (a < b) == (order % 2 == 0) { (a, b) } else { (b, a) };
+                w.make_group(g)?;
+                Ok((g, x))
+            })
+            .unwrap();
+        db.write_with(|w| w.place_expiring(x, g, Some(Duration::from_secs(60)))).unwrap();
+        db.write_with(|w| w.at(x, ak("/app/kept")).set(&Value::Int(1))).unwrap();
+        assert!(db.created(g).unwrap().commit.is_some(), "order {order}");
+        assert_eq!(durable_items(&db, g), vec![x]);
+        c.advance(120_000);
+        db.engine(|e| {
+            e.tick().unwrap();
+            e.tick_ephemeral();
+        });
+        assert_eq!(db.get(g, osis::core::GROUP).unwrap(), Some(Default::default()), "order {order}: still a group");
+    }
+}
+
+// notes/ephemeral.md Persistence: the persistence fixpoint through cycles (a group holding
+// itself, two groups holding each other, an item owned by and placed in an ephemeral group of
+// that pair) persists every thing involved with its placements, and a reopened store reads
+// the same groups. spec/data-model.md §1, §8
+#[test]
+fn persistence_through_group_cycles_spec_data_model_8() {
+    let dir = std::env::temp_dir().join(format!("osis-eph-cycles-{}-{:?}", std::process::id(), std::thread::current().id()).replace(['(', ')'], ""));
+    let _ = std::fs::remove_dir_all(&dir);
+    let c = clock();
+    let at = |seed: u64| {
+        let mut x = Config::at(StoreAt::Dir(dir.clone()));
+        x.seed = Some(seed);
+        x.clock = Some(c.clone());
+        x
+    };
+    let db = Osis::create(at(1)).unwrap().0;
+    let home = db.home();
+    let (g, g1, g2, x) = db
+        .write_with(|w| {
+            let g = w.create(db.me())?;
+            w.make_group(g)?;
+            w.add_subgroup(g, g)?;
+            w.place(g, g)?;
+            let g1 = w.create(db.me())?;
+            let g2 = w.create(g1)?;
+            w.make_group(g1)?;
+            w.make_group(g2)?;
+            w.add_subgroup(g1, g2)?;
+            w.add_subgroup(g2, g1)?;
+            w.add_subgroup(home, g1)?;
+            let x = w.create(g2)?;
+            w.place(x, g2)?;
+            Ok((g, g1, g2, x))
+        })
+        .unwrap();
+    assert!(db.groups_of(g).contains(&g));
+    assert!(db.groups_of(x).contains(&g1) && db.groups_of(x).contains(&home));
+    db.write_with(|w| w.at(g, ak("/app/kept")).set(&Value::Int(1))).unwrap();
+    db.write_with(|w| w.at(x, ak("/app/kept")).set(&Value::Int(2))).unwrap();
+    for t in [g, g1, g2, x] {
+        assert!(db.created(t).unwrap().commit.is_some(), "{t} persisted");
+    }
+    let check = |db: &Osis| {
+        assert!(durable_items(db, g).contains(&g) && durable_items(db, g2).contains(&x));
+        assert!(db.engine(|e| e.durable_groups_of(&x)).is_superset(&[g1, g2, home].into()));
+        assert!(group_of(db, g1).subgroups.contains(&g2) && group_of(db, g2).subgroups.contains(&g1));
+    };
+    check(&db);
+    db.close().unwrap();
+    let db = Osis::open(at(2)).unwrap();
+    check(&db);
+    db.close().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// notes/ephemeral.md Persistence: a placement that does not convert (unplaced by the
+// persisting batch) does not persist its ephemeral group. spec/data-model.md §8
+#[test]
+fn unplaced_placement_does_not_persist_its_group_spec_data_model_8() {
+    let (db, _c) = setup(45);
+    let (g, x) = db
+        .write_with(|w| {
+            let g = w.create(db.me())?;
+            w.make_group(g)?;
+            let x = w.create(db.me())?;
+            w.place(x, g)?;
+            Ok((g, x))
+        })
+        .unwrap();
+    db.write_with(|w| {
+        w.at(x, ak("/app/kept")).set(&Value::Int(1))?;
+        w.unplace(x, g)
+    })
+    .unwrap();
+    assert!(db.created(x).unwrap().commit.is_some());
+    assert_eq!(db.created(g).unwrap().commit, None);
+    assert!(!group_of(&db, g).items.contains(&x));
+}

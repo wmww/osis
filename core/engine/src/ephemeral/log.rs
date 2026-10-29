@@ -88,7 +88,7 @@ impl Log {
         if aspects.is_empty() {
             return;
         }
-        let bytes = aspects.iter().map(|a| size(&a.delta) + size(&a.pre) + a.ak.as_str().len() + 64).sum::<usize>() + 128;
+        let bytes = aspects.iter().map(|a| size(&a.delta) + size(&a.pre) + a.ak.as_str().len()).sum::<usize>() + aspects.capacity() * size_of::<LogAspect>() + size_of::<Entry>() + 32;
         self.bytes += bytes;
         self.entries.push_back(Entry { id, reverts, actor, ts, received, aspects, bytes });
         while self.bytes > cap {

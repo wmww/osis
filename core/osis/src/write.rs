@@ -239,14 +239,14 @@ impl<'d> Write<'d> {
 }
 
 /// Reports things placed only where no synced group holds them (spec/requirements.md, Offline
-/// and network).
+/// and network): durable closures only, what sync carries.
 fn not_synced(e: &mut osis_node::Engine, placed: &[Tid]) {
     if placed.is_empty() {
         return;
     }
     let labeled = e.labeled_groups();
     for t in placed {
-        if e.ephemeral_thing(t).is_some() || labeled.contains(t) || e.groups_of(t).iter().any(|g| labeled.contains(g)) {
+        if e.ephemeral_thing(t).is_some() || labeled.contains(t) || e.durable_groups_of(t).iter().any(|g| labeled.contains(g)) {
             continue;
         }
         e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t], commit: None, peer: None, detail: "placed only in groups no synced group holds: it stays on this device".into() });
