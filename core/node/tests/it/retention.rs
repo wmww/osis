@@ -272,7 +272,7 @@ fn undo_redo_spec_commits_7() {
     let scope = [(t, ak("/t/reg")), (t, ak("/t/tags"))];
     assert_eq!(lp.peers[0].engine.held_commits(Some(&scope))[0].id, c3);
     let u3 = lp.peers[0].engine.revert(&c3).unwrap().unwrap();
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/tags")).unwrap(), Some(Value::Set(Default::default())));
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/tags")).unwrap(), None, "exact: the set was absent before");
     let u2 = lp.peers[0].engine.revert(&c2).unwrap().unwrap();
     assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("a")));
     let held: Vec<_> = lp.peers[0].engine.held_commits(Some(&scope)).into_iter().map(|c| (c.id, c.header.undoes)).collect();
@@ -283,7 +283,7 @@ fn undo_redo_spec_commits_7() {
     // undo replicates like any commit
     sync(&mut lp, 0, 1);
     assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("b")));
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/tags")).unwrap(), Some(Value::Set(Default::default())));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/tags")).unwrap(), None);
     // an admin undoes another's change
     let b = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
