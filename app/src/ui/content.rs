@@ -59,6 +59,8 @@ pub enum Block {
     Chips(Vec<ChipM>),
     /// Calendar days: a label, whether it is today, the events.
     Days(Vec<(String, bool, Vec<Tile>)>),
+    /// The schema fallback view's rows of a thing.
+    Fields(Tid, Vec<crate::fields::Row>),
 }
 
 /// What a slot shows.
@@ -147,6 +149,12 @@ impl Ui {
     pub(super) fn extra_content(&self, t: Tid) -> osis::Result<Content> {
         let d = &self.data;
         let mut c = Content::default();
+        if self.view.all_fields {
+            c.label("All fields");
+            c.line("Every aspect from its schema type. Enter saves a field; an empty optional field becomes none.");
+            c.blocks.push(Block::Fields(t, d.field_rows(t)?));
+            return Ok(c);
+        }
         match d.kind(t)? {
             Kind::Event => {
                 if let Some(s) = d.get(t, crate::event::START)? {
@@ -345,6 +353,29 @@ impl Ui {
                         g = g.with_child(NewWidget::new(Panel::new(NewWidget::new(day), look.clone(), kind, (10.0, 8.0))));
                     }
                     col = col.with_child(NewWidget::new(g));
+                }
+                Block::Fields(t, rows) => {
+                    for r in rows {
+                        let indent = look.sp(16.0) * r.depth as f64;
+                        let label = Flex::column()
+                            .cross_axis_alignment(CrossAxisAlignment::Start)
+                            .with_child(style::label(&look, &r.label, Text::Muted))
+                            .with_child(style::label(&look, &r.ty, Text::Small));
+                        let label = NewWidget::new_with_props(label, osis_kit::masonry::core::Properties::new().with(osis_kit::masonry::properties::Padding { left: indent, right: 0.0, top: 0.0, bottom: 0.0 }));
+                        let value: NewWidget<dyn Widget> = if r.edit == crate::fields::Edit::None {
+                            style::label(&look, &r.value, Text::Body).erased()
+                        } else {
+                            let (input, id) = style::input(&look, &r.value, if r.optional { "none" } else { "" }, Text::Body, false);
+                            self.field_inputs.insert(id, (*t, r.clone()));
+                            NewWidget::new(Panel::new(input, look.clone(), PanelKind::Field, (5.0, 8.0))).erased()
+                        };
+                        let row = Flex::row()
+                            .cross_axis_alignment(CrossAxisAlignment::Center)
+                            .with_gap(Length::px(look.sp(12.0)))
+                            .with_child(NewWidget::new(osis_kit::masonry::widgets::SizedBox::new(label).width(Length::px(220.0))))
+                            .with_flex_child(value, 1.0);
+                        col = col.with_child(NewWidget::new(row));
+                    }
                 }
                 Block::Chips(chips) => {
                     let mut wrap = Wrap::new(look.clone());

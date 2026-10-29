@@ -6,6 +6,7 @@
 pub mod data;
 pub mod demo;
 pub mod edit;
+pub mod fields;
 pub mod time;
 pub mod ui;
 

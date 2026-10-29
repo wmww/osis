@@ -82,6 +82,8 @@ enum Act {
     Week(i64),
     /// Move an event (ms) and lengthen it (ms).
     Nudge(Tid, i64, i64),
+    /// Show or hide every field (the schema fallback view).
+    AllFields,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,6 +103,8 @@ struct ViewState {
     pending: Option<(Tid, Tid, String)>,
     /// The calendar's week, relative to this one.
     week: i64,
+    /// The schema fallback view is shown.
+    all_fields: bool,
 }
 
 /// A text field of the open thing.
@@ -146,6 +150,8 @@ pub struct Ui {
     acts: HashMap<WidgetId, Act>,
     /// What the × of a removable chip does.
     remove_acts: HashMap<WidgetId, Act>,
+    /// The fallback view's inputs: the row each edits (written on Enter).
+    field_inputs: HashMap<WidgetId, (Tid, crate::fields::Row)>,
     /// Focus the title once the next screen is built (a thing just made).
     focus_title: bool,
     editor: Option<Editor>,
@@ -181,6 +187,7 @@ impl Ui {
             search_ids: Vec::new(),
             acts: HashMap::new(),
             remove_acts: HashMap::new(),
+            field_inputs: HashMap::new(),
             focus_title: false,
             editor: None,
             subs: BTreeMap::new(),
@@ -297,6 +304,7 @@ impl Ui {
     fn build(&mut self, ctx: &mut DriverCtx<'_, '_>, screen: Screen) -> osis::Result<()> {
         self.acts.clear();
         self.remove_acts.clear();
+        self.field_inputs.clear();
         self.slots.clear();
         self.search_ids.clear();
         if self.editor.as_ref().map(|e| Screen::Thing(e.tid)) != Some(screen) {
@@ -448,6 +456,12 @@ impl Ui {
                 Ok(())
             }
             Act::Nudge(t, by, longer) => self.data.nudge(t, by, longer),
+            Act::AllFields => {
+                self.view.all_fields = !self.view.all_fields;
+                // the bar's toggle shows the state
+                force = true;
+                Ok(())
+            }
             Act::Undo(t) => {
                 // the sessions hold the text before the undo: reopen them
                 self.editor = None;
@@ -473,6 +487,16 @@ impl Ui {
                     if let Some(t) = first {
                         self.press(ctx, Act::Open(t));
                     }
+                }
+            }
+            return;
+        }
+        if let Some((t, row)) = self.field_inputs.get(&id).cloned() {
+            if let TextAction::Entered(text) = a {
+                let r = self.data.set_field(t, &row, &text);
+                match r {
+                    Ok(()) => self.refresh(ctx, false),
+                    Err(e) => self.status(ctx, format!("{}: {e}", row.label)),
                 }
             }
             return;

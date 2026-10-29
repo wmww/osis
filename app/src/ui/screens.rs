@@ -92,6 +92,8 @@ impl Ui {
         let fav = self.data.is_favorite(t)?;
         let star = NewWidget::new_with_tag(IconButton::new(Icon::Star, "Favorite", look.clone()).on(fav), STAR);
         bar = bar.with_child(self.act(star, Act::Favorite(t)));
+        let all = NewWidget::new(IconButton::new(Icon::List, "All fields", look.clone()).on(self.view.all_fields));
+        bar = bar.with_child(self.act(all, Act::AllFields));
         if !matches!(tile.kind, Kind::View(_)) {
             let del = NewWidget::new(IconButton::new(Icon::Trash, "Delete", look.clone()));
             bar = bar.with_child(self.act(del, Act::Delete(t)));
