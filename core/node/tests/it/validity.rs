@@ -2191,10 +2191,10 @@ fn cover_drop_coverer_flips_back_alike_spec_perm_5_2() {
     let mut order = Vec::new();
     for i in 0..3 {
         for p in packages(&mut lp, i) {
-            if !all.contains_key(&p.id) {
+            all.entry(p.id).or_insert_with(|| {
                 order.push(p.id);
-                all.insert(p.id, p);
-            }
+                p
+            });
         }
     }
     // Alice's tag reaches the fresh nodes only inside S1 and S2
