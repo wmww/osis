@@ -11,7 +11,7 @@ Design and plan: notes/ephemeral.md (owner direction and reviews recorded there)
 
 ## Decisions to glance at (no answer needed unless one is wrong)
 - Presence crosses servers and member peers that serve the label, but not a client node bridging two servers (relaying would keep a departed author's values up). A member peer serves presence to its sessions but uploads none of theirs to its servers (it could not delete it there when the session leaves), so a device reachable only through a member peer is not seen by the server's devices.
-- Per-label caps on ephemeral bytes at servers and nodes: past them, that label's ephemeral data stops syncing or converging there (a defined outcome against a hostile writer); compaction frees the server cap.
+- Per-label caps on ephemeral bytes at servers and nodes: past them, that label's ephemeral data stops syncing or converging there (a defined outcome against a hostile writer). Only an author compacts, its own commits (own covers), keeping them within about twice its state: a server cap of twice the sum of the authors' states holds everything; past it, the entries that arrived when it was full stay out there (first come, first served) with a diagnostic.
 
 ## Status
 - Steps 1 (local ephemeral things and aspects), 2 (ephemeral placements, undo) and 3 (ephemeral commits, relay-only signals, the old signal path deleted) and 4 (presence) built (notes/ephemeral.md Step 1-4 as built). Step 3's open items (unsync and lost access keep state until restart, unpaged deltas only, no coalescing or relay delay) are listed there.
