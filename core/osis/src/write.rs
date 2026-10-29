@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::read::ak_of;
 use osis_commit::PurgeItem;
-use osis_base::{Tid, Ts, Value, WallMs};
+use osis_base::{Role, Tid, Ts, Value, WallMs};
 use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
 use osis_node::{ChangeId, Mutation};
 use osis_schema::core_types::{GROUP, is_membership_class};
@@ -101,7 +101,7 @@ impl<'d> Write<'d> {
 
     fn known(&self, t: Tid) -> Result<Tid> {
         let t = self.resolve(t);
-        if self.created.contains(&t) || self.db.knows(t) { Ok(t) } else { Err(Error::UnknownThing { tid: t }) }
+        if self.created.contains(&t) || self.db.holds(t) { Ok(t) } else { Err(Error::UnknownThing { tid: t }) }
     }
 
     /// A new thing owned by `owner` (fixed forever; needs write on it). It is ephemeral (in
@@ -154,8 +154,13 @@ impl<'d> Write<'d> {
     }
 
     /// Adds `tid` to the items of group `g`: an ephemeral write while `tid` stays ephemeral
-    /// (made durable when it persists), else a durable one (persisting `g`). A durable thing
-    /// whose groups then include no synced one gets a `NotSynced` diagnostic after commit.
+    /// (made durable when it persists), else a durable one (persisting `g`). A group's items
+    /// sync only through groups listing it as a subgroup (its members are its items and its
+    /// subgroups' members, not its items' items). So when `tid` is durable after the commit and
+    /// reaches no synced group while `g`'s own aspects sync (`g` is an item of a synced group,
+    /// not a subgroup of one), the commit fails `Invalid` before anything applies: add `g` as a
+    /// subgroup too. A placement only in groups that do not sync at all (device-local data) is
+    /// allowed and reported by a `NotSynced` diagnostic.
     pub fn place(&mut self, tid: Tid, g: Tid) -> Result<()> {
         self.place_expiring(tid, g, None)
     }
@@ -165,6 +170,8 @@ impl<'d> Write<'d> {
     pub fn place_expiring(&mut self, tid: Tid, g: Tid, expires: Option<Duration>) -> Result<()> {
         let t = self.resolve(tid);
         self.group(g, true, tid, true, expires)?;
+        let g = self.resolve(g);
+        self.m.require_synced(t, g);
         self.placed.push(t);
         Ok(())
     }
@@ -178,8 +185,10 @@ impl<'d> Write<'d> {
         self.group(g, false, sub, false, None)
     }
 
-    /// Removes every aspect the node knows of `tid` and every known placement of it. The tid
-    /// stays valid; a later write recreates the thing.
+    /// Removes every aspect the node knows of `tid` and its placements and subgroup edges in
+    /// every group this node may write (one it may not keeps listing it; it reads deleted
+    /// there). Afterwards `knows(tid)` is `false`; the tid stays valid and a later write
+    /// recreates the thing.
     pub fn delete(&mut self, tid: Tid) -> Result<()> {
         let t = self.known(tid)?;
         let aks = self.db.aspects(t)?;
@@ -192,10 +201,15 @@ impl<'d> Write<'d> {
                 self.m.remove_aspect(t, &osis_schema::Untyped::new(ak.clone(), osis_schema::Lifetime::Ephemeral))?;
             }
         }
-        for g in self.db.groups_of(t) {
-            if self.db.get(g, GROUP)?.is_some_and(|x| x.items.contains(&t)) {
-                self.unplace(t, g)?;
-            }
+        let gs = self.db.groups_of(t);
+        let writable = |g: &Tid| matches!(self.db.role_on(*g), Some(Role::Write | Role::Admin));
+        let items: Vec<Tid> = gs.item_of.into_iter().filter(|g| *g != t && writable(g)).collect();
+        let subs: Vec<Tid> = gs.subgroup_of.into_iter().filter(|g| *g != t && writable(g)).collect();
+        for g in items {
+            self.unplace(t, g)?;
+        }
+        for g in subs {
+            self.remove_subgroup(g, t)?;
         }
         self.m.free(t);
         Ok(())

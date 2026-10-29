@@ -15,6 +15,9 @@ pub enum Error {
     Permission { tid: Tid },
     /// The thing's `/created` record is not held.
     UnknownThing(Tid),
+    /// A placement left `tid` in no synced group while `group`'s own data syncs
+    /// (`Mutation::require_synced`). Local.
+    Unsynced { tid: Tid, group: Tid },
     /// No commit with this ID is held (or its body was dropped).
     UnknownCommit(CommitId),
     /// Peer data violating a rule node-core checks. BadInput.
@@ -35,6 +38,7 @@ osis_base::impl_error!(Error {
     Path(e) => ("value: {e}"),
     Permission { tid } => ("no permission to write {tid}"),
     UnknownThing(t) => ("unknown thing {t}"),
+    Unsynced { tid, group } => ("{tid} placed in {group}, whose own data syncs but whose items reach no synced group"),
     UnknownCommit(c) => ("unknown commit {c:?}"),
     BadInput(m) => ("bad input: {m}"),
     Misuse(m) => ("misuse: {m}"),
@@ -52,7 +56,7 @@ impl Classified for Error {
             Error::Crypto(e) => e.class(),
             Error::Path(e) => e.class(),
             Error::BadInput(_) => ErrorClass::BadInput,
-            Error::Permission { .. } | Error::UnknownThing(_) | Error::UnknownCommit(_) | Error::Misuse(_) | Error::Corrupt(_) => ErrorClass::Local,
+            Error::Permission { .. } | Error::UnknownThing(_) | Error::Unsynced { .. } | Error::UnknownCommit(_) | Error::Misuse(_) | Error::Corrupt(_) => ErrorClass::Local,
         }
     }
 }

@@ -217,6 +217,34 @@ impl Engine {
         Ok(out)
     }
 
+    /// Whether the thing holds content: some present aspect a content write sets (not
+    /// `/created`, not membership-class), durable or ephemeral. Stops at the first.
+    pub fn has_content(&mut self, tid: &Tid) -> Result<bool> {
+        let content = |ak: &Ak| ak.as_str() != ct::CREATED.ak() && !ct::is_membership_class(ak.as_str());
+        if self.ephemeral_aspects(tid).iter().any(content) {
+            return Ok(true);
+        }
+        if self.core.created(tid).is_none() {
+            return Ok(false);
+        }
+        let tid = *tid;
+        self.run(|tx| {
+            let mut aks = Vec::new();
+            let prefix = [records::ASPECTS, tid.as_bytes()].concat();
+            tx.scan(&prefix, |k, _| {
+                let mut r = records::Rd::new(k);
+                aks.push(r.ak()?);
+                Ok(())
+            })?;
+            for ak in aks.iter().filter(|a| content(a)) {
+                if tx.state(&tid, ak)?.is_some_and(Fragment::present) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })
+    }
+
     /// The membership timeline's roster of `thing` (spec/permissions.md §2).
     pub fn roster(&self, thing: &Tid) -> BTreeMap<Tid, Edge> {
         self.core.roster_of(thing)

@@ -62,6 +62,8 @@ pub struct Mutation {
     pub(crate) free: std::collections::BTreeSet<Tid>,
     /// The commit's `ts`, when taken before the commit (a batch with an ephemeral half).
     pub(crate) ts: Option<Ts>,
+    /// Placements (thing, group) the commit must not leave unsynced (`require_synced`).
+    pub(crate) synced: Vec<(Tid, Tid)>,
 }
 
 impl Default for Mutation {
@@ -76,7 +78,7 @@ fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new(), fresh: Default::default(), persist: Default::default(), free: Default::default(), ts: None }
+        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new(), fresh: Default::default(), persist: Default::default(), free: Default::default(), ts: None, synced: Vec::new() }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -135,6 +137,14 @@ impl Mutation {
     /// Frees `tid` after this batch if it is still ephemeral then (`delete`).
     pub fn free(&mut self, tid: Tid) -> &mut Self {
         self.free.insert(tid);
+        self
+    }
+
+    /// The commit fails `Error::Unsynced` when, after it, `tid` is durable and reaches no
+    /// synced (labeled) group while `group`'s own data does: a placement into a group that is
+    /// an item of a synced group but no subgroup of one (spec/data-model.md §8).
+    pub fn require_synced(&mut self, tid: Tid, group: Tid) -> &mut Self {
+        self.synced.push((tid, group));
         self
     }
 
@@ -567,5 +577,19 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     if deltas.is_empty() {
         return Err(Error::Misuse("a purge request needs a delta (reset what it names)"));
     }
-    build_and_apply(tx, plan, deltas).map(Some)
+    let id = build_and_apply(tx, plan, deltas)?;
+    check_synced(tx.core, &m.synced)?;
+    Ok(Some(id))
+}
+
+/// `Mutation::require_synced`, over the state the commit left.
+fn check_synced(core: &Core, placed: &[(Tid, Tid)]) -> Result<()> {
+    let lab = &core.ix.labeled;
+    let in_synced = |x: &Tid| core.ix.groups.of.get(x).is_some_and(|s| s.iter().any(|h| lab.contains(h)));
+    for (t, g) in placed {
+        if core.created(t).is_some() && !lab.contains(t) && !in_synced(t) && in_synced(g) {
+            return Err(Error::Unsynced { tid: *t, group: *g });
+        }
+    }
+    Ok(())
 }

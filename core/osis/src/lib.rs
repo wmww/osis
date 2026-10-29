@@ -13,7 +13,7 @@
 //! let note = w.create(db.me())?;
 //! w.place(note, db.home())?;
 //! w.commit()?;
-//! assert!(db.groups_of(note).contains(&db.home()));
+//! assert!(db.groups_of(note).item_of.contains(&db.home()));
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -265,7 +265,7 @@ pub use net::{GroupPolicy, ManualNet, Runtime, Transport};
 pub use person::{Joining, OFFER_LIFETIME_MS, PairOffer, PairReply, PairRequest};
 pub use keys::{Key, core};
 pub use large::ValueStream;
-pub use read::{AspectRef, Created, Edge, PathRef, Reader, Roster};
+pub use read::{AspectRef, Created, Edge, GroupsOf, PathRef, Reader, Roster};
 pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupSync, LinkInfo, LinkOpts, Lower, PRESYNC_WAIT, RecoveryCard, ServerAddr, ShareLink, Status, SyncScope, SyncState, WaitForSync};
 pub use text::TextSession;
 pub use commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Scope};

@@ -156,11 +156,11 @@ fn mixed_scope_undo_order_spec_crdt_4_6() {
     assert_eq!(state(), (int(2), int(2)));
     // an ephemeral placement is a change of the folder: undone and redone like one
     db.write_with(|w| w.unplace(e, f)).unwrap();
-    assert!(!db.groups_of(e).contains(&f));
+    assert!(!db.groups_of(e).within.contains(&f));
     db.undo(&scope).unwrap().unwrap();
-    assert!(db.groups_of(e).contains(&f));
+    assert!(db.groups_of(e).within.contains(&f));
     db.redo(&scope).unwrap().unwrap();
-    assert!(!db.groups_of(e).contains(&f));
+    assert!(!db.groups_of(e).within.contains(&f));
 }
 
 // notes/ephemeral.md Bounds (`ephemeral_history`): past the cap the oldest ephemeral batches
@@ -230,12 +230,12 @@ fn undo_of_save_removes_the_placement_spec_crdt_4_6() {
         })
         .unwrap();
     db.write_with(|w| w.at(e, body.clone()).set(&Value::Int(1))).unwrap();
-    assert!(db.groups_of(e).contains(&f));
+    assert!(db.groups_of(e).within.contains(&f));
     db.undo(&Scope::Thing(e)).unwrap().unwrap();
-    assert!(db.groups_of(e).is_empty() && db.get(e, body.clone()).unwrap().is_none());
+    assert!(db.groups_of(e).within.is_empty() && db.get(e, body.clone()).unwrap().is_none());
     assert!(db.created(e).unwrap().commit.is_some(), "still durable");
     // the draft's batch wrote an ephemeral aspect of what is now a durable thing: out of scope
     assert_eq!(db.undo(&Scope::Thing(e)).unwrap(), None);
     db.redo(&Scope::Thing(e)).unwrap().unwrap();
-    assert!(db.groups_of(e).contains(&f) && db.get(e, body.clone()).unwrap() == int(1));
+    assert!(db.groups_of(e).within.contains(&f) && db.get(e, body.clone()).unwrap() == int(1));
 }

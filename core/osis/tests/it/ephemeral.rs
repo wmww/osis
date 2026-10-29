@@ -123,7 +123,7 @@ fn first_durable_write_persists_chain_spec_commits_2() {
     // placing an ephemeral thing keeps it ephemeral (notes/ephemeral.md Ephemeral placements)
     db.write_with(|w| w.place(other, db.home())).unwrap();
     assert_eq!(db.created(other).unwrap().commit, None);
-    assert!(db.groups_of(other).contains(&db.home()));
+    assert!(db.groups_of(other).within.contains(&db.home()));
 }
 
 // notes/ephemeral.md Local engine (Restart): on a `Dir` store, reopening forgets every
@@ -543,7 +543,7 @@ fn ephemeral_placement_lists_without_commit_spec_data_model_8() {
     assert_eq!(durable_marks(&db), before, "no commit, no store write");
     assert!(group_of(&db, home).items.contains(&t));
     assert!(!durable_items(&db, home).contains(&t));
-    assert!(db.groups_of(t).contains(&home));
+    assert!(db.groups_of(t).within.contains(&home));
     assert_eq!(db.get(t, osis::core::GROUPS).unwrap().map(|g| g.contains(&home)), Some(true));
     let ch = recv(&rx);
     assert!(matches!(ch.source, Source::Local(_)));
@@ -551,7 +551,7 @@ fn ephemeral_placement_lists_without_commit_spec_data_model_8() {
     db.write_with(|w| w.unplace(t, home)).unwrap();
     assert_eq!(durable_marks(&db), before);
     assert!(!group_of(&db, home).items.contains(&t));
-    assert!(db.groups_of(t).is_empty());
+    assert!(db.groups_of(t).within.is_empty());
 }
 
 // notes/ephemeral.md Persistence, Ephemeral placements: persisting a placed ephemeral thing
@@ -584,7 +584,7 @@ fn persisting_makes_placements_durable_spec_data_model_8() {
     // the ephemeral side no longer names it: removing the durable element removes it
     db.write_with(|w| w.unplace(t, home)).unwrap();
     assert!(!group_of(&db, home).items.contains(&t));
-    assert!(db.groups_of(t).contains(&g) && !db.groups_of(t).contains(&home));
+    assert!(db.groups_of(t).within.contains(&g) && !db.groups_of(t).within.contains(&home));
     // an unplace in the persisting batch wins over converting that placement
     let u = db
         .write_with(|w| {
@@ -626,7 +626,7 @@ fn draft_lands_in_folder_at_save_spec_data_model_8() {
             Ok(d)
         })
         .unwrap();
-    assert_eq!(db.groups_of(draft), vec![folder]);
+    assert_eq!(db.groups_of(draft).within, vec![folder]);
     assert!(durable_items(&db, folder).is_empty());
     db.write_with(|w| w.at(draft, saved.clone()).set(&s("title\nbody"))).unwrap();
     assert!(db.created(draft).unwrap().commit.is_some());
@@ -673,7 +673,7 @@ fn restart_leaves_no_dead_tids_in_groups_spec_data_model_8() {
         assert!(!gr.items.contains(&e) && !gr.subgroups.contains(&sub), "{x}");
         assert!(!durable_items(&db, x).contains(&e));
     }
-    assert!(db.groups_of(e).is_empty());
+    assert!(db.groups_of(e).within.is_empty());
     db.close().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -701,7 +701,7 @@ fn durable_item_persists_ephemeral_group_spec_data_model_8() {
         })
         .unwrap();
     assert_eq!(durable_marks(&db), before, "all ephemeral");
-    assert!(db.groups_of(a).contains(&g) && db.groups_of(a).contains(&home));
+    assert!(db.groups_of(a).within.contains(&g) && db.groups_of(a).within.contains(&home));
     db.write_with(|w| w.unplace(b, g)).unwrap();
     assert_eq!(durable_marks(&db), before, "unplace on an ephemeral group persists nothing");
     assert_eq!(db.created(g).unwrap().commit, None);
@@ -820,8 +820,8 @@ fn persistence_through_group_cycles_spec_data_model_8() {
             Ok((g, g1, g2, x))
         })
         .unwrap();
-    assert!(db.groups_of(g).contains(&g));
-    assert!(db.groups_of(x).contains(&g1) && db.groups_of(x).contains(&home));
+    assert!(db.groups_of(g).within.contains(&g));
+    assert!(db.groups_of(x).within.contains(&g1) && db.groups_of(x).within.contains(&home));
     db.write_with(|w| w.at(g, ak("/app/kept")).set(&Value::Int(1))).unwrap();
     db.write_with(|w| w.at(x, ak("/app/kept")).set(&Value::Int(2))).unwrap();
     for t in [g, g1, g2, x] {

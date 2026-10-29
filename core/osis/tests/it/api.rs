@@ -268,14 +268,14 @@ fn create_place_delete_spec_data_model_8() {
     let b = w.create(db.me()).unwrap();
     w.at(a, ak("/t/x")).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
-    assert_eq!(db.groups_of(a).into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([folder, db.home()]));
-    assert!(db.groups_of(b).is_empty());
+    assert_eq!(db.groups_of(a).within.into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([folder, db.home()]));
+    assert!(db.groups_of(b).within.is_empty());
     db.write_with(|w| {
         w.place(b, folder)?;
         w.unplace(a, db.home())
     })
     .unwrap();
-    assert_eq!(db.groups_of(a), vec![folder]);
+    assert_eq!(db.groups_of(a).within, vec![folder]);
     let sub = db
         .write_with(|w| {
             let s = w.create(db.me())?;
@@ -285,11 +285,14 @@ fn create_place_delete_spec_data_model_8() {
             Ok(s)
         })
         .unwrap();
-    assert!(db.groups_of(b).contains(&sub));
-    assert!(db.groups_of(b).contains(&folder));
+    assert!(db.groups_of(b).within.contains(&sub));
+    assert!(db.groups_of(b).within.contains(&folder));
     db.write_with(|w| w.delete(a)).unwrap();
-    assert!(db.groups_of(a).is_empty());
+    assert!(db.groups_of(a).within.is_empty());
     assert_eq!(db.get(a, ak("/t/x")).unwrap(), None);
+    // deleted: not known, though its creation stays held; a later write recreates it
+    assert!(!db.knows(a) && db.created(a).is_some());
+    db.write_with(|w| w.at(a, ak("/t/x")).set(&Value::Int(2))).unwrap();
     assert!(db.knows(a));
     // an unknown group or owner
     let mut w = db.write();
@@ -442,7 +445,7 @@ fn move_and_same_thing_spec_permissions_7() {
     assert!(!db.same_thing(t, owner2));
     assert_eq!(db.get(m, ak("/t/x")).unwrap(), Some(Value::Int(1)));
     assert_eq!(db.get(t, ak("/t/x")).unwrap(), Some(Value::Int(1)));
-    assert!(db.groups_of(m).contains(&db.home()));
+    assert!(db.groups_of(m).within.contains(&db.home()));
 }
 
 // notes/api.md Sync configuration and status: without a runtime the surface works locally,
@@ -555,6 +558,121 @@ fn not_synced_diagnostic_spec_api_diagnostics() {
     let got: Vec<osis::Tid> = rx.try_iter().flatten().collect();
     assert!(got.contains(&lost), "{got:?}");
     assert!(!got.contains(&home_item));
+}
+
+// notes/api.md Reads (knows), Watching: a deleted thing reads unknown (`created` still reports
+// it); the delete reaches a thing watch, whose callback reads `knows` false.
+// spec: none (API surface, notes/api.md)
+#[test]
+fn deleted_reads_unknown_spec_api_reads() {
+    let db = db(1);
+    let t = db.write_with(|w| {
+        let t = w.create_in(db.me(), &[db.home()])?;
+        w.at(t, ak("/t/x")).set(&Value::Int(1))?;
+        w.at(t, ak("/t/y")).set(&Value::Int(2))?;
+        Ok(t)
+    }).unwrap();
+    assert!(db.knows(t));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _sub = db.watch_thing(t, move |db, c| {
+        let _ = tx.send((c.ak, c.value, db.knows(c.tid)));
+    });
+    db.settle();
+    let initial: Vec<_> = rx.try_iter().collect();
+    assert!(initial.iter().all(|(_, _, known)| *known), "{initial:?}");
+    db.write_with(|w| w.delete(t)).unwrap();
+    db.settle();
+    let got: Vec<_> = rx.try_iter().collect();
+    assert!(got.iter().any(|(ak, v, known)| ak.as_str() == "/t/x" && *v == Ok(None) && !known), "{got:?}");
+    assert!(!db.knows(t) && db.created(t).is_some());
+    assert!(!db.groups_of(db.home()).item_of.contains(&t) && !db.get(db.home(), core::GROUP).unwrap().unwrap().items.contains(&t));
+    // an unknown tid: not known, no creation
+    let other = db_other_thing();
+    assert!(!db.knows(other) && db.created(other).is_none());
+}
+
+// notes/api.md Reads (groups_of), Writes (delete), spec/data-model.md §8: `groups_of` reports the
+// groups listing a thing as an item and as a subgroup, and the transitive `/groups`; deleting a
+// group removes its placements and the subgroup edges pointing at it.
+#[test]
+fn groups_of_relations_spec_data_model_8() {
+    let db = db(1);
+    let home = db.home();
+    let (g1, g2, tag, x) = db.write_with(|w| {
+        let group = |w: &mut osis::Write<'_>| -> osis::Result<osis::Tid> {
+            let g = w.create_in(db.me(), &[home])?;
+            w.make_group(g)?;
+            w.add_subgroup(home, g)?;
+            Ok(g)
+        };
+        let g1 = group(w)?;
+        let g2 = group(w)?;
+        let tag = w.create(db.me())?;
+        w.make_group(tag)?;
+        w.place(tag, g1)?;
+        w.add_subgroup(g1, tag)?;
+        w.add_subgroup(g2, tag)?;
+        let x = w.create_durable(db.me())?;
+        w.place(x, tag)?;
+        Ok((g1, g2, tag, x))
+    }).unwrap();
+    let gs = db.groups_of(tag);
+    assert_eq!(gs.item_of, vec![g1]);
+    assert_eq!(gs.subgroup_of.iter().copied().collect::<BTreeSet<_>>(), BTreeSet::from([g1, g2]));
+    assert_eq!(gs.within.iter().copied().collect::<BTreeSet<_>>(), BTreeSet::from([g1, home]), "an item's groups and those above them; not g2, which it is only a subgroup of");
+    let gx = db.groups_of(x);
+    assert_eq!(gx.item_of, vec![tag]);
+    assert!(gx.subgroup_of.is_empty());
+    assert_eq!(gx.within.iter().copied().collect::<BTreeSet<_>>(), BTreeSet::from([tag, g1, g2, home]));
+    db.write_with(|w| w.delete(tag)).unwrap();
+    assert_eq!(db.groups_of(tag), osis::GroupsOf::default());
+    for g in [g1, g2] {
+        let d = db.get(g, core::GROUP).unwrap().unwrap();
+        assert!(!d.items.contains(&tag) && !d.subgroups.contains(&tag), "{g}: {d:?}");
+    }
+    assert!(!db.knows(tag));
+    assert_eq!(db.groups_of(x).within, Vec::<osis::Tid>::new(), "its tag's /group went with it");
+}
+
+// notes/api.md Writes (place): a placement leaving a durable thing in no synced group while the
+// target group's own aspects sync (an item of the synced home, no subgroup of it) fails before
+// anything applies; the same batch adding the group as a subgroup succeeds; a device-local
+// group (in no synced group) and an ephemeral thing are allowed.
+// spec: none (API surface, notes/api.md)
+#[test]
+fn placement_reaching_no_synced_group_fails_spec_api_writes() {
+    let db = db(1);
+    let home = db.home();
+    let g = db.write_with(|w| {
+        let g = w.create_in(db.me(), &[home])?;
+        w.make_group(g)?;
+        Ok(g)
+    }).unwrap();
+    let mut w = db.write();
+    let x = w.create_durable(db.me()).unwrap();
+    w.place(x, g).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("add_subgroup")));
+    assert!(!db.knows(x) && db.created(x).is_none(), "nothing applied");
+    // an ephemeral thing stays on this device anyway
+    let e = db.write_with(|w| w.create_in(db.me(), &[g])).unwrap();
+    assert!(db.groups_of(e).item_of.contains(&g));
+    // a group with no synced group at all: device-local, allowed (a `NotSynced` diagnostic)
+    let local = db.write_with(|w| {
+        let l = w.create_durable(db.me())?;
+        w.make_group(l)?;
+        let y = w.create_durable(db.me())?;
+        w.place(y, l)?;
+        Ok(l)
+    }).unwrap();
+    assert!(db.knows(local));
+    // the fix: the group as a subgroup too, in the same batch
+    let x = db.write_with(|w| {
+        let x = w.create_durable(db.me())?;
+        w.place(x, g)?;
+        w.add_subgroup(home, g)?;
+        Ok(x)
+    }).unwrap();
+    assert!(db.groups_of(x).within.contains(&home));
 }
 
 // notes/api.md Handle (close): close() from a callback fails at once (it would wait on the

@@ -258,6 +258,24 @@ impl Engine {
         out
     }
 
+    /// The groups whose `/group` lists the thing directly, through either side: (as an item,
+    /// as a subgroup). From the in-memory group index, rebuilt from the definitions at open.
+    pub fn listed_in(&self, tid: &Tid) -> (BTreeSet<Tid>, BTreeSet<Tid>) {
+        let ix = &self.core.ix.groups;
+        // a group listing it as an item contains it: `of` is a superset of those
+        let mut items: BTreeSet<Tid> = ix.of.get(tid).into_iter().flatten().filter(|g| ix.defs.get(g).is_some_and(|d| d.0.contains(tid))).copied().collect();
+        let mut subs: BTreeSet<Tid> = ix.parents_of(tid).collect();
+        for (g, d) in &self.eph.defs {
+            if d.0.contains(tid) {
+                items.insert(*g);
+            }
+            if d.1.contains(tid) {
+                subs.insert(*g);
+            }
+        }
+        (items, subs)
+    }
+
     /// Groups containing the thing through durable `/group` state only (the closure sync uses).
     pub fn durable_groups_of(&self, tid: &Tid) -> BTreeSet<Tid> {
         self.core.ix.groups.of.get(tid).cloned().unwrap_or_default()
