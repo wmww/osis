@@ -57,33 +57,28 @@ pub(crate) struct HeldPart {
     pub fragment: Fragment,
     /// The commits it lists as absorbed.
     pub absorbed: BTreeSet<CommitId>,
-    /// Its `Authors`: the node each session's writes are judged as, and at which `ts`.
+    /// Its `Authors`: the node each session is attributed to, and at which `ts` (attribution
+    /// only: a valid part vouches for every write it carries, spec/permissions.md §5.2).
     pub authors: BTreeMap<CommitId, (Tid, Ts)>,
-    /// The sessions whose writes it carries.
-    pub srcs: BTreeSet<CommitId>,
     /// Valid here (spec/permissions.md §5.2).
     pub valid: bool,
-    /// Carried sessions whose writes are invalid here (judged as their `Authors` node's):
-    /// not joined.
-    pub bad: BTreeSet<CommitId>,
 }
 
 impl HeldPart {
     fn new(ai: usize, s: Snapshot) -> HeldPart {
-        let srcs = s.fragment.writes().into_iter().filter_map(|(d, _)| if let SourceKind::Commit(c) = d.src.author().kind() { Some(*c) } else { None }).collect();
-        HeldPart { ai, fragment: s.fragment, absorbed: s.absorbed.into_keys().collect(), authors: s.authors, srcs, valid: true, bad: BTreeSet::new() }
+        HeldPart { ai, fragment: s.fragment, absorbed: s.absorbed.into_keys().collect(), authors: s.authors, valid: true }
     }
 
-    /// The writes that count here: none when invalid, else all but the invalid sessions'.
+    /// Strips the writes of sessions its `Authors` does not attribute to `author` (a presence
+    /// commit carries its author's writes only, spec/sync.md §9).
+    fn only_of(&mut self, author: Tid) {
+        let authors = &self.authors;
+        self.fragment.strip_copies(&|d| matches!(d.src.author().kind(), SourceKind::Commit(c) if authors.get(c).is_none_or(|(n, _)| *n != author)));
+    }
+
+    /// The writes that count here: none when invalid, else all.
     fn counted(&self) -> Option<Fragment> {
-        if !self.valid {
-            return None;
-        }
-        let mut f = self.fragment.clone();
-        if !self.bad.is_empty() {
-            f.strip_copies(&|d| matches!(d.src.author().kind(), SourceKind::Commit(c) if self.bad.contains(c)));
-        }
-        Some(f)
+        self.valid.then(|| self.fragment.clone())
     }
 }
 
@@ -616,33 +611,10 @@ impl Engine {
         false
     }
 
-    /// Judges a held part (spec/permissions.md §5.2): the part as its commit's author's delta
-    /// (own parts: valid), then each carried session's writes as its `Authors` node's, by the
-    /// session (which no frontier lists: a demotion invalidates the demoted node's carried
-    /// writes as it does its own ephemeral commits); a session with no `Authors` entry is
-    /// invalid. The author's own sessions go with the part.
+    /// Judges a held part (spec/permissions.md §5.2) as its commit's author's delta (own parts:
+    /// valid); a valid part vouches for every session's writes it carries.
     fn judge_part(&self, h: &Header, id: &CommitId, p: &mut HeldPart, own: bool, carried: &BTreeMap<Tid, CreationRecord>) {
         p.valid = own || self.eph_part_valid(h, id, p.ai, carried);
-        p.bad.clear();
-        let Some(a) = h.aspects.get(p.ai) else { return };
-        if !p.valid || a.ak.as_str() == CREATED.ak() {
-            return;
-        }
-        for c in &p.srcs {
-            if c.0 == self.eph.session {
-                continue;
-            }
-            let ok = match p.authors.get(c) {
-                Some((node, _)) if *node == h.author => true,
-                // a presence commit carries its author's writes only (spec/sync.md §9)
-                Some(_) if h.ephemeral == Some(EphClass::Presence) => false,
-                Some((node, ts)) => self.eph_write_valid(&a.tid, a.ak.as_str(), *node, *ts, c, carried),
-                None => false,
-            };
-            if !ok {
-                p.bad.insert(*c);
-            }
-        }
     }
 
     /// Notes the sessions held parts of commit `id` attribute.
@@ -655,13 +627,13 @@ impl Engine {
     }
 
     /// The node session `c`'s writes are attributed to when this node carries them: named by a
-    /// held part that is valid and does not judge them invalid, a commit naming itself first.
+    /// held part that is valid, a commit naming itself first.
     fn claim_of(&self, c: &CommitId) -> Option<Tid> {
         let r = &self.eph.remote;
         let mut other = None;
         for id in r.claims.get(c)? {
             let Some(h) = r.held.get(id) else { continue };
-            for p in h.parts.iter().filter(|p| p.valid && !p.bad.contains(c)) {
+            for p in h.parts.iter().filter(|p| p.valid) {
                 if let Some((node, _)) = p.authors.get(c) {
                     if *node == h.header.author {
                         return Some(*node);
@@ -828,6 +800,9 @@ impl Engine {
                 continue;
             }
             let mut hp = HeldPart::new(ai, s);
+            if presence && a.ak.as_str() != CREATED.ak() {
+                hp.only_of(header.author);
+            }
             self.judge_part(&header, &id, &mut hp, false, &carried);
             if let Some(t) = a.expires {
                 self.eph.remote.timers.entry(t).or_default().insert((id, ai));
@@ -1051,9 +1026,9 @@ impl Engine {
         for id in ids {
             let Some(mut h) = self.eph.remote.held.remove(&id) else { continue };
             for p in h.parts.iter_mut() {
-                let before = (p.valid, p.bad.clone());
+                let before = p.valid;
                 self.judge_part(&h.header, &id, p, h.own, &empty);
-                if (p.valid, &p.bad) != (before.0, &before.1)
+                if p.valid != before
                     && let Some(a) = h.header.aspects.get(p.ai)
                 {
                     flips.insert((a.tid, a.ak.clone()));

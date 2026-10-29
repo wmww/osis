@@ -620,15 +620,14 @@ fn own_compaction_survives_rebuild_spec_crdt_4_6() {
     net.run();
     let at_a = notes(&mut net, a, w);
     assert_eq!(at_a, notes(&mut net, b, w), "holders agree");
-    assert_eq!(at_a, map(&[("b", "1")]), "b's covered write stays (the cover's author is valid); c's writes go, the covered one too (judged as c's)");
+    assert_eq!(at_a, map(&[("b", "1"), ("c", "1")]), "the covered writes stay (the cover's author is valid and vouches for them); c's own commit goes");
 }
 
-// spec/permissions.md §5.2 (a write an ephemeral commit carries is judged as its `Authors` node's;
-// security review M2): an honest writer's compaction carries a member's writes; once that member
-// is removed its writes are gone at every holder and at a node arriving later, not laundered by
-// the compaction
+// spec/permissions.md §5.2 (a valid ephemeral commit vouches for the session writes it carries;
+// owner decision "Snapshots vouch"): an honest writer's compaction carries a member's writes;
+// once that member is removed they stay at every holder and at a node arriving later, alike
 #[test]
-fn removed_member_writes_not_laundered_spec_permissions_5_2() {
+fn removed_member_covered_writes_stay_spec_permissions_5_2() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
@@ -657,12 +656,13 @@ fn removed_member_writes_not_laundered_spec_permissions_5_2() {
     let rs = recipients_of(e, &[(me, Role::Admin), (bt, Role::Write), (dt, Role::Read)]);
     remove_member(e, g, ct, &rs, 9);
     net.run();
+    let both = map(&[("a", "from a"), ("c", "from c")]);
     for n in [a, b, d] {
-        assert_eq!(notes(&mut net, n, w), map(&[("a", "from a")]), "node {n}: c's write is gone");
+        assert_eq!(notes(&mut net, n, w), both, "node {n}: the cover vouches for c's write");
     }
     net.restart(d, 41);
     net.advance(10_000);
-    assert_eq!(notes(&mut net, d, w), map(&[("a", "from a")]), "a node arriving later does not get it back");
+    assert_eq!(notes(&mut net, d, w), both, "a node arriving later gets it from the cover");
 }
 
 /// One random run of the shared window (notes/ephemeral.md Convergence): four writers on two
