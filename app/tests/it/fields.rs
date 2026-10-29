@@ -33,3 +33,29 @@ fn rows_and_edits() {
     assert_eq!((view.edit, view.value.as_str()), (Edit::Case, "calendar"));
     assert!(d.set_field(v, &view, "nope").is_err());
 }
+
+#[test]
+fn contact_form() {
+    use osis_app::contact::{EMAILS, NAMES, ORG};
+    use osis_app::fields::FormAct;
+    let d = Data::new(Osis::create(Config::memory()).unwrap().0);
+    // a contact with no names or org yet: fields still save
+    let c = d.create(NewKind::Note).unwrap();
+    let form = d.contact_form(c).unwrap();
+    let row = |form: &[osis_app::fields::FormRow], label: &str| form.iter().find(|r| r.label == label).unwrap().act.clone();
+    d.form_apply(c, &row(&form, "Title"), "Gardener").unwrap();
+    assert_eq!(d.get(c, ORG).unwrap().unwrap().title, "Gardener");
+    d.form_apply(c, &row(&form, "Given name"), "Theo").unwrap();
+    assert_eq!(d.get(c, NAMES).unwrap().unwrap().given.as_deref(), Some("Theo"));
+    let add = form.iter().find(|r| matches!(r.act, FormAct::AddKey { ak: "/contact/emails" })).unwrap().act.clone();
+    d.form_apply(c, &add, "theo@example.org").unwrap();
+    let form = d.contact_form(c).unwrap();
+    let email = form.iter().find(|r| r.value == "theo@example.org").unwrap().act.clone();
+    d.form_apply(c, &email, "theo@posteo.se").unwrap();
+    assert_eq!(d.get(c, EMAILS).unwrap().unwrap().into_keys().collect::<Vec<_>>(), vec!["theo@posteo.se".to_string()]);
+    let form = d.contact_form(c).unwrap();
+    let email = form.iter().find(|r| r.value == "theo@posteo.se").unwrap().act.clone();
+    d.form_apply(c, &email, "").unwrap();
+    assert!(d.get(c, EMAILS).unwrap().unwrap_or_default().is_empty(), "empty removes");
+    assert_eq!(d.kind(c).unwrap(), osis_app::data::Kind::Contact, "a note given contact fields is a contact");
+}

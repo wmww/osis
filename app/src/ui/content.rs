@@ -61,6 +61,8 @@ pub enum Block {
     Days(Vec<(String, bool, Vec<Tile>)>),
     /// The schema fallback view's rows of a thing.
     Fields(Tid, Vec<crate::fields::Row>),
+    /// A kind's own form (labels and inputs saved on Enter).
+    Form(Tid, Vec<crate::fields::FormRow>),
 }
 
 /// What a slot shows.
@@ -173,17 +175,7 @@ impl Ui {
                 }
             }
             Kind::Contact => {
-                if let Some(o) = d.get(t, crate::contact::ORG)? {
-                    for s in [o.title, o.name].into_iter().filter(|s| !s.is_empty()) {
-                        c.line(s);
-                    }
-                }
-                for e in d.get(t, crate::contact::EMAILS)?.unwrap_or_default().into_keys() {
-                    c.line(e);
-                }
-                for p in d.get(t, crate::contact::PHONES)?.unwrap_or_default().into_keys() {
-                    c.line(p);
-                }
+                c.blocks.push(Block::Form(t, d.contact_form(t)?));
             }
             Kind::Tag => {
                 let (subs, items) = d.tag_contents(t)?;
@@ -366,7 +358,7 @@ impl Ui {
                             style::label(&look, &r.value, Text::Body).erased()
                         } else {
                             let (input, id) = style::input(&look, &r.value, if r.optional { "none" } else { "" }, Text::Body, false);
-                            self.field_inputs.insert(id, (*t, r.clone()));
+                            self.field_inputs.insert(id, (*t, crate::fields::FormAct::Field(r.clone())));
                             NewWidget::new(Panel::new(input, look.clone(), PanelKind::Field, (5.0, 8.0))).erased()
                         };
                         let row = Flex::row()
@@ -374,6 +366,18 @@ impl Ui {
                             .with_gap(Length::px(look.sp(12.0)))
                             .with_child(NewWidget::new(osis_kit::masonry::widgets::SizedBox::new(label).width(Length::px(220.0))))
                             .with_flex_child(value, 1.0);
+                        col = col.with_child(NewWidget::new(row));
+                    }
+                }
+                Block::Form(t, rows) => {
+                    for r in rows {
+                        let (input, id) = style::input(&look, &r.value, &r.placeholder, Text::Body, false);
+                        self.field_inputs.insert(id, (*t, r.act.clone()));
+                        let row = Flex::row()
+                            .cross_axis_alignment(CrossAxisAlignment::Center)
+                            .with_gap(Length::px(look.sp(12.0)))
+                            .with_child(NewWidget::new(osis_kit::masonry::widgets::SizedBox::new(style::label(&look, &r.label, Text::Muted)).width(Length::px(120.0))))
+                            .with_flex_child(NewWidget::new(Panel::new(input, look.clone(), PanelKind::Field, (5.0, 8.0))), 1.0);
                         col = col.with_child(NewWidget::new(row));
                     }
                 }

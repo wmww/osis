@@ -150,8 +150,8 @@ pub struct Ui {
     acts: HashMap<WidgetId, Act>,
     /// What the × of a removable chip does.
     remove_acts: HashMap<WidgetId, Act>,
-    /// The fallback view's inputs: the row each edits (written on Enter).
-    field_inputs: HashMap<WidgetId, (Tid, crate::fields::Row)>,
+    /// Form inputs (the fallback view, a contact's fields): what each saves on Enter.
+    field_inputs: HashMap<WidgetId, (Tid, crate::fields::FormAct)>,
     /// Focus the title once the next screen is built (a thing just made).
     focus_title: bool,
     editor: Option<Editor>,
@@ -491,12 +491,11 @@ impl Ui {
             }
             return;
         }
-        if let Some((t, row)) = self.field_inputs.get(&id).cloned() {
+        if let Some((t, act)) = self.field_inputs.get(&id).cloned() {
             if let TextAction::Entered(text) = a {
-                let r = self.data.set_field(t, &row, &text);
-                match r {
+                match self.data.form_apply(t, &act, &text) {
                     Ok(()) => self.refresh(ctx, false),
-                    Err(e) => self.status(ctx, format!("{}: {e}", row.label)),
+                    Err(e) => self.status(ctx, format!("error: {e}")),
                 }
             }
             return;
