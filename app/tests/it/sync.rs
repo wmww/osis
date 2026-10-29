@@ -72,7 +72,7 @@ fn two_devices_race_the_app_group() {
         assert_eq!(d.view_items(&View::Tags).unwrap().len(), 0);
         // everything the app shows is a member of home, so it syncs to every device
         for t in d.things().unwrap() {
-            assert!(d.db.groups_of(t).contains(&d.db.home()), "{t} not under home");
+            assert!(d.db.groups_of(t).within.contains(&d.db.home()), "{t} not under home");
         }
     }
     a.toggle_favorite(n).unwrap();
