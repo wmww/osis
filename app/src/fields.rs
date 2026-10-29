@@ -244,3 +244,96 @@ pub fn show(v: &Value) -> String {
         other => format!("{other:?}"),
     }
 }
+
+/// What saving a form row does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FormAct {
+    /// Writes the row's value at its path.
+    Field(Row),
+    /// Renames a map entry (an email address, a phone number); empty text removes it.
+    RenameKey { ak: &'static str, old: String },
+    /// Adds a map entry keyed by the text.
+    AddKey { ak: &'static str },
+}
+
+/// A row of a kind's own form (a contact's fields).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FormRow {
+    pub label: String,
+    pub value: String,
+    pub placeholder: String,
+    pub act: FormAct,
+}
+
+fn text_row(ak: &str, path: Path, label: &str, value: String, optional: bool) -> Row {
+    Row { ak: ak.into(), path, depth: 0, label: label.into(), ty: String::new(), value, edit: Edit::Text, optional }
+}
+
+impl Data {
+    /// A contact's form: names, nickname, title, organisation, emails, phones.
+    pub fn contact_form(&self, t: Tid) -> Result<Vec<FormRow>> {
+        use crate::contact::{EMAILS, NAMES, NICKNAME, ORG, PHONES, names, org};
+        let n = self.get(t, NAMES)?;
+        let o = self.get(t, ORG)?;
+        let field = |label: &str, ph: &str, row: Row| FormRow { label: label.into(), value: row.value.clone(), placeholder: ph.into(), act: FormAct::Field(row) };
+        let mut out = vec![
+            field("Given name", "", text_row("/contact/names", Path::root().push(names::GIVEN), "given", n.as_ref().and_then(|n| n.given.clone()).unwrap_or_default(), true)),
+            field("Family name", "", text_row("/contact/names", Path::root().push(names::FAMILY), "family", n.as_ref().and_then(|n| n.family.clone()).unwrap_or_default(), true)),
+            field("Nickname", "", text_row("/contact/nickname", Path::root(), "nickname", self.get(t, NICKNAME)?.unwrap_or_default(), false)),
+            field("Title", "", text_row("/contact/org", Path::root().push(org::TITLE), "title", o.as_ref().map(|o| o.title.clone()).unwrap_or_default(), false)),
+            field("Organisation", "", text_row("/contact/org", Path::root().push(org::NAME), "name", o.as_ref().map(|o| o.name.clone()).unwrap_or_default(), false)),
+        ];
+        for (ak, key, label, add) in [("/contact/emails", EMAILS, "Email", "Add an email"), ("/contact/phones", PHONES, "Phone", "Add a phone")] {
+            for k in self.get(t, key)?.unwrap_or_default().into_keys() {
+                out.push(FormRow { label: label.into(), value: k.clone(), placeholder: "removed when empty".into(), act: FormAct::RenameKey { ak, old: k } });
+            }
+            out.push(FormRow { label: label.into(), value: String::new(), placeholder: add.into(), act: FormAct::AddKey { ak } });
+        }
+        Ok(out)
+    }
+
+    /// Saves a form row's text.
+    pub fn form_apply(&self, t: Tid, act: &FormAct, text: &str) -> Result<()> {
+        use crate::contact::Labeled;
+        let text = text.trim();
+        match act {
+            FormAct::Field(row) => {
+                // a field of an absent struct: write the whole struct with its defaults first
+                if !row.path.steps().is_empty() && self.db.get(t, self.db.key(&row.ak)?)?.is_none() {
+                    self.init_struct(t, &row.ak)?;
+                }
+                self.set_field(t, row, text)
+            }
+            FormAct::RenameKey { ak, old } => {
+                let key = self.db.key(ak)?;
+                let entry: Labeled = self.db.at(t, key.clone()).path(Path::root().push(old.as_str())).get()?.unwrap_or(Labeled { label: String::new(), pref: false });
+                if text == old {
+                    return Ok(());
+                }
+                self.db.write_with(|w| {
+                    w.at(t, key.clone()).path(Path::root()).remove_key(&old.to_string())?;
+                    if !text.is_empty() {
+                        w.at(t, key.clone()).path(Path::root()).put(&text.to_string(), &entry)?;
+                    }
+                    Ok(())
+                })
+            }
+            FormAct::AddKey { ak } => {
+                if text.is_empty() {
+                    return Ok(());
+                }
+                let key = self.db.key(ak)?;
+                self.db.write_with(|w| w.at(t, key.clone()).path(Path::root()).put(&text.to_string(), &Labeled { label: String::new(), pref: false }))
+            }
+        }
+    }
+
+    fn init_struct(&self, t: Tid, ak: &str) -> Result<()> {
+        use crate::contact::{NAMES, Names, ORG, Org};
+        match ak {
+            "/contact/names" => self.db.write_with(|w| w.at(t, NAMES).set(&Names { given: None, family: None, middle: None, prefix: None, suffix: None })),
+            "/contact/org" => self.db.write_with(|w| w.at(t, ORG).set(&Org { name: String::new(), department: String::new(), title: String::new() })),
+            _ => Ok(()),
+        }
+    }
+}
