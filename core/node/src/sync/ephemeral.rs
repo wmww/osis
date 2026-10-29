@@ -74,6 +74,10 @@ pub(crate) struct Lane {
     pub refused: BTreeSet<LabelId>,
     /// Labels a server refused an ephemeral upload of for its cap since the last compaction.
     pub server_full: BTreeSet<LabelId>,
+    /// Labels force-compacted since an entry of new writes (not a cover) was kept under them:
+    /// not forced again until one is (holders of a label a server cannot fit compacted each
+    /// other's concurrent covers forever, every cover refused).
+    pub forced: BTreeSet<LabelId>,
     /// Per connection and label: whether the first Sync listed the held entries, and those it
     /// listed that the peer has not asked for yet.
     pub announced: BTreeSet<(ConnId, LabelId)>,
@@ -189,6 +193,9 @@ impl SyncEngine {
         let mut commits = Vec::new();
         let mut retry = Vec::new();
         for l in full {
+            if !self.eph.forced.insert(l) {
+                continue;
+            }
             let Some(g) = self.group_of(&l) else { continue };
             let scope = self.engine.ephemeral_closure(&g);
             match self.engine.compact_ephemeral(Some(&scope), true)? {
@@ -311,6 +318,9 @@ impl SyncEngine {
 
     /// Keeps an entry under `l` (served to peers from now on).
     fn eph_keep(&mut self, l: LabelId, b: BlobId, e: LaneEntry) {
+        if !self.engine.ephemeral_is_cover(&e.commit) {
+            self.eph.forced.remove(&l);
+        }
         if !e.own {
             *self.eph.bytes.entry(l).or_default() += e.blob.len() as u64;
         }
