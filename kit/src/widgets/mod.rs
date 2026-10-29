@@ -14,7 +14,7 @@ pub use button::IconButton;
 pub use chip::{Chip, ChipMark, ChipPress};
 pub use grid::{Reorder, TileGrid};
 pub use limit::Limit;
-pub use panel::{Panel, PanelKind};
+pub use panel::{Blur, Panel, PanelKind};
 pub use root::Root;
 pub use tile::{Tile, TileIcon, TileStyle};
 pub use wrap::Wrap;

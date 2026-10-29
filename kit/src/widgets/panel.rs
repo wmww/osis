@@ -5,7 +5,7 @@
 use super::shadow;
 use crate::theme::{Look, fade, mix};
 use masonry::accesskit::{Node, Role};
-use masonry::core::{AccessCtx, BoxConstraints, ChildrenIds, LayoutCtx, NewWidget, PaintCtx, PropertiesMut, PropertiesRef, RegisterCtx, Widget, WidgetMut, WidgetPod};
+use masonry::core::{AccessCtx, BoxConstraints, ChildrenIds, LayoutCtx, NewWidget, PaintCtx, PropertiesMut, PropertiesRef, RegisterCtx, Update, UpdateCtx, Widget, WidgetMut, WidgetPod};
 use masonry::kurbo::{Affine, Insets, Point, RoundedRect, Size, Stroke};
 use masonry::vello::Scene;
 use std::sync::Arc;
@@ -28,15 +28,26 @@ pub struct Panel {
     /// Fill the offered width.
     fill_width: bool,
     fill_height: bool,
+    /// Emit `Blur` when the keyboard focus leaves the child (a form field saving its text).
+    report_blur: bool,
 }
+
+/// The keyboard focus left a panel's child (`Panel::report_blur`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Blur;
 
 impl Panel {
     pub fn new(child: NewWidget<impl Widget + ?Sized>, look: Arc<Look>, kind: PanelKind, pad: (f64, f64)) -> Panel {
-        Panel { child: child.erased().to_pod(), look, kind, pad, fill_width: true, fill_height: false }
+        Panel { child: child.erased().to_pod(), look, kind, pad, fill_width: true, fill_height: false, report_blur: false }
     }
 
     pub fn fill_height(mut self, on: bool) -> Self {
         self.fill_height = on;
+        self
+    }
+
+    pub fn report_blur(mut self, on: bool) -> Self {
+        self.report_blur = on;
         self
     }
 
@@ -59,7 +70,13 @@ impl Panel {
 }
 
 impl Widget for Panel {
-    type Action = masonry::core::NoAction;
+    type Action = Blur;
+
+    fn update(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
+        if self.report_blur && matches!(event, Update::ChildFocusChanged(false)) {
+            ctx.submit_action::<Blur>(Blur);
+        }
+    }
 
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
         ctx.register_child(&mut self.child);
