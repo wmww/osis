@@ -1155,9 +1155,12 @@ impl<B: Backend> LabelStore for BackendStore<B> {
     }
 
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError> {
-        if self.eph_entry(label, blob_id).is_some() {
+        if let Some(e) = self.eph_entry(label, blob_id) {
+            // a presence entry's delete is not counted: it leaves no tombstone and costs what its
+            // upload did, which no rate bounds (an author deletes its previous entry per update)
+            let presence = e.presence;
             self.rates.roll(self.now(), self.policy.window_ms);
-            if !self.rates.take(label, Rate::Delete, self.policy.deletes) {
+            if !presence && !self.rates.take(label, Rate::Delete, self.policy.deletes) {
                 return Ok(Code::RATE_LIMITED);
             }
             self.eph_remove(label, blob_id, EphRemove::Delete(now))?;

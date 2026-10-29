@@ -485,3 +485,28 @@ fn many_authors_under_server_rates_large() {
     let (up, del) = many_authors_run(10, 60);
     eprintln!("10 authors, 60 s: {up} uploads, {del} deletes");
 }
+
+// spec/sync.md §9 (a presence commit waits only while every connection of its labels has one of
+// the actor's presence uploads unanswered): a server that is slow to answer holds up nothing
+// that another server could carry; once it answers, each covered entry is deleted there, so it
+// ends holding one entry of A
+#[test]
+fn slow_server_holds_nothing_back_spec_sync_9() {
+    let mut net = Net::new();
+    let (fast, slow) = (net.add_server(), net.add_server());
+    let a = net.node(1, &[fast, slow]);
+    let b = net.node(2, &[fast]);
+    let (_, t) = setup(&mut net, a, &[(b, Role::Write)], &[fast, slow]);
+    let l = net.label(a);
+    let held = live(&net, slow, &l);
+    net.held_servers.insert(slow);
+    for i in 1..=5 {
+        net.eph_write(a, t, &cursor(), s(&format!("a@{i}")));
+        net.run();
+        assert_eq!(at(&mut net, b, t), Some(s(&format!("a@{i}"))), "move {i} reached B through the fast server");
+    }
+    net.release();
+    net.run();
+    assert_eq!(live(&net, slow, &l), held + 1, "one entry of A at the slow server");
+    assert_eq!(live(&net, fast, &l), live(&net, slow, &l));
+}
