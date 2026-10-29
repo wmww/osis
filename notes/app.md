@@ -35,6 +35,9 @@
 - **Widgets** (in `kit/`, product views in `app/`): our own look as Masonry widgets.
 - A toolkit swap rewrites driver and widgets only; state and behavior survive. The earlier idea of a separate "view model" crate dissolves into the view-state schema plus the actions crate.
 
+## Web mockup
+`app/mockup/` (plain HTML/CSS/JS, no deps, no osis; serve the directory, e.g. `python3 -m http.server`) explores look and layout before building in kit. Owner brief: things and scopes (tags, views) are fungible tiles in one list or grid; an ordered favorites list; one search over names, content and scopes; with a view open and room enough, a left bar holds search and favorites. The look should feel like what 1996, 2006, 2016 and 2026 thought 2026 would be: colored gradient backgrounds or abstract shapes, a little Apple liquid glass (never at a perf cost), almost no Material. Six proposed looks behind a switcher (Dusk, Glass, Aero, Workstation, Memphis, Pearl), all custom properties in looks.css over one layout in style.css; owner feedback pending.
+
 ## kit and app (owner)
 Two top-level projects, `kit/` (package `osis-kit`) and `app/` (`osis-app`).
 - **osis-kit**: the first-party UI toolkit over Masonry (or another base if Masonry fails us). Holds windowing and platform shells (the iOS shell too), the osis-Masonry driver, the look (theme tokens, tag tinting, card styling), common widgets (markdown editor, text, lists), generic osis widgets needing only the osis API (schema fallback view, who-can-see display, share confirmation dialog), and the patches we carry to low-level crates. A small special-purpose app that looks and feels like the main one depends on kit alone.

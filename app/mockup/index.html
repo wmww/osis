@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>osis mockup</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="looks.css">
+</head>
+<body data-look="dusk">
+<div id="bg" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+<div id="app"></div>
+<div id="spot" class="overlay" hidden>
+  <div class="spot panel" role="dialog" aria-label="Search">
+    <label class="search-field"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg><input id="spot-q" type="text" placeholder="Search notes, people, tags, views…" autocomplete="off" spellcheck="false"></label>
+    <div id="spot-results"></div>
+  </div>
+</div>
+<aside id="looks" class="looks" aria-label="Look switcher"></aside>
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
