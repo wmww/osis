@@ -1200,8 +1200,12 @@ impl SyncEngine {
                 let s = self.conns.get(&conn).map(|c| c.server);
                 if let Some(s) = s {
                     self.state.set_cursor(s, label, None);
-                    let ids = self.state.present_at(&s, &label);
-                    self.command(conn, Command::Reconcile { label, ids }, out)?;
+                    // a lane reconciliation running lists the present entries too and syncs from
+                    // no cursor after it; this one's reply would be taken for it (`reconciled`)
+                    if !self.eph.reconciling.contains_key(&(conn, label)) {
+                        let ids = self.state.present_at(&s, &label);
+                        self.command(conn, Command::Reconcile { label, ids }, out)?;
+                    }
                 }
             }
             E::Reconciled { label, need, have } => self.reconciled(conn, label, need, have, out)?,
