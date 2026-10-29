@@ -704,31 +704,36 @@ impl Data {
         self.write_favorites(&edits)
     }
 
-    /// Moves the favorite at `from` to `to` (indices into `favorites()`).
+    /// Moves the favorite at `from` to `to` (indices into `favorites()`), by a sequence move
+    /// inside the list that holds it: a device removing it meanwhile wins (a move never brings
+    /// back a deleted element, where delete-and-insert would), and nothing is copied between
+    /// groups. An entry moves among its own group's entries only: placed before the first of
+    /// them that follows it in the new order, else after their last.
     pub fn move_favorite(&self, from: usize, to: usize) -> Result<()> {
         let mut favs = self.favorites()?;
-        if from >= favs.len() || to >= favs.len() {
+        if from >= favs.len() || to >= favs.len() || from == to {
             return Ok(());
         }
-        let t = favs.remove(from);
-        favs.insert(to, t);
-        self.set_favorites(&favs)
-    }
-
-    /// Writes `favs` (read through `favorites()`) to the main group and empties the others'
-    /// lists, whose entries it holds now (an order spans every entry). A favorite another device
-    /// removes from another group meanwhile comes back.
-    fn set_favorites(&self, favs: &[Tid]) -> Result<()> {
-        let main = self.main_group()?;
-        let mut edits = Vec::new();
+        let x = favs.remove(from);
+        favs.insert(to, x);
+        let views = self.view_map()?;
         for g in self.groups()? {
-            let base = self.get(g, FAVORITES)?.unwrap_or_default();
-            let new = if g == main { favs.to_vec() } else { Vec::new() };
-            if base != new {
-                edits.push((g, base, new));
+            let list = self.get(g, FAVORITES)?.unwrap_or_default();
+            let mut shown = Vec::with_capacity(list.len());
+            for e in &list {
+                shown.push(self.shown_as(&views, *e)?);
             }
+            let Some(i) = shown.iter().position(|t| *t == x) else { continue };
+            // the first entry of this list that comes after `x` in the new order
+            let after: Vec<Tid> = favs.iter().skip(to + 1).copied().collect();
+            let rest: Vec<Tid> = shown.iter().enumerate().filter(|(k, _)| *k != i).map(|(_, t)| *t).collect();
+            let dest = after.iter().find_map(|a| rest.iter().position(|t| t == a)).unwrap_or(rest.len());
+            if dest == i {
+                return Ok(());
+            }
+            return self.db.write_with(|w| w.at(g, FAVORITES).path(p![]).move_range(i..i + 1, dest));
         }
-        self.write_favorites(&edits)
+        Ok(())
     }
 
     fn write_favorites(&self, edits: &[(Tid, Vec<Tid>, Vec<Tid>)]) -> Result<()> {

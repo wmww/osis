@@ -43,11 +43,14 @@ pub struct Tile {
     look: Arc<Look>,
     /// Name, sub line and initials, laid out.
     texts: Option<Texts>,
+    /// Where the pointer went down, and whether it has moved far since.
+    down: Option<Point>,
+    dragged: bool,
 }
 
 impl Tile {
     pub fn new(style: TileStyle, icon: TileIcon, name: &str, sub: &str, tint: Option<Color>, look: Arc<Look>) -> Tile {
-        Tile { style, icon, name: name.into(), sub: sub.into(), tint, current: false, look, texts: None }
+        Tile { style, icon, name: name.into(), sub: sub.into(), tint, current: false, look, texts: None, down: None, dragged: false }
     }
 
     pub fn current(mut self, on: bool) -> Self {
@@ -101,12 +104,22 @@ impl Widget for Tile {
 
     fn on_pointer_event(&mut self, ctx: &mut EventCtx<'_>, _props: &mut PropertiesMut<'_>, event: &PointerEvent) {
         match event {
-            PointerEvent::Down(..) => {
+            PointerEvent::Down(e) => {
+                self.down = Some(ctx.local_position(e.state.position));
+                self.dragged = false;
                 ctx.capture_pointer();
                 ctx.request_paint_only();
             }
+            PointerEvent::Move(e) => {
+                // moved past a tremble: a drag (a reorderable grid above may take it), not a click
+                if let Some(d) = self.down
+                    && (ctx.local_position(e.current.position) - d).hypot() > 6.0
+                {
+                    self.dragged = true;
+                }
+            }
             PointerEvent::Up(..) => {
-                if ctx.is_active() && ctx.is_hovered() {
+                if ctx.is_active() && !self.dragged && ctx.is_hovered() {
                     ctx.submit_action::<Press>(Press);
                 }
                 ctx.request_paint_only();

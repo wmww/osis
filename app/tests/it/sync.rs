@@ -331,3 +331,32 @@ fn look_merges_and_tolerates_odd_values() {
     a.set_theme("no-such-theme").unwrap();
     assert_eq!(a.look().unwrap().0.as_deref(), Some("no-such-theme"));
 }
+
+/// Reordering is a sequence move: a favorite one device moves while the other removes it stays
+/// removed, and both devices end with the same order.
+#[test]
+fn reorder_against_concurrent_unfavorite() {
+    let (a, b) = two();
+    a.main_group().unwrap();
+    let n1 = a.create_note().unwrap();
+    let n2 = a.create_note().unwrap();
+    a.toggle_favorite(n1).unwrap();
+    a.toggle_favorite(n2).unwrap();
+    sync(&a, &b);
+    let favs = a.favorites().unwrap();
+    assert_eq!(b.favorites().unwrap(), favs);
+    let i = favs.iter().position(|t| *t == n2).unwrap();
+    a.move_favorite(i, 0).unwrap();
+    assert_eq!(a.favorites().unwrap()[0], n2);
+    b.toggle_favorite(n2).unwrap();
+    sync(&a, &b);
+    assert!(!a.favorites().unwrap().contains(&n2), "the removal wins over the move");
+    assert_eq!(a.favorites().unwrap(), b.favorites().unwrap());
+    // concurrent moves of different entries converge
+    let f = a.favorites().unwrap();
+    a.move_favorite(f.len() - 1, 0).unwrap();
+    b.move_favorite(0, 1).unwrap();
+    sync(&a, &b);
+    assert_eq!(a.favorites().unwrap(), b.favorites().unwrap());
+    assert_eq!(a.favorites().unwrap().len(), f.len());
+}
