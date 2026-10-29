@@ -47,8 +47,27 @@ pub fn role(look: &Look, t: Text) -> (f32, f32, Color) {
 pub fn label(look: &Look, text: &str, t: Text) -> NewWidget<Label> {
     let (size, weight, color) = role(look, t);
     let s = if t == Text::Section && matches!(look.theme.accent, Accent::Caps | Accent::Slash | Accent::Plain) { text.to_uppercase() } else { text.to_string() };
-    let l = Label::new(s).with_style(StyleProperty::FontSize(size)).with_style(StyleProperty::FontWeight(FontWeight::new(weight))).with_style(font_stack(look));
+    let mut l = Label::new(s).with_style(StyleProperty::FontSize(size)).with_style(StyleProperty::FontWeight(FontWeight::new(weight))).with_style(font_stack(look));
+    // bar: mono labels
+    if t == Text::Section && look.theme.accent == Accent::Bar {
+        l = l.with_style(StyleProperty::FontStack(masonry::parley::FontStack::Source(std::borrow::Cow::Borrowed("JetBrains Mono, monospace"))));
+    }
     NewWidget::new_with_props(l, Properties::new().with(ContentColor::new(color)).with(Padding::all(0.0)))
+}
+
+/// The accent's mark above a screen's title: a rule in the main colour (rule), a bar (bar), an
+/// underline (slash); `None` for plain and caps.
+pub fn title_mark(look: &Look) -> Option<NewWidget<masonry::widgets::Flex>> {
+    let (w, h) = match look.theme.accent {
+        Accent::Rule => (f64::INFINITY, 3.0),
+        Accent::Bar => (f64::INFINITY, 8.0),
+        Accent::Slash => (48.0, 4.0),
+        Accent::Plain | Accent::Caps => return None,
+    };
+    let b = masonry::widgets::SizedBox::empty().raw_width(Some(w)).height(masonry::properties::types::Length::px(h));
+    let b = NewWidget::new_with_props(b, Properties::new().with(Background::Color(look.main)));
+    let row = if w.is_finite() { masonry::widgets::Flex::row().with_child(b) } else { masonry::widgets::Flex::row().with_flex_child(b, 1.0) };
+    Some(NewWidget::new(row))
 }
 
 /// A borderless text input in a text role (`multiline`: Enter inserts a newline).

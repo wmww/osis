@@ -1,13 +1,19 @@
 //! The window's root: paints the theme's background behind one child (the screen), and reports
-//! its size so the app can pick a layout by width.
+//! its size so the app can pick a layout by width. A new background colour (a new main colour)
+//! fades in over `FADE_NS`: the one motion the look allows (notes/theming.md).
 
 use crate::backdrop;
 use crate::theme::Look;
 use masonry::accesskit::{Node, Role};
-use masonry::core::{AccessCtx, BoxConstraints, ChildrenIds, LayoutCtx, NewWidget, PaintCtx, PropertiesMut, PropertiesRef, RegisterCtx, Widget, WidgetMut, WidgetPod};
+use masonry::core::{AccessCtx, BoxConstraints, ChildrenIds, LayoutCtx, NewWidget, PaintCtx, PropertiesMut, PropertiesRef, RegisterCtx, UpdateCtx, Widget, WidgetMut, WidgetPod};
+use masonry::peniko::Color;
 use masonry::kurbo::{Point, Size};
 use masonry::vello::Scene;
 use std::sync::Arc;
+
+/// How long the background takes to fade to a new colour. At 0 it jumps; long fades lag
+/// behind navigation.
+const FADE_NS: f64 = 600_000_000.0;
 
 /// The root's size changed (logical px).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -19,11 +25,13 @@ pub struct Root {
     /// Places the background's decorations (hashed from the open thing).
     seed: u64,
     size: Size,
+    /// The colour faded from and how far the fade is (0..1).
+    fade: Option<(Color, f64)>,
 }
 
 impl Root {
     pub fn new(child: NewWidget<impl Widget + ?Sized>, look: Arc<Look>) -> Root {
-        Root { child: child.erased().to_pod(), look, seed: 0, size: Size::ZERO }
+        Root { child: child.erased().to_pod(), look, seed: 0, size: Size::ZERO, fade: None }
     }
 
     /// Replaces the screen.
@@ -40,6 +48,11 @@ impl Root {
 
     pub fn set_look(this: &mut WidgetMut<'_, Self>, look: Arc<Look>, seed: u64) {
         if *this.widget.look != *look || this.widget.seed != seed {
+            let shown = this.widget.shown_bg();
+            if shown != look.bg {
+                this.widget.fade = Some((shown, 0.0));
+                this.ctx.request_anim_frame();
+            }
             this.widget.look = look;
             this.widget.seed = seed;
             this.ctx.request_paint_only();
@@ -47,8 +60,29 @@ impl Root {
     }
 }
 
+impl Root {
+    /// The background colour shown now (mid-fade: between the old and the look's).
+    fn shown_bg(&self) -> Color {
+        match self.fade {
+            Some((from, t)) => crate::theme::mix(from, self.look.bg, t * t * (3.0 - 2.0 * t)),
+            None => self.look.bg,
+        }
+    }
+}
+
 impl Widget for Root {
     type Action = Resized;
+
+    fn on_anim_frame(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, interval: u64) {
+        if let Some((from, t)) = self.fade {
+            let t = t + interval as f64 / FADE_NS;
+            self.fade = if t >= 1.0 { None } else { Some((from, t)) };
+            if self.fade.is_some() {
+                ctx.request_anim_frame();
+            }
+            ctx.request_paint_only();
+        }
+    }
 
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
         ctx.register_child(&mut self.child);
@@ -66,7 +100,7 @@ impl Widget for Root {
     }
 
     fn paint(&mut self, ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, scene: &mut Scene) {
-        backdrop::paint(scene, &self.look, ctx.size(), self.seed);
+        backdrop::paint(scene, &self.look, self.shown_bg(), ctx.size(), self.seed);
     }
 
     fn accessibility_role(&self) -> Role {

@@ -83,3 +83,14 @@ fn snippets() {
     assert!(snippet("ΟΔΟΣ ΚΑΙ", &osis_app::data::fold("ΟΔΟΣ")).is_some());
     assert!(snippet("İzmir", &osis_app::data::fold("İZMİR")).is_some());
 }
+
+/// The look is per person, on the app group: default until set.
+#[test]
+fn look_choice() {
+    use osis_app::schema::Mode;
+    let d = data();
+    assert_eq!(d.look().unwrap(), (None, Mode::Auto));
+    d.set_theme("cel").unwrap();
+    d.set_mode(Mode::Dark).unwrap();
+    assert_eq!(d.look().unwrap(), (Some("cel".into()), Mode::Dark));
+}

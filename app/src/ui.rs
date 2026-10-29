@@ -9,7 +9,7 @@
 
 use crate::data::{Data, Kind, Tile};
 use crate::edit::splice;
-use crate::schema::View;
+use crate::schema::{Mode as ModeChoice, View};
 use osis::core::{BODY, NAME};
 use osis::{Path, Subscription, TextSession, Tid};
 use osis_kit::icons::Icon;
@@ -48,8 +48,10 @@ pub enum Msg {
 }
 
 /// What a press on a widget does.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum Act {
+    Theme(&'static str),
+    Mode(ModeChoice),
     Open(Tid),
     Home,
     New,
@@ -119,7 +121,10 @@ pub struct Ui {
 }
 
 impl Ui {
-    pub fn new(data: Data, window: WindowId, mb: Mailbox<Msg>, inbox: Inbox<Msg>, theme: Theme, mode: Mode) -> Ui {
+    pub fn new(data: Data, window: WindowId, mb: Mailbox<Msg>, inbox: Inbox<Msg>) -> Ui {
+        let (theme, mode) = data.look().unwrap_or((None, ModeChoice::Auto));
+        let theme = Theme::named(theme.as_deref().unwrap_or("frost"));
+        let mode = kit_mode(&mode);
         let m = mb.clone();
         let diag_sub = data.db.on_diagnostic(move |_, d| {
             m.post(Msg::Diagnostic(format!("{:?}: {}", d.kind, d.detail)));
@@ -184,6 +189,9 @@ impl Ui {
             Screen::Thing(t) => self.data.main_color(t)?.and_then(|c| parse(&c)),
             Screen::Home => None,
         };
+        let (theme, mode) = self.data.look()?;
+        self.theme = Theme::named(theme.as_deref().unwrap_or("frost"));
+        self.mode = kit_mode(&mode);
         let dark = self.dark(ctx);
         let look = Look::new(&self.theme, dark, main);
         let rebuild = force || self.built != Some((screen, self.narrow)) || look != *self.look;
@@ -241,9 +249,13 @@ impl Ui {
             Screen::Home => self.home(),
             Screen::Thing(t) => self.thing(t)?,
         };
+        // the arrangement: from the thing, varied by its kind
         let seed = match screen {
             Screen::Home => 0,
-            Screen::Thing(t) => seed_of(t),
+            Screen::Thing(t) => {
+                let k = self.data.kind(t)?;
+                seed_of(t) ^ seed_of_str(&format!("{k:?}")).rotate_left(17)
+            }
         };
         let look = self.look.clone();
         *ctx.window(self.window).base_color() = self.look.bg;
@@ -290,11 +302,35 @@ impl Ui {
             .with_child(style::label(&look, "osis", Text::Brand))
             .with_child(self.search_field(true))
             .with_child(self.slot_widget(HOME_BODY))
+            .with_child(self.look_picker())
             .with_child(self.status_widget());
         let pad = Properties::new().with(Padding::from_vh(look.sp(48.0), look.sp(16.0)));
         let col = NewWidget::new_with_props(col, pad);
         let limited = NewWidget::new(Limit::new(col, 940.0));
         NewWidget::new(Portal::new(limited).constrain_horizontal(true)).erased()
+    }
+
+    /// Theme and mode choices (home's foot).
+    fn look_picker(&mut self) -> NewWidget<dyn Widget> {
+        let look = self.look.clone();
+        let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(6.0)));
+        col = col.with_child(style::label(&look, "Look", Text::Section));
+        let mut themes = TileGrid::new(look.clone(), 120.0).gap(4.0);
+        for th in Theme::defaults() {
+            let tint = th.surface.of(look.dark);
+            let cur = th.id == self.theme.id;
+            let w = NewWidget::new(osis_kit::widgets::Tile::new(TileStyle::Row, TileIcon::Initials(th.name.chars().take(1).collect()), th.name, "", Some(osis_kit::theme::mix(tint, th.background.of(!look.dark), 0.7)), look.clone()).current(cur));
+            themes = themes.with_child(self.act(w, Act::Theme(th.id)));
+        }
+        col = col.with_child(NewWidget::new(themes));
+        let mut modes = TileGrid::new(look.clone(), 120.0).gap(4.0).max_cols(3);
+        for (m, name, icon) in [(ModeChoice::Auto, "Auto", Icon::Recent), (ModeChoice::Light, "Light", Icon::Eye), (ModeChoice::Dark, "Dark", Icon::Star)] {
+            let cur = kit_mode(&m) == self.mode;
+            let w = NewWidget::new(osis_kit::widgets::Tile::new(TileStyle::Row, TileIcon::Icon(icon), name, "", None, look.clone()).current(cur));
+            modes = modes.with_child(self.act(w, Act::Mode(m)));
+        }
+        col = col.with_child(NewWidget::new(modes));
+        NewWidget::new_with_props(col, Properties::new().with(Padding::from_vh(look.sp(24.0), 0.0))).erased()
     }
 
     fn thing(&mut self, t: Tid) -> osis::Result<NewWidget<dyn Widget>> {
@@ -323,7 +359,11 @@ impl Ui {
         let Some(ed) = self.editor.as_mut() else { return Err(osis::Error::Invalid("no editor".into())) };
         let (title, name_id) = style::input(&look, &ed.shown.0, "Untitled", Text::Title, false);
         ed.name_id = name_id;
-        let mut body = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(sp(16.0))).with_child(title);
+        let mut body = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(sp(16.0)));
+        if let Some(m) = style::title_mark(&look) {
+            body = body.with_child(m);
+        }
+        body = body.with_child(title);
         body = body.with_child(extra);
         if has_body {
             let placeholder = if tile.kind == Kind::Contact { "Notes about them…" } else { "Write something…" };
@@ -566,6 +606,8 @@ impl Ui {
                 self.data.create_note().map(|_| ())
             }
             Act::Favorite(t) => self.data.toggle_favorite(t),
+            Act::Theme(id) => self.data.set_theme(id),
+            Act::Mode(m) => self.data.set_mode(m),
             Act::Delete(t) => {
                 // close the editor first: its sessions commit pending typing on drop, which
                 // after the delete would recreate the thing
@@ -652,7 +694,19 @@ fn initials(name: &str) -> String {
 
 /// A seed for the background's arrangement, from the thing's tid.
 fn seed_of(t: Tid) -> u64 {
-    t.to_string().bytes().fold(7u64, |a, b| a.wrapping_mul(31).wrapping_add(u64::from(b)))
+    seed_of_str(&t.to_string())
+}
+
+fn seed_of_str(s: &str) -> u64 {
+    s.bytes().fold(7u64, |a, b| a.wrapping_mul(31).wrapping_add(u64::from(b)))
+}
+
+fn kit_mode(m: &ModeChoice) -> Mode {
+    match m {
+        ModeChoice::Auto => Mode::Auto,
+        ModeChoice::Light => Mode::Light,
+        ModeChoice::Dark => Mode::Dark,
+    }
 }
 
 /// The first 8 hex digits of a tid, for the status line.
@@ -663,7 +717,8 @@ fn short(t: Tid) -> String {
 impl AppDriver for Ui {
     /// The window exists now: wakes posted before it were dropped by masonry_winit, so start the
     /// mailbox over and refresh once.
-    fn on_start(&mut self, _state: &mut osis_kit::masonry_winit::app::MasonryState<'_>) {
+    fn on_start(&mut self, state: &mut osis_kit::masonry_winit::app::MasonryState<'_>) {
+        osis_kit::fonts::register(state);
         self.inbox.drain();
         self.mb.post(Msg::Changed);
     }
@@ -691,7 +746,7 @@ impl AppDriver for Ui {
                 self.refresh(ctx, false);
             }
         } else if action.is::<Press>() {
-            if let Some(a) = self.acts.get(&id).copied() {
+            if let Some(a) = self.acts.get(&id).cloned() {
                 self.press(ctx, a);
             }
         } else if let Ok(a) = action.downcast::<TextAction>() {
