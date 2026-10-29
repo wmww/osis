@@ -121,6 +121,17 @@ impl RelaySeen {
     /// Whether relay-only entry `b` of `l`, expiring at `t`, is seen here for the first time
     /// (`now` wall ms): not a repeat, not at or below the label's floor.
     pub(crate) fn first(&mut self, l: LabelId, b: BlobId, t: u64, now: u64) -> bool {
+        if !self.fresh(l, b, t, now) {
+            return false;
+        }
+        self.record(l, b, t);
+        true
+    }
+
+    /// Whether relay-only entry `b` of `l`, expiring at `t`, would be seen here for the first
+    /// time, without recording it (checked before opening it; recorded once verified, so a
+    /// stranger's junk cannot raise a label's floor).
+    pub(crate) fn fresh(&mut self, l: LabelId, b: BlobId, t: u64, now: u64) -> bool {
         while let Some(x) = self.by_expiry.first().copied()
             && x.0 <= now
         {
@@ -128,8 +139,13 @@ impl RelaySeen {
             self.ids.remove(&(x.1, x.2));
         }
         self.floor.retain(|_, f| *f > now);
-        if self.floor.get(&l).is_some_and(|f| t <= *f) || !self.ids.insert((l, b)) {
-            return false;
+        !(self.floor.get(&l).is_some_and(|f| t <= *f) || self.ids.contains(&(l, b)))
+    }
+
+    /// Records relay-only entry `b` of `l`, expiring at `t`, as seen.
+    pub(crate) fn record(&mut self, l: LabelId, b: BlobId, t: u64) {
+        if !self.ids.insert((l, b)) {
+            return;
         }
         self.by_expiry.insert((t, l, b));
         if self.ids.len() > RELAYS_REMEMBERED
@@ -139,7 +155,6 @@ impl RelaySeen {
             let f = self.floor.entry(l0).or_default();
             *f = (*f).max(t0);
         }
-        true
     }
 }
 
@@ -593,7 +608,7 @@ impl SyncEngine {
         }
         let Some(t) = osis_label::Prefix::parse(&blob).ok().and_then(|p| p.expiry()).map(|t| t.0) else { return Ok(()) };
         let now = self.now();
-        if t <= now || t > now.saturating_add(2 * osis_base::format::MAX_DRIFT_MS) || !self.eph.relays.first(l, b, t, now) {
+        if t <= now || t > now.saturating_add(2 * osis_base::format::MAX_DRIFT_MS) || !self.eph.relays.fresh(l, b, t, now) {
             return Ok(());
         }
         let Some(g) = self.group_of(&l) else { return Ok(()) };
@@ -612,7 +627,7 @@ impl SyncEngine {
         }
         let id = cb.id();
         match self.engine.ingest_ephemeral(cb) {
-            Ok(EphIngest::Relayed { .. }) => {}
+            Ok(EphIngest::Relayed { .. }) => self.eph.relays.record(l, b, t),
             Ok(_) => return Ok(()),
             Err(e) => {
                 self.diag(format!("relay-only commit {id:?}: {e}"));

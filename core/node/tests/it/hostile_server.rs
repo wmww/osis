@@ -129,6 +129,51 @@ fn replayed_signal_dropped_spec_sync_9() {
     assert!(fired(&rx).is_empty(), "a stale replay fires nothing");
 }
 
+// spec/sync.md §9, spec/requirements.md ("Nothing trusts a server's word"): a server pushing more
+// junk relay-only blobs (no keys needed: a relay prefix far ahead and random bytes) than a node
+// remembers cannot raise the label's floor, so a later real signal through any server still fires
+#[test]
+fn junk_relays_raise_no_floor_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Read)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let rx = net.listen(b);
+    let signal = |net: &mut Net, v: bool| {
+        let mut m = osis_node::Mutation::new();
+        m.set(t, &ukey("/t/typing", osis_schema::Lifetime::Signal), &Value::Bool(v)).unwrap();
+        net.engine(a).write(m).unwrap();
+        let acts = net.sync(a).handle(Event::Local);
+        let conn_a = net.conn_to(a, sv).unwrap();
+        let label = sent(&acts, conn_a).into_iter().find_map(|m| if let Message::Upload { label, .. } = m { Some(label) } else { None }).expect("relay-only entry sent");
+        net.actions(a, acts);
+        net.settle(10_000);
+        label
+    };
+    let label = signal(&mut net, true);
+    assert_eq!(fired(&rx).len(), 1);
+    let far = osis_base::WallMs(net.now() + 2 * MAX_DRIFT_MS - 1_000);
+    let junk: Vec<osis_proto::Event> = (0..(1u32 << 16) + 8)
+        .map(|n| {
+            let mut salt = [0u8; 16];
+            salt[..4].copy_from_slice(&n.to_le_bytes());
+            let mut blob = osis_label::Prefix::new(salt, Some(far), vec![]).unwrap().with_class(osis_label::Class::Relay).to_bytes();
+            blob.extend_from_slice(&[7; 40]);
+            osis_proto::Event::Added { blob_id: osis_label::blob_id(&blob), blob: Some(blob), wrap: [0; osis_crypto::WRAP_LEN], stamp: None }
+        })
+        .collect();
+    for chunk in junk.chunks(4096) {
+        let conn_b = net.conn_to(b, sv).unwrap();
+        net.feed(b, Event::Bytes { conn: conn_b, bytes: frame(Message::Push { label, events: chunk.to_vec(), cursor: Cursor { log_id: [0; 16], seq: 0 } }) });
+    }
+    net.clock.advance(1_000);
+    signal(&mut net, false);
+    assert_eq!(fired(&rx).len(), 1, "the real signal fires");
+}
+
 // spec/requirements.md (blind nodes must not learn device identities; groups unlinkable beyond
 // their overlap), spec/sync.md §2 (a key actor reads a label as a listed reader): a node holding a
 // key actor (a link or recovery key) never presents its signing key at a label whose group does
