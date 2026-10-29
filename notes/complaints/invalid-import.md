@@ -1,7 +1,0 @@
-# invalid-import
-- `cargo test --workspace` stops at the first failing binary; after the core schema text changed, a stale vector (`schema/core.vec`) hid every later binary until `--no-fail-fast`. Regenerate vectors with `cargo run --bin gen-vectors`, not `OSIS_REGEN_VECTORS=1` on the vectors test (that env var only regenerates `osis-schema` codegen).
-- `rebuild` joins the current state with the bodies, so un-merge is only ever by dot predicate: a design that "rebuilds" to drop a previously joined body's extra dots does nothing. Worth a line in notes/node.md for whoever next touches import validity.
-- The first cold `cargo build --workspace --all-targets` in the worktree took ~8 min at load 40.
-- The walks `_moves` generator cannot easily make a foreign (non-creator) import: building one fails with "admin delete key not supplied" (imports carry their origins' retention, admin purge needs the admin delete key), so it was left out; the dedicated walks tests cover it.
-- Review: `cargo test --workspace` after an osis-commit edit took 9.7 min wall (every crate above it recompiles; load from other agents); the second run after an osis-engine/test edit 2.7 min.
-- Review: hand-forged snapshots built at `Ts::make(engine.now(), 0)` are refused as "carried write stamped after its commit" when the forged writes reuse a commit's HLC `ts` of the same wall ms; advance the clock first. The helpers `forge_snapshot*` already exist in validity.rs (look before writing another).
