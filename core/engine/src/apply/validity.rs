@@ -733,8 +733,8 @@ fn valid_on(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai
 
 /// Writes a held compaction snapshot holds under dots whose owning delta was never received here
 /// (`owner_received`), per snapshot and source, counters sorted: the snapshots to compare with
-/// that delta once it arrives (`uncarry`, `differing_copies`), and what a snapshot gave alone
-/// when it turns invalid (`given_alone`). Kept for every held snapshot whatever its validity, in
+/// that delta once it arrives (`uncarry`, `differing_copies`), and what a snapshot gave, removed
+/// when it turns invalid (`given_by`). Kept for every held snapshot whatever its validity, in
 /// (snapshot, source) order whatever the arrival order. Nothing is judged per write: a valid
 /// snapshot vouches for every write it carries (spec/permissions.md §5.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -845,17 +845,13 @@ pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, snap: &CommitId,
     }
 }
 
-/// The writes of held snapshot `snap` on `(tid, ak)` whose owning delta was never received and
-/// that no other held valid snapshot carries: what it alone gave, which go when it turns invalid
-/// (spec/permissions.md §5.2).
-pub(crate) fn given_alone(core: &Core, tid: &Tid, ak: &Ak, snap: &CommitId) -> Vec<Owned> {
+/// The writes of held snapshot `snap` on `(tid, ak)` whose owning delta was never received: they
+/// go from the state when it turns invalid (spec/permissions.md §5.2), all of them, also those
+/// another held valid snapshot carries (its body gives its own copy back in the rebuild; the
+/// state may hold this one's differing copy, which would otherwise stay).
+pub(crate) fn given_by(core: &Core, tid: &Tid, ak: &Ak, snap: &CommitId) -> Vec<Owned> {
     let gs = core.ix.carried.get(&(*tid, ak.clone())).map(Vec::as_slice).unwrap_or_default();
-    let other = |src: &osis_crdt::Source, x: u64| gs.iter().any(|g| g.snap != *snap && g.src == *src && g.ctrs.binary_search(&x).is_ok() && snapshot_valid(core, &g.snap, tid, ak));
-    gs.iter()
-        .filter(|g| g.snap == *snap)
-        .map(|g| Owned::Dots { src: g.src.clone(), ctrs: g.ctrs.iter().copied().filter(|x| !other(&g.src, *x)).collect() })
-        .filter(|o| !matches!(o, Owned::Dots { ctrs, .. } if ctrs.is_empty()))
-        .collect()
+    gs.iter().filter(|g| g.snap == *snap).map(|g| Owned::Dots { src: g.src.clone(), ctrs: g.ctrs.clone() }).collect()
 }
 
 /// Drops the carried writes a commit owns on the aspects whose deltas it now holds (`held`):
@@ -1090,12 +1086,13 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
     if rebuild {
         for (tid, ak) in &flipped {
             let k = (*tid, ak.clone());
-            // a snapshot turned invalid gives nothing: what it alone gave goes (its writer no
-            // longer vouches for it, spec/permissions.md §5.2), and with it its vouching
+            // a snapshot turned invalid gives nothing: what it gave goes (its writer no longer
+            // vouches for it, spec/permissions.md §5.2; other valid carriers give theirs back),
+            // and with it its vouching
             let snaps: Vec<CommitId> = fell.get(&k).into_iter().flatten().filter(|(c, _)| tx.core.ix.commits.get(c).is_some_and(|m| super::is_kind_snapshot(m.view.kind))).map(|x| x.0).collect();
             if rose.contains(&k) || !snaps.is_empty() {
                 let _s = crate::costs::span("rejudge: rebuild");
-                let gone: Vec<Owned> = snaps.iter().flat_map(|s| given_alone(tx.core, tid, ak, s)).collect();
+                let gone: Vec<Owned> = snaps.iter().flat_map(|s| given_by(tx.core, tid, ak, s)).collect();
                 super::atomic::rebuild_without(tx, tid, ak, &gone)?;
             } else {
                 let _s = crate::costs::span("rejudge: unmerge");

@@ -1840,3 +1840,118 @@ fn removed_member_write_compacted_earlier_stays_alike_spec_perm_5_2() {
     }
     assert!(states.windows(2).all(|w| w[0] == w[1]));
 }
+
+// spec/permissions.md §5.2, spec/crdt.md §4.6 (a function of the held set): Bob's tag reaches a
+// fresh node inside Alice's snapshot S1 and Carol's later S2, which covers S1 (also with Bob's
+// own commit held and made invalid by his removal with an empty frontier: vouched for). Alice
+// removes Carol before receiving S2 (her frontier does not list it). A node holding S2 as valid
+// drops S1 (covered), then gets the removals; another gets the removals first (S2 invalid, S1
+// kept). Both held S1 valid; the state should not depend on the order
+// (issues/dropped-voucher-after-cover.md).
+#[test]
+#[ignore = "issues/dropped-voucher-after-cover.md"]
+fn coverer_demoted_after_cover_drop_alike_spec_perm_5_2() {
+    for bob_held in [false, true] {
+        let (mut lp, d, b, c) = setup(0x5fa0);
+        add_tag(&mut lp, 1, d, "bob");
+        lp.sync_all().unwrap();
+        let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "/t/tags"))).collect();
+        lp.advance(1_000);
+        let s1 = lp.peers[0].engine.snapshot(&d, &ak("/t/tags")).unwrap().unwrap();
+        sync(&mut lp, 0, 2);
+        lp.advance(1_000);
+        let s2 = lp.peers[2].engine.snapshot(&d, &ak("/t/tags")).unwrap().unwrap();
+        lp.advance(DAY);
+        let latest = |lp: &mut LocalPeer| *lp.peers[0].engine.commit_ids().iter().max_by_key(|x| lp.peers[0].engine.header(x).unwrap().ts).unwrap();
+        revoke(&mut lp, 0, d, c);
+        let mut late = vec![latest(&mut lp)];
+        if bob_held {
+            lp.advance(1_000);
+            set_edge(&mut lp.peers[0].engine, d, b, None, Some(osis_schema::core_types::Frontier::default().to_value()));
+            late.push(latest(&mut lp));
+        }
+        sync(&mut lp, 0, 2);
+        let pks: Vec<_> = packages(&mut lp, 2).into_iter().filter(|p| bob_held || !bob.contains(&p.id)).collect();
+        let pk = |id| pks.iter().find(|p| p.id == id).unwrap().clone();
+        let base: Vec<_> = pks.iter().filter(|p| p.id != s2 && !late.contains(&p.id)).cloned().collect();
+        let mut got = Vec::new();
+        for (n, demote_first) in [false, true].into_iter().enumerate() {
+            let i = lp.peers.len();
+            lp.peers.push(osis_node::local_peer::Peer::new(0x5fa1 + n as u64, lp.peers[0].engine.now()).unwrap());
+            for p in &base {
+                lp.deliver(i, p).unwrap();
+            }
+            if !demote_first {
+                lp.deliver(i, &pk(s2)).unwrap();
+                let e = &mut lp.peers[i].engine;
+                assert_eq!(e.covered(&s2, &s1, &d, &ak("/t/tags")).unwrap(), Some(true), "S2 covers S1");
+                e.drop_body(&s1, &d, &ak("/t/tags")).unwrap();
+            }
+            for id in &late {
+                lp.deliver(i, &pk(*id)).unwrap();
+            }
+            if demote_first {
+                lp.deliver(i, &pk(s2)).unwrap();
+            }
+            lp.peers[i].engine.reexamine().unwrap();
+            got.push(tags(&mut lp, i, d));
+        }
+        assert_eq!(got[0], got[1], "Bob's commit held: {bob_held}; cover drop then removal, removal first");
+    }
+}
+
+// spec/permissions.md §5.2 (a snapshot turned invalid gives nothing), spec/crdt.md §4.6: Bob's tag
+// reaches fresh nodes only through snapshots: Alice's honest one and Carol's carrying another
+// value under Bob's dot and `ts`. Alice then removes Carol with a frontier not listing Carol's.
+// Whether Carol's copy came first (valid) or after the removal, the state ends alike: Alice's copy
+// (its turning invalid strips its copies of shared dots too, `validity::given_by`).
+#[test]
+fn invalidated_copy_of_shared_dot_goes_alike_spec_perm_5_2() {
+    use osis_crdt::{Batch, Op, PathOp, Source, Writer};
+    let (mut lp, d, b, c) = setup(0x5fb0);
+    add_tag(&mut lp, 1, d, "bob");
+    lp.sync_all().unwrap();
+    let tags_ak = ak("/t/tags");
+    let bob = lp.peers[1].engine.commit_ids().into_iter().find(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak == tags_ak))).unwrap();
+    let bh = lp.peers[1].engine.header(&bob).unwrap();
+    let lo = bh.aspects.iter().find(|a| a.ak == tags_ak).unwrap().lo;
+    let empty = osis_crdt::Fragment::default();
+    let mut batch = Batch::new(&empty, Writer::new(bh.ts, Source::node(b), lo));
+    batch.apply(&PathOp { path: Vec::new(), op: Op::Add(s("evil")) }, &osis_crdt::AnyView).unwrap();
+    let (evil, _) = batch.finish().unwrap();
+    lp.advance(1_000);
+    let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
+    let forged = forge_snapshot(&mut lp, 2, d, &tags_ak, now, evil);
+    lp.advance(1_000);
+    let honest = lp.peers[0].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
+    lp.advance(DAY);
+    revoke(&mut lp, 0, d, c);
+    let rv = *lp.peers[0].engine.commit_ids().iter().max_by_key(|x| lp.peers[0].engine.header(x).unwrap().ts).unwrap();
+    let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| p.id != bob).collect();
+    let pk = |id| pks.iter().find(|p| p.id == id).unwrap().clone();
+    let base: Vec<_> = pks.iter().filter(|p| p.id != honest && p.id != rv).cloned().collect();
+    let mut got = Vec::new();
+    for (n, removal_first) in [false, true].into_iter().enumerate() {
+        let i = lp.peers.len();
+        lp.peers.push(osis_node::local_peer::Peer::new(0x5fb1 + n as u64, lp.peers[0].engine.now()).unwrap());
+        for p in &base {
+            lp.deliver(i, p).unwrap();
+        }
+        if removal_first {
+            lp.deliver(i, &pk(rv)).unwrap();
+        }
+        lp.peers[i].engine.ingest(&forged, Vec::new()).unwrap();
+        lp.deliver(i, &pk(honest)).unwrap();
+        if !removal_first {
+            lp.deliver(i, &pk(rv)).unwrap();
+        }
+        lp.peers[i].engine.reexamine().unwrap();
+        got.push(tags(&mut lp, i, d));
+        lp.peers[i].engine.rebuild_state(&d, &tags_ak).unwrap();
+        assert_eq!(tags(&mut lp, i, d), got[n], "removal first: {removal_first}, rebuilt");
+        lp.peers[i].restart(0x5fb3 + n as u64).unwrap();
+        assert_eq!(tags(&mut lp, i, d), got[n], "removal first: {removal_first}, restarted");
+    }
+    assert_eq!(got[1], BTreeSet::from(["bob".to_string()]), "removal first");
+    assert_eq!(got[0], got[1], "Carol's copy first, then the removal");
+}

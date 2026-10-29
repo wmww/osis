@@ -1,0 +1,9 @@
+# A snapshot dropped under a cover that later turns invalid stops vouching
+> Summary: a valid snapshot S1 dropped because S2 covers it vouches no more; if S2 then turns invalid (its author removed by a frontier not listing it), what only S1 vouched for goes at nodes that dropped S1 and stays at nodes that got the removal first (S2 invalid covers nothing, S1 kept). Honest case: Carol compacts over Alice's compaction, then Alice removes Carol before seeing it. Wider than the residual notes/node.md records.
+> Tags: security, node, retention, owner-call
+
+Repro (ignored on this issue): `validity::coverer_demoted_after_cover_drop_alike_spec_perm_5_2`, Bob's tag reaching a fresh node only through S1 and S2 (`{}` after cover drop then removal, `{bob}` removal first), and the same with Bob's commit held and invalid (S1's vouching).
+
+Both cases: never-received writes (`given_alone` no longer sees S1's groups, `forget_snapshot`) and invalid received deltas (`drop_part` re-runs `unmerge_fell`: S1 vouches no more). Pre-existing on main (the carried judgments then lost S1's groups the same way).
+
+Fix sketch (a few hundred lines, store rows): a snapshot body dropped while valid keeps vouching for the dots it carried, recorded at drop (per aspect, per source counter ranges, persisted beside `Meta::live_drops`; removed by `uncarry` where the delta later arrives valid), read by `vouched` and `given_alone`; spec/permissions.md §5.2 "a valid snapshot's body dropped ... vouches no more" changes. Limits: a server entry deleted under that cover is lost for nodes that never held it (a drop is final network-wide), so this buys agreement only among nodes that held S1. Readers cannot cause it (an invalid snapshot covers nothing); a writer can (cover, then be removed unseen), but a writer could remove the value while valid anyway.
