@@ -93,12 +93,11 @@ pub(crate) fn note_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, deaths: &[Death])
 pub(crate) fn note_copies(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<()> {
     let Some(ai) = bounded_part(tx.core, c, tid, ak) else { return Ok(()) };
     let Some(ts) = tx.core.ix.commits.get(c).map(|m| m.header.ts) else { return Ok(()) };
-    let invalid = crate::apply::invalid_of(tx.core, tid, ak);
     tx.load(tid, ak)?;
     let Some(Some(st)) = tx.core.states.get(&(*tid, ak.clone())).cloned() else { return Ok(()) };
     let mut deaths = Vec::new();
-    for mut f in crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment) {
-        f.remove_dots(&|d| invalid.iter().any(|o| o.owns(d)));
+    // a valid snapshot vouches for every write it carries (spec/permissions.md §5.2)
+    for f in crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment) {
         let mut st = st.clone();
         let mut ch = Changes::new();
         st.join_into(f.clone(), None, &mut ch);
@@ -197,7 +196,7 @@ fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<Death>, d
 /// superseded dies at a later one here. Cost: the aspect's held bodies and whole state.
 fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
-    let invalid = crate::apply::invalid_of(tx.core, tid, ak);
+    let un = crate::apply::Unmerge::of(tx, tid, ak, &BTreeMap::new())?;
     let mut st = Fragment::default();
     let mut deaths = Vec::new();
     let mut dead = BTreeSet::new();
@@ -214,7 +213,7 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         let cp = tx.core.ix.commits.get(c).is_none_or(|m| !m.header.kind.has_own_writes());
         for mut f in parts {
             let core = &*tx.core;
-            f.remove_dots(&|d| invalid.iter().any(|o| o.owns(d)));
+            f.remove_dots(&|d| un.bad(d));
             if cp {
                 f.remove_writes(&|d| core.commit_of(tid, ak, d).is_some_and(|x| x != *c && held_part(core, &x, tid, ak).is_some()));
             }

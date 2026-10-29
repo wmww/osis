@@ -14,7 +14,7 @@ mod tests_linked;
 mod tests_order;
 
 pub(crate) use waits::Waits;
-pub(crate) use atomic::{apply_verified, forget_snapshot, index_commit, ingest_secrets_keys, invalid_of, rebuild, strip_held_copies};
+pub(crate) use atomic::{Unmerge, apply_verified, forget_snapshot, index_commit, ingest_secrets_keys, invalid_of, rebuild, strip_copies_where, unmerge_fell};
 
 use crate::engine::blobs::TxBlobs;
 use crate::engine::{Engine, Meta, Tx, decode_commit_record, records};
@@ -759,7 +759,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let missing = (0..h.aspects.len()).filter(|ai| !blob.parts.iter().any(|p| p.ai == *ai) && !head.dropped.iter().any(|x| x.0 == *ai)).collect();
             let m = Meta::new(h.clone(), valid, head, missing);
             atomic::index_commit(tx.core, &id, &m.view);
-            validity::note_authors(tx.core, &id, &h, &[]).map_err(|_| Error::Corrupt("commit authors"))?;
+            validity::note_imports(tx.core, &id, &h, &[]).map_err(|_| Error::Corrupt("commit imports"))?;
             tx.core.ix.commits.insert(id, m);
             if is_kind_snapshot(blob.header.kind) {
                 snaps.push(blob.clone());
@@ -769,15 +769,14 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             }
         }
         // snapshots: their frontiers (the bodies carrying a write, `retention::carriers`) and
-        // the writes they carry without their commit (judged below with every delta)
+        // the writes they carry whose own delta was never received
         for blob in snaps {
             let id = blob.id();
             let mut b = blob.clone();
             if let Exam::Ready(parts) = examine_stored(tx, &mut b, &id)? {
-                validity::note_authors(tx.core, &id, &b.header, &parts).map_err(|_| Error::Corrupt("snapshot authors"))?;
                 for (ai, _, d) in parts {
                     if let (Some(a), Decoded::Snapshot(s)) = (b.header.aspects.get(ai), d) {
-                        validity::note_carried(tx.core, &a.tid, &a.ak, &id, &s.fragment, &s.authors);
+                        validity::note_carried(tx.core, &a.tid, &a.ak, &id, &s.fragment);
                         atomic::note_snapshot(tx.core, &a.tid, &a.ak, b.header.ts, &id, s.frontiers);
                     }
                 }
@@ -869,25 +868,10 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     for (id, m) in tx.core.ix.commits.iter() {
         for (ai, a) in m.view.aspects.iter().enumerate() {
             let now = m.valid.get(ai).copied().unwrap_or(false);
-            let was = old.as_ref().map(|o| o.0.get(id).and_then(|v| v.get(ai)).copied().unwrap_or(true));
+            let was = old.as_ref().map(|o| o.get(id).and_then(|v| v.get(ai)).copied().unwrap_or(true));
             if was.map_or(!now, |w| w != now) {
                 stale.insert((a.tid, a.ak.clone()));
             }
-        }
-    }
-    let invalid_of = |v: Option<&Vec<validity::Carried>>| -> BTreeSet<(osis_crdt::Source, u64)> { v.into_iter().flatten().flat_map(|c| c.invalid.iter().map(|x| (c.src.clone(), *x))).collect() };
-    let mut keys: BTreeSet<(Tid, osis_base::Ak)> = tx.core.ix.carried.keys().cloned().collect();
-    if let Some(o) = &old {
-        keys.extend(o.1.keys().cloned());
-    }
-    for k in keys {
-        let now = invalid_of(tx.core.ix.carried.get(&k));
-        let differs = match &old {
-            Some(o) => invalid_of(o.1.get(&k)) != now,
-            None => !now.is_empty(),
-        };
-        if differs {
-            stale.insert(k);
         }
     }
     stale.retain(|(_, ak)| !matches!(ak.as_str(), "/members" | "/tenures" | "/created"));

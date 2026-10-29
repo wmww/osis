@@ -879,11 +879,11 @@ fn carried_imports_alike_in_both_orders() {
 }
 
 // spec/permissions.md §5.2, §7: a snapshot of a moved thing carries an import's writes (source
-// `Commit(o)`); a node holding o (on the old thing) but not the import judges them as the
-// import's author, so an import invalid on the copy (its author revoked before it) shows them
-// nowhere. The old rule took o held as their own commit held, and showed them.
+// `Commit(o)`); its author, revoked on the copy's owner before the move, could write neither:
+// a node holding o (on the old thing) but not the import shows them nowhere (o owns nothing on
+// the copy, and the invalid snapshot gives nothing).
 #[test]
-fn carried_imports_judged_without_the_import_spec_perm_5_2() {
+fn carried_imports_without_the_import_spec_perm_5_2() {
     let mut lp = LocalPeer::new(4, 0xca23, T0).unwrap();
     lp.sync_all().unwrap();
     let a = lp.peers[0].engine.tid();
@@ -915,7 +915,7 @@ fn carried_imports_judged_without_the_import_spec_perm_5_2() {
         lp.deliver(3, x).unwrap();
     }
     assert!(lp.peers[3].engine.header(&o).is_some() && imports.iter().all(|i| lp.peers[3].engine.header(i).is_none()));
-    assert_eq!(lp.peers[3].engine.get(&copy, &tags).unwrap(), none, "carried writes of an import not held are judged as its author's");
+    assert_eq!(lp.peers[3].engine.get(&copy, &tags).unwrap(), none, "an invalid snapshot gives nothing");
     open_equals_rebuild_any(&mut lp.peers[3].engine, &[t, copy, p], "without the imports");
     for x in pk.iter().filter(|x| imports.contains(&x.id)) {
         lp.deliver(3, x).unwrap();
@@ -924,12 +924,10 @@ fn carried_imports_judged_without_the_import_spec_perm_5_2() {
 }
 
 // spec/requirements.md, Decentralization; spec/permissions.md §7: the copy's hostile creator
-// imports t into it a second time, so two held imports list each origin; the least by (`ts`,
-// ID) names the author its carried writes are judged as, whichever arrived last, and each owns
-// the origin's writes on its aspects. Two nodes taking the imports in either order, and a
-// snapshot of the copy, agree (claims, carried writes, states) and equal their rebuilds, also
-// where the snapshot comes before either import (its `Authors` naming the least is not refused
-// where the other import is held: issues/snapshot-authors-refusal-order.md).
+// imports t into it a second time, so two held imports list each origin; each owns the origin's
+// writes on its aspects. Two nodes taking the imports in either order, and a snapshot of the
+// copy, agree (imports, carried writes, states) and equal their rebuilds, also where the
+// snapshot comes before either import.
 #[test]
 fn double_import_alike_in_both_orders_spec_perm_7() {
     let mut lp = LocalPeer::new(6, 0xd0b1, T0).unwrap();
@@ -972,14 +970,11 @@ fn double_import_alike_in_both_orders_spec_perm_7() {
     }
     let line = |e: &Engine, k: &str| e.index_digest().lines().find(|l| l.starts_with(k)).unwrap_or_default().to_string();
     for i in 3..6 {
-        for k in ["authors ", "imports ", "carried "] {
+        for k in ["imports ", "carried "] {
             assert_eq!(line(&lp.peers[2].engine, k), line(&lp.peers[i].engine, k), "peer {i}: {k}");
         }
         assert_eq!(states(&mut lp.peers[2].engine, &[t, copy]), states(&mut lp.peers[i].engine, &[t, copy]), "peer {i}");
     }
-    // the first move's imports name the author
-    let h = lp.peers[2].engine.header(&first[0]).unwrap();
-    assert!(line(&lp.peers[2].engine, "authors ").contains(&format!("{:?}", (a, h.ts))), "the least import names the author");
     for i in 2..6 {
         open_equals_rebuild_any(&mut lp.peers[i].engine, &[t, copy], &format!("peer {i}"));
     }
@@ -1016,10 +1011,10 @@ fn invalid_reimport_changes_nothing_spec_perm_7() {
     assert_eq!(states(&mut lp.peers[2].engine, &[t, copy]), before, "an invalid import changes nothing");
 }
 
-// spec/permissions.md §7, spec/crdt.md §8 `Authors`: a node holding a snapshot of a copy but
-// not the move's imports judges the imported writes it carries by the snapshot's entry. An
-// import by another node (a reader of the copy) is refused, so it does not become the claim:
-// it re-attributed those writes to itself, judged invalid there, and they vanished.
+// spec/permissions.md §7, §5.2: a node holding a snapshot of a copy but not the move's imports
+// shows the imported writes it carries (the snapshot vouches for them). An import by another
+// node (a reader of the copy) is refused and changes nothing (it once re-attributed those writes
+// to itself, judged invalid there, and they vanished).
 #[test]
 fn foreign_import_does_not_claim_carried_writes_spec_perm_7() {
     let mut lp = LocalPeer::new(3, 0xd0b3, T0).unwrap();
@@ -1043,9 +1038,9 @@ fn foreign_import_does_not_claim_carried_writes_spec_perm_7() {
     }
     let tags = ak("/t/tags");
     let shown = lp.peers[2].engine.get(&copy, &tags).unwrap();
-    assert!(format!("{shown:?}").contains("\"a\""), "the snapshot's carried writes, judged by its entry: {shown:?}");
+    assert!(format!("{shown:?}").contains("\"a\""), "the snapshot's carried writes: {shown:?}");
     let line = |e: &Engine, k: &str| e.index_digest().lines().find(|l| l.starts_with(k)).unwrap_or_default().to_string();
-    let (authors, carried) = (line(&lp.peers[2].engine, "authors "), line(&lp.peers[2].engine, "carried "));
+    let carried = line(&lp.peers[2].engine, "carried ");
     let before = states(&mut lp.peers[2].engine, &[t, copy]);
     let foreign = lp.peers[1].engine.reimport(&t, &copy).unwrap();
     assert!(!foreign.is_empty());
@@ -1053,16 +1048,14 @@ fn foreign_import_does_not_claim_carried_writes_spec_perm_7() {
     for p in pk1.iter().filter(|p| foreign.contains(&p.id)) {
         assert_eq!(lp.deliver(2, p).unwrap_err().class(), osis_base::ErrorClass::BadInput, "not the copy's creator");
     }
-    assert_eq!((line(&lp.peers[2].engine, "authors "), line(&lp.peers[2].engine, "carried ")), (authors, carried), "the claim stays the snapshot's");
+    assert_eq!(line(&lp.peers[2].engine, "carried "), carried);
     assert_eq!(states(&mut lp.peers[2].engine, &[t, copy]), before);
     open_equals_rebuild_any(&mut lp.peers[2].engine, &[t, copy], "after the foreign import");
 }
 
 // spec/requirements.md, Decentralization; spec/permissions.md §7, spec/commits.md §4: a foreign
 // import whose parts a node does not hold (the copy not synced) waits for the copy's creation
-// record like one with parts and is then refused. Applied as a bare header it became the claim
-// for the carried writes once the copy arrived (its writes judged as the reader's: gone), while
-// a node that got its parts refused it and showed them.
+// record like one with parts and is then refused, as one with parts is.
 #[test]
 fn foreign_import_without_parts_waits_for_the_record_spec_perm_7() {
     let mut lp = LocalPeer::new(3, 0xd0b5, T0).unwrap();
@@ -1096,20 +1089,18 @@ fn foreign_import_without_parts_waits_for_the_record_spec_perm_7() {
     }
     assert!(lp.peers[2].engine.pending().is_empty(), "refused once the record is held");
     let shown = lp.peers[2].engine.get(&copy, &ak("/t/tags")).unwrap();
-    assert!(format!("{shown:?}").contains("\"a\""), "the snapshot's carried writes, judged by its entry: {shown:?}");
+    assert!(format!("{shown:?}").contains("\"a\""), "the snapshot's carried writes: {shown:?}");
     open_equals_rebuild_any(&mut lp.peers[2].engine, &[t, copy], "after the foreign import");
 }
 
-// spec/crdt.md §8 `Authors`, spec/permissions.md §5.2, §7: the claim for an origin's writes a
-// snapshot of a copy carries, where no held import has that aspect, is the least held import;
-// a lesser valid import arriving after a greater invalid one changes it, re-judging the carried
-// writes (they come back). The copy's creator moved t (`x` on the list, `r` on the register),
-// snapshotted the list, saw `x` deleted on t, then re-imported twice (the list no longer
-// shown: those imports lack it), the second time after its admin edge on the copy's owner
-// was removed. Nodes taking the re-imports in either order agree with each other and with
-// their rebuilds.
+// spec/permissions.md §5.2, §7: an origin's writes a valid snapshot of a copy carries count
+// whatever the imports held: the snapshot vouches for them. The copy's creator moved t (`x` on
+// the list, `r` on the register), snapshotted the list, saw `x` deleted on t, then re-imported
+// twice (the list no longer shown: those imports lack it), the second time after its admin edge
+// on the copy's owner was removed. Nodes taking the re-imports in either order show `x` and
+// agree with each other and with their rebuilds.
 #[test]
-fn lesser_import_after_snapshot_changes_the_claim_spec_perm_7() {
+fn invalid_import_after_snapshot_alike_spec_perm_7() {
     let mut lp = LocalPeer::new(5, 0xd0b4, T0).unwrap();
     lp.sync_all().unwrap();
     let a = lp.peers[0].engine.tid();
@@ -1158,16 +1149,17 @@ fn lesser_import_after_snapshot_changes_the_claim_spec_perm_7() {
         lp.deliver(3, x).unwrap();
     }
     assert!(line(&lp.peers[3].engine, "carried ").contains("Commit"), "the list's writes are carried: {}", line(&lp.peers[3].engine, "carried "));
-    assert!(!shows(&mut lp.peers[3].engine), "judged as the invalid import's");
+    assert!(shows(&mut lp.peers[3].engine), "the snapshot vouches for them");
     open_equals_rebuild_any(&mut lp.peers[3].engine, &[t, copy, p], "greater import only");
     for x in &l {
         lp.deliver(3, x).unwrap();
     }
-    assert!(shows(&mut lp.peers[3].engine), "judged as the lesser, valid import's");
+    assert!(shows(&mut lp.peers[3].engine), "both imports");
     for x in l.iter().chain(&g) {
         lp.deliver(4, x).unwrap();
     }
-    for k in ["authors ", "imports ", "carried "] {
+    assert!(shows(&mut lp.peers[4].engine), "peer 4");
+    for k in ["imports ", "carried "] {
         assert_eq!(line(&lp.peers[3].engine, k), line(&lp.peers[4].engine, k), "{k}");
     }
     assert_eq!(states(&mut lp.peers[3].engine, &[t, copy, p]), states(&mut lp.peers[4].engine, &[t, copy, p]));

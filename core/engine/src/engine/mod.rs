@@ -342,14 +342,14 @@ indexes! {
     pub invalid: JSetMap<(Tid, Ak), CommitId>,
     /// Held deltas per aspect: (`ts`, commit).
     pub by_aspect: JSetMap<(Tid, Ak), (Ts, CommitId)>,
-    /// Held imports per thing and origin: (thing, origin) -> (`ts`, import, importer). The
-    /// least is the origin's import there (`Core::authors`, spec/permissions.md §7).
+    /// Held imports per thing and origin: (thing, origin) -> (`ts`, import, importer): the
+    /// deltas owning the origin's writes there (spec/permissions.md §7).
     pub imports: JSetMap<(Tid, CommitId), (Ts, CommitId, Tid)>,
     /// Compaction snapshots held per aspect, with their frontiers: the bodies carrying a write
     /// besides its own (deaths, spec/commits.md §5).
     pub snapshots: JMap<(Tid, Ak), Vec<HeldSnapshot>>,
-    /// Writes held snapshots carry whose own commit is not held, per aspect, judged as their
-    /// claimed authors' and by the snapshot's validity (spec/permissions.md §5.2).
+    /// Writes held snapshots carry whose own delta was never received, per aspect
+    /// (`validity::Carried`).
     pub carried: JMap<(Tid, Ak), Vec<crate::apply::validity::Carried>>,
     /// Held commits per thing they hold a delta of (re-judging a thing's deltas).
     pub by_thing: JSetMap<Tid, CommitId>,
@@ -397,12 +397,6 @@ indexes! {
     pub epoch_intro: EpochIntro,
     /// The earliest noted commit writing a box: (actor, box key) -> its `ts`.
     pub box_written: JMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
-    /// Commit-form sources whose writes snapshots may carry, per thing: (thing, commit ID) ->
-    /// (the node its writes are judged as, at which `ts`): a commit-form commit's author and
-    /// `ts`, else the least held import's (`imports`) importer and `ts`, else the least held
-    /// snapshot `Authors` entry (deaths windows and `validity::claim_for` only: carried writes
-    /// are judged by their own snapshot's entry, spec/crdt.md §8, spec/permissions.md §7).
-    pub authors: JMap<(Tid, CommitId), (Tid, Ts)>,
     /// The lost-access trigger's work list (`rotation::LOST_DUE`).
     pub lost_due: JSet<Tid>,
     /// Aspects whose deaths wait for a recompute (`records::DEATHS_DUE`).
@@ -497,7 +491,7 @@ pub struct Core {
     /// and wholly on rollback.
     pub live_bodies: BTreeMap<(CommitId, Tid, Ak), bool>,
     /// Held snapshots' writes by dot (`validity::differing_copies`: deltas arriving after
-    /// snapshots that copied their writes compare against it). A snapshot never changes, so
+    /// snapshots that copied their writes compare against it; `validity::vouched`). A snapshot never changes, so
     /// entries never go stale; all go past `COPY_CACHE_MAX` writes.
     pub copy_index: BTreeMap<(CommitId, Tid, Ak), Arc<osis_crdt::CopyIndex>>,
     /// Bumped whenever a transaction changes the indexes or a state, rolls back, or the caches

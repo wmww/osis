@@ -267,6 +267,10 @@ impl CopyIndex {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+    /// The owner dots indexed of `src` with a counter in `lo..hi`.
+    pub fn dots_in(&self, src: &Source, lo: u64, hi: u64) -> impl Iterator<Item = &Dot> {
+        self.0.range(Dot::new(src.clone(), lo)..Dot::new(src.clone(), hi)).map(|(d, _)| d)
+    }
     /// The dots in `ranges` (source, counters `lo..hi`) whose writes here are not all in
     /// `others` as `Fragment::copies_within` compares them.
     pub fn outside(&self, ranges: &[(Source, u64, u64)], others: &[&Fragment]) -> BTreeSet<Dot> {
