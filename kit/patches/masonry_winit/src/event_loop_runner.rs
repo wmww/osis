@@ -798,7 +798,11 @@ impl MasonryState<'_> {
 
     pub fn handle_new_events(&mut self, _: &ActiveEventLoop, _: winit::event::StartCause) {}
 
-    pub fn handle_exiting(&mut self, _: &ActiveEventLoop) {}
+    pub fn handle_exiting(&mut self, _: &ActiveEventLoop) {
+        // osis-kit patch: the Wayland clipboard's thread uses the loop's wl_display, which
+        // `run_app` drops before this state: stop it while the display is alive.
+        self.clipboard_cx = None;
+    }
 
     pub fn handle_memory_warning(&mut self, _: &ActiveEventLoop) {}
 
@@ -990,8 +994,8 @@ fn make_clipboard(event_loop: &ActiveEventLoop) -> Box<dyn ClipboardProvider> {
         if let Ok(h) = event_loop.display_handle()
             && let RawDisplayHandle::Wayland(w) = h.as_raw()
         {
-            // SAFETY: the display pointer is the event loop's live wl_display, which outlives
-            // every window and so the clipboard kept in MasonryState.
+            // SAFETY: the display pointer is the event loop's live wl_display; the clipboard is
+            // dropped in `handle_exiting`, while the loop (and so the display) is still alive.
             let (_, clip) = unsafe { copypasta::wayland_clipboard::create_clipboards_from_external(w.display.as_ptr()) };
             return Box::new(clip);
         }

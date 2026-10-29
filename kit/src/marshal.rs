@@ -56,7 +56,8 @@ impl<M> Inbox<M> {
     /// Every message posted so far, in post order. A post racing with the drain is either
     /// returned now or wakes the loop again: nothing is left behind unwoken.
     pub fn drain(&self) -> Vec<M> {
-        self.pending.store(false, Ordering::Release);
+        // a swap, not a store: it acquires the last poster's release, so its message is visible
+        self.pending.swap(false, Ordering::AcqRel);
         self.rx.try_iter().collect()
     }
 }

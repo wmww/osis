@@ -1,5 +1,5 @@
 --- /home/ai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/masonry_winit-0.4.0/src/event_loop_runner.rs	2006-07-23 18:21:28.000000000 -0700
-+++ src/event_loop_runner.rs	2026-10-28 19:22:16.939539876 -0700
++++ src/event_loop_runner.rs	2026-10-28 19:41:32.008636255 -0700
 @@ -9,7 +9,7 @@
  use std::sync::{Arc, mpsc};
  
@@ -49,7 +49,20 @@
                              ));
                      } else {
                          window.render_root.handle_text_event(TextEvent::Keyboard(k));
-@@ -843,7 +849,9 @@
+@@ -792,7 +798,11 @@
+ 
+     pub fn handle_new_events(&mut self, _: &ActiveEventLoop, _: winit::event::StartCause) {}
+ 
+-    pub fn handle_exiting(&mut self, _: &ActiveEventLoop) {}
++    pub fn handle_exiting(&mut self, _: &ActiveEventLoop) {
++        // osis-kit patch: the Wayland clipboard's thread uses the loop's wl_display, which
++        // `run_app` drops before this state: stop it while the display is alive.
++        self.clipboard_cx = None;
++    }
+ 
+     pub fn handle_memory_warning(&mut self, _: &ActiveEventLoop) {}
+ 
+@@ -843,7 +853,9 @@
                      handle.set_ime_cursor_area(position, size);
                  }
                  RenderRootSignal::ClipboardStore(text) => {
@@ -60,7 +73,7 @@
                  }
                  RenderRootSignal::RequestRedraw => {
                      need_redraw.insert(*handle_id);
-@@ -970,3 +978,27 @@
+@@ -970,3 +982,27 @@
      ))
      .unwrap()
  }
@@ -76,8 +89,8 @@
 +        if let Ok(h) = event_loop.display_handle()
 +            && let RawDisplayHandle::Wayland(w) = h.as_raw()
 +        {
-+            // SAFETY: the display pointer is the event loop's live wl_display, which outlives
-+            // every window and so the clipboard kept in MasonryState.
++            // SAFETY: the display pointer is the event loop's live wl_display; the clipboard is
++            // dropped in `handle_exiting`, while the loop (and so the display) is still alive.
 +            let (_, clip) = unsafe { copypasta::wayland_clipboard::create_clipboards_from_external(w.display.as_ptr()) };
 +            return Box::new(clip);
 +        }
