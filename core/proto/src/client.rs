@@ -530,8 +530,9 @@ impl ClientSession {
             Message::Push { label, events, cursor } => {
                 // while a Sync of the label runs (a replay above all) its pages still bring
                 // entries from before the push: keeping the push's cursor would skip them for
-                // good if the connection ended first
-                let syncing = self.pending.values().any(|(_, p)| matches!(p, Pending::Sync { label: l, .. } if *l == label));
+                // good if the connection ended first; likewise while a reconciliation runs (the
+                // Sync from the kept cursor follows it)
+                let syncing = self.pending.values().any(|(_, p)| matches!(p, Pending::Sync { label: l, .. } | Pending::Reconcile(l, _) if *l == label));
                 event(out, ClientEvent::Events { label, events, cursor: (!syncing).then_some(cursor) })
             }
             m if m.is_request() => send(out, Message::Error { id: m.id(), code: Code::UNSUPPORTED }),

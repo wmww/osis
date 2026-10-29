@@ -671,3 +671,19 @@ fn push_during_sync_keeps_no_cursor() {
     c.handle(T0, ClientInput::Bytes(encode_frame(&Message::SyncReply { id, events: vec![], want: vec![], codes: vec![], cursor: Cursor { log_id: [1; 16], seq: 8 }, more: false }.encode())));
     assert_eq!(push(&mut c), Some(head), "kept once it ended");
 }
+
+// the same while a reconciliation of the label runs (a node's first sync after a start
+// reconciles, then syncs from its kept cursor): a push's cursor kept then skipped the entries
+// between the old cursor and the push for good when the connection ended first
+#[test]
+fn push_during_reconcile_keeps_no_cursor() {
+    let mut c = ClientSession::new(ClientConfig { peer_static_key: [1; 32], challenge: [2; 32] });
+    c.handle(T0, ClientInput::Start);
+    c.handle(T0, ClientInput::Bytes(encode_frame(&Hello::new(T0, [3; 32]).encode())));
+    let l = LabelId([7; 16]);
+    let out = c.handle(T0, ClientInput::Command(Command::Reconcile { label: l, ids: vec![bid(1)] }));
+    assert!(out.iter().any(|o| matches!(o, ClientOutput::Send(f) if matches!(Message::decode(&f[4..]), Ok(Message::Reconcile { .. })))));
+    let out = c.handle(T0, ClientInput::Bytes(encode_frame(&Message::Push { label: l, events: vec![Event::Deleted(bid(2))], cursor: Cursor { log_id: [1; 16], seq: 9 } }.encode())));
+    let cursor = out.into_iter().find_map(|o| if let ClientOutput::Event(ClientEvent::Events { cursor, .. }) = o { Some(cursor) } else { None }).unwrap();
+    assert_eq!(cursor, None, "no cursor while the reconciliation runs");
+}
