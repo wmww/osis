@@ -55,9 +55,14 @@ Parameters (enums unless noted):
 - bgTint (0..1): how much of the content colour goes into the whole background; 0 means none. Every background decoration is a lighter or darker shade of the resulting background colour, never tinted on its own, so tint 0 leaves decorations visible in grey.
 - background flat|field|curves|sky|grid|dots|shapes|lines|beams|grass: one per theme (owner: simpler beats layering). Placement comes from four seeds hashed from the open thing's tid, plus a small per-kind value (calendar, note, ...). lines: two or three, with seeded widths, spacing and angle; beams: light through water from above; grass: blade shapes from the bottom, not a picture.
 - panelOpacity (0..1) and panelBlur (px) replace a panel enum; a panel's outline and shadow fade with its opacity. With blur switched off, a blurred panel gains opacity in proportion to its blur.
-- radius (px), outline (px, in ink: the text colour, near black for bevel in dark), elevation none|soft|hard, finish flat|gloss|bevel, iconShape circle|rounded|square.
-- tileFill surface|wash|solid, tileMark none|stripe|corner, selection soft|solid|slant.
-- font system|humanist|classic|grotesk|rounded, weight (title, 300..900), labels plain|caps|big|mono, accent none|bar|rule|slash.
+- radius (px), iconRound (0 square .. 1 circle).
+- outline (px) and outlineColor; shadowColor, shadowOpacity, shadowBlur (softness), shadowDistance, shadowAngle (replace an elevation enum: a hard Memphis shadow is softness 0). Outline and shadow colours may be 'auto', the text colour, so they follow light and dark. Panels scale their shadow; dark mode strengthens shadows.
+- finish flat|gloss|bevel.
+- fill soft|wash|solid: tiles fill with their own colour and the selected sidebar row is the same fill in the screen's colour (owner: one set of knobs for both).
+- font system|humanist|classic|grotesk|rounded; weight (-1..1) shifts every text weight, titles most and body text least.
+- accent plain|caps|bar|rule|slash: a package of label style, base weights per role (title, label, name, body) and marks. bar: mono labels, title bars, a stripe on tiles. rule: big light labels, a line atop the pane. slash: caps labels, slashes, underlined titles, a corner flag on tiles, a slanted selection.
+
+Not theme parameters: light/dark/auto (a user setting), and no separate blur switch (panelBlur 0 is the cheap theme).
 
 Stored in osis as a thing (sync, sharing) when built.
 

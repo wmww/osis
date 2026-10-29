@@ -1,0 +1,249 @@
+- generic [active] [ref=f17e1]:
+  - generic [ref=f17e3]:
+    - navigation [ref=f17e4]:
+      - link "osis" [ref=f17e5] [cursor=pointer]:
+        - /url: "#/"
+      - button "Search /" [ref=f17e6] [cursor=pointer]:
+        - generic [ref=f17e10]: Search
+        - generic [ref=f17e11]: /
+      - generic [ref=f17e12]: Favorites
+      - list [ref=f17e14]:
+        - listitem [ref=f17e15]:
+          - link "Groceries oat milk" [ref=f17e16] [cursor=pointer]:
+            - /url: "#/t/n-groceries"
+            - generic [ref=f17e21]:
+              - generic [ref=f17e22]: Groceries
+              - generic [ref=f17e23]: oat milk
+        - listitem [ref=f17e24]:
+          - link "Calendar 10 events this week" [ref=f17e25] [cursor=pointer]:
+            - /url: "#/t/v-cal"
+            - generic [ref=f17e31]:
+              - generic [ref=f17e32]: Calendar
+              - generic [ref=f17e33]: 10 events this week
+        - listitem [ref=f17e34]:
+          - link "Lisbon trip 6 items · shared" [ref=f17e35] [cursor=pointer]:
+            - /url: "#/t/g-lisbon"
+            - generic [ref=f17e40]:
+              - generic [ref=f17e41]: Lisbon trip
+              - generic [ref=f17e42]: 6 items · shared
+        - listitem [ref=f17e43]:
+          - link "MO Mara Okafor Friend · climbing" [ref=f17e44] [cursor=pointer]:
+            - /url: "#/t/c-mara"
+            - generic [ref=f17e45]: MO
+            - generic [ref=f17e47]:
+              - generic [ref=f17e48]: Mara Okafor
+              - generic [ref=f17e49]: Friend · climbing
+        - listitem [ref=f17e50]:
+          - link "1:1 with Jun Tue, Oct 27 · 11:00 AM–11:30 AM" [ref=f17e51] [cursor=pointer]:
+            - /url: "#/t/e-jun"
+            - generic [ref=f17e56]:
+              - generic [ref=f17e57]: 1:1 with Jun
+              - generic [ref=f17e58]: Tue, Oct 27 · 11:00 AM–11:30 AM
+        - listitem [ref=f17e59]:
+          - link "Garden 3 items" [ref=f17e60] [cursor=pointer]:
+            - /url: "#/t/g-garden"
+            - generic [ref=f17e65]:
+              - generic [ref=f17e66]: Garden
+              - generic [ref=f17e67]: 3 items
+        - listitem [ref=f17e68]:
+          - link "People 6 people" [ref=f17e69] [cursor=pointer]:
+            - /url: "#/t/v-people"
+            - generic [ref=f17e75]:
+              - generic [ref=f17e76]: People
+              - generic [ref=f17e77]: 6 people
+        - listitem [ref=f17e78]:
+          - link "Ideas A calendar that shows what I wrote that day, not just what I planned." [ref=f17e79] [cursor=pointer]:
+            - /url: "#/t/n-ideas"
+            - generic [ref=f17e84]:
+              - generic [ref=f17e85]: Ideas
+              - generic [ref=f17e86]: A calendar that shows what I wrote that day, not just what I planned.
+      - button "New note" [ref=f17e87] [cursor=pointer]
+    - generic [ref=f17e91]:
+      - generic [ref=f17e92]:
+        - generic [ref=f17e93]: Note
+        - button "Favorite" [ref=f17e97] [cursor=pointer]
+      - article [ref=f17e101]:
+        - generic [ref=f17e102]:
+          - textbox "Untitled" [ref=f17e103]: Itinerary
+          - generic [ref=f17e104]:
+            - link "Lisbon trip" [ref=f17e105] [cursor=pointer]:
+              - /url: "#/t/g-lisbon"
+            - button "Tag" [ref=f17e107] [cursor=pointer]
+          - textbox "Write something…" [ref=f17e110]: "Thu: land 10:40, bags to Ana's, lunch at the market Fri: tram 28, Alfama, miradouro at sunset Sat: Sintra day trip Sun: pastéis de nata class, flight 19:55"
+        - complementary [ref=f17e111]:
+          - generic [ref=f17e112]:
+            - generic [ref=f17e113]: Visible to
+            - generic [ref=f17e117]: You, Mara, Jun
+            - generic [ref=f17e118]: via Lisbon trip
+          - generic [ref=f17e119]:
+            - generic [ref=f17e120]: With
+            - link "AR Ana Ribeiro Our host in Lisbon" [ref=f17e121] [cursor=pointer]:
+              - /url: "#/t/c-ana"
+              - generic [ref=f17e122]: AR
+              - generic [ref=f17e124]:
+                - generic [ref=f17e125]: Ana Ribeiro
+                - generic [ref=f17e126]: Our host in Lisbon
+          - generic [ref=f17e127]:
+            - generic [ref=f17e128]: History
+            - generic [ref=f17e132]: Edited 3 h ago
+            - button "Undo last change" [ref=f17e133] [cursor=pointer]
+  - complementary "Look switcher" [ref=f17e134]:
+    - 'button "Theme: Custom light ▾" [expanded] [ref=f17e135] [cursor=pointer]':
+      - text: "Theme:"
+      - generic [ref=f17e136]: Custom
+      - generic [ref=f17e137]: light
+      - generic [ref=f17e138]: ▾
+    - generic [ref=f17e139]:
+      - group "Light or dark" [ref=f17e140]:
+        - button "Light" [ref=f17e141] [cursor=pointer]
+        - button "Dark" [ref=f17e142] [cursor=pointer]
+        - button "Auto" [ref=f17e143] [cursor=pointer]
+      - generic [ref=f17e144]:
+        - button "1 Frost" [ref=f17e145] [cursor=pointer]:
+          - generic [ref=f17e146]: "1"
+          - generic [ref=f17e147]: Frost
+        - button "2 Glass" [ref=f17e148] [cursor=pointer]:
+          - generic [ref=f17e149]: "2"
+          - generic [ref=f17e150]: Glass
+        - button "3 Workstation" [ref=f17e151] [cursor=pointer]:
+          - generic [ref=f17e152]: "3"
+          - generic [ref=f17e153]: Workstation
+        - button "4 Memphis" [ref=f17e154] [cursor=pointer]:
+          - generic [ref=f17e155]: "4"
+          - generic [ref=f17e156]: Memphis
+        - button "5 Slate" [ref=f17e157] [cursor=pointer]:
+          - generic [ref=f17e158]: "5"
+          - generic [ref=f17e159]: Slate
+        - button "6 Cel" [ref=f17e160] [cursor=pointer]:
+          - generic [ref=f17e161]: "6"
+          - generic [ref=f17e162]: Cel
+        - button "7 Custom" [ref=f17e163] [cursor=pointer]:
+          - generic [ref=f17e164]: "7"
+          - generic [ref=f17e165]: Custom
+      - paragraph [ref=f17e166]: t
+      - button "▾ Edit parameters" [expanded] [ref=f17e167] [cursor=pointer]
+      - generic [ref=f17e168]:
+        - generic [ref=f17e169]:
+          - generic [ref=f17e170]: Background (light)
+          - button "Pick Background (light)" [ref=f17e172] [cursor=pointer]
+        - generic [ref=f17e173]:
+          - generic [ref=f17e174]: Background (dark)
+          - button "Pick Background (dark)" [ref=f17e176] [cursor=pointer]
+        - generic [ref=f17e177]:
+          - generic [ref=f17e178]: Surface (light)
+          - button "Pick Surface (light)" [ref=f17e180] [cursor=pointer]
+        - generic [ref=f17e181]:
+          - generic [ref=f17e182]: Surface (dark)
+          - button "Pick Surface (dark)" [ref=f17e184] [cursor=pointer]
+        - generic [ref=f17e185]:
+          - generic [ref=f17e186]: Content colour in background
+          - generic [ref=f17e187]:
+            - slider "Content colour in background" [ref=f17e188]: "0.15"
+            - status [ref=f17e189]: "0.15"
+        - generic [ref=f17e190]:
+          - generic [ref=f17e191]: Background
+          - combobox "Background" [ref=f17e192]:
+            - option "flat"
+            - option "field"
+            - option "curves" [selected]
+            - option "sky"
+            - option "grid"
+            - option "dots"
+            - option "shapes"
+            - option "lines"
+            - option "beams"
+            - option "grass"
+        - generic [ref=f17e193]:
+          - generic [ref=f17e194]: Panel opacity
+          - generic [ref=f17e195]:
+            - slider "Panel opacity" [ref=f17e196]: "0"
+            - status [ref=f17e197]: "0"
+        - generic [ref=f17e198]:
+          - generic [ref=f17e199]: Panel blur
+          - generic [ref=f17e200]:
+            - slider "Panel blur" [ref=f17e201]: "0"
+            - status [ref=f17e202]: "0"
+        - generic [ref=f17e203]:
+          - generic [ref=f17e204]: Corner radius
+          - generic [ref=f17e205]:
+            - slider "Corner radius" [ref=f17e206]: "18"
+            - status [ref=f17e207]: "18"
+        - generic [ref=f17e208]:
+          - generic [ref=f17e209]: Icon roundness
+          - generic [ref=f17e210]:
+            - slider "Icon roundness" [ref=f17e211]: "1"
+            - status [ref=f17e212]: "1"
+        - generic [ref=f17e213]:
+          - generic [ref=f17e214]: Outline width
+          - generic [ref=f17e215]:
+            - slider "Outline width" [ref=f17e216]: "0"
+            - status [ref=f17e217]: "0"
+        - generic [ref=f17e218]:
+          - generic [ref=f17e219]: Outline colour
+          - generic [ref=f17e220]:
+            - generic "Follow the text colour" [ref=f17e221]:
+              - checkbox "Outline colour text Pick Outline colour" [checked] [ref=f17e222]
+              - text: text
+            - button "Pick Outline colour" [disabled] [ref=f17e223]
+        - generic [ref=f17e224]:
+          - generic [ref=f17e225]: Shadow colour
+          - generic [ref=f17e226]:
+            - generic "Follow the text colour" [ref=f17e227]:
+              - checkbox "Shadow colour text Pick Shadow colour" [ref=f17e228]
+              - text: text
+            - button "Pick Shadow colour" [ref=f17e229] [cursor=pointer]
+        - generic [ref=f17e230]:
+          - generic [ref=f17e231]: Shadow opacity
+          - generic [ref=f17e232]:
+            - slider "Shadow opacity" [ref=f17e233]: "0.3"
+            - status [ref=f17e234]: "0.3"
+        - generic [ref=f17e235]:
+          - generic [ref=f17e236]: Shadow softness
+          - generic [ref=f17e237]:
+            - slider "Shadow softness" [ref=f17e238]: "18"
+            - status [ref=f17e239]: "18"
+        - generic [ref=f17e240]:
+          - generic [ref=f17e241]: Shadow distance
+          - generic [ref=f17e242]:
+            - slider "Shadow distance" [ref=f17e243]: "6"
+            - status [ref=f17e244]: "6"
+        - generic [ref=f17e245]:
+          - generic [ref=f17e246]: Shadow angle
+          - generic [ref=f17e247]:
+            - slider "Shadow angle" [ref=f17e248]: "90"
+            - status [ref=f17e249]: "90"
+        - generic [ref=f17e250]:
+          - generic [ref=f17e251]: Finish
+          - combobox "Finish" [ref=f17e252]:
+            - option "flat" [selected]
+            - option "gloss"
+            - option "bevel"
+        - generic [ref=f17e253]:
+          - generic [ref=f17e254]: Fill (tiles and selection)
+          - combobox "Fill (tiles and selection)" [ref=f17e255]:
+            - option "soft" [selected]
+            - option "wash"
+            - option "solid"
+        - generic [ref=f17e256]:
+          - generic [ref=f17e257]: Font
+          - combobox "Font" [ref=f17e258]:
+            - option "system" [selected]
+            - option "humanist"
+            - option "classic"
+            - option "grotesk"
+            - option "rounded"
+        - generic [ref=f17e259]:
+          - generic [ref=f17e260]: Weight (lighter, heavier)
+          - generic [ref=f17e261]:
+            - slider "Weight (lighter, heavier)" [ref=f17e262]: "1"
+            - status [ref=f17e263]: "1"
+        - generic [ref=f17e264]:
+          - generic [ref=f17e265]: Accent
+          - combobox "Accent" [ref=f17e266]:
+            - option "plain" [selected]
+            - option "caps"
+            - option "bar"
+            - option "rule"
+            - option "slash"
+      - button "Copy theme as JSON" [ref=f17e267] [cursor=pointer]
+      - paragraph [ref=f17e268]: "Keys: 1–7 or [ ] themes · d light/dark · / search"
