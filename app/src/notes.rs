@@ -10,7 +10,7 @@
 
 use crate::schema::{NOTES, SELECTED};
 use osis::core::{GROUP, NAME};
-use osis::{Config, Osis, Place, Result, Runtime, ServerAddr, Tid, Transport, p};
+use osis::{Config, Osis, Result, Runtime, ServerAddr, Tid, Transport, p};
 use std::path::Path;
 
 /// Opens the store in `dir`, creating it (with its home group on `servers`) when `dir` holds
@@ -61,10 +61,11 @@ impl Notes {
         db.write_with(|w| {
             // an item of home (its own aspects sync) and a subgroup (its items sync: a group's
             // members are its items and its subgroups' members, not its items' items)
-            let g = w.create(db.me(), Place::In(db.home()))?;
+            let g = w.create(db.me())?;
             w.make_group(g)?;
-            w.add_subgroup(db.home(), g)?;
             w.at(g, NOTES).set(&true)?;
+            w.place(g, db.home())?;
+            w.add_subgroup(db.home(), g)?;
             Ok(g)
         })
     }
@@ -94,8 +95,9 @@ impl Notes {
         let db = &self.db;
         let g = self.main_group()?;
         db.write_with(|w| {
-            let t = w.create(db.me(), Place::In(g))?;
+            let t = w.create(db.me())?;
             w.at(t, NAME).set(&name.to_string())?;
+            w.place(t, g)?;
             w.at(g, SELECTED).path(p![]).put(&db.node(), &t)?;
             Ok(t)
         })
