@@ -523,3 +523,34 @@ fn adversarial_ledger_grants_nothing_spec_permissions_6() {
     }
     let _ = tl.roster_state(&p);
 }
+
+/// §5.1, §6 (issues: perm-resnapshot-not-neutral, OSIS_PERM_SEED=3313): n2 removes n1 from P
+/// unseen, so n1's grant of admin on G to n2 does not apply and n2's own lowering of that edge
+/// to write is a raise through P, which k's removal of n2 audits. That removal also drops
+/// n2's removal of n1; on the restart n1's grant applies and n2's lowering is a self-removal,
+/// never audited, but D keeps it: sticky residue, which re-snapshotting P repairs.
+#[test]
+fn resnapshot_repairs_self_removal_residue_spec_permissions_6() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let k = n[0];
+    let p = w.thing(k);
+    let g = w.thing(p);
+    let all0: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(k, p, n[1], edge(Admin), 0, &all0);
+    w.set(k, p, n[2], edge(Admin), 0, &all0);
+    w.set(n[2], p, n[1], None, 2, &[]);
+    w.set(n[1], g, n[2], edge(Admin), 6, &[]);
+    let lower = w.set(n[2], g, n[2], edge(Write), 18, &[]);
+    w.set(k, p, n[2], None, 20, &[]);
+    let tl = Timeline::evaluate(&w.held());
+    let lower = WriteId::Op(lower, 0);
+    assert!(tl.dropped().contains_key(&lower));
+    assert_eq!(tl.roster(&g, At::END).get(&n[2]).map(|e| e.role), Some(Admin));
+    assert_eq!(residue(&tl), BTreeSet::from([lower]));
+    let mut w2 = w.clone();
+    w2.snapshot_state(k, p, tl.roster_state(&p), END_T);
+    let t2 = Timeline::evaluate(&w2.held());
+    assert!(t2.is_applied(&lower), "the snapshot repairs the residue");
+    assert_eq!(neutral(&w, p, k, &[p, g], &[]), None);
+}
