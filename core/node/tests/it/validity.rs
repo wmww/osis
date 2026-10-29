@@ -2011,3 +2011,119 @@ fn covered_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
     assert_eq!(got[1].0, got[0].0, "removal arrived voided");
     assert_eq!(got[1].1, got[0].1, "one state");
 }
+
+// spec/permissions.md §5.2, spec/crdt.md §4.6: as above, but the snapshot covering Alice's
+// dropped delta is Carol's, and Alice revokes Carol (frontier not listing it) and Bob together.
+// A node that dropped the delta under Carol's cover, then applied Bob's removal valid, then the
+// revokes, has neither the delta's body nor a valid copy; one that got the revokes first holds
+// the delta (issues/dropped-voucher-after-cover.md).
+#[test]
+#[ignore = "issues/dropped-voucher-after-cover.md"]
+fn covered_drop_coverer_and_remover_revoked_alike_spec_perm_5_2() {
+    let (mut lp, d, b, c) = setup(0x5fc0);
+    add_tag(&mut lp, 0, d, "ash");
+    lp.sync_all().unwrap();
+    let tags_ak = ak("/t/tags");
+    let added: BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|x| lp.peers[0].engine.header(x).is_some_and(|h| h.kind == osis_commit::Kind::Content && h.aspects.iter().any(|a| a.ak == tags_ak))).collect();
+    let before = packages(&mut lp, 0);
+    lp.advance(1_000);
+    let snap = lp.peers[2].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
+    let snap_pk = packages(&mut lp, 2).into_iter().find(|p| p.id == snap).unwrap();
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.op(d, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("ash")) }).unwrap();
+    let rm = lp.peers[1].commit(m).unwrap().unwrap();
+    let rm_pk = packages(&mut lp, 1).into_iter().find(|p| p.id == rm).unwrap();
+    lp.advance(1_000);
+    revoke(&mut lp, 0, d, c); // without having seen the removal or Carol's snapshot
+    revoke(&mut lp, 0, d, b);
+    let known: BTreeSet<_> = before.iter().map(|p| p.id).collect();
+    let rv: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !known.contains(&p.id)).collect();
+    let mut got = Vec::new();
+    for (i, removal_first) in [(3, true), (4, false)] {
+        lp.peers.push(osis_node::local_peer::Peer::new(0x5fc1 + i as u64, lp.peers[0].engine.now()).unwrap());
+        for pk in &before {
+            lp.deliver(i, pk).unwrap();
+        }
+        if removal_first {
+            lp.deliver(i, &snap_pk).unwrap();
+            for x in &added {
+                assert_eq!(lp.peers[i].engine.covered(&snap, x, &d, &tags_ak).unwrap(), Some(true));
+                lp.peers[i].engine.drop_body(x, &d, &tags_ak).unwrap();
+            }
+            lp.deliver(i, &rm_pk).unwrap();
+            assert!(tags(&mut lp, i, d).is_empty(), "the removal applied while valid");
+        }
+        for pk in &rv {
+            lp.deliver(i, pk).unwrap();
+        }
+        if !removal_first {
+            lp.deliver(i, &snap_pk).unwrap();
+            lp.deliver(i, &rm_pk).unwrap();
+        }
+        lp.peers[i].engine.reexamine().unwrap();
+        got.push(tags(&mut lp, i, d));
+    }
+    assert_eq!(got[1], BTreeSet::from(["ash".to_string()]), "revokes first");
+    assert_eq!(got[0], got[1], "cover drop and removal, then the revokes");
+}
+
+// spec/permissions.md §5.2, spec/commits.md §5: as `covered_drop_restored_after_remover_revoked`,
+// with the cover chained: Alice's delta dropped under her snapshot S1, S1 dropped under her S2.
+// S2's copy is the delta's write in the rebuild after Bob's removal turns invalid.
+#[test]
+fn chained_cover_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
+    let (mut lp, d, b, _) = setup(0x5fd0);
+    add_tag(&mut lp, 0, d, "ash");
+    let tags_ak = ak("/t/tags");
+    let added: BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|x| lp.peers[0].engine.header(x).is_some_and(|h| h.kind == osis_commit::Kind::Content && h.aspects.iter().any(|a| a.ak == tags_ak))).collect();
+    lp.advance(1_000);
+    let s1 = lp.peers[0].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
+    lp.advance(1_000);
+    add_tag(&mut lp, 0, d, "elm");
+    lp.advance(1_000);
+    let s2 = lp.peers[0].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let all = packages(&mut lp, 0);
+    let s2_pk = all.iter().find(|p| p.id == s2).unwrap().clone();
+    let before: Vec<_> = all.into_iter().filter(|p| p.id != s2).collect();
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.op(d, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("ash")) }).unwrap();
+    let rm = lp.peers[1].commit(m).unwrap().unwrap();
+    let rm_pk = packages(&mut lp, 1).into_iter().find(|p| p.id == rm).unwrap();
+    lp.advance(1_000);
+    revoke(&mut lp, 0, d, b);
+    let known: BTreeSet<_> = before.iter().map(|p| p.id).chain([s2]).collect();
+    let rv: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !known.contains(&p.id)).collect();
+    let mut got = Vec::new();
+    for (i, removal_first) in [(3, true), (4, false)] {
+        lp.peers.push(osis_node::local_peer::Peer::new(0x5fd1 + i as u64, lp.peers[0].engine.now()).unwrap());
+        for pk in &before {
+            lp.deliver(i, pk).unwrap();
+        }
+        let e = &mut lp.peers[i].engine;
+        for x in &added {
+            assert_eq!(e.covered(&s1, x, &d, &tags_ak).unwrap(), Some(true));
+            e.drop_body(x, &d, &tags_ak).unwrap();
+        }
+        lp.deliver(i, &s2_pk).unwrap();
+        let e = &mut lp.peers[i].engine;
+        assert_eq!(e.covered(&s2, &s1, &d, &tags_ak).unwrap(), Some(true));
+        e.drop_body(&s1, &d, &tags_ak).unwrap();
+        if removal_first {
+            lp.deliver(i, &rm_pk).unwrap();
+            assert_eq!(tags(&mut lp, i, d), BTreeSet::from(["elm".to_string()]), "the removal applied while valid");
+        }
+        for pk in &rv {
+            lp.deliver(i, pk).unwrap();
+        }
+        if !removal_first {
+            lp.deliver(i, &rm_pk).unwrap();
+        }
+        lp.peers[i].engine.reexamine().unwrap();
+        got.push((tags(&mut lp, i, d), lp.peers[i].engine.state(&d, &tags_ak).unwrap()));
+    }
+    assert_eq!(got[0].0, BTreeSet::from(["ash".to_string(), "elm".to_string()]), "removal applied, then voided");
+    assert_eq!(got[1], got[0], "removal arrived voided");
+}
