@@ -1960,8 +1960,6 @@ dependencies = [
 [[package]]
 name = "masonry_core"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b6894fdd489c98726d3f409b089f07de7109e85f96a9597358f6788d3bfa580"
 dependencies = [
  "accesskit",
  "anymap3",

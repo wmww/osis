@@ -1,0 +1,52 @@
+
+--- src/core/contexts.rs	2006-07-23 18:21:28.000000000 -0700
++++ src/core/contexts.rs	2026-10-29 03:13:58.011771801 -0700
+@@ -1162,6 +1162,11 @@
+             }
+ 
+             global_state.scene_cache.remove(&state.id);
++
++            // Free the tag, so a new widget can take it and lookups don't find this one.
++            if !state.tag.is_empty() && global_state.widget_tags.get(state.tag) == Some(&state.id) {
++                global_state.widget_tags.remove(state.tag);
++            }
+         }
+ 
+         let id = child.id();
+@@ -1487,6 +1492,7 @@
+             widget.short_type_name(),
+             options,
+             action_type,
++            tag,
+             #[cfg(debug_assertions)]
+             action_type_name,
+         );
+
+--- src/core/widget_state.rs	2006-07-23 18:21:28.000000000 -0700
++++ src/core/widget_state.rs	2026-10-29 03:13:58.007093111 -0700
+@@ -132,6 +132,9 @@
+     /// The `TypeId` of the widget's `Widget::Action` type.
+     pub(crate) action_type: TypeId,
+ 
++    /// The widget's tag, or `""`; freed when the widget is removed.
++    pub(crate) tag: &'static str,
++
+     // --- PASSES ---
+     /// `WidgetAdded` hasn't been sent to this widget yet.
+     pub(crate) is_new: bool,
+@@ -224,6 +227,7 @@
+         widget_name: &'static str,
+         options: WidgetOptions,
+         action_type: TypeId,
++        tag: &'static str,
+         #[cfg(debug_assertions)] action_type_name: &'static str,
+     ) -> Self {
+         Self {
+@@ -243,6 +247,7 @@
+             scroll_translation: Vec2::ZERO,
+             transform_changed: false,
+             action_type,
++            tag,
+             is_explicitly_disabled: options.disabled,
+             is_explicitly_stashed: false,
+             is_disabled: false,

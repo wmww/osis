@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use masonry_core::app::RenderRoot;
 use masonry_core::core::{ErasedAction, WidgetId};
 use tracing::field::DisplayValue;
+use winit::dpi::PhysicalSize;
 use winit::event_loop::ActiveEventLoop;
+use winit::window::Theme;
 
 use crate::app::MasonryState;
 use crate::event_loop_runner::{NewWindow, Window};
@@ -85,6 +87,14 @@ pub trait AppDriver {
     fn on_close_requested(&mut self, window_id: WindowId, ctx: &mut DriverCtx<'_, '_>) {
         ctx.exit();
     }
+
+    /// A hook called after a window was resized (and its render root told), with its new size.
+    fn on_resized(&mut self, window_id: WindowId, ctx: &mut DriverCtx<'_, '_>, size: PhysicalSize<u32>) {}
+
+    /// A hook called when a window's system theme (light or dark) changed.
+    ///
+    /// The current theme is `ctx.window(window_id).handle().theme()`.
+    fn on_theme_changed(&mut self, window_id: WindowId, ctx: &mut DriverCtx<'_, '_>, theme: Theme) {}
 }
 
 impl DriverCtx<'_, '_> {

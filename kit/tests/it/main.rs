@@ -3,3 +3,4 @@
 
 mod list;
 mod marshal;
+mod tags;
