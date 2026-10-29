@@ -8,7 +8,7 @@
 - A node checks a creation record by hashing when it receives the thing's data. A tid inside a value is a bare reference: it may dangle, and the thing may lack the expected aspects.
 - A received record that hashes to a tid the node already holds a different record for is bad input: keep the held record, ignore the new one, report a diagnostic. Never panic on it.
 - A thing never changes owner; moving it is a copy under a new tid (spec/permissions.md §7).
-- An **ephemeral thing** is one whose creation record no durable commit holds at the node: the record lives in memory, with the same tid derivation and owner. The durable set is closed under owner: the first commit with a durable delta on an ephemeral thing (or placing it into a group) carries `/created` of it and of every ephemeral thing on its owner chain (spec/commits.md §2), keeping the tids. A durable thing never becomes ephemeral. An ephemeral thing never given durable data is gone when no node holds it.
+- An **ephemeral thing** is one whose creation record no durable commit holds at the node: the record lives in memory, with the same tid derivation and owner. The durable set is closed under owner: the first commit with a durable delta on an ephemeral thing (or a durable placement into it, §8) carries `/created` of it and of every ephemeral thing on its owner chain (spec/commits.md §2), keeping the tids, and makes its ephemeral placements durable (§8). A durable thing never becomes ephemeral. An ephemeral thing never given durable data is gone when no node holds it.
 
 ## 2. Aspects
 - An aspect is identified by (tid, AK). An **AK** is a string, slash-prefixed and slash-separated (`/note/body`). AKs go on the wire as strings.
@@ -80,7 +80,8 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 ## 8. Groups
 - A **group** is a thing with a `/group` aspect: `items: set<tid>`, `subgroups: set<tid>`. Its members are its items plus, transitively, the members of its subgroups. Groups may overlap, nest and be cyclic; membership changes over time.
 - Groups are the sync unit (spec/sync.md §3). Being in a group grants no rights (spec/permissions.md).
-- `/groups` (synthetic) on a thing: the locally known groups containing it, directly or transitively.
+- `/groups` (synthetic) on a thing: the locally known groups containing it, directly or transitively, through both sides of `/group`.
+- `/group` is the one core aspect with an ephemeral side. Adding or removing an item or subgroup that is ephemeral after the write is an ephemeral write of the group's `/group`, needing write on the group; any other write of an ephemeral group's `/group` is ephemeral too. Adding a durable item or subgroup is durable and persists the group (§1). When a thing persists, the persisting commit adds it durably to each group it is ephemerally placed in that the persisting node may write, with that placement's expiry, and the node removes the ephemeral element; a placement into a group it may not write stays ephemeral. A persisting thing with an ephemeral `/group` and no durable one gets an empty durable `/group` in that commit.
 
 ## 9. Core schema
 The core aspects form the core schema, schema ID 16 zero bytes, revision 1, evolving under spec/versioning.md. Exact types below (DSL of notes/data-model.md); `creation`, `signing_key`, `kem_key`, `sealed` are spec/wire.md §3.

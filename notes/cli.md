@@ -39,7 +39,7 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `device ls` / `device rm N` | `devices` / `remove_device` | now |
 | `server ls/add/rm` | `servers`, `add_server`, `remove_server` | now |
 | `serve` | osis-server `serve::run` | now |
-| `create --owner A [--in G\|--in-all G,G] [--group] [AK V]…` (nothing durable: exit 2, the thing would vanish at exit) | `write`, `Write::create`, `place`, `make_group`, `set`, `commit` | now |
+| `create --owner A [--in G\|--in-all G,G] [--group] [AK V]…` (nothing durable: exit 2, the thing would vanish at exit; `--in`/`--group` alone are ephemeral writes) | `write`, `Write::create`, `place`, `make_group`, `set`, `commit` | now |
 | `get T AK [PATH]` | `get`, `at().path().get_value()`; `--stream` / `--len`: `stream()` (raw bytes to stdout) / its `len` | now |
 | `set` / `replace` / `rm T AK [PATH] [V]` | `AspectWrite::set/replace/remove`, path ops; `set --stream` (value on stdin): `set_stream` | now |
 | `op T AK PATH OP ARGS` | `PathWrite` ops | now (`undelete` 2nd; untyped sequence ops fail in the crdt) |
