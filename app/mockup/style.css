@@ -1,29 +1,24 @@
 /* Layout and components. Every look-specific value is a custom property set in looks.css.
    Properties that depend on a tile's own --tint are computed here on the element, never in a look's root block. */
 
-/* background colours and orb positions are registered so a change cross-fades (looks.css, body.ctx) */
-@property --bg-1 { syntax: '<color>'; inherits: true; initial-value: transparent; }
-@property --bg-2 { syntax: '<color>'; inherits: true; initial-value: transparent; }
-@property --bg-3 { syntax: '<color>'; inherits: true; initial-value: transparent; }
-@property --bg-x1 { syntax: '<percentage>'; inherits: true; initial-value: 50%; }
-@property --bg-y1 { syntax: '<percentage>'; inherits: true; initial-value: 50%; }
-@property --bg-x2 { syntax: '<percentage>'; inherits: true; initial-value: 50%; }
-@property --bg-y2 { syntax: '<percentage>'; inherits: true; initial-value: 50%; }
-@property --bg-x3 { syntax: '<percentage>'; inherits: true; initial-value: 50%; }
-@property --bg-y3 { syntax: '<percentage>'; inherits: true; initial-value: 50%; }
+/* --main is the one main colour (from the open thing, set by app.js; each look has a default); --s1..4 are seeds
+   in [0, 1) hashed from the thing's id that place the look's background; --k varies it by kind (body[data-kind]).
+   All registered so a change of thing cross-fades. */
+@property --main { syntax: '<color>'; inherits: true; initial-value: #6b7280; }
+@property --s1 { syntax: '<number>'; inherits: true; initial-value: .5; }
+@property --s2 { syntax: '<number>'; inherits: true; initial-value: .5; }
+@property --s3 { syntax: '<number>'; inherits: true; initial-value: .5; }
+@property --s4 { syntax: '<number>'; inherits: true; initial-value: .5; }
+@property --k { syntax: '<number>'; inherits: true; initial-value: 0; }
+[data-kind="note"] { --k: .15; } [data-kind="event"] { --k: .3; } [data-kind="contact"] { --k: .45; } [data-kind="tag"] { --k: .6; }
+[data-kind="calendar"] { --k: .75; } [data-kind="people"] { --k: .85; } [data-kind="tags"] { --k: .95; } [data-kind="recent"] { --k: 1; }
 :root { --gap: 12px; --neutral: #8a8fa3; --tint-amt: 24%; --ic-amt: 80%; --ic-base: #fff; --ic-fg: #fff; }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0; min-height: 100vh; font-family: var(--font); font-size: 15px; line-height: 1.45;
   color: var(--fg); background: var(--bg-color); -webkit-font-smoothing: antialiased;
-  transition: --bg-1 .9s ease, --bg-2 .9s ease, --bg-3 .9s ease, --bg-x1 1.2s ease, --bg-y1 1.2s ease, --bg-x2 1.2s ease, --bg-y2 1.2s ease, --bg-x3 1.2s ease, --bg-y3 1.2s ease;
-}
-/* background follows content: app.js sets --c-1..3 (and the positions) from the open thing */
-body.ctx[data-look][data-mode] {
-  --bg-1: color-mix(in oklab, var(--c-1) var(--ctx-amt, 100%), var(--ctx-base, white));
-  --bg-2: color-mix(in oklab, var(--c-2) var(--ctx-amt, 100%), var(--ctx-base, white));
-  --bg-3: color-mix(in oklab, var(--c-3) var(--ctx-amt, 100%), var(--ctx-base, white));
+  transition: --main .8s ease, --s1 1.1s ease, --s2 1.1s ease, --s3 1.1s ease, --s4 1.1s ease, --k 1.1s ease;
 }
 a { color: inherit; }
 button { font: inherit; color: inherit; }

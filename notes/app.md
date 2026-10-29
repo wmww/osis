@@ -38,15 +38,17 @@
 ## Web mockup
 `app/mockup/` (plain HTML/CSS/JS, no deps, no osis; serve the directory, e.g. `python3 -m http.server`) explores look and layout before building in kit. Owner brief: things and scopes (tags, views) are fungible tiles in one list or grid; an ordered favorites list; one search over names, content and scopes; with a view open and room enough, a left bar holds search and favorites. The look should feel like what 1996, 2006, 2016 and 2026 thought 2026 would be: colored gradient backgrounds or abstract shapes, a little Apple liquid glass (never at a perf cost), almost no Material. All look values are custom properties in looks.css over one layout in style.css.
 
-Owner feedback on the first six looks:
-- Themes: wanted. Every look needs light and dark (mode is separate from the look: Light/Dark/Auto).
-- Dusk, Glass, Aero and Pearl read as tweaks of one thing; Glass preferred, with a less rounded sidebar selection and simpler, more vivid color. Dusk, Aero and Pearl were dropped (in git history); Glass, Workstation, Memphis remain.
-- Tone down the amount of UI (not the color): simpler backgrounds, fewer bordered elements.
-- Undecided whether the background follows the look (Workstation's synth sun suits it) or the content (color and shapes fade to what is open). The mockup has both behind a switcher: content mode takes up to three colors from the open thing and what it holds or links, and moves Glass's color fields per thing.
+Owner direction so far:
+- Themes: wanted; every theme has light and dark (mode is separate from the theme: Light/Dark/Auto).
+- One main colour in the UI at any time, from the content (the open thing's colour, else the first among what it holds or links; the theme's default on home). Accent, selection and background derive from it.
+- The background follows theme and content: the theme owns the engine (what is drawn), the content picks the colour and the arrangement (seeded from the tid, varied slightly by kind, e.g. calendar vs note).
+- Backgrounds subtle: shading, highlights and variations of the one colour, not big splotches of several colours.
+- Less UI: fewer bordered elements, simpler backgrounds.
+- Liked: Glass (with a less rounded sidebar selection), Aero's glassy 3D feel, Workstation's synth sun.
+- Current six: Glass, Aero (Dusk merged in), Workstation, Memphis, Slate (square, flat, modern; Metro-inspired), Cel (flat, white or dark grey, colour on tiles and accents, anime-ish). Pearl and the separate Dusk are in git history.
+- Mockup mechanics: app.js sets `--main` and seeds `--s1..4` on body plus `body[data-kind]` (style.css maps it to `--k`); all registered with @property so moving between things cross-fades.
 
-Open theme questions (owner: surface now, decide later, not worth much effort yet):
-- Customization depth: a fixed compiled-in set, editable colors and a few properties, both (pick a base, adjust), or full styling. Leaning: a theme is data (tokens plus a few enumerated style choices such as corner shape, border/shadow kind, blur, background recipe), stored in osis so it syncs; no full CSS.
-- Same themes on every platform: free with one codebase; a web build on DOM elements would map the same tokens to CSS, which stays easy only if themes stay data rather than per-theme widget code.
+Themes (owner decision): a theme is a selector plus data specific to that theme, not a portable token set. Each theme is implemented on every platform we ship (one or two), so themes can be truly different (own drawing, own widget treatment). No user CSS.
 
 ## kit and app (owner)
 Two top-level projects, `kit/` (package `osis-kit`) and `app/` (`osis-app`).
