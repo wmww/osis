@@ -1,54 +1,19 @@
-//! The notes actions over an in-memory database.
-use osis::core::{BODY, GROUP, NAME};
+//! Typing spliced into text sessions (`edit::splice`) over an in-memory database.
+use osis::core::BODY;
 use osis::{Config, Osis};
-use osis_app::notes::Notes;
+use osis_app::data::Data;
+use osis_app::edit::splice;
 
-fn notes() -> Notes {
-    Notes::new(Osis::create(Config::memory()).unwrap().0)
-}
-
-#[test]
-fn create_select_rename_delete() {
-    let n = notes();
-    assert!(n.list().unwrap().is_empty());
-    assert_eq!(n.selected().unwrap(), None);
-    let a = n.create("b note").unwrap();
-    let b = n.create("A note").unwrap();
-    assert_eq!(n.selected().unwrap(), Some(b), "a new note is selected");
-    assert_eq!(n.list().unwrap(), vec![(b, "A note".into()), (a, "b note".into())], "sorted case-folded");
-    n.select(Some(a)).unwrap();
-    assert_eq!(n.selected().unwrap(), Some(a));
-    let s = n.db.edit_text(a, BODY, osis::Path::root()).unwrap();
-    s.insert(0, "hello").unwrap();
-    s.commit().unwrap();
-    assert_eq!(n.db.get(a, BODY).unwrap().as_deref(), Some("hello"));
-    n.delete(a).unwrap();
-    assert_eq!(n.list().unwrap(), vec![(b, "A note".into())]);
-    assert_eq!(n.selected().unwrap(), None, "deleting the selected note clears the selection");
-    assert_eq!(n.db.get(a, NAME).unwrap(), None);
-}
-
-/// The notes group is a subgroup of home (so its items sync, not only its own aspects) and
-/// carries no `/tag`; one group however often it is asked for.
-#[test]
-fn one_internal_group_under_home() {
-    let n = notes();
-    let g = n.main_group().unwrap();
-    assert_eq!(n.main_group().unwrap(), g);
-    let home = n.db.get(n.db.home(), GROUP).unwrap().unwrap();
-    assert!(home.items.contains(&g) && home.subgroups.contains(&g));
-    assert_eq!(n.db.get(g, osis::core::TAG).unwrap(), None);
-    let t = n.create("x").unwrap();
-    assert!(n.db.groups_of(t).contains(&n.db.home()));
+fn data() -> Data {
+    Data::new(Osis::create(Config::memory()).unwrap().0)
 }
 
 /// Typing spliced into a session whose buffer holds a remote merge the widget does not show yet
 /// keeps the merge (`shown` is the widget's text before the keystroke).
 #[test]
 fn splice_keeps_unshown_remote_merge() {
-    use osis_app::ui::splice;
-    let n = notes();
-    let t = n.create("x").unwrap();
+    let n = data();
+    let t = n.create_note().unwrap();
     let s = n.db.edit_text(t, BODY, osis::Path::root()).unwrap();
     let shown = "hello world";
     s.insert(0, shown).unwrap();
@@ -78,9 +43,8 @@ fn splice_keeps_unshown_remote_merge() {
 /// lose at most the chars the user removed.
 #[test]
 fn splice_random_against_reference() {
-    use osis_app::ui::splice;
-    let n = notes();
-    let t = n.create("x").unwrap();
+    let n = data();
+    let t = n.create_note().unwrap();
     let s = n.db.edit_text(t, BODY, osis::Path::root()).unwrap();
     let mut x = 0x9e37_79b9_7f4a_7c15u64;
     let mut rnd = move |m: usize| {
