@@ -98,6 +98,25 @@ fn snapshot() -> CommitBlob {
     built(b)
 }
 
+/// An ephemeral commit (spec/commits.md §2): a commit-form content snapshot with the marker,
+/// carrying a session-source write named in `Authors`.
+fn ephemeral(class: osis_commit::EphClass) -> CommitBlob {
+    let at = ts(1_700_000_004_000);
+    let session = CommitId([0x27; 32]);
+    let mut w = Writer::new(ts(1_700_000_003_500), Source::commit(session), 1);
+    let fragment = create(&mut w, &AnyView, &Value::Str("typing".into())).unwrap();
+    let s = Snapshot { absorbed: Default::default(), authors: [(session, (AUTHOR, at))].into_iter().collect(), nonce: [6; 16], fragment, frontiers: Frontiers::default() };
+    let mut cx = writer_ctx(Kind::ContentSnapshot, at, AUTHOR, 0, 0);
+    cx.own = Source::commit(CommitId([0; 32]));
+    let bytes = encode_snapshot(&s, &cx, None).unwrap();
+    let mut b = CommitBuilder::new(Kind::ContentSnapshot, at, AUTHOR, ACTOR, Form::Commit);
+    let mut a = AspectWrite::new(THING, Ak::new("/app/state").unwrap(), 0, 0, bytes);
+    a.retention = Retention { by: PurgeBy::Writer, ..Default::default() };
+    b.aspects.push(a);
+    b.ephemeral = Some(class);
+    built(b)
+}
+
 fn import() -> CommitBlob {
     let at = ts(1_700_000_003_000);
     let origin = CommitId([0x24; 32]);
@@ -125,6 +144,9 @@ pub fn headers() -> VecFile {
     cases.push(record("membership commit, two deltas on one aspect", "spec/wire.md §4; spec/commits.md §2", &membership()));
     cases.push(record("content compaction snapshot", "spec/wire.md §4; spec/commits.md §2, §5", &snapshot()));
     cases.push(record("import with origins", "spec/wire.md §4; spec/permissions.md §7", &import()));
+    let e = ephemeral(osis_commit::EphClass::Plain);
+    cases.push(record("ephemeral commit", "spec/wire.md §4; spec/commits.md §2", &e));
+    cases.push(record("relay-only commit", "spec/wire.md §4; spec/commits.md §2", &ephemeral(osis_commit::EphClass::Relay)));
     let mut purged = c.clone();
     purged.parts.clear();
     cases.push(case("header-only purge rewrite", "spec/wire.md §4; spec/commits.md §5").with("blob", hex(&purged.encode())).with("commit-id", hex(&c.id().0)));
@@ -313,6 +335,28 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     x.keys.remove(0);
     x.aspects[0].keys = vec![0];
     out.push(reject("author retention without its level-1 key", "spec/crypto.md §7", &x, "delete-levels"));
+    let e = ephemeral(osis_commit::EphClass::Plain).header;
+    let mut x = e.clone();
+    x.form = Form::Node;
+    out.push(reject("ephemeral commit in node form", "spec/commits.md §2", &x, "ephemeral"));
+    let mut x = content.clone();
+    x.ephemeral = Some(osis_commit::EphClass::Plain);
+    out.push(reject("ephemeral marker on a content commit", "spec/commits.md §2", &x, "ephemeral"));
+    let mut x = e.clone();
+    x.purge.push(PurgeItem::Aspect { tid: THING, ak: Ak::new("/app/title").unwrap() });
+    out.push(reject("ephemeral commit with a purge request", "spec/commits.md §2", &x, "ephemeral"));
+    let mut x = ephemeral(osis_commit::EphClass::Relay).header;
+    x.aspects[0].expires = Some(x.ts.wall_ms().0 + 1);
+    out.push(reject("relay-only commit with an expiry", "spec/commits.md §2", &x, "ephemeral"));
+    let mut v = e.to_value();
+    if let Value::List(items) = &mut v
+        && let Some(m) = items.last_mut()
+    {
+        *m = Value::List(vec![Value::Int(2)]);
+    }
+    let bytes = osis_base::encode(&v);
+    assert!(Header::decode(&bytes).is_err());
+    out.push(case("unknown ephemeral marker", "spec/wire.md §4").with("header", hex(&bytes)).with("reject", "ephemeral"));
     // a delete key that is no valid Ed25519 point
     let mut x = content.clone();
     x.keys[0].key = [0; 32];
