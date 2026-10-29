@@ -150,6 +150,33 @@ fn joint_model_agrees_large() {
     sharded(100_000, 0x5eed_0002, joint_run);
 }
 
+/// spec/permissions.md §5.1, shrunk from OSIS_PERM_SEED=1303000: n1 removes A1's admin edge on A0 (explicit, n1 also has
+/// its own admin edge there), removes the now absent edge again, then removes itself; n0 (who
+/// received none of it) removes A1's edge. The second removal keeps n1's standing from the
+/// first (§5.1 "R never demotes its own author"), so n0's write audits both against it and
+/// drops them (perm lost the standing at the write on the absent edge).
+#[test]
+fn joint_kept_standing_survives_absent_edge_removal() {
+    use joint::{JHist, JWrite, Owner};
+    use membership_model::Role::{Admin, None as Gone};
+    const LATE: u32 = membership_model::shrink::LATE;
+    let w = |author, t, id, member| JWrite { author, t, id, target: 0, member, role: Gone };
+    // entities: n0, n1, A0, A1
+    let mut genesis = vec![vec![Gone; 2]; 4];
+    genesis[1][0] = Admin;
+    genesis[3][0] = Admin;
+    let h = JHist {
+        nodes: 2,
+        owners: vec![Owner::Node(0), Owner::Node(1)],
+        genesis,
+        writes: vec![w(1, 1, 4, 3), w(0, 3, 2, 3), w(1, 2, 1, 1), w(1, 1, 3, 3)],
+        recv: vec![vec![LATE, 1], vec![3, LATE], vec![LATE, 2], vec![LATE, 1]],
+    };
+    let o = joint::walk(&h);
+    assert_eq!(o.dropped, 0b1001, "model drops both of n1's explicit removals");
+    assert_eq!(joint_diff(&h), None);
+}
+
 /// An edges-model history: node 0 owns the one target T; genesis edges are its writes at t=0.
 struct EdgesWorld {
     w: World,
