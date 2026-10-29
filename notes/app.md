@@ -91,6 +91,10 @@ Owner: a new coordinator runs the buildout. Goal: something the owner can play w
 3. Time and People lenses, search, the schema fallback view.
 4. iOS shell, web, durable view-state spec.
 
+## Running it
+Try it with demo data (from `kit/`, the GUI workspace; first build a few minutes):
+`cargo run --bin osis-app -- ~/osis-try --demo --theme glass` (store directory created on first run; `--demo` adds the demo things once; `--theme frost|glass|workstation|memphis|slate|cel` and `--auto|--light|--dark` set the look, which the picker at home's foot also changes). Two devices syncing, all local: in the repo root `cargo run --bin osis -- serve` (first stdout line: the server address `ADDR`); `osis-app ~/osis-a --server ADDR --demo`, close it; pair a second store with the CLI (notes/cli.md: `osis -s ~/osis-a pair offer` and, in another terminal, `osis -s ~/osis-b pair join OFFER --server ADDR`, pasting the request and the reply across); then run `osis-app ~/osis-a` and `osis-app ~/osis-b` side by side. A store is locked while open, so pairing needs the app closed. Not rechecked since the first prototype's notes app.
+
 ## Prototype (as built)
 `osis-app DIR [--server ADDR]... [--demo] [--theme ID] [--light|--dark]` (kit/ workspace; Masonry `=0.4.0`, masonry_winit `=0.4.0`: wgpu 26, Vello 0.6, Parley 0.6, winit 0.30). Milestones 1-4 of the handoff scope: home, rail, tiles, demo data, the theme engine, facet views with tags, reach and history, the calendar week and the tags tree (`--theme ID`, `--auto|--light|--dark` set the same choice as the picker).
 
