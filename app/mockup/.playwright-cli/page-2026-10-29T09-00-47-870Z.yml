@@ -1,0 +1,72 @@
+- generic [active] [ref=f12e1]:
+  - main [ref=f12e3]:
+    - generic [ref=f12e4]:
+      - link "osis" [ref=f12e6] [cursor=pointer]:
+        - /url: "#/"
+      - textbox [ref=f12e11]:
+        - /placeholder: Search notes, people, tags, views…
+      - generic [ref=f12e12]:
+        - generic [ref=f12e13]:
+          - generic [ref=f12e14]: Favorites
+          - generic [ref=f12e15]: drag to reorder
+        - list [ref=f12e16]:
+          - listitem [ref=f12e17]:
+            - link "Groceries oat milk" [ref=f12e18] [cursor=pointer]:
+              - /url: "#/t/n-groceries"
+              - generic [ref=f12e23]:
+                - generic [ref=f12e24]: Groceries
+                - generic [ref=f12e25]: oat milk
+          - listitem [ref=f12e26]:
+            - link "Calendar 10 events this week" [ref=f12e27] [cursor=pointer]:
+              - /url: "#/t/v-cal"
+              - generic [ref=f12e33]:
+                - generic [ref=f12e34]: Calendar
+                - generic [ref=f12e35]: 10 events this week
+          - listitem [ref=f12e36]:
+            - link "Lisbon trip 6 items · shared" [ref=f12e37] [cursor=pointer]:
+              - /url: "#/t/g-lisbon"
+              - generic [ref=f12e42]:
+                - generic [ref=f12e43]: Lisbon trip
+                - generic [ref=f12e44]: 6 items · shared
+          - listitem [ref=f12e45]:
+            - link "MO Mara Okafor Friend · climbing" [ref=f12e46] [cursor=pointer]:
+              - /url: "#/t/c-mara"
+              - generic [ref=f12e47]: MO
+              - generic [ref=f12e49]:
+                - generic [ref=f12e50]: Mara Okafor
+                - generic [ref=f12e51]: Friend · climbing
+          - listitem [ref=f12e52]:
+            - link "1:1 with Jun Tue, Oct 27 · 11:00 AM–11:30 AM" [ref=f12e53] [cursor=pointer]:
+              - /url: "#/t/e-jun"
+              - generic [ref=f12e58]:
+                - generic [ref=f12e59]: 1:1 with Jun
+                - generic [ref=f12e60]: Tue, Oct 27 · 11:00 AM–11:30 AM
+          - listitem [ref=f12e61]:
+            - link "Garden 3 items" [ref=f12e62] [cursor=pointer]:
+              - /url: "#/t/g-garden"
+              - generic [ref=f12e67]:
+                - generic [ref=f12e68]: Garden
+                - generic [ref=f12e69]: 3 items
+          - listitem [ref=f12e70]:
+            - link "People 6 people" [ref=f12e71] [cursor=pointer]:
+              - /url: "#/t/v-people"
+              - generic [ref=f12e77]:
+                - generic [ref=f12e78]: People
+                - generic [ref=f12e79]: 6 people
+          - listitem [ref=f12e80]:
+            - link "Ideas A calendar that shows what I wrote that day, not just what I planned." [ref=f12e81] [cursor=pointer]:
+              - /url: "#/t/n-ideas"
+              - generic [ref=f12e86]:
+                - generic [ref=f12e87]: Ideas
+                - generic [ref=f12e88]: A calendar that shows what I wrote that day, not just what I planned.
+          - listitem [ref=f12e89]:
+            - button "New note or event, person, tag…" [ref=f12e90] [cursor=pointer]:
+              - generic [ref=f12e94]:
+                - generic [ref=f12e95]: New note
+                - generic [ref=f12e96]: or event, person, tag…
+  - complementary "Look switcher" [ref=f12e97]:
+    - 'button "Theme: Cel dark ▴" [ref=f12e98] [cursor=pointer]':
+      - text: "Theme:"
+      - generic [ref=f12e99]: Cel
+      - generic [ref=f12e100]: dark
+      - generic [ref=f12e101]: ▴

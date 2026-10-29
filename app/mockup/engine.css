@@ -8,13 +8,14 @@
 
 body {
   --r: calc(var(--p-radius) * 1px);
+  /* spacing (a factor): every padding, gap and margin in the layout scales with it */
+  --sp: var(--p-spacing); --gap: calc(12px * var(--sp)); --shell-gap: calc(16px * var(--sp)); --shell-pad: calc(16px * var(--sp));
   --ow: calc(var(--p-outline) * 1px);
   --pa: calc(var(--p-panel-opacity) * 100%);
-  /* outline and shadow colours default to the text colour, so they follow light and dark */
-  --ink: var(--p-outline-color, var(--fg));
+  --ink: var(--outline-c);
   --sd: calc(var(--p-shadow-distance) * 1px); --sb: calc(var(--p-shadow-blur) * 1px);
   --sx: calc(cos(var(--p-shadow-angle) * 1deg) * var(--sd)); --sy: calc(sin(var(--p-shadow-angle) * 1deg) * var(--sd));
-  --sh: color-mix(in oklab, var(--p-shadow-color, var(--fg)) calc(var(--p-shadow-opacity) * var(--sh-boost, 100%)), transparent);
+  --sh: color-mix(in oklab, var(--shadow-c) calc(var(--p-shadow-opacity) * var(--sh-boost, 100%)), transparent);
   --el-tile: var(--sx) var(--sy) var(--sb) calc(var(--sb) * -.5) var(--sh);
   --el-row: calc(var(--sx) * .75) calc(var(--sy) * .75) var(--sb) calc(var(--sb) * -.5) var(--sh);
   --el-panel: calc(var(--sx) * 1.5) calc(var(--sy) * 1.5) calc(var(--sb) * 2.5) calc(var(--sb) * -1.2) color-mix(in oklab, var(--sh) var(--pa), transparent);
@@ -27,7 +28,9 @@ body {
   --panel-bg-strong: color-mix(in oklab, var(--surface) max(var(--pa), 88%), transparent);
   --panel-border: var(--ow) solid var(--panel-ink);
   --glass-filter: blur(calc(var(--p-panel-blur) * 1px)) saturate(calc(100% + var(--p-panel-blur) * 2%));
-  --tile-base: color-mix(in oklab, var(--surface) calc(62% + var(--p-panel-opacity) * 38%), transparent);
+  /* a card on an opaque panel steps away from the panel's surface (darker in light, lighter in dark) */
+  --card-surface: color-mix(in oklab, var(--surface) calc(100% - var(--p-panel-opacity) * 5%), var(--card-step));
+  --tile-base: color-mix(in oklab, var(--card-surface) calc(62% + var(--p-panel-opacity) * 38%), transparent);
   --field-bg: color-mix(in oklab, var(--surface) calc(62% + var(--p-panel-opacity) * 38%), transparent);
   --field-bg-solid: var(--surface);
   --bar-bg: color-mix(in oklab, var(--bg-color) 90%, transparent);
@@ -38,11 +41,12 @@ body {
   --tile-shadow: inset 0 1px 0 var(--gl-line), var(--el-tile);
   --field-shadow: inset 0 2px 3px color-mix(in oklab, black calc(var(--p-gloss) * 18%), transparent), var(--el-tile);
   --btn-bg: transparent; --btn-border: 0;
-  /* weight: the accent sets each role's base; --p-weight (-1..1) shifts them all, titles most and body text least */
+  /* weight: the accent sets each role's base; --p-weight (-1..1) shifts headings (titles most, labels less, names a
+     little); body text keeps the accent's weight */
   --title-weight: clamp(100, calc(var(--w-title) + var(--p-weight) * 300), 900); --brand-weight: var(--title-weight);
   --label-weight: clamp(100, calc(var(--w-label) + var(--p-weight) * 200), 900);
-  --name-weight: clamp(300, calc(var(--w-name) + var(--p-weight) * 150), 900);
-  font-weight: clamp(300, calc(var(--w-body) + var(--p-weight) * 100), 600);
+  --name-weight: clamp(400, calc(var(--w-name) + var(--p-weight) * 75), 800);
+  font-weight: var(--w-body);
   --title-ls: -.015em;
   --star: var(--main); --focus: var(--main); --link: var(--accent);
   --inset-bg: color-mix(in oklab, var(--fg) 4%, transparent); --inset-border: 0;
@@ -51,10 +55,10 @@ body {
   --scrim: color-mix(in oklab, var(--bg-color) 60%, transparent);
   --hover: color-mix(in oklab, var(--fg) 7%, transparent);
   /* gloss (0..1): a hard highlight line across fills and a lit top edge */
-  --gl-line: color-mix(in oklab, white calc(var(--p-gloss) * 55%), transparent);
+  --gl-line: color-mix(in oklab, white calc(var(--p-gloss) * 18%), transparent);
   --gloss: linear-gradient(180deg, color-mix(in oklab, white calc(var(--p-gloss) * 50%), transparent) 0%, color-mix(in oklab, white calc(var(--p-gloss) * 16%), transparent) 48%, transparent 50%, color-mix(in oklab, white calc(var(--p-gloss) * 10%), transparent) 100%);
   /* fill (0..1): how much of its colour a tile takes; past about half, text and icons turn white */
-  --fill: calc(var(--p-fill) * 100%);
+  --fill: calc(5% + var(--p-fill) * 95%);
   --on: clamp(0, (var(--p-fill) - .55) * 1000, 1);
   --sel-amt: max(var(--fill), 20%);
   --tile-fg: color-mix(in oklab, white calc(var(--on) * 100%), var(--fg));
@@ -66,19 +70,19 @@ body {
 /* ---------- mode: each theme gives background and surface colours for both */
 [data-mode="light"] {
   color-scheme: light;
-  --bg-base: var(--p-bg-light); --surface: var(--p-surface-light);
+  --bg-base: var(--p-bg-light); --surface: var(--p-surface-light); --outline-c: var(--p-outline-light); --shadow-c: var(--p-shadow-light);
   --fg: #16151c; --muted: color-mix(in oklab, #16151c 58%, transparent); --neutral: #8f92a3;
   --accent: color-mix(in oklab, var(--main) 80%, black);
   --deco: oklch(from var(--bg-color) calc(l - .1) calc(c * 1.6) h); --deco-hi: oklch(from var(--bg-color) calc(l + .1) calc(c * .6) h);
-  --hi: rgba(255, 255, 255, .75);
+  --hi: rgba(255, 255, 255, .75); --card-step: #3a3f55;
 }
 [data-mode="dark"] {
   color-scheme: dark;
-  --bg-base: var(--p-bg-dark); --surface: var(--p-surface-dark);
+  --bg-base: var(--p-bg-dark); --surface: var(--p-surface-dark); --outline-c: var(--p-outline-dark); --shadow-c: var(--p-shadow-dark);
   --fg: #f1f1f6; --muted: color-mix(in oklab, #f1f1f6 60%, transparent); --neutral: #626577;
   --accent: color-mix(in oklab, var(--main) 65%, white);
   --deco: oklch(from var(--bg-color) calc(l + .1) calc(c * 1.6) h); --deco-hi: oklch(from var(--bg-color) calc(l + .18) calc(c * 1.2) h);
-  --hi: rgba(255, 255, 255, .14); --sh-boost: 180%;
+  --hi: rgba(255, 255, 255, .14); --sh-boost: 180%; --card-step: white;
 }
 /* ---------- finish: flat | gloss (a hard highlight line on fills) | bevel (raised edges, pressed when active) */
 /* ---------- cards: tiles and sidebar rows draw their fill on a layer behind the content, slanted by --p-slant (deg).
@@ -100,15 +104,25 @@ body {
 .tile.row[aria-current] .tile-sub { color: var(--tile-muted); }
 .tile.row[aria-current] .tile-ic { box-shadow: 0 0 0 2px color-mix(in oklab, rgba(255, 255, 255, .8) calc(var(--on) * 100%), transparent); }
 .tile-ic, .swatch, .avatar { background-image: var(--gloss); }
+/* the new-note placeholder and the search fields lean too, with their outline on the slanted layer */
+.tile.tile-new { border-color: transparent; overflow: visible; isolation: isolate; }
+.tile.tile-new::before { content: ""; position: absolute; inset: -1.5px; z-index: -1; border-radius: inherit; transform: skewX(calc(var(--p-slant) * -1deg)); border: var(--new-border, 1.5px dashed color-mix(in oklab, currentColor 40%, transparent)); }
+.search-field, .rail-search { position: relative; isolation: isolate; background: none; border-color: transparent; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+.search-field::before, .rail-search::before { content: ""; position: absolute; inset: calc(var(--ow) * -1); z-index: -1; border-radius: inherit; transform: skewX(calc(var(--p-slant) * -1deg)); background: var(--field-bg); border: var(--field-border); box-shadow: var(--field-shadow); -webkit-backdrop-filter: var(--glass-filter); backdrop-filter: var(--glass-filter); }
+.spot .search-field { background: none; }
+.spot .search-field::before { background: var(--field-bg-solid); }
 .tile.row:not([aria-current]) .tile-ic { background-color: var(--tint); }
 .chip:not(.chip-add) { --chip-amt: max(20%, var(--fill)); color: var(--tile-fg); }
 
-/* ---------- font: system (the platform's, not shipped) | inter | open-sans | plex | nunito (all OFL, shippable) */
+/* ---------- font: system (the platform's, not shipped) or one of these, all OFL so they can ship */
 [data-font="system"] { --font: -apple-system, "SF Pro Text", "Segoe UI Variable Text", system-ui, sans-serif; --font-display: -apple-system, "SF Pro Display", "Segoe UI Variable Display", system-ui, sans-serif; }
 [data-font="inter"] { --font: "Inter", sans-serif; --font-display: var(--font); }
-[data-font="open-sans"] { --font: "Open Sans", sans-serif; --font-display: var(--font); }
-[data-font="plex"] { --font: "IBM Plex Sans", sans-serif; --font-display: var(--font); }
+[data-font="dm-sans"] { --font: "DM Sans", sans-serif; --font-display: var(--font); }
+[data-font="figtree"] { --font: "Figtree", sans-serif; --font-display: var(--font); }
+[data-font="lexend"] { --font: "Lexend", sans-serif; --font-display: var(--font); }
+[data-font="atkinson"] { --font: "Atkinson Hyperlegible Next", sans-serif; --font-display: var(--font); }
 [data-font="nunito"] { --font: "Nunito", sans-serif; --font-display: var(--font); }
+[data-font="literata"] { --font: "Literata", serif; --font-display: var(--font); }
 
 /* ---------- accent, a package of label style and marks:
    plain | caps | bar (mono labels, title bars in the main colour, a stripe on tiles) | rule (big light labels, a line atop the pane)
@@ -116,7 +130,7 @@ body {
 [data-accent="plain"] { --w-title: 700; --w-label: 650; --w-name: 640; --w-body: 400; --label-case: none; --label-ls: 0; --label-size: 14px; --label-color: color-mix(in oklab, var(--fg) 72%, transparent); }
 [data-accent="caps"], [data-accent="slash"] { --w-title: 800; --w-label: 800; --w-name: 690; --w-body: 400; --label-case: uppercase; --label-ls: .06em; --label-size: 12.5px; --label-color: var(--fg); }
 [data-accent="rule"] { --w-title: 300; --w-label: 300; --w-name: 600; --w-body: 400; --label-case: lowercase; --label-ls: 0; --label-size: 22px; --label-color: var(--fg); }
-[data-accent="bar"] { --w-title: 700; --w-label: 700; --w-name: 700; --w-body: 400; --label-case: uppercase; --label-ls: .12em; --label-size: 11px; --label-color: var(--accent); --label-font: "IBM Plex Mono", monospace; }
+[data-accent="bar"] { --w-title: 700; --w-label: 700; --w-name: 700; --w-body: 400; --label-case: uppercase; --label-ls: .12em; --label-size: 11px; --label-color: var(--accent); --label-font: "JetBrains Mono", monospace; }
 [data-accent="rule"] .pane-kind { text-transform: lowercase; font-size: 15px; font-weight: 400; }
 [data-accent="bar"] .tile-sub, [data-accent="bar"] .cal-day h3 { font-family: var(--label-font); font-size: 11.5px; }
 [data-accent="bar"] .brand { font-family: var(--label-font); text-transform: uppercase; letter-spacing: .3em; }
