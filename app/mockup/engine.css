@@ -10,7 +10,15 @@ body {
   --r: calc(var(--p-radius) * 1px);
   --ow: calc(var(--p-outline) * 1px);
   --pa: calc(var(--p-panel-opacity) * 100%);
-  --ink: var(--fg);
+  /* outline and shadow colours default to the text colour, so they follow light and dark */
+  --ink: var(--p-outline-color, var(--fg));
+  --sd: calc(var(--p-shadow-distance) * 1px); --sb: calc(var(--p-shadow-blur) * 1px);
+  --sx: calc(cos(var(--p-shadow-angle) * 1deg) * var(--sd)); --sy: calc(sin(var(--p-shadow-angle) * 1deg) * var(--sd));
+  --sh: color-mix(in oklab, var(--p-shadow-color, var(--fg)) calc(var(--p-shadow-opacity) * var(--sh-boost, 100%)), transparent);
+  --el-tile: var(--sx) var(--sy) var(--sb) calc(var(--sb) * -.5) var(--sh);
+  --el-row: calc(var(--sx) * .75) calc(var(--sy) * .75) var(--sb) calc(var(--sb) * -.5) var(--sh);
+  --el-panel: calc(var(--sx) * 1.5) calc(var(--sy) * 1.5) calc(var(--sb) * 2.5) calc(var(--sb) * -1.2) color-mix(in oklab, var(--sh) var(--pa), transparent);
+  --ic-radius: calc(var(--p-icon-round) * 50%); --avatar-radius: var(--ic-radius); --row-ic-radius: var(--ic-radius);
   --panel-radius: calc(var(--r) * 1.35); --tile-radius: var(--r); --field-radius: calc(var(--r) * .8);
   --row-radius: calc(var(--r) * .55); --inset-radius: calc(var(--r) * .8); --btn-radius: calc(var(--r) * .6); --chip-radius: calc(var(--r) * 100);
   /* panels fade out as a whole: fill, outline and shadow follow the opacity */
@@ -29,7 +37,12 @@ body {
   --tile-shadow: var(--fin-tile), var(--el-tile);
   --field-shadow: var(--fin-field), var(--el-tile);
   --btn-bg: transparent; --btn-border: 0;
-  --title-weight: var(--p-weight); --brand-weight: var(--p-weight); --name-weight: 650; --title-ls: -.015em;
+  /* weight: the accent sets each role's base; --p-weight (-1..1) shifts them all, titles most and body text least */
+  --title-weight: clamp(100, calc(var(--w-title) + var(--p-weight) * 300), 900); --brand-weight: var(--title-weight);
+  --label-weight: clamp(100, calc(var(--w-label) + var(--p-weight) * 200), 900);
+  --name-weight: clamp(300, calc(var(--w-name) + var(--p-weight) * 150), 900);
+  font-weight: clamp(300, calc(var(--w-body) + var(--p-weight) * 100), 600);
+  --title-ls: -.015em;
   --star: var(--main); --focus: var(--main); --link: var(--accent);
   --inset-bg: color-mix(in oklab, var(--fg) 4%, transparent); --inset-border: 0;
   --row-amt: 0%; --row-amt-hover: 0%; --row-fg: var(--fg); --row-muted: var(--muted);
@@ -47,7 +60,7 @@ body {
   --fg: #16151c; --muted: color-mix(in oklab, #16151c 58%, transparent); --neutral: #8f92a3;
   --accent: color-mix(in oklab, var(--main) 80%, black);
   --deco: oklch(from var(--bg-color) calc(l - .1) calc(c * 1.6) h); --deco-hi: oklch(from var(--bg-color) calc(l + .1) calc(c * .6) h);
-  --hi: rgba(255, 255, 255, .75); --soft-shadow: rgba(20, 30, 60, .4);
+  --hi: rgba(255, 255, 255, .75);
   --bev-hi: rgba(255, 255, 255, .75); --bev-lo: rgba(0, 0, 0, .28);
 }
 [data-mode="dark"] {
@@ -56,17 +69,9 @@ body {
   --fg: #f1f1f6; --muted: color-mix(in oklab, #f1f1f6 60%, transparent); --neutral: #626577;
   --accent: color-mix(in oklab, var(--main) 65%, white);
   --deco: oklch(from var(--bg-color) calc(l + .1) calc(c * 1.6) h); --deco-hi: oklch(from var(--bg-color) calc(l + .18) calc(c * 1.2) h);
-  --hi: rgba(255, 255, 255, .14); --soft-shadow: rgba(0, 0, 0, .7);
+  --hi: rgba(255, 255, 255, .14); --sh-boost: 180%;
   --bev-hi: rgba(255, 255, 255, .16); --bev-lo: rgba(0, 0, 0, .5);
 }
-/* without blur, a blurred panel stands in with more opacity (the more blur, the more opacity); a clear one stays clear */
-body.noblur { --panel-bg: color-mix(in oklab, var(--surface) min(100%, var(--pa) + var(--p-panel-blur) * 3%), transparent); }
-
-/* ---------- elevation: none | soft | hard (offset, in ink); a panel's shadow fades with its opacity */
-[data-elevation="none"] { --el-panel: 0 0 0 transparent; --el-tile: 0 0 0 transparent; --el-row: 0 0 0 transparent; }
-[data-elevation="soft"] { --el-panel: 0 18px 50px -22px color-mix(in oklab, var(--soft-shadow) var(--pa), transparent); --el-tile: 0 6px 18px -12px var(--soft-shadow); --el-row: 0 0 0 transparent; }
-[data-elevation="hard"] { --el-panel: 6px 6px 0 var(--panel-ink); --el-tile: 4px 4px 0 var(--ink); --el-row: 3px 3px 0 var(--ink); }
-
 /* ---------- finish: flat | gloss (a hard highlight line on fills) | bevel (raised edges, pressed when active) */
 [data-finish="flat"] { --fin-panel: 0 0 0 transparent; --fin-tile: 0 0 0 transparent; --fin-field: 0 0 0 transparent; }
 [data-finish="gloss"] {
@@ -78,39 +83,24 @@ body.noblur { --panel-bg: color-mix(in oklab, var(--surface) min(100%, var(--pa)
   --fin-panel: inset 2px 2px 0 var(--bev-hi), inset -2px -2px 0 var(--bev-lo); --fin-tile: var(--fin-panel);
   --fin-field: inset 2px 2px 0 var(--bev-lo), inset -1px -1px 0 var(--bev-hi);
 }
-[data-finish="bevel"][data-mode="dark"] { --ink: #05040e; }
 [data-finish="bevel"] .tile:not(.tile-new):active { box-shadow: inset 2px 2px 0 var(--bev-lo), inset -2px -2px 0 var(--bev-hi); }
 [data-finish="gloss"] .tile-ic, [data-finish="gloss"] .swatch, [data-finish="gloss"] .avatar { background-image: var(--gloss); }
 
-/* ---------- icon shape: circle | rounded | square */
-[data-icon-shape="circle"] { --ic-radius: 50%; --avatar-radius: 50%; }
-[data-icon-shape="rounded"] { --ic-radius: calc(var(--r) * .45 + 5px); --avatar-radius: calc(var(--r) * .9 + 8px); }
-[data-icon-shape="square"] { --ic-radius: 0; --avatar-radius: 0; }
-[data-icon-shape] { --row-ic-radius: var(--ic-radius); }
-
-/* ---------- tile fill: surface (colour in the icon) | wash (the tile takes the colour) | solid (white on colour) */
-[data-tile-fill="surface"] { --tint-amt: 7%; --tile-fg: var(--fg); --tile-muted: var(--muted); --ic-amt: 100%; --ic-fg: #fff; }
-[data-tile-fill="wash"] { --tint-amt: 50%; --tile-fg: var(--fg); --tile-muted: color-mix(in oklab, var(--fg) 72%, transparent); --ic-amt: 100%; --ic-fg: #fff; }
-[data-tile-fill="solid"] { --tint-amt: 100%; --tile-fg: #fff; --tile-muted: rgba(255, 255, 255, .82); --ic-amt: 0%; --ic-base: rgba(255, 255, 255, .22); --ic-fg: #fff; }
-[data-tile-fill="solid"] .tile.row .tile-ic { background: var(--tint); }
-[data-tile-fill="solid"] .tile:not(.row):not(.tile-new) { background: var(--gloss), linear-gradient(180deg, color-mix(in oklab, var(--tint) 88%, white), var(--tint)); }
-[data-tile-fill="solid"][data-finish="gloss"] .tile:not(.row):not(.tile-new) { text-shadow: 0 1px 1px rgba(0, 20, 50, .4); }
-[data-tile-fill="solid"] .chip:not(.chip-add) { color: #fff; --chip-amt: 100%; }
-
-/* ---------- tile mark: none | stripe (thick left edge) | corner (a flag) */
-[data-tile-mark="stripe"] .tile:not(.row):not(.tile-new) { border-left: 9px solid var(--tint); }
-[data-tile-mark="corner"] .tile:not(.row):not(.tile-new) { background: linear-gradient(135deg, transparent 0 calc(100% - 26px), var(--tint) 0) top right / 52px 52px no-repeat, color-mix(in oklab, var(--tint) var(--tint-amt), var(--tile-base)); }
-
-/* ---------- selection: soft (a tinted surface) | solid (white on the main colour) | slant (solid, skewed) */
+/* ---------- fill: soft (colour in the icon) | wash (the colour washes the fill) | solid (white on colour).
+   Tiles fill with their own colour; the selected sidebar row is the same fill in the screen's colour. */
+[data-fill="soft"] { --tint-amt: 8%; --sel-amt: 20%; --tile-fg: var(--fg); --tile-muted: var(--muted); --ic-amt: 100%; --ic-fg: #fff; }
+[data-fill="wash"] { --tint-amt: 50%; --sel-amt: 50%; --tile-fg: var(--fg); --tile-muted: color-mix(in oklab, var(--fg) 72%, transparent); --ic-amt: 100%; --ic-fg: #fff; }
+[data-fill="solid"] { --tint-amt: 100%; --sel-amt: 100%; --tile-fg: #fff; --tile-muted: rgba(255, 255, 255, .82); --ic-amt: 0%; --ic-base: rgba(255, 255, 255, .22); --ic-fg: #fff; }
+[data-fill="solid"] .tile.row:not([aria-current]) .tile-ic { background: var(--tint); }
+[data-fill="solid"] .tile:not(.row):not(.tile-new) { background: var(--gloss), linear-gradient(180deg, color-mix(in oklab, var(--tint) 88%, white), var(--tint)); }
+[data-fill="solid"][data-finish="gloss"] .tile:not(.tile-new) { text-shadow: 0 1px 1px rgba(0, 20, 50, .4); }
+[data-fill="solid"] .chip:not(.chip-add) { color: #fff; --chip-amt: 100%; }
 .tile:not(.row):not(.tile-new):hover { filter: brightness(1.04); }
 .tile.row:hover { background: var(--hover); }
-[data-selection="soft"] .tile.row[aria-current] { background: color-mix(in oklab, var(--main) 18%, color-mix(in oklab, var(--surface) 80%, transparent)); border-color: var(--ink); box-shadow: var(--el-row); }
-[data-selection="solid"] .tile.row[aria-current] { background: var(--gloss), var(--main); color: #fff; }
-[data-selection="slant"] .tile.row { isolation: isolate; overflow: visible; }
-[data-selection="slant"] .tile.row[aria-current] { background: none; color: #fff; }
-[data-selection="slant"] .tile.row[aria-current]::before { content: ""; position: absolute; inset: 0 4px; z-index: -1; background: var(--main); transform: skewX(-12deg); border-radius: 3px; }
-[data-selection="solid"] .tile.row[aria-current] .tile-sub, [data-selection="slant"] .tile.row[aria-current] .tile-sub { color: rgba(255, 255, 255, .85); }
-[data-selection="solid"] .tile.row[aria-current] .tile-ic, [data-selection="slant"] .tile.row[aria-current] .tile-ic { box-shadow: 0 0 0 2px rgba(255, 255, 255, .8); }
+.tile.row[aria-current] { background: var(--gloss), color-mix(in oklab, var(--main) var(--sel-amt), var(--tile-base)); color: var(--tile-fg); border: var(--tile-border); box-shadow: var(--fin-tile), var(--el-row); }
+.tile.row[aria-current] .tile-sub { color: var(--tile-muted); }
+[data-fill="solid"] .tile.row[aria-current] { background: var(--gloss), linear-gradient(180deg, color-mix(in oklab, var(--main) 88%, white), var(--main)); }
+[data-fill="solid"] .tile.row[aria-current] .tile-ic { box-shadow: 0 0 0 2px rgba(255, 255, 255, .8); }
 
 /* ---------- font: system | humanist | classic | grotesk | rounded; weight is --p-weight */
 [data-font="system"] { --font: -apple-system, "SF Pro Text", "Segoe UI Variable Text", system-ui, sans-serif; --font-display: -apple-system, "SF Pro Display", "Segoe UI Variable Display", system-ui, sans-serif; }
@@ -119,16 +109,21 @@ body.noblur { --panel-bg: color-mix(in oklab, var(--surface) min(100%, var(--pa)
 [data-font="grotesk"] { --font: "Helvetica Neue", Arial, system-ui, sans-serif; --font-display: "Helvetica Neue", Arial, system-ui, sans-serif; }
 [data-font="rounded"] { --font: "M PLUS Rounded 1c", "Nunito", "Varela Round", "Quicksand", system-ui, sans-serif; --font-display: var(--font); }
 
-/* ---------- labels: plain | caps | big (light lowercase) | mono (spaced caps in the main colour) */
-[data-labels="plain"] { --label-case: none; --label-ls: 0; --label-size: 14px; --label-weight: 650; --label-color: color-mix(in oklab, var(--fg) 72%, transparent); }
-[data-labels="caps"] { --label-case: uppercase; --label-ls: .06em; --label-size: 12.5px; --label-weight: 800; --label-color: var(--fg); }
-[data-labels="big"] { --label-case: lowercase; --label-ls: 0; --label-size: 22px; --label-weight: 300; --label-color: var(--fg); }
-[data-labels="mono"] { --label-case: uppercase; --label-ls: .12em; --label-size: 11px; --label-weight: 700; --label-color: var(--accent); --label-font: ui-monospace, "SF Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace; }
-[data-labels="big"] .pane-kind { text-transform: lowercase; font-size: 15px; font-weight: 400; }
-[data-labels="mono"] .tile-sub, [data-labels="mono"] .cal-day h3 { font-family: var(--label-font); font-size: 11.5px; }
-[data-labels="mono"] .brand { font-family: var(--label-font); text-transform: uppercase; letter-spacing: .3em; }
-
-/* ---------- accent: none | bar (title bars in the main colour) | rule (a line atop the pane) | slash (slashes and underlines) */
+/* ---------- accent, a package of label style and marks:
+   plain | caps | bar (mono labels, title bars in the main colour, a stripe on tiles) | rule (big light labels, a line atop the pane)
+   | slash (caps labels, slashes, underlined titles, a corner flag on tiles, a slanted selection) */
+[data-accent="plain"] { --w-title: 700; --w-label: 650; --w-name: 640; --w-body: 400; --label-case: none; --label-ls: 0; --label-size: 14px; --label-color: color-mix(in oklab, var(--fg) 72%, transparent); }
+[data-accent="caps"], [data-accent="slash"] { --w-title: 800; --w-label: 800; --w-name: 690; --w-body: 400; --label-case: uppercase; --label-ls: .06em; --label-size: 12.5px; --label-color: var(--fg); }
+[data-accent="rule"] { --w-title: 300; --w-label: 300; --w-name: 600; --w-body: 400; --label-case: lowercase; --label-ls: 0; --label-size: 22px; --label-color: var(--fg); }
+[data-accent="bar"] { --w-title: 700; --w-label: 700; --w-name: 700; --w-body: 400; --label-case: uppercase; --label-ls: .12em; --label-size: 11px; --label-color: var(--accent); --label-font: ui-monospace, "SF Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace; }
+[data-accent="rule"] .pane-kind { text-transform: lowercase; font-size: 15px; font-weight: 400; }
+[data-accent="bar"] .tile-sub, [data-accent="bar"] .cal-day h3 { font-family: var(--label-font); font-size: 11.5px; }
+[data-accent="bar"] .brand { font-family: var(--label-font); text-transform: uppercase; letter-spacing: .3em; }
+[data-accent="bar"] .tile:not(.row):not(.tile-new) { border-left: 9px solid color-mix(in oklab, var(--tint) 70%, black); }
+[data-accent="slash"] .tile.row { isolation: isolate; overflow: visible; }
+[data-accent="slash"] .tile.row[aria-current] { background: none; border-color: transparent; box-shadow: none; }
+[data-accent="slash"] .tile.row[aria-current]::before { content: ""; position: absolute; inset: 0 4px; z-index: -1; background: var(--gloss), color-mix(in oklab, var(--main) var(--sel-amt), var(--tile-base)); transform: skewX(-12deg); border-radius: 3px; box-shadow: var(--el-row); }
+[data-accent="slash"] .tile:not(.row):not(.tile-new) { background: linear-gradient(135deg, transparent 0 calc(100% - 26px), var(--tint) 0) top right / 52px 52px no-repeat, color-mix(in oklab, var(--tint) var(--tint-amt), var(--tile-base)); }
 [data-accent="bar"] .pane-bar { background: linear-gradient(90deg, color-mix(in oklab, var(--main) 80%, #0a0630), var(--main)); color: #fff; padding: 3px 4px 3px 10px; min-height: 0; border: var(--ow) solid var(--ink); box-shadow: inset 1px 1px 0 rgba(255, 255, 255, .35); }
 [data-accent="bar"] .pane-bar .pane-kind, [data-accent="bar"] .pane-bar .icon-btn { color: #fff; }
 [data-accent="bar"] .pane-bar .icon-btn { width: 30px; height: 26px; }
@@ -153,8 +148,8 @@ body.noblur { --panel-bg: color-mix(in oklab, var(--surface) min(100%, var(--pa)
 }
 /* two large soft sheets, one light and one dark, curving across */
 [data-background="curves"] #bg i:nth-child(-n+2) { display: block; width: 110vmax; height: 34vmax; border-radius: 50%; }
-[data-background="curves"] #bg i:nth-child(1) { left: -30vmax; top: calc(4vh + var(--s2) * 30vh); transform: rotate(calc(-22deg + var(--s3) * 18deg)); background: linear-gradient(180deg, color-mix(in oklab, var(--deco-hi) 70%, transparent), transparent 65%); }
-[data-background="curves"] #bg i:nth-child(2) { right: -40vmax; top: calc(48vh + var(--s4) * 26vh); transform: rotate(calc(-12deg + var(--k) * 24deg)); background: linear-gradient(180deg, color-mix(in oklab, var(--deco) 30%, transparent), transparent 65%); }
+[data-background="curves"] #bg i:nth-child(1) { left: -30vmax; top: calc(4vh + var(--s2) * 30vh); transform: rotate(calc(-22deg + var(--s3) * 18deg)); background: linear-gradient(180deg, color-mix(in oklab, var(--deco-hi) 40%, transparent), transparent 65%); }
+[data-background="curves"] #bg i:nth-child(2) { right: -40vmax; top: calc(48vh + var(--s4) * 26vh); transform: rotate(calc(-12deg + var(--k) * 24deg)); background: linear-gradient(180deg, color-mix(in oklab, var(--deco) 16%, transparent), transparent 65%); }
 [data-background="sky"] {
   --bg-image:
     radial-gradient(60% 40% at calc(25% + var(--s1) * 50%) -6%, color-mix(in oklab, var(--deco-hi) 70%, transparent), transparent 70%),

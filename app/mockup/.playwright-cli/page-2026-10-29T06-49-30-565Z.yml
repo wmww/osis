@@ -1,0 +1,108 @@
+- generic [active] [ref=f5e1]:
+  - generic [ref=f5e3]:
+    - navigation [ref=f5e4]:
+      - link "osis" [ref=f5e5] [cursor=pointer]:
+        - /url: "#/"
+      - button "Search /" [ref=f5e6] [cursor=pointer]:
+        - generic [ref=f5e10]: Search
+        - generic [ref=f5e11]: /
+      - generic [ref=f5e12]: Favorites
+      - list [ref=f5e14]:
+        - listitem [ref=f5e15]:
+          - link "Groceries oat milk" [ref=f5e16] [cursor=pointer]:
+            - /url: "#/t/n-groceries"
+            - generic [ref=f5e21]:
+              - generic [ref=f5e22]: Groceries
+              - generic [ref=f5e23]: oat milk
+        - listitem [ref=f5e24]:
+          - link "Calendar 10 events this week" [ref=f5e25] [cursor=pointer]:
+            - /url: "#/t/v-cal"
+            - generic [ref=f5e31]:
+              - generic [ref=f5e32]: Calendar
+              - generic [ref=f5e33]: 10 events this week
+        - listitem [ref=f5e34]:
+          - link "Lisbon trip 6 items · shared" [ref=f5e35] [cursor=pointer]:
+            - /url: "#/t/g-lisbon"
+            - generic [ref=f5e40]:
+              - generic [ref=f5e41]: Lisbon trip
+              - generic [ref=f5e42]: 6 items · shared
+        - listitem [ref=f5e43]:
+          - link "MO Mara Okafor Friend · climbing" [ref=f5e44] [cursor=pointer]:
+            - /url: "#/t/c-mara"
+            - generic [ref=f5e45]: MO
+            - generic [ref=f5e47]:
+              - generic [ref=f5e48]: Mara Okafor
+              - generic [ref=f5e49]: Friend · climbing
+        - listitem [ref=f5e50]:
+          - link "1:1 with Jun Tue, Oct 27 · 11:00 AM–11:30 AM" [ref=f5e51] [cursor=pointer]:
+            - /url: "#/t/e-jun"
+            - generic [ref=f5e56]:
+              - generic [ref=f5e57]: 1:1 with Jun
+              - generic [ref=f5e58]: Tue, Oct 27 · 11:00 AM–11:30 AM
+        - listitem [ref=f5e59]:
+          - link "Garden 3 items" [ref=f5e60] [cursor=pointer]:
+            - /url: "#/t/g-garden"
+            - generic [ref=f5e65]:
+              - generic [ref=f5e66]: Garden
+              - generic [ref=f5e67]: 3 items
+        - listitem [ref=f5e68]:
+          - link "People 6 people" [ref=f5e69] [cursor=pointer]:
+            - /url: "#/t/v-people"
+            - generic [ref=f5e75]:
+              - generic [ref=f5e76]: People
+              - generic [ref=f5e77]: 6 people
+        - listitem [ref=f5e78]:
+          - link "Ideas A calendar that shows what I wrote that day, not just what I planned." [ref=f5e79] [cursor=pointer]:
+            - /url: "#/t/n-ideas"
+            - generic [ref=f5e84]:
+              - generic [ref=f5e85]: Ideas
+              - generic [ref=f5e86]: A calendar that shows what I wrote that day, not just what I planned.
+      - button "New note" [ref=f5e87] [cursor=pointer]
+    - generic [ref=f5e91]:
+      - generic [ref=f5e92]:
+        - generic [ref=f5e93]: Tag
+        - button "Favorite" [pressed] [ref=f5e97] [cursor=pointer]
+      - generic [ref=f5e100]:
+        - generic [ref=f5e103]:
+          - textbox [ref=f5e104]: Lisbon trip
+          - generic [ref=f5e105]:
+            - text: You, Mara, Jun ·
+            - button "Share settings" [ref=f5e106] [cursor=pointer]
+        - generic [ref=f5e107]: Items
+        - generic [ref=f5e109]:
+          - 'link "Itinerary Thu: land 10:40, bags to Ana''s, lunch at the market" [ref=f5e110] [cursor=pointer]':
+            - /url: "#/t/n-itinerary"
+            - generic [ref=f5e115]:
+              - generic [ref=f5e116]: Itinerary
+              - generic [ref=f5e117]: "Thu: land 10:40, bags to Ana's, lunch at the market"
+          - link "Packing list walking shoes" [ref=f5e118] [cursor=pointer]:
+            - /url: "#/t/n-packing"
+            - generic [ref=f5e123]:
+              - generic [ref=f5e124]: Packing list
+              - generic [ref=f5e125]: walking shoes
+          - link "Flight to Lisbon Thu, Oct 29 · 7:10 AM–10:40 AM" [ref=f5e126] [cursor=pointer]:
+            - /url: "#/t/e-flight"
+            - generic [ref=f5e131]:
+              - generic [ref=f5e132]: Flight to Lisbon
+              - generic [ref=f5e133]: Thu, Oct 29 · 7:10 AM–10:40 AM
+          - link "Tram 28 + Alfama Fri, Oct 30 · 10:00 AM–2:00 PM" [ref=f5e134] [cursor=pointer]:
+            - /url: "#/t/e-tram"
+            - generic [ref=f5e139]:
+              - generic [ref=f5e140]: Tram 28 + Alfama
+              - generic [ref=f5e141]: Fri, Oct 30 · 10:00 AM–2:00 PM
+          - link "Sintra day trip Sat, Oct 31 · 9:00 AM–6:00 PM" [ref=f5e142] [cursor=pointer]:
+            - /url: "#/t/e-sintra"
+            - generic [ref=f5e147]:
+              - generic [ref=f5e148]: Sintra day trip
+              - generic [ref=f5e149]: Sat, Oct 31 · 9:00 AM–6:00 PM
+          - link "Pastéis de nata class Sun, Nov 1 · 11:00 AM–1:00 PM" [ref=f5e150] [cursor=pointer]:
+            - /url: "#/t/e-nata"
+            - generic [ref=f5e155]:
+              - generic [ref=f5e156]: Pastéis de nata class
+              - generic [ref=f5e157]: Sun, Nov 1 · 11:00 AM–1:00 PM
+  - complementary "Look switcher" [ref=f5e158]:
+    - 'button "Theme: Slate light ▴" [ref=f5e159] [cursor=pointer]':
+      - text: "Theme:"
+      - generic [ref=f5e160]: Slate
+      - generic [ref=f5e161]: light
+      - generic [ref=f5e162]: ▴

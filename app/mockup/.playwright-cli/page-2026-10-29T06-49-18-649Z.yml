@@ -1,0 +1,135 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e129]:
+    - navigation [ref=e130]:
+      - link "osis" [ref=e131] [cursor=pointer]:
+        - /url: "#/"
+      - button "Search /" [ref=e132] [cursor=pointer]:
+        - generic [ref=e136]: Search
+        - generic [ref=e137]: /
+      - generic [ref=e138]: Favorites
+      - list [ref=e140]:
+        - listitem [ref=e141]:
+          - link "Groceries oat milk" [ref=e142] [cursor=pointer]:
+            - /url: "#/t/n-groceries"
+            - generic [ref=e147]:
+              - generic [ref=e148]: Groceries
+              - generic [ref=e149]: oat milk
+        - listitem [ref=e150]:
+          - link "Calendar 10 events this week" [ref=e151] [cursor=pointer]:
+            - /url: "#/t/v-cal"
+            - generic [ref=e157]:
+              - generic [ref=e158]: Calendar
+              - generic [ref=e159]: 10 events this week
+        - listitem [ref=e160]:
+          - link "Lisbon trip 6 items · shared" [ref=e161] [cursor=pointer]:
+            - /url: "#/t/g-lisbon"
+            - generic [ref=e166]:
+              - generic [ref=e167]: Lisbon trip
+              - generic [ref=e168]: 6 items · shared
+        - listitem [ref=e169]:
+          - link "MO Mara Okafor Friend · climbing" [ref=e170] [cursor=pointer]:
+            - /url: "#/t/c-mara"
+            - generic [ref=e171]: MO
+            - generic [ref=e173]:
+              - generic [ref=e174]: Mara Okafor
+              - generic [ref=e175]: Friend · climbing
+        - listitem [ref=e176]:
+          - link "1:1 with Jun Tue, Oct 27 · 11:00 AM–11:30 AM" [ref=e177] [cursor=pointer]:
+            - /url: "#/t/e-jun"
+            - generic [ref=e182]:
+              - generic [ref=e183]: 1:1 with Jun
+              - generic [ref=e184]: Tue, Oct 27 · 11:00 AM–11:30 AM
+        - listitem [ref=e185]:
+          - link "Garden 3 items" [ref=e186] [cursor=pointer]:
+            - /url: "#/t/g-garden"
+            - generic [ref=e191]:
+              - generic [ref=e192]: Garden
+              - generic [ref=e193]: 3 items
+        - listitem [ref=e194]:
+          - link "People 6 people" [ref=e195] [cursor=pointer]:
+            - /url: "#/t/v-people"
+            - generic [ref=e201]:
+              - generic [ref=e202]: People
+              - generic [ref=e203]: 6 people
+        - listitem [ref=e204]:
+          - link "Ideas A calendar that shows what I wrote that day, not just what I planned." [ref=e205] [cursor=pointer]:
+            - /url: "#/t/n-ideas"
+            - generic [ref=e210]:
+              - generic [ref=e211]: Ideas
+              - generic [ref=e212]: A calendar that shows what I wrote that day, not just what I planned.
+      - button "New note" [ref=e213] [cursor=pointer]
+    - generic [ref=e217]:
+      - generic [ref=e218]:
+        - generic [ref=e219]: Tag
+        - button "Favorite" [pressed] [ref=e223] [cursor=pointer]
+      - generic [ref=e226]:
+        - generic [ref=e229]:
+          - textbox [ref=e230]: Lisbon trip
+          - generic [ref=e231]:
+            - text: You, Mara, Jun ·
+            - button "Share settings" [ref=e232] [cursor=pointer]
+        - generic [ref=e233]: Items
+        - generic [ref=e235]:
+          - 'link "Itinerary Thu: land 10:40, bags to Ana''s, lunch at the market" [ref=e236] [cursor=pointer]':
+            - /url: "#/t/n-itinerary"
+            - generic [ref=e241]:
+              - generic [ref=e242]: Itinerary
+              - generic [ref=e243]: "Thu: land 10:40, bags to Ana's, lunch at the market"
+          - link "Packing list walking shoes" [ref=e244] [cursor=pointer]:
+            - /url: "#/t/n-packing"
+            - generic [ref=e249]:
+              - generic [ref=e250]: Packing list
+              - generic [ref=e251]: walking shoes
+          - link "Flight to Lisbon Thu, Oct 29 · 7:10 AM–10:40 AM" [ref=e252] [cursor=pointer]:
+            - /url: "#/t/e-flight"
+            - generic [ref=e257]:
+              - generic [ref=e258]: Flight to Lisbon
+              - generic [ref=e259]: Thu, Oct 29 · 7:10 AM–10:40 AM
+          - link "Tram 28 + Alfama Fri, Oct 30 · 10:00 AM–2:00 PM" [ref=e260] [cursor=pointer]:
+            - /url: "#/t/e-tram"
+            - generic [ref=e265]:
+              - generic [ref=e266]: Tram 28 + Alfama
+              - generic [ref=e267]: Fri, Oct 30 · 10:00 AM–2:00 PM
+          - link "Sintra day trip Sat, Oct 31 · 9:00 AM–6:00 PM" [ref=e268] [cursor=pointer]:
+            - /url: "#/t/e-sintra"
+            - generic [ref=e273]:
+              - generic [ref=e274]: Sintra day trip
+              - generic [ref=e275]: Sat, Oct 31 · 9:00 AM–6:00 PM
+          - link "Pastéis de nata class Sun, Nov 1 · 11:00 AM–1:00 PM" [ref=e276] [cursor=pointer]:
+            - /url: "#/t/e-nata"
+            - generic [ref=e281]:
+              - generic [ref=e282]: Pastéis de nata class
+              - generic [ref=e283]: Sun, Nov 1 · 11:00 AM–1:00 PM
+  - complementary "Look switcher" [ref=e97]:
+    - 'button "Theme: Frost light ▾" [expanded] [ref=e98] [cursor=pointer]':
+      - text: "Theme:"
+      - generic [ref=e99]: Frost
+      - generic [ref=e100]: light
+      - generic [ref=e101]: ▾
+    - generic [ref=e102]:
+      - group "Light or dark" [ref=e103]:
+        - button "Light" [ref=e104] [cursor=pointer]
+        - button "Dark" [ref=e105] [cursor=pointer]
+        - button "Auto" [ref=e106] [cursor=pointer]
+      - generic [ref=e107]:
+        - button "1 Frost" [ref=e108] [cursor=pointer]:
+          - generic [ref=e109]: "1"
+          - generic [ref=e110]: Frost
+        - button "2 Glass" [ref=e111] [cursor=pointer]:
+          - generic [ref=e112]: "2"
+          - generic [ref=e113]: Glass
+        - button "3 Workstation" [ref=e114] [cursor=pointer]:
+          - generic [ref=e115]: "3"
+          - generic [ref=e116]: Workstation
+        - button "4 Memphis" [ref=e117] [cursor=pointer]:
+          - generic [ref=e118]: "4"
+          - generic [ref=e119]: Memphis
+        - button "5 Slate" [ref=e120] [cursor=pointer]:
+          - generic [ref=e121]: "5"
+          - generic [ref=e122]: Slate
+        - button "6 Cel" [ref=e123] [cursor=pointer]:
+          - generic [ref=e124]: "6"
+          - generic [ref=e125]: Cel
+      - paragraph [ref=e126]: "Calm and open: content straight on a lightly tinted background with two soft curves, soft cards, round icons."
+      - button "▸ Edit parameters (makes a custom copy)" [ref=e127] [cursor=pointer]
+      - paragraph [ref=e128]: "Keys: 1–7 or [ ] themes · d light/dark · / search"

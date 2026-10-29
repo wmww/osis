@@ -21,7 +21,6 @@
   if (!themes().some(x => x.id === themeId)) themeId = 'frost';
   const theme = () => themes().find(x => x.id === themeId);
   let editOpen = store.get('editOpen', false);
-  let blur = store.get('blur', true);
   let looksOpen = store.get('looksOpen', true);
   let mode = store.get('mode', 'auto');
   if (!['auto', 'light', 'dark'].includes(mode)) mode = 'auto';
@@ -387,6 +386,7 @@
     const th = theme(), b = document.body;
     for (const p of THEME_PARAMS) {
       if (p.opts) b.dataset[p.k] = th[p.k];
+      else if (th[p.k] === 'auto') b.style.removeProperty('--p-' + p.k.replace(/[A-Z]/g, c => '-' + c.toLowerCase()));
       else b.style.setProperty('--p-' + p.k.replace(/[A-Z]/g, c => '-' + c.toLowerCase()), th[p.k]);
     }
     applyBg(current());
@@ -405,15 +405,42 @@
   const resolvedMode = () => mode === 'auto' ? (darkMq.matches ? 'dark' : 'light') : mode;
   function setMode(m) { mode = m; store.set('mode', m); renderLooks(); }
   darkMq.addEventListener('change', () => { if (mode === 'auto') renderLooks(); });
+  // colours: a swatch opens a hue/saturation/lightness picker below its row; an 'auto' colour follows the text colour
+  let pickOpen = null;
+  function hexToHsl(hex) {
+    const n = parseInt(hex.slice(1), 16), [r, g, b] = [n >> 16, n >> 8 & 255, n & 255].map(v => v / 255);
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn, l = (mx + mn) / 2;
+    const sat = d ? d / (1 - Math.abs(2 * l - 1)) : 0;
+    const h = !d ? 0 : mx === r ? ((g - b) / d + 6) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    return [Math.round(h * 60), Math.round(sat * 100), Math.round(l * 100)];
+  }
+  function hslToHex(h, sat, l) {
+    sat /= 100; l /= 100;
+    const f = n => { const k = (n + h / 30) % 12, a = sat * Math.min(l, 1 - l); return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)))); };
+    return '#' + [f(0), f(8), f(4)].map(v => v.toString(16).padStart(2, '0')).join('');
+  }
+  const isHex = v => /^#[0-9a-f]{6}$/i.test(v);
+  function pickerTracks(h, sat, l) {
+    return [`linear-gradient(90deg, ${[0, 60, 120, 180, 240, 300, 360].map(x => `hsl(${x} ${sat}% ${l}%)`).join(', ')})`,
+      `linear-gradient(90deg, hsl(${h} 0% ${l}%), hsl(${h} 100% ${l}%))`,
+      `linear-gradient(90deg, #000, hsl(${h} ${sat}% 50%), #fff)`];
+  }
+  function picker(p, v) {
+    const hsl = hexToHsl(v), tr = pickerTracks(...hsl);
+    return `<div class="lk-picker" data-for="${p.k}">${['H', 'S', 'L'].map((n, i) => `<label><span>${n}</span><input type="range" class="lk-hsl" data-hsl="${p.k}" min="0" max="${i ? 100 : 360}" value="${hsl[i]}" style="background:${tr[i]}"></label>`).join('')}
+      <input class="lk-hex" data-hex="${p.k}" value="${v}" spellcheck="false" maxlength="7"></div>`;
+  }
   function control(p, v) {
     if (p.opts) return `<select data-p="${p.k}">${p.opts.map(o => `<option${o === v ? ' selected' : ''}>${o}</option>`).join('')}</select>`;
-    if (p.type === 'color') return `<input type="color" data-p="${p.k}" value="${v}">`;
+    if (p.type === 'color') {
+      const auto = v === 'auto';
+      return `<span class="lk-color">${p.auto ? `<label class="lk-auto" title="Follow the text colour"><input type="checkbox" data-auto="${p.k}"${auto ? ' checked' : ''}>text</label>` : ''}<button class="lk-sw${pickOpen === p.k ? ' on' : ''}" data-lk="pick-${p.k}"${auto ? ' disabled' : ''} style="background:${auto ? 'transparent' : v}" aria-label="Pick ${esc(p.label)}"></button></span>`;
+    }
     return `<span class="lk-range"><input type="range" data-p="${p.k}" min="${p.min}" max="${p.max}" step="${p.step}" value="${v}"><output>${v}</output></span>`;
   }
   function renderLooks() {
     const th = theme(), rm = resolvedMode();
     document.body.dataset.mode = rm;
-    document.body.classList.toggle('noblur', !blur);
     looksEl.classList.toggle('open', looksOpen);
     looksEl.innerHTML = `<button class="lk-toggle" data-lk="toggle" aria-expanded="${looksOpen}">Theme: <b>${esc(th.name)}</b><span class="lk-mode">${rm}</span><span class="lk-caret">${looksOpen ? '▾' : '▴'}</span></button>
       <div class="lk-body">
@@ -421,9 +448,8 @@
         <div class="lk-list">${themes().map((x, i) => `<button class="lk-opt${x === th ? ' on' : ''}" data-lk="theme-${x.id}"><span class="lk-n">${i + 1}</span><span>${esc(x.name)}</span></button>`).join('')}</div>
         <p class="lk-desc">${esc(th.desc)}</p>
         <button class="lk-edit" data-lk="edit" aria-expanded="${editOpen}">${editOpen ? '▾' : '▸'} Edit parameters${th === custom ? '' : ' (makes a custom copy)'}</button>
-        ${editOpen ? `<div class="lk-params">${THEME_PARAMS.map(p => `<label><span>${p.label}</span>${control(p, th[p.k])}</label>`).join('')}</div>
+        ${editOpen ? `<div class="lk-params">${THEME_PARAMS.map(p => `<label><span>${p.label}</span>${control(p, th[p.k])}</label>${pickOpen === p.k && isHex(th[p.k]) ? picker(p, th[p.k]) : ''}`).join('')}</div>
           <button class="lk-copy" data-lk="copy">Copy theme as JSON</button>` : ''}
-        <label class="lk-blur"><input type="checkbox" data-lk="blur"${blur ? ' checked' : ''}> Background blur</label>
         <p class="lk-keys">Keys: 1–7 or [ ] themes · d light/dark · / search</p>
       </div>`;
   }
@@ -431,20 +457,33 @@
     const b = e.target.closest('[data-lk]'); if (!b) return;
     const k = b.dataset.lk;
     if (k === 'toggle') { looksOpen = !looksOpen; store.set('looksOpen', looksOpen); renderLooks(); }
-    else if (k === 'blur') { blur = b.checked; store.set('blur', blur); renderLooks(); }
     else if (k === 'edit') { editOpen = !editOpen; store.set('editOpen', editOpen); renderLooks(); }
     else if (k === 'copy') { const { id, desc, ...params } = theme(); navigator.clipboard?.writeText(JSON.stringify(params, null, 1)).then(() => { b.textContent = 'Copied'; }, () => {}); }
+    else if (k.startsWith('pick-')) { pickOpen = pickOpen === k.slice(5) ? null : k.slice(5); renderLooks(); }
     else if (k.startsWith('mode-')) setMode(k.slice(5));
     else if (k.startsWith('theme-')) setTheme(k.slice(6));
   });
   // apply while dragging; rebuild the switcher once the change settles (a fork renames the theme)
   looksEl.addEventListener('input', e => {
-    const el = e.target, p = THEME_PARAMS.find(x => x.k === el.dataset.p); if (!p) return;
+    const el = e.target, d = el.dataset;
+    if (d.hsl) {
+      const box = el.closest('.lk-picker'), [h, sat, l] = [...box.querySelectorAll('.lk-hsl')].map(x => +x.value), hex = hslToHex(h, sat, l);
+      pickerTracks(h, sat, l).forEach((t, i) => { box.querySelectorAll('.lk-hsl')[i].style.background = t; });
+      box.querySelector('.lk-hex').value = hex;
+      looksEl.querySelector(`[data-lk="pick-${d.hsl}"]`).style.background = hex;
+      return setParam(d.hsl, hex);
+    }
+    if (d.hex) { if (isHex(el.value)) setParam(d.hex, el.value.toLowerCase()); return; }
+    const p = THEME_PARAMS.find(x => x.k === d.p); if (!p) return;
     const v = p.type === 'range' ? Number(el.value) : el.value;
     if (el.nextElementSibling?.tagName === 'OUTPUT') el.nextElementSibling.textContent = v;
     setParam(p.k, v);
   });
-  looksEl.addEventListener('change', e => { if (e.target.dataset.p) renderLooks(); });
+  looksEl.addEventListener('change', e => {
+    const d = e.target.dataset;
+    if (d.auto) { setParam(d.auto, e.target.checked ? 'auto' : (resolvedMode() === 'dark' ? '#f1f1f6' : '#16151c')); pickOpen = null; }
+    if (d.p || d.auto || (d.hex && isHex(e.target.value))) renderLooks();
+  });
 
   applyTheme();
   renderLooks();
