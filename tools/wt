@@ -103,7 +103,7 @@ def claim(branch, base="main"):
                 print(f"wt: pruned {freed:.1f} GB of old incremental sessions from {tgt}", file=sys.stderr)
             if gb > 16:
                 shutil.rmtree(tgt, ignore_errors=True)
-                print(f"wt: {tgt} was {gb:.0f} GB after pruning (steady is about 8-9 GB): stacked artifact generations "
+                print(f"wt: {tgt} was {gb:.0f} GB after pruning (steady is about 11-12 GB): stacked artifact generations "
                       f"after a profile, layout, feature or toolchain change; deleted, the first build is cold (notes/build.md)",
                       file=sys.stderr)
     except SystemExit:
