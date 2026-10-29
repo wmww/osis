@@ -79,7 +79,8 @@ Alternatives weighed:
 Parley's plain editor exists; rich editing does not. The markdown editor is ours: an editor over Parley layouts with styled spans, first as a styled-source editor (headings larger, links colored, markup visible), not WYSIWYG. Also the one place a plain-text fallback is acceptable early.
 
 ## Next: the app prototype (handoff from the UX/planning session)
-- **Owner, during the build**: do not copy the mockup closely; it was mainly a test bed for the look and the theme spec. The app leans simpler and less distracting and may choose its own structure and UX: make it work and be sensible, with at least a basic theming implementation (a subset of parameters to start; the six defaults plus light/dark/auto ideally). The owner iterates on details later.
+- **Owner, during the build**: no Android for now, Linux desktop only. Whether a tag nested in a shared tag shares its contents is core's call, not the app's: tagging a tag nests it as a subgroup (`/group.subgroups`, notes/tags.md), which shares however core does, and the confirmation says what that does.
+- **Owner, earlier during the build**: do not copy the mockup closely; it was mainly a test bed for the look and the theme spec. The app leans simpler and less distracting and may choose its own structure and UX: make it work and be sensible, with at least a basic theming implementation (a subset of parameters to start; the six defaults plus light/dark/auto ideally). The owner iterates on details later.
 Owner: a new coordinator runs the buildout. Goal: something the owner can play with and iterate on; it is a major test of both kit and core.
 - **Scope (suggested v1)**, Linux desktop, the mockup as visual reference (not pixel-perfect; the app will diverge): home (search, ordered favorites, new); with room, a rail (search, favorites) beside the open thing, else home and a back button; things and scopes as one tile kind; views by aspects for notes, events (schema/event.osis), contacts (schema/contact.osis) and tags (items, subtags), plus the calendar-week, people, tags and recent views; each thing shows tags, who can see it and when it changed; search over names, bodies and scopes by scanning; the main colour from the content; the theme engine (notes/theming.md) with the six defaults and light/dark/auto. A demo-data option so there is something to play with.
 - **Owner decisions**: UX gets figured out along the way (iterate once there is something to play with); the builder updates and refactors kit as needed (Masonry upgrade allowed); core is never edited, gaps become `core-ask` issues; start without blur (panelBlur unused for now); the app's own data (favorites, theme, view state) lives in its internal group found by scanning home; TextSession caret and resurrection gaps are core's, later; per-screen view state can be ephemeral now that it has landed.
@@ -87,7 +88,7 @@ Owner: a new coordinator runs the buildout. Goal: something the owner can play w
 
 ## Prototype order
 1. Linux desktop: a Thing view with the facet-selection logic, the Tags lens, view state in osis from day one.
-2. An Android build within the first few iterations so the convergent layout stays honest.
+2. An Android build (owner: not for now; stay on Linux desktop).
 3. Time and People lenses, search, the schema fallback view.
 4. iOS shell, web, durable view-state spec.
 
