@@ -2363,3 +2363,79 @@ fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
     let now = lp.peers[i].engine.now();
     assert_ne!(lp.peers[i].engine.frontier(&of_bob, now).unwrap(), osis_schema::core_types::Frontier::default(), "now");
 }
+
+// spec/commits.md §5 (a dropped snapshot keeps its frontiers and `Absorbed`), spec/crdt.md §8,
+// spec/permissions.md §5.1, §5.2: Bob's map entries reach a fresh node only through Carol's
+// snapshot S; Alice's overwrite of one entry kills it in S, which drops at its keep-at-most
+// bound with the other entry still live. The node's frontier for Bob is the same before and
+// after the drop (also restarted and rebuilt), and at a node getting S past its bound, and
+// empty once S turns invalid.
+#[test]
+fn dropped_snapshot_frontiers_count_spec_commits_5() {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    let (mut lp, d, b, c) = setup(0x5fe0);
+    let sm = ak("/t/shortmap");
+    let entry = |k: &str, v: &str| {
+        let mut m = Mutation::new();
+        m.op(d, &SHORTMAP, PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Set(s(v)) }).unwrap();
+        m
+    };
+    let mut m = entry("k1", "b");
+    m.op(d, &SHORTMAP, PathOp { path: vec![PathSeg::Key(s("k2"))], op: Op::Set(s("b")) }).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    sync(&mut lp, 1, 2);
+    let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b)).collect();
+    lp.advance(1_000);
+    // Carol's own entry (her node learns the aspect's schema bounds from it)
+    lp.peers[2].commit(entry("k3", "c")).unwrap().unwrap();
+    let snap = lp.peers[2].engine.snapshot(&d, &sm).unwrap().unwrap();
+    sync(&mut lp, 2, 0);
+    lp.advance(1_000);
+    lp.peers[0].commit(entry("k1", "a")).unwrap().unwrap();
+    let i = lp.peers.len();
+    lp.peers.push(osis_node::local_peer::Peer::new(0x5fe1, lp.peers[0].engine.now()).unwrap());
+    for p in packages(&mut lp, 0).into_iter().filter(|p| !bob.contains(&p.id)) {
+        lp.deliver(i, &p).unwrap();
+    }
+    let e = &mut lp.peers[i].engine;
+    e.reexamine().unwrap();
+    assert!(e.holds_body(&snap, &d, &sm), "S held");
+    let of_bob = DemotionScope { membership: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
+    let now = e.now();
+    let held = e.frontier(&of_bob, now).unwrap();
+    assert_ne!(held, osis_schema::core_types::Frontier::default(), "S counts while held");
+    lp.advance(DAY);
+    let e = &mut lp.peers[i].engine;
+    e.tick().unwrap();
+    assert!(!e.holds_body(&snap, &d, &sm), "S dropped at its bound");
+    assert!(matches!(e.get(&d, &sm).unwrap(), Some(Value::Map(m)) if m.contains_key(&s("k2"))), "k2 still live");
+    assert_eq!(e.frontier(&of_bob, now).unwrap(), held, "dropped");
+    lp.peers[i].restart(0x5fe2).unwrap();
+    assert_eq!(lp.peers[i].engine.frontier(&of_bob, now).unwrap(), held, "dropped, restarted");
+    lp.peers[i].engine.rebuild_index().unwrap();
+    assert_eq!(lp.peers[i].engine.frontier(&of_bob, now).unwrap(), held, "dropped, rebuilt");
+    // a node getting S past its bound drops it on arrival, with the same frontier
+    let j = lp.peers.len();
+    lp.peers.push(osis_node::local_peer::Peer::new(0x5fe4, lp.peers[0].engine.now()).unwrap());
+    for p in packages(&mut lp, 0).into_iter().filter(|p| !bob.contains(&p.id)) {
+        lp.deliver(j, &p).unwrap();
+    }
+    let e = &mut lp.peers[j].engine;
+    e.reexamine().unwrap();
+    assert!(!e.holds_body(&snap, &d, &sm), "S dropped on arrival");
+    let late = e.frontier(&of_bob, e.now()).unwrap();
+    assert_eq!(late.writes, held.writes, "dropped on arrival");
+    // Alice removes Carol without listing S: S gives nothing, dropped or not
+    let scope = DemotionScope { membership: BTreeMap::from([(c, BTreeSet::from([d]))]), content: BTreeMap::from([(c, BTreeSet::from([d]))]) };
+    let at = lp.peers[0].engine.now();
+    let mut f = lp.peers[0].engine.frontier(&scope, at).unwrap();
+    f.commits.remove(&snap);
+    let rv = set_edge(&mut lp.peers[0].engine, d, c, None, Some(f.to_value()));
+    let rvp = lp.peers[0].engine.package(&rv).unwrap().unwrap();
+    lp.deliver(i, &rvp).unwrap();
+    lp.peers[i].engine.reexamine().unwrap();
+    let now = lp.peers[i].engine.now();
+    assert_eq!(lp.peers[i].engine.frontier(&of_bob, now).unwrap(), osis_schema::core_types::Frontier::default(), "S invalid");
+    lp.peers[i].restart(0x5fe3).unwrap();
+    assert_eq!(lp.peers[i].engine.frontier(&of_bob, now).unwrap(), osis_schema::core_types::Frontier::default(), "S invalid, restarted");
+}

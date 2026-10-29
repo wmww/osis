@@ -78,8 +78,8 @@ pub struct Meta {
     /// (`retention::uncover`) (spec/permissions.md §5.2: a snapshot's copies of their writes
     /// count).
     pub missing: BTreeSet<usize>,
-    /// Aspects of a compaction snapshot whose body had a write in the state when dropped (its
-    /// frontiers went with it, spec/commits.md §5; `retention::snapshot_live` starts from this).
+    /// Aspects of a compaction snapshot whose body had a write in the state when dropped (what
+    /// it carried went with it, spec/commits.md §5; `retention::snapshot_live` starts from this).
     pub live_drops: BTreeSet<usize>,
     /// Per dropped aspect, the held valid snapshots that covered its body when it dropped
     /// (spec/commits.md §5): their copies of its writes are its writes (`apply::rebuild`); once
@@ -88,12 +88,19 @@ pub struct Meta {
     /// Aspects dropped as covered (compaction, `Engine::drop_body`), not for their bounds, a
     /// purge or expiry: only these come back as missing (`retention::uncover`).
     pub cover_drops: BTreeSet<usize>,
+    /// Per aspect of a compaction snapshot dropped other than as covered (bound, purge,
+    /// expiry), the frontiers and `Absorbed` its body had: counters and IDs, no content, which
+    /// count as received while the part is valid (spec/commits.md §5, `receipt::received`).
+    pub gives: BTreeMap<usize, Gives>,
 }
+
+/// A snapshot part's frontiers and `Absorbed` (commit, author).
+pub(crate) type Gives = (osis_crdt::Frontiers, Vec<(CommitId, Tid)>);
 
 impl Meta {
     /// A commit's meta from its decoded header.
     pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
-        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, missing, live_drops: head.live_drops, covered_by: head.covered_by, cover_drops: head.cover_drops }
+        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, missing, live_drops: head.live_drops, covered_by: head.covered_by, cover_drops: head.cover_drops, gives: head.gives }
     }
 }
 
@@ -357,6 +364,9 @@ indexes! {
     /// carrying a write besides its own (deaths, spec/commits.md §5); what valid ones count as
     /// received (`receipt::received`).
     pub snapshots: JMap<(Tid, Ak), Vec<HeldSnapshot>>,
+    /// Snapshots per aspect whose dropped part kept its frontiers (`Meta::gives`; derived at
+    /// open, not persisted).
+    pub dropped_snapshots: JSetMap<(Tid, Ak), CommitId>,
     /// Writes held snapshots carry whose own delta was never received, per aspect
     /// (`validity::Carried`).
     pub carried: JMap<(Tid, Ak), Vec<crate::apply::validity::Carried>>,

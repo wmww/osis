@@ -4,8 +4,9 @@
 //! frontier). Pending and parked commits are not received. Held snapshots' frontiers (`[1,
 //! ctr]`) and `Absorbed` (spec/crdt.md §8) are not recorded: `received` adds those of the
 //! snapshots valid now, at their receipt time, so a snapshot turning invalid takes them back
-//! whatever the arrival order (spec/permissions.md §5.2). Demotions read it "as of T" for their
-//! frontier.
+//! whatever the arrival order (spec/permissions.md §5.2); a snapshot dropped other than as
+//! covered keeps them in its record (`Meta::gives`, spec/commits.md §5). Demotions read it "as
+//! of T" for their frontier.
 
 use crate::engine::records::{self, Rd, Wr};
 use crate::engine::{Engine, Tx};
@@ -126,8 +127,9 @@ fn put(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, r: &Receipt) -> Result<()> {
 }
 
 /// What this node had received of `(tid, ak)` by `as_of`: the record's entries received by
-/// then, plus the frontiers and `Absorbed` of the held snapshots valid now that it received by
-/// then (an invalid one's count as not received, spec/permissions.md §5.2).
+/// then, plus the frontiers and `Absorbed` of the held snapshots (bodies held, or dropped with
+/// their frontiers kept) valid now that it received by then (an invalid one's count as not
+/// received, spec/permissions.md §5.2). Cost: the aspect's held and kept snapshots.
 pub(crate) fn received(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, as_of: u64) -> Result<Receipt> {
     let mut r = get(tx, tid, ak)?;
     for v in r.nodes.values_mut() {
@@ -141,6 +143,21 @@ pub(crate) fn received(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, as_of: u64) -> Resul
     for ((_, s, fr, abs), at) in held.into_iter().flatten().zip(at) {
         let Some(at) = at else { continue };
         if !super::validity::snapshot_valid(core, s, tid, ak) {
+            continue;
+        }
+        for (n, c) in &fr.0 {
+            r.add(*n, 1, c.saturating_add(1), at);
+        }
+        for (c, a) in abs {
+            r.commits.entry(*c).or_insert((*a, at));
+        }
+    }
+    // dropped ones that kept their frontiers (`Meta::gives`), while valid and not missing again
+    for s in core.ix.dropped_snapshots.get(&(*tid, ak.clone())).into_iter().flatten() {
+        let Some(m) = core.ix.commits.get(s) else { continue };
+        let Some(ai) = m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
+        let (Some((fr, abs)), Some(at)) = (m.gives.get(&ai), r.commits.get(s).map(|c| c.1)) else { continue };
+        if m.missing.contains(&ai) || !m.dropped.contains(&(ai, 0)) || !m.valid.get(ai).copied().unwrap_or(false) {
             continue;
         }
         for (n, c) in &fr.0 {

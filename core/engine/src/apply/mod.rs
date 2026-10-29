@@ -14,7 +14,7 @@ mod tests_linked;
 mod tests_order;
 
 pub(crate) use waits::Waits;
-pub(crate) use atomic::{Unmerge, apply_verified, forget_snapshot, index_commit, ingest_secrets_keys, invalid_of, rebuild, strip_copies_where, unmerge_fell};
+pub(crate) use atomic::{Unmerge, apply_verified, forget_snapshot, index_commit, note_gives, ingest_secrets_keys, invalid_of, rebuild, strip_copies_where, unmerge_fell};
 
 use crate::engine::blobs::TxBlobs;
 use crate::engine::{Engine, Meta, Tx, decode_commit_record, records};
@@ -794,6 +794,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             atomic::index_commit(tx.core, &id, &m.view);
             validity::note_imports(tx.core, &id, &h, &[]).map_err(|_| Error::Corrupt("commit imports"))?;
             tx.core.ix.commits.insert(id, m);
+            atomic::note_gives(tx.core, &id);
             if is_kind_snapshot(blob.header.kind) {
                 snaps.push(blob.clone());
             }

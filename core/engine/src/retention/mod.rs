@@ -188,7 +188,7 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     if (0..n).all(|di| m.dropped.contains(&(ai, di))) {
         return Ok(());
     }
-    // a snapshot's frontiers go with its body: whether it was live is kept (`snapshot_live`)
+    // what a snapshot carried goes with its body: whether it was live is kept (`snapshot_live`)
     if m.header.kind.is_compaction() && snapshot_live(tx, &m.header, c, &[ai])? {
         m.live_drops.insert(ai);
     }
@@ -205,6 +205,13 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
         if cover {
             m.cover_drops.insert(ai);
         }
+    }
+    // a snapshot dropped other than as covered keeps its frontiers and `Absorbed` (counters
+    // and IDs): what it gave still counts as received while it is valid (spec/commits.md §5);
+    // a covered one's coverers reach them
+    let kept = !m.cover_drops.contains(&ai) && m.header.kind.is_compaction();
+    if let Some(g) = tx.core.ix.snapshots.get(&(a.tid, a.ak.clone())).and_then(|v| v.iter().find(|x| x.1 == *c)).filter(|_| kept) {
+        m.gives.insert(ai, (g.2.clone(), g.3.clone()));
     }
     for di in 0..n {
         m.dropped.insert((ai, di));
@@ -224,6 +231,7 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     let (body, _) = body_class(tx.core, &m.header, c, ai);
     let vouched = m.header.kind.is_compaction() && m.valid.get(ai).copied().unwrap_or(false);
     tx.core.ix.commits.insert(*c, m);
+    crate::apply::note_gives(tx.core, c);
     crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, c);
     tx.core.forget_live(&a.tid, &a.ak);
     tx.txn.drop_body(&body, &[(a.tid, a.ak.clone())])?;
@@ -273,6 +281,9 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
         m.live_drops.remove(&ai);
         m.covered_by.remove(&ai);
         m.cover_drops.remove(&ai);
+        if m.gives.remove(&ai).is_some() {
+            tx.core.ix.dropped_snapshots.remove(&(*tid, ak.clone()), &c);
+        }
         if m.view.kind.has_own_writes() {
             owned.extend(Owned::of_view(&m.view, &c, ai));
         }
@@ -821,9 +832,10 @@ fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
 
 /// Whether a compaction snapshot carries a write still live in this node's state (`body_live`;
 /// live writes as for deltas, `Fragment::live_writes`: no element or entry tombstone): held, a
-/// write it carries (by dot) is there. Dropped, its frontiers went with the body (spec/commits.md
-/// §5), so whether it was live then is kept (`Meta::live_drops`): dropped dead it stays dead
-/// (undo and redo write new dots; a write a validity flip brings back comes from a held body,
+/// write it carries (by dot) is there. Dropped, which writes it carried went with the body
+/// (spec/commits.md §5; kept frontiers, `Meta::gives`, reach dead writes too), so whether it
+/// was live then is kept (`Meta::live_drops`): dropped dead it stays dead (undo and redo write
+/// new dots; a write a validity flip brings back comes from a held body,
 /// which carries it at blind nodes itself); dropped live, it is
 /// live while the state holds a write stamped at or before its `ts` (the header's `ts` bounds
 /// what it carried) or one without a `ts` (a bare anchor it may carry): an
