@@ -3,6 +3,7 @@
 //! rights through the nearest durable owner; expiry in memory; signal aspects.
 
 use crate::common::*;
+use crate::common::world::World;
 use osis::{ChangeId, Config, Error, Lifetimes, MemStore, Osis, Role, Source, StoreAt, Value};
 use std::sync::mpsc::channel;
 use std::time::Duration;
@@ -382,3 +383,123 @@ fn bench_btreemap_sets() {
     assert_eq!(std::hint::black_box(m).len(), usize::from(n > 0));
 }
 
+
+
+/// Alice's synced group `g` with Bob granted `role` on it, through one server.
+fn shared(role: Role) -> (World, Osis, Osis, osis::Tid) {
+    let mut w = World::new();
+    let sv = w.add_server();
+    let (alice, _) = w.person(1, &[sv]);
+    let (bob, _) = w.person(2, &[sv]);
+    w.run();
+    let card = bob.contact_card().unwrap();
+    w.run();
+    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    let mut wr = alice.write();
+    let g = wr.create(alice.me()).unwrap();
+    wr.place(g, alice.home()).unwrap();
+    wr.make_group(g).unwrap();
+    wr.commit().unwrap();
+    alice.sync(g, &[]).unwrap();
+    alice.grant(g, b, role, Default::default()).unwrap();
+    w.run();
+    (w, alice, bob, g)
+}
+
+// notes/ephemeral.md Rights: readers cannot write ephemeral data (spec/requirements.md: readers
+// only read): a reader of the nearest durable owner can neither create an ephemeral thing under
+// it, write an ephemeral aspect on it nor fire a signal there; a writer can.
+// spec/permissions.md §1
+#[test]
+fn reader_cannot_write_ephemeral_spec_permissions_1() {
+    let (_w, _alice, bob, g) = shared(Role::Read);
+    assert_eq!(bob.role_on(g), Some(Role::Read));
+    let before = durable_marks(&bob);
+    let mut w = bob.write();
+    w.create(g).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Permission { .. })), "a reader creates under g");
+    let mut w = bob.write();
+    w.at(g, ak("/app/cursor").ephemeral()).set(&Value::Int(1)).unwrap();
+    assert_eq!(w.commit(), Err(Error::Permission { tid: g, needs: Role::Write }));
+    let mut w = bob.write();
+    w.at(g, ak("/app/sig").signal()).set(&Value::Int(1)).unwrap();
+    assert_eq!(w.commit(), Err(Error::Permission { tid: g, needs: Role::Write }));
+    assert_eq!(durable_marks(&bob), before);
+    let (_w, _alice, bob, g) = shared(Role::Write);
+    let e = bob
+        .write_with(|w| {
+            let e = w.create(g)?;
+            w.at(e, ak("/app/d").ephemeral()).set(&Value::Int(1))?;
+            w.at(g, ak("/app/cursor").ephemeral()).set(&Value::Int(1))?;
+            Ok(e)
+        })
+        .unwrap();
+    assert_eq!(bob.role_on(e), Some(Role::Write));
+}
+
+// notes/ephemeral.md Persistence: a membership operation or a move on an ephemeral thing first
+// persists it (and a move's ephemeral new owner) by its own commit; a durable reference to an
+// ephemeral tid persists nothing (it may dangle). spec/data-model.md §1
+#[test]
+fn membership_and_move_persist_first_spec_data_model_1() {
+    let (_w, alice, bob, g) = shared(Role::Read);
+    let e = alice.write_with(|w| w.create(g)).unwrap();
+    alice.grant(e, bob.me(), Role::Write, Default::default()).unwrap();
+    assert!(alice.created(e).unwrap().commit.is_some(), "persisted first");
+    assert!(alice.roster(e).contains_key(&bob.me()));
+    let (db, _c) = setup(20);
+    let (d, e) = db
+        .write_with(|w| {
+            let e = w.create(db.me())?;
+            let d = w.create_durable(db.me())?;
+            w.at(d, ak("/app/ref")).set(&Value::Tid(e))?;
+            Ok((d, e))
+        })
+        .unwrap();
+    assert_eq!(db.created(e).unwrap().commit, None, "a reference persists nothing");
+    let o = db.write_with(|w| w.create(db.me())).unwrap();
+    let copy = db.move_thing(d, o, &[]).unwrap();
+    assert!(db.created(o).unwrap().commit.is_some());
+    assert_eq!(db.owner_of(copy), Some(o));
+    let copy = db.move_thing(e, o, &[]).unwrap();
+    assert!(db.created(copy).unwrap().commit.is_some());
+}
+
+// notes/ephemeral.md API delta (Writes): an ephemeral op that fails when it resolves (a list
+// index past the end) fails the whole batch: no commit, no new thing. Persisting a thing leaves
+// the ephemeral things it owns ephemeral; `/group` takes no ephemeral writes until ephemeral
+// placements.
+#[test]
+fn mixed_batch_resolution_failure_and_partial_chain() {
+    let (db, _c) = setup(21);
+    let state = db.key("/win/state").unwrap();
+    let before = durable_marks(&db);
+    let mut w = db.write();
+    let e = w.create(db.me()).unwrap();
+    w.at(db.home(), ak("/app/kept")).set(&Value::Int(3)).unwrap();
+    w.at(e, state.clone()).path(field(1)).insert(5, &[s("x")]).unwrap();
+    assert!(w.commit().is_err());
+    assert!(!db.knows(e));
+    assert_eq!(durable_marks(&db), before);
+    assert_eq!(db.get(db.home(), ak("/app/kept")).unwrap(), None);
+    let draft = ak("/app/d").ephemeral();
+    let (p, c) = db
+        .write_with(|w| {
+            let p = w.create(db.me())?;
+            let c = w.create(p)?;
+            w.at(c, draft.clone()).set(&Value::Int(1))?;
+            w.at(p, ak("/app/kept")).set(&Value::Int(1))?;
+            Ok((p, c))
+        })
+        .unwrap();
+    assert!(db.created(p).unwrap().commit.is_some());
+    assert_eq!(db.created(c).unwrap().commit, None);
+    let n = db.engine(|e| e.commit_ids().len());
+    db.write_with(|w| w.at(c, ak("/app/kept")).set(&Value::Int(2))).unwrap();
+    assert_eq!(db.engine(|e| e.commit_ids().len()), n + 1);
+    assert!(db.created(c).unwrap().commit.is_some());
+    assert_eq!(db.get(c, draft).unwrap(), Some(Value::Int(1)));
+    let mut w = db.write();
+    w.at(p, ak("/group").ephemeral()).set(&Value::Int(1)).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Invalid(_))));
+}

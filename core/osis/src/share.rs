@@ -237,6 +237,22 @@ impl Osis {
         self.read(|r| r.resolve(t))
     }
 
+    /// Persists the ephemeral things among `tids` with their owner chains by a content commit
+    /// of their own (notes/ephemeral.md Persistence: a membership operation, or a move, on an
+    /// ephemeral thing persists it first); durable ones are left alone.
+    fn persist(&self, tids: &[Tid]) -> Result<()> {
+        let me = self.me();
+        self.engine(|e| {
+            let mut m = osis_node::Mutation::new();
+            m.act_as(me);
+            for t in tids {
+                m.persist(*t);
+            }
+            e.write(m)
+        })?;
+        Ok(())
+    }
+
     /// Grants `member` `role` on `target` (spec/permissions.md §2): needs admin on the target
     /// (or an invite edge) and the member's `/keys` (a contact card, a shared group, pairing),
     /// else `UnknownActor`. The grant reaches the member's devices through its inbox.
@@ -245,6 +261,7 @@ impl Osis {
         if !self.knows(target) {
             return Err(Error::UnknownThing { tid: target });
         }
+        self.persist(&[target])?;
         let done = self.engine(|e| -> Result<_> {
             // unknown, or a key actor (a node, a recovery or link key) whose `/keys` is not held
             if !e.knows(&member) || (e.owner(&member).is_none() && e.get_typed(&member, &ct::KEYS)?.is_none()) {
@@ -426,6 +443,7 @@ impl Osis {
         if opts.direct && self.locked(|x| x.sync.own_reach()).is_none() {
             return Err(Error::Invalid("a direct link needs this device reachable: a runtime with Config.peers on".into()));
         }
+        self.persist(&[t])?;
         let (mut link, done) = self.engine(|e| e.create_link(&me, &flows::LinkSpec { target: t, role, until: opts.until, servers, peers: Vec::new(), single_use: opts.single_use }).map(|(l, _, d)| (l, d))).map_err(needs_admin)?;
         let l = osis_node::Identity::from_seed(link.seed.clone()).tid();
         self.locked(|x| {
@@ -787,6 +805,7 @@ impl Osis {
         if self.role_on(g) != Some(Role::Admin) {
             return Err(Error::Permission { tid: g, needs: Role::Admin });
         }
+        self.persist(&[g])?;
         let servers = if servers.is_empty() { self.server_addrs() } else { servers.iter().map(|s| s.0.clone()).collect() };
         self.locked(|x| -> Result<()> {
             if x.engine().group_labels(&g)?.iter().any(|l| !l.replaced) {
@@ -905,12 +924,7 @@ impl Osis {
             return Err(Error::UnknownThing { tid: owner });
         }
         // the thing and the new owner are durable first (the copy's history is)
-        let me = self.me();
-        self.engine(|e| {
-            let mut m = osis_node::Mutation::new();
-            m.act_as(me).persist(tid).persist(owner);
-            e.write(m)
-        })?;
+        self.persist(&[tid, owner])?;
         let (copy, done) = self.engine(|e| e.move_to(&tid, &owner))?;
         self.carry(done)?;
         if !groups.is_empty() {

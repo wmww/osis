@@ -119,7 +119,9 @@ Decisions where the design was open:
 - Node-sync subscribes with `subscribe_durable` (no `Event::Ephemeral`), the osis handle skips `SyncEvent::Local` after ephemeral-only events, and node-sync ignores an Expiry `Changed` naming only ephemeral aspects: a local ephemeral write costs the sync engine nothing.
 - `delete`: per aspect a durable remove when a durable delta is held, else an ephemeral reset (an aspect on both sides loses its durable side only); freeing scans the ephemeral things for owned ones (O(ephemeral things)).
 - A new ephemeral thing needs the role its creation would need (checked at write, like `/created`).
-- `move_thing(tid, owner, groups)` persists an ephemeral tid or owner first.
+- `move_thing(tid, owner, groups)` persists an ephemeral tid or owner first; `grant`/`change_edge`, `make_link` and `sync` persist an ephemeral target first (`Osis::persist`, a content commit of its own).
+- An ephemeral op on `/group` is `Invalid` until ephemeral placements (step 2): the closure and `groups_of` read the durable side only.
+- The rights check (perm timeline role per write) is the largest cost part and trivially cacheable per (thing, roster generation) if a budget ever needs it.
 - Not built in step 1: text sessions committing each edit at once on ephemeral aspects (they idle-commit like durable ones, harmless); requirements.md's Ephemeral data section (with step 3: it is about sync).
 - Cost (release, `tools/icount`, `ephemeral::bench_*`, setup subtracted): a local ephemeral set through `db.write_with` on one aspect about 15.7k instructions (engine `write` alone about 14k: rights check about 4.6k, ops and join about 5k, events about 3k), a `BTreeMap` insert 316, a durable set 5.3M. So about 50x an in-memory map and 340x cheaper than a durable write; the rights check (perm timeline role) is the largest single part.
 

@@ -15,7 +15,7 @@ use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs};
 use osis_crdt::{AnyView, Fragment, Op, Source, Writer};
 use osis_schema::Lifetime;
 use osis_schema::AspectKey;
-use osis_schema::core_types::CREATED;
+use osis_schema::core_types::{CREATED, GROUP};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// An ephemeral thing: its creation record and the batch that made it (`Engine::creation`).
@@ -200,6 +200,11 @@ impl Engine {
                     return Err(Error::UnknownThing(*tid));
                 }
                 check_authority_with(&self.core, node, records, tid, ak.as_str(), ts)?;
+                // the closure and `groups_of` read the durable side only until ephemeral
+                // placements (notes/ephemeral.md step 2)
+                if ak.as_str() == GROUP.ak() {
+                    return Err(Error::Misuse("/group is written durably (group ops)"));
+                }
                 if am.retention.is_some() {
                     return Err(Error::Misuse("retention applies to durable writes only"));
                 }
