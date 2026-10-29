@@ -65,10 +65,11 @@ fn neutral(w: &World, thing: Tid, author: Tid, things: &[Tid], probes: &[Point])
     if before == after && before == compacted {
         return None;
     }
-    // a snapshot may repair sticky residue (core/test/tla/membership MC_sticky_snap): it only
-    // undoes drops, never adds them, and only residue drops
+    // a snapshot may repair sticky residue (core/test/tla/membership MC_sticky_snap): it
+    // undoes a residue drop, and the repair may cascade (writes the repaired one enabled apply,
+    // and may genuinely drop others); compacted or not, the answers agree
     let undone: BTreeSet<WriteId> = after.applied.iter().chain(&compacted.applied).filter(|w| !before.applied.contains(w)).copied().collect();
-    if !undone.is_empty() && before.applied.is_subset(&after.applied) && before.applied.is_subset(&compacted.applied) && undone.is_subset(&residue) {
+    if after == compacted && undone.intersection(&residue).next().is_some() {
         RESIDUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return None;
     }
@@ -553,4 +554,37 @@ fn resnapshot_repairs_self_removal_residue_spec_permissions_6() {
     let t2 = Timeline::evaluate(&w2.held());
     assert!(t2.is_applied(&lower), "the snapshot repairs the residue");
     assert_eq!(neutral(&w, p, k, &[p, g], &[]), None);
+}
+
+/// §5.1, §6 (OSIS_PERM_SEED=1900002, joint): n1's removal of n2's admin on A0 drops n2's
+/// grant of admin on A1 to n0, which made n0's grant of that admin on A0 apply: sticky
+/// residue. Re-snapshotting A0 repairs it, and the repair cascades: n0's demotion of n2 on A1
+/// applies and genuinely drops n2's earlier removal of n0.
+#[test]
+fn resnapshot_repair_cascades_spec_permissions_6() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let a0 = w.thing(n[1]);
+    let a1 = w.thing(a0);
+    let all0: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(n[1], a1, n[0], edge(Write), 0, &all0);
+    w.set(n[1], a0, n[1], edge(Write), 0, &all0);
+    w.set(n[1], a1, n[2], edge(Admin), 0, &all0);
+    w.set(n[1], a0, a1, edge(Admin), 0, &all0);
+    let r = |v: [u64; 3]| -> Vec<(Tid, u64)> { (0..3).map(|i| (n[i], v[i])).collect() };
+    w.set(n[0], a0, n[0], edge(Write), 1, &r([1, LATE, 1]));
+    let rm = w.set(n[2], a1, n[0], None, 2, &r([LATE, LATE, 2]));
+    let grant = w.set(n[2], a1, n[0], edge(Admin), 6, &r([5, 8, 6]));
+    w.set(n[0], a0, n[2], edge(Admin), 7, &r([7, 9, 9]));
+    let demote = w.set(n[0], a1, n[2], edge(Write), 8, &r([8, 9, 8]));
+    w.set(n[1], a0, n[2], None, 8, &r([11, 8, 11]));
+    let tl = Timeline::evaluate(&w.held());
+    let (rm, grant, demote) = (WriteId::Op(rm, 0), WriteId::Op(grant, 0), WriteId::Op(demote, 0));
+    assert_eq!(residue(&tl), BTreeSet::from([rm, grant]));
+    assert!(!tl.is_applied(&demote));
+    let mut w2 = w.clone();
+    w2.snapshot_state(n[1], a0, tl.roster_state(&a0), END_T);
+    let t2 = Timeline::evaluate(&w2.held());
+    assert!(t2.is_applied(&grant) && t2.is_applied(&demote) && t2.dropped().contains_key(&rm));
+    assert_eq!(neutral(&w, a0, n[1], &[a0, a1], &[]), None);
 }
