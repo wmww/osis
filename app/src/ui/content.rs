@@ -365,7 +365,7 @@ impl Ui {
                             self.acts.insert(w.id(), Act::Open(t.tid));
                             day = day.with_child(w);
                         }
-                        let kind = if *today { PanelKind::Field } else { PanelKind::Inset };
+                        let kind = if *today { PanelKind::Highlight } else { PanelKind::Inset };
                         g = g.with_child(NewWidget::new(Panel::new(NewWidget::new(day), look.clone(), kind, (10.0, 8.0))));
                     }
                     col = col.with_child(NewWidget::new(g));
