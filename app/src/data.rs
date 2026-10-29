@@ -631,8 +631,9 @@ impl Data {
             .collect())
     }
 
-    /// Moves an event's start by `by` ms and lengthens it by `longer` ms (not below 15 min; a
-    /// day event moves by whole days). Writes through `edit`, so a concurrent change to another
+    /// Moves an event's start by `by` ms (its end along with it, in the end's own form) and, for a
+    /// nonzero `longer`, sets its length to the current one plus `longer` (not below 15 min; a day
+    /// event moves and grows by whole days). Writes through `edit`, so a concurrent change to another
     /// part survives.
     pub fn nudge(&self, t: Tid, by: i64, longer: i64) -> Result<()> {
         use crate::event::{END, End, START, Start};
@@ -643,14 +644,34 @@ impl Data {
         let (new_start, new_end) = match &start {
             Start::At(w) => {
                 let ns = Start::At(crate::event::Wall { time: w.time.saturating_add(by), zone: w.zone.clone() });
-                let len = (e - s).saturating_add(longer).max(15 * MINUTE);
-                (ns, Some(End::After(len)))
+                let ne = if longer == 0 {
+                    // a move keeps the end's form: a moment stays one, an end time moves along
+                    match &end {
+                        Some(End::At(x)) => Some(End::At(crate::event::Wall { time: x.time.saturating_add(by), zone: x.zone.clone() })),
+                        other => other.clone(),
+                    }
+                } else {
+                    let len = match &end {
+                        Some(End::After(d)) => *d,
+                        _ => e.saturating_sub(s),
+                    };
+                    Some(End::After(len.saturating_add(longer).max(15 * MINUTE)))
+                };
+                (ns, ne)
             }
             Start::Day(d) => {
                 let days = by.div_euclid(DAY);
-                let span = ((e - s) / DAY).max(1).saturating_add(longer.div_euclid(DAY)).max(1);
                 let nd = d.saturating_add(days);
-                (Start::Day(nd), if span > 1 { Some(End::Day(nd + span - 1)) } else { None })
+                let ne = if longer == 0 {
+                    match &end {
+                        Some(End::Day(x)) => Some(End::Day(x.saturating_add(days))),
+                        other => other.clone(),
+                    }
+                } else {
+                    let span = (e.saturating_sub(s) / DAY).max(1).saturating_add(longer.div_euclid(DAY)).max(1);
+                    if span > 1 { Some(End::Day(nd.saturating_add(span - 1))) } else { None }
+                };
+                (Start::Day(nd), ne)
             }
         };
         self.db.write_with(|w| {
@@ -1093,7 +1114,7 @@ pub fn fmt_time(ms: i64) -> String {
 pub fn fmt_when(start: &crate::event::Start, end: Option<&crate::event::End>) -> String {
     use crate::time::DAY;
     let (s, e, all_day) = crate::time::span(start, end);
-    let (sd, ed) = (s.div_euclid(DAY), (e - 1).max(s).div_euclid(DAY));
+    let (sd, ed) = (s.div_euclid(DAY), e.saturating_sub(1).max(s).div_euclid(DAY));
     if all_day {
         return if ed > sd { format!("{} – {}", fmt_day(sd), fmt_day(ed)) } else { fmt_day(sd) };
     }

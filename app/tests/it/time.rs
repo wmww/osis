@@ -101,3 +101,102 @@ fn repeats() {
     let o = occurrences(&start, Some(&end), &rep(RepeatFreq::Weekly), mon + 70 * DAY, mon + 77 * DAY, &[]);
     assert_eq!(days(&o), vec![70]);
 }
+
+/// Synced times and rules can hold any number: nothing here may panic or run away.
+#[test]
+fn extreme_values_do_not_panic() {
+    use osis_app::event::{RepeatFreq, RepeatWeekdays, Weekday};
+    use osis_app::time::occurrences;
+    for z in ["+99999999:00", "-2147483647:2147483647", "+:", "-", "+5", "+-5:00"] {
+        let _ = to_local(&Wall { time: 0, zone: Some(z.into()) });
+    }
+    let walls = [i64::MIN, i64::MIN + 1, -1, 0, i64::MAX - 1, i64::MAX];
+    let ends = [None, Some(End::After(i64::MAX)), Some(End::After(i64::MIN)), Some(End::At(Wall { time: i64::MAX, zone: None })), Some(End::Day(i64::MIN))];
+    let mon = 20_752 * DAY;
+    for t in walls {
+        for st in [Start::At(Wall { time: t, zone: None }), Start::At(Wall { time: t, zone: Some("Europe/Berlin".into()) }), Start::Day(t), Start::Day(t / DAY)] {
+            for e in &ends {
+                let _ = span(&st, e.as_ref());
+                let _ = fmt_when(&st, e.as_ref());
+                for freq in [RepeatFreq::Daily, RepeatFreq::Weekly, RepeatFreq::Monthly, RepeatFreq::Yearly] {
+                    for interval in [i64::MIN, 0, 1, i64::MAX / 3, i64::MAX] {
+                        let mut r = rep(freq.clone());
+                        r.interval = interval;
+                        r.count = Some(i64::MAX);
+                        r.monthdays = [i64::MIN, -1, 0, 31, i64::MAX].into_iter().collect();
+                        r.weekdays = [i64::MIN, -1, 0, 1, i64::MAX].into_iter().map(|n| RepeatWeekdays { day: Weekday::Mon, nth: Some(n) }).collect();
+                        let _ = occurrences(&st, e.as_ref(), &r, mon, mon + 7 * DAY, &[]);
+                        let _ = occurrences(&st, e.as_ref(), &r, i64::MIN, i64::MAX, &[]);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A daily series running for decades still shows today.
+#[test]
+fn old_daily_series_still_shows() {
+    use osis_app::event::RepeatFreq;
+    use osis_app::time::occurrences;
+    let mon = 20_752 * DAY;
+    let start = Start::At(Wall { time: 9 * HOUR - 60 * 365 * DAY, zone: None });
+    let o = occurrences(&start, Some(&End::After(HOUR)), &rep(RepeatFreq::Daily), mon, mon + 7 * DAY, &[]);
+    assert_eq!(o.len(), 7);
+}
+
+/// A timed duration is elapsed time: three hours from 01:00 on the spring-forward night end at
+/// 05:00 by the clock; a zoned series keeps its wall time across the change, seen from another zone.
+#[test]
+fn durations_and_series_over_a_dst_change() {
+    use osis_app::event::RepeatFreq;
+    use osis_app::time::{occurrences_in, span_in};
+    let berlin = jiff::tz::TimeZone::get("Europe/Berlin").unwrap();
+    let utc = jiff::tz::TimeZone::UTC;
+    // 2026-03-29, clocks go 02:00 -> 03:00 in Berlin
+    let day = 20_541;
+    let floating = Wall { time: day * DAY + HOUR, zone: None };
+    assert_eq!(span_in(&Start::At(floating), Some(&End::After(3 * HOUR)), &berlin), (day * DAY + HOUR, day * DAY + 5 * HOUR, false));
+    // 23:00 + 4 h on the autumn night (2026-10-25, 03:00 -> 02:00) is 02:00
+    let oct = 20_751;
+    let late = Wall { time: (oct - 1) * DAY + 23 * HOUR, zone: Some("Europe/Berlin".into()) };
+    assert_eq!(span_in(&Start::At(late), Some(&End::After(4 * HOUR)), &berlin).1, oct * DAY + 2 * HOUR);
+    // daily 09:00 Berlin, seen in UTC: 08:00 before, 07:00 after
+    let start = Start::At(Wall { time: (day - 2) * DAY + 9 * HOUR, zone: Some("Europe/Berlin".into()) });
+    let o = occurrences_in(&start, Some(&End::After(HOUR)), &rep(RepeatFreq::Daily), (day - 1) * DAY, (day + 2) * DAY, &[], &utc);
+    let hours: Vec<i64> = o.iter().map(|x| x.1.rem_euclid(DAY) / HOUR).collect();
+    assert_eq!(hours, vec![8, 7, 7], "28 Mar CET, 29 and 30 Mar CEST");
+    assert!(o.iter().all(|x| x.2 - x.1 == HOUR));
+}
+
+/// Moving an event keeps its end's form: a moment stays a moment, an end wall time moves with it.
+#[test]
+fn nudge_keeps_the_end_form() {
+    use osis_app::event::END;
+    let d = Data::new(Osis::create(Config::memory()).unwrap().0);
+    let e = d.create(NewKind::Event).unwrap();
+    let t = 20_752 * DAY + 9 * HOUR;
+    d.db.write_with(|w| {
+        w.at(e, START).set(&Start::At(Wall { time: t, zone: None }))?;
+        w.at(e, END).remove()
+    })
+    .unwrap();
+    d.nudge(e, HOUR, 0).unwrap();
+    assert_eq!(d.get(e, END).unwrap(), None, "a moment moved is still a moment");
+    let end = End::At(Wall { time: t + 2 * HOUR, zone: Some("+02:00".into()) });
+    d.db.write_with(|w| w.at(e, END).set(&end)).unwrap();
+    d.nudge(e, DAY, 0).unwrap();
+    assert_eq!(d.get(e, END).unwrap(), Some(End::At(Wall { time: t + 2 * HOUR + DAY, zone: Some("+02:00".into()) })));
+    // a day event far out: no overflow
+    d.db.write_with(|w| {
+        w.at(e, START).set(&Start::Day(i64::MAX))?;
+        w.at(e, END).remove()
+    })
+    .unwrap();
+    d.nudge(e, DAY, DAY).unwrap();
+    d.nudge(e, -DAY, 0).unwrap();
+    d.db.write_with(|w| w.at(e, START).set(&Start::At(Wall { time: i64::MIN, zone: None }))).unwrap();
+    d.db.write_with(|w| w.at(e, END).set(&End::After(i64::MAX))).unwrap();
+    d.nudge(e, -DAY, HOUR).unwrap();
+    d.week(monday_of(0)).unwrap();
+}
