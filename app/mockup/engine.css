@@ -31,11 +31,12 @@ body {
   --field-bg: color-mix(in oklab, var(--surface) calc(62% + var(--p-panel-opacity) * 38%), transparent);
   --field-bg-solid: var(--surface);
   --bar-bg: color-mix(in oklab, var(--bg-color) 90%, transparent);
-  --tile-border: var(--ow) solid var(--ink); --field-border: var(--ow) solid var(--ink);
-  --chip-border: var(--ow) solid var(--ink); --row-border: var(--ow) solid transparent;
-  --panel-shadow: var(--fin-panel), inset 0 1px 1px color-mix(in oklab, var(--hi) calc(var(--p-panel-blur) * 4%), transparent), var(--el-panel);
-  --tile-shadow: var(--fin-tile), var(--el-tile);
-  --field-shadow: var(--fin-field), var(--el-tile);
+  /* outlines go on panels and fields; tiles, chips and the selection are cards and have none */
+  --field-border: var(--ow) solid var(--ink);
+  --tile-border: 0; --chip-border: 0; --row-border: 0;
+  --panel-shadow: inset 0 1px 0 var(--gl-line), inset 0 1px 1px color-mix(in oklab, var(--hi) calc(var(--p-panel-blur) * 4%), transparent), var(--el-panel);
+  --tile-shadow: inset 0 1px 0 var(--gl-line), var(--el-tile);
+  --field-shadow: inset 0 2px 3px color-mix(in oklab, black calc(var(--p-gloss) * 18%), transparent), var(--el-tile);
   --btn-bg: transparent; --btn-border: 0;
   /* weight: the accent sets each role's base; --p-weight (-1..1) shifts them all, titles most and body text least */
   --title-weight: clamp(100, calc(var(--w-title) + var(--p-weight) * 300), 900); --brand-weight: var(--title-weight);
@@ -49,7 +50,16 @@ body {
   --chip-amt: 20%; --chip-base: var(--tile-base);
   --scrim: color-mix(in oklab, var(--bg-color) 60%, transparent);
   --hover: color-mix(in oklab, var(--fg) 7%, transparent);
-  --gloss: linear-gradient(transparent, transparent);
+  /* gloss (0..1): a hard highlight line across fills and a lit top edge */
+  --gl-line: color-mix(in oklab, white calc(var(--p-gloss) * 55%), transparent);
+  --gloss: linear-gradient(180deg, color-mix(in oklab, white calc(var(--p-gloss) * 50%), transparent) 0%, color-mix(in oklab, white calc(var(--p-gloss) * 16%), transparent) 48%, transparent 50%, color-mix(in oklab, white calc(var(--p-gloss) * 10%), transparent) 100%);
+  /* fill (0..1): how much of its colour a tile takes; past about half, text and icons turn white */
+  --fill: calc(var(--p-fill) * 100%);
+  --on: clamp(0, (var(--p-fill) - .55) * 1000, 1);
+  --sel-amt: max(var(--fill), 20%);
+  --tile-fg: color-mix(in oklab, white calc(var(--on) * 100%), var(--fg));
+  --tile-muted: color-mix(in oklab, rgba(255, 255, 255, .82) calc(var(--on) * 100%), var(--muted));
+  --ic-amt: calc(100% - var(--on) * 100%); --ic-base: rgba(255, 255, 255, .22); --ic-fg: #fff;
   --bg-color: color-mix(in oklab, var(--main) calc(var(--p-bg-tint) * 100%), var(--bg-base));
 }
 
@@ -61,7 +71,6 @@ body {
   --accent: color-mix(in oklab, var(--main) 80%, black);
   --deco: oklch(from var(--bg-color) calc(l - .1) calc(c * 1.6) h); --deco-hi: oklch(from var(--bg-color) calc(l + .1) calc(c * .6) h);
   --hi: rgba(255, 255, 255, .75);
-  --bev-hi: rgba(255, 255, 255, .75); --bev-lo: rgba(0, 0, 0, .28);
 }
 [data-mode="dark"] {
   color-scheme: dark;
@@ -70,60 +79,49 @@ body {
   --accent: color-mix(in oklab, var(--main) 65%, white);
   --deco: oklch(from var(--bg-color) calc(l + .1) calc(c * 1.6) h); --deco-hi: oklch(from var(--bg-color) calc(l + .18) calc(c * 1.2) h);
   --hi: rgba(255, 255, 255, .14); --sh-boost: 180%;
-  --bev-hi: rgba(255, 255, 255, .16); --bev-lo: rgba(0, 0, 0, .5);
 }
 /* ---------- finish: flat | gloss (a hard highlight line on fills) | bevel (raised edges, pressed when active) */
-[data-finish="flat"] { --fin-panel: 0 0 0 transparent; --fin-tile: 0 0 0 transparent; --fin-field: 0 0 0 transparent; }
-[data-finish="gloss"] {
-  --fin-panel: inset 0 1px 0 var(--hi), inset 0 -2px 0 rgba(0, 0, 0, .06); --fin-tile: inset 0 1px 0 rgba(255, 255, 255, .5);
-  --fin-field: inset 0 2px 3px rgba(0, 30, 70, .2);
-  --gloss: linear-gradient(180deg, rgba(255, 255, 255, .5) 0%, rgba(255, 255, 255, .16) 48%, rgba(255, 255, 255, 0) 50%, rgba(255, 255, 255, .1) 100%);
+/* ---------- cards: tiles and sidebar rows draw their fill on a layer behind the content, slanted by --p-slant (deg).
+   One fill for tiles (their own colour) and the selected sidebar row (the screen's colour). */
+.tile:not(.tile-new) { background: none; box-shadow: none; isolation: isolate; overflow: visible; --card: none; --card-shadow: 0 0 0 transparent; }
+.tile:not(.tile-new)::before { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; transform: skewX(calc(var(--p-slant) * -1deg)); background: var(--card); box-shadow: var(--card-shadow); }
+.tile:not(.row):not(.tile-new) {
+  --card: var(--gloss), linear-gradient(180deg, color-mix(in oklab, color-mix(in oklab, var(--tint) 88%, white) var(--fill), var(--tile-base)), color-mix(in oklab, var(--tint) var(--fill), var(--tile-base)));
+  --card-shadow: var(--tile-shadow);
+  text-shadow: 0 1px 1px color-mix(in oklab, rgba(0, 20, 50, .4) calc(var(--on) * var(--p-gloss) * 100%), transparent);
 }
-[data-finish="bevel"] {
-  --fin-panel: inset 2px 2px 0 var(--bev-hi), inset -2px -2px 0 var(--bev-lo); --fin-tile: var(--fin-panel);
-  --fin-field: inset 2px 2px 0 var(--bev-lo), inset -1px -1px 0 var(--bev-hi);
-}
-[data-finish="bevel"] .tile:not(.tile-new):active { box-shadow: inset 2px 2px 0 var(--bev-lo), inset -2px -2px 0 var(--bev-hi); }
-[data-finish="gloss"] .tile-ic, [data-finish="gloss"] .swatch, [data-finish="gloss"] .avatar { background-image: var(--gloss); }
-
-/* ---------- fill: soft (colour in the icon) | wash (the colour washes the fill) | solid (white on colour).
-   Tiles fill with their own colour; the selected sidebar row is the same fill in the screen's colour. */
-[data-fill="soft"] { --tint-amt: 8%; --sel-amt: 20%; --tile-fg: var(--fg); --tile-muted: var(--muted); --ic-amt: 100%; --ic-fg: #fff; }
-[data-fill="wash"] { --tint-amt: 50%; --sel-amt: 50%; --tile-fg: var(--fg); --tile-muted: color-mix(in oklab, var(--fg) 72%, transparent); --ic-amt: 100%; --ic-fg: #fff; }
-[data-fill="solid"] { --tint-amt: 100%; --sel-amt: 100%; --tile-fg: #fff; --tile-muted: rgba(255, 255, 255, .82); --ic-amt: 0%; --ic-base: rgba(255, 255, 255, .22); --ic-fg: #fff; }
-[data-fill="solid"] .tile.row:not([aria-current]) .tile-ic { background: var(--tint); }
-[data-fill="solid"] .tile:not(.row):not(.tile-new) { background: var(--gloss), linear-gradient(180deg, color-mix(in oklab, var(--tint) 88%, white), var(--tint)); }
-[data-fill="solid"][data-finish="gloss"] .tile:not(.tile-new) { text-shadow: 0 1px 1px rgba(0, 20, 50, .4); }
-[data-fill="solid"] .chip:not(.chip-add) { color: #fff; --chip-amt: 100%; }
 .tile:not(.row):not(.tile-new):hover { filter: brightness(1.04); }
-.tile.row:hover { background: var(--hover); }
-.tile.row[aria-current] { background: var(--gloss), color-mix(in oklab, var(--main) var(--sel-amt), var(--tile-base)); color: var(--tile-fg); border: var(--tile-border); box-shadow: var(--fin-tile), var(--el-row); }
+.tile.row:hover, .tile.row[aria-current] { background: none; }
+.tile.row:hover { --card: var(--hover); }
+.tile.row[aria-current] {
+  --card: var(--gloss), linear-gradient(180deg, color-mix(in oklab, color-mix(in oklab, var(--main) 88%, white) var(--sel-amt), var(--tile-base)), color-mix(in oklab, var(--main) var(--sel-amt), var(--tile-base)));
+  --card-shadow: inset 0 1px 0 var(--gl-line), var(--el-row); color: var(--tile-fg);
+}
 .tile.row[aria-current] .tile-sub { color: var(--tile-muted); }
-[data-fill="solid"] .tile.row[aria-current] { background: var(--gloss), linear-gradient(180deg, color-mix(in oklab, var(--main) 88%, white), var(--main)); }
-[data-fill="solid"] .tile.row[aria-current] .tile-ic { box-shadow: 0 0 0 2px rgba(255, 255, 255, .8); }
+.tile.row[aria-current] .tile-ic { box-shadow: 0 0 0 2px color-mix(in oklab, rgba(255, 255, 255, .8) calc(var(--on) * 100%), transparent); }
+.tile-ic, .swatch, .avatar { background-image: var(--gloss); }
+.tile.row:not([aria-current]) .tile-ic { background-color: var(--tint); }
+.chip:not(.chip-add) { --chip-amt: max(20%, var(--fill)); color: var(--tile-fg); }
 
-/* ---------- font: system | humanist | classic | grotesk | rounded; weight is --p-weight */
+/* ---------- font: system (the platform's, not shipped) | inter | open-sans | plex | nunito (all OFL, shippable) */
 [data-font="system"] { --font: -apple-system, "SF Pro Text", "Segoe UI Variable Text", system-ui, sans-serif; --font-display: -apple-system, "SF Pro Display", "Segoe UI Variable Display", system-ui, sans-serif; }
-[data-font="humanist"] { --font: "Segoe UI Variable Text", "Segoe UI", "Frutiger", "Myriad Pro", "Open Sans", system-ui, sans-serif; --font-display: "Segoe UI Variable Display", "Segoe UI", "Frutiger", "Open Sans", system-ui, sans-serif; }
-[data-font="classic"] { --font: Tahoma, Verdana, "DejaVu Sans", Geneva, sans-serif; --font-display: "Trebuchet MS", Futura, "DejaVu Sans", sans-serif; }
-[data-font="grotesk"] { --font: "Helvetica Neue", Arial, system-ui, sans-serif; --font-display: "Helvetica Neue", Arial, system-ui, sans-serif; }
-[data-font="rounded"] { --font: "M PLUS Rounded 1c", "Nunito", "Varela Round", "Quicksand", system-ui, sans-serif; --font-display: var(--font); }
+[data-font="inter"] { --font: "Inter", sans-serif; --font-display: var(--font); }
+[data-font="open-sans"] { --font: "Open Sans", sans-serif; --font-display: var(--font); }
+[data-font="plex"] { --font: "IBM Plex Sans", sans-serif; --font-display: var(--font); }
+[data-font="nunito"] { --font: "Nunito", sans-serif; --font-display: var(--font); }
 
 /* ---------- accent, a package of label style and marks:
    plain | caps | bar (mono labels, title bars in the main colour, a stripe on tiles) | rule (big light labels, a line atop the pane)
-   | slash (caps labels, slashes, underlined titles, a corner flag on tiles, a slanted selection) */
+   | slash (caps labels, slashes, underlined titles, a corner flag on tiles) */
 [data-accent="plain"] { --w-title: 700; --w-label: 650; --w-name: 640; --w-body: 400; --label-case: none; --label-ls: 0; --label-size: 14px; --label-color: color-mix(in oklab, var(--fg) 72%, transparent); }
 [data-accent="caps"], [data-accent="slash"] { --w-title: 800; --w-label: 800; --w-name: 690; --w-body: 400; --label-case: uppercase; --label-ls: .06em; --label-size: 12.5px; --label-color: var(--fg); }
 [data-accent="rule"] { --w-title: 300; --w-label: 300; --w-name: 600; --w-body: 400; --label-case: lowercase; --label-ls: 0; --label-size: 22px; --label-color: var(--fg); }
-[data-accent="bar"] { --w-title: 700; --w-label: 700; --w-name: 700; --w-body: 400; --label-case: uppercase; --label-ls: .12em; --label-size: 11px; --label-color: var(--accent); --label-font: ui-monospace, "SF Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace; }
+[data-accent="bar"] { --w-title: 700; --w-label: 700; --w-name: 700; --w-body: 400; --label-case: uppercase; --label-ls: .12em; --label-size: 11px; --label-color: var(--accent); --label-font: "IBM Plex Mono", monospace; }
 [data-accent="rule"] .pane-kind { text-transform: lowercase; font-size: 15px; font-weight: 400; }
 [data-accent="bar"] .tile-sub, [data-accent="bar"] .cal-day h3 { font-family: var(--label-font); font-size: 11.5px; }
 [data-accent="bar"] .brand { font-family: var(--label-font); text-transform: uppercase; letter-spacing: .3em; }
-[data-accent="bar"] .tile:not(.row):not(.tile-new) { border-left: 9px solid color-mix(in oklab, var(--tint) 70%, black); }
-[data-accent="slash"] .tile.row { isolation: isolate; overflow: visible; }
-[data-accent="slash"] .tile.row[aria-current] { background: none; border-color: transparent; box-shadow: none; }
-[data-accent="slash"] .tile.row[aria-current]::before { content: ""; position: absolute; inset: 0 4px; z-index: -1; background: var(--gloss), color-mix(in oklab, var(--main) var(--sel-amt), var(--tile-base)); transform: skewX(-12deg); border-radius: 3px; box-shadow: var(--el-row); }
-[data-accent="slash"] .tile:not(.row):not(.tile-new) { background: linear-gradient(135deg, transparent 0 calc(100% - 26px), var(--tint) 0) top right / 52px 52px no-repeat, color-mix(in oklab, var(--tint) var(--tint-amt), var(--tile-base)); }
+[data-accent="bar"] .tile:not(.row):not(.tile-new)::before { border-left: 9px solid color-mix(in oklab, var(--tint) 70%, black); }
+[data-accent="slash"] .tile:not(.row):not(.tile-new) { --card: linear-gradient(135deg, transparent 0 calc(100% - 26px), var(--tint) 0) top right / 52px 52px no-repeat, var(--gloss), color-mix(in oklab, var(--tint) var(--fill), var(--tile-base)); }
 [data-accent="bar"] .pane-bar { background: linear-gradient(90deg, color-mix(in oklab, var(--main) 80%, #0a0630), var(--main)); color: #fff; padding: 3px 4px 3px 10px; min-height: 0; border: var(--ow) solid var(--ink); box-shadow: inset 1px 1px 0 rgba(255, 255, 255, .35); }
 [data-accent="bar"] .pane-bar .pane-kind, [data-accent="bar"] .pane-bar .icon-btn { color: #fff; }
 [data-accent="bar"] .pane-bar .icon-btn { width: 30px; height: 26px; }

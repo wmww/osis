@@ -221,15 +221,16 @@ kbd { font: 11.5px ui-monospace, Menlo, monospace; opacity: .55; }
 .lk-desc { margin: 8px 2px; color: #ccc; }
 .lk-edit { width: 100%; margin: 2px 0 6px; padding: 6px 4px; text-align: left; background: none; border: 0; color: #ccc; cursor: pointer; }
 .lk-params { display: grid; gap: 5px; max-height: 46vh; overflow: auto; margin: 0 2px 8px; padding-right: 4px; }
-.lk-params label { display: grid; grid-template-columns: 1fr 130px; align-items: center; gap: 8px; color: #bbb; font-size: 12px; }
+.lk-params .lk-row { display: grid; grid-template-columns: 1fr 140px; align-items: center; gap: 8px; color: #bbb; font-size: 12px; }
 .lk-params select, .lk-params input[type=color] { width: 100%; font: inherit; color: #eee; background: #2a2a30; border: 1px solid #444; border-radius: 6px; padding: 2px 4px; }
 .lk-params input[type=color] { height: 24px; padding: 1px; }
 .lk-range { display: flex; gap: 6px; align-items: center; } .lk-range input { flex: 1; min-width: 0; } .lk-range output { width: 26px; text-align: right; color: #999; font: 11px ui-monospace, monospace; }
 .lk-color { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
-.lk-auto { display: flex; gap: 3px; align-items: center; font-size: 11px; color: #999; }
+.lk-seg { display: inline-grid; grid-auto-flow: column; gap: 2px; padding: 2px; background: rgba(255,255,255,.06); border-radius: 6px; }
+.lk-seg button { padding: 1px 7px; border: 0; border-radius: 4px; background: none; color: #aaa; font-size: 11px; cursor: pointer; }
+.lk-seg button.on { background: rgba(138,180,255,.22); color: #fff; }
 .lk-sw { width: 54px; height: 22px; padding: 0; border: 1px solid #555; border-radius: 6px; cursor: pointer; }
 .lk-sw.on { outline: 2px solid #8ab4ff; outline-offset: 1px; }
-.lk-sw:disabled { cursor: default; background: repeating-linear-gradient(45deg, #333 0 4px, #222 4px 8px) !important; }
 .lk-picker { display: grid; gap: 6px; padding: 8px; margin: 0 0 4px; background: rgba(255,255,255,.05); border-radius: 8px; }
 .lk-picker label { display: grid; grid-template-columns: 14px 1fr; gap: 8px; align-items: center; color: #999; font: 11px ui-monospace, monospace; }
 .lk-hsl { -webkit-appearance: none; appearance: none; height: 14px; border-radius: 7px; margin: 0; }
