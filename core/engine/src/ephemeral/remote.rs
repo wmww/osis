@@ -722,17 +722,15 @@ impl Engine {
         Ok(())
     }
 
-    /// Rebuilds the ephemeral state of `(t, ak)`: the own writes joined with the valid held parts
-    /// (un-merge, spec/crdt.md §4.6).
+    /// Rebuilds the ephemeral state of `(t, ak)`: the own writes joined with the valid held parts,
+    /// own commits included (un-merge, spec/crdt.md §4.6).
     fn rebuild_aspect(&mut self, t: &Tid, ak: &Ak) {
         let r = &self.eph.remote;
         let Some(ea) = self.eph.aspects.get(t).and_then(|m| m.get(ak)) else { return };
         let mut f = ea.own.clone().unwrap_or_default();
         for (id, ai) in &ea.parts {
+            // own held commits too: an own compaction's cover carries others' writes
             let Some(h) = r.held.get(id) else { continue };
-            if h.own {
-                continue;
-            }
             if let Some(k) = h.parts.iter().position(|p| p.0 == *ai)
                 && h.valid.get(k).copied().unwrap_or(false)
                 && let Some((_, frag, _)) = h.parts.get(k)

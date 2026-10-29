@@ -243,6 +243,11 @@ impl SyncEngine {
     fn eph_upload(&mut self, conn: ConnId, l: LabelId, ids: &[BlobId], keys: &HeadKeys, out: &mut Vec<Action>) -> Result<()> {
         let mut entries = Vec::new();
         for b in ids {
+            // one upload of an entry in flight per connection: a second status would reach the
+            // sync records (`eph_status`)
+            if self.eph.uploads.contains(&(conn, l, *b)) {
+                continue;
+            }
             let Some(e) = self.eph.entries.get_mut(&(l, *b)) else { continue };
             let stamp = match (e.stamp, &keys.write) {
                 (Some(s), _) => s,
@@ -327,7 +332,8 @@ impl SyncEngine {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return (ids, codes) };
         let mut rest = (Vec::new(), Vec::new());
         for (b, code) in ids.into_iter().zip(codes) {
-            if !self.eph.uploads.remove(&(conn, l, b)) {
+            let lane = self.eph.uploads.remove(&(conn, l, b)) || (self.eph.entries.contains_key(&(l, b)) && !self.state.entries.contains_key(&(l, b)));
+            if !lane {
                 rest.0.push(b);
                 rest.1.push(code);
                 continue;
