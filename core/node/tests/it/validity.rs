@@ -2329,3 +2329,37 @@ fn flipped_snapshot_frontiers_not_received_alike_spec_perm_5_2() {
     assert_eq!(got[1], osis_schema::core_types::Frontier::default(), "removal first");
     assert_eq!(got[0], got[1], "snapshot first, then the removal");
 }
+
+// spec/permissions.md §5.1 (frontier as of T), §5.2: a snapshot's frontiers count as received
+// from when its part arrived, not its header: a late part of Carol's snapshot S (Bob's tag
+// reaching the node only through it) is not in a frontier backdated to before it came.
+#[test]
+fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
+    let (mut lp, d, b, _) = setup(0x5fd0);
+    add_tag(&mut lp, 1, d, "bob");
+    sync(&mut lp, 1, 2);
+    let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b)).collect();
+    lp.advance(1_000);
+    let snap = lp.peers[2].engine.snapshot(&d, &ak("/t/tags")).unwrap().unwrap();
+    sync(&mut lp, 2, 0);
+    let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !bob.contains(&p.id)).collect();
+    let i = lp.peers.len();
+    lp.peers.push(osis_node::local_peer::Peer::new(0x5fd1, lp.peers[0].engine.now()).unwrap());
+    for p in pks.iter().filter(|p| p.id != snap) {
+        lp.deliver(i, p).unwrap();
+    }
+    let pk = pks.iter().find(|p| p.id == snap).unwrap();
+    let h = lp.peers[i].engine.header(&snap).or_else(|| lp.peers[0].engine.header(&snap)).unwrap();
+    let mut blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    blob.parts.retain(|p| h.aspects[p.ai].ak.as_str() != "/t/tags");
+    assert!(matches!(lp.peers[i].engine.ingest(&blob.encode(), Vec::new()).unwrap(), Ingested::Applied(_)));
+    lp.advance(DAY);
+    let before = lp.peers[i].engine.now();
+    lp.advance(DAY);
+    lp.deliver(i, pk).unwrap();
+    assert!(tags(&mut lp, i, d).contains("bob"));
+    let of_bob = DemotionScope { membership: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
+    assert_eq!(lp.peers[i].engine.frontier(&of_bob, before).unwrap(), osis_schema::core_types::Frontier::default(), "backdated before the part");
+    let now = lp.peers[i].engine.now();
+    assert_ne!(lp.peers[i].engine.frontier(&of_bob, now).unwrap(), osis_schema::core_types::Frontier::default(), "now");
+}
