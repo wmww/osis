@@ -1,5 +1,5 @@
 # In-place un-merge differs from a rebuild on nested map writes
-> Summary: order alike seeds 12060, 12161, 12209, 12236 (range 12000+300) hit the debug assertion in `atomic::unmerge_fell` ("in-place un-merge ... differs from a rebuild") on `/t/map`; reproduces on main b38e3ecd, not caused by the retention-spec branch.
+> Summary: order alike seeds 12060, 12161, 12209, 12236 (range 12000+300) and 731066 (range 731000+300) hit the debug assertion in `atomic::unmerge_fell` ("in-place un-merge ... differs from a rebuild") on `/t/map`; reproduces on main b38e3ecd, not caused by the retention-spec branch.
 > Tags: node, crdt, tests
 
 Shrunk (call `check(seed, &h, LARGE)` from a scratch test in order.rs):
