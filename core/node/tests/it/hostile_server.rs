@@ -91,11 +91,11 @@ fn bad_path_refused_at_first_page_spec_sync_5() {
     assert!(d.iter().any(|x| x.contains("server path does not verify")), "refused at the first page: {d:?}");
 }
 
-// notes/ephemeral.md Signals (a relay-only commit older than `MAX_DRIFT` is dropped, its only
-// replay window; one delivered is remembered): a server pushing a captured signal again fires
-// nothing, at once or later.
+// spec/sync.md §9 (a relay-only commit older than `MAX_DRIFT` is dropped, its only replay window;
+// one delivered is remembered): a server pushing a captured signal again fires nothing, at once
+// or later.
 #[test]
-fn replayed_signal_dropped_spec_sync_5() {
+fn replayed_signal_dropped_spec_sync_9() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
