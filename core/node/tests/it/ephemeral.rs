@@ -11,7 +11,7 @@ use osis_node::sync::{Event, SyncConfig};
 use osis_schema::Lifetime;
 use osis_schema::core_types as ct;
 use osis_store::Backend;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The label write key node `n` stamps with (the group's newest write epoch, label index 0).
 pub(crate) fn write_key(net: &mut Net, n: usize, g: Tid) -> osis_crypto::SigningSecret {
@@ -1268,4 +1268,53 @@ fn slow_server_holds_nothing_back_spec_sync_9() {
     net.release();
     net.run();
     assert_eq!(notes(&mut net, b, w), want);
+}
+
+/// A writes notes while server `slow` holds its answers, then compacts: the covered entries'
+/// uploads are unanswered there. `reconnect`: the connection to `slow` ends before it answers
+/// and is made again; else `slow` answers. B only reads (it deletes nothing). Returns what each
+/// server then holds under the label.
+fn covered_while_slow(reconnect: bool) -> (BTreeSet<osis_base::BlobId>, BTreeSet<osis_base::BlobId>) {
+    let mut net = Net::new();
+    let (fast, slow) = (net.add_server(), net.add_server());
+    let a = net.node(1, &[fast, slow]);
+    let b = net.node(2, &[fast]);
+    let g = net.group(a, &[(b, Role::Read)], &[fast, slow]);
+    net.run();
+    let w = window(&mut net, a, g, "shared");
+    net.run();
+    net.held_servers.insert(slow);
+    for i in 0..4 {
+        note(&mut net, a, w, &format!("k{i}"), &format!("v{i}"));
+        net.run();
+    }
+    let acts = net.sync(a).compact_ephemeral_now().unwrap();
+    net.actions(a, acts);
+    net.run();
+    if reconnect {
+        net.drop_link(a, slow);
+    }
+    net.release();
+    net.run();
+    net.advance(60_000);
+    assert!(net.conn_to(a, slow).is_some(), "reconnected");
+    assert_eq!(notes(&mut net, b, w).len(), 4);
+    let l = net.label(a);
+    (net.server_ids(fast, &l).into_iter().collect(), net.server_ids(slow, &l).into_iter().collect())
+}
+
+// spec/sync.md §9 (a covered entry deleted where it was uploaded, once that upload is
+// answered): a slow server ends holding what the fast one does
+#[test]
+fn covered_while_slow_deleted_once_answered_spec_sync_9() {
+    let (fast, slow) = covered_while_slow(false);
+    assert_eq!(slow, fast);
+}
+
+// the same when the connection ends before the answer: the pending delete is dropped with the
+// connection, and the covered entries, announced again on the next one, are deleted then
+#[test]
+fn covered_while_slow_deleted_after_reconnect_spec_sync_9() {
+    let (fast, slow) = covered_while_slow(true);
+    assert_eq!(slow, fast);
 }

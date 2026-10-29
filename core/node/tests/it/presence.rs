@@ -510,3 +510,30 @@ fn slow_server_holds_nothing_back_spec_sync_9() {
     assert_eq!(live(&net, slow, &l), held + 1, "one entry of A at the slow server");
     assert_eq!(live(&net, fast, &l), live(&net, slow, &l));
 }
+
+// spec/sync.md §5 (a presence entry goes when its uploading connection closes), §9: the
+// connection to a slow server ends with A's presence uploads unanswered (their deletes pending
+// in the node, dropped with it); after reconnecting it holds one entry of A again
+#[test]
+fn slow_server_link_lost_no_leftover_presence_spec_sync_9() {
+    let mut net = Net::new();
+    let (fast, slow) = (net.add_server(), net.add_server());
+    let a = net.node(1, &[fast, slow]);
+    let b = net.node(2, &[fast]);
+    let (_, t) = setup(&mut net, a, &[(b, Role::Write)], &[fast, slow]);
+    let l = net.label(a);
+    let held = live(&net, slow, &l);
+    net.held_servers.insert(slow);
+    for i in 1..=5 {
+        net.eph_write(a, t, &cursor(), s(&format!("a@{i}")));
+        net.run();
+    }
+    net.drop_link(a, slow);
+    net.release();
+    net.run();
+    net.advance(60_000);
+    assert!(net.conn_to(a, slow).is_some(), "reconnected");
+    assert_eq!(at(&mut net, b, t), Some(s("a@5")));
+    assert_eq!(live(&net, slow, &l), held + 1, "one entry of A at the slow server");
+    assert_eq!(live(&net, fast, &l), live(&net, slow, &l));
+}
