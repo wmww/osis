@@ -630,77 +630,73 @@ impl Engine {
 /// `Engine::covered` in `tx`.
 fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
     let (s, c, tid, ak) = (*s, *c, *tid, ak.clone());
+    let (Some(sai), Some(cai)) = (aspect_index(tx, &s, &tid, &ak), aspect_index(tx, &c, &tid, &ak)) else { return Ok(None) };
+    // an invalid snapshot gives nothing, so covers nothing (spec/permissions.md §5.2)
+    if !crate::apply::validity::snapshot_valid(tx.core, &s, &tid, &ak) {
+        return Ok(Some(false));
+    }
+    let parts = crate::apply::held_parts(tx, &s, sai)?;
+    if let (Some(m), [osis_commit::Decoded::Snapshot(sn)]) = (tx.core.ix.commits.get(&c), parts.as_slice())
+        && m.header.form == osis_commit::Form::Node
+        && m.header.kind.has_own_writes()
+        && let Some(a) = m.header.aspects.get(cai)
+        && sn.frontiers.0.get(&m.header.author).is_none_or(|f| f.saturating_add(1) < a.hi)
     {
-        {
-            let (Some(sai), Some(cai)) = (aspect_index(tx, &s, &tid, &ak), aspect_index(tx, &c, &tid, &ak)) else { return Ok(None) };
-            // an invalid snapshot gives nothing, so covers nothing (spec/permissions.md §5.2)
-            if !crate::apply::validity::snapshot_valid(tx.core, &s, &tid, &ak) {
-                return Ok(Some(false));
-            }
-            let parts = crate::apply::held_parts(tx, &s, sai)?;
-            if let (Some(m), [osis_commit::Decoded::Snapshot(sn)]) = (tx.core.ix.commits.get(&c), parts.as_slice())
-                && m.header.form == osis_commit::Form::Node
-                && m.header.kind.has_own_writes()
-                && let Some(a) = m.header.aspects.get(cai)
-                && sn.frontiers.0.get(&m.header.author).is_none_or(|f| f.saturating_add(1) < a.hi)
-            {
-                return Ok(Some(false));
-            }
-            if let (Some(m), [osis_commit::Decoded::Snapshot(sn)]) = (tx.core.ix.commits.get(&c), parts.as_slice())
-                && (m.header.kind == Kind::Import || (m.header.form == osis_commit::Form::Commit && m.header.kind.has_own_writes()))
-                && !sn.absorbed.contains_key(&c)
-            {
-                return Ok(Some(false));
-            }
-            let held = crate::apply::held_parts(tx, &c, cai)?;
-            // a snapshot covers another only if its frontiers hold the other's too: otherwise a
-            // holder of it alone does not count what the other's frontier gave as received
-            if let ([osis_commit::Decoded::Snapshot(sn)], [osis_commit::Decoded::Snapshot(other)]) = (parts.as_slice(), held.as_slice())
-                && (other.frontiers.0.iter().any(|(n, f)| sn.frontiers.0.get(n).is_none_or(|g| g < f)) || other.absorbed.keys().any(|c| !sn.absorbed.contains_key(c)))
-            {
-                return Ok(Some(false));
-            }
-            let snap: Vec<Fragment> = parts.into_iter().map(Decoded::into_fragment).collect();
-            let [snap] = snap.as_slice() else { return Ok(None) };
-            // a body this node holds no delta of joins nothing: covered
-            if held.is_empty() {
-                return Ok(Some(true));
-            }
-            let Some(m) = tx.core.ix.commits.get(&c).cloned() else { return Ok(None) };
-            let is_snapshot = m.header.kind.is_compaction();
-            let mut body: Vec<Fragment> = held.into_iter().map(Decoded::into_fragment).collect();
-            // a snapshot body's copies of writes a received valid delta supplies count for
-            // nothing (spec/permissions.md §5.2): what it must carry is the rest, its copies of
-            // invalid deltas' writes included (it vouches for them)
-            if is_snapshot {
-                for b in &mut body {
-                    crate::apply::strip_copies_where(tx.core, &tid, &ak, b, &|_, m, ai| m.valid.get(ai).copied().unwrap_or(false));
-                }
-            }
-            let before = crate::engine::state::encode(snap)?;
-            let mut j = snap.clone();
-            for b in &body {
-                j.join(b.clone());
-            }
-            if crate::engine::state::encode(&j)? != before {
-                return Ok(Some(false));
-            }
-            // the snapshot's copies of the body's writes are the body's (a copy at another
-            // value, `ts` or position, or under a dot the body owns but lacks, joins as
-            // unchanged): under its own dots, or a snapshot body's carried writes (records
-            // without a `ts`, such as the entry another's write is nested in, are no writes)
-            let mut ranges: Vec<(osis_crdt::Source, u64, u64)> = if is_snapshot {
-                body.iter().flat_map(|b| b.writes()).filter(|w| w.1.is_some()).map(|(d, _)| (d.src.clone(), d.ctr, d.ctr.saturating_add(1))).collect()
-            } else {
-                crate::apply::validity::owned_ranges(&m.header, &c, cai)
-            };
-            ranges.sort();
-            ranges.dedup();
-            let body: Vec<&Fragment> = body.iter().collect();
-            let Some(ix) = crate::apply::validity::copy_index(tx, &s, &tid, &ak, Some(snap))? else { return Ok(None) };
-            Ok(Some(ix.outside(&ranges, &body).is_empty()))
+        return Ok(Some(false));
+    }
+    if let (Some(m), [osis_commit::Decoded::Snapshot(sn)]) = (tx.core.ix.commits.get(&c), parts.as_slice())
+        && (m.header.kind == Kind::Import || (m.header.form == osis_commit::Form::Commit && m.header.kind.has_own_writes()))
+        && !sn.absorbed.contains_key(&c)
+    {
+        return Ok(Some(false));
+    }
+    let held = crate::apply::held_parts(tx, &c, cai)?;
+    // a snapshot covers another only if its frontiers hold the other's too: otherwise a
+    // holder of it alone does not count what the other's frontier gave as received
+    if let ([osis_commit::Decoded::Snapshot(sn)], [osis_commit::Decoded::Snapshot(other)]) = (parts.as_slice(), held.as_slice())
+        && (other.frontiers.0.iter().any(|(n, f)| sn.frontiers.0.get(n).is_none_or(|g| g < f)) || other.absorbed.keys().any(|c| !sn.absorbed.contains_key(c)))
+    {
+        return Ok(Some(false));
+    }
+    let snap: Vec<Fragment> = parts.into_iter().map(Decoded::into_fragment).collect();
+    let [snap] = snap.as_slice() else { return Ok(None) };
+    // a body this node holds no delta of joins nothing: covered
+    if held.is_empty() {
+        return Ok(Some(true));
+    }
+    let Some(m) = tx.core.ix.commits.get(&c).cloned() else { return Ok(None) };
+    let is_snapshot = m.header.kind.is_compaction();
+    let mut body: Vec<Fragment> = held.into_iter().map(Decoded::into_fragment).collect();
+    // a snapshot body's copies of writes a received valid delta supplies count for
+    // nothing (spec/permissions.md §5.2): what it must carry is the rest, its copies of
+    // invalid deltas' writes included (it vouches for them)
+    if is_snapshot {
+        for b in &mut body {
+            crate::apply::strip_copies_where(tx.core, &tid, &ak, b, &|_, m, ai| m.valid.get(ai).copied().unwrap_or(false));
         }
     }
+    let before = crate::engine::state::encode(snap)?;
+    let mut j = snap.clone();
+    for b in &body {
+        j.join(b.clone());
+    }
+    if crate::engine::state::encode(&j)? != before {
+        return Ok(Some(false));
+    }
+    // the snapshot's copies of the body's writes are the body's (a copy at another
+    // value, `ts` or position, or under a dot the body owns but lacks, joins as
+    // unchanged): under its own dots, or a snapshot body's carried writes (records
+    // without a `ts`, such as the entry another's write is nested in, are no writes)
+    let mut ranges: Vec<(osis_crdt::Source, u64, u64)> = if is_snapshot {
+        body.iter().flat_map(|b| b.writes()).filter(|w| w.1.is_some()).map(|(d, _)| (d.src.clone(), d.ctr, d.ctr.saturating_add(1))).collect()
+    } else {
+        crate::apply::validity::owned_ranges(&m.header, &c, cai)
+    };
+    ranges.sort();
+    ranges.dedup();
+    let body: Vec<&Fragment> = body.iter().collect();
+    let Some(ix) = crate::apply::validity::copy_index(tx, &s, &tid, &ak, Some(snap))? else { return Ok(None) };
+    Ok(Some(ix.outside(&ranges, &body).is_empty()))
 }
 
 /// `Engine::body_live` of the body holding aspect `ai` of `c`, judged against the state in
