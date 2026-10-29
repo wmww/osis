@@ -302,3 +302,32 @@ fn unfavorite_survives_a_concurrent_first_write() {
     assert!(f.contains(&m));
     assert!(!f.contains(&n), "unfavorite lost: {f:?}");
 }
+
+/// The look across two devices' racing app groups and over malformed synced values: both read
+/// one choice, a value of another shape or an unknown mode reads as unset, an unknown theme id
+/// is only a string (the UI falls back to the default theme).
+#[test]
+fn look_merges_and_tolerates_odd_values() {
+    use osis_app::schema::Mode;
+    let (a, b) = two();
+    let ga = a.main_group().unwrap();
+    let gb = b.main_group().unwrap();
+    a.set_theme("cel").unwrap();
+    b.set_theme("slate").unwrap();
+    b.set_mode(Mode::Dark).unwrap();
+    sync(&a, &b);
+    assert_eq!(a.look().unwrap(), b.look().unwrap());
+    let want = if ga < gb { "cel" } else { "slate" };
+    assert_eq!(a.look().unwrap(), (Some(want.into()), Mode::Dark), "the main group's theme, the other's mode");
+    let main = a.main_group().unwrap();
+    a.db.write_with(|w| {
+        w.at(main, Ak::new("/osis-app/theme").unwrap()).set(&Value::Int(3))?;
+        w.at(main, Ak::new("/osis-app/mode").unwrap()).set(&Value::Enum(7, None))
+    })
+    .unwrap();
+    // the other group's choice shows through (b's mode lived on gb)
+    let other = if main == ga { (Some("slate".into()), Mode::Dark) } else { (Some("cel".into()), Mode::Auto) };
+    assert_eq!(a.look().unwrap(), other, "odd values on the main group read as unset");
+    a.set_theme("no-such-theme").unwrap();
+    assert_eq!(a.look().unwrap().0.as_deref(), Some("no-such-theme"));
+}
