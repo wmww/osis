@@ -13,9 +13,11 @@ static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
 schema 0x0123456789abcdef0123456789abcd01;
 revision 1;
 aspect /k/kept: string [by: writer, keep_at_least: 1d];
+aspect /k/short: string [by: writer, keep_at_most: 10m];
 "#,
 );
 const KEPT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/k/kept", &KEEP);
+const SHORT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/k/short", &KEEP);
 
 // spec/commits.md §5 (keep at least): a compaction before the bound neither drops the covered
 // bodies nor deletes them at the blind node; once the bound has passed (by MAX_DRIFT) it does both.
@@ -129,4 +131,88 @@ fn compaction_across_skew_no_churn_spec_sync_7() {
     for a_ahead in [true, false] {
         assert_eq!(compact_across_skew(a_ahead), (2, 2), "a ahead {a_ahead}: deletions, blobs of the dead bodies");
     }
+}
+
+// spec/commits.md §5 (deaths dated per node), spec/sync.md §6: X < Y < Z on a kept register
+// and on a keep-at-most-10m one; right holder A held Y before Z (X dies at Y), B held Z before Y
+// (X dies at Z, two hours later). Once A's bound has passed it deletes X at the blind node
+// (kept: covered by its compaction; at most: a timed delete); B, still before its own bound,
+// does not place it again (it has no live write): one deletion, no fresh encryption, and B
+// drops it by its own bound.
+#[test]
+fn deletion_across_local_dating_no_churn_spec_sync_6() {
+    for at_most in [false, true] {
+        assert_eq!(local_dating_churn(at_most), (1, 1), "at most {at_most}: deletions, blobs of X");
+    }
+}
+
+/// The scenario of `deletion_across_local_dating_no_churn_*`: the server's deletions of X's
+/// blobs and how many blobs of X either node knew.
+fn local_dating_churn(at_most: bool) -> (usize, usize) {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[sv]);
+    let g = net.group(a, &[(b, osis_base::Role::Write), (c, osis_base::Role::Write)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    let k = if at_most { &SHORT } else { &KEPT };
+    let set = |net: &mut Net, n: usize, v: &str| {
+        let mut m = Mutation::new();
+        m.set(t, k, &s(v)).unwrap();
+        net.engine(n).commit(m).unwrap().unwrap()
+    };
+    let x = set(&mut net, a, "x");
+    net.run();
+    let l = net.label(a);
+    let mut seen = std::collections::BTreeSet::new();
+    let look = |net: &mut Net, seen: &mut std::collections::BTreeSet<osis_base::BlobId>| {
+        for n in [a, b] {
+            for (id, k) in net.sync(n).entries(&l) {
+                if matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commit == x) {
+                    seen.insert(id);
+                }
+            }
+        }
+    };
+    look(&mut net, &mut seen);
+    for n in [a, b, c] {
+        net.set_online(n, false);
+    }
+    net.advance(1_000);
+    let y = set(&mut net, c, "y");
+    let py = net.engine(c).package(&y).unwrap().unwrap();
+    net.engine(a).ingest(&py.bytes, py.blobs.clone()).unwrap();
+    net.advance(2 * 3_600_000);
+    let z = set(&mut net, a, "z");
+    let pz = net.engine(a).package(&z).unwrap().unwrap();
+    net.engine(b).ingest(&pz.bytes, pz.blobs.clone()).unwrap();
+    net.engine(b).ingest(&py.bytes, py.blobs.clone()).unwrap();
+    let ak = Ak::new(k.ak()).unwrap();
+    let ts = |net: &mut Net, c: &osis_base::CommitId| net.engine(a).header(c).unwrap().ts;
+    let (ty, tz) = (ts(&mut net, &y), ts(&mut net, &z));
+    assert_eq!(net.engine(a).deaths(&x, &t, &ak).unwrap(), Some((ty, ty)));
+    assert_eq!(net.engine(b).deaths(&x, &t, &ak).unwrap(), Some((tz, tz)));
+    for n in [a, b, c] {
+        net.set_online(n, true);
+    }
+    net.run();
+    if !at_most {
+        let acts = net.sync(a).compact(&t, &ak).unwrap();
+        net.actions(a, acts);
+        net.run();
+    }
+    // 5 min steps from before A's bound (at most: passed offline) to past B's
+    let bound = if at_most { net.now() } else { ty.wall_ms().0 + 86_400_000 + osis_base::format::MAX_DRIFT_MS - 10 * 60_000 };
+    net.advance(bound.saturating_sub(net.now()));
+    for _ in 0..30 {
+        look(&mut net, &mut seen);
+        net.advance(5 * 60_000);
+    }
+    assert!(!net.engine(a).holds_body(&x, &t, &ak), "A past its bound");
+    assert!(!net.engine(b).holds_body(&x, &t, &ak), "B past its bound");
+    use osis_proto::{LabelStore, LogRecord};
+    let recs = net.servers[sv].hub.store().log_after(&l, 0, 1 << 20).unwrap().unwrap_or_default();
+    let of_x = recs.iter().filter(|(_, r)| matches!(r, LogRecord::Deleted(id) if seen.contains(id))).count();
+    (of_x, seen.len())
 }
