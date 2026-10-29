@@ -195,9 +195,19 @@ impl Net {
                 sy.handle(Event::Down { conn: c });
             }
         }
-        let mine: Vec<(ConnId, (usize, u64))> = self.links.iter().filter(|((x, _), _)| *x == n).map(|((_, c), v)| (*c, *v)).collect();
-        for (c, (s, hc)) in mine {
+        let servers: Vec<usize> = self.links.iter().filter(|((x, _), _)| *x == n).map(|(_, (s, _))| *s).collect();
+        for s in servers {
+            self.drop_link(n, s);
+        }
+    }
+
+    /// Closes node `n`'s connection to server `s` on both sides; what `s` held back for it is
+    /// dropped.
+    pub fn drop_link(&mut self, n: usize, s: usize) {
+        let mine: Vec<(ConnId, u64)> = self.links.iter().filter(|((x, _), (y, _))| *x == n && *y == s).map(|((_, c), (_, hc))| (*c, *hc)).collect();
+        for (c, hc) in mine {
             self.links.remove(&(n, c));
+            self.held_msgs.retain(|m| !matches!(m, Msg::ToNode(x, y, _) if *x == n && *y == c));
             let now = self.now_at(s);
             let out = self.servers[s].hub.closed(now, hc);
             self.hub_out(s, out);
