@@ -13,8 +13,7 @@ use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// A snapshot part's frontiers and `Absorbed`.
-type Gives = (osis_crdt::Frontiers, Vec<(CommitId, Tid)>);
+use crate::engine::Gives;
 
 fn fragment(d: Decoded) -> (Fragment, Option<Gives>) {
     match d {
@@ -33,8 +32,18 @@ pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_base::
     }
 }
 
-/// Forgets snapshot `id` of `(tid, ak)` when its body drops: its frontiers and carried writes
-/// are index entries derived from the body (spec/commits.md §5), which a rebuild cannot read.
+/// Indexes the dropped parts of `id` that kept their frontiers (`Meta::gives`).
+pub(crate) fn note_gives(core: &mut Core, id: &CommitId) {
+    let Some(m) = core.ix.commits.get(id) else { return };
+    let ks: Vec<(Tid, Ak)> = m.gives.keys().filter_map(|ai| m.view.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
+    for k in ks {
+        core.ix.dropped_snapshots.insert(k, *id);
+    }
+}
+
+/// Forgets snapshot `id` of `(tid, ak)` when its body drops: its carried writes are index
+/// entries derived from the body (spec/commits.md §5), which a rebuild cannot read; its
+/// frontiers and `Absorbed` stay in its record when kept (`Meta::gives`, `retention::drop_part`).
 pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId) {
     let k = (*tid, ak.clone());
     if let Some(mut v) = core.ix.snapshots.get(&k).cloned()
@@ -265,7 +274,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     let uncarried = validity::uncarry(tx.core, &id, &h, &|ai| parts.iter().any(|p| p.0 == ai));
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.iter().any(|p| p.0 == *ai)).collect();
-    let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), dropped: BTreeSet::new(), missing, live_drops: BTreeSet::new(), covered_by: BTreeMap::new(), cover_drops: BTreeSet::new() };
+    let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), dropped: BTreeSet::new(), missing, live_drops: BTreeSet::new(), covered_by: BTreeMap::new(), cover_drops: BTreeSet::new(), gives: BTreeMap::new() };
     tx.core.ix.commits.insert(id, meta.clone());
     tx.core.index_validity(&id);
 

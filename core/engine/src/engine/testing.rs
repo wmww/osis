@@ -73,7 +73,7 @@ impl Engine {
         let c = &self.core;
         let mut out = String::new();
         for (id, m) in c.ix.commits.iter() {
-            let _ = writeln!(out, "commit {id:?} {:?} {:?} {:?} {:?} {:?} missing {:?}", m.valid, m.dropped, m.received, m.origin, m.view, m.missing);
+            let _ = writeln!(out, "commit {id:?} {:?} {:?} {:?} {:?} {:?} gives={:?} missing {:?}", m.valid, m.dropped, m.received, m.origin, m.view, m.gives, m.missing);
         }
         let held = osis_perm::HeldSet::things(&c.ix.held);
         for t in held {
@@ -89,7 +89,7 @@ impl Engine {
         let _ = writeln!(out, "rotation_role {:?}\ngrant_overreach {:?}\nbox_keys {:?}\nboxes_to {:?}", *c.ix.rotation_role, *c.ix.grant_overreach, *c.ix.box_keys, *c.ix.boxes_to);
         let _ = writeln!(out, "epoch_intro {:?}\nbox_written {:?}\nown_keys {:?}", *c.ix.epoch_intro, *c.ix.box_written, *c.ix.own_keys);
         let _ = writeln!(out, "member_keys {:?}\nunresolved {:?}\nwas {:?}\nmoved {:?}\ngroups {:?}", *c.ix.member_keys, *c.ix.unresolved, *c.ix.was, *c.ix.moved, c.ix.groups.of);
-        let _ = writeln!(out, "secrets {:?}\nvoid {:?}\nvalueless {:?}\nsnapshots {:?}\ncarried {:?}\nimports {:?}", *c.ix.secrets, *c.ix.void, *c.ix.valueless, *c.ix.snapshots, *c.ix.carried, *c.ix.imports);
+        let _ = writeln!(out, "secrets {:?}\nvoid {:?}\nvalueless {:?}\nsnapshots {:?}\ndropped_snapshots {:?}\ncarried {:?}\nimports {:?}", *c.ix.secrets, *c.ix.void, *c.ix.valueless, *c.ix.snapshots, *c.ix.dropped_snapshots, *c.ix.carried, *c.ix.imports);
         out
     }
 

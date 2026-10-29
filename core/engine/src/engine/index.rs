@@ -450,6 +450,7 @@ pub(crate) struct RecordHead {
     pub live_drops: BTreeSet<usize>,
     pub covered_by: BTreeMap<usize, BTreeSet<CommitId>>,
     pub cover_drops: BTreeSet<usize>,
+    pub gives: BTreeMap<usize, super::Gives>,
 }
 
 pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
@@ -475,6 +476,17 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
     w = w.u32(m.cover_drops.len() as u32);
     for a in &m.cover_drops {
         w = w.u32(*a as u32);
+    }
+    w = w.u32(m.gives.len() as u32);
+    for (a, (fr, abs)) in &m.gives {
+        w = w.u32(*a as u32).u32(fr.0.len() as u32);
+        for (n, c) in &fr.0 {
+            w = w.raw(n.as_bytes()).u64(*c);
+        }
+        w = w.u32(abs.len() as u32);
+        for (c, n) in abs {
+            w = w.raw(&c.0).raw(n.as_bytes());
+        }
     }
     w.take()
 }
@@ -587,7 +599,21 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
     for _ in 0..r.u32()? {
         cover_drops.insert(r.u32()? as usize);
     }
-    Ok((RecordHead { received, origin, dropped, live_drops, covered_by, cover_drops }, r.rest()))
+    let mut gives = BTreeMap::new();
+    for _ in 0..r.u32()? {
+        let a = r.u32()? as usize;
+        let mut fr = BTreeMap::new();
+        for _ in 0..r.u32()? {
+            let n = r.tid()?;
+            fr.insert(n, r.u64()?);
+        }
+        let mut abs = Vec::new();
+        for _ in 0..r.u32()? {
+            abs.push((CommitId(r.arr()?), r.tid()?));
+        }
+        gives.insert(a, (osis_crdt::Frontiers(fr), abs));
+    }
+    Ok((RecordHead { received, origin, dropped, live_drops, covered_by, cover_drops, gives }, r.rest()))
 }
 
 /// Writes the given changes (`all`: everything) of the indexes to the persisted index.
@@ -771,7 +797,8 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             return Err(Error::Corrupt("meta row"));
         }
         crate::apply::index_commit(tx.core, &id, &view);
-        tx.core.ix.commits.insert(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, missing, live_drops: head.live_drops, covered_by: head.covered_by, cover_drops: head.cover_drops });
+        tx.core.ix.commits.insert(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, missing, live_drops: head.live_drops, covered_by: head.covered_by, cover_drops: head.cover_drops, gives: head.gives });
+        crate::apply::note_gives(tx.core, &id);
         tx.core.index_validity(&id);
     }
     drop(_ms);
