@@ -187,8 +187,9 @@ impl Visit for Writes {
     }
 }
 
-/// `Fragment::holds_owned`: owner dot ranges against a predicate, stopping at the first hit.
-struct Any<'a>(&'a dyn Fn(&Source, u64, u64) -> bool);
+/// `Fragment::holds_owned`: owner dot ranges against a predicate, stopping at the first hit;
+/// `live`: a set or bag element or map entry record counts only while it holds its creation.
+struct Any<'a>(&'a dyn Fn(&Source, u64, u64) -> bool, bool);
 
 impl Any<'_> {
     /// Owner dots of elements `d..d + n` (a `Derived` range has one owner).
@@ -206,7 +207,9 @@ impl Visit for Any<'_> {
     }
     fn rec(&mut self, r: Rec<'_>) -> Next {
         let hit = match r {
-            Rec::Elem(d, _) | Rec::Entry(d, _) => self.range(d, 1),
+            // a tombstone (`[dot, reset]`) holds the remover's reset, not the creation
+            Rec::Elem(d, e) => (!self.1 || e.frag.is_some()) && self.range(d, 1),
+            Rec::Entry(d, e) => (!self.1 || e.created.is_some()) && self.range(d, 1),
             // a range record's creations are its elements' dots, its other stamps shared
             Rec::Seq(d, e) => self.range(d, e.span) || e.pos.iter().any(|(st, _)| st.dot != *d && self.range(&st.dot, 1)) || e.deleted.as_ref().is_some_and(|(st, _)| self.range(&st.dot, 1)),
         };
@@ -219,7 +222,14 @@ impl Fragment {
     /// hi)` accepts (any counter in `lo..hi` owned); stops at the first, and never expands range
     /// records.
     pub fn holds_owned(&self, owned: &dyn Fn(&Source, u64, u64) -> bool) -> bool {
-        walk(&mut Any(owned), self)
+        walk(&mut Any(owned, false), self)
+    }
+
+    /// `holds_owned` of the writes the fragment holds (spec/commits.md §5, live writes): an
+    /// element or entry tombstone, whose creation is gone, counts for its reset only; a
+    /// sequence element's record counts (an anchor, spec/crdt.md §5.7).
+    pub fn holds_owned_write(&self, owned: &dyn Fn(&Source, u64, u64) -> bool) -> bool {
+        walk(&mut Any(owned, true), self)
     }
 }
 

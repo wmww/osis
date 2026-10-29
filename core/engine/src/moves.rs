@@ -166,6 +166,8 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
                 continue;
             }
         }
+        // canonical again after the removals above (spec/crdt.md §5.6, §7)
+        f.prune(None, &mut osis_crdt::Changes::new());
         // only the sequence elements what the state shows needs (deleted elements and bare
         // anchors nothing shown depends on stay behind), so an import stays within
         // `MAX_DELTA_BARE` where its shown writes do (spec/permissions.md §7)
