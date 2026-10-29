@@ -276,6 +276,10 @@ fn one_write(ctx: &mut Ctx<'_>, c: ScriptCmd) -> anyhow::Result<()> {
     let done = w.commit()?;
     let commit = done.and_then(|c| c.id.commit());
     let created = did.created.first().map(|(_, t)| *t);
+    // a new thing with no durable data lives in this process's memory only
+    if created.is_some_and(|t| db.created(t).is_some_and(|c| c.commit.is_none())) {
+        return Err(usage("a new thing with no durable data is gone when this command exits: give AK V, --in G or --group (or use `write`)"));
+    }
     let mut lines = Vec::new();
     if let Some(t) = created {
         lines.push(t.to_uri());

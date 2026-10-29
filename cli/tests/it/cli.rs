@@ -277,6 +277,7 @@ fn commits_undo_redo_plan_cli_4() {
 #[test]
 fn groups_and_moves_plan_cli_4() {
     let s = S::mem();
+    assert_eq!(s.code(&["create", "--owner", "me"]), 2, "nothing durable: gone at exit");
     let g = s.ok(&["create", "--owner", "me", "--group"]).line().to_string();
     let t = s.thing();
     s.ok(&["place", &t, &g]);
