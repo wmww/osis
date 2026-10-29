@@ -1,6 +1,6 @@
 # A tag's access cannot be granted again after it was taken back
 > Summary: After `demote(thing, my_tag, Remove)` every later grant on the thing fails "another node must rotate first": each of my nodes acts through my own tag, so by spec/crypto.md §2 no rotation of mine covers the tag's departure. Re-tagging into a shared tag after a revocation leaves the thing tagged, unshared, with an error.
-> Tags: crypto, permissions, app
+> Tags: core-ask, owner-call, crypto, permissions, app
 
 Repro: `app/tests/it/share.rs` `retag_after_a_revocation_shares_again` (ignored). Even a plain `grant(n, tag, Read)` right after the demotion fails.
 
