@@ -20,3 +20,6 @@ aspect /osis-app/demo: bool;
 aspect /osis-app/theme: string;
 /// On the app group: light, dark, or following the system.
 aspect /osis-app/mode: enum { 0 auto, 1 light, 2 dark };
+/// On the app group: revocations still to do (a tag's access to a thing, kept after the tag was
+/// removed while offline); retried until they succeed or no longer apply.
+aspect /osis-app/revoke: set<struct { 0 thing: tid, 1 tag: tid }>;
