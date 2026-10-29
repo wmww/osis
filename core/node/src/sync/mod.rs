@@ -1425,7 +1425,12 @@ impl SyncEngine {
         if cursor.is_none() {
             self.eph.reconciled.insert((server, label));
         }
-        if cursor.is_some() && self.eph.reconciled.insert((server, label)) {
+        // marked reconciled when the reply arrives (`reconciled`): a connection ending first
+        // reconciles again on the next one
+        if cursor.is_some() && !self.eph.reconciled.contains(&(server, label)) {
+            if self.eph.reconciling.contains(&(conn, label)) {
+                return Ok(());
+            }
             let mut ids = self.state.present_at(&server, &label);
             ids.extend(self.eph.entries.range((label, osis_base::BlobId([0; 32]))..).take_while(|((x, _), _)| *x == label).map(|((_, b), _)| *b));
             ids.sort();
