@@ -48,7 +48,7 @@ fn compaction_keeps_bodies_until_keep_at_least_spec_commits_5() {
     net.actions(a, acts);
     net.run();
     for c in &bodies[..2] {
-        assert!(net.engine(a).holds_body(c, &t, &ak), "dead body dropped before its keep-at-least bound");
+        assert!(net.engine(a).body_not_dropped(c, &t, &ak), "dead body dropped before its keep-at-least bound");
     }
     let at = net.server_ids(sv, &l);
     assert!(dead.iter().all(|id| at.contains(id)), "deleted at the blind node before the bound");
@@ -58,7 +58,7 @@ fn compaction_keeps_bodies_until_keep_at_least_spec_commits_5() {
     net.actions(a, acts);
     net.run();
     for c in &bodies[..2] {
-        assert!(!net.engine(a).holds_body(c, &t, &ak), "covered body past its bound kept");
+        assert!(!net.engine(a).body_not_dropped(c, &t, &ak), "covered body past its bound kept");
     }
     let at = net.server_ids(sv, &l);
     assert!(dead.iter().all(|id| !at.contains(id)), "covered bodies past the bound left at the blind node");
@@ -115,7 +115,7 @@ fn compact_across_skew(a_ahead: bool) -> (usize, usize) {
     }
     for n in [a, b] {
         for c in &bodies[..2] {
-            assert!(!net.engine(n).holds_body(c, &t, &ak), "node {n}: covered body past its bound kept");
+            assert!(!net.engine(n).body_not_dropped(c, &t, &ak), "node {n}: covered body past its bound kept");
         }
         assert_eq!(net.engine(n).get(&t, &ak).unwrap(), Some(s("v3")));
     }
@@ -209,8 +209,8 @@ fn local_dating_churn(at_most: bool) -> (usize, usize) {
         look(&mut net, &mut seen);
         net.advance(5 * 60_000);
     }
-    assert!(!net.engine(a).holds_body(&x, &t, &ak), "A past its bound");
-    assert!(!net.engine(b).holds_body(&x, &t, &ak), "B past its bound");
+    assert!(!net.engine(a).body_not_dropped(&x, &t, &ak), "A past its bound");
+    assert!(!net.engine(b).body_not_dropped(&x, &t, &ak), "B past its bound");
     use osis_proto::{LabelStore, LogRecord};
     let recs = net.servers[sv].hub.store().log_after(&l, 0, 1 << 20).unwrap().unwrap_or_default();
     let of_x = recs.iter().filter(|(_, r)| matches!(r, LogRecord::Deleted(id) if seen.contains(id))).count();

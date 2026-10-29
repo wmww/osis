@@ -2239,7 +2239,7 @@ impl SyncEngine {
         let on = |c: &CommitId| self.engine.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == *t && x.ak == *a));
         let mut c = *self.state.carriers.get(body)?.iter().rev().find(|c| on(c))?;
         for _ in 0..64 {
-            if self.engine.holds_body(&c, t, a) {
+            if self.engine.body_not_dropped(&c, t, a) {
                 return Some(c);
             }
             c = *self.state.carriers.get(&c)?.iter().rev().find(|c| on(c))?;

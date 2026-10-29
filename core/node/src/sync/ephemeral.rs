@@ -951,6 +951,30 @@ impl SyncEngine {
         keys.into_iter().map(|(l, b)| (l, b, self.eph.present.iter().filter(|(_, pl, pb)| *pl == l && *pb == b).map(|(s, _, _)| *s).collect())).collect()
     }
 
+    /// Tests, diagnostics: the lane under `l` as text, an entry per line (commit, own, presence,
+    /// bytes, the servers it is present at by key prefix, the sessions serving it, in-flight
+    /// uploads and cap refusals), then pending entries and the label's flags.
+    #[doc(hidden)]
+    pub fn ephemeral_dump(&self, l: &LabelId) -> String {
+        use std::fmt::Write;
+        let lane = &self.eph;
+        let key = |s: &[u8; 32]| osis_base::hex::encode(&s[..4]);
+        let mut out = String::new();
+        for (b, e) in Self::eph_entries_of(lane, l) {
+            let at: Vec<String> = lane.present.iter().filter(|(_, pl, pb)| pl == l && *pb == b).map(|(s, _, _)| key(s)).collect();
+            let up: Vec<u64> = lane.uploads.iter().filter(|(_, ul, ub)| ul == l && *ub == b).map(|x| x.0).collect();
+            let capped: Vec<u64> = lane.capped.iter().filter(|(_, cl, cb)| cl == l && *cb == b).map(|x| x.0).collect();
+            let _ = writeln!(out, "  {b:?} commit {:?} own {} presence {} {} B present {at:?} served {:?} uploading {up:?} capped {capped:?}", e.commit, e.own, e.presence, e.blob.len(), lane.served_src.get(&(*l, b)));
+        }
+        for ((pl, b), (e, from)) in &lane.pending {
+            if pl == l {
+                let _ = writeln!(out, "  pending {b:?} commit {:?} from {:?}", e.commit, from.as_ref().map(key));
+            }
+        }
+        let _ = writeln!(out, "  bytes {:?} refused {} server_full {} forced {} own_full {:?}", lane.bytes.get(l), lane.refused.contains(l), lane.server_full.contains(l), lane.forced.contains(l), lane.own_full.get(l).map(|x| x.iter().map(key).collect::<Vec<_>>()));
+        out
+    }
+
     /// Ephemeral entries held under `l` (tests, diagnostics).
     pub fn ephemeral_entries(&self, l: &LabelId) -> usize {
         Self::eph_entries_of(&self.eph, l).count()

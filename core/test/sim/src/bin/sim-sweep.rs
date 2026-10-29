@@ -25,7 +25,20 @@ struct Args {
     list: bool,
 }
 
-fn parse() -> Result<Args, String> {
+const USAGE: &str = "usage: sim-sweep [--seeds N] [--from S] [--only a,b] [--blocked] [--budget-secs T] [--jobs J] [--out DIR] [--list]
+  --seeds N        seeds per scenario (default 100)
+  --from S         first seed (default 0)
+  --only a,b       only these scenarios (default: all but blocked ones)
+  --blocked        include blocked scenarios (a known engine bug each)
+  --budget-secs T  stop starting seeds after T s (seed-major, so scenarios get about as many each)
+  --jobs J         parallel jobs (default: a thread per core)
+  --out DIR        write DIR/failing-seeds.txt when any fail
+  --list           print every scenario (blocked ones marked) and exit
+Exits 1 if any seed failed, 2 on bad arguments. Replay a failure: osis_sim::replay(name, seed);
+OSIS_SIM_TRACE=1 traces it.";
+
+/// `Ok(None)`: `--help` asked.
+fn parse() -> Result<Option<Args>, String> {
     let mut a = Args { seeds: 100, from: 0, only: None, blocked: false, budget: None, jobs: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), out: None, list: false };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -40,10 +53,11 @@ fn parse() -> Result<Args, String> {
             "--jobs" => a.jobs = usize::try_from(num(val()?)?).unwrap_or(1).max(1),
             "--out" => a.out = Some(val()?),
             "--list" => a.list = true,
-            _ => return Err(format!("unknown argument {k}")),
+            "-h" | "--help" => return Ok(None),
+            _ => return Err(format!("unknown argument {k}\n{USAGE}")),
         }
     }
-    Ok(a)
+    Ok(Some(a))
 }
 
 #[derive(Default)]
@@ -54,7 +68,11 @@ struct Tally {
 
 fn main() -> ExitCode {
     let args = match parse() {
-        Ok(a) => a,
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            println!("{USAGE}");
+            return ExitCode::SUCCESS;
+        }
         Err(e) => {
             eprintln!("sim-sweep: {e}");
             return ExitCode::from(2);

@@ -393,7 +393,7 @@ impl Osis {
                 if h.kind != Kind::Content {
                     return Err(Error::Invalid("only changes and reverts are reverted".into()));
                 }
-                if h.aspects.iter().any(|a| a.ak.as_str() != "/created" && !e.holds_body(&c, &a.tid, &a.ak)) {
+                if h.aspects.iter().any(|a| a.ak.as_str() != "/created" && !e.body_not_dropped(&c, &a.tid, &a.ak)) {
                     return Err(blocked(DropReason::Compacted));
                 }
             }

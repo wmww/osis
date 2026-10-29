@@ -111,10 +111,23 @@ pub fn convergence(nodes: &mut [(usize, &mut Engine)]) -> std::result::Result<()
         let mut first: Option<(usize, Reads)> = None;
         for k in members {
             let Some((i, e)) = nodes.get_mut(*k) else { continue };
+            let i = *i;
             let r = reads(e).map_err(|x| format!("node {i}: read failed: {x}"))?;
             match &first {
-                None => first = Some((*i, r)),
-                Some((j, f)) if *f != r => return Err(format!("divergence: nodes {j} and {i} hold the same commits but read differently: {}", diff(f, &r))),
+                None => first = Some((i, r)),
+                Some((j, f)) if *f != r => {
+                    let (d, key) = diff(f, &r);
+                    // divergence dump: the differing aspect's parts and state on each of them
+                    let mut dump = String::new();
+                    if let Some((t, ak)) = key {
+                        for k in members {
+                            if let Some((n, e)) = nodes.get_mut(*k) {
+                                dump.push_str(&format!("node {n} on {t} {}:\n{}", ak.as_str(), e.aspect_dump(&t, &ak)));
+                            }
+                        }
+                    }
+                    return Err(format!("divergence: nodes {j} and {i} hold the same commits but read differently: {d}\n{dump}"));
+                }
                 Some(_) => {}
             }
         }
@@ -122,16 +135,17 @@ pub fn convergence(nodes: &mut [(usize, &mut Engine)]) -> std::result::Result<()
     Ok(())
 }
 
-fn diff(a: &[(Tid, Ak, Option<Value>)], b: &[(Tid, Ak, Option<Value>)]) -> String {
-    let am: BTreeMap<(Tid, &str), &Option<Value>> = a.iter().map(|x| ((x.0, x.1.as_str()), &x.2)).collect();
-    let bm: BTreeMap<(Tid, &str), &Option<Value>> = b.iter().map(|x| ((x.0, x.1.as_str()), &x.2)).collect();
+/// The first differing read and its aspect.
+fn diff(a: &[(Tid, Ak, Option<Value>)], b: &[(Tid, Ak, Option<Value>)]) -> (String, Option<(Tid, Ak)>) {
+    let am: BTreeMap<(Tid, &Ak), &Option<Value>> = a.iter().map(|x| ((x.0, &x.1), &x.2)).collect();
+    let bm: BTreeMap<(Tid, &Ak), &Option<Value>> = b.iter().map(|x| ((x.0, &x.1), &x.2)).collect();
     for k in am.keys().chain(bm.keys()) {
         let (x, y) = (am.get(k), bm.get(k));
         if x != y {
-            return format!("{} {}: {x:?} vs {y:?}", k.0, k.1);
+            return (format!("{} {}: {x:?} vs {y:?}", k.0, k.1.as_str()), Some((k.0, k.1.clone())));
         }
     }
-    String::new()
+    (String::new(), None)
 }
 
 /// At quiescence with full delivery: every node holds the same commits and nothing pends.

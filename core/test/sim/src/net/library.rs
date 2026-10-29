@@ -718,7 +718,7 @@ fn expired_absent(sim: &mut NetSim, commits: &[CommitId], ak: &osis_base::Ak) ->
                     let Some(sy) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { continue };
                     let e = sy.entries(&l).into_iter().find(|x| x.0 == b).map(|x| format!("{:?}", x.1));
                     let v = sy.verdicts(&key, &l).ok().flatten().map(|v| (v.writer, v.must_not.iter().find(|x| x.0 == b).map(|x| x.1.clone()), v.must_hold.iter().any(|x| x.0 == c)));
-                    let held = h.aspects.first().is_some_and(|x| sy.engine().holds_body(&c, &x.tid, ak));
+                    let held = h.aspects.first().is_some_and(|x| sy.engine().body_not_dropped(&c, &x.tid, ak));
                     views.push(format!("node {n}: entry {e:?} (writer, must-not, must-hold) {v:?} holds body {held}"));
                 }
                 return Err(sim.fail(format!("server {s} still holds the expired body {b:?} of {c:?} (stamped, pending delete) {meta:?}; {views:?}")));
@@ -775,7 +775,7 @@ pub fn keep_at_most(seed: u64) -> Res<Report> {
     let mut held = Vec::new();
     for n in [a, b] {
         let e = sim.engine(n)?;
-        let h: Vec<usize> = (0..written.len()).filter(|i| written.get(*i).is_some_and(|c| e.holds_body(c, &t, &k))).collect();
+        let h: Vec<usize> = (0..written.len()).filter(|i| written.get(*i).is_some_and(|c| e.body_not_dropped(c, &t, &k))).collect();
         winners.extend(h.iter().filter_map(|i| written.get(*i).copied()));
         held.push(h);
     }

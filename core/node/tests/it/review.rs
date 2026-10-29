@@ -111,14 +111,14 @@ fn purge_drops_snapshots_spec_commits_5() {
     let t = new_thing(&mut lp, 0);
     let secret = set(&mut lp, 0, t, &REG, "secret");
     let snap = lp.peers[0].engine.snapshot(&t, &ak("/t/reg")).unwrap().unwrap();
-    assert!(lp.peers[0].engine.holds_body(&snap, &t, &ak("/t/reg")));
+    assert!(lp.peers[0].engine.body_not_dropped(&snap, &t, &ak("/t/reg")));
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("public")).unwrap();
     m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("/t/reg") });
     lp.peers[0].commit(m).unwrap();
-    assert!(!lp.peers[0].engine.holds_body(&secret, &t, &ak("/t/reg")));
-    assert!(!lp.peers[0].engine.holds_body(&snap, &t, &ak("/t/reg")));
+    assert!(!lp.peers[0].engine.body_not_dropped(&secret, &t, &ak("/t/reg")));
+    assert!(!lp.peers[0].engine.body_not_dropped(&snap, &t, &ak("/t/reg")));
     // a purge never carries expires (spec/commits.md §5)
     let mut m = Mutation::new();
     m.set(t, &BRIEF, &s("x")).unwrap();
@@ -144,12 +144,12 @@ fn body_is_a_class_spec_commits_5() {
     set(&mut lp, 0, t, &GONE, "b");
     sync(&mut lp, 0, 1);
     let e = &mut lp.peers[1].engine;
-    assert!(e.holds_body(&c, &t, &ak("/t/gone")) && e.holds_body(&c, &t, &ak("/t/gone2")), "/t/gone2 is still live");
+    assert!(e.body_not_dropped(&c, &t, &ak("/t/gone")) && e.body_not_dropped(&c, &t, &ak("/t/gone2")), "/t/gone2 is still live");
     set(&mut lp, 0, t, &GONE2, "b2");
     sync(&mut lp, 0, 1);
     let e = &mut lp.peers[1].engine;
-    assert!(!e.holds_body(&c, &t, &ak("/t/gone")));
-    assert!(!e.holds_body(&c, &t, &ak("/t/gone2")));
+    assert!(!e.body_not_dropped(&c, &t, &ak("/t/gone")));
+    assert!(!e.body_not_dropped(&c, &t, &ak("/t/gone2")));
     assert_eq!(e.get(&t, &ak("/t/gone2")).unwrap(), Some(s("b2")));
     // deaths aggregate over the class: killing one delta's write dates the other's body
     let mut m = Mutation::new();
@@ -447,7 +447,7 @@ fn body_live_spans_its_class_spec_commits_5() {
     lp.advance(10);
     set(&mut lp, 0, t, &SHORT2, "b2");
     let e = &mut lp.peers[0].engine;
-    assert!(e.holds_body(&c, &t, &a1), "dead, kept to first death plus 10 min");
+    assert!(e.body_not_dropped(&c, &t, &a1), "dead, kept to first death plus 10 min");
     assert!(!e.body_live(&c, &t, &a2).unwrap());
     assert!(!e.body_live(&c, &t, &a1).unwrap(), "asked by the other aspect of the body");
 }

@@ -10,6 +10,10 @@ mod error;
 pub mod format;
 pub mod hash;
 pub mod hex;
+// test support (panics on bad test settings; only tests call it)
+#[doc(hidden)]
+#[allow(clippy::panic, clippy::expect_used)]
+pub mod testenv;
 mod ids;
 mod time;
 mod value;

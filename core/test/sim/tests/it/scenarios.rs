@@ -67,12 +67,13 @@ fn unknown_scenario_fails() {
 }
 
 // spec/requirements.md (convergence); spec/commits.md §4; spec/crdt.md §2.2, §2.3: a small
-// sweep, `OSIS_SIM_SEEDS` seeds per scenario (default 100), `OSIS_SIM_ONLY` a comma list of
+// sweep, `OSIS_SIM_SEEDS` seeds per scenario (default 100) from `OSIS_SIM_FROM` (default 0), `OSIS_SIM_ONLY` a comma list of
 // scenario names (default all but the blocked ones). The nightly sweep is the `sim-sweep` binary.
 #[test]
 #[ignore]
 fn sweep() {
-    let n: u64 = std::env::var("OSIS_SIM_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(100);
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_SIM_FROM", "OSIS_SIM_SEEDS", 0..100);
+    seeds.announce("sim sweep");
     let mut failed = Vec::new();
     let only: Option<Vec<String>> = std::env::var("OSIS_SIM_ONLY").ok().map(|s| s.split(',').map(str::to_string).collect());
     for (name, _) in SCENARIOS {
@@ -83,12 +84,12 @@ fn sweep() {
         if skip {
             continue;
         }
-        for seed in 0..n {
+        for seed in seeds.range.clone() {
             if let Err(f) = replay(name, seed) {
                 eprintln!("{f}");
                 failed.push((*name, seed));
             }
         }
     }
-    assert!(failed.is_empty(), "failing (scenario, seed): {failed:?}");
+    assert!(failed.is_empty(), "{seeds}: failing (scenario, seed): {failed:?}");
 }

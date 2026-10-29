@@ -30,7 +30,7 @@ fn deaths_and_bounds_spec_commits_5() {
     let k = e.body_keep(&c1, &t, &ak("/t/kept")).unwrap();
     assert_eq!(k.at_least, ts2.wall_ms().0 + 86_400_000);
     assert_eq!(k.at_most, None);
-    assert!(e.holds_body(&c1, &t, &ak("/t/kept")));
+    assert!(e.body_not_dropped(&c1, &t, &ak("/t/kept")));
 }
 
 // spec/commits.md §5: keep at most 0 after replaced: the replacing node drops the body in the
@@ -46,12 +46,12 @@ fn keep_at_most_zero_spec_commits_5() {
     lp.advance(5);
     set(&mut lp, 0, t, &GONE, "final");
     let e = &mut lp.peers[0].engine;
-    assert!(!e.holds_body(&c1, &t, &ak("/t/gone")));
+    assert!(!e.body_not_dropped(&c1, &t, &ak("/t/gone")));
     assert_eq!(e.get(&t, &ak("/t/gone")).unwrap(), Some(s("final")));
     assert_eq!(e.revert(&c1).unwrap(), None);
     // every node drops it by the bound, here when it applies the kill
     sync(&mut lp, 0, 1);
-    assert!(!lp.peers[1].engine.holds_body(&c1, &t, &ak("/t/gone")));
+    assert!(!lp.peers[1].engine.body_not_dropped(&c1, &t, &ak("/t/gone")));
     assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/gone")).unwrap(), Some(s("final")));
 }
 
@@ -73,7 +73,7 @@ fn expiry_spec_commits_6() {
         lp.peers[i].drain_events();
         lp.peers[i].engine.tick().unwrap();
         assert_eq!(lp.peers[i].engine.get(&t, &ak("/t/brief")).unwrap(), None, "node {i}");
-        assert!(!lp.peers[i].engine.holds_body(&c, &t, &ak("/t/brief")));
+        assert!(!lp.peers[i].engine.body_not_dropped(&c, &t, &ak("/t/brief")));
         assert!(lp.peers[i].drain_events().iter().any(|e| matches!(e, Event::Changed { cause: Cause::Expiry, .. })));
     }
     // a late copy (from a relay that still had it) is stripped on arrival
@@ -111,16 +111,16 @@ fn purge_spec_commits_5() {
     m.set(t, &REG, &s("b's")).unwrap();
     m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("/t/reg") });
     lp.peers[1].commit(m).unwrap();
-    assert!(lp.peers[1].engine.holds_body(&secret, &t, &ak("/t/reg")));
+    assert!(lp.peers[1].engine.body_not_dropped(&secret, &t, &ak("/t/reg")));
     // a purges it
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("public")).unwrap();
     m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("/t/reg") });
     let pc = lp.peers[0].commit(m).unwrap().unwrap();
-    assert!(!lp.peers[0].engine.holds_body(&secret, &t, &ak("/t/reg")));
+    assert!(!lp.peers[0].engine.body_not_dropped(&secret, &t, &ak("/t/reg")));
     sync(&mut lp, 0, 1);
-    assert!(!lp.peers[1].engine.holds_body(&secret, &t, &ak("/t/reg")));
+    assert!(!lp.peers[1].engine.body_not_dropped(&secret, &t, &ak("/t/reg")));
     // node 2 gets the purge before the purged delta: the delta arrives purged
     let pks = lp.packages(1).unwrap();
     let purge_pk = pks.iter().find(|p| p.id == pc).unwrap().clone();
@@ -131,7 +131,7 @@ fn purge_spec_commits_5() {
     // a relay still holding the old full blob
     lp.deliver(2, &full).unwrap();
     assert!(lp.peers[2].engine.commit_ids().contains(&secret));
-    assert!(!lp.peers[2].engine.holds_body(&secret, &t, &ak("/t/reg")));
+    assert!(!lp.peers[2].engine.body_not_dropped(&secret, &t, &ak("/t/reg")));
     for i in 0..3 {
         assert_eq!(lp.peers[i].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("public")), "node {i}");
     }
@@ -433,7 +433,7 @@ fn late_entry_creator_dies_at_carried_nested_write_spec_crdt_4_8() {
     let pa = packages(&mut lp, 0).into_iter().find(|p| p.id == a).unwrap();
     lp.deliver(1, &pa).unwrap();
     let e = &mut lp.peers[1].engine;
-    assert!(e.holds_body(&a, &t, &k));
+    assert!(e.body_not_dropped(&a, &t, &k));
     assert_eq!(e.deaths(&a, &t, &k).unwrap(), Some((tb, tb)));
     e.replay_deaths(&t, &k).unwrap();
     assert_eq!(e.deaths(&a, &t, &k).unwrap(), Some((tb, tb)));
@@ -472,7 +472,7 @@ fn replay_dates_at_carried_write_in_held_entry_spec_crdt_4_8() {
     }
     let tx = lp.peers[2].engine.header(&x).unwrap().ts;
     let e = &mut lp.peers[3].engine;
-    assert!(e.header(&x).is_none() && e.holds_body(&s1, &t, &k) && e.holds_body(&y, &t, &k));
+    assert!(e.header(&x).is_none() && e.body_not_dropped(&s1, &t, &k) && e.body_not_dropped(&y, &t, &k));
     e.replay_deaths(&t, &k).unwrap();
     assert_eq!(e.deaths(&a, &t, &k).unwrap(), Some((tx, tx)));
 }
@@ -525,7 +525,7 @@ fn deaths_dated_from_first_superseder_held_spec_commits_5() {
         }
         let e = &mut lp.peers[3].engine;
         for x in &ids[..2] {
-            assert_eq!(e.holds_body(x, &t, &a), kept, "node 3 {name}");
+            assert_eq!(e.body_not_dropped(x, &t, &a), kept, "node 3 {name}");
         }
         assert_eq!(e.get(&t, &a).unwrap(), Some(s("three")));
     }
@@ -546,7 +546,7 @@ fn keep_at_most_zero_late_body_dropped_on_arrival_spec_commits_5() {
     }
     lp.deliver(1, &p1).unwrap();
     let e = &mut lp.peers[1].engine;
-    assert!(e.header(&c1).is_some() && !e.holds_body(&c1, &t, &ak("/t/gone")));
+    assert!(e.header(&c1).is_some() && !e.body_not_dropped(&c1, &t, &ak("/t/gone")));
     assert_eq!(e.get(&t, &ak("/t/gone")).unwrap(), Some(s("final")));
 }
 
@@ -572,18 +572,18 @@ fn snapshot_of_removed_entry_no_live_write_spec_commits_5() {
         assert!(e.body_live(&snap, &t, &a).unwrap(), "carries the entry");
         if dropped {
             e.drop_body(&snap, &t, &a).unwrap();
-            assert!(!e.holds_body(&snap, &t, &a) && e.body_live(&snap, &t, &a).unwrap(), "dropped live");
+            assert!(!e.body_not_dropped(&snap, &t, &a) && e.body_live(&snap, &t, &a).unwrap(), "dropped live");
         }
         let mut m = Mutation::new();
         m.op(t, k, PathOp { path: Vec::new(), op: Op::Remove(s("k1")) }).unwrap();
         let rm = lp.peers[0].commit(m).unwrap().unwrap();
         let e = &mut lp.peers[0].engine;
         if zero {
-            assert!(!e.holds_body(&snap, &t, &a), "dropped with the removal");
+            assert!(!e.body_not_dropped(&snap, &t, &a), "dropped with the removal");
         } else if dropped {
             assert!(!e.body_live(&snap, &t, &a).unwrap(), "dropped live, live no more");
         } else {
-            assert!(e.holds_body(&snap, &t, &a) && !e.body_live(&snap, &t, &a).unwrap(), "held, no live write");
+            assert!(e.body_not_dropped(&snap, &t, &a) && !e.body_live(&snap, &t, &a).unwrap(), "held, no live write");
             let ts = e.header(&rm).unwrap().ts;
             assert_eq!(e.body_keep(&snap, &t, &a).unwrap().at_most, Some(ts.wall_ms().0 + 600_000), "no grace");
         }
@@ -600,14 +600,13 @@ fn snapshot_of_removed_entry_no_live_write_spec_commits_5() {
 // last death no earlier. Seeds: OSIS_STRAYS_START, OSIS_STRAYS_SEEDS.
 #[test]
 fn deaths_never_early_random_spec_commits_5() {
-    let env = |k: &str| std::env::var(k).ok().and_then(|s| s.parse::<u64>().ok());
-    let start = env("OSIS_STRAYS_START").unwrap_or(0);
-    let n = env("OSIS_STRAYS_SEEDS").unwrap_or(24);
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_STRAYS_START", "OSIS_STRAYS_SEEDS", 0..24);
     // every failing seed is reported
     let t0 = std::time::Instant::now();
-    let failed: Vec<u64> = (start..start + n).filter(|&seed| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dating_history(seed))).is_err()).collect();
-    eprintln!("deaths_never_early_random: {n} seeds from {start}, {} failing, {:.1} s", failed.len(), t0.elapsed().as_secs_f64());
-    assert!(failed.is_empty(), "seeds failed: {failed:?} (replay one: OSIS_STRAYS_START=<seed> OSIS_STRAYS_SEEDS=1)");
+    let failed: Vec<u64> = seeds.range.clone().filter(|&seed| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dating_history(seed))).is_err()).collect();
+    let summary = format!("deaths_never_early_random: {seeds}, {} failing, {:.1} s", failed.len(), t0.elapsed().as_secs_f64());
+    osis_base::testenv::visible(seeds.overridden, &summary);
+    assert!(failed.is_empty(), "{summary}: seeds failed: {failed:?} (replay one: OSIS_STRAYS_START=<seed> OSIS_STRAYS_SEEDS=1)");
 }
 
 /// One history of `deaths_never_early_random_*`.
@@ -720,13 +719,13 @@ fn dating_history(seed: u64) {
         let e = &mut lp.peers[4].engine;
         if let Some(&(c, a)) = snaps.iter().find(|x| x.0 == p.id)
             && below(3) == 0
-            && e.holds_body(&c, &t, &aks[a])
+            && e.body_not_dropped(&c, &t, &aks[a])
         {
             e.drop_body(&c, &t, &aks[a]).unwrap();
         }
         if below(5) == 0
             && let Some(&(c, a)) = snaps.get(below(snaps.len().max(1) as u64) as usize)
-            && e.holds_body(&c, &t, &aks[a])
+            && e.body_not_dropped(&c, &t, &aks[a])
         {
             e.drop_body(&c, &t, &aks[a]).unwrap();
         }
@@ -734,7 +733,7 @@ fn dating_history(seed: u64) {
             && let Some(&(_, c)) = writes.get(below(writes.len() as u64) as usize)
         {
             for a in &aks {
-                if e.holds_body(&c, &t, a) {
+                if e.body_not_dropped(&c, &t, a) {
                     e.drop_body(&c, &t, a).unwrap();
                 }
             }
@@ -747,7 +746,7 @@ fn dating_history(seed: u64) {
     let ids: Vec<(osis_base::CommitId, bool)> = writes.iter().map(|x| (x.1, false)).chain(snaps.iter().map(|x| (x.0, true))).filter(|(c, _)| lp.peers[4].engine.header(c).is_some()).collect();
     for a in &aks {
         for (c, snap) in &ids {
-            if !lp.peers[4].engine.holds_body(c, &t, a) {
+            if !lp.peers[4].engine.body_not_dropped(c, &t, a) {
                 continue;
             }
             let x = lp.peers[4].engine.deaths(c, &t, a).unwrap();

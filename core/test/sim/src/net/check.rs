@@ -218,6 +218,8 @@ fn groups(sim: &mut NetSim) -> Res<()> {
         }
         let roster = roster.unwrap_or_default();
         let mut first: Option<(usize, Vec<String>)> = None;
+        // the first reader's aspects, per read
+        let mut first_keys: Vec<(Tid, osis_base::Ak)> = Vec::new();
         for n in 0..sim.nodes.len() {
             if sim.excused.contains(&n) {
                 continue;
@@ -236,29 +238,47 @@ fn groups(sim: &mut NetSim) -> Res<()> {
                 }
                 continue;
             }
-            let mut reads = Vec::new();
+            let (mut reads, mut keys) = (Vec::new(), Vec::new());
             for t in &g.items {
                 // ephemeral aspects: `ephemeral::check` (presence differs by who shares a server)
                 let aks = e.aspects(t).unwrap_or_default().into_iter().filter(|a| !super::ephemeral::is_ephemeral(a));
                 for ak in aks {
                     let v = e.get(t, &ak).map_err(|x| x.to_string());
                     reads.push(format!("{t} {} {v:?}", ak.as_str()));
+                    keys.push((*t, ak));
                 }
             }
             match &first {
-                None => first = Some((n, reads)),
+                None => (first, first_keys) = (Some((n, reads)), keys),
                 Some((m, f)) if *f != reads => {
-                    let d = f.iter().zip(reads.iter()).find(|(a, b)| a != b).map(|(a, b)| format!("{a} vs {b}")).unwrap_or_else(|| format!("{} vs {} reads", f.len(), reads.len()));
+                    let i = f.iter().zip(reads.iter()).position(|(a, b)| a != b).unwrap_or(f.len().min(reads.len()));
+                    let d = match (f.get(i), reads.get(i)) {
+                        (Some(a), Some(b)) => format!("{a} vs {b}"),
+                        _ => format!("{} vs {} reads", f.len(), reads.len()),
+                    };
+                    let key = first_keys.get(i).or(keys.get(i)).cloned();
                     let (m, items) = (*m, g.items.clone());
                     let gap = gap(sim, m, n, &items);
                     let views = views(sim, &g.g);
-                    return Err(sim.fail(format!("members {m} and {n} of group {} read differently at quiescence: {d}; {gap}; views {views:?}", g.g)));
+                    let dump = key.map(|(t, ak)| aspect_dump(sim, &t, &ak)).unwrap_or_default();
+                    return Err(sim.fail(format!("members {m} and {n} of group {} read differently at quiescence: {d}; {gap}; views {views:?}\n{dump}", g.g)));
                 }
                 Some(_) => {}
             }
         }
     }
     Ok(())
+}
+
+/// Divergence dump (failure detail): per node, the commits naming `(t, ak)` with each part's
+/// status (dropped, missing, valid) and the aspect's state.
+fn aspect_dump(sim: &mut NetSim, t: &Tid, ak: &osis_base::Ak) -> String {
+    let mut out = format!("aspect {t} {}:\n", ak.as_str());
+    for n in 0..sim.nodes.len() {
+        let Some(s) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { continue };
+        out.push_str(&format!("node {n}:\n{}", s.engine_mut().aspect_dump(t, ak)));
+    }
+    out
 }
 
 /// Each node's verdicts on the group's labels at each server (failure detail): writer, number of
