@@ -187,7 +187,7 @@ pub fn plaintexts(p: &mut osis_node::local_peer::Peer) -> Vec<Vec<u8>> {
 
 /// A thread per core, or the number in env `var`.
 pub fn threads(var: &str) -> usize {
-    std::env::var(var).ok().and_then(|x| x.parse().ok()).unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+    osis_base::testenv::u64_var(var).map_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()), |n| n as usize).max(1)
 }
 
 /// `f` over `items` on up to `threads` threads, results in order.
@@ -228,6 +228,12 @@ pub fn caught<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
 /// Prints each failing seed with `replay(seed)` as it fails, then a summary line, then panics
 /// listing every failure in seed order; else the results in seed order.
 pub fn run_seeds<T: Send>(name: &str, seeds: &[u64], threads_var: &str, replay: impl Fn(u64) -> String + Sync, f: impl Fn(u64) -> T + Sync) -> Vec<T> {
+    run_seeds_noted(name, seeds, false, threads_var, replay, f)
+}
+
+/// `run_seeds`, its summary line past libtest's capture when `visible` (a range from the
+/// environment: a passing run shows it without `--nocapture`).
+pub fn run_seeds_noted<T: Send>(name: &str, seeds: &[u64], visible: bool, threads_var: &str, replay: impl Fn(u64) -> String + Sync, f: impl Fn(u64) -> T + Sync) -> Vec<T> {
     let t0 = std::time::Instant::now();
     let results = par_map(seeds, threads(threads_var), |seed| {
         caught(|| Ok(f(seed))).map_err(|e| {
@@ -237,10 +243,11 @@ pub fn run_seeds<T: Send>(name: &str, seeds: &[u64], threads_var: &str, replay: 
         })
     });
     let fails: Vec<&String> = results.iter().filter_map(|r| r.as_ref().err()).collect();
-    eprintln!("{name}: {} seeds from {}, {} failing, {:.1} s", seeds.len(), seeds.first().copied().unwrap_or(0), fails.len(), t0.elapsed().as_secs_f64());
+    let summary = format!("{name}: {} seeds from {}, {} failing, {:.1} s", seeds.len(), seeds.first().copied().unwrap_or(0), fails.len(), t0.elapsed().as_secs_f64());
+    osis_base::testenv::visible(visible, &summary);
     if !fails.is_empty() {
         let list: Vec<&str> = fails.iter().map(|m| m.as_str()).collect();
-        panic!("{name}: {} of {} seeds failed:\n{}", fails.len(), seeds.len(), list.join("\n\n"));
+        panic!("{summary}\n{} of {} seeds failed:\n{}", fails.len(), seeds.len(), list.join("\n\n"));
     }
     results.into_iter().flatten().collect()
 }

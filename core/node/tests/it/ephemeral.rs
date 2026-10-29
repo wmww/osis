@@ -856,14 +856,19 @@ fn random_window_one_capped_server_spec_sync_9() {
     }
 }
 
+/// The tier-2 random-window seeds: OSIS_EPH_SEEDS (default 200) from OSIS_EPH_START (default 0).
+fn eph_seeds() -> std::ops::Range<u64> {
+    let s = osis_base::testenv::Seeds::from_env("OSIS_EPH_START", "OSIS_EPH_SEEDS", 0..200);
+    s.announce("random_window");
+    s.range
+}
+
 // the same with one server at a small cap: holders converge through what it holds (compaction
 // under a full server must neither loop nor stop with a holder's writes refused)
 #[test]
 #[ignore]
 fn random_window_one_capped_server_large() {
-    let start: u64 = std::env::var("OSIS_EPH_START").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
-    let n: u64 = std::env::var("OSIS_EPH_SEEDS").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
-    for seed in start..start + n {
+    for seed in eph_seeds() {
         eprintln!("seed {seed}");
         random_window_run_on(seed, true, false);
     }
@@ -882,9 +887,7 @@ fn random_window_converges_spec_sync_6() {
 #[test]
 #[ignore]
 fn random_window_converges_large() {
-    let start: u64 = std::env::var("OSIS_EPH_START").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
-    let n: u64 = std::env::var("OSIS_EPH_SEEDS").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
-    for seed in start..start + n {
+    for seed in eph_seeds() {
         eprintln!("seed {seed}");
         random_window_run(seed);
     }
@@ -903,9 +906,7 @@ fn random_window_inflight_spec_sync_9() {
 #[test]
 #[ignore]
 fn random_window_inflight_large() {
-    let start: u64 = std::env::var("OSIS_EPH_START").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
-    let n: u64 = std::env::var("OSIS_EPH_SEEDS").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
-    for seed in start..start + n {
+    for seed in eph_seeds() {
         eprintln!("seed {seed}");
         random_window_run_on(seed, false, true);
     }

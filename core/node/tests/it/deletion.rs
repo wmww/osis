@@ -233,13 +233,13 @@ fn erasing_edit_then_compaction_spec_commits_5() {
         let sent = net.sent_bytes;
         assert!(sent < 32 * 1024, "case {i}: an erasing edit sent {sent} bytes (the record is about 73 KB)");
         assert_eq!(snapshots(&mut net, a, &t, &ak), before, "case {i}: no re-snapshot per erasing edit");
-        assert!(net.engine(a).holds_body(&s1, &t, &ak), "case {i}: the old body keeps to the next compaction");
+        assert!(net.engine(a).body_not_dropped(&s1, &t, &ak), "case {i}: the old body keeps to the next compaction");
         assert!(net.engine(a).deaths(&s1, &t, &ak).unwrap().is_some());
         let at_server = blobs(&mut net, a, &l, &s1);
         let acts = net.sync(a).compact(&t, &ak).unwrap();
         net.actions(a, acts);
         net.run();
-        assert!(!net.engine(a).holds_body(&s1, &t, &ak), "case {i}");
+        assert!(!net.engine(a).body_not_dropped(&s1, &t, &ak), "case {i}");
         let ids = net.server_ids(sv, &l);
         assert!(at_server.iter().all(|b| !ids.contains(b)), "case {i}: the old body deleted at the server");
         net.blocked.clear();
@@ -247,7 +247,7 @@ fn erasing_edit_then_compaction_spec_commits_5() {
         let ec = net.engine(c);
         assert_eq!(ec.get_at(&t, &ak, &[osis_crdt::PathSeg::Key(s("k007"))]).unwrap(), Some(s(&"f".repeat(1100))), "case {i}");
         assert_eq!(ec.get_at(&t, &ak, &[osis_crdt::PathSeg::Key(s("secret"))]).unwrap(), None, "case {i}");
-        assert!(!ec.holds_body(&s1, &t, &ak));
+        assert!(!ec.body_not_dropped(&s1, &t, &ak));
     }
 }
 
@@ -272,12 +272,12 @@ fn live_body_goes_at_grace_bound_spec_commits_5() {
         let at_server = blobs(&mut net, a, &l, &s1);
         let bound = d + osis_base::format::AT_MOST_GRACE_MS;
         net.advance(bound / 2);
-        assert!(net.engine(a).holds_body(&s1, &t, &ak), "case {i}: kept before the bound");
+        assert!(net.engine(a).body_not_dropped(&s1, &t, &ak), "case {i}: kept before the bound");
         assert!(at_server.iter().all(|b| net.server_ids(sv, &l).contains(b)), "case {i}: no timed delete");
         assert_eq!(snapshots(&mut net, a, &t, &ak).len(), n, "case {i}: no carrier before the bound");
         net.advance(bound - bound / 2 + 1);
         net.run();
-        assert!(!net.engine(a).holds_body(&s1, &t, &ak), "case {i}: dropped at the bound");
+        assert!(!net.engine(a).body_not_dropped(&s1, &t, &ak), "case {i}: dropped at the bound");
         let ids = net.server_ids(sv, &l);
         assert!(at_server.iter().all(|b| !ids.contains(b)), "case {i}: deleted at the server");
         assert_eq!(snapshots(&mut net, a, &t, &ak).len(), n + 1, "case {i}: one carrier written at the bound");
@@ -331,12 +331,12 @@ fn text_partly_erased_kept_to_compaction_spec_commits_5() {
     let sent = net.sent_bytes;
     assert!(sent < 5 * chunk / 8, "a partial delete sent {sent} bytes of a {}-byte text", 5 * chunk);
     assert!(snapshots(&mut net, a, &t, &ak).is_empty(), "no whole-state snapshot");
-    assert!(net.engine(a).holds_body(&old, &t, &ak), "the partly erased body keeps to the next compaction");
+    assert!(net.engine(a).body_not_dropped(&old, &t, &ak), "the partly erased body keeps to the next compaction");
     assert!(net.engine(a).body_live(&old, &t, &ak).unwrap());
     let acts = net.sync(a).compact(&t, &ak).unwrap();
     net.actions(a, acts);
     net.run();
-    assert!(!net.engine(a).holds_body(&old, &t, &ak), "the old body goes at the compaction");
+    assert!(!net.engine(a).body_not_dropped(&old, &t, &ak), "the old body goes at the compaction");
     let ids_now = net.server_ids(sv, &l);
     assert!(at_server.iter().all(|b| !ids_now.contains(b)), "and at the server");
     let want = net.engine(a).get(&t, &ak).unwrap().unwrap();
@@ -348,7 +348,7 @@ fn text_partly_erased_kept_to_compaction_spec_commits_5() {
     let osis_base::Value::Str(text) = got else { panic!("a text reads as a string") };
     assert_eq!(text.len(), 5 * chunk - 20);
     assert!(!text.contains(marker));
-    assert!(!ec.holds_body(&old, &t, &ak));
+    assert!(!ec.body_not_dropped(&old, &t, &ak));
 }
 
 // spec/commits.md §5 (a deleted text element's creation stays a live write: a body whose
@@ -380,19 +380,19 @@ fn text_fully_erased_kept_to_grace_bound_spec_commits_5() {
     assert_eq!(net.engine(a).get(&t, &ak).unwrap().unwrap_or(s("")), s(""));
     assert!(net.engine(a).body_live(&typed, &t, &ak).unwrap(), "a deleted char's creation is a live write");
     net.advance(30 * 60_000);
-    assert!(net.engine(a).holds_body(&typed, &t, &ak), "held before the bound");
+    assert!(net.engine(a).body_not_dropped(&typed, &t, &ak), "held before the bound");
     assert!(at_server.iter().all(|b| net.server_ids(sv, &l).contains(b)), "and at the server");
     assert!(snapshots(&mut net, a, &t, &ak).is_empty(), "no snapshot before the bound");
     net.advance(31 * 60_000);
     net.run();
-    assert!(!net.engine(a).holds_body(&typed, &t, &ak), "dropped at the bound");
+    assert!(!net.engine(a).body_not_dropped(&typed, &t, &ak), "dropped at the bound");
     let ids = net.server_ids(sv, &l);
     assert!(at_server.iter().all(|b| !ids.contains(b)), "deleted at the server");
     net.blocked.clear();
     net.advance(10_000);
     let ec = net.engine(c);
     assert_eq!(ec.get(&t, &ak).unwrap().unwrap_or(s("")), s(""));
-    assert!(!ec.holds_body(&typed, &t, &ak));
+    assert!(!ec.body_not_dropped(&typed, &t, &ak));
 }
 
 // spec/commits.md §5 (a dropped body's liveness counts every write the state holds by dot, bare
@@ -434,11 +434,11 @@ fn dropped_snapshot_waits_for_lost_carrier_spec_sync_7() {
     assert!(!at_server.is_empty() && at_server.iter().all(|b| net.server_ids(sv, &l).contains(b)), "the snapshot is at the server");
     edit(&mut net, Some(Op::Insert { at: 0, items: vec![s("two")] }));
     edit(&mut net, None);
-    assert!(net.engine(a).holds_body(&s1, &t, &ak) && net.engine(a).body_live(&s1, &t, &ak).unwrap(), "the anchors are live writes");
+    assert!(net.engine(a).body_not_dropped(&s1, &t, &ak) && net.engine(a).body_live(&s1, &t, &ak).unwrap(), "the anchors are live writes");
     net.lose_uploads.insert(a);
     net.advance(61 * 60_000);
     net.run();
-    assert!(!net.engine(a).holds_body(&s1, &t, &ak), "dropped at the bound");
+    assert!(!net.engine(a).body_not_dropped(&s1, &t, &ak), "dropped at the bound");
     assert!(net.engine(a).body_live(&s1, &t, &ak).unwrap(), "dropped live, its anchors still in the state");
     assert!(snapshots(&mut net, a, &t, &ak).len() > 1, "a carrier written");
     let ids = net.server_ids(sv, &l);

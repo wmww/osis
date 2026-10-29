@@ -86,7 +86,7 @@ fn crash_every_write_of_a_purging_commit() {
         let v = e.get(&t, &reg).unwrap();
         let landed = v == Some(s("public"));
         assert!(landed || v == Some(s("secret")), "torn state after a crash at write {n}: {v:?}");
-        assert_eq!(e.holds_body(&secret, &t, &reg), !landed, "write {n}");
+        assert_eq!(e.body_not_dropped(&secret, &t, &reg), !landed, "write {n}");
         assert_eq!(e.commit_ids().len(), before + usize::from(landed), "write {n}");
         if !crashed {
             assert!(landed);

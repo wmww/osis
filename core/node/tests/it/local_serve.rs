@@ -143,14 +143,14 @@ fn keep_at_most_body_carried_on_local_label_spec_sync_7() {
     for _ in 0..4 {
         net.advance(1_000_000);
     }
-    assert!(net.engine(a).holds_body(&c1, &t, &kmap) && c1_held(&mut net), "kept and served before the grace bound");
+    assert!(net.engine(a).body_not_dropped(&c1, &t, &kmap) && c1_held(&mut net), "kept and served before the grace bound");
     assert!(!snap(&mut net), "no carrier before the bound");
     for _ in 0..4 {
         net.advance(1_000_000);
     }
     let v = net.engine(a).get(&t, &kmap).unwrap().unwrap();
     assert_eq!(v, osis_base::Value::Map([(k("k1"), k("v1b")), (k("k2"), k("v2"))].into_iter().collect()), "k2 is still read");
-    assert!(!net.engine(a).holds_body(&c1, &t, &kmap), "dropped at the grace bound");
+    assert!(!net.engine(a).body_not_dropped(&c1, &t, &kmap), "dropped at the grace bound");
     assert!(snap(&mut net), "k2 is carried under the label by a snapshot");
 }
 

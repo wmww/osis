@@ -243,6 +243,25 @@ impl Engine {
         self.run(current)
     }
 
+    /// Every known commit naming `(tid, ak)` with its part's status (dropped, missing, valid,
+    /// covered by), then the aspect's state. Failure detail (the sim's divergence dump).
+    #[doc(hidden)]
+    pub fn aspect_dump(&mut self, tid: &Tid, ak: &Ak) -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+        for (c, m) in self.core.ix.commits.iter() {
+            let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
+            let h = &m.header;
+            let dropped: Vec<usize> = m.dropped.iter().filter(|d| d.0 == ai).map(|d| d.1).collect();
+            let missing = m.missing.contains(&ai);
+            let valid = m.valid.get(ai).copied().unwrap_or(true);
+            let _ = writeln!(out, "  {c:?} {:?} by {} ts {:?}: dropped {dropped:?} missing {missing} valid {valid} covered by {:?}", h.kind, h.author, h.ts, m.covered_by.get(&ai));
+        }
+        let state = self.state(tid, ak).map(|s| format!("{s:?}")).unwrap_or_else(|e| format!("error {e}"));
+        let _ = writeln!(out, "  state {state}");
+        out
+    }
+
     /// Rebuilds the state of `(tid, ak)` from its held bodies and current state, as a validity
     /// flip does (tests: equals the state kept incrementally).
     #[doc(hidden)]

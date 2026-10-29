@@ -39,11 +39,11 @@ fn work_sets_seed_1() {
 #[test]
 #[ignore = "tier 2"]
 fn work_sets_match_full_passes() {
-    let seeds: u64 = std::env::var("OSIS_SIM_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(20);
-    let from: u64 = std::env::var("OSIS_SIM_FROM").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_SIM_FROM", "OSIS_SIM_SEEDS", 0..20);
+    seeds.announce("work_sets_match_full_passes");
     let only: Vec<String> = std::env::var("OSIS_SIM_ONLY").map(|s| s.split(',').map(String::from).collect()).unwrap_or_default();
     for (name, _) in osis_sim::SCENARIOS.iter().filter(|(n, _)| osis_sim::blocked(n).is_none() && (only.is_empty() || only.iter().any(|o| o == n))) {
-        for seed in from..from + seeds {
+        for seed in seeds.range.clone() {
             same(name, seed);
         }
     }

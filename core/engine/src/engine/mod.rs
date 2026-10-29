@@ -1053,6 +1053,9 @@ impl Tx<'_> {
     /// blob), and for a membership commit its `node/edges` row (`edges`: what the caller already
     /// read of `blob` with `edge_parts_of`, else decoded here).
     pub(crate) fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, edges: Option<&crate::apply::validity::EdgeParts>) -> Result<()> {
+        // a part is held, dropped or missing: never both of the last two (an open derives
+        // missing as neither in the blob nor dropped)
+        debug_assert!(meta.dropped.iter().all(|d| !meta.missing.contains(&d.0)), "{id:?}: parts both dropped and missing: dropped {:?} missing {:?}", meta.dropped, meta.missing);
         self.core.bodies.remove(id);
         self.core.mark_changed(*id);
         let v = [index::record_head(meta), blob.encode()].concat();

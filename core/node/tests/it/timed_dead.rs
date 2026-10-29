@@ -119,7 +119,7 @@ fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
         net.advance(osis_base::format::AT_MOST_GRACE_MS);
         net.advance(1_000);
         assert_eq!(at_server(&mut net, a, sv, &l, &c1).len(), 1, "kept: v1 is current");
-        assert!(net.engine(a).holds_body(&c1, &t, &gone));
+        assert!(net.engine(a).body_not_dropped(&c1, &t, &gone));
         net.set_online(late, true);
         net.run();
         let resync = net.sync(a).config().resync_ms;

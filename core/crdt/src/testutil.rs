@@ -15,11 +15,8 @@ use std::collections::BTreeMap;
 /// other runs (`OSIS_CRDT_SEED=7 cargo test --workspace`); unset, the committed seed. Hashed: a
 /// small value xored into a loop's consecutive seeds would only reorder them.
 pub fn seeded(seed: u64) -> u64 {
-    match std::env::var("OSIS_CRDT_SEED").ok().filter(|v| !v.is_empty()) {
-        // (a zero xorshift state never leaves zero)
-        Some(v) => (seed ^ splitmix(v.parse::<u64>().unwrap_or_else(|_| panic!("OSIS_CRDT_SEED={v:?} is not a decimal u64")))).max(1),
-        None => seed,
-    }
+    // (a zero xorshift state never leaves zero)
+    osis_base::testenv::u64_var("OSIS_CRDT_SEED").map_or(seed, |v| (seed ^ splitmix(v)).max(1))
 }
 
 fn splitmix(x: u64) -> u64 {

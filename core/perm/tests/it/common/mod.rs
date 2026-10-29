@@ -455,10 +455,7 @@ pub fn snap_world(h: &membership_model::snapshot::SHist) -> SnapWorld {
 /// A random run's seed: `seed`, or `seed` xor `OSIS_PERM_SEED` (decimal) to sample other
 /// histories (`OSIS_PERM_SEED=1 cargo test --workspace -- --ignored`).
 pub fn seeded(seed: u64) -> u64 {
-    match std::env::var("OSIS_PERM_SEED") {
-        Ok(v) => seed ^ v.parse::<u64>().unwrap_or_else(|_| panic!("OSIS_PERM_SEED={v:?} is not a decimal u64")),
-        Err(_) => seed,
-    }
+    osis_base::testenv::u64_var("OSIS_PERM_SEED").map_or(seed, |v| seed ^ v)
 }
 
 /// Tier-2 random runs are split into this many shards, each with its own seed (`shard_seed`);
@@ -471,7 +468,7 @@ pub const SHARDS: u64 = 16;
 fn shard_permits() -> &'static (std::sync::Mutex<usize>, std::sync::Condvar) {
     static P: std::sync::OnceLock<(std::sync::Mutex<usize>, std::sync::Condvar)> = std::sync::OnceLock::new();
     P.get_or_init(|| {
-        let n = std::env::var("OSIS_PERM_THREADS").ok().and_then(|x| x.parse().ok()).unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
+        let n = osis_base::testenv::u64_var("OSIS_PERM_THREADS").map_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()), |n| n as usize);
         (std::sync::Mutex::new(n.max(1)), std::sync::Condvar::new())
     })
 }

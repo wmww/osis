@@ -456,7 +456,7 @@ fn dating(p: &mut Peer, o: &Oracle, now: WallMs) -> Option<String> {
             }
             let (x, y) = (e.deaths(&id, &a.tid, &a.ak).unwrap(), o.deaths.get(&k).copied().flatten());
             let what = format!("{id:?} {:?} {}: here {x:?}, earliest superseders {y:?}", a.tid, a.ak.as_str());
-            if e.holds_body(&id, &a.tid, &a.ak) {
+            if e.body_not_dropped(&id, &a.tid, &a.ak) {
                 let ok = match (x, y, copies) {
                     (Some(x), Some(y), false) => x.0 >= y.0 && x.1 >= y.1,
                     (None, None, false) | (_, None, true) => true,
@@ -492,7 +492,7 @@ fn facts_text(e: &mut osis_node::Engine) -> String {
             let at_most = a.retention.at_most.rel.is_some() || a.retention.at_most.abs.is_some();
             let approx = a.retention.at_most.rel.is_some();
             let valid = e.body_valid(&id, &a.tid, &a.ak).unwrap();
-            let held = e.holds_body(&id, &a.tid, &a.ak);
+            let held = e.body_not_dropped(&id, &a.tid, &a.ak);
             // the node-form counters its writes own (`-`: commit form, a snapshot)
             let owns = if h.form == osis_commit::Form::Node && a.lo < a.hi { format!("N{:?}:{}-{}", h.author, a.lo, a.hi) } else { "-".into() };
             let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}|{:?}|{approx}|{owns}", a.tid, a.ak.as_str(), h.ts);
@@ -1069,14 +1069,13 @@ fn focused_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
 /// `OSIS_ORDER_LEN=n` set the first seed, how many seeds and steps; a seed's history and orders
 /// depend on the seed, the length and the test alone.
 fn run(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: fn(u64, usize, Cfg) -> Vec<Step>) {
-    let env = |k: &str| std::env::var(k).ok().and_then(|x| x.parse::<u64>().ok());
-    let only = env("OSIS_ORDER_SEED");
-    let start = env("OSIS_ORDER_START").unwrap_or(seeds.start);
-    let seeds = start..env("OSIS_ORDER_SEEDS").map_or(start + (seeds.end - seeds.start), |n| start + n);
-    let len = env("OSIS_ORDER_LEN").map_or(len, |n| n as usize);
+    use osis_base::testenv::{Seeds, u64_var};
+    let only = u64_var("OSIS_ORDER_SEED");
+    let range = Seeds::from_env("OSIS_ORDER_START", "OSIS_ORDER_SEEDS", seeds);
+    let len = u64_var("OSIS_ORDER_LEN").map_or(len, |n| n as usize);
     let seeds: Vec<u64> = match only {
         Some(o) => vec![o],
-        None => seeds.collect(),
+        None => range.range.clone().collect(),
     };
     let settings: Vec<String> = std::env::vars().filter(|(k, _)| k.starts_with("OSIS_ORDER_")).map(|(k, v)| format!("{k}={v}")).collect();
     let t0 = std::time::Instant::now();
@@ -1099,8 +1098,9 @@ fn run(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: 
     });
     let tried: usize = results.iter().map(|x| x.0).sum();
     let fails: Vec<String> = results.into_iter().filter_map(|x| x.1).collect();
-    eprintln!("order::{name}: {} seeds from {}, {len} steps, {tried} orders in the passing ones, {} failing, {:.1} s (settings: {settings:?})", seeds.len(), seeds.first().copied().unwrap_or(0), fails.len(), t0.elapsed().as_secs_f64());
-    assert!(fails.is_empty(), "{} of {} histories judged differently by arrival order (settings: {settings:?}):\n{}", fails.len(), seeds.len(), fails.join("\n\n"));
+    let summary = format!("order::{name}: {} seeds from {}, {len} steps, {tried} orders in the passing ones, {} failing, {:.1} s (settings: {settings:?})", seeds.len(), seeds.first().copied().unwrap_or(0), fails.len(), t0.elapsed().as_secs_f64());
+    osis_base::testenv::visible(!settings.is_empty(), &summary);
+    assert!(fails.is_empty(), "{summary}\n{} of {} histories judged differently by arrival order:\n{}", fails.len(), seeds.len(), fails.join("\n\n"));
 }
 
 // spec/requirements.md Decentralization, spec/permissions.md §5 and §5.2, spec/crdt.md §4.6:
@@ -1256,7 +1256,7 @@ fn dropped_snapshot_rebuilds_alike_spec_commits_5() {
     let mut p = deliver(&played, &(0..played.packs.len()).collect::<Vec<_>>());
     let snap = p.engine.commit_ids().into_iter().find(|id| p.engine.header(id).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot)).unwrap();
     let a = p.engine.header(&snap).unwrap().aspects[0].clone();
-    assert!(!p.engine.holds_body(&snap, &a.tid, &a.ak), "the snapshot dropped dead");
+    assert!(!p.engine.body_not_dropped(&snap, &a.tid, &a.ak), "the snapshot dropped dead");
     assert!(!p.engine.body_live(&snap, &a.tid, &a.ak).unwrap(), "the undo reset it");
 }
 
@@ -1334,7 +1334,7 @@ fn undone_entry_body_dropped_at_once_spec_commits_5() {
     let p = deliver(&played, &(0..b + 3).collect::<Vec<_>>());
     let w = &played.packs[b + 1].id;
     let a = p.engine.header(w).unwrap().aspects[0].clone();
-    assert!(!p.engine.holds_body(w, &a.tid, &a.ak), "an entry's tombstone is no write of its creator");
+    assert!(!p.engine.body_not_dropped(w, &a.tid, &a.ak), "an entry's tombstone is no write of its creator");
 }
 
 // spec/commits.md §5 (a drop is final: nodes holding the same commits may differ in whether a

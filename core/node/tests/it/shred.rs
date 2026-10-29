@@ -66,7 +66,7 @@ fn purged_body_unrecoverable_spec_commits_5() {
     m.set(t, &REG, &s("public")).unwrap();
     m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("/t/reg") });
     lp.peers[0].commit(m).unwrap();
-    assert!(!lp.peers[0].engine.holds_body(&secret, &t, &ak("/t/reg")));
+    assert!(!lp.peers[0].engine.body_not_dropped(&secret, &t, &ak("/t/reg")));
     assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "purged content recovered");
 }
 
@@ -84,7 +84,7 @@ fn purged_after_pending_unrecoverable_spec_commits_5() {
     assert!(matches!(lp.deliver(1, &pk).unwrap(), osis_node::Ingested::Pending(..)));
     filler(&mut lp, 1, 6);
     lp.sync(0, 1).unwrap();
-    assert!(lp.peers[1].engine.holds_body(&secret, &t, &ak("/t/reg")));
+    assert!(lp.peers[1].engine.body_not_dropped(&secret, &t, &ak("/t/reg")));
     filler(&mut lp, 1, 6);
     lp.advance(5);
     let mut m = Mutation::new();
@@ -92,7 +92,7 @@ fn purged_after_pending_unrecoverable_spec_commits_5() {
     m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("/t/reg") });
     lp.peers[0].commit(m).unwrap();
     lp.sync(0, 1).unwrap();
-    assert!(!lp.peers[1].engine.holds_body(&secret, &t, &ak("/t/reg")));
+    assert!(!lp.peers[1].engine.body_not_dropped(&secret, &t, &ak("/t/reg")));
     assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "purged content recovered from the pending copy");
 }
 
@@ -106,7 +106,7 @@ fn expired_body_unrecoverable_spec_commits_6() {
     filler(&mut lp, 0, 6);
     lp.advance(3_600_001);
     lp.peers[0].engine.tick().unwrap();
-    assert!(!lp.peers[0].engine.holds_body(&c, &t, &ak("/t/brief")));
+    assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("/t/brief")));
     assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "expired content recovered");
 }
 
@@ -121,7 +121,7 @@ fn kept_at_most_zero_unrecoverable_spec_commits_5() {
     filler(&mut lp, 0, 6);
     lp.advance(5);
     set(&mut lp, 0, t, &GONE, "final");
-    assert!(!lp.peers[0].engine.holds_body(&c, &t, &ak("/t/gone")));
+    assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("/t/gone")));
     assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "dropped content recovered");
 }
 
@@ -148,7 +148,7 @@ fn kept_at_most_zero_paged_unrecoverable_spec_commits_5() {
     assert!(recoverable(&mut lp.peers[0], marker.as_bytes()), "the attack finds live content");
     lp.advance(5);
     edit(&mut lp, "final");
-    assert!(!lp.peers[0].engine.holds_body(&c, &t, &ak("/t/gonemap")));
+    assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("/t/gonemap")));
     assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "dropped content recovered");
     assert_eq!(lp.peers[0].engine.get_at(&t, &ak("/t/gonemap"), &[osis_crdt::PathSeg::Key(s("k047"))]).unwrap(), Some(s("final")));
 }
@@ -280,7 +280,7 @@ fn purged_large_value_unrecoverable_spec_commits_5() {
     m.set(t, &BLOB, &Value::Bytes(b"small".to_vec())).unwrap();
     m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("/t/blob") });
     lp.peers[0].commit(m).unwrap();
-    assert!(!lp.peers[0].engine.holds_body(&secret, &t, &ak("/t/blob")));
+    assert!(!lp.peers[0].engine.body_not_dropped(&secret, &t, &ak("/t/blob")));
     assert!(!opens(&mut lp.peers[0]), "a purged chunk opened");
 }
 
@@ -318,12 +318,12 @@ fn at_most_zero_live_body_dropped_at_bound_unrecoverable_spec_commits_5() {
         let cost = written(&mut lp.peers[0]) - before;
         assert!(cost < 96 * 1024, "compact {compact}: an erasing edit wrote {cost} bytes (the record is about 330 KB)");
         let e = &mut lp.peers[0].engine;
-        assert!(e.holds_body(&body, &t, &k), "compact {compact}: the body keeps to the next compaction");
+        assert!(e.body_not_dropped(&body, &t, &k), "compact {compact}: the body keeps to the next compaction");
         let first = e.deaths(&body, &t, &k).unwrap().unwrap().0.wall_ms().0;
         assert_eq!(e.body_keep(&body, &t, &k).unwrap().at_most, Some(first + osis_base::format::AT_MOST_GRACE_MS));
         lp.advance(osis_base::format::AT_MOST_GRACE_MS + 1);
         lp.peers[0].engine.tick().unwrap();
-        assert!(!lp.peers[0].engine.holds_body(&body, &t, &k), "compact {compact}");
+        assert!(!lp.peers[0].engine.body_not_dropped(&body, &t, &k), "compact {compact}");
         assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "compact {compact}: erased content recovered");
         assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[osis_crdt::PathSeg::Key(s("k007"))]).unwrap(), Some(s(&"f".repeat(1100))));
     }

@@ -540,7 +540,7 @@ impl Engine {
         let mut out = Vec::new();
         for (c, aspects) in due {
             let Some((t, a)) = aspects.first().cloned() else { continue };
-            if self.holds_body(&c, &t, &a) && self.body_keep(&c, &t, &a)?.at_most.is_some_and(|b| b <= self.now().0) && self.body_live(&c, &t, &a)? {
+            if self.body_not_dropped(&c, &t, &a) && self.body_keep(&c, &t, &a)?.at_most.is_some_and(|b| b <= self.now().0) && self.body_live(&c, &t, &a)? {
                 out.push((c, aspects));
             }
         }
@@ -617,8 +617,9 @@ impl Engine {
         Ok(live)
     }
 
-    /// Whether a body is held (not dropped).
-    pub fn holds_body(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
+    /// Whether `c` is known with an aspect `(tid, ak)` whose body is not dropped: true for a
+    /// missing part too (`Engine::aspect_dump` shows which).
+    pub fn body_not_dropped(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
         let Some(m) = self.core.ix.commits.get(c) else { return false };
         let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { return false };
         !m.dropped.contains(&(ai, 0))

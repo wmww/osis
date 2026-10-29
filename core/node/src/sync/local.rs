@@ -92,14 +92,14 @@ impl SyncEngine {
             // a settled judgment holds while both bodies are held (a pair goes once either is
             // dropped: a drop is a trigger, so the pair is looked at then)
             let k = (s, c, *t, ak.clone());
-            let both = self.engine.holds_body(&s, t, ak) && self.engine.holds_body(&c, t, ak);
+            let both = self.engine.body_not_dropped(&s, t, ak) && self.engine.body_not_dropped(&c, t, ak);
             if self.covered_judged.contains(&k) {
                 if both {
                     continue;
                 }
                 self.covered_judged.remove(&k);
             }
-            if !self.engine.holds_body(&c, t, ak) {
+            if !self.engine.body_not_dropped(&c, t, ak) {
                 continue;
             }
             let Some(h) = self.engine.header(&c) else { continue };

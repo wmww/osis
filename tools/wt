@@ -57,6 +57,22 @@ def disk_gb(root):
     return total / 2**30
 
 
+def freed_gb(root):
+    """What deleting `root` frees: inodes whose every hardlink is inside it (rustc hardlinks a new
+    incremental session's unchanged files to the previous one, which stays)."""
+    links, size = {}, {}
+    for dirpath, _, files in os.walk(root):
+        for f in files:
+            try:
+                st = os.lstat(os.path.join(dirpath, f))
+            except OSError:
+                continue
+            k = (st.st_dev, st.st_ino)
+            links[k] = links.get(k, 0) + 1
+            size[k] = (st.st_nlink, st.st_blocks * 512)
+    return sum(b for k, (n, b) in size.items() if links[k] >= n) / 2**30
+
+
 def prune_incremental(tgt):
     """rustc keeps each unit's previous incremental session until the unit next compiles; on a free
     worktree drop every session but the newest per unit (no cold build). Returns GB freed."""
@@ -65,7 +81,7 @@ def prune_incremental(tgt):
         for unit in inc.iterdir():
             sessions = sorted((d for d in unit.glob("s-*") if d.is_dir()), key=lambda d: d.stat().st_mtime)
             for d in sessions[:-1]:
-                freed += disk_gb(d)
+                freed += freed_gb(d)
                 shutil.rmtree(d, ignore_errors=True)
                 lock = d.parent / ("-".join(d.name.split("-")[:3]) + ".lock")
                 lock.unlink(missing_ok=True)
