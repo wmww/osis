@@ -93,6 +93,7 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `socket2` 0.6 (transport, feature `lan`, optional; default features; already in tokio's `net` tree): the IPv6-only LAN socket beside the IPv4 one at the same port (`set_only_v6` before bind, which std cannot do).
 - `masonry` 0.4.0 (GUI workspace only: kit, app; pinned `=`, re-exported as `osis_kit::masonry`, notes/app.md Toolkit): the retained widget tree, with Vello, Parley, AccessKit and wgpu under it. Pulls the GUI stack (~300 crates); never in a core build.
 - `masonry_winit` 0.4.0 (GUI workspace only: kit; pinned `=`; carried patched in kit/patches/masonry_winit, notes/app.md Patches): the winit event loop and windows for Masonry.
+- `jiff` 0.2 (GUI workspace only: app; default features): civil time and the system time zone (tzdb from the OS) for showing event times in the viewer's zone (app/src/time.rs).
 - Fonts (GUI workspace only: kit/assets/fonts/<family>/{font.ttf, OFL.txt}, compiled in with `include_bytes!`; notes/theming.md): Inter, DM Sans, Figtree, Lexend, Atkinson Hyperlegible Next, Nunito, Literata, JetBrains Mono, variable TTFs from google/fonts, SIL OFL 1.1 each.
 - Planned, added with a line here when needed: arbitrary (fuzz only). The cli needs no tokio of its own (it polls the API's futures on its thread and syncs on `Runtime::Own`; `serve` runs osis-server's runtime).
 

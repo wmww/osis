@@ -78,6 +78,10 @@ enum Act {
     Confirm,
     Cancel,
     Undo(Tid),
+    /// Show the week `n` weeks from this one.
+    Week(i64),
+    /// Move an event (ms) and lengthen it (ms).
+    Nudge(Tid, i64, i64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +99,8 @@ struct ViewState {
     picker: bool,
     /// A placement into a shared tag awaiting confirmation: (thing, tag, who will see it).
     pending: Option<(Tid, Tid, String)>,
+    /// The calendar's week, relative to this one.
+    week: i64,
 }
 
 /// A text field of the open thing.
@@ -241,11 +247,15 @@ impl Ui {
             self.build(ctx, screen)?;
         }
         self.fill_slots(ctx, screen)?;
-        if rebuild && std::mem::take(&mut self.focus_title) {
-            let id = self.editor.as_ref().and_then(|e| e.fields.iter().find(|f| f.key == FieldKey::Name)).and_then(|f| f.id);
-            if let Some(id) = id {
-                ctx.render_root(self.window).focus_on(Some(id));
-            }
+        if rebuild {
+            // focus rule: a new screen puts the keyboard in a text field (home's search, a new
+            // thing's title) or nowhere, never on a tile the user did not choose by Tab
+            let id = match screen {
+                Screen::Home => self.search_ids.first().copied(),
+                Screen::Thing(_) if std::mem::take(&mut self.focus_title) => self.editor.as_ref().and_then(|e| e.fields.iter().find(|f| f.key == FieldKey::Name)).and_then(|f| f.id),
+                Screen::Thing(_) => None,
+            };
+            ctx.render_root(self.window).focus_on(id);
         }
         self.watch()?;
         if rebuild || self.diag.is_some() {
@@ -433,6 +443,11 @@ impl Ui {
                 Ok(())
             }
             Act::RemoveTag(t, g) => self.data.remove_tag(t, g),
+            Act::Week(n) => {
+                self.view.week = n;
+                Ok(())
+            }
+            Act::Nudge(t, by, longer) => self.data.nudge(t, by, longer),
             Act::Undo(t) => {
                 // the sessions hold the text before the undo: reopen them
                 self.editor = None;

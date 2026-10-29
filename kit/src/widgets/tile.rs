@@ -27,6 +27,8 @@ pub enum TileStyle {
 pub enum TileIcon {
     Icon(Icon),
     Initials(String),
+    /// No icon: a thin bar in the tile's colour (dense lists such as calendar days).
+    Bar,
 }
 
 type Texts = (Layout<BrushIndex>, Layout<BrushIndex>, Option<Layout<BrushIndex>>);
@@ -65,6 +67,9 @@ impl Tile {
     }
 
     fn icon_size(&self) -> f64 {
+        if self.icon == TileIcon::Bar {
+            return 3.0;
+        }
         match self.style {
             TileStyle::Row => 30.0,
             _ => 38.0,
@@ -146,7 +151,7 @@ impl Widget for Tile {
         let s = text::layout(fcx, lcx, &look, &self.sub, ss, 400.0, None);
         let ini = match &self.icon {
             TileIcon::Initials(i) => Some(text::layout(fcx, lcx, &look, i, if self.style == TileStyle::Row { 11.0 } else { 13.0 }, 700.0, None)),
-            TileIcon::Icon(_) => None,
+            TileIcon::Icon(_) | TileIcon::Bar => None,
         };
         let line = f64::from(n.height()) + if self.sub.is_empty() { 0.0 } else { f64::from(s.height()) };
         self.texts = Some((n, s, ini));
@@ -222,6 +227,11 @@ impl Widget for Tile {
                 scene.stroke(&Stroke::new(1.5).with_dashes(0.0, [6.0, 4.0]), skew, c, None, &r);
             }
         }
+        // keyboard focus is always visible: Space and Enter press what it rings
+        if ctx.is_focus_target() {
+            let ring = RoundedRect::from_rect(size.to_rect().inset(-1.5), (self.radius() - 1.5).max(0.0));
+            scene.stroke(&Stroke::new(2.0), skew, look.accent, None, &ring);
+        }
         let (pv, ph) = self.pad();
         let ic = self.icon_size();
         let white = self.white();
@@ -234,7 +244,10 @@ impl Widget for Tile {
             _ if white => (Some(fade(Color::WHITE, 0.22)), Color::WHITE),
             _ => (Some(mix(tint, Color::WHITE, 0.2)), Color::WHITE),
         };
-        if let Some(bg) = icon_bg {
+        if self.icon == TileIcon::Bar {
+            let bar = RoundedRect::from_rect(Rect::new(ph, pv, ph + ic, size.height - pv), 1.5);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, if white { Color::WHITE } else { tint }, None, &bar);
+        } else if let Some(bg) = icon_bg {
             scene.fill(Fill::NonZero, Affine::IDENTITY, bg, None, &ir);
         }
         let Some((n, s, ini)) = &self.texts else { return };
@@ -252,7 +265,7 @@ impl Widget for Tile {
         // name and sub line, clipped to the tile
         let sh = if self.sub.is_empty() { 0.0 } else { f64::from(s.height()) };
         let (tx, ty) = match self.style {
-            TileStyle::Row => (ph + ic + self.sp(10.0), (size.height - f64::from(n.height()) - sh) / 2.0),
+            TileStyle::Row => (ph + ic + self.sp(if self.icon == TileIcon::Bar { 7.0 } else { 10.0 }), (size.height - f64::from(n.height()) - sh) / 2.0),
             _ => (ph, size.height - pv - f64::from(n.height()) - sh),
         };
         let clip = Rect::new(tx, 0.0, size.width - ph.min(8.0), size.height);
