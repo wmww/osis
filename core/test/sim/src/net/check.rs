@@ -27,6 +27,8 @@ use std::collections::{BTreeMap, BTreeSet};
 const IDLE_ROUNDS: u64 = 3;
 
 pub fn quiescent(sim: &mut NetSim) -> Res<()> {
+    // first: a window held unevenly also shows as a durable `/group` read divergence
+    super::ephemeral::check(sim)?;
     convergence(sim)?;
     pending(sim)?;
     labels(sim)?;
@@ -236,7 +238,8 @@ fn groups(sim: &mut NetSim) -> Res<()> {
             }
             let mut reads = Vec::new();
             for t in &g.items {
-                let aks = e.aspects(t).unwrap_or_default();
+                // ephemeral aspects: `ephemeral::check` (presence differs by who shares a server)
+                let aks = e.aspects(t).unwrap_or_default().into_iter().filter(|a| !super::ephemeral::is_ephemeral(a));
                 for ak in aks {
                     let v = e.get(t, &ak).map_err(|x| x.to_string());
                     reads.push(format!("{t} {} {v:?}", ak.as_str()));

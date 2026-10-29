@@ -36,6 +36,12 @@ pub fn rng(seed: u64) -> SeedRng {
     SeedRng { rng: Rng(eff), seed, eff }
 }
 
+/// The generator of a fixed-seed test: `seed` whatever `OSIS_CRDT_SEED` says (thresholds over a
+/// committed seed set must not shift with it).
+pub fn fixed(seed: u64) -> SeedRng {
+    SeedRng { rng: Rng(seed.max(1)), seed, eff: seed.max(1) }
+}
+
 pub struct SeedRng {
     rng: Rng,
     seed: u64,

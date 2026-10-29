@@ -182,3 +182,27 @@ fn work_sets_seed_15110() {
 fn coverer_revoked() {
     ok("coverer_revoked", 1);
 }
+
+// notes/ephemeral.md, spec/sync.md §9: ephemeral, presence and signal writes on a window and a
+// durable item under faults; holders converge, presence follows its author, signals once.
+#[test]
+fn ephemeral() {
+    let r = ok("ephemeral", 1);
+    assert!(r.writes > 20 && r.crashes > 0, "{r:?}");
+}
+
+// spec/sync.md §9 (holders upload what a server lacks): a plain entry the capped server refused
+// went up again once others' deletions made room (it stayed out for good: divergence at
+// quiescence).
+#[test]
+fn ephemeral_capped_seed_14() {
+    ok("ephemeral_capped", 14);
+}
+
+// spec/sync.md §9 (compaction on a cap refusal): a refused cover is compacted into a fresh cover
+// at every refusal (message storm).
+#[test]
+#[ignore = "issues/eph-cover-livelock.md"]
+fn repro_ephemeral_seed_83() {
+    ok("ephemeral", 83);
+}

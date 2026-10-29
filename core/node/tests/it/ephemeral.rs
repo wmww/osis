@@ -1172,12 +1172,13 @@ fn bytes_under_stuck_entry(stuck: usize) -> usize {
 // spec/sync.md §9 (compaction on a cap refusal): an own entry the server refuses for good (one
 // write over the cap) does not make its holder compact and re-upload it at every other node's
 // write (it did: 5.5x the bytes, one forced compaction per foreign write); only another holder's
-// cover re-arms a compaction for an own refused cover
+// cover re-arms a compaction for an own refused cover; the refused entry goes up again after 1, 2,
+// 4.. deletions under the label (room may have been made: `eph_room`), a few times here
 #[test]
 fn server_cap_stuck_entry_no_churn_spec_sync_9() {
     let fits = bytes_under_stuck_entry(100);
     let stuck = bytes_under_stuck_entry(7_000);
-    assert!(stuck < fits + fits / 4, "{stuck} bytes sent with a refused entry held, {fits} without");
+    assert!(stuck < fits + fits / 2, "{stuck} bytes sent with a refused entry held, {fits} without");
 }
 
 /// Upload messages nodes sent so far (osis-proto message kind 10).

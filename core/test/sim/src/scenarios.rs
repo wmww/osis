@@ -4,6 +4,7 @@
 use crate::dice::Dice;
 use crate::harness::{ClockSpec, Config, Failure, NetFaults, Report, Res, Sim, Weights};
 use crate::net::scenarios as net;
+use crate::net::ephemeral as net_ephemeral;
 use crate::net::{adversary, library, skew};
 use crate::workload;
 use osis_base::format::MAX_DRIFT_MS;
@@ -60,6 +61,8 @@ pub const SCENARIOS: &[(&str, Scenario)] = &[
     ("tombstone_liar", adversary::tombstone_liar),
     ("future_format", skew::future_format),
     ("newer_schema", skew::newer_schema),
+    ("ephemeral", net_ephemeral::ephemeral),
+    ("ephemeral_capped", net_ephemeral::ephemeral_capped),
 ];
 
 /// Scenarios a known engine bug breaks, with the issue: the sweep skips them unless asked;

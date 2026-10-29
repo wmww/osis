@@ -1,0 +1,7 @@
+# Forced ephemeral compaction loops against a full server
+> Summary: Sim `ephemeral` seed 83: a node whose own cover a capped server refused (`own_full`) compacts again at every refusal; each new cover absorbs only its refused predecessor plus something that is not dropped, so the held set stays the same and a fresh cover goes up and is refused thousands of times (message storm, no server log change).
+> Tags: node, sim
+
+- Repro: `osis_sim::replay("ephemeral", 83)` (ignored test `repro_ephemeral_seed_83` in core/test/sim/tests/it/net.rs). Node 2 (reaches only the capped s0) at quiescence: `eph_step` with `own_full` set builds a cover through `compact_ephemeral_if(.., frees)`; it is refused (code 12), re-arming `own_full`; repeat. Between rounds the node's held ephemeral commits are unchanged except the newest own cover (the previous one absorbed), several foreign plain commits present at s0 stay held.
+- So `covered.len() >= 2` and `frees` pass while the cover frees nothing at the server: the covered commits are not all dropped (absorption listed on an aspect the cover carries no delta for, e.g. `/created`, or parts on non-picked aspects?), and the commit counted for `frees` keeps its entry at s0 (foreign entries are not this node's to delete).
+- Wanted: a forced compaction only when it shrinks what the refusing server holds (it deletes an entry there that this node uploaded, or drops a held commit with an entry there), and never a cover whose absorbed set is just the previous refused cover.

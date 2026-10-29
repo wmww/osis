@@ -236,10 +236,9 @@ pub(crate) struct Follows {
 /// records and embedded ones included), then a random text op (undelete of part of a deleted
 /// run, delete, move, insert, now and then a replace), `n` times. After every join the read
 /// equals the model's text slot and the cached placement a whole pass (`check_lin`).
-pub(crate) fn snapshot_then_edit(seed: u64, upgraded: bool, n: usize) -> Follows {
+pub(crate) fn snapshot_then_edit(mut r: crate::testutil::SeedRng, upgraded: bool, n: usize) -> Follows {
     use crdt_model::stamp::Dot as MDot;
     use crdt_model::state::{Anchor as MAnchor, Composite};
-    let mut r = crate::testutil::rng(seed | 1);
     let mut deltas: Vec<MFrag> = history(&mut r, &[Ty::Text], 3, 8).into_iter().map(|c| c.delta).collect();
     let mut m = None;
     for d in &deltas {
@@ -352,14 +351,14 @@ proptest! {
     /// the cached placement follows writes that split a range record.
     #[test]
     fn snapshot_text_edits_match_model_spec_6(seed in any::<u64>()) {
-        snapshot_then_edit(seed, false, 30);
+        snapshot_then_edit(crate::testutil::rng(seed | 1), false, 30);
     }
 
     /// §6.1, §7 (`seq_lin`): the same over a text upgraded from a string (embedded characters,
     /// `Derived` dots and anchors at them, held or virtual).
     #[test]
     fn snapshot_slots_edits_match_model_spec_7(seed in any::<u64>()) {
-        snapshot_then_edit(seed, true, 30);
+        snapshot_then_edit(crate::testutil::rng(seed | 1), true, 30);
     }
 }
 
@@ -369,7 +368,7 @@ proptest! {
 fn range_splits_follow_cache_spec_6() {
     let mut t = Follows::default();
     for seed in 0..24 {
-        let x = snapshot_then_edit(seed, false, 30);
+        let x = snapshot_then_edit(crate::testutil::fixed(seed | 1), false, 30);
         t.joins += x.joins;
         t.kept += x.kept;
         t.split += x.split;
@@ -387,7 +386,7 @@ fn partial_placement_follows_like_whole_spec_6() {
     let mut t = Follows::default();
     for seed in 0..24 {
         for upgraded in [false, true] {
-            let x = snapshot_then_edit(seed, upgraded, 30);
+            let x = snapshot_then_edit(crate::testutil::fixed(seed | 1), upgraded, 30);
             t.whole += x.whole;
             t.partial += x.partial;
             t.loaded += x.loaded;
@@ -405,7 +404,7 @@ fn partial_placement_follows_like_whole_spec_6() {
 fn derived_dots_follow_cache_spec_7() {
     let mut t = Follows::default();
     for seed in 0..24 {
-        let x = snapshot_then_edit(seed, true, 30);
+        let x = snapshot_then_edit(crate::testutil::fixed(seed | 1), true, 30);
         t.joins += x.joins;
         t.kept += x.kept;
         t.derived += x.derived;

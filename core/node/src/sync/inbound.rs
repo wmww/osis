@@ -129,7 +129,15 @@ impl SyncEngine {
                     }
                     continue;
                 }
-                LogEvent::Deleted(b) if self.eph_deleted(server, l, b) => continue,
+                LogEvent::Deleted(b) => {
+                    if let Some(c) = conn {
+                        self.eph_room(c, l, out)?;
+                    }
+                    if self.eph_deleted(server, l, b) {
+                        continue;
+                    }
+                    LogEvent::Deleted(b)
+                }
                 ev => ev,
             };
             match ev {

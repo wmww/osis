@@ -515,3 +515,29 @@ fn presence_deletes_not_rate_limited() {
     assert_eq!(e.store.delete(&l, &osis_label::blob_id(&blobs[7]), T0).unwrap(), Code::OK);
     assert_eq!(e.store.delete(&l, &osis_label::blob_id(&blobs[8]), T0).unwrap(), Code::RATE_LIMITED);
 }
+
+// spec/sync.md §5 (ephemeral memory capped per label, log records counted): the log records of
+// deletions (a presence entry replaced per update, a covered entry deleted) stay within the
+// label's cap: older records are trimmed (sim `ephemeral` seed 13: a label 58 B over its cap)
+#[test]
+fn deletion_records_within_cap() {
+    let cap = 8 << 10;
+    let mut e = env(Policy { ephemeral_bytes: cap, deletes: 1_000, ..Policy::default() });
+    let l = e.f.label;
+    let mut n = 0u32;
+    // plain entries up to the cap
+    while e.store.put(&l, eph_put(&eph_blob(n, 64), None)).unwrap() == Code::OK {
+        n += 1;
+    }
+    let plain = n;
+    for k in 0..200u32 {
+        let b = eph_blob(1_000_000 + k, 64);
+        assert_eq!(e.store.put(&l, Put { presence: true, ..eph_put(&b, None) }).unwrap(), Code::OK);
+        assert_eq!(e.store.delete(&l, &osis_label::blob_id(&b), T0).unwrap(), Code::OK);
+        assert!(e.store.ephemeral_bytes(&l) <= cap, "presence deletes: {} B over {cap}", e.store.ephemeral_bytes(&l));
+    }
+    for k in 0..plain {
+        e.store.delete(&l, &osis_label::blob_id(&eph_blob(k, 64)), T0).unwrap();
+        assert!(e.store.ephemeral_bytes(&l) <= cap, "deletes: {} B over {cap}", e.store.ephemeral_bytes(&l));
+    }
+}
