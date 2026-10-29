@@ -364,3 +364,25 @@ fn presence_write_takes_no_expiry_spec_data_model_2() {
     m.expires(t, &cursor(), osis_base::WallMs(net.now() + 5_000)).unwrap();
     assert!(net.engine(a).write(m).is_err());
 }
+
+// spec/sync.md §9 (each presence commit covers its author's last): an update replaces the cursor
+// at a holder in one change, never dropping it in between (the author deletes the covered entry
+// before uploading the cover, so the holder sees the deletion first)
+#[test]
+fn update_never_flaps_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let (_, t) = setup(&mut net, a, &[(b, Role::Write)], &[sv]);
+    net.eph_write(a, t, &cursor(), s("a@0"));
+    net.run();
+    assert_eq!(at(&mut net, b, t), Some(s("a@0")));
+    let rx = net.listen(b);
+    for i in 1..=5 {
+        net.eph_write(a, t, &cursor(), s(&format!("a@{i}")));
+        net.run();
+        assert_eq!(at(&mut net, b, t), Some(s(&format!("a@{i}"))));
+    }
+    assert_eq!(remote_changes(&rx, t, CURSOR), 5, "one change per update");
+}

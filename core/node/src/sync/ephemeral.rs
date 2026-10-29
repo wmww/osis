@@ -246,11 +246,16 @@ impl SyncEngine {
         self.eph_presence(out)?;
         // what a compaction covers goes first: deleted before its cover goes up on the same
         // connection, so a server at its cap takes the cover
-        let dropped = self.engine.take_dropped_ephemeral();
+        // except an own presence commit its newer one covers: deleted after the cover is up, so
+        // a holder applies the cover first and the value never goes in between
+        let lane = &self.eph;
+        let own_presence = |c: &CommitId| lane.by_commit.get(c).is_some_and(|ks| ks.iter().any(|k| lane.entries.get(k).is_some_and(|e| e.own && e.presence)));
+        let (later, dropped): (Vec<CommitId>, Vec<CommitId>) = self.engine.take_dropped_ephemeral().into_iter().partition(own_presence);
         self.eph_forget(&dropped, out)?;
         for c in commits {
             self.eph_place(c, out)?;
         }
+        self.eph_forget(&later, out)?;
         // entries a full server refused go again after a compaction made room
         for l in retry {
             let ids: Vec<BlobId> = Self::eph_entries_of(&self.eph, &l).map(|(b, _)| b).collect();
