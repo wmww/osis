@@ -10,7 +10,7 @@
 //! A thing is whatever its aspects make it (`Kind`); things and scopes (tags, views) are shown
 //! alike as tiles (`Tile`).
 
-use crate::schema::{APP, COLOR, DEMO, FAVORITES, OPEN, VIEW, View};
+use crate::schema::{APP, COLOR, DEMO, FAVORITES, MODE, Mode, OPEN, THEME, VIEW, View};
 use osis::core::{BODY, GROUP, NAME, TAG};
 use osis::{AspectKey, Config, Error, Osis, Result, Runtime, ServerAddr, Tid, Transport, p};
 use std::collections::{BTreeMap, BTreeSet};
@@ -481,6 +481,35 @@ impl Data {
             }
             Ok(())
         })
+    }
+
+    // ---- the look (per person, on the app group)
+
+    /// The chosen theme id (`None`: the default) and mode.
+    pub fn look(&self) -> Result<(Option<String>, Mode)> {
+        let mut theme = None;
+        let mut mode = None;
+        for g in self.groups()? {
+            theme = theme.or(self.db.get(g, THEME)?);
+            mode = mode.or(self.db.get(g, MODE)?);
+        }
+        Ok((theme, mode.unwrap_or(Mode::Auto)))
+    }
+
+    pub fn set_theme(&self, id: &str) -> Result<()> {
+        let g = self.main_group()?;
+        if self.db.get(g, THEME)?.as_deref() == Some(id) {
+            return Ok(());
+        }
+        self.db.write_with(|w| w.at(g, THEME).set(&id.to_string()))
+    }
+
+    pub fn set_mode(&self, m: Mode) -> Result<()> {
+        let g = self.main_group()?;
+        if self.db.get(g, MODE)? == Some(m.clone()) {
+            return Ok(());
+        }
+        self.db.write_with(|w| w.at(g, MODE).set(&m))
     }
 
     // ---- navigation (per-device ephemeral view state on the main group)

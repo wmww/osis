@@ -6,7 +6,7 @@
 use super::{Press, fill_glossy, shadow};
 use crate::icons::Icon;
 use crate::text;
-use crate::theme::{Look, fade, mix, neutral};
+use crate::theme::{Accent, Look, fade, mix, neutral};
 use masonry::accesskit::{Node, Role};
 use masonry::core::keyboard::{Key, NamedKey};
 use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, BrushIndex, ChildrenIds, EventCtx, LayoutCtx, PaintCtx, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget, WidgetMut};
@@ -87,7 +87,7 @@ impl Tile {
 
     /// Whether the card's text is white (filled cards only; rows sit on the panel).
     fn white(&self) -> bool {
-        self.style == TileStyle::Card && self.look.on_card_white()
+        (self.style == TileStyle::Card || self.style == TileStyle::Row && self.current) && self.look.on_card_white()
     }
 }
 
@@ -187,6 +187,27 @@ impl Widget for Tile {
                     fill = mix(fill, tint, 0.2);
                 }
                 fill_glossy(scene, &look, rect, fill, skew);
+                match look.theme.accent {
+                    // bar: the tag colour as a stripe down the left
+                    Accent::Bar => {
+                        let stripe = Rect::new(0.0, 0.0, 4.0, size.height);
+                        scene.push_clip_layer(skew, &rect);
+                        scene.fill(Fill::NonZero, skew, tint, None, &stripe);
+                        scene.pop_layer();
+                    }
+                    // slash: a corner flag
+                    Accent::Slash => {
+                        let mut flag = masonry::kurbo::BezPath::new();
+                        flag.move_to((size.width - 26.0, 0.0));
+                        flag.line_to((size.width, 0.0));
+                        flag.line_to((size.width, 26.0));
+                        flag.close_path();
+                        scene.push_clip_layer(skew, &rect);
+                        scene.fill(Fill::NonZero, skew, tint, None, &flag);
+                        scene.pop_layer();
+                    }
+                    _ => {}
+                }
             }
             TileStyle::Row => {
                 let amt = if self.current { (0.05 + look.theme.fill * 0.95).max(0.2) } else if hovered { 0.12 } else { 0.0 };

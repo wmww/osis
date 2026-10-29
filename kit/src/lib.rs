@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod backdrop;
+pub mod fonts;
 pub mod icons;
 pub mod list;
 pub mod marshal;

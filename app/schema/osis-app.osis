@@ -16,3 +16,7 @@ aspect /osis-app/color: string;
 aspect /osis-app/open: map<tid, tid> [ephemeral];
 /// On the app group: demo data was added.
 aspect /osis-app/demo: bool;
+/// On the app group: the person's theme (a built-in theme's id).
+aspect /osis-app/theme: string;
+/// On the app group: light, dark, or following the system.
+aspect /osis-app/mode: enum { 0 auto, 1 light, 2 dark };
