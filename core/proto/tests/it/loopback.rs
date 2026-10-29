@@ -5,7 +5,7 @@
 use osis_base::{BlobId, LabelId, Value, WallMs, cbor, hash::hash};
 use osis_crypto::{Secret32, SigningSecret};
 use osis_label::{Prefix, sign_deposit};
-use osis_proto::msg::{DeleteItem, PublishAuth, PublishKey, Wrap};
+use osis_proto::msg::{DeleteItem, Wrap};
 use osis_proto::*;
 use osis_proto::examples::{Label, bid, blob, blob_sized, blob_with, salt};
 use std::collections::VecDeque;
@@ -71,9 +71,9 @@ impl Net {
                         self.server_out(j, so);
                     }
                 }
-                ServerOutput::Signal { label, blob, wrap, auth } => {
+                ServerOutput::Relay(r) => {
                     for j in (0..self.servers.len()).filter(|j| *j != i) {
-                        let so = self.servers[j].handle(self.now + self.server_skew, &mut self.store, ServerInput::Signal { label, blob: blob.clone(), wrap, auth: auth.clone() });
+                        let so = self.servers[j].handle(self.now + self.server_skew, &mut self.store, ServerInput::Relay(r.clone()));
                         self.server_out(j, so);
                     }
                 }
@@ -501,9 +501,9 @@ fn deletes() {
     assert_eq!(evs, vec![Event::Pending { blob_id: id, at: T0 + 5000 }, Event::Deleted(id)]);
 }
 
-// spec/sync.md §8, §9, spec/wire.md §11.2: pushes in the cursor-reply format under the last Sync's inline limit; signals reach other subscribers
+// spec/sync.md §5, §8, spec/wire.md §11.2: pushes in the cursor-reply format under the last Sync's inline limit; a relay-only entry reaches other subscribers and is stored nowhere
 #[test]
-fn subscribe_push_and_signals() {
+fn subscribe_push_and_relays() {
     let mut net = Net::new(2, 0);
     let l = Label::new(3);
     net.setup(&l);
@@ -522,13 +522,17 @@ fn subscribe_push_and_signals() {
     assert!(cursor.unwrap().seq > c1.unwrap().seq);
     let (evs, _) = events_of(&net.run(1, sync(l.id, cursor, vec![], vec![])));
     assert!(evs.is_empty());
-    let env = vec![0x5a; 100];
-    let wrap: Wrap = [3; 49];
-    let auth = PublishAuth::sign(PublishKey::Write, &l.head_keys().write, &l.id, &osis_label::blob_id(&env), &wrap);
-    net.run(0, Command::Signal { label: l.id, blob: env.clone(), wrap, auth: auth.clone() });
-    assert_eq!(std::mem::take(&mut net.events[1]), vec![ClientEvent::Signal { label: l.id, blob: env.clone(), wrap, auth: auth.clone() }]);
-    let bad = PublishAuth { key: PublishKey::Deposit, sig: auth.sig };
-    net.run(0, Command::Signal { label: l.id, blob: env, wrap, auth: bad });
+    let p = Prefix::new(salt(9), None, vec![]).unwrap().with_class(osis_label::Class::Relay);
+    let env = osis_label::frame(&p, &[0x5a; 100], &mut osis_crypto::SeededRng::from_seed([9; 32])).unwrap().1;
+    let e = l.entry(env.clone());
+    let ev = net.run(0, Command::Upload { label: l.id, entries: vec![e.clone()] });
+    assert_eq!(statuses(&ev), vec![Code::OK]);
+    let (evs, _) = events_of(&std::mem::take(&mut net.events[1]));
+    assert_eq!(evs, vec![Event::Added { blob_id: osis_label::blob_id(&env), blob: Some(env.clone()), wrap: e.wrap, stamp: Some(e.stamp) }]);
+    assert!(net.store.entry(&l.id, &osis_label::blob_id(&env)).unwrap().is_none(), "held by nobody");
+    let mut bad = e.clone();
+    bad.stamp = osis_proto::msg::Signature([0; 64]);
+    net.run(0, Command::Upload { label: l.id, entries: vec![bad] });
     assert!(net.events[1].is_empty());
     net.run(1, Command::Unsubscribe { labels: vec![l.id] });
     net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(3))] });

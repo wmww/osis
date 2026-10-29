@@ -326,7 +326,9 @@ fn local_rights_check_spec_permissions_1() {
     w.create(a.me()).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
     // signals need write too
-    assert!(matches!(b.send_signal(t, &ak("/t/sig"), &Value::Int(1), osis::Target::All), Err(Error::Permission { .. })));
+    let mut w = b.write();
+    w.at(t, osis::Lifetimes::signal(ak("/t/sig"))).set(&Value::Int(1)).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Permission { .. })));
 }
 
 // spec/permissions.md §1 (the owner chain confers write), §5; notes/api.md Writes: one batch
@@ -708,34 +710,6 @@ fn path_op_into_absent_key_spec_crdt_5_6() {
     let want = Value::Map(BTreeMap::from([(s("m1"), Value::Set(BTreeSet::from([s("x"), s("y")])))]));
     assert_eq!(a.get(t, r.clone()).unwrap(), Some(want.clone()));
     assert_eq!(b.get(t, r).unwrap(), Some(want));
-}
-
-// notes/api.md Signals (`on_signal_in`), spec/sync.md §9: a listener on a group hears signals
-// about the group and anything in its closure, things placed after it registered included,
-// and nothing else; the event names the thing.
-#[test]
-fn signal_in_group_api_signals() {
-    let db = db(1);
-    let k = ak("/t/typing");
-    let g = db
-        .write_with(|w| {
-            let g = w.create(db.me())?;
-            w.make_group(g)?;
-            Ok(g)
-        })
-        .unwrap();
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _sub = db.on_signal_in(g, k.clone(), move |_, e| {
-        let _ = tx.send((e.tid, e.value.unwrap()));
-    });
-    let (late, outside) = db.write_with(|w| Ok((w.create_in(db.me(), &[g])?, w.create(db.me())?))).unwrap();
-    db.send_signal(outside, &k, &Value::Int(0), osis::Target::All).unwrap();
-    db.send_signal(late, &k, &Value::Int(1), osis::Target::All).unwrap();
-    db.send_signal(g, &k, &Value::Int(2), osis::Target::All).unwrap();
-    assert_eq!(recv(&rx), (late, Value::Int(1)));
-    assert_eq!(recv(&rx), (g, Value::Int(2)));
-    db.settle();
-    assert!(rx.try_recv().is_err(), "nothing about things outside the group");
 }
 
 // spec/commits.md §2 (`/created` is carried by the first commit and by covering snapshots),

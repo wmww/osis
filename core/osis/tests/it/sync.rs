@@ -339,25 +339,33 @@ fn removal_rotates_spec_permissions_3() {
     assert_eq!(x(carol, by_bob), Some(s("bob was here")));
 }
 
-// spec/sync.md §9, notes/api.md Signals: a signal about a shared thing reaches another person's
-// device through the server; local listeners fire too.
+// spec/sync.md §5 (relay-only entries), notes/api.md Signals: a signal aspect set on a shared
+// thing reaches another person's connected device through the server once; local callbacks fire
+// too; nothing is held.
 #[test]
-fn remote_signal_spec_sync_9() {
+fn remote_signal_spec_sync_5() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 1);
     let bob = &others[0];
     let g = group(&alice);
     alice.grant(g, ids[0], Role::Write, Default::default()).unwrap();
     w.run();
+    let ring = osis::Lifetimes::signal(ak("/t/typing"));
     let (tx, rx) = std::sync::mpsc::channel();
     let tx2 = tx.clone();
-    let _a = alice.on_signal(g, ak("/t/typing"), move |_, e| tx.send(("alice", e.value.unwrap(), e.actor)).unwrap());
-    let _b = bob.on_signal(g, ak("/t/typing"), move |_, e| tx2.send(("bob", e.value.unwrap(), e.actor)).unwrap());
-    bob.send_signal(g, &ak("/t/typing"), &Value::Int(1), osis::Target::All).unwrap();
+    let _a = alice.at(g, ring.clone()).on_change(move |_, c| tx.send(("alice", c)).unwrap()).unwrap();
+    let _b = bob.at(g, ring.clone()).on_change(move |_, c| tx2.send(("bob", c)).unwrap()).unwrap();
+    let _ = (recv(&rx), recv(&rx));
+    bob.write_with(|wr| wr.at(g, ring.clone()).set(&Value::Int(1))).unwrap();
     w.run();
-    let mut got = vec![recv(&rx), recv(&rx)];
+    let mut got = [recv(&rx), recv(&rx)];
     got.sort_by_key(|g| g.0);
-    assert_eq!(got, vec![("alice", Value::Int(1), bob.me()), ("bob", Value::Int(1), bob.me())]);
+    assert_eq!(got.iter().map(|(n, c)| (*n, c.value.clone())).collect::<Vec<_>>(), vec![("alice", Ok(Some(Value::Int(1)))), ("bob", Ok(Some(Value::Int(1))))]);
+    assert!(matches!(got[0].1.source, osis::Source::Remote(i) if i.actor == bob.me() && i.node == bob.node()));
+    assert!(matches!(got[1].1.source, osis::Source::Local(_)));
+    alice.settle();
+    assert!(rx.try_recv().is_err(), "once");
+    assert_eq!(alice.get(g, ring).unwrap(), None);
 }
 
 // spec/commits.md §6 (expiry), notes/chat.md (disappearing messages): a message written with an

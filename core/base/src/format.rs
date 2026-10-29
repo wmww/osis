@@ -49,8 +49,9 @@ pub const TREE_MAX_LEVEL: u64 = 48;
 
 /// Blob framing version (spec/wire.md §5). fixed.
 pub const BLOB_FRAMING_VERSION: u8 = 1;
-/// Bytes of a blob prefix before its commitments: version, salt, expiry, count (spec/wire.md §5).
-pub const PREFIX_FIXED_LEN: usize = 26;
+/// Bytes of a blob prefix before its commitments: version, salt, expiry, class, count
+/// (spec/wire.md §5).
+pub const PREFIX_FIXED_LEN: usize = 27;
 /// Bytes of one prefix commitment: level, then the 32-byte blinded delete key (spec/wire.md §5).
 pub const COMMITMENT_LEN: usize = 33;
 /// Most keys in a claim set (spec/wire.md §2, §8). fixed.

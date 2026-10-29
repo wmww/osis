@@ -1,7 +1,7 @@
 //! `Hub`: the blind node's connections over one store, sans-I/O (spec/sync.md §5-§9). One
 //! osis-proto `ServerConnection` per accepted connection, one `Replicator` per connection this
 //! node dialed to a peer server; cross-connection notices (`Changed` to every connection and
-//! replicator, `Signal` to every other connection), bounded sweeps, Hello deadlines, the
+//! replicator, `Relay` to every other connection), bounded sweeps, Hello deadlines, the
 //! connection cap and timers. The async driver and the simulator only move bytes and call `tick`
 //! when `next_due` says.
 
@@ -217,10 +217,10 @@ impl<B: Backend> Hub<B> {
                     out.push(HubOutput::Close(id));
                 }
                 ServerOutput::Changed(l) => self.changed(now, l, out),
-                ServerOutput::Signal { label, blob, wrap, auth } => {
+                ServerOutput::Relay(r) => {
                     let others: Vec<ConnId> = self.conns.iter().filter(|(k, c)| **k != id && matches!(c, Conn::Served { .. })).map(|(k, _)| *k).collect();
                     for j in others {
-                        self.serve(now, j, ServerInput::Signal { label, blob: blob.clone(), wrap, auth: auth.clone() }, out);
+                        self.serve(now, j, ServerInput::Relay(r.clone()), out);
                     }
                 }
                 ServerOutput::PeerError(e) => out.push(HubOutput::Diagnostic(format!("connection {id}: {e}"))),

@@ -28,4 +28,4 @@ aspect /note/views: counter<int>;
 aspect /note/last_opened: timestamp [expires: 30d];
 aspect /note/pinned: map<tid, tagged<int>> [by: writer, keep_at_most: 0s];
 /// Someone is typing in the note.
-signal /note/typing: struct { 0 who: tid, 1 at: timestamp };
+aspect /note/typing: struct { 0 who: tid, 1 at: timestamp } [signal];

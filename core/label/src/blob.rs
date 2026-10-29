@@ -12,11 +12,39 @@ const MAX_LEVELS: usize = 3;
 /// A delete level (spec/wire.md §1): 1 thing admin, 2 author chain, 3 thing write.
 pub type Level = u8;
 
-/// The clear prefix of a blob: salt, optional expiry, commitments with strictly ascending levels.
+/// A blob's class (spec/wire.md §5, spec/sync.md §1): what a blind node does with it. Durable
+/// blobs are stored; ephemeral ones are held in memory only; relay-only ones are pushed to the
+/// label's current subscribers and held by nobody.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Class {
+    #[default]
+    Durable = 0,
+    Ephemeral = 1,
+    Relay = 2,
+}
+
+impl Class {
+    pub fn from_byte(b: u8) -> Option<Class> {
+        [Class::Durable, Class::Ephemeral, Class::Relay].into_iter().find(|c| *c as u8 == b)
+    }
+
+    /// The class of a commit blob carrying a header with this ephemeral marker.
+    pub fn of_marker(m: Option<osis_commit::EphClass>) -> Class {
+        match m {
+            None => Class::Durable,
+            Some(osis_commit::EphClass::Plain) => Class::Ephemeral,
+            Some(osis_commit::EphClass::Relay) => Class::Relay,
+        }
+    }
+}
+
+/// The clear prefix of a blob: salt, optional expiry, class, commitments with strictly ascending
+/// levels.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Prefix {
     salt: [u8; 16],
     expiry: Option<WallMs>,
+    class: Class,
     commitments: Vec<[u8; COMMITMENT_LEN]>,
 }
 
@@ -25,7 +53,7 @@ impl Prefix {
     /// expiry of 0 (which means none on the wire).
     pub fn new(salt: [u8; 16], expiry: Option<WallMs>, mut commitments: Vec<[u8; COMMITMENT_LEN]>) -> Result<Prefix, Error> {
         commitments.sort();
-        let p = Prefix { salt, expiry, commitments };
+        let p = Prefix { salt, expiry, class: Class::Durable, commitments };
         p.validate()?;
         Ok(p)
     }
@@ -67,6 +95,16 @@ impl Prefix {
         Ok(())
     }
 
+    /// This prefix with class `c`.
+    pub fn with_class(mut self, c: Class) -> Prefix {
+        self.class = c;
+        self
+    }
+
+    pub fn class(&self) -> Class {
+        self.class
+    }
+
     pub fn salt(&self) -> &[u8; 16] {
         &self.salt
     }
@@ -97,6 +135,7 @@ impl Prefix {
         out.push(BLOB_FRAMING_VERSION);
         out.extend_from_slice(&self.salt);
         out.extend_from_slice(&self.expiry.map_or(0, |t| t.0).to_le_bytes());
+        out.push(self.class as u8);
         // At most 3 by construction.
         out.push(u8::try_from(self.commitments.len()).unwrap_or(u8::MAX));
         for c in &self.commitments {
@@ -114,8 +153,9 @@ impl Prefix {
         }
         let fixed = rest.get(..PREFIX_FIXED_LEN - 1).ok_or(Error::Malformed("short prefix"))?;
         let (salt, rest) = fixed.split_at(16);
-        let (expiry, n) = rest.split_at(8);
-        let n = usize::from(*n.first().ok_or(Error::Malformed("short prefix"))?);
+        let (expiry, rest) = rest.split_at(8);
+        let class = rest.first().and_then(|b| Class::from_byte(*b)).ok_or(Error::Malformed("blob class"))?;
+        let n = usize::from(*rest.get(1).ok_or(Error::Malformed("short prefix"))?);
         if n > MAX_LEVELS {
             return Err(Error::Malformed("more than 3 commitments"));
         }
@@ -126,16 +166,17 @@ impl Prefix {
         let mut e = [0u8; 8];
         e.copy_from_slice(expiry);
         let t = u64::from_le_bytes(e);
-        let p = Prefix { salt: s, expiry: (t != 0).then_some(WallMs(t)), commitments };
+        let p = Prefix { salt: s, expiry: (t != 0).then_some(WallMs(t)), class, commitments };
         p.validate()?;
         Ok(p)
     }
 
     /// Whether this prefix is what an encryption of a commit's deltas computes (spec/commits.md
     /// §4, spec/sync.md §1): the same expiry, and exactly the commitments of `keys` under this
-    /// salt and the header's blind `hb`. A mismatch makes the commit blob bad input.
-    pub fn agrees(&self, expiry: Option<WallMs>, hb: &[u8; 16], keys: &[osis_commit::DeleteKey]) -> bool {
-        Prefix::for_delete_keys(self.salt, hb, expiry, keys).is_ok_and(|p| p == *self)
+    /// salt and the header's blind `hb`, and the class of the header's ephemeral marker. A
+    /// mismatch makes the commit blob bad input.
+    pub fn agrees(&self, expiry: Option<WallMs>, hb: &[u8; 16], keys: &[osis_commit::DeleteKey], class: Class) -> bool {
+        Prefix::for_delete_keys(self.salt, hb, expiry, keys).is_ok_and(|p| p.with_class(class) == *self)
     }
 }
 
@@ -208,18 +249,27 @@ mod tests {
     fn layout() {
         let p = Prefix::new([7; 16], Some(WallMs(0x0102)), vec![c(2, 9), c(1, 5)]).unwrap();
         let b = p.to_bytes();
-        assert_eq!(b.len(), 26 + 66);
+        assert_eq!(b.len(), 27 + 66);
         assert_eq!(b[0], 1);
         assert_eq!(b[1..17], [7; 16]);
         assert_eq!(b[17..25], [2, 1, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(b[25], 2);
-        assert_eq!(b[26..59], c(1, 5));
+        assert_eq!(b[25], 0);
+        assert_eq!(b[26], 2);
+        assert_eq!(b[27..60], c(1, 5));
         assert_eq!(Prefix::parse(&b).unwrap(), p);
         assert_eq!(p.key_at(2), Some([9; 32]));
         assert_eq!(p.key_at(3), None);
         let none = Prefix::new([0; 16], None, vec![]).unwrap();
-        assert_eq!(none.to_bytes()[17..26], [0; 9]);
+        assert_eq!(none.to_bytes()[17..27], [0; 10]);
         assert_eq!(Prefix::parse(&none.to_bytes()).unwrap().expiry(), None);
+        for c in [Class::Ephemeral, Class::Relay] {
+            let e = none.clone().with_class(c);
+            assert_eq!(e.to_bytes()[25], c as u8);
+            assert_eq!(Prefix::parse(&e.to_bytes()).unwrap().class(), c);
+        }
+        let mut bad = none.to_bytes();
+        bad[25] = 3;
+        assert_eq!(Prefix::parse(&bad), Err(Error::Malformed("blob class")));
     }
 
     // spec/wire.md §5: rejections: two at one level, unsorted, level 0 or 4, more than 3,
@@ -228,21 +278,21 @@ mod tests {
     fn rejections() {
         assert!(Prefix::new([0; 16], None, vec![c(1, 1), c(1, 2)]).is_err());
         let mut b = Prefix::new([0; 16], None, vec![c(1, 1), c(2, 2)]).unwrap().to_bytes();
-        b[26..59].copy_from_slice(&c(2, 2));
-        b[59..92].copy_from_slice(&c(1, 1));
+        b[27..60].copy_from_slice(&c(2, 2));
+        b[60..93].copy_from_slice(&c(1, 1));
         assert!(Prefix::parse(&b).is_err());
-        b[26..59].copy_from_slice(&c(1, 2));
+        b[27..60].copy_from_slice(&c(1, 2));
         assert!(Prefix::parse(&b).is_err(), "two at level 1");
-        b[59..92].copy_from_slice(&c(3, 1));
+        b[60..93].copy_from_slice(&c(3, 1));
         assert!(Prefix::parse(&b).is_ok());
         for level in [0, 4] {
             assert!(Prefix::new([0; 16], None, vec![c(level, 1)]).is_err());
         }
         let mut b = Prefix::new([0; 16], None, vec![]).unwrap().to_bytes();
-        b[25] = 4;
+        b[26] = 4;
         b.extend(std::iter::repeat_n(1, 33 * 4));
         assert_eq!(Prefix::parse(&b), Err(Error::Malformed("more than 3 commitments")));
-        assert!(Prefix::parse(&b[..25]).is_err());
+        assert!(Prefix::parse(&b[..26]).is_err());
         let mut b = Prefix::new([0; 16], None, vec![c(1, 1)]).unwrap().to_bytes();
         b.pop();
         assert!(Prefix::parse(&b).is_err());
@@ -280,12 +330,13 @@ mod tests {
         let hb = [6u8; 16];
         let dk = |l, k: &VerifyingKey| osis_commit::DeleteKey::new(l, k);
         let p = Prefix::for_keys(salt, &hb, Some(WallMs(10)), &[(2, k)]).unwrap();
-        assert!(p.agrees(Some(WallMs(10)), &hb, &[dk(2, &k)]));
-        assert!(!p.agrees(None, &hb, &[dk(2, &k)]));
-        assert!(!p.agrees(Some(WallMs(10)), &hb, &[dk(3, &k)]));
-        assert!(!p.agrees(Some(WallMs(10)), &hb, &[dk(2, &k3)]));
-        assert!(!p.agrees(Some(WallMs(10)), &[7; 16], &[dk(2, &k)]));
-        assert!(!p.agrees(Some(WallMs(10)), &hb, &[]));
+        assert!(p.agrees(Some(WallMs(10)), &hb, &[dk(2, &k)], Class::Durable));
+        assert!(!p.agrees(Some(WallMs(10)), &hb, &[dk(2, &k)], Class::Ephemeral));
+        assert!(!p.agrees(None, &hb, &[dk(2, &k)], Class::Durable));
+        assert!(!p.agrees(Some(WallMs(10)), &hb, &[dk(3, &k)], Class::Durable));
+        assert!(!p.agrees(Some(WallMs(10)), &hb, &[dk(2, &k3)], Class::Durable));
+        assert!(!p.agrees(Some(WallMs(10)), &[7; 16], &[dk(2, &k)], Class::Durable));
+        assert!(!p.agrees(Some(WallMs(10)), &hb, &[], Class::Durable));
         assert_eq!(p.key_at(2), Some(osis_crypto::blind(&k, &salt, &hb).to_bytes()));
         // Repeated pairs on either side give one commitment; two keys at one level are refused.
         assert_eq!(Prefix::for_keys(salt, &hb, Some(WallMs(10)), &[(2, k), (2, k)]).unwrap(), p);
@@ -321,7 +372,7 @@ mod tests {
             if cs.windows(2).any(|w| w[0][0] == w[1][0]) || expiry == Some(WallMs(0)) {
                 return None;
             }
-            Some(Prefix { salt, expiry, commitments: cs })
+            Some(Prefix { salt, expiry, class: Class::Durable, commitments: cs })
         };
         let pool: Vec<VerifyingKey> = (1..=3u8).map(|i| osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([i; 32])).verifying_key()).collect();
         let off_curve = (0..=255u8).map(|b| [b; 32]).find(|b| VerifyingKey::from_bytes(b).is_err()).unwrap();
@@ -350,12 +401,12 @@ mod tests {
             assert_eq!(Prefix::parse(&p.to_bytes()).unwrap(), p);
             let mut rev = keys.clone();
             rev.reverse();
-            assert!(p.agrees(expiry, &hb, &rev));
-            assert!(!p.agrees(expiry, &[hb[0] ^ 1; 16], &keys) || keys.is_empty());
-            assert!(!p.agrees(expiry.map(|t| WallMs(t.0 + 1)).or(Some(WallMs(1))), &hb, &keys));
+            assert!(p.agrees(expiry, &hb, &rev, Class::Durable));
+            assert!(!p.agrees(expiry, &[hb[0] ^ 1; 16], &keys, Class::Durable) || keys.is_empty());
+            assert!(!p.agrees(expiry.map(|t| WallMs(t.0 + 1)).or(Some(WallMs(1))), &hb, &keys, Class::Durable));
             let mut more = keys.clone();
             more.push(DeleteKey::new(r(&mut rng, 3) + 1, &pool[0]));
-            assert_eq!(p.agrees(expiry, &hb, &more), reference(salt, &hb, expiry, &more).as_ref() == Some(&p));
+            assert_eq!(p.agrees(expiry, &hb, &more, Class::Durable), reference(salt, &hb, expiry, &more).as_ref() == Some(&p));
         }
     }
 

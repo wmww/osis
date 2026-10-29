@@ -8,7 +8,7 @@ pub(crate) enum Tok {
     Str(String),
     /// `0x...`, even number of hex digits.
     Hex(Vec<u8>),
-    /// `/a/b`: an AK or signal kind.
+    /// `/a/b`: an AK.
     Ak(String),
     /// `30d`, `12h`, `5m`, `10s`, `250ms`: milliseconds.
     Dur(u64),

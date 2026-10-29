@@ -12,6 +12,7 @@
 
 mod bundle;
 mod deliver;
+mod ephemeral;
 #[cfg(feature = "driver")]
 pub mod driver;
 mod inbound;
@@ -106,6 +107,9 @@ pub struct SyncConfig {
     pub unvouched_cap: usize,
     /// Every pass judges everything (no work sets): a check that the work sets miss no trigger.
     pub full_passes: bool,
+    /// Ephemeral bytes per label this node holds from others (notes/ephemeral.md Bounds): past
+    /// it, further ephemeral commits of that label are not applied (`EphemeralRefused`).
+    pub ephemeral_bytes: u64,
 }
 
 impl Default for SyncConfig {
@@ -131,6 +135,7 @@ impl Default for SyncConfig {
             peer_pass_wait_ms: 300_000,
             unvouched_cap: 1 << 16,
             full_passes: false,
+            ephemeral_bytes: 16 << 20,
         }
     }
 }
@@ -331,8 +336,6 @@ pub struct SyncEngine {
     wake: Option<u64>,
     /// When the last Tick was handled (raw wall ms).
     last_tick: u64,
-    /// Signals received (also sent as engine events).
-    pub(crate) signals: Vec<osis_label::SignalBody>,
     /// Recent diagnostics (also sent as engine events).
     diagnostics: Vec<String>,
     /// Where each queued deposit (`State::outbox`: inbox blobs, a non-writer's own writes)
@@ -439,13 +442,15 @@ pub struct SyncEngine {
     /// Commit blobs with linked header lists whose prefix was checked against the resolved
     /// header (spec/commits.md §4).
     pub(crate) prefix_checked: BTreeSet<osis_base::BlobId>,
+    /// Ephemeral entries held in memory (`ephemeral`).
+    pub(crate) eph: ephemeral::Lane,
 }
 
 impl SyncEngine {
     /// Wraps an engine. `clock` is the uncorrected wall clock the engine was built on (Hellos
     /// carry it; the correction goes to the engine).
     pub fn new(mut engine: Engine, clock: Arc<dyn Clock>, rng: Box<dyn CryptoRngCore + Send>, cfg: SyncConfig) -> Result<SyncEngine> {
-        // local ephemeral writes have nothing to sync yet (notes/ephemeral.md step 3)
+        // ephemeral writes reach node-sync as unsent commits (`Engine::take_ephemeral`), not events
         let events = engine.subscribe_durable();
         engine.set_sync_records(&state::Records);
         // keeps the changed commits from now on (`Engine::take_changed`)
@@ -470,7 +475,6 @@ impl SyncEngine {
             membership_seen: BTreeMap::new(),
             wake: None,
             last_tick: 0,
-            signals: Vec::new(),
             diagnostics: Vec::new(),
             outbox,
             local_inbox: Vec::new(),
@@ -517,6 +521,7 @@ impl SyncEngine {
             pass_peers: BTreeMap::new(),
             members_moved: false,
             prefix_checked: BTreeSet::new(),
+            eph: ephemeral::Lane::default(),
         })
         .and_then(|mut s| {
             // a forgetting a crash interrupted before its inbox check
@@ -695,6 +700,7 @@ impl SyncEngine {
         self.connect(out);
         self.send_inbox()?;
         self.send_outbox(out)?;
+        self.eph_step(out)?;
         self.run_dirty(out)?;
         self.notify_served(out)?;
         Ok(())
@@ -704,6 +710,7 @@ impl SyncEngine {
     pub(crate) fn lost(&mut self, conn: ConnId) {
         // its requests not answered go with it (asked again on the next connection)
         if let Some(c) = self.conns.remove(&conn) {
+            self.eph_lost(conn, c.server);
             // deposits not answered on this connection go out again on the next one
             for o in self.outbox.values_mut().filter(|o| o.sent == Some(conn)) {
                 o.sent = None;
@@ -1177,8 +1184,14 @@ impl SyncEngine {
                 }
                 self.log_events(Some(conn), label, events, cursor, out)?
             }
-            E::Want { label, ids } => self.want(conn, label, ids, out)?,
-            E::Synced { label } => self.synced(conn, label, out)?,
+            E::Want { label, ids } => {
+                let rest = self.eph_want(conn, label, ids, out)?;
+                self.want(conn, label, rest, out)?
+            }
+            E::Synced { label } => {
+                self.synced(conn, label, out)?;
+                self.eph_synced(conn, label, out)?
+            }
             E::NeedReconcile { label } => {
                 let s = self.conns.get(&conn).map(|c| c.server);
                 if let Some(s) = s {
@@ -1205,7 +1218,6 @@ impl SyncEngine {
                 self.log_events(Some(conn), label, evs, None, out)?;
             }
             E::Subscribed { .. } => {}
-            E::Signal { label, blob, wrap, auth } => self.signal_in(label, &blob, &wrap, &auth)?,
             E::Refused { label, kind, code } => self.refused(conn, label, kind, code, out)?,
             E::PeerError(e) => self.diag(format!("server: {e}")),
         }
@@ -1413,7 +1425,10 @@ impl SyncEngine {
                 self.state.set_present(server, label, b, false);
             }
         }
-        self.command(conn, Command::Sync { label, cursor, inline_limit, entries: Vec::new(), gained: Vec::new() }, out)
+        // the ephemeral entries held, listed once per connection: the server asks for those it
+        // lacks (a restarted server, another server's)
+        let gained = self.eph_gained(conn, label);
+        self.command(conn, Command::Sync { label, cursor, inline_limit, entries: Vec::new(), gained }, out)
     }
 
     /// A digest of this node's sync state (simulator determinism checks): entries with their
@@ -1503,10 +1518,6 @@ impl SyncEngine {
         self.state.blobs.contains_key(b) || self.engine.has_blob(b)
     }
 
-    /// Signals received since the last call.
-    pub fn take_signals(&mut self) -> Vec<osis_label::SignalBody> {
-        std::mem::take(&mut self.signals)
-    }
 }
 
 #[cfg(test)]

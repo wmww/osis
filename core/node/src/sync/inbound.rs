@@ -3,16 +3,16 @@
 //! (newest first), checked against their prefix and ingested, membership commits first; inbox
 //! blobs are opened with the read KEM key of the actor whose inbox the label is; entries that
 //! open with nothing held are retried when new secrets arrive; pages of waiting commits are
-//! fetched before apply; signals are verified and fired.
+//! fetched before apply; ephemeral entries go to the ephemeral lane (`ephemeral`).
 
 use super::state::{BlobRec, Entry, Hint, Kind, ServerKey};
 use super::{ConnId, Phase, RELINK_BACKOFF_MAX_MS, RELINK_BACKOFF_MS, SyncEngine};
 use crate::error::Result;
 use crate::labeling::open_commit;
 use crate::Ingested;
-use osis_base::{BlobId, Classified, CreationRecord, ErrorClass, LabelId, Role, Tid};
+use osis_base::{BlobId, Classified, CreationRecord, ErrorClass, LabelId, Tid};
 use osis_crypto::{Secret32, VerifyingKey, role_kem};
-use osis_label::{PublishAuth, Step};
+use osis_label::Step;
 use osis_proto::{Code, Command, Cursor, Event as LogEvent};
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
@@ -99,6 +99,30 @@ impl SyncEngine {
         // deleted blobs that are no commit blob: chunks a live value may still link
         let mut lost = BTreeSet::new();
         for ev in events {
+            // an ephemeral or relay-only entry is held in memory only (`ephemeral`)
+            let ev = match ev {
+                LogEvent::Added { blob_id, blob: Some(blob), wrap, stamp } if osis_label::Prefix::parse(&blob).is_ok_and(|p| p.class() != osis_label::Class::Durable) => {
+                    let class = osis_label::Prefix::parse(&blob).map(|p| p.class()).unwrap_or_default();
+                    let head = conn.and_then(|c| self.lc(c, &l)).and_then(|x| x.head.as_ref()).map(|h| h.keys.write);
+                    // a stamp counts if it verifies under the head's write key (a served peer's
+                    // upload was checked by the server engine)
+                    let stamp = stamp.filter(|s| head.as_ref().map_or(conn.is_none(), |w| osis_label::verify_stamp(w, &l, &blob_id, &wrap, s).is_ok()));
+                    if let Some(c) = conn.and_then(|c| self.conns.get_mut(&c)) {
+                        c.req.missing.remove(&blob_id);
+                        c.req.fetching.remove(&blob_id);
+                    }
+                    self.eph_added(server, l, blob_id, blob, wrap, stamp, class, out)?;
+                    continue;
+                }
+                LogEvent::Added { blob_id, blob: None, .. } if self.eph.entries.contains_key(&(l, blob_id)) => {
+                    if let Some(s) = server {
+                        self.eph.present.insert((s, l, blob_id));
+                    }
+                    continue;
+                }
+                LogEvent::Deleted(b) if self.eph_deleted(server, l, b) => continue,
+                ev => ev,
+            };
             match ev {
                 LogEvent::Added { blob_id, blob, wrap, stamp } => {
                     let signed_by = |w: &VerifyingKey| stamp.is_some_and(|st| osis_label::verify_stamp(w, &l, &blob_id, &wrap, &st).is_ok());
@@ -669,6 +693,11 @@ impl SyncEngine {
     /// Upload or Sync statuses.
     pub(crate) fn entry_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>, head: Option<Step>, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
+        let stale_head = codes.contains(&Code::NOT_HEAD);
+        let (ids, codes) = self.eph_status(conn, l, ids, codes);
+        if ids.is_empty() && !stale_head {
+            return Ok(());
+        }
         let mut stale = false;
         let mut grew = false;
         for (b, code) in ids.into_iter().zip(codes) {
@@ -800,41 +829,6 @@ impl SyncEngine {
             Code::TOMBSTONED => self.state.set_gone(server, l, b),
             c => self.diag(format!("deposit refused: code {}", c.0)),
         }
-        Ok(())
-    }
-
-    /// A signal under `l` (spec/sync.md §9): opened with the label's read secrets, the sender's
-    /// signature and its write authority on the thing verified like a commit's; dropped when
-    /// its chain is unknown or targeted at another node; never stored.
-    pub(crate) fn signal_in(&mut self, l: LabelId, blob: &[u8], wrap: &[u8; osis_crypto::WRAP_LEN], _auth: &PublishAuth) -> Result<()> {
-        let Some(g) = self.group_of(&l) else { return Ok(()) };
-        let id = osis_label::blob_id(blob);
-        let Some((_, key)) = osis_label::unwrap_any(self.read_secrets(&g).iter(), &id, wrap) else { return Ok(()) };
-        let Ok((body, sig)) = osis_label::open_signal(blob, &key) else { return Ok(()) };
-        if body.target.is_some_and(|t| t != self.engine.tid()) {
-            return Ok(());
-        }
-        // a replay (a server or relay re-sending a captured signal later) fires nothing
-        let (now, at) = (self.engine.now().0, body.ts.wall_ms().0);
-        if at.saturating_add(osis_base::format::MAX_DRIFT_MS) < now || at > now.saturating_add(osis_base::format::MAX_DRIFT_MS) {
-            return Ok(());
-        }
-        let Some(CreationRecord::KeyActor { public_key, .. }) = self.engine.core.created(&body.node).cloned() else { return Ok(()) };
-        let Ok(pk) = <[u8; 32]>::try_from(public_key.as_slice()) else { return Ok(()) };
-        let Ok(vk) = VerifyingKey::from_bytes(&pk) else { return Ok(()) };
-        if body.verify(&vk, &sig).is_err() {
-            return Ok(());
-        }
-        let ts = body.ts;
-        if crate::engine::write::role_of(&self.engine.core, &body.node, &body.tid, ts) < Some(Role::Write) {
-            return Ok(());
-        }
-        if body.actor != body.node && crate::engine::write::role_of(&self.engine.core, &body.node, &body.actor, ts) < Some(Role::Write) {
-            return Ok(());
-        }
-        self.engine.core.events.queue(crate::Event::Signal { tid: body.tid, kind: body.kind.clone(), from: body.node, actor: body.actor, ts: body.ts, target: body.target, value: body.value.clone() });
-        self.engine.core.events.flush();
-        self.signals.push(body);
         Ok(())
     }
 }

@@ -91,10 +91,11 @@ fn bad_path_refused_at_first_page_spec_sync_5() {
     assert!(d.iter().any(|x| x.contains("server path does not verify")), "refused at the first page: {d:?}");
 }
 
-// spec/sync.md §9 (receivers drop a signal whose `ts` is more than `MAX_DRIFT` from their
-// corrected clock): a server replaying a captured signal later fires nothing.
+// notes/ephemeral.md Signals (a relay-only commit older than `MAX_DRIFT` is dropped, its only
+// replay window; one delivered is remembered): a server pushing a captured signal again fires
+// nothing, at once or later.
 #[test]
-fn replayed_signal_dropped_spec_sync_9() {
+fn replayed_signal_dropped_spec_sync_5() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
@@ -102,16 +103,30 @@ fn replayed_signal_dropped_spec_sync_9() {
     let g = net.group(a, &[(b, Role::Read)], &[sv]);
     let t = net.item(a, g, g, "x");
     net.run();
-    let acts = net.sync(a).signal(&t, Ak::new("/t/typing").unwrap(), Value::Bool(true), None).unwrap();
+    let rx = net.listen(b);
+    let mut m = osis_node::Mutation::new();
+    m.set(t, &ukey("/t/typing", osis_schema::Lifetime::Signal), &Value::Bool(true)).unwrap();
+    net.engine(a).write(m).unwrap();
+    let acts = net.sync(a).handle(Event::Local);
     let conn_a = net.conn_to(a, sv).unwrap();
-    let captured = sent(&acts, conn_a).into_iter().find(|m| matches!(m, Message::Signal { .. })).expect("signal sent");
+    let (label, entry) = sent(&acts, conn_a)
+        .into_iter()
+        .find_map(|m| match m {
+            Message::Upload { label, entries, .. } => entries.into_iter().next().map(|e| (label, e)),
+            _ => None,
+        })
+        .expect("relay-only entry sent");
     net.actions(a, acts);
     net.settle(10_000);
-    assert_eq!(net.sync(b).take_signals().len(), 1, "delivered once");
+    assert_eq!(fired(&rx).len(), 1, "delivered once");
+    let push = |e: &osis_proto::Entry| Message::Push { label, events: vec![osis_proto::Event::Added { blob_id: osis_label::blob_id(&e.blob), blob: Some(e.blob.clone()), wrap: e.wrap, stamp: Some(e.stamp) }], cursor: osis_proto::Cursor { log_id: [0; 16], seq: 0 } };
+    let conn_b = net.conn_to(b, sv).unwrap();
+    net.feed(b, Event::Bytes { conn: conn_b, bytes: frame(push(&entry)) });
+    assert!(fired(&rx).is_empty(), "a duplicate fires nothing");
     net.clock.advance(MAX_DRIFT_MS + 60_000);
     let conn_b = net.conn_to(b, sv).unwrap();
-    net.feed(b, Event::Bytes { conn: conn_b, bytes: frame(captured) });
-    assert!(net.sync(b).take_signals().is_empty(), "a stale replay fires nothing");
+    net.feed(b, Event::Bytes { conn: conn_b, bytes: frame(push(&entry)) });
+    assert!(fired(&rx).is_empty(), "a stale replay fires nothing");
 }
 
 // spec/requirements.md (blind nodes must not learn device identities; groups unlinkable beyond

@@ -9,8 +9,10 @@
 
 mod log;
 mod place;
+mod remote;
 
 pub use log::{LoggedChange, Reverted};
+pub use remote::{COMPACT_FLOOR, EphCommit, EphIngest, MAX_DELIVERED};
 
 use crate::engine::write::{AspectMut, Records, check_authority_with, role_with, run_ops};
 use crate::engine::{Engine, Mutation};
@@ -31,6 +33,8 @@ pub struct EphThing {
     pub node: Tid,
     pub actor: Tid,
     pub received: WallMs,
+    /// Its `/created` as an ephemeral commit carries it (minted when first sent, or received).
+    pub created: Option<Fragment>,
 }
 
 /// One ephemeral aspect: its joined state and which of its writes expire when. Expiry classes
@@ -42,6 +46,11 @@ struct EphAspect {
     state: Fragment,
     expiring: BTreeMap<u64, Vec<(u64, u64)>>,
     expired: Vec<(u64, u64)>,
+    /// The own writes alone, kept once a held part of another commit joined (a rebuild starts
+    /// from it, `remote::rebuild_aspect`).
+    own: Option<Fragment>,
+    /// Held ephemeral commit parts on this aspect: (commit, aspect index).
+    parts: BTreeSet<(CommitId, usize)>,
 }
 
 /// The engine's ephemeral state.
@@ -60,6 +69,10 @@ pub struct Eph {
     defs: BTreeMap<Tid, place::Def>,
     /// Own batches for undo.
     log: log::Log,
+    /// Synced ephemeral data: unsent writes, held ephemeral commits.
+    remote: remote::Remote,
+    /// Held ephemeral commits dropped (covered or expired), for the sync layer.
+    dropped: Vec<CommitId>,
 }
 
 /// A batch written by `Engine::write`.
@@ -72,7 +85,7 @@ pub struct Written {
 impl Eph {
     /// Empty, under a new random session.
     pub fn new(session: [u8; 32]) -> Eph {
-        Eph { session, src: Source::commit(CommitId(session)), next: 1, batches: 0, things: HashMap::new(), aspects: HashMap::new(), timers: BTreeMap::new(), defs: BTreeMap::new(), log: log::Log::default() }
+        Eph { session, src: Source::commit(CommitId(session)), next: 1, batches: 0, things: HashMap::new(), aspects: HashMap::new(), timers: BTreeMap::new(), defs: BTreeMap::new(), log: log::Log::default(), remote: remote::Remote::default(), dropped: Vec::new() }
     }
 
     fn state(&self, tid: &Tid, ak: &Ak) -> Option<&Fragment> {
@@ -312,7 +325,8 @@ impl Engine {
         }
         let created = !fresh.is_empty();
         for (t, record) in fresh {
-            self.eph.things.insert(t, EphThing { record, ts, node, actor, received: now });
+            self.eph.things.insert(t, EphThing { record, ts, node, actor, received: now, created: None });
+            self.note_created(&t);
         }
         for (item, group) in refused {
             self.report(Diagnostic { kind: DiagnosticKind::PlacementNotPersisted, tids: vec![item, group], commit, peer: None, detail: "a persisted thing's placement stays ephemeral: this node may not write the group".into() });
@@ -328,6 +342,7 @@ impl Engine {
         let now = self.now();
         let mut changed = Vec::new();
         let mut logged = Vec::new();
+        let mut written = Vec::new();
         for r in resolved {
             let src = self.eph.src.clone();
             let a = self.eph.aspects.entry(r.tid).or_default().entry(r.ak.clone()).or_default();
@@ -335,6 +350,10 @@ impl Engine {
             let strip = !expired.is_empty() && r.delta.holds_dots(&|d| d.src == src && expired.iter().any(|(lo, hi)| *lo <= d.ctr && d.ctr < *hi));
             if let Some((pre, schema)) = r.log {
                 logged.push(log::LogAspect { tid: r.tid, ak: r.ak.clone(), delta: r.delta.clone(), range: CounterRange { lo: r.range.0, hi: r.range.1 }, pre, schema });
+            }
+            written.push((r.tid, r.ak.clone(), r.delta.clone(), r.expires));
+            if let Some(o) = &mut a.own {
+                o.join(r.delta.clone());
             }
             a.state.join(r.delta);
             if strip {
@@ -348,6 +367,12 @@ impl Engine {
                 self.refresh_def(&r.tid, &r.ak);
             }
             changed.push((r.tid, r.ak));
+        }
+        for (t, ak, delta, expires) in &written {
+            self.note_written(t, ak, delta, *expires, actor);
+        }
+        for (t, ak, v) in &signals {
+            self.note_signal(t, ak, v, ts, actor);
         }
         let gone = self.free_things(&free, ts, &mut changed);
         logged.retain(|a| !gone.contains(&a.tid));
@@ -378,15 +403,15 @@ impl Engine {
 
     /// Frees ephemeral things deleted by a batch, with the ephemeral things they own: records,
     /// states, timers, undo entries and their ephemeral placements go (resets at `ts`), the tids
-    /// read unknown (notes/ephemeral.md Deletion; nothing syncs ephemeral things yet, so no
-    /// holder could revive them).
+    /// read unknown (notes/ephemeral.md Deletion). A thing in a labeled closure keeps its record
+    /// and tombstones while held: an older copy elsewhere would revive the values.
     fn free_things(&mut self, free: &BTreeSet<Tid>, ts: Ts, changed: &mut Vec<(Tid, Ak)>) -> BTreeSet<Tid> {
-        let mut gone: BTreeSet<Tid> = free.iter().filter(|t| self.eph.things.contains_key(t)).copied().collect();
+        let mut gone: BTreeSet<Tid> = free.iter().filter(|t| self.eph.things.contains_key(t) && !self.ephemeral_synced(t)).copied().collect();
         if gone.is_empty() {
             return gone;
         }
         loop {
-            let more: Vec<Tid> = self.eph.things.iter().filter(|(t, e)| !gone.contains(t) && matches!(&e.record, CreationRecord::Thing { owner, .. } if gone.contains(owner))).map(|(t, _)| *t).collect();
+            let more: Vec<Tid> = self.eph.things.iter().filter(|(t, e)| !gone.contains(t) && !self.ephemeral_synced(t) && matches!(&e.record, CreationRecord::Thing { owner, .. } if gone.contains(owner))).map(|(t, _)| *t).collect();
             if more.is_empty() {
                 break;
             }
@@ -394,6 +419,7 @@ impl Engine {
         }
         for t in &gone {
             self.eph.things.remove(t);
+            self.eph.remote.local.remove(t);
             self.eph.defs.remove(t);
             if let Some(m) = self.eph.aspects.remove(t) {
                 for (ak, a) in m {
@@ -424,6 +450,9 @@ impl Engine {
             };
             if let Ok(Some((delta, r))) = out {
                 self.eph.next = r.hi;
+                if let Some(o) = &mut a.own {
+                    o.join(delta.clone());
+                }
                 a.state.join(delta);
                 let gak = gak.clone();
                 self.refresh_def(&g, &gak);
@@ -437,7 +466,7 @@ impl Engine {
 
     /// When the next ephemeral expiry is due (corrected wall ms).
     pub fn next_ephemeral_timer(&self) -> Option<u64> {
-        self.eph.timers.keys().next().copied()
+        [self.eph.timers.keys().next(), self.eph.remote.timers.keys().next()].into_iter().flatten().min().copied()
     }
 
     /// Runs the ephemeral expiries due by the corrected clock: their value-carrying writes are
@@ -455,6 +484,9 @@ impl Engine {
                 let Some(a) = self.eph.aspects.get_mut(&tid).and_then(|m| m.get_mut(&ak)) else { continue };
                 let Some(ranges) = a.expiring.remove(&t) else { continue };
                 a.state.strip(&|d| d.src == src && ranges.iter().any(|(lo, hi)| *lo <= d.ctr && d.ctr < *hi));
+                if let Some(o) = &mut a.own {
+                    o.strip(&|d| d.src == src && ranges.iter().any(|(lo, hi)| *lo <= d.ctr && d.ctr < *hi));
+                }
                 a.expired.extend(ranges);
                 if ak.as_str() == GROUP.ak() {
                     self.refresh_def(&tid, &ak);
@@ -462,6 +494,7 @@ impl Engine {
                 changed.insert((tid, ak));
             }
         }
+        changed.extend(self.tick_remote(now));
         if !changed.is_empty() {
             self.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
             self.core.events.flush();

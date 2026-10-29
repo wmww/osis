@@ -1,5 +1,5 @@
 # Wire formats
-> Summary: Byte layouts of everything that leaves a node: common encodings, format constants, creation records, commit headers and commit blobs, blob framing and padding, the chunker and chunk trees, boxes, registration steps and claim sets, inbox blobs and signal envelopes, links and recovery cards, the node-to-node protocol, bundles, decoder limits.
+> Summary: Byte layouts of everything that leaves a node: common encodings, format constants, creation records, commit headers and commit blobs, blob framing and padding, the chunker and chunk trees, boxes, registration steps and claim sets, inbox blobs, links and recovery cards, the node-to-node protocol, bundles, decoder limits.
 
 ## 1. Conventions
 - Every structure below is canonical CBOR in the profile of spec/data-model.md §5 unless it is given as a fixed byte layout. `[a, b]` is an array with exactly those positions; `Opt(X) := [] | [X]`; `X*` repeats X zero or more times, `X+` one or more. A decoder rejects any other length, a wrong major type, or an item outside its stated size.
@@ -43,7 +43,7 @@ Blind-node policy (recommended): `TOMBSTONE_LIFETIME` 30 days; deposit budget sp
 ## 4. Commits
 ```
 Header    := [version, author, actor, kind, ts, form, schemas, aspects, chunks, purge,
-              undoes, blind, keys, frontier, origins]
+              undoes, blind, keys, frontier, origins, ephemeral]
 Aspect    := [tid, ak, lo, hi, Retention, expires, schema, keys, hashes]
 Retention := [by, at_least, at_most]
 Bound     := {? 0: abs, ? 1: rel}
@@ -68,6 +68,7 @@ Header fields by position:
 12. `keys`: `[DeleteKey*]` sorted by canonical bytes, distinct: the delete keys of the commit's deltas (spec/crypto.md §7), `pk` a valid Ed25519 key (§1, spec/crypto.md §1), at most one at level 2 (the author chain); a key no aspect lists is bad input.
 13. `frontier`: `Opt(frontier)`, the frontier value (spec/data-model.md §9); present iff the commit is a membership commit carrying an explicit demotion (spec/permissions.md §5).
 14. `origins`: `[Origin*]` sorted by commit ID, distinct; non-empty iff `kind` is 4 (spec/permissions.md §7).
+15. `ephemeral`: `Opt(uint)`, the ephemeral marker (spec/commits.md §2): 0 an ephemeral commit, 1 a relay-only one. Present only with `kind` 2 and `form` 1, no `chunks`, no `purge`, no `undoes` and no list by link; every aspect's retention `by` is writer (`/created` included) with the levels it calls for; a relay-only commit has no `expires`. Anything else is bad input.
 
 Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most 1024 bytes); `lo`, `hi`: the counter range (`lo = hi = 0` for kinds 2, 3, 4; else `1 <= lo < hi`); `Retention`: `by` (purgeable-by class), `at_least` and `at_most` bounds, each a map with optional `0: abs` (wall ms; `2^63 - 1` means forever) and `1: rel` (ms after the body is replaced), `{}` for no bound; `expires`: `Opt(T)`; `schema`: `Opt(index into schemas)`; `keys`: `[ki*]`, ascending indices into the header's `keys`: one per level the retention calls for (spec/crypto.md §7), exactly those levels, else bad input; `hashes`: `[delta_hash+]` (32 bytes each), exactly one for kinds 0, 2, 3, 4, sorted and distinct for kinds 1 and 5.
 
@@ -84,12 +85,14 @@ A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixe
 | 0 | 1 | framing version: 1 |
 | 1 | 16 | salt, random per encryption |
 | 17 | 8 | expiry `T`: le64 wall ms; 0 means none |
-| 25 | 1 | n: number of commitments, 0..3 |
-| 26 | 33·n | commitments: level byte (1..3) `||` 32-byte blinded delete key (spec/crypto.md §7), levels strictly ascending |
+| 25 | 1 | class: 0 durable, 1 ephemeral, 2 relay-only (spec/sync.md §1); any other value is bad input |
+| 26 | 1 | n: number of commitments, 0..3 |
+| 27 | 33·n | commitments: level byte (1..3) `||` 32-byte blinded delete key (spec/crypto.md §7), levels strictly ascending |
 
-- The ciphertext runs from offset `26 + 33n` to the end: XChaCha20-Poly1305 under the blob key, nonce 24 zero bytes, AD = the prefix bytes, plaintext = the padded plaintext. **Blob ID** = BLAKE3(whole blob).
+- The ciphertext runs from offset `27 + 33n` to the end: XChaCha20-Poly1305 under the blob key, nonce 24 zero bytes, AD = the prefix bytes, plaintext = the padded plaintext. **Blob ID** = BLAKE3(whole blob).
 - **Padding** (Padmé): for a plaintext P, let `L = len(P) + 1`, `E = floor(log2 L)`; if `E = 0`, `padme(L) = L`; else with `S` the bit length of `E` and `m = 2^(E - S) - 1`, `padme(L) = (L + m) & ~m`. The padded plaintext is `P || 0x80 || 0x00^(padme(L) - L)`. To unpad: strip trailing `0x00` bytes, then one `0x80`, which MUST be present; the padded length MUST equal `padme(len(P) + 1)`. Anything else is bad input.
-- Plaintext per blob kind: commit blob `CommitBlobPlaintext` (§4); chunk: the raw chunk bytes; tree node and link page: §6; page: §6; inbox blob: §9 (its ciphertext is a sealed box, not the AEAD above); signal envelope: §9.
+- Plaintext per blob kind: commit blob `CommitBlobPlaintext` (§4); chunk: the raw chunk bytes; tree node and link page: §6; page: §6; inbox blob: §9 (its ciphertext is a sealed box, not the AEAD above).
+- Class: a commit blob's class is that of its header's ephemeral marker (none: durable, 0: ephemeral, 1: relay-only); a mismatch is bad input. Chunks, tree nodes, pages and inbox blobs are durable.
 - Commitments: a commit blob, chunk, tree node or page carries one commitment per delete key of the deltas it serves (spec/crypto.md §7), blinded by its own salt and the blind of the header listing it (for a chunk, tree node or page: of the header that introduced it): one per level. A chunk or tree node of a linked header list (§4) carries the commitment of the commit's level-2 key only (none for an import). A header-list chunk's expiry is the greatest `expires` of the commit's aspects when every aspect has one, else none.
 - **Wrap**: XChaCha20-Poly1305 under `kdf("wrap", label read secret)`, nonce = first 24 bytes of the blob ID, empty AD, plaintext `suite (1) || blob key (32)`: 49 bytes. A filler is 49 random bytes.
 - A node that does not know a blob's framing version stores and relays it as a blob with no expiry and no commitments.
@@ -125,13 +128,10 @@ ClaimSet := [[claim+], {entry: box}]
 - A claim key pair is the Ed25519 key pair with seed `kdf("label claim", DH(step private key, M's X25519 key), label_id || step_key)`; a static entry is `BLAKE3("osis v1 static claim" || label_id || pk)` with `pk` the key actor's raw Ed25519 signing key.
 - `/label` stores a step as the canonical bytes of `Step` and its claim set as those of `ClaimSet` (`step_record`, spec/data-model.md §9).
 
-## 9. Inbox blobs and signal envelopes
+## 9. Inbox blobs
 - **Inbox blob** (spec/crypto.md §5): prefix with expiry = the sender's corrected wall ms + `INBOX_LIFETIME` and no commitments, then a sealed box (§7) to the recipient's newest read keyset KEM key with AD = `[recipient, "inbox", prefix bytes]` and payload the padded (§5) canonical bytes of
   `InboxPayload := [CommitBlobPlaintext, [[tid, label_id, [address*], Opt([admin_pk, write_pk])]*]]`:
   the membership commit with the parts about the recipient (§4), then for each thing it names, its label ID and server addresses (`address` values, spec/data-model.md §9) and, for a thing with secrets of its own, its current admin and write delete keys (spec/crypto.md §7), sorted by tid.
-- **Signal envelope** (spec/sync.md §9): a blob (§5) with no expiry and no commitments, wrapped under the label like any blob, at most 64 KiB. Plaintext: the padded canonical bytes of `[SignalBody, signature]` with
-  `SignalBody := [node, actor, ts, tid, kind, target, schema, value]`: sender node tid, actor tid, `ts`, target thing tid, kind (text, as an AK), `Opt(target node tid)`, `Opt([schema_id, revision])`, the value. The `signature` value is the sender node's under `"osis v1 signal"`, digest BLAKE3(canonical `SignalBody`).
-- Publish authorization: `[key, sig]`, key 0 for the label's write key or 1 for its deposit key, `sig` raw Ed25519 under `"osis v1 signal publish"`, digest BLAKE3(canonical `[label_id, blob_id, wrap]`).
 
 ## 10. Links and recovery cards
 ```
@@ -148,7 +148,7 @@ Card := [1, seed, person, home_label, [address+]]
 ### 11.1 Framing and handshake
 - Each direction of the stream (spec/sync.md §10) is a sequence of frames: a 4-byte big-endian length `len`, `1 <= len <= MAX_MESSAGE` (9 MiB, 9 437 184 bytes), then one canonical CBOR item of `len` bytes. A frame breaking a rule of this section is answered by Error 2 and may end the connection.
 - Each side sends `Hello := ["osis", [version+], wall_ms, challenge]` as its first frame, without waiting for the other's: supported protocol versions ascending (at most 16), its corrected wall clock, 32 random bytes. The session uses the greatest version both list; with none in common, both close. This section defines version 1.
-- Every later frame is a message `[kind, id, ...]`. `id < 2^32` is chosen by the requesting side and not reused while its request is outstanding; replies carry it; `id = 0` marks a message that has no reply (Push, Signal). Either side may send requests. A request of unknown kind gets Error 11. Replies may arrive in any order.
+- Every later frame is a message `[kind, id, ...]`. `id < 2^32` is chosen by the requesting side and not reused while its request is outstanding; replies carry it; `id = 0` marks a message that has no reply (Push). Kind 24 is retired (never reused). Either side may send requests. A request of unknown kind gets Error 11. Replies may arrive in any order.
 - **Static key** of a side: the 32-byte key the transport authenticated for it (a server: its address key; a peer: its dialable key). An open signature binds the opened side's static key and Hello challenge.
 - Clock offset (spec/sync.md §6) is estimated from Ping/Pong round trips and Hello.
 
@@ -173,7 +173,6 @@ Fetch     [19, id, label_id, [blob_id+]]       -> FetchReply [20, id, [[blob_id,
 Subscribe [21, id, [label_id+]]                -> Status
 Unsubscribe [22, id, [label_id+]]              -> Ok
 Push      [23, 0, label_id, [event+], cursor]
-Signal    [24, 0, label_id, blob, wrap, auth]
 
 proof  := [0, sync_pk, sig] | [1, step_id, claim_pk, sig] | [2, signing_pk, sig] | [3, dialable_pk, sig]
 entry  := [blob, wrap, stamp]
@@ -188,13 +187,13 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 - **Open** (spec/sync.md §5): `sig` under `"osis v1 label open"`, digest BLAKE3(canonical `[label_id, challenge, static_key]`) with the opened side's challenge and static key; proof 0 by a sync key, 1 by claim key `claim_pk` at step `step_id`, 2 by a key actor's signing key (its static entry), 3 by a node's dialable key under `"osis v1 member open"` instead (member peers only, spec/sync.md §5). Opened carries the head (without claim set) and, for proof 2, the head's entry box for that static entry. A match at a superseded step is answered by Step with that step's child (without claim set).
 - **Register**: replies Ok, or Step with the head when the step is not accepted (spec/sync.md §5). A server MAY answer a genesis step for a new label with Error 12 when it is at its storage cap.
 - **Path** (opened labels): the registration path after step `after` (from the genesis step when absent) toward the head, without claim sets, at most 1024 steps per reply; `more` is true when steps remain.
-- **Upload** and the entries of Sync: `stamp` under `"osis v1 upload"`, digest BLAKE3(canonical `[label_id, blob_id, wrap]`). Status gives one code per entry in order; when any code is 9 it carries the head.
+- **Upload** and the entries of Sync: `stamp` under `"osis v1 upload"`, digest BLAKE3(canonical `[label_id, blob_id, wrap]`). Status gives one code per entry in order; when any code is 9 it carries the head. A relay-only entry (prefix class 2) is not stored: the receiver pushes it to the subscribers of the label on its other connections as a Push of one add event carrying the blob (the Push's cursor the subscription's current position) and answers 0.
 - **Deposit**: `sig` by the deposit key under `"osis v1 deposit"`, digest as for a stamp. Budget reports what remains of the label's deposit budget after the request.
 - **Delete**: per item, signatures under `"osis v1 delete"` over digest BLAKE3(canonical `[label_id, blob_id, Opt(at), Opt(level)]`): without a level, `sig` by the head's delete key; with one, `dsig` by that level's delete key under the blob prefix's commitment at that level (spec/crypto.md §7) and `sig` by the head's write key for level 3, its sync key for level 1 or 2 (spec/sync.md §5). `at` requests a timed delete.
-- **Sync** (cursor sync and download, spec/sync.md §6): `cursor` is the peer's log position for the label (`log_id` names the log instance; a peer whose log no longer reaches `seq` or has another `log_id` answers Error 10); without a cursor the reply replays the label's live entries as add events, in ascending blob ID order. While such a replay has `more`, its cursor is `[replay_id, pos]`: `replay_id` the first 16 bytes of BLAKE3(`"osis v1 replay"` || `log_id`), `pos` the first 8 bytes of the last blob ID sent as a big-endian integer; a Sync carrying it continues with the IDs above that position, and the last page returns the log cursor taken when the replay started (a peer that no longer holds that replay answers Error 10). `entry` lists the requester's new stamped entries (status per entry in `[code*]`), `gained` the blob IDs gained from other sources since the cursor (at most 4096), `want` those the peer lacks. A blob's bytes travel inline in an add event iff its size is at most `inline_limit` and it has not crossed this connection yet. `more` true: repeat with the returned cursor.
+- **Sync** (cursor sync and download, spec/sync.md §6): `cursor` is the peer's log position for the label (`log_id` names the log instance; a peer whose log no longer reaches `seq` or has another `log_id` answers Error 10); without a cursor the reply replays the label's live entries as add events, in ascending blob ID order. While such a replay has `more`, its cursor is `[replay_id, pos]`: `replay_id` the first 16 bytes of BLAKE3(`"osis v1 replay"` || `log_id`), `pos` the first 8 bytes of the last blob ID sent as a big-endian integer shifted right by one bit (its first 63 bits); a Sync carrying it continues with the IDs above that position, and the last page returns the log cursor taken when the replay started (a peer that no longer holds that replay answers Error 10). `entry` lists the requester's new stamped entries (status per entry in `[code*]`), `gained` the blob IDs gained from other sources since the cursor (at most 4096), `want` those the peer lacks. A blob's bytes travel inline in an add event iff its size is at most `inline_limit` and it has not crossed this connection yet. `more` true: repeat with the returned cursor.
 - **Events**: 0 an entry added or its wrap and stamp replaced (no stamp: deposited), 1 deleted, 2 a timed deletion pending at `at`, 3 a new head (without claim set). Expiry produces no event.
 - **Fetch** (spec/sync.md §5): items in request order, possibly a prefix of the request when the reply would exceed `MAX_MESSAGE`.
-- **Subscribe** (opened labels): the peer then sends Push with each new run of log events, with blobs as in Sync under the connection's last `inline_limit` for that label. **Signal**: `auth` as in §9; the receiver forwards it unchanged to its other subscribers of the label and stores nothing.
+- **Subscribe** (opened labels): the peer then sends Push with each new run of log events, with blobs as in Sync under the connection's last `inline_limit` for that label, and the relay-only entries other connections upload.
 - Status codes: 0 ok, 1 refused, 2 malformed, 3 too large (client-local: a server answers an oversized message as malformed), 4 rate limited, 5 deposit budget full, 6 tombstoned, 7 expired, 8 label not opened, 9 key not of the head, 10 cursor invalid, 11 unsupported, 12 storage cap reached, 13 unknown label.
 - Per-message caps: Upload and Delete 1024 items; Fetch 1024 IDs; `gained` and `want` 4096; Subscribe and Unsubscribe 1024 labels; Reconcile 256 ranges, ReconcileReply 4096; a peer may refuse to hold more than 4096 open labels per connection (code 4).
 
@@ -216,5 +215,5 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 
 ## 13. Decoder limits
 - Any object: CBOR nesting at most 512 deep, values inside it at most 64 (spec/data-model.md §5); no array or map longer than the bytes that remain.
-- Blob `MAX_BLOB`; frame `MAX_MESSAGE`; signal envelope 64 KiB; AK and signal kind 1024 bytes; URL 256 bytes.
+- Blob `MAX_BLOB`; frame `MAX_MESSAGE`; AK 1024 bytes; URL 256 bytes.
 - Header: 256 schemas; each inline list at most `CHUNK_THRESHOLD` bytes. Prefix: 3 commitments. Claim set: `MAX_CLAIMS` keys; a claim set with its entry boxes is at most `MAX_MESSAGE` − 64 KiB. Tree node and link page: 512 links (a tree node one length per link); tree level 48. Sequence run: `2^16` elements, a list run's `Content` closing at `CHUNK_MAX` bytes; runs without `Content` in a writer or import delta: `MAX_DELTA_BARE` elements in all (spec/crdt.md §3.3). Link and card: §10. Messages: §11.2.

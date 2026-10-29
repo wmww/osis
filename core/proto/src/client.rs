@@ -1,6 +1,6 @@
 //! Client side of one connection (spec/sync.md §5-§9, spec/wire.md §11): a sans-I/O state machine
 //! that turns commands into requests (batched under the caps, paged replies followed up), and
-//! replies, pushes and signals into events. Policy (what to sync, verify, fetch or upload) stays
+//! replies and pushes into events. Policy (what to sync, verify, fetch or upload) stays
 //! with the node.
 
 use crate::Error;
@@ -73,7 +73,6 @@ pub enum Command {
     Delete { label: LabelId, items: Vec<DeleteItem> },
     Subscribe { labels: Vec<LabelId> },
     Unsubscribe { labels: Vec<LabelId> },
-    Signal { label: LabelId, blob: Vec<u8>, wrap: Wrap, auth: PublishAuth },
     /// Stop following a label's Path pages (the node no longer wants them).
     StopPath { label: LabelId },
     Close,
@@ -122,7 +121,6 @@ pub enum ClientEvent {
     Reconciled { label: LabelId, need: Vec<BlobId>, have: Vec<BlobId> },
     Fetched { label: LabelId, items: Vec<Fetched> },
     Subscribed { labels: Vec<LabelId>, codes: Vec<Code> },
-    Signal { label: LabelId, blob: Vec<u8>, wrap: Wrap, auth: PublishAuth },
     /// A request was answered by Error, or could not be sent (code 2: a delete item whose time
     /// cannot be encoded).
     Refused { label: Option<LabelId>, kind: Request, code: Code },
@@ -430,7 +428,6 @@ impl ClientSession {
                     self.request(out, |id| Message::Unsubscribe { id, labels: chunk.to_vec() }, Pending::Unsubscribe);
                 }
             }
-            Command::Signal { label, blob, wrap, auth } => send(out, Message::Signal { label, blob, wrap, auth }),
             Command::StopPath { label } => {
                 for (_, p) in self.pending.values_mut() {
                     if matches!(p, Pending::Path(l) if *l == label) {
@@ -537,7 +534,6 @@ impl ClientSession {
                 let syncing = self.pending.values().any(|(_, p)| matches!(p, Pending::Sync { label: l, .. } if *l == label));
                 event(out, ClientEvent::Events { label, events, cursor: (!syncing).then_some(cursor) })
             }
-            Message::Signal { label, blob, wrap, auth } => event(out, ClientEvent::Signal { label, blob, wrap, auth }),
             m if m.is_request() => send(out, Message::Error { id: m.id(), code: Code::UNSUPPORTED }),
             m => self.reply(now, m, out),
         }

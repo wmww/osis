@@ -238,6 +238,7 @@ fn fallback_header(v: &View) -> Header {
         frontier: None,
         origins: Vec::new(),
         links: Default::default(),
+        ephemeral: None,
     }
 }
 
@@ -1141,7 +1142,7 @@ pub(crate) fn decode_commit_record(v: &[u8]) -> Result<CommitRecord> {
 pub struct Engine {
     store: Store,
     store_rng: SeededRng,
-    rng: Box<dyn CryptoRngCore + Send>,
+    pub(crate) rng: Box<dyn CryptoRngCore + Send>,
     #[doc(hidden)]
     pub core: Core,
     /// Ephemeral things and aspects, in memory (`crate::ephemeral`).

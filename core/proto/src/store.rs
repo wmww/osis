@@ -47,7 +47,9 @@ pub enum LogRecord {
     Head(Step),
 }
 
-/// An entry to add or replace, already authorized by the engine.
+/// An entry to add or replace, already authorized by the engine. An ephemeral entry
+/// (`ephemeral`, from the blob's prefix class) is held in memory only, under a per-label byte
+/// cap (spec/sync.md §4, §5).
 #[derive(Clone, Copy, Debug)]
 pub struct Put<'a> {
     pub blob_id: BlobId,
@@ -55,6 +57,7 @@ pub struct Put<'a> {
     pub wrap: Wrap,
     pub stamp: Option<Signature>,
     pub expiry: Option<u64>,
+    pub ephemeral: bool,
 }
 
 /// What remains of a label's deposit budget.
@@ -68,7 +71,8 @@ pub struct Budget {
 const MAX_PATH: usize = 1 << 20;
 
 /// Blind-node state per label. Mutations append their log records; the store applies policy
-/// (storage caps, deposit budget, rate limits on wrap replacements, deletes and signals) and
+/// (storage caps, the ephemeral cap, deposit budget, rate limits on wrap replacements and
+/// deletes) and
 /// answers with a status code.
 pub trait LabelStore {
     /// The head's step ID; none for an unknown label.
@@ -117,8 +121,6 @@ pub trait LabelStore {
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError>;
     /// Sets a pending deletion time (the earliest wins) and logs it if it changed.
     fn schedule_delete(&mut self, label: &LabelId, blob_id: &BlobId, at: u64) -> Result<Code, StoreError>;
-    /// A valid signal is about to be forwarded: `Code::OK`, or a refusal (rate limit) drops it.
-    fn signal(&mut self, label: &LabelId) -> Result<Code, StoreError>;
     /// The label log's instance ID and its last sequence number (0: empty).
     fn log_head(&self, label: &LabelId) -> Result<([u8; 16], u64), StoreError>;
     /// Records with sequence numbers above `after`, at most `max`; `None` when the log no longer
@@ -141,6 +143,9 @@ struct LabelState {
     /// Records at or below this sequence number were dropped.
     horizon: u64,
     next_seq: u64,
+    /// Ephemeral entries and their bytes.
+    ephemeral: BTreeSet<BlobId>,
+    ephemeral_bytes: u64,
 }
 
 impl LabelState {
@@ -164,6 +169,8 @@ pub struct MemoryLabelStore {
     blobs: HashMap<BlobId, (Vec<u8>, usize)>,
     /// Entries per label beyond which uploads get code 12.
     pub entry_cap: Option<usize>,
+    /// Ephemeral entry bytes per label beyond which ephemeral uploads get code 12.
+    pub ephemeral_cap: Option<u64>,
     /// (dialable key, label) pairs a member proof opens (`member_open`; member-peer tests).
     pub member_labels: BTreeSet<([u8; 32], LabelId)>,
     /// `blob` calls so far (cost tests).
@@ -224,7 +231,11 @@ impl MemoryLabelStore {
             let due: Vec<BlobId> = s.entries.iter().filter(|(_, (m, _))| m.pending_delete.is_some_and(|t| t <= now)).map(|(k, _)| *k).collect();
             s.tombstones.retain(|_, t| t.saturating_add(TOMBSTONE_LIFETIME_MS) > now);
             for id in &expired {
-                s.entries.remove(id);
+                if let Some((m, _)) = s.entries.remove(id)
+                    && s.ephemeral.remove(id)
+                {
+                    s.ephemeral_bytes = s.ephemeral_bytes.saturating_sub(m.size);
+                }
             }
             for id in &expired {
                 self.unref(id);
@@ -287,7 +298,7 @@ impl LabelStore for MemoryLabelStore {
     }
 
     fn put(&mut self, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError> {
-        let cap = self.entry_cap;
+        let (cap, ecap) = (self.entry_cap, self.ephemeral_cap);
         let s = self.state_mut(label)?;
         let held = s.entries.get(&put.blob_id).map(|(m, _)| m.clone());
         if let Some(m) = &held
@@ -297,6 +308,16 @@ impl LabelStore for MemoryLabelStore {
         }
         if held.is_none() && cap.is_some_and(|c| s.entries.len() >= c) {
             return Ok(Code::STORAGE_CAP);
+        }
+        if put.ephemeral && held.is_none() {
+            if put.stamp.is_none() {
+                return Ok(Code::REFUSED);
+            }
+            if ecap.is_some_and(|c| s.ephemeral_bytes + put.blob.len() as u64 > c) {
+                return Ok(Code::STORAGE_CAP);
+            }
+            s.ephemeral_bytes += put.blob.len() as u64;
+            s.ephemeral.insert(put.blob_id);
         }
         if put.stamp.is_none() {
             let (n, bytes) = Self::deposited(s);
@@ -325,8 +346,11 @@ impl LabelStore for MemoryLabelStore {
 
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError> {
         let s = self.state_mut(label)?;
-        if s.entries.remove(blob_id).is_none() {
+        let Some((m, _)) = s.entries.remove(blob_id) else {
             return Ok(Code::OK);
+        };
+        if s.ephemeral.remove(blob_id) {
+            s.ephemeral_bytes = s.ephemeral_bytes.saturating_sub(m.size);
         }
         s.tombstones.insert(*blob_id, now);
         s.append(LogRecord::Deleted(*blob_id));
@@ -342,10 +366,6 @@ impl LabelStore for MemoryLabelStore {
         }
         m.pending_delete = Some(at);
         s.append(LogRecord::Pending(*blob_id, at));
-        Ok(Code::OK)
-    }
-
-    fn signal(&mut self, _label: &LabelId) -> Result<Code, StoreError> {
         Ok(Code::OK)
     }
 

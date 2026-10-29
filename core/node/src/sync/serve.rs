@@ -222,6 +222,8 @@ struct PeerStore<'a> {
     used_here: BTreeMap<[u8; 32], u64>,
     total_left: u64,
     acc: Accepted,
+    /// Ephemeral entries held in memory (`ephemeral`): served like the others.
+    eph: &'a super::ephemeral::Lane,
 }
 
 /// Whom bytes a peer session put here are charged to: the dialable key its member proof
@@ -259,8 +261,14 @@ impl PeerStore<'_> {
     }
 
     fn live(&self, l: &LabelId, b: &BlobId) -> std::result::Result<Option<EntryMeta>, StoreError> {
-        let Some(e) = self.entries.get(&(*l, *b)) else { return Ok(None) };
         let log = self.feed.labels.get(l);
+        if let Some(e) = self.eph.entries.get(&(*l, *b)) {
+            if log.is_some_and(|x| x.hidden(b, self.now)) {
+                return Ok(None);
+            }
+            return Ok(Some(EntryMeta { wrap: e.wrap, stamp: e.stamp, size: e.blob.len() as u64, add_seq: log.and_then(|x| x.adds.get(b)).copied().unwrap_or(0), pending_delete: None }));
+        }
+        let Some(e) = self.entries.get(&(*l, *b)) else { return Ok(None) };
         if log.is_some_and(|x| x.hidden(b, self.now)) {
             return Ok(None);
         }
@@ -323,6 +331,9 @@ impl LabelStore for PeerStore<'_> {
     }
 
     fn blob(&self, blob_id: &BlobId) -> std::result::Result<Option<Vec<u8>>, StoreError> {
+        if let Some((_, e)) = self.eph.entries.iter().find(|((_, b), _)| b == blob_id) {
+            return Ok(Some(e.blob.clone()));
+        }
         self.engine.borrow_mut().blob(blob_id).map_err(local)
     }
 
@@ -369,10 +380,6 @@ impl LabelStore for PeerStore<'_> {
         Ok(Code::OK)
     }
 
-    fn signal(&mut self, _label: &LabelId) -> std::result::Result<Code, StoreError> {
-        Ok(Code::OK)
-    }
-
     fn log_head(&self, label: &LabelId) -> std::result::Result<([u8; 16], u64), StoreError> {
         Ok((self.feed.log_id, self.feed.labels.get(label).map_or(0, |x| x.seq)))
     }
@@ -387,29 +394,38 @@ impl LabelStore for PeerStore<'_> {
 
     fn live_by_id(&self, label: &LabelId, after: Option<&BlobId>, max: usize) -> std::result::Result<Vec<(BlobId, EntryMeta)>, StoreError> {
         let start = after.copied().unwrap_or(BlobId([0; 32]));
-        let mut out = Vec::new();
+        let mut ids: BTreeSet<BlobId> = BTreeSet::new();
         for ((l, b), _) in self.entries.range((*label, start)..) {
-            if l != label || out.len() >= max {
+            if l != label || ids.len() >= max.saturating_add(1) {
                 break;
             }
-            if after == Some(b) {
+            ids.insert(*b);
+        }
+        for (b, _) in SyncEngine::eph_entries_of(self.eph, label).filter(|(b, _)| *b >= start).take(max.saturating_add(1)) {
+            ids.insert(b);
+        }
+        let mut out = Vec::new();
+        for b in ids {
+            if out.len() >= max {
+                break;
+            }
+            if after == Some(&b) {
                 continue;
             }
-            if let Some(m) = self.live(label, b)? {
-                out.push((*b, m));
+            if let Some(m) = self.live(label, &b)? {
+                out.push((b, m));
             }
         }
         Ok(out)
     }
 
     fn live_ids(&self, label: &LabelId) -> std::result::Result<Vec<BlobId>, StoreError> {
+        let mut ids: BTreeSet<BlobId> = self.entries.range((*label, BlobId([0; 32]))..).take_while(|((l, _), _)| l == label).map(|((_, b), _)| *b).collect();
+        ids.extend(SyncEngine::eph_entries_of(self.eph, label).map(|(b, _)| b));
         let mut out = Vec::new();
-        for ((l, b), _) in self.entries.range((*label, BlobId([0; 32]))..) {
-            if l != label {
-                break;
-            }
-            if self.live(label, b)?.is_some() {
-                out.push(*b);
+        for b in ids {
+            if self.live(label, &b)?.is_some() {
+                out.push(b);
             }
         }
         Ok(out)
@@ -509,7 +525,7 @@ impl SyncEngine {
         self.serve_with(conn, input, &labels, out)
     }
 
-    fn serve_with(&mut self, conn: ConnId, input: ServerInput, labels: &BTreeMap<LabelId, ServedLabel>, out: &mut Vec<Action>) -> Result<()> {
+    pub(crate) fn serve_with(&mut self, conn: ConnId, input: ServerInput, labels: &BTreeMap<LabelId, ServedLabel>, out: &mut Vec<Action>) -> Result<()> {
         if !self.served.contains_key(&conn) {
             return Ok(());
         }
@@ -543,6 +559,7 @@ impl SyncEngine {
                 used_here: BTreeMap::new(),
                 total_left: self.cfg.peer_total_bytes.saturating_sub(total),
                 acc: Accepted::default(),
+                eph: &self.eph,
             };
             let o = s.conn.handle(now, &mut store, input);
             (o, store.acc)
@@ -580,7 +597,7 @@ impl SyncEngine {
             // stamps were checked against the served head by the server engine
             self.log_events(None, l, evs, None, out)?;
         }
-        let mut signals = Vec::new();
+        let mut relays = Vec::new();
         for o in outputs {
             match o {
                 ServerOutput::Send(bytes) => out.push(Action::Send { conn, bytes }),
@@ -588,16 +605,18 @@ impl SyncEngine {
                 ServerOutput::Changed(l) => {
                     self.state.feed.grown.insert(l);
                 }
-                ServerOutput::Signal { label, blob, wrap, auth } => signals.push((label, blob, wrap, auth)),
+                ServerOutput::Relay(r) => relays.push(r),
                 ServerOutput::PeerError(e) => self.diag(format!("peer: {e}")),
                 ServerOutput::StoreError(e) => self.diag(format!("serve: {e}")),
             }
         }
-        for (label, blob, wrap, auth) in signals {
-            self.signal_in(label, &blob, &wrap, &auth)?;
+        // a relay-only entry: delivered here and pushed to the other served sessions, held by
+        // nobody (spec/sync.md §5)
+        for r in relays {
+            self.relay_in(r.label, r.blob_id, &r.blob, &r.wrap)?;
             let others: Vec<ConnId> = self.served.keys().copied().filter(|c| *c != conn).collect();
             for c in others {
-                self.serve_with(c, ServerInput::Signal { label, blob: blob.clone(), wrap, auth: auth.clone() }, labels, out)?;
+                self.serve_with(c, ServerInput::Relay(r.clone()), labels, out)?;
             }
         }
         Ok(())

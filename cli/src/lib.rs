@@ -16,12 +16,11 @@ use anyhow::anyhow;
 use args::{Cli, Global};
 use clap::Parser;
 use json::J;
-use osis::{Config, Error, Key, MemStore, Osis, Schema, StoreAt, Tid};
+use osis::{Config, Error, Key, MemStore, Osis, StoreAt, Tid};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
 /// A failure with its exit code (notes/cli.md Exit codes); an empty message prints nothing.
@@ -276,7 +275,6 @@ pub(crate) struct Ctx<'a> {
     pub stdin: &'a mut dyn BufRead,
     pub tty: bool,
     pub sel: StoreSel,
-    pub schemas: Vec<Arc<Schema>>,
     pub vars: BTreeMap<String, Tid>,
     /// (tid, AK) this batch wrote; AK "" for the whole thing (created or deleted).
     pub pending: std::collections::BTreeSet<(Tid, String)>,
@@ -289,11 +287,10 @@ impl Ctx<'_> {
             StoreSel::Memory(_) => Vec::new(),
         };
         paths.extend(g.schemas.iter().cloned());
-        let mut schemas = Vec::new();
         for p in paths {
-            schemas.push(db.register_schema_file(&p).map_err(|e| exit(7, format!("schema {}: {e}", p.display())))?);
+            db.register_schema_file(&p).map_err(|e| exit(7, format!("schema {}: {e}", p.display())))?;
         }
-        Ok(Ctx { g, db, out, stdin, tty, sel, schemas, vars: BTreeMap::new(), pending: Default::default() })
+        Ok(Ctx { g, db, out, stdin, tty, sel, vars: BTreeMap::new(), pending: Default::default() })
     }
 
     pub fn line(&mut self, s: &str) -> anyhow::Result<()> {
@@ -373,7 +370,7 @@ pub(crate) fn timeout_of(g: &Global, default: Option<Duration>) -> anyhow::Resul
     }
 }
 
-/// An AK or signal kind argument.
+/// An AK argument.
 pub(crate) fn parse_ak(s: &str, what: &str) -> anyhow::Result<osis::Ak> {
     osis::Ak::new(s).map_err(|_| usage(format!("bad {what} {s:?}")))
 }

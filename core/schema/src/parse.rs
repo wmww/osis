@@ -7,7 +7,7 @@
 //! item    := doc* ( "schema" HEX ";" | "revision" INT ";"
 //!                 | "type" IDENT ("<" IDENT,+ ">")? "=" type ";"
 //!                 | "aspect" AK ":" type succeeds? attrs? ";"
-//!                 | "signal" AK ":" type ";" )
+//!  )
 //! type    := IDENT ("<" type,+ ">")? | "struct" "{" field,* "}" | "enum" "{" case,* "}"
 //! field   := doc* (INT IDENT ":" type ("=" lit)? succeeds? | "reserved" ids)
 //! case    := doc* (INT IDENT ("(" type ")")? succeeds? | "reserved" ids)
@@ -22,7 +22,7 @@
 
 use crate::error::ParseError;
 use crate::lex::{Tok, Token, lex};
-use crate::schema::{AspectDef, Bound, Flag, PurgeBy, Retention, Schema, SignalDef, TypeDef};
+use crate::schema::{AspectDef, Bound, Flag, PurgeBy, Retention, Schema, TypeDef};
 use crate::types::{Case, EnumType, Field, StructType, Type};
 use osis_base::{SchemaId, Tid, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -160,7 +160,7 @@ impl<'a> Parser<'a> {
                 Tok::Eof => break,
                 Tok::Ident(k) => k,
                 Tok::InnerDoc(_) => return self.err_at(at, "`//!` docs belong at the top of the file"),
-                _ => return self.err_at(at, "expected an item (schema, revision, type, aspect, signal)"),
+                _ => return self.err_at(at, "expected an item (schema, revision, type, aspect)"),
             };
             match kw.as_str() {
                 "schema" => {
@@ -210,16 +210,6 @@ impl<'a> Parser<'a> {
                     }
                     let key = format!("aspect {ak}");
                     if s.aspects.insert(ak, def).is_some() {
-                        return self.err_at(at, format!("duplicate {key}"));
-                    }
-                    locs.insert(key, at);
-                }
-                "signal" => {
-                    let Tok::Ak(kind) = self.next() else { return self.err_at(at, "expected a signal kind (/a/b)") };
-                    self.expect(':')?;
-                    let ty = self.ty()?;
-                    let key = format!("signal {kind}");
-                    if s.signals.insert(kind, SignalDef { ty, doc: item_doc }).is_some() {
                         return self.err_at(at, format!("duplicate {key}"));
                     }
                     locs.insert(key, at);

@@ -1,5 +1,5 @@
-//! Typed aspect and signal keys (notes/api.md Keys). `Aspect<T>` and `Signal<T>` are constants
-//! (generated per declared AK and signal kind, or the core ones in `core_types`); `Ak` is the
+//! Typed aspect keys (notes/api.md Keys). `Aspect<T>` are constants
+//! (generated per declared AK, or the core ones in `core_types`); `Ak` is the
 //! untyped key with `T = Value`.
 
 use crate::codec::Codec;
@@ -165,74 +165,3 @@ impl<T: Codec> AspectKey for Aspect<T> {
     }
 }
 
-/// A typed signal kind (spec/data-model.md §2; never stored).
-pub struct Signal<T> {
-    kind: &'static str,
-    schema: &'static StaticSchema,
-    _t: PhantomData<fn() -> T>,
-}
-
-impl<T> Clone for Signal<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<T> Copy for Signal<T> {}
-impl<T> std::fmt::Debug for Signal<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Signal({})", self.kind)
-    }
-}
-
-impl<T> Signal<T> {
-    pub const fn new(kind: &'static str, schema: &'static StaticSchema) -> Signal<T> {
-        Signal { kind, schema, _t: PhantomData }
-    }
-}
-
-/// A signal kind (spec/data-model.md §2): `Signal<T>` from codegen, or an untyped `Ak`.
-pub trait SignalKey {
-    type T;
-    fn kind(&self) -> &str;
-    fn encode(&self, t: &Self::T) -> Value;
-    fn decode(&self, v: &Value) -> Result<Self::T, PathError>;
-    fn validate(&self, v: &Value) -> Result<(), PathError>;
-}
-
-impl<T: Codec> Signal<T> {
-    fn ty(&self) -> Result<&Type, PathError> {
-        self.schema.get().signals.get(self.kind).map(|s| &s.ty).ok_or_else(|| undeclared(self.kind))
-    }
-}
-
-impl<T: Codec> SignalKey for Signal<T> {
-    type T = T;
-    fn kind(&self) -> &str {
-        self.kind
-    }
-    fn encode(&self, t: &T) -> Value {
-        t.to_value()
-    }
-    fn decode(&self, v: &Value) -> Result<T, PathError> {
-        T::from_value(&typed_read(self.schema.get(), v, self.ty()?)?)
-    }
-    fn validate(&self, v: &Value) -> Result<(), PathError> {
-        validate_write(self.schema.get(), v, self.ty()?)
-    }
-}
-
-impl SignalKey for Ak {
-    type T = Value;
-    fn kind(&self) -> &str {
-        self.as_str()
-    }
-    fn encode(&self, t: &Value) -> Value {
-        t.clone()
-    }
-    fn decode(&self, v: &Value) -> Result<Value, PathError> {
-        Ok(v.clone())
-    }
-    fn validate(&self, _: &Value) -> Result<(), PathError> {
-        Ok(())
-    }
-}

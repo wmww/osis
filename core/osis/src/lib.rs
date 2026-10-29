@@ -175,15 +175,19 @@
 //! ```
 //!
 //! # Signals
-//! Never stored; local listeners fire too; connected readers of the thing receive them.
+//! A `signal` aspect holds nothing: each set fires every callback on it once, here and on the
+//! devices connected now that read the thing.
 //! ```
-//! # use osis::{Config, Osis, Ak, Value, Target};
+//! # use osis::{Config, Osis, Ak, Value, Lifetimes};
 //! let db = Osis::create(Config::memory())?.0;
 //! let t = db.write_with(|w| w.create(db.me()))?;
+//! let ring = Ak::new("/app/ring").unwrap().signal();
 //! let (tx, rx) = std::sync::mpsc::channel();
-//! let _sub = db.on_signal(t, Ak::new("/app/typing").unwrap(), move |_, e| { let _ = tx.send(e.value); });
-//! db.send_signal(t, &Ak::new("/app/typing").unwrap(), &Value::Bool(true), Target::All)?;
-//! assert_eq!(rx.recv().unwrap(), Ok(Value::Bool(true)));
+//! let _sub = db.at(t, ring.clone()).on_change(move |_, c| { let _ = tx.send(c.value); })?;
+//! assert_eq!(rx.recv().unwrap(), Ok(None));
+//! db.write_with(|w| w.at(t, ring.clone()).set(&Value::Bool(true)))?;
+//! assert_eq!(rx.recv().unwrap(), Ok(Some(Value::Bool(true))));
+//! assert_eq!(db.get(t, ring)?, None);
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -250,7 +254,6 @@ mod net;
 mod person;
 mod read;
 mod share;
-mod signal;
 mod text;
 mod commits;
 mod watch;
@@ -264,7 +267,6 @@ pub use keys::{Key, core};
 pub use large::ValueStream;
 pub use read::{AspectRef, Created, Edge, PathRef, Reader, Roster};
 pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupSync, LinkInfo, LinkOpts, Lower, PRESYNC_WAIT, RecoveryCard, ServerAddr, ShareLink, Status, SyncScope, SyncState, WaitForSync};
-pub use signal::{SignalEvent, Target};
 pub use text::TextSession;
 pub use commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Scope};
 pub use watch::{Change, Changed, CommitInfo, Source, Subscription, Watch};
@@ -272,7 +274,7 @@ pub use write::{AspectWrite, Committed, PathWrite, Write};
 
 pub use osis_base::{Ak, Clock, CommitId, CreationRecord, ManualClock, Role, Tid, Ts, Value, WallMs};
 pub use osis_node::{Cause, ChangeId, Diagnostic, DiagnosticKind, EphemeralId};
-pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError, Lifetime, Lifetimes, Retention, Schema, Signal, SignalKey, Step, Untyped, p};
+pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError, Lifetime, Lifetimes, Retention, Schema, Step, Untyped, p};
 
 /// The schema layer, for generated code (`use osis::schema as osis_schema;`).
 pub use osis_schema as schema;

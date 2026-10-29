@@ -20,7 +20,6 @@ chunker/pages.vec provisional
 commit/headers.vec provisional
 step/steps.vec provisional
 inbox/inbox.vec provisional
-signal/signal.vec provisional
 link/link.vec provisional
 schema/core.vec provisional
 proto/messages.vec provisional

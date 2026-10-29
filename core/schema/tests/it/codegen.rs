@@ -77,7 +77,7 @@ fn generated_types_round_trip_through_keys_spec_versioning_5() {
         m.insert(Value::Int(99), Value::Int(0));
     }
     assert!(notes::Task::try_from(&old).is_ok());
-    // Parametric type and signal.
+    // Parametric type and a signal aspect.
     let pinned = BTreeMap::from([(Tid::from_bytes([1; 15]), notes::Tagged { label: "l".into(), value: 3i64 })]);
     let v = notes::PINNED.encode(&pinned);
     assert_eq!(notes::PINNED.decode(&v).unwrap(), pinned);

@@ -19,7 +19,7 @@ pub mod store;
 
 pub use client::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Command, OpenKey, Request};
 pub use error::Error;
-pub use server::{ServerConfig, ServerConnection, ServerInput, ServerOutput};
+pub use server::{Relayed, ServerConfig, ServerConnection, ServerInput, ServerOutput};
 pub use store::{Budget, EntryMeta, LabelStore, LogRecord, MemoryLabelStore, Put, StoreError};
 pub use frame::{FrameDecoder, MAX_HELLO_BYTES, encode_frame};
 pub use hello::{Hello, OffsetSample, PROTOCOL_VERSION, estimate_offset, negotiate};

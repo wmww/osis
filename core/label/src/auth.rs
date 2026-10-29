@@ -1,6 +1,6 @@
 //! Signatures of label operations and their server-side checks (spec/sync.md §5, spec/wire.md
 //! §9, §11.2): open proofs and their evaluation against a registration path, stamps, deposits,
-//! signal publish authorization, deletes by the label delete key or by a delete-key signature.
+//! deletes by the label delete key or by a delete-key signature.
 
 use crate::blob::{Level, Prefix};
 use crate::cbor::{bytes, get_bytes, get_key, get_opt, get_uint, opt, uint};
@@ -145,53 +145,6 @@ pub fn sign_deposit(deposit: &SigningSecret, label: &LabelId, blob: &BlobId, wra
     deposit.sign(Domain::Deposit, &entry_digest(label, blob, wrap))
 }
 
-/// Which key authorizes a signal publish: 0 the label's write key, 1 its deposit key.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PublishKey {
-    Write,
-    Deposit,
-}
-
-/// Signal publish authorization `[key, sig]` under `"osis v1 signal publish"` (spec/wire.md §9).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PublishAuth {
-    pub key: PublishKey,
-    pub sig: Signature,
-}
-
-impl PublishAuth {
-    pub fn sign(key: PublishKey, secret: &SigningSecret, label: &LabelId, blob: &BlobId, wrap: &[u8]) -> PublishAuth {
-        PublishAuth { key, sig: secret.sign(Domain::SignalPublish, &entry_digest(label, blob, wrap)) }
-    }
-
-    /// Against the head's write or deposit key.
-    pub fn verify(&self, head: &Step, blob: &BlobId, wrap: &[u8]) -> Result<(), Error> {
-        let pk = match self.key {
-            PublishKey::Write => &head.keys.write,
-            PublishKey::Deposit => &head.keys.deposit,
-        };
-        pk.verify(Domain::SignalPublish, &entry_digest(&head.label, blob, wrap), &self.sig).map_err(|_| Error::Verify("publish signature"))
-    }
-
-    pub fn to_value(&self) -> Value {
-        let k = match self.key {
-            PublishKey::Write => 0,
-            PublishKey::Deposit => 1,
-        };
-        Value::List(vec![Value::Int(k), bytes(&self.sig.0)])
-    }
-
-    pub fn from_value(v: &Value) -> Result<PublishAuth, Error> {
-        let Value::List(items) = v else { return Err(Error::Malformed("publish auth")) };
-        let (key, sig) = match items.as_slice() {
-            [Value::Int(0), s] => (PublishKey::Write, s),
-            [Value::Int(1), s] => (PublishKey::Deposit, s),
-            _ => return Err(Error::Malformed("publish auth")),
-        };
-        Ok(PublishAuth { key, sig: Signature(get_bytes(sig, "publish signature")?) })
-    }
-}
-
 /// The label key a delete by a level's delete key needs beside it (spec/sync.md §5): the write
 /// key for level 3, the sync key for level 1 or 2.
 pub fn key_for_level(level: Level) -> Result<LabelRole, Error> {
@@ -333,7 +286,7 @@ mod tests {
         assert!(Proof::from_value(&Value::List(vec![Value::Int(3)])).is_err());
     }
 
-    // spec/sync.md §5, spec/wire.md §11.2: stamps, deposits and publish authorizations verify
+    // spec/sync.md §5, spec/wire.md §11.2: stamps and deposits verify
     // under their own key and domain only.
     #[test]
     fn entry_signatures() {
@@ -349,11 +302,6 @@ mod tests {
         assert!(s0.keys.write.verify(Domain::Deposit, &digest, &stamp).is_err());
         let dep = osis_crypto::deposit_key(&g.deposit, &l);
         s0.keys.deposit.verify(Domain::Deposit, &digest, &sign_deposit(&dep, &l, &b, &w)).unwrap();
-        let a = PublishAuth::sign(PublishKey::Deposit, &dep, &l, &b, &w);
-        a.verify(&s0, &b, &w).unwrap();
-        assert_eq!(PublishAuth::from_value(&a.to_value()).unwrap(), a);
-        let wrong = PublishAuth { key: PublishKey::Write, sig: a.sig };
-        assert!(wrong.verify(&s0, &b, &w).is_err());
     }
 
     // spec/sync.md §5, spec/crypto.md §7: delete by the label delete key; by a level's delete
