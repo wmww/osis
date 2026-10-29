@@ -1159,39 +1159,68 @@ impl Engine {
         self.compact_ephemeral_if(scope, force, &|_| true)
     }
 
+    /// Whether this node may compact `(t, ak)` at `ts`: in `scope`, held parts, no expiring
+    /// writes, not presence or a record, writable here.
+    fn compactable(&self, scope: Option<&BTreeSet<Tid>>, t: &Tid, ak: &Ak, ts: Ts) -> bool {
+        let Some(ea) = self.eph.aspects.get(t).and_then(|m| m.get(ak)) else { return false };
+        if scope.is_some_and(|s| !s.contains(t)) || ea.parts.is_empty() || !ea.expiring.is_empty() || ea.presence || ak.as_str() == CREATED.ak() {
+            return false;
+        }
+        if ea.parts.iter().any(|(id, ai)| self.eph.remote.held.get(id).and_then(|h| h.header.aspects.get(*ai)).is_some_and(|a| a.expires.is_some())) {
+            return false;
+        }
+        let things = &self.eph.things;
+        let records: crate::engine::write::Records<'_> = &|x| things.get(x).map(|e| &e.record);
+        crate::engine::write::check_authority_with(&self.core, self.tid(), records, t, ak.as_str(), ts).is_ok()
+    }
+
     /// `compact_ephemeral`, made only when some commit it would cover satisfies `frees` (the
     /// sync layer: one held where a server refused, so deleting it there makes room).
     pub fn compact_ephemeral_if(&mut self, scope: Option<&BTreeSet<Tid>>, force: bool, frees: &dyn Fn(&CommitId) -> bool) -> Result<Option<EphCommit>> {
         let me = self.tid();
         let ts = Ts::make(self.now(), 0).unwrap_or_default();
-        let mut picked: Vec<(Tid, Ak)> = Vec::new();
+        // the aspects past the rule, or forced
+        let mut due: Vec<(Tid, Ak)> = Vec::new();
         for (t, m) in &self.eph.aspects {
-            if scope.is_some_and(|s| !s.contains(t)) {
-                continue;
-            }
             for (ak, ea) in m {
                 // one held part is what a compaction would make again: forcing it would loop
                 // (a server refusing the cover, compacted into the next cover)
-                if ea.parts.len() < 2 || !ea.expiring.is_empty() || ea.presence || ak.as_str() == CREATED.ak() {
+                if ea.parts.len() < 2 {
                     continue;
                 }
                 let held_bytes: usize = ea.parts.iter().filter_map(|(id, _)| self.eph.remote.held.get(id)).map(|h| h.bytes / h.parts.len().max(1)).sum();
-                let expiring = ea.parts.iter().any(|(id, ai)| self.eph.remote.held.get(id).and_then(|h| h.header.aspects.get(*ai)).is_some_and(|a| a.expires.is_some()));
-                if expiring || !(force || (held_bytes > COMPACT_FLOOR && held_bytes > 2 * ea.state.approx_bytes())) {
-                    continue;
+                if (force || (held_bytes > COMPACT_FLOOR && held_bytes > 2 * ea.state.approx_bytes())) && self.compactable(scope, t, ak, ts) {
+                    due.push((*t, ak.clone()));
                 }
-                let things = &self.eph.things;
-                let records: crate::engine::write::Records<'_> = &|x| things.get(x).map(|e| &e.record);
-                if crate::engine::write::check_authority_with(&self.core, me, records, t, ak.as_str(), ts).is_err() {
-                    continue;
-                }
-                picked.push((*t, ak.clone()));
             }
         }
-        if picked.is_empty() {
+        // closed over the held commits on picked aspects: a one-part aspect of a commit the
+        // cover would otherwise leave partly covered is carried too, so the cover absorbs that
+        // commit (else a holder whose cover a full server refused never absorbs the cover held
+        // there spanning another one-part aspect, sim `ephemeral` seed 83)
+        let mut picked_set: BTreeSet<(Tid, Ak)> = due.iter().cloned().collect();
+        let mut work = due;
+        while let Some((t, ak)) = work.pop() {
+            let Some(ea) = self.eph.aspects.get(&t).and_then(|m| m.get(&ak)) else { continue };
+            for (id, _) in &ea.parts {
+                let Some(h) = self.eph.remote.held.get(id) else { continue };
+                if h.header.ephemeral == Some(EphClass::Presence) {
+                    continue;
+                }
+                let keys: Vec<(Tid, Ak)> = h.parts.iter().filter_map(|p| h.header.aspects.get(p.ai)).filter(|a| a.ak.as_str() != CREATED.ak()).map(|a| (a.tid, a.ak.clone())).collect();
+                if keys.iter().all(|(t, ak)| picked_set.contains(&(*t, ak.clone())) || self.compactable(scope, t, ak, ts)) {
+                    for k in keys {
+                        if picked_set.insert(k.clone()) {
+                            work.push(k);
+                        }
+                    }
+                }
+            }
+        }
+        if picked_set.is_empty() {
             return Ok(None);
         }
-        let picked_set: BTreeSet<(Tid, Ak)> = picked.iter().cloned().collect();
+        let picked: Vec<(Tid, Ak)> = picked_set.iter().cloned().collect();
         let records: BTreeSet<Tid> = picked.iter().map(|(t, _)| *t).filter(|t| self.eph.things.contains_key(t)).collect();
         // the records the cover carries: a commit with a record part of another thing (only
         // that, often) is not dropped by it, so counting it covered compacted again at every

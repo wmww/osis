@@ -1,6 +1,7 @@
 //! Engine events (notes/architecture.md §2): typed, sent on subscriber channels after the store
 //! transaction is durable. The `osis` API builds watches on them; node-sync consumes local
-//! commits from them. Diagnostics are structured, deduped and rate-limited per peer.
+//! commits from them. Diagnostics are structured, deduped and rate-limited per peer (local
+//! ones per kind).
 
 use osis_base::{Ak, CommitId, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, VecDeque};
@@ -129,7 +130,7 @@ pub struct Diagnostic {
     pub detail: String,
 }
 
-/// Diagnostics at most this many per peer per window (local policy).
+/// Diagnostics at most this many per peer, and local ones per kind, per window (local policy).
 const PER_PEER: usize = 64;
 const WINDOW_MS: u64 = 60_000;
 /// Distinct diagnostics remembered for dedup.
@@ -142,7 +143,9 @@ pub struct Events {
     subs: Vec<(Sender<Event>, bool)>,
     queued: Vec<Event>,
     seen: VecDeque<(DiagnosticKind, Option<CommitId>, Vec<Tid>)>,
-    per_peer: BTreeMap<Option<Tid>, (u64, usize)>,
+    /// Window start and count per bucket: a peer, or a kind of local diagnostic (a flood of
+    /// one, e.g. `Mismatch` from a screen of mistyped things, hid `Callback` or `Stranded`).
+    per_peer: BTreeMap<(Option<Tid>, Option<DiagnosticKind>), (u64, usize)>,
 }
 
 impl Events {
@@ -177,13 +180,15 @@ impl Events {
         }
     }
 
-    /// A diagnostic, deduped and rate-limited per peer; sent immediately (no durability).
+    /// A diagnostic, deduped and rate-limited per peer (local ones per kind); sent immediately
+    /// (no durability).
     pub fn diagnostic(&mut self, d: Diagnostic, now: WallMs) {
         let key = (d.kind, d.commit, d.tids.clone());
         if self.seen.contains(&key) {
             return;
         }
-        let slot = self.per_peer.entry(d.peer).or_insert((now.0, 0));
+        let bucket = (d.peer, d.peer.is_none().then_some(d.kind));
+        let slot = self.per_peer.entry(bucket).or_insert((now.0, 0));
         if now.0.saturating_sub(slot.0) >= WINDOW_MS {
             *slot = (now.0, 0);
         }
@@ -197,5 +202,37 @@ impl Events {
         self.seen.push_back(key);
         let e = Event::Diagnostic(d);
         self.subs.retain(|(s, _)| s.send(e.clone()).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn diag(kind: DiagnosticKind, n: u8, peer: Option<Tid>) -> Diagnostic {
+        Diagnostic { kind, tids: vec![Tid::from_bytes([n; 15])], commit: None, peer, detail: String::new() }
+    }
+
+    // a flood of one local kind leaves the others reported; a peer's flood is capped across kinds
+    #[test]
+    fn local_rate_limit_per_kind() {
+        let mut ev = Events::default();
+        let rx = ev.subscribe();
+        let now = WallMs(1);
+        for n in 0..=PER_PEER as u8 {
+            ev.diagnostic(diag(DiagnosticKind::Mismatch, n, None), now);
+        }
+        ev.diagnostic(diag(DiagnosticKind::Callback, 0, None), now);
+        let got: Vec<DiagnosticKind> = rx.try_iter().filter_map(|e| if let Event::Diagnostic(d) = e { Some(d.kind) } else { None }).collect();
+        assert_eq!(got.iter().filter(|k| **k == DiagnosticKind::Mismatch).count(), PER_PEER);
+        assert!(got.contains(&DiagnosticKind::Callback), "not hidden by the Mismatch flood");
+        let peer = Some(Tid::from_bytes([255; 15]));
+        for n in 0..PER_PEER as u8 {
+            ev.diagnostic(diag(DiagnosticKind::BadInput, n, peer), now);
+        }
+        ev.diagnostic(diag(DiagnosticKind::Pending, 0, peer), now);
+        assert!(!rx.try_iter().any(|e| matches!(e, Event::Diagnostic(d) if d.kind == DiagnosticKind::Pending)), "a peer has one bucket");
+        ev.diagnostic(diag(DiagnosticKind::Pending, 0, peer), WallMs(1 + WINDOW_MS));
+        assert!(rx.try_iter().any(|e| matches!(e, Event::Diagnostic(d) if d.kind == DiagnosticKind::Pending)), "the next window");
     }
 }
