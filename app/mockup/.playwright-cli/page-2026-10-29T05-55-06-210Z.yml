@@ -1,0 +1,95 @@
+- generic [active] [ref=f1e1]:
+  - generic [ref=f1e3]:
+    - navigation [ref=f1e4]:
+      - link "osis" [ref=f1e5] [cursor=pointer]:
+        - /url: "#/"
+      - button "Search /" [ref=f1e6] [cursor=pointer]:
+        - generic [ref=f1e10]: Search
+        - generic [ref=f1e11]: /
+      - generic [ref=f1e12]: Favorites
+      - list [ref=f1e14]:
+        - listitem [ref=f1e15]:
+          - link "Groceries oat milk" [ref=f1e16] [cursor=pointer]:
+            - /url: "#/t/n-groceries"
+            - generic [ref=f1e21]:
+              - generic [ref=f1e22]: Groceries
+              - generic [ref=f1e23]: oat milk
+        - listitem [ref=f1e24]:
+          - link "Calendar 10 events this week" [ref=f1e25] [cursor=pointer]:
+            - /url: "#/t/v-cal"
+            - generic [ref=f1e31]:
+              - generic [ref=f1e32]: Calendar
+              - generic [ref=f1e33]: 10 events this week
+        - listitem [ref=f1e34]:
+          - link "Lisbon trip 6 items · shared" [ref=f1e35] [cursor=pointer]:
+            - /url: "#/t/g-lisbon"
+            - generic [ref=f1e40]:
+              - generic [ref=f1e41]: Lisbon trip
+              - generic [ref=f1e42]: 6 items · shared
+        - listitem [ref=f1e43]:
+          - link "MO Mara Okafor Friend · climbing" [ref=f1e44] [cursor=pointer]:
+            - /url: "#/t/c-mara"
+            - generic [ref=f1e45]: MO
+            - generic [ref=f1e47]:
+              - generic [ref=f1e48]: Mara Okafor
+              - generic [ref=f1e49]: Friend · climbing
+        - listitem [ref=f1e50]:
+          - link "1:1 with Jun Tue, Oct 27 · 11:00 AM–11:30 AM" [ref=f1e51] [cursor=pointer]:
+            - /url: "#/t/e-jun"
+            - generic [ref=f1e56]:
+              - generic [ref=f1e57]: 1:1 with Jun
+              - generic [ref=f1e58]: Tue, Oct 27 · 11:00 AM–11:30 AM
+        - listitem [ref=f1e59]:
+          - link "Garden 3 items" [ref=f1e60] [cursor=pointer]:
+            - /url: "#/t/g-garden"
+            - generic [ref=f1e65]:
+              - generic [ref=f1e66]: Garden
+              - generic [ref=f1e67]: 3 items
+        - listitem [ref=f1e68]:
+          - link "People 6 people" [ref=f1e69] [cursor=pointer]:
+            - /url: "#/t/v-people"
+            - generic [ref=f1e75]:
+              - generic [ref=f1e76]: People
+              - generic [ref=f1e77]: 6 people
+        - listitem [ref=f1e78]:
+          - link "Ideas A calendar that shows what I wrote that day, not just what I planned." [ref=f1e79] [cursor=pointer]:
+            - /url: "#/t/n-ideas"
+            - generic [ref=f1e84]:
+              - generic [ref=f1e85]: Ideas
+              - generic [ref=f1e86]: A calendar that shows what I wrote that day, not just what I planned.
+      - button "New note" [ref=f1e87] [cursor=pointer]
+    - generic [ref=f1e91]:
+      - generic [ref=f1e92]:
+        - generic [ref=f1e93]: Note
+        - button "Favorite" [ref=f1e97] [cursor=pointer]
+      - article [ref=f1e101]:
+        - generic [ref=f1e102]:
+          - textbox "Untitled" [ref=f1e103]: Itinerary
+          - generic [ref=f1e104]:
+            - link "Lisbon trip" [ref=f1e105] [cursor=pointer]:
+              - /url: "#/t/g-lisbon"
+            - button "Tag" [ref=f1e107] [cursor=pointer]
+          - textbox "Write something…" [ref=f1e110]: "Thu: land 10:40, bags to Ana's, lunch at the market Fri: tram 28, Alfama, miradouro at sunset Sat: Sintra day trip Sun: pastéis de nata class, flight 19:55"
+        - complementary [ref=f1e111]:
+          - generic [ref=f1e112]:
+            - generic [ref=f1e113]: Visible to
+            - generic [ref=f1e117]: You, Mara, Jun
+            - generic [ref=f1e118]: via Lisbon trip
+          - generic [ref=f1e119]:
+            - generic [ref=f1e120]: With
+            - link "AR Ana Ribeiro Our host in Lisbon" [ref=f1e121] [cursor=pointer]:
+              - /url: "#/t/c-ana"
+              - generic [ref=f1e122]: AR
+              - generic [ref=f1e124]:
+                - generic [ref=f1e125]: Ana Ribeiro
+                - generic [ref=f1e126]: Our host in Lisbon
+          - generic [ref=f1e127]:
+            - generic [ref=f1e128]: History
+            - generic [ref=f1e132]: Edited 3 h ago
+            - button "Undo last change" [ref=f1e133] [cursor=pointer]
+  - complementary "Look switcher" [ref=f1e134]:
+    - 'button "Theme: Frost light ▴" [ref=f1e135] [cursor=pointer]':
+      - text: "Theme:"
+      - generic [ref=f1e136]: Frost
+      - generic [ref=f1e137]: light
+      - generic [ref=f1e138]: ▴

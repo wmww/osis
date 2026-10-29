@@ -146,62 +146,35 @@ body.noblur[data-panel="glass"] { --panel-bg: color-mix(in oklab, var(--surface)
 .icon-btn:hover { background: var(--hover); filter: none; }
 .cal-day.today { outline: 0; box-shadow: inset 0 0 0 2px var(--main); }
 
-/* ---------- background base: flat | field (shaded, highlit) | sky (light from above, darker main at the top) */
-[data-bg-base="flat"] { --bg-image: none; }
-[data-bg-base="field"] {
+/* ---------- background, placed by the seeds --s1..4 and the kind --k:
+   flat | field (shaded, highlit) | sky (darker main at the top, a light swoosh) | grid | dots | shapes | lines */
+[data-background] { --bg-image: none; }
+[data-background="field"] {
   --bg-image:
     radial-gradient(55% 45% at calc(10% + var(--s1) * 45%) calc(var(--s2) * 35%), var(--hi), transparent 70%),
     radial-gradient(60% 55% at calc(45% + var(--s3) * 55%) calc(55% + var(--s4) * 45%), color-mix(in oklab, var(--main) 35%, transparent), transparent 72%),
     linear-gradient(calc(120deg + var(--k) * 120deg + var(--s1) * 40deg), color-mix(in oklab, var(--bg-color) 80%, white), var(--bg-color));
 }
-[data-bg-base="field"][data-mode="dark"] { --bg-image: radial-gradient(55% 45% at calc(10% + var(--s1) * 45%) calc(var(--s2) * 35%), color-mix(in oklab, var(--main) 35%, transparent), transparent 70%), radial-gradient(60% 55% at calc(45% + var(--s3) * 55%) calc(55% + var(--s4) * 45%), rgba(0, 0, 0, .45), transparent 72%); }
-[data-bg-base="sky"] {
+[data-background="field"][data-mode="dark"] { --bg-image: radial-gradient(55% 45% at calc(10% + var(--s1) * 45%) calc(var(--s2) * 35%), color-mix(in oklab, var(--main) 35%, transparent), transparent 70%), radial-gradient(60% 55% at calc(45% + var(--s3) * 55%) calc(55% + var(--s4) * 45%), rgba(0, 0, 0, .45), transparent 72%); }
+[data-background="sky"] {
   --bg-color: color-mix(in oklab, var(--main) 12%, white);
   --bg-image:
     radial-gradient(60% 40% at calc(25% + var(--s1) * 50%) -6%, rgba(255, 255, 255, .6), transparent 70%),
     linear-gradient(180deg, color-mix(in oklab, var(--main) 80%, #001a40) 0%, color-mix(in oklab, var(--main) 50%, white) calc(36% + var(--k) * 10%), color-mix(in oklab, var(--main) 10%, white) 78%);
 }
-[data-bg-base="sky"][data-mode="dark"] {
+[data-background="sky"][data-mode="dark"] {
   --bg-color: color-mix(in oklab, var(--main) 20%, #030a18);
   --bg-image:
     radial-gradient(60% 40% at calc(25% + var(--s1) * 50%) -6%, color-mix(in oklab, var(--main) 35%, transparent), transparent 70%),
     linear-gradient(180deg, color-mix(in oklab, var(--main) 18%, #01050e) 0%, color-mix(in oklab, var(--main) 45%, #04122a) calc(50% + var(--k) * 10%), color-mix(in oklab, var(--main) 28%, #020814) 90%);
 }
-[data-bg-base="sky"] .home .brand, [data-bg-base="sky"] .home .section-label, [data-bg-base="sky"] .pane-bar .pane-kind, [data-bg-base="sky"] .pane-bar > .icon-btn:not(.back) { color: #fff; text-shadow: 0 1px 2px rgba(0, 20, 50, .45); }
-[data-bg-base="sky"] .pane-bar .pane-kind svg { color: inherit; }
-
-/* ---------- background pattern: none | grid | dots | halftone (fading in from a seeded corner) | grain */
-#bg::after { background: none; opacity: 1; }
-[data-bg-pattern="grid"] #bg::after { background: linear-gradient(color-mix(in oklab, var(--main) 14%, transparent) 1px, transparent 1px) 0 0 / 40px 40px, linear-gradient(90deg, color-mix(in oklab, var(--main) 14%, transparent) 1px, transparent 1px) 0 0 / 40px 40px; }
-[data-bg-pattern="dots"] #bg::after { background: radial-gradient(color-mix(in oklab, var(--main) 35%, transparent) 1.3px, transparent 1.7px) 0 0 / 22px 22px; }
-[data-bg-pattern="halftone"] #bg::after {
-  background: radial-gradient(color-mix(in oklab, var(--main) 40%, transparent) 1.6px, transparent 2.2px) 0 0 / 11px 11px;
-  -webkit-mask: radial-gradient(55vmax 55vmax at calc(var(--s1) * 100%) calc(var(--s2) * 100%), #000, transparent 70%);
-  mask: radial-gradient(55vmax 55vmax at calc(var(--s1) * 100%) calc(var(--s2) * 100%), #000, transparent 70%);
-}
-[data-bg-pattern="grain"] #bg::after { opacity: .05; background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .5 0 0 0 0 .5 0 0 0 0 .6 0 0 0 .9 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
-
-/* ---------- background ornament, placed by the seeds --s1..4 and the kind --k:
-   none | streaks | bubbles (and a swoosh) | sun (and horizon) | shapes | speed (lines) */
-[data-bg-ornament="streaks"] #bg i:nth-child(-n+2) { display: block; width: 90vmax; height: 26vmax; border-radius: 50%; background: linear-gradient(180deg, color-mix(in oklab, var(--hi) 30%, transparent), transparent 60%); }
-[data-bg-ornament="streaks"] #bg i:nth-child(1) { left: -20vmax; top: calc(10vh + var(--s2) * 30vh); transform: rotate(calc(-25deg + var(--s3) * 20deg)); }
-[data-bg-ornament="streaks"] #bg i:nth-child(2) { right: -30vmax; top: calc(45vh + var(--s4) * 30vh); transform: rotate(calc(-15deg + var(--k) * 25deg)); }
-
-[data-bg-ornament="bubbles"] #bg i:nth-child(-n+4) { display: block; border-radius: 50%; background: radial-gradient(circle at 32% 26%, var(--hi) 0 7%, color-mix(in oklab, var(--hi) 40%, transparent) 18%, transparent 55%, color-mix(in oklab, var(--hi) 40%, transparent) 76%, color-mix(in oklab, var(--hi) 80%, transparent) 100%); }
-[data-bg-ornament="bubbles"] #bg i:nth-child(1) { width: 150px; height: 150px; left: calc(var(--s1) * 30vw); top: calc(10vh + var(--s2) * 30vh); }
-[data-bg-ornament="bubbles"] #bg i:nth-child(2) { width: 80px; height: 80px; left: calc(55vw + var(--s3) * 35vw); top: calc(6vh + var(--s1) * 20vh); }
-[data-bg-ornament="bubbles"] #bg i:nth-child(3) { width: 230px; height: 230px; left: calc(70vw + var(--s4) * 20vw); top: calc(45vh + var(--s2) * 25vh); }
-[data-bg-ornament="bubbles"] #bg i:nth-child(4) { width: 48px; height: 48px; left: calc(25vw + var(--s2) * 40vw); top: calc(60vh + var(--s3) * 30vh); }
-[data-bg-ornament="bubbles"] #bg::before { left: -20vw; right: -20vw; top: calc(50vh + var(--s3) * 15vh); bottom: auto; height: 70vh; border-radius: 50%; border-top: 2px solid color-mix(in oklab, var(--hi) 90%, transparent); background: linear-gradient(color-mix(in oklab, var(--hi) 30%, transparent), transparent 25%); transform: rotate(calc(-7deg + var(--s1) * 8deg)); }
-
-[data-bg-ornament="sun"] #bg i:nth-child(-n+2) { display: block; }
-[data-bg-ornament="sun"] #bg i:nth-child(1) { width: 34vmax; height: 17vmax; left: calc(20vw + var(--s1) * 60vw); top: calc(60vh - 17vmax); transform: translateX(-50%); border-radius: 34vmax 34vmax 0 0; background: linear-gradient(color-mix(in oklab, var(--main) 35%, #ffd34a), var(--main)); opacity: .5; -webkit-mask: repeating-linear-gradient(180deg, #000 0 calc(10px + var(--k) * 8px), transparent 0 calc(15px + var(--k) * 8px)); mask: repeating-linear-gradient(180deg, #000 0 calc(10px + var(--k) * 8px), transparent 0 calc(15px + var(--k) * 8px)); }
-[data-bg-ornament="sun"] #bg i:nth-child(2) { left: 0; right: 0; top: 60vh; height: 1px; background: color-mix(in oklab, var(--main) 60%, transparent); box-shadow: 0 0 12px var(--main); }
-[data-bg-ornament="sun"] #bg::before { background: linear-gradient(180deg, transparent 60%, color-mix(in oklab, var(--main) 25%, transparent)); }
-
-[data-bg-ornament="shapes"] #bg i:nth-child(-n+3) { display: block; }
-[data-bg-ornament="shapes"] #bg i:nth-child(1) { width: 34vmax; height: 34vmax; right: calc(-14vmax + var(--s1) * 10vmax); top: calc(-16vmax + var(--s2) * 12vmax); border-radius: 50%; background: color-mix(in oklab, var(--main) 55%, var(--surface)); border: max(var(--ow), 1px) solid var(--ink); }
-[data-bg-ornament="shapes"] #bg i:nth-child(2) { width: 260px; height: 50px; left: calc(30vw + var(--s3) * 40vw); bottom: calc(3vh + var(--s4) * 8vh); transform: rotate(calc(-10deg + var(--s1) * 20deg)); background: color-mix(in oklab, var(--main) 65%, var(--ink)); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 260 50'%3E%3Cpath d='M5 40 L30 10 L55 40 L80 10 L105 40 L130 10 L155 40 L180 10 L205 40 L230 10 L255 40' fill='none' stroke='black' stroke-width='7' stroke-linejoin='round' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat center / contain; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 260 50'%3E%3Cpath d='M5 40 L30 10 L55 40 L80 10 L105 40 L130 10 L155 40 L180 10 L205 40 L230 10 L255 40' fill='none' stroke='black' stroke-width='7' stroke-linejoin='round' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat center / contain; }
-[data-bg-ornament="shapes"] #bg i:nth-child(3) { width: 150px; height: 135px; left: calc(2vw + var(--s2) * 8vw); bottom: calc(6vh + var(--s3) * 20vh); background: var(--main); clip-path: polygon(50% 0, 100% 100%, 0 100%); transform: rotate(calc(-30deg + var(--k) * 60deg)); }
-
-[data-bg-ornament="speed"] #bg::before { inset: -50vmax; background: linear-gradient(90deg, transparent 0 calc(50% - 1px), color-mix(in oklab, var(--main) 40%, transparent) 0 calc(50% + 1px), transparent 0), linear-gradient(90deg, transparent 0 calc(53% - 4px), color-mix(in oklab, var(--main) 40%, transparent) 0 calc(53% + 4px), transparent 0); transform: rotate(calc(20deg + var(--k) * 30deg)) translateX(calc(var(--s3) * 30vw - 15vw)); }
+[data-background="sky"] #bg::before { left: -20vw; right: -20vw; top: calc(50vh + var(--s3) * 15vh); bottom: auto; height: 70vh; border-radius: 50%; border-top: 2px solid color-mix(in oklab, var(--hi) 90%, transparent); background: linear-gradient(color-mix(in oklab, var(--hi) 30%, transparent), transparent 25%); transform: rotate(calc(-7deg + var(--s1) * 8deg)); }
+[data-background="sky"] .home .brand, [data-background="sky"] .home .section-label, [data-background="sky"] .pane-bar .pane-kind, [data-background="sky"] .pane-bar > .icon-btn:not(.back) { color: #fff; text-shadow: 0 1px 2px rgba(0, 20, 50, .45); }
+[data-background="sky"] .pane-bar .pane-kind svg { color: inherit; }
+[data-background="grid"] { --bg-image: linear-gradient(color-mix(in oklab, var(--main) 14%, transparent) 1px, transparent 1px) 0 0 / 40px 40px, linear-gradient(90deg, color-mix(in oklab, var(--main) 14%, transparent) 1px, transparent 1px) 0 0 / 40px 40px; }
+[data-background="dots"] { --bg-image: radial-gradient(color-mix(in oklab, var(--main) 35%, transparent) 1.3px, transparent 1.7px) 0 0 / 22px 22px; }
+[data-background="shapes"] #bg i:nth-child(-n+3) { display: block; }
+[data-background="shapes"] #bg i:nth-child(1) { width: 34vmax; height: 34vmax; right: calc(-14vmax + var(--s1) * 10vmax); top: calc(-16vmax + var(--s2) * 12vmax); border-radius: 50%; background: color-mix(in oklab, var(--main) 55%, var(--surface)); border: max(var(--ow), 1px) solid var(--ink); }
+[data-background="shapes"] #bg i:nth-child(2) { width: 260px; height: 50px; left: calc(30vw + var(--s3) * 40vw); bottom: calc(3vh + var(--s4) * 8vh); transform: rotate(calc(-10deg + var(--s1) * 20deg)); background: color-mix(in oklab, var(--main) 65%, var(--ink)); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 260 50'%3E%3Cpath d='M5 40 L30 10 L55 40 L80 10 L105 40 L130 10 L155 40 L180 10 L205 40 L230 10 L255 40' fill='none' stroke='black' stroke-width='7' stroke-linejoin='round' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat center / contain; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 260 50'%3E%3Cpath d='M5 40 L30 10 L55 40 L80 10 L105 40 L130 10 L155 40 L180 10 L205 40 L230 10 L255 40' fill='none' stroke='black' stroke-width='7' stroke-linejoin='round' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat center / contain; }
+[data-background="shapes"] #bg i:nth-child(3) { width: 150px; height: 135px; left: calc(2vw + var(--s2) * 8vw); bottom: calc(6vh + var(--s3) * 20vh); background: var(--main); clip-path: polygon(50% 0, 100% 100%, 0 100%); transform: rotate(calc(-30deg + var(--k) * 60deg)); }
+[data-background="lines"] #bg::before { inset: -50vmax; background: linear-gradient(90deg, transparent 0 calc(50% - 1px), color-mix(in oklab, var(--main) 40%, transparent) 0 calc(50% + 1px), transparent 0), linear-gradient(90deg, transparent 0 calc(53% - 4px), color-mix(in oklab, var(--main) 40%, transparent) 0 calc(53% + 4px), transparent 0); transform: rotate(calc(20deg + var(--k) * 30deg)) translateX(calc(var(--s3) * 30vw - 15vw)); }
