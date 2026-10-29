@@ -76,10 +76,11 @@ fn engine_reopenable(seed: u64) -> (Engine, Arc<AtomicU64>, Arc<AtomicU64>, Reop
     (e, batches, bytes, Reopen(inner, root))
 }
 
-static SCALE: StaticSchema = StaticSchema::new("scale.osis", "schema 0x5ca1e5ca1e5ca1e5ca1e5ca1e5ca1e50; revision 1; aspect /s/text: text; aspect /s/tags: set<string>; aspect /s/kept: set<string> [by: writer, keep_at_least: 1d];\n");
+static SCALE: StaticSchema = StaticSchema::new("scale.osis", "schema 0x5ca1e5ca1e5ca1e5ca1e5ca1e5ca1e50; revision 1; aspect /s/text: text; aspect /s/tags: set<string>; aspect /s/kept: set<string> [by: writer, keep_at_least: 1d]; aspect /s/short: map<string, string> [by: writer, keep_at_most: 10m];\n");
 const TEXT: Aspect<Value> = Aspect::new("/s/text", &SCALE);
 const TAGS: Aspect<Value> = Aspect::new("/s/tags", &SCALE);
 const KEPT: Aspect<Value> = Aspect::new("/s/kept", &SCALE);
+const SHORT: Aspect<Value> = Aspect::new("/s/short", &SCALE);
 
 /// A size from `var`, else `release` in a release build and `dev` in a dev one. A dev build
 /// re-examines every pending commit at each re-examination (`check_unchanged`, debug only): a
@@ -1151,4 +1152,51 @@ fn snapshot_first_sync_cost_spec_permissions_5_2() {
     for (k, d, c) in osis_node::costs::take() {
         println!("  {k}: {d:?} ({c})");
     }
+}
+
+// spec/commits.md §5 (a snapshot dropped at its bound keeps its frontiers), spec/permissions.md
+// §5.1, notes/testing.md budgets: B (1) gets the owner's writes only through K snapshots of one
+// map key, each received a bucket apart and dropped at its keep-at-most bound once the next
+// replaces it; then B's receipt (a delta wait's read) and its demotion frontier for the owner.
+// `OSIS_SCALE_N` sets K (default 1000; 5 commits per snapshot).
+#[test]
+#[ignore = "tier 2"]
+fn dropped_snapshot_receipts_cost_spec_commits_5() {
+    let k: usize = size("OSIS_SCALE_N", 1000, 1000);
+    let mut lp = osis_node::local_peer::LocalPeer::new(2, 47, WallMs(1_700_000_000_000)).unwrap();
+    let me = lp.peers[0].engine.tid();
+    let b = lp.peers[1].engine.tid();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None }.to_value()) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let key = ak("/s/short");
+    let t0 = Instant::now();
+    for i in 0..k {
+        for j in 0..5 {
+            let mut m = Mutation::new();
+            m.op(t, &SHORT, PathOp { path: vec![PathSeg::Key(Value::Str("k".into()))], op: Op::Set(Value::Str(format!("v{i}.{j}"))) }).unwrap();
+            lp.peers[0].commit(m).unwrap().unwrap();
+        }
+        let s = lp.peers[0].engine.snapshot(&t, &key).unwrap().unwrap();
+        let pk = lp.peers[0].engine.package(&s).unwrap().unwrap();
+        lp.deliver(1, &pk).unwrap();
+        lp.advance(11 * 60_000);
+        lp.peers[1].engine.tick().unwrap();
+    }
+    let fill = t0.elapsed();
+    let e = &mut lp.peers[1].engine;
+    let kept = e.drop_counts()[2];
+    let t1 = Instant::now();
+    let r = e.receipt(&t, &key).unwrap();
+    let receipt = t1.elapsed();
+    let scope = osis_perm::DemotionScope { membership: BTreeMap::new(), content: BTreeMap::from([(me, BTreeSet::from([t]))]) };
+    let now = e.now();
+    let t2 = Instant::now();
+    let f = e.frontier(&scope, now).unwrap();
+    let frontier = t2.elapsed();
+    assert!(r.contiguous(&me, u64::MAX) >= (5 * k) as u64);
+    assert!(!f.writes.is_empty());
+    println!("k={k} ({kept} kept): fill {fill:?}; receipt {receipt:?}; demotion frontier {frontier:?}");
 }

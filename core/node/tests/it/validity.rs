@@ -2424,7 +2424,7 @@ fn dropped_snapshot_frontiers_count_spec_commits_5() {
     e.reexamine().unwrap();
     assert!(!e.holds_body(&snap, &d, &sm), "S dropped on arrival");
     let late = e.frontier(&of_bob, e.now()).unwrap();
-    assert_eq!(late.writes, held.writes, "dropped on arrival");
+    assert_eq!(late, held, "dropped on arrival");
     // Alice removes Carol without listing S: S gives nothing, dropped or not
     let scope = DemotionScope { membership: BTreeMap::from([(c, BTreeSet::from([d]))]), content: BTreeMap::from([(c, BTreeSet::from([d]))]) };
     let at = lp.peers[0].engine.now();
@@ -2438,4 +2438,57 @@ fn dropped_snapshot_frontiers_count_spec_commits_5() {
     assert_eq!(lp.peers[i].engine.frontier(&of_bob, now).unwrap(), osis_schema::core_types::Frontier::default(), "S invalid");
     lp.peers[i].restart(0x5fe3).unwrap();
     assert_eq!(lp.peers[i].engine.frontier(&of_bob, now).unwrap(), osis_schema::core_types::Frontier::default(), "S invalid, restarted");
+}
+
+// spec/commits.md §5, spec/permissions.md §5.2 (a part dropped as covered is missing again only
+// once no coverer carries it): Bob's entry k1 is dropped at Alice's node as covered by her
+// snapshot S, which later drops at its keep-at-most bound (its entry k2 overwritten) with k1
+// still live: S's writes stay in the state, so it still carries k1. Carol's unrelated snapshot
+// then turns invalid: k1 stays, Bob's commit stays dropped, as at Bob's node holding it.
+#[test]
+fn bound_dropped_coverer_still_carries_spec_commits_5() {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    let (mut lp, d, b, c) = setup(0x5ff0);
+    let sm = ak("/t/shortmap");
+    let entry = |k: &str, v: &str| {
+        let mut m = Mutation::new();
+        m.op(d, &SHORTMAP, PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Set(s(v)) }).unwrap();
+        m
+    };
+    lp.peers[1].commit(entry("k1", "b")).unwrap().unwrap();
+    lp.peers[0].commit(entry("k2", "a")).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let bob = lp.peers[1].engine.commit_ids().into_iter().find(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak == sm))).unwrap();
+    lp.advance(1_000);
+    let snap = lp.peers[0].engine.snapshot(&d, &sm).unwrap().unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.covered(&snap, &bob, &d, &sm).unwrap(), Some(true), "S covers Bob's");
+    e.drop_body(&bob, &d, &sm).unwrap();
+    lp.advance(1_000);
+    lp.peers[0].commit(entry("k2", "a2")).unwrap().unwrap();
+    lp.advance(DAY);
+    lp.peers[0].engine.tick().unwrap();
+    assert!(!lp.peers[0].engine.holds_body(&snap, &d, &sm), "S dropped at its bound");
+    let k1 = |lp: &mut LocalPeer, i: usize| matches!(lp.peers[i].engine.get(&d, &sm).unwrap(), Some(Value::Map(m)) if m.get(&s("k1")) == Some(&s("b")));
+    assert!(k1(&mut lp, 0), "k1 live");
+    // Carol's snapshot, then her removal by Alice with a frontier not listing it
+    lp.sync_all().unwrap();
+    lp.peers[2].commit(entry("k3", "c")).unwrap().unwrap();
+    let s2 = lp.peers[2].engine.snapshot(&d, &sm).unwrap().unwrap();
+    let new: Vec<_> = packages(&mut lp, 2).into_iter().filter(|p| p.id == s2 || lp.peers[0].engine.header(&p.id).is_none()).collect();
+    for p in new {
+        lp.deliver(0, &p).unwrap();
+    }
+    let scope = DemotionScope { membership: BTreeMap::from([(c, BTreeSet::from([d]))]), content: BTreeMap::from([(c, BTreeSet::from([d]))]) };
+    let at = lp.peers[0].engine.now();
+    let mut f = lp.peers[0].engine.frontier(&scope, at).unwrap();
+    f.commits.remove(&s2);
+    set_edge(&mut lp.peers[0].engine, d, c, None, Some(f.to_value()));
+    lp.peers[0].engine.reexamine().unwrap();
+    assert!(!lp.peers[0].engine.holds_body(&bob, &d, &sm), "Bob's commit still dropped");
+    assert!(k1(&mut lp, 0), "k1 still live");
+    sync(&mut lp, 0, 1);
+    assert!(k1(&mut lp, 1), "k1 live at Bob's");
+    lp.peers[0].restart(0x5ff1).unwrap();
+    assert!(k1(&mut lp, 0), "k1 still live, restarted");
 }

@@ -1,0 +1,7 @@
+# A snapshot carrying purged values that arrives after the purge is kept
+> Summary: `retention::on_apply` checks a new commit's deltas against held purge requests only by whether a request names that commit (`purge_allowed`), so a snapshot taken before the purge, carrying the purged delta's value, arrives after the request and keeps its body. A node that held the snapshot when the request came drops it (`purge_one`). Breaks spec/commits.md §5 ("drops every body carrying their values, snapshots included") and differs by arrival order.
+> Tags: security, engine, retention
+
+Repro (probe, not committed): in `review.rs` after `purge_drops_snapshots_spec_commits_5`'s setup, package the snapshot before the purge commit, deliver everything else to a second node, then the snapshot: its body is held (`dropped` empty, not missing) with "secret" in it. The state stays right (value-less via `ix.valueless`); the blob is what survives.
+
+Fix sketch: in `on_apply`, for a compaction snapshot's part, drop it when its fragment holds a write of a delta a held, allowed purge request names (as `purge_one` tests held snapshots: strip the purged delta's `Owned` and compare). Needs the named delta's header to judge the purge right (`purge_allowed`); a named delta never held here needs a rule (judge by the request's item alone, or wait). Since dropped-snapshot-receipts, such a drop keeps the snapshot's frontiers (`Meta::gives`), so receipts already agree in both orders.

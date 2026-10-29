@@ -245,7 +245,8 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
 }
 
 /// Parts on `(tid, ak)` dropped as covered (`Meta::cover_drops`) that no coverer carries any
-/// more (each turned invalid, or was itself dropped under covers none of which does;
+/// more (each turned invalid, or was itself dropped as covered under covers none of which does;
+/// one dropped for its bound, expiry or a purge carries while valid;
 /// `Meta::covered_by`) are missing again (spec/permissions.md §5.2): they give nothing, as at a node that never held
 /// them, until the body arrives again (a node still holding it finds it uncovered and
 /// re-uploads it, spec/sync.md §6; node-sync fetches it again, `Changed::undropped`). Returns
@@ -254,8 +255,14 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
     fn carries(core: &Core, s: &CommitId, tid: &Tid, ak: &Ak, seen: &mut BTreeSet<CommitId>) -> bool {
         let Some(m) = core.ix.commits.get(s) else { return false };
         let Some(ai) = m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { return false };
+        let valid = m.valid.get(ai).copied().unwrap_or(false);
         if !m.dropped.contains(&(ai, 0)) {
-            return !m.missing.contains(&ai) && m.valid.get(ai).copied().unwrap_or(false);
+            return !m.missing.contains(&ai) && valid;
+        }
+        // dropped other than as covered (bound, purge, expiry): its writes stay in the state and
+        // it never comes back as missing, so it carries while valid
+        if valid && !m.cover_drops.contains(&ai) {
+            return true;
         }
         // a coverer dropped in turn carries what its coverers carry (`apply::covers_dropped`)
         seen.insert(*s) && m.covered_by.get(&ai).is_some_and(|ss| ss.iter().any(|x| carries(core, x, tid, ak, seen)))
