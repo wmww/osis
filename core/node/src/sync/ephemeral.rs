@@ -227,18 +227,13 @@ impl SyncEngine {
         commits.extend(self.engine.compact_own_ephemeral(false)?);
         commits.retain(|c| c.class == EphClass::Relay || self.engine.holds_ephemeral(&c.id));
         self.eph_presence(out)?;
-        // what a compaction covers goes first: deleted before its cover goes up on the same
-        // connection, so a server at its cap takes the cover
-        // except an own presence commit its newer one covers: deleted after the cover is up, so
-        // a holder applies the cover first and the value never goes in between
-        let lane = &self.eph;
-        let own_presence = |c: &CommitId| lane.by_commit.get(c).is_some_and(|ks| ks.iter().any(|k| lane.entries.get(k).is_some_and(|e| e.own && e.presence)));
-        let (later, dropped): (Vec<CommitId>, Vec<CommitId>) = self.engine.take_dropped_ephemeral().into_iter().partition(own_presence);
+        // what a cover absorbs is deleted at a server once the cover is held there (`waiting`):
+        // a holder applies the cover first, and an author crashing in between loses nothing
+        let dropped = self.engine.take_dropped_ephemeral();
         self.eph_forget(&dropped, out)?;
         for c in commits {
             self.eph_place(c, out)?;
         }
-        self.eph_forget(&later, out)?;
         self.eph_flush(out)
     }
 

@@ -743,6 +743,28 @@ fn others_writes_in_a_commit_not_joined_spec_sync_9() {
     assert_eq!(notes(&mut net, c, w), map(&[("b", "1")]), "a's write is a's to send");
 }
 
+// spec/sync.md §9 (an ephemeral commit carries only its author's writes): a write under another
+// node's source (not a session its `Authors` attributes to the author) is not joined either
+#[test]
+fn node_sourced_write_in_a_commit_not_joined_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    note(&mut net, a, w, "a", "1");
+    net.run();
+    let ak = osis_base::Ak::new(NOTES).unwrap();
+    let at = net.engine(a).tid();
+    let v = Value::Map(BTreeMap::from([(s("x"), s("forged"))]));
+    let forged = net.engine(b).forge_ephemeral_as_node(w, &ak, v, at).unwrap().unwrap();
+    net.engine(a).ingest_ephemeral(forged.blob).unwrap();
+    assert_eq!(notes(&mut net, a, w), map(&[("a", "1")]), "b passed a write off as a's node's");
+}
+
 // spec/sync.md §9 (what a cover absorbs is deleted at a server once the cover is held there):
 // the author crashes before its cover reaches the server; nothing was deleted, so the state
 // stays at the server for holders, a restarted holder and the author itself (deleting first
@@ -948,6 +970,17 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
         }
         out
     };
+    // and the refusal is genuine: the server keeps no plain entry that no node holds (one every
+    // holder dropped as absorbed, whose deletion never came, would fill it and excuse divergence)
+    if refused {
+        let store = net.servers[s1].hub.store();
+        let plain: Vec<osis_base::BlobId> = net.server_ids(s1, &l).into_iter().filter(|b| osis_proto::LabelStore::blob(store, b).ok().flatten().and_then(|x| osis_label::Prefix::parse(&x).ok()).is_some_and(|p| p.class() == osis_label::Class::Ephemeral)).collect();
+        let held: BTreeSet<osis_base::BlobId> = nodes.iter().flat_map(|n| net.nodes[*n].sync.as_ref().unwrap().ephemeral_plain_entries(&l).into_iter().map(|x| x.0)).collect();
+        let stale: Vec<_> = plain.iter().filter(|b| !held.contains(b)).collect();
+        if !stale.is_empty() {
+            panic!("seed {seed}: the full server keeps entries {stale:?} no node holds (cap {cap})\n{}\n{}", log.join("\n"), lane_dump(&mut net, &nodes, &servers, &l, w));
+        }
+    }
     let first = notes(&mut net, h0, w);
     for n in &holders[1..] {
         if !refused && notes(&mut net, *n, w) != first {
@@ -1503,4 +1536,27 @@ fn covered_while_slow_deleted_once_answered_spec_sync_9() {
 fn covered_while_slow_deleted_after_reconnect_spec_sync_9() {
     let (fast, slow) = covered_while_slow(true);
     assert_eq!(slow, fast);
+}
+
+
+// spec/sync.md §9 (own covers): once the author's own state of an aspect is past the page target
+// no cover can be built (ephemeral deltas are not paged); its writes still go as they are made
+// (a failed cover dropped the unsent writes it had joined: the reader missed them for good)
+#[test]
+fn cover_past_page_target_loses_no_write_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let v = "v".repeat(1000);
+    for i in 0..120 {
+        note(&mut net, a, w, &format!("k{i:03}"), &v);
+        net.run();
+    }
+    assert_eq!(notes(&mut net, a, w).len(), 120);
+    assert_eq!(notes(&mut net, b, w), notes(&mut net, a, w));
 }

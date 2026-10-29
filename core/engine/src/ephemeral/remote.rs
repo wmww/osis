@@ -91,7 +91,8 @@ impl HeldPart {
     /// commit carries its author's writes only, spec/sync.md §9).
     fn only_of(&mut self, author: Tid) {
         let authors = &self.authors;
-        self.fragment.strip_copies(&|d| matches!(d.src.author().kind(), SourceKind::Commit(c) if authors.get(c).is_none_or(|(n, _)| *n != author)));
+        // a write under any other source (another session, a node's) is not its author's
+        self.fragment.strip_copies(&|d| !matches!(d.src.author().kind(), SourceKind::Commit(c) if authors.get(c).is_some_and(|(n, _)| *n == author)));
     }
 
     /// The writes that count here: none when invalid, else all.
@@ -531,7 +532,14 @@ impl Engine {
             let absorbed_here: BTreeMap<CommitId, Tid> = absorbed.get(&(tid, ak.clone())).into_iter().flatten().filter_map(|c| self.eph.remote.held.get(c).map(|h| (*c, h.header.author))).collect();
             let mut nonce = [0u8; osis_crdt::NONCE_LEN];
             self.rng.fill_bytes(&mut nonce);
-            let bytes = osis_crdt::encode_snapshot(&Snapshot { nonce, fragment, frontiers: Frontiers::default(), absorbed: absorbed_here, authors }, &cx, None)?;
+            let bytes = match osis_crdt::encode_snapshot(&Snapshot { nonce, fragment, frontiers: Frontiers::default(), absorbed: absorbed_here, authors }, &cx, None) {
+                Ok(b) => b,
+                // past the page target (ephemeral deltas are not paged)
+                Err(e) => {
+                    self.report_eph(&format!("an ephemeral commit could not be built: {e}"));
+                    return Ok(None);
+                }
+            };
             let retention = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, ..Default::default() };
             writes.push(AspectWrite { tid, ak, lo: 0, hi: 0, deltas: vec![bytes], retention, expires, schema: None, chunks: Vec::new() });
         }
@@ -1120,20 +1128,31 @@ impl Engine {
             let (ids, stuck) = self.coverable(actor);
             let held: usize = ids.iter().filter_map(|id| self.eph.remote.held.get(id)).map(|h| h.bytes + ENTRY_CHARGE).sum();
             let (deltas, absorbed) = self.own_cover(actor, &ids);
-            let cover = cover_cost(me, &deltas);
             // what it cannot absorb (an aspect no longer writable here) does not make it weigh
             // again at every step
-            self.eph.remote.cover_est.insert(actor, cover + stuck / COVER_FACTOR.max(1));
+            let stuck = stuck / COVER_FACTOR.max(1);
+            // a delta past the page target cannot go in an ephemeral commit (not paged): no cover;
+            // weighed again once the held commits double
+            let Some(cover) = cover_cost(me, &deltas) else {
+                self.eph.remote.cover_est.insert(actor, held + stuck);
+                self.report_eph("own ephemeral commits could not be covered: an aspect's state is too large for one ephemeral commit");
+                continue;
+            };
+            self.eph.remote.cover_est.insert(actor, cover + stuck);
             // one commit is what its cover would be again
             if ids.is_empty() || (!force && (ids.len() < 2 || held <= COVER_FACTOR * cover)) {
                 continue;
             }
-            // what is covered needs no separate send
+            let Some(c) = self.build_ephemeral(EphClass::Plain, actor, deltas, &absorbed)? else {
+                self.eph.remote.cover_est.insert(actor, held + stuck);
+                continue;
+            };
+            // what is covered needs no separate send (kept when no cover was made: lost otherwise)
             for m in self.eph.remote.unsent.values_mut() {
                 m.remove(&(actor, None));
             }
             self.eph.remote.unsent.retain(|_, m| !m.is_empty());
-            out.extend(self.build_ephemeral(EphClass::Plain, actor, deltas, &absorbed)?);
+            out.push(c);
         }
         Ok(out)
     }
@@ -1197,7 +1216,7 @@ impl Engine {
         for (actor, ids) in by {
             let costs: Vec<usize> = ids.iter().filter_map(|id| self.eph.remote.held.get(id)).map(|h| h.bytes + ENTRY_CHARGE).collect();
             let (deltas, _) = self.own_cover(actor, &ids);
-            out.push((actor, costs.iter().sum(), cover_cost(me, &deltas), costs.iter().copied().max().unwrap_or(0)));
+            out.push((actor, costs.iter().sum(), cover_cost(me, &deltas).unwrap_or(0), costs.iter().copied().max().unwrap_or(0)));
         }
         out
     }
@@ -1206,8 +1225,20 @@ impl Engine {
     /// write, to test receivers).
     #[doc(hidden)]
     pub fn forge_ephemeral(&mut self, tid: Tid, ak: &Ak, v: Value) -> Result<Option<EphCommit>> {
+        let src = self.eph.src.clone();
+        self.forge_ephemeral_under(tid, ak, v, src)
+    }
+
+    /// Tests: `forge_ephemeral` with the write under node `node`'s source (a write passed off as
+    /// another node's).
+    #[doc(hidden)]
+    pub fn forge_ephemeral_as_node(&mut self, tid: Tid, ak: &Ak, v: Value, node: Tid) -> Result<Option<EphCommit>> {
+        self.forge_ephemeral_under(tid, ak, v, Source::node(node))
+    }
+
+    fn forge_ephemeral_under(&mut self, tid: Tid, ak: &Ak, v: Value, src: Source) -> Result<Option<EphCommit>> {
         let ts = self.core.hlc.next();
-        let w = Writer::new(ts, self.eph.src.clone(), self.eph.next);
+        let w = Writer::new(ts, src, self.eph.next);
         let Some((f, r)) = run_ops(&Fragment::default(), w, &[PathOp { path: Vec::new(), op: Op::Set(v) }], &AnyView)? else { return Ok(None) };
         self.eph.next = r.hi;
         let me = self.tid();
@@ -1254,18 +1285,19 @@ fn own_plain_unexpiring(h: &Held, me: Tid) -> bool {
     h.header.author == me && h.header.ephemeral == Some(EphClass::Plain) && h.parts.iter().all(|p| h.header.aspects.get(p.ai).is_some_and(|a| a.expires.is_none()))
 }
 
-/// The cost of a cover of `deltas` by `me`: its encoded deltas plus `ENTRY_CHARGE`.
-fn cover_cost(me: Tid, deltas: &[EphDelta]) -> usize {
+/// The cost of a cover of `deltas` by `me`: its encoded deltas plus `ENTRY_CHARGE`; `None` when a
+/// delta would page (an ephemeral commit carries no pages).
+fn cover_cost(me: Tid, deltas: &[EphDelta]) -> Option<usize> {
     let mut cx = osis_commit::writer_ctx(Kind::ContentSnapshot, Ts::default(), me, 0, 0);
     cx.own = Source::commit(CommitId([0; 32]));
     let bytes: usize = deltas
         .iter()
         .map(|(_, _, f, _)| {
             let s = Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: f.clone(), frontiers: Frontiers::default(), absorbed: BTreeMap::new(), authors: BTreeMap::new() };
-            osis_crdt::encode_snapshot(&s, &cx, None).map_or(0, |b| b.len())
+            osis_crdt::encode_snapshot(&s, &cx, None).ok().map(|b| b.len())
         })
-        .sum();
-    bytes + ENTRY_CHARGE
+        .sum::<Option<usize>>()?;
+    Some(bytes + ENTRY_CHARGE)
 }
 
 /// The own writes of an aspect without the values of those that expire (a snapshot never

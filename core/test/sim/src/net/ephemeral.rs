@@ -429,11 +429,20 @@ impl NetSim {
             let st = hub.store();
             for l in st.labels_after(None, 4096).unwrap_or_default() {
                 let live: BTreeSet<osis_base::BlobId> = st.live_ids(&l).unwrap_or_default().into_iter().collect();
+                let mut held = BTreeSet::new();
+                let mut keeps_out = false;
                 for n in (0..self.nodes.len()).filter(|n| self.is_up(*n)) {
                     let Some(sync) = self.nodes.get(n).and_then(|x| x.sync.as_ref()) else { continue };
-                    if sync.ephemeral_plain_entries(&l).into_iter().any(|(b, size)| !live.contains(&b) && !st.ephemeral_fits(&l, size as u64)) {
-                        out.insert(s);
+                    for (b, size) in sync.ephemeral_plain_entries(&l) {
+                        keeps_out |= !live.contains(&b) && !st.ephemeral_fits(&l, size as u64);
+                        held.insert(b);
                     }
+                }
+                // not genuine while it keeps a plain entry no up node holds (absorbed everywhere,
+                // its deletion never sent): that room is what the refused entry lacks
+                let plain = |b: &osis_base::BlobId| st.blob(b).ok().flatten().and_then(|x| osis_label::Prefix::parse(&x).ok()).is_some_and(|p| p.class() == osis_label::Class::Ephemeral);
+                if keeps_out && !live.iter().any(|b| plain(b) && !held.contains(b)) {
+                    out.insert(s);
                 }
             }
         }
