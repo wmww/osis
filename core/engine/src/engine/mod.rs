@@ -334,8 +334,6 @@ indexes! {
     pub invalid: JSetMap<(Tid, Ak), CommitId>,
     /// Held deltas per aspect: (`ts`, commit).
     pub by_aspect: JSetMap<(Tid, Ak), (Ts, CommitId)>,
-    /// The commits of `by_aspect` carrying copies of others' writes (snapshots, imports).
-    pub copies: JSetMap<(Tid, Ak), (Ts, CommitId)>,
     /// Held imports per thing and origin: (thing, origin) -> (`ts`, import, importer). The
     /// least is the origin's import there (`Core::authors`, spec/permissions.md §7).
     pub imports: JSetMap<(Tid, CommitId), (Ts, CommitId, Tid)>,
@@ -399,15 +397,8 @@ indexes! {
     pub authors: JMap<(Tid, CommitId), (Tid, Ts)>,
     /// The lost-access trigger's work list (`rotation::LOST_DUE`).
     pub lost_due: JSet<Tid>,
-    /// Aspects whose deaths wait for a replay (`records::DEATHS_DUE`) and what it must judge.
-    pub deaths_due: JSetMap<(Tid, Ak), crate::retention::Due>,
-    /// The first held body with a relative keep bound per aspect, by `(ts, ID)` (`None`: none),
-    /// where known (`retention::first_bounded`).
-    pub first_bounded: JMap<(Tid, Ak), Option<(Ts, CommitId)>>,
-    /// Per aspect, where known, the lowest stamp a commit dropped without a residue at or after
-    /// its first held bounded body may give a write the state plays (`retention::deaths`
-    /// `first_bare`).
-    pub first_bare: JMap<(Tid, Ak), Option<Ts>>,
+    /// Aspects whose deaths wait for a recompute (`records::DEATHS_DUE`).
+    pub deaths_due: JSet<(Tid, Ak)>,
     /// `rotation::departures` per actor with the time it holds until (an edge's `until`, a
     /// write's future `ts`); cleared by `membership_changed`.
     pub departures: JMap<Tid, (Vec<osis_keys::Departure>, Option<WallMs>)>,
@@ -478,9 +469,11 @@ pub struct Core {
     /// its card, a link key; membership flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
     pub key_actors: BTreeMap<Tid, Arc<Identity>>,
-    /// Replays wait for `Engine::settle_deaths` instead of ending each transaction (node-sync,
-    /// within a step).
+    /// Deaths recomputes wait for `Engine::settle_deaths` instead of ending each transaction
+    /// (node-sync, within a step).
     pub defer_deaths: bool,
+    /// No keep-at-most drop (tests: an oracle holding every body, `Engine::keep_bodies`).
+    pub keep_bodies: bool,
     /// What changed since node-sync last took it (`Engine::take_changed`; `None`: no
     /// node-sync, nothing kept). A mark from an aborted transaction stays: one extra judgment.
     pub changed: Option<Changed>,
@@ -692,6 +685,7 @@ impl Core {
             check_ingest: false,
             key_actors: BTreeMap::new(),
             defer_deaths: false,
+            keep_bodies: false,
             changed: None,
             sync_records: None,
             live_trees: BTreeMap::new(),

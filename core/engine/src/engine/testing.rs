@@ -2,7 +2,7 @@
 //! death-row hooks live in `retention::deaths`).
 
 use super::index::*;
-use super::{Engine, records};
+use super::Engine;
 use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid};
 use osis_store::Shred;
@@ -22,8 +22,9 @@ impl Engine {
         self.core.waits.bytes()
     }
 
-    /// Replays the deaths of `(tid, ak)` from every held body and residue, as a validity flip
-    /// does (tests: the batched and windowed replays must agree with it).
+    /// Recomputes the deaths of `(tid, ak)` from the held bodies and the state, as a validity
+    /// flip does (tests: on a node keeping every body, `keep_bodies`, it gives each write its
+    /// earliest superseder).
     #[doc(hidden)]
     pub fn replay_deaths(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
         self.settle_deaths()?;
@@ -31,18 +32,18 @@ impl Engine {
         self.run(|tx| crate::retention::rejudge_deaths(tx, &tid, &ak))
     }
 
-    /// Bytes of the residues of `(tid, ak)`'s dropped bodies (tests).
+    /// The writes of `(tid, ak)` held snapshots carry whose own commit is not held, as (author
+    /// node, `ts`) (tests: a recompute plays them at their snapshot, not at their own `ts`).
     #[doc(hidden)]
-    pub fn residue_bytes(&mut self, tid: &Tid, ak: &Ak) -> Result<usize> {
-        let p = records::aspect_key(records::DROPPED, tid, ak);
-        self.run(|tx| {
-            let mut n = 0;
-            tx.scan(&p, |k, v| {
-                n += k.len() + v.len();
-                Ok(())
-            })?;
-            Ok(n)
-        })
+    pub fn carried_writes(&self, tid: &Tid, ak: &osis_base::Ak) -> Vec<(Tid, osis_base::Ts)> {
+        self.core.ix.carried.get(&(*tid, ak.clone())).into_iter().flatten().map(|g| (g.node, g.ts)).collect()
+    }
+
+    /// Keeps every body past its keep-at-most bound (tests: an oracle for the earliest
+    /// superseder of each write, spec/crdt.md §4.8).
+    #[doc(hidden)]
+    pub fn keep_bodies(&mut self, on: bool) {
+        self.core.keep_bodies = on;
     }
 
     /// Whether the delta of `(tid, ak)` in `c` is valid here (`None`: no such delta). Tests: the

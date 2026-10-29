@@ -850,12 +850,12 @@ fn sync_membership_pass_cost() {
     );
 }
 
-// spec/crdt.md §4.8 (deaths whatever the arrival order), spec/requirements.md, Scale (no
-// operation O(history)): a set of N one-element commits, then 5 deltas by another writer older
-// than all of them. Each late delta applied and its deaths read alone, then 5 more in one batch
-// read once (`Engine::defer_deaths`), then one 5 commits late: an unbounded set (no deaths kept)
-// against a keep-at-least one (each batch replays the window its late deltas can change), and
-// the keep-at-least one compacted after the N commits (the window plays the snapshot's copies).
+// spec/commits.md §5 (deaths dated per node), spec/requirements.md, Scale (no operation
+// O(history)): a set of N one-element commits, then 5 deltas by another writer older than all of
+// them. Each late delta applied and its deaths read alone, then 5 more in one batch read once
+// (`Engine::defer_deaths`), then one 5 commits late: an unbounded set (no deaths kept) against a
+// keep-at-least one (a late delta's join dates its deaths), and the keep-at-least one compacted
+// after the N commits; then a recompute of the aspect's deaths, as a validity flip runs.
 // `OSIS_SCALE_N` sets N (default 3000).
 #[test]
 #[ignore = "tier 2"]
@@ -923,7 +923,10 @@ fn late_delta_deaths_cost_spec_crdt_4_8() {
         let t4 = Instant::now();
         lp.deliver(0, &pks.iter().find(|p| p.id == recent).unwrap().clone()).unwrap();
         lp.peers[0].engine.deaths(&ids[0], &t, &k).unwrap();
-        println!("{name} n={n}: fill {fill:?}; late deltas each {each:?}; 5 late deltas in one batch {batch:?}; one in-order local write {local:?}; a recent late delta {:?}", t4.elapsed());
+        let recent = t4.elapsed();
+        let t5 = Instant::now();
+        lp.peers[0].engine.replay_deaths(&t, &k).unwrap();
+        println!("{name} n={n}: fill {fill:?}; late deltas each {each:?}; 5 late deltas in one batch {batch:?}; one in-order local write {local:?}; a recent late delta {recent:?}; a recompute {:?}", t5.elapsed());
         for (k, d, c) in osis_node::costs::take() {
             println!("  {k}: {d:?} ({c})");
         }

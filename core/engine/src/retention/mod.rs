@@ -26,7 +26,7 @@ use std::collections::BTreeSet;
 mod deaths;
 pub(crate) mod forget;
 
-pub(crate) use deaths::{Due, drop_residues, write_last_deaths_all, load_deaths_due, mark_deaths_due, mark_if_bounded, mark_late, note_deaths, note_indexed, rejudge_deaths, replays, settle_due};
+pub(crate) use deaths::{load_deaths_due, mark_deaths_due, mark_if_bounded, note_copies, note_deaths, rejudge_deaths, settle_due};
 
 /// A body a due timer drops with a live write: its commit and every aspect of it.
 pub(crate) type LiveDrop = (CommitId, Vec<(Tid, Ak)>);
@@ -144,12 +144,9 @@ pub(crate) fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai) else { return Ok(()) };
     let (body, members) = body_class(tx.core, &m.header, c, ai);
-    // deaths awaiting a replay may be early: the replay judges the body
-    let due: Vec<(Tid, Ak)> = members.iter().filter_map(|x| m.header.aspects.get(*x)).map(|x| (x.tid, x.ak.clone())).filter(|k| tx.core.ix.deaths_due.contains_key(k)).collect();
-    if !due.is_empty() {
-        for (t, a) in due {
-            deaths::mark(tx, &t, &a, Due::Recheck(*c, ai))?;
-        }
+    // deaths awaiting a recompute may be early: the recompute judges the body (`settle_due`);
+    // tests may keep every body (`Engine::keep_bodies`)
+    if tx.core.keep_bodies || members.iter().filter_map(|x| m.header.aspects.get(*x)).any(|x| tx.core.ix.deaths_due.contains(&(x.tid, x.ak.clone()))) {
         return Ok(());
     }
     let d = class_deaths(tx, &m.header, &body, &members)?;
@@ -193,7 +190,6 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
     }
     // the dropped deltas, to find what of the state holds copies of their writes
     let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect();
-    deaths::keep_residue(tx, c, ai, &bodies)?;
     if let Some(blob) = tx.get_commit(c)? {
         let rest = osis_commit::rewrite(&blob, |x, _| x == ai);
         tx.put_commit(c, &rest, &m, Shred::Yes, None)?;
@@ -202,7 +198,6 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
     tx.core.ix.commits.insert(*c, m);
     crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, c);
     tx.core.forget_live(&a.tid, &a.ak);
-    deaths::drop_last(tx, &a.tid, &a.ak, c, ai)?;
     tx.txn.drop_body(&body, &[(a.tid, a.ak.clone())])?;
     tx.shred_bodies(&a.tid, &a.ak, &bodies)
 }
@@ -764,57 +759,6 @@ mod tests {
     use crate::local_peer::LocalPeer;
     use osis_base::{Ak, Role, Value, WallMs};
     use osis_schema::core_types as ct;
-
-    // spec/crdt.md §4.8 (deaths), notes/node.md Rollback: a late delta reads the last-death
-    // rows (70 kept writes before it); a transaction replaying a second late delta's deaths,
-    // then failing, leaves the rows as the death records give them.
-    #[test]
-    fn failed_tx_keeps_last_deaths_spec_crdt_4_8() {
-        use osis_schema::{Bound, PurgeBy, Retention};
-        let mut lp = LocalPeer::new(2, 71, WallMs(1_700_000_000_000)).unwrap();
-        lp.sync_all().unwrap();
-        let (a, w) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-        let ak = Ak::new("/x/k").unwrap();
-        let mut m = Mutation::new();
-        let t = lp.peers[0].engine.new_thing(&mut m, a);
-        m.set(t, &Ak::new("/x/a").unwrap(), &Value::Int(0)).unwrap();
-        lp.peers[0].commit(m).unwrap();
-        lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, since: None }).unwrap();
-        lp.sync_all().unwrap();
-        let kept = |lp: &mut LocalPeer, i: usize, v: &str| {
-            let mut m = Mutation::new();
-            m.retention(t, &ak, Retention { by: PurgeBy::Author, at_least: Bound { abs: None, rel: Some(86_400_000) }, at_most: Bound::default() }).unwrap();
-            m.set(t, &ak, &Value::Str(v.into())).unwrap();
-            lp.peers[i].commit(m).unwrap().unwrap()
-        };
-        for i in 0..70 {
-            lp.advance(1);
-            kept(&mut lp, 0, &format!("a{i}"));
-        }
-        lp.advance(1);
-        let late: Vec<_> = (0..2).map(|i| kept(&mut lp, 1, &format!("b{i}"))).collect();
-        lp.advance(1);
-        for i in 0..3 {
-            kept(&mut lp, 0, &format!("c{i}"));
-        }
-        let pks = lp.packages(1).unwrap();
-        let pk = |c| pks.iter().find(|p| p.id == c).unwrap().clone();
-        lp.deliver(0, &pk(late[0])).unwrap();
-        assert!(lp.peers[0].engine.last_deaths_stale().unwrap().is_empty());
-        lp.peers[0].engine.defer_deaths(true).unwrap();
-        lp.deliver(0, &pk(late[1])).unwrap();
-        let e = &mut lp.peers[0].engine;
-        let r = e.run(|tx| {
-            let before = super::deaths::rows_from(tx, &t, &ak, osis_base::Ts::default())?;
-            super::settle_due(tx)?;
-            assert_ne!(super::deaths::rows_from(tx, &t, &ak, osis_base::Ts::default())?, before, "the replay changes the rows");
-            Err::<(), _>(crate::error::Error::BadInput("test"))
-        });
-        assert!(r.is_err());
-        assert!(e.last_deaths_stale().unwrap().is_empty(), "after the failed transaction");
-        e.defer_deaths(false).unwrap();
-        assert!(e.last_deaths_stale().unwrap().is_empty());
-    }
 
     // spec/sync.md §7 (a body with live writes needs a carrier), spec/permissions.md §5.2: a
     // write made invalid (a backdated removal of its author) counts dead; a re-grant that makes
