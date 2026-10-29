@@ -149,7 +149,7 @@ RULES = [
     ("spec/versioning.md", "2", "reject malformed", "MUST be rejected, never parked"),
     ("spec/versioning.md", "4", "additive revision", "MUST be an additive superset"),
     ("spec/versioning.md", "4", "additive revision", "a new revision MUST NOT"),
-    ("spec/versioning.md", "5", "typed read fails", "A typed read MUST fail"),
+    ("spec/versioning.md", "5", "mistyped reads absent", "MUST NOT be taken as a value of the type"),
     ("spec/wire.md", "5", "unpad", "which MUST be present"),
     ("spec/wire.md", "10", "reserved flags", "reserved and MUST be zero"),
 ]
