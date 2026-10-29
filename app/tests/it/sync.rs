@@ -550,3 +550,25 @@ fn favorite_from_the_other_group_moves_within_its_list() {
     let after = a.favorites().unwrap();
     assert_eq!(after.len(), f.len());
 }
+
+/// Both devices favorite the same thing at once (two entries in one list): it shows once, and
+/// dragging it to the end puts it at the end.
+#[test]
+fn favorite_twice_then_moved() {
+    let (a, b) = two();
+    a.main_group().unwrap();
+    let n = a.create_note().unwrap();
+    let m = a.create_note().unwrap();
+    a.toggle_favorite(m).unwrap();
+    sync(&a, &b);
+    a.toggle_favorite(n).unwrap();
+    b.toggle_favorite(n).unwrap();
+    let k = a.create_note().unwrap();
+    a.toggle_favorite(k).unwrap();
+    sync(&a, &b);
+    let f = a.favorites().unwrap();
+    assert_eq!(f.iter().filter(|x| **x == n).count(), 1);
+    let i = f.iter().position(|x| *x == n).unwrap();
+    a.move_favorite(i, f.len() - 1).unwrap();
+    assert_eq!(a.favorites().unwrap().last(), Some(&n), "{:?}", a.favorites().unwrap());
+}
