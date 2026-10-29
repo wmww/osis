@@ -460,6 +460,26 @@ impl Engine {
         Some(f)
     }
 
+    /// The ephemeral things of `recs` up their ephemeral owner chains: the things whose records
+    /// (`/created`) an ephemeral commit about `recs` carries.
+    fn record_chain(&self, recs: &BTreeSet<Tid>) -> BTreeSet<Tid> {
+        let mut chain: BTreeSet<Tid> = BTreeSet::new();
+        for t in recs {
+            let mut cur = *t;
+            for _ in 0..=MAX_OWNER_DEPTH {
+                let Some(th) = self.eph.things.get(&cur) else { break };
+                if self.core.created(&cur).is_some() || !chain.insert(cur) {
+                    break;
+                }
+                match &th.record {
+                    CreationRecord::Thing { owner, .. } => cur = *owner,
+                    CreationRecord::KeyActor { .. } => break,
+                }
+            }
+        }
+        chain
+    }
+
     /// Builds, signs and holds one ephemeral commit of `deltas` (thing, aspect, fragment,
     /// expiry), carrying the records of `records` and of the ephemeral things the deltas touch
     /// with their ephemeral owner chains; `absorbed`: per aspect, the held commits it covers.
@@ -473,20 +493,7 @@ impl Engine {
                 recs.insert(*t);
             }
         }
-        let mut chain: BTreeSet<Tid> = BTreeSet::new();
-        for t in recs {
-            let mut cur = t;
-            for _ in 0..=MAX_OWNER_DEPTH {
-                let Some(th) = self.eph.things.get(&cur) else { break };
-                if self.core.created(&cur).is_some() || !chain.insert(cur) {
-                    break;
-                }
-                match &th.record {
-                    CreationRecord::Thing { owner, .. } => cur = *owner,
-                    CreationRecord::KeyActor { .. } => break,
-                }
-            }
-        }
+        let chain = self.record_chain(&recs);
         let mut parts: Vec<EphDelta> = deltas.into_iter().filter(|(t, ak, _, _)| !(chain.contains(t) && ak.as_str() == CREATED.ak())).collect();
         let cak = Ak::new(CREATED.ak()).map_err(|_| Error::Misuse("ak"))?;
         for t in &chain {
@@ -1185,13 +1192,18 @@ impl Engine {
             return Ok(None);
         }
         let picked_set: BTreeSet<(Tid, Ak)> = picked.iter().cloned().collect();
-        // the held commits wholly on picked aspects
+        let records: BTreeSet<Tid> = picked.iter().map(|(t, _)| *t).filter(|t| self.eph.things.contains_key(t)).collect();
+        // the records the cover carries: a commit with a record part of another thing (only
+        // that, often) is not dropped by it, so counting it covered compacted again at every
+        // refusal (sim `ephemeral` seed 83)
+        let chain = self.record_chain(&records);
+        // the held commits wholly on picked aspects and carried records
         let mut absorbed: BTreeMap<(Tid, Ak), BTreeSet<CommitId>> = BTreeMap::new();
         for (id, h) in &self.eph.remote.held {
             if h.header.ephemeral == Some(EphClass::Presence) {
                 continue;
             }
-            let all = h.parts.iter().all(|p| h.header.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == CREATED.ak() || picked_set.contains(&(a.tid, a.ak.clone()))));
+            let all = h.parts.iter().all(|p| h.header.aspects.get(p.ai).is_some_and(|a| if a.ak.as_str() == CREATED.ak() { chain.contains(&a.tid) } else { picked_set.contains(&(a.tid, a.ak.clone())) }));
             if !all {
                 continue;
             }
@@ -1210,7 +1222,6 @@ impl Engine {
             return Ok(None);
         }
         let deltas: Vec<EphDelta> = picked.iter().filter_map(|(t, ak)| self.eph.state(t, ak).map(|f| (*t, ak.clone(), f.clone(), None))).collect();
-        let records: BTreeSet<Tid> = picked.iter().map(|(t, _)| *t).filter(|t| self.eph.things.contains_key(t)).collect();
         // what is compacted needs no separate send
         for k in &picked {
             if let Some(m) = self.eph.remote.unsent.get_mut(k) {

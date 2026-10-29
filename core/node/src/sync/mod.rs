@@ -1342,9 +1342,11 @@ impl SyncEngine {
             if !self.cfg.subscribe || self.lc(conn, &label).is_some_and(|l| !l.synced) {
                 self.sync_label(conn, label, out)?;
             } else if let Some(l) = self.lc_mut(conn, &label) {
-                // subscribed: a pass now and then (heartbeats, timed bounds)
+                // subscribed: a pass now and then (heartbeats, timed bounds, entries refused for
+                // the cap; unsubscribed, the Sync's end uploads those)
                 l.last_sync = now;
                 l.dirty = true;
+                self.eph_retry(conn, label, out)?;
             }
         }
         Ok(())
