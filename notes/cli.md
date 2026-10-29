@@ -46,7 +46,7 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `edit T AK --base V` (stdin) | `write_with`, `edit` | now |
 | (none: interactive editors only) | `edit_text` (text sessions) | |
 | `write` (stdin) | one `write` batch | now |
-| `show T` | `aspects`, `get`, `knows` (`state present/deleted`), `groups_of`, `role_on`, `owner_of`, `created` | now |
+| `show T` | `aspects`, `get`, `knows` (`state present/deleted`), `groups_of`, `role_on`, `owner_of`, `created`, `changed` | now |
 | `aspects T` / `delete T` | `aspects` / `Write::delete` | now |
 | `ls G` / `backlinks T` | query / backlinks | 2nd (no API yet) |
 | `watch T [AK]` | `at().on_change` / `watch_thing` | now |

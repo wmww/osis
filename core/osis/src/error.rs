@@ -1,5 +1,5 @@
-//! The one `Error` of the API (notes/api.md Errors). Absent aspects and unknown tids read as
-//! `None`, never as errors; peer-caused problems are diagnostics, never errors.
+//! The one `Error` of the API (notes/api.md Errors). Absent aspects, unknown tids and stored
+//! values of another type read as `None`, never as errors; peer-caused problems are diagnostics, never errors.
 
 use crate::commits::DropReason;
 use osis_base::{Role, Tid};
@@ -14,7 +14,9 @@ pub enum Error {
     UnknownActor { tid: Tid },
     /// The acting node lacks `needs` on `tid` (checked locally before signing).
     Permission { tid: Tid, needs: Role },
-    /// A typed read or write failed at `path` (unknown case, mismatch, missing field).
+    /// A typed write's value failed validation at `path` (unknown case, mismatch, missing
+    /// field), or a typed path read named a path the key's schema does not have. Stored data
+    /// never fails a read on typed grounds: it reads as absent (`DiagnosticKind::Mismatch`).
     Type { path: Path, reason: String },
     /// The value exceeds the materialization bound; read it by path or stream.
     TooLarge { limit: usize },

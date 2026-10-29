@@ -1,6 +1,6 @@
 //! osis: the public API, the only crate apps depend on. A synchronous local data API over the
 //! node engine: typed aspect keys, reads with paths and a materialization bound, RAII watches
-//! on one dispatcher thread, the `Write` batch, undo and history, signals, diagnostics, one
+//! on one dispatcher (its own thread or the app's), the `Write` batch, undo and history, signals, diagnostics, one
 //! `Error`. Layer 8 (notes/architecture.md). Design: notes/api.md.
 //!
 //! # Open a database
@@ -72,7 +72,8 @@
 //! ```
 //!
 //! # Watching
-//! Callbacks run on one dispatcher thread, after the commit is durable, never under a lock;
+//! Callbacks run on one dispatcher (a thread, or the app's thread calling `settle` with
+//! `Dispatcher::Pump`), after the commit is durable, never under a lock;
 //! dropping the `Subscription` unsubscribes. `on_change` first delivers the current value.
 //! ```
 //! # use osis::{Config, Osis, Ak, Value, Source};
@@ -265,11 +266,11 @@ pub use net::{GroupPolicy, ManualNet, Runtime, Transport};
 pub use person::{Joining, OFFER_LIFETIME_MS, PairOffer, PairReply, PairRequest};
 pub use keys::{Key, core};
 pub use large::ValueStream;
-pub use read::{AspectRef, Created, Edge, GroupsOf, PathRef, Reader, Roster};
+pub use read::{AspectRef, Edge, GroupsOf, PathRef, Reader, Roster, Stamp};
 pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupSync, LinkInfo, LinkOpts, Lower, PRESYNC_WAIT, RecoveryCard, ServerAddr, ShareLink, Status, SyncScope, SyncState, WaitForSync};
 pub use text::TextSession;
 pub use commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Scope};
-pub use watch::{Change, Changed, CommitInfo, Source, Subscription, Watch};
+pub use watch::{Change, Changed, CommitInfo, Dispatcher, Source, Subscription, Watch};
 pub use write::{AspectWrite, Committed, PathWrite, Write};
 
 pub use osis_base::{Ak, Clock, CommitId, CreationRecord, ManualClock, Role, Tid, Ts, Value, WallMs};

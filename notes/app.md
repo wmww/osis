@@ -25,12 +25,12 @@ Themes (notes/theming.md): one main colour from the content drives accents, sele
 - All app state lives in osis; widgets hold only what is too hot to be data (drag positions, caret blink, animation).
 - Durable view state (open things, lens, filters, layout, window management if it grows) as things in a person-private group: a view can be moved between devices, and between apps or toolkits, and saved and restored. Not specified or built on the first pass, but the architecture assumes it.
 - Ephemeral view state (selection, expanded panels, scroll anchor) as ephemeral things and aspects (notes/ephemeral.md): in memory, local unless placed in a synced group; hot live state across devices is synced ephemeral data, not commits.
-- Needed from the API (asks for the library side): in-memory things must support watches, queries and backlinks exactly like stored things; and a mode where the app pumps the watch dispatcher on its own (UI) thread, removing the cross-thread hop and ordering questions.
+- Needed from the API (asks for the library side): in-memory things must support watches, queries and backlinks exactly like stored things; the mode where the app pumps the watch dispatcher on its own (UI) thread exists (`Dispatcher::Pump`).
 
 ## Layers
 - **State**: osis (above).
 - **Actions** (in `app/`): a toolkit-free Rust crate. Widgets emit intents (open, tag, share, edit); the crate turns them into osis writes and holds all behavior and policy, including the share confirmation's rule (none yet: sharing through a tag waits on issues/tag-sharing-op.md).
-- **Driver** (in `kit/`): Masonry-specific glue. Watches fire, the driver edits the retained widget tree through Masonry's mutation API. Two pieces written once: marshaling watch callbacks onto the UI thread (until the dispatcher-pump mode exists), and a keyed list reconciler turning a changed query result into insert/move/remove on a list widget.
+- **Driver** (in `kit/`): Masonry-specific glue. Watches fire, the driver edits the retained widget tree through Masonry's mutation API. Two pieces written once: marshaling watch callbacks onto the UI thread (replaceable by `Dispatcher::Pump`, Core changes to adopt), and a keyed list reconciler turning a changed query result into insert/move/remove on a list widget.
 - **Widgets** (in `kit/`, product views in `app/`): our own look as Masonry widgets.
 - A toolkit swap rewrites driver and widgets only; state and behavior survive. The earlier idea of a separate "view model" crate dissolves into the view-state schema plus the actions crate.
 
@@ -128,8 +128,11 @@ Two devices syncing through a local server (checked end to end; four terminals):
 - No well-known per-app root: the app finds its group by scanning home and tolerates duplicates.
 - Masonry 0.4: `TextInput`/`TextArea` do not fill a flex slot by themselves (`SizedBox::expand`); `Portal` content needs `content_must_fill`; `reset_text` drops the selection; user events can only reach the driver as `Action`s; widget tags leaked when their widget was removed and the driver had no resize or system-theme hook (both fixed in kit/patches, Patches above); `NewWidget` takes a tag or properties, not both.
 
-**Core changes to adopt** (core branch api-asks-1; app work removes each line once done):
+**Core changes to adopt** (core branches api-asks-1, api-asks-2; app work removes each line once done):
 - `knows(t)` is now false for a deleted thing (`created` still reports it), and a thing watch sees the delete as aspects going absent: `Data::opened` can check `db.knows(t)` instead of scanning `things()`.
 - `groups_of(t)` returns `GroupsOf { item_of, subgroup_of, within }` (the app took `.within` mechanically): `tags_of` can read `item_of` and `subgroup_of` instead of scanning `all_tags()`.
 - `Write::delete` removes the thing's placements and subgroup edges in every group the node may write (skipping others): `Data::delete`'s scan for parent edges can go.
 - A placement that leaves a durable thing in no synced group while the target group's own data syncs (an item of home, not a subgroup) now fails `Invalid` (also when a durable write persists an ephemerally placed draft); the app group already avoids this.
+- A typed read of a stored value of another shape (or a newer revision's enum case) now reads as `None` with a `Mismatch` diagnostic, in `get`, path reads, watches and `on_change`: `Data::get`'s `Error::Type` wrapper can go (call `db.get`).
+- `db.changed(t) -> Option<Stamp>`: the last content change (not placement or sharing), else the creation; show/sort by `.shown()` (`min(ts, received)`, the same rule as `created`, whose type is now `Stamp` too): `Data::changed` can become `db.changed(t).map(|s| s.shown().0)`, and it reads the in-memory index instead of running a commit query (which scans every aspect) per thing.
+- `Config.dispatch = Dispatcher::Pump(wake)`: callbacks run on the thread calling `db.settle()`; `wake` (any thread, maybe under the osis lock, called once per batch) only posts the UI wake. kit's `marshal` mailbox can go: wake the event loop, then `db.settle()` on the UI thread, and callbacks touch state directly.
