@@ -126,6 +126,81 @@ fn purge_drops_snapshots_spec_commits_5() {
     assert!(lp.peers[0].commit(m).is_err());
 }
 
+// spec/commits.md §5: a purge drops every snapshot body carrying the purged values whatever the
+// arrival order: a snapshot arriving after the request and the named delta, or the named delta
+// arriving after the request and the snapshot.
+#[test]
+fn purge_drops_late_snapshot_spec_commits_5() {
+    let mut lp = net(2, 0x5b00);
+    let t = new_thing(&mut lp, 0);
+    let reg = ak("/t/reg");
+    let secret = set(&mut lp, 0, t, &REG, "secret");
+    let snap = lp.peers[0].engine.snapshot(&t, &reg).unwrap().unwrap();
+    let spk = lp.peers[0].engine.package(&snap).unwrap().unwrap();
+    let secret_pk = lp.peers[0].engine.package(&secret).unwrap().unwrap();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("public")).unwrap();
+    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: reg.clone() });
+    lp.peers[0].commit(m).unwrap();
+    let rest: Vec<Package> = packages(&mut lp, 0).into_iter().filter(|p| p.id != snap && p.id != secret).collect();
+    let check = |e: &mut osis_node::Engine, why: &str| {
+        assert!(!e.body_not_dropped(&snap, &t, &reg), "{why}: snapshot dropped");
+        assert_eq!(e.get(&t, &reg).unwrap(), Some(s("public")), "{why}");
+    };
+    // the snapshot last
+    for p in rest.iter().chain([&secret_pk]) {
+        lp.deliver(1, p).unwrap();
+    }
+    lp.peers[1].engine.set_syncing(t, true).unwrap();
+    lp.peers[1].engine.reexamine().unwrap();
+    assert!(!lp.peers[1].engine.body_not_dropped(&secret, &t, &reg));
+    lp.deliver(1, &spk).unwrap();
+    check(&mut lp.peers[1].engine, "snapshot last");
+    lp.peers[1].restart(0x5b01).unwrap();
+    check(&mut lp.peers[1].engine, "snapshot last, restarted");
+    // the named delta last
+    let i = lp.peers.len();
+    lp.peers.push(osis_node::local_peer::Peer::new(0x5b02, lp.peers[0].engine.now()).unwrap());
+    for p in rest.iter().chain([&spk, &secret_pk]) {
+        lp.deliver(i, p).unwrap();
+    }
+    lp.peers[i].engine.set_syncing(t, true).unwrap();
+    lp.peers[i].engine.reexamine().unwrap();
+    check(&mut lp.peers[i].engine, "named delta last");
+}
+
+// spec/commits.md §5: a compaction snapshot takes the default bounds of a schema known here, also
+// after a restart; a node knowing no schema of a typed aspect does not snapshot it; an untyped
+// aspect snapshots with no bounds.
+#[test]
+fn snapshot_bounds_from_known_schema_spec_commits_5() {
+    let mut lp = net(2, 0x5b10);
+    let t = new_thing(&mut lp, 0);
+    let b = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    let short = ak("/t/short");
+    set(&mut lp, 0, t, &SHORT, "a");
+    let doc = ak("/u/doc");
+    let mut m = Mutation::new();
+    m.set(t, &doc, &s("untyped")).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    sync(&mut lp, 0, 1);
+    let at_most = |e: &osis_node::Engine, c: &osis_base::CommitId| e.header(c).unwrap().aspects[0].retention.at_most.rel;
+    lp.peers[0].restart(0x5b11).unwrap();
+    let snap = lp.peers[0].engine.snapshot(&t, &short).unwrap().unwrap();
+    assert_eq!(at_most(&lp.peers[0].engine, &snap), Some(600_000), "bounds after a restart");
+    // node 1 holds the typed write, never registered its schema
+    lp.peers[1].engine.set_syncing(t, true).unwrap();
+    assert_eq!(lp.peers[1].engine.snapshot(&t, &short).unwrap(), None, "unknown schema: no snapshot");
+    let u = lp.peers[1].engine.snapshot(&t, &doc).unwrap().unwrap();
+    assert_eq!(at_most(&lp.peers[1].engine, &u), None, "untyped");
+    lp.peers[1].engine.register_schema(std::sync::Arc::new(TEST.get().clone())).unwrap();
+    lp.peers[1].restart(0x5b12).unwrap();
+    let snap = lp.peers[1].engine.snapshot(&t, &short).unwrap().unwrap();
+    assert_eq!(at_most(&lp.peers[1].engine, &snap), Some(600_000), "registered, restarted");
+}
+
 // spec/commits.md §5: a body is one projection class: its deltas share deaths and are dropped
 // together; while one of them has a live write the class is kept (`AT_MOST_GRACE`); keep at
 // most 0 drops at apply the kill that leaves it none, even when the killing `ts` is ahead of

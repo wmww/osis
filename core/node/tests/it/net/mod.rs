@@ -144,7 +144,9 @@ impl Net {
         let cfg = SyncConfig { full_passes: cfg.full_passes || self.full_passes, ..cfg };
         let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
         let c: Arc<dyn Clock> = self.clock.clone();
-        let engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c.clone(), Box::new(SeededRng::from_u64(seed))).unwrap();
+        let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c.clone(), Box::new(SeededRng::from_u64(seed))).unwrap();
+        // every node knows the test schema (compaction needs it, spec/commits.md §5)
+        engine.register_schema(Arc::new(crate::common::TEST.get().clone())).unwrap();
         let sync = SyncEngine::new(engine, c, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
         self.nodes.push(Node { sync: Some(sync), backend, root, online: true, wake: None });
         self.nodes.len() - 1

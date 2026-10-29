@@ -685,6 +685,7 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool, forge: bool) -> ([
     let mut forged = 0usize;
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut lp = LocalPeer::new(3, 0x7a1c + seed, T0).unwrap();
+    know_schema(&mut lp);
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
     let mut things: Vec<Tid> = (0..2).map(|_| new_thing(&mut lp, 0)).collect();

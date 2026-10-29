@@ -567,7 +567,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             next_ctr = range.hi;
         }
         if let Some(s) = &am.schema {
-            tx.core.schemas.entry(s.id).or_insert_with(|| s.clone());
+            keep_schema(tx, s, false)?;
         }
         deltas.push(Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, schema_ref: None, retention: am.retention, expires: am.expires, frontiers: None, chunks, split: kind == Kind::RosterSnapshot });
     }
@@ -591,5 +591,16 @@ fn check_synced(core: &Core, placed: &[(Tid, Tid)]) -> Result<()> {
             return Err(Error::Unsynced { tid: *t, group: *g });
         }
     }
+    Ok(())
+}
+
+/// Records schema `s` as known here, in memory and in the store (`records::SCHEMAS`):
+/// replacing one of its ID when `replace`, else only when none is known.
+pub(crate) fn keep_schema(tx: &mut Tx<'_>, s: &Arc<osis_schema::Schema>, replace: bool) -> Result<()> {
+    if !replace && tx.core.schemas.contains_key(&s.id) {
+        return Ok(());
+    }
+    tx.core.schemas.insert(s.id, s.clone());
+    tx.txn.put_local(&[super::records::SCHEMAS, &s.id.0[..]].concat(), &s.canonical_bytes(), osis_store::Shred::No)?;
     Ok(())
 }

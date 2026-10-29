@@ -209,6 +209,7 @@ struct Played {
 /// Plays `steps` on three peers: 0 owns G and gives 1 write and 2 admin on it.
 fn play(seed: u64, steps: &[Step]) -> Played {
     let mut lp = LocalPeer::new(3, seed, T0).unwrap();
+    know_schema(&mut lp);
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
     let mut m = Mutation::new();

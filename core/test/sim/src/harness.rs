@@ -164,6 +164,8 @@ fn boot(seed: u64, t: WallMs) -> osis_node::Result<(Peer, Faults)> {
     let root = MemoryRoot::with_faults(faults.clone());
     let c: Arc<dyn Clock> = clock.clone();
     let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), osis_node::Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
+    // every node knows the workload's schema (compaction needs it, spec/commits.md §5)
+    engine.register_schema(Arc::new(crate::workload::SIM.get().clone()))?;
     let events = engine.subscribe();
     Ok((Peer { engine, clock, backend, root, events }, faults))
 }

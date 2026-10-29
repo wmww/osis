@@ -472,7 +472,8 @@ pub struct Core {
     /// Linked tenure frontiers decoded (by link content hash) with their canonical size; content
     /// addressed, so never stale.
     pub frontiers: BTreeMap<[u8; 32], (Arc<osis_perm::Frontier>, usize)>,
-    /// Schemas of local writes (typed views for undo).
+    /// Schemas registered or written with here (`records::SCHEMAS`): typed views for undo,
+    /// default bounds for snapshots.
     pub schemas: BTreeMap<osis_base::SchemaId, Arc<osis_schema::Schema>>,
     pub events: Events,
     /// States the running transaction wrote (dropped from the cache on rollback).
@@ -1233,9 +1234,10 @@ impl Engine {
     }
 
     /// Registers an app schema: typed views for undo and default bounds for snapshots of its
-    /// AKs (local writes through typed keys register theirs).
-    pub fn register_schema(&mut self, s: Arc<osis_schema::Schema>) {
-        self.core.schemas.insert(s.id, s);
+    /// AKs (local writes through typed keys register theirs). Kept in the store: an open
+    /// knows every schema registered before.
+    pub fn register_schema(&mut self, s: Arc<osis_schema::Schema>) -> Result<()> {
+        self.run(|tx| crate::engine::write::keep_schema(tx, &s, true))
     }
 
     /// A local record of the API layer (`osis`), never synced.
@@ -1373,7 +1375,6 @@ impl Engine {
         fresh.hlc.set_offset(self.core.hlc.offset());
         fresh.events = std::mem::take(&mut self.core.events);
         fresh.key_actors = std::mem::take(&mut self.core.key_actors);
-        fresh.schemas = std::mem::take(&mut self.core.schemas);
         fresh.skip_writer_rules = self.core.skip_writer_rules;
         fresh.walk_cache_min = self.core.walk_cache_min;
         fresh.sync_records = self.core.sync_records;

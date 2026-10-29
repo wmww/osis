@@ -513,21 +513,22 @@ impl Osis {
         self.inner.dispatch.settle(Arc::downgrade(&self.inner));
     }
 
-    /// Registers a schema: typed views for its AKs (`key`), undo and snapshot defaults.
-    /// Generated keys carry their schema and need no registration.
-    pub fn register_schema(&self, s: Schema) -> Arc<Schema> {
+    /// Registers a schema: typed views for its AKs (`key`, this session), undo and snapshot
+    /// defaults (the engine keeps those in the store). Generated keys carry their schema and
+    /// need no registration.
+    pub fn register_schema(&self, s: Schema) -> Result<Arc<Schema>> {
         let s = Arc::new(s);
-        self.engine(|e| e.register_schema(s.clone()));
+        self.engine(|e| e.register_schema(s.clone()))?;
         let mut v = lock(&self.inner.schemas);
         v.retain(|x| x.id != s.id);
         v.push(s.clone());
-        s
+        Ok(s)
     }
 
     /// Parses and registers a `*.osis` source (errors carry file:line:col).
     pub fn register_schema_source(&self, file: &str, src: &str) -> Result<Arc<Schema>> {
         let s = osis_schema::parse(file, src).map_err(|e| Error::Invalid(e.to_string()))?;
-        Ok(self.register_schema(s))
+        self.register_schema(s)
     }
 
     /// Reads, parses and registers a `*.osis` file.
