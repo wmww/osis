@@ -41,6 +41,7 @@ aspect /t/text: text;
 aspect /t/blob: blob;
 aspect /t/book: book;
 aspect /t/docs: map<string, text>;
+aspect /t/shortmap: map<string, string> [by: writer, keep_at_most: 10m];
 "#,
 );
 
@@ -66,6 +67,7 @@ pub const TEXT: Aspect<Value> = Aspect::new("/t/text", &TEST);
 pub const BLOB: Aspect<Value> = Aspect::new("/t/blob", &TEST);
 pub const BOOK: Aspect<Value> = Aspect::new("/t/book", &TEST);
 pub const DOCS: Aspect<Value> = Aspect::new("/t/docs", &TEST);
+pub const SHORTMAP: Aspect<Value> = Aspect::new("/t/shortmap", &TEST);
 
 pub fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()
