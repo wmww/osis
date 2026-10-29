@@ -107,6 +107,13 @@ impl Engine {
             out
         };
         let may_place = |g: &Tid| check_authority_with(&self.core, node, records, g, GROUP.ak(), ts).is_ok();
+        let gak = group_ak()?;
+        // member removals of this batch: an unplace beside the persisting write wins over the
+        // conversion of that placement
+        let removed: BTreeSet<(Tid, u64, Tid)> = gops.iter().flat_map(|(g, am)| am.ops.iter().filter_map(|op| member_op(op).filter(|x| !x.2).map(|(f, x, _)| (*g, f, x)))).collect();
+        // the expiry a placement converts with; `None` when it does not convert (unplaced by
+        // this batch, or expired with its timer not yet run)
+        let converts = |g: &Tid, field: u64, t: &Tid| if removed.contains(&(*g, field, *t)) { None } else { self.placement_expiry(g, &gak, field, t) };
         let mut roots: BTreeSet<Tid> = m.aspects.keys().map(|k| k.0).chain(m.persist.iter().copied()).collect();
         let persisted = loop {
             let persisted = chain(&roots);
@@ -122,8 +129,8 @@ impl Engine {
                 }
             }
             for t in persisted.iter().filter(|t| things.contains_key(t)) {
-                for (g, _) in self.ephemeral_placements(t) {
-                    if may_place(&g) {
+                for (g, field) in self.ephemeral_placements(t) {
+                    if converts(&g, field, t).is_some() && may_place(&g) {
                         grew |= roots.insert(g);
                     }
                 }
@@ -133,12 +140,8 @@ impl Engine {
             }
         };
         let eph_after = |x: &Tid| records(x).is_some() && !persisted.contains(x);
-        let gak = group_ak()?;
         let core_schema = || Some(Arc::new(osis_schema::core_schema().clone()));
         let mut out = Placed { persisted: BTreeSet::new(), durable: BTreeMap::new(), eph: Vec::new(), refused: Vec::new() };
-        // member removals of this batch: an unplace beside the persisting write wins over the
-        // conversion of that placement
-        let removed: BTreeSet<(Tid, u64, Tid)> = gops.iter().flat_map(|(g, am)| am.ops.iter().filter_map(|op| member_op(op).filter(|x| !x.2).map(|(f, x, _)| (*g, f, x)))).collect();
         for (g, am) in gops {
             let (mut d, mut e) = (Vec::new(), Vec::new());
             for op in &am.ops {
@@ -158,14 +161,17 @@ impl Engine {
         }
         for t in persisted.iter().filter(|t| things.contains_key(t)) {
             for (g, field) in self.ephemeral_placements(t) {
+                let exp = converts(&g, field, t);
                 if !may_place(&g) {
-                    out.refused.push((*t, g));
+                    // no write on the group: not even the reset (the timer or the unplace's own
+                    // check deals with a placement that does not convert)
+                    if exp.is_some() {
+                        out.refused.push((*t, g));
+                    }
                     continue;
                 }
                 let reset = EphOp { tid: g, ak: gak.clone(), am: AspectMut { ops: vec![group_op(field, *t, false)], schema: core_schema(), lifetime: Lifetime::Ephemeral, ..AspectMut::default() }, conversion: true };
-                // expired, its timer not yet run, or unplaced by this batch: nothing to convert
-                let exp = self.placement_expiry(&g, &gak, field, t);
-                let Some(exp) = exp.filter(|_| !removed.contains(&(g, field, *t))) else {
+                let Some(exp) = exp else {
                     out.eph.push(reset);
                     continue;
                 };
@@ -176,7 +182,11 @@ impl Engine {
                 d.ops.push(group_op(field, *t, true));
                 out.eph.push(reset);
             }
-            // a group ephemerally: its (empty) `/group` persists, its ephemeral items do not
+        }
+        for t in persisted.iter().filter(|t| things.contains_key(t)) {
+            // a group ephemerally: its (empty) `/group` persists, its ephemeral items do not;
+            // after the conversions, whose expiry it takes: an empty group has no value for
+            // expiry to remove (spec/crdt.md §4.7), so it stays a group
             if self.eph.defs.contains_key(t) && !self.has_durable(t, &gak) {
                 let d = out.durable.entry(*t).or_insert_with(|| AspectMut { schema: core_schema(), ..AspectMut::default() });
                 d.ops.insert(0, PathOp { path: Vec::new(), op: Op::Set(GROUP.encode(&Group::default())) });

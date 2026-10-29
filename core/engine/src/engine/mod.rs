@@ -50,7 +50,8 @@ pub struct Config {
     pub ephemeral_history: usize,
 }
 
-/// `Config::ephemeral_history` by default.
+/// `Config::ephemeral_history` by default. Resource bound (notes/arbitrary-values.md), measured
+/// by `Fragment::approx_bytes`: 0 nothing is undoable, infinity the log grows with every edit.
 pub const DEFAULT_EPHEMERAL_HISTORY: usize = 16 << 20;
 
 impl Default for Config {

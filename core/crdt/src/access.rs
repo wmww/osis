@@ -25,6 +25,8 @@ impl crate::fragment::Struct {
     }
 }
 
+use std::collections::BTreeMap;
+
 impl Fragment {
     /// The position at `path` as a read sees it: a struct field, the current case's payload, what
     /// a map key reads as (its live entries joined, §5.6), a list element by index. Only that
@@ -52,7 +54,7 @@ impl Fragment {
     }
 }
 
-/// Rough bytes per stamp or record identity (a `ts` and a dot).
+/// Rough bytes per stamp held inline beyond its slot (a source's heap part, if any).
 const STAMP: usize = 40;
 
 fn opt_stamp(s: &Option<Stamp>) -> usize {
@@ -63,46 +65,64 @@ fn meta_bytes(m: &crate::fragment::Meta) -> usize {
     opt_stamp(&m.reset) + opt_stamp(&m.w)
 }
 
+/// Heap of a `BTreeMap`'s nodes: a node holds up to 11 entries inline and trees fill them about
+/// two thirds, so a small map costs a whole node (most fragments are small maps).
+fn nodes(len: usize, slot: usize) -> usize {
+    if len == 0 { 0 } else { (1 + len / 8) * (11 * slot + 16) }
+}
+
+fn tree<K, V>(m: &BTreeMap<K, V>) -> usize {
+    nodes(m.len(), size_of::<K>() + size_of::<V>())
+}
+
+fn boxed(f: &Option<Box<Fragment>>) -> usize {
+    f.as_deref().map_or(0, |f| size_of::<Fragment>() + f.approx_bytes())
+}
+
 fn value_bytes(v: &Value) -> usize {
     match v {
-        Value::Str(s) => s.len() + 2,
-        Value::Bytes(b) => b.len() + 2,
-        Value::Map(m) => 2 + m.iter().map(|(k, x)| value_bytes(k) + value_bytes(x)).sum::<usize>(),
-        Value::List(l) => 2 + l.iter().map(value_bytes).sum::<usize>(),
-        Value::Set(s) => 2 + s.iter().map(value_bytes).sum::<usize>(),
-        Value::Enum(_, p) => 2 + p.as_deref().map_or(0, value_bytes),
-        _ => 16,
+        Value::Str(s) => s.len(),
+        Value::Bytes(b) => b.len(),
+        Value::Map(m) => tree(m) + m.iter().map(|(k, x)| value_bytes(k) + value_bytes(x)).sum::<usize>(),
+        Value::List(l) => l.len() * size_of::<Value>() + l.iter().map(value_bytes).sum::<usize>(),
+        Value::Set(s) => nodes(s.len(), size_of::<Value>()) + s.iter().map(value_bytes).sum::<usize>(),
+        Value::Enum(_, p) => p.as_deref().map_or(0, |p| size_of::<Value>() + value_bytes(p)),
+        _ => 0,
     }
 }
 
 impl Fragment {
-    /// A rough size in bytes (stamps, records and values), for memory bounds: O(fragment), far
-    /// cheaper than encoding it.
+    /// A rough size in bytes of what the fragment owns on the heap (tree nodes, boxes, stamps'
+    /// and values' contents; not its own `size_of`), for memory bounds: O(fragment), far cheaper
+    /// than encoding it, and within a small factor of the allocations.
     pub fn approx_bytes(&self) -> usize {
         use crate::fragment::{Bag, Enum, Set, Slots, Struct};
         let reg = |r: &crate::fragment::Register| opt_stamp(&r.reset) + r.write.as_ref().map_or(0, |w| STAMP + w.value.as_ref().map_or(0, value_bytes));
-        let frag = |f: &Option<Box<Fragment>>| f.as_deref().map_or(0, Fragment::approx_bytes);
         match self {
             Fragment::Register(r) => reg(r),
-            Fragment::Bag(Bag { meta, elems, .. }) | Fragment::Set(Set { meta, elems }) => meta_bytes(meta) + elems.values().map(|e| STAMP + opt_stamp(&e.reset) + frag(&e.frag)).sum::<usize>(),
-            Fragment::Struct(Struct { meta, fields }) => meta_bytes(meta) + fields.values().map(|f| 2 + f.approx_bytes()).sum::<usize>(),
-            Fragment::Enum(Enum { meta, case, payloads }) => meta_bytes(meta) + case.as_ref().map_or(0, |_| STAMP + 2) + payloads.values().map(|f| 2 + f.approx_bytes()).sum::<usize>(),
-            Fragment::Map(m) => meta_bytes(&m.meta) + m.entries.values().map(|e| STAMP + opt_stamp(&e.reset) + opt_stamp(&e.created) + e.key.as_ref().map_or(0, value_bytes) + frag(&e.frag)).sum::<usize>(),
+            Fragment::Bag(Bag { meta, elems, .. }) | Fragment::Set(Set { meta, elems }) => meta_bytes(meta) + tree(elems) + elems.values().map(|e| opt_stamp(&e.reset) + boxed(&e.frag)).sum::<usize>(),
+            Fragment::Struct(Struct { meta, fields }) => meta_bytes(meta) + tree(fields) + fields.values().map(Fragment::approx_bytes).sum::<usize>(),
+            Fragment::Enum(Enum { meta, case, payloads }) => meta_bytes(meta) + case.as_ref().map_or(0, |_| STAMP) + tree(payloads) + payloads.values().map(Fragment::approx_bytes).sum::<usize>(),
+            Fragment::Map(m) => {
+                let index = tree(&m.keys) + m.keys.iter().map(|(k, ds)| value_bytes(k) + nodes(ds.len(), size_of::<Dot>())).sum::<usize>();
+                meta_bytes(&m.meta) + tree(&m.entries) + index + m.entries.values().map(|e| opt_stamp(&e.reset) + opt_stamp(&e.created) + e.key.as_ref().map_or(0, value_bytes) + boxed(&e.frag)).sum::<usize>()
+            }
             Fragment::Seq(s) => {
                 meta_bytes(&s.meta)
+                    + tree(s.elems())
                     + s.elems()
                         .values()
                         .map(|e| {
                             let content = match &e.content {
                                 crate::seq::SeqContent::None => 0,
                                 crate::seq::SeqContent::Char(_) => 4 * usize::try_from(e.span).unwrap_or(usize::MAX),
-                                crate::seq::SeqContent::Frag(f) => f.approx_bytes(),
+                                crate::seq::SeqContent::Frag(f) => size_of::<Fragment>() + f.approx_bytes(),
                             };
-                            STAMP + e.created.as_ref().map_or(0, |_| 2 * STAMP) + 2 * STAMP * e.pos.len() + e.deleted.as_ref().map_or(0, |_| STAMP) + content
+                            e.created.as_ref().map_or(0, |_| 2 * STAMP) + (2 * STAMP + 24) * e.pos.len() + e.deleted.as_ref().map_or(0, |_| STAMP) + content
                         })
                         .fold(0usize, usize::saturating_add)
             }
-            Fragment::Slots(Slots { reg: r, members }) => r.as_ref().map_or(0, reg) + members.values().map(Fragment::approx_bytes).sum::<usize>(),
+            Fragment::Slots(Slots { reg: r, members }) => r.as_ref().map_or(0, reg) + tree(members) + members.values().map(Fragment::approx_bytes).sum::<usize>(),
         }
     }
 }
