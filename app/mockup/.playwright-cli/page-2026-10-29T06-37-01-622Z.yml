@@ -1,0 +1,125 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e131]:
+    - navigation [ref=e132]:
+      - link "osis" [ref=e133] [cursor=pointer]:
+        - /url: "#/"
+      - button "Search /" [ref=e134] [cursor=pointer]:
+        - generic [ref=e138]: Search
+        - generic [ref=e139]: /
+      - generic [ref=e140]: Favorites
+      - list [ref=e142]:
+        - listitem [ref=e143]:
+          - link "Groceries oat milk" [ref=e144] [cursor=pointer]:
+            - /url: "#/t/n-groceries"
+            - generic [ref=e149]:
+              - generic [ref=e150]: Groceries
+              - generic [ref=e151]: oat milk
+        - listitem [ref=e152]:
+          - link "Calendar 10 events this week" [ref=e153] [cursor=pointer]:
+            - /url: "#/t/v-cal"
+            - generic [ref=e159]:
+              - generic [ref=e160]: Calendar
+              - generic [ref=e161]: 10 events this week
+        - listitem [ref=e162]:
+          - link "Lisbon trip 6 items · shared" [ref=e163] [cursor=pointer]:
+            - /url: "#/t/g-lisbon"
+            - generic [ref=e168]:
+              - generic [ref=e169]: Lisbon trip
+              - generic [ref=e170]: 6 items · shared
+        - listitem [ref=e171]:
+          - link "MO Mara Okafor Friend · climbing" [ref=e172] [cursor=pointer]:
+            - /url: "#/t/c-mara"
+            - generic [ref=e173]: MO
+            - generic [ref=e175]:
+              - generic [ref=e176]: Mara Okafor
+              - generic [ref=e177]: Friend · climbing
+        - listitem [ref=e178]:
+          - link "1:1 with Jun Tue, Oct 27 · 11:00 AM–11:30 AM" [ref=e179] [cursor=pointer]:
+            - /url: "#/t/e-jun"
+            - generic [ref=e184]:
+              - generic [ref=e185]: 1:1 with Jun
+              - generic [ref=e186]: Tue, Oct 27 · 11:00 AM–11:30 AM
+        - listitem [ref=e187]:
+          - link "Garden 3 items" [ref=e188] [cursor=pointer]:
+            - /url: "#/t/g-garden"
+            - generic [ref=e193]:
+              - generic [ref=e194]: Garden
+              - generic [ref=e195]: 3 items
+        - listitem [ref=e196]:
+          - link "People 6 people" [ref=e197] [cursor=pointer]:
+            - /url: "#/t/v-people"
+            - generic [ref=e203]:
+              - generic [ref=e204]: People
+              - generic [ref=e205]: 6 people
+        - listitem [ref=e206]:
+          - link "Ideas A calendar that shows what I wrote that day, not just what I planned." [ref=e207] [cursor=pointer]:
+            - /url: "#/t/n-ideas"
+            - generic [ref=e212]:
+              - generic [ref=e213]: Ideas
+              - generic [ref=e214]: A calendar that shows what I wrote that day, not just what I planned.
+      - button "New note" [ref=e215] [cursor=pointer]
+    - generic [ref=e219]:
+      - generic [ref=e220]:
+        - generic [ref=e221]: Note
+        - button "Favorite" [ref=e225] [cursor=pointer]
+      - article [ref=e229]:
+        - generic [ref=e230]:
+          - textbox "Untitled" [ref=e231]: Itinerary
+          - generic [ref=e232]:
+            - link "Lisbon trip" [ref=e233] [cursor=pointer]:
+              - /url: "#/t/g-lisbon"
+            - button "Tag" [ref=e235] [cursor=pointer]
+          - textbox "Write something…" [ref=e238]: "Thu: land 10:40, bags to Ana's, lunch at the market Fri: tram 28, Alfama, miradouro at sunset Sat: Sintra day trip Sun: pastéis de nata class, flight 19:55"
+        - complementary [ref=e239]:
+          - generic [ref=e240]:
+            - generic [ref=e241]: Visible to
+            - generic [ref=e245]: You, Mara, Jun
+            - generic [ref=e246]: via Lisbon trip
+          - generic [ref=e247]:
+            - generic [ref=e248]: With
+            - link "AR Ana Ribeiro Our host in Lisbon" [ref=e249] [cursor=pointer]:
+              - /url: "#/t/c-ana"
+              - generic [ref=e250]: AR
+              - generic [ref=e252]:
+                - generic [ref=e253]: Ana Ribeiro
+                - generic [ref=e254]: Our host in Lisbon
+          - generic [ref=e255]:
+            - generic [ref=e256]: History
+            - generic [ref=e260]: Edited 3 h ago
+            - button "Undo last change" [ref=e261] [cursor=pointer]
+  - complementary "Look switcher" [ref=e97]:
+    - 'button "Theme: Frost light ▾" [expanded] [ref=e98] [cursor=pointer]':
+      - text: "Theme:"
+      - generic [ref=e99]: Frost
+      - generic [ref=e100]: light
+      - generic [ref=e101]: ▾
+    - generic [ref=e102]:
+      - group "Light or dark" [ref=e103]:
+        - button "Light" [ref=e104] [cursor=pointer]
+        - button "Dark" [ref=e105] [cursor=pointer]
+        - button "Auto" [ref=e106] [cursor=pointer]
+      - generic [ref=e107]:
+        - button "1 Frost" [ref=e108] [cursor=pointer]:
+          - generic [ref=e109]: "1"
+          - generic [ref=e110]: Frost
+        - button "2 Glass" [ref=e111] [cursor=pointer]:
+          - generic [ref=e112]: "2"
+          - generic [ref=e113]: Glass
+        - button "3 Workstation" [ref=e114] [cursor=pointer]:
+          - generic [ref=e115]: "3"
+          - generic [ref=e116]: Workstation
+        - button "4 Memphis" [ref=e117] [cursor=pointer]:
+          - generic [ref=e118]: "4"
+          - generic [ref=e119]: Memphis
+        - button "5 Slate" [ref=e120] [cursor=pointer]:
+          - generic [ref=e121]: "5"
+          - generic [ref=e122]: Slate
+        - button "6 Cel" [ref=e123] [cursor=pointer]:
+          - generic [ref=e124]: "6"
+          - generic [ref=e125]: Cel
+      - paragraph [ref=e126]: "Calm and open: content straight on a lightly tinted background with two soft curves, soft cards, round icons."
+      - button "▸ Edit parameters (makes a custom copy)" [ref=e127] [cursor=pointer]
+      - generic [ref=e128]:
+        - checkbox "Background blur" [checked] [ref=e129]
+        - text: Background blur
+      - paragraph [ref=e130]: "Keys: 1–7 or [ ] themes · d light/dark · / search"
