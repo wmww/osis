@@ -771,7 +771,7 @@ pub(crate) fn any_owner(core: &Core, tid: &Tid, ak: &Ak, d: &Dot, f: &dyn Fn(&Co
             {
                 return f(c, m, ai);
             }
-            core.ix.imports.get(&(*tid, *c)).is_some_and(|s| s.iter().any(|(_, i, _)| core.ix.commits.get(i).is_some_and(|m| at(m).is_some_and(|ai| f(i, m, ai)))))
+            core.ix.imports.get(&(*tid, *c)).is_some_and(|s| s.iter().any(|i| core.ix.commits.get(i).is_some_and(|m| at(m).is_some_and(|ai| f(i, m, ai)))))
         }
         osis_crdt::SourceKind::Derived(_) => false,
     }
@@ -809,7 +809,7 @@ pub(crate) fn note_imports(core: &mut Core, id: &CommitId, h: &Header, parts: &[
     if h.kind == Kind::Import {
         for a in &h.aspects {
             for o in &h.origins {
-                core.ix.imports.insert((a.tid, o.commit), (h.ts, *id, h.author));
+                core.ix.imports.insert((a.tid, o.commit), *id);
             }
         }
     }
