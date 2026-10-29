@@ -639,9 +639,8 @@ fn flip(w: &Facts, g: &Facts, inv: &Invalid, k: &BodyKey) -> bool {
 /// validity flip: a body dropped at one node and held at the other where a write of its aspect
 /// is invalid (a drop made before its killer, or its own write, turned invalid stays): its
 /// commit line's dropped parts, and that aspect's reads and state (where the kept body's write
-/// is back). Also a drop, then a validity flip and back (`flips`: a body of the aspect is judged
-/// otherwise with one commit of the held set missing, so some arrival order flipped it): the
-/// states may then differ in the creation stamps of map entries whose body (keep at most) the
+/// is back). Also a drop, then a validity flip and back (`flips`: one of the two orders judged a
+/// body of the aspect valid and invalid on the way, `flipped`): the states may then differ in the creation stamps of map entries whose body (keep at most) the
 /// node lacking the stamp dropped (an un-merge leaving the entry with no content took the
 /// creation; the flip back gave the content alone), reads alike. Anything else is a failure.
 fn alike(want: &[(&'static str, String)], got: &[(&'static str, String)], flips: &dyn Fn(&str, &str) -> bool) -> Option<String> {
@@ -715,40 +714,66 @@ const FRESH: u64 = 0x5eed_f00d;
 
 /// A fresh node given `packs` in `order`.
 fn deliver(played: &Played, order: &[usize]) -> Peer {
-    let mut p = Peer::new(FRESH, played.now).unwrap();
-    // every component's walk saved, so reopens restore them
-    p.engine.set_walk_cache_min(1);
-    for &i in order {
-        let pk = &played.packs[i];
-        let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
-    }
-    p
+    deliver_with(played, order, None, &mut |_| {})
 }
 
 /// A fresh node given `packs` in `order`, each commit with parts on several aspects first with
 /// those of one of them only (a seeded pick), the rest of it as late parts at the end, in
 /// reverse (spec/commits.md §4: a late delta joins on arrival).
 fn deliver_split(played: &Played, order: &[usize], rng: &mut Rng) -> Peer {
+    deliver_with(played, order, Some(rng), &mut |_| {})
+}
+
+/// `deliver` (no `rng`) or `deliver_split`, calling `each` after every ingest.
+fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, each: &mut dyn FnMut(&mut Peer)) -> Peer {
     let mut p = Peer::new(FRESH, played.now).unwrap();
+    // every component's walk saved, so reopens restore them
     p.engine.set_walk_cache_min(1);
     let mut late = Vec::new();
     for &i in order {
         let pk = &played.packs[i];
-        let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-        let ais: BTreeSet<usize> = b.parts.iter().map(|x| x.ai).collect();
-        if ais.len() > 1 {
-            let keep = ais.iter().copied().nth(rng.below(ais.len() as u64) as usize).unwrap();
-            b.parts.retain(|x| x.ai == keep);
-            late.push(i);
-        }
-        let _ = p.engine.ingest(&b.encode(), pk.blobs.clone());
+        let bytes = match rng.as_deref_mut() {
+            None => pk.bytes.clone(),
+            Some(rng) => {
+                let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+                let ais: BTreeSet<usize> = b.parts.iter().map(|x| x.ai).collect();
+                if ais.len() > 1 {
+                    let keep = ais.iter().copied().nth(rng.below(ais.len() as u64) as usize).unwrap();
+                    b.parts.retain(|x| x.ai == keep);
+                    late.push(i);
+                }
+                b.encode()
+            }
+        };
+        let _ = p.engine.ingest(&bytes, pk.blobs.clone());
+        each(&mut p);
     }
     for &i in late.iter().rev() {
         let pk = &played.packs[i];
         let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+        each(&mut p);
     }
-    let _ = p.engine.reexamine();
+    if rng.is_some() {
+        let _ = p.engine.reexamine();
+        each(&mut p);
+    }
     p
+}
+
+/// Whether delivering `order` (split as `deliver_split` with `rng`) judged a body of `(tid, ak)`
+/// (as `facts_text` prints them) both valid and invalid on the way: a validity flip in that
+/// order. A delivery with facts at every step: asked only about a difference found.
+fn flipped(played: &Played, order: &[usize], rng: Option<Rng>, tid: &str, ak: &str) -> bool {
+    let mut seen: BTreeMap<BodyKey, BTreeSet<bool>> = BTreeMap::new();
+    let mut rng = rng;
+    deliver_with(played, order, rng.as_mut(), &mut |p| {
+        for (k, f) in facts_of(&[("facts", facts_text(&mut p.engine))]).0 {
+            if k.1 == tid && k.2 == ak {
+                seen.entry(k).or_default().insert(f.valid);
+            }
+        }
+    });
+    seen.values().any(|v| v.len() > 1)
 }
 
 fn first_diff(a: &[(&'static str, String)], b: &[(&'static str, String)]) -> Option<String> {
@@ -854,18 +879,6 @@ fn held_sets(played: &Played, subsets: usize, rng: &mut Rng) -> Vec<Vec<usize>> 
 
 /// Checks one history; the number of orders tried, or the first mismatch found, described (a
 /// panic counts, so it shrinks).
-/// Whether some arrival order of `held` flips the validity of a body of `(tid, ak)` (as
-/// `facts_text` prints them) on the way: one commit of the set missing, a body is judged
-/// otherwise. Costly (a delivery per commit): asked only about a difference found.
-fn flips(played: &Played, held: &[usize], tid: &str, ak: &str) -> bool {
-    let facts = |set: &[usize]| facts_of(&[("facts", facts_text(&mut deliver(played, set).engine))]).0;
-    let full = facts(held);
-    held.iter().filter(|i| **i >= played.base).any(|i| {
-        let less: Vec<usize> = held.iter().copied().filter(|x| x != i).collect();
-        facts(&less).iter().any(|(k, f)| k.1 == tid && k.2 == ak && full.get(k).is_some_and(|w| w.valid != f.valid))
-    })
-}
-
 fn check(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
     caught(|| check_orders(seed, steps, cfg))
 }
@@ -887,7 +900,8 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
             let rest: Vec<usize> = (0..n).filter(|i| !held.contains(i)).collect();
             for order in [held.iter().chain(&rest).copied().collect::<Vec<_>>(), held.iter().chain(rest.iter().rev()).copied().collect()] {
                 let mut p = deliver(&played, &order);
-                if let Some(d) = alike(f, &judged(&mut p, &played), &|t, a| flips(&played, &(0..n).collect::<Vec<_>>(), t, a)) {
+                let flips = |t: &str, a: &str| flipped(&played, &(0..n).collect::<Vec<_>>(), None, t, a) || flipped(&played, &order, None, t, a);
+                if let Some(d) = alike(f, &judged(&mut p, &played), &flips) {
                     return Err(format!("{of}, then the rest: order {order:?} vs the whole set as made: {d}"));
                 }
             }
@@ -928,8 +942,10 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
             let order = &orders[k];
             let vs = format!("{of}: order #0 (as made, want) {held:?} vs order #{k}");
             if let Some(rng) = split_rng {
+                let copy = rng.clone();
                 let mut p = deliver_split(&played, order, rng);
-                return match dating(&mut p, &o, played.now).or_else(|| alike(&want, &judged(&mut p, &played), &|t, a| flips(&played, &held, t, a))) {
+                let flips = |t: &str, a: &str| flipped(&played, &orders[0], None, t, a) || flipped(&played, order, Some(copy.clone()), t, a);
+                return match dating(&mut p, &o, played.now).or_else(|| alike(&want, &judged(&mut p, &played), &flips)) {
                     Some(d) => Err(format!("{vs} with late parts (got) {order:?}: {d}")),
                     None => Ok(()),
                 };
@@ -945,7 +961,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
                 return Err(format!("{of}, order #{k} {order:?}: reopen differs: {d}"));
             }
             got.insert(0, ("index", index_later(&mut p, &played)));
-            match alike(&want, &got, &|t, a| flips(&played, &held, t, a)) {
+            match alike(&want, &got, &|t, a| flipped(&played, &orders[0], None, t, a) || flipped(&played, order, None, t, a)) {
                 Some(d) => Err(format!("{vs} (got) {order:?}: {d}")),
                 None => Ok(()),
             }
@@ -1317,19 +1333,27 @@ fn undone_entry_body_dropped_at_once_spec_commits_5() {
 }
 
 // spec/commits.md §5 (a drop is final: nodes holding the same commits may differ in whether a
-// dropped body's writes are in the state), order seeds 47289 and 583188. B's entry in a
+// dropped body's writes are in the state), order seeds 47289, 583188 and 845143. B's entry in a
 // keep-at-most-0 map (its body dropped once B's own later write inside it killed the value, the
 // bound passed); B's later write is valid with every commit held, invalid before the re-grant:
 // where it arrived valid, then turned invalid and valid again, the un-merge left the entry no
 // content and so took its creation, and the write came back alone. Reads agree; `alike`
-// accepts the states' creation stamps only where such a flip is reachable.
+// accepts the states' creation stamps only where one of the two orders flipped a body.
 #[test]
 fn creation_lost_by_drop_then_flip_tolerated_spec_commits_5() {
     use Step::*;
     let h = vec![Write { by: 1, t: 6, op: 19, k: 0, v: 3 }, Demote { by: 0, t: 4, member: 1, at: 5, to_read: false }, Write { by: 1, t: 4, op: 19, k: 0, v: 1 }, Advance { who: None, ms: 4484944 }, Edge { by: 0, t: 6, member: 1, role: Some(Role::Admin) }];
-    check(47289, &h, LARGE).unwrap();
     let h2 = vec![Demote { by: 0, t: 5, member: 2, at: 3, to_read: true }, Edge { by: 2, t: 3, member: 1, role: Some(Role::Write) }, Roster { by: 0, t: 0 }, Roster { by: 0, t: 5 }, Write { by: 2, t: 0, op: 19, k: 2, v: 1 }, New { by: 2, parent: 6, write: false }, Roster { by: 2, t: 1 }, Edge { by: 0, t: 0, member: 1, role: Some(Role::Admin) }, Compact { by: 1, t: 0, op: 0 }, Sync { from: 2, to: 0 }, Edge { by: 0, t: 1, member: 2, role: Some(Role::Admin) }, Write { by: 2, t: 1, op: 6, k: 0, v: 5 }, Send { from: 2, to: 1, back: 2 }, Write { by: 1, t: 3, op: 6, k: 1, v: 0 }, Write { by: 1, t: 6, op: 6, k: 2, v: 7 }, Edge { by: 0, t: 6, member: 2, role: Some(Role::Admin) }, Edge { by: 2, t: 3, member: 1, role: Some(Role::Write) }, Sync { from: 0, to: 1 }, Write { by: 1, t: 4, op: 19, k: 2, v: 6 }, Advance { who: None, ms: 5488242 }];
-    check(583188, &h2, LARGE).unwrap();
+    // seed 845143: B's two writes, lowered to read and raised by two grants; B's own creation
+    // (the dropped body's) turns invalid and valid again (no single grant missing flips it)
+    let h3 = vec![Edge { by: 0, t: 2, member: 1, role: Some(Role::Read) }, Demote { by: 0, t: 0, member: 2, at: 2, to_read: false }, Edge { by: 0, t: 6, member: 1, role: Some(Role::Write) }, Edge { by: 0, t: 4, member: 1, role: Some(Role::Write) }, Write { by: 1, t: 6, op: 19, k: 0, v: 3 }, Write { by: 1, t: 6, op: 19, k: 0, v: 8 }, Advance { who: None, ms: 6234602 }, New { by: 0, parent: 2, write: true }];
+    let cases = [(47289, h.clone()), (583188, h2), (845143, h3)];
+    let idx: Vec<u64> = (0..cases.len() as u64).collect();
+    for (r, (seed, _)) in par_map(&idx, threads("OSIS_ORDER_THREADS"), |i| check(cases[i as usize].0, &cases[i as usize].1, LARGE)).into_iter().zip(&cases) {
+        if let Err(e) = r {
+            panic!("seed {seed}: {e}");
+        }
+    }
     // B's later write first, the demotion, the re-grant: only the creation stamp differs, and
     // only a reachable flip excuses it
     let played = play(47289, &h);
@@ -1341,6 +1365,6 @@ fn creation_lost_by_drop_then_flip_tolerated_spec_commits_5() {
     let got = judged(&mut deliver(&played, &order), &played);
     let differs = alike(&want, &got, &|_, _| false).expect("the creation stamp differs");
     assert!(differs.contains("states on") && differs.contains("created: None"), "{differs}");
-    assert!(played.things.iter().any(|t| flips(&played, &made, &format!("{t:?}"), "/t/gonemap")), "a flip is reachable");
-    assert_eq!(alike(&want, &got, &|t, a| flips(&played, &made, t, a)), None);
+    assert!(played.things.iter().any(|t| flipped(&played, &order, None, &format!("{t:?}"), "/t/gonemap")), "the order flips");
+    assert_eq!(alike(&want, &got, &|t, a| flipped(&played, &order, None, t, a)), None);
 }
