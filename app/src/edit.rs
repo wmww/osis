@@ -23,6 +23,7 @@ fn diff(o: &[char], n: &[char], left: bool) -> (usize, usize, Vec<char>) {
 /// indices). A remote change merged into the session but not shown yet is kept: the splice goes
 /// before or after it (each placed so they are disjoint if any placement is), or, overlapping it,
 /// becomes an insert at its end (the pending `Remote` then shows both).
+/// Works around issues/text-session-app-gaps.md.
 pub fn splice(s: &TextSession, shown: &str, new: &str) -> osis::Result<()> {
     let sh: Vec<char> = shown.chars().collect();
     let nw: Vec<char> = new.chars().collect();

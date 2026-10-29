@@ -7,7 +7,7 @@ Owner: flagged for review; decide the model before any app builds on it again.
 What an app has to do today (the app prototype's former `add_tag`/`share_below`/revocation code, in git history before this issue):
 - Tag: place, then `grant(t, tag, Write)` where I am admin; nest: `add_subgroup`, then grant every item and sub-tag below that I may share.
 - Untag: unplace, then decide whether the tag's edge came from tagging and whether the tag still reaches the thing (sub-tags, cycles, diamonds, `member_path`), then `demote` asynchronously with a pre-sync, queue it durably for offline retry, back off, and drop it when moot.
-- Placement and grant are separate commits on separate labels: a device that sees the placement but not the grant and untags queues nothing, and the later grant stands (thing shared after the user took it out; ignored test `removal_missing_a_later_grant` in app/tests/it/share.rs, if kept). A grant can also arrive after a removal it did not see.
+- Placement and grant are separate commits on separate labels: a device that sees the placement but not the grant and untags queues nothing, and the later grant stands (thing shared after the user took it out; the app test showing it went with the app's sharing logic). A grant can also arrive after a removal it did not see.
 - No provenance: an edge from tagging cannot be told from one granted by hand or by another admin, so untag may revoke the latter.
 - `demote`'s "still reaches it another way" outcome is only in the error text (`Error::Invalid` containing "reaches").
 - Someone removing my thing from their tag cannot revoke the tag's edge on my thing (they are not admin), so their tag keeps access.

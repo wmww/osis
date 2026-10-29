@@ -282,20 +282,7 @@ impl Ui {
         }
         chips.push(ChipM::action(Icon::Plus, if self.view.picker { "Done" } else { "Tag" }, Act::Picker));
         c.blocks.push(Block::Chips(chips));
-        if let Some((pt, g, who)) = &self.view.pending
-            && *pt == t
-        {
-            // the grant is write capped by each member's role on the tag (Data::add_tag)
-            let g = d.name(*g)?;
-            if d.get(t, osis::core::TAG)?.is_some() {
-                // nesting a tag in a shared tag shares what is in it too (core's default)
-                let n = d.name(t)?;
-                c.line(format!("{g} is shared with {who}. Nest {n} in it? They will see {n} and everything tagged with it that you may share, and whoever can edit {g} can edit them too."));
-            } else {
-                c.line(format!("{g} is shared with {who}. Tag it there? They will see it, and whoever can edit {g} can edit it too."));
-            }
-            c.blocks.push(Block::Chips(vec![ChipM::action(Icon::Tag, "Tag and share", Act::Confirm), ChipM::action(Icon::Back, "Cancel", Act::Cancel)]));
-        } else if self.view.picker {
+        if self.view.picker {
             let others: Vec<Tid> = d.all_tags()?.into_iter().filter(|g| !tags.contains(g) && *g != t).collect();
             c.label("Add a tag");
             if others.is_empty() {
