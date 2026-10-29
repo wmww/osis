@@ -1,7 +1,0 @@
-# A cover still cannot absorb some held commits
-> Summary: Forced ephemeral compaction closes over held commits only within the refused label's group closure and only over aspects, so a held commit spanning another group's thing, or carrying `/created` of a thing none of whose aspects (or descendants') is compacted, is never absorbed by a forced cover: the same stuck shape as sim `ephemeral` 83 when that commit is what fills the refusing server.
-> Tags: engine, node
-
-- `compact_ephemeral_if` (core/engine/src/ephemeral/remote.rs): the closure calls `compactable(scope, ..)`, `scope` = the group's ephemeral closure (node-sync `eph_step`). One commit per actor spans groups (`take_ephemeral_if` builds per actor and expiry), so a batch writing things of two groups is placed under both labels and no forced cover of either absorbs it. Option: judge pulled aspects without `scope` (the cover then also goes under the other label).
-- `/created` parts count covered only for things in `record_chain(records)`, `records` = things of picked aspects. The first commit of a batch carries every pending record (`take_ephemeral_if`), possibly of a thing whose deltas went in another actor's commit, or a stateless one. Option: a commit whose aspects all pass the closure adds its `/created` things (held ephemeral records) to `records`.
-- Neither is a storm (`covered.len() >= 2` holds back a cover that frees nothing), only writes staying out at a full server. Not seen in the sim yet.

@@ -43,6 +43,14 @@ use std::sync::Arc;
 /// newest delivered is dropped; infinity: memory grows with every signal of the replay window).
 pub const MAX_DELIVERED: usize = 1 << 16;
 
+/// An author covers its own held ephemeral commits once they cost more than this many times their
+/// cover (spec/sync.md §9). Performance switch between correct strategies: 0 covers whenever two
+/// own commits are held (at every write, as presence does), infinity never (bodies pile up to
+/// the node and server caps, past which entries are refused). Rebuilds cost O(1) per byte written
+/// for any value above 1; a server cap of this many times the sum of the authors' covers holds
+/// every entry.
+pub const COVER_FACTOR: usize = 2;
+
 /// Bytes charged per held ephemeral commit besides its delta bytes when an author weighs its own
 /// held commits against their cover (spec/sync.md §9): about a server's per-entry and log record
 /// overhead plus the commit header. Performance switch: 0 lets small writes pile up as entries
@@ -122,9 +130,9 @@ pub(crate) struct Remote {
     /// This node's sessions (its earlier ones as its own held commits name them in `Authors`):
     /// an own cover carries their writes as its own. Bounded by this node's restarts.
     pub mine: BTreeSet<CommitId>,
-    /// Per actor, the cost of the own cover last weighed (plus half the own held commits it
-    /// could not absorb): an own compaction is weighed again once the own held commits cost
-    /// more than twice this (`compact_own_ephemeral`).
+    /// Per actor, the cost of the own cover last weighed (plus the own held commits it could not
+    /// absorb, over `COVER_FACTOR`): an own compaction is weighed again once the own held commits
+    /// cost more than `COVER_FACTOR` times this (`compact_own_ephemeral`).
     pub cover_est: BTreeMap<Tid, usize>,
     /// Expiry times of held parts.
     pub timers: BTreeMap<u64, BTreeSet<(CommitId, usize)>>,
@@ -1085,12 +1093,12 @@ impl Engine {
     }
 
     /// The author's own compaction (spec/sync.md §9): per actor, when this node's held plain
-    /// commits without expiry for it (each its delta bytes plus `ENTRY_CHARGE`) cost more than
-    /// twice their cover, one ephemeral commit joining them and the actor's unsent writes without
+    /// commits without expiry for it (each its delta bytes plus `ENTRY_CHARGE`), two at least,
+    /// cost more than `COVER_FACTOR` times their cover, one ephemeral commit joining them and the actor's unsent writes without
     /// expiry, listing them as absorbed; they are dropped here (`take_dropped_ephemeral`).
     /// `force` (tests): whenever there is something to cover. A cover is weighed only once the
-    /// held commits cost more than twice the last cover weighed, so rebuilds cost O(1) per byte
-    /// written, amortized.
+    /// held commits cost more than `COVER_FACTOR` times the last cover weighed, so rebuilds cost
+    /// O(1) per byte written, amortized.
     pub fn compact_own_ephemeral(&mut self, force: bool) -> Result<Vec<EphCommit>> {
         let me = self.tid();
         let mut load: BTreeMap<Tid, usize> = BTreeMap::new();
@@ -1101,7 +1109,7 @@ impl Engine {
         }
         let mut out = Vec::new();
         for (actor, cost) in load {
-            if !force && cost <= 2 * self.eph.remote.cover_est.get(&actor).copied().unwrap_or(0) {
+            if !force && cost <= COVER_FACTOR * self.eph.remote.cover_est.get(&actor).copied().unwrap_or(0) {
                 continue;
             }
             let (ids, stuck) = self.coverable(actor);
@@ -1110,8 +1118,9 @@ impl Engine {
             let cover = cover_cost(me, &deltas);
             // what it cannot absorb (an aspect no longer writable here) does not make it weigh
             // again at every step
-            self.eph.remote.cover_est.insert(actor, cover + stuck / 2);
-            if ids.is_empty() || (!force && held <= 2 * cover) {
+            self.eph.remote.cover_est.insert(actor, cover + stuck / COVER_FACTOR.max(1));
+            // one commit is what its cover would be again
+            if ids.is_empty() || (!force && (ids.len() < 2 || held <= COVER_FACTOR * cover)) {
                 continue;
             }
             // what is covered needs no separate send
@@ -1169,8 +1178,8 @@ impl Engine {
     }
 
     /// Per actor, this node's own held plain commits without expiry: their cost (delta bytes plus
-    /// `ENTRY_CHARGE` each), the cost of their cover, and the largest one's cost (tests: the
-    /// bound of spec/sync.md §9 holds after every step, within one commit in flight).
+    /// `ENTRY_CHARGE` each), the cost of their cover, and the largest one's cost (tests: within
+    /// `COVER_FACTOR` times the cover and one commit in flight after every step).
     pub fn own_ephemeral_load(&self) -> Vec<(Tid, usize, usize, usize)> {
         let me = self.tid();
         let mut by: BTreeMap<Tid, Vec<CommitId>> = BTreeMap::new();
