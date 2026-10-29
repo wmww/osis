@@ -332,7 +332,9 @@ impl LabelStore for PeerStore<'_> {
     }
 
     fn blob(&self, blob_id: &BlobId) -> std::result::Result<Option<Vec<u8>>, StoreError> {
-        if let Some((_, e)) = self.eph.entries.iter().find(|((_, b), _)| b == blob_id) {
+        if let Some((_, l)) = self.eph.by_blob.range((*blob_id, LabelId([0; 16]))..).next().filter(|(b, _)| b == blob_id)
+            && let Some(e) = self.eph.entries.get(&(*l, *blob_id))
+        {
             return Ok(Some(e.blob.clone()));
         }
         self.engine.borrow_mut().blob(blob_id).map_err(local)
@@ -617,14 +619,10 @@ impl SyncEngine {
                 ServerOutput::StoreError(e) => self.diag(format!("serve: {e}")),
             }
         }
-        // a relay-only entry: delivered here and pushed to the other served sessions, held by
-        // nobody (spec/sync.md §5)
+        // a relay-only entry: delivered here and passed on (the other served sessions, the
+        // servers of the label), held by nobody (spec/sync.md §5)
         for r in relays {
-            self.relay_in(r.label, r.blob_id, &r.blob, &r.wrap)?;
-            let others: Vec<ConnId> = self.served.keys().copied().filter(|c| *c != conn).collect();
-            for c in others {
-                self.serve_with(c, ServerInput::Relay(r.clone()), labels, out)?;
-            }
+            self.relay_in(super::ephemeral::RelayFrom::Served(conn), r.label, r.blob_id, r.blob, r.wrap, Some(r.stamp), out)?;
         }
         Ok(())
     }

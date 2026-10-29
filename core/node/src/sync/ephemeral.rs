@@ -12,6 +12,24 @@
 //! server refuses for its cap, and deletes what the compaction covers where it uploaded it.
 
 use super::state::ServerKey;
+
+/// Where an ephemeral or relay-only entry came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RelayFrom {
+    /// A server or a peer this node dialed (`None`: a bundle, nobody).
+    Server(Option<ServerKey>),
+    /// A session this node serves.
+    Served(ConnId),
+}
+
+impl RelayFrom {
+    fn server(self) -> Option<ServerKey> {
+        match self {
+            RelayFrom::Server(s) => s,
+            RelayFrom::Served(_) => None,
+        }
+    }
+}
 use super::{Action, ConnId, Phase, SyncEngine};
 use crate::ephemeral::{EphCommit, EphIngest};
 use crate::error::Result;
@@ -67,6 +85,62 @@ pub(crate) struct Lane {
     /// (server, label) reconciled since start, and the reconciliations running (`sync_label`).
     pub reconciled: BTreeSet<(ServerKey, LabelId)>,
     pub reconciling: BTreeSet<(ConnId, LabelId)>,
+    /// Entries whose commit waits for its author's record (not verified: neither applied, served
+    /// nor spread), with where they came from; their bytes per label (`PENDING_SHARE`).
+    pub pending: BTreeMap<(LabelId, BlobId), (LaneEntry, Option<ServerKey>)>,
+    pub pending_bytes: BTreeMap<LabelId, u64>,
+    /// Held entry IDs by blob (serving a fetch by ID).
+    pub by_blob: BTreeSet<(BlobId, LabelId)>,
+    /// Relay-only entries received (`RelaySeen`).
+    pub relays: RelaySeen,
+}
+
+/// The share of `SyncConfig::ephemeral_bytes` a label's unverified entries (waiting for their
+/// author's record) may take. Resource bound: past it further such entries are not kept (they
+/// come back at a restart's reconciliation); 1 (the whole cap): a writer's commits under made-up
+/// authors could fill what honest ones need; infinity (none): an honest commit arriving before
+/// its author's record is lost until then.
+const PENDING_SHARE: u64 = 4;
+
+/// Relay-only entries remembered as received, node-wide, until their prefix expiry. Resource
+/// bound against hostile writers: past it the earliest-expiring is forgotten and its expiry
+/// becomes its label's floor, at or below which relay-only entries are dropped, so none is
+/// delivered twice (0: only increasing expiries pass; infinity: memory grows with every signal of
+/// the replay window). About 200 bytes each: 13 MiB at the bound.
+const RELAYS_REMEMBERED: usize = 1 << 16;
+
+/// Relay-only entries received: (label, blob) until their prefix expiry, and a floor per label.
+#[derive(Default)]
+pub(crate) struct RelaySeen {
+    ids: std::collections::HashSet<(LabelId, BlobId)>,
+    by_expiry: BTreeSet<(u64, LabelId, BlobId)>,
+    floor: BTreeMap<LabelId, u64>,
+}
+
+impl RelaySeen {
+    /// Whether relay-only entry `b` of `l`, expiring at `t`, is seen here for the first time
+    /// (`now` wall ms): not a repeat, not at or below the label's floor.
+    pub(crate) fn first(&mut self, l: LabelId, b: BlobId, t: u64, now: u64) -> bool {
+        while let Some(x) = self.by_expiry.first().copied()
+            && x.0 <= now
+        {
+            self.by_expiry.pop_first();
+            self.ids.remove(&(x.1, x.2));
+        }
+        self.floor.retain(|_, f| *f > now);
+        if self.floor.get(&l).is_some_and(|f| t <= *f) || !self.ids.insert((l, b)) {
+            return false;
+        }
+        self.by_expiry.insert((t, l, b));
+        if self.ids.len() > RELAYS_REMEMBERED
+            && let Some((t0, l0, b0)) = self.by_expiry.pop_first()
+        {
+            self.ids.remove(&(l0, b0));
+            let f = self.floor.entry(l0).or_default();
+            *f = (*f).max(t0);
+        }
+        true
+    }
 }
 
 impl SyncEngine {
@@ -95,6 +169,7 @@ impl SyncEngine {
     /// forgets (and deletes where it uploaded) what a compaction covered.
     pub(crate) fn eph_step(&mut self, out: &mut Vec<Action>) -> Result<()> {
         self.engine.rejudge_ephemeral()?;
+        self.eph_promote(out)?;
         let full: Vec<LabelId> = std::mem::take(&mut self.eph.server_full).into_iter().collect();
         let mut commits = Vec::new();
         let mut retry = Vec::new();
@@ -125,6 +200,35 @@ impl SyncEngine {
             let ids: Vec<BlobId> = Self::eph_entries_of(&self.eph, &l).map(|(b, _)| b).collect();
             for b in ids {
                 self.eph_spread(l, b, None, out)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Entries whose commit was waiting for its author's record: held now, they join the lane
+    /// and spread; refused meanwhile (bad signature, invalid input), they go.
+    fn eph_promote(&mut self, out: &mut Vec<Action>) -> Result<()> {
+        if self.eph.pending.is_empty() {
+            return Ok(());
+        }
+        let keys: Vec<(LabelId, BlobId)> = self.eph.pending.keys().copied().collect();
+        for (l, b) in keys {
+            let Some((e, _)) = self.eph.pending.get(&(l, b)) else { continue };
+            let c = e.commit;
+            let held = self.engine.holds_ephemeral(&c);
+            if !held && self.engine.pending_ephemeral(&c) {
+                continue;
+            }
+            let Some((e, from)) = self.eph.pending.remove(&(l, b)) else { continue };
+            if let Some(n) = self.eph.pending_bytes.get_mut(&l) {
+                *n = n.saturating_sub(e.blob.len() as u64);
+            }
+            if held && !self.eph.entries.contains_key(&(l, b)) {
+                let stamped = e.stamp.is_some();
+                self.eph_keep(l, b, e);
+                if stamped {
+                    self.eph_spread(l, b, from, out)?;
+                }
             }
         }
         Ok(())
@@ -196,6 +300,7 @@ impl SyncEngine {
             *self.eph.bytes.entry(l).or_default() += e.blob.len() as u64;
         }
         self.eph.by_commit.entry(e.commit).or_default().insert((l, b));
+        self.eph.by_blob.insert((b, l));
         self.eph.entries.insert((l, b), e);
         self.state.feed.added(l, b);
     }
@@ -204,6 +309,14 @@ impl SyncEngine {
     /// sessions, as a member peer would push it), stamped.
     fn eph_send_relay(&mut self, l: LabelId, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], stamp: Option<Signature>, out: &mut Vec<Action>) -> Result<()> {
         let blob_id = osis_label::blob_id(&blob);
+        if blob.len() > osis_base::format::MAX_RELAY_BLOB {
+            self.eph_report(&l, "a signal too large for a relay-only blob was not sent");
+            return Ok(());
+        }
+        // never delivered here again (a member peer's path may bring it back)
+        let t = osis_label::Prefix::parse(&blob).ok().and_then(|p| p.expiry()).map_or(0, |t| t.0);
+        let now = self.now();
+        self.eph.relays.first(l, blob_id, t, now);
         for (conn, _, keys) in self.eph_conns(&l) {
             let st = match (stamp, &keys.write) {
                 (Some(s), _) => s,
@@ -240,7 +353,7 @@ impl SyncEngine {
 
     /// Uploads lane entries `ids` of `l` on `conn`: stamped ones as they are, own unstamped ones
     /// stamped under the connection's write key.
-    fn eph_upload(&mut self, conn: ConnId, l: LabelId, ids: &[BlobId], keys: &HeadKeys, out: &mut Vec<Action>) -> Result<()> {
+    pub(crate) fn eph_upload(&mut self, conn: ConnId, l: LabelId, ids: &[BlobId], keys: &HeadKeys, out: &mut Vec<Action>) -> Result<()> {
         let mut entries = Vec::new();
         for b in ids {
             // one upload of an entry in flight per connection: a second status would reach the
@@ -359,13 +472,21 @@ impl SyncEngine {
     }
 
     /// An ephemeral or relay-only entry arrived under `l` (a log event, a fetch, a peer's
-    /// upload): kept and applied, or delivered; `server` where it came from.
+    /// upload; `from` where it came from): kept, applied and spread once the engine verified and
+    /// holds its commit; one waiting for its author's record kept apart, unspread; a relay-only
+    /// one delivered and passed on (`relay_in`).
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn eph_added(&mut self, server: Option<ServerKey>, l: LabelId, b: BlobId, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], stamp: Option<Signature>, class: Class, out: &mut Vec<Action>) -> Result<()> {
+    pub(crate) fn eph_added(&mut self, from: RelayFrom, l: LabelId, b: BlobId, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], stamp: Option<Signature>, class: Class, out: &mut Vec<Action>) -> Result<()> {
         if class == Class::Relay {
-            return self.relay_in(l, b, &blob, &wrap);
+            return self.relay_in(from, l, b, blob, wrap, stamp, out);
         }
-        if self.eph.entries.contains_key(&(l, b)) {
+        let server = from.server();
+        // the one routing point: a blob whose prefix says ephemeral is the lane's, whatever an
+        // announcement without its bytes made the durable path record (spec/sync.md §4)
+        if self.state.entries.contains_key(&(l, b)) {
+            self.state.forget_ephemeral(l, b);
+        }
+        if self.eph.entries.contains_key(&(l, b)) || self.eph.pending.contains_key(&(l, b)) {
             if let Some(s) = server {
                 self.eph.present.insert((s, l, b));
             }
@@ -374,7 +495,7 @@ impl SyncEngine {
         let Some(g) = self.group_of(&l) else { return Ok(()) };
         let secrets = self.read_secrets(&g);
         let Some((_, key)) = osis_label::unwrap_any(secrets.iter(), &b, &wrap) else { return Ok(()) };
-        let (_, cb) = match open_commit(&blob, &key) {
+        let (pt, cb) = match open_commit(&blob, &key) {
             Ok(x) => x,
             Err(e) => {
                 self.diag(format!("ephemeral blob {b:?}: {e}"));
@@ -396,19 +517,44 @@ impl SyncEngine {
         }
         let commit = cb.id();
         let h = cb.header.clone();
-        match self.engine.ingest_ephemeral(cb) {
-            Ok(EphIngest::Held { .. } | EphIngest::Pending) => {}
-            Ok(EphIngest::Delivered { .. }) => return Ok(()),
-            Err(e) => {
-                self.diag(format!("ephemeral commit {commit:?}: {e}"));
+        let first = osis_commit::CommitBlob::decode(&pt).ok().and_then(|c| c.parts.first().map(|p| p.ai)).unwrap_or(0);
+        let ingested = self.engine.ingest_ephemeral(cb);
+        let salt = osis_label::Prefix::parse(&blob).map(|p| *p.salt()).unwrap_or_default();
+        let a = h.aspects.get(first);
+        let keys = a.map(|a| a.keys.iter().filter_map(|i| h.keys.get(*i).copied()).collect()).unwrap_or_default();
+        let e = LaneEntry { commit, blob, wrap, stamp, own: false, salt, blind: h.blind, tid: a.map_or(g, |a| a.tid), actor: h.actor, keys };
+        match ingested {
+            Ok(EphIngest::Held { .. }) if self.engine.holds_ephemeral(&commit) => {}
+            Ok(EphIngest::Pending) => {
+                // unverified: kept apart under a share of the cap, neither served nor spread
+                let p = self.eph.pending_bytes.get(&l).copied().unwrap_or(0);
+                if p.saturating_add(size) > self.cfg.ephemeral_bytes / PENDING_SHARE {
+                    self.engine.forget_pending_ephemeral(&commit);
+                    if self.eph.refused.insert(l) {
+                        self.eph_report(&l, "this node's share for ephemeral commits by unknown authors was reached: further ones are not kept");
+                    }
+                    return Ok(());
+                }
+                *self.eph.pending_bytes.entry(l).or_default() += size;
+                if let Some(s) = server {
+                    self.eph.present.insert((s, l, b));
+                }
+                self.eph.pending.insert((l, b), (e, server));
+                return Ok(());
+            }
+            Ok(EphIngest::Dropped { absorbed: true }) => {
+                // a replay of a covered entry: a writer deletes it where it found it
+                if let Some(s) = server {
+                    self.eph_delete_at(s, l, b, &e, out)?;
+                }
+                return Ok(());
+            }
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                self.diag(format!("ephemeral commit {commit:?}: {err}"));
                 return Ok(());
             }
         }
-        let salt = osis_label::Prefix::parse(&blob).map(|p| *p.salt()).unwrap_or_default();
-        let parts = osis_commit::CommitBlob::decode(&osis_label::open(&blob, &key).map(|x| x.1).unwrap_or_default()).ok().and_then(|c| c.parts.first().map(|p| p.ai)).unwrap_or(0);
-        let a = h.aspects.get(parts);
-        let keys = a.map(|a| a.keys.iter().filter_map(|i| h.keys.get(*i).copied()).collect()).unwrap_or_default();
-        let e = LaneEntry { commit, blob, wrap, stamp, own: false, salt, blind: h.blind, tid: a.map_or(g, |a| a.tid), actor: h.actor, keys };
         if let Some(s) = server {
             self.eph.present.insert((s, l, b));
         }
@@ -419,12 +565,41 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// A relay-only entry with its wrap (a push, a peer's upload): delivered once.
-    pub(crate) fn relay_in(&mut self, l: LabelId, b: BlobId, blob: &[u8], wrap: &[u8; osis_crypto::WRAP_LEN]) -> Result<()> {
+    /// Deletes ephemeral entry `b` of `l` at server `s` where this node may (a writer: the
+    /// part's level-3 delete key and the label's write key, spec/sync.md §5).
+    fn eph_delete_at(&mut self, s: ServerKey, l: LabelId, b: BlobId, e: &LaneEntry, out: &mut Vec<Action>) -> Result<()> {
+        let dks = self.engine.ephemeral_delete_secrets_for(&e.tid, &e.actor, &e.keys);
+        for (conn, server, hk) in self.eph_conns(&l) {
+            if server != s || self.eph.deletes.contains(&(conn, l, b)) {
+                continue;
+            }
+            if let Some(item) = delete_item(&hk, &l, b, None, Some((&e.salt, &e.blind)), &dks) {
+                self.eph.deletes.insert((conn, l, b));
+                self.command(conn, Command::Delete { label: l, items: vec![item] }, out)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A relay-only entry (a push, a fetch, a served session's upload; `from` where it came
+    /// from): dropped unopened when too large, outside its prefix window or seen before
+    /// (`RelaySeen`); else verified and its signals delivered once, then passed on as a server
+    /// would: to the sessions this node serves, and, from one of them, to the servers it syncs the
+    /// label with (spec/sync.md §5, §9).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn relay_in(&mut self, from: RelayFrom, l: LabelId, b: BlobId, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], stamp: Option<Signature>, out: &mut Vec<Action>) -> Result<()> {
+        if blob.len() > osis_base::format::MAX_RELAY_BLOB {
+            return Ok(());
+        }
+        let Some(t) = osis_label::Prefix::parse(&blob).ok().and_then(|p| p.expiry()).map(|t| t.0) else { return Ok(()) };
+        let now = self.now();
+        if t <= now || t > now.saturating_add(2 * osis_base::format::MAX_DRIFT_MS) || !self.eph.relays.first(l, b, t, now) {
+            return Ok(());
+        }
         let Some(g) = self.group_of(&l) else { return Ok(()) };
         let secrets = self.read_secrets(&g);
-        let Some((_, key)) = osis_label::unwrap_any(secrets.iter(), &b, wrap) else { return Ok(()) };
-        let (_, cb) = match open_commit(blob, &key) {
+        let Some((_, key)) = osis_label::unwrap_any(secrets.iter(), &b, &wrap) else { return Ok(()) };
+        let (_, cb) = match open_commit(&blob, &key) {
             Ok(x) => x,
             Err(e) => {
                 self.diag(format!("relay-only blob {b:?}: {e}"));
@@ -436,8 +611,28 @@ impl SyncEngine {
             return Ok(());
         }
         let id = cb.id();
-        if let Err(e) = self.engine.ingest_ephemeral(cb) {
-            self.diag(format!("relay-only commit {id:?}: {e}"));
+        match self.engine.ingest_ephemeral(cb) {
+            Ok(EphIngest::Relayed { .. }) => {}
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                self.diag(format!("relay-only commit {id:?}: {e}"));
+                return Ok(());
+            }
+        }
+        let Some(stamp) = stamp else { return Ok(()) };
+        let r = osis_proto::Relayed { label: l, blob_id: b, blob, wrap, stamp };
+        if !self.served.is_empty() {
+            let labels = self.served_labels();
+            let conns: Vec<ConnId> = self.served.keys().copied().filter(|c| from != RelayFrom::Served(*c)).collect();
+            for c in conns {
+                self.serve_with(c, osis_proto::ServerInput::Relay(r.clone()), &labels, out)?;
+            }
+        }
+        if let RelayFrom::Served(_) = from {
+            for (conn, _, _) in self.eph_conns(&l) {
+                self.eph.uploads.insert((conn, l, b));
+                self.command(conn, Command::Upload { label: l, entries: vec![osis_proto::Entry { blob: r.blob.clone(), wrap: r.wrap, stamp: r.stamp }] }, out)?;
+            }
         }
         Ok(())
     }
@@ -461,6 +656,7 @@ impl SyncEngine {
             let Some(keys) = self.eph.by_commit.remove(c) else { continue };
             for (l, b) in keys {
                 let Some(e) = self.eph.entries.remove(&(l, b)) else { continue };
+                self.eph.by_blob.remove(&(b, l));
                 if !e.own
                     && let Some(n) = self.eph.bytes.get_mut(&l)
                 {
@@ -506,13 +702,64 @@ impl SyncEngine {
         lane.entries.range((l, BlobId([0; 32]))..).take_while(move |((x, _), _)| *x == l).map(|((_, b), e)| (*b, e))
     }
 
+    /// Tests: compacts every held ephemeral aspect this node may write now (forced) and sends
+    /// the cover as `eph_step` would.
+    #[doc(hidden)]
+    pub fn compact_ephemeral_now(&mut self) -> Result<Vec<Action>> {
+        let mut out = Vec::new();
+        if let Some(c) = self.engine.compact_ephemeral(None, true)? {
+            let dropped = self.engine.take_dropped_ephemeral();
+            self.eph_forget(&dropped, &mut out)?;
+            self.eph_place(c, &mut out)?;
+        }
+        Ok(out)
+    }
+
     /// Ephemeral bytes held from others under `l` (tests, diagnostics).
     pub fn ephemeral_bytes(&self, l: &LabelId) -> u64 {
         self.eph.bytes.get(l).copied().unwrap_or(0)
     }
 
+    /// Bytes of entries under `l` waiting for their author's record (tests, diagnostics).
+    pub fn ephemeral_pending_bytes(&self, l: &LabelId) -> u64 {
+        self.eph.pending_bytes.get(l).copied().unwrap_or(0)
+    }
+
     /// Ephemeral entries held under `l` (tests, diagnostics).
     pub fn ephemeral_entries(&self, l: &LabelId) -> usize {
         Self::eph_entries_of(&self.eph, l).count()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn b(n: u32) -> BlobId {
+        let mut x = [0u8; 32];
+        x[..4].copy_from_slice(&n.to_le_bytes());
+        BlobId(x)
+    }
+
+    // spec/sync.md §9 (relay-only entries remembered, a floor past the bound; security review
+    // L1): a repeat is dropped; past the bound the earliest-expiring entry is forgotten and its
+    // label refuses everything expiring at or before it, so a forgotten one never comes back
+    #[test]
+    fn relay_seen_once_past_the_bound_spec_sync_9() {
+        let mut r = RelaySeen::default();
+        let (l, other) = (LabelId([1; 16]), LabelId([2; 16]));
+        let now = 1_000_000;
+        assert!(r.first(l, b(0), now + 10, now));
+        assert!(!r.first(l, b(0), now + 10, now), "a repeat");
+        for n in 1..=RELAYS_REMEMBERED as u32 {
+            assert!(r.first(l, b(n), now + 10 + u64::from(n), now));
+        }
+        assert!(!r.first(l, b(0), now + 10, now), "forgotten, under the floor: still not twice");
+        assert!(r.first(other, b(0), now + 10, now), "the floor is per label");
+        assert!(r.first(l, b(RELAYS_REMEMBERED as u32 + 1), now + 20 + RELAYS_REMEMBERED as u64, now));
+        // past their expiry entries and floors go
+        assert!(r.first(l, b(7), now + 1_000_000_000, now + 500_000_000));
+        assert_eq!(r.ids.len(), 1);
+        assert!(r.floor.is_empty());
     }
 }

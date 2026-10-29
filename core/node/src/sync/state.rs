@@ -600,6 +600,16 @@ impl State {
         true
     }
 
+    /// Forgets every record of an entry that turned out ephemeral (its blob's prefix class):
+    /// the lane holds it from now on, the sync records never (no tombstone).
+    pub fn forget_ephemeral(&mut self, l: LabelId, b: BlobId) {
+        let servers: Vec<ServerKey> = self.present_by.range((l, b, [0u8; 32])..).take_while(|(x, y, _)| *x == l && *y == b).map(|(_, _, s)| *s).collect();
+        for s in servers {
+            self.set_present(s, l, b, false);
+        }
+        self.drop_entry(l, b);
+    }
+
     /// Forgets tombstones past their lifetime.
     pub fn expire_tombs(&mut self, now: u64) {
         let old: Vec<(LabelId, BlobId)> = self.tombs.iter().filter(|(_, t)| t.saturating_add(osis_base::format::TOMBSTONE_LIFETIME_MS) <= now).map(|(k, _)| *k).collect();

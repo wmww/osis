@@ -312,10 +312,9 @@ impl LabelStore for MemoryLabelStore {
         if held.is_none() && cap.is_some_and(|c| s.entries.len() >= c) {
             return Ok(Code::STORAGE_CAP);
         }
+        // an unstamped ephemeral blob never gets here (the server engine refuses it for every
+        // store, spec/sync.md §5)
         if put.ephemeral && held.is_none() {
-            if put.stamp.is_none() {
-                return Ok(Code::REFUSED);
-            }
             if ecap.is_some_and(|c| s.ephemeral_bytes + put.blob.len() as u64 > c) {
                 return Ok(Code::STORAGE_CAP);
             }

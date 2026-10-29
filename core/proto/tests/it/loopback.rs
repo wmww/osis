@@ -472,6 +472,29 @@ fn deposit_budget() {
     assert!(evs.iter().any(|e| matches!(e, Event::Added { stamp: None, .. })));
 }
 
+// spec/sync.md §5 (readers write no ephemeral data; security review M5): an ephemeral or
+// relay-only blob deposited (no stamp) is refused by the server engine itself, whatever the store
+// behind it checks (a member peer's store did not), and nothing is stored or pushed
+#[test]
+fn ephemeral_deposit_refused_spec_sync_5() {
+    let mut net = Net::new(2, 0);
+    let l = Label::new(3);
+    net.setup(&l);
+    net.open(1, &l);
+    net.run(1, Command::Subscribe { labels: vec![l.id] });
+    let dk = l.head_keys().deposit.clone();
+    for (n, class) in [(1u8, osis_label::Class::Ephemeral), (2, osis_label::Class::Relay)] {
+        let p = Prefix::new(salt(u64::from(n)), Some(WallMs(T0 + osis_base::format::MAX_DRIFT_MS)), vec![]).unwrap().with_class(class);
+        let b = osis_label::frame(&p, &[n; 50], &mut osis_crypto::SeededRng::from_seed([n; 32])).unwrap().1;
+        let wrap: Wrap = [7; 49];
+        let sig = sign_deposit(&dk, &l.id, &osis_label::blob_id(&b), &wrap);
+        let ev = net.run(0, Command::Deposit { label: l.id, blob: b.clone(), wrap, sig });
+        assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::REFUSED, .. }]), "{ev:?}");
+        assert!(net.store.entry(&l.id, &osis_label::blob_id(&b)).unwrap().is_none());
+    }
+    assert!(net.events[1].is_empty(), "nothing pushed");
+}
+
 // spec/sync.md §5, spec/crypto.md §7: deletes by key and by a level's delete key (level 3 write key, levels 1-2 sync key), timed deletes
 #[test]
 fn deletes() {
