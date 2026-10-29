@@ -10,6 +10,7 @@ pub mod backdrop;
 pub mod fonts;
 pub mod icons;
 pub mod list;
+pub mod tasks;
 pub mod marshal;
 pub mod text;
 pub mod theme;
