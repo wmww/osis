@@ -76,8 +76,14 @@ pub(crate) struct Lane {
     pub server_full: BTreeSet<LabelId>,
     /// Labels force-compacted since an entry of new writes (not a cover) was kept under them:
     /// not forced again until one is (holders of a label a server cannot fit compacted each
-    /// other's concurrent covers forever, every cover refused).
+    /// other's concurrent covers forever, every cover refused), unless for `own_full`.
     pub forced: BTreeSet<LabelId>,
+    /// Per label, the servers that refused an own entry for their cap since this node last
+    /// compacted the label: forced again (past `forced`) when an entry of another node is kept
+    /// under it, by a cover that deletes an entry held at such a server (concurrent covers to
+    /// one full server: the refused one stayed out, its writes with it, while the server held
+    /// the other).
+    pub own_full: BTreeMap<LabelId, BTreeSet<ServerKey>>,
     /// Per connection and label: whether the first Sync listed the held entries, and those it
     /// listed that the peer has not asked for yet.
     pub announced: BTreeSet<(ConnId, LabelId)>,
@@ -193,17 +199,24 @@ impl SyncEngine {
         let mut commits = Vec::new();
         let mut retry = Vec::new();
         for l in full {
-            if !self.eph.forced.insert(l) {
+            let first = self.eph.forced.insert(l);
+            let at = if first { None } else { self.eph.own_full.get(&l).cloned() };
+            if !first && at.is_none() {
                 continue;
             }
             let Some(g) = self.group_of(&l) else { continue };
             let scope = self.engine.ephemeral_closure(&g);
-            match self.engine.compact_ephemeral(Some(&scope), true)? {
+            // past `forced`: only a cover deleting an entry where an own one was refused
+            let lane = &self.eph;
+            let frees = |c: &CommitId| at.as_ref().is_none_or(|at| lane.by_commit.get(c).is_some_and(|bs| bs.iter().any(|(l2, b)| at.iter().any(|s| lane.present.contains(&(*s, *l2, *b))))));
+            match self.engine.compact_ephemeral_if(Some(&scope), true, &frees)? {
                 Some(c) => {
                     commits.push(c);
                     retry.push(l);
+                    self.eph.own_full.remove(&l);
                 }
-                None => self.eph_report(&l, "a server's ephemeral cap was reached and nothing could be compacted: ephemeral data of this label stops syncing there"),
+                None if first => self.eph_report(&l, "a server's ephemeral cap was reached and nothing could be compacted: ephemeral data of this label stops syncing there"),
+                None => {}
             }
         }
         if let Some(c) = self.engine.compact_ephemeral(None, false)? {
@@ -320,6 +333,9 @@ impl SyncEngine {
     fn eph_keep(&mut self, l: LabelId, b: BlobId, e: LaneEntry) {
         if !self.engine.ephemeral_is_cover(&e.commit) {
             self.eph.forced.remove(&l);
+        }
+        if !e.own && self.eph.own_full.contains_key(&l) {
+            self.eph.server_full.insert(l);
         }
         if !e.own {
             *self.eph.bytes.entry(l).or_default() += e.blob.len() as u64;
@@ -486,6 +502,9 @@ impl SyncEngine {
                 }
                 Code::STORAGE_CAP => {
                     self.eph.server_full.insert(l);
+                    if self.eph.entries.get(&(l, b)).is_some_and(|e| e.own) {
+                        self.eph.own_full.entry(l).or_default().insert(server);
+                    }
                 }
                 Code::TOMBSTONED => {
                     self.eph.present.remove(&(server, l, b));
