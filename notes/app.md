@@ -92,8 +92,15 @@ Owner: a new coordinator runs the buildout. Goal: something the owner can play w
 4. iOS shell, web, durable view-state spec.
 
 ## Running it
-Try it with demo data (from `kit/`, the GUI workspace; first build a few minutes):
-`cargo run --bin osis-app -- ~/osis-try --demo --theme glass` (store directory created on first run; `--demo` adds the demo things once; `--theme frost|glass|workstation|memphis|slate|cel` and `--auto|--light|--dark` set the look, which the picker at home's foot also changes). Two devices syncing, all local: in the repo root `cargo run --bin osis -- serve` (first stdout line: the server address `ADDR`); `osis-app ~/osis-a --server ADDR --demo`, close it; pair a second store with the CLI (notes/cli.md: `osis -s ~/osis-a pair offer` and, in another terminal, `osis -s ~/osis-b pair join OFFER --server ADDR`, pasting the request and the reply across); then run `osis-app ~/osis-a` and `osis-app ~/osis-b` side by side. A store is locked while open, so pairing needs the app closed. Not rechecked since the first prototype's notes app.
+One device with demo data (in `kit/`; the first build takes a few minutes):
+`cargo run --bin osis-app -- ~/osis-try/solo --demo --theme glass`. The store directory is made on first run; `--demo` adds the demo things once; `--theme frost|glass|workstation|memphis|slate|cel` and `--auto|--light|--dark` set the look (so does the picker at the foot of home).
+
+Two devices syncing through a local server (checked end to end; four terminals):
+1. Repo root: `cargo run --bin osis -- serve --data ~/osis-try/server --listen quic://127.0.0.1:47833`. Its first line is the server address, `quic://127.0.0.1:47833#<key>` (the same on every restart with the same `--data`); leave it running.
+2. `kit/`: `cargo run --bin osis-app -- ~/osis-try/a --server 'quic://127.0.0.1:47833#<key>' --demo` (quote the address: it holds a `#`). Close the window once it shows (a store is locked while open).
+3. Repo root: `cargo run --bin osis -- -s ~/osis-try/a pair offer`. It prints an `osis://pair/...` line and waits.
+4. Another terminal, repo root: `cargo run --bin osis -- -s ~/osis-try/b pair join 'osis://pair/...'` (the line from 3). It prints an `osis://pair-request/...` line and waits. Paste that line into terminal 3 and press Enter: it prints an `osis://pair-reply/...` line; paste that into terminal 4 and press Enter. Both exit. (`b` learns the server from the offer.)
+5. `kit/`: `cargo run --bin osis-app -- ~/osis-try/a` and, in another terminal, `cargo run --bin osis-app -- ~/osis-try/b`. Within a few seconds `b` shows the demo data. Typing in one window shows in the other after a short pause in typing (a text session commits after about 2 s idle) plus sync.
 
 ## Prototype (as built)
 `osis-app DIR [--server ADDR]... [--demo] [--theme ID] [--light|--dark]` (kit/ workspace; Masonry `=0.4.0`, masonry_winit `=0.4.0`: wgpu 26, Vello 0.6, Parley 0.6, winit 0.30). Milestones 1-4 of the handoff scope: home, rail, tiles, demo data, the theme engine, facet views with tags, reach and history, the calendar week and the tags tree (`--theme ID`, `--auto|--light|--dark` set the same choice as the picker).
