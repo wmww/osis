@@ -202,6 +202,10 @@ kbd { font: 11.5px ui-monospace, Menlo, monospace; padding: 1px 6px; border-radi
 .looks button { font: inherit; color: inherit; }
 .lk-toggle { width: 100%; display: flex; gap: 6px; align-items: center; padding: 9px 12px; background: none; border: 0; cursor: pointer; text-align: left; }
 .lk-toggle b { flex: 1; }
+.lk-mode { color: #999; font-size: 12px; }
+.lk-modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 2px; margin-bottom: 8px; background: rgba(255,255,255,.06); border-radius: 8px; }
+.lk-m { padding: 5px 0; border: 0; border-radius: 6px; background: none; cursor: pointer; color: #bbb; }
+.lk-m.on { background: rgba(138,180,255,.22); color: #fff; }
 .lk-body { display: none; padding: 0 10px 10px; }
 .looks.open .lk-body { display: block; }
 .lk-list { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
