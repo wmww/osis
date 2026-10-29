@@ -1671,3 +1671,44 @@ fn demoted_writer_dropped_dot_copy_stays_spec_perm_5_2() {
     assert_eq!(lp.peers[3].engine.get(&copy, &tags).unwrap(), before, "demotion first");
     assert_eq!(lp.peers[2].engine.get(&copy, &tags).unwrap(), before, "snapshot first");
 }
+
+// spec/crdt.md §4.6, spec/permissions.md §5.2: Bob's write is carried, without its commit, by
+// Alice's valid snapshot S and a reader's invalid one R. Dropping S's body leaves only R's
+// invalid copy: the state must come out the same whether R arrived before or after the drop.
+#[test]
+#[ignore = "issues/dropped-carrier-voids-write.md"]
+fn valid_carrier_dropped_alike_either_order_spec_perm_5_2() {
+    let mut lp = net(3, 0x5f88);
+    lp.sync_all().unwrap();
+    let d = new_thing(&mut lp, 0);
+    let (b, r) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, d, r, Some(edge(Role::Read)), None);
+    lp.sync_all().unwrap();
+    add_tag(&mut lp, 1, d, "bob");
+    lp.sync_all().unwrap();
+    let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "/t/tags"))).collect();
+    lp.advance(1_000);
+    let snap = lp.peers[0].engine.snapshot(&d, &ak("/t/tags")).unwrap().unwrap();
+    let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
+    let f = lp.peers[2].engine.state(&d, &ak("/t/tags")).unwrap().unwrap().clone();
+    let forged = forge_snapshot(&mut lp, 2, d, &ak("/t/tags"), now, f);
+    let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !bob.contains(&p.id)).collect();
+    let mut got = Vec::new();
+    for (i, forged_first) in [(3, true), (4, false)] {
+        lp.peers.push(osis_node::local_peer::Peer::new(0x5f89 + i as u64, lp.peers[0].engine.now()).unwrap());
+        for pk in &pks {
+            lp.deliver(i, pk).unwrap();
+        }
+        if forged_first {
+            lp.peers[i].engine.ingest(&forged, Vec::new()).unwrap();
+        }
+        lp.peers[i].engine.drop_body(&snap, &d, &ak("/t/tags")).unwrap();
+        if !forged_first {
+            lp.peers[i].engine.ingest(&forged, Vec::new()).unwrap();
+        }
+        lp.peers[i].engine.reexamine().unwrap();
+        got.push(tags(&mut lp, i, d));
+    }
+    assert_eq!(got[0], got[1], "invalid copy before the drop, after it");
+}
