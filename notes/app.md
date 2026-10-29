@@ -48,11 +48,11 @@ Owner direction so far:
 - Motion: almost none. Only unobtrusive fades, or motion that adds clarity. The mockup fades the main colour and nothing else.
 
 ## Themes are parameters
-Owner direction: a theme is a set of parameters, and the six themes are only defaults; users can make equally distinct themes by changing them. The mockup's engine.css implements every value of every parameter once (themes.js lists them); a toolkit implements the same list. No CSS and no per-theme code. Accepted simplifications: Workstation's hard shadow is in the outline colour (ink), the Memphis icons are filled, no wide first tile, no giant kind word behind Slate.
+Owner direction: a theme is a set of parameters, and the six themes are only defaults; users can make equally distinct themes by changing them. The mockup's engine.css implements every value of every parameter once (themes.js lists them); a toolkit implements the same list. No CSS and no per-theme code. Accepted simplifications: Workstation's hard shadow is in the outline colour (ink) and it lost its sun, Glass lost its bubbles, Cel its halftone, Memphis its dots; Memphis icons are filled; no wide first tile, no giant kind word behind Slate. Frost is now flat with no panels and a light tint.
 
 Parameters (enums unless noted):
 - main (colour; used when the content gives none), surface (colour, light mode; dark derives from it), bgTint (0..1).
-- Background: base flat|field|sky, pattern none|grid|dots|halftone|grain, ornament none|streaks|bubbles|sun|shapes|speed. Placement comes from four seeds hashed from the open thing's tid, plus a small per-kind value (calendar, note, ...).
+- background flat|field|sky|grid|dots|shapes|lines: one choice per theme (owner: simpler beats layering). Placement comes from four seeds hashed from the open thing's tid, plus a small per-kind value (calendar, note, ...).
 - panel glass|solid|none, radius (px), outline (px, in ink: the text colour, near black for bevel in dark), elevation none|soft|hard, finish flat|gloss|bevel, iconShape circle|rounded|square.
 - tileFill surface|wash|solid, tileMark none|stripe|corner, selection soft|solid|slant.
 - font system|humanist|classic|grotesk|rounded, weight (title, 300..900), labels plain|caps|big|mono, accent none|bar|rule|slash.

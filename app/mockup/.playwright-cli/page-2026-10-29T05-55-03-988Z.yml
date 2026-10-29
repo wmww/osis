@@ -1,0 +1,102 @@
+- generic [active] [ref=e1]:
+  - main [ref=e3]:
+    - generic [ref=e4]:
+      - link "osis" [ref=e6] [cursor=pointer]:
+        - /url: "#/"
+      - textbox [ref=e11]:
+        - /placeholder: Search notes, people, tags, views…
+      - generic [ref=e12]:
+        - generic [ref=e13]:
+          - generic [ref=e14]: Favorites
+          - generic [ref=e15]: drag to reorder
+        - list [ref=e16]:
+          - listitem [ref=e17]:
+            - link "Groceries oat milk" [ref=e18] [cursor=pointer]:
+              - /url: "#/t/n-groceries"
+              - generic [ref=e23]:
+                - generic [ref=e24]: Groceries
+                - generic [ref=e25]: oat milk
+          - listitem [ref=e26]:
+            - link "Calendar 10 events this week" [ref=e27] [cursor=pointer]:
+              - /url: "#/t/v-cal"
+              - generic [ref=e33]:
+                - generic [ref=e34]: Calendar
+                - generic [ref=e35]: 10 events this week
+          - listitem [ref=e36]:
+            - link "Lisbon trip 6 items · shared" [ref=e37] [cursor=pointer]:
+              - /url: "#/t/g-lisbon"
+              - generic [ref=e42]:
+                - generic [ref=e43]: Lisbon trip
+                - generic [ref=e44]: 6 items · shared
+          - listitem [ref=e45]:
+            - link "MO Mara Okafor Friend · climbing" [ref=e46] [cursor=pointer]:
+              - /url: "#/t/c-mara"
+              - generic [ref=e47]: MO
+              - generic [ref=e49]:
+                - generic [ref=e50]: Mara Okafor
+                - generic [ref=e51]: Friend · climbing
+          - listitem [ref=e52]:
+            - link "1:1 with Jun Tue, Oct 27 · 11:00 AM–11:30 AM" [ref=e53] [cursor=pointer]:
+              - /url: "#/t/e-jun"
+              - generic [ref=e58]:
+                - generic [ref=e59]: 1:1 with Jun
+                - generic [ref=e60]: Tue, Oct 27 · 11:00 AM–11:30 AM
+          - listitem [ref=e61]:
+            - link "Garden 3 items" [ref=e62] [cursor=pointer]:
+              - /url: "#/t/g-garden"
+              - generic [ref=e67]:
+                - generic [ref=e68]: Garden
+                - generic [ref=e69]: 3 items
+          - listitem [ref=e70]:
+            - link "People 6 people" [ref=e71] [cursor=pointer]:
+              - /url: "#/t/v-people"
+              - generic [ref=e77]:
+                - generic [ref=e78]: People
+                - generic [ref=e79]: 6 people
+          - listitem [ref=e80]:
+            - link "Ideas A calendar that shows what I wrote that day, not just what I planned." [ref=e81] [cursor=pointer]:
+              - /url: "#/t/n-ideas"
+              - generic [ref=e86]:
+                - generic [ref=e87]: Ideas
+                - generic [ref=e88]: A calendar that shows what I wrote that day, not just what I planned.
+          - listitem [ref=e89]:
+            - button "New note or event, person, tag…" [ref=e90] [cursor=pointer]:
+              - generic [ref=e94]:
+                - generic [ref=e95]: New note
+                - generic [ref=e96]: or event, person, tag…
+  - complementary "Look switcher" [ref=e97]:
+    - 'button "Theme: Frost light ▾" [expanded] [ref=e98] [cursor=pointer]':
+      - text: "Theme:"
+      - generic [ref=e99]: Frost
+      - generic [ref=e100]: light
+      - generic [ref=e101]: ▾
+    - generic [ref=e102]:
+      - group "Light or dark" [ref=e103]:
+        - button "Light" [ref=e104] [cursor=pointer]
+        - button "Dark" [ref=e105] [cursor=pointer]
+        - button "Auto" [ref=e106] [cursor=pointer]
+      - generic [ref=e107]:
+        - button "1 Frost" [ref=e108] [cursor=pointer]:
+          - generic [ref=e109]: "1"
+          - generic [ref=e110]: Frost
+        - button "2 Glass" [ref=e111] [cursor=pointer]:
+          - generic [ref=e112]: "2"
+          - generic [ref=e113]: Glass
+        - button "3 Workstation" [ref=e114] [cursor=pointer]:
+          - generic [ref=e115]: "3"
+          - generic [ref=e116]: Workstation
+        - button "4 Memphis" [ref=e117] [cursor=pointer]:
+          - generic [ref=e118]: "4"
+          - generic [ref=e119]: Memphis
+        - button "5 Slate" [ref=e120] [cursor=pointer]:
+          - generic [ref=e121]: "5"
+          - generic [ref=e122]: Slate
+        - button "6 Cel" [ref=e123] [cursor=pointer]:
+          - generic [ref=e124]: "6"
+          - generic [ref=e125]: Cel
+      - paragraph [ref=e126]: "Calm and open: content straight on a lightly tinted background, soft cards, round icons."
+      - button "▸ Edit parameters (makes a custom copy)" [ref=e127] [cursor=pointer]
+      - generic [ref=e128]:
+        - checkbox "Background blur" [checked] [ref=e129]
+        - text: Background blur
+      - paragraph [ref=e130]: "Keys: 1–7 or [ ] themes · d light/dark · / search"
