@@ -1143,8 +1143,17 @@ pub struct Engine {
     rng: Box<dyn CryptoRngCore + Send>,
     #[doc(hidden)]
     pub core: Core,
+    /// Ephemeral things and aspects, in memory (`crate::ephemeral`).
+    pub(crate) eph: crate::ephemeral::Eph,
     clock: Arc<dyn Clock>,
     cfg: Config,
+}
+
+/// A random session for this open's ephemeral writes.
+fn session(rng: &mut dyn CryptoRngCore) -> crate::ephemeral::Eph {
+    let mut s = [0u8; 32];
+    rng.fill_bytes(&mut s);
+    crate::ephemeral::Eph::new(s)
 }
 
 impl Engine {
@@ -1156,7 +1165,8 @@ impl Engine {
         rng.fill_bytes(&mut seed);
         let store_rng = SeededRng::from_seed(seed);
         let id = Identity::generate(&mut *rng);
-        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone()), clock, cfg };
+        let eph = session(&mut *rng);
+        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone()), eph, clock, cfg };
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
         e.run(|tx| {
@@ -1179,7 +1189,8 @@ impl Engine {
         };
         let s: [u8; 32] = s.as_slice().try_into().map_err(|_| Error::Corrupt("seed"))?;
         let id = Identity::from_seed(osis_crypto::Secret32::from_bytes(s));
-        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone()), clock, cfg };
+        let eph = session(&mut *rng);
+        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone()), eph, clock, cfg };
         e.reload()?;
         e.reexamine()?;
         Ok(e)
@@ -1226,13 +1237,16 @@ impl Engine {
 
     /// The owner of `tid` (`None`: a key actor or an unknown thing).
     pub fn owner(&self, tid: &Tid) -> Option<Tid> {
-        self.core.owner(tid)
+        self.core.owner(tid).or_else(|| match &self.ephemeral_thing(tid)?.record {
+            osis_base::CreationRecord::Thing { owner, .. } => Some(*owner),
+            osis_base::CreationRecord::KeyActor { .. } => None,
+        })
     }
 
     /// `tid`, then its owners up the chain: at most `MAX_OWNER_DEPTH` owner links
     /// (spec/permissions.md §1), so a cycle ends too.
     pub fn owner_chain(&self, tid: &Tid) -> impl Iterator<Item = Tid> + '_ {
-        std::iter::successors(Some(*tid), |t| self.core.owner(t)).take(osis_base::format::MAX_OWNER_DEPTH + 1)
+        std::iter::successors(Some(*tid), |t| self.owner(t)).take(osis_base::format::MAX_OWNER_DEPTH + 1)
     }
 
     /// This node's tid.

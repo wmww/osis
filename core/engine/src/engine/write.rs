@@ -15,7 +15,7 @@ use osis_crdt::{AnyView, Batch, CounterRange, Delta, Fragment, Op, PathOp, Sourc
 use osis_label::{BlobWriter, Framing};
 use osis_perm::At;
 use osis_schema::core_types::{CREATED, is_membership_class};
-use osis_schema::{AspectKey, Retention, Schema};
+use osis_schema::{AspectKey, Lifetime, Retention, Schema};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -26,6 +26,10 @@ pub(crate) struct AspectMut {
     pub schema: Option<Arc<Schema>>,
     pub retention: Option<Retention>,
     pub expires: Option<u64>,
+    /// Where the writes go (the key's lifetime, notes/ephemeral.md).
+    pub lifetime: Lifetime,
+    /// The key's default expiry (ms after the write): ephemeral writes fill it themselves.
+    pub default_expiry: Option<u64>,
 }
 
 /// Creation records of a commit by tid (each `tid` is a hash: computed once).
@@ -52,6 +56,12 @@ pub struct Mutation {
     pub(crate) dead_resets: BTreeMap<(Tid, Ak), Vec<osis_crdt::Dot>>,
     /// Chunk and node blobs never reused, written afresh (`Engine::relink`).
     pub(crate) fresh: std::collections::BTreeSet<osis_base::BlobId>,
+    /// Things `Engine::write` persists with this batch if ephemeral (the item of a group op).
+    pub(crate) persist: std::collections::BTreeSet<Tid>,
+    /// Ephemeral things deleted by this batch: freed after it (`Engine::write`).
+    pub(crate) free: std::collections::BTreeSet<Tid>,
+    /// The commit's `ts`, when taken before the commit (a batch with an ephemeral half).
+    pub(crate) ts: Option<Ts>,
 }
 
 impl Default for Mutation {
@@ -66,7 +76,7 @@ fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new(), fresh: Default::default() }
+        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new(), fresh: Default::default(), persist: Default::default(), free: Default::default(), ts: None }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -98,13 +108,34 @@ impl Mutation {
 
     fn entry<K: AspectKey>(&mut self, tid: Tid, key: &K) -> Result<&mut AspectMut> {
         let ak = ak_of(key)?;
-        let e = self.aspects.entry((tid, ak)).or_default();
+        let defaults = key.defaults();
+        let mut fresh = false;
+        let e = self.aspects.entry((tid, ak)).or_insert_with(|| {
+            fresh = true;
+            AspectMut { lifetime: defaults.lifetime, default_expiry: defaults.expires, ..AspectMut::default() }
+        });
+        if !fresh && e.lifetime != defaults.lifetime {
+            return Err(Error::Misuse("one aspect written with two lifetimes in one batch"));
+        }
         if e.schema.is_none()
             && let Some(s) = key.schema()
         {
             e.schema = Some(Arc::new(s.clone()));
         }
         Ok(e)
+    }
+
+    /// Persists `tid` with this batch if it is ephemeral (`Engine::write`): the item of a group
+    /// op (until ephemeral placements exist, notes/ephemeral.md step 2).
+    pub fn persist(&mut self, tid: Tid) -> &mut Self {
+        self.persist.insert(tid);
+        self
+    }
+
+    /// Frees `tid` after this batch if it is still ephemeral then (`delete`).
+    pub fn free(&mut self, tid: Tid) -> &mut Self {
+        self.free.insert(tid);
+        self
     }
 
     /// An op at a path (validated by the crdt against the writer's view).
@@ -170,7 +201,7 @@ impl Mutation {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.creates.is_empty() && self.aspects.is_empty() && self.purge.is_empty() && self.undoes.is_none()
+        self.creates.is_empty() && self.aspects.is_empty() && self.purge.is_empty() && self.undoes.is_none() && self.free.is_empty()
     }
 }
 
@@ -187,15 +218,17 @@ pub fn role_of(core: &Core, node: &Tid, tid: &Tid, ts: Ts) -> Option<Role> {
     core.timelines.get(tid)?.role(node, tid, At::now(ts))
 }
 
-/// May `node` (this node or a key actor it signs as) write `ak` of `tid` at `ts`? Things
-/// created by the commit take their owner's, through owners the commit creates too.
-pub(crate) fn check_authority(core: &Core, node: Tid, creates: &Creates, tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
-    let need = required_role(ak);
+/// Looks up the creation record of a thing not yet held as durable: the commit's own, or an
+/// ephemeral thing's (`Engine::write`).
+pub(crate) type Records<'a> = &'a dyn Fn(&Tid) -> Option<&'a CreationRecord>;
+
+/// The role `node` has on `tid` at `ts`: things not held as durable (`records`) take their
+/// owner's, through owners not held either (spec/permissions.md §1; notes/ephemeral.md Rights).
+pub(crate) fn role_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, ts: Ts) -> Option<Role> {
     let mut cur = *tid;
-    let mut role = None;
-    // each step leaves a record behind, so the walk ends within `creates.len()` steps
-    for _ in 0..=creates.len() {
-        role = match creates.get(&cur) {
+    // a deeper chain is invalid anyway (`within_depth`)
+    for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
+        return match records(&cur) {
             Some(CreationRecord::KeyActor { .. }) => (cur == node).then_some(Role::Admin),
             Some(CreationRecord::Thing { owner, .. }) if *owner == node => Some(Role::Admin),
             Some(CreationRecord::Thing { owner, .. }) => {
@@ -204,17 +237,29 @@ pub(crate) fn check_authority(core: &Core, node: Tid, creates: &Creates, tid: &T
             }
             None => role_of(core, &node, &cur, ts),
         };
-        break;
     }
-    if role >= Some(need) && (ak == CREATED.ak() || core.skip_writer_rules || within_depth(core, creates, tid)) { Ok(()) } else { Err(Error::Permission { tid: *tid }) }
+    None
 }
 
-/// Whether `tid`'s owner chain, through the commit's own creation records, reaches a key actor
+/// May `node` (this node or a key actor it signs as) write `ak` of `tid` at `ts`? Things
+/// created by the commit take their owner's, through owners the commit creates too.
+pub(crate) fn check_authority(core: &Core, node: Tid, creates: &Creates, tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
+    check_authority_with(core, node, &|t| creates.get(t), tid, ak, ts)
+}
+
+/// `check_authority` with the records not held as durable looked up by `records`.
+pub(crate) fn check_authority_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
+    let need = required_role(ak);
+    let role = role_with(core, node, records, tid, ts);
+    if role >= Some(need) && (ak == CREATED.ak() || core.skip_writer_rules || within_depth(core, records, tid)) { Ok(()) } else { Err(Error::Permission { tid: *tid }) }
+}
+
+/// Whether `tid`'s owner chain, through the records not held as durable, reaches a key actor
 /// within `MAX_OWNER_DEPTH` owner links (spec/permissions.md §1: a write deeper is invalid).
-fn within_depth(core: &Core, creates: &Creates, tid: &Tid) -> bool {
+fn within_depth(core: &Core, records: Records<'_>, tid: &Tid) -> bool {
     let mut cur = *tid;
     for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
-        match creates.get(&cur).or_else(|| core.created(&cur)) {
+        match records(&cur).or_else(|| core.created(&cur)) {
             Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
             Some(CreationRecord::KeyActor { .. }) => return true,
             None => return false,
@@ -223,7 +268,7 @@ fn within_depth(core: &Core, creates: &Creates, tid: &Tid) -> bool {
     false
 }
 
-fn run_ops<V: View>(state: &Fragment, w: Writer, ops: &[PathOp], view: &V) -> Result<Option<(Fragment, CounterRange)>> {
+pub(crate) fn run_ops<V: View>(state: &Fragment, w: Writer, ops: &[PathOp], view: &V) -> Result<Option<(Fragment, CounterRange)>> {
     let mut b = Batch::new(state, w);
     for op in ops {
         b.apply(op, view)?;
@@ -463,7 +508,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     if kind != Kind::Content {
         m.form = Form::Commit;
     }
-    let ts = tx.core.hlc.next();
+    let ts = m.ts.unwrap_or_else(|| tx.core.hlc.next());
     let plan = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: m.form, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), origins: Vec::new(), signer: node, blind: draw_blind(&mut *tx.rng) };
     let mut next_ctr = 1u64;
     let mut deltas = Vec::new();

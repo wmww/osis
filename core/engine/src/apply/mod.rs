@@ -638,11 +638,14 @@ impl Engine {
     /// `/created` is kept forever, so every node reading the thing gets that commit; until it
     /// is here (only a snapshot held) `None`.
     pub fn creation(&self, tid: &Tid) -> Option<Creation> {
+        if let Some(e) = self.ephemeral_thing(tid) {
+            return Some(Creation { commit: None, ts: e.ts, node: e.node, actor: e.actor, received: e.received });
+        }
         let ak = osis_base::Ak::new("/created").ok()?;
         self.core.ix.by_aspect.get(&(*tid, ak.clone()))?.iter().find_map(|(_, id)| {
             let m = self.core.ix.commits.get(id)?;
             let ai = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == ak)?;
-            (!is_kind_snapshot(m.header.kind) && m.valid.get(ai).copied().unwrap_or(false)).then(|| Creation { commit: *id, ts: m.header.ts, node: m.header.author, actor: m.header.actor, received: m.received })
+            (!is_kind_snapshot(m.header.kind) && m.valid.get(ai).copied().unwrap_or(false)).then(|| Creation { commit: Some(*id), ts: m.header.ts, node: m.header.author, actor: m.header.actor, received: m.received })
         })
     }
 }
@@ -941,7 +944,8 @@ pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize)
 /// When a thing was created (`Engine::creation`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Creation {
-    pub commit: CommitId,
+    /// `None` while the thing is ephemeral (notes/ephemeral.md).
+    pub commit: Option<CommitId>,
     pub ts: osis_base::Ts,
     pub node: Tid,
     pub actor: Tid,

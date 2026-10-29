@@ -421,11 +421,12 @@ impl Osis {
     }
 
     /// Queues events for the dispatcher, collecting the things whose roster changed into
-    /// `roster`; `true` when there were any events.
+    /// `roster`; `true` when there were any events other than local ephemeral ones (which the
+    /// sync engine has nothing to do for yet).
     fn drain(&self, l: &mut Locked, roster: &mut BTreeSet<Tid>) -> bool {
         let mut any = false;
         while let Ok(e) = l.events.try_recv() {
-            any = true;
+            any |= !matches!(e, Event::Ephemeral { .. });
             if let Event::Roster { thing } = &e {
                 roster.insert(*thing);
             }

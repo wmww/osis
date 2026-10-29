@@ -4,15 +4,16 @@
 
 use crate::scenario as common;
 use common::*;
+use crate::common::CreateIn;
 use osis::core::{BODY, GROUP, NAME, TAG, Tag};
-use osis::{Demotion, EdgeOpts, Error, Lower, Osis, Place, Result, Role, Tid};
+use osis::{Demotion, EdgeOpts, Error, Lower, Osis, Result, Role, Tid};
 use osis_sim::world::World;
 
 /// A sub-tag of `parent` owned by `owner`, with an edge for the parent (unless the parent owns it)
 /// so the parent's members reach what it holds.
 fn new_sub_tag(db: &Osis, owner: Tid, parent: Tid, name: &str, role: Role) -> Result<Tid> {
     let t = db.write_with(|w| {
-        let t = w.create(owner, Place::In(parent))?;
+        let t = w.create_in(owner, &[parent])?;
         w.make_group(t)?;
         w.at(t, TAG).set(&Tag::default())?;
         w.at(t, NAME).set(&name.to_string())?;
@@ -28,7 +29,7 @@ fn new_sub_tag(db: &Osis, owner: Tid, parent: Tid, name: &str, role: Role) -> Re
 /// A card: a thing with a body, owned by `owner`, placed nowhere yet.
 fn new_card(db: &Osis, owner: Tid, text: &str) -> Result<Tid> {
     db.write_with(|w| {
-        let c = w.create(owner, Place::Unsynced)?;
+        let c = w.create(owner)?;
         w.at(c, BODY).set(&text.to_string())?;
         Ok(c)
     })
@@ -227,7 +228,7 @@ fn ownership_transfer_is_a_copy() {
     share(&alice, team, b, Role::Read, None).unwrap();
     w.run();
     assert_eq!(text(&bob, f).unwrap().as_deref(), Some("private now"));
-    let mine = alice.move_thing(f, alice.me(), Place::In(alice.home())).unwrap();
+    let mine = alice.move_thing(f, alice.me(), &[alice.home()]).unwrap();
     assert_ne!(mine, f);
     assert!(alice.same_thing(mine, f));
     w.run();

@@ -5,8 +5,9 @@
 
 use crate::scenario as common;
 use common::*;
+use crate::common::CreateIn;
 use osis::core::NAME;
-use osis::{Osis, Place, Result, Tid};
+use osis::{Osis, Result, Tid};
 use osis_sim::world::World;
 use crate::schemas::contact::*;
 use std::collections::BTreeMap;
@@ -74,7 +75,7 @@ fn profile_and_contact_overlay() {
     let contacts = private_tag(&bob, "Contacts").unwrap();
     let c = bob
         .write_with(|wr| {
-            let c = wr.create(bob.me(), Place::In(contacts))?;
+            let c = wr.create_in(bob.me(), &[contacts])?;
             wr.at(c, PROFILE).set(&p)?;
             wr.at(c, NAME).set(&"Al".to_string())?;
             wr.at(c, PHONES).set(&BTreeMap::from([("+1 555 0100".to_string(), labeled("mobile", true))]))?;
@@ -91,7 +92,7 @@ fn profile_and_contact_overlay() {
     // a contact who is not an osis user
     let d = bob
         .write_with(|wr| {
-            let d = wr.create(bob.me(), Place::In(contacts))?;
+            let d = wr.create_in(bob.me(), &[contacts])?;
             wr.at(d, NAME).set(&"Dentist".to_string())?;
             wr.at(d, ORG).set(&Org { name: "Smile Clinic".into(), department: String::new(), title: String::new() })?;
             wr.at(d, DATES).set(&BTreeMap::from([("birthday".to_string(), Annual { month: 3, day: 14, year: None })]))?;

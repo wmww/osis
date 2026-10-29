@@ -6,7 +6,8 @@
 
 use crate::common;
 use common::ak;
-use osis::{Config, MemStore, Osis, Place, Runtime, ServerAddr, StoreAt, SyncScope, Transport, Value};
+use crate::common::CreateIn;
+use osis::{Config, MemStore, Osis, Runtime, ServerAddr, StoreAt, SyncScope, Transport, Value};
 use osis_crypto::SeededRng;
 use osis_server::{BackendStore, Endpoint, Hub, Policy};
 use osis_store::MemoryBackend;
@@ -42,7 +43,7 @@ async fn round_trip<T: osis_transport::Transport>(server_ep: T, url: &str, a: Tr
 
     let (da, card) = Osis::create(cfg(1, vec![sv.clone()], a)).unwrap();
     let mut w = da.write();
-    let t = w.create(da.me(), Place::In(da.home())).unwrap();
+    let t = w.create_in(da.me(), &[da.home()]).unwrap();
     w.at(t, ak("/t/x")).set(&Value::Str("over the wire".into())).unwrap();
     w.commit().unwrap();
     tokio::time::timeout(GUARD, da.wait_synced(SyncScope::All, GUARD)).await.unwrap().unwrap();
@@ -116,7 +117,7 @@ async fn redeem_over<T: osis_transport::Transport>(server_ep: T, url: &str, a: T
     let alice = Osis::create(cfg(1, vec![sv.clone()], a)).unwrap().0;
     let bob = Osis::create(cfg(2, vec![sv.clone()], b)).unwrap().0;
     let mut w = alice.write();
-    let g = w.create(alice.me(), Place::In(alice.home())).unwrap();
+    let g = w.create_in(alice.me(), &[alice.home()]).unwrap();
     w.make_group(g).unwrap();
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
@@ -160,7 +161,7 @@ async fn text_idle_commit_api_text_sessions() {
     c.idle_commit = Duration::from_millis(20);
     let db = Osis::create(c).unwrap().0;
     let k = ak("/t/body");
-    let t = db.write_with(|w| w.create(db.me(), Place::Unsynced)).unwrap();
+    let t = db.write_with(|w| w.create(db.me())).unwrap();
     let s = db.edit_text(t, k.clone(), osis::Path::root()).unwrap();
     let watch = db.at(t, k.clone()).watch().unwrap();
     s.insert(0, "hi").unwrap();
@@ -207,12 +208,12 @@ async fn redeem_direct_in_process_spec_permissions_9() {
     let bob = Osis::create(c).unwrap().0;
     let me = reach_of(&alice).await;
     let mut w = alice.write();
-    let g = w.create(alice.me(), Place::In(alice.home())).unwrap();
+    let g = w.create_in(alice.me(), &[alice.home()]).unwrap();
     w.make_group(g).unwrap();
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     let mut w = alice.write();
-    let t = w.create(g, Place::In(g)).unwrap();
+    let t = w.create_in(g, &[g]).unwrap();
     w.at(t, ak("/t/x")).set(&Value::Str("first contact".into())).unwrap();
     w.commit().unwrap();
     // `/reach` went under g (only Alice reads it); the link's K joining g makes g stop
@@ -312,12 +313,12 @@ async fn redeem_direct_no_server_in_process_spec_permissions_9() {
     let bob = Osis::create(c).unwrap().0;
     reach_of(&alice).await;
     let mut w = alice.write();
-    let g = w.create(alice.me(), Place::In(alice.home())).unwrap();
+    let g = w.create_in(alice.me(), &[alice.home()]).unwrap();
     w.make_group(g).unwrap();
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     let mut w = alice.write();
-    let t = w.create(g, Place::In(g)).unwrap();
+    let t = w.create_in(g, &[g]).unwrap();
     w.at(t, ak("/t/x")).set(&Value::Str("no server".into())).unwrap();
     w.commit().unwrap();
     let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, ..Default::default() }).unwrap();
@@ -365,7 +366,7 @@ async fn single_use_direct_keeps_key_in_process_spec_permissions_9() {
     let bob = Osis::create(c).unwrap().0;
     reach_of(&alice).await;
     let mut w = alice.write();
-    let g = w.create(alice.me(), Place::In(alice.home())).unwrap();
+    let g = w.create_in(alice.me(), &[alice.home()]).unwrap();
     w.make_group(g).unwrap();
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
@@ -383,7 +384,7 @@ async fn single_use_direct_keeps_key_in_process_spec_permissions_9() {
     .unwrap();
     assert_eq!(alice.sync_engine(|s| s.own_reach()).unwrap().dialable, key, "finalized by redemption: kept");
     let mut w = bob.write();
-    let t = w.create(g, Place::In(g)).unwrap();
+    let t = w.create_in(g, &[g]).unwrap();
     w.at(t, ak("/t/x")).set(&Value::Str("still direct".into())).unwrap();
     w.commit().unwrap();
     let want = Some(Value::Str("still direct".into()));
@@ -492,7 +493,7 @@ fn own_runtime_reopen_right_after_close() {
         c
     };
     let (db, _) = Osis::create(at(0)).unwrap();
-    let t = db.write_with(|w| w.create(db.me(), Place::Unsynced)).unwrap();
+    let t = db.write_with(|w| w.create_durable(db.me())).unwrap();
     db.close().unwrap();
     for i in 1..12u64 {
         let db = Osis::open(at(i)).unwrap();

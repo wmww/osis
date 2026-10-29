@@ -72,3 +72,38 @@ pub fn commit_with(db: &Osis, f: impl FnOnce(&mut osis::Write<'_>) -> osis::Resu
     f(&mut w).unwrap();
     w.commit().unwrap().unwrap()
 }
+
+/// `create` and `place` into `groups` in one batch.
+pub trait CreateIn {
+    fn create_in(&mut self, owner: osis::Tid, groups: &[osis::Tid]) -> osis::Result<osis::Tid>;
+    /// `create` with a durable write (`/t/made`), so the thing is persisted by this batch.
+    fn create_durable(&mut self, owner: osis::Tid) -> osis::Result<osis::Tid>;
+}
+
+impl CreateIn for osis::Write<'_> {
+    fn create_in(&mut self, owner: osis::Tid, groups: &[osis::Tid]) -> osis::Result<osis::Tid> {
+        let t = self.create(owner)?;
+        for g in groups {
+            self.place(t, *g)?;
+        }
+        Ok(t)
+    }
+    fn create_durable(&mut self, owner: osis::Tid) -> osis::Result<osis::Tid> {
+        let t = self.create(owner)?;
+        self.at(t, ak("/t/made")).set(&osis::Value::Bool(true))?;
+        Ok(t)
+    }
+}
+
+/// `create` and `place_expiring` into `g` in one batch.
+pub trait CreateExpiringIn {
+    fn create_expiring_in(&mut self, owner: osis::Tid, g: osis::Tid, d: Option<std::time::Duration>) -> osis::Result<osis::Tid>;
+}
+
+impl CreateExpiringIn for osis::Write<'_> {
+    fn create_expiring_in(&mut self, owner: osis::Tid, g: osis::Tid, d: Option<std::time::Duration>) -> osis::Result<osis::Tid> {
+        let t = self.create(owner)?;
+        self.place_expiring(t, g, d)?;
+        Ok(t)
+    }
+}

@@ -4,12 +4,14 @@
 //! `Error`. Layer 8 (notes/architecture.md). Design: notes/api.md.
 //!
 //! # Open a database
-//! Owner and placement of new things are always explicit; `me()` is the usual owner.
+//! The owner of a new thing is always explicit; `me()` is the usual owner. Placement is a group
+//! op in the same batch. A new thing lives in memory until its first durable write.
 //! ```
-//! use osis::{Config, Osis, Place};
+//! use osis::{Config, Osis};
 //! let db = Osis::create(Config::memory())?.0;
 //! let mut w = db.write();
-//! let note = w.create(db.me(), Place::In(db.home()))?;
+//! let note = w.create(db.me())?;
+//! w.place(note, db.home())?;
 //! w.commit()?;
 //! assert!(db.groups_of(note).contains(&db.home()));
 //! # Ok::<(), osis::Error>(())
@@ -19,11 +21,11 @@
 //! Generated keys (`Aspect<T>`) read and write typed values; an `Ak` is the untyped key. An
 //! absent aspect reads as `None`.
 //! ```
-//! # use osis::{Config, Osis, Place, Ak, Value};
+//! # use osis::{Config, Osis, Ak, Value};
 //! # let db = Osis::create(Config::memory())?.0;
 //! let title = Ak::new("/note/title").unwrap();
 //! let t = db.write_with(|w| {
-//!     let t = w.create(db.me(), Place::Unsynced)?;
+//!     let t = w.create(db.me())?;
 //!     w.at(t, title.clone()).set(&Value::Str("Groceries".into()))?;
 //!     Ok(t)
 //! })?;
@@ -36,11 +38,11 @@
 //! `at(tid, key).path(p![..])` reads or writes one position; only that position is
 //! materialized.
 //! ```
-//! # use osis::{Config, Osis, Place, Ak, Value, p};
+//! # use osis::{Config, Osis, Ak, Value, p};
 //! # let db = Osis::create(Config::memory())?.0;
 //! let tags = Ak::new("/note/tags").unwrap();
 //! let mut w = db.write();
-//! let t = w.create(db.me(), Place::Unsynced)?;
+//! let t = w.create(db.me())?;
 //! w.at(t, tags.clone()).path(p![]).put(&"color".to_string(), &"red".to_string())?;
 //! w.commit()?;
 //! let c: Option<String> = db.at(t, tags).path(p!["color"]).get()?;
@@ -53,13 +55,13 @@
 //! `edit(base, new)` writes only what the user changed since `base`, so a concurrent change to
 //! another field survives.
 //! ```
-//! # use osis::{Config, Osis, Place, Ak, Value};
+//! # use osis::{Config, Osis, Ak, Value};
 //! # use std::collections::BTreeMap;
 //! # let db = Osis::create(Config::memory())?.0;
 //! let form = Ak::new("/app/form").unwrap();
 //! let shown = Value::Map(BTreeMap::from([(Value::Int(0), Value::Str("a".into())), (Value::Int(1), Value::Int(1))]));
 //! let mut w = db.write();
-//! let t = w.create(db.me(), Place::Unsynced)?;
+//! let t = w.create(db.me())?;
 //! w.at(t, form.clone()).set(&shown)?;
 //! w.commit()?;
 //! let mut edited = shown.clone();
@@ -73,11 +75,11 @@
 //! Callbacks run on one dispatcher thread, after the commit is durable, never under a lock;
 //! dropping the `Subscription` unsubscribes. `on_change` first delivers the current value.
 //! ```
-//! # use osis::{Config, Osis, Place, Ak, Value, Source};
+//! # use osis::{Config, Osis, Ak, Value, Source};
 //! # let db = Osis::create(Config::memory())?.0;
 //! let k = Ak::new("/app/count").unwrap();
 //! let mut w = db.write();
-//! let t = w.create(db.me(), Place::Unsynced)?;
+//! let t = w.create(db.me())?;
 //! w.commit()?;
 //! let (tx, rx) = std::sync::mpsc::channel();
 //! let sub = db.at(t, k.clone()).on_change(move |_db, c| { let _ = tx.send(c); })?;
@@ -94,11 +96,11 @@
 //! `commits` queries the held commits (anyone's); undo and redo revert this actor's own
 //! newest change or undo in a scope; `revert` reverts any commit.
 //! ```
-//! # use osis::{Config, Osis, Place, Ak, Value, Scope, CommitQuery, CommitKind};
+//! # use osis::{Config, Osis, Ak, Value, Scope, CommitQuery, CommitKind};
 //! # let db = Osis::create(Config::memory())?.0;
 //! let k = Ak::new("/app/x").unwrap();
 //! let mut w = db.write();
-//! let t = w.create(db.me(), Place::Unsynced)?;
+//! let t = w.create(db.me())?;
 //! w.at(t, k.clone()).set(&Value::Int(1))?;
 //! w.commit()?;
 //! db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(2)))?;
@@ -156,13 +158,13 @@
 //! Grants need the member's keys (a contact card, a shared group); links need nothing. Things a
 //! group owns are what its members read: create shared things with the group as owner.
 //! ```
-//! # use osis::{Config, Osis, Place, Role, LinkOpts, ServerAddr};
+//! # use osis::{Config, Osis, Role, LinkOpts, ServerAddr};
 //! // a link names servers (or is direct, `LinkOpts::direct`)
 //! let mut cfg = Config::memory();
 //! cfg.servers = vec![ServerAddr::new("quic://example.org:4433", [7; 32])];
 //! let db = Osis::create(cfg)?.0;
 //! let mut w = db.write();
-//! let g = w.create(db.me(), Place::In(db.home()))?;
+//! let g = w.create(db.me())?;
 //! w.make_group(g)?;
 //! w.commit()?;
 //! db.sync(g, &[])?;
@@ -175,9 +177,9 @@
 //! # Signals
 //! Never stored; local listeners fire too; connected readers of the thing receive them.
 //! ```
-//! # use osis::{Config, Osis, Place, Ak, Value, Target};
+//! # use osis::{Config, Osis, Ak, Value, Target};
 //! let db = Osis::create(Config::memory())?.0;
-//! let t = db.write_with(|w| w.create(db.me(), Place::Unsynced))?;
+//! let t = db.write_with(|w| w.create(db.me()))?;
 //! let (tx, rx) = std::sync::mpsc::channel();
 //! let _sub = db.on_signal(t, Ak::new("/app/typing").unwrap(), move |_, e| { let _ = tx.send(e.value); });
 //! db.send_signal(t, &Ak::new("/app/typing").unwrap(), &Value::Bool(true), Target::All)?;
@@ -189,12 +191,12 @@
 //! A string or blob above the bound streams; text edited by a user goes through a session that
 //! commits once per pause.
 //! ```
-//! # use osis::{Config, Osis, Place, Ak, Path};
+//! # use osis::{Config, Osis, Ak, Path};
 //! # use std::io::Read;
 //! let db = Osis::create(Config::memory())?.0;
 //! let k = Ak::new("/app/body").unwrap();
 //! let mut w = db.write();
-//! let t = w.create(db.me(), Place::Unsynced)?;
+//! let t = w.create(db.me())?;
 //! w.at(t, k.clone()).set_stream(&b"some bytes"[..])?;
 //! w.commit()?;
 //! let mut s = String::new();
@@ -212,11 +214,11 @@
 //! # Errors
 //! One `Error` with stable categories; rights are checked locally before signing.
 //! ```
-//! # use osis::{Config, Osis, Place, Error};
+//! # use osis::{Config, Osis, Error};
 //! let a = Osis::create(Config::memory())?.0;
 //! let b = Osis::create(Config::memory())?.0;
 //! let mut w = a.write();
-//! assert!(matches!(w.create(b.me(), Place::Unsynced), Err(Error::UnknownThing { .. })));
+//! assert!(matches!(w.create(b.me()), Err(Error::UnknownThing { .. })));
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -225,7 +227,7 @@
 //!   is for "must be exactly this".
 //! - Out of memory on a huge value: reads fail `TooLarge` past `Config::materialize_limit`;
 //!   read by path instead.
-//! - A thing that never syncs, or owned by the device: owner and `Place` are always explicit.
+//! - A thing that never syncs, or owned by the device: the owner is always explicit, placement a group op (`NotSynced` diagnostic).
 //! - A forgotten unsubscribe: `Subscription` is RAII, and dropping it at once is a lint:
 //! ```compile_fail
 //! #![deny(unused_must_use)]
@@ -266,11 +268,11 @@ pub use signal::{SignalEvent, Target};
 pub use text::TextSession;
 pub use commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Scope};
 pub use watch::{Change, Changed, CommitInfo, Source, Subscription, Watch};
-pub use write::{AspectWrite, Committed, PathWrite, Place, Write};
+pub use write::{AspectWrite, Committed, PathWrite, Write};
 
 pub use osis_base::{Ak, Clock, CommitId, CreationRecord, ManualClock, Role, Tid, Ts, Value, WallMs};
-pub use osis_node::{Cause, Diagnostic, DiagnosticKind};
-pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError, Retention, Schema, Signal, SignalKey, Step, p};
+pub use osis_node::{Cause, ChangeId, Diagnostic, DiagnosticKind, EphemeralId};
+pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError, Lifetime, Lifetimes, Retention, Schema, Signal, SignalKey, Step, Untyped, p};
 
 /// The schema layer, for generated code (`use osis::schema as osis_schema;`).
 pub use osis_schema as schema;

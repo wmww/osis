@@ -5,7 +5,8 @@
 use crate::common;
 use common::world::World;
 use common::*;
-use osis::{Demotion, Lower, Osis, Place, Role, SyncScope, SyncState, Tid, Value};
+use crate::common::CreateIn;
+use osis::{Demotion, Lower, Osis, Role, SyncScope, SyncState, Tid, Value};
 use std::time::Duration;
 
 fn s(x: &str) -> Value {
@@ -15,7 +16,7 @@ fn s(x: &str) -> Value {
 /// A thing in `g` (owned by `owner`) with `/t/x` = `v`.
 fn item(db: &Osis, owner: Tid, g: Tid, v: &str) -> Tid {
     let mut w = db.write();
-    let t = w.create(owner, Place::In(g)).unwrap();
+    let t = w.create_in(owner, &[g]).unwrap();
     w.at(t, ak("/t/x")).set(&s(v)).unwrap();
     w.commit().unwrap();
     t
@@ -103,7 +104,7 @@ fn restore_from_card_spec_permissions_9() {
 /// A group owned by `db`'s person, synced on its servers.
 fn group(db: &Osis) -> Tid {
     let mut w = db.write();
-    let g = w.create(db.me(), Place::In(db.home())).unwrap();
+    let g = w.create_in(db.me(), &[db.home()]).unwrap();
     w.make_group(g).unwrap();
     w.commit().unwrap();
     db.sync(g, &[]).unwrap();
@@ -370,7 +371,7 @@ fn disappearing_message_spec_commits_6() {
     alice.grant(g, ids[0], Role::Write, Default::default()).unwrap();
     w.run();
     let mut wr = alice.write();
-    let m = wr.create(g, Place::In(g)).unwrap();
+    let m = wr.create_in(g, &[g]).unwrap();
     wr.at(m, ak("/t/x")).expires_in(Duration::from_secs(10)).set(&s("gone soon")).unwrap();
     wr.commit().unwrap();
     w.run();
@@ -400,7 +401,7 @@ fn text_sessions_merge_spec_crdt_5_7() {
     }
     let body = da.key("/n/body").unwrap();
     let mut wr = da.write();
-    let t = wr.create(da.me(), Place::In(da.home())).unwrap();
+    let t = wr.create_in(da.me(), &[da.home()]).unwrap();
     wr.commit().unwrap();
     let sa = da.edit_text(t, body.clone(), osis::Path::root()).unwrap();
     sa.insert(0, "hello").unwrap();

@@ -68,7 +68,7 @@ pub struct Scope {
     pub group: Option<String>,
 }
 
-/// Where a new thing syncs.
+/// Groups a new thing goes into (none: device-local, or a group synced itself).
 #[derive(Args, Debug, Clone, Default)]
 pub struct PlaceArgs {
     /// Item of group G
@@ -77,9 +77,6 @@ pub struct PlaceArgs {
     /// Item of each group (comma-separated)
     #[arg(long, value_name = "G,G", value_delimiter = ',')]
     pub in_all: Vec<String>,
-    /// Device-local (or a group synced itself)
-    #[arg(long)]
-    pub unsynced: bool,
 }
 
 /// Demotion flags.

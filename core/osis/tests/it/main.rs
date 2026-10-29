@@ -4,6 +4,7 @@
 mod common;
 mod api;
 mod commits;
+mod ephemeral;
 mod runtime;
 mod sharing;
 mod sync;

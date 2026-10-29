@@ -28,6 +28,30 @@ pub enum Cause {
     LostAccess,
 }
 
+/// An ephemeral batch of this node (notes/ephemeral.md): its session and its number there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EphemeralId {
+    pub session: [u8; 32],
+    pub n: u64,
+}
+
+/// What made a change: a commit, or an ephemeral batch with no durable half.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ChangeId {
+    Commit(CommitId),
+    Ephemeral(EphemeralId),
+}
+
+impl ChangeId {
+    /// The commit, unless the change was ephemeral only.
+    pub fn commit(&self) -> Option<CommitId> {
+        match self {
+            ChangeId::Commit(c) => Some(*c),
+            ChangeId::Ephemeral(_) => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     /// A commit applied. `changed`: every `(tid, ak)` whose read may have changed.
@@ -41,6 +65,9 @@ pub enum Event {
     /// A signal about `tid`, received or sent by this node (node-sync fills it): `from` the
     /// sending node, `actor` the actor it signed for, `target` the one node it is for.
     Signal { tid: Tid, kind: Ak, from: Tid, actor: Tid, ts: Ts, target: Option<Tid>, value: osis_base::Value },
+    /// Ephemeral state changed in memory, or signal aspects fired (notes/ephemeral.md). `id` is
+    /// the batch's commit when it had a durable half (one change, one `ts`).
+    Ephemeral { id: ChangeId, origin: Origin, author: Tid, actor: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)>, signals: Vec<(Tid, Ak, osis_base::Value)> },
     /// Sync status changed (node-sync fills it).
     SyncStatus { label: osis_base::LabelId, detail: String },
     Diagnostic(Diagnostic),

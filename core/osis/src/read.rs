@@ -24,8 +24,9 @@ pub struct Edge {
 /// When a thing was created (`Osis::created`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Created {
-    /// The creating commit (never a compaction snapshot, which carries `/created` too).
-    pub commit: CommitId,
+    /// The creating commit (never a compaction snapshot, which carries `/created` too); `None`
+    /// while the thing is ephemeral (`ts`, `node`, `actor` then from the creating batch).
+    pub commit: Option<CommitId>,
     /// Its `ts`: the same on every node.
     pub ts: Ts,
     /// The authoring node and the actor it wrote for.
@@ -168,8 +169,8 @@ impl Reader<'_> {
         self.e.owner(&self.resolve(tid)).map(|o| self.resolve(o))
     }
 
-    /// The commit that created the thing (`Created`; a timeline sorts by `shown()`); `None`
-    /// while it is unknown or only a snapshot carrying its `/created` is here. Follows moves: a
+    /// The commit that created the thing (`Created`; a timeline sorts by `shown()`; an
+    /// ephemeral thing's batch, `commit: None`); `None` while it is unknown or only a snapshot carrying its `/created` is here. Follows moves: a
     /// moved thing reports its copy's creation, the move.
     pub fn created(&self, tid: Tid) -> Option<Created> {
         let c = self.e.creation(&self.resolve(tid))?;
@@ -287,6 +288,7 @@ impl Osis {
                     last.insert(ak.clone(), value.clone());
                     f(db, Change { tid, ak, value, source });
                 }
+                Delivery::Fired { tid, ak, source, value } => f(db, Change { tid, ak, value: Ok(Some(value)), source }),
                 _ => {}
             })
         })
@@ -388,6 +390,7 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
                     last = value.clone();
                     f(db, Change { tid, ak: ak.clone(), value: decode(value), source });
                 }
+                Delivery::Fired { tid, source, value, .. } => f(db, Change { tid, ak: ak.clone(), value: decode(Ok(Some(value))), source }),
                 _ => {}
             })
         }))

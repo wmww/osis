@@ -5,7 +5,7 @@ use crate::args::{CreateArgs, OpArgs, PlaceArgs, RmArgs, ScriptCmd, ScriptLine, 
 use crate::text::{self, PStep};
 use crate::{Ctx, key_ty, parse_dur, parse_ts, ty_in, usage};
 use clap::Parser;
-use osis::{AspectKey, AspectWrite, CaseId, Error, Key, Path, Place, Retention, Step, Tid, Value, WallMs};
+use osis::{AspectKey, AspectWrite, CaseId, Error, Key, Path, Retention, Step, Tid, Value, WallMs};
 use osis_schema::{Bound, PurgeBy, Type};
 use std::ops::Range;
 
@@ -16,16 +16,12 @@ pub struct Did {
     pub created: Vec<(String, Tid)>,
 }
 
-pub fn place(ctx: &Ctx<'_>, p: &PlaceArgs) -> anyhow::Result<Place> {
-    let n = usize::from(p.in_.is_some()) + usize::from(!p.in_all.is_empty()) + usize::from(p.unsynced);
-    if n != 1 {
-        return Err(usage("give exactly one of --in G, --in-all G,G, --unsynced"));
+/// The groups a new thing goes into (none: placed later, or device-local).
+pub fn place(ctx: &Ctx<'_>, p: &PlaceArgs) -> anyhow::Result<Vec<Tid>> {
+    if p.in_.is_some() && !p.in_all.is_empty() {
+        return Err(usage("give at most one of --in G, --in-all G,G"));
     }
-    Ok(match (&p.in_, p.unsynced) {
-        (Some(g), _) => Place::In(ctx.tid(g)?),
-        (None, true) => Place::Unsynced,
-        (None, false) => Place::InAll(p.in_all.iter().map(|g| ctx.tid(g)).collect::<anyhow::Result<_>>()?),
-    })
+    p.in_.iter().chain(&p.in_all).map(|g| ctx.tid(g)).collect()
 }
 
 /// Parses a path. `[n]` on an untyped position: for a read, a list index if the saved value
@@ -122,7 +118,10 @@ pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &
     if !a.pairs.len().is_multiple_of(2) {
         return Err(usage("create takes AK VALUE pairs"));
     }
-    let t = w.create(owner, place)?;
+    let t = w.create(owner)?;
+    for g in place {
+        w.place(t, g)?;
+    }
     if a.group {
         w.make_group(t)?;
     }

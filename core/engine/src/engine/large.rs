@@ -663,7 +663,7 @@ impl Engine {
         if ops.is_empty() {
             return Ok(None);
         }
-        Ok(Some(super::write::AspectMut { ops, schema, retention: Some(a.retention), expires: a.expires }))
+        Ok(Some(super::write::AspectMut { ops, schema, retention: Some(a.retention), expires: a.expires, ..Default::default() }))
     }
 
     /// The blobs the deltas of a body (`plaintext`: its commit blob plaintext) link, through

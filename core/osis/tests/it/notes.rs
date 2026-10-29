@@ -4,15 +4,16 @@
 
 use crate::scenario as common;
 use common::*;
+use crate::common::CreateIn;
 use osis::core::{BODY, GROUP, NAME};
-use osis::{Error, Osis, Path, Place, Result, Role, SyncScope, Tid, Scope};
+use osis::{Error, Osis, Path, Result, Role, SyncScope, Tid, Scope};
 use osis_sim::world::World;
 use std::time::Duration;
 
 /// A new note in `notebook`, owned by it (so the notebook's members read and write it).
 fn new_note(db: &Osis, notebook: Tid, title: &str) -> Result<Tid> {
     db.write_with(|w| {
-        let note = w.create(notebook, Place::In(notebook))?;
+        let note = w.create_in(notebook, &[notebook])?;
         w.at(note, NAME).set(&title.to_string())?;
         Ok(note)
     })

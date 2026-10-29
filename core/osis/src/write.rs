@@ -7,44 +7,26 @@ use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::read::ak_of;
 use osis_commit::PurgeItem;
-use osis_base::{CommitId, Tid, Ts, Value, WallMs};
+use osis_base::{Tid, Ts, Value, WallMs};
 use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
-use osis_node::Mutation;
+use osis_node::{ChangeId, Mutation};
 use osis_schema::core_types::{GROUP, is_membership_class};
 use osis_schema::{AspectKey, CaseId, Codec, Path, PathError, Retention, Step, type_at, validate_write};
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::time::Duration;
 
-/// Where a new thing syncs (notes/api.md: explicit, no default).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Place {
-    /// An item of this group.
-    In(Tid),
-    /// An item of each of these groups.
-    InAll(Vec<Tid>),
-    /// Device-local, or a group that will be synced itself.
-    Unsynced,
-}
-
-impl Place {
-    pub(crate) fn groups(self) -> Vec<Tid> {
-        match self {
-            Place::In(g) => vec![g],
-            Place::InAll(gs) => gs,
-            Place::Unsynced => Vec::new(),
-        }
-    }
-}
-
-/// A committed write.
+/// A written batch: its commit, or its ephemeral batch when it had no durable half
+/// (notes/ephemeral.md).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Committed {
-    pub commit: CommitId,
+    pub id: ChangeId,
     pub ts: Ts,
 }
 
-/// A batch of writes that becomes one commit. Reads see committed state only.
+/// A batch of writes: its durable ops become one commit, its ephemeral ops (keys declared
+/// `ephemeral`, `presence` or `signal`) apply in memory, all or nothing. Reads see written state
+/// only.
 #[must_use = "a Write does nothing until commit()"]
 pub struct Write<'d> {
     db: &'d Osis,
@@ -122,25 +104,15 @@ impl<'d> Write<'d> {
         if self.created.contains(&t) || self.db.knows(t) { Ok(t) } else { Err(Error::UnknownThing { tid: t }) }
     }
 
-    /// A new thing owned by `owner` (fixed forever; needs write on it), placed per `place`.
-    pub fn create(&mut self, owner: Tid, place: Place) -> Result<Tid> {
-        self.create_expiring(owner, place, None)
-    }
-
-    /// `create` whose placements expire after `expires` (spec/commits.md §6; `None`: never), as
-    /// `place_expiring` does: a disappearing item leaves its groups by itself.
-    pub fn create_expiring(&mut self, owner: Tid, place: Place, expires: Option<Duration>) -> Result<Tid> {
-        if let Some(d) = expires {
-            expiry_in(self.db, d)?;
-        }
+    /// A new thing owned by `owner` (fixed forever; needs write on it). It is ephemeral (in
+    /// memory, gone at restart) until its first durable write, which persists it with its owner
+    /// chain, keeping its tid; placing it into a group persists it too (for now). Group ops in
+    /// the same batch place it atomically.
+    pub fn create(&mut self, owner: Tid) -> Result<Tid> {
         let owner = self.known(owner)?;
-        let groups = place.groups().into_iter().map(|g| self.known(g)).collect::<Result<Vec<_>>>()?;
         let m = &mut self.m;
         let t = self.db.engine(|e| e.new_thing(m, owner));
         self.created.push(t);
-        for g in groups {
-            self.place_expiring(t, g, expires)?;
-        }
         Ok(t)
     }
 
@@ -176,6 +148,11 @@ impl<'d> Write<'d> {
         let member = self.resolve(member);
         self.group_expiry(g, exp)?;
         self.m.op(g, &GROUP, group_op(items, member, add))?;
+        // a durable group add naming an ephemeral thing persists it (until ephemeral
+        // placements, notes/ephemeral.md step 2)
+        if add {
+            self.m.persist(member);
+        }
         Ok(())
     }
 
@@ -209,13 +186,20 @@ impl<'d> Write<'d> {
         let t = self.known(tid)?;
         let aks = self.db.aspects(t)?;
         for ak in aks.iter().filter(|a| !read_only(a.as_str()) && !is_membership_class(a.as_str())) {
-            self.m.remove_aspect(t, ak)?;
+            // the side that holds it (an aspect held on both sides, by keys that disagree on
+            // its lifetime, loses its durable side here)
+            if self.db.engine(|e| e.has_durable(&t, ak)) {
+                self.m.remove_aspect(t, ak)?;
+            } else {
+                self.m.remove_aspect(t, &osis_schema::Untyped::new(ak.clone(), osis_schema::Lifetime::Ephemeral))?;
+            }
         }
         for g in self.db.groups_of(t) {
             if self.db.get(g, GROUP)?.is_some_and(|x| x.items.contains(&t)) {
                 self.unplace(t, g)?;
             }
         }
+        self.m.free(t);
         Ok(())
     }
 
@@ -237,16 +221,19 @@ impl<'d> Write<'d> {
         AspectWrite { w: self, tid, key, bad }
     }
 
-    /// Commits every op as one atomic commit; `None` when nothing changes. Fails before
-    /// signing with `Permission` or `UnknownThing`.
+    /// Writes every op: the durable ones as one atomic commit, the ephemeral ones in memory;
+    /// `None` when nothing changes. Fails before anything applies with `Permission`,
+    /// `UnknownThing` or `Invalid`.
     pub fn commit(mut self) -> Result<Option<Committed>> {
         self.m.act_as(self.actor);
         let m = std::mem::take(&mut self.m);
         let placed = std::mem::take(&mut self.placed);
-        self.db.engine(|e| match e.commit(m)? {
-            Some(id) => {
-                not_synced(e, &placed);
-                Ok(Some(Committed { commit: id, ts: e.header(&id).map(|h| h.ts).unwrap_or_default() }))
+        self.db.engine(|e| match e.write(m)? {
+            Some(w) => {
+                if w.id.commit().is_some() {
+                    not_synced(e, &placed);
+                }
+                Ok(Some(Committed { id: w.id, ts: w.ts }))
             }
             None => Ok(None),
         })
@@ -341,6 +328,9 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
     /// Drops the aspect's whole history wherever the author may purge it (spec/commits.md §5,
     /// spec/permissions.md §8) and removes the aspect, in this commit.
     pub fn purge(&mut self) -> Result<()> {
+        if !self.key.defaults().lifetime.is_durable() {
+            return Err(Error::Invalid("purge applies to durable aspects only".into()));
+        }
         self.remove()?;
         let ak = ak_of(&self.key)?;
         self.w.m.purge(PurgeItem::Aspect { tid: self.tid, ak });
