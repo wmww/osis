@@ -64,7 +64,7 @@ fn new_reads_old_with_reader_defaults_spec_versioning_5() {
     assert_eq!(r, Value::List(vec![full]));
 }
 
-// spec/versioning.md §5 (typed read fails)
+// spec/versioning.md §5 (mistyped reads absent): the decoder refuses, with the path
 #[test]
 fn typed_read_errors_carry_paths_spec_versioning_5() {
     let (v1, v2) = (schema(1, V1), schema(2, V2));

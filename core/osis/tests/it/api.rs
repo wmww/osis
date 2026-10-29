@@ -52,6 +52,7 @@ fn create_and_reopen_spec_api_handle() {
 // write typed values; per-path typed reads; a typed read of mistyped data reads as absent with
 // a `Mismatch` diagnostic naming the path, while the untyped read works; one bad element of a
 // list fails the whole typed read but not a path read of another element.
+// spec/versioning.md §5 (mistyped reads absent)
 #[test]
 fn typed_keys_and_paths_spec_versioning_5() {
     let db = db(1);
