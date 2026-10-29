@@ -1,8 +1,18 @@
-//! The app's own aspects (notes/app.md). Notes themselves are core `/name` plus `/body`.
+//! The app's own aspects (notes/app.md). Notes are core `/name` plus `/body`, tags core `/tag` groups,
+//! events and contacts the first-party schemas (schema/).
 schema 0x1479f2511b02a554fda5785da8c52882;
 revision 1;
 
-/// Marks a group as the app's internal notes group: placed in the home group, no `/tag`, never shown.
-aspect /osis-app/notes: bool;
-/// Durable view state on the notes group: the note each device (its node tid) has selected.
-aspect /osis-app/selected: map<tid, tid>;
+/// Marks a group as the app's internal group (an item and subgroup of home, no `/tag`, never shown).
+/// Every thing the app makes is placed in it; the app's own per-person data lives on it.
+aspect /osis-app/app: bool;
+/// On the app group: the favorites, in the person's order.
+aspect /osis-app/favorites: list<tid>;
+/// Marks a thing as one of the app's built-in views (a scope tile like a tag).
+aspect /osis-app/view: enum { 0 calendar, 1 people, 2 tags, 3 recent };
+/// A thing's own display colour (`#rrggbb`) where no first-party aspect holds one (a tag's is `/tag.color`).
+aspect /osis-app/color: string;
+/// On the app group: the thing each device (its node tid) has open; absent: home.
+aspect /osis-app/open: map<tid, tid> [ephemeral];
+/// On the app group: demo data was added.
+aspect /osis-app/demo: bool;

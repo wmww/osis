@@ -2,7 +2,7 @@
 //! `marshal`), and running one window.
 
 use crate::marshal::Wake;
-use crate::theme::Theme;
+use masonry::peniko::Color;
 use masonry::core::{NewWidget, Widget, WidgetId};
 use masonry::dpi::LogicalSize;
 use masonry_winit::app::{AppDriver, EventLoop, EventLoopProxy, MasonryUserEvent, NewWindow, WindowId};
@@ -52,9 +52,9 @@ impl App {
     }
 
     /// Opens the window with `root` and runs until it closes.
-    pub fn run(self, title: &str, size: (f64, f64), root: NewWidget<dyn Widget>, driver: impl AppDriver + 'static, theme: &Theme) -> Result<(), EventLoopError> {
+    pub fn run(self, title: &str, size: (f64, f64), root: NewWidget<dyn Widget>, driver: impl AppDriver + 'static, base: Color) -> Result<(), EventLoopError> {
         let attrs = Window::default_attributes().with_title(title).with_resizable(true).with_inner_size(LogicalSize::new(size.0, size.1));
-        let w = NewWindow::new_with_id(self.window, attrs, root).with_base_color(theme.base);
-        masonry_winit::app::run_with(self.event_loop, vec![w], driver, theme.properties())
+        let w = NewWindow::new_with_id(self.window, attrs, root).with_base_color(base);
+        masonry_winit::app::run_with(self.event_loop, vec![w], driver, masonry::theme::default_property_set())
     }
 }
