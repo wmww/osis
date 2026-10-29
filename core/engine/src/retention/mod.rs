@@ -435,21 +435,22 @@ fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, item: &PurgeItem, c: &CommitId, ai:
 /// purges (spec/commits.md §5): `purge_one` judges the snapshots held when the request or the
 /// named delta arrives; this one a snapshot part arriving after both.
 pub(crate) fn drop_purged_snapshot(tx: &mut Tx<'_>, s: &CommitId, sai: usize) -> Result<()> {
-    let Some(sm) = tx.core.ix.commits.get(s).cloned() else { return Ok(()) };
-    let Some(a) = sm.header.aspects.get(sai).cloned() else { return Ok(()) };
+    // runs for every applied delta: the kind first, nothing cloned
+    let Some(sm) = tx.core.ix.commits.get(s) else { return Ok(()) };
     if !crate::apply::is_kind_snapshot(sm.header.kind) {
         return Ok(());
     }
+    let Some((tid, ak)) = sm.header.aspects.get(sai).map(|a| (a.tid, a.ak.clone())) else { return Ok(()) };
     let mut owned = Vec::new();
-    for pc in purge_requests(tx, &a.tid, &a.ak)? {
+    for pc in purge_requests(tx, &tid, &ak)? {
         let Some(p) = tx.core.ix.commits.get(&pc).map(|m| m.header.clone()) else { continue };
         for item in &p.purge {
             let named: Vec<CommitId> = match item {
                 PurgeItem::Commit { commit, .. } => vec![*commit],
-                PurgeItem::Aspect { .. } => tx.core.ix.by_aspect.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).collect(),
+                PurgeItem::Aspect { .. } => tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect(),
             };
             for c in named.into_iter().filter(|c| c != s) {
-                let (Some(m), Some(ai)) = (tx.core.ix.commits.get(&c).cloned(), aspect_index(tx, &c, &a.tid, &a.ak)) else { continue };
+                let (Some(m), Some(ai)) = (tx.core.ix.commits.get(&c).cloned(), aspect_index(tx, &c, &tid, &ak)) else { continue };
                 if purge_allowed(tx.core, &p, &pc, item, &m.header, &c, ai)
                     && let Some(o) = Owned::of(&m.header, &c, ai)
                 {

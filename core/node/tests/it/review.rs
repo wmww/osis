@@ -168,6 +168,22 @@ fn purge_drops_late_snapshot_spec_commits_5() {
     lp.peers[i].engine.set_syncing(t, true).unwrap();
     lp.peers[i].engine.reexamine().unwrap();
     check(&mut lp.peers[i].engine, "named delta last");
+    // the snapshot's header, then its part (a late part, `join_late`)
+    let j = lp.peers.len();
+    lp.peers.push(osis_node::local_peer::Peer::new(0x5b03, lp.peers[0].engine.now()).unwrap());
+    for p in rest.iter().chain([&secret_pk]) {
+        lp.deliver(j, p).unwrap();
+    }
+    let sh = lp.peers[0].engine.header(&snap).unwrap();
+    let r = lp.peers[j].engine.ingest(&strip_parts(&spk, |_| false, &sh), Vec::new()).unwrap();
+    assert!(matches!(r, Ingested::Applied(_)), "{r:?}");
+    lp.peers[j].engine.set_syncing(t, true).unwrap();
+    lp.peers[j].engine.reexamine().unwrap();
+    assert!(!lp.peers[j].engine.body_not_dropped(&secret, &t, &reg));
+    lp.deliver(j, &spk).unwrap();
+    check(&mut lp.peers[j].engine, "snapshot part last");
+    lp.peers[j].restart(0x5b04).unwrap();
+    check(&mut lp.peers[j].engine, "snapshot part last, restarted");
 }
 
 // spec/commits.md §5: a compaction snapshot takes the default bounds of a schema known here, also
