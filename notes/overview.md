@@ -46,7 +46,7 @@ Known open (issues/): owner tradeoffs stated in user terms (aspect-key-format); 
 - notes/permissions.md: permission rules' reasons, membership model findings, move (copy) and revocation reasoning, sharing patterns.
 - notes/sync.md: sync and blind-node reasons, limits, what a blind node learns, policy defaults.
 - notes/crypto.md: suite choices, costs, crates.
-- notes/ephemeral.md: ephemeral data design (in-memory things and aspects, persistence, synced envelopes with poke liveness, signals folded in, plan), expiry, the all-nodes predicate, heartbeats and the stranded flag.
+- notes/ephemeral.md: ephemeral data design and what is built (in-memory things and aspects, persistence, placements, undo, ephemeral commits held in memory at nodes and servers, relay-only signals; presence left), expiry, the all-nodes predicate, heartbeats and the stranded flag.
 - notes/chat.md: the chat pattern derived from the current design, with costs (thrown out; kept for its measured costs until the redesign, notes/std.md).
 - notes/tags.md: the standard core aspects (`/name`, `/body`, `/tag`), tags as marked groups in a graph, sharing a tag per item through one nested roster, the confirmation guideline.
 - notes/networking.md: transports (iroh, direct servers), official infrastructure, push wake-up proposal, risks.
