@@ -4,7 +4,7 @@
 osis (Open Structured Information System) is a decentralized database optimized for flexibility and robustness: end-user apps managing small-to-large interconnected data across users and devices (notes, calendars, spreadsheets), shared by many apps, app versions, generic tools and AI agents like a file format. Handles device sync, sharing, encryption and simple data APIs. Somewhere between Git, Obsidian, Google Drive and Syncthing.
 
 ## Where things live
-The repo is meant to become a small monorepo of projects worked on independently (owner): core (with cli and schema), and later kit (UI toolkit) and app (notes/app.md), each with its own checks.
+The repo is meant to become a small monorepo of projects worked on independently (owner): core (with cli and schema), kit (UI toolkit) and app (notes/app.md), each with its own checks (the gate picks them by changed paths, notes/build.md).
 - `spec/`: what a compatible implementation needs (start at spec/overview.md). Requirements, accepted limits and usage rules are spec/requirements.md. Until a stable release, spec edits need no owner sign-off; changes to or conflicts with spec/requirements.md go to the owner.
 - `notes/`: why the spec is what it is, rejected alternatives, policies and implementation hints.
 - `issues/`: unsolved problems and pending owner decisions (`grep -l owner-call issues/*`); each has Summary, Tags and a Repro line. Tags: `security`, `performance`, `tests`, `post-mvp`, `owner-call`, component names. `plans/`: work not done yet; the MVP plans are all done or turned into issues. notes/mvp-progress.md holds the MVP final report.
@@ -15,6 +15,7 @@ The MVP is built: every subsystem of the spec is implemented and tested (final r
 
 Code map (crate DAG and rules: notes/architecture.md):
 - `core/` (package names keep the `osis-` prefix): `base` osis-base (values, CBOR, ids, chunker), -crypto, -crdt, -schema, -perm, -store (encrypted local store), -commit, -keys, -label (blobs, labels, steps, large values), -proto (sans-I/O sync protocol), -transport (in-process, QUIC, iroh, LAN), -server (blind node), -node (engine, sync engine, membership flows), `osis` (the app API), `bench` osis-bench. `cli/` osis-cli (binary `osis`).
+- `kit/` osis-kit (UI toolkit over Masonry) and `app/` osis-app (binary `osis-app`, prototype notes app): their own Cargo workspace rooted at kit/Cargo.toml (notes/app.md).
 - `schema/` the first-party schema files, their scenario tests in core/osis's test binary (notes/std.md); `core/test/sim/` the deterministic simulator (notes/testing.md); `core/test/vectors/` conformance vectors; `core/test/fuzz/` cargo-fuzz targets; `core/test/crdt-model` and `core/test/membership-model` reference models, `core/test/tla` TLA+ `sync`, `rotation` and `membership`; `tools/` policy.py, spec_map.py, fixpoint.
 
 What runs where (details and latest numbers: notes/testing.md):
