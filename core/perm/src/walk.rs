@@ -634,8 +634,7 @@ impl Walked {
             // as `Pass::change` (no audit: `insert`): the key's state at the end is its state here
             let old = self.set_alive(p, key, new);
             let explicit = matches!(attr, Attr::By(Class::Chain | Class::Edge));
-            let restores = old.is_some() || self.prior.contains_key(&key);
-            let own = explicit && restores && View::new(&input.owners, &at, Some(p.ts)).reach_backward(&o.member).contains(&c.author);
+            let own = explicit && self.restores(key, old) && View::new(&input.owners, &at, Some(p.ts)).reach_backward(&o.member).contains(&c.author);
             self.set_edge(key, new);
             at.set(o.member, o.target, new);
             if let Some((base, mine, _)) = self.record_change(p, key, old, new, Some(id), explicit.then(|| c.frontier.clone()))
@@ -980,11 +979,22 @@ impl Walked {
 
     /// After an explicit write on `key` by `author` that demoted itself (`record_change`
     /// returned `base` and `mine`): its own standing is kept for the next explicit write.
+    /// (A standing it kept from an earlier explicit write is kept on, even when the edge itself
+    /// restores nothing: a removal of an absent edge.)
     fn keep_own(&mut self, key: (Tid, Tid), author: Tid, base: Option<Edge>, mine: &BTreeMap<Tid, Edge>) {
-        if let Some(b) = base {
-            self.log.push(Undo::PriorNode(key, self.prior_node.get(&key).cloned()));
-            self.prior_node.entry(key).or_default().insert(author, join(mine.get(&author).copied(), b));
-        }
+        let kept = match (base, mine.get(&author)) {
+            (Some(b), m) => join(m.copied(), b),
+            (None, Some(m)) => *m,
+            (None, None) => return,
+        };
+        self.log.push(Undo::PriorNode(key, self.prior_node.get(&key).cloned()));
+        self.prior_node.entry(key).or_default().insert(author, kept);
+    }
+
+    /// Whether an explicit write on `key` over its value `old` restores anything (§5.1 step 4):
+    /// the value, standings taken away without audit, or standings kept by authors.
+    fn restores(&self, key: (Tid, Tid), old: Option<Edge>) -> bool {
+        old.is_some() || self.prior.contains_key(&key) || self.prior_node.contains_key(&key)
     }
 
     /// The items from `i` on that may read what setting edges `keys` changes (`insert`), with
@@ -1650,7 +1660,7 @@ impl<'a> Pass<'a> {
         let old = self.w.set_alive(point, key, edge);
         // Before the change: does the author reach the member (a demotion of itself)? Only
         // asked when the edge restores something.
-        let restores = old.is_some() || self.w.prior.contains_key(&key);
+        let restores = self.w.restores(key, old);
         let own = auditor.and_then(|a| a.author).filter(|a| restores && self.view(point.ts).reach_backward(&member).contains(a));
         self.set_tracked(member, target, edge, point.ts);
         let (Some(aud), Some((base, mine, lowered))) = (auditor, self.w.record_change(point, key, old, edge, by, auditor.map(|a| a.frontier_arc.clone()))) else {
