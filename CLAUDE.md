@@ -19,7 +19,7 @@ Below the title each note, issue and specs should contain a one-line `> Summary:
 - No backward compatibility with earlier builds until the owner opens the stability discussion: no legacy readers, migrations, old-format fallbacks, version shims or "accepted, pre-release" carry-overs in code, protocol, schemas, stores or spec. Change formats in place; data from an older commit may fail to load. spec/requirements.md Versioning (old data readable forever, the wire only grows, no reused identifiers) constrains nothing until stability: it is the design target for released nodes, not a limit on changing today's formats.
 - Any picked number (threshold, cap, timeout, grace period) must pass notes/arbitrary-values.md (what happens at 0 and at infinity?).
 - Refactor freely as needed. don't trust that existing code/comments/notes are necessarily correct, or existing design decisions are optimal.
-- Unless otherwise asked, commit, pull --rebase and push when you've completed your task.
+- Unless otherwise asked, commit, pull --rebase and push when you've completed your task. Only main is pushed: task branches stay local (every worktree shares the repo's branches), so never push a worktree branch.
 - Commit to the current branch unless asked, don't make feature branches.
 - Don't worry about docs/ unless asked to, it's fine for docs/ to fall out of date, they will be updated on explicit request
 - Do not run code formatting tools unless explicitly asked.
