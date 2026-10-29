@@ -73,3 +73,70 @@ fn exhaustive_small() {
         }
     }
 }
+
+/// Random old/new lists (duplicate keys included, up to 12 rows): every op is in range when
+/// applied (the lenient `apply` would skip one silently), moves go up, applying gives `new`, and
+/// a row is updated only if its value changed or it was moved or rebuilt.
+#[test]
+fn random_lists_strict() {
+    let mut seed = 0x9e3779b97f4a7c15u64;
+    let mut rnd = |n: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % n
+    };
+    for _ in 0..20_000 {
+        let keys = 1 + rnd(10);
+        let dup = rnd(4) == 0;
+        let make = |rnd: &mut dyn FnMut(u64) -> u64| {
+            let len = rnd(13) as usize;
+            let mut l: Vec<(u64, u64)> = Vec::new();
+            while l.len() < len {
+                let k = rnd(keys);
+                if dup || !l.iter().any(|(x, _)| *x == k) {
+                    l.push((k, rnd(2)));
+                } else if l.len() as u64 >= keys {
+                    break;
+                }
+            }
+            l
+        };
+        let old = make(&mut rnd);
+        let new = make(&mut rnd);
+        let ops = reconcile(&old, &new);
+        // (key, value, rebuilt)
+        let mut list: Vec<(u64, u64, bool)> = old.iter().map(|(k, v)| (*k, *v, false)).collect();
+        for op in &ops {
+            match op {
+                Op::Remove(i) => {
+                    assert!(*i < list.len(), "{old:?} -> {new:?}: {ops:?}");
+                    list.remove(*i);
+                }
+                Op::Insert(i, k) => {
+                    assert!(*i <= list.len(), "{old:?} -> {new:?}: {ops:?}");
+                    list.insert(*i, (*k, u64::MAX, true));
+                }
+                Op::Move { from, to } => {
+                    assert!(*to < *from && *from < list.len(), "{old:?} -> {new:?}: {ops:?}");
+                    let mut x = list.remove(*from);
+                    x.2 = true;
+                    list.insert(*to, x);
+                }
+                Op::Update(i) => {
+                    assert!(*i < list.len(), "{old:?} -> {new:?}: {ops:?}");
+                    let (_, nv) = new[*i];
+                    assert!(list[*i].1 != nv || list[*i].2, "needless update {old:?} -> {new:?}: {ops:?}");
+                    list[*i].1 = nv;
+                }
+            }
+        }
+        // rebuilt rows take the new value on creation; a kept row must already hold it
+        let got: Vec<u64> = list.iter().map(|(k, _, _)| *k).collect();
+        let want: Vec<u64> = new.iter().map(|(k, _)| *k).collect();
+        assert_eq!(got, want, "{old:?} -> {new:?}: {ops:?}");
+        for (i, (_, v, rebuilt)) in list.iter().enumerate() {
+            assert!(*rebuilt || *v == new[i].1, "stale value at {i}: {old:?} -> {new:?}: {ops:?}");
+        }
+    }
+}

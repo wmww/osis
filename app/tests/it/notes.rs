@@ -41,3 +41,28 @@ fn one_internal_group_under_home() {
     let t = n.create("x").unwrap();
     assert!(n.db.groups_of(t).contains(&n.db.home()));
 }
+
+/// Typing spliced into a session whose buffer holds a remote merge the widget does not show yet
+/// keeps the merge (`shown` is the widget's text before the keystroke).
+#[test]
+fn splice_keeps_unshown_remote_merge() {
+    use osis_app::ui::splice;
+    let n = notes();
+    let t = n.create("x").unwrap();
+    let s = n.db.edit_text(t, BODY, osis::Path::root()).unwrap();
+    let shown = "hello world";
+    s.insert(0, shown).unwrap();
+    // the "remote" merge, ahead of the widget
+    s.insert(6, "brave ").unwrap();
+    splice(&s, shown, "hello world!").unwrap();
+    assert_eq!(s.text(), "hello brave world!", "after the merge");
+    splice(&s, "hello world!", ">hello world!").unwrap();
+    assert_eq!(s.text(), ">hello brave world!", "before the merge");
+    splice(&s, ">hello world!", ">hellX world!").unwrap();
+    assert_eq!(s.text(), ">hellX brave world!", "a replace before the merge");
+    // a deletion across the merge point: the merge wins, only what was typed lands, after it
+    splice(&s, ">hellX world!", ">hellX_rld!").unwrap();
+    assert_eq!(s.text(), ">hellX brave _world!");
+    splice(&s, ">hellX brave _world!", ">hellX brave _world").unwrap();
+    assert_eq!(s.text(), ">hellX brave _world", "no merge pending: the plain splice");
+}

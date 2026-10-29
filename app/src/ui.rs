@@ -39,6 +39,8 @@ struct Editor {
     note: Tid,
     name: TextSession,
     body: TextSession,
+    /// The name and body texts as the widgets show them (a remote merge may be newer).
+    shown: (String, String),
 }
 
 /// Widget ids the driver dispatches on.
@@ -154,7 +156,7 @@ impl Ui {
                     mb.post(Msg::Remote(t));
                 });
                 let texts = (name.text(), body.text());
-                self.editor = Some(Editor { note: t, name, body });
+                self.editor = Some(Editor { note: t, name, body, shown: texts.clone() });
                 texts
             }
             None => (String::new(), String::new()),
@@ -164,6 +166,9 @@ impl Ui {
     }
 
     fn show_text(&mut self, ctx: &mut DriverCtx<'_, '_>, name: &str, body: &str) {
+        if let Some(e) = self.editor.as_mut() {
+            e.shown = (name.to_string(), body.to_string());
+        }
         let root = ctx.render_root(self.window);
         root.edit_widget_with_tag(NAME_AREA, |mut a| reset_if_differs(&mut a, name));
         root.edit_widget_with_tag(BODY_AREA, |mut a| reset_if_differs(&mut a, body));
@@ -187,19 +192,31 @@ fn short(t: Tid) -> String {
     t.to_string().chars().take(8).collect()
 }
 
-/// Writes the user's change `old -> new` into a session as one splice (common prefix and suffix
-/// kept, char indices).
-fn splice(s: &TextSession, new: &str) -> osis::Result<()> {
-    let old = s.text();
-    if old == new {
+/// `old -> new` as one splice: (start, chars removed, chars inserted), common prefix and suffix kept.
+fn diff(o: &[char], n: &[char]) -> (usize, usize, Vec<char>) {
+    let pre = o.iter().zip(n).take_while(|(a, b)| a == b).count();
+    let suf = o.iter().rev().zip(n.iter().rev()).take(o.len().min(n.len()) - pre).take_while(|(a, b)| a == b).count();
+    (pre, o.len() - suf - pre, n.get(pre..n.len() - suf).unwrap_or_default().to_vec())
+}
+
+/// Writes the user's change `shown -> new` of a widget into its session as one splice (char
+/// indices). A remote change merged into the session but not shown yet is kept: the splice moves
+/// past it, or, overlapping it, becomes an insert at its end (the pending `Remote` then shows both).
+pub fn splice(s: &TextSession, shown: &str, new: &str) -> osis::Result<()> {
+    let sh: Vec<char> = shown.chars().collect();
+    let (at, del, ins) = diff(&sh, &new.chars().collect::<Vec<_>>());
+    if del == 0 && ins.is_empty() {
         return Ok(());
     }
-    let o: Vec<char> = old.chars().collect();
-    let n: Vec<char> = new.chars().collect();
-    let pre = o.iter().zip(&n).take_while(|(a, b)| a == b).count();
-    let suf = o.iter().rev().zip(n.iter().rev()).take(o.len().min(n.len()) - pre).take_while(|(a, b)| a == b).count();
-    let ins: String = n.get(pre..n.len() - suf).unwrap_or_default().iter().collect();
-    s.replace(pre..o.len() - suf, &ins)
+    let (rat, rdel, rins) = diff(&sh, &s.text().chars().collect::<Vec<_>>());
+    let (at, del) = if at + del <= rat {
+        (at, del)
+    } else if at >= rat + rdel {
+        (at - rdel + rins.len(), del)
+    } else {
+        (rat + rins.len(), 0)
+    };
+    s.replace(at..at + del, &ins.iter().collect::<String>())
 }
 
 struct RowMaker<'a> {
@@ -272,9 +289,14 @@ impl AppDriver for Ui {
             self.report(ctx, r);
         } else if let Ok(a) = action.downcast::<TextAction>() {
             let TextAction::Changed(text) = *a else { return };
-            let r = match &self.editor {
-                Some(e) if id == self.ids.name => splice(&e.name, &text),
-                Some(e) if id == self.ids.body => splice(&e.body, &text),
+            let r = match self.editor.as_mut() {
+                Some(e) if id == self.ids.name => splice(&e.name, &std::mem::replace(&mut e.shown.0, text.clone()), &text),
+                Some(e) if id == self.ids.body => splice(&e.body, &std::mem::replace(&mut e.shown.1, text.clone()), &text),
+                // no note open: typing goes nowhere, so the widgets show nothing
+                None if id == self.ids.name || id == self.ids.body => {
+                    self.show_text(ctx, "", "");
+                    Ok(())
+                }
                 _ => Ok(()),
             };
             self.report(ctx, r);

@@ -7,3 +7,4 @@
 - `rm -rf` on scratch stores was denied by the permission system; use fresh directory names instead.
 - `claudewait` is not on PATH on this box (not in ~/.local/bin either): waiting on a background gate fell back to task notifications.
 - With deny missing, timing a gate run per project needed `--base REV` plus throwaway probe commits; the core run stops at deny before the GUI `cargo check` (about 1 s warm, run by hand).
+- Review: `git diff --name-only` follows renames by default, so a core file moved into kit/ listed only the kit path and the gate skipped core; now `--no-renames`, with `tools/gate_select_test.sh` (fabricated histories against `gate.sh --plan`).
