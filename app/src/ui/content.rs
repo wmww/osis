@@ -205,7 +205,9 @@ impl Ui {
         if let Some((pt, g, who)) = &self.view.pending
             && *pt == t
         {
-            c.line(format!("{} is shared with {who}. Tag it there, and they will see it?", d.name(*g)?));
+            // the grant is write capped by each member's role on the tag (Data::add_tag)
+            let g = d.name(*g)?;
+            c.line(format!("{g} is shared with {who}. Tag it there? They will see it, and whoever can edit {g} can edit it too."));
             c.blocks.push(Block::Chips(vec![ChipM::action(Icon::Tag, "Tag and share", Act::Confirm), ChipM::action(Icon::Back, "Cancel", Act::Cancel)]));
         } else if self.view.picker {
             let others: Vec<Tid> = d.all_tags()?.into_iter().filter(|g| !tags.contains(g) && *g != t).collect();
