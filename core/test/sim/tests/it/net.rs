@@ -206,3 +206,11 @@ fn ephemeral_capped_seed_14() {
 fn ephemeral_seed_83() {
     ok("ephemeral", 83);
 }
+
+// spec/sync.md §9 (compaction on a cap refusal): node 1's notes commit stays out at the full
+// capped server, which holds node 1's `/created`-only commits no cover absorbs (pre-existing).
+#[test]
+#[ignore = "issues/eph-capped-created-remnants.md"]
+fn repro_ephemeral_capped_seed_2400045() {
+    ok("ephemeral_capped", 2400045);
+}
