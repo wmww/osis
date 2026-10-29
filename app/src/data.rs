@@ -12,7 +12,7 @@
 
 use crate::schema::{APP, COLOR, DEMO, FAVORITES, MODE, Mode, OPEN, THEME, VIEW, View};
 use osis::core::{BODY, GROUP, NAME, TAG};
-use osis::{AspectKey, Config, Error, Osis, Result, Runtime, ServerAddr, Tid, Transport, p};
+use osis::{AspectKey, ChangeId, CommitKind, CommitQuery, Config, Edge, EdgeOpts, Error, Osis, Result, Role, Runtime, Scope, ServerAddr, Tid, Transport, p};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -338,11 +338,13 @@ impl Data {
         }
     }
 
-    /// When `t` last changed (wall ms of its newest change, else its creation).
+    /// When `t` last changed: wall ms of its newest content change, else its creation, each at
+    /// `min(ts, received)` (a device whose clock runs ahead cannot date a change into the future).
     pub fn changed(&self, t: Tid) -> Option<u64> {
-        let q = osis::CommitQuery::new().scope(osis::Scope::Thing(t)).limit(1);
-        let newest = self.db.commits(&q).ok().and_then(|c| c.first().map(|e| e.commit.ts));
-        newest.or_else(|| self.db.created(t).map(|c| c.ts)).map(|ts| ts.wall_ms().0)
+        let q = CommitQuery::new().scope(Scope::Thing(t)).kind(CommitKind::Change).kind(CommitKind::Revert).limit(1);
+        let newest = self.db.commits(&q).ok().and_then(|c| c.first().map(|e| (e.commit.ts, e.commit.received)));
+        let (ts, received) = newest.or_else(|| self.db.created(t).map(|c| (c.ts, c.received)))?;
+        Some(ts.wall_ms().0.min(received.0))
     }
 
     fn sort_by_name(&self, v: &mut [Tid]) -> Result<()> {
@@ -423,11 +425,13 @@ impl Data {
         Ok(out)
     }
 
-    /// Who can see `t`: its owner and its roster, through member actors (shared tags) down to
-    /// people; me and my devices are "you".
+    /// Who can see `t`: its owner and its roster, through member actors (shared tags, with their
+    /// owners) down to people; me and my devices are "you". Edges with an `until` count until it
+    /// passes.
     pub fn reach(&self, t: Tid) -> Result<Reach> {
         let db = &self.db;
         let me = db.me();
+        let now = db.now();
         let mine: BTreeSet<Tid> = db.roster(me).into_keys().chain([me, db.node()]).collect();
         let mut r = Reach::default();
         let mut seen = BTreeSet::new();
@@ -443,8 +447,10 @@ impl Data {
                 continue;
             }
             if x != t && db.knows(x) && self.get(x, TAG)?.is_some() {
-                // a shared tag: its members see what it holds
+                // a shared tag: its members see what it holds, and so does its owner (implicitly
+                // its admin, not on its roster)
                 r.via.push(x);
+                todo.extend(db.owner_of(x));
             } else if x != t {
                 let name = self.person_name(x)?;
                 if !r.people.contains(&name) {
@@ -452,7 +458,7 @@ impl Data {
                 }
                 continue;
             }
-            todo.extend(db.roster(x).into_iter().filter(|(_, e)| e.until.is_none()).map(|(m, _)| m));
+            todo.extend(db.roster(x).into_iter().filter(|(_, e)| live(e, now)).map(|(m, _)| m));
         }
         r.people.sort();
         Ok(r)
@@ -480,9 +486,27 @@ impl Data {
         self.reach(tag)
     }
 
-    /// Places `t` in `tag`.
+    /// Who placing `t` in `tag` shares it with (the share confirmation): the tag's reach, when it
+    /// holds anyone else, `t` is mine to share (admin) and the tag has no edge on it yet. `None`:
+    /// placing shares nothing (placement grants no rights, notes/tags.md).
+    pub fn share_reach(&self, t: Tid, tag: Tid) -> Result<Option<Reach>> {
+        let db = &self.db;
+        if db.role_on(t) != Some(Role::Admin) || db.roster(t).get(&tag).is_some_and(|e| live(e, db.now())) {
+            return Ok(None);
+        }
+        let r = self.tag_reach(tag)?;
+        Ok((!r.people.is_empty()).then_some(r))
+    }
+
+    /// Places `t` in `tag`; where that shares it (`share_reach`), also gives the tag an edge on
+    /// `t` (write, capped by each member's role on the tag), so its members reach it.
     pub fn add_tag(&self, t: Tid, tag: Tid) -> Result<()> {
-        self.db.write_with(|w| w.place(t, tag))
+        let share = self.share_reach(t, tag)?.is_some();
+        self.db.write_with(|w| w.place(t, tag))?;
+        if share {
+            self.db.grant(t, tag, Role::Write, EdgeOpts::default())?;
+        }
+        Ok(())
     }
 
     /// Takes `t` out of `tag` (it stays in the app group).
@@ -490,9 +514,36 @@ impl Data {
         self.db.write_with(|w| w.unplace(t, tag))
     }
 
-    /// Undoes my newest change to `t`; `false` when there is none.
+    /// Undoes my newest change to `t` (made on any of my devices; never someone else's); `false`
+    /// when there is none. Its creation is not undone: that commit also placed it, so reverting
+    /// it would leave the thing in no group, gone from the app but not deleted.
     pub fn undo(&self, t: Tid) -> Result<bool> {
-        Ok(self.db.undo(&osis::Scope::Thing(t))?.is_some())
+        let scope = Scope::Thing(t);
+        if let Some(c) = self.db.created(t).and_then(|c| c.commit)
+            && self.next_undo(&scope)? == Some(ChangeId::Commit(c))
+        {
+            return Ok(false);
+        }
+        Ok(self.db.undo(&scope)?.is_some())
+    }
+
+    /// The change `Osis::undo` would revert in `scope`: my newest change in effect that is not
+    /// itself an undo (an even number of reverts deep).
+    fn next_undo(&self, scope: &Scope) -> Result<Option<ChangeId>> {
+        let mine = self.db.commits(&CommitQuery::new().scope(scope.clone()).actor(self.db.me()))?;
+        let reverts: BTreeMap<ChangeId, ChangeId> = mine.iter().filter_map(|e| e.reverts.map(|r| (e.commit.id, r))).collect();
+        let depth = |mut id: ChangeId| {
+            let mut d = 0usize;
+            while let Some(r) = reverts.get(&id) {
+                (d, id) = (d + 1, *r);
+            }
+            d
+        };
+        Ok(mine
+            .iter()
+            .filter(|e| matches!(e.kind, CommitKind::Change | CommitKind::Revert | CommitKind::Ephemeral))
+            .find(|e| e.in_effect && depth(e.commit.id) % 2 == 0)
+            .map(|e| e.commit.id))
     }
 
     /// "Edited 5 min ago" for `t` (its newest change).
@@ -815,6 +866,11 @@ impl Data {
         parts.extend(self.get(t, crate::contact::PHONES)?.unwrap_or_default().into_keys());
         Ok(parts.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n"))
     }
+}
+
+/// Whether a roster edge is in force at `now` (an `until` ends it).
+fn live(e: &Edge, now: osis::WallMs) -> bool {
+    e.until.is_none_or(|u| u > now)
 }
 
 /// "just now", "5 min ago", "3 h ago", "2 d ago" for an age in ms.

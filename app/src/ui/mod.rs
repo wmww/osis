@@ -415,13 +415,13 @@ impl Ui {
                 self.view.pending = None;
                 Ok(())
             }
-            Act::AddTag(t, g) => match self.data.tag_reach(g) {
+            Act::AddTag(t, g) => match self.data.share_reach(t, g) {
                 // placing into a shared tag shows the thing to its members: confirm first
-                Ok(r) if !r.people.is_empty() => {
+                Ok(Some(r)) => {
                     self.view.pending = Some((t, g, r.people.join(", ")));
                     Ok(())
                 }
-                Ok(_) => self.data.add_tag(t, g),
+                Ok(None) => self.data.add_tag(t, g),
                 Err(e) => Err(e),
             },
             Act::Confirm => match self.view.pending.take() {
