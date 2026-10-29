@@ -5,7 +5,7 @@ use crate::blob::{CommitBlob, Part, encode_parts};
 use crate::header::{AspectEntry, DeleteKey, Header, retention_value};
 use crate::Error;
 use osis_base::cbor::head_len;
-use osis_base::format::{COMMITMENT_LEN, MAX_BLOB, PREFIX_FIXED_LEN};
+use osis_base::format::{COMMITMENT_LEN, MAX_BLOB, MAX_DRIFT_MS, PREFIX_FIXED_LEN};
 use osis_schema::Retention;
 use std::collections::BTreeMap;
 
@@ -59,7 +59,17 @@ pub fn prefix_inputs(h: &Header, parts: &[(usize, usize)]) -> Result<(Option<u64
     }
     let Some(c) = class else { return Ok((None, Vec::new())) };
     let keys = c.keys.iter().map(|i| h.keys.get(*i).copied().ok_or(Error::Malformed("delete key index out of range"))).collect::<Result<Vec<_>, _>>()?;
-    Ok((c.expires, keys))
+    Ok((blob_expiry(h, c), keys))
+}
+
+/// The prefix expiry of a blob holding aspect `a` of `h`: the aspect's `expires`, or for a
+/// relay-only commit (which has none) `ts + MAX_DRIFT`, the end of its replay window
+/// (spec/wire.md §5, spec/sync.md §9).
+pub fn blob_expiry(h: &Header, a: &AspectEntry) -> Option<u64> {
+    match h.ephemeral {
+        Some(crate::EphClass::Relay) => Some(h.ts.wall_ms().0.saturating_add(MAX_DRIFT_MS)),
+        _ => a.expires,
+    }
 }
 
 /// Every delta fits a blob of `max` bytes alone (spec/commits.md §1; paging keeps a canonical
@@ -90,7 +100,7 @@ pub fn project_resolved<K: Ord + Clone>(c: &CommitBlob, resolved: &Header, reade
     let mut classes: BTreeMap<Class<K>, Vec<&Part>> = BTreeMap::new();
     for p in &c.parts {
         let a = resolved.aspects.get(p.ai).ok_or(Error::Malformed("part aspect index out of range"))?;
-        let key = (readers(p.ai), osis_base::encode(&retention_value(&a.retention)), a.expires, a.keys.clone());
+        let key = (readers(p.ai), osis_base::encode(&retention_value(&a.retention)), blob_expiry(resolved, a), a.keys.clone());
         classes.entry(key).or_default().push(p);
     }
     let header = c.header.encode();

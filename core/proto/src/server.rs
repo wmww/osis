@@ -7,6 +7,7 @@ use crate::frame::{FrameDecoder, encode_frame, send};
 use crate::hello::{Hello, PROTOCOL_VERSION, negotiate};
 use crate::msg::*;
 use crate::rbsr;
+use crate::relay::RelayVerdict;
 use crate::store::{EntryMeta, LabelStore, LogRecord, Put, StoreError};
 use osis_base::format::MAX_MESSAGE;
 use osis_base::{BlobId, LabelId, WallMs};
@@ -721,12 +722,23 @@ impl ServerConnection {
         }
         let Ok(prefix) = server_prefix(blob) else { return Ok(Code::MALFORMED) };
         let class = prefix.as_ref().map(|p| p.class()).unwrap_or_default();
+        let expiry = prefix.and_then(|p| p.expiry()).map(|t| t.0);
+        // readers write no ephemeral data: an ephemeral or relay-only blob needs a stamp, at
+        // every store (spec/sync.md §5)
+        if class != Class::Durable && stamp.is_none() {
+            return Ok(Code::REFUSED);
+        }
         if class == Class::Relay {
             let Some(stamp) = stamp else { return Ok(Code::REFUSED) };
-            out.push(ServerOutput::Relay(Relayed { label: *label, blob_id, blob: blob.to_vec(), wrap, stamp }));
-            return Ok(Code::OK);
+            return Ok(match store.relay(label, &blob_id, blob.len(), expiry, now)? {
+                RelayVerdict::Push => {
+                    out.push(ServerOutput::Relay(Relayed { label: *label, blob_id, blob: blob.to_vec(), wrap, stamp }));
+                    Code::OK
+                }
+                RelayVerdict::Seen => Code::OK,
+                RelayVerdict::Refused(c) => c,
+            });
         }
-        let expiry = prefix.and_then(|p| p.expiry()).map(|t| t.0);
         if expiry.is_some_and(|t| t <= now) {
             return Ok(Code::EXPIRED);
         }

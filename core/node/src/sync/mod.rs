@@ -444,6 +444,8 @@ pub struct SyncEngine {
     pub(crate) prefix_checked: BTreeSet<osis_base::BlobId>,
     /// Ephemeral entries held in memory (`ephemeral`).
     pub(crate) eph: ephemeral::Lane,
+    /// Relay-only uploads served sessions made (spec/sync.md §5, as a server admits them).
+    pub(crate) relay_gate: osis_proto::RelayGate,
 }
 
 impl SyncEngine {
@@ -522,6 +524,7 @@ impl SyncEngine {
             members_moved: false,
             prefix_checked: BTreeSet::new(),
             eph: ephemeral::Lane::default(),
+            relay_gate: osis_proto::RelayGate::default(),
         })
         .and_then(|mut s| {
             // a forgetting a crash interrupted before its inbox check
