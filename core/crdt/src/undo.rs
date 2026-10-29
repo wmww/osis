@@ -14,6 +14,11 @@ use std::collections::BTreeMap;
 pub trait UndoBuffer {
     /// The fragment at `path` before the undone commit (a map key's lowest live entry).
     fn before(&self, path: &[PathSeg]) -> Option<Fragment>;
+    /// Whether this is the whole state before the commit, so a position absent here was absent
+    /// (§4.6 "Absent before"); a node missing older bodies says no.
+    fn complete(&self) -> bool {
+        true
+    }
 }
 
 /// The pre-commit state itself is an undo buffer.
@@ -62,6 +67,12 @@ fn before_read(buffer: &dyn UndoBuffer, path: &[PathSeg]) -> Option<osis_base::V
     buffer.before(path).filter(Fragment::present).and_then(|f| f.read())
 }
 
+/// Whether `o` at `path` lands in a position absent before the commit that undo resets (§4.6
+/// "Absent before"): a composite, or the aspect root.
+fn absent_before(o: &Fragment, buffer: &dyn UndoBuffer, path: &[PathSeg], root: bool) -> bool {
+    (root || !matches!(o, Fragment::Register(_))) && buffer.complete() && !buffer.before(path).is_some_and(|f| f.present())
+}
+
 /// Re-inserts the pre-reset value (or leaves the position reset when there was none).
 fn undo_reset<V: View>(w: &mut Writer, o: &Fragment, buffer: &dyn UndoBuffer, view: &V, path: &[PathSeg]) -> Result<Option<Fragment>, Error> {
     match before_read(buffer, path) {
@@ -73,6 +84,9 @@ fn undo_reset<V: View>(w: &mut Writer, o: &Fragment, buffer: &dyn UndoBuffer, vi
 #[allow(clippy::too_many_arguments)]
 fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragment>, buffer: &dyn UndoBuffer, view: &V, path: &mut Vec<PathSeg>, root: bool) -> Result<Option<Fragment>, Error> {
     let r = w.delta_stamp();
+    if absent_before(o, buffer, path, root) {
+        return remove(w, o.encoding()).map(Some);
+    }
     let slot = present_slot(s, o.encoding());
     let slot = slot.as_deref();
     let out = match o {
@@ -92,7 +106,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             }
             match before_read(buffer, path) {
                 Some(v) => Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: r, value: Some(v) }) }),
-                None if root => remove(w, o.encoding())?,
+                // absent before: a root is removed above; a nested register carries no reset
                 None => return Ok(None),
             }
         }
@@ -176,7 +190,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                     // a nested edit into an existing entry
                     path.push(PathSeg::Key(k.clone()));
                     let sub = cur.and_then(|c| c.entries.get(d)).and_then(|x| x.frag.as_deref());
-                    let pre = Sub(prev.as_ref().and_then(|p| entry_frag(p, d, k)));
+                    let pre = Sub(prev.as_ref().and_then(|p| entry_frag(p, d, k)), buffer.complete());
                     let res = undo_at(w, u, f, sub, &pre, &vview, &mut vec![], false);
                     path.pop();
                     if let Some(c) = res? {
@@ -256,8 +270,9 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                 _ => None,
             };
             let ev = view.element();
+            let complete = buffer.complete();
             let mut nested = |w: &mut Writer, f: &Fragment, c: Option<&Fragment>, pre: Option<Fragment>| match &ev {
-                Some(ev) => undo_at(w, u, f, c, &Sub(pre), ev, &mut vec![], false),
+                Some(ev) => undo_at(w, u, f, c, &Sub(pre, complete), ev, &mut vec![], false),
                 None => Ok(None),
             };
             return Ok(seq::undo(w, x, cur, before, u, view, &mut nested)?.map(Fragment::Seq));
@@ -285,12 +300,16 @@ fn contribution<V: View>(w: &mut Writer, ev: Option<&V>, v: osis_base::Value, r:
     Ok((d, Elem { reset: None, frag: Some(Box::new(f)) }))
 }
 
-/// The buffer below a map entry: paths are relative to the entry the undone write edited.
-struct Sub(Option<Fragment>);
+/// The buffer below a map entry or list element: paths are relative to the entry the undone
+/// write edited; complete as the buffer it came from.
+struct Sub(Option<Fragment>, bool);
 
 impl UndoBuffer for Sub {
     fn before(&self, path: &[PathSeg]) -> Option<Fragment> {
         self.0.as_ref().and_then(|e| e.before(path))
+    }
+    fn complete(&self) -> bool {
+        self.1
     }
 }
 
@@ -301,10 +320,22 @@ impl Fragment {
     /// (of a map also every live entry of a key it edits into, along the edit's paths: undo
     /// reads their join, §5.6), of a list or text the records holding the delta's dots (its undo
     /// reads by dot). Anything reset is kept whole.
+    /// A composite kept in part keeps its presence (an explicit `W` at its presence stamp), so
+    /// "absent before" (§4.6) reads the same as on the whole state.
     pub fn footprint(&self, delta: &Fragment) -> Fragment {
         if delta.meta().is_none_or(|m| m.reset.is_some()) || self.encoding() != delta.encoding() {
             return self.clone();
         }
+        let mut out = self.footprint_part(delta);
+        if self.present()
+            && let Some(m) = out.meta_mut()
+        {
+            m.w = crate::stamp::max_opt(m.w.take(), self.written());
+        }
+        out
+    }
+
+    fn footprint_part(&self, delta: &Fragment) -> Fragment {
         match (self, delta) {
             (Fragment::Struct(s), Fragment::Struct(d)) => Fragment::Struct(Struct {
                 meta: s.meta.clone(),

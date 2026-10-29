@@ -104,10 +104,8 @@ proptest! {
         let Some(md) = random_op(&mut r, &mut mw, &ty, Some(&ms)) else { return Ok(()) };
         let s0 = frag(&ms);
         let d = frag(&md);
-        // undo restores values, not absence: a register cannot be written "absent" and a
-        // collection emptied by an undo stays present (§4.3, §4.6), so what lands in positions
-        // the pre-commit state lacks is not compared
-        let cmp = |s: &Fragment| strip_absent(Some(&s0), &d, read(s));
+        // exact: a spot absent before is absent again (§4.6 "Absent before")
+        let cmp = |s: &Fragment| read(s);
         let mut s1 = s0.clone();
         s1.join(d.clone());
         let src = source(&mw.source);
@@ -147,43 +145,6 @@ proptest! {
             state.join(d);
         }
         prop_assert_eq!(read(&state), Some(new));
-    }
-}
-
-/// Read `v` of a state without the positions `d` writes into that are absent in `s`: undo
-/// restores values, not absence (§4.6), so what it leaves there is not compared.
-fn strip_absent(s: Option<&Fragment>, d: &Fragment, v: Option<Value>) -> Option<Value> {
-    let s = s.filter(|s| s.present())?;
-    match (s.chosen(), d, v?) {
-        (Fragment::Struct(x), Fragment::Struct(y), Value::Map(mut m)) => {
-            for (id, f) in &y.fields {
-                let k = Value::Int(*id as i64);
-                let sub = m.remove(&k);
-                if let Some(sv) = strip_absent(x.fields.get(id), f, sub) {
-                    m.insert(k, sv);
-                }
-            }
-            Some(Value::Map(m))
-        }
-        (Fragment::Enum(x), Fragment::Enum(y), Value::Enum(c, p)) if y.case.is_none() => {
-            let p = match y.payloads.get(&c) {
-                Some(f) => strip_absent(x.payloads.get(&c), f, p.map(|b| *b)).map(Box::new),
-                None => p,
-            };
-            Some(Value::Enum(c, p))
-        }
-        (Fragment::Map(x), Fragment::Map(y), Value::Map(mut m)) => {
-            for (dot, e) in &y.entries {
-                let (Some(f), Some(xe)) = (&e.frag, x.entries.get(dot)) else { continue };
-                let Some(k) = xe.key.clone() else { continue };
-                let sub = m.remove(&k);
-                if let Some(sv) = strip_absent(xe.frag.as_deref(), f, sub) {
-                    m.insert(k, sv);
-                }
-            }
-            Some(Value::Map(m))
-        }
-        (_, _, v) => Some(v),
     }
 }
 
@@ -596,6 +557,75 @@ fn undo_edit_of_concurrent_key_spec_4_6() {
             let (s1, _, s2) = commit_and_undo(&view, &s, PathOp { path, op: Op::Set(Value::Str("c".into())) });
             assert_ne!(s1.read(), Some(both.clone()));
             assert_eq!(s2.read(), Some(both.clone()), "field {field}");
+        }
+    }
+}
+
+/// A struct whose set, enum-payload set, list, text and counter fields start absent.
+fn absent_spots() -> (TyView, Fragment) {
+    let set = || Ty::Set(Box::new(Ty::Register));
+    let inner = Ty::Struct([(1, Ty::Register), (2, set())].into_iter().collect());
+    let cases = [(0, None), (1, Some(inner))].into_iter().collect();
+    let ty = Ty::Struct(
+        [(1, Ty::Register), (2, set()), (3, Ty::Enum(cases)), (4, Ty::List(Box::new(Ty::Register))), (5, Ty::Text), (6, Ty::Counter)].into_iter().collect(),
+    );
+    let view = TyView(ty);
+    let mut w = Writer::new(ts(1 << 16), Source::node(Tid::from_bytes([1; 15])), 1);
+    let payload = Value::Map([(Value::Int(1), Value::Str("p".into()))].into_iter().collect());
+    let v = Value::Map([(Value::Int(1), Value::Str("x".into())), (Value::Int(3), Value::Enum(1, Some(Box::new(payload))))].into_iter().collect());
+    let s = create(&mut w, &view, &v).unwrap();
+    assert_eq!(s.read(), Some(v));
+    (view, s)
+}
+
+fn absent_spot_ops() -> Vec<(&'static str, PathOp)> {
+    let one = || Value::Str("a".into());
+    vec![
+        ("struct field set", PathOp { path: vec![PathSeg::Field(2)], op: Op::Add(one()) }),
+        ("enum payload set", PathOp { path: vec![PathSeg::Field(3), PathSeg::Case(1), PathSeg::Field(2)], op: Op::Add(one()) }),
+        ("list", PathOp { path: vec![PathSeg::Field(4)], op: Op::Insert { at: 0, items: vec![one()] } }),
+        ("text", PathOp { path: vec![PathSeg::Field(5)], op: Op::Insert { at: 0, items: vec![one()] } }),
+        ("counter", PathOp { path: vec![PathSeg::Field(6)], op: Op::Inc(Value::Int(2)) }),
+    ]
+}
+
+/// §4.6 "Absent before": undoing the first write into a spot that did not exist makes it absent
+/// again (a set, an enum payload's field, a list, a text, a counter).
+#[test]
+fn undo_makes_absent_again_spec_4_6() {
+    let (view, s) = absent_spots();
+    for (name, op) in absent_spot_ops() {
+        let (s1, ud, s2) = commit_and_undo(&view, &s, op);
+        assert_ne!(s1.read(), s.read(), "{name}");
+        assert_eq!(s2.read(), s.read(), "{name}: {ud:?}");
+    }
+}
+
+/// §4.6 "Absent before": the reset also drops a concurrent older write into the spot; a write
+/// newer than the undo survives.
+#[test]
+fn undo_absent_before_wipes_concurrent_spec_4_6() {
+    let (view, s) = absent_spots();
+    let other = Source::node(Tid::from_bytes([2; 15]));
+    for (name, op) in absent_spot_ops() {
+        let (_, ud, _) = commit_and_undo(&view, &s, op.clone());
+        for (at, survives) in [(4u64, false), (7, true)] {
+            // node 2 writes into the same spot without seeing node 1's commit
+            let mut b = Batch::new(&s, Writer::new(ts(at << 16), other.clone(), 1));
+            b.apply(&op, &view).unwrap();
+            let d2 = b.finish().unwrap().0;
+            let node = Source::node(Tid::from_bytes([1; 15]));
+            let mut b = Batch::new(&s, Writer::new(ts(5 << 16), node, 20));
+            b.apply(&op, &view).unwrap();
+            let d1 = b.finish().unwrap().0;
+            let mut only2 = s.clone();
+            only2.join(d2.clone());
+            let mut all = s.clone();
+            for d in [d1, d2, ud.clone()] {
+                all.join(d);
+            }
+            let want = if survives { only2.read() } else { s.read() };
+            assert_eq!(all.read(), want, "{name} at {at}");
         }
     }
 }
