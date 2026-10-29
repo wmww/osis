@@ -8,12 +8,12 @@
   };
 
   const LOOKS = [
-    { id: 'glass', name: 'Glass', era: '2026',
-      desc: 'Vivid colour fields under frosted panels, few borders, round icons. The blur costs GPU work whenever anything behind it moves: toggle it off to see the fallback.' },
-    { id: 'workstation', name: 'Workstation', era: '1996',
-      desc: 'Bevelled panels on a grid with a striped synth sun (neon in dark), title-bar strips, tag colour as a thick stripe.' },
-    { id: 'memphis', name: 'Memphis', era: '2016, loud',
-      desc: 'Flat taken loud: paper, thick outlines, hard offset shadows, three Memphis shapes. No blur, no gradients.' },
+    { id: 'glass', name: 'Glass', desc: 'Frosted panels over a softly shaded field of the main colour. The blur costs GPU work whenever anything behind it moves: toggle it off to see the fallback.' },
+    { id: 'aero', name: 'Aero', desc: 'Dusk and Aero merged: a sky in the main colour with grain, a light swoosh and glass bubbles; gel tiles and controls with a gloss line.' },
+    { id: 'workstation', name: 'Workstation', desc: 'Bevelled panels on a grid with a striped sun, title-bar strips, tag colour as a thick stripe.' },
+    { id: 'memphis', name: 'Memphis', desc: 'Flat taken loud: paper, thick outlines, hard offset shadows, three shapes in shades of the main colour.' },
+    { id: 'slate', name: 'Slate', desc: 'Square and flat: solid colour tiles (the first favorite is wide), light big type, the kind of thing written huge behind everything.' },
+    { id: 'cel', name: 'Cel', desc: 'Flat and simple on white or dark grey; colour on tiles and accents, a slanted selection, halftone and speed lines.' },
   ];
 
   const things = DATA.things;
@@ -22,8 +22,6 @@
   let favs = store.get('favs', DATA.favorites).filter(id => byId.has(id));
   let look = store.get('look', 'glass');
   if (!LOOKS.some(l => l.id === look)) look = 'glass';
-  let bgMode = store.get('bg', 'look');
-  if (!['look', 'content'].includes(bgMode)) bgMode = 'look';
   let blur = store.get('blur', true);
   let looksOpen = store.get('looksOpen', true);
   let mode = store.get('mode', 'auto');
@@ -268,39 +266,28 @@
   const tagsView = t => viewHead(t) + `<div class="grid">${ofKind('tag').map(x => tile(x)).join('')}</div>`;
   const recentView = t => viewHead(t) + `<div class="grid">${things.filter(x => x.edited).sort((a, b) => b.edited - a.edited).map(x => tile(x, { sub: esc(ago(x.edited)) })).join('')}</div>`;
 
-  // ---------- background follows content: up to three colours from the thing and what it holds or links
-  function ctxColors(t) {
+  // ---------- main colour and background seed, both from the open thing
+  // main: the thing's own colour, else the first colour among what it holds or links; none keeps the look's default
+  function mainColor(t) {
     let near = [t, ...tagsOf(t), ...(t.with || []).map(get).filter(Boolean)];
     if (t.kind === 'tag') near = [t, ...subTags(t), ...itemsIn(t)];
     else if (t.kind === 'view') near = [t, ...({
       calendar: () => events().filter(inWeek), people: () => ofKind('contact'), tags: () => ofKind('tag'),
       recent: () => things.filter(x => x.edited).sort((a, b) => b.edited - a.edited),
     })[t.view]()];
-    const cs = [...new Set(near.map(tintOf).filter(Boolean))];
-    if (!cs.length) return null;
-    while (cs.length < 3) cs.push(rotateHue(cs[0], cs.length === 1 ? 40 : -40));
-    return cs.slice(0, 3);
+    return near.map(tintOf).find(Boolean) || null;
   }
-  function rotateHue(hex, deg) {
-    const n = parseInt(hex.slice(1), 16), [r, g, b] = [n >> 16, n >> 8 & 255, n & 255].map(v => v / 255);
-    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn, l = (mx + mn) / 2;
-    const sat = d ? d / (1 - Math.abs(2 * l - 1)) : 0;
-    let h = !d ? 0 : mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
-    return `hsl(${(h * 60 + deg + 360) % 360} ${sat * 100}% ${l * 100}%)`;
-  }
+  const kindKey = t => !t ? 'home' : t.kind === 'view' ? t.view : t.kind;
+  const KIND_WORD = { home: 'home', note: 'note', event: 'event', contact: 'person', tag: 'tag', calendar: 'calendar', people: 'people', tags: 'tags', recent: 'recent' };
   function applyBg(t) {
-    const st = document.body.style, cs = bgMode === 'content' && t && ctxColors(t);
-    document.body.classList.toggle('ctx', !!cs);
-    for (const k of ['c-1', 'c-2', 'c-3', 'bg-x1', 'bg-y1', 'bg-x2', 'bg-y2', 'bg-x3', 'bg-y3']) st.removeProperty('--' + k);
-    if (!cs) return;
-    cs.forEach((c, i) => st.setProperty('--c-' + (i + 1), c));
-    // the shapes move too: positions hashed from the id, so each thing keeps its own arrangement
-    let h = [...t.id].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7);
-    const next = n => { h = (h * 1103515245 + 12345) >>> 0; return (h >>> 8) % n; };
-    [[0, 35], [65, 100], [20, 80]].forEach(([lo, hi], i) => {
-      st.setProperty(`--bg-x${i + 1}`, lo + next(hi - lo) + '%');
-      st.setProperty(`--bg-y${i + 1}`, (i === 2 ? 60 + next(45) : next(45)) + '%');
-    });
+    const st = document.body.style, c = t && mainColor(t);
+    if (c) st.setProperty('--main', c); else st.removeProperty('--main');
+    // four seeds in [0, 1) hashed from the id: each thing keeps its own arrangement of the look's background
+    let h = [...(t ? t.id : 'home')].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) >>> 0, 7);
+    for (let i = 1; i <= 4; i++) { h = (h * 1103515245 + 12345) >>> 0; st.setProperty('--s' + i, ((h >>> 8) % 1000) / 1000); }
+    const k = kindKey(t);
+    document.body.dataset.kind = k;
+    $('#bg').dataset.word = KIND_WORD[k];
   }
 
   // ---------- render
@@ -369,7 +356,6 @@
     else if (e.key === ']' || e.key === '[') setLook(LOOKS[(LOOKS.findIndex(l => l.id === look) + (e.key === ']' ? 1 : LOOKS.length - 1)) % LOOKS.length].id);
     else if (/^[1-9]$/.test(e.key) && LOOKS[e.key - 1]) setLook(LOOKS[e.key - 1].id);
     else if (e.key === 'd') setMode(resolvedMode() === 'dark' ? 'light' : 'dark');
-    else if (e.key === 'b') setBg(bgMode === 'look' ? 'content' : 'look');
   });
   window.addEventListener('hashchange', () => { closeSpot(); render(); window.scrollTo(0, 0); });
 
@@ -410,7 +396,6 @@
   const darkMq = matchMedia('(prefers-color-scheme: dark)');
   const resolvedMode = () => mode === 'auto' ? (darkMq.matches ? 'dark' : 'light') : mode;
   function setMode(m) { mode = m; store.set('mode', m); renderLooks(); }
-  function setBg(m) { bgMode = m; store.set('bg', m); applyBg(current()); renderLooks(); }
   darkMq.addEventListener('change', () => { if (mode === 'auto') renderLooks(); });
   function renderLooks() {
     const cur = LOOKS.find(l => l.id === look);
@@ -421,12 +406,10 @@
     looksEl.innerHTML = `<button class="lk-toggle" data-lk="toggle" aria-expanded="${looksOpen}">Look: <b>${cur.name}</b><span class="lk-mode">${rm}</span><span class="lk-caret">${looksOpen ? '▾' : '▴'}</span></button>
       <div class="lk-body">
         <div class="lk-modes" role="group" aria-label="Light or dark">${['light', 'dark', 'auto'].map(m => `<button class="lk-m${m === mode ? ' on' : ''}" data-lk="mode-${m}">${m[0].toUpperCase() + m.slice(1)}</button>`).join('')}</div>
-        <div class="lk-list">${LOOKS.map((l, i) => `<button class="lk-opt${l.id === look ? ' on' : ''}" data-lk="${l.id}"><span class="lk-n">${i + 1}</span><span>${l.name}</span><small>${l.era}</small></button>`).join('')}</div>
+        <div class="lk-list">${LOOKS.map((l, i) => `<button class="lk-opt${l.id === look ? ' on' : ''}" data-lk="${l.id}"><span class="lk-n">${i + 1}</span><span>${l.name}</span></button>`).join('')}</div>
         <p class="lk-desc">${cur.desc}</p>
-        <div class="lk-sub">Background</div>
-        <div class="lk-modes lk-modes-2" role="group" aria-label="Background">${[['look', 'Follows look'], ['content', 'Follows content']].map(([m, n]) => `<button class="lk-m${m === bgMode ? ' on' : ''}" data-lk="bg-${m}">${n}</button>`).join('')}</div>
         <label class="lk-blur"><input type="checkbox" data-lk="blur"${blur ? ' checked' : ''}> Background blur</label>
-        <p class="lk-keys">Keys: 1–3 or [ ] looks · d light/dark · b background · / search</p>
+        <p class="lk-keys">Keys: 1–6 or [ ] looks · d light/dark · / search</p>
       </div>`;
   }
   looksEl.addEventListener('click', e => {
@@ -435,7 +418,6 @@
     if (k === 'toggle') { looksOpen = !looksOpen; store.set('looksOpen', looksOpen); renderLooks(); }
     else if (k === 'blur') { blur = b.checked; store.set('blur', blur); renderLooks(); }
     else if (k.startsWith('mode-')) setMode(k.slice(5));
-    else if (k.startsWith('bg-')) setBg(k.slice(3));
     else setLook(k);
   });
 
