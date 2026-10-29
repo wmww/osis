@@ -2399,7 +2399,7 @@ fn dropped_snapshot_frontiers_count_spec_commits_5() {
     }
     let e = &mut lp.peers[i].engine;
     e.reexamine().unwrap();
-    assert!(e.holds_body(&snap, &d, &sm), "S held");
+    assert!(e.body_not_dropped(&snap, &d, &sm), "S held");
     let of_bob = DemotionScope { membership: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
     let now = e.now();
     let held = e.frontier(&of_bob, now).unwrap();
@@ -2407,7 +2407,7 @@ fn dropped_snapshot_frontiers_count_spec_commits_5() {
     lp.advance(DAY);
     let e = &mut lp.peers[i].engine;
     e.tick().unwrap();
-    assert!(!e.holds_body(&snap, &d, &sm), "S dropped at its bound");
+    assert!(!e.body_not_dropped(&snap, &d, &sm), "S dropped at its bound");
     assert!(matches!(e.get(&d, &sm).unwrap(), Some(Value::Map(m)) if m.contains_key(&s("k2"))), "k2 still live");
     assert_eq!(e.frontier(&of_bob, now).unwrap(), held, "dropped");
     lp.peers[i].restart(0x5fe2).unwrap();
@@ -2422,7 +2422,7 @@ fn dropped_snapshot_frontiers_count_spec_commits_5() {
     }
     let e = &mut lp.peers[j].engine;
     e.reexamine().unwrap();
-    assert!(!e.holds_body(&snap, &d, &sm), "S dropped on arrival");
+    assert!(!e.body_not_dropped(&snap, &d, &sm), "S dropped on arrival");
     let late = e.frontier(&of_bob, e.now()).unwrap();
     assert_eq!(late, held, "dropped on arrival");
     // Alice removes Carol without listing S: S gives nothing, dropped or not
@@ -2468,7 +2468,7 @@ fn bound_dropped_coverer_still_carries_spec_commits_5() {
     lp.peers[0].commit(entry("k2", "a2")).unwrap().unwrap();
     lp.advance(DAY);
     lp.peers[0].engine.tick().unwrap();
-    assert!(!lp.peers[0].engine.holds_body(&snap, &d, &sm), "S dropped at its bound");
+    assert!(!lp.peers[0].engine.body_not_dropped(&snap, &d, &sm), "S dropped at its bound");
     let k1 = |lp: &mut LocalPeer, i: usize| matches!(lp.peers[i].engine.get(&d, &sm).unwrap(), Some(Value::Map(m)) if m.get(&s("k1")) == Some(&s("b")));
     assert!(k1(&mut lp, 0), "k1 live");
     // Carol's snapshot, then her removal by Alice with a frontier not listing it
@@ -2485,7 +2485,7 @@ fn bound_dropped_coverer_still_carries_spec_commits_5() {
     f.commits.remove(&s2);
     set_edge(&mut lp.peers[0].engine, d, c, None, Some(f.to_value()));
     lp.peers[0].engine.reexamine().unwrap();
-    assert!(!lp.peers[0].engine.holds_body(&bob, &d, &sm), "Bob's commit still dropped");
+    assert!(!lp.peers[0].engine.body_not_dropped(&bob, &d, &sm), "Bob's commit still dropped");
     assert!(k1(&mut lp, 0), "k1 still live");
     sync(&mut lp, 0, 1);
     assert!(k1(&mut lp, 1), "k1 live at Bob's");
