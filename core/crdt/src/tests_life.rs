@@ -634,3 +634,35 @@ fn rejects_list_run_past_chunk_max_spec_3_3() {
     let e = decode_delta(&bad, &cx, &mut Interner::new(), Some(&mut flat)).unwrap_err();
     assert!(e.to_string().contains("not canonical"), "{e}");
 }
+
+/// spec/permissions.md §5.2 (a received delta's writes count from it alone), spec/crdt.md §5.6:
+/// a snapshot carrying an entry another node created, holding only a held delta's write inside
+/// it, stripped of that delta's copies keeps the creation, so its join gives the entry its
+/// creation stamp whether the delta joined before or after (it once pruned the entry with the
+/// creation: one held set, two states). Alone it joins nothing.
+#[test]
+fn stripped_entry_keeps_others_creation_spec_perm_5_2() {
+    use crate::ops::{Writer, create};
+    use crate::view::AnyView;
+    use crate::PathSeg;
+    use osis_base::{Tid, Value};
+    use std::collections::BTreeMap;
+    let (a, b) = (Source::node(Tid::from_bytes([1; 15])), Source::node(Tid::from_bytes([2; 15])));
+    let k = Value::Str("k".into());
+    let w1 = create(&mut Writer::new(ts(1), a, 1), &AnyView, &Value::Map(BTreeMap::from([(k.clone(), Value::Int(1))]))).unwrap();
+    let mut batch = Batch::new(&w1, Writer::new(ts(2), b.clone(), 1));
+    batch.apply(&PathOp { path: vec![PathSeg::Key(k)], op: Op::Set(Value::Int(2)) }, &AnyView).unwrap();
+    let (w2, _) = batch.finish().unwrap();
+    let mut snap = w1.clone();
+    snap.join(w2.clone());
+    let mut stripped = snap.clone();
+    stripped.strip_copies(&|d| d.src == b);
+    let mut first = w2.clone();
+    first.join(stripped.clone());
+    let mut then = snap.clone();
+    then.join(w2.clone());
+    assert_eq!(first, then, "the delta first, the stripped snapshot after; the snapshot first");
+    let mut alone = Fragment::default();
+    alone.join(stripped);
+    assert!(alone.read().is_none_or(|v| v == Value::Map(BTreeMap::new())), "a creation alone joins nothing: {alone:?}");
+}
