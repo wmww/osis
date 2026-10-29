@@ -60,8 +60,10 @@ pub(crate) struct Lane {
     /// listed that the peer has not asked for yet.
     pub announced: BTreeSet<(ConnId, LabelId)>,
     pub gained: BTreeMap<(ConnId, LabelId), BTreeSet<BlobId>>,
-    /// Relay-only entries sent and not answered (their statuses are no entry's).
-    pub relays: BTreeSet<(LabelId, BlobId)>,
+    /// Lane uploads (relay-only ones included) and deletes sent and not answered: their
+    /// statuses are the lane's, never a sync record's.
+    pub uploads: BTreeSet<(ConnId, LabelId, BlobId)>,
+    pub deletes: BTreeSet<(ConnId, LabelId, BlobId)>,
     /// (server, label) reconciled since start, and the reconciliations running (`sync_label`).
     pub reconciled: BTreeSet<(ServerKey, LabelId)>,
     pub reconciling: BTreeSet<(ConnId, LabelId)>,
@@ -208,7 +210,7 @@ impl SyncEngine {
                 (None, Some(w)) => osis_label::sign_stamp(w, &l, &blob_id, &wrap),
                 (None, None) => continue,
             };
-            self.eph.relays.insert((l, blob_id));
+            self.eph.uploads.insert((conn, l, blob_id));
             self.command(conn, Command::Upload { label: l, entries: vec![osis_proto::Entry { blob: blob.clone(), wrap, stamp: st }] }, out)?;
         }
         if let Some(stamp) = stamp
@@ -252,6 +254,7 @@ impl SyncEngine {
                 _ => continue,
             };
             entries.push(osis_proto::Entry { blob: e.blob.clone(), wrap: e.wrap, stamp });
+            self.eph.uploads.insert((conn, l, *b));
         }
         if !entries.is_empty() {
             self.command(conn, Command::Upload { label: l, entries }, out)?;
@@ -324,12 +327,13 @@ impl SyncEngine {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return (ids, codes) };
         let mut rest = (Vec::new(), Vec::new());
         for (b, code) in ids.into_iter().zip(codes) {
-            if self.eph.relays.remove(&(l, b)) {
+            if !self.eph.uploads.remove(&(conn, l, b)) {
+                rest.0.push(b);
+                rest.1.push(code);
                 continue;
             }
             if !self.eph.entries.contains_key(&(l, b)) {
-                rest.0.push(b);
-                rest.1.push(code);
+                // a relay-only entry, or one forgotten meanwhile
                 continue;
             }
             match code {
@@ -466,6 +470,7 @@ impl SyncEngine {
                         continue;
                     }
                     if let Some(item) = delete_item(&hk, &l, b, None, Some((&e.salt, &e.blind)), &dks) {
+                        self.eph.deletes.insert((conn, l, b));
                         self.command(conn, Command::Delete { label: l, items: vec![item] }, out)?;
                     }
                 }
@@ -480,6 +485,13 @@ impl SyncEngine {
         self.eph.announced.retain(|(c, _)| *c != conn);
         self.eph.gained.retain(|(c, _), _| *c != conn);
         self.eph.reconciling.retain(|(c, _)| *c != conn);
+        self.eph.uploads.retain(|(c, _, _)| *c != conn);
+        self.eph.deletes.retain(|(c, _, _)| *c != conn);
+    }
+
+    /// Statuses of lane deletes are taken out; the rest are returned for the durable path.
+    pub(crate) fn eph_delete_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>) -> (Vec<BlobId>, Vec<Code>) {
+        ids.into_iter().zip(codes).filter(|(b, _)| !self.eph.deletes.remove(&(conn, l, *b))).unzip()
     }
 
     /// Ephemeral entries held under `l` (serving peers): ID and entry.

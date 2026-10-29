@@ -434,3 +434,30 @@ fn ephemeral_owner_chain_travels_spec_data_model_1() {
     net.run();
     assert_eq!(notes(&mut net, a, w), map(&[("b", "writes through g")]));
 }
+
+// spec/sync.md §9 (a part on a thing whose record is not held waits): an ephemeral write on a
+// durable thing that arrives before the thing's own commit joins once that commit is here
+#[test]
+fn ephemeral_part_waits_for_its_record_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    net.set_online(b, false);
+    let t = net.item(a, g, g, "durable");
+    net.run();
+    let mut m = Mutation::new();
+    m.set(t, &eph("/doc/cursor"), &Value::Int(7)).unwrap();
+    net.engine(a).write(m).unwrap();
+    let cs = net.engine(a).take_ephemeral().unwrap();
+    assert_eq!(cs.len(), 1);
+    assert!(net.engine(b).core.created(&t).is_none());
+    net.engine(b).ingest_ephemeral(cs[0].blob.clone()).unwrap();
+    assert_eq!(net.eph_read(b, t, "/doc/cursor"), None, "waits for the record");
+    net.set_online(b, true);
+    net.advance(10_000);
+    assert_eq!(net.read(b, t), Some(s("durable")));
+    assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(Value::Int(7)));
+}

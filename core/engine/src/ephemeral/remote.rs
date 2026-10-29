@@ -72,7 +72,8 @@ pub(crate) struct Remote {
     pub local: BTreeSet<Tid>,
     /// The ephemeral commit records.
     pub held: BTreeMap<CommitId, Held>,
-    /// Commits whose author's record is not here yet (bounded by the sync layer's caps).
+    /// Commits whose author's record, or a part's thing's, is not here yet (bounded by the sync
+    /// layer's caps), retried when the durable state changes.
     pub pending: BTreeMap<CommitId, CommitBlob>,
     /// Ephemeral sessions and the node an `Authors` entry named for them.
     pub sessions: BTreeMap<CommitId, Tid>,
@@ -453,9 +454,14 @@ impl Engine {
             carried.insert(a.tid, rec);
         }
         let mut decoded = Vec::with_capacity(blob.parts.len());
+        // a part on a thing whose record is not here yet waits (`rejudge_ephemeral` retries)
+        let mut waits = false;
         for p in &blob.parts {
             let Some(a) = h.aspects.get(p.ai) else { continue };
-            let Some(rec) = self.record_of(&a.tid, &carried) else { continue };
+            let Some(rec) = self.record_of(&a.tid, &carried) else {
+                waits = true;
+                continue;
+            };
             let dedup = dedup_secret(rec.nonce());
             match osis_commit::verify_part(&h, &id, p, &dedup, &mut interner, None)? {
                 osis_commit::Decoded::Snapshot(s) => decoded.push((p.ai, s)),
@@ -546,6 +552,9 @@ impl Engine {
         let new = !changed.is_empty();
         let absorbs = parts.iter().any(|(_, _, a)| !a.is_empty());
         self.eph.remote.held.insert(id, Held { header: header.clone(), parts, valid, own: false, bytes });
+        if waits {
+            self.eph.remote.pending.insert(id, blob);
+        }
         if absorbs {
             self.drop_absorbed();
         }
@@ -672,7 +681,7 @@ impl Engine {
         for t in durable {
             self.eph.things.remove(&t);
         }
-        let pending: Vec<CommitId> = self.eph.remote.pending.keys().filter(|c| self.eph.remote.pending.get(c).is_some_and(|b| self.core.created(&b.header.author).is_some())).copied().collect();
+        let pending: Vec<CommitId> = self.eph.remote.pending.keys().copied().collect();
         for c in pending {
             if let Some(b) = self.eph.remote.pending.remove(&c)
                 && let Err(e) = self.ingest_ephemeral(b)
