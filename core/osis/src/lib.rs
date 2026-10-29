@@ -107,7 +107,7 @@
 //! let u = db.undo(&Scope::Thing(t))?.unwrap();
 //! assert_eq!(db.get(t, k.clone())?, Some(Value::Int(1)));
 //! let undos = db.commits(&CommitQuery::new().scope(Scope::Thing(t)).kind(CommitKind::Revert))?;
-//! assert_eq!(undos[0].commit.id, u.commit);
+//! assert_eq!(undos[0].commit.id, u.id);
 //! db.redo(&Scope::Thing(t))?;
 //! assert_eq!(db.get(t, k)?, Some(Value::Int(2)));
 //! # Ok::<(), osis::Error>(())
