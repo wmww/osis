@@ -575,8 +575,8 @@ impl World {
             self.stats.one_by_one += 1;
             assert_eq!(f.read(), read, "ops in one commit read like the same ops one by one: {pops:?}");
         }
-        // (a list item's field first written has no previous value to write back, §4.6,
-        // issues/crdt-undo-absent-positions.md)
+        // (a list item's field first written in a present item stays: no nested register reset,
+        // §4.6 "Absent before")
         let restores = !pops.iter().any(|o| matches!(o.op, Op::Move { .. } | Op::Paste { .. }) || self.list && !matches!(o.op, Op::Insert { .. } | Op::Delete { .. }));
         if skew == 0 {
             self.reps[i].lo = range.hi;
@@ -640,9 +640,8 @@ impl World {
         self.stats.undos += 1;
         if let Some(want) = restore {
             self.stats.restores += 1;
-            // (a presence write stays: an emptied sequence may read empty where it read absent,
-            // issues/crdt-undo-absent-positions.md)
-            assert_eq!(items(self.reps[i].st.read()), items(want), "undoing the last commit restores the read before it");
+            // exact, absence included (§4.6 "Absent before")
+            assert_eq!(self.reps[i].st.read(), want, "undoing the last commit restores the read before it");
         }
         let rep = &mut self.reps[i];
         rep.lo = range.hi;
