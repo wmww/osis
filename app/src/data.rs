@@ -390,13 +390,10 @@ impl Data {
     pub fn favorites(&self) -> Result<Vec<Tid>> {
         let mut out: Vec<Tid> = Vec::new();
         let all = self.things()?;
-        let views: BTreeMap<View, Tid> = self.views()?.into_iter().collect();
+        let views = self.view_map()?;
         for g in self.groups()? {
             for t in self.get(g, FAVORITES)?.unwrap_or_default() {
-                let t = match self.get(t, VIEW)? {
-                    Some(v) => views.get(&v).copied().unwrap_or(t),
-                    None => t,
-                };
+                let t = self.shown_as(&views, t)?;
                 if !out.contains(&t) && all.contains(&t) {
                     out.push(t);
                 }
@@ -409,14 +406,45 @@ impl Data {
         Ok(self.favorites()?.contains(&t))
     }
 
-    /// Adds `t` at the end of the favorites, or removes it.
+    fn view_map(&self) -> Result<BTreeMap<View, Tid>> {
+        Ok(self.views()?.into_iter().collect())
+    }
+
+    /// The thing a favorites entry shows: a duplicate view stands for the one `views` keeps.
+    fn shown_as(&self, views: &BTreeMap<View, Tid>, t: Tid) -> Result<Tid> {
+        Ok(match self.get(t, VIEW)? {
+            Some(v) => views.get(&v).copied().unwrap_or(t),
+            None => t,
+        })
+    }
+
+    /// Adds `t` at the end of the main group's favorites, or removes it from every group's list.
+    /// Entries stay in the group holding them: copying another group's entries into the main
+    /// list would bring back one that a device removes meanwhile.
     pub fn toggle_favorite(&self, t: Tid) -> Result<()> {
-        let mut favs = self.favorites()?;
-        match favs.iter().position(|x| *x == t) {
-            Some(i) => drop(favs.remove(i)),
-            None => favs.push(t),
+        let mut edits = Vec::new();
+        if self.is_favorite(t)? {
+            let views = self.view_map()?;
+            for g in self.groups()? {
+                let base = self.get(g, FAVORITES)?.unwrap_or_default();
+                let mut new = Vec::with_capacity(base.len());
+                for x in &base {
+                    if self.shown_as(&views, *x)? != t {
+                        new.push(*x);
+                    }
+                }
+                if new != base {
+                    edits.push((g, base, new));
+                }
+            }
+        } else {
+            let g = self.main_group()?;
+            let base = self.get(g, FAVORITES)?.unwrap_or_default();
+            let mut new = base.clone();
+            new.push(t);
+            edits.push((g, base, new));
         }
-        self.set_favorites(&favs)
+        self.write_favorites(&edits)
     }
 
     /// Moves the favorite at `from` to `to` (indices into `favorites()`).
@@ -431,7 +459,8 @@ impl Data {
     }
 
     /// Writes `favs` (read through `favorites()`) to the main group and empties the others'
-    /// lists, whose entries it holds now (so a favorite made there can be removed).
+    /// lists, whose entries it holds now (an order spans every entry). A favorite another device
+    /// removes from another group meanwhile comes back.
     fn set_favorites(&self, favs: &[Tid]) -> Result<()> {
         let main = self.main_group()?;
         let mut edits = Vec::new();
@@ -442,8 +471,12 @@ impl Data {
                 edits.push((g, base, new));
             }
         }
+        self.write_favorites(&edits)
+    }
+
+    fn write_favorites(&self, edits: &[(Tid, Vec<Tid>, Vec<Tid>)]) -> Result<()> {
         self.db.write_with(|w| {
-            for (g, base, new) in &edits {
+            for (g, base, new) in edits {
                 w.at(*g, FAVORITES).edit(base, new)?;
             }
             Ok(())
