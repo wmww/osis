@@ -4,6 +4,7 @@
 osis (Open Structured Information System) is a decentralized database optimized for flexibility and robustness: end-user apps managing small-to-large interconnected data across users and devices (notes, calendars, spreadsheets), shared by many apps, app versions, generic tools and AI agents like a file format. Handles device sync, sharing, encryption and simple data APIs. Somewhere between Git, Obsidian, Google Drive and Syncthing.
 
 ## Where things live
+The repo is meant to become a small monorepo of projects worked on independently (owner): core (with cli and schema), and later kit (UI toolkit) and app (notes/app.md), each with its own checks.
 - `spec/`: what a compatible implementation needs (start at spec/overview.md). Requirements, accepted limits and usage rules are spec/requirements.md. Until a stable release, spec edits need no owner sign-off; changes to or conflicts with spec/requirements.md go to the owner.
 - `notes/`: why the spec is what it is, rejected alternatives, policies and implementation hints.
 - `issues/`: unsolved problems and pending owner decisions (`grep -l owner-call issues/*`); each has Summary, Tags and a Repro line. Tags: `security`, `performance`, `tests`, `post-mvp`, `owner-call`, component names. `plans/`: work not done yet; the MVP plans are all done or turned into issues. notes/mvp-progress.md holds the MVP final report.
