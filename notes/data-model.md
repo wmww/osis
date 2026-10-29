@@ -64,7 +64,7 @@ aspect /note/body: markdown [indexed];
 aspect /note/last_opened: timestamp [expires: 30d];
 aspect /note/pinned: map<tid, tagged<int>> [by: writer, keep_at_most: 0s];
 aspect /note/title2: string succeeds /note/title;
-signal /note/typing: struct { 0 who: tid, 1 at: timestamp };
+aspect /note/typing: struct { 0 who: tid, 1 at: timestamp } [signal];
 ```
 - Aspect attributes: flags `ro`, `synthetic`, `guaranteed`, `indexed`; `by: nobody|admin|author|writer` (default `author`); `keep_at_least:`/`keep_at_most:` a duration (relative, after replaced) and/or `abs <wall ms>`; `expires: <duration>`. Durations `250ms`, `10s`, `5m`, `12h`, `30d`. Trailing commas everywhere.
 - Default literals: numbers, strings, `0x` bytes, `true`/`false`, case names with optional `(payload)`, `[..]` for lists and sets, `{k: v}` for maps and structs (fields by name or ID; omitted fields take their defaults). A tid default is its text form.

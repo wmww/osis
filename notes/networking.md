@@ -2,7 +2,7 @@
 > Summary: Decided with owner. The sync protocol runs over any ordered, bidirectional byte stream behind our own transport abstraction; direct server connections (QUIC/TLS/WebSocket) need no iroh; iroh 1.0 is the P2P transport (LAN, hole punching, relays, later BLE), used without n0's infrastructure; we run an official blind server and relays. Addresses and relays are osis data, server addresses pin the server's key; transport keys are separate from node signing keys. Push wake-ups are a proposal; Tor a future option.
 
 ## What osis needs from the network (spec/requirements.md)
-- Long-lived connections with server push (subscriptions, signals), several labels per connection, one round trip for the common case.
+- Long-lived connections with server push (subscriptions, relay-only signals), several labels per connection, one round trip for the common case.
 - Blind always-on nodes are the backbone; client-to-server reachability matters most. Direct P2P adds LAN, offline and no-server sync.
 - No required coordinator: any helper is replaceable and self-hostable; osis works without it (LAN, any blind node, a known address).
 - A blind node must not learn authorship or membership. It learns client IPs (accepted), not node identities.
