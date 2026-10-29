@@ -11,6 +11,7 @@ use osis_base::format::{KEEPALIVE_MS, MAX_LEASE_MS};
 use osis_base::{Role, Tid, Value};
 use osis_node::Mutation;
 use osis_schema::Lifetime;
+use osis_server::Policy;
 
 const CURSOR: &str = "/doc/cursor";
 
@@ -385,4 +386,102 @@ fn update_never_flaps_spec_sync_9() {
         assert_eq!(at(&mut net, b, t), Some(s(&format!("a@{i}"))));
     }
     assert_eq!(remote_changes(&rx, t, CURSOR), 5, "one change per update");
+}
+
+/// Upload and Delete messages nodes sent so far (osis-proto message kinds 10 and 14).
+fn sent_up_del(net: &Net) -> (usize, usize) {
+    (net.sent_kinds.get(&10).copied().unwrap_or(0), net.sent_kinds.get(&14).copied().unwrap_or(0))
+}
+
+// spec/sync.md §9 (an own presence commit waits while the previous one's upload is unanswered;
+// the next carries the whole own state): a burst of cursor moves during one upload in flight
+// goes as two commits, two uploads and at most two deletes; B ends at the latest value with one
+// remote change per commit (no blink) and the server holds one entry of A
+#[test]
+fn burst_coalesced_while_upload_in_flight_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let (_, t) = setup(&mut net, a, &[(b, Role::Write)], &[sv]);
+    net.eph_write(a, t, &cursor(), s("a@0"));
+    net.run();
+    let l = net.label(a);
+    let (held, (up, del)) = (live(&net, sv, &l), sent_up_del(&net));
+    let rx = net.listen(b);
+    for i in 1..=20 {
+        net.eph_write(a, t, &cursor(), s(&format!("a@{i}")));
+    }
+    net.run();
+    let (up2, del2) = sent_up_del(&net);
+    assert_eq!(up2 - up, 2, "the first move, then the other 19 in one commit");
+    assert!(del2 - del <= 2, "{} deletes", del2 - del);
+    assert_eq!(at(&mut net, b, t), Some(s("a@20")));
+    assert_eq!(remote_changes(&rx, t, CURSOR), 2, "one change per commit");
+    assert_eq!(presence_held(&mut net, b), 1);
+    assert_eq!(live(&net, sv, &l), held, "one entry of A at the server");
+}
+
+/// `authors` nodes in one group move their cursors every 33 ms (30 a second) for `secs`
+/// simulated seconds, messages taking one 33 ms round per hop (a 66 ms round trip), at a server
+/// whose delete limit is the default rate (20 000 a minute) over a `secs` window: the deletes
+/// stay under it, every author stays visible at every node throughout, and at the end every node
+/// reads every author's latest cursor and the server holds one presence entry per author.
+/// Returns (uploads, deletes) sent.
+fn many_authors_run(authors: usize, secs: u64) -> (usize, usize) {
+    let mut net = Net::new();
+    let window_ms = secs * 1000;
+    let deletes = (Policy::default().deletes as u64 * window_ms / 60_000) as u32;
+    let sv = net.add_server_with(Policy { window_ms, deletes, ..Policy::default() });
+    let ns: Vec<usize> = (0..authors).map(|i| net.node(1 + i as u64, &[sv])).collect();
+    let members: Vec<(usize, Role)> = ns[1..].iter().map(|n| (*n, Role::Write)).collect();
+    let (_, t) = setup(&mut net, ns[0], &members, &[sv]);
+    let l = net.label(ns[0]);
+    let held = live(&net, sv, &l);
+    let (up, del) = sent_up_del(&net);
+    let key = |n: usize| ukey(&format!("/doc/c{n}"), Lifetime::Presence);
+    let rounds = window_ms / 33;
+    for r in 0..rounds {
+        net.clock.advance(33);
+        for n in &ns {
+            net.eph_write(*n, t, &key(*n), s(&format!("{n}@{r}")));
+        }
+        net.round();
+        if r % 30 == 29 {
+            for x in &ns {
+                for n in &ns {
+                    assert!(net.eph_read(*x, t, &format!("/doc/c{n}")).is_some(), "round {r}: author {n} not visible at {x}");
+                }
+            }
+        }
+    }
+    net.run();
+    let (up2, del2) = sent_up_del(&net);
+    for x in &ns {
+        for n in &ns {
+            assert_eq!(net.eph_read(*x, t, &format!("/doc/c{n}")), Some(s(&format!("{n}@{}", rounds - 1))), "author {n} at {x}");
+        }
+    }
+    assert_eq!(live(&net, sv, &l), held + authors, "one presence entry per author");
+    assert!(((del2 - del) as u64) < u64::from(deletes), "{} deletes against a limit of {deletes}", del2 - del);
+    // at most one commit per author per round trip (two rounds), and one more at the end
+    let most = authors * (rounds as usize / 2 + 2);
+    assert!(up2 - up <= most && del2 - del <= most, "{} uploads, {} deletes: more than one per round trip ({most})", up2 - up, del2 - del);
+    (up2 - up, del2 - del)
+}
+
+// spec/sync.md §9 (coalescing while an upload is in flight), §5 (servers rate-limit deletes per
+// label): 10 authors at 30 cursor moves a second, scaled to a 1 s window
+#[test]
+fn many_authors_under_server_rates_spec_sync_9() {
+    let (up, del) = many_authors_run(10, 1);
+    eprintln!("10 authors, 1 s: {up} uploads, {del} deletes");
+}
+
+// tier 2: the same for a whole simulated minute at the default policy
+#[test]
+#[ignore]
+fn many_authors_under_server_rates_large() {
+    let (up, del) = many_authors_run(10, 60);
+    eprintln!("10 authors, 60 s: {up} uploads, {del} deletes");
 }
