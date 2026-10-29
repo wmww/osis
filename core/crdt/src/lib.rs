@@ -49,6 +49,8 @@ mod tests_wire;
 #[cfg(test)]
 mod tests_ops;
 #[cfg(test)]
+mod tests_undo;
+#[cfg(test)]
 mod tests_life;
 #[cfg(test)]
 mod tests_laws;
