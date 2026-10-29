@@ -19,8 +19,7 @@
 - Backlinks from markdown (`/body` has no tid reference syntax): the owner is taking that to the library side. Not an app concern until then.
 
 ## Look
-- Color comes from the data: `/tag.color` tints things, the chrome stays calm. The palette is the user's, which is what keeps it timeless.
-- Flatish: soft elevation and warmth on cards, depth cues for stacking and drag, no decorative gradients. Vello's blurred rounded rects make this cheap.
+Themes (notes/theming.md): one main colour from the content drives accents, selection and a subtle background; the rest is a theme's parameters. Superseded the earlier "chrome calm, no decorative gradients" draft.
 
 ## State in osis
 - All app state lives in osis; widgets hold only what is too hot to be data (drag positions, caret blink, animation).
@@ -36,7 +35,7 @@
 - A toolkit swap rewrites driver and widgets only; state and behavior survive. The earlier idea of a separate "view model" crate dissolves into the view-state schema plus the actions crate.
 
 ## Web mockup
-`app/mockup/` (plain HTML/CSS/JS, no deps, no osis; serve the directory, e.g. `python3 -m http.server`) explores look and layout before building in kit. Owner brief: things and scopes (tags, views) are fungible tiles in one list or grid; an ordered favorites list; one search over names, content and scopes; with a view open and room enough, a left bar holds search and favorites. The look should feel like what 1996, 2006, 2016 and 2026 thought 2026 would be: colored gradient backgrounds or abstract shapes, a little Apple liquid glass (never at a perf cost), almost no Material. Layout in style.css; themes are parameters (themes.js) that engine.css turns into its custom properties.
+`app/mockup/` (plain HTML/CSS/JS, no deps, no osis; serve the directory, e.g. `python3 -m http.server`) explores look and layout before building in kit. Owner brief: things and scopes (tags, views) are fungible tiles in one list or grid; an ordered favorites list; one search over names, content and scopes; with a view open and room enough, a left bar holds search and favorites. The look should feel like what 1996, 2006, 2016 and 2026 thought 2026 would be: colored gradient backgrounds or abstract shapes, a little Apple liquid glass (never at a perf cost), almost no Material. Layout in style.css; themes are parameters (themes.js, notes/theming.md) that engine.css turns into its custom properties.
 
 Owner direction so far:
 - Themes: wanted; every theme has light and dark (mode is separate from the theme: Light/Dark/Auto).
@@ -47,24 +46,8 @@ Owner direction so far:
 - Themes (owner-approved set): Frost, Glass (the earlier Aero with Dusk merged in), Workstation, Memphis, Slate (square, flat, modern), Cel (flat, white or dark grey, anime-ish). Older looks are in git history.
 - Motion: almost none. Only unobtrusive fades, or motion that adds clarity. The mockup fades the main colour and nothing else.
 
-## Themes are parameters
-Owner direction: a theme is a set of parameters, and the six themes are only defaults; users can make equally distinct themes by changing them. The mockup's engine.css implements every value of every parameter once (themes.js lists them); a toolkit implements the same list. No CSS and no per-theme code. Accepted simplifications: Workstation's hard shadow is in the outline colour (ink) and it lost its sun, Glass lost its bubbles, Cel its halftone, Memphis its dots; Memphis icons are filled; no wide first tile, no giant kind word behind Slate. Frost: no panels, light tint, two soft curves.
-
-Parameters (enums unless noted):
-- Colours, each a light and dark pair: background, surface, outline, shadow (no colour is derived from another across modes). The theme has no main colour: a screen without a colour of its own uses a soft grey.
-- bgTint (0..1): how much of the content colour goes into the whole background; 0 means none. Every background decoration is a lighter or darker shade of the resulting background colour, never tinted on its own, so tint 0 leaves decorations visible in grey.
-- background flat|field|curves|sky|grid|dots|shapes|lines|beams|grass: one per theme (owner: simpler beats layering). Placement comes from four seeds hashed from the open thing's tid, plus a small per-kind value (calendar, note, ...). lines: two or three, with seeded widths, spacing and angle; beams: light through water from above; grass: blade shapes from the bottom, not a picture.
-- panelOpacity (0..1) and panelBlur (px) replace a panel enum; a panel's outline and shadow fade with its opacity. With blur switched off, a blurred panel gains opacity in proportion to its blur.
-- spacing (a factor on every padding, gap and margin), radius (px), iconRound (0 square .. 1 circle), slant (deg; cards, the hovered row, the selection, the new-note placeholder and search fields lean together, text stays upright).
-- outline (px): panels and fields only; cards (tiles, chips, the selection) have none. shadowOpacity, shadowBlur (softness), shadowDistance, shadowAngle (a hard Memphis shadow is softness 0). Panels scale their shadow; dark mode strengthens shadows.
-- gloss (0..1): a highlight line across fills and a faint lit top edge. No bevel.
-- fill (0..1): how much of its colour a card takes (always a trace); tiles use their own colour, the selected sidebar row the screen's. Past about half, text and icons turn white. Cards on an opaque panel step away from its surface so they never blend in.
-- font system (the platform's, not shipped) | inter | dm-sans | figtree | lexend | atkinson (Atkinson Hyperlegible Next) | nunito | literata (serif); JetBrains Mono for mono labels. All OFL so we can ship them (owner: freely licensed, good everyday app fonts, with variety). weight (-1..1) moves headings only (titles most, labels less, names a little); body text keeps its weight.
-- accent plain|caps|bar|rule|slash: a package of label style, base weights per role (title, label, name, body) and marks. bar: mono labels, title bars, a stripe on tiles. rule: big light labels, a line atop the pane. slash: caps labels, slashes, underlined titles, a corner flag on tiles.
-
-Not theme parameters: light/dark/auto (a user setting), and no separate blur switch (panelBlur 0 is the cheap theme).
-
-Stored in osis as a thing (sync, sharing) when built.
+## Themes
+A theme is a set of parameters, not code: notes/theming.md (the system, its goals, the parameter list). The mockup's engine.css and themes.js are its reference implementation.
 
 ## kit and app (owner)
 Two top-level projects, `kit/` (package `osis-kit`) and `app/` (`osis-app`).
