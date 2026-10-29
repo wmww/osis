@@ -135,9 +135,12 @@ pub(crate) fn received(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, as_of: u64) -> Resul
     }
     r.commits.retain(|_, x| x.1 <= as_of);
     let core = &*tx.core;
-    for (_, s, fr, abs) in core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten() {
-        let Some(at) = core.ix.commits.get(s).map(|m| m.received.0) else { continue };
-        if at > as_of || !super::validity::snapshot_valid(core, s, tid, ak) {
+    let held = core.ix.snapshots.get(&(*tid, ak.clone()));
+    // received by `as_of` at their part's receipt time (`record`; a late part's, not its header's)
+    let at: Vec<Option<u64>> = held.iter().flat_map(|v| v.iter()).map(|x| r.commits.get(&x.1).map(|c| c.1)).collect();
+    for ((_, s, fr, abs), at) in held.into_iter().flatten().zip(at) {
+        let Some(at) = at else { continue };
+        if !super::validity::snapshot_valid(core, s, tid, ak) {
             continue;
         }
         for (n, c) in &fr.0 {
