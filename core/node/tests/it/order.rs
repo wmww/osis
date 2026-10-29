@@ -1079,8 +1079,10 @@ fn deaths_dated_per_node_spec_commits_5() {
         assert_eq!(dating(&mut p, &o, played.now), None, "order {order:?}");
         seen.push(deaths_of(&mut p.engine).into_iter().filter(|x| x.1.is_some()).collect::<Vec<_>>());
     }
-    // X: Y's `ts` as made, Z's reversed
-    assert!(seen[0].len() == 2 && seen[0][0].1.unwrap().0 < seen[1][0].1.unwrap().0 && seen[0][1] == seen[1][1], "{seen:?}");
+    // X: Y's `ts` as made, Z's reversed; Y: Z's both ways (by commit, not by ID order)
+    let (x, y) = (played.packs[played.base].id, played.packs[played.base + 1].id);
+    let at = |i: usize, c: CommitId| seen[i].iter().find(|e| e.0.0 == c).and_then(|e| e.1);
+    assert!(seen[0].len() == 2 && at(0, x).zip(at(1, x)).is_some_and(|(a, b)| a.0 < b.0) && at(0, y).is_some() && at(0, y) == at(1, y), "{seen:?}");
 }
 
 // spec/crdt.md §4.8, order seed 7855 (exhaustive, shrunk): W1 and W2 put one `/t/gonemap` key, U

@@ -5,3 +5,4 @@
 - Review: the walks `_moves` test reads `OSIS_WALKS_MOVES_START`/`_SEEDS`, not `OSIS_WALKS_*`; a "fresh 1000" run with the latter silently ran the 6 default seeds.
 - Review: planted bugs showed the dating checks were weaker than they read: the order harness never dates snapshots (its kept aspects take bounds per commit, so snapshots are unbounded), and retention.rs accepted any snapshot death the oracle lacked; an early snapshot death passed both.
 - Review: squashing wip commits with `git reset --soft <worker tip>` used the tip hash from before the rebase (brief rebase changed it); caught via reflog. Take the base from `git log` after rebasing.
+- Review: `order::deaths_dated_per_node_*` picked X by commit-ID order; main's ephemeral commit changed the IDs and it failed only after the rebase. Fixed to pick by commit.
