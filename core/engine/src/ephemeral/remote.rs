@@ -134,6 +134,11 @@ impl Engine {
         out
     }
 
+    /// Whether `t` is in the closure of `g` (`ephemeral_closure`), without walking it.
+    pub fn in_ephemeral_closure(&self, g: &Tid, t: &Tid) -> bool {
+        t == g || self.closure(g).contains(t) || self.groups_of(t).contains(g)
+    }
+
     /// Whether own ephemeral writes or signals wait to be sent (`take_ephemeral`).
     pub fn has_unsent(&self) -> bool {
         let r = &self.eph.remote;
@@ -342,7 +347,9 @@ impl Engine {
                 }
                 self.eph.aspects.entry(a.tid).or_default().entry(a.ak.clone()).or_default().parts.insert((id, i));
             }
-            self.drop_absorbed();
+            if !absorbed.is_empty() {
+                self.drop_absorbed();
+            }
         }
         Ok(Some(EphCommit { id, class, blob }))
     }
@@ -537,8 +544,11 @@ impl Engine {
         }
         let bytes = parts.iter().map(|(_, f, _)| f.approx_bytes()).sum();
         let new = !changed.is_empty();
+        let absorbs = parts.iter().any(|(_, _, a)| !a.is_empty());
         self.eph.remote.held.insert(id, Held { header: header.clone(), parts, valid, own: false, bytes });
-        self.drop_absorbed();
+        if absorbs {
+            self.drop_absorbed();
+        }
         changed.sort();
         changed.dedup();
         if !changed.is_empty() {
@@ -830,6 +840,18 @@ impl Engine {
         }
         let c = self.build_ephemeral(EphClass::Plain, me, deltas, &records, &absorbed)?;
         Ok(c)
+    }
+
+    /// Tests: an ephemeral commit setting `(tid, ak)` to `v` with no rights check (a forged
+    /// write, to test receivers).
+    #[doc(hidden)]
+    pub fn forge_ephemeral(&mut self, tid: Tid, ak: &Ak, v: Value) -> Result<Option<EphCommit>> {
+        let ts = self.core.hlc.next();
+        let w = Writer::new(ts, self.eph.src.clone(), self.eph.next);
+        let Some((f, r)) = run_ops(&Fragment::default(), w, &[PathOp { path: Vec::new(), op: Op::Set(v) }], &AnyView)? else { return Ok(None) };
+        self.eph.next = r.hi;
+        let me = self.tid();
+        self.build_ephemeral(EphClass::Plain, me, vec![(tid, ak.clone(), f, None)], &BTreeSet::new(), &BTreeMap::new())
     }
 
     /// Held ephemeral commits and their approximate bytes (tests, diagnostics).
