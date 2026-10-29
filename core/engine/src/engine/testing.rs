@@ -65,6 +65,14 @@ impl Engine {
         self.core.ix.by_aspect.get(&k).into_iter().flatten().filter(|(_, c)| self.body_valid(c, tid, ak) == Some(false)).map(|(ts, c)| (*c, *ts)).collect()
     }
 
+    /// Commits with a dropped part, commits with an invalid part, and snapshots kept for their
+    /// dropped parts' frontiers (`Meta::gives`). Tests: what a random history reached.
+    #[doc(hidden)]
+    pub fn drop_counts(&self) -> [usize; 3] {
+        let ms = || self.core.ix.commits.values();
+        [ms().filter(|m| !m.dropped.is_empty()).count(), ms().filter(|m| m.valid.contains(&false)).count(), self.core.ix.dropped_snapshots.values().map(|v| v.len()).sum()]
+    }
+
     /// A dump of the indexes open rebuilds (tests: a load from the persisted index equals a
     /// rebuild from the commit records).
     #[doc(hidden)]

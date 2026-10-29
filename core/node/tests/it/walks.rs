@@ -565,9 +565,10 @@ fn big_blob(rng: &mut Rng) -> Value {
 fn reached(e: &Engine) -> [usize; 4] {
     let d = e.index_digest();
     let commits = || d.lines().filter(|l| l.starts_with("commit "));
+    let [dropped, invalid, _] = e.drop_counts();
     [
-        commits().filter(|l| !l.contains(" {} ")).count(),
-        commits().filter(|l| l.split(" View").next().is_some_and(|h| h.contains("false"))).count(),
+        dropped,
+        invalid,
         commits().filter(|l| l.contains("kind: RosterSnapshot")).count(),
         d.lines().filter(|l| l.starts_with("by_chunk")).map(|l| l.matches("BlobId(").count()).sum(),
     ]
