@@ -39,12 +39,6 @@ const RAIL_LIST: Slot = ("rail-list", WidgetTag::new("rail-list"));
 const RAIL_NEW: Slot = ("rail-new", WidgetTag::new("rail-new"));
 const PANE_EXTRA: Slot = ("pane-extra", WidgetTag::new("pane-extra"));
 const META: Slot = ("meta", WidgetTag::new("meta"));
-/// Backoff of a failing revocation, doubling per failure up to `RETRY_MAX` (minor consequence:
-/// it is taken back that much later, retried at the first sync after the wait). At 0 a
-/// persistent failure retries on every sync, which its own pre-sync triggers (a loop); at
-/// infinity it waits for a restart or another tag removal.
-const RETRY_FIRST: std::time::Duration = std::time::Duration::from_secs(1);
-const RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(300);
 /// Holds the status label (a tag cannot be given together with properties).
 const STATUS: WidgetTag<SizedBox> = WidgetTag::new("status");
 const STAR: WidgetTag<IconButton> = WidgetTag::new("star");
@@ -61,10 +55,6 @@ pub enum Msg {
     Remote(Tid),
     /// An osis diagnostic (a thing that will not sync, a callback that panicked, ...).
     Diagnostic(String),
-    /// A revocation task finished: (thing, tag, outcome).
-    Revoked(Tid, Tid, Result<(), crate::data::RevokeError>),
-    /// A sync with a server succeeded (retry waiting revocations).
-    Synced,
 }
 
 /// What a press on a widget does.
@@ -84,9 +74,6 @@ enum Act {
     Picker,
     AddTag(Tid, Tid),
     RemoveTag(Tid, Tid),
-    /// Go ahead with the pending placement into a shared tag.
-    Confirm,
-    Cancel,
     Undo(Tid),
     /// Show the week `n` weeks from this one.
     Week(i64),
@@ -119,8 +106,6 @@ struct ViewState {
     creating: bool,
     /// The tag picker is open.
     picker: bool,
-    /// A placement into a shared tag awaiting confirmation: (thing, tag, who will see it).
-    pending: Option<(Tid, Tid, String)>,
     /// The calendar's week, relative to this one.
     week: i64,
     /// The schema fallback view is shown.
@@ -179,15 +164,6 @@ pub struct Ui {
     /// Each slot's form inputs in order, and those of the slot being built.
     slot_inputs: HashMap<&'static str, Vec<WidgetId>>,
     building_inputs: Vec<WidgetId>,
-    /// The latest background task's progress or outcome, kept in the status line.
-    notice: Option<String>,
-    /// Revocations with a task running.
-    revoking: BTreeSet<(Tid, Tid)>,
-    /// Revocations that failed: how often in a row, and when to try next (`RETRY_FIRST`).
-    revoke_backoff: BTreeMap<(Tid, Tid), (u32, std::time::Instant)>,
-    /// The waiting revocations were tried since start.
-    started: bool,
-    _status_sub: Subscription,
     /// Focus the title once the next screen is built (a thing just made).
     focus_title: bool,
     editor: Option<Editor>,
@@ -206,16 +182,6 @@ impl Ui {
             m.post(Msg::Diagnostic(format!("{:?}: {}", d.kind, d.detail)));
         });
         let look = Arc::new(Look::new(&theme, mode == Mode::Dark, None));
-        // a sync that succeeds is the moment to retry waiting revocations
-        let m = mb.clone();
-        let mut synced = 0usize;
-        let status_sub = data.db.watch_status(move |_, st| {
-            let n = st.groups.values().filter(|g| g.state == osis::SyncState::Synced).count();
-            if n > synced {
-                m.post(Msg::Synced);
-            }
-            synced = n;
-        });
         Ui {
             data,
             window,
@@ -239,11 +205,6 @@ impl Ui {
             building_inputs: Vec::new(),
             reorder_grids: Default::default(),
             focus_title: false,
-            notice: None,
-            revoking: BTreeSet::new(),
-            revoke_backoff: BTreeMap::new(),
-            started: false,
-            _status_sub: status_sub,
             editor: None,
             subs: BTreeMap::new(),
             _diag_sub: diag_sub,
@@ -321,10 +282,7 @@ impl Ui {
         }
         self.watch()?;
         if rebuild || self.diag.is_some() {
-            let mut s = format!("device {}{}", short(self.data.db.node()), self.diag.as_deref().map(|d| format!(" · {d}")).unwrap_or_default());
-            if let Some(n) = &self.notice {
-                s = format!("{n} · {s}");
-            }
+            let s = format!("device {}{}", short(self.data.db.node()), self.diag.as_deref().map(|d| format!(" · {d}")).unwrap_or_default());
             self.status(ctx, s);
         }
         Ok(())
@@ -444,105 +402,6 @@ impl Ui {
         self.slots.insert(key, c);
     }
 
-    /// After a tag was removed from `t`: when nothing else keeps the access tagging gave
-    /// (`Data::revoke_needed`), records that it is to be taken back and starts on it.
-    fn revoke_later(&mut self, ctx: &mut DriverCtx<'_, '_>, t: Tid) -> osis::Result<()> {
-        // not only the tag removed: an access kept earlier because `t` was still below a tag another way
-        // may be free now, and so may everything below an un-nested tag
-        let todo = self.data.revocations_after_removal(t)?;
-        for (x, m) in &todo {
-            self.data.queue_revoke(*x, *m)?;
-        }
-        if !todo.is_empty() {
-            self.retry_revokes(ctx);
-        }
-        Ok(())
-    }
-
-    fn names(&self, t: Tid, g: Tid) -> (String, String) {
-        let label = |x: Tid| self.data.name(x).ok().filter(|n| !n.is_empty()).unwrap_or_else(|| "Untitled".into());
-        (label(t), label(g))
-    }
-
-    fn notify(&mut self, ctx: &mut DriverCtx<'_, '_>, n: String) {
-        self.status(ctx, n.clone());
-        self.notice = Some(n);
-    }
-
-    /// Works through the waiting revocations (on start, after each successful sync, after a tag
-    /// is removed): drops those that no longer apply, starts a background task for each other
-    /// one not already running; progress and outcomes go to the status line.
-    fn retry_revokes(&mut self, ctx: &mut DriverCtx<'_, '_>) {
-        let pending = match self.data.pending_revokes() {
-            Ok(p) => p,
-            Err(e) => return self.notify(ctx, format!("error: {e}")),
-        };
-        let now = std::time::Instant::now();
-        for (t, g) in pending {
-            if self.revoking.contains(&(t, g)) || self.revoke_backoff.get(&(t, g)).is_some_and(|b| now < b.1) {
-                continue;
-            }
-            match self.data.revoke_moot(t, g) {
-                Ok(true) => {
-                    if let Err(e) = self.data.drop_revoke(t, g) {
-                        self.notify(ctx, format!("error: {e}"));
-                    }
-                    continue;
-                }
-                Err(e) => {
-                    self.notify(ctx, format!("error: {e}"));
-                    continue;
-                }
-                Ok(false) => {}
-            }
-            match self.data.revoke_applies(t, g) {
-                // still under the tag here: kept until the removal arrives or a re-tag drops it
-                Ok(false) => continue,
-                Err(e) => {
-                    self.notify(ctx, format!("error: {e}"));
-                    continue;
-                }
-                Ok(true) => {}
-            }
-            let (tn, gn) = self.names(t, g);
-            self.notify(ctx, format!("Taking back {gn}'s access to {tn}…"));
-            let data = self.data.clone();
-            let mb = self.mb.clone();
-            let started = osis_kit::tasks::spawn("revoke", move || async move { data.revoke(t, g, osis::WaitForSync::Required).await }, move |r| {
-                mb.post(Msg::Revoked(t, g, r));
-            });
-            if started {
-                self.revoking.insert((t, g));
-            } else {
-                self.notify(ctx, "could not start a background task".into());
-            }
-        }
-    }
-
-    /// A revocation task's outcome: done (or kept another way) drops it; a failure stays
-    /// queued for the next retry.
-    fn revoked(&mut self, ctx: &mut DriverCtx<'_, '_>, t: Tid, g: Tid, r: Result<(), crate::data::RevokeError>) {
-        self.revoking.remove(&(t, g));
-        let (tn, gn) = self.names(t, g);
-        let n = match r {
-            Ok(()) => format!("{gn} no longer reaches {tn}"),
-            Err(crate::data::RevokeError::Kept(_)) => format!("{gn} still reaches {tn} another way: access kept"),
-            Err(crate::data::RevokeError::Failed(e)) => {
-                // each attempt's pre-sync makes the next sync, which would retry it at once
-                let fails = self.revoke_backoff.get(&(t, g)).map_or(0, |b| b.0).saturating_add(1);
-                let wait = RETRY_FIRST.saturating_mul(1u32 << (fails - 1).min(16)).min(RETRY_MAX);
-                self.revoke_backoff.insert((t, g), (fails, std::time::Instant::now() + wait));
-                self.notify(ctx, format!("could not take back {gn}'s access to {tn} yet ({e}); retried after the next sync"));
-                return;
-            }
-        };
-        self.revoke_backoff.remove(&(t, g));
-        if let Err(e) = self.data.drop_revoke(t, g) {
-            return self.notify(ctx, format!("error: {e}"));
-        }
-        self.notify(ctx, n);
-    }
-
     /// Saves a form input's text unless it is what was saved last.
     fn save_input(&mut self, ctx: &mut DriverCtx<'_, '_>, id: WidgetId) {
         let Some(f) = self.field_inputs.get_mut(&id) else { return };
@@ -625,27 +484,11 @@ impl Ui {
             }
             Act::Picker => {
                 self.view.picker = !self.view.picker;
-                self.view.pending = None;
                 Ok(())
             }
-            Act::AddTag(t, g) => match self.data.share_reach(t, g) {
-                // placing into a shared tag shows the thing to its members: confirm first
-                Ok(Some(r)) => {
-                    self.view.pending = Some((t, g, r.people.join(", ")));
-                    Ok(())
-                }
-                Ok(None) => self.data.add_tag(t, g),
-                Err(e) => Err(e),
-            },
-            Act::Confirm => match self.view.pending.take() {
-                Some((t, g, _)) => self.data.add_tag(t, g),
-                None => Ok(()),
-            },
-            Act::Cancel => {
-                self.view.pending = None;
-                Ok(())
-            }
-            Act::RemoveTag(t, g) => self.data.remove_tag(t, g).and_then(|()| self.revoke_later(ctx, t)),
+            // tagging places or nests only; sharing through a tag waits on issues/tag-sharing-op.md
+            Act::AddTag(t, g) => self.data.add_tag(t, g),
+            Act::RemoveTag(t, g) => self.data.remove_tag(t, g),
             Act::Week(n) => {
                 self.view.week = n;
                 Ok(())
@@ -779,18 +622,10 @@ impl AppDriver for Ui {
                         changed = true;
                     }
                     Msg::Remote(t) => self.remote(ctx, t),
-                    Msg::Revoked(t, g, r) => {
-                        self.revoked(ctx, t, g, r);
-                        changed = true;
-                    }
-                    Msg::Synced => self.retry_revokes(ctx),
                 }
             }
             if changed {
                 self.refresh(ctx, false);
-            }
-            if !std::mem::replace(&mut self.started, true) {
-                self.retry_revokes(ctx);
             }
         } else if action.is::<Press>() {
             if let Some(a) = self.acts.get(&id).cloned() {

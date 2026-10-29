@@ -121,7 +121,7 @@ fn kinds_tags_reach_undo() {
     assert_eq!(d.tags_of(n).unwrap(), vec![g]);
     assert_eq!(d.tag_contents(g).unwrap().1, vec![n]);
     assert_eq!(d.reach(n).unwrap().who(), "Only you");
-    assert_eq!(d.tag_reach(g).unwrap().people, Vec::<String>::new());
+    assert_eq!(d.reach(g).unwrap().people, Vec::<String>::new());
     d.remove_tag(n, g).unwrap();
     assert!(d.tags_of(n).unwrap().is_empty());
     assert!(d.things().unwrap().contains(&n), "still in the app group");

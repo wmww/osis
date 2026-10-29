@@ -10,9 +10,9 @@
 //! A thing is whatever its aspects make it (`Kind`); things and scopes (tags, views) are shown
 //! alike as tiles (`Tile`).
 
-use crate::schema::{REVOKE, Revoke, APP, COLOR, DEMO, FAVORITES, MODE, Mode, OPEN, THEME, VIEW, View};
+use crate::schema::{APP, COLOR, DEMO, FAVORITES, MODE, Mode, OPEN, THEME, VIEW, View};
 use osis::core::{BODY, GROUP, NAME, TAG};
-use osis::{AspectKey, ChangeId, CommitKind, CommitQuery, Config, Edge, EdgeOpts, Error, Osis, Result, Role, Runtime, Scope, ServerAddr, Tid, Transport, p};
+use osis::{AspectKey, ChangeId, CommitKind, CommitQuery, Config, Edge, Error, Osis, Result, Runtime, Scope, ServerAddr, Tid, Transport, p};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -101,14 +101,6 @@ pub enum NewKind {
 /// Colours a new tag takes, in turn.
 pub const TAG_COLORS: [&str; 8] = ["#ef4444", "#f59e0b", "#22c55e", "#06b6d4", "#3b82f6", "#8b5cf6", "#ec4899", "#64748b"];
 
-/// Why taking back a tag's access did not happen.
-#[derive(Debug)]
-pub enum RevokeError {
-    /// The tag still reaches the thing another way (its direct edge may be gone).
-    Kept(String),
-    Failed(Error),
-}
-
 /// Who can see a thing (notes/app.md Model: every thing shows it).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Reach {
@@ -158,6 +150,7 @@ impl Data {
 
     /// A typed read where a value of another shape (a synced thing may hold anything, or a
     /// newer revision's enum case) reads as absent, so one odd thing cannot fail a whole screen.
+    /// Works around issues/api-lenient-reads.md.
     pub fn get<K: AspectKey>(&self, t: Tid, key: K) -> Result<Option<K::T>> {
         match self.db.get(t, key) {
             Err(Error::Type { .. }) => Ok(None),
@@ -168,6 +161,7 @@ impl Data {
     // ---- the app group
 
     /// The app groups among home's subgroups, smallest tid first.
+    /// Works around issues/app-group-helper.md (as do `main_group` and the merging of favorites, views, open and look).
     pub fn groups(&self) -> Result<Vec<Tid>> {
         let db = &self.db;
         let home = db.home();
@@ -310,6 +304,7 @@ impl Data {
     pub fn tags_of(&self, t: Tid) -> Result<Vec<Tid>> {
         let mut out = Vec::new();
         // a tag nested in a tag is its subgroup, not a member: `groups_of` does not list the parent
+        // (issues/api-subgroup-parents.md)
         let mut cands: BTreeSet<Tid> = self.db.groups_of(t).into_iter().collect();
         if self.get(t, TAG)?.is_some() {
             cands.extend(self.all_tags()?);
@@ -368,6 +363,7 @@ impl Data {
 
     /// When `t` last changed: wall ms of its newest content change, else its creation, each at
     /// `min(ts, received)` (a device whose clock runs ahead cannot date a change into the future).
+    /// Works around issues/api-change-time.md.
     pub fn changed(&self, t: Tid) -> Option<u64> {
         let q = CommitQuery::new().scope(Scope::Thing(t)).kind(CommitKind::Change).kind(CommitKind::Revert).limit(1);
         let newest = self.db.commits(&q).ok().and_then(|c| c.first().map(|e| (e.commit.ts, e.commit.received)));
@@ -516,199 +512,12 @@ impl Data {
         Ok(format!("someone ({})", p.to_string().chars().take(6).collect::<String>()))
     }
 
-    /// Whether placing something in `tag` shows it to anyone else (the share confirmation).
-    pub fn tag_reach(&self, tag: Tid) -> Result<Reach> {
-        self.reach(tag)
-    }
-
-    /// Who placing `t` in `tag` shares it with (the share confirmation): the tag's reach, when it
-    /// holds anyone else, `t` is mine to share (admin) and the tag has no edge on it yet. `None`:
-    /// placing shares nothing (placement grants no rights, notes/tags.md).
-    pub fn share_reach(&self, t: Tid, tag: Tid) -> Result<Option<Reach>> {
-        let db = &self.db;
-        if db.role_on(t) != Some(Role::Admin) || db.roster(t).get(&tag).is_some_and(|e| live(e, db.now())) {
-            return Ok(None);
-        }
-        let r = self.tag_reach(tag)?;
-        Ok((!r.people.is_empty()).then_some(r))
-    }
-
-    /// Tags `t` with `tag`: a thing is placed in it (an item), a tag is nested in it (a
-    /// subgroup, core's sub-tag: notes/tags.md). Where that shares it (`share_reach`), the tag
-    /// gets an edge on `t` (write, capped by each member's role on the tag); a nested tag is
-    /// shared recursively, as core shares a tag by default: each thing and sub-tag below it that I
-    /// may share gets an edge for its own tag, so the members reach it through the chain. What I
-    /// may not share (not admin) stays out.
+    /// Tags `t` with `tag`: a thing is placed in it (an item), a tag is nested in it (a subgroup,
+    /// core's sub-tag: notes/tags.md). Placement grants nothing, so tagging shares nothing;
+    /// sharing through a tag waits on core (issues/tag-sharing-op.md).
     pub fn add_tag(&self, t: Tid, tag: Tid) -> Result<()> {
-        let share = self.share_reach(t, tag)?.is_some();
-        // a revocation of this very access may be running on another device: grant it again,
-        // so the merge keeps the tag's edge (a grant after the removal it did not see)
-        let waiting = self.pending_revokes()?.contains(&(t, tag));
-        let regrant = !share && waiting && self.db.role_on(t) == Some(Role::Admin);
         let nest = self.get(t, TAG)?.is_some();
-        self.db.write_with(|w| if nest { w.add_subgroup(tag, t) } else { w.place(t, tag) })?;
-        if regrant {
-            self.db.grant(t, tag, Role::Write, EdgeOpts::default())?;
-        }
-        // re-tagged: the entry is moot (elsewhere a thing still in the tag only waits, `revoke_moot`)
-        if waiting {
-            self.drop_revoke(t, tag)?;
-        }
-        if share {
-            self.db.grant(t, tag, Role::Write, EdgeOpts::default())?;
-            if nest {
-                self.share_below(t, &mut BTreeSet::new())?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Gives each item and sub-tag of `tag` an edge for `tag` where it lacks one and I may share
-    /// it, then the same below each sub-tag (a graph: each tag once).
-    fn share_below(&self, tag: Tid, seen: &mut BTreeSet<Tid>) -> Result<()> {
-        if !seen.insert(tag) {
-            return Ok(());
-        }
-        let (subs, items) = self.tag_contents(tag)?;
-        let now = self.db.now();
-        for x in subs.iter().chain(items.iter()) {
-            if self.db.role_on(*x) == Some(Role::Admin) && !self.db.roster(*x).get(&tag).is_some_and(|e| live(e, now)) {
-                self.db.grant(*x, tag, Role::Write, EdgeOpts::default())?;
-            }
-        }
-        for s in subs {
-            self.share_below(s, seen)?;
-        }
-        Ok(())
-    }
-
-    /// Whether `t` is anywhere under `tag` (an item or sub-tag of it or of a tag below it).
-    pub fn under(&self, tag: Tid, t: Tid) -> Result<bool> {
-        let mut seen = BTreeSet::new();
-        let mut todo = vec![tag];
-        while let Some(g) = todo.pop() {
-            if !seen.insert(g) {
-                continue;
-            }
-            let (subs, items) = self.tag_contents(g)?;
-            if subs.contains(&t) || items.contains(&t) {
-                return Ok(true);
-            }
-            todo.extend(subs);
-        }
-        Ok(false)
-    }
-
-    /// After `remove_tag(t, tag)`: whether the access tagging gave should go. Only the tag's own
-    /// live edge on `t`, only when that is how the tag reaches `t` (a direct edge, nothing
-    /// longer), when `t` is no longer anywhere under the tag, and when it is mine to change.
-    pub fn revoke_needed(&self, t: Tid, tag: Tid) -> Result<bool> {
-        let db = &self.db;
-        let direct = db.roster(t).get(&tag).is_some_and(|e| live(e, db.now()));
-        Ok(direct && db.role_on(t) == Some(Role::Admin) && db.member_path(t, tag) == vec![(t, tag)] && !self.under(tag, t)?)
-    }
-
-    /// After a removal of `t` from a tag: every (thing, tag) whose access should go
-    /// (`revoke_needed`), over `t` and, for a tag, everything below it, against each tag holding a
-    /// live edge on them. Not only the tag just removed: one kept earlier because the thing was
-    /// still below it another way (a sub-tag) may be free now.
-    pub fn revocations_after_removal(&self, t: Tid) -> Result<BTreeSet<(Tid, Tid)>> {
-        let now = self.db.now();
-        let mut out = BTreeSet::new();
-        let mut seen = BTreeSet::new();
-        let mut todo = vec![t];
-        while let Some(x) = todo.pop() {
-            if !seen.insert(x) {
-                continue;
-            }
-            for (m, e) in self.db.roster(x) {
-                if live(&e, now) && self.db.knows(m) && self.get(m, TAG)?.is_some() && self.revoke_needed(x, m)? {
-                    out.insert((x, m));
-                }
-            }
-            if self.get(x, TAG)?.is_some() {
-                let (subs, items) = self.tag_contents(x)?;
-                todo.extend(subs.into_iter().chain(items));
-            }
-        }
-        Ok(out)
-    }
-
-    /// Ends the tag's edge on `t` (async: a pre-sync, then the demotion, and `t` rotates its
-    /// secrets). Run off the UI thread (kit `tasks`). When the tag also reaches `t` another way
-    /// (through another actor), core removes the direct edge and refuses the rest: `Kept`, the
-    /// tag's members still reach `t` that way.
-    /// `sync` is core's pre-sync rule (the app passes the default, `Required`: offline, the
-    /// removal fails `Unsynced` and nothing changes).
-    /// A re-tag that lands during the pre-sync ends tagged but unshared: granting again after
-    /// the demotion fails (issues/tag-regrant-after-revoke.md), and a grant the other device
-    /// has not seen when it takes the thing out again would share it after that removal.
-    pub async fn revoke(&self, t: Tid, tag: Tid, sync: osis::WaitForSync) -> std::result::Result<(), RevokeError> {
-        if !self.revoke_needed(t, tag).map_err(RevokeError::Failed)? {
-            return Ok(());
-        }
-        match self.db.demote(t, tag, osis::Lower::Remove, osis::Demotion { sync, backdate: None }).await {
-            Ok(()) => Ok(()),
-            Err(Error::Invalid(m)) if m.contains("reaches") => Err(RevokeError::Kept(m)),
-            Err(e) => Err(RevokeError::Failed(e)),
-        }
-    }
-
-    // ---- revocations still to do (durable, synced on the app group: notes/app.md)
-
-    /// The revocations waiting (thing, tag), from every app group.
-    pub fn pending_revokes(&self) -> Result<Vec<(Tid, Tid)>> {
-        let mut out = BTreeSet::new();
-        for g in self.groups()? {
-            for r in self.get(g, REVOKE)?.unwrap_or_default() {
-                out.insert((r.thing, r.tag));
-            }
-        }
-        Ok(out.into_iter().collect())
-    }
-
-    /// Records that the tag's access to `t` is to be taken back (until `drop_revoke`).
-    pub fn queue_revoke(&self, t: Tid, tag: Tid) -> Result<()> {
-        let g = self.main_group()?;
-        self.db.write_with(|w| w.at(g, REVOKE).path(p![]).add(&Revoke { thing: t, tag }))
-    }
-
-    /// Forgets a revocation, on every app group holding it.
-    pub fn drop_revoke(&self, t: Tid, tag: Tid) -> Result<()> {
-        let r = Revoke { thing: t, tag };
-        let mut gs = Vec::new();
-        for g in self.groups()? {
-            if self.get(g, REVOKE)?.is_some_and(|s| s.contains(&r)) {
-                gs.push(g);
-            }
-        }
-        if gs.is_empty() {
-            return Ok(());
-        }
-        self.db.write_with(|w| {
-            for g in &gs {
-                w.at(*g, REVOKE).path(p![]).remove_elem(&r)?;
-            }
-            Ok(())
-        })
-    }
-
-    /// Whether a waiting revocation still applies: the thing exists and the tag still has the
-    /// access tagging gave and nothing else keeps it (`revoke_needed`). Re-tagged or deleted
-    /// things, and revocations another device already did, do not.
-    pub fn revoke_applies(&self, t: Tid, tag: Tid) -> Result<bool> {
-        Ok(self.things()?.contains(&t) && self.revoke_needed(t, tag)?)
-    }
-
-    /// Whether a waiting revocation can be dropped without running: the thing is gone, or the
-    /// tag's direct access is (another device took it back), or it is not mine to change. A thing
-    /// still under the tag is not moot: this device may not have seen the removal yet (it is
-    /// written on the tag, the entry on the app group), so the entry waits; a re-tag drops it
-    /// (`add_tag`).
-    pub fn revoke_moot(&self, t: Tid, tag: Tid) -> Result<bool> {
-        let db = &self.db;
-        let direct = db.roster(t).get(&tag).is_some_and(|e| live(e, db.now()));
-        Ok(!(self.things()?.contains(&t) && direct && db.role_on(t) == Some(Role::Admin) && db.member_path(t, tag) == vec![(t, tag)]))
+        self.db.write_with(|w| if nest { w.add_subgroup(tag, t) } else { w.place(t, tag) })
     }
 
     /// Takes `t` out of `tag` (it stays in the app group): unplaces a thing, un-nests a tag.
@@ -728,6 +537,7 @@ impl Data {
     /// Undoes my newest change to `t` (made on any of my devices; never someone else's); `false`
     /// when there is none. Its creation is not undone: that commit also placed it, so reverting
     /// it would leave the thing in no group, gone from the app but not deleted.
+    /// Works around issues/undo-creation-unplaces.md (with `next_undo`).
     pub fn undo(&self, t: Tid) -> Result<bool> {
         let scope = Scope::Thing(t);
         if let Some(c) = self.db.created(t).and_then(|c| c.commit)
@@ -916,6 +726,7 @@ impl Data {
 
     /// The favorites in order: the main group's list, then any others' extras; things gone are
     /// skipped, a duplicate view stands for the one `views` keeps.
+    /// Works around issues/app-group-helper.md.
     pub fn favorites(&self) -> Result<Vec<Tid>> {
         let mut out: Vec<Tid> = Vec::new();
         let all = self.things()?;
@@ -1061,6 +872,7 @@ impl Data {
     }
 
     /// The thing this device has open; `None`: home (also when it was deleted meanwhile).
+    /// Works around issues/api-deleted-known.md (a deleted thing stays known).
     pub fn opened(&self) -> Result<Option<Tid>> {
         let Some(t) = self.open_entry()? else { return Ok(None) };
         Ok(Some(t).filter(|t| self.things().is_ok_and(|all| all.contains(t))))
@@ -1141,6 +953,7 @@ impl Data {
         let was = self.opened()? == Some(t);
         let mut parents = Vec::new();
         // `groups_of` follows membership, not subgroup edges: look at every group the app shows
+        // (issues/api-subgroup-parents.md)
         for g in self.groups()?.into_iter().chain(self.things()?) {
             // a group I cannot edit keeps its edge (to a now empty thing) rather than fail the delete
             let writable = matches!(self.db.role_on(g), Some(osis::Role::Write | osis::Role::Admin));
