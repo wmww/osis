@@ -142,3 +142,31 @@ fn edited_time() {
     assert_eq!(a.changed(n), Some(made), "the tag's edge is not an edit");
     assert!(a.changed(n).unwrap() <= a.db.now().0);
 }
+
+/// Tagging a tag nests it (a subgroup, not an item); nesting into a shared tag shares the
+/// sub-tag and, recursively, what is tagged with it, so Bob reads a note two levels down.
+#[test]
+fn nesting_a_tag_shares_below() {
+    let (a, b) = two_people();
+    let shared = shared_tag(&a, &b, Role::Read);
+    let inner = a.create(NewKind::Tag).unwrap();
+    let deeper = a.create(NewKind::Tag).unwrap();
+    let n = a.create(NewKind::Note).unwrap();
+    let m = a.create(NewKind::Note).unwrap();
+    a.add_tag(n, inner).unwrap();
+    a.add_tag(deeper, inner).unwrap();
+    a.add_tag(m, deeper).unwrap();
+    let g = a.get(inner, osis::core::GROUP).unwrap().unwrap();
+    assert!(g.subgroups.contains(&deeper) && !g.items.contains(&deeper), "a tag nests as a subgroup");
+    assert_eq!(a.tags_of(deeper).unwrap(), vec![inner]);
+    assert_eq!(a.tag_contents(inner).unwrap(), (vec![deeper], vec![n]));
+    assert!(a.share_reach(inner, shared).unwrap().is_some());
+    a.add_tag(inner, shared).unwrap();
+    assert_eq!(a.reach(m).unwrap().people.len(), 1, "two levels down: {:?}", a.reach(m).unwrap());
+    sync(&a, &b);
+    for t in [inner, deeper, n, m] {
+        assert_eq!(b.db.role_on(t), Some(Role::Read), "Bob reaches {t} through the chain");
+    }
+    a.remove_tag(deeper, inner).unwrap();
+    assert!(a.tag_contents(inner).unwrap().0.is_empty(), "un-nested");
+}

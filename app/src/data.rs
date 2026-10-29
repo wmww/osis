@@ -301,8 +301,13 @@ impl Data {
     /// The tags `t` is placed in (not their parents), by name.
     pub fn tags_of(&self, t: Tid) -> Result<Vec<Tid>> {
         let mut out = Vec::new();
-        for g in self.db.groups_of(t) {
-            if self.get(g, TAG)?.is_some() && self.get(g, GROUP)?.is_some_and(|gr| gr.items.contains(&t)) {
+        // a tag nested in a tag is its subgroup, not a member: `groups_of` does not list the parent
+        let mut cands: BTreeSet<Tid> = self.db.groups_of(t).into_iter().collect();
+        if self.get(t, TAG)?.is_some() {
+            cands.extend(self.all_tags()?);
+        }
+        for g in cands {
+            if g != t && self.get(g, TAG)?.is_some() && self.get(g, GROUP)?.is_some_and(|gr| gr.items.contains(&t) || gr.subgroups.contains(&t)) {
                 out.push(g);
             }
         }
@@ -520,20 +525,56 @@ impl Data {
         Ok((!r.people.is_empty()).then_some(r))
     }
 
-    /// Places `t` in `tag`; where that shares it (`share_reach`), also gives the tag an edge on
-    /// `t` (write, capped by each member's role on the tag), so its members reach it.
+    /// Tags `t` with `tag`: a thing is placed in it (an item), a tag is nested in it (a
+    /// subgroup, core's sub-tag: notes/tags.md). Where that shares it (`share_reach`), the tag
+    /// gets an edge on `t` (write, capped by each member's role on the tag); a nested tag is
+    /// shared recursively, as core shares a tag by default: each thing and sub-tag below it that I
+    /// may share gets an edge for its own tag, so the members reach it through the chain. What I
+    /// may not share (not admin) stays out.
     pub fn add_tag(&self, t: Tid, tag: Tid) -> Result<()> {
         let share = self.share_reach(t, tag)?.is_some();
-        self.db.write_with(|w| w.place(t, tag))?;
+        let nest = self.get(t, TAG)?.is_some();
+        self.db.write_with(|w| if nest { w.add_subgroup(tag, t) } else { w.place(t, tag) })?;
         if share {
             self.db.grant(t, tag, Role::Write, EdgeOpts::default())?;
+            if nest {
+                self.share_below(t, &mut BTreeSet::new())?;
+            }
         }
         Ok(())
     }
 
-    /// Takes `t` out of `tag` (it stays in the app group).
+    /// Gives each item and sub-tag of `tag` an edge for `tag` where it lacks one and I may share
+    /// it, then the same below each sub-tag (a graph: each tag once).
+    fn share_below(&self, tag: Tid, seen: &mut BTreeSet<Tid>) -> Result<()> {
+        if !seen.insert(tag) {
+            return Ok(());
+        }
+        let (subs, items) = self.tag_contents(tag)?;
+        let now = self.db.now();
+        for x in subs.iter().chain(items.iter()) {
+            if self.db.role_on(*x) == Some(Role::Admin) && !self.db.roster(*x).get(&tag).is_some_and(|e| live(e, now)) {
+                self.db.grant(*x, tag, Role::Write, EdgeOpts::default())?;
+            }
+        }
+        for s in subs {
+            self.share_below(s, seen)?;
+        }
+        Ok(())
+    }
+
+    /// Takes `t` out of `tag` (it stays in the app group): unplaces a thing, un-nests a tag.
     pub fn remove_tag(&self, t: Tid, tag: Tid) -> Result<()> {
-        self.db.write_with(|w| w.unplace(t, tag))
+        let g = self.get(tag, GROUP)?.unwrap_or_default();
+        self.db.write_with(|w| {
+            if g.subgroups.contains(&t) {
+                w.remove_subgroup(tag, t)?;
+            }
+            if g.items.contains(&t) {
+                w.unplace(t, tag)?;
+            }
+            Ok(())
+        })
     }
 
     /// Undoes my newest change to `t` (made on any of my devices; never someone else's); `false`
