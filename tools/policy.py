@@ -2,7 +2,9 @@
 """Policy checks (notes/testing.md, Policy checks): unsafe forbidden everywhere in the workspace,
 workspace lints on, every external dependency has its line in notes/architecture.md §5, and no
 target marked `test = false` / `doctest = false` has unit tests / doctests that would silently not run.
-Usage: python3 tools/policy.py   (from the repo root; exit 1 on any violation)"""
+Usage: python3 tools/policy.py [WORKSPACE]   (from the repo root; WORKSPACE: the directory of a
+workspace's root manifest, `.` (core, default) or `kit` (the GUI workspace, notes/app.md); vendored
+crates under `patches/` are not ours and are skipped; exit 1 on any violation)"""
 import glob, os, re, sys, tomllib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -12,9 +14,10 @@ def load(path):
     with open(path, "rb") as f:
         return tomllib.load(f)
 
-ws = load(os.path.join(ROOT, "Cargo.toml"))
+WS = os.path.normpath(os.path.join(ROOT, sys.argv[1] if len(sys.argv) > 1 else "."))
+ws = load(os.path.join(WS, "Cargo.toml"))
 internal = {n for n, d in ws["workspace"]["dependencies"].items() if isinstance(d, dict) and "path" in d}
-members = sorted(m for pat in ws["workspace"]["members"] for m in glob.glob(os.path.join(ROOT, pat))
+members = sorted(os.path.normpath(m) for pat in ws["workspace"]["members"] for m in glob.glob(os.path.join(WS, pat))
                  if os.path.isfile(os.path.join(m, "Cargo.toml")))
 
 arch = open(os.path.join(ROOT, "notes/architecture.md")).read()
@@ -67,6 +70,8 @@ for m in members:
             external.setdefault(name, rel)
     for src in glob.glob(os.path.join(m, "**/*.rs"), recursive=True):
         srel = os.path.relpath(src, ROOT)
+        if "/target/" in srel or "/patches/" in srel:
+            continue
         text = open(src).read()
         for i, line in enumerate(text.splitlines(), 1):
             if UNSAFE.search(line.split("//", 1)[0]):

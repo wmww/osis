@@ -89,6 +89,8 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `iroh-relay` 1.3 (transport, feature `relay` only, optional; `default-features = false`, `server`, `tls-ring`): a self-hosted relay on localhost for tier-2 tests (`iroh::TestRelay`); never in a non-test path. Adds the relay server's crates (hyper server side) on top of iroh's.
 - `netwatch` 0.19 (transport, features `iroh` and `lan`, optional; default features): iroh's own network monitor (already in iroh's tree, same version): OS interface, address and route events and wakes from sleep tell the LAN loop of a network change (`lan::NetWatch`, with `iroh`), beside the route poll; its interface list gives the links IPv6 announcements go out on (`lan::v6_scopes`). No crate beyond iroh's.
 - `socket2` 0.6 (transport, feature `lan`, optional; default features; already in tokio's `net` tree): the IPv6-only LAN socket beside the IPv4 one at the same port (`set_only_v6` before bind, which std cannot do).
+- `masonry` 0.4.0 (GUI workspace only: kit, app; pinned `=`, re-exported as `osis_kit::masonry`, notes/app.md Toolkit): the retained widget tree, with Vello, Parley, AccessKit and wgpu under it. Pulls the GUI stack (~300 crates); never in a core build.
+- `masonry_winit` 0.4.0 (GUI workspace only: kit; pinned `=`; carried patched in kit/patches/masonry_winit, notes/app.md Patches): the winit event loop and windows for Masonry.
 - Planned, added with a line here when needed: arbitrary (fuzz only). The cli needs no tokio of its own (it polls the API's futures on its thread and syncs on `Runtime::Own`; `serve` runs osis-server's runtime).
 
 ## 6. Conventions

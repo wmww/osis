@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["core/*", "core/test/sim", "core/test/crdt-model", "core/test/membership-model", "core/test/vectors", "cli"]
-exclude = ["core/test"]
+exclude = ["core/test", "kit", "app"]
 
 [workspace.package]
 version = "0.1.0"

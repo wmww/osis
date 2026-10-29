@@ -1,0 +1,28 @@
+[package]
+name = "osis-app"
+description = "The first-party osis app (prototype: a notes app)"
+workspace = "../kit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+test = false
+doctest = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "osis-app"
+test = false
+path = "src/main.rs"
+
+[dependencies]
+osis.workspace = true
+osis-kit.workspace = true
+
+[build-dependencies]
+osis-schema.workspace = true

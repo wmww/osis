@@ -7,16 +7,31 @@
 # crate it has caught regressions in (core/test/sim/, osis-engine, osis-node, osis-perm, osis-crdt)
 # or Cargo.toml/lock since its merge base with main (always on main itself);
 # --sweep-seeds N forces N seeds, 0 skips.
+# Per project (notes/build.md, Merge gate): the GUI workspace (kit/, app/; root manifest kit/Cargo.toml)
+# has its own steps. A diff touching only kit/ or app/ runs only the GUI steps; any other diff runs
+# the core steps plus a `cargo check` of the GUI workspace (an osis API change must not silently
+# break the app); both, both. On main itself, or with --all, everything runs.
 set -e
 seeds=
-case "$1" in
-  "") ;;
-  --sweep-seeds) case "$2" in ''|*[!0-9]*) echo "usage: $0 [--sweep-seeds N]" >&2; exit 2;; esac; seeds=$2 ;;
-  *) echo "usage: $0 [--sweep-seeds N]" >&2; exit 2 ;;
-esac
+all=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --sweep-seeds) case "$2" in ''|*[!0-9]*) echo "usage: $0 [--sweep-seeds N] [--all]" >&2; exit 2;; esac; seeds=$2; shift 2 ;;
+    --all) all=1; shift ;;
+    *) echo "usage: $0 [--sweep-seeds N] [--all]" >&2; exit 2 ;;
+  esac
+done
+base=$(git merge-base HEAD main 2>/dev/null || true)
+core=1
+gui=1
+if [ -z "$all" ] && [ -n "$base" ] && [ "$base" != "$(git rev-parse HEAD)" ]; then
+  # changed paths since the merge base, committed or not
+  changed=$(git diff --name-only "$base"; git ls-files --others --exclude-standard)
+  printf '%s\n' "$changed" | grep -q -v -e '^kit/' -e '^app/' -e '^$' || core=
+  printf '%s\n' "$changed" | grep -q -e '^kit/' -e '^app/' || gui=
+fi
 if [ -z "$seeds" ]; then
   seeds=5
-  base=$(git merge-base HEAD main 2>/dev/null || true)
   if [ -n "$base" ] && [ "$base" != "$(git rev-parse HEAD)" ] && git diff --quiet "$base" -- \
       Cargo.toml Cargo.lock core/test/sim core/engine core/node core/perm core/crdt; then
     seeds=0
@@ -37,7 +52,21 @@ unification_check() {
   [ "$bad" -eq 0 ]
 }
 step() { printf '== %s\n' "$*"; s=$(date +%s); "$@"; printf '   (%ss)\n' $(( $(date +%s) - s )); }
+# The GUI workspace: its own target (kit/target), lock and deny config.
+gui_steps() {
+  step python3 tools/policy.py kit
+  ( cd kit && step cargo test --workspace --locked )
+  ( cd kit && step cargo clippy --workspace --all-targets --locked -- -D warnings )
+  ( cd kit && step cargo deny check )
+}
+if [ -z "$core" ]; then
+  echo "== GUI-only change: core steps skipped"
+  gui_steps
+  echo "== gate passed ($(( $(date +%s) - t0 ))s)"
+  exit 0
+fi
 # instant checks first, so a missing citation fails before minutes of tests
+# (policy.py and spec_map.py cover the core workspace: core/, cli/; the GUI one is checked above)
 step python3 tools/policy.py
 step python3 tools/spec_map.py --uncited
 step python3 tools/spec_map.py --gaps
@@ -51,5 +80,10 @@ if [ "$seeds" -gt 0 ]; then
   step cargo run --locked --bin sim-sweep -- --seeds "$seeds" --budget-secs 900
 else
   echo "== sim sweep skipped (no sweep-relevant change since main)"
+fi
+if [ -n "$gui" ]; then
+  gui_steps
+else
+  ( cd kit && step cargo check --workspace --all-targets --locked )
 fi
 echo "== gate passed ($(( $(date +%s) - t0 ))s)"

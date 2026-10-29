@@ -1,0 +1,8 @@
+//! The app's own aspects (notes/app.md). Notes themselves are core `/name` plus `/body`.
+schema 0x1479f2511b02a554fda5785da8c52882;
+revision 1;
+
+/// Marks a group as the app's internal notes group: placed in the home group, no `/tag`, never shown.
+aspect /osis-app/notes: bool;
+/// Durable view state on the notes group: the note each device (its node tid) has selected.
+aspect /osis-app/selected: map<tid, tid>;

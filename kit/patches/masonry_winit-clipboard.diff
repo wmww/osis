@@ -1,0 +1,90 @@
+--- /home/ai/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/masonry_winit-0.4.0/src/event_loop_runner.rs	2006-07-23 18:21:28.000000000 -0700
++++ src/event_loop_runner.rs	2026-10-28 19:22:16.939539876 -0700
+@@ -9,7 +9,7 @@
+ use std::sync::{Arc, mpsc};
+ 
+ use accesskit_winit::Adapter;
+-use copypasta::{ClipboardContext, ClipboardProvider};
++use copypasta::ClipboardProvider;
+ use masonry_core::app::{RenderRoot, RenderRootOptions, RenderRootSignal, WindowSizePolicy};
+ use masonry_core::core::keyboard::{Key, KeyState};
+ use masonry_core::core::{
+@@ -188,7 +188,9 @@
+     surfaces: HashMap<HandleId, RenderSurface<'a>>,
+     windows: HashMap<HandleId, Window>,
+ 
+-    clipboard_cx: ClipboardContext,
++    // osis-kit patch: made on the first window (the platform's clipboard, Wayland included);
++    // a nop clipboard when none can be made, instead of a panic.
++    clipboard_cx: Option<Box<dyn ClipboardProvider>>,
+ 
+     // Is `Some` if the most recently displayed frame was an animation frame.
+     last_anim: Option<Instant>,
+@@ -345,7 +347,7 @@
+             windows: HashMap::new(),
+             surfaces: HashMap::new(),
+ 
+-            clipboard_cx: ClipboardContext::new().unwrap(),
++            clipboard_cx: None,
+ 
+             signal_sender,
+             default_properties: Arc::new(default_properties),
+@@ -410,6 +412,10 @@
+             return;
+         }
+ 
++        if self.clipboard_cx.is_none() {
++            self.clipboard_cx = Some(make_clipboard(event_loop));
++        }
++
+         // TODO: move this check to modification of base_color once winit exposes window transparency state
+         if !new_window.attributes.transparent && new_window.base_color.components[3] != 1. {
+             tracing::warn!(
+@@ -678,7 +684,7 @@
+                         window
+                             .render_root
+                             .handle_text_event(TextEvent::ClipboardPaste(
+-                                self.clipboard_cx.get_contents().unwrap(),
++                                self.clipboard_cx.as_mut().and_then(|c| c.get_contents().ok()).unwrap_or_default(),
+                             ));
+                     } else {
+                         window.render_root.handle_text_event(TextEvent::Keyboard(k));
+@@ -843,7 +849,9 @@
+                     handle.set_ime_cursor_area(position, size);
+                 }
+                 RenderRootSignal::ClipboardStore(text) => {
+-                    self.clipboard_cx.set_contents(text).unwrap();
++                    if let Some(c) = self.clipboard_cx.as_mut() {
++                        let _ = c.set_contents(text);
++                    }
+                 }
+                 RenderRootSignal::RequestRedraw => {
+                     need_redraw.insert(*handle_id);
+@@ -970,3 +978,27 @@
+     ))
+     .unwrap()
+ }
++
++/// osis-kit patch: the clipboard of the event loop's display: Wayland through the loop's own
++/// connection, else X11, else a nop clipboard (upstream unwrapped the X11 one, which panics on a
++/// Wayland-only session).
++#[allow(unsafe_code, reason = "the Wayland clipboard takes the raw display pointer")]
++fn make_clipboard(event_loop: &ActiveEventLoop) -> Box<dyn ClipboardProvider> {
++    #[cfg(all(unix, not(any(target_os = "macos", target_os = "android", target_os = "ios", target_os = "emscripten"))))]
++    {
++        use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
++        if let Ok(h) = event_loop.display_handle()
++            && let RawDisplayHandle::Wayland(w) = h.as_raw()
++        {
++            // SAFETY: the display pointer is the event loop's live wl_display, which outlives
++            // every window and so the clipboard kept in MasonryState.
++            let (_, clip) = unsafe { copypasta::wayland_clipboard::create_clipboards_from_external(w.display.as_ptr()) };
++            return Box::new(clip);
++        }
++    }
++    let _ = event_loop;
++    match copypasta::ClipboardContext::new() {
++        Ok(c) => Box::new(c),
++        Err(_) => Box::new(copypasta::nop_clipboard::NopClipboardContext),
++    }
++}
