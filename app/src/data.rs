@@ -130,6 +130,10 @@ pub struct Data {
 
 impl Data {
     pub fn new(db: Osis) -> Data {
+        // the schemas the app shows, so `db.key` types their aspects (the fallback view)
+        for s in [&crate::schema::SCHEMA, &crate::event::SCHEMA, &crate::contact::SCHEMA] {
+            db.register_schema(s.get().clone());
+        }
         Data { db }
     }
 

@@ -23,6 +23,7 @@ pub enum Icon {
     Clock,
     Trash,
     Home,
+    List,
 }
 
 /// A circle as path data.
@@ -50,6 +51,7 @@ impl Icon {
             Icon::Eye => concat!("M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z ", circle!(12, 12, 2.8, 5.6)),
             Icon::Trash => "M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3",
             Icon::Home => "M4 11l8-7 8 7v9h-5v-6h-6v6H4z",
+            Icon::List => "M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01",
         }
     }
 

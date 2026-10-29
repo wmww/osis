@@ -6,3 +6,4 @@ mod edit;
 mod share;
 mod sync;
 mod time;
+mod fields;
