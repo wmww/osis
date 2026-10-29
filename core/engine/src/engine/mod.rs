@@ -1275,6 +1275,11 @@ impl Engine {
         self.core.events.subscribe()
     }
 
+    /// `subscribe` without `Event::Ephemeral`.
+    pub fn subscribe_durable(&mut self) -> Receiver<Event> {
+        self.core.events.subscribe_durable()
+    }
+
     /// Installs node-sync's records (`Core::sync_records`).
     pub fn set_sync_records(&mut self, r: &'static dyn SyncRecords) {
         self.core.sync_records = Some(r);

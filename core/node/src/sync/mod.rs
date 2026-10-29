@@ -445,7 +445,8 @@ impl SyncEngine {
     /// Wraps an engine. `clock` is the uncorrected wall clock the engine was built on (Hellos
     /// carry it; the correction goes to the engine).
     pub fn new(mut engine: Engine, clock: Arc<dyn Clock>, rng: Box<dyn CryptoRngCore + Send>, cfg: SyncConfig) -> Result<SyncEngine> {
-        let events = engine.subscribe();
+        // local ephemeral writes have nothing to sync yet (notes/ephemeral.md step 3)
+        let events = engine.subscribe_durable();
         engine.set_sync_records(&state::Records);
         // keeps the changed commits from now on (`Engine::take_changed`)
         engine.take_changed();
