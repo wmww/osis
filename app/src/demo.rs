@@ -120,7 +120,18 @@ pub fn add(data: &Data) -> Result<bool> {
         c.note("books", "Books to read", &["reading"], "The Dispossessed: Le Guin\nPiranesi: Clarke\nThe Mushroom at the End of the World: Tsing\nBraiding Sweetgrass: Kimmerer")?;
         c.note("ideas", "Ideas", &[], "A calendar that shows what I wrote that day, not just what I planned.\nTags as colours of the whole UI?\nShared shopping list with Mara for the trip.")?;
 
-        c.event("standup", "Team standup", &["work"], monday, 0, 9.5, 0.25, "Video call", "")?;
+        let standup = c.event("standup", "Team standup", &["work"], monday, 0, 9.5, 0.25, "Video call", "")?;
+        // every weekday
+        let weekdays = [crate::event::Weekday::Mon, crate::event::Weekday::Tue, crate::event::Weekday::Wed, crate::event::Weekday::Thu, crate::event::Weekday::Fri];
+        c.w.at(standup, crate::event::REPEAT).set(&crate::event::Repeat {
+            freq: crate::event::RepeatFreq::Weekly,
+            interval: 1,
+            weekdays: weekdays.into_iter().map(|day| crate::event::RepeatWeekdays { day, nth: None }).collect(),
+            monthdays: Default::default(),
+            until: None,
+            count: None,
+            skip: Default::default(),
+        })?;
         c.event("dentist", "Dentist", &[], monday, 0, 16.0, 0.75, "Bridge St Clinic", "")?;
         c.event("jun1", "1:1 with Jun", &["work"], monday, 1, 11.0, 0.5, "Room 3B", "Agenda\n- feedback on the tags prototype\n- hiring loop\n- her offsite idea")?;
         c.event("dinner", "Dinner with Mara", &["home"], monday, 1, 19.0, 2.5, "Tavola, Kings Rd", "")?;

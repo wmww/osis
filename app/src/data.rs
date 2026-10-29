@@ -78,6 +78,17 @@ pub struct Tile {
     pub color: Option<String>,
 }
 
+/// An event (or an occurrence of a repeating one) as a calendar shows it, in local wall ms.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shown {
+    pub tid: Tid,
+    pub start: i64,
+    pub end: i64,
+    pub all_day: bool,
+    /// One occurrence of a repeating event.
+    pub repeats: bool,
+}
+
 /// What a new thing is made as.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NewKind {
@@ -389,7 +400,7 @@ impl Data {
                         let monday = crate::time::monday_of(crate::time::now_local());
                         let mut this_week = BTreeSet::new();
                         for (_, evs) in self.week(monday)? {
-                            this_week.extend(evs);
+                            this_week.extend(evs.into_iter().map(|x| x.tid));
                         }
                         format!("{} this week", count(this_week.len(), "event", "events"))
                     }
@@ -573,20 +584,48 @@ impl Data {
         Ok(Some(crate::time::span(&s, self.get(t, crate::event::END)?.as_ref())))
     }
 
-    /// The seven days from `monday` (local wall ms), each with the events touching it, by start.
-    pub fn week(&self, monday: i64) -> Result<Vec<(i64, Vec<Tid>)>> {
-        use crate::time::DAY;
-        let mut evs = Vec::new();
-        for t in self.view_items(&View::Calendar)? {
-            if let Some((s, e, _)) = self.span(t)? {
-                evs.push((s, e, t));
+    /// The events touching local wall ms `[from, to)`, repeating ones expanded (an occurrence
+    /// replaced by an event naming it in `/event/overrides` is left out), by start.
+    pub fn events_between(&self, from: i64, to: i64) -> Result<Vec<Shown>> {
+        use crate::event::{END, OVERRIDES, REPEAT, START};
+        let evs = self.view_items(&View::Calendar)?;
+        let mut overridden: BTreeMap<Tid, Vec<crate::event::Occurrence>> = BTreeMap::new();
+        for t in &evs {
+            if let Some(o) = self.get(*t, OVERRIDES)? {
+                overridden.entry(o.series).or_default().push(o.at);
             }
         }
-        evs.sort();
+        let mut out = Vec::new();
+        for t in evs {
+            let Some(start) = self.get(t, START)? else { continue };
+            let end = self.get(t, END)?;
+            match self.get(t, REPEAT)? {
+                Some(r) => {
+                    let skip = overridden.get(&t).map(Vec::as_slice).unwrap_or_default();
+                    for (_, s, e, all_day) in crate::time::occurrences(&start, end.as_ref(), &r, from, to, skip) {
+                        out.push(Shown { tid: t, start: s, end: e, all_day, repeats: true });
+                    }
+                }
+                None => {
+                    let (s, e, all_day) = crate::time::span(&start, end.as_ref());
+                    if s < to && (e > from || (e == s && s >= from)) {
+                        out.push(Shown { tid: t, start: s, end: e, all_day, repeats: false });
+                    }
+                }
+            }
+        }
+        out.sort_by_key(|x| (x.start, x.tid));
+        Ok(out)
+    }
+
+    /// The seven days from `monday` (local wall ms), each with the occurrences touching it.
+    pub fn week(&self, monday: i64) -> Result<Vec<(i64, Vec<Shown>)>> {
+        use crate::time::DAY;
+        let evs = self.events_between(monday, monday + 7 * DAY)?;
         Ok((0..7)
             .map(|i| {
                 let day = monday + i * DAY;
-                let on: Vec<Tid> = evs.iter().filter(|(s, e, _)| *s < day + DAY && (*e > day || *s >= day)).map(|(_, _, t)| *t).collect();
+                let on = evs.iter().filter(|x| x.start < day + DAY && (x.end > day || x.start >= day)).cloned().collect();
                 (day, on)
             })
             .collect())
@@ -621,6 +660,15 @@ impl Data {
                 (Some(_), None) => w.at(t, END).remove(),
                 (None, None) => Ok(()),
             }
+        })
+    }
+
+    /// Makes an event repeat every period of `freq` from its start (`None`: not at all).
+    pub fn set_repeat(&self, t: Tid, freq: Option<crate::event::RepeatFreq>) -> Result<()> {
+        use crate::event::{REPEAT, Repeat};
+        self.db.write_with(|w| match freq {
+            Some(freq) => w.at(t, REPEAT).set(&Repeat { freq, interval: 1, weekdays: Default::default(), monthdays: Default::default(), until: None, count: None, skip: Default::default() }),
+            None => w.at(t, REPEAT).remove(),
         })
     }
 
