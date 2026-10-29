@@ -84,6 +84,7 @@ enum Act {
     Nudge(Tid, i64, i64),
     /// Show or hide every field (the schema fallback view).
     AllFields,
+    Repeat(Tid, Option<crate::event::RepeatFreq>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -460,6 +461,7 @@ impl Ui {
                 Ok(())
             }
             Act::Nudge(t, by, longer) => self.data.nudge(t, by, longer),
+            Act::Repeat(t, f) => self.data.set_repeat(t, f),
             Act::AllFields => {
                 self.view.all_fields = !self.view.all_fields;
                 // the bar's toggle shows the state

@@ -173,6 +173,19 @@ impl Ui {
                         ]);
                     }
                     c.blocks.push(Block::Chips(chips));
+                    // how it repeats: the current choice is a filled chip
+                    use crate::event::RepeatFreq as F;
+                    let cur = d.get(t, crate::event::REPEAT)?;
+                    let custom = cur.as_ref().is_some_and(|r| r.interval != 1 || !r.weekdays.is_empty() || !r.monthdays.is_empty() || r.until.is_some() || r.count.is_some());
+                    let mut rep = Vec::new();
+                    for (label, f) in [("Once", None), ("Daily", Some(F::Daily)), ("Weekly", Some(F::Weekly)), ("Monthly", Some(F::Monthly)), ("Yearly", Some(F::Yearly))] {
+                        let on = cur.as_ref().map(|r| r.freq.clone()) == f && !custom;
+                        rep.push(ChipM { label: label.into(), color: None, mark: Mark::Icon(Icon::Recent), flat: !on, open: Act::Repeat(t, f), remove: None });
+                    }
+                    if custom {
+                        rep.push(ChipM { label: "Custom (All fields)".into(), color: None, mark: Mark::Icon(Icon::List), flat: false, open: Act::AllFields, remove: None });
+                    }
+                    c.blocks.push(Block::Chips(rep));
                 }
             }
             Kind::Contact => {
@@ -205,11 +218,13 @@ impl Ui {
                 let mut days = Vec::new();
                 for (day, evs) in d.week(monday)? {
                     let mut ts = Vec::new();
-                    for e in evs {
-                        let mut tile = d.tile(e)?;
-                        let (s, _, all_day) = d.span(e)?.unwrap_or((day, day, true));
-                        let place = d.get(e, crate::event::LOCATION)?.filter(|p| !p.is_empty());
-                        let time = if all_day || s < day { "All day".to_string() } else { crate::data::fmt_time(s) };
+                    for x in evs {
+                        let mut tile = d.tile(x.tid)?;
+                        let place = d.get(x.tid, crate::event::LOCATION)?.filter(|p| !p.is_empty());
+                        let mut time = if x.all_day || x.start < day { "All day".to_string() } else { crate::data::fmt_time(x.start) };
+                        if x.repeats {
+                            time.push_str(" ↻");
+                        }
                         tile.sub = match place {
                             Some(p) => format!("{time} · {p}"),
                             None => time,

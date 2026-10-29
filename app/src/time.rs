@@ -82,3 +82,157 @@ pub fn monday_of(ms: i64) -> i64 {
     // 1970-01-01 was a Thursday
     (days - (days + 3).rem_euclid(7)) * DAY
 }
+
+// ---- repeating events
+
+use crate::event::{Occurrence, Repeat, RepeatFreq, Weekday};
+use jiff::civil::Date;
+
+/// Most periods one expansion steps through: a malformed or very long series (daily since a
+/// century) costs at most this much per event and week shown; at 0 nothing would repeat.
+const MAX_PERIODS: i64 = 20_000;
+
+fn date_of(days: i64) -> Option<Date> {
+    civil(days.checked_mul(DAY)?).map(|d| d.date())
+}
+
+fn days_of(d: Date) -> i64 {
+    ms_of(d.to_datetime(jiff::civil::Time::midnight())).div_euclid(DAY)
+}
+
+fn weekday_index(w: &Weekday) -> i64 {
+    match w {
+        Weekday::Mon => 0,
+        Weekday::Tue => 1,
+        Weekday::Wed => 2,
+        Weekday::Thu => 3,
+        Weekday::Fri => 4,
+        Weekday::Sat => 5,
+        Weekday::Sun => 6,
+    }
+}
+
+/// Monday-based weekday of a day count (1970-01-01 was a Thursday).
+fn weekday_of(days: i64) -> i64 {
+    (days + 3).rem_euclid(7)
+}
+
+/// The day counts of one period of the series (the period starting at `first`, a day count),
+/// before `until` and `skip` apply.
+fn period_days(r: &Repeat, first: i64, anchor: i64) -> Vec<i64> {
+    let mut out = Vec::new();
+    match r.freq {
+        RepeatFreq::Daily => out.push(first),
+        RepeatFreq::Weekly => {
+            let monday = first - weekday_of(first);
+            if r.weekdays.is_empty() {
+                out.push(monday + weekday_of(anchor));
+            } else {
+                out.extend(r.weekdays.iter().map(|w| monday + weekday_index(&w.day)));
+            }
+        }
+        RepeatFreq::Monthly | RepeatFreq::Yearly => {
+            let Some(d) = date_of(first) else { return out };
+            let (from, len) = if r.freq == RepeatFreq::Monthly {
+                (Date::new(d.year(), d.month(), 1).ok(), i64::from(d.days_in_month()))
+            } else {
+                (Date::new(d.year(), 1, 1).ok(), i64::from(d.days_in_year()))
+            };
+            let Some(from) = from else { return out };
+            let start = days_of(from);
+            if !r.monthdays.is_empty() && r.freq == RepeatFreq::Monthly {
+                for m in &r.monthdays {
+                    // -1 is the last day
+                    let idx = if *m > 0 { m - 1 } else { len + m };
+                    if (0..len).contains(&idx) {
+                        out.push(start + idx);
+                    }
+                }
+            } else if !r.weekdays.is_empty() {
+                for w in &r.weekdays {
+                    let want = weekday_index(&w.day);
+                    let all: Vec<i64> = (0..len).map(|i| start + i).filter(|d| weekday_of(*d) == want).collect();
+                    match w.nth {
+                        None => out.extend(all),
+                        Some(n) if n > 0 => out.extend(all.get(usize::try_from(n - 1).unwrap_or(usize::MAX)).copied()),
+                        Some(n) => out.extend(all.len().checked_sub(usize::try_from(-n).unwrap_or(usize::MAX)).and_then(|i| all.get(i)).copied()),
+                    }
+                }
+            } else if let Some(a) = date_of(anchor) {
+                // the anchor's day of the month (or of the year); skipped where it does not exist
+                let day = if r.freq == RepeatFreq::Monthly { Date::new(d.year(), d.month(), a.day()).ok() } else { Date::new(d.year(), a.month(), a.day()).ok() };
+                out.extend(day.map(days_of));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The first day of the period `k` periods after the anchor's.
+fn period_start(r: &Repeat, anchor: i64, k: i64) -> Option<i64> {
+    let step = r.interval.max(1).checked_mul(k)?;
+    match r.freq {
+        RepeatFreq::Daily => anchor.checked_add(step),
+        RepeatFreq::Weekly => (anchor - weekday_of(anchor)).checked_add(step.checked_mul(7)?),
+        RepeatFreq::Monthly | RepeatFreq::Yearly => {
+            let a = date_of(anchor)?;
+            let first = Date::new(a.year(), if r.freq == RepeatFreq::Monthly { a.month() } else { 1 }, 1).ok()?;
+            let span = if r.freq == RepeatFreq::Monthly { jiff::Span::new().try_months(step).ok()? } else { jiff::Span::new().try_years(step).ok()? };
+            first.checked_add(span).ok().map(days_of)
+        }
+    }
+}
+
+/// The occurrences of a repeating event that touch local wall ms `[from, to)`: (nominal
+/// occurrence, local start, local end, all day). The series starts at the event's start, counts
+/// `count` occurrences from there, stops after `until` (a date, inclusive), and leaves out `skip`
+/// and the occurrences in `overridden` (replaced by other events).
+pub fn occurrences(start: &Start, end: Option<&End>, r: &Repeat, from: i64, to: i64, overridden: &[Occurrence]) -> Vec<(Occurrence, i64, i64, bool)> {
+    let (s0, e0, all_day) = span(start, end);
+    let len = e0 - s0;
+    // the series in nominal (unconverted) terms: day count and time of day
+    let (anchor, tod, zone) = match start {
+        Start::At(w) => (w.time.div_euclid(DAY), w.time.rem_euclid(DAY), w.zone.clone()),
+        Start::Day(d) => (*d, 0, None),
+    };
+    let mut out = Vec::new();
+    let mut n = 0i64;
+    for k in 0..MAX_PERIODS {
+        let Some(first) = period_start(r, anchor, k) else { break };
+        let mut past = false;
+        for day in period_days(r, first, anchor) {
+            if day < anchor {
+                continue;
+            }
+            if r.until.is_some_and(|u| day > u) || r.count.is_some_and(|c| n >= c) {
+                past = true;
+                break;
+            }
+            n += 1;
+            let occ = match start {
+                Start::At(_) => Occurrence::At(day * DAY + tod),
+                Start::Day(_) => Occurrence::Day(day),
+            };
+            if r.skip.contains(&occ) || overridden.contains(&occ) {
+                continue;
+            }
+            let s = match start {
+                Start::At(_) => to_local(&Wall { time: day * DAY + tod, zone: zone.clone() }),
+                Start::Day(_) => day * DAY,
+            };
+            if s >= to {
+                past = true;
+                break;
+            }
+            if s + len.max(1) > from || (len == 0 && s >= from) {
+                out.push((occ, s, s + len, all_day));
+            }
+        }
+        if past {
+            break;
+        }
+    }
+    out
+}
