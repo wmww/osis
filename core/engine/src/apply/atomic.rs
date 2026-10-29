@@ -140,18 +140,41 @@ pub(crate) fn invalid_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<Owned> {
             out.extend(m.header.origins.iter().map(|o| Owned::Commit(o.commit)));
         }
     }
-    // writes snapshots carry without their commit that no carrier gives validly (an invalid
-    // snapshot gives none of its writes; one carrier's copy does not void another's)
-    // (every join asks: nothing is collected unless a group holds an invalid counter)
+    out.extend(carried_bad(core, tid, ak).into_iter().map(|(src, ctrs)| Owned::Dots { src, ctrs: ctrs.into_iter().collect() }));
+    out
+}
+
+/// Writes snapshots carry on `(tid, ak)` without their commit that no carrier gives validly
+/// (an invalid snapshot gives none of its writes; one carrier's copy does not void another's),
+/// per source. Every join asks: nothing is collected unless a group holds an invalid counter.
+fn carried_bad(core: &Core, tid: &Tid, ak: &Ak) -> BTreeMap<osis_crdt::Source, BTreeSet<u64>> {
+    let mut out: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
     let groups = core.ix.carried.get(&(*tid, ak.clone())).map(Vec::as_slice).unwrap_or_default();
     let gives = |src: &osis_crdt::Source, x: u64| groups.iter().any(|g| g.src == *src && g.ctrs.binary_search(&x).is_ok() && !g.invalid.contains(&x));
     for c in groups.iter().filter(|c| !c.invalid.is_empty()) {
         let ctrs: Vec<u64> = c.invalid.iter().copied().filter(|x| !gives(&c.src, *x)).collect();
         if !ctrs.is_empty() {
-            out.push(Owned::Dots { src: c.src.clone(), ctrs });
+            out.entry(c.src.clone()).or_default().extend(ctrs);
         }
     }
     out
+}
+
+/// Notes snapshot `id`'s part on `(tid, ak)` (frontiers `fr`, carried writes of fragment `f`)
+/// and marks the aspect in `unmerge` when the carried judgments changed its state: it carries
+/// invalid writes (un-merged), or it gives validly a carried write no carrier gave before
+/// (`true`: others' writes nested under it were un-merged and come back only from their
+/// bodies, so it is rebuilt, spec/crdt.md §4.6).
+#[allow(clippy::too_many_arguments)]
+fn note_snapshot_part(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_base::Ts, id: &CommitId, f: &Fragment, fr: osis_crdt::Frontiers, authors: &BTreeMap<CommitId, (Tid, osis_base::Ts)>, unmerge: &mut BTreeMap<(Tid, Ak), bool>) {
+    note_snapshot(core, tid, ak, ts, id, fr);
+    let was = carried_bad(core, tid, ak);
+    validity::note_carried(core, tid, ak, id, f, authors);
+    let now = if was.is_empty() { BTreeMap::new() } else { carried_bad(core, tid, ak) };
+    let rose = was.iter().any(|(src, xs)| !now.get(src).is_some_and(|n| n.is_superset(xs)));
+    if rose || validity::carries_invalid(core, tid, ak, id) {
+        *unmerge.entry((*tid, ak.clone())).or_default() |= rose;
+    }
 }
 
 pub(crate) fn strip_valueless(core: &Core, tid: &Tid, ak: &Ak, st: &mut Fragment) {
@@ -255,7 +278,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     let pend = super::keys::before_join(tx, &h, &parts, &valid)?;
     let mut changed: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     let mut touched = Touched::default();
-    let mut unmerge: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    let mut unmerge: BTreeMap<(Tid, Ak), bool> = BTreeMap::new();
     // deaths after the commit's record: they may drop its own body (dead on arrival)
     let mut joined: Vec<(Tid, Ak, bool, Vec<osis_crdt::Death>)> = Vec::new();
     for (ai, _, d) in &parts {
@@ -265,11 +288,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
         let snap = fr.is_some();
         // every held snapshot's frontiers and carried writes, whatever its validity
         if let Some((fr, authors)) = fr {
-            note_snapshot(tx.core, &a.tid, &a.ak, h.ts, &id, fr);
-            validity::note_carried(tx.core, &a.tid, &a.ak, &id, &f, &authors);
-            if validity::carries_invalid(tx.core, &a.tid, &a.ak, &id) {
-                unmerge.insert((a.tid, a.ak.clone()));
-            }
+            note_snapshot_part(tx.core, &a.tid, &a.ak, h.ts, &id, &f, fr, &authors, &mut unmerge);
             strip_held_copies(tx.core, &a.tid, &a.ak, &mut f);
         }
         if !valid.get(ai).copied().unwrap_or(false) {
@@ -411,10 +430,10 @@ fn refill(tx: &mut Tx<'_>, h: &Header, id: &CommitId, valid: &[bool], uncarried:
 
 /// Un-merges the aspects a snapshot just held carries invalid writes on (`carries_invalid`),
 /// once the commit is stored so its own body joins too: in place for a snapshot new here
-/// (`fresh`: its carried judgments only add invalid writes), else rebuilt.
-fn unmerge_carried(tx: &mut Tx<'_>, unmerge: &BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>, touched: &mut Touched, fresh: bool) -> Result<()> {
-    for (tid, ak) in unmerge {
-        if fresh {
+/// (`fresh`) when it made no carried write valid (the map's flag), else rebuilt.
+fn unmerge_carried(tx: &mut Tx<'_>, unmerge: &BTreeMap<(Tid, Ak), bool>, changed: &mut BTreeSet<(Tid, Ak)>, touched: &mut Touched, fresh: bool) -> Result<()> {
+    for ((tid, ak), rose) in unmerge {
+        if fresh && !rose {
             unmerge_fell(tx, tid, ak, None)?;
         } else {
             rebuild(tx, tid, ak)?;
@@ -485,7 +504,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let pend = super::keys::before_join(tx, &h, &with_keys, &meta.valid)?;
     let mut changed = BTreeSet::new();
     let mut touched = Touched::default();
-    let mut unmerge: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    let mut unmerge: BTreeMap<(Tid, Ak), bool> = BTreeMap::new();
     // deaths after the commit's record: they may drop its own body (dead on arrival)
     let mut joined: Vec<(Tid, Ak, bool, Vec<osis_crdt::Death>)> = Vec::new();
     for (ai, _, d) in parts {
@@ -493,11 +512,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         let (mut f, fr) = fragment(d);
         let snap = fr.is_some();
         if let Some((fr, authors)) = fr {
-            note_snapshot(tx.core, &a.tid, &a.ak, h.ts, id, fr);
-            validity::note_carried(tx.core, &a.tid, &a.ak, id, &f, &authors);
-            if validity::carries_invalid(tx.core, &a.tid, &a.ak, id) {
-                unmerge.insert((a.tid, a.ak.clone()));
-            }
+            note_snapshot_part(tx.core, &a.tid, &a.ak, h.ts, id, &f, fr, &authors, &mut unmerge);
             strip_held_copies(tx.core, &a.tid, &a.ak, &mut f);
         }
         if !meta.valid.get(ai).copied().unwrap_or(false) {

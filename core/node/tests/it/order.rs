@@ -1134,6 +1134,15 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     // with C held first the entries lost their keys, with the snapshot first they kept them
     let h = vec![Write { by: 1, t: 5, op: 3, k: 2, v: 6 }, Write { by: 1, t: 1, op: 5, k: 2, v: 7 }, Write { by: 1, t: 5, op: 0, k: 1, v: 9 }, Send { from: 1, to: 2, back: 2 }, Sync { from: 2, to: 0 }, Nested { by: 0, other: 2, t: 4, k: 2, text: false, compact: true, also: true }, New { by: 0, parent: 5, write: false }];
     cases.push((93004, h, LARGE));
+    // seeds 12161, 12236 (spec/crdt.md §4.6): B's entry creation is held only through C's
+    // snapshot, invalid after C's demotion, so A's write nested in the entry was un-merged; A's
+    // valid snapshot carrying the creation, held later, made it valid again, but the join
+    // stripped its copy of A's write (A's delta held) and nothing re-merged it (was: the next
+    // in-place un-merge differed from a rebuild)
+    let h = vec![Nested { by: 1, other: 2, t: 0, k: 2, text: false, compact: true, also: true }, Sync { from: 2, to: 0 }, Write { by: 0, t: 1, op: 22, k: 2, v: 1 }, Compact { by: 0, t: 1, op: 25 }, Edge { by: 0, t: 3, member: 2, role: Some(Role::Read) }, New { by: 0, parent: 5, write: false }, New { by: 0, parent: 6, write: true }];
+    cases.push((12161, h, LARGE));
+    let h = vec![Edge { by: 0, t: 5, member: 1, role: Some(Role::Write) }, Nested { by: 0, other: 2, t: 2, k: 1, text: false, compact: true, also: true }, Edge { by: 0, t: 1, member: 2, role: None }, Write { by: 1, t: 5, op: 6, k: 1, v: 4 }, Edge { by: 2, t: 3, member: 1, role: Some(Role::Write) }, Write { by: 1, t: 4, op: 16, k: 0, v: 7 }, Nested { by: 1, other: 0, t: 0, k: 1, text: false, compact: true, also: true }];
+    cases.push((12236, h, LARGE));
     // in parallel: the slowest test of the module otherwise
     let idx: Vec<u64> = (0..cases.len() as u64).collect();
     let results = par_map(&idx, threads("OSIS_ORDER_THREADS"), |i| {
