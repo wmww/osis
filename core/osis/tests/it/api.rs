@@ -636,8 +636,9 @@ fn groups_of_relations_spec_data_model_8() {
 
 // notes/api.md Writes (place): a placement leaving a durable thing in no synced group while the
 // target group's own aspects sync (an item of the synced home, no subgroup of it) fails before
-// anything applies; the same batch adding the group as a subgroup succeeds; a device-local
-// group (in no synced group) and an ephemeral thing are allowed.
+// anything applies, also when a durable write persists an ephemeral thing placed there; the
+// same batch adding the group as a subgroup succeeds; a device-local group (in no synced
+// group) and a thing that stays ephemeral are allowed.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn placement_reaching_no_synced_group_fails_spec_api_writes() {
@@ -656,6 +657,10 @@ fn placement_reaching_no_synced_group_fails_spec_api_writes() {
     // an ephemeral thing stays on this device anyway
     let e = db.write_with(|w| w.create_in(db.me(), &[g])).unwrap();
     assert!(db.groups_of(e).item_of.contains(&g));
+    // ... until a durable write persists it with that placement: the same check
+    let r = db.write_with(|w| w.at(e, ak("/t/x")).set(&Value::Int(1)));
+    assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("add_subgroup")), "{r:?}");
+    assert_eq!(db.created(e).unwrap().commit, None, "still ephemeral");
     // a group with no synced group at all: device-local, allowed (a `NotSynced` diagnostic)
     let local = db.write_with(|w| {
         let l = w.create_durable(db.me())?;

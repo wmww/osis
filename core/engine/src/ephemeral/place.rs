@@ -78,6 +78,8 @@ pub(super) struct Placed {
     pub eph: Vec<EphOp>,
     /// (item, group): placements of a persisted thing kept ephemeral (no write on the group).
     pub refused: Vec<(Tid, Tid)>,
+    /// (item, group): item placements made durable by persisting (`Mutation::require_synced`).
+    pub converted: Vec<(Tid, Tid)>,
 }
 
 impl Engine {
@@ -141,7 +143,7 @@ impl Engine {
         };
         let eph_after = |x: &Tid| records(x).is_some() && !persisted.contains(x);
         let core_schema = || Some(Arc::new(osis_schema::core_schema().clone()));
-        let mut out = Placed { persisted: BTreeSet::new(), durable: BTreeMap::new(), eph: Vec::new(), refused: Vec::new() };
+        let mut out = Placed { persisted: BTreeSet::new(), durable: BTreeMap::new(), eph: Vec::new(), refused: Vec::new(), converted: Vec::new() };
         for (g, am) in gops {
             let (mut d, mut e) = (Vec::new(), Vec::new());
             for op in &am.ops {
@@ -180,6 +182,9 @@ impl Engine {
                     return Err(Error::Misuse("placements with different expiries persist into one group in one batch: persist them in separate batches"));
                 }
                 d.ops.push(group_op(field, *t, true));
+                if field == ITEMS {
+                    out.converted.push((*t, g));
+                }
                 out.eph.push(reset);
             }
         }

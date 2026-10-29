@@ -205,6 +205,7 @@ impl Engine {
         }
         eph_ops.extend(plan.eph);
         let refused = plan.refused;
+        m.synced.extend(plan.converted);
         let persisted = plan.persisted;
         for t in &persisted {
             if !m.creates.contains_key(t)
