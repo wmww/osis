@@ -1,0 +1,95 @@
+- generic [active] [ref=f16e1]:
+  - generic [ref=f16e151]:
+    - navigation [ref=f16e152]:
+      - link "osis" [ref=f16e153] [cursor=pointer]:
+        - /url: "#/"
+      - button "Search /" [ref=f16e154] [cursor=pointer]:
+        - generic [ref=f16e158]: Search
+        - generic [ref=f16e159]: /
+      - generic [ref=f16e160]: Favorites
+      - list [ref=f16e162]:
+        - listitem [ref=f16e163]:
+          - link "Groceries oat milk" [ref=f16e164] [cursor=pointer]:
+            - /url: "#/t/n-groceries"
+            - generic [ref=f16e169]:
+              - generic [ref=f16e170]: Groceries
+              - generic [ref=f16e171]: oat milk
+        - listitem [ref=f16e172]:
+          - link "Calendar 10 events this week" [ref=f16e173] [cursor=pointer]:
+            - /url: "#/t/v-cal"
+            - generic [ref=f16e179]:
+              - generic [ref=f16e180]: Calendar
+              - generic [ref=f16e181]: 10 events this week
+        - listitem [ref=f16e182]:
+          - link "Lisbon trip 6 items · shared" [ref=f16e183] [cursor=pointer]:
+            - /url: "#/t/g-lisbon"
+            - generic [ref=f16e188]:
+              - generic [ref=f16e189]: Lisbon trip
+              - generic [ref=f16e190]: 6 items · shared
+        - listitem [ref=f16e191]:
+          - link "MO Mara Okafor Friend · climbing" [ref=f16e192] [cursor=pointer]:
+            - /url: "#/t/c-mara"
+            - generic [ref=f16e193]: MO
+            - generic [ref=f16e195]:
+              - generic [ref=f16e196]: Mara Okafor
+              - generic [ref=f16e197]: Friend · climbing
+        - listitem [ref=f16e198]:
+          - link "1:1 with Jun Tue, Oct 27 · 11:00 AM–11:30 AM" [ref=f16e199] [cursor=pointer]:
+            - /url: "#/t/e-jun"
+            - generic [ref=f16e204]:
+              - generic [ref=f16e205]: 1:1 with Jun
+              - generic [ref=f16e206]: Tue, Oct 27 · 11:00 AM–11:30 AM
+        - listitem [ref=f16e207]:
+          - link "Garden 3 items" [ref=f16e208] [cursor=pointer]:
+            - /url: "#/t/g-garden"
+            - generic [ref=f16e213]:
+              - generic [ref=f16e214]: Garden
+              - generic [ref=f16e215]: 3 items
+        - listitem [ref=f16e216]:
+          - link "People 6 people" [ref=f16e217] [cursor=pointer]:
+            - /url: "#/t/v-people"
+            - generic [ref=f16e223]:
+              - generic [ref=f16e224]: People
+              - generic [ref=f16e225]: 6 people
+        - listitem [ref=f16e226]:
+          - link "Ideas A calendar that shows what I wrote that day, not just what I planned." [ref=f16e227] [cursor=pointer]:
+            - /url: "#/t/n-ideas"
+            - generic [ref=f16e232]:
+              - generic [ref=f16e233]: Ideas
+              - generic [ref=f16e234]: A calendar that shows what I wrote that day, not just what I planned.
+      - button "New note" [ref=f16e235] [cursor=pointer]
+    - generic [ref=f16e239]:
+      - generic [ref=f16e240]:
+        - generic [ref=f16e241]: Tag
+        - button "Favorite" [pressed] [ref=f16e245] [cursor=pointer]
+      - generic [ref=f16e248]:
+        - generic [ref=f16e251]:
+          - textbox [ref=f16e252]: Garden
+          - generic [ref=f16e253]:
+            - text: in
+            - link "Home" [ref=f16e254] [cursor=pointer]:
+              - /url: "#/t/g-home"
+            - text: · Only you
+        - generic [ref=f16e256]: Items
+        - generic [ref=f16e258]:
+          - 'link "Tomato varieties Sungold: sweetest, splits after rain" [ref=f16e259] [cursor=pointer]':
+            - /url: "#/t/n-tomatoes"
+            - generic [ref=f16e264]:
+              - generic [ref=f16e265]: Tomato varieties
+              - generic [ref=f16e266]: "Sungold: sweetest, splits after rain"
+          - link "Compost notes Browns to greens about 3:1. Turn every two weeks. The far bin is ready in May." [ref=f16e267] [cursor=pointer]:
+            - /url: "#/t/n-compost"
+            - generic [ref=f16e272]:
+              - generic [ref=f16e273]: Compost notes
+              - generic [ref=f16e274]: Browns to greens about 3:1. Turn every two weeks. The far bin is ready in May.
+          - link "Seed swap Wed, Oct 28 · 10:00 AM–12:00 PM" [ref=f16e275] [cursor=pointer]:
+            - /url: "#/t/e-seeds"
+            - generic [ref=f16e280]:
+              - generic [ref=f16e281]: Seed swap
+              - generic [ref=f16e282]: Wed, Oct 28 · 10:00 AM–12:00 PM
+  - complementary "Look switcher" [ref=f16e146]:
+    - 'button "Theme: Custom light ▴" [ref=f16e147] [cursor=pointer]':
+      - text: "Theme:"
+      - generic [ref=f16e148]: Custom
+      - generic [ref=f16e149]: light
+      - generic [ref=f16e150]: ▴

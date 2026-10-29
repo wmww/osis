@@ -1,0 +1,103 @@
+- generic [active] [ref=f19e1]:
+  - generic [ref=f19e140]:
+    - navigation [ref=f19e141]:
+      - link "osis" [ref=f19e142] [cursor=pointer]:
+        - /url: "#/"
+      - button "Search /" [ref=f19e143] [cursor=pointer]:
+        - generic [ref=f19e147]: Search
+        - generic [ref=f19e148]: /
+      - generic [ref=f19e149]: Favorites
+      - list [ref=f19e151]:
+        - listitem [ref=f19e152]:
+          - link "Groceries oat milk" [ref=f19e153] [cursor=pointer]:
+            - /url: "#/t/n-groceries"
+            - generic [ref=f19e158]:
+              - generic [ref=f19e159]: Groceries
+              - generic [ref=f19e160]: oat milk
+        - listitem [ref=f19e161]:
+          - link "Calendar 10 events this week" [ref=f19e162] [cursor=pointer]:
+            - /url: "#/t/v-cal"
+            - generic [ref=f19e168]:
+              - generic [ref=f19e169]: Calendar
+              - generic [ref=f19e170]: 10 events this week
+        - listitem [ref=f19e171]:
+          - link "Lisbon trip 6 items · shared" [ref=f19e172] [cursor=pointer]:
+            - /url: "#/t/g-lisbon"
+            - generic [ref=f19e177]:
+              - generic [ref=f19e178]: Lisbon trip
+              - generic [ref=f19e179]: 6 items · shared
+        - listitem [ref=f19e180]:
+          - link "MO Mara Okafor Friend · climbing" [ref=f19e181] [cursor=pointer]:
+            - /url: "#/t/c-mara"
+            - generic [ref=f19e182]: MO
+            - generic [ref=f19e184]:
+              - generic [ref=f19e185]: Mara Okafor
+              - generic [ref=f19e186]: Friend · climbing
+        - listitem [ref=f19e187]:
+          - link "1:1 with Jun Tue, Oct 27 · 11:00 AM–11:30 AM" [ref=f19e188] [cursor=pointer]:
+            - /url: "#/t/e-jun"
+            - generic [ref=f19e193]:
+              - generic [ref=f19e194]: 1:1 with Jun
+              - generic [ref=f19e195]: Tue, Oct 27 · 11:00 AM–11:30 AM
+        - listitem [ref=f19e196]:
+          - link "Garden 3 items" [ref=f19e197] [cursor=pointer]:
+            - /url: "#/t/g-garden"
+            - generic [ref=f19e202]:
+              - generic [ref=f19e203]: Garden
+              - generic [ref=f19e204]: 3 items
+        - listitem [ref=f19e205]:
+          - link "People 6 people" [ref=f19e206] [cursor=pointer]:
+            - /url: "#/t/v-people"
+            - generic [ref=f19e212]:
+              - generic [ref=f19e213]: People
+              - generic [ref=f19e214]: 6 people
+        - listitem [ref=f19e215]:
+          - link "Ideas A calendar that shows what I wrote that day, not just what I planned." [ref=f19e216] [cursor=pointer]:
+            - /url: "#/t/n-ideas"
+            - generic [ref=f19e221]:
+              - generic [ref=f19e222]: Ideas
+              - generic [ref=f19e223]: A calendar that shows what I wrote that day, not just what I planned.
+      - button "New note" [ref=f19e224] [cursor=pointer]
+    - generic [ref=f19e228]:
+      - generic [ref=f19e229]:
+        - generic [ref=f19e230]: Person
+        - button "Favorite" [ref=f19e234] [cursor=pointer]
+      - article [ref=f19e238]:
+        - generic [ref=f19e239]:
+          - generic [ref=f19e240]:
+            - generic [ref=f19e241]: JT
+            - generic [ref=f19e242]:
+              - textbox "Name" [ref=f19e243]: Jun Takahashi
+              - generic [ref=f19e244]: Design lead
+          - generic [ref=f19e245]:
+            - term [ref=f19e246]: Email
+            - definition [ref=f19e247]: jun@studio-kei.jp
+            - term [ref=f19e248]: Phone
+            - definition [ref=f19e249]: +81 90 1234 5678
+          - textbox "Notes about Jun…" [ref=f19e250]
+        - complementary [ref=f19e251]:
+          - generic [ref=f19e252]:
+            - generic [ref=f19e253]: Visible to
+            - generic [ref=f19e257]: Only you
+          - generic [ref=f19e258]:
+            - generic [ref=f19e259]: Linked from
+            - link "Q4 planning Ship the sync redesign before December freeze." [ref=f19e260] [cursor=pointer]:
+              - /url: "#/t/n-q4"
+              - generic [ref=f19e265]:
+                - generic [ref=f19e266]: Q4 planning
+                - generic [ref=f19e267]: Ship the sync redesign before December freeze.
+            - link "1:1 with Jun Tue, Oct 27 · 11:00 AM–11:30 AM" [ref=f19e268] [cursor=pointer]:
+              - /url: "#/t/e-jun"
+              - generic [ref=f19e273]:
+                - generic [ref=f19e274]: 1:1 with Jun
+                - generic [ref=f19e275]: Tue, Oct 27 · 11:00 AM–11:30 AM
+          - generic [ref=f19e276]:
+            - generic [ref=f19e277]: History
+            - generic [ref=f19e281]: Edited a while ago
+            - button "Undo last change" [ref=f19e282] [cursor=pointer]
+  - complementary "Look switcher" [ref=f19e135]:
+    - 'button "Theme: Custom light ▴" [ref=f19e136] [cursor=pointer]':
+      - text: "Theme:"
+      - generic [ref=f19e137]: Custom
+      - generic [ref=f19e138]: light
+      - generic [ref=f19e139]: ▴

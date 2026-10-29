@@ -48,16 +48,18 @@ Owner direction so far:
 - Motion: almost none. Only unobtrusive fades, or motion that adds clarity. The mockup fades the main colour and nothing else.
 
 ## Themes are parameters
-Owner direction: a theme is a set of parameters, and the six themes are only defaults; users can make equally distinct themes by changing them. The mockup's engine.css implements every value of every parameter once (themes.js lists them); a toolkit implements the same list. No CSS and no per-theme code. Accepted simplifications: Workstation's hard shadow is in the outline colour (ink) and it lost its sun, Glass lost its bubbles, Cel its halftone, Memphis its dots; Memphis icons are filled; no wide first tile, no giant kind word behind Slate. Frost is now flat with no panels and a light tint.
+Owner direction: a theme is a set of parameters, and the six themes are only defaults; users can make equally distinct themes by changing them. The mockup's engine.css implements every value of every parameter once (themes.js lists them); a toolkit implements the same list. No CSS and no per-theme code. Accepted simplifications: Workstation's hard shadow is in the outline colour (ink) and it lost its sun, Glass lost its bubbles, Cel its halftone, Memphis its dots; Memphis icons are filled; no wide first tile, no giant kind word behind Slate. Frost: no panels, light tint, two soft curves.
 
 Parameters (enums unless noted):
-- main (colour; used when the content gives none), surface (colour, light mode; dark derives from it), bgTint (0..1).
-- background flat|field|sky|grid|dots|shapes|lines: one choice per theme (owner: simpler beats layering). Placement comes from four seeds hashed from the open thing's tid, plus a small per-kind value (calendar, note, ...).
-- panel glass|solid|none, radius (px), outline (px, in ink: the text colour, near black for bevel in dark), elevation none|soft|hard, finish flat|gloss|bevel, iconShape circle|rounded|square.
+- Colours: bgLight, bgDark, surfaceLight, surfaceDark (no colour is derived from another across modes). The theme has no main colour: a screen without a colour of its own uses a soft grey.
+- bgTint (0..1): how much of the content colour goes into the whole background; 0 means none. Every background decoration is a lighter or darker shade of the resulting background colour, never tinted on its own, so tint 0 leaves decorations visible in grey.
+- background flat|field|curves|sky|grid|dots|shapes|lines|beams|grass: one per theme (owner: simpler beats layering). Placement comes from four seeds hashed from the open thing's tid, plus a small per-kind value (calendar, note, ...). lines: two or three, with seeded widths, spacing and angle; beams: light through water from above; grass: blade shapes from the bottom, not a picture.
+- panelOpacity (0..1) and panelBlur (px) replace a panel enum; a panel's outline and shadow fade with its opacity. With blur switched off, a blurred panel gains opacity in proportion to its blur.
+- radius (px), outline (px, in ink: the text colour, near black for bevel in dark), elevation none|soft|hard, finish flat|gloss|bevel, iconShape circle|rounded|square.
 - tileFill surface|wash|solid, tileMark none|stripe|corner, selection soft|solid|slant.
 - font system|humanist|classic|grotesk|rounded, weight (title, 300..900), labels plain|caps|big|mono, accent none|bar|rule|slash.
 
-Light and dark are derived from the same parameters, not stored per theme. Stored in osis as a thing (sync, sharing) when built.
+Stored in osis as a thing (sync, sharing) when built.
 
 ## kit and app (owner)
 Two top-level projects, `kit/` (package `osis-kit`) and `app/` (`osis-app`).

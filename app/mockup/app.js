@@ -13,7 +13,9 @@
   const get = id => byId.get(id);
   let favs = store.get('favs', DATA.favorites).filter(id => byId.has(id));
   // themes: the built-ins plus one custom theme made by editing any of them (themes.js)
+  // a custom theme saved before a parameter existed takes that parameter from the first built-in
   let custom = store.get('custom', null);
+  if (custom) custom = { ...THEMES[0], ...custom, id: 'custom' };
   const themes = () => custom ? [...THEMES, custom] : THEMES;
   let themeId = store.get('theme', 'frost');
   if (!themes().some(x => x.id === themeId)) themeId = 'frost';
@@ -264,7 +266,7 @@
   const recentView = t => viewHead(t) + `<div class="grid">${things.filter(x => x.edited).sort((a, b) => b.edited - a.edited).map(x => tile(x, { sub: esc(ago(x.edited)) })).join('')}</div>`;
 
   // ---------- main colour and background seed, both from the open thing
-  // main: the thing's own colour, else the first colour among what it holds or links, else the theme's
+  // main: the thing's own colour, else the first colour among what it holds or links, else a soft grey
   function mainColor(t) {
     let near = [t, ...tagsOf(t), ...(t.with || []).map(get).filter(Boolean)];
     if (t.kind === 'tag') near = [t, ...subTags(t), ...itemsIn(t)];
@@ -277,7 +279,7 @@
   const kindKey = t => !t ? 'home' : t.kind === 'view' ? t.view : t.kind;
   function applyBg(t) {
     const st = document.body.style;
-    st.setProperty('--main', (t && mainColor(t)) || theme().main);
+    st.setProperty('--main', (t && mainColor(t)) || NEUTRAL_MAIN);
     // four seeds in [0, 1) hashed from the id: each thing keeps its own arrangement of the theme's background
     let h = [...(t ? t.id : 'home')].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) >>> 0, 7);
     for (let i = 1; i <= 4; i++) { h = (h * 1103515245 + 12345) >>> 0; st.setProperty('--s' + i, ((h >>> 8) % 1000) / 1000); }
@@ -385,7 +387,7 @@
     const th = theme(), b = document.body;
     for (const p of THEME_PARAMS) {
       if (p.opts) b.dataset[p.k] = th[p.k];
-      else if (p.k !== 'main') b.style.setProperty('--p-' + p.k.replace(/[A-Z]/g, c => '-' + c.toLowerCase()), th[p.k]);
+      else b.style.setProperty('--p-' + p.k.replace(/[A-Z]/g, c => '-' + c.toLowerCase()), th[p.k]);
     }
     applyBg(current());
   }
