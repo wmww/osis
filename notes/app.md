@@ -1,5 +1,5 @@
 # The first-party app
-> Summary: Design direction for the first-party osis app over osis and schema/ (decided with the owner, pre-prototype): data-oriented UX (things with facet views, lenses, tags as filters), the look (color from the user's tags, flatish), state kept in osis including view state, the layer split (osis state, toolkit-free actions crate, Masonry driver and widgets), the toolkit decision (Masonry without Xilem) with the alternatives weighed, the platform work accepted, and the prototype order.
+> Summary: Design direction for the first-party osis app over osis and schema/ (decided with the owner, pre-prototype): data-oriented UX (things with facet views, lenses, tags as filters), the look (color from the user's tags, flatish), state kept in osis including view state, the layer split (osis state, toolkit-free actions crate, Masonry driver and widgets), the kit/app split (osis-kit toolkit and osis-app in their own Cargo workspace), the toolkit decision (Masonry without Xilem) with the alternatives weighed, the platform work accepted, and the prototype order.
 
 ## Direction (owner)
 - Fresh and timeless, not a bundle of generic apps over osis types. Bright colors, flatish but not distinctly flat, its own look rather than the native aesthetic.
@@ -30,10 +30,18 @@
 
 ## Layers
 - **State**: osis (above).
-- **Actions**: a toolkit-free Rust crate. Widgets emit intents (open, tag, share, edit); the crate turns them into osis writes and holds all behavior and policy, including the share confirmation.
-- **Driver**: Masonry-specific glue. Watches fire, the driver edits the retained widget tree through Masonry's mutation API. Two pieces written once: marshaling watch callbacks onto the UI thread (until the dispatcher-pump mode exists), and a keyed list reconciler turning a changed query result into insert/move/remove on a list widget.
-- **Widgets**: our own look as Masonry widgets.
+- **Actions** (in `app/`): a toolkit-free Rust crate. Widgets emit intents (open, tag, share, edit); the crate turns them into osis writes and holds all behavior and policy, including the share confirmation's rule.
+- **Driver** (in `kit/`): Masonry-specific glue. Watches fire, the driver edits the retained widget tree through Masonry's mutation API. Two pieces written once: marshaling watch callbacks onto the UI thread (until the dispatcher-pump mode exists), and a keyed list reconciler turning a changed query result into insert/move/remove on a list widget.
+- **Widgets** (in `kit/`, product views in `app/`): our own look as Masonry widgets.
 - A toolkit swap rewrites driver and widgets only; state and behavior survive. The earlier idea of a separate "view model" crate dissolves into the view-state schema plus the actions crate.
+
+## kit and app (owner)
+Two top-level projects, `kit/` (package `osis-kit`) and `app/` (`osis-app`).
+- **osis-kit**: the first-party UI toolkit over Masonry (or another base if Masonry fails us). Holds windowing and platform shells (the iOS shell too), the osis-Masonry driver, the look (theme tokens, tag tinting, card styling), common widgets (markdown editor, text, lists), generic osis widgets needing only the osis API (schema fallback view, who-can-see display, share confirmation dialog), and the patches we carry to low-level crates. A small special-purpose app that looks and feels like the main one depends on kit alone.
+- kit does not abstract over the osis API. Over Masonry: no wrapper for now; kit re-exports it (`kit::masonry`, one pinned version) and apps use its types directly. Design an abstraction only if we actually change base, knowing both sides.
+- **osis-app**: facet views, lenses, home, create flow, the actions crate, the view-state schema.
+- **Own Cargo workspace** for kit and app, depending on core by path: keeps the GUI stack (wgpu, Vello, winit) out of core's builds, gate and feature unification, and puts `[patch]` entries for forked crates at the GUI workspace root. Costs a second `target/` per worktree. Machine-load limits (notes/coordination.md) still count GUI agents.
+- Gate split by changed paths: issues/gate-per-project.md.
 
 ## Toolkit: Masonry without Xilem
 Masonry is a retained widget tree designed to sit under other frontends; Xilem's job is to own app state and diff it into Masonry. With osis owning the state and delivering fine-grained changes (watches per aspect, live queries over a visible range), Xilem solves a problem we do not have. What we get: Vello (2D, GPU compute; vello_hybrid for low-end GPUs and WebGL, vello_cpu as a no-GPU fallback), Parley (the best Rust text stack: rich layout, IME), AccessKit designed in, a renderer abstraction, and a funded multi-contributor org.
