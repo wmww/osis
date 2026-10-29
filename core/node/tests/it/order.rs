@@ -438,15 +438,23 @@ fn judged(p: &mut Peer, things: &[Tid]) -> Vec<(&'static str, String)> {
     pending.sort();
     let perm = e.perm_digest(false);
     let scratch = e.perm_digest(true);
-    // per body: what `alike` needs to tell the documented keep-at-most differences apart
+    // per body: what `alike` needs to tell the documented keep-at-most difference apart; per
+    // aspect: its invalid writes (`inv`)
     let mut facts = String::new();
+    let mut aspects = BTreeSet::new();
     for id in e.commit_ids() {
         let Some(h) = e.header(&id) else { continue };
         for a in &h.aspects {
             let at_most = a.retention.at_most.rel.is_some() || a.retention.at_most.abs.is_some();
             let valid = e.body_valid(&id, &a.tid, &a.ak).unwrap();
             let held = e.holds_body(&id, &a.tid, &a.ak);
-            let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}", a.tid, a.ak.as_str());
+            let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}|{:?}", a.tid, a.ak.as_str(), h.ts);
+            aspects.insert((a.tid, a.ak.clone()));
+        }
+    }
+    for (tid, ak) in &aspects {
+        for (c, ts) in e.invalid_writes(tid, ak) {
+            let _ = writeln!(facts, "inv|{tid:?}|{}|{c:?}|{ts:?}", ak.as_str());
         }
     }
     let mut facts: Vec<&str> = facts.lines().collect();
@@ -461,19 +469,31 @@ struct Fact {
     at_most: bool,
     held: bool,
     valid: bool,
+    ts: u64,
 }
 
 type BodyKey = (String, String, String);
 
-fn facts_of(j: &[(&'static str, String)]) -> BTreeMap<BodyKey, Fact> {
+/// A `Ts(n)`'s n.
+fn ts_of(t: &str) -> u64 {
+    t.trim_start_matches("Ts(").trim_end_matches(')').parse().unwrap()
+}
+
+/// The bodies' facts, and per (thing, aspect) its invalid writes: (commit or carrying snapshot, `ts`).
+#[allow(clippy::type_complexity)]
+fn facts_of(j: &[(&'static str, String)]) -> (BTreeMap<BodyKey, Fact>, BTreeMap<(String, String), Vec<(String, u64)>>) {
     let text = &j.iter().find(|x| x.0 == "facts").unwrap().1;
-    let mut out = BTreeMap::new();
+    let (mut out, mut inv) = (BTreeMap::new(), BTreeMap::<_, Vec<_>>::new());
     for l in text.lines() {
         let f: Vec<&str> = l.split('|').collect();
+        if f[0] == "inv" {
+            inv.entry((f[1].into(), f[2].into())).or_default().push((f[3].into(), ts_of(f[4])));
+            continue;
+        }
         let b = |i: usize| f[i] == "true";
-        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { at_most: b(3), held: b(4), valid: b(5) });
+        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { at_most: b(3), held: b(4), valid: b(5), ts: ts_of(f[6]) });
     }
-    out
+    (out, inv)
 }
 
 /// Whether two nodes holding the same commits judged alike (`None`), else the first difference.
@@ -483,15 +503,18 @@ fn facts_of(j: &[(&'static str, String)]) -> BTreeMap<BodyKey, Fact> {
 /// deaths and liveness, and that aspect's reads and state (where the kept body's write is
 /// back). Anything else is a failure.
 fn alike(want: &[(&'static str, String)], got: &[(&'static str, String)]) -> Option<String> {
-    let (wf, gf) = (facts_of(want), facts_of(got));
+    let ((wf, inv), (gf, _)) = (facts_of(want), facts_of(got));
     if wf.keys().ne(gf.keys()) {
         return first_diff(&want[want.len() - 1..], &got[got.len() - 1..]);
     }
-    let invalid_on = |t: &str, a: &str| wf.iter().any(|(k, f)| k.1 == t && k.2 == a && !f.valid);
-    // the drop-before-flip difference on body `k`
+    // the drop-before-flip difference on body `k`: held at one node only, under keep at most,
+    // with its own write invalid (its delta, or a write it carries) or an invalid write of its
+    // aspect stamped at or after it (one that may have killed it)
     let flip = |k: &BodyKey| {
         let (w, g) = (&wf[k], &gf[k]);
-        w.held != g.held && w.at_most && invalid_on(&k.1, &k.2)
+        let own = !w.valid || inv.get(&(k.1.clone(), k.2.clone())).is_some_and(|v| v.iter().any(|(c, _)| *c == k.0));
+        let killer = inv.get(&(k.1.clone(), k.2.clone())).is_some_and(|v| v.iter().any(|(c, ts)| *c != k.0 && *ts >= w.ts));
+        w.held != g.held && w.at_most && (own || killer)
     };
     let flipped: BTreeSet<(String, String)> = wf.keys().filter(|k| flip(k)).map(|k| (k.1.clone(), k.2.clone())).collect();
     // a death line's body
@@ -1100,6 +1123,17 @@ fn drop_before_flip_tolerated_spec_commits_5() {
     assert!(first_diff(&want, &got).is_some(), "the orders differ");
     assert_eq!(alike(&want, &got), None);
     // with every write judged valid, the same difference is a failure
-    let all_valid = |j: &[(&'static str, String)]| -> Vec<(&'static str, String)> { j.iter().map(|(n, t)| (*n, if *n == "facts" { t.lines().map(|l| format!("{}|true", l.rsplit_once('|').unwrap().0)).collect::<Vec<_>>().join("\n") } else { t.clone() })).collect() };
-    assert!(alike(&all_valid(&want), &all_valid(&got)).is_some(), "a drop difference with no invalid write passed");
+    // with every write judged valid, or the invalid ones stamped before every body (none can
+    // have killed it), the same difference is a failure
+    let edit = |j: &[(&'static str, String)], f: &dyn Fn(Vec<&str>) -> Option<String>| -> Vec<(&'static str, String)> { j.iter().map(|(n, t)| (*n, if *n == "facts" { t.lines().filter_map(|l| f(l.split('|').collect())).collect::<Vec<_>>().join("\n") } else { t.clone() })).collect() };
+    let all_valid = |f: Vec<&str>| (f[0] != "inv").then(|| format!("{}|true|{}", f[..5].join("|"), f[6]));
+    assert!(alike(&edit(&want, &all_valid), &edit(&got, &all_valid)).is_some(), "a drop difference with no invalid write passed");
+    let early = |mut f: Vec<&str>| {
+        if f[0] == "inv" {
+            f[4] = "Ts(0)";
+        }
+        Some(f.join("|"))
+    };
+    assert!(edit(&want, &early).iter().any(|(n, t)| *n == "facts" && t.contains("inv|")), "an invalid write");
+    assert!(alike(&edit(&want, &early), &edit(&got, &early)).is_some(), "a drop difference with only earlier invalid writes passed");
 }

@@ -54,6 +54,17 @@ impl Engine {
         Some(m.valid.get(ai).copied().unwrap_or(true))
     }
 
+    /// The writes of `(tid, ak)` judged invalid here: per held invalid delta its commit and `ts`,
+    /// per snapshot carrying invalid writes of a commit it lacks the snapshot and their `ts`.
+    /// Tests: the order harness tells the documented keep-at-most difference apart.
+    #[doc(hidden)]
+    pub fn invalid_writes(&self, tid: &Tid, ak: &Ak) -> Vec<(CommitId, osis_base::Ts)> {
+        let k = (*tid, ak.clone());
+        let mut out: Vec<(CommitId, osis_base::Ts)> = self.core.ix.by_aspect.get(&k).into_iter().flatten().filter(|(_, c)| self.body_valid(c, tid, ak) == Some(false)).map(|(ts, c)| (*c, *ts)).collect();
+        out.extend(self.core.ix.carried.get(&k).into_iter().flatten().filter(|c| !c.invalid.is_empty()).map(|c| (c.snap, c.ts)));
+        out
+    }
+
     /// A dump of the indexes open rebuilds (tests: a load from the persisted index equals a
     /// rebuild from the commit records).
     #[doc(hidden)]

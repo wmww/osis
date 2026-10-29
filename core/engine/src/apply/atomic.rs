@@ -756,7 +756,6 @@ pub(crate) fn unmerge_fell(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, fell: Option<Fra
 /// author's valid deltas, dropped bodies included, keep theirs).
 pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let st = rebuilt(tx, tid, ak, None)?;
-    crate::retention::note_revived(tx, tid, ak, st.as_ref())?;
     tx.set_state(tid, ak, st, Shred::Yes, false)
 }
 
