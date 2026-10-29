@@ -157,6 +157,14 @@ fn joint_model_agrees_large() {
 /// drops them (perm lost the standing at the write on the absent edge).
 #[test]
 fn joint_kept_standing_survives_absent_edge_removal() {
+    let h = absent_edge_removal_hist();
+    let o = joint::walk(&h);
+    assert_eq!(o.dropped, 0b1001, "model drops both of n1's explicit removals");
+    assert_eq!(joint_diff(&h), None);
+}
+
+/// The history of `joint_kept_standing_survives_absent_edge_removal`.
+fn absent_edge_removal_hist() -> joint::JHist {
     use joint::{JHist, JWrite, Owner};
     use membership_model::Role::{Admin, None as Gone};
     const LATE: u32 = membership_model::shrink::LATE;
@@ -165,15 +173,42 @@ fn joint_kept_standing_survives_absent_edge_removal() {
     let mut genesis = vec![vec![Gone; 2]; 4];
     genesis[1][0] = Admin;
     genesis[3][0] = Admin;
-    let h = JHist {
+    JHist {
         nodes: 2,
         owners: vec![Owner::Node(0), Owner::Node(1)],
         genesis,
         writes: vec![w(1, 1, 4, 3), w(0, 3, 2, 3), w(1, 2, 1, 1), w(1, 1, 3, 3)],
         recv: vec![vec![LATE, 1], vec![3, LATE], vec![LATE, 2], vec![LATE, 1]],
-    };
-    let o = joint::walk(&h);
-    assert_eq!(o.dropped, 0b1001, "model drops both of n1's explicit removals");
+    }
+}
+
+/// spec/permissions.md §5.1: `joint_kept_standing_survives_absent_edge_removal` spread out
+/// for incremental placement (`incremental::kept_standing_absent_edge_every_order`): n0 grants
+/// n2 read on A0 between n1's removals and n1's self-removal, so the removal of the absent edge
+/// can arrive late and be inserted before it.
+pub(crate) fn absent_edge_removal_spread_hist() -> joint::JHist {
+    use joint::{JHist, JWrite, Owner};
+    use membership_model::Role::{Admin, None as Gone, Read};
+    const LATE: u32 = membership_model::shrink::LATE;
+    let w = |author, t, id, member, role| JWrite { author, t, id, target: 0, member, role };
+    // entities: n0, n1, n2, A0, A1
+    let mut genesis = vec![vec![Gone; 2]; 5];
+    genesis[1][0] = Admin;
+    genesis[4][0] = Admin;
+    JHist {
+        nodes: 3,
+        owners: vec![Owner::Node(0), Owner::Node(1)],
+        genesis,
+        writes: vec![w(1, 1, 3, 4, Gone), w(1, 1, 4, 4, Gone), w(0, 5, 5, 2, Read), w(1, 6, 1, 1, Gone), w(0, 7, 2, 4, Gone)],
+        recv: vec![vec![LATE, 1, LATE], vec![LATE, 1, LATE], vec![5, LATE, LATE], vec![LATE, 6, LATE], vec![7, LATE, LATE]],
+    }
+}
+
+/// spec/permissions.md §5.1: perm agrees with the model on `absent_edge_removal_spread_hist`.
+#[test]
+fn joint_kept_standing_spread_agrees() {
+    let h = absent_edge_removal_spread_hist();
+    assert_eq!(joint::walk(&h).dropped, 0b11, "model drops both of n1's explicit removals");
     assert_eq!(joint_diff(&h), None);
 }
 
