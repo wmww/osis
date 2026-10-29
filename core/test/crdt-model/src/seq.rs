@@ -100,11 +100,12 @@ fn linearize_known(elems: &BTreeMap<Dot, SeqElem>) -> (Vec<Dot>, HashMap<Dot, Op
         match cycle {
             None => break,
             Some(cyc) => {
-                // demote the element whose current edge has the smallest stamp and still has a next candidate
+                // demote the element whose current edge has the smallest stamp (then the lowest dot: one stamp on two
+                // edges, copies of one write, §4.1) and still has a next candidate
                 let victim = cyc
                     .iter()
                     .filter(|d| cand[*d] < 2)
-                    .min_by_key(|d| elems[*d].pos.get(cand[*d]).map(|p| p.0.clone()))
+                    .min_by_key(|d| (elems[*d].pos.get(cand[*d]).map(|p| p.0.clone()), Dot::clone(d)))
                     .copied()
                     .expect("END always available");
                 let next = if cand[victim] == 0 && elems[victim].pos.len() > 1 { 1 } else { 2 };
@@ -126,7 +127,8 @@ fn linearize_known(elems: &BTreeMap<Dot, SeqElem>) -> (Vec<Dot>, HashMap<Dot, Op
         }
     }
     for v in children.values_mut() {
-        v.sort_by(|a, b| elems[b.0].pos[b.1].0.cmp(&elems[a.0].pos[a.1].0)); // greatest first
+        // greatest first; one stamp on two edges (copies of one write, §4.1) by dot ascending
+        v.sort_by(|a, b| elems[b.0].pos[b.1].0.cmp(&elems[a.0].pos[a.1].0).then_with(|| a.0.cmp(b.0)));
     }
     ends.sort();
     let mut out = Vec::new();

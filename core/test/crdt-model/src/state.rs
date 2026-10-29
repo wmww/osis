@@ -85,19 +85,15 @@ pub enum Frag {
     Slots { reg: Option<Box<Frag>>, slots: BTreeMap<u8, Frag> },
 }
 
-pub fn max_pair<T>(a: Option<(Stamp, T)>, b: Option<(Stamp, T)>) -> Option<(Stamp, T)> {
-    match (a, b) {
-        (None, x) | (x, None) => x,
-        (Some(a), Some(b)) => Some(if a.0 >= b.0 { a } else { b }),
-    }
+/// Later wins; of two copies of one write (equal stamps) the greater payload (§4.1 copy order).
+pub fn max_pair<T: Ord>(a: Option<(Stamp, T)>, b: Option<(Stamp, T)>) -> Option<(Stamp, T)> {
+    a.max(b)
 }
 
-/// Register join: greater stamp wins; copies of one write prefer the one with the value (§4.7).
-pub fn max_valued<T>(a: Option<(Stamp, Option<T>)>, b: Option<(Stamp, Option<T>)>) -> Option<(Stamp, Option<T>)> {
-    match (a, b) {
-        (None, x) | (x, None) => x,
-        (Some(a), Some(b)) => Some(if a.0 > b.0 || (a.0 == b.0 && a.1.is_some()) { a } else { b }),
-    }
+/// Register join: greater stamp wins; of copies of one write the valued one (§4.7), then the greater value (canonical
+/// bytes, §4.1 copy order).
+pub fn max_valued<T: Ord>(a: Option<(Stamp, Option<T>)>, b: Option<(Stamp, Option<T>)>) -> Option<(Stamp, Option<T>)> {
+    a.max(b)
 }
 
 /// The non-`Derived` dot whose commit owns writes under `d` (§2.1, §4.7).
@@ -133,7 +129,8 @@ impl SeqElem {
 }
 
 fn top2(mut v: Vec<(Stamp, Anchor)>) -> Vec<(Stamp, Anchor)> {
-    v.sort_by(|a, b| b.0.cmp(&a.0));
+    // greatest first; of copies of one write the greater anchor (§4.1 copy order)
+    v.sort_by(|a, b| b.cmp(a));
     v.dedup_by(|a, b| a.0 == b.0);
     v.truncate(2);
     v
@@ -354,8 +351,14 @@ impl Frag {
                             ea.insert(d, nb);
                         }
                         Some(na) => {
-                            // Keys of one dot are equal by construction; keep whichever is present.
-                            ea.insert(d, Entry { reset: max_opt(na.reset, nb.reset), key: na.key.or(nb.key), frag: jopt(na.frag, nb.frag), created: max_opt(na.created, nb.created) });
+                            // the key of the creation with the greater stamp; of copies of one creation (or of records
+                            // without one) the greater key (§4.1 copy order, §5.6)
+                            let key = match na.created.cmp(&nb.created) {
+                                std::cmp::Ordering::Greater => na.key.or(nb.key),
+                                std::cmp::Ordering::Less => nb.key.or(na.key),
+                                std::cmp::Ordering::Equal => na.key.max(nb.key),
+                            };
+                            ea.insert(d, Entry { reset: max_opt(na.reset, nb.reset), key, frag: jopt(na.frag, nb.frag), created: max_opt(na.created, nb.created) });
                         }
                     }
                 }
@@ -368,15 +371,27 @@ impl Frag {
                             ea.insert(d, nb);
                         }
                         Some(na) => {
-                            let content = match (na.content, nb.content) {
+                            // text: the char of the creation with the greater stamp; of two copies of one creation the
+                            // greater char (§4.1 copy order, §5.7)
+                            // (a record without a creation, an undelete repeating the char, joins its char as a copy)
+                            let by = match (&na.created, &nb.created) {
+                                (Some(a), Some(b)) => a.0.cmp(&b.0),
+                                _ => std::cmp::Ordering::Equal,
+                            };
+                            let (ca, cb) = match (text, by) {
+                                (true, std::cmp::Ordering::Greater) => (na.content, Content::None),
+                                (true, std::cmp::Ordering::Less) => (Content::None, nb.content),
+                                _ => (na.content, nb.content),
+                            };
+                            let content = match (ca, cb) {
                                 (Content::None, x) | (x, Content::None) => x,
-                                (Content::Char(a), Content::Char(_)) => Content::Char(a),
+                                (Content::Char(a), Content::Char(b)) => Content::Char(a.max(b)),
                                 (Content::Frag(a), Content::Frag(b)) => Content::Frag(Box::new(join_any(*a, *b))),
                                 (a, _) => a,
                             };
                             let mut pos = na.pos;
                             pos.extend(nb.pos);
-                            let created = na.created.or(nb.created);
+                            let created = na.created.max(nb.created);
                             ea.insert(d, SeqElem { created, content, pos: top2(pos), deleted: max_pair(na.deleted, nb.deleted) });
                         }
                     }
@@ -402,6 +417,19 @@ impl Frag {
             // every member holds the register's embedding, however the members arrived
             if let Some(r) = &reg {
                 for (k, f) in slots.iter_mut() {
+                    // a text slot's embedded records are the embedding of the register's winning copy (§7)
+                    if let (Frag::Seq { elems, .. }, Frag::Register { write: Some(w), .. }) = (&mut *f, r) {
+                        elems.retain(|d, e| {
+                            if matches!(&d.source, Source::Derived(x) if **x == w.0.dot) {
+                                e.created = None;
+                                if matches!(e.content, Content::Char(_)) {
+                                    e.content = Content::None;
+                                }
+                                e.pos.retain(|p| p.0.dot != *d);
+                            }
+                            e.keeps_record(d)
+                        });
+                    }
                     let e = crate::embed::embed(r, *k).expect("embedding is total from a register");
                     *f = std::mem::replace(f, Frag::empty(0)).join_raw(e);
                 }

@@ -1406,7 +1406,8 @@ impl Lin {
         }
         // the newest edge placed here, when above every one before: that run or move goes first
         // among its anchor's children without looking at theirs (the rest of a run is its chain)
-        let fresh = runs.iter().map(|r| &r.1).chain(moves.iter().map(|m| &m.0)).max().filter(|f| before.as_ref().is_some_and(|b| *f > b)).cloned();
+        let edges = || runs.iter().map(|r| &r.1).chain(moves.iter().map(|m| &m.0));
+        let fresh = edges().max().filter(|f| before.as_ref().is_some_and(|b| *f > b) && edges().filter(|e| e == f).count() == 1).cloned();
         let each = self.p.order.len() + self.p.cap;
         for x in cuts {
             *work += each;
@@ -1501,7 +1502,8 @@ impl Lin {
             }
         }
         let (stamp, anchor) = now.first()?.clone();
-        Some((old.first().map(|p| &p.0) != Some(&stamp)).then(|| (stamp, dot.clone(), anchor)))
+        // (a copy of the edge with another anchor moves it too, §4.1 copy order)
+        Some((old.first() != now.first()).then(|| (stamp, dot.clone(), anchor)))
     }
 
     /// Whether element `x` is placed: `Some(Some(cut))`, with the element after it when both
@@ -1620,8 +1622,14 @@ impl Lin {
             }
             let Some((r, rd)) = self.p.row_c(c) else { return Some(Some(c.at)) };
             // past the anchor's subtree, or (at HEAD) at the `END` nodes
-            if rd <= d || key.is_none() && !r.head || first || child_stamp(elems, r, &want)? < *stamp {
+            if rd <= d || key.is_none() && !r.head || first {
                 return Some(Some(c.at));
+            }
+            match child_stamp(elems, r, &want)?.cmp(stamp) {
+                std::cmp::Ordering::Less => return Some(Some(c.at)),
+                // one stamp on two edges (copies of one write, §4.1): ties go by dot, rebuild
+                std::cmp::Ordering::Equal => return None,
+                std::cmp::Ordering::Greater => {}
             }
             // a record lookup per sibling: about as dear as a few rows of a whole pass
             *work += STEP;

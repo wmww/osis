@@ -59,6 +59,8 @@
 - Undo of a move writes the old anchors back with fresh stamps, so a moved element now sorts before siblings at its old anchor that were newer than its original position write; the read can differ from before the move.
 - Undo chains on one position (§4.6): a register or position undo also writes when the winner is an undo-in-effect's write equal in value to the undone one and every later non-undo commit of the aspect is out of effect. Safe because it fires only where undos already restored this value and nothing later is live: no independent newer edit is clobbered (another writer's, or an own selective-undo target's later equal-valued edit; that case removed a live value under value equality alone). Judged at aspect level, so a live later edit of another field of the same aspect also blocks (conservative: `NotUndoable`). The node builds the undo relation lazily from the aspect's commits (`chain_judge`), walks it without recursion or a depth cap (a tree: an undo names an older commit by hash). Enum case writes are undone as resets. No wire change.
 
+- Copies of one write that differ (forged; snapshots vouch, spec/permissions.md §5.2) join by the copy order of spec/crdt.md §4.1: the attacker picks the outcome (a forged copy may compare greater), every holder agrees, which is all a writer gets by writing a new value anyway. A text char and a map key go with the creation of the greater stamp (two creations of one dot with other `ts` are two writes; both stay as position writes). A text slot's `Derived` records are re-fitted to the register's winning copy (`seq::fit_embedding`), else a holder that embedded the losing copy first keeps its chars. Not order-free: forged map keys where one copy's record loses all its content to a reset before meeting the other (issues/forged-map-key.md).
+
 ## Rejected
 - Wall-clock staleness horizon for tombstones: nodes separated longer than the horizon diverge or lose edits; any independent reset-style compaction has the same problem.
 - LWW-element sets/maps: the tombstone names a value hash or key (a fingerprint once the body is purged) and cannot be dropped without stability information.
@@ -123,6 +125,7 @@ A small, slow, obviously-correct implementation of spec/crdt.md: `State` (fully 
 - single writer vs a sequential model after every op;
 - wire round trip and byte-identical re-encode; decoder never panics on random or mutated input;
 - embeddings commute with join; a register delta joined into a text equals its embedding joined;
+- forged copies (osis-crdt `tests_laws.rs` `forged_copies_*`: two writers share one source and clock, so their writes are same-stamp copies with differing payloads): join laws, impl join and read against the model's, a cached placement followed against a fresh one (it found the placement cache keeping a node at an equal-stamp sibling, missing an edge copy with another anchor, and range records merged across creations of other `ts`);
 - diff (`read(join(S, diff(S, v))) == v`);
 - expiry: random expiring commits stripped at random points, equal to join-then-strip; strip commutes with join and is idempotent; value-less registers embed like stripped valued ones;
 - snapshots: round trip with frontiers, frontiers equal last counters, bootstrapping from a snapshot reads the same;

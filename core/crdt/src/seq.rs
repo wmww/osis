@@ -14,6 +14,7 @@ use crate::seq_span::{Elems, Recs, chain_cut, coalesce_in, cut_chains, elems_eq,
 use crate::stamp::{Dot, Source, SourceKind, Stamp, max_opt};
 use crate::state::{join_write, prune_write};
 use osis_base::Value;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
@@ -246,11 +247,13 @@ fn join_pos(d: &Dot, s: &mut Vec<(Stamp, Anchor)>, inc: Vec<(Stamp, Anchor)>, ch
         return;
     }
     let old = s.first().map(|p| p.0.clone());
+    let before = s.clone();
     let fresh: Vec<Stamp> = inc.iter().filter(|p| !s.iter().any(|q| q.0 == p.0)).map(|p| p.0.clone()).collect();
     s.extend(inc);
     top2(s);
     let Some(cur) = s.first().map(|p| p.0.clone()) else { return };
-    if !fresh.is_empty() {
+    // a fresh write, or a copy of one with a greater anchor (§4.1 copy order)
+    if *s != before {
         ch.touch();
     }
     for f in fresh.iter().filter(|f| **f != cur && f.dot != *d) {
@@ -264,17 +267,33 @@ fn join_pos(d: &Dot, s: &mut Vec<(Stamp, Anchor)>, inc: Vec<(Stamp, Anchor)>, ch
     }
 }
 
-/// Keeps the two greatest position writes, greatest first.
+/// Keeps the two greatest position writes, greatest first; of copies of one write the greatest
+/// anchor (§4.1 copy order).
 pub(crate) fn top2(s: &mut Vec<(Stamp, Anchor)>) {
-    s.sort_by(|a, b| b.0.cmp(&a.0));
+    s.sort_by(|a, b| b.cmp(a));
     s.dedup_by(|a, b| a.0 == b.0);
     s.truncate(2);
 }
 
 /// Joins record `de` into existing record `se` under `e` (§5.7 Join).
 fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Stamp>, ch: &mut Changes) {
-    if se.created.is_none() && de.created.is_some() {
-        se.created = de.created;
+    // the creation with the greater stamp, its char with it; of two copies of one creation the
+    // greater anchor and the greater char (§4.1 copy order, §5.7)
+    let mut de = de;
+    // (a record without a creation, an undelete repeating the char, joins its char as a copy)
+    let by = match (&de.created, &se.created) {
+        (Some(a), Some(b)) => a.0.cmp(&b.0),
+        _ => Ordering::Equal,
+    };
+    if text && by != Ordering::Equal {
+        let c = std::mem::replace(&mut de.content, SeqContent::None);
+        if by == Ordering::Greater && se.content != c {
+            se.content = c;
+            ch.touch();
+        }
+    }
+    if de.created > se.created {
+        se.created = de.created.take();
         ch.touch();
     }
     let raised = join_write(&mut se.deleted, de.deleted, ch);
@@ -298,7 +317,12 @@ fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Sta
     match de.content {
         SeqContent::None => {}
         SeqContent::Char(c) => {
-            if matches!(se.content, SeqContent::None) {
+            // the greater char of two copies (§4.1 copy order)
+            if match se.content {
+                SeqContent::None => true,
+                SeqContent::Char(x) => c > x,
+                SeqContent::Frag(_) => false,
+            } {
                 se.content = SeqContent::Char(c);
                 ch.touch();
             }
@@ -485,6 +509,22 @@ fn join_record(s: &mut Seq, dot: Dot, de: SeqElem, existing: bool, e: Option<&St
         let (b, eb) = piece(&dot, &de, c, de.span - c);
         join_record(s, a, ea, existing, e, ch);
         join_record(s, b, eb, existing, e, ch);
+        return;
+    }
+    // range creations of other stamps (copies of one creation dot, §4.1): element by element,
+    // each keeping both as position writes
+    if existing
+        && de.span > 1
+        && let (Some(a), Some(Some(b))) = (&de.created, s.elems.get(&dot).map(|x| &x.created))
+        && a.0 != b.0
+    {
+        for k in 1..de.span {
+            split_at(&mut s.elems, &nth(&dot, k));
+        }
+        for k in 0..de.span {
+            let (pd, pe) = piece(&dot, &de, k, 1);
+            join_record(s, pd, pe, true, e, ch);
+        }
         return;
     }
     if existing {
@@ -914,6 +954,45 @@ pub(crate) fn embed_text(r: &Register) -> BTreeMap<Dot, SeqElem> {
         prev = Anchor::Dot(d);
     }
     out
+}
+
+/// Makes the creation writes and chars of the `Derived` records of register `r`'s write equal
+/// its embedding (§7): a copy of the write with another value (§4.1 copy order) embeds other
+/// chars, which go with it. Records left holding nothing go (§4.2); the embedding is joined in
+/// after. The placement cache is kept when nothing differs.
+pub(crate) fn fit_embedding(s: &mut Seq, r: &Register) {
+    let Some(w) = &r.write else { return };
+    let Some(src) = Source::derived(w.stamp.dot.clone()) else { return };
+    let range = Dot::new(src.clone(), 0)..=Dot::new(src, u64::MAX);
+    if !s.text || s.elems.range(range.clone()).next().is_none() {
+        return;
+    }
+    let emb = embed_text(r);
+    let differs = |d: &Dot, e: &SeqElem| {
+        let x = emb.get(d).and_then(|x| x.created.as_ref().map(|c| (c, &x.content)));
+        e.created.as_ref().is_some_and(|c| Some(c) != x.map(|x| x.0))
+            || e.pos.iter().any(|p| p.0.dot == *d && Some(p) != x.map(|x| x.0))
+            || matches!(e.content, SeqContent::Char(c) if x.is_none_or(|x| *x.1 != SeqContent::Char(c)))
+    };
+    let bad = s.elems.range(range.clone()).any(|(d, e)| if e.span == 1 { differs(d, e) } else { crate::seq_span::expand(BTreeMap::from([(d.clone(), e.clone())])).iter().any(|(d, e)| differs(d, e)) });
+    if !bad {
+        return;
+    }
+    let elems = s.elems_mut();
+    let keys: Vec<Dot> = elems.range(range).map(|(d, _)| d.clone()).collect();
+    let held: Elems = keys.into_iter().filter_map(|k| elems.remove(&k).map(|e| (k, e))).collect();
+    for (d, mut e) in crate::seq_span::expand(held) {
+        if differs(&d, &e) {
+            e.created = None;
+            if matches!(e.content, SeqContent::Char(_)) {
+                e.content = SeqContent::None;
+            }
+            e.pos.retain(|(st, _)| st.dot != d);
+        }
+        if e.keeps(&d) {
+            elems.insert(d, e);
+        }
+    }
 }
 
 // ---- wire hooks (§3.2 Run, §3.3)
