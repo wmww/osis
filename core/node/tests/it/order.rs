@@ -1224,6 +1224,11 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     // removal dead at it (an invalid snapshot gives nothing: `carried_dots` skips it)
     let h = vec![Demote { by: 2, t: 3, member: 1, at: 3, to_read: false }, Nested { by: 1, other: 2, t: 4, k: 1, text: false, compact: true, also: false }, Edge { by: 0, t: 3, member: 2, role: Some(Role::Write) }, Sync { from: 2, to: 1 }, Demote { by: 0, t: 5, member: 2, at: 4, to_read: false }, Advance { who: Some(0), ms: 1093 }, Sync { from: 1, to: 0 }, Write { by: 0, t: 3, op: 25, k: 1, v: 5 }, Send { from: 0, to: 1, back: 2 }, Edge { by: 0, t: 2, member: 2, role: Some(Role::Admin) }, Edge { by: 0, t: 2, member: 2, role: None }, Sync { from: 1, to: 2 }, Send { from: 0, to: 1, back: 2 }, Compact { by: 1, t: 2, op: 22 }, Write { by: 2, t: 0, op: 25, k: 1, v: 9 }];
     cases.push((583175, h, LARGE));
+    // seed 15085 (spec/permissions.md §5.2, spec/crdt.md §5.6): two demotions of 1 and 2's
+    // compacted `Nested` write: an un-merge pruned an entry's creation whose own dot stayed (a
+    // rebuild kept it for the join), so the orders' states differed
+    let h = vec![Nested { by: 2, other: 0, t: 5, k: 2, text: false, compact: false, also: false }, Write { by: 0, t: 6, op: 3, k: 2, v: 9 }, Nested { by: 2, other: 0, t: 0, k: 2, text: false, compact: true, also: true }, Write { by: 1, t: 2, op: 0, k: 1, v: 0 }, Write { by: 1, t: 6, op: 16, k: 1, v: 2 }, Edge { by: 0, t: 2, member: 1, role: Some(Role::Write) }, Edge { by: 0, t: 7, member: 1, role: Some(Role::Write) }, Demote { by: 0, t: 4, member: 1, at: 1, to_read: true }, Edge { by: 0, t: 4, member: 2, role: Some(Role::Write) }, Demote { by: 0, t: 6, member: 1, at: 5, to_read: true }];
+    cases.push((15085, h, LARGE));
     // in parallel: the slowest test of the module otherwise
     let idx: Vec<u64> = (0..cases.len() as u64).collect();
     let results = par_map(&idx, threads("OSIS_ORDER_THREADS"), |i| {
