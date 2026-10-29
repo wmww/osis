@@ -190,7 +190,8 @@ fn purge_drops_late_snapshot_spec_commits_5() {
 // carries live, whether the writer knows the schema or not: `writer`, the longest relative keep
 // at least, the strictest keep at most (an override included); a write that died stops counting (no carry-over
 // through the held earlier snapshot); a write whose own delta's header is not held counts as the
-// held snapshot carrying it; an untyped aspect snapshots with no bounds.
+// held snapshot carrying it; an untyped aspect snapshots with no bounds; an absolute keep at
+// most already passed counts as 0 after replaced.
 #[test]
 fn snapshot_bounds_from_carried_writes_spec_commits_5() {
     use osis_schema::{Bound, PurgeBy, Retention};
@@ -235,6 +236,19 @@ fn snapshot_bounds_from_carried_writes_spec_commits_5() {
         let snap = lp.peers[i].engine.snapshot(&t, &reg).unwrap().unwrap();
         assert_eq!(ret(&lp.peers[i].engine, &snap), most(None), "peer {i}: the override died");
     }
+    // an absolute keep at most: inherited while ahead, 0 after replaced once passed
+    let now = lp.peers[0].engine.now().0;
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("until")).unwrap();
+    m.retention(t, &REG, Retention { at_most: Bound { abs: Some(now + 10_000), rel: None }, ..most(None) }).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    let e0 = &mut lp.peers[0].engine;
+    let snap = e0.snapshot(&t, &reg).unwrap().unwrap();
+    assert_eq!(ret(e0, &snap).at_most, Bound { abs: Some(now + 10_000), rel: None }, "ahead");
+    lp.advance(20_000);
+    let e0 = &mut lp.peers[0].engine;
+    let snap = e0.snapshot(&t, &reg).unwrap().unwrap();
+    assert_eq!(ret(e0, &snap).at_most, Bound { abs: None, rel: Some(0) }, "passed");
 }
 
 // spec/commits.md §5: a body is one projection class: its deltas share deaths and are dropped
