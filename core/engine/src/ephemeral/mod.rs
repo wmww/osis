@@ -226,19 +226,32 @@ impl Engine {
                 self.eph.next = first;
                 return Err(Error::Misuse("an expiry must be in the future"));
             }
-            let base = match self.joined_state(tid, ak) {
-                Ok(Some(f)) => f,
-                Ok(None) => self.durable_state(tid, ak).inspect_err(|_| self.eph.next = first)?.unwrap_or_default(),
+            // resolved against the joined state; the ephemeral side alone (borrowed) when no
+            // durable delta of the aspect is held
+            let durable = match self.durable_state(tid, ak) {
+                Ok(d) => d,
                 Err(e) => {
                     self.eph.next = first;
                     return Err(e);
                 }
             };
+            let empty = Fragment::default();
+            let joined;
+            let base = match (durable, self.eph.state(tid, ak)) {
+                (None, e) => e.unwrap_or(&empty),
+                (Some(mut d), e) => {
+                    if let Some(e) = e {
+                        d.join(e.clone());
+                    }
+                    joined = d;
+                    &joined
+                }
+            };
             let w = Writer::new(ts, self.eph.src.clone(), self.eph.next);
             let view = am.schema.as_ref().and_then(|s| s.view(ak.as_str()));
             let out = match &view {
-                Some(v) => run_ops(&base, w, &am.ops, v),
-                None => run_ops(&base, w, &am.ops, &AnyView),
+                Some(v) => run_ops(base, w, &am.ops, v),
+                None => run_ops(base, w, &am.ops, &AnyView),
             };
             let out = match out {
                 Ok(o) => o,

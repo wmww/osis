@@ -346,3 +346,39 @@ fn delete_frees_ephemeral_things() {
     let mut w = db.write();
     assert_eq!(w.create(x), Err(Error::UnknownThing { tid: x }));
 }
+
+fn bench_n() -> i64 {
+    std::env::var("OSIS_BENCH_N").ok().and_then(|v| v.parse().ok()).unwrap_or(100_000)
+}
+
+// notes/ephemeral.md Local engine (cost): `OSIS_BENCH_N` local ephemeral sets of one aspect,
+// each its own batch, against `bench_btreemap_sets`; compare with tools/icount on a release
+// build (notes/testing.md), subtracting a run with `OSIS_BENCH_N=0`. spec: none (cost)
+#[test]
+#[ignore = "bench: release, by hand"]
+fn bench_ephemeral_sets() {
+    let n = bench_n();
+    let db = db(1);
+    // `OSIS_BENCH_DURABLE=1`: the same through durable commits, for comparison
+    let life = if std::env::var_os("OSIS_BENCH_DURABLE").is_some() { osis::Lifetime::Durable } else { osis::Lifetime::Ephemeral };
+    let k = osis::Untyped::new(ak("/app/x"), life);
+    let t = db.write_with(|w| w.create_durable(db.me())).unwrap();
+    for i in 0..n {
+        db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(i))).unwrap();
+    }
+    assert_eq!(db.get(t, k).unwrap(), (n > 0).then(|| Value::Int(n - 1)));
+}
+
+// The baseline of `bench_ephemeral_sets`: the same sets into an in-memory map. spec: none (cost)
+#[test]
+#[ignore = "bench: release, by hand"]
+fn bench_btreemap_sets() {
+    let n = bench_n();
+    let t = db(1).me();
+    let mut m = std::collections::BTreeMap::new();
+    for i in 0..n {
+        m.insert((t, "/app/x".to_string()), Value::Int(i));
+    }
+    assert_eq!(std::hint::black_box(m).len(), usize::from(n > 0));
+}
+

@@ -124,7 +124,8 @@ const DEDUP: usize = 1024;
 /// Subscribers and the queue of events awaiting durability.
 #[derive(Default)]
 pub struct Events {
-    subs: Vec<Sender<Event>>,
+    /// Subscribers; `false`: not sent `Event::Ephemeral` (`subscribe_durable`).
+    subs: Vec<(Sender<Event>, bool)>,
     queued: Vec<Event>,
     seen: VecDeque<(DiagnosticKind, Option<CommitId>, Vec<Tid>)>,
     per_peer: BTreeMap<Option<Tid>, (u64, usize)>,
@@ -133,7 +134,14 @@ pub struct Events {
 impl Events {
     pub fn subscribe(&mut self) -> Receiver<Event> {
         let (tx, rx) = channel();
-        self.subs.push(tx);
+        self.subs.push((tx, true));
+        rx
+    }
+
+    /// `subscribe` without `Event::Ephemeral` (node-sync: nothing to sync for them yet).
+    pub fn subscribe_durable(&mut self) -> Receiver<Event> {
+        let (tx, rx) = channel();
+        self.subs.push((tx, false));
         rx
     }
 
@@ -150,7 +158,8 @@ impl Events {
     /// Sends every queued event, in order; drops subscribers that hung up.
     pub fn flush(&mut self) {
         for e in std::mem::take(&mut self.queued) {
-            self.subs.retain(|s| s.send(e.clone()).is_ok());
+            let eph = matches!(e, Event::Ephemeral { .. });
+            self.subs.retain(|(s, all)| (eph && !*all) || s.send(e.clone()).is_ok());
         }
     }
 
@@ -173,6 +182,6 @@ impl Events {
         }
         self.seen.push_back(key);
         let e = Event::Diagnostic(d);
-        self.subs.retain(|s| s.send(e.clone()).is_ok());
+        self.subs.retain(|(s, _)| s.send(e.clone()).is_ok());
     }
 }

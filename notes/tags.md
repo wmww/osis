@@ -43,7 +43,7 @@ Adding a thing or a tag to a shared tag has significant privacy implications and
 A thing made of parts (a presentation of slides) owns its parts and is a group of them; sharing it is one edge on the whole. Users never see this as a container; the only copy is an explicit ownership transfer. Apps must not depend on sharing parts individually.
 
 ## Other conventions settled
-- Shared roots (a shared tag, a chat) are created `Unsynced` and synced under their own label, not placed in the home group (notes/api.md `create`).
+- Shared roots (a shared tag, a chat) are created unplaced and synced under their own label, not placed in the home group (notes/api.md `create`).
 - "Shared with me": a foreign thing placed in a home-private group mirrors to all my devices through entitlement (I hold an edge). The home group should hold small person-private index things, not shared roots.
 - Timestamps come from commits (`Osis::created`, commit `ts`), never from aspects.
 - Files: `blob` plus a mime string on a file thing.
