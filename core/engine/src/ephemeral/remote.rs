@@ -415,6 +415,11 @@ impl Engine {
         }
     }
 
+    /// A valid held commit listing `id` as absorbed (the cover that took it in), if any.
+    pub fn ephemeral_absorber(&self, id: &CommitId) -> Option<CommitId> {
+        self.eph.remote.held.iter().find(|(_, h)| h.parts.iter().any(|p| p.valid && p.absorbed.contains(id))).map(|(c, _)| *c)
+    }
+
     /// Whether held ephemeral commit `id` is a presence commit.
     pub fn ephemeral_is_presence(&self, id: &CommitId) -> bool {
         self.eph.remote.held.get(id).is_some_and(|h| h.header.ephemeral == Some(EphClass::Presence))
