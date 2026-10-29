@@ -62,6 +62,9 @@ pub(crate) struct Lane {
     pub gained: BTreeMap<(ConnId, LabelId), BTreeSet<BlobId>>,
     /// Relay-only entries sent and not answered (their statuses are no entry's).
     pub relays: BTreeSet<(LabelId, BlobId)>,
+    /// (server, label) reconciled since start, and the reconciliations running (`sync_label`).
+    pub reconciled: BTreeSet<(ServerKey, LabelId)>,
+    pub reconciling: BTreeSet<(ConnId, LabelId)>,
 }
 
 impl SyncEngine {
@@ -92,11 +95,15 @@ impl SyncEngine {
         self.engine.rejudge_ephemeral()?;
         let full: Vec<LabelId> = std::mem::take(&mut self.eph.server_full).into_iter().collect();
         let mut commits = Vec::new();
+        let mut retry = Vec::new();
         for l in full {
             let Some(g) = self.group_of(&l) else { continue };
             let scope = self.engine.ephemeral_closure(&g);
             match self.engine.compact_ephemeral(Some(&scope), true)? {
-                Some(c) => commits.push(c),
+                Some(c) => {
+                    commits.push(c);
+                    retry.push(l);
+                }
                 None => self.eph_report(&l, "a server's ephemeral cap was reached and nothing could be compacted: ephemeral data of this label stops syncing there"),
             }
         }
@@ -104,11 +111,20 @@ impl SyncEngine {
             commits.push(c);
         }
         commits.extend(self.engine.take_ephemeral()?);
+        // what a compaction covers goes first: deleted before its cover goes up on the same
+        // connection, so a server at its cap takes the cover
+        let dropped = self.engine.take_dropped_ephemeral();
+        self.eph_forget(&dropped, out)?;
         for c in commits {
             self.eph_place(c, out)?;
         }
-        let dropped = self.engine.take_dropped_ephemeral();
-        self.eph_forget(&dropped, out)?;
+        // entries a full server refused go again after a compaction made room
+        for l in retry {
+            let ids: Vec<BlobId> = Self::eph_entries_of(&self.eph, &l).map(|(b, _)| b).collect();
+            for b in ids {
+                self.eph_spread(l, b, None, out)?;
+            }
+        }
         Ok(())
     }
 
@@ -129,8 +145,19 @@ impl SyncEngine {
                 continue;
             }
             let l = gl.id;
-            let closure = self.engine.ephemeral_closure(&g);
-            let readers: Vec<Option<Tid>> = c.blob.header.aspects.iter().map(|a| closure.contains(&a.tid).then(|| self.engine.ephemeral_reader(&a.tid))).collect();
+            let inside: Vec<bool> = c.blob.header.aspects.iter().map(|a| self.engine.in_ephemeral_closure(&g, &a.tid)).collect();
+            // the records of the owner chains of the things inside go along
+            let mut chains: BTreeSet<Tid> = BTreeSet::new();
+            for (a, _) in c.blob.header.aspects.iter().zip(&inside).filter(|(_, i)| **i) {
+                let mut cur = a.tid;
+                while let Some(o) = self.engine.ephemeral_thing(&cur).and_then(|_| self.engine.owner(&cur)) {
+                    if !chains.insert(o) {
+                        break;
+                    }
+                    cur = o;
+                }
+            }
+            let readers: Vec<Option<Tid>> = c.blob.header.aspects.iter().zip(&inside).map(|(a, i)| (*i || (a.ak.as_str() == "/created" && chains.contains(&a.tid))).then(|| self.engine.ephemeral_reader(&a.tid))).collect();
             if readers.iter().all(Option::is_none) {
                 continue;
             }
@@ -452,6 +479,7 @@ impl SyncEngine {
         self.eph.present.retain(|(s, _, _)| *s != server);
         self.eph.announced.retain(|(c, _)| *c != conn);
         self.eph.gained.retain(|(c, _), _| *c != conn);
+        self.eph.reconciling.retain(|(c, _)| *c != conn);
     }
 
     /// Ephemeral entries held under `l` (serving peers): ID and entry.

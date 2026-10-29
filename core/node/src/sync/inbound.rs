@@ -684,6 +684,10 @@ impl SyncEngine {
             }
         }
         self.fetch_on(conn, l, need, out)?;
+        // a reconciliation after a start: the cursor stays (`sync_label`)
+        if self.eph.reconciling.remove(&(conn, l)) {
+            return self.sync_label(conn, l, out);
+        }
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.syncing = true;
         }

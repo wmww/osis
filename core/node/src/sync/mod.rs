@@ -1418,6 +1418,21 @@ impl SyncEngine {
         l.syncing = true;
         l.last_sync = now;
         let cursor = self.state.cursors.get(&(server, label)).copied();
+        // the first sync of a label at a server since start reconciles the live sets first: the
+        // ephemeral entries a cursor already passed are back in no memory here (notes/ephemeral.md
+        // Convergence); the cursor stays for what follows
+        // (a replay from no cursor lists everything: nothing to reconcile after it)
+        if cursor.is_none() {
+            self.eph.reconciled.insert((server, label));
+        }
+        if cursor.is_some() && self.eph.reconciled.insert((server, label)) {
+            let mut ids = self.state.present_at(&server, &label);
+            ids.extend(self.eph.entries.range((label, osis_base::BlobId([0; 32]))..).take_while(|((x, _), _)| *x == label).map(|((_, b), _)| *b));
+            ids.sort();
+            ids.dedup();
+            self.eph.reconciling.insert((conn, label));
+            return self.command(conn, Command::Reconcile { label, ids }, out);
+        }
         // a replay lists the live entries only: presence starts over from it (a cursor lost in a
         // crash otherwise kept entries a wiped server no longer holds "present" for good)
         if cursor.is_none() {
