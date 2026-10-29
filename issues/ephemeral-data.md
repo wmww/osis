@@ -1,5 +1,5 @@
 # Ephemeral data: one state system for an app
-> Summary: Tracking issue for ephemeral data (in-memory things and schema-declared aspects; synced as ordinary signed commits marked ephemeral and kept in memory at nodes and servers; a `presence` lifetime tied to the author's connection; signals folded in as `signal` aspects). The design is notes/ephemeral.md, revised after two owner reviews, with a four-step plan; step 1 (local) built.
+> Summary: Tracking issue for ephemeral data (in-memory things and schema-declared aspects; synced as ordinary signed commits marked ephemeral and kept in memory at nodes and servers; a `presence` lifetime tied to the author's connection; signals folded in as `signal` aspects). The design is notes/ephemeral.md, revised after two owner reviews, with a four-step plan; steps 1-2 (local) built.
 > Tags: api, node, sync
 
 Design and plan: notes/ephemeral.md (owner direction and reviews recorded there).
@@ -14,4 +14,4 @@ Design and plan: notes/ephemeral.md (owner direction and reviews recorded there)
 - Per-label caps on ephemeral bytes at servers and nodes: past them, that label's ephemeral data stops syncing or converging there (a defined outcome against a hostile writer); compaction frees the server cap.
 
 ## Status
-- Step 1 (local ephemeral things and aspects) built (notes/ephemeral.md Step 1 as built); steps 2-4 not started.
+- Steps 1 (local ephemeral things and aspects) and 2 (ephemeral placements, undo) built (notes/ephemeral.md Step 1/2 as built); steps 3-4 not started.
