@@ -8,8 +8,11 @@
 //! (stamped entries only; own ones are stamped here). Relay-only entries (signals) are delivered
 //! and passed to nobody. Per label, the bytes held from others are capped
 //! (`SyncConfig::ephemeral_bytes`): past it further ephemeral commits of the label are not
-//! applied (`EphemeralRefused`). A writer compacts when held bodies outgrow the state, or when a
-//! server refuses for its cap, and deletes what the compaction covers where it uploaded it.
+//! applied (`EphemeralRefused`). Only an author compacts, its own commits into an own cover once
+//! they cost more than twice it (`Engine::compact_own_ephemeral`), and deletes what the cover
+//! absorbs where it is present before uploading the cover; holders drop and delete the absorbed
+//! entries when the cover arrives. A server refusing an entry for its cap triggers nothing but a
+//! report and the retry at the periodic pass (`eph_retry`).
 //! Presence entries are uploaded by their author only (never spread, listed or reconciled up by
 //! another node); a node drops another's presence commit as soon as no server or peer it syncs
 //! the label with holds an entry of it (a pushed deletion, the loss of the connection, a served
@@ -86,19 +89,6 @@ pub(crate) struct Lane {
     pub bytes: BTreeMap<LabelId, u64>,
     /// Labels whose cap was hit (reported once until bytes drop under it).
     pub refused: BTreeSet<LabelId>,
-    /// Labels a server refused an ephemeral upload of for its cap since the last compaction.
-    pub server_full: BTreeSet<LabelId>,
-    /// Labels force-compacted since an entry of new writes (not a cover) was kept under them:
-    /// not forced again until one is (holders of a label a server cannot fit compacted each
-    /// other's concurrent covers forever, every cover refused), unless for `own_full`.
-    pub forced: BTreeSet<LabelId>,
-    /// Per label, the servers that refused an own cover for their cap since this node last
-    /// compacted the label: forced again (past `forced`) at once and when another node's cover
-    /// is kept under it, by a cover that deletes an entry held at such a server (concurrent
-    /// covers to one full server: the refused one stayed out, its writes with it, while the
-    /// server held the other). Not for own plain entries (`forced` covers those) nor re-armed by
-    /// plain entries of others: an entry refused for good was re-uploaded at every write.
-    pub own_full: BTreeMap<LabelId, BTreeSet<ServerKey>>,
     /// Per connection and label: whether the first Sync listed the held entries, and those it
     /// listed that the peer has not asked for yet.
     pub announced: BTreeSet<(ConnId, LabelId)>,
@@ -108,7 +98,7 @@ pub(crate) struct Lane {
     pub uploads: BTreeSet<(ConnId, LabelId, BlobId)>,
     pub deletes: BTreeSet<(ConnId, LabelId, BlobId)>,
     /// Plain entries a server refused for its cap, per connection: uploaded there again at the
-    /// periodic pass (`eph_retry`).
+    /// periodic pass (`eph_retry`); reported once each.
     pub capped: BTreeSet<(ConnId, LabelId, BlobId)>,
     /// Entries forgotten while their upload was in flight on a connection: deleted there once
     /// the upload is answered OK (else a slow server kept every covered entry), and not taken
@@ -219,40 +209,16 @@ impl SyncEngine {
         self.conns.iter().filter_map(|(id, c)| c.labels.get(l).filter(|x| x.phase == Phase::Open && c.up).map(|x| (*id, c.server, x.keys.clone()))).collect()
     }
 
-    /// Per step: re-judges held ephemeral commits, compacts where due, sends what was written,
-    /// forgets (and deletes where it uploaded) what a compaction covered.
+    /// Per step: re-judges held ephemeral commits, sends what was written, compacts the own
+    /// commits where due (after the take: the cover absorbs what was just built, which then never
+    /// goes), forgets (and deletes where it uploaded) what a cover absorbed.
     pub(crate) fn eph_step(&mut self, out: &mut Vec<Action>) -> Result<()> {
         self.engine.rejudge_ephemeral()?;
         self.eph_promote(out)?;
-        let full: Vec<LabelId> = std::mem::take(&mut self.eph.server_full).into_iter().collect();
-        let mut commits = Vec::new();
-        let mut retry = Vec::new();
-        for l in full {
-            let first = self.eph.forced.insert(l);
-            let at = if first { None } else { self.eph.own_full.get(&l).cloned() };
-            if !first && at.is_none() {
-                continue;
-            }
-            let Some(g) = self.group_of(&l) else { continue };
-            let scope = self.engine.ephemeral_closure(&g);
-            // past `forced`: only a cover deleting an entry where an own one was refused
-            let lane = &self.eph;
-            let frees = |c: &CommitId| at.as_ref().is_none_or(|at| lane.by_commit.get(c).is_some_and(|bs| bs.iter().any(|(l2, b)| at.iter().any(|s| lane.present.contains(&(*s, *l2, *b))))));
-            match self.engine.compact_ephemeral_if(Some(&scope), true, &frees)? {
-                Some(c) => {
-                    commits.push(c);
-                    retry.push(l);
-                    self.eph.own_full.remove(&l);
-                }
-                None if first => self.eph_report(&l, "a server's ephemeral cap was reached and nothing could be compacted: ephemeral data of this label stops syncing there"),
-                None => {}
-            }
-        }
-        if let Some(c) = self.engine.compact_ephemeral(None, false)? {
-            commits.push(c);
-        }
         let (busy, busy_presence) = self.eph_busy();
-        commits.extend(self.engine.take_ephemeral_if(&busy, &busy_presence)?);
+        let mut commits = self.engine.take_ephemeral_if(&busy, &busy_presence)?;
+        commits.extend(self.engine.compact_own_ephemeral(false)?);
+        commits.retain(|c| c.class == EphClass::Relay || self.engine.holds_ephemeral(&c.id));
         self.eph_presence(out)?;
         // what a compaction covers goes first: deleted before its cover goes up on the same
         // connection, so a server at its cap takes the cover
@@ -266,13 +232,6 @@ impl SyncEngine {
             self.eph_place(c, out)?;
         }
         self.eph_forget(&later, out)?;
-        // entries a full server refused go again after a compaction made room
-        for l in retry {
-            let ids: Vec<BlobId> = Self::eph_entries_of(&self.eph, &l).map(|(b, _)| b).collect();
-            for b in ids {
-                self.eph_spread(l, b, None, out)?;
-            }
-        }
         Ok(())
     }
 
@@ -403,14 +362,6 @@ impl SyncEngine {
 
     /// Keeps an entry under `l` (served to peers from now on).
     fn eph_keep(&mut self, l: LabelId, b: BlobId, e: LaneEntry) {
-        // a presence entry is no new compactable write
-        if !e.presence && !self.engine.ephemeral_is_cover(&e.commit) {
-            self.eph.forced.remove(&l);
-        }
-        // another holder's cover: an own cover refused meanwhile may now replace it there
-        if !e.own && self.eph.own_full.contains_key(&l) && self.engine.ephemeral_is_cover(&e.commit) {
-            self.eph.server_full.insert(l);
-        }
         if !e.own {
             *self.eph.bytes.entry(l).or_default() += e.blob.len() as u64;
         }
@@ -595,11 +546,11 @@ impl SyncEngine {
                 Code::STORAGE_CAP if self.eph.entries.get(&(l, b)).is_some_and(|e| e.presence) => {
                     self.eph_report(&l, "a server's presence cap was reached: this node's presence is not seen there");
                 }
+                // the defined outcome (spec/sync.md §5): it stays out there until room appears;
+                // nothing is compacted for it (only authors compact, by their own rule)
                 Code::STORAGE_CAP => {
-                    self.eph.capped.insert((conn, l, b));
-                    self.eph.server_full.insert(l);
-                    if self.eph.entries.get(&(l, b)).is_some_and(|e| e.own && self.engine.ephemeral_is_cover(&e.commit)) {
-                        self.eph.own_full.entry(l).or_default().insert(server);
+                    if self.eph.capped.insert((conn, l, b)) {
+                        self.eph_report(&l, "a server's ephemeral cap was reached: an entry stays out there until room appears (retried at the periodic pass)");
                     }
                 }
                 Code::TOMBSTONED => {
@@ -912,17 +863,25 @@ impl SyncEngine {
         lane.entries.range((l, BlobId([0; 32]))..).take_while(move |((x, _), _)| *x == l).map(|((_, b), e)| (*b, e))
     }
 
-    /// Tests: compacts every held ephemeral aspect this node may write now (forced) and sends
-    /// the cover as `eph_step` would.
+    /// Tests: covers this node's own held ephemeral commits now (forced) and sends the covers as
+    /// `eph_step` would.
     #[doc(hidden)]
     pub fn compact_ephemeral_now(&mut self) -> Result<Vec<Action>> {
         let mut out = Vec::new();
-        if let Some(c) = self.engine.compact_ephemeral(None, true)? {
-            let dropped = self.engine.take_dropped_ephemeral();
-            self.eph_forget(&dropped, &mut out)?;
+        let covers = self.engine.compact_own_ephemeral(true)?;
+        let dropped = self.engine.take_dropped_ephemeral();
+        self.eph_forget(&dropped, &mut out)?;
+        for c in covers {
             self.eph_place(c, &mut out)?;
         }
         Ok(out)
+    }
+
+    /// Tests: the ephemeral entries held under `l` that are not presence entries (blob ID and
+    /// size), to check them against a server's cap.
+    #[doc(hidden)]
+    pub fn ephemeral_plain_entries(&self, l: &LabelId) -> Vec<(BlobId, usize)> {
+        Self::eph_entries_of(&self.eph, l).filter(|(_, e)| !e.presence).map(|(b, e)| (b, e.blob.len())).collect()
     }
 
     /// Ephemeral bytes held from others under `l` (tests, diagnostics).
@@ -971,7 +930,7 @@ impl SyncEngine {
                 let _ = writeln!(out, "  pending {b:?} commit {:?} from {:?}", e.commit, from.as_ref().map(key));
             }
         }
-        let _ = writeln!(out, "  bytes {:?} refused {} server_full {} forced {} own_full {:?}", lane.bytes.get(l), lane.refused.contains(l), lane.server_full.contains(l), lane.forced.contains(l), lane.own_full.get(l).map(|x| x.iter().map(key).collect::<Vec<_>>()));
+        let _ = writeln!(out, "  bytes {:?} refused {}", lane.bytes.get(l), lane.refused.contains(l));
         out
     }
 

@@ -1,14 +1,20 @@
 //! Synced ephemeral data in the simulator (notes/ephemeral.md, spec/sync.md §9): random
 //! ephemeral, presence and signal writes on ephemeral windows placed in labeled groups and on
 //! durable items of them, and their invariants at quiescence (`check`):
-//! - convergence among holders (spec/requirements.md Ephemeral data): every member node of the
-//!   group reads the same ephemeral state of a durable item; a window is held by every member
-//!   node or by none (none only if every node seen holding it restarted since: a server's copy
-//!   is not tracked, so a node failing to fetch it back after all holders restarted passes),
-//!   and its holders read the same state; expired writes read absent everywhere.
+//! - convergence among holders (spec/requirements.md Ephemeral data), within what a server cap
+//!   lets through (spec/sync.md §5: a server whose cap keeps out an entry an up node holds,
+//!   checked against the server's own accounting, is no path): member nodes connected through
+//!   the other servers read the same ephemeral state of a durable item; a window is held by
+//!   all of them or by none (none anywhere only if every node seen holding it restarted since:
+//!   a server's copy is not tracked, so a node failing to fetch it back after all holders
+//!   restarted passes), and its holders read the same state; expired writes read absent
+//!   everywhere.
+//! - own compaction (spec/sync.md §9): each up node's own held plain commits without expiry
+//!   cost at most twice their cover plus one commit in flight.
 //! - presence (spec/sync.md §9 Presence commits): a holder reads exactly the live cursors of the
-//!   authors it shares a server with (its own included); a server keeps at most one presence
-//!   entry per live author it serves.
+//!   authors it shares a server with (its own included; with a server keeping an entry out, at
+//!   most those: the placement may not have reached the author); a server keeps at most one
+//!   presence entry per live author it serves.
 //! - signals (spec/sync.md §9 Relay-only commits): delivered at most once per node over the run
 //!   (checked as events arrive).
 //! - bounded server memory (spec/sync.md §5): every label's ephemeral charge within its cap,
@@ -124,7 +130,7 @@ impl NetSim {
         for i in 0..self.eph.windows.len() {
             let Some(w) = self.eph.windows.get(i).map(|x| x.w) else { continue };
             for n in 0..self.nodes.len() {
-                let holds = self.nodes.get(n).and_then(|x| x.sync.as_ref()).is_some_and(|s| s.engine().ephemeral_thing(&w).is_some());
+                let holds = self.nodes.get(n).and_then(|x| x.sync.as_ref()).is_some_and(|s| s.engine().ephemeral_thing(&w).is_some() && s.engine().ephemeral_synced(&w));
                 if holds {
                     let b = self.boots_of(n);
                     if let Some(x) = self.eph.windows.get_mut(i) {
@@ -316,14 +322,15 @@ impl NetSim {
         authors.len()
     }
 
-    /// The presence invariants: every holder of each target reads exactly the expected
-    /// cursors; servers keep at most one presence entry per live author they serve.
-    fn presence_ok(&mut self, holders: &BTreeMap<Tid, (Tid, Vec<usize>)>) -> Res<()> {
+    /// The presence invariants: every holder of each target reads exactly the expected cursors
+    /// (`lossy`: at most those); servers keep at most one presence entry per live author they
+    /// serve.
+    fn presence_ok(&mut self, holders: &BTreeMap<Tid, (Tid, Vec<usize>)>, lossy: bool) -> Res<()> {
         for (t, (g, hs)) in holders {
             for o in hs {
                 let got = self.cursors_at(*o, t)?;
                 let want = self.cursors_expected(*o, t, g);
-                if got != want {
+                if got != want && !(lossy && got.iter().all(|(k, v)| want.get(k) == Some(v))) {
                     return Err(self.fail(format!("node {o} reads cursors {got:?} on {t}, expected {want:?} (live: {:?})", self.eph.cursors)));
                 }
             }
@@ -347,7 +354,8 @@ impl NetSim {
         self.node_down(a)?;
         self.drain_queue()?;
         let holders = self.holders()?;
-        self.presence_ok(&holders)?;
+        let lossy = !self.lossy_servers().is_empty();
+        self.presence_ok(&holders, lossy)?;
         for (t, (_, hs)) in &holders {
             for o in hs {
                 if self.cursors_at(*o, t)?.contains_key(&a.to_string()) {
@@ -398,7 +406,10 @@ impl NetSim {
             let ms = self.members(&win.g)?;
             let mut hs = Vec::new();
             for n in ms {
-                if self.engine(n)?.ephemeral_thing(&win.w).is_some() {
+                // holding it in a labeled closure: a record that came without its placement (a
+                // full server kept that out) leaves the node writing it locally
+                let e = self.engine(n)?;
+                if e.ephemeral_thing(&win.w).is_some() && e.ephemeral_synced(&win.w) {
                     hs.push(n);
                 }
             }
@@ -409,8 +420,70 @@ impl NetSim {
 }
 
 impl NetSim {
+    /// Up servers whose ephemeral cap keeps out a plain entry some up node holds under a label
+    /// they carry, by their own accounting (spec/sync.md §5, the defined outcome past a cap).
+    fn lossy_servers(&self) -> BTreeSet<usize> {
+        let mut out = BTreeSet::new();
+        for s in 0..self.servers.len() {
+            let Some(hub) = self.hub(s) else { continue };
+            let st = hub.store();
+            for l in st.labels_after(None, 4096).unwrap_or_default() {
+                let live: BTreeSet<osis_base::BlobId> = st.live_ids(&l).unwrap_or_default().into_iter().collect();
+                for n in (0..self.nodes.len()).filter(|n| self.is_up(*n)) {
+                    let Some(sync) = self.nodes.get(n).and_then(|x| x.sync.as_ref()) else { continue };
+                    if sync.ephemeral_plain_entries(&l).into_iter().any(|(b, size)| !live.contains(&b) && !st.ephemeral_fits(&l, size as u64)) {
+                        out.insert(s);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The nodes of `ns` grouped by what connects them for `g`'s label through servers not in
+    /// `lossy`: a server they reach, servers replicating to each other.
+    fn eph_components(&mut self, g: &Tid, ns: &[usize], lossy: &BTreeSet<usize>) -> Vec<Vec<usize>> {
+        let mut edges: BTreeMap<Party, BTreeSet<Party>> = BTreeMap::new();
+        let mut link = |a: Party, b: Party| {
+            edges.entry(a).or_default().insert(b);
+            edges.entry(b).or_default().insert(a);
+        };
+        let paths: Vec<usize> = (0..self.servers.len()).filter(|s| !lossy.contains(s) && self.hub(*s).is_some()).collect();
+        for s in paths {
+            for n in ns {
+                if self.label_reaches(*n, s, g) {
+                    link(Party::N(*n), Party::S(s));
+                }
+            }
+            let peers = self.servers.get(s).map(|x| x.peers.clone()).unwrap_or_default();
+            for p in peers.into_iter().filter(|p| !lossy.contains(p) && self.hub(*p).is_some()) {
+                link(Party::S(s), Party::S(p));
+            }
+        }
+        let mut seen: BTreeSet<Party> = BTreeSet::new();
+        let mut out = Vec::new();
+        for n in ns {
+            if seen.contains(&Party::N(*n)) {
+                continue;
+            }
+            let mut comp = Vec::new();
+            let mut stack = vec![Party::N(*n)];
+            while let Some(x) = stack.pop() {
+                if !seen.insert(x) {
+                    continue;
+                }
+                if let Party::N(m) = x {
+                    comp.push(m);
+                }
+                stack.extend(edges.get(&x).into_iter().flatten().copied());
+            }
+            out.push(comp);
+        }
+        out
+    }
+
     /// The ephemeral commits nodes `ns` hold touching `t` (failure detail): id, author node,
-    /// own, cover, aspects of `t`.
+    /// own, aspects of `t`.
     fn held_detail(&self, ns: &[usize], t: &Tid) -> Vec<String> {
         let author = |a: &Tid| self.nodes.iter().position(|x| x.tid == *a).map_or_else(|| a.to_string(), |i| format!("n{i}"));
         let mut out = Vec::new();
@@ -428,7 +501,7 @@ impl NetSim {
                     let counted: Vec<usize> = present.iter().filter_map(|k| self.servers.iter().position(|x| x.key == *k)).collect();
                     format!("{b:?} live at {at:?} counted at {counted:?}")
                 }).collect();
-                out.push(format!("node {n}: {:?} by {} own {own} cover {} {bytes} B ts {:?} {aks:?} entries {ents:?}", id, author(&h.author), e.ephemeral_is_cover(&id), h.ts));
+                out.push(format!("node {n}: {:?} by {} own {own} {bytes} B ts {:?} {aks:?} entries {ents:?}", id, author(&h.author), h.ts));
             }
         }
         out
@@ -477,6 +550,19 @@ pub fn check(sim: &mut NetSim) -> Res<()> {
     for l in lines {
         sim.note(l);
     }
+    // the author's own compaction keeps its own commits within twice their cover
+    let ups: Vec<usize> = (0..sim.nodes.len()).filter(|n| sim.is_up(*n)).collect();
+    for n in ups {
+        for (actor, held, cover, largest) in sim.engine(n)?.own_ephemeral_load() {
+            if held > 2 * cover + largest {
+                return Err(sim.fail(format!("node {n} holds {held} B of own ephemeral commits for {actor}, more than twice their {cover} B cover and one {largest} B commit")));
+            }
+        }
+    }
+    let lossy = sim.lossy_servers();
+    if !lossy.is_empty() {
+        sim.note(format!("servers {lossy:?} keep out an entry that does not fit their ephemeral cap"));
+    }
     let holders = sim.holders()?;
     for win in sim.eph.windows.clone() {
         let ms = sim.members(&win.g)?;
@@ -489,11 +575,27 @@ pub fn check(sim: &mut NetSim) -> Res<()> {
                 return Err(sim.fail(format!("window {} held by no member, though nodes {kept:?} held it and never restarted since", win.w)));
             }
             sim.note(format!("window {} lost: every node that held it restarted", win.w));
-        } else if hs.len() != ms.len() {
-            return Err(sim.fail(format!("window {} held by nodes {hs:?} of members {ms:?} at quiescence", win.w)));
+        } else {
+            for comp in sim.eph_components(&win.g, &ms, &lossy) {
+                let h: Vec<usize> = comp.iter().copied().filter(|n| hs.contains(n)).collect();
+                if !h.is_empty() && h.len() != comp.len() {
+                    return Err(sim.fail(format!("window {} held by nodes {h:?} of connected members {comp:?} (lossy servers {lossy:?}) at quiescence", win.w)));
+                }
+            }
         }
     }
-    for (t, (_, hs)) in &holders {
+    for (t, (g, hs)) in &holders {
+        for comp in sim.eph_components(g, hs, &lossy) {
+            eph_alike(sim, t, &comp)?;
+        }
+    }
+    sim.presence_ok(&holders, !lossy.is_empty())?;
+    Ok(())
+}
+
+/// Nodes `hs` read the same ephemeral state of `t`, and no expired typing flag.
+fn eph_alike(sim: &mut NetSim, t: &Tid, hs: &[usize]) -> Res<()> {
+    {
         let mut first: Option<(usize, Vec<String>)> = None;
         for n in hs {
             let mut reads = Vec::new();
@@ -514,19 +616,18 @@ pub fn check(sim: &mut NetSim) -> Res<()> {
             }
         }
     }
-    sim.presence_ok(&holders)?;
     Ok(())
 }
 
-/// The small server cap of the capped scenarios: above a compacted state of the scenario's
-/// things (a few KB per writer's cover), below what uncompacted writes pile up to, so writers
-/// hit it and compact (a cap below the compacted state stops the label syncing by design:
-/// notes/ephemeral.md Bounds).
-const CAP: u64 = 16_000;
+/// A random server ephemeral cap for the capped scenarios: nothing fits, below one cover, about
+/// the writers' covers, about twice them (what spec/sync.md §5 says always fits), plenty.
+fn random_cap(d: &mut Dice) -> u64 {
+    d.pick(&[0, 1_500, 4_000, 8_000, 16_000, 64_000]).copied().unwrap_or(0)
+}
 
 /// Shared ephemeral data under faults (notes/ephemeral.md): A (admin) and B (writer) reach both
-/// replicating servers, C (writer) only s0, D (reader) only s1; odd seeds give s0 a small
-/// ephemeral cap (writers compact). A window placed in the group and a durable item get random
+/// replicating servers, C (writer) only s0, D (reader) only s1; odd seeds give s0 a random
+/// ephemeral cap (0 and below one cover included). A window placed in the group and a durable item get random
 /// ephemeral, presence and signal writes amid durable writes, lossy links, node and server
 /// crashes (mid-write too), partitions and slow servers; then the quiescent invariants, an
 /// author leaving, and a signal to everyone connected.
@@ -534,7 +635,7 @@ pub fn ephemeral(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xe9);
     let w = NetWeights { write: 1, ephemeral: 5, crash: 1, restart: 2, server_crash: 1, server_restart: 2, partition: 1, heal: 2, slow: 1, ..NetWeights::default() };
     let mut sim = sim("ephemeral", seed, w);
-    let cap = if seed % 2 == 1 { Policy { ephemeral_bytes: CAP, ..sim.cfg.policy.clone() } } else { sim.cfg.policy.clone() };
+    let cap = if seed % 2 == 1 { Policy { ephemeral_bytes: random_cap(&mut d), ..sim.cfg.policy.clone() } } else { sim.cfg.policy.clone() };
     let s0 = sim.add_server_with(cap)?;
     let s1 = sim.add_server()?;
     sim.replicate(s0, s1)?;
@@ -561,14 +662,16 @@ pub fn ephemeral(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// One server with a small ephemeral cap holds all that writers exchange (no other path): three
+/// One server with a random ephemeral cap (0 and below one cover included) holds all that
+/// writers exchange (no other path): three
 /// writers write a window and a durable item ephemerally under link faults, node crashes and
 /// server restarts (which lose every ephemeral entry), with the server at times slow.
 pub fn ephemeral_capped(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xec);
     let w = NetWeights { write: 1, ephemeral: 6, crash: 1, restart: 2, server_crash: 1, server_restart: 2, partition: 1, heal: 2, slow: 1, ..NetWeights::default() };
     let mut sim = sim("ephemeral_capped", seed, w);
-    let s = sim.add_server_with(Policy { ephemeral_bytes: CAP, ..sim.cfg.policy.clone() })?;
+    let cap = random_cap(&mut d);
+    let s = sim.add_server_with(Policy { ephemeral_bytes: cap, ..sim.cfg.policy.clone() })?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let c = sim.add_node(&[s], clock(&mut d))?;

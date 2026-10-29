@@ -7,11 +7,14 @@
 //! part is valid iff its author could write the aspect at its `ts`, by commit ID); the writes a
 //! part carries go with it. Valid parts join the ephemeral state; a held commit whose validity
 //! flips rebuilds the aspects it touches from the own writes and the valid held parts (un-merge,
-//! spec/crdt.md §4.6). A held commit is dropped once valid held commits list it as absorbed on
-//! every aspect it touches (a compaction, `compact_ephemeral`). Relay-only commits are delivered
-//! once (`delivered`, bounded) and held by nobody. Presence commits carry an author's whole own
-//! state of its presence aspects, each covering (absorbing) its author's earlier ones; they carry
-//! no other node's writes, are never compacted, and go (un-merged) at their lease
+//! spec/crdt.md §4.6). Every ephemeral commit carries only its author's writes (and the records
+//! they need); a receiver joins nothing else. A held commit is dropped once valid held commits
+//! of its author and class list it as absorbed on every aspect it touches: only an author
+//! compacts, its own commits into an own cover (`compact_own_ephemeral`), so covers form one
+//! chain per author and never race. Relay-only commits are delivered once (`delivered`, bounded)
+//! and held by nobody. Presence commits carry an author's whole own state of its presence
+//! aspects, each covering (absorbing) its author's earlier ones; they are covered at every
+//! write and go (un-merged) at their lease
 //! (`ts + MAX_LEASE`) or when the sync layer finds no server or peer holding them
 //! (`drop_ephemeral_presence`); an author with live presence values sends a fresh one every
 //! `KEEPALIVE`.
@@ -40,13 +43,18 @@ use std::sync::Arc;
 /// newest delivered is dropped; infinity: memory grows with every signal of the replay window).
 pub const MAX_DELIVERED: usize = 1 << 16;
 
-/// Held bytes of an aspect's ephemeral bodies above which a writer compacts it, besides the
-/// "twice its state" rule (notes/ephemeral.md Compaction). Performance switch: 0 compacts per
-/// write, infinity never (bodies pile up until a cap).
-pub const COMPACT_FLOOR: usize = 64 << 10;
+/// Bytes charged per held ephemeral commit besides its delta bytes when an author weighs its own
+/// held commits against their cover (spec/sync.md §9): about a server's per-entry and log record
+/// overhead plus the commit header. Performance switch: 0 lets small writes pile up as entries
+/// whose overhead dwarfs their bytes (a server's cap fills with overhead the trigger never sees),
+/// infinity compacts at every write.
+pub const ENTRY_CHARGE: usize = 1024;
 
 /// One delta of an ephemeral commit to build: thing, aspect, fragment, expiry.
 type EphDelta = (Tid, Ak, Fragment, Option<u64>);
+
+/// Per aspect, the held commits a cover absorbs.
+type Absorbs = BTreeMap<(Tid, Ak), BTreeSet<CommitId>>;
 
 /// Unsent own deltas of one aspect by (actor written for, expiry).
 type Unsent = BTreeMap<(Tid, Option<u64>), Fragment>;
@@ -55,21 +63,23 @@ type Unsent = BTreeMap<(Tid, Option<u64>), Fragment>;
 pub(crate) struct HeldPart {
     pub ai: usize,
     pub fragment: Fragment,
+    /// Its encoded delta's length.
+    pub bytes: usize,
     /// The commits it lists as absorbed.
     pub absorbed: BTreeSet<CommitId>,
-    /// Its `Authors`: the node each session is attributed to, and at which `ts` (attribution
-    /// only: a valid part vouches for every write it carries, spec/permissions.md §5.2).
+    /// Its `Authors`: the node each session is attributed to, and at which `ts` (writes of
+    /// sessions not attributed to the commit's author are stripped on arrival, `only_of`).
     pub authors: BTreeMap<CommitId, (Tid, Ts)>,
     /// Valid here (spec/permissions.md §5.2).
     pub valid: bool,
 }
 
 impl HeldPart {
-    fn new(ai: usize, s: Snapshot) -> HeldPart {
-        HeldPart { ai, fragment: s.fragment, absorbed: s.absorbed.into_keys().collect(), authors: s.authors, valid: true }
+    fn new(ai: usize, s: Snapshot, bytes: usize) -> HeldPart {
+        HeldPart { ai, fragment: s.fragment, bytes, absorbed: s.absorbed.into_keys().collect(), authors: s.authors, valid: true }
     }
 
-    /// Strips the writes of sessions its `Authors` does not attribute to `author` (a presence
+    /// Strips the writes of sessions its `Authors` does not attribute to `author` (an ephemeral
     /// commit carries its author's writes only, spec/sync.md §9).
     fn only_of(&mut self, author: Tid) {
         let authors = &self.authors;
@@ -86,9 +96,9 @@ impl HeldPart {
 pub(crate) struct Held {
     pub header: Arc<Header>,
     pub parts: Vec<HeldPart>,
-    /// Built by this node (its writes are in the own state already).
+    /// Built by this node in this session (its writes are in the own state already).
     pub own: bool,
-    /// The approximate bytes of its parts.
+    /// The encoded bytes of its held parts' deltas.
     pub bytes: usize,
 }
 
@@ -100,8 +110,6 @@ pub(crate) struct Remote {
     pub unsent: BTreeMap<(Tid, Ak), Unsent>,
     /// Signal writes not yet sent: (thing, aspect, value, `ts`, actor).
     pub signals: Vec<(Tid, Ak, Value, Ts, Tid)>,
-    /// Ephemeral things whose record must travel with the next commit.
-    pub records: BTreeSet<Tid>,
     /// Things with ephemeral state (or ephemeral things) written while in no labeled closure:
     /// their whole state goes once they enter one.
     pub local: BTreeSet<Tid>,
@@ -111,9 +119,13 @@ pub(crate) struct Remote {
     /// whose records they wait for (bounded by the sync layer, which forgets what it drops),
     /// retried when one of those records arrives.
     pub pending: BTreeMap<CommitId, (CommitBlob, BTreeSet<Tid>)>,
-    /// Per ephemeral session, the held commits whose parts name it in `Authors` (attribution
-    /// of carried writes when this node compacts); released with them.
-    pub claims: BTreeMap<CommitId, BTreeSet<CommitId>>,
+    /// This node's sessions (its earlier ones as its own held commits name them in `Authors`):
+    /// an own cover carries their writes as its own. Bounded by this node's restarts.
+    pub mine: BTreeSet<CommitId>,
+    /// Per actor, the cost of the own cover last weighed (plus half the own held commits it
+    /// could not absorb): an own compaction is weighed again once the own held commits cost
+    /// more than twice this (`compact_own_ephemeral`).
+    pub cover_est: BTreeMap<Tid, usize>,
     /// Expiry times of held parts.
     pub timers: BTreeMap<u64, BTreeSet<(CommitId, usize)>>,
     /// Relay-only commits delivered, oldest first, with their `ts` (wall ms).
@@ -137,15 +149,10 @@ pub(crate) struct Remote {
     pub noted: bool,
 }
 
-/// Whether a cover `cover` may absorb `covered` (spec/sync.md §9): a presence commit only its
-/// author's earlier presence commits, a plain one only plain ones.
+/// Whether a cover `cover` may absorb `covered` (spec/sync.md §9): only its author's commits of
+/// its class.
 fn may_absorb(cover: &Header, covered: &Header) -> bool {
-    let p = Some(EphClass::Presence);
-    match (cover.ephemeral == p, covered.ephemeral == p) {
-        (true, true) => cover.author == covered.author,
-        (false, false) => true,
-        _ => false,
-    }
+    cover.author == covered.author && cover.ephemeral == covered.ephemeral
 }
 
 /// What became of a received ephemeral commit.
@@ -179,29 +186,8 @@ impl Engine {
         s.contains(tid) || self.groups_of(tid).iter().any(|g| s.contains(g))
     }
 
-    /// The things of `g`'s closure (`Engine::closure`) and the ephemeral things placed in it,
-    /// transitively through the ephemeral side of `/group`.
-    pub fn ephemeral_closure(&self, g: &Tid) -> BTreeSet<Tid> {
-        let mut out: BTreeSet<Tid> = self.closure(g).iter().copied().collect();
-        if self.eph.defs.is_empty() {
-            return out;
-        }
-        let mut stack: Vec<Tid> = out.iter().copied().collect();
-        while let Some(t) = stack.pop() {
-            if let Some((items, subs)) = self.eph.defs.get(&t) {
-                for x in items.iter().chain(subs) {
-                    for y in std::iter::once(*x).chain(self.closure(x).iter().copied()) {
-                        if out.insert(y) {
-                            stack.push(y);
-                        }
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    /// Whether `t` is in the closure of `g` (`ephemeral_closure`), without walking it.
+    /// Whether `t` is in the closure of `g` (`Engine::closure` and the ephemeral things placed in
+    /// it, transitively through the ephemeral side of `/group`), without walking it.
     pub fn in_ephemeral_closure(&self, g: &Tid, t: &Tid) -> bool {
         t == g || self.closure(g).contains(t) || self.groups_of(t).contains(g)
     }
@@ -225,9 +211,6 @@ impl Engine {
                 return;
             }
             r.unsent.entry((*tid, ak.clone())).or_default().entry((actor, expires)).or_default().join(delta.clone());
-            if self.eph.things.contains_key(tid) {
-                self.eph.remote.records.insert(*tid);
-            }
         } else {
             self.eph.remote.local.insert(*tid);
         }
@@ -238,9 +221,6 @@ impl Engine {
         if self.ephemeral_synced(tid) {
             self.eph.remote.noted = true;
             self.eph.remote.signals.push((*tid, ak.clone(), v.clone(), ts, actor));
-            if self.eph.things.contains_key(tid) {
-                self.eph.remote.records.insert(*tid);
-            }
         }
     }
 
@@ -257,9 +237,9 @@ impl Engine {
 
     /// Builds the ephemeral commits of what is unsent: one relay-only commit per actor for the
     /// signals, one per actor and expiry for state (with the records of the ephemeral things they
-    /// touch), and the whole state of things that entered a labeled closure; the presence commits
-    /// due. Each is held here. Held back (coalescing while the sync layer has an own ephemeral
-    /// upload in flight, spec/sync.md §9): the plain writes and records of things in the closure
+    /// touch or place), and the whole own state of things that entered a labeled closure; the
+    /// presence commits due. Each is held here. Held back (coalescing while the sync layer has an
+    /// own ephemeral upload in flight, spec/sync.md §9): the plain writes of things in the closure
     /// of a group in `busy`, and the presence commits of the actors in `busy_presence`; they
     /// stay unsent, later writes join them (a presence commit carries the whole own state
     /// anyway), and they go with a later take. Signals are never held back.
@@ -268,10 +248,7 @@ impl Engine {
         let entered: Vec<Tid> = self.eph.remote.local.iter().filter(|t| self.ephemeral_synced(t)).copied().collect();
         for t in entered {
             self.eph.remote.local.remove(&t);
-            if self.eph.things.contains_key(&t) {
-                self.eph.remote.records.insert(t);
-            }
-            let aspects: Vec<(Ak, Fragment, bool)> = self.eph.aspects.get(&t).map(|m| m.iter().map(|(ak, a)| (ak.clone(), whole_unexpiring(a, &self.eph.src), a.presence)).collect()).unwrap_or_default();
+            let aspects: Vec<(Ak, Fragment, bool)> = self.eph.aspects.get(&t).map(|m| m.iter().map(|(ak, a)| (ak.clone(), own_unexpiring(a, &self.eph.src), a.presence)).collect()).unwrap_or_default();
             let me = self.tid();
             for (ak, f, presence) in aspects {
                 if presence {
@@ -294,20 +271,16 @@ impl Engine {
             }
         }
         for (actor, deltas) in by_actor {
-            if let Some(c) = self.build_ephemeral(EphClass::Relay, actor, deltas, &BTreeSet::new(), &BTreeMap::new())? {
+            if let Some(c) = self.build_ephemeral(EphClass::Relay, actor, deltas, &BTreeMap::new())? {
                 out.push(c);
             }
         }
         let held_back = |e: &Engine, t: &Tid| busy.iter().any(|g| e.in_ephemeral_closure(g, t));
         let mut unsent = std::mem::take(&mut self.eph.remote.unsent);
-        let mut records = std::mem::take(&mut self.eph.remote.records);
         if !busy.is_empty() {
             let (back, go): (BTreeMap<_, _>, BTreeMap<_, _>) = unsent.into_iter().partition(|((t, _), _)| held_back(self, t));
             unsent = go;
             self.eph.remote.unsent = back;
-            let (back, go): (BTreeSet<Tid>, BTreeSet<Tid>) = records.into_iter().partition(|t| held_back(self, t));
-            records = go;
-            self.eph.remote.records = back;
         }
         let mut by_class: BTreeMap<(Tid, Option<u64>), Vec<EphDelta>> = BTreeMap::new();
         for ((tid, ak), m) in unsent {
@@ -319,13 +292,8 @@ impl Engine {
                 by_class.entry((actor, exp)).or_default().push((tid, ak.clone(), f, exp));
             }
         }
-        if by_class.is_empty() && !records.is_empty() {
-            by_class.insert((self.tid(), None), Vec::new());
-        }
-        let mut first = true;
         for ((actor, _), deltas) in by_class {
-            let recs = if std::mem::take(&mut first) { records.clone() } else { BTreeSet::new() };
-            if let Some(c) = self.build_ephemeral(EphClass::Plain, actor, deltas, &recs, &BTreeMap::new())? {
+            if let Some(c) = self.build_ephemeral(EphClass::Plain, actor, deltas, &BTreeMap::new())? {
                 out.push(c);
             }
         }
@@ -360,7 +328,9 @@ impl Engine {
         let now = self.now().0;
         for actor in dirty {
             let keys: Vec<(Tid, Ak)> = self.eph.remote.presence.iter().filter(|(_, a)| **a == actor).map(|(k, _)| k.clone()).collect();
-            let deltas: Vec<EphDelta> = keys.iter().filter_map(|(t, ak)| self.own_state(t, ak).map(|f| (*t, ak.clone(), f, None))).collect();
+            // an aspect this node never wrote (it entered a closure holding others' presence
+            // only) adds nothing: a commit of none of its own writes would be an entry for nobody
+            let deltas: Vec<EphDelta> = keys.iter().filter_map(|(t, ak)| self.own_state(t, ak).filter(|f| !f.writes().is_empty()).map(|f| (*t, ak.clone(), f, None))).collect();
             let mut absorbed: BTreeMap<(Tid, Ak), BTreeSet<CommitId>> = BTreeMap::new();
             for (id, h) in &self.eph.remote.held {
                 if h.header.ephemeral == Some(EphClass::Presence) && h.header.author == me && h.header.actor == actor {
@@ -375,8 +345,7 @@ impl Engine {
                 self.eph.remote.presence_sent.remove(&actor);
                 continue;
             }
-            let records: BTreeSet<Tid> = keys.iter().map(|(t, _)| *t).filter(|t| self.eph.things.contains_key(t)).collect();
-            if let Some(c) = self.build_ephemeral(EphClass::Presence, actor, deltas, &records, &absorbed)? {
+            if let Some(c) = self.build_ephemeral(EphClass::Presence, actor, deltas, &absorbed)? {
                 out.push(c);
             }
             self.eph.remote.presence_sent.insert(actor, now);
@@ -481,18 +450,30 @@ impl Engine {
     }
 
     /// Builds, signs and holds one ephemeral commit of `deltas` (thing, aspect, fragment,
-    /// expiry), carrying the records of `records` and of the ephemeral things the deltas touch
-    /// with their ephemeral owner chains; `absorbed`: per aspect, the held commits it covers.
-    /// `None` when it would carry nothing or cannot be built (a delete key not held: reported).
-    fn build_ephemeral(&mut self, class: EphClass, actor: Tid, deltas: Vec<EphDelta>, records: &BTreeSet<Tid>, absorbed: &BTreeMap<(Tid, Ak), BTreeSet<CommitId>>) -> Result<Option<EphCommit>> {
+    /// expiry), carrying the records of the ephemeral things the deltas touch and of those its
+    /// `/group` deltas place, with their ephemeral owner chains; `absorbed`: per aspect, the held
+    /// commits it covers. Writes of sessions not this node's are not carried. `None` when it
+    /// would carry nothing or cannot be built (a delete key not held: reported).
+    fn build_ephemeral(&mut self, class: EphClass, actor: Tid, deltas: Vec<EphDelta>, absorbed: &Absorbs) -> Result<Option<EphCommit>> {
+        self.build_ephemeral_with(class, actor, deltas, absorbed, &BTreeMap::new())
+    }
+
+    /// `build_ephemeral`, also carrying the writes of the sessions `foreign` attributes to other
+    /// nodes, named so (tests: forging).
+    fn build_ephemeral_with(&mut self, class: EphClass, actor: Tid, deltas: Vec<EphDelta>, absorbed: &Absorbs, foreign: &BTreeMap<CommitId, Tid>) -> Result<Option<EphCommit>> {
         let me = self.tid();
-        // the records: of the things written (and of the things named), up their ephemeral chains
-        let mut recs: BTreeSet<Tid> = records.clone();
-        for (t, _, _, _) in &deltas {
-            if self.eph.things.contains_key(t) {
-                recs.insert(*t);
+        // the records: of the things written and placed, up their ephemeral chains
+        let mut recs: BTreeSet<Tid> = BTreeSet::new();
+        for (t, ak, f, _) in &deltas {
+            recs.insert(*t);
+            if ak.as_str() == GROUP.ak()
+                && let Some((items, subs)) = super::place::def_of(f)
+            {
+                recs.extend(items);
+                recs.extend(subs);
             }
         }
+        recs.retain(|t| self.eph.things.contains_key(t));
         let chain = self.record_chain(&recs);
         let mut parts: Vec<EphDelta> = deltas.into_iter().filter(|(t, ak, _, _)| !(chain.contains(t) && ak.as_str() == CREATED.ak())).collect();
         let cak = Ak::new(CREATED.ak()).map_err(|_| Error::Misuse("ak"))?;
@@ -518,20 +499,18 @@ impl Engine {
                     && !authors.contains_key(c)
                     && !unknown.contains(c)
                 {
-                    let node = if c.0 == own_session { Some(me) } else { self.claim_of(c) };
-                    match node {
-                        Some(n) => {
-                            authors.insert(*c, (n, ts));
-                        }
-                        None => {
-                            unknown.insert(*c);
-                        }
+                    if c.0 == own_session || self.eph.remote.mine.contains(c) {
+                        authors.insert(*c, (me, ts));
+                    } else if let Some(n) = foreign.get(c) {
+                        authors.insert(*c, (*n, ts));
+                    } else {
+                        unknown.insert(*c);
                     }
                 }
             }
-            // writes no held valid part attributes are not carried (attributing them to this
-            // node would vouch for them, spec/permissions.md §5.2)
-            if !unknown.is_empty() {
+            // only own writes are carried (spec/sync.md §9: receivers strip the rest), and records
+            // whoever minted them (a record hashes to its tid)
+            if !unknown.is_empty() && ak.as_str() != CREATED.ak() {
                 fragment.strip_copies(&|d| matches!(d.src.author().kind(), SourceKind::Commit(c) if unknown.contains(c)));
                 // what is left only for a join (an entry's creation alone) goes before encoding
                 fragment.prune(None, &mut osis_crdt::Changes::new());
@@ -574,12 +553,11 @@ impl Engine {
             for p in &blob.parts {
                 let cx = osis_commit::delta_ctx(&blob.header, &id, p.ai, &mut interner)?;
                 let s = osis_crdt::decode_snapshot(&p.delta, &cx, &mut interner, None)?;
-                let mut hp = HeldPart::new(p.ai, s);
+                let mut hp = HeldPart::new(p.ai, s, p.delta.len());
                 self.judge_part(&header, &id, &mut hp, true, &empty);
                 held_parts.push(hp);
             }
-            let bytes = held_parts.iter().map(|p| p.fragment.approx_bytes()).sum();
-            self.claim(&id, &held_parts);
+            let bytes = held_parts.iter().map(|p| p.bytes).sum();
             self.eph.remote.held.insert(id, Held { header, parts: held_parts, own: true, bytes });
             let presence = class == EphClass::Presence;
             if presence {
@@ -651,37 +629,9 @@ impl Engine {
     }
 
     /// Judges a held part (spec/permissions.md §5.2) as its commit's author's delta (own parts:
-    /// valid); a valid part vouches for every session's writes it carries.
+    /// valid); it carries only its author's writes (`HeldPart::only_of`).
     fn judge_part(&self, h: &Header, id: &CommitId, p: &mut HeldPart, own: bool, carried: &BTreeMap<Tid, CreationRecord>) {
         p.valid = own || self.eph_part_valid(h, id, p.ai, carried);
-    }
-
-    /// Notes the sessions held parts of commit `id` attribute.
-    fn claim(&mut self, id: &CommitId, parts: &[HeldPart]) {
-        for p in parts {
-            for c in p.authors.keys() {
-                self.eph.remote.claims.entry(*c).or_default().insert(*id);
-            }
-        }
-    }
-
-    /// The node session `c`'s writes are attributed to when this node carries them: named by a
-    /// held part that is valid, a commit naming itself first.
-    fn claim_of(&self, c: &CommitId) -> Option<Tid> {
-        let r = &self.eph.remote;
-        let mut other = None;
-        for id in r.claims.get(c)? {
-            let Some(h) = r.held.get(id) else { continue };
-            for p in h.parts.iter().filter(|p| p.valid) {
-                if let Some((node, _)) = p.authors.get(c) {
-                    if *node == h.header.author {
-                        return Some(*node);
-                    }
-                    other.get_or_insert(*node);
-                }
-            }
-        }
-        other
     }
 
     /// Whether valid held commits list `id` as absorbed on every aspect its parts `ais` are on
@@ -776,7 +726,7 @@ impl Engine {
             };
             let dedup = dedup_secret(rec.nonce());
             match osis_commit::verify_part(&h, &id, p, &dedup, &mut interner, None)? {
-                osis_commit::Decoded::Snapshot(s) => decoded.push((p.ai, s)),
+                osis_commit::Decoded::Snapshot(s) => decoded.push((p.ai, s, p.delta.len())),
                 osis_commit::Decoded::Delta(_) => return Err(Error::BadInput("ephemeral commit with a writer delta")),
             }
         }
@@ -796,7 +746,7 @@ impl Engine {
             }
             r.delivered_floor.retain(|_, f| f.saturating_add(MAX_DRIFT_MS) >= now);
             let mut signals = Vec::new();
-            for (ai, s) in decoded {
+            for (ai, s, _) in decoded {
                 let Some(a) = h.aspects.get(ai) else { continue };
                 if a.ak.as_str() == CREATED.ak() || !self.eph_part_valid(&h, &id, ai, &carried) {
                     continue;
@@ -817,7 +767,7 @@ impl Engine {
         let received = self.now();
         for (t, rec) in &carried {
             if self.core.created(t).is_none() && !self.eph.things.contains_key(t) {
-                let created = decoded.iter().find(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| a.tid == *t && a.ak.as_str() == CREATED.ak())).map(|(_, s)| s.fragment.clone());
+                let created = decoded.iter().find(|(ai, _, _)| h.aspects.get(*ai).is_some_and(|a| a.tid == *t && a.ak.as_str() == CREATED.ak())).map(|(_, s, _)| s.fragment.clone());
                 self.eph.things.insert(*t, EphThing { record: rec.clone(), ts: h.ts, node: h.author, actor: h.actor, received, created });
             }
         }
@@ -830,7 +780,8 @@ impl Engine {
         let mut parts = self.eph.remote.held.remove(&id).map(|x| x.parts).unwrap_or_default();
         let mut changed = Vec::new();
         let mut fresh = Vec::new();
-        for (ai, s) in decoded {
+        let me = self.tid();
+        for (ai, s, len) in decoded {
             if parts.iter().any(|p| p.ai == ai) {
                 continue;
             }
@@ -838,9 +789,13 @@ impl Engine {
             if a.expires.is_some_and(|t| t <= now) {
                 continue;
             }
-            let mut hp = HeldPart::new(ai, s);
-            if presence && a.ak.as_str() != CREATED.ak() {
+            let mut hp = HeldPart::new(ai, s, len);
+            if a.ak.as_str() != CREATED.ak() {
                 hp.only_of(header.author);
+            }
+            // an earlier session of this node: an own cover carries its writes
+            if header.author == me {
+                self.eph.remote.mine.extend(hp.authors.iter().filter(|(_, (n, _))| *n == me).map(|(c, _)| *c));
             }
             self.judge_part(&header, &id, &mut hp, false, &carried);
             if let Some(t) = a.expires {
@@ -867,9 +822,8 @@ impl Engine {
             }
             fresh.push(hp);
         }
-        self.claim(&id, &fresh);
         parts.extend(fresh);
-        let bytes = parts.iter().map(|p| p.fragment.approx_bytes()).sum();
+        let bytes = parts.iter().map(|p| p.bytes).sum();
         let new = !changed.is_empty();
         let absorbs = parts.iter().any(|p| !p.absorbed.is_empty());
         self.eph.remote.held.insert(id, Held { header: header.clone(), parts, own: false, bytes });
@@ -951,7 +905,6 @@ impl Engine {
                 }
             }
         }
-        self.unclaim(id, &h.parts);
         for p in &h.parts {
             if let Some(a) = h.header.aspects.get(p.ai) {
                 if let Some(ea) = self.eph.aspects.get_mut(&a.tid).and_then(|m| m.get_mut(&a.ak)) {
@@ -967,20 +920,6 @@ impl Engine {
         self.eph.dropped.push(*id);
     }
 
-    /// Releases the session claims of commit `id`'s parts `parts`.
-    fn unclaim(&mut self, id: &CommitId, parts: &[HeldPart]) {
-        for p in parts {
-            for c in p.authors.keys() {
-                if let Some(s) = self.eph.remote.claims.get_mut(c) {
-                    s.remove(id);
-                    if s.is_empty() {
-                        self.eph.remote.claims.remove(c);
-                    }
-                }
-            }
-        }
-    }
-
     /// The held ephemeral commits dropped since the last call (covered by a compaction): the
     /// sync layer forgets their blobs and deletes them where it may.
     pub fn take_dropped_ephemeral(&mut self) -> Vec<CommitId> {
@@ -990,11 +929,6 @@ impl Engine {
     /// Whether an ephemeral commit is held here.
     pub fn holds_ephemeral(&self, id: &CommitId) -> bool {
         self.eph.remote.held.contains_key(id)
-    }
-
-    /// Whether held ephemeral commit `id` is a compaction's cover (lists commits it absorbs).
-    pub fn ephemeral_is_cover(&self, id: &CommitId) -> bool {
-        self.eph.remote.held.get(id).is_some_and(|h| h.parts.iter().any(|p| !p.absorbed.is_empty()))
     }
 
     /// The header of a held ephemeral commit.
@@ -1095,7 +1029,7 @@ impl Engine {
         let Some(ea) = self.eph.aspects.get(t).and_then(|m| m.get(ak)) else { return };
         let mut f = ea.own.clone().unwrap_or_default();
         for (id, ai) in &ea.parts {
-            // own held commits too: an own compaction's cover carries others' writes
+            // own held commits too: those of an earlier session are not in the own writes
             let Some(h) = r.held.get(id) else { continue };
             if let Some(c) = h.parts.iter().find(|p| p.ai == *ai).and_then(HeldPart::counted) {
                 f.join(c);
@@ -1124,9 +1058,9 @@ impl Engine {
                 let Some(h) = self.eph.remote.held.get_mut(&id) else { continue };
                 let Some(k) = h.parts.iter().position(|p| p.ai == ai) else { continue };
                 let part = h.parts.remove(k);
+                h.bytes = h.bytes.saturating_sub(part.bytes);
                 let header = h.header.clone();
                 let empty = h.parts.is_empty();
-                self.unclaim(&id, std::slice::from_ref(&part));
                 let Some(a) = header.aspects.get(ai) else { continue };
                 let dots: BTreeSet<osis_crdt::Dot> = part.fragment.writes().into_iter().map(|(d, _)| d).collect();
                 if let Some(ea) = self.eph.aspects.get_mut(&a.tid).and_then(|m| m.get_mut(&a.ak)) {
@@ -1150,120 +1084,108 @@ impl Engine {
         changed
     }
 
-    /// Compacts the ephemeral state of the aspects of `scope` (all held ones when `None`) this
-    /// node may write and whose held writes carry no expiry, when forced or past the
-    /// compaction rule (held bodies above twice the state and `COMPACT_FLOOR`): one ephemeral
-    /// commit of their current states, listing the held commits it covers as absorbed, which
-    /// are dropped here (`take_dropped_ephemeral`). `None` when nothing is compacted.
-    pub fn compact_ephemeral(&mut self, scope: Option<&BTreeSet<Tid>>, force: bool) -> Result<Option<EphCommit>> {
-        self.compact_ephemeral_if(scope, force, &|_| true)
+    /// The author's own compaction (spec/sync.md §9): per actor, when this node's held plain
+    /// commits without expiry for it (each its delta bytes plus `ENTRY_CHARGE`) cost more than
+    /// twice their cover, one ephemeral commit joining them and the actor's unsent writes without
+    /// expiry, listing them as absorbed; they are dropped here (`take_dropped_ephemeral`).
+    /// `force` (tests): whenever there is something to cover. A cover is weighed only once the
+    /// held commits cost more than twice the last cover weighed, so rebuilds cost O(1) per byte
+    /// written, amortized.
+    pub fn compact_own_ephemeral(&mut self, force: bool) -> Result<Vec<EphCommit>> {
+        let me = self.tid();
+        let mut load: BTreeMap<Tid, usize> = BTreeMap::new();
+        for h in self.eph.remote.held.values() {
+            if own_plain_unexpiring(h, me) {
+                *load.entry(h.header.actor).or_default() += h.bytes + ENTRY_CHARGE;
+            }
+        }
+        let mut out = Vec::new();
+        for (actor, cost) in load {
+            if !force && cost <= 2 * self.eph.remote.cover_est.get(&actor).copied().unwrap_or(0) {
+                continue;
+            }
+            let (ids, stuck) = self.coverable(actor);
+            let held: usize = ids.iter().filter_map(|id| self.eph.remote.held.get(id)).map(|h| h.bytes + ENTRY_CHARGE).sum();
+            let (deltas, absorbed) = self.own_cover(actor, &ids);
+            let cover = cover_cost(me, &deltas);
+            // what it cannot absorb (an aspect no longer writable here) does not make it weigh
+            // again at every step
+            self.eph.remote.cover_est.insert(actor, cover + stuck / 2);
+            if ids.is_empty() || (!force && held <= 2 * cover) {
+                continue;
+            }
+            // what is covered needs no separate send
+            for m in self.eph.remote.unsent.values_mut() {
+                m.remove(&(actor, None));
+            }
+            self.eph.remote.unsent.retain(|_, m| !m.is_empty());
+            out.extend(self.build_ephemeral(EphClass::Plain, actor, deltas, &absorbed)?);
+        }
+        Ok(out)
     }
 
-    /// Whether this node may compact `(t, ak)` at `ts`: in `scope`, held parts, no expiring
-    /// writes, not presence or a record, writable here.
-    fn compactable(&self, scope: Option<&BTreeSet<Tid>>, t: &Tid, ak: &Ak, ts: Ts) -> bool {
-        let Some(ea) = self.eph.aspects.get(t).and_then(|m| m.get(ak)) else { return false };
-        if scope.is_some_and(|s| !s.contains(t)) || ea.parts.is_empty() || !ea.expiring.is_empty() || ea.presence || ak.as_str() == CREATED.ak() {
-            return false;
-        }
-        if ea.parts.iter().any(|(id, ai)| self.eph.remote.held.get(id).and_then(|h| h.header.aspects.get(*ai)).is_some_and(|a| a.expires.is_some())) {
-            return false;
-        }
-        let things = &self.eph.things;
-        let records: crate::engine::write::Records<'_> = &|x| things.get(x).map(|e| &e.record);
-        crate::engine::write::check_authority_with(&self.core, self.tid(), records, t, ak.as_str(), ts).is_ok()
-    }
-
-    /// `compact_ephemeral`, made only when some commit it would cover satisfies `frees` (the
-    /// sync layer: one held where a server refused, so deleting it there makes room).
-    pub fn compact_ephemeral_if(&mut self, scope: Option<&BTreeSet<Tid>>, force: bool, frees: &dyn Fn(&CommitId) -> bool) -> Result<Option<EphCommit>> {
+    /// The own held plain commits without expiry for `actor` an own cover may absorb (every
+    /// aspect writable here now), and the cost of those it may not.
+    fn coverable(&self, actor: Tid) -> (Vec<CommitId>, usize) {
         let me = self.tid();
         let ts = Ts::make(self.now(), 0).unwrap_or_default();
-        // the aspects past the rule, or forced
-        let mut due: Vec<(Tid, Ak)> = Vec::new();
-        for (t, m) in &self.eph.aspects {
-            for (ak, ea) in m {
-                // one held part is what a compaction would make again: forcing it would loop
-                // (a server refusing the cover, compacted into the next cover)
-                if ea.parts.len() < 2 {
-                    continue;
-                }
-                let held_bytes: usize = ea.parts.iter().filter_map(|(id, _)| self.eph.remote.held.get(id)).map(|h| h.bytes / h.parts.len().max(1)).sum();
-                if (force || (held_bytes > COMPACT_FLOOR && held_bytes > 2 * ea.state.approx_bytes())) && self.compactable(scope, t, ak, ts) {
-                    due.push((*t, ak.clone()));
-                }
-            }
-        }
-        // closed over the held commits on picked aspects: a one-part aspect of a commit the
-        // cover would otherwise leave partly covered is carried too, so the cover absorbs that
-        // commit (else a holder whose cover a full server refused never absorbs the cover held
-        // there spanning another one-part aspect, sim `ephemeral` seed 83)
-        // (each commit judged once: whether all its aspects are compactable does not change)
-        let mut picked_set: BTreeSet<(Tid, Ak)> = due.iter().cloned().collect();
-        let mut judged: BTreeSet<CommitId> = BTreeSet::new();
-        let mut work = due;
-        while let Some((t, ak)) = work.pop() {
-            let Some(ea) = self.eph.aspects.get(&t).and_then(|m| m.get(&ak)) else { continue };
-            for (id, _) in &ea.parts {
-                let Some(h) = self.eph.remote.held.get(id) else { continue };
-                if h.header.ephemeral == Some(EphClass::Presence) || !judged.insert(*id) {
-                    continue;
-                }
-                let keys: Vec<(Tid, Ak)> = h.parts.iter().filter_map(|p| h.header.aspects.get(p.ai)).filter(|a| a.ak.as_str() != CREATED.ak()).map(|a| (a.tid, a.ak.clone())).collect();
-                if keys.iter().all(|(t, ak)| picked_set.contains(&(*t, ak.clone())) || self.compactable(scope, t, ak, ts)) {
-                    for k in keys {
-                        if picked_set.insert(k.clone()) {
-                            work.push(k);
-                        }
-                    }
-                }
-            }
-        }
-        if picked_set.is_empty() {
-            return Ok(None);
-        }
-        let picked: Vec<(Tid, Ak)> = picked_set.iter().cloned().collect();
-        let records: BTreeSet<Tid> = picked.iter().map(|(t, _)| *t).filter(|t| self.eph.things.contains_key(t)).collect();
-        // the records the cover carries: a commit with a record part of another thing (only
-        // that, often) is not dropped by it, so counting it covered compacted again at every
-        // refusal (sim `ephemeral` seed 83)
-        let chain = self.record_chain(&records);
-        // the held commits wholly on picked aspects and carried records
-        let mut absorbed: BTreeMap<(Tid, Ak), BTreeSet<CommitId>> = BTreeMap::new();
+        let things = &self.eph.things;
+        let records: crate::engine::write::Records<'_> = &|x| things.get(x).map(|e| &e.record);
+        let (mut ids, mut stuck) = (Vec::new(), 0);
         for (id, h) in &self.eph.remote.held {
-            if h.header.ephemeral == Some(EphClass::Presence) {
+            if !own_plain_unexpiring(h, me) || h.header.actor != actor {
                 continue;
             }
-            let all = h.parts.iter().all(|p| h.header.aspects.get(p.ai).is_some_and(|a| if a.ak.as_str() == CREATED.ak() { chain.contains(&a.tid) } else { picked_set.contains(&(a.tid, a.ak.clone())) }));
-            if !all {
-                continue;
+            let writable = h.parts.iter().filter_map(|p| h.header.aspects.get(p.ai)).filter(|a| a.ak.as_str() != CREATED.ak()).all(|a| crate::engine::write::check_authority_with(&self.core, me, records, &a.tid, a.ak.as_str(), ts).is_ok());
+            if writable {
+                ids.push(*id);
+            } else {
+                stuck += h.bytes + ENTRY_CHARGE;
             }
+        }
+        (ids, stuck)
+    }
+
+    /// The cover of own held commits `ids` for `actor`: per aspect, the join of their parts and
+    /// of the actor's unsent writes without expiry; per aspect, the commits it absorbs.
+    fn own_cover(&self, actor: Tid, ids: &[CommitId]) -> (Vec<EphDelta>, Absorbs) {
+        let mut joined: BTreeMap<(Tid, Ak), Fragment> = BTreeMap::new();
+        let mut absorbed = Absorbs::new();
+        for id in ids {
+            let Some(h) = self.eph.remote.held.get(id) else { continue };
             for p in &h.parts {
-                if let Some(a) = h.header.aspects.get(p.ai) {
-                    absorbed.entry((a.tid, a.ak.clone())).or_default().insert(*id);
-                }
+                let Some(a) = h.header.aspects.get(p.ai) else { continue };
+                let k = (a.tid, a.ak.clone());
+                joined.entry(k.clone()).or_default().join(p.fragment.clone());
+                absorbed.entry(k).or_default().insert(*id);
             }
         }
-        // a cover that absorbs fewer than two held commits holds no fewer entries than it
-        // replaces: made again and again (a part of a commit that also touches an aspect not
-        // picked stays, so the aspect keeps two parts), it looped, each cover refused by a full
-        // server (random_window_converges_large 61365)
-        let covered: BTreeSet<&CommitId> = absorbed.values().flatten().collect();
-        if covered.len() < 2 || !covered.iter().any(|c| frees(c)) {
-            return Ok(None);
-        }
-        let deltas: Vec<EphDelta> = picked.iter().filter_map(|(t, ak)| self.eph.state(t, ak).map(|f| (*t, ak.clone(), f.clone(), None))).collect();
-        // what is compacted needs no separate send
-        for k in &picked {
-            if let Some(m) = self.eph.remote.unsent.get_mut(k) {
-                m.retain(|(_, exp), _| exp.is_some());
-                if m.is_empty() {
-                    self.eph.remote.unsent.remove(k);
-                }
+        for (k, m) in &self.eph.remote.unsent {
+            if let Some(f) = m.get(&(actor, None)) {
+                joined.entry(k.clone()).or_default().join(f.clone());
             }
         }
-        let c = self.build_ephemeral(EphClass::Plain, me, deltas, &records, &absorbed)?;
-        Ok(c)
+        (joined.into_iter().map(|((t, ak), f)| (t, ak, f, None)).collect(), absorbed)
+    }
+
+    /// Per actor, this node's own held plain commits without expiry: their cost (delta bytes plus
+    /// `ENTRY_CHARGE` each), the cost of their cover, and the largest one's cost (tests: the
+    /// bound of spec/sync.md §9 holds after every step, within one commit in flight).
+    pub fn own_ephemeral_load(&self) -> Vec<(Tid, usize, usize, usize)> {
+        let me = self.tid();
+        let mut by: BTreeMap<Tid, Vec<CommitId>> = BTreeMap::new();
+        for (id, h) in &self.eph.remote.held {
+            if own_plain_unexpiring(h, me) {
+                by.entry(h.header.actor).or_default().push(*id);
+            }
+        }
+        let mut out = Vec::new();
+        for (actor, ids) in by {
+            let costs: Vec<usize> = ids.iter().filter_map(|id| self.eph.remote.held.get(id)).map(|h| h.bytes + ENTRY_CHARGE).collect();
+            let (deltas, _) = self.own_cover(actor, &ids);
+            out.push((actor, costs.iter().sum(), cover_cost(me, &deltas), costs.iter().copied().max().unwrap_or(0)));
+        }
+        out
     }
 
     /// Tests: an ephemeral commit setting `(tid, ak)` to `v` with no rights check (a forged
@@ -1275,30 +1197,28 @@ impl Engine {
         let Some((f, r)) = run_ops(&Fragment::default(), w, &[PathOp { path: Vec::new(), op: Op::Set(v) }], &AnyView)? else { return Ok(None) };
         self.eph.next = r.hi;
         let me = self.tid();
-        self.build_ephemeral(EphClass::Plain, me, vec![(tid, ak.clone(), f, None)], &BTreeSet::new(), &BTreeMap::new())
+        self.build_ephemeral(EphClass::Plain, me, vec![(tid, ak.clone(), f, None)], &BTreeMap::new())
     }
 
-    /// Tests: a presence commit by this node carrying the whole joined ephemeral state of
-    /// `(tid, ak)`, others' writes included (a forged keep-alive of someone else's presence).
+    /// Tests: an ephemeral commit of class `class` by this node carrying the whole joined
+    /// ephemeral state of `(tid, ak)`, others' writes included under their authors' names (a
+    /// forged cover of someone else's writes).
     #[doc(hidden)]
-    pub fn forge_presence_carrying(&mut self, tid: Tid, ak: &Ak) -> Result<Option<EphCommit>> {
+    pub fn forge_carrying(&mut self, class: EphClass, tid: Tid, ak: &Ak) -> Result<Option<EphCommit>> {
         let Some(f) = self.eph.state(&tid, ak).cloned() else { return Ok(None) };
+        let mut foreign = BTreeMap::new();
+        for h in self.eph.remote.held.values() {
+            for p in &h.parts {
+                foreign.extend(p.authors.iter().map(|(c, (n, _))| (*c, *n)));
+            }
+        }
         let me = self.tid();
-        self.build_ephemeral(EphClass::Presence, me, vec![(tid, ak.clone(), f, None)], &BTreeSet::new(), &BTreeMap::new())
+        self.build_ephemeral_with(class, me, vec![(tid, ak.clone(), f, None)], &BTreeMap::new(), &foreign)
     }
 
-    /// Held ephemeral commits and their approximate bytes (tests, diagnostics).
+    /// Held ephemeral commits and their encoded delta bytes (tests, diagnostics).
     pub fn held_ephemeral(&self) -> Vec<(CommitId, usize, bool)> {
         self.eph.remote.held.iter().map(|(id, h)| (*id, h.bytes, h.own)).collect()
-    }
-
-    /// Forgets the held ephemeral commits `ids` (the sync layer refused or lost them), keeping
-    /// the state: nothing is un-merged by forgetting a body.
-    pub fn forget_ephemeral(&mut self, ids: &[CommitId]) {
-        for id in ids {
-            self.forget_held(id);
-        }
-        self.eph.dropped.retain(|c| !ids.contains(c));
     }
 
     /// Whether an ephemeral commit waits for its author's record (not verified yet).
@@ -1312,17 +1232,32 @@ impl Engine {
             self.eph.remote.pending.remove(id);
         }
     }
-
-    /// Ephemeral sessions with attributions held (tests: released with their commits).
-    pub fn ephemeral_claims(&self) -> usize {
-        self.eph.remote.claims.len()
-    }
 }
 
-/// The whole state of an aspect without the values of own writes that expire (a snapshot never
-/// carries those, spec/crdt.md §8).
-fn whole_unexpiring(a: &EphAspect, src: &Source) -> Fragment {
-    let mut f = a.state.clone();
+/// Whether held commit `h` is one of `me`'s plain ones without expiry (what an own cover
+/// absorbs).
+fn own_plain_unexpiring(h: &Held, me: Tid) -> bool {
+    h.header.author == me && h.header.ephemeral == Some(EphClass::Plain) && h.parts.iter().all(|p| h.header.aspects.get(p.ai).is_some_and(|a| a.expires.is_none()))
+}
+
+/// The cost of a cover of `deltas` by `me`: its encoded deltas plus `ENTRY_CHARGE`.
+fn cover_cost(me: Tid, deltas: &[EphDelta]) -> usize {
+    let mut cx = osis_commit::writer_ctx(Kind::ContentSnapshot, Ts::default(), me, 0, 0);
+    cx.own = Source::commit(CommitId([0; 32]));
+    let bytes: usize = deltas
+        .iter()
+        .map(|(_, _, f, _)| {
+            let s = Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: f.clone(), frontiers: Frontiers::default(), absorbed: BTreeMap::new(), authors: BTreeMap::new() };
+            osis_crdt::encode_snapshot(&s, &cx, None).map_or(0, |b| b.len())
+        })
+        .sum();
+    bytes + ENTRY_CHARGE
+}
+
+/// The own writes of an aspect without the values of those that expire (a snapshot never
+/// carries those, spec/crdt.md §8; an ephemeral commit carries only its author's writes).
+fn own_unexpiring(a: &EphAspect, src: &Source) -> Fragment {
+    let mut f = a.own.clone().unwrap_or_else(|| a.state.clone());
     for ranges in a.expiring.values() {
         f.strip(&|d| d.src == *src && ranges.iter().any(|(lo, hi)| *lo <= d.ctr && d.ctr < *hi));
     }

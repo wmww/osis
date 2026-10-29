@@ -326,7 +326,10 @@ struct EphLabel {
     order: BTreeMap<u64, BlobId>,
     /// Deleted ephemeral entries: when their tombstone goes.
     tombstones: BTreeMap<BlobId, u64>,
-    log: std::collections::VecDeque<(u64, EphRec)>,
+    /// With what each record is charged to: a presence entry's records to the presence memory
+    /// (never trimmed for the label's cap: a presence deletion trimmed before its push left a
+    /// departed author's cursor up at holders while the label's cap was full).
+    log: std::collections::VecDeque<(u64, EphRec, Charge)>,
     /// Ephemeral records at or below this sequence number were dropped.
     horizon: u64,
     /// Memory charged to the label's cap: blobs, per-entry and per-record overhead.
@@ -424,9 +427,9 @@ impl Ephemeral {
     /// Drops the label's oldest log record (cursors below it replay). Whether one was there.
     fn trim_log(&mut self, l: &LabelId) -> bool {
         let Some(e) = self.labels.get_mut(l) else { return false };
-        let Some((s, _)) = e.log.pop_front() else { return false };
+        let Some((s, _, kind)) = e.log.pop_front() else { return false };
         e.horizon = s;
-        self.release(l, REC_OVERHEAD, Charge::Label);
+        self.release(l, REC_OVERHEAD, kind);
         true
     }
 }
@@ -593,13 +596,20 @@ impl<B: Backend> BackendStore<B> {
         self.eph.labels.get(label).map_or(0, |e| e.bytes)
     }
 
+    /// Whether a new plain ephemeral entry of `size` blob bytes would fit under `label`'s cap,
+    /// every log record trimmed as an upload would (tests: a refusal is genuine).
+    pub fn ephemeral_fits(&self, label: &LabelId, size: u64) -> bool {
+        let used = self.eph.labels.get(label).map_or(0, |e| e.bytes.saturating_sub(REC_OVERHEAD.saturating_mul(e.log.iter().filter(|x| x.2 == Charge::Label).count() as u64)));
+        used.saturating_add(size).saturating_add(ENTRY_OVERHEAD).saturating_add(REC_OVERHEAD) <= self.policy.ephemeral_bytes
+    }
+
     /// Ephemeral memory charged over all labels (tests, diagnostics).
     pub fn ephemeral_total(&self) -> u64 {
         self.eph.total
     }
 
     /// Appends an ephemeral log record (in memory), reserving sequence numbers on disk as needed.
-    fn eph_append(&mut self, label: &LabelId, r: EphRec) -> Result<u64, StoreError> {
+    fn eph_append(&mut self, label: &LabelId, r: EphRec, kind: Charge) -> Result<u64, StoreError> {
         let m = self.meta(label)?.ok_or_else(unknown)?;
         let seq = m.next_seq.saturating_add(1);
         if seq > m.reserved {
@@ -610,13 +620,13 @@ impl<B: Backend> BackendStore<B> {
             self.backend.commit(b).map_err(err)?;
         }
         self.eph.seq.insert(*label, seq);
-        self.eph.labels.entry(*label).or_default().log.push_back((seq, r));
-        self.eph.charge(label, REC_OVERHEAD, Charge::Label);
+        self.eph.labels.entry(*label).or_default().log.push_back((seq, r, kind));
+        self.eph.charge(label, REC_OVERHEAD, kind);
         if self.eph.labels.get(label).is_some_and(|e| e.log.len() > EPH_LOG_KEEP) {
             self.eph.trim_log(label);
         }
         // a record no upload made room for (a deletion's) stays within the cap: older records go
-        while self.eph.labels.get(label).is_some_and(|e| e.bytes > self.policy.ephemeral_bytes) && self.eph.trim_log(label) {}
+        while self.eph.labels.get(label).is_some_and(|e| e.bytes > self.policy.ephemeral_bytes || e.presence > self.policy.presence_bytes) && self.eph.trim_log(label) {}
         Ok(seq)
     }
 
@@ -641,7 +651,7 @@ impl<B: Backend> BackendStore<B> {
             EphRemove::Expire => {}
             // a presence entry leaves no tombstone: only its author uploads it (spec/sync.md §5)
             EphRemove::Delete(_) if x.presence => {
-                self.eph_append(label, EphRec::Deleted(*blob))?;
+                self.eph_append(label, EphRec::Deleted(*blob), Charge::Presence)?;
             }
             EphRemove::Delete(now) => {
                 let drop = now.saturating_add(EPH_TOMBSTONE_MS);
@@ -651,10 +661,10 @@ impl<B: Backend> BackendStore<B> {
                     self.eph.charge(label, TOMB_OVERHEAD, Charge::Tomb);
                 }
                 self.eph.due.insert((drop, *label, *blob));
-                self.eph_append(label, EphRec::Deleted(*blob))?;
+                self.eph_append(label, EphRec::Deleted(*blob), Charge::Label)?;
             }
             EphRemove::Evict => {
-                self.eph_append(label, EphRec::Deleted(*blob))?;
+                self.eph_append(label, EphRec::Deleted(*blob), if x.presence { Charge::Presence } else { Charge::Label })?;
             }
         }
         Ok(true)
@@ -706,11 +716,13 @@ impl<B: Backend> BackendStore<B> {
                 self.rates.entries.insert((*label, put.blob_id), n + 1);
             }
             None if put.presence => {
-                let need = size.saturating_add(ENTRY_OVERHEAD);
-                if self.eph.labels.get(label).map_or(0, |e| e.presence).saturating_add(need) > self.policy.presence_bytes {
+                let need = size.saturating_add(ENTRY_OVERHEAD).saturating_add(REC_OVERHEAD);
+                let used = |s: &Self| s.eph.labels.get(label).map_or(0, |e| e.presence);
+                while used(self).saturating_add(need) > self.policy.presence_bytes && self.eph.trim_log(label) {}
+                if used(self).saturating_add(need) > self.policy.presence_bytes {
                     return Ok(Code::STORAGE_CAP);
                 }
-                while self.eph.total.saturating_add(need.saturating_add(REC_OVERHEAD)) > self.policy.ephemeral_total {
+                while self.eph.total.saturating_add(need) > self.policy.ephemeral_total {
                     if !self.eph_evict()? {
                         return Ok(Code::STORAGE_CAP);
                     }
@@ -730,7 +742,7 @@ impl<B: Backend> BackendStore<B> {
                 }
             }
         }
-        let seq = self.eph_append(label, EphRec::Added(put.blob_id))?;
+        let seq = self.eph_append(label, EphRec::Added(put.blob_id), if held.as_ref().map_or(put.presence, |h| h.presence) { Charge::Presence } else { Charge::Label })?;
         match held {
             Some(h) => {
                 let e = self.eph.labels.entry(*label).or_default();
@@ -1196,7 +1208,8 @@ impl<B: Backend> LabelStore for BackendStore<B> {
                 e.meta.pending_delete = Some(at);
             }
             self.eph.due.insert((at, *label, *blob_id));
-            self.eph_append(label, EphRec::Pending(*blob_id, at))?;
+            let kind = if self.eph_entry(label, blob_id).is_some_and(|e| e.presence) { Charge::Presence } else { Charge::Label };
+            self.eph_append(label, EphRec::Pending(*blob_id, at), kind)?;
             return Ok(Code::OK);
         }
         let mut tx = self.tx(label)?;
@@ -1247,8 +1260,8 @@ impl<B: Backend> LabelStore for BackendStore<B> {
             if after < e.horizon {
                 out.extend(e.order.range(after + 1..=e.horizon).take(max).map(|(s, b)| (*s, LogRecord::Added(*b))));
             }
-            let at = e.log.partition_point(|(s, _)| *s <= after);
-            out.extend(e.log.iter().skip(at).take(max).map(|(s, r)| (*s, r.record())));
+            let at = e.log.partition_point(|(s, _, _)| *s <= after);
+            out.extend(e.log.iter().skip(at).take(max).map(|(s, r, _)| (*s, r.record())));
             out.sort_by_key(|(s, _)| *s);
             out.truncate(max);
         }
