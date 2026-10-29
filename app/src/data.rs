@@ -305,7 +305,7 @@ impl Data {
         let mut out = Vec::new();
         // a tag nested in a tag is its subgroup, not a member: `groups_of` does not list the parent
         // (issues/api-subgroup-parents.md)
-        let mut cands: BTreeSet<Tid> = self.db.groups_of(t).into_iter().collect();
+        let mut cands: BTreeSet<Tid> = self.db.groups_of(t).within.into_iter().collect();
         if self.get(t, TAG)?.is_some() {
             cands.extend(self.all_tags()?);
         }
