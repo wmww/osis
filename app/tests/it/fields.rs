@@ -59,3 +59,40 @@ fn contact_form() {
     assert!(d.get(c, EMAILS).unwrap().unwrap_or_default().is_empty(), "empty removes");
     assert_eq!(d.kind(c).unwrap(), osis_app::data::Kind::Contact, "a note given contact fields is a contact");
 }
+
+/// Every editable row writes a value its type accepts; a bool is only one of its spellings; a
+/// body (markdown, a text) is not a one-line row.
+#[test]
+fn edits_are_well_typed() {
+    use osis::core::BODY;
+    let d = Data::new(Osis::create(Config::memory()).unwrap().0);
+    let e = d.create(NewKind::Event).unwrap();
+    d.set_repeat(e, Some(osis_app::event::RepeatFreq::Weekly)).unwrap();
+    let s = d.db.edit_text(e, BODY, osis::Path::root()).unwrap();
+    s.insert(0, "line one\nline two\n").unwrap();
+    s.commit().unwrap();
+    drop(s);
+    let rows = d.field_rows(e).unwrap();
+    for r in rows.iter().filter(|r| r.edit != Edit::None) {
+        let text = match r.edit {
+            Edit::Int => "3",
+            Edit::Float => "1.5",
+            Edit::Bool => "true",
+            Edit::Case => "monthly",
+            _ => "x",
+        };
+        if r.ak == "/body" {
+            continue;
+        }
+        let res = d.set_field(e, r, text);
+        if r.edit != Edit::Case || r.label == "freq" {
+            res.unwrap_or_else(|err| panic!("{r:?}: {err}"));
+        }
+    }
+    let body = rows.iter().find(|r| r.ak == "/body").unwrap();
+    assert_eq!(body.edit, Edit::None, "a text is edited in its session");
+    let b = rows.iter().find(|r| r.edit == Edit::Bool);
+    if let Some(b) = b {
+        assert!(d.set_field(e, b, "maybe").is_err());
+    }
+}

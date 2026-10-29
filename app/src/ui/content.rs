@@ -221,7 +221,14 @@ impl Ui {
                     for x in evs {
                         let mut tile = d.tile(x.tid)?;
                         let place = d.get(x.tid, crate::event::LOCATION)?.filter(|p| !p.is_empty());
-                        let mut time = if x.all_day || x.start < day { "All day".to_string() } else { crate::data::fmt_time(x.start) };
+                        // a timed event from an earlier day: until its end, or all day when it goes on
+                        let mut time = if x.all_day || (x.start < day && x.end >= day + DAY) {
+                            "All day".to_string()
+                        } else if x.start < day {
+                            format!("Until {}", crate::data::fmt_time(x.end))
+                        } else {
+                            crate::data::fmt_time(x.start)
+                        };
                         if x.repeats {
                             time.push_str(" ↻");
                         }
