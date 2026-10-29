@@ -12,8 +12,8 @@
 
 use crate::schema::{APP, COLOR, DEMO, FAVORITES, OPEN, VIEW, View};
 use osis::core::{BODY, GROUP, NAME, TAG};
-use osis::{Config, Osis, Result, Runtime, ServerAddr, Tid, Transport, p};
-use std::collections::BTreeSet;
+use osis::{AspectKey, Config, Error, Osis, Result, Runtime, ServerAddr, Tid, Transport, p};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// Opens the store in `dir`, creating it (with its home group on `servers`) when `dir` holds
@@ -105,16 +105,25 @@ impl Data {
         Data { db }
     }
 
+    /// A typed read where a value of another shape (a synced thing may hold anything, or a
+    /// newer revision's enum case) reads as absent, so one odd thing cannot fail a whole screen.
+    pub fn get<K: AspectKey>(&self, t: Tid, key: K) -> Result<Option<K::T>> {
+        match self.db.get(t, key) {
+            Err(Error::Type { .. }) => Ok(None),
+            r => r,
+        }
+    }
+
     // ---- the app group
 
     /// The app groups among home's subgroups, smallest tid first.
     pub fn groups(&self) -> Result<Vec<Tid>> {
         let db = &self.db;
         let home = db.home();
-        let subs = db.get(home, GROUP)?.map(|g| g.subgroups).unwrap_or_default();
+        let subs = self.get(home, GROUP)?.map(|g| g.subgroups).unwrap_or_default();
         let mut out = Vec::new();
         for t in subs {
-            if t != home && db.get(t, APP)? == Some(true) {
+            if t != home && self.get(t, APP)? == Some(true) {
                 out.push(t);
             }
         }
@@ -152,12 +161,11 @@ impl Data {
     /// Every thing the app can show: the app groups' items and, transitively, the tags' items
     /// and subtags (a tag shared with me holds things not in my app group).
     pub fn things(&self) -> Result<BTreeSet<Tid>> {
-        let db = &self.db;
         let groups = self.groups()?;
         let mut seen = BTreeSet::new();
         let mut todo: Vec<Tid> = Vec::new();
         for g in &groups {
-            if let Some(gr) = db.get(*g, GROUP)? {
+            if let Some(gr) = self.get(*g, GROUP)? {
                 todo.extend(gr.items.iter().chain(gr.subgroups.iter()).filter(|t| !groups.contains(t)));
             }
         }
@@ -165,11 +173,24 @@ impl Data {
             if !seen.insert(t) {
                 continue;
             }
-            if db.get(t, TAG)?.is_some()
-                && let Some(gr) = db.get(t, GROUP)?
+            if self.get(t, TAG)?.is_some()
+                && let Some(gr) = self.get(t, GROUP)?
             {
                 todo.extend(gr.items.iter().chain(gr.subgroups.iter()).filter(|x| !groups.contains(x) && !seen.contains(x)));
             }
+        }
+        // one view per kind: where two devices both made the views, the smallest tid
+        let mut views = BTreeSet::new();
+        let mut dup = Vec::new();
+        for t in &seen {
+            if let Some(v) = self.get(*t, VIEW)?
+                && !views.insert(v)
+            {
+                dup.push(*t);
+            }
+        }
+        for t in dup {
+            seen.remove(&t);
         }
         Ok(seen)
     }
@@ -178,9 +199,7 @@ impl Data {
     pub fn views(&self) -> Result<Vec<(View, Tid)>> {
         let mut out: Vec<(View, Tid)> = Vec::new();
         for t in self.things()? {
-            if let Some(v) = self.db.get(t, VIEW)?
-                && !out.iter().any(|(x, _)| *x == v)
-            {
+            if let Some(v) = self.get(t, VIEW)? {
                 out.push((v, t));
             }
         }
@@ -191,7 +210,7 @@ impl Data {
     // ---- reading things
 
     pub fn kind(&self, t: Tid) -> Result<Kind> {
-        if let Some(v) = self.db.get(t, VIEW)? {
+        if let Some(v) = self.get(t, VIEW)? {
             return Ok(Kind::View(v));
         }
         let aks = self.db.aspects(t)?;
@@ -208,19 +227,19 @@ impl Data {
     }
 
     pub fn name(&self, t: Tid) -> Result<String> {
-        Ok(self.db.get(t, NAME)?.unwrap_or_default())
+        Ok(self.get(t, NAME)?.unwrap_or_default())
     }
 
     pub fn body(&self, t: Tid) -> Result<String> {
-        Ok(self.db.get(t, BODY)?.unwrap_or_default())
+        Ok(self.get(t, BODY)?.unwrap_or_default())
     }
 
     /// The thing's own colour: a tag's `/tag.color`, else `/osis-app/color`.
     pub fn own_color(&self, t: Tid) -> Result<Option<String>> {
-        if let Some(c) = self.db.get(t, TAG)?.and_then(|g| g.color) {
+        if let Some(c) = self.get(t, TAG)?.and_then(|g| g.color) {
             return Ok(Some(c));
         }
-        self.db.get(t, COLOR)
+        self.get(t, COLOR)
     }
 
     /// Its own colour, else its first tag's.
@@ -240,7 +259,7 @@ impl Data {
     pub fn tags_of(&self, t: Tid) -> Result<Vec<Tid>> {
         let mut out = Vec::new();
         for g in self.db.groups_of(t) {
-            if self.db.get(g, TAG)?.is_some() && self.db.get(g, GROUP)?.is_some_and(|gr| gr.items.contains(&t)) {
+            if self.get(g, TAG)?.is_some() && self.get(g, GROUP)?.is_some_and(|gr| gr.items.contains(&t)) {
                 out.push(g);
             }
         }
@@ -250,10 +269,10 @@ impl Data {
 
     /// A tag's subtags and items (subtags are not repeated among the items), each by name.
     pub fn tag_contents(&self, tag: Tid) -> Result<(Vec<Tid>, Vec<Tid>)> {
-        let g = self.db.get(tag, GROUP)?.unwrap_or_default();
+        let g = self.get(tag, GROUP)?.unwrap_or_default();
         let mut subs = Vec::new();
         for s in &g.subgroups {
-            if *s != tag && self.db.get(*s, TAG)?.is_some() {
+            if *s != tag && self.get(*s, TAG)?.is_some() {
                 subs.push(*s);
             }
         }
@@ -316,13 +335,13 @@ impl Data {
         let name = self.name(t)?;
         let sub = match &kind {
             Kind::Note => first_line(&self.body(t)?).unwrap_or("Empty note").to_string(),
-            Kind::Event => match self.db.get(t, crate::event::START)? {
-                Some(st) => fmt_when(&st, self.db.get(t, crate::event::END)?.as_ref()),
-                None => self.db.get(t, crate::event::LOCATION)?.unwrap_or_else(|| "Not scheduled".into()),
+            Kind::Event => match self.get(t, crate::event::START)? {
+                Some(st) => fmt_when(&st, self.get(t, crate::event::END)?.as_ref()),
+                None => self.get(t, crate::event::LOCATION)?.unwrap_or_else(|| "Not scheduled".into()),
             },
             Kind::Contact => {
-                let org = self.db.get(t, crate::contact::ORG)?.map(|o| if o.title.is_empty() { o.name } else { o.title }).filter(|s| !s.is_empty());
-                let email = || self.db.get(t, crate::contact::EMAILS).ok().flatten().and_then(|m| m.keys().next().cloned());
+                let org = self.get(t, crate::contact::ORG)?.map(|o| if o.title.is_empty() { o.name } else { o.title }).filter(|s| !s.is_empty());
+                let email = || self.get(t, crate::contact::EMAILS).ok().flatten().and_then(|m| m.keys().next().cloned());
                 org.or_else(email).unwrap_or_else(|| "Contact".into())
             }
             Kind::Tag => {
@@ -366,12 +385,18 @@ impl Data {
 
     // ---- favorites
 
-    /// The favorites in order: the main group's list, then any others' extras; things gone are skipped.
+    /// The favorites in order: the main group's list, then any others' extras; things gone are
+    /// skipped, a duplicate view stands for the one `views` keeps.
     pub fn favorites(&self) -> Result<Vec<Tid>> {
         let mut out: Vec<Tid> = Vec::new();
         let all = self.things()?;
+        let views: BTreeMap<View, Tid> = self.views()?.into_iter().collect();
         for g in self.groups()? {
-            for t in self.db.get(g, FAVORITES)?.unwrap_or_default() {
+            for t in self.get(g, FAVORITES)?.unwrap_or_default() {
+                let t = match self.get(t, VIEW)? {
+                    Some(v) => views.get(&v).copied().unwrap_or(t),
+                    None => t,
+                };
                 if !out.contains(&t) && all.contains(&t) {
                     out.push(t);
                 }
@@ -405,31 +430,69 @@ impl Data {
         self.set_favorites(&favs)
     }
 
+    /// Writes `favs` (read through `favorites()`) to the main group and empties the others'
+    /// lists, whose entries it holds now (so a favorite made there can be removed).
     fn set_favorites(&self, favs: &[Tid]) -> Result<()> {
-        let g = self.main_group()?;
-        let base = self.db.get(g, FAVORITES)?.unwrap_or_default();
-        self.db.write_with(|w| w.at(g, FAVORITES).edit(&base, &favs.to_vec()))
+        let main = self.main_group()?;
+        let mut edits = Vec::new();
+        for g in self.groups()? {
+            let base = self.get(g, FAVORITES)?.unwrap_or_default();
+            let new = if g == main { favs.to_vec() } else { Vec::new() };
+            if base != new {
+                edits.push((g, base, new));
+            }
+        }
+        self.db.write_with(|w| {
+            for (g, base, new) in &edits {
+                w.at(*g, FAVORITES).edit(base, new)?;
+            }
+            Ok(())
+        })
     }
 
     // ---- navigation (per-device ephemeral view state on the main group)
 
-    /// The thing this device has open; `None`: home.
-    pub fn opened(&self) -> Result<Option<Tid>> {
-        let Some(g) = self.groups()?.first().copied() else { return Ok(None) };
-        let t = self.db.get(g, OPEN)?.and_then(|m| m.get(&self.db.node()).copied());
-        Ok(t.filter(|t| self.db.knows(*t)))
+    /// This device's entry in the app groups (the main group's first: an entry made before a
+    /// smaller group arrived is on another one).
+    fn open_entry(&self) -> Result<Option<Tid>> {
+        let node = self.db.node();
+        for g in self.groups()? {
+            if let Some(t) = self.get(g, OPEN)?.and_then(|m| m.get(&node).copied()) {
+                return Ok(Some(t));
+            }
+        }
+        Ok(None)
     }
 
-    /// Opens `t` on this device (`None`: home).
+    /// The thing this device has open; `None`: home (also when it was deleted meanwhile).
+    pub fn opened(&self) -> Result<Option<Tid>> {
+        let Some(t) = self.open_entry()? else { return Ok(None) };
+        Ok(Some(t).filter(|t| self.things().is_ok_and(|all| all.contains(t))))
+    }
+
+    /// Opens `t` on this device (`None`: home); the entry lives on the main group only.
     pub fn set_open(&self, t: Option<Tid>) -> Result<()> {
-        if self.opened()? == t {
+        let main = self.main_group()?;
+        let node = self.db.node();
+        let mut stale = Vec::new();
+        for g in self.groups()? {
+            if g != main && self.get(g, OPEN)?.is_some_and(|m| m.contains_key(&node)) {
+                stale.push(g);
+            }
+        }
+        let here = self.get(main, OPEN)?.and_then(|m| m.get(&node).copied());
+        if here == t && stale.is_empty() {
             return Ok(());
         }
-        let g = self.main_group()?;
-        let node = self.db.node();
-        self.db.write_with(|w| match t {
-            Some(t) => w.at(g, OPEN).path(p![]).put(&node, &t),
-            None => w.at(g, OPEN).path(p![]).remove_key(&node),
+        self.db.write_with(|w| {
+            for g in &stale {
+                w.at(*g, OPEN).path(p![]).remove_key(&node)?;
+            }
+            match t {
+                Some(t) if here != Some(t) => w.at(main, OPEN).path(p![]).put(&node, &t),
+                None if here.is_some() => w.at(main, OPEN).path(p![]).remove_key(&node),
+                _ => Ok(()),
+            }
         })
     }
 
@@ -449,17 +512,30 @@ impl Data {
         })
     }
 
-    /// Deletes `t` (every aspect and placement) and goes home if it was open.
+    /// Deletes `t` (every aspect, placement and subgroup edge: a deleted tag must not stay in
+    /// the app group as an empty thing) and goes home if it was open.
     pub fn delete(&self, t: Tid) -> Result<()> {
         let was = self.opened()? == Some(t);
-        self.db.write_with(|w| w.delete(t))?;
+        let mut parents = Vec::new();
+        // `groups_of` follows membership, not subgroup edges: look at every group the app shows
+        for g in self.groups()?.into_iter().chain(self.things()?) {
+            if self.get(g, GROUP)?.is_some_and(|gr| gr.subgroups.contains(&t)) {
+                parents.push(g);
+            }
+        }
+        self.db.write_with(|w| {
+            for g in &parents {
+                w.remove_subgroup(*g, t)?;
+            }
+            w.delete(t)
+        })?;
         if was { self.set_open(None) } else { Ok(()) }
     }
 
     /// Whether demo data was added to this person's app group.
     pub fn has_demo(&self) -> Result<bool> {
         for g in self.groups()? {
-            if self.db.get(g, DEMO)? == Some(true) {
+            if self.get(g, DEMO)? == Some(true) {
                 return Ok(true);
             }
         }
@@ -470,7 +546,7 @@ impl Data {
 
     /// Scans every thing's name, body and text aspects for `q` (case-folded). Empty `q`: nothing.
     pub fn search(&self, q: &str) -> Result<Found> {
-        let q = q.trim().to_lowercase();
+        let q = fold(q.trim());
         let mut f = Found::default();
         if q.is_empty() {
             return Ok(f);
@@ -479,7 +555,7 @@ impl Data {
         let mut rest = Vec::new();
         for t in &all {
             let kind = self.kind(*t)?;
-            let name = self.name(*t)?.to_lowercase();
+            let name = fold(&self.name(*t)?);
             if kind.is_scope() {
                 if name.contains(&q) {
                     f.scopes.push(*t);
@@ -519,14 +595,13 @@ impl Data {
 
     /// The searchable text of a thing besides its name: body, place, contact fields.
     fn text_of(&self, t: Tid) -> Result<String> {
-        let db = &self.db;
         let mut parts = vec![self.body(t)?];
-        parts.extend(db.get(t, crate::event::LOCATION)?);
-        if let Some(o) = db.get(t, crate::contact::ORG)? {
+        parts.extend(self.get(t, crate::event::LOCATION)?);
+        if let Some(o) = self.get(t, crate::contact::ORG)? {
             parts.extend([o.name, o.department, o.title]);
         }
-        parts.extend(db.get(t, crate::contact::EMAILS)?.unwrap_or_default().into_keys());
-        parts.extend(db.get(t, crate::contact::PHONES)?.unwrap_or_default().into_keys());
+        parts.extend(self.get(t, crate::contact::EMAILS)?.unwrap_or_default().into_keys());
+        parts.extend(self.get(t, crate::contact::PHONES)?.unwrap_or_default().into_keys());
         Ok(parts.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n"))
     }
 }
@@ -540,10 +615,16 @@ pub fn first_line(s: &str) -> Option<&str> {
     s.lines().map(str::trim).find(|l| !l.is_empty())
 }
 
-/// A one-line excerpt of `text` around the first match of `q` (already lowercase), or `None`.
+/// Case folding for search, char by char (so indices match the text's and every place folds
+/// alike; `str::to_lowercase` maps a final sigma by context).
+pub fn fold(s: &str) -> String {
+    s.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect()
+}
+
+/// A one-line excerpt of `text` around the first match of `q` (already `fold`ed), or `None`.
 pub fn snippet(text: &str, q: &str) -> Option<String> {
     let chars: Vec<char> = text.chars().collect();
-    let lower: Vec<char> = chars.iter().map(|c| c.to_lowercase().next().unwrap_or(*c)).collect();
+    let lower: Vec<char> = fold(text).chars().collect();
     let qc: Vec<char> = q.chars().collect();
     if qc.is_empty() {
         return None;
@@ -563,7 +644,7 @@ pub fn snippet(text: &str, q: &str) -> Option<String> {
 
 /// (year, month 1-12, day 1-31) of a day count since 1970-01-01 (proleptic Gregorian).
 pub fn civil(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
+    let z = days.saturating_add(719_468);
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
@@ -580,7 +661,7 @@ const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Au
 /// "Mon 14 Oct" for a day count.
 pub fn fmt_day(days: i64) -> String {
     let (_, m, d) = civil(days);
-    let wd = WEEKDAYS.get((days + 3).rem_euclid(7) as usize).copied().unwrap_or("");
+    let wd = WEEKDAYS.get(days.saturating_add(3).rem_euclid(7) as usize).copied().unwrap_or("");
     format!("{wd} {d} {}", MONTHS.get(m as usize - 1).copied().unwrap_or(""))
 }
 
@@ -599,7 +680,7 @@ pub fn fmt_when(start: &crate::event::Start, end: Option<&crate::event::End>) ->
             let s = format!("{} · {}", fmt_day(w.time.div_euclid(DAY)), fmt_time(w.time));
             match end {
                 Some(End::At(e)) => format!("{s}–{}", fmt_time(e.time)),
-                Some(End::After(d)) => format!("{s}–{}", fmt_time(w.time + d)),
+                Some(End::After(d)) => format!("{s}–{}", fmt_time(w.time.saturating_add(*d))),
                 _ => s,
             }
         }

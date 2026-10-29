@@ -79,4 +79,7 @@ fn snippets() {
     assert_eq!(snippet("hello world", "wor").as_deref(), Some("hello world"));
     assert_eq!(snippet("a\nb", "b").as_deref(), Some("a · b"));
     assert_eq!(snippet("abc", "x"), None);
+    // the query folds like the text: a final sigma, a dotted capital I
+    assert!(snippet("ΟΔΟΣ ΚΑΙ", &osis_app::data::fold("ΟΔΟΣ")).is_some());
+    assert!(snippet("İzmir", &osis_app::data::fold("İZMİR")).is_some());
 }

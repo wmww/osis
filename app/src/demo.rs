@@ -100,6 +100,9 @@ pub fn add(data: &Data) -> Result<bool> {
     let db = &data.db;
     let monday = monday_of(i64::try_from(db.now().0).unwrap_or(0));
     let views: Vec<Tid> = data.views()?.into_iter().map(|(_, t)| t).collect();
+    // the person's own favorites stay, after the demo's
+    let had = data.favorites()?;
+    let base = data.get(group, FAVORITES)?.unwrap_or_default();
     db.write_with(|w| {
         let mut c = Ctx { w, me: db.me(), group, names: BTreeMap::new() };
         c.tag("home", "Home", "#f59e0b", None)?;
@@ -139,7 +142,8 @@ pub fn add(data: &Data) -> Result<bool> {
         let pick = |k: &str| c.names.get(k).copied();
         let mut favs: Vec<Tid> = ["groceries", "lisbon", "mara", "garden", "ideas"].iter().filter_map(|k| pick(k)).collect();
         favs.splice(1..1, views.iter().take(2).copied());
-        c.w.at(group, FAVORITES).set(&favs)?;
+        favs.extend(had.iter().filter(|t| !views.iter().take(2).any(|v| v == *t)));
+        c.w.at(group, FAVORITES).edit(&base, &favs)?;
         c.w.at(group, DEMO).set(&true)?;
         Ok(())
     })?;
