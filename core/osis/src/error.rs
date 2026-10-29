@@ -1,7 +1,7 @@
 //! The one `Error` of the API (notes/api.md Errors). Absent aspects and unknown tids read as
 //! `None`, never as errors; peer-caused problems are diagnostics, never errors.
 
-use crate::undo::DropReason;
+use crate::commits::DropReason;
 use osis_base::{CommitId, Role, Tid};
 use osis_schema::{Path, PathError};
 
@@ -40,7 +40,7 @@ osis_base::impl_error!(Error {
     Permission { tid, needs } => ("needs {needs:?} on {tid}"),
     Type { path, reason } => ("type error at {path}: {reason}"),
     TooLarge { limit } => ("value larger than the materialization bound ({limit} bytes)"),
-    NotUndoable { commit, reason } => ("cannot undo {commit:?}: {reason:?}"),
+    NotUndoable { commit, reason } => ("cannot revert {commit:?}: {reason:?}"),
     Unsynced { groups } => ("could not sync {} group(s)", groups.len()),
     Invalid(m) => ("invalid: {m}"),
     Storage(m) => ("storage: {m}"),

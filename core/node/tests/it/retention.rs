@@ -112,7 +112,7 @@ fn keep_at_most_zero_spec_commits_5() {
     let e = &mut lp.peers[0].engine;
     assert!(!e.holds_body(&c1, &t, &ak("/t/gone")));
     assert_eq!(e.get(&t, &ak("/t/gone")).unwrap(), Some(s("final")));
-    assert_eq!(e.undo(&c1).unwrap(), None);
+    assert_eq!(e.revert(&c1).unwrap(), None);
     // every node drops it by the bound, here when it applies the kill
     sync(&mut lp, 0, 1);
     assert!(!lp.peers[1].engine.holds_body(&c1, &t, &ak("/t/gone")));
@@ -257,32 +257,28 @@ fn compaction_snapshot_spec_commits_5() {
     assert_eq!(lp.peers[0].engine.deaths(&bodies[1], &t, &ak("/t/keptset")).unwrap(), Some((ts, ts)));
 }
 
-// spec/commits.md §7, spec/crdt.md §4.6: undo and redo; the derived stacks; an admin undoes
-// another's change.
+// spec/commits.md §7, spec/crdt.md §4.6: revert, redo as a revert of the revert; the held
+// commits list them; an admin reverts another's change.
 #[test]
 fn undo_redo_spec_commits_7() {
     let mut lp = net(2, 56);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
-    let me = lp.peers[0].engine.tid();
     set(&mut lp, 0, t, &REG, "a");
     let c2 = set(&mut lp, 0, t, &REG, "b");
     let mut m = Mutation::new();
     m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s("x")) }).unwrap();
     let c3 = lp.peers[0].commit(m).unwrap().unwrap();
     let scope = [(t, ak("/t/reg")), (t, ak("/t/tags"))];
-    let (undo, redo) = lp.peers[0].engine.undo_stack(&me, &scope);
-    assert_eq!(undo[0], c3);
-    assert!(redo.is_empty());
-    let u3 = lp.peers[0].engine.undo(&c3).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.held_commits(Some(&scope))[0].id, c3);
+    let u3 = lp.peers[0].engine.revert(&c3).unwrap().unwrap();
     assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/tags")).unwrap(), Some(Value::Set(Default::default())));
-    let u2 = lp.peers[0].engine.undo(&c2).unwrap().unwrap();
+    let u2 = lp.peers[0].engine.revert(&c2).unwrap().unwrap();
     assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("a")));
-    let (undo, redo) = lp.peers[0].engine.undo_stack(&me, &scope);
-    assert!(!undo.contains(&c2) && !undo.contains(&c3));
-    assert_eq!(redo, vec![u2, u3]);
+    let held: Vec<_> = lp.peers[0].engine.held_commits(Some(&scope)).into_iter().map(|c| (c.id, c.header.undoes)).collect();
+    assert_eq!(held[..2], [(u2, Some(c2)), (u3, Some(c3))]);
     // redo = undo of the undo commit
-    lp.peers[0].engine.undo(&u2).unwrap().unwrap();
+    lp.peers[0].engine.revert(&u2).unwrap().unwrap();
     assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("b")));
     // undo replicates like any commit
     sync(&mut lp, 0, 1);
@@ -295,8 +291,8 @@ fn undo_redo_spec_commits_7() {
     lp.advance(5);
     let cb = set(&mut lp, 1, t, &REG, "vandal");
     sync(&mut lp, 1, 0);
-    assert!(lp.peers[0].engine.changes(&scope).iter().any(|c| c.0 == cb && c.1 == b));
-    lp.peers[0].engine.undo(&cb).unwrap().unwrap();
+    assert!(lp.peers[0].engine.held_commits(Some(&scope)).iter().any(|c| c.id == cb && c.header.author == b));
+    lp.peers[0].engine.revert(&cb).unwrap().unwrap();
     assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("b")));
 }
 
@@ -328,7 +324,7 @@ fn undo_in_lazily_loaded_pages_spec_commits_7() {
     for (c, k, want) in [(c3, "new", None), (c2, "k200", Some(s(&"v".repeat(300)))), (c1, "k100", Some(s(&"v".repeat(300))))] {
         lp.peers[0].restart(58).unwrap();
         lp.advance(5);
-        lp.peers[0].engine.undo(&c).unwrap().unwrap();
+        lp.peers[0].engine.revert(&c).unwrap().unwrap();
         assert_eq!(lp.peers[0].engine.get_at(&t, &ak("/t/big"), &[key(k)]).unwrap(), want, "undo of {k}");
     }
     // a whole read after the three undos: the fill again
@@ -382,7 +378,7 @@ fn undo_nested_edit_reads_every_entry_of_its_key_spec_commits_7() {
             lp.peers[0].engine.get(&t, &big).unwrap();
         }
         lp.advance(5);
-        lp.peers[0].engine.undo(&e).unwrap().unwrap();
+        lp.peers[0].engine.revert(&e).unwrap().unwrap();
         let n = lp.peers[0].engine.get_at(&t, &big, &[key("n")]).unwrap();
         assert_eq!(n, Some(Value::Map(BTreeMap::from([(s("a"), s("0")), (s("b"), s("1"))]))));
         lp.peers[0].restart(62).unwrap();

@@ -67,24 +67,51 @@ fn before_read(buffer: &dyn UndoBuffer, path: &[PathSeg]) -> Option<osis_base::V
     buffer.before(path).filter(Fragment::present).and_then(|f| f.read())
 }
 
-/// Whether `o` at `path` lands in a position absent before the commit that undo resets (§4.6
-/// "Absent before"): a composite, or the aspect root.
-fn absent_before(o: &Fragment, buffer: &dyn UndoBuffer, path: &[PathSeg], root: bool) -> bool {
-    (root || !matches!(o, Fragment::Register(_))) && buffer.complete() && !buffer.before(path).is_some_and(|f| f.present())
+/// Whether `o` at `path` lands in a position undo resets (§4.6 "Absent before"): a composite
+/// or the aspect root, absent before the commit, holding no write but the commit's now (`s`).
+fn absent_before(u: &Undone, o: &Fragment, s: Option<&Fragment>, buffer: &dyn UndoBuffer, path: &[PathSeg], root: bool) -> bool {
+    (root || !matches!(o, Fragment::Register(_))) && buffer.complete() && !buffer.before(path).is_some_and(|f| f.present()) && s.is_none_or(|s| only_from(u, s))
 }
 
-/// Re-inserts the pre-reset value (or leaves the position reset when there was none).
-fn undo_reset<V: View>(w: &mut Writer, o: &Fragment, buffer: &dyn UndoBuffer, view: &V, path: &[PathSeg]) -> Result<Option<Fragment>, Error> {
-    match before_read(buffer, path) {
-        Some(v) => replace(w, view, &v).map(Some),
-        None => remove(w, o.encoding()).map(Some),
+/// Whether every value-carrying write (§4.7) in `f` is the undone commit's or one undo may
+/// step back through (`Undone::restored`): resets, `W`, flags, moves and deleted sequence
+/// elements' creations do not count.
+fn only_from(u: &Undone, f: &Fragment) -> bool {
+    let ok = |s: &Stamp, n: u64| {
+        let d = s.dot.owner();
+        (d.src == *u.source && d.ctr >= u.range.lo && d.ctr.saturating_add(n) <= u.range.hi) || (u.restored)(s)
+    };
+    let reg = |r: &Register| r.write.as_ref().is_none_or(|w| ok(&w.stamp, 1));
+    let elems = |e: &BTreeMap<Dot, Elem>| e.values().all(|e| e.frag.as_deref().is_none_or(|f| only_from(u, f)));
+    match f {
+        Fragment::Register(r) => reg(r),
+        Fragment::Bag(Bag { elems: e, .. }) | Fragment::Set(Set { elems: e, .. }) => elems(e),
+        Fragment::Struct(x) => x.fields.values().all(|f| only_from(u, f)),
+        Fragment::Enum(x) => x.case.as_ref().is_none_or(|c| ok(&c.stamp, 1)) && x.payloads.values().all(|f| only_from(u, f)),
+        Fragment::Map(m) => m.entries.values().all(|e| e.created.as_ref().is_none_or(|c| ok(c, 1)) && e.frag.as_deref().is_none_or(|f| only_from(u, f))),
+        // a deleted element's creation does not count
+        Fragment::Seq(x) => x.elems().values().all(|e| {
+            let content = match &e.content {
+                crate::seq::SeqContent::Frag(c) => Some(&**c),
+                _ => None,
+            };
+            let deleted = e.deleted.as_ref().is_some_and(|d| d.1) || (!x.text && !content.is_some_and(Fragment::present));
+            (deleted || e.created.as_ref().is_none_or(|(st, _)| ok(st, e.span))) && content.is_none_or(|c| only_from(u, c))
+        }),
+        Fragment::Slots(x) => x.reg.as_ref().is_none_or(reg) && x.members.values().all(|f| only_from(u, f)),
     }
+}
+
+/// Re-inserts the pre-reset value (nothing when there was none).
+fn undo_reset<V: View>(w: &mut Writer, o: &Fragment, buffer: &dyn UndoBuffer, view: &V, path: &[PathSeg]) -> Result<Option<Fragment>, Error> {
+    // nothing before: making the position absent is "Absent before"'s, which declined here
+    before_read(buffer, path).map(|v| replace(w, view, &v)).transpose()
 }
 
 #[allow(clippy::too_many_arguments)]
 fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragment>, buffer: &dyn UndoBuffer, view: &V, path: &mut Vec<PathSeg>, root: bool) -> Result<Option<Fragment>, Error> {
     let r = w.delta_stamp();
-    if absent_before(o, buffer, path, root) {
+    if absent_before(u, o, s, buffer, path, root) {
         return remove(w, o.encoding()).map(Some);
     }
     let slot = present_slot(s, o.encoding());

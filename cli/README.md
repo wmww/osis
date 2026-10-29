@@ -14,7 +14,7 @@ osis show $t                                     # every aspect, groups, role
 osis get $t /note/tags                           # #{"food", "weekly"}
 osis --json get $t /note/title                   # "groceries"
 printf 'create --owner me --in home --as a /x/n 1\nset $a /x/m {1: [true]}\n' | osis write
-osis history --thing $t; osis undo --thing $t
+osis commits --thing $t; osis undo --thing $t
 osis --schema todo.osis get $t /todo/task        # named fields with a schema
 ```
 

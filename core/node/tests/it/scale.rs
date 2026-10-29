@@ -340,7 +340,7 @@ fn text_undo_and_first_access_cost() {
     assert!(matches!(&v, Some(Value::Str(x)) if x.len() == n + 3 + k));
     println!("text {n} chars: open {opened:?}, first read {first:?}");
     let t4 = Instant::now();
-    e.undo(&id).unwrap().unwrap();
+    e.revert(&id).unwrap().unwrap();
     println!("text {n} chars: undo commit {:?}", t4.elapsed());
 }
 
@@ -469,7 +469,7 @@ fn text_range_and_edit_cost() {
     let mut e = reopen.open(&Arc::new(AtomicU64::new(0)), &bytes);
     osis_node::costs::take();
     let (w0, t0) = (bytes.load(Ordering::Relaxed), Instant::now());
-    e.undo(&id).unwrap().unwrap();
+    e.revert(&id).unwrap().unwrap();
     let c = osis_node::costs::take();
     let count = |k: &str| c.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
     println!("text {n} chars, new session: undo of the last {:?}, {} pages loaded, {} placement rows written, store writes {} B", t0.elapsed(), count("state page load"), count("placement block write") + count("placement row write"), bytes.load(Ordering::Relaxed) - w0);

@@ -339,7 +339,7 @@ fn play(seed: u64, steps: &[Step]) -> Played {
             Step::Undo { by, back } => {
                 let n = own[by].len();
                 if let Some(id) = n.checked_sub(1 + back as usize).and_then(|i| own[by].get(i)).copied() {
-                    let _ = lp.peers[by].engine.undo(&id);
+                    let _ = lp.peers[by].engine.revert(&id);
                 }
                 Some(by)
             }

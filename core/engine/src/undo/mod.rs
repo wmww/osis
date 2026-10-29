@@ -1,8 +1,8 @@
-//! Undo and redo (spec/commits.md §7, spec/crdt.md §4.6; notes/crdt.md hints): the stack is
-//! derived from the actor's own commits in scope, never stored; an undo commit's deltas come
+//! Revert, an undo commit (spec/commits.md §7, spec/crdt.md §4.6): stacks, scopes and redo
+//! live in the `osis` crate (`held_commits`); an undo commit's deltas come
 //! from osis-crdt's `undo` against the current state and the undo buffer, which holds the
 //! pre-commit state of this node's recent local commits (in the aspect's store unit, cleared
-//! whenever a body of the aspect is dropped). Redo is an undo of the undo commit.
+//! whenever a body of the aspect is dropped).
 
 use crate::engine::records::{Rd, Wr};
 use crate::engine::write::{CommitPlan, Resolved, build_and_apply};
@@ -59,11 +59,19 @@ pub(crate) fn remember(tx: &mut Tx<'_>, id: &CommitId, tid: &Tid, ak: &Ak, delta
     Ok(())
 }
 
-struct NoBuffer;
+/// The state before an undone commit and whether it is the whole of it (spec/crdt.md §4.6
+/// "Absent before"): rebuilt from held bodies, it is not when one is gone.
+struct Before {
+    state: Fragment,
+    complete: bool,
+}
 
-impl UndoBuffer for NoBuffer {
-    fn before(&self, _: &[PathSeg]) -> Option<Fragment> {
-        None
+impl UndoBuffer for Before {
+    fn before(&self, path: &[PathSeg]) -> Option<Fragment> {
+        self.state.before(path)
+    }
+    fn complete(&self) -> bool {
+        self.complete
     }
 }
 
@@ -94,14 +102,26 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
         };
         let buffer = decode_buffer(&tx.unit(&a.tid, &a.ak)?.undo)?.into_iter().find(|x| x.0 == target).map(|x| x.1);
         let pre = match buffer {
-            Some(b) if !b.is_empty() => Some(crate::engine::state::decode(&b)?),
-            Some(_) => Some(Fragment::default()),
-            // not a recent local commit: the join of the held bodies ordered before it
+            Some(b) if !b.is_empty() => Before { state: crate::engine::state::decode(&b)?, complete: true },
+            Some(_) => Before { state: Fragment::default(), complete: true },
+            // not a recent local commit: the join of the held bodies ordered before it, whole
+            // unless a body or part before it is gone or a later snapshot or import may stand
+            // for bodies no longer listed
             None => {
-                let before: Vec<CommitId> = tx.core.ix.by_aspect.get(&(a.tid, a.ak.clone())).into_iter().flatten().filter(|x| **x < (h.ts, target)).map(|x| x.1).collect();
+                let held: Vec<(Ts, CommitId)> = tx.core.ix.by_aspect.get(&(a.tid, a.ak.clone())).into_iter().flatten().copied().collect();
                 let mut f: Option<Fragment> = None;
-                for c in before {
-                    let Some(ci) = tx.core.ix.commits.get(&c).and_then(|m| m.valid.iter().zip(&m.header.aspects).position(|(v, x)| *v && x.tid == a.tid && x.ak == a.ak)) else { continue };
+                let mut complete = true;
+                for (cts, c) in held {
+                    let Some(m) = tx.core.ix.commits.get(&c) else { continue };
+                    let Some(ci) = m.valid.iter().zip(&m.header.aspects).position(|(v, x)| *v && x.tid == a.tid && x.ak == a.ak) else { continue };
+                    if (cts, c) > (h.ts, target) {
+                        complete &= !matches!(m.header.kind, Kind::ContentSnapshot | Kind::MembershipSnapshot | Kind::RosterSnapshot | Kind::Import);
+                        continue;
+                    }
+                    if c == target {
+                        continue;
+                    }
+                    complete &= !m.dropped.iter().any(|x| x.0 == ci) && !m.missing.contains(&ci);
                     for d in crate::apply::held_parts(tx, &c, ci)? {
                         let d = d.into_fragment();
                         match &mut f {
@@ -112,7 +132,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
                         }
                     }
                 }
-                f
+                Before { state: f.unwrap_or_default(), complete }
             }
         };
         // the undo reads the current state along the delta's paths
@@ -128,10 +148,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
         let mut w = Writer::new(ts, Source::node(node), lo);
         let schema = a.schema.and_then(|i| h.schemas.get(i)).and_then(|(id, _)| tx.core.schemas.get(id).cloned()).or_else(|| a.ak.is_core().then(|| std::sync::Arc::new(osis_schema::core_schema().clone())));
         let view = schema.as_ref().and_then(|s| s.view(a.ak.as_str()));
-        let buf: &dyn UndoBuffer = match &pre {
-            Some(f) => f,
-            None => &NoBuffer,
-        };
+        let buf: &dyn UndoBuffer = &pre;
         // a write of an undo commit in effect, with every later change of the aspect undone:
         // undo steps back through it (spec/crdt.md §4.6); judged on first use
         let core = &*tx.core;
@@ -193,10 +210,21 @@ fn in_effect(c: &CommitId, undoers: &BTreeMap<CommitId, Vec<CommitId>>) -> bool 
     memo.get(c).copied().unwrap_or(true)
 }
 
+/// A held commit as the `osis` commit query reads it: its signed header and, per aspect it
+/// validly touches, whether the body is still held.
+#[derive(Clone, Debug)]
+pub struct HeldCommit {
+    pub id: CommitId,
+    pub header: std::sync::Arc<osis_commit::Header>,
+    pub received: osis_base::WallMs,
+    /// `(tid, ak, body held)` of each valid aspect (in scope, when one is given).
+    pub aspects: Vec<(Tid, Ak, bool)>,
+}
+
 impl Engine {
-    /// Undoes `target` (any held content commit; an admin may undo others' changes). `None` if
+    /// Reverts `target` (any held content commit; spec/crdt.md §4.6: an undo commit). `None` if
     /// there is nothing to write.
-    pub fn undo(&mut self, target: &CommitId) -> Result<Option<CommitId>> {
+    pub fn revert(&mut self, target: &CommitId) -> Result<Option<CommitId>> {
         let t = *target;
         let me = self.tid();
         match self.run(|tx| undo_in(tx, t, me)) {
@@ -205,32 +233,29 @@ impl Engine {
         }
     }
 
-    /// Every held content commit touching `scope`, newest first: (ID, author, actor, `ts`,
-    /// `undoes`). The admin view of changes.
-    pub fn changes(&self, scope: &[(Tid, Ak)]) -> Vec<(CommitId, Tid, Tid, Ts, Option<CommitId>)> {
-        let mut ids: BTreeSet<(Ts, CommitId)> = BTreeSet::new();
-        for k in scope {
-            ids.extend(self.core.ix.by_aspect.get(k).into_iter().flatten().copied());
-        }
+    /// Held commits validly touching `scope` (every held commit with `None`), newest first by
+    /// `(ts, ID)`. Commits valid on no aspect in scope are left out.
+    pub fn held_commits(&self, scope: Option<&[(Tid, Ak)]>) -> Vec<HeldCommit> {
+        let ids: BTreeSet<(Ts, CommitId)> = match scope {
+            Some(sc) => sc.iter().flat_map(|k| self.core.ix.by_aspect.get(k).into_iter().flatten().copied()).collect(),
+            None => self.core.ix.commits.iter().map(|(id, m)| (m.view.ts, *id)).collect(),
+        };
+        let keep: Option<BTreeSet<&(Tid, Ak)>> = scope.map(|sc| sc.iter().collect());
         ids.into_iter()
             .rev()
-            .filter_map(|(_, c)| {
-                let m = self.core.ix.commits.get(&c)?;
-                (m.header.kind == Kind::Content).then(|| (c, m.header.author, m.header.actor, m.header.ts, m.header.undoes))
+            .filter_map(|(_, id)| {
+                let m = self.core.ix.commits.get(&id)?;
+                let header = m.header.decoded()?;
+                let aspects: Vec<(Tid, Ak, bool)> = header
+                    .aspects
+                    .iter()
+                    .enumerate()
+                    .filter(|(ai, a)| m.valid.get(*ai).copied().unwrap_or(false) && keep.as_ref().is_none_or(|k| k.contains(&(a.tid, a.ak.clone()))))
+                    .map(|(ai, a)| (a.tid, a.ak.clone(), !m.dropped.iter().any(|x| x.0 == ai) && !m.missing.contains(&ai)))
+                    .collect();
+                (!aspects.is_empty()).then(|| HeldCommit { id, header, received: m.received, aspects })
             })
             .collect()
-    }
-
-    /// Undo stack of `actor` in `scope`, newest first: its commits not undone, undo commits
-    /// excluded. Redo stack: its undo commits not undone themselves.
-    pub fn undo_stack(&self, actor: &Tid, scope: &[(Tid, Ak)]) -> (Vec<CommitId>, Vec<CommitId>) {
-        let all = self.changes(scope);
-        // on demand, O(commits): decodes every header the first time
-        let undone: BTreeSet<CommitId> = self.core.ix.commits.values().filter_map(|m| m.header.undoes).collect();
-        let mine = all.iter().filter(|c| c.2 == *actor && !undone.contains(&c.0));
-        let undo = mine.clone().filter(|c| c.4.is_none()).map(|c| c.0).collect();
-        let redo = mine.filter(|c| c.4.is_some()).map(|c| c.0).collect();
-        (undo, redo)
     }
 }
 
