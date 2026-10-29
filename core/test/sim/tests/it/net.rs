@@ -199,11 +199,10 @@ fn ephemeral_capped_seed_14() {
     ok("ephemeral_capped", 14);
 }
 
-// spec/sync.md §9 (compaction on a cap refusal): a holder's refused cover cannot absorb another's
-// cover that also carries a one-part aspect, so its writes stay out (it was a message storm: a
-// fresh cover compacted at every refusal, fixed).
+// spec/sync.md §9 (compaction on a cap refusal): a holder's cover refused at a full server must
+// absorb the cover held there although that one also carries a one-part aspect (its writes stayed
+// out; before that, a message storm: a fresh cover compacted at every refusal).
 #[test]
-#[ignore = "issues/eph-cover-cannot-absorb.md"]
-fn repro_ephemeral_seed_83() {
+fn ephemeral_seed_83() {
     ok("ephemeral", 83);
 }

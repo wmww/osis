@@ -623,6 +623,35 @@ fn own_compaction_survives_rebuild_spec_crdt_4_6() {
     assert_eq!(at_a, map(&[("b", "1"), ("c", "1")]), "the covered writes stay (the cover's author is valid and vouches for them); c's own commit goes");
 }
 
+// spec/sync.md §7 (compaction): a cover also carries a one-part aspect of a held commit it would
+// otherwise leave partly covered, so it absorbs that commit (sim `ephemeral` seed 83: a holder's
+// refused cover never absorbed another's cover spanning a second window)
+#[test]
+fn cover_absorbs_commit_spanning_one_part_aspect_spec_sync_7() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w1 = window(&mut net, a, g, "w1");
+    let w2 = window(&mut net, a, g, "w2");
+    net.run();
+    // one commit on w1's notes and w2's notes (w2's notes have no other part)
+    let mut m = Mutation::new();
+    m.op(w1, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("a"))], op: Op::Set(s("1")) }).unwrap();
+    m.op(w2, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("a"))], op: Op::Set(s("2")) }).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    note(&mut net, b, w1, "b", "1");
+    net.run();
+    let cover = net.engine(b).compact_ephemeral(None, true).unwrap().expect("compacted");
+    assert_eq!(net.engine(b).held_ephemeral().len(), 1, "every held commit absorbed (the windows' records and placements, both note commits), the cover held");
+    net.engine(a).ingest_ephemeral(cover.blob).unwrap();
+    assert_eq!(notes(&mut net, a, w2), map(&[("a", "2")]));
+    assert_eq!(notes(&mut net, a, w1), map(&[("a", "1"), ("b", "1")]));
+}
+
 // spec/permissions.md §5.2 (a valid ephemeral commit vouches for the session writes it carries;
 // owner decision "Snapshots vouch"): an honest writer's compaction carries a member's writes;
 // once that member is removed they stay at every holder and at a node arriving later, alike
