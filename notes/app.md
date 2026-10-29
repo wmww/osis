@@ -36,7 +36,7 @@
 - A toolkit swap rewrites driver and widgets only; state and behavior survive. The earlier idea of a separate "view model" crate dissolves into the view-state schema plus the actions crate.
 
 ## Web mockup
-`app/mockup/` (plain HTML/CSS/JS, no deps, no osis; serve the directory, e.g. `python3 -m http.server`) explores look and layout before building in kit. Owner brief: things and scopes (tags, views) are fungible tiles in one list or grid; an ordered favorites list; one search over names, content and scopes; with a view open and room enough, a left bar holds search and favorites. The look should feel like what 1996, 2006, 2016 and 2026 thought 2026 would be: colored gradient backgrounds or abstract shapes, a little Apple liquid glass (never at a perf cost), almost no Material. All look values are custom properties in looks.css over one layout in style.css.
+`app/mockup/` (plain HTML/CSS/JS, no deps, no osis; serve the directory, e.g. `python3 -m http.server`) explores look and layout before building in kit. Owner brief: things and scopes (tags, views) are fungible tiles in one list or grid; an ordered favorites list; one search over names, content and scopes; with a view open and room enough, a left bar holds search and favorites. The look should feel like what 1996, 2006, 2016 and 2026 thought 2026 would be: colored gradient backgrounds or abstract shapes, a little Apple liquid glass (never at a perf cost), almost no Material. Layout in style.css; themes are parameters (themes.js) that engine.css turns into its custom properties.
 
 Owner direction so far:
 - Themes: wanted; every theme has light and dark (mode is separate from the theme: Light/Dark/Auto).
@@ -44,11 +44,20 @@ Owner direction so far:
 - The background follows theme and content: the theme owns the engine (what is drawn), the content picks the colour and the arrangement (seeded from the tid, varied slightly by kind, e.g. calendar vs note).
 - Backgrounds subtle: shading, highlights and variations of the one colour, not big splotches of several colours.
 - Less UI: fewer bordered elements, simpler backgrounds.
-- Liked: Glass (with a less rounded sidebar selection), Aero's glassy 3D feel, Workstation's synth sun.
-- Current six: Glass, Aero (Dusk merged in), Workstation, Memphis, Slate (square, flat, modern; Metro-inspired), Cel (flat, white or dark grey, colour on tiles and accents, anime-ish). Pearl and the separate Dusk are in git history.
-- Mockup mechanics: app.js sets `--main` and seeds `--s1..4` on body plus `body[data-kind]` (style.css maps it to `--k`); all registered with @property so moving between things cross-fades.
+- Themes (owner-approved set): Frost, Glass (the earlier Aero with Dusk merged in), Workstation, Memphis, Slate (square, flat, modern), Cel (flat, white or dark grey, anime-ish). Older looks are in git history.
+- Motion: almost none. Only unobtrusive fades, or motion that adds clarity. The mockup fades the main colour and nothing else.
 
-Themes (owner decision): a theme is a selector plus data specific to that theme, not a portable token set. Each theme is implemented on every platform we ship (one or two), so themes can be truly different (own drawing, own widget treatment). No user CSS.
+## Themes are parameters
+Owner direction: a theme is a set of parameters, and the six themes are only defaults; users can make equally distinct themes by changing them. The mockup's engine.css implements every value of every parameter once (themes.js lists them); a toolkit implements the same list. No CSS and no per-theme code. Accepted simplifications: Workstation's hard shadow is in the outline colour (ink), the Memphis icons are filled, no wide first tile, no giant kind word behind Slate.
+
+Parameters (enums unless noted):
+- main (colour; used when the content gives none), surface (colour, light mode; dark derives from it), bgTint (0..1).
+- Background: base flat|field|sky, pattern none|grid|dots|halftone|grain, ornament none|streaks|bubbles|sun|shapes|speed. Placement comes from four seeds hashed from the open thing's tid, plus a small per-kind value (calendar, note, ...).
+- panel glass|solid|none, radius (px), outline (px, in ink: the text colour, near black for bevel in dark), elevation none|soft|hard, finish flat|gloss|bevel, iconShape circle|rounded|square.
+- tileFill surface|wash|solid, tileMark none|stripe|corner, selection soft|solid|slant.
+- font system|humanist|classic|grotesk|rounded, weight (title, 300..900), labels plain|caps|big|mono, accent none|bar|rule|slash.
+
+Light and dark are derived from the same parameters, not stored per theme. Stored in osis as a thing (sync, sharing) when built.
 
 ## kit and app (owner)
 Two top-level projects, `kit/` (package `osis-kit`) and `app/` (`osis-app`).
