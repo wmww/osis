@@ -233,7 +233,14 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                 } else if let (Some(f), Some(k)) = (&e.frag, &e.key) {
                     // a nested edit into an existing entry
                     path.push(PathSeg::Key(k.clone()));
-                    let sub = cur.and_then(|c| c.entries.get(d)).and_then(|x| x.frag.as_deref());
+                    // the current state below the key is also the join of its live entries
+                    // (§4.6): a reset nested in entry `d` prunes the other entries' writes in the
+                    // key's read, so their writes must block "Absent before"
+                    let joined = cur.and_then(|c| {
+                        let live = c.live_dots(k);
+                        (!live.is_empty() && live != [d]).then(|| key_state(c, &live)).flatten()
+                    });
+                    let sub = joined.as_ref().or_else(|| cur.and_then(|c| c.entries.get(d)).and_then(|x| x.frag.as_deref()));
                     let pre = Sub(prev.as_ref().and_then(|p| entry_frag(p, d, k)), buffer.complete());
                     let res = undo_at(w, u, f, sub, &pre, &vview, &mut vec![], false);
                     path.pop();

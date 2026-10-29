@@ -85,6 +85,7 @@ struct Hits {
     again: usize,
     concurrent_below: usize,
     concurrent_above: usize,
+    unseen: usize,
     seq: usize,
     exact: usize,
 }
@@ -162,6 +163,8 @@ fn case(r: &mut Rng, hits: &mut Hits) {
     mapply(&mut state, d1.clone());
     let conc = r.chance(1, 2);
     let mut later = false;
+    // d2 held back until after the undo: "Absent before"'s reset drops it when older (§4.6)
+    let mut unseen = None;
     if conc {
         let t2 = [10u64, 25, 40][r.below(3)] << 16;
         w2.next_commit(t2 + 2);
@@ -172,7 +175,11 @@ fn case(r: &mut Rng, hits: &mut Hits) {
                 hits.concurrent_below += 1;
             }
             later = t2 > t1;
-            mapply(&mut state, d2);
+            if t2 < tu && r.chance(1, 3) {
+                unseen = Some(d2);
+            } else {
+                mapply(&mut state, d2);
+            }
         }
     }
     let state = state.unwrap();
@@ -202,6 +209,13 @@ fn case(r: &mut Rng, hits: &mut Hits) {
     hits.undone += 1;
     hits.seq += usize::from(has_seq(&d1));
     assert_eq!(iafter.read(), mread(&mafter), "undo reads differ\nty {ty:?}\nbase {base:?}\nd1 {d1:?}\nstate {state:?}\nmodel undo {mud:?}\nimpl undo {iud:?}");
+    if let Some(d2) = unseen {
+        hits.unseen += 1;
+        iafter.join(frag(&d2));
+        mapply(&mut mafter, d2.clone());
+        assert_eq!(iafter.read(), mread(&mafter), "reads differ once d2 arrives after the undo\nty {ty:?}\nbase {base:?}\nd1 {d1:?}\nd2 {d2:?}\nmodel undo {mud:?}\nimpl undo {iud:?}");
+        return;
+    }
     if !conc && !has_move(&d1) {
         // a single writer's undo restores the pre-commit read (moves aside: a restored position write is newer
         // than the anchor's other children, so it can land before ones it followed, §5.7)
@@ -301,6 +315,7 @@ fn undo_matches_model_coverage_spec_4_6() {
         ("stepped", s.stepped),
         ("concurrent_below", hits.concurrent_below),
         ("concurrent_above", hits.concurrent_above),
+        ("unseen", hits.unseen),
         ("seq", hits.seq),
         ("exact", hits.exact),
         ("redone", hits.redone),
@@ -316,13 +331,18 @@ fn undo_matches_model_coverage_spec_4_6() {
 /// Node 1 sets `v1` at ts 20 on `base`; node 2 sets `v2` at ts `t2` without seeing it; node 1 undoes its commit at
 /// ts 30 holding both. Model and implementation must read alike.
 fn seen_concurrent(ty: &Ty, base: &MValue, v1: &MValue, v2: &MValue, t2: u64) {
+    seen_concurrent_by(ty, base, v1, &|w, b| crdt_model::diff::diff(w, b, ty, v2).unwrap(), t2, &format!("{v2:?}"));
+}
+
+/// `seen_concurrent` with node 2's delta built by `d2` against the base.
+fn seen_concurrent_by(ty: &Ty, base: &MValue, v1: &MValue, d2: &dyn Fn(&mut MWriter, Option<&Frag>) -> Frag, t2: u64, what: &str) {
     let view = TyView(ty.clone());
     let (n1, n2) = (MSource::node(1), MSource::node(2));
     let mut base = Some(crdt_model::ops::create(&mut MWriter::new(n1.clone(), 1 << 16, 1), ty, base));
     base.as_mut().unwrap().prune(None);
     let mut w1 = MWriter::new(n1.clone(), 20 << 16, 10);
     let d1 = crdt_model::diff::diff(&mut w1, base.as_ref(), ty, v1).unwrap();
-    let d2 = crdt_model::diff::diff(&mut MWriter::new(n2, (t2 << 16) + 2, 1), base.as_ref(), ty, v2).unwrap();
+    let d2 = d2(&mut MWriter::new(n2, (t2 << 16) + 2, 1), base.as_ref());
     let mut state = base.clone();
     mapply(&mut state, d1.clone());
     mapply(&mut state, d2);
@@ -343,7 +363,7 @@ fn seen_concurrent(ty: &Ty, base: &MValue, v1: &MValue, v2: &MValue, t2: u64) {
     if let Some(u) = iud {
         i.join(u);
     }
-    assert_eq!(i.read(), mread(&m), "t2 {t2}, v1 {v1:?}, v2 {v2:?}");
+    assert_eq!(i.read(), mread(&m), "t2 {t2}, v1 {v1:?}, d2 {what}");
 }
 
 /// §4.6 "Absent before" against writes of another commit already in the undoing node's state: a concurrent case
@@ -365,3 +385,19 @@ fn undo_absent_keeps_seen_case_or_w_spec_4_6() {
     }
 }
 
+
+/// §4.6 "Absent before" below a map key holding two live entries (a concurrent `put_new`): the undone write
+/// edited one entry; another writer's value at P in the other entry is live in the key's read.
+#[test]
+fn undo_absent_below_key_with_two_entries_spec_4_6() {
+    let inner = Ty::Struct([(1, Ty::Register), (2, Ty::Set(Box::new(Ty::Register)))].into_iter().collect());
+    let vt = Ty::Struct([(1, Ty::Register), (2, inner)].into_iter().collect());
+    let ty = Ty::Map(Box::new(Ty::Register), Box::new(vt.clone()));
+    let k = MValue::Str("k".into());
+    let base = MValue::map(vec![(k.clone(), MValue::fields(vec![(1, MValue::Int(0))]))]);
+    let v1 = MValue::map(vec![(k.clone(), MValue::fields(vec![(1, MValue::Int(0)), (2, MValue::fields(vec![(1, MValue::Int(5))]))]))]);
+    let other = MValue::fields(vec![(1, MValue::Int(0)), (2, MValue::fields(vec![(2, MValue::set(vec![MValue::Str("b".into())]))]))]);
+    for t2 in [10, 25] {
+        seen_concurrent_by(&ty, &base, &v1, &|w, _| crdt_model::ops::map_put_new(w, &vt, &k, &other), t2, "put_new");
+    }
+}
