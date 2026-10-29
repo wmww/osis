@@ -140,11 +140,15 @@ impl Fragment {
                         en.frag = None;
                     }
                 }
-                if en.frag.is_none() {
+                // removing writes exactly keeps an entry's creation whose own dot stays, though
+                // nothing else is left in it: a join gives it to the entry where another body
+                // holds content, and prunes it otherwise (§5.6)
+                let creation = nested && en.created.is_some();
+                if en.frag.is_none() && !creation {
                     en.key = None;
                     en.created = None;
                 }
-                en.reset.is_some() || en.frag.is_some()
+                en.reset.is_some() || en.frag.is_some() || creation
             }),
             Fragment::Seq(s) => seq::remove_dots(s, pred, nested),
             Fragment::Register(_) | Fragment::Slots(_) => {}

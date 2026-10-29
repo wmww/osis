@@ -496,6 +496,8 @@ impl Engine {
             // node would vouch for them, spec/permissions.md §5.2)
             if !unknown.is_empty() {
                 fragment.strip_copies(&|d| matches!(d.src.author().kind(), SourceKind::Commit(c) if unknown.contains(c)));
+                // what is left only for a join (an entry's creation alone) goes before encoding
+                fragment.prune(None, &mut osis_crdt::Changes::new());
             }
             let absorbed_here: BTreeMap<CommitId, Tid> = absorbed.get(&(tid, ak.clone())).into_iter().flatten().filter_map(|c| self.eph.remote.held.get(c).map(|h| (*c, h.header.author))).collect();
             let mut nonce = [0u8; osis_crdt::NONCE_LEN];
