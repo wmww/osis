@@ -821,6 +821,7 @@ impl SyncEngine {
         // changed commits: their aspects' states (verdicts waiting on them), their chunks (bodies
         // waiting on a linked blob), and the blobs of their dropped parts
         let ch = self.engine.take_changed();
+        self.reopen_undropped(&ch.undropped);
         for c in &ch.commits {
             if let Some(h) = self.engine.header(c) {
                 self.touched.states.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));

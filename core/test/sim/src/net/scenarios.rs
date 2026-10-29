@@ -14,6 +14,7 @@ use osis_node::Mutation;
 use osis_node::flows::PreSync;
 use osis_node::sync::Event;
 use osis_schema::AspectKey;
+use std::collections::BTreeSet;
 
 pub const DAY_MS: u64 = 86_400_000;
 
@@ -546,5 +547,73 @@ pub fn work_sets(seed: u64) -> Res<Report> {
     sim.advance(3_600_000)?;
     sim.run(30)?;
     sim.run_until_quiescent(60)?;
+    sim.finish()
+}
+
+/// A snapshot dropped under a cover that turns invalid (spec/permissions.md §5.2, spec/sync.md
+/// §6, §7): A compacts the tags (S1); while A is away, C writes and compacts over it (S2) and W
+/// drops S1 under S2's cover, deleting it at the server; A, not having seen S2, removes C (S2
+/// invalid). S1 is missing again at W; A, holding it uncovered, uploads it again while it has a
+/// live write; W fetches it, and A and W read alike.
+pub fn coverer_revoked(seed: u64) -> Res<Report> {
+    let mut d = Dice::new(seed ^ 0xc5);
+    let mut sim = sim("coverer_revoked", seed, NetWeights::default());
+    let s = sim.add_server()?;
+    let a = sim.add_node(&[s], clock(&mut d))?;
+    let c = sim.add_node(&[s], clock(&mut d))?;
+    let w = sim.add_node(&[s], clock(&mut d))?;
+    let [pa, pc, pw] = persons(&mut sim, [a, c, w], [s, s, s])?;
+    let g = shared_group(&mut sim, a, pa, &[s], &[(pc, Role::Write), (pw, Role::Write)])?;
+    let t = sim.item(a, g)?;
+    sim.quiet(40)?;
+    sim.run(40)?;
+    let k = ak(&sim, &workload::TAGS)?;
+    let add = |sim: &mut NetSim, n: usize, v: &str| -> Res<()> {
+        let mut m = Mutation::new();
+        m.op(t, &workload::TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(Value::Str(v.into())) }).map_err(|e| sim.fail(e.to_string()))?;
+        sim.commit(n, m)?.map(|_| ()).ok_or_else(|| sim.fail(format!("node {n} wrote nothing")))
+    };
+    add(&mut sim, a, "by a")?;
+    sim.quiet(40)?;
+    let snaps = |sim: &mut NetSim, n: usize| -> Res<BTreeSet<osis_base::CommitId>> {
+        let e = sim.engine(n)?;
+        Ok(e.commit_ids().into_iter().filter(|x| e.header(x).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot && h.aspects.iter().any(|y| y.tid == t && y.ak == k))).collect())
+    };
+    let before = snaps(&mut sim, a)?;
+    let acts = sim.sync(a)?.compact(&t, &k).map_err(|e| sim.fail(format!("node {a} compact: {e}")))?;
+    sim.actions(a, acts)?;
+    let s1 = snaps(&mut sim, a)?.difference(&before).next().copied().ok_or_else(|| sim.fail("A wrote no snapshot"))?;
+    sim.quiet(40)?;
+    sim.sever(Party::N(a), Party::S(s));
+    // a write of C's first: S2 covers S1 strictly (of covered-equal ones the higher ID goes)
+    add(&mut sim, c, "by c")?;
+    sim.quiet(40)?;
+    let acts = sim.sync(c)?.compact(&t, &k).map_err(|e| sim.fail(format!("node {c} compact: {e}")))?;
+    sim.actions(c, acts)?;
+    sim.quiet(40)?;
+    // past `MAX_DRIFT`: W drops S1 under S2 and deletes it at the server
+    sim.advance(2 * 3_600_000)?;
+    sim.quiet(40)?;
+    // (dropped, missing) of S1's part at W
+    let part = |sim: &mut NetSim| -> Res<Option<(bool, bool)>> {
+        let e = sim.engine(w)?;
+        let Some(m) = e.core.ix.commits.get(&s1) else { return Ok(None) };
+        Ok(m.view.aspects.iter().position(|x| x.tid == t && x.ak == k).map(|ai| (m.dropped.contains(&(ai, 0)), m.missing.contains(&ai))))
+    };
+    if part(&mut sim)? != Some((true, false)) {
+        return Err(sim.fail("W did not drop S1 under S2"));
+    }
+    sim.remove(a, g, pc)?;
+    sim.excused.insert(c);
+    sim.unsever(Party::N(a), Party::S(s));
+    sim.run(40)?;
+    sim.run_until_quiescent(60)?;
+    // A uploads S1 again only while it has a live write (spec/sync.md §6): random writes may
+    // have removed them all
+    let p = part(&mut sim)?;
+    let live = sim.engine(a)?.body_live(&s1, &t, &k).map_err(|e| sim.fail(e.to_string()))?;
+    if p != Some((false, false)) && live {
+        return Err(sim.fail(format!("W never got S1 back: {p:?}")));
+    }
     sim.finish()
 }

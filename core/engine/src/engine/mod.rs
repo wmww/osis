@@ -73,22 +73,27 @@ pub struct Meta {
     pub valid: Vec<bool>,
     /// Parts dropped (purge, expiry, keep at most): they count as held.
     pub dropped: BTreeSet<(usize, usize)>,
-    /// Aspects none of whose deltas was ever held here (neither held nor dropped): a part that
-    /// may still arrive late, or never (spec/permissions.md §5.2: a snapshot's copies of their
-    /// writes count).
+    /// Aspects none of whose deltas is held here (neither held nor dropped): a part that may
+    /// still arrive late, or never, or one dropped under a cover since turned invalid
+    /// (`retention::uncover`) (spec/permissions.md §5.2: a snapshot's copies of their writes
+    /// count).
     pub missing: BTreeSet<usize>,
     /// Aspects of a compaction snapshot whose body had a write in the state when dropped (its
     /// frontiers went with it, spec/commits.md §5; `retention::snapshot_live` starts from this).
     pub live_drops: BTreeSet<usize>,
     /// Per dropped aspect, the held valid snapshots that covered its body when it dropped
-    /// (spec/commits.md §5): their copies of its writes are its writes (`apply::rebuild`).
+    /// (spec/commits.md §5): their copies of its writes are its writes (`apply::rebuild`); once
+    /// none carries it, the part is missing again (`retention::uncover`).
     pub covered_by: BTreeMap<usize, BTreeSet<CommitId>>,
+    /// Aspects dropped as covered (compaction, `Engine::drop_body`), not for their bounds, a
+    /// purge or expiry: only these come back as missing (`retention::uncover`).
+    pub cover_drops: BTreeSet<usize>,
 }
 
 impl Meta {
     /// A commit's meta from its decoded header.
     pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
-        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, missing, live_drops: head.live_drops, covered_by: head.covered_by }
+        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, missing, live_drops: head.live_drops, covered_by: head.covered_by, cover_drops: head.cover_drops }
     }
 }
 
@@ -533,11 +538,14 @@ pub struct Changed {
     /// Aspects whose state changed other than by a valid write's join (a validity flip, an
     /// un-merge, expiry, purge, a late delta): what waits on the state is judged again.
     pub aspects: BTreeSet<(Tid, Ak)>,
+    /// Commits with a part dropped under a cover since turned invalid, missing again
+    /// (`retention::uncover`): node-sync fetches its entries again.
+    pub undropped: BTreeSet<CommitId>,
 }
 
 impl Changed {
     pub fn is_empty(&self) -> bool {
-        self.commits.is_empty() && self.aspects.is_empty()
+        self.commits.is_empty() && self.aspects.is_empty() && self.undropped.is_empty()
     }
 }
 

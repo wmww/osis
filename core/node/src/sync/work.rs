@@ -492,7 +492,8 @@ impl SyncEngine {
         }
         let secrets = self.read_secrets(g);
         for b in bs {
-            let open = self.state.entries.get(&(*l, *b)).is_some_and(|e| e.kind == Kind::Unknown && osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some());
+            // a shredded one is a dropped body's, missing again: the fetch brings its wrap
+            let open = self.state.entries.get(&(*l, *b)).is_some_and(|e| e.kind == Kind::Unknown && (e.shredded() || osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some()));
             if open {
                 w.unopened.insert(*b);
             } else {

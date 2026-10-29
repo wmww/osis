@@ -586,6 +586,23 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// The entries of commits with a part missing again (`Changed::undropped`: dropped under a
+    /// cover since turned invalid, spec/permissions.md §5.2) whose bytes and wrap went with the
+    /// drop: unopened again, so a pass fetches them where present (`refetch`), the reply bringing
+    /// the wrap back. A body deleted everywhere comes back only as a holder's new upload.
+    pub(crate) fn reopen_undropped(&mut self, commits: &BTreeSet<osis_base::CommitId>) {
+        if commits.is_empty() {
+            return;
+        }
+        let ids: Vec<(LabelId, BlobId)> = self.state.entries.iter().filter(|((_, b), e)| matches!(&e.kind, Kind::Commit { commit, .. } if commits.contains(commit)) && !self.state.blobs.contains_key(b)).map(|(k, _)| *k).collect();
+        for (l, b) in ids {
+            if let Some(mut e) = self.state.entries.get(&(l, b)).cloned() {
+                e.kind = Kind::Unknown;
+                self.state.set_entry(l, b, e);
+            }
+        }
+    }
+
     /// Drops the bytes of a chunk of dropped deltas once no label entry names it (spec/commits.md
     /// §5); while one does, its delete-key signature needs its prefix salt.
     pub(crate) fn forget_chunk(&mut self, b: &BlobId) -> Result<()> {

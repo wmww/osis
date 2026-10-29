@@ -1092,7 +1092,11 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
             let snaps: Vec<CommitId> = fell.get(&k).into_iter().flatten().filter(|(c, _)| tx.core.ix.commits.get(c).is_some_and(|m| super::is_kind_snapshot(m.view.kind))).map(|x| x.0).collect();
             if rose.contains(&k) || !snaps.is_empty() {
                 let _s = crate::costs::span("rejudge: rebuild");
-                let gone: Vec<Owned> = snaps.iter().flat_map(|s| given_by(tx.core, tid, ak, s)).collect();
+                let mut gone: Vec<Owned> = snaps.iter().flat_map(|s| given_by(tx.core, tid, ak, s)).collect();
+                // parts dropped under its cover alone are missing again, their writes gone
+                if !snaps.is_empty() {
+                    gone.extend(crate::retention::uncover(tx, tid, ak)?);
+                }
                 super::atomic::rebuild_without(tx, tid, ak, &gone)?;
             } else {
                 let _s = crate::costs::span("rejudge: unmerge");
