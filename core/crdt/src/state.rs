@@ -19,12 +19,13 @@ impl Default for Fragment {
     }
 }
 
-/// A last-writer-wins write: its stamp, and whether it carries its value (only register and
-/// case writes go value-less, §4.7). Resets, `W`, flags, creations.
+/// A last-writer-wins write: its stamp, and the copy order of its payload (§4.1): of two copies
+/// of one write (equal stamps) the greater wins. Resets, `W`, flags, creations, values.
 pub(crate) trait Write {
     fn stamp(&self) -> &Stamp;
-    fn valued(&self) -> bool {
-        true
+    /// Copy order against another copy of the same write.
+    fn copy_cmp(&self, _: &Self) -> Ordering {
+        Ordering::Equal
     }
 }
 
@@ -34,10 +35,14 @@ impl Write for Stamp {
     }
 }
 
-/// A flag write or a creation (`(stamp, anchor)`) of a sequence element.
-impl<T> Write for (Stamp, T) {
+/// A flag write (`true` over `false`) or a creation or position write (`(stamp, anchor)`, the
+/// greater anchor) of a sequence element.
+impl<T: Ord> Write for (Stamp, T) {
     fn stamp(&self) -> &Stamp {
         &self.0
+    }
+    fn copy_cmp(&self, o: &Self) -> Ordering {
+        self.1.cmp(&o.1)
     }
 }
 
@@ -45,8 +50,8 @@ impl Write for RegWrite {
     fn stamp(&self) -> &Stamp {
         &self.stamp
     }
-    fn valued(&self) -> bool {
-        self.value.is_some()
+    fn copy_cmp(&self, o: &Self) -> Ordering {
+        opt_value_cmp(self.value.as_ref(), o.value.as_ref())
     }
 }
 
@@ -54,18 +59,40 @@ impl Write for CaseWrite {
     fn stamp(&self) -> &Stamp {
         &self.stamp
     }
-    fn valued(&self) -> bool {
-        self.case.is_some()
+    fn copy_cmp(&self, o: &Self) -> Ordering {
+        self.case.cmp(&o.case)
+    }
+}
+
+/// Copy order of values (§4.1): absent (value-less) first, then canonical encodings bytewise.
+/// `Value`'s order is that, except links compare by content hash alone, so equal values holding
+/// a link compare their bytes.
+pub(crate) fn opt_value_cmp(a: Option<&Value>, b: Option<&Value>) -> Ordering {
+    match (a, b) {
+        (Some(x), Some(y)) => x.cmp(y).then_with(|| if has_link(x) { osis_base::cbor::encode(x).cmp(&osis_base::cbor::encode(y)) } else { Ordering::Equal }),
+        _ => a.is_some().cmp(&b.is_some()),
+    }
+}
+
+fn has_link(v: &Value) -> bool {
+    match v {
+        Value::Link(_) => true,
+        Value::Enum(_, p) => p.as_deref().is_some_and(has_link),
+        Value::List(l) => l.iter().any(has_link),
+        Value::Set(s) => s.iter().any(has_link),
+        Value::Map(m) => m.iter().any(|(k, v)| has_link(k) || has_link(v)),
+        _ => false,
     }
 }
 
 /// Last-writer-wins join: greater stamp wins and the loser dies; of two copies of one write the
-/// valued one (§4.7). Whether `d` took the place.
+/// greater in copy order (§4.1, a valued one over a value-less one, §4.7). Whether `d` took the
+/// place.
 pub(crate) fn join_write<W: Write>(s: &mut Option<W>, d: Option<W>, ch: &mut Changes) -> bool {
     let Some(d) = d else { return false };
     match s {
         Some(x) if x.stamp() == d.stamp() => {
-            if !x.valued() && d.valued() {
+            if x.copy_cmp(&d) == Ordering::Less {
                 *x = d;
                 ch.touch();
             }
@@ -242,13 +269,20 @@ fn join_entries(m: &mut Map, d: BTreeMap<Dot, Entry>, e: Option<&Stamp>, ch: &mu
 fn join_entry(s: &mut BTreeMap<Dot, Entry>, dot: Dot, mut de: Entry, e: Option<&Stamp>, ch: &mut Changes) {
     match s.get_mut(&dot) {
         Some(se) => {
+            // the key of the creation with the greater stamp; of copies of one creation (or of
+            // records without one) the greater key (§4.1 copy order, §5.6)
+            let take = match de.created.cmp(&se.created) {
+                Ordering::Greater => de.key.is_some(),
+                Ordering::Equal => opt_value_cmp(de.key.as_ref(), se.key.as_ref()) == Ordering::Greater,
+                Ordering::Less => se.key.is_none() && de.key.is_some(),
+            };
             let raised = join_write(&mut se.reset, de.reset, ch);
             prune_write(&mut se.reset, e, ch);
             let ee = max_opt(e.cloned(), se.reset.clone());
             if raised {
                 prune_opt(&mut se.frag, ee.as_ref(), ch);
             }
-            if se.key.is_none() && de.key.is_some() {
+            if take && se.key != de.key {
                 se.key = de.key;
                 ch.touch();
             }
@@ -831,7 +865,10 @@ fn join_slots_kept(mut sa: Slots, b: Fragment, e: Option<&Stamp>, ch: &mut Chang
         // the state's write wins or ties: only the loser's death and nothing else
         *ra = join_regs(std::mem::take(ra), rb, ch);
     }
-    for (k, fb) in mb {
+    for (k, mut fb) in mb {
+        if let (Fragment::Seq(x), Some(r)) = (&mut fb, sa.reg.as_ref()) {
+            seq::fit_embedding(x, r);
+        }
         match sa.members.get_mut(&k) {
             Some(fa) => fa.join_into(fb, e, ch),
             None => {
@@ -854,7 +891,7 @@ fn join_slots_kept(mut sa: Slots, b: Fragment, e: Option<&Stamp>, ch: &mut Chang
 /// and no value `a`'s copy of the same write lacks (§4.7).
 fn reg_absorbs(a: &Register, b: &Register) -> bool {
     b.reset.as_ref().is_none_or(|x| a.reset.as_ref().is_some_and(|y| x <= y) || a.write.as_ref().is_some_and(|w| *x < w.stamp))
-        && b.write.as_ref().is_none_or(|bw| a.write.as_ref().is_some_and(|aw| bw.stamp < aw.stamp || (bw.stamp == aw.stamp && (aw.value.is_some() || bw.value.is_none()))))
+        && b.write.as_ref().is_none_or(|bw| a.write.as_ref().is_some_and(|aw| bw.stamp < aw.stamp || (bw.stamp == aw.stamp && aw.copy_cmp(bw) != Ordering::Less)))
 }
 
 /// `join_slots` over the whole position.
@@ -885,6 +922,9 @@ pub(crate) fn prune_slots(reg: Option<Register>, members: BTreeMap<Encoding, Fra
     let mut members = members;
     if let Some(r) = &reg {
         for (k, f) in members.iter_mut() {
+            if let Fragment::Seq(x) = f {
+                seq::fit_embedding(x, r);
+            }
             if let Some(e) = embed(r, *k) {
                 f.join_into(e, None, ch);
             }

@@ -233,12 +233,9 @@ fn register_undo_chain_spec_4_6() {
     assert_eq!(undo_of(40, 5, &c1, &me, r1, &s, &s0, &[written(&u2)]), None);
 }
 
-// issues/same-stamp-substitution.md (ephemeral security review M3), repro: two writes under one
-// stamp with different values (a forged copy of another's write inside a snapshot) join in
-// arrival order, so holders that saw them in different orders read different values forever.
-// Ignored until a deterministic tie-break lands.
+/// §4.1 copy order (ephemeral security review M3): two writes under one stamp with different
+/// values (a forged copy of another's write inside a snapshot) join alike in either order.
 #[test]
-#[ignore]
 fn same_stamp_substitution_diverges() {
     let src = Source::node(Tid::from_bytes([3; 15]));
     let alice = create(&mut Writer::new(ts(1 << 16), src.clone(), 1), &AnyView, &Value::Str("alice".into())).unwrap();
@@ -248,6 +245,34 @@ fn same_stamp_substitution_diverges() {
     let mut y = forged;
     y.join(alice);
     assert_eq!(x.read(), y.read(), "join is order dependent for same-stamp writes");
+}
+
+/// §4.1 copy order: copies of one map entry creation with differing keys, and of one text
+/// creation with differing chars, join alike in both orders (the greater key, the greater char).
+#[test]
+fn same_stamp_copies_converge_spec_4_1() {
+    let src = Source::node(Tid::from_bytes([3; 15]));
+    let mk = |v: Value| create(&mut Writer::new(ts(1 << 16), src.clone(), 1), &AnyView, &v).unwrap();
+    let m = |k: i64| Value::Map([(Value::Int(k), Value::Int(9))].into_iter().collect());
+    for (a, b, want) in [
+        (mk(m(1)), mk(m(2)), Some(m(2))),
+        (mk(Value::Str("alice".into())), mk(Value::Str("forged".into())), Some(Value::Str("forged".into()))),
+    ] {
+        let mut x = a.clone();
+        x.join(b.clone());
+        let mut y = b;
+        y.join(a);
+        assert_eq!(x, y);
+        assert_eq!(x.read(), want);
+    }
+    let t = |s: &str| create(&mut Writer::new(ts(1 << 16), src.clone(), 1), &TyView(Ty::Text), &Value::Str(s.into())).unwrap();
+    let (a, b) = (t("abc"), t("xb"));
+    let mut x = a.clone();
+    x.join(b.clone());
+    let mut y = b;
+    y.join(a);
+    assert_eq!(x, y);
+    assert_eq!(x.read(), Some(Value::Str("xbc".into())), "per element: the greater char");
 }
 
 /// spec/permissions.md §5.2, §7: an un-merge at a `Slots` position whose register is older than

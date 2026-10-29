@@ -46,7 +46,87 @@ fn laws(s: &[Fragment]) {
     }
 }
 
+/// Three states whose writers 0 and 1 share one source and one clock but choose their ops
+/// apart, so their writes are copies of one write (equal stamps) with differing payloads, as a
+/// forged snapshot carries (spec/permissions.md §5.2). Model states too.
+fn forged_states(seed: u64, types: &[Ty]) -> (Vec<Fragment>, Vec<Option<crdt_model::state::Frag>>) {
+    let mut r = crate::testutil::rng(seed | 1);
+    let base = (r.below(5) as u64 + 1) << 16;
+    let steps: Vec<u64> = (0..4).map(|k| ((r.below(3) as u64) << 16) + 1 + k).collect();
+    let ms: Vec<_> = (0..3u8)
+        .map(|i| {
+            let ty = &types[usize::from(i) % types.len()];
+            let mut ro = crate::testutil::rng(seed.wrapping_add(u64::from(i) + 7));
+            let (src, t0) = if i < 2 { (1, base) } else { (2, base + 2) };
+            let mut w = MWriter::new(MSource::node(src), t0, 1);
+            let mut st = None;
+            for k in &steps {
+                w.next_commit(w.ts + k);
+                if let Some(d) = random_op(&mut ro, &mut w, ty, st.as_ref()) {
+                    mapply(&mut st, d);
+                }
+            }
+            st
+        })
+        .collect();
+    (ms.iter().map(ostate).collect(), ms)
+}
+
+/// The kitchen sink without its map: a forged key copy is not order-free (issues/forged-map-key.md).
+fn sink_no_map() -> Ty {
+    match sink_no_seq() {
+        Ty::Struct(mut f) => {
+            f.remove(&7);
+            Ty::Struct(f)
+        }
+        t => t,
+    }
+}
+
+/// §4.1 copy order: copies of one write with differing payloads join alike in every order, and
+/// as the model joins them.
+fn forged_laws(seed: u64, types: &[Ty]) {
+    let (s, ms) = forged_states(seed, types);
+    laws(&s);
+    for (i, j) in [(0, 1), (1, 0), (0, 2)] {
+        let mut m = ms[i].clone();
+        if let Some(x) = ms[j].clone() {
+            mapply(&mut m, x);
+        }
+        assert_eq!(join(&s[i], &s[j]), ostate(&m), "model join {i} {j}");
+        assert_eq!(join(&s[i], &s[j]).read(), m.as_ref().and_then(|x| x.read()).map(|v| crate::testutil::value(&v)), "model read {i} {j}");
+        // a placement cached before the join follows it as a fresh one reads
+        let mut x = s[i].clone();
+        let _ = x.read();
+        x.join(s[j].clone());
+        let mut y = x.clone();
+        y.drop_caches();
+        assert_eq!(x.read(), y.read(), "cached read {i} {j}");
+    }
+}
+
 proptest! {
+    /// §4.1 copy order, every encoding, sequences included.
+    #[test]
+    fn forged_copies_join_alike_spec_4_1(seed in any::<u64>()) {
+        let list = Ty::List(Box::new(Ty::Register));
+        let mut r = crate::testutil::rng(seed);
+        let all = [Ty::Text, list, sink_no_map()];
+        let ty = all[r.below(all.len())].clone();
+        forged_laws(seed, &[ty]);
+    }
+
+    /// §4.1 copy order across encodings at one position (§7: a text slot holds the register's
+    /// embedding, and only the winning copy's).
+    #[test]
+    fn forged_copies_across_encodings_spec_7(seed in any::<u64>()) {
+        let set = Ty::Set(Box::new(Ty::Register));
+        let mut r = crate::testutil::rng(seed);
+        let all = [Ty::Register, Ty::Text, Ty::Counter, set, sink_no_map()];
+        let pick: Vec<Ty> = (0..3).map(|_| all[r.below(all.len())].clone()).collect();
+        forged_laws(seed, &pick);
+    }
+
     /// §4.1: within the non-sequence encodings, nested.
     #[test]
     fn join_laws_spec_4_1(seed in any::<u64>()) {
