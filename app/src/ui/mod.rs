@@ -23,7 +23,7 @@ use osis_kit::masonry::core::{ErasedAction, NewWidget, Widget, WidgetId, WidgetT
 use osis_kit::masonry::widgets::{Label, SizedBox, TextAction, TextArea};
 use osis_kit::masonry_winit::app::{AppDriver, DriverCtx, WindowId};
 use osis_kit::theme::{Look, Mode, Theme, parse};
-use osis_kit::widgets::{ChipPress, IconButton, Press, Reorder, Root};
+use osis_kit::widgets::{Blur, ChipPress, IconButton, Press, Reorder, Root};
 use osis_kit::masonry_winit::winit::dpi::PhysicalSize;
 use osis_kit::masonry_winit::winit::window::Theme as WinitTheme;
 use osis_kit::window::Wakeup;
@@ -93,6 +93,15 @@ enum Screen {
     Thing(Tid),
 }
 
+/// A form input: what it saves, the value last saved, the text it shows now.
+#[derive(Clone, Debug)]
+struct FormInput {
+    t: Tid,
+    act: crate::fields::FormAct,
+    saved: String,
+    text: String,
+}
+
 /// The toggles of the open screen (reset when it changes).
 #[derive(Clone, Debug, Default)]
 struct ViewState {
@@ -154,7 +163,12 @@ pub struct Ui {
     /// The grids whose `Reorder` reorders the favorites.
     reorder_grids: std::collections::HashSet<WidgetId>,
     /// Form inputs (the fallback view, a contact's fields): what each saves on Enter.
-    field_inputs: HashMap<WidgetId, (Tid, crate::fields::FormAct)>,
+    field_inputs: HashMap<WidgetId, FormInput>,
+    /// Form field panels: the input each holds (they report losing focus).
+    blur_panels: HashMap<WidgetId, WidgetId>,
+    /// Each slot's form inputs in order, and those of the slot being built.
+    slot_inputs: HashMap<&'static str, Vec<WidgetId>>,
+    building_inputs: Vec<WidgetId>,
     /// Focus the title once the next screen is built (a thing just made).
     focus_title: bool,
     editor: Option<Editor>,
@@ -191,6 +205,9 @@ impl Ui {
             acts: HashMap::new(),
             remove_acts: HashMap::new(),
             field_inputs: HashMap::new(),
+            blur_panels: HashMap::new(),
+            slot_inputs: HashMap::new(),
+            building_inputs: Vec::new(),
             reorder_grids: Default::default(),
             focus_title: false,
             editor: None,
@@ -309,6 +326,8 @@ impl Ui {
         self.acts.clear();
         self.remove_acts.clear();
         self.field_inputs.clear();
+        self.blur_panels.clear();
+        self.slot_inputs.clear();
         self.reorder_grids.clear();
         self.slots.clear();
         self.search_ids.clear();
@@ -367,9 +386,39 @@ impl Ui {
         if ctx.render_root(self.window).get_widget_with_tag(tag).is_none() || self.slots.get(key) == Some(&c) {
             return;
         }
+        // a form input of this slot that has the focus keeps it across the rebuild (by place)
+        let focused = ctx.render_root(self.window).focused_widget();
+        let place = focused.and_then(|f| self.slot_inputs.get(key).and_then(|v| v.iter().position(|i| *i == f)));
+        self.building_inputs.clear();
         let w = self.content_widget(&c, current);
-        ctx.render_root(self.window).edit_widget_with_tag(tag, |mut b| SizedBox::set_child(&mut b, w));
+        let inputs = std::mem::take(&mut self.building_inputs);
+        let root = ctx.render_root(self.window);
+        root.edit_widget_with_tag(tag, |mut b| SizedBox::set_child(&mut b, w));
+        if let Some(id) = place.and_then(|p| inputs.get(p).copied())
+            && root.focus_on(Some(id))
+        {
+            root.edit_widget(id, |mut w| {
+                let mut a = w.downcast::<TextArea<true>>();
+                let end = a.widget.text().to_string().len();
+                TextArea::select_byte_range(&mut a, end, end);
+            });
+        }
+        self.slot_inputs.insert(key, inputs);
         self.slots.insert(key, c);
+    }
+
+    /// Saves a form input's text unless it is what was saved last.
+    fn save_input(&mut self, ctx: &mut DriverCtx<'_, '_>, id: WidgetId) {
+        let Some(f) = self.field_inputs.get_mut(&id) else { return };
+        if f.text.trim() == f.saved.trim() {
+            return;
+        }
+        f.saved = f.text.clone();
+        let (t, act, text) = (f.t, f.act.clone(), f.text.clone());
+        match self.data.form_apply(t, &act, &text) {
+            Ok(()) => self.refresh(ctx, false),
+            Err(e) => self.status(ctx, format!("error: {e}")),
+        }
     }
 
     /// Text sessions on `t`'s fields; kept if `t` is already open with the same fields.
@@ -497,11 +546,13 @@ impl Ui {
             }
             return;
         }
-        if let Some((t, act)) = self.field_inputs.get(&id).cloned() {
-            if let TextAction::Entered(text) = a {
-                match self.data.form_apply(t, &act, &text) {
-                    Ok(()) => self.refresh(ctx, false),
-                    Err(e) => self.status(ctx, format!("error: {e}")),
+        if let Some(f) = self.field_inputs.get_mut(&id) {
+            // saved on Enter and when the focus leaves the field
+            match a {
+                TextAction::Changed(text) => f.text = text,
+                TextAction::Entered(text) => {
+                    f.text = text;
+                    self.save_input(ctx, id);
                 }
             }
             return;
@@ -595,6 +646,10 @@ impl AppDriver for Ui {
         } else if action.is::<Press>() {
             if let Some(a) = self.acts.get(&id).cloned() {
                 self.press(ctx, a);
+            }
+        } else if action.is::<Blur>() {
+            if let Some(input) = self.blur_panels.get(&id).copied() {
+                self.save_input(ctx, input);
             }
         } else if let Some(Reorder { from, to }) = action.downcast_ref::<Reorder>().copied() {
             if self.reorder_grids.contains(&id) {

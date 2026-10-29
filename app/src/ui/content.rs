@@ -389,8 +389,7 @@ impl Ui {
                             style::label(&look, &r.value, Text::Body).erased()
                         } else {
                             let (input, id) = style::input(&look, &r.value, if r.optional { "none" } else { "" }, Text::Body, false);
-                            self.field_inputs.insert(id, (*t, crate::fields::FormAct::Field(r.clone())));
-                            NewWidget::new(Panel::new(input, look.clone(), PanelKind::Field, (5.0, 8.0))).erased()
+                            self.form_input(id, *t, crate::fields::FormAct::Field(r.clone()), &r.value, input).erased()
                         };
                         let row = Flex::row()
                             .cross_axis_alignment(CrossAxisAlignment::Center)
@@ -403,12 +402,12 @@ impl Ui {
                 Block::Form(t, rows) => {
                     for r in rows {
                         let (input, id) = style::input(&look, &r.value, &r.placeholder, Text::Body, false);
-                        self.field_inputs.insert(id, (*t, r.act.clone()));
+                        let field = self.form_input(id, *t, r.act.clone(), &r.value, input);
                         let row = Flex::row()
                             .cross_axis_alignment(CrossAxisAlignment::Center)
                             .with_gap(Length::px(look.sp(12.0)))
                             .with_child(NewWidget::new(osis_kit::masonry::widgets::SizedBox::new(style::label(&look, &r.label, Text::Muted)).width(Length::px(120.0))))
-                            .with_flex_child(NewWidget::new(Panel::new(input, look.clone(), PanelKind::Field, (5.0, 8.0))), 1.0);
+                            .with_flex_child(field, 1.0);
                         col = col.with_child(NewWidget::new(row));
                     }
                 }
@@ -431,6 +430,18 @@ impl Ui {
             }
         }
         NewWidget::new(col).erased()
+    }
+}
+
+impl Ui {
+    /// A form field: the input in a field panel that reports losing focus; registers what it
+    /// saves and its place in the slot being built (for keeping the focus across a rebuild).
+    fn form_input(&mut self, id: osis_kit::masonry::core::WidgetId, t: Tid, act: crate::fields::FormAct, value: &str, input: NewWidget<osis_kit::masonry::widgets::TextInput>) -> NewWidget<Panel> {
+        let panel = NewWidget::new(Panel::new(input, self.look.clone(), PanelKind::Field, (5.0, 8.0)).report_blur(true));
+        self.field_inputs.insert(id, super::FormInput { t, act, saved: value.to_string(), text: value.to_string() });
+        self.blur_panels.insert(panel.id(), id);
+        self.building_inputs.push(id);
+        panel
     }
 }
 
