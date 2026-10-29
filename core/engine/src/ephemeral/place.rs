@@ -136,6 +136,9 @@ impl Engine {
         let gak = group_ak()?;
         let core_schema = || Some(Arc::new(osis_schema::core_schema().clone()));
         let mut out = Placed { persisted: BTreeSet::new(), durable: BTreeMap::new(), eph: Vec::new(), refused: Vec::new() };
+        // member removals of this batch: an unplace beside the persisting write wins over the
+        // conversion of that placement
+        let removed: BTreeSet<(Tid, u64, Tid)> = gops.iter().flat_map(|(g, am)| am.ops.iter().filter_map(|op| member_op(op).filter(|x| !x.2).map(|(f, x, _)| (*g, f, x)))).collect();
         for (g, am) in gops {
             let (mut d, mut e) = (Vec::new(), Vec::new());
             for op in &am.ops {
@@ -159,14 +162,19 @@ impl Engine {
                     out.refused.push((*t, g));
                     continue;
                 }
-                // expired, its timer not yet run: nothing to convert
-                let Some(exp) = self.placement_expiry(&g, &gak, field, t) else { continue };
+                let reset = EphOp { tid: g, ak: gak.clone(), am: AspectMut { ops: vec![group_op(field, *t, false)], schema: core_schema(), lifetime: Lifetime::Ephemeral, ..AspectMut::default() }, conversion: true };
+                // expired, its timer not yet run, or unplaced by this batch: nothing to convert
+                let exp = self.placement_expiry(&g, &gak, field, t);
+                let Some(exp) = exp.filter(|_| !removed.contains(&(g, field, *t))) else {
+                    out.eph.push(reset);
+                    continue;
+                };
                 let d = out.durable.entry(g).or_insert_with(|| AspectMut { schema: core_schema(), expires: exp, ..AspectMut::default() });
                 if d.expires != exp {
                     return Err(Error::Misuse("placements with different expiries persist into one group in one batch: persist them in separate batches"));
                 }
                 d.ops.push(group_op(field, *t, true));
-                out.eph.push(EphOp { tid: g, ak: gak.clone(), am: AspectMut { ops: vec![group_op(field, *t, false)], schema: core_schema(), lifetime: Lifetime::Ephemeral, ..AspectMut::default() }, conversion: true });
+                out.eph.push(reset);
             }
             // a group ephemerally: its (empty) `/group` persists, its ephemeral items do not
             if self.eph.defs.contains_key(t) && !self.has_durable(t, &gak) {

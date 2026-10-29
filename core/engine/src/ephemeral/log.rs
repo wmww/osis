@@ -73,7 +73,7 @@ pub(super) struct Log {
 }
 
 fn size(f: &Fragment) -> usize {
-    crate::engine::state::encode(f).map(|b| b.len()).unwrap_or(0)
+    f.approx_bytes()
 }
 
 /// Whether `c` is in effect among the logged changes (`undo::in_effect`).
