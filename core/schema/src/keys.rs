@@ -4,7 +4,7 @@
 
 use crate::codec::Codec;
 use crate::path::{Path, PathError, PathErrorKind};
-use crate::schema::{AspectDefaults, Schema};
+use crate::schema::{AspectDefaults, Lifetime, Schema};
 use crate::statics::StaticSchema;
 use crate::typed::{typed_read, validate_write};
 use crate::types::Type;
@@ -59,6 +59,58 @@ impl AspectKey for Ak {
     }
     fn encode(&self, t: &Value) -> Value {
         t.clone()
+    }
+}
+
+/// An untyped key with a lifetime other than the default (`Ak::ephemeral()`, `presence()`,
+/// `signal()` through [`Lifetimes`]): generic tools and the CLI.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Untyped {
+    ak: Ak,
+    lifetime: Lifetime,
+}
+
+impl Untyped {
+    pub fn new(ak: Ak, lifetime: Lifetime) -> Untyped {
+        Untyped { ak, lifetime }
+    }
+}
+
+impl AspectKey for Untyped {
+    type T = Value;
+    fn ak(&self) -> &str {
+        self.ak.as_str()
+    }
+    fn schema(&self) -> Option<&Schema> {
+        None
+    }
+    fn decode(&self, v: &Value) -> Result<Value, PathError> {
+        Ok(v.clone())
+    }
+    fn encode(&self, t: &Value) -> Value {
+        t.clone()
+    }
+    fn defaults(&self) -> AspectDefaults {
+        AspectDefaults { lifetime: self.lifetime, ..AspectDefaults::default() }
+    }
+}
+
+/// Untyped keys of the other lifetimes: `Ak::new("/app/x")?.ephemeral()`.
+pub trait Lifetimes {
+    fn ephemeral(self) -> Untyped;
+    fn presence(self) -> Untyped;
+    fn signal(self) -> Untyped;
+}
+
+impl Lifetimes for Ak {
+    fn ephemeral(self) -> Untyped {
+        Untyped::new(self, Lifetime::Ephemeral)
+    }
+    fn presence(self) -> Untyped {
+        Untyped::new(self, Lifetime::Presence)
+    }
+    fn signal(self) -> Untyped {
+        Untyped::new(self, Lifetime::Signal)
     }
 }
 

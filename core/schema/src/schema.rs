@@ -41,29 +41,51 @@ pub struct AspectDef {
     pub doc: Option<String>,
 }
 
+impl AspectDef {
+    /// The lifetime its flags declare (validation allows at most one lifetime flag).
+    pub fn lifetime(&self) -> Lifetime {
+        if self.flags.contains(&Flag::Signal) {
+            Lifetime::Signal
+        } else if self.flags.contains(&Flag::Presence) {
+            Lifetime::Presence
+        } else if self.flags.contains(&Flag::Ephemeral) {
+            Lifetime::Ephemeral
+        } else {
+            Lifetime::Durable
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SignalDef {
     pub ty: Type,
     pub doc: Option<String>,
 }
 
-/// Local aspect flags (spec/data-model.md §2); nothing on the wire enforces them.
+/// Aspect flags (spec/data-model.md §2). `ephemeral`, `presence` and `signal` decide where a
+/// write goes (its lifetime); nothing on the wire enforces the others.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Flag {
     Ro = 0,
     Synthetic = 1,
     Guaranteed = 2,
     Indexed = 3,
+    Ephemeral = 4,
+    Presence = 5,
+    Signal = 6,
 }
 
 impl Flag {
-    pub const ALL: [Flag; 4] = [Flag::Ro, Flag::Synthetic, Flag::Guaranteed, Flag::Indexed];
+    pub const ALL: [Flag; 7] = [Flag::Ro, Flag::Synthetic, Flag::Guaranteed, Flag::Indexed, Flag::Ephemeral, Flag::Presence, Flag::Signal];
     pub fn name(self) -> &'static str {
         match self {
             Flag::Ro => "ro",
             Flag::Synthetic => "synthetic",
             Flag::Guaranteed => "guaranteed",
             Flag::Indexed => "indexed",
+            Flag::Ephemeral => "ephemeral",
+            Flag::Presence => "presence",
+            Flag::Signal => "signal",
         }
     }
     pub fn from_id(id: u64) -> Option<Flag> {
@@ -121,11 +143,31 @@ pub struct Retention {
     pub at_most: Bound,
 }
 
+/// Where an aspect's writes live (notes/ephemeral.md Model): durable commits, or in memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum Lifetime {
+    #[default]
+    Durable,
+    /// A value held in memory.
+    Ephemeral,
+    /// An ephemeral value tied to its author's presence (acts as `Ephemeral` for now).
+    Presence,
+    /// A write with no lasting value: delivered to callbacks, never in state.
+    Signal,
+}
+
+impl Lifetime {
+    pub fn is_durable(self) -> bool {
+        self == Lifetime::Durable
+    }
+}
+
 /// Per-AK write defaults (notes/api.md Keys).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub struct AspectDefaults {
     pub retention: Retention,
     pub expires: Option<u64>,
+    pub lifetime: Lifetime,
 }
 
 /// A validation failure: the item (`type NAME`, `aspect AK`, `signal KIND`, `schema`) and why.
@@ -146,7 +188,7 @@ impl Schema {
 
     /// Write defaults for an AK this schema declares.
     pub fn defaults(&self, ak: &str) -> Option<AspectDefaults> {
-        self.aspects.get(ak).map(|a| AspectDefaults { retention: a.retention, expires: a.expires })
+        self.aspects.get(ak).map(|a| AspectDefaults { retention: a.retention, expires: a.expires, lifetime: a.lifetime() })
     }
 
     /// One expansion step of a named type (standard or declared).
@@ -267,6 +309,19 @@ impl Schema {
             }
             if def.expires == Some(0) {
                 bad(&item, "expires must be positive".into());
+            }
+            let lifetimes = def.flags.iter().filter(|f| matches!(f, Flag::Ephemeral | Flag::Presence | Flag::Signal)).count();
+            if lifetimes > 1 {
+                bad(&item, "at most one of ephemeral, presence, signal".into());
+            }
+            if lifetimes > 0 && self.is_core() {
+                bad(&item, "core aspects are durable".into());
+            }
+            if lifetimes > 0 && def.retention != Retention::default() {
+                bad(&item, "retention applies to durable aspects only".into());
+            }
+            if def.lifetime() == Lifetime::Signal && def.expires.is_some() {
+                bad(&item, "a signal has no value to expire".into());
             }
             for s in &def.succeeds {
                 if s == ak || Ak::new(s.as_str()).is_err() {

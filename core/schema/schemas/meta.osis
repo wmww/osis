@@ -22,6 +22,6 @@ type field_def = struct { 0 name: string, 1 type: type_expr, 2 default: option<a
 type case_def = struct { 0 name: string, 1 payload: option<type_expr>, 2 succeeds: set<int>, 3 doc: option<string> };
 type bound = struct { 0 abs: option<timestamp>, 1 rel: option<duration> };
 type retention = struct { 0 by: enum { 0 nobody, 1 admin, 2 author, 3 writer }, 1 at_least: bound, 2 at_most: bound };
-type flag = enum { 0 ro, 1 synthetic, 2 guaranteed, 3 indexed };
+type flag = enum { 0 ro, 1 synthetic, 2 guaranteed, 3 indexed, 4 ephemeral, 5 presence, 6 signal };
 type aspect_def = struct { 0 type: type_expr, 1 retention: retention, 2 expires: option<duration>, 3 flags: set<flag>, 4 succeeds: set<string>, 5 doc: option<string> };
 type signal_def = struct { 0 type: type_expr, 1 doc: option<string> };

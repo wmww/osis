@@ -180,6 +180,7 @@ fn retention_rules() {
     let d = AspectDefaults {
         retention: Retention { by: PurgeBy::Author, at_least: Bound { abs: Some(7), rel: None }, at_most: Bound::default() },
         expires: Some(100),
+        ..Default::default()
     };
     assert_eq!(write_retention("/app/x", Some(&d), None).unwrap(), d.retention);
     assert_eq!(write_expires("/app/x", ts(10), Some(&d), None).unwrap(), Some(110));
