@@ -2,6 +2,8 @@
 > Summary: Two gaps the notes app hit in `TextSession`: `on_remote` reports only the merged text (no edits), so a UI cannot keep the caret across a remote edit; a session dropped after its thing was deleted commits its pending text and recreates the thing.
 > Tags: core-ask, api, owner-call
 
+Owner: to be handled later on the core side; app work lives with both meanwhile.
+
 Repro: app/ (notes app, notes/app.md Prototype); for the second, in a test: `edit_text(t, BODY)`, `insert`, `write_with(|w| w.delete(t))`, drop the session: `get(t, BODY)` is the typed text again.
 
 - **Caret**: notes/api.md says remote edits are reported through `on_remote(|edits|)` so the UI can map cursors; the code passes `&str` (the merged text). The app resets the widget text and the caret jumps to the end. Ask: deliver the edits (or a char-index map old -> new) with the merged text.
