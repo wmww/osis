@@ -720,9 +720,17 @@ fn random_window_run(seed: u64) {
         net.advance(15_000);
     }
     let holders: Vec<usize> = nodes.iter().copied().filter(|n| net.engine(*n).ephemeral_thing(&w).is_some()).collect();
-    let first = notes(&mut net, holders[0], w);
+    let Some(&h0) = holders.first() else {
+        // lost only when no node holds it (spec/requirements.md Ephemeral data): every node and
+        // both servers restarted
+        let restarted = |who: &str| log.iter().any(|l| *l == format!("{who} restarts"));
+        let all = nodes.iter().all(|n| restarted(&n.to_string())) && [s1, s2].iter().all(|s| restarted(&format!("server {s}")));
+        assert!(all, "seed {seed}: nobody holds the window\n{}", log.join("\n"));
+        return;
+    };
+    let first = notes(&mut net, h0, w);
     for n in &holders[1..] {
-        assert_eq!(notes(&mut net, *n, w), first, "seed {seed}: node {n} differs from node {}\n{}", holders[0], log.join("\n"));
+        assert_eq!(notes(&mut net, *n, w), first, "seed {seed}: node {n} differs from node {h0}\n{}", log.join("\n"));
     }
 }
 

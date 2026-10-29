@@ -47,8 +47,8 @@ pub struct Policy {
     pub deletes: u32,
     pub replacements: u32,
     pub deposits: u32,
-    /// Ephemeral entry bytes held per label, and over all labels (in memory): ephemeral uploads
-    /// beyond either get code 12 (notes/ephemeral.md Bounds).
+    /// Ephemeral memory charged per label, and over all labels: an ephemeral upload beyond the
+    /// label's gets code 12; past the total, the label charged most gives way (notes/ephemeral.md).
     pub ephemeral_bytes: u64,
     pub ephemeral_total: u64,
     /// Wrap replacements per entry and window.

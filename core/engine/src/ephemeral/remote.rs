@@ -29,10 +29,10 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 /// Relay-only commit IDs remembered as delivered (notes/ephemeral.md Bounds). Resource bound
-/// against a hostile writer: past it the oldest is forgotten and its `ts` becomes a floor, at or
-/// below which relay-only commits are dropped, so none fires twice (0: every relay-only commit
-/// older than the newest delivered is dropped; infinity: memory grows with every signal of the
-/// replay window).
+/// against a hostile writer: past it the oldest is forgotten and its `ts` becomes its author's
+/// floor, at or below which that author's relay-only commits are dropped, so none fires twice and
+/// a flooding writer loses only its own (0: every relay-only commit older than its author's
+/// newest delivered is dropped; infinity: memory grows with every signal of the replay window).
 pub const MAX_DELIVERED: usize = 1 << 16;
 
 /// Held bytes of an aspect's ephemeral bodies above which a writer compacts it, besides the
@@ -117,10 +117,11 @@ pub(crate) struct Remote {
     /// Expiry times of held parts.
     pub timers: BTreeMap<u64, BTreeSet<(CommitId, usize)>>,
     /// Relay-only commits delivered, oldest first, with their `ts` (wall ms).
-    pub delivered: VecDeque<(CommitId, u64)>,
+    pub delivered: VecDeque<(CommitId, u64, Tid)>,
     pub delivered_set: BTreeSet<CommitId>,
-    /// Relay-only commits at or below this `ts` (wall ms) are dropped (`MAX_DELIVERED`).
-    pub delivered_floor: u64,
+    /// Per author, relay-only commits at or below this `ts` (wall ms) are dropped
+    /// (`MAX_DELIVERED`; per author, so a writer flooding signals drops only its own).
+    pub delivered_floor: BTreeMap<Tid, u64>,
     /// `Core::generation` when held validity was last judged.
     pub judged_at: u64,
 }
@@ -546,7 +547,7 @@ impl Engine {
         if class == EphClass::Relay {
             // its only replay window (notes/ephemeral.md Signals)
             let r = &self.eph.remote;
-            if r.delivered_set.contains(&id) || at <= r.delivered_floor || at.saturating_add(MAX_DRIFT_MS) < now || at > now.saturating_add(MAX_DRIFT_MS) {
+            if r.delivered_set.contains(&id) || r.delivered_floor.get(&h.author).is_some_and(|f| at <= *f) || at.saturating_add(MAX_DRIFT_MS) < now || at > now.saturating_add(MAX_DRIFT_MS) {
                 return Ok(EphIngest::Dropped { absorbed: false });
             }
         } else {
@@ -620,13 +621,18 @@ impl Engine {
         if class == EphClass::Relay {
             let r = &mut self.eph.remote;
             r.delivered_set.insert(id);
-            r.delivered.push_back((id, at));
-            while r.delivered.len() > MAX_DELIVERED || r.delivered.front().is_some_and(|(_, t)| t.saturating_add(MAX_DRIFT_MS) < now) {
-                if let Some((c, t)) = r.delivered.pop_front() {
+            r.delivered.push_back((id, at, h.author));
+            while r.delivered.len() > MAX_DELIVERED || r.delivered.front().is_some_and(|(_, t, _)| t.saturating_add(MAX_DRIFT_MS) < now) {
+                if let Some((c, t, a)) = r.delivered.pop_front() {
                     r.delivered_set.remove(&c);
-                    r.delivered_floor = r.delivered_floor.max(t);
+                    // past its window a commit is dropped anyway: no floor needed
+                    if t.saturating_add(MAX_DRIFT_MS) >= now {
+                        let f = r.delivered_floor.entry(a).or_default();
+                        *f = (*f).max(t);
+                    }
                 }
             }
+            r.delivered_floor.retain(|_, f| f.saturating_add(MAX_DRIFT_MS) >= now);
             let mut signals = Vec::new();
             for (ai, s) in decoded {
                 let Some(a) = h.aspects.get(ai) else { continue };
