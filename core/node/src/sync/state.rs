@@ -196,6 +196,11 @@ pub struct State {
     /// Entries this node dropped, by when (corrected wall ms): refused from peers for
     /// `TOMBSTONE_LIFETIME` (spec/sync.md §5), so a peer cannot replay a deleted body.
     pub tombs: BTreeMap<(LabelId, BlobId), u64>,
+    /// Commits whose body entry (not a certificate copy) left a label by a delete, by when
+    /// (`remove_entry`): such a body is not placed there again while its live writes are carried
+    /// (spec/sync.md §6). In memory, from `tombs` at load where the blob's record is known;
+    /// forgotten with the tombstone.
+    pub deleted: BTreeMap<(LabelId, CommitId), u64>,
     /// Inbox blobs not yet answered by their server, by (server, blob).
     pub outbox: BTreeMap<(ServerKey, LabelId, BlobId), OutRec>,
     /// Corrected wall ms of the running `handle` (tombstone times).
@@ -446,6 +451,7 @@ impl State {
         s.entries = entries;
         s.present_by = s.present.iter().map(|(sv, l, b)| (*l, *b, *sv)).collect();
         s.gone_by = s.gone.iter().map(|(sv, l, b)| (*l, *b, *sv)).collect();
+        s.deleted = s.tombs.iter().filter_map(|((l, b), t)| s.blobs.get(b).filter(|r| !r.cert).map(|r| ((*l, r.commit), *t))).collect();
         Ok(s)
     }
 
@@ -571,6 +577,9 @@ impl State {
 
     /// Forgets an entry, tombstoned (`tombs`).
     pub fn remove_entry(&mut self, l: LabelId, b: BlobId) {
+        if let Some(Entry { cert: false, kind: Kind::Commit { commit, .. }, .. }) = self.entries.get(&(l, b)) {
+            self.deleted.insert((l, *commit), self.now);
+        }
         if self.drop_entry(l, b) {
             self.put(key(TOMB, &[&l.0, &b.0]), Wr::new().u64(self.now).take());
             self.tombs.insert((l, b), self.now);
@@ -596,6 +605,7 @@ impl State {
             self.tombs.remove(&(l, b));
             self.del(key(TOMB, &[&l.0, &b.0]));
         }
+        self.deleted.retain(|_, t| t.saturating_add(osis_base::format::TOMBSTONE_LIFETIME_MS) > now);
     }
 
     pub fn set_reach_secret(&mut self, s: Secret32) {

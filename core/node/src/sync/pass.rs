@@ -859,6 +859,11 @@ impl SyncEngine {
             if !here && self.carried_by(server, g, &l, &b.commit, &needed) {
                 continue;
             }
+            // a right holder deleted it here: its keep bounds, dated by its own deaths, passed
+            // there (spec/commits.md §5); not placed again while its live writes are carried
+            if !here && self.state.deleted.contains_key(&(l, b.commit)) && self.live_carried(b, &needed, snaps, &mut note)? {
+                continue;
+            }
             // another node's commit not at this server: its author (or a co-writer) first
             if !here && !self.relay_due(&b.commit) {
                 left.commits.insert(b.commit);
@@ -1019,6 +1024,10 @@ impl SyncEngine {
         let mut note = Note::default();
         for b in &bodies {
             if let Some(needed) = self.must_hold(b, &snaps, &snapping, &mut note)? {
+                // not placed again (`body_sends`)
+                if self.state.deleted.contains_key(&(*l, b.commit)) && self.live_carried(b, &needed, &snaps, &mut note)? {
+                    continue;
+                }
                 v.must_hold.push((b.commit, needed));
             }
         }
@@ -1314,6 +1323,18 @@ impl SyncEngine {
         let covered = if covered || known { Some(covered) } else { None };
         let must = classify(&Facts { required: true, closure: true, before_at_least: before, covered, ..Facts::default() }) == Hold::Must;
         Ok(must.then_some(needed))
+    }
+
+    /// Whether each of `parts` of body `b` has no live write or a snapshot under the label
+    /// (`snaps`) covering it.
+    fn live_carried(&mut self, b: &Body, parts: &[(usize, usize)], snaps: &Snaps, note: &mut Note) -> Result<bool> {
+        let Some(h) = self.engine.header(&b.commit) else { return Ok(false) };
+        for p in parts {
+            if self.part_live(&h, &b.commit, p) && !self.parts_covered(snaps, &b.commit, &h, &[*p], note)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Whether every part's aspect of commit `c` is covered by a snapshot under `l`.
