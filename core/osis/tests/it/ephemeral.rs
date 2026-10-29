@@ -128,6 +128,7 @@ fn first_durable_write_persists_chain_spec_commits_2() {
 // notes/ephemeral.md Local engine (Restart): on a `Dir` store, reopening forgets every
 // ephemeral thing and ephemeral aspect; durable data is intact. spec/requirements.md (data
 // model: ephemeral state in memory)
+// spec/data-model.md §1
 #[test]
 fn restart_forgets_ephemeral_spec_requirements_ephemeral() {
     let dir = std::env::temp_dir().join(format!("osis-eph-{}-{:?}", std::process::id(), std::thread::current().id()).replace(['(', ')'], ""));
@@ -280,6 +281,7 @@ fn signal_aspects_fire_once_never_in_state_spec_data_model_2() {
 // notes/ephemeral.md API delta (Writes): a mixed batch is validated as a whole; when its
 // durable half fails nothing applies, ephemeral half and new things included. A mixed batch
 // that succeeds is one change with one `ts`.
+// spec/data-model.md §2
 #[test]
 fn mixed_batch_all_or_nothing_spec_api_writes() {
     let (a, _c) = setup(7);
@@ -324,6 +326,7 @@ fn mixed_batch_all_or_nothing_spec_api_writes() {
 
 // notes/ephemeral.md Deletion: deleting an ephemeral thing in no labeled closure frees it with
 // the ephemeral things it owns; the tids read unknown.
+// spec/data-model.md §1
 #[test]
 fn delete_frees_ephemeral_things() {
     let (db, _c) = setup(9);
@@ -469,6 +472,7 @@ fn membership_and_move_persist_first_spec_data_model_1() {
 // index past the end) fails the whole batch: no commit, no new thing. Persisting a thing leaves
 // the ephemeral things it owns ephemeral; `/group` takes no ephemeral writes until ephemeral
 // placements.
+// spec/data-model.md §1, §2
 #[test]
 fn mixed_batch_resolution_failure_and_partial_chain() {
     let (db, _c) = setup(21);
