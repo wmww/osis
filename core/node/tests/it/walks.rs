@@ -804,7 +804,7 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool, forge: bool) -> ([
     if forge {
         // every node holds every commit now: forged copies show on no original, and the tags
         // agree (a copy may hold one its mover imported while it lacked the forged write's own
-        // commit: issues/snapshot-copy-residue.md)
+        // commit: the forging snapshot vouched for it, spec/permissions.md §5.2)
         let tagged = |lp: &mut LocalPeer, i: usize| things.iter().map(|t| lp.peers[i].engine.get(t, &ak("/t/tags")).unwrap()).collect::<Vec<_>>();
         let first = tagged(&mut lp, 0);
         assert!(!format!("{:?}", &first[..2]).contains("forged"), "seed {seed}: a forged copy shows: {first:?}");

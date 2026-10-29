@@ -772,7 +772,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     for (k, v) in scan::<(Tid, osis_base::Ak)>(tx, CARRIED)? {
         tx.core.ix.carried.insert(k, dec(&v)?);
     }
-    for ((k, x), _) in scan::<((Tid, CommitId), (osis_base::Ts, CommitId, Tid))>(tx, IMPORTS)? {
+    for ((k, x), _) in scan::<((Tid, CommitId), CommitId)>(tx, IMPORTS)? {
         tx.core.ix.imports.insert(k, x);
     }
     Ok(())

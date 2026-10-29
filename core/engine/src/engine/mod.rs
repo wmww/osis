@@ -342,9 +342,9 @@ indexes! {
     pub invalid: JSetMap<(Tid, Ak), CommitId>,
     /// Held deltas per aspect: (`ts`, commit).
     pub by_aspect: JSetMap<(Tid, Ak), (Ts, CommitId)>,
-    /// Held imports per thing and origin: (thing, origin) -> (`ts`, import, importer): the
-    /// deltas owning the origin's writes there (spec/permissions.md §7).
-    pub imports: JSetMap<(Tid, CommitId), (Ts, CommitId, Tid)>,
+    /// Held imports per thing and origin: (thing, origin) -> import: the deltas owning the
+    /// origin's writes there (spec/permissions.md §7).
+    pub imports: JSetMap<(Tid, CommitId), CommitId>,
     /// Compaction snapshots held per aspect, with their frontiers: the bodies carrying a write
     /// besides its own (deaths, spec/commits.md §5).
     pub snapshots: JMap<(Tid, Ak), Vec<HeldSnapshot>>,
