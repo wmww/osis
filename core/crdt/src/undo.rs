@@ -112,7 +112,8 @@ fn only_from(u: &Undone, f: &Fragment) -> bool {
     }
 }
 
-/// Re-inserts the pre-reset value (nothing when there was none).
+/// Re-inserts the pre-reset value; `None` when there was none: the delta's other writes then
+/// get their own rules (the reset or case write itself gets nothing).
 fn undo_reset<V: View>(w: &mut Writer, buffer: &dyn UndoBuffer, view: &V, path: &[PathSeg]) -> Result<Option<Fragment>, Error> {
     // nothing before: making the position absent is "Absent before"'s, which declined here
     before_read(buffer, path).map(|v| replace(w, view, &v)).transpose()
@@ -129,7 +130,9 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
     let out = match o {
         Fragment::Register(reg) => {
             if reg.reset.is_some() {
-                return undo_reset(w, buffer, view, path);
+                if let Some(f) = undo_reset(w, buffer, view, path)? {
+                    return Ok(Some(f));
+                }
             }
             let Some(ow) = &reg.write else { return Ok(None) };
             // only if the undone write still wins, or an undo in effect restored its value
@@ -185,7 +188,9 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
         }
         Fragment::Set(x) => {
             if x.meta.reset.is_some() {
-                return undo_reset(w, buffer, view, path);
+                if let Some(f) = undo_reset(w, buffer, view, path)? {
+                    return Ok(Some(f));
+                }
             }
             let prev = buffer.before(path).map(|f| f.chosen());
             let mut elems = BTreeMap::new();
@@ -208,7 +213,9 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
         }
         Fragment::Map(m) => {
             if m.meta.reset.is_some() {
-                return undo_reset(w, buffer, view, path);
+                if let Some(f) = undo_reset(w, buffer, view, path)? {
+                    return Ok(Some(f));
+                }
             }
             let vview = view.element().ok_or(Error::Mismatch("map without value type"))?;
             let prev = buffer.before(path).map(|f| f.chosen());
@@ -254,7 +261,9 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
         }
         Fragment::Struct(x) => {
             if x.meta.reset.is_some() {
-                return undo_reset(w, buffer, view, path);
+                if let Some(f) = undo_reset(w, buffer, view, path)? {
+                    return Ok(Some(f));
+                }
             }
             let mut fields = BTreeMap::new();
             for (id, f) in &x.fields {
@@ -275,7 +284,9 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
         Fragment::Enum(x) => {
             if x.meta.reset.is_some() || x.case.is_some() {
                 // a case change is a reset (§5.4)
-                return undo_reset(w, buffer, view, path);
+                if let Some(f) = undo_reset(w, buffer, view, path)? {
+                    return Ok(Some(f));
+                }
             }
             let mut payloads = BTreeMap::new();
             for (id, f) in &x.payloads {
@@ -295,7 +306,9 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
         }
         Fragment::Seq(x) => {
             if x.meta.reset.is_some() {
-                return undo_reset(w, buffer, view, path);
+                if let Some(f) = undo_reset(w, buffer, view, path)? {
+                    return Ok(Some(f));
+                }
             }
             let cur = match &slot {
                 Some(Fragment::Seq(c)) => Some(c),
