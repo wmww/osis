@@ -72,7 +72,7 @@ fn forged_states(seed: u64, types: &[Ty]) -> (Vec<Fragment>, Vec<Option<crdt_mod
     (ms.iter().map(ostate).collect(), ms)
 }
 
-/// The kitchen sink without its map: a forged key copy is not order-free (issues/forged-map-key.md).
+/// The kitchen sink without its map: a forged key copy is not order-free (issues/forged-creation-copies.md).
 fn sink_no_map() -> Ty {
     match sink_no_seq() {
         Ty::Struct(mut f) => {
@@ -95,13 +95,17 @@ fn forged_laws(seed: u64, types: &[Ty]) {
         }
         assert_eq!(join(&s[i], &s[j]), ostate(&m), "model join {i} {j}");
         assert_eq!(join(&s[i], &s[j]).read(), m.as_ref().and_then(|x| x.read()).map(|v| crate::testutil::value(&v)), "model read {i} {j}");
-        // a placement cached before the join follows it as a fresh one reads
-        let mut x = s[i].clone();
-        let _ = x.read();
-        x.join(s[j].clone());
-        let mut y = x.clone();
-        y.drop_caches();
-        assert_eq!(x.read(), y.read(), "cached read {i} {j}");
+        // a placement cached before the join follows it as a fresh one reads (`drop_caches` is
+        // debug-only)
+        #[cfg(debug_assertions)]
+        {
+            let mut x = s[i].clone();
+            let _ = x.read();
+            x.join(s[j].clone());
+            let mut y = x.clone();
+            y.drop_caches();
+            assert_eq!(x.read(), y.read(), "cached read {i} {j}");
+        }
     }
 }
 
