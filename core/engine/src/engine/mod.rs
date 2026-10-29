@@ -80,12 +80,15 @@ pub struct Meta {
     /// Aspects of a compaction snapshot whose body had a write in the state when dropped (its
     /// frontiers went with it, spec/commits.md §5; `retention::snapshot_live` starts from this).
     pub live_drops: BTreeSet<usize>,
+    /// Per dropped aspect, the held valid snapshots that covered its body when it dropped
+    /// (spec/commits.md §5): their copies of its writes are its writes (`apply::rebuild`).
+    pub covered_by: BTreeMap<usize, BTreeSet<CommitId>>,
 }
 
 impl Meta {
     /// A commit's meta from its decoded header.
     pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
-        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, missing, live_drops: head.live_drops }
+        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, missing, live_drops: head.live_drops, covered_by: head.covered_by }
     }
 }
 

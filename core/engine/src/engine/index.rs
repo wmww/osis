@@ -441,12 +441,14 @@ pub(crate) fn load_edges(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::ap
 }
 
 /// What of a commit its record holds ahead of its blob (version 1): received, origin, dropped
-/// parts, the aspects among them dropped live (`Meta::live_drops`).
+/// parts, the aspects among them dropped live (`Meta::live_drops`), their coverers
+/// (`Meta::covered_by`).
 pub(crate) struct RecordHead {
     pub received: WallMs,
     pub origin: Origin,
     pub dropped: BTreeSet<(usize, usize)>,
     pub live_drops: BTreeSet<usize>,
+    pub covered_by: BTreeMap<usize, BTreeSet<CommitId>>,
 }
 
 pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
@@ -461,6 +463,13 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
     w = w.u32(m.live_drops.len() as u32);
     for a in &m.live_drops {
         w = w.u32(*a as u32);
+    }
+    w = w.u32(m.covered_by.len() as u32);
+    for (a, ss) in &m.covered_by {
+        w = w.u32(*a as u32).u32(ss.len() as u32);
+        for s in ss {
+            w = w.raw(&s.0);
+        }
     }
     w.take()
 }
@@ -560,7 +569,16 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
     for _ in 0..r.u32()? {
         live_drops.insert(r.u32()? as usize);
     }
-    Ok((RecordHead { received, origin, dropped, live_drops }, r.rest()))
+    let mut covered_by = BTreeMap::new();
+    for _ in 0..r.u32()? {
+        let a = r.u32()? as usize;
+        let mut ss = BTreeSet::new();
+        for _ in 0..r.u32()? {
+            ss.insert(CommitId(r.arr()?));
+        }
+        covered_by.insert(a, ss);
+    }
+    Ok((RecordHead { received, origin, dropped, live_drops, covered_by }, r.rest()))
 }
 
 /// Writes the given changes (`all`: everything) of the indexes to the persisted index.
@@ -744,7 +762,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             return Err(Error::Corrupt("meta row"));
         }
         crate::apply::index_commit(tx.core, &id, &view);
-        tx.core.ix.commits.insert(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, missing, live_drops: head.live_drops });
+        tx.core.ix.commits.insert(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, missing, live_drops: head.live_drops, covered_by: head.covered_by });
         tx.core.index_validity(&id);
     }
     drop(_ms);
