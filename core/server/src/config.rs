@@ -54,6 +54,8 @@ pub fn parse(text: &str) -> Result<Config, String> {
             "deposits" => p.deposits = n32()?,
             "ephemeral_bytes" => p.ephemeral_bytes = n()?,
             "ephemeral_total" => p.ephemeral_total = n()?,
+            "relays" => p.relays = n32()?,
+            "relay_bytes" => p.relay_bytes = n()?,
             "entry_replacements" => p.entry_replacements = n32()?,
             "max_labels" => p.max_labels = n()?,
             "max_entries" => p.max_entries = n()?,

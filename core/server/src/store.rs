@@ -53,6 +53,9 @@ pub struct Policy {
     pub ephemeral_total: u64,
     /// Wrap replacements per entry and window.
     pub entry_replacements: u32,
+    /// Relay-only uploads pushed per label and window, and their bytes (`osis_proto::RelayLimits`).
+    pub relays: u32,
+    pub relay_bytes: u64,
     /// Node-wide caps: new entries beyond them get code 12, new labels Error 12.
     pub max_labels: u64,
     pub max_entries: u64,
@@ -84,6 +87,8 @@ impl Default for Policy {
             ephemeral_bytes: 16 << 20,
             ephemeral_total: 1 << 30,
             entry_replacements: 4,
+            relays: osis_proto::RelayLimits::default().count,
+            relay_bytes: osis_proto::RelayLimits::default().bytes,
             max_labels: 1 << 20,
             max_entries: 1 << 26,
             max_bytes: 256 << 30,
@@ -108,6 +113,8 @@ impl Policy {
             ephemeral_bytes: u64::MAX,
             ephemeral_total: u64::MAX,
             entry_replacements: u32::MAX,
+            relays: u32::MAX,
+            relay_bytes: u64::MAX,
             max_labels: u64::MAX,
             max_entries: u64::MAX,
             max_bytes: u64::MAX,
@@ -388,6 +395,7 @@ pub struct BackendStore<B: Backend> {
     /// Who last added or replaced an entry, when known: replication skips sending it back.
     origins: HashMap<(LabelId, BlobId), [u8; 32]>,
     eph: Ephemeral,
+    relays: osis_proto::RelayGate,
 }
 
 impl<B: Backend> BackendStore<B> {
@@ -407,7 +415,8 @@ impl<B: Backend> BackendStore<B> {
         };
         let mut policy = policy;
         policy.tombstone_ms = policy.tombstone_ms.max(TOMBSTONE_LIFETIME_MS);
-        Ok(BackendStore { backend, seed, clock, policy, rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default() })
+        let relays = osis_proto::RelayGate::new(osis_proto::RelayLimits { count: policy.relays, bytes: policy.relay_bytes, window_ms: policy.window_ms });
+        Ok(BackendStore { backend, seed, clock, policy, rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default(), relays })
     }
 
     pub fn backend(&self) -> &B {
@@ -1028,6 +1037,10 @@ impl<B: Backend> LabelStore for BackendStore<B> {
 
     fn live_ids(&self, label: &LabelId) -> Result<Vec<BlobId>, StoreError> {
         Ok(self.live_by_id(label, None, usize::MAX)?.into_iter().map(|(b, _)| b).collect())
+    }
+
+    fn relay(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, now: u64) -> Result<osis_proto::RelayVerdict, StoreError> {
+        Ok(self.relays.admit(label, blob_id, size, expiry, now))
     }
 }
 

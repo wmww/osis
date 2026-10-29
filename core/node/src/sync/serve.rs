@@ -224,6 +224,7 @@ struct PeerStore<'a> {
     acc: Accepted,
     /// Ephemeral entries held in memory (`ephemeral`): served like the others.
     eph: &'a super::ephemeral::Lane,
+    relays: &'a mut osis_proto::RelayGate,
 }
 
 /// Whom bytes a peer session put here are charged to: the dialable key its member proof
@@ -419,6 +420,11 @@ impl LabelStore for PeerStore<'_> {
         Ok(out)
     }
 
+    fn relay(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, _now: u64) -> std::result::Result<osis_proto::RelayVerdict, StoreError> {
+        // expiry is wall time: the corrected clock
+        Ok(self.relays.admit(label, blob_id, size, expiry, self.wall))
+    }
+
     fn live_ids(&self, label: &LabelId) -> std::result::Result<Vec<BlobId>, StoreError> {
         let mut ids: BTreeSet<BlobId> = self.entries.range((*label, BlobId([0; 32]))..).take_while(|((l, _), _)| l == label).map(|((_, b), _)| *b).collect();
         ids.extend(SyncEngine::eph_entries_of(self.eph, label).map(|(b, _)| b));
@@ -560,6 +566,7 @@ impl SyncEngine {
                 total_left: self.cfg.peer_total_bytes.saturating_sub(total),
                 acc: Accepted::default(),
                 eph: &self.eph,
+                relays: &mut self.relay_gate,
             };
             let o = s.conn.handle(now, &mut store, input);
             (o, store.acc)

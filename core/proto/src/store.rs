@@ -130,6 +130,8 @@ pub trait LabelStore {
     fn live_by_id(&self, label: &LabelId, after: Option<&BlobId>, max: usize) -> Result<Vec<(BlobId, EntryMeta)>, StoreError>;
     /// IDs of the live entries, sorted.
     fn live_ids(&self, label: &LabelId) -> Result<Vec<BlobId>, StoreError>;
+    /// Admits a stamped relay-only upload (spec/sync.md §5; `RelayGate::admit`).
+    fn relay(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, now: u64) -> Result<crate::RelayVerdict, StoreError>;
 }
 
 #[derive(Clone, Debug, Default)]
@@ -175,6 +177,7 @@ pub struct MemoryLabelStore {
     pub member_labels: BTreeSet<([u8; 32], LabelId)>,
     /// `blob` calls so far (cost tests).
     pub blob_reads: std::cell::Cell<u64>,
+    pub relays: crate::RelayGate,
 }
 
 /// Deposit budget unit (spec/sync.md §5 recommended minimum).
@@ -394,5 +397,9 @@ impl LabelStore for MemoryLabelStore {
 
     fn live_ids(&self, label: &LabelId) -> Result<Vec<BlobId>, StoreError> {
         Ok(self.state(label).map(|s| s.entries.keys().copied().collect()).unwrap_or_default())
+    }
+
+    fn relay(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, now: u64) -> Result<crate::RelayVerdict, StoreError> {
+        Ok(self.relays.admit(label, blob_id, size, expiry, now))
     }
 }

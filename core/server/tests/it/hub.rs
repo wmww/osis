@@ -189,8 +189,18 @@ fn horizon_falls_back_to_reconciliation() {
 
 /// A blob of class `c` (spec/wire.md §5).
 fn classed(n: u8, c: osis_label::Class) -> Vec<u8> {
-    let p = osis_label::Prefix::new([n; 16], None, vec![]).unwrap().with_class(c);
-    osis_label::frame(&p, &[n; 20], &mut osis_crypto::SeededRng::from_seed([n; 32])).unwrap().1
+    classed_at(n, c, None, 20)
+}
+
+/// A blob of class `c` with prefix expiry `t` and `len` plaintext bytes.
+fn classed_at(n: u8, c: osis_label::Class, t: Option<u64>, len: usize) -> Vec<u8> {
+    let p = osis_label::Prefix::new([n; 16], t.map(WallMs), vec![]).unwrap().with_class(c);
+    osis_label::frame(&p, &vec![n; len], &mut osis_crypto::SeededRng::from_seed([n; 32])).unwrap().1
+}
+
+/// A relay-only blob as a writer makes it: expiring `MAX_DRIFT` after now (spec/wire.md §5).
+fn relay_blob(w: &World, n: u8) -> Vec<u8> {
+    classed_at(n, osis_label::Class::Relay, Some(w.now() + osis_base::format::MAX_DRIFT_MS), 20)
 }
 
 // spec/sync.md §5, §8: subscriptions push new events in the cursor-reply format; a stamped
@@ -220,7 +230,7 @@ fn subscriptions_and_relays() {
     assert_eq!(events_of(&w.take(b)).0, vec![Event::Head(child)]);
     w.take(a);
     let backend_rows = w.backends[h].scan(&[], None, usize::MAX).unwrap().len();
-    let relay = classed(5, osis_label::Class::Relay);
+    let relay = relay_blob(&w, 5);
     let rid = osis_label::blob_id(&relay);
     let ev = w.run(a, Command::Upload { label: l2.id, entries: vec![l2.entry(relay.clone())] });
     assert_eq!(statuses(&ev), vec![Code::OK]);
@@ -236,6 +246,45 @@ fn subscriptions_and_relays() {
     let ev = w.run(c, l2.deposit(relay, &l2.head_keys().deposit.clone()));
     assert!(ev.iter().any(|e| matches!(e, ClientEvent::Budget { code: Code::REFUSED, .. })), "{ev:?}");
     assert!(w.take(b).is_empty());
+}
+
+// spec/sync.md §5 (relay-only uploads; security review H1): a reader or removed member holding
+// one stamped relay blob re-uploads it in a loop: the subscriber gets it once; a blob without an
+// expiry, expired, expiring far ahead or over `MAX_RELAY_BLOB` is refused; past the label's relay
+// rate fresh relays get code 4
+#[test]
+fn relay_replay_flood_bounded_spec_sync_5() {
+    let mut w = World::new();
+    let h = w.add_hub(Policy { relays: 5, ..Policy::default() });
+    let (a, b) = (w.connect(h), w.connect(h));
+    let l = Label::new(3);
+    w.setup(a, &l);
+    w.open(a, &l);
+    w.open(b, &l);
+    w.run(b, Command::Subscribe { labels: vec![l.id] });
+    let relay = relay_blob(&w, 5);
+    for _ in 0..200 {
+        let ev = w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(relay.clone())] });
+        assert_eq!(statuses(&ev), vec![Code::OK]);
+    }
+    let pushed: Vec<ClientEvent> = w.take(b);
+    assert_eq!(pushed.len(), 1, "pushed once: {}", pushed.len());
+    let drift = osis_base::format::MAX_DRIFT_MS;
+    let now = w.now();
+    let bad = [
+        (classed(6, osis_label::Class::Relay), Code::REFUSED),
+        (classed_at(7, osis_label::Class::Relay, Some(now), 20), Code::EXPIRED),
+        (classed_at(8, osis_label::Class::Relay, Some(now + 2 * drift + 1), 20), Code::REFUSED),
+        (classed_at(9, osis_label::Class::Relay, Some(now + drift), osis_base::format::MAX_RELAY_BLOB), Code::TOO_LARGE),
+    ];
+    for (blob, code) in bad {
+        let ev = w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob)] });
+        assert_eq!(statuses(&ev), vec![code]);
+    }
+    let codes: Vec<Code> = (10..16).map(|n| statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(relay_blob(&w, n))] }))[0]).collect();
+    assert_eq!(codes, [Code::OK, Code::OK, Code::OK, Code::OK, Code::RATE_LIMITED, Code::RATE_LIMITED], "the label's rate");
+    assert_eq!(w.take(b).len(), 4);
+    assert!(w.backends[h].scan(&[], None, usize::MAX).unwrap().len() < 100, "nothing stored");
 }
 
 // spec/sync.md §4, §5: ephemeral entries are held in memory: synced and pushed like any, no store
