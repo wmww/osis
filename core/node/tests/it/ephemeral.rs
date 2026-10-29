@@ -743,6 +743,41 @@ fn others_writes_in_a_commit_not_joined_spec_sync_9() {
     assert_eq!(notes(&mut net, c, w), map(&[("b", "1")]), "a's write is a's to send");
 }
 
+// spec/sync.md §9 (what a cover absorbs is deleted at a server once the cover is held there):
+// the author crashes before its cover reaches the server; nothing was deleted, so the state
+// stays at the server for holders, a restarted holder and the author itself (deleting first
+// lost those writes there for good: the tombstones keep holders from bringing them back)
+#[test]
+fn author_crash_before_cover_lands_keeps_state_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    for i in 0..3 {
+        note(&mut net, a, w, &format!("k{i}"), "v");
+        net.run();
+    }
+    let want = notes(&mut net, a, w);
+    assert_eq!(want.len(), 3);
+    let conn = net.conn_to(a, sv).unwrap();
+    let acts = net.sync(a).compact_ephemeral_now().unwrap();
+    let msgs = sent(&acts, conn);
+    assert!(msgs.iter().any(|m| matches!(m, osis_proto::Message::Upload { .. })), "the cover goes up");
+    assert!(!msgs.iter().any(|m| matches!(m, osis_proto::Message::Delete { .. })), "nothing deleted before the cover is held there");
+    // what it sent never arrives
+    net.restart(a, 77);
+    net.advance(10_000);
+    assert_eq!(notes(&mut net, b, w), want);
+    assert_eq!(notes(&mut net, a, w), want, "the author gets its writes back");
+    net.restart(b, 78);
+    net.advance(10_000);
+    assert_eq!(notes(&mut net, b, w), want, "the server still holds them");
+}
+
 /// One random run of the shared window (notes/ephemeral.md Convergence): four writers on two
 /// servers (odd seeds: one with a random ephemeral cap, 0 and below one cover included), random
 /// ephemeral writes, partitions (offline, one server blocked), node restarts and server
