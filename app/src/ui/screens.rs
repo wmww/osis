@@ -1,7 +1,7 @@
 //! Building whole screens: home, and an open thing with its rail (wide) or back button (narrow).
 
-use super::content::{Content, icon_of};
-use super::{Act, FieldKey, HOME_BODY, META, PANE_EXTRA, RAIL_LIST, RAIL_NEW, Ui, kit_mode};
+use super::content::icon_of;
+use super::{Act, FieldKey, HOME_BODY, META, PANE_EXTRA, RAIL_LIST, RAIL_NEW, STAR, STATUS, Slot, Ui, kit_mode};
 use crate::data::Kind;
 use crate::schema::Mode as ModeChoice;
 use osis::Tid;
@@ -9,23 +9,19 @@ use osis_kit::icons::Icon;
 use osis_kit::masonry::core::{NewWidget, Properties, Widget};
 use osis_kit::masonry::properties::Padding;
 use osis_kit::masonry::properties::types::{CrossAxisAlignment, Length};
-use osis_kit::masonry::widgets::{Flex, Label, Portal, SizedBox};
+use osis_kit::masonry::widgets::{Flex, Portal, SizedBox};
 use osis_kit::theme::Theme;
 use osis_kit::widgets::style::{self, Text};
 use osis_kit::widgets::{IconButton, Limit, Panel, PanelKind, TileGrid, TileIcon, TileStyle};
 
 impl Ui {
-    /// An empty slot named `key`, filled by `slot`.
-    pub(super) fn slot_widget(&mut self, key: &'static str) -> NewWidget<SizedBox> {
-        let w = NewWidget::new(SizedBox::empty());
-        self.slots.insert(key, (w.id(), None::<Content>));
-        w
+    /// An empty slot, filled by `slot`.
+    pub(super) fn slot_widget(&mut self, (_, tag): Slot) -> NewWidget<SizedBox> {
+        NewWidget::new_with_tag(SizedBox::empty(), tag)
     }
 
-    fn status_widget(&mut self) -> NewWidget<Label> {
-        let l = style::label(&self.look, "", Text::Small);
-        self.status_id = Some(l.id());
-        l
+    fn status_widget(&mut self) -> NewWidget<SizedBox> {
+        NewWidget::new_with_tag(SizedBox::new(style::label(&self.look, "", Text::Small)), STATUS)
     }
 
     fn act(&mut self, w: NewWidget<impl Widget + ?Sized>, a: Act) -> NewWidget<dyn Widget> {
@@ -94,8 +90,7 @@ impl Ui {
         };
         bar = bar.with_child(style::label(&look, kind_label, Text::Muted)).with_flex_spacer(1.0);
         let fav = self.data.is_favorite(t)?;
-        let star = NewWidget::new(IconButton::new(Icon::Star, "Favorite", look.clone()).on(fav));
-        self.star = Some(star.id());
+        let star = NewWidget::new_with_tag(IconButton::new(Icon::Star, "Favorite", look.clone()).on(fav), STAR);
         bar = bar.with_child(self.act(star, Act::Favorite(t)));
         if !matches!(tile.kind, Kind::View(_)) {
             let del = NewWidget::new(IconButton::new(Icon::Trash, "Delete", look.clone()));

@@ -1,5 +1,4 @@
-//! The window's root: paints the theme's background behind one child (the screen), and reports
-//! its size so the app can pick a layout by width. A new background colour (a new main colour)
+//! The window's root: paints the theme's background behind one child (the screen). A new background colour (a new main colour)
 //! fades in over `FADE_NS`: the one motion the look allows (notes/theming.md).
 
 use crate::backdrop;
@@ -15,23 +14,18 @@ use std::sync::Arc;
 /// behind navigation.
 const FADE_NS: f64 = 600_000_000.0;
 
-/// The root's size changed (logical px).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Resized(pub Size);
-
 pub struct Root {
     child: WidgetPod<dyn Widget>,
     look: Arc<Look>,
     /// Places the background's decorations (hashed from the open thing).
     seed: u64,
-    size: Size,
     /// The colour faded from and how far the fade is (0..1).
     fade: Option<(Color, f64)>,
 }
 
 impl Root {
     pub fn new(child: NewWidget<impl Widget + ?Sized>, look: Arc<Look>) -> Root {
-        Root { child: child.erased().to_pod(), look, seed: 0, size: Size::ZERO, fade: None }
+        Root { child: child.erased().to_pod(), look, seed: 0, fade: None }
     }
 
     /// Replaces the screen.
@@ -71,7 +65,7 @@ impl Root {
 }
 
 impl Widget for Root {
-    type Action = Resized;
+    type Action = masonry::core::NoAction;
 
     fn on_anim_frame(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, interval: u64) {
         if let Some((from, t)) = self.fade {
@@ -92,10 +86,6 @@ impl Widget for Root {
         let size = bc.max();
         ctx.run_layout(&mut self.child, &BoxConstraints::tight(size));
         ctx.place_child(&mut self.child, Point::ORIGIN);
-        if size != self.size {
-            self.size = size;
-            ctx.submit_action::<Resized>(Resized(size));
-        }
         size
     }
 

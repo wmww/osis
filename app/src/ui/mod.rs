@@ -20,23 +20,28 @@ use osis::core::{BODY, NAME};
 use osis::{Path, Subscription, TextSession, Tid};
 use osis_kit::marshal::{Inbox, Mailbox};
 use osis_kit::masonry::core::{ErasedAction, NewWidget, Widget, WidgetId, WidgetTag};
-use osis_kit::masonry::kurbo::Size;
 use osis_kit::masonry::widgets::{Label, SizedBox, TextAction, TextArea};
 use osis_kit::masonry_winit::app::{AppDriver, DriverCtx, WindowId};
 use osis_kit::theme::{Look, Mode, Theme, parse};
-use osis_kit::widgets::{ChipPress, IconButton, Press, Resized, Root};
+use osis_kit::widgets::{ChipPress, IconButton, Press, Root};
+use osis_kit::masonry_winit::winit::dpi::PhysicalSize;
+use osis_kit::masonry_winit::winit::window::Theme as WinitTheme;
 use osis_kit::window::Wakeup;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 pub const ROOT: WidgetTag<Root> = WidgetTag::new("root");
 
-// Masonry 0.4 never forgets a tag of a removed widget, so rebuilt widgets are found by id.
-const HOME_BODY: &str = "home-body";
-const RAIL_LIST: &str = "rail-list";
-const RAIL_NEW: &str = "rail-new";
-const PANE_EXTRA: &str = "pane-extra";
-const META: &str = "meta";
+/// Slots: containers whose content is rebuilt when its model changes.
+type Slot = (&'static str, WidgetTag<SizedBox>);
+const HOME_BODY: Slot = ("home-body", WidgetTag::new("home-body"));
+const RAIL_LIST: Slot = ("rail-list", WidgetTag::new("rail-list"));
+const RAIL_NEW: Slot = ("rail-new", WidgetTag::new("rail-new"));
+const PANE_EXTRA: Slot = ("pane-extra", WidgetTag::new("pane-extra"));
+const META: Slot = ("meta", WidgetTag::new("meta"));
+/// Holds the status label (a tag cannot be given together with properties).
+const STATUS: WidgetTag<SizedBox> = WidgetTag::new("status");
+const STAR: WidgetTag<IconButton> = WidgetTag::new("star");
 
 /// Below this width (logical px) an open thing fills the window and home is a back button away.
 const NARROW: f64 = 760.0;
@@ -126,15 +131,15 @@ pub struct Ui {
     /// What is built: the screen, its width class.
     built: Option<(Screen, bool)>,
     view: ViewState,
-    /// Each slot's widget and what it shows now.
-    slots: HashMap<&'static str, (WidgetId, Option<Content>)>,
-    status_id: Option<WidgetId>,
+    /// What each slot of the screen shows now.
+    slots: HashMap<&'static str, Content>,
+    /// The system's light or dark, for Auto (`None` until first read).
+    system_dark: Option<bool>,
     query: String,
     search_ids: Vec<WidgetId>,
     acts: HashMap<WidgetId, Act>,
     /// What the × of a removable chip does.
     remove_acts: HashMap<WidgetId, Act>,
-    star: Option<WidgetId>,
     /// Focus the title once the next screen is built (a thing just made).
     focus_title: bool,
     editor: Option<Editor>,
@@ -165,12 +170,11 @@ impl Ui {
             built: None,
             view: ViewState::default(),
             slots: HashMap::new(),
-            status_id: None,
+            system_dark: None,
             query: String::new(),
             search_ids: Vec::new(),
             acts: HashMap::new(),
             remove_acts: HashMap::new(),
-            star: None,
             focus_title: false,
             editor: None,
             subs: BTreeMap::new(),
@@ -184,12 +188,20 @@ impl Ui {
         self.look.clone()
     }
 
-    fn dark(&self, ctx: &mut DriverCtx<'_, '_>) -> bool {
+    fn dark(&mut self, ctx: &mut DriverCtx<'_, '_>) -> bool {
         match self.mode {
             Mode::Light => false,
             Mode::Dark => true,
-            Mode::Auto => ctx.window(self.window).handle().theme() == Some(osis_kit::masonry_winit::winit::window::Theme::Dark),
+            Mode::Auto => *self.system_dark.get_or_insert_with(|| ctx.window(self.window).handle().theme() == Some(WinitTheme::Dark)),
         }
+    }
+
+    /// Whether the window is narrow now (logical width).
+    fn is_narrow(&mut self, ctx: &mut DriverCtx<'_, '_>) -> bool {
+        let w = ctx.window(self.window);
+        let scale = w.handle().scale_factor();
+        let size = w.render_root().size();
+        f64::from(size.width) / scale.max(0.1) < NARROW
     }
 
     /// Re-reads osis and brings the window to it; `force` rebuilds the screen.
@@ -206,6 +218,7 @@ impl Ui {
     }
 
     fn refresh_inner(&mut self, ctx: &mut DriverCtx<'_, '_>, force: bool) -> osis::Result<()> {
+        self.narrow = self.is_narrow(ctx);
         let screen = match self.data.opened()? {
             Some(t) => Screen::Thing(t),
             None => Screen::Home,
@@ -262,8 +275,12 @@ impl Ui {
 
     fn status(&mut self, ctx: &mut DriverCtx<'_, '_>, s: String) {
         let root = ctx.render_root(self.window);
-        if let Some(id) = self.status_id.filter(|id| root.has_widget(*id)) {
-            root.edit_widget(id, |mut l| Label::set_text(&mut l.downcast(), s));
+        if root.get_widget_with_tag(STATUS).is_some() {
+            root.edit_widget_with_tag(STATUS, |mut b| {
+                if let Some(mut l) = SizedBox::child_mut(&mut b) {
+                    Label::set_text(&mut l.downcast(), s);
+                }
+            });
         }
     }
 
@@ -272,8 +289,6 @@ impl Ui {
         self.remove_acts.clear();
         self.slots.clear();
         self.search_ids.clear();
-        self.star = None;
-        self.status_id = None;
         if self.editor.as_ref().map(|e| Screen::Thing(e.tid)) != Some(screen) {
             // dropping the sessions commits pending typing
             self.editor = None;
@@ -315,30 +330,23 @@ impl Ui {
                 let c = self.meta_content(t)?;
                 self.slot(ctx, META, c, None);
                 let fav = self.data.is_favorite(t)?;
-                if let Some(id) = self.star {
-                    let root = ctx.render_root(self.window);
-                    if root.has_widget(id) {
-                        root.edit_widget(id, |mut w| IconButton::set_on(&mut w.downcast(), fav));
-                    }
+                let root = ctx.render_root(self.window);
+                if root.get_widget_with_tag(STAR).is_some() {
+                    root.edit_widget_with_tag(STAR, |mut w| IconButton::set_on(&mut w, fav));
                 }
             }
         }
         Ok(())
     }
 
-    /// Shows `c` in the slot `key` unless it already does.
-    fn slot(&mut self, ctx: &mut DriverCtx<'_, '_>, key: &'static str, c: Content, current: Option<Tid>) {
-        let Some((id, shown)) = self.slots.get(key) else { return };
-        if shown.as_ref() == Some(&c) {
+    /// Shows `c` in the slot `tag` (if the screen has it) unless it already does.
+    fn slot(&mut self, ctx: &mut DriverCtx<'_, '_>, (key, tag): Slot, c: Content, current: Option<Tid>) {
+        if ctx.render_root(self.window).get_widget_with_tag(tag).is_none() || self.slots.get(key) == Some(&c) {
             return;
         }
-        let id = *id;
         let w = self.content_widget(&c, current);
-        let root = ctx.render_root(self.window);
-        if root.has_widget(id) {
-            root.edit_widget(id, |mut b| SizedBox::set_child(&mut b.downcast(), w));
-        }
-        self.slots.insert(key, (id, Some(c)));
+        ctx.render_root(self.window).edit_widget_with_tag(tag, |mut b| SizedBox::set_child(&mut b, w));
+        self.slots.insert(key, c);
     }
 
     /// Text sessions on `t`'s fields; kept if `t` is already open with the same fields.
@@ -509,6 +517,21 @@ impl AppDriver for Ui {
         self.mb.post(Msg::Changed);
     }
 
+    /// A new width class rebuilds the screen (`refresh` compares it).
+    fn on_resized(&mut self, _w: WindowId, ctx: &mut DriverCtx<'_, '_>, _size: PhysicalSize<u32>) {
+        if self.built.is_some() && self.is_narrow(ctx) != self.narrow {
+            self.refresh(ctx, false);
+        }
+    }
+
+    /// Auto follows the system's light or dark.
+    fn on_theme_changed(&mut self, _w: WindowId, ctx: &mut DriverCtx<'_, '_>, theme: WinitTheme) {
+        self.system_dark = Some(theme == WinitTheme::Dark);
+        if self.mode == Mode::Auto {
+            self.refresh(ctx, false);
+        }
+    }
+
     fn on_action(&mut self, _w: WindowId, ctx: &mut DriverCtx<'_, '_>, id: WidgetId, action: ErasedAction) {
         if action.is::<Wakeup>() {
             let mut changed = false;
@@ -523,12 +546,6 @@ impl AppDriver for Ui {
                 }
             }
             if changed {
-                self.refresh(ctx, false);
-            }
-        } else if let Some(Resized(size)) = action.downcast_ref::<Resized>().copied() {
-            let narrow = narrow(size);
-            if narrow != self.narrow || self.built.is_none() {
-                self.narrow = narrow;
                 self.refresh(ctx, false);
             }
         } else if action.is::<Press>() {
@@ -547,10 +564,6 @@ impl AppDriver for Ui {
             self.typed(ctx, id, *a);
         }
     }
-}
-
-fn narrow(size: Size) -> bool {
-    size.width < NARROW
 }
 
 /// The initial widget tree: the root over an empty screen (the first refresh builds it).
