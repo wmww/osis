@@ -1,6 +1,8 @@
 # A snapshot dropped under a cover that later turns invalid stops vouching
 > Summary: a valid snapshot S1 dropped because S2 covers it vouches no more; if S2 then turns invalid (its author removed by a frontier not listing it), what only S1 vouched for goes at nodes that dropped S1 and stays at nodes that got the removal first (S2 invalid covers nothing, S1 kept). Honest case: Carol compacts over Alice's compaction, then Alice removes Carol before seeing it. Wider than the residual notes/node.md records.
-> Tags: security, node, retention, owner-call
+> Tags: security, node, retention
+
+Owner: left to the coordinator ("keep it reasonable"). Chosen: devices still holding a covered snapshot re-upload it once its coverer turns invalid (check whether the must-stay-at-server rule already covers it first).
 
 Repro (ignored on this issue): `validity::coverer_demoted_after_cover_drop_alike_spec_perm_5_2`, Bob's tag reaching a fresh node only through S1 and S2 (`{}` after cover drop then removal, `{bob}` removal first), and the same with Bob's commit held and invalid (S1's vouching).
 
