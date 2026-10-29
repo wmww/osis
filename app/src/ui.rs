@@ -164,6 +164,12 @@ impl Ui {
     /// Re-reads osis and brings the window to it; `force` rebuilds the screen.
     fn refresh(&mut self, ctx: &mut DriverCtx<'_, '_>, force: bool) {
         if let Err(e) = self.refresh_inner(ctx, force) {
+            // a thing that cannot be shown (a synced aspect of another shape under its editor,
+            // say) must not leave a half-built screen whose presses go nowhere: go home
+            if matches!(self.data.opened(), Ok(Some(_))) && self.data.set_open(None).is_ok() {
+                self.editor = None;
+                let _ = self.refresh_inner(ctx, true);
+            }
             self.status(ctx, format!("error: {e}"));
         }
     }
@@ -449,22 +455,21 @@ impl Ui {
     /// What a thing's pane shows between its title and its text.
     fn extra_content(&self, t: Tid) -> osis::Result<Content> {
         let d = &self.data;
-        let db = &d.db;
         let tiles = |v: &[Tid]| -> osis::Result<Vec<Tile>> { v.iter().map(|t| d.tile(*t)).collect() };
         let mut c = Content::default();
         match d.kind(t)? {
             Kind::Event => {
-                if let Some(s) = db.get(t, crate::event::START)? {
-                    c.lines.push(crate::data::fmt_when(&s, db.get(t, crate::event::END)?.as_ref()));
+                if let Some(s) = d.get(t, crate::event::START)? {
+                    c.lines.push(crate::data::fmt_when(&s, d.get(t, crate::event::END)?.as_ref()));
                 }
-                c.lines.extend(db.get(t, crate::event::LOCATION)?);
+                c.lines.extend(d.get(t, crate::event::LOCATION)?);
             }
             Kind::Contact => {
-                if let Some(o) = db.get(t, crate::contact::ORG)? {
+                if let Some(o) = d.get(t, crate::contact::ORG)? {
                     c.lines.extend([o.title, o.name].into_iter().filter(|s| !s.is_empty()));
                 }
-                c.lines.extend(db.get(t, crate::contact::EMAILS)?.unwrap_or_default().into_keys());
-                c.lines.extend(db.get(t, crate::contact::PHONES)?.unwrap_or_default().into_keys());
+                c.lines.extend(d.get(t, crate::contact::EMAILS)?.unwrap_or_default().into_keys());
+                c.lines.extend(d.get(t, crate::contact::PHONES)?.unwrap_or_default().into_keys());
             }
             Kind::Tag => {
                 let (subs, items) = d.tag_contents(t)?;
