@@ -1,6 +1,6 @@
 # A part deleted under a cover that turns invalid pends its commit forever where it was never held
 > Summary: W drops a delta of commit X under C's snapshot S2 and deletes it at the server (uploading X's rewrite without it); A, away, removes C before seeing S2 (S2 invalid at A). A gets the rewrite, never the delta: X waits for it (WaitDeltas) forever, so A lacks X's other parts while W applied them. On main before the dropped-voucher fix too.
-> Tags: node, engine, retention, sim
+> Tags: node, engine, retention, sim, owner-call
 
 Found by sim `coverer_revoked` with random writes during A's absence (seed 6 of a variant running `sim.run(10)`/`run(20)` instead of `quiet` after the sever; the merged scenario keeps those steps calm to avoid it). There X was C's own (invalid) 3-part commit; the same happens for a valid writer's commit (W's own: W then has the delta missing again, its own write gone, while its other parts stay applied at W and never apply at A).
 
