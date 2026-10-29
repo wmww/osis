@@ -127,3 +127,9 @@ Two devices syncing through a local server (checked end to end; four terminals):
 - `TextSession::on_remote` gives only the merged text, so a remote edit moves the caret to the end; a session dropped after `delete` commits its pending text and resurrects the thing (the app closes the editor before deleting).
 - No well-known per-app root: the app finds its group by scanning home and tolerates duplicates.
 - Masonry 0.4: `TextInput`/`TextArea` do not fill a flex slot by themselves (`SizedBox::expand`); `Portal` content needs `content_must_fill`; `reset_text` drops the selection; user events can only reach the driver as `Action`s; widget tags leaked when their widget was removed and the driver had no resize or system-theme hook (both fixed in kit/patches, Patches above); `NewWidget` takes a tag or properties, not both.
+
+**Core changes to adopt** (core branch api-asks-1; app work removes each line once done):
+- `knows(t)` is now false for a deleted thing (`created` still reports it), and a thing watch sees the delete as aspects going absent: `Data::opened` can check `db.knows(t)` instead of scanning `things()`.
+- `groups_of(t)` returns `GroupsOf { item_of, subgroup_of, within }` (the app took `.within` mechanically): `tags_of` can read `item_of` and `subgroup_of` instead of scanning `all_tags()`.
+- `Write::delete` removes the thing's placements and subgroup edges in every group the node may write (skipping others): `Data::delete`'s scan for parent edges can go.
+- A placement that leaves a durable thing in no synced group while the target group's own data syncs (an item of home, not a subgroup) now fails `Invalid` (also when a durable write persists an ephemerally placed draft); the app group already avoids this.
