@@ -593,7 +593,7 @@ impl SyncEngine {
             self.last_tick = self.raw_now();
         }
         self.synced.key.0 = u64::MAX;
-        // one deaths replay per aspect per step (`retention::mark_deaths_due`)
+        // one deaths recompute per aspect per step (validity flips, un-merges) (`retention::mark_deaths_due`)
         self.engine.core.defer_deaths = true;
         let r = self.step(ev, &mut out);
         // off whatever the step returned: left on, no later transaction would settle
@@ -601,7 +601,7 @@ impl SyncEngine {
         for e in [r.err(), settled.err()].into_iter().flatten() {
             self.diag(format!("sync: {e}"));
         }
-        // what the passes' replays marked: judged by the next pass
+        // what the passes' recomputes marked: judged by the next pass
         if self.engine.core.changed.as_ref().is_some_and(|c| !c.is_empty())
             && let Err(e) = self.engine_events()
         {
@@ -680,7 +680,7 @@ impl SyncEngine {
             }
             Event::Down { conn } => self.lost(conn),
         }
-        // the step's deaths replays before its passes: they mark the bodies whose deaths moved
+        // the step's deaths recomputes before its passes: they mark the bodies whose deaths moved
         self.engine.settle_deaths()?;
         self.engine_events()?;
         self.retire_replaced();

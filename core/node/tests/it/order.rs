@@ -373,53 +373,131 @@ fn play(seed: u64, steps: &[Step]) -> Played {
     Played { packs, authors, base, things, now }
 }
 
-/// First and last deaths of every held body (spec/crdt.md §4.8).
-fn deaths_text(e: &mut osis_node::Engine) -> String {
-    let mut out = String::new();
-    let mut ids = e.commit_ids();
-    ids.sort();
-    for id in ids {
+/// Per body (commit, thing, aspect): its first and last death (spec/crdt.md §4.8).
+type Deaths = BTreeMap<(CommitId, Tid, Ak), Option<(osis_base::Ts, osis_base::Ts)>>;
+
+fn deaths_of(e: &mut osis_node::Engine) -> Deaths {
+    let mut out = Deaths::new();
+    for id in e.commit_ids() {
         let Some(h) = e.header(&id) else { continue };
         for a in &h.aspects {
-            let _ = writeln!(out, "death {id:?} {:?} {} {:?}", a.tid, a.ak.as_str(), e.deaths(&id, &a.tid, &a.ak).ok());
+            out.insert((id, a.tid, a.ak.clone()), e.deaths(&id, &a.tid, &a.ak).unwrap());
         }
     }
     out
 }
 
-/// Whether replaying every aspect's deaths from its held bodies and residues changes them (the
-/// in-order joins, batched and windowed replays must give what it gives).
-fn replay_differs(p: &mut Peer) -> Option<String> {
-    // the last-death rows follow the death records
-    let stale = p.engine.last_deaths_stale().unwrap();
-    if !stale.is_empty() {
-        return Some(format!("last-death rows differ from the records on {stale:?}"));
+/// What a node holding `held` and every body of it judges (`keep_bodies`), its deaths
+/// recomputed from them all: each write's earliest superseder (spec/crdt.md §4.8), the oracle
+/// `dating` compares nodes' local dates with; and its facts (`facts_text`).
+struct Oracle {
+    deaths: Deaths,
+    facts: String,
+    /// Aspects a held snapshot carries writes of whose own commit is not held: a recompute plays
+    /// those at the snapshot, not at their own `ts`, so the oracle does not judge them.
+    carried: BTreeSet<(Tid, Ak)>,
+}
+
+fn oracle(played: &Played, held: &[usize]) -> Oracle {
+    let mut p = Peer::new(FRESH, played.now).unwrap();
+    p.engine.keep_bodies(true);
+    for &i in held {
+        let pk = &played.packs[i];
+        let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
     }
-    let before = deaths_text(&mut p.engine);
-    // every aspect a held commit names, absent ones too (un-merged nested writes)
     let mut aspects = BTreeSet::new();
     for id in p.engine.commit_ids() {
         aspects.extend(p.engine.header(&id).into_iter().flat_map(|h| h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect::<Vec<_>>()));
     }
+    let carried = aspects.iter().filter(|(t, a)| !p.engine.carried_writes(t, a).is_empty()).cloned().collect();
     for (t, a) in aspects {
         p.engine.replay_deaths(&t, &a).unwrap();
     }
-    first_diff(&[("deaths", before)], &[("deaths", deaths_text(&mut p.engine))])
+    Oracle { deaths: deaths_of(&mut p.engine), facts: facts_text(&mut p.engine), carried }
 }
 
-/// What a node holding `packs` judged and reads, as text, by part.
-fn judged(p: &mut Peer, things: &[Tid]) -> Vec<(&'static str, String)> {
+/// Whether node `p` dates deaths as spec/commits.md §5 allows against the oracle `o` (`None`),
+/// else the first violation: a held body with its own writes has a death iff the oracle's has,
+/// never earlier, first or last; a held snapshot or import has a last death no earlier than the
+/// oracle's; a body dropped here under a relative keep at most D that the oracle holds died by
+/// the oracle at least D before now (never early); a body under keep at most 0 with a death and
+/// no live write is dropped (prompt). Aspects the drop-before-flip difference reaches are
+/// skipped (`alike`), and those with carried writes whose own commit is not held (the oracle
+/// would date them late, `Oracle::carried`; retention.rs `deaths_never_early_random_*` holds
+/// those commits instead).
+fn dating(p: &mut Peer, o: &Oracle, now: WallMs) -> Option<String> {
+    let (mine, _) = facts_of(&[("facts", facts_text(&mut p.engine))]);
+    let (theirs, inv) = facts_of(&[("facts", o.facts.clone())]);
+    let flipped: BTreeSet<(String, String)> = theirs.keys().filter(|k| mine.get(*k).is_some_and(|m| flip(&theirs, &mine, &inv, k) && m.held != theirs[*k].held)).map(|k| (k.1.clone(), k.2.clone())).collect();
     let e = &mut p.engine;
-    let mut index = e.index_digest();
-    // first and last deaths and liveness of the held bodies (spec/crdt.md §4.8)
     let mut ids = e.commit_ids();
     ids.sort();
     for id in ids {
         let Some(h) = e.header(&id) else { continue };
+        let copies = !h.kind.has_own_writes();
         for a in &h.aspects {
-            let _ = writeln!(index, "death {id:?} {:?} {} {:?} {:?}", a.tid, a.ak.as_str(), e.deaths(&id, &a.tid, &a.ak).ok(), e.body_live(&id, &a.tid, &a.ak).ok());
+            let (r, k) = (a.retention, (id, a.tid, a.ak.clone()));
+            let carried = o.carried.contains(&(a.tid, a.ak.clone())) || !e.carried_writes(&a.tid, &a.ak).is_empty();
+            if (r.at_least.rel.is_none() && r.at_most.rel.is_none()) || carried || flipped.contains(&(format!("{:?}", a.tid), a.ak.as_str().to_string())) {
+                continue;
+            }
+            let (x, y) = (e.deaths(&id, &a.tid, &a.ak).unwrap(), o.deaths.get(&k).copied().flatten());
+            let what = format!("{id:?} {:?} {}: here {x:?}, earliest superseders {y:?}", a.tid, a.ak.as_str());
+            if e.holds_body(&id, &a.tid, &a.ak) {
+                let ok = match (x, y, copies) {
+                    (Some(x), Some(y), false) => x.0 >= y.0 && x.1 >= y.1,
+                    (None, None, false) | (_, None, true) => true,
+                    (Some(x), Some(y), true) => x.1 >= y.1,
+                    _ => false,
+                };
+                if !ok {
+                    return Some(format!("death dated early or missing: {what}"));
+                }
+                if r.at_most.rel == Some(0) && x.is_some() && !e.body_live(&id, &a.tid, &a.ak).unwrap() {
+                    return Some(format!("dead body kept under keep at most 0: {what}"));
+                }
+            } else if let Some(d) = r.at_most.rel
+                && !copies
+                && theirs.get(&(format!("{id:?}"), format!("{:?}", a.tid), a.ak.as_str().to_string())).is_some_and(|f| f.held)
+                && !y.is_some_and(|y| y.0.wall_ms().0.saturating_add(d) <= now.0)
+            {
+                return Some(format!("body dropped before its keep-at-most bound: {what}"));
+            }
         }
     }
+    None
+}
+
+/// The facts `alike` reads per body (commit, thing, aspect, under keep at most, held, valid,
+/// `ts`, under a relative keep at most) and per aspect its invalid writes (`inv`).
+fn facts_text(e: &mut osis_node::Engine) -> String {
+    let mut facts = String::new();
+    let mut aspects = BTreeSet::new();
+    for id in e.commit_ids() {
+        let Some(h) = e.header(&id) else { continue };
+        for a in &h.aspects {
+            let at_most = a.retention.at_most.rel.is_some() || a.retention.at_most.abs.is_some();
+            let approx = a.retention.at_most.rel.is_some();
+            let valid = e.body_valid(&id, &a.tid, &a.ak).unwrap();
+            let held = e.holds_body(&id, &a.tid, &a.ak);
+            let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}|{:?}|{approx}", a.tid, a.ak.as_str(), h.ts);
+            aspects.insert((a.tid, a.ak.clone()));
+        }
+    }
+    for (tid, ak) in &aspects {
+        for (c, ts) in e.invalid_writes(tid, ak) {
+            let _ = writeln!(facts, "inv|{tid:?}|{}|{c:?}|{ts:?}", ak.as_str());
+        }
+    }
+    let mut facts: Vec<&str> = facts.lines().collect();
+    facts.sort();
+    facts.join("\n")
+}
+
+/// What a node holding `packs` judges and reads now, as text, by part: reads and states of every
+/// aspect, rosters, pending set, timelines, body facts. Deaths are the node's own (`dating`).
+fn judged_now(p: &mut Peer, things: &[Tid]) -> Vec<(&'static str, String)> {
+    let e = &mut p.engine;
     let mut reads = String::new();
     let mut states = String::new();
     // every aspect held (fresh nodes share a seed, so their own things agree too)
@@ -438,29 +516,26 @@ fn judged(p: &mut Peer, things: &[Tid]) -> Vec<(&'static str, String)> {
     pending.sort();
     let perm = e.perm_digest(false);
     let scratch = e.perm_digest(true);
-    // per body: what `alike` needs to tell the documented keep-at-most difference apart; per
-    // aspect: its invalid writes (`inv`)
-    let mut facts = String::new();
-    let mut aspects = BTreeSet::new();
-    for id in e.commit_ids() {
-        let Some(h) = e.header(&id) else { continue };
-        for a in &h.aspects {
-            let at_most = a.retention.at_most.rel.is_some() || a.retention.at_most.abs.is_some();
-            let valid = e.body_valid(&id, &a.tid, &a.ak).unwrap();
-            let held = e.holds_body(&id, &a.tid, &a.ak);
-            let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}|{:?}", a.tid, a.ak.as_str(), h.ts);
-            aspects.insert((a.tid, a.ak.clone()));
-        }
+    let facts = facts_text(e);
+    vec![("reads", reads), ("states", states), ("rosters", rosters), ("pending", pending.join("\n")), ("timelines", perm), ("timelines from scratch", scratch), ("facts", facts)]
+}
+
+/// The persisted index as a day after `played.now` (every keep-at-most bound past: which bodies
+/// a node dropped before is its own dating, `dating`). Moves the node's clock there.
+fn index_later(p: &mut Peer, played: &Played) -> String {
+    let later = WallMs(played.now.0 + 24 * HOUR);
+    if p.engine.now().0 < later.0 {
+        p.clock.set(later);
     }
-    for (tid, ak) in &aspects {
-        for (c, ts) in e.invalid_writes(tid, ak) {
-            let _ = writeln!(facts, "inv|{tid:?}|{}|{c:?}|{ts:?}", ak.as_str());
-        }
-    }
-    let mut facts: Vec<&str> = facts.lines().collect();
-    facts.sort();
-    let facts = facts.join("\n");
-    vec![("index", index), ("reads", reads), ("states", states), ("rosters", rosters), ("pending", pending.join("\n")), ("timelines", perm), ("timelines from scratch", scratch), ("facts", facts)]
+    p.engine.tick().unwrap();
+    p.engine.index_digest()
+}
+
+/// `judged_now`, then `index_later` (moves the node's clock).
+fn judged(p: &mut Peer, played: &Played) -> Vec<(&'static str, String)> {
+    let mut v = judged_now(p, &played.things);
+    v.insert(0, ("index", index_later(p, played)));
+    v
 }
 
 /// A body's facts at one node (`judged`'s last part), keyed by (commit, thing, aspect) as the
@@ -470,6 +545,9 @@ struct Fact {
     held: bool,
     valid: bool,
     ts: u64,
+    /// Under a relative keep at most: dropped by the node's own dating (at most 0 with a live
+    /// write: at its grace bound; without one `dating` checks it dropped).
+    approx: bool,
 }
 
 type BodyKey = (String, String, String);
@@ -480,8 +558,7 @@ fn ts_of(t: &str) -> u64 {
 }
 
 /// The bodies' facts, and per (thing, aspect) its invalid writes: (commit or carrying snapshot, `ts`).
-#[allow(clippy::type_complexity)]
-fn facts_of(j: &[(&'static str, String)]) -> (BTreeMap<BodyKey, Fact>, BTreeMap<(String, String), Vec<(String, u64)>>) {
+fn facts_of(j: &[(&'static str, String)]) -> (Facts, Invalid) {
     let text = &j.iter().find(|x| x.0 == "facts").unwrap().1;
     let (mut out, mut inv) = (BTreeMap::new(), BTreeMap::<_, Vec<_>>::new());
     for l in text.lines() {
@@ -491,37 +568,45 @@ fn facts_of(j: &[(&'static str, String)]) -> (BTreeMap<BodyKey, Fact>, BTreeMap<
             continue;
         }
         let b = |i: usize| f[i] == "true";
-        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { at_most: b(3), held: b(4), valid: b(5), ts: ts_of(f[6]) });
+        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { at_most: b(3), held: b(4), valid: b(5), ts: ts_of(f[6]), approx: b(7) });
     }
     (out, inv)
 }
 
+/// Facts per body and invalid writes per aspect (`facts_of`).
+type Facts = BTreeMap<BodyKey, Fact>;
+type Invalid = BTreeMap<(String, String), Vec<(String, u64)>>;
+
+/// The drop-before-flip difference on body `k` between nodes with facts `w` and `g`: held at
+/// one node only, under keep at most, with its own write invalid (its delta, or a write it
+/// carries) or an invalid write of its aspect stamped at or after it (one that may have killed
+/// it).
+fn flip(w: &Facts, g: &Facts, inv: &Invalid, k: &BodyKey) -> bool {
+    let (w, g) = (&w[k], &g[k]);
+    let own = !w.valid || inv.get(&(k.1.clone(), k.2.clone())).is_some_and(|v| v.iter().any(|(c, _)| *c == k.0));
+    let killer = inv.get(&(k.1.clone(), k.2.clone())).is_some_and(|v| v.iter().any(|(c, ts)| *c != k.0 && *ts >= w.ts));
+    w.held != g.held && w.at_most && (own || killer)
+}
+
 /// Whether two nodes holding the same commits judged alike (`None`), else the first difference.
-/// Exactly the difference spec/commits.md §5 allows under keep at most passes: a body dropped
-/// at one node and held at the other where a write of its aspect is invalid (a drop made before
-/// its killer, or its own write, turned invalid stays): its commit line's dropped parts, its
-/// deaths and liveness, and that aspect's reads and state (where the kept body's write is
-/// back). Anything else is a failure.
+/// Values, validity, rosters, pending sets, timelines and the index a day later are compared
+/// exactly; held bodies too, except what spec/commits.md §5 allows: a body under a relative
+/// keep at most (deaths are dated per node; `dating` checks them, and that a dead body under
+/// at most 0 with no live write is dropped), and the drop before a
+/// validity flip: a body dropped at one node and held at the other where a write of its aspect
+/// is invalid (a drop made before its killer, or its own write, turned invalid stays): its
+/// commit line's dropped parts, and that aspect's reads and state (where the kept body's write
+/// is back). Anything else is a failure.
 fn alike(want: &[(&'static str, String)], got: &[(&'static str, String)]) -> Option<String> {
     let ((wf, inv), (gf, _)) = (facts_of(want), facts_of(got));
     if wf.keys().ne(gf.keys()) {
         return first_diff(&want[want.len() - 1..], &got[got.len() - 1..]);
     }
-    // the drop-before-flip difference on body `k`: held at one node only, under keep at most,
-    // with its own write invalid (its delta, or a write it carries) or an invalid write of its
-    // aspect stamped at or after it (one that may have killed it)
-    let flip = |k: &BodyKey| {
-        let (w, g) = (&wf[k], &gf[k]);
-        let own = !w.valid || inv.get(&(k.1.clone(), k.2.clone())).is_some_and(|v| v.iter().any(|(c, _)| *c == k.0));
-        let killer = inv.get(&(k.1.clone(), k.2.clone())).is_some_and(|v| v.iter().any(|(c, ts)| *c != k.0 && *ts >= w.ts));
-        w.held != g.held && w.at_most && (own || killer)
-    };
+    let flip = |k: &BodyKey| flip(&wf, &gf, &inv, k);
     let flipped: BTreeSet<(String, String)> = wf.keys().filter(|k| flip(k)).map(|k| (k.1.clone(), k.2.clone())).collect();
-    // a death line's body
-    let body = |l: &str| -> Option<BodyKey> {
-        let f: Vec<&str> = l.splitn(5, ' ').collect();
-        Some(((*f.get(1)?).into(), (*f.get(2)?).into(), (*f.get(3)?).into()))
-    };
+    if let Some(k) = wf.keys().find(|k| wf[*k].held != gf[*k].held && !wf[*k].approx && !flip(k)) {
+        return Some(format!("body {k:?} held {} vs {}", wf[k].held, gf[k].held));
+    }
     let no_dropped = |l: &str| -> String {
         match (l.find('{'), l.find('}')) {
             (Some(i), Some(j)) if i < j => format!("{}{}", &l[..i], &l[j + 1..]),
@@ -534,10 +619,6 @@ fn alike(want: &[(&'static str, String)], got: &[(&'static str, String)]) -> Opt
                 let id = x.split(' ').nth(1).unwrap_or("");
                 let changed: Vec<&BodyKey> = wf.keys().filter(|k| k.0 == id && wf[*k].held != gf[*k].held).collect();
                 no_dropped(x) == no_dropped(y) && !changed.is_empty() && changed.iter().all(|k| flip(k))
-            }
-            "index" if x.starts_with("death ") => {
-                let (Some(k), Some(k2)) = (body(x), body(y)) else { return false };
-                k == k2 && wf.contains_key(&k) && flip(&k)
             }
             _ => false,
         }
@@ -734,35 +815,39 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
     let subsets = if cfg.every_held && std::env::var("OSIS_ORDER_ALL_HELD").is_ok() { usize::MAX } else { cfg.subsets };
     for held in held_sets(&played, subsets, &mut rng) {
         let of = format!("held {held:?} of {n} commits (base {})", played.base);
+        let o = oracle(&played, &held);
         // a partial set, then the rest (both ways), ends where the whole set does
         if let Some(f) = &full {
             let rest: Vec<usize> = (0..n).filter(|i| !held.contains(i)).collect();
             for order in [held.iter().chain(&rest).copied().collect::<Vec<_>>(), held.iter().chain(rest.iter().rev()).copied().collect()] {
                 let mut p = deliver(&played, &order);
-                if let Some(d) = alike(f, &judged(&mut p, &played.things)) {
+                if let Some(d) = alike(f, &judged(&mut p, &played)) {
                     return Err(format!("{of}, then the rest: order {order:?} vs the whole set as made: {d}"));
                 }
             }
         }
         let orders = orders(&played, &held, cfg, &mut rng);
         tried += orders.len();
-        // the reference, as made: a whole replay, a reopen from the persisted index and a
-        // rebuild judge alike (an open re-examines what pends)
+        // the reference, as made: its deaths dated as the spec allows, a reopen from the
+        // persisted index and a rebuild judge alike (an open re-examines what pends)
         let mut p = deliver(&played, &orders[0]);
-        let want = judged(&mut p, &played.things);
-        if let Some(d) = replay_differs(&mut p) {
-            return Err(format!("{of}, as made: a whole replay differs: {d}"));
+        if let Some(d) = dating(&mut p, &o, played.now) {
+            return Err(format!("{of}, as made: {d}"));
         }
+        let now = judged_now(&mut p, &played.things);
         p.engine.reload().unwrap();
         p.engine.reexamine().unwrap();
-        if let Some(d) = first_diff(&want, &judged(&mut p, &played.things)) {
+        if let Some(d) = first_diff(&now, &judged_now(&mut p, &played.things)) {
             return Err(format!("{of}, as made: reopen differs: {d}"));
         }
         p.engine.rebuild_index().unwrap();
         p.engine.reexamine().unwrap();
-        if let Some(d) = first_diff(&want, &judged(&mut p, &played.things)) {
+        // a rebuild recomputes deaths from the held bodies: dated otherwise, never earlier
+        if let Some(d) = alike(&now, &judged_now(&mut p, &played.things)).or_else(|| dating(&mut p, &o, played.now)) {
             return Err(format!("{of}, as made: rebuild differs: {d}"));
         }
+        let mut want = now;
+        want.insert(0, ("index", index_later(&mut p, &played)));
         if std::env::var("OSIS_ORDER_STATS").is_ok() {
             let idx = &want[0].1;
             let invalid = idx.lines().filter(|l| l.starts_with("commit ") && l.contains("false")).count();
@@ -778,21 +863,22 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
             let vs = format!("{of}: order #0 (as made, want) {held:?} vs order #{k}");
             if let Some(rng) = split_rng {
                 let mut p = deliver_split(&played, order, rng);
-                return match alike(&want, &judged(&mut p, &played.things)).or_else(|| replay_differs(&mut p)) {
+                return match dating(&mut p, &o, played.now).or_else(|| alike(&want, &judged(&mut p, &played))) {
                     Some(d) => Err(format!("{vs} with late parts (got) {order:?}: {d}")),
                     None => Ok(()),
                 };
             }
             let mut p = deliver(&played, order);
-            let got = judged(&mut p, &played.things);
-            if let Some(d) = replay_differs(&mut p) {
-                return Err(format!("{of}, order #{k} {order:?}: a whole replay differs: {d}"));
+            if let Some(d) = dating(&mut p, &o, played.now) {
+                return Err(format!("{of}, order #{k} {order:?}: {d}"));
             }
+            let mut got = judged_now(&mut p, &played.things);
             p.engine.reload().unwrap();
             p.engine.reexamine().unwrap();
-            if let Some(d) = first_diff(&got, &judged(&mut p, &played.things)) {
+            if let Some(d) = first_diff(&got, &judged_now(&mut p, &played.things)) {
                 return Err(format!("{of}, order #{k} {order:?}: reopen differs: {d}"));
             }
+            got.insert(0, ("index", index_later(&mut p, &played)));
             match alike(&want, &got) {
                 Some(d) => Err(format!("{vs} (got) {order:?}: {d}")),
                 None => Ok(()),
@@ -957,66 +1043,50 @@ fn arrival_order_exhaustive_small_spec_crdt_4_8() {
     run("arrival_order_exhaustive_small_spec_crdt_4_8", 0..3, 30, EXHAUST_SMALL, focused_history);
 }
 
-// The same over more histories, up to 6 commits. Seeds 2000..2200 found 2018, 2022, 2098,
-// 2120, 2157 and 2197, all issues/deaths-dropped-superseder.md (accepted; per-node death dating
-// replaces it): the default range starts after the first two, so a new failure here is new.
+// The same over more histories, up to 6 commits.
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_exhaustive_large_spec_crdt_4_8() {
     run("arrival_order_exhaustive_large_spec_crdt_4_8", 2023..2063, 30, EXHAUST, focused_history);
 }
 
-// spec/crdt.md §4.8 (a write dies at the earliest `ts` among the applied commits superseding
-// it, whatever the order): three writes of a kept register, X < Y < Z; delivered Z first, X met
-// only Z (was: X's death at Z's `ts` in that order, at Y's in the other).
+// spec/commits.md §5, spec/crdt.md §4.8 (deaths dated per node, never early): three writes of a
+// kept register, X < Y < Z; delivered Z first, X dies at Z (the first superseder held there),
+// as made at Y; both no earlier than the earliest superseder.
 #[test]
-fn deaths_alike_in_any_order_spec_crdt_4_8() {
+fn deaths_dated_per_node_spec_commits_5() {
     use Step::*;
     let h: Vec<Step> = (0..3).flat_map(|by| [Write { by, t: 0, op: 16, k: 0, v: by as u8 }, Advance { who: None, ms: 1000 }]).collect();
-    check_deaths(16, &h);
+    let played = play(16, &h);
+    let n = played.packs.len();
+    let o = oracle(&played, &(0..n).collect::<Vec<_>>());
+    let mut seen = Vec::new();
+    for order in [(0..n).collect::<Vec<_>>(), (0..played.base).chain((played.base..n).rev()).collect()] {
+        let mut p = deliver(&played, &order);
+        assert_eq!(dating(&mut p, &o, played.now), None, "order {order:?}");
+        seen.push(deaths_of(&mut p.engine).into_iter().filter(|x| x.1.is_some()).collect::<Vec<_>>());
+    }
+    // X: Y's `ts` as made, Z's reversed
+    assert!(seen[0].len() == 2 && seen[0][0].1.unwrap().0 < seen[1][0].1.unwrap().0 && seen[0][1] == seen[1][1], "{seen:?}");
 }
 
 // spec/crdt.md §4.8, order seed 7855 (exhaustive, shrunk): W1 and W2 put one `/t/gonemap` key, U
-// undoes W1 (removes the entry), W3 puts it again, S compacts. Delivered W1, W2, S, U, W3: S's
-// copy of U's removal kills W1's entry creation at U's `ts`, but a replay skipped that death as a
-// snapshot's copy re-dying (W1's value, dead at W2, shares its stamp), so W1 kept (W2, W2) where
-// a replay holding U dates (W2, U), and U's window did not judge W1 (debug check).
+// undoes W1 (removes the entry), W3 puts it again, S compacts. A recompute holding every body
+// dates W1 (W2, U): S's copy of U's removal kills W1's entry creation, which a recompute skipped
+// as a snapshot's copy re-dying (W1's value, dead at W2, shares its stamp). Delivered W1, W2,
+// S, U, W3 or in order, the dates are never earlier.
 #[test]
 fn copy_kills_write_sharing_a_dead_stamp_spec_crdt_4_8() {
     use Step::*;
     let h = vec![Write { by: 0, t: 1, op: 19, k: 1, v: 1 }, Write { by: 0, t: 1, op: 19, k: 1, v: 0 }, Undo { by: 0, back: 1 }, Write { by: 0, t: 1, op: 19, k: 1, v: 2 }, Compact { by: 0, t: 0, op: 19 }];
     let played = play(7855, &h);
     let b = played.base;
-    let mut seen = Vec::new();
+    let o = oracle(&played, &(0..played.packs.len()).collect::<Vec<_>>());
+    assert!(o.deaths.values().any(|d| d.is_some_and(|d| d.0 < d.1)), "{:?}", o.deaths);
     for rel in [[0, 1, 2, 3, 4], [0, 1, 4, 2, 3]] {
         let mut p = deliver(&played, &(0..b).chain(rel.iter().map(|i| b + i)).collect::<Vec<_>>());
-        assert_eq!(replay_differs(&mut p), None, "order {rel:?}");
-        seen.push(deaths_text(&mut p.engine));
+        assert_eq!(dating(&mut p, &o, played.now), None, "order {rel:?}");
     }
-    assert!(seen[0].contains("Some(Some(") && seen[0] == seen[1], "{seen:#?}");
-}
-
-/// `check` comparing every body's deaths.
-fn check_deaths(seed: u64, steps: &[Step]) {
-    let played = play(seed, steps);
-    let n = played.packs.len();
-    let mut seen = Vec::new();
-    for order in [(0..n).collect::<Vec<_>>(), (0..played.base).chain((played.base..n).rev()).collect()] {
-        let mut p = deliver(&played, &order);
-        let e = &mut p.engine;
-        let mut out = String::new();
-        let mut ids = e.commit_ids();
-        ids.sort();
-        for id in ids {
-            let Some(h) = e.header(&id) else { continue };
-            for a in &h.aspects {
-                let _ = writeln!(out, "{id:?} {:?} {} {:?}", a.tid, a.ak.as_str(), e.deaths(&id, &a.tid, &a.ak).ok());
-            }
-        }
-        seen.push(out);
-    }
-    assert!(seen[0].contains("Some(Some("), "no deaths recorded");
-    assert_eq!(seen[0], seen[1]);
 }
 
 // spec/crdt.md §4.6, spec/permissions.md §5.2: histories the harness found, shrunk (each
@@ -1118,15 +1188,15 @@ fn drop_before_flip_tolerated_spec_commits_5() {
     let (seed, h) = &flips[0];
     let played = play(*seed, h);
     let made: Vec<usize> = (0..played.packs.len()).collect();
-    let want = judged(&mut deliver(&played, &made), &played.things);
-    let got = judged(&mut deliver(&played, &made.iter().rev().copied().collect::<Vec<_>>()), &played.things);
+    let want = judged(&mut deliver(&played, &made), &played);
+    let got = judged(&mut deliver(&played, &made.iter().rev().copied().collect::<Vec<_>>()), &played);
     assert!(first_diff(&want, &got).is_some(), "the orders differ");
     assert_eq!(alike(&want, &got), None);
     // with every write judged valid, the same difference is a failure
     // with every write judged valid, or the invalid ones stamped before every body (none can
     // have killed it), the same difference is a failure
     let edit = |j: &[(&'static str, String)], f: &dyn Fn(Vec<&str>) -> Option<String>| -> Vec<(&'static str, String)> { j.iter().map(|(n, t)| (*n, if *n == "facts" { t.lines().filter_map(|l| f(l.split('|').collect())).collect::<Vec<_>>().join("\n") } else { t.clone() })).collect() };
-    let all_valid = |f: Vec<&str>| (f[0] != "inv").then(|| format!("{}|true|{}", f[..5].join("|"), f[6]));
+    let all_valid = |f: Vec<&str>| (f[0] != "inv").then(|| format!("{}|true|{}", f[..5].join("|"), f[6..].join("|")));
     assert!(alike(&edit(&want, &all_valid), &edit(&got, &all_valid)).is_some(), "a drop difference with no invalid write passed");
     let early = |mut f: Vec<&str>| {
         if f[0] == "inv" {

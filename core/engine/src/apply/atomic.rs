@@ -66,9 +66,6 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
         if a.ak.as_str() == "/label" {
             core.ix.labeled.insert(a.tid);
         }
-        if !h.kind.has_own_writes() {
-            core.ix.copies.insert((a.tid, a.ak.clone()), (h.ts, *id));
-        }
         core.ix.by_thing.insert(a.tid, *id);
         if h.form == Form::Node && h.kind.has_own_writes() && a.lo < a.hi {
             core.ix.ranges.insert((a.tid, a.ak.clone(), h.author), a.lo, (a.hi, *id));
@@ -77,7 +74,6 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
     for b in &h.chunks {
         core.ix.by_chunk.insert(*b, *id);
     }
-    crate::retention::note_indexed(core, id, h);
 }
 
 /// Commits by the same node whose node-form ranges on one aspect overlap this one's
@@ -285,12 +281,11 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             continue;
         }
         touched.note(&a.tid, &a.ak, &f);
-        let replay = crate::retention::replays(tx.core, &id, &h, &a.tid, &a.ak);
         let ch = join_into_state(tx, &a.tid, &a.ak, f)?;
         if ch.is_changed() {
             changed.insert((a.tid, a.ak.clone()));
         }
-        joined.push((a.tid, a.ak.clone(), replay, ch.into_deaths()));
+        joined.push((a.tid, a.ak.clone(), snap, ch.into_deaths()));
     }
     // an invalid aspect whose part is not held: others' writes under its creations go too (the
     // part may never come, or come late)
@@ -305,11 +300,10 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     }
     unmerge_carried(tx, &unmerge, &mut changed, &mut touched, true)?;
     refill(tx, &h, &id, &valid, &uncarried, &mut changed, &mut touched)?;
-    for (tid, ak, replay, deaths) in &joined {
-        if *replay {
-            crate::retention::mark_late(tx, &id, &h, tid, ak, deaths)?;
-        } else {
-            crate::retention::note_deaths(tx, tid, ak, deaths)?;
+    for (tid, ak, snap, deaths) in &joined {
+        crate::retention::note_deaths(tx, tid, ak, deaths)?;
+        if *snap {
+            crate::retention::note_copies(tx, &id, tid, ak)?;
         }
     }
     {
@@ -513,23 +507,21 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
             continue;
         }
         touched.note(&a.tid, &a.ak, &f);
-        let replay = crate::retention::replays(tx.core, id, &h, &a.tid, &a.ak);
         let ch = join_into_state(tx, &a.tid, &a.ak, f)?;
         if ch.is_changed() {
             changed.insert((a.tid, a.ak.clone()));
         }
-        joined.push((a.tid, a.ak.clone(), replay, ch.into_deaths()));
+        joined.push((a.tid, a.ak.clone(), snap, ch.into_deaths()));
     }
     // the record's `node/edges` row, read once: it is also the commit's edge writes again
     let all = if h.kind.is_membership() { Some(super::edge_parts_of(tx, id, &h, merged.clone())?) } else { None };
     tx.put_commit(id, merged, &meta, Shred::No, all.as_ref())?;
     unmerge_carried(tx, &unmerge, &mut changed, &mut touched, false)?;
     refill(tx, &h, id, &meta.valid, &uncarried, &mut changed, &mut touched)?;
-    for (tid, ak, replay, deaths) in &joined {
-        if *replay {
-            crate::retention::mark_late(tx, id, &h, tid, ak, deaths)?;
-        } else {
-            crate::retention::note_deaths(tx, tid, ak, deaths)?;
+    for (tid, ak, snap, deaths) in &joined {
+        crate::retention::note_deaths(tx, tid, ak, deaths)?;
+        if *snap {
+            crate::retention::note_copies(tx, id, tid, ak)?;
         }
     }
     if edges && let Some(all) = &all {

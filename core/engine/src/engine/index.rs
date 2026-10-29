@@ -641,7 +641,6 @@ pub(crate) fn write_all(tx: &mut Tx<'_>) -> Result<()> {
     // what an older index held goes shredded (forgotten things' entries among it)
     tx.txn.drop_indexes()?;
     write_edges_all(tx)?;
-    crate::retention::write_last_deaths_all(tx)?;
     write(tx, true)?;
     tx.txn.put_local(VERSION_KEY, VERSION.as_bytes(), Shred::No)?;
     Ok(())

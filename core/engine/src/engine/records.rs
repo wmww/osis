@@ -27,11 +27,8 @@ pub const TIMER: &[u8] = b"x/";
 pub const SYNCING: &[u8] = b"s/";
 /// Commits voided by overlapping node-form ranges: `o/` + commit ID.
 pub const VOID: &[u8] = b"o/";
-/// Aspects whose deaths wait for a replay (`retention::settle_deaths`): `e/` + aspect key.
+/// Aspects whose deaths wait for a recompute (`retention::settle_deaths`): `e/` + aspect key.
 pub const DEATHS_DUE: &[u8] = b"e/";
-/// Value-less writes of dropped bodies that may still date held ones' deaths
-/// (`retention::deaths`): `d/` + aspect key + `ts` (8 bytes, big endian) + commit ID.
-pub const DROPPED: &[u8] = b"d/";
 /// Records the API layer keeps (identity choices, settings): `u/` + name.
 pub const APP: &[u8] = b"u/";
 
@@ -75,13 +72,6 @@ pub fn aspect_key(prefix: &[u8], tid: &Tid, ak: &Ak) -> Vec<u8> {
     k.extend_from_slice(tid.as_bytes());
     k.extend_from_slice(&(a.len() as u16).to_be_bytes());
     k.extend_from_slice(a);
-    k
-}
-
-pub fn dropped_key(tid: &Tid, ak: &Ak, ts: osis_base::Ts, id: &CommitId) -> Vec<u8> {
-    let mut k = aspect_key(DROPPED, tid, ak);
-    k.extend_from_slice(&ts.to_u64().to_be_bytes());
-    k.extend_from_slice(&id.0);
     k
 }
 
