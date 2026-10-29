@@ -1845,11 +1845,10 @@ fn removed_member_write_compacted_earlier_stays_alike_spec_perm_5_2() {
 // fresh node inside Alice's snapshot S1 and Carol's later S2, which covers S1 (also with Bob's
 // own commit held and made invalid by his removal with an empty frontier: vouched for). Alice
 // removes Carol before receiving S2 (her frontier does not list it). A node holding S2 as valid
-// drops S1 (covered), then gets the removals; another gets the removals first (S2 invalid, S1
-// kept). Both held S1 valid; the state should not depend on the order
-// (issues/dropped-voucher-after-cover.md).
+// drops S1 (covered), then gets the removals: S1 is missing again (S2 carries it no more) and
+// gives nothing until it arrives again; another gets the removals first (S2 invalid, S1 kept).
+// Once the first has S1 again, both read Bob's tag, also after a rebuild and a restart.
 #[test]
-#[ignore = "issues/dropped-voucher-after-cover.md"]
 fn coverer_demoted_after_cover_drop_alike_spec_perm_5_2() {
     for bob_held in [false, true] {
         let (mut lp, d, b, c) = setup(0x5fa0);
@@ -1892,11 +1891,22 @@ fn coverer_demoted_after_cover_drop_alike_spec_perm_5_2() {
             }
             if demote_first {
                 lp.deliver(i, &pk(s2)).unwrap();
+            } else {
+                // S1 gives nothing until fetched again
+                lp.peers[i].engine.reexamine().unwrap();
+                assert!(tags(&mut lp, i, d).is_empty(), "Bob's commit held: {bob_held}; S1 missing");
+                lp.deliver(i, &pk(s1)).unwrap();
             }
             lp.peers[i].engine.reexamine().unwrap();
-            got.push(tags(&mut lp, i, d));
+            let t = tags(&mut lp, i, d);
+            lp.peers[i].engine.rebuild_state(&d, &ak("/t/tags")).unwrap();
+            assert_eq!(tags(&mut lp, i, d), t, "Bob's commit held: {bob_held}; demote first: {demote_first}, rebuilt");
+            lp.peers[i].restart(0x5fa3 + n as u64).unwrap();
+            assert_eq!(tags(&mut lp, i, d), t, "Bob's commit held: {bob_held}; demote first: {demote_first}, restarted");
+            got.push(t);
         }
-        assert_eq!(got[0], got[1], "Bob's commit held: {bob_held}; cover drop then removal, removal first");
+        assert_eq!(got[1], BTreeSet::from(["bob".to_string()]), "Bob's commit held: {bob_held}; removal first");
+        assert_eq!(got[0], got[1], "Bob's commit held: {bob_held}; cover drop then removal, S1 fetched again");
     }
 }
 
@@ -2014,11 +2024,11 @@ fn covered_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
 
 // spec/permissions.md §5.2, spec/crdt.md §4.6: as above, but the snapshot covering Alice's
 // dropped delta is Carol's, and Alice revokes Carol (frontier not listing it) and Bob together.
-// A node that dropped the delta under Carol's cover, then applied Bob's removal valid, then the
-// revokes, has neither the delta's body nor a valid copy; one that got the revokes first holds
-// the delta (issues/dropped-voucher-after-cover.md).
+// A node that dropped the delta under Carol's cover has it missing again once the revokes
+// arrive: without it, the element is gone whether Bob's removal applied valid before or arrived
+// voided; with the delta fetched again, it reads what a node that got the revokes first (and
+// held the delta throughout) reads.
 #[test]
-#[ignore = "issues/dropped-voucher-after-cover.md"]
 fn covered_drop_coverer_and_remover_revoked_alike_spec_perm_5_2() {
     let (mut lp, d, b, c) = setup(0x5fc0);
     add_tag(&mut lp, 0, d, "ash");
@@ -2040,32 +2050,52 @@ fn covered_drop_coverer_and_remover_revoked_alike_spec_perm_5_2() {
     let known: BTreeSet<_> = before.iter().map(|p| p.id).collect();
     let rv: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !known.contains(&p.id)).collect();
     let mut got = Vec::new();
-    for (i, removal_first) in [(3, true), (4, false)] {
+    // dropped under Carol's cover: the removal applied valid, or arrived voided; held throughout
+    for (i, drop, removal_first) in [(3, true, true), (4, true, false), (5, false, false)] {
         lp.peers.push(osis_node::local_peer::Peer::new(0x5fc1 + i as u64, lp.peers[0].engine.now()).unwrap());
         for pk in &before {
             lp.deliver(i, pk).unwrap();
         }
-        if removal_first {
+        if drop {
             lp.deliver(i, &snap_pk).unwrap();
             for x in &added {
                 assert_eq!(lp.peers[i].engine.covered(&snap, x, &d, &tags_ak).unwrap(), Some(true));
                 lp.peers[i].engine.drop_body(x, &d, &tags_ak).unwrap();
             }
+        }
+        if removal_first {
             lp.deliver(i, &rm_pk).unwrap();
             assert!(tags(&mut lp, i, d).is_empty(), "the removal applied while valid");
         }
         for pk in &rv {
             lp.deliver(i, pk).unwrap();
         }
-        if !removal_first {
+        if !drop {
             lp.deliver(i, &snap_pk).unwrap();
+        }
+        if !removal_first {
             lp.deliver(i, &rm_pk).unwrap();
         }
         lp.peers[i].engine.reexamine().unwrap();
-        got.push(tags(&mut lp, i, d));
+        if drop {
+            assert!(tags(&mut lp, i, d).is_empty(), "removal first: {removal_first}; the dropped delta missing");
+            lp.peers[i].engine.rebuild_state(&d, &tags_ak).unwrap();
+            assert!(tags(&mut lp, i, d).is_empty(), "removal first: {removal_first}; missing, rebuilt");
+            for pk in before.iter().filter(|p| added.contains(&p.id)) {
+                lp.deliver(i, pk).unwrap();
+            }
+            lp.peers[i].engine.reexamine().unwrap();
+        }
+        let t = tags(&mut lp, i, d);
+        lp.peers[i].engine.rebuild_state(&d, &tags_ak).unwrap();
+        assert_eq!(tags(&mut lp, i, d), t, "drop: {drop}, removal first: {removal_first}; rebuilt");
+        lp.peers[i].restart(0x5fd1 + i as u64).unwrap();
+        assert_eq!(tags(&mut lp, i, d), t, "drop: {drop}, removal first: {removal_first}; restarted");
+        got.push((t, lp.peers[i].engine.state(&d, &tags_ak).unwrap()));
     }
-    assert_eq!(got[1], BTreeSet::from(["ash".to_string()]), "revokes first");
-    assert_eq!(got[0], got[1], "cover drop and removal, then the revokes");
+    assert_eq!(got[2].0, BTreeSet::from(["ash".to_string()]), "revokes first");
+    assert_eq!(got[0], got[2], "cover drop and removal, then the revokes, the delta fetched again");
+    assert_eq!(got[1], got[2], "cover drop, the revokes, then the removal, the delta fetched again");
 }
 
 // spec/permissions.md §5.2, spec/commits.md §5: as `covered_drop_restored_after_remover_revoked`,

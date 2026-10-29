@@ -723,8 +723,23 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool, forge: bool) -> ([
                 }
             }
             6 => {
-                let a = ["/t/keptset", "/t/gonemap", "/t/tags"][rng.below(3) as usize];
-                let _ = lp.peers[i].engine.snapshot(&t, &ak(a));
+                let a = ak(["/t/keptset", "/t/gonemap", "/t/tags"][rng.below(3) as usize]);
+                let e = &mut lp.peers[i].engine;
+                // not with forged snapshots: a forged one covers the delta whose dot it copies
+                // (issues/forged-cover.md)
+                if let Ok(Some(snap)) = e.snapshot(&t, &a)
+                    && !forge
+                    && rng.below(2) == 0
+                {
+                    // the compactor drops what it covers (node-sync's compaction): such a body
+                    // is missing again if the cover turns invalid (`retention::uncover`)
+                    let on: Vec<_> = e.commit_ids().into_iter().filter(|c| *c != snap && e.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t && x.ak == a))).collect();
+                    for c in on {
+                        if e.holds_body(&c, &t, &a) && e.covered(&snap, &c, &t, &a).is_ok_and(|x| x == Some(true)) {
+                            e.drop_body(&c, &t, &a).unwrap();
+                        }
+                    }
+                }
             }
             7 => {
                 // the admin revokes or restores the writer, a revoke with what it received

@@ -174,3 +174,11 @@ fn stranded_reseal_seed_23() {
 fn work_sets_seed_15110() {
     ok("work_sets", 15110);
 }
+
+// spec/permissions.md §5.2, spec/sync.md §6, §7: a snapshot dropped under a cover that turns
+// invalid is missing again; its holder uploads it again and the dropping node fetches it
+// (was issues/dropped-voucher-after-cover.md).
+#[test]
+fn coverer_revoked() {
+    ok("coverer_revoked", 1);
+}

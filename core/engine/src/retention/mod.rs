@@ -176,6 +176,11 @@ pub(crate) fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<
 /// rewritten shredded with its undo buffer cleared (node-sync deletes it at blind nodes, judged
 /// from the dropped parts).
 pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
+    drop_part_as(tx, c, ai, false)
+}
+
+/// `drop_part`; `cover`: dropped as covered (compaction, `Meta::cover_drops`).
+fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result<()> {
     tx.core.touch();
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
@@ -197,9 +202,18 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
     }
     if !by.is_empty() {
         m.covered_by.insert(ai, by);
+        if cover {
+            m.cover_drops.insert(ai);
+        }
     }
     for di in 0..n {
         m.dropped.insert((ai, di));
+    }
+    // a part missing (again, `uncover`) and dropped is dropped, as an open reads it: received,
+    // so snapshots' copies of its writes are carried writes no more
+    if m.missing.remove(&ai) {
+        let h = m.header.clone();
+        crate::apply::validity::uncarry(tx.core, c, &h, &|x| x == ai);
     }
     // the dropped deltas, to find what of the state holds copies of their writes
     let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect();
@@ -220,6 +234,69 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
         tx.core.mark_aspect_changed(&a.tid, &a.ak);
     }
     Ok(())
+}
+
+/// Parts on `(tid, ak)` dropped as covered (`Meta::cover_drops`) that no coverer carries any
+/// more (each turned invalid, or was itself dropped under covers none of which does;
+/// `Meta::covered_by`) are missing again (spec/permissions.md §5.2): they give nothing, as at a node that never held
+/// them, until the body arrives again (a node still holding it finds it uncovered and
+/// re-uploads it, spec/sync.md §6; node-sync fetches it again, `Changed::undropped`). Returns
+/// the own writes of the deltas among them, for the caller's rebuild to strip.
+pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>> {
+    fn carries(core: &Core, s: &CommitId, tid: &Tid, ak: &Ak, seen: &mut BTreeSet<CommitId>) -> bool {
+        let Some(m) = core.ix.commits.get(s) else { return false };
+        let Some(ai) = m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { return false };
+        if !m.dropped.contains(&(ai, 0)) {
+            return !m.missing.contains(&ai) && m.valid.get(ai).copied().unwrap_or(false);
+        }
+        // a coverer dropped in turn carries what its coverers carry (`apply::covers_dropped`)
+        seen.insert(*s) && m.covered_by.get(&ai).is_some_and(|ss| ss.iter().any(|x| carries(core, x, tid, ak, seen)))
+    }
+    let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+    let mut lost = Vec::new();
+    for c in held {
+        let Some(m) = tx.core.ix.commits.get(&c) else { continue };
+        let Some(ai) = m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
+        if m.dropped.contains(&(ai, 0)) && m.cover_drops.contains(&ai) && !carries(tx.core, &c, tid, ak, &mut BTreeSet::new()) {
+            lost.push((c, ai));
+        }
+    }
+    let mut owned = Vec::new();
+    if !lost.is_empty() {
+        tx.core.forget_live(tid, ak);
+    }
+    for (c, ai) in lost {
+        tx.core.touch();
+        let Some(mut m) = tx.core.ix.commits.get(&c).cloned() else { continue };
+        m.dropped.retain(|x| x.0 != ai);
+        m.missing.insert(ai);
+        m.live_drops.remove(&ai);
+        m.covered_by.remove(&ai);
+        m.cover_drops.remove(&ai);
+        if m.view.kind.has_own_writes() {
+            owned.extend(Owned::of_view(&m.view, &c, ai));
+        }
+        if let Some(blob) = tx.get_commit(&c)? {
+            tx.put_commit(&c, &blob, &m, Shred::No, None)?;
+        }
+        tx.core.ix.commits.insert(c, m);
+        if let Some(ch) = &mut tx.core.changed {
+            ch.undropped.insert(c);
+        }
+    }
+    // held snapshots' copies of the writes of deltas now never received are carried writes
+    if !owned.is_empty() {
+        let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|s| tx.core.ix.commits.get(s).is_some_and(|m| crate::apply::is_kind_snapshot(m.view.kind))).collect();
+        for s in held {
+            let Some(sai) = aspect_index(tx, &s, tid, ak) else { continue };
+            for d in crate::apply::held_parts(tx, &s, sai)? {
+                if let Decoded::Snapshot(sn) = d {
+                    crate::apply::validity::note_carried(tx.core, tid, ak, &s, &sn.fragment);
+                }
+            }
+        }
+    }
+    Ok(owned)
 }
 
 /// Holds the value-carrying writes of a delta value-less from now on (spec/crdt.md §4.7).
@@ -484,7 +561,7 @@ impl Engine {
         let (c, tid, ak) = (*c, *tid, ak.clone());
         self.run(|tx| {
             let ai = aspect_index(tx, &c, &tid, &ak).ok_or(Error::UnknownCommit(c))?;
-            drop_part(tx, &c, ai)
+            drop_part_as(tx, &c, ai, true)
         })
     }
 

@@ -86,6 +86,13 @@ pub struct Entry {
     pub kind: Kind,
 }
 
+impl Entry {
+    /// Its wrap went with a dropped body's bytes (`SyncEngine::forget_blob`).
+    pub fn shredded(&self) -> bool {
+        self.wrap == [0; WRAP_LEN]
+    }
+}
+
 /// A commit blob this node holds the key of (received, or sealed here).
 #[derive(Clone)]
 pub struct BlobRec {
