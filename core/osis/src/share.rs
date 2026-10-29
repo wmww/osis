@@ -258,7 +258,7 @@ impl Osis {
     /// else `UnknownActor`. The grant reaches the member's devices through its inbox.
     pub fn grant(&self, target: Tid, member: Tid, role: Role, opts: EdgeOpts) -> Result<()> {
         let (target, member) = (self.resolved(target), self.resolved(member));
-        if !self.knows(target) {
+        if !self.holds(target) {
             return Err(Error::UnknownThing { tid: target });
         }
         self.persist(&[target])?;
@@ -800,7 +800,7 @@ impl Osis {
     /// (spec/sync.md §2); needs admin on the group. A no-op when it has one.
     pub fn sync(&self, group: Tid, servers: &[ServerAddr]) -> Result<()> {
         let g = self.resolved(group);
-        if !self.knows(g) {
+        if !self.holds(g) {
             return Err(Error::UnknownThing { tid: g });
         }
         if self.role_on(g) != Some(Role::Admin) {
@@ -921,7 +921,7 @@ impl Osis {
     /// into `groups` in one more write. Reads and writes through the old tid then reach the copy.
     pub fn move_thing(&self, tid: Tid, owner: Tid, groups: &[Tid]) -> Result<Tid> {
         let tid = self.resolved(tid);
-        if !self.knows(owner) {
+        if !self.holds(owner) {
             return Err(Error::UnknownThing { tid: owner });
         }
         // the thing and the new owner are durable first (the copy's history is)

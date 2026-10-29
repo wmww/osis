@@ -287,12 +287,15 @@ fn groups_and_moves_plan_cli_4() {
     assert!(!s.ok(&["groups", &t]).out.contains(&g));
     s.ok(&["sub", "add", "home", &g]);
     assert!(s.ok(&["get", "home", "/group"]).line().contains(&g));
+    assert!(s.ok(&["groups", &g]).out.lines().any(|l| l.starts_with("subgroup\t")), "listed as a subgroup of home");
     s.ok(&["sub", "rm", "home", &g]);
     assert_eq!(s.ok(&["role", &t]).line(), "admin");
     s.ok(&["roster", "me"]);
     let n = s.ok(&["move", &t, "me", "--in", "home"]).line().to_string();
     assert_ne!(n, t);
     assert_eq!(s.code(&["same", &t, &n]), 0);
+    s.ok(&["delete", &n]);
+    assert!(s.ok(&["show", &n]).out.contains("state\tdeleted"), "a deleted thing shows as such");
 }
 
 // notes/cli.md Command table Things and aspects (`--stream`, `--len`), notes/api.md Large values: a value

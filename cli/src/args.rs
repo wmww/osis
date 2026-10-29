@@ -245,7 +245,7 @@ pub enum Cmd {
     /// Subgroups
     #[command(subcommand)]
     Sub(SubCmd),
-    /// Groups T is in
+    /// Groups listing T as an item or a subgroup, and every group holding T (within)
     Groups { t: String },
     /// Members of a thing with their edges (--watch: one line per change)
     Roster {

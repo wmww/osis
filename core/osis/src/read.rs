@@ -43,6 +43,19 @@ impl Created {
     }
 }
 
+/// The groups a thing is in (`Osis::groups_of`), each list in tid order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GroupsOf {
+    /// Groups whose `/group` lists it as an item.
+    pub item_of: Vec<Tid>,
+    /// Groups whose `/group` lists it as a subgroup (its items count as theirs).
+    pub subgroup_of: Vec<Tid>,
+    /// Every group holding it as an item, directly or through subgroup lists (`/groups`,
+    /// spec/data-model.md §8): what sync follows for its own aspects. Not the groups it is
+    /// only a subgroup of.
+    pub within: Vec<Tid>,
+}
+
 /// The membership timeline's roster of a thing: member actor → edge.
 pub type Roster = BTreeMap<Tid, Edge>;
 
@@ -144,9 +157,12 @@ impl Reader<'_> {
         Ok(self.e.aspects(&tid)?)
     }
 
-    /// Groups containing the thing, transitively.
-    pub fn groups_of(&self, tid: Tid) -> Vec<Tid> {
-        self.e.groups_of(&self.resolve(tid)).into_iter().collect()
+    /// The groups the thing is in: those listing it as an item or as a subgroup, and every
+    /// group holding it transitively. Both sides of `/group`, local indexes only.
+    pub fn groups_of(&self, tid: Tid) -> GroupsOf {
+        let t = self.resolve(tid);
+        let (items, subs) = self.e.listed_in(&t);
+        GroupsOf { item_of: items.into_iter().collect(), subgroup_of: subs.into_iter().collect(), within: self.e.groups_of(&t).into_iter().collect() }
     }
 
     /// The membership timeline's roster of `thing` (spec/permissions.md §2).
@@ -159,8 +175,18 @@ impl Reader<'_> {
         self.e.role_on(&self.resolve(tid))
     }
 
-    /// Whether the thing's `/created` is held.
-    pub fn knows(&self, tid: Tid) -> bool {
+    /// Whether the thing is here: its creation is held (or it is ephemeral here) and it has
+    /// content, some aspect a `Write` sets. `false` for an unknown thing and for a deleted
+    /// one, which `created` still reports; an actor carrying only membership data (a link
+    /// key, a contact before any data) reads `false` too.
+    pub fn knows(&mut self, tid: Tid) -> bool {
+        let t = self.resolve(tid);
+        self.e.ephemeral_thing(&t).is_some() || (self.e.knows(&t) && self.e.has_content(&t).unwrap_or(true))
+    }
+
+    /// Whether the thing's creation is held or it is ephemeral here, deleted or not: what a
+    /// write, grant or move needs.
+    pub(crate) fn holds(&self, tid: Tid) -> bool {
         self.e.knows(&self.resolve(tid))
     }
 
@@ -199,7 +225,8 @@ impl Osis {
         self.read(|r| r.aspects(tid))
     }
 
-    pub fn groups_of(&self, tid: Tid) -> Vec<Tid> {
+    /// `Reader::groups_of`.
+    pub fn groups_of(&self, tid: Tid) -> GroupsOf {
         self.read(|r| r.groups_of(tid))
     }
 
@@ -211,8 +238,13 @@ impl Osis {
         self.read(|r| r.role_on(tid))
     }
 
+    /// `Reader::knows`: the thing is here, not unknown or deleted.
     pub fn knows(&self, tid: Tid) -> bool {
         self.read(|r| r.knows(tid))
+    }
+
+    pub(crate) fn holds(&self, tid: Tid) -> bool {
+        self.read(|r| r.holds(tid))
     }
 
     /// The thing's owner, fixed at creation (`None`: unknown, or a key actor).

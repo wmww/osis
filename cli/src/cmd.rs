@@ -366,7 +366,10 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Groups { t } => {
             let gs = db.groups_of(ctx.tid(&t)?);
-            ctx.emit(&gs.iter().map(Tid::to_uri).collect::<Vec<_>>(), J::Arr(gs.iter().map(|g| J::tid(*g)).collect()))
+            let rel = [("item", &gs.item_of), ("subgroup", &gs.subgroup_of), ("within", &gs.within)];
+            let lines = rel.iter().flat_map(|(n, v)| v.iter().map(move |g| format!("{n}\t{}", g.to_uri()))).collect::<Vec<_>>();
+            let arr = |v: &[Tid]| J::Arr(v.iter().map(|g| J::tid(*g)).collect());
+            ctx.emit(&lines, J::obj([("item_of", arr(&gs.item_of)), ("subgroup_of", arr(&gs.subgroup_of)), ("within", arr(&gs.within))]))
         }
         Cmd::Roster { t, watch: false, .. } => roster(ctx, &t),
         Cmd::Roster { t, watch: true, count } => {
@@ -673,7 +676,9 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     let t = ctx.tid(t)?;
     let aks = db.aspects(t)?;
-    if aks.is_empty() && !db.knows(t) {
+    let known = db.knows(t);
+    let created = db.created(t);
+    if aks.is_empty() && !known && created.is_none() {
         return Err(Error::UnknownThing { tid: t }.into());
     }
     let mut lines = vec![format!("tid\t{}", t.to_uri())];
@@ -691,15 +696,19 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     let groups = db.groups_of(t);
     let role = db.role_on(t);
     let owner = db.owner_of(t);
-    let created = db.created(t);
-    lines.push(format!("groups\t{}", groups.iter().map(Tid::to_uri).collect::<Vec<_>>().join(" ")));
+    let uris = |v: &[Tid]| v.iter().map(Tid::to_uri).collect::<Vec<_>>().join(" ");
+    lines.push(format!("state\t{}", if known { "present" } else { "deleted" }));
+    lines.push(format!("groups\t{}", uris(&groups.within)));
+    lines.push(format!("subgroup_of\t{}", uris(&groups.subgroup_of)));
     lines.push(format!("role\t{}", role.map_or("none", role_text)));
     lines.push(format!("owner\t{}", owner.map_or("none".into(), |o| o.to_uri())));
     lines.push(format!("created\t{}", created.map_or("unknown".into(), |c| format!("{} by {}", ts_text(ctx.g.raw, ts_of(c.ts)), c.node.to_uri()))));
     let j = J::obj([
         ("tid", J::tid(t)),
         ("aspects", J::Obj(fields)),
-        ("groups", J::Arr(groups.iter().map(|g| J::tid(*g)).collect())),
+        ("deleted", J::Bool(!known)),
+        ("groups", J::Arr(groups.within.iter().map(|g| J::tid(*g)).collect())),
+        ("subgroup_of", J::Arr(groups.subgroup_of.iter().map(|g| J::tid(*g)).collect())),
         ("role", J::opt(role.map(|r| J::str(role_text(r))))),
         ("owner", J::opt(owner.map(J::tid))),
         ("created", J::opt(created.map(|c| J::obj([("commit", J::opt(c.commit.map(|x| J::str(commit_text(&x))))), ("node", J::tid(c.node)), ("ts", J::int(ts_of(c.ts)))])))),
@@ -947,7 +956,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
                     lines.push(format!("  state {f}"));
                 }
             }
-            for g in db.groups_of(t) {
+            for g in db.groups_of(t).within {
                 lines.push(format!("group {}", g.to_uri()));
             }
             for (m, e) in db.roster(t) {
@@ -960,7 +969,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
             let mut things: Vec<Tid> = all.into_iter().map(|(t, _)| t).collect();
             things.dedup();
             for t in things {
-                if db.groups_of(t).contains(&g) {
+                if db.groups_of(t).within.contains(&g) {
                     lines.push(format!("item {}", t.to_uri()));
                 }
             }

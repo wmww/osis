@@ -34,11 +34,13 @@ pub fn new_tag(db: &Osis, name: &str) -> Result<Tid> {
     Ok(t)
 }
 
-/// A person's private tag: a tag group in its home, so every device has it and nobody else does.
+/// A person's private tag: a tag group in its home, an item (its own aspects sync) and a
+/// subgroup (its items sync), so every device has it and nobody else does.
 pub fn private_tag(db: &Osis, name: &str) -> Result<Tid> {
     db.write_with(|w| {
         let t = w.create_in(db.me(), &[db.home()])?;
         w.make_group(t)?;
+        w.add_subgroup(db.home(), t)?;
         w.at(t, TAG).set(&Tag::default())?;
         w.at(t, NAME).set(&name.to_string())?;
         Ok(t)
@@ -48,7 +50,7 @@ pub fn private_tag(db: &Osis, name: &str) -> Result<Tid> {
 /// The names of the tags a thing is in, as this node knows them.
 pub fn tag_names(db: &Osis, thing: Tid) -> Result<Vec<String>> {
     let mut out = Vec::new();
-    for g in db.groups_of(thing) {
+    for g in db.groups_of(thing).within {
         if db.get(g, TAG)?.is_some() {
             out.push(db.get(g, NAME)?.unwrap_or_default());
         }

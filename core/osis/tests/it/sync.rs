@@ -101,6 +101,37 @@ fn restore_from_card_spec_permissions_9() {
     assert_eq!(x(&da, u), Some(s("after restore")));
 }
 
+// notes/api.md Reads (knows), Writes (delete): Bob, with write on one of Alice's groups and read
+// on another listing the same thing, deletes it: its placement in the writable group goes, the
+// read-only group keeps listing it (the delete does not fail), and Alice reads it as deleted.
+// spec: none (API surface, notes/api.md)
+#[test]
+fn delete_reaches_other_node_spec_api_writes() {
+    let mut w = World::new();
+    let sv = w.add_server();
+    let (alice, _) = w.person(1, &[sv]);
+    let (bob, _) = w.person(2, &[sv]);
+    w.run();
+    let g = group(&alice);
+    let ro = group(&alice);
+    let card = bob.contact_card().unwrap();
+    w.run();
+    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    alice.grant(g, b, Role::Write, Default::default()).unwrap();
+    alice.grant(ro, b, Role::Read, Default::default()).unwrap();
+    let t = item(&alice, g, g, "doomed");
+    alice.write_with(|wr| wr.place(t, ro)).unwrap();
+    w.run();
+    assert!(bob.knows(t));
+    assert_eq!(bob.groups_of(t).item_of.len(), 2);
+    bob.write_with(|wr| wr.delete(t)).unwrap();
+    assert!(!bob.knows(t));
+    w.run();
+    assert!(!alice.knows(t) && alice.created(t).is_some());
+    assert_eq!(x(&alice, t), None);
+    assert_eq!(alice.groups_of(t).item_of, vec![ro]);
+}
+
 /// A group owned by `db`'s person, synced on its servers.
 fn group(db: &Osis) -> Tid {
     let mut w = db.write();

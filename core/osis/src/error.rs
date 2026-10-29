@@ -68,6 +68,7 @@ impl From<osis_node::Error> for Error {
             N::Store(e) => Error::Storage(e.to_string()),
             N::Corrupt(m) => Error::Storage(m.into()),
             N::Misuse(m) => Error::Invalid(m.into()),
+            N::Unsynced { tid, group } => Error::Invalid(format!("{tid} placed in {group}, whose own aspects sync but whose items reach no synced group: add {group} as a subgroup of a synced group (add_subgroup, same batch or before), or place {tid} elsewhere")),
             e => Error::Invalid(e.to_string()),
         }
     }
