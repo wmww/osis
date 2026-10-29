@@ -226,3 +226,79 @@ fn malformed_aspects_do_not_break_reads() {
     }
     assert!(a.db.get(g, GROUP).unwrap().is_some());
 }
+
+/// One device empties the other's group into the main one while that device, not yet knowing
+/// the main group, favorites something in its own: nothing is lost.
+#[test]
+fn emptying_a_group_keeps_a_concurrent_favorite() {
+    let (a, b) = two();
+    let ga = a.main_group().unwrap();
+    let gb = b.main_group().unwrap();
+    // `big` is the device whose group loses; it learns of the other group only at the end
+    let (small, big) = if ga < gb { (&a, &b) } else { (&b, &a) };
+    let x = big.create_note().unwrap();
+    big.toggle_favorite(x).unwrap();
+    deliver(&big.db, &small.db);
+    let m = small.create_note().unwrap();
+    small.toggle_favorite(m).unwrap();
+    assert!(small.is_favorite(x).unwrap());
+    let y = big.create_note().unwrap();
+    big.toggle_favorite(y).unwrap();
+    sync(&a, &b);
+    for d in [&a, &b] {
+        let f = d.favorites().unwrap();
+        assert!(f.contains(&x) && f.contains(&y) && f.contains(&m), "{f:?}");
+        assert_eq!(views_in(d, &f).len(), 4);
+    }
+    assert_eq!(a.favorites().unwrap(), b.favorites().unwrap());
+}
+
+/// Concurrent first writes after the merge: both devices settle on one list.
+#[test]
+fn concurrent_writes_after_the_merge_converge() {
+    let (a, b) = two();
+    a.main_group().unwrap();
+    b.main_group().unwrap();
+    let na = a.create_note().unwrap();
+    let nb = b.create_note().unwrap();
+    a.toggle_favorite(na).unwrap();
+    b.toggle_favorite(nb).unwrap();
+    sync(&a, &b);
+    let ma = a.create_note().unwrap();
+    let mb = b.create_note().unwrap();
+    a.toggle_favorite(ma).unwrap();
+    b.toggle_favorite(mb).unwrap();
+    sync(&a, &b);
+    let f = a.favorites().unwrap();
+    assert_eq!(f, b.favorites().unwrap());
+    for t in [na, nb, ma, mb] {
+        assert!(f.contains(&t), "{f:?}");
+    }
+    // no writes from reads: another sync round changes nothing
+    let before = a.db.engine(|e| e.commit_ids().len());
+    let _ = (a.favorites().unwrap(), b.favorites().unwrap(), a.opened().unwrap(), b.opened().unwrap());
+    sync(&a, &b);
+    assert_eq!(a.db.engine(|e| e.commit_ids().len()), before);
+}
+
+/// One device unfavorites a thing still held in the other group while the other device, also
+/// writing for the first time since the merge, favorites something else.
+#[test]
+fn unfavorite_survives_a_concurrent_first_write() {
+    let (a, b) = two();
+    let ga = a.main_group().unwrap();
+    let gb = b.main_group().unwrap();
+    let (small, big) = if ga < gb { (&a, &b) } else { (&b, &a) };
+    let n = big.create_note().unwrap();
+    big.toggle_favorite(n).unwrap();
+    sync(&a, &b);
+    let m = small.create_note().unwrap();
+    sync(&a, &b);
+    small.toggle_favorite(n).unwrap();
+    big.toggle_favorite(m).unwrap();
+    sync(&a, &b);
+    let f = a.favorites().unwrap();
+    assert_eq!(f, b.favorites().unwrap());
+    assert!(f.contains(&m));
+    assert!(!f.contains(&n), "unfavorite lost: {f:?}");
+}
