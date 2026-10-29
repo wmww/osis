@@ -232,3 +232,20 @@ fn register_undo_chain_spec_4_6() {
     assert_eq!(s.read(), Some(Value::Int(5)));
     assert_eq!(undo_of(40, 5, &c1, &me, r1, &s, &s0, &[written(&u2)]), None);
 }
+
+// issues/same-stamp-substitution.md (ephemeral security review M3), repro: two writes under one
+// stamp with different values (a forged copy of another's write inside a snapshot) join in
+// arrival order, so holders that saw them in different orders read different values forever.
+// Ignored until a deterministic tie-break lands.
+#[test]
+#[ignore]
+fn same_stamp_substitution_diverges() {
+    let src = Source::node(Tid::from_bytes([3; 15]));
+    let alice = create(&mut Writer::new(ts(1 << 16), src.clone(), 1), &AnyView, &Value::Str("alice".into())).unwrap();
+    let forged = create(&mut Writer::new(ts(1 << 16), src, 1), &AnyView, &Value::Str("forged".into())).unwrap();
+    let mut x = alice.clone();
+    x.join(forged.clone());
+    let mut y = forged;
+    y.join(alice);
+    assert_eq!(x.read(), y.read(), "join is order dependent for same-stamp writes");
+}
