@@ -5,5 +5,5 @@
 
 pub mod sync;
 
-pub use osis_engine::{apply, costs, engine, error, events, flows, identity, labeling, local_peer, moves, retention, rotation, undo};
-pub use osis_engine::{Cause, Config, Creation, Diagnostic, DiagnosticKind, Engine, Error, Event, Identity, Ingested, Mutation, Origin, Reason, Result};
+pub use osis_engine::{apply, costs, engine, ephemeral, error, events, flows, identity, labeling, local_peer, moves, retention, rotation, undo};
+pub use osis_engine::{Cause, ChangeId, Config, Creation, Diagnostic, DiagnosticKind, Engine, EphemeralId, Error, Event, Identity, Ingested, Mutation, Origin, Reason, Result, Written};

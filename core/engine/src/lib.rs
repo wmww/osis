@@ -8,6 +8,7 @@
 pub mod apply;
 pub mod costs;
 pub mod engine;
+pub mod ephemeral;
 pub mod error;
 pub mod events;
 pub mod flows;
@@ -22,5 +23,6 @@ pub mod undo;
 pub use apply::{Creation, Ingested, Reason};
 pub use engine::{Config, Engine, Mutation};
 pub use error::{Error, Result};
-pub use events::{Cause, Diagnostic, DiagnosticKind, Event, Origin};
+pub use ephemeral::Written;
+pub use events::{Cause, ChangeId, Diagnostic, DiagnosticKind, EphemeralId, Event, Origin};
 pub use identity::Identity;

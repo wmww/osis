@@ -219,7 +219,7 @@ impl Osis {
                 .map(|c| {
                     let h = &c.header;
                     let entry = CommitEntry {
-                        commit: CommitInfo { id: c.id, actor: h.actor, node: h.author, ts: h.ts, received: c.received },
+                        commit: CommitInfo { id: osis_node::ChangeId::Commit(c.id), actor: h.actor, node: h.author, ts: h.ts, received: c.received },
                         kind: kind_of(h),
                         reverts: h.undoes,
                         reverted_by: by.remove(&c.id).unwrap_or_default(),
@@ -237,7 +237,7 @@ impl Osis {
     pub fn commits(&self, q: &CommitQuery) -> Result<Vec<CommitEntry>> {
         let mut found = self.found(q.scope.as_ref())?;
         if let Some(a) = q.after {
-            match found.iter().position(|f| f.entry.commit.id == a) {
+            match found.iter().position(|f| f.entry.commit.id == osis_node::ChangeId::Commit(a)) {
                 Some(i) => drop(found.drain(..=i)),
                 None => return Err(Error::Invalid("`after` names no commit in the query's scope".into())),
             }
@@ -272,7 +272,9 @@ impl Osis {
     }
 
     /// Reverts any held change or revert this node may write (an admin reverting someone else's).
-    pub fn revert(&self, id: CommitId) -> Result<Committed> {
+    /// Ephemeral changes have no undo log yet (`Invalid`).
+    pub fn revert(&self, id: osis_node::ChangeId) -> Result<Committed> {
+        let Some(id) = id.commit() else { return Err(Error::Invalid("an ephemeral change cannot be reverted yet".into())) };
         let _g = lock(&self.inner.undo);
         self.revert_one(id)
     }
@@ -288,7 +290,7 @@ impl Osis {
         } else {
             mine.find(|f| f.entry.in_effect && f.depth % 2 == 0)
         };
-        target.map(|f| self.revert_one(f.entry.commit.id)).transpose()
+        target.and_then(|f| f.entry.commit.id.commit()).map(|c| self.revert_one(c)).transpose()
     }
 
     /// The revert of `target`, or why there is none (never a partial revert).
@@ -305,7 +307,7 @@ impl Osis {
                 return Err(blocked(DropReason::Compacted));
             }
             match e.commit(m)? {
-                Some(id) => Ok(Committed { commit: id, ts: e.header(&id).map(|h| h.ts).unwrap_or_default() }),
+                Some(id) => Ok(Committed { id: osis_node::ChangeId::Commit(id), ts: e.header(&id).map(|h| h.ts).unwrap_or_default() }),
                 None => Err(blocked(DropReason::Superseded)),
             }
         })

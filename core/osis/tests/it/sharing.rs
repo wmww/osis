@@ -5,7 +5,8 @@
 use crate::common;
 use common::world::World;
 use common::*;
-use osis::{Demotion, DiagnosticKind, Error, Lower, Osis, Place, Role, SyncScope, SyncState, Tid, Value, WaitForSync};
+use crate::common::CreateIn;
+use osis::{Demotion, DiagnosticKind, Error, Lower, Osis, Role, SyncScope, SyncState, Tid, Value, WaitForSync};
 use std::time::Duration;
 
 fn s(x: &str) -> Value {
@@ -14,7 +15,7 @@ fn s(x: &str) -> Value {
 
 fn item(db: &Osis, owner: Tid, g: Tid, v: &str) -> Tid {
     let mut w = db.write();
-    let t = w.create(owner, Place::In(g)).unwrap();
+    let t = w.create_in(owner, &[g]).unwrap();
     w.at(t, ak("/t/x")).set(&s(v)).unwrap();
     w.commit().unwrap();
     t
@@ -26,7 +27,7 @@ fn x(db: &Osis, t: Tid) -> Option<Value> {
 
 fn group(db: &Osis) -> Tid {
     let mut w = db.write();
-    let g = w.create(db.me(), Place::In(db.home())).unwrap();
+    let g = w.create_in(db.me(), &[db.home()]).unwrap();
     w.make_group(g).unwrap();
     w.commit().unwrap();
     db.sync(g, &[]).unwrap();

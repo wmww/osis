@@ -5,8 +5,9 @@
 
 use crate::scenario as common;
 use common::*;
+use crate::common::CreateIn;
 use osis::core::{BODY, NAME};
-use osis::{EdgeOpts, Error, Osis, Place, Result, Role, Tid};
+use osis::{EdgeOpts, Error, Osis, Result, Role, Tid};
 use osis_sim::world::World;
 use crate::schemas::event::*;
 use std::collections::BTreeSet;
@@ -32,7 +33,7 @@ fn local(y: i64, m: i64, d: i64, h: i64, min: i64) -> i64 {
 
 fn new_event(db: &Osis, calendar: Tid, name: &str, start: Start, end: Option<End>) -> Result<Tid> {
     db.write_with(|w| {
-        let e = w.create(calendar, Place::In(calendar))?;
+        let e = w.create_in(calendar, &[calendar])?;
         w.at(e, NAME).set(&name.to_string())?;
         w.at(e, START).set(&start)?;
         if let Some(end) = &end {

@@ -6,7 +6,6 @@
 use crate::error::{Error, Result};
 use crate::handle::{LINKS, Locked, MadeLink, Osis, save_servers};
 use crate::watch::{Delivery, Filter, Subscription};
-use crate::write::Place;
 use osis_base::{Ak, Role, Tid, Value, WallMs};
 use osis_node::flows::{self, PreSync};
 use osis_node::sync::SyncEngine;
@@ -619,7 +618,7 @@ impl Osis {
         let me = self.me();
         let servers = self.server_addrs();
         let p = self.write_with(|w| {
-            let p = w.create(me, Place::Unsynced)?;
+            let p = w.create(me)?;
             w.make_group(p)?;
             Ok(p)
         })?;
@@ -899,19 +898,25 @@ impl Osis {
     /// Moves `tid` to `owner` (spec/permissions.md §7): a copy with a new tid and the held
     /// history imported, `/was` on the copy, `/moved` on the old thing when this node is its
     /// admin, every current member of the old thing re-granted on the copy; the copy is placed
-    /// per `place`. Reads and writes through the old tid then reach the copy.
-    pub fn move_thing(&self, tid: Tid, owner: Tid, place: Place) -> Result<Tid> {
+    /// into `groups` in one more write. Reads and writes through the old tid then reach the copy.
+    pub fn move_thing(&self, tid: Tid, owner: Tid, groups: &[Tid]) -> Result<Tid> {
         let tid = self.resolved(tid);
         if !self.knows(owner) {
             return Err(Error::UnknownThing { tid: owner });
         }
+        // the thing and the new owner are durable first (the copy's history is)
+        let me = self.me();
+        self.engine(|e| {
+            let mut m = osis_node::Mutation::new();
+            m.act_as(me).persist(tid).persist(owner);
+            e.write(m)
+        })?;
         let (copy, done) = self.engine(|e| e.move_to(&tid, &owner))?;
         self.carry(done)?;
-        let groups = place.groups();
         if !groups.is_empty() {
             self.write_with(|w| {
                 for g in groups {
-                    w.place(copy, g)?;
+                    w.place(copy, *g)?;
                 }
                 Ok(())
             })?;

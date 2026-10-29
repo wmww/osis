@@ -94,7 +94,8 @@ impl Engine {
     pub fn get(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Value>> {
         let (tid, ak) = (*tid, ak.clone());
         if self.core.created(&tid).is_none() {
-            return Ok(None);
+            let v = self.ephemeral_get(&tid, &ak)?;
+            return Ok(self.resolved(&tid, &ak, v));
         }
         let v = match ak.as_str() {
             "/tid" => Some(Value::Tid(tid)),
@@ -104,6 +105,7 @@ impl Engine {
                 let r = self.core.roster_of(&tid);
                 (!r.is_empty()).then(|| Value::Map(r.iter().map(|(m, e)| (Value::Tid(*m), edge_value(e))).collect()))
             }
+            _ if self.has_ephemeral(&tid, &ak) => self.joined_state(&tid, &ak)?.as_ref().and_then(Fragment::read),
             _ => self.run(|tx| Ok(tx.state(&tid, &ak)?.and_then(Fragment::read)))?,
         };
         Ok(self.resolved(&tid, &ak, v))
@@ -138,6 +140,10 @@ impl Engine {
         if path.is_empty() || synthetic_ak(ak.as_str()) {
             return Ok(self.get(tid, ak)?.and_then(|v| value_at(v, path)));
         }
+        if self.has_ephemeral(tid, ak) {
+            let v = self.joined_state(tid, ak)?.and_then(|f| f.at(path)).filter(Fragment::present).and_then(|f| f.read());
+            return Ok(self.resolved(tid, ak, v));
+        }
         if self.core.created(tid).is_none() {
             return Ok(None);
         }
@@ -154,7 +160,14 @@ impl Engine {
     /// inside `(tid, ak)`: a string or a list; `None` if absent or not a sequence. A large
     /// sequence loads only the pages holding them (spec/crdt.md §6 placement kept per page set).
     pub fn get_range(&mut self, tid: &Tid, ak: &Ak, path: &[osis_crdt::PathSeg], r: std::ops::Range<usize>) -> Result<Option<Value>> {
-        if self.core.created(tid).is_none() || synthetic_ak(ak.as_str()) {
+        if synthetic_ak(ak.as_str()) {
+            return Ok(None);
+        }
+        if self.has_ephemeral(tid, ak) {
+            let v = self.joined_state(tid, ak)?.and_then(|f| f.at(path)).filter(Fragment::present).and_then(|s| s.read_elems(&s.visible_range(r)?));
+            return Ok(self.resolved(tid, ak, v));
+        }
+        if self.core.created(tid).is_none() {
             return Ok(None);
         }
         let path = self.lookup_path(tid, path)?;
@@ -174,7 +187,11 @@ impl Engine {
     /// AKs present on the thing (`/aspects`).
     pub fn aspects(&mut self, tid: &Tid) -> Result<Vec<Ak>> {
         let tid = *tid;
-        self.run(|tx| {
+        let eph = self.ephemeral_aspects(&tid);
+        if self.core.created(&tid).is_none() {
+            return Ok(eph);
+        }
+        let mut out = self.run(|tx| {
             let mut aks = Vec::new();
             let prefix = [records::ASPECTS, tid.as_bytes()].concat();
             tx.scan(&prefix, |k, _| {
@@ -189,7 +206,15 @@ impl Engine {
                 }
             }
             Ok(out)
-        })
+        })?;
+        // an aspect with both sides lists once (its read is their join)
+        for ak in eph {
+            if !out.contains(&ak) {
+                out.push(ak);
+            }
+        }
+        out.sort();
+        Ok(out)
     }
 
     /// Groups containing the thing, transitively (`/groups`).
@@ -204,6 +229,9 @@ impl Engine {
 
     /// This node's effective role on `tid` now.
     pub fn role_on(&self, tid: &Tid) -> Option<Role> {
+        if self.ephemeral_thing(tid).is_some() {
+            return self.ephemeral_role(tid);
+        }
         let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
         super::write::role_of(&self.core, &self.tid(), tid, ts)
     }
@@ -225,9 +253,9 @@ impl Engine {
         self.core.ix.secrets.get(tid).cloned().or_else(|| self.core.epochs(tid))
     }
 
-    /// Whether `/created` of `tid` is held.
+    /// Whether `/created` of `tid` is held, or it is an ephemeral thing here.
     pub fn knows(&self, tid: &Tid) -> bool {
-        self.core.created(tid).is_some()
+        self.core.created(tid).is_some() || self.ephemeral_thing(tid).is_some()
     }
 
     /// Every aspect with a held state, as `(tid, ak)` (simulator invariants).

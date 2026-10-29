@@ -2,8 +2,9 @@
 //! (osis-sim's `World`: manual clock, in-memory hubs, no sleeps, no network).
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use crate::common::CreateIn;
 use osis::core::{NAME, TAG, Tag};
-use osis::{Osis, Place, Result, Tid};
+use osis::{Osis, Result, Tid};
 use osis_sim::world::World;
 
 /// A person on server `sv`, settled.
@@ -23,7 +24,7 @@ pub fn introduce(w: &mut World, db: &Osis, other: &Osis) -> Tid {
 /// A tag owned by the person, synced under its own label (a shareable root, not placed in home).
 pub fn new_tag(db: &Osis, name: &str) -> Result<Tid> {
     let t = db.write_with(|w| {
-        let t = w.create(db.me(), Place::Unsynced)?;
+        let t = w.create(db.me())?;
         w.make_group(t)?;
         w.at(t, TAG).set(&Tag::default())?;
         w.at(t, NAME).set(&name.to_string())?;
@@ -36,7 +37,7 @@ pub fn new_tag(db: &Osis, name: &str) -> Result<Tid> {
 /// A person's private tag: a tag group in its home, so every device has it and nobody else does.
 pub fn private_tag(db: &Osis, name: &str) -> Result<Tid> {
     db.write_with(|w| {
-        let t = w.create(db.me(), Place::In(db.home()))?;
+        let t = w.create_in(db.me(), &[db.home()])?;
         w.make_group(t)?;
         w.at(t, TAG).set(&Tag::default())?;
         w.at(t, NAME).set(&name.to_string())?;

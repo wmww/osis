@@ -43,6 +43,14 @@ pub fn commit_text(c: &CommitId) -> String {
     osis_schema::osis_base::hex::encode(&c.0)
 }
 
+/// A change: its commit id, or `ephemeral:<session prefix>:<n>` for an ephemeral batch.
+pub fn change_text(c: &osis::ChangeId) -> String {
+    match c {
+        osis::ChangeId::Commit(c) => commit_text(c),
+        osis::ChangeId::Ephemeral(e) => format!("ephemeral:{}:{}", osis_schema::osis_base::hex::encode(&e.session[..8]), e.n),
+    }
+}
+
 /// Prints a commit id (nothing when nothing changed).
 fn emit_commit(ctx: &mut Ctx<'_>, c: Option<CommitId>) -> anyhow::Result<()> {
     let c = c.map(|c| commit_text(&c));
@@ -266,7 +274,7 @@ fn one_write(ctx: &mut Ctx<'_>, c: ScriptCmd) -> anyhow::Result<()> {
     let mut did = Did::default();
     write::apply(ctx, &mut w, &c, &mut did)?;
     let done = w.commit()?;
-    let commit = done.map(|c| c.commit);
+    let commit = done.and_then(|c| c.id.commit());
     let created = did.created.first().map(|(_, t)| *t);
     let mut lines = Vec::new();
     if let Some(t) = created {
@@ -362,8 +370,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Undo { scope: s } => undo(ctx, &s, false),
         Cmd::Redo { scope: s } => undo(ctx, &s, true),
         Cmd::Revert { id } => {
-            let c = db.revert(parse_commit(&id)?)?;
-            emit_commit(ctx, Some(c.commit))
+            let c = db.revert(osis::ChangeId::Commit(parse_commit(&id)?))?;
+            emit_commit(ctx, c.id.commit())
         }
         Cmd::Groups { t } => {
             let gs = db.groups_of(ctx.tid(&t)?);
@@ -462,7 +470,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Move { t, owner, place } => {
             let p = write::place(ctx, &place)?;
-            let n = db.move_thing(ctx.tid(&t)?, ctx.tid(&owner)?, p)?;
+            let n = db.move_thing(ctx.tid(&t)?, ctx.tid(&owner)?, &p)?;
             ctx.emit(&[n.to_uri()], J::obj([("tid", J::tid(n))]))
         }
         Cmd::Same { a, b } => {
@@ -600,7 +608,7 @@ fn edit(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, base: Option<S
     let mut w = db.write();
     w.at(t, key.clone()).edit(&base, &new)?;
     let done = w.commit()?;
-    emit_commit(ctx, done.map(|c| c.commit))
+    emit_commit(ctx, done.and_then(|c| c.id.commit()))
 }
 
 /// Where `edit`'s temp file goes: the per-user runtime directory (owner-only, usually in
@@ -658,7 +666,7 @@ fn write_script(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
         write::apply(ctx, &mut w, c, &mut did).with_context(|| format!("line {n}"))?;
     }
     let done = w.commit()?;
-    let commit = done.map(|c| commit_text(&c.commit));
+    let commit = done.map(|c| change_text(&c.id));
     let mut text = vec![commit.clone().unwrap_or_else(|| "-".into())];
     let mut vars = Vec::new();
     for (name, t) in &did.created {
@@ -703,7 +711,7 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
         ("groups", J::Arr(groups.iter().map(|g| J::tid(*g)).collect())),
         ("role", J::opt(role.map(|r| J::str(role_text(r))))),
         ("owner", J::opt(owner.map(J::tid))),
-        ("created", J::opt(created.map(|c| J::obj([("commit", J::str(commit_text(&c.commit))), ("node", J::tid(c.node)), ("ts", J::int(ts_of(c.ts)))])))),
+        ("created", J::opt(created.map(|c| J::obj([("commit", J::opt(c.commit.map(|x| J::str(commit_text(&x))))), ("node", J::tid(c.node)), ("ts", J::int(ts_of(c.ts)))])))),
     ]);
     ctx.emit(&lines, j)
 }
@@ -727,7 +735,7 @@ fn change_line(ctx: &Ctx<'_>, c: &Change<Value>) -> String {
             ("tid", J::tid(c.tid)),
             ("ak", J::str(c.ak.as_str())),
             ("source", J::str(src)),
-            ("commit", J::opt(info.map(|i| J::str(commit_text(&i.id))))),
+            ("commit", J::opt(info.map(|i| J::str(change_text(&i.id))))),
             ("actor", J::opt(info.map(|i| J::tid(i.actor)))),
             ("node", J::opt(info.map(|i| J::tid(i.node)))),
             ("ts", J::opt(info.map(|i| J::int(ts_of(i.ts))))),
@@ -848,7 +856,7 @@ fn commits(ctx: &mut Ctx<'_>, q: &CommitQuery) -> anyhow::Result<()> {
         .map(|c| {
             let aks: Vec<String> = c.aspects.iter().map(|(t, a)| format!("{}{}", t.to_uri(), a.as_str())).collect();
             let i = &c.commit;
-            let mut l = format!("{} {} {} {} {} {}", commit_text(&i.id), ts_text(raw, ts_of(i.ts)), i.actor.to_uri(), i.node.to_uri(), kind_text(c.kind), if c.in_effect { "in-effect" } else { "reverted" });
+            let mut l = format!("{} {} {} {} {} {}", change_text(&i.id), ts_text(raw, ts_of(i.ts)), i.actor.to_uri(), i.node.to_uri(), kind_text(c.kind), if c.in_effect { "in-effect" } else { "reverted" });
             if let Some(r) = &c.reverts {
                 l += &format!(" reverts={}", commit_text(r));
             }
@@ -862,7 +870,7 @@ fn commits(ctx: &mut Ctx<'_>, q: &CommitQuery) -> anyhow::Result<()> {
         cs.iter()
             .map(|c| {
                 J::obj([
-                    ("commit", J::str(commit_text(&c.commit.id))),
+                    ("commit", J::str(change_text(&c.commit.id))),
                     ("ts", J::int(ts_of(c.commit.ts))),
                     ("actor", J::tid(c.commit.actor)),
                     ("node", J::tid(c.commit.node)),
@@ -883,7 +891,7 @@ fn undo(ctx: &mut Ctx<'_>, s: &Scope, redo: bool) -> anyhow::Result<()> {
     let sc = scope(ctx, s)?;
     let r = if redo { ctx.db.redo(&sc)? } else { ctx.db.undo(&sc)? };
     match r {
-        Some(c) => emit_commit(ctx, Some(c.commit)),
+        Some(c) => emit_commit(ctx, c.id.commit()),
         None => Err(exit(3, if redo { "nothing to redo" } else { "nothing to undo" })),
     }
 }

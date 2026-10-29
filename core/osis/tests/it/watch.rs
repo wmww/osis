@@ -5,7 +5,7 @@
 
 use crate::common;
 use common::*;
-use osis::{Cause, DiagnosticKind, MemStore, Osis, Place, Source, Target, Value};
+use osis::{Cause, DiagnosticKind, MemStore, Osis, Source, Target, Value};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
@@ -19,7 +19,7 @@ mod notes {
 
 fn thing(db: &Osis) -> osis::Tid {
     let mut w = db.write();
-    let t = w.create(db.me(), Place::Unsynced).unwrap();
+    let t = w.create(db.me()).unwrap();
     w.commit().unwrap();
     t
 }
@@ -237,7 +237,7 @@ fn two_nodes_remote_watch() {
     let done = commit_with(&a, |w| w.at(t, k.clone()).set(&Value::Int(9)));
     deliver(&a, &b);
     let c = recv(&rx);
-    assert!(matches!(c.source, Source::Remote(i) if i.node == a.node() && i.actor == a.me() && i.id == done.commit));
+    assert!(matches!(c.source, Source::Remote(i) if i.node == a.node() && i.actor == a.me() && i.id == done.id));
     assert_eq!(c.value, Ok(Some(Value::Int(9))));
     assert!(w.changed_timeout(Duration::from_secs(20)));
     assert_eq!(w.current().unwrap(), Some(Value::Int(9)));
@@ -283,7 +283,7 @@ fn coalesced_call_carries_newest_source() {
     db.settle();
     let calls: Vec<_> = rx.try_iter().collect();
     assert_eq!(calls.len(), 1);
-    assert!(matches!(calls[0].source, Source::Local(i) if i.id == last.commit));
+    assert!(matches!(calls[0].source, Source::Local(i) if i.id == last.id));
     assert_eq!(calls[0].value, Ok(Some(Value::Int(2))));
 }
 
@@ -371,7 +371,7 @@ fn watch_follows_move() {
     let (tx, rx) = channel();
     let _s = db.at(t, k.clone()).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     assert_eq!(recv(&rx).source, Source::Initial);
-    let m = db.move_thing(t, owner2, Place::Unsynced).unwrap();
+    let m = db.move_thing(t, owner2, &[]).unwrap();
     db.write_with(|w| w.at(m, k.clone()).set(&Value::Int(3))).unwrap();
     db.settle();
     let last = rx.try_iter().last().unwrap();

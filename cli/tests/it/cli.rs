@@ -151,7 +151,7 @@ fn store_dir_init_lock_plan_cli_2() {
         assert_eq!(mode & 0o777, m, "{}", p.display());
     }
     assert_eq!(call(&["init"]).0, 8, "refuses a non-empty store");
-    let (c, t, _) = call(&["create", "--owner", "me", "--unsynced", "/a/b", "1"]);
+    let (c, t, _) = call(&["create", "--owner", "me", "/a/b", "1"]);
     assert_eq!(c, 0);
     assert_eq!(call(&["get", t.trim(), "/a/b"]).1, "1\n");
     let held = osis::Osis::open(osis::Config::dir(&d)).unwrap();
@@ -277,7 +277,7 @@ fn commits_undo_redo_plan_cli_4() {
 #[test]
 fn groups_and_moves_plan_cli_4() {
     let s = S::mem();
-    let g = s.ok(&["create", "--owner", "me", "--unsynced", "--group"]).line().to_string();
+    let g = s.ok(&["create", "--owner", "me", "--group"]).line().to_string();
     let t = s.thing();
     s.ok(&["place", &t, &g]);
     assert!(s.ok(&["groups", &t]).out.contains(&g));

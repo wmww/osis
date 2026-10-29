@@ -645,6 +645,7 @@ impl SyncEngine {
                 }
                 // what the timers dropped: blobs forgotten, judged again (spec/commits.md §5)
                 self.engine.tick()?;
+                self.engine.tick_ephemeral();
                 self.engine_events()?;
                 self.timers(out)?;
                 self.serve_timers(out);
@@ -763,6 +764,8 @@ impl SyncEngine {
                         }
                     }
                 }
+                // an expiry of ephemeral state only: nothing to sync
+                crate::Event::Changed { cause: crate::events::Cause::Expiry, changed: aspects } if aspects.iter().all(|(t, a)| self.engine.only_ephemeral(t, a)) => {}
                 crate::Event::Changed { cause, changed: aspects } => {
                     changed = true;
                     if cause == crate::events::Cause::LostAccess {
@@ -1365,6 +1368,9 @@ impl SyncEngine {
             at(o.after);
         }
         if let Ok(Some(x)) = self.engine.next_timer() {
+            at((x as i64).saturating_sub(skew).max(0) as u64);
+        }
+        if let Some(x) = self.engine.next_ephemeral_timer() {
             at((x as i64).saturating_sub(skew).max(0) as u64);
         }
         t.map(|x| x.max(self.last_tick.saturating_add(MIN_WAKE_MS)))

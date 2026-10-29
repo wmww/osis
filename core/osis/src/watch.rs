@@ -9,8 +9,8 @@
 
 use crate::error::{Error, Result};
 use crate::handle::{Inner, Osis};
-use osis_base::{Ak, CommitId, Tid, Ts, Value, WallMs};
-use osis_node::{Cause, Diagnostic, DiagnosticKind, Event, Origin};
+use osis_base::{Ak, Tid, Ts, Value, WallMs};
+use osis_node::{Cause, ChangeId, Diagnostic, DiagnosticKind, Event, Origin};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
@@ -29,7 +29,8 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// reported as itself, never as the writes it carries (notes/api.md Attribution).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommitInfo {
-    pub id: CommitId,
+    /// The commit, or the ephemeral batch for a change with no durable half.
+    pub id: ChangeId,
     /// The actor the author acted for.
     pub actor: Tid,
     /// The authoring node.
@@ -44,9 +45,9 @@ pub struct CommitInfo {
 pub enum Source {
     /// The first call of `on_change`, with the value at registration.
     Initial,
-    /// A commit made on this node.
+    /// A change made on this node.
     Local(CommitInfo),
-    /// A commit received from another node.
+    /// A change received from another node.
     Remote(CommitInfo),
     /// No commit: validity, expiry, purge or a late part of a commit changed the read.
     Derived(Cause),
@@ -93,6 +94,9 @@ pub(crate) enum Delivery {
     /// `value` is the aspect read when the call was prepared; `source` the last event whose
     /// effect it shows.
     Aspect { tid: Tid, ak: Ak, source: Source, value: Result<Option<Value>> },
+    /// A signal aspect fired (notes/ephemeral.md): once per callback, never coalesced, never in
+    /// state.
+    Fired { tid: Tid, ak: Ak, source: Source, value: Value },
     Roster,
     Diagnostic(Diagnostic),
     Signal(SignalMsg),
@@ -186,13 +190,16 @@ impl Dispatch {
     }
 }
 
+fn source(id: ChangeId, origin: Origin, node: Tid, actor: Tid, ts: Ts, received: WallMs) -> Source {
+    let i = CommitInfo { id, actor, node, ts, received };
+    if origin == Origin::Local { Source::Local(i) } else { Source::Remote(i) }
+}
+
 /// The aspects an event changed, with its source.
 fn aspect_event(m: &Msg) -> Option<(&[(Tid, Ak)], Source)> {
     match m {
-        Msg::Event(Event::Applied { id, origin, author, actor, ts, received, changed }) => {
-            let i = CommitInfo { id: *id, actor: *actor, node: *author, ts: *ts, received: *received };
-            Some((changed, if *origin == Origin::Local { Source::Local(i) } else { Source::Remote(i) }))
-        }
+        Msg::Event(Event::Applied { id, origin, author, actor, ts, received, changed }) => Some((changed, source(ChangeId::Commit(*id), *origin, *author, *actor, *ts, *received))),
+        Msg::Event(Event::Ephemeral { id, origin, author, actor, ts, received, changed, .. }) => Some((changed, source(*id, *origin, *author, *actor, *ts, *received))),
         Msg::Event(Event::Changed { cause, changed }) => Some((changed, Source::Derived(*cause))),
         _ => None,
     }
@@ -215,6 +222,10 @@ fn targets(db: &Osis, sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
     if let Some((changed, source)) = aspect_event(m) {
         let mut resolved: BTreeMap<Tid, Tid> = BTreeMap::new();
         let mut out = Vec::new();
+        let fired: &[(Tid, Ak, Value)] = match m {
+            Msg::Event(Event::Ephemeral { signals, .. }) => signals,
+            _ => &[],
+        };
         for s in &live {
             let ft = match &s.filter {
                 Filter::Aspect(t, _) | Filter::Thing(t) => *t,
@@ -229,6 +240,16 @@ fn targets(db: &Osis, sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
                     };
                 if hit {
                     out.push((s.clone(), Pre::Aspect { tid: *t, ak: ak.clone(), source }));
+                }
+            }
+            for (t, ak, value) in fired {
+                let hit = (ft == *t || rt == *t)
+                    && match &s.filter {
+                        Filter::Aspect(_, fak) => fak == ak,
+                        _ => true,
+                    };
+                if hit {
+                    out.push((s.clone(), Pre::Ready(Delivery::Fired { tid: *t, ak: ak.clone(), source, value: value.clone() })));
                 }
             }
         }
