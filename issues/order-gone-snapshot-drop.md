@@ -1,0 +1,7 @@
+# Keep-at-most-0 snapshot dropped in one arrival order only
+> Summary: `order::arrival_order_exhaustive_large_spec_crdt_4_8` seed 2700027 fails on main (b40ddcbd) and after snapshot-duty alike: a `/t/gone` (keep at most 0) compaction snapshot is held by a fresh node in the as-made order and dropped (keeping its frontiers, `gives`) in the reversed one, and the oracle allows neither exception.
+> Tags: tests, retention, engine
+
+Replay: `OSIS_ORDER_SEED=2700027 OSIS_ORDER_LEN=30 cargo test --workspace --test it order::arrival_order_exhaustive_large_spec_crdt_4_8 -- --include-ignored`. Shrunk: `vec![Write { by: 0, t: 1, op: 18, k: 1, v: 6 }, Send { from: 0, to: 1, back: 0 }, Undo { by: 0, back: 0 }, Compact { by: 1, t: 0, op: 18 }, Write { by: 0, t: 0, op: 18, k: 0, v: 5 }]`; the first differing index line is the snapshot's commit (dropped `{(0, 0)}` in order #1 only).
+
+Shape: peer 1 snapshots a keep-at-most-0 register (the snapshot inherits at most 0 either way: the schema default before, the carried write's own delta now) holding a write that peer 0's undo already killed; peer 0 then writes again. In the as-made order the snapshot arrives with its write already dead and stays; in the reversed order the new write arrives first and the snapshot is dropped. Spec §5: under at most 0 a body with no live write goes; which of the two is wrong (a snapshot dead on arrival kept, or dropped too early) is to be found.

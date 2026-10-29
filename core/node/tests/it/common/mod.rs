@@ -115,14 +115,6 @@ pub fn set_edge(e: &mut Engine, thing: Tid, member: Tid, edge: Option<ct::Edge>,
     e.commit(m).unwrap().unwrap()
 }
 
-/// Registers the test schema at every peer of `lp` (a snapshot needs the schema of a typed
-/// aspect, spec/commits.md §5).
-pub fn know_schema(lp: &mut LocalPeer) {
-    for p in &mut lp.peers {
-        p.engine.register_schema(std::sync::Arc::new(TEST.get().clone())).unwrap();
-    }
-}
-
 /// Delivers every commit of `from` to `to`.
 pub fn sync(lp: &mut LocalPeer, from: usize, to: usize) {
     lp.sync(from, to).unwrap();
@@ -276,7 +268,7 @@ pub fn forge_snapshot_full(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base:
     let snap = osis_crdt::Snapshot { absorbed: Default::default(), nonce: [7; 16], fragment: f, frontiers, authors };
     let bytes = osis_crdt::encode_snapshot(&snap, &writer_ctx(Kind::ContentSnapshot, ts, author, 0, 0), None).unwrap();
     let mut aw = AspectWrite::new(t, a.clone(), 0, 0, bytes);
-    aw.retention = osis_commit::retention::snapshot_retention(a.as_str(), None);
+    aw.retention = osis_commit::retention::snapshot_retention(a.as_str(), [], 0);
     let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, author, Form::Node);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();

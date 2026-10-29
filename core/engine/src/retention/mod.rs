@@ -343,10 +343,75 @@ fn expire(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid,
     drop_part(tx, c, ai)
 }
 
-/// Does a held delta of `(tid, ak)` name a schema (snapshots included)?
-fn typed(core: &Core, tid: &Tid, ak: &Ak) -> bool {
-    let commits = core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter_map(|(_, c)| core.ix.commits.get(c));
-    commits.into_iter().any(|m| m.header.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak && a.schema.is_some()))
+/// The retentions standing for the writes snapshot state `st` of `(tid, ak)` carries live
+/// (spec/commits.md §5): each write's own delta (spec/permissions.md §5.2: the node-form delta
+/// whose counter range holds it, the commit-form commit it names, the imports listing that commit
+/// as an origin); for writes
+/// whose own delta's header is not held, the held snapshot bodies of the aspect carrying them,
+/// and for any of those none carries, every snapshot of the aspect applied here.
+fn own_retentions(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Result<Vec<osis_schema::Retention>> {
+    if osis_commit::retention::fixed_retention(ak.as_str()).is_some() {
+        return Ok(Vec::new());
+    }
+    let entry = |h: &Header| h.aspects.iter().find(|a| a.tid == *tid && a.ak == *ak).map(|a| a.retention);
+    let commits: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|(_, c)| *c).collect();
+    let mut imports: std::collections::BTreeMap<CommitId, Vec<osis_schema::Retention>> = Default::default();
+    let mut snapshots = Vec::new();
+    for c in &commits {
+        let Some(h) = tx.core.ix.commits.get(c).map(|m| &m.header) else { continue };
+        let Some(r) = entry(h) else { continue };
+        if h.kind == Kind::Import {
+            for o in &h.origins {
+                imports.entry(o.commit).or_default().push(r);
+            }
+        } else if h.kind.is_compaction() {
+            snapshots.push((*c, r));
+        }
+    }
+    let mut own: BTreeSet<CommitId> = BTreeSet::new();
+    let mut out = Vec::new();
+    let mut unknown: BTreeSet<osis_crdt::Dot> = BTreeSet::new();
+    for (d, _) in st.live_writes() {
+        let found = tx.core.commit_of(tid, ak, &d).and_then(|c| {
+            let h = &tx.core.ix.commits.get(&c)?.header;
+            (!h.kind.is_compaction() && h.kind != Kind::Import).then_some(())?;
+            entry(h).map(|r| (c, r))
+        });
+        match found {
+            Some((c, r)) => {
+                if own.insert(c) {
+                    out.push(r);
+                }
+            }
+            None => match tx.core.commit_of(tid, ak, &d).and_then(|c| imports.get(&c)) {
+                Some(rs) => out.extend(rs.iter().copied()),
+                None => _ = unknown.insert(d),
+            },
+        }
+    }
+    if unknown.is_empty() {
+        return Ok(out);
+    }
+    let mut carried = BTreeSet::new();
+    for (c, r) in &snapshots {
+        let Some(ai) = aspect_index(tx, c, tid, ak) else { continue };
+        let mut carries = false;
+        for p in crate::apply::held_parts(tx, c, ai)? {
+            for (d, _) in p.into_fragment().live_writes() {
+                if unknown.contains(&d) {
+                    carries = true;
+                    carried.insert(d);
+                }
+            }
+        }
+        if carries {
+            out.push(*r);
+        }
+    }
+    if carried.len() < unknown.len() {
+        out.extend(snapshots.iter().map(|x| x.1));
+    }
+    Ok(out)
 }
 
 fn purge_by(p: osis_schema::PurgeBy) -> PurgeBy {
@@ -752,15 +817,16 @@ impl Engine {
                 }
             }
             let kind = if is_membership_class(ak.as_str()) { Kind::MembershipSnapshot } else { Kind::ContentSnapshot };
-            // the schema's default bounds: core, or a known schema declaring the AK; none for an
-            // untyped aspect (no held delta names a schema), and no snapshot for a typed one
-            // whose schema this node does not know (spec/commits.md §5)
-            let schema = if ak.is_core() { Some(std::sync::Arc::new(osis_schema::core_schema().clone())) } else { tx.core.schemas.values().find(|s| s.aspects.contains_key(ak.as_str())).cloned() };
-            if schema.is_none() && typed(tx.core, &tid, &ak) {
-                return Ok(None);
-            }
+            // bounds from the retention of the writes it carries, schema known here or not; it
+            // names the schema of the newest delta naming one (spec/commits.md §5)
+            let retention = osis_commit::retention::snapshot_retention(ak.as_str(), own_retentions(tx, &tid, &ak, &st)?, ts.wall_ms().0);
+            let schema_ref = tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten().rev().find_map(|(_, c)| {
+                let h = &tx.core.ix.commits.get(c)?.header;
+                let a = h.aspects.iter().find(|a| a.tid == tid && a.ak == ak)?;
+                a.schema.and_then(|i| h.schemas.get(i)).copied()
+            });
             let plan = CommitPlan { kind, ts, actor: node, form: Form::Node, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng) };
-            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema, schema_ref: None, retention: None, expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new(), split: false };
+            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, schema_ref, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new(), split: false };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })
     }

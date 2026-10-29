@@ -513,8 +513,8 @@ impl Osis {
         self.inner.dispatch.settle(Arc::downgrade(&self.inner));
     }
 
-    /// Registers a schema: typed views for its AKs (`key`, this session), undo and snapshot
-    /// defaults (the engine keeps those in the store). Generated keys carry their schema and
+    /// Registers a schema: typed views for its AKs (`key`, this session), undo and large-value
+    /// write-back (the engine keeps those in the store). Generated keys carry their schema and
     /// need no registration.
     pub fn register_schema(&self, s: Schema) -> Result<Arc<Schema>> {
         let s = Arc::new(s);

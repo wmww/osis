@@ -338,7 +338,8 @@ pub(crate) fn draw_blind(rng: &mut dyn osis_crypto::CryptoRngCore) -> [u8; 16] {
 pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_base::Role), osis_crypto::VerifyingKey>, tid: &Tid, ak: &Ak, schema: Option<&Schema>, r: Option<Retention>, e: Option<u64>) -> Result<(Retention, Option<u64>, Framing)> {
     let defaults = schema.and_then(|s| s.defaults(ak.as_str()));
     let retention = match plan.kind {
-        Kind::ContentSnapshot | Kind::MembershipSnapshot => osis_commit::retention::snapshot_retention(ak.as_str(), defaults.as_ref()),
+        // a compaction snapshot's own (`Engine::snapshot`), never from schema defaults
+        Kind::ContentSnapshot | Kind::MembershipSnapshot => r.unwrap_or_else(|| osis_commit::retention::snapshot_retention(ak.as_str(), [], 0)),
         _ => osis_commit::retention::write_retention(ak.as_str(), defaults.as_ref(), r)?,
     };
     let expires = match plan.kind {

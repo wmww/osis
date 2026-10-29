@@ -472,8 +472,8 @@ pub struct Core {
     /// Linked tenure frontiers decoded (by link content hash) with their canonical size; content
     /// addressed, so never stale.
     pub frontiers: BTreeMap<[u8; 32], (Arc<osis_perm::Frontier>, usize)>,
-    /// Schemas registered or written with here (`records::SCHEMAS`): typed views for undo,
-    /// default bounds for snapshots.
+    /// Schemas registered or written with here (`records::SCHEMAS`): typed views for undo and
+    /// large-value write-back, also after a restart (snapshots need none).
     pub schemas: BTreeMap<osis_base::SchemaId, Arc<osis_schema::Schema>>,
     pub events: Events,
     /// States the running transaction wrote (dropped from the cache on rollback).
@@ -1233,8 +1233,8 @@ impl Engine {
         Ok(())
     }
 
-    /// Registers an app schema: typed views for undo and default bounds for snapshots of its
-    /// AKs (local writes through typed keys register theirs). Kept in the store: an open
+    /// Registers an app schema: typed views of its AKs for undo and large-value write-back
+    /// (local writes through typed keys register theirs). Kept in the store: an open
     /// knows every schema registered before.
     pub fn register_schema(&mut self, s: Arc<osis_schema::Schema>) -> Result<()> {
         self.run(|tx| crate::engine::write::keep_schema(tx, &s, true))
