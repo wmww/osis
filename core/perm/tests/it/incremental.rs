@@ -280,6 +280,42 @@ fn created_late_every_order() {
     }
 }
 
+/// spec/permissions.md §5.1 "R never demotes its own author": the kept standing carried through a removal of an
+/// absent edge (`differential::absent_edge_removal_spread_hist`), its writes arriving in every
+/// order after the genesis (late ones inserted mid-walk), by re-partition and by touched
+/// things; each equals from scratch.
+#[test]
+fn kept_standing_absent_edge_every_order() {
+    let (w, n, _) = joint_world(&crate::differential::absent_edge_removal_spread_hist(), 1);
+    let ids: Vec<_> = w.commits.iter().map(|c| c.id).collect();
+    let genesis = 2;
+    let mut orders = vec![vec![]];
+    for k in genesis..ids.len() {
+        orders = orders.into_iter().flat_map(|o: Vec<usize>| (0..=o.len()).map(move |p| { let mut o = o.clone(); o.insert(p, k); o })).collect();
+    }
+    for order in orders {
+        for touched_only in [false, true] {
+            let mut skip: BTreeSet<_> = ids[genesis..].iter().copied().collect();
+            let mut prev = w.held_without(&skip);
+            let mut inc = Timelines::new();
+            inc.update(&prev);
+            for &i in &order {
+                skip.remove(&ids[i]);
+                let held = w.held_without(&skip);
+                if touched_only {
+                    inc.update_touched(&held, &touched(&prev, &held));
+                } else {
+                    inc.update(&held);
+                }
+                if let Some(d) = check(&held, &inc, &n) {
+                    panic!("order {order:?} (touched {touched_only}) after {i}: {d}");
+                }
+                prev = held;
+            }
+        }
+    }
+}
+
 /// §5.1: a new thing's `/created` alone (nothing names it yet: `Timeline::add_leaves`, no held-set
 /// gathering) and a write after every held one continue the component's timeline; each reports what
 /// changed (the leaf; the write's target), and the result equals an evaluation from scratch.
