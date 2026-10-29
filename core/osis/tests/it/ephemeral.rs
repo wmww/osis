@@ -615,6 +615,7 @@ fn draft_lands_in_folder_at_save_spec_data_model_8() {
             let f = w.create_durable(db.me())?;
             w.make_group(f)?;
             w.place(f, db.home())?;
+            w.add_subgroup(db.home(), f)?;
             Ok(f)
         })
         .unwrap();
@@ -626,7 +627,7 @@ fn draft_lands_in_folder_at_save_spec_data_model_8() {
             Ok(d)
         })
         .unwrap();
-    assert_eq!(db.groups_of(draft).within, vec![folder]);
+    assert_eq!(db.groups_of(draft).within.into_iter().collect::<std::collections::BTreeSet<_>>(), std::collections::BTreeSet::from([folder, db.home()]));
     assert!(durable_items(&db, folder).is_empty());
     db.write_with(|w| w.at(draft, saved.clone()).set(&s("title\nbody"))).unwrap();
     assert!(db.created(draft).unwrap().commit.is_some());
