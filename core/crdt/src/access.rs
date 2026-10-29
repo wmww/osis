@@ -51,3 +51,58 @@ impl Fragment {
         }
     }
 }
+
+/// Rough bytes per stamp or record identity (a `ts` and a dot).
+const STAMP: usize = 40;
+
+fn opt_stamp(s: &Option<Stamp>) -> usize {
+    if s.is_some() { STAMP } else { 0 }
+}
+
+fn meta_bytes(m: &crate::fragment::Meta) -> usize {
+    opt_stamp(&m.reset) + opt_stamp(&m.w)
+}
+
+fn value_bytes(v: &Value) -> usize {
+    match v {
+        Value::Str(s) => s.len() + 2,
+        Value::Bytes(b) => b.len() + 2,
+        Value::Map(m) => 2 + m.iter().map(|(k, x)| value_bytes(k) + value_bytes(x)).sum::<usize>(),
+        Value::List(l) => 2 + l.iter().map(value_bytes).sum::<usize>(),
+        Value::Set(s) => 2 + s.iter().map(value_bytes).sum::<usize>(),
+        Value::Enum(_, p) => 2 + p.as_deref().map_or(0, value_bytes),
+        _ => 16,
+    }
+}
+
+impl Fragment {
+    /// A rough size in bytes (stamps, records and values), for memory bounds: O(fragment), far
+    /// cheaper than encoding it.
+    pub fn approx_bytes(&self) -> usize {
+        use crate::fragment::{Bag, Enum, Set, Slots, Struct};
+        let reg = |r: &crate::fragment::Register| opt_stamp(&r.reset) + r.write.as_ref().map_or(0, |w| STAMP + w.value.as_ref().map_or(0, value_bytes));
+        let frag = |f: &Option<Box<Fragment>>| f.as_deref().map_or(0, Fragment::approx_bytes);
+        match self {
+            Fragment::Register(r) => reg(r),
+            Fragment::Bag(Bag { meta, elems, .. }) | Fragment::Set(Set { meta, elems }) => meta_bytes(meta) + elems.values().map(|e| STAMP + opt_stamp(&e.reset) + frag(&e.frag)).sum::<usize>(),
+            Fragment::Struct(Struct { meta, fields }) => meta_bytes(meta) + fields.values().map(|f| 2 + f.approx_bytes()).sum::<usize>(),
+            Fragment::Enum(Enum { meta, case, payloads }) => meta_bytes(meta) + case.as_ref().map_or(0, |_| STAMP + 2) + payloads.values().map(|f| 2 + f.approx_bytes()).sum::<usize>(),
+            Fragment::Map(m) => meta_bytes(&m.meta) + m.entries.values().map(|e| STAMP + opt_stamp(&e.reset) + opt_stamp(&e.created) + e.key.as_ref().map_or(0, value_bytes) + frag(&e.frag)).sum::<usize>(),
+            Fragment::Seq(s) => {
+                meta_bytes(&s.meta)
+                    + s.elems()
+                        .values()
+                        .map(|e| {
+                            let content = match &e.content {
+                                crate::seq::SeqContent::None => 0,
+                                crate::seq::SeqContent::Char(_) => 4 * usize::try_from(e.span).unwrap_or(usize::MAX),
+                                crate::seq::SeqContent::Frag(f) => f.approx_bytes(),
+                            };
+                            STAMP + e.created.as_ref().map_or(0, |_| 2 * STAMP) + 2 * STAMP * e.pos.len() + e.deleted.as_ref().map_or(0, |_| STAMP) + content
+                        })
+                        .fold(0usize, usize::saturating_add)
+            }
+            Fragment::Slots(Slots { reg: r, members }) => r.as_ref().map_or(0, reg) + members.values().map(Fragment::approx_bytes).sum::<usize>(),
+        }
+    }
+}

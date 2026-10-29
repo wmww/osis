@@ -585,6 +585,21 @@ fn persisting_makes_placements_durable_spec_data_model_8() {
     db.write_with(|w| w.unplace(t, home)).unwrap();
     assert!(!group_of(&db, home).items.contains(&t));
     assert!(db.groups_of(t).contains(&g) && !db.groups_of(t).contains(&home));
+    // an unplace in the persisting batch wins over converting that placement
+    let u = db
+        .write_with(|w| {
+            let u = w.create(db.me())?;
+            w.place(u, home)?;
+            Ok(u)
+        })
+        .unwrap();
+    db.write_with(|w| {
+        w.at(u, saved.clone()).set(&s("y"))?;
+        w.unplace(u, home)
+    })
+    .unwrap();
+    assert!(db.created(u).unwrap().commit.is_some());
+    assert!(!group_of(&db, home).items.contains(&u) && !durable_items(&db, home).contains(&u));
 }
 
 // notes/ephemeral.md Ephemeral placements: a draft placed in a folder lands there at save

@@ -636,3 +636,22 @@ fn undo_absent_before_wipes_concurrent_spec_4_6() {
         }
     }
 }
+
+/// `approx_bytes` (a memory bound's measure, not a spec rule): it grows with the content and
+/// stays within a small factor of the encoded size. spec: none (resource bound)
+#[test]
+fn approx_bytes_tracks_content() {
+    let mut r = crate::testutil::rng(7);
+    let ty = sink_no_seq();
+    for _ in 0..50 {
+        let v = value(&random_value(&mut r, &ty, 0));
+        let mut w = Writer::new(osis_base::Ts::default(), Source::node(Tid::from_bytes([1; 15])), 1);
+        let f = create(&mut w, &AnyView, &v).unwrap();
+        let enc = osis_base::encode(&v).len();
+        assert!(f.approx_bytes() >= enc / 2, "{} vs {enc}", f.approx_bytes());
+    }
+    let mut w = Writer::new(osis_base::Ts::default(), Source::node(Tid::from_bytes([1; 15])), 1);
+    let small = create(&mut w, &AnyView, &Value::Str("a".into())).unwrap();
+    let big = create(&mut w, &AnyView, &Value::Str("a".repeat(10_000))).unwrap();
+    assert!(big.approx_bytes() > small.approx_bytes() + 9_000);
+}
