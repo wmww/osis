@@ -94,3 +94,31 @@ fn look_choice() {
     d.set_mode(Mode::Dark).unwrap();
     assert_eq!(d.look().unwrap(), (Some("cel".into()), Mode::Dark));
 }
+
+/// Creating by kind, tagging, untagging, reach of a private thing, undo.
+#[test]
+fn kinds_tags_reach_undo() {
+    use osis_app::data::NewKind;
+    let d = data();
+    let e = d.create(NewKind::Event).unwrap();
+    assert_eq!(d.kind(e).unwrap(), Kind::Event);
+    let c = d.create(NewKind::Contact).unwrap();
+    assert_eq!(d.kind(c).unwrap(), Kind::Contact);
+    let g = d.create(NewKind::Tag).unwrap();
+    assert_eq!(d.kind(g).unwrap(), Kind::Tag);
+    assert!(d.own_color(g).unwrap().is_some(), "a new tag has a colour");
+    assert_eq!(d.all_tags().unwrap(), vec![g]);
+    let n = d.create(NewKind::Note).unwrap();
+    d.add_tag(n, g).unwrap();
+    assert_eq!(d.tags_of(n).unwrap(), vec![g]);
+    assert_eq!(d.tag_contents(g).unwrap().1, vec![n]);
+    assert_eq!(d.reach(n).unwrap().who(), "Only you");
+    assert_eq!(d.tag_reach(g).unwrap().people, Vec::<String>::new());
+    d.remove_tag(n, g).unwrap();
+    assert!(d.tags_of(n).unwrap().is_empty());
+    assert!(d.things().unwrap().contains(&n), "still in the app group");
+    d.db.write_with(|w| w.at(n, NAME).set(&"changed".to_string())).unwrap();
+    assert!(d.undo(n).unwrap());
+    assert_eq!(d.name(n).unwrap(), "");
+    assert!(d.edited(n).starts_with("Edited "));
+}

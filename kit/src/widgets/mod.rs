@@ -1,19 +1,23 @@
 //! kit's own widgets, drawn from a `Look` (notes/theming.md).
 
 mod button;
+mod chip;
 mod grid;
 mod limit;
 mod panel;
 mod root;
 pub mod style;
 mod tile;
+mod wrap;
 
 pub use button::IconButton;
+pub use chip::{Chip, ChipMark, ChipPress};
 pub use grid::TileGrid;
 pub use limit::Limit;
 pub use panel::{Panel, PanelKind};
 pub use root::{Resized, Root};
 pub use tile::{Tile, TileIcon, TileStyle};
+pub use wrap::Wrap;
 
 /// What a pressed kit button or tile reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

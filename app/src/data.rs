@@ -78,6 +78,34 @@ pub struct Tile {
     pub color: Option<String>,
 }
 
+/// What a new thing is made as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NewKind {
+    Note,
+    Event,
+    Contact,
+    Tag,
+}
+
+/// Colours a new tag takes, in turn.
+pub const TAG_COLORS: [&str; 8] = ["#ef4444", "#f59e0b", "#22c55e", "#06b6d4", "#3b82f6", "#8b5cf6", "#ec4899", "#64748b"];
+
+/// Who can see a thing (notes/app.md Model: every thing shows it).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reach {
+    /// People other than me, by display name.
+    pub people: Vec<String>,
+    /// The shared tags (actors) it reaches them through.
+    pub via: Vec<Tid>,
+}
+
+impl Reach {
+    /// "Only you", "You, Mara, Jun".
+    pub fn who(&self) -> String {
+        if self.people.is_empty() { "Only you".into() } else { format!("You, {}", self.people.join(", ")) }
+    }
+}
+
 /// Search results: scopes whose name matches, things whose name matches, things whose text
 /// matches (with a snippet), and the other things in the matching scopes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -383,6 +411,98 @@ impl Data {
         Ok(None)
     }
 
+    /// Every tag, by name.
+    pub fn all_tags(&self) -> Result<Vec<Tid>> {
+        let mut out = Vec::new();
+        for t in self.things()? {
+            if self.get(t, TAG)?.is_some() {
+                out.push(t);
+            }
+        }
+        self.sort_by_name(&mut out)?;
+        Ok(out)
+    }
+
+    /// Who can see `t`: its owner and its roster, through member actors (shared tags) down to
+    /// people; me and my devices are "you".
+    pub fn reach(&self, t: Tid) -> Result<Reach> {
+        let db = &self.db;
+        let me = db.me();
+        let mine: BTreeSet<Tid> = db.roster(me).into_keys().chain([me, db.node()]).collect();
+        let mut r = Reach::default();
+        let mut seen = BTreeSet::new();
+        let mut todo = vec![t];
+        if let Some(o) = db.owner_of(t) {
+            todo.push(o);
+        }
+        while let Some(x) = todo.pop() {
+            if !seen.insert(x) {
+                continue;
+            }
+            if x != t && mine.contains(&x) {
+                continue;
+            }
+            if x != t && db.knows(x) && self.get(x, TAG)?.is_some() {
+                // a shared tag: its members see what it holds
+                r.via.push(x);
+            } else if x != t {
+                let name = self.person_name(x)?;
+                if !r.people.contains(&name) {
+                    r.people.push(name);
+                }
+                continue;
+            }
+            todo.extend(db.roster(x).into_iter().filter(|(_, e)| e.until.is_none()).map(|(m, _)| m));
+        }
+        r.people.sort();
+        Ok(r)
+    }
+
+    /// A person's display name: their profile's `/name`, else a contact naming that profile,
+    /// else a short id.
+    pub fn person_name(&self, p: Tid) -> Result<String> {
+        let db = &self.db;
+        if let Some(prof) = db.profile_of(p)? {
+            if let Some(n) = self.get(prof, NAME)?.filter(|n| !n.is_empty()) {
+                return Ok(n);
+            }
+            for t in self.things()? {
+                if self.get(t, crate::contact::PROFILE)? == Some(prof) {
+                    return self.name(t);
+                }
+            }
+        }
+        Ok(format!("someone ({})", p.to_string().chars().take(6).collect::<String>()))
+    }
+
+    /// Whether placing something in `tag` shows it to anyone else (the share confirmation).
+    pub fn tag_reach(&self, tag: Tid) -> Result<Reach> {
+        self.reach(tag)
+    }
+
+    /// Places `t` in `tag`.
+    pub fn add_tag(&self, t: Tid, tag: Tid) -> Result<()> {
+        self.db.write_with(|w| w.place(t, tag))
+    }
+
+    /// Takes `t` out of `tag` (it stays in the app group).
+    pub fn remove_tag(&self, t: Tid, tag: Tid) -> Result<()> {
+        self.db.write_with(|w| w.unplace(t, tag))
+    }
+
+    /// Undoes my newest change to `t`; `false` when there is none.
+    pub fn undo(&self, t: Tid) -> Result<bool> {
+        Ok(self.db.undo(&osis::Scope::Thing(t))?.is_some())
+    }
+
+    /// "Edited 5 min ago" for `t` (its newest change).
+    pub fn edited(&self, t: Tid) -> String {
+        match self.changed(t) {
+            Some(ms) => format!("Edited {}", ago(self.db.now().0.saturating_sub(ms))),
+            None => "Not saved yet".into(),
+        }
+    }
+
     // ---- favorites
 
     /// The favorites in order: the main group's list, then any others' extras; things gone are
@@ -490,15 +610,15 @@ impl Data {
         let mut theme = None;
         let mut mode = None;
         for g in self.groups()? {
-            theme = theme.or(self.db.get(g, THEME)?);
-            mode = mode.or(self.db.get(g, MODE)?);
+            theme = theme.or(self.get(g, THEME)?);
+            mode = mode.or(self.get(g, MODE)?);
         }
         Ok((theme, mode.unwrap_or(Mode::Auto)))
     }
 
     pub fn set_theme(&self, id: &str) -> Result<()> {
         let g = self.main_group()?;
-        if self.db.get(g, THEME)?.as_deref() == Some(id) {
+        if self.get(g, THEME)?.as_deref() == Some(id) {
             return Ok(());
         }
         self.db.write_with(|w| w.at(g, THEME).set(&id.to_string()))
@@ -506,7 +626,7 @@ impl Data {
 
     pub fn set_mode(&self, m: Mode) -> Result<()> {
         let g = self.main_group()?;
-        if self.db.get(g, MODE)? == Some(m.clone()) {
+        if self.get(g, MODE)? == Some(m.clone()) {
             return Ok(());
         }
         self.db.write_with(|w| w.at(g, MODE).set(&m))
@@ -562,12 +682,39 @@ impl Data {
 
     /// A new empty note in the app group, opened on this device.
     pub fn create_note(&self) -> Result<Tid> {
+        self.create(NewKind::Note)
+    }
+
+    /// A new thing of `kind` in the app group, opened on this device. An event starts at the
+    /// next full hour for an hour; a contact gets an empty `/contact/names`; a tag the next
+    /// colour of `TAG_COLORS`.
+    pub fn create(&self, kind: NewKind) -> Result<Tid> {
         let g = self.main_group()?;
         let db = &self.db;
         let node = db.node();
+        let n_tags = if kind == NewKind::Tag { self.all_tags()?.len() } else { 0 };
+        let now = i64::try_from(db.now().0).unwrap_or(0);
         db.write_with(|w| {
             let t = w.create(db.me())?;
             w.at(t, NAME).set(&String::new())?;
+            match kind {
+                NewKind::Note => {}
+                NewKind::Event => {
+                    const HOUR: i64 = 3_600_000;
+                    let start = (now / HOUR + 1) * HOUR;
+                    w.at(t, crate::event::START).set(&crate::event::Start::At(crate::event::Wall { time: start, zone: None }))?;
+                    w.at(t, crate::event::END).set(&crate::event::End::After(HOUR))?;
+                }
+                NewKind::Contact => {
+                    w.at(t, crate::contact::NAMES).set(&crate::contact::Names { given: None, family: None, middle: None, prefix: None, suffix: None })?;
+                }
+                NewKind::Tag => {
+                    w.make_group(t)?;
+                    let c = TAG_COLORS.get(n_tags % TAG_COLORS.len()).map(|c| c.to_string());
+                    w.at(t, TAG).set(&osis::core::Tag { color: c })?;
+                    w.add_subgroup(g, t)?;
+                }
+            }
             w.place(t, g)?;
             w.at(g, OPEN).path(p![]).put(&node, &t)?;
             Ok(t)
@@ -581,7 +728,9 @@ impl Data {
         let mut parents = Vec::new();
         // `groups_of` follows membership, not subgroup edges: look at every group the app shows
         for g in self.groups()?.into_iter().chain(self.things()?) {
-            if self.get(g, GROUP)?.is_some_and(|gr| gr.subgroups.contains(&t)) {
+            // a group I cannot edit keeps its edge (to a now empty thing) rather than fail the delete
+            let writable = matches!(self.db.role_on(g), Some(osis::Role::Write | osis::Role::Admin));
+            if writable && self.get(g, GROUP)?.is_some_and(|gr| gr.subgroups.contains(&t)) {
                 parents.push(g);
             }
         }
@@ -665,6 +814,17 @@ impl Data {
         parts.extend(self.get(t, crate::contact::EMAILS)?.unwrap_or_default().into_keys());
         parts.extend(self.get(t, crate::contact::PHONES)?.unwrap_or_default().into_keys());
         Ok(parts.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n"))
+    }
+}
+
+/// "just now", "5 min ago", "3 h ago", "2 d ago" for an age in ms.
+pub fn ago(ms: u64) -> String {
+    let m = ms / 60_000;
+    match m {
+        0 => "just now".into(),
+        1..60 => format!("{m} min ago"),
+        60..1440 => format!("{} h ago", m / 60),
+        _ => format!("{} d ago", m / 1440),
     }
 }
 
