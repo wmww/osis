@@ -265,6 +265,15 @@ fn same_stamp_copies_converge_spec_4_1() {
         assert_eq!(x, y);
         assert_eq!(x.read(), want);
     }
+    // links as keys: equal as `Value`s (by hash), copies by their bytes
+    let link = |b: u8| Value::Link(Link { hash: [9; 32], blob: osis_base::BlobId([b; 32]), suite: 1, key: [b; 32] });
+    let (a, b) = (mk(Value::Map([(link(1), Value::Int(9))].into_iter().collect())), mk(Value::Map([(link(2), Value::Int(9))].into_iter().collect())));
+    let mut x = a.clone();
+    x.join(b.clone());
+    let mut y = b;
+    y.join(a);
+    let bytes = |f: &Fragment| osis_base::cbor::encode(&f.read().unwrap());
+    assert_eq!(bytes(&x), bytes(&y), "link keys join by bytes");
     let t = |s: &str| create(&mut Writer::new(ts(1 << 16), src.clone(), 1), &TyView(Ty::Text), &Value::Str(s.into())).unwrap();
     let (a, b) = (t("abc"), t("xb"));
     let mut x = a.clone();
@@ -302,4 +311,27 @@ fn slots_unmerge_keeps_member_creation_spec_7() {
         y.join(x);
         assert_eq!(y, full, "{name}");
     }
+}
+
+// issues/forged-creation-copies.md: copies of one text creation with other `ts` (a forged copy)
+// and an undelete repeating another char: the char goes with the greater creation, so a repeated
+// char folded in before the greater creation arrives is lost on one path and kept on the other.
+#[test]
+#[ignore]
+fn forged_creation_ts_undelete_char() {
+    use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
+    let d = Dot::new(Source::node(Tid::from_bytes([5; 15])), 1);
+    let s1 = Stamp { ts: ts(1 << 16), dot: d.clone() };
+    let s2 = Stamp { ts: ts(2 << 16), dot: d.clone() };
+    let mk = |e: SeqElem| Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(d.clone(), e)])));
+    let made = |s: &Stamp, c: char| mk(SeqElem { created: Some((s.clone(), Anchor::Head)), content: SeqContent::Char(c), pos: vec![(s.clone(), Anchor::Head)], ..SeqElem::bare() });
+    let (a, c) = (made(&s1, 'x'), made(&s2, 'w'));
+    let b = mk(SeqElem { content: SeqContent::Char('y'), deleted: Some((st(3, 9, 1), false)), ..SeqElem::bare() });
+    let mut x = a.clone();
+    x.join(b.clone());
+    x.join(c.clone());
+    let mut y = c;
+    y.join(b);
+    y.join(a);
+    assert_eq!(x.read(), y.read());
 }

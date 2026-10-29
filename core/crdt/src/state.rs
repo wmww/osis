@@ -282,7 +282,8 @@ fn join_entry(s: &mut BTreeMap<Dot, Entry>, dot: Dot, mut de: Entry, e: Option<&
             if raised {
                 prune_opt(&mut se.frag, ee.as_ref(), ch);
             }
-            if take && se.key != de.key {
+            // (bytes, not `Value` equality: that compares links by hash alone)
+            if take && opt_value_cmp(de.key.as_ref(), se.key.as_ref()) != Ordering::Equal {
                 se.key = de.key;
                 ch.touch();
             }
