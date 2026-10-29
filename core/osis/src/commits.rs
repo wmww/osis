@@ -210,10 +210,8 @@ impl Osis {
                         None => break None,
                     }
                 };
-                let mut next = hit.map_or(0, |d| d + 1);
-                for c in chain.iter().rev() {
-                    depth.insert(*c, next);
-                    next += 1;
+                for (d, c) in (hit.map_or(0, |d| d + 1)..).zip(chain.iter().rev()) {
+                    depth.insert(*c, d);
                 }
                 depth.get(&id).copied().unwrap_or_default()
             };

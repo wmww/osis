@@ -253,7 +253,7 @@ impl Engine {
                     .filter(|(ai, a)| m.valid.get(*ai).copied().unwrap_or(false) && keep.as_ref().is_none_or(|k| k.contains(&(a.tid, a.ak.clone()))))
                     .map(|(ai, a)| (a.tid, a.ak.clone(), !m.dropped.iter().any(|x| x.0 == ai) && !m.missing.contains(&ai)))
                     .collect();
-                (!aspects.is_empty()).then(|| HeldCommit { id, header, received: m.received, aspects })
+                (!aspects.is_empty()).then_some(HeldCommit { id, header, received: m.received, aspects })
             })
             .collect()
     }
