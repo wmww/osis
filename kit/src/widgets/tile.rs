@@ -160,7 +160,9 @@ impl Widget for Tile {
             _ => (15.0, 12.5),
         };
         let name = if self.name.is_empty() { "Untitled" } else { &self.name };
-        let n = text::layout(fcx, lcx, &look, name, ns, name_w, None);
+        // a bar tile (dense lists) wraps its name to the width instead of cutting it
+        let wrap = (self.icon == TileIcon::Bar && bc.is_width_bounded()).then(|| (bc.max().width - 2.0 * self.pad().1 - self.icon_size() - self.sp(7.0)).max(20.0) as f32);
+        let n = text::layout(fcx, lcx, &look, name, ns, name_w, wrap);
         let s = text::layout(fcx, lcx, &look, &self.sub, ss, 400.0, None);
         let ini = match &self.icon {
             TileIcon::Initials(i) => Some(text::layout(fcx, lcx, &look, i, if self.style == TileStyle::Row { 11.0 } else { 13.0 }, 700.0, None)),
@@ -208,9 +210,11 @@ impl Widget for Tile {
                 match look.theme.accent {
                     // bar: the tag colour as a stripe down the left
                     Accent::Bar => {
-                        let stripe = Rect::new(0.0, 0.0, 4.0, size.height);
+                        let stripe = Rect::new(0.0, 0.0, 5.0, size.height);
+                        // on a card filled with its own colour the stripe is a darker shade of it
+                        let c = if look.on_card_white() { mix(tint, Color::BLACK, 0.4) } else { tint };
                         scene.push_clip_layer(skew, &rect);
-                        scene.fill(Fill::NonZero, skew, tint, None, &stripe);
+                        scene.fill(Fill::NonZero, skew, c, None, &stripe);
                         scene.pop_layer();
                     }
                     // slash: a corner flag

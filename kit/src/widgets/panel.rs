@@ -15,6 +15,8 @@ pub enum PanelKind {
     Panel,
     Inset,
     Field,
+    /// A raised inset in the accent (today in a calendar).
+    Highlight,
 }
 
 pub struct Panel {
@@ -51,7 +53,7 @@ impl Panel {
         let r = self.look.theme.radius;
         match self.kind {
             PanelKind::Panel => r * 1.35,
-            PanelKind::Inset | PanelKind::Field => r * 0.8,
+            PanelKind::Inset | PanelKind::Field | PanelKind::Highlight => r * 0.8,
         }
     }
 }
@@ -108,6 +110,11 @@ impl Widget for Panel {
             }
             PanelKind::Inset => {
                 scene.fill(masonry::peniko::Fill::NonZero, Affine::IDENTITY, fade(look.fg, 0.04), None, &rect);
+            }
+            PanelKind::Highlight => {
+                scene.fill(masonry::peniko::Fill::NonZero, Affine::IDENTITY, mix(look.surface, look.accent, 0.16), None, &rect);
+                let w = 1.5;
+                scene.stroke(&Stroke::new(w), Affine::IDENTITY, look.accent, None, &rect.rect().inset(-w / 2.0).to_rounded_rect(self.radius()));
             }
             PanelKind::Field => {
                 let bg = fade(mix(look.surface, look.main, 0.03), 0.62 + op * 0.38);
