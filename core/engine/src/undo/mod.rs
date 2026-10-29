@@ -233,8 +233,8 @@ impl Engine {
         }
     }
 
-    /// Held commits validly touching `scope` (every held commit with `None`), newest first by
-    /// `(ts, ID)`. Commits valid on no aspect in scope are left out.
+    /// Held commits validly touching `scope` (every held commit with `None`: decodes every header),
+    /// newest first by `(ts, ID)`. Commits valid on no aspect in scope are left out.
     pub fn held_commits(&self, scope: Option<&[(Tid, Ak)]>) -> Vec<HeldCommit> {
         let ids: BTreeSet<(Ts, CommitId)> = match scope {
             Some(sc) => sc.iter().flat_map(|k| self.core.ix.by_aspect.get(k).into_iter().flatten().copied()).collect(),
