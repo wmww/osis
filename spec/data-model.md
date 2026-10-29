@@ -14,8 +14,7 @@
 - An aspect is identified by (tid, AK). An **AK** is a string, slash-prefixed and slash-separated (`/note/body`). AKs go on the wire as strings.
 - Single-segment AKs belong to the core schema (§9). App AKs have two or more segments; the first is a namespace owned by the schema maintainer.
 - An aspect is present iff its root fragment is present (spec/crdt.md §4.3).
-- A schema declares per AK: the type, the default retention (purgeable by, keep at least, keep at most, in any form; spec/commits.md §5), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags. `ro`, `synthetic`, `guaranteed`, `indexed` are local; nothing on the wire enforces them. At most one **lifetime flag** decides where writes of the AK go: none, durable commits; `ephemeral`, a value held in memory by the nodes holding the thing, never in a commit; `presence`, an `ephemeral` value tied to its author's presence; `signal`, an ephemeral write with no lasting value (delivered to listeners, never in state; only a whole-value set). Ephemeral writes carry no retention; expiry applies (spec/crdt.md §4.7, in memory). Core aspects are durable. An aspect reads the join of its durable and ephemeral states (spec/crdt.md §4.1).
-- A schema also declares **signal kinds**, typed like AKs. Signals are never stored and are not aspects (spec/sync.md §9).
+- A schema declares per AK: the type, the default retention (purgeable by, keep at least, keep at most, in any form; spec/commits.md §5), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags. `ro`, `synthetic`, `guaranteed`, `indexed` are local; nothing on the wire enforces them. At most one **lifetime flag** decides where writes of the AK go: none, durable commits; `ephemeral`, a value held in memory by the nodes holding the thing, never in a durable commit (it syncs as ephemeral commits, spec/commits.md §2, spec/sync.md §9); `presence`, an `ephemeral` value tied to its author's presence; `signal`, an ephemeral write with no lasting value (delivered to listeners here and on the devices connected now, never in state; only a whole-value set). Ephemeral writes carry no retention; expiry applies (spec/crdt.md §4.7, in memory). Core aspects are durable. An aspect reads the join of its durable and ephemeral states (spec/crdt.md §4.1).
 
 ## 3. Types
 - Scalars: `string` (UTF-8), `blob` (bytes), `bool`, `int` (i64), `float` (f64), `tid`.
@@ -165,7 +164,7 @@ aspect /tag: struct { 0 color: option<string> };
 type schema = struct {
     0 id: blob, 1 revision: int,                                // id: 16 bytes
     2 types: map<string, type_def>, 3 aspects: map<string, aspect_def>,   // by type name, by AK
-    4 signals: map<string, signal_def>, 5 doc: option<string>,
+    5 doc: option<string>,                                       // 4 retired
 };
 type type_def = struct { 0 params: list<string>, 1 body: type_expr, 2 doc: option<string> };
 type type_expr = enum {
@@ -183,5 +182,4 @@ type bound = struct { 0 abs: option<timestamp>, 1 rel: option<duration> };
 type retention = struct { 0 by: enum { 0 nobody, 1 admin, 2 author, 3 writer }, 1 at_least: bound, 2 at_most: bound };
 type flag = enum { 0 ro, 1 synthetic, 2 guaranteed, 3 indexed, 4 ephemeral, 5 presence, 6 signal };
 type aspect_def = struct { 0 type: type_expr, 1 retention: retention, 2 expires: option<duration>, 3 flags: set<flag>, 4 succeeds: set<string>, 5 doc: option<string> };
-type signal_def = struct { 0 type: type_expr, 1 doc: option<string> };
 ```

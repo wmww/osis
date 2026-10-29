@@ -61,7 +61,11 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 - Nothing depends on retaining full history.
 
 ## Ephemeral data
-- Signals: never stored, reach connected nodes only, no delivery guarantee. Same rights and verification as writes.
+- Ephemeral state lives in memory, converges among the nodes holding it like any state, outlives contact with its author, and may be lost when no node holds it. A node that restarts gets it back from those that still do.
+- Values tied to their author's presence converge once every holder sees the departure.
+- Signals have no lasting value: they reach the devices connected at the time, once, with no delivery guarantee, and are held by nobody.
+- Ephemeral writes need the rights the durable write would need and are verified like it; readers cannot write ephemeral data. Memory spent on others' ephemeral data is bounded per group, with a defined outcome past the bound.
+- Ephemeral data is exempt from neither "Deterministic" nor "Convergence".
 - Nothing is kept "until everyone has seen it". Whether others are alive is never a protocol condition.
 
 ## Scale
@@ -75,7 +79,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 The properties above hold for any use of the data. The only usage rules are:
 - Share a set of things through one shared actor, not one by one (removal cost).
 - Commit per editing pause, never per keystroke (state growth).
-- Ephemeral membership such as presence or selections uses expiring writes, not add and remove (state growth).
+- Ephemeral membership such as presence or selections uses presence aspects, not durable add and remove (state growth).
 - Keep direct rosters in the thousands; nest larger ones (header cost).
 
 ## Versioning
