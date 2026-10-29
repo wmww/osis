@@ -111,9 +111,11 @@ pub(crate) struct Lane {
     /// the upload is answered OK (else a slow server kept every covered entry), and not taken
     /// back meanwhile from a peer that has it (it is no longer covered by anything held).
     pub orphans: BTreeMap<(LabelId, BlobId, ConnId), osis_label::DeleteItem>,
-    /// (server, label) reconciled since start, and the reconciliations running (`sync_label`).
+    /// (server, label) reconciled since start, and the reconciliations running (`sync_label`)
+    /// with the ephemeral entries their set listed: only those the reply can say the peer holds
+    /// (one arriving meanwhile from elsewhere is not known there).
     pub reconciled: BTreeSet<(ServerKey, LabelId)>,
-    pub reconciling: BTreeSet<(ConnId, LabelId)>,
+    pub reconciling: BTreeMap<(ConnId, LabelId), BTreeSet<BlobId>>,
     /// Entries whose commit waits for its author's record (not verified: neither applied, served
     /// nor spread), with where they came from; their bytes per label (`PENDING_SHARE`).
     pub pending: BTreeMap<(LabelId, BlobId), (LaneEntry, Option<ServerKey>)>,
@@ -843,7 +845,7 @@ impl SyncEngine {
         self.eph.present.retain(|(s, _, _)| *s != server);
         self.eph.announced.retain(|(c, _)| *c != conn);
         self.eph.gained.retain(|(c, _), _| *c != conn);
-        self.eph.reconciling.retain(|(c, _)| *c != conn);
+        self.eph.reconciling.retain(|(c, _), _| *c != conn);
         self.eph.uploads.retain(|(c, _, _)| *c != conn);
         self.eph.deletes.retain(|(c, _, _)| *c != conn);
         self.eph.orphans.retain(|(_, _, c), _| *c != conn);
