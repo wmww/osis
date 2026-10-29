@@ -12,7 +12,7 @@ use osis_base::format::MAX_MESSAGE;
 use osis_base::{BlobId, LabelId, WallMs};
 use osis_crypto::{Domain, LabelRole, VerifyingKey, verify_delete};
 use osis_label::auth::delete_digest;
-use osis_label::{OpenOutcome, entry_digest, evaluate_open, key_for_level, server_prefix};
+use osis_label::{Class, OpenOutcome, entry_digest, evaluate_open, key_for_level, server_prefix};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -46,8 +46,19 @@ pub enum ServerInput {
     Bytes(Vec<u8>),
     /// A label's log grew (on any connection): push to a subscription.
     Changed(LabelId),
-    /// A signal accepted on another connection: forward if subscribed.
-    Signal { label: LabelId, blob: Vec<u8>, wrap: Wrap, auth: PublishAuth },
+    /// A relay-only entry accepted on another connection: push it if subscribed.
+    Relay(Relayed),
+}
+
+/// A relay-only entry (spec/sync.md §5): accepted by stamp, pushed to the label's current
+/// subscribers on other connections, held by nobody.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Relayed {
+    pub label: LabelId,
+    pub blob_id: BlobId,
+    pub blob: Vec<u8>,
+    pub wrap: Wrap,
+    pub stamp: Signature,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,8 +68,8 @@ pub enum ServerOutput {
     Close,
     /// This connection grew a label's log: deliver `ServerInput::Changed` to every connection.
     Changed(LabelId),
-    /// A valid signal: deliver `ServerInput::Signal` to every other connection.
-    Signal { label: LabelId, blob: Vec<u8>, wrap: Wrap, auth: PublishAuth },
+    /// A relay-only entry accepted: deliver `ServerInput::Relay` to every other connection.
+    Relay(Relayed),
     /// The peer broke a protocol rule (diagnostic).
     PeerError(Error),
     StoreError(StoreError),
@@ -178,18 +189,19 @@ pub fn replay_id(log_id: &[u8; 16]) -> [u8; 16] {
     id
 }
 
-/// Replay position of a blob ID: its first 8 bytes, big-endian.
+/// Replay position of a blob ID: its first 63 bits, big-endian (a wire integer stays below
+/// 2^63).
 fn replay_pos(id: &BlobId) -> u64 {
     let mut b = [0u8; 8];
     b.copy_from_slice(id.0.get(..8).unwrap_or(&[0; 8]));
-    u64::from_be_bytes(b)
+    u64::from_be_bytes(b) >> 1
 }
 
 /// The greatest blob ID at a replay position (continuing after it skips the position).
 fn after_pos(pos: u64) -> BlobId {
     let mut b = [0xff; 32];
     if let Some(d) = b.get_mut(..8) {
-        d.copy_from_slice(&pos.to_be_bytes());
+        d.copy_from_slice(&((pos << 1) | 1).to_be_bytes());
     }
     BlobId(b)
 }
@@ -264,9 +276,15 @@ impl ServerConnection {
                     out.push(ServerOutput::StoreError(e));
                 }
             }
-            ServerInput::Signal { label, blob, wrap, auth } => {
-                if self.subs.contains_key(&label) {
-                    send(&mut out, Message::Signal { label, blob, wrap, auth });
+            ServerInput::Relay(r) => {
+                if let Some(seq) = self.subs.get(&r.label).copied() {
+                    match store.log_head(&r.label) {
+                        Ok((log_id, _)) => {
+                            let ev = Event::Added { blob_id: r.blob_id, blob: Some(r.blob), wrap: r.wrap, stamp: Some(r.stamp) };
+                            send(&mut out, Message::Push { label: r.label, events: vec![ev], cursor: Cursor { log_id, seq } });
+                        }
+                        Err(e) => out.push(ServerOutput::StoreError(e)),
+                    }
                 }
             }
         }
@@ -339,7 +357,7 @@ impl ServerConnection {
                 let mut code = c.check(Key::Deposit, Domain::Deposit, &entry_digest(&label, &blob_id, &wrap), &sig);
                 let head = if code == Code::NOT_HEAD { c.head_step().cloned() } else { None };
                 if code == Code::OK {
-                    code = self.accept(store, now, &label, blob_id, &blob, wrap, None)?;
+                    code = self.accept(store, now, &label, blob_id, &blob, wrap, None, out)?;
                 }
                 changed(&[code], &label, out);
                 let b = store.budget(&label)?;
@@ -386,13 +404,6 @@ impl ServerConnection {
                     self.subs.remove(&l);
                 }
                 M::Ok { id }
-            }
-            M::Signal { label, blob, wrap, auth } => {
-                let Some(head) = self.head(store, &label)? else { return Ok(None) };
-                if auth.verify(&head, &osis_label::blob_id(&blob), &wrap).is_ok() && store.signal(&label)? == Code::OK {
-                    out.push(ServerOutput::Signal { label, blob, wrap, auth });
-                }
-                return Ok(None);
             }
             // Replies and pushes: this side sends no requests.
             _ => return Ok(None),
@@ -688,15 +699,17 @@ impl ServerConnection {
     fn accept_all(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, entries: &[Entry], ids: &[BlobId], out: &mut Vec<ServerOutput>) -> Result<Vec<Code>, StoreError> {
         let mut codes = Vec::with_capacity(entries.len());
         for (e, b) in entries.iter().zip(ids) {
-            codes.push(self.accept(store, now, label, *b, &e.blob, e.wrap, Some(e.stamp))?);
+            codes.push(self.accept(store, now, label, *b, &e.blob, e.wrap, Some(e.stamp), out)?);
         }
         changed(&codes, label, out);
         Ok(codes)
     }
 
     /// Upload (stamp) or deposit (no stamp, already authorized) of one entry (spec/sync.md §5).
+    /// A relay-only blob (stamped only) is not stored: it goes to the other connections'
+    /// subscribers (`ServerOutput::Relay`).
     #[allow(clippy::too_many_arguments)]
-    fn accept(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_id: BlobId, blob: &[u8], wrap: Wrap, stamp: Option<Signature>) -> Result<Code, StoreError> {
+    fn accept(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_id: BlobId, blob: &[u8], wrap: Wrap, stamp: Option<Signature>, out: &mut Vec<ServerOutput>) -> Result<Code, StoreError> {
         // An oversized blob never gets here: the message decoder refuses it (msg tests `field_sizes`).
         debug_assert!(blob.len() <= osis_base::format::MAX_BLOB);
         let Some(c) = self.cached(store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
@@ -707,6 +720,12 @@ impl ServerConnection {
             }
         }
         let Ok(prefix) = server_prefix(blob) else { return Ok(Code::MALFORMED) };
+        let class = prefix.as_ref().map(|p| p.class()).unwrap_or_default();
+        if class == Class::Relay {
+            let Some(stamp) = stamp else { return Ok(Code::REFUSED) };
+            out.push(ServerOutput::Relay(Relayed { label: *label, blob_id, blob: blob.to_vec(), wrap, stamp }));
+            return Ok(Code::OK);
+        }
         let expiry = prefix.and_then(|p| p.expiry()).map(|t| t.0);
         if expiry.is_some_and(|t| t <= now) {
             return Ok(Code::EXPIRED);
@@ -714,7 +733,7 @@ impl ServerConnection {
         if store.tombstoned(label, &blob_id)? {
             return Ok(Code::TOMBSTONED);
         }
-        store.put(label, Put { blob_id, blob, wrap, stamp, expiry })
+        store.put(label, Put { blob_id, blob, wrap, stamp, expiry, ephemeral: class == Class::Ephemeral })
     }
 
     /// One Delete item (spec/sync.md §5): by the head's delete key, or by a level's delete key

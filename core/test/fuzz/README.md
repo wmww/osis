@@ -34,7 +34,7 @@ Each target asserts no panic plus the parser's round-trip or consistency propert
 | `page` | page and link page | osis-crdt, osis-label | planned |
 | `box` | sealed, `/secrets`, symmetric and history box openers, wrap, blob decrypt, unpad (fixed keys); `/secrets` and `/keys` value decoders | osis-crypto, osis-schema | live |
 | `step` | step, claim set | osis-label | live |
-| `inbox`, `signal` | inbox payload, signal envelope | osis-label | live |
+| `inbox` | inbox payload | osis-label | live |
 | `link_card` | link and card, text forms | osis-label | live |
 | `proto_frame` | frame codec, Hello, each message | osis-proto | live |
 | `bundle` | bundle reader, importer | osis-label | live |

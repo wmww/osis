@@ -68,11 +68,9 @@ pub enum Event {
     Changed { cause: Cause, changed: Vec<(Tid, Ak)> },
     /// The membership timeline's roster of `thing` may have changed.
     Roster { thing: Tid },
-    /// A signal about `tid`, received or sent by this node (node-sync fills it): `from` the
-    /// sending node, `actor` the actor it signed for, `target` the one node it is for.
-    Signal { tid: Tid, kind: Ak, from: Tid, actor: Tid, ts: Ts, target: Option<Tid>, value: osis_base::Value },
     /// Ephemeral state changed in memory, or signal aspects fired (notes/ephemeral.md). `id` is
-    /// the batch's commit when it had a durable half (one change, one `ts`).
+    /// the batch's commit when it had a durable half (one change, one `ts`); for a remote change,
+    /// the ephemeral commit that carried it.
     Ephemeral { id: ChangeId, origin: Origin, author: Tid, actor: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)>, signals: Vec<(Tid, Ak, osis_base::Value)> },
     /// Sync status changed (node-sync fills it).
     SyncStatus { label: osis_base::LabelId, detail: String },
@@ -109,6 +107,9 @@ pub enum DiagnosticKind {
     /// A text session could not commit its edits (the `osis` API: lost write access, storage);
     /// they stay in its buffer.
     Uncommitted,
+    /// Ephemeral data was not synced or not applied: a server's or this node's ephemeral cap
+    /// was reached, or an ephemeral commit could not be built (notes/ephemeral.md Bounds).
+    EphemeralRefused,
     /// A local storage condition: a store file or directory readable by others whose mode
     /// could not be tightened (the `osis` file store).
     Storage,

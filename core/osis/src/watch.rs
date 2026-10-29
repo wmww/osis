@@ -70,21 +70,7 @@ pub(crate) enum Filter {
     Thing(Tid),
     Roster(Tid),
     Diagnostics,
-    Signal(Tid, String),
-    /// Signals of a kind about anything in a group's closure (the group included).
-    SignalIn(Tid, String),
     Status,
-}
-
-/// A locally delivered signal.
-#[derive(Clone, Debug)]
-pub(crate) struct SignalMsg {
-    pub tid: Tid,
-    pub kind: String,
-    pub value: Value,
-    pub actor: Tid,
-    pub node: Tid,
-    pub ts: WallMs,
 }
 
 /// What a callback is called with.
@@ -99,7 +85,6 @@ pub(crate) enum Delivery {
     Fired { tid: Tid, ak: Ak, source: Source, value: Value },
     Roster,
     Diagnostic(Diagnostic),
-    Signal(SignalMsg),
     Status(crate::share::Status),
 }
 
@@ -258,27 +243,6 @@ fn targets(db: &Osis, sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
     match m {
         Msg::Event(Event::Roster { thing }) => to(&|f| *f == Filter::Roster(*thing), Delivery::Roster),
         Msg::Event(Event::Diagnostic(d)) => to(&|f| *f == Filter::Diagnostics, Delivery::Diagnostic(d.clone())),
-        Msg::Event(Event::Signal { tid, kind, from, actor, ts, target, value }) => {
-            if target.is_some_and(|t| t != db.node()) {
-                return Vec::new();
-            }
-            let sig = SignalMsg { tid: *tid, kind: kind.as_str().to_string(), value: value.clone(), actor: *actor, node: *from, ts: ts.wall_ms() };
-            // the closure is read now, so things that joined the group later count
-            let mut groups: Option<Vec<Tid>> = None;
-            let mut in_group = |g: &Tid| *g == sig.tid || groups.get_or_insert_with(|| db.groups_of(sig.tid)).contains(g);
-            let mut out = Vec::new();
-            for s in &live {
-                let hit = match &s.filter {
-                    Filter::Signal(t, k) => *t == sig.tid && *k == sig.kind,
-                    Filter::SignalIn(g, k) => *k == sig.kind && in_group(g),
-                    _ => false,
-                };
-                if hit {
-                    out.push((s.clone(), Pre::Ready(Delivery::Signal(sig.clone()))));
-                }
-            }
-            out
-        }
         Msg::Status(st) => to(&|f| *f == Filter::Status, Delivery::Status(st.clone())),
         _ => Vec::new(),
     }

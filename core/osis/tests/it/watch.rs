@@ -1,11 +1,11 @@
-//! Watches, subscriptions, the dispatcher, diagnostics, signals, two nodes (notes/api.md
-//! Watching, Signals, Diagnostics, Footguns closed).
+//! Watches, subscriptions, the dispatcher, diagnostics, two nodes (notes/api.md Watching,
+//! Diagnostics, Footguns closed).
 //! spec: none (API surface, notes/api.md).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common;
 use common::*;
-use osis::{Cause, DiagnosticKind, MemStore, Osis, Source, Target, Value};
+use osis::{Cause, DiagnosticKind, MemStore, Osis, Source, Value};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
@@ -187,28 +187,6 @@ fn diagnostics_reach_subscribers() {
     let _s = db.on_diagnostic(move |_, d| tx.send(d.kind).unwrap());
     let _ = db.engine(|e| e.ingest(&[0xff, 0x00, 0x01], Vec::new()));
     assert_eq!(recv(&rx), DiagnosticKind::BadInput);
-}
-
-// notes/api.md Signals, Fixed directions: a sent signal fires matching listeners on the same
-// node, the sender's own included; typed through the generated key.
-#[test]
-fn local_signals() {
-    let db = db(1);
-    let t = thing(&db);
-    let (tx, rx) = channel();
-    let _s = db.on_signal(t, notes::TYPING, move |_, s| tx.send(s).unwrap());
-    let other = thing(&db);
-    let (tx2, rx2) = channel();
-    let _s2 = db.on_signal(other, notes::TYPING, move |_, s| tx2.send(s).unwrap());
-    let v = notes::Typing { who: db.me(), at: 5 };
-    db.send_signal(t, &notes::TYPING, &v, Target::All).unwrap();
-    let e = recv(&rx);
-    assert_eq!((e.value.unwrap(), e.actor, e.node), (v.clone(), db.me(), db.node()));
-    // aimed at another node: no local delivery
-    db.send_signal(t, &notes::TYPING, &v, Target::Node(other)).unwrap();
-    db.settle();
-    assert!(rx.try_recv().is_err());
-    assert!(rx2.try_recv().is_err());
 }
 
 // spec/permissions.md §2, notes/api.md Watching: watch_roster calls once with the roster now.

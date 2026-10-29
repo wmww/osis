@@ -1,5 +1,5 @@
-//! A parsed schema (spec/data-model.md §2, §10): types, aspects with retention, expiry and flags,
-//! signal kinds; expansion of named types; validation.
+//! A parsed schema (spec/data-model.md §2, §10): types, aspects with retention, expiry and flags;
+//! expansion of named types; validation.
 
 use crate::types::{Case, EnumType, Field, StructType, Type, is_reserved_name};
 use osis_base::format::CORE_SCHEMA_ID;
@@ -18,8 +18,6 @@ pub struct Schema {
     pub types: BTreeMap<String, TypeDef>,
     /// By AK.
     pub aspects: BTreeMap<String, AspectDef>,
-    /// By signal kind.
-    pub signals: BTreeMap<String, SignalDef>,
     pub doc: Option<String>,
 }
 
@@ -56,11 +54,6 @@ impl AspectDef {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SignalDef {
-    pub ty: Type,
-    pub doc: Option<String>,
-}
 
 /// Aspect flags (spec/data-model.md §2). `ephemeral`, `presence` and `signal` decide where a
 /// write goes (its lifetime); nothing on the wire enforces the others.
@@ -170,7 +163,7 @@ pub struct AspectDefaults {
     pub lifetime: Lifetime,
 }
 
-/// A validation failure: the item (`type NAME`, `aspect AK`, `signal KIND`, `schema`) and why.
+/// A validation failure: the item (`type NAME`, `aspect AK`, `schema`) and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Invalid {
     pub item: String,
@@ -179,7 +172,7 @@ pub struct Invalid {
 
 impl Schema {
     pub fn new(id: SchemaId, revision: u64) -> Schema {
-        Schema { id, revision, types: BTreeMap::new(), aspects: BTreeMap::new(), signals: BTreeMap::new(), doc: None }
+        Schema { id, revision, types: BTreeMap::new(), aspects: BTreeMap::new(), doc: None }
     }
 
     pub fn is_core(&self) -> bool {
@@ -329,13 +322,6 @@ impl Schema {
                 }
             }
         }
-        for (kind, def) in &self.signals {
-            let item = format!("signal {kind}");
-            if Ak::new(kind.as_str()).is_err() {
-                bad(&item, "invalid signal kind".into());
-            }
-            self.check_syntax(&def.ty, &[], &mut |m| bad(&item, m));
-        }
         // Semantic rules only on a syntactically sound schema with regular recursion (so the set
         // of named instances is finite); one walk shared by every root, memoized per instance.
         if !out.is_empty() {
@@ -347,8 +333,7 @@ impl Schema {
             .iter()
             .filter(|(_, d)| d.params.is_empty())
             .map(|(n, _)| (format!("type {n}"), Type::named(n)))
-            .chain(self.aspects.iter().map(|(ak, d)| (format!("aspect {ak}"), d.ty.clone())))
-            .chain(self.signals.iter().map(|(k, d)| (format!("signal {k}"), d.ty.clone())));
+            .chain(self.aspects.iter().map(|(ak, d)| (format!("aspect {ak}"), d.ty.clone())));
         for (item, ty) in roots {
             let mut msgs = Vec::new();
             sem.walk(&ty, false, 0, &mut |m| msgs.push(m));

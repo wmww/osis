@@ -38,8 +38,13 @@ pub struct Sealed {
 
 /// Frames a body as a fresh blob: random salt and key, prefix from its class (spec/sync.md §1).
 pub fn seal_body(b: &Body, rng: &mut dyn CryptoRngCore) -> Result<Sealed> {
+    seal_body_as(b, osis_label::Class::Durable, rng)
+}
+
+/// `seal_body` with the prefix class of an ephemeral commit's body (spec/sync.md §1).
+pub fn seal_body_as(b: &Body, class: osis_label::Class, rng: &mut dyn CryptoRngCore) -> Result<Sealed> {
     let salt = osis_label::Prefix::random_salt(rng);
-    let prefix = osis_label::Prefix::for_delete_keys(salt, &b.blind, b.expires.map(WallMs), &b.keys)?;
+    let prefix = osis_label::Prefix::for_delete_keys(salt, &b.blind, b.expires.map(WallMs), &b.keys)?.with_class(class);
     let (key, blob) = osis_label::frame(&prefix, &b.plaintext, rng)?;
     Ok(Sealed { id: osis_label::blob_id(&blob), blob, key, salt })
 }
@@ -56,7 +61,7 @@ pub fn open_commit(blob: &[u8], key: &Secret32) -> Result<(Vec<u8>, CommitBlob)>
         return Ok((pt, c));
     }
     let (expiry, keys) = osis_commit::prefix_inputs(&c.header, &parts)?;
-    if !parts.is_empty() && !prefix.agrees(expiry.map(WallMs), &c.header.blind, &keys) {
+    if !parts.is_empty() && !prefix.agrees(expiry.map(WallMs), &c.header.blind, &keys, osis_label::Class::of_marker(c.header.ephemeral)) {
         return Err(Error::BadInput("blob prefix disagrees with its header"));
     }
     Ok((pt, c))

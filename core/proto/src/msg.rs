@@ -1,5 +1,5 @@
 //! Protocol version 1 messages (spec/wire.md §11.2) with their caps and limits (§13). Label
-//! objects are osis-label's types (steps, claim sets, proofs, delete items, publish authorizations)
+//! objects are osis-label's types (steps, claim sets, proofs, delete items)
 //! and the entry box is a `box` value; the wire carries steps, claim sets and boxes as their
 //! canonical bytes.
 
@@ -9,7 +9,7 @@ use crate::rbsr::{self, Bound};
 use osis_base::format::{MAX_BLOB, MAX_MESSAGE};
 use osis_base::{BlobId, LabelId, Limits, Value, cbor};
 pub use osis_crypto::Signature;
-pub use osis_label::{ClaimSet, DeleteItem, Proof, PublishAuth, PublishKey, Step, StepId};
+pub use osis_label::{ClaimSet, DeleteItem, Proof, Step, StepId};
 use osis_schema::Codec;
 pub use osis_schema::core_types::SecretBox;
 
@@ -25,8 +25,6 @@ pub const MAX_RECONCILE_REPLY_RANGES: usize = 4096;
 pub const MAX_PATH_STEPS: usize = 1024;
 /// Open labels per connection a peer may refuse to exceed (code 4).
 pub const MAX_OPEN_LABELS: usize = 4096;
-/// Signal envelope (spec/wire.md §13).
-pub const MAX_SIGNAL: usize = osis_label::MAX_SIGNAL;
 /// A canonical `Step` is at most this long (spec/wire.md §8: nine fixed-size items).
 pub const MAX_STEP_BYTES: usize = 323;
 /// Request ids are below 2^32 (spec/wire.md §11.1).
@@ -138,7 +136,6 @@ pub enum Message {
     Subscribe { id: Id, labels: Vec<LabelId> },
     Unsubscribe { id: Id, labels: Vec<LabelId> },
     Push { label: LabelId, events: Vec<Event>, cursor: Cursor },
-    Signal { label: LabelId, blob: Vec<u8>, wrap: Wrap, auth: PublishAuth },
 }
 
 /// A frame body that is not a valid message: its kind and request id when readable (else 0).
@@ -205,16 +202,15 @@ impl Message {
             Subscribe { .. } => 21,
             Unsubscribe { .. } => 22,
             Push { .. } => 23,
-            Signal { .. } => 24,
         }
     }
 
-    /// The request id (0 for Push and Signal).
+    /// The request id (0 for Push).
     pub fn id(&self) -> Id {
         use Message::*;
         match self {
             Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Open { id, .. } | Opened { id, .. } | Step { id, .. } | Register { id, .. } | Path { id, .. } | PathReply { id, .. } | Upload { id, .. } | Status { id, .. } | Deposit { id, .. } | Budget { id, .. } | Delete { id, .. } | Sync { id, .. } | SyncReply { id, .. } | Reconcile { id, .. } | ReconcileReply { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Subscribe { id, .. } | Unsubscribe { id, .. } => *id,
-            Push { .. } | Signal { .. } => 0,
+            Push { .. } => 0,
         }
     }
 
@@ -264,7 +260,6 @@ impl Message {
             ],
             M::Subscribe { labels, .. } | M::Unsubscribe { labels, .. } => vec![k, id, Value::List(labels.iter().map(l).collect())],
             M::Push { label, events, cursor } => vec![k, id, l(label), events_value(events), cursor_value(cursor)],
-            M::Signal { label, blob, wrap, auth } => vec![k, id, l(label), b(blob), b(wrap), auth.to_value()],
         };
         Value::List(items)
     }
@@ -294,15 +289,15 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
         0 | 2 | 3 | 6 | 18 | 20 | 21 | 22 => 3,
         4 | 5 | 8 | 9 | 10 | 11 | 14 | 17 | 19 => 4,
         7 | 23 => 5,
-        12 | 13 | 24 => 6,
+        12 | 13 => 6,
         15 | 16 => 7,
         _ => return Err(Error::UnknownKind(kind)),
     };
-    // Push and Signal have no reply (id 0); every request and reply has a real id; an Error
-    // answering a broken frame may carry 0.
+    // Push has no reply (id 0); every request and reply has a real id; an Error answering a
+    // broken frame may carry 0. Kind 24 (the old signal) is retired.
     match (kind, id) {
-        (23 | 24, 0) | (0, _) => {}
-        (23 | 24, _) => return Err(Error::Malformed("id of a message without reply")),
+        (23, 0) | (0, _) => {}
+        (23, _) => return Err(Error::Malformed("id of a message without reply")),
         (_, 0) => return Err(Error::Malformed("id 0")),
         _ => {}
     }
@@ -355,7 +350,6 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
         21 => Message::Subscribe { id, labels: labels(f.list(1, MAX_LABELS, "labels")?)? },
         22 => Message::Unsubscribe { id, labels: labels(f.list(1, MAX_LABELS, "labels")?)? },
         23 => Message::Push { label: label(&mut f)?, events: events(f.list(1, usize::MAX, "events")?)?, cursor: cursor(f.next()?)? },
-        24 => Message::Signal { label: label(&mut f)?, blob: f.bytes(MAX_SIGNAL)?, wrap: f.fixed()?, auth: PublishAuth::from_value(&f.next()?)? },
         _ => return Err(Error::UnknownKind(kind)),
     };
     f.end()?;

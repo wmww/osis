@@ -424,8 +424,8 @@ impl Osis {
     }
 
     /// Queues events for the dispatcher, collecting the things whose roster changed into
-    /// `roster`; `true` when there were any events other than local ephemeral ones (which the
-    /// sync engine has nothing to do for yet).
+    /// `roster`; `true` when there were any events other than ephemeral ones (local ephemeral
+    /// writes reach the sync engine only when they wait to be sent, `after`).
     fn drain(&self, l: &mut Locked, roster: &mut BTreeSet<Tid>) -> bool {
         let mut any = false;
         while let Ok(e) = l.events.try_recv() {
@@ -443,7 +443,8 @@ impl Osis {
     /// sync engine; then status, link upkeep and waiters.
     fn after(&self, l: &mut Locked, handled: bool) {
         let mut roster = BTreeSet::new();
-        let any = self.drain(l, &mut roster);
+        // ephemeral writes on things in a labeled closure go out as ephemeral commits
+        let any = self.drain(l, &mut roster) || l.sync.engine().has_unsent();
         if any && !handled {
             let acts = l.sync.handle(SyncEvent::Local);
             self.inner.net.apply(acts);

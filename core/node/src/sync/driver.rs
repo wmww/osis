@@ -40,7 +40,7 @@ pub const LAN_REJOIN_MIN: Duration = Duration::from_secs(30);
 /// A failed listen with a new dialable key is tried again after this long.
 pub const RELISTEN_RETRY: Duration = Duration::from_secs(5);
 
-/// A call on the sync engine from the app (create a label, signal, compact, read the engine):
+/// A call on the sync engine from the app (create a label, compact, read the engine):
 /// its actions are carried out.
 pub type Call = Box<dyn FnOnce(&mut SyncEngine) -> Vec<Action> + Send>;
 

@@ -367,7 +367,7 @@ type task = struct { 0 title: string, 1 done: bool, 2 due: option<timestamp> };
 aspect /todo/task: task;
 aspect /todo/list: list<task>;
 aspect /todo/count: counter<int>;
-signal /todo/ping: int;
+aspect /todo/ping: int [signal];
 ";
 
 // notes/cli.md Design Honest about names: named forms with a registered schema; --raw numbered.
@@ -414,8 +414,10 @@ fn named_keys_with_schema_plan_cli_1() {
     assert_eq!(call(&["op", t, "/todo/count", "", "inc", "5"], "").0, 0);
     assert_eq!(call(&["op", t, "/todo/count", "", "inc", "-2"], "").0, 0);
     assert_eq!(call(&["get", t, "/todo/count"], "").1, "3\n");
-    // signals reach local listeners only; sending is checked
-    assert_eq!(call(&["signal", "send", t, "/todo/ping", "1"], "").0, 0);
+    // a signal aspect fires and holds nothing
+    assert_eq!(call(&["set", t, "/todo/ping", "1"], "").0, 0);
+    assert_eq!(call(&["get", t, "/todo/ping"], "").0, 3, "absent");
+    assert!(!call(&["aspects", t], "").1.contains("/todo/ping"));
     assert_eq!(call(&["schema", "check", f.to_str().unwrap()], "").1, "ok revision 1 no lock\n");
     // a schema that does not parse: exit 7
     let bad = d.join("bad.osis");

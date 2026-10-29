@@ -1,4 +1,4 @@
-//! Requests of the app and of membership flows: signals (spec/sync.md §9), compaction
+//! Requests of the app and of membership flows: compaction
 //! (spec/sync.md §7), certificate placement under a group's labels (spec/permissions.md §3, §4:
 //! the grantee's `/keys`, a removal's new `/keys`), inbox delivery (spec/sync.md §3), label
 //! creation.
@@ -8,8 +8,8 @@ use super::{Action, ConnId, Phase, SyncEngine};
 use crate::error::{Error, Result};
 use crate::labeling::seal_body;
 use osis_base::format::MAX_DRIFT_MS;
-use osis_base::{Ak, BlobId, CommitId, LabelId, Role, Tid, Ts, Value};
-use osis_label::{Address, InboxPayload, InboxThing, PublishAuth, PublishKey, SignalBody};
+use osis_base::{Ak, BlobId, CommitId, LabelId, Role, Tid, Ts};
+use osis_label::{Address, InboxPayload, InboxThing};
 use osis_perm::{At, PurgeBy};
 use osis_proto::Command;
 use osis_schema::core_types as ct;
@@ -36,18 +36,6 @@ pub(crate) struct Outgoing {
 }
 
 impl SyncEngine {
-    /// Open connections and labels whose group's closure holds `t`.
-    fn labels_holding(&mut self, t: &Tid) -> Vec<(ConnId, LabelId, Tid)> {
-        let mut out = Vec::new();
-        let opened: Vec<(ConnId, LabelId, Tid)> = self.conns.iter().flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.phase == Phase::Open).map(move |(lid, l)| (*id, *lid, l.group))).collect();
-        for (c, l, g) in opened {
-            if self.engine.closure(&g).contains(t) {
-                out.push((c, l, g));
-            }
-        }
-        out
-    }
-
     /// Creates a label for group `g` at `servers` (an admin; spec/sync.md §2) and connects.
     pub fn create_label(&mut self, g: &Tid, servers: Vec<Address>) -> Result<(LabelId, Vec<Action>)> {
         let (l, done) = self.engine.create_label(g, &servers)?;
@@ -65,51 +53,6 @@ impl SyncEngine {
         let (new, done) = self.engine.replace_label(g, old)?;
         self.take_done(done)?;
         Ok((new, self.handle(super::Event::Local)))
-    }
-
-    /// Sends a signal about `t` under every open label holding it (spec/sync.md §9): under the
-    /// write key when this node writes the label, else the deposit key; also fires this node's
-    /// own listeners.
-    pub fn signal(&mut self, t: &Tid, kind: Ak, value: Value, target: Option<Tid>) -> Result<Vec<Action>> {
-        let me = self.engine.tid();
-        self.signal_as(t, me, kind, value, target)
-    }
-
-    /// `signal` for `actor` (an actor this node writes for: the receivers check it).
-    pub fn signal_as(&mut self, t: &Tid, actor: Tid, kind: Ak, value: Value, target: Option<Tid>) -> Result<Vec<Action>> {
-        if self.engine.role_on(t) < Some(Role::Write) {
-            return Err(Error::Permission { tid: *t });
-        }
-        let me = self.engine.tid();
-        if actor != me && self.engine.role_on(&actor) < Some(Role::Write) {
-            return Err(Error::Permission { tid: actor });
-        }
-        let ts = Ts::make(self.engine.now(), 0).ok_or(Error::Misuse("clock out of range"))?;
-        let body = SignalBody { node: me, actor, ts, tid: *t, kind: kind.clone(), target, schema: None, value: value.clone() };
-        let mut out = Vec::new();
-        let mut sent = BTreeSet::new();
-        for (conn, l, g) in self.labels_holding(t) {
-            if self.uncovered(&g)?.contains(&Role::Read) {
-                continue;
-            }
-            let Some(secret) = self.engine.wrap_secret(&g, None)? else { continue };
-            let Some(keys) = self.lc(conn, &l).map(|x| x.keys.clone()) else { continue };
-            let (key, blob) = osis_label::seal_signal(&body, &self.engine.identity().keys().signing, &mut *self.rng)?;
-            let id = osis_label::blob_id(&blob);
-            let wrap = osis_crypto::wrap(&secret, &id, &key)?;
-            let auth = match (&keys.write, &keys.deposit) {
-                (Some(w), _) => PublishAuth::sign(PublishKey::Write, w, &l, &id, &wrap),
-                (None, Some(d)) => PublishAuth::sign(PublishKey::Deposit, d, &l, &id, &wrap),
-                _ => continue,
-            };
-            sent.insert(l);
-            self.command(conn, Command::Signal { label: l, blob, wrap, auth }, &mut out)?;
-        }
-        self.engine.core.events.queue(crate::Event::Signal { tid: *t, kind, from: me, actor, ts, target, value });
-        self.engine.core.events.flush();
-        self.signals.push(body);
-        self.state.flush(&mut self.engine)?;
-        Ok(out)
     }
 
     /// Compacts `(t, ak)` (spec/sync.md §7): writes a snapshot from this node's state, then

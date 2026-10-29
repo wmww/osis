@@ -25,6 +25,7 @@ fn prefix_case(name: &str, p: &Prefix) -> Record {
     case(name, SPEC)
         .with("salt", hex(p.salt()))
         .with("expiry", p.expiry().map_or("none".to_string(), |t| t.0.to_string()))
+        .with("class", (p.class() as u8).to_string())
         .with("commitments", commitments(p))
         .with("prefix", hex(&p.to_bytes()))
 }
@@ -37,6 +38,7 @@ fn reject(name: &str, bytes: &[u8], rule: &str) -> Record {
         "prefix-level" => Error::Malformed("commitment level"),
         "prefix-count" => Error::Malformed("more than 3 commitments"),
         "prefix-short" => Error::Malformed("short prefix"),
+        "prefix-class" => Error::Malformed("blob class"),
         _ => panic!("unknown rule {rule}"),
     };
     assert_eq!(got, Err(want), "{name}");
@@ -48,6 +50,8 @@ pub fn prefixes() -> VecFile {
     let salt = [0x21; 16];
     let mut cases = vec![prefix_case("no commitments, no expiry", &Prefix::new(salt, None, vec![]).unwrap())];
     cases.push(prefix_case("one commitment, expiry", &Prefix::new(salt, Some(WallMs(1_700_000_000_000)), vec![c(2, 0x22)]).unwrap()));
+    cases.push(prefix_case("ephemeral class", &Prefix::new(salt, None, vec![]).unwrap().with_class(osis_label::Class::Ephemeral)));
+    cases.push(prefix_case("relay-only class", &Prefix::new(salt, None, vec![]).unwrap().with_class(osis_label::Class::Relay)));
     // Commitments derived from (level, delete key) pairs under the prefix salt.
     let keys: Vec<(u8, osis_crypto::VerifyingKey)> = [(1u8, 0x23u8), (2, 0x24), (3, 0x25)].iter().map(|(l, b)| (*l, DeleteSecret::derive(&s32(*b)).verifying_key())).collect();
     let hb = [0x26u8; 16];
@@ -57,20 +61,23 @@ pub fn prefixes() -> VecFile {
 
     let base = Prefix::new(salt, None, vec![c(1, 1), c(2, 2)]).unwrap().to_bytes();
     let mut b = base.clone();
-    b[26..59].copy_from_slice(&c(2, 2));
-    b[59..92].copy_from_slice(&c(1, 1));
+    b[27..60].copy_from_slice(&c(2, 2));
+    b[60..93].copy_from_slice(&c(1, 1));
     cases.push(reject("commitments unsorted", &b, "prefix-order"));
     let mut b = base.clone();
-    b[59..92].copy_from_slice(&c(1, 2));
+    b[60..93].copy_from_slice(&c(1, 2));
     cases.push(reject("two commitments at one level", &b, "prefix-order"));
     let mut b = base.clone();
-    b[26] = 0;
+    b[27] = 0;
     cases.push(reject("commitment level 0", &b, "prefix-level"));
     let mut b = base.clone();
-    b[59] = 4;
+    b[60] = 4;
     cases.push(reject("commitment level 4", &b, "prefix-level"));
+    let mut b = base.clone();
+    b[25] = 3;
+    cases.push(reject("class 3", &b, "prefix-class"));
     let mut b = Prefix::new(salt, None, vec![]).unwrap().to_bytes();
-    b[25] = 4;
+    b[26] = 4;
     for i in 1..=4u8 {
         b.extend(c(i.min(3), i));
     }

@@ -7,7 +7,7 @@ use crate::common;
 use common::*;
 use osis_base::{BlobId, WallMs};
 use osis_crypto::SigningSecret;
-use osis_proto::msg::{DeleteItem, PublishAuth, PublishKey, Wrap};
+use osis_proto::msg::DeleteItem;
 use osis_proto::*;
 use osis_server::Policy;
 use osis_store::Backend;
@@ -187,11 +187,19 @@ fn horizon_falls_back_to_reconciliation() {
     assert_eq!(added(&events_of(&w.run(b, sync(l.id, c, vec![], vec![]))).0), vec![bid(901)]);
 }
 
-// spec/sync.md §8, §9: subscriptions push new events in the cursor-reply format; signals under the write or deposit key reach the other subscribers, never the sender; nothing is stored
+/// A blob of class `c` (spec/wire.md §5).
+fn classed(n: u8, c: osis_label::Class) -> Vec<u8> {
+    let p = osis_label::Prefix::new([n; 16], None, vec![]).unwrap().with_class(c);
+    osis_label::frame(&p, &[n; 20], &mut osis_crypto::SeededRng::from_seed([n; 32])).unwrap().1
+}
+
+// spec/sync.md §5, §8: subscriptions push new events in the cursor-reply format; a stamped
+// relay-only entry reaches the other connections' subscribers once, never the sender, and is held
+// by nobody (no entry, no log record, no store row); an unstamped one is refused
 #[test]
-fn subscriptions_and_signals() {
+fn subscriptions_and_relays() {
     let mut w = World::new();
-    let h = w.add_hub(Policy { signals: 2, ..Policy::default() });
+    let h = w.add_hub(Policy::default());
     let (a, b, c) = (w.connect(h), w.connect(h), w.connect(h));
     let l = Label::new(3);
     w.setup(a, &l);
@@ -212,20 +220,63 @@ fn subscriptions_and_signals() {
     assert_eq!(events_of(&w.take(b)).0, vec![Event::Head(child)]);
     w.take(a);
     let backend_rows = w.backends[h].scan(&[], None, usize::MAX).unwrap().len();
-    let env = vec![0x5a; 100];
-    let wrap: Wrap = [3; 49];
-    let auth = PublishAuth::sign(PublishKey::Write, &l2.head_keys().write, &l2.id, &osis_label::blob_id(&env), &wrap);
-    w.run(a, Command::Signal { label: l2.id, blob: env.clone(), wrap, auth: auth.clone() });
-    assert_eq!(w.take(b), vec![ClientEvent::Signal { label: l2.id, blob: env.clone(), wrap, auth: auth.clone() }]);
+    let relay = classed(5, osis_label::Class::Relay);
+    let rid = osis_label::blob_id(&relay);
+    let ev = w.run(a, Command::Upload { label: l2.id, entries: vec![l2.entry(relay.clone())] });
+    assert_eq!(statuses(&ev), vec![Code::OK]);
+    let (evs, _) = events_of(&w.take(b));
+    assert_eq!(added(&evs), vec![rid], "pushed to the subscriber");
     assert!(w.take(a).is_empty() && w.take(c).is_empty(), "not the sender, not unsubscribed");
-    let dauth = PublishAuth::sign(PublishKey::Deposit, &l2.head_keys().deposit, &l2.id, &osis_label::blob_id(&env), &wrap);
-    w.run(c, Command::Signal { label: l2.id, blob: env.clone(), wrap, auth: dauth });
-    assert_eq!(w.take(b).len(), 1);
-    assert_eq!(w.take(a).len(), 1);
-    assert_eq!(w.backends[h].scan(&[], None, usize::MAX).unwrap().len(), backend_rows, "signals store nothing");
-    // over the rate limit: dropped
-    w.run(a, Command::Signal { label: l2.id, blob: env, wrap, auth });
+    assert_eq!(w.backends[h].scan(&[], None, usize::MAX).unwrap().len(), backend_rows, "relays store nothing");
+    assert!(w.hubs[h].store().entry(&l2.id, &rid).unwrap().is_none());
+    // a later sync never sees it
+    let (evs, _) = events_of(&w.run(c, sync(l2.id, None, vec![], vec![])));
+    assert!(!added(&evs).contains(&rid));
+    // deposited (unstamped): refused
+    let ev = w.run(c, l2.deposit(relay, &l2.head_keys().deposit.clone()));
+    assert!(ev.iter().any(|e| matches!(e, ClientEvent::Budget { code: Code::REFUSED, .. })), "{ev:?}");
     assert!(w.take(b).is_empty());
+}
+
+// spec/sync.md §4, §5: ephemeral entries are held in memory: synced and pushed like any, no store
+// row, refused past the label's ephemeral cap, deposits refused, gone after a restart while the
+// log goes on (a cursor from before the restart misses nothing durable added after it)
+#[test]
+fn ephemeral_entries_in_memory() {
+    let mut w = World::new();
+    let policy = Policy { ephemeral_bytes: 150, ..Policy::default() };
+    let h = w.add_hub(policy.clone());
+    let (a, b) = (w.connect(h), w.connect(h));
+    let l = Label::new(3);
+    w.setup(a, &l);
+    w.open(a, &l);
+    w.open(b, &l);
+    let rows = w.backends[h].scan(&[], None, usize::MAX).unwrap().len();
+    let eph: Vec<Vec<u8>> = (1..=3).map(|n| classed(n, osis_label::Class::Ephemeral)).collect();
+    let ev = w.run(a, Command::Upload { label: l.id, entries: eph.iter().map(|e| l.entry(e.clone())).collect() });
+    assert_eq!(statuses(&ev), vec![Code::OK, Code::OK, Code::STORAGE_CAP], "the third is over the cap");
+    let reserve = w.backends[h].scan(&[], None, usize::MAX).unwrap().len();
+    assert_eq!(reserve, rows, "only the label meta row changed (sequence reservation)");
+    assert_eq!(w.hubs[h].store().ephemeral_bytes(&l.id), (eph[0].len() + eph[1].len()) as u64);
+    let (evs, cursor) = events_of(&w.run(b, sync(l.id, None, vec![], vec![])));
+    let ids: Vec<BlobId> = eph[..2].iter().map(|e| osis_label::blob_id(e)).collect();
+    assert_eq!(sorted(added(&evs)), sorted(ids.clone()));
+    let ev = w.run(b, l.deposit(eph[2].clone(), &l.head_keys().deposit.clone()));
+    assert!(ev.iter().any(|e| matches!(e, ClientEvent::Budget { code: Code::REFUSED, .. })), "{ev:?}");
+    // a restart loses them; the log does not reuse their numbers
+    w.restart(h, policy);
+    let (a, b) = (w.connect(h), w.connect(h));
+    w.open(a, &l);
+    w.open(b, &l);
+    w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(9))] });
+    let (evs, _) = events_of(&w.run(b, sync(l.id, cursor, vec![], vec![])));
+    assert_eq!(added(&evs), vec![bid(9)], "the durable entry after the restart is not skipped");
+    let (evs, _) = events_of(&w.run(b, sync(l.id, None, vec![], vec![])));
+    assert!(added(&evs).iter().all(|x| !ids.contains(x)), "ephemeral entries are gone");
+    // a holder lists them as gained: the server wants them back
+    let ev = w.run(b, sync(l.id, None, vec![], ids.clone()));
+    let want: Vec<BlobId> = ev.iter().flat_map(|e| if let ClientEvent::Want { ids, .. } = e { ids.clone() } else { vec![] }).collect();
+    assert_eq!(sorted(want), sorted(ids));
 }
 
 // spec/sync.md §5: blind-to-blind replication is push only: steps with claim sets and stamped entries reach the peer; deposits and deletions do not travel

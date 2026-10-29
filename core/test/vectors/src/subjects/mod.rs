@@ -17,7 +17,6 @@ pub mod link;
 pub mod padme;
 pub mod proto;
 pub mod sign;
-pub mod signal;
 pub mod step;
 pub mod schema;
 pub mod tid;
@@ -58,7 +57,6 @@ pub fn get(path: &str) -> Option<Subject> {
         "chunker/pages.vec" => Subject { generate: Some(chunker::pages), check: None },
         "step/steps.vec" => Subject { generate: Some(step::steps), check: None },
         "inbox/inbox.vec" => Subject { generate: Some(inbox::inbox), check: None },
-        "signal/signal.vec" => Subject { generate: Some(signal::signal), check: None },
         "link/link.vec" => Subject { generate: Some(link::links), check: None },
         "lan/announce.vec" => Subject { generate: Some(lan::announce), check: None },
         "bundle/bundle.vec" => Subject { generate: Some(bundle::bundle), check: None },

@@ -41,7 +41,6 @@ vector_files! {
     chunker_pages => "chunker/pages.vec",
     step_steps => "step/steps.vec",
     inbox_inbox => "inbox/inbox.vec",
-    signal_signal => "signal/signal.vec",
     link_link => "link/link.vec",
     bundle_bundle => "bundle/bundle.vec",
     lan_announce => "lan/announce.vec",

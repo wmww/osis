@@ -62,6 +62,20 @@ impl Kind {
     }
 }
 
+/// The header's ephemeral marker (spec/commits.md §1, §2; spec/wire.md §4): an ephemeral
+/// commit holding state (`Plain`), or a relay-only one carrying signals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EphClass {
+    Plain = 0,
+    Relay = 1,
+}
+
+impl EphClass {
+    pub fn from_id(id: u64) -> Option<EphClass> {
+        [EphClass::Plain, EphClass::Relay].into_iter().find(|c| *c as u64 == id)
+    }
+}
+
 /// Dot form (spec/commits.md §3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Form {
@@ -214,6 +228,8 @@ pub struct Header {
     pub frontier: Option<Value>,
     pub origins: Vec<Origin>,
     pub links: Links,
+    /// Set on an ephemeral commit (kept in memory by every node, never stored).
+    pub ephemeral: Option<EphClass>,
 }
 
 // ---- encode
@@ -311,6 +327,7 @@ impl Header {
             self.position(ListField::Keys),
             self.position(ListField::Frontier),
             self.position(ListField::Origins),
+            opt(self.ephemeral.map(|c| uint(c as u64))),
         ])
     }
 
@@ -488,7 +505,7 @@ impl Header {
         if version != FORMAT_VERSION {
             return Err(Error::Malformed("format version"));
         }
-        let [_, author, actor, kind, ts, form, schemas, aspects, chunks, purge, undoes, blind, keys, frontier, origins] = items else {
+        let [_, author, actor, kind, ts, form, schemas, aspects, chunks, purge, undoes, blind, keys, frontier, origins, ephemeral] = items else {
             return Err(Error::Malformed("header arity"));
         };
         let schemas = as_list(schemas)?;
@@ -523,6 +540,7 @@ impl Header {
             frontier: None,
             origins: Vec::new(),
             links: Links::default(),
+            ephemeral: as_opt(ephemeral)?.map(|c| EphClass::from_id(as_uint(c)?).ok_or(Error::Malformed("ephemeral marker"))).transpose()?,
         };
         h.take_position(ListField::Aspects, aspects, stored)?;
         h.take_position(ListField::Chunks, chunks, stored)?;

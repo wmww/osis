@@ -255,6 +255,10 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
 
 /// Applies or stores one decoded commit blob.
 fn ingest_blob(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<Ingested> {
+    // an ephemeral commit is never stored (`Engine::ingest_ephemeral`)
+    if blob.header.ephemeral.is_some() {
+        return Err(Error::BadInput("an ephemeral commit on the durable path"));
+    }
     let id = blob.id();
     if tx.core.ix.commits.contains_key(&id) {
         return late_parts(tx, &id, blob);

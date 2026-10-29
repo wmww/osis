@@ -46,6 +46,7 @@ pub(crate) fn sample_header() -> Header {
         frontier: None,
         origins: vec![],
         links: Links::default(),
+        ephemeral: None,
     }
 }
 

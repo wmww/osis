@@ -1,5 +1,5 @@
 //! `Key`: an aspect key typed by a schema registered at run time (CLIs, tools; `Osis::key`), and
-//! the core keys. Typed `Aspect<T>`/`Signal<T>` come from codegen (osis-schema).
+//! the core keys. Typed `Aspect<T>` come from codegen (osis-schema).
 
 use osis_base::{Ak, Value};
 use osis_schema::{AspectKey, Codec, PathError, Schema, typed_read};

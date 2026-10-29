@@ -52,7 +52,8 @@ pub fn parse(text: &str) -> Result<Config, String> {
             "deletes" => p.deletes = n32()?,
             "replacements" => p.replacements = n32()?,
             "deposits" => p.deposits = n32()?,
-            "signals" => p.signals = n32()?,
+            "ephemeral_bytes" => p.ephemeral_bytes = n()?,
+            "ephemeral_total" => p.ephemeral_total = n()?,
             "entry_replacements" => p.entry_replacements = n32()?,
             "max_labels" => p.max_labels = n()?,
             "max_entries" => p.max_entries = n()?,
@@ -86,15 +87,15 @@ mod tests {
     #[test]
     fn parses_keys_peers_and_knobs() {
         let peer = osis_label::address_to_text(&Address { url: "quic://b:7400".into(), key: [7; 32] });
-        let text = format!("# server\nlisten = quic://0.0.0.0:7400\nkey = /k\ndata = /d  # dir\npeer = {peer}\n\nsignals = 5\ncap_bytes = 1000\n");
+        let text = format!("# server\nlisten = quic://0.0.0.0:7400\nkey = /k\ndata = /d  # dir\npeer = {peer}\n\nephemeral_bytes = 5\ncap_bytes = 1000\n");
         let c = parse(&text).unwrap();
         assert_eq!(c.listen, "quic://0.0.0.0:7400");
         assert_eq!(c.data, PathBuf::from("/d"));
         assert_eq!(c.peers, vec![Address { url: "quic://b:7400".into(), key: [7; 32] }]);
-        assert_eq!((c.policy.signals, c.policy.cap_bytes, c.policy.deposits), (5, 1000, Policy::default().deposits));
+        assert_eq!((c.policy.ephemeral_bytes, c.policy.cap_bytes, c.policy.deposits), (5, 1000, Policy::default().deposits));
         assert_eq!(parse("listen = x\nkey = k\nmax_connections = 3\n").unwrap().data, PathBuf::from(DEFAULT_DATA));
         assert!(parse("listen = x\n").is_err());
         assert!(parse("listen = x\nkey = k\ndata = d\nbogus = 1\n").is_err());
-        assert!(parse("listen = x\nkey = k\ndata = d\nsignals = many\n").is_err());
+        assert!(parse("listen = x\nkey = k\ndata = d\nephemeral_bytes = many\n").is_err());
     }
 }

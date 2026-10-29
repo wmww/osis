@@ -3,7 +3,7 @@
 //! field (`none` included).
 
 use crate::error::Error;
-use crate::schema::{AspectDef, Bound, Flag, PurgeBy, Retention, Schema, SignalDef, TypeDef};
+use crate::schema::{AspectDef, Bound, Flag, PurgeBy, Retention, Schema, TypeDef};
 use crate::statics::StaticSchema;
 use crate::typed::typed_read;
 use crate::types::{Case, EnumType, Field, StructType, Type};
@@ -24,6 +24,10 @@ fn int(n: u64) -> Value {
 }
 fn st(fields: Vec<Value>) -> Value {
     Value::Map(fields.into_iter().enumerate().map(|(i, v)| (int(i as u64), v)).collect())
+}
+/// A struct value with the given field ids (a retired id stays unused).
+fn st_fields(fields: Vec<(u64, Value)>) -> Value {
+    Value::Map(fields.into_iter().map(|(i, v)| (int(i), v)).collect())
 }
 fn opt(v: Option<Value>) -> Value {
     match v {
@@ -116,15 +120,7 @@ impl Schema {
                 (Value::Str(ak.clone()), st(vec![type_value(&a.ty), retention, opt(a.expires.map(int)), flags, succ, doc(&a.doc)]))
             })
             .collect();
-        let signals = self.signals.iter().map(|(k, s)| (Value::Str(k.clone()), st(vec![type_value(&s.ty), doc(&s.doc)]))).collect();
-        st(vec![
-            Value::Bytes(self.id.0.to_vec()),
-            int(self.revision),
-            Value::Map(types),
-            Value::Map(aspects),
-            Value::Map(signals),
-            doc(&self.doc),
-        ])
+        st_fields(vec![(0, Value::Bytes(self.id.0.to_vec())), (1, int(self.revision)), (2, Value::Map(types)), (3, Value::Map(aspects)), (5, doc(&self.doc))])
     }
 
     /// Canonical form: the canonical encoding of `to_value`.
@@ -164,10 +160,6 @@ impl Schema {
             let succeeds = a.set(4)?.iter().map(as_str).collect::<Result<_, _>>()?;
             let expires = a.opt(2)?.map(as_uint).transpose()?;
             s.aspects.insert(as_str(ak)?, AspectDef { ty: read_type(a.get(0)?)?, retention, expires, flags, succeeds, doc: a.doc(5)? });
-        }
-        for (k, sig) in f.map(4)? {
-            let sig = Fields::of(sig)?;
-            s.signals.insert(as_str(k)?, SignalDef { ty: read_type(sig.get(0)?)?, doc: sig.doc(1)? });
         }
         s.doc = f.doc(5)?;
         if let Some(inv) = s.validate().into_iter().next() {

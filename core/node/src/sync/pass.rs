@@ -1098,7 +1098,7 @@ impl SyncEngine {
             let Some(h) = self.engine.header(&c) else { continue };
             self.prefix_checked.insert(b);
             let agrees = match (osis_label::Prefix::parse(&bytes), osis_commit::prefix_inputs(&h, &parts)) {
-                (Ok(p), Ok((expiry, keys))) => parts.is_empty() || p.agrees(expiry.map(WallMs), &h.blind, &keys),
+                (Ok(p), Ok((expiry, keys))) => parts.is_empty() || p.agrees(expiry.map(WallMs), &h.blind, &keys, osis_label::Class::Durable),
                 _ => false,
             };
             if !agrees {

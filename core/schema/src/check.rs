@@ -18,7 +18,7 @@ pub enum Rule {
     ReservedDropped,
     /// An enum case was removed (cases are never removed, reserved or not).
     CaseRemoved,
-    /// An existing ID (or aspect, or signal kind) changed type, other than along a register
+    /// An existing ID (or aspect) changed type, other than along a register
     /// embedding edge (`T` to `counter<T>`/`max<T>`/`min<T>`, `string` to `text`).
     TypeChanged,
     /// A field without default was added to an existing struct.
@@ -33,8 +33,6 @@ pub enum Rule {
     RevisionNotBumped,
     /// An aspect was removed (its wire type never changes; a different type is a new AK).
     AspectRemoved,
-    /// A signal kind was removed.
-    SignalRemoved,
     /// The comparison exceeded its depth or size bound (not provably additive).
     TooLarge,
     /// A revision does not validate (`Schema::validate`), so it is not compared.
@@ -99,12 +97,6 @@ pub fn check(old: &Schema, new: &Schema) -> Vec<Violation> {
         match new.aspects.get(ak) {
             Some(na) => c.ty(&oa.ty, &na.ty, &format!("aspect {ak}")),
             None => c.v(Rule::AspectRemoved, format!("aspect {ak}")),
-        }
-    }
-    for (k, os) in &old.signals {
-        match new.signals.get(k) {
-            Some(ns) => c.ty(&os.ty, &ns.ty, &format!("signal {k}")),
-            None => c.v(Rule::SignalRemoved, format!("signal {k}")),
         }
     }
     c.out

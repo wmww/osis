@@ -62,6 +62,7 @@ prop_compose! {
             frontier: frontier.map(|n| Value::Map([(Value::Int(0), Value::Int(n))].into_iter().collect())),
             origins: origins.into_iter().map(|(c, author, actor, w)| Origin { commit: CommitId(c), author, actor, ts: ts(w) }).collect(),
             links: l,
+            ephemeral: None,
         };
         // a linked list's items are not in the header bytes
         for f in ListField::ALL {

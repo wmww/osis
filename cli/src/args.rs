@@ -197,9 +197,6 @@ pub enum Cmd {
         #[arg(long)]
         count: Option<usize>,
     },
-    /// Signals
-    #[command(subcommand)]
-    Signal(SignalCmd),
     /// Held commits (anyone's), newest first
     Commits {
         #[command(flatten)]
@@ -426,27 +423,6 @@ pub enum ServerCmd {
     Ls,
     Add { addr: String },
     Rm { addr: String },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum SignalCmd {
-    /// Send a signal about T
-    Send {
-        t: String,
-        kind: String,
-        value: String,
-        #[arg(long, value_name = "NODE")]
-        to: Option<String>,
-    },
-    /// Print signals about T (--in: about T or anything in its closure, the thing first)
-    Listen {
-        t: String,
-        kind: String,
-        #[arg(long = "in")]
-        in_group: bool,
-        #[arg(long)]
-        count: Option<usize>,
-    },
 }
 
 #[derive(Subcommand, Debug, Clone)]

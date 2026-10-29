@@ -438,6 +438,27 @@ impl Net {
         self.engine(n).commit(m).unwrap().unwrap()
     }
 
+    /// Node `n` writes `v` to the ephemeral (or presence, signal) key `key` of `t`, then lets
+    /// its sync engine see it.
+    pub fn eph_write(&mut self, n: usize, t: Tid, key: &osis_schema::Untyped, v: Value) {
+        let mut m = Mutation::new();
+        m.set(t, key, &v).unwrap();
+        self.engine(n).write(m).unwrap();
+        let acts = self.sync(n).handle(Event::Local);
+        self.actions(n, acts);
+    }
+
+    /// Node `n`'s value of ephemeral (or any) aspect `ak` of `t`.
+    pub fn eph_read(&mut self, n: usize, t: Tid, ak: &str) -> Option<Value> {
+        let ak = osis_base::Ak::new(ak).unwrap();
+        self.engine(n).get(&t, &ak).unwrap()
+    }
+
+    /// The engine events node `n` sends from now on.
+    pub fn listen(&mut self, n: usize) -> std::sync::mpsc::Receiver<osis_node::Event> {
+        self.engine(n).subscribe()
+    }
+
     pub fn read(&mut self, n: usize, t: Tid) -> Option<Value> {
         let ak = osis_base::Ak::new(REG.ak()).unwrap();
         self.engine(n).get(&t, &ak).unwrap()
@@ -494,6 +515,22 @@ pub const GONEMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/gon
 pub const SHORTMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/shortmap", &TEST);
 pub const GONETEXT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/gonetext", &TEST);
 pub const BRIEFMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/briefmap", &TEST);
+
+/// The signal parts fired among the events received so far: (thing, aspect, value, origin).
+pub fn fired(rx: &std::sync::mpsc::Receiver<osis_node::Event>) -> Vec<(Tid, String, Value, osis_node::Origin)> {
+    let mut out = Vec::new();
+    while let Ok(e) = rx.try_recv() {
+        if let osis_node::Event::Ephemeral { signals, origin, .. } = e {
+            out.extend(signals.into_iter().map(|(t, ak, v)| (t, ak.as_str().to_string(), v, origin)));
+        }
+    }
+    out
+}
+
+/// An untyped key of `ak` with the given lifetime.
+pub fn ukey(ak: &str, l: osis_schema::Lifetime) -> osis_schema::Untyped {
+    osis_schema::Untyped::new(osis_base::Ak::new(ak).unwrap(), l)
+}
 
 pub fn s(x: &str) -> Value {
     Value::Str(x.into())

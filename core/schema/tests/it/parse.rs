@@ -57,7 +57,7 @@ fn notes_schema_parses_items_spec_data_model_2() {
     assert_eq!((pinned.by, pinned.at_most.rel), (PurgeBy::Writer, Some(0)));
     assert!(s.aspects["/note/body"].flags.contains(&Flag::Indexed));
     assert_eq!(s.aspects["/note/body"].doc.as_deref(), Some("Markdown; not guaranteed valid."));
-    assert!(s.signals.contains_key("/note/typing"));
+    assert!(s.aspects["/note/typing"].flags.contains(&Flag::Signal));
     assert_eq!(s.types["tagged"].params, vec!["T".to_string()]);
 }
 

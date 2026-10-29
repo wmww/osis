@@ -9,6 +9,11 @@
 //! sweep indexes `X t label blob` (expiry), `P t label blob` (pending deletion),
 //! `Y t label blob` (tombstone drop), `Z t label step` (claim-set drop);
 //! `Q peer label` replication position; `N` node-wide totals (labels, entries, bytes).
+//!
+//! Ephemeral entries (blob prefix class ephemeral, spec/sync.md §4) are held in memory only:
+//! entry, blob, log records and tombstones; a restart loses them. Their log records take
+//! sequence numbers from the label's log, reserved on disk in blocks (`SEQ_BLOCK`, the label
+//! meta's `reserved`), so no number handed out before a restart is handed out again.
 
 use osis_base::format::{MEMBERSHIP_KEEP_MS, TOMBSTONE_LIFETIME_MS};
 use osis_base::{BlobId, Clock, LabelId};
@@ -42,7 +47,10 @@ pub struct Policy {
     pub deletes: u32,
     pub replacements: u32,
     pub deposits: u32,
-    pub signals: u32,
+    /// Ephemeral entry bytes held per label, and over all labels (in memory): ephemeral uploads
+    /// beyond either get code 12 (notes/ephemeral.md Bounds).
+    pub ephemeral_bytes: u64,
+    pub ephemeral_total: u64,
     /// Wrap replacements per entry and window.
     pub entry_replacements: u32,
     /// Node-wide caps: new entries beyond them get code 12, new labels Error 12.
@@ -73,7 +81,8 @@ impl Default for Policy {
             deletes: 20_000,
             replacements: 20_000,
             deposits: 600,
-            signals: 1_200,
+            ephemeral_bytes: 16 << 20,
+            ephemeral_total: 1 << 30,
             entry_replacements: 4,
             max_labels: 1 << 20,
             max_entries: 1 << 26,
@@ -96,7 +105,8 @@ impl Policy {
             deletes: u32::MAX,
             replacements: u32::MAX,
             deposits: u32::MAX,
-            signals: u32::MAX,
+            ephemeral_bytes: u64::MAX,
+            ephemeral_total: u64::MAX,
             entry_replacements: u32::MAX,
             max_labels: u64::MAX,
             max_entries: u64::MAX,
@@ -152,9 +162,16 @@ struct Meta {
     bytes: u64,
     dep_n: u64,
     dep_bytes: u64,
+    /// Sequence numbers up to this one may have gone to ephemeral log records (in memory).
+    reserved: u64,
 }
 
-const META_LEN: usize = 16 + 1 + 32 + 8 * 7;
+const META_LEN: usize = 16 + 1 + 32 + 8 * 8;
+
+/// Sequence numbers reserved on disk at a time for ephemeral log records. Performance switch
+/// (notes/arbitrary-values.md): 1 writes the label meta per ephemeral upload, a large block skips
+/// that many numbers after a restart (harmless: cursors only compare).
+const SEQ_BLOCK: u64 = 1024;
 
 impl Meta {
     fn encode(&self) -> Vec<u8> {
@@ -162,7 +179,7 @@ impl Meta {
         v.extend_from_slice(&self.log_id);
         v.push(u8::from(self.head.is_some()));
         v.extend_from_slice(&self.head.map_or([0; 32], |h| h.0));
-        for n in [self.next_seq, self.horizon, self.head_claims, self.entries, self.bytes, self.dep_n, self.dep_bytes] {
+        for n in [self.next_seq, self.horizon, self.head_claims, self.entries, self.bytes, self.dep_n, self.dep_bytes, self.reserved] {
             v.extend_from_slice(&be(n));
         }
         v
@@ -183,6 +200,7 @@ impl Meta {
             bytes: n(4)?,
             dep_n: n(5)?,
             dep_bytes: n(6)?,
+            reserved: n(7)?,
         })
     }
 }
@@ -255,7 +273,38 @@ enum Rate {
     Delete,
     Replace,
     Deposit,
-    Signal,
+}
+
+/// One ephemeral entry (in memory).
+#[derive(Clone, Debug)]
+struct EphEntry {
+    meta: EntryMeta,
+    expiry: Option<u64>,
+}
+
+/// A label's ephemeral entries, tombstones and log records (in memory).
+#[derive(Debug, Default)]
+struct EphLabel {
+    entries: BTreeMap<BlobId, EphEntry>,
+    /// Deleted ephemeral entries: when.
+    tombstones: BTreeMap<BlobId, u64>,
+    log: std::collections::VecDeque<(u64, LogRecord)>,
+    /// Ephemeral records at or below this sequence number were dropped.
+    horizon: u64,
+    bytes: u64,
+}
+
+/// Ephemeral log records kept per label (a cursor below them replays).
+const EPH_LOG_KEEP: usize = 1 << 16;
+
+/// The ephemeral side of the store (in memory).
+#[derive(Debug, Default)]
+struct Ephemeral {
+    labels: HashMap<LabelId, EphLabel>,
+    blobs: HashMap<BlobId, (Vec<u8>, usize)>,
+    /// The log's next sequence number for labels with ephemeral records since start.
+    seq: HashMap<LabelId, u64>,
+    total: u64,
 }
 
 /// Fixed-window counters, kept in memory only (a restart resets them).
@@ -338,6 +387,7 @@ pub struct BackendStore<B: Backend> {
     origin: Option<[u8; 32]>,
     /// Who last added or replaced an entry, when known: replication skips sending it back.
     origins: HashMap<(LabelId, BlobId), [u8; 32]>,
+    eph: Ephemeral,
 }
 
 impl<B: Backend> BackendStore<B> {
@@ -357,7 +407,7 @@ impl<B: Backend> BackendStore<B> {
         };
         let mut policy = policy;
         policy.tombstone_ms = policy.tombstone_ms.max(TOMBSTONE_LIFETIME_MS);
-        Ok(BackendStore { backend, seed, clock, policy, rates: Rates::default(), origin: None, origins: HashMap::new() })
+        Ok(BackendStore { backend, seed, clock, policy, rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default() })
     }
 
     pub fn backend(&self) -> &B {
@@ -387,8 +437,146 @@ impl<B: Backend> BackendStore<B> {
         self.clock.now_wall_ms().0
     }
 
+    /// The label's meta with its log position past every ephemeral record handed out (this run's,
+    /// or reserved before a restart).
     fn meta(&self, label: &LabelId) -> Result<Option<Meta>, StoreError> {
+        let Some(mut m) = self.raw_meta(label)? else { return Ok(None) };
+        m.next_seq = match self.eph.seq.get(label) {
+            Some(s) => m.next_seq.max(*s),
+            None => m.next_seq.max(m.reserved),
+        };
+        Ok(Some(m))
+    }
+
+    fn raw_meta(&self, label: &LabelId) -> Result<Option<Meta>, StoreError> {
         self.backend.get(&key(b'L', &[&label.0])).map_err(err)?.map(|b| Meta::decode(&b)).transpose()
+    }
+
+    /// Ephemeral entry bytes held per label (tests, diagnostics).
+    pub fn ephemeral_bytes(&self, label: &LabelId) -> u64 {
+        self.eph.labels.get(label).map_or(0, |e| e.bytes)
+    }
+
+    /// Appends an ephemeral log record (in memory), reserving sequence numbers on disk as needed.
+    fn eph_append(&mut self, label: &LabelId, r: LogRecord) -> Result<u64, StoreError> {
+        let m = self.meta(label)?.ok_or_else(unknown)?;
+        let seq = m.next_seq.saturating_add(1);
+        if seq > m.reserved {
+            let mut raw = self.raw_meta(label)?.ok_or_else(unknown)?;
+            raw.reserved = seq.saturating_add(SEQ_BLOCK);
+            let mut b = WriteBatch::new();
+            b.put(key(b'L', &[&label.0]), raw.encode());
+            self.backend.commit(b).map_err(err)?;
+        }
+        self.eph.seq.insert(*label, seq);
+        let e = self.eph.labels.entry(*label).or_default();
+        e.log.push_back((seq, r));
+        if e.log.len() > EPH_LOG_KEEP
+            && let Some((s, _)) = e.log.pop_front()
+        {
+            e.horizon = s;
+        }
+        Ok(seq)
+    }
+
+    /// Removes an ephemeral entry: a tombstone and a log record when `tombstone_at` is given.
+    fn eph_remove(&mut self, label: &LabelId, blob: &BlobId, tombstone_at: Option<u64>) -> Result<bool, StoreError> {
+        let Some(e) = self.eph.labels.get_mut(label) else { return Ok(false) };
+        let Some(x) = e.entries.remove(blob) else { return Ok(false) };
+        e.bytes = e.bytes.saturating_sub(x.meta.size);
+        self.eph.total = self.eph.total.saturating_sub(x.meta.size);
+        if let Some((_, n)) = self.eph.blobs.get_mut(blob) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                self.eph.blobs.remove(blob);
+            }
+        }
+        if let Some(t) = tombstone_at {
+            e.tombstones.insert(*blob, t);
+            self.eph_append(label, LogRecord::Deleted(*blob))?;
+        }
+        Ok(true)
+    }
+
+    /// Adds or replaces an ephemeral entry (spec/sync.md §4, §5): stamped only; past the
+    /// label's or the node's ephemeral cap, code 12.
+    fn eph_put(&mut self, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError> {
+        let Some(stamp) = put.stamp else { return Ok(Code::REFUSED) };
+        let held = self.eph.labels.get(label).and_then(|e| e.entries.get(&put.blob_id)).cloned();
+        if let Some(h) = &held
+            && h.meta.wrap == put.wrap
+            && h.meta.stamp == Some(stamp)
+        {
+            return Ok(Code::OK);
+        }
+        let size = put.blob.len() as u64;
+        if held.is_none() {
+            let used = self.eph.labels.get(label).map_or(0, |e| e.bytes);
+            if used.saturating_add(size) > self.policy.ephemeral_bytes || self.eph.total.saturating_add(size) > self.policy.ephemeral_total {
+                return Ok(Code::STORAGE_CAP);
+            }
+        }
+        let seq = self.eph_append(label, LogRecord::Added(put.blob_id))?;
+        let e = self.eph.labels.entry(*label).or_default();
+        match held {
+            Some(h) => {
+                e.entries.insert(put.blob_id, EphEntry { meta: EntryMeta { wrap: put.wrap, stamp: Some(stamp), add_seq: seq, ..h.meta }, expiry: h.expiry });
+            }
+            None => {
+                e.entries.insert(put.blob_id, EphEntry { meta: EntryMeta { wrap: put.wrap, stamp: Some(stamp), size, add_seq: seq, pending_delete: None }, expiry: put.expiry });
+                e.bytes = e.bytes.saturating_add(size);
+                self.eph.total = self.eph.total.saturating_add(size);
+                self.eph.blobs.entry(put.blob_id).or_insert_with(|| (put.blob.to_vec(), 0)).1 += 1;
+            }
+        }
+        match self.origin {
+            Some(o) => {
+                if self.origins.len() >= MAX_ORIGINS {
+                    self.origins.clear();
+                }
+                self.origins.insert((*label, put.blob_id), o);
+            }
+            None => {
+                self.origins.remove(&(*label, put.blob_id));
+            }
+        }
+        Ok(Code::OK)
+    }
+
+    fn eph_entry(&self, label: &LabelId, blob: &BlobId) -> Option<&EphEntry> {
+        self.eph.labels.get(label)?.entries.get(blob)
+    }
+
+    /// Expires ephemeral entries, runs their due timed deletes, drops old ephemeral tombstones;
+    /// the labels whose logs grew.
+    fn eph_sweep(&mut self, now: u64, grew: &mut BTreeSet<LabelId>) -> Result<(), StoreError> {
+        let tomb_ms = self.policy.tombstone_ms;
+        let labels: Vec<LabelId> = self.eph.labels.keys().copied().collect();
+        for l in labels {
+            let Some(e) = self.eph.labels.get_mut(&l) else { continue };
+            e.tombstones.retain(|_, t| t.saturating_add(tomb_ms) > now);
+            let expired: Vec<BlobId> = e.entries.iter().filter(|(_, x)| x.expiry.is_some_and(|t| t <= now)).map(|(b, _)| *b).collect();
+            let due: Vec<BlobId> = e.entries.iter().filter(|(_, x)| x.meta.pending_delete.is_some_and(|t| t <= now)).map(|(b, _)| *b).collect();
+            for b in expired {
+                self.eph_remove(&l, &b, None)?;
+            }
+            for b in due {
+                if self.eph_remove(&l, &b, Some(now))? {
+                    grew.insert(l);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The earliest ephemeral expiry, timed delete or tombstone drop.
+    fn eph_next_due(&self) -> Option<u64> {
+        let tomb_ms = self.policy.tombstone_ms;
+        self.eph
+            .labels
+            .values()
+            .flat_map(|e| e.entries.values().flat_map(|x| [x.expiry, x.meta.pending_delete]).flatten().chain(e.tombstones.values().map(|t| t.saturating_add(tomb_ms))))
+            .min()
     }
 
     fn row(&self, label: &LabelId, blob: &BlobId) -> Result<Option<Row>, StoreError> {
@@ -412,6 +600,9 @@ impl<B: Backend> BackendStore<B> {
             tx.meta.horizon = upto;
         }
         tx.batch.put(key(b'L', &[&tx.label.0]), tx.meta.encode());
+        if let Some(s) = self.eph.seq.get_mut(&tx.label) {
+            *s = (*s).max(tx.meta.next_seq);
+        }
         let (entries, bytes, new) = tx.before;
         if new || entries != tx.meta.entries || bytes != tx.meta.bytes {
             let t = self.totals()?;
@@ -538,6 +729,7 @@ impl<B: Backend> BackendStore<B> {
         if !b.is_empty() {
             self.backend.commit(b).map_err(err)?;
         }
+        self.eph_sweep(now, &mut out.grew)?;
         out.more = left == 0;
         Ok(out)
     }
@@ -554,7 +746,7 @@ impl<B: Backend> BackendStore<B> {
 
     /// Next due sweep time (earliest index row), if any.
     pub fn next_due(&self) -> Result<Option<u64>, StoreError> {
-        let mut next: Option<u64> = None;
+        let mut next: Option<u64> = self.eph_next_due();
         for tag in *b"XPYZ" {
             if let Some((k, _)) = self.backend.scan_prefix(&[tag], 1).map_err(err)?.first() {
                 let t = read_u64(k, 1)?;
@@ -623,20 +815,33 @@ impl<B: Backend> LabelStore for BackendStore<B> {
     }
 
     fn entry(&self, label: &LabelId, blob_id: &BlobId) -> Result<Option<EntryMeta>, StoreError> {
+        if let Some(e) = self.eph_entry(label, blob_id) {
+            return Ok(Some(e.meta.clone()));
+        }
         Ok(self.row(label, blob_id)?.map(|r| r.meta))
     }
 
     fn tombstoned(&self, label: &LabelId, blob_id: &BlobId) -> Result<bool, StoreError> {
+        if self.eph.labels.get(label).is_some_and(|e| e.tombstones.contains_key(blob_id)) {
+            return Ok(true);
+        }
         Ok(self.backend.get(&key(b'T', &[&label.0, &blob_id.0])).map_err(err)?.is_some())
     }
 
     fn blob(&self, blob_id: &BlobId) -> Result<Option<Vec<u8>>, StoreError> {
+        if let Some((b, _)) = self.eph.blobs.get(blob_id) {
+            return Ok(Some(b.clone()));
+        }
         self.backend.get_blob(blob_id).map_err(err)
     }
 
     fn put(&mut self, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError> {
         let mut tx = self.tx(label)?;
         let held = self.row(label, &put.blob_id)?;
+        // an ephemeral blob (unless the same blob is held as a durable entry) stays in memory
+        if (put.ephemeral && held.is_none()) || self.eph_entry(label, &put.blob_id).is_some() {
+            return self.eph_put(label, put);
+        }
         if let Some(r) = &held
             && (put.stamp.is_none() || (r.meta.wrap == put.wrap && r.meta.stamp == put.stamp))
         {
@@ -726,6 +931,10 @@ impl<B: Backend> LabelStore for BackendStore<B> {
     }
 
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError> {
+        if self.eph_entry(label, blob_id).is_some() {
+            self.eph_remove(label, blob_id, Some(now))?;
+            return Ok(Code::OK);
+        }
         let mut tx = self.tx(label)?;
         let Some(row) = self.row(label, blob_id)? else { return Ok(Code::OK) };
         self.rates.roll(self.now(), self.policy.window_ms);
@@ -738,6 +947,13 @@ impl<B: Backend> LabelStore for BackendStore<B> {
     }
 
     fn schedule_delete(&mut self, label: &LabelId, blob_id: &BlobId, at: u64) -> Result<Code, StoreError> {
+        if let Some(e) = self.eph.labels.get_mut(label).and_then(|e| e.entries.get_mut(blob_id)) {
+            if e.meta.pending_delete.is_none_or(|t| at < t) {
+                e.meta.pending_delete = Some(at);
+                self.eph_append(label, LogRecord::Pending(*blob_id, at))?;
+            }
+            return Ok(Code::OK);
+        }
         let mut tx = self.tx(label)?;
         let Some(mut row) = self.row(label, blob_id)? else { return Ok(Code::OK) };
         if row.meta.pending_delete.is_some_and(|t| t <= at) {
@@ -759,11 +975,6 @@ impl<B: Backend> LabelStore for BackendStore<B> {
         Ok(Code::OK)
     }
 
-    fn signal(&mut self, label: &LabelId) -> Result<Code, StoreError> {
-        self.rates.roll(self.now(), self.policy.window_ms);
-        Ok(if self.rates.take(label, Rate::Signal, self.policy.signals) { Code::OK } else { Code::RATE_LIMITED })
-    }
-
     fn log_head(&self, label: &LabelId) -> Result<([u8; 16], u64), StoreError> {
         let m = self.meta(label)?.ok_or_else(unknown)?;
         Ok((m.log_id, m.next_seq))
@@ -771,7 +982,8 @@ impl<B: Backend> LabelStore for BackendStore<B> {
 
     fn log_after(&self, label: &LabelId, after: u64, max: usize) -> Result<Option<Vec<(u64, LogRecord)>>, StoreError> {
         let m = self.meta(label)?.ok_or_else(unknown)?;
-        if after < m.horizon || after > m.next_seq {
+        let eph = self.eph.labels.get(label);
+        if after < m.horizon || after > m.next_seq || eph.is_some_and(|e| after < e.horizon) {
             return Ok(None);
         }
         if max == 0 || after == m.next_seq {
@@ -781,7 +993,15 @@ impl<B: Backend> LabelStore for BackendStore<B> {
         let end = key(b'G', &[&label.0, &be(m.next_seq.saturating_add(1))]);
         let end = if m.next_seq == u64::MAX { osis_store::prefix_end(&key(b'G', &[&label.0])) } else { Some(end) };
         let rows = self.backend.scan(&start, end.as_deref(), max).map_err(err)?;
-        rows.iter().map(|(k, v)| Ok((read_u64(k, 17)?, decode_record(v)?))).collect::<Result<Vec<_>, _>>().map(Some)
+        let mut out = rows.iter().map(|(k, v)| Ok((read_u64(k, 17)?, decode_record(v)?))).collect::<Result<Vec<_>, StoreError>>()?;
+        // the ephemeral records in sequence order among them
+        if let Some(e) = eph {
+            let at = e.log.partition_point(|(s, _)| *s <= after);
+            out.extend(e.log.iter().skip(at).take(max).cloned());
+            out.sort_by_key(|(s, _)| *s);
+            out.truncate(max);
+        }
+        Ok(Some(out))
     }
 
     fn live_by_id(&self, label: &LabelId, after: Option<&BlobId>, max: usize) -> Result<Vec<(BlobId, EntryMeta)>, StoreError> {
@@ -793,7 +1013,17 @@ impl<B: Backend> LabelStore for BackendStore<B> {
         };
         let end = osis_store::prefix_end(&prefix);
         let rows = self.backend.scan(&start, end.as_deref(), max).map_err(err)?;
-        rows.iter().map(|(k, v)| Ok((BlobId(read_arr(k, 17)?), Row::decode(v)?.meta))).collect()
+        let mut out = rows.iter().map(|(k, v)| Ok((BlobId(read_arr(k, 17)?), Row::decode(v)?.meta))).collect::<Result<Vec<_>, StoreError>>()?;
+        if let Some(e) = self.eph.labels.get(label) {
+            let range = match after {
+                Some(a) => e.entries.range((std::ops::Bound::Excluded(*a), std::ops::Bound::Unbounded)),
+                None => e.entries.range(..),
+            };
+            out.extend(range.take(max).map(|(b, x)| (*b, x.meta.clone())));
+            out.sort_by_key(|(b, _)| *b);
+            out.truncate(max);
+        }
+        Ok(out)
     }
 
     fn live_ids(&self, label: &LabelId) -> Result<Vec<BlobId>, StoreError> {

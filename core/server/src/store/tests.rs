@@ -35,7 +35,7 @@ fn blob(n: u8) -> Vec<u8> {
 }
 
 fn put(b: &[u8], stamped: bool, expiry: Option<u64>) -> Put<'_> {
-    Put { blob_id: osis_label::blob_id(b), blob: b, wrap: [b.len() as u8; WRAP_LEN], stamp: stamped.then_some(Signature([b.len() as u8; 64])), expiry }
+    Put { blob_id: osis_label::blob_id(b), blob: b, wrap: [b.len() as u8; WRAP_LEN], stamp: stamped.then_some(Signature([b.len() as u8; 64])), expiry, ephemeral: false }
 }
 
 fn id(n: u8) -> BlobId {
@@ -150,10 +150,10 @@ fn storage_cap() {
     assert_eq!(e.store.put(&l, put(&blob(3), true, None)).unwrap(), Code::OK);
 }
 
-// spec/sync.md §5: rate limits per label on deletes, wrap replacements (also per entry), deposits and signals (code 4); a new window resets them
+// spec/sync.md §5: rate limits per label on deletes, wrap replacements (also per entry) and deposits (code 4); a new window resets them
 #[test]
 fn rate_limits() {
-    let mut e = env(Policy { deletes: 2, replacements: 3, entry_replacements: 2, deposits: 1, signals: 2, ..Policy::default() });
+    let mut e = env(Policy { deletes: 2, replacements: 3, entry_replacements: 2, deposits: 1, ..Policy::default() });
     let l = e.f.label;
     for n in 0..5 {
         e.store.put(&l, put(&blob(n), true, None)).unwrap();
@@ -174,13 +174,9 @@ fn rate_limits() {
     assert_eq!(replace(&mut e.store, 4, 2), Code::RATE_LIMITED);
     assert_eq!(e.store.put(&l, put(&blob(20), false, None)).unwrap(), Code::OK);
     assert_eq!(e.store.put(&l, put(&blob(21), false, None)).unwrap(), Code::RATE_LIMITED);
-    assert_eq!(e.store.signal(&l).unwrap(), Code::OK);
-    assert_eq!(e.store.signal(&l).unwrap(), Code::OK);
-    assert_eq!(e.store.signal(&l).unwrap(), Code::RATE_LIMITED);
     e.clock.advance(60_000);
     assert_eq!(e.store.delete(&l, &id(2), T0).unwrap(), Code::OK);
     assert_eq!(replace(&mut e.store, 3, 3), Code::OK);
-    assert_eq!(e.store.signal(&l).unwrap(), Code::OK);
 }
 
 // spec/sync.md §5: timed deletes (earliest wins) execute at their time with a tombstone and a log event; expiry removes outright, no tombstone, no event; tombstones last TOMBSTONE_LIFETIME

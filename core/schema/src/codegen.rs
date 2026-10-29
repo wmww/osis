@@ -1,6 +1,6 @@
 //! Code generation from a schema: plain Rust structs and enums with `Codec` (`codec_struct!`,
 //! `codec_enum!`), `TryFrom<&Value>` through the schema's typed read (`named_type!`), field and
-//! case constants for paths, one `Aspect<T>`/`Signal<T>` constant per declared AK and signal kind.
+//! case constants for paths, one `Aspect<T>` constant per declared AK.
 //! Usable from `build.rs` (`generate`) or the `osis-schema-gen` binary.
 //!
 //! Mapping: string, text, markdown → `String`; blob → `Vec<u8>`; int, timestamp, duration →
@@ -37,7 +37,7 @@ pub fn generate(schema: &Schema, file: &str, src: &str) -> Result<Generated, Err
     for (name, def) in &schema.types {
         g.items.push(Item { rust: camel(name), schema_name: Some(name.clone()), params: def.params.clone(), body: def.body.clone(), doc: def.doc.clone() });
     }
-    let prefix = common_namespace(schema.aspects.keys().chain(schema.signals.keys()));
+    let prefix = common_namespace(schema.aspects.keys());
     let mut consts = String::new();
     for (ak, def) in &schema.aspects {
         let cname = const_name(ak, prefix.as_deref());
@@ -53,14 +53,6 @@ pub fn generate(schema: &Schema, file: &str, src: &str) -> Result<Generated, Err
                 "aspect {ak}: list<struct>: concurrent edits of one record can pair with the wrong element; prefer map<K, struct> or path ops (notes/api.md)"
             ));
         }
-    }
-    for (kind, def) in &schema.signals {
-        let cname = const_name(kind, prefix.as_deref());
-        let t = g.rust_type(&def.ty, &camel(&cname.to_lowercase()), false)?;
-        if let Some(d) = &def.doc {
-            doc_lines(&mut consts, d, "");
-        }
-        let _ = writeln!(consts, "pub const {cname}: {P}::Signal<{t}> = {P}::Signal::new({kind:?}, &SCHEMA);");
     }
     // Items may queue further inline items while being emitted.
     let mut i = 0;

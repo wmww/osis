@@ -8,7 +8,7 @@ use crate::write::{self, Did};
 use crate::{Ctx, StoreSel, exit, key_ty, open, opt_ts, parse_ak, ty_in, usage};
 use anyhow::{Context as _, anyhow};
 use osis::{
-    AspectKey, Change, CommitId, CommitKind, CommitQuery, Demotion, EdgeOpts, Error, Key, LinkOpts, Lower, Osis, Role, Schema, Source, SyncScope, Target, Tid, Ts,
+    AspectKey, Change, CommitId, CommitKind, CommitQuery, Demotion, EdgeOpts, Error, Key, LinkOpts, Lower, Osis, Role, Schema, Source, SyncScope, Tid, Ts,
     Value, WaitForSync,
 };
 use std::future::Future;
@@ -177,7 +177,6 @@ fn needs_net(c: &Cmd) -> bool {
             | Cmd::Sync { .. }
             | Cmd::Wait { .. }
             | Cmd::Daemon
-            | Cmd::Signal(_)
             | Cmd::Watch { .. }
             | Cmd::Roster { watch: true, .. }
             | Cmd::Diag { follow: true }
@@ -348,18 +347,6 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Ls { .. } => Err(not_supported("query (issues/api-deferred.md)")),
         Cmd::Backlinks { .. } => Err(not_supported("backlinks (issues/api-deferred.md)")),
         Cmd::Watch { t, ak, count } => watch(ctx, &t, ak.as_deref(), count),
-        Cmd::Signal(SignalCmd::Send { t, kind, value, to }) => {
-            let t = ctx.tid(&t)?;
-            let k = parse_ak(&kind, "signal kind")?;
-            let st = signal_type(ctx, &kind);
-            let v = ctx.value(&value, st.as_ref().map(|(s, t)| (&**s, t)))?;
-            let target = match to {
-                Some(n) => Target::Node(ctx.tid(&n)?),
-                None => Target::All,
-            };
-            Ok(db.send_signal(t, &k, &v, target)?)
-        }
-        Cmd::Signal(SignalCmd::Listen { t, kind, in_group, count }) => listen(ctx, &t, &kind, in_group, count),
         Cmd::Commits { scope: s, actor, kind, reverts, reverted_by, in_effect, since, until, after, max } => {
             let mut q = CommitQuery { scope: opt_scope(ctx, &s)?, in_effect, limit: max, ..CommitQuery::default() };
             q.actors = actor.iter().map(|a| ctx.tid(a)).collect::<anyhow::Result<_>>()?;
@@ -803,41 +790,6 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, count: Option<usize>) -> 
     };
     let timeout = ctx.timeout_or(None)?;
     stream(ctx, &rx, count, timeout, "change", |ctx, c| change_line(ctx, &c))
-}
-
-/// The schema type of a signal kind, if a registered schema declares it.
-fn signal_type(ctx: &Ctx<'_>, kind: &str) -> Option<(Arc<Schema>, osis_schema::Type)> {
-    if ctx.g.raw {
-        return None;
-    }
-    ctx.schemas.iter().find_map(|s| s.signals.get(kind).map(|d| (s.clone(), d.ty.clone())))
-}
-
-fn listen(ctx: &mut Ctx<'_>, t: &str, kind: &str, in_group: bool, count: Option<usize>) -> anyhow::Result<()> {
-    let db = ctx.db.clone();
-    let t = ctx.tid(t)?;
-    let k = parse_ak(kind, "signal kind")?;
-    let st = signal_type(ctx, kind);
-    let (raw, json_out) = (ctx.g.raw, ctx.g.json);
-    let (tx, rx) = mpsc::channel::<String>();
-    let f = move |_: &osis::Osis, e: osis::SignalEvent<Value>| {
-        let ty = st.as_ref().map(|(s, t)| (&**s, t));
-        let (vt, vj) = match &e.value {
-            Ok(v) => (text::print(v, if raw { None } else { ty }), json::value(v, if raw { None } else { ty })),
-            Err(e) => (format!("(error: {e})"), J::Null),
-        };
-        let l = if json_out {
-            J::obj([("tid", J::tid(e.tid)), ("actor", J::tid(e.actor)), ("node", J::tid(e.node)), ("ts", J::int(e.ts.0)), ("value", vj)]).text()
-        } else if in_group {
-            format!("{} {} {} {} {vt}", e.tid.to_uri(), e.actor.to_uri(), e.node.to_uri(), ts_text(raw, e.ts.0))
-        } else {
-            format!("{} {} {} {vt}", e.actor.to_uri(), e.node.to_uri(), ts_text(raw, e.ts.0))
-        };
-        let _ = tx.send(l);
-    };
-    let _sub = if in_group { db.on_signal_in(t, k, f) } else { db.on_signal(t, k, f) };
-    let timeout = ctx.timeout_or(None)?;
-    stream_lines(ctx, &rx, count, timeout)
 }
 
 const KINDS: [(&str, CommitKind); 6] =

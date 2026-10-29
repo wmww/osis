@@ -61,6 +61,8 @@ pub struct CommitBuilder {
     /// drawn at build.
     pub blind: Option<[u8; 16]>,
     pub origins: Vec<Origin>,
+    /// The ephemeral marker (an ephemeral commit, spec/commits.md §2).
+    pub ephemeral: Option<crate::header::EphClass>,
     /// The blob bound each delta is checked against: `MAX_BLOB` (tests shrink it).
     pub(crate) max_blob: usize,
 }
@@ -82,7 +84,7 @@ fn build_err(e: Error) -> Error {
 
 impl CommitBuilder {
     pub fn new(kind: Kind, ts: Ts, author: Tid, actor: Tid, form: Form) -> CommitBuilder {
-        CommitBuilder { kind, ts, author, actor, form, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, origins: Vec::new(), max_blob: MAX_BLOB }
+        CommitBuilder { kind, ts, author, actor, form, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, origins: Vec::new(), ephemeral: None, max_blob: MAX_BLOB }
     }
 
     /// Builds the header (lists above `CHUNK_THRESHOLD` go by link through `sink`), signs it,
@@ -175,6 +177,7 @@ impl CommitBuilder {
             frontier: self.frontier,
             origins,
             links: Links::default(),
+            ephemeral: self.ephemeral,
         };
         header.validate().map_err(build_err)?;
 

@@ -75,9 +75,10 @@ impl Header {
                 Kind::MembershipSnapshot if ROSTER_AKS.contains(&ak) => return Err(Error::Invalid("compaction snapshot of /members or /tenures")),
                 _ => {}
             }
-            // retention
+            // retention (an ephemeral commit's deltas all take the snapshot class, `/created`
+            // included: retention does not apply to ephemeral data)
             check_retention(&a.retention)?;
-            if let Some(f) = fixed_retention(ak) {
+            if let Some(f) = fixed_retention(ak).filter(|_| self.ephemeral.is_none()) {
                 ord(a.retention == f, "retention of a fixed-retention aspect")?;
             } else if kind == Kind::ContentSnapshot && a.retention.by != PurgeBy::Writer {
                 return Err(Error::Invalid("compaction-snapshot delta not purgeable by writer"));
@@ -136,6 +137,19 @@ impl Header {
         }
         if self.origins.is_empty() == (kind == Kind::Import) {
             return Err(Error::Invalid("origins present iff import"));
+        }
+        // an ephemeral commit is of snapshot form and carries nothing a stored commit is for
+        // (spec/commits.md §2)
+        if let Some(c) = self.ephemeral {
+            if kind != Kind::ContentSnapshot || self.form != crate::header::Form::Commit {
+                return Err(Error::Invalid("ephemeral commit not a commit-form content snapshot"));
+            }
+            if !self.chunks.is_empty() || !self.purge.is_empty() || self.undoes.is_some() || self.links != crate::header::Links::default() {
+                return Err(Error::Invalid("ephemeral commit with chunks, a purge, an undo or linked lists"));
+            }
+            if c == crate::header::EphClass::Relay && self.aspects.iter().any(|a| a.expires.is_some()) {
+                return Err(Error::Invalid("relay-only commit with an expiry"));
+            }
         }
         Ok(())
     }

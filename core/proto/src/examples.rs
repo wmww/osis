@@ -217,8 +217,6 @@ pub fn messages() -> Vec<(&'static str, Message)> {
     let dep_wrap = [0x78; WRAP_LEN];
     let dep_sig = osis_label::sign_deposit(&f.deposit, &l, &osis_label::blob_id(&deposited), &dep_wrap);
     let dk = osis_crypto::DeleteSecret::derive(&s32(0x7a));
-    let envelope = vec![0x5a; 40];
-    let auth = PublishAuth::sign(PublishKey::Deposit, &f.deposit, &l, &osis_label::blob_id(&envelope), &[0x7b; WRAP_LEN]);
     vec![
         ("error", Message::Error { id: 1, code: Code::NOT_OPENED }),
         ("ok", Message::Ok { id: 2 }),
@@ -284,6 +282,5 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ("subscribe", Message::Subscribe { id: 21, labels: vec![l, LabelId([0x0b; 16])] }),
         ("unsubscribe", Message::Unsubscribe { id: 22, labels: vec![l] }),
         ("push", Message::Push { label: l, events: vec![added], cursor: Cursor { log_id: [0x1c; 16], seq: 48 } }),
-        ("signal", Message::Signal { label: l, blob: envelope, wrap: [0x7b; WRAP_LEN], auth }),
     ]
 }

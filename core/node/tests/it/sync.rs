@@ -79,10 +79,11 @@ fn subscription_push_spec_sync_8() {
     assert_eq!(net.read(b, t), Some(s("two")));
 }
 
-// spec/sync.md §9: a signal reaches the label's other subscribers verified, fires the sender's
-// own listeners, is stored nowhere; a targeted signal is dropped by other nodes.
+// spec/sync.md §5 (relay-only entries), notes/ephemeral.md Signals: a signal write reaches the
+// label's connected readers once, verified, fires the writer's own callbacks, is stored nowhere;
+// a reader cannot fire one.
 #[test]
-fn signals_spec_sync_9() {
+fn signals_relay_only_spec_sync_5() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
@@ -91,22 +92,22 @@ fn signals_spec_sync_9() {
     let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[sv]);
     let t = net.item(a, g, g, "x");
     net.run();
-    let kind = Ak::new("/t/typing").unwrap();
-    let acts = net.sync(a).signal(&t, kind.clone(), Value::Bool(true), None).unwrap();
-    net.actions(a, acts);
+    let rx: Vec<_> = [a, b, c].iter().map(|n| net.listen(*n)).collect();
+    let rows = osis_store::Backend::scan(&net.servers[sv].backend, &[], None, usize::MAX).unwrap().len();
+    let ring = ukey("/t/typing", osis_schema::Lifetime::Signal);
+    net.eph_write(a, t, &ring, Value::Bool(true));
     net.settle(10_000);
-    assert_eq!(net.sync(a).take_signals().len(), 1, "own listeners fire");
-    for n in [b, c] {
-        let got = net.sync(n).take_signals();
-        assert_eq!(got.len(), 1, "node {n}");
-        assert_eq!((got[0].kind.clone(), got[0].value.clone()), (kind.clone(), Value::Bool(true)));
+    let got: Vec<_> = rx.iter().map(fired).collect();
+    assert_eq!(got[0].len(), 1, "own callbacks fire");
+    for (i, n) in [(1, b), (2, c)] {
+        assert_eq!(got[i].iter().map(|x| (x.0, x.1.clone(), x.2.clone(), x.3)).collect::<Vec<_>>(), vec![(t, "/t/typing".into(), Value::Bool(true), osis_node::Origin::Remote)], "node {n}");
     }
-    let ct = net.tid(c);
-    let acts = net.sync(b).signal(&t, kind.clone(), Value::Int(2), Some(ct)).unwrap();
-    net.actions(b, acts);
-    net.settle(10_000);
-    assert!(net.sync(a).take_signals().is_empty(), "targeted elsewhere: dropped");
-    assert_eq!(net.sync(c).take_signals().len(), 1);
+    assert_eq!(osis_store::Backend::scan(&net.servers[sv].backend, &[], None, usize::MAX).unwrap().len(), rows, "stored nowhere");
+    assert_eq!(net.eph_read(b, t, "/t/typing"), None);
+    // a reader may not fire one
+    let mut m = osis_node::Mutation::new();
+    m.set(t, &ring, &Value::Int(2)).unwrap();
+    assert!(net.engine(c).write(m).is_err());
 }
 
 // spec/sync.md §11: a bundle replays a label as a peer with no cursor; a member that never

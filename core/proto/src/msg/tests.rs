@@ -32,7 +32,8 @@ fn round_trip_every_kind() {
     let ms = messages();
     let mut kinds: Vec<u64> = ms.iter().map(|(_, m)| m.kind()).collect();
     kinds.dedup();
-    assert_eq!(kinds, (0..=24).collect::<Vec<_>>());
+    // kind 24 (the old signal) is retired
+    assert_eq!(kinds, (0..=23).collect::<Vec<_>>());
     for (name, m) in ms {
         assert_eq!(Message::decode(&m.encode()), Ok(m.clone()), "{name}");
     }
@@ -110,12 +111,13 @@ fn reconcile_rules() {
     assert!(Message::decode(&reply(vec![whole(Mode::Diff { theirs: vec![], lacking: ids(33) })])).is_err());
 }
 
-// spec/wire.md §11.1: [kind, id, ...] with id < 2^32; unknown kind answered by 11; Push and Signal carry id 0
+// spec/wire.md §11.1: [kind, id, ...] with id < 2^32; unknown kind answered by 11; Push carries id 0
 #[test]
 fn heads() {
     let r = rejected(Value::List(vec![Value::Int(99), Value::Int(7)]));
     assert_eq!((r.id, r.code()), (7, Code::UNSUPPORTED));
-    // id 0 only on Error, Push and Signal
+    // id 0 only on Error and Push; kind 24 is retired
+    assert_eq!(rejected(Value::List(vec![Value::Int(24), Value::Int(0)])).code(), Code::UNSUPPORTED);
     assert_eq!(rejected(Value::List(vec![Value::Int(2), Value::Int(0), Value::Int(1)])).error, Error::Malformed("id 0"));
     assert_eq!(rejected(Value::List(vec![Value::Int(1), Value::Int(0)])).error, Error::Malformed("id 0"));
     assert!(Message::decode(&enc(Value::List(vec![Value::Int(0), Value::Int(0), Value::Int(2)]))).is_ok());
@@ -133,7 +135,7 @@ fn heads() {
     assert!(Message::decode(&enc(Value::List(push))).is_err());
 }
 
-// spec/wire.md §11.2: wrap 49 bytes, sig 64, label 16; blob at most MAX_BLOB, signal 64 KiB
+// spec/wire.md §11.2: wrap 49 bytes, sig 64, label 16; blob at most MAX_BLOB
 // spec/sync.md §5 (upload refusals): an oversized blob does not decode
 #[test]
 fn field_sizes() {
@@ -146,10 +148,6 @@ fn field_sizes() {
     let mut d = dep.clone();
     d[3] = Value::Bytes(vec![0; MAX_BLOB + 1]);
     assert_eq!(rejected(Value::List(d)).error, Error::Cap("message"));
-    let auth = PublishAuth { key: PublishKey::Write, sig: Signature([0; 64]) };
-    let sig = |n: usize| Message::Signal { label: LabelId([0; 16]), blob: vec![0; n], wrap: [0; 49], auth: auth.clone() }.encode();
-    assert!(Message::decode(&sig(MAX_SIGNAL)).is_ok());
-    assert!(Message::decode(&sig(MAX_SIGNAL + 1)).is_err());
     let st = |n: usize| Value::List(vec![Value::Int(6), Value::Int(1), Value::Bytes(vec![0; n])]);
     assert_eq!(rejected(st(MAX_STEP_BYTES + 1)).error, Error::Cap("step"));
     // a step must parse: 323 zero bytes do not
