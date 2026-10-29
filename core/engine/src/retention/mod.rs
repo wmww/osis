@@ -346,14 +346,39 @@ fn expire(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid,
 /// The retentions standing for the writes snapshot state `st` of `(tid, ak)` carries live
 /// (spec/commits.md §5): each write's own delta (spec/permissions.md §5.2: the node-form delta
 /// whose counter range holds it, the commit-form commit it names, the imports listing that commit
-/// as an origin); for writes
-/// whose own delta's header is not held, the held snapshot bodies of the aspect carrying them,
-/// and for any of those none carries, every snapshot of the aspect applied here.
+/// as an origin); for writes whose own delta's header is not held, the held snapshot bodies of
+/// the aspect carrying them, and for any of those none carries, every snapshot of the aspect
+/// applied here. Cost: a lookup and a header per live write; the aspect's headers (and its held
+/// snapshot bodies) only when some write's own commit is not found directly.
 fn own_retentions(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Result<Vec<osis_schema::Retention>> {
     if osis_commit::retention::fixed_retention(ak.as_str()).is_some() {
         return Ok(Vec::new());
     }
     let entry = |h: &Header| h.aspects.iter().find(|a| a.tid == *tid && a.ak == *ak).map(|a| a.retention);
+    let mut own: BTreeSet<CommitId> = BTreeSet::new();
+    let mut out = Vec::new();
+    // live writes whose own commit is not a held commit with its own writes on the aspect, with
+    // the commit their dot names (an import's origin), if any
+    let mut rest: Vec<(osis_crdt::Dot, Option<CommitId>)> = Vec::new();
+    for (d, _) in st.live_writes() {
+        let c = tx.core.commit_of(tid, ak, &d);
+        let found = c.and_then(|c| {
+            let h = &tx.core.ix.commits.get(&c)?.header;
+            (!h.kind.is_compaction() && h.kind != Kind::Import).then_some(())?;
+            entry(h)
+        });
+        match (found, c) {
+            (Some(r), Some(c)) => {
+                if own.insert(c) {
+                    out.push(r);
+                }
+            }
+            _ => rest.push((d, c)),
+        }
+    }
+    if rest.is_empty() {
+        return Ok(out);
+    }
     let commits: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|(_, c)| *c).collect();
     let mut imports: std::collections::BTreeMap<CommitId, Vec<osis_schema::Retention>> = Default::default();
     let mut snapshots = Vec::new();
@@ -368,25 +393,11 @@ fn own_retentions(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Result<
             snapshots.push((*c, r));
         }
     }
-    let mut own: BTreeSet<CommitId> = BTreeSet::new();
-    let mut out = Vec::new();
     let mut unknown: BTreeSet<osis_crdt::Dot> = BTreeSet::new();
-    for (d, _) in st.live_writes() {
-        let found = tx.core.commit_of(tid, ak, &d).and_then(|c| {
-            let h = &tx.core.ix.commits.get(&c)?.header;
-            (!h.kind.is_compaction() && h.kind != Kind::Import).then_some(())?;
-            entry(h).map(|r| (c, r))
-        });
-        match found {
-            Some((c, r)) => {
-                if own.insert(c) {
-                    out.push(r);
-                }
-            }
-            None => match tx.core.commit_of(tid, ak, &d).and_then(|c| imports.get(&c)) {
-                Some(rs) => out.extend(rs.iter().copied()),
-                None => _ = unknown.insert(d),
-            },
+    for (d, c) in rest {
+        match c.and_then(|c| imports.get(&c)) {
+            Some(rs) => out.extend(rs.iter().copied()),
+            None => _ = unknown.insert(d),
         }
     }
     if unknown.is_empty() {

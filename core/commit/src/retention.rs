@@ -56,7 +56,7 @@ pub fn write_retention(ak: &str, defaults: Option<&AspectDefaults>, set: Option<
 /// keeps it; any other is `writer` with, over `own` (the retentions standing for the writes the
 /// snapshot carries live), the longest relative keep at least (no absolute one), and the
 /// strictest keep at most: the shortest relative bound and the earliest absolute bound after
-/// `now` (the snapshot's wall ms; one passed binds nothing).
+/// `now` (the snapshot's wall ms; one at or before it counts as a relative bound of 0).
 pub fn snapshot_retention(ak: &str, own: impl IntoIterator<Item = Retention>, now: u64) -> Retention {
     if let Some(f) = fixed_retention(ak) {
         return f;
@@ -64,12 +64,15 @@ pub fn snapshot_retention(ak: &str, own: impl IntoIterator<Item = Retention>, no
     let (mut at_least, mut at_most) = (Bound::default(), Bound::default());
     for r in own {
         at_least.rel = at_least.rel.max(r.at_least.rel);
+        // an absolute bound already passed counts as 0 after replaced: the write outlived its
+        // bound only by being live, and its content goes as it dies
         let m = r.at_most;
-        at_most.rel = match (at_most.rel, m.rel) {
+        let passed = m.abs.is_some_and(|t| t <= now);
+        at_most.rel = match (at_most.rel, if passed { Some(0) } else { m.rel }) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
-        at_most.abs = match (at_most.abs, m.abs.filter(|t| *t > now)) {
+        at_most.abs = match (at_most.abs, m.abs.filter(|_| !passed)) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
