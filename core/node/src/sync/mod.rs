@@ -529,6 +529,7 @@ impl SyncEngine {
         .and_then(|mut s| {
             // a forgetting a crash interrupted before its inbox check
             s.forget_inbox()?;
+            s.reopen_undropped(None);
             Ok(s)
         })
     }
@@ -821,7 +822,7 @@ impl SyncEngine {
         // changed commits: their aspects' states (verdicts waiting on them), their chunks (bodies
         // waiting on a linked blob), and the blobs of their dropped parts
         let ch = self.engine.take_changed();
-        self.reopen_undropped(&ch.undropped);
+        self.reopen_undropped(Some(&ch.undropped));
         for c in &ch.commits {
             if let Some(h) = self.engine.header(c) {
                 self.touched.states.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
