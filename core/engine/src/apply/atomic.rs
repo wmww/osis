@@ -780,8 +780,8 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 }
 
 /// `rebuild`, the writes `gone` matches first removed from the current state, exactly (others'
-/// writes nested under them stay): what a snapshot turned invalid alone gave
-/// (`validity::given_alone`).
+/// writes nested under them stay): what a snapshot turned invalid gave
+/// (`validity::given_by`).
 pub(crate) fn rebuild_without(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned]) -> Result<()> {
     let st = rebuilt(tx, tid, ak, None, gone)?;
     tx.set_state(tid, ak, st, Shred::Yes, false)
