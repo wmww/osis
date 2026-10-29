@@ -78,11 +78,12 @@ pub(crate) struct Lane {
     /// not forced again until one is (holders of a label a server cannot fit compacted each
     /// other's concurrent covers forever, every cover refused), unless for `own_full`.
     pub forced: BTreeSet<LabelId>,
-    /// Per label, the servers that refused an own entry for their cap since this node last
-    /// compacted the label: forced again (past `forced`) when an entry of another node is kept
-    /// under it, by a cover that deletes an entry held at such a server (concurrent covers to
-    /// one full server: the refused one stayed out, its writes with it, while the server held
-    /// the other).
+    /// Per label, the servers that refused an own cover for their cap since this node last
+    /// compacted the label: forced again (past `forced`) at once and when another node's cover
+    /// is kept under it, by a cover that deletes an entry held at such a server (concurrent
+    /// covers to one full server: the refused one stayed out, its writes with it, while the
+    /// server held the other). Not for own plain entries (`forced` covers those) nor re-armed by
+    /// plain entries of others: an entry refused for good was re-uploaded at every write.
     pub own_full: BTreeMap<LabelId, BTreeSet<ServerKey>>,
     /// Per connection and label: whether the first Sync listed the held entries, and those it
     /// listed that the peer has not asked for yet.
@@ -334,7 +335,8 @@ impl SyncEngine {
         if !self.engine.ephemeral_is_cover(&e.commit) {
             self.eph.forced.remove(&l);
         }
-        if !e.own && self.eph.own_full.contains_key(&l) {
+        // another holder's cover: an own cover refused meanwhile may now replace it there
+        if !e.own && self.eph.own_full.contains_key(&l) && self.engine.ephemeral_is_cover(&e.commit) {
             self.eph.server_full.insert(l);
         }
         if !e.own {
@@ -502,7 +504,7 @@ impl SyncEngine {
                 }
                 Code::STORAGE_CAP => {
                     self.eph.server_full.insert(l);
-                    if self.eph.entries.get(&(l, b)).is_some_and(|e| e.own) {
+                    if self.eph.entries.get(&(l, b)).is_some_and(|e| e.own && self.engine.ephemeral_is_cover(&e.commit)) {
                         self.eph.own_full.entry(l).or_default().insert(server);
                     }
                 }
