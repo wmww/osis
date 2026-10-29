@@ -595,9 +595,12 @@ fn check_synced(core: &Core, placed: &[(Tid, Tid)]) -> Result<()> {
 }
 
 /// Records schema `s` as known here, in memory and in the store (`records::SCHEMAS`):
-/// replacing one of its ID when `replace`, else only when none is known.
+/// replacing a different one of its ID when `replace` (a registration), else only an older
+/// revision (a local write). An equal one writes nothing (every open re-registers).
 pub(crate) fn keep_schema(tx: &mut Tx<'_>, s: &Arc<osis_schema::Schema>, replace: bool) -> Result<()> {
-    if !replace && tx.core.schemas.contains_key(&s.id) {
+    if let Some(k) = tx.core.schemas.get(&s.id)
+        && (**k == **s || (!replace && k.revision >= s.revision))
+    {
         return Ok(());
     }
     tx.core.schemas.insert(s.id, s.clone());
