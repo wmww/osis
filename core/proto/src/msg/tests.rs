@@ -55,6 +55,10 @@ fn caps() {
             _ => "labels",
         }), "{name}");
     }
+    // Sync entries: 1024, like Upload
+    let entries = |n: usize| Message::Sync { id: 1, label: LabelId([0; 16]), cursor: None, inline_limit: 0, entries: vec![Entry::new(vec![], [0; WRAP_LEN], Signature([0; 64])); n], gained: vec![] };
+    assert!(Message::decode(&entries(MAX_ITEMS).encode()).is_ok());
+    assert_eq!(Message::decode(&entries(MAX_ITEMS + 1).encode()).unwrap_err().error, Error::Cap("sync entries"));
     // gained and want: 4096
     let sync = |n: usize| Message::Sync { id: 1, label: LabelId([0; 16]), cursor: None, inline_limit: 0, entries: vec![], gained: vec![BlobId([0; 32]); n] };
     assert!(Message::decode(&sync(MAX_GAINED).encode()).is_ok());

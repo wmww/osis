@@ -384,7 +384,7 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
             let label = label(&mut f)?;
             let cursor = f.opt()?.map(cursor).transpose()?;
             let inline_limit = f.uint()?;
-            let entries = entries(f.list(0, usize::MAX, "sync entries")?)?;
+            let entries = entries(f.list(0, MAX_ITEMS, "sync entries")?)?;
             let gained = ids(f.list(0, MAX_GAINED, "gained")?)?;
             Message::Sync { id, label, cursor, inline_limit, entries, gained }
         }
