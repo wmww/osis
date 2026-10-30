@@ -1,5 +1,6 @@
 //! Two people (commits delivered by hand, as in `sync`): who can see a thing, tagging (places or
 //! nests only: sharing through a tag waits on issues/tag-sharing-op.md), undo across people.
+use osis::internals::Internals as _;
 use osis::core::NAME;
 use osis::{Config, EdgeOpts, ManualClock, MemStore, Osis, Role, StoreAt, WallMs};
 use osis_app::data::{Data, NewKind};

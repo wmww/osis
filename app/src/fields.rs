@@ -6,7 +6,7 @@
 
 use crate::data::Data;
 use osis::schema::{Schema, Step, Type};
-use osis::{Path, Result, Tid, Value};
+use osis::{AspectKey, Path, Result, Tid, Value};
 
 /// How a row's text is turned back into a value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,8 +51,8 @@ impl Data {
         for ak in aks {
             let key = self.db.key(&ak)?;
             let value = self.db.get(t, key.clone()).ok().flatten();
-            let schema = key.schema().cloned();
-            match (schema.as_deref(), schema.as_deref().and_then(|s| s.aspects.get(&ak)).map(|d| d.ty.clone())) {
+            let schema = key.schema();
+            match (schema, schema.and_then(|s| s.aspects.get(&ak)).map(|d| d.ty.clone())) {
                 (Some(s), Some(ty)) => flatten(s, &ak, &ty, value.as_ref(), Path::root(), ak.clone(), 0, &mut rows),
                 _ => rows.push(Row { ak: ak.clone(), path: Path::root(), depth: 0, label: ak.clone(), ty: "untyped".into(), value: value.map(|v| show(&v)).unwrap_or_default(), edit: Edit::None, optional: false }),
             }
@@ -78,8 +78,8 @@ impl Data {
                     _ => return Err(osis::Error::Invalid(format!("{text:?}: true or false"))),
                 }),
                 Edit::Case => {
-                    let schema = key.schema().cloned().ok_or_else(|| osis::Error::Invalid("untyped".into()))?;
-                    let ty = type_at(&schema, &row.ak, &row.path, row.optional).ok_or_else(|| osis::Error::Invalid("no type".into()))?;
+                    let schema = key.schema().ok_or_else(|| osis::Error::Invalid("untyped".into()))?;
+                    let ty = type_at(schema, &row.ak, &row.path, row.optional).ok_or_else(|| osis::Error::Invalid("no type".into()))?;
                     let Type::Enum(e) = ty else { return Ok(()) };
                     let id = e.cases.iter().find(|(_, c)| c.name == text).map(|(id, _)| *id).ok_or_else(|| osis::Error::Invalid(format!("{text:?}: one of {}", e.cases.values().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "))))?;
                     Value::Enum(id, None)
