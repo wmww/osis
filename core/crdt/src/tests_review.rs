@@ -442,3 +442,23 @@ fn map_key_erased_record_spec_5_6() {
     erm.strip(&|_| true);
     all_orders(&[valued, erm], Some(Value::Map(Default::default())));
 }
+
+/// issues/forged-creation-copies.md (map residue): a dot under two keys (a forged copy), one
+/// removed. A node past the creation's `T` folds both into the key-erased record, whose reset
+/// then prunes the other key's record too; a node before `T` holding that snapshot beside the
+/// valued records reads the other key gone, one without it reads it live, until it passes `T`.
+#[test]
+#[ignore = "issues/forged-creation-copies.md"]
+fn repro_forged_key_hidden_by_erased_reset() {
+    let (a, b) = (Value::Str("a".into()), Value::Str("b".into()));
+    let c = st(1, 1, 1);
+    let rm = st(3, 2, 1);
+    let mut x = entry_map(vec![(c.clone(), Some(a.clone()), None, Some(7))]);
+    x.join(entry_map(vec![(c.clone(), Some(a), Some(rm), None)]));
+    x.join(entry_map(vec![(c, Some(b), None, Some(8))]));
+    let mut s = x.clone();
+    s.strip(&|_| true);
+    let mut y = x.clone();
+    y.join(s);
+    assert_eq!(y.read(), x.read(), "valued copy wins");
+}

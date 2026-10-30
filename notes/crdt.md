@@ -3,7 +3,7 @@
 
 ## Owner decisions
 - One conflict rule everywhere: every state element carries a timestamp and an author dot, later wins, removal is a reset. No causal contexts; no multi-value register.
-- Collection elements are identified by creation dot; a removal resets the observed dots, so an add the remover never saw survives. Tombstones carry no content (no fingerprint), except a map tombstone's key (below), which value erasure (expiry, purge) erases with every other record of the entry.
+- Collection elements are identified by creation dot; a removal resets the observed dots, so an add the remover never saw survives. Tombstones carry no content (no fingerprint), except a map tombstone's key (below), which value erasure (expiry, purge) erases with every other record of the entry (but removal bodies keep it: issues/map-removal-keys-retained.md).
 - `set_aspect` diffs structurally by default; an explicit replace resets.
 - Every composite merges recursively down to leaf registers; enum cases never merge with each other.
 - Movable text/list CRDT ships in the MVP, as good as we can make it, with whatever fuzzing and testing that takes.
