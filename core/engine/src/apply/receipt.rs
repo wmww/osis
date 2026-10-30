@@ -138,22 +138,21 @@ pub(crate) fn received(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, as_of: u64) -> Resul
     r.commits.retain(|_, x| x.1 <= as_of);
     let core = &*tx.core;
     let k = (*tid, ak.clone());
-    // valid ones: held, then dropped ones that kept their frontiers (`Dropped::gives`)
-    let held = core.ix.snapshots.get(&k).into_iter().flatten().filter(|x| super::validity::snapshot_valid(core, &x.1, tid, ak)).map(|(_, s, fr, abs)| (s, fr, abs));
+    // valid ones received by `as_of`, at their part's receipt time (`record`; a late part's,
+    // not its header's): held, then dropped ones that kept their frontiers (`Dropped::gives`)
+    let at = |s: &CommitId| r.commits.get(s).map(|c| c.1);
+    let held = core.ix.snapshots.get(&k).into_iter().flatten().filter_map(|(_, s, fr, abs)| {
+        let at = at(s)?;
+        super::validity::snapshot_valid(core, s, tid, ak).then_some((at, fr, abs))
+    });
     let kept = core.ix.dropped_snapshots.get(&k).into_iter().flatten().filter_map(|s| {
+        let at = at(s)?;
         let m = core.ix.commits.get(s)?;
         let ai = m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak)?;
         let (fr, abs) = m.dropped.get(&ai)?.gives.as_ref()?;
-        m.valid.get(ai).copied().unwrap_or(false).then_some((s, fr, abs))
+        m.valid.get(ai).copied().unwrap_or(false).then_some((at, fr, abs))
     });
-    let mut add = Vec::new();
-    for (s, fr, abs) in held.chain(kept) {
-        // received by `as_of` at their part's receipt time (`record`; a late part's, not its
-        // header's)
-        if let Some(at) = r.commits.get(s).map(|c| c.1) {
-            add.push((at, fr, abs));
-        }
-    }
+    let add: Vec<_> = held.chain(kept).collect();
     for (at, fr, abs) in add {
         for (n, c) in &fr.0 {
             r.add(*n, 1, c.saturating_add(1), at);
