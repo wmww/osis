@@ -714,14 +714,18 @@ impl SyncEngine {
         let mut replaces = Vec::new();
         let mut moved = Vec::new();
         for x in ready {
-            let Some((cs, item)) = self.eph.waiting.remove(&(l, x, server)) else { continue };
-            replaces.push(if self.eph.tied.contains(&(conn, l, x)) {
-                osis_proto::Replace::Untie(x)
-            } else {
-                // one this connection holds no key for is dropped (`eph_resign`): carried, it
-                // refused the cover
+            let tied = self.eph.tied.contains(&(conn, l, x));
+            let Some((_, item)) = self.eph.waiting.get(&(l, x, server)) else { continue };
+            // one this connection holds no key for stays waiting, uncarried (carried, it would
+            // refuse the cover): it goes alone once the cover is held (`eph_delete_now`)
+            let signed = if tied { None } else {
                 let Some((signed, _)) = self.eph_resign(conn, l, item.clone()) else { continue };
-                osis_proto::Replace::Delete(signed)
+                Some(signed)
+            };
+            let Some((cs, item)) = self.eph.waiting.remove(&(l, x, server)) else { continue };
+            replaces.push(match signed {
+                Some(d) => osis_proto::Replace::Delete(d),
+                None => osis_proto::Replace::Untie(x),
             });
             moved.push((x, cs, item));
         }
