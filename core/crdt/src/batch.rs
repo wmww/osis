@@ -451,6 +451,22 @@ pub(crate) fn overlay(acc: Fragment, d: Fragment, w: &Writer) -> Fragment {
             let mut omitted = false;
             let touched: Vec<Eid> = b.entries.keys().cloned().collect();
             for (id, de) in b.entries {
+                if de.reset.is_some() && id.key.is_none() {
+                    // a keyless removal resets every record of its dot: the batch's earlier
+                    // writes there go (same stamp), all of them if the batch created the dot
+                    let same: Vec<Eid> = entries.range(Eid::erased(id.dot.clone())..).take_while(|(x, _)| x.dot == id.dot).map(|(x, _)| x.clone()).collect();
+                    for x in same {
+                        if w.made(&id.dot) {
+                            omitted |= entries.remove(&x).is_some();
+                        } else if let Some(en) = entries.get_mut(&x) {
+                            en.frag = None;
+                            en.created = None;
+                            if en.reset.is_none() {
+                                entries.remove(&x);
+                            }
+                        }
+                    }
+                }
                 if de.reset.is_some() && w.made(&id.dot) {
                     omitted |= entries.remove(&id).is_some();
                     continue;

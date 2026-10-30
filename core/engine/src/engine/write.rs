@@ -583,16 +583,18 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         };
         let empty = Fragment::default();
         let view = am.schema.as_ref().and_then(|s| s.view(ak.as_str()));
+        // map removals carry their key only where keys are public ids (spec/crdt.md §5.6)
+        let keyed = osis_schema::core_types::is_membership_class(ak.as_str());
         let run = |tx: &Tx<'_>| {
             let state = tx.cached(&tid, &ak).unwrap_or(&empty);
-            let w = Writer::new(ts, own_source(m.form, node), lo);
+            let w = Writer::new(ts, own_source(m.form, node), lo).keyed_removals(keyed);
             match &view {
                 Some(v) => run_ops(state, w, &am.ops, v),
                 None => run_ops(state, w, &am.ops, &AnyView),
             }
         };
         let out = tx.run_attached(&tid, &ak, attached, run)??;
-        let w2 = Writer::new(ts, own_source(m.form, node), lo);
+        let w2 = Writer::new(ts, own_source(m.form, node), lo).keyed_removals(keyed);
         let out = match (out, m.dead_resets.get(&(tid, ak.clone())).filter(|d| !d.is_empty())) {
             (o, None) => o,
             (Some((mut f, r)), Some(ds)) => {

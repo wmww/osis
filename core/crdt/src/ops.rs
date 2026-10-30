@@ -22,13 +22,24 @@ pub struct Writer {
     src: Source,
     lo: u64,
     next: u64,
+    keyed: bool,
 }
 
 impl Writer {
-    /// `lo` is the first unused counter of `src` for this aspect (≥ 1).
+    /// `lo` is the first unused counter of `src` for this aspect (≥ 1). Map removals are keyless.
     pub fn new(ts: osis_base::Ts, src: Source, lo: u64) -> Writer {
         let lo = lo.max(1);
-        Writer { ts, src, lo, next: lo }
+        Writer { ts, src, lo, next: lo, keyed: false }
+    }
+    /// Whether map removals carry the removed record's key (membership-class aspects only,
+    /// §5.6); else a removal is the dot's key-erased record.
+    pub fn keyed_removals(mut self, on: bool) -> Writer {
+        self.keyed = on;
+        self
+    }
+    /// The record a removal of entry record `id` writes (§5.6).
+    pub(crate) fn removal(&self, id: &Eid) -> Eid {
+        if self.keyed { id.clone() } else { Eid::erased(id.dot.clone()) }
     }
     pub fn ts(&self) -> osis_base::Ts {
         self.ts
@@ -233,12 +244,12 @@ pub fn remove(w: &Writer, enc: Encoding) -> Result<Fragment, Error> {
     Ok(f)
 }
 
-/// Map tombstones `[dot, [D], key, []]` for the entries `ids` (dot and key) at the delta stamp
+/// Map removals of the entries `ids` (dot and key) at the delta stamp, keyed as `w` says
 /// (§5.6): a reset of entries whatever their liveness here (an explicit removal of an edge
 /// already removed).
 pub fn reset_entries(w: &Writer, ids: &[(Dot, Value)]) -> Fragment {
     let r = w.delta_stamp();
-    let entries = ids.iter().map(|(d, k)| (Eid::new(d.clone(), Some(k.clone())), Entry::tomb(&r))).collect();
+    let entries = ids.iter().map(|(d, k)| (w.removal(&Eid::new(d.clone(), Some(k.clone()))), Entry::tomb(&r))).collect();
     Fragment::Map(Map::new(Meta::default(), entries))
 }
 
@@ -377,7 +388,7 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
             for (k, _, ids) in &keyed {
                 if k.as_ref().is_some_and(|k| !kv.contains_key(k)) {
                     for id in ids.iter() {
-                        entries.insert((*id).clone(), Entry::tomb(&r));
+                        entries.insert(w.removal(id), Entry::tomb(&r));
                     }
                 }
             }
@@ -455,7 +466,7 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
                         .into_iter()
                         .filter(|(k, _)| projected(&kv, k).as_ref() == Some(x))
                         .flat_map(|(_, ids)| ids)
-                        .map(|id| (id.clone(), Entry::tomb(&r)))
+                        .map(|id| (w.removal(id), Entry::tomb(&r)))
                         .collect();
                     Ok((!entries.is_empty()).then(|| Fragment::Map(Map::new(Meta::default(), entries))))
                 }

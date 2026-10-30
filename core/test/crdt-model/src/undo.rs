@@ -226,11 +226,13 @@ fn at(cx: &mut Cx, w: &mut Writer, ty: &Ty, d: &Frag, s: Option<&Frag>, b: Optio
             for (id, e) in entries {
                 if e.frag.is_some() && (cx.made)(&id.0) {
                     cx.stats.creation += 1;
-                    out.insert(id.clone(), Entry { reset: Some(u.clone()), frag: None, created: None });
+                    out.insert(w.removal(id), Entry { reset: Some(u.clone()), frag: None, created: None });
                 } else if e.reset.is_some() {
-                    let live = bentries.map_or(false, |be| crate::state::live_records(be).iter().any(|(x, _)| x == id));
-                    if let (true, Some(k)) = (live, &id.1) {
-                        removed.entry(k.clone()).or_default().push(id.clone());
+                    // the live records it removed: its own, or a key-erased record's every record of the dot
+                    for (x, _) in bentries.map(crate::state::live_records).unwrap_or_default() {
+                        if let (true, Some(k)) = (x.0 == id.0 && (id.1.is_none() || x == *id), &x.1) {
+                            removed.entry(k.clone()).or_default().push(x.clone());
+                        }
                     }
                 } else if let (Some(k), Some(fd)) = (&id.1, &e.frag) {
                     let (sv, bv) = (at_key(sentries, k), at_key(bentries, k));

@@ -177,9 +177,30 @@ impl Fragment {
         walk(&mut HoldsStamp(s), self)
     }
 
+    /// Whether a keyed map entry record carries a reset: a removal or tombstone naming its key,
+    /// allowed only in membership-class aspects (spec/crdt.md §5.6).
+    pub fn keyed_resets(&self) -> bool {
+        walk(&mut KeyedResets, self)
+    }
+
     /// `holds_dots` with `holds`, else `dots_supersede`.
     pub(crate) fn dots_in(&self, pred: &dyn Fn(&Dot) -> bool, holds: bool) -> bool {
         walk(&mut DotsIn { pred, holds }, self)
+    }
+}
+
+/// `Fragment::keyed_resets`.
+struct KeyedResets;
+
+impl Visit for KeyedResets {
+    fn stamp(&mut self, _: &Stamp) -> bool {
+        false
+    }
+    fn rec(&mut self, r: Rec<'_>) -> Next {
+        match r {
+            Rec::Entry(id, e) if id.key.is_some() && e.reset.is_some() => Next::Stop,
+            _ => Next::On,
+        }
     }
 }
 
@@ -220,7 +241,7 @@ impl Visit for DotsIn<'_> {
         let pred = self.pred;
         // `own`: whether a record of theirs counts with `holds`; `other`: a write of theirs on it
         let (d, own, other) = match r {
-            Rec::Elem(d, _) | Rec::Entry(d, _) => (d, true, false),
+            Rec::Elem(d, _) | Rec::Entry(crate::fragment::Eid { dot: d, .. }, _) => (d, true, false),
             // a sequence element: with content; a flag or a position write of theirs other than
             // the element's own creation, which `remove_dots` keeps
             Rec::Seq(d, el) => (d, !matches!(el.content, SeqContent::None), el.deleted.as_ref().is_some_and(|x| pred(x.0.dot.owner())) || el.pos.iter().any(|p| p.0.dot != *d && pred(p.0.dot.owner()))),

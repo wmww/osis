@@ -272,7 +272,8 @@ pub fn history(r: &mut Rng, types: &[Ty], n: usize, rounds: usize) -> Vec<MCommi
 /// `history` with the given writer sources (commit form: a `Commit` source per writer).
 pub fn history_with(r: &mut Rng, types: &[Ty], sources: Vec<crdt_model::stamp::Source>, rounds: usize) -> Vec<MCommit> {
     let n = sources.len();
-    let mut ws: Vec<MWriter> = sources.into_iter().map(|s| MWriter::new(s, 1 << 16, 0)).collect();
+    // odd writers remove keyed (membership-class aspects), even ones keyless (§5.6)
+    let mut ws: Vec<MWriter> = sources.into_iter().enumerate().map(|(i, s)| MWriter { keyed: i % 2 == 1, ..MWriter::new(s, 1 << 16, 0) }).collect();
     let mut states: Vec<Option<m::Frag>> = vec![None; n];
     let mut seen: Vec<usize> = vec![0; n];
     let mut commits: Vec<MCommit> = Vec::new();
@@ -343,7 +344,7 @@ impl crate::view::View for TyView {
 }
 
 pub fn writer(w: &MWriter) -> crate::ops::Writer {
-    crate::ops::Writer::new(ts(w.ts), source(&w.source), w.lo)
+    crate::ops::Writer::new(ts(w.ts), source(&w.source), w.lo).keyed_removals(w.keyed)
 }
 
 /// A sequence held in part as a node holds a paged one: its records in pages of `per` records
