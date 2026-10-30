@@ -4,3 +4,4 @@
 mod bundle;
 mod hostile_peer;
 mod loopback;
+mod slow_link;

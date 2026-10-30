@@ -44,9 +44,11 @@ pub use state::Kind as EntryKind;
 /// reply lost on a live connection must not keep it back for good.
 const RESEND_MS: u64 = 30_000;
 
-/// Whether a request for `k` went out less than `RESEND_MS` before `now`.
-fn in_flight(m: &BTreeMap<(LabelId, osis_base::BlobId), u64>, k: (LabelId, osis_base::BlobId), now: u64) -> bool {
-    m.get(&k).is_some_and(|t| now < t.saturating_add(RESEND_MS))
+/// Whether a request for `k` went to `c`'s session less than `RESEND_MS` before `now`, or the
+/// session still holds requests back for room in its window (a slow link: a copy would only
+/// queue behind the first).
+fn in_flight(c: &Conn, m: &BTreeMap<(LabelId, osis_base::BlobId), u64>, k: (LabelId, osis_base::BlobId), now: u64) -> bool {
+    m.get(&k).is_some_and(|t| now < t.saturating_add(RESEND_MS) || c.session.unsent() > 0)
 }
 
 /// Whether `OSIS_TRACE_UPLOADS` asks for the upload trace (`SyncEngine::trace`).
@@ -151,6 +153,9 @@ pub enum Event {
     Up { conn: ConnId },
     /// Bytes arrived on a connection.
     Bytes { conn: ConnId, bytes: Vec<u8> },
+    /// The transport took bytes sent on these connections since the last `Sent` (progress for the
+    /// session stall timeout; the driver reports it before a `Tick`).
+    Sent { conns: Vec<ConnId> },
     /// A connection is gone, or its dial failed.
     Down { conn: ConnId },
 }
@@ -690,6 +695,15 @@ impl SyncEngine {
                 }
             }
             Event::Down { conn } => self.lost(conn),
+            Event::Sent { conns } => {
+                let now = self.raw_now();
+                for conn in conns {
+                    if let Some(c) = self.conns.get_mut(&conn) {
+                        let o = c.session.handle(now, ClientInput::Sent);
+                        self.outputs(conn, o, out)?;
+                    }
+                }
+            }
         }
         // the step's deaths recomputes before its passes: they mark the bodies whose deaths moved
         self.engine.settle_deaths()?;

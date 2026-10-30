@@ -1,12 +1,7 @@
-# Sync has no send window: slow links redial forever
-> Summary: Nodes and servers emit uploads, fetches and replies without any bound on bytes in flight; past `MAX_QUEUED` (node, 64 MiB) or `max_queued_bytes` (server, 32 MiB) not yet taken by the transport the connection closes as "slow", and `REQUEST_TIMEOUT_MS` (2 min) counts from when a request was queued, not from the last progress. A large upload or fetch on a slow link closes the connection and the redial repeats it.
+# Sync flow control: pushes and handshakes on slow links
+> Summary: The request window (spec/sync.md §6 Flow control) bounds a session's own requests and replies, but pushes to a subscriber slower than the label's writers still fill the server's send queue and close the connection; `HANDSHAKE_TIMEOUT` still refuses links too slow to finish a handshake in 5-10 s.
 > Tags: node, proto, server, transport
 
-Found by the arbitrary-values audit (notes/arbitrary-values-table.md): these values only make the failure unlikely on fast links.
-
-- `proto/client.rs` `upload`/`Fetch`: every batch of a command is sent at once (a `want` of 4096 IDs, each blob up to 8 MiB; a Fetch of many 1024-ID chunks, each reply up to 9 MiB).
-- `node/sync/driver.rs` `Action::Send`: `LinkTx::send(bytes, MAX_QUEUED)` false closes the connection. Server `driver.rs` the same with `max_queued_bytes` for replies, so pipelined Fetch replies on a slow downlink close it too.
-- `client.rs` Timer: the oldest pending request older than `REQUEST_TIMEOUT_MS` closes the session, whatever is still arriving. At 64 KB/s one 9 MiB reply takes 2.4 min.
-- Transport `HANDSHAKE_TIMEOUT` 5 s / 10 s (provisional) has the same shape for very slow links, though it also bounds half-open handshakes.
-
-Fix direction: a per-connection window of request bytes in flight (and of reply bytes asked for), so the queue cap is never reached by the node's own traffic; the request timeout measured from the request leaving the queue and reset by received bytes. The caps then only catch a peer that does not read. Test on the in-process transport with a throttled link.
+- Pushes: `ServerConnection::push` writes every new log run at once; nothing ties it to what the subscriber has read. A subscriber whose link is slower than the writers' (inline blobs up to its `inline_limit`) passes `max_queued_bytes` / `MAX_QUEUED` and is closed; the redial catches up by windowed Sync, so each cycle makes progress, but it can repeat. Fix direction: while the connection's queue is above some level, a subscription only marks the label dirty and pushes from its cursor once the queue drains (pushes are cursor-based already); needs a drained signal from `LinkTx` to the hub (and node serve).
+- `HANDSHAKE_TIMEOUT` 5 s (quic) / 10 s (iroh), provisional: also bounds half-open handshakes against `MAX_INCOMING`; a link under a few hundred bytes per second never connects.
+- `RESEND_MS`: an upload in flight on a slow link (window not full) is sent once more after 30 s and queued behind the first; bounded to one extra copy per slow burst, but wasted bytes on exactly the links that can least afford them.

@@ -116,6 +116,18 @@ impl<B: Backend> Hub<B> {
         out
     }
 
+    /// The transport took bytes sent on these connections since the last report: progress for a
+    /// replication session's stall timeout (the driver reports it before `tick`).
+    pub fn sent(&mut self, now: u64, ids: &[ConnId]) -> Vec<HubOutput> {
+        let mut out = Vec::new();
+        for id in ids {
+            if let Some(Conn::Peer { .. }) = self.conns.get(id) {
+                self.replicate(now, *id, Some(ClientInput::Sent), &mut out);
+            }
+        }
+        out
+    }
+
     /// The connection is gone (either side closed it): the presence entries it uploaded go
     /// (spec/sync.md §5), pushed to the subscriptions as deletions.
     pub fn closed(&mut self, now: u64, id: ConnId) -> Vec<HubOutput> {

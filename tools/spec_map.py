@@ -140,6 +140,7 @@ RULES = [
     ("spec/sync.md", "5", "deposit refusals", "Refused like an upload, when the label's deposit budget is full"),
     ("spec/sync.md", "5", "delete keys", "a delete signature that verifies under the blob prefix's commitment"),
     ("spec/sync.md", "5", "download needs open", "only for labels opened on the connection"),
+    ("spec/sync.md", "6", "flow control", "MUST NOT close a connection over unwritten replies"),
     ("spec/sync.md", "5", "member peer", "A member peer serving a label applies the same rule"),
     ("spec/sync.md", "10", "server key check", "a client MUST check the server's key"),
     ("spec/sync.md", "10", "no 0-rtt", "0-RTT MUST NOT be used"),

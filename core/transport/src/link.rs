@@ -6,7 +6,7 @@
 
 use crate::{Address, Connection, Error, Listener, PublicKey, RecvStream, SendStream, StaticSecret, Transport};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -15,12 +15,17 @@ use tokio::time::timeout;
 const READ_CHUNK: usize = 64 * 1024;
 /// Pieces read ahead of the consumer; past that the transport's flow control holds the peer.
 const READ_AHEAD: usize = 16;
+/// Largest piece the writer pump hands the transport at once: the grain of `LinkTx::taken`
+/// (progress a slow link shows, spec/sync.md §6). Minor: smaller costs more awaits, larger
+/// shows a link slower than a piece per stall timeout as stalled.
+const WRITE_CHUNK: usize = 16 * 1024;
 
 /// The sending end of a link. Dropping it ends our side of the stream (after what is queued).
 #[derive(Debug)]
 pub struct LinkTx {
     tx: mpsc::UnboundedSender<Vec<u8>>,
     queued: Arc<AtomicUsize>,
+    taken: Arc<AtomicU64>,
 }
 
 impl LinkTx {
@@ -35,6 +40,11 @@ impl LinkTx {
         }
         self.queued.fetch_add(n, Ordering::AcqRel);
         self.tx.send(bytes).is_ok()
+    }
+
+    /// Bytes the transport has taken so far (grows as the link moves our bytes).
+    pub fn taken(&self) -> u64 {
+        self.taken.load(Ordering::Acquire)
     }
 }
 
@@ -70,13 +80,17 @@ impl Drop for Live {
 fn session<C: Connection>(peer_key: PublicKey, mut send: C::Send, mut recv: C::Recv, closer: Option<C>, live: Option<Live>, wait: Duration) -> Link {
     let (tx, mut wrx) = mpsc::unbounded_channel::<Vec<u8>>();
     let queued = Arc::new(AtomicUsize::new(0));
-    let q = queued.clone();
+    let taken = Arc::new(AtomicU64::new(0));
+    let (q, t) = (queued.clone(), taken.clone());
     tokio::spawn(async move {
-        while let Some(b) = wrx.recv().await {
-            let r = send.write_all(&b).await;
-            q.fetch_sub(b.len(), Ordering::AcqRel);
-            if r.is_err() {
-                break;
+        'pump: while let Some(b) = wrx.recv().await {
+            for piece in b.chunks(WRITE_CHUNK) {
+                let r = send.write_all(piece).await;
+                q.fetch_sub(piece.len(), Ordering::AcqRel);
+                if r.is_err() {
+                    break 'pump;
+                }
+                t.fetch_add(piece.len() as u64, Ordering::AcqRel);
             }
         }
         drop(wrx);
@@ -100,7 +114,7 @@ fn session<C: Connection>(peer_key: PublicKey, mut send: C::Send, mut recv: C::R
             }
         }
     });
-    Link { peer_key, tx: LinkTx { tx, queued }, rx: LinkRx(rrx) }
+    Link { peer_key, tx: LinkTx { tx, queued, taken }, rx: LinkRx(rrx) }
 }
 
 /// Dials `addr` (as `secret`'s static key if given, else with an ephemeral key) and opens one
@@ -183,11 +197,37 @@ mod tests {
         assert_eq!(b.rx.recv().await, None);
     }
 
+    // spec/sync.md §6: `taken` counts what the transport took, piece by piece, for the stall timeout
+    #[tokio::test]
+    async fn taken_counts_written_bytes() {
+        let net = Net::new(1);
+        let l = net.endpoint("s").listen(ListenConfig { url: "mem://s".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap();
+        let addr = l.address();
+        let (out, mut incoming) = mpsc::channel(4);
+        tokio::spawn(serve(l, W, W, out, usize::MAX));
+        let a = dial(&net.endpoint("c"), &addr, None, W).await.unwrap();
+        let n = 3 * WRITE_CHUNK + 5;
+        assert!(a.tx.send(vec![7; n], usize::MAX));
+        let mut b = incoming.recv().await.unwrap();
+        let mut got = 0;
+        while got < n {
+            got += b.rx.recv().await.unwrap().len();
+        }
+        timeout(W, async {
+            while a.tx.taken() < n as u64 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(a.tx.taken(), n as u64);
+    }
+
     // spec: none (driver policy): bytes the transport has not taken count against the cap; one run fits an empty queue
     #[test]
     fn send_cap() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let t = LinkTx { tx, queued: Arc::new(AtomicUsize::new(0)) };
+        let t = LinkTx { tx, queued: Arc::new(AtomicUsize::new(0)), taken: Arc::new(AtomicU64::new(0)) };
         assert!(t.send(vec![0; 100], 10));
         assert!(!t.send(vec![0; 1], 10));
         assert_eq!(t.queued.load(Ordering::Acquire), 100);
