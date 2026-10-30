@@ -7,7 +7,7 @@ use common::*;
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts};
 use osis_crypto::{Secret32, label_role_key};
 use osis_keys::{
-    ActorEpochs, Departure, Graph, MemoryGraph, PermGraph, WrapEpoch, label_role, lost_access, newer_than_head, plan_departure, plan_inside,
+    ActorEpochs, Departure, Graph, MemoryGraph, PermGraph, WrapEpoch, label_role, lost_access, newer_than_head, plan_departure, plan_inside, reached,
     registered_epoch, registration_epochs, roles_up_to, delete_candidates, delete_key, wrap_epoch,
 };
 use osis_perm::{At, Dots, Edge, EdgeOp, MembershipCommit, MemoryHeldSet, Timeline};
@@ -96,6 +96,48 @@ fn cycles_and_lost_access() {
     assert_eq!(plan.entries[&c].roles, set(&[Role::Read]));
     let lost = lost_access(&g, b, &|t| *t == c);
     assert_eq!(lost, vec![b, a]);
+}
+
+// spec/permissions.md §3: `reached` (the labels a removal is placed under, what a lost actor
+// drops) is `plan_inside`'s set of things on random graphs with cycles, owned things and the
+// avoided member among them, and stays linear on a lattice with 6^11 paths.
+#[test]
+fn reached_matches_plan_inside() {
+    let mut x: u64 = 0x2545_F491_4F6C_DD1D;
+    let mut next = |n: u64| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x % n
+    };
+    for _ in 0..300 {
+        let mut g = MemoryGraph::default();
+        for v in 1..=8u8 {
+            for t in 1..=8u8 {
+                if t != v && next(4) == 0 {
+                    let role = [Role::Read, Role::Write, Role::Admin][next(3) as usize];
+                    if next(5) == 0 { g.owned.entry(tid(v)).or_default().push(tid(t)) } else { g.edges.entry(tid(v)).or_default().push((tid(t), role)) }
+                }
+            }
+        }
+        let (start, avoid) = (tid(1 + next(8) as u8), tid(1 + next(8) as u8));
+        if start == avoid {
+            continue;
+        }
+        let plan = plan_inside(&g, start, roles_up_to(Role::Admin), Departure::member(avoid, Role::Read));
+        let want: BTreeSet<Tid> = plan.entries.keys().filter(|t| **t != start).copied().collect();
+        assert_eq!(reached(&g, start, avoid), want);
+    }
+    let mut g = MemoryGraph::default();
+    let mut layer = vec![tid(200)];
+    for l in 0..12u8 {
+        let next: Vec<Tid> = (0..6u8).map(|i| tid(l * 6 + i + 1)).collect();
+        for v in &layer {
+            g.edges.insert(*v, next.iter().map(|t| (*t, Role::Write)).collect());
+        }
+        layer = next;
+    }
+    assert_eq!(reached(&g, tid(200), tid(250)).len(), 72);
 }
 
 // spec/permissions.md §3: the planner runs over perm's timeline (owned things and live edges).

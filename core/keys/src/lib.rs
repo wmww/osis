@@ -20,7 +20,7 @@ pub use epoch::{ActorEpochs, EpochInfo, MAX_READING, MAX_READING_PER_AUTHOR, Pro
 pub use error::Error;
 pub use open::{HistoryAlts, Opened, Opener, ingest, ingest_with, open_boxes, open_histories};
 pub use osis_crypto::Epoch;
-pub use planner::{Entry, Graph, MemoryGraph, PermGraph, Plan, lost_access, plan_departure, plan_inside};
+pub use planner::{Entry, Graph, MemoryGraph, PermGraph, Plan, lost_access, plan_departure, plan_inside, reached};
 pub use delete::{delete_candidates, delete_key};
 pub use wrap::{WrapEpoch, label_role, newer_than_head, registered_epoch, registered_secret, registration_epochs, wrap_epoch};
 pub use produce::{MemberKeys, Recipient, Rotated, Rotation, box_member, reseal_member, roles_up_to, rotate};

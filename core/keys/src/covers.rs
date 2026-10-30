@@ -110,30 +110,30 @@ fn boxes_for(secrets: &Secrets, epochs: &ActorEpochs, member: &Tid, r: Role, e: 
 /// Does epoch `e` of role `r` (of the actor whose `/secrets` and epochs are given) cover `d`?
 /// A member's departure: `e` holds no box for it (a key actor's box keyed higher counts). A
 /// departure inside member M: M's box in `e` names the newest keyset epoch of M for `r` the node
-/// holds, and that epoch of M covers the rest of the departure, recursively. Missing knowledge of
-/// a chain actor counts as not covered.
+/// holds, and that epoch of M covers the rest of the departure, and so on down the chain (a loop:
+/// chains have no depth bound). Missing knowledge of a chain actor counts as not covered.
 pub fn covers(secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: &Epoch, d: &Departure, held: &dyn HeldActors) -> bool {
     if r < d.from {
         return true;
     }
-    let Some((m, rest)) = d.via.split_first() else {
-        return !boxes_for(secrets, epochs, &d.member, r, e, None, Some(held));
-    };
-    let named = match secrets.boxes.get(&box_key(*m, r, e)) {
-        None => return true,
-        Some(SecretBox::Sealed(s)) => match &s.keyset {
-            // A key actor has no members: nothing departs inside it.
+    let (mut secrets, mut epochs, mut e) = (secrets, epochs, *e);
+    for m in &d.via {
+        let named = match secrets.boxes.get(&box_key(*m, r, &e)) {
             None => return true,
-            Some(k) => from_schema(k),
-        },
-        Some(SecretBox::Symmetric(s)) => from_schema(&s.epoch),
-    };
-    let (Ok(k), Some(me), Some(ms)) = (named, held.epochs(m), held.secrets(m)) else { return false };
-    if me.role(r).newest() != Some(k) {
-        return false;
+            Some(SecretBox::Sealed(s)) => match &s.keyset {
+                // A key actor has no members: nothing departs inside it.
+                None => return true,
+                Some(k) => from_schema(k),
+            },
+            Some(SecretBox::Symmetric(s)) => from_schema(&s.epoch),
+        };
+        let (Ok(k), Some(me), Some(ms)) = (named, held.epochs(m), held.secrets(m)) else { return false };
+        if me.role(r).newest() != Some(k) {
+            return false;
+        }
+        (secrets, epochs, e) = (ms, me, k);
     }
-    let inner = Departure { via: rest.to_vec(), member: d.member, from: d.from };
-    covers(ms, me, r, &k, &inner, held)
+    !boxes_for(secrets, epochs, &d.member, r, &e, None, Some(held))
 }
 
 /// The known departures epoch `e` of role `r` does not cover. A node that may rotate `r`
