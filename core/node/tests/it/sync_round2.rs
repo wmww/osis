@@ -40,8 +40,8 @@ fn junk_entry_does_not_stall_uploads_spec_versioning_2() {
     let id = osis_label::blob_id(&blob);
     let wrap = osis_crypto::wrap(&read, &id, &key).unwrap();
     let stamp = osis_label::sign_stamp(keys.write.as_ref().unwrap(), &gl.id, &id, &wrap);
-    let e = Entry { blob, wrap, stamp };
-    let put = Put { blob_id: id, blob: &e.blob, wrap: e.wrap, stamp: Some(e.stamp), expiry: None, ephemeral: false, presence: false };
+    let e = Entry { blob, wrap, stamp, replaces: Vec::new() };
+    let put = Put { blob_id: id, blob: &e.blob, wrap: e.wrap, stamp: Some(e.stamp), expiry: None, ephemeral: false, presence: false, tie: 0, replaces: &[], now: 0 };
     net.servers[sv].hub.store_mut().put(&gl.id, put).unwrap();
     // reconnect: the cursor sync brings the junk entry
     net.restart(a, 11);

@@ -405,8 +405,8 @@ fn presence_write_takes_no_expiry_spec_data_model_2() {
 }
 
 // spec/sync.md §9 (each presence commit covers its author's last): an update replaces the cursor
-// at a holder in one change, never dropping it in between (the author deletes the covered entry
-// before uploading the cover, so the holder sees the deletion first)
+// at a holder in one change, never dropping it in between (deleting the covered entry before
+// the cover was uploaded made the holder see the deletion first)
 #[test]
 fn update_never_flaps_spec_sync_9() {
     let mut net = Net::new();
@@ -426,6 +426,31 @@ fn update_never_flaps_spec_sync_9() {
     assert_eq!(remote_changes(&rx, t, CURSOR), 5, "one change per update");
 }
 
+// spec/sync.md §5 (Replace: an upload names the entries it replaces), §9: each presence update is
+// one Upload replacing the previous entry by the connection's tie (no Delete), and the server
+// ends holding one entry of the author
+#[test]
+fn update_is_one_upload_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let (_, t) = setup(&mut net, a, &[(b, Role::Write)], &[sv]);
+    net.eph_write(a, t, &cursor(), s("a@0"));
+    net.run();
+    let l = net.label(a);
+    let held = live(&net, sv, &l);
+    let (up, del) = sent_up_del(&net);
+    for i in 1..=5 {
+        net.eph_write(a, t, &cursor(), s(&format!("a@{i}")));
+        net.run();
+        assert_eq!(at(&mut net, b, t), Some(s(&format!("a@{i}"))));
+    }
+    let (up2, del2) = sent_up_del(&net);
+    assert_eq!((up2 - up, del2 - del), (5, 0), "one upload and no delete per update");
+    assert_eq!(live(&net, sv, &l), held, "one entry of A at the server");
+}
+
 /// Upload and Delete messages nodes sent so far (osis-proto message kinds 10 and 14).
 fn sent_up_del(net: &Net) -> (usize, usize) {
     (net.sent_kinds.get(&10).copied().unwrap_or(0), net.sent_kinds.get(&14).copied().unwrap_or(0))
@@ -433,7 +458,7 @@ fn sent_up_del(net: &Net) -> (usize, usize) {
 
 // spec/sync.md §9 (an own presence commit waits while the previous one's upload is unanswered;
 // the next carries the whole own state): a burst of cursor moves during one upload in flight
-// goes as two commits, two uploads and at most two deletes; B ends at the latest value with one
+// goes as two commits and two uploads (each replacing the last); B ends at the latest value with one
 // remote change per commit (no blink) and the server holds one entry of A
 #[test]
 fn burst_coalesced_while_upload_in_flight_spec_sync_9() {
@@ -453,7 +478,7 @@ fn burst_coalesced_while_upload_in_flight_spec_sync_9() {
     net.run();
     let (up2, del2) = sent_up_del(&net);
     assert_eq!(up2 - up, 2, "the first move, then the other 19 in one commit");
-    assert!(del2 - del <= 2, "{} deletes", del2 - del);
+    assert_eq!(del2 - del, 0, "{} deletes", del2 - del);
     assert_eq!(at(&mut net, b, t), Some(s("a@20")));
     assert_eq!(remote_changes(&rx, t, CURSOR), 2, "one change per commit");
     assert_eq!(presence_held(&mut net, b), 1);

@@ -73,6 +73,7 @@ impl SyncEngine {
             c.labels.retain(|l, _| !gone(l));
             c.req.sent.retain(|(l, _), _| !gone(l));
             c.req.deleting.retain(|(l, _), _| !gone(l));
+            c.req.replacing.retain(|(l, _), _| !gone(l));
             c.req.timed_sent.retain(|(l, _)| !gone(l));
             c.req.reopens.retain(|l, _| !gone(l));
         }

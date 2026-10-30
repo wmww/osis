@@ -35,7 +35,7 @@ pub fn stamped(sim: &NetSim, k: &LabelKeys, id: &BlobId, blob: Vec<u8>, key: &os
     let wrap = osis_crypto::wrap(&read, id, key).map_err(|e| sim.fail(e.to_string()))?;
     let write = k.keys.write.clone().ok_or_else(|| sim.fail("no write key held"))?;
     let stamp = osis_label::sign_stamp(&write, &k.label, id, &wrap);
-    Ok(Entry { blob, wrap, stamp })
+    Ok(Entry { blob, wrap, stamp, replaces: Vec::new() })
 }
 
 /// Codes of the entry statuses and budgets among `evs`.
@@ -130,7 +130,7 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
         for id in st.live_ids(&old.label).unwrap_or_default() {
             let (Some(e), Some(blob)) = (st.entry(&old.label, &id).ok().flatten(), st.blob(&id).ok().flatten()) else { continue };
             if let Some(stamp) = e.stamp {
-                v.push(Entry { blob, wrap: e.wrap, stamp });
+                v.push(Entry { blob, wrap: e.wrap, stamp, replaces: Vec::new() });
             }
         }
         v

@@ -108,7 +108,7 @@ pub fn future_format(seed: u64) -> Res<Report> {
     let write = k.keys.write.clone().ok_or_else(|| sim.fail("no write key"))?;
     let stamp = osis_label::sign_stamp(&write, &k.label, &bid, &wrap);
     let mut rg = sim.rogue(s0)?;
-    sim.rogue_do(&mut rg, Command::Upload { label: k.label, entries: vec![Entry { blob, wrap, stamp }] })?;
+    sim.rogue_do(&mut rg, Command::Upload { label: k.label, entries: vec![Entry { blob, wrap, stamp, replaces: Vec::new() }] })?;
     sim.rogue_close(&mut rg);
     sim.parked_ok.insert(fid);
     sim.run(60)?;

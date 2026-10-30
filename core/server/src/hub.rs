@@ -85,7 +85,7 @@ impl<B: Backend> Hub<B> {
         if served >= self.store.policy().max_connections {
             return vec![HubOutput::Close(id)];
         }
-        let cfg = ServerConfig { static_key: self.static_key, challenge: self.challenge() };
+        let cfg = ServerConfig { static_key: self.static_key, challenge: self.challenge(), tie: id };
         let hello_by = Some(now.saturating_add(self.store.policy().hello_ms));
         self.conns.insert(id, Conn::Served { c: Box::new(ServerConnection::new(cfg)), peer, hello_by, buffered: 0 });
         let mut out = Vec::new();
@@ -140,18 +140,14 @@ impl<B: Backend> Hub<B> {
         out
     }
 
-    /// Forgets a connection and its partial frame bytes; removes the presence entries it
-    /// uploaded that no other open connection uploaded too (spec/sync.md §5).
+    /// Forgets a connection and its partial frame bytes; unties it from the presence entries it
+    /// uploaded, removing those no other open connection's tie holds (spec/sync.md §5).
     fn remove(&mut self, now: u64, id: ConnId, out: &mut Vec<HubOutput>) {
         let Some(Conn::Served { c, buffered, .. }) = self.conns.remove(&id) else { return };
         self.buffered = self.buffered.saturating_sub(buffered);
         let mut grew = std::collections::BTreeSet::new();
         for (l, b) in c.presence() {
-            let elsewhere = self.conns.values().any(|x| matches!(x, Conn::Served { c, .. } if c.presence().contains(&(*l, *b))));
-            if elsewhere {
-                continue;
-            }
-            match osis_proto::LabelStore::presence_gone(&mut self.store, l, b) {
+            match osis_proto::LabelStore::untie(&mut self.store, l, b, id) {
                 Ok(true) => {
                     grew.insert(*l);
                 }

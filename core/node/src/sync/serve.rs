@@ -20,7 +20,7 @@ use crate::error::Result;
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::{BlobId, LabelId};
 use osis_label::{ClaimSet, Step, StepId};
-use osis_proto::{Budget, Code, EntryMeta, LabelStore, LogRecord, Put, ServerConfig, ServerConnection, ServerInput, ServerOutput, StoreError};
+use osis_proto::{Budget, Code, EntryMeta, LabelStore, LogRecord, Put, Replaced, ServerConfig, ServerConnection, ServerInput, ServerOutput, StoreError};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -207,6 +207,10 @@ struct Accepted {
     charges: Vec<(LabelId, BlobId, u64)>,
     /// A put was refused for the budget.
     full: bool,
+    /// Entries accepted uploads replaced: hidden from peers (by delete proof), or no longer
+    /// sourced by this session (untied), once the uploads are applied.
+    removed: Vec<(LabelId, BlobId)>,
+    untied: Vec<(LabelId, BlobId)>,
 }
 
 /// The `LabelStore` a member peer serves from.
@@ -234,6 +238,8 @@ struct PeerStore<'a> {
     /// Ephemeral entries held in memory (`ephemeral`): served like the others.
     eph: &'a super::ephemeral::Lane,
     relays: &'a mut osis_proto::RelayGate,
+    /// The session served (its tie to the presence entries it uploads).
+    conn: ConnId,
 }
 
 /// Whom bytes a peer session put here are charged to: the dialable key its member proof
@@ -367,6 +373,20 @@ impl LabelStore for PeerStore<'_> {
     }
 
     fn put(&mut self, label: &LabelId, put: Put<'_>) -> std::result::Result<Code, StoreError> {
+        // replacements (spec/sync.md §5): an untie only of a presence entry this session uploaded
+        let (mut removed, mut untied) = (Vec::new(), Vec::new());
+        for r in put.replaces {
+            match *r {
+                Replaced::Delete(b) if b != put.blob_id && self.live(label, &b)?.is_some() => removed.push((*label, b)),
+                Replaced::Untie(b) if b != put.blob_id && self.live(label, &b)?.is_some() => {
+                    if !self.eph.served_src.get(&(*label, b)).is_some_and(|cs| cs.contains(&self.conn)) {
+                        return Ok(Code::REFUSED);
+                    }
+                    untied.push((*label, b));
+                }
+                _ => {}
+            }
+        }
         // a held entry costs nothing more (a new wrap or a stamp)
         if !self.entries.contains_key(&(*label, put.blob_id)) {
             let size = put.blob.len() as u64;
@@ -384,6 +404,8 @@ impl LabelStore for PeerStore<'_> {
             x.pending.remove(&put.blob_id);
         }
         self.acc.entries.push((*label, osis_proto::Event::Added { blob_id: put.blob_id, blob: Some(put.blob.to_vec()), wrap: put.wrap, stamp: put.stamp }));
+        self.acc.removed.extend(removed);
+        self.acc.untied.extend(untied);
         Ok(Code::OK)
     }
 
@@ -450,7 +472,7 @@ impl LabelStore for PeerStore<'_> {
 
     /// Unused: the sync engine drops a presence entry a session uploaded once no source holds
     /// it (`eph_served_gone`, `eph_presence`).
-    fn presence_gone(&mut self, _label: &LabelId, _blob_id: &BlobId) -> std::result::Result<bool, StoreError> {
+    fn untie(&mut self, _label: &LabelId, _blob_id: &BlobId, _tie: u64) -> std::result::Result<bool, StoreError> {
         Ok(false)
     }
 
@@ -506,7 +528,7 @@ impl SyncEngine {
         let mut challenge = [0u8; 32];
         self.rng.fill_bytes(&mut challenge);
         let last = self.raw_now();
-        self.served.insert(conn, Served { conn: ServerConnection::new(ServerConfig { static_key: local, challenge }), peer, last, since: last });
+        self.served.insert(conn, Served { conn: ServerConnection::new(ServerConfig { static_key: local, challenge, tie: conn }), peer, last, since: last });
         if let Err(e) = self.serve(conn, ServerInput::Start, &mut out) {
             self.diag(format!("serve: {e}"));
         }
@@ -603,6 +625,7 @@ impl SyncEngine {
                 acc: Accepted::default(),
                 eph: &self.eph,
                 relays: &mut self.relay_gate,
+                conn,
             };
             let o = s.conn.handle(now, &mut store, input);
             (o, store.acc)
@@ -641,6 +664,21 @@ impl SyncEngine {
         for (l, evs) in by_label {
             // stamps were checked against the served head by the server engine
             self.log_events_from(None, Some(conn), l, evs, None, out)?;
+        }
+        // what the uploads replaced goes after them (peers see the new entry first)
+        for (l, b) in acc.removed {
+            let x = self.state.feed.labels.entry(l).or_default();
+            if x.gone.insert(b, now).is_none() {
+                self.state.feed.deleted(l, b);
+            }
+        }
+        for k in acc.untied {
+            if let Some(cs) = self.eph.served_src.get_mut(&k) {
+                cs.remove(&conn);
+                if cs.is_empty() {
+                    self.eph.served_src.remove(&k);
+                }
+            }
         }
         let mut relays = Vec::new();
         for o in outputs {

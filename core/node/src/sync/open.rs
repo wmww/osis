@@ -465,6 +465,7 @@ impl SyncEngine {
         if let Some(c) = self.conns.get_mut(&conn) {
             if matches!(kind, Request::Upload | Request::Deposit) {
                 c.req.sent.retain(|(x, _), _| *x != l);
+                c.req.replacing.retain(|(x, _), _| *x != l);
             }
             if kind == Request::Delete {
                 c.req.timed_sent.retain(|(x, _)| *x != l);

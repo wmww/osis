@@ -73,6 +73,13 @@ pub fn messages() -> VecFile {
     let empty = Value::List(vec![]);
     let caps: Vec<(&str, Value, Value, usize, Vec<Value>)> = vec![
         ("upload of 1025 entries", Value::List(vec![int(10), int(1), label.clone(), list(&entry, 1025)]), entry.clone(), 1025, vec![]),
+        (
+            "upload of 1025 replaces",
+            Value::List(vec![int(10), int(1), label.clone(), Value::List(vec![Value::List(vec![bytes(30, 1), bytes(49, 2), bytes(64, 3), list(&Value::List(vec![id.clone()]), 1025)])])]),
+            Value::List(vec![id.clone()]),
+            1025,
+            vec![],
+        ),
         ("delete of 1025 items", Value::List(vec![int(14), int(1), label.clone(), list(&item, 1025)]), item.clone(), 1025, vec![]),
         ("fetch of 1025 ids", Value::List(vec![int(19), int(1), label.clone(), list(&id, 1025)]), id.clone(), 1025, vec![]),
         ("fetch reply of 1025 items", Value::List(vec![int(20), int(1), list(&fetched, 1025)]), fetched.clone(), 1025, vec![]),
@@ -122,6 +129,12 @@ pub fn messages() -> VecFile {
             ])),
         ),
         ("empty upload", "count", cbor::encode(&Value::List(vec![int(10), int(1), label.clone(), empty.clone()]))),
+        ("entry with an empty replace list", "count", cbor::encode(&Value::List(vec![int(10), int(1), label.clone(), Value::List(vec![Value::List(vec![bytes(30, 1), bytes(49, 2), bytes(64, 3), empty.clone()])])]))),
+        (
+            "replace of three items",
+            "shape",
+            cbor::encode(&Value::List(vec![int(10), int(1), label.clone(), Value::List(vec![Value::List(vec![bytes(30, 1), bytes(49, 2), bytes(64, 3), Value::List(vec![Value::List(vec![id.clone(), int(3), bytes(64, 4)])])])])])),
+        ),
         (
             "overlapping ranges",
             "ranges",

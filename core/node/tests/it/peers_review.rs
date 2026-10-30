@@ -98,7 +98,7 @@ fn dropped_entry_refused_from_peer_spec_sync_5() {
     net.settle(100_000);
     assert!(!net.sync(b).entries(&l).iter().any(|(id, _)| *id == x), "the server's deletion reached b");
     let (mut p, _) = dial_in(&mut net, b);
-    let evs = command(&mut net, b, &mut p, Command::Upload { label: l, entries: vec![osis_proto::Entry { blob, wrap: meta.wrap, stamp: meta.stamp.unwrap() }] });
+    let evs = command(&mut net, b, &mut p, Command::Upload { label: l, entries: vec![osis_proto::Entry { blob, wrap: meta.wrap, stamp: meta.stamp.unwrap(), replaces: Vec::new() }] });
     assert_eq!(upload_codes(&evs), vec![Code::TOMBSTONED]);
     net.run();
     assert!(!net.sync(b).entries(&l).iter().any(|(id, _)| *id == x));

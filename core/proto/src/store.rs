@@ -50,8 +50,10 @@ pub enum LogRecord {
 
 /// An entry to add or replace, already authorized by the engine. An ephemeral entry
 /// (`ephemeral`, from the blob's prefix class) is held in memory only, under a per-label byte
-/// cap (spec/sync.md §4, §5); a presence entry (`presence`, ephemeral too) is removed when the
-/// connections that uploaded it have closed (`presence_gone`) and leaves no tombstone.
+/// cap (spec/sync.md §4, §5); a presence entry (`presence`, ephemeral too) is tied to the
+/// connection `tie` uploaded it on, removed once no connection's tie holds it (`untie`), and
+/// leaves no tombstone. `replaces` go in the same step: all of them iff the entry is admitted
+/// (logged after its add), the room they free counted toward its cap.
 #[derive(Clone, Copy, Debug)]
 pub struct Put<'a> {
     pub blob_id: BlobId,
@@ -61,6 +63,21 @@ pub struct Put<'a> {
     pub expiry: Option<u64>,
     pub ephemeral: bool,
     pub presence: bool,
+    pub tie: u64,
+    pub replaces: &'a [Replaced],
+    /// Wall ms (tombstones of the replaced entries).
+    pub now: u64,
+}
+
+/// An entry an upload replaces (spec/sync.md §5, Replace), as the server engine authorized it.
+/// One no longer held is skipped; one naming the uploaded entry itself is ignored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Replaced {
+    /// By its delete proof: removed as a Delete removes it.
+    Delete(BlobId),
+    /// By the uploading connection's tie: the tie goes, and the entry once no other tie holds
+    /// it. A held entry this connection's tie does not hold refuses the upload (code 1).
+    Untie(BlobId),
 }
 
 /// What remains of a label's deposit budget.
@@ -237,10 +254,10 @@ pub trait LabelStore {
     fn live_ids(&self, label: &LabelId) -> Result<Vec<BlobId>, StoreError> {
         self.live_ids_in(label, &BlobId([0; 32]), None)
     }
-    /// Removes presence entry `blob_id` once every connection that uploaded it has closed
-    /// (spec/sync.md §5): logged, no tombstone (only its author uploads it, again on reconnect).
-    /// Whether a presence entry was held.
-    fn presence_gone(&mut self, label: &LabelId, blob_id: &BlobId) -> Result<bool, StoreError>;
+    /// Unties connection `tie` from presence entry `blob_id` (it closed, spec/sync.md §5); the
+    /// entry goes once no connection's tie holds it: logged, no tombstone (only its author
+    /// uploads it, again on reconnect). Whether the entry was removed.
+    fn untie(&mut self, label: &LabelId, blob_id: &BlobId, tie: u64) -> Result<bool, StoreError>;
     /// Admits a stamped relay-only upload (spec/sync.md §5; `RelayGate::admit`).
     fn relay(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, now: u64) -> Result<crate::RelayVerdict, StoreError>;
 }
@@ -260,10 +277,11 @@ struct LabelState {
     /// Records at or below this sequence number were dropped.
     horizon: u64,
     next_seq: u64,
-    /// Ephemeral entries and their bytes; the presence ones among them.
+    /// Ephemeral entries and their bytes; the presence ones among them, with the connections
+    /// tied to each.
     ephemeral: BTreeSet<BlobId>,
     ephemeral_bytes: u64,
-    presence: BTreeSet<BlobId>,
+    presence: BTreeMap<BlobId, BTreeSet<u64>>,
 }
 
 impl LabelState {
@@ -328,6 +346,21 @@ impl MemoryLabelStore {
                 self.blobs.remove(blob_id);
             }
         }
+    }
+
+    /// Removes an entry with a log record and, unless a presence entry, a tombstone.
+    fn remove_entry(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<(), StoreError> {
+        let s = self.state_mut(label)?;
+        let Some((m, _)) = s.entries.remove(blob_id) else { return Ok(()) };
+        if s.ephemeral.remove(blob_id) {
+            s.ephemeral_bytes = s.ephemeral_bytes.saturating_sub(m.size);
+        }
+        if s.presence.remove(blob_id).is_none() {
+            s.tombstones.insert(*blob_id, now);
+        }
+        s.append(LogRecord::Deleted(*blob_id));
+        self.unref(blob_id);
+        Ok(())
     }
 
     /// Drops log records up to `seq` (cursors below it become invalid).
@@ -447,41 +480,71 @@ impl LabelStore for MemoryLabelStore {
     fn put(&mut self, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError> {
         let (cap, ecap) = (self.entry_cap, self.ephemeral_cap);
         let s = self.state_mut(label)?;
+        // what the replacements remove (all or nothing, below) and the room they free
+        let mut gone: BTreeSet<BlobId> = BTreeSet::new();
+        let mut untied = Vec::new();
+        for r in put.replaces {
+            match *r {
+                Replaced::Delete(b) if b != put.blob_id && s.entries.contains_key(&b) => {
+                    gone.insert(b);
+                }
+                Replaced::Untie(b) if b != put.blob_id && s.entries.contains_key(&b) => match s.presence.get(&b) {
+                    Some(t) if t.contains(&put.tie) => {
+                        if t.len() == 1 {
+                            gone.insert(b);
+                        } else {
+                            untied.push(b);
+                        }
+                    }
+                    _ => return Ok(Code::REFUSED),
+                },
+                _ => {}
+            }
+        }
+        let freed_bytes: u64 = gone.iter().filter(|b| s.ephemeral.contains(b)).filter_map(|b| s.entries.get(b)).map(|(m, _)| m.size).sum();
         let held = s.entries.get(&put.blob_id).map(|(m, _)| m.clone());
-        if let Some(m) = &held
-            && (put.stamp.is_none() || (m.wrap == put.wrap && m.stamp == put.stamp))
-        {
-            return Ok(Code::OK);
-        }
-        if held.is_none() && cap.is_some_and(|c| s.entries.len() >= c) {
-            return Ok(Code::STORAGE_CAP);
-        }
-        // an unstamped ephemeral blob never gets here (the server engine refuses it for every
-        // store, spec/sync.md §5)
-        if put.ephemeral && held.is_none() {
-            if ecap.is_some_and(|c| s.ephemeral_bytes + put.blob.len() as u64 > c) {
+        let same = held.as_ref().is_some_and(|m| put.stamp.is_none() || (m.wrap == put.wrap && m.stamp == put.stamp));
+        if !same {
+            if held.is_none() && cap.is_some_and(|c| s.entries.len().saturating_sub(gone.len()) >= c) {
                 return Ok(Code::STORAGE_CAP);
             }
-            s.ephemeral_bytes += put.blob.len() as u64;
-            s.ephemeral.insert(put.blob_id);
-            if put.presence {
-                s.presence.insert(put.blob_id);
+            // an unstamped ephemeral blob never gets here (the server engine refuses it for every
+            // store, spec/sync.md §5)
+            if put.ephemeral && held.is_none() && ecap.is_some_and(|c| s.ephemeral_bytes.saturating_sub(freed_bytes) + put.blob.len() as u64 > c) {
+                return Ok(Code::STORAGE_CAP);
+            }
+            if put.stamp.is_none() {
+                let (n, bytes) = Self::deposited(s);
+                let max = 64 + 4 * s.head_claims();
+                if n + 1 > max || bytes + put.blob.len() as u64 > max * DEPOSIT_ENTRY_BYTES {
+                    return Ok(Code::BUDGET_FULL);
+                }
+            }
+            if put.ephemeral && held.is_none() {
+                s.ephemeral_bytes += put.blob.len() as u64;
+                s.ephemeral.insert(put.blob_id);
+            }
+            let seq = s.append(LogRecord::Added(put.blob_id));
+            let pending = held.as_ref().and_then(|m| m.pending_delete);
+            let meta = EntryMeta { wrap: put.wrap, stamp: put.stamp, size: put.blob.len() as u64, add_seq: seq, pending_delete: pending };
+            s.entries.insert(put.blob_id, (meta, put.expiry));
+            if held.is_none() {
+                let e = self.blobs.entry(put.blob_id).or_insert_with(|| (put.blob.to_vec(), 0));
+                e.1 += 1;
             }
         }
-        if put.stamp.is_none() {
-            let (n, bytes) = Self::deposited(s);
-            let max = 64 + 4 * s.head_claims();
-            if n + 1 > max || bytes + put.blob.len() as u64 > max * DEPOSIT_ENTRY_BYTES {
-                return Ok(Code::BUDGET_FULL);
+        let s = self.state_mut(label)?;
+        if put.presence && s.ephemeral.contains(&put.blob_id) {
+            s.presence.entry(put.blob_id).or_default().insert(put.tie);
+        }
+        for b in untied {
+            if let Some(t) = s.presence.get_mut(&b) {
+                t.remove(&put.tie);
             }
         }
-        let seq = s.append(LogRecord::Added(put.blob_id));
-        let pending = held.as_ref().and_then(|m| m.pending_delete);
-        let meta = EntryMeta { wrap: put.wrap, stamp: put.stamp, size: put.blob.len() as u64, add_seq: seq, pending_delete: pending };
-        s.entries.insert(put.blob_id, (meta, put.expiry));
-        if held.is_none() {
-            let e = self.blobs.entry(put.blob_id).or_insert_with(|| (put.blob.to_vec(), 0));
-            e.1 += 1;
+        // removed after the add is logged: a holder applies the new entry before the deletions
+        for b in gone {
+            self.remove_entry(label, &b, put.now)?;
         }
         Ok(Code::OK)
     }
@@ -494,33 +557,17 @@ impl LabelStore for MemoryLabelStore {
     }
 
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError> {
-        let s = self.state_mut(label)?;
-        let Some((m, _)) = s.entries.remove(blob_id) else {
-            return Ok(Code::OK);
-        };
-        if s.ephemeral.remove(blob_id) {
-            s.ephemeral_bytes = s.ephemeral_bytes.saturating_sub(m.size);
-        }
-        if !s.presence.remove(blob_id) {
-            s.tombstones.insert(*blob_id, now);
-        }
-        s.append(LogRecord::Deleted(*blob_id));
-        self.unref(blob_id);
+        self.remove_entry(label, blob_id, now)?;
         Ok(Code::OK)
     }
 
-    fn presence_gone(&mut self, label: &LabelId, blob_id: &BlobId) -> Result<bool, StoreError> {
+    fn untie(&mut self, label: &LabelId, blob_id: &BlobId, tie: u64) -> Result<bool, StoreError> {
         let Some(s) = self.labels.get_mut(label) else { return Ok(false) };
-        if !s.presence.remove(blob_id) {
+        let Some(t) = s.presence.get_mut(blob_id) else { return Ok(false) };
+        if !t.remove(&tie) || !t.is_empty() {
             return Ok(false);
         }
-        if let Some((m, _)) = s.entries.remove(blob_id)
-            && s.ephemeral.remove(blob_id)
-        {
-            s.ephemeral_bytes = s.ephemeral_bytes.saturating_sub(m.size);
-        }
-        s.append(LogRecord::Deleted(*blob_id));
-        self.unref(blob_id);
+        self.remove_entry(label, blob_id, 0)?;
         Ok(true)
     }
 

@@ -8,7 +8,7 @@ use crate::hello::{Hello, PROTOCOL_VERSION, negotiate};
 use crate::msg::*;
 use crate::rbsr;
 use crate::relay::RelayVerdict;
-use crate::store::{EntryMeta, HeadKeys, LabelStore, LogRecord, Put, StepKey, StoreError};
+use crate::store::{EntryMeta, HeadKeys, LabelStore, LogRecord, Put, Replaced, StepKey, StoreError};
 use osis_base::format::MAX_MESSAGE;
 use osis_base::{BlobId, LabelId, WallMs};
 use osis_crypto::{Domain, LabelRole, verify_delete};
@@ -50,6 +50,9 @@ pub struct ServerConfig {
     pub static_key: [u8; 32],
     /// This side's Hello challenge: 32 random bytes per connection.
     pub challenge: [u8; 32],
+    /// Names this connection's tie to the presence entries it uploads (`Put::tie`): unique
+    /// among the connections over one store.
+    pub tie: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -431,7 +434,7 @@ impl ServerConnection {
                 let mut code = check(k, StepKey::Deposit, Domain::Deposit, &entry_digest(&label, &blob_id, &wrap), &sig);
                 let head = if code == Code::NOT_HEAD { Some(k.head.clone()) } else { None };
                 if code == Code::OK {
-                    code = self.accept(store, now, &label, blob_id, &blob, wrap, None, out)?;
+                    code = self.accept(store, now, &label, blob_id, &blob, wrap, None, &[], out)?;
                 }
                 changed(&[code], &label, out);
                 let b = store.budget(&label)?;
@@ -785,17 +788,18 @@ impl ServerConnection {
     fn accept_all(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, entries: &[Entry], ids: &[BlobId], out: &mut Vec<ServerOutput>) -> Result<Vec<Code>, StoreError> {
         let mut codes = Vec::with_capacity(entries.len());
         for (e, b) in entries.iter().zip(ids) {
-            codes.push(self.accept(store, now, label, *b, &e.blob, e.wrap, Some(e.stamp), out)?);
+            codes.push(self.accept(store, now, label, *b, &e.blob, e.wrap, Some(e.stamp), &e.replaces, out)?);
         }
         changed(&codes, label, out);
         Ok(codes)
     }
 
-    /// Upload (stamp) or deposit (no stamp, already authorized) of one entry (spec/sync.md §5).
-    /// A relay-only blob (stamped only) is not stored: it goes to the other connections'
-    /// subscribers (`ServerOutput::Relay`).
+    /// Upload (stamp) or deposit (no stamp, already authorized) of one entry (spec/sync.md §5),
+    /// with the entries it replaces: each authorized as a Delete of it would be (or by this
+    /// connection's tie), all removed iff the entry is admitted. A relay-only blob (stamped
+    /// only) is not stored: it goes to the other connections' subscribers (`ServerOutput::Relay`).
     #[allow(clippy::too_many_arguments)]
-    fn accept(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_id: BlobId, blob: &[u8], wrap: Wrap, stamp: Option<Signature>, out: &mut Vec<ServerOutput>) -> Result<Code, StoreError> {
+    fn accept(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_id: BlobId, blob: &[u8], wrap: Wrap, stamp: Option<Signature>, replaces: &[Replace], out: &mut Vec<ServerOutput>) -> Result<Code, StoreError> {
         // An oversized blob never gets here: the message decoder refuses it (msg tests `field_sizes`).
         debug_assert!(blob.len() <= osis_base::format::MAX_BLOB);
         let Some(k) = self.keys(store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
@@ -803,6 +807,23 @@ impl ServerConnection {
             let code = check(k, StepKey::Write, Domain::Upload, &entry_digest(label, &blob_id, &wrap), &stamp);
             if code != Code::OK {
                 return Ok(code);
+            }
+        }
+        let mut replaced = Vec::with_capacity(replaces.len());
+        for r in replaces {
+            match r {
+                Replace::Untie(b) => replaced.push(Replaced::Untie(*b)),
+                // one no longer held is skipped unchecked: nothing to remove
+                Replace::Delete(item) => {
+                    if store.entry(label, &item.blob)?.is_none() {
+                        continue;
+                    }
+                    let code = self.delete_auth(store, label, item)?;
+                    if code != Code::OK {
+                        return Ok(code);
+                    }
+                    replaced.push(Replaced::Delete(item.blob));
+                }
             }
         }
         let Ok(prefix) = server_prefix(blob) else { return Ok(Code::MALFORMED) };
@@ -814,7 +835,8 @@ impl ServerConnection {
             return Ok(Code::REFUSED);
         }
         if class == Class::Relay {
-            let Some(stamp) = stamp else { return Ok(Code::REFUSED) };
+            // held by nobody, so it replaces nothing
+            let Some(stamp) = stamp.filter(|_| replaces.is_empty()) else { return Ok(Code::REFUSED) };
             return Ok(match store.relay(label, &blob_id, blob.len(), expiry, now)? {
                 RelayVerdict::Push => {
                     out.push(ServerOutput::Relay(Relayed { label: *label, blob_id, blob: blob.to_vec(), wrap, stamp }));
@@ -831,7 +853,14 @@ impl ServerConnection {
             return Ok(Code::TOMBSTONED);
         }
         let presence = class == Class::Presence;
-        let code = store.put(label, Put { blob_id, blob, wrap, stamp, expiry, ephemeral: class.in_memory(), presence })?;
+        let code = store.put(label, Put { blob_id, blob, wrap, stamp, expiry, ephemeral: class.in_memory(), presence, tie: self.cfg.tie, replaces: &replaced, now })?;
+        if code == Code::OK {
+            for r in &replaced {
+                if let Replaced::Untie(b) = r {
+                    self.presence.remove(&(*label, *b));
+                }
+            }
+        }
         if presence && code == Code::OK {
             self.presence.insert((*label, blob_id));
             if self.presence.len() > self.prune_at {
@@ -850,13 +879,13 @@ impl ServerConnection {
         Ok(code)
     }
 
-    /// One Delete item (spec/sync.md §5): by the head's delete key, or by a level's delete key
-    /// (checked against the blob prefix's commitment at that level) with the label key the level
-    /// needs.
-    fn delete(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, item: &DeleteItem) -> Result<Code, StoreError> {
+    /// The signatures of a delete of held entry `item.blob` (spec/sync.md §5): by the head's
+    /// delete key, or by a level's delete key (checked against the blob prefix's commitment at
+    /// that level) with the label key the level needs. The prefix (`blob_prefix`, never the
+    /// whole blob) is read only once the label signature holds.
+    fn delete_auth(&mut self, store: &dyn LabelStore, label: &LabelId, item: &DeleteItem) -> Result<Code, StoreError> {
         let Some(k) = self.keys(store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
         let Ok(digest) = delete_digest(label, &item.blob, item.at, item.by.map(|b| b.0)) else { return Ok(Code::MALFORMED) };
-        let entry = store.entry(label, &item.blob)?;
         let (key, by) = match &item.by {
             None => (StepKey::Delete, None),
             Some((level, dsig)) => match key_for_level(*level) {
@@ -865,23 +894,42 @@ impl ServerConnection {
             },
         };
         let code = check(k, key, Domain::Delete, &digest, &item.sig);
-        // A delete-key signature is checked against the blob's prefix: without the blob it cannot
-        // be (nor a tombstone revealed). The prefix (`blob_prefix`, never the whole blob) is read
-        // only for an item whose label signature holds.
         if let Some((level, dsig)) = by {
-            let prefix = match (code, &entry) {
-                (Code::REFUSED, _) | (_, None) => None,
+            let prefix = match code {
+                Code::REFUSED => None,
                 _ => store.blob_prefix(&item.blob)?.and_then(|b| Prefix::parse(&b).ok()),
             };
             if !prefix.and_then(|p| p.key_at(level)).is_some_and(|k| verify_delete(&k, &digest, dsig).is_ok()) {
                 return Ok(Code::REFUSED);
             }
         }
+        Ok(code)
+    }
+
+    /// One Delete item (spec/sync.md §5). A delete-key signature is checked against the blob's
+    /// prefix: without the entry it cannot be (nor a tombstone revealed).
+    fn delete(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, item: &DeleteItem) -> Result<Code, StoreError> {
+        if self.keys(store, label)?.is_none() {
+            return Ok(Code::UNKNOWN_LABEL);
+        }
+        if delete_digest(label, &item.blob, item.at, item.by.map(|b| b.0)).is_err() {
+            return Ok(Code::MALFORMED);
+        }
+        let entry = store.entry(label, &item.blob)?;
+        if entry.is_none() {
+            // a level's signature needs the prefix; the delete key's alone can be checked
+            if item.by.is_some() {
+                return Ok(Code::REFUSED);
+            }
+            let code = self.delete_auth(store, label, item)?;
+            if code != Code::OK {
+                return Ok(code);
+            }
+            return Ok(if store.tombstoned(label, &item.blob)? { Code::OK } else { Code::REFUSED });
+        }
+        let code = self.delete_auth(store, label, item)?;
         if code != Code::OK {
             return Ok(code);
-        }
-        if entry.is_none() {
-            return Ok(if store.tombstoned(label, &item.blob)? { Code::OK } else { Code::REFUSED });
         }
         match item.at {
             Some(WallMs(at)) if at > now => store.schedule_delete(label, &item.blob, at),
@@ -916,14 +964,14 @@ mod tests {
         let f = Fixture::new(0x10);
         let mut store = MemoryLabelStore::new([1; 32]);
         store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
-        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE, tie: 0 });
         let mut feed = |c: &mut ServerConnection, body: Vec<u8>| c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&body)));
         feed(&mut c, Hello::new(0, [2; 32]).encode());
         let out = feed(&mut c, Message::Open { id: 1, label: f.label, proof: Proof::sync(&f.sync, &f.label, &CHALLENGE, &STATIC_KEY) }.encode());
         assert!(out.iter().any(|o| matches!(o, ServerOutput::Send(b) if matches!(Message::decode(&b[4..]), Ok(Message::Opened { .. })))));
         let n = MAX_CROSSED / 2 + 1;
         for round in 0..3u32 {
-            let entries = (0..n).map(|i| Entry { blob: [round.to_be_bytes(), (i as u32).to_be_bytes()].concat(), wrap: [0; WRAP_LEN], stamp: Signature([0; 64]) }).collect();
+            let entries = (0..n).map(|i| Entry { blob: [round.to_be_bytes(), (i as u32).to_be_bytes()].concat(), wrap: [0; WRAP_LEN], stamp: Signature([0; 64]), replaces: Vec::new() }).collect();
             feed(&mut c, Message::Sync { id: 2 + round, label: f.label, cursor: None, inline_limit: 0, entries, gained: vec![] }.encode());
             assert!(c.crossed.len() <= MAX_CROSSED, "{}", c.crossed.len());
         }
@@ -931,7 +979,7 @@ mod tests {
     }
 
     fn opened(f: &Fixture, store: &mut MemoryLabelStore) -> ServerConnection {
-        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE, tie: 0 });
         c.handle(0, store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
         let open = Message::Open { id: 1, label: f.label, proof: Proof::sync(&f.sync, &f.label, &CHALLENGE, &STATIC_KEY) };
         let out = c.handle(0, store, ServerInput::Bytes(encode_frame(&open.encode())));
@@ -956,7 +1004,7 @@ mod tests {
         for i in 0..n {
             let blob = i.to_be_bytes().to_vec();
             let blob_id = osis_label::blob_id(&blob);
-            let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, presence: false };
+            let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, presence: false, tie: 0, replaces: &[], now: 0 };
             assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
             ids.push(blob_id);
         }
@@ -1002,7 +1050,7 @@ mod tests {
         let bad = Entry { stamp: Signature([0; 64]), ..e };
         for _ in 0..2 {
             // a fresh connection: nothing cached
-            let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+            let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE, tie: 0 });
             c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
             store.step_reads.set(0);
             let up = Message::Upload { id: 1, label: f.label, entries: vec![old.clone(), bad.clone()] };
@@ -1042,7 +1090,7 @@ mod tests {
             (proof(200), Some(999)),
         ];
         for (n, (pr, want)) in cases.into_iter().enumerate() {
-            let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+            let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE, tie: 0 });
             c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
             for round in 0..3u32 {
                 store.step_reads.set(0);
@@ -1097,7 +1145,7 @@ mod tests {
             }
             cases.push((Proof::claim(StepId([7; 32]), &claim, &f.label, &CHALLENGE, &STATIC_KEY), None));
             for (pr, want) in cases {
-                let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+                let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE, tie: 0 });
                 c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
                 let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Message::Open { id: 1, label: f.label, proof: pr.clone() }.encode())));
                 let m = reply(&out);
@@ -1129,7 +1177,7 @@ mod tests {
         for s in &path {
             store.push_step(&f.label, s.clone(), None).unwrap();
         }
-        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE, tie: 0 });
         c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
         let head_key = crate::store::tests::secret(1 + ((path.len() - 1) % 200) as u8);
         let open = Message::Open { id: 1, label: f.label, proof: Proof::sync(&head_key, &f.label, &CHALLENGE, &STATIC_KEY) };
@@ -1167,7 +1215,7 @@ mod tests {
         store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
         let e = f.entry(Fixture::blob(1));
         let blob_id = osis_label::blob_id(&e.blob);
-        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE, tie: 0 });
         c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
         let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Message::Upload { id: 1, label: f.label, entries: vec![e] }.encode())));
         assert!(out.iter().any(|o| matches!(o, ServerOutput::Changed(_))), "uploaded");
@@ -1192,7 +1240,7 @@ mod tests {
         let commit = osis_crypto::commitment(2, &dk.verifying_key(), &[1; 16], &[0x7e; 16]).unwrap();
         let e = f.entry(Fixture::blob_with(1, None, vec![commit]));
         let blob_id = osis_label::blob_id(&e.blob);
-        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE, tie: 0 });
         c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
         c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Message::Upload { id: 1, label: f.label, entries: vec![e] }.encode())));
         let item = DeleteItem::sign_by(&f.sync, &dk, 2, &[1; 16], &[0x7e; 16], &f.label, blob_id, None).unwrap();

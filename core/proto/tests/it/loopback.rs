@@ -36,7 +36,7 @@ impl Net {
     fn new(n: usize, server_skew: u64) -> Net {
         let mut net = Net { now: T0, server_skew, store: MemoryLabelStore::new([9; 32]), servers: vec![], clients: vec![], events: vec![], to_server: vec![], to_client: vec![], handshake: vec![], flights: 0 };
         for i in 0..n {
-            net.servers.push(ServerConnection::new(ServerConfig { static_key: [0x5e; 32], challenge: [0x40 + i as u8; 32] }));
+            net.servers.push(ServerConnection::new(ServerConfig { static_key: [0x5e; 32], challenge: [0x40 + i as u8; 32], tie: i as u64 }));
             net.clients.push(ClientSession::new(ClientConfig { peer_static_key: [0x5e; 32], challenge: [0x80 + i as u8; 32] }));
             net.events.push(vec![]);
             net.to_server.push(VecDeque::new());
@@ -595,7 +595,7 @@ fn bad_frames() {
     let so = net.servers[0].handle(T0, &mut net.store, ServerInput::Bytes(vec![0, 0, 0, 0]));
     assert!(so.contains(&ServerOutput::Close));
     assert!(net.servers[0].is_closed());
-    let mut s = ServerConnection::new(ServerConfig { static_key: [0; 32], challenge: [0; 32] });
+    let mut s = ServerConnection::new(ServerConfig { static_key: [0; 32], challenge: [0; 32], tie: 0 });
     let h = Hello { versions: vec![7], wall_ms: 0, challenge: [0; 32] };
     let so = s.handle(T0, &mut net.store, ServerInput::Bytes(encode_frame(&h.encode())));
     assert!(so.contains(&ServerOutput::Close));

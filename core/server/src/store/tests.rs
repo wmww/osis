@@ -35,7 +35,7 @@ fn blob(n: u8) -> Vec<u8> {
 }
 
 fn put(b: &[u8], stamped: bool, expiry: Option<u64>) -> Put<'_> {
-    Put { blob_id: osis_label::blob_id(b), blob: b, wrap: [b.len() as u8; WRAP_LEN], stamp: stamped.then_some(Signature([b.len() as u8; 64])), expiry, ephemeral: false, presence: false }
+    Put { blob_id: osis_label::blob_id(b), blob: b, wrap: [b.len() as u8; WRAP_LEN], stamp: stamped.then_some(Signature([b.len() as u8; 64])), expiry, ephemeral: false, presence: false, tie: 0, replaces: &[], now: 0 }
 }
 
 fn id(n: u8) -> BlobId {
@@ -368,7 +368,8 @@ fn overheads_cover_the_structures() {
         + slack(size_of::<(BlobId, (Vec<u8>, usize))>() + 1)
         + slack(size_of::<(u64, BlobId)>())
         + 2 * slack(size_of::<(u64, LabelId, BlobId)>())
-        + slack(size_of::<((LabelId, BlobId), [u8; 32])>() + 1);
+        + slack(size_of::<((LabelId, BlobId), [u8; 32])>() + 1)
+        + 32;
     assert!(entry <= ENTRY_OVERHEAD, "{entry}");
     let tomb = slack(size_of::<(BlobId, u64)>()) + slack(size_of::<(u64, LabelId, BlobId)>());
     assert!(tomb <= TOMB_OVERHEAD, "{tomb}");

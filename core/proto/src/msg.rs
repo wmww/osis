@@ -54,12 +54,65 @@ impl Code {
     pub const UNKNOWN_LABEL: Code = Code(13);
 }
 
-/// `entry := [blob, wrap, stamp]`.
+/// `entry := [blob, wrap, stamp] | [blob, wrap, stamp, [replace+]]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub blob: Vec<u8>,
     pub wrap: Wrap,
     pub stamp: Signature,
+    /// Entries this one replaces (spec/sync.md §5, Replace): removed iff it is admitted.
+    pub replaces: Vec<Replace>,
+}
+
+impl Entry {
+    /// An entry replacing nothing.
+    pub fn new(blob: Vec<u8>, wrap: Wrap, stamp: Signature) -> Entry {
+        Entry { blob, wrap, stamp, replaces: Vec::new() }
+    }
+}
+
+/// `replace := [blob_id] | [blob_id, sig] | [blob_id, level, dsig, sig]`: an entry an upload
+/// replaces, by the uploading connection's tie (own presence entries) or by the signatures a
+/// Delete of it without `at` carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Replace {
+    Untie(BlobId),
+    /// `at` is always `None`.
+    Delete(DeleteItem),
+}
+
+impl Replace {
+    pub fn blob(&self) -> BlobId {
+        match self {
+            Replace::Untie(b) => *b,
+            Replace::Delete(i) => i.blob,
+        }
+    }
+
+    fn to_value(&self) -> Value {
+        match self {
+            Replace::Untie(b) => Value::List(vec![Value::bytes(&b.0)]),
+            Replace::Delete(DeleteItem { blob, by: None, sig, .. }) => Value::List(vec![Value::bytes(&blob.0), Value::bytes(&sig.0)]),
+            Replace::Delete(DeleteItem { blob, by: Some((level, dsig)), sig, .. }) => Value::List(vec![Value::bytes(&blob.0), Value::uint(u64::from(*level)), Value::bytes(&dsig.0), Value::bytes(&sig.0)]),
+        }
+    }
+
+    fn from_value(v: Value) -> Result<Replace, Error> {
+        let mut f = Fields::range(v, 1, 4, "replace")?;
+        let blob = BlobId(f.fixed()?);
+        let r = match f.remaining() {
+            0 => Replace::Untie(blob),
+            1 => Replace::Delete(DeleteItem { blob, at: None, by: None, sig: Signature(f.fixed()?) }),
+            3 => {
+                let level = u8::try_from(f.uint()?).ok().filter(|l| (osis_base::format::DELETE_ADMIN..=osis_base::format::DELETE_WRITER).contains(l)).ok_or(Error::Malformed("replace level"))?;
+                let dsig = Signature(f.fixed()?);
+                Replace::Delete(DeleteItem { blob, at: None, by: Some((level, dsig)), sig: Signature(f.fixed()?) })
+            }
+            _ => return Err(Error::Malformed("replace")),
+        };
+        f.end()?;
+        Ok(r)
+    }
 }
 
 /// `cursor := [log_id, seq]`.
@@ -383,19 +436,39 @@ fn entry_box(v: Value) -> Result<SecretBox, Error> {
     Ok(e)
 }
 
+/// Entries of an Upload or Sync: at most `MAX_ITEMS` replace items over all of them.
 fn entries(vs: Vec<Value>) -> Result<Vec<Entry>, Error> {
+    let mut left = MAX_ITEMS;
     vs.into_iter()
         .map(|v| {
-            let mut f = Fields::exact(v, 3, "entry")?;
-            let e = Entry { blob: f.bytes(MAX_BLOB)?, wrap: f.fixed()?, stamp: Signature(f.fixed()?) };
+            let mut f = Fields::range(v, 3, 4, "entry")?;
+            let (blob, wrap, stamp) = (f.bytes(MAX_BLOB)?, f.fixed()?, Signature(f.fixed()?));
+            let replaces = match f.remaining() {
+                0 => Vec::new(),
+                _ => {
+                    let rs = f.list(1, left, "replaces")?;
+                    left -= rs.len();
+                    rs.into_iter().map(Replace::from_value).collect::<Result<_, _>>()?
+                }
+            };
             f.end()?;
-            Ok(e)
+            Ok(Entry { blob, wrap, stamp, replaces })
         })
         .collect()
 }
 
 fn entries_value(es: &[Entry]) -> Value {
-    Value::List(es.iter().map(|e| Value::List(vec![Value::bytes(&e.blob), Value::bytes(&e.wrap), Value::bytes(&e.stamp.0)])).collect())
+    Value::List(
+        es.iter()
+            .map(|e| {
+                let mut v = vec![Value::bytes(&e.blob), Value::bytes(&e.wrap), Value::bytes(&e.stamp.0)];
+                if !e.replaces.is_empty() {
+                    v.push(Value::List(e.replaces.iter().map(Replace::to_value).collect()));
+                }
+                Value::List(v)
+            })
+            .collect(),
+    )
 }
 
 fn cursor(v: Value) -> Result<Cursor, Error> {
@@ -544,7 +617,7 @@ pub fn event_size(e: &Event) -> usize {
 
 /// Upper bound on the encoded size of an entry.
 pub fn entry_size(e: &Entry) -> usize {
-    140 + e.blob.len()
+    140 + e.blob.len() + 180 * e.replaces.len()
 }
 
 #[cfg(test)]

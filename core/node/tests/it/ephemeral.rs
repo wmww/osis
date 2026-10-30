@@ -2022,14 +2022,6 @@ fn split_cover_pieces_under_different_labels_spec_sync_9() {
     net.held_servers.insert(sv);
     let acts = net.sync(a).compact_ephemeral_now().unwrap();
     net.actions(a, acts);
-    for _ in 0..20 {
-        net.feed(a, Event::Local);
-        net.round();
-    }
-    for (l, b) in &entries {
-        assert!(net.server_ids(sv, l).contains(b), "deleted before the server answered");
-    }
-    net.release();
     // the pieces that absorb `c`, each on one group's things only
     let pieces: Vec<osis_base::CommitId> = net.engine(a).held_ephemeral().into_iter().filter(|x| x.2).map(|x| x.0).collect();
     assert!(!pieces.contains(&c), "covered");
@@ -2044,16 +2036,27 @@ fn split_cover_pieces_under_different_labels_spec_sync_9() {
     }
     assert_eq!(on.len(), 2, "two pieces absorb it: {on:?}");
     let piece_blobs = |net: &mut Net, p: &osis_base::CommitId, l: &osis_base::LabelId| -> Vec<osis_base::BlobId> { net.sync(a).ephemeral_entries_of(p).into_iter().filter(|x| x.0 == *l).map(|x| x.1).collect() };
-    for _ in 0..2000 {
-        net.round();
+    // an entry goes only with (or after) its piece under that label: the piece's upload names it
+    // as replaced, so the server removes it as it admits the piece, answered or not
+    let check = |net: &mut Net| {
         for g in [g1, g2] {
             let l = labels[&g];
             let ids = net.server_ids(sv, &l);
             if !ids.contains(&entries[&l]) {
-                let pb = piece_blobs(&mut net, &on[&g], &l);
+                let pb = piece_blobs(net, &on[&g], &l);
                 assert!(!pb.is_empty() && pb.iter().all(|b| ids.contains(b)), "deleted under {g:?} before its piece was held there");
             }
         }
+    };
+    for _ in 0..20 {
+        net.feed(a, Event::Local);
+        net.round();
+        check(&mut net);
+    }
+    net.release();
+    for _ in 0..2000 {
+        net.round();
+        check(&mut net);
     }
     net.run();
     for g in [g1, g2] {

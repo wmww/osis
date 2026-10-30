@@ -23,7 +23,7 @@ use osis_base::format::{MAX_DRIFT_MS, MEMBERSHIP_KEEP_MS, TOMBSTONE_LIFETIME_MS}
 use osis_base::{BlobId, Clock, LabelId};
 use osis_crypto::{CryptoRngCore, Signature};
 use osis_proto::msg::{ClaimSet, Code, Step, StepId, WRAP_LEN};
-use osis_proto::{Budget, EntryMeta, HeadKeys, LabelStore, LogRecord, Put, StoreError};
+use osis_proto::{Budget, EntryMeta, HeadKeys, LabelStore, LogRecord, Put, Replaced, StoreError};
 use osis_store::{Backend, BackendError, KeyValue, WriteBatch};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -330,8 +330,42 @@ enum Rate {
 struct EphEntry {
     meta: EntryMeta,
     expiry: Option<u64>,
-    /// A presence entry: removed when its uploading connections close, no tombstone.
+    /// A presence entry: removed when no connection's tie holds it (`ties`, the connections
+    /// tied to it: one but rarely), no tombstone.
     presence: bool,
+    ties: Vec<u64>,
+}
+
+/// Ties `t` to a presence entry's `ties`.
+fn tie(ties: &mut Vec<u64>, t: u64) {
+    if !ties.contains(&t) {
+        ties.push(t);
+    }
+}
+
+/// Unties `t`; whether it was tied.
+fn untie(ties: &mut Vec<u64>, t: u64) -> bool {
+    let n = ties.len();
+    ties.retain(|x| *x != t);
+    ties.len() < n
+}
+
+/// What an upload's replacements remove (spec/sync.md §5, Replace), planned before it is
+/// admitted, and the room they free per cap.
+#[derive(Default)]
+struct Plan {
+    /// Entries removed (durable rows or ephemeral entries), in request order.
+    gone: Vec<BlobId>,
+    /// Presence entries this connection's tie leaves that other ties still hold.
+    untie: Vec<BlobId>,
+    /// Durable entries and bytes freed.
+    entries: u64,
+    bytes: u64,
+    /// Ephemeral memory freed in the label's plain and presence charges.
+    eph_label: u64,
+    eph_presence: u64,
+    /// Removals counted against the delete rate (presence ones are not).
+    counted: u32,
 }
 
 /// An ephemeral log record (in memory): no head records go here, so no parsed step.
@@ -393,9 +427,9 @@ enum Charge {
 
 /// Memory charged per ephemeral entry besides its blob bytes: the entry map's key and value
 /// (about 170 bytes), the blob map's entry, the eviction order and due-time index entries and an
-/// origin entry, each with its map's node overhead (checked against the type sizes by
-/// `overheads_cover_the_structures`). Not a tunable: what an entry really costs.
-const ENTRY_OVERHEAD: u64 = 768;
+/// origin entry, a presence entry's tie, each with its map's node overhead (checked against the
+/// type sizes by `overheads_cover_the_structures`). Not a tunable: what an entry really costs.
+const ENTRY_OVERHEAD: u64 = 896;
 /// Memory charged per ephemeral tombstone (map entry and due-time index entry).
 const TOMB_OVERHEAD: u64 = 160;
 /// Memory charged per ephemeral log record.
@@ -728,15 +762,21 @@ impl<B: Backend> BackendStore<B> {
     /// Adds or replaces an ephemeral entry (spec/sync.md §4, §5): stamped only; past the label's
     /// ephemeral cap (after trimming its log) code 12; past the node's, the label charged most
     /// gives way; a wrap replacement is rate-limited like a durable one.
-    fn eph_put(&mut self, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError> {
+    fn eph_put(&mut self, label: &LabelId, put: Put<'_>, plan: &Plan) -> Result<Code, StoreError> {
         let Some(stamp) = put.stamp else { return Ok(Code::REFUSED) };
         let held = self.eph.labels.get(label).and_then(|e| e.entries.get(&put.blob_id)).cloned();
         if let Some(h) = &held
             && h.meta.wrap == put.wrap
             && h.meta.stamp == Some(stamp)
         {
+            if h.presence
+                && let Some(e) = self.eph.labels.get_mut(label).and_then(|e| e.entries.get_mut(&put.blob_id))
+            {
+                tie(&mut e.ties, put.tie);
+            }
             return Ok(Code::OK);
         }
+        let freed = plan.eph_label.saturating_add(plan.eph_presence);
         let now = self.now();
         self.rates.roll(now, self.policy.window_ms);
         let size = put.blob.len() as u64;
@@ -751,12 +791,12 @@ impl<B: Backend> BackendStore<B> {
             }
             None if put.presence => {
                 let need = size.saturating_add(ENTRY_OVERHEAD).saturating_add(REC_OVERHEAD);
-                let used = |s: &Self| s.eph.labels.get(label).map_or(0, |e| e.presence);
+                let used = |s: &Self| s.eph.labels.get(label).map_or(0, |e| e.presence).saturating_sub(plan.eph_presence);
                 while used(self).saturating_add(need) > self.policy.presence_bytes && self.eph.trim_log(label) {}
                 if used(self).saturating_add(need) > self.policy.presence_bytes {
                     return Ok(Code::STORAGE_CAP);
                 }
-                while self.eph.total.saturating_add(need) > self.policy.ephemeral_total {
+                while self.eph.total.saturating_sub(freed).saturating_add(need) > self.policy.ephemeral_total {
                     if !self.eph_evict()? {
                         return Ok(Code::STORAGE_CAP);
                     }
@@ -764,12 +804,12 @@ impl<B: Backend> BackendStore<B> {
             }
             None => {
                 let need = size.saturating_add(ENTRY_OVERHEAD).saturating_add(REC_OVERHEAD);
-                let used = |s: &Self| s.eph.labels.get(label).map_or(0, |e| e.bytes);
+                let used = |s: &Self| s.eph.labels.get(label).map_or(0, |e| e.bytes).saturating_sub(plan.eph_label);
                 while used(self).saturating_add(need) > self.policy.ephemeral_bytes && self.eph.trim_log(label) {}
                 if used(self).saturating_add(need) > self.policy.ephemeral_bytes {
                     return Ok(Code::STORAGE_CAP);
                 }
-                while self.eph.total.saturating_add(need) > self.policy.ephemeral_total {
+                while self.eph.total.saturating_sub(freed).saturating_add(need) > self.policy.ephemeral_total {
                     if !self.eph_evict()? {
                         return Ok(Code::STORAGE_CAP);
                     }
@@ -782,12 +822,17 @@ impl<B: Backend> BackendStore<B> {
                 let e = self.eph.labels.entry(*label).or_default();
                 e.order.remove(&h.meta.add_seq);
                 e.order.insert(seq, put.blob_id);
-                e.entries.insert(put.blob_id, EphEntry { meta: EntryMeta { wrap: put.wrap, stamp: Some(stamp), add_seq: seq, ..h.meta }, expiry: h.expiry, presence: h.presence });
+                let mut ties = h.ties;
+                if h.presence {
+                    tie(&mut ties, put.tie);
+                }
+                e.entries.insert(put.blob_id, EphEntry { meta: EntryMeta { wrap: put.wrap, stamp: Some(stamp), add_seq: seq, ..h.meta }, expiry: h.expiry, presence: h.presence, ties });
             }
             None => {
                 let e = self.eph.labels.entry(*label).or_default();
                 e.order.insert(seq, put.blob_id);
-                e.entries.insert(put.blob_id, EphEntry { meta: EntryMeta { wrap: put.wrap, stamp: Some(stamp), size, add_seq: seq, pending_delete: None }, expiry: put.expiry, presence: put.presence });
+                let ties = if put.presence { vec![put.tie] } else { Vec::new() };
+                e.entries.insert(put.blob_id, EphEntry { meta: EntryMeta { wrap: put.wrap, stamp: Some(stamp), size, add_seq: seq, pending_delete: None }, expiry: put.expiry, presence: put.presence, ties });
                 if let Some(t) = put.expiry {
                     self.eph.due.insert((t, *label, put.blob_id));
                 }
@@ -807,6 +852,166 @@ impl<B: Backend> BackendStore<B> {
             }
         }
         Ok(Code::OK)
+    }
+
+    /// Adds or replaces a durable entry (spec/sync.md §4, §5): past the label's or the node's
+    /// cap, the room `plan`'s removals free counted, code 12.
+    fn durable_put(&mut self, label: &LabelId, put: Put<'_>, held: Option<Row>, plan: &Plan) -> Result<Code, StoreError> {
+        let mut tx = self.tx(label)?;
+        if let Some(r) = &held
+            && (put.stamp.is_none() || (r.meta.wrap == put.wrap && r.meta.stamp == put.stamp))
+        {
+            return Ok(Code::OK);
+        }
+        let size = put.blob.len() as u64;
+        let now = self.now();
+        self.rates.roll(now, self.policy.window_ms);
+        let p = &self.policy;
+        match &held {
+            Some(_) => {
+                let n = self.rates.entries.get(&(*label, put.blob_id)).copied().unwrap_or(0);
+                if n >= p.entry_replacements || !self.rates.take(label, Rate::Replace, p.replacements) {
+                    return Ok(Code::RATE_LIMITED);
+                }
+                self.rates.entries.insert((*label, put.blob_id), n + 1);
+            }
+            None => {
+                let m = &tx.meta;
+                let (entries, bytes) = (m.entries.saturating_sub(plan.entries), m.bytes.saturating_sub(plan.bytes));
+                if entries.saturating_add(1) > p.cap_entries || bytes.saturating_add(size) > p.cap_bytes {
+                    return Ok(Code::STORAGE_CAP);
+                }
+                let t = self.totals()?;
+                let p = &self.policy;
+                let (entries, bytes) = (t.entries.saturating_sub(plan.entries), t.bytes.saturating_sub(plan.bytes));
+                if entries.saturating_add(1) > p.max_entries || bytes.saturating_add(size) > p.max_bytes {
+                    return Ok(Code::STORAGE_CAP);
+                }
+                if put.stamp.is_none() {
+                    let max = self.budget_max(m);
+                    if m.dep_n.saturating_add(1) > max || m.dep_bytes.saturating_add(size) > max.saturating_mul(DEPOSIT_ENTRY_BYTES) {
+                        return Ok(Code::BUDGET_FULL);
+                    }
+                    if !self.rates.take(label, Rate::Deposit, p.deposits) {
+                        return Ok(Code::RATE_LIMITED);
+                    }
+                }
+            }
+        }
+        let seq = tx.append(&LogRecord::Added(put.blob_id));
+        let l = label.0;
+        let row = match held {
+            Some(old) => {
+                if old.meta.stamp.is_none() {
+                    tx.meta.dep_n = tx.meta.dep_n.saturating_sub(1);
+                    tx.meta.dep_bytes = tx.meta.dep_bytes.saturating_sub(old.meta.size);
+                }
+                Row { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, add_seq: seq, ..old.meta }, expiry: old.expiry }
+            }
+            None => {
+                tx.meta.entries += 1;
+                tx.meta.bytes = tx.meta.bytes.saturating_add(size);
+                if put.stamp.is_none() {
+                    tx.meta.dep_n += 1;
+                    tx.meta.dep_bytes = tx.meta.dep_bytes.saturating_add(size);
+                }
+                if let Some(t) = put.expiry {
+                    tx.batch.put(key(b'X', &[&be(t), &l, &put.blob_id.0]), vec![]);
+                }
+                let (refs, _) = self.refs(&put.blob_id)?;
+                if refs == 0 {
+                    tx.batch.put_blob(put.blob_id, put.blob.to_vec());
+                }
+                let prefix = put.blob.get(..osis_label::MAX_PREFIX_LEN).unwrap_or(put.blob);
+                tx.batch.put(key(b'R', &[&put.blob_id.0]), [&be(refs + 1)[..], prefix].concat());
+                Row { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, size, add_seq: seq, pending_delete: None }, expiry: put.expiry }
+            }
+        };
+        tx.batch.put(key(b'E', &[&l, &put.blob_id.0]), row.encode());
+        self.commit(tx)?;
+        match self.origin {
+            Some(o) => {
+                if self.origins.len() >= MAX_ORIGINS {
+                    self.origins.clear();
+                }
+                self.origins.insert((*label, put.blob_id), o);
+            }
+            None => {
+                self.origins.remove(&(*label, put.blob_id));
+            }
+        }
+        Ok(Code::OK)
+    }
+
+    /// Plans `put`'s replacements (spec/sync.md §5, Replace): what goes, what is only untied,
+    /// the room freed. Code 1 for an untie of a held entry this connection's tie does not hold.
+    fn plan(&self, label: &LabelId, put: &Put<'_>) -> Result<Result<Plan, Code>, StoreError> {
+        let mut plan = Plan::default();
+        let mut seen = BTreeSet::new();
+        for r in put.replaces {
+            let (b, untie) = match *r {
+                Replaced::Delete(b) => (b, false),
+                Replaced::Untie(b) => (b, true),
+            };
+            if b == put.blob_id || !seen.insert(b) {
+                continue;
+            }
+            if let Some(e) = self.eph_entry(label, &b) {
+                if untie {
+                    if !e.presence || !e.ties.contains(&put.tie) {
+                        return Ok(Err(Code::REFUSED));
+                    }
+                    if e.ties.len() > 1 {
+                        plan.untie.push(b);
+                        continue;
+                    }
+                }
+                let n = e.meta.size.saturating_add(ENTRY_OVERHEAD);
+                if e.presence {
+                    plan.eph_presence = plan.eph_presence.saturating_add(n);
+                } else {
+                    plan.eph_label = plan.eph_label.saturating_add(n);
+                    plan.counted += 1;
+                }
+                plan.gone.push(b);
+            } else if let Some(row) = self.row(label, &b)? {
+                if untie {
+                    return Ok(Err(Code::REFUSED));
+                }
+                plan.entries += 1;
+                plan.bytes = plan.bytes.saturating_add(row.meta.size);
+                plan.counted += 1;
+                plan.gone.push(b);
+            }
+        }
+        Ok(Ok(plan))
+    }
+
+    /// Carries out a planned replacement once its upload was admitted (logged after the add):
+    /// each entry removed as a Delete removes it, the untied ones lose this connection's tie.
+    fn replace(&mut self, label: &LabelId, plan: &Plan, tie: u64, now: u64) -> Result<(), StoreError> {
+        if plan.gone.is_empty() && plan.untie.is_empty() {
+            return Ok(());
+        }
+        for b in &plan.untie {
+            if let Some(e) = self.eph.labels.get_mut(label).and_then(|e| e.entries.get_mut(b)) {
+                untie(&mut e.ties, tie);
+            }
+        }
+        let mut tx = self.tx(label)?;
+        let mut durable = false;
+        for b in &plan.gone {
+            if self.eph_entry(label, b).is_some() {
+                self.eph_remove(label, b, EphRemove::Delete(now))?;
+            } else if let Some(row) = self.row(label, b)? {
+                self.remove(&mut tx, b, &row, Some(now))?;
+                durable = true;
+            }
+        }
+        if durable {
+            self.commit(tx)?;
+        }
+        Ok(())
     }
 
     fn eph_entry(&self, label: &LabelId, blob: &BlobId) -> Option<&EphEntry> {
@@ -1145,93 +1350,31 @@ impl<B: Backend> LabelStore for BackendStore<B> {
     }
 
     fn put(&mut self, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError> {
-        let mut tx = self.tx(label)?;
-        let held = self.row(label, &put.blob_id)?;
-        // an ephemeral blob (unless the same blob is held as a durable entry) stays in memory
-        if (put.ephemeral && held.is_none()) || self.eph_entry(label, &put.blob_id).is_some() {
-            return self.eph_put(label, put);
-        }
-        if let Some(r) = &held
-            && (put.stamp.is_none() || (r.meta.wrap == put.wrap && r.meta.stamp == put.stamp))
-        {
-            return Ok(Code::OK);
-        }
-        let size = put.blob.len() as u64;
-        let now = self.now();
-        self.rates.roll(now, self.policy.window_ms);
-        let p = &self.policy;
-        match &held {
-            Some(_) => {
-                let n = self.rates.entries.get(&(*label, put.blob_id)).copied().unwrap_or(0);
-                if n >= p.entry_replacements || !self.rates.take(label, Rate::Replace, p.replacements) {
+        let plan = match self.plan(label, &put)? {
+            Ok(p) => p,
+            Err(code) => return Ok(code),
+        };
+        // the removals count against the delete rate (taken even if the upload is then refused
+        // for its cap: a minor overcount)
+        if plan.counted > 0 {
+            self.rates.roll(self.now(), self.policy.window_ms);
+            for _ in 0..plan.counted {
+                if !self.rates.take(label, Rate::Delete, self.policy.deletes) {
                     return Ok(Code::RATE_LIMITED);
                 }
-                self.rates.entries.insert((*label, put.blob_id), n + 1);
-            }
-            None => {
-                let m = &tx.meta;
-                if m.entries.saturating_add(1) > p.cap_entries || m.bytes.saturating_add(size) > p.cap_bytes {
-                    return Ok(Code::STORAGE_CAP);
-                }
-                let t = self.totals()?;
-                let p = &self.policy;
-                if t.entries.saturating_add(1) > p.max_entries || t.bytes.saturating_add(size) > p.max_bytes {
-                    return Ok(Code::STORAGE_CAP);
-                }
-                if put.stamp.is_none() {
-                    let max = self.budget_max(m);
-                    if m.dep_n.saturating_add(1) > max || m.dep_bytes.saturating_add(size) > max.saturating_mul(DEPOSIT_ENTRY_BYTES) {
-                        return Ok(Code::BUDGET_FULL);
-                    }
-                    if !self.rates.take(label, Rate::Deposit, p.deposits) {
-                        return Ok(Code::RATE_LIMITED);
-                    }
-                }
             }
         }
-        let seq = tx.append(&LogRecord::Added(put.blob_id));
-        let l = label.0;
-        let row = match held {
-            Some(old) => {
-                if old.meta.stamp.is_none() {
-                    tx.meta.dep_n = tx.meta.dep_n.saturating_sub(1);
-                    tx.meta.dep_bytes = tx.meta.dep_bytes.saturating_sub(old.meta.size);
-                }
-                Row { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, add_seq: seq, ..old.meta }, expiry: old.expiry }
-            }
-            None => {
-                tx.meta.entries += 1;
-                tx.meta.bytes = tx.meta.bytes.saturating_add(size);
-                if put.stamp.is_none() {
-                    tx.meta.dep_n += 1;
-                    tx.meta.dep_bytes = tx.meta.dep_bytes.saturating_add(size);
-                }
-                if let Some(t) = put.expiry {
-                    tx.batch.put(key(b'X', &[&be(t), &l, &put.blob_id.0]), vec![]);
-                }
-                let (refs, _) = self.refs(&put.blob_id)?;
-                if refs == 0 {
-                    tx.batch.put_blob(put.blob_id, put.blob.to_vec());
-                }
-                let prefix = put.blob.get(..osis_label::MAX_PREFIX_LEN).unwrap_or(put.blob);
-                tx.batch.put(key(b'R', &[&put.blob_id.0]), [&be(refs + 1)[..], prefix].concat());
-                Row { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, size, add_seq: seq, pending_delete: None }, expiry: put.expiry }
-            }
+        let held = self.row(label, &put.blob_id)?;
+        // an ephemeral blob (unless the same blob is held as a durable entry) stays in memory
+        let code = if (put.ephemeral && held.is_none()) || self.eph_entry(label, &put.blob_id).is_some() {
+            self.eph_put(label, put, &plan)?
+        } else {
+            self.durable_put(label, put, held, &plan)?
         };
-        tx.batch.put(key(b'E', &[&l, &put.blob_id.0]), row.encode());
-        self.commit(tx)?;
-        match self.origin {
-            Some(o) => {
-                if self.origins.len() >= MAX_ORIGINS {
-                    self.origins.clear();
-                }
-                self.origins.insert((*label, put.blob_id), o);
-            }
-            None => {
-                self.origins.remove(&(*label, put.blob_id));
-            }
+        if code == Code::OK {
+            self.replace(label, &plan, put.tie, put.now)?;
         }
-        Ok(Code::OK)
+        Ok(code)
     }
 
     fn budget(&self, label: &LabelId) -> Result<Budget, StoreError> {
@@ -1243,7 +1386,7 @@ impl<B: Backend> LabelStore for BackendStore<B> {
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError> {
         if let Some(e) = self.eph_entry(label, blob_id) {
             // a presence entry's delete is not counted: it leaves no tombstone and costs what its
-            // upload did, which no rate bounds (an author deletes its previous entry per update)
+            // upload did, which no rate bounds
             let presence = e.presence;
             self.rates.roll(self.now(), self.policy.window_ms);
             if !presence && !self.rates.take(label, Rate::Delete, self.policy.deletes) {
@@ -1388,8 +1531,9 @@ impl<B: Backend> LabelStore for BackendStore<B> {
         Ok(self.relays.admit(label, blob_id, size, expiry, now))
     }
 
-    fn presence_gone(&mut self, label: &LabelId, blob_id: &BlobId) -> Result<bool, StoreError> {
-        if !self.eph_entry(label, blob_id).is_some_and(|e| e.presence) {
+    fn untie(&mut self, label: &LabelId, blob_id: &BlobId, tie: u64) -> Result<bool, StoreError> {
+        let Some(e) = self.eph.labels.get_mut(label).and_then(|e| e.entries.get_mut(blob_id)) else { return Ok(false) };
+        if !e.presence || !untie(&mut e.ties, tie) || !e.ties.is_empty() {
             return Ok(false);
         }
         self.eph_remove(label, blob_id, EphRemove::Evict)

@@ -293,8 +293,8 @@ fn relay_replay_flood_bounded_spec_sync_5() {
 #[test]
 fn ephemeral_entries_in_memory() {
     let mut w = World::new();
-    // two entries fit with their per-entry overhead (about 900 bytes each), three do not
-    let policy = Policy { ephemeral_bytes: 2_000, ..Policy::default() };
+    // two entries fit with their per-entry overhead (about 1000 bytes each), three do not
+    let policy = Policy { ephemeral_bytes: 2_400, ..Policy::default() };
     let h = w.add_hub(policy.clone());
     let (a, b) = (w.connect(h), w.connect(h));
     let l = Label::new(3);
@@ -308,7 +308,7 @@ fn ephemeral_entries_in_memory() {
     let reserve = w.backends[h].scan(&[], None, usize::MAX).unwrap().len();
     assert_eq!(reserve, rows, "only the label meta row changed (sequence reservation)");
     let charged = w.hubs[h].store().ephemeral_bytes(&l.id);
-    assert!(charged > (eph[0].len() + eph[1].len()) as u64 && charged <= 2_000, "blobs and their overhead: {charged}");
+    assert!(charged > (eph[0].len() + eph[1].len()) as u64 && charged <= 2_400, "blobs and their overhead: {charged}");
     let (evs, cursor) = events_of(&w.run(b, sync(l.id, None, vec![], vec![])));
     let ids: Vec<BlobId> = eph[..2].iter().map(|e| osis_label::blob_id(e)).collect();
     assert_eq!(sorted(added(&evs)), sorted(ids.clone()));
@@ -373,6 +373,73 @@ fn presence_entries_tied_to_connection_spec_sync_5() {
     let a2 = w.connect(h);
     w.open(a2, &l);
     assert_eq!(statuses(&w.run(a2, Command::Upload { label: l.id, entries: vec![l.entry(p.clone())] })), vec![Code::OK]);
+}
+
+// spec/sync.md §5 (Replace): an upload's own presence entries go by the connection's tie, logged
+// after the new entry; a replayer naming another connection's entry is refused and changes
+// nothing; an entry tied elsewhere too only loses this tie; an untie of a durable entry is refused
+#[test]
+fn upload_replaces_by_tie_spec_sync_5() {
+    let mut w = World::new();
+    let h = w.add_hub(Policy::default());
+    let (a, b, c) = (w.connect(h), w.connect(h), w.connect(h));
+    let l = Label::new(3);
+    w.setup(a, &l);
+    for x in [a, b, c] {
+        w.open(x, &l);
+    }
+    w.run(c, Command::Subscribe { labels: vec![l.id] });
+    let p: Vec<Vec<u8>> = (1..=5).map(|n| classed(n, osis_label::Class::Presence)).collect();
+    let id: Vec<BlobId> = p.iter().map(|x| osis_label::blob_id(x)).collect();
+    let with = |e: &[u8], r: Vec<Replace>| Entry { replaces: r, ..l.entry(e.to_vec()) };
+    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(p[0].clone())] })), vec![Code::OK]);
+    w.take(c);
+    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![with(&p[1], vec![Replace::Untie(id[0])])] })), vec![Code::OK]);
+    let (pushed, _) = events_of(&w.take(c));
+    assert_eq!(added(&pushed), vec![id[1]]);
+    assert_eq!(pushed.last(), Some(&Event::Deleted(id[0])), "the replaced entry goes after the new one is added");
+    // a replay on another connection: refused, nothing changes
+    let ev = w.run(b, Command::Upload { label: l.id, entries: vec![with(&p[2], vec![Replace::Untie(id[1])])] });
+    assert_eq!(statuses(&ev), vec![Code::REFUSED]);
+    let live = osis_proto::LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap();
+    assert!(live.contains(&id[1]) && !live.contains(&id[2]), "{live:?}");
+    // the same replay naming an entry no longer held replaces nothing and is taken
+    assert_eq!(statuses(&w.run(b, Command::Upload { label: l.id, entries: vec![with(&p[2], vec![Replace::Untie(id[0])])] })), vec![Code::OK]);
+    // tied to a and b: a's replacement only unties a
+    assert_eq!(statuses(&w.run(b, Command::Upload { label: l.id, entries: vec![l.entry(p[1].clone())] })), vec![Code::OK]);
+    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![with(&p[3], vec![Replace::Untie(id[1])])] })), vec![Code::OK]);
+    let live = osis_proto::LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap();
+    assert!(live.contains(&id[1]) && live.contains(&id[3]), "b still holds it");
+    w.cut(b);
+    let live = osis_proto::LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap();
+    assert!(!live.contains(&id[1]) && !live.contains(&id[2]), "gone with b's tie: {live:?}");
+    // a durable entry is never untied
+    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(7))] })), vec![Code::OK]);
+    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![with(&p[4], vec![Replace::Untie(bid(7))])] })), vec![Code::REFUSED]);
+}
+
+// spec/sync.md §5 (Replace), §7: on a label at its entry cap, an upload naming a held entry with
+// its delete proof is admitted in the room it frees and removes it in the same step (a tombstone
+// as a Delete leaves); a bad proof refuses the upload and removes nothing
+#[test]
+fn upload_replaces_by_delete_proof_at_cap_spec_sync_5() {
+    let mut w = World::new();
+    let h = w.add_hub(Policy { cap_entries: 3, ..Policy::default() });
+    let a = w.connect(h);
+    let l = Label::new(3);
+    w.setup(a, &l);
+    w.open(a, &l);
+    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: (0..3).map(|n| l.entry(blob(n))).collect() })), vec![Code::OK; 3]);
+    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(3))] })), vec![Code::STORAGE_CAP]);
+    let item = |n: u64, k: &SigningSecret| DeleteItem::sign(k, &l.id, bid(n), None).unwrap();
+    let with = |n: u64, r: Vec<Replace>| Entry { replaces: r, ..l.entry(blob(n)) };
+    let bad = item(0, &l.head_keys().write.clone());
+    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![with(3, vec![Replace::Delete(bad)])] })), vec![Code::REFUSED]);
+    let good = item(0, &l.head_keys().delete.clone());
+    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![with(3, vec![Replace::Delete(good)])] })), vec![Code::OK]);
+    let live = osis_proto::LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap();
+    assert_eq!(live, sorted(vec![bid(1), bid(2), bid(3)]));
+    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(0))] })), vec![Code::TOMBSTONED]);
 }
 
 // spec/sync.md §5: blind-to-blind replication is push only: steps with claim sets and stamped entries reach the peer; deposits and deletions do not travel

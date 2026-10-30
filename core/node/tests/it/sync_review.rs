@@ -190,10 +190,11 @@ fn purged_body_waits_for_its_rewrite_spec_sync_7() {
     assert_eq!(net.engine(b).get(&t, &gone).unwrap(), None);
 }
 
-// spec/sync.md §7 (the purged body goes first when the label refuses its rewrite for the cap),
-// spec/requirements.md (purge is prompt): as above, but the label is at its entry cap, so a's
-// rewrite q is refused (code 12); p, which would stay as long as the label is full, is deleted
-// and q goes up at once in the space it freed.
+// spec/sync.md §7 (a rewrite the label refuses for its cap goes up again replacing the purged
+// body), §5 (Replace), spec/requirements.md (purge is prompt): as above, but the label is at its
+// entry cap, so a's rewrite q is refused (code 12); q goes up again naming p as replaced, and the
+// server admits it in p's room and removes p in one step: after every hop the server holds p or
+// q (the kept live write is never absent), and ends with q only.
 #[test]
 fn purged_body_leaves_full_label_spec_sync_7() {
     let mut net = Net::new();
@@ -223,13 +224,22 @@ fn purged_body_leaves_full_label_spec_sync_7() {
     m.remove_aspect(t, &GONE).unwrap();
     net.engine(a).commit(m).unwrap();
     net.feed(a, Event::Local);
+    let (up, del) = (net.sent_kinds.get(&10).copied().unwrap_or(0), net.sent_kinds.get(&14).copied().unwrap_or(0));
+    for _ in 0..200 {
+        net.round();
+        let ids = net.server_ids(sv, &l);
+        let q: Vec<_> = blobs_of(&mut net, a, &l, &c).into_iter().filter(|id| !p.contains(id)).collect();
+        assert!(ids.contains(&p[0]) || q.iter().any(|x| ids.contains(x)), "neither p nor its rewrite at the server");
+    }
     net.run();
     diags(&mut net, &[a, b]);
     let q: Vec<_> = blobs_of(&mut net, a, &l, &c).into_iter().filter(|id| !p.contains(id)).collect();
     assert_eq!(q.len(), 1, "a's rewrite placed");
     let ids = net.server_ids(sv, &l);
     assert!(!ids.contains(&p[0]), "p deleted though its rewrite was refused");
-    assert!(ids.contains(&q[0]), "q uploaded in the space p freed");
+    assert!(ids.contains(&q[0]), "q uploaded in the room p freed");
+    assert!(net.sent_kinds.get(&10).copied().unwrap_or(0) > up, "uploads sent");
+    assert_eq!(net.sent_kinds.get(&14).copied().unwrap_or(0), del, "p went by the replacing upload, no Delete");
     assert_eq!(ids.len() as u64, full, "the label stays full (the purge request itself waits for space)");
 }
 

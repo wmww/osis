@@ -67,7 +67,7 @@ impl Run {
         let mut r = Run {
             now: T0,
             client: ClientSession::new(ClientConfig { peer_static_key: [0x5e; 32], challenge: [0x80; 32] }),
-            server: ServerConnection::new(ServerConfig { static_key: [0x5e; 32], challenge: [0x40; 32] }),
+            server: ServerConnection::new(ServerConfig { static_key: [0x5e; 32], challenge: [0x40; 32], tie: 0 }),
             store: MemoryLabelStore::new([9; 32]),
             // the node's `MAX_QUEUED` and the server's default `max_queued_bytes`
             up: Pipe::new(64 << 20),
@@ -213,7 +213,7 @@ fn pushes_to_slow_subscriber_spec_sync_6() {
     r.command(Command::Sync { label: l.id, cursor: None, inline_limit: 8 << 20, entries: vec![], gained: vec![] }, rate, step_ms);
     r.command(Command::Subscribe { labels: vec![l.id] }, rate, step_ms);
     // another connection uploads 72 MiB at once
-    let mut w = ServerConnection::new(ServerConfig { static_key: [0x5e; 32], challenge: [0x41; 32] });
+    let mut w = ServerConnection::new(ServerConfig { static_key: [0x5e; 32], challenge: [0x41; 32], tie: 0 });
     w.handle(r.now, &mut r.store, ServerInput::Start);
     w.handle(r.now, &mut r.store, ServerInput::Bytes(encode_frame(&Hello::new(r.now, [7; 32]).encode())));
     let mut ids = Vec::new();
@@ -285,7 +285,7 @@ fn held_back_requests_count_unanswered_spec_sync_6() {
 
 /// Another connection on `r`'s store, past its Hellos.
 fn writer(r: &mut Run) -> ServerConnection {
-    let mut w = ServerConnection::new(ServerConfig { static_key: [0x5e; 32], challenge: [0x41; 32] });
+    let mut w = ServerConnection::new(ServerConfig { static_key: [0x5e; 32], challenge: [0x41; 32], tie: 0 });
     w.handle(r.now, &mut r.store, ServerInput::Start);
     w.handle(r.now, &mut r.store, ServerInput::Bytes(encode_frame(&Hello::new(r.now, [7; 32]).encode())));
     w
