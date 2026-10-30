@@ -3,7 +3,7 @@
 //! deletes by the label delete key or by a delete-key signature.
 
 use crate::blob::{Level, Prefix};
-use crate::cbor::{bytes, get_bytes, get_key, get_opt, get_uint, opt, uint};
+use crate::cbor::{get_bytes, get_key, get_opt, get_uint, uint};
 use crate::step::{ClaimSet, Step, StepId};
 use crate::Error;
 use osis_base::cbor::encode;
@@ -42,10 +42,10 @@ impl Proof {
 
     pub fn to_value(&self) -> Value {
         Value::List(match self {
-            Proof::Sync { pk, sig } => vec![Value::Int(0), bytes(&pk.to_bytes()), bytes(&sig.0)],
-            Proof::Claim { step, pk, sig } => vec![Value::Int(1), bytes(&step.0), bytes(&pk.to_bytes()), bytes(&sig.0)],
-            Proof::Static { signing, sig } => vec![Value::Int(2), bytes(&signing.to_bytes()), bytes(&sig.0)],
-            Proof::Member { dialable, sig } => vec![Value::Int(3), bytes(&dialable.to_bytes()), bytes(&sig.0)],
+            Proof::Sync { pk, sig } => vec![Value::Int(0), Value::bytes(&pk.to_bytes()), Value::bytes(&sig.0)],
+            Proof::Claim { step, pk, sig } => vec![Value::Int(1), Value::bytes(&step.0), Value::bytes(&pk.to_bytes()), Value::bytes(&sig.0)],
+            Proof::Static { signing, sig } => vec![Value::Int(2), Value::bytes(&signing.to_bytes()), Value::bytes(&sig.0)],
+            Proof::Member { dialable, sig } => vec![Value::Int(3), Value::bytes(&dialable.to_bytes()), Value::bytes(&sig.0)],
         })
     }
 
@@ -127,7 +127,7 @@ pub fn evaluate_open<'a>(
 /// Digest of a stamp, deposit or publish authorization: BLAKE3 of canonical
 /// `[label_id, blob_id, wrap]`.
 pub fn entry_digest(label: &LabelId, blob: &BlobId, wrap: &[u8]) -> [u8; 32] {
-    osis_base::hash::hash(&encode(&Value::List(vec![bytes(&label.0), bytes(&blob.0), bytes(wrap)])))
+    osis_base::hash::hash(&encode(&Value::List(vec![Value::bytes(&label.0), Value::bytes(&blob.0), Value::bytes(wrap)])))
 }
 
 /// A stamp: the label write key's signature under `"osis v1 upload"`.
@@ -170,7 +170,7 @@ pub struct DeleteItem {
 /// Digest of a delete: BLAKE3 of canonical `[label_id, blob_id, Opt(at), Opt(level)]`.
 pub fn delete_digest(label: &LabelId, blob: &BlobId, at: Option<WallMs>, level: Option<Level>) -> Result<[u8; 32], Error> {
     let at = at.map(|t| uint(t.0)).transpose()?;
-    let v = Value::List(vec![bytes(&label.0), bytes(&blob.0), opt(at), opt(level.map(|l| Value::Int(i64::from(l))))]);
+    let v = Value::List(vec![Value::bytes(&label.0), Value::bytes(&blob.0), Value::opt(at), Value::opt(level.map(|l| Value::Int(i64::from(l))))]);
     Ok(osis_base::hash::hash(&encode(&v)))
 }
 
@@ -207,8 +207,8 @@ impl DeleteItem {
 
     pub fn to_value(&self) -> Result<Value, Error> {
         let at = self.at.map(|t| uint(t.0)).transpose()?;
-        let by = self.by.map(|(l, s)| Value::List(vec![Value::Int(i64::from(l)), bytes(&s.0)]));
-        Ok(Value::List(vec![bytes(&self.blob.0), opt(at), opt(by), bytes(&self.sig.0)]))
+        let by = self.by.map(|(l, s)| Value::List(vec![Value::Int(i64::from(l)), Value::bytes(&s.0)]));
+        Ok(Value::List(vec![Value::bytes(&self.blob.0), Value::opt(at), Value::opt(by), Value::bytes(&self.sig.0)]))
     }
 
     pub fn from_value(v: &Value) -> Result<DeleteItem, Error> {
@@ -342,7 +342,7 @@ mod tests {
         assert_eq!(DeleteItem::from_value(&item.to_value().unwrap()).unwrap(), item);
         let mut v = item.to_value().unwrap();
         if let Value::List(x) = &mut v {
-            x[2] = opt(Some(Value::List(vec![Value::Int(4), bytes(&[0; 64])])));
+            x[2] = Value::opt(Some(Value::List(vec![Value::Int(4), Value::bytes(&[0; 64])])));
         }
         assert!(DeleteItem::from_value(&v).is_err());
         assert!(key_for_level(0).is_err());

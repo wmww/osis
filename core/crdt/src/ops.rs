@@ -126,10 +126,7 @@ pub struct PathOp {
 }
 
 fn int_key(k: &Value) -> Result<u64, Error> {
-    match k {
-        Value::Int(i) => u64::try_from(*i).map_err(|_| Error::Mismatch("negative field id")),
-        _ => Err(Error::Mismatch("struct key is not an int")),
-    }
+    k.as_uint().ok_or(Error::Mismatch("struct key is not a uint"))
 }
 
 fn number(v: &Value) -> Result<(), Error> {

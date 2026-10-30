@@ -3,7 +3,7 @@
 
 use crate::addr::{Address, address_from_value};
 use osis_base::base64url;
-use crate::cbor::{bytes, get_bytes, get_tid, get_uint, tid};
+use crate::cbor::{get_bytes, get_tid, get_uint, tid};
 use crate::Error;
 use osis_base::cbor::{Limits, decode, encode};
 use osis_base::format::MAX_URL_BYTES;
@@ -103,14 +103,14 @@ impl ShareLink {
                 return Err(Error::Malformed("more than 4 relays"));
             }
             p.relays.iter().try_for_each(|r| check_url(r))?;
-            peers.push(Value::List(vec![bytes(&p.dialable), Value::List(p.relays.iter().map(|r| Value::Str(r.clone())).collect())]));
+            peers.push(Value::List(vec![Value::bytes(&p.dialable), Value::List(p.relays.iter().map(|r| Value::Str(r.clone())).collect())]));
         }
         let mut v = vec![
             Value::Int(FORMAT),
-            bytes(self.seed.expose()),
+            Value::bytes(self.seed.expose()),
             tid(&self.target),
             tid(&self.k),
-            bytes(&self.k_label.0),
+            Value::bytes(&self.k_label.0),
             servers_value(&self.servers)?,
             Value::List(peers),
         ];
@@ -188,9 +188,9 @@ impl RecoveryCard {
         }
         Ok(Value::List(vec![
             Value::Int(FORMAT),
-            bytes(self.seed.expose()),
+            Value::bytes(self.seed.expose()),
             tid(&self.person),
-            bytes(&self.home_label.0),
+            Value::bytes(&self.home_label.0),
             servers_value(&self.servers)?,
         ]))
     }

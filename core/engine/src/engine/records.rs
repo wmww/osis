@@ -34,11 +34,6 @@ pub const SCHEMAS: &[u8] = b"d/";
 /// Records the API layer keeps (identity choices, settings): `u/` + name.
 pub const APP: &[u8] = b"u/";
 
-/// A count as a value (saturating).
-pub(crate) fn uint(n: u64) -> osis_base::Value {
-    osis_base::Value::Int(i64::try_from(n).unwrap_or(i64::MAX))
-}
-
 /// A dot as a value (local records).
 pub fn dot_value(d: &osis_crdt::Dot) -> osis_base::Value {
     use osis_base::Value;
@@ -48,7 +43,7 @@ pub fn dot_value(d: &osis_crdt::Dot) -> osis_base::Value {
         SourceKind::Commit(c) => Value::List(vec![Value::Int(1), Value::Bytes(c.0.to_vec())]),
         SourceKind::Derived(x) => Value::List(vec![Value::Int(2), dot_value(x)]),
     };
-    Value::List(vec![src, uint(d.ctr)])
+    Value::List(vec![src, Value::uint(d.ctr)])
 }
 
 pub fn dot_of(v: &osis_base::Value) -> Result<osis_crdt::Dot> {

@@ -4,7 +4,7 @@
 //! peer's log would.
 
 use crate::auth::verify_stamp;
-use crate::cbor::{bytes, get_bytes, get_opt, get_uint, opt, uint};
+use crate::cbor::{get_bytes, get_opt, get_uint, uint};
 use crate::blob::{blob_id, check_size};
 use crate::labels::parse_step;
 use crate::step::{ClaimSet, OBJECT_LIMITS, Step, verify_path};
@@ -41,15 +41,15 @@ impl Record {
     pub fn to_value(&self) -> Result<Value, Error> {
         Ok(Value::List(match self {
             Record::Path { label, steps } => {
-                let steps = steps.iter().map(|(s, c)| Value::List(vec![bytes(&s.to_bytes()), opt(c.as_ref().map(|c| bytes(&c.to_bytes())))]));
-                vec![Value::Int(1), bytes(&label.0), Value::List(steps.collect())]
+                let steps = steps.iter().map(|(s, c)| Value::List(vec![Value::bytes(&s.to_bytes()), Value::opt(c.as_ref().map(|c| Value::bytes(&c.to_bytes())))]));
+                vec![Value::Int(1), Value::bytes(&label.0), Value::List(steps.collect())]
             }
-            Record::Blob(b) => vec![Value::Int(2), bytes(b)],
+            Record::Blob(b) => vec![Value::Int(2), Value::bytes(b)],
             Record::Entry { label, blob, wrap, stamp } => {
-                vec![Value::Int(3), bytes(&label.0), bytes(&blob.0), bytes(wrap), opt(stamp.map(|s| bytes(&s.0)))]
+                vec![Value::Int(3), Value::bytes(&label.0), Value::bytes(&blob.0), Value::bytes(wrap), Value::opt(stamp.map(|s| Value::bytes(&s.0)))]
             }
-            Record::Delete { label, blob } => vec![Value::Int(4), bytes(&label.0), bytes(&blob.0)],
-            Record::TimedDelete { label, blob, at } => vec![Value::Int(5), bytes(&label.0), bytes(&blob.0), uint(at.0)?],
+            Record::Delete { label, blob } => vec![Value::Int(4), Value::bytes(&label.0), Value::bytes(&blob.0)],
+            Record::TimedDelete { label, blob, at } => vec![Value::Int(5), Value::bytes(&label.0), Value::bytes(&blob.0), uint(at.0)?],
             Record::Unknown(_) => return Err(Error::Malformed("unknown record has no encoding")),
         }))
     }

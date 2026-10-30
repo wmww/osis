@@ -4,7 +4,7 @@
 //! canonical bytes.
 
 use crate::Error;
-use crate::dec::{self, Fields, b, opt_v, u};
+use crate::dec::{self, Fields};
 use crate::rbsr::{self, Bound};
 use osis_base::format::{MAX_BLOB, MAX_MESSAGE};
 use osis_base::{BlobId, LabelId, Limits, Value, cbor};
@@ -167,7 +167,7 @@ pub fn is_request_kind(kind: u64) -> bool {
 }
 
 fn step_value(s: &Step) -> Value {
-    b(&s.to_bytes())
+    Value::bytes(&s.to_bytes())
 }
 
 fn box_bytes(e: &SecretBox) -> Vec<u8> {
@@ -221,26 +221,26 @@ impl Message {
 
     pub fn to_value(&self) -> Value {
         use Message as M;
-        let k = u(self.kind());
-        let id = u(self.id() as u64);
-        let l = |x: &LabelId| b(&x.0);
+        let k = Value::uint(self.kind());
+        let id = Value::uint(self.id() as u64);
+        let l = |x: &LabelId| Value::bytes(&x.0);
         let items = match self {
-            M::Error { code, .. } => vec![k, id, u(code.0)],
+            M::Error { code, .. } => vec![k, id, Value::uint(code.0)],
             M::Ok { .. } => vec![k, id],
-            M::Ping { wall_ms, .. } | M::Pong { wall_ms, .. } => vec![k, id, u(*wall_ms)],
+            M::Ping { wall_ms, .. } | M::Pong { wall_ms, .. } => vec![k, id, Value::uint(*wall_ms)],
             M::Open { label, proof, .. } => vec![k, id, l(label), proof.to_value()],
-            M::Opened { head, entry_box, .. } => vec![k, id, step_value(head), opt_v(entry_box.as_ref().map(|e| Value::Bytes(box_bytes(e))))],
+            M::Opened { head, entry_box, .. } => vec![k, id, step_value(head), Value::opt(entry_box.as_ref().map(|e| Value::Bytes(box_bytes(e))))],
             M::Step { step, .. } => vec![k, id, step_value(step)],
-            M::Register { label, step, claim_set, .. } => vec![k, id, l(label), step_value(step), opt_v(claim_set.as_ref().map(|c| Value::Bytes(c.to_bytes())))],
-            M::Path { label, after, .. } => vec![k, id, l(label), opt_v(after.as_ref().map(|a| b(&a.0)))],
+            M::Register { label, step, claim_set, .. } => vec![k, id, l(label), step_value(step), Value::opt(claim_set.as_ref().map(|c| Value::Bytes(c.to_bytes())))],
+            M::Path { label, after, .. } => vec![k, id, l(label), Value::opt(after.as_ref().map(|a| Value::bytes(&a.0)))],
             M::PathReply { steps, more, .. } => vec![k, id, Value::List(steps.iter().map(step_value).collect()), Value::Bool(*more)],
             M::Upload { label, entries, .. } => vec![k, id, l(label), entries_value(entries)],
-            M::Status { codes, head, .. } => vec![k, id, codes_value(codes), opt_v(head.as_ref().map(step_value))],
-            M::Deposit { label, blob, wrap, sig, .. } => vec![k, id, l(label), b(blob), b(wrap), b(&sig.0)],
-            M::Budget { code, entries_left, bytes_left, head, .. } => vec![k, id, u(code.0), u(*entries_left), u(*bytes_left), opt_v(head.as_ref().map(step_value))],
+            M::Status { codes, head, .. } => vec![k, id, codes_value(codes), Value::opt(head.as_ref().map(step_value))],
+            M::Deposit { label, blob, wrap, sig, .. } => vec![k, id, l(label), Value::bytes(blob), Value::bytes(wrap), Value::bytes(&sig.0)],
+            M::Budget { code, entries_left, bytes_left, head, .. } => vec![k, id, Value::uint(code.0), Value::uint(*entries_left), Value::uint(*bytes_left), Value::opt(head.as_ref().map(step_value))],
             // An unencodable item (at above 2^63 - 1) becomes `[]`, which the peer rejects.
             M::Delete { label, items, .. } => vec![k, id, l(label), Value::List(items.iter().map(|i| i.to_value().unwrap_or(Value::List(vec![]))).collect())],
-            M::Sync { label, cursor, inline_limit, entries, gained, .. } => vec![k, id, l(label), opt_v(cursor.as_ref().map(cursor_value)), u(*inline_limit), entries_value(entries), ids_value(gained)],
+            M::Sync { label, cursor, inline_limit, entries, gained, .. } => vec![k, id, l(label), Value::opt(cursor.as_ref().map(cursor_value)), Value::uint(*inline_limit), entries_value(entries), ids_value(gained)],
             M::SyncReply { events, want, codes, cursor, more, .. } => vec![k, id, events_value(events), ids_value(want), codes_value(codes), cursor_value(cursor), Value::Bool(*more)],
             M::Reconcile { label, ranges, .. } => vec![k, id, l(label), ranges_value(ranges)],
             M::ReconcileReply { ranges, .. } => vec![k, id, ranges_value(ranges)],
@@ -252,8 +252,8 @@ impl Message {
                     items
                         .iter()
                         .map(|f| {
-                            let e = f.entry.as_ref().map(|(blob, wrap, stamp)| Value::List(vec![b(blob), b(wrap), opt_v(stamp.as_ref().map(|s| b(&s.0)))]));
-                            Value::List(vec![b(&f.blob_id.0), opt_v(e)])
+                            let e = f.entry.as_ref().map(|(blob, wrap, stamp)| Value::List(vec![Value::bytes(blob), Value::bytes(wrap), Value::opt(stamp.as_ref().map(|s| Value::bytes(&s.0)))]));
+                            Value::List(vec![Value::bytes(&f.blob_id.0), Value::opt(e)])
                         })
                         .collect(),
                 ),
@@ -395,7 +395,7 @@ fn entries(vs: Vec<Value>) -> Result<Vec<Entry>, Error> {
 }
 
 fn entries_value(es: &[Entry]) -> Value {
-    Value::List(es.iter().map(|e| Value::List(vec![b(&e.blob), b(&e.wrap), b(&e.stamp.0)])).collect())
+    Value::List(es.iter().map(|e| Value::List(vec![Value::bytes(&e.blob), Value::bytes(&e.wrap), Value::bytes(&e.stamp.0)])).collect())
 }
 
 fn cursor(v: Value) -> Result<Cursor, Error> {
@@ -406,7 +406,7 @@ fn cursor(v: Value) -> Result<Cursor, Error> {
 }
 
 fn cursor_value(c: &Cursor) -> Value {
-    Value::List(vec![b(&c.log_id), u(c.seq)])
+    Value::List(vec![Value::bytes(&c.log_id), Value::uint(c.seq)])
 }
 
 fn ids(vs: Vec<Value>) -> Result<Vec<BlobId>, Error> {
@@ -414,7 +414,7 @@ fn ids(vs: Vec<Value>) -> Result<Vec<BlobId>, Error> {
 }
 
 fn ids_value(ids: &[BlobId]) -> Value {
-    Value::List(ids.iter().map(|i| b(&i.0)).collect())
+    Value::List(ids.iter().map(|i| Value::bytes(&i.0)).collect())
 }
 
 fn labels(vs: Vec<Value>) -> Result<Vec<LabelId>, Error> {
@@ -426,7 +426,7 @@ fn codes(vs: Vec<Value>) -> Result<Vec<Code>, Error> {
 }
 
 fn codes_value(cs: &[Code]) -> Value {
-    Value::List(cs.iter().map(|c| u(c.0)).collect())
+    Value::List(cs.iter().map(|c| Value::uint(c.0)).collect())
 }
 
 fn events(vs: Vec<Value>) -> Result<Vec<Event>, Error> {
@@ -453,10 +453,10 @@ fn event(v: Value) -> Result<Event, Error> {
 
 pub(crate) fn event_value(e: &Event) -> Value {
     Value::List(match e {
-        Event::Added { blob_id, blob, wrap, stamp } => vec![u(0), b(&blob_id.0), opt_v(blob.as_deref().map(b)), b(wrap), opt_v(stamp.as_ref().map(|s| b(&s.0)))],
-        Event::Deleted(id) => vec![u(1), b(&id.0)],
-        Event::Pending { blob_id, at } => vec![u(2), b(&blob_id.0), u(*at)],
-        Event::Head(step) => vec![u(3), step_value(step)],
+        Event::Added { blob_id, blob, wrap, stamp } => vec![Value::uint(0), Value::bytes(&blob_id.0), Value::opt(blob.as_deref().map(Value::bytes)), Value::bytes(wrap), Value::opt(stamp.as_ref().map(|s| Value::bytes(&s.0)))],
+        Event::Deleted(id) => vec![Value::uint(1), Value::bytes(&id.0)],
+        Event::Pending { blob_id, at } => vec![Value::uint(2), Value::bytes(&blob_id.0), Value::uint(*at)],
+        Event::Head(step) => vec![Value::uint(3), step_value(step)],
     })
 }
 
@@ -522,11 +522,11 @@ fn ranges_value(rs: &[Range]) -> Value {
         rs.iter()
             .map(|r| {
                 let mode = match &r.mode {
-                    Mode::Fingerprint(fp) => vec![u(0), b(fp)],
-                    Mode::Ids(ids) => vec![u(1), ids_value(ids)],
-                    Mode::Diff { theirs, lacking } => vec![u(2), ids_value(theirs), ids_value(lacking)],
+                    Mode::Fingerprint(fp) => vec![Value::uint(0), Value::bytes(fp)],
+                    Mode::Ids(ids) => vec![Value::uint(1), ids_value(ids)],
+                    Mode::Diff { theirs, lacking } => vec![Value::uint(2), ids_value(theirs), ids_value(lacking)],
                 };
-                Value::List(vec![b(r.lower.as_bytes()), b(r.upper.as_bytes()), Value::List(mode)])
+                Value::List(vec![Value::bytes(r.lower.as_bytes()), Value::bytes(r.upper.as_bytes()), Value::List(mode)])
             })
             .collect(),
     )

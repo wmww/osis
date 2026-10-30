@@ -19,15 +19,12 @@ pub fn meta_schema() -> &'static Schema {
     META.get()
 }
 
-fn int(n: u64) -> Value {
-    Value::Int(i64::try_from(n).unwrap_or(i64::MAX))
-}
 fn st(fields: Vec<Value>) -> Value {
-    Value::Map(fields.into_iter().enumerate().map(|(i, v)| (int(i as u64), v)).collect())
+    Value::Map(fields.into_iter().enumerate().map(|(i, v)| (Value::uint(i as u64), v)).collect())
 }
 /// A struct value with the given field ids (a retired id stays unused).
 fn st_fields(fields: Vec<(u64, Value)>) -> Value {
-    Value::Map(fields.into_iter().map(|(i, v)| (int(i), v)).collect())
+    Value::Map(fields.into_iter().map(|(i, v)| (Value::uint(i), v)).collect())
 }
 fn opt(v: Option<Value>) -> Value {
     match v {
@@ -39,13 +36,13 @@ fn doc(d: &Option<String>) -> Value {
     opt(d.clone().map(Value::Str))
 }
 fn ids(s: &BTreeSet<u64>) -> Value {
-    Value::Set(s.iter().map(|i| int(*i)).collect())
+    Value::Set(s.iter().map(|i| Value::uint(*i)).collect())
 }
 fn case(id: u64, payload: Value) -> Value {
     Value::Enum(id, Some(Box::new(payload)))
 }
 fn bound(b: &Bound) -> Value {
-    st(vec![opt(b.abs.map(int)), opt(b.rel.map(int))])
+    st(vec![opt(b.abs.map(Value::uint)), opt(b.rel.map(Value::uint))])
 }
 
 /// `type_expr` value of a type.
@@ -70,7 +67,7 @@ pub fn type_value(t: &Type) -> Value {
                     s.fields
                         .iter()
                         .map(|(id, f)| {
-                            (int(*id), st(vec![Value::Str(f.name.clone()), b(&f.ty), opt(f.default.clone()), ids(&f.succeeds), doc(&f.doc)]))
+                            (Value::uint(*id), st(vec![Value::Str(f.name.clone()), b(&f.ty), opt(f.default.clone()), ids(&f.succeeds), doc(&f.doc)]))
                         })
                         .collect(),
                 ),
@@ -84,7 +81,7 @@ pub fn type_value(t: &Type) -> Value {
                     e.cases
                         .iter()
                         .map(|(id, c)| {
-                            (int(*id), st(vec![Value::Str(c.name.clone()), opt(c.payload.as_ref().map(b)), ids(&c.succeeds), doc(&c.doc)]))
+                            (Value::uint(*id), st(vec![Value::Str(c.name.clone()), opt(c.payload.as_ref().map(b)), ids(&c.succeeds), doc(&c.doc)]))
                         })
                         .collect(),
                 ),
@@ -117,10 +114,10 @@ impl Schema {
                 let retention = st(vec![Value::Enum(r.by as u64, None), bound(&r.at_least), bound(&r.at_most)]);
                 let flags = Value::Set(a.flags.iter().map(|f| Value::Enum(*f as u64, None)).collect());
                 let succ = Value::Set(a.succeeds.iter().cloned().map(Value::Str).collect());
-                (Value::Str(ak.clone()), st(vec![type_value(&a.ty), retention, opt(a.expires.map(int)), flags, succ, doc(&a.doc)]))
+                (Value::Str(ak.clone()), st(vec![type_value(&a.ty), retention, opt(a.expires.map(Value::uint)), flags, succ, doc(&a.doc)]))
             })
             .collect();
-        st_fields(vec![(0, Value::Bytes(self.id.0.to_vec())), (1, int(self.revision)), (2, Value::Map(types)), (3, Value::Map(aspects)), (5, doc(&self.doc))])
+        st_fields(vec![(0, Value::bytes(&self.id.0)), (1, Value::uint(self.revision)), (2, Value::Map(types)), (3, Value::Map(aspects)), (5, doc(&self.doc))])
     }
 
     /// Canonical form: the canonical encoding of `to_value`.
@@ -182,10 +179,7 @@ fn as_str(v: &Value) -> Result<String, Error> {
     }
 }
 fn as_uint(v: &Value) -> Result<u64, Error> {
-    match v {
-        Value::Int(i) if *i >= 0 => Ok(i.unsigned_abs()),
-        _ => form("expected a non-negative int"),
-    }
+    v.as_uint().ok_or_else(|| Error::Form("expected a non-negative int".into()))
 }
 
 impl<'a> Fields<'a> {
@@ -202,10 +196,7 @@ impl<'a> Fields<'a> {
         as_uint(self.get(id)?)
     }
     fn bytes(&self, id: i64) -> Result<Vec<u8>, Error> {
-        match self.get(id)? {
-            Value::Bytes(b) => Ok(b.clone()),
-            _ => form("expected blob"),
-        }
+        self.get(id)?.as_bytes().map(<[u8]>::to_vec).ok_or_else(|| Error::Form("expected blob".into()))
     }
     fn map(&self, id: i64) -> Result<&'a BTreeMap<Value, Value>, Error> {
         match self.get(id)? {
