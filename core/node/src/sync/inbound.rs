@@ -491,13 +491,13 @@ impl SyncEngine {
     /// to that follow. Other inbox hints are dropped.
     pub(crate) fn vet_inbox_hints(&mut self) -> Result<()> {
         let now = self.now();
-        let inbox: Vec<(LabelId, BlobId, Option<CommitId>)> = self
-            .state
-            .by_kind
+        // the synced labels' inbox entries (runs per `run_dirty`: never a scan of every entry)
+        let labels: BTreeSet<LabelId> = self.labels().iter().map(|(_, x)| x.id).collect();
+        let inbox: Vec<(LabelId, BlobId, Option<CommitId>)> = labels
             .iter()
-            .filter(|(_, t, _)| *t == 2)
-            .filter_map(|(l, _, b)| match self.state.entries.get(&(*l, *b)).map(|e| &e.kind) {
-                Some(Kind::Inbox(c)) => Some((*l, *b, *c)),
+            .flat_map(|l| self.state.of_kind(l, 2).into_iter().map(move |b| (*l, b)))
+            .filter_map(|(l, b)| match self.state.entries.get(&(l, b)).map(|e| &e.kind) {
+                Some(Kind::Inbox(c)) => Some((l, b, *c)),
                 _ => None,
             })
             .collect();
