@@ -1,2 +1,3 @@
 - `wt` was not on PATH; the brief's PATH export worked.
 - Certificates carry only the newest `/keys` commit of an actor (`latest_on`), so any `/keys` write split over commits (separate role rotations, a seed-only refresh) silently thins later chain certificates; it shaped the deposit-seed fix (issues/fresh-deposit-seed-readable-by-departed.md).
+- review: `wt` not on PATH in the reviewer shell (needed the plugin bin path).
