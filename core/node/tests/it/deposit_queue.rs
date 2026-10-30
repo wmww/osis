@@ -389,3 +389,40 @@ fn queued_deposit_after_seed_refresh_spec_sync_5() {
     // the pass also seals the grant again under the epoch the removal rotated to
     assert!(copies(&mut net, 0, &l, &c) >= 1, "the grant reached the label");
 }
+
+// spec/sync.md §5, spec/permissions.md §3: after an admin refreshes the deposit seed alone and
+// registers the new deposit key, a second admin that comes online before it applied the `/keys`
+// write registers no step back to the old key (it waits until what it can open under the label
+// is applied), so the server's head keeps the new deposit key.
+#[test]
+fn lagging_admin_keeps_refreshed_deposit_key_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    net.node(80, &[sv]);
+    // blobs never inline: the new head arrives before the `/keys` write it fetches
+    net.add_node(81, osis_node::sync::SyncConfig { servers: vec![net.address(sv)], inline_limit: 0, ..Default::default() });
+    let g = net.group(0, &[(1, Role::Admin)], &[sv]);
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    let l = net.engine(0).group_labels(&g).unwrap()[0].id;
+    let actor = net.engine(0).group_actor(&g);
+    let old = net.engine(1).deposit_seed(&g).unwrap().unwrap();
+    let before = net.server_path(sv, &l).len();
+    let done = net.engine(0).refresh_deposit_seed(&actor).unwrap();
+    carry(&mut net, 0, done);
+    net.run();
+    let new = net.engine(0).deposit_seed(&g).unwrap().unwrap();
+    let (old_pk, new_pk) = (osis_crypto::deposit_key(&old, &l).verifying_key(), osis_crypto::deposit_key(&new, &l).verifying_key());
+    assert_eq!(net.server_path(sv, &l).last().unwrap().keys.deposit, new_pk, "the refresh registered");
+    for _ in 0..6 {
+        net.run();
+        net.advance(61_000);
+    }
+    assert_eq!(net.engine(1).deposit_seed(&g).unwrap().unwrap().expose(), new.expose(), "the laggard applied the write");
+    let path = net.server_path(sv, &l);
+    assert!(path[before..].iter().all(|s| s.keys.deposit != old_pk), "no step back to the old deposit key");
+    assert_eq!(path.len(), before + 1, "the refresh's step only");
+    assert_eq!(path.last().unwrap().keys.deposit, new_pk);
+}

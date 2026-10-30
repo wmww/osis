@@ -934,10 +934,36 @@ impl SyncEngine {
 
     /// Whether this admin re-registers `l` of `g` before anything else (spec/sync.md §5): it
     /// holds, established, the head's epochs (`keys`) and a newer one, or the head's deposit key
-    /// is not the one the actor's deposit seed derives (refreshed); a replaced label never.
+    /// is not the one the actor's deposit seed derives (refreshed) and nothing under `l` that
+    /// could carry a newer seed waits to be opened or applied (`keys_caught_up`: else a lagging
+    /// admin would register its older seed back); a replaced label never.
     fn step_due(&mut self, g: &Tid, l: &LabelId, keys: &HeadKeys) -> bool {
-        let refreshed = keys.deposit.is_none() && self.engine.deposit_seed(g).is_ok_and(|s| s.is_some());
-        keys.delete.is_some() && keys.write.is_some() && !self.is_replaced(g, l) && (refreshed || self.engine.epochs(g).is_some_and(|e| osis_keys::newer_than_head(&e, keys.epochs)))
+        if keys.delete.is_none() || keys.write.is_none() || self.is_replaced(g, l) {
+            return false;
+        }
+        if self.engine.epochs(g).is_some_and(|e| osis_keys::newer_than_head(&e, keys.epochs)) {
+            return true;
+        }
+        keys.deposit.is_none() && self.engine.deposit_seed(g).is_ok_and(|s| s.is_some()) && self.keys_caught_up(g, l)
+    }
+
+    /// No entry under `l` this node can open is unopened (in flight, or not fetched; but those
+    /// a server said it lacks), and no pending commit writes the actor's `/keys`.
+    fn keys_caught_up(&mut self, g: &Tid, l: &LabelId) -> bool {
+        let secrets = self.read_secrets(g);
+        let missing = |s: &Self, b: &BlobId| s.conns.values().any(|c| c.req.missing.contains(b));
+        let unopened = self.state.of_kind(l, 0).into_iter().any(|b| {
+            !missing(self, &b) && self.state.entries.get(&(*l, b)).is_some_and(|e| e.kind == Kind::Unknown && (e.shredded() || osis_label::unwrap_any(secrets.iter(), &b, &e.wrap).is_some()))
+        });
+        if unopened {
+            return false;
+        }
+        let a = self.engine.core.secret_actor(g).unwrap_or(*g);
+        let pending = self.engine.pending().into_iter().filter(|(_, r)| *r != crate::Reason::Parked).any(|(c, _)| {
+            let bytes = self.engine.commit_bytes(&c).ok().flatten();
+            bytes.and_then(|b| osis_commit::CommitBlob::decode(&b).ok()).is_some_and(|cb| cb.header.aspects.iter().any(|x| x.tid == a && x.ak.as_str() == "/keys"))
+        });
+        !pending
     }
 
     /// What may become of entry `id` under `l` (spec/sync.md §6, §7): `judge`, then a live
