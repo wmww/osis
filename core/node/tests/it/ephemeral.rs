@@ -675,6 +675,57 @@ fn junk_copy_of_waiting_commit_evicts_nothing_spec_sync_9() {
     }
 }
 
+// spec/commits.md §4, spec/sync.md §9 (only verified commits are held and spread): a junk copy of
+// a commit by an author whose record is not here yet, pushed before the real one, is not kept in
+// the lane once the real copy makes the commit held (both wait apart; promotion kept every blob of
+// a held commit unchecked)
+#[test]
+fn junk_copy_of_waiting_commit_not_kept_once_held_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let x = net.node(3, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let t = net.item(a, g, g, "durable");
+    net.run();
+    // b hears nothing from the server: x joins unseen by it
+    net.deaf.insert(b);
+    net.pair(x, a);
+    let (at, bt, xt) = (net.tid(a), net.tid(b), net.tid(x));
+    let e = net.engine(a);
+    set_edge(e, g, xt, Role::Write);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write), (xt, Role::Write)]);
+    rotation(e, g, &rs, 7, false);
+    local(&mut net, a);
+    net.run();
+    net.pair(a, x);
+    assert!(net.engine(b).core.created(&xt).is_none() && net.read(x, t) == Some(s("durable")));
+    let ak = osis_base::Ak::new("/doc/cursor").unwrap();
+    let blob = net.engine(x).forge_ephemeral(t, &ak, Value::Int(7)).unwrap().unwrap().blob;
+    let mut junk = blob.clone();
+    let last = junk.parts[0].delta.len() - 1;
+    junk.parts[0].delta[last] ^= 1;
+    // sealed under the label keys b holds
+    let wk = write_key(&mut net, b, g);
+    let l = net.label(b);
+    let (_, jev) = sealed(&mut net, b, g, &junk, Some(&wk), 1);
+    let (real, ev) = sealed(&mut net, b, g, &blob, Some(&wk), 2);
+    let acts = push(&mut net, b, sv, l, vec![jev, ev]);
+    net.actions(b, acts);
+    assert!(net.sync(b).ephemeral_pending_bytes(&l) > 0, "both wait apart");
+    // the records arrive (out of band here)
+    net.deaf.remove(&b);
+    net.pair(x, b);
+    net.pair(a, b);
+    net.engine(b).rejudge_ephemeral().unwrap();
+    net.advance(10_000);
+    assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(Value::Int(7)));
+    let kept: Vec<_> = net.sync(b).ephemeral_entries_of(&blob.id()).into_iter().map(|(_, x, _)| x).collect();
+    assert_eq!(kept, vec![real], "only the real copy is kept");
+    assert_eq!(net.sync(b).ephemeral_pending_bytes(&l), 0);
+}
+
 // spec/commits.md §4, spec/sync.md §9 (only verified commits are held and spread): another blob
 // of a held ephemeral commit, the same header with a junk delta or signature, is refused
 #[test]
