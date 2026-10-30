@@ -72,6 +72,23 @@ struct Strm {
     opener: usize,
     /// `pipes[i]` carries what side `i` writes.
     pipes: [Pipe; 2],
+    /// Live halves (`MemSend`, `MemRecv`) per side; the stream goes once the peer accepted it
+    /// and every half dropped.
+    halves: [u8; 2],
+    accepted: bool,
+}
+
+impl Conn {
+    /// Drops one half of stream `s` on `side`, and the stream once nothing can use it.
+    fn drop_half(&mut self, s: u64, side: usize) {
+        let Some(st) = self.streams.get_mut(&s) else { return };
+        if let Some(n) = st.halves.get_mut(side) {
+            *n = n.saturating_sub(1);
+        }
+        if st.accepted && st.halves == [0, 0] {
+            self.streams.remove(&s);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -539,7 +556,11 @@ impl Connection for MemConn {
             let c = st.live(self.0.id).ok_or(Error::Closed)?;
             let s = c.next_stream;
             c.next_stream = s.wrapping_add(1);
-            c.streams.insert(s, Strm { opener: self.0.side, pipes: [Pipe::default(), Pipe::default()] });
+            let mut halves = [0; 2];
+            if let Some(n) = halves.get_mut(self.0.side) {
+                *n = 2;
+            }
+            c.streams.insert(s, Strm { opener: self.0.side, pipes: [Pipe::default(), Pipe::default()], halves, accepted: false });
             Ok(self.halves(s))
         })();
         std::future::ready(r)
@@ -551,7 +572,15 @@ impl Connection for MemConn {
             let side = self.0.side;
             let Some(c) = st.live(self.0.id) else { return Poll::Ready(Err(Error::Closed)) };
             match c.accept.get_mut(side).and_then(|q| q.pop_front()) {
-                Some(s) => Poll::Ready(Ok(self.halves(s))),
+                Some(s) => {
+                    if let Some(st) = c.streams.get_mut(&s) {
+                        st.accepted = true;
+                        if let Some(n) = st.halves.get_mut(side) {
+                            *n = 2;
+                        }
+                    }
+                    Poll::Ready(Ok(self.halves(s)))
+                }
                 None => {
                     if let Some(w) = c.accept_waker.get_mut(side) {
                         *w = Some(cx.waker().clone());
@@ -651,6 +680,9 @@ impl Drop for MemSend {
         if self.pipe(|p, closed| p.fin_sent || closed) == Some(false) {
             let _ = self.push(&[], true);
         }
+        if let Some(c) = lock(&self.h.net.0).conns.get_mut(&self.h.id) {
+            c.drop_half(self.s, self.h.side);
+        }
     }
 }
 
@@ -684,6 +716,14 @@ impl RecvStream for MemRecv {
             p.waker = Some(cx.waker().clone());
             Poll::Pending
         })
+    }
+}
+
+impl Drop for MemRecv {
+    fn drop(&mut self) {
+        if let Some(c) = lock(&self.h.net.0).conns.get_mut(&self.h.id) {
+            c.drop_half(self.s, self.h.side);
+        }
     }
 }
 
@@ -730,5 +770,44 @@ mod tests {
         let r = s.block_on(async move { cli.dial(&Address { url, key: [9; 32] }).await }).unwrap();
         assert!(matches!(r, Err(Error::Unreachable(_))));
         drop(l);
+    }
+
+    // spec: none (bounded memory): a long-lived connection keeps no state of sessions both
+    // sides are done with, accepted or not yet when the opener finished
+    #[test]
+    fn finished_streams_dropped() {
+        let net = Net::new(3);
+        let mut s = Sched::new(3, Some(net.clone()));
+        let srv = net.endpoint("srv");
+        let mut l = s
+            .block_on(async move { srv.listen(ListenConfig { url: "mem://srv".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap() })
+            .unwrap();
+        let (cli, addr) = (net.endpoint("cli"), l.address());
+        let c = s.block_on(async move { cli.dial(&addr).await.unwrap() }).unwrap();
+        let a = s.block_on(async move { l.accept().await.unwrap() }).unwrap();
+        let streams = |net: &Net| lock(&net.0).conns.values().map(|c| c.streams.len()).sum::<usize>();
+        for i in 0..100u8 {
+            let (c2, a2) = (c.clone(), a.clone());
+            s.block_on(async move {
+                let (mut tx, rx) = c2.open_stream().await.unwrap();
+                tx.write_all(&[i]).await.unwrap();
+                // the opener is done before the peer accepts
+                tx.finish().await.unwrap();
+                drop((tx, rx));
+                let (mut tx2, mut rx2) = a2.accept_stream().await.unwrap();
+                let mut b = [0u8; 4];
+                assert_eq!(rx2.read(&mut b).await.unwrap(), 1);
+                assert_eq!(rx2.read(&mut b).await.unwrap(), 0);
+                tx2.finish().await.unwrap();
+            })
+            .unwrap();
+            assert_eq!(streams(&net), 0, "after session {i}");
+        }
+        // a stream still held on one side stays
+        let c2 = c.clone();
+        let kept = s.block_on(async move { c2.open_stream().await.unwrap() }).unwrap();
+        assert_eq!(streams(&net), 1);
+        drop(kept);
+        assert_eq!(streams(&net), 1, "not accepted yet: the peer may still read its fin");
     }
 }
