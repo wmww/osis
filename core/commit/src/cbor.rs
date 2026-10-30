@@ -55,8 +55,5 @@ pub(crate) fn as_opt(v: &Value) -> Result<Option<&Value>, Error> {
 
 /// Strictly ascending (sorted, distinct) by a key.
 pub(crate) fn strictly_ascending<T, K: Ord>(items: &[T], key: impl Fn(&T) -> K) -> bool {
-    items.windows(2).all(|w| match w {
-        [a, b] => key(a) < key(b),
-        _ => true,
-    })
+    items.is_sorted_by(|a, b| key(a) < key(b))
 }
