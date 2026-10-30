@@ -86,8 +86,8 @@ pub(crate) enum Net {
 /// the app's runtime waits for it (`Net::ended`), so the app may shut its runtime down next.
 pub(crate) struct Stop {
     own: Option<tokio::runtime::Runtime>,
-    /// Disconnects when the driver task ends (or was never spawned).
-    ended: Option<std::sync::mpsc::Receiver<()>>,
+    /// Disconnects when the driver task ends (or was never spawned); shared by every `close`.
+    ended: Ended,
     /// The driver task holds this until it ends.
     task: Option<std::sync::mpsc::Sender<()>>,
 }
@@ -105,9 +105,7 @@ impl Drop for Net {
             if let Some((rt, ended)) = lock(&j).take() {
                 // bounded: a driver awaiting the network is not in an engine call (the database
                 // is gone) and may be dropped
-                if let Some(e) = ended {
-                    let _ = e.recv_timeout(STOP_WAIT);
-                }
+                let _ = lock(&ended).recv_timeout(STOP_WAIT);
                 rt.shutdown_timeout(STOP_WAIT);
             }
         });
@@ -123,18 +121,20 @@ impl Drop for Net {
 /// blocking tasks of osis's own runtime.
 const STOP_WAIT: Duration = Duration::from_secs(5);
 
-/// Waits (at most `d`) until the driver task ended. On a multi-thread runtime this blocks in
-/// place so the driver can run; on a current-thread one it does not wait (the driver cannot run
-/// meanwhile, and runs no engine call in `block_in_place` there).
-pub(crate) fn wait_ended(ended: std::sync::mpsc::Receiver<()>, d: Duration) {
+/// Disconnects when the driver task ends.
+pub(crate) type Ended = Arc<Mutex<std::sync::mpsc::Receiver<()>>>;
+
+/// Waits until the driver task (on the app's multi-thread runtime, which runs it meanwhile)
+/// ended: it ends at the `Shutdown` the closed database's `Net` queued (it polls no timer while
+/// a control message waits, and runs no engine call: the database is gone). Inside a
+/// multi-thread runtime this blocks in place.
+pub(crate) fn wait_ended(ended: &Ended) {
+    let wait = || {
+        let _ = lock(ended).recv();
+    };
     match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
-        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(|| {
-            let _ = ended.recv_timeout(d);
-        }),
-        Ok(_) => {}
-        Err(_) => {
-            let _ = ended.recv_timeout(d);
-        }
+        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(wait),
+        _ => wait(),
     }
 }
 
@@ -151,13 +151,19 @@ impl Net {
         };
         let (task, ended) = std::sync::mpsc::channel();
         let (ctl, rx) = mpsc::unbounded_channel();
-        Ok((Net::Driver { ctl, handle, stop: Mutex::new(Some(Stop { own, ended: Some(ended), task: Some(task) })) }, Some(rx)))
+        Ok((Net::Driver { ctl, handle, stop: Mutex::new(Some(Stop { own, ended: Arc::new(Mutex::new(ended)), task: Some(task) })) }, Some(rx)))
     }
 
-    /// On the app's runtime: what disconnects once the driver task ended (`close` waits on it).
-    pub fn ended(&self) -> Option<std::sync::mpsc::Receiver<()>> {
-        let Net::Driver { stop, .. } = self else { return None };
-        lock(stop).as_mut().filter(|s| s.own.is_none()).and_then(|s| s.ended.take())
+    /// On the app's multi-thread runtime: what disconnects once the driver task ended (`close`
+    /// waits on it). Not on a current-thread one: the driver runs only while the app drives that
+    /// runtime, and runs no engine call in `block_in_place` there, so shutting it down at any
+    /// time is safe.
+    pub fn ended(&self) -> Option<Ended> {
+        let Net::Driver { stop, handle, .. } = self else { return None };
+        if handle.runtime_flavor() != tokio::runtime::RuntimeFlavor::MultiThread {
+            return None;
+        }
+        lock(stop).as_ref().filter(|s| s.own.is_none()).map(|s| s.ended.clone())
     }
 
     /// Whether anything carries actions.
@@ -271,7 +277,7 @@ struct OsisHost(WeakOsis);
 
 impl Host for OsisHost {
     fn with(&self, f: &mut dyn FnMut(&mut SyncEngine) -> Vec<Action>) -> Option<Vec<Action>> {
-        let db = self.0.upgrade()?;
+        let db = self.0.hold()?;
         db.handled(|l| f(&mut l.sync));
         Some(Vec::new())
     }

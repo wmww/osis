@@ -462,7 +462,7 @@ impl Osis {
                 let wait = Duration::from_millis(until.0.saturating_sub(self.inner.clock.now_wall_ms().0).saturating_add(1));
                 let db = self.downgrade();
                 self.inner.net.after(wait, Box::new(move || {
-                    if let Some(db) = db.upgrade() {
+                    if let Some(db) = db.hold() {
                         db.locked(|x| db.upkeep_links(x, &BTreeSet::new(), true));
                     }
                 }));
@@ -1023,7 +1023,7 @@ pub(crate) struct KeyGuard {
 
 impl Drop for KeyGuard {
     fn drop(&mut self) {
-        if let Some(db) = self.db.upgrade() {
+        if let Some(db) = self.db.hold() {
             db.engine(|e| e.drop_key_actor(&self.l));
             if let Some(k) = self.link {
                 db.act(|x| x.sync.forget_link(k));

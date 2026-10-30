@@ -22,8 +22,6 @@ use std::time::Duration;
 
 /// Default materialization bound: 64 MiB (notes/api.md Reads).
 pub const DEFAULT_LIMIT: usize = 64 << 20;
-/// How long `Osis::close` waits for other holders of the database.
-pub const CLOSE_WAIT: Duration = Duration::from_secs(5);
 /// Default wait for another node (`Config::wait_timeout`).
 pub const DEFAULT_WAIT: Duration = Duration::from_secs(60);
 /// Default inactivity before a text session commits.
@@ -145,16 +143,58 @@ pub(crate) struct Inner {
     /// Serializes undo and redo: candidate selection and commit.
     pub undo: Mutex<()>,
     pub net: Net,
-    /// `close` waits on this until `closed` (the last field) is dropped.
-    pub closing: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
-    pub _closed: std::sync::mpsc::Sender<()>,
+    /// User handles and whether the store closed (the last field: it drops after `eng`).
+    pub life: LifeGuard,
+}
+
+/// What `close` waits on: the count of user handles (clones, `WeakOsis::upgrade`, streams,
+/// text sessions; not the dispatcher's, the driver's or timers' short-lived ones) and whether
+/// `Inner` is gone.
+#[derive(Default)]
+pub(crate) struct Life {
+    m: Mutex<(usize, bool)>,
+    cv: std::sync::Condvar,
+}
+
+impl Life {
+    fn users(&self, d: isize) {
+        let mut g = lock(&self.m);
+        g.0 = g.0.saturating_add_signed(d);
+        self.cv.notify_all();
+    }
+}
+
+/// Marks the store closed when `Inner` drops.
+pub(crate) struct LifeGuard(Arc<Life>);
+
+impl Drop for LifeGuard {
+    fn drop(&mut self) {
+        lock(&self.0.m).1 = true;
+        self.0.cv.notify_all();
+    }
 }
 
 /// A database handle: `Clone + Send + Sync`; clones share one database, which closes with the
 /// last handle.
-#[derive(Clone)]
 pub struct Osis {
     pub(crate) inner: Arc<Inner>,
+    /// Counted in `Life` (an app's handle; internal short-lived ones are not).
+    user: bool,
+}
+
+impl Clone for Osis {
+    /// Always a user handle (a callback may keep a clone of the `&Osis` it is passed).
+    fn clone(&self) -> Osis {
+        Osis::user(self.inner.clone())
+    }
+}
+
+impl Drop for Osis {
+    fn drop(&mut self) {
+        if self.user {
+            self.inner.life.0.users(-1);
+        }
+    }
 }
 
 impl std::fmt::Debug for Osis {
@@ -170,7 +210,13 @@ pub struct WeakOsis(pub(crate) std::sync::Weak<Inner>);
 impl WeakOsis {
     /// The database, if still open.
     pub fn upgrade(&self) -> Option<Osis> {
-        self.0.upgrade().map(|inner| Osis { inner })
+        self.0.upgrade().map(Osis::user)
+    }
+
+    /// For osis's own short-lived use (an engine call, a timer): not counted as a user handle,
+    /// so `close` waits for it to end.
+    pub(crate) fn hold(&self) -> Option<Osis> {
+        self.0.upgrade().map(Osis::internal)
     }
 }
 
@@ -302,13 +348,12 @@ impl Osis {
         let dispatch = Dispatch::new(&cfg.dispatch);
         let (net, ctl) = Net::new(&cfg.runtime)?;
         let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new() };
-        let (closed, closing) = std::sync::mpsc::channel();
-        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, wait_timeout: cfg.wait_timeout, clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, closing: Mutex::new(Some(closing)), _closed: closed });
+        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, wait_timeout: cfg.wait_timeout, clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, life: LifeGuard(Arc::default()) });
         inner.dispatch.start(Arc::downgrade(&inner))?;
         if let Some(ctl) = ctl {
             inner.net.spawn_driver(ctl, cfg.transport.clone(), cfg.peers, cfg.relays.clone(), clock, WeakOsis(Arc::downgrade(&inner)))?;
         }
-        let db = Osis { inner };
+        let db = Osis::user(inner);
         if let Runtime::Manual(m) = &cfg.runtime {
             m.register(db.downgrade());
         }
@@ -316,8 +361,14 @@ impl Osis {
         Ok(db)
     }
 
-    pub(crate) fn from_inner(inner: Arc<Inner>) -> Osis {
-        Osis { inner }
+    fn user(inner: Arc<Inner>) -> Osis {
+        inner.life.0.users(1);
+        Osis { inner, user: true }
+    }
+
+    /// A handle for osis's own short-lived use (the dispatcher running callbacks), not counted.
+    pub(crate) fn internal(inner: Arc<Inner>) -> Osis {
+        Osis { inner, user: false }
     }
 
     /// A handle that does not keep the database open (for the rare callback that must capture
@@ -326,26 +377,30 @@ impl Osis {
         WeakOsis(Arc::downgrade(&self.inner))
     }
 
-    /// Closes this handle; the database closes with the last one (every commit is already
-    /// durable). Returns once it is closed, so the store can be opened again at once (with
-    /// `Runtime::Tokio`, also once its sync task ended, so the app may shut that runtime down); while
-    /// other handles keep it open, it returns after `CLOSE_WAIT`. From a callback (the
-    /// dispatcher, which holds the database while it runs) it fails `Invalid` at once:
-    /// drop the handle instead.
+    /// Closes this handle. With no other handle left (clones, upgraded `WeakOsis`, value streams,
+    /// text sessions, a `Joining`), returns once the database is closed (every commit is already
+    /// durable), so the store can be opened again at once; a callback or sync engine call still
+    /// running ends first (with `Runtime::Tokio` on a multi-thread runtime, also its sync task, so
+    /// the app may shut that runtime down). While other handles keep it open, this one is closed
+    /// and it fails `StillOpen` at once. From a callback (the dispatcher, which holds the database
+    /// while it runs) it fails `Invalid` at once: drop the handle instead.
     pub fn close(self) -> Result<()> {
         if self.inner.dispatch.shared.on_dispatcher() {
             return Err(Error::Invalid("close() from a callback would wait on itself; drop the handle".into()));
         }
-        let rx = lock(&self.inner.closing).take();
+        let life = self.inner.life.0.clone();
         let ended = self.inner.net.ended();
         drop(self);
-        // the dispatcher or the sync driver may hold the database for a moment
-        if let Some(rx) = rx
-            && rx.recv_timeout(CLOSE_WAIT) == Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
-            && let Some(e) = ended
-        {
+        // what still holds it besides user handles (a callback, an engine call, a timer) ends
+        let g = life.cv.wait_while(lock(&life.m), |(users, closed)| *users == 0 && !*closed).unwrap_or_else(|e| e.into_inner());
+        let (users, closed) = *g;
+        drop(g);
+        if !closed {
+            return Err(Error::StillOpen { handles: users });
+        }
+        if let Some(e) = ended {
             // on the app's runtime: the driver ended, so the app may shut its runtime down
-            crate::net::wait_ended(e, CLOSE_WAIT);
+            crate::net::wait_ended(&e);
         }
         Ok(())
     }

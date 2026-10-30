@@ -31,7 +31,7 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | `HINT_INDEXES` 4 | `node/sync/open.rs` | a label of index 4 or more cannot be opened from a hint (inbox, link) | fixed: inbox things carry the label index (spec/wire.md §9), links and cards name index 0; test `inbox_retry::hint_opens_a_label_replaced_many_times_spec_wire_9` |
 | `MAX_INBOX_TRIES` 8 | `node/sync/local.rs`, `inbound.rs` | a deposit refused for about 21 min (budget full while the recipient is offline) is dropped; resent only after `INBOX_LIFETIME` | fixed: retried at the capped back-off until taken or moot (delivery forgotten or re-sealed, label replaced); test `inbox_retry::inbox_deposit_retried_for_hours_spec_sync_5` |
 | `MAX_QUEUED` 64 MiB, server `max_queued_bytes` 32 MiB, `REQUEST_TIMEOUT_MS` 2 min | `node/sync/driver.rs`, `server/`, `proto/client.rs` | no send window: a large upload or fetch on a slow link closes the connection, the redial repeats it | fixed: request window `WINDOW` (spec/sync.md §6 Flow control) keeps both queues under `WINDOW_QUEUE`; `STALL_TIMEOUT_MS` from the last progress; tests `slow_link::*`. Pushes to a slow subscriber left: issues/sync-flow-control.md |
-| `CLOSE_WAIT` 5 s | `osis/handle.rs` | `close` returns Ok with the database still held when a callback or engine call outlasts it | issues/api-close-wait.md |
+| `CLOSE_WAIT` 5 s | `osis/handle.rs` | `close` returns Ok with the database still held when a callback or engine call outlasts it | fixed: no cap; user handles counted, `close` fails `StillOpen` while others exist, else waits for the callback, engine call or timer to end (and for the driver task on the app's multi-thread runtime); test `api::close_waits_or_names_holders_spec_api_handle` |
 
 ## Table
 0 / ∞: what the value at 0 and at infinity would do.
@@ -148,7 +148,6 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | osis `DEFAULT_IDLE_COMMIT` 2 s | M (a crash loses at most that much typing) | |
 | osis `STOP_WAIT` 5 s | M (the database is already durable) | |
 | osis `OFFER_LIFETIME_MS` 10 min | M | |
-| osis `CLOSE_WAIT` 5 s | X | issues/api-close-wait.md |
 
 ### Test oracles (`core/test/`)
 | value | class | note |

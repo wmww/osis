@@ -53,7 +53,7 @@ fn arm(db: &Osis, st: Weak<Mutex<State>>, b: Bind, d: std::time::Duration) -> bo
     db.inner.net.after(
         d,
         Box::new(move || {
-            let (Some(db), Some(st)) = (w.upgrade(), st.upgrade()) else { return };
+            let (Some(db), Some(st)) = (w.hold(), st.upgrade()) else { return };
             let mut s = lock(&st);
             let idle = db.inner.idle_commit;
             match s.last_edit.map(|t| t.elapsed()) {
