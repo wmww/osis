@@ -465,3 +465,31 @@ fn box_secret_checked_against_keyset_spec_crypto_4() {
     assert_eq!(b.read.set_keyset(e, &osis_keys::keyset(&e, &bad)), (false, false));
     assert_eq!(b.read.secret(&e), Some(&genuine));
 }
+
+// spec/crypto.md §4, spec/sync.md §2: a secret from a source that vouches
+// for nothing (a label's entry box) is a reading-only candidate, never encrypted under even
+// once its epoch is established; the genuine box replaces it, and a keyset refutes it.
+#[test]
+fn unverified_secret_reading_only_spec_crypto_4() {
+    let f = forked();
+    let e = f.forks[0];
+    let genuine = f.view.read.secret(&e).unwrap().clone();
+    let planted = Secret32::from_bytes([0x66; 32]);
+    let mut a = ActorEpochs::default();
+    a.read.learn_unverified(e, planted.clone());
+    a.read.set_established(e, osis_keys::Provenance::Chain);
+    assert!(a.read.is_reading_only(&e) && a.read.reading_secrets(&e) == vec![&planted]);
+    assert!(a.read.newest_held().is_none());
+    assert_eq!(osis_keys::wrap_epoch(&a.read), osis_keys::WrapEpoch::None);
+    a.read.set_box_secret(e, genuine.clone());
+    assert_eq!(a.read.newest_held(), Some((e, &genuine)));
+    // refuted by a recorded keyset: gone
+    let mut b = ActorEpochs::default();
+    b.read.learn_unverified(e, planted.clone());
+    b.read.set_keyset(e, &osis_keys::keyset(&e, &genuine));
+    assert!(b.read.reading_secrets(&e).is_empty());
+    b.read.learn_unverified(e, planted);
+    assert!(b.read.reading_secrets(&e).is_empty());
+    b.read.learn_unverified(e, genuine.clone());
+    assert_eq!(b.read.secret(&e), Some(&genuine));
+}
