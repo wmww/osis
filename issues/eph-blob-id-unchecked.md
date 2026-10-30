@@ -1,0 +1,9 @@
+# Ephemeral and relay-only blobs from a server are not checked against their blob ID
+> Summary: the node's durable path stores pushed or fetched bytes only if BLAKE3 matches the blob ID (`put_blobs`), but `eph_added` and `relay_in` never check. The wrap's nonce is only the first 24 bytes of the ID, so a malicious server or member peer can push one real ephemeral blob under 2^64 IDs (same 24-byte prefix, any last 8 bytes). Each copy is kept as a separate entry and charged to the node's per-label ephemeral cap, until the label's ephemeral data from honest servers is refused too. Low-medium.
+> Tags: security, node, ephemeral
+
+- `log_events_from` (core/node/src/sync/inbound.rs:128) routes any `Added` event with inline bytes and a non-durable prefix to `eph_added` (core/node/src/sync/ephemeral.rs:878). That unwraps with nonce `b[..24]`, opens the blob (its own bytes, so it opens), and for a commit already held `ingest_ephemeral` returns `Held { new: false }` (after `check_copy`). `eph_keep` then inserts `(l, b)` and adds the blob's size to `eph.bytes[l]`. A server can repeat this with fresh IDs until `cfg.ephemeral_bytes`, after which "further ephemeral data is not applied here" for every source, not just that server. Relay-only (`relay_in`, :998) has the same gap: its blob-ID replay memory keys on an ID the sender picks, but delivery is also deduped by commit ID, so it is minor there.
+- The bogus IDs are also spread (`eph_spread`) and named in later deletes. Honest servers compute the real ID from the bytes, so they only see a duplicate.
+- A server can already withhold. What it should not be able to do is block data that reaches the node through other servers.
+
+Fix direction: at the top of `log_events_from` (and for `Fetched` items), drop any event whose inline bytes do not hash to its blob ID, for every class, with a diagnostic. This is one BLAKE3 per blob, which the durable path pays anyway.
