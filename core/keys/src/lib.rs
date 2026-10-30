@@ -16,7 +16,7 @@ pub mod wrap;
 
 pub use covers::{Carries, Departure, HeldActors, Member, MemoryHeldActors, Via, covers, expired, may_encrypt_under, reseal_needed, rotate_first, uncovered};
 pub use aspects::{KeysWrite, SecretsWrite, keyset, may_compact_secrets, observe_keys, observe_secrets, prune_reading, snapshot_keyed};
-pub use epoch::{ActorEpochs, EpochInfo, MAX_READING, MAX_READING_PER_AUTHOR, Provenance, ROLES, RoleEpochs, SUITE, UNKNOWN_AUTHOR, Unchecked, is_newer, newest_of};
+pub use epoch::{ActorEpochs, EpochInfo, MAX_FREE_N, MAX_READING, MAX_READING_PER_AUTHOR, Provenance, ROLES, RoleEpochs, SUITE, UNKNOWN_AUTHOR, Unchecked, is_newer, newest_of};
 pub use error::Error;
 pub use open::{HistoryAlts, Opened, Opener, ingest, ingest_with, open_boxes, open_histories};
 pub use osis_crypto::Epoch;

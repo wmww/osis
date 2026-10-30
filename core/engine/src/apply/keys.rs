@@ -688,7 +688,7 @@ mod tests {
         for x in 2..lp.peers.len() {
             for i in 0..per {
                 let mut held = ActorEpochs::default();
-                held.read.observe(Epoch::new(1, [0; 16]).unwrap());
+                held.read.set_established(Epoch::new(1, [0; 16]).unwrap(), osis_keys::Provenance::Own);
                 let rcpt = osis_keys::Recipient { member: b, role: Role::Read, keys: osis_keys::MemberKeys::KeyActor { kem: kem.clone(), seed: None } };
                 let mut rng = osis_crypto::SeededRng::from_u64((x * 10_000 + i) as u64);
                 let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &|_, _| true, &mut rng).unwrap();
