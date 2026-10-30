@@ -131,8 +131,13 @@ pub trait LabelStore {
     fn log_after(&self, label: &LabelId, after: u64, max: usize) -> Result<Option<Vec<(u64, LogRecord)>>, StoreError>;
     /// Live entries with IDs above `after` (from the lowest when none), ascending, at most `max`.
     fn live_by_id(&self, label: &LabelId, after: Option<&BlobId>, max: usize) -> Result<Vec<(BlobId, EntryMeta)>, StoreError>;
+    /// IDs of the live entries in `[lower, upper)` (no upper: to the end), sorted. A Reconcile
+    /// reads only the ranges it asks (spec/wire.md §11.3), so its cost follows them, not the label.
+    fn live_ids_in(&self, label: &LabelId, lower: &BlobId, upper: Option<&BlobId>) -> Result<Vec<BlobId>, StoreError>;
     /// IDs of the live entries, sorted.
-    fn live_ids(&self, label: &LabelId) -> Result<Vec<BlobId>, StoreError>;
+    fn live_ids(&self, label: &LabelId) -> Result<Vec<BlobId>, StoreError> {
+        self.live_ids_in(label, &BlobId([0; 32]), None)
+    }
     /// Removes presence entry `blob_id` once every connection that uploaded it has closed
     /// (spec/sync.md §5): logged, no tombstone (only its author uploads it, again on reconnect).
     /// Whether a presence entry was held.
@@ -185,6 +190,8 @@ pub struct MemoryLabelStore {
     pub member_labels: BTreeSet<([u8; 32], LabelId)>,
     /// `blob` calls so far (cost tests).
     pub blob_reads: std::cell::Cell<u64>,
+    /// IDs `live_ids_in` returned so far (cost tests).
+    pub ids_read: std::cell::Cell<u64>,
     pub relays: crate::RelayGate,
 }
 
@@ -423,8 +430,15 @@ impl LabelStore for MemoryLabelStore {
         Ok(range.take(max).map(|(k, (m, _))| (*k, m.clone())).collect())
     }
 
-    fn live_ids(&self, label: &LabelId) -> Result<Vec<BlobId>, StoreError> {
-        Ok(self.state(label).map(|s| s.entries.keys().copied().collect()).unwrap_or_default())
+    fn live_ids_in(&self, label: &LabelId, lower: &BlobId, upper: Option<&BlobId>) -> Result<Vec<BlobId>, StoreError> {
+        let Some(s) = self.state(label) else { return Ok(Vec::new()) };
+        let ids: Vec<BlobId> = match upper {
+            Some(u) if u <= lower => Vec::new(),
+            Some(u) => s.entries.range(*lower..*u).map(|(k, _)| *k).collect(),
+            None => s.entries.range(*lower..).map(|(k, _)| *k).collect(),
+        };
+        self.ids_read.set(self.ids_read.get() + ids.len() as u64);
+        Ok(ids)
     }
 
     fn relay(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, now: u64) -> Result<crate::RelayVerdict, StoreError> {

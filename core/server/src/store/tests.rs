@@ -382,6 +382,9 @@ fn live_by_id_pages() {
     let page = e.store.live_by_id(&l, Some(&all[3]), 4).unwrap();
     assert_eq!(page.iter().map(|p| p.0).collect::<Vec<_>>(), all[4..8]);
     assert!(e.store.live_ids(&LabelId([0xee; 16])).unwrap().is_empty());
+    assert_eq!(e.store.live_ids_in(&l, &all[2], Some(&all[7])).unwrap(), all[2..7]);
+    assert_eq!(e.store.live_ids_in(&l, &all[7], None).unwrap(), all[7..]);
+    assert!(e.store.live_ids_in(&l, &all[7], Some(&all[2])).unwrap().is_empty());
 }
 
 #[derive(Clone, Debug)]
@@ -462,6 +465,10 @@ proptest! {
             }
             for l in [e.f.label, g.label] {
                 prop_assert_eq!(e.store.live_by_id(&l, None, 100).unwrap(), r.live_by_id(&l, None, 100).unwrap());
+                for (lo, hi) in [(0u8, None), (3, Some(9)), (9, Some(3)), (6, None)] {
+                    let (lo, hi) = (id(lo), hi.map(id));
+                    prop_assert_eq!(e.store.live_ids_in(&l, &lo, hi.as_ref()).unwrap(), r.live_ids_in(&l, &lo, hi.as_ref()).unwrap());
+                }
                 prop_assert_eq!(e.store.budget(&l).unwrap(), r.budget(&l).unwrap());
                 prop_assert_eq!(e.store.log_head(&l).unwrap().1, r.log_head(&l).unwrap().1);
                 // the same records; a sweep executes due deletes by time, the reference by ID

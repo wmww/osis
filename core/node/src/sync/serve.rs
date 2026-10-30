@@ -433,9 +433,10 @@ impl LabelStore for PeerStore<'_> {
         Ok(self.relays.admit(label, blob_id, size, expiry, self.wall))
     }
 
-    fn live_ids(&self, label: &LabelId) -> std::result::Result<Vec<BlobId>, StoreError> {
-        let mut ids: BTreeSet<BlobId> = self.entries.range((*label, BlobId([0; 32]))..).take_while(|((l, _), _)| l == label).map(|((_, b), _)| *b).collect();
-        ids.extend(SyncEngine::eph_entries_of(self.eph, label).map(|(b, _)| b));
+    fn live_ids_in(&self, label: &LabelId, lower: &BlobId, upper: Option<&BlobId>) -> std::result::Result<Vec<BlobId>, StoreError> {
+        let below = |b: &BlobId| upper.is_none_or(|u| b < u);
+        let mut ids: BTreeSet<BlobId> = self.entries.range((*label, *lower)..).take_while(|((l, b), _)| l == label && below(b)).map(|((_, b), _)| *b).collect();
+        ids.extend(self.eph.entries.range((*label, *lower)..).take_while(|((l, b), _)| l == label && below(b)).map(|((_, b), _)| *b));
         let mut out = Vec::new();
         for b in ids {
             if self.live(label, &b)?.is_some() {

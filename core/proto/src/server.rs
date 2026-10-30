@@ -475,7 +475,16 @@ impl ServerConnection {
                 if !self.opened.contains(&label) {
                     return Ok(Some(M::Error { id, code: Code::NOT_OPENED }));
                 }
-                match rbsr::respond(&store.live_ids(&label)?, &ranges) {
+                if ranges.iter().any(|r| matches!(r.mode, Mode::Diff { .. })) {
+                    return Ok(Some(M::Error { id, code: Code::MALFORMED }));
+                }
+                // only the asked ranges are read (sorted and disjoint: at most the label once)
+                let mut mine = Vec::with_capacity(ranges.len());
+                for r in &ranges {
+                    let upper = (!r.upper.is_end()).then(|| BlobId(r.upper.padded()));
+                    mine.push(store.live_ids_in(&label, &BlobId(r.lower.padded()), upper.as_ref())?);
+                }
+                match rbsr::respond_in(&ranges, &mine) {
                     Ok(ranges) => M::ReconcileReply { id, ranges },
                     Err(_) => M::Error { id, code: Code::MALFORMED },
                 }
@@ -954,6 +963,59 @@ mod tests {
             assert!(c.crossed.len() <= MAX_CROSSED, "{}", c.crossed.len());
         }
         assert!(!c.is_closed());
+    }
+
+    fn opened(f: &Fixture, store: &mut MemoryLabelStore) -> ServerConnection {
+        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        c.handle(0, store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+        let open = Message::Open { id: 1, label: f.label, proof: Proof::sync(&f.sync, &f.label, &CHALLENGE, &STATIC_KEY) };
+        let out = c.handle(0, store, ServerInput::Bytes(encode_frame(&open.encode())));
+        assert!(out.iter().any(|o| matches!(o, ServerOutput::Send(b) if matches!(Message::decode(&b[4..]), Ok(Message::Opened { .. })))));
+        c
+    }
+
+    fn reply(out: &[ServerOutput]) -> Message {
+        out.iter().find_map(|o| if let ServerOutput::Send(b) = o { Message::decode(&b[4..]).ok() } else { None }).unwrap()
+    }
+
+    // spec/wire.md §11.3, spec/requirements.md (peer input never causes unbounded work): a
+    // Reconcile reads only the live IDs inside its ranges, so repeating a narrow range over a
+    // large label costs what the range holds, and the whole space costs the label once
+    #[test]
+    fn reconcile_reads_only_asked_ranges() {
+        let f = Fixture::new(0x10);
+        let mut store = MemoryLabelStore::new([1; 32]);
+        store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
+        let n = 4096u32;
+        let mut ids = Vec::new();
+        for i in 0..n {
+            let blob = i.to_be_bytes().to_vec();
+            let blob_id = osis_label::blob_id(&blob);
+            let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, presence: false };
+            assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
+            ids.push(blob_id);
+        }
+        ids.sort();
+        let mut c = opened(&f, &mut store);
+        // [ids[100], ids[110]): ten IDs, asked by fingerprint and by list
+        let (lo, hi) = (rbsr::Bound::of(&ids[100]), rbsr::Bound::of(&ids[110]));
+        for (i, mode) in [Mode::Fingerprint([0; 16]), Mode::Ids(vec![])].into_iter().enumerate() {
+            store.ids_read.set(0);
+            let msg = Message::Reconcile { id: 2 + i as u32, label: f.label, ranges: vec![Range { lower: lo.clone(), upper: hi.clone(), mode }] };
+            let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&msg.encode())));
+            let Message::ReconcileReply { ranges, .. } = reply(&out) else { panic!("{out:?}") };
+            let want = match i {
+                0 => Mode::Ids(ids[100..110].to_vec()),
+                _ => Mode::Diff { theirs: ids[100..110].to_vec(), lacking: vec![] },
+            };
+            assert_eq!(ranges, vec![Range { lower: lo.clone(), upper: hi.clone(), mode: want }]);
+            assert_eq!(store.ids_read.get(), 10);
+        }
+        store.ids_read.set(0);
+        let whole = Message::Reconcile { id: 9, label: f.label, ranges: vec![Range { lower: rbsr::Bound::empty(), upper: rbsr::Bound::empty(), mode: Mode::Fingerprint([0; 16]) }] };
+        let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&whole.encode())));
+        assert!(matches!(reply(&out), Message::ReconcileReply { ranges, .. } if ranges.len() == rbsr::SPLIT));
+        assert_eq!(store.ids_read.get(), u64::from(n));
     }
 
     // spec/sync.md §5 (Delete), spec/requirements.md (peer input never causes unbounded work): items
