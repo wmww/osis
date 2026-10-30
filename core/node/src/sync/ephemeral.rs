@@ -548,13 +548,15 @@ impl SyncEngine {
             if e.foreign_presence() {
                 continue;
             }
+            // an own entry is stamped under this connection's head: one stamped before a
+            // rotation (built offline, or for another server) is refused under it (code 9)
             let stamp = match (e.stamp, &keys.write) {
-                (Some(s), _) => s,
-                (None, Some(w)) if e.own => {
+                (_, Some(w)) if e.own => {
                     let s = osis_label::sign_stamp(w, &l, b, &e.wrap);
                     e.stamp = Some(s);
                     s
                 }
+                (Some(s), _) => s,
                 _ => continue,
             };
             let (blob, wrap) = (e.blob.clone(), e.wrap);

@@ -2066,3 +2066,41 @@ fn split_cover_pieces_under_different_labels_spec_sync_9() {
     }
 }
 
+
+// spec/sync.md §5 (a new sync key ends an open), §6 (a first Sync lists the held ephemeral
+// entries as gained): a Sync refused 8 because a read rotation landed between its Open and it
+// listed nothing to the server, so the Sync after the reopen on the same connection lists them
+// again (it counted the refused list as held there and never uploaded b's offline note).
+// End to end (c reads the note) waits on issues/eph-own-entry-not-head.md.
+#[test]
+fn gained_announced_again_after_refused_sync_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[sv]);
+    let x = net.node(4, &[sv]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Write), (x, Role::Read)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    net.set_online(b, false);
+    net.run();
+    note(&mut net, b, w, "b", "1");
+    net.hold_opened.insert(b);
+    net.set_online(b, true);
+    net.advance(10_000);
+    let conn = net.conn_to(b, sv);
+    assert!(net.gained.get(&b).is_none_or(|v| v.is_empty()), "the first Sync waits behind the held Opened");
+    let (at, bt, ct, xt) = (net.tid(a), net.tid(b), net.tid(c), net.tid(x));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write), (ct, Role::Write)]);
+    remove_member(e, g, xt, &rs, 9);
+    net.run();
+    net.release();
+    net.run();
+    assert_eq!(net.conn_to(b, sv), conn, "same connection");
+    let sent = &net.gained[&b];
+    assert_eq!(sent.len(), 2, "listed again after the refused Sync: {sent:?}");
+    assert_eq!(sent[0], sent[1]);
+}

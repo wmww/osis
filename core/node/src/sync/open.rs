@@ -476,6 +476,12 @@ impl SyncEngine {
         if kind == Request::Reconcile {
             self.eph.reconciling.remove(&(conn, l));
         }
+        // a refused Sync listed nothing to the server: the next one announces the held entries
+        // again (else `eph_synced` counted the stale list as held there)
+        if kind == Request::Sync {
+            self.eph.gained.remove(&(conn, l));
+            self.eph.announced.remove(&(conn, l));
+        }
         let phase = self.lc(conn, &l).map(|x| x.phase.clone());
         match (kind, phase) {
             (Request::Open, Some(Phase::Opening)) if code == Code::UNKNOWN_LABEL => self.register_path(conn, l, out),
