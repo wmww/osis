@@ -753,13 +753,17 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         Ok(())
     })?;
     tx.core.ix.secrets.extend(secrets);
-    // kept from the first keyset seen on, even once the `/keys` state lost it
-    let mut own = Vec::new();
+    // the `/keys` parts that wrote a keyset, kept once their bodies dropped or went missing
+    let mut parts = Vec::new();
     tx.scan(records::OWN_KEYS, |k, _| {
-        own.push(Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("own keys"))?));
+        let bad = || Error::Corrupt("own keys");
+        let (t, c) = k.split_at_checked(15).ok_or_else(bad)?;
+        parts.push((Tid::from_bytes(t.try_into().map_err(|_| bad())?), CommitId(c.try_into().map_err(|_| bad())?)));
         Ok(())
     })?;
-    tx.core.ix.own_keys.extend(own);
+    for (t, c) in parts {
+        tx.core.ix.keyset_parts.insert(t, c);
+    }
     let mut schemas = Vec::new();
     tx.scan(records::SCHEMAS, |_, v| {
         let bad = |_| Error::Corrupt("schema");
@@ -898,7 +902,10 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     for (id, k) in pend {
         tx.core.ix.pending.insert(id, if k == PendingKind::Parked { Reason::Parked } else { Reason::Unexamined });
     }
-    // derived indexes from states (secrets, own keys: persisted, read again on a rebuild)
+    // with every commit's validity (a rebuild's re-judging below re-derives what flips)
+    let things: BTreeSet<Tid> = tx.core.ix.keyset_parts.keys().copied().collect();
+    keys::refresh_own_keys(tx, &things, false)?;
+    // derived indexes from states (secrets: persisted, read again on a rebuild)
     let mut aspects = Vec::new();
     tx.scan(crate::engine::records::ASPECTS, |k, _| {
         let mut r = records::Rd::new(k);

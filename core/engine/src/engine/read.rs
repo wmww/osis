@@ -283,7 +283,7 @@ impl Engine {
     /// The epochs this node holds for actor `tid` (its own, opened ones with their
     /// establishment, or derived from the owner's).
     pub fn epochs(&self, tid: &Tid) -> Option<osis_keys::ActorEpochs> {
-        self.core.ix.secrets.get(tid).cloned().or_else(|| self.core.epochs(tid))
+        self.core.epochs(tid).or_else(|| self.core.ix.secrets.get(tid).cloned())
     }
 
     /// Whether `/created` of `tid` is held, or it is an ephemeral thing here.

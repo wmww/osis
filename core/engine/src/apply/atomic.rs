@@ -733,8 +733,8 @@ fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: 
     Ok(())
 }
 
-/// Keeps the indexes derived from states current: secrets opened from `/secrets`, own keys
-/// from `/keys`, the `/was` and `/moved` indexes, group definitions.
+/// Keeps the indexes derived from states current: secrets opened from `/secrets`, delete keys
+/// and keyset epochs from `/keys`, the `/was` and `/moved` indexes, group definitions.
 pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     if !matches!(ak.as_str(), "/secrets" | "/keys" | "/was" | "/moved" | "/group") {
         return Ok(());
@@ -757,9 +757,7 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             if let Some(k) = v.as_ref().and_then(crate::engine::secrets::keys_value) {
                 // the keysets' epochs and suites it records are persisted with the epochs
                 let before = tx.core.ix.secrets.get(tid).cloned();
-                if tx.core.observe_keys(tid, &k) {
-                    tx.txn.put_local(&[records::OWN_KEYS, tid.as_bytes()].concat(), &[], Shred::No)?;
-                }
+                tx.core.observe_keys(tid, &k);
                 if let Some(e) = tx.core.ix.secrets.get(tid)
                     && before.as_ref() != Some(e)
                 {
