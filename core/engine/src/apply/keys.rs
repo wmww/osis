@@ -826,6 +826,54 @@ mod tests {
         assert_eq!(secrets_parts(&mut lp, &id, t), 1);
     }
 
+    // spec/permissions.md §3: a pending grant from before the removal boxes only an epoch the
+    // node held: applied, it would give no role, so forgetting shreds its boxes with the secrets
+    // (kept, a device compromised later would open the lost secrets from them).
+    #[test]
+    fn stale_grant_loses_its_boxes_spec_perm_3() {
+        let (mut lp, t) = removed_reader(915);
+        let b = lp.peers[1].engine.tid();
+        let kem = lp.peers[1].engine.identity().keys().kem.public().clone();
+        let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
+        let epochs = lp.peers[0].engine.epochs(&t).unwrap();
+        let secrets = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+        let rcpt = osis_keys::Recipient { member: b, role: Role::Read, keys: osis_keys::MemberKeys::KeyActor { kem, seed: None } };
+        let w = osis_keys::reseal_member(&t, &epochs, &secrets, &rcpt, &[Role::Read].into(), &mut osis_crypto::SeededRng::from_u64(3)).unwrap().unwrap();
+        let v = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() }.to_value();
+        // signed before the removal; pending for good (a thing nobody holds the `/created` of)
+        let bytes = forge_membership(&mut lp, 0, t, &rec, &v, Some(Tid::from_bytes([0x5b; 15])));
+        remove(&mut lp, t);
+        assert!(matches!(lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), crate::Ingested::Pending(..)));
+        lp.peers[1].clock.advance(2 * crate::rotation::PENDING_GRANT_WAIT_MS);
+        assert!(lp.peers[1].engine.drop_lost_secrets().unwrap().contains(&t));
+        let (id, _) = lp.peers[1].engine.pending().into_iter().next().unwrap();
+        assert_eq!(secrets_parts(&mut lp, &id, t), 0, "a held epoch's box goes");
+    }
+
+    // spec/permissions.md §3 (a deposit-only step waits for a pending `/keys` write): only one
+    // signed by an admin of the actor counts; one whose author nobody can check (anyone can send
+    // it) would hold the step back for good.
+    #[test]
+    fn keys_write_pending_needs_an_admin_spec_perm_3() {
+        let (mut lp, t) = removed_reader(916);
+        // a stranger's `/keys` write on its own thing: its author's chain is unknown here
+        let mut m = Mutation::new();
+        let me2 = lp.peers[2].engine.tid();
+        let t2 = lp.peers[2].engine.new_thing(&mut m, me2);
+        lp.peers[2].commit(m).unwrap();
+        let c = *lp.peers[2].engine.refresh_deposit_seed(&t2).unwrap().commits.last().unwrap();
+        let pk = lp.peers[2].engine.package(&c).unwrap().unwrap();
+        assert!(matches!(lp.deliver(1, &pk).unwrap(), crate::Ingested::Pending(..)));
+        assert!(!lp.peers[1].engine.keys_write_pending(&t2).unwrap(), "unchecked author");
+        // the admin's own, held back by drift
+        lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
+        let c = *lp.peers[0].engine.refresh_deposit_seed(&t).unwrap().commits.last().unwrap();
+        let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+        assert!(!lp.peers[1].engine.keys_write_pending(&t).unwrap());
+        assert!(matches!(lp.deliver(1, &pk).unwrap(), crate::Ingested::Pending(_, crate::Reason::Drift)));
+        assert!(lp.peers[1].engine.keys_write_pending(&t).unwrap(), "the admin's");
+    }
+
     /// Parts on `t`'s `/secrets` of held commit `id` at peer 1.
     fn secrets_parts(lp: &mut LocalPeer, id: &CommitId, t: Tid) -> usize {
         let Some(bytes) = lp.peers[1].engine.commit_bytes(id).unwrap() else { return 0 };
