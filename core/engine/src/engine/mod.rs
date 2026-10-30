@@ -100,6 +100,10 @@ pub struct Dropped {
     /// one's coverers reach them): the frontiers and `Absorbed` its body had (counters and IDs, no content), which count as received while the part is
     /// valid (`receipt::received`; indexed by `ix.dropped_snapshots`).
     pub gives: Option<Gives>,
+    /// Its `rotation_role` and `grant_overreach` notes when it dropped: judgments the body made,
+    /// kept so re-judging the part (and a rebuild) needs no body.
+    pub role: Option<osis_base::Role>,
+    pub overreach: bool,
 }
 
 /// A snapshot part's frontiers and `Absorbed` (commit, author).

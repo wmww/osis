@@ -804,6 +804,15 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let valid = vec![true; h.aspects.len()];
             let missing = (0..h.aspects.len()).filter(|ai| !blob.parts.iter().any(|p| p.ai == *ai) && !head.dropped.contains_key(ai)).collect();
             let m = Meta::new(h.clone(), valid, head, missing);
+            // what a dropped part judged, kept in its record (`Dropped::role`)
+            for (ai, d) in &m.dropped {
+                if let Some(r) = d.role {
+                    tx.core.ix.rotation_role.insert((id, *ai), r);
+                }
+                if d.overreach {
+                    tx.core.ix.grant_overreach.insert((id, *ai));
+                }
+            }
             atomic::index_commit(tx.core, &id, &m.view);
             validity::note_imports(tx.core, &id, &h, &[]).map_err(|_| Error::Corrupt("commit imports"))?;
             tx.core.ix.commits.insert(id, m);

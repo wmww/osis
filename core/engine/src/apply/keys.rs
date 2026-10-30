@@ -35,20 +35,54 @@ fn map(f: Option<&Fragment>) -> Option<&osis_crdt::Map> {
 /// Records for each box a `/secrets` delta writes the commit's time: the earliest write of the
 /// box, and the earliest of its epoch (`Core::epoch_intro`).
 pub(crate) fn note_box_keys(core: &mut Core, h: &Header, actor: &Tid, delta: &Fragment) {
-    if let Some(m) = map(field(delta, 0)) {
-        for (_, _, k, f) in m.entries() {
-            let Some(k) = k else { continue };
-            if f.is_none() {
-                continue;
+    for (bk, k) in written_boxes(delta) {
+        core.ix.boxes_to.insert(bk.member, (*actor, k.clone()));
+        if let Ok(e) = osis_keys::aspects::from_schema(&bk.epoch) {
+            note_intro(core, h, actor, bk.role, e);
+        }
+        core.ix.box_written.upsert((*actor, bk), || h.ts, |w| *w = (*w).min(h.ts));
+    }
+}
+
+/// The boxes a `/secrets` delta writes (removals aside): typed key and key value.
+fn written_boxes(delta: &Fragment) -> Vec<(BoxKey, &Value)> {
+    let Some(m) = map(field(delta, 0)) else { return Vec::new() };
+    m.entries().filter(|(_, _, _, f)| f.is_some()).filter_map(|(_, _, k, _)| Some((typed(k?, "box_key").and_then(|t| BoxKey::from_value(&t).ok())?, k?))).collect()
+}
+
+/// A membership commit's `/secrets` or `/keys` part dropped its body (`bodies`, its deltas):
+/// what was noted from them goes with them (spec/commits.md §5), re-derived from the bodies
+/// still held: `epoch_intro`, `box_written`, and the `boxes_to` entries of the boxes it wrote
+/// that no held body writes. Unknowns there cost a rotation or a re-seal, never a leak.
+pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[Fragment]) -> Result<()> {
+    let Some(a) = h.aspects.get(ai) else { return Ok(()) };
+    if h.kind != Kind::Membership || !matches!(a.ak.as_str(), "/secrets" | "/keys") {
+        return Ok(());
+    }
+    rebuild_intro(tx, &std::collections::BTreeSet::from([a.tid]))?;
+    if a.ak.as_str() != "/secrets" {
+        return Ok(());
+    }
+    let mut gone: std::collections::BTreeSet<(Tid, Value)> = bodies.iter().flat_map(written_boxes).map(|(bk, k)| (bk.member, k.clone())).collect();
+    let ids: Vec<CommitId> = tx.core.ix.by_aspect.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+    for id in ids {
+        let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
+        let Some(xi) = m.header.aspects.iter().position(|x| x.tid == a.tid && x.ak == a.ak) else { continue };
+        if m.header.kind != Kind::Membership {
+            continue;
+        }
+        for d in super::held_parts(tx, &id, xi)? {
+            if let Decoded::Delta(d) = d {
+                for (bk, k) in written_boxes(&d.fragment) {
+                    gone.remove(&(bk.member, k.clone()));
+                }
             }
-            let Some(bk) = typed(k, "box_key").and_then(|k| BoxKey::from_value(&k).ok()) else { continue };
-            core.ix.boxes_to.insert(bk.member, (*actor, k.clone()));
-            if let Ok(e) = osis_keys::aspects::from_schema(&bk.epoch) {
-                note_intro(core, h, actor, bk.role, e);
-            }
-            core.ix.box_written.upsert((*actor, bk), || h.ts, |w| *w = (*w).min(h.ts));
         }
     }
+    for (m, k) in gone {
+        tx.core.ix.boxes_to.remove(&m, &(a.tid, k));
+    }
+    Ok(())
 }
 
 /// Records for each keyset a `/keys` delta writes the commit's time as the epoch's introduction

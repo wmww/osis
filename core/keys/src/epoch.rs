@@ -237,9 +237,10 @@ impl RoleEpochs {
         }
     }
 
-    /// Records that a held `/secrets` compaction snapshot keys `e`. Call `establish` after.
-    pub fn set_snapshot(&mut self, e: Epoch) {
-        self.observe(e).snapshot = true;
+    /// Records that a held `/secrets` compaction snapshot keys `e`; whether that is new. Call
+    /// `establish` after.
+    pub fn set_snapshot(&mut self, e: Epoch) -> bool {
+        !std::mem::replace(&mut self.observe(e).snapshot, true)
     }
 
     /// Recomputes `Chain` and `Snapshot` establishment (spec/crypto.md §4), a fixpoint: an epoch

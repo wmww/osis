@@ -435,6 +435,57 @@ fn open_equals_rebuild_after_a_forget() {
     open_equals_rebuild(&mut lp.peers[0].engine, &[d], "owner");
 }
 
+// spec/requirements.md, Decentralization; spec/commits.md §5 (a dropped body leaves no local
+// index entry derived from it): after `/secrets` and `/keys` compactions drop a grant's and a
+// demotion's rotation bodies, an open from the persisted index computes what a rebuild from the
+// commit records computes, whole index included (box and epoch notes, rotation roles, epochs'
+// snapshot marks), also after a later rotation
+#[test]
+fn open_equals_rebuild_after_a_secrets_compaction() {
+    let mut lp = LocalPeer::new(4, 0x5ec7, T0).unwrap();
+    lp.sync_all().unwrap();
+    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
+    let (a, w, r, r2) = (tids[0], tids[1], tids[2], tids[3]);
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, a);
+    m.set(t, &REG, &s("x")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let mut ids = Vec::new();
+    for (who, role) in [(w, Role::Write), (r, Role::Read)] {
+        ids.extend(lp.peers[0].engine.grant(&t, &who, &edge(role)).unwrap().commits);
+    }
+    lp.sync_all().unwrap();
+    let demote = osis_node::flows::Demotion { member: r, new: None, presync: osis_node::flows::PreSync::Synced };
+    ids.extend(lp.peers[0].engine.demote(&t, &demote).unwrap().commits);
+    lp.sync_all().unwrap();
+    // the admin compacts both aspects and drops every body a snapshot covers
+    let compact = |e: &mut Engine, ids: &mut Vec<osis_base::CommitId>| {
+        let mut dropped = 0;
+        for k in ["/secrets", "/keys"] {
+            let k = osis_base::Ak::new(k).unwrap();
+            let Some(snap) = e.snapshot(&t, &k).unwrap() else { continue };
+            for c in ids.iter() {
+                if e.body_not_dropped(c, &t, &k) && e.covered(&snap, c, &t, &k).unwrap() == Some(true) {
+                    e.drop_body(c, &t, &k).unwrap();
+                    dropped += 1;
+                }
+            }
+            ids.push(snap);
+        }
+        dropped
+    };
+    assert!(compact(&mut lp.peers[0].engine, &mut ids) >= 2, "a grant's and a rotation's bodies dropped");
+    open_equals_rebuild(&mut lp.peers[0].engine, &[t], "compacted");
+    // a later grant and rotation over the compacted aspects, compacted again
+    ids.extend(lp.peers[0].engine.grant(&t, &r2, &edge(Role::Read)).unwrap().commits);
+    let demote = osis_node::flows::Demotion { member: w, new: None, presync: osis_node::flows::PreSync::Synced };
+    ids.extend(lp.peers[0].engine.demote(&t, &demote).unwrap().commits);
+    lp.sync_all().unwrap();
+    open_equals_rebuild(&mut lp.peers[0].engine, &[t], "rotated after");
+    compact(&mut lp.peers[0].engine, &mut ids);
+    open_equals_rebuild(&mut lp.peers[0].engine, &[t], "compacted again");
+}
+
 // spec/requirements.md, Decentralization; spec/commits.md §4 (all or none): a crash at any
 // durable write of a content commit and then an edge write, then open: what the open from the
 // persisted index computes equals a rebuild of what landed
