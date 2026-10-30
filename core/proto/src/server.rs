@@ -139,12 +139,23 @@ fn check(k: &HeadKeys, key: StepKey, domain: Domain, digest: &[u8; 32], sig: &Si
     Code::REFUSED
 }
 
+/// What an open holds under.
+#[derive(Clone, Copy)]
+enum Under {
+    /// The sync key of the head it was proven at.
+    Sync(osis_crypto::VerifyingKey),
+    /// A member proof (spec/sync.md §5, member peer): the store's word, not a step's.
+    Member,
+}
+
 pub struct ServerConnection {
     cfg: ServerConfig,
     decoder: FrameDecoder,
     version: Option<u64>,
     closed: bool,
-    opened: BTreeSet<LabelId>,
+    /// Opened labels and the sync key each open holds under (spec/sync.md §5): a head with
+    /// another sync key ends it (`still_open`).
+    opened: BTreeMap<LabelId, Under>,
     /// Subscribed labels and the log position pushed so far.
     subs: BTreeMap<LabelId, u64>,
     /// Last complete Sync per label: its cursor sequence number.
@@ -227,7 +238,7 @@ impl ServerConnection {
             decoder: FrameDecoder::new(),
             version: None,
             closed: false,
-            opened: BTreeSet::new(),
+            opened: BTreeMap::new(),
             subs: BTreeMap::new(),
             synced: BTreeMap::new(),
             inline: BTreeMap::new(),
@@ -254,9 +265,40 @@ impl ServerConnection {
         self.member
     }
 
-    /// Labels opened on this connection.
-    pub fn opened(&self) -> &BTreeSet<LabelId> {
-        &self.opened
+    /// Labels opened on this connection (an open a new head ended stays listed until a
+    /// request or push about the label finds it ended).
+    pub fn opened(&self) -> impl Iterator<Item = &LabelId> {
+        self.opened.keys()
+    }
+
+    /// Whether no label is opened on this connection (as `opened`).
+    pub fn none_opened(&self) -> bool {
+        self.opened.is_empty()
+    }
+
+    /// Whether `label` is opened and its open holds at the head: under the head's sync key, or
+    /// by a member proof, which holds across steps (spec/sync.md §5).
+    fn holds(&mut self, store: &dyn LabelStore, label: &LabelId) -> Result<bool, StoreError> {
+        Ok(match self.opened.get(label).copied() {
+            None => false,
+            Some(Under::Member) => true,
+            Some(Under::Sync(k)) => self.keys(store, label)?.is_some_and(|h| h.head.keys.sync == k),
+        })
+    }
+
+    /// `holds`, ending an open that no longer does, with its subscription (spec/sync.md §5).
+    fn still_open(&mut self, store: &dyn LabelStore, label: &LabelId) -> Result<bool, StoreError> {
+        if self.holds(store, label)? {
+            return Ok(true);
+        }
+        self.end_open(label);
+        Ok(false)
+    }
+
+    fn end_open(&mut self, label: &LabelId) {
+        self.opened.remove(label);
+        self.subs.remove(label);
+        self.owed.retain(|x| x != label);
     }
 
     pub fn is_closed(&self) -> bool {
@@ -343,8 +385,13 @@ impl ServerConnection {
             ServerInput::Relay(r) => {
                 // a slow subscriber misses relay-only entries rather than queueing them
                 let ev = Event::Added { blob_id: r.blob_id, blob: Some(r.blob), wrap: r.wrap, stamp: Some(r.stamp) };
+                // an open a new head ended gets none (its held push ends it)
                 if let Some(seq) = self.subs.get(&r.label).copied()
                     && !self.no_room(out, event_size(&ev))
+                    && self.holds(store, &r.label).unwrap_or_else(|e| {
+                        out.push(ServerOutput::StoreError(e));
+                        false
+                    })
                 {
                     match store.log_head(&r.label) {
                         Ok((log_id, _)) => send(out, Message::Push { label: r.label, events: vec![ev], cursor: Cursor { log_id, seq } }),
@@ -451,7 +498,7 @@ impl ServerConnection {
             }
             M::Sync { id, label, cursor, inline_limit, entries, gained } => self.sync(store, now, id, label, cursor, inline_limit, entries, gained, out)?,
             M::Reconcile { id, label, ranges } => {
-                if !self.opened.contains(&label) {
+                if !self.still_open(store, &label)? {
                     return Ok(Some(M::Error { id, code: Code::NOT_OPENED }));
                 }
                 if ranges.iter().any(|r| matches!(r.mode, Mode::Diff { .. })) {
@@ -472,7 +519,7 @@ impl ServerConnection {
             M::Subscribe { id, labels } => {
                 let mut codes = Vec::with_capacity(labels.len());
                 for l in labels {
-                    codes.push(if self.opened.contains(&l) {
+                    codes.push(if self.still_open(store, &l)? {
                         let seq = match self.synced.get(&l) {
                             Some(s) => *s,
                             None => store.log_head(&l)?.1,
@@ -499,7 +546,7 @@ impl ServerConnection {
 
     fn open(&mut self, store: &dyn LabelStore, id: Id, label: LabelId, proof: Proof) -> Result<Message, StoreError> {
         let Some(head) = self.head(store, &label)? else { return Ok(Message::Error { id, code: Code::UNKNOWN_LABEL }) };
-        if !self.opened.contains(&label) && self.opened.len() >= MAX_OPEN_LABELS {
+        if !self.opened.contains_key(&label) && self.opened.len() >= MAX_OPEN_LABELS {
             return Ok(Message::Error { id, code: Code::RATE_LIMITED });
         }
         // a member node's proof: the store knows its dialable key (spec/sync.md §5)
@@ -508,13 +555,15 @@ impl ServerConnection {
             if !(proof.verify_sig(&label, &self.cfg.challenge, &self.cfg.static_key).is_ok() && store.member_open(&key, &label)?) {
                 return Ok(Message::Error { id, code: Code::REFUSED });
             }
-            self.opened.insert(label);
+            self.opened.insert(label, Under::Member);
             self.member = Some(key);
             return Ok(Message::Opened { id, head, entry_box: None });
         }
         Ok(match evaluate_open(&head, &Index { store, label: &label }, &proof, &self.cfg.challenge, &self.cfg.static_key)? {
+            // every open proof holds at the head only: under the head's sync key (a claim or
+            // static entry is listed by a reader of the head's read epoch)
             OpenOutcome::Opened(entry_box) => {
-                self.opened.insert(label);
+                self.opened.insert(label, Under::Sync(head.keys.sync));
                 Message::Opened { id, head, entry_box }
             }
             OpenOutcome::Child(step) => Message::Step { id, step },
@@ -553,7 +602,7 @@ impl ServerConnection {
     /// Pages forward from `after` by the store's child index: a step read and a child lookup
     /// per step sent, never the whole path.
     fn path(&mut self, store: &dyn LabelStore, id: Id, label: LabelId, after: Option<StepId>) -> Result<Message, StoreError> {
-        if !self.opened.contains(&label) {
+        if !self.still_open(store, &label)? {
             return Ok(Message::Error { id, code: Code::NOT_OPENED });
         }
         let Some(head) = store.head(&label)? else { return Ok(Message::Error { id, code: Code::UNKNOWN_LABEL }) };
@@ -576,7 +625,7 @@ impl ServerConnection {
     }
 
     fn fetch(&mut self, store: &dyn LabelStore, id: Id, label: LabelId, ids: Vec<BlobId>) -> Result<Message, StoreError> {
-        if !self.opened.contains(&label) {
+        if !self.still_open(store, &label)? {
             return Ok(Message::Error { id, code: Code::NOT_OPENED });
         }
         let mut items = Vec::new();
@@ -632,7 +681,7 @@ impl ServerConnection {
 
     #[allow(clippy::too_many_arguments)]
     fn sync(&mut self, store: &mut dyn LabelStore, now: u64, id: Id, label: LabelId, cursor: Option<Cursor>, inline_limit: u64, entries: Vec<Entry>, gained: Vec<BlobId>, out: &mut Vec<ServerOutput>) -> Result<Message, StoreError> {
-        if !self.opened.contains(&label) {
+        if !self.still_open(store, &label)? {
             return Ok(Message::Error { id, code: Code::NOT_OPENED });
         }
         let (log_id, head_seq) = store.log_head(&label)?;
@@ -735,12 +784,18 @@ impl ServerConnection {
         Ok(Message::SyncReply { id, events, want, codes, cursor, more })
     }
 
+    /// Pushes `label`'s new log events. An open a new head ends (`still_open`) gets the events up
+    /// to and with that head's, and nothing after: its subscription ends.
     fn push(&mut self, store: &dyn LabelStore, label: &LabelId, out: &mut Vec<ServerOutput>) -> Result<(), StoreError> {
         let Some(mut seq) = self.subs.get(label).copied() else { return Ok(()) };
         if self.backlog(out) >= REPLY_BUDGET {
             self.owe(*label);
             return Ok(());
         }
+        let ends = match self.opened.get(label).copied() {
+            Some(Under::Sync(k)) if !self.holds(store, label)? => Some(k),
+            _ => None,
+        };
         let inline_limit = self.inline.get(label).copied().unwrap_or(0);
         let (log_id, head) = store.log_head(label)?;
         let none = HashSet::new();
@@ -755,6 +810,15 @@ impl ServerConnection {
                 break;
             }
             for (s, rec) in recs {
+                let ending = matches!((&rec, ends), (LogRecord::Head(st), Some(k)) if st.keys.sync != k);
+                if ending {
+                    // pushed whatever the queue holds: the last event of this subscription
+                    let e = self.event(store, label, s, rec, inline_limit, &none)?;
+                    events.extend(e);
+                    send(out, Message::Push { label: *label, events, cursor: Cursor { log_id, seq: s } });
+                    self.end_open(label);
+                    return Ok(());
+                }
                 if let Some(e) = self.event(store, label, s, rec, inline_limit, &none)? {
                     let size = event_size(&e);
                     if self.backlog(out) + used + size > REPLY_BUDGET {
@@ -775,6 +839,13 @@ impl ServerConnection {
                 }
                 seq = s;
             }
+        }
+        if ends.is_some() {
+            // the ending head's record is gone from the log: the current head ends it
+            events.extend(self.keys(store, label)?.map(|h| Event::Head(h.head.clone())));
+            send(out, Message::Push { label: *label, events, cursor: Cursor { log_id, seq } });
+            self.end_open(label);
+            return Ok(());
         }
         if !events.is_empty() {
             send(out, Message::Push { label: *label, events, cursor: Cursor { log_id, seq } });

@@ -223,12 +223,17 @@ fn subscriptions_and_relays() {
     let (evs, cursor) = events_of(&w.take(b));
     assert_eq!(added(&evs), vec![bid(1)]);
     assert!(cursor.is_some());
-    // a new head is pushed too
+    // a new head is pushed too, ending the open under the old sync key: opened again
     let mut l2 = l;
     let (child, set) = l2.rotate(20);
     w.run(a, Command::Register { label: l2.id, step: child.clone(), claim_set: Some(set) });
     assert_eq!(events_of(&w.take(b)).0, vec![Event::Head(child)]);
     w.take(a);
+    for x in [a, b, c] {
+        w.open(x, &l2);
+    }
+    w.run(b, Command::Subscribe { labels: vec![l2.id] });
+    w.run(a, Command::Subscribe { labels: vec![l2.id] });
     let backend_rows = w.backends[h].scan(&[], None, usize::MAX).unwrap().len();
     let relay = relay_blob(&w, 5);
     let rid = osis_label::blob_id(&relay);
@@ -464,16 +469,17 @@ fn two_servers_replicate() {
     assert!(matches!(&ev[..], [ClientEvent::Opened { .. }]), "{ev:?}");
     let (evs, cursor) = events_of(&w.run(b, sync(l.id, None, vec![], vec![])));
     assert_eq!(added(&evs), sorted((0..10).map(bid).collect()));
-    // live changes follow; a new head before them
+    // live changes follow; a new head (another sync key) ends the open, opened again under it
     w.run(b, Command::Subscribe { labels: vec![l.id] });
     let mut l = l;
     let (child, set) = l.rotate(20);
     w.run(a, Command::Register { label: l.id, step: child.clone(), claim_set: Some(set) });
+    assert_eq!(events_of(&w.take(b)).0, vec![Event::Head(child)]);
+    w.open(b, &l);
+    w.run(b, Command::Subscribe { labels: vec![l.id] });
     w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(10))] });
     let (pushed, _) = events_of(&w.take(b));
-    assert_eq!(pushed.len(), 2, "{pushed:?}");
-    assert_eq!(pushed[0], Event::Head(child));
-    assert_eq!(added(&pushed[1..]), vec![bid(10)]);
+    assert_eq!(added(&pushed), vec![bid(10)]);
     // deletes are not relayed
     w.open(a, &l);
     let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0), None).unwrap();

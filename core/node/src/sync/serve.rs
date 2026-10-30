@@ -507,7 +507,7 @@ impl SyncEngine {
         self.next_conn += 1;
         let mut out = Vec::new();
         if self.served.len() >= self.cfg.max_served {
-            let idle = self.served.iter().filter(|(_, s)| s.conn.opened().is_empty()).min_by_key(|(c, s)| (s.since, **c)).map(|(c, _)| *c);
+            let idle = self.served.iter().filter(|(_, s)| s.conn.none_opened()).min_by_key(|(c, s)| (s.since, **c)).map(|(c, _)| *c);
             match idle {
                 Some(old) => {
                     self.served.remove(&old);
@@ -534,7 +534,7 @@ impl SyncEngine {
 
     /// Label IDs opened on each served session (tests, diagnostics).
     pub fn served_opened(&self) -> BTreeMap<ConnId, BTreeSet<LabelId>> {
-        self.served.iter().map(|(c, s)| (*c, s.conn.opened().clone())).collect()
+        self.served.iter().map(|(c, s)| (*c, s.conn.opened().copied().collect())).collect()
     }
 
     /// The dialable keys member proofs proved on the sessions served now (spec/sync.md §5).
@@ -714,7 +714,7 @@ impl SyncEngine {
             .filter(|(_, s)| {
                 let Some(k) = s.conn.member() else { return false };
                 let node = reach.get(&k);
-                s.conn.opened().iter().any(|l| labels.get(l).is_some_and(|x| node.is_none_or(|n| !self.engine.may_read(n, &x.group))))
+                s.conn.opened().any(|l| labels.get(l).is_some_and(|x| node.is_none_or(|n| !self.engine.may_read(n, &x.group))))
             })
             .map(|(c, _)| *c)
             .collect();
@@ -753,7 +753,7 @@ impl SyncEngine {
     pub(crate) fn serve_timers(&mut self, out: &mut Vec<Action>) {
         let now = self.raw_now();
         let (idle, open) = (self.cfg.serve_idle_ms, self.cfg.serve_open_ms);
-        let stale: Vec<ConnId> = self.served.iter().filter(|(_, s)| s.last.saturating_add(idle) <= now || s.conn.opened().is_empty() && s.since.saturating_add(open) <= now).map(|(c, _)| *c).collect();
+        let stale: Vec<ConnId> = self.served.iter().filter(|(_, s)| s.last.saturating_add(idle) <= now || s.conn.none_opened() && s.since.saturating_add(open) <= now).map(|(c, _)| *c).collect();
         for c in stale {
             self.served.remove(&c);
             self.eph_served_gone(c);
@@ -773,6 +773,6 @@ impl SyncEngine {
     pub(crate) fn serve_wake(&self) -> Option<u64> {
         // a session holding pushes back: `Event::Sent` at the next tick may give them room
         let poll = self.served.values().any(|s| s.conn.held()).then(|| self.raw_now().saturating_add(osis_proto::server::PUSH_POLL_MS));
-        self.served.values().map(|s| if s.conn.opened().is_empty() { s.since.saturating_add(self.cfg.serve_open_ms).min(s.last.saturating_add(self.cfg.serve_idle_ms)) } else { s.last.saturating_add(self.cfg.serve_idle_ms) }).chain(poll).min()
+        self.served.values().map(|s| if s.conn.none_opened() { s.since.saturating_add(self.cfg.serve_open_ms).min(s.last.saturating_add(self.cfg.serve_idle_ms)) } else { s.last.saturating_add(self.cfg.serve_idle_ms) }).chain(poll).min()
     }
 }

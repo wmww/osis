@@ -561,18 +561,28 @@ impl SyncEngine {
         self.state.flush(&mut self.engine)
     }
 
-    /// A new head in a server's log: a child of the current one moves on; anything else reopens.
+    /// A new head in a server's log: a child of the current one moves on, and reopens when its
+    /// sync key is another (the server ended the open, spec/sync.md §5); anything else reopens.
+    /// An open in flight learns the head itself (`accept_head` asks for the path after it).
     pub(crate) fn new_head(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
+        if matches!(lc.phase, super::Phase::Opening | super::Phase::Verifying | super::Phase::Registering) {
+            return Ok(());
+        }
         let cur = lc.head.clone();
         if cur.as_ref().is_some_and(|h| h.id() == step.id()) {
             return Ok(());
         }
-        let g = lc.group;
+        let (g, open) = (lc.group, lc.phase == super::Phase::Open);
         match cur {
             Some(h) if step.verify_child(&h).is_ok() => {
+                let ended = open && step.keys.sync != h.keys.sync;
                 self.record_steps(&g, &l, &[h, step.clone()], None)?;
-                self.set_head(conn, l, step)
+                self.set_head(conn, l, step)?;
+                if ended {
+                    return self.reopen(conn, l, out);
+                }
+                Ok(())
             }
             _ => self.reopen(conn, l, out),
         }

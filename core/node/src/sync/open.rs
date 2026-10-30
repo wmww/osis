@@ -472,6 +472,10 @@ impl SyncEngine {
                 c.req.deleting.retain(|(x, _), _| *x != l);
             }
         }
+        // a reconciliation ended unanswered (an open a new head ended): the next sync starts one
+        if kind == Request::Reconcile {
+            self.eph.reconciling.remove(&(conn, l));
+        }
         let phase = self.lc(conn, &l).map(|x| x.phase.clone());
         match (kind, phase) {
             (Request::Open, Some(Phase::Opening)) if code == Code::UNKNOWN_LABEL => self.register_path(conn, l, out),
@@ -482,6 +486,8 @@ impl SyncEngine {
                 }
                 self.reopen(conn, l, out)
             }
+            // sent before the open in flight (replies come in order): that open decides
+            (Request::Sync | Request::Reconcile | Request::Path, Some(Phase::Opening)) if code == Code::NOT_OPENED => Ok(()),
             (Request::Sync | Request::Reconcile | Request::Path, _) if code == Code::NOT_OPENED || code == Code::UNKNOWN_LABEL => self.reopen(conn, l, out),
             // the opened head is no longer on the server's path
             (Request::Path, Some(Phase::Open)) => self.reopen(conn, l, out),
@@ -548,6 +554,9 @@ impl SyncEngine {
         let Some((step, set)) = lc.registering.take() else { return Ok(()) };
         let g = lc.group;
         let parent = lc.head.clone();
+        // a new sync key ended this connection's open too (spec/sync.md §5): opened again under
+        // it, the first try (one round trip, the cursor kept)
+        let ended = parent.as_ref().is_some_and(|p| p.keys.sync != step.keys.sync);
         let mut steps = Vec::new();
         if let Some(p) = parent {
             steps.push(p);
@@ -555,6 +564,9 @@ impl SyncEngine {
         steps.push(step.clone());
         self.record_steps(&g, &l, &steps, Some((step.id(), set)))?;
         self.set_head(conn, l, step)?;
+        if ended {
+            return self.reopen(conn, l, out);
+        }
         self.run_dirty(out)
     }
 
