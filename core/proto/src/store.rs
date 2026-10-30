@@ -76,7 +76,7 @@ pub enum Replaced {
     /// By its delete proof: removed as a Delete removes it.
     Delete(BlobId),
     /// By the uploading connection's tie: the tie goes, and the entry once no other tie holds
-    /// it. A held entry this connection's tie does not hold refuses the upload (code 1).
+    /// it. Skipped unless this connection's tie holds it.
     Untie(BlobId),
 }
 
@@ -489,14 +489,11 @@ impl LabelStore for MemoryLabelStore {
                     gone.insert(b);
                 }
                 Replaced::Untie(b) if b != put.blob_id && s.entries.contains_key(&b) => match s.presence.get(&b) {
-                    Some(t) if t.contains(&put.tie) => {
-                        if t.len() == 1 {
-                            gone.insert(b);
-                        } else {
-                            untied.push(b);
-                        }
+                    Some(t) if t.contains(&put.tie) && t.len() == 1 => {
+                        gone.insert(b);
                     }
-                    _ => return Ok(Code::REFUSED),
+                    Some(t) if t.contains(&put.tie) => untied.push(b),
+                    _ => {}
                 },
                 _ => {}
             }

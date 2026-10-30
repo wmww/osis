@@ -776,7 +776,8 @@ impl<B: Backend> BackendStore<B> {
             }
             return Ok(Code::OK);
         }
-        let freed = plan.eph_label.saturating_add(plan.eph_presence);
+        // the planned removals' memory still held (an eviction below may take one first)
+        let freed = |s: &Self| plan.gone.iter().filter_map(|b| s.eph_entry(label, b)).map(|e| e.meta.size.saturating_add(ENTRY_OVERHEAD)).fold(0u64, u64::saturating_add);
         let now = self.now();
         self.rates.roll(now, self.policy.window_ms);
         let size = put.blob.len() as u64;
@@ -796,7 +797,7 @@ impl<B: Backend> BackendStore<B> {
                 if used(self).saturating_add(need) > self.policy.presence_bytes {
                     return Ok(Code::STORAGE_CAP);
                 }
-                while self.eph.total.saturating_sub(freed).saturating_add(need) > self.policy.ephemeral_total {
+                while self.eph.total.saturating_sub(freed(self)).saturating_add(need) > self.policy.ephemeral_total {
                     if !self.eph_evict()? {
                         return Ok(Code::STORAGE_CAP);
                     }
@@ -809,7 +810,7 @@ impl<B: Backend> BackendStore<B> {
                 if used(self).saturating_add(need) > self.policy.ephemeral_bytes {
                     return Ok(Code::STORAGE_CAP);
                 }
-                while self.eph.total.saturating_sub(freed).saturating_add(need) > self.policy.ephemeral_total {
+                while self.eph.total.saturating_sub(freed(self)).saturating_add(need) > self.policy.ephemeral_total {
                     if !self.eph_evict()? {
                         return Ok(Code::STORAGE_CAP);
                     }
@@ -944,8 +945,8 @@ impl<B: Backend> BackendStore<B> {
     }
 
     /// Plans `put`'s replacements (spec/sync.md §5, Replace): what goes, what is only untied,
-    /// the room freed. Code 1 for an untie of a held entry this connection's tie does not hold.
-    fn plan(&self, label: &LabelId, put: &Put<'_>) -> Result<Result<Plan, Code>, StoreError> {
+    /// the room freed. An untie of an entry this connection's tie does not hold is skipped.
+    fn plan(&self, label: &LabelId, put: &Put<'_>) -> Result<Plan, StoreError> {
         let mut plan = Plan::default();
         let mut seen = BTreeSet::new();
         for r in put.replaces {
@@ -953,19 +954,21 @@ impl<B: Backend> BackendStore<B> {
                 Replaced::Delete(b) => (b, false),
                 Replaced::Untie(b) => (b, true),
             };
-            if b == put.blob_id || !seen.insert(b) {
+            if b == put.blob_id || seen.contains(&b) {
                 continue;
             }
             if let Some(e) = self.eph_entry(label, &b) {
                 if untie {
                     if !e.presence || !e.ties.contains(&put.tie) {
-                        return Ok(Err(Code::REFUSED));
+                        continue;
                     }
                     if e.ties.len() > 1 {
+                        seen.insert(b);
                         plan.untie.push(b);
                         continue;
                     }
                 }
+                seen.insert(b);
                 let n = e.meta.size.saturating_add(ENTRY_OVERHEAD);
                 if e.presence {
                     plan.eph_presence = plan.eph_presence.saturating_add(n);
@@ -976,15 +979,16 @@ impl<B: Backend> BackendStore<B> {
                 plan.gone.push(b);
             } else if let Some(row) = self.row(label, &b)? {
                 if untie {
-                    return Ok(Err(Code::REFUSED));
+                    continue;
                 }
+                seen.insert(b);
                 plan.entries += 1;
                 plan.bytes = plan.bytes.saturating_add(row.meta.size);
                 plan.counted += 1;
                 plan.gone.push(b);
             }
         }
-        Ok(Ok(plan))
+        Ok(plan)
     }
 
     /// Carries out a planned replacement once its upload was admitted (logged after the add):
@@ -1350,10 +1354,7 @@ impl<B: Backend> LabelStore for BackendStore<B> {
     }
 
     fn put(&mut self, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError> {
-        let plan = match self.plan(label, &put)? {
-            Ok(p) => p,
-            Err(code) => return Ok(code),
-        };
+        let plan = self.plan(label, &put)?;
         // the removals count against the delete rate (taken even if the upload is then refused
         // for its cap: a minor overcount)
         if plan.counted > 0 {

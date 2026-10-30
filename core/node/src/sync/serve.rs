@@ -374,16 +374,12 @@ impl LabelStore for PeerStore<'_> {
 
     fn put(&mut self, label: &LabelId, put: Put<'_>) -> std::result::Result<Code, StoreError> {
         // replacements (spec/sync.md §5): an untie only of a presence entry this session uploaded
+        // (any other is skipped)
         let (mut removed, mut untied) = (Vec::new(), Vec::new());
         for r in put.replaces {
             match *r {
                 Replaced::Delete(b) if b != put.blob_id && self.live(label, &b)?.is_some() => removed.push((*label, b)),
-                Replaced::Untie(b) if b != put.blob_id && self.live(label, &b)?.is_some() => {
-                    if !self.eph.served_src.get(&(*label, b)).is_some_and(|cs| cs.contains(&self.conn)) {
-                        return Ok(Code::REFUSED);
-                    }
-                    untied.push((*label, b));
-                }
+                Replaced::Untie(b) if b != put.blob_id && self.eph.served_src.get(&(*label, b)).is_some_and(|cs| cs.contains(&self.conn)) => untied.push((*label, b)),
                 _ => {}
             }
         }

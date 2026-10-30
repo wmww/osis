@@ -376,8 +376,9 @@ fn presence_entries_tied_to_connection_spec_sync_5() {
 }
 
 // spec/sync.md §5 (Replace): an upload's own presence entries go by the connection's tie, logged
-// after the new entry; a replayer naming another connection's entry is refused and changes
-// nothing; an entry tied elsewhere too only loses this tie; an untie of a durable entry is refused
+// after the new entry; an untie of an entry not tied to this connection (another's, a durable
+// one) is skipped: the upload is taken and that entry stays; an entry tied elsewhere too only
+// loses this tie
 #[test]
 fn upload_replaces_by_tie_spec_sync_5() {
     let mut w = World::new();
@@ -398,12 +399,13 @@ fn upload_replaces_by_tie_spec_sync_5() {
     let (pushed, _) = events_of(&w.take(c));
     assert_eq!(added(&pushed), vec![id[1]]);
     assert_eq!(pushed.last(), Some(&Event::Deleted(id[0])), "the replaced entry goes after the new one is added");
-    // a replay on another connection: refused, nothing changes
+    // a replay on another connection naming a's entry: taken, a's entry stays (an upload that
+    // could be refused here would let a replayer of a's old entry block a's updates)
     let ev = w.run(b, Command::Upload { label: l.id, entries: vec![with(&p[2], vec![Replace::Untie(id[1])])] });
-    assert_eq!(statuses(&ev), vec![Code::REFUSED]);
+    assert_eq!(statuses(&ev), vec![Code::OK]);
     let live = osis_proto::LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap();
-    assert!(live.contains(&id[1]) && !live.contains(&id[2]), "{live:?}");
-    // the same replay naming an entry no longer held replaces nothing and is taken
+    assert!(live.contains(&id[1]) && live.contains(&id[2]), "{live:?}");
+    // naming an entry no longer held replaces nothing and is taken
     assert_eq!(statuses(&w.run(b, Command::Upload { label: l.id, entries: vec![with(&p[2], vec![Replace::Untie(id[0])])] })), vec![Code::OK]);
     // tied to a and b: a's replacement only unties a
     assert_eq!(statuses(&w.run(b, Command::Upload { label: l.id, entries: vec![l.entry(p[1].clone())] })), vec![Code::OK]);
@@ -415,7 +417,9 @@ fn upload_replaces_by_tie_spec_sync_5() {
     assert!(!live.contains(&id[1]) && !live.contains(&id[2]), "gone with b's tie: {live:?}");
     // a durable entry is never untied
     assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(7))] })), vec![Code::OK]);
-    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![with(&p[4], vec![Replace::Untie(bid(7))])] })), vec![Code::REFUSED]);
+    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![with(&p[4], vec![Replace::Untie(bid(7))])] })), vec![Code::OK]);
+    let live = osis_proto::LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap();
+    assert!(live.contains(&bid(7)) && live.contains(&id[4]), "{live:?}");
 }
 
 // spec/sync.md §5 (Replace), §7: on a label at its entry cap, an upload naming a held entry with
