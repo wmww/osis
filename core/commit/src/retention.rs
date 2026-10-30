@@ -31,7 +31,7 @@ pub fn fixed_retention(ak: &str) -> Option<Retention> {
 }
 
 /// A relative keep-at-most bound exists only under `writer`.
-pub fn check_retention(r: &Retention) -> Result<(), Error> {
+pub(crate) fn check_retention(r: &Retention) -> Result<(), Error> {
     if r.at_most.rel.is_some() && r.by != PurgeBy::Writer {
         return Err(Error::Invalid("relative keep at most needs purgeable by writer"));
     }
@@ -98,7 +98,7 @@ pub fn write_expires(ak: &str, ts: Ts, defaults: Option<&AspectDefaults>, set: O
 
 /// Keep-at-least bound of a body (wall ms; 0 = none): the later of `abs` and last death plus
 /// `rel`. A body with no dead writes is past a relative bound.
-pub fn keep_at_least(r: &Retention, last_death: Option<u64>) -> u64 {
+pub(crate) fn keep_at_least(r: &Retention, last_death: Option<u64>) -> u64 {
     let rel = match (r.at_least.rel, last_death) {
         (Some(d), Some(t)) => t.saturating_add(d),
         _ => 0,
@@ -108,7 +108,7 @@ pub fn keep_at_least(r: &Retention, last_death: Option<u64>) -> u64 {
 
 /// Keep-at-most bound of a body (wall ms): the earlier of `abs` and first death plus `rel`;
 /// `None` while neither applies.
-pub fn keep_at_most(r: &Retention, first_death: Option<u64>) -> Option<u64> {
+pub(crate) fn keep_at_most(r: &Retention, first_death: Option<u64>) -> Option<u64> {
     let rel = r.at_most.rel.zip(first_death).map(|(d, t)| t.saturating_add(d));
     match (r.at_most.abs, rel) {
         (Some(a), Some(b)) => Some(a.min(b)),
@@ -118,7 +118,7 @@ pub fn keep_at_most(r: &Retention, first_death: Option<u64>) -> Option<u64> {
 
 /// Floor on keeping the blobs of a commit carrying a purge request: `wall_ms(ts) +
 /// MEMBERSHIP_KEEP`, whatever its deltas' bounds.
-pub fn purge_keep_until(h: &Header) -> Option<u64> {
+pub(crate) fn purge_keep_until(h: &Header) -> Option<u64> {
     (!h.purge.is_empty()).then(|| h.ts.wall_ms().0.saturating_add(MEMBERSHIP_KEEP_MS))
 }
 
@@ -155,7 +155,7 @@ pub fn body_keep(h: &Header, r: &Retention, first_death: Option<u64>, last_death
 
 /// Delete levels a delta of retention `r` calls for (spec/crypto.md §7); level 2 is omitted for
 /// an import.
-pub fn delete_levels(r: &Retention, kind: Kind) -> &'static [u8] {
+pub(crate) fn delete_levels(r: &Retention, kind: Kind) -> &'static [u8] {
     let import = kind == Kind::Import;
     match r.by {
         PurgeBy::Nobody => &[],
