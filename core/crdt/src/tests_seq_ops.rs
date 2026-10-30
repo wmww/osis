@@ -255,7 +255,8 @@ proptest! {
         prop_assert_eq!(&finals[1], &finals[2]);
     }
 
-    /// §4.6, §5.7 Undo: undoing a single writer's last text commit restores the previous read.
+    /// §4.6, §5.7 Undo: undoing a single writer's last text commit restores the previous read, moves
+    /// and pastes included (restored position writes carry their old sibling keys).
     #[test]
     fn text_undo_restores_spec_4_6(seed in any::<u64>()) {
         let mut r = crate::testutil::rng(seed | 1);
@@ -269,10 +270,6 @@ proptest! {
         let before = a.state.clone();
         let n = read_str(&a.state).chars().count();
         let o = random_text_op(&mut r, n, &a.state);
-        // a move undoes with fresh stamps: newer siblings of the old anchor may then follow it (notes/crdt.md)
-        if matches!(o, Op::Move { .. } | Op::Paste { .. }) {
-            return Ok(());
-        }
         let Some((d, src, range)) = a.commit(10, &[op(o)], &text_view()) else { return Ok(()) };
         let u = Undone { delta: &d, source: &src, range, restored: &|_| false };
         let mut w = Writer::new(ts(11 << 16), node(1), a.lo);
@@ -301,9 +298,6 @@ proptest! {
         }
         let before = a.state.clone();
         let o = random_list_op(&mut r, &a.state, &ty);
-        if matches!(o.op, Op::Move { .. }) {
-            return Ok(());
-        }
         let Some((d, src, range)) = a.commit(10, &[o], &view) else { return Ok(()) };
         let u = Undone { delta: &d, source: &src, range, restored: &|_| false };
         let mut w = Writer::new(ts(11 << 16), node(1), a.lo);
@@ -443,7 +437,7 @@ fn hostile_moves(base: &Fragment, sibs: usize, moves: usize) -> (Fragment, Fragm
     let Fragment::Seq(sq) = &a.state else { panic!() };
     let mut w = Writer::new(ts(4000 << 16), node(7), 1);
     let step = n / moves;
-    let elems = visible(sq).iter().step_by(step.max(1)).take(moves).map(|d| (d.clone(), crate::seq::SeqElem { pos: vec![(w.fresh(), crate::seq::Anchor::Head)], ..crate::seq::SeqElem::bare() })).collect();
+    let elems = visible(sq).iter().step_by(step.max(1)).take(moves).map(|d| (d.clone(), crate::seq::SeqElem { pos: vec![(w.fresh(), crate::seq::Anchor::Head, None)], ..crate::seq::SeqElem::bare() })).collect();
     let d = Fragment::Seq(crate::seq::Seq::new(true, crate::fragment::Meta::default(), elems));
     let _ = read_str(&b.state);
     (b.state, d)
@@ -645,7 +639,7 @@ fn budget_big_text_spec_6() {
         let st = crate::stamp::Stamp::new(ts(3002 << 16), src.clone(), 1);
         let a = crate::seq::Anchor::Dot(gone[70].clone());
         let mut d = crate::seq::Seq::empty(true);
-        d.elems_mut().insert(st.dot.clone(), crate::seq::SeqElem { created: Some((st.clone(), a.clone())), content: crate::seq::SeqContent::Char('q'), pos: vec![(st, a)], deleted: None, span: 1 });
+        d.elems_mut().insert(st.dot.clone(), crate::seq::SeqElem { created: Some((st.clone(), a.clone())), content: crate::seq::SeqContent::Char('q'), pos: vec![(st, a, None)], deleted: None, span: 1 });
         wired(&Fragment::Seq(d), &src, CounterRange { lo: 1, hi: 2 }, 3002)
     };
     let mut splits = Vec::new();
@@ -901,7 +895,7 @@ fn paste_refuses_a_range_with_visible_text_spec_5_7() {
     let mut b = Replica { state: a.state.clone(), src: node(2), lo: 1 };
     let mut d = crate::seq::Seq::empty(true);
     let st = crate::stamp::Stamp::new(ts(3 << 16), node(2), 1);
-    d.elems_mut().insert(st.dot.clone(), crate::seq::SeqElem { created: Some((st.clone(), crate::seq::Anchor::Dot(dots[1].clone()))), content: crate::seq::SeqContent::Char('X'), pos: vec![(st, crate::seq::Anchor::Dot(dots[1].clone()))], deleted: None, span: 1 });
+    d.elems_mut().insert(st.dot.clone(), crate::seq::SeqElem { created: Some((st.clone(), crate::seq::Anchor::Dot(dots[1].clone()))), content: crate::seq::SeqContent::Char('X'), pos: vec![(st, crate::seq::Anchor::Dot(dots[1].clone()), None)], deleted: None, span: 1 });
     b.state.join(Fragment::Seq(d));
     assert_eq!(read_str(&b.state), "aXef");
     let mut bt = Batch::new(&b.state, Writer::new(ts(5 << 16), node(2), 2));
@@ -949,6 +943,44 @@ fn move_undo_spec_5_7() {
         Fragment::Seq(sq) => sq.elems().len() == 1,
         _ => false,
     }));
+}
+
+/// §4.6, §5.7 Undo, §6.1: a move's undo restores the old sibling keys, so the element lands after
+/// a newer sibling it followed (issue crdt-undo-move-order: `eab`, move `a`, undo gave `aeb`), and a
+/// concurrent insert at the old anchor newer than the old write stays before it, as if the move had
+/// not happened. A receiver joins the undo through the wire (keys naming earlier commits) and its
+/// cached placement follows it.
+#[test]
+fn move_undo_keeps_sibling_order_spec_5_7() {
+    let mut a = Replica::new(1);
+    a.commit(1, &[op(Op::Set(s("ab")))], &text_view());
+    a.commit(2, &[op(Op::Insert { at: 0, items: vec![s("e")] })], &text_view());
+    assert_eq!(read_str(&a.state), "eab");
+    let before = a.state.clone();
+    let (d, src, range) = a.commit(3, &[op(Op::Move { at: 1, len: 1, to: 2 })], &text_view()).unwrap();
+    assert_eq!(read_str(&a.state), "eba");
+    let mut b = Replica::new(2);
+    b.state = a.state.clone();
+    let (x, _, _) = b.commit(4, &[op(Op::Insert { at: 0, items: vec![s("x")] })], &text_view()).unwrap();
+    let u = Undone { delta: &d, source: &src, range, restored: &|_| false };
+    let mut w = Writer::new(ts(5 << 16), node(1), a.lo);
+    let ud = undo(&mut w, &u, &a.state, &before, &text_view()).unwrap().unwrap();
+    let cx = DeltaCtx { ts: ts(5 << 16), own: src.clone(), range: w.range(), kind: DeltaKind::Writer };
+    let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: ud.clone() }, &cx, None).unwrap();
+    let back = decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment;
+    assert_eq!(back, ud, "the undo round-trips as a writer's delta");
+    let mut alone = a.state.clone();
+    alone.join(ud);
+    assert_eq!(read_str(&alone), "eab");
+    // the receiver holds the concurrent insert and a cached placement
+    assert_eq!(read_str(&b.state), "x".to_string() + &read_str(&a.state));
+    b.state.join(back);
+    let Fragment::Seq(sq) = &b.state else { panic!("text") };
+    assert_eq!(sq.lin_check(), Some(true), "the cached placement followed the undo");
+    assert_eq!(read_str(&b.state), "xeab");
+    // the undoing node, once it receives the insert
+    alone.join(x);
+    assert_eq!(read_str(&alone), "xeab");
 }
 
 /// A random list op: insert, delete, move, or a nested field set through `PathSeg::Index`.
@@ -1328,12 +1360,12 @@ fn hostile_cuts_join_bounded_spec_6() {
     let chain = 2000u64;
     let mut elems = std::collections::BTreeMap::new();
     let del = Some((Stamp::new(ts(2 << 16), b.clone(), 1), true));
-    elems.insert(Dot::new(a.clone(), 1), SeqElem { created: Some((Stamp::new(ts(1 << 16), a.clone(), 1), Anchor::Head)), content: SeqContent::None, pos: vec![(Stamp::new(ts(1 << 16), a.clone(), 1), Anchor::Head)], deleted: del, span: chain });
+    elems.insert(Dot::new(a.clone(), 1), SeqElem { created: Some((Stamp::new(ts(1 << 16), a.clone(), 1), Anchor::Head)), content: SeqContent::None, pos: vec![(Stamp::new(ts(1 << 16), a.clone(), 1), Anchor::Head, None)], deleted: del, span: chain });
     // a typed chain of 2000 chars below the range's last element: depth 2000
     let mut prev = Anchor::Dot(Dot::new(a.clone(), chain));
     for k in 1..=2000u64 {
         let st = Stamp::new(ts(3 << 16), c.clone(), k);
-        elems.insert(st.dot.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char('x'), pos: vec![(st.clone(), prev)], deleted: None, span: 1 });
+        elems.insert(st.dot.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char('x'), pos: vec![(st.clone(), prev, None)], deleted: None, span: 1 });
         prev = Anchor::Dot(st.dot);
     }
     let base = Fragment::Seq(Seq::new(true, crate::fragment::Meta::default(), elems));

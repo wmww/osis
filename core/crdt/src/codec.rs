@@ -518,7 +518,7 @@ fn derived_ok(f: &Fragment) -> bool {
             meta(&x.meta)
                 && x.elems().values().all(|e| {
                     let created = e.created.as_ref().map(|c| &c.0);
-                    ok(e.deleted.as_ref().map(|d| &d.0)) && (x.text || ok(created)) && e.pos.iter().all(|(p, _)| ok(Some(p)) || Some(p) == created)
+                    ok(e.deleted.as_ref().map(|d| &d.0)) && (x.text || ok(created)) && e.pos.iter().all(|(p, _, _)| ok(Some(p)) || Some(p) == created)
                 })
         }
         Fragment::Slots(_) => true,

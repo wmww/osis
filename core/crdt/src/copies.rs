@@ -27,7 +27,8 @@ enum Kind {
     Case,
     Entry,
     Created(Anchor),
-    Pos(Anchor),
+    /// Anchor and sibling key (§5.7).
+    Pos(Anchor, Option<Stamp>),
     Flag(bool),
 }
 
@@ -137,8 +138,8 @@ impl Copies<'_> {
                         };
                         self.put(Kind::Created(a.clone()), st, v);
                     }
-                    for (st, a) in e.pos.iter().filter(|(st, _)| st.dot != d) {
-                        self.put(Kind::Pos(a.clone()), st, None);
+                    for (st, a, k) in e.pos.iter().filter(|p| p.0.dot != d) {
+                        self.put(Kind::Pos(a.clone(), k.clone()), st, None);
                     }
                     if let Some((st, b)) = &e.deleted {
                         self.put(Kind::Flag(*b), st, None);

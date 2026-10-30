@@ -438,11 +438,11 @@ pub fn seq_move(w: &mut Writer, state: &Frag, from: usize, len: usize, after: us
     let Frag::Seq { elems: de, .. } = &mut f else { unreachable!() };
     // Re-anchor outside elements to pred in reverse visual order so their newest-first sibling order is kept.
     for o in outside.iter().rev() {
-        de.insert((*o).clone(), SeqElem::write(Content::None, vec![(w.stamp(), pred.clone())], None));
+        de.insert((*o).clone(), SeqElem::write(Content::None, vec![(w.stamp(), pred.clone(), None)], None));
     }
     let mut anchor = dest;
     for r in &roots {
-        de.insert((*r).clone(), SeqElem::write(Content::None, vec![(w.stamp(), anchor.clone())], None));
+        de.insert((*r).clone(), SeqElem::write(Content::None, vec![(w.stamp(), anchor.clone(), None)], None));
         let last = all.iter().rev().find(|d| moved_root(d).as_ref() == Some(*r)).unwrap();
         anchor = Anchor::Dot(last.clone());
     }

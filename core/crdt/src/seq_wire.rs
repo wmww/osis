@@ -1,7 +1,7 @@
 //! Sequence runs on the wire (spec/crdt.md §3.2 Run, §3.3 rules 2, 3, 5, 7).
 
 use crate::error::Error;
-use crate::seq::{Anchor, Seq, SeqContent, SeqElem, top2};
+use crate::seq::{Anchor, PosW, Seq, SeqContent, SeqElem, top2};
 use crate::seq_span::{nth, overlaps};
 use crate::stamp::{Dot, Stamp};
 use osis_base::Ts;
@@ -149,9 +149,11 @@ fn encode_run(text: bool, run: &[Piece], content: Option<Vec<Value>>, cx: &mut E
     let mut idx = 0u64;
     for &(k, e, _, len) in run {
         if e.span == 1 {
-            for (st, a) in e.pos.iter().filter(|p| p.0.dot != *k) {
+            for (st, a, key) in e.pos.iter().filter(|p| p.0.dot != *k) {
                 let st = cx.stamp(st);
-                posw.push(Value::List(vec![uint(idx), st, anchor(cx, a)]));
+                let mut w = vec![uint(idx), st, anchor(cx, a)];
+                w.extend(key.as_ref().map(|k| cx.stamp(k)));
+                posw.push(Value::List(w));
             }
         }
         if let Some(dl) = &e.deleted {
@@ -253,14 +255,23 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
             }
             _ => return Err(Error::Malformed("creation")),
         }
-        let mut pws: Vec<(u64, Stamp, Anchor)> = Vec::new();
+        let mut pws: Vec<(u64, PosW)> = Vec::new();
         for p in as_array(posw)? {
-            let [i, st, a] = as_array(p)? else { return Err(Error::Malformed("position write")) };
+            let (i, st, a, key) = match as_array(p)? {
+                [i, st, a] => (i, st, a, None),
+                [i, st, a, k] => (i, st, a, Some(k)),
+                _ => return Err(Error::Malformed("position write")),
+            };
             let i = index(i, n)?;
             let st = cx.stamp(st)?;
             cx.claim(&st.dot)?;
             let a = dec_anchor(cx, a)?;
-            pws.push((i, st, a));
+            // a sibling key is an older write's stamp, any commit's (§5.7, §3.3 rule 7)
+            let key = key.map(|k| cx.key_stamp(k)).transpose()?;
+            if key.as_ref().is_some_and(|k| *k >= st) {
+                return Err(Error::Malformed("sibling key not below its stamp"));
+            }
+            pws.push((i, (st, a, key)));
         }
         pws.sort_by_key(|p| p.0);
         let mut fws: Vec<(u64, u64, (Stamp, bool))> = Vec::new();
@@ -333,12 +344,12 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
                 let len = if single { 1 } else { b - at };
                 let dot = nth(&first, at);
                 let created = ts.map(|ts| (Stamp { ts, dot: dot.clone() }, if at == 0 { anchor0.clone() } else { Anchor::Dot(nth(&first, at - 1)) }));
-                let mut pos: Vec<(Stamp, Anchor)> = created.iter().cloned().collect();
-                while let Some((i, st, an)) = pws.get(pi) {
+                let mut pos: Vec<PosW> = created.iter().map(|(s, a)| (s.clone(), a.clone(), None)).collect();
+                while let Some((i, p)) = pws.get(pi) {
                     if *i != at {
                         break;
                     }
-                    pos.push((st.clone(), an.clone()));
+                    pos.push(p.clone());
                     pi += 1;
                 }
                 top2(&mut pos);

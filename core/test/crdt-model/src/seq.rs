@@ -1,6 +1,6 @@
 //! Linearization of a sequence state (spec §6).
 use crate::stamp::{Dot, Source};
-use crate::state::{Anchor, Content, SeqElem};
+use crate::state::{Anchor, Content, SeqElem, sib_key};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,7 +48,7 @@ fn linearize_known(elems: &BTreeMap<Dot, SeqElem>) -> (Vec<Dot>, HashMap<Dot, Op
     let chosen = |d: &Dot, ci: usize| -> Cand {
         let el = &elems[d];
         match el.pos.get(ci) {
-            Some((_, a)) => match a {
+            Some((_, a, _)) => match a {
                 Anchor::Head => Cand::Real(Anchor::Head),
                 Anchor::Dot(x) if elems.contains_key(x) => Cand::Real(Anchor::Dot(x.clone())),
                 // unknown anchor: hidden on the cur slot, END on the prev slot (§6.2 step 3)
@@ -127,8 +127,8 @@ fn linearize_known(elems: &BTreeMap<Dot, SeqElem>) -> (Vec<Dot>, HashMap<Dot, Op
         }
     }
     for v in children.values_mut() {
-        // greatest first; one stamp on two edges (copies of one write, §4.1) by dot ascending
-        v.sort_by(|a, b| elems[b.0].pos[b.1].0.cmp(&elems[a.0].pos[a.1].0).then_with(|| a.0.cmp(b.0)));
+        // greatest sibling key first (§6.1); one key on two edges by dot ascending
+        v.sort_by(|a, b| sib_key(&elems[b.0].pos[b.1]).cmp(sib_key(&elems[a.0].pos[a.1])).then_with(|| a.0.cmp(b.0)));
     }
     ends.sort();
     let mut out = Vec::new();

@@ -189,7 +189,7 @@ fn cycle_breaking_is_linear_spec_6_2() {
     let mut prev = Anchor::Head;
     for c in 1..=len {
         let s = st(1, c);
-        elems.insert(Dot::new(a.clone(), c), SeqElem { created: Some((s.clone(), prev.clone())), content: SeqContent::Char('x'), pos: vec![(s, prev.clone())], deleted: None, span: 1 });
+        elems.insert(Dot::new(a.clone(), c), SeqElem { created: Some((s.clone(), prev.clone())), content: SeqContent::Char('x'), pos: vec![(s, prev.clone(), None)], deleted: None, span: 1 });
         prev = Anchor::Dot(Dot::new(a.clone(), c));
     }
     let tail = prev;
@@ -199,8 +199,8 @@ fn cycle_breaking_is_linear_spec_6_2() {
         let (cx, cy, mx, my) = (st(2, c), st(2, c + 1), st(3, m), st(3, m + 1));
         c += 2;
         m += 2;
-        elems.insert(x.clone(), SeqElem { created: Some((cx.clone(), tail.clone())), content: SeqContent::Char('a'), pos: vec![(mx, Anchor::Dot(y.clone())), (cx, tail.clone())], deleted: None, span: 1 });
-        elems.insert(y.clone(), SeqElem { created: Some((cy.clone(), tail.clone())), content: SeqContent::Char('b'), pos: vec![(my, Anchor::Dot(x.clone())), (cy, tail.clone())], deleted: None, span: 1 });
+        elems.insert(x.clone(), SeqElem { created: Some((cx.clone(), tail.clone())), content: SeqContent::Char('a'), pos: vec![(mx, Anchor::Dot(y.clone()), None), (cx, tail.clone(), None)], deleted: None, span: 1 });
+        elems.insert(y.clone(), SeqElem { created: Some((cy.clone(), tail.clone())), content: SeqContent::Char('b'), pos: vec![(my, Anchor::Dot(x.clone()), None), (cy, tail.clone(), None)], deleted: None, span: 1 });
     }
     let t = std::time::Instant::now();
     let p = crate::linearize::place_idx(&elems);
@@ -290,7 +290,7 @@ pub(crate) fn snapshot_then_edit(mut r: crate::testutil::SeedRng, upgraded: bool
         if let (Some(st), Fragment::Seq(ds)) = (&before, &d) {
             let inside = |x: &Dot| crate::seq_span::find(st.elems(), x).is_some_and(|(k, _)| k != x);
             for (dot, de) in ds.elems() {
-                let anchors = || de.pos.iter().filter_map(|(_, a)| if let Anchor::Dot(x) = a { Some(x) } else { None });
+                let anchors = || de.pos.iter().filter_map(|(_, a, _)| if let Anchor::Dot(x) = a { Some(x) } else { None });
                 splits |= inside(dot) || inside(&nth(dot, de.span)) || anchors().any(|x| crate::seq_span::find(st.elems(), x).is_some_and(|(k, e)| x.ctr - k.ctr + 1 < e.span));
                 derived |= dot.src.is_derived() || anchors().any(|x| x.src.is_derived());
             }
@@ -925,7 +925,7 @@ fn long_text(len: u64) -> Fragment {
     let mut prev = Anchor::Head;
     for c in 1..=len {
         let s = st(1, 1, c);
-        elems.insert(s.dot.clone(), SeqElem { created: Some((s.clone(), prev.clone())), content: SeqContent::Char('a'), pos: vec![(s.clone(), prev)], deleted: None, span: 1 });
+        elems.insert(s.dot.clone(), SeqElem { created: Some((s.clone(), prev.clone())), content: SeqContent::Char('a'), pos: vec![(s.clone(), prev, None)], deleted: None, span: 1 });
         prev = Anchor::Dot(s.dot);
     }
     seq_of(elems, None)
@@ -990,8 +990,8 @@ fn ranges_split_where_writes_land_spec_6() {
     let flat = expanded(&ranged);
     let x = st(3, 3, 1);
     let at = Anchor::Dot(Dot::new(n(1), 1000));
-    let insert = one(x.dot.clone(), SeqElem { created: Some((x.clone(), at.clone())), content: SeqContent::Char('x'), pos: vec![(x.clone(), at)], deleted: None, span: 1 });
-    let mv = one(Dot::new(n(1), 500), SeqElem { pos: vec![(st(4, 3, 2), Anchor::Head)], ..SeqElem::bare() });
+    let insert = one(x.dot.clone(), SeqElem { created: Some((x.clone(), at.clone())), content: SeqContent::Char('x'), pos: vec![(x.clone(), at, None)], deleted: None, span: 1 });
+    let mv = one(Dot::new(n(1), 500), SeqElem { pos: vec![(st(4, 3, 2), Anchor::Head, None)], ..SeqElem::bare() });
     let undelete = one(Dot::new(n(1), 2000), SeqElem { deleted: Some((st(5, 3, 3), false)), content: SeqContent::Char('u'), ..SeqElem::bare() });
     // creations of t = 1 below (1, node 1, 30000) go: a reset inside the chain
     let reset = seq_of(BTreeMap::new(), Some(st(1, 1, 30_000)));
@@ -1042,7 +1042,7 @@ proptest! {
 /// A created char `c` of `dot` at `t`, anchored at `at`.
 fn char_at(dot: Dot, t: u64, at: Anchor, c: char) -> SeqElem {
     let s = Stamp { ts: ts(t << 16), dot };
-    SeqElem { created: Some((s.clone(), at.clone())), content: SeqContent::Char(c), pos: vec![(s, at)], deleted: None, span: 1 }
+    SeqElem { created: Some((s.clone(), at.clone())), content: SeqContent::Char(c), pos: vec![(s, at, None)], deleted: None, span: 1 }
 }
 /// Through a snapshot: uniform stretches become range records.
 pub(crate) fn via_snapshot(f: &Fragment) -> Fragment {
@@ -1141,7 +1141,7 @@ fn virtual_derived_anchor_inside_range_spec_6_1() {
 fn chain_anchored_into_itself_spec_6_2() {
     let s0 = st(1, 1, 1);
     let at = Anchor::Dot(Dot::new(n(1), 3));
-    let e = SeqElem { created: Some((s0.clone(), at.clone())), pos: vec![(s0, at)], deleted: Some((st(2, 2, 1), true)), span: 5, ..SeqElem::bare() };
+    let e = SeqElem { created: Some((s0.clone(), at.clone())), pos: vec![(s0, at, None)], deleted: Some((st(2, 2, 1), true)), span: 5, ..SeqElem::bare() };
     let mut a = seq_of(BTreeMap::from([(Dot::new(n(1), 1), e)]), None);
     a.join(one(Dot::new(n(3), 1), char_at(Dot::new(n(3), 1), 4, Anchor::Dot(Dot::new(n(1), 5)), 'v')));
     let b = expanded(&a);

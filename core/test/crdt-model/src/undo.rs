@@ -5,7 +5,7 @@
 //!   restored position write before re-inserted list elements; within one re-add the entry or element dot
 //!   comes as in the model's `create`/`insert_run` (map entry dot first, list content first).
 //! - Restored position writes are stamped in ascending order of the stamp of the position they restore
-//!   (the undo buffer's `cur`), so siblings restored to one anchor keep their relative order.
+//!   (the undo buffer's `cur`); they carry its sibling key (§5.7), so this only matters to cycle breaking.
 //! - A re-inserted list element is anchored at the deleted element's own dot, so it lands right after it.
 //! - A delete or undelete flag write is inverted only on elements whose flag the undone write changed:
 //!   a delete range's elements already hidden in the undo buffer stay hidden.
@@ -18,7 +18,7 @@
 //! - A case write without a reset (an enum created at an absent spot whose P was blocked) writes nothing.
 use crate::ops::{create, key_state, live_elems, live_entries, register, remove, replace, Ty, Writer};
 use crate::stamp::{Dot, Stamp};
-use crate::state::{Anchor, Content, Elem, Entry, Frag, SeqElem};
+use crate::state::{Anchor, Content, Elem, Entry, Frag, SeqElem, sib_key};
 use crate::value::Value;
 use std::collections::BTreeMap;
 
@@ -306,7 +306,7 @@ fn seq(cx: &mut Cx, w: &mut Writer, ty: &Ty, text: bool, elems: &BTreeMap<Dot, S
     };
     let u = w.delta();
     let mut out: BTreeMap<Dot, SeqElem> = BTreeMap::new();
-    let mut moves: Vec<(Stamp, Dot, Anchor)> = Vec::new();
+    let mut moves: Vec<(Stamp, Dot, Anchor, Stamp)> = Vec::new();
     let mut reinserts: Vec<(Dot, Value)> = Vec::new();
     for (dot, e) in elems {
         if e.created.is_some() && (cx.made)(dot) {
@@ -332,14 +332,17 @@ fn seq(cx: &mut Cx, w: &mut Writer, ty: &Ty, text: bool, elems: &BTreeMap<Dot, S
                 }
             }
         }
-        if let Some((sd, anchor)) = e.pos.iter().max_by(|x, y| x.0.cmp(&y.0)) {
+        if let Some(p) = e.pos.iter().max_by(|x, y| x.0.cmp(&y.0)) {
+            let (sd, anchor) = (&p.0, &p.1);
             let cur = selems.and_then(|se| se.get(dot)).and_then(|se| se.pos.first());
-            let stepped = cur.map_or(false, |(cs, ca)| cs != sd && ca == anchor && (cx.restored)(cs));
-            let winner = stepped || cur.map_or(false, |(cs, _)| cs == sd);
+            // equal in value: anchor and sibling key (§4.6)
+            let stepped = cur.map_or(false, |c| c.0 != *sd && c.1 == *anchor && sib_key(c) == sib_key(p) && (cx.restored)(&c.0));
+            let winner = stepped || cur.map_or(false, |c| c.0 == *sd);
             match (winner, be.and_then(|be| be.pos.first())) {
-                (true, Some((bs, ba))) => {
+                (true, Some(b)) => {
                     cx.stats.stepped += usize::from(stepped);
-                    moves.push((bs.clone(), dot.clone(), ba.clone()))
+                    // the restored write carries the old one's sibling key, so it sorts where it was (§5.7)
+                    moves.push((b.0.clone(), dot.clone(), b.1.clone(), sib_key(b).clone()))
                 }
                 _ => cx.stats.position_kept += 1,
             }
@@ -359,10 +362,10 @@ fn seq(cx: &mut Cx, w: &mut Writer, ty: &Ty, text: bool, elems: &BTreeMap<Dot, S
         }
     }
     moves.sort();
-    for (_, dot, anchor) in moves {
+    for (_, dot, anchor, key) in moves {
         cx.stats.position += 1;
         let st = w.stamp();
-        out.entry(dot).or_insert_with(|| SeqElem::write(Content::None, vec![], None)).pos = vec![(st, anchor)];
+        out.entry(dot).or_insert_with(|| SeqElem::write(Content::None, vec![], None)).pos = vec![(st, anchor, Some(key))];
     }
     for (dot, v) in reinserts {
         cx.stats.list_reinsert += 1;

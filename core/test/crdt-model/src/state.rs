@@ -48,13 +48,21 @@ pub enum Content {
     Frag(Box<Frag>),
 }
 
+/// A position write `(stamp, anchor, sibling key)`; no key: the stamp is the sibling key (§5.7).
+pub type Pos = (Stamp, Anchor, Option<Stamp>);
+
+/// The sibling key of a position write (§5.7, §6.1).
+pub fn sib_key(p: &Pos) -> &Stamp {
+    p.2.as_ref().unwrap_or(&p.0)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SeqElem {
     /// The creation write: stamp (ts, element dot) and initial anchor. Text content lives and dies with it.
     pub created: Option<(Stamp, Anchor)>,
     pub content: Content,
     /// Position writes (the creation write included), greatest first, at most two (§5.7).
-    pub pos: Vec<(Stamp, Anchor)>,
+    pub pos: Vec<Pos>,
     /// Text: the deleted flag (LWW bool). List: the element reset `R_elem`, always `true`; the element's content
     /// fragment is pruned under it and the element is deleted iff that fragment is absent (§5.7).
     pub deleted: Option<(Stamp, bool)>,
@@ -62,9 +70,9 @@ pub struct SeqElem {
 
 impl SeqElem {
     pub fn new(created: Stamp, anchor: Anchor, content: Content) -> SeqElem {
-        SeqElem { created: Some((created.clone(), anchor.clone())), content, pos: vec![(created, anchor)], deleted: None }
+        SeqElem { created: Some((created.clone(), anchor.clone())), content, pos: vec![(created, anchor, None)], deleted: None }
     }
-    pub fn write(content: Content, pos: Vec<(Stamp, Anchor)>, deleted: Option<(Stamp, bool)>) -> SeqElem {
+    pub fn write(content: Content, pos: Vec<Pos>, deleted: Option<(Stamp, bool)>) -> SeqElem {
         SeqElem { created: None, content, pos, deleted }
     }
 }
@@ -128,8 +136,9 @@ impl SeqElem {
     }
 }
 
-fn top2(mut v: Vec<(Stamp, Anchor)>) -> Vec<(Stamp, Anchor)> {
-    // greatest first; of copies of one write the greater anchor (§4.1 copy order)
+fn top2(mut v: Vec<Pos>) -> Vec<Pos> {
+    // greatest first; of copies of one write the greater anchor, then the greater sibling key, none below any
+    // (§4.1 copy order)
     v.sort_by(|a, b| b.cmp(a));
     v.dedup_by(|a, b| a.0 == b.0);
     v.truncate(2);

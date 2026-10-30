@@ -6,7 +6,7 @@ use crate::error::Error;
 use crate::fragment::{Fragment, Meta};
 use crate::seq_lin::{Lin, Placement, Row};
 use crate::ops::{Op, Writer};
-use crate::seq::{Anchor, Seq, SeqContent, SeqElem, SeqRead, Vis, is_visible, top2, visible};
+use crate::seq::{Anchor, Seq, SeqContent, SeqElem, SeqRead, Vis, is_visible, sib_key, top2, visible};
 use crate::seq_span::{Elems, Recs, expand, nth, split_at};
 use crate::stamp::{Dot, Stamp};
 use crate::undo::Undone;
@@ -21,7 +21,7 @@ pub(crate) fn insert_run(w: &mut Writer, s: &mut Seq, anchor: Anchor, contents: 
     for c in contents {
         let st = w.fresh();
         let d = st.dot.clone();
-        s.elems_mut().insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: c, pos: vec![(st, prev)], deleted: None, span: 1 });
+        s.elems_mut().insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: c, pos: vec![(st, prev, None)], deleted: None, span: 1 });
         prev = Anchor::Dot(d);
     }
 }
@@ -105,7 +105,7 @@ fn check_bare(out: &Seq) -> Result<(), Error> {
 }
 
 fn position(w: &mut Writer, a: Anchor) -> SeqElem {
-    SeqElem { pos: vec![(w.fresh(), a)], ..SeqElem::bare() }
+    SeqElem { pos: vec![(w.fresh(), a, None)], ..SeqElem::bare() }
 }
 
 /// The position writes moving the nodes `range` (placement positions) to `dest`, re-anchoring
@@ -337,7 +337,7 @@ pub(crate) fn overlay(acc: Seq, d: Seq, w: &Writer) -> Seq {
     }
     // created and removed in this commit, and no write of the commit anchors at it: omitted (§4.5)
     let gone = |elems: &Elems| {
-        let named: HashSet<&Dot> = elems.values().flat_map(|e| e.created.iter().chain(e.pos.iter())).filter_map(|(_, a)| if let Anchor::Dot(x) = a { Some(x) } else { None }).collect();
+        let named: HashSet<&Dot> = elems.values().flat_map(|e| e.created.iter().map(|c| &c.1).chain(e.pos.iter().map(|p| &p.1))).filter_map(|a| if let Anchor::Dot(x) = a { Some(x) } else { None }).collect();
         elems.iter().filter(|(d, e)| w.made(d) && e.created.is_some() && e.flag() && !named.contains(d)).map(|(d, _)| d.clone()).collect::<Vec<Dot>>()
     };
     debug_assert!(omit || gone(&elems).is_empty(), "overlay left an element to omit");
@@ -372,7 +372,7 @@ pub(crate) fn undo<V: View>(w: &mut Writer, undone: &Seq, cur: Option<&Seq>, bef
     let text = undone.text;
     let r = w.delta_stamp();
     let mut out = Seq::empty(text);
-    let mut moves: Vec<(Stamp, Dot, Anchor)> = Vec::new();
+    let mut moves: Vec<(Stamp, Dot, Anchor, Stamp)> = Vec::new();
     let mut reinsert: Vec<(Dot, Value)> = Vec::new();
     let was_visible = |d: &Dot| before.is_none_or(|b| b.elems().get(d).is_some_and(|e| is_visible(e, text)));
     for (dot, el) in &expand(undone.elems().clone()) {
@@ -403,17 +403,18 @@ pub(crate) fn undo<V: View>(w: &mut Writer, undone: &Seq, cur: Option<&Seq>, bef
             }
             _ => {}
         }
-        // position writes: back to the pre-move anchor if still `cur`, or if an undo in effect
-        // restored its anchor (then only from the pre-commit state)
-        for (st, a) in el.pos.iter().filter(|p| p.0.dot != *dot) {
+        // position writes: back to the pre-move anchor and sibling key if still `cur`, or if an
+        // undo in effect restored both (then only from the pre-commit state)
+        for p in el.pos.iter().filter(|p| p.0.dot != *dot) {
             let cur_w = now.and_then(|n| n.pos.first());
-            if !u.steps_back((st, a), cur_w.map(|p| (&p.0, &p.1))) {
+            let (undone_v, cur_v) = ((&p.1, sib_key(p)), cur_w.map(|c| (&c.1, sib_key(c))));
+            if !u.steps_back((&p.0, &undone_v), cur_w.zip(cur_v.as_ref()).map(|(c, v)| (&c.0, v))) {
                 continue;
             }
-            let won = cur_w.is_some_and(|p| p.0 == *st);
+            let won = cur_w.is_some_and(|c| c.0 == p.0);
             let back = pre.and_then(|e| e.pos.first()).or_else(|| if won { now.and_then(|n| n.pos.get(1)) } else { None });
-            if let Some((bs, a)) = back {
-                moves.push((bs.clone(), dot.clone(), a.clone()));
+            if let Some(b) = back {
+                moves.push((b.0.clone(), dot.clone(), b.1.clone(), sib_key(b).clone()));
             }
         }
         if let SeqContent::Frag(f) = &el.content
@@ -427,11 +428,12 @@ pub(crate) fn undo<V: View>(w: &mut Writer, undone: &Seq, cur: Option<&Seq>, bef
             }
         }
     }
-    // restored positions in their original stamp order, so siblings keep their order
+    // restored writes carry the old sibling key, so they sort where they were (§5.7); stamped in
+    // the old writes' order
     moves.sort_by(|a, b| a.0.cmp(&b.0));
-    for (_, d, a) in moves {
+    for (_, d, a, k) in moves {
         let st = w.fresh();
-        out.elems_mut().entry(d).or_insert_with(SeqElem::bare).pos.push((st, a));
+        out.elems_mut().entry(d).or_insert_with(SeqElem::bare).pos.push((st, a, Some(k)));
     }
     if !reinsert.is_empty() {
         let ev = view.element().ok_or(Error::Mismatch("list without element type"))?;

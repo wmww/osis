@@ -324,7 +324,7 @@ fn repro_forged_creation_ts_undelete_char() {
     let s1 = Stamp { ts: ts(1 << 16), dot: d.clone() };
     let s2 = Stamp { ts: ts(2 << 16), dot: d.clone() };
     let mk = |e: SeqElem| Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(d.clone(), e)])));
-    let made = |s: &Stamp, c: char| mk(SeqElem { created: Some((s.clone(), Anchor::Head)), content: SeqContent::Char(c), pos: vec![(s.clone(), Anchor::Head)], ..SeqElem::bare() });
+    let made = |s: &Stamp, c: char| mk(SeqElem { created: Some((s.clone(), Anchor::Head)), content: SeqContent::Char(c), pos: vec![(s.clone(), Anchor::Head, None)], ..SeqElem::bare() });
     let (a, c) = (made(&s1, 'x'), made(&s2, 'w'));
     let b = mk(SeqElem { content: SeqContent::Char('y'), deleted: Some((st(3, 9, 1), false)), ..SeqElem::bare() });
     let mut x = a.clone();

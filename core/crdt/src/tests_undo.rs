@@ -3,10 +3,13 @@
 //! of another writer, from states with absent spots, and must read alike. Fresh-dot allocation may differ, so
 //! reads are compared, not deltas.
 
+use crate::codec::{decode_delta, encode_delta};
 use crate::fragment::Fragment;
 use crate::ops::Writer;
-use crate::stamp::CounterRange;
-use crate::testutil::{TyView, frag, mapply, source, ts, value};
+use crate::stamp::{CounterRange, Interner};
+use crate::tests_wire::writer_cx;
+use crate::wire::Delta;
+use crate::testutil::{TyView, check_lin, frag, mapply, source, ts, value};
 use crate::undo::{Undone, undo};
 use crdt_model::r#gen::{Rng, random_op, random_value};
 use crdt_model::ops::{Ty, Writer as MWriter};
@@ -14,6 +17,7 @@ use crdt_model::stamp::{Dot, Source as MSource};
 use crdt_model::state::Frag;
 use crdt_model::undo::{Stats, undo_stats};
 use crdt_model::value::Value as MValue;
+use crdt_model::wire::{Ctx, decode_delta as m_decode_delta, encode_delta as m_encode_delta};
 use proptest::prelude::*;
 
 /// Every encoding with sequences, nested: a list of structs holding a text and a set, a map of the same, an
@@ -88,6 +92,8 @@ struct Hits {
     unseen: usize,
     seq: usize,
     exact: usize,
+    exact_moves: usize,
+    foreign_keys: usize,
 }
 
 fn add(a: &mut Stats, b: &Stats) {
@@ -127,6 +133,30 @@ fn has_move(f: &Frag) -> bool {
         Frag::Map { entries, .. } => entries.values().any(|e| e.frag.as_deref().is_some_and(has_move)),
         _ => false,
     }
+}
+
+/// Whether the delta holds a sibling key whose source `pick` accepts.
+fn has_key(f: &Frag, pick: &dyn Fn(&MSource) -> bool) -> bool {
+    match f {
+        Frag::Seq { elems, .. } => elems.values().any(|e| e.pos.iter().any(|p| p.2.as_ref().is_some_and(|k| pick(&k.dot.source))) || matches!(&e.content, crdt_model::state::Content::Frag(x) if has_key(x, pick))),
+        Frag::Struct { fields, .. } => fields.values().any(|x| has_key(x, pick)),
+        Frag::Enum { payloads, .. } => payloads.values().any(|x| has_key(x, pick)),
+        Frag::Map { entries, .. } => entries.values().any(|e| e.frag.as_deref().is_some_and(|x| has_key(x, pick))),
+        _ => false,
+    }
+}
+
+/// An undo delta crosses the wire as its writer's delta: restored position writes' sibling keys name other
+/// commits (§3.2 `PosW`, §3.3 rule 7); model and implementation encode it alike and decode it back.
+fn wire_alike(m: &Frag, w: &MWriter) {
+    let mbytes = m_encode_delta(m, [7; 16], &mut Ctx::writer(w.ts, w.source.clone(), w.lo, w.hi()));
+    let cx = writer_cx(w);
+    let d = Delta { nonce: [7; 16], fragment: frag(m) };
+    let bytes = encode_delta(&d, &cx, None).unwrap();
+    assert_eq!(bytes, mbytes, "undo delta bytes differ\n{m:?}");
+    assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap(), d, "undo delta round trip");
+    let back = m_decode_delta(&mbytes, &mut Ctx::writer(w.ts, w.source.clone(), w.lo, w.hi())).unwrap();
+    assert_eq!(frag(&back), d.fragment, "model undo delta round trip");
 }
 
 /// One random case: a base (absent, partial, or after a few ops), writer 1's op d1 against it, now and then
@@ -189,6 +219,11 @@ fn case(r: &mut Rng, hits: &mut Hits) {
     let mut mu = MWriter::new(n1.clone(), tu, hi);
     let (mud, stats) = undo_stats(&mut mu, &ty, &d1, &made, &state, base.as_ref(), &|_| false);
     add(&mut hits.stats, &stats);
+    // (only deltas with sibling keys: the rest is the history differentials' ground)
+    if let Some(m) = mud.as_ref().filter(|m| has_key(m, &|_| true)) {
+        wire_alike(m, &mu);
+        hits.foreign_keys += usize::from(has_key(m, &|s| *s != n1));
+    }
     let mut mafter = Some(state.clone());
     if let Some(u) = mud.clone() {
         mapply(&mut mafter, u);
@@ -198,6 +233,8 @@ fn case(r: &mut Rng, hits: &mut Hits) {
     let src = source(&n1);
     let u = Undone { delta: &d1i, source: &src, range: CounterRange { lo, hi }, restored: &|_| false };
     let si = frag(&state);
+    // placements cached before the undo joins, so the joins below follow them (checked by `check_lin`)
+    let _ = si.read();
     let bi = base.as_ref().map(frag).unwrap_or_default();
     let mut iw = Writer::new(ts(tu), src.clone(), hi);
     let iud = undo(&mut iw, &u, &si, &bi, &view).unwrap();
@@ -205,6 +242,7 @@ fn case(r: &mut Rng, hits: &mut Hits) {
     let mut iafter: Fragment = si.clone();
     if let Some(u) = iud.clone() {
         iafter.join(u);
+        check_lin(&iafter);
     }
     hits.undone += 1;
     hits.seq += usize::from(has_seq(&d1));
@@ -216,10 +254,11 @@ fn case(r: &mut Rng, hits: &mut Hits) {
         assert_eq!(iafter.read(), mread(&mafter), "reads differ once d2 arrives after the undo\nty {ty:?}\nbase {base:?}\nd1 {d1:?}\nd2 {d2:?}\nmodel undo {mud:?}\nimpl undo {iud:?}");
         return;
     }
-    if !conc && !has_move(&d1) {
-        // a single writer's undo restores the pre-commit read (moves aside: a restored position write is newer
-        // than the anchor's other children, so it can land before ones it followed, §5.7)
+    if !conc {
+        // a single writer's undo restores the pre-commit read, moves included (restored position writes carry
+        // the old sibling keys, §5.7)
         hits.exact += 1;
+        hits.exact_moves += usize::from(has_move(&d1));
         assert_eq!(mread(&mafter), mread(&base), "undo not exact\nty {ty:?}\nbase {base:?}\nd1 {d1:?}\nmodel undo {mud:?}");
     }
     // redo: each side undoes its own undo commit (§4.6), the state before it as the buffer
@@ -243,10 +282,11 @@ fn case(r: &mut Rng, hits: &mut Hits) {
     let mut iredo = iafter.clone();
     if let Some(x) = ird.clone() {
         iredo.join(x);
+        check_lin(&iredo);
     }
     hits.redone += 1;
     assert_eq!(iredo.read(), mread(&mredo), "redo reads differ\nty {ty:?}\nstate {state:?}\nmodel undo {mud:?}\nimpl undo {iud:?}\nmodel redo {mrd:?}\nimpl redo {ird:?}");
-    if !conc && !has_move(&d1) {
+    if !conc {
         assert_eq!(mread(&mredo), state.read().map(|v| value(&v)), "redo not exact\nty {ty:?}\nstate {state:?}\nmodel undo {mud:?}\nmodel redo {mrd:?}");
     }
     // d1 undone again after the redo: a write the redo restored is stepped back through (§4.6 `restored`),
@@ -269,6 +309,7 @@ fn case(r: &mut Rng, hits: &mut Hits) {
     let mut iagain = iredo.clone();
     if let Some(x) = iad.clone() {
         iagain.join(x);
+        check_lin(&iagain);
     }
     hits.again += 1;
     assert_eq!(iagain.read(), mread(&magain), "undo after redo reads differ\nty {ty:?}\nd1 {d1:?}\nredo state {mredo:?}\nmodel redo {mrd:?}\nimpl redo {ird:?}\nmodel undo {mad:?}\nimpl undo {iad:?}");
@@ -289,7 +330,8 @@ proptest! {
 }
 
 /// The differential reaches every rule: "Absent before" at the root and nested, replace, bag, register step
-/// back, creation, text flag, list re-insert, set and key re-add, position restore, concurrency on both sides.
+/// back, creation, text flag, list re-insert, set and key re-add, position restore, exact undo of moves,
+/// concurrency on both sides.
 #[test]
 fn undo_matches_model_coverage_spec_4_6() {
     let mut r = crate::testutil::rng(0x05ee_d0d0);
@@ -318,6 +360,8 @@ fn undo_matches_model_coverage_spec_4_6() {
         ("unseen", hits.unseen),
         ("seq", hits.seq),
         ("exact", hits.exact),
+        ("exact_moves", hits.exact_moves),
+        ("foreign_keys", hits.foreign_keys),
         ("redone", hits.redone),
         ("again", hits.again),
     ] {
