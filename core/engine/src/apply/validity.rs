@@ -1767,6 +1767,49 @@ mod keys_tests {
         assert_eq!(lp.peers[0].engine.get_typed(&t, &ct::KEYS).unwrap().unwrap(), before);
     }
 
+    // issues/secrets-removal-unknown-key.md (honest flow): writers W1 and W2 both remove read
+    // box X; the admin compacts after W1, drops X's creation and W1's body, then gets W2. Open
+    // knows X's key (noted from the dropped creation): W2 valid; a rebuild knows none (X dead in
+    // the snapshot): admin, W2 invalid. Open must equal rebuild.
+    #[test]
+    #[ignore = "issues/secrets-removal-unknown-key.md"]
+    fn secrets_removal_dropped_creation_open_equals_rebuild() {
+        let mut lp = LocalPeer::new(4, 907, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let (me, w1, w2, r) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3));
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        m.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let we = ct::Edge { role: Role::Write, until: None, invite: None, since: None };
+        lp.peers[0].engine.grant(&t, &w1, &we).unwrap();
+        lp.peers[0].engine.grant(&t, &w2, &we).unwrap();
+        let g = *lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Read, ..we.clone() }).unwrap().commits.last().unwrap();
+        lp.sync_all().unwrap();
+        let rk = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap().boxes.keys().find(|k| k.member == r).unwrap().clone();
+        let rm = |lp: &mut LocalPeer, i: usize| {
+            let mut m = Mutation::new();
+            m.op(t, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(rk.to_value()) }).unwrap();
+            let id = lp.peers[i].commit(m).unwrap().unwrap();
+            (id, lp.peers[i].engine.package(&id).unwrap().unwrap())
+        };
+        let (c1, p1) = rm(&mut lp, 1);
+        let (c2, p2) = rm(&mut lp, 2);
+        lp.deliver(0, &p1).unwrap();
+        let secrets = osis_base::Ak::new("/secrets").unwrap();
+        lp.peers[0].engine.snapshot(&t, &secrets).unwrap().unwrap();
+        lp.peers[0].engine.drop_body(&g, &t, &secrets).unwrap();
+        lp.peers[0].engine.drop_body(&c1, &t, &secrets).unwrap();
+        lp.deliver(0, &p2).unwrap();
+        let v = |lp: &LocalPeer| lp.peers[0].engine.core.ix.commits.get(&c2).unwrap().valid[0];
+        assert!(v(&lp), "a writer's removal of a read box");
+        let d0 = lp.peers[0].engine.index_digest();
+        lp.peers[0].engine.rebuild_index().unwrap();
+        assert!(v(&lp), "rebuilt alike");
+        assert_eq!(d0, lp.peers[0].engine.index_digest());
+    }
+
     // spec/permissions.md §3, spec/crypto.md §4: a writer rotates read and write only. A removal
     // names only the entry's dot, so it needs the role of the key the entry was created with:
     // a writer's removal of admin boxes and admin history boxes is invalid; its removal of a read
