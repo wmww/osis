@@ -129,7 +129,7 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 |---|---|---|
 | `reopen_all` sweeps, `reopen_dependents` steps | was X | fixed (no cap) |
 | rotation `MAX_DEPTH` 8 | was X | fixed (no cap) |
-| `MAX_READING` 256, `MAX_READING_PER_AUTHOR` 64, `MAX_READING_ACTORS` 64 | R (tested, keys `boxes.rs`; a genuine candidate past it waits for its checked box) | |
+| `MAX_READING` 256, `MAX_READING_PER_AUTHOR` 64, `MAX_READING_ACTORS` 64 | R (tested, keys `boxes.rs`; counts epochs known only from pending commits; a genuine one past it waits for its checked box) | |
 | `PENDING_GRANT_WAIT_MS` 1 day (engine rotation) | M: past it a plausible granter's pending grant no longer keeps a node that lost access holding the actor; the node re-learns from the grant's boxes when it applies and re-fetches content. 0: every such grant waits that way; infinity: a grant that never applies keeps lost secrets for good | `rotation/mod.rs` |
 | `MAX_HINT_COMMITS` 64 | R (lowest commit ID evicted, not oldest; inbox spam can evict a genuine hint) | the grantee then writes once the thing's `/keys` syncs, as after a restart (candidates are not persisted): a delay (checked) |
 | `UNDO_DEPTH` 16 | M | no undo / memory |
