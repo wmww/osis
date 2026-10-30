@@ -79,6 +79,8 @@ pub struct Net {
     /// Nodes whose Upload requests to servers are lost on the way (answered rate-limited for
     /// the server: a request is never left unanswered on an ordered stream).
     pub lose_uploads: BTreeSet<usize>,
+    /// Deposits of these blobs to a peer are lost on the way (answered rate-limited).
+    pub lose_deposits: BTreeSet<osis_base::BlobId>,
     /// Servers whose messages to nodes are held back until `release` (a slow server).
     pub held_servers: BTreeSet<usize>,
     /// Time spent in each node's `handle` and in the hubs (scale tests).
@@ -92,7 +94,7 @@ pub fn server_key(i: usize) -> [u8; 32] {
 
 impl Net {
     pub fn new() -> Net {
-        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), held_servers: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO }
+        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_servers: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO }
     }
 
     pub fn now(&self) -> u64 {
@@ -297,8 +299,24 @@ impl Net {
                     let out = self.servers[s].hub.accept(now, hc, [0xe0; 32]);
                     self.hub_out(s, out);
                 }
-                Action::Send { conn, bytes } if self.plinks.contains_key(&(n, conn)) => {
+                Action::Send { conn, mut bytes } if self.plinks.contains_key(&(n, conn)) => {
                     let (m, pc) = self.plinks[&(n, conn)];
+                    if !self.lose_deposits.is_empty() {
+                        let mut d = osis_proto::FrameDecoder::new();
+                        d.push(&bytes);
+                        let mut kept = Vec::new();
+                        while let Ok(Some(body)) = d.next_frame() {
+                            if let Ok(osis_proto::Message::Deposit { id, blob, .. }) = osis_proto::Message::decode(&body)
+                                && self.lose_deposits.contains(&osis_label::blob_id(&blob))
+                            {
+                                let e = osis_proto::Message::Error { id, code: osis_proto::Code::RATE_LIMITED };
+                                self.queue.push_back(Msg::ToNode(n, self.nodes[n].life, conn, osis_proto::encode_frame(&e.encode())));
+                                continue;
+                            }
+                            kept.extend(osis_proto::encode_frame(&body));
+                        }
+                        bytes = kept;
+                    }
                     if self.held.contains(&(n, m)) {
                         self.held_msgs.push(Msg::ToNode(m, self.nodes[m].life, pc, bytes));
                     } else {
