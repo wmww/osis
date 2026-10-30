@@ -131,20 +131,20 @@ impl Parts {
                 .collect(),
         };
         for src in srcs {
-            if self.kills(tx, tid, ak, c, ai, Some(src), &want)? {
+            if self.kills(tx, tid, ak, (c, ai), Some(src), &want)? {
                 return Ok(true);
             }
         }
         if own.is_some() {
             return Ok(false);
         }
-        self.kills(tx, tid, ak, c, ai, None, &want)
+        self.kills(tx, tid, ak, (c, ai), None, &want)
     }
 
     /// Whether a source supersedes `want` (dead stamp, superseder) in part `ai` of `c`: part
     /// `kai` of `k` joined into a copy of the part, or for `None` the part joined into a copy of
     /// the state. Cached per (part, source).
-    fn kills(&mut self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, src: Option<(CommitId, usize)>, want: &(Stamp, Stamp)) -> Result<bool> {
+    fn kills(&mut self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, (c, ai): (&CommitId, usize), src: Option<(CommitId, usize)>, want: &(Stamp, Stamp)) -> Result<bool> {
         let key = (*c, src.map(|x| x.0));
         if let Some(k) = self.0.get(&key) {
             return Ok(k.contains(want));
