@@ -255,7 +255,7 @@ fn forged_entry_box_teaches_nothing_spec_sync_5() {
     let (read, write, admin, dep) = (Secret32::from_bytes([b; 32]), Secret32::from_bytes([b + 1; 32]), Secret32::from_bytes([b + 2; 32]), Secret32::from_bytes([b + 3; 32]));
     let skeys = StepKeys::derive(&read, &write, &admin, 0, &dep, &genesis_label(&admin, 0));
     let delete = label_role_key(LabelRole::Delete, &admin, 0);
-    let reader = osis_label::Reader::Static { signing: keys.signing.verifying_key(), entry: osis_label::EntryTo::Sealed(keys.kem.public()) };
+    let reader = osis_label::Reader::Static { signing: keys.signing.verifying_key(), kem: keys.kem.public() };
     let (fake, set) = register(Parent::Genesis(&delete), skeys, &[reader], (&ka, Epoch::derive(&ka, Role::Read, 0, &read).unwrap(), &read), &mut SeededRng::from_u64(9)).unwrap();
     let entry_box = set.entry_box(&fake.label, &keys.signing.verifying_key()).cloned().expect("entry box");
     let target = LabelId([0x42; 16]);
@@ -310,7 +310,7 @@ fn substituted_entry_box_teaches_nothing_spec_sync_2() {
     let (read, write, admin, dep) = (Secret32::from_bytes([b; 32]), Secret32::from_bytes([b + 1; 32]), Secret32::from_bytes([b + 2; 32]), Secret32::from_bytes([b + 3; 32]));
     let skeys = StepKeys::derive(&read, &write, &admin, 0, &dep, &genesis_label(&admin, 0));
     let delete = label_role_key(LabelRole::Delete, &admin, 0);
-    let reader = || osis_label::Reader::Static { signing: keys.signing.verifying_key(), entry: osis_label::EntryTo::Sealed(keys.kem.public()) };
+    let reader = || osis_label::Reader::Static { signing: keys.signing.verifying_key(), kem: keys.kem.public() };
     let e1 = Epoch::derive(&ka, Role::Read, 1, &read).unwrap();
     // the genuine genesis (its path verifies), and a box for its slot carrying another secret
     let (head, _) = register(Parent::Genesis(&delete), skeys, &[reader()], (&ka, e1, &read), &mut SeededRng::from_u64(10)).unwrap();

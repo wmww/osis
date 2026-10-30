@@ -13,7 +13,7 @@ use osis_base::{LabelId, Role, Tid, Value};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_crypto::{Epoch, KemPublicKey, LabelRole, Secret32, VerifyingKey, label_role_key};
 use osis_keys::{ActorEpochs, registration_epochs};
-use osis_label::{Address, ClaimSet, EntryTo, Parent, Reader, Step, StepId, StepKeys, genesis_label, label_steps, register, step_record};
+use osis_label::{Address, ClaimSet, Parent, Reader, Step, StepId, StepKeys, genesis_label, label_steps, register, step_record};
 use osis_schema::core_types::{self as ct, KemKey};
 use osis_schema::{AspectKey, Codec};
 
@@ -97,7 +97,7 @@ pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, index: u
         .iter()
         .map(|r| match r {
             ReaderKey::Dh(x) => Reader::Dh(*x),
-            ReaderKey::Static(vk, kem) => Reader::Static { signing: *vk, entry: EntryTo::Sealed(kem) },
+            ReaderKey::Static(vk, kem) => Reader::Static { signing: *vk, kem },
         })
         .collect();
     let del = label_role_key(LabelRole::Delete, parent.map_or(adm, |(_, a)| a), index);

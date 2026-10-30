@@ -160,7 +160,7 @@ fn person_and_pairing_spec_perm_1() {
     // the recovery key reads the current step's entry box
     let rk = osis_crypto::KeyActorKeys::from_seed(&card.seed);
     let eb = set.unwrap().entry_box(&card.home_label, &rk.signing.verifying_key()).cloned().unwrap();
-    let (_, read) = osis_label::open_entry_box(&eb, &step, osis_label::EntryKey::Kem(&rk.kem), &p).unwrap();
+    let (_, read) = osis_label::open_entry_box(&eb, &step, &rk.kem, &p).unwrap();
     let held = e0.epochs(&p).unwrap();
     assert_eq!(held.read.newest_held().unwrap().1, &read);
     // the second device: admin, holds the same secrets

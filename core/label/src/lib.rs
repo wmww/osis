@@ -28,5 +28,5 @@ pub use error::Error;
 pub use inbox::{InboxPayload, InboxThing, open_inbox_blob, seal_inbox_blob};
 pub use labels::{Label, Labels, StepRecord, label_steps, parse_record, step_record, tips};
 pub use link::{Peer, RecoveryCard, ShareLink};
-pub use step::{ClaimSet, EntryKey, EntryTo, Parent, Reader, Step, StepId, StepKeys, genesis_label, match_secret, open_entry_box, path_to, register, verify_path};
+pub use step::{ClaimSet, Parent, Reader, Step, StepId, StepKeys, genesis_label, match_secret, open_entry_box, path_to, register, verify_path};
 pub use tree::{BlobFetch, BlobReader, BlobSink, BlobStore, BlobWriter, Framing, Reuse, HashSink, LinkSource, MemoryBlobs, TreeReader, TreeSink, TreeWriter, Written, read_tree, write_tree};
