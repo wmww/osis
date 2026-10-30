@@ -111,10 +111,6 @@ pub(crate) struct CertIndex {
     /// Things with a held edge write or roster snapshot on them: the only key actors a path
     /// can pass through.
     entered: BTreeSet<Tid>,
-    /// Every edge held at any time (initial, written or in a snapshot roster), by member and
-    /// by target: a later path of a node runs over these and owner links.
-    ever_up: BTreeMap<Tid, BTreeSet<Tid>>,
-    ever_down: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Every possible demotion by point.
     demotions: Vec<(Point, Demotion)>,
 }
@@ -191,13 +187,6 @@ impl Timeline {
                 x.by_thing.entry(s.thing).or_default().push(s.id);
                 x.entered.insert(s.thing);
             }
-            let ever = self.walked.initial.iter().map(|(m, t, _)| (*m, *t));
-            let written = self.input.commits.values().flat_map(|c| c.ops.iter().filter(|o| o.edge.is_some()).map(|o| (o.member, o.target)));
-            let rostered = self.input.snaps.values().flat_map(|s| s.roster.keys().map(|m| (*m, s.thing)));
-            for (m, t) in ever.chain(written).chain(rostered) {
-                x.ever_up.entry(m).or_default().insert(t);
-                x.ever_down.entry(t).or_default().insert(m);
-            }
             for cm in self.input.commits.values().filter(|c| audits.contains(&c.id)) {
                 x.demotions.extend(cm.ops.iter().map(|o| (cm.point(), Demotion::Edge(o.member, o.target, cm.clone()))));
             }
@@ -231,17 +220,17 @@ impl Timeline {
         c
     }
 
-    /// Things reachable from `node` over every edge held at any time and owner links: a
-    /// superset of what it reaches at every point.
+    /// Things reachable from `node` over every edge any held write, roster or ledger can set
+    /// (`Input::ever`) and owner links: a superset of what it reaches at every point.
     fn ever_up_from(&self, node: &Tid) -> BTreeSet<Tid> {
-        let index = self.cert_index();
-        search(node, |x| index.ever_up.get(x).into_iter().flatten().chain(self.input.owners.owned(x)).copied().collect())
+        let ever = &self.input.ever;
+        search(node, |x| ever.targets.get(x).into_iter().flatten().chain(self.input.owners.owned(x)).copied().collect())
     }
 
     /// Things reaching `thing` likewise.
     fn ever_down_to(&self, thing: &Tid) -> BTreeSet<Tid> {
-        let index = self.cert_index();
-        search(thing, |y| index.ever_down.get(y).into_iter().flatten().copied().chain(self.input.owners.owner_actor(y)).collect())
+        let ever = &self.input.ever;
+        search(thing, |y| ever.members.get(y).into_iter().flatten().copied().chain(self.input.owners.owner_actor(y)).collect())
     }
 
     /// The chain certificates of `node` for a write on `thing` at `at` (§4).
@@ -291,6 +280,8 @@ impl Timeline {
         // things reachable from n, and reaching t, over every edge ever held
         let mut ups: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
         let mut downs: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
+        // (n, t, demotion index) already judged for a later path: each at most once
+        let mut judged: BTreeSet<(Tid, Tid, usize)> = BTreeSet::new();
         loop {
             let Some((p, n, t)) = todo.pop_last() else {
                 if later.is_empty() {
@@ -349,17 +340,17 @@ impl Timeline {
             // A later demotion on a path n gains after p (an edge on no path of n's at p) may
             // demote n as well: n's chain at its point goes along when the lowered edge or the
             // snapshot's thing is on it there.
-            let after = index.demotions.get(index.demotions.partition_point(|d| d.0 <= p)..).unwrap_or_default();
-            if !after.is_empty() {
-                let up = ups.entry(n).or_insert_with(|| self.ever_up_from(&n)).clone();
-                let down = downs.entry(t).or_insert_with(|| self.ever_down_to(&t)).clone();
+            let first = index.demotions.partition_point(|d| d.0 <= p);
+            if first < index.demotions.len() {
+                let up = &*ups.entry(n).or_insert_with(|| self.ever_up_from(&n));
+                let down = &*downs.entry(t).or_insert_with(|| self.ever_down_to(&t));
                 let ever = |x: &Tid| up.contains(x) && down.contains(x);
-                for (q, d) in after {
+                for (i, (q, d)) in index.demotions.iter().enumerate().skip(first) {
                     let fresh = match d {
                         Demotion::Edge(m, tg, cm) => ever(m) && ever(tg) && !(chain.contains(m) && chain.contains(tg)) && cm.ops.iter().any(|o| reaches(&o.member)),
                         Demotion::Thing(x) => ever(x) && !chain.contains(x),
                     };
-                    if !fresh || later.contains(&(*q, n, t)) {
+                    if !fresh || later.contains(&(*q, n, t)) || !judged.insert((n, t, i)) {
                         continue;
                     }
                     let c = self.chain_things(&n, &t, *q, &mut chains);
