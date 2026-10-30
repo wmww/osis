@@ -516,3 +516,62 @@ fn next_reports_what_undo_and_redo_revert_api_commits() {
     assert_eq!(db.get(a, k).unwrap(), Some(Value::Int(1)));
     assert!(matches!(db.commits(&CommitQuery::new().next(Next::Undo)), Err(Error::Invalid(_))));
 }
+
+// spec/crdt.md §4.6 Undoing a creation, shared: the undo of a creation reaches the other
+// member (deleted there), redo restores it there; a writer (not admin) may revert another's
+// creation of a thing it may write; reverting the creation of a thing it may not write is
+// `Permission` and changes nothing (never a partial revert: unplaced but not deleted).
+#[test]
+fn undo_of_creation_shared_spec_crdt_4_6() {
+    let mut w = World::new();
+    let sv = w.add_server().unwrap();
+    let alice = crate::scenario::person(&mut w, 1, sv);
+    let bob = crate::scenario::person(&mut w, 2, sv);
+    let b = crate::scenario::introduce(&mut w, &alice, &bob);
+    let x = ak("/t/x");
+    let g = alice.write_with(|wr| { let g = wr.create(alice.me())?; wr.make_group(g)?; Ok(g) }).unwrap();
+    alice.sync(g, &[]).unwrap();
+    alice.grant(g, b, osis::Role::Write, osis::EdgeOpts::default()).unwrap();
+    w.run();
+    let mk = |owner: osis::Tid| { let t = alice.write_with(|wr| { let t = wr.create_in(owner, &[g])?; wr.at(t, x.clone()).set(&Value::Int(1))?; Ok(t) }).unwrap(); t };
+    let t = mk(g);
+    w.run();
+    assert_eq!(bob.get(t, x.clone()).unwrap(), Some(Value::Int(1)));
+    let s = Scope::Thing(t);
+    alice.undo(&s).unwrap().unwrap();
+    w.run();
+    assert!(!bob.knows(t) && bob.groups_of(t).within.is_empty());
+    alice.redo(&s).unwrap().unwrap();
+    w.run();
+    assert!(bob.knows(t) && bob.get(t, x.clone()).unwrap() == Some(Value::Int(1)) && bob.groups_of(t).item_of == vec![g]);
+    let c = ChangeId::Commit(alice.created(t).unwrap().commit.unwrap());
+    bob.revert(c).unwrap();
+    w.run();
+    assert!(!alice.knows(t) && alice.groups_of(t).within.is_empty());
+    let t3 = mk(alice.me());
+    w.run();
+    assert_eq!(bob.role_on(t3), None);
+    let c3 = ChangeId::Commit(alice.created(t3).unwrap().commit.unwrap());
+    assert!(matches!(bob.revert(c3), Err(Error::Permission { .. })));
+    w.run();
+    assert!(alice.knows(t3) && alice.groups_of(t3).item_of == vec![g]);
+}
+
+// notes/api.md Commits: a revert of a creation is related to it in a scope naming only
+// `/created`, though it writes none of the aspects the creation wrote (removed meanwhile; seen
+// on the other device, which has no log entry of it).
+#[test]
+fn creation_revert_found_by_created_scope_api_commits() {
+    let (da, db) = two_devices();
+    let t = da.write_with(|w| w.create_durable(da.me())).unwrap();
+    let c = da.created(t).unwrap().commit.map(ChangeId::Commit).unwrap();
+    commit_with(&da, |w| {
+        w.at(t, ak("/t/made")).remove()?;
+        w.at(t, ak("/t/y")).set(&Value::Int(1))
+    });
+    let r = da.revert(c).unwrap();
+    sync2(&da, &db);
+    assert!(!db.knows(t));
+    let e = db.commits(&CommitQuery::new().scope(Scope::Aspects(vec![(t, ak("/created"))]))).unwrap();
+    assert_eq!(e.iter().map(|e| (e.commit.id, e.in_effect, e.reverted_by.clone())).collect::<Vec<_>>(), vec![(c, false, vec![r.id])]);
+}

@@ -76,6 +76,10 @@ pub struct Eph {
     defs: BTreeMap<Tid, place::Def>,
     /// Own batches for undo.
     log: log::Log,
+    /// Drafts again: durable things whose save an undo reverted (`log::Making`), read and
+    /// undone like the ephemeral things they were (scope, placements converting at their next
+    /// durable write) until saved again; in memory, like the draft.
+    drafts: BTreeSet<Tid>,
     /// Synced ephemeral data: unsent writes, held ephemeral commits.
     remote: remote::Remote,
     /// Held ephemeral commits dropped (covered or expired), for the sync layer.
@@ -92,11 +96,16 @@ pub struct Written {
 impl Eph {
     /// Empty, under a new random session.
     pub fn new(session: [u8; 32]) -> Eph {
-        Eph { session, src: Source::commit(CommitId(session)), next: 1, batches: 0, things: HashMap::new(), aspects: HashMap::new(), timers: BTreeMap::new(), defs: BTreeMap::new(), log: log::Log::default(), remote: remote::Remote::default(), dropped: Vec::new() }
+        Eph { session, src: Source::commit(CommitId(session)), next: 1, batches: 0, things: HashMap::new(), aspects: HashMap::new(), timers: BTreeMap::new(), defs: BTreeMap::new(), log: log::Log::default(), drafts: BTreeSet::new(), remote: remote::Remote::default(), dropped: Vec::new() }
     }
 
     fn state(&self, tid: &Tid, ak: &Ak) -> Option<&Fragment> {
         self.aspects.get(tid)?.get(ak).map(|a| &a.state)
+    }
+
+    /// An ephemeral thing, or a draft again (`drafts`).
+    fn draft_like(&self, tid: &Tid) -> bool {
+        self.things.contains_key(tid) || self.drafts.contains(tid)
     }
 
     fn present(&self, tid: &Tid) -> Vec<Ak> {
@@ -110,7 +119,7 @@ pub(crate) struct EphOp {
     pub ak: Ak,
     pub am: AspectMut,
     /// The reset of a placement made durable by this batch: resolved against the ephemeral
-    /// side alone and not logged for undo.
+    /// side alone.
     pub conversion: bool,
 }
 
@@ -211,17 +220,21 @@ impl Engine {
         let refused = plan.refused;
         m.synced.extend(plan.converted);
         let persisted = plan.persisted;
+        // the drafts this batch saves: ephemeral things made before it that it persists, and
+        // drafts again it writes durably
+        let mut saved = plan.saved;
         for t in &persisted {
             if !m.creates.contains_key(t)
                 && let Some(e) = self.eph.things.get(t)
             {
                 m.creates.insert(*t, e.record.clone());
+                saved.insert(*t);
             }
         }
         let fresh: BTreeMap<Tid, CreationRecord> = m.creates.iter().filter(|(t, _)| !persisted.contains(t)).map(|(t, r)| (*t, r.clone())).collect();
         m.creates.retain(|t, _| persisted.contains(t));
         let durable = !(m.creates.is_empty() && m.aspects.is_empty() && m.purge.is_empty() && m.dead_resets.is_empty() && m.undoes.is_none());
-        if eph_ops.is_empty() && fresh.is_empty() && m.free.is_empty() && refused.is_empty() {
+        if eph_ops.is_empty() && fresh.is_empty() && m.free.is_empty() && refused.is_empty() && saved.is_empty() {
             // the common durable write: no ephemeral half
             let Some(id) = self.commit(m)? else { return Ok(None) };
             for t in &persisted {
@@ -316,7 +329,7 @@ impl Engine {
                 }
             };
             if let Some((delta, r)) = out {
-                let log = (!op.conversion).then(|| (base.footprint(&delta), am.schema.clone()));
+                let log = Some((base.footprint(&delta), am.schema.clone()));
                 self.eph.next = r.hi;
                 resolved.push(Resolved { tid: *tid, ak: ak.clone(), delta, range: (r.lo, r.hi), expires, presence: am.lifetime == Lifetime::Presence, log });
             }
@@ -338,7 +351,7 @@ impl Engine {
         for t in &persisted {
             self.eph.things.remove(t);
         }
-        let making = log::Making { made: fresh.keys().copied().collect(), unmade: Vec::new() };
+        let making = log::Making { made: fresh.keys().copied().collect(), saved: saved.into_iter().collect(), ..Default::default() };
         for (t, record) in fresh {
             self.eph.things.insert(t, EphThing { record, ts, node, actor, received: now, created: None, deleted: false });
             self.note_created(&t);
@@ -397,6 +410,10 @@ impl Engine {
                 }
             }
         }
+        for t in &making.saved {
+            self.eph.drafts.remove(t);
+        }
+        self.eph.drafts.extend(making.unsaved.iter().copied());
         let gone = self.free_things(&free, ts, &mut changed);
         logged.retain(|a| !gone.contains(&a.tid));
         making.made.retain(|t| !gone.contains(t));

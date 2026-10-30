@@ -81,8 +81,9 @@ fn undo_delta<V: View>(w: &mut Writer, undone: &Undone, state: &Fragment, buf: &
     Ok(osis_crdt::undo(w, undone, state, buf, view)?)
 }
 
-/// Builds and applies the undo commit of `target` (spec/crdt.md §4.6).
-pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<Ts>) -> Result<CommitId> {
+/// Builds and applies the undo commit of `target` (spec/crdt.md §4.6); of the things it
+/// created, `keep` (drafts it saved) are not deleted.
+pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<Ts>, keep: &BTreeSet<Tid>) -> Result<CommitId> {
     let m = tx.core.ix.commits.get(&target).cloned().ok_or(Error::UnknownCommit(target))?;
     let h = m.header.clone();
     if !matches!(h.kind, Kind::Content) {
@@ -91,7 +92,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     let node = tx.core.id.tid();
     let ts = ts.unwrap_or_else(|| tx.core.hlc.next());
     let mut deltas = Vec::new();
-    let made = made_by(&h, &m.valid);
+    let made: BTreeSet<Tid> = made_by(&h, &m.valid).difference(keep).copied().collect();
     for (ai, a) in h.aspects.iter().enumerate() {
         // a commit whose body was dropped cannot be undone (spec/commits.md §7); a thing it
         // created is deleted below instead
@@ -194,13 +195,17 @@ pub(crate) fn made_by(h: &osis_commit::Header, valid: &[bool]) -> BTreeSet<Tid> 
 /// Undoing a creation deletes the thing (spec/crdt.md §4.6): `delete`'s writes for each of
 /// `made`, its held aspects reset (not `/created` or membership-class ones) and its entries
 /// removed from every `/group` listing it that this node may write, each resolved after the
-/// undo's own delta of that aspect and joined into it.
+/// undo's own delta of that aspect and joined into it. `Permission` when this node may not
+/// write one of `made` (`delete` would refuse; never a partial revert).
 fn unmake(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid, deltas: &mut Vec<Resolved>) -> Result<()> {
     if made.is_empty() {
         return Ok(());
     }
     let mut ops: BTreeMap<(Tid, Ak), Vec<PathOp>> = BTreeMap::new();
     for x in made {
+        if crate::engine::write::role_of(tx.core, &node, x, ts) < Some(Role::Write) {
+            return Err(Error::Permission { tid: *x });
+        }
         let prefix = [crate::engine::records::ASPECTS, x.as_bytes()].concat();
         let mut aks = Vec::new();
         tx.scan(&prefix, |k, _| {
@@ -301,7 +306,7 @@ impl Engine {
     pub fn revert(&mut self, target: &CommitId) -> Result<Option<CommitId>> {
         let t = *target;
         let me = self.tid();
-        match self.run(|tx| undo_in(tx, t, me, None)) {
+        match self.run(|tx| undo_in(tx, t, me, None, &BTreeSet::new())) {
             Err(Error::Misuse("nothing to undo")) => Ok(None),
             r => r.map(Some),
         }

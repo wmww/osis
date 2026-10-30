@@ -72,6 +72,9 @@ pub(super) fn def_of(f: &Fragment) -> Option<Def> {
 pub(super) struct Placed {
     /// Ephemeral things (and new ones) the durable half persists, owner chains included.
     pub persisted: BTreeSet<Tid>,
+    /// Drafts again (`Eph::drafts`) the durable half writes: saved again, their ephemeral
+    /// placements converting like a persisted thing's.
+    pub saved: BTreeSet<Tid>,
     /// Durable `/group` writes by group.
     pub durable: BTreeMap<Tid, AspectMut>,
     /// Ephemeral `/group` writes, conversions' resets included.
@@ -85,8 +88,8 @@ pub(super) struct Placed {
 impl Engine {
     /// Splits `gops` (the batch's durable-keyed `/group` writes) and computes what the batch
     /// persists: the things its durable aspects and `persist` name, groups getting a durable
-    /// add, and the groups each persisted thing's ephemeral placements convert into, each with
-    /// its ephemeral owner chain, to a fixpoint.
+    /// add, and the groups each persisted thing's (or saved draft's) ephemeral placements
+    /// convert into, each with its ephemeral owner chain, to a fixpoint.
     pub(super) fn place_plan(&self, m: &Mutation, gops: Vec<(Tid, AspectMut)>) -> Result<Placed> {
         let node = self.tid();
         let ts = Ts::make(self.now(), 0).unwrap_or_default();
@@ -117,8 +120,10 @@ impl Engine {
         // this batch, or expired with its timer not yet run)
         let converts = |g: &Tid, field: u64, t: &Tid| if removed.contains(&(*g, field, *t)) { None } else { self.placement_expiry(g, &gak, field, t) };
         let mut roots: BTreeSet<Tid> = m.aspects.keys().map(|k| k.0).chain(m.persist.iter().copied()).collect();
+        let drafts = &self.eph.drafts;
         let persisted = loop {
             let persisted = chain(&roots);
+            let saved: Vec<Tid> = roots.iter().filter(|t| drafts.contains(t)).copied().collect();
             let eph_after = |x: &Tid| records(x).is_some() && !persisted.contains(x);
             let mut grew = false;
             for (g, am) in &gops {
@@ -130,7 +135,7 @@ impl Engine {
                     }
                 }
             }
-            for t in persisted.iter().filter(|t| things.contains_key(t)) {
+            for t in persisted.iter().filter(|t| things.contains_key(t)).chain(&saved) {
                 for (g, field) in self.ephemeral_placements(t) {
                     if converts(&g, field, t).is_some() && may_place(&g) {
                         grew |= roots.insert(g);
@@ -141,9 +146,11 @@ impl Engine {
                 break persisted;
             }
         };
+        let saved: BTreeSet<Tid> = roots.iter().filter(|t| drafts.contains(t)).copied().collect();
+        let converting: BTreeSet<Tid> = persisted.iter().filter(|t| things.contains_key(t)).chain(&saved).copied().collect();
         let eph_after = |x: &Tid| records(x).is_some() && !persisted.contains(x);
         let core_schema = || Some(Arc::new(osis_schema::core_schema().clone()));
-        let mut out = Placed { persisted: BTreeSet::new(), durable: BTreeMap::new(), eph: Vec::new(), refused: Vec::new(), converted: Vec::new() };
+        let mut out = Placed { persisted: BTreeSet::new(), saved: BTreeSet::new(), durable: BTreeMap::new(), eph: Vec::new(), refused: Vec::new(), converted: Vec::new() };
         for (g, am) in gops {
             let (mut d, mut e) = (Vec::new(), Vec::new());
             for op in &am.ops {
@@ -161,7 +168,7 @@ impl Engine {
                 out.durable.insert(g, AspectMut { ops: d, ..am });
             }
         }
-        for t in persisted.iter().filter(|t| things.contains_key(t)) {
+        for t in &converting {
             for (g, field) in self.ephemeral_placements(t) {
                 let exp = converts(&g, field, t);
                 if !may_place(&g) {
@@ -188,7 +195,7 @@ impl Engine {
                 out.eph.push(reset);
             }
         }
-        for t in persisted.iter().filter(|t| things.contains_key(t)) {
+        for t in &converting {
             // a group ephemerally: its (empty) `/group` persists, its ephemeral items do not;
             // after the conversions, whose expiry it takes: an empty group has no value for
             // expiry to remove (spec/crdt.md §4.7), so it stays a group
@@ -198,6 +205,7 @@ impl Engine {
             }
         }
         out.persisted = persisted;
+        out.saved = saved;
         Ok(out)
     }
 

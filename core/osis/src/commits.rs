@@ -209,9 +209,9 @@ impl Osis {
     }
 
     /// The changes in `scope`, newest first, with relations judged over every held commit that
-    /// can revert one of them (a revert touches aspects its target touched, or the aspects of a
-    /// thing it created: a scope naming only `/created` may miss that one) and every logged
-    /// ephemeral change. Also the scope's aspects.
+    /// can revert one of them (a revert touches aspects its target touched: undoing a creation
+    /// resets every held aspect of the thing, the ones its creation wrote among them) and every
+    /// logged ephemeral change. Also the scope's aspects.
     fn found(&self, scope: Option<&Scope>) -> Result<(Vec<Found>, Option<Aspects>)> {
         let aks = scope.map(|s| self.scope_aspects(s)).transpose()?;
         let found = self.engine(|e| {
