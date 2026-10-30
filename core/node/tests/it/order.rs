@@ -1430,3 +1430,35 @@ fn creation_lost_by_drop_then_flip_tolerated_spec_commits_5() {
     assert!(played.things.iter().any(|t| flipped(&played, &order, None, &format!("{t:?}"), "/t/gonemap")), "the order flips");
     assert_eq!(alike(&want, &got, &|t, a| flipped(&played, &order, None, t, a)), None);
 }
+
+// spec/commits.md §5, the shape of seed 2700027 in a map: B's snapshot of a keep-at-most-0 map
+// carries A's entry value, which A's overwrite (`ts` not above the snapshot's) killed unseen by
+// B; the value shares its stamp with the entry's creation, still live. In every arrival order,
+// and on a recompute, the snapshot dies for it at its `ts` (it had no death and kept the value).
+#[test]
+fn snapshot_of_overwritten_entry_value_dies_any_order_spec_commits_5() {
+    use Step::*;
+    let h = vec![Write { by: 0, t: 0, op: 19, k: 0, v: 6 }, Send { from: 0, to: 1, back: 0 }, Write { by: 0, t: 0, op: 19, k: 0, v: 7 }, Compact { by: 1, t: 0, op: 19 }, Write { by: 0, t: 0, op: 19, k: 1, v: 5 }];
+    let played = play(2700027, &h);
+    let b = played.base;
+    let n = played.packs.len() - b;
+    let mut orders = vec![(b..b + n).collect::<Vec<_>>()];
+    while let Some(o) = next_perm(orders.last().unwrap()) {
+        orders.push(o);
+    }
+    for rel in orders {
+        let mut k = Peer::new(FRESH, played.now).unwrap();
+        k.engine.keep_bodies(true);
+        for &i in (0..b).chain(rel.iter().copied()).collect::<Vec<_>>().iter() {
+            let pk = &played.packs[i];
+            let _ = k.engine.ingest(&pk.bytes, pk.blobs.clone());
+        }
+        let snap = k.engine.commit_ids().into_iter().find(|id| k.engine.header(id).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot)).expect("a snapshot");
+        let a = k.engine.header(&snap).unwrap().aspects[0].clone();
+        let ts = k.engine.header(&snap).unwrap().ts;
+        let first = |k: &mut Peer| k.engine.deaths(&snap, &a.tid, &a.ak).unwrap().map(|d| d.0);
+        assert_eq!(first(&mut k), Some(ts), "order {rel:?}");
+        k.engine.replay_deaths(&a.tid, &a.ak).unwrap();
+        assert_eq!(first(&mut k), Some(ts), "order {rel:?}: recomputed");
+    }
+}
