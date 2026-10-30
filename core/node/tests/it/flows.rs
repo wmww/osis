@@ -1100,7 +1100,7 @@ fn link_bearer_and_until_spec_perm_9() {
     assert!(lp.peers[1].engine.epochs(&link.k).unwrap().read.secret(&k1).is_none(), "the bearer is out");
 }
 
-// spec/permissions.md §9, §5.1: an expired link is due for finalization on both of the sharer's
+// spec/permissions.md §9 (link finalized), §5.1: an expired link is due for finalization on both of the sharer's
 // devices (the seed thing is the person's); both finalize concurrently without conflict. A seed
 // holder whose clock lags signs an invite grant as L dated before `until`, after both removals:
 // their frontiers do not cover it, so it is void at every peer, whether it arrives before or

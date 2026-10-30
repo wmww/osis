@@ -131,6 +131,7 @@ RULES = [
     ("spec/permissions.md", "5.1", "frontier received", "a frontier MUST NOT cover what A had not received"),
     ("spec/permissions.md", "5.2", "dot reuse", "A revoked actor cannot reuse a covered dot"),
     ("spec/permissions.md", "7", "one import", "a client MUST NOT import t"),
+    ("spec/permissions.md", "9", "link finalized", "MUST write it once L's edge expired or was self-removed"),
     ("spec/sync.md", "2", "home label", "It MUST have one when it names it as its inbox"),
     ("spec/sync.md", "5", "stale sync key", "is answered with that step's child on the path"),
     ("spec/sync.md", "5", "claim refusals", "Otherwise refused like an unknown key"),
