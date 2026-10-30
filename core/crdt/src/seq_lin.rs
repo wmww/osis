@@ -43,7 +43,8 @@
 //! - a move of an element or to an anchor that is not placed, or one closing a cycle (the anchor
 //!   inside the subtree, checked per step) (`place_moved`);
 //! - 256 or more newer siblings at the anchor (`slot`), or a sibling there whose old write fell
-//!   out of its top two (a move in the same delta; `child_key`).
+//!   out of its top two (a move in the same delta; `child_key`);
+//! - an element's chosen edge replaced by a copy with another anchor or key (`moved`).
 
 use crate::linearize::{Placed, place_idx};
 use crate::seq::{Anchor, PosW, SeqContent, SeqElem, is_creation, is_visible, sib_key};
@@ -1486,8 +1487,8 @@ impl Lin {
     /// `Some(None)` if its chosen edge stays; `None`: rebuild. A write gained naming an element
     /// inside a range record cuts a row after it (`cuts`); rebuilds if a write gained or lost
     /// names an unknown element (an absent `Derived` one: a virtual anchor), a write lost names
-    /// an element inside a range record (its node may join the next again), or the element is
-    /// on a broken cycle (§6.2: its demotion may change).
+    /// an element inside a range record (its node may join the next again), the element is on a
+    /// broken cycle (§6.2: its demotion may change), or its chosen edge is replaced by a copy.
     fn moved(&self, elems: &dyn Recs, dot: &Dot, old: &[PosW], now: &[PosW], cuts: &mut Vec<Dot>) -> Option<Option<(Stamp, Dot, Anchor, Stamp)>> {
         if self.cyc.contains(dot) {
             return None;
@@ -1504,7 +1505,11 @@ impl Lin {
             }
         }
         let p = now.first()?;
-        // (a copy of the edge with another anchor or key moves it too, §4.1 copy order)
+        // a copy of the edge with another anchor or key (§4.1 copy order) replaces the old write,
+        // so the row no longer finds its key where it sits (`child_key`): rebuild
+        if old.first().is_some_and(|o| o != p && o.0 == p.0) {
+            return None;
+        }
         Some((old.first() != now.first()).then(|| (p.0.clone(), dot.clone(), p.1.clone(), sib_key(p).clone())))
     }
 
