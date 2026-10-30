@@ -86,7 +86,9 @@ pub fn plan_departure(graph: &dyn Graph, actor: Tid, member: Tid, from: Role, he
 }
 
 /// The rotations required by `departure` (as seen from actor X) exposing roles `roles` of X:
-/// X itself, then every thing X's roles open, transitively.
+/// X itself, then every thing X's roles open, transitively. One departure per path: exponential
+/// in diamonds, a model for tests (the engine's walk is `rotation::departures`, its reach
+/// `reached`).
 pub fn plan_inside(graph: &dyn Graph, x: Tid, roles: BTreeSet<Role>, departure: Departure) -> Plan {
     let first = Entry { roles: roles.clone(), departures: [departure.clone()].into_iter().collect(), own_secrets: graph.has_own_secrets(&x), depth: 0 };
     let mut plan = Plan { target: None, entries: [(x, first)].into_iter().collect() };
@@ -114,13 +116,29 @@ pub fn plan_inside(graph: &dyn Graph, x: Tid, roles: BTreeSet<Role>, departure: 
     plan
 }
 
+/// The things `x`'s roles open (owned things, targets of its edges, transitively), never
+/// through `avoid`: the keys of `plan_inside(graph, x, _, departure of avoid)` other than `x`,
+/// found in time linear in the graph (`plan_inside` keeps one departure per path).
+pub fn reached(graph: &dyn Graph, x: Tid, avoid: Tid) -> BTreeSet<Tid> {
+    let mut out = BTreeSet::new();
+    let mut work = vec![x];
+    while let Some(v) = work.pop() {
+        let next = graph.owned(&v).into_iter().chain(graph.edges(&v).into_iter().map(|(t, _)| t));
+        for t in next {
+            if t != x && t != avoid && out.insert(t) {
+                work.push(t);
+            }
+        }
+    }
+    out
+}
+
 /// What a node drops on losing read access to `actor` (spec/permissions.md §3): the actor and
 /// every thing reached from it whose read it holds by no other path (`still_readable`). The store
 /// erases those secrets and units.
 pub fn lost_access(graph: &dyn Graph, actor: Tid, still_readable: &dyn Fn(&Tid) -> bool) -> Vec<Tid> {
-    let plan = plan_inside(graph, actor, ROLES.into_iter().collect(), Departure::member(actor, Role::Read));
     let mut out = vec![actor];
-    out.extend(plan.entries.keys().filter(|t| **t != actor && !still_readable(t)).copied());
+    out.extend(reached(graph, actor, actor).into_iter().filter(|t| !still_readable(t)));
     out
 }
 

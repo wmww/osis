@@ -288,11 +288,10 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         done.deliveries.extend(rotation::deliver_rotation(tx, target, Some(c), &unreached)?);
         // every label the removed parties could read: the target and what its roles open
         let graph = osis_keys::PermGraph { timeline: tx.core.timelines.get(&target).ok_or(Error::UnknownThing(target))?, at: At::now(ts), own_secrets: &|t: &Tid| tx.core.has_own_secrets(t) };
-        let plan = osis_keys::plan_inside(&graph, target, ROLES.into_iter().collect(), Departure::member(member, Role::Read));
-        let mut under: Vec<Tid> = plan.entries.keys().copied().collect();
-        under.push(target);
-        under.sort();
-        under.dedup();
+        let mut under: Vec<Tid> = osis_keys::reached(&graph, target, member).into_iter().collect();
+        if let Err(i) = under.binary_search(&target) {
+            under.insert(i, target);
+        }
         done.deliveries.push(Delivery::First { commits: vec![c], under });
     }
     // the leaver drops what it lost once the removal is placed (`Done::drop_lost`): it must
