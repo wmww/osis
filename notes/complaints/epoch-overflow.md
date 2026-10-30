@@ -1,2 +1,3 @@
 # epoch-overflow
 - Hand-forging a `/secrets` commit: `encode_delta(.., None)` fails with "a paged array needs a page sink" even for a few boxes; pass a `MemoryPages` and assert it stayed empty. Three test files each carry their own `forge_membership`/`Dedup` copy (engine apply/keys.rs, node validity.rs, now flows.rs `stranger_secrets`): a shared helper in node tests/it/common would save the next forger the hunt.
+- Reviewer: per-branch oracles share the worktree's target with review edits; editing keys while the sim/order runs were queued meant they built whatever state the tree had at their turn.

@@ -99,7 +99,9 @@ pub type HistoryAlts = BTreeMap<HistoryKey, Vec<Vec<u8>>>;
 /// Opens the history boxes of every epoch whose secret `epochs` holds, repeatedly, adding the
 /// earlier secrets and marking them superseded by the epoch whose history lists them (counted
 /// once that epoch is established). `alts`: each live entry of keys with several, tried too.
-pub fn open_histories(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs: &mut ActorEpochs) -> Vec<(HistoryKey, Error)> {
+/// `from`: the source when `secrets` is a pending commit's: what its history boxes list is
+/// reading-only even when opened with a checked secret (an ex-holder of it can forge them).
+pub fn open_histories(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs: &mut ActorEpochs, from: Option<Unchecked>) -> Vec<(HistoryKey, Error)> {
     let mut failed: BTreeMap<HistoryKey, Error> = BTreeMap::new();
     let mut done: std::collections::BTreeSet<HistoryKey> = std::collections::BTreeSet::new();
     loop {
@@ -114,7 +116,7 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs
                 continue;
             };
             let candidates: Vec<Secret32> = epochs.role(k.role).reading_secrets(&e).into_iter().cloned().collect();
-            let unchecked = epochs.role(k.role).is_reading_only(&e);
+            let unchecked = from.is_some() || epochs.role(k.role).is_reading_only(&e);
             if candidates.is_empty() {
                 continue;
             }
@@ -128,7 +130,7 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs
                 for c in &cts {
                     opened = open_history(s, actor, k.role, &e, c).map_err(Error::from);
                     if opened.is_ok() {
-                        source = epochs.role(k.role).reading_source(&e, s);
+                        source = from.or_else(|| epochs.role(k.role).reading_source(&e, s));
                         break 'try_all;
                     }
                 }
@@ -189,6 +191,6 @@ pub fn ingest_with(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, opener: &
         }
     }
     let mut errs: Vec<Error> = failed.into_iter().map(|(_, e)| e).collect();
-    errs.extend(open_histories(actor, secrets, alts, epochs).into_iter().map(|(_, e)| e));
+    errs.extend(open_histories(actor, secrets, alts, epochs, unchecked).into_iter().map(|(_, e)| e));
     Ok(errs)
 }

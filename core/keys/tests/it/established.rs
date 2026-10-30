@@ -264,6 +264,7 @@ fn planted_epochs_never_base_a_rotation() {
     // the pending commit dropped: its epoch goes with its candidate
     assert!(v.drop_reading_from(&from.commit));
     assert!(v.read.get(&top).is_none());
+    assert!(v.read.get(&other).is_some(), "an entry the candidate did not hold stays");
 }
 
 // spec/crypto.md §4 (headroom): an applied rotation commit or a snapshot naming an epoch above
@@ -293,4 +294,26 @@ fn jumped_epochs_keep_rotation_possible() {
     v.read.set_applied(skip, [free]);
     v.establish();
     assert!(v.read.is_established(&next) && !v.read.is_established(&skip));
+}
+
+// spec/crypto.md §4 (a secret learned only from a pending commit is kept for reading): a pending
+// commit's history box at an epoch the node holds checked (forgeable by any ex-holder of it)
+// lists epochs that stay reading-only candidates (bounded), supersede nothing, and leave with
+// the commit.
+#[test]
+fn pending_history_box_plants_nothing() {
+    let w = World::new();
+    let mut v = w.a2v.clone();
+    let s0 = v.read.secret(&w.e0).unwrap().clone();
+    // (a history box lists only epochs below its own)
+    let top = Epoch::new(w.e0.n() - 1, [0xab; 16]).unwrap();
+    let ct = osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &[(top, osis_crypto::Secret32::from_bytes([0xee; 32]))]).unwrap();
+    let mut s = Secrets::default();
+    s.history.insert(history_key(Role::Read, &w.e0), ct);
+    let from = osis_keys::Unchecked { author: osis_keys::UNKNOWN_AUTHOR, commit: osis_base::CommitId([9; 32]) };
+    ingest(&w.a, &s, &Opener::Actor { member: w.a2, epochs: &w.a2e }, &mut v, Some(from)).unwrap();
+    assert!(v.read.is_reading_only(&top));
+    assert!(!v.read.get(&w.e0).unwrap().supersedes.contains(&top));
+    assert!(v.drop_reading_from(&from.commit));
+    assert!(v.read.get(&top).is_none());
 }
