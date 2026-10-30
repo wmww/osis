@@ -1805,3 +1805,29 @@ fn commit_past_a_blob_splits_spec_sync_9() {
     // the second blob may come first: its parts wait for the record the first one carries
     assert!(got == want, "restarted holder reads the author's state");
 }
+
+// spec/sync.md §9 (only an author compacts its own commits): another blob of an own held commit
+// whose expiring part already went keeps it held as own (it was re-stored as another's)
+#[test]
+fn own_commit_stays_own_after_expiry_copy_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let g = net.group(a, &[], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let mut m = Mutation::new();
+    m.set(w, &eph("/win/typing"), &Value::Bool(true)).unwrap();
+    m.expires(w, &eph("/win/typing"), osis_base::WallMs(net.now() + 5_000)).unwrap();
+    net.engine(a).write(m).unwrap();
+    let cs = net.engine(a).take_ephemeral().unwrap();
+    assert_eq!(cs.len(), 1);
+    let id = cs[0].blob.id();
+    assert_eq!(cs[0].blob.parts.len(), 2, "the typing part and the window's record");
+    let own = |net: &mut Net| net.engine(a).held_ephemeral().into_iter().find(|x| x.0 == id).map(|x| x.2);
+    net.advance(6_000);
+    assert_eq!(own(&mut net), Some(true), "the record part stays held");
+    net.engine(a).ingest_ephemeral(cs[0].blob.clone()).unwrap();
+    assert_eq!(own(&mut net), Some(true));
+}
