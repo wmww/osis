@@ -1410,7 +1410,9 @@ impl SyncEngine {
             self.local_dirty = true;
         }
         for (conn, label) in resync {
-            if !self.cfg.subscribe || self.lc(conn, &label).is_some_and(|l| !l.synced) {
+            // a label not reconciled since a cap refusal made room (`eph_forget`) syncs again
+            let unreconciled = self.conns.get(&conn).is_some_and(|c| !self.eph.reconciled.contains(&(c.server, label)) && self.state.cursors.contains_key(&(c.server, label)));
+            if !self.cfg.subscribe || unreconciled || self.lc(conn, &label).is_some_and(|l| !l.synced) {
                 self.sync_label(conn, label, out)?;
                 self.eph_retry_deletes(conn, label, out)?;
             } else if let Some(l) = self.lc_mut(conn, &label) {
