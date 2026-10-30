@@ -1430,7 +1430,7 @@ mod tests {
         BlobId(x)
     }
 
-    // notes/ephemeral.md (waiting deletes bounded per label and server; security review): past
+    // spec/sync.md §9, notes/ephemeral.md (waiting deletes bounded per label and server): past
     // `WAITING_MAX` at one (label, server) the oldest there is dropped, others untouched
     #[test]
     fn waiting_deletes_bounded_per_server() {
