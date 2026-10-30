@@ -2,6 +2,7 @@
 //! trait, which osis-server implements over osis-store, and `MemoryLabelStore` for tests.
 
 use crate::msg::{ClaimSet, Code, Signature, Step, StepId, Wrap};
+use osis_crypto::VerifyingKey;
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::{BlobId, Classified, ErrorClass, LabelId};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -72,6 +73,83 @@ pub struct Budget {
 /// Longest registration path `path` walks (a guard against a corrupt store).
 const MAX_PATH: usize = 1 << 20;
 
+/// Earlier distinct keys per role an Upload, Deposit or Delete is answered code 9 for rather
+/// than refused (each a signature check per refused item). Minor consequence: past it a signer
+/// that far behind gets code 1 and learns no head; 0 would refuse every earlier key, infinity
+/// would cost a check per key the label ever had.
+pub const OLDER_KEYS: usize = 8;
+
+/// A role key a step registers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepKey {
+    Sync,
+    Write,
+    Delete,
+    Deposit,
+}
+
+impl StepKey {
+    pub const ALL: [StepKey; 4] = [StepKey::Sync, StepKey::Write, StepKey::Delete, StepKey::Deposit];
+
+    pub fn of(self, s: &Step) -> &VerifyingKey {
+        match self {
+            StepKey::Sync => &s.keys.sync,
+            StepKey::Write => &s.keys.write,
+            StepKey::Delete => &s.keys.delete,
+            StepKey::Deposit => &s.keys.deposit,
+        }
+    }
+}
+
+/// What an Upload, Deposit or Delete is checked against: the head step and, per `StepKey`, up to
+/// `OLDER_KEYS` distinct earlier keys of the path, newest first, never the head's. A store keeps
+/// it as the head advances (`child`), so a check reads no path however long.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeadKeys {
+    pub head: Step,
+    pub older: [Vec<VerifyingKey>; 4],
+}
+
+impl HeadKeys {
+    pub fn genesis(head: Step) -> HeadKeys {
+        HeadKeys { head, older: Default::default() }
+    }
+
+    /// The keys once `step` (a child of the head) is the head.
+    pub fn child(&self, step: Step) -> HeadKeys {
+        let older = StepKey::ALL.map(|k| {
+            let (old, new) = (*k.of(&self.head), *k.of(&step));
+            let i = k as usize;
+            let mut v = Vec::with_capacity(OLDER_KEYS);
+            for pk in std::iter::once(&old).chain(self.older.get(i).into_iter().flatten()) {
+                if *pk != new && !v.contains(pk) && v.len() < OLDER_KEYS {
+                    v.push(*pk);
+                }
+            }
+            v
+        });
+        HeadKeys { head: step, older }
+    }
+
+    /// The keys of a whole path (genesis first); none when empty.
+    pub fn of_path(path: &[Step]) -> Option<HeadKeys> {
+        let head = path.last()?;
+        let older = StepKey::ALL.map(|k| {
+            let mut v = Vec::new();
+            for pk in path.iter().rev().map(|s| k.of(s)) {
+                if v.len() >= OLDER_KEYS {
+                    break;
+                }
+                if pk != k.of(head) && !v.contains(pk) {
+                    v.push(*pk);
+                }
+            }
+            v
+        });
+        Some(HeadKeys { head: head.clone(), older })
+    }
+}
+
 /// Blind-node state per label. Mutations append their log records; the store applies policy
 /// (storage caps, the ephemeral cap, deposit budget, rate limits on wrap replacements and
 /// deletes) and
@@ -97,6 +175,11 @@ pub trait LabelStore {
         }
         path.reverse();
         Ok(path)
+    }
+    /// The head and earlier keys checks use; none for an unknown label. Stores that persist
+    /// labels keep it per head (`HeadKeys::child`) rather than walk the path.
+    fn head_keys(&self, label: &LabelId) -> Result<Option<HeadKeys>, StoreError> {
+        Ok(HeadKeys::of_path(&self.path(label)?))
     }
     /// Whether a new label may be registered here (a verified genesis step): `Code::OK`, or a
     /// refusal such as code 12 at a node-wide storage cap (spec/wire.md §11.2 Register).
@@ -151,6 +234,7 @@ struct LabelState {
     log_id: [u8; 16],
     steps: BTreeMap<StepId, (Step, Option<Arc<ClaimSet>>)>,
     head: Option<StepId>,
+    keys: Option<HeadKeys>,
     entries: BTreeMap<BlobId, (EntryMeta, Option<u64>)>,
     tombstones: BTreeMap<BlobId, u64>,
     log: Vec<(u64, LogRecord)>,
@@ -192,6 +276,8 @@ pub struct MemoryLabelStore {
     pub blob_reads: std::cell::Cell<u64>,
     /// IDs `live_ids_in` returned so far (cost tests).
     pub ids_read: std::cell::Cell<u64>,
+    /// `step` calls so far (cost tests).
+    pub step_reads: std::cell::Cell<u64>,
     pub relays: crate::RelayGate,
 }
 
@@ -281,7 +367,12 @@ impl LabelStore for MemoryLabelStore {
     }
 
     fn step(&self, label: &LabelId, id: &StepId) -> Result<Option<Step>, StoreError> {
+        self.step_reads.set(self.step_reads.get() + 1);
         Ok(self.state(label).and_then(|s| s.steps.get(id)).map(|(s, _)| s.clone()))
+    }
+
+    fn head_keys(&self, label: &LabelId) -> Result<Option<HeadKeys>, StoreError> {
+        Ok(self.state(label).and_then(|s| s.keys.clone()))
     }
 
     fn claim_set(&self, label: &LabelId, id: &StepId) -> Result<Option<Arc<ClaimSet>>, StoreError> {
@@ -298,6 +389,10 @@ impl LabelStore for MemoryLabelStore {
         });
         let id = step.id();
         s.append(LogRecord::Head(step.clone()));
+        s.keys = Some(match s.keys.take() {
+            Some(k) => k.child(step.clone()),
+            None => HeadKeys::genesis(step.clone()),
+        });
         s.steps.insert(id, (step, claim_set.map(Arc::new)));
         s.head = Some(id);
         Ok(())
@@ -443,5 +538,55 @@ impl LabelStore for MemoryLabelStore {
 
     fn relay(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, now: u64) -> Result<crate::RelayVerdict, StoreError> {
         Ok(self.relays.admit(label, blob_id, size, expiry, now))
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+    use super::*;
+    use osis_crypto::{Secret32, SigningSecret};
+
+    pub(crate) fn secret(n: u8) -> SigningSecret {
+        SigningSecret::from_seed(&Secret32::from_bytes([n; 32]))
+    }
+
+    fn key(n: u8) -> VerifyingKey {
+        secret(n).verifying_key()
+    }
+
+    /// A path whose role keys follow `pick(step, role)` (keys from a small pool, so they repeat).
+    pub(crate) fn path(n: usize, pick: impl Fn(usize, usize) -> u8) -> Vec<Step> {
+        let f = crate::examples::Fixture::new(0x10);
+        let mut path: Vec<Step> = Vec::new();
+        for i in 0..n {
+            let mut s = f.genesis.clone();
+            s.prev = path.last().map(|p| p.id());
+            s.keys.sync = key(pick(i, 0));
+            s.keys.write = key(pick(i, 1));
+            s.keys.delete = key(pick(i, 2));
+            s.keys.deposit = key(pick(i, 3));
+            path.push(s);
+        }
+        path
+    }
+
+    // the head keys kept step by step (`child`) are those of the whole path: up to OLDER_KEYS
+    // distinct earlier keys per role, newest first, never the head's
+    #[test]
+    fn head_keys_incremental() {
+        for seed in 0..64u64 {
+            let pick = |i: usize, r: usize| {
+                let h = osis_base::hash::hash(&[seed.to_le_bytes(), (i as u64).to_le_bytes(), (r as u64).to_le_bytes()].concat());
+                // role 3 keeps one key throughout on even seeds
+                if r == 3 && seed % 2 == 0 { 1 } else { 1 + h[0] % (2 + (seed % 14) as u8) }
+            };
+            let p = path(40, pick);
+            let mut k = HeadKeys::genesis(p[0].clone());
+            for i in 1..p.len() {
+                k = k.child(p[i].clone());
+                assert_eq!(Some(&k), HeadKeys::of_path(&p[..=i]).as_ref(), "seed {seed} step {i}");
+            }
+        }
     }
 }

@@ -307,6 +307,10 @@ impl LabelStore for PeerStore<'_> {
         Ok(self.labels.get(label).map(|s| s.path.clone()).unwrap_or_default())
     }
 
+    fn head_keys(&self, label: &LabelId) -> std::result::Result<Option<osis_proto::HeadKeys>, StoreError> {
+        Ok(self.labels.get(label).and_then(|s| osis_proto::HeadKeys::of_path(&s.path)))
+    }
+
     /// Only labels this node syncs are served.
     fn admit_label(&self, _label: &LabelId) -> std::result::Result<Code, StoreError> {
         Ok(Code::REFUSED)
