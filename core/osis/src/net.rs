@@ -126,15 +126,19 @@ pub(crate) type Ended = Arc<Mutex<std::sync::mpsc::Receiver<()>>>;
 
 /// Waits until the driver task (on the app's multi-thread runtime, which runs it meanwhile)
 /// ended: it ends at the `Shutdown` the closed database's `Net` queued (it polls no timer while
-/// a control message waits, and runs no engine call: the database is gone). Inside a
-/// multi-thread runtime this blocks in place.
+/// a control message waits, and runs no engine call: the database is gone).
 pub(crate) fn wait_ended(ended: &Ended) {
-    let wait = || {
+    blocking(|| {
         let _ = lock(ended).recv();
-    };
+    });
+}
+
+/// Runs `f`, which blocks; inside a multi-thread runtime in place, so that worker's tasks move
+/// to others meanwhile.
+pub(crate) fn blocking<R>(f: impl FnOnce() -> R) -> R {
     match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
-        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(wait),
-        _ => wait(),
+        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(f),
+        _ => f(),
     }
 }
 

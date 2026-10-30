@@ -383,7 +383,9 @@ impl Osis {
     /// running ends first (with `Runtime::Tokio` on a multi-thread runtime, also its sync task, so
     /// the app may shut that runtime down). While other handles keep it open, this one is closed
     /// and it fails `StillOpen` at once. From a callback (the dispatcher, which holds the database
-    /// while it runs) it fails `Invalid` at once: drop the handle instead.
+    /// while it runs) it fails `Invalid` at once: drop the handle instead. Never call it while
+    /// holding something a running callback may wait for (a lock, a channel it awaits): close
+    /// waits for that callback.
     pub fn close(self) -> Result<()> {
         if self.inner.dispatch.shared.on_dispatcher() {
             return Err(Error::Invalid("close() from a callback would wait on itself; drop the handle".into()));
@@ -392,9 +394,8 @@ impl Osis {
         let ended = self.inner.net.ended();
         drop(self);
         // what still holds it besides user handles (a callback, an engine call, a timer) ends
-        let g = life.cv.wait_while(lock(&life.m), |(users, closed)| *users == 0 && !*closed).unwrap_or_else(|e| e.into_inner());
-        let (users, closed) = *g;
-        drop(g);
+        // (in place on a multi-thread runtime: the holder may need that worker's tasks)
+        let (users, closed) = crate::net::blocking(|| *life.cv.wait_while(lock(&life.m), |(users, closed)| *users == 0 && !*closed).unwrap_or_else(|e| e.into_inner()));
         if !closed {
             return Err(Error::StillOpen { handles: users });
         }
