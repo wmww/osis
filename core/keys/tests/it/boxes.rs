@@ -430,6 +430,9 @@ fn history_box_poison_refused_spec_crypto_4() {
     for e in f.forks {
         let k = history_key(Role::Read, &e);
         assert!(rot.read.set_history(e, &alts[&k][1]));
+        // a later commit re-claiming e with its own history box does not replace the first
+        assert!(!rot.read.set_history(e, &alts[&k][0]));
+        assert!(!rot.read.is_rotation_history(&e, &alts[&k][0]));
     }
     osis_keys::ingest_with(&f.a, &s, &alts, &opener, &mut rot, None).unwrap();
     for e in &older {
