@@ -35,6 +35,8 @@ pub enum Error {
     Unsupported(&'static str),
     /// The database is closed.
     Closed,
+    /// `close`: this handle is closed, but `handles` others keep the database open.
+    StillOpen { handles: usize },
 }
 
 osis_base::impl_error!(Error {
@@ -50,6 +52,7 @@ osis_base::impl_error!(Error {
     Network(m) => ("network: {m}"),
     Unsupported(m) => ("not supported yet: {m}"),
     Closed => ("database closed"),
+    StillOpen { handles } => ("{handles} other handle(s) keep the database open"),
 });
 
 pub type Result<T> = std::result::Result<T, Error>;

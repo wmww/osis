@@ -722,6 +722,54 @@ fn close_spec_api_handle() {
     assert!(weak.upgrade().is_none(), "closed when close() returns");
 }
 
+// notes/api.md Handle (close): close() tells the truth about the database. Another handle
+// keeps it open: StillOpen at once. A callback still running: close waits for it, then the
+// database is closed; a callback that kept a clone of its handle: StillOpen.
+// spec: none (API surface, notes/api.md)
+#[test]
+fn close_waits_or_names_holders_spec_api_handle() {
+    use std::sync::{Arc, Mutex};
+    let db = db(1);
+    let other = db.clone();
+    assert_eq!(db.close(), Err(Error::StillOpen { handles: 1 }));
+    other.close().unwrap();
+    for keep in [false, true] {
+        let db = common::db(1);
+        let k = ak("/t/x");
+        let t = db.write_with(|w| w.create(db.me())).unwrap();
+        let (entered, rx) = std::sync::mpsc::channel();
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let wait = Mutex::new(wait);
+        let kept: Arc<Mutex<Option<Osis>>> = Arc::default();
+        let kept2 = kept.clone();
+        db.at(t, k.clone()).on_change(move |db, c| {
+            if c.source == osis::Source::Initial {
+                return;
+            }
+            let _ = entered.send(());
+            let _ = wait.lock().unwrap().recv();
+            if keep {
+                *kept2.lock().unwrap() = Some(db.clone());
+            }
+        }).unwrap().detach();
+        db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap();
+        recv(&rx);
+        let weak = db.downgrade();
+        let closing = std::thread::spawn(move || db.close());
+        go.send(()).unwrap();
+        let r = closing.join().unwrap();
+        if keep {
+            assert_eq!(r, Err(Error::StillOpen { handles: 1 }));
+            assert!(weak.upgrade().is_some());
+            let db = kept.lock().unwrap().take().unwrap();
+            db.close().unwrap();
+        } else {
+            r.unwrap();
+        }
+        assert!(weak.upgrade().is_none(), "closed when close() returns");
+    }
+}
+
 /// Writes a value nested past the depth limit, a string of `string` bytes and a map of `map`
 /// entries; the database errs or accepts, never panics, and keeps working.
 fn values_past_limits(string: usize, map: i64) {

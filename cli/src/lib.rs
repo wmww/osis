@@ -56,6 +56,7 @@ pub fn category(e: &Error) -> (i32, &'static str) {
         Error::Storage(_) => (1, "Storage"),
         Error::Unsupported(_) => (1, "Unsupported"),
         Error::Closed => (1, "Closed"),
+        Error::StillOpen { .. } => (1, "StillOpen"),
     }
 }
 

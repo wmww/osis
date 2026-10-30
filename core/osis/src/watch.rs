@@ -360,7 +360,7 @@ impl Pump {
             return true;
         }
         let Some(inner) = db.upgrade() else { return true };
-        let db = Osis::from_inner(inner);
+        let db = Osis::internal(inner);
         self.covered.retain(|_, c| *c >= seq);
         for (s, pre) in targets(&db, sh, seq, &m) {
             let d = match pre {
