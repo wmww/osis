@@ -120,3 +120,28 @@ fn history_chain_from_state_spec_crypto_4() {
     assert!(v1.read.secret(&e1).is_some(), "e2's history box, held in state");
     assert_eq!(v1.read.secret(&e1), lp.peers[0].engine.epochs(&a).unwrap().read.secret(&e1));
 }
+
+// spec/crypto.md §3, §4: a key actor taken up (a link's L) opens every box reachable from it,
+// however deep the chain of member actors (each box opens with the secrets of the member below
+// it). Tids descend along the chain, so a sweep over actors in tid order opens one level per sweep.
+#[test]
+fn key_actor_opens_deep_member_chain_spec_crypto_4() {
+    let mut lp = net(2, 85);
+    lp.sync_all().unwrap();
+    let mut chain: Vec<Tid> = (0..12).map(|_| new_thing(&mut lp, 0)).collect();
+    chain.sort_by(|a, b| b.cmp(a));
+    let read = edge(Role::Read);
+    for w in chain.windows(2) {
+        lp.peers[0].engine.grant(&w[1], &w[0], &read).unwrap();
+    }
+    let sharer = new_thing(&mut lp, 0);
+    let spec = osis_node::flows::LinkSpec { target: chain[0], role: Role::Read, until: None, servers: Vec::new(), peers: Vec::new(), single_use: false };
+    let (link, _, _) = lp.peers[0].engine.create_link(&sharer, &spec).unwrap();
+    sync(&mut lp, 0, 1);
+    let held = |lp: &LocalPeer, t: &Tid| lp.peers[1].engine.epochs(t).is_some_and(|e| !e.read.held_newest_first().is_empty());
+    assert!(chain.iter().all(|t| !held(&lp, t)), "nothing opens before the key");
+    lp.peers[1].engine.hold_key_actor(link.seed.clone()).unwrap();
+    assert!(held(&lp, &link.k), "K, boxed to L");
+    let missing: Vec<usize> = (0..chain.len()).filter(|i| !held(&lp, &chain[*i])).collect();
+    assert!(missing.is_empty(), "levels left unopened: {missing:?}");
+}
