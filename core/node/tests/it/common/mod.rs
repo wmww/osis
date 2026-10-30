@@ -263,9 +263,15 @@ pub fn forge_snapshot_with(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base:
 
 #[allow(clippy::too_many_arguments)]
 pub fn forge_snapshot_full(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base::Ak, ts: osis_base::Ts, f: osis_crdt::Fragment, frontiers: osis_crdt::Frontiers, authors: std::collections::BTreeMap<osis_base::CommitId, (Tid, osis_base::Ts)>) -> Vec<u8> {
+    forge_snapshot_absorbing(lp, by, t, a, ts, f, frontiers, authors, Default::default())
+}
+
+/// `forge_snapshot_full` listing `absorbed` (commit ID -> author).
+#[allow(clippy::too_many_arguments)]
+pub fn forge_snapshot_absorbing(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base::Ak, ts: osis_base::Ts, f: osis_crdt::Fragment, frontiers: osis_crdt::Frontiers, authors: std::collections::BTreeMap<osis_base::CommitId, (Tid, osis_base::Ts)>, absorbed: std::collections::BTreeMap<osis_base::CommitId, Tid>) -> Vec<u8> {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
     let author = lp.peers[by].engine.tid();
-    let snap = osis_crdt::Snapshot { absorbed: Default::default(), nonce: [7; 16], fragment: f, frontiers, authors };
+    let snap = osis_crdt::Snapshot { absorbed, nonce: [7; 16], fragment: f, frontiers, authors };
     let bytes = osis_crdt::encode_snapshot(&snap, &writer_ctx(Kind::ContentSnapshot, ts, author, 0, 0), None).unwrap();
     let mut aw = AspectWrite::new(t, a.clone(), 0, 0, bytes);
     aw.retention = osis_commit::retention::snapshot_retention(a.as_str(), [], 0);
