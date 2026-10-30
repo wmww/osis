@@ -417,6 +417,11 @@ fn add_membership_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgeParts
             let mut known = true;
             for (ai, es) in parts.members() {
                 let Some(a) = h.aspects.get(ai) else { continue };
+                // nothing written on a thing too deep applies (spec/permissions.md §1); its owner
+                // chain is held whole at apply (`examine`), so this never changes later
+                if too_deep(core, &a.tid) {
+                    continue;
+                }
                 let (v, k) = edge_ops(core, &a.tid, es, dots_of_view(h, ai), Owned::of_view(h, id, ai).as_ref());
                 ops.extend(v);
                 known &= k;
@@ -464,7 +469,7 @@ fn add_membership_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgeParts
                 }
             }
             for (thing, (roster, ledger, dots)) in by_thing {
-                if linked.waiting.contains(&thing) {
+                if linked.waiting.contains(&thing) || too_deep(core, &thing) {
                     continue;
                 }
                 core.ix.held.add_snapshot(RosterSnapshot { id: *id, ts: h.ts, author: h.author, actor: h.actor, thing, dots, roster, ledger });
@@ -1489,6 +1494,52 @@ mod tests {
             }
             assert_eq!(lp.peers[r].engine.get(&shallow, &x).unwrap(), Some(Value::Int(2)), "peer {r}");
             assert_eq!(lp.peers[r].engine.get(&d, &x).unwrap(), None, "peer {r}");
+        }
+    }
+    // spec/permissions.md §1: an edge write on a thing too deep is invalid like any of its
+    // deltas: it never reaches perm (else a deep actor's members would gain its roles on a
+    // shallow thing it is a member of), at the writer and at receivers.
+    #[test]
+    fn edge_on_deep_thing_not_held_spec_permissions_1() {
+        use osis_base::format::MAX_OWNER_DEPTH;
+        use osis_base::Tid;
+        use osis_crdt::{Op, PathOp, PathSeg};
+        use osis_perm::HeldSet;
+        use osis_schema::Codec;
+        let mut lp = LocalPeer::new(2, 906, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.tid();
+        let x = lp.peers[1].engine.tid();
+        let mut owner = me;
+        for _ in 0..MAX_OWNER_DEPTH {
+            let mut m = Mutation::new();
+            owner = lp.peers[0].engine.new_thing(&mut m, owner);
+            lp.peers[0].commit(m).unwrap();
+        }
+        let mut m = Mutation::new();
+        let shallow = lp.peers[0].engine.new_thing(&mut m, me);
+        lp.peers[0].commit(m).unwrap();
+        let edge_in = |m: &mut Mutation, t: Tid, member: Tid| {
+            m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(member))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None }.to_value()) }).unwrap();
+        };
+        let edge = |t: Tid, member: Tid| {
+            let mut m = Mutation::new();
+            edge_in(&mut m, t, member);
+            m
+        };
+        lp.peers[0].engine.core.skip_writer_rules = true;
+        let mut m = Mutation::new();
+        let deep = lp.peers[0].engine.new_thing(&mut m, owner);
+        edge_in(&mut m, deep, x);
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        lp.peers[0].commit(edge(shallow, deep)).unwrap();
+        lp.peers[0].engine.core.skip_writer_rules = false;
+        lp.sync_all().unwrap();
+        assert!(lp.peers[1].engine.header(&c).is_some(), "applied at the receiver");
+        for r in [0, 1] {
+            let held = &lp.peers[r].engine.core.ix.held;
+            assert!(held.edge_commits(&deep).is_empty(), "peer {r}");
+            assert!(!held.edge_commits(&shallow).is_empty(), "peer {r}: the shallow edge counts");
         }
     }
     // spec/permissions.md §2: the invite exemption is for an applied invite grant's boxes. A
