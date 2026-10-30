@@ -1412,6 +1412,7 @@ impl SyncEngine {
         for (conn, label) in resync {
             if !self.cfg.subscribe || self.lc(conn, &label).is_some_and(|l| !l.synced) {
                 self.sync_label(conn, label, out)?;
+                self.eph_retry_deletes(conn, label, out)?;
             } else if let Some(l) = self.lc_mut(conn, &label) {
                 // subscribed: a pass now and then (heartbeats, timed bounds, entries refused for
                 // the cap; unsubscribed, the Sync's end uploads those)

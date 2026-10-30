@@ -101,10 +101,8 @@ pub(crate) struct Lane {
     pub uploads: BTreeSet<(ConnId, LabelId, BlobId)>,
     /// Lane deletes in flight with the item sent and the label key that signed it.
     pub deletes: BTreeMap<(ConnId, LabelId, BlobId), (osis_label::DeleteItem, VerifyingKey)>,
-    /// Lane deletes refused, to send again: under an older head than the connection's (code 9)
-    /// with the key tried, sent once the connection's keys give another (`eph_redelete`); rate
-    /// limited (code 4, `None`), sent at the periodic pass (`eph_retry`).
-    pub redelete: BTreeMap<(ConnId, LabelId, BlobId), (osis_label::DeleteItem, Option<VerifyingKey>)>,
+    /// Lane deletes to send again (`Redo`).
+    pub redelete: BTreeMap<(ConnId, LabelId, BlobId), (osis_label::DeleteItem, Redo)>,
     /// Own entries in flight on a connection, with the write key that stamped them.
     pub stamped: BTreeMap<(ConnId, LabelId, BlobId), VerifyingKey>,
     /// Own entries a connection's head refused as stamped under another write key (code 9),
@@ -266,18 +264,30 @@ impl SyncEngine {
         self.eph_flush(out)
     }
 
-    /// Deletes refused under an older head (`Lane::redelete`): sent again once the connection's
-    /// keys give another key for them; dropped once they give none (`eph_delete_now`).
+    /// Deletes waiting for another head key (`Redo::Head`): sent again once the connection's
+    /// keys give another key for them; dropped once they give none and this node no longer
+    /// has the role (`eph_may_delete`; a key missing for now, not established or uncovered,
+    /// comes back).
     fn eph_redelete(&mut self, out: &mut Vec<Action>) -> Result<()> {
-        let due: Vec<(ConnId, LabelId, BlobId)> = self
-            .eph
-            .redelete
-            .iter()
-            .filter(|((c, l, _), (item, tried))| {
-                tried.is_some() && self.lc(*c, l).filter(|x| x.phase == Phase::Open).is_some_and(|x| delete_key(&x.keys, item).map(|k| k.verifying_key()) != *tried)
-            })
-            .map(|(k, _)| *k)
-            .collect();
+        if self.eph.redelete.is_empty() {
+            return Ok(());
+        }
+        let mut due = Vec::new();
+        let mut keyless = Vec::new();
+        for ((c, l, b), (item, redo)) in &self.eph.redelete {
+            let Redo::Head(tried) = redo else { continue };
+            let Some(lc) = self.lc(*c, l).filter(|x| x.phase == Phase::Open) else { continue };
+            match delete_key(&lc.keys, item).map(|k| k.verifying_key()) {
+                Some(k) if Some(k) != *tried => due.push((*c, *l, *b)),
+                Some(_) => {}
+                None => keyless.push((*c, *l, *b)),
+            }
+        }
+        for (conn, l, b) in keyless {
+            if !self.redelete_may(conn, l, b) {
+                self.eph.redelete.remove(&(conn, l, b));
+            }
+        }
         for (conn, l, b) in due {
             if let Some((item, _)) = self.eph.redelete.remove(&(conn, l, b)) {
                 self.eph_delete_now(conn, l, b, item, out)?;
@@ -314,6 +324,18 @@ impl SyncEngine {
             self.eph_report(&l, "this node no longer writes the label: its own ephemeral entries are not sent");
         }
         Ok(())
+    }
+
+    /// Whether this node still has the role `item` is signed for under `l` (admin for the head
+    /// delete key, else writer): a key it lacks for now may come back.
+    fn eph_may_delete(&mut self, l: &LabelId, item: &osis_label::DeleteItem) -> bool {
+        let need = if item.by.is_none() { osis_base::Role::Admin } else { osis_base::Role::Write };
+        self.group_of(l).is_some_and(|g| self.engine.role_on(&g) >= Some(need))
+    }
+
+    fn redelete_may(&mut self, conn: ConnId, l: LabelId, b: BlobId) -> bool {
+        let Some(item) = self.eph.redelete.get(&(conn, l, b)).map(|x| x.0.clone()) else { return false };
+        self.eph_may_delete(&l, &item)
     }
 
     /// Whether this node writes label `l` (its group's role).
@@ -407,13 +429,20 @@ impl SyncEngine {
         Ok(!freed.is_empty())
     }
 
-    /// Sends a delete signed under `conn`'s keys now; dropped when they hold no key for it.
+    /// Sends a delete signed under `conn`'s keys now; when they hold no key for it, it waits for
+    /// one while this node has the role (`eph_may_delete`, `Redo::Head`), else it is dropped.
     fn eph_delete_now(&mut self, conn: ConnId, l: LabelId, b: BlobId, item: osis_label::DeleteItem, out: &mut Vec<Action>) -> Result<()> {
         if self.eph.deletes.contains_key(&(conn, l, b)) {
             return Ok(());
         }
         self.eph.redelete.remove(&(conn, l, b));
-        let Some((item, key)) = self.eph_resign(conn, l, item) else { return Ok(()) };
+        let Some((item, key)) = self.eph_resign(conn, l, item.clone()) else {
+            let keyed = self.lc(conn, &l).and_then(|lc| delete_key(&lc.keys, &item).map(|k| k.verifying_key()));
+            if keyed.is_some() || self.eph_may_delete(&l, &item) {
+                self.eph.redelete.insert((conn, l, b), (item, Redo::Head(keyed)));
+            }
+            return Ok(());
+        };
         self.eph.deletes.insert((conn, l, b), (item.clone(), key));
         self.command(conn, Command::Delete { label: l, items: vec![item] }, out)
     }
@@ -1015,15 +1044,24 @@ impl SyncEngine {
     /// Entries the peer on `conn` refused under `l` for its cap go up again (the periodic pass:
     /// others' compactions or expiries may have made room).
     pub(crate) fn eph_retry(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<Action>) -> Result<()> {
-        let limited: Vec<BlobId> = self.eph.redelete.range((conn, l, BlobId([0; 32]))..).take_while(|((c, x, _), _)| *c == conn && *x == l).filter(|(_, (_, tried))| tried.is_none()).map(|(k, _)| k.2).collect();
+        self.eph_retry_deletes(conn, l, out)?;
+        let ids: Vec<BlobId> = self.eph.capped.range((conn, l, BlobId([0; 32]))..).take_while(|(c, x, _)| *c == conn && *x == l).map(|x| x.2).filter(|b| self.eph.entries.contains_key(&(l, *b))).collect();
+        if !ids.is_empty() {
+            self.eph_upload_on(conn, l, &ids, out)?;
+        }
+        Ok(())
+    }
+
+    /// Lane deletes rate limited under `l` on `conn` go again (the periodic pass).
+    pub(crate) fn eph_retry_deletes(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<Action>) -> Result<()> {
+        if self.lc(conn, &l).is_none_or(|x| x.phase != Phase::Open) {
+            return Ok(());
+        }
+        let limited: Vec<BlobId> = self.eph.redelete.range((conn, l, BlobId([0; 32]))..).take_while(|((c, x, _), _)| *c == conn && *x == l).filter(|(_, (_, redo))| *redo == Redo::Limited).map(|(k, _)| k.2).collect();
         for b in limited {
             if let Some((item, _)) = self.eph.redelete.remove(&(conn, l, b)) {
                 self.eph_delete_now(conn, l, b, item, out)?;
             }
-        }
-        let ids: Vec<BlobId> = self.eph.capped.range((conn, l, BlobId([0; 32]))..).take_while(|(c, x, _)| *c == conn && *x == l).map(|x| x.2).filter(|b| self.eph.entries.contains_key(&(l, *b))).collect();
-        if !ids.is_empty() {
-            self.eph_upload_on(conn, l, &ids, out)?;
         }
         Ok(())
     }
@@ -1175,10 +1213,10 @@ impl SyncEngine {
                 // again under the next one
                 Code::NOT_HEAD => {
                     stale = true;
-                    self.eph.redelete.insert((conn, l, b), (item, Some(key)));
+                    self.eph.redelete.insert((conn, l, b), (item, Redo::Head(Some(key))));
                 }
                 Code::RATE_LIMITED => {
-                    self.eph.redelete.insert((conn, l, b), (item, None));
+                    self.eph.redelete.insert((conn, l, b), (item, Redo::Limited));
                 }
                 // done, or nothing left to delete there (not held, label not open: the next
                 // open reconciles it)
@@ -1270,6 +1308,17 @@ impl SyncEngine {
     pub fn ephemeral_entries(&self, l: &LabelId) -> usize {
         Self::eph_entries_of(&self.eph, l).count()
     }
+}
+
+/// Why a lane delete waits to go again (`Lane::redelete`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Redo {
+    /// Refused under an older head (code 9) with this key, or the connection held none for it
+    /// (`None`; keys not established yet, roles uncovered): sent once its keys give another,
+    /// dropped once they give none and this node lacks the role (`eph_redelete`).
+    Head(Option<VerifyingKey>),
+    /// Rate limited (code 4): sent at the periodic pass (`eph_retry`).
+    Limited,
 }
 
 /// A delete of lane entry `e` (`b` under `l`) by a level's delete key first, else by the head
