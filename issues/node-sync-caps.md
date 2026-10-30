@@ -1,8 +1,0 @@
-# Node sync: hint label index guess and deposit drop
-> Summary: `HINT_INDEXES` 4 means a label of index 4+ (a group replaced 4+ times) cannot be opened from a hint; `MAX_INBOX_TRIES` 8 drops a queued deposit after about 21 min of refusals (e.g. the recipient's deposit budget full while it is offline), and it is resent only after `INBOX_LIFETIME`.
-> Tags: node, sync
-
-Found by the arbitrary-values audit (notes/arbitrary-values-table.md).
-
-- **`HINT_INDEXES`** (`sync/open.rs` `tries`, entry-box path): a hint (inbox payload thing, link) names a label without its index; sync keys are tried for indexes 0..4 and an entry-box secret is matched against the head's sync key for 0..4 only ("entry box secret does not derive the head's sync key"). Fix: carry the index wherever a hint comes from (`InboxPayload` thing entries, spec/wire.md §9; links §10), then try exactly it. Wire change.
-- **`MAX_INBOX_TRIES`** (`sync/inbound.rs` `budget`): retryable codes (unknown label, rate limited, budget full, not head) back off from `retry_ms` (5 s) doubling, and the 9th refusal removes the outbox record (`remove_out` also deletes it from the store, so a restart does not resend). `send_inbox` re-sends only after `INBOX_LIFETIME` (90 days). A full budget is the expected state while the recipient is offline. Fix: keep retrying retryable codes at the capped backoff (1 h) while the `SentInbox` delivery is live, and drop the outbox record when the delivery is forgotten (member acted or left, commit gone) or replaced by a re-seal; check an unknown label is not retried forever when the label is gone for good.

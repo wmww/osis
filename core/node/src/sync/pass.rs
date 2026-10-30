@@ -176,7 +176,7 @@ impl SyncEngine {
         let Some(c) = self.conns.get(&conn) else { return Ok(()) };
         let server = c.server;
         let Some(lc) = c.labels.get(&l) else { return Ok(()) };
-        let (g, index) = (lc.group, lc.index.unwrap_or(0));
+        let (g, index) = (lc.group, lc.index);
         let Some(head) = lc.head.clone() else { return Ok(()) };
         // secrets may have arrived since the head was accepted
         let (keys, read_ok) = self.usable_keys(&g, index, &head)?;
@@ -398,7 +398,7 @@ impl SyncEngine {
             for (blob, wrap, d) in queue {
                 let id = osis_label::blob_id(&blob);
                 let at: Vec<osis_label::Address> = servers.iter().filter(|a| !self.state.is_present(&a.key, &l, &id)).cloned().collect();
-                self.queue_deposit(l, &at, &d, blob, wrap);
+                self.queue_deposit(l, &at, &d, blob, wrap, None);
             }
             self.send_outbox(out)?;
         }

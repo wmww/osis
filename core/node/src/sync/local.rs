@@ -15,9 +15,10 @@ use osis_proto::Command;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 
-/// Refusals of one queued deposit before it is dropped (label not registered, rate limit, full
-/// budget, stale head).
-pub(crate) const MAX_INBOX_TRIES: u32 = 8;
+/// Longest wait between sends of a queued deposit refused for now (`retry_ms` doubling per
+/// refusal up to this). Minor consequence: at 0 a refused deposit is resent on every tick, at
+/// infinity it lands that much later after the refusal clears (a recipient back online).
+pub(crate) const DEPOSIT_RETRY_CAP_MS: u64 = 3_600_000;
 
 /// Re-sends of an inbox delivery whose member never acts (local policy; one per
 /// `INBOX_LIFETIME`).
@@ -29,7 +30,7 @@ const MAX_INBOX_RESENDS: u32 = 3;
 pub(crate) struct Outgoing {
     /// Not sent before this raw wall ms (a refused deposit backs off from `retry_ms`).
     pub after: u64,
-    /// Refusals so far (`MAX_INBOX_TRIES` then dropped with a diagnostic).
+    /// Refusals so far (the back-off doubles per refusal).
     pub tries: u32,
     /// Sent on this connection and not answered yet.
     pub sent: Option<ConnId>,
@@ -184,7 +185,7 @@ impl SyncEngine {
                 let s = seal_body(&b, &mut *self.rng)?;
                 let wrap = osis_crypto::wrap(&secret, &s.id, &s.key)?;
                 if let Some(d) = &deposit {
-                    self.queue_deposit(l, &servers, d, s.blob.clone(), wrap);
+                    self.queue_deposit(l, &servers, d, s.blob.clone(), wrap, None);
                 }
                 self.engine.put_blobs(vec![(s.id, s.blob)])?;
                 self.state.add_blob(s.id, super::state::BlobRec { commit: b.commit, parts: b.parts.clone(), key: s.key.clone(), cert: true });
@@ -196,7 +197,7 @@ impl SyncEngine {
                 for id in self.engine.linked_blobs(c, &parts)? {
                     let wrap = self.state.entries.get(&(l, id)).map(|e| e.wrap);
                     if let (Some(wrap), Some(blob)) = (wrap, self.engine.blob(&id)?) {
-                        self.queue_deposit(l, &servers, d, blob, wrap);
+                        self.queue_deposit(l, &servers, d, blob, wrap, None);
                     }
                 }
             }
@@ -272,7 +273,7 @@ impl SyncEngine {
             for gl in self.engine.group_labels(&t)? {
                 if !gl.replaced {
                     let delete_keys = self.engine.own_delete_keys(&t)?;
-                    things.push(InboxThing { tid: t, label: gl.id, servers: gl.servers, delete_keys });
+                    things.push(InboxThing { tid: t, label: gl.id, index: gl.index, servers: gl.servers, delete_keys });
                     break;
                 }
             }
@@ -281,7 +282,7 @@ impl SyncEngine {
             .map_err(|_| Error::Corrupt("commit blob"))?;
         let payload = InboxPayload { commit, things };
         let blob = osis_label::seal_inbox_blob(recipient, &kem, &payload, self.engine.now(), &mut *self.rng)?;
-        self.queue_inbox(&owner, inbox.label, &inbox.servers, blob)?;
+        self.queue_inbox(&owner, inbox.label, &inbox.servers, blob, None)?;
         Ok(self.handle(super::Event::Local))
     }
 
@@ -301,7 +302,7 @@ impl SyncEngine {
                 Some(ts) => !first && (s.tries >= MAX_INBOX_RESENDS || self.acted(&s.member, ts)),
             };
             if gone || !s.edge_only && !self.still_member(&s.member, &s.commit) {
-                self.state.remove_sent(&s.member, &s.commit);
+                self.forget_delivery(&s.member, &s.commit);
                 continue;
             }
             if first && !s.edge_only && self.hold(&s.commit)? {
@@ -312,11 +313,13 @@ impl SyncEngine {
             // target's current one
             let things = if s.edge_only && !first { Vec::new() } else { s.things.clone() };
             let r = self.engine.run(|tx| crate::flows::edges::deliver_parts(tx, s.member, s.commit, &things, parts));
+            // a new seal replaces the earlier one still queued
+            self.drop_delivery_out(&s.member, &s.commit);
             let mut sent = false;
             for d in r.unwrap_or_default() {
                 if let crate::flows::Delivery::Inbox { to, inbox, blob, .. } = d {
                     let owner = self.inbox_owner(&to, &inbox.label)?.unwrap_or(to);
-                    self.queue_inbox(&owner, inbox.label, &inbox.servers, blob)?;
+                    self.queue_inbox(&owner, inbox.label, &inbox.servers, blob, Some((s.member, s.commit)))?;
                     sent = true;
                 }
             }
@@ -324,10 +327,38 @@ impl SyncEngine {
                 self.state.note_sent(s.member, s.commit, s.things.clone(), s.edge_only, now);
             } else {
                 // no inbox or keys for the member any more
-                self.state.remove_sent(&s.member, &s.commit);
+                self.forget_delivery(&s.member, &s.commit);
             }
         }
         Ok(())
+    }
+
+    /// Forgets inbox delivery `(member, c)` and its seals still queued.
+    fn forget_delivery(&mut self, member: &Tid, c: &CommitId) {
+        self.state.remove_sent(member, c);
+        self.drop_delivery_out(member, c);
+    }
+
+    /// Drops the queued seals of inbox delivery `(member, c)`.
+    fn drop_delivery_out(&mut self, member: &Tid, c: &CommitId) {
+        let k = Some((*member, *c));
+        let ks: Vec<(ServerKey, LabelId, BlobId)> = self.state.outbox.iter().filter(|(_, o)| o.delivery == k).map(|(x, _)| *x).collect();
+        for (s, l, b) in ks {
+            self.outbox.remove(&(s, l, b));
+            self.state.remove_out(&s, &l, &b);
+        }
+    }
+
+    /// Whether a queued deposit refused for now (`SyncEngine::budget`) is moot, so it is dropped
+    /// rather than sent again: an inbox seal whose delivery is gone, or a deposit under a label
+    /// this node sees replaced (spec/sync.md §2: no new step is issued for it, and what still
+    /// matters goes under the new label). Anything else waits for its label to take it.
+    pub(crate) fn deposit_moot(&mut self, server: &ServerKey, l: &LabelId, b: &BlobId) -> bool {
+        let Some(o) = self.state.outbox.get(&(*server, *l, *b)) else { return true };
+        if let Some(k) = o.delivery {
+            return !self.state.sent_inbox.contains_key(&k);
+        }
+        self.group_of(l).is_some_and(|g| self.is_replaced(&g, l))
     }
 
     /// Whether `member` is still a current member of a thing whose edges or secrets commit `c`
@@ -351,8 +382,8 @@ impl SyncEngine {
     }
 
     /// Queues inbox blob `blob` for the inbox `label` of `owner` (its deposit seed signs, with
-    /// a filler wrap).
-    pub(crate) fn queue_inbox(&mut self, owner: &Tid, label: LabelId, servers: &[Address], blob: Vec<u8>) -> Result<()> {
+    /// a filler wrap), a seal of inbox delivery `delivery` when given.
+    pub(crate) fn queue_inbox(&mut self, owner: &Tid, label: LabelId, servers: &[Address], blob: Vec<u8>, delivery: Option<(Tid, CommitId)>) -> Result<()> {
         let Some(seed) = self.engine.get_typed(owner, &ct::KEYS)?.and_then(|k| k.deposit_seed) else {
             self.diag(format!("inbox blob for {owner}: no deposit seed held for the inbox"));
             return Ok(());
@@ -363,17 +394,18 @@ impl SyncEngine {
         if servers.iter().all(super::peers::is_peer) && self.labels().iter().any(|(_, x)| x.id == label) {
             self.local_inbox.push((label, blob.clone(), wrap));
         }
-        self.queue_deposit(label, servers, &d, blob, wrap);
+        self.queue_deposit(label, servers, &d, blob, wrap, delivery);
         Ok(())
     }
 
-    /// Queues a deposit under `label`, signed now: kept durably until each of its servers answers
-    /// (a crash, a cut or forgetting the label does not recall it).
-    pub(crate) fn queue_deposit(&mut self, label: LabelId, servers: &[Address], deposit: &osis_crypto::SigningSecret, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN]) {
+    /// Queues a deposit under `label`, signed now: kept durably until each of its servers takes
+    /// it, refuses it for good, or it is moot (`deposit_moot`); a crash, a cut or forgetting the
+    /// label does not recall it.
+    pub(crate) fn queue_deposit(&mut self, label: LabelId, servers: &[Address], deposit: &osis_crypto::SigningSecret, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], delivery: Option<(Tid, CommitId)>) {
         let sig = osis_label::sign_deposit(deposit, &label, &osis_label::blob_id(&blob), &wrap);
         let id = osis_label::blob_id(&blob);
         for server in servers {
-            self.state.add_out(super::state::OutRec { label, server: server.clone(), blob: blob.clone(), wrap, sig });
+            self.state.add_out(super::state::OutRec { label, server: server.clone(), blob: blob.clone(), wrap, sig, delivery });
             self.outbox.entry((server.key, label, id)).or_default();
         }
     }

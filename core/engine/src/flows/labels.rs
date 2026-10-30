@@ -266,7 +266,7 @@ impl Engine {
     /// The newest label of `group` with its servers.
     pub fn label_of(&mut self, group: &Tid) -> Result<Option<(LabelId, Vec<Address>)>> {
         let g = *group;
-        self.run(|tx| own_label(tx, &g))
+        Ok(self.run(|tx| own_label(tx, &g))?.map(|(id, _, servers)| (id, servers)))
     }
 }
 

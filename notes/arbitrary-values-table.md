@@ -28,8 +28,8 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | `reopen_all` 8 sweeps | `engine/flows/mod.rs` | taking up a key actor opened at most 8 levels of a member-actor chain (a 12-chain left 4 unread) | fixed: fixpoint, each learner's dependents reopened at once (one sweep opens a chain in any tid order); test `keys::key_actor_opens_deep_member_chain_spec_crypto_4` |
 | `reopen_dependents` 4096 steps | `engine/flows/mod.rs` | the reopen fixpoint stopped silently; it terminates anyway: an actor is pushed only when its held epochs grew (epochs and secrets are only added, `set_secret` only when absent), so pushes are bounded by the secrets the held `/secrets` states carry, which writers paid for | fixed: cap removed (no test: needs > 4096 steps) |
 | rotation `MAX_DEPTH` 8 | `engine/rotation/mod.rs` | departures more than 8 member actors deep are never rotated (security) | issues/rotation-depth-cap.md |
-| `HINT_INDEXES` 4 | `node/sync/open.rs` | a label of index 4 or more cannot be opened from a hint (inbox, link) | issues/node-sync-caps.md |
-| `MAX_INBOX_TRIES` 8 | `node/sync/local.rs`, `inbound.rs` | a deposit refused for about 21 min (budget full while the recipient is offline) is dropped; resent only after `INBOX_LIFETIME` | issues/node-sync-caps.md |
+| `HINT_INDEXES` 4 | `node/sync/open.rs` | a label of index 4 or more cannot be opened from a hint (inbox, link) | fixed: inbox things carry the label index (spec/wire.md §9), links and cards name index 0; test `inbox_retry::hint_opens_a_label_replaced_many_times_spec_wire_9` |
+| `MAX_INBOX_TRIES` 8 | `node/sync/local.rs`, `inbound.rs` | a deposit refused for about 21 min (budget full while the recipient is offline) is dropped; resent only after `INBOX_LIFETIME` | fixed: retried at the capped back-off until taken or moot (delivery forgotten or re-sealed, label replaced); test `inbox_retry::inbox_deposit_retried_for_hours_spec_sync_5` |
 | `MAX_QUEUED` 64 MiB, server `max_queued_bytes` 32 MiB, `REQUEST_TIMEOUT_MS` 2 min | `node/sync/driver.rs`, `server/`, `proto/client.rs` | no send window: a large upload or fetch on a slow link closes the connection, the redial repeats it | issues/sync-flow-control.md |
 | `CLOSE_WAIT` 5 s | `osis/handle.rs` | `close` returns Ok with the database still held when a callback or engine call outlasts it | issues/api-close-wait.md |
 
@@ -100,9 +100,8 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 ### Node sync (`node/sync/`)
 | value | class | 0 / ∞ |
 |---|---|---|
-| `MAX_INBOX_TRIES` 8, `HINT_INDEXES` 4 | X | issues/node-sync-caps.md |
 | `MAX_INBOX_RESENDS` 3 | O (sign-off) | |
-| deposit retry backoff cap 1 h | M | |
+| `DEPOSIT_RETRY_CAP_MS` 1 h | M | resent every tick / lands that much later once the refusal clears |
 | `MAX_REOPENS` 3 | M (then the retry timer) | |
 | `MAX_ROUNDS` 16 | M (the rest opens at the next pass: `refetch`) | |
 | `MAX_NOTIFY` 8 | M (the rest goes at the next `handle`) | |

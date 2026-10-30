@@ -1598,7 +1598,7 @@ mod tests {
         write(&mut m, g, "new");
         let c = lp.peers[0].commit(m).unwrap().unwrap();
         let dk = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([7; 32])).verifying_key();
-        let hint = osis_label::InboxThing { tid: g, label: osis_base::LabelId([0; 16]), servers: Vec::new(), delete_keys: Some((dk, dk)) };
+        let hint = osis_label::InboxThing { tid: g, label: osis_base::LabelId([0; 16]), index: 0, servers: Vec::new(), delete_keys: Some((dk, dk)) };
         let e = &mut lp.peers[1].engine;
         e.note_delete_hints(c, &[hint]).unwrap();
         assert_eq!(e.core.ix.hint_candidates.len(), 1);
