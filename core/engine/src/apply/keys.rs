@@ -44,6 +44,38 @@ pub(crate) fn note_box_keys(core: &mut Core, h: &Header, actor: &Tid, delta: &Fr
     }
 }
 
+/// Notes `boxes_to` alone for a `/secrets` delta of any validity (the boxes keyed to each member,
+/// for `flows::reopen_dependents`; a load notes every held part alike).
+pub(crate) fn note_boxes_to(core: &mut Core, actor: &Tid, delta: &Fragment) {
+    for (bk, k) in written_boxes(delta) {
+        core.ix.boxes_to.insert(bk.member, (*actor, k.clone()));
+    }
+}
+
+/// The epochs membership part `ai` of `h` boxes or keys in `bodies` (its deltas): what it noted
+/// in `epoch_intro`, kept in its record when it drops (`Dropped::intros`).
+pub(crate) fn intro_epochs(h: &Header, ai: usize, bodies: &[Fragment]) -> Vec<(Role, osis_crypto::Epoch)> {
+    let mut out = std::collections::BTreeSet::new();
+    match h.aspects.get(ai).map(|a| a.ak.as_str()) {
+        Some("/secrets") if h.kind == Kind::Membership => {
+            for (bk, _) in bodies.iter().flat_map(written_boxes) {
+                if let Ok(e) = osis_keys::aspects::from_schema(&bk.epoch) {
+                    out.insert((bk.role, e));
+                }
+            }
+        }
+        Some("/keys") if h.kind == Kind::Membership => {
+            for (r, ks) in bodies.iter().flat_map(|b| keys_write(b).keysets) {
+                if let Ok(e) = osis_keys::aspects::from_schema(&ks.epoch) {
+                    out.insert((r, e));
+                }
+            }
+        }
+        _ => {}
+    }
+    out.into_iter().collect()
+}
+
 /// The boxes a `/secrets` delta writes (removals aside): typed key and key value.
 fn written_boxes(delta: &Fragment) -> Vec<(BoxKey, &Value)> {
     let Some(m) = map(field(delta, 0)) else { return Vec::new() };
@@ -52,8 +84,11 @@ fn written_boxes(delta: &Fragment) -> Vec<(BoxKey, &Value)> {
 
 /// A membership commit's `/secrets` or `/keys` part dropped its body (`bodies`, its deltas):
 /// what was noted from them goes with them (spec/commits.md §5), re-derived from the bodies
-/// still held: `epoch_intro`, `box_written`, and the `boxes_to` entries of the boxes it wrote
-/// that no held body writes. Unknowns there cost a rotation or a re-seal, never a leak.
+/// still held: `box_written`, and the `boxes_to` entries of the boxes it wrote that no held body
+/// writes (an unknown first write costs a rotation or a re-seal, never a leak). `epoch_intro`
+/// keeps the part's epochs (`Dropped::intros`): re-derived from held bodies alone, a later
+/// grant or re-seal would stand in as the epoch's rotation, and an epoch a departed party
+/// introduced would cover its departure.
 pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[Fragment]) -> Result<()> {
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
     if h.kind != Kind::Membership || !matches!(a.ak.as_str(), "/secrets" | "/keys") {
@@ -119,6 +154,9 @@ pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet
                 if !m.valid.get(ai).copied().unwrap_or(false) {
                     continue;
                 }
+                for (r, e) in m.dropped.get(&ai).map(|d| d.intros.clone()).unwrap_or_default() {
+                    note_intro(tx.core, &m.header, a, r, e);
+                }
                 for d in super::held_parts(tx, &id, ai)? {
                     if let Decoded::Delta(d) = d {
                         if ak.as_str() == "/keys" {
@@ -135,7 +173,7 @@ pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet
     Ok(())
 }
 
-fn note_intro(core: &mut Core, h: &Header, actor: &Tid, r: Role, e: osis_crypto::Epoch) {
+pub(crate) fn note_intro(core: &mut Core, h: &Header, actor: &Tid, r: Role, e: osis_crypto::Epoch) {
     let v = (h.ts, h.author, h.actor, h.id());
     core.ix.epoch_intro.upsert((*actor, r, e), || v, |slot| *slot = (*slot).min(v));
 }
@@ -212,10 +250,14 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
         if let (Decoded::Delta(d), "/keys", true) = (d, a.ak.as_str(), valid.get(*ai).copied().unwrap_or(false)) {
             note_keysets(tx.core, h, &a.tid, &d.fragment);
         }
-        if a.ak.as_str() != "/secrets" || !valid.get(*ai).copied().unwrap_or(false) {
+        if a.ak.as_str() != "/secrets" {
             continue;
         }
         let Decoded::Delta(d) = d else { continue };
+        if !valid.get(*ai).copied().unwrap_or(false) {
+            note_boxes_to(tx.core, &a.tid, &d.fragment);
+            continue;
+        }
         note_box_keys(tx.core, h, &a.tid, &d.fragment);
         let keys = parts
             .iter()
@@ -257,7 +299,11 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, De
         }
         let actor = p.actor;
         let e = tx.core.ix.secrets.entry_or_default(actor);
-        if w.applied(e, p.id, (&p.keys, &p.before)).unwrap_or(false) {
+        // persisted whenever it changed: `applied` also records epochs and supersessions it
+        // reports no change for
+        let before = e.clone();
+        let changed = w.applied(e, p.id, (&p.keys, &p.before)).unwrap_or(false);
+        if changed || *e != before {
             save(tx, &actor)?;
         }
     }

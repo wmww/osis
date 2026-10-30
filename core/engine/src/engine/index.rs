@@ -463,6 +463,10 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
         for s in &d.covered_by {
             w = w.raw(&s.0);
         }
+        w = w.u32(d.intros.len() as u32);
+        for (r, e) in &d.intros {
+            w = w.u8(*r as u8).u64(e.n()).raw(e.nonce());
+        }
         let Some((fr, abs)) = &d.gives else {
             w = w.u8(0);
             continue;
@@ -574,6 +578,12 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
         for _ in 0..r.u32()? {
             covered_by.insert(CommitId(r.arr()?));
         }
+        let mut intros = Vec::new();
+        for _ in 0..r.u32()? {
+            let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from(r.u8()?)).copied().ok_or(Error::Corrupt("dropped intro role"))?;
+            let e = osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped intro epoch"))?;
+            intros.push((role, e));
+        }
         let gives = match r.u8()? {
             0 => None,
             _ => {
@@ -590,7 +600,7 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
             }
         };
         let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from((flags >> 2) & 3).wrapping_sub(1)).copied();
-        dropped.insert(a, super::Dropped { covered_by, as_cover: flags & 1 != 0, live: flags & 2 != 0, gives, role, overreach: flags & 16 != 0 });
+        dropped.insert(a, super::Dropped { covered_by, as_cover: flags & 1 != 0, live: flags & 2 != 0, gives, role, overreach: flags & 16 != 0, intros });
     }
     Ok((RecordHead { received, origin, dropped }, r.rest()))
 }

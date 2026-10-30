@@ -1,0 +1,5 @@
+# own_keys outlives /keys parts that go back to missing
+> Summary: `ix.own_keys` is only ever added to; after a `/keys` snapshot turns invalid and the bodies it covered go back to missing (`retention::uncover`), the running node keeps the actor in `own_keys` while a rebuild (state without keysets) does not: open differs from rebuild until the parts are fetched again.
+> Tags: engine, tests
+
+Found by `walks::open_equals_rebuild_random_secrets_compactions` seed 10607 (`OSIS_WALKS_SECRETS_START=10607 OSIS_WALKS_SECRETS_SEEDS=1`, step 24 peer 1: "index rebuilt", `own_keys`): its `/keys` state is empty after the uncover, every earlier `/keys` part missing. About one seed in a thousand. Decide whether `own_keys` is "ever saw a keyset" (then a rebuild should derive it from more than the current state, e.g. headers of valid `/keys` parts held or missing) or "the state has keysets" (then `observe_keys` removes it, and what a missing keyset does to encryption under the actor until refetch needs checking).

@@ -755,7 +755,15 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         }
         "/keys" => {
             if let Some(k) = v.as_ref().and_then(crate::engine::secrets::keys_value) {
+                // the keysets' epochs and suites it records are persisted with the epochs
+                let before = tx.core.ix.secrets.get(tid).cloned();
                 tx.core.observe_keys(tid, &k);
+                if let Some(e) = tx.core.ix.secrets.get(tid)
+                    && before.as_ref() != Some(e)
+                {
+                    let b = crate::engine::secrets::encode_epochs(e);
+                    tx.txn.put_local(&[b"k/".as_slice(), tid.as_bytes()].concat(), &b, Shred::Yes)?;
+                }
             }
         }
         "/was" => {
