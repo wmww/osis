@@ -1,6 +1,7 @@
 //! The commit query, undo, redo, revert (notes/api.md Commits; spec/commits.md §7, spec/crdt.md §4.6).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use osis::internals::Internals as _;
 use crate::common;
 use common::*;
 use crate::common::CreateIn;
@@ -101,9 +102,9 @@ fn undo_mutation_alone_spec_commits_7() {
     let mut w = db.write();
     let t = w.create_durable(db.me()).unwrap();
     let c = w.commit().unwrap().unwrap().id.commit().unwrap();
-    let mut m = osis::node::Mutation::new();
+    let mut m = osis::internals::node::Mutation::new();
     m.undo(c).set(t, &ak("/t/x"), &Value::Int(1)).unwrap();
-    assert!(matches!(db.engine(|e| e.commit(m)), Err(osis::node::Error::Misuse(_))));
+    assert!(matches!(db.engine(|e| e.commit(m)), Err(osis::internals::node::Error::Misuse(_))));
 }
 
 // notes/api.md Commits: the query lists everyone's commits in scope with their relations; a

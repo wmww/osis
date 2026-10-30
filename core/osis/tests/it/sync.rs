@@ -2,6 +2,7 @@
 //! Sync configuration and status), no tokio: see common/world.rs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use osis::internals::Internals as _;
 use crate::common;
 use common::world::World;
 use common::*;

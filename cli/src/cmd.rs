@@ -7,6 +7,7 @@ use crate::text::{self, Ty};
 use crate::write::{self, Did};
 use crate::{Ctx, StoreSel, exit, key_ty, open, opt_ts, parse_ak, ty_in, usage};
 use anyhow::{Context as _, anyhow};
+use osis::internals::Internals as _;
 use osis::{
     AspectKey, Change, CommitId, CommitKind, CommitQuery, Demotion, EdgeOpts, Error, Key, LinkOpts, Lower, Osis, Role, Schema, Source, SyncScope, Tid, Ts,
     Value, WaitForSync,
@@ -256,7 +257,7 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
     let mut ctx = Ctx::new(g, db, sel, out, stdin, tty)?;
     let flush = delivers(&cli.cmd);
     let mut r = run(&mut ctx, cli.cmd);
-    if r.is_ok() && flush && !ctx.db.servers()?.is_empty() {
+    if r.is_ok() && flush && !ctx.db.servers().is_empty() {
         r = deliver(&mut ctx);
     }
     ctx.db.settle();
@@ -321,7 +322,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             wait(ctx, db.remove_device(n, d))
         }
         Cmd::Server(ServerCmd::Ls) => {
-            let s = db.servers()?;
+            let s = db.servers();
             ctx.emit(&s.iter().map(|s| s.to_string()).collect::<Vec<_>>(), J::Arr(s.iter().map(|s| J::str(s.to_string())).collect()))
         }
         Cmd::Server(ServerCmd::Add { addr }) => Ok(db.add_server(&ctx.arg_text(&addr)?.parse()?)?),
@@ -499,7 +500,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Group(GroupCmd::Sync { g, server }) => {
             let g = ctx.tid(&g)?;
-            let s = if server.is_empty() { db.servers()? } else { servers(ctx, &server)? };
+            let s = if server.is_empty() { db.servers() } else { servers(ctx, &server)? };
             Ok(db.sync(g, &s)?)
         }
         Cmd::Group(GroupCmd::Unsync { g }) => Ok(db.unsync(ctx.tid(&g)?)?),
@@ -527,19 +528,17 @@ fn whoami(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
         StoreSel::Dir(d) => d.display().to_string(),
         StoreSel::Memory(_) => "(memory)".into(),
     };
-    let servers = db.servers().ok();
+    let servers = db.servers();
     let sw = format!("osis {}", env!("CARGO_PKG_VERSION"));
     let mut lines = vec![format!("me\t{}", db.me().to_uri()), format!("node\t{}", db.node().to_uri()), format!("home\t{}", db.home().to_uri())];
-    if let Some(s) = &servers {
-        lines.extend(s.iter().map(|s| format!("server\t{s}")));
-    }
+    lines.extend(servers.iter().map(|s| format!("server\t{s}")));
     lines.push(format!("store\t{store}"));
     lines.push(format!("software\t{sw}"));
     let j = J::obj([
         ("me", J::tid(db.me())),
         ("node", J::tid(db.node())),
         ("home", J::tid(db.home())),
-        ("servers", J::opt(servers.map(|s| J::Arr(s.iter().map(|s| J::str(s.to_string())).collect())))),
+        ("servers", J::Arr(servers.iter().map(|s| J::str(s.to_string())).collect())),
         ("store", J::str(store)),
         ("software", J::str(sw)),
     ]);

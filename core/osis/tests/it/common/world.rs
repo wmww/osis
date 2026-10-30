@@ -3,8 +3,9 @@
 //! osis-node's tests/net). Futures of the API are polled by hand while the world runs.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use osis::node::sync::{Action, ConnId, Event};
-use osis::{Config, ManualClock, ManualNet, MemStore, Osis, Runtime, ServerAddr, StoreAt, WallMs};
+use osis::internals::node::sync::{Action, ConnId, Event};
+use osis::internals::{Internals, ManualNet};
+use osis::{Config, ManualClock, MemStore, Osis, Runtime, ServerAddr, StoreAt, WallMs};
 use osis_crypto::SeededRng;
 use osis_server::{BackendStore, Hub, HubOutput, Policy};
 use osis_store::MemoryBackend;

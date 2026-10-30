@@ -418,7 +418,7 @@ fn call(db: &Osis, s: &Sub, d: Delivery) {
 /// A registration; dropping it unsubscribes (notes/api.md: RAII, no ids to remember). Off the
 /// dispatcher thread, drop waits for a call in flight, so no call starts or runs after it
 /// returns; except when the dropping thread holds the engine lock (inside `Osis::read` or
-/// `Osis::engine`), where it cannot wait: a call may still be running then.
+/// `Internals::engine`), where it cannot wait: a call may still be running then.
 #[must_use = "dropping a Subscription unsubscribes at once; use detach() to keep it"]
 pub struct Subscription {
     shared: Weak<Shared>,

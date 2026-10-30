@@ -19,12 +19,6 @@ impl Key {
         let schema = schema.filter(|s| s.aspects.contains_key(ak.as_str()));
         Key { ak, schema }
     }
-    pub fn ak(&self) -> &Ak {
-        &self.ak
-    }
-    pub fn schema(&self) -> Option<&Arc<Schema>> {
-        self.schema.as_ref()
-    }
 }
 
 impl AspectKey for Key {
@@ -41,7 +35,7 @@ impl AspectKey for Key {
         if self.schema.as_deref().is_some_and(Schema::is_core) && self.ak.as_str() == "/created" {
             return <osis_base::CreationRecord as Codec>::from_value(v).map(|_| v.clone());
         }
-        match (self.schema.as_deref(), AspectKey::ty(self)) {
+        match (self.schema.as_deref(), self.ty()) {
             (Some(s), Some(t)) => typed_read(s, v, t),
             _ => Ok(v.clone()),
         }

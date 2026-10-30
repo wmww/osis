@@ -428,34 +428,9 @@ impl Osis {
     }
 
     /// Runs `f` on the engine under the database lock, then queues its events for the
-    /// dispatcher. For inspection (the CLI's `inspect`) and tests; apps never need it.
-    #[doc(hidden)]
-    pub fn engine<R>(&self, f: impl FnOnce(&mut Engine) -> R) -> R {
+    /// dispatcher (`internals::Internals::engine` outside the crate).
+    pub(crate) fn engine<R>(&self, f: impl FnOnce(&mut Engine) -> R) -> R {
         self.locked(|l| f(l.engine()))
-    }
-
-    /// Runs `f` on the sync engine (inspection and tests); its actions are carried out.
-    #[doc(hidden)]
-    pub fn sync_engine<R>(&self, f: impl FnOnce(&mut SyncEngine) -> R) -> R {
-        self.locked(|l| f(&mut l.sync))
-    }
-
-    /// Calls waiting for another node right now (tests: a dropped future leaves none).
-    #[doc(hidden)]
-    pub fn waiting(&self) -> usize {
-        self.locked(|l| l.waiters.len())
-    }
-
-    /// With `Runtime::Manual`: the network actions queued so far (a test harness carries them).
-    #[doc(hidden)]
-    pub fn take_actions(&self) -> Vec<Action> {
-        self.inner.net.take()
-    }
-
-    /// With `Runtime::Manual`: feeds a network event (a test harness).
-    #[doc(hidden)]
-    pub fn feed(&self, ev: SyncEvent) {
-        self.handled(|l| l.sync.handle(ev));
     }
 
     /// Runs `f` on the sync engine as the network driver does: its actions go out, and the
@@ -563,7 +538,7 @@ impl Osis {
     /// `Dispatcher::Thread` it waits for the dispatcher thread (tests and scripts wait this
     /// way without sleeping); with `Dispatcher::Pump` it runs them on this thread, which is
     /// how the app pumps (after its wake callback). Returns at once inside a callback. Never
-    /// call it inside an `Osis::read` or `Osis::engine` closure: a callback may need the lock
+    /// call it inside an `Osis::read` or `Internals::engine` closure: a callback may need the lock
     /// that closure holds (deadlock).
     pub fn settle(&self) {
         self.inner.dispatch.settle(Arc::downgrade(&self.inner));

@@ -4,6 +4,7 @@
 //! localhost QUIC (tier 2, ignored).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use osis::internals::Internals as _;
 use crate::common;
 use common::ak;
 use crate::common::CreateIn;
@@ -171,11 +172,11 @@ async fn text_idle_commit_api_text_sessions() {
 }
 
 /// Waits until `db` published its `/reach` (the driver listens with its dialable key).
-async fn reach_of(db: &Osis) -> osis::node::sync::peers::Peer {
+async fn reach_of(db: &Osis) -> osis::internals::node::sync::peers::Peer {
     tokio::time::timeout(GUARD, async {
         loop {
             if let Some(r) = db.sync_engine(|s| s.own_reach()) {
-                return osis::node::sync::peers::Peer { node: db.node(), reach: r, labels: Default::default() };
+                return osis::internals::node::sync::peers::Peer { node: db.node(), reach: r, labels: Default::default() };
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

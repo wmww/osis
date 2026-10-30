@@ -16,7 +16,7 @@ use anyhow::anyhow;
 use args::{Cli, Global};
 use clap::Parser;
 use json::J;
-use osis::{Config, Error, Key, MemStore, Osis, StoreAt, Tid};
+use osis::{AspectKey, Config, Error, Key, MemStore, Osis, StoreAt, Tid};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{BufRead, Write};
@@ -378,12 +378,12 @@ pub(crate) fn parse_ak(s: &str, what: &str) -> anyhow::Result<osis::Ak> {
 
 /// The schema type of a key's aspect (`Ty` for parsing and printing).
 pub(crate) fn key_ty(key: &Key) -> text::Ty<'_> {
-    ty_in(key, osis::AspectKey::ty(key))
+    ty_in(key, key.ty())
 }
 
 /// A type `t` of `key`'s schema.
 pub(crate) fn ty_in<'a>(key: &'a Key, t: Option<&'a osis_schema::Type>) -> text::Ty<'a> {
-    key.schema().zip(t).map(|(s, t)| (&**s, t))
+    key.schema().zip(t)
 }
 
 /// An optional timestamp flag.

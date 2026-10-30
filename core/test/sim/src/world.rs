@@ -4,8 +4,9 @@
 //! (examples/*) and their end-to-end tests drive it; core/osis/tests/it/common/world.rs is the
 //! osis crate's own copy (it cannot depend on this crate).
 
-use osis::node::sync::{Action, ConnId, Event};
-use osis::{Config, ManualClock, ManualNet, MemStore, Osis, RecoveryCard, Runtime, ServerAddr, StoreAt, WallMs};
+use osis::internals::node::sync::{Action, ConnId, Event};
+use osis::internals::{Internals, ManualNet};
+use osis::{Config, ManualClock, MemStore, Osis, RecoveryCard, Runtime, ServerAddr, StoreAt, WallMs};
 use osis_crypto::SeededRng;
 use osis_proto::{FrameDecoder, Message, StoreError};
 use osis_server::{BackendStore, Hub, HubOutput, Policy};
