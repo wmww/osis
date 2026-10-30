@@ -288,7 +288,7 @@ mod tests {
         let (g, g2) = (Group::new(10), Group::new(20));
         let m = X25519Secret::random(&mut rng);
         let card = KeyActorKeys::from_seed(&Secret32::from_bytes([4; 32]));
-        let readers = [Reader::Dh(m.public()), Reader::Static { signing: card.signing.verifying_key(), entry: crate::EntryTo::Sealed(card.kem.public()) }];
+        let readers = [Reader::Dh(m.public()), Reader::Static { signing: card.signing.verifying_key(), kem: card.kem.public() }];
         let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &readers, (&TG, Epoch::derive(&TG, osis_base::Role::Read, 0, &g.read).unwrap(), &g.read), &mut rng).unwrap();
         let k1 = crate::StepKeys::derive(&g2.read, &g2.write, &g2.admin, 0, &g.deposit, &s0.label);
         let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, k1, &readers, (&TG, Epoch::derive(&TG, osis_base::Role::Read, 1, &g2.read).unwrap(), &g2.read), &mut rng).unwrap();

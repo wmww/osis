@@ -47,7 +47,7 @@ pub fn messages() -> VecFile {
     let f = Fixture::new(0x10);
     cases.push(
         case("fixture", "spec/wire.md §8, §11.2")
-            .with("about", "the label of the messages below: osis-proto examples::Fixture::new(0x10) (group secrets 10..13 repeated, reader X25519 14.., key actor 15.., symmetric entry box under 16.., registration rng seed 17..); opens are signed for the challenge and static key below")
+            .with("about", "the label of the messages below: osis-proto examples::Fixture::new(0x10) (group secrets 10..13 repeated, reader X25519 14.., key actor 15.., entry box sealed to the KEM key derived from 16.., group thing tid 10.., registration rng seed 17..); opens are signed for the challenge and static key below")
             .with("label-id", hex(&f.label.0))
             .with("genesis", hex(&f.genesis.to_bytes()))
             .with("genesis-claim-set", hex(&f.genesis_claims.to_bytes()))

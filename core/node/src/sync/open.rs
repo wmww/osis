@@ -343,12 +343,8 @@ impl SyncEngine {
     fn static_secret(&mut self, conn: ConnId, l: LabelId, g: &Tid, head: &Step, b: &SecretBox) -> Result<bool> {
         let Some(Try::Static { kem, .. }) = self.current_try(conn, &l) else { return Ok(false) };
         let Some(index) = self.lc(conn, &l).map(|x| x.index) else { return Ok(false) };
-        let (e, secret) = match osis_label::open_entry_box(b, head, osis_label::EntryKey::Kem(&kem), g) {
-            Ok((Some(e), secret)) => (e, secret),
-            Ok((None, _)) => {
-                self.diag("entry box without its epoch".into());
-                return Ok(false);
-            }
+        let (e, secret) = match osis_label::open_entry_box(b, head, &kem, g) {
+            Ok(x) => x,
             Err(e) => {
                 self.diag(format!("entry box: {e}"));
                 return Ok(false);

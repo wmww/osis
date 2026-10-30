@@ -8,7 +8,7 @@ use crate::file::{Record, VecFile};
 use crate::hex;
 use osis_base::{LabelId, Value, encode};
 use osis_crypto::{Epoch, KeyActorKeys, LabelRole, X25519Secret, label_role_key, static_entry};
-use osis_label::{ClaimSet, EntryKey, EntryTo, Parent, Reader, Step, StepKeys, genesis_label, open_entry_box, register};
+use osis_label::{ClaimSet, Parent, Reader, Step, StepKeys, genesis_label, open_entry_box, register};
 use osis_schema::Codec;
 
 const SPEC: &str = "spec/wire.md §8";
@@ -42,7 +42,7 @@ pub fn steps() -> VecFile {
     let readers = [
         Reader::Dh(m1.kem.public().x25519()),
         Reader::Dh(m2.kem.public().x25519()),
-        Reader::Static { signing: card.signing.verifying_key(), entry: EntryTo::Sealed(card.kem.public()) },
+        Reader::Static { signing: card.signing.verifying_key(), kem: card.kem.public() },
     ];
     let (sk, eph, m, pad, shuf) = ([0x31u8; 32], [0x32u8; 32], [0x33u8; 32], [0x34u8; 32], [0x35u8; 24]);
     let delete0 = label_role_key(LabelRole::Delete, &admin, 0);
@@ -56,7 +56,7 @@ pub fn steps() -> VecFile {
     let entry = static_entry(&s0.label, &card.signing.verifying_key());
     assert!(c0.contains(&k1) && c0.contains(&k2) && c0.contains(&entry));
     let b = c0.entries.get(&entry).unwrap();
-    assert_eq!(open_entry_box(b, &s0, EntryKey::Kem(&card.kem), &group).unwrap(), (Some(epoch), read.clone()));
+    assert_eq!(open_entry_box(b, &s0, &card.kem, &group).unwrap(), (epoch, read.clone()));
     let mut cases = vec![step_fields(
         case("genesis step with two DH readers and one static entry", SPEC)
             .with("read-secret", hex(read.expose()))

@@ -8,9 +8,8 @@ use crate::rbsr::Bound;
 use crate::client::Command;
 use osis_base::hash::hash;
 use osis_base::{BlobId, LabelId, WallMs};
-use osis_crypto::{Epoch, LabelRole, SeededRng, Secret32, SigningSecret, X25519Secret, label_role_key};
+use osis_crypto::{Epoch, KemSecret, LabelRole, SeededRng, Secret32, SigningSecret, X25519Secret, label_role_key};
 use osis_label::{Parent, Prefix, Reader, StepKeys, genesis_label, register, sign_deposit, sign_stamp};
-use osis_label::step::EntryTo;
 
 /// The server's static key and Hello challenge the examples sign opens for.
 pub const STATIC_KEY: [u8; 32] = [0x5e; 32];
@@ -21,7 +20,7 @@ fn s32(b: u8) -> Secret32 {
 }
 
 /// One group's label at index 0: a genesis step and a child without rotation, each with a claim
-/// set listing one DH reader and one key actor (symmetric entry box).
+/// set listing one DH reader and one key actor (entry box sealed to a KEM key from `b+6`).
 pub struct Fixture {
     pub label: LabelId,
     pub genesis: Step,
@@ -47,13 +46,13 @@ impl Fixture {
         let delete = label_role_key(LabelRole::Delete, &admin, 0);
         let reader = X25519Secret::from_secret(&s32(b + 4));
         let key_actor = SigningSecret::from_seed(&s32(b + 5));
-        let s = s32(b + 6);
-        let epoch_s = Epoch::new(0, [b; 32]).expect("small epoch");
-        let read_epoch = Epoch::new(1, [b + 1; 32]).expect("small epoch");
-        let readers = [Reader::Dh(reader.public()), Reader::Static { signing: key_actor.verifying_key(), entry: EntryTo::Symmetric { s: &s, epoch_s: &epoch_s } }];
+        let kem = KemSecret::derive(&s32(b + 6));
+        let group = osis_base::Tid::from_bytes([b; 15]);
+        let read_epoch = Epoch::derive(&group, osis_base::Role::Read, 1, &read).expect("small epoch");
+        let readers = [Reader::Dh(reader.public()), Reader::Static { signing: key_actor.verifying_key(), kem: kem.public() }];
         let mut rng = SeededRng::from_seed([b + 7; 32]);
-        let (genesis, genesis_claims) = register(Parent::Genesis(&delete), keys, &readers, (&osis_base::Tid::from_bytes([b; 15]), read_epoch, &read), &mut rng).expect("fixed genesis");
-        let (child, child_claims) = register(Parent::Child { step: &genesis, delete: &delete }, keys, &readers, (&osis_base::Tid::from_bytes([b; 15]), read_epoch, &read), &mut rng).expect("fixed child");
+        let (genesis, genesis_claims) = register(Parent::Genesis(&delete), keys, &readers, (&group, read_epoch, &read), &mut rng).expect("fixed genesis");
+        let (child, child_claims) = register(Parent::Child { step: &genesis, delete: &delete }, keys, &readers, (&group, read_epoch, &read), &mut rng).expect("fixed child");
         Fixture {
             label,
             genesis,
@@ -130,11 +129,11 @@ impl Label {
             delete: label_role_key(LabelRole::Delete, &adm, 0),
             deposit: osis_crypto::deposit_key(&s32(DEPOSIT_SEED), &self.id),
         };
-        let s = s32(0x33);
-        let readers = [Reader::Dh(self.reader.public()), Reader::Static { signing: self.key_actor.verifying_key(), entry: EntryTo::Symmetric { s: &s, epoch_s: &Epoch::new(0, [0; 32]).expect("small epoch") } }];
+        let kem = KemSecret::derive(&s32(0x33));
+        let readers = [Reader::Dh(self.reader.public()), Reader::Static { signing: self.key_actor.verifying_key(), kem: kem.public() }];
         let mut rng = SeededRng::from_seed([b; 32]);
         let group = osis_base::Tid::from_bytes([b; 15]);
-        let read_epoch = (&group, Epoch::new(1, [b; 32]).expect("small epoch"), &read);
+        let read_epoch = (&group, Epoch::derive(&group, osis_base::Role::Read, 1, &read).expect("small epoch"), &read);
         let (step, set) = match (&parent, self.steps.last()) {
             (Some(d), Some(prev)) => register(Parent::Child { step: prev, delete: d }, pk, &readers, read_epoch, &mut rng).expect("child step"),
             _ => register(Parent::Genesis(&keys.delete), pk, &readers, read_epoch, &mut rng).expect("genesis step"),

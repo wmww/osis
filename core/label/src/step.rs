@@ -8,11 +8,10 @@ use osis_base::format::{MAX_CLAIMS, MAX_MESSAGE, MAX_OBJECT_DEPTH};
 use osis_base::{LabelId, Role, Tid, Value};
 use osis_crypto::{
     BoxForm, BoxItem, BoxSlot, CryptoRngCore, Domain, Epoch, KemPublicKey, KemSecret, LabelRole, Secret32, Signature, SigningSecret,
-    VerifyingKey, X25519Secret, claim_key, deposit_key, label_id, label_role_key, open_box, open_symmetric_box, seal_box, static_entry,
-    wrap_symmetric_box,
+    VerifyingKey, X25519Secret, claim_key, deposit_key, label_id, label_role_key, open_box, seal_box, static_entry,
 };
 use osis_schema::Codec;
-use osis_schema::core_types::{Epoch as EpochValue, SealedBox, SecretBox, Sealed, SymmetricBox};
+use osis_schema::core_types::{SealedBox, SecretBox, Sealed};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// BLAKE3 of a step's canonical bytes.
@@ -281,13 +280,13 @@ impl ClaimSet {
     }
 }
 
-/// A `box` value, strictly: it must re-encode to itself.
+/// A `box` value in the sealed form (spec/wire.md §7), strictly: it must re-encode to itself.
 fn parse_box(v: &Value) -> Result<SecretBox, Error> {
     let b = SecretBox::from_value(v).map_err(|e| match e.kind {
         osis_schema::PathErrorKind::UnknownCase(c) => Error::Crypto(osis_crypto::Error::UnknownCase(c)),
         _ => Error::Malformed("entry box"),
     })?;
-    if b.to_value() != *v {
+    if b.to_value() != *v || !matches!(b, SecretBox::Sealed(_)) {
         return Err(Error::Malformed("entry box"));
     }
     Ok(b)
@@ -297,17 +296,8 @@ fn parse_box(v: &Value) -> Result<SecretBox, Error> {
 pub enum Reader<'a> {
     /// Listed by claim key: the X25519 half of its read-role KEM key (a node: its KEM key).
     Dh([u8; 32]),
-    /// A key actor other than a node, by static entry, with an entry box.
-    Static { signing: VerifyingKey, entry: EntryTo<'a> },
-}
-
-/// How an entry box reaches its key actor (spec/crypto.md §4 forms).
-pub enum EntryTo<'a> {
-    /// Sealed to its KEM key.
-    Sealed(&'a KemPublicKey),
-    /// Wrapped under `kdf("box", s)`, s its own read secret of epoch `epoch_s`, when the
-    /// registrar holds s (a link key's seed holder).
-    Symmetric { s: &'a Secret32, epoch_s: &'a Epoch },
+    /// A key actor other than a node, by static entry, with an entry box sealed to its KEM key.
+    Static { signing: VerifyingKey, kem: &'a KemPublicKey },
 }
 
 /// Who signs a new step.
@@ -352,10 +342,10 @@ pub fn register(parent: Parent, keys: StepKeys, readers: &[Reader], read: (&Tid,
                     claims.push(k.verifying_key().to_bytes());
                 }
             }
-            Reader::Static { signing, entry } => {
+            Reader::Static { signing, kem } => {
                 let e = static_entry(&label, signing);
                 claims.push(e);
-                entries.insert(e, seal_entry(&slot, entry, read.1, read.2, rng)?);
+                entries.insert(e, seal_entry(&slot, kem, read.1, read.2, rng)?);
             }
         }
     }
@@ -386,50 +376,23 @@ fn shuffle<T>(v: &mut [T], rng: &mut dyn CryptoRngCore) {
     }
 }
 
-fn epoch_value(e: &Epoch) -> EpochValue {
-    EpochValue { n: e.n(), nonce: *e.nonce() }
+fn seal_entry(slot: &BoxSlot, kem: &KemPublicKey, epoch: Epoch, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<SecretBox, Error> {
+    let item = BoxItem { role: Role::Read, epoch, secret: secret.clone() };
+    let sealed = seal_box(kem, slot, None, &[item], rng)?;
+    Ok(SecretBox::Sealed(SealedBox { keyset: None, suite: u64::from(osis_crypto::SUITE_1), sealed: Sealed::X25519MlKem768(sealed) }))
 }
 
-fn seal_entry(slot: &BoxSlot, to: &EntryTo, epoch: Epoch, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<SecretBox, Error> {
-    Ok(match to {
-        EntryTo::Sealed(pk) => {
-            let item = BoxItem { role: Role::Read, epoch, secret: secret.clone() };
-            let sealed = seal_box(pk, slot, None, &[item], rng)?;
-            SecretBox::Sealed(SealedBox { keyset: None, suite: u64::from(osis_crypto::SUITE_1), sealed: Sealed::X25519MlKem768(sealed) })
-        }
-        EntryTo::Symmetric { s, epoch_s } => {
-            let wrap = wrap_symmetric_box(s, slot, **epoch_s, secret)?;
-            SecretBox::Symmetric(SymmetricBox { epoch: epoch_value(epoch_s), wrap: wrap.to_vec() })
-        }
-    })
-}
-
-/// A key actor's key for its entry box.
-pub enum EntryKey<'a> {
-    Kem(&'a KemSecret),
-    /// Its own read secret s (the symmetric form names the epoch of s).
-    Symmetric(&'a Secret32),
-}
-
-/// Opens an entry box of `step` of `group`'s label: the read secret, with the epoch of `group`
-/// it names (spec/crypto.md §4) for the sealed form.
-pub fn open_entry_box(b: &SecretBox, step: &Step, key: EntryKey, group: &Tid) -> Result<(Option<Epoch>, Secret32), Error> {
+/// Opens an entry box of `step` of `group`'s label with the key actor's KEM key: the read
+/// secret, with the epoch of `group` it names (spec/crypto.md §4).
+pub fn open_entry_box(b: &SecretBox, step: &Step, kem: &KemSecret, group: &Tid) -> Result<(Epoch, Secret32), Error> {
     let slot = BoxSlot::Entry { label: step.label, step_key: step.step_key, group: *group };
-    match (b, key) {
-        (SecretBox::Sealed(sb), EntryKey::Kem(kem)) => {
-            let keyset = sb.keyset.as_ref().map(|e| Epoch::new(e.n, e.nonce)).transpose()?;
-            let Sealed::X25519MlKem768(sealed) = &sb.sealed;
-            let items = open_box(kem, &slot, BoxForm::Sealed { keyset, suite: sb.suite }, sealed)?;
-            match items.as_slice() {
-                [BoxItem { role: Role::Read, epoch, secret }] => Ok((Some(*epoch), secret.clone())),
-                _ => Err(Error::Malformed("entry box carries other than the read secret")),
-            }
-        }
-        (SecretBox::Symmetric(sb), EntryKey::Symmetric(s)) => {
-            let epoch_s = Epoch::new(sb.epoch.n, sb.epoch.nonce)?;
-            Ok((None, open_symmetric_box(s, &slot, epoch_s, &sb.wrap)?))
-        }
-        _ => Err(Error::Malformed("entry box form")),
+    let SecretBox::Sealed(sb) = b else { return Err(Error::Malformed("entry box form")) };
+    let keyset = sb.keyset.as_ref().map(|e| Epoch::new(e.n, e.nonce)).transpose()?;
+    let Sealed::X25519MlKem768(sealed) = &sb.sealed;
+    let items = open_box(kem, &slot, BoxForm::Sealed { keyset, suite: sb.suite }, sealed)?;
+    match items.as_slice() {
+        [BoxItem { role: Role::Read, epoch, secret }] => Ok((*epoch, secret.clone())),
+        _ => Err(Error::Malformed("entry box carries other than the read secret")),
     }
 }
 
@@ -539,13 +502,12 @@ pub(crate) mod tests {
         let m2 = KeyActorKeys::from_seed(&Secret32::from_bytes([2; 32]));
         let link = KeyActorKeys::from_seed(&Secret32::from_bytes([3; 32]));
         let card = KeyActorKeys::from_seed(&Secret32::from_bytes([4; 32]));
-        let s_link = Secret32::from_bytes([5; 32]);
         let readers = [
             Reader::Dh(m1.kem.public().x25519()),
             Reader::Dh(m2.kem.public().x25519()),
             Reader::Dh([0; 32]),
-            Reader::Static { signing: card.signing.verifying_key(), entry: EntryTo::Sealed(card.kem.public()) },
-            Reader::Static { signing: link.signing.verifying_key(), entry: EntryTo::Symmetric { s: &s_link, epoch_s: &epoch(9) } },
+            Reader::Static { signing: card.signing.verifying_key(), kem: card.kem.public() },
+            Reader::Static { signing: link.signing.verifying_key(), kem: link.kem.public() },
         ];
         let e3 = Epoch::derive(&TG, Role::Read, 3, &g.read).unwrap();
         let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &readers, (&TG, e3, &g.read), &mut rng).unwrap();
@@ -559,25 +521,24 @@ pub(crate) mod tests {
         let outsider = KeyActorKeys::from_seed(&Secret32::from_bytes([6; 32]));
         assert!(!c0.contains(&s0.claim_key(outsider.kem.x25519()).unwrap().verifying_key().to_bytes()));
         let b = c0.entry_box(&s0.label, &card.signing.verifying_key()).unwrap();
-        let (e, s) = open_entry_box(b, &s0, EntryKey::Kem(&card.kem), &TG).unwrap();
-        assert_eq!((e, s), (Some(e3), g.read.clone()));
+        let (e, s) = open_entry_box(b, &s0, &card.kem, &TG).unwrap();
+        assert_eq!((e, s), (e3, g.read.clone()));
         // read as another group's, the secret names that group's epoch (spec/crypto.md §4)
         let other = Tid::from_bytes([1; 15]);
-        assert_ne!(open_entry_box(b, &s0, EntryKey::Kem(&card.kem), &other).unwrap().0, Some(e3));
+        assert_ne!(open_entry_box(b, &s0, &card.kem, &other).unwrap().0, e3);
         // a registrar naming an epoch the secret does not name boxes nothing
         assert!(register(Parent::Genesis(&g.delete(0)), g.keys(0), &readers, (&TG, epoch(3), &g.read), &mut rng).is_err());
         let b = c0.entry_box(&s0.label, &link.signing.verifying_key()).unwrap();
-        assert_eq!(open_entry_box(b, &s0, EntryKey::Symmetric(&s_link), &TG).unwrap(), (None, g.read.clone()));
-        assert!(open_entry_box(b, &s0, EntryKey::Symmetric(&g.read), &TG).is_err());
-        assert!(open_entry_box(b, &s0, EntryKey::Kem(&card.kem), &TG).is_err());
+        assert_eq!(open_entry_box(b, &s0, &link.kem, &TG).unwrap(), (e3, g.read.clone()));
+        assert!(open_entry_box(b, &s0, &card.kem, &TG).is_err());
         // Another step's slot does not open it.
         let (s1, _) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, s0.keys, &[], (&TG, e3, &g.read), &mut rng).unwrap();
         let b = c0.entry_box(&s0.label, &card.signing.verifying_key()).unwrap();
-        assert!(open_entry_box(b, &s1, EntryKey::Kem(&card.kem), &TG).is_err());
+        assert!(open_entry_box(b, &s1, &card.kem, &TG).is_err());
     }
 
     // spec/wire.md §8: claim set rejections: count not a power of two, entry key not among the
-    // claims, wrong claim length, a box that is not a `box` value.
+    // claims, wrong claim length, a box that is not a sealed `box` value.
     #[test]
     fn claim_set_rejections() {
         let c = |n: usize| Value::List((0..n).map(|i| Value::bytes(&[i as u8; 32])).collect());
@@ -586,9 +547,12 @@ pub(crate) mod tests {
         for n in [0, 3, 5] {
             assert!(ClaimSet::from_value(&set(c(n), vec![])).is_err(), "{n}");
         }
-        let sym = SecretBox::Symmetric(SymmetricBox { epoch: EpochValue { n: 1, nonce: [0; 32] }, wrap: vec![0; 49] }).to_value();
-        assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[1; 32]), sym.clone())])).is_ok());
-        assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[9; 32]), sym)])).is_err());
+        let sealed = SecretBox::Sealed(SealedBox { keyset: None, suite: 1, sealed: Sealed::X25519MlKem768(vec![0; 1200]) }).to_value();
+        assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[1; 32]), sealed.clone())])).is_ok());
+        assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[9; 32]), sealed)])).is_err());
+        // an entry box is sealed (spec/wire.md §7)
+        let sym = SecretBox::Symmetric(osis_schema::core_types::SymmetricBox { epoch: osis_schema::core_types::Epoch { n: 1, nonce: [0; 32] }, wrap: vec![0; 49] }).to_value();
+        assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[1; 32]), sym)])).is_err());
         assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[1; 32]), Value::Int(0))])).is_err());
         assert!(ClaimSet::from_value(&set(Value::List(vec![Value::bytes(&[0; 31])]), vec![])).is_err());
         let parked = Value::Enum(7, None);
@@ -599,7 +563,7 @@ pub(crate) mod tests {
     // read and when registering.
     #[test]
     fn claim_set_size_cap() {
-        let big = SecretBox::Symmetric(SymmetricBox { epoch: EpochValue { n: 1, nonce: [0; 32] }, wrap: vec![0; MAX_CLAIM_SET] });
+        let big = SecretBox::Sealed(SealedBox { keyset: None, suite: 1, sealed: Sealed::X25519MlKem768(vec![0; MAX_CLAIM_SET]) });
         let set = ClaimSet { claims: vec![[1; 32]], entries: [([1; 32], big)].into_iter().collect() };
         let b = set.to_bytes();
         assert!(b.len() > MAX_CLAIM_SET && b.len() < MAX_MESSAGE);
