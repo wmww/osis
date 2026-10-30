@@ -191,6 +191,7 @@ impl Net {
             self.plinks.remove(&(n, c));
             self.plinks.remove(&(m, pc));
             self.queue.push_back(Msg::Close(m, pc));
+            self.forget_conn(n, c);
             if let Some(sy) = self.nodes[n].sync.as_mut() {
                 sy.handle(Event::Down { conn: c });
             }
@@ -201,13 +202,22 @@ impl Net {
         }
     }
 
+    /// Nothing more reaches node `n` on its closed connection `c`, queued or held back (a
+    /// restarted node numbers its connections from 1 again: a late delivery would land on the
+    /// new connection of that number).
+    fn forget_conn(&mut self, n: usize, c: ConnId) {
+        let to = |m: &Msg| matches!(m, Msg::Up(x, y) | Msg::ToNode(x, y, _) | Msg::Close(x, y) if *x == n && *y == c);
+        self.queue.retain(|m| !to(m));
+        self.held_msgs.retain(|m| !to(m));
+    }
+
     /// Closes node `n`'s connection to server `s` on both sides; what `s` held back for it is
     /// dropped.
     pub fn drop_link(&mut self, n: usize, s: usize) {
         let mine: Vec<(ConnId, u64)> = self.links.iter().filter(|((x, _), (y, _))| *x == n && *y == s).map(|((_, c), (_, hc))| (*c, *hc)).collect();
         for (c, hc) in mine {
             self.links.remove(&(n, c));
-            self.held_msgs.retain(|m| !matches!(m, Msg::ToNode(x, y, _) if *x == n && *y == c));
+            self.forget_conn(n, c);
             let now = self.now_at(s);
             let out = self.servers[s].hub.closed(now, hc);
             self.hub_out(s, out);
