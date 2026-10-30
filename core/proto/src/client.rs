@@ -485,10 +485,13 @@ impl ClientSession {
                 let mut budget = REPLY_BUDGET.saturating_sub(40 * gained.len());
                 let mut inline = Vec::new();
                 let mut rest = Vec::new();
+                let mut replaces = 0;
+                // within the message caps (spec/wire.md §11.2); the rest goes as Uploads
                 for e in entries {
                     let size = entry_size(&e);
-                    if rest.is_empty() && size <= budget {
+                    if rest.is_empty() && size <= budget && inline.len() < MAX_ITEMS && replaces + e.replaces.len() <= MAX_ITEMS {
                         budget -= size;
+                        replaces += e.replaces.len();
                         inline.push(e);
                     } else {
                         rest.push(e);

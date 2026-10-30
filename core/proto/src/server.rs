@@ -128,14 +128,18 @@ impl PathIndex for Index<'_> {
     }
 }
 
-/// OK under the head's key, NOT_HEAD under a recent earlier one, else REFUSED.
-fn check(k: &HeadKeys, key: StepKey, domain: Domain, digest: &[u8; 32], sig: &Signature) -> Code {
+/// OK under the head's key, NOT_HEAD under a recent earlier one, else REFUSED. `struck`: a
+/// signature of this message already verified under no key; then only the head's key is tried
+/// (spec/wire.md §11.2), so a message of bogus signatures costs one verification per signature,
+/// as an honest one does, not one per kept key.
+fn check(k: &HeadKeys, key: StepKey, domain: Domain, digest: &[u8; 32], sig: &Signature, struck: &mut bool) -> Code {
     if key.of(&k.head).verify(domain, digest, sig).is_ok() {
         return Code::OK;
     }
-    if k.older.get(key as usize).is_some_and(|ks| ks.iter().any(|pk| pk.verify(domain, digest, sig).is_ok())) {
+    if !*struck && k.older.get(key as usize).is_some_and(|ks| ks.iter().any(|pk| pk.verify(domain, digest, sig).is_ok())) {
         return Code::NOT_HEAD;
     }
+    *struck = true;
     Code::REFUSED
 }
 
@@ -168,6 +172,8 @@ pub struct ServerConnection {
     crossed: HashSet<BlobId>,
     /// Head keys per label, as of its head (`MAX_CACHED`).
     keys: HashMap<LabelId, HeadKeys>,
+    /// A signature of the message being handled verified under no key (`check`).
+    struck: bool,
     /// Dialable key of the last member proof that opened a label.
     member: Option<[u8; 32]>,
     /// Presence entries uploaded on this connection (spec/sync.md §5): removed when it closes
@@ -245,6 +251,7 @@ impl ServerConnection {
             replays: BTreeMap::new(),
             crossed: HashSet::new(),
             keys: HashMap::new(),
+            struck: false,
             member: None,
             presence: BTreeSet::new(),
             prune_at: PRESENCE_PRUNE,
@@ -442,6 +449,7 @@ impl ServerConnection {
             }
         };
         let id = msg.id();
+        self.struck = false;
         match self.dispatch(now, store, msg, out) {
             Ok(Some(reply)) => send(out, reply),
             Ok(None) => {}
@@ -474,11 +482,11 @@ impl ServerConnection {
                 M::Status { id, codes, head }
             }
             M::Deposit { id, label, blob, wrap, sig } => {
-                let Some(k) = self.keys(store, &label)? else {
+                let Some(k) = head_keys(&mut self.keys, store, &label)? else {
                     return Ok(Some(M::Budget { id, code: Code::UNKNOWN_LABEL, entries_left: 0, bytes_left: 0, head: None }));
                 };
                 let blob_id = osis_label::blob_id(&blob);
-                let mut code = check(k, StepKey::Deposit, Domain::Deposit, &entry_digest(&label, &blob_id, &wrap), &sig);
+                let mut code = check(k, StepKey::Deposit, Domain::Deposit, &entry_digest(&label, &blob_id, &wrap), &sig, &mut self.struck);
                 let head = if code == Code::NOT_HEAD { Some(k.head.clone()) } else { None };
                 if code == Code::OK {
                     code = self.accept(store, now, &label, blob_id, &blob, wrap, None, &[], out)?;
@@ -876,9 +884,9 @@ impl ServerConnection {
     fn accept(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_id: BlobId, blob: &[u8], wrap: Wrap, stamp: Option<Signature>, replaces: &[Replace], out: &mut Vec<ServerOutput>) -> Result<Code, StoreError> {
         // An oversized blob never gets here: the message decoder refuses it (msg tests `field_sizes`).
         debug_assert!(blob.len() <= osis_base::format::MAX_BLOB);
-        let Some(k) = self.keys(store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
+        let Some(k) = head_keys(&mut self.keys, store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
         if let Some(stamp) = stamp {
-            let code = check(k, StepKey::Write, Domain::Upload, &entry_digest(label, &blob_id, &wrap), &stamp);
+            let code = check(k, StepKey::Write, Domain::Upload, &entry_digest(label, &blob_id, &wrap), &stamp, &mut self.struck);
             if code != Code::OK {
                 return Ok(code);
             }
@@ -958,7 +966,7 @@ impl ServerConnection {
     /// that level) with the label key the level needs. The prefix (`blob_prefix`, never the
     /// whole blob) is read only once the label signature holds.
     fn delete_auth(&mut self, store: &dyn LabelStore, label: &LabelId, item: &DeleteItem) -> Result<Code, StoreError> {
-        let Some(k) = self.keys(store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
+        let Some(k) = head_keys(&mut self.keys, store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
         let Ok(digest) = delete_digest(label, &item.blob, item.at, item.by.map(|b| b.0)) else { return Ok(Code::MALFORMED) };
         let (key, by) = match &item.by {
             None => (StepKey::Delete, None),
@@ -967,7 +975,7 @@ impl ServerConnection {
                 Err(_) => return Ok(Code::REFUSED),
             },
         };
-        let code = check(k, key, Domain::Delete, &digest, &item.sig);
+        let code = check(k, key, Domain::Delete, &digest, &item.sig, &mut self.struck);
         if let Some((level, dsig)) = by {
             let prefix = match code {
                 Code::REFUSED => None,
@@ -1133,6 +1141,32 @@ mod tests {
             assert_eq!(codes, vec![Code::NOT_HEAD, Code::REFUSED]);
             assert_eq!(head.map(|h| h.id()), Some(path[999].id()));
             assert_eq!(store.step_reads.get(), 0);
+        }
+    }
+
+    // spec/wire.md §11.2, spec/requirements.md (peer input never causes unbounded work): once a
+    // signature of a message verifies under no key, the message's later ones are tried against
+    // the head's key only (one verification each, not one per kept key): an old key's stamp after
+    // a bogus one gets 1, before it 9, and the next message starts over
+    #[test]
+    fn bogus_signature_stops_older_keys() {
+        let f = Fixture::new(0x10);
+        let mut store = MemoryLabelStore::new([1; 32]);
+        let path = crate::store::tests::path(10, |i, r| 1 + ((i + r) % 200) as u8);
+        for s in &path {
+            store.push_step(&f.label, s.clone(), None).unwrap();
+        }
+        let e = f.entry(Fixture::blob(1));
+        let blob_id = osis_label::blob_id(&e.blob);
+        let old = Entry { stamp: osis_label::sign_stamp(&crate::store::tests::secret(1 + ((5 + 1) % 200) as u8), &f.label, &blob_id, &e.wrap), ..e.clone() };
+        let bad = Entry { stamp: Signature([0; 64]), ..e };
+        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE, tie: 0 });
+        c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+        for (i, (entries, want)) in [(vec![old.clone(), bad.clone()], vec![Code::NOT_HEAD, Code::REFUSED]), (vec![bad.clone(), old.clone()], vec![Code::REFUSED, Code::REFUSED]), (vec![old.clone()], vec![Code::NOT_HEAD])].into_iter().enumerate() {
+            let up = Message::Upload { id: 1 + i as u32, label: f.label, entries };
+            let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&up.encode())));
+            let Message::Status { codes, .. } = reply(&out) else { panic!("{out:?}") };
+            assert_eq!(codes, want, "message {i}");
         }
     }
 

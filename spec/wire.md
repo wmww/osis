@@ -199,8 +199,9 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 - **Events**: 0 an entry added or its wrap and stamp replaced (no stamp: deposited), 1 deleted, 2 a timed deletion pending at `at`, 3 a new head (without claim set). Expiry produces no event.
 - **Fetch** (spec/sync.md §5): items in request order, possibly a prefix of the request when the reply would exceed `MAX_MESSAGE`.
 - **Subscribe** (opened labels): the peer then sends Push with each new run of log events, with blobs as in Sync under the connection's last `inline_limit` for that label, and the relay-only entries other connections upload.
+- Once one signature of a message verifies under no key the server tries (code 1), it MAY check the message's later signatures against the head's keys only (code 1 where 9 would be due).
 - Status codes: 0 ok, 1 refused, 2 malformed, 3 too large (client-local: a server answers an oversized message as malformed), 4 rate limited, 5 deposit budget full, 6 tombstoned, 7 expired, 8 label not opened, 9 key not of the head, 10 cursor invalid, 11 unsupported, 12 storage cap reached, 13 unknown label.
-- Per-message caps: Upload and Delete 1024 items; replace items 1024 per Upload or Sync over all its entries; Fetch 1024 IDs; `gained` and `want` 4096; Subscribe and Unsubscribe 1024 labels; Reconcile 256 ranges, ReconcileReply 4096; a peer may refuse to hold more than 4096 open labels per connection (code 4).
+- Per-message caps: Upload, Delete and the entries of Sync 1024 items; replace items 1024 per Upload or Sync over all its entries; Fetch 1024 IDs; `gained` and `want` 4096; Subscribe and Unsubscribe 1024 labels; Reconcile 256 ranges, ReconcileReply 4096; a peer may refuse to hold more than 4096 open labels per connection (code 4).
 
 ### 11.3 Range reconciliation
 - The set reconciled is the blob IDs of the label's live entries at each side. Bounds are byte strings of at most 32 bytes compared as if right-padded with zero bytes; a range holds the IDs with `lower <= id < upper`, `upper = []` meaning the end of the ID space. Ranges in a message are sorted and disjoint.
