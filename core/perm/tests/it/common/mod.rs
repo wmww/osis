@@ -291,13 +291,38 @@ pub fn residue(tl: &osis_perm::Timeline) -> BTreeSet<WriteId> {
         }
         tl.role(&m.author, &op.member, at) == Some(Role::Admin) && !matches!(class, osis_perm::Class::Chain | osis_perm::Class::Edge)
     };
+    // The audit that dropped a write saw it in effect; the settled walk does not. A fall that
+    // holds only with the write's own edge gone justifies itself (OSIS_PERM_SEED=52011): with
+    // the edge set as the write set it (if nothing in the settled walk changed it up to just
+    // after R), X's class on N just after R must still be below the write's class.
+    let self_supported = |w: &WriteId, p: &osis_perm::Point, class: osis_perm::Class| {
+        let WriteId::Op(c, k) = w else { return false };
+        let Some(m) = tl.membership_commit(c) else { return false };
+        let Some(op) = m.ops.get(usize::try_from(*k).unwrap_or(usize::MAX)) else { return false };
+        let mut next = p.commit.0;
+        for b in next.iter_mut().rev() {
+            *b = b.wrapping_add(1);
+            if *b != 0 {
+                break;
+            }
+        }
+        let after = osis_perm::Point { commit: CommitId(next), ..*p };
+        let mut edges = tl.edges_at(Some(after));
+        if edges.get(&op.member, &op.target) != tl.edges_at(Some(m.point())).get(&op.member, &op.target) {
+            return false;
+        }
+        edges.set(op.member, op.target, op.edge);
+        let view = osis_perm::graph::View::at(tl.owners(), &edges, Some(p.ts));
+        let x = m.author;
+        view.standing(&x, &view.roles_from(&x), &op.target).class >= class
+    };
     let audits = |w: &WriteId, p: &osis_perm::Point| {
         let Some((x, n, at)) = by(w) else { return false };
         if self_removal(w) {
             return false;
         }
         let class = tl.class(&x, &n, osis_perm::At::before(at));
-        tl.falls(&x, &n).iter().any(|f| f.point == *p && f.now < class && class <= f.held)
+        tl.falls(&x, &n).iter().any(|f| f.point == *p && f.now < class && class <= f.held) && !self_supported(w, p, class)
     };
     tl.dropped().iter().filter(|(w, p)| !audits(w, p)).map(|(w, _)| *w).collect()
 }
