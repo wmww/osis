@@ -600,3 +600,29 @@ fn slow_server_link_lost_no_leftover_presence_spec_sync_9() {
     assert_eq!(live(&net, slow, &l), held + 1, "one entry of A at the slow server");
     assert_eq!(live(&net, fast, &l), live(&net, slow, &l));
 }
+
+// spec/sync.md §5, §9: a cursor set offline under the write
+// key of a head the label rotated past meanwhile is refused 9 at the reconnection; stamped again
+// under the new head's key, it reaches the other reader there.
+#[test]
+fn offline_presence_across_rotation_restamped_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[sv]);
+    let x = net.node(4, &[sv]);
+    let (g, t) = setup(&mut net, a, &[(b, Role::Write), (c, Role::Write), (x, Role::Read)], &[sv]);
+    net.set_online(b, false);
+    net.run();
+    net.eph_write(b, t, &cursor(), s("b@1"));
+    let (ad, bt, ct, xt) = (net.tid(a), net.tid(b), net.tid(c), net.tid(x));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(ad, Role::Admin), (bt, Role::Write), (ct, Role::Write)]);
+    remove_member(e, g, xt, &rs, 9);
+    net.run();
+    net.set_online(b, true);
+    net.run();
+    net.advance(10_000);
+    assert_eq!(at(&mut net, c, t), Some(s("b@1")), "b's offline cursor reaches c");
+}

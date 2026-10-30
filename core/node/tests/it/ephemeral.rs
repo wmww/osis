@@ -2071,7 +2071,6 @@ fn split_cover_pieces_under_different_labels_spec_sync_9() {
 // entries as gained): a Sync refused 8 because a read rotation landed between its Open and it
 // listed nothing to the server, so the Sync after the reopen on the same connection lists them
 // again (it counted the refused list as held there and never uploaded b's offline note).
-// End to end (c reads the note) waits on issues/eph-own-entry-not-head.md.
 #[test]
 fn gained_announced_again_after_refused_sync_spec_sync_5() {
     let mut net = Net::new();
@@ -2103,4 +2102,69 @@ fn gained_announced_again_after_refused_sync_spec_sync_5() {
     let sent = &net.gained[&b];
     assert_eq!(sent.len(), 2, "listed again after the refused Sync: {sent:?}");
     assert_eq!(sent[0], sent[1]);
+    net.advance(60_000);
+    assert_eq!(notes(&mut net, c, w).get("b").map(String::as_str), Some("1"), "b's offline note reaches c");
+}
+
+// spec/sync.md §5, §9: a writer's note built offline under
+// the write key of a head the label rotated past meanwhile is refused 9 at its reconnection;
+// stamped again under the new head's key and sent again, it reaches the other readers there.
+#[test]
+fn offline_entry_across_rotation_restamped_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[sv]);
+    let x = net.node(4, &[sv]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Write), (x, Role::Read)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    net.set_online(b, false);
+    net.run();
+    note(&mut net, b, w, "b", "1");
+    let (at, bt, ct, xt) = (net.tid(a), net.tid(b), net.tid(c), net.tid(x));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write), (ct, Role::Write)]);
+    remove_member(e, g, xt, &rs, 9);
+    net.run();
+    net.set_online(b, true);
+    net.run();
+    net.advance(60_000);
+    assert_eq!(notes(&mut net, c, w).get("b").map(String::as_str), Some("1"), "b's offline note reaches c");
+}
+
+// spec/sync.md §5, §9: a writer demoted to reader while its note waited offline holds no write
+// key of the new head: once it sees it no longer writes the label it stops trying (reported),
+// and the note reaches nobody.
+#[test]
+fn demoted_writer_entry_stops_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[sv]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    net.set_online(b, false);
+    net.run();
+    note(&mut net, b, w, "b", "1");
+    let bt = net.tid(b);
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None };
+    let d = osis_node::flows::Demotion { member: bt, new: Some(edge), presync: osis_node::flows::PreSync::Synced };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let rx = net.listen(b);
+    net.set_online(b, true);
+    net.run();
+    net.advance(60_000);
+    assert_eq!(net.engine(b).role_on(&g), Some(Role::Read));
+    let ds: Vec<String> = rx.try_iter().filter_map(|e| match e { osis_node::Event::Diagnostic(d) => Some(d.detail), _ => None }).collect();
+    assert!(ds.iter().any(|d| d.contains("no longer writes the label")), "reported: {ds:?}");
+    assert_eq!(notes(&mut net, c, w).get("b"), None, "the demoted writer's note never reaches c");
 }

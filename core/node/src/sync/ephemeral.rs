@@ -27,7 +27,7 @@ use crate::events::{Diagnostic, DiagnosticKind};
 use crate::labeling::{HeadKeys, delete_item, open_commit, seal_body_as};
 use osis_base::{BlobId, CommitId, LabelId, Tid};
 use osis_commit::{DeleteKey, EphClass};
-use osis_crypto::{Signature, SigningSecret};
+use osis_crypto::{Signature, SigningSecret, VerifyingKey};
 use osis_label::Class;
 use osis_proto::{Code, Command};
 use std::collections::{BTreeMap, BTreeSet};
@@ -100,6 +100,13 @@ pub(crate) struct Lane {
     /// statuses are the lane's, never a sync record's.
     pub uploads: BTreeSet<(ConnId, LabelId, BlobId)>,
     pub deletes: BTreeSet<(ConnId, LabelId, BlobId)>,
+    /// Own entries in flight on a connection, with the write key that stamped them.
+    pub stamped: BTreeMap<(ConnId, LabelId, BlobId), VerifyingKey>,
+    /// Own entries a connection's head refused as stamped under another write key (code 9),
+    /// or that had no write key to go under there, with the key tried (`None`): stamped again
+    /// and sent once the connection's keys give another (`eph_restamp`), dropped once this node
+    /// is no longer a writer of the label.
+    pub restamp: BTreeMap<(ConnId, LabelId, BlobId), Option<VerifyingKey>>,
     /// Plain entries a server refused for its cap, per connection: uploaded there again at the
     /// periodic pass (`eph_retry`); reported once each.
     pub capped: BTreeSet<(ConnId, LabelId, BlobId)>,
@@ -249,7 +256,38 @@ impl SyncEngine {
         for c in commits {
             self.eph_place(c, out)?;
         }
+        self.eph_restamp(out)?;
         self.eph_flush(out)
+    }
+
+    /// Own entries waiting for another write key on a connection (`Lane::restamp`): sent
+    /// stamped under it once the label is open there with one; dropped (reported) once this
+    /// node is no longer a writer of the label, or the entry is gone.
+    fn eph_restamp(&mut self, out: &mut Vec<Action>) -> Result<()> {
+        if self.eph.restamp.is_empty() {
+            return Ok(());
+        }
+        let waiting: Vec<((ConnId, LabelId, BlobId), Option<VerifyingKey>)> = self.eph.restamp.iter().map(|(k, v)| (*k, *v)).collect();
+        let mut lost = BTreeSet::new();
+        for ((conn, l, b), tried) in waiting {
+            if !self.eph.entries.contains_key(&(l, b)) {
+                self.eph.restamp.remove(&(conn, l, b));
+                continue;
+            }
+            if self.group_of(&l).is_none_or(|g| self.engine.role_on(&g) < Some(osis_base::Role::Write)) {
+                self.eph.restamp.remove(&(conn, l, b));
+                lost.insert(l);
+                continue;
+            }
+            let Some(lc) = self.lc(conn, &l).filter(|x| x.phase == Phase::Open) else { continue };
+            if lc.keys.write.as_ref().is_some_and(|w| Some(w.verifying_key()) != tried) {
+                self.eph_upload_on(conn, l, &[b], out)?;
+            }
+        }
+        for l in lost {
+            self.eph_report(&l, "this node no longer writes the label: its own ephemeral entries are not sent");
+        }
+        Ok(())
     }
 
     /// Whether an entry of commit `c` under `l` is held at server `s`.
@@ -549,12 +587,18 @@ impl SyncEngine {
                 continue;
             }
             // an own entry is stamped under this connection's head: one stamped before a
-            // rotation (built offline, or for another server) is refused under it (code 9)
+            // rotation (built offline, or for another server) is refused under it (code 9);
+            // with no write key there it waits for one (`eph_restamp`)
             let stamp = match (e.stamp, &keys.write) {
                 (_, Some(w)) if e.own => {
                     let s = osis_label::sign_stamp(w, &l, b, &e.wrap);
                     e.stamp = Some(s);
+                    self.eph.stamped.insert((conn, l, *b), w.verifying_key());
                     s
+                }
+                _ if e.own => {
+                    self.eph.restamp.insert((conn, l, *b), None);
+                    continue;
                 }
                 (Some(s), _) => s,
                 _ => continue,
@@ -563,6 +607,7 @@ impl SyncEngine {
             let replaces = self.eph_replaces(conn, l, *b, &mut room);
             entries.push(osis_proto::Entry { blob, wrap, stamp, replaces });
             self.eph.uploads.insert((conn, l, *b));
+            self.eph.restamp.remove(&(conn, l, *b));
         }
         if !entries.is_empty() {
             self.command(conn, Command::Upload { label: l, entries }, out)?;
@@ -686,6 +731,7 @@ impl SyncEngine {
                 continue;
             }
             let replaced = self.eph_replaced(conn, server, l, b, code == Code::OK);
+            let key = self.eph.stamped.remove(&(conn, l, b));
             if !self.eph.entries.contains_key(&(l, b)) {
                 // a relay-only entry, or one forgotten meanwhile: deleted now that it is there
                 // (once what absorbed it is there too)
@@ -723,6 +769,11 @@ impl SyncEngine {
                 }
                 Code::TOMBSTONED => {
                     self.eph.present.remove(&(server, l, b));
+                }
+                // stamped under a write key older than the head's (a rotation this node had
+                // not read): again under the next one (the reply's head is taken meanwhile)
+                Code::NOT_HEAD if key.is_some() => {
+                    self.eph.restamp.insert((conn, l, b), key);
                 }
                 c => self.diag(format!("ephemeral upload refused: code {}", c.0)),
             }
@@ -999,6 +1050,8 @@ impl SyncEngine {
         self.eph.gained.retain(|(c, _), _| *c != conn);
         self.eph.reconciling.retain(|(c, _), _| *c != conn);
         self.eph.uploads.retain(|(c, _, _)| *c != conn);
+        self.eph.stamped.retain(|(c, _, _), _| *c != conn);
+        self.eph.restamp.retain(|(c, _, _), _| *c != conn);
         self.eph.deletes.retain(|(c, _, _)| *c != conn);
         self.eph.capped.retain(|(c, _, _)| *c != conn);
         self.eph.orphans.retain(|(_, _, c), _| *c != conn);
