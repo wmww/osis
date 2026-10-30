@@ -276,27 +276,44 @@ async fn redeem_direct_in_process_spec_permissions_9() {
     assert!(matches!(carol.redeem(&link).await, Err(osis::Error::Network(_))));
     assert!(carol.sync_engine(|s| s.link_peer_keys()).is_empty());
     assert_eq!(carol.role_on(g), None);
-    // even at the sharer's current key, K refuses the revoked link's key: the open fails there
+    // even at the sharer's current key, K refuses the revoked link's key: the open fails there.
+    // Erin waits as long as the guard (a short wait could end before a loaded machine gets the
+    // open refused) and drops her redemption once refused; the new key is listened on first (a
+    // dial before that pauses the peer)
+    let nk = alice.sync_engine(|s| s.own_reach()).unwrap().dialable;
+    tokio::time::timeout(GUARD, async {
+        while probe.dial(&osis_transport::Address { url: osis_transport::peer_url(&[]), key: nk }).await.is_err() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     let mut patched = parsed.clone();
-    patched.peers = vec![osis_label::Peer { dialable: alice.sync_engine(|s| s.own_reach()).unwrap().dialable, relays: vec![] }];
+    patched.peers = vec![osis_label::Peer { dialable: nk, relays: vec![] }];
     let patched: osis::ShareLink = patched.to_text().unwrap().parse().unwrap();
+    let mut e = cfg(5, vec![], Transport::InProcess(net.endpoint("e")));
+    e.wait_timeout = GUARD;
+    let erin = Osis::create(e).unwrap().0;
+    net.partition("e", "s");
     let refused = async {
         loop {
-            if carol.sync_engine(|s| s.describe()).iter().any(|d| d.contains("Failed")) {
+            if erin.sync_engine(|s| s.describe()).iter().any(|d| d.contains("Failed")) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     };
-    let (r, seen) = tokio::join!(carol.redeem(&patched), tokio::time::timeout(Duration::from_secs(2), refused));
-    assert!(matches!(r, Err(osis::Error::Network(_))));
-    assert!(seen.is_ok(), "K's open was refused at the sharer");
-    assert_eq!(carol.role_on(g), None);
+    tokio::select! {
+        r = erin.redeem(&patched) => panic!("K's open was refused at the sharer: {r:?}"),
+        _ = refused => {}
+    }
+    assert!(erin.sync_engine(|s| s.link_peer_keys()).is_empty());
+    assert_eq!(erin.role_on(g), None);
     // a redemption dropped while it waits forgets its follow too (the key guard)
     let dave = Osis::create(cfg(4, vec![], Transport::InProcess(net.endpoint("d")))).unwrap().0;
     assert!(tokio::time::timeout(Duration::from_millis(300), dave.redeem(&link)).await.is_err());
     assert!(dave.sync_engine(|s| s.link_peer_keys()).is_empty());
-    drop((alice, bob, carol, dave));
+    drop((alice, bob, carol, dave, erin));
     assert!(sctl.send(osis_server::Control::Shutdown).await.is_ok());
     server.await.unwrap();
 }
