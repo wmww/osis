@@ -150,28 +150,21 @@ fn collect(tx: &mut Tx<'_>, a: &Tid, horizon: &mut Option<WallMs>) -> Result<BTr
     }
     let mut found: BTreeMap<Tid, BTreeMap<Class, Departure>> = BTreeMap::new();
     let mut work = std::collections::VecDeque::new();
+    let keep = |found: &mut BTreeMap<Tid, BTreeMap<Class, Departure>>, work: &mut std::collections::VecDeque<(Tid, Departure)>, v: Tid, d: Departure| {
+        if let std::collections::btree_map::Entry::Vacant(e) = found.entry(v).or_default().entry(class_of(&held, &v, &d)) {
+            e.insert(d.clone());
+            work.push_back((v, d));
+        }
+    };
     for v in &below {
-        let mine = found.entry(*v).or_default();
         for d in direct_departures(tx, v, horizon)? {
-            let c = class_of(&held, v, &d);
-            if !mine.contains_key(&c) {
-                mine.insert(c, d);
-                work.push_back((*v, c));
-            }
+            keep(&mut found, &mut work, *v, d);
         }
     }
-    while let Some((w, c)) = work.pop_front() {
-        let d = found[&w][&c].clone();
+    while let Some((w, d)) = work.pop_front() {
         for u in parents.get(&w).into_iter().flatten() {
-            if u == a || d.member == *u || d.via.contains(u) {
-                continue;
-            }
-            let du = Departure::inside(w, &d);
-            let cu = class_of(&held, u, &du);
-            let at = found.entry(*u).or_default();
-            if !at.contains_key(&cu) {
-                at.insert(cu, du);
-                work.push_back((*u, cu));
+            if u != a && d.member != *u && !d.via.contains(u) {
+                keep(&mut found, &mut work, *u, Departure::inside(w, &d));
             }
         }
     }
@@ -1176,11 +1169,12 @@ mod tests {
     }
 
     type Key = (Option<Tid>, Option<Tid>, Tid, Tid, Role);
+    type Decisions = (BTreeSet<(Key, [bool; 3])>, Vec<BTreeSet<Key>>, BTreeSet<Role>);
 
     /// What the rotation decisions read of departures `deps` of `a`: each class (first and
     /// second actor, actor left, member, role) with the first actor's verdicts, the uncovered
     /// classes per role at `a`'s newest held epoch, and the uncovered roles.
-    fn decisions(tx: &mut Tx<'_>, a: &Tid, deps: Vec<Departure>) -> (BTreeSet<(Key, [bool; 3])>, Vec<BTreeSet<Key>>, BTreeSet<Role>) {
+    fn decisions(tx: &mut Tx<'_>, a: &Tid, deps: Vec<Departure>) -> Decisions {
         let held = super::held_actors(tx).unwrap();
         let key = |d: &Departure| (d.via.first().copied(), d.via.get(1).copied(), d.via.last().copied().unwrap_or(*a), d.member, d.from);
         let classes = deps
