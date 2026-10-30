@@ -1,20 +1,21 @@
 //! Read-only views into fragments for the node (perm adapts `/members` entries into edge
 //! writes, spec/permissions.md §5.1): map entries with their keys and fragments.
 
-use crate::fragment::{Fragment, Map};
+use crate::fragment::{Eid, Fragment, Map};
 use crate::state::MemberRef;
 use crate::stamp::{Dot, Stamp};
 use osis_base::Value;
 
 impl Map {
-    /// Entries by dot: (dot, entry reset, key if carried, fragment if carried).
+    /// Entry records by dot, then key: (dot, reset, key (`None`: the key-erased record),
+    /// fragment if carried).
     pub fn entries(&self) -> impl Iterator<Item = (&Dot, Option<&Stamp>, Option<&Value>, Option<&Fragment>)> {
-        self.entries.iter().map(|(d, e)| (d, e.reset.as_ref(), e.key.as_ref(), e.frag.as_deref()))
+        self.entries.iter().map(|(id, e)| (&id.dot, e.reset.as_ref(), id.key(), e.frag.as_deref()))
     }
 
-    /// The live entries of key `k` by dot (O(log n + their number)).
-    pub fn live(&self, k: &Value) -> Vec<(&Dot, &Fragment)> {
-        self.live_dots(k).into_iter().filter_map(|d| Some((d, self.entries.get(d)?.frag.as_deref()?))).collect()
+    /// The live records of key `k` (O(log n + their number)), with their own fragments.
+    pub fn live(&self, k: &Value) -> Vec<(&Eid, &Fragment)> {
+        self.live_ids(k).into_iter().filter_map(|id| Some((id, self.entries.get(id)?.frag.as_deref()?))).collect()
     }
 }
 
@@ -43,10 +44,10 @@ impl Fragment {
         match (seg, f) {
             (PathSeg::Field(id), Fragment::Struct(s)) => s.fields.get(id)?.walk(rest, any_case),
             (PathSeg::Case(id), Fragment::Enum(e)) if any_case || e.case.as_ref().and_then(|c| c.case) == Some(*id) => e.payloads.get(id)?.walk(rest, any_case),
-            (PathSeg::Key(k), Fragment::Map(m)) => match m.live_dots(k).as_slice() {
-                // one live entry: read in place
-                [d] => m.entries.get(*d)?.frag.as_deref()?.walk(rest, any_case),
-                ds => crate::ops::key_state(m, ds)?.walk(rest, any_case),
+            (PathSeg::Key(k), Fragment::Map(m)) => match m.live_ids(k).as_slice() {
+                // one live record: read in place
+                [id] => m.record_frag(id)?.walk(rest, any_case),
+                ids => crate::ops::key_state(m, ids)?.walk(rest, any_case),
             },
             (PathSeg::Index(i), Fragment::Seq(s)) => crate::seq::element_at(s, *i)?.1?.walk(rest, any_case),
             _ => None,
@@ -104,8 +105,8 @@ impl Fragment {
             Fragment::Struct(Struct { meta, fields }) => meta_bytes(meta) + tree(fields) + fields.values().map(Fragment::approx_bytes).sum::<usize>(),
             Fragment::Enum(Enum { meta, case, payloads }) => meta_bytes(meta) + case.as_ref().map_or(0, |_| STAMP) + tree(payloads) + payloads.values().map(Fragment::approx_bytes).sum::<usize>(),
             Fragment::Map(m) => {
-                let index = tree(&m.keys) + m.keys.iter().map(|(k, ds)| value_bytes(k) + nodes(ds.len(), size_of::<Dot>())).sum::<usize>();
-                meta_bytes(&m.meta) + tree(&m.entries) + index + m.entries.values().map(|e| opt_stamp(&e.reset) + opt_stamp(&e.created) + e.key.as_ref().map_or(0, value_bytes) + boxed(&e.frag)).sum::<usize>()
+                let index = tree(&m.keys) + m.keys.iter().map(|(k, ds)| value_bytes(k) + nodes(ds.len(), size_of::<Eid>()) + ds.iter().filter_map(Eid::key).map(value_bytes).sum::<usize>()).sum::<usize>();
+                meta_bytes(&m.meta) + tree(&m.entries) + index + m.entries.iter().map(|(id, e)| opt_stamp(&e.reset) + opt_stamp(&e.created) + id.key().map_or(0, value_bytes) + boxed(&e.frag)).sum::<usize>()
             }
             Fragment::Seq(s) => {
                 meta_bytes(&s.meta)

@@ -5,7 +5,7 @@
 //! order, maximal runs, `W`) is enforced by that one comparison.
 
 use crate::error::Error;
-use crate::fragment::{Bag, CaseWrite, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
+use crate::fragment::{Bag, CaseWrite, Eid, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
 use crate::page::{PageError, PageParams, PageSink, PageSource};
 use crate::seq::{self, Seq};
 use crate::stamp::{Dot, Interner, Source, Stamp};
@@ -184,15 +184,15 @@ pub(crate) fn encode_fragment(cx: &mut Enc, f: &Fragment) -> Result<Value, Error
         Fragment::Map(m) => {
             let mut a = head(cx, Encoding::Map, &m.meta);
             let mut items = Vec::with_capacity(m.entries.len());
-            for (d, e) in cx.sorted(&m.entries) {
-                let mut x = vec![cx.dot(d)];
+            for (id, e) in cx.sorted_by(&m.entries, |id| &id.dot) {
+                let mut x = vec![cx.dot(&id.dot)];
                 // the creation's commit, where a snapshot or import carries it (a writer's own
                 // creations are implied, §3.2)
                 if let Some(c) = e.created.as_ref().filter(|c| !cx.is_own(c)) {
                     x.push(cx.commit_of(c));
                 }
                 x.push(cx.opt_stamp(e.reset.as_ref()));
-                x.extend(e.key.clone());
+                x.extend(id.key().cloned());
                 x.push(opt_frag(cx, e.frag.as_deref())?);
                 items.push(Value::List(x));
             }
@@ -574,9 +574,6 @@ fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragme
                 let frag = opt_stamp_only(f, |x| cx.fragment(x))?.map(Box::new);
                 if let Some(k) = key {
                     check_value(k)?;
-                    if frag.is_none() {
-                        return Err(Error::Malformed("keyed entry without a fragment"));
-                    }
                 }
                 if frag.is_some() {
                     cx.claim(&dot)?;
@@ -596,7 +593,7 @@ fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragme
                     None if cx.kind() == crate::wire::DeltaKind::Writer && frag.is_some() && dot.src == *cx.own() && cx.range().contains(dot.ctr) => Some(Stamp::new(cx.ts(), dot.src.clone(), dot.ctr)),
                     None => None,
                 };
-                entries.insert(dot, Entry { reset, key: key.cloned(), frag, created });
+                entries.insert(Eid::new(dot, key.cloned()), Entry { reset, frag, created });
             }
             cx.done(fetched);
             Fragment::Map(Map::new(meta, entries))

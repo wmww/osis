@@ -109,7 +109,7 @@ pub fn diff(w: &mut Writer, st: Option<&Frag>, ty: &Ty, v: &Value) -> Option<Fra
                 let s = w.delta();
                 for (_, dots) in gone {
                     for d in dots {
-                        de.insert(d.clone(), Entry { reset: Some(s.clone()), key: None, frag: None, created: None });
+                        de.insert(d.clone(), Entry { reset: Some(s.clone()), frag: None, created: None });
                     }
                 }
             }
@@ -118,13 +118,13 @@ pub fn diff(w: &mut Writer, st: Option<&Frag>, ty: &Ty, v: &Value) -> Option<Fra
                     Some(dots) => {
                         let d = dots[0].clone();
                         if let Some(delta) = diff(w, crate::ops::key_state(entries, dots).as_ref(), vt, val) {
-                            de.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(delta)), created: None });
+                            de.insert(d, Entry { reset: None, frag: Some(Box::new(delta)), created: None });
                         }
                     }
                     None => {
                         let st = w.stamp();
-                        let d = st.dot.clone();
-                        de.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, vt, val))), created: Some(st) });
+                        let d = (st.dot.clone(), Some(k.clone()));
+                        de.insert(d, Entry { reset: None, frag: Some(Box::new(create(w, vt, val))), created: Some(st) });
                     }
                 }
             }

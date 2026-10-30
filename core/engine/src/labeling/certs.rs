@@ -73,7 +73,7 @@ impl Engine {
             let (Some(a), Decoded::Delta(d)) = (h.aspects.get(ai), &d) else { continue };
             let named: Vec<Tid> = match a.ak.as_str() {
                 "/members" => crate::apply::validity::edge_members(&self.core, &a.tid, &d.fragment),
-                _ => crate::apply::keys::secrets_write(&self.core, &a.tid, &d.fragment).0.boxes.into_keys().map(|k| k.member).collect(),
+                _ => crate::apply::keys::secrets_write(&d.fragment).boxes.into_keys().map(|k| k.member).collect(),
             };
             out.entry(ai).or_default().extend(named);
         }

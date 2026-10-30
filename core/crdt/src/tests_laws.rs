@@ -72,17 +72,6 @@ fn forged_states(seed: u64, types: &[Ty]) -> (Vec<Fragment>, Vec<Option<crdt_mod
     (ms.iter().map(ostate).collect(), ms)
 }
 
-/// The kitchen sink without its map: a forged key copy is not order-free (issues/forged-creation-copies.md).
-fn sink_no_map() -> Ty {
-    match sink_no_seq() {
-        Ty::Struct(mut f) => {
-            f.remove(&7);
-            Ty::Struct(f)
-        }
-        t => t,
-    }
-}
-
 /// §4.1 copy order: copies of one write with differing payloads join alike in every order, and
 /// as the model joins them.
 fn forged_laws(seed: u64, types: &[Ty]) {
@@ -115,7 +104,7 @@ proptest! {
     fn forged_copies_join_alike_spec_4_1(seed in any::<u64>()) {
         let list = Ty::List(Box::new(Ty::Register));
         let mut r = crate::testutil::rng(seed);
-        let all = [Ty::Text, list, sink_no_map()];
+        let all = [Ty::Text, list, sink_no_seq()];
         let ty = all[r.below(all.len())].clone();
         forged_laws(seed, &[ty]);
     }
@@ -126,7 +115,7 @@ proptest! {
     fn forged_copies_across_encodings_spec_7(seed in any::<u64>()) {
         let set = Ty::Set(Box::new(Ty::Register));
         let mut r = crate::testutil::rng(seed);
-        let all = [Ty::Register, Ty::Text, Ty::Counter, set, sink_no_map()];
+        let all = [Ty::Register, Ty::Text, Ty::Counter, set, sink_no_seq()];
         let pick: Vec<Ty> = (0..3).map(|_| all[r.below(all.len())].clone()).collect();
         forged_laws(seed, &pick);
     }

@@ -179,14 +179,6 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
         }
         Ok(())
     })?;
-    tx.scan(crate::apply::keys::UNRESOLVED, |k, _| {
-        let mut r = Rd::new(k);
-        let c = CommitId(r.arr()?);
-        if hit(&c, r.u32()? as usize) {
-            stale.push([crate::apply::keys::UNRESOLVED, k].concat());
-        }
-        Ok(())
-    })?;
     for k in stale {
         tx.txn.remove_local(&k, Shred::Yes)?;
     }

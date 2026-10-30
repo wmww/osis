@@ -32,26 +32,12 @@ fn map(f: Option<&Fragment>) -> Option<&osis_crdt::Map> {
     }
 }
 
-/// Records the keys of the `/secrets` entries a delta creates (`own`: a removal names only the
-/// entry's dot; a record into another's entry repeats a key it may have forged), and for each
-/// box written the commit's time: the earliest write of the box, and the earliest of its epoch
-/// (`Core::epoch_intro`).
-pub(crate) fn note_box_keys(core: &mut Core, h: &Header, own: Option<&crate::engine::Owned>, actor: &Tid, delta: &Fragment) {
-    if let Some(m) = map(field(delta, 1)) {
-        for (d, _, k, _) in m.entries() {
-            if let Some(k) = k.filter(|_| own.is_some_and(|o| o.owns(d)))
-                && !core.ix.box_keys.contains_key(&(*actor, d.clone()))
-            {
-                core.ix.box_keys.insert((*actor, d.clone()), k.clone());
-            }
-        }
-    }
+/// Records for each box a `/secrets` delta writes the commit's time: the earliest write of the
+/// box, and the earliest of its epoch (`Core::epoch_intro`).
+pub(crate) fn note_box_keys(core: &mut Core, h: &Header, actor: &Tid, delta: &Fragment) {
     if let Some(m) = map(field(delta, 0)) {
-        for (d, _, k, f) in m.entries() {
+        for (_, _, k, f) in m.entries() {
             let Some(k) = k else { continue };
-            if own.is_some_and(|o| o.owns(d)) && !core.ix.box_keys.contains_key(&(*actor, d.clone())) {
-                core.ix.box_keys.insert((*actor, d.clone()), k.clone());
-            }
             if f.is_none() {
                 continue;
             }
@@ -104,7 +90,7 @@ pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet
                         if ak.as_str() == "/keys" {
                             note_keysets(tx.core, &m.header, a, &d.fragment);
                         } else {
-                            note_box_keys(tx.core, &m.header, crate::engine::Owned::of(&m.header, &id, ai).as_ref(), a, &d.fragment);
+                            note_box_keys(tx.core, &m.header, a, &d.fragment);
                         }
                     }
                 }
@@ -120,26 +106,23 @@ fn note_intro(core: &mut Core, h: &Header, actor: &Tid, r: Role, e: osis_crypto:
     core.ix.epoch_intro.upsert((*actor, r, e), || v, |slot| *slot = (*slot).min(v));
 }
 
-/// The `/secrets` write a delta makes: keyed entries put, resets of entries whose key is known
-/// here removed. `false` while a removed entry's key is unknown (its creation not held yet).
-pub(crate) fn secrets_write(core: &Core, actor: &Tid, delta: &Fragment) -> (SecretsWrite, bool) {
+/// The `/secrets` write a delta makes: keyed entries put, keyed entries reset removed (a removal
+/// record carries its entry's key, spec/crdt.md §5.6).
+pub(crate) fn secrets_write(delta: &Fragment) -> SecretsWrite {
     let mut w = SecretsWrite::default();
-    let mut complete = true;
     if let Some(m) = map(field(delta, 0)) {
-        for (d, _, k, f) in m.entries() {
-            match (k, f.and_then(Fragment::read)) {
-                (Some(k), Some(v)) => {
-                    if let (Some(k), Some(b)) = (typed(k, "box_key").and_then(|k| BoxKey::from_value(&k).ok()), typed(&v, "box").and_then(|b| SecretBox::from_value(&b).ok())) {
+        for (_, r, k, f) in m.entries() {
+            let Some(k) = k.and_then(|k| typed(k, "box_key")).and_then(|k| BoxKey::from_value(&k).ok()) else { continue };
+            match (r, f.and_then(Fragment::read)) {
+                (_, Some(v)) => {
+                    if let Some(b) = typed(&v, "box").and_then(|b| SecretBox::from_value(&b).ok()) {
                         w.boxes.insert(k, b);
                     }
                 }
-                (None, None) => match core.ix.box_keys.get(&(*actor, d.clone())).and_then(|k| typed(k, "box_key")).and_then(|k| BoxKey::from_value(&k).ok()) {
-                    Some(k) => {
-                        w.removed.insert(k);
-                    }
-                    None => complete = false,
-                },
-                _ => {}
+                (Some(_), None) => {
+                    w.removed.insert(k);
+                }
+                (None, None) => {}
             }
         }
     }
@@ -150,7 +133,7 @@ pub(crate) fn secrets_write(core: &Core, actor: &Tid, delta: &Fragment) -> (Secr
             }
         }
     }
-    (w, complete)
+    w
 }
 
 /// The keysets a `/keys` delta writes (whole keysets: a rotation replaces the field).
@@ -185,13 +168,6 @@ pub(crate) struct Pending {
     before: Keys,
 }
 
-/// A commit's `/secrets` write that waits for the keys of the boxes it removes.
-#[derive(Clone, Debug)]
-pub struct Unresolved {
-    keys: KeysWrite,
-    before: Keys,
-}
-
 pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)], valid: &[bool]) -> Result<Vec<Pending>> {
     let mut out = Vec::new();
     if h.kind != Kind::Membership {
@@ -206,7 +182,7 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
             continue;
         }
         let Decoded::Delta(d) = d else { continue };
-        note_box_keys(tx.core, h, crate::engine::Owned::of(h, &h.id(), *ai).as_ref(), &a.tid, &d.fragment);
+        note_box_keys(tx.core, h, &a.tid, &d.fragment);
         let keys = parts
             .iter()
             .find_map(|(x, _, k)| match (h.aspects.get(*x), k) {
@@ -238,53 +214,30 @@ fn save(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
 /// After the joins: the applied rotations, and `/secrets` compaction snapshots held.
 pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)], valid: &[bool], pending: Vec<Pending>) -> Result<()> {
     tx.core.touch();
-    let mut actors = std::collections::BTreeSet::new();
+    // per part, the write of all its held deltas at once
+    let mut done = std::collections::BTreeSet::new();
     for p in pending {
-        let u = Unresolved { keys: p.keys, before: p.before };
-        put_unresolved(tx, &p.id, p.ai, &u)?;
-        tx.core.ix.secrets_unresolved.insert((p.id, p.ai), u);
-        actors.insert(p.actor);
-    }
-    // apply every waiting write of these actors whose removed keys are now known
-    let waiting: Vec<(CommitId, usize, Unresolved)> = tx.core.ix.secrets_unresolved.iter().map(|(k, v)| (k.0, k.1, v.clone())).collect();
-    let mut progress = true;
-    while progress {
-        progress = false;
-        for (c, ai, u) in &waiting {
-            if !tx.core.ix.secrets_unresolved.contains_key(&(*c, *ai)) {
-                continue;
+        if !done.insert((p.id, p.ai)) {
+            continue;
+        }
+        let mut w = SecretsWrite::default();
+        for d in super::held_parts(tx, &p.id, p.ai)? {
+            if let Decoded::Delta(d) = d {
+                w.extend(secrets_write(&d.fragment));
             }
-            let Some(actor) = tx.core.ix.commits.get(c).and_then(|m| m.header.aspects.get(*ai)).map(|a| a.tid) else { continue };
-            if !actors.contains(&actor) {
-                continue;
-            }
-            let mut w = SecretsWrite::default();
-            let mut complete = true;
-            for d in super::held_parts(tx, c, *ai)? {
-                if let Decoded::Delta(d) = d {
-                    let (x, ok) = secrets_write(tx.core, &actor, &d.fragment);
-                    w.extend(x);
-                    complete &= ok;
-                }
-            }
-            if !complete {
-                continue;
-            }
-            tx.core.ix.secrets_unresolved.remove(&(*c, *ai));
-            remove_unresolved(tx, c, *ai)?;
-            progress = true;
-            let e = tx.core.ix.secrets.entry_or_default(actor);
-            let held = held_count(e);
-            let recorded = w.applied(e, (&u.keys, &u.before)).unwrap_or(false);
-            if recorded {
-                save(tx, &actor)?;
-            }
-            // a keyset it published refuted a held secret (the boxes may carry the genuine one),
-            // or its keysets and history boxes may check candidates: reopen
-            let reopen = |e: &osis_keys::ActorEpochs| held_count(e) < held || (recorded && ROLES.iter().any(|r| e.role(*r).epochs().any(|(x, _)| e.role(*r).is_reading_only(x))));
-            if tx.core.ix.secrets.get(&actor).is_some_and(reopen) {
-                super::atomic::observe_state(tx, &actor, &osis_base::Ak::new("/secrets").map_err(|_| crate::Error::Misuse("ak"))?)?;
-            }
+        }
+        let actor = p.actor;
+        let e = tx.core.ix.secrets.entry_or_default(actor);
+        let held = held_count(e);
+        let recorded = w.applied(e, (&p.keys, &p.before)).unwrap_or(false);
+        if recorded {
+            save(tx, &actor)?;
+        }
+        // a keyset it published refuted a held secret (the boxes may carry the genuine one),
+        // or its keysets and history boxes may check candidates: reopen
+        let reopen = |e: &osis_keys::ActorEpochs| held_count(e) < held || (recorded && ROLES.iter().any(|r| e.role(*r).epochs().any(|(x, _)| e.role(*r).is_reading_only(x))));
+        if tx.core.ix.secrets.get(&actor).is_some_and(reopen) {
+            super::atomic::observe_state(tx, &actor, &osis_base::Ak::new("/secrets").map_err(|_| crate::Error::Misuse("ak"))?)?;
         }
     }
     if h.kind == Kind::MembershipSnapshot {
@@ -324,7 +277,7 @@ pub(crate) fn invalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     let mut eps = Vec::new();
     for d in super::held_parts(tx, c, ai)? {
         if let Decoded::Delta(d) = d {
-            for k in secrets_write(tx.core, &a.tid, &d.fragment).0.history.keys() {
+            for k in secrets_write(&d.fragment).history.keys() {
                 if let Ok(e) = osis_keys::aspects::from_schema(&k.epoch)
                     && keys.keysets.get(&k.role).is_some_and(|ks| ks.epoch == k.epoch)
                 {
@@ -359,7 +312,7 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     let mut secrets = SecretsWrite::default();
     for d in super::held_parts(tx, c, ai)? {
         if let Decoded::Delta(d) = d {
-            secrets.extend(secrets_write(tx.core, &a.tid, &d.fragment).0);
+            secrets.extend(secrets_write(&d.fragment));
         }
     }
     let mut keys = KeysWrite::default();
@@ -380,66 +333,12 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     Ok(())
 }
 
-pub(crate) const UNRESOLVED: &[u8] = b"w/";
-
 /// (pending commit, actor) whose boxes the lost-access forgetting kept (`rotation::boxes_kept`):
 /// never read as candidates (they would keep the lost secrets for good), only applied.
 pub(crate) const SEALED: &[u8] = b"b/";
 
 pub(crate) fn sealed_key(c: &CommitId, a: &Tid) -> Vec<u8> {
     [SEALED, &c.0[..], a.as_bytes()].concat()
-}
-
-fn unresolved_key(c: &CommitId, ai: usize) -> Vec<u8> {
-    [UNRESOLVED, &c.0[..], &(ai as u32).to_be_bytes()].concat()
-}
-
-fn keys_of_write(w: &KeysWrite) -> Keys {
-    let mut k = Keys::default();
-    w.apply(&mut k);
-    k
-}
-
-fn write_of_keys(k: &Keys) -> KeysWrite {
-    let mut w = KeysWrite::default();
-    for (r, ks) in [(Role::Read, &k.read), (Role::Write, &k.write), (Role::Admin, &k.admin)] {
-        if let Some(ks) = ks {
-            w.keysets.insert(r, ks.clone());
-        }
-    }
-    w
-}
-
-fn put_unresolved(tx: &mut Tx<'_>, c: &CommitId, ai: usize, u: &Unresolved) -> Result<()> {
-    let v = Value::List(vec![keys_of_write(&u.keys).to_value(), u.before.to_value()]);
-    Ok(tx.txn.put_local(&unresolved_key(c, ai), &osis_base::encode(&v), Shred::No)?)
-}
-
-fn remove_unresolved(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
-    tx.txn.remove_local(&unresolved_key(c, ai), Shred::No)?;
-    Ok(())
-}
-
-/// Loads the waiting `/secrets` writes.
-pub(crate) fn load_unresolved(tx: &mut Tx<'_>) -> Result<()> {
-    let mut out = Vec::new();
-    tx.scan(UNRESOLVED, |k, v| {
-        let mut r = crate::engine::records::Rd::new(k);
-        let c = CommitId(r.arr()?);
-        let ai = r.u32()? as usize;
-        let lim = osis_base::Limits { max_depth: 32, max_bytes: v.len() };
-        let bad = || crate::Error::Corrupt("unresolved secrets write");
-        let Value::List(items) = osis_base::decode(&v, &lim).map_err(|_| bad())? else { return Err(bad()) };
-        let [kw, kb] = items.as_slice() else { return Err(bad()) };
-        let keys = write_of_keys(&Keys::from_value(kw).map_err(|_| bad())?);
-        let before = Keys::from_value(kb).map_err(|_| bad())?;
-        out.push((c, ai, Unresolved { keys, before }));
-        Ok(())
-    })?;
-    for (c, ai, u) in out {
-        tx.core.ix.secrets_unresolved.insert((c, ai), u);
-    }
-    Ok(())
 }
 
 /// Opens, read-only, the boxes of a pending membership commit addressed to this node or an actor
@@ -449,7 +348,7 @@ pub(crate) fn load_unresolved(tx: &mut Tx<'_>) -> Result<()> {
 /// decoded unverified, so what they yield is reading-only: never encrypted under, and replaced
 /// by an applied valid box (spec/crypto.md §4).
 pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id: &CommitId) -> Result<()> {
-    for (a, w) in pending_secrets_writes(tx.core, blob, id) {
+    for (a, w) in pending_secrets_writes(blob, id) {
         if (w.boxes.is_empty() && w.history.is_empty()) || tx.txn.get_local(&sealed_key(id, &a))?.is_some() {
             continue;
         }
@@ -524,7 +423,7 @@ pub(crate) fn pending_grantees(blob: &osis_commit::CommitBlob, id: &CommitId, on
 
 /// The `/secrets` writes of a held, not applied membership commit, per actor, decoded
 /// unverified (what `read_pending_boxes` reads; the lost-access trigger's pending grants).
-pub(crate) fn pending_secrets_writes(core: &Core, blob: &osis_commit::CommitBlob, id: &CommitId) -> Vec<(Tid, SecretsWrite)> {
+pub(crate) fn pending_secrets_writes(blob: &osis_commit::CommitBlob, id: &CommitId) -> Vec<(Tid, SecretsWrite)> {
     let h = &blob.header;
     let mut out = Vec::new();
     if !h.kind.is_membership() || !h.is_resolved() {
@@ -538,7 +437,7 @@ pub(crate) fn pending_secrets_writes(core: &Core, blob: &osis_commit::CommitBlob
         }
         let Ok(cx) = osis_commit::delta_ctx(h, id, p.ai, &mut interner) else { continue };
         let Ok(d) = osis_crdt::decode_delta(&p.delta, &cx, &mut interner, None) else { continue };
-        out.push((a.tid, secrets_write(core, &a.tid, &d.fragment).0));
+        out.push((a.tid, secrets_write(&d.fragment)));
     }
     out
 }

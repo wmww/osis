@@ -18,7 +18,7 @@
 //! - A case write without a reset (an enum created at an absent spot whose P was blocked) writes nothing.
 use crate::ops::{create, key_state, live_elems, live_entries, register, remove, replace, Ty, Writer};
 use crate::stamp::{Dot, Stamp};
-use crate::state::{Anchor, Content, Elem, Entry, Frag, SeqElem, sib_key};
+use crate::state::{Anchor, Content, Eid, Elem, Entry, Frag, SeqElem, sib_key};
 use crate::value::Value;
 use std::collections::BTreeMap;
 
@@ -216,26 +216,26 @@ fn at(cx: &mut Cx, w: &mut Writer, ty: &Ty, d: &Frag, s: Option<&Frag>, b: Optio
                 _ => None,
             };
             // below a key, a position's value is that of the join of the key's live entries (§4.6, §5.6)
-            let at_key = |es: Option<&BTreeMap<Dot, Entry>>, k: &Value| -> Option<Frag> {
+            let at_key = |es: Option<&BTreeMap<Eid, Entry>>, k: &Value| -> Option<Frag> {
                 let es = es?;
                 let dots = live_entries(es).remove(k)?;
                 key_state(es, &dots)
             };
             let mut out = BTreeMap::new();
-            let mut removed: BTreeMap<Value, Vec<Dot>> = BTreeMap::new();
-            for (dot, e) in entries {
-                if e.frag.is_some() && (cx.made)(dot) {
+            let mut removed: BTreeMap<Value, Vec<Eid>> = BTreeMap::new();
+            for (id, e) in entries {
+                if e.frag.is_some() && (cx.made)(&id.0) {
                     cx.stats.creation += 1;
-                    out.insert(dot.clone(), Entry { reset: Some(u.clone()), key: None, frag: None, created: None });
+                    out.insert(id.clone(), Entry { reset: Some(u.clone()), frag: None, created: None });
                 } else if e.reset.is_some() {
-                    let be = bentries.and_then(|be| be.get(dot)).filter(|be| be.frag.as_ref().map_or(false, |f| f.present()));
-                    if let Some(k) = be.and_then(|be| be.key.clone()) {
-                        removed.entry(k).or_default().push(dot.clone());
+                    let live = bentries.map_or(false, |be| crate::state::live_records(be).iter().any(|(x, _)| x == id));
+                    if let (true, Some(k)) = (live, &id.1) {
+                        removed.entry(k.clone()).or_default().push(id.clone());
                     }
-                } else if let (Some(k), Some(fd)) = (&e.key, &e.frag) {
+                } else if let (Some(k), Some(fd)) = (&id.1, &e.frag) {
                     let (sv, bv) = (at_key(sentries, k), at_key(bentries, k));
                     if let Some(x) = at(cx, w, vt, fd, sv.as_ref(), bv.as_ref(), false, absent_ok) {
-                        out.insert(dot.clone(), Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(x)), created: None });
+                        out.insert(id.clone(), Entry { reset: None, frag: Some(Box::new(x)), created: None });
                     }
                 }
             }
@@ -244,7 +244,7 @@ fn at(cx: &mut Cx, w: &mut Writer, ty: &Ty, d: &Frag, s: Option<&Frag>, b: Optio
                 cx.stats.key_readd += 1;
                 let st = w.stamp();
                 let frag = create(w, vt, &v);
-                out.insert(st.dot.clone(), Entry { reset: None, key: Some(k), frag: Some(Box::new(frag)), created: Some(st) });
+                out.insert((st.dot.clone(), Some(k)), Entry { reset: None, frag: Some(Box::new(frag)), created: Some(st) });
             }
             (!out.is_empty()).then(|| Frag::Map { c: Default::default(), entries: out })
         }
@@ -393,8 +393,8 @@ fn valued(f: &Frag, out: &mut Vec<Stamp>) {
             payloads.values().for_each(|x| valued(x, out));
         }
         Frag::Map { entries, .. } => {
-            for e in entries.values() {
-                out.extend(e.created.clone().filter(|_| e.key.is_some()));
+            for ((_, k), e) in entries {
+                out.extend(e.created.clone().filter(|_| k.is_some()));
                 if let Some(x) = &e.frag {
                     valued(x, out);
                 }

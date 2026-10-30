@@ -600,7 +600,7 @@ impl Engine {
             }
             if let Some(b) = self.commit_bytes(c)?.and_then(|b| CommitBlob::decode(&b).ok()) {
                 out.extend(keys::pending_grantees(&b, c, thing));
-                for (a, w) in keys::pending_secrets_writes(&self.core, &b, c) {
+                for (a, w) in keys::pending_secrets_writes(&b, c) {
                     if a == *thing {
                         out.extend(w.boxes.into_keys().map(|k| k.member));
                     }
@@ -839,7 +839,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 for (ai, _, d) in &parts {
                     if let (Some(a), Decoded::Delta(d)) = (b.header.aspects.get(*ai), d) {
                         match a.ak.as_str() {
-                            "/secrets" => keys::note_box_keys(tx.core, &b.header, crate::engine::Owned::of(&b.header, &id, *ai).as_ref(), &a.tid, &d.fragment),
+                            "/secrets" => keys::note_box_keys(tx.core, &b.header, &a.tid, &d.fragment),
                             "/keys" => keys::note_keysets(tx.core, &b.header, &a.tid, &d.fragment),
                             _ => {}
                         }
@@ -859,7 +859,6 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     } else {
         tx.core.update_timelines();
     }
-    keys::load_unresolved(tx)?;
     crate::rotation::load_lost_due(tx)?;
     crate::retention::load_deaths_due(tx)?;
     let mut pend = Vec::new();

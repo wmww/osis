@@ -5,7 +5,7 @@
 //! result equals the union of writes followed by a whole-state prune (§4.1, §4.2).
 
 use crate::changes::Changes;
-use crate::fragment::{Bag, BagKind, CaseWrite, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
+use crate::fragment::{Bag, BagKind, CaseWrite, Eid, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
 use crate::seq::{self, Seq, SeqContent};
 use crate::stamp::{Dot, Stamp, max_opt};
 use osis_base::{Float, Value};
@@ -246,67 +246,87 @@ fn join_coll(meta: &mut Meta, elems: &mut BTreeMap<Dot, Elem>, dm: Meta, de: BTr
     join_elems(elems, de, e.as_ref(), ch);
 }
 
-/// Prunes a map entry; the key goes with the content (content-free tombstone, §5.6).
-fn prune_entry(en: &mut Entry, e: Option<&Stamp>, ch: &mut Changes) -> bool {
-    prune_write(&mut en.reset, e, ch);
-    let ee = max_opt(e.cloned(), en.reset.clone());
-    prune_opt(&mut en.frag, ee.as_ref(), ch);
-    prune_write(&mut en.created, ee.as_ref(), ch);
-    if en.frag.is_none() {
-        en.key = None;
-        en.created = None;
+/// Prunes the records of one dot (§5.6): each under its own reset, the key-erased record also
+/// under every keyed record's, a keyed record also under the key-erased record's; a creation
+/// lives only with content. Records left with neither reset nor content go.
+fn prune_dot(recs: &mut Vec<(Eid, Entry)>, e: Option<&Stamp>, ch: &mut Changes) {
+    for (_, en) in recs.iter_mut() {
+        prune_write(&mut en.reset, e, ch);
     }
-    en.reset.is_some() || en.frag.is_some()
+    let erased = recs.iter().find(|(id, _)| id.key.is_none()).and_then(|(_, en)| en.reset.clone());
+    let keyed = recs.iter().filter(|(id, _)| id.key.is_some()).fold(None, |m, (_, en)| max_opt(m, en.reset.clone()));
+    for (id, en) in recs.iter_mut() {
+        let cross = if id.key.is_none() { keyed.clone() } else { erased.clone() };
+        let ee = max_opt(max_opt(e.cloned(), en.reset.clone()), cross);
+        prune_opt(&mut en.frag, ee.as_ref(), ch);
+        prune_write(&mut en.created, ee.as_ref(), ch);
+        if en.frag.is_none() {
+            en.created = None;
+        }
+    }
+    recs.retain(|(_, en)| en.reset.is_some() || en.frag.is_some());
 }
 
-fn join_entries(m: &mut Map, d: BTreeMap<Dot, Entry>, e: Option<&Stamp>, ch: &mut Changes) {
-    for (dot, de) in d {
-        join_entry(&mut m.entries, dot.clone(), de, e, ch);
-        m.index_dot(&dot);
+/// Prunes every record of a map under `e` (§4.2, §5.6).
+fn prune_entries(m: &mut Map, e: Option<&Stamp>, ch: &mut Changes) {
+    let mut out = BTreeMap::new();
+    let mut group: Vec<(Eid, Entry)> = Vec::new();
+    for (id, en) in std::mem::take(&mut m.entries) {
+        if group.first().is_some_and(|(g, _)| g.dot != id.dot) {
+            prune_dot(&mut group, e, ch);
+            out.extend(group.drain(..));
+        }
+        group.push((id, en));
     }
+    prune_dot(&mut group, e, ch);
+    out.extend(group);
+    m.entries = out;
 }
 
-fn join_entry(s: &mut BTreeMap<Dot, Entry>, dot: Dot, mut de: Entry, e: Option<&Stamp>, ch: &mut Changes) {
-    match s.get_mut(&dot) {
-        Some(se) => {
-            // the key of the creation with the greater stamp; of copies of one creation (or of
-            // records without one) the greater key (§4.1 copy order, §5.6)
-            let take = match de.created.cmp(&se.created) {
-                Ordering::Greater => de.key.is_some(),
-                Ordering::Equal => opt_value_cmp(de.key.as_ref(), se.key.as_ref()) == Ordering::Greater,
-                Ordering::Less => se.key.is_none() && de.key.is_some(),
-            };
-            let raised = join_write(&mut se.reset, de.reset, ch);
-            prune_write(&mut se.reset, e, ch);
-            let ee = max_opt(e.cloned(), se.reset.clone());
-            if raised {
-                prune_opt(&mut se.frag, ee.as_ref(), ch);
-            }
-            // (bytes, not `Value` equality: that compares links by hash alone)
-            if take && opt_value_cmp(de.key.as_ref(), se.key.as_ref()) != Ordering::Equal {
-                se.key = de.key;
-                ch.touch();
-            }
-            if raised {
-                prune_write(&mut se.created, ee.as_ref(), ch);
-            }
-            join_opt(&mut se.frag, de.frag, ee.as_ref(), ch);
-            let mut dc = de.created;
-            prune_write(&mut dc, ee.as_ref(), ch);
-            join_write(&mut se.created, dc, ch);
-            if se.frag.is_none() {
-                se.key = None;
-                se.created = None;
-            }
-            if se.reset.is_none() && se.frag.is_none() {
-                s.remove(&dot);
+/// Joins records `d` into the map under `e`, a dot at a time (§5.6): per record its reset,
+/// content and creation; then the dot's records are pruned together.
+fn join_entries(m: &mut Map, d: BTreeMap<Eid, Entry>, e: Option<&Stamp>, ch: &mut Changes) {
+    let mut it = d.into_iter().peekable();
+    while let Some((id, de)) = it.next() {
+        let dot = id.dot.clone();
+        let mut incoming = vec![(id, de)];
+        while let Some((x, _)) = it.peek()
+            && x.dot == dot
+        {
+            incoming.extend(it.next());
+        }
+        let ids: Vec<Eid> = m.of_dot(&dot).map(|(x, _)| x.clone()).collect();
+        let mut recs: Vec<(Eid, Entry)> = ids.into_iter().filter_map(|x| m.entries.remove_entry(&x)).collect();
+        let mut new = Vec::new();
+        for (id, de) in incoming {
+            match recs.iter_mut().find(|(x, _)| *x == id) {
+                Some((_, se)) => {
+                    let raised = join_write(&mut se.reset, de.reset, ch);
+                    prune_write(&mut se.reset, e, ch);
+                    let ee = max_opt(e.cloned(), se.reset.clone());
+                    if raised {
+                        prune_opt(&mut se.frag, ee.as_ref(), ch);
+                        prune_write(&mut se.created, ee.as_ref(), ch);
+                    }
+                    join_opt(&mut se.frag, de.frag, ee.as_ref(), ch);
+                    let mut dc = de.created;
+                    prune_write(&mut dc, ee.as_ref(), ch);
+                    join_write(&mut se.created, dc, ch);
+                }
+                None => {
+                    new.push(id.clone());
+                    recs.push((id, de));
+                }
             }
         }
-        None => {
-            if prune_entry(&mut de, e, ch) {
-                ch.touch();
-                s.insert(dot, de);
-            }
+        recs.sort_by(|a, b| a.0.cmp(&b.0));
+        prune_dot(&mut recs, e, ch);
+        if recs.iter().any(|(x, _)| new.contains(x)) {
+            ch.touch();
+        }
+        for (id, en) in recs {
+            m.index_id(&id);
+            m.entries.insert(id, en);
         }
     }
 }
@@ -429,7 +449,7 @@ impl Fragment {
             (Fragment::Map(mut a), Fragment::Map(b)) => {
                 let (e, raised) = join_meta(&mut a.meta, b.meta, e_parent, ch);
                 if raised {
-                    a.entries.retain(|_, en| prune_entry(en, e.as_ref(), ch));
+                    prune_entries(&mut a, e.as_ref(), ch);
                 }
                 join_entries(&mut a, b.entries, e.as_ref(), ch);
                 Fragment::Map(a)
@@ -472,7 +492,7 @@ impl Fragment {
             }
             Fragment::Map(m) => {
                 let e = prune_meta(&mut m.meta, e_parent, ch);
-                m.entries.retain(|_, en| prune_entry(en, e.as_ref(), ch));
+                prune_entries(m, e.as_ref(), ch);
             }
             Fragment::Seq(s) => {
                 let e = prune_meta(&mut s.meta, e_parent, ch);
@@ -719,18 +739,19 @@ impl Fragment {
             }
             Fragment::Map(m) => {
                 let mut by_key: BTreeMap<&Value, Fragment> = BTreeMap::new();
-                for en in m.entries.values() {
-                    if let (Some(k), Some(f)) = (&en.key, &en.frag)
-                        && f.present()
-                    {
-                        match by_key.get_mut(k) {
-                            None => {
-                                by_key.insert(k, (**f).clone());
-                            }
-                            Some(g) => {
-                                // same-key entries read as their join (§5.6)
-                                g.join_into((**f).clone(), None, &mut Changes::new());
-                            }
+                for id in m.entries.keys() {
+                    let Some(k) = id.key() else { continue };
+                    if !m.is_live(id) {
+                        continue;
+                    }
+                    let Some(f) = m.record_frag(id) else { continue };
+                    match by_key.get_mut(k) {
+                        None => {
+                            by_key.insert(k, f.into_owned());
+                        }
+                        Some(g) => {
+                            // same-key entries read as their join (§5.6)
+                            g.join_into(f.into_owned(), None, &mut Changes::new());
                         }
                     }
                 }

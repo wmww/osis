@@ -319,7 +319,7 @@ fn rotation_boxes(tx: &mut Tx<'_>, a: &Tid, c: &osis_base::CommitId) -> Result<O
     let mut out = BTreeSet::new();
     for d in parts {
         if let osis_commit::Decoded::Delta(d) = d {
-            out.extend(crate::apply::keys::secrets_write(tx.core, a, &d.fragment).0.boxes.into_keys());
+            out.extend(crate::apply::keys::secrets_write(&d.fragment).boxes.into_keys());
         }
     }
     Ok(Some(out))
@@ -860,7 +860,7 @@ fn pending_grants(tx: &mut Tx<'_>) -> Result<Vec<PendingGrant>> {
             let Ok(blob) = osis_commit::CommitBlob::decode(&bytes) else { continue };
             let (author, ts) = (blob.header.author, blob.header.ts.wall_ms().0);
             let recent = ts.saturating_add(PENDING_GRANT_WAIT_MS) > now && ts <= now.saturating_add(osis_base::format::MAX_DRIFT_MS);
-            for (x, w) in crate::apply::keys::pending_secrets_writes(tx.core, &blob, &id) {
+            for (x, w) in crate::apply::keys::pending_secrets_writes(&blob, &id) {
                 let core = &*tx.core;
                 let ours = |m: &Tid| *m == node || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m));
                 if w.boxes.keys().any(|k| ours(&k.member)) {
@@ -890,7 +890,7 @@ pub(crate) fn boxes_kept(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_
     let node = core.id.tid();
     let ours = |m: &Tid| *m == node || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m));
     let newer = |x: &Tid, k: &BoxKey| ours(&k.member) && k.role == Role::Read && held.get(x).is_none_or(|n| k.epoch.n > *n);
-    crate::apply::keys::pending_secrets_writes(core, blob, id).into_iter().filter(|(x, w)| w.boxes.keys().any(|k| newer(x, k)) && may_grant(core, &blob.header.author, x) && authentic(core, blob, id, x)).map(|(x, _)| x).collect()
+    crate::apply::keys::pending_secrets_writes(blob, id).into_iter().filter(|(x, w)| w.boxes.keys().any(|k| newer(x, k)) && may_grant(core, &blob.header.author, x) && authentic(core, blob, id, x)).map(|(x, _)| x).collect()
 }
 
 impl Engine {

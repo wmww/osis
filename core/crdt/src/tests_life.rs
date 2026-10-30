@@ -142,7 +142,10 @@ pub(crate) fn expiry_laws(seed: u64, ty: &Ty) {
     let (a, b) = (&s[0], &s[1]);
     assert_eq!(strip(&join(a, b)), join(&strip(a), &strip(b)), "strip commutes with join");
     assert_eq!(strip(&strip(a)), strip(a), "idempotent");
-    assert_eq!(join(a, &strip(a)), a.clone(), "valued copy wins");
+    // a stripped map record moves to its dot's key-erased record (§4.7), which the valued
+    // records' read joins: the same read, and the same state once stripped
+    assert_eq!(join(a, &strip(a)).read(), a.read(), "valued copy wins");
+    assert_eq!(strip(&join(a, &strip(a))), strip(a), "valued copy wins, stripped");
 }
 
 /// §4.6 un-merge over a random history of type `ty`.

@@ -1,0 +1,7 @@
+# Index notes from dropped bodies differ between open and rebuild
+> Summary: after a `/secrets` compaction drops a grant's and a rotation's bodies, a reopened node keeps notes derived from those bodies (`box_written`, `boxes_to`, `rotation_role`, `grant_overreach`, an epoch's `snapshot` flag in `secrets`) that a rebuild (slow-path open) cannot re-derive; validity agrees. Unclear which side is meant.
+> Tags: engine
+
+Seen in `keys_tests::secrets_removal_dropped_creation_open_equals_rebuild` (core/engine/src/apply/validity.rs): after `snapshot` + `drop_body` of grant `g` and removal `c1`, then a later removal, `index_digest()` before and after `rebuild_index()` differs in: `box_written` and `boxes_to` entries for the read box `g` wrote, `rotation_role` and `grant_overreach` rows of `g` and `c1` (rebuild judges only held parts), and `snapshot: true` (open) vs `false` (rebuild) on the actor's epochs. Commit validity is equal, so the test compares `.commits` only.
+
+Not investigated whether these are pre-existing (likely: none of them reads removal keys) or matter: `box_written`/`epoch_intro` feed rotation decisions (whether an epoch covers a departure), the `snapshot` flag the re-seal rule (spec/permissions.md §3, no re-seal at an epoch established by a snapshot alone). If they matter, either persist them as derived from bodies held once (and accept they outlive the body, spec/commits.md §5 "no local entry derived from a dropped body" says otherwise) or re-derive from the compaction snapshot.

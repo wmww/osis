@@ -24,15 +24,45 @@ pub struct Elem {
     pub frag: Option<Box<Frag>>,
 }
 
+/// A map entry record's identity (§5.6): the entry's dot and key; no key for the dot's key-erased record (§4.7).
+pub type Eid = (Dot, Option<Value>);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub reset: Option<Stamp>,
-    /// `None` for tombstones and entries whose creation is value-less (§4.7, §5.6).
-    pub key: Option<Value>,
     pub frag: Option<Box<Frag>>,
-    /// The creation write's stamp (dot = the entry's), while it survives pruning and the entry
+    /// The creation write's stamp (dot = the entry's), while it survives pruning and the record
     /// holds content (§5.6).
     pub created: Option<Stamp>,
+}
+
+/// The records of map `entries` that are live, with what each reads as (§5.6): a keyed record whose fragment is
+/// present, unless its dot's greatest creation is held only by the dot's key-erased record; it reads as its fragment
+/// joined with the key-erased record's.
+pub fn live_records(entries: &BTreeMap<Eid, Entry>) -> Vec<(Eid, Frag)> {
+    let mut out = Vec::new();
+    for ((d, k), en) in entries {
+        let (Some(_), Some(f)) = (k, &en.frag) else { continue };
+        if !f.present() {
+            continue;
+        }
+        let erased = entries.get(&(d.clone(), None));
+        let ec = erased.and_then(|e| e.created.clone());
+        let kc = entries.iter().filter(|((x, y), _)| x == d && y.is_some()).filter_map(|(_, e)| e.created.clone()).max();
+        if ec.is_some() && kc < ec {
+            continue;
+        }
+        let f = match erased.and_then(|e| e.frag.as_deref()) {
+            Some(x) => {
+                let mut j = join_any((**f).clone(), x.clone());
+                j.prune(None);
+                j
+            }
+            None => (**f).clone(),
+        };
+        out.push(((d.clone(), k.clone()), f));
+    }
+    out
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -85,7 +115,7 @@ pub enum Frag {
     Struct { c: Composite, fields: BTreeMap<u64, Frag> },
     Enum { c: Composite, case: Option<(Stamp, Option<u64>)>, payloads: BTreeMap<u64, Frag> },
     Set { c: Composite, elems: BTreeMap<Dot, Elem> },
-    Map { c: Composite, entries: BTreeMap<Dot, Entry> },
+    Map { c: Composite, entries: BTreeMap<Eid, Entry> },
     Seq { text: bool, c: Composite, elems: BTreeMap<Dot, SeqElem> },
     /// Several encodings at one position (§7): the register slot plus non-register slots keyed by encoding, joined
     /// pointwise. Every slot already holds the embedding of the register slot. Never produced by a writer; appears in
@@ -354,20 +384,13 @@ impl Frag {
             (Frag::Struct { c: ca, fields: fa }, Frag::Struct { c: cb, fields: fb }) => Frag::Struct { c: jc(ca, cb), fields: jfrags(fa, fb) },
             (Frag::Enum { c: ca, case: ka, payloads: pa }, Frag::Enum { c: cb, case: kb, payloads: pb }) => Frag::Enum { c: jc(ca, cb), case: max_valued(ka, kb), payloads: jfrags(pa, pb) },
             (Frag::Map { c: ca, entries: mut ea }, Frag::Map { c: cb, entries: eb }) => {
-                for (d, nb) in eb {
-                    match ea.remove(&d) {
+                for (id, nb) in eb {
+                    match ea.remove(&id) {
                         None => {
-                            ea.insert(d, nb);
+                            ea.insert(id, nb);
                         }
                         Some(na) => {
-                            // the key of the creation with the greater stamp; of copies of one creation (or of records
-                            // without one) the greater key (§4.1 copy order, §5.6)
-                            let key = match na.created.cmp(&nb.created) {
-                                std::cmp::Ordering::Greater => na.key.or(nb.key),
-                                std::cmp::Ordering::Less => nb.key.or(na.key),
-                                std::cmp::Ordering::Equal => na.key.max(nb.key),
-                            };
-                            ea.insert(d, Entry { reset: max_opt(na.reset, nb.reset), key, frag: jopt(na.frag, nb.frag), created: max_opt(na.created, nb.created) });
+                            ea.insert(id, Entry { reset: max_opt(na.reset, nb.reset), frag: jopt(na.frag, nb.frag), created: max_opt(na.created, nb.created) });
                         }
                     }
                 }
@@ -513,11 +536,20 @@ impl Frag {
             }
             Frag::Map { c, entries } => {
                 prune_written(c, e);
-                entries.retain(|_, en| {
+                for en in entries.values_mut() {
                     if !en.reset.as_ref().map_or(true, |r| survives(r, e)) {
                         en.reset = None;
                     }
-                    let ee = max_opt(e.cloned(), en.reset.clone());
+                }
+                // a record's reset reaches the dot's key-erased record; the key-erased record's reaches every record
+                // of the dot (§5.6)
+                let mut cross: BTreeMap<Eid, Option<Stamp>> = BTreeMap::new();
+                for (d, k) in entries.keys() {
+                    let r = entries.iter().filter(|((x, y), _)| x == d && (k.is_none() || y.is_none()) && (x, y) != (d, k)).fold(None, |m, (_, en)| max_opt(m, en.reset.clone()));
+                    cross.insert((d.clone(), k.clone()), r);
+                }
+                entries.retain(|id, en| {
+                    let ee = max_opt(max_opt(e.cloned(), en.reset.clone()), cross.get(id).cloned().flatten());
                     if let Some(f) = &mut en.frag {
                         f.prune(ee.as_ref());
                         if f.is_empty() {
@@ -527,9 +559,8 @@ impl Frag {
                     if !en.created.as_ref().map_or(true, |c| survives(c, ee.as_ref())) {
                         en.created = None;
                     }
-                    // content-free tombstone: the key and creation go with the content
+                    // a creation lives only with content
                     if en.frag.is_none() {
-                        en.key = None;
                         en.created = None;
                     }
                     en.reset.is_some() || en.frag.is_some()
@@ -627,19 +658,16 @@ impl Frag {
             Frag::Set { elems, .. } => Value::set(elems.values().filter_map(|e| e.frag.as_ref().and_then(|f| f.read())).collect()),
             Frag::Map { entries, .. } => {
                 let mut by_key: BTreeMap<Value, Frag> = BTreeMap::new();
-                for en in entries.values() {
-                    if let (Some(k), Some(f)) = (&en.key, &en.frag) {
-                        if f.present() {
-                            match by_key.remove(k) {
-                                None => {
-                                    by_key.insert(k.clone(), (**f).clone());
-                                }
-                                Some(g) => {
-                                    let mut j = join_any(g, (**f).clone());
-                                    j.prune(None);
-                                    by_key.insert(k.clone(), j);
-                                }
-                            }
+                for ((_, k), f) in live_records(entries) {
+                    let k = k.expect("live records are keyed");
+                    match by_key.remove(&k) {
+                        None => {
+                            by_key.insert(k, f);
+                        }
+                        Some(g) => {
+                            let mut j = join_any(g, f);
+                            j.prune(None);
+                            by_key.insert(k, j);
                         }
                     }
                 }
@@ -731,7 +759,7 @@ impl Frag {
                     !f.is_empty()
                 });
             }
-            Frag::Map { entries, .. } => entries.retain(|d, en| {
+            Frag::Map { entries, .. } => entries.retain(|(d, _), en| {
                 if en.reset.as_ref().map_or(false, |r| is_bad(r)) {
                     en.reset = None;
                 }
@@ -744,7 +772,6 @@ impl Frag {
                     }
                 }
                 if en.frag.is_none() {
-                    en.key = None;
                     en.created = None;
                 }
                 en.reset.is_some() || en.frag.is_some()
@@ -806,15 +833,21 @@ impl Frag {
                 payloads.values_mut().for_each(|f| f.strip_values(expired));
             }
             Frag::Map { entries, .. } => {
-                for (d, en) in entries.iter_mut() {
-                    // the key is the creation's value; a key repeated by another record is ignored
-                    if exp(d) {
-                        en.key = None;
-                    }
-                    if let Some(f) = &mut en.frag {
-                        f.strip_values(expired);
-                    }
+                // the key is the creation's value, wherever a record of the entry repeats it: the dot's records join
+                // into its key-erased record
+                let mut out: BTreeMap<Eid, Entry> = BTreeMap::new();
+                for ((d, k), en) in std::mem::take(entries) {
+                    let id = (d.clone(), if exp(&d) { None } else { k });
+                    let en = match out.remove(&id) {
+                        None => en,
+                        Some(o) => Entry { reset: max_opt(o.reset, en.reset), frag: jopt_any(o.frag, en.frag), created: max_opt(o.created, en.created) },
+                    };
+                    out.insert(id, en);
                 }
+                for f in out.values_mut().filter_map(|en| en.frag.as_mut()) {
+                    f.strip_values(expired);
+                }
+                *entries = out;
             }
             Frag::Seq { elems, .. } => {
                 for (d, el) in elems.iter_mut() {
@@ -913,6 +946,14 @@ fn below_embedding(f: &Frag, r: &Frag) -> bool {
     let mut j = f.clone().join_raw(e.clone());
     j.prune(None);
     j == e
+}
+
+/// `join_any` of optional fragments.
+pub fn jopt_any(a: Option<Box<Frag>>, b: Option<Box<Frag>>) -> Option<Box<Frag>> {
+    match (a, b) {
+        (None, x) | (x, None) => x,
+        (Some(a), Some(b)) => Some(Box::new(join_any(*a, *b))),
+    }
 }
 
 /// Join of two fragments of possibly different encodings (§7), unpruned: pointwise per encoding, with the register

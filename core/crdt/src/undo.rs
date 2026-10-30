@@ -3,7 +3,7 @@
 //! `UndoBuffer` the node fills with pre-commit state.
 
 use crate::error::Error;
-use crate::fragment::{Bag, Elem, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Struct};
+use crate::fragment::{Bag, Eid, Elem, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Struct};
 use crate::ops::{PathSeg, Writer, create, key_state, present_slot, remove, replace};
 use crate::seq;
 use crate::stamp::{CounterRange, Dot, Source, Stamp};
@@ -227,35 +227,37 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             // removed entries, joined per key: a key held by several entries comes back as one
             // (re-adding each at the undo's one stamp would tie their registers)
             let mut removed: BTreeMap<osis_base::Value, Fragment> = BTreeMap::new();
-            for (d, e) in &m.entries {
-                if e.frag.is_some() && u.made(d) {
-                    entries.insert(d.clone(), Entry::tomb(&r));
-                } else if let (Some(f), Some(k)) = (&e.frag, &e.key) {
+            for (id, e) in &m.entries {
+                if e.frag.is_some() && u.made(&id.dot) {
+                    entries.insert(id.clone(), Entry::tomb(&r));
+                } else if let (Some(f), Some(k)) = (&e.frag, id.key()) {
                     // a nested edit into an existing entry
                     path.push(PathSeg::Key(k.clone()));
-                    // the current state below the key is also the join of its live entries
-                    // (§4.6): a reset nested in entry `d` prunes the other entries' writes in the
-                    // key's read, so their writes must block "Absent before"
+                    // the current state below the key is also the join of its live records
+                    // (§4.6): a reset nested in record `id` prunes the other records' writes in
+                    // the key's read, so their writes must block "Absent before"
                     let joined = cur.and_then(|c| {
-                        let live = c.live_dots(k);
-                        (!live.is_empty() && live != [d]).then(|| key_state(c, &live)).flatten()
+                        let live = c.live_ids(k);
+                        (!live.is_empty() && live != [id]).then(|| key_state(c, &live)).flatten()
                     });
-                    let sub = joined.as_ref().or_else(|| cur.and_then(|c| c.entries.get(d)).and_then(|x| x.frag.as_deref()));
-                    let pre = Sub(prev.as_ref().and_then(|p| entry_frag(p, d, k)), buffer.complete());
+                    let own = cur.and_then(|c| c.record_frag(id));
+                    let sub = joined.as_ref().or(own.as_deref());
+                    let pre = Sub(prev.as_ref().and_then(|p| entry_frag(p, id, k)), buffer.complete());
                     let res = undo_at(w, u, f, sub, &pre, &vview, &mut vec![], false);
                     path.pop();
                     if let Some(c) = res? {
-                        entries.insert(d.clone(), Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)), created: None });
+                        entries.insert(id.clone(), Entry { reset: None, frag: Some(Box::new(c)), created: None });
                     }
                 } else if e.reset.is_some()
                     && let Some(Fragment::Map(p)) = &prev
-                    && let Some(x) = p.entries.get(d)
-                    && let (Some(k), Some(f)) = (&x.key, &x.frag)
+                    && let Some(k) = id.key()
+                    && p.is_live(id)
+                    && let Some(f) = p.record_frag(id)
                 {
                     match removed.get_mut(k) {
-                        Some(acc) => acc.join_into((**f).clone(), None, &mut crate::changes::Changes::new()),
+                        Some(acc) => acc.join_into(f.into_owned(), None, &mut crate::changes::Changes::new()),
                         None => {
-                            removed.insert(k.clone(), (**f).clone());
+                            removed.insert(k.clone(), f.into_owned());
                         }
                     }
                 }
@@ -339,11 +341,11 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
     Ok((!out.is_empty()).then_some(out))
 }
 
-/// What a nested edit into entry `d` of key `k` saw before the commit: the join of the key's
-/// live entries (§5.6 path ops), or the entry alone if none is live.
-fn entry_frag(p: &Fragment, d: &Dot, k: &osis_base::Value) -> Option<Fragment> {
+/// What a nested edit into record `id` of key `k` saw before the commit: the join of the key's
+/// live records (§5.6 path ops), or the record alone if none is live.
+fn entry_frag(p: &Fragment, id: &Eid, k: &osis_base::Value) -> Option<Fragment> {
     let Fragment::Map(m) = p else { return None };
-    key_state(m, &m.live_dots(k)).or_else(|| m.entries.get(d)?.frag.as_deref().cloned())
+    key_state(m, &m.live_ids(k)).or_else(|| m.record_frag(id).map(|f| f.into_owned()))
 }
 
 /// A new bag contribution of `v` with a fresh dot: created under the element view, else a
@@ -401,18 +403,22 @@ impl Fragment {
             (Fragment::Map(s), Fragment::Map(d)) => {
                 // the delta's own entries whole; a nested edit into key k reads the join of k's
                 // live entries along the edit's paths only
-                let mut keep: BTreeMap<Dot, Entry> = BTreeMap::new();
-                for (dot, e) in &d.entries {
-                    if let (Some(f), Some(k)) = (&e.frag, &e.key) {
-                        for ld in s.live_dots(k) {
+                let mut keep: BTreeMap<Eid, Entry> = BTreeMap::new();
+                for id in d.entries.keys() {
+                    if let (Some(f), Some(k)) = (d.entries.get(id).and_then(|e| e.frag.as_ref()), id.key()) {
+                        for ld in s.live_ids(k) {
                             if let Some(x) = s.entries.get(ld) {
                                 let frag = x.frag.as_ref().map(|xf| Box::new(xf.footprint(f)));
-                                keep.insert(ld.clone(), Entry { reset: x.reset.clone(), key: x.key.clone(), frag, created: x.created.clone() });
+                                keep.insert(ld.clone(), Entry { reset: x.reset.clone(), frag, created: x.created.clone() });
+                            }
+                            // the dot's key-erased record whole: the record's read joins it
+                            if let Some((eid, x)) = s.of_dot(&ld.dot).next().filter(|(x, _)| x.key.is_none()) {
+                                keep.entry(eid.clone()).or_insert_with(|| x.clone());
                             }
                         }
                     }
-                    if let Some(x) = s.entries.get(dot) {
-                        keep.entry(dot.clone()).or_insert_with(|| x.clone());
+                    for (x, e) in s.of_dot(&id.dot) {
+                        keep.entry(x.clone()).or_insert_with(|| e.clone());
                     }
                 }
                 Fragment::Map(Map::new(s.meta.clone(), keep))

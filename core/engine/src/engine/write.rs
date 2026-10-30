@@ -56,7 +56,7 @@ pub struct Mutation {
     pub(crate) roster: bool,
     /// Map entries to reset whatever their liveness here (spec/crdt.md §5.6): an explicit removal
     /// of an edge already removed (membership flows).
-    pub(crate) dead_resets: BTreeMap<(Tid, Ak), Vec<osis_crdt::Dot>>,
+    pub(crate) dead_resets: BTreeMap<(Tid, Ak), Vec<(osis_crdt::Dot, Value)>>,
     /// Chunk and node blobs never reused, written afresh (`Engine::relink`).
     pub(crate) fresh: std::collections::BTreeSet<osis_base::BlobId>,
     /// Things `Engine::write` persists with this batch if ephemeral.

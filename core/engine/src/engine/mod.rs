@@ -412,14 +412,9 @@ indexes! {
     pub unresolved: JSet<CommitId>,
     /// Roles `/secrets` and `/keys` deltas need (by commit and aspect index).
     pub rotation_role: JMap<(CommitId, usize), osis_base::Role>,
-    /// `/secrets` parts whose role waits on an entry key not known yet (`resolve_rotation`).
-    pub rotation_unresolved: JSet<(CommitId, usize)>,
     /// `/secrets` parts of membership commits that write beyond their grantees' boxes (an invite
     /// grant may carry only those, spec/permissions.md §2).
     pub grant_overreach: JSet<(CommitId, usize)>,
-    /// Keys of the `/secrets` entries (boxes and history boxes) from their creations: (actor,
-    /// entry dot) -> key.
-    pub box_keys: JMap<(Tid, Dot), osis_base::Value>,
     /// Keyed boxes per member: member -> (actor, box key), from `/secrets` entries seen.
     pub boxes_to: JSetMap<Tid, (Tid, osis_base::Value)>,
     /// The earliest noted commit boxing an epoch or writing its keyset: (actor, role, epoch) ->
@@ -434,8 +429,6 @@ indexes! {
     /// `rotation::departures` per actor with the time it holds until (an edge's `until`, a
     /// write's future `ts`); cleared by `membership_changed`.
     pub departures: JMap<Tid, (Vec<osis_keys::Departure>, Option<WallMs>)>,
-    /// `/secrets` writes of applied commits waiting for the keys of the boxes they remove.
-    pub secrets_unresolved: JMap<(CommitId, usize), crate::apply::keys::Unresolved>,
     /// Hints of opened inbox payloads whose commit has not applied yet (not persisted).
     pub hint_candidates: JMap<CommitId, Vec<(Tid, osis_base::Value)>>,
     /// Things a roster snapshot of which was kept out of perm for a linked frontier not held
