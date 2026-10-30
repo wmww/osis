@@ -2231,12 +2231,30 @@ impl SyncEngine {
             if !dropped && self.carried_by(server, g, l, commit, &[*p]) || self.snapshot_carries(at, commit, &t, &a, dropped)? {
                 continue;
             }
+            // this node's rewrite, refused at the server for the label's cap: it goes up in the
+            // space this body frees (else a full label would keep a purged body for good)
+            if !dropped && server.is_some_and(|s| self.rewrite_capped(s, g, l, commit, parts, p)) {
+                continue;
+            }
             all = false;
             if dropped || !self.carried_by(None, g, l, commit, &[*p]) {
                 need.push((t, a));
             }
         }
         Ok((all, need))
+    }
+
+    /// Whether a blob of commit `c` under `l` holding delta `p`, a strict subset of `parts` (so
+    /// smaller than the body it would carry), is this node's upload `server` refused for the
+    /// label's cap (`SyncEngine::capped`).
+    fn rewrite_capped(&mut self, server: &ServerKey, g: &Tid, l: &LabelId, c: &CommitId, parts: &[(usize, usize)], p: &(usize, usize)) -> bool {
+        let ids: Vec<BlobId> = self
+            .state
+            .entries_of(l, c)
+            .filter(|(id, e)| !e.cert && self.capped.contains(&(*server, *l, *id)) && matches!(&e.kind, Kind::Commit { parts: q, .. } if q.contains(p) && q.len() < parts.len() && q.iter().all(|x| parts.contains(x)) && !self.holds_nothing(g, c, q)))
+            .map(|(id, _)| id)
+            .collect();
+        ids.into_iter().any(|id| self.genuine(&id))
     }
 
     /// Whether a later snapshot of `(t, a)` under the label at the server carries body `body`'s

@@ -758,6 +758,16 @@ impl SyncEngine {
             if let Some(c) = self.conns.get_mut(&conn) {
                 c.req.sent.remove(&(l, b));
             }
+            if code == Code::STORAGE_CAP {
+                self.capped.retain(|(s, l, b)| self.state.entries.contains_key(&(*l, *b)) && !self.state.is_present(s, l, b));
+                // the bodies it would carry are judged again (`carried`), in a pass now
+                if self.capped.insert((server, l, b)) {
+                    self.state.touch(l, b);
+                    grew = true;
+                }
+            } else {
+                self.capped.remove(&(server, l, b));
+            }
             match code {
                 Code::OK => {
                     let new = !self.state.is_present(&server, &l, &b);
@@ -787,7 +797,7 @@ impl SyncEngine {
                 }
             }
         }
-        // carriers just went up: deletions waiting for them may go now
+        // carriers just went up (or were refused for the cap): deletions waiting for them may go now
         if grew && let Some(lc) = self.lc_mut(conn, &l) {
             lc.dirty = true;
         }
@@ -801,6 +811,7 @@ impl SyncEngine {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
         let (ids, codes) = self.eph_delete_status(conn, l, ids, codes);
         let mut stale = false;
+        let mut freed = false;
         for (b, code) in ids.into_iter().zip(codes) {
             // a timed delete is done once the server took it (spec/commits.md §5)
             let timed = self.conns.get_mut(&conn).is_some_and(|c| {
@@ -820,6 +831,19 @@ impl SyncEngine {
                 }
                 Code::NOT_HEAD => stale = true,
                 c => self.diag(format!("delete refused: code {}", c.0)),
+            }
+            freed |= code == Code::OK;
+        }
+        // uploads refused for the label's cap go again now, into the space freed
+        let capped: Vec<BlobId> = self.capped.range((server, l, BlobId([0; 32]))..=(server, l, BlobId([0xff; 32]))).map(|x| x.2).collect();
+        if freed && !capped.is_empty() {
+            if let Some(c) = self.conns.get_mut(&conn) {
+                for b in capped {
+                    c.req.sent.remove(&(l, b));
+                }
+            }
+            if let Some(lc) = self.lc_mut(conn, &l) {
+                lc.dirty = true;
             }
         }
         // a replaced label is judged done after its deletions (`retire_at`): pass again

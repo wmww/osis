@@ -190,6 +190,49 @@ fn purged_body_waits_for_its_rewrite_spec_sync_7() {
     assert_eq!(net.engine(b).get(&t, &gone).unwrap(), None);
 }
 
+// spec/sync.md §7 (the purged body goes first when the label refuses its rewrite for the cap),
+// spec/requirements.md (purge is prompt): as above, but the label is at its entry cap, so a's
+// rewrite q is refused (code 12); p, which would stay as long as the label is full, is deleted
+// and q goes up at once in the space it freed.
+#[test]
+fn purged_body_leaves_full_label_spec_sync_7() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    let t2 = net.item(a, g, g, "y");
+    let gone = Ak::new(GONE.ak()).unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &GONE, &s("secret")).unwrap();
+    m.set(t2, &GONE, &s("kept")).unwrap();
+    let c = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    net.advance(60_000);
+    let l = net.label(a);
+    let p = blobs_of(&mut net, a, &l, &c);
+    assert_eq!(p.len(), 1);
+    let full = net.server_ids(sv, &l).len() as u64;
+    net.restart_server_with(sv, osis_server::Policy { cap_entries: full, ..osis_server::Policy::default() });
+    net.run();
+    // past the redial pause
+    net.advance(66_000);
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: gone.clone() });
+    m.remove_aspect(t, &GONE).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.feed(a, Event::Local);
+    net.run();
+    diags(&mut net, &[a, b]);
+    let q: Vec<_> = blobs_of(&mut net, a, &l, &c).into_iter().filter(|id| !p.contains(id)).collect();
+    assert_eq!(q.len(), 1, "a's rewrite placed");
+    let ids = net.server_ids(sv, &l);
+    assert!(!ids.contains(&p[0]), "p deleted though its rewrite was refused");
+    assert!(ids.contains(&q[0]), "q uploaded in the space p freed");
+    assert_eq!(ids.len() as u64, full, "the label stays full (the purge request itself waits for space)");
+}
+
 // spec/permissions.md §3 (complete pass): a membership commit pushed to a subscribed node ends
 // with a pass: `complete_pass` holds without another Sync.
 #[test]
