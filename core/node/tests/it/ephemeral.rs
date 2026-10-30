@@ -1549,11 +1549,11 @@ fn covered_while_slow_deleted_after_reconnect_spec_sync_9() {
 }
 
 
-// spec/sync.md §9 (own covers): once the author's own state of an aspect is past the page target
-// no cover can be built (ephemeral deltas are not paged); its writes still go as they are made
-// (a failed cover dropped the unsent writes it had joined: the reader missed them for good)
+// spec/sync.md §9 (own covers), spec/crdt.md §8: ephemeral deltas are not paged, so an author's
+// own state of one aspect far past the page target is still covered: holders converge and every
+// copy (the author's held commits, a holder's lane, the server) stays within about twice it
 #[test]
-fn cover_past_page_target_loses_no_write_spec_sync_9() {
+fn cover_past_page_target_bounded_spec_sync_9() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
@@ -1562,11 +1562,25 @@ fn cover_past_page_target_loses_no_write_spec_sync_9() {
     net.run();
     let w = window(&mut net, a, g, "w");
     net.run();
+    let l = net.label(a);
     let v = "v".repeat(1000);
-    for i in 0..120 {
+    let mut peak = (0, 0, 0);
+    for i in 0..400 {
         note(&mut net, a, w, &format!("k{i:03}"), &v);
         net.run();
+        let load = net.engine(a).own_ephemeral_load();
+        let [(_, held, cover, largest)] = load[..] else { panic!("one actor: {load:?}") };
+        assert!(held <= osis_node::ephemeral::COVER_FACTOR * cover + largest, "write {i}: {held} B of own commits, cover {cover} B");
+        let (at_b, at_sv) = (net.sync(b).ephemeral_bytes(&l) as usize, net.servers[sv].hub.store().ephemeral_bytes(&l) as usize);
+        assert!(at_b <= 3 * cover && at_sv <= 4 * cover, "write {i}: holder {at_b} B, server {at_sv} B, cover {cover} B");
+        peak = (cover, at_b, at_sv);
     }
-    assert_eq!(notes(&mut net, a, w).len(), 120);
+    assert!(peak.0 > 6 * osis_base::format::PAGE_TARGET, "state far past the page target: {peak:?}");
+    assert_eq!(notes(&mut net, a, w).len(), 400);
     assert_eq!(notes(&mut net, b, w), notes(&mut net, a, w));
+    // a restarted holder gets it all back from the server
+    let want = notes(&mut net, a, w);
+    net.restart(b, 22);
+    net.run();
+    assert_eq!(notes(&mut net, b, w), want);
 }
