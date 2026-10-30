@@ -123,7 +123,7 @@ fn history_chain_from_state_spec_crypto_4() {
 
 // spec/crypto.md §3, §4: a key actor taken up (a link's L) opens every box reachable from it,
 // however deep the chain of member actors (each box opens with the secrets of the member below
-// it). Tids descend along the chain, so a sweep over actors in tid order opens one level per sweep.
+// it). Tids descend along the chain, so a bare sweep over actors in tid order opens one level per sweep.
 #[test]
 fn key_actor_opens_deep_member_chain_spec_crypto_4() {
     let mut lp = net(2, 85);

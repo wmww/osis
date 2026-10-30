@@ -338,9 +338,10 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
     Ok(())
 }
 
-/// Re-opens every held `/secrets` (after a key actor was taken up), to a fixpoint: a sweep
-/// opens at least one more level of a member-actor chain, and stops once one learns nothing
-/// (held epochs only grow, so no round cap is needed; a cap left deep chains unopened).
+/// Re-opens every held `/secrets` (after a key actor was taken up), to a fixpoint: what an
+/// actor learns reopens its dependents at once (`reopen_dependents`, so a member-actor chain
+/// opens in one sweep whatever its tid order); sweeps repeat until one learns nothing (held
+/// epochs only grow, so no round cap is needed; a cap left deep chains unopened).
 fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
     let secrets_ak = ak("/secrets")?;
     let actors: BTreeSet<Tid> = tx.core.ix.by_aspect.keys().filter(|(_, a)| *a == secrets_ak).map(|(t, _)| *t).collect();
@@ -352,6 +353,7 @@ fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
             tx.core.touch();
             if tx.core.ingest_secrets(a, &s, None, &alts, None) {
                 save_epochs(tx, a)?;
+                reopen_dependents(tx, *a)?;
                 any = true;
             }
         }
