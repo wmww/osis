@@ -1154,4 +1154,44 @@ mod tests {
             assert_eq!(d0.first_diff(&lp.peers[i].engine.index_digest()), None, "peer {i}: open = rebuild");
         }
     }
+
+    // spec/crypto.md §3: B, an admin of G, grants Z on T while A's rotation (T's first keyset,
+    // made after the owner removed A) still made T own-keyed at B, boxing under A's epochs. Once
+    // A's commit is invalid, B's valid `/secrets` part does not make T own-keyed again: its
+    // opened epochs are derived from G's epochs from before A's removal (A knows those). T is
+    // plain at every node: encrypted under G's epoch rotated past A, the owner can write.
+    #[test]
+    fn valid_grant_under_invalid_keyset_leaves_thing_plain_spec_crypto_3() {
+        let mut lp = LocalPeer::new(5, 942, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let (me, a, x, b, z) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3), tid(&mut lp, 4));
+        let edge = |role| ct::Edge { role, until: None, invite: None, since: None };
+        let g = thing_of(&mut lp, 0, me);
+        lp.peers[0].engine.grant(&g, &a, &edge(Role::Admin)).unwrap();
+        lp.peers[0].engine.grant(&g, &b, &edge(Role::Admin)).unwrap();
+        let t = thing_of(&mut lp, 0, g);
+        lp.sync_all().unwrap();
+        lp.peers[0].engine.demote(&g, &Demotion { member: a, new: None, presync: PreSync::Synced }).unwrap();
+        lp.peers[1].clock.advance(120_000);
+        lp.peers[1].engine.grant(&t, &x, &edge(Role::Read)).unwrap();
+        lp.sync(1, 3).unwrap();
+        assert!(lp.peers[3].engine.core.ix.own_keys.contains(&t));
+        lp.peers[3].clock.advance(130_000);
+        lp.peers[3].engine.grant(&t, &z, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        lp.sync_all().unwrap();
+        for i in [0usize, 3] {
+            let core = &lp.peers[i].engine.core;
+            assert!(!core.ix.own_keys.contains(&t) && core.own_epochs(&t).is_none(), "peer {i}: plain");
+            let derived = osis_keys::ActorEpochs::derived(&core.epochs(&g).unwrap(), &t).role(Role::Read).newest();
+            assert_eq!(core.epochs(&t).unwrap().role(Role::Read).newest_held().map(|x| x.0), derived, "peer {i}: under G's epoch past A");
+            let mut m = Mutation::new();
+            m.set(t, &osis_base::Ak::new("/x/reg").unwrap(), &Value::Str(format!("w{i}"))).unwrap();
+            lp.peers[i].engine.commit(m).unwrap().unwrap();
+            let d0 = lp.peers[i].engine.index_digest();
+            lp.peers[i].engine.rebuild_index().unwrap();
+            assert_eq!(d0.first_diff(&lp.peers[i].engine.index_digest()), None, "peer {i}: open = rebuild");
+        }
+    }
 }

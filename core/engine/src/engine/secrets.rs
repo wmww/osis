@@ -29,24 +29,21 @@ impl Core {
     /// for a plain thing without secrets of its own. A plain thing's epochs learned from a
     /// rotation since found invalid (`stale_epochs`) are added for reading only.
     pub(crate) fn epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
-        let stale = self.stale_epochs(tid);
-        let mut d = self.chain_epochs(tid);
-        match (&mut d, stale) {
-            (Some(d), Some(x)) => {
-                for r in ROLES {
-                    for (ep, info) in x.role(r).epochs() {
-                        if d.role(r).get(ep).is_none() {
-                            let i = d.role_mut(r).observe(*ep);
-                            *i = info.clone();
-                            i.established = None;
-                        }
-                    }
+        let d = self.chain_epochs(tid);
+        let Some(x) = self.stale_epochs(tid) else { return d };
+        // no owner's epochs held: the leftovers alone, still reading-only (this node's own
+        // invalid rotation's are `Own`)
+        let mut d = d.unwrap_or_default();
+        for r in ROLES {
+            for (ep, info) in x.role(r).epochs() {
+                if d.role(r).get(ep).is_none() {
+                    let i = d.role_mut(r).observe(*ep);
+                    *i = info.clone();
+                    i.established = None;
                 }
             }
-            (None, Some(x)) => return Some(x.clone()),
-            _ => {}
         }
-        d
+        Some(d)
     }
 
     fn chain_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
@@ -82,8 +79,17 @@ impl Core {
     pub(crate) fn own_epochs(&self, tid: &Tid) -> Option<&ActorEpochs> {
         let e = self.ix.secrets.get(tid)?;
         let thing = matches!(self.created(tid), Some(CreationRecord::Thing { .. }));
+        if self.ix.own_keys.contains(tid) || !thing {
+            return Some(e);
+        }
+        // a held keyset part decides: all invalid, the thing is plain (a valid grant boxing under
+        // that keyset's epochs counts for nothing; its derived epochs may predate a rotation of
+        // the owner)
+        if self.ix.keyset_parts.get(tid).is_some_and(|s| !s.is_empty()) {
+            return None;
+        }
         let rotated = || ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| matches!(i.established, Some(Provenance::Chain | Provenance::Snapshot))));
-        (self.ix.own_keys.contains(tid) || !thing || rotated() || self.ix.delete_hints.contains_key(tid) || self.valid_secrets_part(tid)).then_some(e)
+        (rotated() || self.ix.delete_hints.contains_key(tid) || self.valid_secrets_part(tid)).then_some(e)
     }
 
     /// Whether a held membership commit's `/secrets` part on `tid` is valid (only a thing with

@@ -207,14 +207,14 @@ pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
     let mut h = MemoryHeldActors::default();
     let actors: Vec<Tid> = tx.core.ix.secrets.keys().copied().collect();
     for a in actors {
-        let held = tx.core.ix.secrets.get(&a).is_some_and(|e| ROLES.iter().any(|r| e.role(*r).newest_held().is_some()));
+        // a plain thing's leftover epochs (an invalid rotation's) are no secrets of its own
+        let Some(e) = tx.core.own_epochs(&a).cloned() else { continue };
+        let held = ROLES.iter().any(|r| e.role(*r).newest_held().is_some());
         if !held && tx.core.ix.own_keys.contains(&a) {
             continue;
         }
         let s = secrets_in(tx, &a)?;
-        if let Some(e) = tx.core.ix.secrets.get(&a) {
-            h.map.insert(a, (s, e.clone()));
-        }
+        h.map.insert(a, (s, e));
     }
     let unheld: Vec<Tid> = tx.core.ix.own_keys.iter().filter(|a| !h.map.contains_key(a)).copied().collect();
     for a in unheld {
