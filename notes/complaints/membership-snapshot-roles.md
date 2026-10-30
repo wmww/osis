@@ -1,0 +1,1 @@
+- Pre-fix checks of a test (temporarily reverting the fix) are easy to botch: a `; git checkout <file>` cleanup chained after a failing sed reverted uncommitted work. Copy the file aside and restore from the copy instead.

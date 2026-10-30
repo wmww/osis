@@ -1596,7 +1596,7 @@ mod tests {
         // the reader's self-removal plus a put of z at admin (no authority: fails)
         assert!(!commit(&mut lp, z, ct::Edge { role: Role::Admin, ..read.clone() }, 1), "no exemption beside a failing put");
         assert_eq!(lp.peers[0].engine.roster(&t).get(&z), None);
-        assert!(lp.peers[0].engine.roster(&t).get(&r).is_none(), "the self-removal applies");
+        assert!(!lp.peers[0].engine.roster(&t).contains_key(&r), "the self-removal applies");
         let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         assert!(!s.boxes.contains_key(&zk) && s.history.get(&hk) != Some(&vec![0; 48]));
         // honest shape: an invite holder's grant of g plus its own removal (a redemption)
