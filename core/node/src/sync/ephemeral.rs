@@ -950,10 +950,10 @@ impl SyncEngine {
                 self.eph.pending.insert((l, b), (e, server));
                 return Ok(());
             }
-            Ok(EphIngest::Dropped { absorbed: true }) => {
+            Ok(EphIngest::Covered(by)) => {
                 // a replay of a covered entry: a writer deletes it where it found it
                 if let Some(s) = server {
-                    self.eph_delete_at(s, l, b, &e, out)?;
+                    self.eph_delete_at(s, l, b, &e, by, out)?;
                 }
                 return Ok(());
             }
@@ -974,10 +974,10 @@ impl SyncEngine {
     }
 
     /// Deletes ephemeral entry `b` of `l` at server `s` where this node may (a writer: the
-    /// part's level-3 delete key and the label's write key, spec/sync.md §5).
-    fn eph_delete_at(&mut self, s: ServerKey, l: LabelId, b: BlobId, e: &LaneEntry, out: &mut Vec<Action>) -> Result<()> {
+    /// part's level-3 delete key and the label's write key, spec/sync.md §5), once `cover` (the
+    /// held commits containing it) is held there.
+    fn eph_delete_at(&mut self, s: ServerKey, l: LabelId, b: BlobId, e: &LaneEntry, cover: BTreeSet<CommitId>, out: &mut Vec<Action>) -> Result<()> {
         let dks = self.engine.ephemeral_delete_secrets_for(&e.tid, &e.actor, &e.keys);
-        let cover = self.engine.ephemeral_absorbers(&e.commit);
         for (conn, server, hk) in self.eph_conns(&l) {
             if server != s || self.eph.deletes.contains_key(&(conn, l, b)) {
                 continue;
@@ -1118,8 +1118,10 @@ impl SyncEngine {
                     && let Some(n) = self.eph.bytes.get_mut(&l)
                 {
                     *n = n.saturating_sub(e.blob.len() as u64);
-                    if *n < self.cfg.ephemeral_bytes {
-                        self.eph.refused.remove(&l);
+                    // room again after a refusal: the label is reconciled at its next periodic
+                    // pass, so what was refused is fetched again (`SyncEngine::timers`)
+                    if *n < self.cfg.ephemeral_bytes && self.eph.refused.remove(&l) {
+                        self.eph.reconciled.retain(|(_, x)| *x != l);
                     }
                 }
                 self.state.feed.deleted(l, b);

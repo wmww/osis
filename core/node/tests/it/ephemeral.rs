@@ -1428,6 +1428,126 @@ fn replayed_covered_entry_dropped_spec_sync_9() {
     net.run();
 }
 
+// spec/sync.md §9 (a commit contained in held commits of its author is not held),
+// notes/ephemeral.md Own covers: a replay of an entry from several covers back (its first cover
+// gone everywhere) is neither held, counted nor spread again, reads change nothing, and a
+// writer deletes it where it came back
+#[test]
+fn replay_from_covers_back_not_held_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let l = net.label(a);
+    let wk = write_key(&mut net, a, g);
+    let ak = osis_base::Ak::new(NOTES).unwrap();
+    let old = net.engine(a).forge_ephemeral(w, &ak, Value::Map(BTreeMap::from([(s("k"), s("old"))]))).unwrap().unwrap();
+    let (id, ev) = sealed(&mut net, a, g, &old.blob, Some(&wk), 1);
+    let acts = push(&mut net, b, sv, l, vec![ev.clone()]);
+    net.actions(b, acts);
+    net.run();
+    assert!(net.engine(b).holds_ephemeral(&old.id));
+    for k in ["x", "y", "z"] {
+        let acts = net.sync(a).compact_ephemeral_now().unwrap();
+        net.actions(a, acts);
+        net.run();
+        note(&mut net, a, w, k, "1");
+        net.run();
+    }
+    let acts = net.sync(a).compact_ephemeral_now().unwrap();
+    net.actions(a, acts);
+    net.run();
+    let at = net.tid(a);
+    let by_a = |net: &mut Net| {
+        let e = net.engine(b);
+        e.held_ephemeral().into_iter().filter(|(c, _, _)| e.ephemeral_header(c).is_some_and(|h| h.author == at)).count()
+    };
+    assert_eq!(by_a(&mut net), 1, "one cover of a's left");
+    let (bytes, before) = (net.sync(b).ephemeral_bytes(&l), notes(&mut net, b, w));
+    let acts = push(&mut net, b, sv, l, vec![ev]);
+    assert!(!net.engine(b).holds_ephemeral(&old.id), "not held again");
+    assert_eq!(net.sync(b).ephemeral_bytes(&l), bytes, "nor counted");
+    let conn = net.conn_to(b, sv).unwrap();
+    let msgs = sent(&acts, conn);
+    let deletes: Vec<osis_base::BlobId> = msgs.iter().flat_map(|m| if let osis_proto::Message::Delete { items, .. } = m { items.iter().map(|i| i.blob).collect() } else { vec![] }).collect();
+    assert_eq!(deletes, vec![id], "deleted where it came back");
+    assert!(!msgs.iter().any(|m| matches!(m, osis_proto::Message::Upload { .. })), "not spread");
+    net.actions(b, acts);
+    net.run();
+    assert_eq!(by_a(&mut net), 1);
+    assert_eq!(notes(&mut net, b, w), before);
+    // the author drops it too
+    net.engine(a).ingest_ephemeral(old.blob).unwrap();
+    assert!(!net.engine(a).holds_ephemeral(&old.id));
+}
+
+// spec/sync.md §9 (parts are judged; a commit none of whose parts is valid is not held),
+// notes/ephemeral.md Own covers: a commit invalid on arrival is neither held nor counted; it is
+// held once the durable set makes it valid (a promotion the node had not seen)
+#[test]
+fn invalid_on_arrival_held_once_valid_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let r = net.node(2, &[sv]);
+    let d = net.node(3, &[sv]);
+    let g = net.group(a, &[(r, Role::Read), (d, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let ak = osis_base::Ak::new(NOTES).unwrap();
+    let junk = net.engine(r).forge_ephemeral(w, &ak, Value::Map(BTreeMap::from([(s("r"), s("junk"))]))).unwrap().unwrap();
+    assert_eq!(net.engine(d).ingest_ephemeral(junk.blob).unwrap(), osis_node::ephemeral::EphIngest::Pending);
+    assert!(!net.engine(d).holds_ephemeral(&junk.id), "a reader's write: not held");
+    net.set_online(d, false);
+    let (at, rt, dt) = (net.tid(a), net.tid(r), net.tid(d));
+    let e = net.engine(a);
+    set_edge(e, g, rt, Role::Write);
+    let rs = recipients_of(e, &[(at, Role::Admin), (rt, Role::Write), (dt, Role::Write)]);
+    rotation(e, g, &rs, 7, false);
+    net.run();
+    let ok = net.engine(r).forge_ephemeral(w, &ak, Value::Map(BTreeMap::from([(s("r"), s("ok"))]))).unwrap().unwrap();
+    assert_eq!(net.engine(d).ingest_ephemeral(ok.blob.clone()).unwrap(), osis_node::ephemeral::EphIngest::Pending, "promotion not seen here yet");
+    assert!(!net.engine(d).holds_ephemeral(&ok.id));
+    net.set_online(d, true);
+    net.run();
+    net.advance(60_000);
+    assert!(net.engine(d).holds_ephemeral(&ok.id), "valid now: held");
+    assert!(!net.engine(d).holds_ephemeral(&junk.id), "still invalid");
+}
+
+// notes/ephemeral.md Bounds, notes/ephemeral.md Own covers: entries refused for a node's cap are
+// fetched again once its bytes drop (here another's presence goes): the label is reconciled at
+// the next periodic pass instead of staying short until a restart
+#[test]
+fn capped_label_reconciles_once_room_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let x = net.node(2, &[sv]);
+    let b = net.add_node(3, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 4_000, ..SyncConfig::default() });
+    let g = net.group(a, &[(x, Role::Write), (b, Role::Write)], &[sv]);
+    let t = net.item(a, g, g, "doc");
+    net.run();
+    let l = net.label(a);
+    net.eph_write(x, t, &ukey("/doc/cursor", Lifetime::Presence), s(&"c".repeat(2_500)));
+    net.run();
+    assert!(net.eph_read(b, t, "/doc/cursor").is_some());
+    net.eph_write(a, t, &ukey("/doc/big", Lifetime::Ephemeral), s(&"b".repeat(1_500)));
+    net.run();
+    assert_eq!(net.eph_read(b, t, "/doc/big"), None, "refused for the cap");
+    net.set_online(x, false);
+    net.run();
+    assert_eq!(net.eph_read(b, t, "/doc/cursor"), None);
+    assert!(net.sync(b).ephemeral_bytes(&l) < 1_000);
+    net.advance(SyncConfig::default().resync_ms + 1_000);
+    assert_eq!(net.eph_read(b, t, "/doc/big"), Some(s(&"b".repeat(1_500))), "fetched again");
+}
+
 // spec/sync.md §9 (ephemeral parts on core aspects; security review L3): a writer's ephemeral
 // part on a core aspect other than `/group` (here `/reach`) is invalid: never joined
 #[test]
@@ -1847,8 +1967,8 @@ fn expired_commit_leaves_no_records_spec_sync_9() {
             assert!(net.engine(a).ephemeral_thing(w).is_some(), "the author's own thing stays");
         }
         for bl in &blobs {
-            assert_eq!(net.engine(b).ingest_ephemeral(bl.clone()).unwrap(), osis_node::ephemeral::EphIngest::Dropped { absorbed: false });
-            assert_eq!(net.engine(a).ingest_ephemeral(bl.clone()).unwrap(), osis_node::ephemeral::EphIngest::Dropped { absorbed: false });
+            assert_eq!(net.engine(b).ingest_ephemeral(bl.clone()).unwrap(), osis_node::ephemeral::EphIngest::Dropped);
+            assert_eq!(net.engine(a).ingest_ephemeral(bl.clone()).unwrap(), osis_node::ephemeral::EphIngest::Dropped);
         }
         assert_eq!((held(&mut net, a), held(&mut net, b)), base, "a copy after expiry is not held");
         assert!(made.iter().all(|w| net.engine(b).ephemeral_thing(w).is_none()));
