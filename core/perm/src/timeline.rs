@@ -488,6 +488,13 @@ impl Timeline {
         self.input.snaps.get(id)
     }
 
+    /// The highest role edge (`member`, `target`) held anywhere in the walk (its initial state
+    /// and every change).
+    pub fn highest_edge(&self, member: &Tid, target: &Tid) -> Option<Role> {
+        let init = self.walked.initial.get(member, target).map(|e| e.role);
+        self.walked.history.iter().filter(|c| c.member == *member && c.target == *target).filter_map(|c| c.edge.map(|e| e.role)).chain(init).max()
+    }
+
     /// The edge state just before `point` (`None`: the current state).
     pub fn edges_at(&self, point: Option<Point>) -> EdgesAt<'_> {
         let Some(p) = point else { return EdgesAt::new(&self.walked.edges) };

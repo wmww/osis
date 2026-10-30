@@ -33,13 +33,11 @@ fn map(f: Option<&Fragment>) -> Option<&osis_crdt::Map> {
 }
 
 /// Records for each box a `/secrets` delta writes the commit's time: the earliest write of the
-/// box, and the earliest of its epoch (`Core::epoch_intro`).
+/// box. A box introduces no epoch (a grant or re-seal boxes an epoch it did not make;
+/// `note_keysets`).
 pub(crate) fn note_box_keys(core: &mut Core, h: &Header, actor: &Tid, delta: &Fragment) {
     for (bk, k) in written_boxes(delta) {
         core.ix.boxes_to.insert(bk.member, (*actor, k.clone()));
-        if let Ok(e) = osis_keys::aspects::from_schema(&bk.epoch) {
-            note_intro(core, h, actor, bk.role, e);
-        }
         core.ix.box_written.upsert((*actor, bk), || h.ts, |w| *w = (*w).min(h.ts));
     }
 }
@@ -52,26 +50,16 @@ pub(crate) fn note_boxes_to(core: &mut Core, actor: &Tid, delta: &Fragment) {
     }
 }
 
-/// The epochs membership part `ai` of `h` boxes or keys in `bodies` (its deltas): what it noted
+/// The epochs membership part `ai` of `h` keys in `bodies` (its `/keys` deltas): what it noted
 /// in `epoch_intro`, kept in its record when it drops (`Dropped::intros`).
 pub(crate) fn intro_epochs(h: &Header, ai: usize, bodies: &[Fragment]) -> Vec<(Role, osis_crypto::Epoch)> {
     let mut out = std::collections::BTreeSet::new();
-    match h.aspects.get(ai).map(|a| a.ak.as_str()) {
-        Some("/secrets") if h.kind == Kind::Membership => {
-            for (bk, _) in bodies.iter().flat_map(written_boxes) {
-                if let Ok(e) = osis_keys::aspects::from_schema(&bk.epoch) {
-                    out.insert((bk.role, e));
-                }
+    if h.kind == Kind::Membership && h.aspects.get(ai).is_some_and(|a| a.ak.as_str() == "/keys") {
+        for (r, ks) in bodies.iter().flat_map(|b| keys_write(b).keysets) {
+            if let Ok(e) = osis_keys::aspects::from_schema(&ks.epoch) {
+                out.insert((r, e));
             }
         }
-        Some("/keys") if h.kind == Kind::Membership => {
-            for (r, ks) in bodies.iter().flat_map(|b| keys_write(b).keysets) {
-                if let Ok(e) = osis_keys::aspects::from_schema(&ks.epoch) {
-                    out.insert((r, e));
-                }
-            }
-        }
-        _ => {}
     }
     out.into_iter().collect()
 }
@@ -86,9 +74,7 @@ fn written_boxes(delta: &Fragment) -> Vec<(BoxKey, &Value)> {
 /// what was noted from them goes with them (spec/commits.md §5), re-derived from the bodies
 /// still held: `box_written`, and the `boxes_to` entries of the boxes it wrote that no held body
 /// writes (an unknown first write costs a rotation or a re-seal, never a leak). `epoch_intro`
-/// keeps the part's epochs (`Dropped::intros`): re-derived from held bodies alone, a later
-/// grant or re-seal would stand in as the epoch's rotation, and an epoch a departed party
-/// introduced would cover its departure.
+/// keeps a `/keys` part's epochs (`Dropped::intros`): the rotation stays known.
 pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[Fragment]) -> Result<()> {
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
     if h.kind != Kind::Membership || !matches!(a.ak.as_str(), "/secrets" | "/keys") {
@@ -121,8 +107,9 @@ pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[F
 }
 
 /// Records for each keyset a `/keys` delta writes the commit's time as the epoch's introduction
-/// if earliest (a rotation writes the rotated roles' keysets: an epoch boxed only to key actors,
-/// keyed at a higher role, is found by it).
+/// if earliest: a rotation writes the rotated roles' keysets, nothing else does, so the epoch's
+/// introducer (`Core::epoch_intro`) is its rotation commit, or unknown while that `/keys` part is
+/// not held (synced after a compaction, or missing again after `retention::uncover`).
 pub(crate) fn note_keysets(core: &mut Core, h: &Header, actor: &Tid, delta: &Fragment) {
     for (r, ks) in keys_write(delta).keysets {
         if let Ok(e) = osis_keys::aspects::from_schema(&ks.epoch) {

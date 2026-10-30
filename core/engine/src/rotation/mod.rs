@@ -4,7 +4,8 @@
 //! state (every box holder at a current epoch that holds less than that role now), recursively
 //! through member and owner actors (departures inside a member); the covers rule over the held
 //! actors, plus: an epoch introduced by a departed party (or a node acting through it) does not
-//! cover its departure; the cascade (`ensure_rotated`: intermediate actors first, top-down, where
+//! cover its departure, nor, for a rotator, one whose rotation commit it does not hold and a
+//! departed party could have written; the cascade (`ensure_rotated`: intermediate actors first, top-down, where
 //! the signer may rotate; one that may not stays stranded on what is below); giving a thing
 //! secrets of its own; re-seal decisions. Departures are recomputed on demand (O(edge history)),
 //! never stored.
@@ -344,8 +345,8 @@ pub fn may_rotate(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Role> {
     core.timelines.get(a).map(|tl| tl.may_rotate(who, a, At::now(now_ts(core))).into_iter().collect()).unwrap_or_default()
 }
 
-/// The commit that introduced epoch `e` of role `r` of `a` (the earliest commit boxing it or
-/// writing its keyset in `/keys`): its author node, actor and `ts`.
+/// The commit that introduced epoch `e` of role `r` of `a` (its rotation: the earliest valid
+/// held commit writing its keyset in `/keys`), if held: its author node, actor and `ts`.
 fn introduced_by(core: &Core, a: &Tid, r: Role, e: &Epoch) -> Option<(Tid, Tid, Ts)> {
     core.ix.epoch_intro.get(&(*a, r, *e)).map(|(ts, au, ac, _)| (*au, *ac, *ts))
 }
@@ -354,6 +355,13 @@ fn introduced_by(core: &Core, a: &Tid, r: Role, e: &Epoch) -> Option<(Tid, Tid, 
 /// or a node acting through it (spec/crypto.md §4: such an epoch does not cover `m`'s departure).
 fn written_by(core: &Core, author: &Tid, actor: &Tid, ts: Ts, m: &Tid) -> bool {
     author == m || actor == m || core.timelines.get(m).is_some_and(|tl| tl.role(author, m, At::now(ts)).is_some())
+}
+
+/// Whether departed party `d` (or a node acting through it) may have rotated role `r` of `a`:
+/// the first actor on its chain is `a`'s owner or held an edge on `a` of write and at least `r`.
+fn could_rotate(core: &Core, a: &Tid, d: &Departure, r: Role) -> bool {
+    let first = d.via.first().copied().unwrap_or(d.member);
+    core.owner(a) == Some(first) || core.timelines.get(a).and_then(|tl| tl.highest_edge(&first, a)) >= Some(r.max(Role::Write))
 }
 
 /// The known departures `a`'s newest held epochs (any role) do not cover now.
@@ -419,11 +427,16 @@ pub fn uncovered_roles_of(tx: &mut Tx<'_>, a: &Tid, deps: Vec<Departure>) -> Res
     let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
     let secrets = secrets_in(tx, a)?;
     let held = held_actors(tx)?;
+    let may = may_rotate(tx.core, &tx.core.id.tid(), a);
     let mut out = BTreeSet::new();
     for r in ROLES {
         let Some((e, _)) = epochs.role(r).newest_held() else { continue };
-        let by_departed = || {
-            introduced_by(tx.core, a, r, &e).is_some_and(|(au, ac, ts)| deps.iter().any(|d| d.from <= r && written_by(tx.core, &au, &ac, ts, &d.member)))
+        let by_departed = || match introduced_by(tx.core, a, r, &e) {
+            Some((au, ac, ts)) => deps.iter().any(|d| d.from <= r && written_by(tx.core, &au, &ac, ts, &d.member)),
+            // the rotation commit not held (synced after a compaction, or its body missing
+            // again): a node that may rotate r counts it as written by any departed party that
+            // could have rotated r (a rotation more, never a leak)
+            None => may.contains(&r) && deps.iter().any(|d| d.from <= r && could_rotate(tx.core, a, d, r)),
         };
         if !uncovered(&secrets, &epochs, r, &e, &deps, &held).is_empty() || by_departed() {
             out.insert(r);
@@ -1292,6 +1305,99 @@ mod tests {
         assert_eq!(lp.peers[0].engine.roster(&x).get(&w), None, "a sees W gone");
         let (_, still) = lp.peers[0].engine.ensure_rotated(&g).unwrap();
         assert!(still.contains(&Role::Read), "W's departure inside X is not covered: {still:?}");
+    }
+
+    /// Peers: 0 = the owner of group `t`, 1 = W (a writer, then removed: rotation R1 of read
+    /// and write), 2 = P (an admin), 3 = N (an admin when `n_first`, else granted later by the
+    /// caller). Returns R1's commits.
+    fn removed_writer(seed: u64, n_first: bool) -> (LocalPeer, Tid, Vec<osis_base::CommitId>) {
+        let mut lp = LocalPeer::new(4, seed, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let t = group(&mut lp, 0);
+        let (w, p, n) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
+        lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
+        lp.peers[0].engine.grant(&t, &p, &edge(Role::Admin)).unwrap();
+        if n_first {
+            lp.peers[0].engine.grant(&t, &n, &edge(Role::Admin)).unwrap();
+        }
+        lp.sync_all().unwrap();
+        let r1 = lp.peers[0].engine.demote(&t, &Demotion { member: w, new: None, presync: PreSync::Synced }).unwrap().commits;
+        (lp, t, r1)
+    }
+
+    fn uncovered_at(lp: &mut LocalPeer, i: usize, t: Tid) -> BTreeSet<Role> {
+        lp.peers[i].engine.run(|tx| super::uncovered_roles(tx, &t)).unwrap()
+    }
+
+    fn keys_secrets() -> [osis_base::Ak; 2] {
+        ["/keys", "/secrets"].map(|k| osis_base::Ak::new(k).unwrap())
+    }
+
+    // spec/crypto.md §4 (an epoch whose rotation commit a rotator does not hold counts as
+    // written by any departed party that could have rotated it): N, granted admin after the
+    // owner compacted and dropped R1's bodies, does not know who wrote the read epoch, and W (a
+    // writer) is gone: it rotates read before encrypting under it. Holding R1 it does not.
+    #[test]
+    fn unheld_rotation_counts_as_departed_partys_spec_crypto_4() {
+        for compact in [true, false] {
+            let (mut lp, t, r1) = removed_writer(941, false);
+            if compact {
+                for k in keys_secrets() {
+                    lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+                    for c in &r1 {
+                        if lp.peers[0].engine.body_not_dropped(c, &t, &k) {
+                            lp.peers[0].engine.drop_body(c, &t, &k).unwrap();
+                        }
+                    }
+                }
+            }
+            let n = lp.peers[3].engine.tid();
+            lp.peers[0].engine.grant(&t, &n, &edge(Role::Admin)).unwrap();
+            lp.sync(0, 3).unwrap();
+            let before = newest_read(&lp, 3, t);
+            assert!(before.is_some(), "N holds the read epoch");
+            if !compact {
+                assert!(uncovered_at(&mut lp, 3, t).is_empty(), "R1 held: covered");
+                assert!(lp.peers[3].engine.ensure_rotated(&t).unwrap().0.commits.is_empty(), "no extra rotation");
+                continue;
+            }
+            assert!(uncovered_at(&mut lp, 3, t).contains(&Role::Read), "introducer unknown, a writer gone");
+            let (done, still) = lp.peers[3].engine.ensure_rotated(&t).unwrap();
+            assert!(!done.commits.is_empty() && still.is_empty(), "{still:?}");
+            assert_ne!(newest_read(&lp, 3, t), before, "rotated");
+            assert!(uncovered_at(&mut lp, 3, t).is_empty(), "its own rotation is known");
+            // the owner, holding R1's record, needs no rotation
+            assert!(uncovered_at(&mut lp, 0, t).is_empty());
+        }
+    }
+
+    // spec/crypto.md §4, spec/permissions.md §5.2: N drops R1's `/keys` body under admin P's
+    // compaction snapshot S; the owner then demotes P with a frontier not listing S, so S turns
+    // invalid and that body is missing again at N (R1's `/secrets` still held): the read epoch's
+    // introducer is unknown there and N rotates read.
+    #[test]
+    fn rotation_missing_again_counts_as_departed_partys_spec_crypto_4() {
+        let (mut lp, t, r1) = removed_writer(942, true);
+        lp.sync_all().unwrap();
+        let p = lp.peers[2].engine.tid();
+        let k = osis_base::Ak::new("/keys").unwrap();
+        let s = lp.peers[2].engine.snapshot(&t, &k).unwrap().unwrap();
+        let pk = lp.peers[2].engine.package(&s).unwrap().unwrap();
+        lp.deliver(3, &pk).unwrap();
+        for c in &r1 {
+            let e = &mut lp.peers[3].engine;
+            if e.body_not_dropped(c, &t, &k) && e.covered(&s, c, &t, &k).unwrap() == Some(true) {
+                e.drop_body(c, &t, &k).unwrap();
+            }
+        }
+        assert!(r1.iter().any(|c| !lp.peers[3].engine.body_not_dropped(c, &t, &k)), "R1's /keys dropped at N");
+        assert!(uncovered_at(&mut lp, 3, t).is_empty(), "the dropped rotation stays known");
+        lp.peers[0].engine.demote(&t, &Demotion { member: p, new: Some(edge(Role::Read)), presync: PreSync::Synced }).unwrap();
+        lp.sync(0, 3).unwrap();
+        assert!(!lp.peers[3].engine.core.ix.commits.get(&s).unwrap().valid.iter().any(|v| *v), "S invalid at N");
+        assert!(uncovered_at(&mut lp, 3, t).contains(&Role::Read), "R1 missing again: introducer unknown");
+        let (done, still) = lp.peers[3].engine.ensure_rotated(&t).unwrap();
+        assert!(!done.commits.is_empty() && still.is_empty(), "{still:?}");
     }
 
     /// A thing of peer `i`'s with secrets of its own.
