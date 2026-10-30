@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "wmww-agent-skills": {
+      "source": {
+        "source": "github",
+        "repo": "wmww/agent-skills"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "reasonable-rust-builds@wmww-agent-skills": true
+  }
+}
