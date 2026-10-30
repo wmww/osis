@@ -104,9 +104,9 @@ pub struct Dropped {
     /// kept so re-judging the part (and a rebuild) needs no body.
     pub role: Option<osis_base::Role>,
     pub overreach: bool,
-    /// The epochs a membership `/secrets` or `/keys` body boxed or keyed (`epoch_intro`
-    /// candidates, `apply::keys::intro_epochs`): which commit introduced an epoch is a judgment
-    /// the covers rule needs (a later commit standing in names the wrong rotator).
+    /// The epochs a membership `/keys` body keyed (`epoch_intro` candidates,
+    /// `apply::keys::intro_epochs`): which commit introduced an epoch is a judgment the covers
+    /// rule needs.
     pub intros: Vec<(osis_base::Role, osis_crypto::Epoch)>,
 }
 
@@ -425,8 +425,9 @@ indexes! {
     pub grant_overreach: JSet<(CommitId, usize)>,
     /// Keyed boxes per member: member -> (actor, box key), from `/secrets` entries seen.
     pub boxes_to: JSetMap<Tid, (Tid, osis_base::Value)>,
-    /// The earliest noted commit boxing an epoch or writing its keyset: (actor, role, epoch) ->
-    /// (`ts`, author node, actor acted for). What introduced the epoch (`rotation`).
+    /// The earliest valid held commit writing an epoch's keyset in `/keys` (its rotation):
+    /// (actor, role, epoch) -> (`ts`, author node, actor acted for, commit). Absent: the
+    /// introducer is unknown (`rotation`).
     pub epoch_intro: EpochIntro,
     /// The earliest noted commit writing a box: (actor, box key) -> its `ts`.
     pub box_written: JMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
