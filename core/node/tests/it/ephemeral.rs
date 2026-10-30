@@ -1812,7 +1812,7 @@ fn expired_commit_leaves_no_records_spec_sync_9() {
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
     let held = |net: &mut Net, n: usize| net.engine(n).held_ephemeral().len();
-    let base = (held(&mut net, a), held(&mut net, b));
+    let mut base = (held(&mut net, a), held(&mut net, b));
     for round in 0..3 {
         let mut made = Vec::new();
         let mut blobs = Vec::new();
@@ -1852,5 +1852,21 @@ fn expired_commit_leaves_no_records_spec_sync_9() {
         }
         assert_eq!((held(&mut net, a), held(&mut net, b)), base, "a copy after expiry is not held");
         assert!(made.iter().all(|w| net.engine(b).ephemeral_thing(w).is_none()));
+        // a later write of a thing whose record went at b carries the record again (placed
+        // again: its placement expired, so it was in no labeled closure)
+        let mut m = Mutation::new();
+        m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(made[0])) }).unwrap();
+        m.set(made[0], &eph(STATE), &s("late")).unwrap();
+        net.engine(a).write(m).unwrap();
+        for c in net.engine(a).take_ephemeral().unwrap() {
+            net.engine(b).ingest_ephemeral(c.blob).unwrap();
+        }
+        assert_eq!(net.eph_read(b, made[0], STATE), Some(s("late")), "round {round}");
+        assert!(net.engine(b).ephemeral_thing(&made[0]).is_some());
+        net.advance(6_000);
+        net.run();
+        assert_eq!(net.eph_read(b, made[0], STATE), Some(s("late")), "an unexpiring write stays");
+        assert!(net.engine(b).ephemeral_thing(&made[0]).is_some());
+        base = (held(&mut net, a), held(&mut net, b));
     }
 }
