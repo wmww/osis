@@ -236,9 +236,9 @@ impl Pending {
     }
 }
 
-/// A request: `sent` (when, and its cost against `WINDOW`) once it left the queue.
+/// A request: its `cost` against `WINDOW` once it left the queue.
 struct Req {
-    sent: Option<(u64, usize)>,
+    cost: Option<usize>,
     p: Pending,
 }
 
@@ -392,7 +392,7 @@ impl ClientSession {
             if self.in_flight == 0 {
                 self.progress = self.now;
             }
-            req.sent = Some((self.now, cost));
+            req.cost = Some(cost);
             self.in_flight = self.in_flight.saturating_add(cost);
             out.push(ClientOutput::Send(frame));
         }
@@ -427,7 +427,7 @@ impl ClientSession {
             }
         }
         let id = self.next_id;
-        self.pending.insert(id, Req { sent: None, p: pending });
+        self.pending.insert(id, Req { cost: None, p: pending });
         self.waiting.push_back((id, msg(id)));
     }
 
@@ -617,7 +617,7 @@ impl ClientSession {
     }
 
     fn reply(&mut self, now: u64, m: Message, out: &mut Vec<ClientOutput>) {
-        let Some(Req { sent: Some((_, cost)), .. }) = self.pending.get(&m.id()) else {
+        let Some(Req { cost: Some(cost), .. }) = self.pending.get(&m.id()) else {
             event(out, ClientEvent::PeerError(Error::Malformed("reply to no request")));
             return;
         };
