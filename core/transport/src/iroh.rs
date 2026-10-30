@@ -13,15 +13,15 @@
 //! transport has none (a second endpoint with a listener's key could take its relay
 //! registration). Needs a tokio runtime.
 
-use crate::{Address, Connection, Error, ListenConfig, Listener, PublicKey, RecvStream, SendStream, StaticSecret, Transport};
-use iroh::endpoint::{presets, ConnectionError, QuicTransportConfig, VarInt};
+use crate::{Address, Connection, Error, ListenConfig, Listener, PublicKey, StaticSecret, Transport};
+use iroh::endpoint::{presets, QuicTransportConfig, VarInt};
 use iroh::{Endpoint, EndpointAddr, RelayMode, RelayUrl, SecretKey, TransportAddr};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 pub use crate::quic::ALPN;
-use crate::quic::{CONN_WINDOW, Handshakes, IDLE_TIMEOUT, KEEP_ALIVE, MAX_STREAMS, STREAM_WINDOW};
+use crate::quic::{CONN_WINDOW, IDLE_TIMEOUT, KEEP_ALIVE, MAX_STREAMS, STREAM_WINDOW};
 
 /// The P2P transport. Clones share the listening endpoints.
 #[derive(Clone, Default)]
@@ -98,14 +98,7 @@ fn spawn_close(ep: Endpoint) {
     }
 }
 
-fn conn_err(e: ConnectionError) -> Error {
-    use ConnectionError as E;
-    match e {
-        E::LocallyClosed | E::ApplicationClosed(_) | E::ConnectionClosed(_) | E::Reset | E::TimedOut => Error::Closed,
-        E::VersionMismatch | E::TransportError(_) => Error::Protocol(e.to_string()),
-        E::CidsExhausted => Error::Io(e.to_string()),
-    }
-}
+crate::quic::quic_streams!(iroh::endpoint; IrohSend, IrohRecv);
 
 impl Iroh {
     /// A transport whose listeners use no relay (direct and LAN only).
@@ -152,19 +145,16 @@ impl Iroh {
         let ep = endpoint(Some(&cfg.secret), relays, &bind, true).await?;
         let key = *ep.id().as_bytes();
         crate::util::lock(&self.listening).insert(key, ep.clone());
-        // handshakes run concurrently (`Handshakes`), so a silent or slow dialer blocks nobody
-        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        // handshakes run concurrently (`accept_loop`), so a silent or slow dialer blocks nobody
         let e2 = ep.clone();
-        let hs = Handshakes::new(crate::quic::MAX_INCOMING);
-        tokio::spawn(async move {
-            while let Some(inc) = e2.accept().await {
-                let tx = tx.clone();
-                hs.spawn(async move {
-                    let Ok(c) = inc.await else { return };
-                    let peer = *c.remote_id().as_bytes();
-                    let _ = tx.send(IrohConn { c, peer, ep: None }).await;
-                });
-            }
+        let incoming = move || {
+            let e = e2.clone();
+            async move { e.accept().await }
+        };
+        let rx = crate::quic::accept_loop(incoming, |inc: iroh::endpoint::Incoming| async move {
+            let c = inc.await.ok()?;
+            let peer = *c.remote_id().as_bytes();
+            Some(IrohConn { c, peer, ep: None })
         });
         let mut items: Vec<String> = ep.bound_sockets().iter().map(|a| a.to_string()).collect();
         items.extend(home);
@@ -242,44 +232,17 @@ impl Connection for IrohConn {
     }
 
     async fn open_stream(&self) -> Result<(IrohSend, IrohRecv), Error> {
-        let (s, r) = self.c.open_bi().await.map_err(conn_err)?;
-        Ok((IrohSend(s), IrohRecv(r)))
+        open_bi(&self.c).await
     }
 
     async fn accept_stream(&self) -> Result<(IrohSend, IrohRecv), Error> {
-        let (s, r) = self.c.accept_bi().await.map_err(conn_err)?;
-        Ok((IrohSend(s), IrohRecv(r)))
+        accept_bi(&self.c).await
     }
 
     fn close(&self) {
         self.c.close(0u32.into(), b"");
         if let Some(ep) = self.ep.clone() {
             spawn_close(ep);
-        }
-    }
-}
-
-pub struct IrohSend(iroh::endpoint::SendStream);
-
-impl SendStream for IrohSend {
-    async fn write_all(&mut self, buf: &[u8]) -> Result<(), Error> {
-        self.0.write_all(buf).await.map_err(|_| Error::Closed)
-    }
-
-    async fn finish(&mut self) -> Result<(), Error> {
-        let _ = self.0.finish(); // Err only when already finished
-        self.0.stopped().await.map(|_| ()).map_err(|_| Error::Closed)
-    }
-}
-
-pub struct IrohRecv(iroh::endpoint::RecvStream);
-
-impl RecvStream for IrohRecv {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
-        match self.0.read(buf).await {
-            Ok(Some(n)) => Ok(n),
-            Ok(None) => Ok(0),
-            Err(_) => Err(Error::Closed),
         }
     }
 }
@@ -309,6 +272,7 @@ mod tests {
     //! Tier 2 (localhost sockets, `--ignored`). spec/sync.md §10.
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+    use crate::{RecvStream, SendStream};
 
     fn rt() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
