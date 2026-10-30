@@ -84,6 +84,7 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | `EPH_LOG_KEEP` 2^16 | R (commented) | every cursor replays / log bounded by the cap only |
 | `EPH_TOMBSTONE_MS` = `MAX_DRIFT` | M (commented) | |
 | `MAX_RELAY_SEEN` 2^16 | M (commented) | |
+| connection source = IPv6 /64 (`osis_transport::Source`; slots shared by source, `evict_for`, no per-source number) | M (commented): a holder of a larger prefix counts as many sources; /128 would let one host take every slot, /0 makes every client one source | |
 | `RelayLimits` 6000 / 32 MiB per 60 s | R (rate, code 4) | no relays / relay floods |
 | `Policy` defaults: caps per label (2^20 entries, 16 GiB), totals (2^20 labels, 2^26 entries, 256 GiB), rates per 60 s (deletes, replacements 20 000, deposits 600, registers 600, `entry_replacements` 4), ephemeral 16 MiB/label, 1 GiB total, presence 4 MiB, `log_keep` 2^20, `max_connections` 10 000, `hello_ms` 10 s, `max_buffered_bytes` 512 MiB | R (operator config; refuse with a code or close) | |
 | `max_queued_bytes` 48 MiB (at least `SEND_QUEUE` = `WINDOW_QUEUE` + `PUSH_QUEUE`, config refuses less) | R (a peer that does not read) | sessions keeping the window closed / unbounded buffer |
