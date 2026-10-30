@@ -969,6 +969,43 @@ fn author_crash_before_cover_lands_keeps_state_spec_sync_9() {
     assert_eq!(notes(&mut net, b, w), want, "the server still holds them");
 }
 
+// spec/sync.md §5 (code 4: the delete rate is used up, replacements counting), §9 (absorbed
+// entries leave a server once the cover is held there): a cover refused for the rate goes again
+// at the periodic pass, and what it absorbs leaves the server then
+#[test]
+fn cover_refused_for_rate_retried_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server_with(osis_server::Policy { deletes: 3, ..osis_server::Policy::default() });
+    let a = net.node(1, &[sv]);
+    let g = net.group(a, &[], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let l = net.label(a);
+    let cover = |net: &mut Net, keys: std::ops::Range<u32>| {
+        for i in keys {
+            note(net, a, w, &format!("k{i}"), "v");
+            net.run();
+        }
+        let acts = net.sync(a).compact_ephemeral_now().unwrap();
+        net.actions(a, acts);
+        net.run();
+    };
+    // two absorbed (two deletes of three), then three more: refused 4
+    cover(&mut net, 0..2);
+    let one = net.servers[sv].hub.store().ephemeral_bytes(&l);
+    cover(&mut net, 2..4);
+    let refused = net.servers[sv].hub.store().ephemeral_bytes(&l);
+    assert!(refused > one, "the second cover is not there: its absorbed entries stay");
+    net.advance(130_000);
+    let after = net.servers[sv].hub.store().ephemeral_bytes(&l);
+    assert!(after < refused, "the cover went again and replaced what it absorbs: {after} {refused}");
+    assert_eq!(net.sync(a).ephemeral_plain_entries(&l).len(), 1);
+    net.restart(a, 31);
+    net.advance(10_000);
+    assert_eq!(notes(&mut net, a, w).len(), 4);
+}
+
 // harness (random_window_inflight seed 173899): bytes a slow server held back for a connection
 // that closed when it restarted never reach the restarted node's new connection of that number
 // (they carried another connection's challenge: every open there was refused)
