@@ -206,7 +206,7 @@ pub enum EphIngest {
     /// arrival) a change of the held durable set; kept apart, `pending_ephemeral`.
     Pending,
     /// Not held: a relay-only duplicate or one outside its window, a commit more than
-    /// `MAX_DRIFT` ahead.
+    /// `MAX_DRIFT` ahead, or a presence commit older than one held of its author and actor.
     Dropped,
     /// Not held: held commits of its author and class (these) contain it (`eph_containers`); a
     /// writer may delete its entry where it found it once they are there.
@@ -854,6 +854,11 @@ impl Engine {
                     return Ok(EphIngest::Held { new: false });
                 }
             } else {
+                // a presence commit stands for its author's whole presence state for its actor:
+                // an older one than the newest held is not held (the ID commits to the header)
+                if class == EphClass::Presence && self.newer_presence(&h, &id) {
+                    return Ok(EphIngest::Dropped);
+                }
                 if !live_parts(&h, now) {
                     // expired but for its records: nothing of it is held
                     return Ok(EphIngest::Dropped);
@@ -1000,6 +1005,21 @@ impl Engine {
             // another blob of this commit may wait too (a commit past a blob splits): both kept
             self.wait_apart(id, blob, waits);
         }
+        if presence && first {
+            // the older presence commits of its author and actor go (un-merge): this one carries
+            // that whole presence state
+            let older: Vec<CommitId> = self
+                .eph
+                .remote
+                .held
+                .iter()
+                .filter(|(c, x)| x.header.ephemeral == Some(EphClass::Presence) && x.header.author == header.author && x.header.actor == header.actor && (x.header.ts, **c) < (header.ts, id))
+                .map(|(c, _)| *c)
+                .collect();
+            for c in older {
+                self.drop_ephemeral_presence(&c);
+            }
+        }
         if absorbs {
             self.drop_absorbed();
         }
@@ -1030,6 +1050,11 @@ impl Engine {
                 self.eph.remote.pending.insert(id, (blob, needs));
             }
         }
+    }
+
+    /// Whether a held presence commit of `h`'s author and actor is newer than commit `id`.
+    fn newer_presence(&self, h: &Header, id: &CommitId) -> bool {
+        self.eph.remote.held.iter().any(|(c, x)| x.header.ephemeral == Some(EphClass::Presence) && x.header.author == h.author && x.header.actor == h.actor && (x.header.ts, *c) > (h.ts, *id))
     }
 
     /// Delivers verified relay-only commit `id` once: remembered as delivered (`MAX_DELIVERED`,

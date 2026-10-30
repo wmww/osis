@@ -537,6 +537,33 @@ fn presence_deletes_not_rate_limited() {
     assert_eq!(e.store.delete(&l, &osis_label::blob_id(&blobs[8]), T0).unwrap(), Code::RATE_LIMITED);
 }
 
+// spec/sync.md §5 (a presence entry deleted or replaced is tombstoned until its expiry; one whose
+// last tie closed is not), notes/ephemeral.md Presence: a reader that kept an author's
+// replaced presence entries cannot upload them again
+#[test]
+fn replaced_presence_tombstoned_until_expiry() {
+    let mut e = env(Policy::default());
+    let l = e.f.label;
+    let exp = T0 + 20 * 60_000;
+    let b: Vec<Vec<u8>> = (0..4).map(|n| eph_blob(n, 64)).collect();
+    let pid = |n: usize| osis_label::blob_id(&b[n]);
+    let pres = |n: usize, tie: u64| Put { presence: true, tie, now: T0, ..eph_put(&b[n], Some(exp)) };
+    assert_eq!(e.store.put(&l, pres(0, 1)).unwrap(), Code::OK);
+    let replaces = [Replaced::Untie(pid(0))];
+    assert_eq!(e.store.put(&l, Put { replaces: &replaces, ..pres(1, 1) }).unwrap(), Code::OK);
+    assert!(e.store.entry(&l, &pid(0)).unwrap().is_none());
+    assert!(e.store.tombstoned(&l, &pid(0)).unwrap(), "replaced: tombstoned");
+    assert_eq!(e.store.delete(&l, &pid(1), T0).unwrap(), Code::OK);
+    assert!(e.store.tombstoned(&l, &pid(1)).unwrap(), "deleted: tombstoned");
+    assert_eq!(e.store.put(&l, pres(2, 1)).unwrap(), Code::OK);
+    assert!(e.store.untie(&l, &pid(2), 1).unwrap());
+    assert!(!e.store.tombstoned(&l, &pid(2)).unwrap(), "its last tie closed: no tombstone (its author uploads it again)");
+    e.store.sweep(exp - 1, 1024).unwrap();
+    assert!(e.store.tombstoned(&l, &pid(0)).unwrap());
+    e.store.sweep(exp, 1024).unwrap();
+    assert!(!e.store.tombstoned(&l, &pid(0)).unwrap() && !e.store.tombstoned(&l, &pid(1)).unwrap(), "gone at the entries' expiry");
+}
+
 // spec/sync.md §5 (ephemeral memory capped per label, log records counted): the log records of
 // deletions (a presence entry replaced per update, a covered entry deleted) stay within the
 // label's cap: older records are trimmed (sim `ephemeral` seed 13: a label 58 B over its cap)
