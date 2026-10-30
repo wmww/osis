@@ -1420,6 +1420,45 @@ fn registration_step_after_rotation_spec_sync_5() {
     assert_eq!(now.get(&card.home_label).unwrap().steps.len(), 2);
 }
 
+// spec/crypto.md §3, spec/sync.md §5: an admin's removal that rotates read writes a fresh
+// deposit seed in its rotation commit, and the step it issues registers the new deposit key, so
+// the removed device can no longer deposit under the actor's labels.
+#[test]
+fn removal_refreshes_deposit_seed_spec_crypto_3() {
+    let (mut lp, p, _pa, card) = devices_and_alice(516);
+    let d1 = lp.peers[0].engine.tid();
+    let labels = lp.peers[1].engine.get_typed(&p, &ct::LABEL).unwrap().unwrap();
+    let genesis = osis_label::StepId(*labels.get(&card.home_label).unwrap().steps.keys().next().unwrap());
+    let old = lp.peers[1].engine.deposit_seed(&p).unwrap().unwrap();
+    let done = lp.peers[1].engine.demote(&p, &Demotion { member: d1, new: None, presync: PreSync::Synced }).unwrap();
+    let new = lp.peers[1].engine.deposit_seed(&p).unwrap().unwrap();
+    assert!(old != new, "refreshed");
+    let removal = *done.commits.last().unwrap();
+    let h = lp.peers[1].engine.header(&removal).unwrap();
+    assert!(h.aspects.iter().any(|a| a.tid == p && a.ak.as_str() == "/members") && h.aspects.iter().any(|a| a.tid == p && a.ak.as_str() == "/keys"), "in the removal's rotation commit");
+    let (step, _) = lp.peers[1].engine.issue_step(&p, &card.home_label, &genesis, false).unwrap().0.unwrap();
+    assert_eq!(step.keys.deposit, osis_crypto::deposit_key(&new, &card.home_label).verifying_key());
+}
+
+// spec/sync.md §5: a refreshed deposit seed alone (no rotation) is registered by the next step
+// an admin issues: a child at the same role keys with the new deposit key; then nothing is due.
+#[test]
+fn refreshed_deposit_seed_issues_step_spec_sync_5() {
+    let (mut lp, p, _pa, card) = devices_and_alice(518);
+    let labels = lp.peers[1].engine.get_typed(&p, &ct::LABEL).unwrap().unwrap();
+    let genesis = osis_label::StepId(*labels.get(&card.home_label).unwrap().steps.keys().next().unwrap());
+    let parent = osis_label::parse_record(&labels.get(&card.home_label).unwrap().steps[&genesis.0]).unwrap().0;
+    assert!(lp.peers[1].engine.issue_step(&p, &card.home_label, &genesis, false).unwrap().0.is_none(), "nothing newer");
+    lp.peers[1].engine.refresh_deposit_seed(&p).unwrap();
+    let new = lp.peers[1].engine.deposit_seed(&p).unwrap().unwrap();
+    let (step, _) = lp.peers[1].engine.issue_step(&p, &card.home_label, &genesis, false).unwrap().0.unwrap();
+    step.verify_child(&parent).unwrap();
+    assert_eq!(step.keys.deposit, osis_crypto::deposit_key(&new, &card.home_label).verifying_key());
+    assert_ne!(step.keys.deposit, parent.keys.deposit);
+    assert_eq!((step.keys.sync, step.keys.write, step.keys.delete), (parent.keys.sync, parent.keys.write, parent.keys.delete));
+    assert!(lp.peers[1].engine.issue_step(&p, &card.home_label, &step.id(), false).unwrap().0.is_none(), "registered: nothing due");
+}
+
 // spec/permissions.md §6: an owner-chain node's roster snapshot carries the timeline's roster
 // with `since` and the tenure ledger (the removed writer's ended tenure with its frontier);
 // rosters and content validity are unchanged by it; an edge admin may not write one.

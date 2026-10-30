@@ -933,9 +933,11 @@ impl SyncEngine {
     }
 
     /// Whether this admin re-registers `l` of `g` before anything else (spec/sync.md §5): it
-    /// holds, established, the head's epochs (`keys`) and a newer one; a replaced label never.
+    /// holds, established, the head's epochs (`keys`) and a newer one, or the head's deposit key
+    /// is not the one the actor's deposit seed derives (refreshed); a replaced label never.
     fn step_due(&mut self, g: &Tid, l: &LabelId, keys: &HeadKeys) -> bool {
-        keys.delete.is_some() && keys.write.is_some() && !self.is_replaced(g, l) && self.engine.epochs(g).is_some_and(|e| osis_keys::newer_than_head(&e, keys.epochs))
+        let refreshed = keys.deposit.is_none() && self.engine.deposit_seed(g).is_ok_and(|s| s.is_some());
+        keys.delete.is_some() && keys.write.is_some() && !self.is_replaced(g, l) && (refreshed || self.engine.epochs(g).is_some_and(|e| osis_keys::newer_than_head(&e, keys.epochs)))
     }
 
     /// What may become of entry `id` under `l` (spec/sync.md §6, §7): `judge`, then a live
