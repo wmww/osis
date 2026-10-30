@@ -21,7 +21,7 @@ enum FStep {
     Ops { r: u8, ops: Vec<FOp>, skew: u8, per: u8 },
     Model { r: u8, seed: u16 },
     Undo { r: u8, back: u8 },
-    Join { to: u8, pick: u8, n: u8, per: u8 },
+    Join { to: u8, pick: u8, n: u8, per: u8, merged: bool },
     Reboot { r: u8 },
     Bootstrap { r: u8, from: u8 },
 }
@@ -52,7 +52,7 @@ fn step(s: FStep) -> Step {
         FStep::Ops { r, ops, skew, per } => Step::Ops { r, ops: ops.into_iter().map(op).collect(), skew, per: per % 9 },
         FStep::Model { r, seed } => Step::Model { r, seed },
         FStep::Undo { r, back } => Step::Undo { r, back },
-        FStep::Join { to, pick, n, per } => Step::Join { to, pick, n, per: per % 9 },
+        FStep::Join { to, pick, n, per, merged } => Step::Join { to, pick, n, per: per % 9, merged },
         FStep::Reboot { r } => Step::Reboot { r },
         FStep::Bootstrap { r, from } => Step::Bootstrap { r, from },
     }
