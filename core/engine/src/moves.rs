@@ -305,3 +305,101 @@ fn import_all(tx: &mut Tx<'_>, t: &Tid, copy: &Tid) -> Result<Vec<CommitId>> {
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local_peer::LocalPeer;
+    use crate::Ingested;
+    use osis_base::{Role, Value, WallMs};
+    use osis_crdt::{Op, PathOp, PathSeg};
+    use osis_schema::Codec;
+
+    /// Peer `i` writes an import on `copy` naming `c` as origin whose copies under `Commit(c)`
+    /// dots are `d`'s writes (another value), as a hostile creator of the copy would.
+    fn forged_import(lp: &mut LocalPeer, i: usize, copy: Tid, c: CommitId, d: CommitId) -> CommitId {
+        let e = &mut lp.peers[i].engine;
+        e.core.skip_writer_rules = true;
+        let id = e
+            .run(|tx| {
+                let h = tx.core.ix.commits.get(&d).unwrap().header.clone();
+                let ch = tx.core.ix.commits.get(&c).unwrap().header.clone();
+                let (ai, a) = h.aspects.iter().enumerate().find(|(_, a)| a.ak.as_str() == "/t/body").unwrap();
+                let mut f = crate::apply::held_parts(tx, &d, ai)?.into_iter().next().unwrap().into_fragment();
+                f.map_dots(&|x| (x.src == Source::commit(d)).then(|| Dot::new(Source::commit(c), x.ctr)));
+                let node = tx.core.id.tid();
+                let ts = tx.core.hlc.next();
+                let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Node, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: vec![Origin { commit: c, author: ch.author, actor: ch.actor, ts: ch.ts }], signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
+                let r = Resolved { tid: copy, ak: a.ak.clone(), fragment: f, lo: 0, hi: 0, schema: None, schema_ref: schema_of(&h, ai), retention: Some(a.retention), expires: None, frontiers: None, chunks: Vec::new(), split: false };
+                build_and_apply(tx, plan, vec![r])
+            })
+            .unwrap();
+        e.core.skip_writer_rules = false;
+        id
+    }
+
+    // spec/permissions.md §7: an import naming a commit on its own thing whose copies under that
+    // commit's dots differ from its writes is void in either arrival order, also across a restart
+    // between them and after an index rebuild: the origin's own writes show.
+    #[test]
+    fn void_import_differing_copies_origin_wins_spec_permissions_7() {
+        let mut lp = LocalPeer::new(4, 0x5e1f, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.tid();
+        let x = lp.peers[1].engine.tid();
+        let body = Ak::new("/t/body").unwrap();
+        let mut things = Vec::new();
+        for _ in 0..3 {
+            let mut m = Mutation::new();
+            things.push(lp.peers[0].engine.new_thing(&mut m, me));
+            lp.peers[0].commit(m).unwrap();
+        }
+        let (t, o, z) = (things[0], things[1], things[2]);
+        let mut m = Mutation::new();
+        m.op(o, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(ct::Edge { role: Role::Admin, until: None, invite: None, since: None }.to_value()) }).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        lp.sync_all().unwrap();
+        let (copy, _) = lp.peers[1].engine.move_thing(&t, o).unwrap();
+        lp.sync_all().unwrap();
+        let write = |lp: &mut LocalPeer, t: Tid, v: &str| {
+            let mut m = Mutation::new();
+            m.commit_form();
+            m.set(t, &body, &Value::Str(v.into())).unwrap();
+            lp.peers[0].commit(m).unwrap().unwrap()
+        };
+        let c = write(&mut lp, copy, "by owner");
+        let d = write(&mut lp, z, "forged");
+        lp.sync(0, 1).unwrap();
+        let i = forged_import(&mut lp, 1, copy, c, d);
+        let pi = lp.peers[1].engine.package(&i).unwrap().unwrap();
+        let pc = lp.peers[0].engine.package(&c).unwrap().unwrap();
+        // peer 0 holds the origin first; peers 2 and 3 the import first, peer 3 restarting between
+        lp.deliver(0, &pi).unwrap();
+        for p in lp.packages(0).unwrap().iter().filter(|p| p.id != c && p.id != i) {
+            lp.deliver(2, p).unwrap();
+            lp.deliver(3, p).unwrap();
+        }
+        for r in [2, 3] {
+            assert!(matches!(lp.deliver(r, &pi).unwrap(), Ingested::Applied(_)));
+            // valid until the origin is held: the forged copies show
+            assert_eq!(lp.peers[r].engine.get(&copy, &body).unwrap(), Some(Value::Str("forged".into())), "peer {r}");
+        }
+        lp.peers[3].restart(77).unwrap();
+        for r in [2, 3] {
+            assert!(matches!(lp.deliver(r, &pc).unwrap(), Ingested::Applied(_)));
+        }
+        for r in 0..4 {
+            let e = &mut lp.peers[r].engine;
+            assert_eq!(e.get(&copy, &body).unwrap(), Some(Value::Str("by owner".into())), "peer {r}");
+            assert!(e.core.ix.void.contains(&i), "peer {r}");
+            let had = e.index_digest().without_held();
+            e.reload().unwrap();
+            assert_eq!(e.get(&copy, &body).unwrap(), Some(Value::Str("by owner".into())), "peer {r}: reopened");
+            assert_eq!(e.index_digest().without_held(), had, "peer {r}: reopened");
+            e.rebuild_index().unwrap();
+            assert_eq!(e.index_digest().without_held(), had, "peer {r}: rebuilt");
+            assert_eq!(e.get(&copy, &body).unwrap(), Some(Value::Str("by owner".into())), "peer {r}: rebuilt");
+            assert!(e.core.ix.void.contains(&i), "peer {r}: rebuilt");
+        }
+    }
+}
