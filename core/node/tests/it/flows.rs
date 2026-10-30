@@ -1006,6 +1006,49 @@ fn single_use_finalization_audits_spec_perm_9() {
     }
 }
 
+// spec/permissions.md §9, §5.1, §3: the race flipped by the finalization. Peer 2 redeems first,
+// peer 1 later; peer 1 sees both and loses by its view, but keeps K's and the target's secrets
+// (so it keeps following their labels) while L's self-removal is not finalized. The sharer saw
+// only peer 1's redemption: its finalization drops peer 2's and peer 1 is in. Peer 2, the loser
+// once the finalization arrives, drops them.
+#[test]
+fn single_use_loser_keeps_secrets_until_finalized_spec_perm_9() {
+    let (mut lp, ps) = people(3, 522);
+    let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
+    let d = thing_of(&mut lp, 0, pa);
+    let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, None)).unwrap();
+    spread(&mut lp);
+    let l = osis_node::identity::Identity::from_seed(link.seed.clone()).tid();
+    let early = lp.peers[2].engine.redeem(&link, &ps2, true).unwrap().commits;
+    lp.peers[1].clock.advance(1000);
+    let late = lp.peers[1].engine.redeem(&link, &ps1, true).unwrap().commits;
+    send(&mut lp, 2, 1, &early);
+    assert!(!lp.peers[1].engine.roster(&link.k).contains_key(&ps1), "peer 1 lost by its view");
+    lp.peers[1].engine.drop_lost_secrets().unwrap();
+    assert!(lp.peers[1].engine.epochs(&link.k).is_some() && lp.peers[1].engine.epochs(&d).is_some(), "kept until finalized");
+    send(&mut lp, 1, 0, &late);
+    lp.peers[0].clock.advance(2000);
+    let fin = lp.peers[0].engine.finalize_link(&link.k, &l).unwrap();
+    send(&mut lp, 0, 1, &fin.commits);
+    send(&mut lp, 2, 0, &early);
+    for i in [0, 1] {
+        let r = lp.peers[i].engine.roster(&link.k);
+        assert!(r.contains_key(&ps1) && !r.contains_key(&ps2) && !r.contains_key(&l), "peer {i}: {r:?}");
+    }
+    assert_eq!(lp.peers[1].engine.role_on(&d), Some(Role::Read));
+    assert!(lp.peers[1].engine.drop_lost_secrets().unwrap().is_empty());
+    // the loser holds its own redemption only until the finalization reaches it
+    lp.peers[2].engine.drop_lost_secrets().unwrap();
+    assert!(lp.peers[2].engine.epochs(&link.k).is_some(), "peer 2 won by its view");
+    send(&mut lp, 1, 2, &late);
+    lp.peers[2].engine.drop_lost_secrets().unwrap();
+    assert!(lp.peers[2].engine.epochs(&link.k).is_some(), "lost by its view, not finalized");
+    send(&mut lp, 0, 2, &fin.commits);
+    assert!(!lp.peers[2].engine.roster(&link.k).contains_key(&ps2));
+    let dropped = lp.peers[2].engine.drop_lost_secrets().unwrap();
+    assert!(dropped.contains(&link.k), "{dropped:?}");
+}
+
 // spec/permissions.md §9, spec/commits.md §2: revoking a joiner of a multi-use link removes it
 // and L in one commit with one rotation of K; the other joiner keeps K's new secrets, the
 // revoked one and a seed holder acting as L (bearer use) get none; every peer applies the
