@@ -1,8 +1,8 @@
 //! Property tests (spec/wire.md §4, spec/sync.md §3).
 
 use crate::tests::{dkey, t, ts};
-use crate::tests_build::{key, rng};
-use crate::tests_verify::{TestSecrets, register_delta};
+use crate::tests::build::{key, rng};
+use crate::tests::verify::{TestSecrets, register_delta};
 use crate::*;
 use osis_base::{Ak, BlobId, CommitId, Link, SchemaId, Tid, Value};
 use osis_schema::{Bound, PurgeBy, Retention};
