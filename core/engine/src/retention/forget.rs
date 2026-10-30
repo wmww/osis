@@ -10,7 +10,7 @@
 //! aspect units (state, undo buffer, pre-reset snapshots, tables, deaths), the deltas in commit
 //! records (a commit left with no part is deleted, so a re-grant fetches it again; the others
 //! keep their readable parts, the forgotten ones joining late if they come back), pending parts,
-//! but a grant's boxes that may still apply (`rotation::boxes_kept`),
+//! but a re-grant's boxes that may still apply (`rotation::boxes_kept`),
 //! receipts, value-less lists, purge lists, timers, `/secrets` waits, the sync records of the
 //! labels of forgotten groups and of the commit blobs holding forgotten parts, and their blob
 //! ciphertexts.
@@ -65,8 +65,9 @@ fn lost_aspects(core: &Core, lost: &BTreeSet<Tid>, h: &Header, memo: &mut BTreeM
 }
 
 /// Forgets every thing whose reading went with the secrets of `lost` (called after they are
-/// dropped from the store, before the engine reloads its indexes).
-pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid]) -> Result<Forgotten> {
+/// dropped from the store, before the engine reloads its indexes; `held`: the newest read epoch
+/// number they held, `rotation::boxes_kept`).
+pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -> Result<Forgotten> {
     let lost: BTreeSet<Tid> = lost.iter().copied().collect();
     let mut out = Forgotten::default();
     if lost.is_empty() {
@@ -143,7 +144,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid]) -> Result<Forgotten> {
         // a grant that may still apply keeps its boxes (applied later without them, the node
         // would hold the role and no secret), marked sealed: read as candidates again, they
         // would keep the lost secrets for good
-        let grants = crate::rotation::boxes_kept(tx.core, &blob, &id);
+        let grants = crate::rotation::boxes_kept(tx.core, &blob, &id, held);
         let kept: Vec<(usize, Tid)> = ais.iter().filter_map(|ai| blob.header.aspects.get(*ai).filter(|a| a.ak.as_str() == "/secrets" && grants.contains(&a.tid)).map(|a| (*ai, a.tid))).collect();
         for (ai, x) in kept {
             ais.remove(&ai);

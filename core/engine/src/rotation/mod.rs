@@ -874,14 +874,45 @@ fn pending_grants(tx: &mut Tx<'_>) -> Result<Vec<PendingGrant>> {
     }
 }
 
-/// The actors pending commit `id` boxes secrets of to this node, a held key actor or an actor it
-/// reads, signed (`authentic`) by an author who may grant on them now: forgetting keeps those
-/// `/secrets` parts, whatever the commit's age (spec/permissions.md §3), so a re-grant applied
-/// after the loss brings its boxes. Cost: such a grant that never applies keeps its sealed box.
-pub(crate) fn boxes_kept(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_base::CommitId) -> BTreeSet<Tid> {
+/// The actors not applied commit `id` boxes to this node, a held key actor or an actor it reads
+/// a read epoch newer than any it held checked (`held`: newest checked read epoch number per
+/// dropped actor; a grant from after a rotation that left the node out; reading candidates, as
+/// a re-grant read before the removal applied gives, do not count), signed (`authentic`) by an
+/// author who may grant on them now: forgetting keeps those `/secrets` parts, whatever the
+/// commit's age (spec/permissions.md §3), so a re-grant applied after the loss brings its boxes.
+/// A box only at an epoch the node held (a grant from before the removal, which applied gives no
+/// role) goes: kept, it would hold the lost secrets for good. Cost: such a re-grant that never
+/// applies keeps its sealed box.
+pub(crate) fn boxes_kept(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_base::CommitId, held: &BTreeMap<Tid, u64>) -> BTreeSet<Tid> {
+    if core.ix.commits.contains_key(id) {
+        return BTreeSet::new();
+    }
     let node = core.id.tid();
     let ours = |m: &Tid| *m == node || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m));
-    crate::apply::keys::pending_secrets_writes(core, blob, id).into_iter().filter(|(x, w)| w.boxes.keys().any(|k| ours(&k.member)) && may_grant(core, &blob.header.author, x) && authentic(core, blob, id, x)).map(|(x, _)| x).collect()
+    let newer = |x: &Tid, k: &BoxKey| ours(&k.member) && k.role == Role::Read && held.get(x).is_none_or(|n| k.epoch.n > *n);
+    crate::apply::keys::pending_secrets_writes(core, blob, id).into_iter().filter(|(x, w)| w.boxes.keys().any(|k| newer(x, k)) && may_grant(core, &blob.header.author, x) && authentic(core, blob, id, x)).map(|(x, _)| x).collect()
+}
+
+impl Engine {
+    /// Whether a held, not applied commit (parked ones aside) writes `a`'s `/keys`, signed
+    /// (`authentic`) by an admin of `a` now: a newer deposit seed may be on its way (node-sync
+    /// holds back a deposit-only step meanwhile). Anyone can send a pending commit naming any
+    /// aspect, so an unsigned one never counts: it would hold the step back for good.
+    pub fn keys_write_pending(&mut self, a: &Tid) -> Result<bool> {
+        let a = *a;
+        let ids: Vec<osis_base::CommitId> = self.core.ix.pending.iter().filter(|(_, r)| **r != crate::Reason::Parked).map(|(c, _)| *c).collect();
+        self.run(|tx| {
+            for id in ids {
+                let Some((_, bytes)) = tx.txn.get_pending(&id)? else { continue };
+                let Ok(blob) = osis_commit::CommitBlob::decode(&bytes) else { continue };
+                let h = &blob.header;
+                if h.aspects.iter().any(|x| x.tid == a && x.ak.as_str() == "/keys") && tx.core.role_now(&h.author, &a) == Some(Role::Admin) && authentic(tx.core, &blob, &id, &a) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })
+    }
 }
 
 /// Whether pending `blob` is signed by its author and its `/secrets` parts on `x` are the ones its
@@ -957,6 +988,7 @@ fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>) -> Result<(Vec<Tid>, Forgotten)>
         return Ok((lost, Forgotten::default()));
     }
     tx.core.touch();
+    let held: BTreeMap<Tid, u64> = lost.iter().filter_map(|a| Some((*a, tx.core.ix.secrets.get(a)?.read.held().map(|(e, _)| e.n()).max()?))).collect();
     for a in &lost {
         tx.core.ix.secrets.remove(a);
         tx.core.membership_changed();
@@ -964,7 +996,7 @@ fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>) -> Result<(Vec<Tid>, Forgotten)>
         let now = tx.now();
         tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::Removed, tids: vec![*a], commit: None, peer: None, detail: "lost read access: secrets and what only they read dropped".into() }, now);
     }
-    let f = crate::retention::forget::forget(tx, &lost)?;
+    let f = crate::retention::forget::forget(tx, &lost, &held)?;
     Ok((lost, f))
 }
 
