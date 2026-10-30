@@ -130,6 +130,12 @@ pub(crate) fn body_class(core: &Core, h: &Header, c: &CommitId, ai: usize) -> (B
     (BlobId(hs.finalize()), members)
 }
 
+/// The ID of the body holding aspect `ai` of known commit `c` (`body_class`).
+fn body_of(core: &Core, c: &CommitId, ai: usize) -> Option<BlobId> {
+    let m = core.ix.commits.get(c)?;
+    Some(body_class(core, &m.header, c, ai).0)
+}
+
 /// First and last death so far over the deltas of the body holding aspect `ai` of `c`.
 fn deaths_of(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Option<(Ts, Ts)>> {
     let (body, members) = body_class(tx.core, h, c, ai);
@@ -137,7 +143,7 @@ fn deaths_of(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Opt
 }
 
 /// First and last death so far over a body's deltas.
-pub(crate) fn class_deaths(tx: &mut Tx<'_>, h: &Header, body: &BlobId, members: &[usize]) -> Result<Option<(Ts, Ts)>> {
+fn class_deaths(tx: &mut Tx<'_>, h: &Header, body: &BlobId, members: &[usize]) -> Result<Option<(Ts, Ts)>> {
     let mut out: Option<(Ts, Ts)> = None;
     for ai in members {
         let Some(a) = h.aspects.get(*ai) else { continue };
@@ -766,9 +772,7 @@ impl Engine {
     /// Whether `c` is known with an aspect `(tid, ak)` whose body is not dropped: true for a
     /// missing part too (`Engine::aspect_dump` shows which).
     pub fn body_not_dropped(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
-        let Some(m) = self.core.ix.commits.get(c) else { return false };
-        let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { return false };
-        !m.dropped.contains_key(&ai)
+        aspect_index(&self.core, c, tid, ak).is_some_and(|ai| self.core.ix.commits.get(c).is_some_and(|m| !m.dropped.contains_key(&ai)))
     }
 
     /// Writes a compaction snapshot of `(tid, ak)` from this node's whole state (spec/commits.md
