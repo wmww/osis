@@ -595,3 +595,42 @@ fn resnapshot_repair_cascades_spec_permissions_6() {
     assert!(t2.is_applied(&grant) && t2.is_applied(&demote) && t2.dropped().contains_key(&rm));
     assert_eq!(neutral(&w, a0, n[1], &[a0, a1], &[]), None);
 }
+
+/// §5.1, §6 (OSIS_PERM_SEED=52011, joint): n0 (admin on A0, so on A1 through A0's ownership)
+/// grants itself admin on A1, then removes A1 from A0; n1, seeing neither, demotes n0 on A0.
+/// That audit sees the removal in effect, so n0 falls on A0 and from the owner chain on A1, and
+/// drops both. With the removal dropped, A1 is admin on A0 again: with its own grant in effect
+/// n0 would keep admin on A0 through A1 and fall nowhere, so the grant's drop now justifies
+/// itself: sticky residue. Re-snapshotting A0 replaces the removal by the roster and repairs it.
+#[test]
+fn resnapshot_repairs_self_supported_drop_spec_permissions_6() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let a0 = w.thing(n[1]);
+    let a1 = w.thing(a0);
+    let a2 = w.thing(a0);
+    let all0: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(n[1], a0, n[0], edge(Admin), 0, &all0);
+    w.set(n[1], a1, n[1], edge(Admin), 0, &all0);
+    w.set(n[1], a2, a0, edge(Admin), 0, &all0);
+    w.set(n[1], a0, a1, edge(Admin), 0, &all0);
+    w.set(n[1], a1, a2, edge(Admin), 0, &all0);
+    let r = |v: [u64; 3]| -> Vec<(Tid, u64)> { (0..3).map(|i| (n[i], v[i])).collect() };
+    let grant = w.set(n[0], a1, n[0], edge(Admin), 1, &r([1, LATE, 0]));
+    let rm = w.set(n[0], a0, a1, None, 2, &r([2, LATE, LATE]));
+    w.set(n[2], a0, n[2], edge(Write), 2, &r([LATE, LATE, 2]));
+    w.set(n[2], a2, n[1], edge(Admin), 3, &r([2, 1, 3]));
+    w.set(n[1], a0, n[0], edge(Write), 4, &r([3, 4, LATE]));
+    w.set(n[2], a2, n[2], None, 5, &r([LATE, LATE, 5]));
+    w.set(n[0], a0, n[1], edge(Admin), 7, &r([7, LATE, LATE]));
+    let tl = Timeline::evaluate(&w.held());
+    let (grant, rm) = (WriteId::Op(grant, 0), WriteId::Op(rm, 0));
+    assert!(tl.dropped().contains_key(&grant) && tl.dropped().contains_key(&rm));
+    assert_eq!(residue(&tl), BTreeSet::from([grant]));
+    let mut w2 = w.clone();
+    w2.snapshot_state(n[1], a0, tl.roster_state(&a0), END_T);
+    let t2 = Timeline::evaluate(&w2.held());
+    assert!(t2.is_applied(&grant), "the snapshot repairs the residue");
+    assert_eq!(t2.role(&n[0], &a0, At::END), Some(Admin));
+    assert_eq!(neutral(&w, a0, n[1], &[a0, a1, a2], &[]), None);
+}
