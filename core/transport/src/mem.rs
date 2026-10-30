@@ -445,6 +445,7 @@ impl InProcess {
             return Err(Error::KeyMismatch);
         }
         let mine = own.unwrap_or_else(|| st.rng.bytes32());
+        let source = name_source(&lend);
         let id = st.id();
         st.conns.insert(id, Conn {
             ends: [self.name.clone(), lend],
@@ -460,7 +461,7 @@ impl InProcess {
             l.queue.push_back(id);
             wake(&mut l.waker);
         }
-        Ok(MemConn(Arc::new(Handle { net: self.net.clone(), id, side: 0, peer: lkey })))
+        Ok(MemConn(Arc::new(Handle { net: self.net.clone(), id, side: 0, peer: lkey, source })))
     }
 }
 
@@ -487,7 +488,8 @@ impl Listener for MemListener {
                             let [_, d1] = &mut c.dropped;
                             *d1 = false;
                             let [peer, _] = c.keys;
-                            return Poll::Ready(Ok(MemConn(Arc::new(Handle { net: self.net.clone(), id, side: 1, peer }))));
+                            let source = name_source(c.ends.first().map_or("", String::as_str));
+                            return Poll::Ready(Ok(MemConn(Arc::new(Handle { net: self.net.clone(), id, side: 1, peer, source }))));
                         }
                         // reset before accept: side 0 dropping removes it
                     }
@@ -521,6 +523,19 @@ struct Handle {
     id: u64,
     side: usize,
     peer: PublicKey,
+    /// The other end's endpoint name, hashed.
+    source: crate::Source,
+}
+
+fn name_source(name: &str) -> crate::Source {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    name.hash(&mut h);
+    let mut s = [0u8; 16];
+    if let Some(d) = s.get_mut(..8) {
+        d.copy_from_slice(&h.finish().to_be_bytes());
+    }
+    s
 }
 
 impl Drop for Handle {
@@ -548,6 +563,10 @@ impl Connection for MemConn {
 
     fn peer_key(&self) -> PublicKey {
         self.0.peer
+    }
+
+    fn source(&self) -> Option<crate::Source> {
+        Some(self.0.source)
     }
 
     fn open_stream(&self) -> impl Future<Output = Result<(MemSend, MemRecv), Error>> + Send {

@@ -11,6 +11,7 @@ use osis_base::LabelId;
 use osis_crypto::CryptoRngCore;
 use osis_proto::{ClientInput, ClientOutput, ServerConfig, ServerConnection, ServerInput, ServerOutput};
 use osis_store::Backend;
+use osis_transport::Source;
 use std::collections::BTreeMap;
 
 /// A connection's handle, chosen by the driver.
@@ -32,8 +33,9 @@ pub enum HubOutput {
 }
 
 enum Conn {
-    /// `buffered`: partial frame bytes after the last input.
-    Served { c: Box<ServerConnection>, peer: [u8; 32], hello_by: Option<u64>, buffered: usize },
+    /// `buffered`: partial frame bytes after the last input; `source`: where it comes from
+    /// (slots are shared by it).
+    Served { c: Box<ServerConnection>, peer: [u8; 32], hello_by: Option<u64>, buffered: usize, source: Option<Source> },
     Peer { r: Box<Replicator>, timer: Option<u64> },
 }
 
@@ -86,17 +88,36 @@ impl<B: Backend> Hub<B> {
         c
     }
 
-    /// A client connected (`peer`: the key the transport authenticated): start its server engine
-    /// (sends Hello), or close it beyond `max_connections`.
+    /// A client connected (`peer`: the key the transport authenticated), from no known source.
     pub fn accept(&mut self, now: u64, id: ConnId, peer: [u8; 32]) -> Vec<HubOutput> {
-        let served = self.conns.values().filter(|c| matches!(c, Conn::Served { .. })).count();
-        if served >= self.store.policy().max_connections {
-            return vec![HubOutput::Close(id)];
+        self.accept_from(now, id, peer, None)
+    }
+
+    /// A client connected from `source` (`osis_transport::Source`; none: unknown, all such
+    /// connections one source): start its server engine (sends Hello). At `max_connections`
+    /// the slots are shared by source (`osis_transport::evict_for`): the newest connection of
+    /// the source holding the most is closed for it, or it is closed if that source holds fewer
+    /// than two more than its own.
+    pub fn accept_from(&mut self, now: u64, id: ConnId, peer: [u8; 32], source: Option<Source>) -> Vec<HubOutput> {
+        let mut out = Vec::new();
+        let mut held = BTreeMap::new();
+        for c in self.conns.values() {
+            if let Conn::Served { source, .. } = c {
+                *held.entry(*source).or_insert(0usize) += 1;
+            }
+        }
+        if held.values().sum::<usize>() >= self.store.policy().max_connections {
+            let victim = osis_transport::evict_for(&held, &source).and_then(|v| self.conns.iter().rev().find(|(_, c)| matches!(c, Conn::Served { source, .. } if *source == v)).map(|(k, _)| *k));
+            let Some(v) = victim else { return vec![HubOutput::Close(id)] };
+            out.extend(self.batch(now, |h, o| h.remove(now, v, o)));
+            out.push(HubOutput::Close(v));
+            out.push(HubOutput::Diagnostic(format!("connection {v}: closed for a connection from a source holding fewer slots")));
         }
         let cfg = ServerConfig { static_key: self.static_key, challenge: self.challenge(), tie: id };
         let hello_by = Some(now.saturating_add(self.store.policy().hello_ms));
-        self.conns.insert(id, Conn::Served { c: Box::new(ServerConnection::new(cfg)), peer, hello_by, buffered: 0 });
-        self.batch(now, |h, out| h.serve(now, id, ServerInput::Start, out))
+        self.conns.insert(id, Conn::Served { c: Box::new(ServerConnection::new(cfg)), peer, hello_by, buffered: 0, source });
+        out.extend(self.batch(now, |h, out| h.serve(now, id, ServerInput::Start, out)));
+        out
     }
 
     /// A connection this node dialed to peer server `peer_key` is up: replicate to it.
@@ -263,7 +284,7 @@ impl<B: Backend> Hub<B> {
     }
 
     fn serve(&mut self, now: u64, id: ConnId, input: ServerInput, out: &mut Vec<HubOutput>) {
-        let Some(Conn::Served { c, peer, hello_by, buffered }) = self.conns.get_mut(&id) else { return };
+        let Some(Conn::Served { c, peer, hello_by, buffered, .. }) = self.conns.get_mut(&id) else { return };
         self.store.set_origin(Some(*peer));
         let outputs = c.handle(now, &mut self.store, input);
         self.store.set_origin(None);

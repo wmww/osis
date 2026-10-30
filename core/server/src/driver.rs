@@ -203,10 +203,10 @@ pub async fn run<B: Backend + 'static, T: Transport>(hub: Hub<B>, ep: Endpoint<T
         tokio::select! {
             link = incoming.recv(), if listening => match link {
                 Some(link) => {
-                    let key = link.peer_key;
+                    let (key, source) = (link.peer_key, link.source);
                     let id = d.add(link, None);
                     let now = d.now();
-                    let out = blocking(|| d.hub.accept(now, id, key));
+                    let out = blocking(|| d.hub.accept_from(now, id, key, source));
                     d.apply(out);
                 }
                 None => listening = false,

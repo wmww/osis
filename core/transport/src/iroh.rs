@@ -231,6 +231,11 @@ impl Connection for IrohConn {
         self.peer
     }
 
+    /// Unknown: a path may run through a relay or change (iroh connections count as one source).
+    fn source(&self) -> Option<crate::Source> {
+        None
+    }
+
     async fn open_stream(&self) -> Result<(IrohSend, IrohRecv), Error> {
         open_bi(&self.c).await
     }

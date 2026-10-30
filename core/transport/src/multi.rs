@@ -136,6 +136,10 @@ impl Connection for MultiConn {
         each!(self, c => c.peer_key())
     }
 
+    fn source(&self) -> Option<crate::Source> {
+        each!(self, c => c.source())
+    }
+
     async fn open_stream(&self) -> Result<(MultiSend, MultiRecv), Error> {
         each!(self, c => c.open_stream().await.map(|(s, r)| (s.into(), r.into())))
     }
