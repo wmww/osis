@@ -1,7 +1,6 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Multi-GB large value streamed within a memory bound (tier 2; numbers in
-//! notes/testing.md, "Scale checks"): `OSIS_LARGE_MIB=1024 cargo test --workspace
-//! --test scale -- --ignored --nocapture`. Blobs go to files under the target dir.
+//! notes/testing.md, "Scale checks"): `OSIS_LARGE_MIB=1024 cargo test --release -p osis-label
+//! --test it -- --ignored scale:: --nocapture`. Blobs go to files under the target dir.
 
 use osis_base::BlobId;
 use osis_base::hash::Hasher;
