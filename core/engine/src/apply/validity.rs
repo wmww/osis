@@ -707,9 +707,10 @@ impl<'a> Judge<'a> {
         }
         let Some(tl) = tl else { return false };
         // a compaction snapshot: valid iff its author could write the aspect at the snapshot,
-        // judged by commit ID (a demotion's frontier lists it), by the aspect's role alone
+        // judged by commit ID (a demotion's frontier lists it), needing the strictest role a
+        // write it carries could need (`snapshot_role`: admin for `/keys` and `/secrets`)
         if h.kind.is_compaction() {
-            let required = required_role(ak);
+            let required = crate::engine::write::snapshot_role(ak);
             let point = Point { ts: h.ts, node: h.author, commit: *id };
             return tl.delta_valid(point, &a.tid, ak, Dots::Commit, required) == Validity::Valid;
         }
@@ -1601,6 +1602,47 @@ mod keys_tests {
         lp.sync_all().unwrap();
         assert_eq!(lp.peers[0].engine.get_typed(&t, &ct::KEYS).unwrap().unwrap(), keys);
         assert_eq!(lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap(), secrets);
+    }
+
+    // spec/permissions.md §5.2: a compaction snapshot of `/keys` or `/secrets` needs admin (the
+    // strictest role a write it carries could need). Else a writer's `/keys` snapshot carrying a
+    // forged admin keyset under a dot nobody holds joined at every receiver, and later admin
+    // secrets were sealed to the writer.
+    #[test]
+    fn writer_snapshot_of_keys_invalid_spec_perm_5_2() {
+        use osis_crdt::{Batch, Source, Writer};
+        let mut lp = LocalPeer::new(2, 905, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.tid();
+        let w = lp.peers[1].engine.tid();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        m.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, since: None }).unwrap();
+        lp.sync_all().unwrap();
+        let keys_ak = osis_base::Ak::new("/keys").unwrap();
+        let before = lp.peers[0].engine.get_typed(&t, &ct::KEYS).unwrap().unwrap();
+        assert!(matches!(lp.peers[1].engine.snapshot(&t, &keys_ak), Err(crate::Error::Permission { .. })), "refused writer-side");
+        // the writer's state with a forged admin keyset (its write keyset) under a dot nobody holds
+        let forged = before.write.clone().unwrap();
+        assert_ne!(Some(&forged), before.admin.as_ref());
+        let st = lp.peers[1].engine.state(&t, &keys_ak).unwrap().unwrap();
+        let ts = lp.peers[1].engine.core.hlc.next();
+        let view = osis_schema::core_schema().view("/keys").unwrap();
+        let mut batch = Batch::new(&st, Writer::new(ts, Source::commit(osis_base::CommitId([7; 32])), 1));
+        batch.apply(&PathOp { path: vec![PathSeg::Field(2)], op: Op::Set(Some(forged.clone()).to_value()) }, &view).unwrap();
+        let (d, _) = batch.finish().unwrap();
+        let mut st = st.clone();
+        st.join(d);
+        lp.peers[1].engine.core.states.insert((t, keys_ak.clone()), Some(st));
+        lp.peers[1].engine.core.skip_writer_rules = true;
+        let snap = lp.peers[1].engine.snapshot(&t, &keys_ak).unwrap().unwrap();
+        lp.peers[1].engine.core.skip_writer_rules = false;
+        let pk = lp.peers[1].engine.package(&snap).unwrap().unwrap();
+        lp.deliver(0, &pk).unwrap();
+        assert!(!lp.peers[0].engine.core.ix.commits.get(&snap).unwrap().valid[0], "a writer's /keys snapshot is invalid");
+        assert_eq!(lp.peers[0].engine.get_typed(&t, &ct::KEYS).unwrap().unwrap(), before);
     }
 
     // spec/permissions.md §2: an invite grant carries the grantee's boxes only; a write of the
