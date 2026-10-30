@@ -258,7 +258,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     }
     if !selfr && !left.is_empty() && tx.core.has_own_secrets(&target) {
         // boxing to the remaining members encrypts under their keysets: the cascade first
-        rotation::ensure_rotated(tx, who, target, &mut Vec::new(), &mut done)?;
+        rotation::ensure_rotated(tx, who, target, &mut done)?;
         let may = rotation::may_rotate(tx.core, &who, &target);
         let roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r)).collect();
         if !roles.is_empty() {

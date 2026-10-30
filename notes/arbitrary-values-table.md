@@ -27,7 +27,7 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 |---|---|---|---|
 | `reopen_all` 8 sweeps | `engine/flows/mod.rs` | taking up a key actor opened at most 8 levels of a member-actor chain (a 12-chain left 4 unread) | fixed: fixpoint, each learner's dependents reopened at once (one sweep opens a chain in any tid order); test `keys::key_actor_opens_deep_member_chain_spec_crypto_4` |
 | `reopen_dependents` 4096 steps | `engine/flows/mod.rs` | the reopen fixpoint stopped silently; it terminates anyway: an actor is pushed only when its held epochs grew (epochs and secrets are only added, `set_secret` only when absent), so pushes are bounded by the secrets the held `/secrets` states carry, which writers paid for | fixed: cap removed (no test: needs > 4096 steps) |
-| rotation `MAX_DEPTH` 8 | `engine/rotation/mod.rs` | departures more than 8 member actors deep are never rotated (security) | issues/rotation-depth-cap.md |
+| rotation `MAX_DEPTH` 8 | `engine/rotation/mod.rs` | departures more than 8 member actors deep are never rotated (security) | fixed: no cap; departures one per covers class (fixpoint over the member graph, polynomial), cascade iterative, each actor once; tests `rotation::tests::removal_twelve_deep_rotates_every_level_spec_crypto_4`, `wide_lattice_departures_bounded`, differential `walk_matches_path_walk` |
 | `HINT_INDEXES` 4 | `node/sync/open.rs` | a label of index 4 or more cannot be opened from a hint (inbox, link) | fixed: inbox things carry the label index (spec/wire.md §9), links and cards name index 0; test `inbox_retry::hint_opens_a_label_replaced_many_times_spec_wire_9` |
 | `MAX_INBOX_TRIES` 8 | `node/sync/local.rs`, `inbound.rs` | a deposit refused for about 21 min (budget full while the recipient is offline) is dropped; resent only after `INBOX_LIFETIME` | fixed: retried at the capped back-off until taken or moot (delivery forgotten or re-sealed, label replaced); test `inbox_retry::inbox_deposit_retried_for_hours_spec_sync_5` |
 | `MAX_QUEUED` 64 MiB, server `max_queued_bytes` 32 MiB, `REQUEST_TIMEOUT_MS` 2 min | `node/sync/driver.rs`, `server/`, `proto/client.rs` | no send window: a large upload or fetch on a slow link closes the connection, the redial repeats it | issues/sync-flow-control.md |
@@ -123,7 +123,7 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | value | class | 0 / ∞ |
 |---|---|---|
 | `reopen_all` sweeps, `reopen_dependents` steps | was X | fixed (no cap) |
-| rotation `MAX_DEPTH` 8 | X | issues/rotation-depth-cap.md |
+| rotation `MAX_DEPTH` 8 | was X | fixed (no cap) |
 | `MAX_READING` 256, `MAX_READING_PER_AUTHOR` 64, `MAX_READING_ACTORS` 64 | R (tested, keys `boxes.rs`; a genuine candidate past it waits for its checked box) | |
 | `MAX_HINT_COMMITS` 64 | R (lowest commit ID evicted, not oldest; inbox spam can evict a genuine hint) | the grantee then writes once the thing's `/keys` syncs, as after a restart (candidates are not persisted): a delay (checked) |
 | `UNDO_DEPTH` 16 | M | no undo / memory |
