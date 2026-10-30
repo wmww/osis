@@ -37,16 +37,16 @@ pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &Key, s: &str, write: bool) -> anyho
         let step = match st {
             PStep::Step(s) => s,
             PStep::IndexOrKey(i) => {
-                if write && (ctx.pending.contains(&(t, key.ak().as_str().to_string())) || ctx.pending.contains(&(t, String::new()))) {
-                    return Err(usage(format!("[{i}] on untyped {} written earlier in this batch: list index or map key is unknown (register a schema, or write in a separate step)", key.ak().as_str())));
+                if write && (ctx.pending.contains(&(t, key.ak().to_string())) || ctx.pending.contains(&(t, String::new()))) {
+                    return Err(usage(format!("[{i}] on untyped {} written earlier in this batch: list index or map key is unknown (register a schema, or write in a separate step)", key.ak())));
                 }
                 if cur.is_none() {
-                    let untyped = Key::new(key.ak().clone(), None);
+                    let untyped = Key::new(osis::Ak::new(key.ak()).map_err(|_| usage("bad AK"))?, None);
                     cur = Some(ctx.db.get(t, untyped).ok().flatten());
                 }
                 let here = cur.as_ref().and_then(|v| v.as_ref()).and_then(|v| osis_schema::value_at(v, &Path(out.clone())));
                 match here {
-                    Some(Value::List(_)) if write => return Err(usage(format!("[{i}]: {} is an untyped list; index writes need a schema (--schema)", key.ak().as_str()))),
+                    Some(Value::List(_)) if write => return Err(usage(format!("[{i}]: {} is an untyped list; index writes need a schema (--schema)", key.ak()))),
                     Some(Value::List(_)) => Step::Index(usize::try_from(i).map_err(|_| usage("bad index"))?),
                     _ => Step::Key(Value::Int(i)),
                 }
@@ -71,7 +71,7 @@ fn with_flags<'w, 'd>(mut a: AspectWrite<'w, 'd, Key>, f: &WriteFlags, key: &Key
         a = a.expires_at(WallMs(parse_ts(t)?));
     }
     if let Some(r) = &f.retention {
-        let base = key.schema().and_then(|s| s.defaults(key.ak().as_str())).map(|d| d.retention).unwrap_or_default();
+        let base = key.schema().and_then(|s| s.defaults(key.ak())).map(|d| d.retention).unwrap_or_default();
         a = a.retention(retention(r, base)?);
     }
     Ok(a)
@@ -185,12 +185,12 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
     let key = ctx.key(&a.ak)?;
     let p = path(ctx, t, &key, &a.path, true)?;
     let pt = type_at(&key, &p);
-    let sch = key.schema().cloned();
+    let sch = key.schema();
     let (et, vt) = match (&sch, &pt) {
         (Some(s), Some(t)) => text::inner_types(s, t),
         _ => (None, None),
     };
-    let (ety, vty) = (sch.as_deref().zip(et.as_ref()), sch.as_deref().zip(vt.as_ref()));
+    let (ety, vty) = (sch.zip(et.as_ref()), sch.zip(vt.as_ref()));
     let args = &a.args;
     let n = |k: usize| -> anyhow::Result<()> {
         if args.len() == k { Ok(()) } else { Err(usage(format!("{} takes {k} argument(s)", a.op))) }
@@ -255,9 +255,9 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
             if args.is_empty() || args.len() > 2 {
                 return Err(usage("set-case ID [V]"));
             }
-            let (id, payload_ty) = text::case_id(sch.as_deref(), pt.as_ref(), &args[0]).map_err(usage)?;
+            let (id, payload_ty) = text::case_id(sch, pt.as_ref(), &args[0]).map_err(usage)?;
             let pl = match args.get(1) {
-                Some(v) => Some(ctx.value(v, sch.as_deref().zip(payload_ty.as_ref()))?),
+                Some(v) => Some(ctx.value(v, sch.zip(payload_ty.as_ref()))?),
                 None => None,
             };
             pw.set_case(CaseId(id), pl)?

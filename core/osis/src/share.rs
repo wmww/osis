@@ -745,8 +745,8 @@ impl Osis {
     }
 
     /// The servers new labels go to (and kept connected).
-    pub fn servers(&self) -> Result<Vec<ServerAddr>> {
-        Ok(self.server_addrs().into_iter().map(ServerAddr).collect())
+    pub fn servers(&self) -> Vec<ServerAddr> {
+        self.server_addrs().into_iter().map(ServerAddr).collect()
     }
 
     fn server_addrs(&self) -> Vec<osis_label::Address> {
@@ -760,7 +760,7 @@ impl Osis {
     /// their servers), not groups owned by others. A database created without servers becomes
     /// reachable once one is added.
     pub fn add_server(&self, s: &ServerAddr) -> Result<()> {
-        let mut v = self.servers()?;
+        let mut v = self.servers();
         if !v.contains(s) {
             v.push(s.clone());
         }
@@ -770,7 +770,7 @@ impl Osis {
     /// Removes a server, from the database's list and the labels that follow it (`add_server`);
     /// a group with members besides the person's devices keeps its last server.
     pub fn remove_server(&self, s: &ServerAddr) -> Result<()> {
-        let mut v = self.servers()?;
+        let mut v = self.servers();
         v.retain(|x| x != s);
         self.set_servers(v)
     }

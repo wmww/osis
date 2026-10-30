@@ -249,6 +249,8 @@
 
 mod error;
 mod handle;
+#[doc(hidden)]
+pub mod internals;
 mod keys;
 mod large;
 mod net;
@@ -262,7 +264,7 @@ mod write;
 
 pub use error::{Error, Result};
 pub use handle::{Config, DEFAULT_IDLE_COMMIT, DEFAULT_WAIT, DEFAULT_LIMIT, MemStore, Osis, StoreAt, WeakOsis};
-pub use net::{GroupPolicy, ManualNet, Runtime, Transport};
+pub use net::{GroupPolicy, Runtime, Transport};
 pub use person::{Joining, OFFER_LIFETIME_MS, PairOffer, PairReply, PairRequest};
 pub use keys::{Key, core};
 pub use large::ValueStream;
@@ -279,6 +281,3 @@ pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError
 
 /// The schema layer, for generated code (`use osis::schema as osis_schema;`).
 pub use osis_schema as schema;
-/// The engine, for inspection (CLI) and tests only.
-#[doc(hidden)]
-pub use osis_node as node;

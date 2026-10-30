@@ -2,6 +2,7 @@
 //! store write; persistence at the first durable write with the owner chain; restart forgets;
 //! rights through the nearest durable owner; expiry in memory; signal aspects.
 
+use osis::internals::Internals as _;
 use crate::common::*;
 use crate::common::CreateIn;
 use crate::common::world::World;

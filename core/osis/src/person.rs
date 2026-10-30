@@ -180,7 +180,7 @@ impl Joining {
             e.set_app_record(PERSON, person.as_bytes())?;
             Ok(done)
         })?;
-        let servers = self.db.servers()?;
+        let servers = self.db.servers();
         self.db.engine(|e| save_servers(e, &servers))?;
         self.db.carry(done)?;
         Ok(self.db)
@@ -220,7 +220,7 @@ impl Osis {
     /// expires (10 minutes): show it only to the new device.
     pub fn pair_offer(&self) -> Result<PairOffer> {
         let (me, node) = (self.me(), self.node());
-        let servers: Vec<Value> = self.servers()?.iter().map(|s| Value::Str(s.to_string())).collect();
+        let servers: Vec<Value> = self.servers().iter().map(|s| Value::Str(s.to_string())).collect();
         let now = self.inner.clock.now_wall_ms().0;
         let secret = self.locked(|x| {
             let mut s = [0u8; 32];

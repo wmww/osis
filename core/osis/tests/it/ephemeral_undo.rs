@@ -2,6 +2,7 @@
 //! delta, Local engine Undo; spec/crdt.md §4.6): an in-memory log of this session's own
 //! ephemeral batches, the scope rule, mixed batches as one change, the history cap.
 
+use osis::internals::Internals as _;
 use crate::common::*;
 use crate::common::CreateIn;
 use osis::{ChangeId, CommitKind, CommitQuery, DropReason, Error, Lifetimes, MemStore, Osis, Scope, Value};

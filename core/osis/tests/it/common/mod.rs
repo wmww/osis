@@ -3,6 +3,7 @@
 
 pub mod world;
 
+use osis::internals::Internals as _;
 use osis::{Ak, Config, ManualClock, MemStore, Osis, StoreAt, WallMs};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;

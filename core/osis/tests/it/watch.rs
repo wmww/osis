@@ -3,6 +3,7 @@
 //! spec: none (API surface, notes/api.md).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use osis::internals::Internals as _;
 use crate::common;
 use common::*;
 use osis::{Cause, DiagnosticKind, MemStore, Osis, Source, Value};

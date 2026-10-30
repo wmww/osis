@@ -28,14 +28,13 @@ pub enum Runtime {
     Tokio(tokio::runtime::Handle),
     /// A small tokio runtime of osis's own.
     Own,
-    /// A test harness carries the actions (`Osis::take_actions`, `Osis::feed`) of every
-    /// database opened with this registry.
+    /// A test harness carries the actions (`internals::Internals::take_actions`, `feed`) of
+    /// every database opened with this registry.
     #[doc(hidden)]
     Manual(ManualNet),
 }
 
 /// The databases a test harness drives (`Runtime::Manual`), in the order they started.
-#[doc(hidden)]
 #[derive(Clone, Debug, Default)]
 pub struct ManualNet(Arc<Mutex<Vec<WeakOsis>>>);
 

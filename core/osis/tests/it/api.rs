@@ -2,6 +2,8 @@
 //! Writes, Errors, Footguns closed).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use osis::AspectKey as _;
+use osis::internals::Internals as _;
 use crate::common;
 use common::*;
 use crate::common::{CreateIn, CreateExpiringIn};
@@ -82,7 +84,7 @@ fn typed_keys_and_paths_spec_versioning_5() {
     assert_eq!((d.tids, d.detail.as_str()), (vec![n], "/note/title: type error at (root): expected string"));
     assert_eq!(db.get(n, ak("/note/title")).unwrap(), Some(Value::Int(3)));
     // one element of another shape (as a newer revision's enum case would be)
-    let Value::List(mut l) = osis::schema::AspectKey::encode(&notes::TASKS, &vec![task("milk"), task("eggs")]) else { panic!() };
+    let Value::List(mut l) = notes::TASKS.encode(&vec![task("milk"), task("eggs")]) else { panic!() };
     let Some(Value::Map(m)) = l.get_mut(1) else { panic!() };
     m.insert(Value::Int(1), Value::Int(7));
     db.write_with(|w| w.at(n, ak("/note/tasks")).set(&Value::List(l))).unwrap();
@@ -477,7 +479,7 @@ fn local_sync_surface_spec_api_sync() {
     let c = clock();
     let store = MemStore::new();
     let db = Osis::create(cfg(1, store.clone(), &c)).unwrap().0;
-    assert!(db.servers().unwrap().is_empty());
+    assert!(db.servers().is_empty());
     let st = db.status().unwrap();
     assert_eq!(st.groups.get(&db.home()).map(|g| g.state), Some(osis::SyncState::NoServers));
     assert!("".parse::<osis::ServerAddr>().is_err());
@@ -487,7 +489,7 @@ fn local_sync_surface_spec_api_sync() {
     assert!(matches!(common::block_on(db.wait_synced(osis::SyncScope::All, std::time::Duration::from_secs(1))), Err(Error::Network(_))));
     drop(db);
     let db = Osis::open(cfg(1, store, &c)).unwrap();
-    assert_eq!(db.servers().unwrap(), vec![a]);
+    assert_eq!(db.servers(), vec![a]);
 }
 
 // spec/data-model.md §9: `/created` is typed by its exclusivity rule (owner or key), not the
