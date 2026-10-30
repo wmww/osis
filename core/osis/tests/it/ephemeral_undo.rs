@@ -282,3 +282,17 @@ fn undo_of_save_restores_an_empty_draft_spec_crdt_4_6() {
     assert!(!db.knows(e), "deleting the draft again: known");
     assert_eq!(db.groups_of(e).within, vec![], "deleting the draft again");
 }
+
+// spec/data-model.md §8: placing a durable thing into an ephemeral group is a durable add and
+// persists the group then, so a durable thing is never placed ephemerally on purpose; an
+// ephemeral placement of a durable thing was made while it was ephemeral (or restored by
+// undoing its save), which is why any durable write of it converts it (`place_plan`)
+#[test]
+fn durable_thing_into_ephemeral_group_persists_it_spec_data_model_8() {
+    let db = setup(11);
+    let n = db.write_with(|w| { let n = w.create(db.me())?; w.at(n, ak("/app/body")).set(&Value::Int(1))?; Ok(n) }).unwrap();
+    let g = db.write_with(|w| { let g = w.create(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
+    assert!(db.created(g).unwrap().commit.is_none(), "the group is ephemeral");
+    db.write_with(|w| w.place(n, g)).unwrap();
+    assert!(db.created(g).unwrap().commit.is_some() && db.engine(|x| x.durable_groups_of(&n)).contains(&g), "placed durably, the group persisted");
+}
