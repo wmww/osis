@@ -222,7 +222,7 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, member: Tid, role: Role) -> Result<Reci
         // a key-actor KEM key on an actor's `/keys` is never sealed to (only key actors have one)
         (false, Some(k)) => {
             let mk = MemberKeys::from_keys(&Keys { key: None, ..k })?;
-            match tx.core.ix.secrets.get(&member) {
+            match tx.core.own_epochs(&member) {
                 Some(e) => mk.with_own(e),
                 None => mk,
             }
