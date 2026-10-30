@@ -88,8 +88,10 @@ impl Engine {
     }
 
     /// The links whose seed this node holds (a sharer-only thing's `/link/seed`, readable on
-    /// every device of the sharer), as (K, L). Cached until a `/link/seed` changes.
-    pub fn held_links(&mut self) -> Result<Arc<Vec<(Tid, Tid)>>> {
+    /// every device of the sharer), as (K, L, the seed thing's owner). Cached until a
+    /// `/link/seed` changes. `links_due` takes only those whose K has that owner: a seed thing
+    /// anyone else made (a co-reader's, placed in a shared group) names no link of ours.
+    pub fn held_links(&mut self) -> Result<Arc<Vec<(Tid, Tid, Tid)>>> {
         if let Some(l) = &self.core.links {
             return Ok(l.clone());
         }
@@ -100,8 +102,9 @@ impl Engine {
             if let Some(Value::Map(m)) = self.get(&t, &ak)?
                 && let (Some(Value::Tid(k)), Some(Value::Bytes(b))) = (m.get(&Value::Int(0)), m.get(&Value::Int(1)))
                 && let Ok(seed) = <[u8; 32]>::try_from(b.as_slice())
+                && let Some(o) = self.owner(&t)
             {
-                out.push((*k, crate::identity::Identity::from_seed(Secret32::from_bytes(seed)).tid()));
+                out.push((*k, crate::identity::Identity::from_seed(Secret32::from_bytes(seed)).tid(), o));
             }
         }
         out.sort();
@@ -122,8 +125,8 @@ impl Engine {
         let me = self.tid();
         let ts = super::now_ts(&self.core);
         let mut out = Vec::new();
-        for (k, l) in self.held_links()?.iter() {
-            let Some(tl) = self.core.timelines.get(k) else { continue };
+        for (k, l, o) in self.held_links()?.iter() {
+            let Some(tl) = self.core.timelines.get(k).filter(|_| self.owner(k) == Some(*o)) else { continue };
             let due = match tl.edges_at(None).get(l, k) {
                 Some(e) => (!e.alive_at(Some(ts))).then_some(e.until),
                 None => tl.lowered_unaudited(l, k).then_some(None),
@@ -143,8 +146,8 @@ impl Engine {
         let me = self.tid();
         let ts = super::now_ts(&self.core);
         let mut next: Option<u64> = None;
-        for (k, l) in self.held_links()?.iter() {
-            let Some(tl) = self.core.timelines.get(k) else { continue };
+        for (k, l, o) in self.held_links()?.iter() {
+            let Some(tl) = self.core.timelines.get(k).filter(|_| self.owner(k) == Some(*o)) else { continue };
             if let Some(e) = tl.edges_at(None).get(l, k)
                 && let Some(u) = e.until
                 && e.alive_at(Some(ts))

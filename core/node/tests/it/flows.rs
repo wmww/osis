@@ -1123,7 +1123,7 @@ fn until_link_backdated_grant_void_spec_perm_9() {
     spread(&mut lp);
     for i in [0, 1] {
         assert!(lp.peers[i].engine.get(&keep, &ak(osis_node::flows::LINK_SEED)).unwrap().is_some());
-        assert_eq!(*lp.peers[i].engine.held_links().unwrap(), vec![(link.k, l)], "peer {i}");
+        assert_eq!(*lp.peers[i].engine.held_links().unwrap(), vec![(link.k, l, p)], "peer {i}");
         assert!(lp.peers[i].engine.links_due().unwrap().is_empty(), "peer {i}: not expired yet");
         assert_eq!(lp.peers[i].engine.next_link_expiry().unwrap(), Some(until.0), "peer {i}");
     }
