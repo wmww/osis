@@ -3,7 +3,7 @@
 //! RFC 7250 raw Ed25519 public keys: the server's is its address key (pinned by the client), the
 //! client's a fresh key per connection. No certificates, no CA. Needs a tokio runtime.
 
-use crate::{Address, Connection, Error, ListenConfig, Listener, PublicKey, RecvStream, SendStream, Transport};
+use crate::{Address, Connection, Error, ListenConfig, Listener, PublicKey, Transport};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{verify_tls13_signature_with_raw_key, WebPkiSupportedAlgorithms};
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName, SubjectPublicKeyInfoDer, UnixTime};
@@ -38,18 +38,18 @@ pub(crate) const MAX_INCOMING: usize = 1024;
 /// A listener's handshakes in progress, oldest first: each runs in its own task, ends at the QUIC
 /// idle timeout when the peer goes silent, and is aborted when `MAX_INCOMING` newer ones start
 /// (half-open handshakes stay bounded without a deadline that refuses slow links).
-pub(crate) struct Handshakes {
+struct Handshakes {
     cap: usize,
     q: std::sync::Mutex<std::collections::VecDeque<(u64, tokio::task::AbortHandle)>>,
     next: std::sync::atomic::AtomicU64,
 }
 
 impl Handshakes {
-    pub(crate) fn new(cap: usize) -> Arc<Handshakes> {
+    fn new(cap: usize) -> Arc<Handshakes> {
         Arc::new(Handshakes { cap, q: Default::default(), next: Default::default() })
     }
 
-    pub(crate) fn spawn(self: &Arc<Self>, f: impl std::future::Future<Output = ()> + Send + 'static) {
+    fn spawn(self: &Arc<Self>, f: impl std::future::Future<Output = ()> + Send + 'static) {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let me = self.clone();
         // held across the spawn, so the task's removal comes after its insertion
@@ -66,6 +66,86 @@ impl Handshakes {
         }
     }
 }
+
+/// A listener's accept loop: every incoming connection's `handshake` in its own task
+/// (`Handshakes`, at most `MAX_INCOMING` at once), the connections it yields into the returned
+/// channel for `accept`.
+pub(crate) fn accept_loop<I, C, AF, HF>(mut incoming: impl FnMut() -> AF + Send + 'static, handshake: impl Fn(I) -> HF + Send + 'static) -> tokio::sync::mpsc::Receiver<C>
+where
+    AF: std::future::Future<Output = Option<I>> + Send,
+    I: Send + 'static,
+    HF: std::future::Future<Output = Option<C>> + Send + 'static,
+    C: Send + 'static,
+{
+    let (tx, rx) = tokio::sync::mpsc::channel(64);
+    let hs = Handshakes::new(MAX_INCOMING);
+    tokio::spawn(async move {
+        while let Some(inc) = incoming().await {
+            let (tx, hand) = (tx.clone(), handshake(inc));
+            hs.spawn(async move {
+                if let Some(c) = hand.await {
+                    let _ = tx.send(c).await;
+                }
+            });
+        }
+    });
+    rx
+}
+
+/// The parts of a `Connection` over a crate with quinn's API (`quinn`, or iroh's fork `noq`
+/// through `iroh::endpoint`): the stream wrappers `$send` and `$recv`, `conn_err`, and
+/// `open_bi`/`accept_bi` on its connection.
+macro_rules! quic_streams {
+    ($($m:ident)::+; $send:ident, $recv:ident) => {
+        fn conn_err(e: $($m)::+::ConnectionError) -> $crate::Error {
+            use $($m)::+::ConnectionError as E;
+            match e {
+                E::LocallyClosed | E::ApplicationClosed(_) | E::ConnectionClosed(_) | E::Reset | E::TimedOut => $crate::Error::Closed,
+                E::VersionMismatch | E::TransportError(_) => $crate::Error::Protocol(e.to_string()),
+                E::CidsExhausted => $crate::Error::Io(e.to_string()),
+            }
+        }
+
+        async fn open_bi(c: &$($m)::+::Connection) -> Result<($send, $recv), $crate::Error> {
+            let (s, r) = c.open_bi().await.map_err(conn_err)?;
+            Ok(($send(s), $recv(r)))
+        }
+
+        async fn accept_bi(c: &$($m)::+::Connection) -> Result<($send, $recv), $crate::Error> {
+            let (s, r) = c.accept_bi().await.map_err(conn_err)?;
+            Ok(($send(s), $recv(r)))
+        }
+
+        pub struct $send($($m)::+::SendStream);
+
+        impl $crate::SendStream for $send {
+            async fn write_all(&mut self, buf: &[u8]) -> Result<(), $crate::Error> {
+                self.0.write_all(buf).await.map_err(|_| $crate::Error::Closed)
+            }
+
+            async fn finish(&mut self) -> Result<(), $crate::Error> {
+                let _ = self.0.finish(); // Err only when already finished
+                self.0.stopped().await.map(|_| ()).map_err(|_| $crate::Error::Closed)
+            }
+        }
+
+        pub struct $recv($($m)::+::RecvStream);
+
+        impl $crate::RecvStream for $recv {
+            async fn read(&mut self, buf: &mut [u8]) -> Result<usize, $crate::Error> {
+                match self.0.read(buf).await {
+                    Ok(Some(n)) => Ok(n),
+                    Ok(None) => Ok(0),
+                    Err(_) => Err($crate::Error::Closed),
+                }
+            }
+        }
+    };
+}
+#[cfg(feature = "iroh")]
+pub(crate) use quic_streams;
+
+quic_streams!(quinn; QuicSend, QuicRecv);
 
 /// DER SubjectPublicKeyInfo prefix of an Ed25519 key (RFC 8410).
 const SPKI_PREFIX: [u8; 12] = [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00];
@@ -295,26 +375,24 @@ impl Quic {
         sc.max_incoming(MAX_INCOMING);
         let ep = quinn::Endpoint::server(sc, sa).map_err(|e| Error::Io(e.to_string()))?;
         let local = ep.local_addr().map_err(|e| Error::Io(e.to_string()))?;
-        // handshakes run concurrently (`Handshakes`), so a silent or slow client blocks nobody
-        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        // handshakes run concurrently (`accept_loop`), so a silent or slow client blocks nobody
         let e2 = ep.clone();
-        let hs = Handshakes::new(MAX_INCOMING);
-        tokio::spawn(async move {
-            while let Some(inc) = e2.accept().await {
-                let tx = tx.clone();
-                hs.spawn(async move {
-                    let Ok(c) = inc.await else { return };
-                    let key = c
-                        .peer_identity()
-                        .and_then(|id| id.downcast::<Vec<CertificateDer<'static>>>().ok())
-                        .and_then(|certs| certs.first().and_then(|d| key_of_spki(d.as_ref())));
-                    match key {
-                        Some(peer) => {
-                            let _ = tx.send(QuicConn { c, peer }).await;
-                        }
-                        None => c.close(0u32.into(), b"key"),
-                    }
-                });
+        let incoming = move || {
+            let e = e2.clone();
+            async move { e.accept().await }
+        };
+        let rx = accept_loop(incoming, |inc: quinn::Incoming| async move {
+            let c = inc.await.ok()?;
+            let key = c
+                .peer_identity()
+                .and_then(|id| id.downcast::<Vec<CertificateDer<'static>>>().ok())
+                .and_then(|certs| certs.first().and_then(|d| key_of_spki(d.as_ref())));
+            match key {
+                Some(peer) => Some(QuicConn { c, peer }),
+                None => {
+                    c.close(0u32.into(), b"key");
+                    None
+                }
             }
         });
         Ok(QuicListener { ep, rx, addr: Address { url: format!("{SCHEME}://{local}"), key: pk } })
@@ -385,15 +463,6 @@ fn handshake_err(e: quinn::ConnectionError) -> Error {
     }
 }
 
-fn conn_err(e: quinn::ConnectionError) -> Error {
-    use quinn::ConnectionError as E;
-    match e {
-        E::LocallyClosed | E::ApplicationClosed(_) | E::ConnectionClosed(_) | E::Reset | E::TimedOut => Error::Closed,
-        E::VersionMismatch | E::TransportError(_) => Error::Protocol(e.to_string()),
-        E::CidsExhausted => Error::Io(e.to_string()),
-    }
-}
-
 impl Connection for QuicConn {
     type Send = QuicSend;
     type Recv = QuicRecv;
@@ -403,42 +472,15 @@ impl Connection for QuicConn {
     }
 
     async fn open_stream(&self) -> Result<(QuicSend, QuicRecv), Error> {
-        let (s, r) = self.c.open_bi().await.map_err(conn_err)?;
-        Ok((QuicSend(s), QuicRecv(r)))
+        open_bi(&self.c).await
     }
 
     async fn accept_stream(&self) -> Result<(QuicSend, QuicRecv), Error> {
-        let (s, r) = self.c.accept_bi().await.map_err(conn_err)?;
-        Ok((QuicSend(s), QuicRecv(r)))
+        accept_bi(&self.c).await
     }
 
     fn close(&self) {
         self.c.close(0u32.into(), b"");
-    }
-}
-
-pub struct QuicSend(quinn::SendStream);
-
-impl SendStream for QuicSend {
-    async fn write_all(&mut self, buf: &[u8]) -> Result<(), Error> {
-        self.0.write_all(buf).await.map_err(|_| Error::Closed)
-    }
-
-    async fn finish(&mut self) -> Result<(), Error> {
-        let _ = self.0.finish(); // Err only when already finished
-        self.0.stopped().await.map(|_| ()).map_err(|_| Error::Closed)
-    }
-}
-
-pub struct QuicRecv(quinn::RecvStream);
-
-impl RecvStream for QuicRecv {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
-        match self.0.read(buf).await {
-            Ok(Some(n)) => Ok(n),
-            Ok(None) => Ok(0),
-            Err(_) => Err(Error::Closed),
-        }
     }
 }
 
