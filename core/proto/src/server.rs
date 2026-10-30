@@ -21,10 +21,12 @@ use std::sync::Arc;
 pub const REPLY_BUDGET: usize = MAX_MESSAGE - 64 * 1024;
 /// Log records or entries read from the store per call.
 const LOG_BATCH: usize = 256;
-/// Labels whose head keys a connection caches. Performance switch: a peer cycling past it makes
-/// the connection reload them (three store reads); 0 reloads per message, infinity grows with the
-/// labels a peer names.
-const MAX_CACHED: usize = 4096;
+/// Labels whose head keys a connection caches (cleared when full). Performance switch: a peer
+/// cycling past it makes the connection reload them (two store reads beyond the head lookup every
+/// message makes, and up to 33 key parses); 0 reloads per message, infinity grows with the labels
+/// a peer names, opened or not. An entry is about 7 KB (parsed keys), so about 450 KB per
+/// connection, the scale of `MAX_CROSSED`.
+const MAX_CACHED: usize = 64;
 /// Blob IDs a connection remembers as crossed (an optimization only: past it the set is cleared,
 /// so a peer streaming entries cannot grow it without bound).
 const MAX_CROSSED: usize = 1 << 14;
