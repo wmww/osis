@@ -65,6 +65,22 @@ fn partial_frames_bounded() {
     assert_eq!(closed, 2, "two of four over the budget");
 }
 
+// spec/requirements.md (peer input never causes unbounded work): a message's entries reach disk
+// with one durable point (one fsync on a file backend), not one per entry
+#[test]
+fn one_fsync_per_message() {
+    let mut w = World::new();
+    let h = w.add_hub(Policy::default());
+    let c = w.connect(h);
+    let l = Label::new(3);
+    w.setup(c, &l);
+    let before = w.backends[h].syncs();
+    let ev = w.run(c, Command::Upload { label: l.id, entries: (0..1024).map(|n| l.entry(blob(n))).collect() });
+    assert_eq!(statuses(&ev), vec![Code::OK; 1024]);
+    assert_eq!(w.backends[h].syncs() - before, 1);
+    assert_eq!(live(&w, h, &l).len(), 1024);
+}
+
 // spec/wire.md §11.2 Register, spec/sync.md §5: node-wide caps refuse new labels (Error 12) and new entries (code 12)
 #[test]
 fn node_wide_caps() {

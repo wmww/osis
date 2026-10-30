@@ -83,8 +83,17 @@ pub trait Backend: Send {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, BackendError>;
     /// Up to `limit` pairs with `start <= key < end` (`None`: unbounded), ascending.
     fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, BackendError>;
-    /// Applies `batch` atomically; durable when it returns `Ok`.
+    /// Applies `batch` atomically; durable when it returns `Ok`, with every `commit_lazy` before.
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError>;
+    /// Applies `batch` atomically and visibly, durable only once a later `commit` or `sync`
+    /// returns `Ok` (a crash before may lose it, never a part of it).
+    fn commit_lazy(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
+        self.commit(batch)
+    }
+    /// Makes every `commit_lazy` before it durable.
+    fn sync(&mut self) -> Result<(), BackendError> {
+        Ok(())
+    }
     fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError>;
     /// Bytes `offset..offset+len` of a blob (clipped at its end); `None` if absent.
     fn read_blob(&self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, BackendError>;

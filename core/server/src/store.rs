@@ -601,6 +601,9 @@ pub struct BackendStore<B: Backend> {
     origins: HashMap<(LabelId, BlobId), [u8; 32]>,
     eph: Ephemeral,
     relays: osis_proto::RelayGate,
+    /// Commits are lazy until `durable` (`defer_durability`); one was made since.
+    lazy: bool,
+    unsynced: bool,
 }
 
 impl<B: Backend> BackendStore<B> {
@@ -621,11 +624,38 @@ impl<B: Backend> BackendStore<B> {
         let mut policy = policy;
         policy.tombstone_ms = policy.tombstone_ms.max(TOMBSTONE_LIFETIME_MS);
         let relays = osis_proto::RelayGate::new(osis_proto::RelayLimits { count: policy.relays, bytes: policy.relay_bytes, window_ms: policy.window_ms });
-        Ok(BackendStore { backend, seed, clock, policy, rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default(), relays })
+        Ok(BackendStore { backend, seed, clock, policy, rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default(), relays, lazy: false, unsynced: false })
     }
 
     pub fn backend(&self) -> &B {
         &self.backend
+    }
+
+    /// Commits from now on are visible at once and durable at the next `durable` (the hub's
+    /// batch: one fsync per handled input instead of one per entry).
+    pub fn defer_durability(&mut self) {
+        self.lazy = true;
+    }
+
+    /// Makes every commit since `defer_durability` durable and commits durably again. Nothing is
+    /// acknowledged to a peer before it returns `Ok`.
+    pub fn durable(&mut self) -> Result<(), StoreError> {
+        self.lazy = false;
+        if self.unsynced {
+            self.backend.sync().map_err(err)?;
+            self.unsynced = false;
+        }
+        Ok(())
+    }
+
+    fn write(&mut self, b: WriteBatch) -> Result<(), StoreError> {
+        if self.lazy {
+            self.backend.commit_lazy(b).map_err(err)?;
+            self.unsynced = true;
+            Ok(())
+        } else {
+            self.backend.commit(b).map_err(err)
+        }
     }
 
     pub fn policy(&self) -> &Policy {
@@ -693,7 +723,7 @@ impl<B: Backend> BackendStore<B> {
             raw.reserved = seq.saturating_add(SEQ_BLOCK);
             let mut b = WriteBatch::new();
             b.put(key(b'L', &[&label.0]), raw.encode());
-            self.backend.commit(b).map_err(err)?;
+            self.write(b)?;
         }
         self.eph.seq.insert(*label, seq);
         self.eph.labels.entry(*label).or_default().log.push_back((seq, r, kind));
@@ -1107,7 +1137,7 @@ impl<B: Backend> BackendStore<B> {
             };
             tx.batch.put(b"N".to_vec(), [be(t.labels), be(t.entries), be(t.bytes)].concat());
         }
-        self.backend.commit(tx.batch).map_err(err)
+        self.write(tx.batch)
     }
 
     fn budget_max(&self, m: &Meta) -> u64 {
@@ -1243,7 +1273,7 @@ impl<B: Backend> BackendStore<B> {
         }
         b.ops.extend(junk.ops);
         if !b.is_empty() {
-            self.backend.commit(b).map_err(err)?;
+            self.write(b)?;
         }
         left -= self.eph_sweep(now, left, &mut out.grew)?;
         out.more = left == 0;
@@ -1281,7 +1311,7 @@ impl<B: Backend> BackendStore<B> {
     pub fn set_replica_pos(&mut self, peer: &[u8; 32], label: &LabelId, log_id: [u8; 16], seq: u64) -> Result<(), StoreError> {
         let mut b = WriteBatch::new();
         b.put(key(b'Q', &[peer, &label.0]), [&log_id[..], &be(seq)].concat());
-        self.backend.commit(b).map_err(err)
+        self.write(b)
     }
 }
 

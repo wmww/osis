@@ -78,6 +78,10 @@ struct Data {
     blobs: HashMap<BlobId, Vec<u8>>,
     /// Every value ever written, if recording: what a forensic look at freed pages could find.
     history: Option<Vec<KeyValue>>,
+    /// Durable points so far: commits, and syncs after lazy commits (what a file backend fsyncs).
+    syncs: u64,
+    /// A lazy commit since the last durable point.
+    lazy: bool,
 }
 
 /// In-memory backend. Clones share the data, so a test keeps a handle, "crashes" the store and
@@ -113,6 +117,10 @@ impl MemoryBackend {
     pub fn faults(&self) -> &Faults {
         &self.faults
     }
+    /// Durable points so far (`commit`, `sync` after a `commit_lazy`): a file backend's fsyncs.
+    pub fn syncs(&self) -> u64 {
+        self.lock().syncs
+    }
     fn lock(&self) -> MutexGuard<'_, Data> {
         self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -140,8 +148,15 @@ impl Backend for MemoryBackend {
     }
 
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
+        self.commit_lazy(batch)?;
+        self.sync()
+    }
+
+    /// Counted by the fault plan as a write, like `commit` (applied at once in memory).
+    fn commit_lazy(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
         self.faults.check()?;
         let mut d = self.lock();
+        d.lazy = true;
         for op in batch.ops {
             match op {
                 Op::Put(k, v) => {
@@ -160,6 +175,15 @@ impl Backend for MemoryBackend {
                     d.blobs.remove(&id);
                 }
             }
+        }
+        Ok(())
+    }
+
+    fn sync(&mut self) -> Result<(), BackendError> {
+        let mut d = self.lock();
+        if d.lazy {
+            d.lazy = false;
+            d.syncs += 1;
         }
         Ok(())
     }
@@ -199,6 +223,13 @@ impl<B: Backend> Backend for FaultyBackend<B> {
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
         self.faults.check()?;
         self.inner.commit(batch)
+    }
+    fn commit_lazy(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
+        self.faults.check()?;
+        self.inner.commit_lazy(batch)
+    }
+    fn sync(&mut self) -> Result<(), BackendError> {
+        self.inner.sync()
     }
     fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError> {
         self.inner.get_blob(id)

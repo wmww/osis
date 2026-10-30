@@ -58,12 +58,30 @@ fn suite(b: &mut dyn Backend) {
     w.put(b"big".to_vec(), big.clone());
     b.commit(w).unwrap();
     assert_eq!(b.get(b"big").unwrap(), Some(big));
+
+    // Lazy commits are visible at once; `sync` makes them durable (checked across reopen below).
+    for k in [&b"lazy1"[..], b"lazy2"] {
+        let mut w = WriteBatch::new();
+        w.put(k.to_vec(), b"v".to_vec());
+        b.commit_lazy(w).unwrap();
+        assert_eq!(b.get(k).unwrap(), Some(b"v".to_vec()));
+    }
+    b.sync().unwrap();
+    b.sync().unwrap();
 }
 
 // spec: none (backend conformance)
 #[test]
 fn memory_backend_suite() {
-    suite(&mut MemoryBackend::new());
+    let mut b = MemoryBackend::new();
+    suite(&mut b);
+    // durable points: every commit, and the first sync after lazy commits
+    let n = b.syncs();
+    b.commit_lazy(WriteBatch::new()).unwrap();
+    b.commit_lazy(WriteBatch::new()).unwrap();
+    b.sync().unwrap();
+    b.sync().unwrap();
+    assert_eq!(b.syncs(), n + 1);
 }
 
 // spec/commits.md §4: one storage transaction per atomic apply; a failed or crashed batch has no effect.
@@ -112,6 +130,7 @@ mod file {
         // Durable across reopen.
         let b = RedbBackend::open(&dir.join("db")).unwrap();
         assert_eq!(b.get(b"a").unwrap(), Some(b"1".to_vec()));
+        assert_eq!(b.get(b"lazy2").unwrap(), Some(b"v".to_vec()));
         drop(b);
         std::fs::remove_dir_all(&dir).unwrap();
     }
