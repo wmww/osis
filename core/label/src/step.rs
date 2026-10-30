@@ -5,7 +5,7 @@ use crate::cbor::{get_bytes, get_key};
 use crate::Error;
 use osis_base::cbor::{Limits, decode, encode};
 use osis_base::format::{MAX_CLAIMS, MAX_MESSAGE, MAX_OBJECT_DEPTH};
-use osis_base::{LabelId, Role, Value};
+use osis_base::{LabelId, Role, Tid, Value};
 use osis_crypto::{
     BoxForm, BoxItem, BoxSlot, CryptoRngCore, Domain, Epoch, KemPublicKey, KemSecret, LabelRole, Secret32, Signature, SigningSecret,
     VerifyingKey, X25519Secret, claim_key, deposit_key, label_id, label_role_key, open_box, open_symmetric_box, seal_box, static_entry,
@@ -307,7 +307,7 @@ pub enum EntryTo<'a> {
     Sealed(&'a KemPublicKey),
     /// Wrapped under `kdf("box", s)`, s its own read secret of epoch `epoch_s`, when the
     /// registrar holds s (a link key's seed holder).
-    Symmetric { s: &'a Secret32, epoch_s: Epoch },
+    Symmetric { s: &'a Secret32, epoch_s: &'a Epoch },
 }
 
 /// Who signs a new step.
@@ -321,11 +321,11 @@ pub enum Parent<'a> {
 /// Issues a step with a fresh step key, its claim set and entry boxes (spec/sync.md §2): one
 /// claim key per DH reader (a non-contributory result omits it), one static entry and entry box
 /// per key actor, padded with random public keys to a power of two, shuffled. `read` is the
-/// registered read epoch and its secret. The step private key is dropped (zeroized) on return.
+/// label's group thing, the registered read epoch and its secret. The step private key is dropped (zeroized) on return.
 /// A step without rotation passes the parent's keys. Randomness in draw order: the step key
 /// (32 bytes), per sealed entry box the seal's ephemeral key and ML-KEM randomness (32 + 32), 32
 /// per padding key, 8 per shuffle swap.
-pub fn register(parent: Parent, keys: StepKeys, readers: &[Reader], read: (Epoch, &Secret32), rng: &mut dyn CryptoRngCore) -> Result<(Step, ClaimSet), Error> {
+pub fn register(parent: Parent, keys: StepKeys, readers: &[Reader], read: (&Tid, Epoch, &Secret32), rng: &mut dyn CryptoRngCore) -> Result<(Step, ClaimSet), Error> {
     let (label, prev, signer) = match parent {
         Parent::Genesis(own) => {
             if own.verifying_key() != keys.delete {
@@ -342,7 +342,7 @@ pub fn register(parent: Parent, keys: StepKeys, readers: &[Reader], read: (Epoch
     };
     let step_secret = X25519Secret::random(rng);
     let step_key = step_secret.public();
-    let slot = BoxSlot::Entry { label, step_key };
+    let slot = BoxSlot::Entry { label, step_key, group: *read.0 };
     let mut claims = Vec::new();
     let mut entries = BTreeMap::new();
     for r in readers {
@@ -355,7 +355,7 @@ pub fn register(parent: Parent, keys: StepKeys, readers: &[Reader], read: (Epoch
             Reader::Static { signing, entry } => {
                 let e = static_entry(&label, signing);
                 claims.push(e);
-                entries.insert(e, seal_entry(&slot, entry, read.0, read.1, rng)?);
+                entries.insert(e, seal_entry(&slot, entry, read.1, read.2, rng)?);
             }
         }
     }
@@ -398,7 +398,7 @@ fn seal_entry(slot: &BoxSlot, to: &EntryTo, epoch: Epoch, secret: &Secret32, rng
             SecretBox::Sealed(SealedBox { keyset: None, suite: u64::from(osis_crypto::SUITE_1), sealed: Sealed::X25519MlKem768(sealed) })
         }
         EntryTo::Symmetric { s, epoch_s } => {
-            let wrap = wrap_symmetric_box(s, slot, *epoch_s, secret)?;
+            let wrap = wrap_symmetric_box(s, slot, **epoch_s, secret)?;
             SecretBox::Symmetric(SymmetricBox { epoch: epoch_value(epoch_s), wrap: wrap.to_vec() })
         }
     })
@@ -411,9 +411,10 @@ pub enum EntryKey<'a> {
     Symmetric(&'a Secret32),
 }
 
-/// Opens an entry box of `step`: the read secret, with its epoch for the sealed form.
-pub fn open_entry_box(b: &SecretBox, step: &Step, key: EntryKey) -> Result<(Option<Epoch>, Secret32), Error> {
-    let slot = BoxSlot::Entry { label: step.label, step_key: step.step_key };
+/// Opens an entry box of `step` of `group`'s label: the read secret, with the epoch of `group`
+/// it names (spec/crypto.md §4) for the sealed form.
+pub fn open_entry_box(b: &SecretBox, step: &Step, key: EntryKey, group: &Tid) -> Result<(Option<Epoch>, Secret32), Error> {
+    let slot = BoxSlot::Entry { label: step.label, step_key: step.step_key, group: *group };
     match (b, key) {
         (SecretBox::Sealed(sb), EntryKey::Kem(kem)) => {
             let keyset = sb.keyset.as_ref().map(|e| Epoch::new(e.n, e.nonce)).transpose()?;
@@ -457,8 +458,11 @@ pub(crate) mod tests {
         }
     }
 
+    /// The group thing of test labels.
+    pub(crate) const TG: Tid = Tid::from_bytes([0x47; 15]);
+
     fn epoch(n: u64) -> Epoch {
-        Epoch::new(n, [n as u8; 16]).unwrap()
+        Epoch::new(n, [n as u8; 32]).unwrap()
     }
 
     // spec/wire.md §8, spec/sync.md §2: genesis step bytes round trip; the ID is BLAKE3 of the
@@ -468,7 +472,7 @@ pub(crate) mod tests {
     fn steps_and_paths() {
         let mut rng = SeededRng::from_u64(1);
         let g = Group::new(10);
-        let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (epoch(0), &g.read), &mut rng).unwrap();
+        let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, epoch(0), &g.read), &mut rng).unwrap();
         assert_eq!(s0.label, genesis_label(&g.admin, 0));
         assert_eq!(Step::parse(&s0.to_bytes()).unwrap(), s0);
         assert_eq!(s0.id().0, osis_base::hash::hash(&s0.to_bytes()));
@@ -478,11 +482,11 @@ pub(crate) mod tests {
         // Rotation: new admin secret, step signed by the old delete key.
         let g2 = Group::new(20);
         let k1 = StepKeys::derive(&g2.read, &g2.write, &g2.admin, 0, &g.deposit, &s0.label);
-        let (s1, _) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, k1, &[], (epoch(1), &g2.read), &mut rng).unwrap();
+        let (s1, _) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, k1, &[], (&TG, epoch(1), &g2.read), &mut rng).unwrap();
         s1.verify_child(&s0).unwrap();
         assert!(s1.verify_genesis().is_err());
         // Step without rotation: same keys, fresh step key.
-        let (s2, _) = register(Parent::Child { step: &s1, delete: &g2.delete(0) }, s1.keys, &[], (epoch(1), &g2.read), &mut rng).unwrap();
+        let (s2, _) = register(Parent::Child { step: &s1, delete: &g2.delete(0) }, s1.keys, &[], (&TG, epoch(1), &g2.read), &mut rng).unwrap();
         assert_eq!(s2.keys, s1.keys);
         assert_ne!(s2.step_key, s1.step_key);
         verify_path(&s0.label, &[s0.clone(), s1.clone(), s2.clone()]).unwrap();
@@ -492,8 +496,8 @@ pub(crate) mod tests {
         let map: BTreeMap<StepId, Step> = [&s0, &s1, &s2].into_iter().map(|s| (s.id(), s.clone())).collect();
         assert_eq!(path_to(&map, &s2.id()).unwrap(), vec![s0.clone(), s1.clone(), s2.clone()]);
         // Signer checks.
-        assert!(register(Parent::Child { step: &s1, delete: &g.delete(0) }, s1.keys, &[], (epoch(1), &g2.read), &mut rng).is_err());
-        assert!(register(Parent::Genesis(&g.delete(1)), g.keys(0), &[], (epoch(0), &g.read), &mut rng).is_err());
+        assert!(register(Parent::Child { step: &s1, delete: &g.delete(0) }, s1.keys, &[], (&TG, epoch(1), &g2.read), &mut rng).is_err());
+        assert!(register(Parent::Genesis(&g.delete(1)), g.keys(0), &[], (&TG, epoch(0), &g.read), &mut rng).is_err());
         // A tampered field fails the signature.
         let mut t = s1.clone();
         t.claims_hash[0] ^= 1;
@@ -507,7 +511,7 @@ pub(crate) mod tests {
     fn step_rejections() {
         let mut rng = SeededRng::from_u64(2);
         let g = Group::new(30);
-        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (epoch(0), &g.read), &mut rng).unwrap();
+        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, epoch(0), &g.read), &mut rng).unwrap();
         let Value::List(items) = s0.to_value() else { panic!() };
         let mut short = items.clone();
         short.pop();
@@ -541,9 +545,10 @@ pub(crate) mod tests {
             Reader::Dh(m2.kem.public().x25519()),
             Reader::Dh([0; 32]),
             Reader::Static { signing: card.signing.verifying_key(), entry: EntryTo::Sealed(card.kem.public()) },
-            Reader::Static { signing: link.signing.verifying_key(), entry: EntryTo::Symmetric { s: &s_link, epoch_s: epoch(9) } },
+            Reader::Static { signing: link.signing.verifying_key(), entry: EntryTo::Symmetric { s: &s_link, epoch_s: &epoch(9) } },
         ];
-        let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &readers, (epoch(3), &g.read), &mut rng).unwrap();
+        let e3 = Epoch::derive(&TG, Role::Read, 3, &g.read).unwrap();
+        let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &readers, (&TG, e3, &g.read), &mut rng).unwrap();
         assert_eq!(c0.claims.len(), 4);
         assert_eq!(ClaimSet::parse(&c0.to_bytes()).unwrap(), c0);
         assert_eq!(s0.claims_hash, c0.hash());
@@ -554,16 +559,21 @@ pub(crate) mod tests {
         let outsider = KeyActorKeys::from_seed(&Secret32::from_bytes([6; 32]));
         assert!(!c0.contains(&s0.claim_key(outsider.kem.x25519()).unwrap().verifying_key().to_bytes()));
         let b = c0.entry_box(&s0.label, &card.signing.verifying_key()).unwrap();
-        let (e, s) = open_entry_box(b, &s0, EntryKey::Kem(&card.kem)).unwrap();
-        assert_eq!((e, s), (Some(epoch(3)), g.read.clone()));
+        let (e, s) = open_entry_box(b, &s0, EntryKey::Kem(&card.kem), &TG).unwrap();
+        assert_eq!((e, s), (Some(e3), g.read.clone()));
+        // read as another group's, the secret names that group's epoch (spec/crypto.md §4)
+        let other = Tid::from_bytes([1; 15]);
+        assert_ne!(open_entry_box(b, &s0, EntryKey::Kem(&card.kem), &other).unwrap().0, Some(e3));
+        // a registrar naming an epoch the secret does not name boxes nothing
+        assert!(register(Parent::Genesis(&g.delete(0)), g.keys(0), &readers, (&TG, epoch(3), &g.read), &mut rng).is_err());
         let b = c0.entry_box(&s0.label, &link.signing.verifying_key()).unwrap();
-        assert_eq!(open_entry_box(b, &s0, EntryKey::Symmetric(&s_link)).unwrap(), (None, g.read.clone()));
-        assert!(open_entry_box(b, &s0, EntryKey::Symmetric(&g.read)).is_err());
-        assert!(open_entry_box(b, &s0, EntryKey::Kem(&card.kem)).is_err());
+        assert_eq!(open_entry_box(b, &s0, EntryKey::Symmetric(&s_link), &TG).unwrap(), (None, g.read.clone()));
+        assert!(open_entry_box(b, &s0, EntryKey::Symmetric(&g.read), &TG).is_err());
+        assert!(open_entry_box(b, &s0, EntryKey::Kem(&card.kem), &TG).is_err());
         // Another step's slot does not open it.
-        let (s1, _) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, s0.keys, &[], (epoch(3), &g.read), &mut rng).unwrap();
+        let (s1, _) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, s0.keys, &[], (&TG, e3, &g.read), &mut rng).unwrap();
         let b = c0.entry_box(&s0.label, &card.signing.verifying_key()).unwrap();
-        assert!(open_entry_box(b, &s1, EntryKey::Kem(&card.kem)).is_err());
+        assert!(open_entry_box(b, &s1, EntryKey::Kem(&card.kem), &TG).is_err());
     }
 
     // spec/wire.md §8: claim set rejections: count not a power of two, entry key not among the
@@ -576,7 +586,7 @@ pub(crate) mod tests {
         for n in [0, 3, 5] {
             assert!(ClaimSet::from_value(&set(c(n), vec![])).is_err(), "{n}");
         }
-        let sym = SecretBox::Symmetric(SymmetricBox { epoch: EpochValue { n: 1, nonce: [0; 16] }, wrap: vec![0; 49] }).to_value();
+        let sym = SecretBox::Symmetric(SymmetricBox { epoch: EpochValue { n: 1, nonce: [0; 32] }, wrap: vec![0; 49] }).to_value();
         assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[1; 32]), sym.clone())])).is_ok());
         assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[9; 32]), sym)])).is_err());
         assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[1; 32]), Value::Int(0))])).is_err());
@@ -589,7 +599,7 @@ pub(crate) mod tests {
     // read and when registering.
     #[test]
     fn claim_set_size_cap() {
-        let big = SecretBox::Symmetric(SymmetricBox { epoch: EpochValue { n: 1, nonce: [0; 16] }, wrap: vec![0; MAX_CLAIM_SET] });
+        let big = SecretBox::Symmetric(SymmetricBox { epoch: EpochValue { n: 1, nonce: [0; 32] }, wrap: vec![0; MAX_CLAIM_SET] });
         let set = ClaimSet { claims: vec![[1; 32]], entries: [([1; 32], big)].into_iter().collect() };
         let b = set.to_bytes();
         assert!(b.len() > MAX_CLAIM_SET && b.len() < MAX_MESSAGE);
@@ -607,7 +617,7 @@ pub(crate) mod tests {
             let g = Group::new(50);
             let ms: Vec<[u8; 32]> = (0..n).map(|_| X25519Secret::random(&mut rng).public()).collect();
             let readers: Vec<Reader> = ms.iter().map(|m| Reader::Dh(*m)).collect();
-            let (_, c) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &readers, (epoch(0), &g.read), &mut rng).unwrap();
+            let (_, c) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &readers, (&TG, epoch(0), &g.read), &mut rng).unwrap();
             prop_assert_eq!(c.claims.len(), n.max(1).next_power_of_two());
             prop_assert!(c.claims.iter().all(|k| VerifyingKey::from_bytes(k).is_ok()));
         }
@@ -619,8 +629,8 @@ pub(crate) mod tests {
             let g = Group::new(60);
             let m = X25519Secret::random(&mut rng);
             let r = [Reader::Dh(m.public())];
-            let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &r, (epoch(0), &g.read), &mut rng).unwrap();
-            let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, s0.keys, &r, (epoch(0), &g.read), &mut rng).unwrap();
+            let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &r, (&TG, epoch(0), &g.read), &mut rng).unwrap();
+            let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, s0.keys, &r, (&TG, epoch(0), &g.read), &mut rng).unwrap();
             let k0 = s0.claim_key(&m).unwrap().verifying_key().to_bytes();
             let k1 = s1.claim_key(&m).unwrap().verifying_key().to_bytes();
             prop_assert!(c0.contains(&k0) && c1.contains(&k1));

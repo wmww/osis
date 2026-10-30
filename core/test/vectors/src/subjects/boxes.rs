@@ -11,8 +11,14 @@ use osis_crypto::*;
 const EPH: [u8; 32] = [0x0c; 32];
 const M: [u8; 32] = [0x0d; 32];
 
+/// A nonce standing for an epoch nothing checks (a keyset or epoch of s).
 fn epoch(n: u64) -> Epoch {
-    Epoch::new(n, [n as u8; 16]).unwrap()
+    Epoch::new(n, [n as u8; 32]).unwrap()
+}
+
+/// The epoch secret `s` of `actor`'s `role` names at `n` (spec/crypto.md §4).
+fn named(actor: &Tid, role: Role, n: u64, s: &Secret32) -> Epoch {
+    Epoch::derive(actor, role, n, s).unwrap()
 }
 
 fn role_int(r: Role) -> i64 {
@@ -23,7 +29,7 @@ fn role_int(r: Role) -> i64 {
     }
 }
 
-/// Box payload `[[role, n, nonce, secret]+]`, encoded here independently of osis-crypto.
+/// Box payload `[[role, n, secret]+]`, encoded here independently of osis-crypto.
 fn payload(items: &[BoxItem]) -> Vec<u8> {
     encode(&Value::List(
         items
@@ -32,7 +38,6 @@ fn payload(items: &[BoxItem]) -> Vec<u8> {
                 Value::List(vec![
                     Value::Int(role_int(i.role)),
                     Value::Int(i.epoch.n() as i64),
-                    Value::Bytes(i.epoch.nonce().to_vec()),
                     Value::Bytes(i.secret.expose().to_vec()),
                 ])
             })
@@ -65,6 +70,14 @@ pub fn boxes() -> VecFile {
     let (actor, member) = (Tid::from_bytes([0x01; 15]), Tid::from_bytes([0x02; 15]));
     let mut cases = Vec::new();
 
+    // The nonce rule: kdf("epoch", s, actor || role byte || le64(n)).
+    let e = named(&actor, Role::Write, 4, &s32(0x09));
+    let mut input = actor.as_bytes().to_vec();
+    input.push(1);
+    input.extend(4u64.to_le_bytes());
+    assert_eq!(e.nonce(), kdf::kdf(kdf::EPOCH, s32(0x09).expose(), &input).expose());
+    cases.push(case("epoch nonce", "spec/crypto.md §4").with("actor", hex(actor.as_bytes())).with("role", "1").with("n", "4").with("secret", hex(s32(0x09).expose())).with("nonce", hex(e.nonce())));
+
     let sealed = seal_with(recipient.public(), b"ad", b"payload", &Secret32::from_bytes(EPH), &M).unwrap();
     cases.push(
         randomness(case("hybrid sealed box", "spec/crypto.md §1").with("recipient-kem-seed", hex(kem_seed.expose())).with("recipient-public", hex(recipient.public().as_bytes())))
@@ -82,32 +95,41 @@ pub fn boxes() -> VecFile {
 
     // Sealed /secrets boxes: to an actor member (one item, keyset named), to a key-actor member
     // (no keyset, every written role).
+    let ew = named(&actor, Role::Write, 4, &s32(0x09));
+    let er = named(&actor, Role::Read, 2, &s32(0x08));
     let cases_sealed: [(&str, Option<Epoch>, Vec<BoxItem>); 2] = [
-        ("secrets box sealed, actor member", Some(epoch(3)), vec![BoxItem { role: Role::Write, epoch: epoch(4), secret: s32(0x09) }]),
-        (
-            "secrets box sealed, key-actor member",
-            None,
-            vec![BoxItem { role: Role::Read, epoch: epoch(2), secret: s32(0x08) }, BoxItem { role: Role::Write, epoch: epoch(4), secret: s32(0x09) }],
-        ),
+        ("secrets box sealed, actor member", Some(epoch(3)), vec![BoxItem { role: Role::Write, epoch: ew, secret: s32(0x09) }]),
+        ("secrets box sealed, key-actor member", None, vec![BoxItem { role: Role::Read, epoch: er, secret: s32(0x08) }, BoxItem { role: Role::Write, epoch: ew, secret: s32(0x09) }]),
     ];
     for (name, keyset, items) in cases_sealed {
-        let slot = BoxSlot::Secrets { actor, member, role: Role::Write, epoch: epoch(4) };
+        let slot = BoxSlot::Secrets { actor, member, role: Role::Write, epoch: ew };
         let form = BoxForm::Sealed { keyset, suite: 1 };
         let ad = slot.ad(form).unwrap();
         let b = seal_box(recipient.public(), &slot, keyset, &items, &mut FixedRng::new(&[&EPH, &M])).unwrap();
         assert_eq!(open_box(&recipient, &slot, form, &b).unwrap(), items);
         assert_eq!(&open_sealed(&recipient, &ad, &b).unwrap()[..], &payload(&items)[..]);
-        let r = secrets_slot(case(name, "spec/wire.md §7").with("recipient-kem-seed", hex(kem_seed.expose())), &actor, &member, Role::Write, &epoch(4));
+        let r = secrets_slot(case(name, "spec/wire.md §7").with("recipient-kem-seed", hex(kem_seed.expose())), &actor, &member, Role::Write, &ew);
         let r = epoch_fields(r, "keyset", keyset.as_ref()).with("suite", "1").with("ad", hex(&ad));
         cases.push(randomness(r).with("payload", hex(&payload(&items))).with("sealed", hex(&b)));
     }
 
+    // A box whose item names another epoch than its key's is refused.
+    let slot = BoxSlot::Secrets { actor, member, role: Role::Write, epoch: ew };
+    let form = BoxForm::Sealed { keyset: Some(epoch(3)), suite: 1 };
+    let ad = slot.ad(form).unwrap();
+    let lie = encode(&Value::List(vec![Value::List(vec![Value::Int(1), Value::Int(4), Value::Bytes(s32(0x0a).expose().to_vec())])]));
+    let b = seal_with(recipient.public(), &ad, &lie, &Secret32::from_bytes(EPH), &M).unwrap();
+    assert!(matches!(open_box(&recipient, &slot, form, &b), Err(Error::Malformed(_))));
+    let r = secrets_slot(case("secrets box naming another epoch", "spec/crypto.md §4").with("recipient-kem-seed", hex(kem_seed.expose())), &actor, &member, Role::Write, &ew);
+    cases.push(epoch_fields(r, "keyset", Some(&epoch(3))).with("suite", "1").with("ad", hex(&ad)).with("payload", hex(&lie)).with("sealed", hex(&b)).with("reject", "malformed"));
+
     // Symmetric form.
-    let slot = BoxSlot::Secrets { actor, member, role: Role::Read, epoch: epoch(1) };
+    let e1 = named(&actor, Role::Read, 1, &s32(0x09));
+    let slot = BoxSlot::Secrets { actor, member, role: Role::Read, epoch: e1 };
     let ad = slot.ad(BoxForm::Symmetric { epoch_s: epoch(7) }).unwrap();
     let w = wrap_symmetric_box(&s32(0x0b), &slot, epoch(7), &s32(0x09)).unwrap();
     assert_eq!(open_symmetric_box(&s32(0x0b), &slot, epoch(7), &w), Ok(s32(0x09)));
-    let r = epoch_fields(secrets_slot(case("secrets box symmetric", "spec/wire.md §7"), &actor, &member, Role::Read, &epoch(1)), "s-epoch", Some(&epoch(7)));
+    let r = epoch_fields(secrets_slot(case("secrets box symmetric", "spec/wire.md §7"), &actor, &member, Role::Read, &e1), "s-epoch", Some(&epoch(7)));
     cases.push(r.with("ad", hex(&ad)).with("s", hex(s32(0x0b).expose())).with("secret", hex(s32(0x09).expose())).with("wrap", hex(&w)));
     assert_eq!(open_symmetric_box(&s32(0x0c), &slot, epoch(7), &w), Err(Error::Decrypt));
     cases.push(case("secrets box symmetric wrong s", "spec/wire.md §7").with("ad", hex(&ad)).with("s", hex(s32(0x0c).expose())).with("wrap", hex(&w)).with("reject", "decrypt"));
@@ -115,36 +137,37 @@ pub fn boxes() -> VecFile {
     // Entry box.
     let label = LabelId([0x0a; 16]);
     let step_key = X25519Secret::from_secret(&s32(0x06)).public();
-    let slot = BoxSlot::Entry { label, step_key };
+    let group = Tid::from_bytes([0x07; 15]);
+    let slot = BoxSlot::Entry { label, step_key, group };
     let form = BoxForm::Sealed { keyset: None, suite: 1 };
     let ad = slot.ad(form).unwrap();
-    let items = [BoxItem { role: Role::Read, epoch: epoch(2), secret: s32(0x08) }];
+    let items = [BoxItem { role: Role::Read, epoch: named(&group, Role::Read, 2, &s32(0x08)), secret: s32(0x08) }];
     let b = seal_box(recipient.public(), &slot, None, &items, &mut FixedRng::new(&[&EPH, &M])).unwrap();
     assert_eq!(open_box(&recipient, &slot, form, &b).unwrap(), items);
-    let r = case("entry box", "spec/wire.md §7").with("recipient-kem-seed", hex(kem_seed.expose())).with("label-id", hex(&label.0)).with("step-key", hex(&step_key));
+    let r = case("entry box", "spec/wire.md §7").with("recipient-kem-seed", hex(kem_seed.expose())).with("label-id", hex(&label.0)).with("step-key", hex(&step_key)).with("group", hex(group.as_bytes()));
     cases.push(randomness(r.with("keyset", "none").with("suite", "1").with("ad", hex(&ad))).with("payload", hex(&payload(&items))).with("sealed", hex(&b)));
 
     // History box.
-    let earlier = [(epoch(1), s32(0x21)), (epoch(2), s32(0x22))];
-    let h = seal_history(&s32(0x09), &actor, Role::Read, &epoch(3), &earlier).unwrap();
-    assert_eq!(open_history(&s32(0x09), &actor, Role::Read, &epoch(3), &h).unwrap(), earlier);
-    let pt = encode(&Value::List(
-        earlier.iter().map(|(e, s)| Value::List(vec![Value::Int(e.n() as i64), Value::Bytes(e.nonce().to_vec()), Value::Bytes(s.expose().to_vec())])).collect(),
-    ));
-    let ad = encode(&Value::List(vec![Value::Bytes(actor.as_bytes().to_vec()), Value::Int(0), Value::Int(3), Value::Bytes(vec![3; 16])]));
+    let e3 = named(&actor, Role::Read, 3, &s32(0x09));
+    let mut earlier = vec![(named(&actor, Role::Read, 1, &s32(0x21)), s32(0x21)), (named(&actor, Role::Read, 2, &s32(0x22)), s32(0x22))];
+    earlier.sort_by_key(|(e, _)| *e);
+    let h = seal_history(&s32(0x09), &actor, Role::Read, &e3, &earlier).unwrap();
+    assert_eq!(open_history(&s32(0x09), &actor, Role::Read, &e3, &h).unwrap(), earlier);
+    let pt = encode(&Value::List(earlier.iter().map(|(e, s)| Value::List(vec![Value::Int(e.n() as i64), Value::Bytes(s.expose().to_vec())])).collect()));
+    let ad = encode(&Value::List(vec![Value::Bytes(actor.as_bytes().to_vec()), Value::Int(0), Value::Int(3), Value::Bytes(e3.nonce().to_vec())]));
     cases.push(
         case("history box", "spec/wire.md §7")
             .with("secret", hex(s32(0x09).expose()))
             .with("actor", hex(actor.as_bytes()))
             .with("role", "0")
             .with("n", "3")
-            .with("nonce", hex(&[3; 16]))
+            .with("nonce", hex(e3.nonce()))
             .with("ad", hex(&ad))
             .with("plaintext", hex(&pt))
             .with("box", hex(&h)),
     );
-    assert_eq!(open_history(&s32(0x09), &actor, Role::Write, &epoch(3), &h), Err(Error::Decrypt));
-    cases.push(case("history box wrong role", "spec/wire.md §7").with("secret", hex(s32(0x09).expose())).with("actor", hex(actor.as_bytes())).with("role", "1").with("n", "3").with("nonce", hex(&[3; 16])).with("box", hex(&h)).with("reject", "decrypt"));
+    assert_eq!(open_history(&s32(0x09), &actor, Role::Write, &e3, &h), Err(Error::Decrypt));
+    cases.push(case("history box wrong role", "spec/wire.md §7").with("secret", hex(s32(0x09).expose())).with("actor", hex(actor.as_bytes())).with("role", "1").with("n", "3").with("nonce", hex(e3.nonce())).with("box", hex(&h)).with("reject", "decrypt"));
 
     // Inbox sealed box over an opaque prefix (the prefix layout is osis-label's, inbox/).
     let prefix = super::PREFIX;

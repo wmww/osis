@@ -273,7 +273,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::auth::sign_stamp;
     use crate::blob::{Prefix, frame};
-    use crate::step::tests::Group;
+    use crate::step::tests::{Group, TG};
     use crate::step::{Parent, register};
     use osis_crypto::{Epoch, LabelRole, SeededRng, label_role_key, wrap};
 
@@ -281,9 +281,9 @@ pub(crate) mod tests {
     /// timed deletion.
     pub(crate) fn sample(rng: &mut SeededRng) -> (Vec<Record>, Vec<u8>) {
         let (g, h) = (Group::new(10), Group::new(20));
-        let e = Epoch::new(0, [0; 16]).unwrap();
-        let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (e, &g.read), rng).unwrap();
-        let (t0, _) = register(Parent::Genesis(&h.delete(0)), h.keys(0), &[], (e, &h.read), rng).unwrap();
+        let e = Epoch::new(0, [0; 32]).unwrap();
+        let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, e, &g.read), rng).unwrap();
+        let (t0, _) = register(Parent::Genesis(&h.delete(0)), h.keys(0), &[], (&TG, e, &h.read), rng).unwrap();
         let p = Prefix::new([1; 16], None, vec![]).unwrap();
         let (k1, b1) = frame(&p, b"one", rng).unwrap();
         let (_, b2) = frame(&p, b"two", rng).unwrap();
@@ -343,9 +343,9 @@ pub(crate) mod tests {
     fn path_extends_head() {
         let mut rng = SeededRng::from_u64(3);
         let g = Group::new(10);
-        let e = Epoch::new(0, [0; 16]).unwrap();
-        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (e, &g.read), &mut rng).unwrap();
-        let child = |p: &Step, rng: &mut SeededRng| register(Parent::Child { step: p, delete: &g.delete(0) }, p.keys, &[], (e, &g.read), rng).unwrap().0;
+        let e = Epoch::new(0, [0; 32]).unwrap();
+        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, e, &g.read), &mut rng).unwrap();
+        let child = |p: &Step, rng: &mut SeededRng| register(Parent::Child { step: p, delete: &g.delete(0) }, p.keys, &[], (&TG, e, &g.read), rng).unwrap().0;
         let (a, b) = (child(&s0, &mut rng), child(&s0, &mut rng));
         let a2 = child(&a, &mut rng);
         let path = |steps: &[&Step]| Record::Path { label: s0.label, steps: steps.iter().map(|s| ((*s).clone(), None)).collect() };

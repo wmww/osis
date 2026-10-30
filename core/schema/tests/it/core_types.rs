@@ -12,7 +12,7 @@ fn tid(n: u8) -> Tid {
     Tid::from_bytes([n; 15])
 }
 fn epoch(n: u64) -> Epoch {
-    Epoch { n, nonce: [8; 16] }
+    Epoch { n, nonce: [8; 32] }
 }
 fn edge_key() -> EdgeKey {
     EdgeKey { ts: Ts::make(WallMs(1_700_000_000_000), 3).unwrap(), node: tid(6), commit: osis_base::CommitId([7; 32]) }

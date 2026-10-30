@@ -251,7 +251,7 @@ impl DeleteItem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::step::tests::Group;
+    use crate::step::tests::{Group, TG};
     use crate::step::{Parent, Reader, register};
     use osis_crypto::{Epoch, KeyActorKeys, SeededRng, Secret32, X25519Secret, label_role_key};
     use proptest::prelude::*;
@@ -276,7 +276,7 @@ mod tests {
     }
 
     fn epoch(n: u64) -> Epoch {
-        Epoch::new(n, [n as u8; 16]).unwrap()
+        Epoch::new(n, [n as u8; 32]).unwrap()
     }
 
     // spec/sync.md §5, spec/wire.md §11.2: opens by sync key (head or superseded: child), by
@@ -289,9 +289,9 @@ mod tests {
         let m = X25519Secret::random(&mut rng);
         let card = KeyActorKeys::from_seed(&Secret32::from_bytes([4; 32]));
         let readers = [Reader::Dh(m.public()), Reader::Static { signing: card.signing.verifying_key(), entry: crate::EntryTo::Sealed(card.kem.public()) }];
-        let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &readers, (epoch(0), &g.read), &mut rng).unwrap();
+        let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &readers, (&TG, Epoch::derive(&TG, osis_base::Role::Read, 0, &g.read).unwrap(), &g.read), &mut rng).unwrap();
         let k1 = crate::StepKeys::derive(&g2.read, &g2.write, &g2.admin, 0, &g.deposit, &s0.label);
-        let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, k1, &readers, (epoch(1), &g2.read), &mut rng).unwrap();
+        let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, k1, &readers, (&TG, Epoch::derive(&TG, osis_base::Role::Read, 1, &g2.read).unwrap(), &g2.read), &mut rng).unwrap();
         let path = vec![s0.clone(), s1.clone()];
         let sets = Slice { path: &path, sets: vec![(s0.id(), Arc::new(c0.clone())), (s1.id(), Arc::new(c1.clone()))] };
         let evaluate_open = |p: &[Step], ix: &Slice<'_>, pr: &Proof, ch: &[u8; 32], sk: &[u8; 32]| evaluate_open(p.last().unwrap(), ix, pr, ch, sk).unwrap();
@@ -326,7 +326,7 @@ mod tests {
     fn entry_signatures() {
         let g = Group::new(30);
         let mut rng = SeededRng::from_u64(2);
-        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (epoch(0), &g.read), &mut rng).unwrap();
+        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, epoch(0), &g.read), &mut rng).unwrap();
         let (l, b, w) = (s0.label, BlobId([1; 32]), [2u8; 49]);
         let write = label_role_key(LabelRole::Write, &g.write, 0);
         let stamp = sign_stamp(&write, &l, &b, &w);
@@ -345,7 +345,7 @@ mod tests {
     fn deletes() {
         let g = Group::new(40);
         let mut rng = SeededRng::from_u64(3);
-        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (epoch(0), &g.read), &mut rng).unwrap();
+        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, epoch(0), &g.read), &mut rng).unwrap();
         let l = s0.label;
         let (sync, write) = (label_role_key(LabelRole::Sync, &g.read, 0), label_role_key(LabelRole::Write, &g.write, 0));
         let salt = [5u8; 16];
