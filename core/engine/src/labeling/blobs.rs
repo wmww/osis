@@ -259,6 +259,28 @@ impl Engine {
         })
     }
 
+    /// Held read secrets of a group, newest first; then those derived from its owner's (a
+    /// thing that got secrets of its own, or one owned by a key actor this node holds: the
+    /// rotation that gave it its own is wrapped under the derived epoch, spec/crypto.md §5).
+    pub fn read_secrets(&self, g: &Tid) -> Vec<Secret32> {
+        let mut v: Vec<Secret32> = self.epochs(g).map(|e| e.read.held_newest_first().into_iter().map(|(_, s)| s.clone()).collect()).unwrap_or_default();
+        // the owner's epochs; a thing whose `/created` is not here yet (a recovery card's
+        // person) may be owned by any key actor held
+        let owners: Vec<osis_keys::ActorEpochs> = match self.core.created(g) {
+            Some(osis_base::CreationRecord::Thing { owner, .. }) => self.epochs(owner).or_else(|| self.core.key_actors.get(owner).map(|id| osis_keys::ActorEpochs::key_actor(id.seed()))).into_iter().collect(),
+            Some(osis_base::CreationRecord::KeyActor { .. }) => Vec::new(),
+            None => self.core.key_actors.values().map(|id| osis_keys::ActorEpochs::key_actor(id.seed())).collect(),
+        };
+        for oe in owners {
+            for (_, s) in osis_keys::ActorEpochs::derived(&oe, g).read.held_newest_first() {
+                if !v.iter().any(|x| x.expose() == s.expose()) {
+                    v.push(s.clone());
+                }
+            }
+        }
+        v
+    }
+
     /// Whether these deltas of `c` hold the `/secrets` or `/keys` of the actor `g`'s secrets derive
     /// from (only a blob carrying the boxes takes the rotation's wrap exception).
     pub fn carries_secrets(&self, g: &Tid, c: &CommitId, parts: &[(usize, usize)]) -> bool {

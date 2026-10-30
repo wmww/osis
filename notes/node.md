@@ -13,7 +13,7 @@ Every module below is in osis-engine (`core/engine`) except `sync/`, which is os
 | `identity/` | node-core | node seed, keys, creation records |
 | `events/` | node-core | `Event`, `Diagnostic`, subscriber channels |
 | `moves.rs` | node-core | `move_thing`: copy with `/was`, one import commit per origin, re-sourcing (`Fragment::map_dots`), double-import guard |
-| `local_peer.rs` | node-core (sim grows it) | `Peer`, `LocalPeer`, `Package`, `Engine::package` |
+| `local_peer.rs` | node-core (sim grows it) | `Peer`, `LocalPeer`, `Package`, `Engine::package`, `SealedPackage`, `Engine::seal_package`/`open_package` (notes/testing.md, Confidentiality over `LocalPeer`) |
 | `labeling/` | node-sync | reader actors, entitlement, closure, labels of a group (`actors.rs`), bodies, sealing, wraps, head keys, delete secrets (`blobs.rs`), certificates and partial bodies (`certs.rs`; labels and steps are flows'), the convergence rule (`converge.rs`) |
 | `sync/` | node-sync | `SyncEngine` (sans-I/O: `mod.rs`), durable sync state (`state.rs`), flows' results and `SyncState` (`deliver.rs`), opening and walking (`open.rs`), inbound entries (`inbound.rs`), the ephemeral lane (`ephemeral.rs`), the pass (`pass.rs`), app and flows requests (`local.rs`), bundles (`bundle.rs`), `/reach`, co-readers and LAN tags (`peers.rs`), member-peer serving (`serve.rs`), tokio driver (`driver.rs`) |
 | `flows/` | membership-flows | person actors and pairing (`person.rs`), grants, demotions, invite grants, self-removals, inbox delivery (`edges.rs`), labels and registration steps (`labels.rs`), links (`links.rs`), roster snapshots (`roster.rs`), moving with re-grant (`moving.rs`); `Delivery`, `Done`, `SyncState` |
