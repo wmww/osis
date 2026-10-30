@@ -291,9 +291,6 @@ pub(crate) struct Linked {
     /// Things with a linked frontier whose blobs are not held (the commit waits, spec/commits.md
     /// §4; already applied: kept out of perm).
     pub waiting: BTreeSet<Tid>,
-    /// Things with a linked frontier not held whose later epoch start is applied: no wait, kept
-    /// out of perm.
-    pub superseded: BTreeSet<Tid>,
 }
 
 /// One linked frontier: from the in-memory cache, the local record, or its tree (recorded then).
@@ -366,13 +363,10 @@ pub(crate) fn linked_frontiers_capped(tx: &mut Tx<'_>, h: &Header, parts: &EdgeP
             Some(f) => {
                 out.frontiers.insert(hash, f);
             }
+            // always a wait, whatever this node's epoch start: what counts must not depend on
+            // the order snapshots arrived in
             None => {
-                let later = tx.core.timelines.get(&tid).and_then(|tl| tl.epoch_start(&tid)).and_then(|c| tx.core.ix.commits.get(&c)).is_some_and(|m| m.view.ts > h.ts);
-                if later {
-                    out.superseded.insert(tid);
-                } else {
-                    out.waiting.insert(tid);
-                }
+                out.waiting.insert(tid);
             }
         }
     }
@@ -470,7 +464,7 @@ fn add_membership_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgeParts
                 }
             }
             for (thing, (roster, ledger, dots)) in by_thing {
-                if linked.waiting.contains(&thing) || linked.superseded.contains(&thing) {
+                if linked.waiting.contains(&thing) {
                     continue;
                 }
                 core.ix.held.add_snapshot(RosterSnapshot { id: *id, ts: h.ts, author: h.author, actor: h.actor, thing, dots, roster, ledger });

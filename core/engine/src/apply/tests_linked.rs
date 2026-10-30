@@ -31,7 +31,11 @@ fn big_frontier(t: Tid, x: Tid, pad: u8) -> ct::Frontier {
 /// Peer 0 owns `t`; peer 1's node wrote a tag as a writer and was demoted with a linked
 /// frontier covering it; peer 0 wrote a roster snapshot of `t` (the ledger links it).
 fn demoted_writer() -> (LocalPeer, Tid, Tid, CommitId) {
-    let mut lp = LocalPeer::new(2, 940, T0).unwrap();
+    demoted_writer_of(2)
+}
+
+fn demoted_writer_of(n: usize) -> (LocalPeer, Tid, Tid, CommitId) {
+    let mut lp = LocalPeer::new(n, 940, T0).unwrap();
     lp.sync_all().unwrap();
     let me = lp.peers[0].engine.tid();
     let x = lp.peers[1].engine.tid();
@@ -133,6 +137,41 @@ fn deliver_all(lp: &mut LocalPeer, last: &CommitId) -> crate::Result<Ingested> {
     }
     let pk = lp.peers[0].engine.package(last).unwrap().unwrap();
     lp.deliver(1, &pk)
+}
+
+// spec/permissions.md §5, §6, spec/commits.md §4: a snapshot whose linked frontier's blobs are
+// not held waits for them, also when a later epoch start of its thing is applied, so the held
+// snapshots do not depend on arrival order (issues/roster-superseded-order.md).
+#[test]
+fn linked_frontier_wait_order_independent_spec_perm_6() {
+    use osis_perm::HeldSet;
+    let (mut lp, t, _, s1) = demoted_writer_of(3);
+    lp.advance(10);
+    let s2 = raw_snapshot(&mut lp, t, Vec::new());
+    let missing = chunk_blobs(&mut lp, &s1);
+    assert!(!missing.is_empty());
+    let pk1 = lp.peers[0].engine.package(&s1).unwrap().unwrap();
+    let pk2 = lp.peers[0].engine.package(&s2).unwrap().unwrap();
+    let bare = crate::local_peer::Package { id: s1, bytes: pk1.bytes.clone(), blobs: pk1.blobs.iter().filter(|(b, _)| !missing.contains(b)).cloned().collect() };
+    for p in lp.packages(0).unwrap() {
+        if p.id != s1 && p.id != s2 {
+            lp.deliver(1, &p).unwrap();
+            lp.deliver(2, &p).unwrap();
+        }
+    }
+    // peer 1: S2 first, then S1 without its frontier's blobs
+    assert!(matches!(lp.deliver(1, &pk2).unwrap(), Ingested::Applied(_)));
+    assert!(matches!(lp.deliver(1, &bare).unwrap(), Ingested::Pending(..)), "waits despite the later start");
+    // peer 2: S1 without blobs, then S2
+    assert!(matches!(lp.deliver(2, &bare).unwrap(), Ingested::Pending(..)));
+    assert!(matches!(lp.deliver(2, &pk2).unwrap(), Ingested::Applied(_)));
+    for i in [1, 2] {
+        assert!(matches!(lp.deliver(i, &pk1).unwrap(), Ingested::Applied(_)));
+    }
+    let held = |lp: &LocalPeer, i: usize| -> BTreeSet<CommitId> { lp.peers[i].engine.core.ix.held.roster_snapshots(&t).iter().map(|s| s.id).collect() };
+    assert_eq!(held(&lp, 1), BTreeSet::from([s1, s2]));
+    assert_eq!(held(&lp, 1), held(&lp, 2));
+    assert_eq!(lp.peers[1].engine.roster(&t), lp.peers[2].engine.roster(&t));
 }
 
 // spec/permissions.md §6 (linked frontier bounds): a linked frontier whose value is not a frontier
