@@ -247,10 +247,15 @@ impl SyncEngine {
         self.eph.by_commit.get(c).is_some_and(|ks| ks.iter().any(|(l2, b)| l2 == l && self.eph.present.contains(&(s, *l2, *b))))
     }
 
-    /// Whether every cover of `cs` that `l`'s closure (of group `g`) holds a thing of is held at
-    /// server `s` under `l`: a split cover's part about other things is never placed there.
+    /// Whether every cover of `cs` placed under `l` is held at server `s` there: a split cover's
+    /// piece about other things is never placed under `l`. An own cover was placed under every
+    /// label at once (its entries say where); another's, or one not placed yet, counts when
+    /// `l`'s closure (of group `g`) holds a thing of it.
     fn eph_covers_held_at(&self, cs: &BTreeSet<CommitId>, g: Option<Tid>, l: &LabelId, s: ServerKey) -> bool {
-        let outside = |c: &CommitId| g.is_some_and(|g| self.engine.ephemeral_header(c).is_some_and(|h| !h.aspects.iter().any(|a| self.engine.in_ephemeral_closure(&g, &a.tid))));
+        let outside = |c: &CommitId| match self.eph.by_commit.get(c) {
+            Some(ks) if ks.iter().any(|k| self.eph.entries.get(k).is_some_and(|e| e.own)) => !ks.iter().any(|(l2, _)| l2 == l),
+            _ => g.is_some_and(|g| self.engine.ephemeral_header(c).is_some_and(|h| !h.aspects.iter().any(|a| self.engine.in_ephemeral_closure(&g, &a.tid)))),
+        };
         cs.iter().all(|c| self.eph_held_at(c, l, s) || outside(c))
     }
 

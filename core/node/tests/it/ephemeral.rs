@@ -1928,7 +1928,8 @@ fn own_cover_split_by_aspect_spec_sync_9() {
 
 // spec/sync.md §9 (an aspect's own delta past a blob): a batch whose delta of one aspect does
 // not fit a blob is not sent; its writes stay unsent, the aspect's other writes are refused
-// while its own state does not fit, and a write that makes it fit is taken and sends it all
+// while its own state does not fit unless they shrink it, and a write that makes it fit is taken
+// and sends it all
 #[test]
 fn aspect_past_a_blob_refuses_writes_spec_sync_9() {
     let mut net = Net::new();
@@ -1942,7 +1943,7 @@ fn aspect_past_a_blob_refuses_writes_spec_sync_9() {
     net.run();
     let big = "v".repeat(5 << 20);
     let mut m = Mutation::new();
-    for k in ["x", "y"] {
+    for k in ["x", "y", "u"] {
         m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Set(s(&big)) }).unwrap();
     }
     net.engine(a).write(m).unwrap();
@@ -1961,6 +1962,13 @@ fn aspect_past_a_blob_refuses_writes_spec_sync_9() {
     m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("z"))], op: Op::Set(s("small")) }).unwrap();
     let err = net.engine(a).write(m).unwrap_err().to_string();
     assert!(err.contains("does not fit a blob"), "{err}");
+    // one that shrinks it is taken, though it still does not fit: nothing goes yet
+    let mut m = Mutation::new();
+    m.op(w, &eph(NOTES), PathOp { path: Vec::new(), op: Op::Remove(s("u")) }).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert!(notes(&mut net, b, w).is_empty(), "still past a blob: not sent");
     // one that makes it fit goes, with what waited
     let mut m = Mutation::new();
     m.op(w, &eph(NOTES), PathOp { path: Vec::new(), op: Op::Remove(s("x")) }).unwrap();
@@ -1973,3 +1981,85 @@ fn aspect_past_a_blob_refuses_writes_spec_sync_9() {
     net.run();
     assert_eq!(notes(&mut net, b, w), notes(&mut net, a, w));
 }
+
+// spec/sync.md §9 (deletes wait for the covers in the label's closure): a commit under two labels
+// whose cover splits into pieces each under one label is deleted under each label once the piece
+// on that label's things is held there, never before, and without waiting for the other piece
+#[test]
+fn split_cover_pieces_under_different_labels_spec_sync_9() {
+    const N: usize = 1500;
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g1 = net.group(a, &[(b, Role::Write)], &[sv]);
+    let g2 = net.group_seeded(a, &[(b, Role::Write)], vec![net.address(sv)], 12);
+    net.run();
+    let labels: BTreeMap<Tid, osis_base::LabelId> = net.sync(a).labels().into_iter().map(|(g, gl)| (g, gl.id)).collect();
+    for g in [g1, g2] {
+        set_many(&mut net, a, g, 0..N, "old");
+        net.run();
+    }
+    // one commit on both groups' things: an entry under each label
+    let mut m = Mutation::new();
+    for g in [g1, g2] {
+        m.set(g, &eph("/x/a0000"), &s("both")).unwrap();
+    }
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    let tids = |net: &mut Net, c: &osis_base::CommitId| -> BTreeSet<Tid> { net.engine(a).ephemeral_header(c).unwrap().aspects.iter().map(|x| x.tid).collect() };
+    let own: Vec<osis_base::CommitId> = net.engine(a).held_ephemeral().into_iter().filter(|x| x.2).map(|x| x.0).collect();
+    let both: Vec<_> = own.iter().filter(|c| net.engine(a).ephemeral_header(c).unwrap().aspects.len() == 2).copied().collect();
+    let [c] = both[..] else { panic!("one commit on both: {both:?}") };
+    assert_eq!(tids(&mut net, &c), BTreeSet::from([g1, g2]));
+    let entries: BTreeMap<osis_base::LabelId, osis_base::BlobId> = net.sync(a).ephemeral_entries_of(&c).into_iter().map(|(l, b, _)| (l, b)).collect();
+    assert_eq!(entries.len(), 2, "under both labels");
+    for (l, b) in &entries {
+        assert!(net.server_ids(sv, l).contains(b));
+    }
+    // the server's answers held back: nothing tells the author its pieces are held there
+    net.held_servers.insert(sv);
+    let acts = net.sync(a).compact_ephemeral_now().unwrap();
+    net.actions(a, acts);
+    for _ in 0..20 {
+        net.feed(a, Event::Local);
+        net.round();
+    }
+    for (l, b) in &entries {
+        assert!(net.server_ids(sv, l).contains(b), "deleted before the server answered");
+    }
+    net.release();
+    // the pieces that absorb `c`, each on one group's things only
+    let pieces: Vec<osis_base::CommitId> = net.engine(a).held_ephemeral().into_iter().filter(|x| x.2).map(|x| x.0).collect();
+    assert!(!pieces.contains(&c), "covered");
+    let mut on: BTreeMap<Tid, osis_base::CommitId> = BTreeMap::new();
+    for p in &pieces {
+        let ts = tids(&mut net, p);
+        assert_eq!(ts.len(), 1, "a piece on one group's things");
+        let h = net.engine(a).ephemeral_header(p).unwrap();
+        if h.aspects.iter().any(|x| x.ak.as_str() == "/x/a0000") {
+            on.insert(*ts.iter().next().unwrap(), *p);
+        }
+    }
+    assert_eq!(on.len(), 2, "two pieces absorb it: {on:?}");
+    let piece_blobs = |net: &mut Net, p: &osis_base::CommitId, l: &osis_base::LabelId| -> Vec<osis_base::BlobId> { net.sync(a).ephemeral_entries_of(p).into_iter().filter(|x| x.0 == *l).map(|x| x.1).collect() };
+    for _ in 0..2000 {
+        net.round();
+        for g in [g1, g2] {
+            let l = labels[&g];
+            let ids = net.server_ids(sv, &l);
+            if !ids.contains(&entries[&l]) {
+                let pb = piece_blobs(&mut net, &on[&g], &l);
+                assert!(!pb.is_empty() && pb.iter().all(|b| ids.contains(b)), "deleted under {g:?} before its piece was held there");
+            }
+        }
+    }
+    net.run();
+    for g in [g1, g2] {
+        let l = labels[&g];
+        assert!(!net.server_ids(sv, &l).contains(&entries[&l]), "deleted under {g:?}");
+        assert_eq!(read_many(&mut net, b, g, N), read_many(&mut net, a, g, N));
+    }
+}
+

@@ -226,14 +226,22 @@ impl Engine {
 
     /// Whether a local write of `delta` to `(tid, ak)` may go (spec/sync.md §9): refused only
     /// when an own delta of the aspect did not fit a blob (`Remote::full`) and its own state
-    /// with `delta` still does not; `Some(true)` when it fits now (the caller clears the flag).
+    /// with `delta` still does not and is no smaller (a removal shrinking it goes, so it can be
+    /// cut down step by step); `Some(true)` when it fits now (the caller clears the flag).
     pub(super) fn check_full(&self, tid: &Tid, ak: &Ak, delta: &Fragment) -> Option<bool> {
         if !self.eph.remote.full.contains(&(*tid, ak.clone())) {
             return Some(false);
         }
+        let me = self.tid();
         let mut f = self.eph.aspects.get(tid).and_then(|m| m.get(ak)).map(|a| own_unexpiring(a, &self.eph.src)).unwrap_or_default();
+        let before = delta_len(me, &f);
         f.join(delta.clone());
-        fits_blob(self.tid(), &f).then_some(true)
+        let after = delta_len(me, &f);
+        if fits_blob(after) {
+            Some(true)
+        } else {
+            (after < before).then_some(false)
+        }
     }
 
     /// Notes an own ephemeral write for sync: it joins `unsent` (a presence write marks its
@@ -1551,11 +1559,11 @@ fn delta_len(me: Tid, f: &Fragment) -> usize {
     osis_crdt::encode_snapshot(&s, &cx, Some(&mut Unpaged)).map_or(0, |b| b.len())
 }
 
-/// Whether `f`, an own delta of one aspect, fits an ephemeral commit's blob alone: its unpaged
-/// encoding within `MAX_BLOB` less room for a header with inline lists (`CHUNK_THRESHOLD`).
-fn fits_blob(me: Tid, f: &Fragment) -> bool {
-    let room = osis_base::format::MAX_BLOB.saturating_sub(osis_base::format::CHUNK_THRESHOLD);
-    delta_len(me, f) <= room
+/// Whether an own delta of one aspect of unpaged length `len` (`delta_len`) fits an ephemeral
+/// commit's blob alone: within `MAX_BLOB` less room for a header with inline lists
+/// (`CHUNK_THRESHOLD`).
+fn fits_blob(len: usize) -> bool {
+    len <= osis_base::format::MAX_BLOB.saturating_sub(osis_base::format::CHUNK_THRESHOLD)
 }
 
 /// The own writes of an aspect without the values of those that expire (a snapshot never
