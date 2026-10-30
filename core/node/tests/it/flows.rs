@@ -1544,8 +1544,10 @@ fn no_rotation_that_cannot_cover_spec_perm_3() {
 // spec/permissions.md §7, spec/crypto.md §3, §4: a doc moved into a team without secrets of
 // its own: the copy's own-secrets rotation boxes nobody (the team has no keyset). The writer,
 // who does not read the team, gets the re-grant before the rotation commit (wrapped under the
-// copy's derived epoch): its history box hands it that epoch, and once the rotation commit is
-// opened its write epoch is established.
+// copy's derived epoch): its history box hands it that epoch for reading (no keyset of a derived
+// epoch exists, and the grant's copy is not checked until the rotation commit that wrote it is
+// applied), and once the rotation commit is opened the derived secret is checked and its write
+// epoch established.
 #[test]
 fn move_into_derived_owner_spec_perm_7() {
     let (mut lp, ps) = people(2, 519);
@@ -1566,9 +1568,12 @@ fn move_into_derived_owner_spec_perm_7() {
     carry(&mut lp, 0, &done);
     let e = lp.peers[1].engine.epochs(&copy).unwrap();
     let derived = lp.peers[0].engine.epochs(&copy).unwrap().read.epochs().filter(|(_, i)| i.established == Some(osis_keys::Provenance::Derived)).map(|(k, _)| *k).max_by_key(|k| k.n()).unwrap();
-    assert!(e.read.secret(&derived).is_some(), "the grant's history box opens the derived epoch");
+    let genuine = lp.peers[0].engine.epochs(&copy).unwrap().read.secret(&derived).cloned().unwrap();
+    assert_eq!(e.read.reading_secrets(&derived), vec![&genuine], "the grant's history box opens the derived epoch");
+    assert!(e.read.secret(&derived).is_none());
     send(&mut lp, 0, 1, &own);
     let e = lp.peers[1].engine.epochs(&copy).unwrap();
+    assert_eq!(e.read.secret(&derived), Some(&genuine), "checked by the rotation commit");
     assert!(e.write.newest_held().is_some(), "bob holds an established write epoch of the copy");
 }
 

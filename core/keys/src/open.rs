@@ -96,66 +96,68 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener, kem_cache: 
 /// writers): readers try each, not only the merged read (spec/crypto.md §4).
 pub type HistoryAlts = BTreeMap<HistoryKey, Vec<Vec<u8>>>;
 
-/// Opens the history boxes of every epoch whose secret `epochs` holds, repeatedly, adding the
-/// earlier secrets and marking them superseded by the epoch whose history lists them (counted
-/// once that epoch is established). `alts`: each live entry of keys with several, tried too.
+/// Opens the history boxes of every epoch whose secret `epochs` holds, repeatedly. Every live
+/// entry of a key (`alts`: each live entry of keys with several) is tried with every secret
+/// held for its epoch, since any writer of the key may put one (spec/crypto.md §4): an entry
+/// listing a secret its epoch's recorded keyset refutes is a lie and ignored whole; an entry of
+/// the bytes the epoch's applied rotation commit wrote (`RoleEpochs::is_rotation_history`)
+/// lists checked secrets; from the others each earlier secret is checked against its epoch's
+/// keyset when one is recorded and kept as an unverified reading-only candidate when not
+/// (`RoleEpochs::learn_unverified`). The epochs listed are marked superseded by the opening one
+/// (counted once it is established).
 /// `from`: the source when `secrets` is a pending commit's: what its history boxes list is
 /// reading-only even when opened with a checked secret (an ex-holder of it can forge them).
 pub fn open_histories(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs: &mut ActorEpochs, from: Option<Unchecked>) -> Vec<(HistoryKey, Error)> {
     let mut failed: BTreeMap<HistoryKey, Error> = BTreeMap::new();
-    let mut done: std::collections::BTreeSet<HistoryKey> = std::collections::BTreeSet::new();
+    // (key, secret) pairs tried: a secret learned later for an epoch tries its entries again
+    let mut done: BTreeMap<HistoryKey, Vec<Secret32>> = BTreeMap::new();
     loop {
         let mut progress = false;
         for (k, ct) in &secrets.history {
-            if done.contains(k) {
-                continue;
-            }
             let Ok(e) = from_schema(&k.epoch) else {
                 failed.insert(k.clone(), Error::Mismatch("history epoch"));
-                done.insert(k.clone());
                 continue;
             };
-            let candidates: Vec<Secret32> = epochs.role(k.role).reading_secrets(&e).into_iter().cloned().collect();
-            let unchecked = from.is_some() || epochs.role(k.role).is_reading_only(&e);
+            let candidates: Vec<Secret32> = epochs.role(k.role).reading_secrets(&e).into_iter().filter(|s| !done.get(k).is_some_and(|d| d.contains(s))).cloned().collect();
             if candidates.is_empty() {
                 continue;
             }
-            done.insert(k.clone());
+            let unchecked = from.is_some() || epochs.role(k.role).is_reading_only(&e);
             progress = true;
-            // a reading-only epoch may hold several candidates: the one that opens the box counts
-            let mut opened = Err(Error::Mismatch("history box"));
-            let mut source = None;
             let cts: Vec<&Vec<u8>> = std::iter::once(ct).chain(alts.get(k).into_iter().flatten()).collect();
-            'try_all: for s in &candidates {
+            let mut opened_any = false;
+            for s in &candidates {
+                done.entry(k.clone()).or_default().push(s.clone());
+                // a reading-only secret's source passes on to what it opens
+                let source = from.or_else(|| epochs.role(k.role).reading_source(&e, s));
                 for c in &cts {
-                    opened = open_history(s, actor, k.role, &e, c).map_err(Error::from);
-                    if opened.is_ok() {
-                        source = from.or_else(|| epochs.role(k.role).reading_source(&e, s));
-                        break 'try_all;
-                    }
-                }
-            }
-            match opened {
-                Ok(earlier) => {
+                    let Ok(earlier) = open_history(s, actor, k.role, &e, c) else { continue };
+                    opened_any = true;
                     let re = epochs.role_mut(k.role);
+                    if earlier.iter().any(|(x, sx)| re.get(x).and_then(|i| i.derives(x, sx)) == Some(false)) {
+                        continue;
+                    }
+                    // the bytes e's applied rotation commit wrote: checked as that commit is,
+                    // whatever secret of e opened them
+                    let genuine = from.is_none() && re.is_rotation_history(&e, c);
                     // what an unchecked box lists supersedes nothing; reopened once e is checked
-                    if !unchecked {
+                    if !unchecked || genuine {
                         re.rotation(e, earlier.iter().map(|(x, _)| *x));
                     }
                     for (x, sx) in earlier {
-                        // what a reading-only secret opens is reading-only too, from its source
-                        if unchecked {
-                            if let Some(u) = source {
-                                re.set_reading_secret(x, sx, u);
-                            }
-                        } else if re.secret(&x).is_none() {
-                            re.set_secret(x, sx);
+                        match (genuine, unchecked, source) {
+                            (true, ..) => re.set_box_secret(x, sx),
+                            // what a pending commit's box or its secrets open is reading-only too
+                            (false, true, Some(u)) => re.set_reading_secret(x, sx, u),
+                            _ => re.learn_unverified(x, sx),
                         }
                     }
                 }
-                Err(err) => {
-                    failed.insert(k.clone(), err);
-                }
+            }
+            if opened_any {
+                failed.remove(k);
+            } else if !failed.contains_key(k) {
+                failed.insert(k.clone(), Error::Mismatch("history box"));
             }
         }
         if !progress {
@@ -184,10 +186,9 @@ pub fn ingest_with(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, opener: &
     let (opened, failed) = open_boxes(actor, secrets, opener);
     for o in opened {
         let re = epochs.role_mut(o.role);
-        if let Some(u) = unchecked {
-            re.set_reading_secret(o.epoch, o.secret, u);
-        } else if re.secret(&o.epoch).is_none() {
-            re.set_secret(o.epoch, o.secret);
+        match unchecked {
+            Some(u) => re.set_reading_secret(o.epoch, o.secret, u),
+            None => re.set_box_secret(o.epoch, o.secret),
         }
     }
     let mut errs: Vec<Error> = failed.into_iter().map(|(_, e)| e).collect();

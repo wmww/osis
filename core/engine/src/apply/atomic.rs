@@ -718,11 +718,18 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         "/keys" => {
             if let Some(k) = v.as_ref().and_then(crate::engine::secrets::keys_value) {
                 tx.core.observe_keys(tid, &k);
-                // reading-only candidates the published keysets contradict go
-                if let Some(e) = tx.core.ix.secrets.get_mut(tid)
-                    && osis_keys::prune_reading(e, &k)
-                {
-                    crate::flows::save_epochs(tx, tid)?;
+                // the published keysets are recorded: candidates they refute go, one that
+                // derives them is checked
+                let checked = tx.core.ix.secrets.get_mut(tid).map(|e| osis_keys::check_keysets(e, &k));
+                if let Some((changed, dropped)) = checked {
+                    if changed {
+                        tx.core.touch();
+                        crate::flows::save_epochs(tx, tid)?;
+                    }
+                    // a held secret they refute went: the boxes may carry the genuine one
+                    if dropped {
+                        observe_state(tx, tid, &Ak::new("/secrets").map_err(|_| Error::Misuse("ak"))?)?;
+                    }
                 }
             }
         }

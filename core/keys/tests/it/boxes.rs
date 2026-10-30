@@ -62,8 +62,12 @@ fn grant_boxes_every_current_epoch() {
     w.apply(&mut s);
     let mut gv = ActorEpochs::default();
     assert!(ingest(&f.a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, None).unwrap().is_empty());
-    for (e, _) in f.view.read.held() {
-        assert!(gv.read.secret(&e).is_some(), "{e:?}");
+    // the boxed epochs are checked; the older ones, by history, readable (no keyset held here)
+    for (e, s) in f.view.read.held() {
+        match f.forks.contains(&e) {
+            true => assert_eq!(gv.read.secret(&e), Some(s), "{e:?}"),
+            false => assert_eq!(gv.read.reading_secrets(&e), vec![s], "{e:?}"),
+        }
     }
     assert!(gv.admin.held().next().is_none());
 }
@@ -233,6 +237,10 @@ fn reading_only_through_history() {
     let older: Vec<_> = gv.read.held_newest_first().into_iter().map(|x| x.0).filter(|e| !f.forks.contains(e)).collect();
     assert!(!older.is_empty());
     assert!(older.iter().all(|e| gv.read.is_reading_only(e)));
+    // the older epochs' rotation commits applied: their keysets check what history lists
+    for e in &older {
+        gv.read.set_keyset(*e, &osis_keys::keyset(e, f.view.read.secret(e).unwrap()));
+    }
     ingest(&f.a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, None).unwrap();
     assert!(older.iter().all(|e| !gv.read.is_reading_only(e) && gv.read.secret(e).is_some()));
 }
@@ -315,7 +323,7 @@ fn planted_candidate_against_published_keyset_spec_crypto_4() {
     }
     a.read.set_reading_secret(e, genuine.clone(), from(200));
     let keys = osis_schema::core_types::Keys { read: Some(osis_keys::keyset(&e, &genuine)), ..Default::default() };
-    assert!(osis_keys::prune_reading(&mut a, &keys));
+    assert!(osis_keys::check_keysets(&mut a, &keys).0);
     assert_eq!(a.read.reading_secrets(&e), vec![&genuine]);
 }
 
@@ -355,8 +363,105 @@ fn history_alternatives_tried_spec_crypto_4() {
     }
     let mut plain = ActorEpochs::default();
     osis_keys::ingest(&f.a, &bad, &Opener::Actor { member: g, epochs: &ge }, &mut plain, None).unwrap();
-    assert!(older.iter().all(|e| plain.read.secret(e).is_none()), "the merged read alone hides them");
+    assert!(older.iter().all(|e| plain.read.reading_secrets(e).is_empty()), "the merged read alone hides them");
     let mut gv = ActorEpochs::default();
     osis_keys::ingest_with(&f.a, &bad, &alts, &Opener::Actor { member: g, epochs: &ge }, &mut gv, None).unwrap();
-    assert!(older.iter().all(|e| gv.read.secret(e).is_some()), "each entry tried");
+    assert!(older.iter().all(|e| gv.read.reading_secrets(e) == vec![f.view.read.secret(e).unwrap()]), "each entry tried");
+}
+
+/// `f` granted to a reader G, plus a lying entry next to each fork's genuine history box: put by
+/// an invite holder of the fork's secret, merged read first, listing garbage for every older
+/// epoch. Returns G, its epochs, the state, the alternatives and the older epochs.
+fn poisoned(f: &Forked) -> (osis_base::Tid, ActorEpochs, Secrets, osis_keys::HistoryAlts, Vec<osis_crypto::Epoch>) {
+    let (g, ge) = (tid(5), person(0x50));
+    let w = box_member(&f.a, &f.view, &f.s, &actor_rcpt(g, Role::Read, &ge), &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();
+    let mut s = f.s.clone();
+    w.apply(&mut s);
+    let older: Vec<_> = f.view.read.held().map(|x| x.0).filter(|e| !f.forks.contains(e)).collect();
+    assert!(!older.is_empty());
+    let garbage: Vec<_> = older.iter().map(|e| (*e, Secret32::from_bytes([0x66; 32]))).collect();
+    let mut alts = osis_keys::HistoryAlts::new();
+    for e in f.forks {
+        let k = history_key(Role::Read, &e);
+        let lie = osis_crypto::seal_history(f.view.read.secret(&e).unwrap(), &f.a, Role::Read, &e, &garbage).unwrap();
+        let genuine = std::mem::replace(s.history.get_mut(&k).unwrap(), lie.clone());
+        alts.insert(k, vec![lie, genuine]);
+    }
+    (g, ge, s, alts, older)
+}
+
+// spec/crypto.md §3, §4: an invite holder's extra history entry that opens and lists garbage
+// for older epochs does not poison them: with their keysets known (their rotation commits
+// applied) the lying entry is refuted whole and the genuine one counts, in either order of
+// arrival; with neither keysets nor rotation commits both stay reading-only candidates;
+// nothing the lie lists is ever held or put in a history box.
+#[test]
+fn history_box_poison_refused_spec_crypto_4() {
+    let f = forked();
+    let (g, ge, s, alts, older) = poisoned(&f);
+    let opener = Opener::Actor { member: g, epochs: &ge };
+    let mut gv = ActorEpochs::default();
+    for e in &older {
+        gv.read.set_keyset(*e, &osis_keys::keyset(e, f.view.read.secret(e).unwrap()));
+    }
+    osis_keys::ingest_with(&f.a, &s, &alts, &opener, &mut gv, None).unwrap();
+    for e in &older {
+        assert_eq!(gv.read.secret(e), f.view.read.secret(e), "{e:?}");
+        assert_eq!(gv.read.reading_secrets(e).len(), 1);
+    }
+    // keysets learned after the history (older commits decrypted later): the garbage goes, the
+    // genuine candidate is checked
+    let mut late = ActorEpochs::default();
+    osis_keys::ingest_with(&f.a, &s, &alts, &opener, &mut late, None).unwrap();
+    for e in &older {
+        assert_eq!(late.read.reading_secrets(e).len(), 2, "both kept for reading, neither held");
+        assert!(late.read.secret(e).is_none());
+        late.read.set_established(*e, osis_keys::Provenance::Chain);
+    }
+    assert!(late.read.held_established().all(|(e, _)| f.forks.contains(&e)), "no unverified secret goes in a history box");
+    for e in &older {
+        assert_eq!(late.read.set_keyset(*e, &osis_keys::keyset(e, f.view.read.secret(e).unwrap())), (true, false));
+        assert_eq!(late.read.secret(e), f.view.read.secret(e));
+        assert_eq!(late.read.reading_secrets(e).len(), 1);
+    }
+    // no keyset, but the forks' rotation commits applied: the entry of the bytes each wrote
+    // (the grant's copy) is checked, the lie adds nothing
+    let mut rot = ActorEpochs::default();
+    for e in f.forks {
+        let k = history_key(Role::Read, &e);
+        assert!(rot.read.set_history(e, &alts[&k][1]));
+    }
+    osis_keys::ingest_with(&f.a, &s, &alts, &opener, &mut rot, None).unwrap();
+    for e in &older {
+        assert_eq!(rot.read.secret(e), f.view.read.secret(e), "{e:?}");
+        assert_eq!(rot.read.reading_secrets(e).len(), 1);
+    }
+}
+
+// spec/crypto.md §3, §4: an applied valid box whose secret fails its epoch's recorded keyset
+// (a lying grant) is refused; a held secret a keyset recorded later refutes is dropped (the
+// caller reopens the boxes) and the genuine box then counts.
+#[test]
+fn box_secret_checked_against_keyset_spec_crypto_4() {
+    let f = forked();
+    let e = f.forks[0];
+    let genuine = f.view.read.secret(&e).unwrap().clone();
+    let bad = Secret32::from_bytes([0x66; 32]);
+    let ks = osis_keys::keyset(&e, &genuine);
+    let mut a = ActorEpochs::default();
+    a.read.set_keyset(e, &ks);
+    a.read.set_box_secret(e, bad.clone());
+    assert!(a.read.secret(&e).is_none() && a.read.reading_secrets(&e).is_empty());
+    a.read.set_box_secret(e, genuine.clone());
+    assert_eq!(a.read.secret(&e), Some(&genuine));
+    // held first, keyset later
+    let mut b = ActorEpochs::default();
+    b.read.set_box_secret(e, bad.clone());
+    assert_eq!(b.read.set_keyset(e, &ks), (true, true));
+    assert!(b.read.secret(&e).is_none());
+    b.read.set_box_secret(e, genuine.clone());
+    assert_eq!(b.read.secret(&e), Some(&genuine));
+    // only the first keyset recorded counts
+    assert_eq!(b.read.set_keyset(e, &osis_keys::keyset(&e, &bad)), (false, false));
+    assert_eq!(b.read.secret(&e), Some(&genuine));
 }

@@ -162,6 +162,7 @@ fn reorder_holding_e2_without_e1() {
     reseal.applied(&mut a2v, (&KeysWrite::default(), &w.k0)).unwrap();
     r2.secrets.applied(&mut a2v, (&r2.keys, &w.k0)).unwrap();
     ingest(&w.a, &s2, &Opener::Actor { member: w.a2, epochs: &w.a2e }, &mut a2v, None).unwrap();
+    // e1's secret from the history box e2's applied rotation commit wrote
     assert!(a2v.read.secret(&e1).is_some() && a2v.read.secret(&e2).is_some());
     assert!(!a2v.read.is_established(&e1) && !a2v.read.is_established(&e2));
     assert_eq!(a2v.read.current(), vec![w.e0]);
@@ -180,6 +181,7 @@ fn reorder_holding_e2_without_e1() {
 
     // e1 arrives (with the removal): both established, e2 current.
     assert!(r1.secrets.applied(&mut a2v, (&r1.keys, &w.k0)).unwrap());
+    assert_eq!(a2v.read.secret(&e1), a1v1.read.secret(&e1));
     assert_eq!(a2v.read.provenance(&e1), Some(Provenance::Chain));
     assert_eq!(a2v.read.provenance(&e2), Some(Provenance::Chain));
     assert_eq!(a2v.read.current(), vec![e2]);
