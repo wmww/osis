@@ -229,7 +229,7 @@ fn pushes_to_slow_subscriber_spec_sync_6() {
     // 8 MiB of pushes are unwritten: room for a small relay, not for one of 1 MiB
     let relay = |n: usize| {
         let e = l.entry(vec![1; n]);
-        ServerInput::Relay(Relayed { label: l.id, blob_id: osis_label::blob_id(&e.blob), blob: e.blob, wrap: e.wrap, stamp: e.stamp })
+        ServerInput::Relay(Relayed { label: l.id, blob_id: osis_label::blob_id(&e.blob), blob: e.blob.into(), wrap: e.wrap, stamp: e.stamp })
     };
     assert!(r.server.handle(r.now, &mut r.store, relay(1 << 20)).is_empty(), "no room: the relay is dropped");
     let so = r.server.handle(r.now, &mut r.store, relay(100));
