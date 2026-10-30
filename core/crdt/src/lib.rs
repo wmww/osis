@@ -67,7 +67,7 @@ pub use changes::{Changes, Death};
 pub use copies::CopyIndex;
 pub use codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot, page_array};
 pub use error::Error;
-pub use fragment::{BagKind, Bag, CaseWrite, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
+pub use fragment::{BagKind, Bag, CaseWrite, Eid, Elem, Encoding, Entry, Key, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
 pub use shape::Shown;
 pub use batch::Batch;
 pub use ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values, remove, replace, reset_entries};

@@ -47,6 +47,12 @@ pub fn wire_src_cmp(a: &Source, b: &Source, own: &Source) -> std::cmp::Ordering 
 pub fn wire_cmp(a: &Dot, b: &Dot, own: &Source) -> std::cmp::Ordering {
     crate::stamp::dot_cmp(a, b, &|x, y| wire_src_cmp(x, y, own))
 }
+/// Map entry records in wire order: by dot, then the key-erased record, then by key.
+pub fn entries_sorted<'a, T>(m: &'a BTreeMap<crate::state::Eid, T>, own: &Source) -> Vec<(&'a crate::state::Eid, &'a T)> {
+    let mut v: Vec<(&crate::state::Eid, &T)> = m.iter().collect();
+    v.sort_by(|a, b| wire_cmp(&a.0 .0, &b.0 .0, own).then_with(|| a.0 .1.cmp(&b.0 .1)));
+    v
+}
 /// Map entries in wire order.
 pub fn wire_sorted<'a, T>(m: &'a BTreeMap<Dot, T>, own: &Source) -> Vec<(&'a Dot, &'a T)> {
     let mut v: Vec<(&Dot, &T)> = m.iter().collect();
@@ -393,7 +399,7 @@ impl Frag {
             Frag::Map { c, entries } => {
                 opt(&c.reset, f);
                 opt(&c.w, f);
-                for (d, en) in wire_sorted(entries, own) {
+                for ((d, _), en) in entries_sorted(entries, own) {
                     f(Ref::Dot(d));
                     opt(&en.created, f);
                     opt(&en.reset, f);
@@ -484,7 +490,7 @@ impl Frag {
                 }
             }
             Frag::Map { entries, .. } => {
-                for (d, en) in entries {
+                for ((d, _), en) in entries {
                     if d.source == *own && en.frag.is_some() {
                         take(used, d.ctr)?;
                     }
@@ -586,9 +592,9 @@ pub fn encode(f: &Frag, cx: &Ctx) -> Item {
             Item::Array(vec![enc, enc_opt_stamp(&c.reset, cx), enc_w(c, cx), case_i, cbor::sorted_map(m)])
         }
         Frag::Map { c, entries } => {
-            let es = wire_sorted(entries, &cx.own)
+            let es = entries_sorted(entries, &cx.own)
                 .into_iter()
-                .map(|(d, e)| {
+                .map(|((d, key), e)| {
                     let mut a = vec![enc_dot(d, cx)];
                     // a foreign creation carries its commit (snapshots, imports); this commit's own
                     // is implied
@@ -596,7 +602,7 @@ pub fn encode(f: &Frag, cx: &Ctx) -> Item {
                         a.push(u(cx.commit_index(c.ts, &d.source).expect("commit table collected").0));
                     }
                     a.push(enc_opt_stamp(&e.reset, cx));
-                    a.extend(e.key.iter().map(|k| k.to_item()));
+                    a.extend(key.iter().map(|k| k.to_item()));
                     a.push(Item::Array(e.frag.iter().map(|f| encode(f, cx)).collect()));
                     Item::Array(a)
                 })
@@ -826,7 +832,7 @@ fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
         (6, 4) => Frag::Set { c: composite(a, cx)?, elems: dec_elems(&a[3], cx)? },
         (7, 4) => {
             let mut entries = BTreeMap::new();
-            let mut last: Option<Dot> = None;
+            let mut last: Option<(Dot, Option<Value>)> = None;
             for e in a[3].array()? {
                 let x = e.array()?;
                 let ci = match x.get(1) {
@@ -839,14 +845,11 @@ fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
                     4 => (Some(Value::from_item(&x[2])?), dec_opt_frag(&x[3], cx)?),
                     _ => return Err(Error::Bad("entry")),
                 };
-                if key.is_some() && frag.is_none() {
-                    return Err(Error::Bad("tombstone with key"));
-                }
                 let d = dec_dot(&x[0], cx)?;
-                if last.as_ref().map_or(false, |l| wire_cmp(l, &d, &cx.own).is_ge()) {
+                if last.as_ref().map_or(false, |(l, lk)| wire_cmp(l, &d, &cx.own).then_with(|| lk.cmp(&key)).is_ge()) {
                     return Err(Error::Bad("entry order"));
                 }
-                last = Some(d.clone());
+                last = Some((d.clone(), key.clone()));
                 let created = match (ci, cx.hi) {
                     (Some(_), Some(_)) => return Err(Error::Bad("creation commit in a writer's delta")),
                     (Some(_), None) if frag.is_none() => return Err(Error::Bad("creation commit on a tombstone")),
@@ -860,7 +863,7 @@ fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
                     (None, Some(hi)) if frag.is_some() && d.source == cx.own && cx.lo <= d.ctr && d.ctr < hi => Some(Stamp { ts: cx.ts, dot: d.clone() }),
                     _ => None,
                 };
-                entries.insert(d, Entry { reset: dec_opt_stamp(&x[1], cx)?, key, frag, created });
+                entries.insert((d, key), Entry { reset: dec_opt_stamp(&x[1], cx)?, frag, created });
             }
             Frag::Map { c: composite(a, cx)?, entries }
         }

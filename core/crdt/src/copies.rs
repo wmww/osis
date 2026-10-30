@@ -112,10 +112,10 @@ impl Copies<'_> {
             }
             Fragment::Map(Map { meta: m, entries, .. }) => {
                 self.meta(m);
-                for (d, e) in entries {
-                    self.path.push(Step::Elem(d.clone()));
+                for (id, e) in entries {
+                    self.path.push(Step::Elem(id.dot.clone()));
                     if let Some(c) = &e.created {
-                        self.put(Kind::Entry, c, e.key.clone().map(Val::V));
+                        self.put(Kind::Entry, c, id.key().cloned().map(Val::V));
                     }
                     self.opt(Kind::Reset, &e.reset);
                     if let Some(f) = &e.frag {
@@ -234,16 +234,11 @@ impl Fragment {
             }
             // an entry's creation went with `remove_dots_in`
             Fragment::Map(m) => {
-                for (d, e) in m.entries.iter_mut() {
-                    if keys && pred(d.owner()) {
-                        e.key = None;
-                    }
-                    if let Some(x) = e.frag.as_deref_mut() {
-                        x.drop_creations(pred, keys);
-                    }
-                }
                 if keys {
-                    m.reindex();
+                    m.erase_keys(&|d| pred(d.owner()));
+                }
+                for x in m.entries.values_mut().filter_map(|e| e.frag.as_deref_mut()) {
+                    x.drop_creations(pred, keys);
                 }
             }
             Fragment::Seq(s) => crate::seq::drop_creations(s, pred, keys),

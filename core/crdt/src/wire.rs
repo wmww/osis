@@ -362,9 +362,15 @@ impl<'p> Enc<'p> {
 
     /// The entries of `m` in wire order (§3.3 rule 2).
     pub fn sorted<'m, T>(&self, m: &'m BTreeMap<Dot, T>) -> Vec<(&'m Dot, &'m T)> {
-        let mut v: Vec<(&Dot, &T)> = m.iter().collect();
+        self.sorted_by(m, |d| d)
+    }
+
+    /// The entries of `m`, keyed by something holding a dot (`dot`), in wire order (§3.3 rule
+    /// 2): by dot, then in `m`'s order.
+    pub fn sorted_by<'m, K: Ord, T>(&self, m: &'m BTreeMap<K, T>, dot: impl Fn(&K) -> &Dot) -> Vec<(&'m K, &'m T)> {
+        let mut v: Vec<(&K, &T)> = m.iter().collect();
         if matches!(self.own.kind(), SourceKind::Commit(_)) {
-            v.sort_by(|a, b| self.dot_order(a.0, b.0));
+            v.sort_by(|a, b| self.dot_order(dot(a.0), dot(b.0)));
         }
         v
     }

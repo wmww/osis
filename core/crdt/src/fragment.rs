@@ -119,19 +119,65 @@ impl Elem {
     }
 }
 
-/// A map entry (§5.6). `key` is `None` for tombstones and value-less creations. `created` is
-/// the creation write's stamp (its dot is the entry's), kept while it survives pruning and the
-/// entry holds content (§5.6).
+/// A map key as an entry's identity: compared by canonical encoding, bytewise (§3.3 rule 2;
+/// `Value` compares links by content hash alone).
+#[derive(Clone, Debug)]
+pub struct Key(pub Value);
+
+impl Ord for Key {
+    fn cmp(&self, o: &Key) -> std::cmp::Ordering {
+        crate::state::opt_value_cmp(Some(&self.0), Some(&o.0))
+    }
+}
+impl PartialOrd for Key {
+    fn partial_cmp(&self, o: &Key) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(o))
+    }
+}
+impl PartialEq for Key {
+    fn eq(&self, o: &Key) -> bool {
+        self.cmp(o) == std::cmp::Ordering::Equal
+    }
+}
+impl Eq for Key {}
+impl std::hash::Hash for Key {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.0.hash(h);
+    }
+}
+
+/// A map entry record's identity (§5.6): the entry's dot and key; `None` for the dot's
+/// key-erased record (§4.7). Ordered by dot, the key-erased record first, then by key.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Eid {
+    pub dot: Dot,
+    pub key: Option<Key>,
+}
+
+impl Eid {
+    pub fn new(dot: Dot, key: Option<Value>) -> Eid {
+        Eid { dot, key: key.map(Key) }
+    }
+    /// The key-erased record of `dot`, the lowest of its records.
+    pub fn erased(dot: Dot) -> Eid {
+        Eid { dot, key: None }
+    }
+    pub fn key(&self) -> Option<&Value> {
+        self.key.as_ref().map(|k| &k.0)
+    }
+}
+
+/// A map entry record (§5.6): its reset, its content, and its creation write's stamp (the
+/// creation's dot is the entry's), kept while it survives pruning and the record holds content.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Entry {
     pub(crate) reset: Option<Stamp>,
-    pub(crate) key: Option<Value>,
     pub(crate) frag: Option<Box<Fragment>>,
     pub(crate) created: Option<Stamp>,
 }
 
 impl Entry {
-    /// A tombstone: reset `r`, no key or content.
+    /// A tombstone: reset `r`, no content.
     pub(crate) fn tomb(r: &Stamp) -> Entry {
         Entry { reset: Some(r.clone()), ..Entry::default() }
     }
@@ -178,11 +224,11 @@ pub struct Set {
 #[derive(Clone, Default)]
 pub struct Map {
     pub(crate) meta: Meta,
-    pub(crate) entries: BTreeMap<Dot, Entry>,
-    /// Local index, not part of the lattice: stored key -> dots that carried it. A superset
-    /// (every keyed entry is listed; a dot whose entry lost its key may linger), so lookups
-    /// check the entry.
-    pub(crate) keys: BTreeMap<Value, BTreeSet<Dot>>,
+    pub(crate) entries: BTreeMap<Eid, Entry>,
+    /// Local index, not part of the lattice: key -> the keyed records carrying it (by `Value`
+    /// equality, so links by content hash). A superset (a record gone may linger), so lookups
+    /// check the record.
+    pub(crate) keys: BTreeMap<Value, BTreeSet<Eid>>,
 }
 
 impl PartialEq for Map {
@@ -199,7 +245,7 @@ impl std::fmt::Debug for Map {
 }
 
 impl Map {
-    pub(crate) fn new(meta: Meta, entries: BTreeMap<Dot, Entry>) -> Map {
+    pub(crate) fn new(meta: Meta, entries: BTreeMap<Eid, Entry>) -> Map {
         let mut m = Map { meta, entries, keys: BTreeMap::new() };
         m.reindex();
         m
@@ -207,26 +253,74 @@ impl Map {
     /// Rebuilds the key index exactly.
     pub(crate) fn reindex(&mut self) {
         self.keys.clear();
-        for (d, e) in &self.entries {
-            if let Some(k) = &e.key {
-                self.keys.entry(k.clone()).or_default().insert(d.clone());
+        for id in self.entries.keys() {
+            if let Some(k) = id.key() {
+                self.keys.entry(k.clone()).or_default().insert(id.clone());
             }
         }
     }
-    /// Lists `d` under the key its entry carries now.
-    pub(crate) fn index_dot(&mut self, d: &Dot) {
-        if let Some(k) = self.entries.get(d).and_then(|e| e.key.as_ref())
-            && !self.keys.get(k).is_some_and(|s| s.contains(d))
+    /// Lists keyed record `id` in the index.
+    pub(crate) fn index_id(&mut self, id: &Eid) {
+        if let Some(k) = id.key()
+            && !self.keys.get(k).is_some_and(|s| s.contains(id))
         {
-            self.keys.entry(k.clone()).or_default().insert(d.clone());
+            self.keys.entry(k.clone()).or_default().insert(id.clone());
         }
     }
-    /// Live entries of `k`, ascending (§5.6): O(log n + dots of k).
-    pub(crate) fn live_dots(&self, k: &Value) -> Vec<&Dot> {
-        let Some(ds) = self.keys.get(k) else { return Vec::new() };
-        ds.iter()
-            .filter(|d| self.entries.get(*d).is_some_and(|e| e.key.as_ref() == Some(k) && e.frag.as_ref().is_some_and(|f| f.present())))
-            .collect()
+    /// The records of `dot`, the key-erased one first.
+    pub(crate) fn of_dot(&self, dot: &Dot) -> impl Iterator<Item = (&Eid, &Entry)> + '_ {
+        let d = dot.clone();
+        self.entries.range(Eid::erased(dot.clone())..).take_while(move |(id, _)| id.dot == d)
+    }
+    /// Whether `dot`'s greatest creation is held only by its key-erased record: then none of
+    /// its records is live (§5.6, §4.7).
+    pub(crate) fn hidden(&self, dot: &Dot) -> bool {
+        let mut it = self.of_dot(dot);
+        let Some((id, e)) = it.next() else { return false };
+        let Some(c) = e.created.as_ref().filter(|_| id.key.is_none()) else { return false };
+        !it.any(|(_, x)| x.created.as_ref().is_some_and(|y| y >= c))
+    }
+    /// Whether keyed record `id` is live: its fragment present and its dot not hidden (§5.6).
+    pub(crate) fn is_live(&self, id: &Eid) -> bool {
+        id.key.is_some() && self.entries.get(id).and_then(|e| e.frag.as_deref()).is_some_and(|f| f.present()) && !self.hidden(&id.dot)
+    }
+    /// What record `id` reads as: its fragment, a keyed record's joined with its dot's
+    /// key-erased record's (§5.6).
+    pub(crate) fn record_frag(&self, id: &Eid) -> Option<std::borrow::Cow<'_, Fragment>> {
+        let f = self.entries.get(id)?.frag.as_deref()?;
+        match self.entries.get(&Eid::erased(id.dot.clone())).and_then(|e| e.frag.as_deref()) {
+            Some(x) if id.key.is_some() => {
+                let mut j = f.clone();
+                j.join_into(x.clone(), None, &mut crate::changes::Changes::new());
+                Some(std::borrow::Cow::Owned(j))
+            }
+            _ => Some(std::borrow::Cow::Borrowed(f)),
+        }
+    }
+    /// Moves the records of the dots `pred` accepts to their key-erased record (§4.7), each
+    /// joined in without pruning (the caller joins or prunes).
+    pub(crate) fn erase_keys(&mut self, pred: &dyn Fn(&Dot) -> bool) {
+        let ids: Vec<Eid> = self.entries.keys().filter(|id| id.key.is_some() && pred(&id.dot)).cloned().collect();
+        if ids.is_empty() {
+            return;
+        }
+        for id in ids {
+            let Some(e) = self.entries.remove(&id) else { continue };
+            let slot = self.entries.entry(Eid::erased(id.dot)).or_default();
+            slot.reset = crate::stamp::max_opt(slot.reset.take(), e.reset);
+            slot.created = crate::stamp::max_opt(slot.created.take(), e.created);
+            match (&mut slot.frag, e.frag) {
+                (Some(a), Some(b)) => a.join_into(*b, None, &mut crate::changes::Changes::new()),
+                (a @ None, b) => *a = b,
+                (_, None) => {}
+            }
+        }
+        self.reindex();
+    }
+    /// Live records of `k`, ascending (§5.6): O(log n + records of k).
+    pub(crate) fn live_ids(&self, k: &Value) -> Vec<&Eid> {
+        let Some(ids) = self.keys.get(k) else { return Vec::new() };
+        ids.iter().filter(|id| self.is_live(id)).collect()
     }
 }
 

@@ -3,7 +3,7 @@
 
 use crate::changes::Changes;
 use crate::error::Error;
-use crate::fragment::{Bag, BagKind, CaseWrite, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Struct};
+use crate::fragment::{Bag, BagKind, CaseWrite, Eid, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Struct};
 use crate::seq;
 use crate::stamp::{CounterRange, Dot, Source, Stamp};
 use crate::view::View;
@@ -160,10 +160,10 @@ fn contribution(w: &mut Writer, kind: BagKind, v: Value) -> Fragment {
 
 /// A new map entry of key `k`: a fresh dot, whose stamp is the creation's (§5.6), holding what
 /// `content` writes after it; `None` if it writes nothing (the dot stays consumed).
-pub(crate) fn new_entry(w: &mut Writer, k: Value, content: impl FnOnce(&mut Writer) -> Result<Option<Fragment>, Error>) -> Result<Option<(Dot, Entry)>, Error> {
+pub(crate) fn new_entry(w: &mut Writer, k: Value, content: impl FnOnce(&mut Writer) -> Result<Option<Fragment>, Error>) -> Result<Option<(Eid, Entry)>, Error> {
     let st = w.fresh();
     let Some(frag) = content(w)? else { return Ok(None) };
-    Ok(Some((st.dot.clone(), Entry { reset: None, key: Some(k), frag: Some(Box::new(frag)), created: Some(st) })))
+    Ok(Some((Eid::new(st.dot.clone(), Some(k)), Entry { reset: None, frag: Some(Box::new(frag)), created: Some(st) })))
 }
 
 fn with_w(w: &Writer, empty: bool) -> Meta {
@@ -233,11 +233,12 @@ pub fn remove(w: &Writer, enc: Encoding) -> Result<Fragment, Error> {
     Ok(f)
 }
 
-/// Map tombstones `[dot, [D], []]` for `dots` at the delta stamp (§5.6): a reset of entries
-/// whatever their liveness here (an explicit removal of an edge already removed).
-pub fn reset_entries(w: &Writer, dots: &[Dot]) -> Fragment {
+/// Map tombstones `[dot, [D], key, []]` for the entries `ids` (dot and key) at the delta stamp
+/// (§5.6): a reset of entries whatever their liveness here (an explicit removal of an edge
+/// already removed).
+pub fn reset_entries(w: &Writer, ids: &[(Dot, Value)]) -> Fragment {
     let r = w.delta_stamp();
-    let entries = dots.iter().map(|d| (d.clone(), Entry::tomb(&r))).collect();
+    let entries = ids.iter().map(|(d, k)| (Eid::new(d.clone(), Some(k.clone())), Entry::tomb(&r))).collect();
     Fragment::Map(Map::new(Meta::default(), entries))
 }
 
@@ -255,26 +256,26 @@ pub(crate) fn live_elems(elems: &BTreeMap<Dot, Elem>) -> Vec<(&Dot, Value)> {
     elems.iter().filter_map(|(d, e)| Some((d, e.frag.as_ref()?.read()?))).collect()
 }
 
-/// Live map entries: key to live dots, ascending (§5.6).
-pub(crate) fn live_entries(entries: &BTreeMap<Dot, Entry>) -> BTreeMap<&Value, Vec<&Dot>> {
-    let mut m: BTreeMap<&Value, Vec<&Dot>> = BTreeMap::new();
-    for (d, e) in entries {
-        if let (Some(k), Some(f)) = (&e.key, &e.frag)
-            && f.present()
+/// Live map entry records: key to live records, ascending (§5.6).
+pub(crate) fn live_entries(m: &Map) -> BTreeMap<&Value, Vec<&Eid>> {
+    let mut out: BTreeMap<&Value, Vec<&Eid>> = BTreeMap::new();
+    for id in m.entries.keys() {
+        if let Some(k) = id.key()
+            && m.is_live(id)
         {
-            m.entry(k).or_default().push(d);
+            out.entry(k).or_default().push(id);
         }
     }
-    m
+    out
 }
 
-/// What a key reads as: the join of its live entries' fragments (§5.6).
-pub(crate) fn key_state(m: &Map, dots: &[&Dot]) -> Option<Fragment> {
+/// What a key reads as: the join of its live records' reads (§5.6).
+pub(crate) fn key_state(m: &Map, ids: &[&Eid]) -> Option<Fragment> {
     let mut out: Option<Fragment> = None;
-    for f in dots.iter().filter_map(|d| m.entries.get(*d).and_then(|e| e.frag.as_deref())) {
+    for f in ids.iter().filter_map(|id| m.record_frag(id)) {
         match &mut out {
-            None => out = Some(f.clone()),
-            Some(o) => o.join_into(f.clone(), None, &mut Changes::new()),
+            None => out = Some(f.into_owned()),
+            Some(o) => o.join_into(f.into_owned(), None, &mut Changes::new()),
         }
     }
     out
@@ -368,15 +369,15 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
         (Encoding::Map, Fragment::Map(m), Value::Map(kv)) => {
             let kview = view.key().ok_or(Error::Mismatch("map without key type"))?;
             let vview = view.element().ok_or(Error::Mismatch("map without value type"))?;
-            let live = live_entries(&m.entries);
-            // (projected key, stored key, live dots); a stored key is immutable (§5.6)
-            let keyed: Vec<(Option<Value>, &Value, &Vec<&Dot>)> = live.iter().map(|(k, ds)| (projected(&kview, k), *k, ds)).collect();
+            let live = live_entries(m);
+            // (projected key, stored key, live records); a stored key is immutable (§5.6)
+            let keyed: Vec<(Option<Value>, &Value, &Vec<&Eid>)> = live.iter().map(|(k, ds)| (projected(&kview, k), *k, ds)).collect();
             let mut entries = BTreeMap::new();
             let r = w.delta_stamp();
-            for (k, _, dots) in &keyed {
+            for (k, _, ids) in &keyed {
                 if k.as_ref().is_some_and(|k| !kv.contains_key(k)) {
-                    for d in dots.iter() {
-                        entries.insert((*d).clone(), Entry::tomb(&r));
+                    for id in ids.iter() {
+                        entries.insert((*id).clone(), Entry::tomb(&r));
                     }
                 }
             }
@@ -384,12 +385,12 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
                 let mut matched = false;
                 // every stored key the view projects to `k` is written, each into its lowest live dot,
                 // against what it reads as
-                for (_, stored, dots) in keyed.iter().filter(|(p, _, _)| p.as_ref() == Some(k)) {
+                for (_, _, ids) in keyed.iter().filter(|(p, _, _)| p.as_ref() == Some(k)) {
                     matched = true;
-                    let Some(d) = dots.first() else { continue };
-                    let cur = key_state(m, dots);
+                    let Some(id) = ids.first() else { continue };
+                    let cur = key_state(m, ids);
                     if let Some(delta) = diff(w, cur.as_ref(), &vview, val)? {
-                        entries.insert((*d).clone(), Entry { reset: None, key: Some((*stored).clone()), frag: Some(Box::new(delta)), created: None });
+                        entries.insert((*id).clone(), Entry { reset: None, frag: Some(Box::new(delta)), created: None });
                     }
                 }
                 if !matched {
@@ -450,11 +451,11 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
                 }
                 (Some(Encoding::Map), Some(Fragment::Map(m))) => {
                     let kv = view.key().ok_or(Error::Mismatch("map without key type"))?;
-                    let entries: BTreeMap<Dot, Entry> = live_entries(&m.entries)
+                    let entries: BTreeMap<Eid, Entry> = live_entries(m)
                         .into_iter()
                         .filter(|(k, _)| projected(&kv, k).as_ref() == Some(x))
-                        .flat_map(|(_, ds)| ds)
-                        .map(|d| (d.clone(), Entry::tomb(&r)))
+                        .flat_map(|(_, ids)| ids)
+                        .map(|id| (id.clone(), Entry::tomb(&r)))
                         .collect();
                     Ok((!entries.is_empty()).then(|| Fragment::Map(Map::new(Meta::default(), entries))))
                 }

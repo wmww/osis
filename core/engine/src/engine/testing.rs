@@ -116,8 +116,6 @@ impl Engine {
             ("ranges", format!("{:?}", *ix.ranges)),
             ("rotation_role", format!("{:?}", *ix.rotation_role)),
             ("grant_overreach", format!("{:?}", *ix.grant_overreach)),
-            ("rotation_unresolved", format!("{:?}", *ix.rotation_unresolved)),
-            ("box_keys", format!("{:?}", *ix.box_keys)),
             ("boxes_to", format!("{:?}", *ix.boxes_to)),
             ("epoch_intro", format!("{:?}", *ix.epoch_intro)),
             ("box_written", format!("{:?}", *ix.box_written)),

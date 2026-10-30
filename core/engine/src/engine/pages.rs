@@ -13,7 +13,7 @@ use super::{clear_table, scan_table};
 use crate::error::{Error, Result};
 use osis_base::format::PAGE_TARGET;
 use osis_base::{Ak, Tid, Value};
-use osis_crdt::{Dot, Encoding, Fragment, PagedTouch, PathSeg, Paths, PlaceBlock, PlaceDiff, PlaceMisses, PlaceRow, PlaceTop, SeqPlace, SourceKind, Step};
+use osis_crdt::{Dot, Eid, Encoding, Fragment, PagedTouch, PathSeg, Paths, PlaceBlock, PlaceDiff, PlaceMisses, PlaceRow, PlaceTop, SeqPlace, SourceKind, Step};
 use osis_store::{Shred, Table, Transaction};
 use std::collections::BTreeMap;
 use std::ops::Range as Span;
@@ -161,9 +161,9 @@ fn path_value(p: &KeyedPath) -> Value {
             .map(|(s, k, c)| match s {
                 Step::Field(id) => Value::List(vec![Value::Int(0), Value::uint(*id)]),
                 Step::Case(id) => Value::List(vec![Value::Int(1), Value::uint(*id)]),
-                Step::Entry(d) => Value::List(vec![
+                Step::Entry(id) => Value::List(vec![
                     Value::Int(2),
-                    dot_value(d),
+                    dot_value(&id.dot),
                     k.clone().map_or(Value::List(Vec::new()), |k| Value::List(vec![k])),
                     Value::List(c.iter().map(|c| Value::uint(c.ts.to_u64())).collect()),
                 ]),
@@ -182,7 +182,7 @@ fn path_of(v: &Value) -> Result<KeyedPath> {
             Value::List(x) => match x.as_slice() {
                 [Value::Int(0), Value::Int(id)] => Ok((Step::Field(n(id)?), None, None)),
                 [Value::Int(1), Value::Int(id)] => Ok((Step::Case(n(id)?), None, None)),
-                [Value::Int(2), d, Value::List(k)] => Ok((Step::Entry(dot_of(d)?), k.first().cloned(), None)),
+                [Value::Int(2), d, Value::List(k)] => Ok((Step::Entry(Eid::new(dot_of(d)?, k.first().cloned())), k.first().cloned(), None)),
                 [Value::Int(2), d, Value::List(k), Value::List(c)] => {
                     let d = dot_of(d)?;
                     let created = match c.as_slice() {
@@ -190,7 +190,7 @@ fn path_of(v: &Value) -> Result<KeyedPath> {
                         [Value::Int(ts)] => Some(osis_crdt::Stamp::new(osis_base::Ts::from_u64(n(ts)?).ok_or_else(bad)?, d.src.clone(), d.ctr)),
                         _ => return Err(bad()),
                     };
-                    Ok((Step::Entry(d), k.first().cloned(), created))
+                    Ok((Step::Entry(Eid::new(d, k.first().cloned())), k.first().cloned(), created))
                 }
                 _ => Err(bad()),
             },
@@ -223,12 +223,13 @@ fn parse_page_row(b: &[u8]) -> Result<(Range, Fragment)> {
     Ok(((opt_dot_of(lo)?, opt_dot_of(hi)?), decode(p)?))
 }
 
-/// What the index of a paged collection finds element `d` by: a map entry's key, the value of
-/// a set element (and of any `Derived` element sorting right after it: a superset). Empty for
-/// a keyless or value-less element and other encodings.
+/// What the index of a paged collection finds element `d` by: the keys of a map's records of
+/// `d` holding content (a tombstone's key finds nothing live), the value of a set element (and
+/// of any `Derived` element sorting right after it: a superset). Empty for a key-erased or
+/// value-less element and other encodings.
 fn indexed(c: &Fragment, enc: Encoding, d: &Dot) -> Vec<Value> {
     match enc {
-        Encoding::Map => c.entry_key(d).cloned().into_iter().collect(),
+        Encoding::Map => c.entry_keys(d).into_iter().cloned().collect(),
         Encoding::Set => {
             let next = d.ctr.checked_add(1).map(|ctr| Dot { src: d.src.clone(), ctr });
             match c.elem_range(Some(d), next.as_ref(), false).and_then(|x| x.read()) {
@@ -550,6 +551,19 @@ fn walk(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, idx: &mut PageI
                             if !next.contains(&q) {
                                 next.push(q);
                             }
+                        }
+                    }
+                    // the key-erased records of those dots: a record's read joins its dot's
+                    // (spec/crdt.md §5.6)
+                    let dots: Vec<Dot> = next.iter().filter(|q| q.starts_with(&p)).filter_map(|q| match q.get(p.len()) {
+                        Some(Step::Entry(id)) if id.key.is_some() => Some(id.dot.clone()),
+                        _ => None,
+                    }).collect();
+                    for d in dots {
+                        let q = [p.clone(), vec![Step::Entry(Eid::erased(d))]].concat();
+                        let held = matches!(f.at_steps(&p), Some(Fragment::Map(_))) && f.at_steps(&q).is_some();
+                        if (held || idx.sets.keys().any(|x| x.starts_with(&q))) && !next.contains(&q) {
+                            next.push(q);
                         }
                     }
                 }
@@ -1245,7 +1259,7 @@ fn keyed(f: &Fragment, p: &[Step]) -> KeyedPath {
     let mut cur = Some(f);
     for s in p {
         let (key, created) = match s {
-            Step::Entry(d) => (cur.and_then(|c| c.entry_key(d)).cloned(), cur.and_then(|c| c.entry_created(d)).cloned()),
+            Step::Entry(id) => (id.key().cloned(), cur.and_then(|c| c.entry_created(id)).cloned()),
             _ => (None, None),
         };
         out.push((s.clone(), key, created));
@@ -1468,6 +1482,11 @@ pub fn strip_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
             }
         }
     }
+    // a map record whose key goes (spec/crdt.md §4.7) moves to its dot's key-erased record: a
+    // paged collection below it changes path, so the caller strips the whole state
+    if idx.sets.keys().any(|p| p.iter().any(|s| matches!(s, Step::Entry(id) if id.key.is_some() && pred(id.dot.owner())))) {
+        return Ok(false);
+    }
     f.strip(pred);
     for t in touches {
         if write_touched(txn, idx, tid, ak, f, t, Shred::Yes)?.is_none() {
@@ -1581,8 +1600,8 @@ mod tests {
 
     // spec/commits.md §5 (a dropped write leaves no local index entry derived from it): stripping
     // the writes of a delta that created a paged map inside a map entry, and other keys of a
-    // nested map besides, leaves the key index as a from-scratch rebuild of the stripped state
-    // (stripped writes stay as value-less records, so no position on a paged path goes).
+    // nested map besides: the entries' keys go (spec/crdt.md §4.7), so the paged maps change
+    // path and the state is rewritten whole, its key index as a from-scratch rebuild's.
     #[test]
     fn strip_touched_nested_rows_spec_commits_5() {
         let mut rng = osis_crypto::SeededRng::from_u64(82);
@@ -1611,12 +1630,12 @@ mod tests {
         let t = touch_of(&body, Some(&idx)).unwrap();
         assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
         let done = strip_touched(&mut txn, &mut idx, &tid, &ak, &mut f, std::slice::from_ref(&t), &pred).unwrap();
-        let after = rows(&mut txn);
+        assert!(!done, "a paged map under an erased key moves");
         load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
-        write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
-        let rebuilt = rows(&mut txn);
-        assert!(done);
-        assert_eq!((before, after, rebuilt), (6100, 100, 100));
+        f.strip(&pred);
+        let (_, i) = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
+        assert!(i.unwrap().sets.keys().all(|p| p.iter().all(|s| !matches!(s, Step::Entry(id) if id.key.is_some()))), "paged below the key-erased records");
+        assert_eq!((before, rows(&mut txn)), (6100, 100));
     }
 
     // spec/crdt.md §5.5 (add and remove by value), spec/data-model.md §6 (links compare by
@@ -2040,6 +2059,9 @@ mod tests {
                         }
                         if !done {
                             load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
+                            if k == 0 {
+                                f.strip(&pred);
+                            }
                             let (u, i) = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
                             unit = u;
                             idx = i.unwrap();

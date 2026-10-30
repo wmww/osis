@@ -30,7 +30,7 @@ impl Fragment {
     /// range), so no write goes into an existing entry. Checkable from the delta alone.
     pub fn is_put_only_map(&self, own: &dyn Fn(&Dot) -> bool) -> bool {
         match self {
-            Fragment::Map(m) => m.meta.reset.is_none() && m.entries.iter().all(|(d, e)| own(d) && e.reset.is_none() && e.key.is_some() && e.frag.is_some()),
+            Fragment::Map(m) => m.meta.reset.is_none() && m.entries.iter().all(|(id, e)| own(&id.dot) && e.reset.is_none() && id.key.is_some() && e.frag.is_some()),
             Fragment::Slots(Slots { reg: None, members }) => members.len() == 1 && members.values().all(|f| f.is_put_only_map(own)),
             _ => false,
         }

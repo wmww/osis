@@ -245,7 +245,7 @@ pub(crate) fn chunk_op(op: &mut PathOp, schema: Option<&Schema>, ak: &str, state
         }
         let Value::Link(h) = hash(k)? else { continue };
         let key_of = |f: &Fragment| match f {
-            Fragment::Map(m) => m.live(&Value::Link(h)).first().and_then(|(d, _)| f.entry_key(d)).cloned(),
+            Fragment::Map(m) => m.live(&Value::Link(h)).first().and_then(|(id, _)| id.key()).cloned(),
             _ => None,
         };
         // (`at` copies the position: the root is read in place)

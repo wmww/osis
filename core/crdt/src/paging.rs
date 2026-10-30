@@ -3,7 +3,7 @@
 //! by dot, and rewrites only the pages a join touched. Element records are independent per dot
 //! and struct fields per field (§4.1), so the join of the pages is the state.
 
-use crate::fragment::{Bag, Fragment, Map, Meta, Set, Struct};
+use crate::fragment::{Bag, Eid, Fragment, Map, Meta, Set, Struct};
 use crate::seq::Seq;
 use crate::state::MemberRef;
 use crate::stamp::{Dot, Stamp};
@@ -15,6 +15,13 @@ fn range<'a, T>(m: &'a BTreeMap<Dot, T>, lo: Option<&Dot>, hi: Option<&Dot>) -> 
     let lo = lo.map_or(Bound::Unbounded, Bound::Included);
     let hi = hi.map_or(Bound::Unbounded, Bound::Excluded);
     m.range::<Dot, _>((lo, hi))
+}
+
+/// A map's records of the dots in `[lo, hi)`.
+fn map_range<'a, T>(m: &'a BTreeMap<Eid, T>, lo: Option<&Dot>, hi: Option<&Dot>) -> std::collections::btree_map::Range<'a, Eid, T> {
+    let lo = lo.map_or(Bound::Unbounded, |d| Bound::Included(Eid::erased(d.clone())));
+    let hi = hi.map_or(Bound::Unbounded, |d| Bound::Excluded(Eid::erased(d.clone())));
+    m.range((lo, hi))
 }
 
 /// The entries of `m` in `[lo, hi)`; none for `None`.
@@ -38,7 +45,11 @@ impl Fragment {
     /// Dots of the root elements in `[lo, hi)` (unbounded where `None`), ascending.
     pub fn elem_dots(&self, lo: Option<&Dot>, hi: Option<&Dot>) -> Vec<Dot> {
         match self {
-            Fragment::Map(m) => range(&m.entries, lo, hi).map(|(d, _)| d.clone()).collect(),
+            Fragment::Map(m) => {
+                let mut v: Vec<Dot> = map_range(&m.entries, lo, hi).map(|(id, _)| id.dot.clone()).collect();
+                v.dedup();
+                v
+            }
             Fragment::Set(Set { elems, .. }) | Fragment::Bag(Bag { elems, .. }) => range(elems, lo, hi).map(|(d, _)| d.clone()).collect(),
             Fragment::Seq(s) => range(s.elems(), lo, hi).map(|(d, _)| d.clone()).collect(),
             _ => Vec::new(),
@@ -55,7 +66,7 @@ impl Fragment {
     fn elem_part(&self, r: Option<(Option<&Dot>, Option<&Dot>)>, meta: bool) -> Option<Fragment> {
         let m = |x: &Meta| if meta { x.clone() } else { Meta::default() };
         Some(match self {
-            Fragment::Map(x) => Fragment::Map(Map::new(m(&x.meta), sub(&x.entries, r))),
+            Fragment::Map(x) => Fragment::Map(Map::new(m(&x.meta), r.map(|(lo, hi)| map_range(&x.entries, lo, hi).map(|(id, e)| (id.clone(), e.clone())).collect()).unwrap_or_default())),
             Fragment::Set(x) => Fragment::Set(Set { meta: m(&x.meta), elems: sub(&x.elems, r) }),
             Fragment::Bag(x) => Fragment::Bag(Bag { kind: x.kind, meta: m(&x.meta), elems: sub(&x.elems, r) }),
             Fragment::Seq(x) => Fragment::Seq(Seq::new(x.text, m(&x.meta), sub(x.elems(), r))),
@@ -127,7 +138,11 @@ impl Fragment {
         }
         let w = meta.w.is_some();
         Some(match self {
-            Fragment::Map(m) => (w, m.entries.keys().cloned().collect()),
+            Fragment::Map(m) => {
+                let mut v: Vec<Dot> = m.entries.keys().map(|id| id.dot.clone()).collect();
+                v.dedup();
+                (w, v)
+            }
             Fragment::Set(Set { elems, .. }) | Fragment::Bag(Bag { elems, .. }) => (w, elems.keys().cloned().collect()),
             Fragment::Seq(s) => (w, s.elems().iter().flat_map(|(d, e)| [d.clone(), crate::seq_span::nth(d, e.span - 1)]).collect()),
             _ => return None,
@@ -136,12 +151,12 @@ impl Fragment {
 }
 
 /// A step from a fragment to a position inside it, for the node's paged states: a struct field,
-/// an enum payload, or a map entry's content (by its dot).
+/// an enum payload, or a map entry record's content (by its dot and key).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Step {
     Field(u64),
     Case(u64),
-    Entry(Dot),
+    Entry(Eid),
 }
 
 /// A set of paths (a trie of steps): the paged collections of a state.
@@ -190,7 +205,7 @@ impl Fragment {
         match (s, self) {
             (Step::Field(id), Fragment::Struct(x)) => x.fields.get(id),
             (Step::Case(id), Fragment::Enum(x)) => x.payloads.get(id),
-            (Step::Entry(d), Fragment::Map(m)) => m.entries.get(d)?.frag.as_deref(),
+            (Step::Entry(id), Fragment::Map(m)) => m.entries.get(id)?.frag.as_deref(),
             _ => None,
         }
     }
@@ -200,7 +215,7 @@ impl Fragment {
         match (s, self) {
             (Step::Field(id), Fragment::Struct(x)) => x.fields.get_mut(id),
             (Step::Case(id), Fragment::Enum(x)) => x.payloads.get_mut(id),
-            (Step::Entry(d), Fragment::Map(m)) => m.entries.get_mut(d)?.frag.as_deref_mut(),
+            (Step::Entry(id), Fragment::Map(m)) => m.entries.get_mut(id)?.frag.as_deref_mut(),
             _ => None,
         }
     }
@@ -219,31 +234,32 @@ impl Fragment {
         }
     }
 
-    /// The key a map entry carries.
-    pub fn entry_key(&self, d: &Dot) -> Option<&Value> {
+    /// The keys of a map's records of dot `d` holding content.
+    pub fn entry_keys(&self, d: &Dot) -> Vec<&Value> {
         match self {
-            Fragment::Map(m) => m.entries.get(d)?.key.as_ref(),
+            Fragment::Map(m) => m.of_dot(d).filter(|(_, e)| e.frag.is_some()).filter_map(|(id, _)| id.key()).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The creation stamp of map record `id` (§5.6).
+    pub fn entry_created(&self, id: &Eid) -> Option<&Stamp> {
+        match self {
+            Fragment::Map(m) => m.entries.get(id)?.created.as_ref(),
             _ => None,
         }
     }
 
-    /// The creation stamp of entry `d` of a map (§5.6).
-    pub fn entry_created(&self, d: &Dot) -> Option<&Stamp> {
-        match self {
-            Fragment::Map(m) => m.entries.get(d)?.created.as_ref(),
-            _ => None,
-        }
-    }
-
-    /// A fragment holding `inner` at `path` and nothing else; an entry step carries the entry's
-    /// key and creation (so joining it alone restores the entry with them).
+    /// A fragment holding `inner` at `path` (steps with their entry keys, which the steps
+    /// hold too, and creations) and nothing else; an entry step carries the record's creation
+    /// (so joining it alone restores the record with it).
     pub fn wrap(path: &[(Step, Option<Value>, Option<Stamp>)], inner: Fragment) -> Fragment {
         let mut f = inner;
-        for (s, key, created) in path.iter().rev() {
+        for (s, _, created) in path.iter().rev() {
             f = match s {
                 Step::Field(id) => Fragment::Struct(Struct { meta: Meta::default(), fields: BTreeMap::from([(*id, f)]) }),
                 Step::Case(id) => Fragment::Enum(crate::fragment::Enum { meta: Meta::default(), case: None, payloads: BTreeMap::from([(*id, f)]) }),
-                Step::Entry(d) => Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d.clone(), crate::fragment::Entry { reset: None, key: key.clone(), frag: Some(Box::new(f)), created: created.clone() })]))),
+                Step::Entry(id) => Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(id.clone(), crate::fragment::Entry { reset: None, frag: Some(Box::new(f)), created: created.clone() })]))),
             };
         }
         f
@@ -278,11 +294,11 @@ impl Fragment {
                 let entries = m
                     .entries
                     .iter()
-                    .map(|(d, e)| {
-                        let frag = e.frag.as_ref().map(|f| Box::new(below(&Step::Entry(d.clone()), f))).filter(|f| !f.is_empty());
-                        // an entry reduced to nothing keeps no key here: the pages below carry it
-                        let (key, created) = if frag.is_some() { (e.key.clone(), e.created.clone()) } else { (None, None) };
-                        (d.clone(), crate::fragment::Entry { reset: e.reset.clone(), key, frag, created })
+                    .map(|(id, e)| {
+                        let frag = e.frag.as_ref().map(|f| Box::new(below(&Step::Entry(id.clone()), f))).filter(|f| !f.is_empty());
+                        // a record reduced to nothing keeps no creation here: the pages below carry it
+                        let created = if frag.is_some() { e.created.clone() } else { None };
+                        (id.clone(), crate::fragment::Entry { reset: e.reset.clone(), frag, created })
                     })
                     .filter(|(_, e)| e.reset.is_some() || e.frag.is_some())
                     .collect();
@@ -304,7 +320,7 @@ impl Fragment {
             let mut kids: Vec<(Step, &Fragment)> = match f {
                 Fragment::Struct(x) => x.fields.iter().map(|(id, f)| (Step::Field(*id), f)).collect(),
                 Fragment::Enum(x) => x.payloads.iter().map(|(id, f)| (Step::Case(*id), f)).collect(),
-                Fragment::Map(m) => m.entries.iter().filter_map(|(d, e)| Some((Step::Entry(d.clone()), e.frag.as_deref()?))).collect(),
+                Fragment::Map(m) => m.entries.iter().filter_map(|(id, e)| Some((Step::Entry(id.clone()), e.frag.as_deref()?))).collect(),
                 _ => Vec::new(),
             };
             kids.reverse();
@@ -337,7 +353,7 @@ fn touched_walk(d: &Fragment, t: &Paths, path: &mut Vec<Step>, out: &mut PagedTo
         for (s, sub) in &t.next {
             let Step::Entry(e) = s else { return None };
             if let Some(f) = d.step(s) {
-                if matches!(d, Fragment::Map(m) if m.entries.get(e).is_some_and(|x| x.reset.is_some())) {
+                if matches!(d, Fragment::Map(m) if m.of_dot(&e.dot).any(|(_, x)| x.reset.is_some())) {
                     return None;
                 }
                 path.push(s.clone());
@@ -374,9 +390,10 @@ fn touched_walk(d: &Fragment, t: &Paths, path: &mut Vec<Step>, out: &mut PagedTo
         Fragment::Map(m) => {
             out.skeleton |= m.meta.w.is_some();
             let mut v = Vec::new();
-            for (dot, e) in &m.entries {
-                let s = Step::Entry(dot.clone());
-                if t.next.contains_key(&s) && e.reset.is_some() {
+            for (id, e) in &m.entries {
+                let s = Step::Entry(id.clone());
+                // a reset of any record of the dot may prune a paged record (§5.6)
+                if e.reset.is_some() && t.next.keys().any(|x| matches!(x, Step::Entry(y) if y.dot == id.dot)) {
                     return None;
                 }
                 match &e.frag {

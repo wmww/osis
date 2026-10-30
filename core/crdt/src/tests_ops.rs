@@ -230,7 +230,7 @@ fn map_put_lowest_dot_spec_5_6() {
     batch.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Set(Value::Int(9)) }, &view).unwrap();
     let (d, _) = batch.finish().unwrap();
     let Fragment::Map(m) = &d else { panic!("map") };
-    assert_eq!(m.entries.keys().map(|d| d.src.clone()).collect::<Vec<_>>(), vec![a.clone()]);
+    assert_eq!(m.entries.keys().map(|id| id.dot.src.clone()).collect::<Vec<_>>(), vec![a.clone()]);
     st.join(d);
     assert_eq!(st.read(), Some(Value::Map([(Value::Int(0), Value::Int(9))].into_iter().collect())));
     let mut batch = Batch::new(&st, Writer::new(ts(6 << 16), a, 3));
@@ -325,7 +325,7 @@ fn large_values_equal_by_hash_spec_5_5() {
     st.join(create(&mut Writer::new(ts(1 << 16), b.clone(), 1), &view, &m(2, 2)).unwrap());
     assert_eq!(st.read().map(|v| if let Value::Map(m) = v { m.len() } else { 0 }), Some(1));
     let Fragment::Map(mf) = &st else { panic!("map") };
-    let lowest = mf.entries.values().next().and_then(|e| e.key.clone());
+    let lowest = mf.entries.keys().next().and_then(|id| id.key().cloned());
     assert_eq!(blob_of(st.read()), blob_of(lowest.map(|k| Value::Map([(k, Value::Int(0))].into_iter().collect()))));
     let mut st2 = create(&mut Writer::new(ts(1 << 16), b.clone(), 1), &view, &m(2, 2)).unwrap();
     st2.join(create(&mut Writer::new(ts(1 << 16), a.clone(), 1), &view, &m(1, 1)).unwrap());
@@ -402,11 +402,11 @@ proptest! {
             s.join(frag(&c.delta));
             let Fragment::Struct(st) = &s else { continue };
             let Some(Fragment::Map(m)) = st.fields.get(&7) else { continue };
-            let scan = crate::ops::live_entries(&m.entries);
-            let keys: std::collections::BTreeSet<&Value> = m.entries.values().filter_map(|e| e.key.as_ref()).collect();
+            let scan = crate::ops::live_entries(m);
+            let keys: std::collections::BTreeSet<&Value> = m.entries.keys().filter_map(|id| id.key()).collect();
             for k in keys {
-                let want: Vec<&crate::stamp::Dot> = scan.get(k).cloned().unwrap_or_default();
-                prop_assert_eq!(m.live_dots(k), want);
+                let want: Vec<&crate::fragment::Eid> = scan.get(k).cloned().unwrap_or_default();
+                prop_assert_eq!(m.live_ids(k), want);
             }
         }
     }
@@ -542,7 +542,7 @@ fn undo_remove_of_concurrent_key_spec_4_6() {
         let (s1, ud, s2) = commit_and_undo(&view, &s, PathOp { path: vec![], op: Op::Remove(Value::Str("k".into())) });
         assert_eq!(s1.read(), Some(Value::Map(Default::default())));
         let Fragment::Map(m) = &ud else { panic!("map") };
-        assert_eq!(m.entries.values().filter(|e| e.key == Some(Value::Str("k".into()))).count(), 1);
+        assert_eq!(m.entries.keys().filter(|id| id.key() == Some(&Value::Str("k".into()))).count(), 1);
         assert_eq!(s2.read(), Some(both));
     }
 }

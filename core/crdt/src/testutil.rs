@@ -149,7 +149,7 @@ pub fn frag(f: &m::Frag) -> Fragment {
             meta(c),
             entries
                 .iter()
-                .map(|(d, e)| (dot(d), Entry { reset: ostamp(&e.reset), key: e.key.as_ref().map(value), frag: e.frag.as_ref().map(|f| Box::new(frag(f))), created: ostamp(&e.created) }))
+                .map(|((d, k), e)| (crate::fragment::Eid::new(dot(d), k.as_ref().map(value)), Entry { reset: ostamp(&e.reset), frag: e.frag.as_ref().map(|f| Box::new(frag(f))), created: ostamp(&e.created) }))
                 .collect(),
         )),
         m::Frag::Seq { text, c, elems } => Fragment::Seq(Seq::new(

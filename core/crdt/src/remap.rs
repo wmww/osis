@@ -154,7 +154,7 @@ pub(crate) fn walk(v: &mut dyn Visit, f: &Fragment) -> bool {
         Fragment::Bag(Bag { meta: m, elems: e, .. }) | Fragment::Set(Set { meta: m, elems: e }) => meta_v(v, m) || e.iter().any(|(d, x)| rec_v(v, Rec::Elem(d, x), &x.reset, x.frag.as_deref())),
         Fragment::Struct(Struct { meta: m, fields }) => meta_v(v, m) || fields.values().any(|f| walk(v, f)),
         Fragment::Enum(Enum { meta: m, case, payloads }) => meta_v(v, m) || case.as_ref().is_some_and(|c| v.stamp(&c.stamp)) || payloads.values().any(|f| walk(v, f)),
-        Fragment::Map(mp) => meta_v(v, &mp.meta) || mp.entries.iter().any(|(d, e)| rec_v(v, Rec::Entry(d, e), &e.reset, e.frag.as_deref())),
+        Fragment::Map(mp) => meta_v(v, &mp.meta) || mp.entries.iter().any(|(id, e)| rec_v(v, Rec::Entry(&id.dot, e), &e.reset, e.frag.as_deref())),
         Fragment::Seq(s) => {
             meta_v(v, &s.meta)
                 || s.elems().iter().any(|(d, e)| match v.rec(Rec::Seq(d, e)) {
@@ -297,13 +297,13 @@ impl Fragment {
                 meta(&mut mp.meta, f);
                 mp.entries = std::mem::take(&mut mp.entries)
                     .into_iter()
-                    .map(|(d, mut e): (Dot, Entry)| {
+                    .map(|(id, mut e): (crate::fragment::Eid, Entry)| {
                         opt(&mut e.reset, f);
                         opt(&mut e.created, f);
                         if let Some(x) = &mut e.frag {
                             x.map_dots(f);
                         }
-                        (dot(&d, f), e)
+                        (crate::fragment::Eid { dot: dot(&id.dot, f), key: id.key }, e)
                     })
                     .collect();
                 mp.reindex();

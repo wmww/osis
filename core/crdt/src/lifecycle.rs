@@ -46,14 +46,10 @@ impl Fragment {
                 e.payloads.values_mut().for_each(|f| f.strip_values(expired));
             }
             Fragment::Map(m) => {
-                for (d, en) in m.entries.iter_mut() {
-                    // the key is the creation's value; a key repeated by another record is ignored
-                    if exp(d) {
-                        en.key = None;
-                    }
-                    if let Some(f) = &mut en.frag {
-                        f.strip_values(expired);
-                    }
+                // the key is the creation's value, wherever a record of the entry repeats it
+                m.erase_keys(&exp);
+                for f in m.entries.values_mut().filter_map(|en| en.frag.as_mut()) {
+                    f.strip_values(expired);
                 }
             }
             Fragment::Seq(s) => seq::strip_values(s, expired),
@@ -132,7 +128,8 @@ impl Fragment {
                     !f.is_empty()
                 });
             }
-            Fragment::Map(Map { entries, .. }) => entries.retain(|d, en| {
+            Fragment::Map(Map { entries, .. }) => entries.retain(|id, en| {
+                let d = &id.dot;
                 if en.reset.as_ref().is_some_and(|r| pred(r.dot.owner())) {
                     en.reset = None;
                 }
@@ -151,9 +148,6 @@ impl Fragment {
                 // an entry's creation whose own dot stays is kept, though nothing else is left
                 // in it: a join gives it to the entry where another body holds content, and
                 // prunes it otherwise (§5.6); so the result is joined or pruned before use
-                if en.frag.is_none() && en.created.is_none() {
-                    en.key = None;
-                }
                 en.reset.is_some() || en.frag.is_some() || en.created.is_some()
             }),
             Fragment::Seq(s) => seq::remove_dots(s, pred, nested),

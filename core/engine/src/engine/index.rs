@@ -34,7 +34,6 @@ const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/", env!("OSIS_INDEX_R
 pub(super) const METAS: &[u8] = b"node/metas";
 // The derived indexes live in rebuildable store index tables of their own (a node's local
 // records table is not deepened by them).
-const BOX_KEYS: &[u8] = b"node/box keys";
 const BOXES_TO: &[u8] = b"node/boxes to";
 const EPOCH_INTRO: &[u8] = b"node/epoch intro";
 const BOX_WRITTEN: &[u8] = b"node/box written";
@@ -486,7 +485,7 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
             Some(Role::Write) => 2,
             Some(Role::Admin) => 3,
         };
-        out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.grant_overreach.contains(&(*id, ai))) << 3) | (u8::from(m.missing.contains(&ai)) << 4) | (u8::from(core.ix.rotation_unresolved.contains(&(*id, ai))) << 5));
+        out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.grant_overreach.contains(&(*id, ai))) << 3) | (u8::from(m.missing.contains(&ai)) << 4));
     }
     let v = &m.view;
     let mut w = records::Wr(out).u64(v.ts.to_u64()).u8(v.kind.id() as u8).u8(match v.form {
@@ -600,7 +599,6 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
         let mut s: BTreeSet<CommitId> = c.ix.commits.logged().into_iter().collect();
         s.extend(c.ix.rotation_role.logged().into_iter().map(|k| k.0));
         s.extend(c.ix.grant_overreach.logged().into_iter().map(|k| k.0));
-        s.extend(c.ix.rotation_unresolved.logged().into_iter().map(|k| k.0));
         s.into_iter().collect()
     };
     if !ids.is_empty() {
@@ -612,7 +610,6 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
             };
         }
     }
-    put_map(txn, BOX_KEYS, &c.ix.box_keys, all)?;
     put_setmap(txn, BOXES_TO, &c.ix.boxes_to, all)?;
     put_map(txn, EPOCH_INTRO, &c.ix.epoch_intro, all)?;
     put_map(txn, BOX_WRITTEN, &c.ix.box_written, all)?;
@@ -751,9 +748,6 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             if p & 8 != 0 {
                 tx.core.ix.grant_overreach.insert((id, ai));
             }
-            if p & 32 != 0 {
-                tx.core.ix.rotation_unresolved.insert((id, ai));
-            }
         }
         let view = Arc::new(view);
         let header = if view.linked || cfg!(debug_assertions) {
@@ -779,9 +773,6 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         tx.core.index_validity(&id);
     }
     drop(_ms);
-    for (k, v) in scan::<(Tid, Dot)>(tx, BOX_KEYS)? {
-        tx.core.ix.box_keys.insert(k, dec(&v)?);
-    }
     for ((m, x), _) in scan::<(Tid, (Tid, Value))>(tx, BOXES_TO)? {
         tx.core.ix.boxes_to.insert(m, x);
     }

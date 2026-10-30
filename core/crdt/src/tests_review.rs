@@ -83,7 +83,7 @@ fn map_diff_keeps_stored_keys_spec_5_6() {
     let mut w2 = Writer::new(ts(2 << 16), node, 10);
     let d = diff(&mut w2, Some(&s), &OldKeys(0), &Value::Map([(short, Value::Int(7))].into_iter().collect())).unwrap().unwrap();
     let Fragment::Map(m) = &d else { panic!("map") };
-    let keys: Vec<Option<Value>> = m.entries.values().map(|e| e.key.clone()).collect();
+    let keys: Vec<Option<Value>> = m.entries.keys().map(|id| id.key().cloned()).collect();
     assert_eq!(keys, vec![Some(key(2)), Some(key(3))]);
     s.join(d);
     assert_eq!(s.read(), Some(Value::Map([(key(2), Value::Int(7)), (key(3), Value::Int(7))].into_iter().collect())));
@@ -255,7 +255,8 @@ fn same_stamp_copies_converge_spec_4_1() {
     let mk = |v: Value| create(&mut Writer::new(ts(1 << 16), src.clone(), 1), &AnyView, &v).unwrap();
     let m = |k: i64| Value::Map([(Value::Int(k), Value::Int(9))].into_iter().collect());
     for (a, b, want) in [
-        (mk(m(1)), mk(m(2)), Some(m(2))),
+        // a map key is part of the entry's identity (§5.6): two keys, two entries
+        (mk(m(1)), mk(m(2)), Some(Value::Map([(Value::Int(1), Value::Int(9)), (Value::Int(2), Value::Int(9))].into_iter().collect()))),
         (mk(Value::Str("alice".into())), mk(Value::Str("forged".into())), Some(Value::Str("forged".into()))),
     ] {
         let mut x = a.clone();
@@ -293,8 +294,8 @@ fn slots_unmerge_keeps_member_creation_spec_7() {
     let (a, b) = (st(2, 1, 1), st(3, 2, 1));
     let k = Value::Str("k".into());
     let inner = |created: Option<Stamp>| {
-        let e = Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(Fragment::Register(reg(b.clone(), 7)))), created };
-        Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(a.dot.clone(), e)])))
+        let e = Entry { reset: None, frag: Some(Box::new(Fragment::Register(reg(b.clone(), 7)))), created };
+        Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(crate::fragment::Eid::new(a.dot.clone(), Some(k.clone())), e)])))
     };
     let mut full = Fragment::default();
     full.join(Fragment::Slots(Slots { reg: Some(reg(st(1, 3, 1), 5)), members: BTreeMap::from([(Encoding::Map, inner(Some(a.clone())))]) }));
@@ -334,4 +335,110 @@ fn repro_forged_creation_ts_undelete_char() {
     y.join(b);
     y.join(a);
     assert_eq!(x.read(), y.read());
+}
+
+/// A map entry record: its creation stamp (the dot), key, reset and value.
+type Rec = (Stamp, Option<Value>, Option<Stamp>, Option<i64>);
+
+/// Records of map entries `(dot, key)`: a creation (value `v`) or a removal (`reset`).
+fn entry_map(recs: Vec<Rec>) -> Fragment {
+    use crate::fragment::{Eid, Entry, Map};
+    let entries = recs
+        .into_iter()
+        .map(|(d, k, reset, v)| {
+            let frag = v.map(|v| Box::new(Fragment::Register(reg(d.clone(), v))));
+            let created = frag.as_ref().map(|_| d.clone());
+            (Eid::new(d.dot, k), Entry { reset, frag, created })
+        })
+        .collect();
+    Fragment::Map(Map::new(Meta::default(), entries))
+}
+
+/// Every join order of `parts` gives the same state, read as `want`.
+fn all_orders(parts: &[Fragment], want: Option<Value>) {
+    let mut first: Option<Fragment> = None;
+    let n = parts.len();
+    let mut idx: Vec<usize> = (0..n).collect();
+    // Heap's algorithm over the join orders
+    let mut c = vec![0; n];
+    let mut check = |idx: &[usize]| {
+        let mut s = Fragment::default();
+        for i in idx {
+            s.join(parts[*i].clone());
+        }
+        assert_eq!(s.read(), want, "order {idx:?}");
+        match &first {
+            None => first = Some(s),
+            Some(f) => assert_eq!(&s, f, "order {idx:?}"),
+        }
+    };
+    check(&idx);
+    let mut i = 0;
+    while i < n {
+        if c[i] < i {
+            if i % 2 == 0 { idx.swap(0, i) } else { idx.swap(c[i], i) }
+            check(&idx);
+            c[i] += 1;
+            i = 0;
+        } else {
+            c[i] = 0;
+            i += 1;
+        }
+    }
+}
+
+/// §5.6: a map record acts only on the entry of its key. A removal carrying another key than the
+/// entry's leaves it live; one carrying its key removes it, also when it arrives first (the
+/// tombstone keeps the key); a dot created under two keys (an equivocating writer) is two
+/// entries, and a removal of one key leaves the other.
+#[test]
+fn map_removal_acts_on_its_key_spec_5_6() {
+    let (a, b) = (Value::Str("a".into()), Value::Str("b".into()));
+    let map = |kv: &[(&Value, i64)]| Some(Value::Map(kv.iter().map(|(k, v)| ((*k).clone(), Value::Int(*v))).collect()));
+    let c = st(1, 1, 1);
+    let rm = st(2, 2, 1);
+    let created = entry_map(vec![(c.clone(), Some(a.clone()), None, Some(7))]);
+    // another key: nothing removed
+    all_orders(&[created.clone(), entry_map(vec![(c.clone(), Some(b.clone()), Some(rm.clone()), None)])], map(&[(&a, 7)]));
+    // its key: removed, in either order
+    all_orders(&[created.clone(), entry_map(vec![(c.clone(), Some(a.clone()), Some(rm.clone()), None)])], map(&[]));
+    // the tombstone keeps its key
+    let mut t = entry_map(vec![(c.clone(), Some(a.clone()), Some(rm.clone()), None)]);
+    t.join(created.clone());
+    let Fragment::Map(m) = &t else { panic!("map") };
+    assert_eq!(m.entries().map(|(_, r, k, f)| (r.cloned(), k.cloned(), f.is_some())).collect::<Vec<_>>(), vec![(Some(rm.clone()), Some(a.clone()), false)]);
+    // one dot, two keys: two entries; a removal of one leaves the other
+    let other = entry_map(vec![(c.clone(), Some(b.clone()), None, Some(8))]);
+    all_orders(&[created.clone(), other.clone()], map(&[(&a, 7), (&b, 8)]));
+    all_orders(&[created, other, entry_map(vec![(c, Some(a), Some(rm), None)])], map(&[(&b, 8)]));
+}
+
+/// §5.6, §4.7: the key-erased record of a dot (a value-less creation, as a snapshot of an
+/// expiring delta carries it) joins into the dot's keyed records' read, hides them while it
+/// holds the dot's greatest creation alone, and its reset reaches every record of the dot,
+/// as a keyed record's reset reaches it.
+#[test]
+fn map_key_erased_record_spec_5_6() {
+    let k = Value::Str("k".into());
+    let c = st(1, 1, 1);
+    let rm = st(3, 2, 1);
+    let valued = entry_map(vec![(c.clone(), Some(k.clone()), None, Some(7))]);
+    let mut erased = valued.clone();
+    erased.strip(&|_| true);
+    // the valued creation shows the entry; the key-erased copy alone hides it
+    let mut s = erased.clone();
+    assert_eq!(s.read(), None, "hidden");
+    s.join(valued.clone());
+    assert_eq!(s.read(), Some(Value::Map([(k.clone(), Value::Int(7))].into_iter().collect())), "the valued copy shows it");
+    // a keyed removal reaches the key-erased record: nothing of the dot left live or hidden
+    let removal = entry_map(vec![(c.clone(), Some(k.clone()), Some(rm.clone()), None)]);
+    all_orders(&[erased.clone(), valued.clone(), removal.clone()], Some(Value::Map(Default::default())));
+    let mut s = erased.clone();
+    s.join(removal);
+    let Fragment::Map(m) = &s else { panic!("map") };
+    assert!(m.entries().all(|(_, _, _, f)| f.is_none()), "{s:?}");
+    // a key-erased removal reaches the keyed records
+    let mut erm = entry_map(vec![(c.clone(), Some(k.clone()), Some(rm), None)]);
+    erm.strip(&|_| true);
+    all_orders(&[valued, erm], Some(Value::Map(Default::default())));
 }
