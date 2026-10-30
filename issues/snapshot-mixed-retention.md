@@ -1,7 +1,0 @@
-# A snapshot's keep at most can cut a carried write's keep at least
-> Summary: a compaction snapshot takes the longest keep at least and the strictest keep at most of the writes it carries (spec/commits.md §5); where an aspect mixes them (per-commit retention), keep at most wins and a write whose own body compaction dropped loses its keep-at-least promise.
-> Tags: retention, engine
-
-Shape: on one aspect, write w with keep at least D (30 min) and write x with keep at most 0 (per-commit overrides). w's body, w still live, is past its relative keep at least and is dropped as covered by snapshot S (at least D, at most 0). When w dies and S has no live write left, S drops at once (keep at most wins, spec §5), so w's dead value is kept for 0, not D. Also a stand-in chain (a late joiner's snapshot taking the bounds of a held snapshot carrying a write whose header it lacks, or of every applied snapshot) ratchets: the strictest keep at most and longest keep at least of every earlier snapshot in the chain carry on, never loosening.
-
-On main the snapshot took the schema default, so a commit's own keep at least never carried at all; the mixed case is the remainder. Options: a body is dropped as covered only by a snapshot whose keep at most does not undercut the body's keep at least (`drop_covered`), or split snapshot bodies by retention class (more bodies per aspect). No harness op mixes at most and at least on one aspect (order.rs `keep_of`: /t/map mixes only at least with defaults).

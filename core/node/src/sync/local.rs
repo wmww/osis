@@ -121,6 +121,11 @@ impl SyncEngine {
                 left.at(due, c);
                 continue;
             }
+            // `s` would cut the body's keep at least short once its live write dies: judged
+            // again when its deaths change (spec/commits.md §5)
+            if self.engine.undercuts(&s, &c, t, ak)? {
+                continue;
+            }
             match self.engine.covered(&s, &c, t, ak)? {
                 // not established yet: judged again
                 None => {
