@@ -48,12 +48,14 @@ pub struct Hub<B: Backend> {
     sweep_more: bool,
     /// Partial frame bytes over all served connections.
     buffered: usize,
+    /// Relay-only entries handed to connections so far (`relays_delivered`).
+    relays_delivered: u64,
 }
 
 impl<B: Backend> Hub<B> {
     /// `static_key`: this node's transport key (bound by open signatures).
     pub fn new(store: BackendStore<B>, static_key: [u8; 32], rng: Box<dyn CryptoRngCore + Send>) -> Hub<B> {
-        Hub { store, static_key, rng, conns: BTreeMap::new(), sweep_hold: 0, sweep_more: false, buffered: 0 }
+        Hub { store, static_key, rng, conns: BTreeMap::new(), sweep_hold: 0, sweep_more: false, buffered: 0, relays_delivered: 0 }
     }
 
     pub fn store(&self) -> &BackendStore<B> {
@@ -70,6 +72,12 @@ impl<B: Backend> Hub<B> {
 
     pub fn connections(&self) -> usize {
         self.conns.len()
+    }
+
+    /// Relay-only entries handed to connections so far: one per subscriber of the label on
+    /// another connection, whatever the number of connections.
+    pub fn relays_delivered(&self) -> u64 {
+        self.relays_delivered
     }
 
     fn challenge(&mut self) -> [u8; 32] {
@@ -273,9 +281,11 @@ impl<B: Backend> Hub<B> {
                     out.push(HubOutput::Close(id));
                 }
                 ServerOutput::Changed(l) => self.changed(now, l, out),
+                // only to the label's subscribers on other connections, the bytes shared
                 ServerOutput::Relay(r) => {
-                    let others: Vec<ConnId> = self.conns.iter().filter(|(k, c)| **k != id && matches!(c, Conn::Served { .. })).map(|(k, _)| *k).collect();
+                    let others: Vec<ConnId> = self.conns.iter().filter(|(k, c)| **k != id && matches!(c, Conn::Served { c, .. } if c.subscribed(&r.label))).map(|(k, _)| *k).collect();
                     for j in others {
+                        self.relays_delivered += 1;
                         self.serve(now, j, ServerInput::Relay(r.clone()), out);
                     }
                 }

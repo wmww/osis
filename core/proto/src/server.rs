@@ -79,7 +79,8 @@ pub enum ServerInput {
 pub struct Relayed {
     pub label: LabelId,
     pub blob_id: BlobId,
-    pub blob: Vec<u8>,
+    /// Shared by every connection it goes to.
+    pub blob: Arc<[u8]>,
     pub wrap: Wrap,
     pub stamp: Signature,
 }
@@ -278,6 +279,11 @@ impl ServerConnection {
         self.opened.keys()
     }
 
+    /// Whether `label` is subscribed here: only then does a relay-only entry go to it.
+    pub fn subscribed(&self, label: &LabelId) -> bool {
+        self.subs.contains_key(label)
+    }
+
     /// Whether no label is opened on this connection (as `opened`).
     pub fn none_opened(&self) -> bool {
         self.opened.is_empty()
@@ -391,7 +397,7 @@ impl ServerConnection {
             }
             ServerInput::Relay(r) => {
                 // a slow subscriber misses relay-only entries rather than queueing them
-                let ev = Event::Added { blob_id: r.blob_id, blob: Some(r.blob), wrap: r.wrap, stamp: Some(r.stamp) };
+                let ev = Event::Added { blob_id: r.blob_id, blob: Some(r.blob.to_vec()), wrap: r.wrap, stamp: Some(r.stamp) };
                 // an open a new head ended gets none (its held push ends it)
                 if let Some(seq) = self.subs.get(&r.label).copied()
                     && !self.no_room(out, event_size(&ev))
@@ -921,7 +927,7 @@ impl ServerConnection {
             let Some(stamp) = stamp.filter(|_| replaces.is_empty()) else { return Ok(Code::REFUSED) };
             return Ok(match store.relay(label, &blob_id, blob.len(), expiry, now)? {
                 RelayVerdict::Push => {
-                    out.push(ServerOutput::Relay(Relayed { label: *label, blob_id, blob: blob.to_vec(), wrap, stamp }));
+                    out.push(ServerOutput::Relay(Relayed { label: *label, blob_id, blob: blob.into(), wrap, stamp }));
                     Code::OK
                 }
                 RelayVerdict::Seen => Code::OK,

@@ -253,6 +253,28 @@ fn subscriptions_and_relays() {
     assert!(w.take(b).is_empty());
 }
 
+// spec/wire.md §11.2 (relay-only entries go to the label's subscribers), spec/requirements.md
+// (peer input never causes unbounded work): a relay is handed to the subscribed connections only,
+// not to every connection of the node
+#[test]
+fn relay_reaches_subscribers_only() {
+    let mut w = World::new();
+    let h = w.add_hub(Policy::default());
+    let (a, b) = (w.connect(h), w.connect(h));
+    let others: Vec<usize> = (0..20).map(|_| w.connect(h)).collect();
+    let l = Label::new(3);
+    w.setup(a, &l);
+    w.open(a, &l);
+    w.open(b, &l);
+    // opened but not subscribed: no relay either
+    w.open(others[0], &l);
+    w.run(b, Command::Subscribe { labels: vec![l.id] });
+    let ev = w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(relay_blob(&w, 5))] });
+    assert_eq!(statuses(&ev), vec![Code::OK]);
+    assert_eq!(w.hubs[h].relays_delivered(), 1);
+    assert_eq!(w.take(b).len(), 1);
+}
+
 // spec/sync.md §5 (relay-only uploads; security review H1): a reader or removed member holding
 // one stamped relay blob re-uploads it in a loop: the subscriber gets it once; a blob without an
 // expiry, expired, expiring far ahead or over `MAX_RELAY_BLOB` is refused; past the label's relay

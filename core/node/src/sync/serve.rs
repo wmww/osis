@@ -692,7 +692,7 @@ impl SyncEngine {
         // a relay-only entry: delivered here and passed on (the other served sessions, the
         // servers of the label), held by nobody (spec/sync.md §5)
         for r in relays {
-            self.relay_in(super::ephemeral::RelayFrom::Served(conn), r.label, r.blob_id, r.blob, r.wrap, Some(r.stamp), out)?;
+            self.relay_in(super::ephemeral::RelayFrom::Served(conn), r.label, r.blob_id, r.blob.to_vec(), r.wrap, Some(r.stamp), out)?;
         }
         Ok(())
     }
