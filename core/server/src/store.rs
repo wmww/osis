@@ -1291,8 +1291,26 @@ impl<B: Backend> LabelStore for BackendStore<B> {
         Ok(out)
     }
 
-    fn live_ids(&self, label: &LabelId) -> Result<Vec<BlobId>, StoreError> {
-        Ok(self.live_by_id(label, None, usize::MAX)?.into_iter().map(|(b, _)| b).collect())
+    fn live_ids_in(&self, label: &LabelId, lower: &BlobId, upper: Option<&BlobId>) -> Result<Vec<BlobId>, StoreError> {
+        if upper.is_some_and(|u| u <= lower) {
+            return Ok(Vec::new());
+        }
+        let start = key(b'E', &[&label.0, &lower.0]);
+        let end = match upper {
+            Some(u) => Some(key(b'E', &[&label.0, &u.0])),
+            None => osis_store::prefix_end(&key(b'E', &[&label.0])),
+        };
+        let rows = self.backend.scan(&start, end.as_deref(), usize::MAX).map_err(err)?;
+        let mut out = rows.iter().map(|(k, _)| Ok(BlobId(read_arr(k, 17)?))).collect::<Result<Vec<_>, StoreError>>()?;
+        if let Some(e) = self.eph.labels.get(label) {
+            let eph = match upper {
+                Some(u) => e.entries.range(*lower..*u),
+                None => e.entries.range(*lower..),
+            };
+            out.extend(eph.map(|(b, _)| *b));
+            out.sort();
+        }
+        Ok(out)
     }
 
     fn relay(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, now: u64) -> Result<osis_proto::RelayVerdict, StoreError> {

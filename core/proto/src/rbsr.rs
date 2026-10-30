@@ -38,7 +38,8 @@ impl Bound {
     pub fn is_end(&self) -> bool {
         self.0.is_empty()
     }
-    fn padded(&self) -> [u8; 32] {
+    /// The bound right-padded with zeros to an ID.
+    pub fn padded(&self) -> [u8; 32] {
         let mut p = [0u8; 32];
         for (d, s) in p.iter_mut().zip(&self.0) {
             *d = *s;
@@ -119,12 +120,13 @@ fn dense(mismatched: &[Option<bool>]) -> bool {
     fps >= SPLIT && 2 * bad > fps
 }
 
-/// For each range: `Some(mismatched)` for a fingerprint range, `None` otherwise.
-fn mismatches<'a>(own: &[BlobId], ranges: impl IntoIterator<Item = &'a Range>) -> Vec<Option<bool>> {
+/// For each range (with our IDs in it): `Some(mismatched)` for a fingerprint range, `None`
+/// otherwise.
+fn mismatches<'a>(ranges: impl IntoIterator<Item = (&'a Range, &'a [BlobId])>) -> Vec<Option<bool>> {
     ranges
         .into_iter()
-        .map(|r| match &r.mode {
-            Mode::Fingerprint(fp) => Some(fingerprint(slice(own, &r.lower, &r.upper)) != *fp),
+        .map(|(r, mine)| match &r.mode {
+            Mode::Fingerprint(fp) => Some(fingerprint(mine) != *fp),
             _ => None,
         })
         .collect()
@@ -152,11 +154,21 @@ fn minus(a: &[BlobId], b: &[BlobId]) -> Vec<BlobId> {
 /// The responder's answer to one Reconcile message (spec/wire.md §11.3). Mode 2 is never sent
 /// to a responder.
 pub fn respond(own: &[BlobId], ranges: &[Range]) -> Result<Vec<Range>, Error> {
+    let mine: Vec<&[BlobId]> = ranges.iter().map(|r| slice(own, &r.lower, &r.upper)).collect();
+    respond_in(ranges, &mine)
+}
+
+/// `respond` given the responder's IDs inside each range (`mine[i]` for `ranges[i]`, sorted), so
+/// a responder reads only what the asked ranges hold.
+pub fn respond_in(ranges: &[Range], mine: &[impl AsRef<[BlobId]>]) -> Result<Vec<Range>, Error> {
+    if ranges.len() != mine.len() {
+        return Err(Error::Malformed("reconcile ranges and IDs differ"));
+    }
     let mut out = Vec::new();
-    let mism = mismatches(own, ranges);
+    let mism = mismatches(ranges.iter().zip(mine.iter().map(|m| m.as_ref())));
     let dense = dense(&mism);
-    for (r, bad) in ranges.iter().zip(mism) {
-        let mine = slice(own, &r.lower, &r.upper);
+    for ((r, bad), mine) in ranges.iter().zip(mism).zip(mine) {
+        let mine = mine.as_ref();
         match &r.mode {
             Mode::Fingerprint(_) => {
                 if bad == Some(true) {
@@ -241,10 +253,10 @@ impl Reconciler {
                 })
             })
             .collect();
-        let mism = mismatches(own, ranges.iter().copied());
+        let mine: Vec<&[BlobId]> = ranges.iter().map(|r| slice(own, &r.lower, &r.upper)).collect();
+        let mism = mismatches(ranges.iter().copied().zip(mine.iter().copied()));
         let dense = dense(&mism);
-        for (r, bad) in ranges.into_iter().zip(mism) {
-            let mine = slice(own, &r.lower, &r.upper);
+        for ((r, bad), mine) in ranges.into_iter().zip(mism).zip(mine) {
             match &r.mode {
                 Mode::Fingerprint(_) => {
                     if bad == Some(true) {
