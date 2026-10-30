@@ -12,7 +12,7 @@ pub fn tid(b: u8) -> Tid {
 }
 
 pub fn ep(n: u64, nonce: u8) -> Epoch {
-    Epoch::new(n, [nonce; 16]).unwrap()
+    Epoch::new(n, [nonce; 32]).unwrap()
 }
 
 pub fn rng(seed: u64) -> SeededRng {

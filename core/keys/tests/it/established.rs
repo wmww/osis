@@ -15,6 +15,10 @@ use osis_crypto::Epoch;
 use osis_schema::core_types::{Keys, Secrets};
 use std::collections::BTreeSet;
 
+fn cid(b: u8) -> osis_base::CommitId {
+    osis_base::CommitId([b; 32])
+}
+
 fn read() -> BTreeSet<Role> {
     [Role::Read].into_iter().collect()
 }
@@ -52,7 +56,7 @@ impl World {
         r0.record(&mut a1v);
         let mut a2v = ActorEpochs::default();
         ingest(&a, &s0, &Opener::Actor { member: a2, epochs: &a2e }, &mut a2v, None).unwrap();
-        assert!(r0.secrets.applied(&mut a2v, (&r0.keys, &Keys::default())).unwrap());
+        assert!(r0.secrets.applied(&mut a2v, cid(1), (&r0.keys, &Keys::default())).unwrap());
         let e0 = r0.rotated[0].epoch;
         assert_eq!(a2v.read.current(), vec![e0]);
         assert_eq!(a2v.read.provenance(&e0), Some(Provenance::Chain));
@@ -100,7 +104,7 @@ fn r9_reseal_before_rotation_commit() {
     let mut s2 = w.s0.clone();
     reseal.apply(&mut s2);
     let mut a2v = w.a2v.clone();
-    assert!(!reseal.applied(&mut a2v, (&KeysWrite::default(), &w.k0)).unwrap());
+    assert!(!reseal.applied(&mut a2v, cid(3), (&KeysWrite::default(), &w.k0)).unwrap());
     ingest(&w.a, &s2, &Opener::Actor { member: w.a2, epochs: &w.a2e }, &mut a2v, None).unwrap();
     assert!(a2v.read.secret(&e1).is_some());
     assert!(!a2v.read.is_established(&e1));
@@ -129,7 +133,7 @@ fn r9_reseal_before_rotation_commit() {
     assert!(m1v.read.secret(&e1).is_none(), "e2's history box carries e1");
 
     // e1's commit reaches a2: established, and e2 (boxing m1) no longer covers the departure.
-    assert!(r1.secrets.applied(&mut a2v, (&r1.keys, &w.k0)).unwrap());
+    assert!(r1.secrets.applied(&mut a2v, cid(4), (&r1.keys, &w.k0)).unwrap());
     r1.secrets.apply(&mut s3);
     assert_eq!(a2v.read.provenance(&e1), Some(Provenance::Chain));
     let deps = [Departure::member(w.m1, Role::Read)];
@@ -159,8 +163,8 @@ fn reorder_holding_e2_without_e1() {
     reseal.apply(&mut s2);
     r2.secrets.apply(&mut s2);
     let mut a2v = w.a2v.clone();
-    reseal.applied(&mut a2v, (&KeysWrite::default(), &w.k0)).unwrap();
-    r2.secrets.applied(&mut a2v, (&r2.keys, &w.k0)).unwrap();
+    reseal.applied(&mut a2v, cid(3), (&KeysWrite::default(), &w.k0)).unwrap();
+    r2.secrets.applied(&mut a2v, cid(5), (&r2.keys, &w.k0)).unwrap();
     ingest(&w.a, &s2, &Opener::Actor { member: w.a2, epochs: &w.a2e }, &mut a2v, None).unwrap();
     // e1's secret from the history box e2's applied rotation commit wrote
     assert!(a2v.read.secret(&e1).is_some() && a2v.read.secret(&e2).is_some());
@@ -180,7 +184,7 @@ fn reorder_holding_e2_without_e1() {
     assert!(!out.history.contains_key(&history_key(Role::Read, &e2)));
 
     // e1 arrives (with the removal): both established, e2 current.
-    assert!(r1.secrets.applied(&mut a2v, (&r1.keys, &w.k0)).unwrap());
+    assert!(r1.secrets.applied(&mut a2v, cid(4), (&r1.keys, &w.k0)).unwrap());
     assert_eq!(a2v.read.secret(&e1), a1v1.read.secret(&e1));
     assert_eq!(a2v.read.provenance(&e1), Some(Provenance::Chain));
     assert_eq!(a2v.read.provenance(&e2), Some(Provenance::Chain));
@@ -216,7 +220,7 @@ fn snapshot_established_no_reseal() {
     assert!(box_member(&w.a, &v, &s1, &rc, &read(), &mut rng(3)).unwrap().is_some());
     // The rotation commit applied: e0 (keyed by its history box in the snapshot) is established,
     // so e1 is chain-established.
-    assert!(r1.secrets.applied(&mut v, (&r1.keys, &w.k0)).unwrap());
+    assert!(r1.secrets.applied(&mut v, cid(4), (&r1.keys, &w.k0)).unwrap());
     assert_eq!(v.read.provenance(&e1), Some(Provenance::Chain));
     assert!(!v.read.newest_is_snapshot());
     assert_eq!(reseal_needed(&s1, &v, &members, WallMs(0), &|_, _, _| true), vec![(g, read())]);
@@ -225,15 +229,17 @@ fn snapshot_established_no_reseal() {
 
 const TOP: u64 = i64::MAX as u64;
 
-/// A box for a2 at epoch `e` (n of the planter's choosing) under a made-up secret.
-fn planted(w: &World, e: Epoch) -> Secrets {
+/// A box for a2 at an epoch of n `n` (the planter's choosing) under a made-up secret.
+fn planted(w: &World, n: u64) -> (Epoch, Secrets) {
+    let secret = osis_crypto::Secret32::from_bytes([0xee; 32]);
+    let e = Epoch::derive(&w.a, Role::Read, n, &secret).unwrap();
     let mut v = ActorEpochs::default();
-    v.read.set_secret(e, osis_crypto::Secret32::from_bytes([0xee; 32]));
+    v.read.set_secret(e, secret);
     v.read.set_established(e, Provenance::Own);
     let out = box_member(&w.a, &v, &Secrets::default(), &w.rcpt(w.a2), &read(), &mut rng(77)).unwrap().unwrap();
     let mut s = Secrets::default();
     out.apply(&mut s);
-    s
+    (e, s)
 }
 
 // spec/crypto.md §4 (a rotation's n is 1 + the greatest n it supersedes; a pending commit's
@@ -244,29 +250,28 @@ fn planted(w: &World, e: Epoch) -> Secrets {
 fn planted_epochs_never_base_a_rotation() {
     let mut w = World::new();
     let mut v = w.a2v.clone();
-    let top = Epoch::new(TOP, [1; 16]).unwrap();
     let from = osis_keys::Unchecked { author: osis_keys::UNKNOWN_AUTHOR, commit: osis_base::CommitId([9; 32]) };
     // an unopenable box at the top (keyed to someone else): no entry at all
-    let mut s = planted(&w, top);
+    let (top, mut s) = planted(&w, TOP);
     let k = s.boxes.keys().next().unwrap().clone();
     let b = s.boxes.remove(&k).unwrap();
     s.boxes.insert(box_key(w.m1, Role::Read, &top), b);
     ingest(&w.a, &s, &Opener::Actor { member: w.a2, epochs: &w.a2e }, &mut v, Some(from)).unwrap();
     assert!(v.read.get(&top).is_none(), "an unchecked box records no epoch");
-    // an openable one: a reading-only candidate, never a base
-    let s = planted(&w, top);
+    // an openable one: reading-only, never a base
+    let (_, s) = planted(&w, TOP);
     ingest(&w.a, &s, &Opener::Actor { member: w.a2, epochs: &w.a2e }, &mut v, Some(from)).unwrap();
     assert!(v.read.is_reading_only(&top));
     // an applied box naming an epoch establishes nothing
-    let other = Epoch::new(TOP, [2; 16]).unwrap();
+    let other = Epoch::new(TOP, [2; 32]).unwrap();
     v.read.observe(other);
     let r = w.rotate(&v, &w.s0.clone(), &[w.p, w.a2]);
     assert_eq!(r.rotated[0].epoch.n(), w.e0.n() + 1);
     assert_eq!(r.rotated[0].supersedes, [w.e0].into_iter().collect());
-    // the pending commit dropped: its epoch goes with its candidate
+    // the pending commit dropped: its epoch goes with its secret
     assert!(v.drop_reading_from(&from.commit));
     assert!(v.read.get(&top).is_none());
-    assert!(v.read.get(&other).is_some(), "an entry the candidate did not hold stays");
+    assert!(v.read.get(&other).is_some(), "an entry the pending commit did not give stays");
 }
 
 // spec/crypto.md §4 (headroom): an applied rotation commit or a snapshot naming an epoch above
@@ -277,39 +282,39 @@ fn planted_epochs_never_base_a_rotation() {
 fn jumped_epochs_keep_rotation_possible() {
     let mut w = World::new();
     let mut v = w.a2v.clone();
-    let top = Epoch::new(TOP, [1; 16]).unwrap();
-    v.read.set_applied(top, [w.e0]);
-    v.read.set_snapshot(Epoch::new(TOP - 1, [1; 16]).unwrap());
+    let top = Epoch::new(TOP, [1; 32]).unwrap();
+    v.read.set_applied(top, cid(7), [w.e0]);
+    v.read.set_snapshot(Epoch::new(TOP - 1, [1; 32]).unwrap());
     v.establish();
     assert!(!v.read.is_established(&top));
     assert_eq!(v.read.current(), vec![w.e0]);
     let r = w.rotate(&v, &w.s0.clone(), &[w.p, w.a2]);
     assert_eq!(r.rotated[0].epoch.n(), w.e0.n() + 1);
     // within the headroom: established, and the chain goes on above it
-    let free = Epoch::new(osis_keys::MAX_FREE_N, [1; 16]).unwrap();
-    v.read.set_applied(free, [w.e0]);
+    let free = Epoch::new(osis_keys::MAX_FREE_N, [1; 32]).unwrap();
+    v.read.set_applied(free, cid(8), [w.e0]);
     v.establish();
     assert_eq!(v.read.current(), vec![free]);
-    let next = Epoch::new(osis_keys::MAX_FREE_N + 1, [1; 16]).unwrap();
-    let skip = Epoch::new(osis_keys::MAX_FREE_N + 3, [1; 16]).unwrap();
-    v.read.set_applied(next, [free]);
-    v.read.set_applied(skip, [free]);
+    let next = Epoch::new(osis_keys::MAX_FREE_N + 1, [1; 32]).unwrap();
+    let skip = Epoch::new(osis_keys::MAX_FREE_N + 3, [1; 32]).unwrap();
+    v.read.set_applied(next, cid(9), [free]);
+    v.read.set_applied(skip, cid(10), [free]);
     v.establish();
     assert!(v.read.is_established(&next) && !v.read.is_established(&skip));
 }
 
 // spec/crypto.md §4 (a secret learned only from a pending commit is kept for reading): a pending
 // commit's history box at an epoch the node holds checked (forgeable by any ex-holder of it)
-// lists epochs that stay reading-only candidates (bounded), supersede nothing, and leave with
-// the commit.
+// lists epochs that stay reading-only (bounded), supersede nothing, and leave with the commit.
 #[test]
 fn pending_history_box_plants_nothing() {
     let w = World::new();
     let mut v = w.a2v.clone();
     let s0 = v.read.secret(&w.e0).unwrap().clone();
     // (a history box lists only epochs below its own)
-    let top = Epoch::new(w.e0.n() - 1, [0xab; 16]).unwrap();
-    let ct = osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &[(top, osis_crypto::Secret32::from_bytes([0xee; 32]))]).unwrap();
+    let planted = osis_crypto::Secret32::from_bytes([0xee; 32]);
+    let top = Epoch::derive(&w.a, Role::Read, w.e0.n() - 1, &planted).unwrap();
+    let ct = osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &[(top, planted)]).unwrap();
     let mut s = Secrets::default();
     s.history.insert(history_key(Role::Read, &w.e0), ct);
     let from = osis_keys::Unchecked { author: osis_keys::UNKNOWN_AUTHOR, commit: osis_base::CommitId([9; 32]) };
@@ -318,4 +323,27 @@ fn pending_history_box_plants_nothing() {
     assert!(!v.read.get(&w.e0).unwrap().supersedes.contains(&top));
     assert!(v.drop_reading_from(&from.commit));
     assert!(v.read.get(&top).is_none());
+}
+
+// spec/crypto.md §4 (established by an applied valid rotation commit): a holder re-claiming e0
+// in a later valid commit (e0's keyset and a history box of its own) that is then found invalid
+// leaves e0 established by its genuine rotation commit.
+#[test]
+fn reclaim_then_invalidated_keeps_chain() {
+    let w = World::new();
+    let mut v = w.a2v.clone();
+    let s0 = v.read.secret(&w.e0).unwrap().clone();
+    let mut again = osis_keys::SecretsWrite::default();
+    again.history.insert(history_key(Role::Read, &w.e0), osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &[]).unwrap());
+    let ks = KeysWrite { keysets: [(Role::Read, osis_keys::keyset(&w.e0, &s0))].into_iter().collect() };
+    assert!(again.applied(&mut v, cid(2), (&ks, &w.k0)).unwrap());
+    assert_eq!(v.read.get(&w.e0).unwrap().applied.len(), 2);
+    v.unset_applied(&cid(2));
+    v.establish();
+    assert_eq!(v.read.provenance(&w.e0), Some(Provenance::Chain));
+    assert_eq!(v.read.current(), vec![w.e0]);
+    // the genuine one invalidated too: e0 is no longer established by chain
+    v.unset_applied(&cid(1));
+    v.establish();
+    assert!(!v.read.is_established(&w.e0));
 }

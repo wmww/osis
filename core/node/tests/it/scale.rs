@@ -159,7 +159,7 @@ fn roster_removal_cost() {
         e.commit(m).unwrap().unwrap();
         // Person-like members: keysets per role (one KEM key reused; box size does not depend on it).
         let kem = KeyActorKeys::from_seed(&Secret32::from_bytes([9; 32])).kem.public().clone();
-        let ep = Epoch::new(1, [3; 16]).unwrap();
+        let ep = Epoch::new(1, [3; 32]).unwrap();
         let mut members = vec![Recipient { member: me, role: Role::Admin, keys: MemberKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } }];
         for i in 0..n - 1 {
             let mut b = [0u8; 15];

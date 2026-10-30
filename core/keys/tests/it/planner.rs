@@ -179,7 +179,7 @@ fn wrap_epochs() {
     let pe = person(0x20);
     let mut view = ActorEpochs::derived(&pe, &tid(1));
     let r = osis_keys::rotate(&tid(1), &roles_up_to(Role::Admin), &view, &Default::default(), &[], &|_, _| true, &mut rng(1)).unwrap();
-    assert_eq!(r.wrap_epoch(), Some(ep(1, 0x20)));
+    assert_eq!(r.wrap_epoch(), ActorEpochs::derived(&pe, &tid(1)).read.newest());
     r.record(&mut view);
     assert_eq!(wrap_epoch(&view.read), WrapEpoch::Current(r.rotated[0].epoch));
     let w = osis_keys::rotate(&tid(1), &set(&[Role::Write]), &view, &Default::default(), &[], &|_, _| true, &mut rng(2)).unwrap();

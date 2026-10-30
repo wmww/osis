@@ -508,7 +508,7 @@ mod tests {
     // finds the head's epoch (opening, walking) but is not offered for signing.
     #[test]
     fn reading_only_head_secret_never_signs_spec_crypto_4() {
-        let e = Epoch::new(2, [2; 16]).unwrap();
+        let e = Epoch::new(2, [2; 32]).unwrap();
         let s = Secret32::from_bytes([5; 32]);
         let mut a = ActorEpochs::default();
         a.write.set_reading_secret(e, s.clone(), osis_keys::Unchecked { author: Tid::from_bytes([1; 15]), commit: CommitId([1; 32]) });

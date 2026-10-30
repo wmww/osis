@@ -125,9 +125,8 @@ impl Core {
     /// (spec/crypto.md §4). `unchecked`: `None` when `secrets` is the applied valid state; the
     /// source for the boxes of a pending commit, whose secrets are kept for reading only.
     /// Returns whether anything new was learned.
-    /// `alts`: the live entries of history keys holding several (each tried). `published`: the
-    /// actor's `/keys`, against which unchecked candidates are checked.
-    pub(crate) fn ingest_secrets(&mut self, actor: &Tid, secrets: &Secrets, unchecked: Option<Unchecked>, alts: &HistoryAlts, published: Option<&Keys>) -> bool {
+    /// `alts`: the live entries of history keys holding several (each tried).
+    pub(crate) fn ingest_secrets(&mut self, actor: &Tid, secrets: &Secrets, unchecked: Option<Unchecked>, alts: &HistoryAlts) -> bool {
         let before = self.ix.secrets.get(actor).cloned();
         // a bounded number of actors held through reading-only secrets alone
         let reading_only = |e: &ActorEpochs| ROLES.iter().all(|r| e.role(*r).held().next().is_none()) && ROLES.iter().any(|r| !e.role(*r).held_newest_first().is_empty());
@@ -145,9 +144,6 @@ impl Core {
         }
         for (m, e) in &openers {
             let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::Actor { member: *m, epochs: e }, &mut epochs, unchecked);
-        }
-        if let Some(k) = published {
-            osis_keys::check_keysets(&mut epochs, k);
         }
         self.adopt_derived(actor, &mut epochs);
         let held_any = ROLES.iter().any(|r| !epochs.role(*r).held_newest_first().is_empty());
@@ -198,11 +194,11 @@ impl Core {
         }
         let mut learned = false;
         loop {
-            learned |= self.ingest_secrets(actor, &s, None, &alts, None);
+            learned |= self.ingest_secrets(actor, &s, None, &alts);
             let Some(e) = self.ix.secrets.get(actor) else { break };
             let candidates: Vec<Value> = ROLES
                 .iter()
-                .flat_map(|r| e.role(*r).epochs().filter(|(ep, _)| !e.role(*r).reading_secrets(ep).is_empty()).map(|(ep, _)| osis_schema::Codec::to_value(&osis_keys::aspects::history_key(*r, ep))).collect::<Vec<_>>())
+                .flat_map(|r| e.role(*r).epochs().filter(|(_, i)| i.secret.is_some()).map(|(ep, _)| osis_schema::Codec::to_value(&osis_keys::aspects::history_key(*r, ep))).collect::<Vec<_>>())
                 .collect();
             let mut more = false;
             for k in &candidates {
@@ -218,8 +214,8 @@ impl Core {
     /// A thing that got secrets of its own keeps its earlier derived epochs (by history box):
     /// those derived from an established epoch of the owner are established (spec/crypto.md §4,
     /// "derived from an established epoch of the owner"), so the rotation from them establishes
-    /// and labels registered under them can be stepped; a candidate a checked secret of the
-    /// owner derives is checked (no keyset was published for a derived epoch, spec/crypto.md §3).
+    /// and labels registered under them can be stepped. A derived epoch's ID names its secret, so
+    /// only an owner epoch whose secret is held matches.
     pub(crate) fn adopt_derived(&self, actor: &Tid, epochs: &mut ActorEpochs) {
         let Some(CreationRecord::Thing { owner, .. }) = self.created(actor) else { return };
         let Some(o) = self.epochs(owner) else { return };
@@ -227,13 +223,7 @@ impl Core {
         let mut any = false;
         for r in ROLES {
             for (ep, info) in d.role(r).epochs() {
-                if let Some(s) = &info.secret
-                    && epochs.role(r).secret(ep).is_none()
-                    && epochs.role(r).reading_secrets(ep).contains(&s)
-                {
-                    epochs.role_mut(r).set_secret(*ep, s.clone());
-                }
-                if info.established.is_some() && epochs.role(r).get(ep).is_some() && !epochs.role(r).is_established(ep) {
+                if info.established.is_some() && info.secret.is_some() && epochs.role(r).get(ep).is_some() && !epochs.role(r).is_established(ep) {
                     epochs.role_mut(r).set_established(*ep, Provenance::Derived);
                     any = true;
                 }
@@ -490,15 +480,12 @@ pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
                         Value::List(vec![
                             e.to_wire(),
                             Value::uint(i.suite),
-                            Value::List(i.applied.iter().map(|a| Value::List(a.iter().map(Epoch::to_wire).collect())).collect()),
+                            Value::List(i.applied.iter().map(|(c, sup)| Value::List(vec![Value::Bytes(c.0.to_vec()), Value::List(sup.iter().map(Epoch::to_wire).collect())])).collect()),
                             Value::Bool(i.snapshot),
                             Value::List(i.established.iter().map(|p| Value::uint(provenance_code(*p))).collect()),
                             Value::List(i.supersedes.iter().map(Epoch::to_wire).collect()),
                             Value::List(i.secret.iter().map(|s| Value::Bytes(s.expose().to_vec())).collect()),
-                            Value::List(i.reading.iter().map(|(s, u)| Value::List(vec![Value::Bytes(s.expose().to_vec()), Value::Bytes(u.author.as_bytes().to_vec()), Value::Bytes(u.commit.0.to_vec())])).collect()),
-                            Value::List(i.unverified.iter().map(|s| Value::Bytes(s.expose().to_vec())).collect()),
-                            Value::List(i.keyset.iter().map(osis_schema::Codec::to_value).collect()),
-                            Value::List(i.history.iter().map(|h| Value::Bytes(h.to_vec())).collect()),
+                            Value::List(i.reading.iter().map(|u| Value::List(vec![Value::Bytes(u.author.as_bytes().to_vec()), Value::Bytes(u.commit.0.to_vec())])).collect()),
                         ])
                     })
                     .collect(),
@@ -578,13 +565,16 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
         let Value::List(items) = items else { return Err(bad()) };
         for it in items {
             let Value::List(f) = it else { return Err(bad()) };
-            let [e, Value::Int(suite), Value::List(applied), Value::Bool(snapshot), Value::List(est), Value::List(sup), Value::List(sec), Value::List(reading), Value::List(unverified), Value::List(keyset), Value::List(history)] = f.as_slice() else { return Err(bad()) };
+            let [e, Value::Int(suite), Value::List(applied), Value::Bool(snapshot), Value::List(est), Value::List(sup), Value::List(sec), Value::List(reading)] = f.as_slice() else { return Err(bad()) };
             let e = Epoch::from_wire(e).map_err(|_| bad())?;
             let info = a.role_mut(*r).observe(e);
             info.suite = u64::try_from(*suite).map_err(|_| bad())?;
             info.snapshot = *snapshot;
-            if let [Value::List(ap)] = applied.as_slice() {
-                info.applied = Some(ap.iter().map(Epoch::from_wire).collect::<std::result::Result<_, _>>().map_err(|_| bad())?);
+            for ap in applied {
+                let Value::List(ap) = ap else { return Err(bad()) };
+                let [Value::Bytes(c), Value::List(sup)] = ap.as_slice() else { return Err(bad()) };
+                let c = CommitId(c.as_slice().try_into().map_err(|_| bad())?);
+                info.applied.insert(c, sup.iter().map(Epoch::from_wire).collect::<std::result::Result<_, _>>().map_err(|_| bad())?);
             }
             if let [Value::Int(p)] = est.as_slice() {
                 info.established = Some(provenance_of(*p).ok_or_else(bad)?);
@@ -601,19 +591,13 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
             }
             for c in reading {
                 let Value::List(c) = c else { return Err(bad()) };
-                let [s, Value::Bytes(author), Value::Bytes(commit)] = c.as_slice() else { return Err(bad()) };
+                let [Value::Bytes(author), Value::Bytes(commit)] = c.as_slice() else { return Err(bad()) };
                 let author = Tid::from_bytes(author.as_slice().try_into().map_err(|_| bad())?);
                 let commit = osis_base::CommitId(commit.as_slice().try_into().map_err(|_| bad())?);
-                info.reading.push((secret(s)?, Unchecked { author, commit }));
+                info.reading.insert(Unchecked { author, commit });
             }
-            for s in unverified {
-                info.unverified.push(secret(s)?);
-            }
-            if let [Value::Bytes(h)] = history.as_slice() {
-                info.history = Some(h.as_slice().try_into().map_err(|_| bad())?);
-            }
-            if let [ks] = keyset.as_slice() {
-                info.keyset = Some(<osis_schema::core_types::Keyset as osis_schema::Codec>::from_value(ks).map_err(|_| bad())?);
+            if !info.reading.is_empty() && info.secret.is_none() {
+                return Err(bad());
             }
         }
     }
@@ -647,13 +631,14 @@ mod tests {
     #[test]
     fn reading_only_mark_persists() {
         let mut a = ActorEpochs::default();
-        let (e1, e2) = (Epoch::new(1, [1; 16]).unwrap(), Epoch::new(2, [2; 16]).unwrap());
+        let (e1, e2) = (Epoch::new(1, [1; 32]).unwrap(), Epoch::new(2, [2; 32]).unwrap());
         a.read.set_secret(e1, Secret32::from_bytes([1; 32]));
         a.read.set_established(e1, Provenance::Own);
         let from = |n: u8| Unchecked { author: Tid::from_bytes([n; 15]), commit: osis_base::CommitId([n; 32]) };
         a.read.set_reading_secret(e2, Secret32::from_bytes([2; 32]), from(1));
-        a.read.set_reading_secret(e2, Secret32::from_bytes([3; 32]), from(2));
+        a.read.set_reading_secret(e2, Secret32::from_bytes([2; 32]), from(2));
         a.read.set_established(e2, Provenance::Chain);
+        a.read.set_applied(e2, osis_base::CommitId([9; 32]), []);
         let b = decode_epochs(&encode_epochs(&a)).unwrap();
         assert_eq!(b, a);
         assert!(b.read.is_reading_only(&e2) && b.read.secret(&e2).is_none());
@@ -668,7 +653,7 @@ mod tests {
         use osis_schema::Codec;
         let schema = osis_schema::core_schema();
         let view = schema.view("/secrets").unwrap();
-        let k = osis_schema::core_types::HistoryKey { role: Role::Read, epoch: osis_keys::aspects::to_schema(&Epoch::new(1, [1; 16]).unwrap()) };
+        let k = osis_schema::core_types::HistoryKey { role: Role::Read, epoch: osis_keys::aspects::to_schema(&Epoch::new(1, [1; 32]).unwrap()) };
         let mut st = osis_crdt::Fragment::default();
         for (n, b) in [(1u8, 0x11u8), (2, 0x22)] {
             let ts = osis_base::Ts::make(osis_base::WallMs(u64::from(n) * 1000), 0).unwrap();

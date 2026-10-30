@@ -5,7 +5,6 @@
 
 use osis_base::{CommitId, Role, Tid};
 use osis_crypto::{Epoch, Secret32, key_actor_role_secret, thing_role_secret};
-use osis_schema::core_types::Keyset;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Suite 1, the only suite (spec/crypto.md §8).
@@ -63,54 +62,60 @@ pub struct EpochInfo {
     /// Epochs its rotation superseded: from its rotation commit (removed boxes, replaced keyset)
     /// and from its opened history box (everything listed). Counts only once established.
     pub supersedes: BTreeSet<Epoch>,
-    /// Its rotation commit is applied and valid: the epochs that commit supersedes (the chain
-    /// condition of `establish`).
-    pub applied: Option<BTreeSet<Epoch>>,
+    /// The applied valid rotation commits that claim it, each with the epochs it supersedes (the
+    /// chain condition of `establish`): a holder may re-claim an epoch in a later commit, and
+    /// invalidating that one leaves the others.
+    pub applied: BTreeMap<CommitId, BTreeSet<Epoch>>,
     /// A held `/secrets` compaction snapshot keys it.
     pub snapshot: bool,
     /// Established (spec/crypto.md §4): persisted, never inferred from the applied `/secrets`
     /// state. Unestablished epochs are kept for reading only: never current, supersede nothing,
     /// never encrypted under, never put in a history box.
     pub established: Option<Provenance>,
-    /// From a checked source (an applied valid box, a history box opened with such a secret, an
-    /// own rotation): may be encrypted under.
+    /// Its secret: the one it names (spec/crypto.md §4, every source is checked by the nonce
+    /// rule before it gets here).
     pub secret: Option<Secret32>,
-    /// Distinct candidates learned only from unchecked boxes (a pending commit, or a history box
-    /// opened with such a secret) while `secret` is none, each with its source: kept for reading,
-    /// never encrypted under, until an applied valid box carries one (spec/crypto.md §4). One per
-    /// author node and epoch, so a wrong secret planted first does not hide the genuine one;
-    /// readers try each. Bounded per role (`MAX_READING`, `MAX_READING_PER_AUTHOR`); dropped with
-    /// their source commit (`drop_reading_from`).
-    pub reading: Vec<(Secret32, Unchecked)>,
-    /// Distinct candidates from sources that vouch for nothing but the applied state, while
-    /// `secret` is none and no keyset is recorded to check them: an entry of a history box (any
-    /// writer of the key may put one, spec/crypto.md §4) and a label's entry box (spec/sync.md
-    /// §2). Kept for reading, never encrypted under or put in a history box; the one that derives
-    /// the keyset once recorded becomes `secret`, the rest go (`set_keyset`). Bounded by the
-    /// applied state: one per distinct live history entry or opened entry box.
-    pub unverified: Vec<Secret32>,
-    /// The keyset an applied valid commit's `/keys` write (or the `/keys` state) published for
-    /// this epoch, the first recorded: a secret of it must derive its KEM and delete keys
-    /// (spec/crypto.md §3).
-    pub keyset: Option<Keyset>,
-    /// BLAKE3 of the history box its applied valid rotation commit wrote: an entry of the same
-    /// bytes (a grant's copy) lists what the rotator held, checked as that commit is.
-    pub history: Option<[u8; 32]>,
+    /// The pending commits the secret is known from, when known only from such (their boxes, or
+    /// history boxes opened with a secret so known): non-empty, the secret is kept for reading,
+    /// never encrypted under, until an applied valid box or a history box opened with a secret
+    /// not so known carries it (spec/crypto.md §4). Such epochs are bounded per role
+    /// (`MAX_READING`, `MAX_READING_PER_AUTHOR`); dropped with their last source commit
+    /// (`drop_reading_from`).
+    pub reading: BTreeSet<Unchecked>,
 }
 
-/// The source of a reading-only candidate: the unchecked commit and its author node.
+impl Default for EpochInfo {
+    fn default() -> EpochInfo {
+        EpochInfo { suite: SUITE, supersedes: BTreeSet::new(), applied: BTreeMap::new(), snapshot: false, established: None, secret: None, reading: BTreeSet::new() }
+    }
+}
+
+impl EpochInfo {
+    /// Its secret is known only from pending commits.
+    pub fn is_reading_only(&self) -> bool {
+        self.secret.is_some() && !self.reading.is_empty()
+    }
+
+    /// Its secret when it may be encrypted under (not reading-only).
+    pub fn checked(&self) -> Option<&Secret32> {
+        self.secret.as_ref().filter(|_| self.reading.is_empty())
+    }
+}
+
+/// The source of a reading-only secret: the unchecked commit and its author node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Unchecked {
     pub author: Tid,
     pub commit: CommitId,
 }
 
-/// The author recorded for a candidate whose commit's author has no chain the node knows
-/// (throwaway identities share one budget).
+/// The author recorded for a reading-only secret whose commit's author has no chain the node
+/// knows (throwaway identities share one budget).
 pub const UNKNOWN_AUTHOR: Tid = Tid::from_bytes([0; 15]);
 
-/// Most reading-only candidates per role of one actor, and per author node (local policy: a
-/// planted candidate costs a KEM or DH per open, claim and inbox blob).
+/// Most epochs held through reading-only secrets per role of one actor, and per author node
+/// (local policy: each costs a KEM or DH per open, claim and inbox blob, since wraps name no
+/// epoch).
 pub const MAX_READING: usize = 256;
 pub const MAX_READING_PER_AUTHOR: usize = 64;
 
@@ -118,30 +123,6 @@ pub const MAX_READING_PER_AUTHOR: usize = 64;
 /// epoch at n-1 or above (spec/crypto.md §4): leaves 2^62 rotations before n+1 overflows the
 /// int range, far above any genuine first n (derived from an owner's).
 pub const MAX_FREE_N: u64 = 1 << 62;
-
-impl EpochInfo {
-    /// The checked secret, else every reading-only candidate.
-    fn readable(&self) -> Vec<&Secret32> {
-        match &self.secret {
-            Some(s) => vec![s],
-            None => self.reading.iter().map(|(s, _)| s).chain(&self.unverified).collect(),
-        }
-    }
-
-    /// Whether `s` derives the recorded keyset of `e`; `None` when none is recorded.
-    pub fn derives(&self, e: &Epoch, s: &Secret32) -> Option<bool> {
-        self.keyset.as_ref().map(|ks| {
-            let k = crate::aspects::keyset(e, s);
-            k.kem_key == ks.kem_key && k.delete_key == ks.delete_key
-        })
-    }
-}
-
-impl Default for EpochInfo {
-    fn default() -> EpochInfo {
-        EpochInfo { suite: SUITE, supersedes: BTreeSet::new(), applied: None, snapshot: false, established: None, secret: None, reading: Vec::new(), unverified: Vec::new(), keyset: None, history: None }
-    }
-}
 
 /// The epochs of one role of one actor.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -161,112 +142,59 @@ impl RoleEpochs {
         info.supersedes.extend(supersedes.into_iter().filter(|s| s.n() < e.n()));
     }
 
-    /// Sets `e`'s secret from a checked source (an applied valid box, a history box opened with
-    /// such a secret, an own rotation); drops the reading-only candidates.
+    /// Sets `e`'s secret, known from a source that is no pending commit (an applied valid box, a
+    /// history box opened with such a secret, an entry box, an own rotation, derivation): it may
+    /// be encrypted under once `e` is established.
     pub fn set_secret(&mut self, e: Epoch, secret: Secret32) {
         let info = self.observe(e);
         info.secret = Some(secret);
         info.reading.clear();
-        info.unverified.clear();
     }
 
-    /// Sets `e`'s secret from an applied valid box: refused when it fails `e`'s recorded keyset
-    /// (a box writer may lie, e.g. an invite holder's grant); else set when none is held.
-    pub fn set_box_secret(&mut self, e: Epoch, secret: Secret32) {
-        let info = self.observe(e);
-        if info.secret.is_none() && info.derives(&e, &secret) != Some(false) {
-            self.set_secret(e, secret);
-        }
-    }
-
-    /// Learns `e`'s secret from a source that vouches for nothing but the applied state (an
-    /// entry of a history box opened with a checked secret, a label's entry box; spec/crypto.md
-    /// §4): checked against `e`'s recorded keyset when there is one (a match sets it, a mismatch
-    /// is dropped), else kept as an unverified reading-only candidate while no secret is held.
-    pub fn learn_unverified(&mut self, e: Epoch, secret: Secret32) {
-        let info = self.observe(e);
-        if info.secret.is_some() {
-            return;
-        }
-        match info.derives(&e, &secret) {
-            Some(true) => self.set_secret(e, secret),
-            Some(false) => self.drop_bare(&e),
-            None => {
-                if !info.unverified.contains(&secret) {
-                    info.unverified.push(secret);
-                }
-            }
-        }
-    }
-
-    /// Records the keyset published for `e` (the first one; spec/crypto.md §3) and checks what
-    /// is held against it: the unverified candidate that derives it becomes the secret, the
-    /// candidates that do not go, and a held secret that does not is dropped unless set
-    /// directly (`Provenance::sticky`). Returns (anything changed, a held secret dropped: the
-    /// caller reopens the boxes, which may carry the genuine one).
-    pub fn set_keyset(&mut self, e: Epoch, ks: &Keyset) -> (bool, bool) {
-        let info = self.observe(e);
-        if info.keyset.is_some() {
-            return (false, false);
-        }
-        info.keyset = Some(ks.clone());
-        let mut dropped = false;
-        if let Some(s) = &info.secret
-            && !info.established.is_some_and(Provenance::sticky)
-            && info.derives(&e, s) == Some(false)
-        {
-            info.secret = None;
-            dropped = true;
-        }
-        if info.secret.is_none()
-            && let Some(s) = info.unverified.iter().find(|s| info.derives(&e, s) == Some(true)).cloned()
-        {
-            self.set_secret(e, s);
-            return (true, dropped);
-        }
-        let keep = |s: &Secret32| info.derives(&e, s) != Some(false);
-        let reading: Vec<(Secret32, Unchecked)> = info.reading.iter().filter(|(s, _)| keep(s)).cloned().collect();
-        let unverified: Vec<Secret32> = info.unverified.iter().filter(|s| keep(s)).cloned().collect();
-        info.reading = reading;
-        info.unverified = unverified;
-        (true, dropped)
-    }
-
-    /// Records a secret learned only from an unchecked box (spec/crypto.md §4): one more
-    /// reading-only candidate when `e` holds no checked secret, `from`'s author has none for `e`
-    /// yet (authors whose chain the node does not know share `UNKNOWN_AUTHOR`, one budget, any
-    /// number per epoch), and neither cap is reached.
+    /// Records a secret known only from pending commit `from` (spec/crypto.md §4): reading-only.
+    /// A new such epoch is refused once the role holds `MAX_READING` of them or `from`'s author
+    /// `MAX_READING_PER_AUTHOR` (authors whose chain the node does not know share
+    /// `UNKNOWN_AUTHOR`, one budget).
     pub fn set_reading_secret(&mut self, e: Epoch, secret: Secret32, from: Unchecked) {
-        let known = from.author != UNKNOWN_AUTHOR;
-        if self.map.get(&e).is_some_and(|i| i.secret.is_some() || i.reading.iter().any(|(s, u)| *s == secret || (known && u.author == from.author))) {
-            return;
+        match self.map.get_mut(&e) {
+            Some(i) if i.checked().is_some() => return,
+            Some(i) if i.secret.is_some() => {
+                i.reading.insert(from);
+                return;
+            }
+            _ => {}
         }
-        let all = self.map.values().flat_map(|i| i.reading.iter());
-        let (total, mine) = all.fold((0, 0), |(t, m), (_, u)| (t + 1, m + usize::from(u.author == from.author)));
+        let reading = self.map.values().filter(|i| i.is_reading_only());
+        let (total, mine) = reading.fold((0, 0), |(t, m), i| (t + 1, m + usize::from(i.reading.iter().any(|u| u.author == from.author))));
         if total >= MAX_READING || mine >= MAX_READING_PER_AUTHOR {
             return;
         }
-        self.observe(e).reading.push((secret, from));
+        let info = self.observe(e);
+        info.secret = Some(secret);
+        info.reading.insert(from);
     }
 
-    /// Drops the reading-only candidates `commit` gave (it applied, or was dropped as bad
-    /// input). Returns whether any went.
+    /// Drops `commit` as a source of reading-only secrets (it applied, or was dropped as bad
+    /// input); a secret it was the last source of goes. Returns whether any source went.
     pub fn drop_reading_from(&mut self, commit: &CommitId) -> bool {
-        let mut lost = Vec::new();
+        let mut touched = Vec::new();
         for (e, i) in self.map.iter_mut() {
             let n = i.reading.len();
-            i.reading.retain(|(_, u)| u.commit != *commit);
+            i.reading.retain(|u| u.commit != *commit);
             if i.reading.len() != n {
-                lost.push(*e);
+                if i.reading.is_empty() {
+                    i.secret = None;
+                }
+                touched.push(*e);
             }
         }
-        for e in &lost {
+        for e in &touched {
             self.drop_bare(e);
         }
-        !lost.is_empty()
+        !touched.is_empty()
     }
 
-    /// Drops `e`'s entry if it holds nothing (known only from reading-only candidates just
+    /// Drops `e`'s entry if it holds nothing (known only from a reading-only secret just
     /// dropped): nothing from an unchecked source outlives it.
     fn drop_bare(&mut self, e: &Epoch) {
         if self.map.get(e).is_some_and(|i| *i == EpochInfo::default()) {
@@ -274,28 +202,14 @@ impl RoleEpochs {
         }
     }
 
-    /// Drops the reading-only candidates of `e` that `keep` refuses (a published keyset of `e`
-    /// they do not derive). Returns whether any went.
-    pub fn retain_reading(&mut self, e: &Epoch, keep: impl Fn(&Secret32) -> bool) -> bool {
-        let Some(i) = self.map.get_mut(e) else { return false };
-        let n = i.reading.len();
-        i.reading.retain(|(s, _)| keep(s));
-        let changed = i.reading.len() != n;
-        if changed {
-            self.drop_bare(e);
-        }
-        changed
+    /// The pending commits `e`'s reading-only secret is known from (empty when it is not one).
+    pub fn reading_sources(&self, e: &Epoch) -> BTreeSet<Unchecked> {
+        self.map.get(e).map(|i| i.reading.clone()).unwrap_or_default()
     }
 
-    /// The source of `e`'s reading-only candidate `secret`.
-    pub fn reading_source(&self, e: &Epoch, secret: &Secret32) -> Option<Unchecked> {
-        self.map.get(e)?.reading.iter().find(|(s, _)| s == secret).map(|(_, u)| *u)
-    }
-
-    /// Whether `e`'s secrets are held only for reading (`set_reading_secret`,
-    /// `learn_unverified`).
+    /// Whether `e`'s secret is held only for reading (`set_reading_secret`).
     pub fn is_reading_only(&self, e: &Epoch) -> bool {
-        self.map.get(e).is_some_and(|i| i.secret.is_none() && !(i.reading.is_empty() && i.unverified.is_empty()))
+        self.map.get(e).is_some_and(EpochInfo::is_reading_only)
     }
 
     /// Sets `e`'s provenance directly (`Own`, `Fixed`, `Derived`; `Chain` and `Snapshot` set
@@ -304,38 +218,23 @@ impl RoleEpochs {
         self.observe(e).established = Some(p);
     }
 
-    /// Records that `e`'s rotation commit is applied and valid, superseding `supersedes`
-    /// (`SecretsWrite::rotations`). Call `establish` after.
-    pub fn set_applied(&mut self, e: Epoch, supersedes: impl IntoIterator<Item = Epoch>) {
+    /// Records that rotation commit `commit`, applied and valid, claims `e`, superseding
+    /// `supersedes` (`SecretsWrite::rotations`). Call `establish` after. Returns whether it is
+    /// new.
+    pub fn set_applied(&mut self, e: Epoch, commit: CommitId, supersedes: impl IntoIterator<Item = Epoch>) -> bool {
         let sup: BTreeSet<Epoch> = supersedes.into_iter().filter(|s| s.n() < e.n()).collect();
         let info = self.observe(e);
         info.supersedes.extend(sup.iter().copied());
-        info.applied.get_or_insert_with(BTreeSet::new).extend(sup);
+        let prev = info.applied.insert(commit, sup.clone());
+        prev.is_none_or(|p| p != sup)
     }
 
-    /// `e`'s rotation commit is no longer applied (found invalid). Call `establish` after.
-    pub fn unset_applied(&mut self, e: &Epoch) {
-        if let Some(i) = self.map.get_mut(e) {
-            i.applied = None;
-            i.history = None;
+    /// Rotation commit `commit` is no longer applied (found invalid): the epochs it claimed keep
+    /// their other claimants. Call `establish` after.
+    pub fn unset_applied(&mut self, commit: &CommitId) {
+        for i in self.map.values_mut() {
+            i.applied.remove(commit);
         }
-    }
-
-    /// Records the history box `e`'s applied valid rotation commit wrote (`EpochInfo::history`),
-    /// the first one: a later commit re-publishing `e`'s keyset with a history box of its own (a
-    /// writer holding `e`) does not replace it. Returns whether it is new.
-    pub fn set_history(&mut self, e: Epoch, ct: &[u8]) -> bool {
-        let info = self.observe(e);
-        if info.history.is_some() {
-            return false;
-        }
-        info.history = Some(osis_base::hash::hash(ct));
-        true
-    }
-
-    /// Whether `ct` is the history box `e`'s applied valid rotation commit wrote.
-    pub fn is_rotation_history(&self, e: &Epoch, ct: &[u8]) -> bool {
-        self.map.get(e).and_then(|i| i.history).is_some_and(|h| h == osis_base::hash::hash(ct))
     }
 
     /// Records that a held `/secrets` compaction snapshot keys `e`. Call `establish` after.
@@ -360,7 +259,7 @@ impl RoleEpochs {
                 .iter()
                 .filter(|(_, i)| !matches!(i.established, Some(p) if p.sticky() || p == Provenance::Chain))
                 .filter_map(|(e, i)| {
-                    let chain = i.applied.as_ref().is_some_and(|sup| sup.iter().all(|s| self.is_established(s)));
+                    let chain = i.applied.values().any(|sup| sup.iter().all(|s| self.is_established(s)));
                     let p = if chain {
                         Provenance::Chain
                     } else if i.snapshot && i.established.is_none() {
@@ -406,13 +305,13 @@ impl RoleEpochs {
 
     /// `e`'s secret when it may be encrypted under (not reading-only).
     pub fn secret(&self, e: &Epoch) -> Option<&Secret32> {
-        self.map.get(e).and_then(|i| i.secret.as_ref())
+        self.map.get(e).and_then(EpochInfo::checked)
     }
 
-    /// `e`'s secrets for reading: the checked one, else every reading-only candidate (opening a
-    /// label, unwrapping, opening history boxes).
-    pub fn reading_secrets(&self, e: &Epoch) -> Vec<&Secret32> {
-        self.map.get(e).map(EpochInfo::readable).unwrap_or_default()
+    /// `e`'s secret for reading, reading-only included (opening a label, unwrapping, opening
+    /// history boxes).
+    pub fn reading_secret(&self, e: &Epoch) -> Option<&Secret32> {
+        self.map.get(e).and_then(|i| i.secret.as_ref())
     }
 
     /// Every known epoch, ascending.
@@ -422,7 +321,7 @@ impl RoleEpochs {
 
     /// Every held secret that may be encrypted under (not reading-only), ascending by epoch.
     pub fn held(&self) -> impl Iterator<Item = (Epoch, &Secret32)> {
-        self.map.iter().filter_map(|(e, i)| i.secret.as_ref().map(|s| (*e, s)))
+        self.map.iter().filter_map(|(e, i)| i.checked().map(|s| (*e, s)))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -474,10 +373,10 @@ impl RoleEpochs {
         self.held().filter(|(e, _)| self.is_established(e))
     }
 
-    /// Held secrets, newest first (a reader tries them in this order, spec/crypto.md §5).
-    /// Reading-only candidates included, each (one epoch may appear several times).
+    /// Held secrets, newest first (a reader tries them in this order, spec/crypto.md §5),
+    /// reading-only ones included.
     pub fn held_newest_first(&self) -> Vec<(Epoch, &Secret32)> {
-        let mut v: Vec<(Epoch, &Secret32)> = self.map.iter().flat_map(|(e, i)| i.readable().into_iter().map(|s| (*e, s))).collect();
+        let mut v: Vec<(Epoch, &Secret32)> = self.map.iter().filter_map(|(e, i)| i.secret.as_ref().map(|s| (*e, s))).collect();
         // newest first: greater n, then lower nonce (`is_newer`)
         v.sort_by_key(|(e, _)| (std::cmp::Reverse(e.n()), *e.nonce()));
         v
@@ -520,21 +419,37 @@ impl ActorEpochs {
         a
     }
 
-    /// A plain thing's derived role secrets `kdf("thing <role>", owner's secret, tid)`, at the
-    /// owner's epochs, forks included (spec/crypto.md §3); established (`Derived`) where the
-    /// owner's is. Epochs whose owner secret is not held are known without a secret.
+    /// A plain thing's derived role secrets `kdf("thing <role>", owner's secret, tid)`, one per
+    /// epoch of the owner, forks included, each at the epoch with the owner's n that the nonce
+    /// rule gives it (spec/crypto.md §3); established (`Derived`) where the owner's is. An owner
+    /// epoch whose secret is not held stays known under the owner's epoch, a placeholder no
+    /// secret names, so that what it supersedes stays superseded.
     pub fn derived(owner: &ActorEpochs, tid: &Tid) -> ActorEpochs {
-        let mut a = owner.clone();
+        let mut a = ActorEpochs::default();
         for r in ROLES {
-            for info in a.role_mut(r).map.values_mut() {
-                info.secret = info.secret.as_ref().map(|s| thing_role_secret(s, r, tid));
-                info.reading = info.reading.iter().map(|(s, u)| (thing_role_secret(s, r, tid), *u)).collect();
-                info.unverified = info.unverified.iter().map(|s| thing_role_secret(s, r, tid)).collect();
-                info.keyset = None;
-                info.history = None;
-                info.established = info.established.map(|_| Provenance::Derived);
-                info.applied = None;
-                info.snapshot = false;
+            let o = owner.role(r);
+            let ids: BTreeMap<Epoch, (Epoch, Option<Secret32>)> = o
+                .map
+                .iter()
+                .map(|(e, i)| {
+                    let ds = i.secret.as_ref().map(|s| thing_role_secret(s, r, tid));
+                    let de = ds.as_ref().and_then(|s| Epoch::derive(tid, r, e.n(), s).ok()).unwrap_or(*e);
+                    (*e, (de, ds))
+                })
+                .collect();
+            let id = |e: &Epoch| ids.get(e).map_or(*e, |x| x.0);
+            for (e, i) in &o.map {
+                let Some((de, ds)) = ids.get(e) else { continue };
+                let info = EpochInfo {
+                    suite: i.suite,
+                    supersedes: i.supersedes.iter().map(id).collect(),
+                    applied: BTreeMap::new(),
+                    snapshot: false,
+                    established: i.established.map(|_| Provenance::Derived),
+                    secret: ds.clone(),
+                    reading: i.reading.clone(),
+                };
+                a.role_mut(r).map.insert(*de, info);
             }
         }
         a
@@ -547,6 +462,13 @@ impl ActorEpochs {
             changed |= self.role_mut(r).establish();
         }
         changed
+    }
+
+    /// `RoleEpochs::unset_applied` for every role.
+    pub fn unset_applied(&mut self, commit: &CommitId) {
+        for r in ROLES {
+            self.role_mut(r).unset_applied(commit);
+        }
     }
 
     /// `RoleEpochs::drop_reading_from` for every role.
@@ -564,7 +486,11 @@ mod tests {
     use super::*;
 
     fn ep(n: u64, nonce: u8) -> Epoch {
-        Epoch::new(n, [nonce; 16]).unwrap()
+        Epoch::new(n, [nonce; 32]).unwrap()
+    }
+
+    fn cid(b: u8) -> CommitId {
+        CommitId([b; 32])
     }
 
     // spec/crypto.md §4: current = not superseded by a held rotation; newest = greatest n, ties by
@@ -592,11 +518,16 @@ mod tests {
         // current.
         r.rotation(ep(4, 1), [ep(3, 9), ep(2, 3)]);
         assert_eq!(r.current(), vec![ep(2, 3), ep(3, 9)]);
-        r.set_applied(ep(4, 1), [ep(3, 9), ep(2, 3)]);
+        r.set_applied(ep(4, 1), cid(1), [ep(3, 9), ep(2, 3)]);
         assert!(r.establish());
         assert_eq!(r.current(), vec![ep(4, 1)]);
         assert_eq!(r.provenance(&ep(4, 1)), Some(Provenance::Chain));
-        r.unset_applied(&ep(4, 1));
+        // a re-claim of e4 by another commit, then invalidated, leaves e4's rotation applied
+        r.set_applied(ep(4, 1), cid(2), [ep(3, 9)]);
+        r.unset_applied(&cid(2));
+        assert!(!r.establish());
+        assert_eq!(r.provenance(&ep(4, 1)), Some(Provenance::Chain));
+        r.unset_applied(&cid(1));
         assert!(r.establish());
         assert_eq!(r.current(), vec![ep(2, 3), ep(3, 9)]);
         let order: Vec<Epoch> = r.held_newest_first().into_iter().map(|x| x.0).collect();
@@ -611,16 +542,16 @@ mod tests {
         let mut r = RoleEpochs::default();
         r.set_established(ep(1, 0), Provenance::Own);
         // e3 then e2 applied (reorder): e3 waits for e2.
-        r.set_applied(ep(3, 0), [ep(2, 0)]);
+        r.set_applied(ep(3, 0), cid(3), [ep(2, 0)]);
         assert!(!r.establish());
         assert_eq!(r.current(), vec![ep(1, 0)]);
-        r.set_applied(ep(2, 0), [ep(1, 0)]);
+        r.set_applied(ep(2, 0), cid(2), [ep(1, 0)]);
         assert!(r.establish());
         assert_eq!(r.current(), vec![ep(3, 0)]);
         assert_eq!(r.provenance(&ep(2, 0)), Some(Provenance::Chain));
         // A chain whose base is unknown here: established only once a snapshot keys the base.
         let mut s = RoleEpochs::default();
-        s.set_applied(ep(5, 0), [ep(4, 0)]);
+        s.set_applied(ep(5, 0), cid(5), [ep(4, 0)]);
         s.establish();
         assert!(s.current().is_empty());
         s.set_snapshot(ep(4, 0));
@@ -633,12 +564,14 @@ mod tests {
         s.establish();
         assert!(s.newest_is_snapshot());
         // A snapshot-keyed epoch whose commit then applies is chain-established.
-        s.set_applied(ep(6, 0), [ep(5, 0)]);
+        s.set_applied(ep(6, 0), cid(6), [ep(5, 0)]);
         s.establish();
         assert_eq!(s.provenance(&ep(6, 0)), Some(Provenance::Chain));
     }
 
-    // spec/crypto.md §3: derived secrets take the owner's epochs; a key actor's are fixed.
+    // spec/crypto.md §3: derived secrets take the owner's n at the epochs the nonce rule names;
+    // a key actor's are fixed; an owner epoch without a secret stays a placeholder, so what it
+    // supersedes stays superseded.
     #[test]
     fn derived_and_key_actor() {
         let seed = Secret32::from_bytes([7; 32]);
@@ -647,19 +580,45 @@ mod tests {
         let t = Tid::from_bytes([3; 15]);
         let d = ActorEpochs::derived(&k, &t);
         let want = thing_role_secret(&key_actor_role_secret(&seed, Role::Write), Role::Write, &t);
-        assert_eq!(d.write.secret(&Epoch::ZERO), Some(&want));
+        let dz = Epoch::derive(&t, Role::Write, 0, &want).unwrap();
+        assert_eq!(d.write.current(), vec![dz]);
+        assert_eq!(d.write.secret(&dz), Some(&want));
         let mut owner = ActorEpochs::default();
         owner.read.set_secret(ep(1, 1), Secret32::from_bytes([1; 32]));
         owner.read.set_secret(ep(1, 2), Secret32::from_bytes([2; 32]));
-        owner.read.observe(ep(2, 0));
+        owner.read.rotation(ep(2, 0), [ep(1, 1)]);
         for e in [ep(1, 1), ep(1, 2), ep(2, 0)] {
             owner.read.set_established(e, Provenance::Chain);
         }
         owner.read.observe(ep(3, 0));
         let d = ActorEpochs::derived(&owner, &t);
-        assert_eq!(d.read.current(), owner.read.current());
-        assert_eq!(d.read.provenance(&ep(1, 1)), Some(Provenance::Derived));
+        let de = |b: u8| Epoch::derive(&t, Role::Read, 1, &thing_role_secret(&Secret32::from_bytes([b; 32]), Role::Read, &t)).unwrap();
+        assert_eq!(d.read.current(), vec![de(2), ep(2, 0)]);
+        assert!(d.read.superseded(&de(1)));
+        assert_eq!(d.read.provenance(&de(1)), Some(Provenance::Derived));
         assert_eq!(d.read.provenance(&ep(3, 0)), None);
         assert_eq!(d.read.held().count(), 2);
+    }
+
+    // spec/crypto.md §4: a secret known only from pending commits is reading-only, one per
+    // epoch with every source; it goes with its last source; a checked one replaces it.
+    #[test]
+    fn reading_only_sources() {
+        let mut r = RoleEpochs::default();
+        let u = |b: u8| Unchecked { author: Tid::from_bytes([b; 15]), commit: cid(b) };
+        let s = Secret32::from_bytes([1; 32]);
+        r.set_reading_secret(ep(1, 1), s.clone(), u(1));
+        r.set_reading_secret(ep(1, 1), s.clone(), u(2));
+        assert!(r.is_reading_only(&ep(1, 1)) && r.secret(&ep(1, 1)).is_none());
+        assert_eq!(r.reading_secret(&ep(1, 1)), Some(&s));
+        assert!(r.drop_reading_from(&cid(1)));
+        assert!(r.is_reading_only(&ep(1, 1)));
+        assert!(r.drop_reading_from(&cid(2)));
+        assert!(r.get(&ep(1, 1)).is_none());
+        r.set_reading_secret(ep(1, 1), s.clone(), u(1));
+        r.set_secret(ep(1, 1), s.clone());
+        assert_eq!(r.secret(&ep(1, 1)), Some(&s));
+        r.set_reading_secret(ep(1, 1), s.clone(), u(3));
+        assert!(!r.drop_reading_from(&cid(3)) && r.secret(&ep(1, 1)).is_some());
     }
 }

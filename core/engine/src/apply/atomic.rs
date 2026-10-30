@@ -682,7 +682,7 @@ fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: 
         let st = tx.state(actor, &ak)?.cloned();
         let alts = st.as_ref().map(crate::engine::secrets::history_alts).unwrap_or_default();
         if let Some(s) = st.as_ref().and_then(Fragment::read).as_ref().and_then(crate::engine::secrets::secrets_value)
-            && tx.core.ingest_secrets(actor, &s, None, &alts, None)
+            && tx.core.ingest_secrets(actor, &s, None, &alts)
         {
 
             match before {
@@ -706,7 +706,7 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         "/secrets" => {
             let alts = tx.state(tid, ak)?.map(crate::engine::secrets::history_alts).unwrap_or_default();
             if let Some(s) = v.as_ref().and_then(crate::engine::secrets::secrets_value)
-                && tx.core.ingest_secrets(tid, &s, None, &alts, None)
+                && tx.core.ingest_secrets(tid, &s, None, &alts)
                 && let Some(e) = tx.core.ix.secrets.get(tid)
             {
                 let b = crate::engine::secrets::encode_epochs(e);
@@ -718,19 +718,6 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         "/keys" => {
             if let Some(k) = v.as_ref().and_then(crate::engine::secrets::keys_value) {
                 tx.core.observe_keys(tid, &k);
-                // the published keysets are recorded: candidates they refute go, one that
-                // derives them is checked
-                let checked = tx.core.ix.secrets.get_mut(tid).map(|e| osis_keys::check_keysets(e, &k));
-                if let Some((changed, dropped)) = checked {
-                    if changed {
-                        tx.core.touch();
-                        crate::flows::save_epochs(tx, tid)?;
-                    }
-                    // a held secret they refute went: the boxes may carry the genuine one
-                    if dropped {
-                        observe_state(tx, tid, &Ak::new("/secrets").map_err(|_| Error::Misuse("ak"))?)?;
-                    }
-                }
             }
         }
         "/was" => {

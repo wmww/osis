@@ -88,7 +88,7 @@ impl Engine {
             return m.header.aspects.iter().enumerate().any(|(i, a)| a.tid == *t && a.ak.as_str() == "/secrets" && m.valid.get(i).copied().unwrap_or(false));
         }
         self.core.ix.pending.contains_key(c)
-            && self.core.ix.secrets.get(t).is_some_and(|e| e.role(osis_base::Role::Read).epochs().any(|(_, i)| i.reading.iter().any(|(_, u)| u.commit == *c)))
+            && self.core.ix.secrets.get(t).is_some_and(|e| e.role(osis_base::Role::Read).epochs().any(|(_, i)| i.reading.iter().any(|u| u.commit == *c)))
     }
 
     /// The deltas of roster snapshot `c` on `things` a chain needs (spec/permissions.md §6):
