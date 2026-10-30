@@ -594,12 +594,12 @@ impl SyncEngine {
             if let Some(n) = self.eph.pending_bytes.get_mut(&l) {
                 *n = n.saturating_sub(e.blob.len() as u64);
             }
+            // the commit is held now, but this blob may be a junk copy (the real header with junk
+            // parts or signature, kept apart beside the real one): it arrives again, so its copy
+            // is checked against the held commit before it is kept or spread
             if held && !self.eph.entries.contains_key(&(l, b)) {
-                let stamped = e.stamp.is_some();
-                self.eph_keep(l, b, e);
-                if stamped {
-                    self.eph_spread(l, b, from, out)?;
-                }
+                let class = if e.presence { Class::Presence } else { Class::Ephemeral };
+                self.eph_added(RelayFrom::Server(from), l, b, e.blob, e.wrap, e.stamp, class, out)?;
             }
         }
         Ok(())
