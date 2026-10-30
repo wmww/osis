@@ -3,3 +3,4 @@
 - LocalPeer tests deliver commits unencrypted: any peer "reads" any thing, so confidentiality assertions there are meaningless (only the World tests show who holds what).
 - `complete_pass` counts passes from before a reconnect (in-memory, never reset on Down): a device back online judged a pass from before it went offline as complete. Link finalization adds its own "pass ended after `until`" check; re-seal decisions still use the plain one.
 - Reviewer: the 30-seed per-branch sweep caught link_race failing once; 200 seeds showed 15%. The gate's 5-seed sweep would likely have missed it.
+- Reviewer 2: a chained `( ... | grep ) && ( ... )` oracle run in one background job printed only the empty-binary `test result` lines for the perm tier-2 set; rerun alone it showed 15 passed. Run each oracle as its own command and check for a non-zero `passed` count.

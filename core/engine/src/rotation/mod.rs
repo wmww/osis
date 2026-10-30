@@ -916,20 +916,28 @@ fn lost_among(tx: &mut Tx<'_>, cands: Vec<Tid>) -> Result<Vec<Tid>> {
     Ok(unread.into_iter().filter(|a| !kept(a)).collect())
 }
 
-/// Whether `k` is a thing where a held grant of one of ours stands void only because its signer's edge was
-/// self-removed first with no explicit write on it since: a single-use link race the sharer
-/// has not finalized (spec/permissions.md §9). The finalization may drop the competing
-/// redemption and make ours stand, so until it arrives the loser keeps the secrets (and with
-/// them follows the labels) it would get back.
+/// Whether `k` is a thing where a held single-use redemption granting one of ours stands void
+/// only because an applied redemption by the same signer removed the signer's edge first, with
+/// no explicit write on that edge since: a link race the sharer has not finalized
+/// (spec/permissions.md §3, §9). The finalization may drop the competing redemption and make
+/// ours stand, so until it arrives the loser keeps the secrets (and with them follows the
+/// labels) it would get back. A redemption is a commit removing its signer's own edge on `k`
+/// beside a grant: a plain leave followed by a void grant (a leaver's forgery) defers nothing.
 fn contested(core: &Core, k: &Tid) -> bool {
     let Some(tl) = core.timelines.get(k) else { return false };
     let node = core.id.tid();
     let ours = |m: &Tid| *m == node || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m));
-    let ids = core.ix.by_thing.get(k).into_iter().flatten();
-    ids.filter_map(|c| tl.membership_commit(c)).any(|mc| {
-        mc.ops.iter().enumerate().any(|(i, o)| {
-            o.target == *k && o.edge.is_some() && ours(&o.member) && tl.lowered_unaudited(&mc.author, k) && !tl.is_applied(&osis_perm::WriteId::Op(mc.id, i as u32))
-        })
+    let op = |mc: &osis_perm::MembershipCommit, i: usize| osis_perm::WriteId::Op(mc.id, i as u32);
+    // the index of the redemption's self-removal
+    let leave = |mc: &osis_perm::MembershipCommit| {
+        let j = mc.ops.iter().position(|o| o.target == *k && o.member == mc.author && o.edge.is_none())?;
+        mc.ops.iter().any(|o| o.target == *k && o.member != mc.author && o.edge.is_some()).then_some(j)
+    };
+    let reds: Vec<_> = core.ix.by_thing.get(k).into_iter().flatten().filter_map(|c| tl.membership_commit(c)).filter_map(|mc| Some((mc, leave(mc)?))).collect();
+    reds.iter().any(|(mc, j)| {
+        tl.lowered_unaudited(&mc.author, k)
+            && mc.ops.iter().enumerate().any(|(i, o)| i != *j && o.target == *k && o.edge.is_some() && ours(&o.member) && !tl.is_applied(&op(mc, i)))
+            && reds.iter().any(|(w, jw)| w.author == mc.author && w.id != mc.id && tl.is_applied(&op(w, *jw)))
     })
 }
 
