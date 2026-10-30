@@ -34,14 +34,18 @@ pub struct Node {
     pub root: MemoryRoot,
     pub online: bool,
     pub wake: Option<u64>,
+    /// Restarts so far (`Msg`).
+    pub life: u64,
 }
 
+/// Messages to a node carry its `life` when sent: one sent before it restarted is dropped (it
+/// numbers connections from 1 again, so the old connection's bytes would land on a new one).
 enum Msg {
-    /// node, conn -> hub
-    Up(usize, ConnId),
+    /// node, life, conn -> hub
+    Up(usize, u64, ConnId),
     ToHub(usize, ConnId, Vec<u8>),
-    ToNode(usize, ConnId, Vec<u8>),
-    Close(usize, ConnId),
+    ToNode(usize, u64, ConnId, Vec<u8>),
+    Close(usize, u64, ConnId),
 }
 
 pub struct Net {
@@ -122,7 +126,7 @@ impl Net {
         let mine: Vec<((usize, ConnId), u64)> = self.links.iter().filter(|(_, (x, _))| *x == s).map(|(k, (_, hc))| (*k, *hc)).collect();
         for ((n, c), _) in mine {
             self.links.remove(&(n, c));
-            self.queue.push_back(Msg::Close(n, c));
+            self.queue.push_back(Msg::Close(n, self.nodes[n].life, c));
         }
         let backend = self.servers[s].backend.clone();
         let store = BackendStore::open(backend.clone(), self.clock.clone(), Policy::default(), &mut SeededRng::from_u64(980 + s as u64)).unwrap();
@@ -146,7 +150,7 @@ impl Net {
         let c: Arc<dyn Clock> = self.clock.clone();
         let engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c.clone(), Box::new(SeededRng::from_u64(seed))).unwrap();
         let sync = SyncEngine::new(engine, c, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
-        self.nodes.push(Node { sync: Some(sync), backend, root, online: true, wake: None });
+        self.nodes.push(Node { sync: Some(sync), backend, root, online: true, wake: None, life: 0 });
         self.nodes.len() - 1
     }
 
@@ -181,6 +185,7 @@ impl Net {
         let c: Arc<dyn Clock> = self.clock.clone();
         let node = &mut self.nodes[n];
         node.sync = None;
+        node.life += 1;
         let engine = Engine::open(Box::new(node.backend.clone()), Box::new(node.root.clone()), Config::default(), c.clone(), Box::new(SeededRng::from_u64(seed))).unwrap();
         node.sync = Some(SyncEngine::new(engine, c, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap());
     }
@@ -190,7 +195,7 @@ impl Net {
         for ((_, c), (m, pc)) in peers {
             self.plinks.remove(&(n, c));
             self.plinks.remove(&(m, pc));
-            self.queue.push_back(Msg::Close(m, pc));
+            self.queue.push_back(Msg::Close(m, self.nodes[m].life, pc));
             self.forget_conn(n, c);
             if let Some(sy) = self.nodes[n].sync.as_mut() {
                 sy.handle(Event::Down { conn: c });
@@ -202,11 +207,9 @@ impl Net {
         }
     }
 
-    /// Nothing more reaches node `n` on its closed connection `c`, queued or held back (a
-    /// restarted node numbers its connections from 1 again: a late delivery would land on the
-    /// new connection of that number).
+    /// Nothing more reaches node `n` on its closed connection `c`, queued or held back.
     fn forget_conn(&mut self, n: usize, c: ConnId) {
-        let to = |m: &Msg| matches!(m, Msg::Up(x, y) | Msg::ToNode(x, y, _) | Msg::Close(x, y) if *x == n && *y == c);
+        let to = |m: &Msg| matches!(m, Msg::Up(x, _, y) | Msg::ToNode(x, _, y, _) | Msg::Close(x, _, y) if *x == n && *y == c);
         self.queue.retain(|m| !to(m));
         self.held_msgs.retain(|m| !to(m));
     }
@@ -266,24 +269,24 @@ impl Net {
                     let lan = self.lan_keys.get(&address.key).copied();
                     let target = lan.filter(|m| self.nodes[*m].online).or_else(|| (0..self.nodes.len()).find(|m| *m != n && self.nodes[*m].online && self.nodes[*m].sync.as_mut().and_then(|s| s.own_reach()).is_some_and(|r| r.dialable == address.key)));
                     let Some(m) = target.filter(|m| !self.blocked_peers.contains(&(n, *m)) && !self.blocked_peers.contains(&(*m, n))) else {
-                        self.queue.push_back(Msg::Close(n, conn));
+                        self.queue.push_back(Msg::Close(n, self.nodes[n].life, conn));
                         continue;
                     };
                     let (pc, acts) = self.sync(m).accept(address.key, [0xd0 + n as u8; 32]);
                     self.plinks.insert((n, conn), (m, pc));
                     self.plinks.insert((m, pc), (n, conn));
-                    self.queue.push_back(Msg::Up(n, conn));
+                    self.queue.push_back(Msg::Up(n, self.nodes[n].life, conn));
                     self.actions(m, acts);
                 }
                 Action::Dial { conn, address } => {
                     let Some(s) = self.servers.iter().position(|x| x.address.key == address.key).filter(|s| !self.blocked.contains(&(n, *s))) else {
-                        self.queue.push_back(Msg::Close(n, conn));
+                        self.queue.push_back(Msg::Close(n, self.nodes[n].life, conn));
                         continue;
                     };
                     let hc = self.next_hub_conn;
                     self.next_hub_conn += 1;
                     self.links.insert((n, conn), (s, hc));
-                    self.queue.push_back(Msg::Up(n, conn));
+                    self.queue.push_back(Msg::Up(n, self.nodes[n].life, conn));
                     let now = self.now_at(s);
                     let out = self.servers[s].hub.accept(now, hc, [0xe0; 32]);
                     self.hub_out(s, out);
@@ -291,15 +294,15 @@ impl Net {
                 Action::Send { conn, bytes } if self.plinks.contains_key(&(n, conn)) => {
                     let (m, pc) = self.plinks[&(n, conn)];
                     if self.held.contains(&(n, m)) {
-                        self.held_msgs.push(Msg::ToNode(m, pc, bytes));
+                        self.held_msgs.push(Msg::ToNode(m, self.nodes[m].life, pc, bytes));
                     } else {
-                        self.queue.push_back(Msg::ToNode(m, pc, bytes));
+                        self.queue.push_back(Msg::ToNode(m, self.nodes[m].life, pc, bytes));
                     }
                 }
                 Action::Close { conn } if self.plinks.contains_key(&(n, conn)) => {
                     let (m, pc) = self.plinks.remove(&(n, conn)).unwrap();
                     self.plinks.remove(&(m, pc));
-                    self.queue.push_back(Msg::Close(m, pc));
+                    self.queue.push_back(Msg::Close(m, self.nodes[m].life, pc));
                 }
                 Action::Send { conn, mut bytes } => {
                     self.sent_bytes += bytes.len();
@@ -341,7 +344,7 @@ impl Net {
             match o {
                 HubOutput::Send(hc, bytes) => {
                     if let Some(((n, c), _)) = self.links.iter().find(|(_, (x, h))| *x == s && *h == hc) {
-                        let m = Msg::ToNode(*n, *c, bytes);
+                        let m = Msg::ToNode(*n, self.nodes[*n].life, *c, bytes);
                         if self.held_servers.contains(&s) {
                             self.held_msgs.push(m);
                         } else {
@@ -352,7 +355,7 @@ impl Net {
                 HubOutput::Close(hc) => {
                     if let Some(((n, c), _)) = self.links.iter().find(|(_, (x, h))| *x == s && *h == hc).map(|(k, v)| (*k, *v)) {
                         self.links.remove(&(n, c));
-                        self.queue.push_back(Msg::Close(n, c));
+                        self.queue.push_back(Msg::Close(n, self.nodes[n].life, c));
                     }
                 }
                 HubOutput::Diagnostic(_) => {}
@@ -391,7 +394,8 @@ impl Net {
 
     fn deliver(&mut self, m: Msg) {
         match m {
-            Msg::Up(n, c) => self.feed(n, Event::Up { conn: c }),
+            Msg::Up(n, l, _) | Msg::ToNode(n, l, _, _) | Msg::Close(n, l, _) if l != self.nodes[n].life => {}
+            Msg::Up(n, _, c) => self.feed(n, Event::Up { conn: c }),
             Msg::ToHub(s, hc, b) => {
                 let now = self.now_at(s);
                 let t = std::time::Instant::now();
@@ -399,8 +403,8 @@ impl Net {
                 self.hub_busy += t.elapsed();
                 self.hub_out(s, out);
             }
-            Msg::ToNode(n, c, b) => self.feed(n, Event::Bytes { conn: c, bytes: b }),
-            Msg::Close(n, c) => self.feed(n, Event::Down { conn: c }),
+            Msg::ToNode(n, _, c, b) => self.feed(n, Event::Bytes { conn: c, bytes: b }),
+            Msg::Close(n, _, c) => self.feed(n, Event::Down { conn: c }),
         }
         for s in 0..self.servers.len() {
             let now = self.now_at(s);
