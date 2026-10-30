@@ -126,14 +126,15 @@ impl Feed {
 }
 
 /// A served label: its group, its path to the head and the claim sets held, with the path
-/// indexes an Open or a Path page reads (step ID → position, sync key → newest position), so a
-/// peer's request costs no scan of the path.
+/// indexes an Open or a Path page reads (step ID → position, sync key → newest position) and the
+/// head keys, so a peer's request costs no scan of the path.
 pub struct ServedLabel {
     group: osis_base::Tid,
     path: Vec<Step>,
     claims: BTreeMap<StepId, Arc<ClaimSet>>,
     pos: BTreeMap<StepId, usize>,
     by_sync: BTreeMap<[u8; 32], usize>,
+    keys: Option<osis_proto::HeadKeys>,
 }
 
 impl ServedLabel {
@@ -149,7 +150,8 @@ impl ServedLabel {
         let pos = path.iter().enumerate().map(|(i, s)| (s.id(), i)).collect();
         // later positions overwrite: the newest step per sync key
         let by_sync = path.iter().enumerate().map(|(i, s)| (s.keys.sync.to_bytes(), i)).collect();
-        Some(ServedLabel { group, path, claims, pos, by_sync })
+        let keys = osis_proto::HeadKeys::of_path(&path);
+        Some(ServedLabel { group, path, claims, pos, by_sync, keys })
     }
 }
 
@@ -328,7 +330,7 @@ impl LabelStore for PeerStore<'_> {
     }
 
     fn head_keys(&self, label: &LabelId) -> std::result::Result<Option<osis_proto::HeadKeys>, StoreError> {
-        Ok(self.labels.get(label).and_then(|s| osis_proto::HeadKeys::of_path(&s.path)))
+        Ok(self.labels.get(label).and_then(|s| s.keys.clone()))
     }
 
     /// Only labels this node syncs are served.

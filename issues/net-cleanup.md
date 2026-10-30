@@ -1,7 +1,6 @@
 # Server engine: costs a peer can still cause
-> Summary: What remains after the net-cleanup pass: a Reconcile over the whole space still sums every live ID of the label per message (needs a fingerprint index), the per-connection head-keys cache (memory), and the listener backlog that `link::serve` keeps unreachable.
+> Summary: What remains after the net-cleanup pass: a Reconcile over the whole space still sums every live ID of the label per message (needs a fingerprint index), and the listener backlog that `link::serve` keeps unreachable.
 > Tags: proto, server, transport, security
 
 - **Reconcile fingerprints** (`ServerConnection::dispatch`, Reconcile): reads are now limited to the asked ranges (`LabelStore::live_ids_in`; ranges are sorted and disjoint), but a fingerprint over a large range still needs every ID in it, so an opener repeating the whole-space fingerprint pays O(label) reads per message, without limit across messages. A bound needs fingerprints the store keeps per subtree (additive sums, spec/wire.md §11.3) so a range costs O(log n). Needs an open.
-- **Head-keys cache memory** (`server.rs` `keys`, `MAX_CACHED` 4096): a connection caches a parsed `HeadKeys` (head step plus up to 32 parsed keys, a few KB) per label it names, opened or not, so one connection can hold on the order of 10-30 MB and `max_connections` of them far more. Unmeasured; a smaller cap or a node-wide cache would bound it.
 - **Listener backlog** (`quic.rs` `accept_loop`, used by `iroh.rs` too): a connection whose handshake completed waits in its own task for a slot in the 64-entry accept channel; if nobody accepted, those tasks would pile up. `link::serve` accepts continuously (closing past its cap), so this is not reachable today.
