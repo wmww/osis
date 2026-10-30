@@ -1,5 +1,6 @@
 //! The actions layer across two devices of one person (commits delivered by hand, the engine-level
 //! path of core's tests) and over malformed synced data.
+use osis::internals::Internals as _;
 use osis::core::{BODY, GROUP};
 use osis::{Ak, Config, ManualClock, MemStore, Osis, Path, StoreAt, Tid, Value, WallMs};
 use osis_app::data::{Data, Kind};
