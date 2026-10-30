@@ -25,8 +25,8 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 ## Not acceptable
 | value | where | problem | status |
 |---|---|---|---|
-| `reopen_all` 8 sweeps | `engine/flows/mod.rs` | taking up a key actor opened at most 8 levels of a member-actor chain (a 12-chain left 4 unread) | fixed: fixpoint; test `keys::key_actor_opens_deep_member_chain_spec_crypto_4` |
-| `reopen_dependents` 4096 steps | `engine/flows/mod.rs` | the reopen fixpoint stopped silently; it terminates anyway (pushes only on growth of held epochs) | fixed: cap removed (no test: needs > 4096 steps) |
+| `reopen_all` 8 sweeps | `engine/flows/mod.rs` | taking up a key actor opened at most 8 levels of a member-actor chain (a 12-chain left 4 unread) | fixed: fixpoint, each learner's dependents reopened at once (one sweep opens a chain in any tid order); test `keys::key_actor_opens_deep_member_chain_spec_crypto_4` |
+| `reopen_dependents` 4096 steps | `engine/flows/mod.rs` | the reopen fixpoint stopped silently; it terminates anyway: an actor is pushed only when its held epochs grew (epochs and secrets are only added, `set_secret` only when absent), so pushes are bounded by the secrets the held `/secrets` states carry, which writers paid for | fixed: cap removed (no test: needs > 4096 steps) |
 | rotation `MAX_DEPTH` 8 | `engine/rotation/mod.rs` | departures more than 8 member actors deep are never rotated (security) | issues/rotation-depth-cap.md |
 | `HINT_INDEXES` 4 | `node/sync/open.rs` | a label of index 4 or more cannot be opened from a hint (inbox, link) | issues/node-sync-caps.md |
 | `MAX_INBOX_TRIES` 8 | `node/sync/local.rs`, `inbound.rs` | a deposit refused for about 21 min (budget full while the recipient is offline) is dropped; resent only after `INBOX_LIFETIME` | issues/node-sync-caps.md |
@@ -73,7 +73,7 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | value | class | 0 / ∞ |
 |---|---|---|
 | `LOG_BATCH` 256, replicate `BATCH_RECORDS` 256, `BATCH_BYTES` 4 MiB, `MAX_STEPS` 64, hub `SWEEP_BUDGET` 1024 | P | no progress per call / unbounded call latency |
-| `OLDER_KEYS` 8 | M | every stale key REFUSED / unbounded signature checks per refused item; past it a writer 8+ rotations behind gets REFUSED, not the head (it learns the head at its next open) |
+| `OLDER_KEYS` 8 | M | every stale key REFUSED / unbounded signature checks per refused item; past it a writer 8+ rotations behind gets REFUSED, not the head; the entry stays unsent and goes again at the next pass, under the head the connection learned by open (a stale sync key opens to its child and walks) or by registration pushes (checked) |
 | `MAX_CACHED` 4096 | P (cost: issues/net-cleanup.md) | reparse per request / memory |
 | `MAX_CROSSED` 2^14, `MAX_ORIGINS` 2^20 | P (optimizations, cleared past the cap) | blobs inlined back, entries replicated back to their origin (refused there as held) / memory |
 | `PRESENCE_PRUNE` 1024, `SEQ_BLOCK` 1024 | P (commented in code) | |
@@ -126,7 +126,7 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | `reopen_all` sweeps, `reopen_dependents` steps | was X | fixed (no cap) |
 | rotation `MAX_DEPTH` 8 | X | issues/rotation-depth-cap.md |
 | `MAX_READING` 256, `MAX_READING_PER_AUTHOR` 64, `MAX_READING_ACTORS` 64 | R (tested, keys `boxes.rs`; a genuine candidate past it waits for its checked box) | |
-| `MAX_HINT_COMMITS` 64 | R (oldest evicted; inbox spam can evict a genuine hint) | |
+| `MAX_HINT_COMMITS` 64 | R (lowest commit ID evicted, not oldest; inbox spam can evict a genuine hint) | the grantee then writes once the thing's `/keys` syncs, as after a restart (candidates are not persisted): a delay (checked) |
 | `UNDO_DEPTH` 16 | M | no undo / memory |
 | `ROSTER_SNAPSHOT_AFTER` 64, `WALK_CACHE_MIN` 64, `MAX_WAIT_BYTES` 64 KiB / 16 MiB, `COPY_CACHE_MAX` 2^20 | P | |
 | pages `PAGE_BYTES` 8 KiB, `SEQ_PAGE_BYTES` 3 KiB, `MIN_PAGED` 64, `GROUP` 32, `PREFETCH` 8, `OP_RUNS` 8, prefetch budget `max(1024)`, `SCAN_PAGE` 256, pending page 256 | P | |
