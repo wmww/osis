@@ -438,10 +438,13 @@ fn deposit_promoted_on_local_label_spec_sync_5() {
 }
 
 
+/// The reader's entry at the writer: aspect, commit, blob, stamped.
+type Placed = (String, osis_base::CommitId, BlobId, bool);
+
 /// The deposit-promotion setup above, with the reader's deposits of the blobs in `lose`
 /// refused on the way (rate-limited): returns the net, the writer, the label, and the reader's
 /// commits under it by aspect (`/keys`, `/node`) with their entries at the writer.
-fn promote_run(lose: &BTreeSet<BlobId>) -> (Net, usize, LabelId, Vec<(String, osis_base::CommitId, BlobId, bool)>) {
+fn promote_run(lose: &BTreeSet<BlobId>) -> (Net, usize, LabelId, Vec<Placed>) {
     let mut net = Net::new();
     net.lose_deposits = lose.clone();
     let a = net.node(1, &[]);
