@@ -1420,7 +1420,7 @@ fn registration_step_after_rotation_spec_sync_5() {
     assert_eq!(now.get(&card.home_label).unwrap().steps.len(), 2);
 }
 
-// spec/crypto.md §3, spec/sync.md §5: an admin's removal that rotates read writes a fresh
+// spec/crypto.md §3 (fresh deposit seed), spec/sync.md §5: an admin's removal that rotates read writes a fresh
 // deposit seed in its rotation commit, and the step it issues registers the new deposit key, so
 // the removed device can no longer deposit under the actor's labels.
 #[test]
