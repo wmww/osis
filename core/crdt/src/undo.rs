@@ -229,7 +229,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             let mut removed: BTreeMap<osis_base::Value, Fragment> = BTreeMap::new();
             for (id, e) in &m.entries {
                 if e.frag.is_some() && u.made(&id.dot) {
-                    entries.insert(id.clone(), Entry::tomb(&r));
+                    entries.insert(w.removal(id), Entry::tomb(&r));
                 } else if let (Some(f), Some(k)) = (&e.frag, id.key()) {
                     // a nested edit into an existing entry
                     path.push(PathSeg::Key(k.clone()));
@@ -250,14 +250,17 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                     }
                 } else if e.reset.is_some()
                     && let Some(Fragment::Map(p)) = &prev
-                    && let Some(k) = id.key()
-                    && p.is_live(id)
-                    && let Some(f) = p.record_frag(id)
                 {
-                    match removed.get_mut(k) {
-                        Some(acc) => acc.join_into(f.into_owned(), None, &mut crate::changes::Changes::new()),
-                        None => {
-                            removed.insert(k.clone(), f.into_owned());
+                    // the live records it removed: its own, or a key-erased record's every
+                    // record of the dot (§5.6)
+                    let hit: Vec<&Eid> = p.of_dot(&id.dot).map(|(x, _)| x).filter(|x| (id.key.is_none() || *x == id) && p.is_live(x)).collect();
+                    for x in hit {
+                        let (Some(k), Some(f)) = (x.key(), p.record_frag(x)) else { continue };
+                        match removed.get_mut(k) {
+                            Some(acc) => acc.join_into(f.into_owned(), None, &mut crate::changes::Changes::new()),
+                            None => {
+                                removed.insert(k.clone(), f.into_owned());
+                            }
                         }
                     }
                 }

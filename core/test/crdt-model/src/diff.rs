@@ -109,7 +109,7 @@ pub fn diff(w: &mut Writer, st: Option<&Frag>, ty: &Ty, v: &Value) -> Option<Fra
                 let s = w.delta();
                 for (_, dots) in gone {
                     for d in dots {
-                        de.insert(d.clone(), Entry { reset: Some(s.clone()), frag: None, created: None });
+                        de.insert(w.removal(d), Entry { reset: Some(s.clone()), frag: None, created: None });
                     }
                 }
             }

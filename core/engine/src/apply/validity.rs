@@ -1832,16 +1832,12 @@ mod keys_tests {
         let admin = s.boxes.keys().find(|k| k.role == Role::Admin).unwrap().clone();
         let read = ct::BoxKey { role: Role::Read, ..admin.clone() };
         let src = osis_crdt::Source::node(lp.peers[1].engine.tid());
-        let w = osis_crdt::Writer::new(osis_base::Ts::make(WallMs(1_700_000_000_000), 0).unwrap(), src.clone(), 1);
+        let w = osis_crdt::Writer::new(osis_base::Ts::make(WallMs(1_700_000_000_000), 0).unwrap(), src.clone(), 1).keyed_removals(true);
         let dot = osis_crdt::Dot::new(osis_crdt::Source::node(me), 3);
         let rm = |k: Option<&ct::BoxKey>| {
             let f = match k {
                 Some(k) => osis_crdt::reset_entries(&w, &[(dot.clone(), k.to_value())]),
-                None => {
-                    let mut f = osis_crdt::reset_entries(&w, &[(dot.clone(), Value::Int(0))]);
-                    f.strip(&|_| true);
-                    f
-                }
+                None => osis_crdt::reset_entries(&w.clone().keyed_removals(false), &[(dot.clone(), Value::Int(0))]),
             };
             osis_crdt::Fragment::wrap(&[(osis_crdt::Step::Field(0), None, None)], f)
         };

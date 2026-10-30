@@ -126,3 +126,25 @@ fn verify_deltas() {
     assert!(matches!(verify_part(&b.header, &b.id(), &p, &sec(0xd0, &t(3)), &mut i, None), Err(Error::Malformed(_))));
     let _ = ts(0);
 }
+
+// spec/crdt.md §5.6: a keyed map removal is malformed outside the membership-class aspects; the
+// keyless form is fine anywhere
+#[test]
+fn keyed_map_removal_only_in_membership_aspects_spec_crdt_5_6() {
+    let (mut b, _) = one_commit();
+    let (author, at) = (b.header.author, b.header.ts);
+    let dot = osis_crdt::Dot::new(Source::node(t(9)), 4);
+    let w = Writer::new(at, Source::node(author), 1);
+    let check = |b: &mut CommitBlob, keyed: bool, ak: &str| {
+        let fragment = osis_crdt::reset_entries(&w.clone().keyed_removals(keyed), &[(dot.clone(), Value::Str("a key".into()))]);
+        let delta = encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(Kind::Content, at, author, 1, 2), None).unwrap();
+        b.header.aspects[0].ak = osis_base::Ak::new(ak).unwrap();
+        b.header.aspects[0].hashes = vec![delta_hash(&sec(0xd0, &t(3)), &delta)];
+        b.parts[0].delta = delta;
+        verify_part(&b.header, &b.id(), &b.parts[0], &sec(0xd0, &t(3)), &mut Interner::new(), None)
+    };
+    assert!(matches!(check(&mut b, true, "/x/map"), Err(Error::Malformed(_))));
+    assert!(check(&mut b, false, "/x/map").is_ok());
+    assert!(check(&mut b, true, "/secrets").is_ok());
+    assert!(check(&mut b, true, "/members").is_ok());
+}

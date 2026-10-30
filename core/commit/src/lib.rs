@@ -28,4 +28,4 @@ pub use lists::{BlobSink, BlobSource, MAX_LIST_BYTES, MemoryBlobs, read_list, wr
 pub use error::Error;
 pub use header::{AspectEntry, ChunkEntry, DeleteKey, EphClass, FOREVER, Form, Header, Kind, Links, ListField, MAX_SCHEMAS, Origin, PurgeItem, verify_signature};
 pub use keys::{Prefix, Secrets, delete_keys};
-pub use verify::{Decoded, delta_ctx, verify_blob, verify_part, writer_ctx};
+pub use verify::{Decoded, check_entry_keys, delta_ctx, verify_blob, verify_part, writer_ctx};

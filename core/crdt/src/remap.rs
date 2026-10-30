@@ -2,7 +2,7 @@
 //! element identities, anchors, resets) mapped by a function; `ts` is kept. `Derived` dots map
 //! through their underlying dot. Also the one read-only walk over a fragment's writes (`walk`).
 
-use crate::fragment::{Bag, Elem, Entry, Enum, Fragment, Meta, Register, Set, Slots, Struct};
+use crate::fragment::{Bag, Eid, Elem, Entry, Enum, Fragment, Meta, Register, Set, Slots, Struct};
 use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
 use crate::stamp::{Dot, Source, SourceKind, Stamp};
 use std::collections::BTreeMap;
@@ -91,7 +91,7 @@ fn seq(s: &mut Seq, f: DotFn<'_>) {
 #[derive(Clone, Copy)]
 pub(crate) enum Rec<'a> {
     Elem(&'a Dot, &'a Elem),
-    Entry(&'a Dot, &'a Entry),
+    Entry(&'a Eid, &'a Entry),
     /// A sequence record (a range one too): its creation, position and flag writes are the
     /// visitor's to look at.
     Seq(&'a Dot, &'a SeqElem),
@@ -154,7 +154,7 @@ pub(crate) fn walk(v: &mut dyn Visit, f: &Fragment) -> bool {
         Fragment::Bag(Bag { meta: m, elems: e, .. }) | Fragment::Set(Set { meta: m, elems: e }) => meta_v(v, m) || e.iter().any(|(d, x)| rec_v(v, Rec::Elem(d, x), &x.reset, x.frag.as_deref())),
         Fragment::Struct(Struct { meta: m, fields }) => meta_v(v, m) || fields.values().any(|f| walk(v, f)),
         Fragment::Enum(Enum { meta: m, case, payloads }) => meta_v(v, m) || case.as_ref().is_some_and(|c| v.stamp(&c.stamp)) || payloads.values().any(|f| walk(v, f)),
-        Fragment::Map(mp) => meta_v(v, &mp.meta) || mp.entries.iter().any(|(id, e)| rec_v(v, Rec::Entry(&id.dot, e), &e.reset, e.frag.as_deref())),
+        Fragment::Map(mp) => meta_v(v, &mp.meta) || mp.entries.iter().any(|(id, e)| rec_v(v, Rec::Entry(id, e), &e.reset, e.frag.as_deref())),
         Fragment::Seq(s) => {
             meta_v(v, &s.meta)
                 || s.elems().iter().any(|(d, e)| match v.rec(Rec::Seq(d, e)) {
@@ -189,7 +189,7 @@ impl Visit for Writes {
                 };
                 self.0.push((d.owner().clone(), ts));
             }
-            Rec::Entry(d, e) => self.0.push((d.owner().clone(), e.created.as_ref().map(|c| c.ts))),
+            Rec::Entry(id, e) => self.0.push((id.dot.owner().clone(), e.created.as_ref().map(|c| c.ts))),
             Rec::Seq(d, e) => {
                 for k in 0..e.span {
                     let piece = (e.span > 1).then(|| crate::seq_span::piece(d, e, k, 1));
@@ -225,7 +225,7 @@ impl Visit for Any<'_> {
     fn rec(&mut self, r: Rec<'_>) -> Next {
         let hit = match r {
             _ if self.1 && r.tomb() => false,
-            Rec::Elem(d, _) | Rec::Entry(d, _) => self.range(d, 1),
+            Rec::Elem(d, _) | Rec::Entry(Eid { dot: d, .. }, _) => self.range(d, 1),
             // a range record's creations are its elements' dots, its other stamps shared
             Rec::Seq(d, e) => self.range(d, e.span) || e.pos.iter().any(|(st, _, _)| st.dot != *d && self.range(&st.dot, 1)) || e.deleted.as_ref().is_some_and(|(st, _)| self.range(&st.dot, 1)),
         };

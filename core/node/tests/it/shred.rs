@@ -328,3 +328,39 @@ fn at_most_zero_live_body_dropped_at_bound_unrecoverable_spec_commits_5() {
         assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[osis_crdt::PathSeg::Key(s("k007"))]).unwrap(), Some(s(&"f".repeat(1100))));
     }
 }
+
+// spec/requirements.md Deletion (purge is prompt, no fingerprint), spec/crdt.md §5.6: an app
+// map's key is user content; once its entry is removed and the creation purged, neither the
+// removal's body nor a later snapshot's tombstone keeps it, at the writer or a receiver
+#[test]
+fn removed_map_key_gone_after_purge_spec_crdt_5_6() {
+    let mut lp = net2(78);
+    let t = new_thing(&mut lp, 0);
+    let marker = "KEY-MARK-5e17";
+    let k = ak("/t/big");
+    let put = |lp: &mut LocalPeer, key: &str| {
+        let mut m = Mutation::new();
+        m.op(t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(key))], op: osis_crdt::Op::Set(s("v")) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    let c = put(&mut lp, marker);
+    lp.sync(0, 1).unwrap();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.op(t, &BIG, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s(marker)) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync(0, 1).unwrap();
+    filler(&mut lp, 0, 6);
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.op(t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("other"))], op: osis_crdt::Op::Set(s("w")) }).unwrap();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    lp.peers[0].commit(m).unwrap();
+    lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.sync(0, 1).unwrap();
+    for i in [0, 1] {
+        assert!(!lp.peers[i].engine.body_not_dropped(&c, &t, &k), "peer {i}");
+        assert_eq!(lp.peers[i].engine.get_at(&t, &k, &[osis_crdt::PathSeg::Key(s("other"))]).unwrap(), Some(s("w")));
+        assert!(!recoverable(&mut lp.peers[i], marker.as_bytes()), "peer {i}: the removed key recovered");
+    }
+}

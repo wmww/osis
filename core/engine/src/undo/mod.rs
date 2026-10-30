@@ -150,7 +150,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
         // read in place: the undo reads the current state along the delta's paths only
         let empty = Fragment::default();
         let state = tx.core.states.get(&(a.tid, a.ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
-        let mut w = Writer::new(ts, Source::node(node), lo);
+        let mut w = Writer::new(ts, Source::node(node), lo).keyed_removals(osis_schema::core_types::is_membership_class(a.ak.as_str()));
         let schema = a.schema.and_then(|i| h.schemas.get(i)).and_then(|(id, _)| tx.core.schemas.get(id).cloned()).or_else(|| a.ak.is_core().then(|| std::sync::Arc::new(osis_schema::core_schema().clone())));
         let view = schema.as_ref().and_then(|s| s.view(a.ak.as_str()));
         let buf: &dyn UndoBuffer = &pre;
@@ -239,7 +239,7 @@ fn unmake(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid, deltas: &mut
         };
         let schema = ak.is_core().then(|| std::sync::Arc::new(osis_schema::core_schema().clone()));
         let view = schema.as_ref().and_then(|s| s.view(ak.as_str()));
-        let w = Writer::new(ts, Source::node(node), lo);
+        let w = Writer::new(ts, Source::node(node), lo).keyed_removals(osis_schema::core_types::is_membership_class(ak.as_str()));
         let out = match &view {
             Some(v) => crate::engine::write::run_ops(&state, w, &ops, v)?,
             None => crate::engine::write::run_ops(&state, w, &ops, &AnyView)?,

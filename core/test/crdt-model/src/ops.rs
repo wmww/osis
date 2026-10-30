@@ -46,11 +46,18 @@ pub struct Writer {
     pub ts: Ts,
     pub lo: u64,
     pub next: u64,
+    /// Map removals carry the removed record's key (membership-class aspects, spec §5.6); else a removal
+    /// is the dot's key-erased record.
+    pub keyed: bool,
 }
 
 impl Writer {
     pub fn new(source: Source, ts: Ts, lo: u64) -> Writer {
-        Writer { source, ts, lo, next: lo }
+        Writer { source, ts, lo, next: lo, keyed: false }
+    }
+    /// The record a removal of entry record `id` writes (spec §5.6).
+    pub fn removal(&self, id: &Eid) -> Eid {
+        if self.keyed { id.clone() } else { (id.0.clone(), None) }
     }
     /// Start the next commit of this writer at `ts`; counters continue.
     pub fn next_commit(&mut self, ts: Ts) {
@@ -325,7 +332,7 @@ pub fn map_remove(w: &mut Writer, state: Option<&Frag>, k: &Value) -> Option<Fra
     let s = w.delta();
     let mut entries = BTreeMap::new();
     for d in dots {
-        entries.insert(d, Entry { reset: Some(s.clone()), frag: None, created: None });
+        entries.insert(w.removal(&d), Entry { reset: Some(s.clone()), frag: None, created: None });
     }
     let f = Frag::Map { c: comp(None), entries };
     Some(f)

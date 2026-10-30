@@ -97,7 +97,7 @@ fn snapshot_transfer(st: &Frag, received: &Received, expiring: &[Range]) -> (Fra
 fn converge(seed: u64, ty: &Ty, n: usize, rounds: usize, partial: bool, expiry: bool) -> Option<Frag> {
     let mut r = Rng(seed | 1);
     let mut reps: Vec<Replica> =
-        (0..n).map(|i| Replica { w: Writer::new(Source::node(i as u8 + 1), 1 << 16, 0), state: None, expired: vec![], received: Received::default() }).collect();
+        (0..n).map(|i| Replica { w: Writer { keyed: i % 2 == 1, ..Writer::new(Source::node(i as u8 + 1), 1 << 16, 0) }, state: None, expired: vec![], received: Received::default() }).collect();
     let mut commits: Vec<Commit> = Vec::new();
     for round in 0..rounds {
         for i in 0..n {
@@ -767,7 +767,7 @@ fn converge_bootstrap(seed: u64, ty: &Ty, rounds: usize) {
     let mut r = Rng(seed | 1);
     let n = 3;
     let mut reps: Vec<Replica> =
-        (0..n).map(|i| Replica { w: Writer::new(Source::node(i as u8 + 1), 1 << 16, 0), state: None, expired: vec![], received: Received::default() }).collect();
+        (0..n).map(|i| Replica { w: Writer { keyed: i % 2 == 1, ..Writer::new(Source::node(i as u8 + 1), 1 << 16, 0) }, state: None, expired: vec![], received: Received::default() }).collect();
     let mut commits: Vec<Commit> = Vec::new();
     let mut joined_at = 0usize;
     for round in 0..rounds {
@@ -1055,7 +1055,7 @@ fn set_element_is_a_register_spec_3_2() {
 fn snapshot_authors_and_creations_round_trip() {
     use crdt_model::wire::{decode_snapshot_authors, encode_snapshot_authors, Authors};
     let c = [9u8; 32];
-    let mut w = Writer { source: Source::Commit(c), ts: 7 << 16, lo: 1, next: 1 };
+    let mut w = Writer { source: Source::Commit(c), ts: 7 << 16, lo: 1, next: 1, keyed: false };
     let ty = Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register));
     let v = Value::map(vec![(Value::Int(1), Value::Int(10)), (Value::Int(2), Value::Int(20))]);
     let f = ops::create(&mut w, &ty, &v);

@@ -56,10 +56,22 @@ pub fn verify_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
         return Err(Error::DeltaHash { ai: part.ai, di: part.di });
     }
     let cx = delta_ctx(h, id, part.ai, interner)?;
-    Ok(match cx.kind {
+    let d = match cx.kind {
         DeltaKind::Snapshot => Decoded::Snapshot(decode_snapshot(&part.delta, &cx, interner, pages)?),
         DeltaKind::Writer | DeltaKind::Import => Decoded::Delta(decode_delta(&part.delta, &cx, interner, pages)?),
-    })
+    };
+    check_entry_keys(a.ak.as_str(), d.fragment())?;
+    Ok(d)
+}
+
+/// A keyed map removal or tombstone (a keyed entry record with a reset) outside the
+/// membership-class aspects is malformed: an app map's key must not outlive its entry
+/// (spec/crdt.md §5.6).
+pub fn check_entry_keys(ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> {
+    if !osis_schema::core_types::is_membership_class(ak) && f.keyed_resets() {
+        return Err(Error::Malformed("keyed map removal outside a membership-class aspect"));
+    }
+    Ok(())
 }
 
 /// Verifies a received commit blob whose header lists are resolved: signature under the
