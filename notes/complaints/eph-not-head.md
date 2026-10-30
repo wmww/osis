@@ -1,0 +1,1 @@
+- A chained 'disable fix, run test, re-enable fix' command crossed the 120 s Bash cap (rebuild at load) and went to the background with the source still edited; it finished fine, but a wip commit before such probes is safer.
