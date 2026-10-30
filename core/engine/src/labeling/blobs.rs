@@ -411,7 +411,12 @@ pub fn delete_item(keys: &HeadKeys, label: &LabelId, blob: BlobId, at: Option<Wa
     if let Some(d) = &keys.delete {
         return osis_label::DeleteItem::sign(d, label, blob, at).ok();
     }
-    let (salt, hb) = blinding?;
+    delete_item_by_level(keys, label, blob, at, blinding?, dks)
+}
+
+/// A delete item by the first level of `dks` whose label key `keys` hold.
+pub fn delete_item_by_level(keys: &HeadKeys, label: &LabelId, blob: BlobId, at: Option<WallMs>, blinding: (&[u8; 16], &[u8; 16]), dks: &[(u8, DeleteSecret)]) -> Option<osis_label::DeleteItem> {
+    let (salt, hb) = blinding;
     for (level, dk) in dks {
         let key = match osis_label::key_for_level(*level).ok()? {
             LabelRole::Write => keys.write.as_ref(),
@@ -424,18 +429,16 @@ pub fn delete_item(keys: &HeadKeys, label: &LabelId, blob: BlobId, at: Option<Wa
     None
 }
 
-/// `item` signed again under `keys` (a head the label rotated to since it was made), by the
-/// label key it needs; `item` itself when that key is not held.
-pub fn resign_delete(keys: &HeadKeys, label: &LabelId, item: osis_label::DeleteItem) -> osis_label::DeleteItem {
-    let key = match item.by {
+/// The label key of `keys` that signs `item` (the delete key, or the key its level needs).
+pub fn delete_key<'a>(keys: &'a HeadKeys, item: &osis_label::DeleteItem) -> Option<&'a SigningSecret> {
+    match item.by {
         None => keys.delete.as_ref(),
         Some((level, _)) => match osis_label::key_for_level(level) {
             Ok(LabelRole::Write) => keys.write.as_ref(),
             Ok(_) => keys.sync.as_ref().filter(|_| keys.sync_established),
             Err(_) => None,
         },
-    };
-    key.and_then(|k| item.resign(k, label).ok()).unwrap_or(item)
+    }
 }
 
 /// Labeled things by their nearest labeled owner-chain actor with secrets of its own
