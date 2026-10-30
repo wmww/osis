@@ -310,22 +310,25 @@ impl SyncEngine {
     /// Finalizes the links due here (`Engine::links_due`, spec/permissions.md §9) after a
     /// complete pass of K's labels (`complete_pass`) that, for an expired link, ended at every
     /// server after `until` (a pass from before going offline does not count); at once when K's
-    /// labels have no server (the redeemers reach this node directly). A link whose
-    /// finalization failed is not tried again in this run.
+    /// labels have no server and this node made the link (the redeemers reached it directly;
+    /// another device of the sharer may not have their grants yet). A link whose finalization
+    /// failed is not tried again in this run.
     pub(crate) fn finalize_links(&mut self) -> Result<()> {
         let due = self.engine.links_due()?;
         if due.is_empty() {
             return Ok(());
         }
         self.labels();
-        for (k, l, until) in due {
+        for (h, until) in due {
+            let k = h.k;
             let labels: Vec<(LabelId, &Vec<ServerKey>)> = self.synced.actors.iter().filter(|(_, (a, _))| *a == k).map(|(id, (_, s))| (*id, s)).collect();
             let serverless = !labels.is_empty() && labels.iter().all(|(_, s)| s.is_empty());
             let after = labels.iter().all(|(id, s)| s.iter().all(|sv| self.passes.get(&(*sv, *id)).is_some_and(|p| until.is_none_or(|u| p.1 >= u.0))));
-            if self.links_failed.contains(&k) || !(serverless || (after && self.complete_pass(&k))) {
+            let ready = if serverless { h.here } else { after && self.complete_pass(&k) };
+            if self.links_failed.contains(&k) || !ready {
                 continue;
             }
-            match self.engine.finalize_link(&k, &l) {
+            match self.engine.finalize_link(&k, &h.l) {
                 Ok(done) => {
                     self.take_done(done)?;
                     self.mark_dirty();

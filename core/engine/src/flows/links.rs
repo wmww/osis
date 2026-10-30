@@ -25,6 +25,19 @@ use std::sync::Arc;
 /// The untyped aspect of the sharer-only thing that keeps a link's seed.
 pub const LINK_SEED: &str = "/link/seed";
 
+/// A link whose seed this node holds (`Engine::held_links`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct HeldLink {
+    pub k: Tid,
+    pub l: Tid,
+    /// The seed thing's owner: only a K of that owner counts (a seed thing a co-reader made and
+    /// placed in a shared group names no link of ours).
+    pub owner: Tid,
+    /// This node wrote the seed: it made the link, so a redeemer of a link without servers
+    /// reached this node.
+    pub here: bool,
+}
+
 /// What a sharer asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkSpec {
@@ -88,23 +101,24 @@ impl Engine {
     }
 
     /// The links whose seed this node holds (a sharer-only thing's `/link/seed`, readable on
-    /// every device of the sharer), as (K, L, the seed thing's owner). Cached until a
-    /// `/link/seed` changes. `links_due` takes only those whose K has that owner: a seed thing
-    /// anyone else made (a co-reader's, placed in a shared group) names no link of ours.
-    pub fn held_links(&mut self) -> Result<Arc<Vec<(Tid, Tid, Tid)>>> {
+    /// every device of the sharer). Cached until a `/link/seed` changes.
+    pub fn held_links(&mut self) -> Result<Arc<Vec<HeldLink>>> {
         if let Some(l) = &self.core.links {
             return Ok(l.clone());
         }
         let keep: Vec<Tid> = self.core.ix.by_aspect.keys().filter(|(_, a)| a.as_str() == LINK_SEED).map(|(t, _)| *t).collect();
         let ak = super::ak(LINK_SEED)?;
+        let me = self.tid();
         let mut out = Vec::new();
         for t in keep {
             if let Some(Value::Map(m)) = self.get(&t, &ak)?
                 && let (Some(Value::Tid(k)), Some(Value::Bytes(b))) = (m.get(&Value::Int(0)), m.get(&Value::Int(1)))
                 && let Ok(seed) = <[u8; 32]>::try_from(b.as_slice())
-                && let Some(o) = self.owner(&t)
+                && let Some(owner) = self.owner(&t)
             {
-                out.push((*k, crate::identity::Identity::from_seed(Secret32::from_bytes(seed)).tid(), o));
+                let ids: Vec<osis_base::CommitId> = self.core.ix.by_thing.get(&t).into_iter().flatten().copied().collect();
+                let here = ids.iter().any(|c| self.header(c).is_some_and(|h| h.author == me && h.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == LINK_SEED)));
+                out.push(HeldLink { k: *k, l: crate::identity::Identity::from_seed(Secret32::from_bytes(seed)).tid(), owner, here });
             }
         }
         out.sort();
@@ -114,19 +128,19 @@ impl Engine {
         Ok(out)
     }
 
-    /// The links this node should finalize now (spec/permissions.md §9), as (K, L): it holds
-    /// the seed and admin on K, and L's edge on K expired (`until`) or was removed by a
-    /// single-use redemption, with no explicit write on it since. The caller finalizes each
-    /// after a complete pass of K's labels, so the frontier covers the grants made while the
-    /// link worked that reached them. Idempotent across devices: a finalization by any of them
-    /// is that explicit write.
-    /// With each, its `until` when it expired.
-    pub fn links_due(&mut self) -> Result<Vec<(Tid, Tid, Option<WallMs>)>> {
+    /// The links this node should finalize now (spec/permissions.md §9): it holds the seed and
+    /// admin on K, and L's edge on K expired (`until`, given) or was removed by a single-use
+    /// redemption, with no explicit write on it since. The caller finalizes each after a
+    /// complete pass of K's labels, so the frontier covers the grants made while the link
+    /// worked that reached them. Idempotent across devices: a finalization by any of them is
+    /// that explicit write.
+    pub fn links_due(&mut self) -> Result<Vec<(HeldLink, Option<WallMs>)>> {
         let me = self.tid();
         let ts = super::now_ts(&self.core);
         let mut out = Vec::new();
-        for (k, l, o) in self.held_links()?.iter() {
-            let Some(tl) = self.core.timelines.get(k).filter(|_| self.owner(k) == Some(*o)) else { continue };
+        for h in self.held_links()?.iter() {
+            let (k, l) = (&h.k, &h.l);
+            let Some(tl) = self.core.timelines.get(k).filter(|_| self.owner(k) == Some(h.owner)) else { continue };
             let due = match tl.edges_at(None).get(l, k) {
                 Some(e) => (!e.alive_at(Some(ts))).then_some(e.until),
                 None => tl.lowered_unaudited(l, k).then_some(None),
@@ -134,7 +148,7 @@ impl Engine {
             if let Some(until) = due
                 && self.core.role_now(&me, k) == Some(Role::Admin)
             {
-                out.push((*k, *l, until));
+                out.push((*h, until));
             }
         }
         Ok(out)
@@ -146,8 +160,9 @@ impl Engine {
         let me = self.tid();
         let ts = super::now_ts(&self.core);
         let mut next: Option<u64> = None;
-        for (k, l, o) in self.held_links()?.iter() {
-            let Some(tl) = self.core.timelines.get(k).filter(|_| self.owner(k) == Some(*o)) else { continue };
+        for h in self.held_links()?.iter() {
+            let (k, l) = (&h.k, &h.l);
+            let Some(tl) = self.core.timelines.get(k).filter(|_| self.owner(k) == Some(h.owner)) else { continue };
             if let Some(e) = tl.edges_at(None).get(l, k)
                 && let Some(u) = e.until
                 && e.alive_at(Some(ts))
