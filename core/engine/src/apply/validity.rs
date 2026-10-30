@@ -732,13 +732,18 @@ impl<'a> Judge<'a> {
 fn valid_on(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai: usize, a: &osis_commit::AspectEntry) -> bool {
     let ak = a.ak.as_str();
     let point = Point { ts: h.ts, node: h.author, commit: *id };
-    // an applied invite grant carries the grantee's boxes (spec/permissions.md §1, §2)
+    // an applied invite grant carries the grantee's boxes (spec/permissions.md §1, §2): every
+    // put on the thing applied as an invite grant (`grant_overreach` checked the boxes against
+    // all of them), so a self-removal beside a failing put exempts nothing
     if ak == "/secrets"
         && let Some(c) = tl.membership_commit(id)
-        && c.ops.iter().enumerate().any(|(i, o)| o.target == a.tid && tl.is_applied(&WriteId::Op(*id, i as u32)))
         && !core.ix.grant_overreach.contains(&(*id, ai))
     {
-        return true;
+        let grant = |i: usize| matches!(tl.applied().get(&WriteId::Op(*id, i as u32)), Some(x) if matches!(x.attr, osis_perm::Attr::By(osis_perm::Class::Invite(_))));
+        let mut puts = c.ops.iter().enumerate().filter(|(_, o)| o.target == a.tid && o.edge.is_some()).peekable();
+        if puts.peek().is_some() && puts.all(|(i, _)| grant(i)) {
+            return true;
+        }
     }
     let dots = if h.kind == Kind::Import { Dots::Commit } else { dots_of(h, ai) };
     let required = core.ix.rotation_role.get(&(*id, ai)).copied().unwrap_or_else(|| required_role(ak));
@@ -1482,6 +1487,59 @@ mod tests {
             assert_eq!(lp.peers[r].engine.get(&shallow, &x).unwrap(), Some(Value::Int(2)), "peer {r}");
             assert_eq!(lp.peers[r].engine.get(&d, &x).unwrap(), None, "peer {r}");
         }
+    }
+    // spec/permissions.md §2: the invite exemption is for an applied invite grant's boxes. A
+    // reader pairing its own removal (which always applies) with a put that fails gets no
+    // exemption: its boxes for the failed grantee and its history boxes are judged as its own
+    // `/secrets` write (admin), invalid. A redemption-shaped grant by an invite holder stays valid.
+    #[test]
+    fn self_removal_beside_failing_grant_no_exemption_spec_perm_2() {
+        use osis_base::Tid;
+        use osis_crdt::{Op, PathOp};
+        let mut lp = LocalPeer::new(4, 908, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let (a, r, z, g) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3));
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let read = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+        lp.peers[0].engine.grant(&t, &r, &read).unwrap();
+        lp.sync_all().unwrap();
+        let before = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+        let (rk, rb) = before.boxes.iter().find(|(k, _)| k.member == r).map(|(k, v)| (k.clone(), v.clone())).unwrap();
+        let zk = ct::BoxKey { member: z, role: Role::Admin, epoch: rk.epoch.clone() };
+        let hk = ct::HistoryKey { role: Role::Admin, epoch: rk.epoch.clone() };
+        let commit = |lp: &mut LocalPeer, who: Tid, edge: ct::Edge, i: usize| {
+            let mut m = Mutation::new();
+            m.op(t, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(lp.peers[i].engine.tid())) }).unwrap();
+            crate::flows::put_edge(&mut m, t, who, &edge).unwrap();
+            let k = ct::BoxKey { member: who, role: edge.role, ..zk.clone() };
+            let h = ct::HistoryKey { role: edge.role, ..hk.clone() };
+            let w = osis_keys::SecretsWrite { boxes: [(k, rb.clone())].into_iter().collect(), history: [(h, vec![0; 48])].into_iter().collect(), ..Default::default() };
+            crate::flows::put_secrets(&mut m, t, &w, true).unwrap();
+            m.unchecked = true;
+            lp.peers[i].engine.core.skip_writer_rules = true;
+            let id = lp.peers[i].commit(m).unwrap().unwrap();
+            lp.peers[i].engine.core.skip_writer_rules = false;
+            let pk = lp.peers[i].engine.package(&id).unwrap().unwrap();
+            lp.deliver(0, &pk).unwrap();
+            let h = lp.peers[0].engine.header(&id).unwrap();
+            let si = h.aspects.iter().position(|x| x.ak.as_str() == "/secrets").unwrap();
+            lp.peers[0].engine.core.ix.commits.get(&id).unwrap().valid[si]
+        };
+        // the reader's self-removal plus a put of z at admin (no authority: fails)
+        assert!(!commit(&mut lp, z, ct::Edge { role: Role::Admin, ..read.clone() }, 1), "no exemption beside a failing put");
+        assert_eq!(lp.peers[0].engine.roster(&t).get(&z), None);
+        assert!(lp.peers[0].engine.roster(&t).get(&r).is_none(), "the self-removal applies");
+        let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+        assert!(!s.boxes.contains_key(&zk) && s.history.get(&hk) != Some(&vec![0; 48]));
+        // honest shape: an invite holder's grant of g plus its own removal (a redemption)
+        lp.peers[0].engine.grant(&t, &z, &ct::Edge { invite: Some(Role::Read), ..read.clone() }).unwrap();
+        lp.sync_all().unwrap();
+        assert!(commit(&mut lp, g, ct::Edge { role: Role::Read, ..read.clone() }, 2), "an applied invite grant's boxes");
+        assert_eq!(lp.peers[0].engine.roster(&t).get(&g).map(|e| e.role), Some(Role::Read));
     }
     // spec/permissions.md §2: an invite grant's `/secrets` aspect is one delta (the header
     // says so to every node), so validity never depends on which of several parts a node holds.
