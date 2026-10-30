@@ -13,6 +13,7 @@ pub const KNOWN: &[&str] = &[
     "OSIS_CRDT_SEED",
     "OSIS_EPH_SEEDS",
     "OSIS_EPH_START",
+    "OSIS_EPH_THREADS",
     "OSIS_INDEX_RULES",
     "OSIS_LARGE_MIB",
     "OSIS_LOG",
