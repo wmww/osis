@@ -4,7 +4,7 @@
 use crate::common;
 use common::*;
 use osis_base::Role;
-use osis_crypto::{Secret32, thing_role_secret};
+use osis_crypto::{Epoch, Secret32, thing_role_secret};
 use osis_keys::aspects::{box_key, history_key};
 use osis_keys::{ActorEpochs, MemberKeys, Opener, Recipient, ROLES, ingest, rotate};
 use osis_schema::core_types::{Keys, SecretBox, Secrets};
@@ -56,7 +56,9 @@ fn own_secrets_switch() {
     rot.secrets.apply(&mut s);
     let e = |r: Role| rot.rotated.iter().find(|x| x.role == r).unwrap().epoch;
     assert!(ROLES.iter().all(|r| e(*r).n() == 2));
-    assert_eq!(rot.wrap_epoch(), Some(ep(1, 0x20)));
+    let derived_read = thing_role_secret(w.pe.read.secret(&ep(1, 0x20)).unwrap(), Role::Read, &w.a);
+    let de = Epoch::derive(&w.a, Role::Read, 1, &derived_read).unwrap();
+    assert_eq!(rot.wrap_epoch(), Some(de));
     // Owner: three symmetric boxes of 49 bytes (spec/wire.md §7).
     for r in ROLES {
         match &s.boxes[&box_key(w.p, r, &e(r))] {
@@ -87,12 +89,12 @@ fn own_secrets_switch() {
     assert!(errs.is_empty(), "{errs:?}");
     // Opening establishes nothing; applying the rotation commit does (spec/crypto.md §4).
     assert!(ma.read.current().is_empty());
-    let applied = |v: &mut ActorEpochs| assert!(rot.secrets.applied(v, (&rot.keys, &Keys::default())).unwrap());
+    let applied = |v: &mut ActorEpochs| assert!(rot.secrets.applied(v, osis_base::CommitId([1; 32]), (&rot.keys, &Keys::default())).unwrap());
     applied(&mut ma);
-    // the derived epoch has no keyset: its secret from the history box is kept for reading
-    let derived_read = thing_role_secret(w.pe.read.secret(&ep(1, 0x20)).unwrap(), Role::Read, &w.a);
-    assert_eq!(ma.read.reading_secrets(&ep(1, 0x20)), vec![&derived_read]);
-    assert!(ma.read.secret(&ep(1, 0x20)).is_none());
+    // the history box hands M the derived secret at the epoch it names (unestablished here: M
+    // holds no secret of the owner)
+    assert_eq!(ma.read.secret(&de), Some(&derived_read));
+    assert!(!ma.read.is_established(&de));
     assert_eq!(ma.read.newest_held().unwrap().0, e(Role::Read));
     assert!(ma.write.held().next().is_none());
     me.read = Default::default();
@@ -158,10 +160,10 @@ fn fork_merge() {
     // A member's view after both deltas: both current, newest by lowest nonce; both secrets held.
     let mut ma = ActorEpochs::default();
     let mut k1 = Keys::default();
-    r1.secrets.applied(&mut ma, (&r1.keys, &k1)).unwrap();
+    r1.secrets.applied(&mut ma, osis_base::CommitId([1; 32]), (&r1.keys, &k1)).unwrap();
     r1.keys.apply(&mut k1);
-    for rot in [&x, &y] {
-        rot.secrets.applied(&mut ma, (&rot.keys, &k1)).unwrap();
+    for (i, rot) in [&x, &y].into_iter().enumerate() {
+        rot.secrets.applied(&mut ma, osis_base::CommitId([2 + i as u8; 32]), (&rot.keys, &k1)).unwrap();
     }
     ingest(&w.a, &s1, &Opener::Actor { member: w.m, epochs: &w.me }, &mut ma, None).unwrap();
     let mut cur = vec![ex, ey];
@@ -186,9 +188,10 @@ fn fork_merge() {
     ingest(&w.a, &s3, &Opener::Actor { member: w.m, epochs: &w.me }, &mut fresh, None).unwrap();
     // Holding s3 as a compaction snapshot establishes what it keys; history supersedes the rest.
     assert!(osis_keys::snapshot_keyed(&s3, &mut fresh).unwrap());
-    // no keyset of theirs is held: readable, not checked
-    for e in [ex, ey, r1.rotated[0].epoch, ep(1, 0x20)] {
-        assert!(fresh.read.secret(&e).is_none() && fresh.read.reading_secrets(&e).len() == 1, "{e:?}");
+    // every earlier secret is held at the epoch it names, no keyset needed
+    let de = derived.read.current()[0];
+    for e in [ex, ey, r1.rotated[0].epoch, de] {
+        assert!(fresh.read.secret(&e).is_some(), "{e:?}");
     }
     assert_eq!(fresh.read.current(), vec![z.rotated[0].epoch]);
     assert!(s3.history.contains_key(&history_key(Role::Read, &ex)));

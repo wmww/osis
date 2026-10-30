@@ -55,8 +55,8 @@ pub fn registered_epoch(re: &RoleEpochs, r: Role, index: u64, key: &VerifyingKey
     registered_secret(re, r, index, key).map(|(e, _)| e)
 }
 
-/// `registered_epoch` with the secret that derives `key` (of a reading-only epoch, the candidate
-/// that matches).
+/// `registered_epoch` with the secret that derives `key` (reading-only ones
+/// included).
 pub fn registered_secret<'a>(re: &'a RoleEpochs, r: Role, index: u64, key: &VerifyingKey) -> Option<(Epoch, &'a Secret32)> {
     re.held_newest_first().into_iter().find(|(_, s)| label_role_key(label_role(r), s, index).verifying_key() == *key)
 }

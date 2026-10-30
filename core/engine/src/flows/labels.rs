@@ -86,10 +86,10 @@ fn deposit_seed(tx: &mut Tx<'_>, group: &Tid) -> Result<Secret32> {
     Ok(Secret32::from_bytes(k))
 }
 
-/// Issues a step at the newest established epochs: a genesis step of a new label at `index`
+/// Issues a step of `group` at the newest established epochs: a genesis step of a new label at `index`
 /// when `parent` is none, else a child of the parent step (signed by the parent's delete key,
 /// from the admin secret of the epoch it registers).
-pub(crate) fn issue(tx: &mut Tx<'_>, epochs: &ActorEpochs, index: u64, parent: Option<(&Step, &Secret32)>, readers: &[ReaderKey], deposit: &Secret32) -> Result<(Step, ClaimSet)> {
+pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, index: u64, parent: Option<(&Step, &Secret32)>, readers: &[ReaderKey], deposit: &Secret32) -> Result<(Step, ClaimSet)> {
     let [(re, rs), (_, ws), (_, adm)] = registration_epochs(epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
     let label = parent.map_or_else(|| genesis_label(adm, index), |(p, _)| p.label);
     let keys = StepKeys::derive(rs, ws, adm, index, deposit, &label);
@@ -105,7 +105,7 @@ pub(crate) fn issue(tx: &mut Tx<'_>, epochs: &ActorEpochs, index: u64, parent: O
         None => Parent::Genesis(&del),
         Some((step, _)) => Parent::Child { step, delete: &del },
     };
-    Ok(register(p, keys, &rk, (re, rs), &mut *tx.rng)?)
+    Ok(register(p, keys, &rk, (group, re, rs), &mut *tx.rng)?)
 }
 
 /// `/label` write: a new label of `group` with its genesis step, or a step added.
@@ -127,7 +127,7 @@ pub(crate) fn put_label(m: &mut Mutation, group: Tid, label: LabelId, index: u64
 /// newest epochs, written to `/label` in `m`. Returns the label ID.
 pub(crate) fn new_label(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs: &ActorEpochs, readers: &[ReaderKey], deposit: &Secret32, servers: &[Address]) -> Result<LabelId> {
     let index = labels_of(tx, &group)?.values().map(|l| l.index.saturating_add(1)).max().unwrap_or(0);
-    let (step, set) = issue(tx, epochs, index, None, readers, deposit)?;
+    let (step, set) = issue(tx, &group, epochs, index, None, readers, deposit)?;
     put_label(m, group, step.label, index, &step, &set, Some(servers))?;
     Ok(step.label)
 }
@@ -220,7 +220,7 @@ impl Engine {
                 }
             }
             let rs = readers(tx, &g, &re)?;
-            let (step, set) = issue(tx, &epochs, rec.index, Some((&head, &admin_secret)), &rs, &deposit)?;
+            let (step, set) = issue(tx, &g, &epochs, rec.index, Some((&head, &admin_secret)), &rs, &deposit)?;
             let mut m = Mutation::new();
             put_label(&mut m, g, l, rec.index, &step, &set, None)?;
             done.add(Engine::commit_tx(tx, m)?);

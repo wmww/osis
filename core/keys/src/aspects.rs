@@ -3,7 +3,7 @@
 
 use crate::epoch::{ActorEpochs, SUITE};
 use crate::Error;
-use osis_base::Role;
+use osis_base::{CommitId, Role};
 use osis_crypto::{DeleteSecret, Epoch, Secret32, role_kem};
 use osis_schema::core_types::{self as ct, BoxKey, HistoryKey, KemKey, Keys, Keyset, SecretBox, Secrets, SigningKey};
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,21 +33,6 @@ pub fn keyset(epoch: &Epoch, secret: &Secret32) -> Keyset {
         suite: SUITE,
         delete_key: SigningKey::Ed25519(DeleteSecret::derive(secret).verifying_key().to_bytes().to_vec()),
     }
-}
-
-/// Records the keysets of the actor's `/keys` (`RoleEpochs::set_keyset`): the keyset of an
-/// epoch names the KEM and delete keys derived from its genuine secret (spec/crypto.md §3), so
-/// a planted secret for a published epoch never stays. Returns (anything changed, a held secret
-/// dropped).
-pub fn check_keysets(epochs: &mut ActorEpochs, keys: &Keys) -> (bool, bool) {
-    let mut out = (false, false);
-    for r in crate::epoch::ROLES {
-        let Some(ks) = keyset_of(keys, r) else { continue };
-        let Ok(e) = from_schema(&ks.epoch) else { continue };
-        let (c, d) = epochs.role_mut(r).set_keyset(e, ks);
-        out = (out.0 | c, out.1 | d);
-    }
-    out
 }
 
 /// A write to `/secrets`: boxes put, boxes removed, history boxes put (spec/crypto.md §4).
@@ -139,23 +124,15 @@ impl SecretsWrite {
         Ok(self.rotations(Some(keys))?.into_iter().filter(|(r, e, _)| w.keysets.get(r).is_some_and(|ks| ks.epoch == to_schema(e))).collect())
     }
 
-    /// The commit carrying this write (and `keys`) is applied and valid: records its epochs, marks
-    /// its rotations applied with their history boxes (`RoleEpochs::set_history`), records the
-    /// keysets its `/keys` write publishes (`check_keysets`) and recomputes establishment
-    /// (spec/crypto.md §4). Returns whether establishment or anything recorded changed (persist
-    /// then; reopen the history boxes when the actor holds candidates).
-    pub fn applied(&self, epochs: &mut ActorEpochs, keys: (&KeysWrite, &Keys)) -> Result<bool, Error> {
+    /// The commit `commit` carrying this write (and `keys`) is applied and valid: records its
+    /// epochs, marks its rotations applied by it and recomputes establishment (spec/crypto.md
+    /// §4). Returns whether establishment or a rotation recorded changed (persist then).
+    pub fn applied(&self, epochs: &mut ActorEpochs, commit: CommitId, keys: (&KeysWrite, &Keys)) -> Result<bool, Error> {
         self.observe(epochs, Some(keys))?;
         let mut recorded = false;
         for (r, e, sup) in self.rotation_commit(keys)? {
-            epochs.role_mut(r).set_applied(e, sup);
-            if let Some(ct) = self.history.get(&history_key(r, &e)) {
-                recorded |= epochs.role_mut(r).set_history(e, ct);
-            }
+            recorded |= epochs.role_mut(r).set_applied(e, commit, sup);
         }
-        let mut published = Keys::default();
-        keys.0.apply(&mut published);
-        recorded |= check_keysets(epochs, &published).0;
         Ok(epochs.establish() | recorded)
     }
 }

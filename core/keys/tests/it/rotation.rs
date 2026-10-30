@@ -106,7 +106,7 @@ fn wrap_under_held_superseded() {
     let (a, p, pe, mut view, s) = switched(&[]);
     let e1 = view.read.newest().unwrap();
     // A fork the rotator knows but holds no secret of, newer than its own.
-    let fork = Epoch::new(e1.n(), [0; 16]).unwrap();
+    let fork = Epoch::new(e1.n(), [0; 32]).unwrap();
     view.read.rotation(fork, view.read.get(&e1).unwrap().supersedes.clone());
     view.read.set_established(fork, osis_keys::Provenance::Own);
     assert_eq!(view.read.newest(), Some(fork));
@@ -137,12 +137,12 @@ fn supersedes_from_keyset_bump() {
     // A non-holder applying both rotation commits.
     let observe = |with_keys: bool| {
         let mut v = ActorEpochs::default();
-        assert!(r1.secrets.applied(&mut v, (&r1.keys, &Keys::default())).unwrap());
+        assert!(r1.secrets.applied(&mut v, osis_base::CommitId([1; 32]), (&r1.keys, &Keys::default())).unwrap());
         if with_keys {
-            assert!(r2.secrets.applied(&mut v, (&r2.keys, &keys)).unwrap());
+            assert!(r2.secrets.applied(&mut v, osis_base::CommitId([2; 32]), (&r2.keys, &keys)).unwrap());
         } else {
             r2.secrets.observe(&mut v, None).unwrap();
-            v.read.set_applied(er2, []);
+            v.read.set_applied(er2, osis_base::CommitId([2; 32]), []);
             v.establish();
         }
         v.read.current()
@@ -172,9 +172,9 @@ fn observe_and_extend() {
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
     let reseal = osis_keys::reseal_member(&a, &rv, &s2, &key_rcpt(k, Role::Read, &seed), &set(&[Role::Read]), &mut rng(3)).unwrap().unwrap();
     assert!(!reseal.history.is_empty());
-    assert!(!reseal.applied(&mut v, (&osis_keys::KeysWrite::default(), &Keys::default())).unwrap());
+    assert!(!reseal.applied(&mut v, osis_base::CommitId([3; 32]), (&osis_keys::KeysWrite::default(), &Keys::default())).unwrap());
     assert!(!v.read.is_current(&e2));
-    assert!(rot.secrets.applied(&mut v, (&rot.keys, &Keys::default())).unwrap());
+    assert!(rot.secrets.applied(&mut v, osis_base::CommitId([2; 32]), (&rot.keys, &Keys::default())).unwrap());
     assert_eq!(v.read.current(), vec![e2]);
     assert_eq!(v.read.provenance(&e2), Some(osis_keys::Provenance::Chain));
     let key = box_key(p, Role::Read, &e2);

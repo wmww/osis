@@ -236,10 +236,8 @@ pub fn rotate(
         let re = held.role(r);
         let supersedes: BTreeSet<Epoch> = re.current().into_iter().collect();
         let n = supersedes.iter().map(Epoch::n).max().ok_or(Error::NoEpoch(r))?;
-        let mut nonce = [0u8; 16];
-        rng.fill_bytes(&mut nonce);
-        let epoch = Epoch::new(n + 1, nonce)?;
         let secret = Secret32::random(rng);
+        let epoch = Epoch::derive(actor, r, n + 1, &secret)?;
         if r == Role::Read {
             wrap = newest_of(supersedes.iter().filter(|e| re.secret(e).is_some()));
         }

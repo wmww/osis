@@ -160,7 +160,7 @@ fn person_and_pairing_spec_perm_1() {
     // the recovery key reads the current step's entry box
     let rk = osis_crypto::KeyActorKeys::from_seed(&card.seed);
     let eb = set.unwrap().entry_box(&card.home_label, &rk.signing.verifying_key()).cloned().unwrap();
-    let (_, read) = osis_label::open_entry_box(&eb, &step, osis_label::EntryKey::Kem(&rk.kem)).unwrap();
+    let (_, read) = osis_label::open_entry_box(&eb, &step, osis_label::EntryKey::Kem(&rk.kem), &p).unwrap();
     let held = e0.epochs(&p).unwrap();
     assert_eq!(held.read.newest_held().unwrap().1, &read);
     // the second device: admin, holds the same secrets
@@ -1544,10 +1544,8 @@ fn no_rotation_that_cannot_cover_spec_perm_3() {
 // spec/permissions.md §7, spec/crypto.md §3, §4: a doc moved into a team without secrets of
 // its own: the copy's own-secrets rotation boxes nobody (the team has no keyset). The writer,
 // who does not read the team, gets the re-grant before the rotation commit (wrapped under the
-// copy's derived epoch): its history box hands it that epoch for reading (no keyset of a derived
-// epoch exists, and the grant's copy is not checked until the rotation commit that wrote it is
-// applied), and once the rotation commit is opened the derived secret is checked and its write
-// epoch established.
+// copy's derived epoch): its history box hands it that epoch's secret (it names its epoch), and
+// once the rotation commit is opened its write epoch is established.
 #[test]
 fn move_into_derived_owner_spec_perm_7() {
     let (mut lp, ps) = people(2, 519);
@@ -1569,11 +1567,10 @@ fn move_into_derived_owner_spec_perm_7() {
     let e = lp.peers[1].engine.epochs(&copy).unwrap();
     let derived = lp.peers[0].engine.epochs(&copy).unwrap().read.epochs().filter(|(_, i)| i.established == Some(osis_keys::Provenance::Derived)).map(|(k, _)| *k).max_by_key(|k| k.n()).unwrap();
     let genuine = lp.peers[0].engine.epochs(&copy).unwrap().read.secret(&derived).cloned().unwrap();
-    assert_eq!(e.read.reading_secrets(&derived), vec![&genuine], "the grant's history box opens the derived epoch");
-    assert!(e.read.secret(&derived).is_none());
+    assert_eq!(e.read.secret(&derived), Some(&genuine), "the grant's history box opens the derived epoch");
     send(&mut lp, 0, 1, &own);
     let e = lp.peers[1].engine.epochs(&copy).unwrap();
-    assert_eq!(e.read.secret(&derived), Some(&genuine), "checked by the rotation commit");
+    assert_eq!(e.read.secret(&derived), Some(&genuine));
     assert!(e.write.newest_held().is_some(), "bob holds an established write epoch of the copy");
 }
 
@@ -1927,14 +1924,14 @@ fn stale_key_actor_box_after_until_spec_crypto_4() {
     lp.peers[1].engine.demote(&t, &Demotion { member: pc, new: Some(edge_of(Role::Read)), presync: PreSync::Synced }).unwrap();
     spread(&mut lp);
     let r0 = newest_read(&lp, 1, t).unwrap();
-    assert!(!lp.peers[3].engine.epochs(&t).unwrap().read.reading_secrets(&r0).is_empty(), "the key actor holds the read epoch");
+    assert!(!lp.peers[3].engine.epochs(&t).unwrap().read.reading_secret(&r0).is_none(), "the key actor holds the read epoch");
     lp.advance(2 * 3_600_000);
     let (done, still) = lp.peers[1].engine.ensure_rotated(&t).unwrap();
     assert!(still.is_empty());
     let r1 = newest_read(&lp, 1, t).unwrap();
     assert_ne!(r0, r1, "read rotated: {done:?}");
     spread(&mut lp);
-    assert!(lp.peers[3].engine.epochs(&t).unwrap().read.reading_secrets(&r1).is_empty(), "the departed key actor is out");
+    assert!(lp.peers[3].engine.epochs(&t).unwrap().read.reading_secret(&r1).is_none(), "the departed key actor is out");
 }
 
 // spec/commits.md §3 (shared key commit form): a link key, usable from several devices, signs
@@ -2129,9 +2126,10 @@ fn planted_epoch_blocks_no_removal_spec_crypto_4() {
     let before = lp.peers[0].engine.epochs(&d).unwrap();
     let n0 = before.read.newest().unwrap().n();
     // an openable box to pa at the top, and unopenable ones (keyed to bob) at huge epochs
-    let top = osis_crypto::Epoch::new(i64::MAX as u64, [1; 16]).unwrap();
+    let top_secret = osis_crypto::Secret32::from_bytes([0xee; 32]);
+    let top = osis_crypto::Epoch::derive(&d, Role::Read, i64::MAX as u64, &top_secret).unwrap();
     let mut v = osis_keys::ActorEpochs::default();
-    v.read.set_secret(top, osis_crypto::Secret32::from_bytes([0xee; 32]));
+    v.read.set_secret(top, top_secret);
     v.read.set_established(top, osis_keys::Provenance::Own);
     let pk = lp.peers[0].engine.get_typed(&pa, &ct::KEYS).unwrap().unwrap();
     let rc = osis_keys::Recipient { member: pa, role: Role::Admin, keys: osis_keys::MemberKeys::from_keys(&pk).unwrap() };
@@ -2140,14 +2138,14 @@ fn planted_epoch_blocks_no_removal_spec_crypto_4() {
     w.apply(&mut s);
     let junk = ct::SecretBox::Symmetric(ct::SymmetricBox { epoch: osis_keys::aspects::to_schema(&top), wrap: vec![0; 49] });
     for i in 0..100u64 {
-        let e = osis_crypto::Epoch::new(i64::MAX as u64 - 1 - i, [2; 16]).unwrap();
+        let e = osis_crypto::Epoch::new(i64::MAX as u64 - 1 - i, [2; 32]).unwrap();
         s.boxes.insert(osis_keys::aspects::box_key(pb, Role::Read, &e), junk.clone());
     }
     let forged = stranger_secrets(&mut lp, d, &s);
     lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap();
     assert!(!lp.peers[0].engine.pending().is_empty(), "held pending: its author is unknown");
     let held = lp.peers[0].engine.epochs(&d).unwrap();
-    assert!(held.read.is_reading_only(&top), "the openable box: a reading-only candidate");
+    assert!(held.read.is_reading_only(&top), "the openable box: reading-only");
     assert_eq!(held.read.epochs().count(), before.read.epochs().count() + 1, "no entry for the unopenable boxes");
     let done = lp.peers[0].engine.demote(&d, &Demotion { member: pb, new: None, presync: PreSync::Synced }).unwrap();
     assert!(!done.commits.is_empty());
