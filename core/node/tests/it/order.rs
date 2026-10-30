@@ -1462,3 +1462,49 @@ fn snapshot_of_overwritten_entry_value_dies_any_order_spec_commits_5() {
         assert_eq!(first(&mut k), Some(ts), "order {rel:?}: recomputed");
     }
 }
+
+// spec/commits.md §5 (a date is never earlier than the death): B's snapshot carries A's entry
+// creation and B's own value write, which overwrote A's (B saw A's first value, not A's second,
+// lower `ts` than the snapshot's: that one kills A's first value, a write the snapshot does not
+// carry but whose stamp its creation shares); A's removal after the snapshot kills both. The
+// snapshot's first death is the removal's `ts`, never its own (dated there by the shared stamp).
+#[test]
+#[ignore = "issues/snapshot-death-shared-stamp.md: the recompute dates it at the snapshot's ts"]
+fn snapshot_sharing_stamp_of_unseen_death_not_dated_early_spec_commits_5() {
+    use Step::*;
+    let h = vec![
+        Write { by: 0, t: 0, op: 19, k: 0, v: 6 },
+        Send { from: 0, to: 1, back: 0 },
+        Advance { who: None, ms: 1 },
+        Write { by: 0, t: 0, op: 19, k: 0, v: 7 },
+        Advance { who: None, ms: 1 },
+        Write { by: 1, t: 0, op: 19, k: 0, v: 8 },
+        Send { from: 1, to: 0, back: 0 },
+        Advance { who: None, ms: 1 },
+        Compact { by: 1, t: 0, op: 19 },
+        Advance { who: None, ms: 1 },
+        Write { by: 0, t: 0, op: 20, k: 0, v: 0 },
+    ];
+    let played = play(2700027, &h);
+    let b = played.base;
+    let n = played.packs.len() - b;
+    let mut orders = vec![(b..b + n).collect::<Vec<_>>()];
+    while let Some(o) = next_perm(orders.last().unwrap()) {
+        orders.push(o);
+    }
+    for rel in orders {
+        let mut k = Peer::new(FRESH, played.now).unwrap();
+        k.engine.keep_bodies(true);
+        for &i in (0..b).chain(rel.iter().copied()).collect::<Vec<_>>().iter() {
+            let pk = &played.packs[i];
+            let _ = k.engine.ingest(&pk.bytes, pk.blobs.clone());
+        }
+        let snap = k.engine.commit_ids().into_iter().find(|id| k.engine.header(id).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot)).expect("a snapshot");
+        let a = k.engine.header(&snap).unwrap().aspects[0].clone();
+        let ts = k.engine.header(&snap).unwrap().ts;
+        let first = |k: &mut Peer| k.engine.deaths(&snap, &a.tid, &a.ak).unwrap().map(|d| d.0);
+        assert!(first(&mut k).is_some_and(|f| f > ts), "order {rel:?}: {:?}, snapshot at {ts:?}", first(&mut k));
+        k.engine.replay_deaths(&a.tid, &a.ak).unwrap();
+        assert!(first(&mut k).is_some_and(|f| f > ts), "order {rel:?}: recomputed {:?}, snapshot at {ts:?}", first(&mut k));
+    }
+}
