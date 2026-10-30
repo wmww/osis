@@ -867,7 +867,9 @@ impl Osis {
 
     /// Resolves once every label in scope finished a pass with nothing outstanding after the
     /// local commits so far (they are at a server); fails `Unsynced` for a stranded or
-    /// server-less group in scope, `Network` after `timeout` or without a runtime.
+    /// server-less group in scope, `Network` after `timeout` or without a runtime. Also waits
+    /// for every queued deposit (any scope): a grant to a recipient whose inbox server refuses
+    /// it for now (not registered yet, budget full) keeps it waiting until taken.
     pub async fn wait_synced(&self, scope: SyncScope, timeout: Duration) -> Result<()> {
         let groups = self.locked(|x| {
             let st = status_of(&mut x.sync);

@@ -361,6 +361,30 @@ impl SyncEngine {
         self.group_of(l).is_some_and(|g| self.is_replaced(&g, l))
     }
 
+    /// Signs queued deposit `(server, l, b)` again with the label's current deposit key (an
+    /// inbox's from its owner's `/keys`), after its server found it signed by an earlier one;
+    /// false when this node holds no other key, so it can never be taken.
+    pub(crate) fn resign_deposit(&mut self, server: &ServerKey, l: &LabelId, b: &BlobId) -> Result<bool> {
+        let Some(o) = self.state.outbox.get(&(*server, *l, *b)).cloned() else { return Ok(false) };
+        let seed = match o.delivery {
+            Some((member, _)) => {
+                let owner = self.inbox_owner(&member, l)?.unwrap_or(member);
+                self.engine.get_typed(&owner, &ct::KEYS)?.and_then(|k| k.deposit_seed).map(osis_crypto::Secret32::from_bytes)
+            }
+            None => match self.group_of(l) {
+                Some(g) => self.engine.deposit_seed(&g)?,
+                None => None,
+            },
+        };
+        let Some(seed) = seed else { return Ok(false) };
+        let sig = osis_label::sign_deposit(&osis_crypto::deposit_key(&seed, l), l, b, &o.wrap);
+        if sig == o.sig {
+            return Ok(false);
+        }
+        self.state.add_out(super::state::OutRec { sig, ..o });
+        Ok(true)
+    }
+
     /// Whether `member` is still a current member of a thing whose edges or secrets commit `c`
     /// writes (a grant or re-seal is re-sent only while the member holds what it gave; a removal
     /// since then must not hand it the target's current label).
