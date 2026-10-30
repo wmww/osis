@@ -132,8 +132,8 @@ ClaimSet := [[claim+], {entry: box}]
 
 ## 9. Inbox blobs
 - **Inbox blob** (spec/crypto.md §5): prefix with expiry = the sender's corrected wall ms + `INBOX_LIFETIME` and no commitments, then a sealed box (§7) to the recipient's newest read keyset KEM key with AD = `[recipient, "inbox", prefix bytes]` and payload the padded (§5) canonical bytes of
-  `InboxPayload := [CommitBlobPlaintext, [[tid, label_id, [address*], Opt([admin_pk, write_pk])]*]]`:
-  the membership commit with the parts about the recipient (§4), then for each thing it names, its label ID and server addresses (`address` values, spec/data-model.md §9) and, for a thing with secrets of its own, its current admin and write delete keys (spec/crypto.md §7), sorted by tid.
+  `InboxPayload := [CommitBlobPlaintext, [[tid, label_id, index, [address*], Opt([admin_pk, write_pk])]*]]`:
+  the membership commit with the parts about the recipient (§4), then for each thing it names, its label ID, that label's index (uint, spec/sync.md §2) and server addresses (`address` values, spec/data-model.md §9) and, for a thing with secrets of its own, its current admin and write delete keys (spec/crypto.md §7), sorted by tid.
 
 ## 10. Links and recovery cards
 ```
@@ -143,6 +143,7 @@ Card := [1, seed, person, home_label, [address+]]
 ```
 - `Link` (spec/permissions.md §9): format 1, L's 32-byte seed, the target tid, K's tid, K's label ID, server addresses of K's label, and the sharer node's P2P reach for first contact: `dialable` its 32-byte dialable key, `relay` relay URLs (`/reach`, spec/data-model.md §9). A redeemer with no common server dials a peer, which serves K's label as a member peer (spec/sync.md §5). `flags` (uint): bit 0 single use (the redemption removes L's own edge, spec/permissions.md §9); other bits are reserved and MUST be zero; present only when nonzero (a link with `flags` 0 or a reserved bit set is malformed).
 - `Card` (spec/permissions.md §9): format 1, the recovery key's 32-byte seed, the person actor's tid, its home label ID, server addresses.
+- The label a link or card names is the first label of K or of the person (index 0, spec/sync.md §2): both are created with it.
 - Caps: at most 8 addresses, 4 peers, 4 relays per peer; URLs at most 256 bytes.
 - Text forms: `osis://link/` or `osis://card/` followed by the unpadded base64url of the canonical bytes.
 

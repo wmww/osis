@@ -1263,7 +1263,7 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     let mut rng = osis_crypto::SeededRng::from_u64(7);
     for id in [cc, unrelated] {
         let commit = osis_base::decode(&net.engine(c).package(&id).unwrap().unwrap().bytes, &osis_base::Limits { max_depth: 512, max_bytes: 1 << 24 }).unwrap();
-        let payload = osis_label::InboxPayload { commit, things: vec![osis_label::InboxThing { tid: g, label: osis_base::LabelId([0; 16]), servers: vec![], delete_keys: Some((ck, ck)) }] };
+        let payload = osis_label::InboxPayload { commit, things: vec![osis_label::InboxThing { tid: g, label: osis_base::LabelId([0; 16]), index: 0, servers: vec![], delete_keys: Some((ck, ck)) }] };
         let blob = osis_label::seal_inbox_blob(&bob.person, &kem, &payload, osis_base::WallMs(net.now()), &mut rng).unwrap();
         let _ = net.engine(b).accept_inbox(&blob);
     }

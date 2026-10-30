@@ -112,6 +112,9 @@ pub struct OutRec {
     pub blob: Vec<u8>,
     pub wrap: [u8; WRAP_LEN],
     pub sig: Signature,
+    /// The inbox delivery (`State::sent_inbox` key) this blob is a seal of: dropped when that
+    /// delivery is forgotten or sealed again.
+    pub delivery: Option<(Tid, CommitId)>,
 }
 
 /// A membership commit delivered by inbox to `member` (spec/sync.md §3): re-sealed and sent
@@ -134,6 +137,8 @@ pub struct SentInbox {
 #[derive(Clone, Debug)]
 pub struct Hint {
     pub thing: Tid,
+    /// The label's index (its role keys derive from it, spec/sync.md §2).
+    pub index: u64,
     pub servers: Vec<Address>,
     /// The key actor whose static entry may open it; no other key actor's is presented.
     pub via: Option<Tid>,
@@ -446,9 +451,10 @@ impl State {
                     let l = LabelId(r.arr()?);
                     let mut x = Rd::new(&v);
                     let thing = x.tid()?;
+                    let index = x.u64()?;
                     let servers = decode_addrs(&mut x, "hint")?;
                     let via = if x.is_empty() { None } else { Some(x.tid()?) };
-                    s.hints.insert(l, Hint { thing, servers, via });
+                    s.hints.insert(l, Hint { thing, index, servers, via });
                 }
                 _ => {}
             }
@@ -877,7 +883,11 @@ impl State {
 
     pub fn add_out(&mut self, o: OutRec) {
         let id = osis_label::blob_id(&o.blob);
-        let v = Wr::new().raw(&o.label.0).bytes(o.server.url.as_bytes()).raw(&o.server.key).raw(&o.wrap).raw(&o.sig.0).bytes(&o.blob).take();
+        let mut w = Wr::new().raw(&o.label.0).bytes(o.server.url.as_bytes()).raw(&o.server.key).raw(&o.wrap).raw(&o.sig.0).bytes(&o.blob);
+        if let Some((m, c)) = &o.delivery {
+            w = w.raw(m.as_bytes()).raw(&c.0);
+        }
+        let v = w.take();
         self.put(key(OUTBOX, &[&o.server.key, &o.label.0, &id.0]), v);
         self.outbox.insert((o.server.key, o.label, id), o);
         self.version += 1;
@@ -896,7 +906,7 @@ impl State {
         if h.via.is_none() {
             h.via = self.hints.get(&l).and_then(|x| x.via);
         }
-        let mut w = encode_addrs(Wr::new().raw(h.thing.as_bytes()), &h.servers);
+        let mut w = encode_addrs(Wr::new().raw(h.thing.as_bytes()).u64(h.index), &h.servers);
         if let Some(v) = &h.via {
             w = w.raw(v.as_bytes());
         }
@@ -1031,10 +1041,11 @@ fn decode_out(k: &[u8], v: &[u8]) -> Result<((ServerKey, LabelId, BlobId), OutRe
     let wrap = x.arr()?;
     let sig = Signature(x.arr()?);
     let blob = x.bytes()?.to_vec();
+    let delivery = if x.is_empty() { None } else { Some((x.tid()?, CommitId(x.arr()?))) };
     if !x.is_empty() {
         return Err(Error::Corrupt("outbox"));
     }
-    Ok((key, OutRec { label, server, blob, wrap, sig }))
+    Ok((key, OutRec { label, server, blob, wrap, sig, delivery }))
 }
 
 fn decode_sent(v: &[u8]) -> Result<SentInbox> {
@@ -1127,8 +1138,8 @@ mod tests {
     fn inbox_hint_keeps_followed_key_actor_spec_sync_5() {
         let mut s = State::default();
         let (l, t, k) = (LabelId([1; 16]), Tid::from_bytes([2; 15]), Tid::from_bytes([3; 15]));
-        s.add_hint(l, Hint { thing: t, servers: Vec::new(), via: Some(k) });
-        s.add_hint(l, Hint { thing: t, servers: Vec::new(), via: None });
+        s.add_hint(l, Hint { thing: t, index: 0, servers: Vec::new(), via: Some(k) });
+        s.add_hint(l, Hint { thing: t, index: 0, servers: Vec::new(), via: None });
         assert_eq!(s.hints.get(&l).and_then(|h| h.via), Some(k));
     }
 }

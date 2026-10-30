@@ -91,10 +91,10 @@ pub fn deliver_parts(tx: &mut Tx<'_>, member: Tid, c: CommitId, things: &[Tid], 
     let mut seen = BTreeSet::new();
     for t in things {
         if seen.insert(*t)
-            && let Some((label, servers)) = label_for(tx, t)?
+            && let Some((label, index, servers)) = label_for(tx, t)?
         {
             let delete_keys = crate::engine::secrets::own_delete_keys(tx, t)?;
-            ts.push(InboxThing { tid: *t, label, servers, delete_keys });
+            ts.push(InboxThing { tid: *t, label, index, servers, delete_keys });
         }
     }
     ts.sort_by_key(|t| t.tid);

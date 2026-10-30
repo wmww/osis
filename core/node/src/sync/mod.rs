@@ -203,7 +203,8 @@ pub struct PassStats {
 /// One label on one connection.
 pub(crate) struct LConn {
     pub group: Tid,
-    pub index: Option<u64>,
+    /// The label's index (recorded, or the hint's).
+    pub index: u64,
     pub phase: Phase,
     pub tries: Vec<open::Try>,
     pub tried_claim: bool,
@@ -1578,7 +1579,7 @@ mod tests {
             let b = osis_base::BlobId([1; 32]);
             s.conns.get_mut(&conn).unwrap().req.fetching.insert(b);
             let d = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
-            s.queue_deposit(LabelId([1; 16]), std::slice::from_ref(&server), &d, vec![9; 40], [3; osis_crypto::WRAP_LEN]);
+            s.queue_deposit(LabelId([1; 16]), std::slice::from_ref(&server), &d, vec![9; 40], [3; osis_crypto::WRAP_LEN], None);
             for o in s.outbox.values_mut() {
                 o.sent = Some(conn);
             }
@@ -1627,12 +1628,15 @@ mod tests {
         let server = Address { url: "quic://server:1".into(), key: [7; 32] };
         let mut s = SyncEngine::new(p.engine, p.clock, Box::new(osis_crypto::SeededRng::from_u64(967)), SyncConfig::default()).unwrap();
         let d = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
-        for l in [LabelId([1; 16]), LabelId([2; 16])] {
-            s.queue_deposit(l, std::slice::from_ref(&server), &d, vec![9; 40], [3; osis_crypto::WRAP_LEN]);
+        let delivery = Some((osis_base::Tid::from_bytes([4; 15]), osis_base::CommitId([6; 32])));
+        for (l, x) in [(LabelId([1; 16]), None), (LabelId([2; 16]), delivery)] {
+            s.queue_deposit(l, std::slice::from_ref(&server), &d, vec![9; 40], [3; osis_crypto::WRAP_LEN], x);
         }
         assert_eq!(s.deliveries_pending(), 2);
         s.state.flush(&mut s.engine).unwrap();
         let back = State::load(&mut s.engine).unwrap();
         assert_eq!(back.outbox.len(), 2, "both survive a restart");
+        let got: Vec<_> = back.outbox.values().map(|o| (o.label, o.delivery)).collect();
+        assert_eq!(got, vec![(LabelId([1; 16]), None), (LabelId([2; 16]), delivery)], "with the delivery each serves");
     }
 }

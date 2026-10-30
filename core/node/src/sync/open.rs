@@ -19,14 +19,11 @@ use std::collections::BTreeMap;
 /// Reopens of one label on one connection before backing off to the retry timer.
 const MAX_REOPENS: u32 = 3;
 
-/// Hint labels: indexes tried for the sync key when only the label ID is known.
-const HINT_INDEXES: u64 = 4;
-
 /// An open attempt.
 #[derive(Clone)]
 pub(crate) enum Try {
     /// The sync key of a step (`step`: its ID when recorded).
-    Sync { step: Option<Step>, index: u64, key: SigningSecret },
+    Sync { step: Option<Step>, key: SigningSecret },
     /// A claim at a step.
     Claim { step: Step, key: SigningSecret },
     /// A key actor this node holds (a recovery or link key) by its static entry; the head's
@@ -105,32 +102,27 @@ impl SyncEngine {
     }
 
     /// Open attempts in order: the known head, recorded steps deepest first by sync key, then
-    /// by claim key; for a hint, guessed indexes.
-    fn tries(&mut self, server: &[u8; 32], g: &Tid, l: &LabelId) -> (Option<u64>, Vec<Try>) {
+    /// by claim key; for a hint, the sync keys at the index it names.
+    fn tries(&mut self, server: &[u8; 32], g: &Tid, l: &LabelId) -> (u64, Vec<Try>) {
         let epochs = self.engine.epochs(g);
         let held: Vec<osis_crypto::Secret32> = epochs.as_ref().map(|e| e.read.held_newest_first().into_iter().map(|(_, s)| s.clone()).collect()).unwrap_or_default();
         let sync_key = |step: &Step, index: u64| held.iter().map(|s| label_role_key(LabelRole::Sync, s, index)).find(|k| k.verifying_key() == step.keys.sync);
         let Some(gl) = self.group_label(g, l) else {
-            let mut v = Vec::new();
-            for index in 0..HINT_INDEXES {
-                for s in &held {
-                    v.push(Try::Sync { step: None, index, key: label_role_key(LabelRole::Sync, s, index) });
-                }
-            }
+            let Some((index, via)) = self.state.hints.get(l).map(|h| (h.index, h.via)) else { return (0, Vec::new()) };
+            let mut v: Vec<Try> = held.iter().map(|s| Try::Sync { step: None, key: label_role_key(LabelRole::Sync, s, index) }).collect();
             // only the key actor the hint follows for and those the thing's held `/members` lists
             // (spec/sync.md §5): presenting every held one would link their labels at this server
             // (spec/requirements.md, blind nodes)
-            let via = self.state.hints.get(l).and_then(|h| h.via);
             let members = self.engine.get_typed(g, &osis_schema::core_types::MEMBERS).ok().flatten().unwrap_or_default();
             v.extend(self.static_tries().into_iter().filter(|(t, _)| Some(*t) == via || members.contains_key(t)).map(|(_, x)| x));
-            return (None, v);
+            return (index, v);
         };
         let index = gl.index;
         let mut v = Vec::new();
         if let Some(h) = self.state.heads.get(&(*server, *l)).cloned()
             && let Some(key) = sync_key(&h, index)
         {
-            v.push(Try::Sync { step: Some(h), index, key });
+            v.push(Try::Sync { step: Some(h), key });
         }
         let mut steps: Vec<(&Step, &Option<ClaimSet>)> = gl.steps.values().map(|(s, c)| (s, c)).collect();
         steps.sort_by_cached_key(|(s, _)| std::cmp::Reverse(path_to(&gl.steps, s.id()).map_or(0, |p| p.len())));
@@ -138,7 +130,7 @@ impl SyncEngine {
             if let Some(key) = sync_key(s, index)
                 && !v.iter().any(|t| matches!(t, Try::Sync { key: k, .. } if k.verifying_key() == key.verifying_key()))
             {
-                v.push(Try::Sync { step: Some((*s).clone()), index, key });
+                v.push(Try::Sync { step: Some((*s).clone()), key });
             }
         }
         let xs = self.claim_keys_of(None);
@@ -155,7 +147,7 @@ impl SyncEngine {
         // and name the key to the server
         let members = self.engine.get_typed(g, &osis_schema::core_types::MEMBERS).ok().flatten().unwrap_or_default();
         v.extend(self.static_tries().into_iter().filter(|(t, _)| members.contains_key(t)).map(|(_, x)| x));
-        (Some(index), v)
+        (index, v)
     }
 
     /// Static-entry opens for the key actors this node holds that are not nodes, by tid.
@@ -164,9 +156,10 @@ impl SyncEngine {
     }
 
     /// Follows `thing`'s label known only by ID and servers (a recovery card's home label, a
-    /// link's label): opened by guessed index or by the static entry of `via`, a held key actor.
+    /// link's label: the thing's first, index 0, spec/wire.md §10): opened by the static entry
+    /// of `via`, a held key actor, or a held read secret.
     pub fn follow(&mut self, via: Tid, thing: Tid, label: LabelId, servers: Vec<osis_label::Address>) -> Vec<super::Action> {
-        self.state.add_hint(label, super::state::Hint { thing, servers, via: Some(via) });
+        self.state.add_hint(label, super::state::Hint { thing, index: 0, servers, via: Some(via) });
         self.handle(super::Event::Local)
     }
 
@@ -253,11 +246,6 @@ impl SyncEngine {
         {
             lc.entry_box = Some(b);
             return self.verify_path(conn, l, head, out);
-        }
-        if let Some(Try::Sync { step: None, index, .. }) = &tried
-            && let Some(lc) = self.lc_mut(conn, &l)
-        {
-            lc.index = Some(*index);
         }
         let recorded = self.group_label(&g, &l).is_some_and(|gl| gl.steps.contains_key(&head.id()));
         let known = self.state.heads.get(&(server, l)).is_some_and(|h| h.id() == head.id());
@@ -354,7 +342,7 @@ impl SyncEngine {
     /// its epoch; anything else is a forged box). False when it does not.
     fn static_secret(&mut self, conn: ConnId, l: LabelId, g: &Tid, head: &Step, b: &SecretBox) -> Result<bool> {
         let Some(Try::Static { kem, .. }) = self.current_try(conn, &l) else { return Ok(false) };
-        let index = self.lc(conn, &l).and_then(|x| x.index);
+        let Some(index) = self.lc(conn, &l).map(|x| x.index) else { return Ok(false) };
         let (e, secret) = match osis_label::open_entry_box(b, head, osis_label::EntryKey::Kem(&kem)) {
             Ok((Some(e), secret)) => (e, secret),
             Ok((None, _)) => {
@@ -366,16 +354,9 @@ impl SyncEngine {
                 return Ok(false);
             }
         };
-        let indexes: Vec<u64> = match index {
-            Some(i) => vec![i],
-            None => (0..HINT_INDEXES).collect(),
-        };
-        let Some(i) = indexes.into_iter().find(|i| osis_label::match_secret(&head.keys.sync, LabelRole::Sync, *i, [&secret]).is_some()) else {
+        if osis_label::match_secret(&head.keys.sync, LabelRole::Sync, index, [&secret]).is_none() {
             self.diag("entry box secret does not derive the head's sync key".into());
             return Ok(false);
-        };
-        if let Some(lc) = self.lc_mut(conn, &l) {
-            lc.index = Some(i);
         }
         self.engine.learn_read_secret(g, e, secret)?;
         Ok(true)
@@ -409,10 +390,9 @@ impl SyncEngine {
         let Some(parent) = parent else {
             // a hinted label (no recorded steps, so no parent to verify under): walk on, and
             // verify the server's whole path once a key opens it (`opened`)
-            if let Some(Try::Sync { step: None, index, .. }) = &tried
+            if let Some(Try::Sync { step: None, .. }) = &tried
                 && let Some(lc) = self.lc_mut(conn, &l)
             {
-                lc.index = Some(*index);
                 lc.walk = Some(step.clone());
                 return self.walk_on(conn, l, step, out);
             }
@@ -436,7 +416,7 @@ impl SyncEngine {
     /// so a server handing out a step of its choosing learns no other actor's pseudonym.
     fn walk_on(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
-        let (g, index, hinted) = (lc.group, lc.index.unwrap_or(0), lc.walk.is_some());
+        let (g, index, hinted) = (lc.group, lc.index, lc.walk.is_some());
         let only = if hinted {
             // the pending commits of the inbox blobs naming the thing: nothing else unverified
             let inbox: Vec<(LabelId, osis_base::BlobId, osis_base::CommitId)> = self.state.entries.iter().filter_map(|((x, id), e)| if let super::state::Kind::Inbox(Some(c)) = e.kind { Some((*x, *id, c)) } else { None }).collect();
@@ -454,7 +434,7 @@ impl SyncEngine {
         if let Some(e) = self.engine.epochs(&g)
             && let Some(s) = e.read.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s, index)).find(|k| k.verifying_key() == step.keys.sync)
         {
-            front.push(Try::Sync { step: Some(step.clone()), index, key: s });
+            front.push(Try::Sync { step: Some(step.clone()), key: s });
         }
         for x in self.claim_keys_of(only.as_ref()) {
             if let Ok(key) = step.claim_key(&x) {
@@ -582,7 +562,7 @@ impl SyncEngine {
     pub(crate) fn set_head(&mut self, conn: ConnId, l: LabelId, step: Step) -> Result<()> {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
-        let (g, index) = (lc.group, lc.index.unwrap_or(0));
+        let (g, index) = (lc.group, lc.index);
         let keys = self.engine.head_keys(&g, index, &step)?;
         self.state.set_head(server, l, &step);
         if let Some(lc) = self.lc_mut(conn, &l) {

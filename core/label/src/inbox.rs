@@ -3,7 +3,7 @@
 //! commit layout, kept here).
 
 use crate::addr::{Address, address_from_value};
-use crate::cbor::{bytes, get_bytes, get_key, get_opt, get_tid, tid};
+use crate::cbor::{bytes, get_bytes, get_key, get_opt, get_tid, get_uint, tid, uint};
 use crate::blob::Prefix;
 use crate::step::OBJECT_LIMITS;
 use crate::Error;
@@ -13,18 +13,20 @@ use osis_base::{LabelId, Tid, Value, WallMs};
 use osis_crypto::{CryptoRngCore, KemPublicKey, KemSecret, VerifyingKey, open_inbox, seal_inbox};
 use osis_schema::Codec;
 
-/// A thing the commit names: its label ID and server addresses, and for a thing with secrets
+/// A thing the commit names: its label ID, the label's index (its role keys derive from it,
+/// spec/sync.md §2) and server addresses, and for a thing with secrets
 /// of its own its current admin and write delete keys (spec/crypto.md §7), which the grantee
 /// lists until it holds the thing's `/keys`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InboxThing {
     pub tid: Tid,
     pub label: LabelId,
+    pub index: u64,
     pub servers: Vec<Address>,
     pub delete_keys: Option<(VerifyingKey, VerifyingKey)>,
 }
 
-/// `InboxPayload := [CommitBlobPlaintext, [[tid, label_id, [address*], Opt([admin_pk,
+/// `InboxPayload := [CommitBlobPlaintext, [[tid, label_id, index, [address*], Opt([admin_pk,
 /// write_pk])]*]]`, things sorted by tid, distinct.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InboxPayload {
@@ -35,16 +37,18 @@ pub struct InboxPayload {
 }
 
 impl InboxPayload {
-    pub fn to_value(&self) -> Value {
-        let things = self.things.iter().map(|t| {
-            Value::List(vec![
+    pub fn to_value(&self) -> Result<Value, Error> {
+        let mut things = Vec::with_capacity(self.things.len());
+        for t in &self.things {
+            things.push(Value::List(vec![
                 tid(&t.tid),
                 bytes(&t.label.0),
+                uint(t.index)?,
                 Value::List(t.servers.iter().map(Codec::to_value).collect()),
                 Value::List(t.delete_keys.iter().map(|(a, w)| Value::List(vec![bytes(&a.to_bytes()), bytes(&w.to_bytes())])).collect()),
-            ])
-        });
-        Value::List(vec![self.commit.clone(), Value::List(things.collect())])
+            ]));
+        }
+        Ok(Value::List(vec![self.commit.clone(), Value::List(things)]))
     }
 
     pub fn from_value(v: &Value) -> Result<InboxPayload, Error> {
@@ -53,7 +57,7 @@ impl InboxPayload {
         let mut out: Vec<InboxThing> = Vec::with_capacity(things.len());
         for t in things {
             let Value::List(f) = t else { return Err(Error::Malformed("inbox thing")) };
-            let [tid, label, Value::List(servers), keys] = f.as_slice() else { return Err(Error::Malformed("inbox thing")) };
+            let [tid, label, index, Value::List(servers), keys] = f.as_slice() else { return Err(Error::Malformed("inbox thing")) };
             let key = |v: &Value| get_key(v, "inbox delete key");
             let delete_keys = match get_opt(keys, "inbox delete keys")? {
                 None => None,
@@ -68,7 +72,7 @@ impl InboxPayload {
                 return Err(Error::Malformed("inbox things not sorted by tid"));
             }
             let servers = servers.iter().map(address_from_value).collect::<Result<_, _>>()?;
-            out.push(InboxThing { tid, label: LabelId(get_bytes(label, "inbox label")?), servers, delete_keys });
+            out.push(InboxThing { tid, label: LabelId(get_bytes(label, "inbox label")?), index: get_uint(index, "inbox label index")?, servers, delete_keys });
         }
         Ok(InboxPayload { commit: commit.clone(), things: out })
     }
@@ -79,7 +83,7 @@ impl InboxPayload {
 /// filler (`osis_crypto::filler_wrap`).
 pub fn seal_inbox_blob(recipient: &Tid, kem: &KemPublicKey, payload: &InboxPayload, now: WallMs, rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
     let prefix = Prefix::new(Prefix::random_salt(rng), Some(now.saturating_add(INBOX_LIFETIME_MS)), vec![])?;
-    seal_inbox(&prefix.to_bytes(), recipient, kem, &encode(&payload.to_value()), rng).map_err(|e| match e {
+    seal_inbox(&prefix.to_bytes(), recipient, kem, &encode(&payload.to_value()?), rng).map_err(|e| match e {
         osis_crypto::Error::TooLarge => Error::TooLarge("inbox blob above MAX_BLOB"),
         e => Error::Crypto(e),
     })
@@ -107,8 +111,8 @@ mod tests {
         InboxPayload {
             commit: Value::List(vec![Value::List(vec![]), Value::Int(0), Value::List(vec![])]),
             things: vec![
-                InboxThing { tid: Tid::from_bytes([1; 15]), label: LabelId([2; 16]), servers: vec![a.clone()], delete_keys: None },
-                InboxThing { tid: Tid::from_bytes([3; 15]), label: LabelId([4; 16]), servers: vec![], delete_keys: Some((dk(1), dk(2))) },
+                InboxThing { tid: Tid::from_bytes([1; 15]), label: LabelId([2; 16]), index: 0, servers: vec![a.clone()], delete_keys: None },
+                InboxThing { tid: Tid::from_bytes([3; 15]), label: LabelId([4; 16]), index: 5, servers: vec![], delete_keys: Some((dk(1), dk(2))) },
             ],
         }
     }
@@ -135,11 +139,11 @@ mod tests {
     fn rejections() {
         let mut p = payload();
         p.things.reverse();
-        assert!(InboxPayload::from_value(&p.to_value()).is_err());
+        assert!(InboxPayload::from_value(&p.to_value().unwrap()).is_err());
         let mut p = payload();
         p.things[1].tid = p.things[0].tid;
-        assert!(InboxPayload::from_value(&p.to_value()).is_err());
+        assert!(InboxPayload::from_value(&p.to_value().unwrap()).is_err());
         assert!(InboxPayload::from_value(&Value::List(vec![Value::Int(0), Value::List(vec![])])).is_err());
-        assert_eq!(InboxPayload::from_value(&payload().to_value()).unwrap(), payload());
+        assert_eq!(InboxPayload::from_value(&payload().to_value().unwrap()).unwrap(), payload());
     }
 }
