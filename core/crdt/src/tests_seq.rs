@@ -1226,3 +1226,40 @@ fn empty_placement_held_in_part_follows_spec_6() {
     // loads what the follow misses (it panicked loading a chunk the stored form lacked)
     let _ = partial_follow(&empty, &d, 1);
 }
+
+/// §6.1: a cached placement follows a delta moving element X (under p, by sibling key K, before
+/// Z) and Y onto p, Y first, where X's writes after the join name p with a key below K (`second`:
+/// a forged copy of X's chosen write, or an undo's restoring write): X sits by K until re-placed.
+fn moved_row_keeps_key(base_x: Vec<(Stamp, Anchor, Option<Stamp>)>, delta_x: Vec<(Stamp, Anchor, Option<Stamp>)>, x_created: Stamp) {
+    let (p, x, y) = (Dot::new(n(1), 1), x_created.dot.clone(), Dot::new(n(1), 4));
+    let pa = Anchor::Dot(p.clone());
+    let mk = |s: Stamp, a: Anchor| SeqElem { created: Some((s.clone(), a.clone())), content: SeqContent::Char('c'), pos: vec![(s, a, None)], deleted: None, span: 1 };
+    let mut elems = BTreeMap::new();
+    elems.insert(p.clone(), mk(st(1, 1, 1), Anchor::Head));
+    let mut xe = mk(x_created.clone(), base_x[0].1.clone());
+    xe.pos = base_x;
+    elems.insert(x.clone(), xe);
+    elems.insert(Dot::new(n(1), 3), mk(st(4, 1, 3), pa.clone()));
+    elems.insert(y.clone(), mk(st(1, 1, 4), Anchor::Head));
+    let base = seq_of(elems, None);
+    let mut d = BTreeMap::new();
+    d.insert(x, SeqElem { pos: delta_x, ..SeqElem::bare() });
+    d.insert(y, SeqElem { pos: vec![(st(3, 2, 1), pa, None)], ..SeqElem::bare() });
+    let mut cached = base;
+    let _ = cached.read();
+    cached.join(seq_of(d, None));
+    crate::testutil::check_lin(&cached);
+}
+
+#[test]
+fn moved_row_keeps_key_spec_6_1() {
+    let pa = Anchor::Dot(Dot::new(n(1), 1));
+    // X created at p (t1), moved to HEAD (t5), back to p (t6); concurrently an undo of t5 (t7:
+    // back to p with key t1) and a move to HEAD (t8)
+    let (c1, w5, w6) = (st(1, 1, 2), st(5, 3, 0), st(6, 3, 1));
+    moved_row_keeps_key(vec![(w6.clone(), pa.clone(), None), (w5, Anchor::Head, None)], vec![(st(8, 4, 1), Anchor::Head, None), (st(7, 5, 1), pa.clone(), Some(c1.clone()))], c1.clone());
+    // forged: the delta's copy of X's chosen write t6 carries key t1, beside a move to HEAD
+    moved_row_keeps_key(vec![(w6.clone(), pa.clone(), None), (c1.clone(), pa.clone(), None)], vec![(st(8, 4, 1), Anchor::Head, None), (w6.clone(), pa.clone(), Some(c1.clone()))], c1.clone());
+    // forged: the copy alone (X stays under p, its key drops)
+    moved_row_keeps_key(vec![(w6.clone(), pa.clone(), None), (c1.clone(), pa.clone(), None)], vec![(w6, pa, Some(c1.clone()))], c1);
+}

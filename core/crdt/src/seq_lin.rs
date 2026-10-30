@@ -42,9 +42,9 @@
 //!   node may join the next again) (`moved`); a row cut on such a cycle (`cut_row`);
 //! - a move of an element or to an anchor that is not placed, or one closing a cycle (the anchor
 //!   inside the subtree, checked per step) (`place_moved`);
-//! - 256 or more newer siblings at the anchor (`slot`), or a sibling there whose old write fell
-//!   out of its top two (a move in the same delta; `child_key`);
-//! - an element's chosen edge replaced by a copy with another anchor or key (`moved`).
+//! - 256 or more newer siblings at the anchor (`slot`), or a sibling there with no position
+//!   write naming it (`Sibs::key`; a node the delta moves sits by its old chosen write until
+//!   re-placed).
 
 use crate::linearize::{Placed, place_idx};
 use crate::seq::{Anchor, PosW, SeqContent, SeqElem, is_creation, is_visible, sib_key};
@@ -1327,6 +1327,8 @@ impl Lin {
         let mut flags: Vec<Flag> = Vec::new();
         // elements whose chosen edge changed: (edge stamp, element, anchor, sibling key)
         let mut moves: Vec<(Stamp, Dot, Anchor, Stamp)> = Vec::new();
+        // the sibling key each of those sits by until re-placed
+        let mut sibs = Sibs { elems, sits: HashMap::new() };
         // elements a row must start at
         let mut cuts: Vec<Dot> = Vec::new();
         // the newest position write before this delta (`newest` takes the delta's too)
@@ -1389,7 +1391,11 @@ impl Lin {
                     }
                     if r.pos != pos {
                         match self.moved(elems, &dot, &pos, &r.pos, &mut cuts) {
-                            Some(m) => moves.extend(m),
+                            Some(Some(m)) => {
+                                sibs.sits.extend(pos.first().map(|o| (dot.clone(), sib_key(o).clone())));
+                                moves.push(m);
+                            }
+                            Some(None) => {}
                             None => return false,
                         }
                     }
@@ -1420,7 +1426,7 @@ impl Lin {
         }
         for (key, stamp, run) in runs {
             *work += each;
-            let Some(slot) = self.slot(elems, &key, &stamp, fresh.as_ref(), usize::MAX..usize::MAX, work) else { return false };
+            let Some(slot) = self.slot(&sibs, &key, &stamp, fresh.as_ref(), usize::MAX..usize::MAX, work) else { return false };
             // below a hidden node: hidden too
             let Some(q) = slot else { continue };
             let Some(d0) = self.depth_below(&key) else { return false };
@@ -1445,9 +1451,10 @@ impl Lin {
             *work += each;
             // onto a new element: its run's next element (a newer stamp) may be a sibling
             let fresh = fresh.as_ref().filter(|_| !matches!(&anchor, Anchor::Dot(x) if new.contains_key(x)));
-            if !self.place_moved(elems, &dot, key, anchor, fresh, work) {
+            if !self.place_moved(&sibs, &dot, key, anchor, fresh, work) {
                 return false;
             }
+            sibs.sits.remove(&dot);
         }
         self.flip(flags);
         true
@@ -1488,7 +1495,7 @@ impl Lin {
     /// inside a range record cuts a row after it (`cuts`); rebuilds if a write gained or lost
     /// names an unknown element (an absent `Derived` one: a virtual anchor), a write lost names
     /// an element inside a range record (its node may join the next again), the element is on a
-    /// broken cycle (§6.2: its demotion may change), or its chosen edge is replaced by a copy.
+    /// broken cycle (§6.2: its demotion may change).
     fn moved(&self, elems: &dyn Recs, dot: &Dot, old: &[PosW], now: &[PosW], cuts: &mut Vec<Dot>) -> Option<Option<(Stamp, Dot, Anchor, Stamp)>> {
         if self.cyc.contains(dot) {
             return None;
@@ -1505,11 +1512,7 @@ impl Lin {
             }
         }
         let p = now.first()?;
-        // a copy of the edge with another anchor or key (§4.1 copy order) replaces the old write,
-        // so the row no longer finds its key where it sits (`child_key`): rebuild
-        if old.first().is_some_and(|o| o != p && o.0 == p.0) {
-            return None;
-        }
+        // (a copy of the edge with another anchor or key moves it too, §4.1 copy order)
         Some((old.first() != now.first()).then(|| (p.0.clone(), dot.clone(), p.1.clone(), sib_key(p).clone())))
     }
 
@@ -1579,7 +1582,7 @@ impl Lin {
 
     /// Moves the subtree of `dot` below `anchor` with sibling key `stamp`; `false`: rebuild (the
     /// element or the anchor is not placed, or the anchor is in the subtree: a cycle).
-    fn place_moved(&mut self, elems: &dyn Recs, dot: &Dot, stamp: Stamp, anchor: Anchor, fresh: Option<&Stamp>, work: &mut usize) -> bool {
+    fn place_moved(&mut self, sibs: &Sibs, dot: &Dot, stamp: Stamp, anchor: Anchor, fresh: Option<&Stamp>, work: &mut usize) -> bool {
         let Some((b, o)) = self.loc(dot) else { return false };
         let Some(d) = self.p.block(b).get(o).map(|r| r.depth + self.p.shift_of(b)) else { return false };
         let i = self.p.base(b) + o;
@@ -1594,7 +1597,7 @@ impl Lin {
                 Some(x)
             }
         };
-        let (Some(Some(q)), Some(nd)) = (self.slot(elems, &key, &stamp, fresh, i..e, work), self.depth_below(&key)) else { return false };
+        let (Some(Some(q)), Some(nd)) = (self.slot(sibs, &key, &stamp, fresh, i..e, work), self.depth_below(&key)) else { return false };
         self.p.relocate(i..e, q, nd - d, Some(&mut self.at));
         let Some((b, o)) = self.loc(dot) else { return false };
         let Some(row) = self.p.blocks.get_mut(b).map(Arc::make_mut).and_then(|x| x.rows.get_mut(o)) else { return false };
@@ -1608,7 +1611,7 @@ impl Lin {
     /// at HEAD before the `END` nodes, as if the rows `skip` (the node's own subtree) were out;
     /// `None`: rebuild. `stamp` equal to `fresh` (above every other edge) goes before the
     /// anchor's first child.
-    fn slot(&self, elems: &dyn Recs, key: &Option<Dot>, stamp: &Stamp, fresh: Option<&Stamp>, skip: Range<usize>, work: &mut usize) -> Option<Slot> {
+    fn slot(&self, sibs: &Sibs, key: &Option<Dot>, stamp: &Stamp, fresh: Option<&Stamp>, skip: Range<usize>, work: &mut usize) -> Option<Slot> {
         let first = fresh == Some(stamp);
         let (mut c, d, want) = match key {
             None => (self.p.norm(Cursor { k: 0, o: 0, at: 0 }), -1, Anchor::Head),
@@ -1632,7 +1635,7 @@ impl Lin {
             if rd <= d || key.is_none() && !r.head || first {
                 return Some(Some(c.at));
             }
-            match child_key(elems, r, &want)?.cmp(stamp) {
+            match sibs.key(r, &want)?.cmp(stamp) {
                 std::cmp::Ordering::Less => return Some(Some(c.at)),
                 // one key on two edges: ties go by dot, rebuild
                 std::cmp::Ordering::Equal => return None,
@@ -1649,10 +1652,22 @@ impl Lin {
     }
 }
 
-/// The sibling key of node `row` towards `want`: that of its greatest position write naming it
-/// (a demoted edge is the `prev` one, §6.2; a node a delta moves away keeps its old write there
-/// as `prev` until it is re-placed, else this is `None` and the caller rebuilds).
-fn child_key(elems: &dyn Recs, row: &Row, want: &Anchor) -> Option<Stamp> {
-    let e = elems.elem(&row.dot)?;
-    e.pos.iter().find(|p| p.1 == *want).map(|p| sib_key(p).clone())
+/// The records a follow reads sibling keys from, and the sibling key each node the delta moves
+/// sits by until re-placed: its old chosen write's, which the join may have replaced (a copy,
+/// §4.1) or put below another write at that anchor (an undo's restoring write, a lower key).
+struct Sibs<'a> {
+    elems: &'a dyn Recs,
+    sits: HashMap<Dot, Stamp>,
+}
+
+impl Sibs<'_> {
+    /// The sibling key of node `row` towards `want`: that of its greatest position write naming
+    /// it (a demoted edge is the `prev` one, §6.2), or its `sits` one.
+    fn key(&self, row: &Row, want: &Anchor) -> Option<Stamp> {
+        if let Some(k) = self.sits.get(&row.dot) {
+            return Some(k.clone());
+        }
+        let e = self.elems.elem(&row.dot)?;
+        e.pos.iter().find(|p| p.1 == *want).map(|p| sib_key(p).clone())
+    }
 }
