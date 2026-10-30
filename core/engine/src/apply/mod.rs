@@ -839,7 +839,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 for (ai, _, d) in &parts {
                     if let (Some(a), Decoded::Delta(d)) = (b.header.aspects.get(*ai), d) {
                         match a.ak.as_str() {
-                            "/secrets" => keys::note_box_keys(tx.core, &b.header, &a.tid, &d.fragment),
+                            "/secrets" => keys::note_box_keys(tx.core, &b.header, crate::engine::Owned::of(&b.header, &id, *ai).as_ref(), &a.tid, &d.fragment),
                             "/keys" => keys::note_keysets(tx.core, &b.header, &a.tid, &d.fragment),
                             _ => {}
                         }

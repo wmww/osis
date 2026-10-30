@@ -32,14 +32,24 @@ fn map(f: Option<&Fragment>) -> Option<&osis_crdt::Map> {
     }
 }
 
-/// Records the box keys of keyed `/secrets` entries (a removal names only the entry's dot), and
-/// for each box written the commit's time: the earliest write of the box, and the earliest of
-/// its epoch (`Core::epoch_intro`).
-pub(crate) fn note_box_keys(core: &mut Core, h: &Header, actor: &Tid, delta: &Fragment) {
+/// Records the keys of the `/secrets` entries a delta creates (`own`: a removal names only the
+/// entry's dot; a record into another's entry repeats a key it may have forged), and for each
+/// box written the commit's time: the earliest write of the box, and the earliest of its epoch
+/// (`Core::epoch_intro`).
+pub(crate) fn note_box_keys(core: &mut Core, h: &Header, own: Option<&crate::engine::Owned>, actor: &Tid, delta: &Fragment) {
+    if let Some(m) = map(field(delta, 1)) {
+        for (d, _, k, _) in m.entries() {
+            if let Some(k) = k.filter(|_| own.is_some_and(|o| o.owns(d)))
+                && !core.ix.box_keys.contains_key(&(*actor, d.clone()))
+            {
+                core.ix.box_keys.insert((*actor, d.clone()), k.clone());
+            }
+        }
+    }
     if let Some(m) = map(field(delta, 0)) {
         for (d, _, k, f) in m.entries() {
             let Some(k) = k else { continue };
-            if !core.ix.box_keys.contains_key(&(*actor, d.clone())) {
+            if own.is_some_and(|o| o.owns(d)) && !core.ix.box_keys.contains_key(&(*actor, d.clone())) {
                 core.ix.box_keys.insert((*actor, d.clone()), k.clone());
             }
             if f.is_none() {
@@ -94,7 +104,7 @@ pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet
                         if ak.as_str() == "/keys" {
                             note_keysets(tx.core, &m.header, a, &d.fragment);
                         } else {
-                            note_box_keys(tx.core, &m.header, a, &d.fragment);
+                            note_box_keys(tx.core, &m.header, crate::engine::Owned::of(&m.header, &id, ai).as_ref(), a, &d.fragment);
                         }
                     }
                 }
@@ -196,7 +206,7 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
             continue;
         }
         let Decoded::Delta(d) = d else { continue };
-        note_box_keys(tx.core, h, &a.tid, &d.fragment);
+        note_box_keys(tx.core, h, crate::engine::Owned::of(h, &h.id(), *ai).as_ref(), &a.tid, &d.fragment);
         let keys = parts
             .iter()
             .find_map(|(x, _, k)| match (h.aspects.get(*x), k) {
