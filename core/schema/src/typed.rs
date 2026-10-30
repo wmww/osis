@@ -77,13 +77,6 @@ pub fn value_at<'a>(v: &'a Value, path: &Path) -> Option<&'a Value> {
     Some(cur)
 }
 
-/// Typed read of the part of `v` at `path` (lets an app skip one bad element).
-pub fn read_path(schema: &Schema, v: &Value, ty: &Type, path: &Path) -> Result<Value, PathError> {
-    let (t, atomic) = type_at(schema, ty, path)?;
-    let sub = value_at(v, path).ok_or_else(|| PathError::new(path.clone(), K::NotFound))?;
-    Walk { schema, mode: Mode::Read, path: path.0.clone() }.walk(sub, &t, atomic)
-}
-
 struct Walk<'s> {
     schema: &'s Schema,
     mode: Mode,

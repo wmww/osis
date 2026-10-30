@@ -539,20 +539,10 @@ impl Sem<'_> {
 
 /// Every `Named(name, args)` inside a type (arguments included).
 fn named_refs(t: &Type, f: &mut dyn FnMut(&str, &[Type])) {
-    match t {
-        Type::Named(n, a) => {
-            f(n, a);
-            a.iter().for_each(|x| named_refs(x, f));
-        }
-        Type::List(e) | Type::Set(e) | Type::Counter(e) | Type::Max(e) | Type::Min(e) => named_refs(e, f),
-        Type::Map(k, v) => {
-            named_refs(k, f);
-            named_refs(v, f);
-        }
-        Type::Struct(st) => st.fields.values().for_each(|x| named_refs(&x.ty, f)),
-        Type::Enum(en) => en.cases.values().filter_map(|c| c.payload.as_ref()).for_each(|p| named_refs(p, f)),
-        _ => {}
+    if let Type::Named(n, a) = t {
+        f(n, a);
     }
+    t.children().into_iter().for_each(|c| named_refs(c, f));
 }
 
 /// Strongly connected components (iterative Tarjan): component number per node. A node alone

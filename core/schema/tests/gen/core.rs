@@ -10,12 +10,12 @@ osis_schema::codec_struct! {
         1 key: Vec<u8>,
     }
 }
-/// Field IDs of `Address`.
-pub mod address {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const URL: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const KEY: osis_schema::FieldId = osis_schema::FieldId(1);
+osis_schema::ids! {
+    /// Field IDs of `Address`.
+    pub mod address: FieldId {
+        URL = 0,
+        KEY = 1,
+    }
 }
 osis_schema::named_type!(Address, "address", SCHEMA);
 
@@ -26,12 +26,12 @@ osis_schema::codec_enum! {
         1 Symmetric(x: BoxSymmetric),
     }
 }
-/// Case IDs of `Box`.
-pub mod box_ {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const SEALED: osis_schema::CaseId = osis_schema::CaseId(0);
-    pub const SYMMETRIC: osis_schema::CaseId = osis_schema::CaseId(1);
+osis_schema::ids! {
+    /// Case IDs of `Box`.
+    pub mod box_: CaseId {
+        SEALED = 0,
+        SYMMETRIC = 1,
+    }
 }
 osis_schema::named_type!(Box, "box", SCHEMA);
 
@@ -43,13 +43,13 @@ osis_schema::codec_struct! {
         2 epoch: Epoch,
     }
 }
-/// Field IDs of `BoxKey`.
-pub mod box_key {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const MEMBER: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const ROLE: osis_schema::FieldId = osis_schema::FieldId(1);
-    pub const EPOCH: osis_schema::FieldId = osis_schema::FieldId(2);
+osis_schema::ids! {
+    /// Field IDs of `BoxKey`.
+    pub mod box_key: FieldId {
+        MEMBER = 0,
+        ROLE = 1,
+        EPOCH = 2,
+    }
 }
 osis_schema::named_type!(BoxKey, "box_key", SCHEMA);
 
@@ -63,14 +63,14 @@ osis_schema::codec_struct! {
         3 creator: osis_schema::osis_base::Tid,
     }
 }
-/// Field IDs of `Creation`.
-pub mod creation {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const OWNER: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const KEY: osis_schema::FieldId = osis_schema::FieldId(1);
-    pub const NONCE: osis_schema::FieldId = osis_schema::FieldId(2);
-    pub const CREATOR: osis_schema::FieldId = osis_schema::FieldId(3);
+osis_schema::ids! {
+    /// Field IDs of `Creation`.
+    pub mod creation: FieldId {
+        OWNER = 0,
+        KEY = 1,
+        NONCE = 2,
+        CREATOR = 3,
+    }
 }
 osis_schema::named_type!(Creation, "creation", SCHEMA);
 
@@ -83,14 +83,14 @@ osis_schema::codec_struct! {
         3 since: Option<EdgeKey>,
     }
 }
-/// Field IDs of `Edge`.
-pub mod edge {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const ROLE: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const UNTIL: osis_schema::FieldId = osis_schema::FieldId(1);
-    pub const INVITE: osis_schema::FieldId = osis_schema::FieldId(2);
-    pub const SINCE: osis_schema::FieldId = osis_schema::FieldId(3);
+osis_schema::ids! {
+    /// Field IDs of `Edge`.
+    pub mod edge: FieldId {
+        ROLE = 0,
+        UNTIL = 1,
+        INVITE = 2,
+        SINCE = 3,
+    }
 }
 osis_schema::named_type!(Edge, "edge", SCHEMA);
 
@@ -102,13 +102,13 @@ osis_schema::codec_struct! {
         2 commit: Vec<u8>,
     }
 }
-/// Field IDs of `EdgeKey`.
-pub mod edge_key {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const TS: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const NODE: osis_schema::FieldId = osis_schema::FieldId(1);
-    pub const COMMIT: osis_schema::FieldId = osis_schema::FieldId(2);
+osis_schema::ids! {
+    /// Field IDs of `EdgeKey`.
+    pub mod edge_key: FieldId {
+        TS = 0,
+        NODE = 1,
+        COMMIT = 2,
+    }
 }
 osis_schema::named_type!(EdgeKey, "edge_key", SCHEMA);
 
@@ -119,12 +119,12 @@ osis_schema::codec_struct! {
         1 nonce: Vec<u8>,
     }
 }
-/// Field IDs of `Epoch`.
-pub mod epoch {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const N: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const NONCE: osis_schema::FieldId = osis_schema::FieldId(1);
+osis_schema::ids! {
+    /// Field IDs of `Epoch`.
+    pub mod epoch: FieldId {
+        N = 0,
+        NONCE = 1,
+    }
 }
 osis_schema::named_type!(Epoch, "epoch", SCHEMA);
 
@@ -135,12 +135,12 @@ osis_schema::codec_struct! {
         1 commits: std::collections::BTreeSet<Vec<u8>>,
     }
 }
-/// Field IDs of `Frontier`.
-pub mod frontier {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const WRITES: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const COMMITS: osis_schema::FieldId = osis_schema::FieldId(1);
+osis_schema::ids! {
+    /// Field IDs of `Frontier`.
+    pub mod frontier: FieldId {
+        WRITES = 0,
+        COMMITS = 1,
+    }
 }
 osis_schema::named_type!(Frontier, "frontier", SCHEMA);
 
@@ -151,12 +151,12 @@ osis_schema::codec_struct! {
         1 epoch: Epoch,
     }
 }
-/// Field IDs of `HistoryKey`.
-pub mod history_key {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const ROLE: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const EPOCH: osis_schema::FieldId = osis_schema::FieldId(1);
+osis_schema::ids! {
+    /// Field IDs of `HistoryKey`.
+    pub mod history_key: FieldId {
+        ROLE = 0,
+        EPOCH = 1,
+    }
 }
 osis_schema::named_type!(HistoryKey, "history_key", SCHEMA);
 
@@ -167,12 +167,12 @@ osis_schema::codec_struct! {
         1 servers: Vec<Address>,
     }
 }
-/// Field IDs of `Inbox`.
-pub mod inbox {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const LABEL: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const SERVERS: osis_schema::FieldId = osis_schema::FieldId(1);
+osis_schema::ids! {
+    /// Field IDs of `Inbox`.
+    pub mod inbox: FieldId {
+        LABEL = 0,
+        SERVERS = 1,
+    }
 }
 osis_schema::named_type!(Inbox, "inbox", SCHEMA);
 
@@ -182,11 +182,11 @@ osis_schema::codec_enum! {
         1 X25519Mlkem768(x: Vec<u8>),
     }
 }
-/// Case IDs of `KemKey`.
-pub mod kem_key {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const X25519_MLKEM768: osis_schema::CaseId = osis_schema::CaseId(1);
+osis_schema::ids! {
+    /// Case IDs of `KemKey`.
+    pub mod kem_key: CaseId {
+        X25519_MLKEM768 = 1,
+    }
 }
 osis_schema::named_type!(KemKey, "kem_key", SCHEMA);
 
@@ -199,14 +199,14 @@ osis_schema::codec_struct! {
         3 delete_key: SigningKey,
     }
 }
-/// Field IDs of `Keyset`.
-pub mod keyset {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const EPOCH: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const KEM_KEY: osis_schema::FieldId = osis_schema::FieldId(1);
-    pub const SUITE: osis_schema::FieldId = osis_schema::FieldId(2);
-    pub const DELETE_KEY: osis_schema::FieldId = osis_schema::FieldId(3);
+osis_schema::ids! {
+    /// Field IDs of `Keyset`.
+    pub mod keyset: FieldId {
+        EPOCH = 0,
+        KEM_KEY = 1,
+        SUITE = 2,
+        DELETE_KEY = 3,
+    }
 }
 osis_schema::named_type!(Keyset, "keyset", SCHEMA);
 
@@ -219,14 +219,14 @@ osis_schema::codec_struct! {
         3 replaced: bool,
     }
 }
-/// Field IDs of `Label`.
-pub mod label {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const INDEX: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const STEPS: osis_schema::FieldId = osis_schema::FieldId(1);
-    pub const SERVERS: osis_schema::FieldId = osis_schema::FieldId(2);
-    pub const REPLACED: osis_schema::FieldId = osis_schema::FieldId(3);
+osis_schema::ids! {
+    /// Field IDs of `Label`.
+    pub mod label: FieldId {
+        INDEX = 0,
+        STEPS = 1,
+        SERVERS = 2,
+        REPLACED = 3,
+    }
 }
 osis_schema::named_type!(Label, "label", SCHEMA);
 
@@ -238,13 +238,13 @@ osis_schema::codec_enum! {
         2 Admin,
     }
 }
-/// Case IDs of `Role`.
-pub mod role {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const READ: osis_schema::CaseId = osis_schema::CaseId(0);
-    pub const WRITE: osis_schema::CaseId = osis_schema::CaseId(1);
-    pub const ADMIN: osis_schema::CaseId = osis_schema::CaseId(2);
+osis_schema::ids! {
+    /// Case IDs of `Role`.
+    pub mod role: CaseId {
+        READ = 0,
+        WRITE = 1,
+        ADMIN = 2,
+    }
 }
 osis_schema::named_type!(Role, "role", SCHEMA);
 
@@ -254,11 +254,11 @@ osis_schema::codec_enum! {
         1 X25519Mlkem768(x: Vec<u8>),
     }
 }
-/// Case IDs of `Sealed`.
-pub mod sealed {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const X25519_MLKEM768: osis_schema::CaseId = osis_schema::CaseId(1);
+osis_schema::ids! {
+    /// Case IDs of `Sealed`.
+    pub mod sealed: CaseId {
+        X25519_MLKEM768 = 1,
+    }
 }
 osis_schema::named_type!(Sealed, "sealed", SCHEMA);
 
@@ -268,11 +268,11 @@ osis_schema::codec_enum! {
         1 Ed25519(x: Vec<u8>),
     }
 }
-/// Case IDs of `SigningKey`.
-pub mod signing_key {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const ED25519: osis_schema::CaseId = osis_schema::CaseId(1);
+osis_schema::ids! {
+    /// Case IDs of `SigningKey`.
+    pub mod signing_key: CaseId {
+        ED25519 = 1,
+    }
 }
 osis_schema::named_type!(SigningKey, "signing_key", SCHEMA);
 
@@ -283,12 +283,12 @@ osis_schema::codec_struct! {
         1 claims: Option<Vec<u8>>,
     }
 }
-/// Field IDs of `StepRecord`.
-pub mod step_record {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const STEP: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const CLAIMS: osis_schema::FieldId = osis_schema::FieldId(1);
+osis_schema::ids! {
+    /// Field IDs of `StepRecord`.
+    pub mod step_record: FieldId {
+        STEP = 0,
+        CLAIMS = 1,
+    }
 }
 osis_schema::named_type!(StepRecord, "step_record", SCHEMA);
 
@@ -302,15 +302,15 @@ osis_schema::codec_struct! {
         4 frontier: Option<Frontier>,
     }
 }
-/// Field IDs of `Tenure`.
-pub mod tenure {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const MEMBER: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const ROLE: osis_schema::FieldId = osis_schema::FieldId(1);
-    pub const SINCE: osis_schema::FieldId = osis_schema::FieldId(2);
-    pub const UNTIL: osis_schema::FieldId = osis_schema::FieldId(3);
-    pub const FRONTIER: osis_schema::FieldId = osis_schema::FieldId(4);
+osis_schema::ids! {
+    /// Field IDs of `Tenure`.
+    pub mod tenure: FieldId {
+        MEMBER = 0,
+        ROLE = 1,
+        SINCE = 2,
+        UNTIL = 3,
+        FRONTIER = 4,
+    }
 }
 osis_schema::named_type!(Tenure, "tenure", SCHEMA);
 
@@ -321,12 +321,12 @@ osis_schema::codec_struct! {
         1 subgroups: std::collections::BTreeSet<osis_schema::osis_base::Tid>,
     }
 }
-/// Field IDs of `Group`.
-pub mod group {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const ITEMS: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const SUBGROUPS: osis_schema::FieldId = osis_schema::FieldId(1);
+osis_schema::ids! {
+    /// Field IDs of `Group`.
+    pub mod group: FieldId {
+        ITEMS = 0,
+        SUBGROUPS = 1,
+    }
 }
 
 osis_schema::codec_struct! {
@@ -340,16 +340,16 @@ osis_schema::codec_struct! {
         5 deposit_seed: Option<Vec<u8>>,
     }
 }
-/// Field IDs of `Keys`.
-pub mod keys {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const READ: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const WRITE: osis_schema::FieldId = osis_schema::FieldId(1);
-    pub const ADMIN: osis_schema::FieldId = osis_schema::FieldId(2);
-    pub const KEY: osis_schema::FieldId = osis_schema::FieldId(3);
-    pub const INBOX: osis_schema::FieldId = osis_schema::FieldId(4);
-    pub const DEPOSIT_SEED: osis_schema::FieldId = osis_schema::FieldId(5);
+osis_schema::ids! {
+    /// Field IDs of `Keys`.
+    pub mod keys: FieldId {
+        READ = 0,
+        WRITE = 1,
+        ADMIN = 2,
+        KEY = 3,
+        INBOX = 4,
+        DEPOSIT_SEED = 5,
+    }
 }
 
 osis_schema::codec_struct! {
@@ -359,12 +359,12 @@ osis_schema::codec_struct! {
         1 schemas: std::collections::BTreeMap<Vec<u8>, i64>,
     }
 }
-/// Field IDs of `Node`.
-pub mod node {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const SOFTWARE: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const SCHEMAS: osis_schema::FieldId = osis_schema::FieldId(1);
+osis_schema::ids! {
+    /// Field IDs of `Node`.
+    pub mod node: FieldId {
+        SOFTWARE = 0,
+        SCHEMAS = 1,
+    }
 }
 
 osis_schema::codec_struct! {
@@ -375,13 +375,13 @@ osis_schema::codec_struct! {
         2 lan_secret: Vec<u8>,
     }
 }
-/// Field IDs of `Reach`.
-pub mod reach {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const DIALABLE: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const RELAYS: osis_schema::FieldId = osis_schema::FieldId(1);
-    pub const LAN_SECRET: osis_schema::FieldId = osis_schema::FieldId(2);
+osis_schema::ids! {
+    /// Field IDs of `Reach`.
+    pub mod reach: FieldId {
+        DIALABLE = 0,
+        RELAYS = 1,
+        LAN_SECRET = 2,
+    }
 }
 
 osis_schema::codec_struct! {
@@ -391,12 +391,12 @@ osis_schema::codec_struct! {
         1 history: std::collections::BTreeMap<HistoryKey, Vec<u8>>,
     }
 }
-/// Field IDs of `Secrets`.
-pub mod secrets {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const BOXES: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const HISTORY: osis_schema::FieldId = osis_schema::FieldId(1);
+osis_schema::ids! {
+    /// Field IDs of `Secrets`.
+    pub mod secrets: FieldId {
+        BOXES = 0,
+        HISTORY = 1,
+    }
 }
 
 osis_schema::codec_struct! {
@@ -406,12 +406,12 @@ osis_schema::codec_struct! {
         1 stranded: bool,
     }
 }
-/// Field IDs of `Seen`.
-pub mod seen {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const TS: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const STRANDED: osis_schema::FieldId = osis_schema::FieldId(1);
+osis_schema::ids! {
+    /// Field IDs of `Seen`.
+    pub mod seen: FieldId {
+        TS = 0,
+        STRANDED = 1,
+    }
 }
 
 osis_schema::codec_struct! {
@@ -420,11 +420,11 @@ osis_schema::codec_struct! {
         0 color: Option<String>,
     }
 }
-/// Field IDs of `Tag`.
-pub mod tag {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const COLOR: osis_schema::FieldId = osis_schema::FieldId(0);
+osis_schema::ids! {
+    /// Field IDs of `Tag`.
+    pub mod tag: FieldId {
+        COLOR = 0,
+    }
 }
 
 osis_schema::codec_struct! {
@@ -435,13 +435,13 @@ osis_schema::codec_struct! {
         2 r#box: Sealed,
     }
 }
-/// Field IDs of `BoxSealed`.
-pub mod box_sealed {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const KEYSET: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const SUITE: osis_schema::FieldId = osis_schema::FieldId(1);
-    pub const BOX: osis_schema::FieldId = osis_schema::FieldId(2);
+osis_schema::ids! {
+    /// Field IDs of `BoxSealed`.
+    pub mod box_sealed: FieldId {
+        KEYSET = 0,
+        SUITE = 1,
+        BOX = 2,
+    }
 }
 
 osis_schema::codec_struct! {
@@ -451,12 +451,12 @@ osis_schema::codec_struct! {
         1 wrap: Vec<u8>,
     }
 }
-/// Field IDs of `BoxSymmetric`.
-pub mod box_symmetric {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const EPOCH: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const WRAP: osis_schema::FieldId = osis_schema::FieldId(1);
+osis_schema::ids! {
+    /// Field IDs of `BoxSymmetric`.
+    pub mod box_symmetric: FieldId {
+        EPOCH = 0,
+        WRAP = 1,
+    }
 }
 
 /// AKs present on the thing.

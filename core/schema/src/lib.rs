@@ -36,6 +36,6 @@ pub use parse::parse;
 pub use path::{CaseId, FieldId, Path, PathError, PathErrorKind, Step};
 pub use schema::{AspectDef, AspectDefaults, Bound, Flag, Invalid, Lifetime, PurgeBy, Retention, Schema, TypeDef};
 pub use statics::{CORE_SRC, StaticSchema, core_schema, core_static};
-pub use typed::{read_path, type_at, typed_read, validate_write, value_at};
+pub use typed::{type_at, typed_read, validate_write, value_at};
 pub use view::{Large, SchemaView, large_positions, link_positions};
 pub use types::{Case, EnumType, Field, STANDARD, StructType, Type, is_reserved_name};

@@ -12,14 +12,14 @@ osis_schema::codec_enum! {
         3 Custom(x: i64),
     }
 }
-/// Case IDs of `Priority`.
-pub mod priority {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const LOW: osis_schema::CaseId = osis_schema::CaseId(0);
-    pub const MEDIUM: osis_schema::CaseId = osis_schema::CaseId(1);
-    pub const HIGH: osis_schema::CaseId = osis_schema::CaseId(2);
-    pub const CUSTOM: osis_schema::CaseId = osis_schema::CaseId(3);
+osis_schema::ids! {
+    /// Case IDs of `Priority`.
+    pub mod priority: CaseId {
+        LOW = 0,
+        MEDIUM = 1,
+        HIGH = 2,
+        CUSTOM = 3,
+    }
 }
 osis_schema::named_type!(Priority, "priority", SCHEMA);
 
@@ -32,14 +32,14 @@ osis_schema::codec_enum! {
         3 Blocked,
     }
 }
-/// Case IDs of `Status`.
-pub mod status {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const TODO: osis_schema::CaseId = osis_schema::CaseId(0);
-    pub const DOING: osis_schema::CaseId = osis_schema::CaseId(1);
-    pub const DONE: osis_schema::CaseId = osis_schema::CaseId(2);
-    pub const BLOCKED: osis_schema::CaseId = osis_schema::CaseId(3);
+osis_schema::ids! {
+    /// Case IDs of `Status`.
+    pub mod status: CaseId {
+        TODO = 0,
+        DOING = 1,
+        DONE = 2,
+        BLOCKED = 3,
+    }
 }
 osis_schema::named_type!(Status, "status", SCHEMA);
 
@@ -51,12 +51,12 @@ osis_schema::codec_struct! {
         1 value: T,
     }
 }
-/// Field IDs of `Tagged`.
-pub mod tagged {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const LABEL: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const VALUE: osis_schema::FieldId = osis_schema::FieldId(1);
+osis_schema::ids! {
+    /// Field IDs of `Tagged`.
+    pub mod tagged: FieldId {
+        LABEL = 0,
+        VALUE = 1,
+    }
 }
 
 osis_schema::codec_struct! {
@@ -72,17 +72,17 @@ osis_schema::codec_struct! {
         8 weight: osis_schema::osis_base::Float,
     }
 }
-/// Field IDs of `Task`.
-pub mod task {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const TITLE: osis_schema::FieldId = osis_schema::FieldId(1);
-    pub const DONE: osis_schema::FieldId = osis_schema::FieldId(2);
-    pub const TAGS: osis_schema::FieldId = osis_schema::FieldId(3);
-    pub const PRIORITY: osis_schema::FieldId = osis_schema::FieldId(4);
-    pub const DUE: osis_schema::FieldId = osis_schema::FieldId(6);
-    pub const STATUS: osis_schema::FieldId = osis_schema::FieldId(7);
-    pub const WEIGHT: osis_schema::FieldId = osis_schema::FieldId(8);
+osis_schema::ids! {
+    /// Field IDs of `Task`.
+    pub mod task: FieldId {
+        TITLE = 1,
+        DONE = 2,
+        TAGS = 3,
+        PRIORITY = 4,
+        DUE = 6,
+        STATUS = 7,
+        WEIGHT = 8,
+    }
 }
 osis_schema::named_type!(Task, "task", SCHEMA);
 
@@ -93,12 +93,12 @@ osis_schema::codec_struct! {
         1 at: i64,
     }
 }
-/// Field IDs of `Typing`.
-pub mod typing {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const WHO: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const AT: osis_schema::FieldId = osis_schema::FieldId(1);
+osis_schema::ids! {
+    /// Field IDs of `Typing`.
+    pub mod typing: FieldId {
+        WHO = 0,
+        AT = 1,
+    }
 }
 
 /// Markdown; not guaranteed valid.

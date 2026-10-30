@@ -160,10 +160,10 @@ impl Gen {
                         doc_lines(&mut self.out, d, "        ");
                     }
                     let _ = writeln!(self.out, "        {id} {}: {t},", field_ident(&f.name));
-                    let _ = writeln!(consts, "    pub const {}: {P}::FieldId = {P}::FieldId({id});", f.name.to_uppercase());
+                    let _ = writeln!(consts, "        {} = {id},", f.name.to_uppercase());
                 }
                 let _ = writeln!(self.out, "    }}\n}}");
-                let _ = writeln!(self.out, "/// Field IDs of `{}`.\npub mod {} {{\n    #[allow(unused_imports)]\n    use super::*;\n{consts}}}", it.rust, snake(&it.rust));
+                let _ = writeln!(self.out, "{P}::ids! {{\n    /// Field IDs of `{}`.\n    pub mod {}: FieldId {{\n{consts}    }}\n}}", it.rust, snake(&it.rust));
             }
             Type::Enum(en) => {
                 let _ = writeln!(self.out, "{P}::codec_enum! {{");
@@ -184,10 +184,10 @@ impl Gen {
                             let _ = writeln!(self.out, "        {id} {v}(x: {t}),");
                         }
                     }
-                    let _ = writeln!(consts, "    pub const {}: {P}::CaseId = {P}::CaseId({id});", c.name.to_uppercase());
+                    let _ = writeln!(consts, "        {} = {id},", c.name.to_uppercase());
                 }
                 let _ = writeln!(self.out, "    }}\n}}");
-                let _ = writeln!(self.out, "/// Case IDs of `{}`.\npub mod {} {{\n    #[allow(unused_imports)]\n    use super::*;\n{consts}}}", it.rust, snake(&it.rust));
+                let _ = writeln!(self.out, "{P}::ids! {{\n    /// Case IDs of `{}`.\n    pub mod {}: CaseId {{\n{consts}    }}\n}}", it.rust, snake(&it.rust));
             }
             _ => {
                 let t = self.rust_type(&it.body, &it.rust, false)?;
@@ -206,18 +206,12 @@ impl Gen {
 /// Parameters mentioned inside a type, in first-use order.
 fn params_in(t: &Type) -> Vec<String> {
     fn walk(t: &Type, out: &mut Vec<String>) {
-        match t {
-            Type::Param(p) if !out.contains(p) => out.push(p.clone()),
-            Type::List(e) | Type::Set(e) | Type::Counter(e) | Type::Max(e) | Type::Min(e) => walk(e, out),
-            Type::Map(k, v) => {
-                walk(k, out);
-                walk(v, out);
-            }
-            Type::Named(_, a) => a.iter().for_each(|x| walk(x, out)),
-            Type::Struct(s) => s.fields.values().for_each(|f| walk(&f.ty, out)),
-            Type::Enum(e) => e.cases.values().filter_map(|c| c.payload.as_ref()).for_each(|p| walk(p, out)),
-            _ => {}
+        if let Type::Param(p) = t
+            && !out.contains(p)
+        {
+            out.push(p.clone());
         }
+        t.children().into_iter().for_each(|c| walk(c, out));
     }
     let mut out = Vec::new();
     walk(t, &mut out);
@@ -228,15 +222,13 @@ fn params_in(t: &Type) -> Vec<String> {
 fn recursive_types(s: &Schema) -> BTreeSet<String> {
     fn refs(t: &Type, out: &mut BTreeSet<String>) {
         match t {
-            Type::Named(n, a) => {
+            Type::List(_) | Type::Set(_) | Type::Map(..) => return, // collections break the size cycle
+            Type::Named(n, _) => {
                 out.insert(n.clone());
-                a.iter().for_each(|x| refs(x, out));
             }
-            Type::Counter(e) | Type::Max(e) | Type::Min(e) => refs(e, out),
-            Type::Struct(st) => st.fields.values().for_each(|f| refs(&f.ty, out)),
-            Type::Enum(en) => en.cases.values().filter_map(|c| c.payload.as_ref()).for_each(|p| refs(p, out)),
-            _ => {} // collections break the size cycle
+            _ => {}
         }
+        t.children().into_iter().for_each(|c| refs(c, out));
     }
     let direct: BTreeMap<&String, BTreeSet<String>> = s
         .types

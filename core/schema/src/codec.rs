@@ -332,6 +332,18 @@ macro_rules! codec_enum {
     };
 }
 
+/// A module of field or case ID constants, for generated code:
+/// `ids! { pub mod task: FieldId { TITLE = 1, DONE = 2 } }`.
+#[macro_export]
+macro_rules! ids {
+    ($(#[$m:meta])* $vis:vis mod $name:ident : $ty:ident { $($c:ident = $id:literal),* $(,)? }) => {
+        $(#[$m])*
+        $vis mod $name {
+            $(pub const $c: $crate::$ty = $crate::$ty($id);)*
+        }
+    };
+}
+
 /// `TryFrom<&Value>` through a schema's typed read of its type `name` (reader defaults, open
 /// structs), and `From<&T> for Value`: for generated types.
 #[macro_export]
