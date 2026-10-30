@@ -49,7 +49,7 @@ static RESIDUE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 
 fn neutral(w: &World, thing: Tid, author: Tid, things: &[Tid], probes: &[Point]) -> Option<String> {
     let tl = Timeline::evaluate(&w.held());
-    let residue = common::residue(&tl);
+    let residue = common::resnapshot_residue(&tl);
     let state = tl.roster_state(&thing);
     let mut w2 = w.clone();
     let ledger = state.ledger.clone();
@@ -626,7 +626,8 @@ fn resnapshot_repairs_self_supported_drop_spec_permissions_6() {
     let tl = Timeline::evaluate(&w.held());
     let (grant, rm) = (WriteId::Op(grant, 0), WriteId::Op(rm, 0));
     assert!(tl.dropped().contains_key(&grant) && tl.dropped().contains_key(&rm));
-    assert_eq!(residue(&tl), BTreeSet::from([grant]));
+    assert_eq!(resnapshot_residue(&tl), BTreeSet::from([grant]));
+    assert!(residue(&tl).is_empty(), "the settled walk explains both drops: the differential tests do not skip it");
     let mut w2 = w.clone();
     w2.snapshot_state(n[1], a0, tl.roster_state(&a0), END_T);
     let t2 = Timeline::evaluate(&w2.held());

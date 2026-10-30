@@ -270,6 +270,18 @@ impl World {
 /// since D only grows, so the answer depends on the order drops were found, and a roster
 /// snapshot can repair them.
 pub fn residue(tl: &osis_perm::Timeline) -> BTreeSet<WriteId> {
+    residue_with(tl, false)
+}
+
+/// `residue`, plus self-supported drops: a drop whose fall holds in the settled walk only with
+/// the write's own edge gone (OSIS_PERM_SEED=52011). For the neutrality check only: a perm bug
+/// that judged a fall without the audited write's own path would look the same, so the
+/// differential and query tests, which skip cases with residue, keep the narrower `residue`.
+pub fn resnapshot_residue(tl: &osis_perm::Timeline) -> BTreeSet<WriteId> {
+    residue_with(tl, true)
+}
+
+fn residue_with(tl: &osis_perm::Timeline, self_supported_too: bool) -> BTreeSet<WriteId> {
     let by = |w: &WriteId| match w {
         WriteId::Op(c, k) => tl.membership_commit(c).and_then(|m| Some((m.author, m.ops.get(usize::try_from(*k).ok()?)?.target, m.point()))),
         WriteId::Snapshot(c) => tl.roster_snapshot(c).map(|s| (s.author, s.thing, s.point())),
@@ -296,6 +308,9 @@ pub fn residue(tl: &osis_perm::Timeline) -> BTreeSet<WriteId> {
     // the edge set as the write set it (if nothing in the settled walk changed it up to just
     // after R), X's class on N just after R must still be below the write's class.
     let self_supported = |w: &WriteId, p: &osis_perm::Point, class: osis_perm::Class| {
+        if !self_supported_too {
+            return false;
+        }
         let WriteId::Op(c, k) = w else { return false };
         let Some(m) = tl.membership_commit(c) else { return false };
         let Some(op) = m.ops.get(usize::try_from(*k).unwrap_or(usize::MAX)) else { return false };
