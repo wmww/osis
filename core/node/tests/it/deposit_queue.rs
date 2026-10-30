@@ -290,9 +290,10 @@ fn deliveries_survive_a_crash_before_carry_out_spec_sync_5() {
     }
 }
 
-// spec/sync.md §5 (a refused deposit at one server does not hold what another accepted),
-// spec/sync.md §3: K's label at two servers, one refusing every entry (storage cap); the
-// redeemer's deposit lands at the other, and its inbox blob to its own person goes.
+// spec/sync.md §5 (a refused deposit at one server does not hold what another accepted; a
+// storage-cap refusal is for now), spec/sync.md §3: K's label at two servers, one refusing every
+// entry (storage cap); the redeemer's deposit lands at the other, and its inbox blob to its own
+// person goes; the deposit at the full server is sent again and lands once it has room.
 #[test]
 fn inbox_goes_when_one_server_refuses_spec_sync_5() {
     let mut net = Net::new();
@@ -310,8 +311,17 @@ fn inbox_goes_when_one_server_refuses_spec_sync_5() {
         net.advance(61_000);
     }
     assert!(net.engine(a).roster(&link.k).contains_key(&px), "the sharer applied the redemption");
-    assert_eq!(net.sync(x).deliveries_pending(), 0);
     assert!(net.server_ids(0, &inbox).len() > before, "the inbox blob reached its label");
+    assert_eq!(net.sync(x).deliveries_pending(), 1, "the full server's deposit is kept");
+    let full = net.server_ids(2, &link.k_label).len();
+    net.restart_server_with(2, osis_server::Policy::default());
+    for _ in 0..4 {
+        net.run();
+        net.advance(3_600_000);
+    }
+    net.run();
+    assert_eq!(net.sync(x).deliveries_pending(), 0);
+    assert!(net.server_ids(2, &link.k_label).len() > full, "the deposit landed once there was room");
 }
 
 // spec/permissions.md §3 (a removal goes under the labels the removed party could read in the
