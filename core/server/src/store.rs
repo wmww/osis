@@ -331,7 +331,8 @@ struct EphEntry {
     meta: EntryMeta,
     expiry: Option<u64>,
     /// A presence entry: removed when no connection's tie holds it (`ties`, the connections
-    /// tied to it: one but rarely), no tombstone.
+    /// tied to it: one but rarely), with no tombstone; deleted or replaced, tombstoned until
+    /// its expiry.
     presence: bool,
     ties: Vec<u64>,
 }
@@ -717,19 +718,20 @@ impl<B: Backend> BackendStore<B> {
         }
         match how {
             EphRemove::Expire => {}
-            // a presence entry leaves no tombstone: only its author uploads it (spec/sync.md §5)
-            EphRemove::Delete(_) if x.presence => {
-                self.eph_append(label, EphRec::Deleted(*blob), Charge::Presence)?;
-            }
             EphRemove::Delete(now) => {
-                let drop = now.saturating_add(EPH_TOMBSTONE_MS);
+                // a presence entry's until its expiry, past which an upload of it is refused
+                // anyway: a reader that kept it cannot put it back (spec/sync.md §5)
+                let mut drop = now.saturating_add(EPH_TOMBSTONE_MS);
+                if x.presence {
+                    drop = drop.min(x.expiry.unwrap_or(drop));
+                }
                 if let Some(old) = self.eph.labels.entry(*label).or_default().tombstones.insert(*blob, drop) {
                     self.eph.due.remove(&(old, *label, *blob));
                 } else {
                     self.eph.charge(label, TOMB_OVERHEAD, Charge::Tomb);
                 }
                 self.eph.due.insert((drop, *label, *blob));
-                self.eph_append(label, EphRec::Deleted(*blob), Charge::Label)?;
+                self.eph_append(label, EphRec::Deleted(*blob), if x.presence { Charge::Presence } else { Charge::Label })?;
             }
             EphRemove::Evict => {
                 self.eph_append(label, EphRec::Deleted(*blob), if x.presence { Charge::Presence } else { Charge::Label })?;
@@ -1386,8 +1388,8 @@ impl<B: Backend> LabelStore for BackendStore<B> {
 
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError> {
         if let Some(e) = self.eph_entry(label, blob_id) {
-            // a presence entry's delete is not counted: it leaves no tombstone and costs what its
-            // upload did, which no rate bounds
+            // a presence entry's delete is not counted: it and its tombstone (until the entry's
+            // expiry) cost what its upload did, which no rate bounds
             let presence = e.presence;
             self.rates.roll(self.now(), self.policy.window_ms);
             if !presence && !self.rates.take(label, Rate::Delete, self.policy.deletes) {

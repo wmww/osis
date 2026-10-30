@@ -235,7 +235,7 @@ pub trait LabelStore {
     /// something changed.
     fn put(&mut self, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError>;
     fn budget(&self, label: &LabelId) -> Result<Budget, StoreError>;
-    /// Removes an entry, leaving a tombstone (none for a presence entry), and logs the deletion
+    /// Removes an entry, leaving a tombstone (a presence entry's until its expiry), and logs the deletion
     /// (or refuses, e.g. code 4).
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError>;
     /// Sets a pending deletion time (the earliest wins) and logs it if it changed.
@@ -348,14 +348,16 @@ impl MemoryLabelStore {
         }
     }
 
-    /// Removes an entry with a log record and, unless a presence entry, a tombstone.
-    fn remove_entry(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<(), StoreError> {
+    /// Removes an entry with a log record and, unless a presence entry's last tie went
+    /// (`tomb` false), a tombstone.
+    fn remove_entry(&mut self, label: &LabelId, blob_id: &BlobId, now: u64, tomb: bool) -> Result<(), StoreError> {
         let s = self.state_mut(label)?;
         let Some((m, _)) = s.entries.remove(blob_id) else { return Ok(()) };
         if s.ephemeral.remove(blob_id) {
             s.ephemeral_bytes = s.ephemeral_bytes.saturating_sub(m.size);
         }
-        if s.presence.remove(blob_id).is_none() {
+        s.presence.remove(blob_id);
+        if tomb {
             s.tombstones.insert(*blob_id, now);
         }
         s.append(LogRecord::Deleted(*blob_id));
@@ -541,7 +543,7 @@ impl LabelStore for MemoryLabelStore {
         }
         // removed after the add is logged: a holder applies the new entry before the deletions
         for b in gone {
-            self.remove_entry(label, &b, put.now)?;
+            self.remove_entry(label, &b, put.now, true)?;
         }
         Ok(Code::OK)
     }
@@ -554,7 +556,7 @@ impl LabelStore for MemoryLabelStore {
     }
 
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError> {
-        self.remove_entry(label, blob_id, now)?;
+        self.remove_entry(label, blob_id, now, true)?;
         Ok(Code::OK)
     }
 
@@ -564,7 +566,7 @@ impl LabelStore for MemoryLabelStore {
         if !t.remove(&tie) || !t.is_empty() {
             return Ok(false);
         }
-        self.remove_entry(label, blob_id, 0)?;
+        self.remove_entry(label, blob_id, 0, false)?;
         Ok(true)
     }
 

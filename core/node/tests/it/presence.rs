@@ -323,6 +323,37 @@ fn replayed_presence_dies_at_lease_spec_sync_9() {
     assert_eq!(presence_held(&mut net, b), 0);
 }
 
+// spec/sync.md §9 (a presence commit older than one held of its author and actor is not held),
+// notes/ephemeral.md Presence: an author's earlier presence entries pushed again (several
+// updates back, which the held one no longer lists) are not held and bring no old value back
+#[test]
+fn replayed_older_presence_not_held_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let (_, t) = setup(&mut net, a, &[(b, Role::Write)], &[sv]);
+    let mut captured = Vec::new();
+    for i in 1..=3 {
+        net.eph_write(a, t, &cursor(), s(&format!("a@{i}")));
+        net.run();
+        let id = net.engine(b).held_ephemeral().into_iter().map(|(id, _, _)| id).find(|id| net.engine(b).ephemeral_is_presence(id)).unwrap();
+        captured.extend(net.sync(b).ephemeral_entry_events(&id));
+    }
+    assert_eq!(presence_held(&mut net, b), 1);
+    let l = net.label(a);
+    let bytes = net.sync(b).ephemeral_bytes(&l);
+    for (l, ev) in captured {
+        let acts = push(&mut net, b, sv, l, vec![ev]);
+        assert_eq!(presence_held(&mut net, b), 1, "an older one is not held");
+        assert_eq!(net.sync(b).ephemeral_bytes(&l), bytes, "nor counted");
+        net.actions(b, acts);
+    }
+    net.run();
+    assert_eq!(at(&mut net, b, t), Some(s("a@3")));
+    assert_eq!(presence_held(&mut net, b), 1);
+}
+
 // spec/sync.md §6 (a node's first sync after start reconciles the live sets), §9 (a node drops
 // another's presence commit once no server it syncs the label with holds it): A's cursor reaches
 // a restarted B from one server while B's reconciliation with the other (which never had it) is
