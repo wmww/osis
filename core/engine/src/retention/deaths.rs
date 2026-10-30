@@ -7,7 +7,7 @@
 //! within a node-sync step the next read of deaths, recomputes its deaths from the held bodies
 //! and the state (`replay_all`).
 
-use super::{body_class, bounded, check_at_most, held_part};
+use super::{body_of, bounded, check_at_most, held_part};
 use crate::engine::records::{self, Rd};
 use crate::engine::{Core, Tx};
 use crate::error::Result;
@@ -141,8 +141,7 @@ impl Parts {
 
 /// Records `at` on the body of part `ai` of `c`: first and last so far.
 fn add_death(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, at: Ts) -> Result<()> {
-    let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(()) };
-    let (body, _) = body_class(tx.core, &h, c, ai);
+    let Some(body) = body_of(tx.core, c, ai) else { return Ok(()) };
     let old = tx.txn.death(tid, ak, &body)?;
     let n = osis_store::Deaths { first: old.map_or(at, |o| o.first.min(at)), last: old.map_or(at, |o| o.last.max(at)) };
     if old != Some(n) {
@@ -330,8 +329,7 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 }
 
 fn set_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, d: Option<(Ts, Ts)>) -> Result<()> {
-    let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(()) };
-    let (body, _) = body_class(tx.core, &h, c, ai);
+    let Some(body) = body_of(tx.core, c, ai) else { return Ok(()) };
     let d = d.map(|(first, last)| osis_store::Deaths { first, last });
     if tx.txn.death(tid, ak, &body)? == d {
         return Ok(());
