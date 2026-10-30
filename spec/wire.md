@@ -5,7 +5,7 @@
 - Every structure below is canonical CBOR in the profile of spec/data-model.md §5 unless it is given as a fixed byte layout. `[a, b]` is an array with exactly those positions; `Opt(X) := [] | [X]`; `X*` repeats X zero or more times, `X+` one or more. A decoder rejects any other length, a wrong major type, or an item outside its stated size.
 - Inside structures (not values): a tid is a 15-byte byte string, a commit ID, blob ID, step ID or hash a 32-byte byte string, a label ID a 16-byte byte string, a time (wall ms) or `ts` an unsigned integer. A **value** (spec/data-model.md §4) embedded in a structure keeps its value encoding (tags included).
 - A role in a structure is a uint: 0 read, 1 write, 2 admin. A purgeable-by class: 0 `nobody`, 1 `admin`, 2 `author`, 3 `writer`. A delete level: 1, 2, 3 (spec/crypto.md §7).
-- An epoch in a structure is `[n, nonce]` (uint, 16-byte byte string).
+- An epoch in a structure is `[n, nonce]` (uint, 32-byte byte string; spec/crypto.md §4).
 - **AD tuples**: an AEAD associated-data tuple `(a, b, ...)` written in spec/crypto.md is the canonical CBOR array of its items in the encodings of this section; layouts below give each one.
 - Signed digests: a signature's digest (spec/crypto.md §2) is BLAKE3 of the canonical bytes of the array the layout names.
 - Ed25519 keys and signatures in structures are raw (32 and 64 bytes) where a layout says `pk` or `sig`; where it says `signing_key` or `signature` it holds the agility enum value (§3).
@@ -112,10 +112,10 @@ A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixe
 ## 7. Boxes
 - A sealed box (spec/crypto.md §1) is `ct_x (32) || ct_m (1088) || AEAD_K(nonce 24 zero bytes, AD, payload)`, held in a `sealed` value (§3).
 - **`/secrets` box** (spec/crypto.md §4), a `box` value (spec/data-model.md §9) keyed by `box_key`. AD = `[actor, member, role, n, nonce, form]` with the key's epoch `[n, nonce]` and `form` = `[0, Opt([kn, knonce]), suite]` for the sealed form (the recipient keyset epoch, none for a key actor) or `[1, [sn, snonce]]` for the symmetric form (the epoch of s).
-  - Sealed payload: `[[role, n, nonce, secret]+]` ascending by role, secret 32 bytes: one item for an actor member, every role written for a key-actor member.
+  - Sealed payload: `[[role, n, secret]+]` ascending by role, secret 32 bytes: one item for an actor member, every role written for a key-actor member. Each item names the epoch (n, nonce of the secret under the actor's tid and the item's role, spec/crypto.md §4).
   - Symmetric `wrap`: XChaCha20-Poly1305 under `kdf("box", s)`, nonce = first 24 bytes of BLAKE3(AD), plaintext `suite (1) || secret (32)`: 49 bytes.
-- **Entry box** (spec/sync.md §2): a `box` value, AD = `[label_id, step_key, form]`, payload as above with the read role only.
-- **History box** (role r, epoch e): XChaCha20-Poly1305 under `kdf("history", secret_r[e])`, nonce 24 zero bytes, AD = `[actor, role, n, nonce]`, plaintext `[[n, nonce, secret]*]` ascending by `[n, nonce]`; the `/secrets` history map holds the ciphertext.
+- **Entry box** (spec/sync.md §2): a `box` value, AD = `[label_id, step_key, form]`, payload as above with the read role only; its epoch is the label's group thing's.
+- **History box** (role r, epoch e): XChaCha20-Poly1305 under `kdf("history", secret_r[e])`, nonce 24 zero bytes, AD = `[actor, role, n, nonce]`, plaintext `[[n, secret]*]` ascending by the epochs they name (spec/crypto.md §4); the `/secrets` history map holds the ciphertext.
 - Suite 1 is the only suite: `suite` fields and suite bytes are 1.
 
 ## 8. Labels: steps and claim sets
