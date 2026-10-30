@@ -3,7 +3,7 @@
 //! commits by ID. Adjacent ranges merge with the later time (a coarser record only shrinks a
 //! frontier). Pending and parked commits are not received. Held snapshots' frontiers (`[1,
 //! ctr]`) and `Absorbed` (spec/crdt.md §8) are not recorded: `received` adds those of the
-//! snapshots valid now, at their receipt time, so a snapshot turning invalid takes them back
+//! snapshots valid now, at their receipt time, as far as held headers justify them, so a snapshot turning invalid takes them back
 //! whatever the arrival order (spec/permissions.md §5.2); a snapshot dropped other than as
 //! covered keeps them in its record (`Dropped::gives`, spec/commits.md §5). Demotions read it "as
 //! of T" for their frontier.
@@ -12,7 +12,8 @@ use crate::engine::records::{self, Rd, Wr};
 use crate::engine::{Engine, Tx};
 use crate::error::Result;
 use osis_commit::{Decoded, Form, Header};
-use osis_base::{Ak, CommitId, Tid, WallMs};
+use osis_base::{Ak, CommitId, Tid, Ts, WallMs};
+use osis_crdt::Frontiers;
 use osis_perm::DemotionScope;
 use osis_schema::core_types::{Frontier, is_membership_class};
 use osis_store::Shred;
@@ -126,10 +127,28 @@ fn put(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, r: &Receipt) -> Result<()> {
     Ok(tx.txn.put_local(&records::aspect_key(records::RECEIPT, tid, ak), &r.encode(), Shred::No)?)
 }
 
+/// The held snapshots of `(tid, ak)` valid now (bodies held, or dropped with their frontiers
+/// kept, `Dropped::gives`): ID, `ts`, frontiers, `Absorbed`.
+fn valid_snapshots<'a>(core: &'a crate::engine::Core, tid: &'a Tid, ak: &'a Ak) -> impl Iterator<Item = (CommitId, Ts, &'a Frontiers, &'a [(CommitId, Tid)])> + 'a {
+    let k = (*tid, ak.clone());
+    let held = core.ix.snapshots.get(&k).into_iter().flatten().filter(|(_, s, _, _)| super::validity::snapshot_valid(core, s, tid, ak)).map(|(ts, s, fr, abs)| (*s, *ts, fr, abs.as_slice()));
+    let kept = core.ix.dropped_snapshots.get(&k).into_iter().flatten().filter_map(move |s| {
+        let m = core.ix.commits.get(s)?;
+        let ai = m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak)?;
+        let (fr, abs) = m.dropped.get(&ai)?.gives.as_ref()?;
+        m.valid.get(ai).copied().unwrap_or(false).then_some((*s, m.view.ts, fr, abs.as_slice()))
+    });
+    held.chain(kept)
+}
+
 /// What this node had received of `(tid, ak)` by `as_of`: the record's entries received by
-/// then, plus the frontiers and `Absorbed` of the held snapshots (bodies held, or dropped with
-/// their frontiers kept) valid now that it received by then (an invalid one's count as not
-/// received, spec/permissions.md §5.2). Cost: the aspect's held and kept snapshots.
+/// then, plus what the held snapshots valid now that it received by then justify (an invalid
+/// one's count as not received, spec/permissions.md §5.2). A snapshot's frontier `[1, ctr]` for
+/// node N counts only on the counters of N's node-form commits on the aspect whose header this
+/// node holds, and its `Absorbed` only the listed commits with a delta of the aspect whose header
+/// it holds, by that header's author (spec/crdt.md §8: a claim never covers a write that does
+/// not exist yet), each from the later of the snapshot part's and the header's receipt. Cost:
+/// the aspect's held and kept snapshots plus the claimed nodes' commits on it.
 pub(crate) fn received(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, as_of: u64) -> Result<Receipt> {
     let mut r = get(tx, tid, ak)?;
     for v in r.nodes.values_mut() {
@@ -137,31 +156,61 @@ pub(crate) fn received(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, as_of: u64) -> Resul
     }
     r.commits.retain(|_, x| x.1 <= as_of);
     let core = &*tx.core;
-    let k = (*tid, ak.clone());
     // valid ones received by `as_of`, at their part's receipt time (`record`; a late part's,
-    // not its header's): held, then dropped ones that kept their frontiers (`Dropped::gives`)
-    let at = |s: &CommitId| r.commits.get(s).map(|c| c.1);
-    let held = core.ix.snapshots.get(&k).into_iter().flatten().filter_map(|(_, s, fr, abs)| {
-        let at = at(s)?;
-        super::validity::snapshot_valid(core, s, tid, ak).then_some((at, fr, abs))
-    });
-    let kept = core.ix.dropped_snapshots.get(&k).into_iter().flatten().filter_map(|s| {
-        let at = at(s)?;
-        let m = core.ix.commits.get(s)?;
-        let ai = m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak)?;
-        let (fr, abs) = m.dropped.get(&ai)?.gives.as_ref()?;
-        m.valid.get(ai).copied().unwrap_or(false).then_some((at, fr, abs))
-    });
-    let add: Vec<_> = held.chain(kept).collect();
-    for (at, fr, abs) in add {
+    // not its header's)
+    let mut claims: BTreeMap<Tid, Vec<(u64, u64)>> = BTreeMap::new();
+    let mut absorbed: Vec<(CommitId, u64)> = Vec::new();
+    for (s, _, fr, abs) in valid_snapshots(core, tid, ak) {
+        let Some(at) = r.commits.get(&s).map(|c| c.1) else { continue };
         for (n, c) in &fr.0 {
-            r.add(*n, 1, c.saturating_add(1), at);
+            claims.entry(*n).or_default().push((*c, at));
         }
-        for (c, a) in abs {
-            r.commits.entry(*c).or_insert((*a, at));
+        absorbed.extend(abs.iter().map(|(c, _)| (*c, at)));
+    }
+    for (c, at) in absorbed {
+        let Some(m) = core.ix.commits.get(&c) else { continue };
+        let t = at.max(m.received.0);
+        if t <= as_of && m.view.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak) {
+            let e = r.commits.entry(c).or_insert((m.view.author, t));
+            e.1 = e.1.min(t);
         }
     }
+    // per node: each held range's counters at or below a claim, from the earliest claim
+    // reaching them (suffix minimum of claim times by counter) or the header, the later
+    let mut adds = Vec::new();
+    for (n, mut cl) in claims {
+        cl.sort_unstable();
+        let mut m = u64::MAX;
+        let mut first: Vec<u64> = cl.iter().rev().map(|x| { m = m.min(x.1); m }).collect();
+        first.reverse();
+        let top = cl.last().map_or(0, |x| x.0);
+        let Some(rs) = core.ix.ranges.get(&(*tid, ak.clone(), n)) else { continue };
+        for (lo, (hi, c)) in rs.range(..=top) {
+            let Some(hr) = core.ix.commits.get(c).map(|m| m.received.0) else { continue };
+            let mut x = *lo;
+            while x < *hi {
+                let i = cl.partition_point(|e| e.0 < x);
+                let (Some((ctr, _)), Some(t0)) = (cl.get(i), first.get(i)) else { break };
+                let end = (*hi).min(ctr.saturating_add(1));
+                let t = (*t0).max(hr);
+                if t <= as_of {
+                    adds.push((n, x, end, t));
+                }
+                x = end;
+            }
+        }
+    }
+    for (n, lo, hi, t) in adds {
+        r.add(n, lo, hi, t);
+    }
     Ok(r)
+}
+
+/// Whether a held snapshot valid now stamped after `before` claims counters up to `ctr` of
+/// `node` on `(tid, ak)` (atomic apply: a commit's dropped delta counts as held,
+/// spec/commits.md §4; a snapshot never absorbed a commit stamped after it, spec/crdt.md §2.2).
+pub(crate) fn claimed(core: &crate::engine::Core, tid: &Tid, ak: &Ak, node: &Tid, ctr: u64, before: Ts) -> bool {
+    valid_snapshots(core, tid, ak).any(|(_, ts, fr, _)| ts > before && fr.0.get(node).is_some_and(|c| *c >= ctr))
 }
 
 /// Records what an applied commit's held parts gave this node (a snapshot: its ID; what it

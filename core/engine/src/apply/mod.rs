@@ -107,13 +107,13 @@ fn carried_records(h: &Header, blob: &CommitBlob, id: &CommitId) -> Result<BTree
 /// Whether a missing delta of commit `id` makes it wait (atomic apply, spec/commits.md §4).
 fn waits_for_deltas(tx: &mut Tx<'_>, h: &Header, id: &CommitId, missing: impl Iterator<Item = (usize, usize)>) -> Result<bool> {
     for (ai, _) in missing {
-        // expired, purged or dropped deltas count as held (dropped: a held valid snapshot's
-        // frontier already holds its counters, spec/crdt.md §8)
+        // expired, purged or dropped deltas count as held (dropped: a held valid snapshot
+        // stamped after it claims its counters, spec/crdt.md §8)
         if let Some(a) = h.aspects.get(ai)
             && tx.core.ix.syncing.contains(&a.tid)
             && !a.expires.is_some_and(|t| t <= tx.now().0)
             && !crate::retention::known_purged(tx, h, id, ai)?
-            && !(h.form == osis_commit::Form::Node && h.kind.has_own_writes() && receipt::received(tx, &a.tid, &a.ak, u64::MAX)?.holds(&h.author, a.lo, a.hi))
+            && !(h.form == osis_commit::Form::Node && h.kind.has_own_writes() && (receipt::get(tx, &a.tid, &a.ak)?.holds(&h.author, a.lo, a.hi) || receipt::claimed(tx.core, &a.tid, &a.ak, &h.author, a.hi.saturating_sub(1), h.ts)))
         {
             return Ok(true);
         }

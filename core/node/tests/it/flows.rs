@@ -841,12 +841,12 @@ fn intermediate_grantor_covered_spec_perm_5_1() {
     }
 }
 
-// spec/crdt.md §8 (absorbed commits), spec/commits.md §5, spec/permissions.md §5.1: X's
-// rotation (commit form) reaches late joiner Bob only through Alice's compaction snapshot of
-// `/secrets`, which lists it as absorbed, so Bob counts it received: when Bob removes X, his
-// frontier covers it and nobody un-merges X's old rotation.
+// spec/crdt.md §8 (absorbed commits count only with a held header), spec/permissions.md §5.1:
+// X's rotation (commit form) reaches late joiner Bob only through Alice's compaction snapshot of
+// `/secrets`, which lists it as absorbed; Bob never held its header, so he cannot tell it from a
+// commit X signed ahead and his frontier for X's removal does not list it.
 #[test]
-fn late_joiner_covers_compacted_rotation_spec_crdt_8() {
+fn late_joiner_lists_no_unheld_absorbed_spec_crdt_8() {
     let (mut lp, ps) = people(4, 512);
     let (pa, pb, px, pm) = (ps[0], ps[1], ps[2], ps[3]);
     let t = thing_of(&mut lp, 0, pa);
@@ -873,11 +873,9 @@ fn late_joiner_covers_compacted_rotation_spec_crdt_8() {
     lp.peers[1].engine.demote(&t, &Demotion { member: px, new: None, presync: PreSync::Synced }).unwrap();
     let br = new_ids(&lp, 1, &before);
     let r = br.iter().copied().find(|c| lp.peers[1].engine.header(c).unwrap().frontier.is_some()).unwrap();
-    assert!(xr.iter().all(|c| frontier_ids(&mut lp, 1, &r).contains(c)), "the absorbed rotation is listed");
-    lp.peers[0].drain_events();
+    assert!(xr.iter().all(|c| !frontier_ids(&mut lp, 1, &r).contains(c)), "the unheld absorbed rotation is not listed");
+    // Alice, holding X's rotation, un-merges it (issues/late-joiner-frontier-misses-compacted.md)
     send(&mut lp, 1, 0, &br);
-    let unmerged = lp.peers[0].drain_events().into_iter().any(|e| matches!(e, osis_node::Event::Changed { cause: osis_node::Cause::Validity, ref changed } if changed.iter().any(|(x, a)| *x == t && (a.as_str() == "/secrets" || a.as_str() == "/keys"))));
-    assert!(!unmerged, "X's old rotation stays valid");
     assert!(!lp.peers[0].engine.roster(&t).contains_key(&px));
 }
 
