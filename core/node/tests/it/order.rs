@@ -17,6 +17,7 @@ use common::*;
 use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::Mutation;
+use osis_node::engine::{CommitDigest, IndexDigest, IndexField};
 use osis_node::local_peer::{LocalPeer, Package, Peer};
 use osis_perm::DemotionScope;
 use osis_schema::{Bound, Codec, PurgeBy, Retention};
@@ -439,8 +440,8 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
 /// skipped (`alike`), and those with carried writes whose own commit the oracle does not hold
 /// (it would date them late, `Oracle::carried`).
 fn dating(p: &mut Peer, o: &Oracle, now: WallMs) -> Option<String> {
-    let (mine, _) = facts_of(&[("facts", facts_text(&mut p.engine))]);
-    let (theirs, inv) = facts_of(&[("facts", o.facts.clone())]);
+    let (mine, _) = facts_of(&facts_text(&mut p.engine));
+    let (theirs, inv) = facts_of(&o.facts);
     let flipped: BTreeSet<(String, String)> = theirs.keys().filter(|k| mine.get(*k).is_some_and(|m| flip(&theirs, &mine, &inv, k) && m.held != theirs[*k].held)).map(|k| (k.1.clone(), k.2.clone())).collect();
     let e = &mut p.engine;
     let mut ids = e.commit_ids();
@@ -509,9 +510,23 @@ fn facts_text(e: &mut osis_node::Engine) -> String {
     facts.join("\n")
 }
 
+/// What a node judged: its index a day later (`judged`; `None` from `judged_now`) and the rest as
+/// text, by part.
+#[derive(Clone)]
+struct Judged {
+    index: Option<IndexDigest>,
+    parts: Vec<(&'static str, String)>,
+}
+
+impl Judged {
+    fn part(&self, name: &str) -> &str {
+        &self.parts.iter().find(|x| x.0 == name).unwrap().1
+    }
+}
+
 /// What a node holding `packs` judges and reads now, as text, by part: reads and states of every
 /// aspect, rosters, pending set, timelines, body facts. Deaths are the node's own (`dating`).
-fn judged_now(p: &mut Peer, things: &[Tid]) -> Vec<(&'static str, String)> {
+fn judged_now(p: &mut Peer, things: &[Tid]) -> Judged {
     let e = &mut p.engine;
     let mut reads = String::new();
     let mut states = String::new();
@@ -532,12 +547,13 @@ fn judged_now(p: &mut Peer, things: &[Tid]) -> Vec<(&'static str, String)> {
     let perm = e.perm_digest(false);
     let scratch = e.perm_digest(true);
     let facts = facts_text(e);
-    vec![("reads", reads), ("states", states), ("rosters", rosters), ("pending", pending.join("\n")), ("timelines", perm), ("timelines from scratch", scratch), ("facts", facts)]
+    let parts = vec![("reads", reads), ("states", states), ("rosters", rosters), ("pending", pending.join("\n")), ("timelines", perm), ("timelines from scratch", scratch), ("facts", facts)];
+    Judged { index: None, parts }
 }
 
 /// The persisted index as a day after `played.now` (every keep-at-most bound past: which bodies
 /// a node dropped before is its own dating, `dating`). Moves the node's clock there.
-fn index_later(p: &mut Peer, played: &Played) -> String {
+fn index_later(p: &mut Peer, played: &Played) -> IndexDigest {
     let later = WallMs(played.now.0 + 24 * HOUR);
     if p.engine.now().0 < later.0 {
         p.clock.set(later);
@@ -547,9 +563,9 @@ fn index_later(p: &mut Peer, played: &Played) -> String {
 }
 
 /// `judged_now`, then `index_later` (moves the node's clock).
-fn judged(p: &mut Peer, played: &Played) -> Vec<(&'static str, String)> {
+fn judged(p: &mut Peer, played: &Played) -> Judged {
     let mut v = judged_now(p, &played.things);
-    v.insert(0, ("index", index_later(p, played)));
+    v.index = Some(index_later(p, played));
     v
 }
 
@@ -601,8 +617,7 @@ fn ts_of(t: &str) -> u64 {
 }
 
 /// The bodies' facts, and per (thing, aspect) its invalid writes: (commit or carrying snapshot, `ts`).
-fn facts_of(j: &[(&'static str, String)]) -> (Facts, Invalid) {
-    let text = &j.iter().find(|x| x.0 == "facts").unwrap().1;
+fn facts_of(text: &str) -> (Facts, Invalid) {
     let (mut out, mut inv) = (BTreeMap::new(), BTreeMap::<_, Vec<_>>::new());
     for l in text.lines() {
         let f: Vec<&str> = l.split('|').collect();
@@ -643,52 +658,36 @@ fn flip(w: &Facts, g: &Facts, inv: &Invalid, k: &BodyKey) -> bool {
 /// body of the aspect valid and invalid on the way, `flipped`): the states may then differ in the creation stamps of map entries whose body (keep at most) the
 /// node lacking the stamp dropped (an un-merge leaving the entry with no content took the
 /// creation; the flip back gave the content alone), reads alike. Anything else is a failure.
-fn alike(want: &[(&'static str, String)], got: &[(&'static str, String)], flips: &dyn Fn(&str, &str) -> bool) -> Option<String> {
-    let ((wf, inv), (gf, _)) = (facts_of(want), facts_of(got));
+fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Option<String> {
+    let ((wf, inv), (gf, _)) = (facts_of(want.part("facts")), facts_of(got.part("facts")));
     if wf.keys().ne(gf.keys()) {
-        return first_diff(&want[want.len() - 1..], &got[got.len() - 1..]);
+        return first_diff_parts(&[("facts", want.part("facts").into())], &[("facts", got.part("facts").into())]);
     }
     let flip = |k: &BodyKey| flip(&wf, &gf, &inv, k);
     let flipped: BTreeSet<(String, String)> = wf.keys().filter(|k| flip(k)).map(|k| (k.1.clone(), k.2.clone())).collect();
     if let Some(k) = wf.keys().find(|k| wf[*k].held != gf[*k].held && !wf[*k].approx && !flip(k)) {
         return Some(format!("body {k:?} held {} vs {}", wf[k].held, gf[k].held));
     }
-    // a commit line without its dropped parts and what a snapshot dropped other than as covered
-    // keeps (`gives`, spec/commits.md §5)
-    let no_dropped = |l: &str| -> String {
-        let l = match (l.find('{'), l.find('}')) {
-            (Some(i), Some(j)) if i < j => format!("{}{}", &l[..i], &l[j + 1..]),
-            _ => l.into(),
-        };
-        match (l.find(" gives="), l.rfind(" missing ")) {
-            (Some(i), Some(j)) if i < j => format!("{}{}", &l[..i], &l[j..]),
-            _ => l,
-        }
+    // commit `c` has a body held at one node only, and each such is a drop before a flip
+    let drop_flip = |c: &CommitId| {
+        let id = format!("{c:?}");
+        let changed: Vec<&BodyKey> = wf.keys().filter(|k| k.0 == id && wf[*k].held != gf[*k].held).collect();
+        !changed.is_empty() && changed.iter().all(|k| flip(k))
     };
-    let allowed = |name: &str, x: &str, y: &str| -> bool {
-        match name {
-            "index" if x.starts_with("commit ") => {
-                let id = x.split(' ').nth(1).unwrap_or("");
-                let changed: Vec<&BodyKey> = wf.keys().filter(|k| k.0 == id && wf[*k].held != gf[*k].held).collect();
-                no_dropped(x) == no_dropped(y) && !changed.is_empty() && changed.iter().all(|k| flip(k))
+    match (&want.index, &got.index) {
+        (Some(w), Some(g)) => {
+            if let Some(f) = w.diff(g).into_iter().find(|f| !index_exempt(w, g, f, &drop_flip)) {
+                return Some(format!("index {f:?}:\n  want {}\n  got  {}", w.show(&f).unwrap_or("<none>".into()), g.show(&f).unwrap_or("<none>".into())));
             }
-            // a snapshot dropped at one node only leaves the snapshot index for the dropped one
-            "index" if ["snapshots ", "dropped_snapshots ", "carried "].iter().any(|p| x.starts_with(p)) => {
-                let (a, b) = (snapshot_entries(x), snapshot_entries(y));
-                a.keys().chain(b.keys()).filter(|id| a.get(*id) != b.get(*id)).all(|id| {
-                    let changed: Vec<&BodyKey> = wf.keys().filter(|k| k.0 == *id && wf[*k].held != gf[*k].held).collect();
-                    (!a.contains_key(id) || !b.contains_key(id)) && !changed.is_empty() && changed.iter().all(|k| flip(k))
-                })
-            }
-            _ => false,
         }
-    };
-    for ((name, x), (_, y)) in want.iter().zip(got) {
+        (None, None) => {}
+        _ => return Some("index judged at one node only".into()),
+    }
+    for ((name, x), (_, y)) in want.parts.iter().zip(&got.parts) {
         if x == y || *name == "facts" {
             continue;
         }
         let (xl, yl): (Vec<&str>, Vec<&str>) = (x.lines().collect(), y.lines().collect());
-        let fail = |i: usize| Some(format!("{name} line {i}:\n  want {}\n  got  {}", xl.get(i).unwrap_or(&"<end>"), yl.get(i).unwrap_or(&"<end>")));
         if *name == "reads" || *name == "states" {
             // keyed by thing and aspect: one may lack an aspect the other shows
             let keyed = |ls: &[&str]| -> BTreeMap<(String, String), String> {
@@ -712,50 +711,30 @@ fn alike(want: &[(&'static str, String)], got: &[(&'static str, String)], flips:
             }
             continue;
         }
-        if xl.len() != yl.len() {
-            return first_diff(&[(name, x.clone())], &[(name, y.clone())]);
-        }
-        for (i, (p, q)) in xl.iter().zip(&yl).enumerate() {
-            if p != q && !allowed(name, p, q) {
-                return fail(i);
-            }
-        }
+        return first_diff_parts(&[(name, x.clone())], &[(name, y.clone())]);
     }
     None
 }
 
-/// An index `snapshots` or `carried` line's entries by snapshot (`(ts, id, frontiers,
-/// absorbed)`, `Carried { snap, .. }`: every entry of a snapshot, in order, one per aspect and
-/// source), or the commits of a `dropped_snapshots` line.
-fn snapshot_entries(l: &str) -> BTreeMap<String, Vec<String>> {
-    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut rest = l;
-    while let Some(i) = rest.find("CommitId(") {
-        let Some(n) = rest[i..].find(')') else { break };
-        let id = rest[i..i + n + 1].to_string();
-        let end = match ["(Ts(", "Carried {"].iter().filter_map(|m| rest[..i].rfind(m)).max() {
-            Some(s) => {
-                let mut depth = 0;
-                let close = rest[s..].char_indices().find(|&(_, c)| {
-                    depth += match c {
-                        '(' | '[' | '{' => 1,
-                        ')' | ']' | '}' => -1,
-                        _ => 0,
-                    };
-                    depth == 0
-                });
-                let Some((j, _)) = close else { break };
-                out.entry(id).or_default().push(rest[s..s + j + 1].to_string());
-                s + j + 1
-            }
-            None => {
-                out.entry(id.clone()).or_default().push(id);
-                i + n + 1
-            }
-        };
-        rest = &rest[end..];
+/// The index differences `alike` tolerates, by name (spec/commits.md §5); `drop_flip(c)`: commit
+/// `c` has a body held at one node only, each such a drop before a validity flip.
+fn index_exempt(w: &IndexDigest, g: &IndexDigest, f: &IndexField, drop_flip: &dyn Fn(&CommitId) -> bool) -> bool {
+    // a commit differing in its dropped parts and what dropped snapshots keep (`gives`) alone
+    let dropped_parts = |c: &CommitId| {
+        let bare = |x: &CommitDigest| CommitDigest { dropped: Default::default(), gives: Default::default(), ..x.clone() };
+        matches!((w.commits.get(c), g.commits.get(c)), (Some(x), Some(y)) if bare(x) == bare(y))
+    };
+    // a snapshot dropped at one node only leaves the snapshot indexes there
+    fn one_side<V>(a: &BTreeMap<CommitId, V>, b: &BTreeMap<CommitId, V>, c: &CommitId) -> bool {
+        a.contains_key(c) != b.contains_key(c)
     }
-    out
+    match f {
+        IndexField::Commit(c) => dropped_parts(c) && drop_flip(c),
+        IndexField::Snapshots(c) => one_side(&w.snapshots, &g.snapshots, c) && drop_flip(c),
+        IndexField::DroppedSnapshots(c) => one_side(&w.dropped_snapshots, &g.dropped_snapshots, c) && drop_flip(c),
+        IndexField::Carried(c) => one_side(&w.carried, &g.carried, c) && drop_flip(c),
+        IndexField::Held(_) | IndexField::ByChunk | IndexField::Table(_) => false,
+    }
 }
 
 const FRESH: u64 = 0x5eed_f00d;
@@ -815,7 +794,7 @@ fn flipped(played: &Played, order: &[usize], rng: Option<Rng>, tid: &str, ak: &s
     let mut seen: BTreeMap<BodyKey, BTreeSet<bool>> = BTreeMap::new();
     let mut rng = rng;
     deliver_with(played, order, rng.as_mut(), &mut |p| {
-        for (k, f) in facts_of(&[("facts", facts_text(&mut p.engine))]).0 {
+        for (k, f) in facts_of(&facts_text(&mut p.engine)).0 {
             if k.1 == tid && k.2 == ak {
                 seen.entry(k).or_default().insert(f.valid);
             }
@@ -824,7 +803,17 @@ fn flipped(played: &Played, order: &[usize], rng: Option<Rng>, tid: &str, ak: &s
     seen.values().any(|v| v.len() > 1)
 }
 
-fn first_diff(a: &[(&'static str, String)], b: &[(&'static str, String)]) -> Option<String> {
+/// The first difference between two judgements, index first, described.
+fn first_diff(a: &Judged, b: &Judged) -> Option<String> {
+    match (&a.index, &b.index) {
+        (Some(x), Some(y)) => x.first_diff(y),
+        (None, None) => None,
+        _ => Some("index judged at one node only".into()),
+    }
+    .or_else(|| first_diff_parts(&a.parts, &b.parts))
+}
+
+fn first_diff_parts(a: &[(&'static str, String)], b: &[(&'static str, String)]) -> Option<String> {
     for ((name, x), (_, y)) in a.iter().zip(b) {
         if x != y {
             let (xl, yl): (Vec<&str>, Vec<&str>) = (x.lines().collect(), y.lines().collect());
@@ -935,7 +924,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
     let played = play(seed, steps);
     let mut rng = Rng(seed ^ 0x0de5_ab1e | 1);
     let mut tried = 0;
-    let mut full: Option<Vec<(&'static str, String)>> = None;
+    let mut full: Option<Judged> = None;
     let n = played.packs.len();
     let split = played.packs.iter().any(|pk| osis_commit::CommitBlob::decode(&pk.bytes).is_ok_and(|b| b.parts.iter().any(|x| x.ai != b.parts[0].ai)));
     // `OSIS_ORDER_ALL_HELD`: every held set in exhaustive mode (about 2.3x the time)
@@ -975,13 +964,13 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
             return Err(format!("{of}, as made: rebuild differs: {d}"));
         }
         let mut want = now;
-        want.insert(0, ("index", index_later(&mut p, &played)));
+        let idx = index_later(&mut p, &played);
         if std::env::var("OSIS_ORDER_STATS").is_ok() {
-            let idx = &want[0].1;
-            let invalid = idx.lines().filter(|l| l.starts_with("commit ") && l.contains("false")).count();
-            let carried = idx.lines().find(|l| l.starts_with("carried ")).map_or(0, |l| l.matches("invalid: [").count() - l.matches("invalid: []").count());
-            eprintln!("seed {seed}: {} of {} commits held ({} base), {} with an invalid part, {} carried groups with invalid writes, {} pending, {} things", held.len(), n, played.base, invalid, carried, want[4].1.lines().count(), played.things.len());
+            let invalid = idx.commits.values().filter(|c| c.valid.contains(&false)).count();
+            let carried: usize = idx.carried.values().map(Vec::len).sum();
+            eprintln!("seed {seed}: {} of {} commits held ({} base), {} with an invalid part, {} carried groups, {} pending, {} things", held.len(), n, played.base, invalid, carried, want.part("pending").lines().count(), played.things.len());
         }
+        want.index = Some(idx);
         if full.is_none() {
             full = Some(want.clone());
         }
@@ -1008,7 +997,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
             if let Some(d) = first_diff(&got, &judged_now(&mut p, &played.things)) {
                 return Err(format!("{of}, order #{k} {order:?}: reopen differs: {d}"));
             }
-            got.insert(0, ("index", index_later(&mut p, &played)));
+            got.index = Some(index_later(&mut p, &played));
             match alike(&want, &got, &|t, a| flipped(&played, &orders[0], None, t, a) || flipped(&played, order, None, t, a)) {
                 Some(d) => Err(format!("{vs} (got) {order:?}: {d}")),
                 None => Ok(()),
@@ -1357,7 +1346,7 @@ fn drop_before_flip_tolerated_spec_commits_5() {
     // with every write judged valid, the same difference is a failure
     // with every write judged valid, or the invalid ones stamped before every body (none can
     // have killed it), the same difference is a failure
-    let edit = |j: &[(&'static str, String)], f: &dyn Fn(Vec<&str>) -> Option<String>| -> Vec<(&'static str, String)> { j.iter().map(|(n, t)| (*n, if *n == "facts" { t.lines().filter_map(|l| f(l.split('|').collect())).collect::<Vec<_>>().join("\n") } else { t.clone() })).collect() };
+    let edit = |j: &Judged, f: &dyn Fn(Vec<&str>) -> Option<String>| -> Judged { Judged { index: j.index.clone(), parts: j.parts.iter().map(|(n, t)| (*n, if *n == "facts" { t.lines().filter_map(|l| f(l.split('|').collect())).collect::<Vec<_>>().join("\n") } else { t.clone() })).collect() } };
     let all_valid = |f: Vec<&str>| (f[0] != "inv").then(|| format!("{}|true|{}", f[..5].join("|"), f[6..].join("|")));
     assert!(alike(&edit(&want, &all_valid), &edit(&got, &all_valid), &|_, _| false).is_some(), "a drop difference with no invalid write passed");
     let early = |mut f: Vec<&str>| {
@@ -1366,7 +1355,7 @@ fn drop_before_flip_tolerated_spec_commits_5() {
         }
         Some(f.join("|"))
     };
-    assert!(edit(&want, &early).iter().any(|(n, t)| *n == "facts" && t.contains("inv|")), "an invalid write");
+    assert!(edit(&want, &early).part("facts").contains("inv|"), "an invalid write");
     assert!(alike(&edit(&want, &early), &edit(&got, &early), &|_, _| false).is_some(), "a drop difference with only earlier invalid writes passed");
 }
 
@@ -1570,8 +1559,8 @@ fn snapshot_dropped_before_flip_keeps_frontiers_tolerated_spec_commits_5() {
     let order = [16, 7, 20, 13, 12, 5, 8, 21, 1, 10, 0, 18, 19, 9, 15, 3, 14, 6, 2, 17, 11, 4];
     let want = judged(&mut deliver(&played, &made), &played);
     let got = judged(&mut deliver(&played, &order), &played);
-    let snap = |j: &[(&'static str, String)]| j[0].1.lines().find(|l| l.contains("ContentSnapshot") && l.contains("/t/gone")).unwrap().to_string();
-    assert!(snap(&want).contains("gives={}") && !snap(&got).contains("gives={}"), "dropped in one order only, keeping its frontiers");
+    let snap = |j: &Judged| j.index.as_ref().unwrap().commits.values().find(|c| c.kind == osis_commit::Kind::ContentSnapshot && c.rest.contains("/t/gone")).unwrap().clone();
+    assert!(snap(&want).gives.is_empty() && !snap(&got).gives.is_empty(), "dropped in one order only, keeping its frontiers");
     assert_eq!(alike(&want, &got, &|_, _| false), None);
     check(3401073, &h, LARGE).unwrap();
     // the seed's longer shrink: the dropped snapshot leaves the carried-writes index too
@@ -1580,6 +1569,6 @@ fn snapshot_dropped_before_flip_keeps_frontiers_tolerated_spec_commits_5() {
     let held = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 13, 14, 16, 17, 18, 20, 21, 23, 26, 27, 28, 30];
     let order = [3, 8, 13, 30, 20, 4, 27, 0, 11, 2, 28, 26, 14, 16, 18, 10, 5, 6, 21, 1, 17, 7, 23];
     let (want, got) = (judged(&mut deliver(&played, &held), &played), judged(&mut deliver(&played, &order), &played));
-    assert!(want[0].1.lines().zip(got[0].1.lines()).any(|(a, b)| a.starts_with("carried ") && a != b), "the carried index differs");
+    assert_ne!(want.index.as_ref().unwrap().carried, got.index.as_ref().unwrap().carried, "the carried index differs");
     assert_eq!(alike(&want, &got, &|_, _| false), None);
 }

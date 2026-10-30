@@ -19,6 +19,8 @@ pub(crate) mod state;
 mod testing;
 pub mod write;
 
+#[doc(hidden)]
+pub use testing::{Carry, CommitDigest, IndexDigest, IndexField};
 pub use large::LiveTrees;
 pub use write::Mutation;
 

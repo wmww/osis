@@ -269,7 +269,7 @@ fn persisted_index_equals_rebuild_spec_perm_5_2() {
     assert!(h.aspects.iter().any(|a| a.tid == d), "bob's late write is held");
     assert_eq!(e.get(&d, &ak("/t/reg")).unwrap(), Some(s("bob before")), "and invalid here");
     let before = e.index_digest();
-    assert!(before.contains("false"), "an invalid part is indexed");
+    assert!(before.commits.values().any(|c| c.valid.contains(&false)), "an invalid part is indexed");
     e.reload().unwrap();
     assert_eq!(e.index_digest(), before, "loaded from the persisted index");
     e.rebuild_index().unwrap();

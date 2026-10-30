@@ -54,7 +54,7 @@ fn refused_inbox_deposit_retried_spec_sync_3() {
     // `/members` part; his `node/edges` row was rewritten with the record, so a reopen from the
     // index equals a rebuild from the commit records and keeps the edge
     let e = net.engine(b);
-    let held = |d: String| d.lines().filter(|l| !l.starts_with("held ")).collect::<Vec<_>>().join("\n");
+    let held = |d: osis_node::engine::IndexDigest| d.without_held();
     assert!(e.index_current().unwrap());
     let (perm, index, rows) = (e.perm_digest(false), held(e.index_digest()), e.edges_rows().unwrap());
     e.reload().unwrap();
