@@ -807,7 +807,10 @@ impl Engine {
         self.run(|tx| {
             let node = tx.core.id.tid();
             let ts = tx.core.hlc.next();
-            crate::engine::write::check_authority(tx.core, tx.core.id.tid(), &Default::default(), &tid, ak.as_str(), ts)?;
+            // a snapshot needs the strictest role a write it carries could need (tests may write
+            // one a receiver judges invalid)
+            let need = if tx.core.skip_writer_rules { crate::engine::write::required_role(ak.as_str()) } else { crate::engine::write::snapshot_role(ak.as_str()) };
+            crate::engine::write::check_role_with(tx.core, tx.core.id.tid(), &|_| None, &tid, ak.as_str(), need, ts)?;
             tx.load(&tid, &ak)?;
             let Some(mut st) = tx.core.states.get(&(tid, ak.clone())).cloned().flatten() else { return Ok(None) };
             if ak.as_str() == "/secrets" && !crate::apply::keys::may_compact(tx.core, &tid, &st) {

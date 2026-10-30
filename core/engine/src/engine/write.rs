@@ -227,6 +227,16 @@ pub(crate) fn required_role(ak: &str) -> Role {
     }
 }
 
+/// The role a compaction snapshot of `ak` needs (spec/permissions.md §5.2): the strictest any
+/// write it carries could need, so admin for `/keys` and `/secrets` (admin keysets, inbox,
+/// deposit seed, admin boxes and tombstones), else the aspect's role.
+pub(crate) fn snapshot_role(ak: &str) -> Role {
+    match ak {
+        "/keys" | "/secrets" => Role::Admin,
+        _ => required_role(ak),
+    }
+}
+
 pub fn role_of(core: &Core, node: &Tid, tid: &Tid, ts: Ts) -> Option<Role> {
     core.timelines.get(tid)?.role(node, tid, At::now(ts))
 }
@@ -262,7 +272,11 @@ pub(crate) fn check_authority(core: &Core, node: Tid, creates: &Creates, tid: &T
 
 /// `check_authority` with the records not held as durable looked up by `records`.
 pub(crate) fn check_authority_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
-    let need = required_role(ak);
+    check_role_with(core, node, records, tid, ak, required_role(ak), ts)
+}
+
+/// `check_authority_with` needing role `need`.
+pub(crate) fn check_role_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, ak: &str, need: Role, ts: Ts) -> Result<()> {
     let role = role_with(core, node, records, tid, ts);
     if role >= Some(need) && (ak == CREATED.ak() || core.skip_writer_rules || within_depth(core, records, tid)) { Ok(()) } else { Err(Error::Permission { tid: *tid }) }
 }
