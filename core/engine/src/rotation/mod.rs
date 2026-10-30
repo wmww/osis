@@ -896,7 +896,7 @@ fn may_grant(core: &Core, author: &Tid, x: &Tid) -> bool {
 }
 
 /// Of `cands`, the actors this node holds a secret of and lost read access to
-/// (spec/permissions.md §3): no role on them by any path now and no pending grant reaching them.
+/// (spec/permissions.md §3): no role on them by any path now and no pending grant or `contested` thing reaching them.
 /// Each actor is judged on its own, so what the node reached only through a lost one is lost
 /// with it. (Epochs observed without a secret are no access.) An actor this node holds checked
 /// secrets of is kept only by a plausible grant: anyone can send a pending commit, which is kept
@@ -911,7 +911,26 @@ fn lost_among(tx: &mut Tx<'_>, cands: Vec<Tid>) -> Result<Vec<Tid>> {
     let pend = pending_grants(tx)?;
     let core = &*tx.core;
     let checked = |a: &Tid| core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| e.role(*r).held().next().is_some()));
-    Ok(unread.into_iter().filter(|a| !pend.iter().any(|g| (g.plausible || !checked(a)) && reaches(core, &g.x, a))).collect())
+    let held: Vec<Tid> = unread.iter().filter(|k| contested(core, k)).copied().collect();
+    let kept = |a: &Tid| pend.iter().any(|g| (g.plausible || !checked(a)) && reaches(core, &g.x, a)) || held.iter().any(|x| reaches(core, x, a));
+    Ok(unread.into_iter().filter(|a| !kept(a)).collect())
+}
+
+/// Whether `k` is a thing where a held grant of one of ours stands void only because its signer's edge was
+/// self-removed first with no explicit write on it since: a single-use link race the sharer
+/// has not finalized (spec/permissions.md §9). The finalization may drop the competing
+/// redemption and make ours stand, so until it arrives the loser keeps the secrets (and with
+/// them follows the labels) it would get back.
+fn contested(core: &Core, k: &Tid) -> bool {
+    let Some(tl) = core.timelines.get(k) else { return false };
+    let node = core.id.tid();
+    let ours = |m: &Tid| *m == node || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m));
+    let ids = core.ix.by_thing.get(k).into_iter().flatten();
+    ids.filter_map(|c| tl.membership_commit(c)).any(|mc| {
+        mc.ops.iter().enumerate().any(|(i, o)| {
+            o.target == *k && o.edge.is_some() && ours(&o.member) && tl.lowered_unaudited(&mc.author, k) && !tl.is_applied(&osis_perm::WriteId::Op(mc.id, i as u32))
+        })
+    })
 }
 
 /// Drops the secrets of `lost` actors (diagnostic each) and forgets what only they read.
