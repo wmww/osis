@@ -98,10 +98,8 @@ impl Drop for Via {
     fn drop(&mut self) {
         let mut next = self.0.take();
         while let Some(h) = next {
-            next = match Arc::try_unwrap(h) {
-                Ok(mut hop) => hop.rest.0.take(),
-                Err(_) => None,
-            };
+            // `into_inner` (not `try_unwrap`): of two racing last owners, exactly one unwraps
+            next = Arc::into_inner(h).and_then(|mut hop| hop.rest.0.take());
         }
     }
 }
