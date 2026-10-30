@@ -1023,13 +1023,13 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
             if s.dot.source == first.source && s.dot.ctr == first.ctr + i as u64 {
                 return Err(Error::Bad("creation as a position write"));
             }
-            // a sibling key is an older write's stamp (§5.7): below the write's own, else non-canonical
+            // a sibling key is an older commit's write stamp (§5.7): its ts below the write's
             let key = match p.get(3) {
                 Some(k) => Some(dec_stamp(k, cx)?),
                 None => None,
             };
-            if key.as_ref().map_or(false, |k| *k >= s) {
-                return Err(Error::Bad("sibling key not below its stamp"));
+            if key.as_ref().map_or(false, |k| k.ts >= s.ts) {
+                return Err(Error::Bad("sibling key not below its stamp's ts"));
             }
             elems[i].pos.push((s, dec_anchor(&p[2], cx)?, key));
         }
