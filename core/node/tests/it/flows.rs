@@ -1497,11 +1497,14 @@ fn fork_from_concurrent_rotations_spec_crypto_4() {
     spread(&mut lp);
     let forks = lp.peers[0].engine.epochs(&t).unwrap().read.current();
     assert_eq!(forks.len(), 2, "{forks:?}");
+    assert_eq!(forks[0].n(), forks[1].n(), "one n: each counts from the epoch it supersedes");
     assert_eq!(lp.peers[1].engine.epochs(&t).unwrap().read.current(), forks);
+    assert_eq!(newest_read(&lp, 0, t), newest_read(&lp, 1, t), "ties broken alike");
     let (done, still) = lp.peers[0].engine.ensure_rotated(&t).unwrap();
     assert!(still.is_empty());
     assert_eq!(done.commits.len(), 1);
     let e3 = newest_read(&lp, 0, t).unwrap();
+    assert_eq!(e3.n(), forks[0].n() + 1);
     spread(&mut lp);
     assert_eq!(lp.peers[1].engine.epochs(&t).unwrap().read.current(), vec![e3]);
     for i in [2, 3] {

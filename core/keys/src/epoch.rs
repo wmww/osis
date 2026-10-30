@@ -166,20 +166,26 @@ impl RoleEpochs {
     /// Drops the reading-only candidates `commit` gave (it applied, or was dropped as bad
     /// input). Returns whether any went.
     pub fn drop_reading_from(&mut self, commit: &CommitId) -> bool {
-        let mut any = false;
-        for i in self.map.values_mut() {
+        let mut lost = Vec::new();
+        for (e, i) in self.map.iter_mut() {
             let n = i.reading.len();
             i.reading.retain(|(_, u)| u.commit != *commit);
-            any |= i.reading.len() != n;
+            if i.reading.len() != n {
+                lost.push(*e);
+            }
         }
-        self.drop_bare();
-        any
+        for e in &lost {
+            self.drop_bare(e);
+        }
+        !lost.is_empty()
     }
 
-    /// Drops entries holding nothing (an epoch known only from dropped reading-only candidates):
-    /// nothing from an unchecked source outlives it.
-    fn drop_bare(&mut self) {
-        self.map.retain(|_, i| *i != EpochInfo::default());
+    /// Drops `e`'s entry if it holds nothing (known only from reading-only candidates just
+    /// dropped): nothing from an unchecked source outlives it.
+    fn drop_bare(&mut self, e: &Epoch) {
+        if self.map.get(e).is_some_and(|i| *i == EpochInfo::default()) {
+            self.map.remove(e);
+        }
     }
 
     /// Drops the reading-only candidates of `e` that `keep` refuses (a published keyset of `e`
@@ -189,7 +195,9 @@ impl RoleEpochs {
         let n = i.reading.len();
         i.reading.retain(|(s, _)| keep(s));
         let changed = i.reading.len() != n;
-        self.drop_bare();
+        if changed {
+            self.drop_bare(e);
+        }
         changed
     }
 
