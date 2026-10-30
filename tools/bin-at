@@ -4,7 +4,9 @@
 # `tools/icount` comparisons (notes/build.md). Needs a clean tree (wip-commit first): checks out
 # REV detached, builds, checks the starting branch or commit out again (also on failure). The
 # next build here recompiles what REV changed back. The binary keeps this worktree's manifest
-# dirs: a test reading fixtures reads the checked-out ones.
+# dirs: a test reading fixtures reads the checked-out ones. Refuses the main checkout (build only
+# in task worktrees). Killed hard (SIGKILL) mid-build, it leaves HEAD detached at REV: check the
+# branch it printed out again.
 set -eu
 [ $# -ge 2 ] || { echo "usage: tools/bin-at REV OUT [--release] [-p CRATE] [--test NAME]" >&2; exit 2; }
 rev=$1 out=$2
@@ -21,12 +23,14 @@ while [ $# -gt 0 ]; do
 done
 root=$(git rev-parse --show-toplevel)
 cd "$root"
+[ "$(git rev-parse --git-dir)" != "$(git rev-parse --git-common-dir)" ] || { echo "bin-at: main checkout; run it in a task worktree (tools/wt claim)" >&2; exit 1; }
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "bin-at: uncommitted changes; wip-commit them first" >&2; exit 1; }
 sha=$(git rev-parse --verify "$rev^{commit}")
 back=$(git symbolic-ref -q --short HEAD || git rev-parse HEAD)
 restore() { git checkout -q "$back"; }
 trap restore EXIT
 trap 'exit 1' INT TERM
+echo "bin-at: building $sha detached; returns to $back (if killed: git checkout $back)" >&2
 git checkout -q --detach "$sha"
 # shellcheck disable=SC2086
 exe=$(cargo test $profile -p "$crate" --test "$test" --no-run --message-format=json-render-diagnostics \

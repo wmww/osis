@@ -1136,7 +1136,8 @@ fn run(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: 
     let tried: usize = results.iter().map(|x| x.0).sum();
     let fails: Vec<String> = results.into_iter().filter_map(|x| x.1).collect();
     let summary = format!("order::{name}: {} seeds from {}, {len} steps, {tried} orders in the passing ones, {} failing, {:.1} s (settings: {settings:?})", seeds.len(), seeds.first().copied().unwrap_or(0), fails.len(), t0.elapsed().as_secs_f64());
-    osis_base::testenv::visible(!settings.is_empty(), &summary);
+    // always shown: the order counts are what a passing run is read for
+    osis_base::testenv::visible(true, &summary);
     assert!(fails.is_empty(), "{summary}\n{} of {} histories judged differently by arrival order:\n{}", fails.len(), seeds.len(), fails.join("\n\n"));
 }
 
