@@ -10,12 +10,27 @@ use super::{ConnId, Phase, RELINK_BACKOFF_MAX_MS, RELINK_BACKOFF_MS, SyncEngine}
 use crate::error::Result;
 use crate::labeling::open_commit;
 use crate::Ingested;
-use osis_base::{BlobId, Classified, CreationRecord, ErrorClass, LabelId, Tid};
+use osis_base::{BlobId, Classified, CommitId, CreationRecord, ErrorClass, LabelId, Tid};
 use osis_crypto::{Secret32, VerifyingKey, role_kem};
 use osis_label::Step;
 use osis_proto::{Code, Command, Cursor, Event as LogEvent};
 use osis_schema::core_types as ct;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// An opened inbox blob: its prefix expiry (none: never), the aspect indexes its commit
+/// carries, the things its payload names.
+#[derive(Clone, Debug)]
+pub(crate) struct Opened {
+    pub until: u64,
+    pub ais: BTreeSet<usize>,
+    pub things: Vec<osis_label::InboxThing>,
+}
+
+impl Opened {
+    fn new(prefix: &osis_label::Prefix, c: &osis_commit::CommitBlob, things: Vec<osis_label::InboxThing>) -> Opened {
+        Opened { until: prefix.expiry().map_or(u64::MAX, |w| w.0), ais: c.parts.iter().map(|p| p.ai).collect(), things }
+    }
+}
 
 /// Rounds of "new secrets opened more entries" per batch.
 const MAX_ROUNDS: usize = 16;
@@ -378,7 +393,7 @@ impl SyncEngine {
             todo = self.state.entries.iter().filter(|(_, e)| e.kind == Kind::Unknown).map(|(k, _)| *k).collect();
         }
         self.engine.reexamine()?;
-        Ok(())
+        self.vet_inbox_hints()
     }
 
     fn secrets_count(&self) -> usize {
@@ -423,18 +438,14 @@ impl SyncEngine {
             }
             return Ok(());
         }
-        let Some(payload) = self.open_inbox(&l, &bytes) else { return Ok(()) };
+        let Some((prefix, payload)) = self.open_inbox(&l, &bytes) else { return Ok(()) };
         let pt = osis_base::encode(&payload.commit);
         let c = osis_commit::CommitBlob::decode(&pt).ok();
         if let Some(c) = &c {
             self.engine.note_delete_hints(c.id(), &payload.things)?;
         }
-        for t in &payload.things {
-            if self.engine.labels_of(&t.tid).iter().all(|x| x.id != t.label) {
-                // a sender's word: servers only, never a node to dial (`peer://`)
-                self.state.add_hint(t.label, Hint { thing: t.tid, index: t.index, servers: t.servers.iter().filter(|a| !super::peers::is_peer(a)).cloned().collect(), via: None });
-            }
-        }
+        // its labels are followed only once vetted (`vet_inbox_hints`)
+        self.inbox_opened.insert((l, b), c.as_ref().map(|c| Opened::new(&prefix, c, payload.things)));
         e.kind = Kind::Inbox(c.as_ref().map(|c| c.id()));
         self.state.set_entry(l, b, e);
         if let Some(c) = c {
@@ -444,18 +455,102 @@ impl SyncEngine {
     }
 
     /// Opens inbox blob `bytes` under the held keys of an actor whose inbox `l` is.
-    fn open_inbox(&mut self, l: &LabelId, bytes: &[u8]) -> Option<osis_label::InboxPayload> {
-        self.inbox_of(l).into_iter().flat_map(|(a, keys)| keys.into_iter().map(move |s| (a, s))).find_map(|(a, s)| osis_label::open_inbox_blob(bytes, &a, &role_kem(&s)).ok()).map(|(_, p)| p)
+    fn open_inbox(&mut self, l: &LabelId, bytes: &[u8]) -> Option<(osis_label::Prefix, osis_label::InboxPayload)> {
+        self.inbox_of(l).into_iter().flat_map(|(a, keys)| keys.into_iter().map(move |s| (a, s))).find_map(|(a, s)| osis_label::open_inbox_blob(bytes, &a, &role_kem(&s)).ok())
     }
 
-    /// The aspect indexes of the commit inbox blob `b` under `l` carries and the things it names
-    /// (it opens again under the held keys of an actor whose inbox `l` is), if its bytes are
-    /// held.
-    pub(crate) fn inbox_parts(&mut self, l: &LabelId, b: &BlobId) -> Result<Option<(BTreeSet<usize>, Vec<Tid>)>> {
+    /// What opened inbox blob `b` under `l` carries (cached; it opens again under the held keys
+    /// of an actor whose inbox `l` is), if its bytes are held and its commit decodes.
+    pub(crate) fn inbox_opened(&mut self, l: &LabelId, b: &BlobId) -> Result<Option<Opened>> {
+        if let Some(x) = self.inbox_opened.get(&(*l, *b)) {
+            return Ok(x.clone());
+        }
         let Some(bytes) = self.engine.blob(b)? else { return Ok(None) };
-        let Some(payload) = self.open_inbox(l, &bytes) else { return Ok(None) };
-        let Ok(c) = osis_commit::CommitBlob::decode(&osis_base::encode(&payload.commit)) else { return Ok(None) };
-        Ok(Some((c.parts.iter().map(|p| p.ai).collect(), payload.things.iter().map(|t| t.tid).collect())))
+        // one that no longer opens is not tried again (a KEM per try)
+        let Some((prefix, payload)) = self.open_inbox(l, &bytes) else {
+            self.inbox_opened.insert((*l, *b), None);
+            return Ok(None);
+        };
+        let x = osis_commit::CommitBlob::decode(&osis_base::encode(&payload.commit)).ok().map(|c| Opened::new(&prefix, &c, payload.things));
+        self.inbox_opened.insert((*l, *b), x.clone());
+        Ok(x)
+    }
+
+    /// The aspect indexes of the commit inbox blob `b` under `l` carries and the things it
+    /// names, if its bytes are held.
+    pub(crate) fn inbox_parts(&mut self, l: &LabelId, b: &BlobId) -> Result<Option<(BTreeSet<usize>, Vec<Tid>)>> {
+        Ok(self.inbox_opened(l, b)?.map(|o| (o.ais, o.things.iter().map(|t| t.tid).collect())))
+    }
+
+    /// Follows the labels opened inbox blobs name (spec/sync.md §3) as hints, from scratch: per
+    /// unexpired blob whose commit is applied or pending, the first payload thing with no known
+    /// label that the commit gave this node a read secret of (`Engine::boxed_by`), one per blob
+    /// (a delivery names one thing), so the hints a sender makes are bounded by the inbox's
+    /// deposit budget and go with the blob. The payload is the sender's word: servers only, never
+    /// a node to dial (`peer://`); a label a key actor's entry is followed for (`via`) is left
+    /// to that follow. Other inbox hints are dropped.
+    pub(crate) fn vet_inbox_hints(&mut self) -> Result<()> {
+        let now = self.now();
+        let inbox: Vec<(LabelId, BlobId, Option<CommitId>)> = self
+            .state
+            .by_kind
+            .iter()
+            .filter(|(_, t, _)| *t == 2)
+            .filter_map(|(l, _, b)| match self.state.entries.get(&(*l, *b)).map(|e| &e.kind) {
+                Some(Kind::Inbox(c)) => Some((*l, *b, *c)),
+                _ => None,
+            })
+            .collect();
+        let live: BTreeSet<(LabelId, BlobId)> = inbox.iter().map(|(l, b, _)| (*l, *b)).collect();
+        self.inbox_opened.retain(|k, _| live.contains(k));
+        let mut want: BTreeMap<LabelId, Hint> = BTreeMap::new();
+        for (l, b, c) in inbox {
+            let Some(c) = c else { continue };
+            if !self.engine.core.ix.commits.contains_key(&c) && !self.engine.core.ix.pending.contains_key(&c) {
+                continue;
+            }
+            let Some(o) = self.inbox_opened(&l, &b)? else { continue };
+            if o.until <= now {
+                continue;
+            }
+            for t in &o.things {
+                if !self.engine.labels_of(&t.tid).is_empty() || !self.engine.boxed_by(&c, &t.tid) {
+                    continue;
+                }
+                let servers = t.servers.iter().filter(|a| !super::peers::is_peer(a)).cloned();
+                let src = super::state::InboxSource { label: l, blob: b, until: o.until };
+                match want.get_mut(&t.label) {
+                    // two blobs naming one label: both servers, the later expiry
+                    Some(h) if h.thing == t.tid && h.index == t.index => {
+                        for a in servers {
+                            if !h.servers.contains(&a) {
+                                h.servers.push(a);
+                            }
+                        }
+                        if h.inbox.is_some_and(|i| i.until < o.until) {
+                            h.inbox = Some(src);
+                        }
+                    }
+                    Some(_) => {}
+                    None => {
+                        want.insert(t.label, Hint { thing: t.tid, index: t.index, servers: servers.collect(), via: None, inbox: Some(src) });
+                    }
+                }
+                break;
+            }
+        }
+        let gone: Vec<LabelId> = self.state.hints.iter().filter(|(l, h)| h.via.is_none() && !want.contains_key(l)).map(|(l, _)| *l).collect();
+        for l in gone {
+            self.state.remove_hint(&l);
+        }
+        for (l, h) in want {
+            let old = self.state.hints.get(&l);
+            if old.is_some_and(|x| x.via.is_some() || (x.thing, x.index, &x.servers, x.inbox) == (h.thing, h.index, &h.servers, h.inbox)) {
+                continue;
+            }
+            self.state.add_hint(l, h);
+        }
+        Ok(())
     }
 
     /// Deletes the ciphertexts of opened inbox blobs naming a forgotten thing (they open under
@@ -470,7 +565,7 @@ impl SyncEngine {
         let mut gone = Vec::new();
         for (l, b) in inbox {
             let Some(bytes) = self.engine.blob(&b)? else { continue };
-            let Some(payload) = self.open_inbox(&l, &bytes) else { continue };
+            let Some((_, payload)) = self.open_inbox(&l, &bytes) else { continue };
             let names = payload.things.iter().any(|t| things.contains(&t.tid)) || osis_commit::CommitBlob::decode(&osis_base::encode(&payload.commit)).is_ok_and(|c| c.header.aspects.iter().any(|a| things.contains(&a.tid)));
             if names {
                 gone.push(b);

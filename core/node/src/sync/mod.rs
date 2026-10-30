@@ -379,6 +379,9 @@ pub struct SyncEngine {
     /// Blobs each body's deltas link (`pass::body_blobs`), once the walk was complete: a body
     /// never changes.
     pub(crate) body_links: BTreeMap<BodyKey, Vec<osis_base::BlobId>>,
+    /// Opened inbox entries' payloads (`inbound::inbox_opened`): a blob never changes; one no
+    /// entry names any more is dropped by `vet_inbox_hints`.
+    pub(crate) inbox_opened: BTreeMap<(LabelId, osis_base::BlobId), Option<inbound::Opened>>,
     /// Re-encrypting deleted chunks (`Engine::relink`) per aspect: when allowed next, and the
     /// interval after that (doubling, `RELINK_BACKOFF_MS` to `RELINK_BACKOFF_MAX_MS`).
     pub(crate) relink_backoff: BTreeMap<(Tid, osis_base::Ak), (u64, u64)>,
@@ -515,6 +518,7 @@ impl SyncEngine {
             drop_when_idle: false,
             tree_wants: BTreeSet::new(),
             body_links: BTreeMap::new(),
+            inbox_opened: BTreeMap::new(),
             relink_backoff: BTreeMap::new(),
             relink_pending: BTreeSet::new(),
             relink_at: 0,
@@ -1328,6 +1332,7 @@ impl SyncEngine {
     /// Runs passes for open, synced labels marked dirty.
     fn run_dirty(&mut self, out: &mut Vec<Action>) -> Result<()> {
         self.add_new_labels(out)?;
+        self.vet_inbox_hints()?;
         // a hint is done once the thing's `/label` names the label
         let hints: Vec<(LabelId, Tid)> = self.state.hints.iter().map(|(l, h)| (*l, h.thing)).collect();
         for (l, t) in hints {
