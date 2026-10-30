@@ -725,9 +725,10 @@ fn alike(want: &[(&'static str, String)], got: &[(&'static str, String)], flips:
 }
 
 /// An index `snapshots` or `carried` line's entries by snapshot (`(ts, id, frontiers,
-/// absorbed)`, `Carried { snap, .. }`), or the commits of a `dropped_snapshots` line.
-fn snapshot_entries(l: &str) -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
+/// absorbed)`, `Carried { snap, .. }`: every entry of a snapshot, in order, one per aspect and
+/// source), or the commits of a `dropped_snapshots` line.
+fn snapshot_entries(l: &str) -> BTreeMap<String, Vec<String>> {
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut rest = l;
     while let Some(i) = rest.find("CommitId(") {
         let Some(n) = rest[i..].find(')') else { break };
@@ -744,11 +745,11 @@ fn snapshot_entries(l: &str) -> BTreeMap<String, String> {
                     depth == 0
                 });
                 let Some((j, _)) = close else { break };
-                out.insert(id, rest[s..s + j + 1].to_string());
+                out.entry(id).or_default().push(rest[s..s + j + 1].to_string());
                 s + j + 1
             }
             None => {
-                out.insert(id.clone(), id);
+                out.entry(id.clone()).or_default().push(id);
                 i + n + 1
             }
         };

@@ -44,6 +44,7 @@ pub const KNOWN: &[&str] = &[
     "OSIS_STORE",
     "OSIS_STRAYS_SEEDS",
     "OSIS_STRAYS_START",
+    "OSIS_STRAYS_THREADS",
     "OSIS_SYNC_TRACE",
     "OSIS_TEST_DIAG",
     "OSIS_TEST_TRACE",

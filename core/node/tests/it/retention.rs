@@ -595,16 +595,15 @@ fn snapshot_of_removed_entry_no_live_write_spec_commits_5() {
 // and recomputes batched. Node 5 takes the same commits keeping every body (`keep_bodies`) and
 // recomputes: each write's earliest superseder. Every body node 4 holds is dated no earlier:
 // a body with writes of its own dies iff node 5's does, first and last no earlier; a snapshot's
-// last death no earlier. Seeds: OSIS_STRAYS_START, OSIS_STRAYS_SEEDS.
+// last death no earlier. Seeds: OSIS_STRAYS_START, OSIS_STRAYS_SEEDS, a thread per core
+// (OSIS_STRAYS_THREADS); every failing seed is reported.
 #[test]
 fn deaths_never_early_random_spec_commits_5() {
-    let seeds = osis_base::testenv::Seeds::from_env("OSIS_STRAYS_START", "OSIS_STRAYS_SEEDS", 0..24);
-    // every failing seed is reported
-    let t0 = std::time::Instant::now();
-    let failed: Vec<u64> = seeds.range.clone().filter(|&seed| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dating_history(seed))).is_err()).collect();
-    let summary = format!("deaths_never_early_random: {seeds}, {} failing, {:.1} s", failed.len(), t0.elapsed().as_secs_f64());
-    osis_base::testenv::visible(seeds.overridden, &summary);
-    assert!(failed.is_empty(), "{summary}: seeds failed: {failed:?} (replay one: OSIS_STRAYS_START=<seed> OSIS_STRAYS_SEEDS=1)");
+    let range = osis_base::testenv::Seeds::from_env("OSIS_STRAYS_START", "OSIS_STRAYS_SEEDS", 0..24);
+    let seeds: Vec<u64> = range.range.clone().collect();
+    let name = "retention::deaths_never_early_random_spec_commits_5";
+    let replay = |s: u64| format!("OSIS_STRAYS_START={s} OSIS_STRAYS_SEEDS=1 cargo test --workspace --test it {name} -- --exact");
+    run_seeds_noted(name, &seeds, range.overridden, "OSIS_STRAYS_THREADS", replay, dating_history);
 }
 
 /// One history of `deaths_never_early_random_*`.
