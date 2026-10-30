@@ -351,7 +351,7 @@ fn member_proof_bound_to_session_spec_sync_5() {
     let so = net.servers[0].handle(T0, &mut net.store, ServerInput::Bytes(encode_frame(&open.encode())));
     let sent: Vec<Message> = so.into_iter().filter_map(|o| if let ServerOutput::Send(f) = o { Some(Message::decode(&f[4..]).unwrap()) } else { None }).collect();
     assert_eq!(sent, vec![Message::Error { id: 99, code: Code::REFUSED }]);
-    assert!(net.servers[0].opened().is_empty());
+    assert!(net.servers[0].none_opened());
 }
 
 // spec/sync.md §5: claim keys open at the head or get the child; static entries open with the entry box; a dropped set serves no claims
@@ -560,6 +560,62 @@ fn subscribe_push_and_relays() {
     net.run(1, Command::Unsubscribe { labels: vec![l.id] });
     net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(3))] });
     assert!(net.events[1].is_empty());
+}
+
+// spec/sync.md §5 (an open holds under the head's sync key), §8: a head with another sync key
+// ends the label's opens and subscriptions on every connection, the registrar's included: one
+// push ending with that head, then nothing, every read refused 8 until opened again under the
+// new key (which resumes from the cursor). A step keeping the sync key keeps them.
+#[test]
+fn new_sync_key_ends_opens_spec_sync_5() {
+    let mut net = Net::new(2, 0);
+    let mut l = Label::new(3);
+    net.setup(&l);
+    let mut cursors = vec![];
+    for i in 0..2 {
+        net.open(i, &l);
+        let (_, c) = events_of(&net.run(i, sync(l.id, None, vec![], vec![])));
+        cursors.push(c);
+        let ev = net.run(i, Command::Subscribe { labels: vec![l.id] });
+        assert_eq!(ev, vec![ClientEvent::Subscribed { labels: vec![l.id], codes: vec![Code::OK] }]);
+    }
+    // a step without a read rotation: the opens hold
+    let (same, cs) = l.rotate(1);
+    assert_eq!(same.keys.sync, l.steps[0].keys.sync);
+    net.run(0, Command::Register { label: l.id, step: same.clone(), claim_set: Some(cs) });
+    assert_eq!(events_of(&std::mem::take(&mut net.events[1])).0, vec![Event::Head(same)]);
+    net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(1))] });
+    assert_eq!(added(&events_of(&std::mem::take(&mut net.events[1])).0), vec![bid(1)]);
+    // a read rotation, registered by client 0: both pushed the head last, then nothing
+    let (child, cs) = l.rotate(20);
+    let ev = net.run(0, Command::Register { label: l.id, step: child.clone(), claim_set: Some(cs) });
+    assert!(ev.contains(&ClientEvent::Registered { label: l.id }), "{ev:?}");
+    assert_eq!(events_of(&ev).0, vec![Event::Head(child.clone())]);
+    assert_eq!(events_of(&std::mem::take(&mut net.events[1])).0, vec![Event::Head(child.clone())]);
+    let ev = net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(2))] });
+    assert_eq!(statuses(&ev), vec![Code::OK]);
+    assert_eq!(events_of(&ev).0, vec![], "no push to the registrar");
+    assert!(net.events[1].is_empty(), "{:?}", net.events[1]);
+    for (i, cursor) in cursors.iter().enumerate() {
+        let ev = net.run(i, sync(l.id, *cursor, vec![], vec![]));
+        assert!(matches!(&ev[..], [ClientEvent::Refused { kind: Request::Sync, code: Code::NOT_OPENED, .. }]), "{ev:?}");
+        let ev = net.run(i, Command::Fetch { label: l.id, ids: vec![bid(2)] });
+        assert_eq!(ev, vec![ClientEvent::Refused { label: Some(l.id), kind: Request::Fetch, code: Code::NOT_OPENED, fetch: vec![bid(2)] }]);
+        let ev = net.run(i, Command::Path { label: l.id, after: None });
+        assert!(matches!(&ev[..], [ClientEvent::Refused { kind: Request::Path, code: Code::NOT_OPENED, .. }]), "{ev:?}");
+        let ev = net.run(i, Command::Subscribe { labels: vec![l.id] });
+        assert_eq!(ev, vec![ClientEvent::Subscribed { labels: vec![l.id], codes: vec![Code::NOT_OPENED] }]);
+    }
+    assert_eq!(net.servers[1].opened().count(), 0);
+    // the old key gets the child only; the new one opens and syncs on from the cursor
+    let ev = net.run(1, Command::Open { label: l.id, key: OpenKey::Sync(l.keys[0].sync.clone()) });
+    assert!(matches!(&ev[..], [ClientEvent::Step { .. }]), "{ev:?}");
+    net.open(1, &l);
+    let (evs, _) = events_of(&net.run(1, sync(l.id, cursors[1], vec![], vec![])));
+    assert_eq!(added(&evs), vec![bid(1), bid(2)]);
+    net.run(1, Command::Subscribe { labels: vec![l.id] });
+    net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(3))] });
+    assert_eq!(added(&events_of(&std::mem::take(&mut net.events[1])).0), vec![bid(3)]);
 }
 
 // spec/sync.md §5, spec/wire.md §11.2: fetch by ID of opened labels only, items in request order

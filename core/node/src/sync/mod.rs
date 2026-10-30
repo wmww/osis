@@ -1290,7 +1290,15 @@ impl SyncEngine {
                 self.log_events(Some(conn), label, evs, None, out)?;
             }
             E::Subscribed { .. } => {}
-            E::Refused { label, kind, code } => self.refused(conn, label, kind, code, out)?,
+            E::Refused { label, kind, code, fetch } => {
+                // no longer in flight on this connection: a pass asks again (after a reopen)
+                if let Some(c) = self.conns.get_mut(&conn) {
+                    for b in &fetch {
+                        c.req.fetching.remove(b);
+                    }
+                }
+                self.refused(conn, label, kind, code, out)?
+            }
             E::PeerError(e) => self.diag(format!("server: {e}")),
         }
         Ok(())

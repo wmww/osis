@@ -139,8 +139,8 @@ pub enum ClientEvent {
     Fetched { label: LabelId, items: Vec<Fetched> },
     Subscribed { labels: Vec<LabelId>, codes: Vec<Code> },
     /// A request was answered by Error, or could not be sent (code 2: a delete item whose time
-    /// cannot be encoded).
-    Refused { label: Option<LabelId>, kind: Request, code: Code },
+    /// cannot be encoded). `fetch`: a Fetch's blob IDs left unanswered (empty for other kinds).
+    Refused { label: Option<LabelId>, kind: Request, code: Code, fetch: Vec<BlobId> },
     /// The peer broke a protocol rule (diagnostic); a paged exchange it broke is abandoned.
     PeerError(Error),
 }
@@ -517,7 +517,7 @@ impl ClientSession {
             Command::Delete { label, items } => {
                 let (items, bad): (Vec<DeleteItem>, Vec<DeleteItem>) = items.into_iter().partition(|i| i.to_value().is_ok());
                 if !bad.is_empty() {
-                    event(out, ClientEvent::Refused { label: Some(label), kind: Request::Delete, code: Code::MALFORMED });
+                    event(out, ClientEvent::Refused { label: Some(label), kind: Request::Delete, code: Code::MALFORMED, fetch: Vec::new() });
                 }
                 for chunk in items.chunks(MAX_ITEMS) {
                     let ids = chunk.iter().map(|i| i.blob).collect();
@@ -582,7 +582,7 @@ impl ClientSession {
         let found = rec.r.need.len().saturating_add(rec.r.have.len());
         if rec.sent > MAX_RECONCILE_MESSAGES || found > MAX_RECONCILE_IDS || rec.r.queued() > MAX_RECONCILE_QUEUED {
             self.recs.remove(&label);
-            event(out, ClientEvent::Refused { label: Some(label), kind: Request::Reconcile, code: Code::REFUSED });
+            event(out, ClientEvent::Refused { label: Some(label), kind: Request::Reconcile, code: Code::REFUSED, fetch: Vec::new() });
             return;
         }
         if rec.r.is_done() {
@@ -687,10 +687,11 @@ impl ClientSession {
             }
             (Pending::Reconcile(label, _), M::Error { code, .. }) => {
                 if self.recs.remove(&label).is_some() {
-                    event(out, E::Refused { label: Some(label), kind: Request::Reconcile, code });
+                    event(out, E::Refused { label: Some(label), kind: Request::Reconcile, code, fetch: Vec::new() });
                 }
             }
-            (p, M::Error { code, .. }) => event(out, E::Refused { label: p.label(), kind: p.kind(), code }),
+            (Pending::Fetch(label, ids), M::Error { code, .. }) => event(out, E::Refused { label: Some(label), kind: Request::Fetch, code, fetch: ids }),
+            (p, M::Error { code, .. }) => event(out, E::Refused { label: p.label(), kind: p.kind(), code, fetch: Vec::new() }),
             (Pending::Open(label), M::Opened { head, entry_box, .. }) => event(out, E::Opened { label, head, entry_box }),
             (Pending::Open(label), M::Step { step, .. }) => event(out, E::Step { label, step }),
             (Pending::Register(label), M::Ok { .. }) => event(out, E::Registered { label }),
@@ -755,7 +756,7 @@ impl ClientSession {
                 if n > 0 && !rest.is_empty() {
                     self.request(|id| Message::Fetch { id, label, ids: rest.clone() }, Pending::Fetch(label, rest.clone()));
                 } else if !rest.is_empty() {
-                    event(out, E::Refused { label: Some(label), kind: Request::Fetch, code: Code::TOO_LARGE });
+                    event(out, E::Refused { label: Some(label), kind: Request::Fetch, code: Code::TOO_LARGE, fetch: rest });
                 }
             }
             (_, _) => event(out, E::PeerError(Error::Malformed("reply of the wrong kind"))),

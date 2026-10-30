@@ -1323,3 +1323,43 @@ fn membership_change_judges_only_its_labels_spec_sync_6() {
     let s3 = net.sync(a).pass_stats();
     assert_eq!(s3.full - s2.full, 1, "only g0's label judges everything");
 }
+
+// spec/sync.md §5 (an open holds under the head's sync key): a removed reader still connected
+// and subscribed when the remover registers the new step (ignoring all it is sent from then on)
+// is told of no entry added after it, while the remaining reader and the admin go on over the
+// same connections, reopened under the new key with their cursors (no reconciliation).
+#[test]
+fn departed_reader_connected_across_new_step_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let r = net.node(2, &[sv]);
+    let x = net.node(3, &[sv]);
+    let g = net.group(a, &[(r, Role::Read), (x, Role::Read)], &[sv]);
+    net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(a);
+    let conns = [a, r, x].map(|n| net.conn_to(n, sv).expect("connected"));
+    net.told.insert(x, BTreeSet::new());
+    net.deaf.insert(x);
+    let reconciles = net.sent_kinds.get(&17).copied().unwrap_or(0);
+    let (at, rt, xt) = (net.tid(a), net.tid(r), net.tid(x));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (rt, Role::Read)]);
+    remove_member(e, g, xt, &rs, 45);
+    net.run();
+    assert_eq!(net.server_path(sv, &l).len(), 2, "a newer step");
+    let before: BTreeSet<_> = net.server_ids(sv, &l).into_iter().collect();
+    let t = net.item(a, g, g, "y");
+    net.run();
+    net.write(a, t, "z");
+    net.run();
+    let new: Vec<_> = net.server_ids(sv, &l).into_iter().filter(|b| !before.contains(b)).collect();
+    assert!(!new.is_empty());
+    let told = &net.told[&x];
+    assert!(new.iter().all(|b| !told.contains(b)), "the departed reader was told of an entry added after the step");
+    assert_eq!(net.read(r, t), Some(s("z")));
+    assert_eq!([a, r, x].map(|n| net.conn_to(n, sv).expect("connected")), conns, "same connections");
+    assert!(net.servers[sv].hub.connections() >= 3);
+    assert_eq!(net.sent_kinds.get(&17).copied().unwrap_or(0), reconciles, "no reconciliation");
+}
