@@ -76,10 +76,11 @@ pub struct Eph {
     defs: BTreeMap<Tid, place::Def>,
     /// Own batches for undo.
     log: log::Log,
-    /// Drafts again: durable things whose save an undo reverted (`log::Making`), read and
-    /// undone like the ephemeral things they were (scope, placements converting at their next
-    /// durable write) until saved again; in memory, like the draft.
-    drafts: BTreeSet<Tid>,
+    /// Drafts again: durable things whose save an undo reverted (`log::Making`), known and
+    /// undone like the ephemeral things they were (scope, deletion by undoing their creation:
+    /// the flag, like `EphThing.deleted`) until saved again; in memory, like the draft. At most
+    /// one entry per own undone save this session.
+    drafts: BTreeMap<Tid, bool>,
     /// Synced ephemeral data: unsent writes, held ephemeral commits.
     remote: remote::Remote,
     /// Held ephemeral commits dropped (covered or expired), for the sync layer.
@@ -96,7 +97,7 @@ pub struct Written {
 impl Eph {
     /// Empty, under a new random session.
     pub fn new(session: [u8; 32]) -> Eph {
-        Eph { session, src: Source::commit(CommitId(session)), next: 1, batches: 0, things: HashMap::new(), aspects: HashMap::new(), timers: BTreeMap::new(), defs: BTreeMap::new(), log: log::Log::default(), drafts: BTreeSet::new(), remote: remote::Remote::default(), dropped: Vec::new() }
+        Eph { session, src: Source::commit(CommitId(session)), next: 1, batches: 0, things: HashMap::new(), aspects: HashMap::new(), timers: BTreeMap::new(), defs: BTreeMap::new(), log: log::Log::default(), drafts: BTreeMap::new(), remote: remote::Remote::default(), dropped: Vec::new() }
     }
 
     fn state(&self, tid: &Tid, ak: &Ak) -> Option<&Fragment> {
@@ -105,7 +106,7 @@ impl Eph {
 
     /// An ephemeral thing, or a draft again (`drafts`).
     fn draft_like(&self, tid: &Tid) -> bool {
-        self.things.contains_key(tid) || self.drafts.contains(tid)
+        self.things.contains_key(tid) || self.drafts.contains_key(tid)
     }
 
     fn present(&self, tid: &Tid) -> Vec<Ak> {
@@ -140,6 +141,11 @@ impl Engine {
     /// The ephemeral thing `tid`, if it is one here.
     pub fn ephemeral_thing(&self, tid: &Tid) -> Option<&EphThing> {
         self.eph.things.get(tid)
+    }
+
+    /// Whether `tid` is a draft again here (`Eph::drafts`), not deleted.
+    pub fn is_draft_again(&self, tid: &Tid) -> bool {
+        self.eph.drafts.get(tid) == Some(&false)
     }
 
     /// Whether `(tid, ak)` has ephemeral state here.
@@ -408,12 +414,20 @@ impl Engine {
                 if let Some(e) = self.eph.things.get_mut(t) {
                     e.deleted = del;
                 }
+                if let Some(d) = self.eph.drafts.get_mut(t) {
+                    *d = del;
+                }
             }
         }
         for t in &making.saved {
             self.eph.drafts.remove(t);
         }
-        self.eph.drafts.extend(making.unsaved.iter().copied());
+        self.eph.drafts.extend(making.unsaved.iter().map(|t| (*t, false)));
+        // `delete` ends a draft again too (an undo of it restores content and placements, which
+        // convert at the next durable write)
+        for t in &free {
+            self.eph.drafts.remove(t);
+        }
         let gone = self.free_things(&free, ts, &mut changed);
         logged.retain(|a| !gone.contains(&a.tid));
         making.made.retain(|t| !gone.contains(t));

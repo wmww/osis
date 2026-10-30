@@ -203,13 +203,13 @@ impl Reader<'_> {
     }
 
     /// Whether the thing is here: its creation is held and it has content, some aspect a
-    /// `Write` sets, or it is ephemeral here (content or not, unless an undo of its creation
-    /// deleted it). `false` for an unknown thing and for a deleted one, which `created` still
+    /// `Write` sets, or it is ephemeral or a draft again (its save undone) here (content or
+    /// not, unless an undo of its creation deleted it). `false` for an unknown thing and for a deleted one, which `created` still
     /// reports; an actor carrying only membership data (a link key, a contact before any
     /// data) reads `false` too.
     pub fn knows(&mut self, tid: Tid) -> bool {
         let t = self.resolve(tid);
-        self.e.ephemeral_thing(&t).is_some_and(|x| !x.deleted) || (self.e.knows(&t) && self.e.has_content(&t).unwrap_or(true))
+        self.e.ephemeral_thing(&t).is_some_and(|x| !x.deleted) || self.e.is_draft_again(&t) || (self.e.knows(&t) && self.e.has_content(&t).unwrap_or(true))
     }
 
     /// Whether the thing's creation is held or it is ephemeral here, deleted or not: what a

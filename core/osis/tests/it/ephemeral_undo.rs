@@ -260,3 +260,25 @@ fn undo_of_save_restores_the_draft_spec_crdt_4_6() {
     db.undo(&s).unwrap().unwrap();
     assert!(!durable_in_f(&db) && db.groups_of(e).item_of == vec![f] && db.get(e, body).unwrap().is_none() && db.knows(e));
 }
+
+// notes/ephemeral.md Undo (undoing a save returns the draft): a draft with no content of its
+// own (placed only) is known; so is it again after undoing its save; undoing its creation
+// then deletes it (unknown, unplaced), redo brings it back known; `delete` deletes it
+#[test]
+fn undo_of_save_restores_an_empty_draft_spec_crdt_4_6() {
+    let db = setup(10);
+    let f = db.write_with(|w| { let f = w.create_durable(db.me())?; w.make_group(f)?; Ok(f) }).unwrap();
+    let e = db.write_with(|w| { let e = w.create(db.me())?; w.place(e, f)?; Ok(e) }).unwrap();
+    assert!(db.knows(e));
+    db.write_with(|w| w.at(e, ak("/app/body")).set(&Value::Int(1))).unwrap();
+    let s = Scope::Thing(e);
+    db.undo(&s).unwrap().unwrap();
+    assert!(db.knows(e) && db.groups_of(e).item_of == vec![f], "the draft again");
+    db.undo(&s).unwrap().unwrap();
+    assert!(!db.knows(e) && db.groups_of(e).within.is_empty(), "its creation undone");
+    db.redo(&s).unwrap().unwrap();
+    assert!(db.knows(e) && db.groups_of(e).item_of == vec![f]);
+    db.write_with(|w| w.delete(e)).unwrap();
+    assert!(!db.knows(e), "deleting the draft again: known");
+    assert_eq!(db.groups_of(e).within, vec![], "deleting the draft again");
+}
