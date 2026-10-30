@@ -41,8 +41,10 @@ const SETTLE_MS: u64 = 30_000;
 /// label (`inbox_copies`, spec/sync.md §3): the copy outlives the blob, so a sender's short
 /// expiry would free its deposit budget for the next copy at once. At 0 a stranger with the
 /// deposit seed stores grants without bound; at `INBOX_LIFETIME` no device ever copies. Past it a
-/// device opening a late blob applies the grant without copying; the sender re-sends unanswered
-/// grants after `INBOX_LIFETIME` and another device that opened it earlier copied it.
+/// device opening a late blob applies the grant without copying: unless another device copied it
+/// earlier, the actor's later devices never find it (the device's writes count as acting, so the
+/// sender does not re-send). No rule on the blob alone avoids a number: a late genuine blob and a
+/// stranger's short-lived one look alike (both expiry and `ts` are the sender's word).
 const INBOX_COPY_MIN_LEFT: u64 = osis_base::format::INBOX_LIFETIME_MS / 2;
 
 /// The least a writer waits, after receiving another node's commit or seeing a deposit, before
