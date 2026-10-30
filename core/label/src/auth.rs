@@ -196,6 +196,13 @@ impl DeleteItem {
         Ok(DeleteItem { blob, at, by: Some((level, dk.sign(salt, hb, &d))), sig: key.sign(Domain::Delete, &d) })
     }
 
+    /// The same delete signed again by label key `key` (a later head's, the delete-key
+    /// signature kept: it does not depend on the head).
+    pub fn resign(&self, key: &SigningSecret, label: &LabelId) -> Result<DeleteItem, Error> {
+        let d = delete_digest(label, &self.blob, self.at, self.by.map(|b| b.0))?;
+        Ok(DeleteItem { sig: key.sign(Domain::Delete, &d), ..self.clone() })
+    }
+
     /// Server check against its head and the entry's blob prefix (none: unknown framing, no
     /// commitments): without a level the delete key; with one, the delete-key signature under
     /// the prefix's commitment at that level and the label key the level needs.

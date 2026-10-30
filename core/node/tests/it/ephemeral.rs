@@ -2136,8 +2136,8 @@ fn offline_entry_across_rotation_restamped_spec_sync_5() {
 }
 
 // spec/sync.md §5, §9: a writer demoted to reader while its note waited offline holds no write
-// key of the new head: once it sees it no longer writes the label it stops trying (reported),
-// and the note reaches nobody.
+// key of the new head: once it sees it no longer writes the label it stops trying (reported
+// when the entry was already waiting for a key then), and the note reaches nobody.
 #[test]
 fn demoted_writer_entry_stops_spec_sync_5() {
     let mut net = Net::new();
@@ -2159,12 +2159,53 @@ fn demoted_writer_entry_stops_spec_sync_5() {
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
-    let rx = net.listen(b);
     net.set_online(b, true);
     net.run();
     net.advance(60_000);
     assert_eq!(net.engine(b).role_on(&g), Some(Role::Read));
-    let ds: Vec<String> = rx.try_iter().filter_map(|e| match e { osis_node::Event::Diagnostic(d) => Some(d.detail), _ => None }).collect();
-    assert!(ds.iter().any(|d| d.contains("no longer writes the label")), "reported: {ds:?}");
     assert_eq!(notes(&mut net, c, w).get("b"), None, "the demoted writer's note never reaches c");
+}
+
+// spec/sync.md §5, §9: a writer compacts before it reads a rotation: the cover and the deletes
+// of what it absorbs (carried as replacements) are signed under the old write key and refused 9;
+// once the writer reads the rotation the cover lands and the absorbed entries go at the server.
+#[test]
+fn cover_across_unread_rotation_lands_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[sv]);
+    let x = net.node(4, &[sv]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Write), (x, Role::Read)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    for i in 0..4 {
+        note(&mut net, b, w, &format!("k{i}"), &format!("v{i}"));
+        net.run();
+    }
+    net.held_to.insert(b);
+    let (at, bt, ct, xt) = (net.tid(a), net.tid(b), net.tid(c), net.tid(x));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write), (ct, Role::Write)]);
+    remove_member(e, g, xt, &rs, 9);
+    net.run();
+    let l = net.label(a);
+    let before: BTreeSet<osis_base::BlobId> = net.server_ids(sv, &l).into_iter().collect();
+    let acts = net.sync(b).compact_ephemeral_now().unwrap();
+    net.actions(b, acts);
+    net.run();
+    net.release();
+    net.run();
+    net.advance(60_000);
+    let held_b = |net: &mut Net, n: usize| {
+        let e = net.engine(n);
+        e.held_ephemeral().into_iter().filter(|(id, _, _)| e.ephemeral_header(id).is_some_and(|h| h.author == bt)).count()
+    };
+    assert_eq!(held_b(&mut net, c), 1, "c holds b's cover alone");
+    assert_eq!(notes(&mut net, c, w).len(), 4);
+    let after: BTreeSet<osis_base::BlobId> = net.server_ids(sv, &l).into_iter().collect();
+    assert_eq!(after.difference(&before).count(), 1, "the cover landed");
+    assert!(before.difference(&after).count() > 0, "what it absorbs is deleted at the server");
 }

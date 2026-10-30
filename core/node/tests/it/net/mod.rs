@@ -95,6 +95,8 @@ pub struct Net {
     /// Nodes whose server bytes are held back (until `release`) from the first Opened reply
     /// on: an open answered, nothing after it delivered yet.
     pub hold_opened: BTreeSet<usize>,
+    /// Nodes whose server bytes are held back until `release` (a node reading nothing for a while).
+    pub held_to: BTreeSet<usize>,
     /// Per node, the `gained` lists of the Syncs it sent to servers (non-empty ones).
     pub gained: BTreeMap<usize, Vec<Vec<osis_base::BlobId>>>,
 }
@@ -133,7 +135,7 @@ pub fn server_key(i: usize) -> [u8; 32] {
 
 impl Net {
     pub fn new() -> Net {
-        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_servers: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), gained: BTreeMap::new() }
+        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_servers: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new() }
     }
 
     pub fn now(&self) -> u64 {
@@ -416,7 +418,7 @@ impl Net {
             match o {
                 HubOutput::Send(hc, bytes) => {
                     if let Some(((n, c), _)) = self.links.iter().find(|(_, (x, h))| *x == s && *h == hc) {
-                        let held = self.hold_opened.contains(n) && (has_opened(&bytes) || self.held_msgs.iter().any(|m| matches!(m, Msg::ToNode(x, ..) if x == n)));
+                        let held = self.held_to.contains(n) || self.hold_opened.contains(n) && (has_opened(&bytes) || self.held_msgs.iter().any(|m| matches!(m, Msg::ToNode(x, ..) if x == n)));
                         let m = Msg::ToNode(*n, self.nodes[*n].life, *c, bytes);
                         if self.held_servers.contains(&s) || held {
                             self.held_msgs.push(m);
@@ -441,6 +443,7 @@ impl Net {
         self.held.clear();
         self.held_servers.clear();
         self.hold_opened.clear();
+        self.held_to.clear();
         self.queue.extend(self.held_msgs.drain(..));
     }
 
