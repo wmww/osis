@@ -258,7 +258,8 @@ fn label_replacement_spec_sync_2() {
     let old = net.label(a);
     let before: BTreeSet<_> = commits_under(&mut net, a, &old).into_iter().map(|x| x.0).collect();
     let admin0 = net.engine(a).epochs(&g).unwrap().admin.newest_held().unwrap().0;
-    let (new, _) = net.sync(a).replace_label(&g, &old).unwrap();
+    let (new, acts) = net.sync(a).replace_label(&g, &old).unwrap();
+    net.actions(a, acts);
     assert_ne!(net.engine(a).epochs(&g).unwrap().admin.newest_held().unwrap().0, admin0, "the admin secret rotated");
     // the admin restarts before syncing: it reopens the replaced label as well
     net.restart(a, 9);
@@ -375,7 +376,8 @@ fn replaced_label_reregistered_where_lost_spec_sync_2() {
     net.wipe_server(s1);
     assert!(net.server_path(s1, &old).is_empty());
     net.set_online(a, true);
-    let (new, _) = net.sync(a).replace_label(&g, &old).unwrap();
+    let (new, acts) = net.sync(a).replace_label(&g, &old).unwrap();
+    net.actions(a, acts);
     net.run();
     // past the redial backoff
     net.advance(120_000);
@@ -402,7 +404,8 @@ fn replaced_label_retired_with_server_unreachable_spec_sync_2() {
     net.set_online(a, false);
     net.blocked.insert((a, s1));
     net.set_online(a, true);
-    let (new, _) = net.sync(a).replace_label(&g, &old).unwrap();
+    let (new, acts) = net.sync(a).replace_label(&g, &old).unwrap();
+    net.actions(a, acts);
     net.run();
     net.run();
     let labels: BTreeSet<_> = net.sync(a).labels().into_iter().map(|(_, l)| l.id).collect();
@@ -437,7 +440,8 @@ fn replaced_label_dropped_when_admin_edge_expires_spec_sync_2() {
     net.set_online(b, false);
     net.blocked.insert((b, s1));
     net.set_online(b, true);
-    let (new, _) = net.sync(b).replace_label(&g, &old).unwrap();
+    let (new, acts) = net.sync(b).replace_label(&g, &old).unwrap();
+    net.actions(b, acts);
     net.run();
     let labels: BTreeSet<_> = net.sync(b).labels().into_iter().map(|(_, l)| l.id).collect();
     assert_eq!(labels, BTreeSet::from([new, old]), "kept by the admin");

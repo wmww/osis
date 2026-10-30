@@ -76,7 +76,8 @@ pub struct Net {
     pub dialed: Vec<(usize, Address)>,
     /// Nodes added from now on judge everything at every pass (`SyncConfig::full_passes`).
     pub full_passes: bool,
-    /// Nodes whose Upload requests to servers are lost on the way (never answered).
+    /// Nodes whose Upload requests to servers are lost on the way (answered rate-limited for
+    /// the server: a request is never left unanswered on an ordered stream).
     pub lose_uploads: BTreeSet<usize>,
     /// Servers whose messages to nodes are held back until `release` (a slow server).
     pub held_servers: BTreeSet<usize>,
@@ -312,7 +313,11 @@ impl Net {
                     while let Ok(Some(body)) = d.next_frame() {
                         if let Ok(m) = osis_proto::Message::decode(&body) {
                             *self.sent_kinds.entry(m.kind()).or_default() += 1;
-                            if self.lose_uploads.contains(&n) && matches!(m, osis_proto::Message::Upload { .. }) {
+                            if self.lose_uploads.contains(&n)
+                                && let osis_proto::Message::Upload { id, .. } = m
+                            {
+                                let e = osis_proto::Message::Error { id, code: osis_proto::Code::RATE_LIMITED };
+                                self.queue.push_back(Msg::ToNode(n, self.nodes[n].life, conn, osis_proto::encode_frame(&e.encode())));
                                 continue;
                             }
                         }

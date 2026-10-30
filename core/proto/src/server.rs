@@ -28,6 +28,17 @@ const MAX_CACHED: usize = 4096;
 /// Blob IDs a connection remembers as crossed (an optimization only: past it the set is cleared,
 /// so a peer streaming entries cannot grow it without bound).
 const MAX_CROSSED: usize = 1 << 14;
+/// Unwritten push bytes a connection can hold (spec/sync.md §6): pushes go while the unwritten
+/// bytes, the push included, fit `REPLY_BUDGET` or none are unwritten, so at most one push frame.
+pub const PUSH_QUEUE: usize = MAX_MESSAGE + 4;
+/// Bytes a peer can have unwritten to a compliant subscriber: its windowed replies plus the
+/// pushes it holds. A send queue cap at or above it never closes such a connection.
+pub const SEND_QUEUE: usize = crate::client::WINDOW_QUEUE + PUSH_QUEUE;
+/// How often a driver reports `ServerInput::Taken` while a connection holds pushes back
+/// (`ServerConnection::held`; ms). Minor consequence: pushes resume up to this late after the
+/// queue has room; 0 spins the driver while a slow subscriber drains, infinity leaves them to
+/// the next unrelated tick.
+pub const PUSH_POLL_MS: u64 = 1000;
 /// Domain of replay cursor IDs.
 const REPLAY: &str = "osis v1 replay";
 
@@ -47,8 +58,14 @@ pub enum ServerInput {
     Bytes(Vec<u8>),
     /// A label's log grew (on any connection): push to a subscription.
     Changed(LabelId),
-    /// A relay-only entry accepted on another connection: push it if subscribed.
+    /// A relay-only entry accepted on another connection: push it if subscribed (dropped while
+    /// the connection's unwritten bytes leave no room).
     Relay(Relayed),
+    /// The transport has taken this many bytes of this connection's output so far (cumulative):
+    /// pushes wait while too much is unwritten (spec/sync.md §6). A driver that never reports it
+    /// delivers instantly (no push is held back); one that does reports it before input bytes,
+    /// at ticks, and every `PUSH_POLL_MS` while `held`.
+    Taken(u64),
 }
 
 /// A relay-only entry (spec/sync.md §5): accepted by stamp, pushed to the label's current
@@ -169,6 +186,13 @@ pub struct ServerConnection {
     /// (and no other connection uploaded them); pruned of entries gone at `prune_at`.
     presence: BTreeSet<(LabelId, BlobId)>,
     prune_at: usize,
+    /// Bytes of `Send` outputs so far.
+    written: u64,
+    /// The last `ServerInput::Taken` (none: never reported, no flow control).
+    taken: Option<u64>,
+    /// Subscribed labels whose pushes wait for room in the send queue (from their position in
+    /// `subs`).
+    owed: BTreeSet<LabelId>,
 }
 
 /// Presence uploads a connection remembers before it first drops those no longer held.
@@ -234,6 +258,9 @@ impl ServerConnection {
             member: None,
             presence: BTreeSet::new(),
             prune_at: PRESENCE_PRUNE,
+            written: 0,
+            taken: None,
+            owed: BTreeSet::new(),
         }
     }
 
@@ -262,6 +289,25 @@ impl ServerConnection {
         self.version
     }
 
+    /// Whether pushes wait for the transport to take bytes (`ServerInput::Taken`).
+    pub fn held(&self) -> bool {
+        !self.owed.is_empty()
+    }
+
+    /// Bytes written and not taken by the transport, with those in `out` (0 without reports).
+    fn backlog(&self, out: &[ServerOutput]) -> usize {
+        let Some(t) = self.taken else { return 0 };
+        let o: usize = out.iter().map(|x| if let ServerOutput::Send(b) = x { b.len() } else { 0 }).sum();
+        usize::try_from(self.written.saturating_sub(t)).unwrap_or(usize::MAX).saturating_add(o)
+    }
+
+    /// Whether a push of about `size` bytes waits: something is unwritten and it would not fit
+    /// `REPLY_BUDGET` behind it.
+    fn no_room(&self, out: &[ServerOutput], size: usize) -> bool {
+        let b = self.backlog(out);
+        b > 0 && b.saturating_add(size) > REPLY_BUDGET
+    }
+
     /// Bytes received and not yet parsed (a partial frame).
     pub fn buffered(&self) -> usize {
         self.decoder.pending()
@@ -272,6 +318,13 @@ impl ServerConnection {
         if self.closed {
             return out;
         }
+        self.input(now, store, input, &mut out);
+        let n: usize = out.iter().map(|x| if let ServerOutput::Send(b) = x { b.len() } else { 0 }).sum();
+        self.written = self.written.saturating_add(n as u64);
+        out
+    }
+
+    fn input(&mut self, now: u64, store: &mut dyn LabelStore, input: ServerInput, out: &mut Vec<ServerOutput>) {
         match input {
             ServerInput::Start => out.push(ServerOutput::Send(encode_frame(&Hello::new(now, self.cfg.challenge).encode()))),
             ServerInput::Bytes(b) => {
@@ -280,34 +333,42 @@ impl ServerConnection {
                     // before the peer's Hello only a Hello-sized frame is taken (spec/wire.md §11.1)
                     self.decoder.set_max(if self.version.is_some() { osis_base::format::MAX_MESSAGE } else { crate::frame::MAX_HELLO_BYTES });
                     match self.decoder.next_frame() {
-                        Ok(Some(body)) => self.frame(now, store, &body, &mut out),
+                        Ok(Some(body)) => self.frame(now, store, &body, out),
                         Ok(None) => break,
                         Err(e) => {
                             out.push(ServerOutput::PeerError(e));
-                            send(&mut out, Message::Error { id: 0, code: Code::MALFORMED });
-                            self.close(&mut out);
+                            send(out, Message::Error { id: 0, code: Code::MALFORMED });
+                            self.close(out);
                         }
                     }
                 }
             }
             ServerInput::Changed(label) => {
-                if let Err(e) = self.push(store, &label, &mut out) {
+                if let Err(e) = self.push(store, &label, out) {
                     out.push(ServerOutput::StoreError(e));
                 }
             }
             ServerInput::Relay(r) => {
-                if let Some(seq) = self.subs.get(&r.label).copied() {
+                // a slow subscriber misses relay-only entries rather than queueing them
+                let ev = Event::Added { blob_id: r.blob_id, blob: Some(r.blob), wrap: r.wrap, stamp: Some(r.stamp) };
+                if let Some(seq) = self.subs.get(&r.label).copied()
+                    && !self.no_room(out, event_size(&ev))
+                {
                     match store.log_head(&r.label) {
-                        Ok((log_id, _)) => {
-                            let ev = Event::Added { blob_id: r.blob_id, blob: Some(r.blob), wrap: r.wrap, stamp: Some(r.stamp) };
-                            send(&mut out, Message::Push { label: r.label, events: vec![ev], cursor: Cursor { log_id, seq } });
-                        }
+                        Ok((log_id, _)) => send(out, Message::Push { label: r.label, events: vec![ev], cursor: Cursor { log_id, seq } }),
                         Err(e) => out.push(ServerOutput::StoreError(e)),
                     }
                 }
             }
+            ServerInput::Taken(n) => {
+                self.taken = Some(self.taken.map_or(n, |t| t.max(n)));
+                for l in self.owed.clone() {
+                    if let Err(e) = self.push(store, &l, out) {
+                        out.push(ServerOutput::StoreError(e));
+                    }
+                }
+            }
         }
-        out
     }
 
     fn close(&mut self, out: &mut Vec<ServerOutput>) {
@@ -421,6 +482,7 @@ impl ServerConnection {
             M::Unsubscribe { id, labels } => {
                 for l in labels {
                     self.subs.remove(&l);
+                    self.owed.remove(&l);
                 }
                 M::Ok { id }
             }
@@ -680,6 +742,10 @@ impl ServerConnection {
 
     fn push(&mut self, store: &dyn LabelStore, label: &LabelId, out: &mut Vec<ServerOutput>) -> Result<(), StoreError> {
         let Some(mut seq) = self.subs.get(label).copied() else { return Ok(()) };
+        if self.backlog(out) >= REPLY_BUDGET {
+            self.owed.insert(*label);
+            return Ok(());
+        }
         let inline_limit = self.inline.get(label).copied().unwrap_or(0);
         let (log_id, head) = store.log_head(label)?;
         let none = HashSet::new();
@@ -696,9 +762,17 @@ impl ServerConnection {
             for (s, rec) in recs {
                 if let Some(e) = self.event(store, label, s, rec, inline_limit, &none)? {
                     let size = event_size(&e);
-                    if used + size > REPLY_BUDGET && !events.is_empty() {
-                        send(out, Message::Push { label: *label, events: std::mem::take(&mut events), cursor: Cursor { log_id, seq } });
-                        used = 0;
+                    if self.backlog(out) + used + size > REPLY_BUDGET {
+                        if !events.is_empty() {
+                            send(out, Message::Push { label: *label, events: std::mem::take(&mut events), cursor: Cursor { log_id, seq } });
+                            used = 0;
+                        }
+                        if self.no_room(out, size) {
+                            // the rest goes from `seq` once the transport takes bytes (`Taken`)
+                            self.owed.insert(*label);
+                            self.subs.insert(*label, seq);
+                            return Ok(());
+                        }
                     }
                     used += size;
                     self.take(&e);
@@ -711,6 +785,7 @@ impl ServerConnection {
             send(out, Message::Push { label: *label, events, cursor: Cursor { log_id, seq } });
         }
         self.subs.insert(*label, seq);
+        self.owed.remove(label);
         Ok(())
     }
 

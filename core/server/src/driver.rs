@@ -65,7 +65,7 @@ struct ConnState {
     reader: JoinHandle<()>,
     /// A dial task waiting for this peer link to end.
     done: Option<oneshot::Sender<()>>,
-    /// `LinkTx::taken` when last reported (`Hub::sent`).
+    /// `LinkTx::taken` when last reported (`Hub::sent`; `u64::MAX` before the first report).
     taken: u64,
 }
 
@@ -104,7 +104,7 @@ impl<B: Backend> Driver<B> {
             }
             let _ = ev.send(Ev::Closed(id)).await;
         });
-        self.conns.insert(id, ConnState { tx, reader, done, taken: 0 });
+        self.conns.insert(id, ConnState { tx, reader, done, taken: u64::MAX });
         id
     }
 
@@ -144,7 +144,7 @@ impl<B: Backend> Driver<B> {
             let n = c.tx.taken();
             if n != c.taken {
                 c.taken = n;
-                moved.push(*id);
+                moved.push((*id, n));
             }
         }
         if !moved.is_empty() {
@@ -153,6 +153,17 @@ impl<B: Backend> Driver<B> {
         }
         let out = blocking(|| self.hub.tick(now));
         self.apply(out);
+    }
+
+    /// Reports what the transport took of `id` before its input (`Hub::sent`).
+    fn moved(&mut self, now: u64, id: ConnId) {
+        let Some(c) = self.conns.get_mut(&id) else { return };
+        let n = c.tx.taken();
+        if n != c.taken {
+            c.taken = n;
+            let out = blocking(|| self.hub.sent(now, &[(id, n)]));
+            self.apply(out);
+        }
     }
 
     fn idle(&self) -> Duration {
@@ -220,6 +231,7 @@ pub async fn run<B: Backend + 'static, T: Transport>(hub: Hub<B>, ep: Endpoint<T
                 let now = d.now();
                 match ev {
                     Ev::Bytes(id, b) => {
+                        d.moved(now, id);
                         let out = blocking(|| d.hub.input(now, id, b));
                         d.apply(out);
                     }

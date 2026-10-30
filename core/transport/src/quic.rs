@@ -20,12 +20,11 @@ pub const SCHEME: &str = "quic";
 pub const ALPN: &[u8] = b"osis";
 /// SNI sent by clients; not checked (the key is).
 const SERVER_NAME: &str = "osis";
-/// A handshake not done in this time is dropped (provisional).
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 // QUIC settings shared with `iroh` (all provisional):
 /// Keep-alive so idle subscriptions survive NAT and the idle timeout.
 pub(crate) const KEEP_ALIVE: Duration = Duration::from_secs(15);
-/// A connection silent this long is dropped.
+/// A connection silent this long is dropped; also bounds a handshake, which has no deadline of
+/// its own (any link speed passes, spec/sync.md §10).
 pub(crate) const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Flow-control windows per stream and per connection: the reader drains frames incrementally,
 /// so a window need not hold a whole frame; these bound what a peer makes us buffer.
@@ -33,8 +32,40 @@ pub(crate) const STREAM_WINDOW: u32 = 1 << 20;
 pub(crate) const CONN_WINDOW: u32 = 4 << 20;
 /// Concurrent bidirectional streams a peer may open.
 pub(crate) const MAX_STREAMS: u32 = 16;
-/// Handshakes in progress per listener.
+/// Handshakes in progress per listener: past it the oldest is dropped (`Handshakes`).
 pub(crate) const MAX_INCOMING: usize = 1024;
+
+/// A listener's handshakes in progress, oldest first: each runs in its own task, ends at the QUIC
+/// idle timeout when the peer goes silent, and is aborted when `MAX_INCOMING` newer ones start
+/// (half-open handshakes stay bounded without a deadline that refuses slow links).
+pub(crate) struct Handshakes {
+    cap: usize,
+    q: std::sync::Mutex<std::collections::VecDeque<(u64, tokio::task::AbortHandle)>>,
+    next: std::sync::atomic::AtomicU64,
+}
+
+impl Handshakes {
+    pub(crate) fn new(cap: usize) -> Arc<Handshakes> {
+        Arc::new(Handshakes { cap, q: Default::default(), next: Default::default() })
+    }
+
+    pub(crate) fn spawn(self: &Arc<Self>, f: impl std::future::Future<Output = ()> + Send + 'static) {
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let me = self.clone();
+        // held across the spawn, so the task's removal comes after its insertion
+        let mut q = crate::util::lock(&self.q);
+        let h = tokio::spawn(async move {
+            f.await;
+            crate::util::lock(&me.q).retain(|(x, _)| *x != id);
+        });
+        q.push_back((id, h.abort_handle()));
+        while q.len() > self.cap {
+            if let Some((_, a)) = q.pop_front() {
+                a.abort();
+            }
+        }
+    }
+}
 
 /// DER SubjectPublicKeyInfo prefix of an Ed25519 key (RFC 8410).
 const SPKI_PREFIX: [u8; 12] = [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00];
@@ -188,7 +219,7 @@ async fn resolve(url: &str) -> Result<SocketAddr, Error> {
     it.next().ok_or_else(|| Error::Unreachable(url.to_owned()))
 }
 
-/// A client handshake from a fresh UDP socket, under `HANDSHAKE_TIMEOUT`.
+/// A client handshake from a fresh UDP socket (ends at `IDLE_TIMEOUT` of silence).
 async fn handshake(
     sa: SocketAddr,
     url: &str,
@@ -211,11 +242,7 @@ async fn handshake(
     let bind: SocketAddr = if sa.is_ipv6() { (std::net::Ipv6Addr::UNSPECIFIED, 0).into() } else { (std::net::Ipv4Addr::UNSPECIFIED, 0).into() };
     let ep = quinn::Endpoint::client(bind).map_err(|e| Error::Io(e.to_string()))?;
     let connecting = ep.connect_with(cfg, sa, SERVER_NAME).map_err(|e| Error::BadUrl(format!("{url}: {e}")))?;
-    match tokio::time::timeout(HANDSHAKE_TIMEOUT, connecting).await {
-        Ok(Ok(c)) => Ok(c),
-        Ok(Err(e)) => Err(handshake_err(e)),
-        Err(_) => Err(Error::Unreachable(format!("{url}: handshake timed out"))),
-    }
+    connecting.await.map_err(handshake_err)
 }
 
 /// The QUIC transport. Each dial uses its own UDP socket, so a server cannot link a client's
@@ -268,14 +295,15 @@ impl Quic {
         sc.max_incoming(MAX_INCOMING);
         let ep = quinn::Endpoint::server(sc, sa).map_err(|e| Error::Io(e.to_string()))?;
         let local = ep.local_addr().map_err(|e| Error::Io(e.to_string()))?;
-        // handshakes run concurrently, each under a deadline, so a silent client blocks nobody
+        // handshakes run concurrently (`Handshakes`), so a silent or slow client blocks nobody
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let e2 = ep.clone();
+        let hs = Handshakes::new(MAX_INCOMING);
         tokio::spawn(async move {
             while let Some(inc) = e2.accept().await {
                 let tx = tx.clone();
-                tokio::spawn(async move {
-                    let Ok(Ok(c)) = tokio::time::timeout(HANDSHAKE_TIMEOUT, inc).await else { return };
+                hs.spawn(async move {
+                    let Ok(c) = inc.await else { return };
                     let key = c
                         .peer_identity()
                         .and_then(|id| id.downcast::<Vec<CertificateDer<'static>>>().ok())
@@ -513,6 +541,38 @@ mod tests {
 
     fn endpoint() -> quinn::Endpoint {
         quinn::Endpoint::client((std::net::Ipv4Addr::UNSPECIFIED, 0).into()).unwrap()
+    }
+
+    // spec/sync.md §10: handshakes have no deadline; past the cap the oldest in progress goes
+    #[test]
+    fn handshakes_evict_oldest() {
+        rt().block_on(async {
+            let hs = Handshakes::new(2);
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let gates: Vec<_> = (0..3)
+                .map(|i| {
+                    let (g, w) = tokio::sync::oneshot::channel::<()>();
+                    let tx = tx.clone();
+                    hs.spawn(async move {
+                        let _ = w.await;
+                        let _ = tx.send(i);
+                    });
+                    g
+                })
+                .collect();
+            drop(tx);
+            assert_eq!(crate::util::lock(&hs.q).len(), 2);
+            for g in gates {
+                let _ = g.send(());
+            }
+            let mut done = Vec::new();
+            while let Some(i) = rx.recv().await {
+                done.push(i);
+            }
+            done.sort();
+            assert_eq!(done, vec![1, 2]);
+            assert!(crate::util::lock(&hs.q).is_empty());
+        });
     }
 
     // spec/sync.md §10 (mutual auth): a client presenting no key is refused: the server yields

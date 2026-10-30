@@ -40,15 +40,21 @@ use std::sync::mpsc::Receiver;
 pub use pass::Verdicts;
 pub use state::Kind as EntryKind;
 
-/// An upload, deposit or delete not answered this long goes again at the next pass (ms): a
-/// reply lost on a live connection must not keep it back for good.
+/// An upload, deposit or delete whose request was answered without settling it (a refusal, an
+/// entry the reply did not mark) goes again at the first pass this long after it was given (ms).
+/// Minor consequence: pacing of retries only (an unanswered request never goes again: a slow
+/// link only queues the copy behind the first, and a dead one closes at `STALL_TIMEOUT_MS`);
+/// 0 retries at every pass, infinity never retries on this connection (the next one does).
 const RESEND_MS: u64 = 30_000;
 
-/// Whether a request for `k` went to `c`'s session less than `RESEND_MS` before `now`, or the
-/// session still holds requests back for room in its window (a slow link: a copy would only
-/// queue behind the first).
-fn in_flight(c: &Conn, m: &BTreeMap<(LabelId, osis_base::BlobId), u64>, k: (LabelId, osis_base::BlobId), now: u64) -> bool {
-    m.get(&k).is_some_and(|t| now < t.saturating_add(RESEND_MS) || c.session.unsent() > 0)
+/// A request recorded in `Requests` before the command carrying it is given: never answered
+/// until `Requests::given` tags it.
+const UNTAGGED: u64 = u64::MAX;
+
+/// Whether a request for `k` on `c` is still unanswered, or was given less than `RESEND_MS`
+/// before `now`.
+fn in_flight(c: &Conn, m: &BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>, k: (LabelId, osis_base::BlobId), now: u64) -> bool {
+    m.get(&k).is_some_and(|(t, tag)| now < t.saturating_add(RESEND_MS) || !c.session.answered(*tag))
 }
 
 /// Whether `OSIS_TRACE_UPLOADS` asks for the upload trace (`SyncEngine::trace`).
@@ -153,9 +159,11 @@ pub enum Event {
     Up { conn: ConnId },
     /// Bytes arrived on a connection.
     Bytes { conn: ConnId, bytes: Vec<u8> },
-    /// The transport took bytes sent on these connections since the last `Sent` (progress for the
-    /// session stall timeout; the driver reports it before a `Tick`).
-    Sent { conns: Vec<ConnId> },
+    /// The transport took bytes sent on these connections since the last `Sent`, with how many it
+    /// took in all: progress for the session stall timeout, room for a served session's pushes
+    /// (`osis_proto::ServerInput::Taken`). The driver reports it before a `Tick` and before a
+    /// connection's `Bytes`; a driver that never does delivers instantly.
+    Sent { conns: Vec<(ConnId, u64)> },
     /// A connection is gone, or its dial failed.
     Down { conn: ConnId },
 }
@@ -268,11 +276,12 @@ pub(crate) struct Conn {
 /// with the connection (asked again on the next one).
 #[derive(Default)]
 pub(crate) struct Requests {
-    /// Entries uploaded or deposited, with when (raw ms): passes within `RESEND_MS` skip them
-    /// (a burst of passes sent them all again each time).
-    pub sent: BTreeMap<(LabelId, osis_base::BlobId), u64>,
-    /// Deletes sent: later passes skip them.
-    pub deleting: BTreeMap<(LabelId, osis_base::BlobId), u64>,
+    /// Entries uploaded or deposited, with when (raw ms) and the tag of the command carrying them
+    /// (`ClientSession::commands`): passes skip them while unanswered or within `RESEND_MS`
+    /// (`in_flight`).
+    pub sent: BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>,
+    /// Deletes sent, likewise.
+    pub deleting: BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>,
     /// Timed deletes sent: recorded once the server says OK.
     pub timed_sent: BTreeSet<(LabelId, osis_base::BlobId)>,
     /// Blobs asked for and not received yet.
@@ -281,6 +290,17 @@ pub(crate) struct Requests {
     pub missing: BTreeSet<osis_base::BlobId>,
     /// Reopens in a row per label.
     pub reopens: BTreeMap<LabelId, u32>,
+}
+
+impl Requests {
+    /// The commands carrying the `UNTAGGED` requests were given, the last tagged `tag`.
+    pub fn given(&mut self, tag: u64) {
+        for v in self.sent.values_mut().chain(self.deleting.values_mut()) {
+            if v.1 == UNTAGGED {
+                v.1 = tag;
+            }
+        }
+    }
 }
 
 /// One synced label's state (`SyncEngine::label_status`).
@@ -697,8 +717,10 @@ impl SyncEngine {
             Event::Down { conn } => self.lost(conn),
             Event::Sent { conns } => {
                 let now = self.raw_now();
-                for conn in conns {
-                    if let Some(c) = self.conns.get_mut(&conn) {
+                for (conn, n) in conns {
+                    if self.served.contains_key(&conn) {
+                        self.serve(conn, osis_proto::ServerInput::Taken(n), out)?;
+                    } else if let Some(c) = self.conns.get_mut(&conn) {
                         let o = c.session.handle(now, ClientInput::Sent);
                         self.outputs(conn, o, out)?;
                     }
@@ -1139,6 +1161,14 @@ impl SyncEngine {
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
         let o = c.session.handle(now, ClientInput::Command(cmd));
         self.outputs(conn, o, out)
+    }
+
+    /// Tags the requests recorded on `conn` before their commands were given (`Requests::given`).
+    pub(crate) fn given(&mut self, conn: ConnId) {
+        if let Some(c) = self.conns.get_mut(&conn) {
+            let tag = c.session.commands();
+            c.req.given(tag);
+        }
     }
 
     /// One stderr line per entry sent (cost attribution, `OSIS_TRACE_UPLOADS`): node, group,
