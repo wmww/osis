@@ -11,7 +11,7 @@
 
 use crate::store::Policy;
 use osis_label::{Address, address_from_text};
-use osis_proto::client::WINDOW_QUEUE as MIN_QUEUED;
+use osis_proto::server::SEND_QUEUE as MIN_QUEUED;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

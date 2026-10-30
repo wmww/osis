@@ -29,11 +29,11 @@ pub const MAX_IDLE: Duration = Duration::from_secs(60);
 /// How long a session's end waits for the server to take our last bytes.
 pub const FINISH_WAIT: Duration = Duration::from_secs(10);
 /// Bytes queued for a connection and not yet taken by the transport before it is dropped: a peer
-/// that does not read, or pushes beyond the link (resource bound; a session's own traffic stays
-/// within `WINDOW_QUEUE`, spec/sync.md §6). 0 drops every session with a request queued behind
-/// another, infinity buffers a non-reading peer without end.
+/// that does not read (resource bound; a session's own traffic stays within `WINDOW_QUEUE`, a
+/// served one's within `SEND_QUEUE`, spec/sync.md §6). 0 drops every session with a request
+/// queued behind another, infinity buffers a non-reading peer without end.
 pub const MAX_QUEUED: usize = 64 * 1024 * 1024;
-const _: () = assert!(MAX_QUEUED >= osis_proto::client::WINDOW_QUEUE);
+const _: () = assert!(MAX_QUEUED >= osis_proto::server::SEND_QUEUE);
 /// LAN loop: how often it looks whether an announcement is due, and how often they repeat
 /// (provisional). Network changes come from `lan::NetWatch`.
 pub const LAN_CHECK: Duration = Duration::from_secs(5);
@@ -117,7 +117,7 @@ async fn forward(conn: ConnId, mut rx: link::LinkRx, ev: mpsc::Sender<Ev>) {
 struct Conn {
     tx: Option<LinkTx>,
     task: JoinHandle<()>,
-    /// `LinkTx::taken` when last reported (`Event::Sent`).
+    /// `LinkTx::taken` when last reported (`Event::Sent`; `u64::MAX` before the first report).
     taken: u64,
 }
 
@@ -276,7 +276,7 @@ impl<T: Transport, H: Host> Driver<T, H> {
                             forward(conn, rx, ev).await;
                         }
                     });
-                    self.conns.insert(conn, Conn { tx: None, task, taken: 0 });
+                    self.conns.insert(conn, Conn { tx: None, task, taken: u64::MAX });
                 }
                 Action::Send { conn, bytes } => {
                     let ok = self.conns.get(&conn).and_then(|c| c.tx.as_ref()).is_some_and(|tx| tx.send(bytes, MAX_QUEUED));
@@ -299,7 +299,7 @@ impl<T: Transport, H: Host> Driver<T, H> {
         for (id, c) in &mut self.conns {
             if let Some(n) = c.tx.as_ref().map(LinkTx::taken).filter(|n| *n != c.taken) {
                 c.taken = n;
-                moved.push(*id);
+                moved.push((*id, n));
             }
         }
         if !moved.is_empty() {
@@ -410,7 +410,7 @@ impl<T: Transport, H: Host> Driver<T, H> {
         });
         if let Some(conn) = conn {
             let task = tokio::spawn(forward(conn, rx, self.ev_tx.clone()));
-            self.conns.insert(conn, Conn { tx: Some(tx), task, taken: 0 });
+            self.conns.insert(conn, Conn { tx: Some(tx), task, taken: u64::MAX });
             let conns = &self.conns;
             let v = self.served_by.entry(key).or_default();
             v.retain(|c| conns.contains_key(c));
@@ -436,9 +436,12 @@ impl<T: Transport, H: Host> Driver<T, H> {
                 self.feed(Event::Down { conn });
             }
             Ev::Bytes(conn, bytes) => {
-                if self.conns.contains_key(&conn) {
-                    self.feed(Event::Bytes { conn, bytes });
+                let Some(c) = self.conns.get_mut(&conn) else { return };
+                if let Some(n) = c.tx.as_ref().map(LinkTx::taken).filter(|n| *n != c.taken) {
+                    c.taken = n;
+                    self.feed(Event::Sent { conns: vec![(conn, n)] });
                 }
+                self.feed(Event::Bytes { conn, bytes });
             }
             Ev::Closed(conn) => {
                 if self.conns.remove(&conn).is_some() {

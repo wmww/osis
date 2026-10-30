@@ -116,13 +116,17 @@ impl<B: Backend> Hub<B> {
         out
     }
 
-    /// The transport took bytes sent on these connections since the last report: progress for a
-    /// replication session's stall timeout (the driver reports it before `tick`).
-    pub fn sent(&mut self, now: u64, ids: &[ConnId]) -> Vec<HubOutput> {
+    /// The transport took bytes sent on these connections since the last report, with how many
+    /// it took in all: progress for a replication session's stall timeout, room for a served
+    /// connection's pushes (`ServerInput::Taken`). The driver reports it before `tick`, before
+    /// a connection's input bytes, and at `PUSH_POLL_MS` while one holds pushes (`next_due`).
+    pub fn sent(&mut self, now: u64, ids: &[(ConnId, u64)]) -> Vec<HubOutput> {
         let mut out = Vec::new();
-        for id in ids {
-            if let Some(Conn::Peer { .. }) = self.conns.get(id) {
-                self.replicate(now, *id, Some(ClientInput::Sent), &mut out);
+        for (id, n) in ids {
+            match self.conns.get(id) {
+                Some(Conn::Peer { .. }) => self.replicate(now, *id, Some(ClientInput::Sent), &mut out),
+                Some(Conn::Served { .. }) => self.serve(now, *id, ServerInput::Taken(*n), &mut out),
+                None => {}
             }
         }
         out
@@ -224,6 +228,7 @@ impl<B: Backend> Hub<B> {
     pub fn next_due(&self, now: u64) -> Option<u64> {
         let sweep = if self.sweep_more { Some(now) } else { self.store.next_due().ok().flatten() }.map(|t| t.max(self.sweep_hold));
         let conns = self.conns.values().filter_map(|c| match c {
+            Conn::Served { c, .. } if c.held() => Some(now.saturating_add(osis_proto::server::PUSH_POLL_MS)),
             Conn::Served { hello_by, .. } => *hello_by,
             Conn::Peer { r, timer } => [*timer, r.next_due(now)].into_iter().flatten().min(),
         });

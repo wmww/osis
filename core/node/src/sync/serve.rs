@@ -710,6 +710,8 @@ impl SyncEngine {
 
     /// When the next served session goes idle.
     pub(crate) fn serve_wake(&self) -> Option<u64> {
-        self.served.values().map(|s| if s.conn.opened().is_empty() { s.since.saturating_add(self.cfg.serve_open_ms).min(s.last.saturating_add(self.cfg.serve_idle_ms)) } else { s.last.saturating_add(self.cfg.serve_idle_ms) }).min()
+        // a session holding pushes back: `Event::Sent` at the next tick may give them room
+        let poll = self.served.values().any(|s| s.conn.held()).then(|| self.raw_now().saturating_add(osis_proto::server::PUSH_POLL_MS));
+        self.served.values().map(|s| if s.conn.opened().is_empty() { s.since.saturating_add(self.cfg.serve_open_ms).min(s.last.saturating_add(self.cfg.serve_idle_ms)) } else { s.last.saturating_add(self.cfg.serve_idle_ms) }).chain(poll).min()
     }
 }

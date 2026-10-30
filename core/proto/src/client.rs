@@ -236,11 +236,16 @@ impl Pending {
     }
 }
 
-/// A request: its `cost` against `WINDOW` once it left the queue.
+/// A request: its `cost` against `WINDOW` once it left the queue, and the command it serves
+/// (`ClientSession::commands`; `NO_COMMAND` for pings).
 struct Req {
     cost: Option<usize>,
+    cmd: u64,
     p: Pending,
 }
+
+/// The command tag of a request no command asked for (pings).
+const NO_COMMAND: u64 = u64::MAX;
 
 struct Rec {
     r: Reconciler,
@@ -269,7 +274,14 @@ pub struct ClientSession {
     next_ping: u64,
     /// The timer last asked for by `SetTimer`.
     timer: u64,
-    queued: VecDeque<Command>,
+    /// Commands given before the Hellos, with their tags.
+    queued: VecDeque<(u64, Command)>,
+    /// Commands given so far (the last one's tag).
+    commands: u64,
+    /// The command tag `request` gives (the command being handled, or the request being answered).
+    tag: u64,
+    /// Tags of the requests in `pending`, with their counts.
+    open: BTreeMap<u64, usize>,
     samples: VecDeque<OffsetSample>,
     pongs: usize,
     recs: BTreeMap<LabelId, Rec>,
@@ -292,6 +304,9 @@ impl ClientSession {
             next_ping: 0,
             timer: 0,
             queued: VecDeque::new(),
+            commands: 0,
+            tag: NO_COMMAND,
+            open: BTreeMap::new(),
             samples: VecDeque::new(),
             pongs: 0,
             recs: BTreeMap::new(),
@@ -317,6 +332,17 @@ impl ClientSession {
         self.waiting.len()
     }
 
+    /// Commands given so far: the tag of the last one (`answered`).
+    pub fn commands(&self) -> u64 {
+        self.commands
+    }
+
+    /// Whether every request of the commands tagged up to `tag` was answered (follow-up pages
+    /// and resends included): one still unanswered is queued, in flight or held back.
+    pub fn answered(&self, tag: u64) -> bool {
+        self.queued.front().is_none_or(|(t, _)| *t > tag) && self.open.first_key_value().is_none_or(|(t, _)| *t > tag)
+    }
+
     /// Bytes in flight against `WINDOW`.
     pub fn in_flight(&self) -> usize {
         self.in_flight
@@ -328,6 +354,7 @@ impl ClientSession {
             return out;
         }
         self.now = now;
+        self.tag = NO_COMMAND;
         match input {
             ClientInput::Start => {
                 self.hello_sent = now;
@@ -365,10 +392,12 @@ impl ClientSession {
             }
             ClientInput::Sent => self.progress = now,
             ClientInput::Command(c) => {
+                self.commands = self.commands.saturating_add(1);
+                self.tag = self.commands;
                 if self.is_ready() {
                     self.command(c, &mut out);
                 } else {
-                    self.queued.push_back(c);
+                    self.queued.push_back((self.commands, c));
                 }
             }
         }
@@ -427,7 +456,8 @@ impl ClientSession {
             }
         }
         let id = self.next_id;
-        self.pending.insert(id, Req { cost: None, p: pending });
+        self.pending.insert(id, Req { cost: None, cmd: self.tag, p: pending });
+        *self.open.entry(self.tag).or_insert(0) += 1;
         self.waiting.push_back((id, msg(id)));
     }
 
@@ -581,11 +611,13 @@ impl ClientSession {
             self.samples.push_back(OffsetSample { sent: self.hello_sent, peer: hello.wall_ms, received: now });
             self.peer = Some(hello);
             event(out, ClientEvent::Ready { version });
+            self.tag = NO_COMMAND;
             for _ in 0..INITIAL_PINGS {
                 self.request(|id| Message::Ping { id, wall_ms: now }, Pending::Ping { sent: now });
             }
             self.next_ping = now.saturating_add(PING_INTERVAL_MS);
-            while let Some(c) = self.queued.pop_front() {
+            while let Some((t, c)) = self.queued.pop_front() {
+                self.tag = t;
                 self.command(c, out);
             }
             return;
@@ -622,7 +654,15 @@ impl ClientSession {
             return;
         };
         self.in_flight = self.in_flight.saturating_sub(*cost);
-        let Some(Req { p: pending, .. }) = self.pending.remove(&m.id()) else { return };
+        let Some(Req { p: pending, cmd, .. }) = self.pending.remove(&m.id()) else { return };
+        if let Some(n) = self.open.get_mut(&cmd) {
+            *n -= 1;
+            if *n == 0 {
+                self.open.remove(&cmd);
+            }
+        }
+        // follow-ups (next pages, entries sent on their own) serve the same command
+        self.tag = cmd;
         use ClientEvent as E;
         use Message as M;
         match (pending, m) {

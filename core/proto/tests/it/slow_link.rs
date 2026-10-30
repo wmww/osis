@@ -1,8 +1,10 @@
 //! A client against a server over a throttled link with the drivers' send queues (spec/sync.md
-//! §6: the request window and the stall timeout): bulk uploads and fetches on a slow link finish
-//! on one connection, and neither side's queue outgrows `WINDOW_QUEUE`.
+//! §6: the request window, held pushes and the stall timeout): bulk uploads, fetches and pushes
+//! on a slow link finish on one connection, and neither side's queue outgrows `WINDOW_QUEUE`
+//! (`SEND_QUEUE` with pushes).
 
 use osis_proto::client::{STALL_TIMEOUT_MS, WINDOW, WINDOW_QUEUE};
+use osis_proto::server::SEND_QUEUE;
 use osis_proto::examples::{Label, blob_sized};
 use osis_proto::*;
 use std::collections::VecDeque;
@@ -16,11 +18,13 @@ struct Pipe {
     queued: usize,
     max: usize,
     cap: usize,
+    /// Bytes taken so far (`LinkTx::taken`).
+    taken: u64,
 }
 
 impl Pipe {
     fn new(cap: usize) -> Pipe {
-        Pipe { q: VecDeque::new(), queued: 0, max: 0, cap }
+        Pipe { q: VecDeque::new(), queued: 0, max: 0, cap, taken: 0 }
     }
 
     fn push(&mut self, b: Vec<u8>, side: &str) {
@@ -42,6 +46,7 @@ impl Pipe {
             n -= k;
         }
         self.queued -= out.len();
+        self.taken += out.len() as u64;
         out
     }
 }
@@ -66,7 +71,7 @@ impl Run {
             store: MemoryLabelStore::new([9; 32]),
             // the node's `MAX_QUEUED` and the server's default `max_queued_bytes`
             up: Pipe::new(64 << 20),
-            down: Pipe::new(32 << 20),
+            down: Pipe::new(48 << 20),
             timer: None,
             events: Vec::new(),
         };
@@ -100,7 +105,7 @@ impl Run {
 
     /// Steps the link (`rate` bytes per direction per `step_ms`) until nothing is outstanding.
     fn settle(&mut self, rate: usize, step_ms: u64) {
-        while self.client.outstanding() > 0 || self.up.queued > 0 || self.down.queued > 0 {
+        while self.client.outstanding() > 0 || self.up.queued > 0 || self.down.queued > 0 || self.server.held() {
             self.now += step_ms;
             let b = self.up.take(rate);
             if !b.is_empty() {
@@ -110,6 +115,9 @@ impl Run {
             }
             let b = self.down.take(rate);
             if !b.is_empty() {
+                // the driver reports what the transport took (before input and at ticks)
+                let so = self.server.handle(self.now, &mut self.store, ServerInput::Taken(self.down.taken));
+                self.server_out(so);
                 self.input(ClientInput::Bytes(b));
             }
             if self.timer.is_some_and(|t| t <= self.now) {
@@ -183,4 +191,89 @@ fn window_holds_requests_back_spec_sync_6() {
     let out = c.handle(T0, ClientInput::Bytes(encode_frame(&Message::FetchReply { id, items: vec![] }.encode())));
     assert_eq!(sent(&out).len(), 1, "an answer makes room for the next");
     assert_eq!(c.unsent(), 1);
+}
+
+// spec/sync.md §6 (flow control): writers fill a label far faster than its subscriber's 640 KB/s
+// link; the server holds the pushes (continued from the subscription's position as the queue
+// drains, relay-only entries dropped meanwhile), so the queue stays within `SEND_QUEUE` and every
+// entry arrives by push on one connection (without `Taken` the first push overflows the cap)
+#[test]
+fn pushes_to_slow_subscriber_spec_sync_6() {
+    let (rate, step_ms) = (64_000, 100);
+    let mut r = Run::new();
+    let l = Label::new(1);
+    r.settle(rate, step_ms);
+    r.command(Command::Register { label: l.id, step: l.steps[0].clone(), claim_set: Some(l.sets[0].clone()) }, rate, step_ms);
+    r.command(Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) }, rate, step_ms);
+    r.command(Command::Sync { label: l.id, cursor: None, inline_limit: 8 << 20, entries: vec![], gained: vec![] }, rate, step_ms);
+    r.command(Command::Subscribe { labels: vec![l.id] }, rate, step_ms);
+    // another connection uploads 72 MiB at once
+    let mut w = ServerConnection::new(ServerConfig { static_key: [0x5e; 32], challenge: [0x41; 32] });
+    w.handle(r.now, &mut r.store, ServerInput::Start);
+    w.handle(r.now, &mut r.store, ServerInput::Bytes(encode_frame(&Hello::new(r.now, [7; 32]).encode())));
+    let mut ids = Vec::new();
+    for b in 0..9u32 {
+        let entries: Vec<Entry> = (0..2).map(|i| l.entry(blob_sized(u64::from(b * 2 + i), 0, vec![], 4 << 20))).collect();
+        ids.extend(entries.iter().map(|e| osis_label::blob_id(&e.blob)));
+        let out = w.handle(r.now, &mut r.store, ServerInput::Bytes(encode_frame(&Message::Upload { id: b + 1, label: l.id, entries }.encode())));
+        assert!(out.contains(&ServerOutput::Changed(l.id)));
+        let so = r.server.handle(r.now, &mut r.store, ServerInput::Changed(l.id));
+        r.server_out(so);
+    }
+    assert!(r.server.held());
+    // 8 MiB of pushes are unwritten: room for a small relay, not for one of 1 MiB
+    let relay = |n: usize| {
+        let e = l.entry(vec![1; n]);
+        ServerInput::Relay(Relayed { label: l.id, blob_id: osis_label::blob_id(&e.blob), blob: e.blob, wrap: e.wrap, stamp: e.stamp })
+    };
+    assert!(r.server.handle(r.now, &mut r.store, relay(1 << 20)).is_empty(), "no room: the relay is dropped");
+    let so = r.server.handle(r.now, &mut r.store, relay(100));
+    assert_eq!(so.len(), 1);
+    r.server_out(so);
+    r.settle(rate, step_ms);
+    let got: Vec<_> = r
+        .events
+        .iter()
+        .flat_map(|e| if let ClientEvent::Events { events, .. } = e { events.clone() } else { vec![] })
+        .filter_map(|e| if let Event::Added { blob_id, blob: Some(b), .. } = e { (b.len() > 100).then_some(blob_id) } else { None })
+        .collect();
+    assert_eq!(got, ids);
+    assert!(r.down.max <= SEND_QUEUE, "{}", r.down.max);
+}
+
+// spec/sync.md §6: a request is unanswered while it waits for room in the window, however long
+// (the node's resend timer asks this, not the time it was given)
+#[test]
+fn held_back_requests_count_unanswered_spec_sync_6() {
+    let mut c = ClientSession::new(ClientConfig { peer_static_key: [1; 32], challenge: [2; 32] });
+    c.handle(T0, ClientInput::Start);
+    let l = Label::new(1);
+    // given before the Hellos
+    c.handle(T0, ClientInput::Command(Command::Fetch { label: l.id, ids: vec![osis_label::blob_id(b"a")] }));
+    let first = c.commands();
+    assert!(!c.answered(first));
+    let sent = |out: &[ClientOutput]| out.iter().filter_map(|o| if let ClientOutput::Send(f) = o { Message::decode(&f[4..]).ok() } else { None }).collect::<Vec<_>>();
+    let mut pending: VecDeque<Message> = VecDeque::new();
+    pending.extend(sent(&c.handle(T0, ClientInput::Bytes(encode_frame(&Hello::new(T0, [3; 32]).encode())))));
+    let ids: Vec<_> = (0..1024 * 4u32).map(|i| osis_label::blob_id(&i.to_le_bytes())).collect();
+    pending.extend(sent(&c.handle(T0, ClientInput::Command(Command::Fetch { label: l.id, ids }))));
+    let big = c.commands();
+    assert!(c.unsent() > 0);
+    // answer every request sent, an hour later each time, until the queue drains
+    let mut now = T0;
+    let mut answered_first = false;
+    while let Some(m) = pending.pop_front() {
+        now += 3_600_000;
+        assert!(!c.answered(big), "a request of the command is still unanswered");
+        let reply = match m {
+            Message::Fetch { id, .. } => Message::FetchReply { id, items: vec![] },
+            Message::Ping { id, .. } => Message::Pong { id, wall_ms: now },
+            _ => continue,
+        };
+        let out = c.handle(now, ClientInput::Bytes(encode_frame(&reply.encode())));
+        pending.extend(sent(&out));
+        answered_first |= c.answered(first);
+    }
+    assert!(answered_first);
+    assert!(c.answered(big) && c.unsent() == 0);
 }

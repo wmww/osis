@@ -67,8 +67,8 @@ pub struct Policy {
     pub max_connections: usize,
     /// A connection without the peer's Hello this long after accept is closed.
     pub hello_ms: u64,
-    /// Bytes queued for one connection beyond which it is dropped (a peer that does not read, or
-    /// pushes beyond its link); at least `osis_proto::client::WINDOW_QUEUE` (spec/sync.md §6).
+    /// Bytes queued for one connection beyond which it is dropped (a peer that does not read);
+    /// at least `osis_proto::server::SEND_QUEUE` (windowed replies and held pushes, spec/sync.md §6).
     pub max_queued_bytes: usize,
     /// Partially received frame bytes over all connections beyond which the connection holding
     /// the largest partial frame is closed.
@@ -99,7 +99,7 @@ impl Default for Policy {
             max_bytes: 256 << 30,
             max_connections: 10_000,
             hello_ms: 10_000,
-            max_queued_bytes: 32 << 20,
+            max_queued_bytes: 48 << 20,
             max_buffered_bytes: 512 << 20,
         }
     }

@@ -407,7 +407,7 @@ impl SyncEngine {
             self.promote(conn, server, &g, l, w, &mut uploads)?;
         }
         if let Some(c) = self.conns.get_mut(&conn) {
-            c.req.sent.extend(uploads.iter().map(|u| osis_label::blob_id(&u.blob)).chain(deposits.iter().map(|d| osis_label::blob_id(&d.0))).map(|b| ((l, b), raw)));
+            c.req.sent.extend(uploads.iter().map(|u| osis_label::blob_id(&u.blob)).chain(deposits.iter().map(|d| osis_label::blob_id(&d.0))).map(|b| ((l, b), (raw, super::UNTAGGED))));
         }
         if !uploads.is_empty() {
             self.command(conn, Command::Upload { label: l, entries: uploads }, out)?;
@@ -415,6 +415,7 @@ impl SyncEngine {
         for (blob, wrap, sig) in deposits {
             self.command(conn, Command::Deposit { label: l, blob, wrap, sig }, out)?;
         }
+        self.given(conn);
         Ok(())
     }
 
@@ -2016,7 +2017,7 @@ impl SyncEngine {
         let busy = |s: &Self, id: &BlobId| s.conns.get(&conn).is_some_and(|c| super::in_flight(c, &c.req.deleting, (l, *id), raw));
         let send = |s: &mut Self, id: BlobId| {
             if let Some(c) = s.conns.get_mut(&conn) {
-                c.req.deleting.insert((l, id), raw);
+                c.req.deleting.insert((l, id), (raw, super::UNTAGGED));
             }
         };
         let mut items = Vec::new();
@@ -2139,6 +2140,7 @@ impl SyncEngine {
         if !items.is_empty() {
             self.command(conn, Command::Delete { label: l, items }, out)?;
         }
+        self.given(conn);
         Ok(())
     }
 

@@ -26,7 +26,8 @@ fn replaced_label_chunks_deleted_spec_sync_2() {
     let old = net.label(a);
     let chunks = net.sync(a).entries(&old).into_iter().filter(|(_, k)| *k == EntryKind::Unknown).count();
     assert!(chunks > 1, "the value went up in chunks");
-    let (new, _) = net.sync(a).replace_label(&g, &old).unwrap();
+    let (new, acts) = net.sync(a).replace_label(&g, &old).unwrap();
+    net.actions(a, acts);
     for _ in 0..3 {
         net.advance(31_000);
     }

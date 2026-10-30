@@ -19,13 +19,9 @@ use iroh::{Endpoint, EndpointAddr, RelayMode, RelayUrl, SecretKey, TransportAddr
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 pub use crate::quic::ALPN;
-use crate::quic::{CONN_WINDOW, IDLE_TIMEOUT, KEEP_ALIVE, MAX_INCOMING, MAX_STREAMS, STREAM_WINDOW};
-
-/// A handshake not done in this time is dropped (provisional).
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+use crate::quic::{CONN_WINDOW, Handshakes, IDLE_TIMEOUT, KEEP_ALIVE, MAX_STREAMS, STREAM_WINDOW};
 
 /// The P2P transport. Clones share the listening endpoints.
 #[derive(Clone, Default)]
@@ -132,16 +128,14 @@ impl Iroh {
             (None, Some(_)) => return Err(Error::Unreachable("dial_as: no listener with that key".into())),
             (None, None) => (endpoint(None, relays, &[], false).await?, true),
         };
-        let c = match tokio::time::timeout(HANDSHAKE_TIMEOUT, ep.connect(target, ALPN)).await {
-            Ok(Ok(c)) => c,
-            r => {
+        // no deadline: QUIC's idle timeout ends a silent handshake (any link speed passes)
+        let c = match ep.connect(target, ALPN).await {
+            Ok(c) => c,
+            Err(e) => {
                 if owned {
                     ep.close().await;
                 }
-                return Err(Error::Unreachable(match r {
-                    Ok(Err(e)) => e.to_string(),
-                    _ => "handshake timed out".into(),
-                }));
+                return Err(Error::Unreachable(e.to_string()));
             }
         };
         let peer = *c.remote_id().as_bytes();
@@ -158,22 +152,15 @@ impl Iroh {
         let ep = endpoint(Some(&cfg.secret), relays, &bind, true).await?;
         let key = *ep.id().as_bytes();
         crate::util::lock(&self.listening).insert(key, ep.clone());
-        // handshakes run concurrently, each under a deadline, so a silent dialer blocks nobody
+        // handshakes run concurrently (`Handshakes`), so a silent or slow dialer blocks nobody
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let e2 = ep.clone();
-        let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hs = Handshakes::new(crate::quic::MAX_INCOMING);
         tokio::spawn(async move {
             while let Some(inc) = e2.accept().await {
-                if pending.load(std::sync::atomic::Ordering::Acquire) >= MAX_INCOMING {
-                    drop(inc);
-                    continue;
-                }
-                pending.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                let (tx, pending) = (tx.clone(), pending.clone());
-                tokio::spawn(async move {
-                    let r = tokio::time::timeout(HANDSHAKE_TIMEOUT, inc).await;
-                    pending.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-                    let Ok(Ok(c)) = r else { return };
+                let tx = tx.clone();
+                hs.spawn(async move {
+                    let Ok(c) = inc.await else { return };
                     let peer = *c.remote_id().as_bytes();
                     let _ = tx.send(IrohConn { c, peer, ep: None }).await;
                 });
