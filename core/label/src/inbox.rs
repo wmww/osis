@@ -3,7 +3,7 @@
 //! commit layout, kept here).
 
 use crate::addr::{Address, address_from_value};
-use crate::cbor::{bytes, get_bytes, get_key, get_opt, get_tid, get_uint, tid, uint};
+use crate::cbor::{get_bytes, get_key, get_opt, get_tid, get_uint, tid, uint};
 use crate::blob::Prefix;
 use crate::step::OBJECT_LIMITS;
 use crate::Error;
@@ -42,10 +42,10 @@ impl InboxPayload {
         for t in &self.things {
             things.push(Value::List(vec![
                 tid(&t.tid),
-                bytes(&t.label.0),
+                Value::bytes(&t.label.0),
                 uint(t.index)?,
                 Value::List(t.servers.iter().map(Codec::to_value).collect()),
-                Value::List(t.delete_keys.iter().map(|(a, w)| Value::List(vec![bytes(&a.to_bytes()), bytes(&w.to_bytes())])).collect()),
+                Value::List(t.delete_keys.iter().map(|(a, w)| Value::List(vec![Value::bytes(&a.to_bytes()), Value::bytes(&w.to_bytes())])).collect()),
             ]));
         }
         Ok(Value::List(vec![self.commit.clone(), Value::List(things)]))

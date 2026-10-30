@@ -7,7 +7,7 @@ use osis_base::{Ak, Tid, Value};
 /// A uint in a structure. Every uint we write is below 2^63 (times, counters, indices).
 pub(crate) fn uint(n: u64) -> Value {
     debug_assert!(i64::try_from(n).is_ok());
-    Value::Int(i64::try_from(n).unwrap_or(i64::MAX))
+    Value::uint(n)
 }
 
 pub(crate) fn uidx(n: usize) -> Value {
@@ -15,10 +15,7 @@ pub(crate) fn uidx(n: usize) -> Value {
 }
 
 pub(crate) fn as_uint(v: &Value) -> Result<u64, Error> {
-    match v {
-        Value::Int(i) => u64::try_from(*i).map_err(|_| Error::Malformed("negative integer")),
-        _ => Err(Error::Malformed("expected an unsigned integer")),
-    }
+    v.as_uint().ok_or(Error::Malformed("expected an unsigned integer"))
 }
 
 pub(crate) fn as_idx(v: &Value) -> Result<usize, Error> {
@@ -26,25 +23,15 @@ pub(crate) fn as_idx(v: &Value) -> Result<usize, Error> {
 }
 
 pub(crate) fn as_list(v: &Value) -> Result<&[Value], Error> {
-    match v {
-        Value::List(a) => Ok(a),
-        _ => Err(Error::Malformed("expected an array")),
-    }
+    v.as_list().ok_or(Error::Malformed("expected an array"))
 }
 
 pub(crate) fn as_bytes<const N: usize>(v: &Value) -> Result<[u8; N], Error> {
-    match v {
-        Value::Bytes(b) => <[u8; N]>::try_from(b.as_slice()).map_err(|_| Error::Malformed("byte string length")),
-        _ => Err(Error::Malformed("expected a byte string")),
-    }
-}
-
-pub(crate) fn bytes(b: &[u8]) -> Value {
-    Value::Bytes(b.to_vec())
+    v.as_array().ok_or(Error::Malformed("expected a byte string of its length"))
 }
 
 pub(crate) fn tid(t: &Tid) -> Value {
-    bytes(t.as_bytes())
+    Value::bytes(t.as_bytes())
 }
 
 pub(crate) fn as_tid(v: &Value) -> Result<Tid, Error> {
@@ -62,17 +49,8 @@ pub(crate) fn as_ak(v: &Value) -> Result<Ak, Error> {
     }
 }
 
-/// `Opt(X) := [] | [X]`.
-pub(crate) fn opt(v: Option<Value>) -> Value {
-    Value::List(v.into_iter().collect())
-}
-
 pub(crate) fn as_opt(v: &Value) -> Result<Option<&Value>, Error> {
-    match as_list(v)? {
-        [] => Ok(None),
-        [x] => Ok(Some(x)),
-        _ => Err(Error::Malformed("option arity")),
-    }
+    v.as_opt().ok_or(Error::Malformed("expected an option"))
 }
 
 /// Strictly ascending (sorted, distinct) by a key.

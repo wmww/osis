@@ -235,12 +235,12 @@ fn wipe_value(v: Value) {
 
 // Structure encodings (spec/wire.md §1).
 fn tid(t: &Tid) -> Value {
-    Value::Bytes(t.as_bytes().to_vec())
+    Value::bytes(t.as_bytes())
 }
 
 /// `TooLarge` above `i64::MAX` (the int range).
 fn uint(n: u64) -> Result<Value, Error> {
-    Ok(Value::Int(i64::try_from(n).map_err(|_| Error::TooLarge)?))
+    Value::try_uint(n).ok_or(Error::TooLarge)
 }
 
 pub(crate) fn role_value(r: Role) -> Value {
@@ -261,17 +261,11 @@ fn get_role(v: &Value) -> Result<Role, Error> {
 }
 
 fn get_uint(v: &Value) -> Result<u64, Error> {
-    match v {
-        Value::Int(n) => u64::try_from(*n).map_err(|_| Error::Malformed("negative int")),
-        _ => Err(Error::Malformed("not an int")),
-    }
+    v.as_uint().ok_or(Error::Malformed("not a uint"))
 }
 
 fn get_array<const N: usize>(v: &Value) -> Result<[u8; N], Error> {
-    match v {
-        Value::Bytes(b) => b.as_slice().try_into().map_err(|_| Error::Malformed("byte string length")),
-        _ => Err(Error::Malformed("not a byte string")),
-    }
+    v.as_array().ok_or(Error::Malformed("not a byte string of its length"))
 }
 
 #[cfg(test)]

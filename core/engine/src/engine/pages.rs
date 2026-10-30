@@ -142,7 +142,7 @@ fn dot_key(d: &Dot, out: &mut Vec<u8>) {
     out.extend_from_slice(&d.ctr.to_be_bytes());
 }
 
-use super::records::{dot_of, dot_value, uint};
+use super::records::{dot_of, dot_value};
 
 fn opt_dot_value(d: Option<&Dot>) -> Value {
     d.map_or(Value::List(Vec::new()), dot_value)
@@ -159,13 +159,13 @@ fn path_value(p: &KeyedPath) -> Value {
     Value::List(
         p.iter()
             .map(|(s, k, c)| match s {
-                Step::Field(id) => Value::List(vec![Value::Int(0), uint(*id)]),
-                Step::Case(id) => Value::List(vec![Value::Int(1), uint(*id)]),
+                Step::Field(id) => Value::List(vec![Value::Int(0), Value::uint(*id)]),
+                Step::Case(id) => Value::List(vec![Value::Int(1), Value::uint(*id)]),
                 Step::Entry(d) => Value::List(vec![
                     Value::Int(2),
                     dot_value(d),
                     k.clone().map_or(Value::List(Vec::new()), |k| Value::List(vec![k])),
-                    Value::List(c.iter().map(|c| uint(c.ts.to_u64())).collect()),
+                    Value::List(c.iter().map(|c| Value::uint(c.ts.to_u64())).collect()),
                 ]),
             })
             .collect(),
@@ -206,7 +206,7 @@ fn steps(p: &KeyedPath) -> Vec<Step> {
 /// Unit state of a paged state: `[1, skeleton, [[set ID, path, encoding]*]]`.
 /// Unpaged states start `[bytes, ...]`.
 fn unit_state(skeleton: &Fragment, idx: &PageIndex) -> Result<Vec<u8>> {
-    let sets = idx.sets.values().map(|s| Value::List(vec![uint(u64::from(s.id)), path_value(&s.path), uint(u64::from(s.enc.id()))])).collect();
+    let sets = idx.sets.values().map(|s| Value::List(vec![Value::uint(u64::from(s.id)), path_value(&s.path), Value::uint(u64::from(s.enc.id()))])).collect();
     Ok(osis_base::encode(&Value::List(vec![Value::Int(TAG), Value::Bytes(encode(skeleton)?), Value::List(sets)])))
 }
 
@@ -652,7 +652,7 @@ struct Srcs {
 impl Srcs {
     fn of(&mut self, s: &osis_crdt::Source) -> Value {
         if let Some(i) = self.at.get(s) {
-            return uint(*i as u64);
+            return Value::uint(*i as u64);
         }
         let i = self.list.len();
         let v = match dot_value(&Dot::new(s.clone(), 0)) {
@@ -661,10 +661,10 @@ impl Srcs {
         };
         self.list.push(v);
         self.at.insert(s.clone(), i);
-        uint(i as u64)
+        Value::uint(i as u64)
     }
     fn dot(&mut self, d: &Dot) -> Value {
-        Value::List(vec![self.of(&d.src), uint(d.ctr)])
+        Value::List(vec![self.of(&d.src), Value::uint(d.ctr)])
     }
     fn row(self, items: Vec<Value>) -> Vec<u8> {
         osis_base::encode(&Value::List(vec![Value::List(self.list), Value::List(items)]))
@@ -722,7 +722,7 @@ fn block_row(rows: &[PlaceRow]) -> Vec<u8> {
         }
         let flags = u64::from(r.created) | (u64::from(r.head) << 1) | (u64::from(r.shown) << 2) | (u64::from(n > 1) << 3);
         let parent = r.parent.as_ref().map_or(Value::List(Vec::new()), |p| t.dot(p));
-        out.push(Value::List(vec![t.of(&r.dot.src), uint(r.dot.ctr), uint(if n > 1 { n as u64 } else { r.span }), uint(flags), parent, Value::Int(r.depth)]));
+        out.push(Value::List(vec![t.of(&r.dot.src), Value::uint(r.dot.ctr), Value::uint(if n > 1 { n as u64 } else { r.span }), Value::uint(flags), parent, Value::Int(r.depth)]));
         i += n;
     }
     t.row(out)
@@ -772,7 +772,7 @@ fn chunk_row(e: &[(Dot, usize)]) -> Vec<u8> {
             }
             n += 1;
         }
-        out.push(Value::List(vec![t.of(&d.src), uint(d.ctr), uint(n as u64), uint(*b as u64)]));
+        out.push(Value::List(vec![t.of(&d.src), Value::uint(d.ctr), Value::uint(n as u64), Value::uint(*b as u64)]));
         i += n;
     }
     t.row(out)
@@ -796,12 +796,12 @@ fn parse_chunk(b: &[u8]) -> Option<Vec<(Dot, usize)>> {
 
 fn top_row(t: &PlaceTop, groups: usize) -> Vec<u8> {
     let dots = |x: &[Dot]| Value::List(x.iter().map(dot_value).collect());
-    let newest = t.newest.as_ref().map_or(Value::List(Vec::new()), |s| Value::List(vec![uint(s.ts.to_u64()), dot_value(&s.dot)]));
-    osis_base::encode(&Value::List(vec![uint(t.cap as u64), uint(t.map_len as u64), dots(&t.waiting), dots(&t.cyc), uint(groups as u64), newest]))
+    let newest = t.newest.as_ref().map_or(Value::List(Vec::new()), |s| Value::List(vec![Value::uint(s.ts.to_u64()), dot_value(&s.dot)]));
+    osis_base::encode(&Value::List(vec![Value::uint(t.cap as u64), Value::uint(t.map_len as u64), dots(&t.waiting), dots(&t.cyc), Value::uint(groups as u64), newest]))
 }
 
 fn group_rows(t: &PlaceTop) -> Vec<Vec<u8>> {
-    t.blocks.chunks(GROUP).map(|g| osis_base::encode(&Value::List(g.iter().map(|b| Value::List(vec![uint(b.id as u64), uint(b.len as u64), uint(b.shown as u64), Value::Int(b.min), Value::Int(b.shift)])).collect()))).collect()
+    t.blocks.chunks(GROUP).map(|g| osis_base::encode(&Value::List(g.iter().map(|b| Value::List(vec![Value::uint(b.id as u64), Value::uint(b.len as u64), Value::uint(b.shown as u64), Value::Int(b.min), Value::Int(b.shift)])).collect()))).collect()
 }
 
 fn chunks_row(t: &PlaceTop) -> Vec<u8> {

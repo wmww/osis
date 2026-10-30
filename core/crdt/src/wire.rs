@@ -116,23 +116,17 @@ pub struct Snapshot {
 /// A non-negative integer as a value. Counters and `ts` stay below 2^63 (decoded ones are `Int`).
 pub(crate) fn uint(n: u64) -> Value {
     debug_assert!(n <= i64::MAX as u64);
-    Value::Int(i64::try_from(n).unwrap_or(i64::MAX))
+    Value::uint(n)
 }
 
 /// A non-negative integer from a value.
 pub(crate) fn as_uint(v: &Value) -> Result<u64, Error> {
-    match v {
-        Value::Int(i) => u64::try_from(*i).map_err(|_| Error::Malformed("negative integer")),
-        _ => Err(Error::Malformed("expected an unsigned integer")),
-    }
+    v.as_uint().ok_or(Error::Malformed("expected an unsigned integer"))
 }
 
 /// An array's items.
 pub(crate) fn as_array(v: &Value) -> Result<&[Value], Error> {
-    match v {
-        Value::List(a) => Ok(a),
-        _ => Err(Error::Malformed("expected an array")),
-    }
+    v.as_list().ok_or(Error::Malformed("expected an array"))
 }
 
 #[derive(Clone, Debug)]

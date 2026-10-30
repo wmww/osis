@@ -4,7 +4,6 @@
 //! (spec/crypto.md §7), and the `Secrets` osis-commit asks for when building a commit.
 
 use super::Core;
-use super::records::uint;
 use osis_base::CommitId;
 use crate::error::{Error, Result};
 use osis_base::{CreationRecord, Role, Tid, Value};
@@ -483,10 +482,10 @@ pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
                     .map(|(e, i)| {
                         Value::List(vec![
                             e.to_wire(),
-                            uint(i.suite),
+                            Value::uint(i.suite),
                             Value::List(i.applied.iter().map(|a| Value::List(a.iter().map(Epoch::to_wire).collect())).collect()),
                             Value::Bool(i.snapshot),
-                            Value::List(i.established.iter().map(|p| uint(provenance_code(*p))).collect()),
+                            Value::List(i.established.iter().map(|p| Value::uint(provenance_code(*p))).collect()),
                             Value::List(i.supersedes.iter().map(Epoch::to_wire).collect()),
                             Value::List(i.secret.iter().map(|s| Value::Bytes(s.expose().to_vec())).collect()),
                             Value::List(i.reading.iter().map(|(s, u)| Value::List(vec![Value::Bytes(s.expose().to_vec()), Value::Bytes(u.author.as_bytes().to_vec()), Value::Bytes(u.commit.0.to_vec())])).collect()),

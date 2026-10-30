@@ -2,7 +2,7 @@
 //! spec/commits.md §1, spec/crypto.md §2).
 
 use crate::Error;
-use crate::cbor::{ak, as_ak, as_bytes, as_idx, as_list, as_opt, as_tid, as_uint, bytes, opt, tid, uidx, uint};
+use crate::cbor::{ak, as_ak, as_bytes, as_idx, as_list, as_opt, as_tid, as_uint, tid, uidx, uint};
 use osis_base::format::{CHUNK_THRESHOLD, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH};
 use osis_base::{Ak, BlobId, CommitId, Limits, Link, SchemaId, Tid, Ts, Value};
 use osis_crdt::DeltaKind;
@@ -258,30 +258,30 @@ fn aspect_value(a: &AspectEntry) -> Value {
         uint(a.lo),
         uint(a.hi),
         retention_value(&a.retention),
-        opt(a.expires.map(uint)),
-        opt(a.schema.map(uidx)),
+        Value::opt(a.expires.map(uint)),
+        Value::opt(a.schema.map(uidx)),
         Value::List(a.keys.iter().map(|i| uidx(*i)).collect()),
-        Value::List(a.hashes.iter().map(|h| bytes(h)).collect()),
+        Value::List(a.hashes.iter().map(|h| Value::bytes(h)).collect()),
     ])
 }
 
 pub(crate) fn key_value(t: &DeleteKey) -> Value {
-    Value::List(vec![uint(u64::from(t.level)), bytes(&t.key)])
+    Value::List(vec![uint(u64::from(t.level)), Value::bytes(&t.key)])
 }
 
 fn chunk_value(c: &ChunkEntry) -> Value {
-    Value::List(vec![bytes(&c.blob.0), Value::List(c.keys.iter().map(|i| uidx(*i)).collect())])
+    Value::List(vec![Value::bytes(&c.blob.0), Value::List(c.keys.iter().map(|i| uidx(*i)).collect())])
 }
 
 pub(crate) fn purge_value(p: &PurgeItem) -> Value {
     match p {
-        PurgeItem::Commit { commit, tid: t, ak: a } => Value::List(vec![bytes(&commit.0), tid(t), ak(a)]),
+        PurgeItem::Commit { commit, tid: t, ak: a } => Value::List(vec![Value::bytes(&commit.0), tid(t), ak(a)]),
         PurgeItem::Aspect { tid: t, ak: a } => Value::List(vec![tid(t), ak(a)]),
     }
 }
 
 fn origin_value(o: &Origin) -> Value {
-    Value::List(vec![bytes(&o.commit.0), tid(&o.author), tid(&o.actor), uint(o.ts.to_u64())])
+    Value::List(vec![Value::bytes(&o.commit.0), tid(&o.author), tid(&o.actor), uint(o.ts.to_u64())])
 }
 
 /// Canonical bytes of `[tid, ak]`, the aspect sort key.
@@ -304,15 +304,15 @@ impl Header {
 
     fn position(&self, f: ListField) -> Value {
         match (f, self.links.get(f)) {
-            (ListField::Frontier, Some(l)) => opt(Some(Value::Link(*l))),
-            (ListField::Frontier, None) => opt(self.frontier.clone()),
+            (ListField::Frontier, Some(l)) => Value::opt(Some(Value::Link(*l))),
+            (ListField::Frontier, None) => Value::opt(self.frontier.clone()),
             (_, Some(l)) => Value::Link(*l),
             (_, None) => self.list_value(f).unwrap_or(Value::List(Vec::new())),
         }
     }
 
     pub fn to_value(&self) -> Value {
-        let schemas = self.schemas.iter().map(|(id, rev)| Value::List(vec![bytes(&id.0), uint(*rev)])).collect();
+        let schemas = self.schemas.iter().map(|(id, rev)| Value::List(vec![Value::bytes(&id.0), uint(*rev)])).collect();
         Value::List(vec![
             uint(self.version),
             tid(&self.author),
@@ -324,12 +324,12 @@ impl Header {
             self.position(ListField::Aspects),
             self.position(ListField::Chunks),
             self.position(ListField::Purge),
-            opt(self.undoes.map(|c| bytes(&c.0))),
-            bytes(&self.blind),
+            Value::opt(self.undoes.map(|c| Value::bytes(&c.0))),
+            Value::bytes(&self.blind),
             self.position(ListField::Keys),
             self.position(ListField::Frontier),
             self.position(ListField::Origins),
-            opt(self.ephemeral.map(|c| uint(c as u64))),
+            Value::opt(self.ephemeral.map(|c| uint(c as u64))),
         ])
     }
 

@@ -254,7 +254,7 @@ pub fn encode_snapshot(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageS
     let authors: Vec<Value> = enc
         .commit_sources()
         .into_iter()
-        .filter_map(|(i, c)| s.authors.get(&c).map(|(n, ts)| Value::List(vec![uint(i), Value::Bytes(n.as_bytes().to_vec()), uint(ts.to_u64())])))
+        .filter_map(|(i, c)| s.authors.get(&c).map(|(n, ts)| Value::List(vec![uint(i), Value::bytes(n.as_bytes()), uint(ts.to_u64())])))
         .collect();
     if !authors.is_empty() {
         top.push(Value::List(authors));
@@ -650,10 +650,7 @@ fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragme
 }
 
 fn nonce(v: &Value) -> Result<[u8; NONCE_LEN], Error> {
-    match v {
-        Value::Bytes(b) => <[u8; NONCE_LEN]>::try_from(b.as_slice()).map_err(|_| Error::Malformed("nonce length")),
-        _ => Err(Error::Malformed("nonce")),
-    }
+    v.as_array().ok_or(Error::Malformed("nonce"))
 }
 
 /// Decodes a delta (§3.2) against its header facts; bad input unless canonical.
@@ -705,8 +702,7 @@ pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Intern
     for e in au.map(as_array).transpose()?.unwrap_or_default() {
         let [i, t, ts] = as_array(e)? else { return Err(Error::Malformed("author")) };
         let i = as_uint(i)?;
-        let Value::Bytes(t) = t else { return Err(Error::Malformed("author tid")) };
-        let t = osis_base::Tid::from_bytes(t.as_slice().try_into().map_err(|_| Error::Malformed("author tid"))?);
+        let t = osis_base::Tid::from_bytes(t.as_array().ok_or(Error::Malformed("author tid"))?);
         let ts = osis_base::Ts::from_u64(as_uint(ts)?).ok_or(Error::Malformed("author ts"))?;
         let c = dec.source(i)?.as_commit().ok_or(Error::Malformed("author of a non-commit source"))?;
         if i <= last {

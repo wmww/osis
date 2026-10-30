@@ -1,7 +1,7 @@
 //! Hello and version negotiation (spec/wire.md §11.1), clock offset estimation (spec/sync.md §6).
 
 use crate::Error;
-use crate::dec::{Fields, b, u, uint};
+use crate::dec::{Fields, uint};
 use osis_base::{Limits, Value, cbor};
 
 /// The protocol version this build speaks (spec/wire.md §11; separate from the format version).
@@ -28,9 +28,9 @@ impl Hello {
     pub fn to_value(&self) -> Value {
         Value::List(vec![
             Value::Str("osis".into()),
-            Value::List(self.versions.iter().map(|v| u(*v)).collect()),
-            u(self.wall_ms),
-            b(&self.challenge),
+            Value::List(self.versions.iter().map(|v| Value::uint(*v)).collect()),
+            Value::uint(self.wall_ms),
+            Value::bytes(&self.challenge),
         ])
     }
 
@@ -112,7 +112,7 @@ mod tests {
     fn hello_rejects() {
         let bad = |v: Value| Hello::decode(&cbor::encode(&v)).is_err();
         let mk = |vs: Vec<u64>, c: usize| {
-            Value::List(vec![Value::Str("osis".into()), Value::List(vs.into_iter().map(u).collect()), u(5), Value::Bytes(vec![0; c])])
+            Value::List(vec![Value::Str("osis".into()), Value::List(vs.into_iter().map(Value::uint).collect()), Value::uint(5), Value::Bytes(vec![0; c])])
         };
         assert!(!bad(mk(vec![1], 32)));
         assert!(bad(mk(vec![], 32)));
@@ -120,7 +120,7 @@ mod tests {
         assert!(bad(mk(vec![1, 1], 32)));
         assert!(bad(mk((1..=17).collect(), 32)));
         assert!(bad(mk(vec![1], 31)));
-        assert!(bad(Value::List(vec![Value::Str("osiz".into()), Value::List(vec![u(1)]), u(5), Value::Bytes(vec![0; 32])])));
+        assert!(bad(Value::List(vec![Value::Str("osiz".into()), Value::List(vec![Value::uint(1)]), Value::uint(5), Value::Bytes(vec![0; 32])])));
     }
 
     // spec/sync.md §6: round-trip corrected, robust to an outlier

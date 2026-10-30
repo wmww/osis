@@ -12,7 +12,6 @@
 //! re-judge).
 
 use super::journal::{JMap, JSet, JSetMap};
-use super::records::uint;
 use super::{Core, Meta, Tx, records, scan_table};
 use osis_store::Transaction;
 use crate::error::{Error, Result};
@@ -84,7 +83,7 @@ impl Rec for Tid {
 }
 impl Rec for usize {
     fn to(&self) -> Value {
-        uint(*self as u64)
+        Value::uint(*self as u64)
     }
     fn from(v: &Value) -> Option<Self> {
         match v {
@@ -95,7 +94,7 @@ impl Rec for usize {
 }
 impl Rec for Ts {
     fn to(&self) -> Value {
-        uint(self.to_u64())
+        Value::uint(self.to_u64())
     }
     fn from(v: &Value) -> Option<Self> {
         match v {
@@ -157,7 +156,7 @@ impl Rec for osis_base::Ak {
 }
 impl Rec for osis_crdt::Frontiers {
     fn to(&self) -> Value {
-        Value::List(self.0.iter().map(|(t, c)| Value::List(vec![t.to(), uint(*c)])).collect())
+        Value::List(self.0.iter().map(|(t, c)| Value::List(vec![t.to(), Value::uint(*c)])).collect())
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(x) = v else { return None };
@@ -195,7 +194,7 @@ impl Rec for osis_crdt::Source {
     }
 }
 fn uints(v: &[u64]) -> Value {
-    Value::List(v.iter().map(|c| uint(*c)).collect())
+    Value::List(v.iter().map(|c| Value::uint(*c)).collect())
 }
 fn uints_of(v: &Value) -> Option<Vec<u64>> {
     let Value::List(x) = v else { return None };
@@ -286,7 +285,7 @@ impl Rec for osis_perm::Edge {
 }
 impl Rec for u64 {
     fn to(&self) -> Value {
-        uint(*self)
+        Value::uint(*self)
     }
     fn from(v: &Value) -> Option<Self> {
         match v {
@@ -304,7 +303,7 @@ impl Rec for crate::apply::validity::EdgeParts {
                 .iter()
                 .map(|(ai, p)| match p {
                     EdgePart::Members(es) => Value::List(vec![
-                        uint(*ai as u64),
+                        Value::uint(*ai as u64),
                         Value::Int(0),
                         Value::List(
                             es.iter()
@@ -318,7 +317,7 @@ impl Rec for crate::apply::validity::EdgeParts {
                                 .collect(),
                         ),
                     ]),
-                    EdgePart::Tenures(ts) => Value::List(vec![uint(*ai as u64), Value::Int(1), Value::List(ts.clone())]),
+                    EdgePart::Tenures(ts) => Value::List(vec![Value::uint(*ai as u64), Value::Int(1), Value::List(ts.clone())]),
                 })
                 .collect(),
         )

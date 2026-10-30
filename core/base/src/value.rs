@@ -83,6 +83,53 @@ impl Value {
     pub fn float(f: f64) -> Value {
         Value::Float(Float::new(f))
     }
+
+    // Structure helpers (spec/wire.md §1): each crate maps `None` to its own error.
+    /// A uint, saturating at `i64::MAX` (structure uints stay below 2^63).
+    pub fn uint(n: u64) -> Value {
+        Value::Int(i64::try_from(n).unwrap_or(i64::MAX))
+    }
+    /// A uint; `None` above `i64::MAX`.
+    pub fn try_uint(n: u64) -> Option<Value> {
+        i64::try_from(n).ok().map(Value::Int)
+    }
+    pub fn bytes(b: &[u8]) -> Value {
+        Value::Bytes(b.to_vec())
+    }
+    /// `Opt(X) := [] | [X]`.
+    pub fn opt(v: Option<Value>) -> Value {
+        Value::List(v.into_iter().collect())
+    }
+    pub fn as_uint(&self) -> Option<u64> {
+        match self {
+            Value::Int(i) => u64::try_from(*i).ok(),
+            _ => None,
+        }
+    }
+    pub fn as_list(&self) -> Option<&[Value]> {
+        match self {
+            Value::List(l) => Some(l),
+            _ => None,
+        }
+    }
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Value::Bytes(b) => Some(b),
+            _ => None,
+        }
+    }
+    /// A byte string of exactly `N` bytes.
+    pub fn as_array<const N: usize>(&self) -> Option<[u8; N]> {
+        self.as_bytes()?.try_into().ok()
+    }
+    /// `Opt(X)`: a list of zero or one item.
+    pub fn as_opt(&self) -> Option<Option<&Value>> {
+        match self.as_list()? {
+            [] => Some(None),
+            [x] => Some(Some(x)),
+            _ => None,
+        }
+    }
     /// Nesting depth as the decoder counts it: arrays, maps and tags on the deepest path.
     pub fn depth(&self) -> usize {
         fn max(it: impl Iterator<Item = usize>) -> usize {

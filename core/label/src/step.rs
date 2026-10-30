@@ -1,7 +1,7 @@
 //! Labels: role keys, registration steps, step IDs and paths, claim sets with claim keys and
 //! static entries, entry boxes (spec/sync.md §2, §5, spec/wire.md §8, §7).
 
-use crate::cbor::{bytes, get_bytes, get_key};
+use crate::cbor::{get_bytes, get_key};
 use crate::Error;
 use osis_base::cbor::{Limits, decode, encode};
 use osis_base::format::{MAX_CLAIMS, MAX_MESSAGE, MAX_OBJECT_DEPTH};
@@ -91,14 +91,14 @@ impl Step {
     fn unsigned(&self) -> Vec<Value> {
         let k = &self.keys;
         vec![
-            bytes(&self.label.0),
-            Value::List(self.prev.iter().map(|p| bytes(&p.0)).collect()),
-            bytes(&k.sync.to_bytes()),
-            bytes(&k.write.to_bytes()),
-            bytes(&k.delete.to_bytes()),
-            bytes(&k.deposit.to_bytes()),
-            bytes(&self.step_key),
-            bytes(&self.claims_hash),
+            Value::bytes(&self.label.0),
+            Value::List(self.prev.iter().map(|p| Value::bytes(&p.0)).collect()),
+            Value::bytes(&k.sync.to_bytes()),
+            Value::bytes(&k.write.to_bytes()),
+            Value::bytes(&k.delete.to_bytes()),
+            Value::bytes(&k.deposit.to_bytes()),
+            Value::bytes(&self.step_key),
+            Value::bytes(&self.claims_hash),
         ]
     }
 
@@ -109,7 +109,7 @@ impl Step {
 
     pub fn to_value(&self) -> Value {
         let mut items = self.unsigned();
-        items.push(bytes(&self.sig.0));
+        items.push(Value::bytes(&self.sig.0));
         Value::List(items)
     }
 
@@ -228,8 +228,8 @@ pub struct ClaimSet {
 impl ClaimSet {
     pub fn to_value(&self) -> Value {
         Value::List(vec![
-            Value::List(self.claims.iter().map(|c| bytes(c)).collect()),
-            Value::Map(self.entries.iter().map(|(k, b)| (bytes(k), b.to_value())).collect()),
+            Value::List(self.claims.iter().map(|c| Value::bytes(c)).collect()),
+            Value::Map(self.entries.iter().map(|(k, b)| (Value::bytes(k), b.to_value())).collect()),
         ])
     }
 
@@ -513,13 +513,13 @@ pub(crate) mod tests {
         short.pop();
         assert!(Step::from_value(&Value::List(short)).is_err());
         let mut two_prev = items.clone();
-        two_prev[1] = Value::List(vec![bytes(&[0; 32]), bytes(&[0; 32])]);
+        two_prev[1] = Value::List(vec![Value::bytes(&[0; 32]), Value::bytes(&[0; 32])]);
         assert!(Step::from_value(&Value::List(two_prev)).is_err());
         let mut bad_key = items.clone();
-        bad_key[2] = bytes(&[0; 32]);
+        bad_key[2] = Value::bytes(&[0; 32]);
         assert!(Step::from_value(&Value::List(bad_key)).is_err());
         let mut short_hash = items;
-        short_hash[7] = bytes(&[0; 31]);
+        short_hash[7] = Value::bytes(&[0; 31]);
         assert!(Step::from_value(&Value::List(short_hash)).is_err());
         assert!(Step::parse(&[0x80]).is_err());
     }
@@ -570,19 +570,19 @@ pub(crate) mod tests {
     // claims, wrong claim length, a box that is not a `box` value.
     #[test]
     fn claim_set_rejections() {
-        let c = |n: usize| Value::List((0..n).map(|i| bytes(&[i as u8; 32])).collect());
+        let c = |n: usize| Value::List((0..n).map(|i| Value::bytes(&[i as u8; 32])).collect());
         let set = |claims: Value, entries: Vec<(Value, Value)>| Value::List(vec![claims, Value::Map(entries.into_iter().collect())]);
         assert!(ClaimSet::from_value(&set(c(4), vec![])).is_ok());
         for n in [0, 3, 5] {
             assert!(ClaimSet::from_value(&set(c(n), vec![])).is_err(), "{n}");
         }
         let sym = SecretBox::Symmetric(SymmetricBox { epoch: EpochValue { n: 1, nonce: [0; 16] }, wrap: vec![0; 49] }).to_value();
-        assert!(ClaimSet::from_value(&set(c(2), vec![(bytes(&[1; 32]), sym.clone())])).is_ok());
-        assert!(ClaimSet::from_value(&set(c(2), vec![(bytes(&[9; 32]), sym)])).is_err());
-        assert!(ClaimSet::from_value(&set(c(2), vec![(bytes(&[1; 32]), Value::Int(0))])).is_err());
-        assert!(ClaimSet::from_value(&set(Value::List(vec![bytes(&[0; 31])]), vec![])).is_err());
+        assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[1; 32]), sym.clone())])).is_ok());
+        assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[9; 32]), sym)])).is_err());
+        assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[1; 32]), Value::Int(0))])).is_err());
+        assert!(ClaimSet::from_value(&set(Value::List(vec![Value::bytes(&[0; 31])]), vec![])).is_err());
         let parked = Value::Enum(7, None);
-        assert_eq!(ClaimSet::from_value(&set(c(1), vec![(bytes(&[0; 32]), parked)])), Err(Error::Crypto(osis_crypto::Error::UnknownCase(7))));
+        assert_eq!(ClaimSet::from_value(&set(c(1), vec![(Value::bytes(&[0; 32]), parked)])), Err(Error::Crypto(osis_crypto::Error::UnknownCase(7))));
     }
 
     // spec/wire.md §13: a claim set with its entry boxes is at most MAX_MESSAGE − 64 KiB, on

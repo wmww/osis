@@ -93,10 +93,7 @@ pub(crate) fn opt(v: Value, what: &'static str) -> Result<Option<Value>, Error> 
 }
 
 pub(crate) fn uint(v: Value, what: &'static str) -> Result<u64, Error> {
-    match v {
-        Value::Int(i) if i >= 0 => Ok(i as u64),
-        _ => Err(Error::Malformed(what)),
-    }
+    v.as_uint().ok_or(Error::Malformed(what))
 }
 
 pub(crate) fn bytes(v: Value, max: usize, what: &'static str) -> Result<Vec<u8>, Error> {
@@ -108,22 +105,5 @@ pub(crate) fn bytes(v: Value, max: usize, what: &'static str) -> Result<Vec<u8>,
 }
 
 pub(crate) fn fixed<const N: usize>(v: Value, what: &'static str) -> Result<[u8; N], Error> {
-    match v {
-        Value::Bytes(b) => b.try_into().map_err(|_| Error::Malformed(what)),
-        _ => Err(Error::Malformed(what)),
-    }
-}
-
-/// Encoding helpers.
-pub(crate) fn b(bytes: &[u8]) -> Value {
-    Value::Bytes(bytes.to_vec())
-}
-
-pub(crate) fn u(n: u64) -> Value {
-    // Wire uints in this protocol stay below 2^63 (ids < 2^32, wall ms, sequence numbers).
-    Value::Int(i64::try_from(n).unwrap_or(i64::MAX))
-}
-
-pub(crate) fn opt_v(v: Option<Value>) -> Value {
-    Value::List(v.into_iter().collect())
+    v.as_array().ok_or(Error::Malformed(what))
 }
