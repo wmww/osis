@@ -347,7 +347,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Ls { .. } => Err(not_supported("query (issues/api-deferred.md)")),
         Cmd::Backlinks { .. } => Err(not_supported("backlinks (issues/api-deferred.md)")),
         Cmd::Watch { t, ak, count } => watch(ctx, &t, ak.as_deref(), count),
-        Cmd::Commits { scope: s, actor, kind, reverts, reverted_by, in_effect, since, until, after, max } => {
+        Cmd::Commits { scope: s, actor, kind, reverts, reverted_by, in_effect, since, until, after, max, next } => {
             let mut q = CommitQuery { scope: opt_scope(ctx, &s)?, in_effect, limit: max, ..CommitQuery::default() };
             q.actors = actor.iter().map(|a| ctx.tid(a)).collect::<anyhow::Result<_>>()?;
             q.kinds = kind.iter().map(|k| kind_of(k)).collect::<anyhow::Result<_>>()?;
@@ -356,6 +356,12 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             q.after = after.as_deref().map(parse_commit).transpose()?.map(osis::ChangeId::Commit);
             q.since = opt_ts(&since)?.and_then(|ms| Ts::make(ms, 0));
             q.until = opt_ts(&until)?.and_then(|ms| Ts::make(ms, 0));
+            q.next = match next.as_deref() {
+                None => None,
+                Some("undo") => Some(osis::Next::Undo),
+                Some("redo") => Some(osis::Next::Redo),
+                Some(x) => return Err(usage(format!("--next takes undo or redo, not {x:?}"))),
+            };
             commits(ctx, &q)
         }
         Cmd::Undo { scope: s } => undo(ctx, &s, false),

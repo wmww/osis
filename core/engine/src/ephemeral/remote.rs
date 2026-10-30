@@ -788,7 +788,7 @@ impl Engine {
         for (t, rec) in &carried {
             if self.core.created(t).is_none() && !self.eph.things.contains_key(t) {
                 let created = decoded.iter().find(|(ai, _, _)| h.aspects.get(*ai).is_some_and(|a| a.tid == *t && a.ak.as_str() == CREATED.ak())).map(|(_, s, _)| s.fragment.clone());
-                self.eph.things.insert(*t, EphThing { record: rec.clone(), ts: h.ts, node: h.author, actor: h.actor, received, created });
+                self.eph.things.insert(*t, EphThing { record: rec.clone(), ts: h.ts, node: h.author, actor: h.actor, received, created, deleted: false });
             }
         }
         let header = Arc::new(h);

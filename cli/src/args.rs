@@ -225,6 +225,9 @@ pub enum Cmd {
         after: Option<String>,
         #[arg(long = "max", value_name = "N")]
         max: Option<usize>,
+        /// Only the change `undo` or `redo` in scope would revert now (needs a scope)
+        #[arg(long, value_name = "undo|redo")]
+        next: Option<String>,
     },
     /// Undo this person's newest change in scope
     Undo {

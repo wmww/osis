@@ -269,7 +269,7 @@ pub use large::ValueStream;
 pub use read::{AspectRef, Edge, GroupsOf, PathRef, Reader, Roster, Stamp};
 pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupSync, LinkInfo, LinkOpts, Lower, PRESYNC_WAIT, RecoveryCard, ServerAddr, ShareLink, Status, SyncScope, SyncState, WaitForSync};
 pub use text::TextSession;
-pub use commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Scope};
+pub use commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Next, Scope};
 pub use watch::{Change, Changed, CommitInfo, Dispatcher, Source, Subscription, Watch};
 pub use write::{AspectWrite, Committed, PathWrite, Write};
 

@@ -29,7 +29,7 @@ fn undo_redo_ephemeral_thing_spec_crdt_4_6() {
     let scope = Scope::Thing(t);
     let get = || db.get(t, k.clone()).unwrap();
     let all = db.commits(&CommitQuery::new().scope(scope.clone())).unwrap();
-    assert_eq!(all.len(), 2);
+    assert_eq!(all.len(), 3, "the creation and two writes");
     assert!(all.iter().all(|e| e.kind == CommitKind::Ephemeral && e.in_effect && matches!(e.commit.id, ChangeId::Ephemeral(_))));
     let u = db.undo(&scope).unwrap().unwrap();
     assert!(matches!(u.id, ChangeId::Ephemeral(_)));
@@ -40,7 +40,12 @@ fn undo_redo_ephemeral_thing_spec_crdt_4_6() {
     assert_eq!((target[0].commit.id, target[0].in_effect), (all[0].commit.id, false));
     db.undo(&scope).unwrap().unwrap();
     assert_eq!(get(), None, "absent before the first write");
+    assert!(db.knows(t));
+    db.undo(&scope).unwrap().unwrap();
+    assert!(!db.knows(t), "undoing the creation deletes");
     assert_eq!(db.undo(&scope).unwrap(), None);
+    db.redo(&scope).unwrap().unwrap();
+    assert!(db.knows(t) && get().is_none());
     db.redo(&scope).unwrap().unwrap();
     assert_eq!(get(), int(1));
     db.redo(&scope).unwrap().unwrap();
@@ -210,12 +215,14 @@ trait Tap: Sized {
 }
 impl Tap for osis::Write<'_> {}
 
-// notes/ephemeral.md Step 2 as built (Open): undoing the save of a placed draft reverts its
-// durable writes, the placement's durable add included; the thing stays durable, so its
-// ephemeral placement is not restored (it would vanish at restart and never convert). Redo
-// puts it back. spec/crdt.md §4.6
+// notes/ephemeral.md Step 2 as built (Open), spec/crdt.md §4.6 Undoing a creation: the save
+// of a placed draft is the thing's durable creation, so undoing it deletes the thing: its
+// durable writes reverted, the placement's durable add included, and its ephemeral draft
+// aspect reset; the thing stays durable (its record is held) and reads deleted. The ephemeral
+// placement is not restored (it would vanish at restart and never convert). Redo puts all of
+// it back.
 #[test]
-fn undo_of_save_removes_the_placement_spec_crdt_4_6() {
+fn undo_of_save_deletes_spec_crdt_4_6() {
     let db = setup(9);
     let draft = ak("/app/draft").ephemeral();
     let body = ak("/app/body");
@@ -232,10 +239,10 @@ fn undo_of_save_removes_the_placement_spec_crdt_4_6() {
     db.write_with(|w| w.at(e, body.clone()).set(&Value::Int(1))).unwrap();
     assert!(db.groups_of(e).within.contains(&f));
     db.undo(&Scope::Thing(e)).unwrap().unwrap();
-    assert!(db.groups_of(e).within.is_empty() && db.get(e, body.clone()).unwrap().is_none());
-    assert!(db.created(e).unwrap().commit.is_some(), "still durable");
+    assert!(db.groups_of(e).within.is_empty() && db.get(e, body.clone()).unwrap().is_none() && db.get(e, draft.clone()).unwrap().is_none());
+    assert!(db.created(e).unwrap().commit.is_some() && !db.knows(e), "durable, deleted");
     // the draft's batch wrote an ephemeral aspect of what is now a durable thing: out of scope
     assert_eq!(db.undo(&Scope::Thing(e)).unwrap(), None);
     db.redo(&Scope::Thing(e)).unwrap().unwrap();
-    assert!(db.groups_of(e).within.contains(&f) && db.get(e, body.clone()).unwrap() == int(1));
+    assert!(db.groups_of(e).within.contains(&f) && db.get(e, body.clone()).unwrap() == int(1) && db.get(e, draft).unwrap() == int(1));
 }

@@ -252,10 +252,16 @@ fn commits_undo_redo_plan_cli_4() {
     let h = s.ok(&["commits", "--thing", &t]).out;
     assert_eq!(h.lines().count(), 3, "{h}");
     assert!(h.lines().all(|l| l.contains(" change in-effect ")), "{h}");
+    assert_eq!(s.ok(&["commits", "--thing", &t, "--next", "redo"]).out, "");
+    let next = s.ok(&["commits", "--thing", &t, "--next", "undo"]).out;
+    assert_eq!(next.lines().count(), 1, "{next}");
     s.ok(&["undo", "--thing", &t]);
     assert_eq!(s.ok(&["get", &t, "/a/x"]).line(), "1");
     let undone = s.ok(&["commits", "--thing", &t, "--in-effect", "false"]).out;
     let undone = undone.split(' ').next().unwrap();
+    assert_eq!(next.split(' ').next(), Some(undone), "undo reverted what --next undo listed");
+    assert_eq!(s.code(&["commits", "--next", "undo"]), 7, "--next needs a scope");
+    assert_eq!(s.code(&["commits", "--thing", &t, "--next", "nope"]), 2);
     let rev = s.ok(&["commits", "--reverts", undone]).out;
     assert_eq!(rev.lines().count(), 1, "{rev}");
     assert!(rev.contains(" revert in-effect reverts="), "{rev}");
