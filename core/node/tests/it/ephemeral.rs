@@ -785,6 +785,32 @@ fn others_writes_in_a_commit_not_joined_spec_sync_9() {
     assert_eq!(notes(&mut net, c, w), map(&[("b", "1")]), "a's write is a's to send");
 }
 
+// spec/sync.md §9 (a carried `/created` is exactly one minting of its record): a writer that
+// pads an ephemeral thing's `/created` with a losing junk write has its commit refused, so no
+// honest node keeps that `/created` to carry in its own commits
+#[test]
+fn padded_created_refused_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let w = e.new_thing(&mut m, g);
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+    e.write(m).unwrap();
+    let ak = osis_base::Ak::new(STATE).unwrap();
+    let honest = net.engine(a).forge_ephemeral(w, &ak, s("honest")).unwrap().unwrap();
+    net.engine(a).pad_created(&w, Value::Bytes(vec![7; 4096])).unwrap();
+    let padded = net.engine(a).forge_ephemeral(w, &ak, s("padded")).unwrap().unwrap();
+    assert!(net.engine(b).ingest_ephemeral(padded.blob).is_err(), "refused");
+    assert!(net.engine(b).ephemeral_thing(&w).is_none(), "its /created not kept");
+    net.engine(b).ingest_ephemeral(honest.blob).unwrap();
+    assert!(net.engine(b).ephemeral_thing(&w).is_some(), "the unpadded one is taken");
+}
+
 // spec/sync.md §9 (an ephemeral commit carries only its author's writes): a write under another
 // node's source (not a session its `Authors` attributes to the author) is not joined either
 #[test]
