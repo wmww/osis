@@ -795,13 +795,18 @@ impl Engine {
     /// The held commits that make received commit `id` redundant, when on each of its parts
     /// `parts` but `/created` ones (one at least, none expiring) a valid unexpiring part of one
     /// held plain commit of its author contains the part's writes (`contains`) and either lists
-    /// `id` as absorbed or is a cover stamped later. A cover's chain contains whatever an
-    /// earlier cover took in, so a replay from any depth is caught without transitive lists; a
-    /// commit missing from a cover (its author did not hold it then) is not.
+    /// `id` as absorbed or, when `id` lists nothing (a take, not a cover), is a cover stamped
+    /// later. A cover's chain contains whatever an earlier cover took in, so a replayed take
+    /// from any depth is caught without transitive lists; a commit missing from a cover (its
+    /// author did not hold it then) is not. Stamps do not order an author's sessions (a session
+    /// after a restart may stamp below the last one's covers), so a cover is redundant only by a
+    /// list: lists form no cycle, and two covers of equal content each taking the other for the
+    /// later one would both be deleted at servers.
     fn eph_containers(&self, id: &CommitId, h: &Header, parts: &[HeldPart]) -> Option<BTreeSet<CommitId>> {
         if h.ephemeral != Some(EphClass::Plain) {
             return None;
         }
+        let take = parts.iter().all(|p| p.absorbed.is_empty());
         let mut by = BTreeSet::new();
         for p in parts {
             let a = h.aspects.get(p.ai)?;
@@ -815,7 +820,7 @@ impl Engine {
             let found = ea.parts.iter().find_map(|(c, ai)| {
                 let x = self.eph.remote.held.get(c).filter(|x| c != id && may_absorb(&x.header, h))?;
                 let q = x.parts.iter().find(|q| q.ai == *ai && q.valid)?;
-                let later = !q.absorbed.is_empty() && x.header.ts > h.ts;
+                let later = take && !q.absorbed.is_empty() && x.header.ts > h.ts;
                 let fits = x.header.aspects.get(*ai).is_some_and(|xa| xa.expires.is_none()) && (later || q.absorbed.contains(id));
                 (fits && contains(&q.fragment, &p.fragment)).then_some(*c)
             });
@@ -1139,13 +1144,10 @@ impl Engine {
         }
         let listers = |id: &CommitId, h: &Held, p: &HeldPart| h.header.aspects.get(p.ai).and_then(|a| lists.get(&(a.tid, a.ak.clone()))).and_then(|m| m.get(id)).cloned();
         let listed: Vec<CommitId> = r.held.iter().filter(|(id, h)| h.parts.iter().all(|p| listers(id, h, p).is_some())).map(|(id, _)| *id).collect();
-        if listed.is_empty() {
-            return;
-        }
-        // per listing cover part, the parts it must contain
+        // per listing cover part, every held part it lists (of commits listed on only some of
+        // their aspects too): it must contain them all
         let mut vouch: BTreeMap<PartId, Vec<PartId>> = BTreeMap::new();
-        for id in &listed {
-            let Some(h) = r.held.get(id) else { continue };
+        for (id, h) in &r.held {
             for p in h.parts.iter().filter(|p| h.header.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() != CREATED.ak())) {
                 for c in listers(id, h, p).unwrap_or_default() {
                     vouch.entry(c).or_default().push((*id, p.ai));
