@@ -874,6 +874,16 @@ fn pending_grants(tx: &mut Tx<'_>) -> Result<Vec<PendingGrant>> {
     }
 }
 
+/// The actors pending commit `id` boxes secrets of to this node, a held key actor or an actor it
+/// reads, signed (`authentic`) by an author who may grant on them now: forgetting keeps those
+/// `/secrets` parts, whatever the commit's age (spec/permissions.md §3), so a re-grant applied
+/// after the loss brings its boxes. Cost: such a grant that never applies keeps its sealed box.
+pub(crate) fn boxes_kept(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_base::CommitId) -> BTreeSet<Tid> {
+    let node = core.id.tid();
+    let ours = |m: &Tid| *m == node || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m));
+    crate::apply::keys::pending_secrets_writes(core, blob, id).into_iter().filter(|(x, w)| w.boxes.keys().any(|k| ours(&k.member)) && may_grant(core, &blob.header.author, x) && authentic(core, blob, id, x)).map(|(x, _)| x).collect()
+}
+
 /// Whether pending `blob` is signed by its author and its `/secrets` parts on `x` are the ones its
 /// header lists: a commit waiting on its author's chain or a creation record is stored unchecked, so its
 /// `author` and `ts` could be anyone's.

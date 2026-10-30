@@ -359,6 +359,14 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
 
 pub(crate) const UNRESOLVED: &[u8] = b"w/";
 
+/// (pending commit, actor) whose boxes the lost-access forgetting kept (`rotation::boxes_kept`):
+/// never read as candidates (they would keep the lost secrets for good), only applied.
+pub(crate) const SEALED: &[u8] = b"b/";
+
+pub(crate) fn sealed_key(c: &CommitId, a: &Tid) -> Vec<u8> {
+    [SEALED, &c.0[..], a.as_bytes()].concat()
+}
+
 fn unresolved_key(c: &CommitId, ai: usize) -> Vec<u8> {
     [UNRESOLVED, &c.0[..], &(ai as u32).to_be_bytes()].concat()
 }
@@ -419,7 +427,7 @@ pub(crate) fn load_unresolved(tx: &mut Tx<'_>) -> Result<()> {
 /// by an applied valid box (spec/crypto.md §4).
 pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id: &CommitId) -> Result<()> {
     for (a, w) in pending_secrets_writes(tx.core, blob, id) {
-        if w.boxes.is_empty() && w.history.is_empty() {
+        if (w.boxes.is_empty() && w.history.is_empty()) || tx.txn.get_local(&sealed_key(id, &a))?.is_some() {
             continue;
         }
         let s = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() };
@@ -440,6 +448,15 @@ pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob
 /// now, or stripped as invalid) or was dropped (spec/crypto.md §4). An actor they were the only
 /// secrets of is left to the lost-access trigger, which drops them with what they read.
 pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
+    let prefix = [SEALED, &id.0[..]].concat();
+    let mut sealed = Vec::new();
+    tx.scan(&prefix, |k, _| {
+        sealed.push([prefix.as_slice(), k].concat());
+        Ok(())
+    })?;
+    for k in sealed {
+        tx.txn.remove_local(&k, Shred::No)?;
+    }
     let actors: Vec<Tid> = tx.core.ix.secrets.iter().filter(|(_, e)| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.reading.iter().any(|(_, u)| u.commit == *id)))).map(|(t, _)| *t).collect();
     let mut lost = Vec::new();
     for a in actors {
@@ -804,6 +821,48 @@ mod tests {
         lp.peers[1].clock.advance(2 * crate::rotation::PENDING_GRANT_WAIT_MS);
         assert!(lp.peers[1].engine.drop_lost_secrets().unwrap().contains(&t));
         assert!(lp.peers[1].engine.core.ix.secrets.get(&t).is_none());
+        // the grant itself keeps its boxes: it may still apply
+        let (id, _) = lp.peers[1].engine.pending().into_iter().next().unwrap();
+        assert_eq!(secrets_parts(&mut lp, &id, t), 1);
+    }
+
+    /// Parts on `t`'s `/secrets` of held commit `id` at peer 1.
+    fn secrets_parts(lp: &mut LocalPeer, id: &CommitId, t: Tid) -> usize {
+        let Some(bytes) = lp.peers[1].engine.commit_bytes(id).unwrap() else { return 0 };
+        let blob = osis_commit::CommitBlob::decode(&bytes).unwrap();
+        blob.parts.iter().filter(|p| blob.header.aspects.get(p.ai).is_some_and(|a| a.tid == t && a.ak.as_str() == "/secrets")).count()
+    }
+
+    // spec/permissions.md §3: a re-grant held pending past the removal and outside the wait (here
+    // ahead of the removed node's clock) keeps its boxes through the forgetting the removal
+    // triggers, so once it applies the node holds the role and its secrets.
+    #[test]
+    fn late_regrant_keeps_its_boxes_spec_perm_3() {
+        let (mut lp, t) = grantee_world(914, 2);
+        let b = lp.peers[1].engine.tid();
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+        lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
+        lp.sync(0, 1).unwrap();
+        let removal = lp.peers[0].engine.demote(&t, &Demotion { member: b, new: None, presync: PreSync::Synced }).unwrap();
+        lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
+        let regrant = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
+        let pk = lp.peers[0].engine.package(&regrant).unwrap().unwrap();
+        assert!(matches!(lp.deliver(1, &pk).unwrap(), crate::Ingested::Pending(_, crate::Reason::Drift)));
+        for id in &removal.commits {
+            let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
+            lp.deliver(1, &pk).unwrap();
+        }
+        assert_eq!(lp.peers[1].engine.core.role_now(&b, &t), None, "removed; the re-grant pending");
+        lp.peers[1].engine.drop_lost_due().unwrap();
+        lp.peers[1].engine.drop_lost_secrets().unwrap();
+        assert!(lp.peers[1].engine.core.ix.secrets.get(&t).is_none(), "outside the wait: dropped, candidates too");
+        assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("/x/a").unwrap()).unwrap(), None, "content forgotten");
+        assert_eq!(secrets_parts(&mut lp, &regrant, t), 1, "the boxes stay");
+        lp.peers[1].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
+        lp.peers[1].engine.reexamine().unwrap();
+        assert_eq!(lp.peers[1].engine.core.role_now(&b, &t), Some(Role::Read), "the re-grant applied");
+        let checked = lp.peers[1].engine.core.ix.secrets.get(&t).is_some_and(|e| e.read.held().next().is_some());
+        assert!(checked, "its boxes came with it");
     }
 
     // spec/permissions.md §3: a pending commit waiting on its author's chain is stored unchecked;
