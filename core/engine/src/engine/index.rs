@@ -486,7 +486,7 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
             Some(Role::Write) => 2,
             Some(Role::Admin) => 3,
         };
-        out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.grant_overreach.contains(&(*id, ai))) << 3) | (u8::from(m.missing.contains(&ai)) << 4));
+        out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.grant_overreach.contains(&(*id, ai))) << 3) | (u8::from(m.missing.contains(&ai)) << 4) | (u8::from(core.ix.rotation_unresolved.contains(&(*id, ai))) << 5));
     }
     let v = &m.view;
     let mut w = records::Wr(out).u64(v.ts.to_u64()).u8(v.kind.id() as u8).u8(match v.form {
@@ -600,6 +600,7 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
         let mut s: BTreeSet<CommitId> = c.ix.commits.logged().into_iter().collect();
         s.extend(c.ix.rotation_role.logged().into_iter().map(|k| k.0));
         s.extend(c.ix.grant_overreach.logged().into_iter().map(|k| k.0));
+        s.extend(c.ix.rotation_unresolved.logged().into_iter().map(|k| k.0));
         s.into_iter().collect()
     };
     if !ids.is_empty() {
@@ -749,6 +750,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             }
             if p & 8 != 0 {
                 tx.core.ix.grant_overreach.insert((id, ai));
+            }
+            if p & 32 != 0 {
+                tx.core.ix.rotation_unresolved.insert((id, ai));
             }
         }
         let view = Arc::new(view);

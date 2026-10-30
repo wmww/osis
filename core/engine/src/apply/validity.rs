@@ -500,45 +500,98 @@ pub(crate) fn reaches(core: &Core, author: &Tid, chain: &[Tid]) -> bool {
     false
 }
 
-/// The role a `/secrets` or `/keys` delta needs (spec/permissions.md §3): a writer rotates
-/// read and write, only an admin the admin role; at least write. A delta that is not a plain
-/// struct (a write or reset of the whole value) replaces every field: admin.
+/// The role a `/keys` delta needs (spec/permissions.md §3): a writer rotates read and write,
+/// only an admin the admin role; at least write. A delta that is not a plain struct (a write or
+/// reset of the whole value) replaces every field: admin. `/secrets`: `secrets_role`.
 fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
-    if (ak == "/keys" || ak == "/secrets") && !f.is_plain_struct() {
+    if ak != "/keys" {
+        return None;
+    }
+    if !f.is_plain_struct() {
         return Some(Role::Admin);
     }
-    let role_of = |v: &Value| match v {
-        Value::Enum(c, _) => [Role::Read, Role::Write, Role::Admin].get(usize::try_from(*c).ok()?).copied(),
-        _ => None,
+    // the admin keyset, a key actor's KEM key, the inbox and the deposit seed need admin
+    // (spec/crypto.md §3: inbox and deposit seed by an admin); read and write keysets their
+    // rotator
+    let admin = match f.slot(osis_crdt::Encoding::Struct) {
+        Some(osis_crdt::MemberRef::Frag(Fragment::Struct(st))) => (2..=5).any(|id| st.field(id).is_some()),
+        _ => false,
     };
-    let field = |v: &Value, id: i64| match v {
-        Value::Map(m) => m.get(&Value::Int(id)).cloned(),
-        _ => None,
-    };
-    if ak == "/keys" {
-        // the admin keyset, a key actor's KEM key, the inbox and the deposit seed need admin
-        // (spec/crypto.md §3: inbox and deposit seed by an admin); read and write keysets their
-        // rotator
-        let admin = match f.slot(osis_crdt::Encoding::Struct) {
-            Some(osis_crdt::MemberRef::Frag(Fragment::Struct(st))) => (2..=5).any(|id| st.field(id).is_some()),
-            _ => false,
-        };
-        return Some(if admin { Role::Admin } else { Role::Write });
-    }
-    let v = f.read()?;
-    let top = match ak {
-        "/secrets" => {
-            let mut roles = Vec::new();
-            for (fid, rid) in [(0, 1), (1, 0)] {
-                if let Some(Value::Map(m)) = field(&v, fid) {
-                    roles.extend(m.keys().filter_map(|k| field(k, rid)).filter_map(|r| role_of(&r)));
-                }
-            }
-            roles.into_iter().max()
+    Some(if admin { Role::Admin } else { Role::Write })
+}
+
+/// The role a `/secrets` delta `f` of `actor` needs (spec/permissions.md §3, spec/crypto.md
+/// §4): at least write, and for each entry record (a put, a write into an entry, a removal) the
+/// role its entry's key names. The key is read from the record only where this delta creates
+/// the entry (`own`); else it is the key of the entry's creation (`box_keys`, or `live`: the
+/// entry live in the current state), so a removal or a record repeating a false key needs the
+/// role of what it touches. A write or reset of the whole value or of a field: admin. `None`:
+/// some entry's key is not known (yet).
+fn secrets_role(core: &Core, actor: &Tid, f: &Fragment, own: Option<&Owned>, live: &dyn Fn(&Dot) -> Option<Value>) -> Option<Role> {
+    let Some(osis_crdt::MemberRef::Frag(Fragment::Struct(st))) = f.slot(osis_crdt::Encoding::Struct).filter(|_| f.is_plain_struct()) else { return Some(Role::Admin) };
+    let mut top = Role::Write;
+    for id in [0, 1] {
+        let Some(field) = st.field(id) else { continue };
+        let Some(osis_crdt::MemberRef::Frag(Fragment::Map(m))) = field.slot(osis_crdt::Encoding::Map).filter(|_| !field.has_reset()) else { return Some(Role::Admin) };
+        for (d, _, k, _) in m.entries() {
+            let key = match k {
+                Some(k) if own.is_some_and(|o| o.owns(d)) => Some(k.clone()),
+                _ => core.ix.box_keys.get(&(*actor, d.clone())).cloned().or_else(|| live(d)),
+            }?;
+            let role = match id {
+                0 => typed(&key, "box_key").and_then(|k| ct::BoxKey::from_value(&k).ok()).map(|k| k.role),
+                _ => typed(&key, "history_key").and_then(|k| ct::HistoryKey::from_value(&k).ok()).map(|k| k.role),
+            };
+            top = top.max(role.unwrap_or(Role::Admin));
         }
-        _ => return None,
-    };
-    Some(top.unwrap_or(Role::Write).max(Role::Write))
+    }
+    Some(top)
+}
+
+/// Records the role `/secrets` part `(id, ai)` needs from its held deltas `fs` (`secrets_role`):
+/// while an entry's key is unknown, admin, and the part waits in `rotation_unresolved` for
+/// `resolve_rotation`.
+fn note_secrets_role(core: &mut Core, h: &Header, id: &CommitId, ai: usize, fs: &[&Fragment], live: &dyn Fn(&Dot) -> Option<Value>) {
+    let Some(a) = h.aspects.get(ai) else { return };
+    let own = Owned::of(h, id, ai);
+    let role = fs.iter().try_fold(Role::Write, |r, f| Some(r.max(secrets_role(core, &a.tid, f, own.as_ref(), live)?)));
+    if core.ix.rotation_role.get(&(*id, ai)) != Some(&role.unwrap_or(Role::Admin)) {
+        core.ix.rotation_role.insert((*id, ai), role.unwrap_or(Role::Admin));
+        core.stale_commits.insert(*id);
+    }
+    if role.is_some() {
+        core.ix.rotation_unresolved.remove(&(*id, ai));
+    } else {
+        core.ix.rotation_unresolved.insert((*id, ai));
+    }
+}
+
+/// Re-derives the roles of the `/secrets` parts whose entry keys were unknown, from the keys
+/// noted since and the entries live in the current states (a held snapshot's entries); run
+/// when keys, states of `/secrets` or the waiting set changed in this transaction.
+pub(crate) fn resolve_rotation(tx: &mut Tx<'_>) -> Result<()> {
+    let ix = &tx.core.ix;
+    if ix.rotation_unresolved.is_empty() || (ix.box_keys.logged().is_empty() && ix.rotation_unresolved.logged().is_empty() && !tx.core.written.iter().any(|(_, ak)| ak.as_str() == "/secrets")) {
+        return Ok(());
+    }
+    let secrets = Ak::new("/secrets").map_err(|_| Error::Misuse("ak"))?;
+    let waiting: Vec<(CommitId, usize)> = tx.core.ix.rotation_unresolved.iter().copied().collect();
+    for (c, ai) in waiting {
+        let Some(h) = tx.core.ix.commits.get(&c).map(|m| m.header.clone()) else { continue };
+        let Some(actor) = h.aspects.get(ai).map(|a| a.tid) else { continue };
+        let parts = super::held_parts(tx, &c, ai)?;
+        let state = tx.state(&actor, &secrets)?.cloned();
+        let live = |d: &Dot| -> Option<Value> {
+            let osis_crdt::MemberRef::Frag(Fragment::Struct(st)) = state.as_ref()?.slot(osis_crdt::Encoding::Struct)? else { return None };
+            [0, 1].iter().find_map(|id| {
+                let osis_crdt::MemberRef::Frag(Fragment::Map(m)) = st.field(*id)?.slot(osis_crdt::Encoding::Map)? else { return None };
+                m.entries().find(|(x, _, k, f)| *x == d && k.is_some() && f.is_some()).and_then(|e| e.2.cloned())
+            })
+        };
+        let fs: Vec<&Fragment> = parts.iter().filter_map(|d| if let Decoded::Delta(d) = d { Some(&d.fragment) } else { None }).collect();
+        note_secrets_role(tx.core, &h, &c, ai, &fs, &live);
+    }
+    Ok(())
 }
 
 /// Records the roles `/secrets` and `/keys` deltas of a commit need, and the `/secrets` parts
@@ -552,6 +605,16 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
         {
             core.ix.rotation_role.upsert((*id, *ai), || r, |e| *e = (*e).max(r));
         }
+    }
+    // a `/secrets` part's role from all its held deltas at once (keys learned later re-derive it)
+    let mut secrets: BTreeMap<usize, Vec<&Fragment>> = BTreeMap::new();
+    for (ai, _, d) in parts {
+        if h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "/secrets") && !h.kind.is_compaction() {
+            secrets.entry(*ai).or_default().push(d.fragment());
+        }
+    }
+    for (ai, fs) in secrets {
+        note_secrets_role(core, h, id, ai, &fs, &|_| None);
     }
     if h.kind != Kind::Membership {
         return;
@@ -1007,6 +1070,7 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
     if resolve_unresolved(tx)? {
         tx.core.update_timelines();
     }
+    resolve_rotation(tx)?;
     let mut flipped: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     // aspects where something became valid again: re-merging needs the held bodies
     let mut rose: BTreeSet<(Tid, Ak)> = BTreeSet::new();
@@ -1701,6 +1765,57 @@ mod keys_tests {
         lp.deliver(0, &pk).unwrap();
         assert!(!lp.peers[0].engine.core.ix.commits.get(&snap).unwrap().valid[0], "a writer's /keys snapshot is invalid");
         assert_eq!(lp.peers[0].engine.get_typed(&t, &ct::KEYS).unwrap().unwrap(), before);
+    }
+
+    // spec/permissions.md §3, spec/crypto.md §4: a writer rotates read and write only. A removal
+    // names only the entry's dot, so it needs the role of the key the entry was created with:
+    // a writer's removal of admin boxes and admin history boxes is invalid; its removal of a read
+    // box is valid, also where it arrives before the box (admin until the key is known).
+    #[test]
+    fn writer_cannot_remove_admin_boxes_spec_perm_3() {
+        let mut lp = LocalPeer::new(4, 906, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let (me, w, r) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 3));
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        m.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, since: None }).unwrap();
+        lp.sync_all().unwrap();
+        let before = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+        let mut m = Mutation::new();
+        let admin: Vec<_> = before.boxes.keys().filter(|k| k.role == Role::Admin).cloned().collect();
+        let hist: Vec<_> = before.history.keys().filter(|k| k.role == Role::Admin).cloned().collect();
+        assert!(!admin.is_empty() && !hist.is_empty());
+        for k in &admin {
+            m.op(t, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(k.to_value()) }).unwrap();
+        }
+        for k in &hist {
+            m.op(t, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1)], op: Op::Remove(k.to_value()) }).unwrap();
+        }
+        force(&mut lp, 1, m);
+        lp.sync_all().unwrap();
+        for i in [0, 2] {
+            assert_eq!(lp.peers[i].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap(), before, "peer {i}");
+        }
+        // a read box: the writer may remove it, judged alike before and after its grant arrives
+        let grant = *lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Read, until: None, invite: None, since: None }).unwrap().commits.last().unwrap();
+        let grant = lp.peers[0].engine.package(&grant).unwrap().unwrap();
+        lp.deliver(1, &grant).unwrap();
+        let rk = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap().boxes.keys().find(|k| k.member == r).unwrap().clone();
+        let mut m = Mutation::new();
+        m.op(t, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(rk.to_value()) }).unwrap();
+        let id = lp.peers[1].commit(m).unwrap().unwrap();
+        let rm = lp.peers[1].engine.package(&id).unwrap().unwrap();
+        lp.deliver(2, &rm).unwrap();
+        assert!(!lp.peers[2].engine.core.ix.commits.get(&id).unwrap().valid[0], "the removed key unknown: admin");
+        lp.deliver(2, &grant).unwrap();
+        assert!(lp.peers[2].engine.core.ix.commits.get(&id).unwrap().valid[0], "the key known: a read box");
+        lp.deliver(0, &rm).unwrap();
+        for i in [0, 1, 2] {
+            assert!(!lp.peers[i].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap().boxes.contains_key(&rk), "peer {i}");
+        }
     }
 
     // spec/permissions.md §2: an invite grant carries the grantee's boxes only; a write of the
