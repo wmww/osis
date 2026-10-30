@@ -12,7 +12,8 @@ fn io(e: impl std::fmt::Display) -> BackendError {
     BackendError::Io(e.to_string())
 }
 
-/// A redb database file. Commits use redb's immediate durability (fsync before returning).
+/// A redb database file. `commit` and `sync` use redb's immediate durability (fsync before
+/// returning); `commit_lazy` none (made durable by the next of those).
 pub struct RedbBackend {
     db: Database,
 }
@@ -62,7 +63,35 @@ impl Backend for RedbBackend {
     }
 
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
-        let w = self.db.begin_write().map_err(io)?;
+        self.write(batch, redb::Durability::Immediate)
+    }
+
+    fn commit_lazy(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
+        self.write(batch, redb::Durability::None)
+    }
+
+    fn sync(&mut self) -> Result<(), BackendError> {
+        self.write(WriteBatch::new(), redb::Durability::Immediate)
+    }
+
+    fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError> {
+        self.read(BLOBS, |t| Ok(t.get(id.0.as_slice())?.map(|v| v.value().to_vec())))
+    }
+
+    /// redb reads the whole value (at most `MAX_BLOB`) before slicing.
+    fn read_blob(&self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, BackendError> {
+        self.read(BLOBS, |t| Ok(t.get(id.0.as_slice())?.map(|v| blob_slice(v.value(), offset, len))))
+    }
+
+    fn blob_len(&self, id: &BlobId) -> Result<Option<u64>, BackendError> {
+        self.read(BLOBS, |t| Ok(t.get(id.0.as_slice())?.map(|v| v.value().len() as u64)))
+    }
+}
+
+impl RedbBackend {
+    fn write(&mut self, batch: WriteBatch, durability: redb::Durability) -> Result<(), BackendError> {
+        let mut w = self.db.begin_write().map_err(io)?;
+        w.set_durability(durability);
         {
             let mut kv = w.open_table(KV).map_err(io)?;
             let mut blobs = w.open_table(BLOBS).map_err(io)?;
@@ -84,18 +113,5 @@ impl Backend for RedbBackend {
             }
         }
         w.commit().map_err(io)
-    }
-
-    fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError> {
-        self.read(BLOBS, |t| Ok(t.get(id.0.as_slice())?.map(|v| v.value().to_vec())))
-    }
-
-    /// redb reads the whole value (at most `MAX_BLOB`) before slicing.
-    fn read_blob(&self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, BackendError> {
-        self.read(BLOBS, |t| Ok(t.get(id.0.as_slice())?.map(|v| blob_slice(v.value(), offset, len))))
-    }
-
-    fn blob_len(&self, id: &BlobId) -> Result<Option<u64>, BackendError> {
-        self.read(BLOBS, |t| Ok(t.get(id.0.as_slice())?.map(|v| v.value().len() as u64)))
     }
 }
