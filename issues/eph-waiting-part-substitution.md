@@ -1,0 +1,9 @@
+# Unverified waiting parts are first-wins: a junk copy evicts the real part
+> Summary: parts of an ephemeral commit on a thing whose record is not held yet are kept unverified in `Remote::pending`, and the first blob's copy of each (aspect, delta) wins. A blob with the author's real header and signature plus junk parts, arriving first, makes the honest blob's part be discarded. When the record arrives, the retry fails on the junk and the part is lost at that node for good. Medium-low (writer, or a reader acting as member peer).
+> Tags: security, engine, ephemeral
+
+Mechanism: `ingest_ephemeral` (core/engine/src/ephemeral/remote.rs:851-856) skips verifying a part whose thing has no record and adds it to `waits`. At :933-939 a later blob of the same commit adds only parts whose `(ai, di)` is not already pending. `retry_waiting` (:1124) ingests the merged blob again, and `verify_part` fails on the junk part, so the error drops the whole pending blob, including the honest part that was never kept. Holders that got the honest blob first apply the part, so holders diverge.
+
+Who can do it: anyone who can deliver a wrapped blob under the label. A writer can upload it, stamped. A reader can serve it from a member peer that others dial. A blind server cannot, since it lacks the wrap secret. Records are often missing: a fresh joiner lacks every ephemeral thing's record, and since unpaged deltas, a split commit can carry a record in another blob.
+
+Fix direction: check each waiting part's delta hash against the header before keeping it (the hash needs only the thing's dedup secret, which comes from its record). Or, while records are missing, keep every distinct copy for an `(ai, di)` and pick the one that verifies on retry. Also let a retry failure drop only the failing part, not the commit.
