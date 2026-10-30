@@ -24,7 +24,7 @@ use super::{Action, ConnId, Phase, SyncEngine};
 use crate::ephemeral::{EphCommit, EphIngest};
 use crate::error::Result;
 use crate::events::{Diagnostic, DiagnosticKind};
-use crate::labeling::{HeadKeys, delete_item, open_commit, resign_delete, seal_body_as};
+use crate::labeling::{HeadKeys, delete_item, delete_item_by_level, delete_key, open_commit, seal_body_as};
 use osis_base::{BlobId, CommitId, LabelId, Tid};
 use osis_commit::{DeleteKey, EphClass};
 use osis_crypto::{Signature, SigningSecret, VerifyingKey};
@@ -99,7 +99,12 @@ pub(crate) struct Lane {
     /// Lane uploads (relay-only ones included) and deletes sent and not answered: their
     /// statuses are the lane's, never a sync record's.
     pub uploads: BTreeSet<(ConnId, LabelId, BlobId)>,
-    pub deletes: BTreeSet<(ConnId, LabelId, BlobId)>,
+    /// Lane deletes in flight with the item sent and the label key that signed it.
+    pub deletes: BTreeMap<(ConnId, LabelId, BlobId), (osis_label::DeleteItem, VerifyingKey)>,
+    /// Lane deletes refused, to send again: under an older head than the connection's (code 9)
+    /// with the key tried, sent once the connection's keys give another (`eph_redelete`); rate
+    /// limited (code 4, `None`), sent at the periodic pass (`eph_retry`).
+    pub redelete: BTreeMap<(ConnId, LabelId, BlobId), (osis_label::DeleteItem, Option<VerifyingKey>)>,
     /// Own entries in flight on a connection, with the write key that stamped them.
     pub stamped: BTreeMap<(ConnId, LabelId, BlobId), VerifyingKey>,
     /// Own entries a connection's head refused as stamped under another write key (code 9),
@@ -257,7 +262,28 @@ impl SyncEngine {
             self.eph_place(c, out)?;
         }
         self.eph_restamp(out)?;
+        self.eph_redelete(out)?;
         self.eph_flush(out)
+    }
+
+    /// Deletes refused under an older head (`Lane::redelete`): sent again once the connection's
+    /// keys give another key for them; dropped once they give none (`eph_delete_now`).
+    fn eph_redelete(&mut self, out: &mut Vec<Action>) -> Result<()> {
+        let due: Vec<(ConnId, LabelId, BlobId)> = self
+            .eph
+            .redelete
+            .iter()
+            .filter(|((c, l, _), (item, tried))| {
+                tried.is_some() && self.lc(*c, l).filter(|x| x.phase == Phase::Open).is_some_and(|x| delete_key(&x.keys, item).map(|k| k.verifying_key()) != *tried)
+            })
+            .map(|(k, _)| *k)
+            .collect();
+        for (conn, l, b) in due {
+            if let Some((item, _)) = self.eph.redelete.remove(&(conn, l, b)) {
+                self.eph_delete_now(conn, l, b, item, out)?;
+            }
+        }
+        Ok(())
     }
 
     /// Own entries waiting for another write key on a connection (`Lane::restamp`): sent
@@ -381,21 +407,25 @@ impl SyncEngine {
         Ok(!freed.is_empty())
     }
 
+    /// Sends a delete signed under `conn`'s keys now; dropped when they hold no key for it.
     fn eph_delete_now(&mut self, conn: ConnId, l: LabelId, b: BlobId, item: osis_label::DeleteItem, out: &mut Vec<Action>) -> Result<()> {
-        if !self.eph.deletes.insert((conn, l, b)) {
+        if self.eph.deletes.contains_key(&(conn, l, b)) {
             return Ok(());
         }
-        let item = self.eph_resign(conn, l, item);
+        self.eph.redelete.remove(&(conn, l, b));
+        let Some((item, key)) = self.eph_resign(conn, l, item) else { return Ok(()) };
+        self.eph.deletes.insert((conn, l, b), (item.clone(), key));
         self.command(conn, Command::Delete { label: l, items: vec![item] }, out)
     }
 
-    /// A delete made under an earlier head (waiting for a cover, or carried by one refused 9)
-    /// signed under the head `l` is open with on `conn` now.
-    fn eph_resign(&self, conn: ConnId, l: LabelId, item: osis_label::DeleteItem) -> osis_label::DeleteItem {
-        match self.lc(conn, &l) {
-            Some(lc) => resign_delete(&lc.keys, &l, item),
-            None => item,
-        }
+    /// A delete made under an earlier head (waiting for a cover, carried by one refused 9, or
+    /// refused 9 itself) signed under the head `l` is open with on `conn` now, with that key;
+    /// `None` when the connection holds no key for it (a writer demoted, or an admin's delete
+    /// by the head delete key once it is no longer admin): refused under every head, it is not
+    /// sent (the entry leaves that server at its expiry, or by another writer's delete).
+    fn eph_resign(&self, conn: ConnId, l: LabelId, item: osis_label::DeleteItem) -> Option<(osis_label::DeleteItem, VerifyingKey)> {
+        let k = delete_key(&self.lc(conn, &l)?.keys, &item)?;
+        Some((item.resign(k, &l).ok()?, k.verifying_key()))
     }
 
     /// What waits for an own ephemeral upload in flight (sent, not answered): the groups of the
@@ -656,7 +686,14 @@ impl SyncEngine {
         let mut moved = Vec::new();
         for x in ready {
             let Some((cs, item)) = self.eph.waiting.remove(&(l, x, server)) else { continue };
-            replaces.push(if self.eph.tied.contains(&(conn, l, x)) { osis_proto::Replace::Untie(x) } else { osis_proto::Replace::Delete(self.eph_resign(conn, l, item.clone())) });
+            replaces.push(if self.eph.tied.contains(&(conn, l, x)) {
+                osis_proto::Replace::Untie(x)
+            } else {
+                // one this connection holds no key for is dropped (`eph_resign`): carried, it
+                // refused the cover
+                let Some((signed, _)) = self.eph_resign(conn, l, item.clone()) else { continue };
+                osis_proto::Replace::Delete(signed)
+            });
             moved.push((x, cs, item));
         }
         *room -= replaces.len();
@@ -909,10 +946,10 @@ impl SyncEngine {
         let dks = self.engine.ephemeral_delete_secrets_for(&e.tid, &e.actor, &e.keys);
         let cover = self.engine.ephemeral_absorbers(&e.commit);
         for (conn, server, hk) in self.eph_conns(&l) {
-            if server != s || self.eph.deletes.contains(&(conn, l, b)) {
+            if server != s || self.eph.deletes.contains_key(&(conn, l, b)) {
                 continue;
             }
-            if let Some(item) = delete_item(&hk, &l, b, None, Some((&e.salt, &e.blind)), &dks) {
+            if let Some(item) = eph_delete_item(&hk, &l, b, e, &dks) {
                 self.eph_delete_after(conn, s, l, b, item, cover.clone(), out)?;
             }
         }
@@ -978,6 +1015,12 @@ impl SyncEngine {
     /// Entries the peer on `conn` refused under `l` for its cap go up again (the periodic pass:
     /// others' compactions or expiries may have made room).
     pub(crate) fn eph_retry(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<Action>) -> Result<()> {
+        let limited: Vec<BlobId> = self.eph.redelete.range((conn, l, BlobId([0; 32]))..).take_while(|((c, x, _), _)| *c == conn && *x == l).filter(|(_, (_, tried))| tried.is_none()).map(|(k, _)| k.2).collect();
+        for b in limited {
+            if let Some((item, _)) = self.eph.redelete.remove(&(conn, l, b)) {
+                self.eph_delete_now(conn, l, b, item, out)?;
+            }
+        }
         let ids: Vec<BlobId> = self.eph.capped.range((conn, l, BlobId([0; 32]))..).take_while(|(c, x, _)| *c == conn && *x == l).map(|x| x.2).filter(|b| self.eph.entries.contains_key(&(l, *b))).collect();
         if !ids.is_empty() {
             self.eph_upload_on(conn, l, &ids, out)?;
@@ -989,6 +1032,10 @@ impl SyncEngine {
     pub(crate) fn eph_deleted(&mut self, server: Option<ServerKey>, l: LabelId, b: BlobId) -> bool {
         if let Some(s) = server {
             self.eph.waiting.remove(&(l, b, s));
+            let conns: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.server == s).map(|(id, _)| *id).collect();
+            for c in conns {
+                self.eph.redelete.remove(&(c, l, b));
+            }
         }
         if !self.eph.entries.contains_key(&(l, b)) {
             return false;
@@ -1042,7 +1089,7 @@ impl SyncEngine {
                     if e.foreign_presence() || !(present || self.eph.uploads.contains(&(conn, l, b))) {
                         continue;
                     }
-                    if let Some(item) = delete_item(&hk, &l, b, None, Some((&e.salt, &e.blind)), &dks) {
+                    if let Some(item) = eph_delete_item(&hk, &l, b, &e, &dks) {
                         if present {
                             self.eph_delete_after(conn, server, l, b, item, cover.clone(), out)?;
                         } else {
@@ -1071,7 +1118,8 @@ impl SyncEngine {
         self.eph.uploads.retain(|(c, _, _)| *c != conn);
         self.eph.stamped.retain(|(c, _, _), _| *c != conn);
         self.eph.restamp.retain(|(c, _, _), _| *c != conn);
-        self.eph.deletes.retain(|(c, _, _)| *c != conn);
+        self.eph.deletes.retain(|(c, _, _), _| *c != conn);
+        self.eph.redelete.retain(|(c, _, _), _| *c != conn);
         self.eph.capped.retain(|(c, _, _)| *c != conn);
         self.eph.orphans.retain(|(_, _, c), _| *c != conn);
         self.eph.tied.retain(|(c, _, _)| *c != conn);
@@ -1112,9 +1160,33 @@ impl SyncEngine {
         self.eph_forget(&gone, out)
     }
 
-    /// Statuses of lane deletes are taken out; the rest are returned for the durable path.
-    pub(crate) fn eph_delete_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>) -> (Vec<BlobId>, Vec<Code>) {
-        ids.into_iter().zip(codes).filter(|(b, _)| !self.eph.deletes.remove(&(conn, l, *b))).unzip()
+    /// Statuses of lane deletes are taken out (the rest returned for the durable path), with
+    /// whether one was refused under an older head (the reply's head is to be taken).
+    pub(crate) fn eph_delete_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>) -> (Vec<BlobId>, Vec<Code>, bool) {
+        let (mut rest, mut rest_codes, mut stale) = (Vec::new(), Vec::new(), false);
+        for (b, code) in ids.into_iter().zip(codes) {
+            let Some((item, key)) = self.eph.deletes.remove(&(conn, l, b)) else {
+                rest.push(b);
+                rest_codes.push(code);
+                continue;
+            };
+            match code {
+                // signed under a key older than the head's (a rotation this node had not read):
+                // again under the next one
+                Code::NOT_HEAD => {
+                    stale = true;
+                    self.eph.redelete.insert((conn, l, b), (item, Some(key)));
+                }
+                Code::RATE_LIMITED => {
+                    self.eph.redelete.insert((conn, l, b), (item, None));
+                }
+                // done, or nothing left to delete there (not held, label not open: the next
+                // open reconciles it)
+                Code::OK => {}
+                c => self.diag(format!("ephemeral delete refused: code {}", c.0)),
+            }
+        }
+        (rest, rest_codes, stale)
     }
 
     /// Ephemeral entries held under `l` (serving peers): ID and entry.
@@ -1200,6 +1272,13 @@ impl SyncEngine {
     }
 }
 
+/// A delete of lane entry `e` (`b` under `l`) by a level's delete key first, else by the head
+/// delete key: a level's signature holds across heads and its label key (write, sync) stays with
+/// an admin demoted to writer, whose waiting deletes by the delete key no head would take.
+fn eph_delete_item(hk: &HeadKeys, l: &LabelId, b: BlobId, e: &LaneEntry, dks: &[(u8, osis_crypto::DeleteSecret)]) -> Option<osis_label::DeleteItem> {
+    delete_item_by_level(hk, l, b, None, (&e.salt, &e.blind), dks).or_else(|| delete_item(hk, l, b, None, None, &[]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1232,3 +1311,4 @@ mod tests {
         assert!(r.floor.is_empty());
     }
 }
+

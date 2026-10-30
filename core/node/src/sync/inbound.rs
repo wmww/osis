@@ -908,8 +908,7 @@ impl SyncEngine {
 
     pub(crate) fn delete_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>, head: Option<Step>, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
-        let (ids, codes) = self.eph_delete_status(conn, l, ids, codes);
-        let mut stale = false;
+        let (ids, codes, mut stale) = self.eph_delete_status(conn, l, ids, codes);
         for (b, code) in ids.into_iter().zip(codes) {
             // a timed delete is done once the server took it (spec/commits.md §5)
             let timed = self.conns.get_mut(&conn).is_some_and(|c| {

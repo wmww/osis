@@ -2209,3 +2209,45 @@ fn cover_across_unread_rotation_lands_spec_sync_9() {
     assert_eq!(after.difference(&before).count(), 1, "the cover landed");
     assert!(before.difference(&after).count() > 0, "what it absorbs is deleted at the server");
 }
+
+// spec/sync.md §5, §9: a plain delete of an absorbed entry sent before the writer reads a
+// rotation is refused 9; it goes again under the next key and the entry leaves the server. The
+// writer's last note is in flight when it compacts: its delete waits for the OK, then for the
+// cover's (`orphans`, `waiting`), so it goes alone after the rotation. The admin holds no
+// ephemeral entries of others, nor the writer it removes: the writer alone deletes.
+#[test]
+fn delete_across_unread_rotation_retried_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.add_node(1, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 0, ..SyncConfig::default() });
+    let b = net.node(2, &[sv]);
+    let c = net.add_node(3, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 0, ..SyncConfig::default() });
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    for i in 0..4 {
+        note(&mut net, b, w, &format!("k{i}"), &format!("v{i}"));
+        net.run();
+    }
+    let l = net.label(a);
+    let before: BTreeSet<osis_base::BlobId> = net.server_ids(sv, &l).into_iter().collect();
+    net.held_to.insert(b);
+    note(&mut net, b, w, "k4", "v4");
+    net.run();
+    let k4: Vec<osis_base::BlobId> = net.server_ids(sv, &l).into_iter().filter(|i| !before.contains(i)).collect();
+    assert_eq!(k4.len(), 1, "the last note landed");
+    let acts = net.sync(b).compact_ephemeral_now().unwrap();
+    net.actions(b, acts);
+    net.run();
+    let (at, bt, ct) = (net.tid(a), net.tid(b), net.tid(c));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write)]);
+    remove_member(e, g, ct, &rs, 9);
+    net.run();
+    net.release();
+    net.run();
+    net.advance(60_000);
+    let after: BTreeSet<osis_base::BlobId> = net.server_ids(sv, &l).into_iter().collect();
+    assert!(!after.contains(&k4[0]), "the plain delete refused 9 went again under the next key");
+}
