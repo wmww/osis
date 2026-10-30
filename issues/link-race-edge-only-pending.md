@@ -7,7 +7,7 @@
 - Exempt by design: removals and `/keys` writes (spec/permissions.md §3), and every `carry_out` placement (a removal's First copies, a grantee's home copy, L's card). The full commit follows in the same sync; forever only on author loss in between.
 - Copies by non-authors (a grantee's chain naming the grant) rely on the author's order; author disk loss before the commit is accepted anywhere leaves them pending.
 
-Effect when forever: K-syncers never apply the commit, nor the author's later writes whose chain runs through it (`MissingChain`), while readers of the copy's label that do not sync K apply the copy alone (spec/permissions.md §4) and see those writes: the two groups read differently.
+Not seen in the sim since the placement order: `link_race`, `link_redeem` seeds 5000..6500 green. Effect when forever: K-syncers never apply the commit, nor the author's later writes whose chain runs through it (`MissingChain`), while readers of the copy's label that do not sync K apply the copy alone (spec/permissions.md §4) and see those writes: the two groups read differently.
 
 ## Why there is no narrow fix
 Every forever case is "the full commit exists nowhere a K-syncer can fetch". So:
