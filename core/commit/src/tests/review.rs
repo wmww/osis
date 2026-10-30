@@ -10,7 +10,8 @@ use osis_crypto::{link_hash, link_tree_hash};
 use osis_schema::{AspectDefaults, PurgeBy, Retention};
 
 // spec/wire.md §6, through `read_list` (tree.rs `reader_bounds_spec_wire_6` has the reader's
-// own bounds): a short chunk repeated (so not final) is bad input; the output bound is exact.
+// own bounds): a short chunk repeated (so not final) is bad input, one of CHUNK_MIN is not;
+// the output bound is exact.
 #[test]
 fn list_reader_bounds() {
     let d = sec(0xd0, &t(2));
@@ -19,6 +20,9 @@ fn list_reader_bounds() {
     let chunk = vec![7u8; 1024];
     let (cid, _) = m.put(&none, &chunk).unwrap();
     let cl = Link { hash: link_hash(&d, &chunk), blob: cid, suite: 1, key: [0; 32] };
+    let min = vec![0u8; osis_base::format::CHUNK_MIN];
+    let (mid, _) = m.put(&Prefix { salt: [3; 16], ..none.clone() }, &min).unwrap();
+    let ml = Link { hash: link_hash(&d, &min), blob: mid, suite: 1, key: [0; 32] };
     let mut root = |kids: &[(Link, u64)], salt: u8| {
         let (nid, _) = m.put(&Prefix { salt: [salt; 16], ..none.clone() }, &crate::tree::node_plaintext(1, kids).unwrap()).unwrap();
         let hashes: Vec<_> = kids.iter().map(|(l, n)| (l.hash, *n)).collect();
@@ -26,9 +30,12 @@ fn list_reader_bounds() {
     };
     let repeated = root(&vec![(cl, 1024); 512], 1);
     let single = root(&[(cl, 1024)], 2);
+    // repeated links are legal: a non-final chunk of exactly CHUNK_MIN passes
+    let mins = root(&[(ml, min.len() as u64); 4], 4);
     assert!(matches!(read_list(&repeated, &d, &mut m, MAX_LIST_BYTES), Err(Error::Malformed(_))));
     assert_eq!(read_list(&single, &d, &mut m, 1024).unwrap(), chunk);
     assert!(matches!(read_list(&single, &d, &mut m, 1023), Err(Error::TooLarge(_))));
+    assert_eq!(read_list(&mins, &d, &mut m, MAX_LIST_BYTES).unwrap().len(), 4 * min.len());
 }
 
 // spec/commits.md §5, §6: `/created` (fixed retention) never carries `expires`.

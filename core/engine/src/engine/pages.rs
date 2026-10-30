@@ -1579,6 +1579,46 @@ mod tests {
         assert_ne!(k5, key_row(&other, &Value::Int(5), None));
     }
 
+    // spec/commits.md §5 (a dropped write leaves no local index entry derived from it): stripping
+    // the writes of a delta that created a paged map inside a map entry, and other keys of a
+    // nested map besides, leaves the key index as a from-scratch rebuild of the stripped state
+    // (stripped writes stay as value-less records, so no position on a paged path goes).
+    #[test]
+    fn strip_touched_nested_rows_spec_commits_5() {
+        let mut rng = osis_crypto::SeededRng::from_u64(82);
+        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (tid, ak) = (Tid::from_bytes([7; 15]), osis_base::Ak::new("/app/nest").unwrap());
+        let a = Source::node(Tid::from_bytes([1; 15]));
+        let b = Source::node(Tid::from_bytes([2; 15]));
+        let outer = |n: i64| Value::Map([(Value::Str("x".into()), ints(n, 1)), (Value::Str("y".into()), ints(n, 2))].into_iter().collect());
+        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), a.clone(), 1);
+        let mut st = create(&mut w, &AnyView, &outer(3000)).unwrap();
+        // b adds keys inside "y"
+        let mut bw = Batch::new(&st, Writer::new(Ts::from_u64(2 << 16).unwrap(), b, 1));
+        for i in 5000..5100 {
+            bw.apply(&PathOp { path: vec![PathSeg::Key(Value::Str("y".into())), PathSeg::Key(Value::Int(i))], op: Op::Set(Value::Int(0)) }, &AnyView).unwrap();
+        }
+        let (bd, _) = bw.finish().unwrap();
+        st.join(bd);
+        let body = create(&mut Writer::new(Ts::from_u64(1 << 16).unwrap(), a.clone(), 1), &AnyView, &outer(3000)).unwrap();
+        let mut txn = store.transaction(&mut rng).unwrap();
+        let (unit, idx) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
+        assert!(idx.unwrap().sets.len() >= 2, "both inner maps paged");
+        let rows = |txn: &mut Transaction<'_>| txn.table(&tid, &ak, KEY_TABLE).unwrap().map_or(0, |t| txn.table_range(t, &[], None, 100_000).unwrap().len());
+        let before = rows(&mut txn);
+        let (mut f, mut idx) = open(&unit, &SALT).unwrap();
+        let pred = move |d: &Dot| d.owner().src == a;
+        let t = touch_of(&body, Some(&idx)).unwrap();
+        assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
+        let done = strip_touched(&mut txn, &mut idx, &tid, &ak, &mut f, std::slice::from_ref(&t), &pred).unwrap();
+        let after = rows(&mut txn);
+        load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
+        write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
+        let rebuilt = rows(&mut txn);
+        assert!(done);
+        assert_eq!((before, after, rebuilt), (6100, 100, 100));
+    }
+
     // spec/crdt.md §5.5 (add and remove by value), spec/data-model.md §6 (links compare by
     // content hash), spec/commits.md §5 (a dropped body leaves no index entry derived from it):
     // a paged set's value index finds a value's elements, a link by its hash alone; the rows of
