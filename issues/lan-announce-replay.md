@@ -1,0 +1,8 @@
+# A replayed LAN announcement draws a co-reader's dials to the attacker
+> Summary: a LAN announcement is not bound to its source address, and it stays valid for the current and adjacent 10-minute windows. A LAN attacker who captures A's datagram can replay it from spoofed local source addresses (unlimited IPv6 link-local ones). Every co-reader B that knows A's lan secret then makes the attacker's address A's candidate (one new address per `LAN_CHANGE_MS`, 5 s) and dials it. The attacker learns which LAN hosts are A's co-readers and their addresses, and keeps B's LAN route to A from forming while it races A's real announcements. Low.
+> Tags: security, transport, node
+
+- `lan_seen` (core/node/src/sync/peers.rs:489): only `is_local(from)`, the tag and the sealed signature are checked. `verified` caches the announcement, so a replay costs B a lookup. `failed` is keyed per address, so each fresh spoofed address is dialed once. The transport handshake fails (the attacker lacks A's transport secret) only after B has revealed itself by dialing.
+- spec/sync.md §10 promises that discovery "announces nothing ... meaningful to strangers". The replay turns A's announcement into a probe for A's social graph on that LAN.
+
+Fix direction: prefer the address heard most often (`heard` counts already exist) or the first one verified in a window, instead of the latest one. A replayer then has to outpace A's real announcements from one address. Optionally, a candidate address for a key already verified this window counts only once it repeats. Binding the source IP into the signed digest breaks on multi-homed hosts, so it is not recommended.
