@@ -693,7 +693,7 @@ mod tests {
                 let mut rng = osis_crypto::SeededRng::from_u64((x * 10_000 + i) as u64);
                 let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &|_, _| true, &mut rng).unwrap();
                 let v = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
-                let bytes = forge_membership(lp, x, t, &rec, &v);
+                let bytes = forge_membership(lp, x, t, &rec, &v, None);
                 assert!(matches!(lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), crate::Ingested::Pending(..)), "a bogus commit pends at the grantee");
                 sent += 1;
             }
@@ -701,9 +701,10 @@ mod tests {
         sent
     }
 
-    /// A membership commit by peer `by` setting `t`'s `/secrets` to `v`, signed past every
-    /// writer rule (its author holds no chain to `t`).
-    fn forge_membership(lp: &mut LocalPeer, by: usize, t: Tid, rec: &osis_base::CreationRecord, v: &Value) -> Vec<u8> {
+    /// A membership commit by peer `by` setting `t`'s `/secrets` to `v` (and `also`'s, a thing
+    /// whose `/created` nobody holds, so the commit stays pending), signed past every writer
+    /// rule (its author holds no chain to `t`).
+    fn forge_membership(lp: &mut LocalPeer, by: usize, t: Tid, rec: &osis_base::CreationRecord, v: &Value, also: Option<Tid>) -> Vec<u8> {
         use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
         use osis_crdt::{Delta, Source, Writer, create, encode_delta};
         struct Dedup(osis_base::CreationRecord);
@@ -734,11 +735,75 @@ mod tests {
         let mut cx = writer_ctx(Kind::Membership, ts, author, r.lo, r.hi);
         cx.own = own;
         let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
-        let mut aw = AspectWrite::new(t, ak.clone(), r.lo, r.hi, bytes);
-        aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
         let mut cb = CommitBuilder::new(Kind::Membership, ts, author, author, Form::Commit);
-        cb.aspects.push(aw);
+        for tid in std::iter::once(t).chain(also) {
+            let mut aw = AspectWrite::new(tid, ak.clone(), r.lo, r.hi, bytes.clone());
+            aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
+            cb.aspects.push(aw);
+        }
         cb.build(&lp.peers[by].engine.identity().keys().signing, &Dedup(rec.clone()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+    }
+
+    /// A pending commit by peer `by` boxing peer 1 a fresh read secret of `t` (`also`: as in
+    /// `forge_membership`).
+    fn forged_grant(lp: &mut LocalPeer, by: usize, t: Tid, seed: u64, also: Option<Tid>) {
+        let b = lp.peers[1].engine.tid();
+        let kem = lp.peers[1].engine.identity().keys().kem.public().clone();
+        let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
+        let mut held = ActorEpochs::default();
+        held.read.set_established(Epoch::new(1, [0; 16]).unwrap(), osis_keys::Provenance::Own);
+        let rcpt = osis_keys::Recipient { member: b, role: Role::Read, keys: osis_keys::MemberKeys::KeyActor { kem, seed: None } };
+        let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &|_, _| true, &mut osis_crypto::SeededRng::from_u64(seed)).unwrap();
+        let v = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
+        let bytes = forge_membership(lp, by, t, &rec, &v, also);
+        assert!(matches!(lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), crate::Ingested::Pending(..)));
+    }
+
+    /// Peer 1 reads `t` (checked secrets), then is removed by peer 0; the removal applied.
+    fn removed_reader(seed: u64) -> (LocalPeer, Tid) {
+        let (mut lp, t) = grantee_world(seed, 3);
+        let b = lp.peers[1].engine.tid();
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+        lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
+        lp.sync(0, 1).unwrap();
+        assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("/x/a").unwrap()).unwrap(), Some(Value::Int(1)));
+        (lp, t)
+    }
+
+    fn remove(lp: &mut LocalPeer, t: Tid) {
+        let b = lp.peers[1].engine.tid();
+        lp.peers[0].engine.demote(&t, &Demotion { member: b, new: None, presync: PreSync::Synced }).unwrap();
+        lp.sync(0, 1).unwrap();
+        assert_eq!(lp.peers[1].engine.core.role_now(&b, &t), None);
+    }
+
+    // spec/permissions.md §3 (a node that lost read access drops those secrets),
+    // spec/requirements.md Deletion: a pending commit boxing the removed node, by an author with
+    // no right to grant on the thing, keeps nothing: it is held until it applies, so it would
+    // keep the secrets for good.
+    #[test]
+    fn strangers_pending_box_keeps_no_lost_secrets_spec_perm_3() {
+        let (mut lp, t) = removed_reader(911);
+        forged_grant(&mut lp, 2, t, 1, None);
+        remove(&mut lp, t);
+        assert!(lp.peers[1].engine.drop_lost_due().unwrap().contains(&t));
+        assert!(lp.peers[1].engine.core.ix.secrets.get(&t).is_none());
+        assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("/x/a").unwrap()).unwrap(), None);
+    }
+
+    // spec/permissions.md §3: a pending grant by an admin of the thing keeps the removed node's
+    // secrets (it may yet read again), for a bounded time after its `ts` only.
+    #[test]
+    fn admins_pending_grant_keeps_lost_secrets_for_a_while_spec_perm_3() {
+        let (mut lp, t) = removed_reader(912);
+        remove(&mut lp, t);
+        // pending for good: it also writes a thing nobody holds the `/created` of
+        forged_grant(&mut lp, 0, t, 2, Some(Tid::from_bytes([0x5a; 15])));
+        assert!(lp.peers[1].engine.drop_lost_due().unwrap().is_empty());
+        assert!(lp.peers[1].engine.drop_lost_secrets().unwrap().is_empty());
+        lp.peers[1].clock.advance(2 * crate::rotation::PENDING_GRANT_WAIT_MS);
+        assert!(lp.peers[1].engine.drop_lost_secrets().unwrap().contains(&t));
+        assert!(lp.peers[1].engine.core.ix.secrets.get(&t).is_none());
     }
 
     fn candidates(lp: &LocalPeer, t: &Tid) -> usize {
