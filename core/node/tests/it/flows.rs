@@ -1211,7 +1211,6 @@ fn until_link_backdated_grant_void_spec_perm_9() {
         assert!(lp.peers[i].engine.links_due().unwrap().is_empty(), "peer {i}: not expired yet");
         assert_eq!(lp.peers[i].engine.next_link_expiry().unwrap(), Some(until.0), "peer {i}");
     }
-    // (commits travel unencrypted here: the joiner reads the seed thing too, but is no admin of K)
     assert_eq!(lp.peers[2].engine.next_link_expiry().unwrap(), None);
     // the link expires everywhere but at the forger
     for i in [0, 1, 2, 4] {
@@ -1247,6 +1246,9 @@ fn until_link_backdated_grant_void_spec_perm_9() {
     for i in 0..5 {
         assert!(lp.peers[i].engine.links_due().unwrap().is_empty(), "peer {i}: nothing left after both removals");
     }
+    // sealed: the joiner reads the target, not the seed thing; the forger neither
+    assert_eq!(sealed_write(&mut lp, 0, d, "after"), BTreeSet::from([1, 2]));
+    assert_eq!(sealed_write(&mut lp, 0, keep, "after"), BTreeSet::from([1]));
 }
 
 // spec/permissions.md §3 (re-seal): a grant raced by a rotation leaves the grantee without a
@@ -2132,4 +2134,3 @@ fn planted_epoch_blocks_no_removal_spec_crypto_4() {
     assert_eq!(after.read.newest().unwrap().n(), n0 + 1);
     assert!(after.read.epochs().all(|(e, _)| e.n() <= n0 + 1 || *e == top));
 }
-
