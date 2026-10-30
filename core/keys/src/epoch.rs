@@ -321,14 +321,16 @@ impl RoleEpochs {
         }
     }
 
-    /// Records the history box `e`'s applied valid rotation commit wrote (`EpochInfo::history`).
-    /// Returns whether it is new.
+    /// Records the history box `e`'s applied valid rotation commit wrote (`EpochInfo::history`),
+    /// the first one: a later commit re-publishing `e`'s keyset with a history box of its own (a
+    /// writer holding `e`) does not replace it. Returns whether it is new.
     pub fn set_history(&mut self, e: Epoch, ct: &[u8]) -> bool {
-        let h = osis_base::hash::hash(ct);
         let info = self.observe(e);
-        let new = info.history != Some(h);
-        info.history = Some(h);
-        new
+        if info.history.is_some() {
+            return false;
+        }
+        info.history = Some(osis_base::hash::hash(ct));
+        true
     }
 
     /// Whether `ct` is the history box `e`'s applied valid rotation commit wrote.
