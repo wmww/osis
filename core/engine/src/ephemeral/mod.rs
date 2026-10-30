@@ -13,7 +13,7 @@ mod remote;
 
 pub use log::{LoggedChange, Reverted};
 pub(crate) use place::{ITEMS, SUBGROUPS};
-pub use remote::{COVER_FACTOR, ENTRY_CHARGE, EphCommit, EphIngest, MAX_DELIVERED};
+pub use remote::{COVER_FACTOR, EphCommit, EphIngest};
 
 use crate::engine::write::{AspectMut, Records, check_authority_with, role_with, run_ops};
 use crate::engine::{Engine, Mutation};
@@ -58,6 +58,18 @@ struct EphAspect {
     /// A presence aspect (written with that lifetime, or held from presence commits): its own
     /// writes go out as presence commits and it is never compacted.
     presence: bool,
+}
+
+impl EphAspect {
+    /// The own writes alone (the state while no held part of another commit joined).
+    fn own_writes(&self) -> &Fragment {
+        self.own.as_ref().unwrap_or(&self.state)
+    }
+}
+
+/// Whether dot `d` is one of this session's (`src`) writes in counter `ranges` (an expiry class).
+fn in_ranges(d: &osis_crdt::Dot, src: &Source, ranges: &[(u64, u64)]) -> bool {
+    d.src == *src && ranges.iter().any(|(lo, hi)| *lo <= d.ctr && d.ctr < *hi)
 }
 
 /// The engine's ephemeral state.
@@ -164,7 +176,7 @@ impl Engine {
     }
 
     /// The role this node has on an ephemeral thing: its role on a new thing owned by the
-    /// nearest durable thing of its chain (notes/ephemeral.md Rights).
+    /// nearest durable thing of its chain (spec/permissions.md §1).
     pub(crate) fn ephemeral_role(&self, tid: &Tid) -> Option<Role> {
         let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
         let things = &self.eph.things;
@@ -180,19 +192,15 @@ impl Engine {
     /// state, which is loaded only when a durable delta of it is held. `None` without
     /// ephemeral state.
     pub(crate) fn joined_state(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
-        let Some(e) = self.eph.state(tid, ak) else { return Ok(None) };
-        let mut f = e.clone();
-        if self.has_durable(tid, ak) {
-            let (t, a) = (*tid, ak.clone());
-            if let Some(d) = self.run(|tx| Ok(tx.state(&t, &a)?.cloned()))? {
-                f.join(d);
-            }
+        let Some(mut f) = self.eph.state(tid, ak).cloned() else { return Ok(None) };
+        if let Some(d) = self.durable_state(tid, ak)? {
+            f.join(d);
         }
         Ok(Some(f))
     }
 
     /// Writes `m`: its durable half as one commit (with the creation records of the ephemeral
-    /// things it persists and their placements made durable, notes/ephemeral.md Persistence),
+    /// things it persists and their placements made durable, spec/data-model.md §1, §8),
     /// then its ephemeral half in memory. Validated as a whole: when the commit or any op
     /// fails, nothing applies. `None` when nothing changes.
     pub fn write(&mut self, mut m: Mutation) -> Result<Option<Written>> {
@@ -380,8 +388,7 @@ impl Engine {
         for r in resolved {
             let src = self.eph.src.clone();
             let a = self.eph.aspects.entry(r.tid).or_default().entry(r.ak.clone()).or_default();
-            let expired = a.expired.clone();
-            let strip = !expired.is_empty() && r.delta.holds_dots(&|d| d.src == src && expired.iter().any(|(lo, hi)| *lo <= d.ctr && d.ctr < *hi));
+            let strip = !a.expired.is_empty() && r.delta.holds_dots(&|d| in_ranges(d, &src, &a.expired));
             if let Some((pre, schema)) = r.log {
                 logged.push(log::LogAspect { tid: r.tid, ak: r.ak.clone(), delta: r.delta.clone(), range: CounterRange { lo: r.range.0, hi: r.range.1 }, pre, schema });
             }
@@ -392,7 +399,8 @@ impl Engine {
             }
             a.state.join(r.delta);
             if strip {
-                a.state.strip(&|d| d.src == src && expired.iter().any(|(lo, hi)| *lo <= d.ctr && d.ctr < *hi));
+                let expired = &a.expired;
+                a.state.strip(&|d| in_ranges(d, &src, expired));
             }
             if let Some(t) = r.expires {
                 a.expiring.entry(t).or_default().push(r.range);
@@ -440,7 +448,8 @@ impl Engine {
                 ChangeId::Ephemeral(EphemeralId { session: self.eph.session, n: self.eph.batches })
             }
         };
-        self.log_push(id, reverts, actor, ts, now, logged, making);
+        let cap = self.cfg.ephemeral_history;
+        self.eph.log.push(id, reverts, actor, ts, now, logged, making, cap);
         if !(changed.is_empty() && signals.is_empty()) {
             self.core.events.queue(Event::Ephemeral { id, origin: Origin::Local, author: node, actor, ts, received: now, changed, signals });
             self.core.events.flush();
@@ -459,7 +468,7 @@ impl Engine {
 
     /// Frees ephemeral things deleted by a batch, with the ephemeral things they own: records,
     /// states, timers, undo entries and their ephemeral placements go (resets at `ts`), the tids
-    /// read unknown (notes/ephemeral.md Deletion). A thing in a labeled closure keeps its record
+    /// read unknown (notes/ephemeral.md Step 1 as built). A thing in a labeled closure keeps its record
     /// and tombstones while held: an older copy elsewhere would revive the values.
     fn free_things(&mut self, free: &BTreeSet<Tid>, ts: Ts, changed: &mut Vec<(Tid, Ak)>) -> BTreeSet<Tid> {
         let mut gone: BTreeSet<Tid> = free.iter().filter(|t| self.eph.things.contains_key(t) && !self.ephemeral_synced(t)).copied().collect();
@@ -542,9 +551,9 @@ impl Engine {
                 let src = self.eph.src.clone();
                 let Some(a) = self.eph.aspects.get_mut(&tid).and_then(|m| m.get_mut(&ak)) else { continue };
                 let Some(ranges) = a.expiring.remove(&t) else { continue };
-                a.state.strip(&|d| d.src == src && ranges.iter().any(|(lo, hi)| *lo <= d.ctr && d.ctr < *hi));
+                a.state.strip(&|d| in_ranges(d, &src, &ranges));
                 if let Some(o) = &mut a.own {
-                    o.strip(&|d| d.src == src && ranges.iter().any(|(lo, hi)| *lo <= d.ctr && d.ctr < *hi));
+                    o.strip(&|d| in_ranges(d, &src, &ranges));
                 }
                 a.expired.extend(ranges);
                 if ak.as_str() == GROUP.ak() {

@@ -6,11 +6,12 @@
 //! only) so undo reports it instead of reaching past it.
 
 use super::{Resolved, Written};
+use crate::engine::write::run_ops;
 use crate::engine::{Engine, Mutation};
 use crate::error::{Error, Result};
 use crate::events::{ChangeId, EphemeralId};
+use crate::undo::in_effect;
 use osis_base::{Ak, Tid, Ts, WallMs};
-use crate::engine::write::run_ops;
 use osis_crdt::{AnyView, CounterRange, Fragment, Op, PathOp, Stamp, Undone, Writer};
 use osis_schema::core_types::{CREATED, GROUP, is_membership_class};
 use osis_schema::{AspectKey, Schema};
@@ -98,15 +99,6 @@ pub(super) struct Log {
     dropped: HashMap<(Tid, Ak), (Ts, EphemeralId, bool)>,
 }
 
-fn size(f: &Fragment) -> usize {
-    f.approx_bytes()
-}
-
-/// Whether `c` is in effect among the logged changes (`undo::in_effect`).
-fn in_effect(c: &ChangeId, undoers: &BTreeMap<ChangeId, Vec<ChangeId>>) -> bool {
-    crate::undo::in_effect(c, undoers)
-}
-
 impl Log {
     /// Logs a batch, then drops the oldest entries past `cap` bytes.
     #[allow(clippy::too_many_arguments)]
@@ -114,7 +106,7 @@ impl Log {
         if aspects.is_empty() && making.is_empty() {
             return;
         }
-        let bytes = aspects.iter().map(|a| size(&a.delta) + size(&a.pre) + a.ak.as_str().len()).sum::<usize>() + aspects.capacity() * size_of::<LogAspect>() + making.len() * size_of::<Tid>() + size_of::<Entry>() + 32;
+        let bytes = aspects.iter().map(|a| a.delta.approx_bytes() + a.pre.approx_bytes() + a.ak.as_str().len()).sum::<usize>() + aspects.capacity() * size_of::<LogAspect>() + making.len() * size_of::<Tid>() + size_of::<Entry>() + 32;
         self.bytes += bytes;
         self.entries.push_back(Entry { id, reverts, actor, ts, received, aspects, making, bytes });
         while self.bytes > cap {
@@ -372,11 +364,5 @@ impl Engine {
             }
         }
         Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn log_push(&mut self, id: ChangeId, reverts: Option<ChangeId>, actor: Tid, ts: Ts, received: WallMs, aspects: Vec<LogAspect>, making: Making) {
-        let cap = self.cfg.ephemeral_history;
-        self.eph.log.push(id, reverts, actor, ts, received, aspects, making, cap);
     }
 }
