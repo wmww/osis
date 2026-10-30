@@ -487,7 +487,14 @@ impl Engine {
         }
         recs.retain(|t| self.eph.things.contains_key(t));
         let chain = self.record_chain(&recs);
-        let mut parts: Vec<EphDelta> = deltas.into_iter().filter(|(t, ak, _, _)| !(chain.contains(t) && ak.as_str() == CREATED.ak())).collect();
+        // a record left in (an own cover's join of what its commits carried, of a thing durable or
+        // gone here now) goes as one minting: the copies can differ (a minter that sent two, a
+        // restart between first sights) and receivers refuse a join
+        let mut parts: Vec<EphDelta> = deltas
+            .into_iter()
+            .filter(|(t, ak, _, _)| !(chain.contains(t) && ak.as_str() == CREATED.ak()))
+            .filter_map(|(t, ak, f, e)| if ak.as_str() == CREATED.ak() { one_minting(&f).map(|f| (t, ak, f, e)) } else { Some((t, ak, f, e)) })
+            .collect();
         let cak = Ak::new(CREATED.ak()).map_err(|_| Error::Misuse("ak"))?;
         for t in &chain {
             if let Some(f) = self.created_fragment(t) {
@@ -1291,6 +1298,14 @@ impl Engine {
         Some(())
     }
 
+    /// Tests: makes ephemeral thing `t`'s next commits carry a new minting of its record (a copy
+    /// unlike what its earlier ones carried, as after a restart between two copies).
+    #[doc(hidden)]
+    pub fn remint_created(&mut self, t: &Tid) -> Option<()> {
+        self.eph.things.get_mut(t)?.created = None;
+        Some(())
+    }
+
     /// Held ephemeral commits and their encoded delta bytes (tests, diagnostics).
     pub fn held_ephemeral(&self) -> Vec<(CommitId, usize, bool)> {
         self.eph.remote.held.iter().map(|(id, h)| (*id, h.bytes, h.own)).collect()
@@ -1318,8 +1333,7 @@ fn mint_created(rec: &CreationRecord, ts: Ts, src: Source, lo: u64) -> Option<(F
 }
 
 /// Whether `f` is exactly what `mint_created` makes of `rec` under a session source (spec/sync.md
-/// §9): no other write
-/// (losing junk honest carriers would repeat) fits.
+/// §9): no other write (losing junk honest carriers would repeat) fits.
 fn is_minted(f: &Fragment, rec: &CreationRecord) -> bool {
     let writes = f.writes();
     let Some((first, Some(ts))) = writes.first() else { return false };
@@ -1328,6 +1342,22 @@ fn is_minted(f: &Fragment, rec: &CreationRecord) -> bool {
     }
     let lo = writes.iter().map(|(d, _)| d.ctr).min().unwrap_or(first.ctr);
     mint_created(rec, *ts, first.src.clone(), lo).is_some_and(|(m, _)| m == *f)
+}
+
+/// One minting of the record `f` reads out of `f`, a join of mintings of it: `f` if it is one,
+/// else its first write's.
+fn one_minting(f: &Fragment) -> Option<Fragment> {
+    let rec = CreationRecord::from_value(&f.read()?)?;
+    if is_minted(f, &rec) {
+        return Some(f.clone());
+    }
+    let writes = f.writes();
+    let (first, ts) = writes.first()?;
+    let lo = writes.iter().filter(|(d, t)| d.src == first.src && t == ts).map(|(d, _)| d.ctr).min()?;
+    let (m, _) = mint_created(&rec, (*ts)?, first.src.clone(), lo)?;
+    let mut j = f.clone();
+    j.join(m.clone());
+    (j == *f && is_minted(&m, &rec)).then_some(m)
 }
 
 /// Whether held commit `h` is one of `me`'s plain ones without expiry (what an own cover
