@@ -73,6 +73,9 @@ pub fn blob_expiry(h: &Header, a: &AspectEntry) -> Option<u64> {
     }
 }
 
+/// The build error of a delta that does not fit a blob alone (with the header and prefix).
+pub const DELTA_PAST_BLOB: &str = "one delta does not fit a blob";
+
 /// Every delta fits a blob of `max` bytes alone (spec/commits.md §1; paging keeps a canonical
 /// delta far below `MAX_BLOB`, so only a caller's mistake fails, such as a value left unchunked).
 pub(crate) fn check_fits(c: &CommitBlob, max: usize) -> Result<(), Error> {
@@ -80,7 +83,7 @@ pub(crate) fn check_fits(c: &CommitBlob, max: usize) -> Result<(), Error> {
     for p in &c.parts {
         let (_, toks) = prefix_inputs(&c.header, &[(p.ai, p.di)])?;
         if blob_len(fixed.saturating_add(part_len(p)), toks.len()) > max {
-            return Err(Error::Build("one delta does not fit a blob"));
+            return Err(Error::Build(DELTA_PAST_BLOB));
         }
     }
     Ok(())
@@ -122,7 +125,7 @@ pub fn project_resolved<K: Ord + Clone>(c: &CommitBlob, resolved: &Header, reade
                 body = 0;
             }
             if !fits(1, l) {
-                return Err(Error::Build("one delta does not fit a blob"));
+                return Err(Error::Build(DELTA_PAST_BLOB));
             }
             cur.push(p);
             body = body.saturating_add(l);

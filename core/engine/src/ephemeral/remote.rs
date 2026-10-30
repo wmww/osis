@@ -10,8 +10,9 @@
 //! spec/crdt.md §4.6). Every ephemeral commit carries only its author's writes (and the records
 //! they need); a receiver joins nothing else. A held commit is dropped once valid held commits
 //! of its author and class list it as absorbed on every aspect it touches: only an author
-//! compacts, its own commits into an own cover (`compact_own_ephemeral`), so covers form one
-//! chain per author and never race. Relay-only commits are delivered once (`delivered`, bounded)
+//! compacts, its own commits into an own cover (`compact_own_ephemeral`; several commits, each
+//! with part of the aspects, past inline header lists), so covers form one chain per author
+//! and never race. Relay-only commits are delivered once (`delivered`, bounded)
 //! and held by nobody. Presence commits carry an author's whole own state of its presence
 //! aspects, each covering (absorbing) its author's earlier ones; they are covered at every
 //! write and go (un-merged) at their lease
@@ -27,7 +28,7 @@ use crate::error::{Error, Result};
 use crate::events::{ChangeId, Event, Origin};
 use osis_base::format::{KEEPALIVE_MS, MAX_DRIFT_MS, MAX_LEASE_MS, MAX_OWNER_DEPTH};
 use osis_base::{Ak, CommitId, CreationRecord, Tid, Ts, Value};
-use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, EphClass, Form, Header, Kind, MemoryBlobs};
+use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, DELTA_PAST_BLOB, EphClass, Form, Header, Kind, MemoryBlobs};
 use osis_crdt::{AnyView, Fragment, Frontiers, Interner, Op, PathOp, Snapshot, Source, SourceKind, Unpaged, Writer};
 use osis_crypto::{DeleteSecret, VerifyingKey, dedup_secret};
 use osis_perm::{Dots, Point, Validity};
@@ -63,6 +64,17 @@ type EphDelta = (Tid, Ak, Fragment, Option<u64>);
 
 /// Per aspect, the held commits a cover absorbs.
 type Absorbs = BTreeMap<(Tid, Ak), BTreeSet<CommitId>>;
+
+/// What one ephemeral commit build gave (`try_build`).
+enum Attempt {
+    Made(Box<EphCommit>),
+    /// Nothing to carry.
+    Empty,
+    /// Header lists past the inline bound or a delta past a blob.
+    Large,
+    /// Another failure (reported).
+    Failed,
+}
 
 /// Unsent own deltas of one aspect by (actor written for, expiry).
 type Unsent = BTreeMap<(Tid, Option<u64>), Fragment>;
@@ -143,6 +155,10 @@ pub(crate) struct Remote {
     /// Per author, relay-only commits at or below this `ts` (wall ms) are dropped
     /// (`MAX_DELIVERED`; per author, so a writer flooding signals drops only its own).
     pub delivered_floor: BTreeMap<Tid, u64>,
+    /// Aspects whose own delta did not fit a blob alone (a take or cover of it failed): their
+    /// unsent writes wait, and a local write to one is refused unless the aspect's own state
+    /// fits then (`check_full`), which clears it.
+    pub full: BTreeSet<(Tid, Ak)>,
     /// `Core::generation` when held validity was last judged.
     pub judged_at: u64,
     /// Own presence aspects of things that sync, with the actor of their last write.
@@ -208,6 +224,18 @@ impl Engine {
         r.noted || r.local.iter().any(|t| self.ephemeral_synced(t))
     }
 
+    /// Whether a local write of `delta` to `(tid, ak)` may go (spec/sync.md §9): refused only
+    /// when an own delta of the aspect did not fit a blob (`Remote::full`) and its own state
+    /// with `delta` still does not; `Some(true)` when it fits now (the caller clears the flag).
+    pub(super) fn check_full(&self, tid: &Tid, ak: &Ak, delta: &Fragment) -> Option<bool> {
+        if !self.eph.remote.full.contains(&(*tid, ak.clone())) {
+            return Some(false);
+        }
+        let mut f = self.eph.aspects.get(tid).and_then(|m| m.get(ak)).map(|a| own_unexpiring(a, &self.eph.src)).unwrap_or_default();
+        f.join(delta.clone());
+        fits_blob(self.tid(), &f).then_some(true)
+    }
+
     /// Notes an own ephemeral write for sync: it joins `unsent` (a presence write marks its
     /// actor's presence commit due) when the thing syncs, else the thing waits in `local`.
     pub(super) fn note_written(&mut self, tid: &Tid, ak: &Ak, delta: &Fragment, expires: Option<u64>, presence: bool, actor: Tid) {
@@ -258,8 +286,9 @@ impl Engine {
         let mut out = self.take_signals()?;
         let held_back = |e: &Engine, t: &Tid| busy.iter().any(|g| e.in_ephemeral_closure(g, t));
         let mut unsent = std::mem::take(&mut self.eph.remote.unsent);
-        if !busy.is_empty() {
-            let (back, go): (BTreeMap<_, _>, BTreeMap<_, _>) = unsent.into_iter().partition(|((t, _), _)| held_back(self, t));
+        let full = &self.eph.remote.full;
+        if !busy.is_empty() || !full.is_empty() {
+            let (back, go): (BTreeMap<_, _>, BTreeMap<_, _>) = unsent.into_iter().partition(|(k, _)| full.contains(k) || held_back(self, &k.0));
             unsent = go;
             self.eph.remote.unsent = back;
         }
@@ -274,7 +303,16 @@ impl Engine {
             }
         }
         for ((actor, _), deltas) in by_class {
-            out.extend(self.build_ephemeral(EphClass::Plain, actor, deltas, &BTreeMap::new())?);
+            let mut left = Vec::new();
+            self.build_fitting(actor, deltas, &BTreeMap::new(), &mut out, &mut left)?;
+            // what could not be built stays unsent (a later cover or take may carry it); one
+            // past a blob waits until a write makes it fit (`Remote::full`)
+            for ((tid, ak, f, exp), large) in left {
+                if large {
+                    self.eph.remote.full.insert((tid, ak.clone()));
+                }
+                self.eph.remote.unsent.entry((tid, ak)).or_default().entry((actor, exp)).or_default().join(f);
+            }
         }
         out.extend(self.take_presence(busy_presence)?);
         Ok(out)
@@ -429,9 +467,10 @@ impl Engine {
         }
     }
 
-    /// A valid held commit listing `id` as absorbed (the cover that took it in), if any.
-    pub fn ephemeral_absorber(&self, id: &CommitId) -> Option<CommitId> {
-        self.eph.remote.held.iter().find(|(_, h)| h.parts.iter().any(|p| p.valid && p.absorbed.contains(id))).map(|(c, _)| *c)
+    /// The valid held commits listing `id` as absorbed (the covers that took it in: several
+    /// when an own cover was split by aspect, spec/sync.md §9).
+    pub fn ephemeral_absorbers(&self, id: &CommitId) -> BTreeSet<CommitId> {
+        self.eph.remote.held.iter().filter(|(_, h)| h.parts.iter().any(|p| p.valid && p.absorbed.contains(id))).map(|(c, _)| *c).collect()
     }
 
     /// Whether held ephemeral commit `id` is a presence commit.
@@ -483,9 +522,46 @@ impl Engine {
         self.build_ephemeral_with(class, actor, deltas, absorbed, &BTreeMap::new())
     }
 
+    /// Builds plain ephemeral commits of `deltas` (`build_ephemeral`): one, or, while a commit's
+    /// header lists do not fit inline or a delta does not fit a blob, the halves of its deltas
+    /// (in aspect order) apart, each listing as absorbed what `absorbed` names on its own
+    /// aspects (spec/sync.md §9). The commits go to `out`; the deltas that could not be built to
+    /// `left`, each flagged when it does not fit a blob alone (reported).
+    fn build_fitting(&mut self, actor: Tid, deltas: Vec<EphDelta>, absorbed: &Absorbs, out: &mut Vec<EphCommit>, left: &mut Vec<(EphDelta, bool)>) -> Result<()> {
+        let mut copy = deltas.clone();
+        match self.try_build(EphClass::Plain, actor, deltas, absorbed, &BTreeMap::new())? {
+            Attempt::Made(c) => out.push(*c),
+            Attempt::Empty => {}
+            Attempt::Large if copy.len() > 1 => {
+                let rest = copy.split_off(copy.len() / 2);
+                self.build_fitting(actor, copy, absorbed, out, left)?;
+                self.build_fitting(actor, rest, absorbed, out, left)?;
+            }
+            Attempt::Large => {
+                let tids = copy.iter().map(|d| d.0).collect();
+                self.report(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::EphemeralRefused, tids, commit: None, peer: None, detail: "an ephemeral delta does not fit a blob: not sent".into() });
+                left.extend(copy.into_iter().map(|d| (d, true)));
+            }
+            Attempt::Failed => left.extend(copy.into_iter().map(|d| (d, false))),
+        }
+        Ok(())
+    }
+
     /// `build_ephemeral`, also carrying the writes of the sessions `foreign` attributes to other
     /// nodes, named so (tests: forging).
     fn build_ephemeral_with(&mut self, class: EphClass, actor: Tid, deltas: Vec<EphDelta>, absorbed: &Absorbs, foreign: &BTreeMap<CommitId, Tid>) -> Result<Option<EphCommit>> {
+        Ok(match self.try_build(class, actor, deltas, absorbed, foreign)? {
+            Attempt::Made(c) => Some(*c),
+            Attempt::Large => {
+                self.report_eph("an ephemeral commit too large for a blob or inline header lists was not sent");
+                None
+            }
+            Attempt::Empty | Attempt::Failed => None,
+        })
+    }
+
+    /// One attempt of `build_ephemeral_with` (a failure other than size reported here).
+    fn try_build(&mut self, class: EphClass, actor: Tid, deltas: Vec<EphDelta>, absorbed: &Absorbs, foreign: &BTreeMap<CommitId, Tid>) -> Result<Attempt> {
         let me = self.tid();
         // the records: of the things written and placed, up their ephemeral chains
         let mut recs: BTreeSet<Tid> = BTreeSet::new();
@@ -515,30 +591,14 @@ impl Engine {
             }
         }
         if parts.is_empty() {
-            return Ok(None);
+            return Ok(Attempt::Empty);
         }
         let ts = self.core.hlc.next();
         let creates: Creates = chain.iter().filter_map(|t| self.eph.things.get(t).map(|th| (*t, th.record.clone()))).collect();
         let cx = snapshot_ctx(ts, me);
         let mut writes = Vec::with_capacity(parts.len());
-        let own_session = self.eph.session;
         for (tid, ak, mut fragment, expires) in parts {
-            let mut authors = BTreeMap::new();
-            let mut unknown = BTreeSet::new();
-            for (d, _) in fragment.writes() {
-                if let SourceKind::Commit(c) = d.src.author().kind()
-                    && !authors.contains_key(c)
-                    && !unknown.contains(c)
-                {
-                    if c.0 == own_session || self.eph.remote.mine.contains(c) {
-                        authors.insert(*c, (me, ts));
-                    } else if let Some(n) = foreign.get(c) {
-                        authors.insert(*c, (*n, ts));
-                    } else {
-                        unknown.insert(*c);
-                    }
-                }
-            }
+            let (authors, unknown) = self.authors_of(&fragment, ts, foreign);
             // only own writes are carried (spec/sync.md §9: receivers strip the rest), and records
             // whoever minted them (a record hashes to its tid)
             if !unknown.is_empty() && ak.as_str() != CREATED.ak() {
@@ -553,7 +613,7 @@ impl Engine {
                 Ok(b) => b,
                 Err(e) => {
                     self.report_eph(&format!("an ephemeral commit could not be built: {e}"));
-                    return Ok(None);
+                    return Ok(Attempt::Failed);
                 }
             };
             let retention = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, ..Default::default() };
@@ -571,13 +631,12 @@ impl Engine {
         };
         let built = match built {
             Ok(b) if b.list_blobs.is_empty() => b,
-            Ok(_) => {
-                self.report_eph("an ephemeral commit too large for inline header lists was not sent");
-                return Ok(None);
-            }
+            // header lists past the inline bound (ephemeral commits link none) or a delta past
+            // a blob (ephemeral deltas are not paged)
+            Ok(_) | Err(osis_commit::Error::Build(DELTA_PAST_BLOB)) => return Ok(Attempt::Large),
             Err(e) => {
                 self.report_eph(&format!("an ephemeral commit could not be built: {e}"));
-                return Ok(None);
+                return Ok(Attempt::Failed);
             }
         };
         let blob = built.commit;
@@ -610,7 +669,51 @@ impl Engine {
                 self.drop_absorbed();
             }
         }
-        Ok(Some(EphCommit { id, class, blob }))
+        Ok(Attempt::Made(Box::new(EphCommit { id, class, blob })))
+    }
+
+    /// The `Authors` of an ephemeral delta of `f` built at `ts`: this node for its sessions'
+    /// writes, `foreign`'s node for those it names; and the sessions of the other writes (not
+    /// carried).
+    fn authors_of(&self, f: &Fragment, ts: Ts, foreign: &BTreeMap<CommitId, Tid>) -> (BTreeMap<CommitId, (Tid, Ts)>, BTreeSet<CommitId>) {
+        let me = self.tid();
+        let mut authors = BTreeMap::new();
+        let mut unknown = BTreeSet::new();
+        for (d, _) in f.writes() {
+            if let SourceKind::Commit(c) = d.src.author().kind()
+                && !authors.contains_key(c)
+                && !unknown.contains(c)
+            {
+                if c.0 == self.eph.session || self.eph.remote.mine.contains(c) {
+                    authors.insert(*c, (me, ts));
+                } else if let Some(n) = foreign.get(c) {
+                    authors.insert(*c, (*n, ts));
+                } else {
+                    unknown.insert(*c);
+                }
+            }
+        }
+        (authors, unknown)
+    }
+
+    /// The cost of an own cover of `deltas`: its encoded deltas (unpaged, with their `Authors`,
+    /// which dominate small values) plus `ENTRY_CHARGE`. Each lists one commit absorbed, as the
+    /// next cover will (the cover itself: what it absorbs now goes with the next one), so a held
+    /// cover weighs what its own cover would.
+    fn cover_cost(&self, deltas: &[EphDelta]) -> usize {
+        let me = self.tid();
+        let ts = Ts::make(self.now(), 0).unwrap_or_default();
+        let cx = snapshot_ctx(ts, me);
+        let bytes: usize = deltas
+            .iter()
+            .map(|(_, _, f, _)| {
+                let absorbed = BTreeMap::from([(CommitId([0; 32]), me)]);
+                let s = Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: f.clone(), frontiers: Frontiers::default(), absorbed, authors: self.authors_of(f, ts, &BTreeMap::new()).0 };
+                // unpaged encoding fails only on a malformed fragment: counted as nothing
+                osis_crdt::encode_snapshot(&s, &cx, Some(&mut Unpaged)).map_or(0, |b| b.len())
+            })
+            .sum();
+        bytes + ENTRY_CHARGE
     }
 
     fn report_eph(&mut self, detail: &str) {
@@ -1195,7 +1298,6 @@ impl Engine {
     /// cover is weighed only once the held commits cost more than `COVER_FACTOR` times the last
     /// cover weighed (`cover_est`), so rebuilds cost O(1) per byte written, amortized.
     pub fn compact_own_ephemeral(&mut self, force: bool) -> Result<Vec<EphCommit>> {
-        let me = self.tid();
         let mut out = Vec::new();
         for (actor, ids) in self.own_held() {
             let cost: usize = ids.iter().map(|(_, c)| c).sum();
@@ -1209,24 +1311,37 @@ impl Engine {
             // what it cannot absorb (an aspect no longer writable here) does not make it weigh
             // again at every step
             let stuck = stuck / COVER_FACTOR.max(1);
-            let cover = cover_cost(me, &deltas);
+            let cover = self.cover_cost(&deltas);
             self.eph.remote.cover_est.insert(actor, cover + stuck);
             // one commit is what its cover would be again
             if ids.is_empty() || (!force && (ids.len() < 2 || held <= COVER_FACTOR * cover)) {
                 continue;
             }
-            // a delta that does not fit a blob (ephemeral deltas are not paged) or header lists
-            // past the inline bound: no cover (reported); weighed again once the held commits double
-            let Some(c) = self.build_ephemeral(EphClass::Plain, actor, deltas, &absorbed)? else {
+            // header lists past the inline bound: several covers, each absorbing on its own
+            // aspects; a delta that does not fit a blob alone (ephemeral deltas are not paged):
+            // that aspect is not covered (reported), and the cover is weighed again once the
+            // held commits double
+            let keys: BTreeSet<(Tid, Ak)> = deltas.iter().map(|(t, ak, _, _)| (*t, ak.clone())).collect();
+            let mut left = Vec::new();
+            self.build_fitting(actor, deltas, &absorbed, &mut out, &mut left)?;
+            self.eph.remote.full.retain(|k| !keys.contains(k));
+            let mut kept = BTreeSet::new();
+            for ((tid, ak, _, _), large) in left {
+                if large {
+                    self.eph.remote.full.insert((tid, ak.clone()));
+                }
+                kept.insert((tid, ak));
+            }
+            if !kept.is_empty() {
                 self.eph.remote.cover_est.insert(actor, held + stuck);
-                continue;
-            };
-            // what is covered needs no separate send (kept when no cover was made: lost otherwise)
-            for m in self.eph.remote.unsent.values_mut() {
-                m.remove(&(actor, None));
+            }
+            // what is covered needs no separate send (kept when not covered: lost otherwise)
+            for (k, m) in self.eph.remote.unsent.iter_mut() {
+                if !kept.contains(k) {
+                    m.remove(&(actor, None));
+                }
             }
             self.eph.remote.unsent.retain(|_, m| !m.is_empty());
-            out.push(c);
         }
         Ok(out)
     }
@@ -1286,13 +1401,12 @@ impl Engine {
     /// `ENTRY_CHARGE` each), the cost of their cover, and the largest one's cost (tests: within
     /// `COVER_FACTOR` times the cover and one commit in flight after every step).
     pub fn own_ephemeral_load(&self) -> Vec<(Tid, usize, usize, usize)> {
-        let me = self.tid();
         let mut out = Vec::new();
         for (actor, held) in self.own_held() {
             let ids: Vec<CommitId> = held.iter().map(|(id, _)| *id).collect();
             let (deltas, _) = self.own_cover(actor, &ids);
             let costs = held.iter().map(|(_, c)| *c);
-            out.push((actor, costs.clone().sum(), cover_cost(me, &deltas), costs.max().unwrap_or(0)));
+            out.push((actor, costs.clone().sum(), self.cover_cost(&deltas), costs.max().unwrap_or(0)));
         }
         out
     }
@@ -1429,18 +1543,19 @@ fn snapshot_ctx(ts: Ts, me: Tid) -> osis_crdt::DeltaCtx {
     cx
 }
 
-/// The cost of a cover of `deltas` by `me`: its encoded deltas (unpaged) plus `ENTRY_CHARGE`.
-fn cover_cost(me: Tid, deltas: &[EphDelta]) -> usize {
+/// The length of `f` encoded as an unpaged snapshot delta of an ephemeral commit by `me`.
+fn delta_len(me: Tid, f: &Fragment) -> usize {
     let cx = snapshot_ctx(Ts::default(), me);
-    let bytes: usize = deltas
-        .iter()
-        .map(|(_, _, f, _)| {
-            let s = Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: f.clone(), frontiers: Frontiers::default(), absorbed: BTreeMap::new(), authors: BTreeMap::new() };
-            // unpaged encoding fails only on a malformed fragment: counted as nothing
-            osis_crdt::encode_snapshot(&s, &cx, Some(&mut Unpaged)).map_or(0, |b| b.len())
-        })
-        .sum();
-    bytes + ENTRY_CHARGE
+    let s = Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: f.clone(), frontiers: Frontiers::default(), absorbed: BTreeMap::new(), authors: BTreeMap::new() };
+    // unpaged encoding fails only on a malformed fragment: counted as nothing
+    osis_crdt::encode_snapshot(&s, &cx, Some(&mut Unpaged)).map_or(0, |b| b.len())
+}
+
+/// Whether `f`, an own delta of one aspect, fits an ephemeral commit's blob alone: its unpaged
+/// encoding within `MAX_BLOB` less room for a header with inline lists (`CHUNK_THRESHOLD`).
+fn fits_blob(me: Tid, f: &Fragment) -> bool {
+    let room = osis_base::format::MAX_BLOB.saturating_sub(osis_base::format::CHUNK_THRESHOLD);
+    delta_len(me, f) <= room
 }
 
 /// The own writes of an aspect without the values of those that expire (a snapshot never

@@ -1870,3 +1870,106 @@ fn expired_commit_leaves_no_records_spec_sync_9() {
         base = (held(&mut net, a), held(&mut net, b));
     }
 }
+
+/// Node `n` sets ephemeral aspects `/x/a<i>` of `g` to `v` for each `i` of `keys`, in one batch.
+fn set_many(net: &mut Net, n: usize, g: Tid, keys: impl Iterator<Item = usize>, v: &str) {
+    let mut m = Mutation::new();
+    for i in keys {
+        m.set(g, &eph(&format!("/x/a{i:04}")), &s(v)).unwrap();
+    }
+    net.engine(n).write(m).unwrap();
+    local(net, n);
+}
+
+fn read_many(net: &mut Net, n: usize, g: Tid, count: usize) -> Vec<Option<Value>> {
+    (0..count).map(|i| net.eph_read(n, g, &format!("/x/a{i:04}"))).collect()
+}
+
+// spec/sync.md §9 (own covers), spec/commits.md §2 (no list by link): an author's commits and
+// covers over more aspects than inline header lists hold go as several commits, each covering
+// the own commits on its aspects; the author's held commits, a holder's lane and the server stay
+// within a few covers, holders converge, and a restarted holder gets it all back
+#[test]
+fn own_cover_split_by_aspect_spec_sync_9() {
+    const N: usize = 2000;
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let l = net.label(a);
+    for round in 0..8 {
+        // every aspect, or a slice of them
+        let keys: Vec<usize> = if round % 2 == 0 { (0..N).collect() } else { (round * 100..round * 100 + 300).collect() };
+        set_many(&mut net, a, g, keys.into_iter(), &format!("r{round}"));
+        net.run();
+        let load = net.engine(a).own_ephemeral_load();
+        let [(_, held, cover, largest)] = load[..] else { panic!("one actor: {load:?}") };
+        assert!(held <= osis_node::ephemeral::COVER_FACTOR * cover + largest, "round {round}: {held} B of own commits, cover {cover} B");
+        let (at_b, at_sv) = (net.sync(b).ephemeral_bytes(&l) as usize, net.servers[sv].hub.store().ephemeral_bytes(&l) as usize);
+        assert!(at_b <= 3 * cover && at_sv <= 4 * cover, "round {round}: holder {at_b} B, server {at_sv} B, cover {cover} B");
+        assert_eq!(read_many(&mut net, b, g, N), read_many(&mut net, a, g, N), "round {round}");
+    }
+    assert_eq!(net.eph_read(b, g, "/x/a0000"), Some(s("r6")));
+    // a cover of it all goes as several commits, which together absorb every other own one
+    let acts = net.sync(a).compact_ephemeral_now().unwrap();
+    net.actions(a, acts);
+    net.run();
+    let own: Vec<usize> = net.engine(a).held_ephemeral().into_iter().filter(|x| x.2).map(|x| net.engine(a).ephemeral_header(&x.0).unwrap().aspects.len()).collect();
+    assert!(own.len() > 1 && own.iter().all(|n| *n < N) && own.iter().sum::<usize>() >= N, "a split cover: {own:?}");
+    assert_eq!(net.sync(b).ephemeral_entries(&l), own.len(), "the holder dropped what the covers absorb");
+    let want = read_many(&mut net, a, g, N);
+    assert_eq!(read_many(&mut net, b, g, N), want);
+    net.restart(b, 22);
+    net.run();
+    assert_eq!(read_many(&mut net, b, g, N), want);
+}
+
+// spec/sync.md §9 (an aspect's own delta past a blob): a batch whose delta of one aspect does
+// not fit a blob is not sent; its writes stay unsent, the aspect's other writes are refused
+// while its own state does not fit, and a write that makes it fit is taken and sends it all
+#[test]
+fn aspect_past_a_blob_refuses_writes_spec_sync_9() {
+    let mut net = Net::new();
+    let cap: u64 = 64 << 20;
+    let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: cap, ..osis_server::Policy::default() });
+    let a = net.node(1, &[sv]);
+    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let big = "v".repeat(5 << 20);
+    let mut m = Mutation::new();
+    for k in ["x", "y"] {
+        m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Set(s(&big)) }).unwrap();
+    }
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert!(notes(&mut net, b, w).is_empty(), "past a blob: not sent");
+    // the window's other aspect still syncs
+    let mut m = Mutation::new();
+    m.set(w, &eph(STATE), &s("next")).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert_eq!(net.eph_read(b, w, STATE), Some(s("next")));
+    // a write that leaves the state past a blob is refused
+    let mut m = Mutation::new();
+    m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("z"))], op: Op::Set(s("small")) }).unwrap();
+    let err = net.engine(a).write(m).unwrap_err().to_string();
+    assert!(err.contains("does not fit a blob"), "{err}");
+    // one that makes it fit goes, with what waited
+    let mut m = Mutation::new();
+    m.op(w, &eph(NOTES), PathOp { path: Vec::new(), op: Op::Remove(s("x")) }).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert_eq!(notes(&mut net, b, w).get("y").map(String::len), Some(big.len()));
+    assert_eq!(notes(&mut net, b, w), notes(&mut net, a, w));
+    note(&mut net, a, w, "z", "small");
+    net.run();
+    assert_eq!(notes(&mut net, b, w), notes(&mut net, a, w));
+}
