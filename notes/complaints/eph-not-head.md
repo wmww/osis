@@ -1,2 +1,3 @@
 - A chained 'disable fix, run test, re-enable fix' command crossed the 120 s Bash cap (rebuild at load) and went to the background with the source still edited; it finished fine, but a wip commit before such probes is safer.
 - Debug-printing a `VerifyingKey` needs `format!("{k:?}")`: its field is private (cost one rebuild).
+- Gate after rebase took 503 s (documented about 90 s warm): main had moved, so a rebuild plus load around 15-20.
