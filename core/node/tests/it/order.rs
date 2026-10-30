@@ -653,10 +653,16 @@ fn alike(want: &[(&'static str, String)], got: &[(&'static str, String)], flips:
     if let Some(k) = wf.keys().find(|k| wf[*k].held != gf[*k].held && !wf[*k].approx && !flip(k)) {
         return Some(format!("body {k:?} held {} vs {}", wf[k].held, gf[k].held));
     }
+    // a commit line without its dropped parts and what a snapshot dropped other than as covered
+    // keeps (`gives`, spec/commits.md §5)
     let no_dropped = |l: &str| -> String {
-        match (l.find('{'), l.find('}')) {
+        let l = match (l.find('{'), l.find('}')) {
             (Some(i), Some(j)) if i < j => format!("{}{}", &l[..i], &l[j + 1..]),
             _ => l.into(),
+        };
+        match (l.find(" gives="), l.rfind(" missing ")) {
+            (Some(i), Some(j)) if i < j => format!("{}{}", &l[..i], &l[j..]),
+            _ => l,
         }
     };
     let allowed = |name: &str, x: &str, y: &str| -> bool {
@@ -665,6 +671,14 @@ fn alike(want: &[(&'static str, String)], got: &[(&'static str, String)], flips:
                 let id = x.split(' ').nth(1).unwrap_or("");
                 let changed: Vec<&BodyKey> = wf.keys().filter(|k| k.0 == id && wf[*k].held != gf[*k].held).collect();
                 no_dropped(x) == no_dropped(y) && !changed.is_empty() && changed.iter().all(|k| flip(k))
+            }
+            // a snapshot dropped at one node only leaves the snapshot index for the dropped one
+            "index" if ["snapshots ", "dropped_snapshots ", "carried "].iter().any(|p| x.starts_with(p)) => {
+                let (a, b) = (snapshot_entries(x), snapshot_entries(y));
+                a.keys().chain(b.keys()).filter(|id| a.get(*id) != b.get(*id)).all(|id| {
+                    let changed: Vec<&BodyKey> = wf.keys().filter(|k| k.0 == *id && wf[*k].held != gf[*k].held).collect();
+                    (!a.contains_key(id) || !b.contains_key(id)) && !changed.is_empty() && changed.iter().all(|k| flip(k))
+                })
             }
             _ => false,
         }
@@ -708,6 +722,39 @@ fn alike(want: &[(&'static str, String)], got: &[(&'static str, String)], flips:
         }
     }
     None
+}
+
+/// An index `snapshots` or `carried` line's entries by snapshot (`(ts, id, frontiers,
+/// absorbed)`, `Carried { snap, .. }`), or the commits of a `dropped_snapshots` line.
+fn snapshot_entries(l: &str) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let mut rest = l;
+    while let Some(i) = rest.find("CommitId(") {
+        let Some(n) = rest[i..].find(')') else { break };
+        let id = rest[i..i + n + 1].to_string();
+        let end = match ["(Ts(", "Carried {"].iter().filter_map(|m| rest[..i].rfind(m)).max() {
+            Some(s) => {
+                let mut depth = 0;
+                let close = rest[s..].char_indices().find(|&(_, c)| {
+                    depth += match c {
+                        '(' | '[' | '{' => 1,
+                        ')' | ']' | '}' => -1,
+                        _ => 0,
+                    };
+                    depth == 0
+                });
+                let Some((j, _)) = close else { break };
+                out.insert(id, rest[s..s + j + 1].to_string());
+                s + j + 1
+            }
+            None => {
+                out.insert(id.clone(), id);
+                i + n + 1
+            }
+        };
+        rest = &rest[end..];
+    }
+    out
 }
 
 const FRESH: u64 = 0x5eed_f00d;
@@ -1469,7 +1516,6 @@ fn snapshot_of_overwritten_entry_value_dies_any_order_spec_commits_5() {
 // carry but whose stamp its creation shares); A's removal after the snapshot kills both. The
 // snapshot's first death is the removal's `ts`, never its own (dated there by the shared stamp).
 #[test]
-#[ignore = "issues/snapshot-death-shared-stamp.md: the recompute dates it at the snapshot's ts"]
 fn snapshot_sharing_stamp_of_unseen_death_not_dated_early_spec_commits_5() {
     use Step::*;
     let h = vec![
@@ -1507,4 +1553,32 @@ fn snapshot_sharing_stamp_of_unseen_death_not_dated_early_spec_commits_5() {
         k.engine.replay_deaths(&a.tid, &a.ak).unwrap();
         assert!(first(&mut k).is_some_and(|f| f > ts), "order {rel:?}: recomputed {:?}, snapshot at {ts:?}", first(&mut k));
     }
+}
+
+// spec/commits.md §5 (a drop is final; a snapshot dropped other than as covered keeps its
+// frontiers), order seed 3401073: B's write kills A's keep-at-most-0 write (and so A's snapshot
+// of it) where it arrives before B's demotion, which makes it invalid; the snapshot dropped there
+// keeps its frontiers (`gives`) and leaves the snapshot indexes, all part of the tolerated drop
+// (was a failure: only the dropped parts were excused on its commit line).
+#[test]
+fn snapshot_dropped_before_flip_keeps_frontiers_tolerated_spec_commits_5() {
+    use Step::*;
+    let h = vec![Write { by: 0, t: 3, op: 18, k: 0, v: 2 }, Compact { by: 0, t: 4, op: 18 }, Edge { by: 0, t: 6, member: 1, role: Some(Role::Admin) }, Roster { by: 0, t: 6 }, Write { by: 1, t: 7, op: 15, k: 2, v: 7 }, Nested { by: 0, other: 2, t: 4, k: 0, text: false, compact: true, also: true }, Demote { by: 0, t: 0, member: 1, at: 4, to_read: false }, Edge { by: 2, t: 2, member: 2, role: Some(Role::Admin) }, Write { by: 2, t: 4, op: 0, k: 1, v: 8 }, Demote { by: 0, t: 4, member: 2, at: 1, to_read: true }, Write { by: 1, t: 0, op: 18, k: 2, v: 5 }];
+    let played = play(3401073, &h);
+    let made: Vec<usize> = (0..played.packs.len()).collect();
+    let order = [16, 7, 20, 13, 12, 5, 8, 21, 1, 10, 0, 18, 19, 9, 15, 3, 14, 6, 2, 17, 11, 4];
+    let want = judged(&mut deliver(&played, &made), &played);
+    let got = judged(&mut deliver(&played, &order), &played);
+    let snap = |j: &[(&'static str, String)]| j[0].1.lines().find(|l| l.contains("ContentSnapshot") && l.contains("/t/gone")).unwrap().to_string();
+    assert!(snap(&want).contains("gives={}") && !snap(&got).contains("gives={}"), "dropped in one order only, keeping its frontiers");
+    assert_eq!(alike(&want, &got, &|_, _| false), None);
+    check(3401073, &h, LARGE).unwrap();
+    // the seed's longer shrink: the dropped snapshot leaves the carried-writes index too
+    let h2 = vec![Roster { by: 0, t: 2 }, Nested { by: 1, other: 2, t: 0, k: 1, text: false, compact: false, also: false }, Demote { by: 2, t: 6, member: 2, at: 4, to_read: true }, Roster { by: 0, t: 0 }, Demote { by: 0, t: 6, member: 2, at: 1, to_read: false }, Write { by: 0, t: 3, op: 18, k: 0, v: 2 }, Compact { by: 0, t: 4, op: 18 }, Write { by: 1, t: 0, op: 15, k: 0, v: 3 }, Edge { by: 0, t: 4, member: 1, role: Some(Role::Read) }, Edge { by: 0, t: 6, member: 1, role: Some(Role::Admin) }, Roster { by: 0, t: 6 }, Advance { who: None, ms: 3721574 }, Write { by: 1, t: 7, op: 15, k: 2, v: 7 }, Nested { by: 0, other: 2, t: 4, k: 0, text: false, compact: true, also: true }, Demote { by: 0, t: 0, member: 1, at: 4, to_read: false }, Edge { by: 0, t: 7, member: 2, role: Some(Role::Write) }, Compact { by: 1, t: 7, op: 4 }, Sync { from: 0, to: 2 }, Write { by: 1, t: 1, op: 4, k: 1, v: 3 }, Write { by: 2, t: 4, op: 0, k: 1, v: 8 }, Demote { by: 0, t: 4, member: 2, at: 1, to_read: true }, Edge { by: 0, t: 7, member: 1, role: Some(Role::Write) }, Write { by: 1, t: 0, op: 18, k: 2, v: 5 }];
+    let played = play(3401073, &h2);
+    let held = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 13, 14, 16, 17, 18, 20, 21, 23, 26, 27, 28, 30];
+    let order = [3, 8, 13, 30, 20, 4, 27, 0, 11, 2, 28, 26, 14, 16, 18, 10, 5, 6, 21, 1, 17, 7, 23];
+    let (want, got) = (judged(&mut deliver(&played, &held), &played), judged(&mut deliver(&played, &order), &played));
+    assert!(want[0].1.lines().zip(got[0].1.lines()).any(|(a, b)| a.starts_with("carried ") && a != b), "the carried index differs");
+    assert_eq!(alike(&want, &got, &|_, _| false), None);
 }

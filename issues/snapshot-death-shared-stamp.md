@@ -1,7 +1,0 @@
-# Snapshot death dated early through a shared stamp
-> Summary: `carriers` dates a snapshot's death at its `ts` when the snapshot carries some dead write of the dying write's stamp; a stamp names several writes (an entry's creation and its value, a struct's fields), so a write the snapshot does not carry, killed before its `ts`, dates there a carried one killed only later (keep at most D > 0: dropped early).
-> Tags: retention, engine
-
-Repro: order.rs `snapshot_sharing_stamp_of_unseen_death_not_dated_early_spec_commits_5` (ignored; the recompute fails, `replay_all`). B's snapshot carries A's entry creation (stamp s) and B's value (overwriting A's value s, seen); A's second value, unseen by B and below the snapshot's `ts`, killed A's value s at the node; A's removal after the snapshot kills the creation. `Parts::dead` (the part joined into the state) holds s for the creation, so the death of A's value s dates the snapshot at its `ts`, not at the removal's.
-
-Keeping only join deaths whose superseder is at or below the snapshot's `ts` fixes it but breaks seed 2700027 (`snapshot_of_undone_write_dropped_any_order_*`): there the state's superseder of the carried write is a later write, the earlier one (the undo) being dead. An exact test needs a write's identity, not its stamp: a `Death` naming its write's position (path, record), or the snapshot's join against the killer's own write. Present since the worker's first version ("the state holds no write of the stamp" conflates the same way).
