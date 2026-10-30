@@ -839,7 +839,8 @@ pub(crate) const PENDING_GRANT_WAIT_MS: u64 = 24 * 60 * 60 * 1000;
 struct PendingGrant {
     x: Tid,
     /// Its author may grant on `x` now, as this node sees it (admin or an invite), and its `ts`
-    /// is within `PENDING_GRANT_WAIT_MS` before now (and not past `MAX_DRIFT` ahead).
+    /// is within `PENDING_GRANT_WAIT_MS` before now (and not past `MAX_DRIFT` ahead), checked by
+    /// its signature (`authentic`).
     plausible: bool,
 }
 
@@ -863,7 +864,7 @@ fn pending_grants(tx: &mut Tx<'_>) -> Result<Vec<PendingGrant>> {
                 let core = &*tx.core;
                 let ours = |m: &Tid| *m == node || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m));
                 if w.boxes.keys().any(|k| ours(&k.member)) {
-                    out.push(PendingGrant { x, plausible: recent && may_grant(core, &author, &x) });
+                    out.push(PendingGrant { x, plausible: recent && may_grant(core, &author, &x) && authentic(core, &blob, &id, &x) });
                 }
             }
         }
@@ -871,6 +872,21 @@ fn pending_grants(tx: &mut Tx<'_>) -> Result<Vec<PendingGrant>> {
             return Ok(out);
         }
     }
+}
+
+/// Whether pending `blob` is signed by its author and its `/secrets` parts on `x` are the ones its
+/// header lists: a commit waiting on its author's chain or a creation record is stored unchecked, so its
+/// `author` and `ts` could be anyone's.
+pub(crate) fn authentic(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_base::CommitId, x: &Tid) -> bool {
+    let h = &blob.header;
+    let Some(osis_base::CreationRecord::KeyActor { public_key, .. }) = core.created(&h.author) else { return false };
+    let Ok(vk) = osis_crypto::VerifyingKey::from_slice(public_key) else { return false };
+    let mut interner = osis_crdt::Interner::new();
+    osis_commit::verify_signature(id, &blob.signature, &vk).is_ok()
+        && blob.parts.iter().all(|p| match h.aspects.get(p.ai) {
+            Some(a) if a.tid == *x && a.ak.as_str() == "/secrets" => core.dedup(x).is_some_and(|d| osis_commit::verify_part(h, id, p, &d, &mut interner, None).is_ok()),
+            _ => true,
+        })
 }
 
 /// Whether `author` may grant on `x` now: admin, or an invite (spec/permissions.md §2).
