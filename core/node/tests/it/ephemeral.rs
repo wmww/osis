@@ -1082,6 +1082,9 @@ fn lane_dump(net: &mut Net, nodes: &[usize], servers: &[usize], l: &osis_base::L
     for m in nodes {
         let (n, c) = (notes(net, *m, w), str_map(net.eph_read(*m, w, CURSOR)));
         out.push_str(&format!("node {m} {:?} reads {n:?} cursors {c:?}\n{}", net.tid(*m), net.nodes[*m].sync.as_ref().unwrap().ephemeral_dump(l)));
+        for d in net.nodes[*m].sync.as_ref().unwrap().describe() {
+            out.push_str(&format!("  {d}\n"));
+        }
         let e = net.engine(*m);
         for (id, bytes, own) in e.held_ephemeral() {
             let h = e.ephemeral_header(&id).unwrap();
@@ -1170,6 +1173,27 @@ fn random_window_inflight_large() {
         eprintln!("seed {seed}");
         random_window_run_on(seed, false, true);
     }
+}
+
+// the harness: a node restarted while its server's Hello is still on the way gets nothing of
+// the old connection on the new one of the same number (`random_window_inflight_large` seed
+// 3300065: the stale Hello's challenge made every Open there refused, so the restarted node never
+// reopened the label at that server)
+#[test]
+fn restart_mid_handshake_reopens() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    net.restart(a, 50);
+    net.feed(a, Event::Local);
+    assert!(net.conn_to(a, sv).is_some(), "dialed, the Hello queued");
+    net.restart(a, 51);
+    net.run();
+    let d = net.sync(a).describe();
+    assert!(!d.is_empty() && d.iter().all(|x| x.contains(": Open")), "{d:?}");
 }
 
 // spec/data-model.md §1 (two nodes persisting one ephemeral thing both carry its record,
