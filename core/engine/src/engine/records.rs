@@ -27,6 +27,8 @@ pub const TIMER: &[u8] = b"x/";
 pub const SYNCING: &[u8] = b"s/";
 /// Commits voided by overlapping node-form ranges: `o/` + commit ID.
 pub const VOID: &[u8] = b"o/";
+/// Things seen with keysets in their `/keys` (`Core::own_keys`; never removed): `g/` + tid.
+pub const OWN_KEYS: &[u8] = b"g/";
 /// Aspects whose deaths wait for a recompute (`retention::settle_deaths`): `e/` + aspect key.
 pub const DEATHS_DUE: &[u8] = b"e/";
 /// Schemas this node registered or wrote with: `d/` + schema ID, the schema's canonical form.

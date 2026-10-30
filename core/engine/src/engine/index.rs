@@ -11,7 +11,7 @@
 //! (`invalidate`), or one that fails to decode rebuilds it from the commit records once (a full
 //! re-judge).
 
-use super::journal::{JMap, JSet, JSetMap};
+use super::journal::{JMap, JSetMap};
 use super::{Core, Meta, Tx, records, scan_table};
 use osis_store::Transaction;
 use crate::error::{Error, Result};
@@ -37,7 +37,6 @@ pub(super) const METAS: &[u8] = b"node/metas";
 const BOXES_TO: &[u8] = b"node/boxes to";
 const EPOCH_INTRO: &[u8] = b"node/epoch intro";
 const BOX_WRITTEN: &[u8] = b"node/box written";
-const OWN_KEYS: &[u8] = b"node/own keys";
 const DELETE_HINTS: &[u8] = b"node/delete hints";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
 pub(super) const CARRIED: &[u8] = b"node/carried";
@@ -386,12 +385,6 @@ fn put_map<K: Rec + Ord + Clone, V: Rec + Clone>(txn: &mut Transaction<'_>, name
     put_rows(txn, name, keys, |k| m.get(k).map(enc))
 }
 
-/// `put_map` of a set: a row per item.
-fn put_set<T: Rec + Ord + Clone>(txn: &mut Transaction<'_>, name: &[u8], s: &JSet<T>, all: bool) -> Result<()> {
-    let items = if all { s.iter().cloned().collect() } else { s.logged() };
-    put_rows(txn, name, items, |t| s.contains(t).then(Vec::new))
-}
-
 /// `put_map` of a map of sets: a row per (key, item).
 fn put_setmap<K: Rec + Ord + Clone, T: Rec + Ord + Clone>(txn: &mut Transaction<'_>, name: &[u8], s: &JSetMap<K, T>, all: bool) -> Result<()> {
     let items = if all { s.iter().flat_map(|(k, x)| x.iter().map(|t| (k.clone(), t.clone()))).collect() } else { s.logged() };
@@ -630,7 +623,6 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_setmap(txn, BOXES_TO, &c.ix.boxes_to, all)?;
     put_map(txn, EPOCH_INTRO, &c.ix.epoch_intro, all)?;
     put_map(txn, BOX_WRITTEN, &c.ix.box_written, all)?;
-    put_set(txn, OWN_KEYS, &c.ix.own_keys, all)?;
     put_map(txn, DELETE_HINTS, &c.ix.delete_hints, all)?;
     put_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
     put_map(txn, CARRIED, &c.ix.carried, all)?;
@@ -798,9 +790,6 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     }
     for (k, v) in scan::<(Tid, BoxKey)>(tx, BOX_WRITTEN)? {
         tx.core.ix.box_written.insert(k, dec(&v)?);
-    }
-    for (k, _) in scan::<Tid>(tx, OWN_KEYS)? {
-        tx.core.ix.own_keys.insert(k);
     }
     for (k, v) in scan::<Tid>(tx, DELETE_HINTS)? {
         tx.core.ix.delete_hints.insert(k, dec(&v)?);

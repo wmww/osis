@@ -235,19 +235,24 @@ impl Core {
     }
 
     /// Notes `/keys` of `actor`: keysets mean secrets of its own (spec/permissions.md §3).
-    pub(crate) fn observe_keys(&mut self, actor: &Tid, keys: &Keys) {
+    /// Whether `actor` joined `own_keys` (the caller persists that: a keyset seen once keeps
+    /// it there, though the `/keys` state may lose it again, `retention::uncover`).
+    pub(crate) fn observe_keys(&mut self, actor: &Tid, keys: &Keys) -> bool {
+        let mut new = false;
         if keys.read.is_some() || keys.write.is_some() || keys.admin.is_some() {
             // its published delete keys replace any inbox hint
             self.ix.delete_hints.remove(actor);
             if self.ix.own_keys.insert(*actor) {
                 // reader actors of things below it change
                 self.bodies.clear();
+                new = true;
             }
             self.membership_changed();
             if let Some(e) = self.ix.secrets.get_mut(actor) {
                 let _ = osis_keys::observe_keys(keys, e);
             }
         }
+        new
     }
 }
 
