@@ -744,7 +744,7 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
 
 /// Whether the commit that wrote a key actor's box keyed at a higher role knew epoch `e` of
 /// role `r` (osis-keys `Carries`): its first write is ordered at or after the commit that
-/// introduced `e` (found by its boxes or, for an epoch boxed to key actors only, its keyset).
+/// introduced `e` (its rotation, `introduced_by`).
 /// The first write, not the newest: a later rewrite of the box (a re-seal, a grant) by a writer
 /// ordered after `e` need not have held `e` (a concurrent fork), so it proves nothing; a
 /// rotation that introduces an epoch writes its key-actor boxes under fresh keys anyway.
