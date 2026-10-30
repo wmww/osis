@@ -2101,10 +2101,7 @@ impl SyncEngine {
                 }
                 Fate::Delete(_, item, via) => {
                     left.commits.insert(commit);
-                    // a replacing upload waits for an upload of its rewrite in flight (whose
-                    // status could not be told from its own)
-                    let rewrite_busy = via.is_some_and(|q| self.conns.get(&conn).is_some_and(|c| super::in_flight(c, &c.req.sent, (l, q), raw)));
-                    if !busy(self, &id) && !rewrite_busy {
+                    if !busy(self, &id) {
                         send(self, id);
                         match via {
                             Some(q) => replace.entry(q).or_default().push(item),
