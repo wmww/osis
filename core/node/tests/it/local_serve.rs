@@ -10,6 +10,7 @@ use osis_base::{Ak, BlobId, LabelId, Role, Tid, WallMs};
 use osis_node::flows::{Demotion, PreSync};
 use osis_node::sync::EntryKind;
 use osis_schema::AspectKey;
+use std::collections::BTreeSet;
 
 static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     "keep.osis",
@@ -434,4 +435,49 @@ fn deposit_promoted_on_local_label_spec_sync_5() {
         }
     }
     assert!(card > 0, "the reader's card is served");
+}
+
+
+/// The deposit-promotion setup above, with the reader's deposits of the blobs in `lose`
+/// refused on the way (rate-limited): returns the net, the writer, the label, and the reader's
+/// commits under it by aspect (`/keys`, `/node`) with their entries at the writer.
+fn promote_run(lose: &BTreeSet<BlobId>) -> (Net, usize, LabelId, Vec<(String, osis_base::CommitId, BlobId, bool)>) {
+    let mut net = Net::new();
+    net.lose_deposits = lose.clone();
+    let a = net.node(1, &[]);
+    let r = net.node(2, &[]);
+    let acts = net.sync(a).publish_reach([0xa7; 32], Vec::new()).unwrap();
+    net.actions(a, acts);
+    let _g = net.group_at(a, &[(r, Role::Read)], vec![]);
+    net.run();
+    net.advance(31_000);
+    let l = net.label(a);
+    let rt = net.tid(r);
+    let mut out = Vec::new();
+    for (id, k) in net.sync(a).entries(&l) {
+        let EntryKind::Commit { commit, .. } = k else { continue };
+        let h = net.engine(a).header(&commit).unwrap();
+        if h.aspects.iter().any(|x| x.tid == rt) {
+            let stamped = net.sync(a).entry_meta(&l, &id).unwrap().1.is_some();
+            out.push((h.aspects[0].ak.as_str().to_string(), commit, id, stamped));
+        }
+    }
+    (net, a, l, out)
+}
+
+// spec/sync.md §5, spec/permissions.md §4 (a promoter completes the author's chain it holds):
+// as above, but the reader's deposit of its `/keys` commit (part of its card's chain) never
+// reaches the writer; the writer places its own copy of it, then promotes the card.
+#[test]
+fn deposit_chain_completed_on_local_label_spec_sync_5() {
+    let (_, _, _, first) = promote_run(&BTreeSet::new());
+    let keys: BTreeSet<BlobId> = first.iter().filter(|x| x.0 == "/keys").map(|x| x.2).collect();
+    assert_eq!(keys.len(), 1, "the reader deposited its /keys: {first:?}");
+    let keys_commit = first.iter().find(|x| x.0 == "/keys").unwrap().1;
+    let (_, _, _, run) = promote_run(&keys);
+    assert!(run.iter().all(|x| !keys.contains(&x.2)), "the reader's /keys deposit was lost");
+    let copies: Vec<_> = run.iter().filter(|x| x.1 == keys_commit).collect();
+    assert!(!copies.is_empty() && copies.iter().all(|x| x.3), "the writer placed its own copy of the reader's /keys: {run:?}");
+    let cards: Vec<_> = run.iter().filter(|x| x.0 == "/node").collect();
+    assert!(!cards.is_empty() && cards.iter().all(|x| x.3), "the card was promoted: {run:?}");
 }
