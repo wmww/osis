@@ -6,7 +6,9 @@
 # next build here recompiles what REV changed back. The binary keeps this worktree's manifest
 # dirs: a test reading fixtures reads the checked-out ones. Refuses the main checkout (build only
 # in task worktrees). Killed hard (SIGKILL) mid-build, it leaves HEAD detached at REV: check the
-# branch it printed out again.
+# branch it printed out again. Interrupted mid-build (seen with Ctrl-C), the next build here may
+# fail to link with undefined symbols: delete the newest target/debug/incremental/{it,osis_node,
+# osis_engine}-* dirs.
 set -eu
 [ $# -ge 2 ] || { echo "usage: tools/bin-at REV OUT [--release] [-p CRATE] [--test NAME]" >&2; exit 2; }
 rev=$1 out=$2
