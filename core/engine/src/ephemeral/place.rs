@@ -72,8 +72,8 @@ pub(super) fn def_of(f: &Fragment) -> Option<Def> {
 pub(super) struct Placed {
     /// Ephemeral things (and new ones) the durable half persists, owner chains included.
     pub persisted: BTreeSet<Tid>,
-    /// Drafts again (`Eph::drafts`) the durable half writes: saved again, their ephemeral
-    /// placements converting like a persisted thing's.
+    /// Drafts again (`Eph::drafts`) the durable half writes: saved again (their ephemeral
+    /// placements convert like any durable thing's written durably).
     pub saved: BTreeSet<Tid>,
     /// Durable `/group` writes by group.
     pub durable: BTreeMap<Tid, AspectMut>,
@@ -120,10 +120,17 @@ impl Engine {
         // this batch, or expired with its timer not yet run)
         let converts = |g: &Tid, field: u64, t: &Tid| if removed.contains(&(*g, field, *t)) { None } else { self.placement_expiry(g, &gak, field, t) };
         let mut roots: BTreeSet<Tid> = m.aspects.keys().map(|k| k.0).chain(m.persist.iter().copied()).collect();
-        let drafts = &self.eph.drafts;
+        // the things whose ephemeral placements convert: the ephemeral things persisted, and
+        // every durable thing written durably (a draft again, `Eph::drafts`, or one placed
+        // ephemerally while it persisted elsewhere or before a restart); none without defs
+        let placed = |persisted: &BTreeSet<Tid>, roots: &BTreeSet<Tid>| -> BTreeSet<Tid> {
+            if self.eph.defs.is_empty() {
+                return BTreeSet::new();
+            }
+            persisted.iter().filter(|t| things.contains_key(t)).chain(roots.iter().filter(|t| records(t).is_none())).copied().collect()
+        };
         let persisted = loop {
             let persisted = chain(&roots);
-            let saved: Vec<Tid> = roots.iter().filter(|t| drafts.contains(t)).copied().collect();
             let eph_after = |x: &Tid| records(x).is_some() && !persisted.contains(x);
             let mut grew = false;
             for (g, am) in &gops {
@@ -135,7 +142,7 @@ impl Engine {
                     }
                 }
             }
-            for t in persisted.iter().filter(|t| things.contains_key(t)).chain(&saved) {
+            for t in &placed(&persisted, &roots) {
                 for (g, field) in self.ephemeral_placements(t) {
                     if converts(&g, field, t).is_some() && may_place(&g) {
                         grew |= roots.insert(g);
@@ -146,8 +153,8 @@ impl Engine {
                 break persisted;
             }
         };
-        let saved: BTreeSet<Tid> = roots.iter().filter(|t| drafts.contains(t)).copied().collect();
-        let converting: BTreeSet<Tid> = persisted.iter().filter(|t| things.contains_key(t)).chain(&saved).copied().collect();
+        let saved: BTreeSet<Tid> = roots.iter().filter(|t| self.eph.drafts.contains_key(t)).copied().collect();
+        let converting = placed(&persisted, &roots);
         let eph_after = |x: &Tid| records(x).is_some() && !persisted.contains(x);
         let core_schema = || Some(Arc::new(osis_schema::core_schema().clone()));
         let mut out = Placed { persisted: BTreeSet::new(), saved: BTreeSet::new(), durable: BTreeMap::new(), eph: Vec::new(), refused: Vec::new(), converted: Vec::new() };
@@ -159,7 +166,15 @@ impl Engine {
                     Some((_, x, false)) => !eph_after(&x) && !eph_after(&g),
                     None => !eph_after(&g),
                 };
-                if durable { d.push(op.clone()) } else { e.push(op.clone()) }
+                // a durable removal also removes an ephemeral placement of the item (a durable
+                // thing placed ephemerally: see `placed`)
+                let listed = || matches!(member_op(op), Some((f, x, false)) if self.eph.defs.get(&g).is_some_and(|(i, s)| if f == ITEMS { i.contains(&x) } else { s.contains(&x) }));
+                if !durable || listed() {
+                    e.push(op.clone());
+                }
+                if durable {
+                    d.push(op.clone());
+                }
             }
             if !e.is_empty() {
                 out.eph.push(EphOp { tid: g, ak: gak.clone(), am: AspectMut { ops: e, lifetime: Lifetime::Ephemeral, retention: None, ..am.clone() }, conversion: false });

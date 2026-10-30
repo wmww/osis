@@ -211,7 +211,7 @@ impl Engine {
     /// things.
     pub fn ephemeral_scope_keys(&self) -> Vec<(Tid, Ak)> {
         let created = created_ak();
-        let mut out: Vec<(Tid, Ak)> = self.eph.things.keys().chain(&self.eph.drafts).map(|t| (*t, created.clone())).collect();
+        let mut out: Vec<(Tid, Ak)> = self.eph.things.keys().chain(self.eph.drafts.keys()).map(|t| (*t, created.clone())).collect();
         for (t, m) in &self.eph.aspects {
             let eph = self.eph.draft_like(t);
             out.extend(m.keys().filter(|ak| eph || ak.as_str() == GROUP.ak()).map(|ak| (*t, ak.clone())));

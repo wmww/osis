@@ -297,6 +297,48 @@ fn ephemeral_thing_persists_same_tid_elsewhere_spec_data_model_1() {
     assert_eq!(net.eph_read(a, w, STATE), Some(s("draft")), "ephemeral aspects stay ephemeral");
 }
 
+// spec/data-model.md §8, spec/crdt.md §4.6 (undoing a save restores the draft's ephemeral
+// placement): a durable thing whose placement is ephemeral (here a draft saved, the save undone,
+// the node restarted and its ephemeral writes back from the server: no undo log, nothing marks
+// it a draft) gets that placement converted by its next durable write, as at its first; the
+// other member sees it placed durably again
+#[test]
+fn ephemeral_placement_of_durable_thing_converts_spec_data_model_8() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "draft");
+    net.run();
+    let mut m = Mutation::new();
+    m.set(w, &REG, &s("saved")).unwrap();
+    let saved = net.engine(a).write(m).unwrap().unwrap().id;
+    local(&mut net, a);
+    net.run();
+    assert!(net.engine(b).durable_groups_of(&w).contains(&g));
+    let me = net.tid(a);
+    net.engine(a).revert_change(saved, me).unwrap();
+    local(&mut net, a);
+    net.run();
+    for n in [a, b] {
+        assert!(net.engine(n).groups_of(&w).contains(&g) && !net.engine(n).durable_groups_of(&w).contains(&g), "placed ephemerally again");
+        assert_eq!(net.read(n, w), None);
+    }
+    net.restart(a, 31);
+    net.advance(10_000);
+    assert!(net.engine(a).groups_of(&w).contains(&g) && !net.engine(a).durable_groups_of(&w).contains(&g), "the ephemeral placement came back");
+    assert_eq!(net.eph_read(a, w, STATE), Some(s("draft")));
+    let mut m = Mutation::new();
+    m.set(w, &REG, &s("again")).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    assert!(net.engine(a).durable_groups_of(&w).contains(&g), "converted by the durable write");
+    net.run();
+    assert!(net.engine(b).durable_groups_of(&w).contains(&g) && net.read(b, w) == Some(s("again")));
+}
+
 // spec/permissions.md §5.2 (ephemeral commits judged as snapshots: by commit ID, so a demotion's
 // frontier, which lists none, covers none): a removed writer's ephemeral writes are un-merged
 #[test]
