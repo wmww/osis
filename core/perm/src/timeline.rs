@@ -475,6 +475,12 @@ impl Timeline {
     pub fn falls(&self, node: &Tid, thing: &Tid) -> &[crate::walk::Fall] {
         self.walked.falls.get(&(*node, *thing)).map_or(&[], |v| v.as_slice())
     }
+    /// Whether edge (`member`, `target`) was lowered by a write that audits nothing (a
+    /// self-removal, §2) with no explicit write on it since (§5.1 step 4: the next one restores
+    /// it). An expiry by `until` is read from the edge itself.
+    pub fn lowered_unaudited(&self, member: &Tid, target: &Tid) -> bool {
+        self.walked.prior.contains_key(&(*member, *target))
+    }
     pub fn membership_commit(&self, id: &CommitId) -> Option<&Arc<MembershipCommit>> {
         self.input.commits.get(id)
     }

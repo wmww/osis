@@ -531,6 +531,9 @@ pub struct Core {
     /// `Engine::published_under` for every actor, with the counts it was taken at (held
     /// records, `own_keys`, `labeled`).
     pub(crate) published: Option<Published>,
+    /// `Engine::held_links`: dropped when a `/link/seed` state or index entry changes and on
+    /// rollback.
+    pub(crate) links: Option<std::sync::Arc<Vec<(Tid, Tid)>>>,
     /// The sync records this engine's transactions write or drop (`SyncRecords`), set by
     /// node-sync (`Engine::set_sync_records`; `None`: no node-sync, no sync records).
     pub sync_records: Option<&'static dyn SyncRecords>,
@@ -647,6 +650,9 @@ impl Core {
         if k.1.as_str() == "/label" {
             self.labels.remove(&k.0);
         }
+        if k.1.as_str() == crate::flows::LINK_SEED {
+            self.links = None;
+        }
         self.written.push(k);
     }
 
@@ -676,6 +682,7 @@ impl Core {
             self.generation += 1;
             self.membership_changed();
             self.labels.clear();
+            self.links = None;
             for k in std::mem::take(&mut self.written) {
                 self.states.remove(&k);
                 self.pages.remove(&k);
@@ -728,6 +735,7 @@ impl Core {
             generation: 0,
             labels: BTreeMap::new(),
             published: None,
+            links: None,
         }
     }
 
