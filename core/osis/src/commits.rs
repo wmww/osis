@@ -2,7 +2,8 @@
 //! §7, spec/crdt.md §4.6). Everything is derived from the held commits and this session's
 //! ephemeral undo log (notes/ephemeral.md), nothing is stored: a revert is a change naming the
 //! change it reverts; a change is in effect while no revert in effect names it; undo and redo
-//! pick a change by query and revert it.
+//! pick a change by query (`CommitQuery::next`) and revert it. Reverting a thing's creation
+//! deletes the thing (spec/crdt.md §4.6).
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
@@ -46,6 +47,13 @@ pub enum CommitKind {
     Ephemeral,
 }
 
+/// The change `undo` or `redo` would revert (`CommitQuery::next`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Next {
+    Undo,
+    Redo,
+}
+
 /// A filter over the held commits and this session's ephemeral changes. Empty fields match
 /// everything; results are newest first.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -67,6 +75,10 @@ pub struct CommitQuery {
     /// Paging: only changes after this one in result order (older).
     pub after: Option<ChangeId>,
     pub limit: Option<usize>,
+    /// Only the change `undo` (or `redo`) of `scope` would revert now: none or one. Fails as
+    /// that call would without choosing one (`NotUndoable`: the newest own ephemeral change in
+    /// scope left the undo log). Needs `scope`; not with `after`.
+    pub next: Option<Next>,
 }
 
 impl CommitQuery {
@@ -111,6 +123,10 @@ impl CommitQuery {
     }
     pub fn limit(mut self, n: usize) -> Self {
         self.limit = Some(n);
+        self
+    }
+    pub fn next(mut self, n: Next) -> Self {
+        self.next = Some(n);
         self
     }
 }
@@ -193,8 +209,9 @@ impl Osis {
     }
 
     /// The changes in `scope`, newest first, with relations judged over every held commit that
-    /// can revert one of them (a revert touches only aspects its target touched) and every
-    /// logged ephemeral change. Also the scope's aspects.
+    /// can revert one of them (a revert touches aspects its target touched, or the aspects of a
+    /// thing it created: a scope naming only `/created` may miss that one) and every logged
+    /// ephemeral change. Also the scope's aspects.
     fn found(&self, scope: Option<&Scope>) -> Result<(Vec<Found>, Option<Aspects>)> {
         let aks = scope.map(|s| self.scope_aspects(s)).transpose()?;
         let found = self.engine(|e| {
@@ -316,7 +333,13 @@ impl Osis {
 
     /// Changes matching `q`, newest first (by `ts`, then ID).
     pub fn commits(&self, q: &CommitQuery) -> Result<Vec<CommitEntry>> {
-        let (mut found, _) = self.found(q.scope.as_ref())?;
+        let (mut found, aks) = self.found(q.scope.as_ref())?;
+        if let Some(n) = q.next {
+            if q.scope.is_none() || q.after.is_some() {
+                return Err(Error::Invalid("`next` needs a scope and takes no `after`".into()));
+            }
+            found = self.pick(found, aks.as_deref().unwrap_or_default(), n)?.into_iter().collect();
+        }
         if let Some(a) = q.after {
             match found.iter().position(|f| f.entry.commit.id == a) {
                 Some(i) => drop(found.drain(..=i)),
@@ -364,9 +387,17 @@ impl Osis {
     /// Undo or redo, serialized under one lock: choose by query, then revert.
     fn step(&self, scope: &Scope, redo: bool) -> Result<Option<Committed>> {
         let _g = lock(&self.inner.undo);
+        let q = CommitQuery::new().scope(scope.clone()).next(if redo { Next::Redo } else { Next::Undo });
+        self.commits(&q)?.first().map(|e| self.revert_one(e.commit.id)).transpose()
+    }
+
+    /// The change undo (redo) of the scope of `found` (with aspects `aks`) reverts: this
+    /// actor's newest change in effect (a redo counts as a change); for redo its newest undo in
+    /// effect, unless a new change of this actor came after it.
+    fn pick(&self, found: Vec<Found>, aks: &[(Tid, Ak)], n: Next) -> Result<Option<Found>> {
         let me = self.me();
-        let (found, aks) = self.found(Some(scope))?;
-        let mut mine = found.iter().filter(|f| f.entry.commit.actor == me && matches!(f.entry.kind, CommitKind::Change | CommitKind::Revert | CommitKind::Ephemeral));
+        let redo = n == Next::Redo;
+        let mut mine = found.into_iter().filter(|f| f.entry.commit.actor == me && matches!(f.entry.kind, CommitKind::Change | CommitKind::Revert | CommitKind::Ephemeral));
         let target = if redo {
             mine.take_while(|f| f.depth > 0).find(|f| f.entry.in_effect && f.depth % 2 == 1)
         } else {
@@ -374,13 +405,13 @@ impl Osis {
         };
         // a newer own ephemeral change that left the undo log: it cannot be reverted, and
         // nothing older is instead (for redo: a change clears redo)
-        let gone = self.engine(|e| e.ephemeral_dropped(aks.as_deref().unwrap_or_default()));
+        let gone = self.engine(|e| e.ephemeral_dropped(aks));
         if let Some((ts, id, revert)) = gone
-            && target.is_none_or(|f| f.entry.commit.ts < ts)
+            && target.as_ref().is_none_or(|f| f.entry.commit.ts < ts)
         {
             return if redo && !revert { Ok(None) } else { Err(Error::NotUndoable { commit: id, reason: DropReason::Compacted }) };
         }
-        target.map(|f| self.revert_one(f.entry.commit.id)).transpose()
+        Ok(target)
     }
 
     /// The revert of `target`, or why there is none (never a partial revert).

@@ -9,8 +9,10 @@ use crate::engine::write::{CommitPlan, Resolved, build_and_apply};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use osis_commit::{Decoded, Form, Kind};
-use osis_base::{Ak, CommitId, Tid, Ts};
-use osis_crdt::{AnyView, CounterRange, Fragment, PathSeg, Source, Stamp, UndoBuffer, Undone, View, Writer};
+use osis_base::{Ak, CommitId, Role, Tid, Ts, Value};
+use osis_schema::AspectKey;
+use osis_schema::core_types::GROUP;
+use osis_crdt::{AnyView, CounterRange, Fragment, Op, PathOp, PathSeg, Source, Stamp, UndoBuffer, Undone, View, Writer};
 use osis_store::Shred;
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -89,9 +91,11 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     let node = tx.core.id.tid();
     let ts = ts.unwrap_or_else(|| tx.core.hlc.next());
     let mut deltas = Vec::new();
+    let made = made_by(&h, &m.valid);
     for (ai, a) in h.aspects.iter().enumerate() {
-        // a commit whose body was dropped cannot be undone (spec/commits.md §7)
-        if m.dropped.contains(&(ai, 0)) || !m.valid.get(ai).copied().unwrap_or(false) || a.ak.as_str() == "/created" {
+        // a commit whose body was dropped cannot be undone (spec/commits.md §7); a thing it
+        // created is deleted below instead
+        if m.dropped.contains(&(ai, 0)) || !m.valid.get(ai).copied().unwrap_or(false) || a.ak.as_str() == "/created" || made.contains(&a.tid) {
             continue;
         }
         let parts = crate::apply::held_parts(tx, &target, ai)?;
@@ -167,6 +171,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
             deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, schema_ref: None, retention: None, expires: None, frontiers: None, chunks: Vec::new(), split: false });
         }
     }
+    unmake(tx, &made, ts, node, &mut deltas)?;
     if deltas.is_empty() {
         return Err(Error::Misuse("nothing to undo"));
     }
@@ -175,6 +180,75 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     }
     let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Node, creates: Default::default(), purge: Vec::new(), undoes: Some(target), frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng) };
     build_and_apply(tx, plan, deltas)
+}
+
+/// The things content commit `m` created: those whose `/created` it validly carries (a
+/// thing's creation, or the save persisting an ephemeral one).
+pub(crate) fn made_by(h: &osis_commit::Header, valid: &[bool]) -> BTreeSet<Tid> {
+    if h.kind != Kind::Content {
+        return BTreeSet::new();
+    }
+    h.aspects.iter().enumerate().filter(|(ai, a)| a.ak.as_str() == "/created" && valid.get(*ai).copied().unwrap_or(false)).map(|(_, a)| a.tid).collect()
+}
+
+/// Undoing a creation deletes the thing (spec/crdt.md §4.6): `delete`'s writes for each of
+/// `made`, its held aspects reset (not `/created` or membership-class ones) and its entries
+/// removed from every `/group` listing it that this node may write, each resolved after the
+/// undo's own delta of that aspect and joined into it.
+fn unmake(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid, deltas: &mut Vec<Resolved>) -> Result<()> {
+    if made.is_empty() {
+        return Ok(());
+    }
+    let mut ops: BTreeMap<(Tid, Ak), Vec<PathOp>> = BTreeMap::new();
+    for x in made {
+        let prefix = [crate::engine::records::ASPECTS, x.as_bytes()].concat();
+        let mut aks = Vec::new();
+        tx.scan(&prefix, |k, _| {
+            aks.push(Rd::new(k).ak()?);
+            Ok(())
+        })?;
+        for ak in aks.into_iter().filter(|a| a.as_str() != "/created" && !osis_schema::core_types::is_membership_class(a.as_str())) {
+            ops.entry((*x, ak)).or_default().push(PathOp { path: Vec::new(), op: Op::RemoveAspect });
+        }
+    }
+    let gak = Ak::new(GROUP.ak()).map_err(|_| Error::Misuse("ak"))?;
+    for (g, (items, subs)) in &tx.core.ix.groups.defs {
+        if made.contains(g) || crate::engine::write::role_of(tx.core, &node, g, ts) < Some(Role::Write) {
+            continue;
+        }
+        let rm = |field: u64, set: &BTreeSet<Tid>| set.intersection(made).map(|x| PathOp { path: vec![PathSeg::Field(field)], op: Op::Remove(Value::Tid(*x)) }).collect::<Vec<_>>();
+        let v: Vec<PathOp> = [rm(crate::ephemeral::ITEMS, items), rm(crate::ephemeral::SUBGROUPS, subs)].concat();
+        if !v.is_empty() {
+            ops.entry((*g, gak.clone())).or_default().extend(v);
+        }
+    }
+    for ((tid, ak), ops) in ops {
+        let at = deltas.iter().position(|d| d.tid == tid && d.ak == ak);
+        let mut state = tx.state(&tid, &ak)?.cloned().unwrap_or_default();
+        let lo = match at.and_then(|i| deltas.get(i)) {
+            Some(d) => {
+                state.join(d.fragment.clone());
+                d.hi
+            }
+            None => tx.txn.counter(&tid, &ak)?,
+        };
+        let schema = ak.is_core().then(|| std::sync::Arc::new(osis_schema::core_schema().clone()));
+        let view = schema.as_ref().and_then(|s| s.view(ak.as_str()));
+        let w = Writer::new(ts, Source::node(node), lo);
+        let out = match &view {
+            Some(v) => crate::engine::write::run_ops(&state, w, &ops, v)?,
+            None => crate::engine::write::run_ops(&state, w, &ops, &AnyView)?,
+        };
+        let Some((f, r)) = out else { continue };
+        match at.and_then(|i| deltas.get_mut(i)) {
+            Some(d) => {
+                d.fragment.join(f);
+                d.hi = r.hi;
+            }
+            None => deltas.push(Resolved { tid, ak, fragment: f, lo: r.lo, hi: r.hi, schema, schema_ref: None, retention: None, expires: None, frontiers: None, chunks: Vec::new(), split: false }),
+        }
+    }
+    Ok(())
 }
 
 /// From the commits holding writes of `(tid, ak)`: who undoes whom, and whether every change

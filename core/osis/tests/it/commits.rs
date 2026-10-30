@@ -4,7 +4,7 @@
 use crate::common;
 use common::*;
 use crate::common::CreateIn;
-use osis::{CommitKind, CommitQuery, DropReason, Error, MemStore, Osis, Scope, Value};
+use osis::{ChangeId, CommitKind, CommitQuery, DropReason, Error, MemStore, Next, Osis, Scope, Value};
 use osis_sim::world::World;
 
 // spec/commits.md §7, notes/api.md Commits: undo and redo walk this actor's own changes in
@@ -276,7 +276,7 @@ fn undo_chain_stops_at_a_live_change_spec_crdt_4_6() {
     let db = db(1);
     let k = ak("/t/x");
     let mut w = db.write();
-    let t = w.create(db.me()).unwrap();
+    let t = w.create_durable(db.me()).unwrap();
     w.commit().unwrap();
     let c1 = commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(1)));
     commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(2)));
@@ -386,4 +386,133 @@ fn exact_undo_spec_crdt_4_6() {
         sync2(&a, &b);
         assert_eq!(a.get(t, doc.clone()).unwrap(), before, "{name}");
     }
+}
+
+
+/// What `next` picks in `scope`.
+fn next(db: &Osis, scope: &Scope, n: Next) -> Option<ChangeId> {
+    let v = db.commits(&CommitQuery::new().scope(scope.clone()).next(n)).unwrap();
+    assert!(v.len() <= 1);
+    v.first().map(|e| e.commit.id)
+}
+
+/// Undo (redo) in `scope`, checking it reverts what `next` reported.
+fn step(db: &Osis, scope: &Scope, n: Next) -> Option<ChangeId> {
+    let want = next(db, scope, n);
+    let got = match n {
+        Next::Undo => db.undo(scope),
+        Next::Redo => db.redo(scope),
+    }
+    .unwrap()
+    .map(|c| c.id);
+    match (want, got) {
+        (Some(w), Some(g)) => assert_eq!(db.commits(&CommitQuery::new().reverted_by(g)).unwrap().iter().map(|e| e.commit.id).collect::<Vec<_>>(), vec![w], "reverts what next reported"),
+        (None, None) => {}
+        x => panic!("next and the step disagree: {x:?}"),
+    }
+    got
+}
+
+// spec/crdt.md §4.6 Undoing a creation, notes/api.md Commits: undoing the commit that created a
+// thing deletes it, its placements in every group included (one made later in another group,
+// and a subgroup edge); redo brings it back with its content and placements. `next` reports the
+// change each step then reverts.
+#[test]
+fn undo_of_creation_deletes_spec_crdt_4_6() {
+    let db = db(1);
+    let (x, y) = (ak("/t/x"), ak("/t/y"));
+    let mk = |db: &Osis| db.write_with(|w| { let g = w.create_durable(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
+    let (f, f2, f3) = (mk(&db), mk(&db), mk(&db));
+    let t = db.write_with(|w| { let t = w.create_in(db.me(), &[f])?; w.at(t, x.clone()).set(&Value::Int(1))?; Ok(t) }).unwrap();
+    let created = db.created(t).unwrap().commit.map(ChangeId::Commit).unwrap();
+    db.write_with(|w| { w.place(t, f2)?; w.add_subgroup(f3, t) }).unwrap();
+    let edit = commit_with(&db, |w| w.at(t, y.clone()).set(&Value::Int(2))).id;
+    let s = Scope::Thing(t);
+    assert_eq!(next(&db, &s, Next::Redo), None);
+    assert_eq!(next(&db, &s, Next::Undo), Some(edit));
+    step(&db, &s, Next::Undo).unwrap();
+    assert_eq!(db.get(t, y.clone()).unwrap(), None);
+    assert_eq!(next(&db, &s, Next::Undo), Some(created));
+    step(&db, &s, Next::Undo).unwrap();
+    let gs = db.groups_of(t);
+    assert!(!db.knows(t) && gs.item_of.is_empty() && gs.subgroup_of.is_empty() && db.get(t, x.clone()).unwrap().is_none(), "deleted: {gs:?}");
+    assert_eq!(next(&db, &s, Next::Undo), None);
+    step(&db, &s, Next::Redo).unwrap();
+    let gs = db.groups_of(t);
+    assert!(db.knows(t) && db.get(t, x.clone()).unwrap() == Some(Value::Int(1)));
+    let mut items = gs.item_of;
+    items.sort();
+    let mut want = vec![f, f2];
+    want.sort();
+    assert_eq!((items, gs.subgroup_of), (want, vec![f3]));
+    step(&db, &s, Next::Redo).unwrap();
+    assert_eq!(db.get(t, y.clone()).unwrap(), Some(Value::Int(2)));
+    assert_eq!(next(&db, &s, Next::Redo), None);
+    // reverting the creation directly, with a later change in effect, deletes too (the later
+    // content goes with it), and reverting that revert restores everything
+    let r = db.revert(created).unwrap();
+    assert!(!db.knows(t) && db.get(t, y.clone()).unwrap().is_none() && db.groups_of(t).within.is_empty());
+    db.revert(r.id).unwrap();
+    assert!(db.get(t, x).unwrap() == Some(Value::Int(1)) && db.get(t, y).unwrap() == Some(Value::Int(2)) && db.groups_of(t).within.len() == 2);
+}
+
+// notes/ephemeral.md API delta (Undo), spec/crdt.md §4.6: undoing the batch that created an
+// ephemeral thing deletes it (it reads unknown, its ephemeral placements in every group go);
+// redo brings it back placed.
+#[test]
+fn undo_of_ephemeral_creation_deletes_spec_crdt_4_6() {
+    let db = db(2);
+    let k = osis::Lifetimes::ephemeral(ak("/app/draft"));
+    let mk = |db: &Osis| db.write_with(|w| { let g = w.create_durable(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
+    let (f, f2) = (mk(&db), mk(&db));
+    let e = db.write_with(|w| { let e = w.create_in(db.me(), &[f])?; w.at(e, k.clone()).set(&Value::Int(1))?; Ok(e) }).unwrap();
+    db.write_with(|w| w.place(e, f2)).unwrap();
+    let sorted = |mut v: Vec<osis::Tid>| {
+        v.sort();
+        v
+    };
+    assert_eq!(sorted(db.groups_of(e).item_of), sorted(vec![f, f2]));
+    let s = Scope::Thing(e);
+    // the placement in f2 is a write of f2: outside the thing's scope, so undo picks the creation
+    let picked = next(&db, &s, Next::Undo).unwrap();
+    assert!(matches!(picked, ChangeId::Ephemeral(_)));
+    step(&db, &s, Next::Undo).unwrap();
+    assert!(!db.knows(e) && db.groups_of(e).item_of.is_empty() && db.get(e, k.clone()).unwrap().is_none());
+    assert_eq!(step(&db, &s, Next::Undo), None);
+    step(&db, &s, Next::Redo).unwrap();
+    assert!(db.knows(e) && db.get(e, k).unwrap() == Some(Value::Int(1)));
+    assert_eq!(sorted(db.groups_of(e).item_of), sorted(vec![f, f2]));
+    // still an ephemeral thing: nothing reached the store for it
+    assert_eq!(db.created(e).unwrap().commit, None);
+}
+
+// notes/api.md Commits: `next` reports what undo and redo would revert, in a thing and in a
+// broader scope; a new change clears what redo would revert; `next` needs a scope.
+#[test]
+fn next_reports_what_undo_and_redo_revert_api_commits() {
+    let db = db(3);
+    let k = ak("/t/x");
+    let f = db.write_with(|w| { let g = w.create_durable(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
+    let in_f = |w: &mut osis::Write<'_>| -> osis::Result<osis::Tid> {
+        let t = w.create_durable(db.me())?;
+        w.place(t, f)?;
+        Ok(t)
+    };
+    let (a, b) = db.write_with(|w| Ok((in_f(w)?, in_f(w)?))).unwrap();
+    let ca = commit_with(&db, |w| w.at(a, k.clone()).set(&Value::Int(1))).id;
+    let cb = commit_with(&db, |w| w.at(b, k.clone()).set(&Value::Int(1))).id;
+    let (sa, sf) = (Scope::Thing(a), Scope::Group(f));
+    assert_eq!((next(&db, &sa, Next::Undo), next(&db, &sf, Next::Undo)), (Some(ca), Some(cb)));
+    let u = step(&db, &sa, Next::Undo).unwrap();
+    assert_eq!((next(&db, &sa, Next::Redo), next(&db, &sf, Next::Redo)), (Some(u), Some(u)));
+    // the group's newest change is still b's, in effect
+    assert_eq!(next(&db, &sf, Next::Undo), Some(cb));
+    // a new change in the group clears its redo, not the thing's
+    let cb2 = commit_with(&db, |w| w.at(b, k.clone()).set(&Value::Int(2))).id;
+    assert_eq!((next(&db, &sf, Next::Redo), next(&db, &sa, Next::Redo)), (None, Some(u)));
+    assert_eq!(step(&db, &sf, Next::Redo), None);
+    assert_eq!(next(&db, &sf, Next::Undo), Some(cb2));
+    step(&db, &sa, Next::Redo).unwrap();
+    assert_eq!(db.get(a, k).unwrap(), Some(Value::Int(1)));
+    assert!(matches!(db.commits(&CommitQuery::new().next(Next::Undo)), Err(Error::Invalid(_))));
 }

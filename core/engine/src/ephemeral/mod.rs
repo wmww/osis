@@ -12,6 +12,7 @@ mod place;
 mod remote;
 
 pub use log::{LoggedChange, Reverted};
+pub(crate) use place::{ITEMS, SUBGROUPS};
 pub use remote::{COVER_FACTOR, ENTRY_CHARGE, EphCommit, EphIngest, MAX_DELIVERED};
 
 use crate::engine::write::{AspectMut, Records, check_authority_with, role_with, run_ops};
@@ -35,6 +36,9 @@ pub struct EphThing {
     pub received: WallMs,
     /// Its `/created` as an ephemeral commit carries it (minted when first sent, or received).
     pub created: Option<Fragment>,
+    /// Deleted by an undo of its creation (`log::Making`): it reads unknown until that is
+    /// reverted.
+    pub deleted: bool,
 }
 
 /// One ephemeral aspect: its joined state and which of its writes expire when. Expiry classes
@@ -334,21 +338,21 @@ impl Engine {
         for t in &persisted {
             self.eph.things.remove(t);
         }
-        let created = !fresh.is_empty();
+        let making = log::Making { made: fresh.keys().copied().collect(), unmade: Vec::new() };
         for (t, record) in fresh {
-            self.eph.things.insert(t, EphThing { record, ts, node, actor, received: now, created: None });
+            self.eph.things.insert(t, EphThing { record, ts, node, actor, received: now, created: None, deleted: false });
             self.note_created(&t);
         }
         for (item, group) in refused {
             self.report(Diagnostic { kind: DiagnosticKind::PlacementNotPersisted, tids: vec![item, group], commit, peer: None, detail: "a persisted thing's placement stays ephemeral: this node may not write the group".into() });
         }
-        Ok(self.apply_ephemeral(commit, resolved, free, signals, created, ts, actor, None))
+        Ok(self.apply_ephemeral(commit, resolved, free, signals, making, ts, actor, None))
     }
 
     /// Applies a batch's resolved ephemeral writes (cannot fail), frees `free`, logs the batch
     /// for undo and queues its event. Its id: the commit when it had a durable half.
     #[allow(clippy::too_many_arguments)]
-    fn apply_ephemeral(&mut self, commit: Option<CommitId>, resolved: Vec<Resolved>, free: BTreeSet<Tid>, signals: Vec<(Tid, Ak, Value)>, created: bool, ts: Ts, actor: Tid, reverts: Option<ChangeId>) -> Option<Written> {
+    fn apply_ephemeral(&mut self, commit: Option<CommitId>, resolved: Vec<Resolved>, free: BTreeSet<Tid>, signals: Vec<(Tid, Ak, Value)>, mut making: log::Making, ts: Ts, actor: Tid, reverts: Option<ChangeId>) -> Option<Written> {
         let node = self.tid();
         let now = self.now();
         let mut changed = Vec::new();
@@ -386,17 +390,26 @@ impl Engine {
         for (t, ak, v) in &signals {
             self.note_signal(t, ak, v, ts, actor);
         }
+        for (list, del) in [(&making.unmade, true), (&making.made, false)] {
+            for t in list {
+                if let Some(e) = self.eph.things.get_mut(t) {
+                    e.deleted = del;
+                }
+            }
+        }
         let gone = self.free_things(&free, ts, &mut changed);
         logged.retain(|a| !gone.contains(&a.tid));
+        making.made.retain(|t| !gone.contains(t));
+        making.unmade.retain(|t| !gone.contains(t));
         let id = match commit {
             Some(c) => ChangeId::Commit(c),
-            None if changed.is_empty() && signals.is_empty() && !created => return None,
+            None if changed.is_empty() && signals.is_empty() && making.is_empty() => return None,
             None => {
                 self.eph.batches += 1;
                 ChangeId::Ephemeral(EphemeralId { session: self.eph.session, n: self.eph.batches })
             }
         };
-        self.log_push(id, reverts, actor, ts, now, logged);
+        self.log_push(id, reverts, actor, ts, now, logged, making);
         if !(changed.is_empty() && signals.is_empty()) {
             self.core.events.queue(Event::Ephemeral { id, origin: Origin::Local, author: node, actor, ts, received: now, changed, signals });
             self.core.events.flush();

@@ -19,8 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// `/group` field ids (spec/data-model.md §8).
-const ITEMS: u64 = 0;
-const SUBGROUPS: u64 = 1;
+pub(crate) const ITEMS: u64 = 0;
+pub(crate) const SUBGROUPS: u64 = 1;
 
 /// A `/group` definition: (items, subgroups).
 pub(super) type Def = (BTreeSet<Tid>, BTreeSet<Tid>);

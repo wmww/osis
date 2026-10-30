@@ -10,10 +10,11 @@ use crate::engine::{Engine, Mutation};
 use crate::error::{Error, Result};
 use crate::events::{ChangeId, EphemeralId};
 use osis_base::{Ak, Tid, Ts, WallMs};
-use osis_crdt::{AnyView, CounterRange, Fragment, Stamp, Undone, Writer};
-use osis_schema::core_types::GROUP;
+use crate::engine::write::run_ops;
+use osis_crdt::{AnyView, CounterRange, Fragment, Op, PathOp, Stamp, Undone, Writer};
+use osis_schema::core_types::{CREATED, GROUP, is_membership_class};
 use osis_schema::{AspectKey, Schema};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 /// One aspect of a logged batch.
@@ -36,7 +37,24 @@ pub(super) struct Entry {
     pub ts: Ts,
     pub received: WallMs,
     pub aspects: Vec<LogAspect>,
+    /// The ephemeral things it made and deleted (`Making`).
+    pub making: Making,
     bytes: usize,
+}
+
+/// The ephemeral things a batch brings into being (created, or their deletion reverted) and
+/// deletes (their creation reverted: spec/crdt.md §4.6 Undoing a creation). A deleted one keeps
+/// its record, so reverting the deletion brings it back; it reads unknown meanwhile.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Making {
+    pub made: Vec<Tid>,
+    pub unmade: Vec<Tid>,
+}
+
+impl Making {
+    pub fn is_empty(&self) -> bool {
+        self.made.is_empty() && self.unmade.is_empty()
+    }
 }
 
 /// A logged own change, as the commit query lists it.
@@ -49,7 +67,7 @@ pub struct LoggedChange {
     pub actor: Tid,
     pub ts: Ts,
     pub received: WallMs,
-    /// Its ephemeral aspects.
+    /// Its ephemeral aspects, and `/created` of each ephemeral thing it made or deleted.
     pub aspects: Vec<(Tid, Ak)>,
 }
 
@@ -84,13 +102,13 @@ fn in_effect(c: &ChangeId, undoers: &BTreeMap<ChangeId, Vec<ChangeId>>) -> bool 
 impl Log {
     /// Logs a batch, then drops the oldest entries past `cap` bytes.
     #[allow(clippy::too_many_arguments)]
-    pub fn push(&mut self, id: ChangeId, reverts: Option<ChangeId>, actor: Tid, ts: Ts, received: WallMs, aspects: Vec<LogAspect>, cap: usize) {
-        if aspects.is_empty() {
+    pub fn push(&mut self, id: ChangeId, reverts: Option<ChangeId>, actor: Tid, ts: Ts, received: WallMs, aspects: Vec<LogAspect>, making: Making, cap: usize) {
+        if aspects.is_empty() && making.is_empty() {
             return;
         }
-        let bytes = aspects.iter().map(|a| size(&a.delta) + size(&a.pre) + a.ak.as_str().len()).sum::<usize>() + aspects.capacity() * size_of::<LogAspect>() + size_of::<Entry>() + 32;
+        let bytes = aspects.iter().map(|a| size(&a.delta) + size(&a.pre) + a.ak.as_str().len()).sum::<usize>() + aspects.capacity() * size_of::<LogAspect>() + (making.made.len() + making.unmade.len()) * size_of::<Tid>() + size_of::<Entry>() + 32;
         self.bytes += bytes;
-        self.entries.push_back(Entry { id, reverts, actor, ts, received, aspects, bytes });
+        self.entries.push_back(Entry { id, reverts, actor, ts, received, aspects, making, bytes });
         while self.bytes > cap {
             let Some(e) = self.entries.pop_front() else { break };
             self.bytes -= e.bytes;
@@ -116,12 +134,14 @@ impl Log {
         let mut bytes = 0;
         for e in &mut self.entries {
             e.aspects.retain(|a| !gone(&a.tid));
-            if e.aspects.is_empty() {
+            e.making.made.retain(|t| !gone(t));
+            e.making.unmade.retain(|t| !gone(t));
+            if e.aspects.is_empty() && e.making.is_empty() {
                 e.bytes = 0;
             }
             bytes += e.bytes;
         }
-        self.entries.retain(|e| !e.aspects.is_empty());
+        self.entries.retain(|e| !(e.aspects.is_empty() && e.making.is_empty()));
         self.bytes = bytes;
     }
 
@@ -148,14 +168,24 @@ impl Log {
     }
 }
 
+/// `/created`, the key a thing's creation and deletion are listed under.
+fn created_ak() -> Ak {
+    Ak::new(CREATED.ak()).unwrap_or_else(|_| unreachable!("a core key"))
+}
+
 impl Engine {
     /// This session's logged own changes, oldest first.
     pub fn ephemeral_log(&self) -> Vec<LoggedChange> {
+        let created = created_ak();
         self.eph
             .log
             .entries
             .iter()
-            .map(|e| LoggedChange { id: e.id, reverts: e.reverts, actor: e.actor, ts: e.ts, received: e.received, aspects: e.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect() })
+            .map(|e| {
+                let mut aspects: Vec<(Tid, Ak)> = e.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect();
+                aspects.extend(e.making.made.iter().chain(&e.making.unmade).filter(|t| self.eph.things.contains_key(t)).map(|t| (*t, created.clone())));
+                LoggedChange { id: e.id, reverts: e.reverts, actor: e.actor, ts: e.ts, received: e.received, aspects }
+            })
             .collect()
     }
 
@@ -166,10 +196,12 @@ impl Engine {
     }
 
     /// The ephemeral keys `Scope::Thing` and `Scope::Group` cover (notes/ephemeral.md API delta,
-    /// Undo): every aspect with ephemeral state of an ephemeral thing, and the ephemeral side of
-    /// a durable thing's `/group`; not the ephemeral aspects of durable things.
+    /// Undo): every aspect with ephemeral state of an ephemeral thing and its `/created` (what
+    /// its creation and deletion touch), and the ephemeral side of a durable thing's `/group`;
+    /// not the ephemeral aspects of durable things.
     pub fn ephemeral_scope_keys(&self) -> Vec<(Tid, Ak)> {
-        let mut out = Vec::new();
+        let created = created_ak();
+        let mut out: Vec<(Tid, Ak)> = self.eph.things.keys().map(|t| (*t, created.clone())).collect();
         for (t, m) in &self.eph.aspects {
             let eph = self.eph.things.contains_key(t);
             out.extend(m.keys().filter(|ak| eph || ak.as_str() == GROUP.ak()).map(|ak| (*t, ak.clone())));
@@ -188,17 +220,30 @@ impl Engine {
         {
             return if e.session == self.eph.session && e.n <= self.eph.batches { Ok(Reverted::Compacted) } else { Err(Error::Misuse("no undo log for this ephemeral change (another node's, or from before a restart)")) };
         }
+        // undoing a creation deletes the thing, undoing that brings it back (spec/crdt.md §4.6):
+        // the things a commit created are deleted by its undo commit, their ephemeral side here
+        let entry = at.and_then(|i| self.eph.log.entries.get(i));
+        let is_eph = |t: &&Tid| self.eph.things.contains_key(t);
+        let mut del: BTreeSet<Tid> = entry.map(|e| e.making.made.iter().filter(is_eph).copied().collect()).unwrap_or_default();
+        let making = Making { made: entry.map(|e| e.making.unmade.iter().filter(is_eph).copied().collect()).unwrap_or_default(), unmade: del.iter().copied().collect() };
+        if let ChangeId::Commit(c) = id
+            && let Some(m) = self.core.ix.commits.get(&c)
+            && let Some(h) = m.header.decoded()
+        {
+            del.extend(crate::undo::made_by(&h, &m.valid));
+        }
         let ts = self.core.hlc.next();
         let first = self.eph.next;
         let resolved = match at {
-            Some(i) => match self.ephemeral_undo(i, ts) {
-                Ok(r) => r,
-                Err(e) => {
-                    self.eph.next = first;
-                    return Err(e);
-                }
-            },
-            None => Vec::new(),
+            Some(i) => self.ephemeral_undo(i, ts, &del),
+            None => Ok(Vec::new()),
+        };
+        let resolved = match resolved.and_then(|mut r| self.unmake_ephemeral(&del, ts, &mut r).map(|()| r)) {
+            Ok(r) => r,
+            Err(e) => {
+                self.eph.next = first;
+                return Err(e);
+            }
         };
         let commit = match id {
             ChangeId::Commit(c) => {
@@ -215,7 +260,7 @@ impl Engine {
             }
             ChangeId::Ephemeral(_) => None,
         };
-        if commit.is_none() && resolved.is_empty() {
+        if commit.is_none() && resolved.is_empty() && making.is_empty() {
             self.eph.next = first;
             return Ok(Reverted::Superseded);
         }
@@ -223,17 +268,18 @@ impl Engine {
             Some(c) => self.core.ix.commits.get(&c).map(|m| m.view.ts).unwrap_or(ts),
             None => ts,
         };
-        let w = self.apply_ephemeral(commit, resolved, Default::default(), Vec::new(), false, ts, actor, Some(id));
+        let w = self.apply_ephemeral(commit, resolved, Default::default(), Vec::new(), making, ts, actor, Some(id));
         Ok(w.map_or(Reverted::Superseded, Reverted::Written))
     }
 
-    /// The inverse writes of log entry `at` against the current state (spec/crdt.md §4.6).
-    fn ephemeral_undo(&mut self, at: usize, ts: Ts) -> Result<Vec<Resolved>> {
+    /// The inverse writes of log entry `at` against the current state (spec/crdt.md §4.6), but
+    /// for the aspects of `del` (deleted whole instead).
+    fn ephemeral_undo(&mut self, at: usize, ts: Ts, del: &BTreeSet<Tid>) -> Result<Vec<Resolved>> {
         let Some(aspects) = self.eph.log.entries.get(at).map(|e| e.aspects.clone()) else { return Ok(Vec::new()) };
         let undoers = self.eph.log.undoers();
         let src = self.eph.src.clone();
         let mut out = Vec::new();
-        for la in aspects {
+        for la in aspects.into_iter().filter(|a| !del.contains(&a.tid)) {
             let state = match self.joined_state(&la.tid, &la.ak)? {
                 Some(s) => s,
                 None => self.durable_state(&la.tid, &la.ak)?.unwrap_or_default(),
@@ -257,8 +303,65 @@ impl Engine {
         Ok(out)
     }
 
-    pub(super) fn log_push(&mut self, id: ChangeId, reverts: Option<ChangeId>, actor: Tid, ts: Ts, received: WallMs, aspects: Vec<LogAspect>) {
+    /// `delete`'s ephemeral writes for each of `del` (spec/crdt.md §4.6 Undoing a creation):
+    /// its ephemeral aspects reset and its entries removed from the ephemeral side of every
+    /// `/group` listing it, resolved against the ephemeral side after what `out` already writes
+    /// there and joined into it.
+    fn unmake_ephemeral(&mut self, del: &BTreeSet<Tid>, ts: Ts, out: &mut Vec<Resolved>) -> Result<()> {
+        if del.is_empty() {
+            return Ok(());
+        }
+        let mut ops: BTreeMap<(Tid, Ak), Vec<PathOp>> = BTreeMap::new();
+        for x in del {
+            for (ak, a) in self.eph.aspects.get(x).into_iter().flatten() {
+                if a.state.present() && ak.as_str() != CREATED.ak() && !is_membership_class(ak.as_str()) {
+                    ops.entry((*x, ak.clone())).or_default().push(PathOp { path: Vec::new(), op: Op::RemoveAspect });
+                }
+            }
+        }
+        for (g, (items, subs)) in &self.eph.defs {
+            let v = super::place::unplace_ops(items, subs, del);
+            let gak = self.eph.aspects.get(g).and_then(|m| m.keys().find(|k| k.as_str() == GROUP.ak()));
+            if let Some(gak) = gak.filter(|_| !del.contains(g) && !v.is_empty()) {
+                ops.entry((*g, gak.clone())).or_default().extend(v);
+            }
+        }
+        let core = Arc::new(osis_schema::core_schema().clone());
+        for ((tid, ak), ops) in ops {
+            let Some(a) = self.eph.aspects.get(&tid).and_then(|m| m.get(&ak)) else { continue };
+            let presence = a.presence;
+            let at = out.iter().position(|r| r.tid == tid && r.ak == ak);
+            let mut state = a.state.clone();
+            if let Some(r) = at.and_then(|i| out.get(i)) {
+                state.join(r.delta.clone());
+            }
+            let schema = (ak.as_str() == GROUP.ak()).then(|| core.clone());
+            let view = schema.as_ref().and_then(|s| s.view(ak.as_str()));
+            let w = Writer::new(ts, self.eph.src.clone(), self.eph.next);
+            let res = match &view {
+                Some(v) => run_ops(&state, w, &ops, v)?,
+                None => run_ops(&state, w, &ops, &AnyView)?,
+            };
+            let Some((delta, r)) = res else { continue };
+            self.eph.next = r.hi;
+            let pre = a.state.footprint(&delta);
+            match at.and_then(|i| out.get_mut(i)) {
+                Some(x) => {
+                    x.delta.join(delta);
+                    x.range.1 = r.hi;
+                    if let Some((p, _)) = &mut x.log {
+                        p.join(pre);
+                    }
+                }
+                None => out.push(Resolved { tid, ak, delta, range: (r.lo, r.hi), expires: None, presence, log: Some((pre, schema)) }),
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn log_push(&mut self, id: ChangeId, reverts: Option<ChangeId>, actor: Tid, ts: Ts, received: WallMs, aspects: Vec<LogAspect>, making: Making) {
         let cap = self.cfg.ephemeral_history;
-        self.eph.log.push(id, reverts, actor, ts, received, aspects, cap);
+        self.eph.log.push(id, reverts, actor, ts, received, aspects, making, cap);
     }
 }
