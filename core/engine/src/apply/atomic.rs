@@ -183,7 +183,9 @@ pub(crate) fn invalid_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<Owned> {
         if m.header.kind.has_own_writes() {
             out.extend(Owned::of(&m.header, c, ai));
         } else if m.header.kind == osis_commit::Kind::Import {
-            out.extend(m.header.origins.iter().map(|o| Owned::Commit(o.commit)));
+            // an origin owning its dots here (a commit-form commit on this aspect: the import is
+            // void, spec/permissions.md §7) keeps its writes
+            out.extend(m.header.origins.iter().filter(|o| !validity::owns_commit_dots(core, &o.commit, tid, ak)).map(|o| Owned::Commit(o.commit)));
         }
     }
     out
@@ -272,6 +274,16 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             now,
         );
     }
+    // an import naming an origin on its own thing is void, judged once both are held
+    // (spec/permissions.md §7): this one, or held ones naming this commit
+    let voided = validity::self_origin_imports(tx.core, &id, &h);
+    let void_self = voided.contains(&id);
+    for c in &voided {
+        held_changed = true;
+        tx.core.ix.void.insert(*c);
+        tx.core.stale_commits.insert(*c);
+        tx.txn.put_local(&[records::VOID, &c.0[..]].concat(), &[], Shred::No)?;
+    }
     index_commit(tx.core, &id, &view);
     // copies snapshots held here took of its writes: compared with its deltas once stored
     let uncarried = validity::uncarry(tx.core, &id, &h, &|ai| parts.iter().any(|p| p.0 == ai));
@@ -320,9 +332,10 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             strip_received_copies(tx.core, &a.tid, &a.ak, &mut f);
         }
         if !valid.get(ai).copied().unwrap_or(false) {
-            // an invalid snapshot gives nothing: its copies never join (spec/permissions.md §5.2)
+            // an invalid snapshot gives nothing: its copies never join (spec/permissions.md §5.2),
+            // nor does a void import's body (its copies may sit under an origin's own dots)
             if !snap {
-                arrived_invalid(tx, &a.tid, &a.ak, Some(f), &mut changed, &mut touched)?;
+                arrived_invalid(tx, &a.tid, &a.ak, (!void_self).then_some(f), &mut changed, &mut touched)?;
             }
             continue;
         }
@@ -346,6 +359,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     }
     rebuild_all(tx, &vouching, &mut changed, &mut touched)?;
     refill(tx, &h, &id, &uncarried, &mut changed, &mut touched)?;
+    unjoin_void(tx, &h, &id, &voided, &mut changed, &mut touched)?;
     for (tid, ak, snap, deaths) in &joined {
         crate::retention::note_deaths(tx, tid, ak, deaths)?;
         if *snap {
@@ -461,6 +475,29 @@ fn refill(tx: &mut Tx<'_>, h: &Header, id: &CommitId, uncarried: &[(Tid, Ak, BTr
     Ok(())
 }
 
+/// Rebuilds the aspects where held imports turned void by commit `id` (header `h`), an origin
+/// on their own thing, joined copies under `id`'s own dots: those go from the state and `id`'s
+/// deltas give the writes again (spec/permissions.md §7).
+fn unjoin_void(tx: &mut Tx<'_>, h: &Header, id: &CommitId, voided: &BTreeSet<CommitId>, changed: &mut BTreeSet<(Tid, Ak)>, touched: &mut Touched) -> Result<()> {
+    let mut aspects: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    for c in voided.iter().filter(|c| *c != id) {
+        let Some(m) = tx.core.ix.commits.get(c) else { continue };
+        aspects.extend(m.header.aspects.iter().filter(|a| h.aspects.iter().any(|x| x.tid == a.tid && x.ak == a.ak)).map(|a| (a.tid, a.ak.clone())));
+    }
+    for (tid, ak) in aspects {
+        if !validity::owns_commit_dots(tx.core, id, &tid, &ak) {
+            continue;
+        }
+        let st = rebuilt(tx, &tid, &ak, None, &[Owned::Commit(*id)])?;
+        tx.set_state(&tid, &ak, st, Shred::Yes, false)?;
+        crate::retention::mark_deaths_due(tx, &tid, &ak)?;
+        tx.core.mark_aspect_changed(&tid, &ak);
+        changed.insert((tid, ak.clone()));
+        touched.whole(&tid, &ak);
+    }
+    Ok(())
+}
+
 /// Rebuilds `aspects` once the commit is stored, so its own body joins too (`vouching`).
 fn rebuild_all(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>, touched: &mut Touched) -> Result<()> {
     for (tid, ak) in aspects {
@@ -547,7 +584,8 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         }
         if !meta.valid.get(ai).copied().unwrap_or(false) {
             if !snap {
-                arrived_invalid(tx, &a.tid, &a.ak, Some(f), &mut changed, &mut touched)?;
+                let void_import = h.kind == osis_commit::Kind::Import && tx.core.ix.void.contains(id);
+                arrived_invalid(tx, &a.tid, &a.ak, (!void_import).then_some(f), &mut changed, &mut touched)?;
             }
             continue;
         }
@@ -812,6 +850,10 @@ fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, forged: Option<&BTreeSet<osis_cr
         let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
         // an invalid snapshot's body joins nothing (spec/permissions.md §5.2)
         let snap_invalid = m.header.kind.is_compaction() && !m.valid.get(ai).copied().unwrap_or(false);
+        // nor does a void import's (spec/permissions.md §7)
+        if m.header.kind == osis_commit::Kind::Import && tx.core.ix.void.contains(&c) {
+            continue;
+        }
         for d in super::held_parts(tx, &c, ai)? {
             let (f, fr) = fragment(d);
             if fr.is_some() && snap_invalid {

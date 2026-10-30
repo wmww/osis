@@ -117,6 +117,11 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
     if h.kind != Kind::Content && !snapshot {
         return Ok(None);
     }
+    // origins are commits of other things (spec/permissions.md §7); a hostile test writer
+    // (`Engine::reimport`) imports them too
+    if h.aspects.iter().any(|a| a.tid == *m) && !tx.core.skip_writer_rules {
+        return Err(Error::Misuse("an import origin with a delta on the copy"));
+    }
     let own = match h.form {
         Form::Node => Source::node(h.author),
         Form::Commit => Source::commit(*c),

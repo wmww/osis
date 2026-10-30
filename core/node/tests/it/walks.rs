@@ -1021,6 +1021,55 @@ fn invalid_reimport_changes_nothing_spec_perm_7() {
     assert_eq!(states(&mut lp.peers[2].engine, &[t, copy]), before, "an invalid import changes nothing");
 }
 
+// spec/permissions.md §7, §5.2: an import naming as origin a commit on its own thing (here a
+// commit-form write by the copy's owner) is void wherever both are held, in either order: it
+// joins nothing and its invalidity never un-merges that commit's own writes
+// (issues/import-origin-same-thing.md).
+#[test]
+fn import_of_own_thing_commit_void_spec_perm_7() {
+    let mut lp = LocalPeer::new(3, 0xd0b4, T0).unwrap();
+    lp.sync_all().unwrap();
+    let x = lp.peers[1].engine.tid();
+    let t = new_thing(&mut lp, 0);
+    let o = new_thing(&mut lp, 0);
+    set_edge(&mut lp.peers[0].engine, o, x, Some(edge(Role::Admin)), None);
+    lp.sync_all().unwrap();
+    // peer 1, an admin of `o`, creates the copy under it, then is removed
+    let (copy, _) = lp.peers[1].engine.move_thing(&t, o).unwrap();
+    lp.sync(1, 0).unwrap();
+    set_edge(&mut lp.peers[0].engine, o, x, None, None);
+    let body = ak("/t/body");
+    let mut m = Mutation::new();
+    m.commit_form();
+    m.set(copy, &body, &s("by owner")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync(0, 1).unwrap();
+    let imports = lp.peers[1].engine.reimport(&copy, &copy).unwrap();
+    assert!(!imports.is_empty());
+    let pk1: Vec<_> = lp.packages(1).unwrap().into_iter().filter(|p| imports.contains(&p.id)).collect();
+    // peer 0: the commit first; peer 2: the imports first
+    for p in &pk1 {
+        lp.deliver(0, p).unwrap();
+    }
+    for p in lp.packages(0).unwrap().iter().filter(|p| p.id != c && !imports.contains(&p.id)) {
+        lp.deliver(2, p).unwrap();
+    }
+    for p in &pk1 {
+        let r = lp.deliver(2, p).unwrap();
+        assert!(matches!(r, osis_node::Ingested::Applied(_)), "{r:?}");
+    }
+    let pc = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    lp.deliver(2, &pc).unwrap();
+    let of_c = *imports.iter().find(|i| lp.peers[1].engine.header(i).unwrap().origins.iter().any(|o| o.commit == c)).unwrap();
+    for i in 0..3 {
+        assert_eq!(lp.peers[i].engine.get(&copy, &body).unwrap(), Some(s("by owner")), "peer {i}");
+        assert!(lp.peers[i].engine.core.ix.void.contains(&of_c), "peer {i}");
+    }
+    let s0 = states(&mut lp.peers[0].engine, &[copy]);
+    assert_eq!(states(&mut lp.peers[2].engine, &[copy]), s0);
+    assert_eq!(states(&mut lp.peers[1].engine, &[copy]), s0);
+}
+
 // spec/permissions.md §7, §5.2: a node holding a snapshot of a copy but not the move's imports
 // shows the imported writes it carries (the snapshot vouches for them). An import by another
 // node (a reader of the copy) is refused and changes nothing (it once re-attributed those writes
