@@ -99,12 +99,12 @@ pub(crate) fn join_write<W: Write>(s: &mut Option<W>, d: Option<W>, ch: &mut Cha
             false
         }
         Some(x) if x.stamp() > d.stamp() => {
-            ch.died(d.stamp(), x.stamp().ts);
+            ch.died(d.stamp(), x.stamp());
             false
         }
         _ => {
             if let Some(x) = s.as_ref() {
-                ch.died(x.stamp(), d.stamp().ts);
+                ch.died(x.stamp(), d.stamp());
             }
             *s = Some(d);
             ch.touch();
@@ -118,7 +118,7 @@ pub(crate) fn prune_write<W: Write>(w: &mut Option<W>, e: Option<&Stamp>, ch: &m
     if let (Some(x), Some(e)) = (w.as_ref(), e)
         && x.stamp() < e
     {
-        ch.died(x.stamp(), e.ts);
+        ch.died(x.stamp(), e);
         *w = None;
     }
 }
@@ -796,7 +796,7 @@ fn drop_implied_reset(r: &mut Register, ch: &mut Changes) {
     if let (Some(w), Some(x)) = (r.write.as_ref(), r.reset.as_ref())
         && w.stamp > *x
     {
-        ch.died(x, w.stamp.ts);
+        ch.died(x, &w.stamp);
         r.reset = None;
     }
 }

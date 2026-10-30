@@ -1229,6 +1229,10 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     // rebuild kept it for the join), so the orders' states differed
     let h = vec![Nested { by: 2, other: 0, t: 5, k: 2, text: false, compact: false, also: false }, Write { by: 0, t: 6, op: 3, k: 2, v: 9 }, Nested { by: 2, other: 0, t: 0, k: 2, text: false, compact: true, also: true }, Write { by: 1, t: 2, op: 0, k: 1, v: 0 }, Write { by: 1, t: 6, op: 16, k: 1, v: 2 }, Edge { by: 0, t: 2, member: 1, role: Some(Role::Write) }, Edge { by: 0, t: 7, member: 1, role: Some(Role::Write) }, Demote { by: 0, t: 4, member: 1, at: 1, to_read: true }, Edge { by: 0, t: 4, member: 2, role: Some(Role::Write) }, Demote { by: 0, t: 6, member: 1, at: 5, to_read: true }];
     cases.push((15085, h, LARGE));
+    // seed 2700027 (spec/commits.md §5): B's snapshot of a keep-at-most-0 register carries A's
+    // write that A's undo (`ts` below the snapshot's) already killed: held after the undo, the
+    // snapshot got no death and kept the undone value with no bound
+    cases.push((2700027, snapshot_of_undone(), LARGE));
     // in parallel: the slowest test of the module otherwise
     let idx: Vec<u64> = (0..cases.len() as u64).collect();
     let results = par_map(&idx, threads("OSIS_ORDER_THREADS"), |i| {
@@ -1335,6 +1339,59 @@ fn undone_entry_body_dropped_at_once_spec_commits_5() {
     let w = &played.packs[b + 1].id;
     let a = p.engine.header(w).unwrap().aspects[0].clone();
     assert!(!p.engine.body_not_dropped(w, &a.tid, &a.ak), "an entry's tombstone is no write of its creator");
+}
+
+fn snapshot_of_undone() -> Vec<Step> {
+    use Step::*;
+    vec![Write { by: 0, t: 1, op: 18, k: 1, v: 6 }, Send { from: 0, to: 1, back: 0 }, Undo { by: 0, back: 0 }, Compact { by: 1, t: 0, op: 18 }, Write { by: 0, t: 0, op: 18, k: 0, v: 5 }]
+}
+
+// spec/commits.md §5 (a snapshot's writes die for it no earlier than its `ts`; under at most 0
+// a body with no live write goes): order seed 2700027 reduced. B's keep-at-most-0 snapshot
+// carries A's write, which A's undo with a lower `ts` killed unseen by B: in every arrival
+// order the snapshot dies (at its own `ts` at the latest) and drops, whether the undo is held
+// before it (`note_copies`), after it (`note_deaths`) or the aspect's deaths are recomputed.
+#[test]
+fn snapshot_of_undone_write_dropped_any_order_spec_commits_5() {
+    let h = snapshot_of_undone();
+    let played = play(2700027, &h);
+    let b = played.base;
+    let n = played.packs.len() - b;
+    let mut orders = vec![(b..b + n).collect::<Vec<_>>()];
+    // every order of the history's commits, the setup first
+    while let Some(o) = next_perm(orders.last().unwrap()) {
+        orders.push(o);
+    }
+    for rel in orders {
+        let order: Vec<usize> = (0..b).chain(rel.iter().copied()).collect();
+        let p = deliver(&played, &order);
+        let snap = p.engine.commit_ids().into_iter().find(|id| p.engine.header(id).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot)).expect("a snapshot");
+        let a = p.engine.header(&snap).unwrap().aspects[0].clone();
+        assert!(!p.engine.body_not_dropped(&snap, &a.tid, &a.ak), "order {rel:?}: the snapshot of an undone write dropped");
+        // a node keeping every body dates its death (at a superseder it met), a recompute at its
+        // `ts` at the latest (the undo is the first superseder held)
+        let mut k = Peer::new(FRESH, played.now).unwrap();
+        k.engine.keep_bodies(true);
+        for &i in &order {
+            let pk = &played.packs[i];
+            let _ = k.engine.ingest(&pk.bytes, pk.blobs.clone());
+        }
+        let ts = k.engine.header(&snap).unwrap().ts;
+        let first = |k: &mut Peer| k.engine.deaths(&snap, &a.tid, &a.ak).unwrap().map(|d| d.0);
+        assert!(first(&mut k).is_some(), "order {rel:?}: no death");
+        k.engine.replay_deaths(&a.tid, &a.ak).unwrap();
+        assert!(first(&mut k).is_some_and(|f| f <= ts), "order {rel:?}: recomputed {:?}, snapshot at {ts:?}", first(&mut k));
+    }
+}
+
+/// The next permutation of `v` in lexicographic order, if any.
+fn next_perm(v: &[usize]) -> Option<Vec<usize>> {
+    let mut v = v.to_vec();
+    let i = (1..v.len()).rev().find(|&i| v[i - 1] < v[i])?;
+    let j = (i..v.len()).rev().find(|&j| v[j] > v[i - 1])?;
+    v.swap(i - 1, j);
+    v[i..].reverse();
+    Some(v)
 }
 
 // spec/commits.md §5 (a drop is final: nodes holding the same commits may differ in whether a
