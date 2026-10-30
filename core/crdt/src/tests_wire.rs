@@ -311,7 +311,7 @@ fn set_element_is_a_register_spec_3_2() {
 }
 
 /// §3.2 `PosW`, §3.3 rule 7, §5.7: a writer's position write may carry a sibling key naming
-/// another commit (the only use of a writer's commit table), strictly below its stamp; a write
+/// another commit (the only use of a writer's commit table), its `ts` below its stamp's; a write
 /// stamp naming a table commit is foreign. Model and implementation agree on each.
 #[test]
 fn position_write_sibling_keys_spec_3_3() {
@@ -334,8 +334,9 @@ fn position_write_sibling_keys_spec_3_3() {
     let crate::Fragment::Seq(s) = &ok.fragment else { panic!("text") };
     let e = s.elems().values().next().unwrap();
     assert_eq!(e.pos.first().and_then(|p| p.2.as_ref()), Some(&crate::stamp::Stamp::new(ts(1 << 16), Source::node(tid(2)), 7)));
-    // the key equal to or above the stamp (own commit: counter 3 is the base)
-    for k in [i(0), l(vec![i(0), i(4)])] {
+    // the key equal to or above the stamp (own commit: counter 3 is the base), or below it at
+    // the same ts (imports re-source both, which may reorder them)
+    for k in [i(0), l(vec![i(0), i(4)]), l(vec![i(0), i(2)])] {
         assert!(alike(&delta(vec![n2.clone()], vec![], posw(vec![i(0), i(0), i(0), k]))).is_err());
     }
     // the write stamp naming the table's commit

@@ -266,10 +266,11 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
             let st = cx.stamp(st)?;
             cx.claim(&st.dot)?;
             let a = dec_anchor(cx, a)?;
-            // a sibling key is an older write's stamp, any commit's (§5.7, §3.3 rule 7)
+            // a sibling key is an older commit's write stamp, any commit's (§5.7, §3.3 rule 7); its
+            // `ts` below the write's, so re-sourcing (imports) keeps it below
             let key = key.map(|k| cx.key_stamp(k)).transpose()?;
-            if key.as_ref().is_some_and(|k| *k >= st) {
-                return Err(Error::Malformed("sibling key not below its stamp"));
+            if key.as_ref().is_some_and(|k| k.ts >= st.ts) {
+                return Err(Error::Malformed("sibling key not below its stamp's ts"));
             }
             pws.push((i, (st, a, key)));
         }
