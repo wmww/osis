@@ -167,7 +167,7 @@ pub(crate) fn bounded(a: &osis_commit::AspectEntry) -> bool {
 /// still to arrive).
 pub(crate) fn held_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> {
     let m = core.ix.commits.get(c)?;
-    let ai = aspect_index(core, c, tid, ak)?;
+    let ai = m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak)?;
     // a part that never arrived (`missing`, a late part) is not held
     (!m.dropped.contains_key(&ai) && !m.missing.contains(&ai)).then_some(ai)
 }
@@ -263,27 +263,30 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     Ok(())
 }
 
-/// The snapshots that covered dropped part `ai` of `c` when it dropped, and those that covered
-/// such a coverer dropped in turn, and so on (`Dropped::covered_by`).
-pub(crate) fn coverers(core: &Core, c: &CommitId, ai: usize) -> BTreeSet<CommitId> {
-    let Some(a) = core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)) else { return BTreeSet::new() };
+/// Whether `f` holds for a snapshot that covered dropped part `ai` of `c` when it dropped, or
+/// covered such a coverer dropped in turn, and so on (`Dropped::covered_by`); stops at the first.
+pub(crate) fn any_coverer(core: &Core, c: &CommitId, ai: usize, f: &dyn Fn(&CommitId) -> bool) -> bool {
+    let Some(a) = core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)) else { return false };
     let (tid, ak) = (a.tid, a.ak.clone());
     let direct = |x: &CommitId| -> Vec<CommitId> {
         let Some(m) = core.ix.commits.get(x) else { return Vec::new() };
         let xai = m.view.aspects.iter().position(|a| a.tid == tid && a.ak == ak);
         xai.and_then(|xai| m.dropped.get(&xai)).map(|d| d.covered_by.iter().copied().collect()).unwrap_or_default()
     };
-    let mut out = BTreeSet::new();
+    let mut seen = BTreeSet::new();
     let mut todo = direct(c);
     while let Some(x) = todo.pop() {
-        if out.insert(x) {
+        if f(&x) {
+            return true;
+        }
+        if seen.insert(x) {
             todo.extend(direct(&x));
         }
     }
-    out
+    false
 }
 
-/// Parts on `(tid, ak)` dropped as covered that no coverer carries any more (`coverers`: each
+/// Parts on `(tid, ak)` dropped as covered that no coverer carries any more (`any_coverer`: each
 /// turned invalid, or was itself dropped as covered; one dropped for its bound, expiry or a
 /// purge carries while valid, its writes staying in the state) are missing again
 /// (spec/permissions.md §5.2): they give nothing, as at a node that never held them, until the
@@ -305,7 +308,7 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
     for (_, c) in core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten() {
         let Some(m) = core.ix.commits.get(c) else { continue };
         let Some(ai) = m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
-        if m.dropped.get(&ai).is_some_and(|d| d.as_cover) && !coverers(core, c, ai).iter().any(carries) {
+        if m.dropped.get(&ai).is_some_and(|d| d.as_cover) && !any_coverer(core, c, ai, &carries) {
             lost.push((*c, ai));
         }
     }
@@ -772,7 +775,8 @@ impl Engine {
     /// Whether `c` is known with an aspect `(tid, ak)` whose body is not dropped: true for a
     /// missing part too (`Engine::aspect_dump` shows which).
     pub fn body_not_dropped(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
-        aspect_index(&self.core, c, tid, ak).is_some_and(|ai| self.core.ix.commits.get(c).is_some_and(|m| !m.dropped.contains_key(&ai)))
+        let Some(m) = self.core.ix.commits.get(c) else { return false };
+        m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak).is_some_and(|ai| !m.dropped.contains_key(&ai))
     }
 
     /// Writes a compaction snapshot of `(tid, ak)` from this node's whole state (spec/commits.md
