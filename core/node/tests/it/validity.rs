@@ -2492,3 +2492,58 @@ fn bound_dropped_coverer_still_carries_spec_commits_5() {
     lp.peers[0].restart(0x5ff1).unwrap();
     assert!(k1(&mut lp, 0), "k1 still live, restarted");
 }
+
+/// A content commit signed by peer `by`'s key carrying only `/created` of `rec`'s thing at `ts`,
+/// its delta `ops` run from counter `lo` (the record's view, else untyped).
+fn forge_created(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord, ts: osis_base::Ts, lo: u64, ops: &[osis_crdt::PathOp], typed: bool) -> Result<Vec<u8>, String> {
+    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{Batch, Delta, Source, Writer, encode_delta};
+    let view = osis_schema::core_schema().view("/created").unwrap();
+    let author = lp.peers[by].engine.tid();
+    let empty = osis_crdt::Fragment::default();
+    let mut b = Batch::new(&empty, Writer::new(ts, Source::node(author), lo));
+    for op in ops {
+        if typed { b.apply(op, &view) } else { b.apply(op, &osis_crdt::AnyView) }.map_err(|e| format!("{e:?}"))?;
+    }
+    let (f, r) = b.finish().ok_or("empty")?;
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(Kind::Content, ts, author, r.lo, r.hi), None).map_err(|e| format!("{e:?}"))?;
+    let mut aw = AspectWrite::new(rec.tid(), ak("/created"), r.lo, r.hi, bytes);
+    aw.retention = osis_commit::retention::fixed_retention("/created").unwrap();
+    let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, Form::Node);
+    cb.aspects.push(aw);
+    Ok(cb.build(&lp.peers[by].engine.identity().keys().signing, &Dedup(rec.clone()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode())
+}
+
+// spec/commits.md §2 (created one minting): Bob's
+// commits whose `/created` reads the record but is no minting of it (padded with a reset, or
+// written untyped) are refused whole; his commit carrying one minting applies, and the honest
+// creating commit (another minting of the same record, as two nodes persisting one ephemeral
+// thing carry) joins it; no snapshot of `/created` is written.
+#[test]
+fn padded_durable_created_refused_spec_commits_2() {
+    use osis_crdt::{Op, PathOp};
+    let (mut lp, d, _, _) = setup(53);
+    let mut m = Mutation::new();
+    let x = lp.peers[1].engine.new_thing(&mut m, d);
+    m.set(x, &REG, &s("x")).unwrap();
+    let honest = lp.peers[1].commit(m).unwrap().unwrap();
+    let rec = lp.peers[1].engine.get_typed(&x, &osis_schema::core_types::CREATED).unwrap().unwrap();
+    let r = rec.to_value();
+    let created = |lp: &mut LocalPeer| lp.peers[0].engine.get_typed(&x, &osis_schema::core_types::CREATED).unwrap();
+    let ts = |lp: &mut LocalPeer, k: u64| osis_base::Ts::make(WallMs(lp.peers[1].engine.now().0 + k), 0).unwrap();
+    let padded = [(vec![PathOp { path: Vec::new(), op: Op::Replace(r.clone()) }], true), (vec![PathOp { path: Vec::new(), op: Op::Set(r.clone()) }], false)];
+    for (k, (ops, typed)) in padded.into_iter().enumerate() {
+        let t = ts(&mut lp, k as u64 + 1);
+        let b = forge_created(&mut lp, 1, &rec, t, 1000 * (k as u64 + 1), &ops, typed).unwrap();
+        assert_eq!(lp.peers[0].engine.ingest(&b, Vec::new()).unwrap_err().class(), osis_base::ErrorClass::BadInput, "typed {typed}");
+        assert!(created(&mut lp).is_none());
+    }
+    let t = ts(&mut lp, 10);
+    let one = forge_created(&mut lp, 1, &rec, t, 5000, &[PathOp { path: Vec::new(), op: Op::Set(r) }], true).unwrap();
+    assert!(matches!(lp.peers[0].engine.ingest(&one, Vec::new()).unwrap(), Ingested::Applied(_)));
+    assert_eq!(created(&mut lp), Some(rec.clone()));
+    send(&mut lp, 1, 0, &[honest]);
+    assert_eq!(lp.peers[0].engine.get(&x, &ak("/t/reg")).unwrap(), Some(s("x")));
+    assert_eq!(created(&mut lp), Some(rec));
+    assert!(matches!(lp.peers[0].engine.snapshot(&x, &ak("/created")), Err(osis_node::Error::Misuse(_))));
+}

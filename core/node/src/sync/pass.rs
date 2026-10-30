@@ -2218,7 +2218,8 @@ impl SyncEngine {
             return Ok(());
         }
         for (t, a) in aspects {
-            if is_membership(a) || self.engine.role_on(t) < Some(Role::Write) {
+            // `/created` is kept forever and never compacted
+            if is_membership(a) || a.as_str() == "/created" || self.engine.role_on(t) < Some(Role::Write) {
                 continue;
             }
             if self.carrier_of(body, t, a).is_some() {

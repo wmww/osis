@@ -71,6 +71,27 @@ fn created_rejects_expires() {
     assert!(h.validate().unwrap_err().to_string().contains("fixed-retention"));
 }
 
+// spec/commits.md §2 (created one minting): a durable snapshot or import never carries `/created`.
+#[test]
+fn created_only_in_commits_with_own_writes() {
+    let mut h = sample_header();
+    let a = &mut h.aspects[0];
+    a.ak = Ak::new("/created").unwrap();
+    a.retention = retention::CREATED_RETENTION;
+    a.keys.clear();
+    a.schema = None;
+    a.expires = None;
+    a.lo = 0;
+    a.hi = 0;
+    h.keys.clear();
+    h.schemas.clear();
+    for k in [Kind::ContentSnapshot, Kind::Import] {
+        let mut x = h.clone();
+        x.kind = k;
+        assert!(x.validate().unwrap_err().to_string().contains("without own writes"), "{k:?}");
+    }
+}
+
 // spec/sync.md §3, spec/wire.md §4: a received blob mixing retention classes is bad input.
 #[test]
 fn prefix_inputs_mixed_class_bad_input() {

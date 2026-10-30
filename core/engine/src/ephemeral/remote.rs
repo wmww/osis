@@ -22,7 +22,7 @@
 use super::{Eph, EphAspect, EphThing};
 use crate::engine::Engine;
 use crate::engine::secrets::{CommitSecrets, published_keys};
-use crate::engine::write::{Creates, required_role, run_ops};
+use crate::engine::write::{Creates, is_minting, mint_created, required_role, run_ops};
 use crate::error::{Error, Result};
 use crate::events::{ChangeId, Event, Origin};
 use osis_base::format::{KEEPALIVE_MS, MAX_DRIFT_MS, MAX_LEASE_MS, MAX_OWNER_DEPTH};
@@ -1324,24 +1324,9 @@ impl Engine {
     }
 }
 
-/// `/created` of `rec`: one write of its record by a writer at `ts` under `src` from counter
-/// `lo`, and the next unused counter.
-fn mint_created(rec: &CreationRecord, ts: Ts, src: Source, lo: u64) -> Option<(Fragment, u64)> {
-    let w = Writer::new(ts, src, lo);
-    let (f, r) = run_ops(&Fragment::default(), w, &[PathOp { path: Vec::new(), op: Op::Set(rec.to_value()) }], &AnyView).ok()??;
-    Some((f, r.hi))
-}
-
-/// Whether `f` is exactly what `mint_created` makes of `rec` under a session source (spec/sync.md
-/// §9): no other write (losing junk honest carriers would repeat) fits.
+/// Whether `f` is exactly one minting of `rec` under a session source (spec/sync.md §9).
 fn is_minted(f: &Fragment, rec: &CreationRecord) -> bool {
-    let writes = f.writes();
-    let Some((first, Some(ts))) = writes.first() else { return false };
-    if !matches!(first.src.kind(), SourceKind::Commit(_)) || writes.iter().any(|(d, t)| d.src != first.src || *t != Some(*ts)) {
-        return false;
-    }
-    let lo = writes.iter().map(|(d, _)| d.ctr).min().unwrap_or(first.ctr);
-    mint_created(rec, *ts, first.src.clone(), lo).is_some_and(|(m, _)| m == *f)
+    f.writes().first().is_some_and(|(d, _)| matches!(d.src.kind(), SourceKind::Commit(_))) && is_minting(f, rec)
 }
 
 /// One minting of the record `f` reads out of `f`, a join of mintings of it: `f` if it is one,
