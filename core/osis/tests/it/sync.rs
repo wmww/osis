@@ -301,7 +301,7 @@ fn finalized(db: &Osis, k: Tid, l: Tid) -> bool {
     db.engine(|e| e.held_links().unwrap().iter().any(|x| (x.k, x.l) == (k, l)) && e.links_due().unwrap().is_empty())
 }
 
-// spec/permissions.md §9 (`until` finalized by a sharer device's removal of L): with Alice's
+// spec/permissions.md §9 (link finalized): `until` finalized by a sharer device's removal of L; with Alice's
 // device offline when the link expires, her other device (which holds the seed thing, not the
 // link record) removes L at expiry; back online, Alice's device writes nothing more; Bob stays.
 #[test]
@@ -329,7 +329,7 @@ fn until_link_finalized_by_other_device_spec_permissions_9() {
     assert!(alice.roster(k).contains_key(&bob.me()) && bob.role_on(g).is_some(), "the joiner stays");
 }
 
-// spec/permissions.md §9: Alice's only device is offline when the link expires; it removes L
+// spec/permissions.md §9 (link finalized): Alice's only device is offline when the link expires; it removes L
 // once it is back and synced K's label; Bob stays.
 #[test]
 fn until_link_finalized_when_sharer_returns_spec_permissions_9() {
