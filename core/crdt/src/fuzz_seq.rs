@@ -59,8 +59,9 @@ pub enum Step {
     /// Replica `r` undoes its `back`-th last commit (wrapped).
     Undo { r: u8, back: u8 },
     /// Replica `to` joins `n` commits of the log from the `pick`-th on (wrapped; seen ones again
-    /// as duplicates); `per` > 0: each also followed by a placement held in part.
-    Join { to: u8, pick: u8, n: u8, per: u8 },
+    /// as duplicates); `per` > 0: each also followed by a placement held in part; `merged`: the
+    /// commits joined into one delta first (several writes on one element in one delta).
+    Join { to: u8, pick: u8, n: u8, per: u8, merged: bool },
     /// Replica `r`'s state through a snapshot round trip (deleted chars dropped, range records).
     Reboot { r: u8 },
     /// Replica `r` starts over from replica `from`'s snapshot, then joins its own commits.
@@ -121,6 +122,8 @@ pub struct Stats {
     pub restores: usize,
     pub joins: usize,
     pub model_joins: usize,
+    /// joins of several commits as one delta
+    pub merged: usize,
 }
 
 struct World {
@@ -186,7 +189,7 @@ pub fn random_script(r: &mut Rng, steps: usize) -> Script {
                 5 | 6 => Step::Model { r: rr, seed: w(r) },
                 // half of them the last commit, which an undo restores when nothing joined since
                 7 => Step::Undo { r: rr, back: if r.chance(1, 2) { 0 } else { b(r) } },
-                8 | 9 => Step::Join { to: rr, pick: b(r), n: 1 + r.below(4) as u8, per: if r.chance(1, 2) { 1 + r.below(8) as u8 } else { 0 } },
+                8 | 9 => Step::Join { to: rr, pick: b(r), n: 1 + r.below(4) as u8, per: if r.chance(1, 2) { 1 + r.below(8) as u8 } else { 0 }, merged: r.chance(1, 3) },
                 10 => Step::Reboot { r: rr },
                 _ => Step::Bootstrap { r: rr, from: r.below(REPLICAS) as u8 },
             }
@@ -370,11 +373,16 @@ impl World {
             Step::Ops { r, ref ops, skew, per } => self.ops(usize::from(r) % REPLICAS, ops, skew, per),
             Step::Model { r, seed } => self.model(usize::from(r) % REPLICAS, seed),
             Step::Undo { r, back } => self.undo(usize::from(r) % REPLICAS, back),
-            Step::Join { to, pick, n, per } => {
+            Step::Join { to, pick, n, per, merged } => {
                 let to = usize::from(to) % REPLICAS;
                 let len = self.log.len();
-                for k in 0..(usize::from(n) % (MAX_JOIN + 1)).min(len) {
-                    self.deliver(to, (usize::from(pick) + k) % len, per);
+                let ks: Vec<usize> = (0..(usize::from(n) % (MAX_JOIN + 1)).min(len)).map(|k| (usize::from(pick) + k) % len).collect();
+                if merged {
+                    self.deliver_merged(to, &ks, per);
+                } else {
+                    for k in ks {
+                        self.deliver(to, k, per);
+                    }
                 }
             }
             Step::Reboot { r } => {
@@ -431,18 +439,38 @@ impl World {
     }
 
     fn deliver(&mut self, to: usize, k: usize, per: u8) {
-        let (d, md) = (self.log[k].d.clone(), self.log[k].md.clone());
-        self.join_into(to, d, per);
-        self.stats.joins += 1;
-        let rep = &mut self.reps[to];
-        rep.seen.insert(k);
-        rep.last = None;
-        match md {
-            Some(md) if rep.tracked => {
-                self.stats.model_joins += 1;
-                mapply(&mut rep.ms, md)
+        self.deliver_merged(to, &[k], per);
+    }
+
+    /// Joins commits `ks` of the log into replica `to` as one delta: more than one is joined into
+    /// a copy of its state first (text content needs the creation it lives with, §5.7), as a peer's
+    /// state would arrive.
+    fn deliver_merged(&mut self, to: usize, ks: &[usize], per: u8) {
+        let d = match ks {
+            [] => return,
+            [k] => self.log[*k].d.clone(),
+            _ => {
+                self.stats.merged += 1;
+                let mut d = self.reps[to].st.clone();
+                for &k in ks {
+                    d.join(self.log[k].d.clone());
+                }
+                d
             }
-            _ => rep.tracked = false,
+        };
+        self.join_into(to, d, per);
+        self.stats.joins += ks.len();
+        let rep = &mut self.reps[to];
+        rep.last = None;
+        for &k in ks {
+            rep.seen.insert(k);
+            match self.log[k].md.clone() {
+                Some(md) if rep.tracked => {
+                    self.stats.model_joins += 1;
+                    mapply(&mut rep.ms, md)
+                }
+                _ => rep.tracked = false,
+            }
         }
         self.check_model(to, "a join");
     }
@@ -687,8 +715,9 @@ mod tests {
             all.restores += x.restores;
             all.joins += x.joins;
             all.model_joins += x.model_joins;
+            all.merged += x.merged;
         }
-        assert!(all.commits > 150 && all.partial > 40 && all.one_by_one > 40 && all.model_ops > 40 && all.model_joins > 8 && all.undos > 10 && all.restores > 2 && all.joins > 300, "{all:?}");
+        assert!(all.commits > 150 && all.partial > 40 && all.one_by_one > 40 && all.model_ops > 40 && all.model_joins > 8 && all.undos > 10 && all.restores > 2 && all.joins > 300 && all.merged > 20, "{all:?}");
     }
 
     /// §6.2: a move on a replica holding a broken cycle (shrunk from a random script) re-places
@@ -696,7 +725,7 @@ mod tests {
     /// model's delta and the replica's state stays the model's.
     #[test]
     fn move_beside_broken_cycle_replays_spec_6_2() {
-        let s = Script{list:false,steps:vec![Step::Model{r:2,seed:43984,},Step::Ops{r:1,ops:vec![LocalOp::Insert{at:24797,item:28,},],skew:0,per:0,},Step::Model{r:2,seed:34863,},Step::Ops{r:1,ops:vec![LocalOp::Move{at:8501,len:81,to:16916,},],skew:0,per:0,},Step::Model{r:0,seed:4636,},Step::Ops{r:1,ops:vec![LocalOp::Move{at:56715,len:98,to:39210,},],skew:0,per:0,},Step::Ops{r:1,ops:vec![LocalOp::Move{at:25427,len:172,to:49462,},],skew:0,per:0,},Step::Ops{r:2,ops:vec![LocalOp::Delete{at:24211,len:208,},],skew:0,per:0,},Step::Join{to:0,pick:218,n:1,per:0,},Step::Ops{r:1,ops:vec![LocalOp::Delete{at:10145,len:211,},],skew:0,per:0,},Step::Ops{r:1,ops:vec![LocalOp::Delete{at:22635,len:234,},],skew:0,per:0,},Step::Ops{r:2,ops:vec![LocalOp::Move{at:22605,len:77,to:30330,},],skew:0,per:0,},Step::Model{r:2,seed:34675,},Step::Ops{r:2,ops:vec![LocalOp::Insert{at:34823,item:116,},],skew:0,per:0,},Step::Join{to:0,pick:63,n:1,per:0,},Step::Ops{r:2,ops:vec![LocalOp::Delete{at:34543,len:138,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Insert{at:48798,item:233,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Move{at:4606,len:60,to:40670,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Delete{at:53482,len:91,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Insert{at:16555,item:19,},],skew:0,per:0,},Step::Join{to:1,pick:251,n:2,per:0,},Step::Join{to:0,pick:106,n:4,per:0,},Step::Ops{r:2,ops:vec![LocalOp::Delete{at:57007,len:193,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Insert{at:43702,item:225,},],skew:0,per:0,},Step::Ops{r:1,ops:vec![LocalOp::Move{at:55088,len:176,to:23293,},],skew:0,per:0,},Step::Join{to:0,pick:60,n:4,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Move{at:30935,len:99,to:4073,},],skew:0,per:0,},],};
+        let s = Script{list:false,steps:vec![Step::Model{r:2,seed:43984,},Step::Ops{r:1,ops:vec![LocalOp::Insert{at:24797,item:28,},],skew:0,per:0,},Step::Model{r:2,seed:34863,},Step::Ops{r:1,ops:vec![LocalOp::Move{at:8501,len:81,to:16916,},],skew:0,per:0,},Step::Model{r:0,seed:4636,},Step::Ops{r:1,ops:vec![LocalOp::Move{at:56715,len:98,to:39210,},],skew:0,per:0,},Step::Ops{r:1,ops:vec![LocalOp::Move{at:25427,len:172,to:49462,},],skew:0,per:0,},Step::Ops{r:2,ops:vec![LocalOp::Delete{at:24211,len:208,},],skew:0,per:0,},Step::Join{to:0,pick:218,n:1,per:0,merged:false,},Step::Ops{r:1,ops:vec![LocalOp::Delete{at:10145,len:211,},],skew:0,per:0,},Step::Ops{r:1,ops:vec![LocalOp::Delete{at:22635,len:234,},],skew:0,per:0,},Step::Ops{r:2,ops:vec![LocalOp::Move{at:22605,len:77,to:30330,},],skew:0,per:0,},Step::Model{r:2,seed:34675,},Step::Ops{r:2,ops:vec![LocalOp::Insert{at:34823,item:116,},],skew:0,per:0,},Step::Join{to:0,pick:63,n:1,per:0,merged:false,},Step::Ops{r:2,ops:vec![LocalOp::Delete{at:34543,len:138,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Insert{at:48798,item:233,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Move{at:4606,len:60,to:40670,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Delete{at:53482,len:91,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Insert{at:16555,item:19,},],skew:0,per:0,},Step::Join{to:1,pick:251,n:2,per:0,merged:false,},Step::Join{to:0,pick:106,n:4,per:0,merged:false,},Step::Ops{r:2,ops:vec![LocalOp::Delete{at:57007,len:193,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Insert{at:43702,item:225,},],skew:0,per:0,},Step::Ops{r:1,ops:vec![LocalOp::Move{at:55088,len:176,to:23293,},],skew:0,per:0,},Step::Join{to:0,pick:60,n:4,per:0,merged:false,},Step::Ops{r:0,ops:vec![LocalOp::Move{at:30935,len:99,to:4073,},],skew:0,per:0,},],};
         replay(&s);
     }
 
@@ -725,7 +754,7 @@ mod tests {
                 let mut t = s.clone();
                 match &mut t.steps[k] {
                     Step::Ops { skew, per, .. } if *skew > 0 || *per > 0 => (*skew, *per) = (0, 0),
-                    Step::Join { per, .. } if *per > 0 => *per = 0,
+                    Step::Join { per, merged, .. } if *per > 0 || *merged => (*per, *merged) = (0, false),
                     _ => {}
                 }
                 if format!("{:?}", t.steps[k]) != format!("{:?}", s.steps[k]) && fails(&t) {
