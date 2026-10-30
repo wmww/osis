@@ -1100,6 +1100,71 @@ fn link_bearer_and_until_spec_perm_9() {
     assert!(lp.peers[1].engine.epochs(&link.k).unwrap().read.secret(&k1).is_none(), "the bearer is out");
 }
 
+// spec/permissions.md §9, §5.1: an expired link is due for finalization on both of the sharer's
+// devices (the seed thing is the person's); both finalize concurrently without conflict. A seed
+// holder whose clock lags signs an invite grant as L dated before `until`, after both removals:
+// their frontiers do not cover it, so it is void at every peer, whether it arrives before or
+// after the removals (until they arrive it stands: the window the removal closes); the joiner
+// that redeemed while the link worked stays.
+#[test]
+fn until_link_backdated_grant_void_spec_perm_9() {
+    let (mut lp, p, _) = person_two_devices(530);
+    let mut more = net(3, 531);
+    lp.peers.append(&mut more.peers);
+    let ps: Vec<Tid> = (2..5).map(|i| lp.peers[i].engine.create_person(&servers()).unwrap().0.person).collect();
+    let (joiner, forger) = (ps[0], ps[1]);
+    spread(&mut lp);
+    let d = thing_of(&mut lp, 0, p);
+    let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
+    let (link, keep, _) = lp.peers[0].engine.create_link(&p, &link_spec(d, Role::Read, Some(until))).unwrap();
+    let l = osis_node::identity::Identity::from_seed(link.seed.clone()).tid();
+    spread(&mut lp);
+    lp.peers[2].engine.redeem(&link, &joiner, false).unwrap();
+    spread(&mut lp);
+    for i in [0, 1] {
+        assert!(lp.peers[i].engine.get(&keep, &ak(osis_node::flows::LINK_SEED)).unwrap().is_some());
+        assert_eq!(*lp.peers[i].engine.held_links().unwrap(), vec![(link.k, l)], "peer {i}");
+        assert!(lp.peers[i].engine.links_due().unwrap().is_empty(), "peer {i}: not expired yet");
+        assert_eq!(lp.peers[i].engine.next_link_expiry().unwrap(), Some(until.0), "peer {i}");
+    }
+    // (commits travel unencrypted here: the joiner reads the seed thing too, but is no admin of K)
+    assert_eq!(lp.peers[2].engine.next_link_expiry().unwrap(), None);
+    // the link expires everywhere but at the forger
+    for i in [0, 1, 2, 4] {
+        lp.peers[i].clock.advance(2 * 3_600_000);
+    }
+    let mut removals = Vec::new();
+    for i in [0, 1] {
+        assert_eq!(lp.peers[i].engine.links_due().unwrap(), vec![(link.k, l, Some(until))], "peer {i}");
+        assert_eq!(lp.peers[i].engine.next_link_expiry().unwrap(), None);
+        let done = lp.peers[i].engine.finalize_link(&link.k, &l).unwrap();
+        assert!(lp.peers[i].engine.links_due().unwrap().is_empty(), "peer {i}: idempotent");
+        removals.push((i, done.commits));
+    }
+    // the forger: L still alive by its clock, a grant dated before `until`
+    let forged = lp.peers[3].engine.redeem(&link, &forger, false).unwrap().commits;
+    assert!(lp.peers[3].engine.header(&forged[0]).unwrap().ts.wall_ms() < until);
+    // (its clock catches up, else it parks the removals as from the future)
+    lp.peers[3].clock.advance(2 * 3_600_000);
+    // peer 4 gets the forged grant first, peer 2 the removals first
+    send(&mut lp, 3, 4, &forged);
+    assert!(lp.peers[4].engine.roster(&link.k).contains_key(&forger), "stands until the removal arrives");
+    for (i, c) in &removals {
+        send(&mut lp, *i, 4, c);
+        send(&mut lp, *i, 2, c);
+    }
+    send(&mut lp, 3, 2, &forged);
+    spread(&mut lp);
+    for i in 0..5 {
+        let r = lp.peers[i].engine.roster(&link.k);
+        assert!(r.contains_key(&joiner) && !r.contains_key(&forger) && !r.contains_key(&l), "peer {i}: {r:?}");
+        assert_eq!(lp.peers[i].engine.core.role_now(&forger, &d), None, "peer {i}");
+    }
+    for i in 0..5 {
+        assert!(lp.peers[i].engine.links_due().unwrap().is_empty(), "peer {i}: nothing left after both removals");
+    }
+}
+
 // spec/permissions.md §3 (re-seal): a grant raced by a rotation leaves the grantee without a
 // box at the new epoch; at the end of a complete pass a node that may rotate re-seals it by
 // inbox; the removed member is not re-sealed.

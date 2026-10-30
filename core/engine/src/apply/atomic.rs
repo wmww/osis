@@ -75,6 +75,9 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
         if a.ak.as_str() == "/label" {
             core.ix.labeled.insert(a.tid);
         }
+        if a.ak.as_str() == crate::flows::LINK_SEED {
+            core.links = None;
+        }
         core.ix.by_thing.insert(a.tid, *id);
         if h.form == Form::Node && h.kind.has_own_writes() && a.lo < a.hi {
             core.ix.ranges.insert((a.tid, a.ak.clone(), h.author), a.lo, (a.hi, *id));

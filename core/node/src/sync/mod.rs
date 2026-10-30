@@ -360,7 +360,8 @@ pub struct SyncEngine {
     pub(crate) state: State,
     /// Event counter: pass completions and remote membership commits are ordered by it.
     pub(crate) seq: u64,
-    pub(crate) passes: BTreeMap<(ServerKey, LabelId), u64>,
+    /// Per (server, label), the last pass end: its `seq` and when (corrected wall ms).
+    pub(crate) passes: BTreeMap<(ServerKey, LabelId), (u64, u64)>,
     pub(crate) membership_seen: BTreeMap<Tid, u64>,
     wake: Option<u64>,
     /// When the last Tick was handled (raw wall ms).
@@ -415,6 +416,8 @@ pub struct SyncEngine {
     pub(crate) capped: BTreeSet<(ServerKey, LabelId, osis_base::BlobId)>,
     /// Stranded heartbeats already answered by a re-seal.
     pub(crate) resealed: BTreeSet<osis_base::CommitId>,
+    /// Links whose finalization failed in this run (`finalize_links`): not tried again.
+    pub(crate) links_failed: BTreeSet<Tid>,
     /// Commits placed before any other upload (`Delivery::First`).
     pub(crate) first: BTreeSet<osis_base::CommitId>,
     /// A self-removal was carried out: its lost secrets are dropped once every label is idle
@@ -535,6 +538,7 @@ impl SyncEngine {
             deposit_seen: BTreeMap::new(),
             capped: BTreeSet::new(),
             resealed: BTreeSet::new(),
+            links_failed: BTreeSet::new(),
             synced: Synced::default(),
             unsubscribe: BTreeSet::new(),
             served: BTreeMap::new(),
@@ -738,6 +742,8 @@ impl SyncEngine {
                 }
             }
         }
+        // links expired or used: a removal of the link key (spec/permissions.md §9)
+        self.finalize_links()?;
         // the step's deaths recomputes before its passes: they mark the bodies whose deaths moved
         self.engine.settle_deaths()?;
         self.engine_events()?;
@@ -1453,6 +1459,9 @@ impl SyncEngine {
             at((x as i64).saturating_sub(skew).max(0) as u64);
         }
         if let Some(x) = self.engine.next_ephemeral_timer() {
+            at((x as i64).saturating_sub(skew).max(0) as u64);
+        }
+        if let Ok(Some(x)) = self.engine.next_link_expiry() {
             at((x as i64).saturating_sub(skew).max(0) as u64);
         }
         t.map(|x| x.max(self.last_tick.saturating_add(MIN_WAKE_MS)))

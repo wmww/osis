@@ -52,10 +52,12 @@ pub enum Lower {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LinkOpts {
+    /// The link expires: a device of this person removes the link key once it passed and K's
+    /// label synced (spec/permissions.md §9).
     pub until: Option<WallMs>,
     /// The first redemption ends the link: the link says so (`flags`, spec/wire.md §10), the
-    /// redeemer removes the link key in its redemption, and this node finalizes the link when it
-    /// sees that (spec/permissions.md §9).
+    /// redeemer removes the link key in its redemption, and a device of this person finalizes
+    /// the link when it sees that (spec/permissions.md §9).
     pub single_use: bool,
     /// Opt-in: the link text carries this device's dialable key and relays (never its lan
     /// secret; spec/permissions.md §9), so a redeemer that shares no server with it reaches it
@@ -444,10 +446,14 @@ impl Osis {
             return Err(Error::Invalid("a direct link needs this device reachable: a runtime with Config.peers on".into()));
         }
         self.persist(&[t])?;
-        let (mut link, done) = self.engine(|e| e.create_link(&me, &flows::LinkSpec { target: t, role, until: opts.until, servers, peers: Vec::new(), single_use: opts.single_use }).map(|(l, _, d)| (l, d))).map_err(needs_admin)?;
+        let (mut link, keep, done) = self.engine(|e| e.create_link(&me, &flows::LinkSpec { target: t, role, until: opts.until, servers, peers: Vec::new(), single_use: opts.single_use })).map_err(needs_admin)?;
+        // the seed thing in the home group: every device of this person holds it and may
+        // finalize the link (spec/permissions.md §9)
+        let home = self.home();
+        self.write_with(|w| w.place(keep, home))?;
         let l = osis_node::Identity::from_seed(link.seed.clone()).tid();
         self.locked(|x| {
-            x.links.insert(link.k, MadeLink { l, target: t, single_use: opts.single_use, finalized: false, direct: opts.direct, ended: false });
+            x.links.insert(link.k, MadeLink { l, target: t, single_use: opts.single_use, direct: opts.direct, ended: false });
             save_links(x)
         })?;
         // K joining the target may rotate this device's reach (the target no longer qualifies,
@@ -463,7 +469,7 @@ impl Osis {
                 let db = self.downgrade();
                 self.inner.net.after(wait, Box::new(move || {
                     if let Some(db) = db.hold() {
-                        db.locked(|x| db.upkeep_links(x, &BTreeSet::new(), true));
+                        db.locked(|x| db.upkeep_links(x));
                     }
                 }));
             }
@@ -558,29 +564,11 @@ impl Osis {
         self.carry(done)
     }
 
-    /// Finalizes single-use links whose redemption removed the link key (spec/permissions.md
-    /// §9), on a roster change of K and for every link at open (`all`). The trigger is K's roster
-    /// itself, so a restart re-arms it; `finalized` is persisted.
-    pub(crate) fn upkeep_links(&self, l: &mut Locked, changed: &BTreeSet<Tid>, all: bool) {
-        let me = self.me();
-        let due: Vec<(Tid, Tid)> = l.links.iter().filter(|(k, m)| m.single_use && !m.finalized && (all || changed.contains(k))).map(|(k, m)| (*k, m.l)).collect();
+    /// Rotates this device's dialable key when a direct link it made ended (spec/permissions.md
+    /// §9): after every change, at open and at the link's expiry. Finalizing links is
+    /// node-sync's (`SyncEngine::finalize_links`). `ended` is persisted.
+    pub(crate) fn upkeep_links(&self, l: &mut Locked) {
         let mut any = false;
-        for (k, lk) in due {
-            let r = l.engine().roster(&k);
-            if r.contains_key(&lk) || !r.keys().any(|x| *x != me) {
-                continue;
-            }
-            match l.engine().finalize_link(&k, &lk).and_then(|d| l.sync.carry_out(d)) {
-                Ok(acts) => {
-                    self.inner.net.apply(acts);
-                    if let Some(m) = l.links.get_mut(&k) {
-                        m.finalized = true;
-                        any = true;
-                    }
-                }
-                Err(e) => l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::BadInput, tids: vec![k], commit: None, peer: None, detail: format!("finalizing a single-use link: {e}") }),
-            }
-        }
         // a direct link that ended (its key left K, or its edge expired) gave out this device's
         // dialable key: rotate it (spec/permissions.md §9), unless a single-use link ended by its
         // redemption (the one who could use it is now a member and keeps the direct path)
@@ -588,8 +576,11 @@ impl Osis {
         let direct: Vec<(Tid, MadeLink)> = l.links.iter().filter(|(_, m)| m.direct && !m.ended).map(|(k, m)| (*k, *m)).collect();
         let mut rotate = false;
         for (k, m) in direct {
-            if l.engine().roster(&k).get(&m.l).is_none_or(|e| e.until.is_some_and(|u| u <= now)) {
-                rotate |= !(m.single_use && m.finalized);
+            let r = l.engine().roster(&k);
+            if r.get(&m.l).is_none_or(|e| e.until.is_some_and(|u| u <= now)) {
+                // a used single-use link: its joiner is on K
+                let redeemed = m.single_use && r.keys().any(|x| *x != m.l);
+                rotate |= !redeemed;
                 if let Some(m) = l.links.get_mut(&k) {
                     m.ended = true;
                     any = true;
@@ -615,13 +606,13 @@ impl Osis {
                 && let [Value::Tid(k), Value::Tid(l), Value::Tid(t), Value::Bool(s), rest @ ..] = f.as_slice()
             {
                 let flag = |i: usize| matches!(rest.get(i), Some(Value::Bool(true)));
-                let (finalized, direct, ended) = (flag(0), flag(1), flag(2));
-                links.insert(*k, MadeLink { l: *l, target: *t, single_use: *s, finalized, direct, ended });
+                let (direct, ended) = (flag(0), flag(1));
+                links.insert(*k, MadeLink { l: *l, target: *t, single_use: *s, direct, ended });
             }
         }
         self.locked(|x| {
             x.links = links;
-            self.upkeep_links(x, &BTreeSet::new(), true);
+            self.upkeep_links(x);
         });
         Ok(())
     }
@@ -1007,7 +998,7 @@ const PROFILE_OF: &str = "profile/";
 
 /// Stores the links made here (one local record).
 fn save_links(l: &mut Locked) -> Result<()> {
-    let v = Value::List(l.links.iter().map(|(k, m)| Value::List(vec![Value::Tid(*k), Value::Tid(m.l), Value::Tid(m.target), Value::Bool(m.single_use), Value::Bool(m.finalized), Value::Bool(m.direct), Value::Bool(m.ended)])).collect());
+    let v = Value::List(l.links.iter().map(|(k, m)| Value::List(vec![Value::Tid(*k), Value::Tid(m.l), Value::Tid(m.target), Value::Bool(m.single_use), Value::Bool(m.direct), Value::Bool(m.ended)])).collect());
     l.engine().set_app_record(LINKS, &osis_base::cbor::encode(&v))?;
     Ok(())
 }

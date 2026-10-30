@@ -4,7 +4,7 @@
 //! certificate copies under a home label, deposits; commits that travel by inbox only are never
 //! placed under a label (spec/permissions.md §3, re-seal).
 
-use super::{Action, PLACE_WAIT_MS, SyncEngine};
+use super::{Action, PLACE_WAIT_MS, ServerKey, SyncEngine};
 use crate::error::Result;
 use crate::flows::{Delivery, Done, SyncState};
 use crate::local_peer::Package;
@@ -306,6 +306,40 @@ impl SyncEngine {
     }
 }
 
+impl SyncEngine {
+    /// Finalizes the links due here (`Engine::links_due`, spec/permissions.md §9) after a
+    /// complete pass of K's labels (`complete_pass`) that, for an expired link, ended at every
+    /// server after `until` (a pass from before going offline does not count); at once when K's
+    /// labels have no server (the redeemers reach this node directly). A link whose
+    /// finalization failed is not tried again in this run.
+    pub(crate) fn finalize_links(&mut self) -> Result<()> {
+        let due = self.engine.links_due()?;
+        if due.is_empty() {
+            return Ok(());
+        }
+        self.labels();
+        for (k, l, until) in due {
+            let labels: Vec<(LabelId, &Vec<ServerKey>)> = self.synced.actors.iter().filter(|(_, (a, _))| *a == k).map(|(id, (_, s))| (*id, s)).collect();
+            let serverless = !labels.is_empty() && labels.iter().all(|(_, s)| s.is_empty());
+            let after = labels.iter().all(|(id, s)| s.iter().all(|sv| self.passes.get(&(*sv, *id)).is_some_and(|p| until.is_none_or(|u| p.1 >= u.0))));
+            if self.links_failed.contains(&k) || !(serverless || (after && self.complete_pass(&k))) {
+                continue;
+            }
+            match self.engine.finalize_link(&k, &l) {
+                Ok(done) => {
+                    self.take_done(done)?;
+                    self.mark_dirty();
+                }
+                Err(e) => {
+                    self.links_failed.insert(k);
+                    self.diag(format!("finalizing link {k}: {e}"));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 impl SyncState for SyncEngine {
     fn complete_pass(&self, actor: &Tid) -> bool {
         let since = self.membership_seen.get(actor).copied().unwrap_or(0);
@@ -321,7 +355,7 @@ impl SyncState for SyncEngine {
             let peers = self.pass_peers.get(l).into_iter().flatten().filter(|_| !waited);
             for s in servers.iter().chain(peers) {
                 any = true;
-                if self.passes.get(&(*s, *l)).is_none_or(|p| *p <= since) {
+                if self.passes.get(&(*s, *l)).is_none_or(|p| p.0 <= since) {
                     return false;
                 }
             }

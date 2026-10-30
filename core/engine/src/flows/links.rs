@@ -20,6 +20,7 @@ use osis_keys::{MemberKeys, Recipient, box_member, roles_up_to};
 use osis_label::{Address, ShareLink};
 use osis_schema::Codec;
 use osis_schema::core_types::{self as ct, Edge, Inbox};
+use std::sync::Arc;
 
 /// The untyped aspect of the sharer-only thing that keeps a link's seed.
 pub const LINK_SEED: &str = "/link/seed";
@@ -84,6 +85,75 @@ impl Engine {
     /// to revoke the link. K rotates before its next encryption (L's departure).
     pub fn finalize_link(&mut self, k: &Tid, l: &Tid) -> Result<Done> {
         self.demote(k, &crate::flows::Demotion { member: *l, new: None, presync: crate::flows::PreSync::Synced })
+    }
+
+    /// The links whose seed this node holds (a sharer-only thing's `/link/seed`, readable on
+    /// every device of the sharer), as (K, L). Cached until a `/link/seed` changes.
+    pub fn held_links(&mut self) -> Result<Arc<Vec<(Tid, Tid)>>> {
+        if let Some(l) = &self.core.links {
+            return Ok(l.clone());
+        }
+        let keep: Vec<Tid> = self.core.ix.by_aspect.keys().filter(|(_, a)| a.as_str() == LINK_SEED).map(|(t, _)| *t).collect();
+        let ak = super::ak(LINK_SEED)?;
+        let mut out = Vec::new();
+        for t in keep {
+            if let Some(Value::Map(m)) = self.get(&t, &ak)?
+                && let (Some(Value::Tid(k)), Some(Value::Bytes(b))) = (m.get(&Value::Int(0)), m.get(&Value::Int(1)))
+                && let Ok(seed) = <[u8; 32]>::try_from(b.as_slice())
+            {
+                out.push((*k, crate::identity::Identity::from_seed(Secret32::from_bytes(seed)).tid()));
+            }
+        }
+        out.sort();
+        out.dedup();
+        let out = Arc::new(out);
+        self.core.links = Some(out.clone());
+        Ok(out)
+    }
+
+    /// The links this node should finalize now (spec/permissions.md §9), as (K, L): it holds
+    /// the seed and admin on K, and L's edge on K expired (`until`) or was removed by a
+    /// single-use redemption, with no explicit write on it since. The caller finalizes each
+    /// after a complete pass of K's labels, so the frontier covers the grants made while the
+    /// link worked that reached them. Idempotent across devices: a finalization by any of them
+    /// is that explicit write.
+    /// With each, its `until` when it expired.
+    pub fn links_due(&mut self) -> Result<Vec<(Tid, Tid, Option<WallMs>)>> {
+        let me = self.tid();
+        let ts = super::now_ts(&self.core);
+        let mut out = Vec::new();
+        for (k, l) in self.held_links()?.iter() {
+            let Some(tl) = self.core.timelines.get(k) else { continue };
+            let due = match tl.edges_at(None).get(l, k) {
+                Some(e) => (!e.alive_at(Some(ts))).then_some(e.until),
+                None => tl.lowered_unaudited(l, k).then_some(None),
+            };
+            if let Some(until) = due
+                && self.core.role_now(&me, k) == Some(Role::Admin)
+            {
+                out.push((*k, *l, until));
+            }
+        }
+        Ok(out)
+    }
+
+    /// When the next link this node may finalize expires (corrected wall ms): the earliest
+    /// `until` of a live L edge on a K it is admin of.
+    pub fn next_link_expiry(&mut self) -> Result<Option<u64>> {
+        let me = self.tid();
+        let ts = super::now_ts(&self.core);
+        let mut next: Option<u64> = None;
+        for (k, l) in self.held_links()?.iter() {
+            let Some(tl) = self.core.timelines.get(k) else { continue };
+            if let Some(e) = tl.edges_at(None).get(l, k)
+                && let Some(u) = e.until
+                && e.alive_at(Some(ts))
+                && self.core.role_now(&me, k) == Some(Role::Admin)
+            {
+                next = Some(next.map_or(u.0, |n| n.min(u.0)));
+            }
+        }
+        Ok(next)
     }
 
     /// Revokes one joiner of a link (spec/permissions.md §9): removes the joiner and L (the

@@ -207,7 +207,8 @@ fn link_redeem_spec_permissions_9() {
     let u = item(bob, g, g, "from the joiner");
     w.run();
     assert_eq!(x(&alice, u), Some(s("from the joiner")));
-    assert!(alice.links(g).is_empty(), "single use: finalized on the redemption");
+    assert!(alice.links(g).is_empty(), "single use: L left K");
+    assert!(alice.engine(|e| !e.held_links().unwrap().is_empty() && e.links_due().unwrap().is_empty()), "finalized on the redemption");
     let v = item(&alice, g, g, "after the link ended");
     w.run();
     assert_eq!(x(bob, v), Some(s("after the link ended")), "the joiner stays");
@@ -275,6 +276,73 @@ fn used_link_with_sharer_offline_spec_permissions_9() {
     w.advance(600_000);
     w.run();
     assert_eq!(carol.role_on(g), None, "still no role once the sharer is back");
+}
+
+/// Alice's synced group with a read link expiring in an hour, redeemed by Bob: (world, alice,
+/// bob, group, K, L).
+fn until_link(w: &mut World) -> (Osis, Osis, Tid, Tid, Tid) {
+    let sv = w.add_server();
+    let [alice, bob] = [1, 2].map(|i| w.person(i, &[sv]).0);
+    w.run();
+    let g = group(&alice);
+    let until = osis::WallMs(w.now() + 3_600_000);
+    let link = alice.make_link(g, Role::Read, osis::LinkOpts { until: Some(until), single_use: false, direct: false }).unwrap();
+    w.run();
+    assert_eq!(w.until(bob.redeem(&link), 1000, 10).unwrap(), g);
+    w.run();
+    let k = alice.links(g)[0].id;
+    let l = alice.roster(k).into_keys().find(|m| alice.owner_of(*m).is_none()).unwrap();
+    (alice, bob, g, k, l)
+}
+
+/// Whether `db` holds link (k, l) and has nothing of it left to finalize (L's edge on K is
+/// gone by an explicit removal: it expired, so it is not alive).
+fn finalized(db: &Osis, k: Tid, l: Tid) -> bool {
+    db.engine(|e| e.held_links().unwrap().contains(&(k, l)) && e.links_due().unwrap().is_empty())
+}
+
+// spec/permissions.md §9 (`until` finalized by a sharer device's removal of L): with Alice's
+// device offline when the link expires, her other device (which holds the seed thing, not the
+// link record) removes L at expiry; back online, Alice's device writes nothing more; Bob stays.
+#[test]
+fn until_link_finalized_by_other_device_spec_permissions_9() {
+    let mut w = World::new();
+    let (alice, bob, g, k, l) = until_link(&mut w);
+    let join = Osis::pair(w.cfg(9, &[0]), &alice.pair_offer().unwrap()).unwrap();
+    let (_, reply) = alice.pair_accept(join.request()).unwrap();
+    let alice2 = join.finish(&reply).unwrap();
+    w.run();
+    assert!(alice2.engine(|e| e.held_links().unwrap().contains(&(k, l))), "the other device holds the seed thing");
+    w.set_online(&alice, false);
+    w.advance(3_600_000);
+    w.run();
+    assert!(finalized(&alice2, k, l), "finalized at expiry");
+    assert!(!finalized(&alice, k, l), "offline: not yet here");
+    // removals of L on K written by a database
+    let removals = |db: &Osis| db.engine(|e| e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.author == db.node() && h.frontier.is_some() && h.aspects.iter().any(|a| a.tid == k && a.ak.as_str() == "/members"))).count());
+    assert_eq!(removals(&alice2), 1);
+    w.set_online(&alice, true);
+    w.advance(60_000);
+    w.run();
+    assert!(finalized(&alice, k, l), "the other device's removal arrived");
+    assert_eq!(removals(&alice), 0, "and wrote no removal of its own");
+    assert!(alice.roster(k).contains_key(&bob.me()) && bob.role_on(g).is_some(), "the joiner stays");
+}
+
+// spec/permissions.md §9: Alice's only device is offline when the link expires; it removes L
+// once it is back and synced K's label; Bob stays.
+#[test]
+fn until_link_finalized_when_sharer_returns_spec_permissions_9() {
+    let mut w = World::new();
+    let (alice, bob, g, k, l) = until_link(&mut w);
+    w.set_online(&alice, false);
+    w.advance(2 * 3_600_000);
+    assert!(!finalized(&alice, k, l), "waits for a complete pass of K's labels");
+    w.set_online(&alice, true);
+    w.advance(60_000);
+    w.run();
+    assert!(finalized(&alice, k, l));
+    assert!(alice.roster(k).contains_key(&bob.me()) && bob.role_on(g).is_some(), "the joiner stays");
 }
 
 /// Alice's synced group with a multi-use read link redeemed by Bob and Carol: (world, alice,

@@ -15,7 +15,7 @@ use osis_node::{Engine, Event};
 use osis_schema::Schema;
 use osis_schema::core_types as ct;
 use osis_store::{MemoryBackend, MemoryRoot};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -102,8 +102,6 @@ pub(crate) struct MadeLink {
     pub l: Tid,
     pub target: Tid,
     pub single_use: bool,
-    /// Its single-use redemption was finalized here.
-    pub finalized: bool,
     /// The link text carries this device's dialable key (`LinkOpts.direct`).
     pub direct: bool,
     /// A direct link that ended (revoked, finalized, expired): the key it carried was rotated.
@@ -458,16 +456,13 @@ impl Osis {
         r
     }
 
-    /// Queues events for the dispatcher, collecting the things whose roster changed into
-    /// `roster`; `true` when there were any events other than ephemeral ones (local ephemeral
-    /// writes reach the sync engine only when they wait to be sent, `after`).
-    fn drain(&self, l: &mut Locked, roster: &mut BTreeSet<Tid>) -> bool {
+    /// Queues events for the dispatcher; `true` when there were any events other than
+    /// ephemeral ones (local ephemeral writes reach the sync engine only when they wait to be
+    /// sent, `after`).
+    fn drain(&self, l: &mut Locked) -> bool {
         let mut any = false;
         while let Ok(e) = l.events.try_recv() {
             any |= !matches!(e, Event::Ephemeral { .. });
-            if let Event::Roster { thing } = &e {
-                roster.insert(*thing);
-            }
             l.seq += 1;
             self.inner.dispatch.send(l.seq, Msg::Event(e));
         }
@@ -477,13 +472,12 @@ impl Osis {
     /// After every call under the lock: events to the dispatcher; local changes shown to the
     /// sync engine; then status, link upkeep and waiters.
     fn after(&self, l: &mut Locked, handled: bool) {
-        let mut roster = BTreeSet::new();
         // ephemeral writes on things in a labeled closure go out as ephemeral commits
-        let any = self.drain(l, &mut roster) || l.sync.engine().has_unsent();
+        let any = self.drain(l) || l.sync.engine().has_unsent();
         if any && !handled {
             let acts = l.sync.handle(SyncEvent::Local);
             self.inner.net.apply(acts);
-            self.drain(l, &mut roster);
+            self.drain(l);
         }
         if !(any || handled) {
             // nothing changed, but deadlines may have passed
@@ -494,7 +488,7 @@ impl Osis {
             }
             return;
         }
-        self.upkeep_links(l, &roster, false);
+        self.upkeep_links(l);
         let status = crate::share::status_of(&mut l.sync);
         if status != l.status {
             for (g, s) in &status.groups {
@@ -506,7 +500,7 @@ impl Osis {
             l.seq += 1;
             self.inner.dispatch.send(l.seq, Msg::Status(status));
         }
-        self.drain(l, &mut roster);
+        self.drain(l);
         let now = self.inner.clock.now_wall_ms().0;
         let Locked { waiters, sync, status, .. } = l;
         waiters.retain_mut(|w| !w.poll(sync, status, now));
