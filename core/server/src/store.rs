@@ -1322,7 +1322,8 @@ impl<B: Backend> LabelStore for BackendStore<B> {
     }
 
     /// The step's and its claim set's bytes count toward the label's and the node's byte caps
-    /// (the claim set's until the sweep drops it); registrations are rate-limited per label.
+    /// (the claim set's until the sweep drops it): past them a genesis step is refused, a child
+    /// step kept without its set; registrations are rate-limited per label.
     fn push_step(&mut self, label: &LabelId, step: Step, claim_set: Option<ClaimSet>) -> Result<Code, StoreError> {
         let (meta, new) = match self.meta(label)? {
             Some(m) => (m, false),
@@ -1336,11 +1337,18 @@ impl<B: Backend> LabelStore for BackendStore<B> {
             None => HeadKeys::genesis(step.clone()),
         };
         let step_bytes = step.to_bytes();
-        let set_bytes = claim_set.as_ref().map(ClaimSet::to_bytes);
-        let size = (step_bytes.len() + set_bytes.as_ref().map_or(0, Vec::len)) as u64;
-        let p = &self.policy;
-        if meta.bytes.saturating_add(size) > p.cap_bytes || self.totals()?.bytes.saturating_add(size) > p.max_bytes {
-            return Ok(Code::STORAGE_CAP);
+        let mut set_bytes = claim_set.as_ref().map(ClaimSet::to_bytes);
+        let fits = |n: u64, total: u64| meta.bytes.saturating_add(n) <= self.policy.cap_bytes && total.saturating_add(n) <= self.policy.max_bytes;
+        let total = self.totals()?.bytes;
+        let mut size = (step_bytes.len() + set_bytes.as_ref().map_or(0, Vec::len)) as u64;
+        if !fits(size, total) {
+            // a new label is refused; a child step never is (a refused rotation would keep a
+            // removed member's open and write keys valid here): its claim set is not kept
+            if new {
+                return Ok(Code::STORAGE_CAP);
+            }
+            set_bytes = None;
+            size = step_bytes.len() as u64;
         }
         self.rates.roll(self.now(), self.policy.window_ms);
         if !self.rates.take(label, Rate::Register, self.policy.registers) {

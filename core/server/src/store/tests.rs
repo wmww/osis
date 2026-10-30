@@ -659,16 +659,18 @@ fn child_of(f: &Fixture, prev: &Step) -> Step {
 }
 
 // spec/sync.md §5 Register: a step and its claim set count toward the label's and the node's byte
-// caps (code 12 past them, nothing changed) until the claim set is dropped
+// caps until the claim set is dropped; past them a child step is still taken, without its set (a
+// refused rotation would keep a removed member's keys valid), and a new label is refused (code 12)
 #[test]
 fn steps_count_toward_byte_caps() {
     let e = env(Policy::default());
     let set = e.f.child_claims.clone();
-    let one = (e.f.child.to_bytes().len() + set.to_bytes().len()) as u64;
+    let step = e.f.child.to_bytes().len() as u64;
+    let one = step + set.to_bytes().len() as u64;
     let genesis = (e.f.genesis.to_bytes().len() + e.f.genesis_claims.to_bytes().len()) as u64;
     assert_eq!(e.store.totals().unwrap().bytes, genesis);
-    // room for two children with sets and one more step (what the sweep below frees suffices)
-    let room = genesis + 2 * one + e.f.child.to_bytes().len() as u64;
+    // room for two children with sets and one more step
+    let room = genesis + 2 * one + step;
     for cap in [Policy { cap_bytes: room, ..Policy::default() }, Policy { max_bytes: room, ..Policy::default() }] {
         let mut e = env(cap);
         let l = e.f.label;
@@ -676,23 +678,39 @@ fn steps_count_toward_byte_caps() {
         for _ in 0..2 {
             let s = child_of(&e.f, &prev);
             assert_eq!(e.store.push_step(&l, s.clone(), Some(set.clone())).unwrap(), Code::OK);
+            assert!(e.store.claim_set(&l, &s.id()).unwrap().is_some());
             prev = s;
         }
+        // past the cap: the step is taken, its set is not
+        let before = e.store.totals().unwrap().bytes;
         let s = child_of(&e.f, &prev);
-        let (log, totals) = (e.store.log_head(&l).unwrap(), e.store.totals().unwrap());
-        assert_eq!(e.store.push_step(&l, s.clone(), Some(set.clone())).unwrap(), Code::STORAGE_CAP);
-        assert_eq!((e.store.head(&l).unwrap(), e.store.log_head(&l).unwrap(), e.store.totals().unwrap()), (Some(prev.id()), log, totals));
+        assert_eq!(e.store.push_step(&l, s.clone(), Some(set.clone())).unwrap(), Code::OK);
+        assert_eq!(e.store.head(&l).unwrap(), Some(s.id()));
+        assert!(e.store.claim_set(&l, &s.id()).unwrap().is_none());
+        assert_eq!(e.store.totals().unwrap().bytes, before + step);
+        // even past the cap
+        let t = child_of(&e.f, &s);
+        assert_eq!(e.store.push_step(&l, t.clone(), Some(set.clone())).unwrap(), Code::OK);
+        assert_eq!(e.store.totals().unwrap().bytes, before + 2 * step);
         // an entry finds the label full too
         let big = vec![1u8; 4096];
         assert_eq!(e.store.put(&l, put(&big, true, None)).unwrap(), Code::STORAGE_CAP);
         // superseded claim sets dropped after MEMBERSHIP_KEEP free their bytes (the steps stay)
         e.store.sweep(T0 + MEMBERSHIP_KEEP_MS, 1024).unwrap();
         let steps: u64 = e.store.path(&l).unwrap().iter().map(|s| s.to_bytes().len() as u64).sum();
-        assert_eq!(e.store.totals().unwrap().bytes, steps + set.to_bytes().len() as u64);
-        assert_eq!(e.store.push_step(&l, s, Some(set.clone())).unwrap(), Code::OK);
+        assert_eq!(e.store.totals().unwrap().bytes, steps);
+        let u = child_of(&e.f, &t);
+        assert_eq!(e.store.push_step(&l, u.clone(), Some(set.clone())).unwrap(), Code::OK);
+        assert!(e.store.claim_set(&l, &u.id()).unwrap().is_some());
         let again = BackendStore::open(e.backend.clone(), e.clock.clone(), Policy::default(), &mut SeededRng::from_seed([2; 32])).unwrap();
         assert_eq!(again.totals().unwrap(), e.store.totals().unwrap());
     }
+    // a new label's genesis step past a cap: refused, nothing changed
+    let g = Fixture::new(0x30);
+    let mut e = env(Policy { max_bytes: genesis + 1, ..Policy::default() });
+    let totals = e.store.totals().unwrap();
+    assert_eq!(e.store.push_step(&g.label, g.genesis.clone(), Some(g.genesis_claims.clone())).unwrap(), Code::STORAGE_CAP);
+    assert_eq!((e.store.head(&g.label).unwrap(), e.store.totals().unwrap()), (None, totals));
 }
 
 // spec/sync.md §5 Register: servers may rate-limit registrations per label (code 4, nothing changed)
