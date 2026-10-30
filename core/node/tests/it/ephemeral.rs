@@ -1799,28 +1799,58 @@ fn commit_past_a_blob_splits_spec_sync_9() {
     assert!(got == want, "restarted holder reads the author's state");
 }
 
-// spec/sync.md §9 (only an author compacts its own commits): another blob of an own held commit
-// whose expiring part already went keeps it held as own (it was re-stored as another's)
+// spec/crdt.md §4.7, spec/sync.md §9 (a commit's records serve its other parts): an
+// ephemeral commit whose expiring parts went is dropped with its `/created` parts, at its author
+// and at holders, and the record of a thing nothing else uses goes with it; a copy received
+// again after its expiry is not held. Expiring things do not pile up in memory.
 #[test]
-fn own_commit_stays_own_after_expiry_copy_spec_sync_9() {
+fn expired_commit_leaves_no_records_spec_sync_9() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
-    let g = net.group(a, &[], &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
-    let w = window(&mut net, a, g, "w");
-    net.run();
-    let mut m = Mutation::new();
-    m.set(w, &eph("/win/typing"), &Value::Bool(true)).unwrap();
-    m.expires(w, &eph("/win/typing"), osis_base::WallMs(net.now() + 5_000)).unwrap();
-    net.engine(a).write(m).unwrap();
-    let cs = net.engine(a).take_ephemeral().unwrap();
-    assert_eq!(cs.len(), 1);
-    let id = cs[0].blob.id();
-    assert_eq!(cs[0].blob.parts.len(), 2, "the typing part and the window's record");
-    let own = |net: &mut Net| net.engine(a).held_ephemeral().into_iter().find(|x| x.0 == id).map(|x| x.2);
-    net.advance(6_000);
-    assert_eq!(own(&mut net), Some(true), "the record part stays held");
-    net.engine(a).ingest_ephemeral(cs[0].blob.clone()).unwrap();
-    assert_eq!(own(&mut net), Some(true));
+    let held = |net: &mut Net, n: usize| net.engine(n).held_ephemeral().len();
+    let base = (held(&mut net, a), held(&mut net, b));
+    for round in 0..3 {
+        let mut made = Vec::new();
+        let mut blobs = Vec::new();
+        for i in 0..4 {
+            let e = net.engine(a);
+            let mut m = Mutation::new();
+            let w = e.new_thing(&mut m, g);
+            let until = osis_base::WallMs(net.now() + 5_000);
+            m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+            m.expires(g, &ct::GROUP, until).unwrap();
+            m.set(w, &eph(STATE), &s(&format!("{round}.{i}"))).unwrap();
+            m.expires(w, &eph(STATE), until).unwrap();
+            net.engine(a).write(m).unwrap();
+            blobs.extend(net.engine(a).take_ephemeral().unwrap().into_iter().map(|c| c.blob));
+            made.push(w);
+        }
+        // taken by hand: b gets them directly
+        for bl in &blobs {
+            net.engine(b).ingest_ephemeral(bl.clone()).unwrap();
+        }
+        for (i, w) in made.iter().enumerate() {
+            assert_eq!(net.eph_read(b, *w, STATE), Some(s(&format!("{round}.{i}"))));
+            assert!(net.engine(b).ephemeral_thing(w).is_some());
+        }
+        assert!(held(&mut net, b) > base.1);
+        net.advance(6_000);
+        net.run();
+        assert_eq!((held(&mut net, a), held(&mut net, b)), base, "round {round}: nothing held but what was before");
+        for w in &made {
+            assert_eq!(net.eph_read(b, *w, STATE), None);
+            assert!(net.engine(b).ephemeral_thing(w).is_none(), "the holder's record went with the commit");
+            assert!(net.engine(a).ephemeral_thing(w).is_some(), "the author's own thing stays");
+        }
+        for bl in &blobs {
+            assert_eq!(net.engine(b).ingest_ephemeral(bl.clone()).unwrap(), osis_node::ephemeral::EphIngest::Dropped { absorbed: false });
+            assert_eq!(net.engine(a).ingest_ephemeral(bl.clone()).unwrap(), osis_node::ephemeral::EphIngest::Dropped { absorbed: false });
+        }
+        assert_eq!((held(&mut net, a), held(&mut net, b)), base, "a copy after expiry is not held");
+        assert!(made.iter().all(|w| net.engine(b).ephemeral_thing(w).is_none()));
+    }
 }
