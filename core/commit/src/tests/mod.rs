@@ -1,4 +1,10 @@
-//! Unit tests (spec/wire.md §4, spec/commits.md).
+//! Unit tests (spec/wire.md §4, spec/commits.md): header round trips here, one module per area.
+
+mod build;
+mod prop;
+mod review;
+mod validate;
+mod verify;
 
 use crate::*;
 use osis_base::{Ak, CommitId, SchemaId, Tid, Ts, Value, WallMs};

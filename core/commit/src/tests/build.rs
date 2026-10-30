@@ -2,7 +2,7 @@
 //! §4, §6; spec/sync.md §3).
 
 use crate::tests::{t, ts};
-use crate::tests_verify::{TestSecrets, register_delta, sec};
+use crate::tests::verify::{TestSecrets, register_delta, sec};
 use crate::*;
 use osis_base::format::{CHUNK_THRESHOLD, MAX_BLOB};
 use osis_base::{Ak, CommitId, Tid, Ts, Value};

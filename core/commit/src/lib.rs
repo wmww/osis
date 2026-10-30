@@ -20,16 +20,6 @@ mod verify;
 
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod tests_validate;
-#[cfg(test)]
-mod tests_verify;
-#[cfg(test)]
-mod tests_build;
-#[cfg(test)]
-mod tests_prop;
-#[cfg(test)]
-mod tests_review;
 
 pub use blob::{CommitBlob, Part};
 pub use builder::{AspectWrite, Built, CommitBuilder};
