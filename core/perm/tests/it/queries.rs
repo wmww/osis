@@ -185,6 +185,38 @@ fn cert_check(w: &World) -> Option<String> {
     None
 }
 
+/// §4: a demotion along a path the author gained after its write goes along. n0 writes on A2
+/// at 4 by its admin edge (w6), which n2 then removes; at 5 n1 makes n0 an admin of A1, an
+/// admin of A2; removing A1 from A2 at 7 without having seen w6 drops it. A1 was on no path
+/// of n0's at 4 (OSIS_PERM_SEED=90731).
+#[test]
+fn certificates_carry_demotion_on_later_path_spec_permissions_4() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let a0 = w.thing(n[0]);
+    let a1 = w.thing(n[1]);
+    let a2 = w.thing(n[1]);
+    let all0: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(n[0], a0, n[0], edge(Write), 0, &all0);
+    w.set(n[0], a0, n[2], edge(Admin), 0, &all0);
+    w.set(n[1], a1, n[2], edge(Write), 0, &all0);
+    w.set(n[1], a2, n[2], edge(Admin), 0, &all0);
+    w.set(n[1], a2, a1, edge(Admin), 0, &all0);
+    let r = |a: u64, b: u64, c: u64| vec![(n[0], a), (n[1], b), (n[2], c)];
+    w.commit_id(cid(2782044695), n[1], 2, &[(a2, n[0], edge(Admin))], &r(1, 2, 1));
+    w.commit_id(cid(3096925279), n[2], 2, &[(a0, a2, edge(Write))], &r(1, 1, 2));
+    w.commit_id(cid(1778379934), n[0], 4, &[(a2, n[2], edge(Admin))], &r(4, LATE, 3));
+    w.commit_id(cid(527979467), n[2], 4, &[(a2, n[0], None)], &r(3, LATE, 4));
+    w.commit_id(cid(2288976456), n[1], 5, &[(a1, n[0], edge(Admin))], &r(LATE, 5, 7));
+    w.commit_id(cid(2482343703), n[1], 7, &[(a2, a1, None)], &r(5, 7, 6));
+    w.commit_id(cid(1006705973), n[2], 8, &[(a2, a0, None)], &r(LATE, LATE, 8));
+    let held = w.held();
+    let tl = Timeline::evaluate(&held);
+    let id = WriteId::Op(cid(1778379934), 0);
+    assert!(tl.dropped().contains_key(&id) && !sticky_residue(&tl), "{:?}", tl.dropped());
+    assert_eq!(cert_check(&w), None);
+}
+
 #[test]
 fn certificates_project_joint() {
     cert_run_joint(80, 0x5eed_0201);
