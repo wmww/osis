@@ -1,7 +1,7 @@
 //! What the server engine asks of a blind node's storage (spec/sync.md §4): the `LabelStore`
 //! trait, which osis-server implements over osis-store, and `MemoryLabelStore` for tests.
 
-use crate::msg::{ClaimSet, Code, Signature, Step, StepId, Wrap};
+use crate::msg::{ClaimSet, Code, SecretBox, Signature, Step, StepId, Wrap};
 use osis_crypto::VerifyingKey;
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::{BlobId, Classified, ErrorClass, LabelId};
@@ -178,6 +178,12 @@ pub trait LabelStore {
     fn step(&self, label: &LabelId, id: &StepId) -> Result<Option<Step>, StoreError>;
     /// The claim set of a step on the path, while held.
     fn claim_set(&self, label: &LabelId, id: &StepId) -> Result<Option<Arc<ClaimSet>>, StoreError>;
+    /// Whether `key` is in step `id`'s held claim set, with its entry box (`PathIndex::claim`).
+    /// A store that loads sets from disk answers by an index instead (an Open must not cost a
+    /// set's size).
+    fn claim(&self, label: &LabelId, id: &StepId, key: &[u8; 32]) -> Result<Option<Option<SecretBox>>, StoreError> {
+        Ok(self.claim_set(label, id)?.and_then(|c| c.contains(key).then(|| c.entries.get(key).cloned())))
+    }
     /// The newest step on the path registering sync key `pk` (an index `push_step` keeps, so an
     /// Open reads no path).
     fn step_with_sync(&self, label: &LabelId, pk: &VerifyingKey) -> Result<Option<StepId>, StoreError>;

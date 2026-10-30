@@ -5,13 +5,14 @@
 //!
 //! Rows (all cleartext metadata a blind node sees anyway; blobs are ciphertext):
 //! `I` seed; `L label` meta; `K label` the head's earlier role keys (`HeadKeys`); `S label step`
-//! step; `C label step` claim set; path indexes `V label sync_key` the newest step registering
+//! step; `C label step` claim set, `H label step key` each of its keys (the entry box or empty:
+//! an Open looks one key up instead of loading the set); path indexes `V label sync_key` the newest step registering
 //! that sync key, `W label` the genesis step and `W label step` its child (an Open or a Path page
 //! reads no path); `E label blob` entry;
 //! `T label blob` tombstone time; `G label seq` log record; `R blob` reference count and the
 //! blob's prefix bytes (`blob_prefix`);
 //! sweep indexes `X t label blob` (expiry), `P t label blob` (pending deletion),
-//! `Y t label blob` (tombstone drop), `Z t label step` (claim-set drop);
+//! `Y t label blob` (tombstone drop), `Z t label step` (claim-set drop, with its `H` rows);
 //! `Q peer label` replication position; `N` node-wide totals (labels, entries, bytes).
 //!
 //! Ephemeral entries (blob prefix class ephemeral, spec/sync.md §4) are held in memory only:
@@ -22,7 +23,7 @@
 use osis_base::format::{MAX_DRIFT_MS, MEMBERSHIP_KEEP_MS, TOMBSTONE_LIFETIME_MS};
 use osis_base::{BlobId, Clock, LabelId};
 use osis_crypto::{CryptoRngCore, Signature};
-use osis_proto::msg::{ClaimSet, Code, Step, StepId, WRAP_LEN};
+use osis_proto::msg::{ClaimSet, Code, SecretBox, Step, StepId, WRAP_LEN};
 use osis_proto::{Budget, EntryMeta, HeadKeys, LabelStore, LogRecord, Put, Replaced, StoreError};
 use osis_store::{Backend, BackendError, KeyValue, WriteBatch};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -582,6 +583,22 @@ pub struct Swept {
     pub grew: BTreeSet<LabelId>,
     /// The budget ran out with due work left.
     pub more: bool,
+}
+
+/// A held claim set's rows: the set (`C`) and its index (`H`, a key and its entry box or empty).
+fn set_rows(label: &LabelId, id: &StepId, c: &ClaimSet) -> (Vec<u8>, Vec<KeyValue>) {
+    let index = c.claims.iter().map(|k| (key(b'H', &[&label.0, &id.0, k]), c.entries.get(k).map(osis_label::step::entry_box_bytes).unwrap_or_default())).collect();
+    (c.to_bytes(), index)
+}
+
+fn rows_bytes((set, index): &(Vec<u8>, Vec<KeyValue>)) -> u64 {
+    (set.len() + index.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()) as u64
+}
+
+/// The bytes step `id`'s claim set `c` counts toward the byte caps while held: the set and its
+/// index rows.
+pub fn claim_set_bytes(label: &LabelId, id: &StepId, c: &ClaimSet) -> u64 {
+    rows_bytes(&set_rows(label, id, c))
 }
 
 /// Remembered entry origins (in memory) beyond which the map is cleared.
@@ -1245,30 +1262,42 @@ impl<B: Backend> BackendStore<B> {
             b.delete(key(b'T', &[&rest]));
             b.delete(k);
         }
-        // a dropped claim set's bytes leave the label's and the node's totals
-        let due = self.due(b'Z', now, left)?;
-        left -= due.len();
-        let mut sets: BTreeMap<LabelId, Vec<KeyValue>> = BTreeMap::new();
-        for (k, rest) in due {
-            match read_arr(&rest, 0).map(LabelId) {
-                Ok(l) if rest.len() == 48 => sets.entry(l).or_default().push((k, rest)),
-                _ => b.delete(k),
+        // a dropped claim set's bytes, its index rows' included, leave the label's and the
+        // node's totals; each index row counts against the budget (a set has up to `MAX_CLAIMS`
+        // keys), so a set may go over several sweeps, its `Z` row kept until the last
+        for (k, rest) in self.due(b'Z', now, left)? {
+            if left == 0 {
+                break;
             }
-        }
-        for (label, rows) in sets {
-            let mut tx = self.tx(&label).ok();
-            for (k, rest) in rows {
-                let c = key(b'C', &[&rest]);
-                if let Some(t) = &mut tx
-                    && let Some(set) = self.backend.get(&c).map_err(err)?
-                {
-                    t.meta.bytes = t.meta.bytes.saturating_sub(set.len() as u64);
+            left -= 1;
+            let label = match read_arr(&rest, 0).map(LabelId) {
+                Ok(l) if rest.len() == 48 => l,
+                _ => {
+                    b.delete(k);
+                    continue;
                 }
-                b.delete(c);
-                b.delete(k);
+            };
+            let index = self.backend.scan_prefix(&key(b'H', &[&rest]), left).map_err(err)?;
+            let all = index.len() < left;
+            left -= index.len();
+            let mut freed: usize = index.iter().map(|(k, v)| k.len() + v.len()).sum();
+            let mut batch = WriteBatch::new();
+            for (h, _) in index {
+                batch.delete(h);
             }
-            if let Some(t) = tx {
-                self.commit(t)?;
+            if all {
+                let c = key(b'C', &[&rest]);
+                freed += self.backend.get(&c).map_err(err)?.map_or(0, |set| set.len());
+                batch.delete(c);
+                batch.delete(k);
+            }
+            match self.tx(&label) {
+                Ok(mut tx) => {
+                    tx.meta.bytes = tx.meta.bytes.saturating_sub(freed as u64);
+                    tx.batch = batch;
+                    self.commit(tx)?;
+                }
+                Err(_) => b.ops.extend(batch.ops),
             }
         }
         b.ops.extend(junk.ops);
@@ -1330,6 +1359,15 @@ impl<B: Backend> LabelStore for BackendStore<B> {
         ClaimSet::parse(&b).map(|c| Some(Arc::new(c))).map_err(|_| corrupt("claim set"))
     }
 
+    /// One `H` row read: an Open by claim or static entry costs a lookup, not the set's size.
+    fn claim(&self, label: &LabelId, id: &StepId, k: &[u8; 32]) -> Result<Option<Option<SecretBox>>, StoreError> {
+        let Some(b) = self.backend.get(&key(b'H', &[&label.0, &id.0, k])).map_err(err)? else { return Ok(None) };
+        if b.is_empty() {
+            return Ok(Some(None));
+        }
+        osis_label::step::parse_entry_box(&b).map(|e| Some(Some(e))).map_err(|_| corrupt("entry box"))
+    }
+
     fn head_keys(&self, label: &LabelId) -> Result<Option<HeadKeys>, StoreError> {
         let Some(head) = self.head(label)? else { return Ok(None) };
         let step = self.step(label, &head)?.ok_or_else(|| corrupt("head step"))?;
@@ -1367,17 +1405,18 @@ impl<B: Backend> LabelStore for BackendStore<B> {
             None => HeadKeys::genesis(step.clone()),
         };
         let step_bytes = step.to_bytes();
-        let mut set_bytes = claim_set.as_ref().map(ClaimSet::to_bytes);
+        let id = step.id();
+        let mut set_rows = claim_set.as_ref().map(|c| set_rows(label, &id, c));
         let fits = |n: u64, total: u64| meta.bytes.saturating_add(n) <= self.policy.cap_bytes && total.saturating_add(n) <= self.policy.max_bytes;
         let total = self.totals()?.bytes;
-        let mut size = (step_bytes.len() + set_bytes.as_ref().map_or(0, Vec::len)) as u64;
+        let mut size = step_bytes.len() as u64 + set_rows.as_ref().map_or(0, rows_bytes);
         if !fits(size, total) {
             // a new label is refused; a child step never is (a refused rotation would keep a
             // removed member's open and write keys valid here): its claim set is not kept
             if new {
                 return Ok(Code::STORAGE_CAP);
             }
-            set_bytes = None;
+            set_rows = None;
             size = step_bytes.len() as u64;
         }
         self.rates.roll(self.now(), self.policy.window_ms);
@@ -1387,7 +1426,6 @@ impl<B: Backend> LabelStore for BackendStore<B> {
         let mut tx = Tx { label: *label, before: (meta.entries, meta.bytes, new), meta, batch: WriteBatch::new(), grew: false };
         tx.meta.bytes = tx.meta.bytes.saturating_add(size);
         tx.batch.put(key(b'K', &[&label.0]), encode_older(&keys.older));
-        let id = step.id();
         if let Some(prev) = tx.meta.head {
             let drop = self.now().saturating_add(self.policy.claim_keep_ms.max(MEMBERSHIP_KEEP_MS));
             tx.batch.put(key(b'Z', &[&be(drop), &label.0, &prev.0]), vec![]);
@@ -1397,8 +1435,11 @@ impl<B: Backend> LabelStore for BackendStore<B> {
         tx.batch.put(key(b'S', &[&label.0, &id.0]), step_bytes);
         tx.batch.put(key(b'V', &[&label.0, &step.keys.sync.to_bytes()]), id.0.to_vec());
         tx.batch.put(key(b'W', &[&label.0, step.prev.as_ref().map_or(&[][..], |p| &p.0[..])]), id.0.to_vec());
-        if let Some(c) = set_bytes {
+        if let Some((c, index)) = set_rows {
             tx.batch.put(key(b'C', &[&label.0, &id.0]), c);
+            for (k, v) in index {
+                tx.batch.put(k, v);
+            }
         }
         tx.append(&LogRecord::Head(step));
         self.commit(tx)?;

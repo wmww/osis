@@ -118,8 +118,8 @@ impl PathIndex for Index<'_> {
     fn step_with_sync(&self, pk: &osis_crypto::VerifyingKey) -> Result<Option<StepId>, StoreError> {
         self.store.step_with_sync(self.label, pk)
     }
-    fn claims(&self, step: &StepId) -> Result<Option<Arc<ClaimSet>>, StoreError> {
-        self.store.claim_set(self.label, step)
+    fn claim(&self, step: &StepId, key: &[u8; 32]) -> Result<Option<Option<SecretBox>>, StoreError> {
+        self.store.claim(self.label, step, key)
     }
     fn child(&self, step: &StepId) -> Result<Option<Step>, StoreError> {
         match self.store.child(self.label, Some(step))? {
