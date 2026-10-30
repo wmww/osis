@@ -44,16 +44,24 @@ pub(super) struct Entry {
 
 /// The ephemeral things a batch brings into being (created, or their deletion reverted) and
 /// deletes (their creation reverted: spec/crdt.md §4.6 Undoing a creation). A deleted one keeps
-/// its record, so reverting the deletion brings it back; it reads unknown meanwhile.
+/// its record, so reverting the deletion brings it back; it reads unknown meanwhile. Also the
+/// drafts it saves (ephemeral things it persists, or drafts it writes durably again) and the
+/// saves it reverts (`Eph::drafts`): reverting a save is no deletion, the draft comes back.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Making {
     pub made: Vec<Tid>,
     pub unmade: Vec<Tid>,
+    pub saved: Vec<Tid>,
+    pub unsaved: Vec<Tid>,
 }
 
 impl Making {
     pub fn is_empty(&self) -> bool {
-        self.made.is_empty() && self.unmade.is_empty()
+        self.made.is_empty() && self.unmade.is_empty() && self.saved.is_empty() && self.unsaved.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.made.len() + self.unmade.len() + self.saved.len() + self.unsaved.len()
     }
 }
 
@@ -106,7 +114,7 @@ impl Log {
         if aspects.is_empty() && making.is_empty() {
             return;
         }
-        let bytes = aspects.iter().map(|a| size(&a.delta) + size(&a.pre) + a.ak.as_str().len()).sum::<usize>() + aspects.capacity() * size_of::<LogAspect>() + (making.made.len() + making.unmade.len()) * size_of::<Tid>() + size_of::<Entry>() + 32;
+        let bytes = aspects.iter().map(|a| size(&a.delta) + size(&a.pre) + a.ak.as_str().len()).sum::<usize>() + aspects.capacity() * size_of::<LogAspect>() + making.len() * size_of::<Tid>() + size_of::<Entry>() + 32;
         self.bytes += bytes;
         self.entries.push_back(Entry { id, reverts, actor, ts, received, aspects, making, bytes });
         while self.bytes > cap {
@@ -134,8 +142,9 @@ impl Log {
         let mut bytes = 0;
         for e in &mut self.entries {
             e.aspects.retain(|a| !gone(&a.tid));
-            e.making.made.retain(|t| !gone(t));
-            e.making.unmade.retain(|t| !gone(t));
+            for v in [&mut e.making.made, &mut e.making.unmade, &mut e.making.saved, &mut e.making.unsaved] {
+                v.retain(|t| !gone(t));
+            }
             if e.aspects.is_empty() && e.making.is_empty() {
                 e.bytes = 0;
             }
@@ -183,7 +192,7 @@ impl Engine {
             .iter()
             .map(|e| {
                 let mut aspects: Vec<(Tid, Ak)> = e.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect();
-                aspects.extend(e.making.made.iter().chain(&e.making.unmade).filter(|t| self.eph.things.contains_key(t)).map(|t| (*t, created.clone())));
+                aspects.extend(e.making.made.iter().chain(&e.making.unmade).filter(|t| self.eph.draft_like(t)).map(|t| (*t, created.clone())));
                 LoggedChange { id: e.id, reverts: e.reverts, actor: e.actor, ts: e.ts, received: e.received, aspects }
             })
             .collect()
@@ -196,14 +205,15 @@ impl Engine {
     }
 
     /// The ephemeral keys `Scope::Thing` and `Scope::Group` cover (notes/ephemeral.md API delta,
-    /// Undo): every aspect with ephemeral state of an ephemeral thing and its `/created` (what
-    /// its creation and deletion touch), and the ephemeral side of a durable thing's `/group`;
-    /// not the ephemeral aspects of durable things.
+    /// Undo): every aspect with ephemeral state of an ephemeral thing or a draft again
+    /// (`Eph::drafts`) and its `/created` (what its creation and deletion touch), and the
+    /// ephemeral side of a durable thing's `/group`; not the ephemeral aspects of other durable
+    /// things.
     pub fn ephemeral_scope_keys(&self) -> Vec<(Tid, Ak)> {
         let created = created_ak();
-        let mut out: Vec<(Tid, Ak)> = self.eph.things.keys().map(|t| (*t, created.clone())).collect();
+        let mut out: Vec<(Tid, Ak)> = self.eph.things.keys().chain(&self.eph.drafts).map(|t| (*t, created.clone())).collect();
         for (t, m) in &self.eph.aspects {
-            let eph = self.eph.things.contains_key(t);
+            let eph = self.eph.draft_like(t);
             out.extend(m.keys().filter(|ak| eph || ak.as_str() == GROUP.ak()).map(|ak| (*t, ak.clone())));
         }
         out
@@ -221,16 +231,20 @@ impl Engine {
             return if e.session == self.eph.session && e.n <= self.eph.batches { Ok(Reverted::Compacted) } else { Err(Error::Misuse("no undo log for this ephemeral change (another node's, or from before a restart)")) };
         }
         // undoing a creation deletes the thing, undoing that brings it back (spec/crdt.md §4.6):
-        // the things a commit created are deleted by its undo commit, their ephemeral side here
+        // the things a commit created are deleted by its undo commit, their ephemeral side here;
+        // a draft the change saved (persisted, carrying its `/created`) is no creation: it comes
+        // back as a draft (`Eph::drafts`), and redo saves it again
         let entry = at.and_then(|i| self.eph.log.entries.get(i));
-        let is_eph = |t: &&Tid| self.eph.things.contains_key(t);
+        let is_eph = |t: &&Tid| self.eph.draft_like(t);
         let mut del: BTreeSet<Tid> = entry.map(|e| e.making.made.iter().filter(is_eph).copied().collect()).unwrap_or_default();
-        let making = Making { made: entry.map(|e| e.making.unmade.iter().filter(is_eph).copied().collect()).unwrap_or_default(), unmade: del.iter().copied().collect() };
+        let (saved, unsaved) = entry.map(|e| (e.making.saved.clone(), e.making.unsaved.clone())).unwrap_or_default();
+        let making = Making { made: entry.map(|e| e.making.unmade.iter().filter(is_eph).copied().collect()).unwrap_or_default(), unmade: del.iter().copied().collect(), saved: unsaved, unsaved: saved.clone() };
+        let keep: BTreeSet<Tid> = saved.into_iter().collect();
         if let ChangeId::Commit(c) = id
             && let Some(m) = self.core.ix.commits.get(&c)
             && let Some(h) = m.header.decoded()
         {
-            del.extend(crate::undo::made_by(&h, &m.valid));
+            del.extend(crate::undo::made_by(&h, &m.valid).difference(&keep));
         }
         let ts = self.core.hlc.next();
         let first = self.eph.next;
@@ -249,6 +263,7 @@ impl Engine {
             ChangeId::Commit(c) => {
                 let mut m = Mutation::new();
                 m.act_as(actor).undo(c);
+                m.undo_keep = keep;
                 m.ts = Some(ts);
                 match self.commit(m) {
                     Ok(c) => c,

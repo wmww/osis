@@ -175,7 +175,7 @@ fn mixed_scope_undo_order_spec_crdt_4_6() {
 fn not_undoable_past_history_cap_spec_crdt_4_6() {
     let c = clock();
     let mut x = cfg(6, MemStore::new(), &c);
-    x.ephemeral_history = 2_000;
+    x.ephemeral_history = 8_000;
     let db = Osis::create(x).unwrap().0;
     let k = ak("/app/n").ephemeral();
     let t = db.write_with(|w| w.create(db.me())).unwrap();
@@ -215,34 +215,48 @@ trait Tap: Sized {
 }
 impl Tap for osis::Write<'_> {}
 
-// notes/ephemeral.md Step 2 as built (Open), spec/crdt.md §4.6 Undoing a creation: the save
-// of a placed draft is the thing's durable creation, so undoing it deletes the thing: its
-// durable writes reverted, the placement's durable add included, and its ephemeral draft
-// aspect reset; the thing stays durable (its record is held) and reads deleted. The ephemeral
-// placement is not restored (it would vanish at restart and never convert). Redo puts all of
-// it back.
+// notes/ephemeral.md Step 2 as built, spec/crdt.md §4.6 Undoing a creation: saving a placed
+// draft is no creation (the draft existed), so undoing the save returns to the draft: its
+// durable writes reverted, the placement's durable add included, its ephemeral placement and
+// draft content back, the thing known (its record stays durable). A further undo reverts the
+// draft's creation and deletes it; redo brings back the draft, then the save. A new save of a
+// draft again converts its placement like the first.
 #[test]
-fn undo_of_save_deletes_spec_crdt_4_6() {
+fn undo_of_save_restores_the_draft_spec_crdt_4_6() {
     let db = setup(9);
     let draft = ak("/app/draft").ephemeral();
     let body = ak("/app/body");
-    let (f, e) = db
+    let f = db.write_with(|w| { let f = w.create_durable(db.me())?; w.make_group(f)?; Ok(f) }).unwrap();
+    let e = db
         .write_with(|w| {
-            let f = w.create_durable(db.me())?;
-            w.make_group(f)?;
             let e = w.create(db.me())?;
             w.place(e, f)?;
             w.at(e, draft.clone()).set(&Value::Int(1))?;
-            Ok((f, e))
+            Ok(e)
         })
         .unwrap();
+    let durable_in_f = |db: &Osis| db.engine(|x| x.durable_groups_of(&e)).contains(&f);
+    let s = Scope::Thing(e);
     db.write_with(|w| w.at(e, body.clone()).set(&Value::Int(1))).unwrap();
-    assert!(db.groups_of(e).within.contains(&f));
-    db.undo(&Scope::Thing(e)).unwrap().unwrap();
-    assert!(db.groups_of(e).within.is_empty() && db.get(e, body.clone()).unwrap().is_none() && db.get(e, draft.clone()).unwrap().is_none());
-    assert!(db.created(e).unwrap().commit.is_some() && !db.knows(e), "durable, deleted");
-    // the draft's batch wrote an ephemeral aspect of what is now a durable thing: out of scope
-    assert_eq!(db.undo(&Scope::Thing(e)).unwrap(), None);
-    db.redo(&Scope::Thing(e)).unwrap().unwrap();
-    assert!(db.groups_of(e).within.contains(&f) && db.get(e, body.clone()).unwrap() == int(1) && db.get(e, draft).unwrap() == int(1));
+    assert!(durable_in_f(&db));
+    db.undo(&s).unwrap().unwrap();
+    assert!(db.groups_of(e).item_of == vec![f] && !durable_in_f(&db), "placed ephemerally again");
+    assert!(db.get(e, body.clone()).unwrap().is_none() && db.get(e, draft.clone()).unwrap() == int(1) && db.knows(e), "the draft");
+    assert!(db.created(e).unwrap().commit.is_some(), "the record stays durable");
+    db.undo(&s).unwrap().unwrap();
+    assert!(!db.knows(e) && db.groups_of(e).within.is_empty() && db.get(e, draft.clone()).unwrap().is_none(), "the draft's creation undone");
+    assert_eq!(db.undo(&s).unwrap(), None);
+    db.redo(&s).unwrap().unwrap();
+    assert!(db.knows(e) && db.groups_of(e).item_of == vec![f] && !durable_in_f(&db) && db.get(e, draft.clone()).unwrap() == int(1));
+    db.redo(&s).unwrap().unwrap();
+    assert!(durable_in_f(&db) && db.get(e, body.clone()).unwrap() == int(1) && db.get(e, draft.clone()).unwrap() == int(1));
+    assert_eq!(db.redo(&s).unwrap(), None);
+    // undo the save again, then save anew: the placement converts
+    db.undo(&s).unwrap().unwrap();
+    assert!(!durable_in_f(&db));
+    db.write_with(|w| w.at(e, body.clone()).set(&Value::Int(2))).unwrap();
+    assert!(durable_in_f(&db) && db.groups_of(e).item_of == vec![f]);
+    // and undoing that new save returns to the draft too
+    db.undo(&s).unwrap().unwrap();
+    assert!(!durable_in_f(&db) && db.groups_of(e).item_of == vec![f] && db.get(e, body).unwrap().is_none() && db.knows(e));
 }

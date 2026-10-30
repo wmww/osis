@@ -44,6 +44,9 @@ pub struct Mutation {
     pub(crate) form: Form,
     pub(crate) purge: Vec<PurgeItem>,
     pub(crate) undoes: Option<CommitId>,
+    /// With `undoes`: things whose `/created` the undone commit carries that it saved (drafts
+    /// before it, `Engine::revert_change`): their writes are undone, they are not deleted.
+    pub(crate) undo_keep: std::collections::BTreeSet<Tid>,
     pub(crate) frontier: Option<Value>,
     /// Membership flows judge their own authority (invite grants, self-removals).
     pub(crate) unchecked: bool,
@@ -78,7 +81,7 @@ fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new(), fresh: Default::default(), persist: Default::default(), free: Default::default(), ts: None, synced: Vec::new() }
+        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, undo_keep: Default::default(), frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new(), fresh: Default::default(), persist: Default::default(), free: Default::default(), ts: None, synced: Vec::new() }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -492,7 +495,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         false => Kind::Content,
     };
     if let Some(u) = m.undoes {
-        return crate::undo::undo_in(tx, u, m.actor.unwrap_or(node), m.ts).map(Some).or_else(|e| match e {
+        return crate::undo::undo_in(tx, u, m.actor.unwrap_or(node), m.ts, &m.undo_keep).map(Some).or_else(|e| match e {
             Error::Misuse("nothing to undo") => Ok(None),
             e => Err(e),
         });
