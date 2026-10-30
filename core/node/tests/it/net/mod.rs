@@ -124,13 +124,18 @@ impl Net {
     /// Restarts server `s` over its durable state: its connections are gone, its in-memory
     /// (ephemeral) entries too.
     pub fn restart_server(&mut self, s: usize) {
+        self.restart_server_with(s, Policy::default());
+    }
+
+    /// `restart_server` with another policy.
+    pub fn restart_server_with(&mut self, s: usize, policy: Policy) {
         let mine: Vec<((usize, ConnId), u64)> = self.links.iter().filter(|(_, (x, _))| *x == s).map(|(k, (_, hc))| (*k, *hc)).collect();
         for ((n, c), _) in mine {
             self.links.remove(&(n, c));
             self.queue.push_back(Msg::Close(n, self.nodes[n].life, c));
         }
         let backend = self.servers[s].backend.clone();
-        let store = BackendStore::open(backend.clone(), self.clock.clone(), Policy::default(), &mut SeededRng::from_u64(980 + s as u64)).unwrap();
+        let store = BackendStore::open(backend.clone(), self.clock.clone(), policy, &mut SeededRng::from_u64(980 + s as u64)).unwrap();
         let hub = Hub::new(store, server_key(s), Box::new(SeededRng::from_u64(985 + s as u64)));
         let (address, skew) = (self.servers[s].address.clone(), self.servers[s].skew);
         self.servers[s] = Server { hub, backend, address, skew };

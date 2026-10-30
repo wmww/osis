@@ -404,6 +404,9 @@ pub struct SyncEngine {
     pub(crate) local_work: BTreeMap<osis_base::LabelId, work::Work>,
     /// When this node first saw each entry deposited at a server (raw ms; the promotion wait).
     pub(crate) deposit_seen: BTreeMap<(ServerKey, LabelId, osis_base::BlobId), u64>,
+    /// This node's uploads a server refused for the label's cap (code 12), until taken there
+    /// or no longer held: a purged body they would carry goes first (spec/sync.md §7).
+    pub(crate) capped: BTreeSet<(ServerKey, LabelId, osis_base::BlobId)>,
     /// Stranded heartbeats already answered by a re-seal.
     pub(crate) resealed: BTreeSet<osis_base::CommitId>,
     /// Commits placed before any other upload (`Delivery::First`).
@@ -523,6 +526,7 @@ impl SyncEngine {
             local_expiry: BTreeMap::new(),
             local_work: BTreeMap::new(),
             deposit_seen: BTreeMap::new(),
+            capped: BTreeSet::new(),
             resealed: BTreeSet::new(),
             synced: Synced::default(),
             unsubscribe: BTreeSet::new(),

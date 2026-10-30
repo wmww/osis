@@ -501,7 +501,7 @@ impl State {
     }
 
     /// Notes that what is known of entry `b` under `l` changed (its passes judge it again).
-    fn touch(&mut self, l: LabelId, b: BlobId) {
+    pub(crate) fn touch(&mut self, l: LabelId, b: BlobId) {
         let t = match self.entries.get(&(l, b)).map(|e| &e.kind) {
             Some(Kind::Commit { commit, .. }) => Touch::Commit(*commit),
             _ => Touch::Blob(b),
