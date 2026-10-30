@@ -71,9 +71,10 @@ fn seq(s: &mut Seq, f: DotFn<'_>) {
                 stamp(st, f);
                 anchor(a, f);
             }
-            for (st, a) in &mut e.pos {
+            for (st, a, k) in &mut e.pos {
                 stamp(st, f);
                 anchor(a, f);
+                opt(k, f);
             }
             if let Some((st, _)) = &mut e.deleted {
                 stamp(st, f);
@@ -226,7 +227,7 @@ impl Visit for Any<'_> {
             _ if self.1 && r.tomb() => false,
             Rec::Elem(d, _) | Rec::Entry(d, _) => self.range(d, 1),
             // a range record's creations are its elements' dots, its other stamps shared
-            Rec::Seq(d, e) => self.range(d, e.span) || e.pos.iter().any(|(st, _)| st.dot != *d && self.range(&st.dot, 1)) || e.deleted.as_ref().is_some_and(|(st, _)| self.range(&st.dot, 1)),
+            Rec::Seq(d, e) => self.range(d, e.span) || e.pos.iter().any(|(st, _, _)| st.dot != *d && self.range(&st.dot, 1)) || e.deleted.as_ref().is_some_and(|(st, _)| self.range(&st.dot, 1)),
         };
         if hit { Next::Stop } else { Next::On }
     }

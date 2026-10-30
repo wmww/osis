@@ -104,9 +104,8 @@ struct Commit {
     src: Source,
     range: CounterRange,
     before: Fragment,
-    /// The undo of this commit restores `before`'s read when nothing joined after it: no move
-    /// or paste (their undo writes fresh anchors, notes/crdt.md), no list item write, not a
-    /// model commit.
+    /// The undo of this commit restores `before`'s read when nothing joined after it (§4.6
+    /// Exactness): no list item write, not a model commit.
     restores: bool,
 }
 
@@ -577,7 +576,7 @@ impl World {
         }
         // (a list item's field first written in a present item stays: no nested register reset,
         // §4.6 "Absent before")
-        let restores = !pops.iter().any(|o| matches!(o.op, Op::Move { .. } | Op::Paste { .. }) || self.list && !matches!(o.op, Op::Insert { .. } | Op::Delete { .. }));
+        let restores = !pops.iter().any(|o| self.list && !matches!(o.op, Op::Insert { .. } | Op::Delete { .. }));
         if skew == 0 {
             self.reps[i].lo = range.hi;
         }

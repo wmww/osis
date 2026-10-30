@@ -496,8 +496,23 @@ impl<'a> Dec<'a> {
         Ok((c.ts, c.src.clone(), c.base))
     }
 
-    /// `Stamp := Ci | [Ci, ctr]`. In a writer's delta every stamp is own and inside `[lo, hi)`.
+    /// `Stamp := Ci | [Ci, ctr]`. In a writer's delta every write stamp is this commit's and
+    /// inside `[lo, hi)`.
     pub fn stamp(&self, v: &Value) -> Result<Stamp, Error> {
+        let s = self.key_stamp(v)?;
+        if self.kind == DeltaKind::Writer && (s.ts != self.ts || s.dot.src != self.own) {
+            // the commit table names only sibling keys' commits (§3.3 rule 7)
+            return Err(Error::Malformed("foreign stamps in a writer's delta"));
+        }
+        if self.kind == DeltaKind::Writer && !self.range.contains(s.dot.ctr) {
+            return Err(Error::Malformed("own write outside the counter range"));
+        }
+        Ok(s)
+    }
+
+    /// A stamp that names no write of this delta (a position write's sibling key, §5.7): any
+    /// commit's, in a writer's delta too.
+    pub fn key_stamp(&self, v: &Value) -> Result<Stamp, Error> {
         let s = match v {
             Value::Int(_) => {
                 let (ts, src, base) = self.commit(as_uint(v)?)?;
@@ -519,9 +534,6 @@ impl<'a> Dec<'a> {
             },
             _ => return Err(Error::Malformed("stamp")),
         };
-        if self.kind == DeltaKind::Writer && !self.range.contains(s.dot.ctr) {
-            return Err(Error::Malformed("own write outside the counter range"));
-        }
         Ok(s)
     }
 
@@ -568,13 +580,11 @@ impl<'a> Dec<'a> {
     }
 
     /// Reads `Commits` (§3.2): groups by strictly ascending `Src`, entries by strictly ascending
-    /// `ts`. A writer's delta has an empty table (§3.3 rule 7: no foreign stamps).
+    /// `ts`. A writer's delta lists only its sibling keys' commits (§3.3 rule 7, checked per
+    /// stamp; the re-encoding drops unused entries).
     pub(crate) fn load_commits(&mut self, v: &Value) -> Result<(), Error> {
         self.commits.clear();
         let groups = as_array(v)?;
-        if self.kind == DeltaKind::Writer && !groups.is_empty() {
-            return Err(Error::Malformed("foreign stamps in a writer's delta"));
-        }
         let mut last_src: Option<u64> = None;
         for g in groups {
             let [s, entries] = as_array(g)? else { return Err(Error::Malformed("commit group")) };
@@ -693,8 +703,8 @@ mod tests {
         }
     }
 
-    /// §2.3, §3.3 rule 7: writer deltas carry own stamps in `[lo, hi)`, own dots below `hi`, and
-    /// no commit table.
+    /// §2.3, §3.3 rule 7: writer deltas carry own write stamps in `[lo, hi)` and own dots below
+    /// `hi`; the commit table serves only sibling keys.
     #[test]
     fn writer_rejections_spec_3_3() {
         let own = Source::node(tid(1));
@@ -710,7 +720,9 @@ mod tests {
         assert!(dec.dot(&Value::Int(7)).is_err());
         assert!(dec.dot(&Value::Int(0)).is_err());
         let foreign = Value::List(vec![Value::List(vec![Value::Int(0), Value::List(vec![Value::List(vec![Value::Int(1), Value::Int(0), Value::Int(1)])])])]);
-        assert!(dec.load_commits(&foreign).is_err());
+        dec.load_commits(&foreign).unwrap();
+        assert!(dec.stamp(&Value::Int(1)).is_err()); // a write of another commit
+        assert_eq!(dec.key_stamp(&Value::Int(1)).unwrap().ts, ts(1, 0));
     }
 
     /// §3.3 rule 2 clarification: the own commit-form source sorts below other commits.

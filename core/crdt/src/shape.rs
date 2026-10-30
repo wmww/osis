@@ -46,7 +46,7 @@ impl Fragment {
         let mut work = Vec::new();
         self.walk_seqs(&mut |s| {
             for (d, e) in s.elems() {
-                let anchors: Vec<Dot> = e.created.iter().chain(e.pos.iter()).filter_map(|(_, a)| if let Anchor::Dot(x) = a { Some(x.clone()) } else { None }).collect();
+                let anchors: Vec<Dot> = e.created.iter().map(|c| &c.1).chain(e.pos.iter().map(|p| &p.1)).filter_map(|a| if let Anchor::Dot(x) = a { Some(x.clone()) } else { None }).collect();
                 let shown = crate::seq::is_visible(e, s.text);
                 if shown {
                     work.extend(anchors.iter().cloned());

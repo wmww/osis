@@ -167,7 +167,7 @@ pub fn frag(f: &m::Frag) -> Fragment {
                     let el = SeqElem {
                         created: e.created.as_ref().map(|(s, a)| (stamp(s), anchor(a))),
                         content,
-                        pos: e.pos.iter().map(|(s, a)| (stamp(s), anchor(a))).collect(),
+                        pos: e.pos.iter().map(|(s, a, k)| (stamp(s), anchor(a), k.as_ref().map(stamp))).collect(),
                         deleted: e.deleted.as_ref().map(|(s, b)| (stamp(s), *b)),
                         span: 1,
                     };

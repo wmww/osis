@@ -9,7 +9,7 @@
 //! chain) or all are bare anchors on `END` in dot order, so the node places like its elements,
 //! and its first element's edge has the smallest stamp of the chain (§6.2 picks the same victim).
 
-use crate::seq::{Anchor, SeqElem};
+use crate::seq::{Anchor, PosW, SeqElem, sib_key};
 use crate::seq_span::{Elems, nth, piece};
 use crate::stamp::{Dot, SourceKind, Stamp};
 use std::borrow::Cow;
@@ -49,7 +49,7 @@ struct Graph<'a> {
     /// First dot and span per node.
     dots: Vec<&'a Dot>,
     spans: Vec<u64>,
-    pos: Vec<&'a [(Stamp, Anchor)]>,
+    pos: Vec<&'a [PosW]>,
     real: usize,
     /// Candidate per element: 0 = `cur`, 1 = `prev`, 2 = `END` (§6.2).
     cand: Vec<u8>,
@@ -66,7 +66,7 @@ impl Graph<'_> {
     }
     fn compute(&self, i: usize) -> Edge {
         let c = self.cand.get(i).copied().unwrap_or(2);
-        let Some((_, a)) = self.pos.get(i).and_then(|p| p.get(usize::from(c))) else { return Edge::End };
+        let Some((_, a, _)) = self.pos.get(i).and_then(|p| p.get(usize::from(c))) else { return Edge::End };
         match a {
             Anchor::Head => Edge::Head,
             Anchor::Dot(x) => match self.lookup(x) {
@@ -96,6 +96,11 @@ impl Graph<'_> {
         let c = usize::from(self.cand.get(i).copied().unwrap_or(2));
         self.pos.get(i).and_then(|p| p.get(c)).map(|p| &p.0)
     }
+    /// Sibling key of the chosen edge (`None` on `END`, §6.1).
+    fn key(&self, i: usize) -> Option<&Stamp> {
+        let c = usize::from(self.cand.get(i).copied().unwrap_or(2));
+        self.pos.get(i).and_then(|p| p.get(c)).map(sib_key)
+    }
     /// Demotes the element of `cycle` whose current edge has the smallest stamp (§6.2 step 2).
     fn demote(&mut self, cycle: &[usize]) -> Option<usize> {
         let v = *cycle.iter().min_by(|a, b| self.stamp(**a).cmp(&self.stamp(**b)).then_with(|| self.dots.get(**a).cmp(&self.dots.get(**b))))?;
@@ -116,7 +121,7 @@ impl Graph<'_> {
 fn nodes(elems: &Elems) -> Vec<Node<'_>> {
     let mut targets: Vec<&Dot> = Vec::new();
     if elems.values().any(|e| e.span > 1) {
-        targets = elems.values().flat_map(|e| e.pos.iter()).filter_map(|(_, a)| if let Anchor::Dot(d) = a { Some(d) } else { None }).collect();
+        targets = elems.values().flat_map(|e| e.pos.iter()).filter_map(|(_, a, _)| if let Anchor::Dot(d) = a { Some(d) } else { None }).collect();
         targets.sort();
         targets.dedup();
     }
@@ -163,7 +168,7 @@ pub(crate) fn place_idx(elems: &Elems) -> Placed<'_> {
     let mut virt: Vec<Dot> = nodes
         .iter()
         .flat_map(|n| n.elem.pos.iter())
-        .filter_map(|(_, a)| match a {
+        .filter_map(|(_, a, _)| match a {
             Anchor::Dot(d) if d.src.is_derived() && !held(d) => Some(d.clone()),
             _ => None,
         })
@@ -187,7 +192,7 @@ pub(crate) fn place_idx(elems: &Elems) -> Placed<'_> {
     g.edge = Vec::with_capacity(n);
     for i in 0..n {
         let mut edge = Edge::End;
-        for (k, (_, a)) in g.pos.get(i).copied().unwrap_or_default().iter().enumerate() {
+        for (k, (_, a, _)) in g.pos.get(i).copied().unwrap_or_default().iter().enumerate() {
             let e = match a {
                 Anchor::Head => Edge::Head,
                 Anchor::Dot(x) => match g.lookup_near(x, i) {
@@ -315,7 +320,7 @@ fn traverse(g: &Graph) -> (Vec<usize>, Vec<Option<usize>>) {
     let range = |s: usize| start.get(s).copied().unwrap_or(0)..start.get(s + 1).copied().unwrap_or(0);
     for s in 0..=n {
         if let Some(c) = kids.get_mut(range(s)).filter(|c| c.len() > 1) {
-            c.sort_by(|a, b| g.stamp(*b).cmp(&g.stamp(*a)).then_with(|| g.dots.get(*a).cmp(&g.dots.get(*b))));
+            c.sort_by(|a, b| g.key(*b).cmp(&g.key(*a)).then_with(|| g.dots.get(*a).cmp(&g.dots.get(*b))));
         }
     }
     // END elements by dot ascending: node indices are already in dot order per part

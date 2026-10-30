@@ -309,3 +309,37 @@ fn set_element_is_a_register_spec_3_2() {
         assert!(create(&mut writer(&mw), &TyView(ty), &link).is_err());
     }
 }
+
+/// §3.2 `PosW`, §3.3 rule 7, §5.7: a writer's position write may carry a sibling key naming
+/// another commit (the only use of a writer's commit table), strictly below its stamp; a write
+/// stamp naming a table commit is foreign. Model and implementation agree on each.
+#[test]
+fn position_write_sibling_keys_spec_3_3() {
+    let n2 = Value::Bytes(tid(2).as_bytes().to_vec());
+    // node 2's commit at wall 1, base counter 7 (Ci 1)
+    let table = || vec![l(vec![i(1), l(vec![l(vec![i(1), i(0), i(7)])])])];
+    // a position write on node 2's element 7: `[i, Stamp, HEAD, key?]`
+    let posw = |w: Vec<Value>| l(vec![i(9), l(vec![]), l(vec![]), l(vec![l(vec![l(vec![i(1), i(7)]), i(1), l(vec![]), l(vec![]), l(vec![l(w)]), l(vec![])])])]);
+    let alike = |b: &[u8]| {
+        let mut mcx = Ctx::writer(5 << 16, MSource::node(1), 3, 6);
+        let m = crdt_model::wire::decode_delta(b, &mut mcx);
+        let d = decode_delta(b, &wcx(), &mut Interner::new(), None);
+        assert_eq!(m.is_ok(), d.is_ok(), "model {m:?}, implementation {d:?}");
+        if let (Ok(m), Ok(d)) = (&m, &d) {
+            assert_eq!(frag(m), d.fragment);
+        }
+        d
+    };
+    let ok = alike(&delta(vec![n2.clone()], table(), posw(vec![i(0), i(0), i(0), i(1)]))).unwrap();
+    let crate::Fragment::Seq(s) = &ok.fragment else { panic!("text") };
+    let e = s.elems().values().next().unwrap();
+    assert_eq!(e.pos.first().and_then(|p| p.2.as_ref()), Some(&crate::stamp::Stamp::new(ts(1 << 16), Source::node(tid(2)), 7)));
+    // the key equal to or above the stamp (own commit: counter 3 is the base)
+    for k in [i(0), l(vec![i(0), i(4)])] {
+        assert!(alike(&delta(vec![n2.clone()], vec![], posw(vec![i(0), i(0), i(0), k]))).is_err());
+    }
+    // the write stamp naming the table's commit
+    assert!(alike(&delta(vec![n2.clone()], table(), posw(vec![i(0), i(1), i(0)]))).is_err());
+    // a table entry nothing names
+    assert!(alike(&delta(vec![n2], table(), posw(vec![i(0), i(0), i(0)]))).is_err());
+}

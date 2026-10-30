@@ -58,6 +58,8 @@ pub fn wire_sorted<'a, T>(m: &'a BTreeMap<Dot, T>, own: &Source) -> Vec<(&'a Dot
 #[derive(Clone, Copy, Debug)]
 pub enum Ref<'a> {
     Stamp(&'a Stamp),
+    /// A position write's sibling key (§5.7): a stamp, not a write.
+    Key(&'a Stamp),
     Dot(&'a Dot),
 }
 
@@ -106,7 +108,7 @@ impl Ctx {
             Ref::Dot(d) => {
                 self.index(&d.source);
             }
-            Ref::Stamp(s) => {
+            Ref::Stamp(s) | Ref::Key(s) => {
                 self.index(&s.dot.source);
                 if s.ts == self.ts && s.dot.source == self.own {
                     return;
@@ -249,13 +251,16 @@ impl Ctx {
             return Err(Error::Bad("non-canonical commit table"));
         }
         if let Some(hi) = self.hi {
-            if !self.commits.is_empty() {
-                return Err(Error::Bad("foreign stamps in a writer's delta"));
-            }
+            // every write stamp is this commit's; the table names only sibling keys' commits (§3.3 rule 7)
             let mut err = None;
             f.walk(&mut |r| {
                 let ok = match r {
-                    Ref::Stamp(s) => s.dot.source != self.own || (self.lo..hi).contains(&s.dot.ctr),
+                    Ref::Stamp(s) if s.ts != self.ts || s.dot.source != self.own => {
+                        err = Some(Error::Bad("foreign stamps in a writer's delta"));
+                        return;
+                    }
+                    Ref::Stamp(s) => (self.lo..hi).contains(&s.dot.ctr),
+                    Ref::Key(_) => true,
                     Ref::Dot(d) => d.source != self.own || d.ctr < hi,
                 };
                 if !ok {
@@ -420,6 +425,9 @@ impl Frag {
                             if p.0.dot != **d {
                                 f(Ref::Stamp(&p.0));
                                 anchor(&p.1, f);
+                                if let Some(k) = &p.2 {
+                                    f(Ref::Key(k));
+                                }
                             }
                         }
                     }
@@ -662,7 +670,9 @@ fn enc_runs(text: bool, elems: &BTreeMap<Dot, SeqElem>, cx: &Ctx) -> Item {
         for (k, (d, e)) in run.iter().enumerate() {
             for p in &e.pos {
                 if p.0.dot != **d {
-                    posw.push(Item::Array(vec![u(k as u64), enc_stamp(&p.0, cx), enc_anchor(&p.1, cx)]));
+                    let mut w = vec![u(k as u64), enc_stamp(&p.0, cx), enc_anchor(&p.1, cx)];
+                    w.extend(p.2.as_ref().map(|k| enc_stamp(k, cx)));
+                    posw.push(Item::Array(w));
                 }
             }
         }
@@ -922,7 +932,7 @@ fn derived_ok(f: &Frag) -> bool {
             comp(c)
                 && elems.values().all(|e| {
                     let created = e.created.as_ref().map(|x| &x.0);
-                    ok(e.deleted.as_ref().map(|d| &d.0)) && (*text || ok(created)) && e.pos.iter().all(|(p, _)| ok(Some(p)) || Some(p) == created)
+                    ok(e.deleted.as_ref().map(|d| &d.0)) && (*text || ok(created)) && e.pos.iter().all(|(p, _, _)| ok(Some(p)) || Some(p) == created)
                 })
         }
         Frag::Slots { .. } => true,
@@ -980,7 +990,7 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
                         let d = Dot { source: first.source.clone(), ctr: first.ctr + i as u64 };
                         let st = Stamp { ts, dot: d.clone() };
                         e.created = Some((st.clone(), prev.clone()));
-                        e.pos.push((st, prev));
+                        e.pos.push((st, prev, None));
                         prev = Anchor::Dot(d);
                         i += 1;
                     }
@@ -994,7 +1004,7 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
         let mut last_pos: Option<(usize, Stamp)> = None;
         for p in a[4].array()? {
             let p = p.array()?;
-            if p.len() != 3 {
+            if p.len() != 3 && p.len() != 4 {
                 return Err(Error::Bad("posw"));
             }
             let i = p[0].uint()? as usize;
@@ -1013,7 +1023,15 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
             if s.dot.source == first.source && s.dot.ctr == first.ctr + i as u64 {
                 return Err(Error::Bad("creation as a position write"));
             }
-            elems[i].pos.push((s, dec_anchor(&p[2], cx)?));
+            // a sibling key is an older write's stamp (§5.7): below the write's own, else non-canonical
+            let key = match p.get(3) {
+                Some(k) => Some(dec_stamp(k, cx)?),
+                None => None,
+            };
+            if key.as_ref().map_or(false, |k| *k >= s) {
+                return Err(Error::Bad("sibling key not below its stamp"));
+            }
+            elems[i].pos.push((s, dec_anchor(&p[2], cx)?, key));
         }
         let mut last_flag: Option<(usize, Stamp, bool)> = None;
         for fl in a[5].array()? {
@@ -1208,7 +1226,7 @@ pub fn decode_snapshot_authors(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<
             cx.check(&frag, &extra)?;
             // a snapshot writes nothing itself (§2.4): no stamp of this commit (`Ci` 0)
             let mut own = false;
-            frag.walk(&mut |r| own |= matches!(r, Ref::Stamp(s) if s.dot.source == cx.own && s.ts == cx.ts));
+            frag.walk(&mut |r| own |= matches!(r, Ref::Stamp(s) | Ref::Key(s) if s.dot.source == cx.own && s.ts == cx.ts));
             if own {
                 return Err(Error::Bad("own write in a snapshot"));
             }

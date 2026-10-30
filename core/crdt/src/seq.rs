@@ -37,6 +37,19 @@ pub enum SeqContent {
     Frag(Box<Fragment>),
 }
 
+/// A position write `(stamp, anchor, sibling key)`; no key: the stamp is the sibling key (§5.7).
+pub(crate) type PosW = (Stamp, Anchor, Option<Stamp>);
+
+/// The sibling key of a position write: what orders it among its anchor's children (§6.1).
+pub(crate) fn sib_key(p: &PosW) -> &Stamp {
+    p.2.as_ref().unwrap_or(&p.0)
+}
+
+/// Whether position write `p` is creation write `c` (a creation carries no sibling key).
+pub(crate) fn is_creation(p: &PosW, c: &(Stamp, Anchor)) -> bool {
+    p.2.is_none() && p.0 == c.0 && p.1 == c.1
+}
+
 /// One element record (§5.7 State), identified by its creation dot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SeqElem {
@@ -44,7 +57,7 @@ pub struct SeqElem {
     pub(crate) created: Option<(Stamp, Anchor)>,
     pub(crate) content: SeqContent,
     /// The two greatest position writes, creation included, greatest first.
-    pub(crate) pos: Vec<(Stamp, Anchor)>,
+    pub(crate) pos: Vec<PosW>,
     /// Text: the deleted flag (LWW bool). List: the element reset, always `true`.
     pub(crate) deleted: Option<(Stamp, bool)>,
     /// Elements this record stands for (a range record above 1, `seq_span`); the fields are
@@ -220,7 +233,7 @@ fn prune_elem(d: &Dot, el: &mut SeqElem, text: bool, e: Option<&Stamp>, ch: &mut
 fn prune_fields(d: &Dot, el: &mut SeqElem, e: Option<&Stamp>, ch: &mut Changes) {
     prune_write(&mut el.created, e, ch);
     if let Some(e) = e {
-        el.pos.retain(|(s, _)| {
+        el.pos.retain(|(s, _, _)| {
             if *s >= *e {
                 return true;
             }
@@ -242,7 +255,7 @@ fn content_rule(el: &mut SeqElem, text: bool) {
 }
 
 /// Top-2 of the union of position writes (§5.7); reports the beaten `cur`.
-fn join_pos(d: &Dot, s: &mut Vec<(Stamp, Anchor)>, inc: Vec<(Stamp, Anchor)>, ch: &mut Changes) {
+fn join_pos(d: &Dot, s: &mut Vec<PosW>, inc: Vec<PosW>, ch: &mut Changes) {
     if inc.is_empty() {
         return;
     }
@@ -268,8 +281,8 @@ fn join_pos(d: &Dot, s: &mut Vec<(Stamp, Anchor)>, inc: Vec<(Stamp, Anchor)>, ch
 }
 
 /// Keeps the two greatest position writes, greatest first; of copies of one write the greatest
-/// anchor (§4.1 copy order).
-pub(crate) fn top2(s: &mut Vec<(Stamp, Anchor)>) {
+/// anchor, then the greatest sibling key, none below any (§4.1 copy order, §5.7).
+pub(crate) fn top2(s: &mut Vec<PosW>) {
     s.sort_by(|a, b| b.cmp(a));
     s.dedup_by(|a, b| a.0 == b.0);
     s.truncate(2);
@@ -950,7 +963,7 @@ pub(crate) fn embed_text(r: &Register) -> BTreeMap<Dot, SeqElem> {
     for (i, c) in text.chars().enumerate() {
         let d = Dot::new(src.clone(), i as u64 + 1);
         let st = Stamp { ts: w.stamp.ts, dot: d.clone() };
-        out.insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char(c), pos: vec![(st, prev)], deleted: None, span: 1 });
+        out.insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char(c), pos: vec![(st, prev, None)], deleted: None, span: 1 });
         prev = Anchor::Dot(d);
     }
     out
@@ -971,7 +984,7 @@ pub(crate) fn fit_embedding(s: &mut Seq, r: &Register) {
     let differs = |d: &Dot, e: &SeqElem| {
         let x = emb.get(d).and_then(|x| x.created.as_ref().map(|c| (c, &x.content)));
         e.created.as_ref().is_some_and(|c| Some(c) != x.map(|x| x.0))
-            || e.pos.iter().any(|p| p.0.dot == *d && Some(p) != x.map(|x| x.0))
+            || e.pos.iter().any(|p| p.0.dot == *d && !x.is_some_and(|x| is_creation(p, x.0)))
             || matches!(e.content, SeqContent::Char(c) if x.is_none_or(|x| *x.1 != SeqContent::Char(c)))
     };
     let bad = s.elems.range(range.clone()).any(|(d, e)| if e.span == 1 { differs(d, e) } else { crate::seq_span::expand(BTreeMap::from([(d.clone(), e.clone())])).iter().any(|(d, e)| differs(d, e)) });
@@ -987,7 +1000,7 @@ pub(crate) fn fit_embedding(s: &mut Seq, r: &Register) {
             if matches!(e.content, SeqContent::Char(_)) {
                 e.content = SeqContent::None;
             }
-            e.pos.retain(|(st, _)| st.dot != d);
+            e.pos.retain(|p| p.0.dot != d);
         }
         if e.keeps(&d) {
             elems.insert(d, e);
