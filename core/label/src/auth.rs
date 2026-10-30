@@ -11,6 +11,7 @@ use osis_base::format::{DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER};
 use osis_base::{BlobId, LabelId, Value, WallMs};
 use osis_crypto::{DeleteSecret, Domain, LabelRole, Signature, SigningSecret, VerifyingKey, open_digest, sign_open, static_entry, verify_delete, verify_open};
 use osis_schema::core_types::SecretBox;
+use std::sync::Arc;
 
 /// Open proof (spec/wire.md §11.2): `[0, sync_pk, sig] | [1, step_id, claim_pk, sig] |
 /// [2, signing_pk, sig] | [3, dialable_pk, sig]`.
@@ -75,53 +76,58 @@ impl Proof {
 
 /// What a server answers an open with (spec/sync.md §5).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum OpenOutcome<'a> {
+#[allow(clippy::large_enum_variant)] // one per Open, consumed at once
+pub enum OpenOutcome {
     /// The label is open on the connection; for a static proof, with the head's entry box.
-    Opened(Option<&'a SecretBox>),
+    Opened(Option<SecretBox>),
     /// A match at a superseded step: its child on the path (sent without its claim set).
-    Child(&'a Step),
+    Child(Step),
     /// Refused like an unknown key.
     Refused,
 }
 
-/// Evaluates an open against a server's path (genesis first, head last) and the claim sets it
-/// still holds. The signature is checked first. A sync key matches the head, else the newest
-/// superseded step bearing it; a claim at step j needs V in j's set (head: open; on the path:
-/// its child); a static proof needs the key's static entry in the head's set.
-pub fn evaluate_open<'a>(
-    path: &'a [Step],
-    claims: &dyn Fn(&StepId) -> Option<&'a ClaimSet>,
-    proof: &Proof,
-    challenge: &[u8; 32],
-    static_key: &[u8; 32],
-) -> OpenOutcome<'a> {
-    let Some(head) = path.last() else { return OpenOutcome::Refused };
+/// What `evaluate_open` reads of a server's path besides its head: indexes the store keeps as
+/// steps are added, so an open costs a constant number of lookups however long the path.
+pub trait PathIndex {
+    type Error;
+    /// The newest step on the path registering sync key `pk`.
+    fn step_with_sync(&self, pk: &VerifyingKey) -> Result<Option<StepId>, Self::Error>;
+    /// The claim set of a step on the path, while held; none for a step not on it.
+    fn claims(&self, step: &StepId) -> Result<Option<Arc<ClaimSet>>, Self::Error>;
+    /// The child on the path of a step on it; none past the head.
+    fn child(&self, step: &StepId) -> Result<Option<Step>, Self::Error>;
+}
+
+/// Evaluates an open against a server's head and its path indexes. The signature is checked
+/// first. A sync key matches the head, else the newest superseded step bearing it; a claim at
+/// step j needs V in j's set (head: open; on the path: its child); a static proof needs the
+/// key's static entry in the head's set. At most three lookups.
+pub fn evaluate_open<I: PathIndex>(head: &Step, index: &I, proof: &Proof, challenge: &[u8; 32], static_key: &[u8; 32]) -> Result<OpenOutcome, I::Error> {
     if proof.verify_sig(&head.label, challenge, static_key).is_err() {
-        return OpenOutcome::Refused;
+        return Ok(OpenOutcome::Refused);
     }
-    let child_of = |i: usize| path.get(i + 1).map_or(OpenOutcome::Refused, OpenOutcome::Child);
+    let child_of = |s: &StepId| Ok(index.child(s)?.map_or(OpenOutcome::Refused, OpenOutcome::Child));
     match proof {
-        Proof::Sync { pk, .. } => match path.iter().rposition(|s| s.keys.sync == *pk) {
-            Some(i) if i + 1 == path.len() => OpenOutcome::Opened(None),
-            Some(i) => child_of(i),
-            None => OpenOutcome::Refused,
+        Proof::Sync { pk, .. } if head.keys.sync == *pk => Ok(OpenOutcome::Opened(None)),
+        Proof::Sync { pk, .. } => match index.step_with_sync(pk)? {
+            Some(s) => child_of(&s),
+            None => Ok(OpenOutcome::Refused),
         },
         Proof::Claim { step, pk, .. } => {
-            let Some(i) = path.iter().position(|s| s.id() == *step) else { return OpenOutcome::Refused };
-            if !claims(step).is_some_and(|c| c.contains(&pk.to_bytes())) {
-                return OpenOutcome::Refused;
+            if !index.claims(step)?.is_some_and(|c| c.contains(&pk.to_bytes())) {
+                return Ok(OpenOutcome::Refused);
             }
-            if i + 1 == path.len() { OpenOutcome::Opened(None) } else { child_of(i) }
+            if *step == head.id() { Ok(OpenOutcome::Opened(None)) } else { child_of(step) }
         }
         Proof::Static { signing, .. } => {
             let e = static_entry(&head.label, signing);
-            match claims(&head.id()) {
-                Some(c) if c.contains(&e) => OpenOutcome::Opened(c.entries.get(&e)),
+            Ok(match index.claims(&head.id())? {
+                Some(c) if c.contains(&e) => OpenOutcome::Opened(c.entries.get(&e).cloned()),
                 _ => OpenOutcome::Refused,
-            }
+            })
         }
         // only a member peer that knows the key's node opens it (`ServerConnection`)
-        Proof::Member { .. } => OpenOutcome::Refused,
+        Proof::Member { .. } => Ok(OpenOutcome::Refused),
     }
 }
 
@@ -243,6 +249,25 @@ mod tests {
     use osis_crypto::{Epoch, KeyActorKeys, SeededRng, Secret32, X25519Secret, label_role_key};
     use proptest::prelude::*;
 
+    /// A path and its held claim sets, indexed by scanning (`PathIndex` for tests).
+    struct Slice<'a> {
+        path: &'a [Step],
+        sets: Vec<(StepId, Arc<ClaimSet>)>,
+    }
+
+    impl PathIndex for Slice<'_> {
+        type Error = std::convert::Infallible;
+        fn step_with_sync(&self, pk: &VerifyingKey) -> Result<Option<StepId>, Self::Error> {
+            Ok(self.path.iter().rev().find(|s| s.keys.sync == *pk).map(|s| s.id()))
+        }
+        fn claims(&self, step: &StepId) -> Result<Option<Arc<ClaimSet>>, Self::Error> {
+            Ok(self.sets.iter().find(|(id, _)| id == step).map(|(_, c)| c.clone()))
+        }
+        fn child(&self, step: &StepId) -> Result<Option<Step>, Self::Error> {
+            Ok(self.path.iter().position(|s| s.id() == *step).and_then(|i| self.path.get(i + 1)).cloned())
+        }
+    }
+
     fn epoch(n: u64) -> Epoch {
         Epoch::new(n, [n as u8; 16]).unwrap()
     }
@@ -261,24 +286,25 @@ mod tests {
         let k1 = crate::StepKeys::derive(&g2.read, &g2.write, &g2.admin, 0, &g.deposit, &s0.label);
         let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, k1, &readers, (epoch(1), &g2.read), &mut rng).unwrap();
         let path = vec![s0.clone(), s1.clone()];
-        let sets = |id: &StepId| if *id == s0.id() { Some(&c0) } else if *id == s1.id() { Some(&c1) } else { None };
+        let sets = Slice { path: &path, sets: vec![(s0.id(), Arc::new(c0.clone())), (s1.id(), Arc::new(c1.clone()))] };
+        let evaluate_open = |p: &[Step], ix: &Slice<'_>, pr: &Proof, ch: &[u8; 32], sk: &[u8; 32]| evaluate_open(p.last().unwrap(), ix, pr, ch, sk).unwrap();
         let (ch, sk) = ([1; 32], [2; 32]);
         let l = s0.label;
         let sync1 = label_role_key(LabelRole::Sync, &g2.read, 0);
         let sync0 = label_role_key(LabelRole::Sync, &g.read, 0);
         assert_eq!(evaluate_open(&path, &sets, &Proof::sync(&sync1, &l, &ch, &sk), &ch, &sk), OpenOutcome::Opened(None));
-        assert_eq!(evaluate_open(&path, &sets, &Proof::sync(&sync0, &l, &ch, &sk), &ch, &sk), OpenOutcome::Child(&s1));
+        assert_eq!(evaluate_open(&path, &sets, &Proof::sync(&sync0, &l, &ch, &sk), &ch, &sk), OpenOutcome::Child(s1.clone()));
         assert_eq!(evaluate_open(&path, &sets, &Proof::sync(&sync1, &l, &[9; 32], &sk), &ch, &sk), OpenOutcome::Refused);
         assert_eq!(evaluate_open(&path, &sets, &Proof::sync(&sync1, &l, &ch, &[9; 32]), &ch, &sk), OpenOutcome::Refused);
         let cl0 = s0.claim_key(&m).unwrap();
         let cl1 = s1.claim_key(&m).unwrap();
-        assert_eq!(evaluate_open(&path, &sets, &Proof::claim(s0.id(), &cl0, &l, &ch, &sk), &ch, &sk), OpenOutcome::Child(&s1));
+        assert_eq!(evaluate_open(&path, &sets, &Proof::claim(s0.id(), &cl0, &l, &ch, &sk), &ch, &sk), OpenOutcome::Child(s1.clone()));
         assert_eq!(evaluate_open(&path, &sets, &Proof::claim(s1.id(), &cl1, &l, &ch, &sk), &ch, &sk), OpenOutcome::Opened(None));
         assert_eq!(evaluate_open(&path, &sets, &Proof::claim(s1.id(), &cl0, &l, &ch, &sk), &ch, &sk), OpenOutcome::Refused);
-        let dropped = |id: &StepId| if *id == s1.id() { Some(&c1) } else { None };
+        let dropped = Slice { path: &path, sets: vec![(s1.id(), Arc::new(c1.clone()))] };
         assert_eq!(evaluate_open(&path, &dropped, &Proof::claim(s0.id(), &cl0, &l, &ch, &sk), &ch, &sk), OpenOutcome::Refused);
         let p = Proof::static_entry(&card.signing, &l, &ch, &sk);
-        assert_eq!(evaluate_open(&path, &sets, &p, &ch, &sk), OpenOutcome::Opened(c1.entry_box(&l, &card.signing.verifying_key())));
+        assert_eq!(evaluate_open(&path, &sets, &p, &ch, &sk), OpenOutcome::Opened(c1.entry_box(&l, &card.signing.verifying_key()).cloned()));
         let stranger = KeyActorKeys::from_seed(&Secret32::from_bytes([5; 32]));
         assert_eq!(evaluate_open(&path, &sets, &Proof::static_entry(&stranger.signing, &l, &ch, &sk), &ch, &sk), OpenOutcome::Refused);
         for pr in [Proof::sync(&sync0, &l, &ch, &sk), Proof::claim(s0.id(), &cl0, &l, &ch, &sk), p] {

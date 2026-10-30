@@ -76,7 +76,7 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 |---|---|---|
 | `LOG_BATCH` 256, replicate `BATCH_RECORDS` 256, `BATCH_BYTES` 4 MiB, `MAX_STEPS` 64, hub `SWEEP_BUDGET` 1024 | P | no progress per call / unbounded call latency |
 | `OLDER_KEYS` 8 | M | every stale key REFUSED / unbounded signature checks per refused item; past it a writer 8+ rotations behind gets REFUSED, not the head; the entry stays unsent and goes again at the next pass, under the head the connection learned by open (a stale sync key opens to its child and walks) or by registration pushes (checked) |
-| `MAX_CACHED` 4096 | P | reload per message (head keys: two store reads; the whole path only for Open and Path, issues/net-cleanup.md) / memory |
+| `MAX_CACHED` 4096 | P | head keys only: reload per message (three store reads) / memory |
 | `MAX_CROSSED` 2^14, `MAX_ORIGINS` 2^20 | P (optimizations, cleared past the cap) | blobs inlined back, entries replicated back to their origin (refused there as held) / memory |
 | `PRESENCE_PRUNE` 1024, `SEQ_BLOCK` 1024 | P (commented in code) | |
 | `ENTRY_OVERHEAD` 768, `TOMB_OVERHEAD` 160, `REC_OVERHEAD` 96 | measured, tested (`overheads_cover_the_structures`) | |

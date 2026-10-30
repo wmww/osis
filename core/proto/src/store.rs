@@ -161,7 +161,14 @@ pub trait LabelStore {
     fn step(&self, label: &LabelId, id: &StepId) -> Result<Option<Step>, StoreError>;
     /// The claim set of a step on the path, while held.
     fn claim_set(&self, label: &LabelId, id: &StepId) -> Result<Option<Arc<ClaimSet>>, StoreError>;
-    /// Registration path from the genesis step to the head; empty for an unknown label.
+    /// The newest step on the path registering sync key `pk` (an index `push_step` keeps, so an
+    /// Open reads no path).
+    fn step_with_sync(&self, label: &LabelId, pk: &VerifyingKey) -> Result<Option<StepId>, StoreError>;
+    /// The child on the path of `step` (none: the genesis step); none past the head, for a step
+    /// not on the path or an unknown label. Kept by `push_step`, so Path pages without the path.
+    fn child(&self, label: &LabelId, step: Option<&StepId>) -> Result<Option<StepId>, StoreError>;
+    /// Registration path from the genesis step to the head; empty for an unknown label. Walks
+    /// every step: never on behalf of a peer.
     fn path(&self, label: &LabelId) -> Result<Vec<Step>, StoreError> {
         let mut path = Vec::new();
         let mut at = self.head(label)?;
@@ -244,6 +251,9 @@ struct LabelState {
     steps: BTreeMap<StepId, (Step, Option<Arc<ClaimSet>>)>,
     head: Option<StepId>,
     keys: Option<HeadKeys>,
+    /// Sync key → the newest step registering it; step (none: genesis) → its child.
+    by_sync: BTreeMap<[u8; 32], StepId>,
+    children: BTreeMap<Option<StepId>, StepId>,
     entries: BTreeMap<BlobId, (EntryMeta, Option<u64>)>,
     tombstones: BTreeMap<BlobId, u64>,
     log: Vec<(u64, LogRecord)>,
@@ -384,6 +394,14 @@ impl LabelStore for MemoryLabelStore {
         Ok(self.state(label).and_then(|s| s.keys.clone()))
     }
 
+    fn step_with_sync(&self, label: &LabelId, pk: &VerifyingKey) -> Result<Option<StepId>, StoreError> {
+        Ok(self.state(label).and_then(|s| s.by_sync.get(&pk.to_bytes())).copied())
+    }
+
+    fn child(&self, label: &LabelId, step: Option<&StepId>) -> Result<Option<StepId>, StoreError> {
+        Ok(self.state(label).and_then(|s| s.children.get(&step.copied())).copied())
+    }
+
     fn claim_set(&self, label: &LabelId, id: &StepId) -> Result<Option<Arc<ClaimSet>>, StoreError> {
         Ok(self.state(label).and_then(|s| s.steps.get(id)).and_then(|(_, c)| c.clone()))
     }
@@ -402,6 +420,8 @@ impl LabelStore for MemoryLabelStore {
             Some(k) => k.child(step.clone()),
             None => HeadKeys::genesis(step.clone()),
         });
+        s.by_sync.insert(step.keys.sync.to_bytes(), id);
+        s.children.insert(step.prev, id);
         s.steps.insert(id, (step, claim_set.map(Arc::new)));
         s.head = Some(id);
         Ok(())
@@ -599,6 +619,30 @@ pub(crate) mod tests {
             for i in 1..p.len() {
                 k = k.child(p[i].clone());
                 assert_eq!(Some(&k), HeadKeys::of_path(&p[..=i]).as_ref(), "seed {seed} step {i}");
+            }
+        }
+    }
+
+    // spec/sync.md §5 (Open, Path): the path indexes `MemoryLabelStore` keeps step by step agree
+    // with scans of the whole path: the newest step per sync key, each step's child
+    #[test]
+    fn path_indexes_incremental() {
+        let l = crate::examples::Fixture::new(0x10).label;
+        for seed in 0..16u64 {
+            let pick = |i: usize, r: usize| 1 + osis_base::hash::hash(&[seed.to_le_bytes(), (i as u64).to_le_bytes(), (r as u64).to_le_bytes()].concat())[0] % (2 + seed as u8);
+            let p = path(40, pick);
+            let mut store = MemoryLabelStore::new([1; 32]);
+            for (i, s) in p.iter().enumerate() {
+                store.push_step(&l, s.clone(), None).unwrap();
+                let at = &p[..=i];
+                assert_eq!(store.child(&l, None).unwrap(), Some(p[0].id()));
+                for (j, s) in at.iter().enumerate() {
+                    assert_eq!(store.child(&l, Some(&s.id())).unwrap(), at.get(j + 1).map(Step::id), "seed {seed} step {i}");
+                }
+                for n in 1..=2 + seed as u8 {
+                    let newest = at.iter().rev().find(|s| s.keys.sync == key(n)).map(Step::id);
+                    assert_eq!(store.step_with_sync(&l, &key(n)).unwrap(), newest, "seed {seed} step {i}");
+                }
             }
         }
     }

@@ -125,11 +125,15 @@ impl Feed {
     }
 }
 
-/// A served label: its group, its path to the head and the claim sets held.
+/// A served label: its group, its path to the head and the claim sets held, with the path
+/// indexes an Open or a Path page reads (step ID → position, sync key → newest position), so a
+/// peer's request costs no scan of the path.
 pub struct ServedLabel {
     group: osis_base::Tid,
     path: Vec<Step>,
     claims: BTreeMap<StepId, Arc<ClaimSet>>,
+    pos: BTreeMap<StepId, usize>,
+    by_sync: BTreeMap<[u8; 32], usize>,
 }
 
 impl ServedLabel {
@@ -140,9 +144,12 @@ impl ServedLabel {
 
     /// The path to the deepest step of `steps` (the lowest ID among equals).
     pub(crate) fn new(group: osis_base::Tid, steps: &super::open::Steps) -> Option<ServedLabel> {
-        let path = super::open::deepest_path(steps)?.into_iter().map(|(s, _)| s.clone()).collect();
+        let path: Vec<Step> = super::open::deepest_path(steps)?.into_iter().map(|(s, _)| s.clone()).collect();
         let claims = steps.iter().filter_map(|(id, (_, c))| c.clone().map(|c| (*id, Arc::new(c)))).collect();
-        Some(ServedLabel { group, path, claims })
+        let pos = path.iter().enumerate().map(|(i, s)| (s.id(), i)).collect();
+        // later positions overwrite: the newest step per sync key
+        let by_sync = path.iter().enumerate().map(|(i, s)| (s.keys.sync.to_bytes(), i)).collect();
+        Some(ServedLabel { group, path, claims, pos, by_sync })
     }
 }
 
@@ -296,11 +303,24 @@ impl LabelStore for PeerStore<'_> {
     }
 
     fn step(&self, label: &LabelId, id: &StepId) -> std::result::Result<Option<Step>, StoreError> {
-        Ok(self.labels.get(label).and_then(|s| s.path.iter().find(|x| x.id() == *id)).cloned())
+        Ok(self.labels.get(label).and_then(|s| s.pos.get(id).and_then(|i| s.path.get(*i))).cloned())
     }
 
     fn claim_set(&self, label: &LabelId, id: &StepId) -> std::result::Result<Option<Arc<ClaimSet>>, StoreError> {
         Ok(self.labels.get(label).and_then(|s| s.claims.get(id)).cloned())
+    }
+
+    fn step_with_sync(&self, label: &LabelId, pk: &osis_crypto::VerifyingKey) -> std::result::Result<Option<StepId>, StoreError> {
+        Ok(self.labels.get(label).and_then(|s| s.by_sync.get(&pk.to_bytes()).and_then(|i| s.path.get(*i))).map(|x| x.id()))
+    }
+
+    fn child(&self, label: &LabelId, step: Option<&StepId>) -> std::result::Result<Option<StepId>, StoreError> {
+        let Some(s) = self.labels.get(label) else { return Ok(None) };
+        let next = match step {
+            None => s.path.first(),
+            Some(id) => s.pos.get(id).and_then(|i| s.path.get(i + 1)),
+        };
+        Ok(next.map(|x| x.id()))
     }
 
     fn path(&self, label: &LabelId) -> std::result::Result<Vec<Step>, StoreError> {
