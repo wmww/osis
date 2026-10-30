@@ -287,13 +287,22 @@ impl Engine {
         let me = self.tid();
         for t in entered {
             self.eph.remote.local.remove(&t);
-            let aspects: Vec<(Ak, Fragment, bool)> = self.eph.aspects.get(&t).map(|m| m.iter().map(|(ak, a)| (ak.clone(), own_unexpiring(a, &self.eph.src), a.presence)).collect()).unwrap_or_default();
+            let src = &self.eph.src;
+            // `None`: only expiring or expired writes (`unsent` has the former), whose records
+            // `own_unexpiring` keeps value-less; a part of those would carry the thing's record
+            // past their expiry
+            let aspects: Vec<(Ak, Option<Fragment>, bool)> = self
+                .eph
+                .aspects
+                .get(&t)
+                .map(|m| m.iter().map(|(ak, a)| (ak.clone(), Some(own_unexpiring(a, src)).filter(|f| f.holds_dots(&|d| !in_ranges(d, src, &a.expired) && !a.expiring.values().any(|r| in_ranges(d, src, r)))), a.presence)).collect())
+                .unwrap_or_default();
             let r = &mut self.eph.remote;
             for (ak, f, presence) in aspects {
                 if presence {
                     r.presence.entry((t, ak)).or_insert(me);
                     r.presence_dirty.insert(me);
-                } else {
+                } else if let Some(f) = f {
                     r.unsent.entry((t, ak)).or_default().entry((me, None)).or_default().join(f);
                 }
             }
@@ -402,6 +411,7 @@ impl Engine {
         let header = h.header.clone();
         let own = h.own;
         let aspects: Vec<(Tid, Ak)> = h.parts.iter().filter_map(|p| header.aspects.get(p.ai)).filter(|a| a.ak.as_str() != CREATED.ak()).map(|a| (a.tid, a.ak.clone())).collect();
+        let recs = self.carried_tids(id);
         self.forget_held(id);
         let mut changed = Vec::new();
         for (t, ak) in aspects {
@@ -411,6 +421,7 @@ impl Engine {
                 changed.push((t, ak));
             }
         }
+        self.free_unused_records(recs);
         if !changed.is_empty() && !own {
             let received = self.now();
             self.core.events.queue(Event::Ephemeral { id: ChangeId::Commit(*id), origin: Origin::Remote, author: header.author, actor: header.actor, ts: header.ts, received, changed, signals: Vec::new() });
@@ -699,6 +710,10 @@ impl Engine {
                 let ais: Vec<usize> = blob.parts.iter().map(|p| p.ai).collect();
                 if self.eph_covered(&id, &h, &ais) {
                     return Ok(EphIngest::Dropped { absorbed: true });
+                }
+                if !live_parts(&h, now) {
+                    // expired but for its records: nothing of it is held
+                    return Ok(EphIngest::Dropped { absorbed: false });
                 }
             }
         }
@@ -1077,6 +1092,7 @@ impl Engine {
     /// (spec/crdt.md §4.7) and the parts dropped. Returns the aspects changed.
     pub(super) fn tick_remote(&mut self, now: u64) -> BTreeSet<(Tid, Ak)> {
         let mut changed = BTreeSet::new();
+        let mut gone = Vec::new();
         while let Some(entry) = self.eph.remote.timers.first_entry() {
             if *entry.key() > now {
                 break;
@@ -1106,10 +1122,69 @@ impl Engine {
                 if empty {
                     self.eph.remote.held.remove(&id);
                     self.eph.dropped.push(id);
+                } else if !live_parts(&header, now) {
+                    // only its `/created` parts are left: dropped with their records' last use
+                    gone.push(id);
                 }
             }
         }
+        for id in gone {
+            self.forget_unused(&id);
+        }
         changed
+    }
+
+    /// Forgets held commit `id`, then the records it carried that nothing here uses any more.
+    fn forget_unused(&mut self, id: &CommitId) {
+        let recs = self.carried_tids(id);
+        self.forget_held(id);
+        self.free_unused_records(recs);
+    }
+
+    /// The things whose `/created` held commit `id` carries.
+    fn carried_tids(&self, id: &CommitId) -> BTreeSet<Tid> {
+        let Some(h) = self.eph.remote.held.get(id) else { return BTreeSet::new() };
+        h.parts.iter().filter_map(|p| h.header.aspects.get(p.ai)).filter(|a| a.ak.as_str() == CREATED.ak()).map(|a| a.tid).collect()
+    }
+
+    /// Frees the records of `cands`, ephemeral things received from others (not made by this
+    /// session), that nothing here uses: no held part on the thing (a commit about it or placing
+    /// it carries its record), no pending commit waiting for it, no state, no own write to send,
+    /// no ephemeral thing it owns. Their content is gone (expired or its holder's tie ended), and
+    /// a later commit about them brings the record again (notes/ephemeral.md Own covers).
+    fn free_unused_records(&mut self, mut cands: BTreeSet<Tid>) {
+        loop {
+            let owners: BTreeSet<Tid> = self.eph.things.values().filter_map(|e| match &e.record {
+                CreationRecord::Thing { owner, .. } => Some(*owner),
+                CreationRecord::KeyActor { .. } => None,
+            }).collect();
+            let free: Vec<Tid> = cands.iter().filter(|t| !owners.contains(t) && self.record_unused(t)).copied().collect();
+            if free.is_empty() {
+                return;
+            }
+            for t in &free {
+                cands.remove(t);
+                if let Some(CreationRecord::Thing { owner, .. }) = self.eph.things.remove(t).map(|e| e.record) {
+                    cands.insert(owner);
+                }
+                self.eph.aspects.remove(t);
+                self.eph.defs.remove(t);
+            }
+            self.eph.log.forget(&|t| free.contains(t));
+        }
+    }
+
+    fn record_unused(&self, t: &Tid) -> bool {
+        let Some(th) = self.eph.things.get(t) else { return false };
+        let r = &self.eph.remote;
+        // made here this session: the app's own (its record minted under this session)
+        let made_here = th.created.as_ref().is_none_or(|f| f.writes().first().is_none_or(|(d, _)| d.src == self.eph.src));
+        !made_here
+            && self.eph.aspects.get(t).is_none_or(|m| m.values().all(|a| a.parts.is_empty() && !a.state.present()))
+            && !r.local.contains(t)
+            && !r.unsent.keys().any(|(x, _)| x == t)
+            && !r.presence.keys().any(|(x, _)| x == t)
+            && !r.pending.values().any(|(_, needs)| needs.contains(t))
     }
 
     /// The author's own compaction (spec/sync.md §9): per actor, when this node's held plain
@@ -1387,6 +1462,12 @@ fn strip_own_expired(a: &mut EphAspect, src: &Source) {
 }
 
 /// Whether `ak` is a core aspect (one segment, spec/data-model.md §9) rather than a schema's.
+/// Whether commit `h` has a part other than `/created` not expired at `now` (a commit's records
+/// serve only its other parts).
+fn live_parts(h: &Header, now: u64) -> bool {
+    h.aspects.iter().any(|a| a.ak.as_str() != CREATED.ak() && !a.expires.is_some_and(|t| t <= now))
+}
+
 fn is_core_aspect(ak: &str) -> bool {
     ak.matches('/').count() == 1
 }
