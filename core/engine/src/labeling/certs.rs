@@ -197,8 +197,9 @@ impl Engine {
     }
 
     /// Revokes of the departures inside members of `actor` that leave its epochs uncovered now
-    /// (`rotation::uncovered_departures`: a member M with secrets of its own, outside `closure`;
-    /// the newest applied write lowering the leaver's edge on M), each the whole write on M with
+    /// (`rotation::uncovered_departures`: a departure from M, the last actor on its chain, with
+    /// secrets of its own and outside `closure`; the newest applied write lowering the departed
+    /// member's edge on M), each the whole write on M with
     /// what judges it: the only certificates a node that may not rotate places under such an
     /// epoch (spec/permissions.md §4). A departure by `until` has no write and places nothing.
     pub fn inside_member_revokes(&mut self, actor: &Tid, closure: &BTreeSet<Tid>) -> BTreeMap<CommitId, Parts> {
@@ -207,8 +208,9 @@ impl Engine {
         let mut found: Vec<osis_perm::Certificates> = Vec::new();
         let mut whole: Vec<(CommitId, Tid)> = Vec::new();
         for d in deps {
-            let Some(m) = d.via.first().copied() else { continue };
-            let leaver = d.via.get(1).copied().unwrap_or(d.member);
+            // the actor left: the last on the chain (A's member via[0] is the first)
+            let Some(m) = d.via.last().copied() else { continue };
+            let leaver = d.member;
             if closure.contains(&m) || !self.core.has_own_secrets(&m) {
                 continue;
             }
