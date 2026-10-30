@@ -751,7 +751,8 @@ impl Engine {
         if presence && first {
             self.eph.remote.leases.entry(at.saturating_add(MAX_LEASE_MS)).or_default().insert(id);
         }
-        let mut parts = self.eph.remote.held.remove(&id).map(|x| x.parts).unwrap_or_default();
+        // another blob of a held commit: an own one stays own
+        let (mut parts, own) = self.eph.remote.held.remove(&id).map_or((Vec::new(), false), |x| (x.parts, x.own));
         let mut changed = Vec::new();
         let mut fresh = Vec::new();
         let me = self.tid();
@@ -771,7 +772,7 @@ impl Engine {
             if header.author == me {
                 self.eph.remote.mine.extend(hp.authors.iter().filter(|(_, (n, _))| *n == me).map(|(c, _)| *c));
             }
-            hp.valid = self.eph_part_valid(&header, &id, ai, &carried);
+            hp.valid = own || self.eph_part_valid(&header, &id, ai, &carried);
             if let Some(t) = a.expires {
                 self.eph.remote.timers.entry(t).or_default().insert((id, ai));
             }
@@ -800,7 +801,7 @@ impl Engine {
         let bytes = parts.iter().map(|p| p.bytes).sum();
         let new = !changed.is_empty();
         let absorbs = parts.iter().any(|p| !p.absorbed.is_empty());
-        self.eph.remote.held.insert(id, Held { header: header.clone(), parts, own: false, bytes });
+        self.eph.remote.held.insert(id, Held { header: header.clone(), parts, own, bytes });
         if !waits.is_empty() {
             // another blob of this commit may wait too (a commit past a blob splits): both kept
             match self.eph.remote.pending.get_mut(&id) {
