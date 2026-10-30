@@ -67,7 +67,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
             "max_queued_bytes" => {
                 p.max_queued_bytes = usize::try_from(n()?).map_err(|_| bad("too large"))?;
                 if p.max_queued_bytes < MIN_QUEUED {
-                    return Err(bad(&format!("below {MIN_QUEUED} (a client's window plus a message, spec/sync.md §6)")));
+                    return Err(bad(&format!("below {MIN_QUEUED} (a client's window plus a reply and a push, spec/sync.md §6)")));
                 }
             }
             "max_buffered_bytes" => p.max_buffered_bytes = usize::try_from(n()?).map_err(|_| bad("too large"))?,

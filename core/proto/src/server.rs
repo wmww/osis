@@ -14,7 +14,7 @@ use osis_base::{BlobId, LabelId, WallMs};
 use osis_crypto::{Domain, LabelRole, VerifyingKey, verify_delete};
 use osis_label::auth::delete_digest;
 use osis_label::{Class, OpenOutcome, entry_digest, evaluate_open, key_for_level, server_prefix};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 /// Room left in a reply for everything but its events or items.
@@ -191,8 +191,8 @@ pub struct ServerConnection {
     /// The last `ServerInput::Taken` (none: never reported, no flow control).
     taken: Option<u64>,
     /// Subscribed labels whose pushes wait for room in the send queue (from their position in
-    /// `subs`).
-    owed: BTreeSet<LabelId>,
+    /// `subs`), in the order they were held: resumed in turn, so a busy label starves no other.
+    owed: VecDeque<LabelId>,
 }
 
 /// Presence uploads a connection remembers before it first drops those no longer held.
@@ -260,7 +260,7 @@ impl ServerConnection {
             prune_at: PRESENCE_PRUNE,
             written: 0,
             taken: None,
-            owed: BTreeSet::new(),
+            owed: VecDeque::new(),
         }
     }
 
@@ -292,6 +292,13 @@ impl ServerConnection {
     /// Whether pushes wait for the transport to take bytes (`ServerInput::Taken`).
     pub fn held(&self) -> bool {
         !self.owed.is_empty()
+    }
+
+    /// Queues `label`'s pushes behind those already held (`owed`).
+    fn owe(&mut self, label: LabelId) {
+        if !self.owed.contains(&label) {
+            self.owed.push_back(label);
+        }
     }
 
     /// Bytes written and not taken by the transport, with those in `out` (0 without reports).
@@ -343,6 +350,12 @@ impl ServerConnection {
                     }
                 }
             }
+            // while pushes are held, a label waits its turn (`owed`)
+            ServerInput::Changed(label) if self.held() => {
+                if self.subs.contains_key(&label) {
+                    self.owe(label);
+                }
+            }
             ServerInput::Changed(label) => {
                 if let Err(e) = self.push(store, &label, out) {
                     out.push(ServerOutput::StoreError(e));
@@ -362,9 +375,14 @@ impl ServerConnection {
             }
             ServerInput::Taken(n) => {
                 self.taken = Some(self.taken.map_or(n, |t| t.max(n)));
-                for l in self.owed.clone() {
+                // in turn: one held again goes to the back, and the rest keep their place
+                while let Some(l) = self.owed.pop_front() {
                     if let Err(e) = self.push(store, &l, out) {
                         out.push(ServerOutput::StoreError(e));
+                        self.owe(l);
+                    }
+                    if self.owed.back() == Some(&l) {
+                        break;
                     }
                 }
             }
@@ -482,7 +500,7 @@ impl ServerConnection {
             M::Unsubscribe { id, labels } => {
                 for l in labels {
                     self.subs.remove(&l);
-                    self.owed.remove(&l);
+                    self.owed.retain(|x| *x != l);
                 }
                 M::Ok { id }
             }
@@ -743,7 +761,7 @@ impl ServerConnection {
     fn push(&mut self, store: &dyn LabelStore, label: &LabelId, out: &mut Vec<ServerOutput>) -> Result<(), StoreError> {
         let Some(mut seq) = self.subs.get(label).copied() else { return Ok(()) };
         if self.backlog(out) >= REPLY_BUDGET {
-            self.owed.insert(*label);
+            self.owe(*label);
             return Ok(());
         }
         let inline_limit = self.inline.get(label).copied().unwrap_or(0);
@@ -769,7 +787,7 @@ impl ServerConnection {
                         }
                         if self.no_room(out, size) {
                             // the rest goes from `seq` once the transport takes bytes (`Taken`)
-                            self.owed.insert(*label);
+                            self.owe(*label);
                             self.subs.insert(*label, seq);
                             return Ok(());
                         }
@@ -785,7 +803,7 @@ impl ServerConnection {
             send(out, Message::Push { label: *label, events, cursor: Cursor { log_id, seq } });
         }
         self.subs.insert(*label, seq);
-        self.owed.remove(label);
+        self.owed.retain(|x| x != label);
         Ok(())
     }
 
