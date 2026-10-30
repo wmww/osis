@@ -1,4 +1,4 @@
-//! Ephemeral placements (notes/ephemeral.md Ephemeral placements): `/group` is the one durable
+//! Ephemeral placements (notes/ephemeral.md Step 2 as built): `/group` is the one durable
 //! aspect with an ephemeral side. A group op whose item stays ephemeral after the batch is an
 //! ephemeral write into the group's `/group`; one on a durable item is durable and persists the
 //! group. When a thing persists, each of its ephemeral placements the node may write becomes a
@@ -249,7 +249,7 @@ impl Engine {
         let holds = |f: &Fragment| f.at(&[PathSeg::Field(field)]).and_then(|x| x.read()).is_some_and(|v| matches!(v, Value::Set(s) if s.contains(&Value::Tid(*t))));
         let mut f = a.state.clone();
         for (time, ranges) in &a.expiring {
-            f.strip(&|d| d.src == *src && ranges.iter().any(|(lo, hi)| *lo <= d.ctr && d.ctr < *hi));
+            f.strip(&|d| super::in_ranges(d, src, ranges));
             if !holds(&f) {
                 return (*time > self.now().0).then_some(Some(*time));
             }
