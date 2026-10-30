@@ -315,15 +315,12 @@ pub(crate) fn save_epochs(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
 
 /// Re-opens the `/secrets` of every actor that boxes to `learned` after this node learned
 /// secrets of `learned` (an actor's boxes open only once its member's epochs are held), to a
-/// fixpoint. Called by node-core's state observation (engine hook).
+/// fixpoint. Called by node-core's state observation (engine hook). Terminates without a step
+/// cap: an actor is pushed only when its held epochs grew, and they only grow, bounded by the
+/// boxes held (a cap would leave secrets of deep member chains unopened).
 pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
     let mut work = vec![learned];
-    let mut steps = 0usize;
     while let Some(m) = work.pop() {
-        steps += 1;
-        if steps > 4096 {
-            break;
-        }
         // the boxes keyed to `m`, per actor: from the index of keyed `/secrets` entries
         let mut per: std::collections::BTreeMap<Tid, Vec<osis_base::Value>> = std::collections::BTreeMap::new();
         for (a, k) in tx.core.ix.boxes_to.get(&m).into_iter().flatten() {
@@ -341,11 +338,13 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
     Ok(())
 }
 
-/// Re-opens every held `/secrets` (after a key actor was taken up).
+/// Re-opens every held `/secrets` (after a key actor was taken up), to a fixpoint: a sweep
+/// opens at least one more level of a member-actor chain, and stops once one learns nothing
+/// (held epochs only grow, so no round cap is needed; a cap left deep chains unopened).
 fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
     let secrets_ak = ak("/secrets")?;
     let actors: BTreeSet<Tid> = tx.core.ix.by_aspect.keys().filter(|(_, a)| *a == secrets_ak).map(|(t, _)| *t).collect();
-    for _ in 0..8 {
+    loop {
         let mut any = false;
         for a in &actors {
             let s = secrets_in(tx, a)?;
