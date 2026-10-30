@@ -307,3 +307,44 @@ fn removal_copies_not_held_spec_permissions_3() {
     assert!(ids.iter().all(|id| !at1.contains(id)), "the target's server is down");
     assert!(ids.iter().any(|id| at0.contains(id)), "the removal's copy under T went");
 }
+
+// spec/sync.md §5, spec/crypto.md §3: a deposit queued before the label's deposit seed was
+// refreshed is refused as signed by an earlier key; it is signed again with the current one
+// (or, when this node has not read the new seed yet, dropped: the next pass places it again
+// under the current key), never resent unchanged forever.
+#[test]
+fn queued_deposit_after_seed_refresh_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    for i in 0..4 {
+        net.node(60 + i, &[sv]);
+    }
+    let (g, l, c, done) = invite(&mut net, sv);
+    net.pair(3, 0);
+    let d = net.tid(3);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+    let grant = net.engine(0).grant(&g, &d, &edge).unwrap();
+    carry(&mut net, 0, grant);
+    net.run();
+    net.set_online(1, false);
+    net.sync(1).carry_out(done).unwrap();
+    // a refreshed seed, registered by the step the next rotation (a removal) issues
+    let actor = net.engine(0).group_actor(&g);
+    let done = net.engine(0).refresh_deposit_seed(&actor).unwrap();
+    carry(&mut net, 0, done);
+    let demotion = osis_node::flows::Demotion { member: d, new: None, presync: osis_node::flows::PreSync::Synced };
+    let done = net.engine(0).demote(&g, &demotion).unwrap();
+    carry(&mut net, 0, done);
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    net.set_online(1, true);
+    for _ in 0..6 {
+        net.run();
+        net.advance(61_000);
+    }
+    assert_eq!(net.sync(1).deliveries_pending(), 0, "answered, not resent unchanged");
+    // the pass also seals the grant again under the epoch the removal rotated to
+    assert!(copies(&mut net, 0, &l, &c) >= 1, "the grant reached the label");
+}
