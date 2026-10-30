@@ -2669,3 +2669,62 @@ fn padded_durable_created_refused_spec_commits_2() {
     assert_eq!(created(&mut lp), Some(rec));
     assert!(matches!(lp.peers[0].engine.snapshot(&x, &ak("/created")), Err(osis_node::Error::Misuse(_))));
 }
+
+// spec/crdt.md §8 (a snapshot's frontier counts only on held headers), spec/permissions.md §5.2
+// (a valid snapshot vouches for what it carries): Bob's tags are compacted into Carol's snapshot S
+// and their blobs gone, so late admin Dan holds only S and his removal of Bob does not cover
+// them; Alice and Carol, still holding Bob's commits, judge them invalid, but S keeps the tags at
+// every node, fresh ones in either order included.
+#[test]
+fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
+    let mut lp = net(4, 0x6200);
+    lp.sync_all().unwrap();
+    let d = new_thing(&mut lp, 0);
+    let (b, c, j) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
+    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, d, c, Some(edge(Role::Write)), None);
+    sync(&mut lp, 0, 1);
+    sync(&mut lp, 0, 2);
+    let before: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().collect();
+    add_tag(&mut lp, 1, d, "mon");
+    add_tag(&mut lp, 1, d, "tue");
+    let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| !before.contains(x)).collect();
+    sync(&mut lp, 1, 0);
+    sync(&mut lp, 1, 2);
+    lp.advance(1000);
+    lp.peers[2].engine.snapshot(&d, &ak("/t/tags")).unwrap().unwrap();
+    sync(&mut lp, 2, 0);
+    set_edge(&mut lp.peers[0].engine, d, j, Some(edge(Role::Admin)), None);
+    lp.advance(1000);
+    for p in packages(&mut lp, 0).into_iter().filter(|p| !bob.contains(&p.id)) {
+        lp.deliver(3, &p).unwrap();
+    }
+    lp.peers[3].engine.reexamine().unwrap();
+    let want = BTreeSet::from(["mon".to_string(), "tue".to_string()]);
+    assert_eq!(tags(&mut lp, 3, d), want);
+    lp.advance(DAY);
+    let scope = DemotionScope { membership: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
+    let now = lp.peers[3].engine.now();
+    assert_eq!(lp.peers[3].engine.frontier(&scope, now).unwrap().writes.get(&d).and_then(|w| w.get("/t/tags")).and_then(|w| w.get(&b)), None, "no held header of Bob's");
+    revoke(&mut lp, 3, d, b);
+    lp.advance(1000);
+    sync(&mut lp, 3, 0);
+    sync(&mut lp, 3, 2);
+    let all = packages(&mut lp, 0);
+    for (n, reversed) in [false, true].into_iter().enumerate() {
+        let i = lp.peers.len();
+        lp.peers.push(osis_node::local_peer::Peer::new(0x6210 + n as u64, lp.peers[0].engine.now()).unwrap());
+        let mut v = all.clone();
+        if reversed {
+            v.reverse();
+        }
+        for p in &v {
+            lp.deliver(i, p).unwrap();
+        }
+        lp.peers[i].engine.reexamine().unwrap();
+        for k in [0, 2, 3, i] {
+            assert_eq!(tags(&mut lp, k, d), want, "peer {k}, reversed {reversed}");
+        }
+    }
+    assert!(!lp.peers[0].engine.roster(&d).contains_key(&b));
+}

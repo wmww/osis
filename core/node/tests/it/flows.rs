@@ -841,12 +841,15 @@ fn intermediate_grantor_covered_spec_perm_5_1() {
     }
 }
 
-// spec/crdt.md §8 (absorbed commits count only with a held header), spec/permissions.md §5.1:
-// X's rotation (commit form) reaches late joiner Bob only through Alice's compaction snapshot of
-// `/secrets`, which lists it as absorbed; Bob never held its header, so he cannot tell it from a
-// commit X signed ahead and his frontier for X's removal does not list it.
+// spec/crdt.md §8 (absorbed commits count only with a held header), spec/permissions.md §5.1,
+// §5.2 (a valid snapshot vouches for what it carries): X's removal of M (with X's rotation) is
+// compacted away: Alice snapshots `/secrets` and `/keys` and writes a roster snapshot, so servers
+// drop its blobs, header included, and late joiner Bob gets only the snapshots. Bob cannot tell
+// the absorbed commit from one X signed ahead, so his removal of X does not list it; Alice, still
+// holding it, judges its deltas invalid, but her snapshots vouch for its writes: she, Bob and
+// fresh nodes agree, M stays removed.
 #[test]
-fn late_joiner_lists_no_unheld_absorbed_spec_crdt_8() {
+fn late_joiner_after_compaction_agrees_spec_crdt_8() {
     let (mut lp, ps) = people(4, 512);
     let (pa, pb, px, pm) = (ps[0], ps[1], ps[2], ps[3]);
     let t = thing_of(&mut lp, 0, pa);
@@ -860,23 +863,42 @@ fn late_joiner_lists_no_unheld_absorbed_spec_crdt_8() {
     send(&mut lp, 2, 0, &xr);
     lp.advance(1000);
     let snap = lp.peers[0].engine.snapshot(&t, &ak("/secrets")).unwrap().unwrap();
-    let h = lp.peers[0].engine.header(&snap).unwrap();
-    assert_eq!(h.form, osis_commit::Form::Node);
+    assert_eq!(lp.peers[0].engine.header(&snap).unwrap().form, osis_commit::Form::Node);
+    lp.peers[0].engine.snapshot(&t, &ak("/keys")).unwrap().unwrap();
+    lp.peers[0].engine.roster_snapshot(&t, None).unwrap();
     // Bob joins late: everything Alice holds but X's removal itself
     lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
     let to_b: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !xr.contains(c)).collect();
     send(&mut lp, 0, 1, &to_b);
     assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Admin));
-    assert!(xr.iter().all(|c| lp.peers[1].engine.header(c).is_none()), "Bob never got X's rotation");
+    assert!(xr.iter().all(|c| lp.peers[1].engine.header(c).is_none()), "Bob never got X's removal");
+    assert!(!lp.peers[1].engine.roster(&t).contains_key(&pm));
     lp.advance(1000);
     let before = ids(&lp, 1);
     lp.peers[1].engine.demote(&t, &Demotion { member: px, new: None, presync: PreSync::Synced }).unwrap();
     let br = new_ids(&lp, 1, &before);
     let r = br.iter().copied().find(|c| lp.peers[1].engine.header(c).unwrap().frontier.is_some()).unwrap();
-    assert!(xr.iter().all(|c| !frontier_ids(&mut lp, 1, &r).contains(c)), "the unheld absorbed rotation is not listed");
-    // Alice, holding X's rotation, un-merges it (issues/late-joiner-frontier-misses-compacted.md)
+    assert!(xr.iter().all(|c| !frontier_ids(&mut lp, 1, &r).contains(c)), "the unheld absorbed commit is not listed");
     send(&mut lp, 1, 0, &br);
-    assert!(!lp.peers[0].engine.roster(&t).contains_key(&px));
+    let aspects: BTreeSet<_> = xr.iter().flat_map(|c| lp.peers[0].engine.header(c).unwrap().aspects.iter().map(|a| (a.tid, a.ak.clone())).collect::<Vec<_>>()).collect();
+    let all = lp.peers[0].engine.commit_ids();
+    for reversed in [false, true] {
+        let i = lp.peers.len();
+        lp.peers.push(osis_node::local_peer::Peer::new(0x7700 + reversed as u64, lp.peers[0].engine.now()).unwrap());
+        let mut v = all.clone();
+        if reversed {
+            v.reverse();
+        }
+        send(&mut lp, 0, i, &v);
+        lp.peers[i].engine.reexamine().unwrap();
+        for k in [0, 1, i] {
+            for (x, a) in &aspects {
+                assert_eq!(lp.peers[k].engine.get(x, a).unwrap(), lp.peers[0].engine.get(x, a).unwrap(), "peer {k} {a:?}, reversed {reversed}");
+            }
+            let roster = lp.peers[k].engine.roster(&t);
+            assert!(!roster.contains_key(&pm) && !roster.contains_key(&px), "peer {k}, reversed {reversed}");
+        }
+    }
 }
 
 /// Peers 0 and 1 are devices of person P (created on 1, 0 paired); peer 2 is Alice (PA).
