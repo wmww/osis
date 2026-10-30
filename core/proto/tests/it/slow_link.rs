@@ -106,26 +106,31 @@ impl Run {
     /// Steps the link (`rate` bytes per direction per `step_ms`) until nothing is outstanding.
     fn settle(&mut self, rate: usize, step_ms: u64) {
         while self.client.outstanding() > 0 || self.up.queued > 0 || self.down.queued > 0 || self.server.held() {
-            self.now += step_ms;
-            let b = self.up.take(rate);
-            if !b.is_empty() {
-                self.input(ClientInput::Sent);
-                let so = self.server.handle(self.now, &mut self.store, ServerInput::Bytes(b));
-                self.server_out(so);
-            }
-            let b = self.down.take(rate);
-            if !b.is_empty() {
-                // the driver reports what the transport took (before input and at ticks)
-                let so = self.server.handle(self.now, &mut self.store, ServerInput::Taken(self.down.taken));
-                self.server_out(so);
-                self.input(ClientInput::Bytes(b));
-            }
-            if self.timer.is_some_and(|t| t <= self.now) {
-                self.timer = None;
-                self.input(ClientInput::Timer);
-            }
-            assert!(self.now - T0 < 1 << 40, "no end");
+            self.step(rate, step_ms);
         }
+    }
+
+    /// One step of the link.
+    fn step(&mut self, rate: usize, step_ms: u64) {
+        self.now += step_ms;
+        let b = self.up.take(rate);
+        if !b.is_empty() {
+            self.input(ClientInput::Sent);
+            let so = self.server.handle(self.now, &mut self.store, ServerInput::Bytes(b));
+            self.server_out(so);
+        }
+        let b = self.down.take(rate);
+        if !b.is_empty() {
+            // the driver reports what the transport took (before input and at ticks)
+            let so = self.server.handle(self.now, &mut self.store, ServerInput::Taken(self.down.taken));
+            self.server_out(so);
+            self.input(ClientInput::Bytes(b));
+        }
+        if self.timer.is_some_and(|t| t <= self.now) {
+            self.timer = None;
+            self.input(ClientInput::Timer);
+        }
+        assert!(self.now - T0 < 1 << 40, "no end");
     }
 
     fn command(&mut self, c: Command, rate: usize, step_ms: u64) -> Vec<ClientEvent> {
@@ -276,4 +281,109 @@ fn held_back_requests_count_unanswered_spec_sync_6() {
     }
     assert!(answered_first);
     assert!(c.answered(big) && c.unsent() == 0);
+}
+
+/// Another connection on `r`'s store, past its Hellos.
+fn writer(r: &mut Run) -> ServerConnection {
+    let mut w = ServerConnection::new(ServerConfig { static_key: [0x5e; 32], challenge: [0x41; 32] });
+    w.handle(r.now, &mut r.store, ServerInput::Start);
+    w.handle(r.now, &mut r.store, ServerInput::Bytes(encode_frame(&Hello::new(r.now, [7; 32]).encode())));
+    w
+}
+
+/// Registers, opens, syncs and subscribes `labels` on `r`'s session.
+fn subscribe(r: &mut Run, labels: &[&Label], rate: usize, step_ms: u64) {
+    r.settle(rate, step_ms);
+    for l in labels {
+        r.command(Command::Register { label: l.id, step: l.steps[0].clone(), claim_set: Some(l.sets[0].clone()) }, rate, step_ms);
+        r.command(Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) }, rate, step_ms);
+        r.command(Command::Sync { label: l.id, cursor: None, inline_limit: 8 << 20, entries: vec![], gained: vec![] }, rate, step_ms);
+    }
+    r.command(Command::Subscribe { labels: labels.iter().map(|l| l.id).collect() }, rate, step_ms);
+    r.events.clear();
+}
+
+/// Uploads `e` under `l` on `w` and tells `r`'s connection (as the hub does).
+fn upload(r: &mut Run, w: &mut ServerConnection, id: u32, l: &Label, e: Entry) {
+    let out = w.handle(r.now, &mut r.store, ServerInput::Bytes(encode_frame(&Message::Upload { id, label: l.id, entries: vec![e] }.encode())));
+    assert!(out.contains(&ServerOutput::Changed(l.id)));
+    let so = r.server.handle(r.now, &mut r.store, ServerInput::Changed(l.id));
+    r.server_out(so);
+}
+
+/// The added blob IDs pushed to `r`'s client under `l`, in order.
+fn pushed(r: &Run, l: &Label) -> Vec<osis_base::BlobId> {
+    r.events
+        .iter()
+        .flat_map(|e| if let ClientEvent::Events { label, events, .. } = e { if *label == l.id { events.clone() } else { vec![] } } else { vec![] })
+        .filter_map(|e| if let Event::Added { blob_id, .. } = e { Some(blob_id) } else { None })
+        .collect()
+}
+
+// spec/sync.md §6: held pushes go in turn: a label written faster than the subscriber's link
+// does not keep another label's entry back until its writers stop
+#[test]
+fn held_pushes_take_turns_spec_sync_6() {
+    let (rate, step_ms) = (64_000, 100);
+    let mut r = Run::new();
+    let (a, b) = (Label::new(1), Label::new(2));
+    // the busy label sorts first
+    let (busy, quiet) = if a.id < b.id { (a, b) } else { (b, a) };
+    subscribe(&mut r, &[&busy, &quiet], rate, step_ms);
+    let mut w = writer(&mut r);
+    let mut quiet_id = None;
+    // 1 MiB under the busy label every step (16x the link) for 60 s
+    for i in 0..600u32 {
+        upload(&mut r, &mut w, i + 1, &busy, busy.entry(blob_sized(u64::from(i), 0, vec![], 1 << 20)));
+        if i == 20 {
+            let e = quiet.entry(blob_sized(1 << 20, 0, vec![], 1 << 20));
+            quiet_id = Some(osis_label::blob_id(&e.blob));
+            upload(&mut r, &mut w, 10_000, &quiet, e);
+        }
+        r.step(rate, step_ms);
+    }
+    assert_eq!(pushed(&r, &quiet), vec![quiet_id.unwrap()], "the quiet label's entry arrived while the busy one was still written");
+    assert!(r.down.max <= SEND_QUEUE, "{}", r.down.max);
+}
+
+// spec/sync.md §6: held pushes resumed from the subscription's position deliver what unheld ones
+// would: random writes under several labels, random link rates; every entry arrives once, in log
+// order, and the queue stays within `SEND_QUEUE`
+#[test]
+fn held_pushes_deliver_everything_in_order_spec_sync_6() {
+    for seed in 0..6u64 {
+        let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        let mut rnd = |n: u64| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x % n
+        };
+        let rate = 8_000 + rnd(120_000) as usize;
+        let step_ms = 100;
+        let mut r = Run::new();
+        let labels: Vec<Label> = (0..1 + rnd(3)).map(|i| Label::new(i as u8 + 1)).collect();
+        subscribe(&mut r, &labels.iter().collect::<Vec<_>>(), rate, step_ms);
+        let mut w = writer(&mut r);
+        let mut want = vec![Vec::new(); labels.len()];
+        let mut n = 0u64;
+        for _ in 0..40 {
+            for _ in 0..rnd(4) {
+                let k = rnd(labels.len() as u64) as usize;
+                let size = if rnd(4) == 0 { 1 + rnd(2 << 20) } else { 1 + rnd(20_000) } as usize;
+                let e = labels[k].entry(blob_sized(n, 0, vec![], size));
+                want[k].push(osis_label::blob_id(&e.blob));
+                n += 1;
+                upload(&mut r, &mut w, n as u32, &labels[k], e);
+            }
+            for _ in 0..rnd(30) {
+                r.step(rate, step_ms);
+            }
+        }
+        r.settle(rate, step_ms);
+        for (k, l) in labels.iter().enumerate() {
+            assert_eq!(pushed(&r, l), want[k], "seed {seed} label {k}");
+        }
+        assert!(r.down.max <= SEND_QUEUE, "seed {seed}: {}", r.down.max);
+    }
 }
