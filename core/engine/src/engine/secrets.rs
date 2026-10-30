@@ -72,7 +72,7 @@ impl Core {
     }
 
     /// The opened epochs of `tid` when they make it an actor with secrets of its own here: it is
-    /// in `own_keys`, is no known thing, or, its `/keys` part not held yet, holds an epoch
+    /// in `own_keys`, is no known thing, or, no keyset part of it held (`keyset_parts`), holds an epoch
     /// established by an applied valid rotation or a held snapshot, a valid `/secrets` part or an
     /// inbox hint of its delete keys. Not by this node's own rotation alone: that commit may have
     /// turned invalid.
