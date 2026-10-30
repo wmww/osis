@@ -391,3 +391,47 @@ fn local_inbox_blob_expires_spec_sync_5() {
         assert_eq!(w, f, "step {i}: work sets vs full passes");
     }
 }
+
+// spec/sync.md §5 (a writer promotes a deposit it verified, completing the author's chain first;
+// member peer: served as a server's sync would leave it): a reader that dials the writer serving
+// a label with no server (the writer cannot dial back: no `/reach`) deposits its node card; the
+// writer's local pass stamps it as a promotion would, never the reader's heartbeat.
+#[test]
+fn deposit_promoted_on_local_label_spec_sync_5() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let r = net.node(2, &[]);
+    let acts = net.sync(a).publish_reach([0xa7; 32], Vec::new()).unwrap();
+    net.actions(a, acts);
+    let _g = net.group_at(a, &[(r, Role::Read)], vec![]);
+    net.run();
+    net.advance(31_000);
+    let l = net.label(a);
+    let rt = net.tid(r);
+    let mut card = 0;
+    let entries = net.sync(a).entries(&l);
+    let under: Vec<osis_base::CommitId> = entries.iter().filter_map(|(_, k)| if let EntryKind::Commit { commit, .. } = k { Some(*commit) } else { None }).collect();
+    for (id, k) in entries {
+        let EntryKind::Commit { commit, parts, .. } = k else { continue };
+        let h = net.engine(a).header(&commit).unwrap();
+        if h.author != rt {
+            continue;
+        }
+        let stamped = net.sync(a).entry_meta(&l, &id).unwrap().1.is_some();
+        let aks: Vec<&str> = h.aspects.iter().map(|x| x.ak.as_str()).collect();
+        if aks.contains(&"/seen") {
+            assert!(!stamped, "heartbeats are never promoted");
+        } else if aks.contains(&"/node") {
+            assert!(stamped, "the card was promoted");
+            card += 1;
+        }
+        // a promotion only with the author's chain under the label
+        if stamped {
+            let chain = net.engine(a).author_chain(&commit, &parts.iter().copied().collect()).unwrap();
+            for x in chain.keys() {
+                assert!(under.contains(x) || *x == commit, "chain commit {x:?} of a promoted deposit under the label");
+            }
+        }
+    }
+    assert!(card > 0, "the reader's card is served");
+}
