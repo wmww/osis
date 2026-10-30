@@ -737,6 +737,20 @@ impl Engine {
         Ok(osis_commit::retention::body_keep(&h, &r, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0), live))
     }
 
+    /// Whether snapshot `s`'s keep at most could cut short body `c`'s keep at least were `c`
+    /// dropped as covered by `s` (spec/commits.md §5): `c` has a relative keep at least and a
+    /// live write (a death to come starts it again), and `s` a keep-at-most component stricter
+    /// than `c`'s own. Such a body stays until a snapshot that does not undercut it covers it.
+    pub fn undercuts(&mut self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
+        let r = |e: &Self, x: &CommitId| e.header(x).and_then(|h| h.aspects.iter().find(|a| a.tid == *tid && a.ak == *ak).map(|a| a.retention));
+        let (Some(sr), Some(cr)) = (r(self, s), r(self, c)) else { return Ok(false) };
+        let stricter = |a: Option<u64>, b: Option<u64>| a.is_some_and(|a| b.is_none_or(|b| a < b));
+        if cr.at_least.rel.is_none_or(|d| d == 0) || !(stricter(sr.at_most.rel, cr.at_most.rel) || stricter(sr.at_most.abs, cr.at_most.abs)) {
+            return Ok(false);
+        }
+        self.body_live(c, tid, ak)
+    }
+
     /// First and last death so far of the writes of the body holding aspect `ak` of `c`.
     pub fn deaths(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<(Ts, Ts)>> {
         self.settle_deaths()?;

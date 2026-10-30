@@ -41,20 +41,29 @@ fn seen(fr: &osis_crdt::Frontiers, by: &osis_crdt::Dot) -> bool {
 /// up to its frontier, spec/crdt.md §8) at `d.at`; a snapshot taken at or after `d.at` whose
 /// frontier lacks the superseder (its author had not seen it) and whose body carries the dying
 /// write (`Parts::carries`), at the snapshot's `ts` (spec/commits.md §5: a snapshot's writes die
-/// for it no earlier than its `ts`). Commit-form writes are found in their own commit only
-/// (snapshots keep no frontier for them). Dropped bodies are not. Cost: in memory, but for a
+/// for it no earlier than its `ts`). A commit-form write's own commits are its commit and the
+/// imports of it; a snapshot holds it when its `Absorbed` lists one of them. Dropped bodies are
+/// not. Cost: in memory, but for a
 /// superseder some later snapshot had not seen: the superseder's body (else the state) joined
 /// into a copy of that snapshot's part (once per pair per `parts`).
 fn carriers(tx: &mut Tx<'_>, parts: &mut Parts, tid: &Tid, ak: &Ak, d: &Death) -> Result<Vec<(CommitId, usize, Ts)>> {
     let (dot, at) = (&d.stamp.dot, d.at);
-    let mut out = Vec::new();
-    if let Some(c) = tx.core.commit_of(tid, ak, dot)
-        && let Some(ai) = bounded_part(tx.core, &c, tid, ak)
-    {
-        out.push((c, ai, at));
-    }
-    let osis_crdt::SourceKind::Node(n) = dot.owner().src.kind() else { return Ok(out) };
     let core = &*tx.core;
+    let o = dot.owner();
+    // its own commits: the node-form or commit-form commit owning the dot, and the held imports
+    // listing a commit-form dot's commit as origin (spec/permissions.md §7)
+    let imports: Vec<CommitId> = match o.src.kind() {
+        osis_crdt::SourceKind::Commit(c) => core.ix.imports.get(&(*tid, *c)).into_iter().flatten().copied().collect(),
+        _ => Vec::new(),
+    };
+    let mut out: Vec<(CommitId, usize, Ts)> = core.commit_of(tid, ak, dot).into_iter().chain(imports.iter().copied()).filter_map(|c| bounded_part(core, &c, tid, ak).map(|ai| (c, ai, at))).collect();
+    // a snapshot carries the write if taken with it: a node-form write under its frontier, a
+    // commit-form one in its `Absorbed` (the commit, or an import of it)
+    let holds = |fr: &osis_crdt::Frontiers, abs: &[(CommitId, Tid)]| match o.src.kind() {
+        osis_crdt::SourceKind::Node(n) => fr.0.get(n).is_some_and(|f| *f >= o.ctr),
+        osis_crdt::SourceKind::Commit(c) => abs.iter().any(|(a, _)| a == c || imports.contains(a)),
+        osis_crdt::SourceKind::Derived(_) => false,
+    };
     let snaps: Vec<(Ts, CommitId, usize, bool)> = core
         .ix
         .snapshots
@@ -62,7 +71,7 @@ fn carriers(tx: &mut Tx<'_>, parts: &mut Parts, tid: &Tid, ak: &Ak, d: &Death) -
         .into_iter()
         .flatten()
         // an invalid snapshot carries nothing (spec/permissions.md §5.2)
-        .filter(|(_, s, fr, _)| fr.0.get(n).is_some_and(|f| *f >= dot.owner().ctr) && !crate::apply::validity::invalid_snapshot(core, s, tid, ak))
+        .filter(|(_, s, fr, abs)| holds(fr, abs) && !crate::apply::validity::invalid_snapshot(core, s, tid, ak))
         .filter_map(|(ts, s, fr, _)| bounded_part(core, s, tid, ak).map(|ai| (*ts, *s, ai, seen(fr, &d.by))))
         .collect();
     for (ts, s, ai, saw) in snaps {
@@ -102,40 +111,71 @@ impl Parts {
     /// Whether part `ai` of snapshot `c` carries the write `d` killed, a write of its stamp that
     /// its superseder supersedes. A stamp names several writes (an entry's creation and its
     /// value, a struct's fields): the part may carry one of them while another died, so the
-    /// superseder itself is joined against the part: its own body if held, else the state (the
-    /// superseder then still wins there, or its write's later death is dated there instead).
+    /// superseder itself is joined against the part: its own body if held; else each held valid
+    /// snapshot whose frontier holds it (a kill by it there is a true death); else the state
+    /// (the superseder then still wins there, or its write's later death is dated there instead).
     fn carries(&mut self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, d: &Death) -> Result<bool> {
-        let src = tx.core.commit_of(tid, ak, &d.by).and_then(|k| held_part(tx.core, &k, tid, ak).map(|kai| (k, kai)));
-        let key = (*c, src.map(|x| x.0));
         let want = (d.stamp.clone(), killer(d));
-        if let Some(k) = self.0.get(&key) {
-            return Ok(k.contains(&want));
-        }
-        let mut dead = BTreeSet::new();
-        let fs: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect();
-        let mut keep = |f: &Fragment, ch: Changes| dead.extend(ch.into_deaths().into_iter().filter(|d| dies_in(f, d)).map(|d| (d.stamp.clone(), killer(&d))));
-        if let Some((k, kai)) = src {
-            let ks: Vec<Fragment> = crate::apply::held_parts(tx, &k, kai)?.into_iter().map(Decoded::into_fragment).collect();
-            for f in &fs {
-                let (mut g, mut ch) = (f.clone(), Changes::new());
-                for x in &ks {
-                    g.join_into(x.clone(), None, &mut ch);
-                }
-                keep(f, ch);
+        let core = &*tx.core;
+        let own = core.commit_of(tid, ak, &d.by).and_then(|k| held_part(core, &k, tid, ak).map(|kai| (k, kai)));
+        let srcs: Vec<(CommitId, usize)> = match own {
+            Some(k) => vec![k],
+            None => core
+                .ix
+                .snapshots
+                .get(&(*tid, ak.clone()))
+                .into_iter()
+                .flatten()
+                .filter(|(_, s, fr, _)| s != c && seen(fr, &d.by) && !crate::apply::validity::invalid_snapshot(core, s, tid, ak))
+                .filter_map(|(_, s, _, _)| held_part(core, s, tid, ak).map(|sai| (*s, sai)))
+                .collect(),
+        };
+        for src in srcs {
+            if self.kills(tx, tid, ak, c, ai, Some(src), &want)? {
+                return Ok(true);
             }
-        } else {
-            tx.load(tid, ak)?;
-            if let Some(Some(st)) = tx.core.states.get(&(*tid, ak.clone())).cloned() {
+        }
+        if own.is_some() {
+            return Ok(false);
+        }
+        self.kills(tx, tid, ak, c, ai, None, &want)
+    }
+
+    /// Whether a source supersedes `want` (dead stamp, superseder) in part `ai` of `c`: part
+    /// `kai` of `k` joined into a copy of the part, or for `None` the part joined into a copy of
+    /// the state. Cached per (part, source).
+    fn kills(&mut self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, src: Option<(CommitId, usize)>, want: &(Stamp, Stamp)) -> Result<bool> {
+        let key = (*c, src.map(|x| x.0));
+        if let Some(k) = self.0.get(&key) {
+            return Ok(k.contains(want));
+        }
+        {
+            let mut dead = BTreeSet::new();
+            let fs: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect();
+            let mut keep = |f: &Fragment, ch: Changes| dead.extend(ch.into_deaths().into_iter().filter(|d| dies_in(f, d)).map(|d| (d.stamp.clone(), killer(&d))));
+            if let Some((k, kai)) = src {
+                let ks: Vec<Fragment> = crate::apply::held_parts(tx, &k, kai)?.into_iter().map(Decoded::into_fragment).collect();
                 for f in &fs {
-                    let (mut st, mut ch) = (st.clone(), Changes::new());
-                    st.join_into(f.clone(), None, &mut ch);
+                    let (mut g, mut ch) = (f.clone(), Changes::new());
+                    for x in &ks {
+                        g.join_into(x.clone(), None, &mut ch);
+                    }
                     keep(f, ch);
                 }
+            } else {
+                tx.load(tid, ak)?;
+                if let Some(Some(st)) = tx.core.states.get(&(*tid, ak.clone())).cloned() {
+                    for f in &fs {
+                        let (mut st, mut ch) = (st.clone(), Changes::new());
+                        st.join_into(f.clone(), None, &mut ch);
+                        keep(f, ch);
+                    }
+                }
             }
+            let hit = dead.contains(want);
+            self.0.insert(key, dead);
+            Ok(hit)
         }
-        let hit = dead.contains(&want);
-        self.0.insert(key, dead);
-        Ok(hit)
     }
 }
 

@@ -543,3 +543,54 @@ fn purge_resnapshot_by_writer_without_schema_spec_commits_5() {
     assert_eq!(ec.get_at(&t, &ak, &[osis_crdt::PathSeg::Key(s("k2"))]).unwrap(), Some(s("f")));
     assert_eq!(ec.get_at(&t, &ak, &[osis_crdt::PathSeg::Key(s("secret"))]).unwrap(), None);
 }
+
+// spec/commits.md §5 (keep at least, compaction): on one aspect w keeps at least 30 min and x at
+// most 0 (per-commit retention). A snapshot carrying both takes at most 0, so it would drop as w
+// dies and w's dead value would go at once: w's body, live, is not dropped as covered by it;
+// x's is. Once w is dead its body goes at its keep-at-least bound, covered by a later snapshot.
+#[test]
+fn mixed_retention_snapshot_keeps_carried_keep_at_least_spec_commits_5() {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    use osis_schema::{Bound, PurgeBy, Retention};
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let g = net.group(a, &[], &[sv]);
+    let t = net.item(a, g, g, "x");
+    let k = Ak::new(BIG.ak()).unwrap();
+    let put = |net: &mut Net, key: &str, v: &str, keep: Option<Retention>| {
+        let mut m = Mutation::new();
+        if let Some(r) = keep {
+            m.retention(t, &BIG, r).unwrap();
+        }
+        m.op(t, &BIG, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(s(v)) }).unwrap();
+        net.engine(a).commit(m).unwrap().unwrap()
+    };
+    let least = Retention { by: PurgeBy::Writer, at_least: Bound { abs: None, rel: Some(1_800_000) }, at_most: Bound::default() };
+    let most = Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(0) } };
+    let w = put(&mut net, "w", "one", Some(least));
+    let x = put(&mut net, "x", "one", Some(most));
+    net.run();
+    net.advance(10);
+    let acts = net.sync(a).compact(&t, &k).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let e = net.engine(a);
+    assert!(e.body_not_dropped(&w, &t, &k), "w kept: the snapshot's at most 0 would cut its keep at least");
+    assert!(!e.body_not_dropped(&x, &t, &k), "x dropped as covered");
+    // w dies (its entry removed): its body keeps to 30 min after
+    let mut m = Mutation::new();
+    m.op(t, &BIG, PathOp { path: Vec::new(), op: Op::Remove(s("w")) }).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    net.advance(10);
+    let acts = net.sync(a).compact(&t, &k).unwrap();
+    net.actions(a, acts);
+    net.run();
+    assert!(net.engine(a).body_not_dropped(&w, &t, &k), "before its keep-at-least bound");
+    net.advance(1_800_000 + osis_base::format::MAX_DRIFT_MS + 1000);
+    let acts = net.sync(a).compact(&t, &k).unwrap();
+    net.actions(a, acts);
+    net.run();
+    assert!(!net.engine(a).body_not_dropped(&w, &t, &k), "past it, covered by a snapshot");
+}
