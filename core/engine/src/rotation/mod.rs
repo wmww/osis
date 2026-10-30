@@ -812,12 +812,28 @@ fn reaches(core: &Core, x: &Tid, a: &Tid) -> bool {
     core.role_now(x, a).is_some()
 }
 
+/// How long after its `ts` a held pending grant by a plausible granter keeps this node from
+/// dropping an actor it holds checked secrets of. Minor consequence: past it the node drops and
+/// re-learns the secrets from the grant's own boxes when it applies, re-fetching the content. At
+/// 0 every such grant waits that way; at infinity a grant that never applies (a part parked for
+/// good) keeps a node that lost access holding the actor's secrets and content for good.
+pub(crate) const PENDING_GRANT_WAIT_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// A held, not applied membership commit's boxes to this node on actor `x`.
+struct PendingGrant {
+    x: Tid,
+    /// Its author may grant on `x` now, as this node sees it (admin or an invite), and its `ts`
+    /// is within `PENDING_GRANT_WAIT_MS` before now (and not past `MAX_DRIFT` ahead).
+    plausible: bool,
+}
+
 /// Actors a held, not applied membership commit (pending, parked readable, or late parts)
 /// boxes secrets of to this node, a held key actor or an actor it reads now: grants this node
 /// may yet get (their secrets may be read already, spec/crypto.md §4), never a loss.
-fn pending_grants(tx: &mut Tx<'_>) -> Result<BTreeSet<Tid>> {
-    let mut out = BTreeSet::new();
+fn pending_grants(tx: &mut Tx<'_>) -> Result<Vec<PendingGrant>> {
+    let mut out = Vec::new();
     let node = tx.core.id.tid();
+    let now = tx.now().0;
     let mut after = None;
     loop {
         let page = tx.txn.pending(after.as_ref(), 256)?;
@@ -825,11 +841,13 @@ fn pending_grants(tx: &mut Tx<'_>) -> Result<BTreeSet<Tid>> {
         for (id, _, bytes) in page {
             after = Some(id);
             let Ok(blob) = osis_commit::CommitBlob::decode(&bytes) else { continue };
-            for (a, w) in crate::apply::keys::pending_secrets_writes(tx.core, &blob, &id) {
+            let (author, ts) = (blob.header.author, blob.header.ts.wall_ms().0);
+            let recent = ts.saturating_add(PENDING_GRANT_WAIT_MS) > now && ts <= now.saturating_add(osis_base::format::MAX_DRIFT_MS);
+            for (x, w) in crate::apply::keys::pending_secrets_writes(tx.core, &blob, &id) {
                 let core = &*tx.core;
                 let ours = |m: &Tid| *m == node || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m));
                 if w.boxes.keys().any(|k| ours(&k.member)) {
-                    out.insert(a);
+                    out.push(PendingGrant { x, plausible: recent && may_grant(core, &author, &x) });
                 }
             }
         }
@@ -839,10 +857,19 @@ fn pending_grants(tx: &mut Tx<'_>) -> Result<BTreeSet<Tid>> {
     }
 }
 
+/// Whether `author` may grant on `x` now: admin, or an invite (spec/permissions.md §2).
+fn may_grant(core: &Core, author: &Tid, x: &Tid) -> bool {
+    let at = At::now(now_ts(core));
+    core.role_now(author, x) == Some(Role::Admin) || core.timelines.get(x).and_then(|t| t.invite(author, x, at)).is_some()
+}
+
 /// Of `cands`, the actors this node holds a secret of and lost read access to
 /// (spec/permissions.md §3): no role on them by any path now and no pending grant reaching them.
 /// Each actor is judged on its own, so what the node reached only through a lost one is lost
-/// with it. (Epochs observed without a secret are no access.)
+/// with it. (Epochs observed without a secret are no access.) An actor this node holds checked
+/// secrets of is kept only by a plausible grant: anyone can send a pending commit, which is kept
+/// until it applies, so any other would keep a node that lost access holding it for good;
+/// reading-only candidates go with the commit that gave them.
 fn lost_among(tx: &mut Tx<'_>, cands: Vec<Tid>) -> Result<Vec<Tid>> {
     let holds = |e: &ActorEpochs| ROLES.iter().any(|r| !e.role(*r).held_newest_first().is_empty());
     let unread: Vec<Tid> = cands.into_iter().filter(|a| tx.core.ix.secrets.get(a).is_some_and(holds) && !readable(tx.core, a)).collect();
@@ -850,7 +877,9 @@ fn lost_among(tx: &mut Tx<'_>, cands: Vec<Tid>) -> Result<Vec<Tid>> {
         return Ok(unread);
     }
     let pend = pending_grants(tx)?;
-    Ok(unread.into_iter().filter(|a| !pend.iter().any(|x| reaches(tx.core, x, a))).collect())
+    let core = &*tx.core;
+    let checked = |a: &Tid| core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| e.role(*r).held().next().is_some()));
+    Ok(unread.into_iter().filter(|a| !pend.iter().any(|g| (g.plausible || !checked(a)) && reaches(core, &g.x, a))).collect())
 }
 
 /// Drops the secrets of `lost` actors (diagnostic each) and forgets what only they read.
