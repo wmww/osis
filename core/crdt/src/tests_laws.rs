@@ -194,3 +194,17 @@ fn budget_big_map_spec_4_1() {
     eprintln!("10^5 map: create {create:?}, join {join_big:?}, read {read:?}, encode {encode:?} ({} pages), decode {decode:?}, small join {join_small:?}", pages.len());
     assert!(join_small.as_micros() < 200, "small join is not O(state): {join_small:?}");
 }
+
+/// A cached placement follows a join whose forged copy of an element's chosen position write
+/// names another anchor (the old write is gone, so the sibling key of the element's row is no
+/// longer found where it sits): it rebuilds (a gate-found seed).
+#[test]
+fn forged_edge_copy_cached_placement() {
+    let (s, _) = forged_states(17419099531132830180, &[Ty::Text]);
+    let mut x = s[0].clone();
+    let _ = x.read();
+    x.join(s[1].clone());
+    crate::testutil::check_lin(&x);
+    forged_laws(17419099531132830180, &[Ty::Text]);
+}
+
