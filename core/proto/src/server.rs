@@ -1061,6 +1061,63 @@ mod tests {
         }
     }
 
+    // spec/sync.md §5 (Open): the index-based Open answers as the former scan of the path did,
+    // on paths whose sync keys repeat (re-used after rotation): a sync key opens at the head, else
+    // gets the child of the newest step registering it; a claim needs its step on the path and V
+    // in its held set, then opens at the head or gets the step's child
+    #[test]
+    fn open_matches_path_scan() {
+        use crate::store::tests::{path, secret};
+        let f = Fixture::new(0x10);
+        for seed in 0..24u64 {
+            let r = |i: usize, k: u64| osis_base::hash::hash(&[seed.to_le_bytes(), (i as u64).to_le_bytes(), k.to_le_bytes()].concat())[0];
+            let n = 1 + r(0, 9) as usize % 24;
+            let pool = 1 + seed as u8 % 4;
+            let path = path(n, |i, role| 1 + (r(i, role as u64) % pool));
+            let mut store = MemoryLabelStore::new([1; 32]);
+            let claim = secret(240);
+            let held: Vec<bool> = (0..n).map(|i| r(i, 7) % 3 == 0).collect();
+            for (i, s) in path.iter().enumerate() {
+                let set = held[i].then(|| ClaimSet { claims: vec![claim.verifying_key().to_bytes()], entries: BTreeMap::new() });
+                store.push_step(&f.label, s.clone(), set).unwrap();
+            }
+            // the former rule over the whole path: Some((i, opened)) = Opened with path[i] (the
+            // head), else Step with path[i] (the matched step's child, the head included)
+            let child = |i: usize| (i + 1 < n).then_some((i + 1, false));
+            let mut cases: Vec<(Proof, Option<(usize, bool)>)> = Vec::new();
+            for k in 1..=pool + 1 {
+                let want = path.iter().rposition(|s| s.keys.sync == secret(k).verifying_key()).and_then(|i| if i + 1 == n { Some((i, true)) } else { child(i) });
+                cases.push((Proof::sync(&secret(k), &f.label, &CHALLENGE, &STATIC_KEY), want));
+            }
+            for i in 0..n {
+                for (key, ok) in [(&claim, held[i]), (&secret(241), false)] {
+                    let want = if !ok { None } else if i + 1 == n { Some((i, true)) } else { child(i) };
+                    cases.push((Proof::claim(path[i].id(), key, &f.label, &CHALLENGE, &STATIC_KEY), want));
+                }
+            }
+            cases.push((Proof::claim(StepId([7; 32]), &claim, &f.label, &CHALLENGE, &STATIC_KEY), None));
+            for (pr, want) in cases {
+                let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+                c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+                let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Message::Open { id: 1, label: f.label, proof: pr.clone() }.encode())));
+                let m = reply(&out);
+                let ok = match (&m, want) {
+                    (Message::Error { code, .. }, None) => *code == Code::REFUSED,
+                    (Message::Step { step, .. }, Some((i, false))) => *step == path[i],
+                    (Message::Opened { head, .. }, Some((i, true))) => *head == path[i],
+                    _ => false,
+                };
+                let at = |s: &Step| path.iter().position(|p| p == s);
+                let got = match &m {
+                    Message::Step { step, .. } => format!("step {:?}", at(step)),
+                    Message::Opened { head, .. } => format!("opened {:?}", at(head)),
+                    m => format!("{m:?}"),
+                };
+                assert!(ok, "seed {seed} n {n}: {pr:?} gave {got}, want {want:?}");
+            }
+        }
+    }
+
     // spec/wire.md §11.2 (Path): pages of at most MAX_PATH_STEPS steps from `after` (none:
     // genesis) give the whole path in order, `more` until the head; each page reads only the
     // steps it sends; `after` the head gives an empty page, a step not on the path is refused
