@@ -752,6 +752,39 @@ fn forged_copy_of_held_commit_refused_spec_sync_9() {
     assert!(net.engine(b).ingest_ephemeral(unsigned).is_err(), "a junk signature");
 }
 
+// spec/sync.md §4 (blob ID = BLAKE3 of the bytes), spec/requirements.md ("Nothing trusts a
+// server's word"): a server pushing a held ephemeral blob again under other IDs (the wrap's
+// nonce is only the ID's first 24 bytes, so it still opens) adds no entry and charges nothing
+#[test]
+fn ephemeral_blob_under_wrong_id_dropped_spec_sync_4() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let t = net.item(a, g, g, "durable");
+    net.run();
+    let mut m = Mutation::new();
+    m.set(t, &eph("/doc/cursor"), &Value::Int(7)).unwrap();
+    net.engine(a).write(m).unwrap();
+    let cs = net.engine(a).take_ephemeral().unwrap();
+    let wk = write_key(&mut net, a, g);
+    let (id, ev) = sealed(&mut net, a, g, &cs[0].blob, Some(&wk), 9);
+    let l = net.label(a);
+    push(&mut net, b, sv, l, vec![ev.clone()]);
+    assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(Value::Int(7)));
+    let held = (net.sync(b).ephemeral_bytes(&l), net.sync(b).ephemeral_plain_entries(&l));
+    assert_eq!(held.1.iter().map(|e| e.0).collect::<Vec<_>>(), vec![id]);
+    for n in 0..4u8 {
+        let osis_proto::Event::Added { blob, wrap, stamp, .. } = ev.clone() else { unreachable!() };
+        let mut forged = id;
+        forged.0[31] ^= 1 + n;
+        let stamp = stamp.map(|_| osis_label::sign_stamp(&wk, &l, &forged, &wrap));
+        push(&mut net, b, sv, l, vec![osis_proto::Event::Added { blob_id: forged, blob, wrap, stamp }]);
+    }
+    assert_eq!((net.sync(b).ephemeral_bytes(&l), net.sync(b).ephemeral_plain_entries(&l)), held);
+}
+
 // spec/crdt.md §4.6 (un-merge rebuilds from what is held), spec/sync.md §9 (an own cover carries
 // the author's earlier sessions' writes): a restarted node gets its old commits back and covers
 // them as its own; a later validity flip on the aspect rebuilds it from the own writes and the

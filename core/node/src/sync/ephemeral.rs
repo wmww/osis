@@ -962,6 +962,13 @@ impl SyncEngine {
     /// one delivered and passed on (`relay_in`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn eph_added(&mut self, from: RelayFrom, l: LabelId, b: BlobId, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], stamp: Option<Signature>, class: Class, out: &mut Vec<Action>) -> Result<()> {
+        // the ID must name these bytes: the wrap's nonce is only its first 24 bytes, so one blob
+        // would open under 2^64 IDs, each kept and charged apart (the durable path checks in
+        // `put_blobs`)
+        if osis_label::blob_id(&blob) != b {
+            self.diag(format!("label {l:?}: an ephemeral blob not matching its ID dropped"));
+            return Ok(());
+        }
         if class == Class::Relay {
             return self.relay_in(from, l, b, blob, wrap, stamp, out);
         }
