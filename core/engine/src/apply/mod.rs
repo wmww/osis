@@ -96,6 +96,9 @@ fn carried_records(h: &Header, blob: &CommitBlob, id: &CommitId) -> Result<BTree
         if rec.tid() != a.tid {
             return Err(Error::BadInput("/created does not hash to its tid"));
         }
+        if !crate::engine::write::is_minting(&d.fragment, &rec) {
+            return Err(Error::BadInput("/created is not one minting of its record"));
+        }
         out.insert(a.tid, rec);
     }
     Ok(out)
@@ -638,7 +641,7 @@ impl Engine {
     }
 
     /// The commit that created `tid`: the oldest held commit carrying its `/created` that is
-    /// no snapshot (spec/commits.md: covering snapshots carry `/created` too) and valid here.
+    /// valid here (no durable snapshot carries `/created`, spec/commits.md §2).
     /// `/created` is kept forever, so every node reading the thing gets that commit; until it
     /// is here (only a snapshot held) `None`.
     pub fn creation(&self, tid: &Tid) -> Option<Creation> {
@@ -649,7 +652,7 @@ impl Engine {
         self.core.ix.by_aspect.get(&(*tid, ak.clone()))?.iter().find_map(|(_, id)| {
             let m = self.core.ix.commits.get(id)?;
             let ai = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == ak)?;
-            (!is_kind_snapshot(m.header.kind) && m.valid.get(ai).copied().unwrap_or(false)).then(|| Creation { commit: Some(*id), ts: m.header.ts, node: m.header.author, actor: m.header.actor, received: m.received })
+            (m.valid.get(ai).copied().unwrap_or(false)).then(|| Creation { commit: Some(*id), ts: m.header.ts, node: m.header.author, actor: m.header.actor, received: m.received })
         })
     }
 

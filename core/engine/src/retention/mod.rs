@@ -776,6 +776,9 @@ impl Engine {
         if ak.as_str() == "/members" || ak.as_str() == "/tenures" {
             return Err(Error::Misuse("/members and /tenures are compacted by roster snapshots"));
         }
+        if ak.as_str() == "/created" {
+            return Err(Error::Misuse("/created is kept forever, never compacted"));
+        }
         self.run(|tx| {
             let node = tx.core.id.tid();
             let ts = tx.core.hlc.next();

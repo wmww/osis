@@ -281,6 +281,27 @@ fn within_depth(core: &Core, records: Records<'_>, tid: &Tid) -> bool {
     false
 }
 
+/// `/created` of `rec`: one write of its record by a writer at `ts` under `src` from counter
+/// `lo`, and the next unused counter.
+pub(crate) fn mint_created(rec: &CreationRecord, ts: Ts, src: Source, lo: u64) -> Option<(Fragment, u64)> {
+    let w = Writer::new(ts, src, lo);
+    let view = osis_schema::core_schema().view(CREATED.ak())?;
+    let (f, r) = run_ops(&Fragment::default(), w, &[PathOp { path: Vec::new(), op: Op::Set(rec.to_value()) }], &view).ok()??;
+    Some((f, r.hi))
+}
+
+/// Whether `f` is exactly what `mint_created` makes of `rec` under some source (spec/commits.md
+/// §2): no other write (losing junk every holder would keep) fits.
+pub(crate) fn is_minting(f: &Fragment, rec: &CreationRecord) -> bool {
+    let writes = f.writes();
+    let Some((first, Some(ts))) = writes.first() else { return false };
+    if writes.iter().any(|(d, t)| d.src != first.src || *t != Some(*ts)) {
+        return false;
+    }
+    let lo = writes.iter().map(|(d, _)| d.ctr).min().unwrap_or(first.ctr);
+    mint_created(rec, *ts, first.src.clone(), lo).is_some_and(|(m, _)| m == *f)
+}
+
 pub(crate) fn run_ops<V: View>(state: &Fragment, w: Writer, ops: &[PathOp], view: &V) -> Result<Option<(Fragment, CounterRange)>> {
     let mut b = Batch::new(state, w);
     for op in ops {

@@ -70,6 +70,11 @@ impl Header {
             if ak != CREATED && is_membership_class(ak) != kind.is_membership() {
                 return Err(Error::Invalid("aspect of the wrong class for the commit kind"));
             }
+            // `/created` is kept forever, so a durable snapshot or import never carries it: each
+            // part is its own commit's one minting (spec/commits.md §2)
+            if ak == CREATED && !kind.has_own_writes() && self.ephemeral.is_none() {
+                return Err(Error::Invalid("/created in a durable commit without own writes"));
+            }
             match kind {
                 Kind::RosterSnapshot if !ROSTER_AKS.contains(&ak) => return Err(Error::Invalid("roster snapshot of a non-roster aspect")),
                 Kind::MembershipSnapshot if ROSTER_AKS.contains(&ak) => return Err(Error::Invalid("compaction snapshot of /members or /tenures")),
