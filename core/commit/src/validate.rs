@@ -4,7 +4,7 @@ use crate::cbor::strictly_ascending;
 use crate::header::{FOREVER, Header, Kind, aspect_key, key_value, purge_value};
 use crate::retention::{CREATED, check_retention, delete_levels, fixed_retention};
 use crate::Error;
-use osis_base::format::FORMAT_VERSION;
+use osis_base::format::{DELETE_AUTHOR, FORMAT_VERSION};
 use osis_schema::PurgeBy;
 use osis_schema::core_types::is_membership_class;
 
@@ -117,7 +117,7 @@ impl Header {
             return Err(Error::Invalid("import on several things"));
         }
         // one author chain: at most one level-2 key (header-list blobs commit to it alone)
-        if self.keys.iter().filter(|k| k.level == 2).count() > 1 {
+        if self.keys.iter().filter(|k| k.level == DELETE_AUTHOR).count() > 1 {
             return Err(Error::Invalid("more than one level-2 delete key"));
         }
         if used.iter().any(|u| !u) {

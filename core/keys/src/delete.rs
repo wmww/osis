@@ -1,19 +1,14 @@
 //! Delete keys by level (spec/crypto.md §7).
 
 use crate::epoch::{ActorEpochs, RoleEpochs};
+use osis_base::format::{DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER};
 use osis_crypto::{DeleteSecret, Epoch, Secret32, VerifyingKey};
-
-/// Delete levels: 1 admin secret of the thing, 2 write secret of the actor above the author
-/// node, 3 write secret of the thing.
-pub const LEVEL_ADMIN: u8 = 1;
-pub const LEVEL_AUTHOR: u8 = 2;
-pub const LEVEL_WRITER: u8 = 3;
 
 fn source<'a>(level: u8, thing: &'a ActorEpochs, author_actor: Option<&'a ActorEpochs>) -> Option<&'a RoleEpochs> {
     match level {
-        LEVEL_ADMIN => Some(&thing.admin),
-        LEVEL_AUTHOR => author_actor.map(|a| &a.write),
-        LEVEL_WRITER => Some(&thing.write),
+        DELETE_ADMIN => Some(&thing.admin),
+        DELETE_AUTHOR => author_actor.map(|a| &a.write),
+        DELETE_WRITER => Some(&thing.write),
         _ => None,
     }
 }

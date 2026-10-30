@@ -4,6 +4,7 @@ use crate::header::{DeleteKey, Kind};
 use crate::retention::delete_levels;
 use crate::Error;
 use osis_base::Tid;
+use osis_base::format::{DELETE_ADMIN, DELETE_AUTHOR};
 use osis_crypto::{Secret32, VerifyingKey};
 use osis_schema::Retention;
 
@@ -26,9 +27,9 @@ pub fn delete_keys(s: &dyn Secrets, tid: &Tid, r: &Retention, kind: Kind) -> Res
     delete_levels(r, kind)
         .iter()
         .map(|level| {
-            let key = match level {
-                1 => s.admin_key(tid).ok_or(Error::Build("admin delete key not supplied"))?,
-                2 => s.chain_key().ok_or(Error::Build("author-chain delete key not supplied"))?,
+            let key = match *level {
+                DELETE_ADMIN => s.admin_key(tid).ok_or(Error::Build("admin delete key not supplied"))?,
+                DELETE_AUTHOR => s.chain_key().ok_or(Error::Build("author-chain delete key not supplied"))?,
                 _ => s.write_key(tid).ok_or(Error::Build("write delete key not supplied"))?,
             };
             Ok(DeleteKey::new(*level, &key))

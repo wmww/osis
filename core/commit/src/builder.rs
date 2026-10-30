@@ -6,7 +6,7 @@ use crate::project::check_fits;
 use crate::keys::{Prefix, Secrets, delete_keys};
 use crate::lists::{BlobSink, write_list};
 use crate::Error;
-use osis_base::format::{CHUNK_THRESHOLD, FORMAT_VERSION, MAX_BLOB};
+use osis_base::format::{CHUNK_THRESHOLD, DELETE_AUTHOR, FORMAT_VERSION, MAX_BLOB};
 use osis_base::{Ak, BlobId, CommitId, SchemaId, Tid, Ts, Value};
 use osis_crypto::{CryptoRngCore, SigningSecret, delta_hash};
 use osis_schema::Retention;
@@ -184,7 +184,7 @@ impl CommitBuilder {
         // lists above the threshold go by link
         let mut list_blobs = Vec::new();
         // header-list chunks and tree nodes: the commit's level-2 key only (spec/wire.md §5)
-        let list_keys: Vec<DeleteKey> = header.keys.iter().filter(|k| k.level == 2).copied().collect();
+        let list_keys: Vec<DeleteKey> = header.keys.iter().filter(|k| k.level == DELETE_AUTHOR).copied().collect();
         for f in ListField::ALL {
             let Some(v) = header.list_value(f) else { continue };
             let bytes = osis_base::encode(&v);

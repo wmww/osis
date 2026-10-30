@@ -2,7 +2,7 @@
 //! the prefix-versus-header agreement check (spec/commits.md §4) and label wraps (spec/crypto.md §5).
 
 use crate::Error;
-use osis_base::format::{BLOB_FRAMING_VERSION, COMMITMENT_LEN, MAX_BLOB, PREFIX_FIXED_LEN};
+use osis_base::format::{BLOB_FRAMING_VERSION, COMMITMENT_LEN, DELETE_ADMIN, DELETE_WRITER, MAX_BLOB, PREFIX_FIXED_LEN};
 use osis_base::{BlobId, WallMs};
 use osis_crypto::{CryptoRngCore, Secret32, VerifyingKey, commitment, decrypt_blob, encrypt_blob};
 
@@ -91,7 +91,7 @@ impl Prefix {
     }
 
     fn validate(&self) -> Result<(), Error> {
-        if self.commitments.iter().any(|c| !(1..=3).contains(&c[0])) {
+        if self.commitments.iter().any(|c| !(DELETE_ADMIN..=DELETE_WRITER).contains(&c[0])) {
             return Err(Error::Malformed("commitment level"));
         }
         if self.commitments.windows(2).any(|w| matches!(w, [a, b] if a[0] >= b[0])) {

@@ -2,7 +2,7 @@
 
 use crate::header::{FOREVER, Header, Kind};
 use crate::Error;
-use osis_base::format::{MEMBERSHIP_KEEP_MS, AT_MOST_GRACE_MS};
+use osis_base::format::{AT_MOST_GRACE_MS, DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER, MEMBERSHIP_KEEP_MS};
 use osis_base::Ts;
 use osis_schema::core_types::is_membership_class;
 use osis_schema::{AspectDefaults, Bound, PurgeBy, Retention};
@@ -159,10 +159,10 @@ pub fn delete_levels(r: &Retention, kind: Kind) -> &'static [u8] {
     let import = kind == Kind::Import;
     match r.by {
         PurgeBy::Nobody => &[],
-        PurgeBy::Admin => &[1],
-        PurgeBy::Author if import => &[1],
-        PurgeBy::Author => &[1, 2],
-        PurgeBy::Writer if import => &[1, 3],
-        PurgeBy::Writer => &[1, 2, 3],
+        PurgeBy::Admin => &[DELETE_ADMIN],
+        PurgeBy::Author if import => &[DELETE_ADMIN],
+        PurgeBy::Author => &[DELETE_ADMIN, DELETE_AUTHOR],
+        PurgeBy::Writer if import => &[DELETE_ADMIN, DELETE_WRITER],
+        PurgeBy::Writer => &[DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER],
     }
 }

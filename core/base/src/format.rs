@@ -54,6 +54,14 @@ pub const BLOB_FRAMING_VERSION: u8 = 1;
 pub const PREFIX_FIXED_LEN: usize = 27;
 /// Bytes of one prefix commitment: level, then the 32-byte blinded delete key (spec/wire.md §5).
 pub const COMMITMENT_LEN: usize = 33;
+/// Delete levels (spec/crypto.md §7): keys derived from the thing's admin secret, from the write
+/// secret of the actor directly above the author node (the author chain), from the thing's write
+/// secret. fixed.
+pub const DELETE_ADMIN: u8 = 1;
+/// See `DELETE_ADMIN`. fixed.
+pub const DELETE_AUTHOR: u8 = 2;
+/// See `DELETE_ADMIN`. fixed.
+pub const DELETE_WRITER: u8 = 3;
 /// Most keys in a claim set (spec/wire.md §2, §8). fixed.
 pub const MAX_CLAIMS: usize = 65_536;
 
