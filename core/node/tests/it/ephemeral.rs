@@ -604,6 +604,43 @@ fn ephemeral_part_waits_for_its_record_spec_sync_9() {
     assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(Value::Int(7)));
 }
 
+// spec/commits.md §4, spec/sync.md §9 (only verified commits are held): a copy of a waiting
+// commit with the real header but a junk delta or signature, arriving before the real one (its
+// author's and thing's records not here yet), does not evict the real copy: once the records are
+// here the real part is held
+#[test]
+fn junk_copy_of_waiting_commit_evicts_nothing_spec_sync_9() {
+    for junk_sig in [false, true] {
+        let mut net = Net::new();
+        let sv = net.add_server();
+        let a = net.node(1, &[sv]);
+        let b = net.node(2, &[]);
+        let c = net.node(3, &[sv]);
+        let g = net.group(a, &[(c, Role::Write)], &[sv]);
+        let t = net.item(c, g, g, "durable");
+        net.run();
+        let mut m = Mutation::new();
+        m.set(t, &eph("/doc/cursor"), &Value::Int(7)).unwrap();
+        net.engine(c).write(m).unwrap();
+        let cs = net.engine(c).take_ephemeral().unwrap();
+        let blob = cs[0].blob.clone();
+        let mut junk = blob.clone();
+        junk.parts[0].delta.push(0);
+        if junk_sig {
+            junk.signature = osis_crypto::Signature([0; 64]);
+        }
+        let ct = net.engine(c).tid();
+        assert!(net.engine(b).core.created(&ct).is_none() && net.engine(b).core.created(&t).is_none(), "author and thing unknown");
+        assert_eq!(net.engine(b).ingest_ephemeral(junk).unwrap(), osis_node::ephemeral::EphIngest::Pending);
+        assert_eq!(net.engine(b).ingest_ephemeral(blob.clone()).unwrap(), osis_node::ephemeral::EphIngest::Pending);
+        // the records arrive (out of band here)
+        net.pair(a, b);
+        net.engine(b).rejudge_ephemeral().unwrap();
+        assert_eq!(net.read(b, t), Some(s("durable")));
+        assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(Value::Int(7)), "junk_sig {junk_sig}");
+    }
+}
+
 // spec/commits.md §4, spec/sync.md §9 (only verified commits are held and spread): another blob
 // of a held ephemeral commit, the same header with a junk delta or signature, is refused
 #[test]

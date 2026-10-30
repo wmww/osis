@@ -151,7 +151,7 @@ pub(crate) struct Remote {
     /// Commits whose author's record, or a part's thing's, is not here yet, with the things
     /// whose records they wait for (bounded by the sync layer, which forgets what it drops),
     /// retried when one of those records arrives.
-    pub pending: BTreeMap<CommitId, (CommitBlob, BTreeSet<Tid>)>,
+    pub pending: BTreeMap<CommitId, Waiting>,
     /// Commits whose parts were all invalid on arrival (`/created` ones aside): neither held nor
     /// counted, judged again when the held durable set changes (bounded like `pending`).
     pub invalid: BTreeMap<CommitId, Invalid>,
@@ -187,6 +187,19 @@ pub(crate) struct Remote {
     /// Own writes, signals or keep-alives noted since the last `take_ephemeral_if` (what it held
     /// back goes when the sync layer's upload in flight is answered, not on a new local event).
     pub noted: bool,
+}
+
+/// A commit waiting for records (`Remote::pending`): every distinct copy of its signature and
+/// parts not known to be junk is kept, since a copy cannot be checked before its record is here
+/// (keeping the first copy let a junk one, the real header with junk parts, evict the real part).
+pub(crate) struct Waiting {
+    pub header: Header,
+    /// Distinct signatures received (the author's record may not be here to check them).
+    pub sigs: Vec<osis_crypto::Signature>,
+    /// Distinct parts received: several per `(ai, di)` while their thing's record is missing.
+    pub parts: Vec<osis_commit::Part>,
+    /// The things whose records it waits for.
+    pub needs: BTreeSet<Tid>,
 }
 
 /// Whether a cover `cover` may absorb `covered` (spec/sync.md §9): only its author's commits of
@@ -1041,20 +1054,72 @@ impl Engine {
         Ok(EphIngest::Held { new })
     }
 
-    /// Keeps `blob` of commit `id` waiting for the records of `needs` (`pending`); another
-    /// waiting blob of the commit (a commit past a blob splits) merges with it.
+    /// Keeps `blob` of commit `id` waiting for the records of `needs` (`pending`), merged with
+    /// the other copies of the commit waiting (a commit past a blob splits; a junk copy may come
+    /// first): its signature and parts not held yet, but parts that fail their delta hash.
     fn wait_apart(&mut self, id: CommitId, blob: CommitBlob, needs: BTreeSet<Tid>) {
-        match self.eph.remote.pending.get_mut(&id) {
-            Some((b, n)) => {
-                let mut more = blob.parts;
-                more.retain(|p| !b.parts.iter().any(|q| (q.ai, q.di) == (p.ai, p.di)));
-                b.parts.extend(more);
-                n.extend(needs);
-            }
-            None => {
-                self.eph.remote.pending.insert(id, (blob, needs));
+        let parts: Vec<osis_commit::Part> = blob.parts.into_iter().filter(|p| self.part_matches(&blob.header, &id, p) != Some(false)).collect();
+        let w = self.eph.remote.pending.entry(id).or_insert_with(|| Waiting { header: blob.header, sigs: Vec::new(), parts: Vec::new(), needs: BTreeSet::new() });
+        if !w.sigs.contains(&blob.signature) {
+            w.sigs.push(blob.signature);
+        }
+        for p in parts {
+            if !w.parts.contains(&p) {
+                w.parts.push(p);
             }
         }
+        w.needs.extend(needs);
+    }
+
+    /// Whether part `p` of ephemeral commit `h` (ID `id`) matches its delta hash; `None` while
+    /// its thing's record is not here (a `/created` part brings its own).
+    fn part_matches(&self, h: &Header, id: &CommitId, p: &osis_commit::Part) -> Option<bool> {
+        let Some(a) = h.aspects.get(p.ai) else { return Some(false) };
+        let Some(want) = a.hashes.get(p.di) else { return Some(false) };
+        let empty = BTreeMap::new();
+        let rec = match self.record_of(&a.tid, &empty) {
+            Some(r) => r.clone(),
+            None if a.ak.as_str() == CREATED.ak() => match created_record(h, id, p, &mut Interner::new()) {
+                Ok(r) => r,
+                Err(_) => return Some(false),
+            },
+            None => return None,
+        };
+        Some(osis_crypto::delta_hash(&dedup_secret(rec.nonce()), &p.delta) == *want)
+    }
+
+    /// The copy of waiting commit `id` to ingest once a record it waits for is here: the first
+    /// signature that verifies, and per `(ai, di)` the first part matching its delta hash (every
+    /// copy of a part whose record is still missing); `None` when its author's record is still
+    /// missing (it waits on, its parts sifted) or no signature verifies (dropped).
+    fn sift_waiting(&mut self, id: CommitId, w: Waiting) -> Option<CommitBlob> {
+        let key = match self.core.created(&w.header.author) {
+            Some(CreationRecord::KeyActor { public_key, .. }) => VerifyingKey::from_slice(public_key).ok(),
+            Some(_) => None,
+            None => {
+                let mut w = w;
+                let parts = std::mem::take(&mut w.parts);
+                w.parts = parts.into_iter().filter(|p| self.part_matches(&w.header, &id, p) != Some(false)).collect();
+                let empty = BTreeMap::new();
+                w.needs.retain(|t| self.record_of(t, &empty).is_none());
+                self.eph.remote.pending.insert(id, w);
+                return None;
+            }
+        };
+        let Some(signature) = key.and_then(|k| w.sigs.iter().find(|s| osis_commit::verify_signature(&id, s, &k).is_ok()).copied()) else {
+            self.report_eph(&format!("ephemeral commit {id:?}: no copy verifies"));
+            return None;
+        };
+        let mut parts: Vec<osis_commit::Part> = Vec::new();
+        for p in w.parts {
+            match self.part_matches(&w.header, &id, &p) {
+                Some(true) if !parts.iter().any(|q| (q.ai, q.di) == (p.ai, p.di)) => parts.push(p),
+                None => parts.push(p),
+                _ => {}
+            }
+        }
+        parts.sort_by_key(|p| (p.ai, p.di));
+        Some(CommitBlob { header: w.header, signature, parts })
     }
 
     /// Whether a held presence commit of `h`'s author and actor is newer than commit `id`.
@@ -1277,9 +1342,10 @@ impl Engine {
     /// to keep waiting); one waiting again goes back.
     fn retry_waiting(&mut self) {
         let empty = BTreeMap::new();
-        let ready: Vec<CommitId> = self.eph.remote.pending.iter().filter(|(_, (_, needs))| needs.iter().any(|t| self.record_of(t, &empty).is_some())).map(|(c, _)| *c).collect();
+        let ready: Vec<CommitId> = self.eph.remote.pending.iter().filter(|(_, w)| w.needs.iter().any(|t| self.record_of(t, &empty).is_some())).map(|(c, _)| *c).collect();
         for c in ready {
-            if let Some((b, _)) = self.eph.remote.pending.remove(&c)
+            if let Some(w) = self.eph.remote.pending.remove(&c)
+                && let Some(b) = self.sift_waiting(c, w)
                 && let Err(e) = self.ingest_ephemeral(b)
             {
                 self.report_eph(&format!("ephemeral commit {c:?}: {e}"));
@@ -1450,7 +1516,7 @@ impl Engine {
             && !r.local.contains(t)
             && !r.unsent.keys().any(|(x, _)| x == t)
             && !r.presence.keys().any(|(x, _)| x == t)
-            && !r.pending.values().any(|(_, needs)| needs.contains(t))
+            && !r.pending.values().any(|w| w.needs.contains(t))
     }
 
     /// The author's own compaction (spec/sync.md §9): per actor, when this node's held plain
@@ -1683,19 +1749,27 @@ fn carried_records(blob: &CommitBlob, id: &CommitId, interner: &mut Interner) ->
         if a.ak.as_str() != CREATED.ak() {
             continue;
         }
-        let cx = osis_commit::delta_ctx(h, id, p.ai, interner)?;
-        let s = osis_crdt::decode_snapshot(&p.delta, &cx, interner, Some(&mut Unpaged))?;
-        let v = s.fragment.read().ok_or(Error::BadInput("empty /created"))?;
-        let rec = CreationRecord::from_value(&v).ok_or(Error::BadInput("/created is not a creation record"))?;
-        if rec.tid() != a.tid {
-            return Err(Error::BadInput("/created does not hash to its tid"));
-        }
-        if !is_minted(&s.fragment, &rec) {
-            return Err(Error::BadInput("/created is not one minting of its record"));
-        }
+        let rec = created_record(h, id, p, interner)?;
         carried.insert(a.tid, rec);
     }
     Ok(carried)
+}
+
+/// The record `/created` part `p` of commit `h` (ID `id`) carries, checked: it hashes to its tid
+/// and is exactly one minting (bad input otherwise).
+fn created_record(h: &Header, id: &CommitId, p: &osis_commit::Part, interner: &mut Interner) -> Result<CreationRecord> {
+    let a = h.aspects.get(p.ai).ok_or(Error::BadInput("part aspect index"))?;
+    let cx = osis_commit::delta_ctx(h, id, p.ai, interner)?;
+    let s = osis_crdt::decode_snapshot(&p.delta, &cx, interner, Some(&mut Unpaged))?;
+    let v = s.fragment.read().ok_or(Error::BadInput("empty /created"))?;
+    let rec = CreationRecord::from_value(&v).ok_or(Error::BadInput("/created is not a creation record"))?;
+    if rec.tid() != a.tid {
+        return Err(Error::BadInput("/created does not hash to its tid"));
+    }
+    if !is_minted(&s.fragment, &rec) {
+        return Err(Error::BadInput("/created is not one minting of its record"));
+    }
+    Ok(rec)
 }
 
 /// Whether `f` is exactly one minting of `rec` under a session source (spec/sync.md §9).
