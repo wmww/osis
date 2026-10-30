@@ -128,9 +128,8 @@ fn class_of(held: &MemoryHeldActors, v: &Tid, d: &Departure) -> Class {
     (d.via.first().copied(), d.via.last().copied().unwrap_or(*v), d.member, d.from, verdicts(held, v, d))
 }
 
-/// The departures of `departures`: a fixpoint over the member graph below `a` (`a` left out),
-/// each actor keeping one departure per class; a chain is extended by an actor only when it
-/// does not pass that actor already nor is that actor's departure (simple chains).
+/// The departures of `departures`: the walk below `a`, then `a`'s own departures and those
+/// inside its members.
 fn collect(tx: &mut Tx<'_>, a: &Tid, horizon: &mut Option<WallMs>) -> Result<BTreeSet<Departure>> {
     let held = held_actors(tx)?;
     // the actors below `a` with secrets of their own, and who each is a member of
@@ -148,26 +147,12 @@ fn collect(tx: &mut Tx<'_>, a: &Tid, horizon: &mut Option<WallMs>) -> Result<BTr
             }
         }
     }
-    let mut found: BTreeMap<Tid, BTreeMap<Class, Departure>> = BTreeMap::new();
-    let mut work = std::collections::VecDeque::new();
-    let keep = |found: &mut BTreeMap<Tid, BTreeMap<Class, Departure>>, work: &mut std::collections::VecDeque<(Tid, Departure)>, v: Tid, d: Departure| {
-        if let std::collections::btree_map::Entry::Vacant(e) = found.entry(v).or_default().entry(class_of(&held, &v, &d)) {
-            e.insert(d.clone());
-            work.push_back((v, d));
-        }
-    };
-    for v in &below {
-        for d in direct_departures(tx, v, horizon)? {
-            keep(&mut found, &mut work, *v, d);
-        }
+    let mut direct = Vec::with_capacity(below.len());
+    for v in below {
+        let d = direct_departures(tx, &v, horizon)?;
+        direct.push((v, d));
     }
-    while let Some((w, d)) = work.pop_front() {
-        for u in parents.get(&w).into_iter().flatten() {
-            if u != a && d.member != *u && !d.via.contains(u) {
-                keep(&mut found, &mut work, *u, Departure::inside(w, &d));
-            }
-        }
-    }
+    let found = walk(a, &parents, direct, |v, d| class_of(&held, v, d));
     let mut out = direct_departures(tx, a, horizon)?;
     for (m, ps) in &parents {
         if !ps.contains(a) {
@@ -180,6 +165,34 @@ fn collect(tx: &mut Tx<'_>, a: &Tid, horizon: &mut Option<WallMs>) -> Result<BTr
         }
     }
     Ok(out)
+}
+
+/// The fixpoint over the member graph below `a` (`a` left out): each actor keeps one departure
+/// per class, starting from the actors' own (`direct`, in walk order); a chain is extended by an
+/// actor only when it does not pass that actor already nor is that actor's departure (simple
+/// chains). Chains share their tails (`osis_keys::Via`), so each kept departure costs one hop.
+fn walk(a: &Tid, parents: &BTreeMap<Tid, Vec<Tid>>, direct: Vec<(Tid, BTreeSet<Departure>)>, class_of: impl Fn(&Tid, &Departure) -> Class) -> BTreeMap<Tid, BTreeMap<Class, Departure>> {
+    let mut found: BTreeMap<Tid, BTreeMap<Class, Departure>> = BTreeMap::new();
+    let mut work = std::collections::VecDeque::new();
+    let keep = |found: &mut BTreeMap<Tid, BTreeMap<Class, Departure>>, work: &mut std::collections::VecDeque<(Tid, Departure)>, v: Tid, d: Departure| {
+        if let std::collections::btree_map::Entry::Vacant(e) = found.entry(v).or_default().entry(class_of(&v, &d)) {
+            e.insert(d.clone());
+            work.push_back((v, d));
+        }
+    };
+    for (v, ds) in direct {
+        for d in ds {
+            keep(&mut found, &mut work, v, d);
+        }
+    }
+    while let Some((w, d)) = work.pop_front() {
+        for u in parents.get(&w).into_iter().flatten() {
+            if u != a && d.member != *u && !d.via.contains(u) {
+                keep(&mut found, &mut work, *u, Departure::inside(w, &d));
+            }
+        }
+    }
+    found
 }
 
 /// What the covers rule needs of every actor this node holds secrets of; an actor with secrets
@@ -458,7 +471,7 @@ fn rotation_helps(tx: &mut Tx<'_>, a: &Tid, uncovered_roles: &BTreeSet<Role>) ->
             if !current.contains(m) {
                 return true;
             }
-            let inner = Departure { via: rest.to_vec(), member: d.member, from: d.from };
+            let inner = Departure { via: rest.clone(), member: d.member, from: d.from };
             match (osis_keys::HeldActors::epochs(&held, m), osis_keys::HeldActors::secrets(&held, m)) {
                 (Some(me), Some(ms)) => {
                     let ks = keysets.get(&(*m, r)).copied().flatten();
@@ -994,7 +1007,7 @@ mod tests {
     use osis_base::{Role, Tid, WallMs};
     use osis_keys::Departure;
     use osis_schema::core_types as ct;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     /// Delivers every commit of peer `from` to peer `to` without the `/secrets` deltas of `x`
     /// (what a node that does not read `x` gets of them: certificates).
@@ -1206,7 +1219,7 @@ mod tests {
         let classes = deps
             .iter()
             .map(|d| match d.via.split_first() {
-                Some((m, rest)) => (key(d), super::verdicts(&held, m, &Departure { via: rest.to_vec(), member: d.member, from: d.from })),
+                Some((m, rest)) => (key(d), super::verdicts(&held, m, &Departure { via: rest.clone(), member: d.member, from: d.from })),
                 None => (key(d), super::verdicts(&held, a, d)),
             })
             .collect();
@@ -1317,6 +1330,40 @@ mod tests {
             all += n;
         }
         assert!(same * 10 >= all * 9, "{same} of {all} alike");
+    }
+
+    /// The walk over a chain G0 (the walked actor) <- G1 <- ... <- GL, departures from the
+    /// levels in `departed`: (kept departures, distinct chain hops they hold, chain actors they
+    /// would hold unshared).
+    fn chain_walk(l: usize, departed: impl Fn(usize) -> bool) -> (usize, usize, usize) {
+        let t = |i: usize| Tid::from_bytes({
+            let mut b = [0u8; 15];
+            b[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            b
+        });
+        let leaf = |i: usize| t(i + 1_000_000);
+        let parents: BTreeMap<Tid, Vec<Tid>> = (1..=l).map(|i| (t(i), vec![t(i - 1)])).collect();
+        let direct = (1..=l).map(|i| (t(i), if departed(i) { BTreeSet::from([Departure::member(leaf(i), Role::Read)]) } else { BTreeSet::new() })).collect();
+        let held = osis_keys::MemoryHeldActors::default();
+        let found = super::walk(&t(0), &parents, direct, |v, d| super::class_of(&held, v, d));
+        let deps: Vec<&Departure> = found.values().flat_map(|f| f.values()).collect();
+        let hops: std::collections::HashSet<usize> = deps.iter().flat_map(|d| d.via.hop_ids()).collect();
+        (deps.len(), hops.len(), deps.iter().map(|d| d.via.len()).sum())
+    }
+
+    // issues/rotation-chain-cost.md: the walk's memory is linear in the departures it keeps
+    // (one hop each, tails shared), not in the sum of their chain lengths.
+    #[test]
+    fn walk_memory_linear_in_chain_depth() {
+        for l in [100, 1000] {
+            let (kept, hops, unshared) = chain_walk(l, |i| i == l);
+            assert_eq!((kept, hops, unshared), (l, l - 1, l * (l - 1) / 2), "L = {l}");
+        }
+        // a departure at every level: kept departures grow with L^2, each holding one hop
+        for l in [100, 200] {
+            let (kept, hops, _) = chain_walk(l, |_| true);
+            assert_eq!((kept, hops), (l * (l + 1) / 2, l * (l - 1) / 2), "L = {l}");
+        }
     }
 
     // spec/crypto.md §4 (no depth bound): a node removed 12 actors below G0 (G11 in G10 ... in
