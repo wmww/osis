@@ -81,6 +81,89 @@ impl LaneEntry {
 /// A waiting delete (`Lane::waiting`) with its entry: what an upload carries as a replacement.
 pub(crate) type Waiting = (BlobId, BTreeSet<CommitId>, osis_label::DeleteItem);
 
+/// Waiting deletes per (label, server) at most. Resource bound against a server that never holds
+/// covers (refuses them other than for its cap, or deletes them): past it the oldest waiting
+/// delete there is dropped, its entry left at that server as a covered replay (a writer that
+/// fetches it deletes it then; else the server's cap bounds it). 0: no delete waits for its cover
+/// (each absorbed entry stays up there until fetched again); infinity: the set grows with every
+/// absorbed own commit and `eph_flush` walks it all each step. An honest server holds a cover
+/// within a round trip: what waits is what covers in flight absorb (a replacement message
+/// carries at most 1024). About 300 bytes each: about 1.2 MiB per (label, server) at the bound.
+pub(crate) const WAITING_MAX: usize = 1 << 12;
+
+type WaitKey = (LabelId, BlobId, ServerKey);
+type WaitVal = (BTreeSet<CommitId>, osis_label::DeleteItem);
+
+/// `Lane::waiting`: per (label, blob, server) the covers a delete waits for, bounded per
+/// (label, server) by `WAITING_MAX` (the oldest dropped).
+#[derive(Default)]
+pub(crate) struct WaitingDeletes {
+    map: BTreeMap<WaitKey, (WaitVal, u64)>,
+    /// Insertion order per (label, server), and how many wait there.
+    order: BTreeSet<(LabelId, ServerKey, u64, BlobId)>,
+    count: BTreeMap<(LabelId, ServerKey), usize>,
+    next: u64,
+}
+
+impl WaitingDeletes {
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// How many wait at server `s` under `l`.
+    pub fn at(&self, l: LabelId, s: ServerKey) -> usize {
+        self.count.get(&(l, s)).copied().unwrap_or(0)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&WaitKey, &WaitVal)> {
+        self.map.iter().map(|(k, (v, _))| (k, v))
+    }
+
+    /// The waiting deletes under `l`.
+    pub fn of_label(&self, l: LabelId) -> impl Iterator<Item = (&WaitKey, &WaitVal)> {
+        self.map.range((l, BlobId([0; 32]), [0u8; 32])..).take_while(move |((l2, _, _), _)| *l2 == l).map(|(k, (v, _))| (k, v))
+    }
+
+    pub fn get(&self, k: &WaitKey) -> Option<&WaitVal> {
+        self.map.get(k).map(|(v, _)| v)
+    }
+
+    pub fn get_mut(&mut self, k: &WaitKey) -> Option<&mut WaitVal> {
+        self.map.get_mut(k).map(|(v, _)| v)
+    }
+
+    pub fn remove(&mut self, k: &WaitKey) -> Option<WaitVal> {
+        let (v, n) = self.map.remove(k)?;
+        self.order.remove(&(k.0, k.2, n, k.1));
+        if let Some(c) = self.count.get_mut(&(k.0, k.2)) {
+            *c -= 1;
+            if *c == 0 {
+                self.count.remove(&(k.0, k.2));
+            }
+        }
+        Some(v)
+    }
+
+    /// Adds (or replaces) a waiting delete; past `WAITING_MAX` at its (label, server) the oldest
+    /// there is dropped.
+    pub fn insert(&mut self, k: WaitKey, v: WaitVal) {
+        if let Some((old, _)) = self.map.get_mut(&k) {
+            *old = v;
+            return;
+        }
+        let (l, b, s) = k;
+        if self.at(l, s) >= WAITING_MAX
+            && let Some(&(_, _, _, oldest)) = self.order.range((l, s, 0, BlobId([0; 32]))..).next()
+        {
+            self.remove(&(l, oldest, s));
+        }
+        *self.count.entry((l, s)).or_default() += 1;
+        self.next += 1;
+        self.order.insert((l, s, self.next, b));
+        self.map.insert(k, (v, self.next));
+    }
+}
+
 /// The lane's state (in memory).
 #[derive(Default)]
 pub(crate) struct Lane {
@@ -110,8 +193,8 @@ pub(crate) struct Lane {
     /// and sent once the connection's keys give another (`eph_restamp`), dropped once this node
     /// is no longer a writer of the label.
     pub restamp: BTreeMap<(ConnId, LabelId, BlobId), Option<VerifyingKey>>,
-    /// Plain entries a server refused for its cap, per connection: uploaded there again at the
-    /// periodic pass (`eph_retry`); reported once each.
+    /// Entries a server refused for its cap (reported once each) or its rate (code 4), per
+    /// connection: uploaded there again at the periodic pass (`eph_retry`).
     pub capped: BTreeSet<(ConnId, LabelId, BlobId)>,
     /// Entries forgotten while their upload was in flight on a connection, with the cover that
     /// absorbed them: deleted there once the upload is answered OK (else a slow server kept every
@@ -123,7 +206,7 @@ pub(crate) struct Lane {
     /// cover never came (its author crashed in between; the tombstone keeps holders from
     /// bringing them back). The author's own cover refused for the cap deletes them at once and
     /// goes again (room for it).
-    pub waiting: BTreeMap<(LabelId, BlobId, ServerKey), (BTreeSet<CommitId>, osis_label::DeleteItem)>,
+    pub waiting: WaitingDeletes,
     /// Waiting deletes an own upload in flight carries as replacements (spec/sync.md §5,
     /// Replace: the server removes them iff it admits the upload), by upload: back in
     /// `waiting` unless it is answered OK.
@@ -705,8 +788,7 @@ impl SyncEngine {
         let ready: Vec<BlobId> = self
             .eph
             .waiting
-            .range((l, BlobId([0; 32]), [0u8; 32])..)
-            .take_while(|((l2, _, _), _)| *l2 == l)
+            .of_label(l)
             .filter(|((_, _, s), (cs, _))| *s == server && cs.contains(&commit) && self.eph_covers_held_with(&self.eph_covers(cs), g, &l, server, Some(&commit)))
             .map(|((_, x, _), _)| *x)
             .take(*room)
@@ -858,6 +940,10 @@ impl SyncEngine {
                 }
                 Code::TOMBSTONED => {
                     self.eph.present.remove(&(server, l, b));
+                }
+                // its rate used up (deletes and replacements count): again at the periodic pass
+                Code::RATE_LIMITED => {
+                    self.eph.capped.insert((conn, l, b));
                 }
                 // stamped under a write key older than the head's (a rotation this node had
                 // not read): again under the next one (the reply's head is taken meanwhile)
@@ -1342,6 +1428,27 @@ mod tests {
         let mut x = [0u8; 32];
         x[..4].copy_from_slice(&n.to_le_bytes());
         BlobId(x)
+    }
+
+    // notes/ephemeral.md (waiting deletes bounded per label and server; security review): past
+    // `WAITING_MAX` at one (label, server) the oldest there is dropped, others untouched
+    #[test]
+    fn waiting_deletes_bounded_per_server() {
+        let mut w = WaitingDeletes::default();
+        let (l, s1, s2) = (LabelId([1; 16]), [1u8; 32], [2u8; 32]);
+        let item = |x: BlobId| osis_label::DeleteItem { blob: x, at: None, by: None, sig: osis_crypto::Signature([0; 64]) };
+        w.insert((l, b(u32::MAX), s2), (BTreeSet::new(), item(b(u32::MAX))));
+        // inserted in descending blob order: the oldest is not the smallest key
+        for n in (0..=WAITING_MAX as u32).rev() {
+            w.insert((l, b(n), s1), (BTreeSet::new(), item(b(n))));
+        }
+        assert_eq!(w.at(l, s1), WAITING_MAX);
+        assert!(w.get(&(l, b(WAITING_MAX as u32), s1)).is_none(), "the oldest dropped");
+        assert!(w.get(&(l, b(0), s1)).is_some() && w.get(&(l, b(u32::MAX), s2)).is_some());
+        w.insert((l, b(0), s1), (BTreeSet::new(), item(b(0))));
+        assert_eq!(w.at(l, s1), WAITING_MAX, "a replacement adds nothing");
+        assert!(w.remove(&(l, b(0), s1)).is_some());
+        assert_eq!((w.at(l, s1), w.at(l, s2)), (WAITING_MAX - 1, 1));
     }
 
     // spec/sync.md §9 (relay-only entries remembered, a floor past the bound; security review
