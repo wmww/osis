@@ -556,3 +556,33 @@ fn deletion_records_within_cap() {
         assert!(e.store.ephemeral_bytes(&l) <= cap, "deletes: {} B over {cap}", e.store.ephemeral_bytes(&l));
     }
 }
+
+// spec/sync.md §5 (code 9): the head keys the store keeps step by step (`K` row) are those of
+// the whole path (`HeadKeys::of_path`), across reopens, on long paths whose keys repeat and run
+// past `OLDER_KEYS` distinct ones
+#[test]
+fn head_keys_follow_path_across_reopen() {
+    let key = |n: u8| osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([n; 32])).verifying_key();
+    for seed in 0..4u8 {
+        let mut e = env(Policy::unlimited());
+        let l = e.f.label;
+        let mut prev = e.f.genesis.clone();
+        for i in 0..40u32 {
+            let h = osis_base::hash::hash(&[seed.to_le_bytes().as_slice(), &i.to_le_bytes()].concat());
+            let pool = 2 + seed * 4;
+            let mut s = e.f.genesis.clone();
+            s.prev = Some(prev.id());
+            s.keys.sync = key(1 + h[0] % pool);
+            s.keys.write = key(1 + h[1] % pool);
+            s.keys.delete = key(1 + h[2] % 3);
+            s.keys.deposit = key(1 + h[3] % pool);
+            e.store.push_step(&l, s.clone(), None).unwrap();
+            prev = s;
+            if h[4].is_multiple_of(7) {
+                e.store = BackendStore::open(e.backend.clone(), e.clock.clone(), Policy::unlimited(), &mut SeededRng::from_seed([h[5]; 32])).unwrap();
+            }
+            let path = e.store.path(&l).unwrap();
+            assert_eq!(e.store.head_keys(&l).unwrap(), osis_proto::HeadKeys::of_path(&path), "seed {seed} step {i}");
+        }
+    }
+}
