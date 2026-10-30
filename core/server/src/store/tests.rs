@@ -475,6 +475,7 @@ proptest! {
                 let recs = |v: Vec<(u64, LogRecord)>| { let mut v: Vec<String> = v.into_iter().map(|r| format!("{:?}", r.1)).collect(); v.sort(); v };
                 prop_assert_eq!(recs(e.store.log_after(&l, 0, 1000).unwrap().unwrap()), recs(r.log_after(&l, 0, 1000).unwrap().unwrap()));
                 prop_assert_eq!(e.store.head(&l).unwrap(), r.head(&l).unwrap());
+                prop_assert_eq!(e.store.head_keys(&l).unwrap(), osis_proto::HeadKeys::of_path(&e.store.path(&l).unwrap()));
                 for n in 0..12 {
                     prop_assert_eq!(e.store.tombstoned(&l, &id(n)).unwrap(), r.tombstoned(&l, &id(n)).unwrap());
                     prop_assert_eq!(e.store.blob(&id(n)).unwrap(), r.blob(&id(n)).unwrap());

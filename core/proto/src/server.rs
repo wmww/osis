@@ -8,10 +8,10 @@ use crate::hello::{Hello, PROTOCOL_VERSION, negotiate};
 use crate::msg::*;
 use crate::rbsr;
 use crate::relay::RelayVerdict;
-use crate::store::{EntryMeta, LabelStore, LogRecord, Put, StoreError};
+use crate::store::{EntryMeta, HeadKeys, LabelStore, LogRecord, Put, StepKey, StoreError};
 use osis_base::format::MAX_MESSAGE;
 use osis_base::{BlobId, LabelId, WallMs};
-use osis_crypto::{Domain, LabelRole, VerifyingKey, verify_delete};
+use osis_crypto::{Domain, LabelRole, verify_delete};
 use osis_label::auth::delete_digest;
 use osis_label::{Class, OpenOutcome, entry_digest, evaluate_open, key_for_level, server_prefix};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -21,9 +21,9 @@ use std::sync::Arc;
 pub const REPLY_BUDGET: usize = MAX_MESSAGE - 64 * 1024;
 /// Log records or entries read from the store per call.
 const LOG_BATCH: usize = 256;
-/// Earlier distinct keys per role tried for code 9 (each a signature check per refused item).
-const OLDER_KEYS: usize = 8;
-/// Labels whose parsed path a connection caches.
+/// Labels whose parsed path, and whose head keys, a connection caches. Performance switch: a
+/// peer cycling past it makes the connection reload (head keys: two store reads; a path only for
+/// Open and Path); 0 reloads per message, infinity grows with the labels a peer names.
 const MAX_CACHED: usize = 4096;
 /// Blob IDs a connection remembers as crossed (an optimization only: past it the set is cleared,
 /// so a peer streaming entries cannot grow it without bound).
@@ -93,74 +93,30 @@ pub enum ServerOutput {
     StoreError(StoreError),
 }
 
-/// A role key a step registers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Key {
-    Sync,
-    Write,
-    Delete,
-    Deposit,
-}
-
-impl Key {
-    fn of(self, s: &Step) -> &VerifyingKey {
-        match self {
-            Key::Sync => &s.keys.sync,
-            Key::Write => &s.keys.write,
-            Key::Delete => &s.keys.delete,
-            Key::Deposit => &s.keys.deposit,
-        }
-    }
-
-    fn from_role(r: LabelRole) -> Key {
-        match r {
-            LabelRole::Sync => Key::Sync,
-            LabelRole::Write => Key::Write,
-            LabelRole::Delete => Key::Delete,
-        }
+fn key_of_role(r: LabelRole) -> StepKey {
+    match r {
+        LabelRole::Sync => StepKey::Sync,
+        LabelRole::Write => StepKey::Write,
+        LabelRole::Delete => StepKey::Delete,
     }
 }
 
-/// A label's path as of its head, parsed once per head change.
+/// A label's path as of its head (Open and Path need the whole path), parsed once per head
+/// change.
 struct Cached {
     head: StepId,
     path: Vec<Step>,
-    /// Per key kind: up to `OLDER_KEYS` distinct earlier keys, newest first, not the head's.
-    older: [Vec<VerifyingKey>; 4],
 }
 
-impl Cached {
-    fn new(head: StepId, path: Vec<Step>) -> Cached {
-        let older = [Key::Sync, Key::Write, Key::Delete, Key::Deposit].map(|k| {
-            let mut v: Vec<VerifyingKey> = Vec::new();
-            let head_key = path.last().map(|h| *k.of(h));
-            for s in path.iter().rev() {
-                let pk = *k.of(s);
-                if Some(pk) != head_key && !v.contains(&pk) && v.len() < OLDER_KEYS {
-                    v.push(pk);
-                }
-            }
-            v
-        });
-        Cached { head, path, older }
+/// OK under the head's key, NOT_HEAD under a recent earlier one, else REFUSED.
+fn check(k: &HeadKeys, key: StepKey, domain: Domain, digest: &[u8; 32], sig: &Signature) -> Code {
+    if key.of(&k.head).verify(domain, digest, sig).is_ok() {
+        return Code::OK;
     }
-
-    fn head_step(&self) -> Option<&Step> {
-        self.path.last()
+    if k.older.get(key as usize).is_some_and(|ks| ks.iter().any(|pk| pk.verify(domain, digest, sig).is_ok())) {
+        return Code::NOT_HEAD;
     }
-
-    /// OK under the head's key, NOT_HEAD under a recent earlier one, else REFUSED.
-    fn check(&self, key: Key, domain: Domain, digest: &[u8; 32], sig: &Signature) -> Code {
-        let Some(head) = self.head_step() else { return Code::UNKNOWN_LABEL };
-        if key.of(head).verify(domain, digest, sig).is_ok() {
-            return Code::OK;
-        }
-        let i = key as usize;
-        if self.older.get(i).is_some_and(|ks| ks.iter().any(|k| k.verify(domain, digest, sig).is_ok())) {
-            return Code::NOT_HEAD;
-        }
-        Code::REFUSED
-    }
+    Code::REFUSED
 }
 
 pub struct ServerConnection {
@@ -180,6 +136,8 @@ pub struct ServerConnection {
     /// Blobs whose bytes crossed this connection (at most `MAX_CROSSED`): not inlined back.
     crossed: HashSet<BlobId>,
     cache: HashMap<LabelId, Cached>,
+    /// Head keys per label, as of its head (`MAX_CACHED`).
+    keys: HashMap<LabelId, HeadKeys>,
     /// Dialable key of the last member proof that opened a label.
     member: Option<[u8; 32]>,
     /// Presence entries uploaded on this connection (spec/sync.md §5): removed when it closes
@@ -211,9 +169,26 @@ fn cached<'a>(cache: &'a mut HashMap<LabelId, Cached>, store: &dyn LabelStore, l
         if cache.len() >= MAX_CACHED {
             cache.clear();
         }
-        cache.insert(*label, Cached::new(head, store.path(label)?));
+        cache.insert(*label, Cached { head, path: store.path(label)? });
     }
     Ok(cache.get(label))
+}
+
+/// The label's head keys, reloaded when the head changed (a store read, never the path); none
+/// for an unknown label.
+fn head_keys<'a>(keys: &'a mut HashMap<LabelId, HeadKeys>, store: &dyn LabelStore, label: &LabelId) -> Result<Option<&'a HeadKeys>, StoreError> {
+    let Some(head) = store.head(label)? else {
+        keys.remove(label);
+        return Ok(None);
+    };
+    if keys.get(label).is_none_or(|k| k.head.id() != head) {
+        if keys.len() >= MAX_CACHED {
+            keys.clear();
+        }
+        let Some(k) = store.head_keys(label)? else { return Ok(None) };
+        keys.insert(*label, k);
+    }
+    Ok(keys.get(label))
 }
 
 /// Replay cursor ID of a log (spec/wire.md §11.2).
@@ -255,6 +230,7 @@ impl ServerConnection {
             replays: BTreeMap::new(),
             crossed: HashSet::new(),
             cache: HashMap::new(),
+            keys: HashMap::new(),
             member: None,
             presence: BTreeSet::new(),
             prune_at: PRESENCE_PRUNE,
@@ -430,8 +406,12 @@ impl ServerConnection {
         cached(&mut self.cache, store, label)
     }
 
+    fn keys(&mut self, store: &dyn LabelStore, label: &LabelId) -> Result<Option<&HeadKeys>, StoreError> {
+        head_keys(&mut self.keys, store, label)
+    }
+
     fn head(&mut self, store: &dyn LabelStore, label: &LabelId) -> Result<Option<Step>, StoreError> {
-        Ok(self.cached(store, label)?.and_then(|c| c.head_step().cloned()))
+        Ok(self.keys(store, label)?.map(|k| k.head.clone()))
     }
 
     fn dispatch(&mut self, now: u64, store: &mut dyn LabelStore, msg: Message, out: &mut Vec<ServerOutput>) -> Result<Option<Message>, StoreError> {
@@ -448,12 +428,12 @@ impl ServerConnection {
                 M::Status { id, codes, head }
             }
             M::Deposit { id, label, blob, wrap, sig } => {
-                let Some(c) = self.cached(store, &label)? else {
+                let Some(k) = self.keys(store, &label)? else {
                     return Ok(Some(M::Budget { id, code: Code::UNKNOWN_LABEL, entries_left: 0, bytes_left: 0, head: None }));
                 };
                 let blob_id = osis_label::blob_id(&blob);
-                let mut code = c.check(Key::Deposit, Domain::Deposit, &entry_digest(&label, &blob_id, &wrap), &sig);
-                let head = if code == Code::NOT_HEAD { c.head_step().cloned() } else { None };
+                let mut code = check(k, StepKey::Deposit, Domain::Deposit, &entry_digest(&label, &blob_id, &wrap), &sig);
+                let head = if code == Code::NOT_HEAD { Some(k.head.clone()) } else { None };
                 if code == Code::OK {
                     code = self.accept(store, now, &label, blob_id, &blob, wrap, None, out)?;
                 }
@@ -833,9 +813,9 @@ impl ServerConnection {
     fn accept(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_id: BlobId, blob: &[u8], wrap: Wrap, stamp: Option<Signature>, out: &mut Vec<ServerOutput>) -> Result<Code, StoreError> {
         // An oversized blob never gets here: the message decoder refuses it (msg tests `field_sizes`).
         debug_assert!(blob.len() <= osis_base::format::MAX_BLOB);
-        let Some(c) = self.cached(store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
+        let Some(k) = self.keys(store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
         if let Some(stamp) = stamp {
-            let code = c.check(Key::Write, Domain::Upload, &entry_digest(label, &blob_id, &wrap), &stamp);
+            let code = check(k, StepKey::Write, Domain::Upload, &entry_digest(label, &blob_id, &wrap), &stamp);
             if code != Code::OK {
                 return Ok(code);
             }
@@ -889,17 +869,17 @@ impl ServerConnection {
     /// (checked against the blob prefix's commitment at that level) with the label key the level
     /// needs.
     fn delete(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, item: &DeleteItem) -> Result<Code, StoreError> {
-        let Some(c) = self.cached(store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
+        let Some(k) = self.keys(store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
         let Ok(digest) = delete_digest(label, &item.blob, item.at, item.by.map(|b| b.0)) else { return Ok(Code::MALFORMED) };
         let entry = store.entry(label, &item.blob)?;
         let (key, by) = match &item.by {
-            None => (Key::Delete, None),
+            None => (StepKey::Delete, None),
             Some((level, dsig)) => match key_for_level(*level) {
-                Ok(role) => (Key::from_role(role), Some((*level, dsig))),
+                Ok(role) => (key_of_role(role), Some((*level, dsig))),
                 Err(_) => return Ok(Code::REFUSED),
             },
         };
-        let code = c.check(key, Domain::Delete, &digest, &item.sig);
+        let code = check(k, key, Domain::Delete, &digest, &item.sig);
         // A delete-key signature is checked against the blob's prefix: without the blob it cannot
         // be (nor a tombstone revealed). The blob is read only for an item whose label signature
         // holds (an unsigned item would cost a blob read of up to MAX_BLOB each).
@@ -1016,6 +996,37 @@ mod tests {
         let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&whole.encode())));
         assert!(matches!(reply(&out), Message::ReconcileReply { ranges, .. } if ranges.len() == rbsr::SPLIT));
         assert_eq!(store.ids_read.get(), u64::from(n));
+    }
+
+    // spec/sync.md §5, spec/requirements.md (peer input never causes unbounded work): checking
+    // an Upload (which needs no open) reads the head keys the store keeps, never the label's
+    // path, however long and whatever the connection has cached; a recent earlier key still
+    // gets code 9 and the head
+    #[test]
+    fn upload_check_reads_no_path() {
+        let f = Fixture::new(0x10);
+        let mut store = MemoryLabelStore::new([1; 32]);
+        let path = crate::store::tests::path(1000, |i, r| 1 + ((i + r) % 200) as u8);
+        for s in &path {
+            store.push_step(&f.label, s.clone(), None).unwrap();
+        }
+        let e = f.entry(Fixture::blob(1));
+        let blob_id = osis_label::blob_id(&e.blob);
+        // step 995's write key: four keys before the head's
+        let old = Entry { stamp: osis_label::sign_stamp(&crate::store::tests::secret(1 + ((995 + 1) % 200) as u8), &f.label, &blob_id, &e.wrap), ..e.clone() };
+        let bad = Entry { stamp: Signature([0; 64]), ..e };
+        for _ in 0..2 {
+            // a fresh connection: nothing cached
+            let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+            c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+            store.step_reads.set(0);
+            let up = Message::Upload { id: 1, label: f.label, entries: vec![old.clone(), bad.clone()] };
+            let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&up.encode())));
+            let Message::Status { codes, head, .. } = reply(&out) else { panic!("{out:?}") };
+            assert_eq!(codes, vec![Code::NOT_HEAD, Code::REFUSED]);
+            assert_eq!(head.map(|h| h.id()), Some(path[999].id()));
+            assert_eq!(store.step_reads.get(), 0);
+        }
     }
 
     // spec/sync.md §5 (Delete), spec/requirements.md (peer input never causes unbounded work): items

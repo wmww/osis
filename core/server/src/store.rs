@@ -4,7 +4,8 @@
 //! deposit budget, rate limits). Every mutation is one atomic `WriteBatch`.
 //!
 //! Rows (all cleartext metadata a blind node sees anyway; blobs are ciphertext):
-//! `I` seed; `L label` meta; `S label step` step; `C label step` claim set; `E label blob` entry;
+//! `I` seed; `L label` meta; `K label` the head's earlier role keys (`HeadKeys`); `S label step`
+//! step; `C label step` claim set; `E label blob` entry;
 //! `T label blob` tombstone time; `G label seq` log record; `R blob` reference count;
 //! sweep indexes `X t label blob` (expiry), `P t label blob` (pending deletion),
 //! `Y t label blob` (tombstone drop), `Z t label step` (claim-set drop);
@@ -19,7 +20,7 @@ use osis_base::format::{MAX_DRIFT_MS, MEMBERSHIP_KEEP_MS, TOMBSTONE_LIFETIME_MS}
 use osis_base::{BlobId, Clock, LabelId};
 use osis_crypto::{CryptoRngCore, Signature};
 use osis_proto::msg::{ClaimSet, Code, Step, StepId, WRAP_LEN};
-use osis_proto::{Budget, EntryMeta, LabelStore, LogRecord, Put, StoreError};
+use osis_proto::{Budget, EntryMeta, HeadKeys, LabelStore, LogRecord, Put, StoreError};
 use osis_store::{Backend, BackendError, KeyValue, WriteBatch};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -160,6 +161,35 @@ fn read_u64(b: &[u8], at: usize) -> Result<u64, StoreError> {
 
 fn read_arr<const N: usize>(b: &[u8], at: usize) -> Result<[u8; N], StoreError> {
     b.get(at..at + N).and_then(|s| s.try_into().ok()).ok_or_else(|| corrupt("row"))
+}
+
+/// `K` row: per role a count byte, then that many 32-byte keys.
+fn encode_older(older: &[Vec<osis_crypto::VerifyingKey>; 4]) -> Vec<u8> {
+    let mut b = Vec::new();
+    for keys in older {
+        b.push(keys.len() as u8);
+        for k in keys {
+            b.extend_from_slice(&k.to_bytes());
+        }
+    }
+    b
+}
+
+fn decode_older(b: &[u8]) -> Result<[Vec<osis_crypto::VerifyingKey>; 4], StoreError> {
+    let mut older: [Vec<osis_crypto::VerifyingKey>; 4] = Default::default();
+    let mut at = 0;
+    for keys in older.iter_mut() {
+        let n = *b.get(at).ok_or_else(|| corrupt("head keys"))? as usize;
+        at += 1;
+        for _ in 0..n {
+            keys.push(osis_crypto::VerifyingKey::from_bytes(&read_arr(b, at)?).map_err(|_| corrupt("head keys"))?);
+            at += 32;
+        }
+    }
+    if at != b.len() {
+        return Err(corrupt("head keys"));
+    }
+    Ok(older)
 }
 
 /// Per-label counters and positions.
@@ -1022,6 +1052,13 @@ impl<B: Backend> LabelStore for BackendStore<B> {
         ClaimSet::parse(&b).map(|c| Some(Arc::new(c))).map_err(|_| corrupt("claim set"))
     }
 
+    fn head_keys(&self, label: &LabelId) -> Result<Option<HeadKeys>, StoreError> {
+        let Some(head) = self.head(label)? else { return Ok(None) };
+        let step = self.step(label, &head)?.ok_or_else(|| corrupt("head step"))?;
+        let b = self.backend.get(&key(b'K', &[&label.0])).map_err(err)?.ok_or_else(|| corrupt("head keys"))?;
+        Ok(Some(HeadKeys { head: step, older: decode_older(&b)? }))
+    }
+
     fn admit_label(&self, _label: &LabelId) -> Result<Code, StoreError> {
         let t = self.totals()?;
         let p = &self.policy;
@@ -1036,7 +1073,12 @@ impl<B: Backend> LabelStore for BackendStore<B> {
                 (Meta { log_id: read_arr(&h, 0)?, ..Meta::default() }, true)
             }
         };
+        let keys = match meta.head {
+            Some(_) => self.head_keys(label)?.ok_or_else(|| corrupt("head keys"))?.child(step.clone()),
+            None => HeadKeys::genesis(step.clone()),
+        };
         let mut tx = Tx { label: *label, before: (meta.entries, meta.bytes, new), meta, batch: WriteBatch::new(), grew: false };
+        tx.batch.put(key(b'K', &[&label.0]), encode_older(&keys.older));
         let id = step.id();
         if let Some(prev) = tx.meta.head {
             let drop = self.now().saturating_add(self.policy.claim_keep_ms.max(MEMBERSHIP_KEEP_MS));
