@@ -89,6 +89,20 @@ impl Type {
     pub fn is_wrapper(&self) -> bool {
         matches!(self, Type::Counter(_) | Type::Max(_) | Type::Min(_) | Type::Text)
     }
+    /// The type expressions directly inside this one: element, key and value types, named
+    /// types' arguments, field types, case payloads.
+    pub fn children(&self) -> Vec<&Type> {
+        match self {
+            Type::List(t) | Type::Set(t) | Type::Counter(t) | Type::Max(t) | Type::Min(t) => vec![t],
+            Type::Map(k, v) => vec![k, v],
+            Type::Named(_, a) => a.iter().collect(),
+            Type::Struct(st) => st.fields.values().map(|f| &f.ty).collect(),
+            Type::Enum(en) => en.cases.values().filter_map(|c| c.payload.as_ref()).collect(),
+            Type::String | Type::Blob | Type::Bool | Type::Int | Type::Float | Type::Tid | Type::Any | Type::Text | Type::Param(_) => {
+                Vec::new()
+            }
+        }
+    }
     /// Replaces `Param(p)` with the matching argument, without expanding named types (so
     /// recursive types stay finite).
     pub fn subst(&self, params: &[String], args: &[Type]) -> Type {

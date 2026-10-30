@@ -14,16 +14,16 @@ osis_schema::codec_struct! {
         5 doc: Option<String>,
     }
 }
-/// Field IDs of `AspectDef`.
-pub mod aspect_def {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const TYPE: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const RETENTION: osis_schema::FieldId = osis_schema::FieldId(1);
-    pub const EXPIRES: osis_schema::FieldId = osis_schema::FieldId(2);
-    pub const FLAGS: osis_schema::FieldId = osis_schema::FieldId(3);
-    pub const SUCCEEDS: osis_schema::FieldId = osis_schema::FieldId(4);
-    pub const DOC: osis_schema::FieldId = osis_schema::FieldId(5);
+osis_schema::ids! {
+    /// Field IDs of `AspectDef`.
+    pub mod aspect_def: FieldId {
+        TYPE = 0,
+        RETENTION = 1,
+        EXPIRES = 2,
+        FLAGS = 3,
+        SUCCEEDS = 4,
+        DOC = 5,
+    }
 }
 osis_schema::named_type!(AspectDef, "aspect_def", SCHEMA);
 
@@ -34,12 +34,12 @@ osis_schema::codec_struct! {
         1 rel: Option<i64>,
     }
 }
-/// Field IDs of `Bound`.
-pub mod bound {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const ABS: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const REL: osis_schema::FieldId = osis_schema::FieldId(1);
+osis_schema::ids! {
+    /// Field IDs of `Bound`.
+    pub mod bound: FieldId {
+        ABS = 0,
+        REL = 1,
+    }
 }
 osis_schema::named_type!(Bound, "bound", SCHEMA);
 
@@ -52,14 +52,14 @@ osis_schema::codec_struct! {
         3 doc: Option<String>,
     }
 }
-/// Field IDs of `CaseDef`.
-pub mod case_def {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const NAME: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const PAYLOAD: osis_schema::FieldId = osis_schema::FieldId(1);
-    pub const SUCCEEDS: osis_schema::FieldId = osis_schema::FieldId(2);
-    pub const DOC: osis_schema::FieldId = osis_schema::FieldId(3);
+osis_schema::ids! {
+    /// Field IDs of `CaseDef`.
+    pub mod case_def: FieldId {
+        NAME = 0,
+        PAYLOAD = 1,
+        SUCCEEDS = 2,
+        DOC = 3,
+    }
 }
 osis_schema::named_type!(CaseDef, "case_def", SCHEMA);
 
@@ -73,15 +73,15 @@ osis_schema::codec_struct! {
         4 doc: Option<String>,
     }
 }
-/// Field IDs of `FieldDef`.
-pub mod field_def {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const NAME: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const TYPE: osis_schema::FieldId = osis_schema::FieldId(1);
-    pub const DEFAULT: osis_schema::FieldId = osis_schema::FieldId(2);
-    pub const SUCCEEDS: osis_schema::FieldId = osis_schema::FieldId(3);
-    pub const DOC: osis_schema::FieldId = osis_schema::FieldId(4);
+osis_schema::ids! {
+    /// Field IDs of `FieldDef`.
+    pub mod field_def: FieldId {
+        NAME = 0,
+        TYPE = 1,
+        DEFAULT = 2,
+        SUCCEEDS = 3,
+        DOC = 4,
+    }
 }
 osis_schema::named_type!(FieldDef, "field_def", SCHEMA);
 
@@ -97,17 +97,17 @@ osis_schema::codec_enum! {
         6 Signal,
     }
 }
-/// Case IDs of `Flag`.
-pub mod flag {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const RO: osis_schema::CaseId = osis_schema::CaseId(0);
-    pub const SYNTHETIC: osis_schema::CaseId = osis_schema::CaseId(1);
-    pub const GUARANTEED: osis_schema::CaseId = osis_schema::CaseId(2);
-    pub const INDEXED: osis_schema::CaseId = osis_schema::CaseId(3);
-    pub const EPHEMERAL: osis_schema::CaseId = osis_schema::CaseId(4);
-    pub const PRESENCE: osis_schema::CaseId = osis_schema::CaseId(5);
-    pub const SIGNAL: osis_schema::CaseId = osis_schema::CaseId(6);
+osis_schema::ids! {
+    /// Case IDs of `Flag`.
+    pub mod flag: CaseId {
+        RO = 0,
+        SYNTHETIC = 1,
+        GUARANTEED = 2,
+        INDEXED = 3,
+        EPHEMERAL = 4,
+        PRESENCE = 5,
+        SIGNAL = 6,
+    }
 }
 osis_schema::named_type!(Flag, "flag", SCHEMA);
 
@@ -119,13 +119,13 @@ osis_schema::codec_struct! {
         2 at_most: Bound,
     }
 }
-/// Field IDs of `Retention`.
-pub mod retention {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const BY: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const AT_LEAST: osis_schema::FieldId = osis_schema::FieldId(1);
-    pub const AT_MOST: osis_schema::FieldId = osis_schema::FieldId(2);
+osis_schema::ids! {
+    /// Field IDs of `Retention`.
+    pub mod retention: FieldId {
+        BY = 0,
+        AT_LEAST = 1,
+        AT_MOST = 2,
+    }
 }
 osis_schema::named_type!(Retention, "retention", SCHEMA);
 
@@ -139,15 +139,15 @@ osis_schema::codec_struct! {
         5 doc: Option<String>,
     }
 }
-/// Field IDs of `Schema`.
-pub mod schema {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const ID: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const REVISION: osis_schema::FieldId = osis_schema::FieldId(1);
-    pub const TYPES: osis_schema::FieldId = osis_schema::FieldId(2);
-    pub const ASPECTS: osis_schema::FieldId = osis_schema::FieldId(3);
-    pub const DOC: osis_schema::FieldId = osis_schema::FieldId(5);
+osis_schema::ids! {
+    /// Field IDs of `Schema`.
+    pub mod schema: FieldId {
+        ID = 0,
+        REVISION = 1,
+        TYPES = 2,
+        ASPECTS = 3,
+        DOC = 5,
+    }
 }
 osis_schema::named_type!(Schema, "schema", SCHEMA);
 
@@ -159,13 +159,13 @@ osis_schema::codec_struct! {
         2 doc: Option<String>,
     }
 }
-/// Field IDs of `TypeDef`.
-pub mod type_def {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const PARAMS: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const BODY: osis_schema::FieldId = osis_schema::FieldId(1);
-    pub const DOC: osis_schema::FieldId = osis_schema::FieldId(2);
+osis_schema::ids! {
+    /// Field IDs of `TypeDef`.
+    pub mod type_def: FieldId {
+        PARAMS = 0,
+        BODY = 1,
+        DOC = 2,
+    }
 }
 osis_schema::named_type!(TypeDef, "type_def", SCHEMA);
 
@@ -192,28 +192,28 @@ osis_schema::codec_enum! {
         17 Param(x: String),
     }
 }
-/// Case IDs of `TypeExpr`.
-pub mod type_expr {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const STRING: osis_schema::CaseId = osis_schema::CaseId(0);
-    pub const BLOB: osis_schema::CaseId = osis_schema::CaseId(1);
-    pub const BOOL: osis_schema::CaseId = osis_schema::CaseId(2);
-    pub const INT: osis_schema::CaseId = osis_schema::CaseId(3);
-    pub const FLOAT: osis_schema::CaseId = osis_schema::CaseId(4);
-    pub const TID: osis_schema::CaseId = osis_schema::CaseId(5);
-    pub const ANY: osis_schema::CaseId = osis_schema::CaseId(6);
-    pub const TEXT: osis_schema::CaseId = osis_schema::CaseId(7);
-    pub const LIST: osis_schema::CaseId = osis_schema::CaseId(8);
-    pub const SET: osis_schema::CaseId = osis_schema::CaseId(9);
-    pub const MAP: osis_schema::CaseId = osis_schema::CaseId(10);
-    pub const STRUCT: osis_schema::CaseId = osis_schema::CaseId(11);
-    pub const ENUM: osis_schema::CaseId = osis_schema::CaseId(12);
-    pub const COUNTER: osis_schema::CaseId = osis_schema::CaseId(13);
-    pub const MAX: osis_schema::CaseId = osis_schema::CaseId(14);
-    pub const MIN: osis_schema::CaseId = osis_schema::CaseId(15);
-    pub const NAMED: osis_schema::CaseId = osis_schema::CaseId(16);
-    pub const PARAM: osis_schema::CaseId = osis_schema::CaseId(17);
+osis_schema::ids! {
+    /// Case IDs of `TypeExpr`.
+    pub mod type_expr: CaseId {
+        STRING = 0,
+        BLOB = 1,
+        BOOL = 2,
+        INT = 3,
+        FLOAT = 4,
+        TID = 5,
+        ANY = 6,
+        TEXT = 7,
+        LIST = 8,
+        SET = 9,
+        MAP = 10,
+        STRUCT = 11,
+        ENUM = 12,
+        COUNTER = 13,
+        MAX = 14,
+        MIN = 15,
+        NAMED = 16,
+        PARAM = 17,
+    }
 }
 osis_schema::named_type!(TypeExpr, "type_expr", SCHEMA);
 
@@ -226,14 +226,14 @@ osis_schema::codec_enum! {
         3 Writer,
     }
 }
-/// Case IDs of `RetentionBy`.
-pub mod retention_by {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const NOBODY: osis_schema::CaseId = osis_schema::CaseId(0);
-    pub const ADMIN: osis_schema::CaseId = osis_schema::CaseId(1);
-    pub const AUTHOR: osis_schema::CaseId = osis_schema::CaseId(2);
-    pub const WRITER: osis_schema::CaseId = osis_schema::CaseId(3);
+osis_schema::ids! {
+    /// Case IDs of `RetentionBy`.
+    pub mod retention_by: CaseId {
+        NOBODY = 0,
+        ADMIN = 1,
+        AUTHOR = 2,
+        WRITER = 3,
+    }
 }
 
 osis_schema::codec_struct! {
@@ -243,12 +243,12 @@ osis_schema::codec_struct! {
         1 value: Box<TypeExpr>,
     }
 }
-/// Field IDs of `TypeExprMap`.
-pub mod type_expr_map {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const KEY: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const VALUE: osis_schema::FieldId = osis_schema::FieldId(1);
+osis_schema::ids! {
+    /// Field IDs of `TypeExprMap`.
+    pub mod type_expr_map: FieldId {
+        KEY = 0,
+        VALUE = 1,
+    }
 }
 
 osis_schema::codec_struct! {
@@ -258,12 +258,12 @@ osis_schema::codec_struct! {
         1 reserved: std::collections::BTreeSet<i64>,
     }
 }
-/// Field IDs of `TypeExprStruct`.
-pub mod type_expr_struct {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const FIELDS: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const RESERVED: osis_schema::FieldId = osis_schema::FieldId(1);
+osis_schema::ids! {
+    /// Field IDs of `TypeExprStruct`.
+    pub mod type_expr_struct: FieldId {
+        FIELDS = 0,
+        RESERVED = 1,
+    }
 }
 
 osis_schema::codec_struct! {
@@ -273,12 +273,12 @@ osis_schema::codec_struct! {
         1 reserved: std::collections::BTreeSet<i64>,
     }
 }
-/// Field IDs of `TypeExprEnum`.
-pub mod type_expr_enum {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const CASES: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const RESERVED: osis_schema::FieldId = osis_schema::FieldId(1);
+osis_schema::ids! {
+    /// Field IDs of `TypeExprEnum`.
+    pub mod type_expr_enum: FieldId {
+        CASES = 0,
+        RESERVED = 1,
+    }
 }
 
 osis_schema::codec_struct! {
@@ -288,11 +288,11 @@ osis_schema::codec_struct! {
         1 args: Vec<TypeExpr>,
     }
 }
-/// Field IDs of `TypeExprNamed`.
-pub mod type_expr_named {
-    #[allow(unused_imports)]
-    use super::*;
-    pub const NAME: osis_schema::FieldId = osis_schema::FieldId(0);
-    pub const ARGS: osis_schema::FieldId = osis_schema::FieldId(1);
+osis_schema::ids! {
+    /// Field IDs of `TypeExprNamed`.
+    pub mod type_expr_named: FieldId {
+        NAME = 0,
+        ARGS = 1,
+    }
 }
 

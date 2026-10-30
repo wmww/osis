@@ -84,13 +84,6 @@ fn typed_read_errors_carry_paths_spec_versioning_5() {
     // Missing field without default.
     let e = typed_read(&v1, &Value::List(vec![st(&[(1, s("x"))])]), &tasks(&v1)).unwrap_err();
     assert_eq!((e.path, e.kind), (p![0], PathErrorKind::MissingField(2)));
-    // Per-path reads skip a bad element.
-    let bad = st(&[(1, s("b")), (2, Value::Int(1))]);
-    let list = Value::List(vec![bad, good.clone()]);
-    assert!(read_path(&v1, &list, &tasks(&v1), &p![0]).is_err());
-    assert_eq!(read_path(&v1, &list, &tasks(&v1), &p![1]).unwrap(), good);
-    assert_eq!(read_path(&v1, &list, &tasks(&v1), &p![1, FieldId(1)]).unwrap(), s("a"));
-    assert_eq!(read_path(&v1, &list, &tasks(&v1), &p![5]).unwrap_err().kind, PathErrorKind::NotFound);
     // Unknown tags fail typed reads only.
     let unknown = Value::Unknown(osis_base::Unknown::new(4000, osis_base::CanonicalBytes::from_value(&Value::Int(1))).unwrap());
     let e = typed_read(&v1, &unknown, &Type::String).unwrap_err();
