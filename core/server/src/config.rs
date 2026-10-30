@@ -53,6 +53,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
             "deletes" => p.deletes = n32()?,
             "replacements" => p.replacements = n32()?,
             "deposits" => p.deposits = n32()?,
+            "registers" => p.registers = n32()?,
             "ephemeral_bytes" => p.ephemeral_bytes = n()?,
             "ephemeral_total" => p.ephemeral_total = n()?,
             "presence_bytes" => p.presence_bytes = n()?,

@@ -36,7 +36,8 @@ pub const DEPOSIT_ENTRY_BYTES: u64 = 32 * 1024;
 pub struct Policy {
     /// Live entries per label beyond which new entries get code 12.
     pub cap_entries: u64,
-    /// Live entry bytes per label beyond which new entries get code 12.
+    /// Bytes per label (live entries, steps, held claim sets) beyond which new entries and
+    /// steps get code 12.
     pub cap_bytes: u64,
     /// Deposit budget = this × (64 + 4 × head claim slots) entries, × 32 KiB bytes; at least 1.
     pub deposit_factor: u64,
@@ -51,6 +52,9 @@ pub struct Policy {
     pub deletes: u32,
     pub replacements: u32,
     pub deposits: u32,
+    /// Registered steps per label and window (each step and its claim set also count toward
+    /// the byte caps): 0 registers nothing, unlimited leaves only the byte caps.
+    pub registers: u32,
     /// Ephemeral memory charged per label, and over all labels: an ephemeral upload beyond the
     /// label's gets code 12; past the total, the label charged most gives way (notes/ephemeral.md).
     pub ephemeral_bytes: u64,
@@ -63,7 +67,7 @@ pub struct Policy {
     /// Relay-only uploads pushed per label and window, and their bytes (`osis_proto::RelayLimits`).
     pub relays: u32,
     pub relay_bytes: u64,
-    /// Node-wide caps: new entries beyond them get code 12, new labels Error 12.
+    /// Node-wide caps: new entries beyond them get code 12, new labels and steps Error 12.
     pub max_labels: u64,
     pub max_entries: u64,
     pub max_bytes: u64,
@@ -92,6 +96,7 @@ impl Default for Policy {
             deletes: 20_000,
             replacements: 20_000,
             deposits: 600,
+            registers: 600,
             ephemeral_bytes: 16 << 20,
             ephemeral_total: 1 << 30,
             presence_bytes: 4 << 20,
@@ -119,6 +124,7 @@ impl Policy {
             deletes: u32::MAX,
             replacements: u32::MAX,
             deposits: u32::MAX,
+            registers: u32::MAX,
             ephemeral_bytes: u64::MAX,
             ephemeral_total: u64::MAX,
             presence_bytes: u64::MAX,
@@ -323,6 +329,7 @@ enum Rate {
     Delete,
     Replace,
     Deposit,
+    Register,
 }
 
 /// One ephemeral entry (in memory).
@@ -1208,11 +1215,31 @@ impl<B: Backend> BackendStore<B> {
             b.delete(key(b'T', &[&rest]));
             b.delete(k);
         }
+        // a dropped claim set's bytes leave the label's and the node's totals
         let due = self.due(b'Z', now, left)?;
         left -= due.len();
+        let mut sets: BTreeMap<LabelId, Vec<KeyValue>> = BTreeMap::new();
         for (k, rest) in due {
-            b.delete(key(b'C', &[&rest]));
-            b.delete(k);
+            match read_arr(&rest, 0).map(LabelId) {
+                Ok(l) if rest.len() == 48 => sets.entry(l).or_default().push((k, rest)),
+                _ => b.delete(k),
+            }
+        }
+        for (label, rows) in sets {
+            let mut tx = self.tx(&label).ok();
+            for (k, rest) in rows {
+                let c = key(b'C', &[&rest]);
+                if let Some(t) = &mut tx
+                    && let Some(set) = self.backend.get(&c).map_err(err)?
+                {
+                    t.meta.bytes = t.meta.bytes.saturating_sub(set.len() as u64);
+                }
+                b.delete(c);
+                b.delete(k);
+            }
+            if let Some(t) = tx {
+                self.commit(t)?;
+            }
         }
         b.ops.extend(junk.ops);
         if !b.is_empty() {
@@ -1294,7 +1321,9 @@ impl<B: Backend> LabelStore for BackendStore<B> {
         Ok(if t.labels >= p.max_labels || t.entries >= p.max_entries || t.bytes >= p.max_bytes { Code::STORAGE_CAP } else { Code::OK })
     }
 
-    fn push_step(&mut self, label: &LabelId, step: Step, claim_set: Option<ClaimSet>) -> Result<(), StoreError> {
+    /// The step's and its claim set's bytes count toward the label's and the node's byte caps
+    /// (the claim set's until the sweep drops it); registrations are rate-limited per label.
+    fn push_step(&mut self, label: &LabelId, step: Step, claim_set: Option<ClaimSet>) -> Result<Code, StoreError> {
         let (meta, new) = match self.meta(label)? {
             Some(m) => (m, false),
             None => {
@@ -1306,7 +1335,19 @@ impl<B: Backend> LabelStore for BackendStore<B> {
             Some(_) => self.head_keys(label)?.ok_or_else(|| corrupt("head keys"))?.child(step.clone()),
             None => HeadKeys::genesis(step.clone()),
         };
+        let step_bytes = step.to_bytes();
+        let set_bytes = claim_set.as_ref().map(ClaimSet::to_bytes);
+        let size = (step_bytes.len() + set_bytes.as_ref().map_or(0, Vec::len)) as u64;
+        let p = &self.policy;
+        if meta.bytes.saturating_add(size) > p.cap_bytes || self.totals()?.bytes.saturating_add(size) > p.max_bytes {
+            return Ok(Code::STORAGE_CAP);
+        }
+        self.rates.roll(self.now(), self.policy.window_ms);
+        if !self.rates.take(label, Rate::Register, self.policy.registers) {
+            return Ok(Code::RATE_LIMITED);
+        }
         let mut tx = Tx { label: *label, before: (meta.entries, meta.bytes, new), meta, batch: WriteBatch::new(), grew: false };
+        tx.meta.bytes = tx.meta.bytes.saturating_add(size);
         tx.batch.put(key(b'K', &[&label.0]), encode_older(&keys.older));
         let id = step.id();
         if let Some(prev) = tx.meta.head {
@@ -1315,14 +1356,15 @@ impl<B: Backend> LabelStore for BackendStore<B> {
         }
         tx.meta.head = Some(id);
         tx.meta.head_claims = claim_set.as_ref().map_or(0, |c| c.claims.len() as u64);
-        tx.batch.put(key(b'S', &[&label.0, &id.0]), step.to_bytes());
+        tx.batch.put(key(b'S', &[&label.0, &id.0]), step_bytes);
         tx.batch.put(key(b'V', &[&label.0, &step.keys.sync.to_bytes()]), id.0.to_vec());
         tx.batch.put(key(b'W', &[&label.0, step.prev.as_ref().map_or(&[][..], |p| &p.0[..])]), id.0.to_vec());
-        if let Some(c) = &claim_set {
-            tx.batch.put(key(b'C', &[&label.0, &id.0]), c.to_bytes());
+        if let Some(c) = set_bytes {
+            tx.batch.put(key(b'C', &[&label.0, &id.0]), c);
         }
         tx.append(&LogRecord::Head(step));
-        self.commit(tx)
+        self.commit(tx)?;
+        Ok(Code::OK)
     }
 
     fn entry(&self, label: &LabelId, blob_id: &BlobId) -> Result<Option<EntryMeta>, StoreError> {

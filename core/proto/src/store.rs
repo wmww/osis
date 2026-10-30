@@ -216,8 +216,10 @@ pub trait LabelStore {
     fn member_open(&self, _dialable: &[u8; 32], _label: &LabelId) -> Result<bool, StoreError> {
         Ok(false)
     }
-    /// Appends a verified step (a child of the head, or a new label's genesis) and logs it.
-    fn push_step(&mut self, label: &LabelId, step: Step, claim_set: Option<ClaimSet>) -> Result<(), StoreError>;
+    /// Appends a verified step (a child of the head, or a new label's genesis) and logs it:
+    /// `Code::OK`, or a refusal such as code 12 (the step and its claim set past a storage cap)
+    /// or 4 (registrations rate-limited), with nothing changed.
+    fn push_step(&mut self, label: &LabelId, step: Step, claim_set: Option<ClaimSet>) -> Result<Code, StoreError>;
     fn entry(&self, label: &LabelId, blob_id: &BlobId) -> Result<Option<EntryMeta>, StoreError>;
     fn tombstoned(&self, label: &LabelId, blob_id: &BlobId) -> Result<bool, StoreError>;
     fn blob(&self, blob_id: &BlobId) -> Result<Option<Vec<u8>>, StoreError>;
@@ -441,7 +443,7 @@ impl LabelStore for MemoryLabelStore {
         Ok(self.state(label).and_then(|s| s.steps.get(id)).and_then(|(_, c)| c.clone()))
     }
 
-    fn push_step(&mut self, label: &LabelId, step: Step, claim_set: Option<ClaimSet>) -> Result<(), StoreError> {
+    fn push_step(&mut self, label: &LabelId, step: Step, claim_set: Option<ClaimSet>) -> Result<Code, StoreError> {
         let seed = self.seed;
         let s = self.labels.entry(*label).or_insert_with(|| {
             let mut log_id = [0u8; 16];
@@ -459,7 +461,7 @@ impl LabelStore for MemoryLabelStore {
         s.children.insert(step.prev, id);
         s.steps.insert(id, (step, claim_set.map(Arc::new)));
         s.head = Some(id);
-        Ok(())
+        Ok(Code::OK)
     }
 
     fn entry(&self, label: &LabelId, blob_id: &BlobId) -> Result<Option<EntryMeta>, StoreError> {

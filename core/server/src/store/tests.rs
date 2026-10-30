@@ -143,7 +143,10 @@ fn deposit_budget() {
 // spec/sync.md §5: servers cap storage per label (code 12); replacing a held entry is not capped
 #[test]
 fn storage_cap() {
-    let mut e = env(Policy { cap_entries: 2, cap_bytes: 1000, ..Policy::default() });
+    // the genesis step and its claim set count too
+    let f = Fixture::new(0x10);
+    let genesis = (f.genesis.to_bytes().len() + f.genesis_claims.to_bytes().len()) as u64;
+    let mut e = env(Policy { cap_entries: 2, cap_bytes: genesis + 1000, ..Policy::default() });
     let l = e.f.label;
     assert_eq!(e.store.put(&l, put(&blob(1), true, None)).unwrap(), Code::OK);
     assert_eq!(e.store.put(&l, put(&vec![5; 1000], true, None)).unwrap(), Code::STORAGE_CAP);
@@ -646,4 +649,67 @@ fn path_records_follow_path_across_reopen() {
             }
         }
     }
+}
+
+/// A child of `prev` (the store checks no signature).
+fn child_of(f: &Fixture, prev: &Step) -> Step {
+    let mut s = f.genesis.clone();
+    s.prev = Some(prev.id());
+    s
+}
+
+// spec/sync.md §5 Register: a step and its claim set count toward the label's and the node's byte
+// caps (code 12 past them, nothing changed) until the claim set is dropped
+#[test]
+fn steps_count_toward_byte_caps() {
+    let e = env(Policy::default());
+    let set = e.f.child_claims.clone();
+    let one = (e.f.child.to_bytes().len() + set.to_bytes().len()) as u64;
+    let genesis = (e.f.genesis.to_bytes().len() + e.f.genesis_claims.to_bytes().len()) as u64;
+    assert_eq!(e.store.totals().unwrap().bytes, genesis);
+    // room for two children with sets and one more step (what the sweep below frees suffices)
+    let room = genesis + 2 * one + e.f.child.to_bytes().len() as u64;
+    for cap in [Policy { cap_bytes: room, ..Policy::default() }, Policy { max_bytes: room, ..Policy::default() }] {
+        let mut e = env(cap);
+        let l = e.f.label;
+        let mut prev = e.f.genesis.clone();
+        for _ in 0..2 {
+            let s = child_of(&e.f, &prev);
+            assert_eq!(e.store.push_step(&l, s.clone(), Some(set.clone())).unwrap(), Code::OK);
+            prev = s;
+        }
+        let s = child_of(&e.f, &prev);
+        let (log, totals) = (e.store.log_head(&l).unwrap(), e.store.totals().unwrap());
+        assert_eq!(e.store.push_step(&l, s.clone(), Some(set.clone())).unwrap(), Code::STORAGE_CAP);
+        assert_eq!((e.store.head(&l).unwrap(), e.store.log_head(&l).unwrap(), e.store.totals().unwrap()), (Some(prev.id()), log, totals));
+        // an entry finds the label full too
+        let big = vec![1u8; 4096];
+        assert_eq!(e.store.put(&l, put(&big, true, None)).unwrap(), Code::STORAGE_CAP);
+        // superseded claim sets dropped after MEMBERSHIP_KEEP free their bytes (the steps stay)
+        e.store.sweep(T0 + MEMBERSHIP_KEEP_MS, 1024).unwrap();
+        let steps: u64 = e.store.path(&l).unwrap().iter().map(|s| s.to_bytes().len() as u64).sum();
+        assert_eq!(e.store.totals().unwrap().bytes, steps + set.to_bytes().len() as u64);
+        assert_eq!(e.store.push_step(&l, s, Some(set.clone())).unwrap(), Code::OK);
+        let again = BackendStore::open(e.backend.clone(), e.clock.clone(), Policy::default(), &mut SeededRng::from_seed([2; 32])).unwrap();
+        assert_eq!(again.totals().unwrap(), e.store.totals().unwrap());
+    }
+}
+
+// spec/sync.md §5 Register: servers may rate-limit registrations per label (code 4, nothing changed)
+#[test]
+fn registers_rate_limited() {
+    let mut e = env(Policy { registers: 2, ..Policy::default() });
+    let l = e.f.label;
+    // the genesis step took one
+    let s = child_of(&e.f, &e.f.genesis);
+    assert_eq!(e.store.push_step(&l, s.clone(), None).unwrap(), Code::OK);
+    let t = child_of(&e.f, &s);
+    assert_eq!(e.store.push_step(&l, t.clone(), None).unwrap(), Code::RATE_LIMITED);
+    assert_eq!(e.store.head(&l).unwrap(), Some(s.id()));
+    // another label has its own count
+    let g = Fixture::new(0x20);
+    assert_eq!(e.store.push_step(&g.label, g.genesis.clone(), None).unwrap(), Code::OK);
+    e.clock.set(WallMs(T0 + Policy::default().window_ms));
+    assert_eq!(e.store.push_step(&l, t.clone(), None).unwrap(), Code::OK);
+    assert_eq!(e.store.head(&l).unwrap(), Some(t.id()));
 }

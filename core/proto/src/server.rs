@@ -594,7 +594,10 @@ impl ServerConnection {
                 }
             }
         }
-        store.push_step(&label, step, claim_set)?;
+        let code = store.push_step(&label, step, claim_set)?;
+        if code != Code::OK {
+            return Ok(Message::Error { id, code });
+        }
         out.push(ServerOutput::Changed(label));
         Ok(Message::Ok { id })
     }
