@@ -834,9 +834,9 @@ fn chain_found_past_owned_flood_spec_perm_4() {
     assert_eq!(lp.peers[1].engine.get(&c, &ak("/t/reg")).unwrap(), Some(s("n0")));
 }
 
-/// The index digest without the held set's arrival order (`held` lines).
-fn index_of(e: &osis_node::Engine) -> String {
-    e.index_digest().lines().filter(|l| !l.starts_with("held ")).collect::<Vec<_>>().join("\n")
+/// The index digest without the held set.
+fn index_of(e: &osis_node::Engine) -> osis_node::engine::IndexDigest {
+    e.index_digest().without_held()
 }
 
 // spec/permissions.md §2 (an edge change is remove + put): a write inside a member's entry
@@ -944,7 +944,7 @@ fn carried_writes_recorded_alike_in_any_order_spec_perm_5_2() {
         for pk in order {
             p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
         }
-        assert!(p.engine.index_digest().contains("carried {("), "the writes are carried");
+        assert!(!p.engine.index_digest().carried.is_empty(), "the writes are carried");
         seen.push(index_of(&p.engine));
     }
     assert_eq!(seen[0], seen[1]);
@@ -1124,9 +1124,9 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
         for a in [ak("/x/m"), ak("/t/reg"), ak("/t/text")] {
             out.push(format!("{:?}\n{:?}", e.get(&d, &a).unwrap(), e.state(&d, &a).unwrap()));
         }
-        // the index lines naming Bob's and Carol's commits (each node has its own identity)
-        let mine = [format!("{c:?}"), format!("{n:?}")];
-        out.push(index_of(e).lines().filter(|l| l.starts_with("invalid ") || (l.starts_with("commit ") && mine.iter().any(|x| l.contains(x.as_str())))).collect::<Vec<_>>().join("\n"));
+        // the invalid index and Bob's and Carol's commits (each node has its own identity)
+        let ix = index_of(e);
+        out.push(format!("{}\n{:?}\n{:?}", ix.tables["invalid"], ix.commits.get(&c), ix.commits.get(&n)));
         out
     };
     let want = look(&mut lp, 4);

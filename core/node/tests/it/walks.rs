@@ -42,8 +42,8 @@ fn try_edge(e: &mut Engine, thing: Tid, member: Tid, role: Option<Role>) {
 }
 
 /// The index digest without the held set's arrival order.
-fn validity(d: &str) -> String {
-    d.lines().filter(|l| !l.starts_with("held ")).collect::<Vec<_>>().join("\n")
+fn validity(d: osis_node::engine::IndexDigest) -> osis_node::engine::IndexDigest {
+    d.without_held()
 }
 
 /// Reopens the engine's indexes from its store and checks the timelines against what it had
@@ -55,7 +55,7 @@ fn reopen_same(e: &mut Engine, at: &str) -> usize {
     assert_eq!(e.perm_digest(false), perm, "{at}: reopened");
     assert_eq!(e.perm_digest(true), perm, "{at}: from scratch");
     // held commits are listed in arrival order, which an open does not keep
-    assert_eq!(validity(&e.index_digest()), validity(&index), "{at}: index");
+    assert_eq!(validity(e.index_digest()), validity(index), "{at}: index");
     e.walks_restored()
 }
 
@@ -65,11 +65,11 @@ fn reopen_equals_rebuild(e: &mut Engine, at: &str) {
     assert!(e.index_current().unwrap(), "{at}: index not current");
     let rows = e.edges_rows().unwrap();
     e.reload().unwrap();
-    let (perm, index) = (e.perm_digest(false), validity(&e.index_digest()));
+    let (perm, index) = (e.perm_digest(false), validity(e.index_digest()));
     assert_eq!(perm, e.perm_digest(true), "{at}: reopened against from scratch");
     e.rebuild_index().unwrap();
     assert_eq!(e.perm_digest(false), perm, "{at}: rebuilt");
-    assert_eq!(validity(&e.index_digest()), index, "{at}: rebuilt index");
+    assert_eq!(validity(e.index_digest()), index, "{at}: rebuilt index");
     assert_eq!(e.edges_rows().unwrap(), rows, "{at}: rebuilt rows");
 }
 
@@ -170,7 +170,7 @@ fn damaged_edge_rows_are_rebuilt() {
             e.roster_snapshot(&t, None).unwrap();
         }
     }
-    let (perm, index) = (e.perm_digest(false), validity(&e.index_digest()));
+    let (perm, index) = (e.perm_digest(false), validity(e.index_digest()));
     let rows = e.edges_rows().unwrap();
     assert!(rows.len() > 20);
     for how in 0..4u8 {
@@ -181,7 +181,7 @@ fn damaged_edge_rows_are_rebuilt() {
         }
         e.reload().unwrap();
         assert_eq!(e.perm_digest(false), perm, "damage {how}");
-        assert_eq!(validity(&e.index_digest()), index, "damage {how}: index");
+        assert_eq!(validity(e.index_digest()), index, "damage {how}: index");
         assert_eq!(e.edges_rows().unwrap(), rows, "damage {how}: rows");
         assert!(e.index_current().unwrap());
     }
@@ -341,12 +341,12 @@ fn open_equals_rebuild(e: &mut Engine, things: &[Tid], at: &str) {
 /// `open_equals_rebuild` where the open decodes `decoded` headers.
 fn open_equals_rebuild_decoding(e: &mut Engine, things: &[Tid], decoded: usize, at: &str) {
     assert!(e.index_current().unwrap(), "{at}: index not current");
-    let had = (validity(&e.index_digest()), e.perm_digest(false), states(e, things));
+    let had = (validity(e.index_digest()), e.perm_digest(false), states(e, things));
     e.reload().unwrap();
     assert_eq!(e.headers_decoded(), decoded, "{at}: headers the open decoded");
-    assert_eq!((validity(&e.index_digest()), e.perm_digest(false), states(e, things)), had, "{at}: opened from the index");
+    assert_eq!((validity(e.index_digest()), e.perm_digest(false), states(e, things)), had, "{at}: opened from the index");
     e.rebuild_index().unwrap();
-    assert_eq!((validity(&e.index_digest()), e.perm_digest(false), states(e, things)), had, "{at}: rebuilt");
+    assert_eq!((validity(e.index_digest()), e.perm_digest(false), states(e, things)), had, "{at}: rebuilt");
 }
 
 fn add_tag(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_base::CommitId {
@@ -528,7 +528,7 @@ fn open_equals_rebuild_after_demotions_and_a_roster_snapshot() {
 /// tenure frontier decodes its own).
 fn open_equals_rebuild_any(e: &mut Engine, things: &[Tid], at: &str) {
     assert!(e.index_current().unwrap(), "{at}: index not current");
-    let take = |e: &mut Engine| (validity(&e.index_digest()), e.perm_digest(false), states(e, things));
+    let take = |e: &mut Engine| (validity(e.index_digest()), e.perm_digest(false), states(e, things));
     let had = take(e);
     e.reload().unwrap();
     same(&take(e), &had, &format!("{at}: opened from the index"));
@@ -536,7 +536,7 @@ fn open_equals_rebuild_any(e: &mut Engine, things: &[Tid], at: &str) {
     same(&take(e), &had, &format!("{at}: rebuilt"));
 }
 
-type Digest = (String, String, Vec<(Tid, osis_base::Ak, Option<Value>)>);
+type Digest = (osis_node::engine::IndexDigest, String, Vec<(Tid, osis_base::Ak, Option<Value>)>);
 
 /// Equal digests, else the lines that differ.
 fn same(got: &Digest, want: &Digest, at: &str) {
@@ -547,7 +547,7 @@ fn same(got: &Digest, want: &Digest, at: &str) {
         let (x, y): (std::collections::BTreeSet<&str>, std::collections::BTreeSet<&str>) = (a.lines().collect(), b.lines().collect());
         x.symmetric_difference(&y).map(|l| format!("{} {}", if x.contains(l) { "got " } else { "want" }, l.chars().take(600).collect::<String>())).collect()
     };
-    panic!("{at}: index {:#?}\nperm {:#?}\nstates equal {}", diff(&got.0, &want.0), diff(&got.1, &want.1), got.2 == want.2);
+    panic!("{at}: index {:?}\nperm {:#?}\nstates equal {}", want.0.first_diff(&got.0), diff(&got.1, &want.1), got.2 == want.2);
 }
 
 /// A large blob: one of a few bases with a small tail (a rewrite reuses most chunks).
@@ -564,14 +564,8 @@ fn big_blob(rng: &mut Rng) -> Value {
 /// invalid part, roster snapshots, chunks indexed.
 fn reached(e: &Engine) -> [usize; 4] {
     let d = e.index_digest();
-    let commits = || d.lines().filter(|l| l.starts_with("commit "));
     let [dropped, invalid, _] = e.drop_counts();
-    [
-        dropped,
-        invalid,
-        commits().filter(|l| l.contains("kind: RosterSnapshot")).count(),
-        d.lines().filter(|l| l.starts_with("by_chunk")).map(|l| l.matches("BlobId(").count()).sum(),
-    ]
+    [dropped, invalid, d.commits.values().filter(|c| c.kind == osis_commit::Kind::RosterSnapshot).count(), d.by_chunk.len()]
 }
 
 // spec/requirements.md, Decentralization; spec/permissions.md §5.2; spec/commits.md §5: random
@@ -887,9 +881,8 @@ fn carried_imports_alike_in_both_orders() {
     for p in late.iter().chain(&rest) {
         lp.deliver(3, p).unwrap();
     }
-    let carried = |e: &Engine| e.index_digest().lines().find(|l| l.starts_with("carried ")).unwrap_or_default().to_string();
     for i in [2, 3] {
-        assert_eq!(carried(&lp.peers[i].engine), "carried {}", "peer {i}: the import's writes are not carried");
+        assert!(lp.peers[i].engine.index_digest().carried.is_empty(), "peer {i}: the import's writes are not carried");
         open_equals_rebuild_any(&mut lp.peers[i].engine, &[t, copy], &format!("peer {i}"));
     }
 }
@@ -984,11 +977,12 @@ fn double_import_alike_in_both_orders_spec_perm_7() {
             assert!(matches!(lp.deliver(i, p).unwrap(), osis_node::Ingested::Applied(_)), "peer {i} applies {:?}", p.id);
         }
     }
-    let line = |e: &Engine, k: &str| e.index_digest().lines().find(|l| l.starts_with(k)).unwrap_or_default().to_string();
+    let moved = |e: &Engine| {
+        let d = e.index_digest();
+        (d.tables["imports"].clone(), d.carried)
+    };
     for i in 3..6 {
-        for k in ["imports ", "carried "] {
-            assert_eq!(line(&lp.peers[2].engine, k), line(&lp.peers[i].engine, k), "peer {i}: {k}");
-        }
+        assert_eq!(moved(&lp.peers[2].engine), moved(&lp.peers[i].engine), "peer {i}: imports, carried");
         assert_eq!(states(&mut lp.peers[2].engine, &[t, copy]), states(&mut lp.peers[i].engine, &[t, copy]), "peer {i}");
     }
     for i in 2..6 {
@@ -1055,8 +1049,11 @@ fn foreign_import_does_not_claim_carried_writes_spec_perm_7() {
     let tags = ak("/t/tags");
     let shown = lp.peers[2].engine.get(&copy, &tags).unwrap();
     assert!(format!("{shown:?}").contains("\"a\""), "the snapshot's carried writes: {shown:?}");
-    let line = |e: &Engine, k: &str| e.index_digest().lines().find(|l| l.starts_with(k)).unwrap_or_default().to_string();
-    let carried = line(&lp.peers[2].engine, "carried ");
+    let moved = |e: &Engine| {
+        let d = e.index_digest();
+        (d.tables["imports"].clone(), d.carried)
+    };
+    let carried = moved(&lp.peers[2].engine).1;
     let before = states(&mut lp.peers[2].engine, &[t, copy]);
     let foreign = lp.peers[1].engine.reimport(&t, &copy).unwrap();
     assert!(!foreign.is_empty());
@@ -1064,7 +1061,7 @@ fn foreign_import_does_not_claim_carried_writes_spec_perm_7() {
     for p in pk1.iter().filter(|p| foreign.contains(&p.id)) {
         assert_eq!(lp.deliver(2, p).unwrap_err().class(), osis_base::ErrorClass::BadInput, "not the copy's creator");
     }
-    assert_eq!(line(&lp.peers[2].engine, "carried "), carried);
+    assert_eq!(moved(&lp.peers[2].engine).1, carried);
     assert_eq!(states(&mut lp.peers[2].engine, &[t, copy]), before);
     open_equals_rebuild_any(&mut lp.peers[2].engine, &[t, copy], "after the foreign import");
 }
@@ -1158,13 +1155,17 @@ fn invalid_import_after_snapshot_alike_spec_perm_7() {
             lp.deliver(i, x).unwrap();
         }
     }
-    let line = |e: &Engine, k: &str| e.index_digest().lines().find(|l| l.starts_with(k)).unwrap_or_default().to_string();
+    let moved = |e: &Engine| {
+        let d = e.index_digest();
+        (d.tables["imports"].clone(), d.carried)
+    };
     let shows = |e: &mut Engine| format!("{:?}", e.get(&copy, &list).unwrap()).contains("\"x\"");
     // peer 3: the greater (invalid) import, then the lesser; peer 4 the other way round
     for x in &g {
         lp.deliver(3, x).unwrap();
     }
-    assert!(line(&lp.peers[3].engine, "carried ").contains("Commit"), "the list's writes are carried: {}", line(&lp.peers[3].engine, "carried "));
+    let carried = moved(&lp.peers[3].engine).1;
+    assert!(carried.values().flatten().any(|g| matches!(g.src.kind(), osis_crdt::SourceKind::Commit(_))), "the list's writes are carried: {carried:?}");
     assert!(shows(&mut lp.peers[3].engine), "the snapshot vouches for them");
     open_equals_rebuild_any(&mut lp.peers[3].engine, &[t, copy, p], "greater import only");
     for x in &l {
@@ -1175,9 +1176,7 @@ fn invalid_import_after_snapshot_alike_spec_perm_7() {
         lp.deliver(4, x).unwrap();
     }
     assert!(shows(&mut lp.peers[4].engine), "peer 4");
-    for k in ["imports ", "carried "] {
-        assert_eq!(line(&lp.peers[3].engine, k), line(&lp.peers[4].engine, k), "{k}");
-    }
+    assert_eq!(moved(&lp.peers[3].engine), moved(&lp.peers[4].engine), "imports, carried");
     assert_eq!(states(&mut lp.peers[3].engine, &[t, copy, p]), states(&mut lp.peers[4].engine, &[t, copy, p]));
     for i in [3, 4] {
         open_equals_rebuild_any(&mut lp.peers[i].engine, &[t, copy, p], &format!("peer {i}"));

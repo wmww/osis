@@ -73,34 +73,65 @@ impl Engine {
         [ms().filter(|m| !m.dropped.is_empty()).count(), ms().filter(|m| m.valid.contains(&false)).count(), self.core.ix.dropped_snapshots.values().map(|v| v.len()).sum()]
     }
 
-    /// A dump of the indexes open rebuilds (tests: a load from the persisted index equals a
-    /// rebuild from the commit records).
+    /// The indexes open rebuilds, field by field (tests: a load from the persisted index equals a
+    /// rebuild from the commit records; harnesses compare with `IndexDigest::diff`).
     #[doc(hidden)]
-    pub fn index_digest(&self) -> String {
-        use std::fmt::Write;
-        let c = &self.core;
-        let mut out = String::new();
-        for (id, m) in c.ix.commits.iter() {
-            let dropped: std::collections::BTreeSet<usize> = m.dropped.keys().copied().collect();
-            let gives: BTreeMap<usize, &crate::engine::Gives> = m.dropped.iter().filter_map(|(ai, d)| Some((*ai, d.gives.as_ref()?))).collect();
-            let _ = writeln!(out, "commit {id:?} {:?} {dropped:?} {:?} {:?} {:?} gives={gives:?} missing {:?}", m.valid, m.received, m.origin, m.view, m.missing);
-        }
-        let held = osis_perm::HeldSet::things(&c.ix.held);
-        for t in held {
+    pub fn index_digest(&self) -> IndexDigest {
+        let ix = &self.core.ix;
+        let commits = ix.commits.iter().map(|(id, m)| {
+            let gives = m.dropped.iter().filter_map(|(ai, d)| Some((*ai, format!("{:?}", d.gives.as_ref()?)))).collect();
+            let rest = format!("{:?} {:?} {:?}", m.received, m.origin, m.view);
+            (*id, CommitDigest { kind: m.view.kind, valid: m.valid.clone(), dropped: m.dropped.keys().copied().collect(), gives, missing: m.missing.clone(), rest })
+        }).collect();
+        let held = osis_perm::HeldSet::things(&ix.held).into_iter().map(|t| {
             // sorted: the held set keeps arrival order, which nothing it answers depends on
-            let mut cs: Vec<CommitId> = osis_perm::HeldSet::edge_commits(&c.ix.held, &t).iter().map(|x| x.id).collect();
-            let mut ss: Vec<CommitId> = osis_perm::HeldSet::roster_snapshots(&c.ix.held, &t).iter().map(|x| x.id).collect();
+            let mut cs: Vec<CommitId> = osis_perm::HeldSet::edge_commits(&ix.held, &t).iter().map(|x| x.id).collect();
+            let mut ss: Vec<CommitId> = osis_perm::HeldSet::roster_snapshots(&ix.held, &t).iter().map(|x| x.id).collect();
             cs.sort();
             ss.sort();
-            let _ = writeln!(out, "held {t:?} {cs:?} {ss:?} {:?}", c.ix.held.created(&t).is_some());
+            (t, (cs, ss, ix.held.created(&t).is_some()))
+        }).collect();
+        let mut snapshots: BTreeMap<CommitId, Vec<(Tid, Ak, String)>> = BTreeMap::new();
+        for ((t, a), v) in ix.snapshots.iter() {
+            for s in v {
+                snapshots.entry(s.1).or_default().push((*t, a.clone(), format!("{s:?}")));
+            }
         }
-        let _ = writeln!(out, "by_thing {:?}\nby_chunk {:?}", *c.ix.by_thing, *c.ix.by_chunk);
-        let _ = writeln!(out, "by_aspect {:?}\ninvalid {:?}\nranges {:?}", *c.ix.by_aspect, *c.ix.invalid, *c.ix.ranges);
-        let _ = writeln!(out, "rotation_role {:?}\ngrant_overreach {:?}\nbox_keys {:?}\nboxes_to {:?}", *c.ix.rotation_role, *c.ix.grant_overreach, *c.ix.box_keys, *c.ix.boxes_to);
-        let _ = writeln!(out, "epoch_intro {:?}\nbox_written {:?}\nown_keys {:?}", *c.ix.epoch_intro, *c.ix.box_written, *c.ix.own_keys);
-        let _ = writeln!(out, "member_keys {:?}\nunresolved {:?}\nwas {:?}\nmoved {:?}\ngroups {:?}", *c.ix.member_keys, *c.ix.unresolved, *c.ix.was, *c.ix.moved, c.ix.groups.of);
-        let _ = writeln!(out, "secrets {:?}\nvoid {:?}\nvalueless {:?}\nsnapshots {:?}\ndropped_snapshots {:?}\ncarried {:?}\nimports {:?}", *c.ix.secrets, *c.ix.void, *c.ix.valueless, *c.ix.snapshots, *c.ix.dropped_snapshots, *c.ix.carried, *c.ix.imports);
-        out
+        let mut dropped_snapshots: BTreeMap<CommitId, Vec<(Tid, Ak)>> = BTreeMap::new();
+        for ((t, a), v) in ix.dropped_snapshots.iter() {
+            for c in v {
+                dropped_snapshots.entry(*c).or_default().push((*t, a.clone()));
+            }
+        }
+        let mut carried: BTreeMap<CommitId, Vec<Carry>> = BTreeMap::new();
+        for ((t, a), v) in ix.carried.iter() {
+            for g in v {
+                carried.entry(g.snap).or_default().push(Carry { tid: *t, ak: a.clone(), src: g.src.clone(), ctrs: g.ctrs.clone() });
+            }
+        }
+        let tables = [
+            ("by_thing", format!("{:?}", *ix.by_thing)),
+            ("by_aspect", format!("{:?}", *ix.by_aspect)),
+            ("invalid", format!("{:?}", *ix.invalid)),
+            ("ranges", format!("{:?}", *ix.ranges)),
+            ("rotation_role", format!("{:?}", *ix.rotation_role)),
+            ("grant_overreach", format!("{:?}", *ix.grant_overreach)),
+            ("box_keys", format!("{:?}", *ix.box_keys)),
+            ("boxes_to", format!("{:?}", *ix.boxes_to)),
+            ("epoch_intro", format!("{:?}", *ix.epoch_intro)),
+            ("box_written", format!("{:?}", *ix.box_written)),
+            ("own_keys", format!("{:?}", *ix.own_keys)),
+            ("member_keys", format!("{:?}", *ix.member_keys)),
+            ("unresolved", format!("{:?}", *ix.unresolved)),
+            ("was", format!("{:?}", *ix.was)),
+            ("moved", format!("{:?}", *ix.moved)),
+            ("groups", format!("{:?}", ix.groups.of)),
+            ("secrets", format!("{:?}", *ix.secrets)),
+            ("void", format!("{:?}", *ix.void)),
+            ("valueless", format!("{:?}", *ix.valueless)),
+            ("imports", format!("{:?}", *ix.imports)),
+        ].into_iter().collect();
+        IndexDigest { commits, held, by_chunk: (*ix.by_chunk).clone(), snapshots, dropped_snapshots, carried, tables }
     }
 
     /// Damages the persisted index (tests): `garble` a commit's parts row, else mislabel its tag.
@@ -287,4 +318,112 @@ impl Engine {
         self.reload()
     }
 
+}
+
+/// The indexes open rebuilds (`Engine::index_digest`): the parts harnesses tell apart typed,
+/// keyed by commit, snapshot or thing; every other index as its `Debug` text, by name.
+#[doc(hidden)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IndexDigest {
+    pub commits: BTreeMap<CommitId, CommitDigest>,
+    /// Per held thing: its edge commits and roster snapshots, sorted, and whether its creation
+    /// record is held.
+    pub held: BTreeMap<Tid, (Vec<CommitId>, Vec<CommitId>, bool)>,
+    pub by_chunk: BTreeMap<osis_base::BlobId, std::collections::BTreeSet<CommitId>>,
+    /// Per compaction snapshot: its `snapshots` entries, with their aspect.
+    pub snapshots: BTreeMap<CommitId, Vec<(Tid, Ak, String)>>,
+    /// Per snapshot: the aspects listing it in `dropped_snapshots`.
+    pub dropped_snapshots: BTreeMap<CommitId, Vec<(Tid, Ak)>>,
+    /// Per carrying snapshot: its `carried` groups.
+    pub carried: BTreeMap<CommitId, Vec<Carry>>,
+    pub tables: BTreeMap<&'static str, String>,
+}
+
+/// One commit of `IndexDigest::commits`.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitDigest {
+    pub kind: osis_commit::Kind,
+    pub valid: Vec<bool>,
+    /// Aspects whose deltas were all dropped, and the kept frontiers of those that keep them
+    /// (`Dropped::gives`, as text).
+    pub dropped: std::collections::BTreeSet<usize>,
+    pub gives: BTreeMap<usize, String>,
+    pub missing: std::collections::BTreeSet<usize>,
+    /// Received time, origin and view, as text.
+    pub rest: String,
+}
+
+/// One `carried` group of `IndexDigest::carried`.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Carry {
+    pub tid: Tid,
+    pub ak: Ak,
+    pub src: osis_crdt::Source,
+    pub ctrs: Vec<u64>,
+}
+
+/// Where two `IndexDigest`s differ: one entry per commit, thing, snapshot or named index.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum IndexField {
+    Commit(CommitId),
+    Held(Tid),
+    ByChunk,
+    Snapshots(CommitId),
+    DroppedSnapshots(CommitId),
+    Carried(CommitId),
+    Table(&'static str),
+}
+
+impl IndexDigest {
+    /// Every field where `self` and `other` differ, in field order.
+    pub fn diff(&self, other: &Self) -> Vec<IndexField> {
+        // destructured: a new field fails to compile until it is compared
+        let IndexDigest { commits, held, by_chunk, snapshots, dropped_snapshots, carried, tables } = self;
+        let mut out = Vec::new();
+        keyed(commits, &other.commits, IndexField::Commit, &mut out);
+        keyed(held, &other.held, IndexField::Held, &mut out);
+        if *by_chunk != other.by_chunk {
+            out.push(IndexField::ByChunk);
+        }
+        keyed(snapshots, &other.snapshots, IndexField::Snapshots, &mut out);
+        keyed(dropped_snapshots, &other.dropped_snapshots, IndexField::DroppedSnapshots, &mut out);
+        keyed(carried, &other.carried, IndexField::Carried, &mut out);
+        keyed(tables, &other.tables, IndexField::Table, &mut out);
+        out
+    }
+
+    /// Field `f` of this digest as text (`None`: absent), for a failure message.
+    pub fn show(&self, f: &IndexField) -> Option<String> {
+        let s = |x: Option<&dyn std::fmt::Debug>| x.map(|x| format!("{x:?}"));
+        match f {
+            IndexField::Commit(c) => s(self.commits.get(c).map(|x| x as _)),
+            IndexField::Held(t) => s(self.held.get(t).map(|x| x as _)),
+            IndexField::ByChunk => s(Some(&self.by_chunk)),
+            IndexField::Snapshots(c) => s(self.snapshots.get(c).map(|x| x as _)),
+            IndexField::DroppedSnapshots(c) => s(self.dropped_snapshots.get(c).map(|x| x as _)),
+            IndexField::Carried(c) => s(self.carried.get(c).map(|x| x as _)),
+            IndexField::Table(n) => self.tables.get(n).cloned(),
+        }
+    }
+
+    /// The first difference from `other` (`None`: equal), described.
+    pub fn first_diff(&self, other: &Self) -> Option<String> {
+        let f = self.diff(other).into_iter().next()?;
+        Some(format!("index {f:?}:\n  want {}\n  got  {}", self.show(&f).unwrap_or("<none>".into()), other.show(&f).unwrap_or("<none>".into())))
+    }
+
+    /// Without the held set (`held`): what validity tests compare.
+    pub fn without_held(mut self) -> Self {
+        self.held.clear();
+        self
+    }
+}
+
+/// The keys of `a` and `b` whose values differ (or that one lacks), as fields.
+fn keyed<K: Ord + Clone, V: PartialEq>(a: &BTreeMap<K, V>, b: &BTreeMap<K, V>, f: impl Fn(K) -> IndexField, out: &mut Vec<IndexField>) {
+    let keys: std::collections::BTreeSet<&K> = a.keys().chain(b.keys()).collect();
+    out.extend(keys.into_iter().filter(|k| a.get(*k) != b.get(*k)).map(|k| f(k.clone())));
 }

@@ -1,0 +1,37 @@
+#!/bin/sh
+# tools/bin-at REV OUT [--release] [-p CRATE] [--test NAME]: REV's test binary (default osis-node's
+# `it`, dev profile), built in this worktree and copied to OUT, for old-vs-new runs and
+# `tools/icount` comparisons (notes/build.md). Needs a clean tree (wip-commit first): checks out
+# REV detached, builds, checks the starting branch or commit out again (also on failure). The
+# next build here recompiles what REV changed back. The binary keeps this worktree's manifest
+# dirs: a test reading fixtures reads the checked-out ones.
+set -eu
+[ $# -ge 2 ] || { echo "usage: tools/bin-at REV OUT [--release] [-p CRATE] [--test NAME]" >&2; exit 2; }
+rev=$1 out=$2
+shift 2
+profile="" crate=osis-node test=it
+while [ $# -gt 0 ]; do
+    case $1 in
+        --release) profile=--release ;;
+        -p) crate=$2; shift ;;
+        --test) test=$2; shift ;;
+        *) echo "bin-at: unknown argument $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+[ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "bin-at: uncommitted changes; wip-commit them first" >&2; exit 1; }
+sha=$(git rev-parse --verify "$rev^{commit}")
+back=$(git symbolic-ref -q --short HEAD || git rev-parse HEAD)
+restore() { git checkout -q "$back"; }
+trap restore EXIT
+trap 'exit 1' INT TERM
+git checkout -q --detach "$sha"
+# shellcheck disable=SC2086
+exe=$(cargo test $profile -p "$crate" --test "$test" --no-run --message-format=json-render-diagnostics \
+    | jq -r 'select(.reason == "compiler-artifact" and .executable != null and .target.name == "'"$test"'") | .executable' | tail -n 1)
+[ -n "$exe" ] || { echo "bin-at: no executable for $crate --test $test" >&2; exit 1; }
+mkdir -p "$(dirname "$out")"
+cp "$exe" "$out"
+echo "bin-at: $(git log -1 --format='%h %s' "$sha") -> $out" >&2
