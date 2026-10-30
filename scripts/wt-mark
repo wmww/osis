@@ -1,0 +1,13 @@
+# Run by `wt release` in each workspace (repo root, kit/) before it prunes that target: every
+# standard command (notes/build.md), so units a task skipped stay. Each is a no-op on a gated tree.
+set -e
+if [ "$(basename "$PWD")" = kit ]; then
+  cargo test --workspace --no-run
+  cargo check --workspace --all-targets
+  cargo clippy --workspace --all-targets -- -D warnings
+else
+  cargo test --workspace --no-run
+  cargo build --workspace --all-targets
+  cargo clippy --workspace --all-targets -- -D warnings
+  cargo clippy-net -- -D warnings
+fi
