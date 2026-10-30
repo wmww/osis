@@ -96,7 +96,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     for (ai, a) in h.aspects.iter().enumerate() {
         // a commit whose body was dropped cannot be undone (spec/commits.md §7); a thing it
         // created is deleted below instead
-        if m.dropped.contains(&(ai, 0)) || !m.valid.get(ai).copied().unwrap_or(false) || a.ak.as_str() == "/created" || made.contains(&a.tid) {
+        if m.dropped.contains_key(&ai) || !m.valid.get(ai).copied().unwrap_or(false) || a.ak.as_str() == "/created" || made.contains(&a.tid) {
             continue;
         }
         let parts = crate::apply::held_parts(tx, &target, ai)?;
@@ -126,7 +126,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
                     if c == target {
                         continue;
                     }
-                    complete &= !m.dropped.iter().any(|x| x.0 == ci) && !m.missing.contains(&ci);
+                    complete &= !m.dropped.contains_key(&ci) && !m.missing.contains(&ci);
                     for d in crate::apply::held_parts(tx, &c, ci)? {
                         let d = d.into_fragment();
                         match &mut f {
@@ -330,7 +330,7 @@ impl Engine {
                     .iter()
                     .enumerate()
                     .filter(|(ai, a)| m.valid.get(*ai).copied().unwrap_or(false) && keep.as_ref().is_none_or(|k| k.contains(&(a.tid, a.ak.clone()))))
-                    .map(|(ai, a)| (a.tid, a.ak.clone(), !m.dropped.iter().any(|x| x.0 == ai) && !m.missing.contains(&ai)))
+                    .map(|(ai, a)| (a.tid, a.ak.clone(), !m.dropped.contains_key(&ai) && !m.missing.contains(&ai)))
                     .collect();
                 (!aspects.is_empty()).then_some(HeldCommit { id, header, received: m.received, aspects })
             })

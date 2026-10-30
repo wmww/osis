@@ -32,10 +32,10 @@ pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_base::
     }
 }
 
-/// Indexes the dropped parts of `id` that kept their frontiers (`Meta::gives`).
+/// Indexes the dropped parts of `id` that kept their frontiers (`Dropped::gives`).
 pub(crate) fn note_gives(core: &mut Core, id: &CommitId) {
     let Some(m) = core.ix.commits.get(id) else { return };
-    let ks: Vec<(Tid, Ak)> = m.gives.keys().filter_map(|ai| m.view.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
+    let ks: Vec<(Tid, Ak)> = m.dropped.iter().filter(|x| x.1.gives.is_some()).filter_map(|x| m.view.aspects.get(*x.0)).map(|a| (a.tid, a.ak.clone())).collect();
     for k in ks {
         core.ix.dropped_snapshots.insert(k, *id);
     }
@@ -43,7 +43,7 @@ pub(crate) fn note_gives(core: &mut Core, id: &CommitId) {
 
 /// Forgets snapshot `id` of `(tid, ak)` when its body drops: its carried writes are index
 /// entries derived from the body (spec/commits.md §5), which a rebuild cannot read; its
-/// frontiers and `Absorbed` stay in its record when kept (`Meta::gives`, `retention::drop_part`).
+/// frontiers and `Absorbed` stay in its record when kept (`Dropped::gives`, `retention::drop_part`).
 pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId) {
     let k = (*tid, ak.clone());
     if let Some(mut v) = core.ix.snapshots.get(&k).cloned()
@@ -274,7 +274,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     let uncarried = validity::uncarry(tx.core, &id, &h, &|ai| parts.iter().any(|p| p.0 == ai));
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.iter().any(|p| p.0 == *ai)).collect();
-    let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), dropped: BTreeSet::new(), missing, live_drops: BTreeSet::new(), covered_by: BTreeMap::new(), cover_drops: BTreeSet::new(), gives: BTreeMap::new() };
+    let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), dropped: BTreeMap::new(), missing };
     tx.core.ix.commits.insert(id, meta.clone());
     tx.core.index_validity(&id);
 
@@ -804,29 +804,6 @@ pub(crate) fn rebuild_without(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned
     tx.set_state(tid, ak, st, Shred::Yes, false)
 }
 
-/// Whether snapshot `s` covered dropped part `ai` of `c` when it dropped, or covered a dropped
-/// snapshot that did, and so on (`Meta::covered_by`).
-fn covers_dropped(core: &Core, c: &CommitId, ai: usize, s: &CommitId) -> bool {
-    let Some(ca) = core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)) else { return false };
-    let at = |x: &CommitId| -> Vec<CommitId> {
-        let Some(m) = core.ix.commits.get(x) else { return Vec::new() };
-        let Some(xai) = m.view.aspects.iter().position(|a| a.tid == ca.tid && a.ak == ca.ak) else { return Vec::new() };
-        m.covered_by.get(&xai).map(|v| v.iter().copied().collect()).unwrap_or_default()
-    };
-    let mut seen = BTreeSet::new();
-    let mut todo = at(c);
-    while let Some(x) = todo.pop() {
-        if x == *s {
-            return true;
-        }
-        // a coverer dropped in turn: its coverers carry what it carried
-        if seen.insert(x) {
-            todo.extend(at(&x));
-        }
-    }
-    false
-}
-
 /// What `rebuild_without` writes; `forged`: the dots whose copies in the state a snapshot gave
 /// against their held delta (`refill`), which that delta gives again.
 fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, forged: Option<&BTreeSet<osis_crdt::Dot>>, gone: &[Owned]) -> Result<Option<Fragment>> {
@@ -837,7 +814,7 @@ fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, forged: Option<&BTreeSet<osis_cr
         let Some(m) = tx.core.ix.commits.get(&c).cloned() else { continue };
         let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
         // an invalid snapshot's body joins nothing (spec/permissions.md §5.2)
-        let snap_invalid = super::is_kind_snapshot(m.header.kind) && !m.valid.get(ai).copied().unwrap_or(false);
+        let snap_invalid = m.header.kind.is_compaction() && !m.valid.get(ai).copied().unwrap_or(false);
         for d in super::held_parts(tx, &c, ai)? {
             let (f, fr) = fragment(d);
             if fr.is_some() && snap_invalid {
@@ -866,7 +843,7 @@ fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, forged: Option<&BTreeSet<osis_cr
     // to a write since invalid (spec/permissions.md §5.2, spec/commits.md §5)
     for (f, s) in bodies.iter_mut() {
         let Some(s) = *s else { continue };
-        strip_copies_where(core, tid, ak, f, &|c, m, ai| !(m.dropped.contains(&(ai, 0)) && covers_dropped(core, c, ai, &s)));
+        strip_copies_where(core, tid, ak, f, &|c, m, ai| !(m.dropped.contains_key(&ai) && crate::retention::coverers(core, c, ai).contains(&s)));
     }
     let mut st = Fragment::default();
     let mut ch = Changes::new();

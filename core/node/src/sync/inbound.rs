@@ -568,7 +568,7 @@ impl SyncEngine {
     /// key and ciphertext: a dropped body's copies go, spec/commits.md §5).
     pub(crate) fn forget_blob(&mut self, b: &BlobId) -> Result<()> {
         let Some(r) = self.state.blobs.get(b) else { return Ok(()) };
-        let dropped = self.engine.core.ix.commits.get(&r.commit).is_some_and(|m| r.parts.iter().any(|p| m.dropped.contains(p)));
+        let dropped = self.engine.core.ix.commits.get(&r.commit).is_some_and(|m| r.parts.iter().any(|p| m.dropped.contains_key(&p.0)));
         let unused = !self.state.named(b);
         if dropped || unused && (r.cert || !self.engine.core.ix.commits.contains_key(&r.commit)) {
             // its entries stay (deletes at servers need no copy) with their wraps shredded
@@ -620,7 +620,7 @@ impl SyncEngine {
     /// most, compaction): key and ciphertext (spec/commits.md §5). Only those of `commits`
     /// when given (the commits a change may have dropped deltas of).
     pub(crate) fn forget_dropped(&mut self, commits: Option<&BTreeSet<osis_base::CommitId>>) -> Result<()> {
-        let dropped = |s: &Self, r: &super::state::BlobRec| s.engine.core.ix.commits.get(&r.commit).is_some_and(|m| r.parts.iter().any(|p| m.dropped.contains(p)));
+        let dropped = |s: &Self, r: &super::state::BlobRec| s.engine.core.ix.commits.get(&r.commit).is_some_and(|m| r.parts.iter().any(|p| m.dropped.contains_key(&p.0)));
         let fresh = std::mem::take(&mut self.state.new_blobs);
         let commits: Option<BTreeSet<osis_base::CommitId>> = commits.map(|c| c.union(&fresh).copied().collect());
         let commits = commits.as_ref();

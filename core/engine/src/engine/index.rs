@@ -441,16 +441,11 @@ pub(crate) fn load_edges(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::ap
 }
 
 /// What of a commit its record holds ahead of its blob (version 1): received, origin, dropped
-/// parts, the aspects among them dropped live (`Meta::live_drops`), their coverers
-/// (`Meta::covered_by`), those dropped as covered (`Meta::cover_drops`).
+/// parts and what each keeps (`Meta::dropped`).
 pub(crate) struct RecordHead {
     pub received: WallMs,
     pub origin: Origin,
-    pub dropped: BTreeSet<(usize, usize)>,
-    pub live_drops: BTreeSet<usize>,
-    pub covered_by: BTreeMap<usize, BTreeSet<CommitId>>,
-    pub cover_drops: BTreeSet<usize>,
-    pub gives: BTreeMap<usize, super::Gives>,
+    pub dropped: BTreeMap<usize, super::Dropped>,
 }
 
 pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
@@ -460,26 +455,15 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
     });
     w = w.u32(m.dropped.len() as u32);
     for (a, d) in &m.dropped {
-        w = w.u32(*a as u32).u32(*d as u32);
-    }
-    w = w.u32(m.live_drops.len() as u32);
-    for a in &m.live_drops {
-        w = w.u32(*a as u32);
-    }
-    w = w.u32(m.covered_by.len() as u32);
-    for (a, ss) in &m.covered_by {
-        w = w.u32(*a as u32).u32(ss.len() as u32);
-        for s in ss {
+        w = w.u32(*a as u32).u8(u8::from(d.as_cover) | u8::from(d.live) << 1).u32(d.covered_by.len() as u32);
+        for s in &d.covered_by {
             w = w.raw(&s.0);
         }
-    }
-    w = w.u32(m.cover_drops.len() as u32);
-    for a in &m.cover_drops {
-        w = w.u32(*a as u32);
-    }
-    w = w.u32(m.gives.len() as u32);
-    for (a, (fr, abs)) in &m.gives {
-        w = w.u32(*a as u32).u32(fr.0.len() as u32);
+        let Some((fr, abs)) = &d.gives else {
+            w = w.u8(0);
+            continue;
+        };
+        w = w.u8(1).u32(fr.0.len() as u32);
         for (n, c) in &fr.0 {
             w = w.raw(n.as_bytes()).u64(*c);
         }
@@ -578,42 +562,32 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
     }
     let received = WallMs(r.u64()?);
     let origin = if r.u8()? == 0 { Origin::Local } else { Origin::Remote };
-    let mut dropped = BTreeSet::new();
-    for _ in 0..r.u32()? {
-        dropped.insert((r.u32()? as usize, r.u32()? as usize));
-    }
-    let mut live_drops = BTreeSet::new();
-    for _ in 0..r.u32()? {
-        live_drops.insert(r.u32()? as usize);
-    }
-    let mut covered_by = BTreeMap::new();
+    let mut dropped = BTreeMap::new();
     for _ in 0..r.u32()? {
         let a = r.u32()? as usize;
-        let mut ss = BTreeSet::new();
+        let flags = r.u8()?;
+        let mut covered_by = BTreeSet::new();
         for _ in 0..r.u32()? {
-            ss.insert(CommitId(r.arr()?));
+            covered_by.insert(CommitId(r.arr()?));
         }
-        covered_by.insert(a, ss);
+        let gives = match r.u8()? {
+            0 => None,
+            _ => {
+                let mut fr = BTreeMap::new();
+                for _ in 0..r.u32()? {
+                    let n = r.tid()?;
+                    fr.insert(n, r.u64()?);
+                }
+                let mut abs = Vec::new();
+                for _ in 0..r.u32()? {
+                    abs.push((CommitId(r.arr()?), r.tid()?));
+                }
+                Some((osis_crdt::Frontiers(fr), abs))
+            }
+        };
+        dropped.insert(a, super::Dropped { covered_by, as_cover: flags & 1 != 0, live: flags & 2 != 0, gives });
     }
-    let mut cover_drops = BTreeSet::new();
-    for _ in 0..r.u32()? {
-        cover_drops.insert(r.u32()? as usize);
-    }
-    let mut gives = BTreeMap::new();
-    for _ in 0..r.u32()? {
-        let a = r.u32()? as usize;
-        let mut fr = BTreeMap::new();
-        for _ in 0..r.u32()? {
-            let n = r.tid()?;
-            fr.insert(n, r.u64()?);
-        }
-        let mut abs = Vec::new();
-        for _ in 0..r.u32()? {
-            abs.push((CommitId(r.arr()?), r.tid()?));
-        }
-        gives.insert(a, (osis_crdt::Frontiers(fr), abs));
-    }
-    Ok((RecordHead { received, origin, dropped, live_drops, covered_by, cover_drops, gives }, r.rest()))
+    Ok((RecordHead { received, origin, dropped }, r.rest()))
 }
 
 /// Writes the given changes (`all`: everything) of the indexes to the persisted index.
@@ -797,7 +771,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             return Err(Error::Corrupt("meta row"));
         }
         crate::apply::index_commit(tx.core, &id, &view);
-        tx.core.ix.commits.insert(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, missing, live_drops: head.live_drops, covered_by: head.covered_by, cover_drops: head.cover_drops, gives: head.gives });
+        tx.core.ix.commits.insert(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, missing });
         crate::apply::note_gives(tx.core, &id);
         tx.core.index_validity(&id);
     }

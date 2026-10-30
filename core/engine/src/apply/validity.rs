@@ -695,7 +695,7 @@ impl<'a> Judge<'a> {
         let Some(tl) = tl else { return false };
         // a compaction snapshot: valid iff its author could write the aspect at the snapshot,
         // judged by commit ID (a demotion's frontier lists it), by the aspect's role alone
-        if super::is_kind_snapshot(h.kind) {
+        if h.kind.is_compaction() {
             let required = required_role(ak);
             let point = Point { ts: h.ts, node: h.author, commit: *id };
             return tl.delta_valid(point, &a.tid, ak, Dots::Commit, required) == Validity::Valid;
@@ -786,7 +786,7 @@ pub(crate) fn owner_received(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
 
 /// Whether the delta owning dot `d` on `(tid, ak)` is held here (not dropped).
 pub(crate) fn owner_held(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
-    any_owner(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && !m.dropped.iter().any(|x| x.0 == ai))
+    any_owner(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && !m.dropped.contains_key(&ai))
 }
 
 /// Whether held snapshot `snap`'s part on `(tid, ak)` is valid (`Judge::part`: its author could
@@ -798,7 +798,7 @@ pub(crate) fn snapshot_valid(core: &Core, snap: &CommitId, tid: &Tid, ak: &Ak) -
 /// Whether held commit `c` is a compaction snapshot whose part on `(tid, ak)` is invalid: its
 /// body gives nothing (not joined, replayed or covering).
 pub(crate) fn invalid_snapshot(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
-    core.ix.commits.get(c).is_some_and(|m| super::is_kind_snapshot(m.view.kind)) && !snapshot_valid(core, c, tid, ak)
+    core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction()) && !snapshot_valid(core, c, tid, ak)
 }
 
 /// Records the held imports per (thing, origin) (`Core::imports`: which delta owns a `Commit`
@@ -1068,7 +1068,7 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
                     intro_flips.insert(x.tid);
                 }
                 // a snapshot's frontiers count as received while it is valid (`receipt::received`)
-                if super::is_kind_snapshot(h.kind) {
+                if h.kind.is_compaction() {
                     tx.core.waits.wake(&x.tid, &x.ak);
                 }
             }
@@ -1093,7 +1093,7 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
             // a snapshot turned invalid gives nothing: what it gave goes (its writer no longer
             // vouches for it, spec/permissions.md §5.2; other valid carriers give theirs back),
             // and with it its vouching
-            let snaps: Vec<CommitId> = fell.get(&k).into_iter().flatten().filter(|(c, _)| tx.core.ix.commits.get(c).is_some_and(|m| super::is_kind_snapshot(m.view.kind))).map(|x| x.0).collect();
+            let snaps: Vec<CommitId> = fell.get(&k).into_iter().flatten().filter(|(c, _)| tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction())).map(|x| x.0).collect();
             if rose.contains(&k) || !snaps.is_empty() {
                 let _s = crate::costs::span("rejudge: rebuild");
                 let mut gone: Vec<Owned> = snaps.iter().flat_map(|s| given_by(tx.core, tid, ak, s)).collect();
@@ -1127,7 +1127,7 @@ fn fell_bodies(tx: &mut Tx<'_>, parts: &[(CommitId, usize)]) -> Result<Option<Fr
     let mut out = Fragment::default();
     let mut ch = osis_crdt::Changes::new();
     for (id, ai) in parts {
-        let n = tx.core.ix.commits.get(id).filter(|m| m.dropped.iter().all(|(a, _)| a != ai)).and_then(|m| m.header.aspects.get(*ai)).map(|a| a.hashes.len());
+        let n = tx.core.ix.commits.get(id).filter(|m| !m.dropped.contains_key(ai)).and_then(|m| m.header.aspects.get(*ai)).map(|a| a.hashes.len());
         let bodies = super::held_parts(tx, id, *ai)?;
         if bodies.is_empty() || n != Some(bodies.len()) {
             return Ok(None);
