@@ -7,6 +7,7 @@ use crate::cbor::{get_bytes, get_key, get_opt, get_uint, uint};
 use crate::step::{ClaimSet, Step, StepId};
 use crate::Error;
 use osis_base::cbor::encode;
+use osis_base::format::{DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER};
 use osis_base::{BlobId, LabelId, Value, WallMs};
 use osis_crypto::{DeleteSecret, Domain, LabelRole, Signature, SigningSecret, VerifyingKey, open_digest, sign_open, static_entry, verify_delete, verify_open};
 use osis_schema::core_types::SecretBox;
@@ -149,8 +150,8 @@ pub fn sign_deposit(deposit: &SigningSecret, label: &LabelId, blob: &BlobId, wra
 /// key for level 3, the sync key for level 1 or 2.
 pub fn key_for_level(level: Level) -> Result<LabelRole, Error> {
     match level {
-        3 => Ok(LabelRole::Write),
-        1 | 2 => Ok(LabelRole::Sync),
+        DELETE_WRITER => Ok(LabelRole::Write),
+        DELETE_ADMIN | DELETE_AUTHOR => Ok(LabelRole::Sync),
         _ => Err(Error::Malformed("delete level")),
     }
 }
@@ -218,7 +219,7 @@ impl DeleteItem {
             None => None,
             Some(Value::List(x)) => match x.as_slice() {
                 [l, s] => {
-                    let l = u8::try_from(get_uint(l, "delete level")?).ok().filter(|l| (1..=3).contains(l)).ok_or(Error::Malformed("delete level"))?;
+                    let l = u8::try_from(get_uint(l, "delete level")?).ok().filter(|l| (DELETE_ADMIN..=DELETE_WRITER).contains(l)).ok_or(Error::Malformed("delete level"))?;
                     Some((l, Signature(get_bytes(s, "delete-key signature")?)))
                 }
                 _ => return Err(Error::Malformed("delete level")),

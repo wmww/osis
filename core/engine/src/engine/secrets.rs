@@ -105,7 +105,7 @@ impl Core {
     /// tried over every held epoch along the chains: `thing` the chain of the delta's thing,
     /// `author` that of the actor above its author node (empty for an import).
     pub(crate) fn delete_secret(level: u8, key: &[u8; 32], thing: &[DeleteSource], author: &[DeleteSource]) -> Option<DeleteSecret> {
-        let chain = if level == osis_keys::delete::LEVEL_AUTHOR { author } else { thing };
+        let chain = if level == osis_base::format::DELETE_AUTHOR { author } else { thing };
         for src in chain {
             match src {
                 DeleteSource::KeyActor(d) if d.verifying_key().to_bytes() == *key => return Some(DeleteSecret::from_seed(d.seed().clone())),

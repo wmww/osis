@@ -3,7 +3,7 @@
 
 use crate::Error;
 use crate::cbor::{ak, as_ak, as_bytes, as_idx, as_list, as_opt, as_tid, as_uint, tid, uidx, uint};
-use osis_base::format::{CHUNK_THRESHOLD, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH};
+use osis_base::format::{CHUNK_THRESHOLD, DELETE_ADMIN, DELETE_WRITER, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH};
 use osis_base::{Ak, BlobId, CommitId, Limits, Link, SchemaId, Tid, Ts, Value};
 use osis_crdt::DeltaKind;
 use osis_crypto::{Domain, Signature, SigningSecret, VerifyingKey};
@@ -419,7 +419,7 @@ pub(crate) fn as_key(v: &Value) -> Result<DeleteKey, Error> {
 /// `as_key` without the point check (a stored header, checked when it arrived).
 fn as_key_unchecked(v: &Value) -> Result<DeleteKey, Error> {
     let [l, k] = as_list(v)? else { return Err(Error::Malformed("delete key arity")) };
-    let level = u8::try_from(as_uint(l)?).ok().filter(|l| (1..=3).contains(l)).ok_or(Error::Malformed("delete level"))?;
+    let level = u8::try_from(as_uint(l)?).ok().filter(|l| (DELETE_ADMIN..=DELETE_WRITER).contains(l)).ok_or(Error::Malformed("delete level"))?;
     Ok(DeleteKey { level, key: as_bytes(k)? })
 }
 

@@ -8,6 +8,7 @@ pub use osis_commit::tree::{HashSink, Kid, LinkSource, TreeReader, TreeSink, Tre
 
 use crate::blob::{Level, Prefix, frame, open};
 use crate::Error;
+use osis_base::format::DELETE_AUTHOR;
 use osis_base::{BlobId, ChunkParams, Link, WallMs};
 use osis_crdt::{PageError, PageParams, PageSink, PageSource};
 use osis_crypto::{CryptoRngCore, SUITE_1, Secret32, VerifyingKey, commitment, link_hash};
@@ -26,9 +27,6 @@ pub struct Framing {
     pub blind: [u8; 16],
 }
 
-/// Level of the author-chain delete key (spec/crypto.md §7); the others are the thing's.
-const AUTHOR_CHAIN: Level = 2;
-
 impl Framing {
     /// Whether a blob framed earlier keeps its encryption when a delta framed with `self` reuses
     /// it (spec/sync.md §1): its expiry is not earlier than this one's, and its commitments to
@@ -42,8 +40,8 @@ impl Framing {
             (Some(old), Some(new)) => old >= new,
         };
         let salt = prefix.salt();
-        let mine: Result<BTreeSet<[u8; 33]>, _> = self.keys.iter().filter(|(l, _)| *l != AUTHOR_CHAIN).map(|(l, k)| commitment(*l, k, salt, blind)).collect();
-        let theirs: BTreeSet<[u8; 33]> = prefix.commitments().iter().filter(|c| c[0] != AUTHOR_CHAIN).copied().collect();
+        let mine: Result<BTreeSet<[u8; 33]>, _> = self.keys.iter().filter(|(l, _)| *l != DELETE_AUTHOR).map(|(l, k)| commitment(*l, k, salt, blind)).collect();
+        let theirs: BTreeSet<[u8; 33]> = prefix.commitments().iter().filter(|c| c[0] != DELETE_AUTHOR).copied().collect();
         expiry_ok && mine.is_ok_and(|m| m == theirs)
     }
 }
