@@ -58,6 +58,26 @@ impl LinkRx {
     }
 }
 
+/// Runs blocking driver work (storage, engine calls) without stalling the runtime:
+/// `block_in_place` on a multi-thread runtime, inline otherwise.
+pub fn blocking<R>(f: impl FnOnce() -> R) -> R {
+    match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
+        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(f),
+        _ => f(),
+    }
+}
+
+/// Forwards a session's bytes into a driver's event channel as `bytes(b)`, then `closed` once
+/// the peer finished or the stream failed; stops when the channel is gone.
+pub async fn forward<E>(mut rx: LinkRx, ev: mpsc::Sender<E>, bytes: impl Fn(Vec<u8>) -> E, closed: E) {
+    while let Some(b) = rx.recv().await {
+        if ev.send(bytes(b)).await.is_err() {
+            return;
+        }
+    }
+    let _ = ev.send(closed).await;
+}
+
 /// One session: the peer's authenticated static key (spec/wire.md §11.1) and its byte stream.
 #[derive(Debug)]
 pub struct Link {

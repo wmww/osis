@@ -11,7 +11,7 @@ use crate::hub::{ConnId, Hub, HubOutput};
 use osis_base::Clock;
 use osis_label::Address;
 use osis_store::Backend;
-use osis_transport::link::{self, Link, LinkTx};
+use osis_transport::link::{self, Link, LinkTx, blocking};
 use osis_transport::{Backoff, Listener, StaticSecret, Transport};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -78,14 +78,6 @@ struct Driver<B: Backend> {
     ev_tx: mpsc::Sender<Ev>,
 }
 
-/// Runs blocking hub work off the async worker when the runtime allows it.
-fn blocking<R>(f: impl FnOnce() -> R) -> R {
-    match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
-        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(f),
-        _ => f(),
-    }
-}
-
 impl<B: Backend> Driver<B> {
     fn now(&self) -> u64 {
         self.clock.now_wall_ms().0
@@ -94,16 +86,8 @@ impl<B: Backend> Driver<B> {
     fn add(&mut self, link: Link, done: Option<oneshot::Sender<()>>) -> ConnId {
         let id = self.next;
         self.next += 1;
-        let Link { tx, mut rx, .. } = link;
-        let ev = self.ev_tx.clone();
-        let reader = tokio::spawn(async move {
-            while let Some(b) = rx.recv().await {
-                if ev.send(Ev::Bytes(id, b)).await.is_err() {
-                    return;
-                }
-            }
-            let _ = ev.send(Ev::Closed(id)).await;
-        });
+        let Link { tx, rx, .. } = link;
+        let reader = tokio::spawn(link::forward(rx, self.ev_tx.clone(), move |b| Ev::Bytes(id, b), Ev::Closed(id)));
         self.conns.insert(id, ConnState { tx, reader, done, taken: u64::MAX });
         id
     }

@@ -12,7 +12,7 @@
 
 use super::{Action, ConnId, Event, SyncEngine};
 use osis_base::Clock;
-use osis_transport::link::{self, Link, LinkTx};
+use osis_transport::link::{self, Link, LinkTx, blocking};
 use osis_transport::lan::Announce;
 use osis_transport::{Address, ListenConfig, Listener, StaticSecret, Transport};
 use std::collections::HashMap;
@@ -105,13 +105,8 @@ enum Ev {
 }
 
 /// Forwards a session's bytes to the driver, then its end.
-async fn forward(conn: ConnId, mut rx: link::LinkRx, ev: mpsc::Sender<Ev>) {
-    while let Some(b) = rx.recv().await {
-        if ev.send(Ev::Bytes(conn, b)).await.is_err() {
-            return;
-        }
-    }
-    let _ = ev.send(Ev::Closed(conn)).await;
+async fn forward(conn: ConnId, rx: link::LinkRx, ev: mpsc::Sender<Ev>) {
+    link::forward(rx, ev, move |b| Ev::Bytes(conn, b), Ev::Closed(conn)).await
 }
 
 struct Conn {
@@ -119,13 +114,6 @@ struct Conn {
     task: JoinHandle<()>,
     /// `LinkTx::taken` when last reported (`Event::Sent`; `u64::MAX` before the first report).
     taken: u64,
-}
-
-fn blocking<R>(f: impl FnOnce() -> R) -> R {
-    match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
-        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(f),
-        _ => f(),
-    }
 }
 
 /// Where the sync engine lives while a driver runs.
