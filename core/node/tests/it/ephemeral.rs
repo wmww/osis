@@ -898,6 +898,40 @@ fn author_crash_before_cover_lands_keeps_state_spec_sync_9() {
     assert_eq!(notes(&mut net, b, w), want, "the server still holds them");
 }
 
+// harness (random_window_inflight seed 173899): bytes a slow server held back for a connection
+// that closed when it restarted never reach the restarted node's new connection of that number
+// (they carried another connection's challenge: every open there was refused)
+#[test]
+fn restarted_node_gets_no_old_server_bytes() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    // b's first connection since a restart (numbered 1): the server's greeting held back
+    net.set_online(b, false);
+    net.restart(b, 49);
+    net.held_servers.insert(sv);
+    net.set_online(b, true);
+    net.run();
+    // the server restarts (b redials, connection 2), then b (connection 1 again): the old
+    // greeting must not reach it
+    net.restart_server(sv);
+    net.run();
+    net.restart(b, 50);
+    net.run();
+    net.release();
+    net.run();
+    // redials
+    net.advance(30_000);
+    note(&mut net, a, w, "k", "2");
+    net.run();
+    assert_eq!(notes(&mut net, b, w), map(&[("k", "2")]));
+}
+
 /// One random run of the shared window (notes/ephemeral.md Convergence): four writers on two
 /// servers (odd seeds: one with a random ephemeral cap, 0 and below one cover included), random
 /// ephemeral writes, partitions (offline, one server blocked), node restarts and server
@@ -1047,6 +1081,26 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     }
     // one more periodic pass: entries a full server refused go again once room appeared
     net.advance(61_000);
+    // and more while room appeared only after a pass (deletes of what an entry accepted at that
+    // pass absorbs): the retry is the next pass's (spec/sync.md §9, "later"). Each such pass
+    // lets in an entry that fits (or another takes its room), so at most one per entry.
+    if single {
+        let l = net.label(nodes[0]);
+        let pending = |net: &mut Net| {
+            let ids: BTreeSet<osis_base::BlobId> = net.server_ids(s1, &l).into_iter().collect();
+            let store = net.servers[s1].hub.store();
+            let entries: Vec<(osis_base::BlobId, usize)> = nodes.iter().filter_map(|n| net.nodes[*n].sync.as_ref()).flat_map(|x| x.ephemeral_plain_entries(&l)).collect();
+            (entries.len(), entries.iter().any(|(b, size)| !ids.contains(b) && store.ephemeral_fits(&l, *size as u64)))
+        };
+        let (n, _) = pending(&mut net);
+        for _ in 0..n {
+            if !pending(&mut net).1 {
+                break;
+            }
+            log.push("periodic pass".into());
+            net.advance(61_000);
+        }
+    }
     let holders: Vec<usize> = nodes.iter().copied().filter(|n| syncs(&mut net, *n, w)).collect();
     let Some(&h0) = holders.first() else {
         // lost only when no node holds it (spec/requirements.md Ephemeral data): every node that
@@ -1167,10 +1221,11 @@ fn str_map(v: Option<Value>) -> BTreeMap<String, String> {
     }
 }
 
-// the same with one capped server (caps 0 to fitting all)
+// the same with one capped server (caps 0 to fitting all; 173658: room appears only after the
+// last periodic pass)
 #[test]
 fn random_window_one_capped_server_spec_sync_9() {
-    for seed in [0, 2, 4, 6, 8, 10, 63, 105, 162] {
+    for seed in [0, 2, 4, 6, 8, 10, 63, 105, 162, 173658] {
         random_window_run_on(seed, true, false);
     }
 }
