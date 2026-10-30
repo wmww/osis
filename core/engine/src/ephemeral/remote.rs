@@ -62,6 +62,9 @@ pub const ENTRY_CHARGE: usize = 1024;
 /// One delta of an ephemeral commit to build: thing, aspect, fragment, expiry.
 type EphDelta = (Tid, Ak, Fragment, Option<u64>);
 
+/// A held commit's part: commit, aspect index.
+type PartId = (CommitId, usize);
+
 /// Per aspect, the held commits a cover absorbs.
 type Absorbs = BTreeMap<(Tid, Ak), BTreeSet<CommitId>>;
 
@@ -1084,33 +1087,73 @@ impl Engine {
     }
 
     /// Drops held commits that valid held commits list as absorbed on every aspect they touch
-    /// (a cover); their parts' writes stay in the state through the cover. Queued for
-    /// `take_dropped_ephemeral`.
+    /// (a cover); their parts' writes stay in the state through the cover. A cover's part that
+    /// does not contain the parts it lists (`contains`; an honest cover is their join) absorbs
+    /// nothing: its list is cleared, so holders keep those commits and compute one join. Queued
+    /// for `take_dropped_ephemeral`.
     fn drop_absorbed(&mut self) {
         let r = &self.eph.remote;
-        let mut covers: BTreeMap<(Tid, Ak), BTreeSet<CommitId>> = BTreeMap::new();
-        for h in r.held.values() {
+        // per aspect, per held commit listed there, the cover parts listing it
+        let mut lists: BTreeMap<(Tid, Ak), BTreeMap<CommitId, Vec<PartId>>> = BTreeMap::new();
+        for (cid, h) in &r.held {
             for p in &h.parts {
                 if p.valid
                     && !p.absorbed.is_empty()
                     && let Some(a) = h.header.aspects.get(p.ai)
+                    && a.expires.is_none()
                 {
-                    let ok = p.absorbed.iter().filter(|c| r.held.get(c).is_some_and(|x| may_absorb(&h.header, &x.header))).copied();
-                    covers.entry((a.tid, a.ak.clone())).or_default().extend(ok);
+                    let m = lists.entry((a.tid, a.ak.clone())).or_default();
+                    for c in p.absorbed.iter().filter(|c| r.held.get(c).is_some_and(|x| may_absorb(&h.header, &x.header))) {
+                        m.entry(*c).or_default().push((*cid, p.ai));
+                    }
                 }
             }
         }
-        if covers.is_empty() {
+        if lists.is_empty() {
             return;
         }
-        let gone: Vec<CommitId> = r
-            .held
-            .iter()
-            .filter(|(id, h)| {
-                h.parts.iter().all(|p| h.header.aspects.get(p.ai).is_some_and(|a| covers.get(&(a.tid, a.ak.clone())).is_some_and(|c| c.contains(id))))
+        let listers = |id: &CommitId, h: &Held, p: &HeldPart| h.header.aspects.get(p.ai).and_then(|a| lists.get(&(a.tid, a.ak.clone()))).and_then(|m| m.get(id)).cloned();
+        let listed: Vec<CommitId> = r.held.iter().filter(|(id, h)| h.parts.iter().all(|p| listers(id, h, p).is_some())).map(|(id, _)| *id).collect();
+        if listed.is_empty() {
+            return;
+        }
+        // per listing cover part, the parts it must contain
+        let mut vouch: BTreeMap<PartId, Vec<PartId>> = BTreeMap::new();
+        for id in &listed {
+            let Some(h) = r.held.get(id) else { continue };
+            for p in h.parts.iter().filter(|p| h.header.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() != CREATED.ak())) {
+                for c in listers(id, h, p).unwrap_or_default() {
+                    vouch.entry(c).or_default().push((*id, p.ai));
+                }
+            }
+        }
+        let part = |c: &CommitId, ai: usize| r.held.get(c).and_then(|h| h.parts.iter().find(|p| p.ai == ai));
+        let mut bad: BTreeSet<PartId> = BTreeSet::new();
+        for ((c, ai), xs) in &vouch {
+            let Some(cp) = part(c, *ai) else { continue };
+            let mut j = cp.fragment.clone();
+            for (x, xai) in xs {
+                if let Some(xp) = part(x, *xai) {
+                    j.join(xp.fragment.clone());
+                }
+            }
+            if j != cp.fragment {
+                bad.insert((*c, *ai));
+            }
+        }
+        let gone: Vec<CommitId> = listed
+            .into_iter()
+            .filter(|id| {
+                r.held.get(id).is_some_and(|h| {
+                    h.parts.iter().filter(|p| h.header.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() != CREATED.ak())).all(|p| listers(id, h, p).unwrap_or_default().iter().any(|c| !bad.contains(c)))
+                })
             })
-            .map(|(id, _)| *id)
             .collect();
+        for (c, ai) in bad {
+            if let Some(p) = self.eph.remote.held.get_mut(&c).and_then(|h| h.parts.iter_mut().find(|p| p.ai == ai)) {
+                p.absorbed.clear();
+            }
+        }
         for id in gone {
             self.forget_held(&id);
         }
@@ -1542,6 +1585,25 @@ impl Engine {
         }
         let me = self.tid();
         self.build_ephemeral_with(class, me, vec![(tid, ak.clone(), f, None)], &BTreeMap::new(), &foreign)
+    }
+
+    /// Tests: `forge_ephemeral` listing `absorbed` as absorbed on `(tid, ak)` without carrying
+    /// their writes (a writer's cover that is no join).
+    #[doc(hidden)]
+    pub fn forge_cover(&mut self, tid: Tid, ak: &Ak, v: Value, absorbed: &[CommitId]) -> Result<Option<EphCommit>> {
+        let ts = self.core.hlc.next();
+        let w = Writer::new(ts, self.eph.src.clone(), self.eph.next);
+        let Some((f, r)) = run_ops(&Fragment::default(), w, &[PathOp { path: Vec::new(), op: Op::Set(v) }], &AnyView)? else { return Ok(None) };
+        self.eph.next = r.hi;
+        let me = self.tid();
+        // listed on every aspect of their parts, as an own cover lists them
+        let mut abs = Absorbs::new();
+        for c in absorbed {
+            for a in self.eph.remote.held.get(c).into_iter().flat_map(|h| h.parts.iter().filter_map(|p| h.header.aspects.get(p.ai))) {
+                abs.entry((a.tid, a.ak.clone())).or_default().insert(*c);
+            }
+        }
+        self.build_ephemeral(EphClass::Plain, me, vec![(tid, ak.clone(), f, None)], &abs)
     }
 
     /// Tests: pads the `/created` ephemeral thing `t`'s commits carry with a losing write of

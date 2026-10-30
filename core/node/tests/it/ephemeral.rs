@@ -1485,6 +1485,35 @@ fn replay_from_covers_back_not_held_spec_sync_9() {
     assert!(!net.engine(a).holds_ephemeral(&old.id));
 }
 
+// spec/sync.md §9 (a cover drops only what it contains), notes/ephemeral.md Own covers: a
+// writer's "cover" listing its earlier commit without carrying its writes drops nothing: holders
+// keep the commit, and nodes getting the two in either order read alike
+#[test]
+fn cover_without_its_commits_drops_nothing_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let wr = net.node(2, &[sv]);
+    let b = net.node(3, &[sv]);
+    let c = net.node(4, &[sv]);
+    let g = net.group(a, &[(wr, Role::Write), (b, Role::Write), (c, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let ak = osis_base::Ak::new(NOTES).unwrap();
+    let w1 = net.engine(wr).forge_ephemeral(w, &ak, Value::Map(BTreeMap::from([(s("k"), s("a"))]))).unwrap().unwrap();
+    let cv = net.engine(wr).forge_cover(w, &ak, Value::Map(BTreeMap::from([(s("j"), s("b"))])), &[w1.id]).unwrap().unwrap();
+    assert!(net.engine(wr).holds_ephemeral(&w1.id), "at its writer too");
+    net.engine(b).ingest_ephemeral(w1.blob.clone()).unwrap();
+    net.engine(b).ingest_ephemeral(cv.blob.clone()).unwrap();
+    assert!(net.engine(b).holds_ephemeral(&w1.id), "not contained: kept");
+    assert_eq!(net.engine(c).ingest_ephemeral(cv.blob).unwrap(), osis_node::ephemeral::EphIngest::Held { new: true });
+    assert_eq!(net.engine(c).ingest_ephemeral(w1.blob).unwrap(), osis_node::ephemeral::EphIngest::Held { new: true }, "not covered by it");
+    let want = notes(&mut net, b, w);
+    assert!(want.contains_key("k"), "{want:?}");
+    assert_eq!(notes(&mut net, c, w), want, "either order");
+}
+
 // spec/sync.md §9 (parts are judged; a commit none of whose parts is valid is not held),
 // notes/ephemeral.md Own covers: a commit invalid on arrival is neither held nor counted; it is
 // held once the durable set makes it valid (a promotion the node had not seen)
