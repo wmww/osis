@@ -448,6 +448,21 @@ fn paging_canonical_rejections_spec_8() {
     assert!(decode_snapshot(&plain, &scx(), &mut Interner::new(), Some(&mut rec.inner)).is_err());
 }
 
+/// §8: an ephemeral delta is never paged: above the page target it encodes inline and decodes
+/// only as unpaged; a paged one is bad input there.
+#[test]
+fn unpaged_ephemeral_deltas_spec_8() {
+    let st = big_set(3000, 7);
+    let plain = encode_snapshot(&snap(&st), &scx(), Some(&mut crate::Unpaged)).unwrap();
+    assert!(plain.len() > PageParams::FORMAT.target);
+    assert_eq!(decode_snapshot(&plain, &scx(), &mut Interner::new(), Some(&mut crate::Unpaged)).unwrap().fragment, st);
+    assert!(decode_snapshot(&plain, &scx(), &mut Interner::new(), None).is_err(), "durable: paging is mandatory");
+    let mut pages = MemoryPages::new();
+    let paged = encode_snapshot(&snap(&st), &scx(), Some(&mut pages)).unwrap();
+    let e = decode_snapshot(&paged, &scx(), &mut Interner::new(), Some(&mut crate::Unpaged)).unwrap_err();
+    assert_eq!(osis_base::Classified::class(&e), osis_base::ErrorClass::BadInput);
+}
+
 /// §8 at the format's sizes: a set above 64 KiB pages and round-trips.
 #[test]
 fn paging_format_size_spec_8() {

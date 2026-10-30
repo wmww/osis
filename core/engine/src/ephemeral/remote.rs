@@ -28,7 +28,7 @@ use crate::events::{ChangeId, Event, Origin};
 use osis_base::format::{KEEPALIVE_MS, MAX_DRIFT_MS, MAX_LEASE_MS, MAX_OWNER_DEPTH};
 use osis_base::{Ak, CommitId, CreationRecord, Tid, Ts, Value};
 use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, EphClass, Form, Header, Kind, MemoryBlobs};
-use osis_crdt::{AnyView, Fragment, Frontiers, Interner, Op, PathOp, Snapshot, Source, SourceKind, Writer};
+use osis_crdt::{AnyView, Fragment, Frontiers, Interner, Op, PathOp, Snapshot, Source, SourceKind, Unpaged, Writer};
 use osis_crypto::{DeleteSecret, VerifyingKey, dedup_secret};
 use osis_perm::{Dots, Point, Validity};
 use osis_schema::AspectKey;
@@ -532,9 +532,8 @@ impl Engine {
             let absorbed_here: BTreeMap<CommitId, Tid> = absorbed.get(&(tid, ak.clone())).into_iter().flatten().filter_map(|c| self.eph.remote.held.get(c).map(|h| (*c, h.header.author))).collect();
             let mut nonce = [0u8; osis_crdt::NONCE_LEN];
             self.rng.fill_bytes(&mut nonce);
-            let bytes = match osis_crdt::encode_snapshot(&Snapshot { nonce, fragment, frontiers: Frontiers::default(), absorbed: absorbed_here, authors }, &cx, None) {
+            let bytes = match osis_crdt::encode_snapshot(&Snapshot { nonce, fragment, frontiers: Frontiers::default(), absorbed: absorbed_here, authors }, &cx, Some(&mut Unpaged)) {
                 Ok(b) => b,
-                // past the page target (ephemeral deltas are not paged)
                 Err(e) => {
                     self.report_eph(&format!("an ephemeral commit could not be built: {e}"));
                     return Ok(None);
@@ -573,7 +572,7 @@ impl Engine {
             let empty = BTreeMap::new();
             for p in &blob.parts {
                 let cx = osis_commit::delta_ctx(&blob.header, &id, p.ai, &mut interner)?;
-                let s = osis_crdt::decode_snapshot(&p.delta, &cx, &mut interner, None)?;
+                let s = osis_crdt::decode_snapshot(&p.delta, &cx, &mut interner, Some(&mut Unpaged))?;
                 let mut hp = HeldPart::new(p.ai, s, p.delta.len());
                 self.judge_part(&header, &id, &mut hp, true, &empty);
                 held_parts.push(hp);
@@ -728,7 +727,7 @@ impl Engine {
                 continue;
             }
             let cx = osis_commit::delta_ctx(&h, &id, p.ai, &mut interner)?;
-            let s = osis_crdt::decode_snapshot(&p.delta, &cx, &mut interner, None)?;
+            let s = osis_crdt::decode_snapshot(&p.delta, &cx, &mut interner, Some(&mut Unpaged))?;
             let v = s.fragment.read().ok_or(Error::BadInput("empty /created"))?;
             let rec = CreationRecord::from_value(&v).ok_or(Error::BadInput("/created is not a creation record"))?;
             if rec.tid() != a.tid {
@@ -746,7 +745,7 @@ impl Engine {
                 continue;
             };
             let dedup = dedup_secret(rec.nonce());
-            match osis_commit::verify_part(&h, &id, p, &dedup, &mut interner, None)? {
+            match osis_commit::verify_part(&h, &id, p, &dedup, &mut interner, Some(&mut Unpaged))? {
                 osis_commit::Decoded::Snapshot(s) => decoded.push((p.ai, s, p.delta.len())),
                 osis_commit::Decoded::Delta(_) => return Err(Error::BadInput("ephemeral commit with a writer delta")),
             }
@@ -1131,18 +1130,14 @@ impl Engine {
             // what it cannot absorb (an aspect no longer writable here) does not make it weigh
             // again at every step
             let stuck = stuck / COVER_FACTOR.max(1);
-            // a delta past the page target cannot go in an ephemeral commit (not paged): no cover;
-            // weighed again once the held commits double
-            let Some(cover) = cover_cost(me, &deltas) else {
-                self.eph.remote.cover_est.insert(actor, held + stuck);
-                self.report_eph("own ephemeral commits could not be covered: an aspect's state is too large for one ephemeral commit");
-                continue;
-            };
+            let cover = cover_cost(me, &deltas);
             self.eph.remote.cover_est.insert(actor, cover + stuck);
             // one commit is what its cover would be again
             if ids.is_empty() || (!force && (ids.len() < 2 || held <= COVER_FACTOR * cover)) {
                 continue;
             }
+            // a delta that does not fit a blob (ephemeral deltas are not paged) or header lists
+            // past the inline bound: no cover (reported); weighed again once the held commits double
             let Some(c) = self.build_ephemeral(EphClass::Plain, actor, deltas, &absorbed)? else {
                 self.eph.remote.cover_est.insert(actor, held + stuck);
                 continue;
@@ -1216,7 +1211,7 @@ impl Engine {
         for (actor, ids) in by {
             let costs: Vec<usize> = ids.iter().filter_map(|id| self.eph.remote.held.get(id)).map(|h| h.bytes + ENTRY_CHARGE).collect();
             let (deltas, _) = self.own_cover(actor, &ids);
-            out.push((actor, costs.iter().sum(), cover_cost(me, &deltas).unwrap_or(0), costs.iter().copied().max().unwrap_or(0)));
+            out.push((actor, costs.iter().sum(), cover_cost(me, &deltas), costs.iter().copied().max().unwrap_or(0)));
         }
         out
     }
@@ -1285,19 +1280,19 @@ fn own_plain_unexpiring(h: &Held, me: Tid) -> bool {
     h.header.author == me && h.header.ephemeral == Some(EphClass::Plain) && h.parts.iter().all(|p| h.header.aspects.get(p.ai).is_some_and(|a| a.expires.is_none()))
 }
 
-/// The cost of a cover of `deltas` by `me`: its encoded deltas plus `ENTRY_CHARGE`; `None` when a
-/// delta would page (an ephemeral commit carries no pages).
-fn cover_cost(me: Tid, deltas: &[EphDelta]) -> Option<usize> {
+/// The cost of a cover of `deltas` by `me`: its encoded deltas (unpaged) plus `ENTRY_CHARGE`.
+fn cover_cost(me: Tid, deltas: &[EphDelta]) -> usize {
     let mut cx = osis_commit::writer_ctx(Kind::ContentSnapshot, Ts::default(), me, 0, 0);
     cx.own = Source::commit(CommitId([0; 32]));
     let bytes: usize = deltas
         .iter()
         .map(|(_, _, f, _)| {
             let s = Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: f.clone(), frontiers: Frontiers::default(), absorbed: BTreeMap::new(), authors: BTreeMap::new() };
-            osis_crdt::encode_snapshot(&s, &cx, None).ok().map(|b| b.len())
+            // unpaged encoding fails only on a malformed fragment: counted as nothing
+            osis_crdt::encode_snapshot(&s, &cx, Some(&mut Unpaged)).map_or(0, |b| b.len())
         })
-        .sum::<Option<usize>>()?;
-    Some(bytes + ENTRY_CHARGE)
+        .sum();
+    bytes + ENTRY_CHARGE
 }
 
 /// The own writes of an aspect without the values of those that expire (a snapshot never

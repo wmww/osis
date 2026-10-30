@@ -72,7 +72,7 @@ pub use shape::Shown;
 pub use batch::Batch;
 pub use ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values, remove, replace, reset_entries};
 pub use undo::{UndoBuffer, Undone, undo};
-pub use page::{MemoryPages, PageError, PageParams, PageSink, PageSource};
+pub use page::{MemoryPages, PageError, PageParams, PageSink, PageSource, Unpaged};
 pub use paging::{PagedTouch, Paths, Step};
 pub use state::MemberRef;
 pub use seq::{Anchor, Seq, SeqContent, SeqElem};

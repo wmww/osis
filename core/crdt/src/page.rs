@@ -44,6 +44,31 @@ pub struct PageParams {
 
 impl PageParams {
     pub const FORMAT: PageParams = PageParams { target: PAGE_TARGET, cut: ChunkParams::FORMAT, fanout: TREE_FANOUT };
+    /// Never pages: ephemeral deltas (spec/crdt.md §8), bounded by the blob alone.
+    pub const UNPAGED: PageParams = PageParams { target: usize::MAX, ..PageParams::FORMAT };
+}
+
+/// The page plug of a delta that is never paged (ephemeral deltas, spec/crdt.md §8): encodes
+/// every array inline; a link to a page is bad input.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Unpaged;
+
+impl PageSink for Unpaged {
+    fn put(&mut self, _: &[u8]) -> Result<Link, PageError> {
+        Err(PageError::Corrupt)
+    }
+    fn params(&self) -> PageParams {
+        PageParams::UNPAGED
+    }
+}
+
+impl PageSource for Unpaged {
+    fn get(&mut self, _: &Link) -> Result<Vec<u8>, PageError> {
+        Err(PageError::Corrupt)
+    }
+    fn params(&self) -> PageParams {
+        PageParams::UNPAGED
+    }
 }
 
 /// Writes one page or link page (its canonical plaintext) as a blob and returns its link.
