@@ -85,7 +85,7 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | `EPH_TOMBSTONE_MS` = `MAX_DRIFT` | M (commented) | |
 | `MAX_RELAY_SEEN` 2^16 | M (commented) | |
 | `RelayLimits` 6000 / 32 MiB per 60 s | R (rate, code 4) | no relays / relay floods |
-| `Policy` defaults: caps per label (2^20 entries, 16 GiB), totals (2^20 labels, 2^26 entries, 256 GiB), rates per 60 s (deletes, replacements 20 000, deposits 600, `entry_replacements` 4), ephemeral 16 MiB/label, 1 GiB total, presence 4 MiB, `log_keep` 2^20, `max_connections` 10 000, `hello_ms` 10 s, `max_buffered_bytes` 512 MiB | R (operator config; refuse with a code or close) | |
+| `Policy` defaults: caps per label (2^20 entries, 16 GiB), totals (2^20 labels, 2^26 entries, 256 GiB), rates per 60 s (deletes, replacements 20 000, deposits 600, registers 600, `entry_replacements` 4), ephemeral 16 MiB/label, 1 GiB total, presence 4 MiB, `log_keep` 2^20, `max_connections` 10 000, `hello_ms` 10 s, `max_buffered_bytes` 512 MiB | R (operator config; refuse with a code or close) | |
 | `max_queued_bytes` 48 MiB (at least `SEND_QUEUE` = `WINDOW_QUEUE` + `PUSH_QUEUE`, config refuses less) | R (a peer that does not read) | sessions keeping the window closed / unbounded buffer |
 | `PUSH_POLL_MS` 1 s | M (held pushes resume up to this late after the queue drains) | the driver spins while a slow subscriber drains / pushes wait for an unrelated tick |
 | `MAX_PATH` 2^20 | R (corrupt-store guard) | |

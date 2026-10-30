@@ -344,9 +344,9 @@ impl LabelStore for PeerStore<'_> {
         Ok(Code::REFUSED)
     }
 
-    fn push_step(&mut self, label: &LabelId, step: Step, claim_set: Option<ClaimSet>) -> std::result::Result<(), StoreError> {
+    fn push_step(&mut self, label: &LabelId, step: Step, claim_set: Option<ClaimSet>) -> std::result::Result<Code, StoreError> {
         self.acc.steps.push((*label, step, claim_set));
-        Ok(())
+        Ok(Code::OK)
     }
 
     fn entry(&self, label: &LabelId, blob_id: &BlobId) -> std::result::Result<Option<EntryMeta>, StoreError> {
