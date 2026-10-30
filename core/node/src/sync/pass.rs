@@ -282,8 +282,9 @@ impl SyncEngine {
                 let tight = self.lc(conn, &l).and_then(|x| x.budget).is_some_and(|b| b < self.cfg.tight_budget);
                 self.heartbeat(&g, l, keys, tight)?;
             } else if !self.may_rotate_read(&g) {
-                // the revokes of departures inside members only: they tell the label's rotators
-                // what keeps its epoch uncovered (spec/permissions.md §4 exception)
+                // the revokes of departures inside members and their chains' keysets only: they
+                // tell the label's rotators what keeps its epoch uncovered and what to seal to
+                // (spec/permissions.md §4 exception)
                 held = self.certificates(&g, l, true, &BTreeSet::new())?;
             }
         }
@@ -1553,7 +1554,7 @@ impl SyncEngine {
     fn certificates(&mut self, g: &Tid, l: LabelId, revokes_only: bool, authors: &BTreeSet<Tid>) -> Result<BTreeSet<CommitId>> {
         let closure = self.engine.closure(g);
         let wanted = if revokes_only {
-            // under an epoch a departure inside a member leaves uncovered: those revokes only
+            // under an epoch a departure inside a member leaves uncovered: those revokes and keysets only
             let actor = self.engine.group_actor(g);
             self.engine.inside_member_revokes(&actor, &closure)
         } else {
