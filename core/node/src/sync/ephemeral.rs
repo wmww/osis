@@ -9,10 +9,10 @@
 //! and passed to nobody. Per label, the bytes held from others are capped
 //! (`SyncConfig::ephemeral_bytes`): past it further ephemeral commits of the label are not
 //! applied (`EphemeralRefused`). Only an author compacts, its own commits into an own cover once
-//! they cost more than twice it (`Engine::compact_own_ephemeral`), and deletes what the cover
-//! absorbs where it is present before uploading the cover; holders drop and delete the absorbed
-//! entries when the cover arrives. A server refusing an entry for its cap triggers nothing but a
-//! report and the retry at the periodic pass (`eph_retry`).
+//! they cost more than twice it (`Engine::compact_own_ephemeral`); holders drop the absorbed
+//! entries when the cover arrives, and a writer deletes them at a server once the cover is held
+//! there (`waiting`). A server refusing an entry for its cap triggers nothing but a report and
+//! the retry at the periodic pass (`eph_retry`).
 //! Presence entries are uploaded by their author only (never spread, listed or reconciled up by
 //! another node); a node drops another's presence commit as soon as no server or peer it syncs
 //! the label with holds an entry of it (a pushed deletion, the loss of the connection, a served
@@ -20,6 +20,17 @@
 //! server it lost, so the entries come back while their author is still there.
 
 use super::state::ServerKey;
+use super::{Action, ConnId, Phase, SyncEngine};
+use crate::ephemeral::{EphCommit, EphIngest};
+use crate::error::Result;
+use crate::events::{Diagnostic, DiagnosticKind};
+use crate::labeling::{HeadKeys, delete_item, open_commit, seal_body_as};
+use osis_base::{BlobId, CommitId, LabelId, Tid};
+use osis_commit::{DeleteKey, EphClass};
+use osis_crypto::{Signature, SigningSecret};
+use osis_label::Class;
+use osis_proto::{Code, Command};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Where an ephemeral or relay-only entry came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,17 +49,6 @@ impl RelayFrom {
         }
     }
 }
-use super::{Action, ConnId, Phase, SyncEngine};
-use crate::ephemeral::{EphCommit, EphIngest};
-use crate::error::Result;
-use crate::events::{Diagnostic, DiagnosticKind};
-use crate::labeling::{HeadKeys, delete_item, open_commit, seal_body_as};
-use osis_base::{BlobId, CommitId, LabelId, Tid};
-use osis_commit::{DeleteKey, EphClass};
-use osis_crypto::{Signature, SigningSecret};
-use osis_label::Class;
-use osis_proto::{Code, Command};
-use std::collections::{BTreeMap, BTreeSet};
 
 /// One ephemeral entry held under a label (in memory).
 #[derive(Clone)]
@@ -216,6 +216,11 @@ impl SyncEngine {
         self.conns.iter().filter_map(|(id, c)| c.labels.get(l).filter(|x| x.phase == Phase::Open && c.up).map(|x| (*id, c.server, x.keys.clone()))).collect()
     }
 
+    /// An open connection with label `l` to server `s`.
+    fn eph_conn_to(&self, l: &LabelId, s: ServerKey) -> Option<ConnId> {
+        self.eph_conns(l).into_iter().find(|(_, server, _)| *server == s).map(|x| x.0)
+    }
+
     /// Per step: re-judges held ephemeral commits, sends what was written, compacts the own
     /// commits where due (after the take: the cover absorbs what was just built, which then never
     /// goes), forgets (and deletes where it uploaded) what a cover absorbed.
@@ -250,7 +255,7 @@ impl SyncEngine {
         }
         let ready: Vec<(LabelId, BlobId, ServerKey)> = self.eph.waiting.iter().filter(|((l, _, s), (c, _))| self.eph_cover(c).is_none_or(|c| self.eph_held_at(&c, l, *s))).map(|(k, _)| *k).collect();
         for (l, b, s) in ready {
-            let Some(conn) = self.eph_conns(&l).into_iter().find(|(_, server, _)| *server == s).map(|x| x.0) else { continue };
+            let Some(conn) = self.eph_conn_to(&l, s) else { continue };
             let Some((_, item)) = self.eph.waiting.remove(&(l, b, s)) else { continue };
             self.eph_delete_now(conn, l, b, item, out)?;
         }
@@ -495,7 +500,7 @@ impl SyncEngine {
 
     /// Uploads lane entries `ids` of `l` on `conn`: stamped ones as they are, own unstamped ones
     /// stamped under the connection's write key.
-    pub(crate) fn eph_upload(&mut self, conn: ConnId, l: LabelId, ids: &[BlobId], keys: &HeadKeys, out: &mut Vec<Action>) -> Result<()> {
+    fn eph_upload(&mut self, conn: ConnId, l: LabelId, ids: &[BlobId], keys: &HeadKeys, out: &mut Vec<Action>) -> Result<()> {
         let mut entries = Vec::new();
         for b in ids {
             // one upload of an entry in flight per connection: a second status would reach the
@@ -525,13 +530,21 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// `eph_upload` under the keys `l` is open with on `conn`.
+    pub(crate) fn eph_upload_on(&mut self, conn: ConnId, l: LabelId, ids: &[BlobId], out: &mut Vec<Action>) -> Result<()> {
+        match self.lc(conn, &l).map(|x| x.keys.clone()) {
+            Some(keys) => self.eph_upload(conn, l, ids, &keys, out),
+            None => Ok(()),
+        }
+    }
+
     /// The held entry IDs of `l` a first Sync on `conn` lists as gained (none past the message
     /// cap: then everything goes after the Sync, `eph_synced`).
     pub(crate) fn eph_gained(&mut self, conn: ConnId, l: LabelId) -> Vec<BlobId> {
         if !self.eph.announced.insert((conn, l)) {
             return Vec::new();
         }
-        let ids: BTreeSet<BlobId> = self.eph.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).filter(|(_, e)| !e.foreign_presence()).map(|((_, b), _)| *b).collect();
+        let ids: BTreeSet<BlobId> = Self::eph_entries_of(&self.eph, &l).filter(|(_, e)| !e.foreign_presence()).map(|(b, _)| b).collect();
         if ids.is_empty() || ids.len() > osis_proto::msg::MAX_GAINED {
             if !ids.is_empty() {
                 self.eph.announced.remove(&(conn, l));
@@ -550,10 +563,8 @@ impl SyncEngine {
                 g.remove(b);
             }
         }
-        if !mine.is_empty()
-            && let Some(keys) = self.lc(conn, &l).map(|x| x.keys.clone())
-        {
-            self.eph_upload(conn, l, &mine, &keys, out)?;
+        if !mine.is_empty() {
+            self.eph_upload_on(conn, l, &mine, out)?;
         }
         Ok(rest)
     }
@@ -567,20 +578,11 @@ impl SyncEngine {
                 self.eph.present.insert((server, l, b));
             }
         }
-        if self.eph.announced.contains(&(conn, l)) {
-            let missing: Vec<BlobId> = self.eph.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).map(|((_, b), _)| *b).filter(|b| !self.eph.present.contains(&(server, l, *b))).collect();
-            if !missing.is_empty()
-                && let Some(keys) = self.lc(conn, &l).map(|x| x.keys.clone())
-            {
-                self.eph_upload(conn, l, &missing, &keys, out)?;
-            }
-        } else {
-            // not announced (too many): everything held goes, the peer keeps one copy
-            self.eph.announced.insert((conn, l));
-            let all: Vec<BlobId> = self.eph.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).map(|((_, b), _)| *b).collect();
-            if let Some(keys) = self.lc(conn, &l).map(|x| x.keys.clone()) {
-                self.eph_upload(conn, l, &all, &keys, out)?;
-            }
+        // not announced (too many): everything held goes, the peer keeps one copy
+        let all = self.eph.announced.insert((conn, l));
+        let ids: Vec<BlobId> = Self::eph_entries_of(&self.eph, &l).map(|(b, _)| b).filter(|b| all || !self.eph.present.contains(&(server, l, *b))).collect();
+        if !ids.is_empty() {
+            self.eph_upload_on(conn, l, &ids, out)?;
         }
         Ok(())
     }
@@ -622,9 +624,7 @@ impl SyncEngine {
                 Code::STORAGE_CAP => {
                     // an own cover: what it absorbs goes first there, and it goes again
                     if self.eph_free_for(conn, server, l, b, out)? {
-                        if let Some(keys) = self.lc(conn, &l).map(|x| x.keys.clone()) {
-                            self.eph_upload(conn, l, &[b], &keys, out)?;
-                        }
+                        self.eph_upload_on(conn, l, &[b], out)?;
                     } else if self.eph.capped.insert((conn, l, b)) {
                         self.eph_report(&l, "a server's ephemeral cap was reached: an entry stays out there until room appears (retried at the periodic pass)");
                     }
@@ -817,10 +817,8 @@ impl SyncEngine {
     /// others' compactions or expiries may have made room).
     pub(crate) fn eph_retry(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<Action>) -> Result<()> {
         let ids: Vec<BlobId> = self.eph.capped.range((conn, l, BlobId([0; 32]))..).take_while(|(c, x, _)| *c == conn && *x == l).map(|x| x.2).filter(|b| self.eph.entries.contains_key(&(l, *b))).collect();
-        if !ids.is_empty()
-            && let Some(keys) = self.lc(conn, &l).map(|x| x.keys.clone())
-        {
-            self.eph_upload(conn, l, &ids, &keys, out)?;
+        if !ids.is_empty() {
+            self.eph_upload_on(conn, l, &ids, out)?;
         }
         Ok(())
     }
@@ -854,7 +852,7 @@ impl SyncEngine {
                     (Some(a), Some(w)) => w.0 = a,
                     _ => {
                         if let Some((_, item)) = self.eph.waiting.remove(&k)
-                            && let Some(conn) = self.eph_conns(&k.0).into_iter().find(|(_, s, _)| *s == k.2).map(|x| x.0)
+                            && let Some(conn) = self.eph_conn_to(&k.0, k.2)
                         {
                             self.eph_delete_now(conn, k.0, k.1, item, out)?;
                         }
