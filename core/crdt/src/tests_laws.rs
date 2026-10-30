@@ -196,8 +196,8 @@ fn budget_big_map_spec_4_1() {
 }
 
 /// A cached placement follows a join whose forged copy of an element's chosen position write
-/// names another anchor (the old write is gone, so the sibling key of the element's row is no
-/// longer found where it sits): it rebuilds (a gate-found seed).
+/// names another anchor (the old write is gone, so the element's row, until re-placed, sits by a
+/// key its record no longer holds; a gate-found seed).
 #[test]
 fn forged_edge_copy_cached_placement() {
     let (s, _) = forged_states(17419099531132830180, &[Ty::Text]);
