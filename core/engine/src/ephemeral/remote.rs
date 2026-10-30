@@ -166,7 +166,8 @@ pub(crate) struct Remote {
     pub timers: BTreeMap<u64, BTreeSet<(CommitId, usize)>>,
     /// Relay-only commits delivered, oldest first, with their `ts` (wall ms).
     pub delivered: VecDeque<(CommitId, u64, Tid)>,
-    pub delivered_set: BTreeSet<CommitId>,
+    /// Per commit in `delivered`, the parts delivered (its projections go as several blobs).
+    pub delivered_set: BTreeMap<CommitId, BTreeSet<usize>>,
     /// Per author, relay-only commits at or below this `ts` (wall ms) are dropped
     /// (`MAX_DELIVERED`; per author, so a writer flooding signals drops only its own).
     pub delivered_floor: BTreeMap<Tid, u64>,
@@ -854,7 +855,7 @@ impl Engine {
         if class == EphClass::Relay {
             // its only replay window (notes/ephemeral.md Signals)
             let r = &self.eph.remote;
-            if r.delivered_set.contains(&id) || r.delivered_floor.get(&h.author).is_some_and(|f| at <= *f) || at.saturating_add(MAX_DRIFT_MS) < now || at > now.saturating_add(MAX_DRIFT_MS) {
+            if r.delivered_set.get(&id).is_some_and(|d| blob.parts.iter().all(|p| d.contains(&p.ai))) || r.delivered_floor.get(&h.author).is_some_and(|f| at <= *f) || at.saturating_add(MAX_DRIFT_MS) < now || at > now.saturating_add(MAX_DRIFT_MS) {
                 return Ok(EphIngest::Dropped);
             }
         } else {
@@ -1127,12 +1128,22 @@ impl Engine {
         self.eph.remote.held.iter().any(|(c, x)| x.header.ephemeral == Some(EphClass::Presence) && x.header.author == h.author && x.header.actor == h.actor && (x.header.ts, *c) > (h.ts, *id))
     }
 
-    /// Delivers verified relay-only commit `id` once: remembered as delivered (`MAX_DELIVERED`,
-    /// per-author floors), its valid signal parts fired.
+    /// Delivers the parts of verified relay-only commit `id` this blob carries once each:
+    /// remembered as delivered (`MAX_DELIVERED`, per-author floors), its valid signal parts not
+    /// delivered before fired (a commit whose parts have different readers goes as several blobs).
     fn deliver_relay(&mut self, id: CommitId, h: &Header, decoded: Vec<(usize, Snapshot, usize)>, carried: &BTreeMap<Tid, CreationRecord>, now: u64) -> EphIngest {
         let r = &mut self.eph.remote;
-        r.delivered_set.insert(id);
-        r.delivered.push_back((id, h.ts.wall_ms().0, h.author));
+        let seen = match r.delivered_set.get_mut(&id) {
+            Some(d) => std::mem::take(d),
+            None => {
+                r.delivered.push_back((id, h.ts.wall_ms().0, h.author));
+                BTreeSet::new()
+            }
+        };
+        let decoded: Vec<_> = decoded.into_iter().filter(|(ai, _, _)| !seen.contains(ai)).collect();
+        let mut all = seen;
+        all.extend(decoded.iter().map(|(ai, _, _)| *ai));
+        r.delivered_set.insert(id, all);
         while r.delivered.len() > MAX_DELIVERED || r.delivered.front().is_some_and(|(_, t, _)| t.saturating_add(MAX_DRIFT_MS) < now) {
             if let Some((c, t, a)) = r.delivered.pop_front() {
                 r.delivered_set.remove(&c);

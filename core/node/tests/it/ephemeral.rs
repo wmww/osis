@@ -523,6 +523,40 @@ fn signal_once_to_connected_devices_spec_sync_5() {
     assert!(fired(&rb).is_empty(), "a restarted node does not see it again");
 }
 
+// spec/sync.md §5 (a signal is delivered once): a relay-only commit whose parts go as several
+// blobs (projections for different readers) delivers every blob's signals, each once
+#[test]
+fn signal_commit_in_several_blobs_all_delivered_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let t1 = net.item(a, g, g, "x");
+    let t2 = net.item(a, g, g, "y");
+    net.run();
+    let mut m = Mutation::new();
+    m.set(t1, &ukey("/t/ring", Lifetime::Signal), &s("one")).unwrap();
+    m.set(t2, &ukey("/t/ring", Lifetime::Signal), &s("two")).unwrap();
+    net.engine(a).write(m).unwrap();
+    let cs = net.engine(a).take_ephemeral().unwrap();
+    let blob = cs.iter().find(|c| c.class == osis_commit::EphClass::Relay).unwrap().blob.clone();
+    assert_eq!(blob.parts.len(), 2);
+    let rb = net.listen(b);
+    let mut fires = Vec::new();
+    for p in &blob.parts {
+        let one = osis_commit::CommitBlob { header: blob.header.clone(), signature: blob.signature, parts: vec![p.clone()] };
+        net.engine(b).ingest_ephemeral(one.clone()).unwrap();
+        assert_eq!(net.engine(b).ingest_ephemeral(one).unwrap(), osis_node::ephemeral::EphIngest::Dropped, "a copy");
+        fires.extend(fired(&rb).into_iter().map(|(t, _, v, _)| (t, v)));
+    }
+    fires.sort();
+    let mut want = vec![(t1, s("one")), (t2, s("two"))];
+    want.sort();
+    assert_eq!(fires, want);
+    assert_eq!(net.engine(b).ingest_ephemeral(blob).unwrap(), osis_node::ephemeral::EphIngest::Dropped, "the whole commit again");
+}
+
 // spec/crdt.md §4.7, spec/sync.md §1 (an ephemeral commit's expiry rides in its header and its
 // blob prefix): a typing indicator written with an expiry reaches the other member and is gone
 // everywhere at its time, servers included
