@@ -721,9 +721,7 @@ impl SyncEngine {
             for b in holds {
                 self.eph.present.insert((server, l, b));
             }
-            if let Some(keys) = self.lc(conn, &l).map(|x| x.keys.clone()) {
-                self.eph_upload(conn, l, &up, &keys, out)?;
-            }
+            self.eph_upload_on(conn, l, &up, out)?;
         }
         for b in have {
             self.state.set_present(server, l, b, false);
