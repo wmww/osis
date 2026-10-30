@@ -262,6 +262,7 @@ impl Engine {
         let first = self.eph.next;
         let mut resolved = Vec::new();
         let mut signals = Vec::new();
+        let mut unfull = Vec::new();
         {
             let things = &self.eph.things;
             let creates = &m.creates;
@@ -344,6 +345,18 @@ impl Engine {
             };
             if let Some((delta, r)) = out {
                 let log = Some((base.footprint(&delta), am.schema.clone()));
+                // an aspect whose own delta did not fit a blob takes only writes that make it fit
+                // (spec/sync.md §9)
+                if am.lifetime != Lifetime::Presence {
+                    match self.check_full(tid, ak, &delta) {
+                        None => {
+                            self.eph.next = first;
+                            return Err(Error::Misuse("an ephemeral aspect's own state does not fit a blob"));
+                        }
+                        Some(true) => unfull.push((*tid, ak.clone())),
+                        Some(false) => {}
+                    }
+                }
                 self.eph.next = r.hi;
                 resolved.push(Resolved { tid: *tid, ak: ak.clone(), delta, range: (r.lo, r.hi), expires, presence: am.lifetime == Lifetime::Presence, log });
             }
@@ -362,6 +375,9 @@ impl Engine {
             None
         };
         // the ephemeral half: cannot fail from here on
+        for k in &unfull {
+            self.eph.remote.full.remove(k);
+        }
         for t in &persisted {
             self.eph.things.remove(t);
         }

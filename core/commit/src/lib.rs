@@ -23,7 +23,7 @@ mod tests;
 
 pub use blob::{CommitBlob, Part};
 pub use builder::{AspectWrite, Built, CommitBuilder};
-pub use project::{Projection, blob_expiry, prefix_inputs, project, project_resolved, rewrite, strict_subset};
+pub use project::{DELTA_PAST_BLOB, Projection, blob_expiry, prefix_inputs, project, project_resolved, rewrite, strict_subset};
 pub use lists::{BlobSink, BlobSource, MAX_LIST_BYTES, MemoryBlobs, read_list, write_list};
 pub use error::Error;
 pub use header::{AspectEntry, ChunkEntry, DeleteKey, EphClass, FOREVER, Form, Header, Kind, Links, ListField, MAX_SCHEMAS, Origin, PurgeItem, verify_signature};

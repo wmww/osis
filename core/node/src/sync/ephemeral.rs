@@ -104,13 +104,13 @@ pub(crate) struct Lane {
     /// absorbed them: deleted there once the upload is answered OK (else a slow server kept every
     /// covered entry; `waiting` while that cover is not held there), and not taken back
     /// meanwhile from a peer that has it (it is no longer covered by anything held).
-    pub orphans: BTreeMap<(LabelId, BlobId, ConnId), (osis_label::DeleteItem, Option<CommitId>)>,
-    /// Deletes of absorbed entries at a server, waiting until the cover that absorbs them is held
-    /// there (`eph_flush`): deleting first lost their writes at that server for good when the
+    pub orphans: BTreeMap<(LabelId, BlobId, ConnId), (osis_label::DeleteItem, BTreeSet<CommitId>)>,
+    /// Deletes of absorbed entries at a server, waiting until the covers that absorb them (several
+    /// when a cover was split by aspect) are held there (`eph_flush`): deleting first lost their writes at that server for good when the
     /// cover never came (its author crashed in between; the tombstone keeps holders from
     /// bringing them back). The author's own cover refused for the cap deletes them at once and
     /// goes again (room for it).
-    pub waiting: BTreeMap<(LabelId, BlobId, ServerKey), (CommitId, osis_label::DeleteItem)>,
+    pub waiting: BTreeMap<(LabelId, BlobId, ServerKey), (BTreeSet<CommitId>, osis_label::DeleteItem)>,
     /// (server, label) reconciled since start, and the reconciliations running (`sync_label`)
     /// with the ephemeral entries their set listed: only those the reply can say the peer holds
     /// (one arriving meanwhile from elsewhere is not known there).
@@ -247,13 +247,21 @@ impl SyncEngine {
         self.eph.by_commit.get(c).is_some_and(|ks| ks.iter().any(|(l2, b)| l2 == l && self.eph.present.contains(&(s, *l2, *b))))
     }
 
-    /// Sends the waiting deletes whose cover is held at their server now (on a connection where
-    /// the label is open).
+    /// Whether every cover of `cs` that `l`'s closure (of group `g`) holds a thing of is held at
+    /// server `s` under `l`: a split cover's part about other things is never placed there.
+    fn eph_covers_held_at(&self, cs: &BTreeSet<CommitId>, g: Option<Tid>, l: &LabelId, s: ServerKey) -> bool {
+        let outside = |c: &CommitId| g.is_some_and(|g| self.engine.ephemeral_header(c).is_some_and(|h| !h.aspects.iter().any(|a| self.engine.in_ephemeral_closure(&g, &a.tid))));
+        cs.iter().all(|c| self.eph_held_at(c, l, s) || outside(c))
+    }
+
+    /// Sends the waiting deletes whose covers are held at their server now (on a connection
+    /// where the label is open).
     fn eph_flush(&mut self, out: &mut Vec<Action>) -> Result<()> {
         if self.eph.waiting.is_empty() {
             return Ok(());
         }
-        let ready: Vec<(LabelId, BlobId, ServerKey)> = self.eph.waiting.iter().filter(|((l, _, s), (c, _))| self.eph_cover(c).is_none_or(|c| self.eph_held_at(&c, l, *s))).map(|(k, _)| *k).collect();
+        let groups: BTreeMap<LabelId, Tid> = self.labels().into_iter().map(|(g, gl)| (gl.id, g)).collect();
+        let ready: Vec<(LabelId, BlobId, ServerKey)> = self.eph.waiting.iter().filter(|((l, _, s), (cs, _))| self.eph_covers_held_at(&self.eph_covers(cs), groups.get(l).copied(), l, *s)).map(|(k, _)| *k).collect();
         for (l, b, s) in ready {
             let Some(conn) = self.eph_conn_to(&l, s) else { continue };
             let Some((_, item)) = self.eph.waiting.remove(&(l, b, s)) else { continue };
@@ -262,39 +270,46 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// The newest cover in the chain from `c` (`c`, or what absorbed it since, transitively)
-    /// this node holds (its entries placed, or about to be); `None` when the chain ends in
-    /// nothing held.
-    fn eph_cover(&self, c: &CommitId) -> Option<CommitId> {
-        let mut cur = *c;
-        // a chain is never longer than the commits held
-        for _ in 0..=self.eph.by_commit.len().saturating_add(1) {
-            if self.eph.by_commit.contains_key(&cur) || self.engine.holds_ephemeral(&cur) {
-                return Some(cur);
+    /// The newest covers from `cs` (each of `cs`, or what absorbed it since, transitively) this
+    /// node holds (their entries placed, or about to be); chains ending in nothing held add
+    /// nothing.
+    fn eph_covers(&self, cs: &BTreeSet<CommitId>) -> BTreeSet<CommitId> {
+        let mut out = BTreeSet::new();
+        let mut seen = BTreeSet::new();
+        let mut todo: Vec<CommitId> = cs.iter().copied().collect();
+        while let Some(c) = todo.pop() {
+            if !seen.insert(c) {
+                continue;
             }
-            cur = self.engine.ephemeral_absorber(&cur)?;
+            if self.eph.by_commit.contains_key(&c) || self.engine.holds_ephemeral(&c) {
+                out.insert(c);
+            } else {
+                todo.extend(self.engine.ephemeral_absorbers(&c));
+            }
         }
-        None
+        out
     }
 
-    /// Deletes absorbed entry `b` of `l` at server `s` on `conn` once `cover` (or what absorbed
-    /// it since) is held there.
+    /// Deletes absorbed entry `b` of `l` at server `s` on `conn` once `covers` (or what absorbed
+    /// them since) are held there.
     #[allow(clippy::too_many_arguments)]
-    fn eph_delete_after(&mut self, conn: ConnId, s: ServerKey, l: LabelId, b: BlobId, item: osis_label::DeleteItem, cover: Option<CommitId>, out: &mut Vec<Action>) -> Result<()> {
-        match cover.and_then(|c| self.eph_cover(&c)) {
-            Some(c) if !self.eph_held_at(&c, &l, s) => {
-                self.eph.waiting.insert((l, b, s), (c, item));
-                Ok(())
+    fn eph_delete_after(&mut self, conn: ConnId, s: ServerKey, l: LabelId, b: BlobId, item: osis_label::DeleteItem, covers: BTreeSet<CommitId>, out: &mut Vec<Action>) -> Result<()> {
+        let cs = self.eph_covers(&covers);
+        if !cs.is_empty() {
+            let g = self.group_of(&l);
+            if !self.eph_covers_held_at(&cs, g, &l, s) {
+                self.eph.waiting.insert((l, b, s), (cs, item));
+                return Ok(());
             }
-            _ => self.eph_delete_now(conn, l, b, item, out),
         }
+        self.eph_delete_now(conn, l, b, item, out)
     }
 
     /// Sends at once the waiting deletes at `server` under `l` of what own entry `b`'s commit
     /// absorbs (refused for the cap: room for it). Whether there were any.
     fn eph_free_for(&mut self, conn: ConnId, server: ServerKey, l: LabelId, b: BlobId, out: &mut Vec<Action>) -> Result<bool> {
         let Some(commit) = self.eph.entries.get(&(l, b)).filter(|e| e.own).map(|e| e.commit) else { return Ok(false) };
-        let freed: Vec<(LabelId, BlobId, ServerKey)> = self.eph.waiting.iter().filter(|((l2, _, s), (c, _))| *l2 == l && *s == server && *c == commit).map(|(k, _)| *k).collect();
+        let freed: Vec<(LabelId, BlobId, ServerKey)> = self.eph.waiting.iter().filter(|((l2, _, s), (cs, _))| *l2 == l && *s == server && cs.contains(&commit)).map(|(k, _)| *k).collect();
         for k in &freed {
             if let Some((_, item)) = self.eph.waiting.remove(k) {
                 self.eph_delete_now(conn, k.0, k.1, item, out)?;
@@ -745,13 +760,13 @@ impl SyncEngine {
     /// part's level-3 delete key and the label's write key, spec/sync.md §5).
     fn eph_delete_at(&mut self, s: ServerKey, l: LabelId, b: BlobId, e: &LaneEntry, out: &mut Vec<Action>) -> Result<()> {
         let dks = self.engine.ephemeral_delete_secrets_for(&e.tid, &e.actor, &e.keys);
-        let cover = self.engine.ephemeral_absorber(&e.commit);
+        let cover = self.engine.ephemeral_absorbers(&e.commit);
         for (conn, server, hk) in self.eph_conns(&l) {
             if server != s || self.eph.deletes.contains(&(conn, l, b)) {
                 continue;
             }
             if let Some(item) = delete_item(&hk, &l, b, None, Some((&e.salt, &e.blind)), &dks) {
-                self.eph_delete_after(conn, s, l, b, item, cover, out)?;
+                self.eph_delete_after(conn, s, l, b, item, cover.clone(), out)?;
             }
         }
         Ok(())
@@ -844,19 +859,18 @@ impl SyncEngine {
         for c in commits {
             self.eph.presence.remove(c);
             // what absorbed it (none: expired, or a presence commit gone); deletes waiting for
-            // it wait for that now
-            let cover = self.engine.ephemeral_absorber(c);
-            let moved: Vec<(LabelId, BlobId, ServerKey)> = self.eph.waiting.iter().filter(|(_, (w, _))| w == c).map(|(k, _)| *k).collect();
+            // it wait for that now, and go once they wait for nothing
+            let cover = self.engine.ephemeral_absorbers(c);
+            let moved: Vec<(LabelId, BlobId, ServerKey)> = self.eph.waiting.iter().filter(|(_, (w, _))| w.contains(c)).map(|(k, _)| *k).collect();
             for k in moved {
-                match (cover, self.eph.waiting.get_mut(&k)) {
-                    (Some(a), Some(w)) => w.0 = a,
-                    _ => {
-                        if let Some((_, item)) = self.eph.waiting.remove(&k)
-                            && let Some(conn) = self.eph_conn_to(&k.0, k.2)
-                        {
-                            self.eph_delete_now(conn, k.0, k.1, item, out)?;
-                        }
-                    }
+                let Some(w) = self.eph.waiting.get_mut(&k) else { continue };
+                w.0.remove(c);
+                w.0.extend(cover.iter().copied());
+                if w.0.is_empty()
+                    && let Some((_, item)) = self.eph.waiting.remove(&k)
+                    && let Some(conn) = self.eph_conn_to(&k.0, k.2)
+                {
+                    self.eph_delete_now(conn, k.0, k.1, item, out)?;
                 }
             }
             let Some(keys) = self.eph.by_commit.remove(c) else { continue };
@@ -883,9 +897,9 @@ impl SyncEngine {
                     }
                     if let Some(item) = delete_item(&hk, &l, b, None, Some((&e.salt, &e.blind)), &dks) {
                         if present {
-                            self.eph_delete_after(conn, server, l, b, item, cover, out)?;
+                            self.eph_delete_after(conn, server, l, b, item, cover.clone(), out)?;
                         } else {
-                            self.eph.orphans.insert((l, b, conn), (item, cover));
+                            self.eph.orphans.insert((l, b, conn), (item, cover.clone()));
                         }
                     }
                 }
