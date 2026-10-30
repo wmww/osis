@@ -211,6 +211,11 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
     Ok(out)
 }
 
+/// Secrets held that may be encrypted under, over the roles.
+fn held_count(e: &osis_keys::ActorEpochs) -> usize {
+    ROLES.iter().map(|r| e.role(*r).held().count()).sum()
+}
+
 fn save(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
     tx.core.membership_changed();
     if let Some(e) = tx.core.ix.secrets.get(actor) {
@@ -259,8 +264,16 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, De
             remove_unresolved(tx, c, *ai)?;
             progress = true;
             let e = tx.core.ix.secrets.entry_or_default(actor);
-            if w.applied(e, (&u.keys, &u.before)).unwrap_or(false) {
+            let held = held_count(e);
+            let recorded = w.applied(e, (&u.keys, &u.before)).unwrap_or(false);
+            if recorded {
                 save(tx, &actor)?;
+            }
+            // a keyset it published refuted a held secret (the boxes may carry the genuine one),
+            // or its keysets and history boxes may check candidates: reopen
+            let reopen = |e: &osis_keys::ActorEpochs| held_count(e) < held || (recorded && ROLES.iter().any(|r| e.role(*r).epochs().any(|(x, _)| e.role(*r).is_reading_only(x))));
+            if tx.core.ix.secrets.get(&actor).is_some_and(reopen) {
+                super::atomic::observe_state(tx, &actor, &osis_base::Ak::new("/secrets").map_err(|_| crate::Error::Misuse("ak"))?)?;
             }
         }
     }

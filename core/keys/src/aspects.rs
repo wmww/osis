@@ -35,20 +35,19 @@ pub fn keyset(epoch: &Epoch, secret: &Secret32) -> Keyset {
     }
 }
 
-/// Drops reading-only candidates that contradict the actor's published keysets (`/keys`): the
-/// keyset of an epoch names the KEM and delete keys derived from its genuine secret (spec/crypto.md §3), so a
-/// planted secret for a published epoch never stays. Returns whether any went.
-pub fn prune_reading(epochs: &mut ActorEpochs, keys: &Keys) -> bool {
-    let mut any = false;
+/// Records the keysets of the actor's `/keys` (`RoleEpochs::set_keyset`): the keyset of an
+/// epoch names the KEM and delete keys derived from its genuine secret (spec/crypto.md §3), so
+/// a planted secret for a published epoch never stays. Returns (anything changed, a held secret
+/// dropped).
+pub fn check_keysets(epochs: &mut ActorEpochs, keys: &Keys) -> (bool, bool) {
+    let mut out = (false, false);
     for r in crate::epoch::ROLES {
         let Some(ks) = keyset_of(keys, r) else { continue };
         let Ok(e) = from_schema(&ks.epoch) else { continue };
-        any |= epochs.role_mut(r).retain_reading(&e, |s| {
-            let k = keyset(&e, s);
-            k.kem_key == ks.kem_key && k.delete_key == ks.delete_key
-        });
+        let (c, d) = epochs.role_mut(r).set_keyset(e, ks);
+        out = (out.0 | c, out.1 | d);
     }
-    any
+    out
 }
 
 /// A write to `/secrets`: boxes put, boxes removed, history boxes put (spec/crypto.md §4).
@@ -141,14 +140,23 @@ impl SecretsWrite {
     }
 
     /// The commit carrying this write (and `keys`) is applied and valid: records its epochs, marks
-    /// its rotations applied and recomputes establishment (spec/crypto.md §4). Returns whether
-    /// establishment changed (persist then).
+    /// its rotations applied with their history boxes (`RoleEpochs::set_history`), records the
+    /// keysets its `/keys` write publishes (`check_keysets`) and recomputes establishment
+    /// (spec/crypto.md §4). Returns whether establishment or anything recorded changed (persist
+    /// then; reopen the history boxes when the actor holds candidates).
     pub fn applied(&self, epochs: &mut ActorEpochs, keys: (&KeysWrite, &Keys)) -> Result<bool, Error> {
         self.observe(epochs, Some(keys))?;
+        let mut recorded = false;
         for (r, e, sup) in self.rotation_commit(keys)? {
             epochs.role_mut(r).set_applied(e, sup);
+            if let Some(ct) = self.history.get(&history_key(r, &e)) {
+                recorded |= epochs.role_mut(r).set_history(e, ct);
+            }
         }
-        Ok(epochs.establish())
+        let mut published = Keys::default();
+        keys.0.apply(&mut published);
+        recorded |= check_keysets(epochs, &published).0;
+        Ok(epochs.establish() | recorded)
     }
 }
 

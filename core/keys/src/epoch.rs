@@ -5,6 +5,7 @@
 
 use osis_base::{CommitId, Role, Tid};
 use osis_crypto::{Epoch, Secret32, key_actor_role_secret, thing_role_secret};
+use osis_schema::core_types::Keyset;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Suite 1, the only suite (spec/crypto.md §8).
@@ -81,6 +82,20 @@ pub struct EpochInfo {
     /// readers try each. Bounded per role (`MAX_READING`, `MAX_READING_PER_AUTHOR`); dropped with
     /// their source commit (`drop_reading_from`).
     pub reading: Vec<(Secret32, Unchecked)>,
+    /// Distinct candidates from sources that vouch for nothing but the applied state, while
+    /// `secret` is none and no keyset is recorded to check them: an entry of a history box (any
+    /// writer of the key may put one, spec/crypto.md §4) and a label's entry box (spec/sync.md
+    /// §2). Kept for reading, never encrypted under or put in a history box; the one that derives
+    /// the keyset once recorded becomes `secret`, the rest go (`set_keyset`). Bounded by the
+    /// applied state: one per distinct live history entry or opened entry box.
+    pub unverified: Vec<Secret32>,
+    /// The keyset an applied valid commit's `/keys` write (or the `/keys` state) published for
+    /// this epoch, the first recorded: a secret of it must derive its KEM and delete keys
+    /// (spec/crypto.md §3).
+    pub keyset: Option<Keyset>,
+    /// BLAKE3 of the history box its applied valid rotation commit wrote: an entry of the same
+    /// bytes (a grant's copy) lists what the rotator held, checked as that commit is.
+    pub history: Option<[u8; 32]>,
 }
 
 /// The source of a reading-only candidate: the unchecked commit and its author node.
@@ -109,14 +124,22 @@ impl EpochInfo {
     fn readable(&self) -> Vec<&Secret32> {
         match &self.secret {
             Some(s) => vec![s],
-            None => self.reading.iter().map(|(s, _)| s).collect(),
+            None => self.reading.iter().map(|(s, _)| s).chain(&self.unverified).collect(),
         }
+    }
+
+    /// Whether `s` derives the recorded keyset of `e`; `None` when none is recorded.
+    pub fn derives(&self, e: &Epoch, s: &Secret32) -> Option<bool> {
+        self.keyset.as_ref().map(|ks| {
+            let k = crate::aspects::keyset(e, s);
+            k.kem_key == ks.kem_key && k.delete_key == ks.delete_key
+        })
     }
 }
 
 impl Default for EpochInfo {
     fn default() -> EpochInfo {
-        EpochInfo { suite: SUITE, supersedes: BTreeSet::new(), applied: None, snapshot: false, established: None, secret: None, reading: Vec::new() }
+        EpochInfo { suite: SUITE, supersedes: BTreeSet::new(), applied: None, snapshot: false, established: None, secret: None, reading: Vec::new(), unverified: Vec::new(), keyset: None, history: None }
     }
 }
 
@@ -144,6 +167,69 @@ impl RoleEpochs {
         let info = self.observe(e);
         info.secret = Some(secret);
         info.reading.clear();
+        info.unverified.clear();
+    }
+
+    /// Sets `e`'s secret from an applied valid box: refused when it fails `e`'s recorded keyset
+    /// (a box writer may lie, e.g. an invite holder's grant); else set when none is held.
+    pub fn set_box_secret(&mut self, e: Epoch, secret: Secret32) {
+        let info = self.observe(e);
+        if info.secret.is_none() && info.derives(&e, &secret) != Some(false) {
+            self.set_secret(e, secret);
+        }
+    }
+
+    /// Learns `e`'s secret from a source that vouches for nothing but the applied state (an
+    /// entry of a history box opened with a checked secret, a label's entry box; spec/crypto.md
+    /// §4): checked against `e`'s recorded keyset when there is one (a match sets it, a mismatch
+    /// is dropped), else kept as an unverified reading-only candidate while no secret is held.
+    pub fn learn_unverified(&mut self, e: Epoch, secret: Secret32) {
+        let info = self.observe(e);
+        if info.secret.is_some() {
+            return;
+        }
+        match info.derives(&e, &secret) {
+            Some(true) => self.set_secret(e, secret),
+            Some(false) => self.drop_bare(&e),
+            None => {
+                if !info.unverified.contains(&secret) {
+                    info.unverified.push(secret);
+                }
+            }
+        }
+    }
+
+    /// Records the keyset published for `e` (the first one; spec/crypto.md §3) and checks what
+    /// is held against it: the unverified candidate that derives it becomes the secret, the
+    /// candidates that do not go, and a held secret that does not is dropped unless set
+    /// directly (`Provenance::sticky`). Returns (anything changed, a held secret dropped: the
+    /// caller reopens the boxes, which may carry the genuine one).
+    pub fn set_keyset(&mut self, e: Epoch, ks: &Keyset) -> (bool, bool) {
+        let info = self.observe(e);
+        if info.keyset.is_some() {
+            return (false, false);
+        }
+        info.keyset = Some(ks.clone());
+        let mut dropped = false;
+        if let Some(s) = &info.secret
+            && !info.established.is_some_and(Provenance::sticky)
+            && info.derives(&e, s) == Some(false)
+        {
+            info.secret = None;
+            dropped = true;
+        }
+        if info.secret.is_none()
+            && let Some(s) = info.unverified.iter().find(|s| info.derives(&e, s) == Some(true)).cloned()
+        {
+            self.set_secret(e, s);
+            return (true, dropped);
+        }
+        let keep = |s: &Secret32| info.derives(&e, s) != Some(false);
+        let reading: Vec<(Secret32, Unchecked)> = info.reading.iter().filter(|(s, _)| keep(s)).cloned().collect();
+        let unverified: Vec<Secret32> = info.unverified.iter().filter(|s| keep(s)).cloned().collect();
+        info.reading = reading;
+        info.unverified = unverified;
+        (true, dropped)
     }
 
     /// Records a secret learned only from an unchecked box (spec/crypto.md §4): one more
@@ -206,9 +292,10 @@ impl RoleEpochs {
         self.map.get(e)?.reading.iter().find(|(s, _)| s == secret).map(|(_, u)| *u)
     }
 
-    /// Whether `e`'s secrets are held only for reading (`set_reading_secret`).
+    /// Whether `e`'s secrets are held only for reading (`set_reading_secret`,
+    /// `learn_unverified`).
     pub fn is_reading_only(&self, e: &Epoch) -> bool {
-        self.map.get(e).is_some_and(|i| i.secret.is_none() && !i.reading.is_empty())
+        self.map.get(e).is_some_and(|i| i.secret.is_none() && !(i.reading.is_empty() && i.unverified.is_empty()))
     }
 
     /// Sets `e`'s provenance directly (`Own`, `Fixed`, `Derived`; `Chain` and `Snapshot` set
@@ -230,7 +317,23 @@ impl RoleEpochs {
     pub fn unset_applied(&mut self, e: &Epoch) {
         if let Some(i) = self.map.get_mut(e) {
             i.applied = None;
+            i.history = None;
         }
+    }
+
+    /// Records the history box `e`'s applied valid rotation commit wrote (`EpochInfo::history`).
+    /// Returns whether it is new.
+    pub fn set_history(&mut self, e: Epoch, ct: &[u8]) -> bool {
+        let h = osis_base::hash::hash(ct);
+        let info = self.observe(e);
+        let new = info.history != Some(h);
+        info.history = Some(h);
+        new
+    }
+
+    /// Whether `ct` is the history box `e`'s applied valid rotation commit wrote.
+    pub fn is_rotation_history(&self, e: &Epoch, ct: &[u8]) -> bool {
+        self.map.get(e).and_then(|i| i.history).is_some_and(|h| h == osis_base::hash::hash(ct))
     }
 
     /// Records that a held `/secrets` compaction snapshot keys `e`. Call `establish` after.
@@ -424,6 +527,9 @@ impl ActorEpochs {
             for info in a.role_mut(r).map.values_mut() {
                 info.secret = info.secret.as_ref().map(|s| thing_role_secret(s, r, tid));
                 info.reading = info.reading.iter().map(|(s, u)| (thing_role_secret(s, r, tid), *u)).collect();
+                info.unverified = info.unverified.iter().map(|s| thing_role_secret(s, r, tid)).collect();
+                info.keyset = None;
+                info.history = None;
                 info.established = info.established.map(|_| Provenance::Derived);
                 info.applied = None;
                 info.snapshot = false;

@@ -89,8 +89,10 @@ fn own_secrets_switch() {
     assert!(ma.read.current().is_empty());
     let applied = |v: &mut ActorEpochs| assert!(rot.secrets.applied(v, (&rot.keys, &Keys::default())).unwrap());
     applied(&mut ma);
+    // the derived epoch has no keyset: its secret from the history box is kept for reading
     let derived_read = thing_role_secret(w.pe.read.secret(&ep(1, 0x20)).unwrap(), Role::Read, &w.a);
-    assert_eq!(ma.read.secret(&ep(1, 0x20)), Some(&derived_read));
+    assert_eq!(ma.read.reading_secrets(&ep(1, 0x20)), vec![&derived_read]);
+    assert!(ma.read.secret(&ep(1, 0x20)).is_none());
     assert_eq!(ma.read.newest_held().unwrap().0, e(Role::Read));
     assert!(ma.write.held().next().is_none());
     me.read = Default::default();
@@ -184,8 +186,9 @@ fn fork_merge() {
     ingest(&w.a, &s3, &Opener::Actor { member: w.m, epochs: &w.me }, &mut fresh, None).unwrap();
     // Holding s3 as a compaction snapshot establishes what it keys; history supersedes the rest.
     assert!(osis_keys::snapshot_keyed(&s3, &mut fresh).unwrap());
+    // no keyset of theirs is held: readable, not checked
     for e in [ex, ey, r1.rotated[0].epoch, ep(1, 0x20)] {
-        assert!(fresh.read.secret(&e).is_some(), "{e:?}");
+        assert!(fresh.read.secret(&e).is_none() && fresh.read.reading_secrets(&e).len() == 1, "{e:?}");
     }
     assert_eq!(fresh.read.current(), vec![z.rotated[0].epoch]);
     assert!(s3.history.contains_key(&history_key(Role::Read, &ex)));
