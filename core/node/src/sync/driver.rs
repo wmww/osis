@@ -385,7 +385,7 @@ impl<T: Transport, H: Host> Driver<T, H> {
 
     /// A peer's session on the listener of key `key`.
     fn accepted(&mut self, key: [u8; 32], l: Link) {
-        let Link { peer_key, tx, rx } = l;
+        let Link { peer_key, tx, rx, .. } = l;
         // the connection exists before its first actions are carried out
         let mut conn = None;
         let host = &self.host;

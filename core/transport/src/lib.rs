@@ -35,6 +35,42 @@ use std::future::Future;
 /// A transport's 32-byte static public key (spec/wire.md §11.1).
 pub type PublicKey = [u8; 32];
 
+/// Where a connection comes from, as far as the transport can tell: an IPv4 address (as
+/// IPv4-mapped IPv6), the /64 of an IPv6 address (the usual allocation to one site; minor: a
+/// holder of a larger prefix counts as many sources), an in-process endpoint's name hashed. A
+/// server shares its connection slots by it (`evict_for`). Connections whose source is unknown
+/// count as one source.
+pub type Source = [u8; 16];
+
+/// The source of a connection from `ip`.
+pub fn ip_source(ip: std::net::IpAddr) -> Source {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
+        std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_ipv6_mapped().octets(),
+            None => {
+                let mut s = [0u8; 16];
+                if let (Some(d), Some(o)) = (s.get_mut(..8), v6.octets().get(..8)) {
+                    d.copy_from_slice(o);
+                }
+                s
+            }
+        },
+    }
+}
+
+/// Fair shares of a full set of connection slots, without a per-source number to pick: when a
+/// connection from `new` arrives and every slot is taken (`held`: the slots per source), the
+/// source holding the most gives one up if it holds at least two more than `new` (ties: the
+/// greatest source); otherwise the newcomer is refused. Repeated, every source that keeps
+/// connecting ends up with an equal share (max-min fairness), however many connections one
+/// source opens.
+pub fn evict_for<K: Ord + Copy>(held: &std::collections::BTreeMap<K, usize>, new: &K) -> Option<K> {
+    let (top, n) = held.iter().max_by_key(|(k, n)| (**n, **k))?;
+    let mine = held.get(new).copied().unwrap_or(0);
+    (*n >= mine.saturating_add(2)).then_some(*top)
+}
+
 /// Where to dial: a transport URL and the key the peer must authenticate with (spec/sync.md §10).
 /// Mirrors the schema's `address` type; the scheme picks the implementation.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -128,6 +164,8 @@ pub trait Connection: Clone + Send + Sync + 'static {
     /// The key the transport authenticated for the peer: a server's address key, a client's
     /// per-connection ephemeral key, a peer's dialable key (spec/wire.md §11.1).
     fn peer_key(&self) -> PublicKey;
+    /// Where the connection comes from, when the transport can tell (`Source`).
+    fn source(&self) -> Option<Source>;
     /// A new stream. The peer's `accept_stream` sees it once data (or finish) is sent on it.
     fn open_stream(&self) -> impl Future<Output = Result<(Self::Send, Self::Recv), Error>> + Send;
     fn accept_stream(&self) -> impl Future<Output = Result<(Self::Send, Self::Recv), Error>> + Send;
@@ -148,4 +186,43 @@ pub trait SendStream: Send + 'static {
 /// The receiving half of a stream: bytes in order, `Ok(0)` after the peer finished.
 pub trait RecvStream: Send + 'static {
     fn read(&mut self, buf: &mut [u8]) -> impl Future<Output = Result<usize, Error>> + Send;
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use std::collections::BTreeMap;
+
+    // spec: none (server policy): full slots go to the source holding the most only while it holds
+    // two more than the newcomer's; repeated arrivals end in equal shares
+    #[test]
+    fn evict_for_shares_fairly() {
+        let mut held: BTreeMap<u8, usize> = BTreeMap::from([(1, 8)]);
+        let cap = 8;
+        // sources 2, 3 and 4 keep arriving; 1 holds every slot at first
+        for _ in 0..20 {
+            for s in [2u8, 3, 4] {
+                if held.values().sum::<usize>() >= cap {
+                    match evict_for(&held, &s) {
+                        Some(v) => *held.get_mut(&v).unwrap() -= 1,
+                        None => continue,
+                    }
+                }
+                *held.entry(s).or_insert(0) += 1;
+            }
+        }
+        assert_eq!(held.values().sum::<usize>(), cap);
+        assert!(held.values().all(|n| (2..=3).contains(n)), "{held:?}");
+        // the source holding the most never gives one up to itself, nor at a difference of one
+        assert_eq!(evict_for(&BTreeMap::from([(1u8, 5)]), &1), None);
+        assert_eq!(evict_for(&BTreeMap::from([(1u8, 3), (2, 2)]), &2), None);
+        assert_eq!(evict_for(&BTreeMap::from([(1u8, 3), (2, 1)]), &2), Some(1));
+        assert_eq!(evict_for(&BTreeMap::<u8, usize>::new(), &1), None);
+        // sources: an IPv4 address and its mapped form are one; an IPv6 /64 is one
+        let v4 = ip_source("192.0.2.1".parse().unwrap());
+        assert_eq!(v4, ip_source("::ffff:192.0.2.1".parse().unwrap()));
+        assert_eq!(ip_source("2001:db8::1".parse().unwrap()), ip_source("2001:db8::ffff:2".parse().unwrap()));
+        assert_ne!(ip_source("2001:db8::1".parse().unwrap()), ip_source("2001:db8:0:1::1".parse().unwrap()));
+    }
 }

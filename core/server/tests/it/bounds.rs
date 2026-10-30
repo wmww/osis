@@ -35,6 +35,32 @@ fn connection_cap_and_hello_deadline() {
     assert_eq!(w.hubs[h].connections(), 1);
 }
 
+// spec: none (server policy): at `max_connections` the slots are shared by source: one source
+// holding them all gives up its newest to each newcomer from elsewhere until shares are equal;
+// then (and to its own) a newcomer is closed
+#[test]
+fn full_slots_shared_by_source() {
+    let mut w = World::new();
+    let h = w.add_hub(Policy { max_connections: 6, ..Policy::default() });
+    let now = w.now();
+    let hub = &mut w.hubs[h];
+    let (a, b, c) = (Some([1u8; 16]), Some([2u8; 16]), Some([3u8; 16]));
+    let closed = |out: &[HubOutput]| out.iter().filter_map(|o| if let HubOutput::Close(id) = o { Some(*id) } else { None }).collect::<Vec<_>>();
+    for id in 1..=6 {
+        assert!(closed(&hub.accept_from(now, id, [id as u8; 32], a)).is_empty());
+    }
+    assert_eq!(closed(&hub.accept_from(now, 7, [7; 32], a)), vec![7], "its own source: refused");
+    assert_eq!(closed(&hub.accept_from(now, 8, [8; 32], b)), vec![6], "a's newest");
+    assert_eq!(closed(&hub.accept_from(now, 9, [9; 32], b)), vec![5]);
+    assert_eq!(closed(&hub.accept_from(now, 10, [10; 32], b)), vec![4]);
+    // a 3, b 3
+    assert_eq!(closed(&hub.accept_from(now, 11, [11; 32], b)), vec![11]);
+    assert_eq!(closed(&hub.accept_from(now, 12, [12; 32], c)), vec![10], "the greatest of the largest");
+    assert_eq!(closed(&hub.accept_from(now, 13, [13; 32], c)), vec![3]);
+    assert_eq!(closed(&hub.accept_from(now, 14, [14; 32], c)), vec![14], "2 each");
+    assert_eq!(hub.connections(), 6);
+}
+
 // spec/wire.md §11.1 (a Hello lists at most 16 versions), spec/requirements.md (peer input never
 // causes unbounded allocation): a first frame above a Hello's size is refused before its body
 // arrives; partial frames over all connections stay under `max_buffered_bytes`, the connection

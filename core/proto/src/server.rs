@@ -347,6 +347,13 @@ impl ServerConnection {
         usize::try_from(self.written.saturating_sub(t)).unwrap_or(usize::MAX).saturating_add(o)
     }
 
+    /// Bytes written and not taken (as far as reported), with those in `out`.
+    fn unsent(&self, out: &[ServerOutput]) -> usize {
+        let o: usize = out.iter().map(|x| if let ServerOutput::Send(b) = x { b.len() } else { 0 }).sum();
+        let w = self.taken.map_or(0, |t| usize::try_from(self.written.saturating_sub(t)).unwrap_or(usize::MAX));
+        w.saturating_add(o)
+    }
+
     /// Whether a push of about `size` bytes waits: something is unwritten and it would not fit
     /// `REPLY_BUDGET` behind it.
     fn no_room(&self, out: &[ServerOutput], size: usize) -> bool {
@@ -379,7 +386,17 @@ impl ServerConnection {
                     // before the peer's Hello only a Hello-sized frame is taken (spec/wire.md §11.1)
                     self.decoder.set_max(if self.version.is_some() { osis_base::format::MAX_MESSAGE } else { crate::frame::MAX_HELLO_BYTES });
                     match self.decoder.next_frame() {
-                        Ok(Some(body)) => self.frame(now, store, &body, out),
+                        Ok(Some(body)) => {
+                            self.frame(now, store, &body, out);
+                            // a peer within its window (spec/sync.md §6) never has more replies
+                            // unwritten: one that pipelines past it is closed here, before its
+                            // further requests cost reads and memory, not after (the driver's
+                            // queue cap sees only what this input made)
+                            if self.unsent(out) > SEND_QUEUE {
+                                out.push(ServerOutput::PeerError(Error::Cap("replies past the request window")));
+                                self.close(out);
+                            }
+                        }
                         Ok(None) => break,
                         Err(e) => {
                             out.push(ServerOutput::PeerError(e));
@@ -1084,6 +1101,29 @@ mod tests {
         out.iter().find_map(|o| if let ServerOutput::Send(b) = o { Message::decode(&b[4..]).ok() } else { None }).unwrap()
     }
 
+    // spec/sync.md §6 (request window), spec/requirements.md (peer input never causes unbounded
+    // work): a peer pipelining requests whose replies pass `SEND_QUEUE` in one input is closed
+    // there; the rest of its input costs nothing
+    #[test]
+    fn pipelined_replies_bounded() {
+        let f = Fixture::new(0x10);
+        let mut store = MemoryLabelStore::new([1; 32]);
+        store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
+        let blob = vec![7u8; osis_base::format::MAX_BLOB];
+        let blob_id = osis_label::blob_id(&blob);
+        let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, presence: false, tie: 0, replaces: &[], now: 0 };
+        assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
+        let mut c = opened(&f, &mut store);
+        let mut bytes = Vec::new();
+        for id in 0..100u32 {
+            bytes.extend(encode_frame(&Message::Fetch { id: 10 + id, label: f.label, ids: vec![blob_id] }.encode()));
+        }
+        let out = c.handle(0, &mut store, ServerInput::Bytes(bytes));
+        assert!(c.is_closed());
+        let sent: usize = out.iter().map(|x| if let ServerOutput::Send(b) = x { b.len() } else { 0 }).sum();
+        assert!(sent > SEND_QUEUE - MAX_MESSAGE && sent <= SEND_QUEUE + MAX_MESSAGE, "{sent}");
+    }
+
     // spec/wire.md §11.3, spec/requirements.md (peer input never causes unbounded work): a
     // Reconcile reads only the live IDs inside its ranges, so repeating a narrow range over a
     // large label costs what the range holds, and the whole space costs the label once
@@ -1169,7 +1209,8 @@ mod tests {
         }
         let e = f.entry(Fixture::blob(1));
         let blob_id = osis_label::blob_id(&e.blob);
-        let old = Entry { stamp: osis_label::sign_stamp(&crate::store::tests::secret(1 + ((5 + 1) % 200) as u8), &f.label, &blob_id, &e.wrap), ..e.clone() };
+        // step 5's write key (by `path`'s rule above)
+        let old = Entry { stamp: osis_label::sign_stamp(&crate::store::tests::secret(7), &f.label, &blob_id, &e.wrap), ..e.clone() };
         let bad = Entry { stamp: Signature([0; 64]), ..e };
         let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE, tie: 0 });
         c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
