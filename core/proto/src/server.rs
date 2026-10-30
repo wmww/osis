@@ -13,7 +13,7 @@ use osis_base::format::MAX_MESSAGE;
 use osis_base::{BlobId, LabelId, WallMs};
 use osis_crypto::{Domain, LabelRole, verify_delete};
 use osis_label::auth::delete_digest;
-use osis_label::{Class, OpenOutcome, Prefix, entry_digest, evaluate_open, key_for_level, server_prefix};
+use osis_label::{Class, OpenOutcome, PathIndex, Prefix, entry_digest, evaluate_open, key_for_level, server_prefix};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -21,9 +21,9 @@ use std::sync::Arc;
 pub const REPLY_BUDGET: usize = MAX_MESSAGE - 64 * 1024;
 /// Log records or entries read from the store per call.
 const LOG_BATCH: usize = 256;
-/// Labels whose parsed path, and whose head keys, a connection caches. Performance switch: a
-/// peer cycling past it makes the connection reload (head keys: two store reads; a path only for
-/// Open and Path); 0 reloads per message, infinity grows with the labels a peer names.
+/// Labels whose head keys a connection caches. Performance switch: a peer cycling past it makes
+/// the connection reload them (three store reads); 0 reloads per message, infinity grows with the
+/// labels a peer names.
 const MAX_CACHED: usize = 4096;
 /// Blob IDs a connection remembers as crossed (an optimization only: past it the set is cleared,
 /// so a peer streaming entries cannot grow it without bound).
@@ -101,11 +101,26 @@ fn key_of_role(r: LabelRole) -> StepKey {
     }
 }
 
-/// A label's path as of its head (Open and Path need the whole path), parsed once per head
-/// change.
-struct Cached {
-    head: StepId,
-    path: Vec<Step>,
+/// A label's path indexes in the store, as `evaluate_open` reads them.
+struct Index<'a> {
+    store: &'a dyn LabelStore,
+    label: &'a LabelId,
+}
+
+impl PathIndex for Index<'_> {
+    type Error = StoreError;
+    fn step_with_sync(&self, pk: &osis_crypto::VerifyingKey) -> Result<Option<StepId>, StoreError> {
+        self.store.step_with_sync(self.label, pk)
+    }
+    fn claims(&self, step: &StepId) -> Result<Option<Arc<ClaimSet>>, StoreError> {
+        self.store.claim_set(self.label, step)
+    }
+    fn child(&self, step: &StepId) -> Result<Option<Step>, StoreError> {
+        match self.store.child(self.label, Some(step))? {
+            Some(c) => self.store.step(self.label, &c),
+            None => Ok(None),
+        }
+    }
 }
 
 /// OK under the head's key, NOT_HEAD under a recent earlier one, else REFUSED.
@@ -135,7 +150,6 @@ pub struct ServerConnection {
     replays: BTreeMap<LabelId, u64>,
     /// Blobs whose bytes crossed this connection (at most `MAX_CROSSED`): not inlined back.
     crossed: HashSet<BlobId>,
-    cache: HashMap<LabelId, Cached>,
     /// Head keys per label, as of its head (`MAX_CACHED`).
     keys: HashMap<LabelId, HeadKeys>,
     /// Dialable key of the last member proof that opened a label.
@@ -158,21 +172,6 @@ pub struct ServerConnection {
 /// ephemeral caps); 0 prunes at every upload, infinity never (a connection replacing its
 /// presence would grow the set without bound).
 const PRESENCE_PRUNE: usize = 1024;
-
-/// The label's parsed path, reloaded when the head changed; none for an unknown label.
-fn cached<'a>(cache: &'a mut HashMap<LabelId, Cached>, store: &dyn LabelStore, label: &LabelId) -> Result<Option<&'a Cached>, StoreError> {
-    let Some(head) = store.head(label)? else {
-        cache.remove(label);
-        return Ok(None);
-    };
-    if cache.get(label).is_none_or(|c| c.head != head) {
-        if cache.len() >= MAX_CACHED {
-            cache.clear();
-        }
-        cache.insert(*label, Cached { head, path: store.path(label)? });
-    }
-    Ok(cache.get(label))
-}
 
 /// The label's head keys, reloaded when the head changed (a store read, never the path); none
 /// for an unknown label.
@@ -229,7 +228,6 @@ impl ServerConnection {
             inline: BTreeMap::new(),
             replays: BTreeMap::new(),
             crossed: HashSet::new(),
-            cache: HashMap::new(),
             keys: HashMap::new(),
             member: None,
             presence: BTreeSet::new(),
@@ -402,10 +400,6 @@ impl ServerConnection {
         }
     }
 
-    fn cached(&mut self, store: &dyn LabelStore, label: &LabelId) -> Result<Option<&Cached>, StoreError> {
-        cached(&mut self.cache, store, label)
-    }
-
     fn keys(&mut self, store: &dyn LabelStore, label: &LabelId) -> Result<Option<&HeadKeys>, StoreError> {
         head_keys(&mut self.keys, store, label)
     }
@@ -499,45 +493,26 @@ impl ServerConnection {
     }
 
     fn open(&mut self, store: &dyn LabelStore, id: Id, label: LabelId, proof: Proof) -> Result<Message, StoreError> {
-        let Some(c) = cached(&mut self.cache, store, &label)? else { return Ok(Message::Error { id, code: Code::UNKNOWN_LABEL }) };
-        let (path, head_id) = (&c.path, c.head);
+        let Some(head) = self.head(store, &label)? else { return Ok(Message::Error { id, code: Code::UNKNOWN_LABEL }) };
         if !self.opened.contains(&label) && self.opened.len() >= MAX_OPEN_LABELS {
             return Ok(Message::Error { id, code: Code::RATE_LIMITED });
         }
-        // The one claim set the proof needs: its step's (claim), the head's (static entry).
         // a member node's proof: the store knows its dialable key (spec/sync.md §5)
         if let Proof::Member { dialable, .. } = &proof {
             let key = dialable.to_bytes();
-            let ok = proof.verify_sig(&label, &self.cfg.challenge, &self.cfg.static_key).is_ok() && store.member_open(&key, &label)?;
-            return Ok(match path.last() {
-                Some(head) if ok => {
-                    self.opened.insert(label);
-                    self.member = Some(key);
-                    Message::Opened { id, head: head.clone(), entry_box: None }
-                }
-                _ => Message::Error { id, code: Code::REFUSED },
-            });
+            if !(proof.verify_sig(&label, &self.cfg.challenge, &self.cfg.static_key).is_ok() && store.member_open(&key, &label)?) {
+                return Ok(Message::Error { id, code: Code::REFUSED });
+            }
+            self.opened.insert(label);
+            self.member = Some(key);
+            return Ok(Message::Opened { id, head, entry_box: None });
         }
-        let want = match &proof {
-            Proof::Member { .. } => None,
-            Proof::Sync { .. } => None,
-            Proof::Claim { step, .. } => Some(*step),
-            Proof::Static { .. } => Some(head_id),
-        };
-        let set: Option<(StepId, Arc<ClaimSet>)> = match want {
-            Some(s) => store.claim_set(&label, &s)?.map(|c| (s, c)),
-            None => None,
-        };
-        let claims = |s: &StepId| set.as_ref().filter(|(id, _)| id == s).map(|(_, c)| c.as_ref());
-        Ok(match evaluate_open(path, &claims, &proof, &self.cfg.challenge, &self.cfg.static_key) {
-            OpenOutcome::Opened(entry_box) => match path.last() {
-                Some(head) => {
-                    self.opened.insert(label);
-                    Message::Opened { id, head: head.clone(), entry_box: entry_box.cloned() }
-                }
-                None => Message::Error { id, code: Code::UNKNOWN_LABEL },
-            },
-            OpenOutcome::Child(step) => Message::Step { id, step: step.clone() },
+        Ok(match evaluate_open(&head, &Index { store, label: &label }, &proof, &self.cfg.challenge, &self.cfg.static_key)? {
+            OpenOutcome::Opened(entry_box) => {
+                self.opened.insert(label);
+                Message::Opened { id, head, entry_box }
+            }
+            OpenOutcome::Child(step) => Message::Step { id, step },
             OpenOutcome::Refused => Message::Error { id, code: Code::REFUSED },
         })
     }
@@ -570,21 +545,29 @@ impl ServerConnection {
         Ok(Message::Ok { id })
     }
 
+    /// Pages forward from `after` by the store's child index: a step read and a child lookup
+    /// per step sent, never the whole path.
     fn path(&mut self, store: &dyn LabelStore, id: Id, label: LabelId, after: Option<StepId>) -> Result<Message, StoreError> {
         if !self.opened.contains(&label) {
             return Ok(Message::Error { id, code: Code::NOT_OPENED });
         }
-        let Some(c) = self.cached(store, &label)? else { return Ok(Message::Error { id, code: Code::UNKNOWN_LABEL }) };
-        let start = match after {
-            None => 0,
-            Some(a) => match c.path.iter().position(|s| s.id() == a) {
-                Some(i) => i + 1,
+        let Some(head) = store.head(&label)? else { return Ok(Message::Error { id, code: Code::UNKNOWN_LABEL }) };
+        let mut at = match after {
+            Some(a) if a == head => None,
+            a => match store.child(&label, a.as_ref())? {
+                Some(c) => Some(c),
                 None => return Ok(Message::Error { id, code: Code::REFUSED }),
             },
         };
-        let rest = c.path.get(start..).unwrap_or(&[]);
-        let more = rest.len() > MAX_PATH_STEPS;
-        Ok(Message::PathReply { id, steps: rest.iter().take(MAX_PATH_STEPS).cloned().collect(), more })
+        let mut steps = Vec::new();
+        while let Some(s) = at {
+            if steps.len() >= MAX_PATH_STEPS {
+                break;
+            }
+            steps.push(store.step(&label, &s)?.ok_or_else(|| StoreError("step missing on the path".into()))?);
+            at = if s == head { None } else { store.child(&label, Some(&s))? };
+        }
+        Ok(Message::PathReply { id, steps, more: at.is_some() })
     }
 
     fn fetch(&mut self, store: &dyn LabelStore, id: Id, label: LabelId, ids: Vec<BlobId>) -> Result<Message, StoreError> {
@@ -1027,6 +1010,92 @@ mod tests {
             assert_eq!(head.map(|h| h.id()), Some(path[999].id()));
             assert_eq!(store.step_reads.get(), 0);
         }
+    }
+
+    // spec/sync.md §5 (Open), spec/requirements.md (peer input never causes unbounded work): an
+    // Open reads the store's path indexes, never the path: on a 1000-step label a stranger's sync
+    // key, an unknown or unproven claim, an old sync key (its newest step's child) and a held
+    // claim each cost at most one step read, on a fresh connection and repeated past the cache
+    #[test]
+    fn open_reads_no_path() {
+        use crate::store::tests::{path, secret};
+        let f = Fixture::new(0x10);
+        let mut store = MemoryLabelStore::new([1; 32]);
+        let path = path(1000, |i, r| 1 + ((i + r) % 200) as u8);
+        let claim = secret(240);
+        for (i, s) in path.iter().enumerate() {
+            let set = (i == 500).then(|| ClaimSet { claims: vec![claim.verifying_key().to_bytes()], entries: BTreeMap::new() });
+            store.push_step(&f.label, s.clone(), set).unwrap();
+        }
+        let proof = |k: u8| Proof::sync(&secret(k), &f.label, &CHALLENGE, &STATIC_KEY);
+        let claim_at = |i: usize, k: &osis_crypto::SigningSecret| Proof::claim(path[i].id(), k, &f.label, &CHALLENGE, &STATIC_KEY);
+        // the expected reply: refused (none), else the step sent (Step, or Opened with the head)
+        let cases = [
+            (proof(250), None),
+            (claim_at(400, &claim), None),
+            (claim_at(500, &secret(241)), None),
+            // secret(11) is step 10's sync key, last at step 810
+            (proof(11), Some(811)),
+            (claim_at(500, &claim), Some(501)),
+            (proof(200), Some(999)),
+        ];
+        for (n, (pr, want)) in cases.into_iter().enumerate() {
+            let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+            c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+            for round in 0..3u32 {
+                store.step_reads.set(0);
+                let open = Message::Open { id: 1 + round, label: f.label, proof: pr.clone() };
+                let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&open.encode())));
+                let m = reply(&out);
+                let ok = match (&m, want) {
+                    (Message::Error { code, .. }, None) => *code == Code::REFUSED,
+                    (Message::Step { step, .. }, Some(i)) => *step == path[i] && i < 999,
+                    (Message::Opened { head, .. }, Some(999)) => *head == path[999],
+                    _ => false,
+                };
+                assert!(ok, "case {n}: {m:?}");
+                assert!(store.step_reads.get() <= 1, "case {n}: {} step reads", store.step_reads.get());
+            }
+        }
+    }
+
+    // spec/wire.md §11.2 (Path): pages of at most MAX_PATH_STEPS steps from `after` (none:
+    // genesis) give the whole path in order, `more` until the head; each page reads only the
+    // steps it sends; `after` the head gives an empty page, a step not on the path is refused
+    #[test]
+    fn path_pages_by_child_index() {
+        let f = Fixture::new(0x10);
+        let mut store = MemoryLabelStore::new([1; 32]);
+        let path = crate::store::tests::path(2 * MAX_PATH_STEPS + 7, |i, r| 1 + ((i + r) % 200) as u8);
+        for s in &path {
+            store.push_step(&f.label, s.clone(), None).unwrap();
+        }
+        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+        let head_key = crate::store::tests::secret(1 + ((path.len() - 1) % 200) as u8);
+        let open = Message::Open { id: 1, label: f.label, proof: Proof::sync(&head_key, &f.label, &CHALLENGE, &STATIC_KEY) };
+        assert!(matches!(reply(&c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&open.encode())))), Message::Opened { .. }));
+        let ask = |c: &mut ServerConnection, store: &mut MemoryLabelStore, id: u32, after: Option<StepId>| {
+            store.step_reads.set(0);
+            let out = c.handle(0, store, ServerInput::Bytes(encode_frame(&Message::Path { id, label: f.label, after }.encode())));
+            (reply(&out), store.step_reads.get())
+        };
+        let (mut got, mut after, mut id) = (Vec::new(), None, 2);
+        loop {
+            let (Message::PathReply { steps, more, .. }, reads) = ask(&mut c, &mut store, id, after) else { panic!() };
+            assert_eq!(reads, steps.len() as u64);
+            assert!(steps.len() <= MAX_PATH_STEPS);
+            after = steps.last().map(|s| s.id());
+            got.extend(steps);
+            id += 1;
+            if !more {
+                break;
+            }
+        }
+        assert_eq!(got, path);
+        assert_eq!(id, 5, "three pages");
+        assert!(matches!(ask(&mut c, &mut store, 9, after).0, Message::PathReply { steps, more: false, .. } if steps.is_empty()));
+        assert!(matches!(ask(&mut c, &mut store, 10, Some(StepId([7; 32]))).0, Message::Error { code: Code::REFUSED, .. }));
     }
 
     // spec/sync.md §5 (Delete), spec/requirements.md (peer input never causes unbounded work): items

@@ -483,6 +483,11 @@ proptest! {
                 prop_assert_eq!(recs(e.store.log_after(&l, 0, 1000).unwrap().unwrap()), recs(r.log_after(&l, 0, 1000).unwrap().unwrap()));
                 prop_assert_eq!(e.store.head(&l).unwrap(), r.head(&l).unwrap());
                 prop_assert_eq!(e.store.head_keys(&l).unwrap(), osis_proto::HeadKeys::of_path(&e.store.path(&l).unwrap()));
+                for s in [None, Some(e.f.genesis.id()), Some(e.f.child.id())] {
+                    prop_assert_eq!(e.store.child(&l, s.as_ref()).unwrap(), r.child(&l, s.as_ref()).unwrap());
+                }
+                let sync = e.f.genesis.keys.sync;
+                prop_assert_eq!(e.store.step_with_sync(&l, &sync).unwrap(), r.step_with_sync(&l, &sync).unwrap());
                 for n in 0..12 {
                     prop_assert_eq!(e.store.tombstoned(&l, &id(n)).unwrap(), r.tombstoned(&l, &id(n)).unwrap());
                     prop_assert_eq!(e.store.blob(&id(n)).unwrap(), r.blob(&id(n)).unwrap());
@@ -557,13 +562,37 @@ fn deletion_records_within_cap() {
     }
 }
 
-// spec/sync.md §5 (code 9): the head keys the store keeps step by step (`K` row) are those of
-// the whole path (`HeadKeys::of_path`), across reopens, on long paths whose keys repeat and run
-// past `OLDER_KEYS` distinct ones
+/// The path indexes (`V`, `W` rows) against the whole path: each step's child is the next one,
+/// the genesis the child of none, none past the head; each key of `pool` names the newest step
+/// registering it as sync key.
+fn check_indexes(store: &BackendStore<MemoryBackend>, l: &LabelId, path: &[Step], pool: &[osis_crypto::VerifyingKey]) -> Result<(), String> {
+    let ids: Vec<StepId> = path.iter().map(|s| s.id()).collect();
+    let mut want = vec![(None, ids.first().copied())];
+    want.extend(ids.iter().enumerate().map(|(i, id)| (Some(*id), ids.get(i + 1).copied())));
+    want.push((Some(StepId([0xee; 32])), None));
+    for (at, child) in want {
+        let got = store.child(l, at.as_ref()).map_err(|e| e.to_string())?;
+        if got != child {
+            return Err(format!("child of {at:?}: {got:?}, want {child:?}"));
+        }
+    }
+    for pk in pool {
+        let newest = path.iter().rev().find(|s| s.keys.sync == *pk).map(|s| s.id());
+        let got = store.step_with_sync(l, pk).map_err(|e| e.to_string())?;
+        if got != newest {
+            return Err(format!("sync key {pk:?}: {got:?}, want {newest:?}"));
+        }
+    }
+    Ok(())
+}
+
+// spec/sync.md §5 (code 9, Open, Path): what the store keeps step by step (the `K` head keys,
+// the `V` sync-key and `W` child indexes) agrees with the whole path (`HeadKeys::of_path`, a
+// scan), across reopens, on long paths whose keys repeat and run past `OLDER_KEYS` distinct ones
 #[test]
-fn head_keys_follow_path_across_reopen() {
+fn path_records_follow_path_across_reopen() {
     let key = |n: u8| osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([n; 32])).verifying_key();
-    for seed in 0..4u8 {
+    for seed in 0..8u8 {
         let mut e = env(Policy::unlimited());
         let l = e.f.label;
         let mut prev = e.f.genesis.clone();
@@ -583,6 +612,10 @@ fn head_keys_follow_path_across_reopen() {
             }
             let path = e.store.path(&l).unwrap();
             assert_eq!(e.store.head_keys(&l).unwrap(), osis_proto::HeadKeys::of_path(&path), "seed {seed} step {i}");
+            let pool: Vec<_> = (1..=pool).map(key).collect();
+            if let Err(m) = check_indexes(&e.store, &l, &path, &pool) {
+                panic!("seed {seed} step {i}: {m}");
+            }
         }
     }
 }

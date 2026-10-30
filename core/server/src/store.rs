@@ -5,7 +5,9 @@
 //!
 //! Rows (all cleartext metadata a blind node sees anyway; blobs are ciphertext):
 //! `I` seed; `L label` meta; `K label` the head's earlier role keys (`HeadKeys`); `S label step`
-//! step; `C label step` claim set; `E label blob` entry;
+//! step; `C label step` claim set; path indexes `V label sync_key` the newest step registering
+//! that sync key, `W label` the genesis step and `W label step` its child (an Open or a Path page
+//! reads no path); `E label blob` entry;
 //! `T label blob` tombstone time; `G label seq` log record; `R blob` reference count and the
 //! blob's prefix bytes (`blob_prefix`);
 //! sweep indexes `X t label blob` (expiry), `P t label blob` (pending deletion),
@@ -844,6 +846,11 @@ impl<B: Backend> BackendStore<B> {
         self.eph.due.first().map(|(t, _, _)| *t)
     }
 
+    /// A `V` or `W` row: a step ID.
+    fn step_row(&self, k: Vec<u8>) -> Result<Option<StepId>, StoreError> {
+        self.backend.get(&k).map_err(err)?.map(|b| read_arr(&b, 0).map(StepId)).transpose()
+    }
+
     fn row(&self, label: &LabelId, blob: &BlobId) -> Result<Option<Row>, StoreError> {
         self.backend.get(&key(b'E', &[&label.0, &blob.0])).map_err(err)?.map(|b| Row::decode(&b)).transpose()
     }
@@ -1062,6 +1069,14 @@ impl<B: Backend> LabelStore for BackendStore<B> {
         Ok(Some(HeadKeys { head: step, older: decode_older(&b)? }))
     }
 
+    fn step_with_sync(&self, label: &LabelId, pk: &osis_crypto::VerifyingKey) -> Result<Option<StepId>, StoreError> {
+        self.step_row(key(b'V', &[&label.0, &pk.to_bytes()]))
+    }
+
+    fn child(&self, label: &LabelId, step: Option<&StepId>) -> Result<Option<StepId>, StoreError> {
+        self.step_row(key(b'W', &[&label.0, step.map_or(&[][..], |s| &s.0[..])]))
+    }
+
     fn admit_label(&self, _label: &LabelId) -> Result<Code, StoreError> {
         let t = self.totals()?;
         let p = &self.policy;
@@ -1090,6 +1105,8 @@ impl<B: Backend> LabelStore for BackendStore<B> {
         tx.meta.head = Some(id);
         tx.meta.head_claims = claim_set.as_ref().map_or(0, |c| c.claims.len() as u64);
         tx.batch.put(key(b'S', &[&label.0, &id.0]), step.to_bytes());
+        tx.batch.put(key(b'V', &[&label.0, &step.keys.sync.to_bytes()]), id.0.to_vec());
+        tx.batch.put(key(b'W', &[&label.0, step.prev.as_ref().map_or(&[][..], |p| &p.0[..])]), id.0.to_vec());
         if let Some(c) = &claim_set {
             tx.batch.put(key(b'C', &[&label.0, &id.0]), c.to_bytes());
         }
