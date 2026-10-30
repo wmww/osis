@@ -533,7 +533,7 @@ fn undo_of_creation_shared_spec_crdt_4_6() {
     alice.sync(g, &[]).unwrap();
     alice.grant(g, b, osis::Role::Write, osis::EdgeOpts::default()).unwrap();
     w.run();
-    let mk = |owner: osis::Tid| { let t = alice.write_with(|wr| { let t = wr.create_in(owner, &[g])?; wr.at(t, x.clone()).set(&Value::Int(1))?; Ok(t) }).unwrap(); t };
+    let mk = |owner: osis::Tid| alice.write_with(|wr| { let t = wr.create_in(owner, &[g])?; wr.at(t, x.clone()).set(&Value::Int(1))?; Ok(t) }).unwrap();
     let t = mk(g);
     w.run();
     assert_eq!(bob.get(t, x.clone()).unwrap(), Some(Value::Int(1)));
