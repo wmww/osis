@@ -79,7 +79,7 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | `MAX_CACHED` 64 | P | head keys only: reload per message (two store reads, up to 33 key parses) / memory (about 7 KB each per connection, any label a peer names; 4096 was up to 30 MB per connection) |
 | `MAX_CROSSED` 2^14, `MAX_ORIGINS` 2^20 | P (optimizations, cleared past the cap) | blobs inlined back, entries replicated back to their origin (refused there as held) / memory |
 | `PRESENCE_PRUNE` 1024, `SEQ_BLOCK` 1024 | P (commented in code) | |
-| `ENTRY_OVERHEAD` 768, `TOMB_OVERHEAD` 160, `REC_OVERHEAD` 96 | measured, tested (`overheads_cover_the_structures`) | |
+| `ENTRY_OVERHEAD` 896, `TOMB_OVERHEAD` 160, `REC_OVERHEAD` 96 | measured, tested (`overheads_cover_the_structures`) | |
 | `EPH_LOG_KEEP` 2^16 | R (commented) | every cursor replays / log bounded by the cap only |
 | `EPH_TOMBSTONE_MS` = `MAX_DRIFT` | M (commented) | |
 | `MAX_RELAY_SEEN` 2^16 | M (commented) | |

@@ -293,7 +293,7 @@ impl Replicator {
                 continue;
             }
             bytes += blob.len();
-            entries.push(Entry { blob, wrap: m.wrap, stamp });
+            entries.push(Entry { blob, wrap: m.wrap, stamp, replaces: Vec::new() });
             if bytes >= BATCH_BYTES {
                 end = Some(id);
                 break;
@@ -329,7 +329,7 @@ impl Replicator {
                         && !is_presence(&blob)
                     {
                         bytes += blob.len();
-                        entries.push(Entry { blob, wrap: m.wrap, stamp });
+                        entries.push(Entry { blob, wrap: m.wrap, stamp, replaces: Vec::new() });
                     }
                 }
                 LogRecord::Deleted(_) | LogRecord::Pending(..) => {}

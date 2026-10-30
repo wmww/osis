@@ -83,7 +83,7 @@ impl Fixture {
     pub fn entry(&self, blob: Vec<u8>) -> Entry {
         let wrap = [blob.len() as u8; WRAP_LEN];
         let stamp = sign_stamp(&self.write, &self.label, &osis_label::blob_id(&blob), &wrap);
-        Entry { blob, wrap, stamp }
+        Entry { blob, wrap, stamp, replaces: Vec::new() }
     }
 }
 
@@ -162,7 +162,7 @@ impl Label {
     pub fn entry_by(&self, blob: Vec<u8>, write: &SigningSecret) -> Entry {
         let wrap: Wrap = [(blob.len() % 251) as u8; WRAP_LEN];
         let stamp = sign_stamp(write, &self.id, &osis_label::blob_id(&blob), &wrap);
-        Entry { blob, wrap, stamp }
+        Entry { blob, wrap, stamp, replaces: Vec::new() }
     }
 
     pub fn deposit(&self, blob: Vec<u8>, key: &SigningSecret) -> Command {
@@ -233,6 +233,21 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ("path", Message::Path { id: 8, label: l, after: Some(f.genesis.id()) }),
         ("path reply", Message::PathReply { id: 8, steps: vec![f.genesis.clone(), f.child.clone()], more: false }),
         ("upload", Message::Upload { id: 10, label: l, entries: vec![entry.clone()] }),
+        (
+            "upload with replaces",
+            Message::Upload {
+                id: 11,
+                label: l,
+                entries: vec![Entry {
+                    replaces: vec![
+                        Replace::Untie(id(0xe1)),
+                        Replace::Delete(DeleteItem::sign(&f.delete, &l, id(0xe2), None).expect("fixed delete")),
+                        Replace::Delete(DeleteItem::sign_by(&f.write, &dk, 3, &[0x7d; 16], &[0x7e; 16], &l, id(0xe3), None).expect("fixed delete")),
+                    ],
+                    ..f.entry(Fixture::blob(4))
+                }],
+            },
+        ),
         ("status", Message::Status { id: 10, codes: vec![Code::OK, Code::NOT_HEAD], head: Some(f.child.clone()) }),
         ("deposit", Message::Deposit { id: 12, label: l, blob: deposited, wrap: dep_wrap, sig: dep_sig }),
         ("budget", Message::Budget { id: 12, code: Code::OK, entries_left: 63, bytes_left: 2_064_384, head: None }),

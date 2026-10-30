@@ -284,6 +284,9 @@ pub(crate) struct Requests {
     pub deleting: BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>,
     /// Timed deletes sent: recorded once the server says OK.
     pub timed_sent: BTreeSet<(LabelId, osis_base::BlobId)>,
+    /// Uploads sent replacing entries (spec/sync.md §5): those are gone once one is answered OK.
+    /// A plain upload of the same blob waits meanwhile (two statuses could not be told apart).
+    pub replacing: BTreeMap<(LabelId, osis_base::BlobId), Vec<osis_base::BlobId>>,
     /// Blobs asked for and not received yet.
     pub fetching: BTreeSet<osis_base::BlobId>,
     /// Blobs the server did not deliver when fetched (since it last announced them).

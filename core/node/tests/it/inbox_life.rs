@@ -192,7 +192,7 @@ fn inbox_copy_names_only_touched_things_spec_sync_3() {
     let blob = osis_label::seal_inbox_blob(&bob, &kem, &payload, now, &mut osis_crypto::SeededRng::from_u64(5)).unwrap();
     let id = osis_label::blob_id(&blob);
     net.set_online(b, false);
-    let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(now.0 + osis_base::format::INBOX_LIFETIME_MS), ephemeral: false, presence: false };
+    let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(now.0 + osis_base::format::INBOX_LIFETIME_MS), ephemeral: false, presence: false, tie: 0, replaces: &[], now: 0 };
     osis_proto::LabelStore::put(net.servers[sv].hub.store_mut(), &home, put).unwrap();
     net.set_online(b, true);
     for _ in 0..3 {

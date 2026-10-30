@@ -691,7 +691,7 @@ impl SyncEngine {
         for b in ids {
             let Some(e) = self.state.entries.get(&(l, b)).cloned() else { continue };
             let (Some(stamp), Some(blob)) = (e.stamp, self.engine.blob(&b)?) else { continue };
-            entries.push(osis_proto::Entry { blob, wrap: e.wrap, stamp });
+            entries.push(osis_proto::Entry { blob, wrap: e.wrap, stamp, replaces: Vec::new() });
         }
         if !entries.is_empty() {
             self.command(conn, Command::Upload { label: l, entries }, out)?;
@@ -755,8 +755,19 @@ impl SyncEngine {
         let mut stale = false;
         let mut grew = false;
         for (b, code) in ids.into_iter().zip(codes) {
-            if let Some(c) = self.conns.get_mut(&conn) {
+            let replaced = self.conns.get_mut(&conn).and_then(|c| {
                 c.req.sent.remove(&(l, b));
+                c.req.replacing.remove(&(l, b))
+            });
+            // what it replaced went with it (spec/sync.md §5); else those deletes may go again
+            for p in replaced.into_iter().flatten() {
+                if let Some(c) = self.conns.get_mut(&conn) {
+                    c.req.deleting.remove(&(l, p));
+                }
+                if code == Code::OK {
+                    self.absent_at(Some(server), l, p)?;
+                    grew = true;
+                }
             }
             if code == Code::STORAGE_CAP {
                 self.capped.retain(|(s, l, b)| self.state.entries.contains_key(&(*l, *b)) && !self.state.is_present(s, l, b));
@@ -811,7 +822,6 @@ impl SyncEngine {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
         let (ids, codes) = self.eph_delete_status(conn, l, ids, codes);
         let mut stale = false;
-        let mut freed = false;
         for (b, code) in ids.into_iter().zip(codes) {
             // a timed delete is done once the server took it (spec/commits.md §5)
             let timed = self.conns.get_mut(&conn).is_some_and(|c| {
@@ -831,19 +841,6 @@ impl SyncEngine {
                 }
                 Code::NOT_HEAD => stale = true,
                 c => self.diag(format!("delete refused: code {}", c.0)),
-            }
-            freed |= code == Code::OK;
-        }
-        // uploads refused for the label's cap go again now, into the space freed
-        let capped: Vec<BlobId> = self.capped.range((server, l, BlobId([0; 32]))..=(server, l, BlobId([0xff; 32]))).map(|x| x.2).collect();
-        if freed && !capped.is_empty() {
-            if let Some(c) = self.conns.get_mut(&conn) {
-                for b in capped {
-                    c.req.sent.remove(&(l, b));
-                }
-            }
-            if let Some(lc) = self.lc_mut(conn, &l) {
-                lc.dirty = true;
             }
         }
         // a replaced label is judged done after its deletions (`retire_at`): pass again

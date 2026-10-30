@@ -78,6 +78,9 @@ impl LaneEntry {
     }
 }
 
+/// A waiting delete (`Lane::waiting`) with its entry: what an upload carries as a replacement.
+pub(crate) type Waiting = (BlobId, BTreeSet<CommitId>, osis_label::DeleteItem);
+
 /// The lane's state (in memory).
 #[derive(Default)]
 pub(crate) struct Lane {
@@ -111,6 +114,13 @@ pub(crate) struct Lane {
     /// bringing them back). The author's own cover refused for the cap deletes them at once and
     /// goes again (room for it).
     pub waiting: BTreeMap<(LabelId, BlobId, ServerKey), (BTreeSet<CommitId>, osis_label::DeleteItem)>,
+    /// Waiting deletes an own upload in flight carries as replacements (spec/sync.md §5,
+    /// Replace: the server removes them iff it admits the upload), by upload: back in
+    /// `waiting` unless it is answered OK.
+    pub replacing: BTreeMap<(ConnId, LabelId, BlobId), Vec<Waiting>>,
+    /// Own presence entries a server took on this connection (tied to it there): replaced by
+    /// the tie alone (no delete signatures).
+    pub tied: BTreeSet<(ConnId, LabelId, BlobId)>,
     /// (server, label) reconciled since start, and the reconciliations running (`sync_label`)
     /// with the ephemeral entries their set listed: only those the reply can say the peer holds
     /// (one arriving meanwhile from elsewhere is not known there).
@@ -252,11 +262,16 @@ impl SyncEngine {
     /// label at once (its entries say where); another's, or one not placed yet, counts when
     /// `l`'s closure (of group `g`) holds a thing of it.
     fn eph_covers_held_at(&self, cs: &BTreeSet<CommitId>, g: Option<Tid>, l: &LabelId, s: ServerKey) -> bool {
+        self.eph_covers_held_with(cs, g, l, s, None)
+    }
+
+    /// `eph_covers_held_at`, counting commit `also` (being uploaded there) as held.
+    fn eph_covers_held_with(&self, cs: &BTreeSet<CommitId>, g: Option<Tid>, l: &LabelId, s: ServerKey, also: Option<&CommitId>) -> bool {
         let outside = |c: &CommitId| match self.eph.by_commit.get(c) {
             Some(ks) if ks.iter().any(|k| self.eph.entries.get(k).is_some_and(|e| e.own)) => !ks.iter().any(|(l2, _)| l2 == l),
             _ => g.is_some_and(|g| self.engine.ephemeral_header(c).is_some_and(|h| !h.aspects.iter().any(|a| self.engine.in_ephemeral_closure(&g, &a.tid)))),
         };
-        cs.iter().all(|c| self.eph_held_at(c, l, s) || outside(c))
+        cs.iter().all(|c| Some(c) == also || self.eph_held_at(c, l, s) || outside(c))
     }
 
     /// Sends the waiting deletes whose covers are held at their server now (on a connection
@@ -488,7 +503,7 @@ impl SyncEngine {
                 (None, None) => continue,
             };
             self.eph.uploads.insert((conn, l, blob_id));
-            self.command(conn, Command::Upload { label: l, entries: vec![osis_proto::Entry { blob: blob.clone(), wrap, stamp: st }] }, out)?;
+            self.command(conn, Command::Upload { label: l, entries: vec![osis_proto::Entry { blob: blob.clone(), wrap, stamp: st, replaces: Vec::new() }] }, out)?;
         }
         if let Some(stamp) = stamp
             && !self.served.is_empty()
@@ -522,6 +537,7 @@ impl SyncEngine {
     /// stamped under the connection's write key.
     fn eph_upload(&mut self, conn: ConnId, l: LabelId, ids: &[BlobId], keys: &HeadKeys, out: &mut Vec<Action>) -> Result<()> {
         let mut entries = Vec::new();
+        let mut room = osis_proto::msg::MAX_ITEMS;
         for b in ids {
             // one upload of an entry in flight per connection: a second status would reach the
             // sync records (`eph_status`)
@@ -541,13 +557,62 @@ impl SyncEngine {
                 }
                 _ => continue,
             };
-            entries.push(osis_proto::Entry { blob: e.blob.clone(), wrap: e.wrap, stamp });
+            let (blob, wrap) = (e.blob.clone(), e.wrap);
+            let replaces = self.eph_replaces(conn, l, *b, &mut room);
+            entries.push(osis_proto::Entry { blob, wrap, stamp, replaces });
             self.eph.uploads.insert((conn, l, *b));
         }
         if !entries.is_empty() {
             self.command(conn, Command::Upload { label: l, entries }, out)?;
         }
         Ok(())
+    }
+
+    /// The waiting deletes at `conn`'s server under `l` that own entry `b` completes (the covers
+    /// they wait on are held there once `b` is), at most `room`: carried by its upload as
+    /// replacements (spec/sync.md §5), so the server admits the cover and removes what it
+    /// absorbs in one step (a holder sees the cover first; no window where neither is there).
+    /// Own presence entries tied to this connection go by the tie, the rest by delete proof.
+    fn eph_replaces(&mut self, conn: ConnId, l: LabelId, b: BlobId, room: &mut usize) -> Vec<osis_proto::Replace> {
+        let Some(commit) = self.eph.entries.get(&(l, b)).filter(|e| e.own).map(|e| e.commit) else { return Vec::new() };
+        let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Vec::new() };
+        let g = self.group_of(&l);
+        let ready: Vec<BlobId> = self
+            .eph
+            .waiting
+            .range((l, BlobId([0; 32]), [0u8; 32])..)
+            .take_while(|((l2, _, _), _)| *l2 == l)
+            .filter(|((_, _, s), (cs, _))| *s == server && cs.contains(&commit) && self.eph_covers_held_with(&self.eph_covers(cs), g, &l, server, Some(&commit)))
+            .map(|((_, x, _), _)| *x)
+            .take(*room)
+            .collect();
+        let mut replaces = Vec::new();
+        let mut moved = Vec::new();
+        for x in ready {
+            let Some((cs, item)) = self.eph.waiting.remove(&(l, x, server)) else { continue };
+            replaces.push(if self.eph.tied.contains(&(conn, l, x)) { osis_proto::Replace::Untie(x) } else { osis_proto::Replace::Delete(item.clone()) });
+            moved.push((x, cs, item));
+        }
+        *room -= replaces.len();
+        if !moved.is_empty() {
+            self.eph.replacing.insert((conn, l, b), moved);
+        }
+        replaces
+    }
+
+    /// The replacements upload `b` of `l` on `conn` carried: done (`ok`), else waiting again.
+    /// Whether it carried any.
+    fn eph_replaced(&mut self, conn: ConnId, server: ServerKey, l: LabelId, b: BlobId, ok: bool) -> bool {
+        let Some(moved) = self.eph.replacing.remove(&(conn, l, b)) else { return false };
+        for (x, cs, item) in moved {
+            if ok {
+                self.eph.present.remove(&(server, l, x));
+                self.eph.tied.remove(&(conn, l, x));
+            } else {
+                self.eph.waiting.insert((l, x, server), (cs, item));
+            }
+        }
+        true
     }
 
     /// `eph_upload` under the keys `l` is open with on `conn`.
@@ -618,6 +683,7 @@ impl SyncEngine {
                 rest.1.push(code);
                 continue;
             }
+            let replaced = self.eph_replaced(conn, server, l, b, code == Code::OK);
             if !self.eph.entries.contains_key(&(l, b)) {
                 // a relay-only entry, or one forgotten meanwhile: deleted now that it is there
                 // (once what absorbed it is there too)
@@ -632,6 +698,9 @@ impl SyncEngine {
                 Code::OK => {
                     self.eph.capped.remove(&(conn, l, b));
                     self.eph.present.insert((server, l, b));
+                    if self.eph.entries.get(&(l, b)).is_some_and(|e| e.own && e.presence) {
+                        self.eph.tied.insert((conn, l, b));
+                    }
                 }
                 // presence has a cap of its own at servers: what this one absorbs goes anyway
                 // (its values must not stay up there)
@@ -642,8 +711,9 @@ impl SyncEngine {
                 // the defined outcome (spec/sync.md §5): it stays out there until room appears;
                 // nothing is compacted for it (only authors compact, by their own rule)
                 Code::STORAGE_CAP => {
-                    // an own cover: what it absorbs goes first there, and it goes again
-                    if self.eph_free_for(conn, server, l, b, out)? {
+                    // an own cover whose upload did not already count the room of what it
+                    // absorbs (carried as replacements): that goes first there, and it goes again
+                    if !replaced && self.eph_free_for(conn, server, l, b, out)? {
                         self.eph_upload_on(conn, l, &[b], out)?;
                     } else if self.eph.capped.insert((conn, l, b)) {
                         self.eph_report(&l, "a server's ephemeral cap was reached: an entry stays out there until room appears (retried at the periodic pass)");
@@ -827,7 +897,7 @@ impl SyncEngine {
         if let RelayFrom::Served(_) = from {
             for (conn, _, _) in self.eph_conns(&l) {
                 self.eph.uploads.insert((conn, l, b));
-                self.command(conn, Command::Upload { label: l, entries: vec![osis_proto::Entry { blob: r.blob.clone(), wrap: r.wrap, stamp: r.stamp }] }, out)?;
+                self.command(conn, Command::Upload { label: l, entries: vec![osis_proto::Entry { blob: r.blob.clone(), wrap: r.wrap, stamp: r.stamp, replaces: Vec::new() }] }, out)?;
             }
         }
         Ok(())
@@ -930,6 +1000,11 @@ impl SyncEngine {
         self.eph.deletes.retain(|(c, _, _)| *c != conn);
         self.eph.capped.retain(|(c, _, _)| *c != conn);
         self.eph.orphans.retain(|(_, _, c), _| *c != conn);
+        self.eph.tied.retain(|(c, _, _)| *c != conn);
+        let carried: Vec<(ConnId, LabelId, BlobId)> = self.eph.replacing.keys().filter(|(c, _, _)| *c == conn).copied().collect();
+        for (c, l, b) in carried {
+            self.eph_replaced(c, server, l, b, false);
+        }
     }
 
     /// A session this node served ended: the presence entries it uploaded lose it as a source.

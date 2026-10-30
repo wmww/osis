@@ -545,17 +545,21 @@ impl ClientSession {
         }
     }
 
-    /// Uploads in batches within the item cap and the message size.
+    /// Uploads in batches within the item caps (entries, and replace items over them) and the
+    /// message size. An entry naming more than `MAX_ITEMS` replacements goes with its first
+    /// `MAX_ITEMS` (callers stay under it).
     fn upload(&mut self, label: LabelId, entries: Vec<Entry>) {
         let mut batch: Vec<Entry> = Vec::new();
-        let mut used = 0;
-        for e in entries {
+        let (mut used, mut replaces) = (0, 0);
+        for mut e in entries {
+            e.replaces.truncate(MAX_ITEMS);
             let size = entry_size(&e);
-            if !batch.is_empty() && (batch.len() == MAX_ITEMS || used + size > REPLY_BUDGET) {
+            if !batch.is_empty() && (batch.len() == MAX_ITEMS || replaces + e.replaces.len() > MAX_ITEMS || used + size > REPLY_BUDGET) {
                 self.upload_batch(label, std::mem::take(&mut batch));
-                used = 0;
+                (used, replaces) = (0, 0);
             }
             used += size;
+            replaces += e.replaces.len();
             batch.push(e);
         }
         if !batch.is_empty() {

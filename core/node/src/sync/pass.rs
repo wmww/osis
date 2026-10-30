@@ -68,7 +68,12 @@ fn desired(bodies: &[Body]) -> Desired {
     m
 }
 
+/// Whether an entry's live writes are carried, the aspects only a snapshot can carry, and the
+/// capped rewrite it relies on (`SyncEngine::carried`).
+type Carriage = (bool, Vec<(Tid, Ak)>, Option<BlobId>);
+
 /// What may become of an entry judged under a label (`SyncEngine::deletable`).
+#[allow(clippy::large_enum_variant)] // short-lived, one per judged entry
 enum Fate {
     /// Not must-not-hold, or not judged.
     Keep,
@@ -77,8 +82,10 @@ enum Fate {
     Wait,
     /// Past its expiry: goes unattended.
     Expired,
-    /// Goes, for this reason, by this delete item.
-    Delete(Why, osis_label::DeleteItem),
+    /// Goes, for this reason, by this delete item; with this node's rewrite the server refused
+    /// for the label's cap that carries it (`carried`), only as a replacement in that rewrite's
+    /// upload (spec/sync.md §5, §7).
+    Delete(Why, osis_label::DeleteItem, Option<BlobId>),
 }
 
 /// What a keep-at-most body before its timed delete waits on (`keep_at_most_due`), its aspect.
@@ -354,7 +361,7 @@ impl SyncEngine {
                     None => false,
                 };
             }
-            if !seen.insert(o.id) || settled || self.conns.get(&conn).is_some_and(|c| super::in_flight(c, &c.req.sent, (l, o.id), raw)) {
+            if !seen.insert(o.id) || settled || self.conns.get(&conn).is_some_and(|c| super::in_flight(c, &c.req.sent, (l, o.id), raw) || c.req.replacing.contains_key(&(l, o.id))) {
                 continue;
             }
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
@@ -372,13 +379,13 @@ impl SyncEngine {
             let Some(blob) = self.engine.blob(&o.id)? else { continue };
             if let Some(w) = &keys.write {
                 let stamp = osis_label::sign_stamp(w, &l, &o.id, &e.wrap);
-                uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp });
+                uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp, replaces: Vec::new() });
                 // kept, so a later pass does not promote it again
                 let mut e = e;
                 e.stamp = Some(stamp);
                 self.state.set_entry(l, o.id, e);
             } else if let Some(stamp) = e.stamp {
-                uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp });
+                uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp, replaces: Vec::new() });
             } else if let Some(d) = &keys.deposit
                 && self.mine(&e)
                 // a queued deposit goes from the outbox
@@ -930,9 +937,9 @@ impl SyncEngine {
         if why == Why::Expired {
             return Ok(Fate::Expired);
         }
-        let (carried, need) = match why {
-            _ if !live => (true, Vec::new()),
-            Why::Duplicate | Why::StrictSubset => (true, Vec::new()),
+        let (carried, need, via) = match why {
+            _ if !live => (true, Vec::new(), None),
+            Why::Duplicate | Why::StrictSubset => (true, Vec::new(), None),
             _ => self.carried(at, e)?,
         };
         if !may_delete(why, live, carried) {
@@ -944,7 +951,7 @@ impl SyncEngine {
             return Ok(Fate::Wait);
         }
         Ok(match self.delete_for(at.keys, &at.l, id, e, None)? {
-            Some(item) => Fate::Delete(why, item),
+            Some(item) => Fate::Delete(why, item, via),
             None => {
                 note.keyless = true;
                 Fate::Wait
@@ -1040,7 +1047,7 @@ impl SyncEngine {
         let entries: Vec<(BlobId, Entry)> = self.state.label_entries(l).map(|(b, e)| (b, e.clone())).collect();
         let at = At { g, l: *l, server: Some(*server), keys: &keys, snaps: &snaps, settled: unsettled.is_empty() };
         for (id, e) in entries {
-            if let Fate::Delete(why, _) = self.deletable(&at, &id, &e, &desired, false, &mut note)? {
+            if let Fate::Delete(why, _, _) = self.deletable(&at, &id, &e, &desired, false, &mut note)? {
                 v.must_not.push((id, format!("{why:?}")));
             }
         }
@@ -1264,7 +1271,7 @@ impl SyncEngine {
             }
             let Some(blob) = self.engine.blob(&id)? else { continue };
             let stamp = osis_label::sign_stamp(write, &l, &id, &e.wrap);
-            uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp });
+            uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp, replaces: Vec::new() });
             e.stamp = Some(stamp);
             self.state.set_entry(l, id, e);
             // still deposited there until the server takes the stamped upload (a refusal, say a
@@ -1827,7 +1834,7 @@ impl SyncEngine {
                 }
                 let (Some(en), Some(blob)) = (self.state.entries.get(&(l, bid)).cloned(), self.engine.blob(&bid)?) else { continue };
                 let stamp = osis_label::sign_stamp(&write, &l, &bid, &en.wrap);
-                uploads.push(osis_proto::Entry { blob, wrap: en.wrap, stamp });
+                uploads.push(osis_proto::Entry { blob, wrap: en.wrap, stamp, replaces: Vec::new() });
             }
         }
         if !uploads.is_empty() {
@@ -2074,6 +2081,8 @@ impl SyncEngine {
             }
         };
         let mut items = Vec::new();
+        // capped rewrites to upload again, each replacing the bodies it carries
+        let mut replace: BTreeMap<BlobId, Vec<osis_label::DeleteItem>> = BTreeMap::new();
         let mut note = Note::default();
         for id in &ids {
             let id = *id;
@@ -2090,11 +2099,14 @@ impl SyncEngine {
                     // the server drops it unattended (spec/sync.md §5)
                     self.absent_at(Some(server), l, id)?;
                 }
-                Fate::Delete(_, item) => {
+                Fate::Delete(_, item, via) => {
                     left.commits.insert(commit);
                     if !busy(self, &id) {
                         send(self, id);
-                        items.push(item);
+                        match via {
+                            Some(q) => replace.entry(q).or_default().push(item),
+                            None => items.push(item),
+                        }
                     }
                 }
             }
@@ -2193,7 +2205,39 @@ impl SyncEngine {
         if !items.is_empty() {
             self.command(conn, Command::Delete { label: l, items }, out)?;
         }
+        self.replace_sends(conn, keys, l, replace, out)?;
         self.given(conn);
+        Ok(())
+    }
+
+    /// Uploads this node's rewrites the server refused for the label's cap again, each naming
+    /// the bodies it carries as replaced with their delete items (spec/sync.md §5, §7): the
+    /// server admits it in the room they free and removes them in the same step, so the label
+    /// never lacks the kept live writes.
+    fn replace_sends(&mut self, conn: ConnId, keys: &HeadKeys, l: LabelId, replace: BTreeMap<BlobId, Vec<osis_label::DeleteItem>>, out: &mut Vec<super::Action>) -> Result<()> {
+        let raw = self.raw_now();
+        let mut uploads = Vec::new();
+        for (q, items) in replace {
+            let Some(mut e) = self.state.entries.get(&(l, q)).cloned() else { continue };
+            let Some(blob) = self.engine.blob(&q)? else { continue };
+            let stamp = match (&keys.write, e.stamp) {
+                (Some(w), _) => osis_label::sign_stamp(w, &l, &q, &e.wrap),
+                (None, Some(s)) => s,
+                (None, None) => continue,
+            };
+            e.stamp = Some(stamp);
+            let wrap = e.wrap;
+            self.state.set_entry(l, q, e);
+            if let Some(c) = self.conns.get_mut(&conn) {
+                c.req.sent.insert((l, q), (raw, super::UNTAGGED));
+                c.req.replacing.insert((l, q), items.iter().map(|i| i.blob).collect());
+            }
+            let replaces = items.into_iter().map(osis_proto::Replace::Delete).collect();
+            uploads.push(osis_proto::Entry { blob, wrap, stamp, replaces });
+        }
+        if !uploads.is_empty() {
+            self.command(conn, Command::Upload { label: l, entries: uploads }, out)?;
+        }
         Ok(())
     }
 
@@ -2214,12 +2258,13 @@ impl SyncEngine {
     /// A kept delta's: a blob of the commit holding it that is not must-not-hold (the dropping
     /// node's rewrite, `carried_by`) or a snapshot covering it; none is asked for while this node
     /// has such a blob placed. A dropped delta's: the snapshot that covered it when it was dropped.
-    fn carried(&mut self, at: &At, e: &Entry) -> Result<(bool, Vec<(Tid, Ak)>)> {
+    /// With a carrier that is this node's rewrite refused for the cap (`rewrite_capped`): it.
+    fn carried(&mut self, at: &At, e: &Entry) -> Result<Carriage> {
         let (g, l, server) = (&at.g, &at.l, at.server.as_ref());
-        let Kind::Commit { commit, parts, .. } = &e.kind else { return Ok((false, Vec::new())) };
-        let Some(m) = self.engine.core.ix.commits.get(commit).cloned() else { return Ok((false, Vec::new())) };
+        let Kind::Commit { commit, parts, .. } = &e.kind else { return Ok((false, Vec::new(), None)) };
+        let Some(m) = self.engine.core.ix.commits.get(commit).cloned() else { return Ok((false, Vec::new(), None)) };
         let x = self.engine.group_actor(g);
-        let (mut all, mut need) = (true, Vec::new());
+        let (mut all, mut need, mut via) = (true, Vec::new(), None);
         for p in parts {
             let Some(a) = m.header.aspects.get(p.0) else { continue };
             let (t, a) = (a.tid, a.ak.clone());
@@ -2231,9 +2276,13 @@ impl SyncEngine {
             if !dropped && self.carried_by(server, g, l, commit, &[*p]) || self.snapshot_carries(at, commit, &t, &a, dropped)? {
                 continue;
             }
-            // this node's rewrite, refused at the server for the label's cap: it goes up in the
-            // space this body frees (else a full label would keep a purged body for good)
-            if !dropped && server.is_some_and(|s| self.rewrite_capped(s, g, l, commit, parts, p)) {
+            // this node's rewrite, refused at the server for the label's cap: it goes up again
+            // replacing this body, in the room it frees (else a full label would keep a purged
+            // body for good)
+            if !dropped
+                && let Some(q) = server.and_then(|s| self.rewrite_capped(s, g, l, commit, parts, p))
+            {
+                via = via.or(Some(q));
                 continue;
             }
             all = false;
@@ -2241,20 +2290,20 @@ impl SyncEngine {
                 need.push((t, a));
             }
         }
-        Ok((all, need))
+        Ok((all, need, via))
     }
 
-    /// Whether a blob of commit `c` under `l` holding delta `p`, a strict subset of `parts` (so
-    /// smaller than the body it would carry), is this node's upload `server` refused for the
+    /// A blob of commit `c` under `l` holding delta `p`, a strict subset of `parts` (so smaller
+    /// than the body it would carry), that is this node's upload `server` refused for the
     /// label's cap (`SyncEngine::capped`).
-    fn rewrite_capped(&mut self, server: &ServerKey, g: &Tid, l: &LabelId, c: &CommitId, parts: &[(usize, usize)], p: &(usize, usize)) -> bool {
+    fn rewrite_capped(&mut self, server: &ServerKey, g: &Tid, l: &LabelId, c: &CommitId, parts: &[(usize, usize)], p: &(usize, usize)) -> Option<BlobId> {
         let ids: Vec<BlobId> = self
             .state
             .entries_of(l, c)
             .filter(|(id, e)| !e.cert && self.capped.contains(&(*server, *l, *id)) && matches!(&e.kind, Kind::Commit { parts: q, .. } if q.contains(p) && q.len() < parts.len() && q.iter().all(|x| parts.contains(x)) && !self.holds_nothing(g, c, q)))
             .map(|(id, _)| id)
             .collect();
-        ids.into_iter().any(|id| self.genuine(&id))
+        ids.into_iter().find(|id| self.genuine(id))
     }
 
     /// Whether a later snapshot of `(t, a)` under the label at the server carries body `body`'s

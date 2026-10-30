@@ -1,0 +1,2 @@
+- `wt` was not on PATH in the worker shell; the brief's PATH export worked.
+- A scripted multi-edit (python `str.replace` on a slice found by `index`) turned an empty match into an insert between every character of a file (3 MB of garbage); recovered by `git checkout`. Asserting the old text is non-empty and unique before replacing avoids it.
