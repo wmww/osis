@@ -594,3 +594,64 @@ fn mixed_retention_snapshot_keeps_carried_keep_at_least_spec_commits_5() {
     net.run();
     assert!(!net.engine(a).body_not_dropped(&w, &t, &k), "past it, covered by a snapshot");
 }
+
+// spec/commits.md §5, spec/sync.md §6 (undercut, two right holders): w's body stays at the
+// server while the at-most-0 snapshot undercuts it; b kills w while a is offline and deletes it
+// past its keep-at-least bound; a, back, neither uploads w again nor keeps it.
+#[test]
+fn mixed_retention_undercut_body_two_holders_spec_sync_6() {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    use osis_schema::{Bound, PurgeBy, Retention};
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(a);
+    let k = Ak::new(BIG.ak()).unwrap();
+    let put = |net: &mut Net, n: usize, key: &str, v: &str, keep: Option<Retention>| {
+        let mut m = Mutation::new();
+        if let Some(r) = keep {
+            m.retention(t, &BIG, r).unwrap();
+        }
+        m.op(t, &BIG, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(s(v)) }).unwrap();
+        net.engine(n).commit(m).unwrap().unwrap()
+    };
+    let at_srv = |net: &mut Net, c: osis_base::CommitId| {
+        let ids = net.server_ids(sv, &l);
+        net.sync(a).entries(&l).into_iter().filter(|(id, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c) && ids.contains(id)).count()
+    };
+    let least = Retention { by: PurgeBy::Writer, at_least: Bound { abs: None, rel: Some(1_800_000) }, at_most: Bound::default() };
+    let most = Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(0) } };
+    let w = put(&mut net, a, "w", "one", Some(least));
+    let x = put(&mut net, a, "x", "one", Some(most));
+    net.run();
+    net.advance(10);
+    let acts = net.sync(a).compact(&t, &k).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.advance(60_000);
+    for n in [a, b] {
+        assert!(net.engine(n).body_not_dropped(&w, &t, &k), "{n} keeps w");
+        assert!(!net.engine(n).body_not_dropped(&x, &t, &k), "{n} dropped x");
+    }
+    assert_eq!(at_srv(&mut net, w), 1, "w at the server");
+    assert_eq!(at_srv(&mut net, x), 0, "x deleted");
+    // b kills w while a is offline; past the bound b drops and deletes it
+    net.set_online(a, false);
+    let mut m = Mutation::new();
+    m.op(t, &BIG, PathOp { path: Vec::new(), op: Op::Remove(s("w")) }).unwrap();
+    net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    net.advance(1_800_000 + osis_base::format::MAX_DRIFT_MS + 1000);
+    assert!(!net.engine(b).body_not_dropped(&w, &t, &k), "b dropped w");
+    assert!(net.engine(a).body_not_dropped(&w, &t, &k), "a still holds w");
+    assert_eq!(at_srv(&mut net, w), 0, "b deleted w");
+    net.set_online(a, true);
+    net.run();
+    net.advance(180_000);
+    assert_eq!(at_srv(&mut net, w), 0, "a did not upload w again");
+    assert!(!net.engine(a).body_not_dropped(&w, &t, &k), "a dropped w");
+}

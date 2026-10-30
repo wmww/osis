@@ -1,0 +1,7 @@
+# Compaction can still shorten a write's keep at least under uniform retention
+> Summary: a snapshot's keep at most counts from its first death, so a write compacted into it while live loses part of its keep-at-least promise when another carried write died earlier; `Engine::undercuts` only guards a stricter keep-at-most component, not this.
+> Tags: retention, owner-call
+
+Shape (one retention for the whole aspect, keep at least D and at most E, E >= D, e.g. both 30 days): w's body, live, is dropped as covered by snapshot S (a fully live body is past a relative keep at least). Another write S carries dies at f; w dies later at t. S's bound is min(t + D, f + E) (keep at most wins, `osis_commit::retention::body_keep`), so w's dead value is kept only f + E - t < D when t - f > E - D. With E = D any earlier death in S cuts it. While S stays live past f + E plus `AT_MOST_GRACE` it must drop, and a new carrier starts the clock again, so the cut is at the last carrier.
+
+Same rule as an uncompacted multi-write body (spec/commits.md §5 bounds are per body), so the spec allows it; what changes is that compaction regroups writes into a body with an earlier first death. `undercuts` cannot cover it without stopping compaction of every live body under a finite keep at most. Options: accept and say so in spec §5; count a snapshot's keep at most per carried write (its own first death) rather than per body; or let a snapshot drop only once no carried write is inside its own keep-at-least bound.
