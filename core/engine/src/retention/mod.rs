@@ -234,16 +234,17 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     // and IDs): what it gave still counts as received while it is valid (spec/commits.md §5);
     // a covered one's coverers reach them
     let gives = if snapshot && !as_cover { tx.core.ix.snapshots.get(&k).and_then(|v| v.iter().find(|x| x.1 == *c)).map(|g| (g.2.clone(), g.3.clone())) } else { None };
+    // the dropped deltas, to find what of the state holds copies of their writes
+    let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect();
     let (role, overreach) = (tx.core.ix.rotation_role.get(&(*c, ai)).copied(), tx.core.ix.grant_overreach.contains(&(*c, ai)));
-    m.dropped.insert(ai, Dropped { covered_by, as_cover, live, gives, role, overreach });
+    let intros = crate::apply::keys::intro_epochs(&m.header, ai, &bodies);
+    m.dropped.insert(ai, Dropped { covered_by, as_cover, live, gives, role, overreach, intros });
     // a part missing (again, `uncover`) and dropped is dropped, as an open reads it: received,
     // so snapshots' copies of its writes are carried writes no more
     if m.missing.remove(&ai) {
         let h = m.header.clone();
         crate::apply::validity::uncarry(tx.core, c, &h, &|x| x == ai);
     }
-    // the dropped deltas, to find what of the state holds copies of their writes
-    let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect();
     if let Some(blob) = tx.get_commit(c)? {
         let rest = osis_commit::rewrite(&blob, |x, _| x == ai);
         tx.put_commit(c, &rest, &m, Shred::Yes, None)?;
@@ -316,7 +317,8 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
         }
     }
     let mut owned = Vec::new();
-    if !lost.is_empty() {
+    let any = !lost.is_empty();
+    if any {
         tx.core.forget_live(tid, ak);
     }
     for (c, ai) in lost {
@@ -325,6 +327,14 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
         // dropped as covered: no frontiers kept (`Dropped::gives`), nothing in `dropped_snapshots`
         m.dropped.remove(&ai);
         m.missing.insert(ai);
+        // never received from now on: what its body judged goes too (`Dropped::role`; the
+        // header's one-delta rule for `/secrets` stays, `validity::note_required`), and so do
+        // the epochs it introduced (`keys::rebuild_intro` below)
+        tx.core.ix.rotation_role.remove(&(c, ai));
+        let several = m.header.aspects.get(ai).is_some_and(|a| a.ak.as_str() == "/secrets" && a.hashes.len() != 1);
+        if !several {
+            tx.core.ix.grant_overreach.remove(&(c, ai));
+        }
         if m.view.kind.has_own_writes() {
             owned.extend(Owned::of_view(&m.view, &c, ai));
         }
@@ -335,6 +345,9 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
         if let Some(ch) = &mut tx.core.changed {
             ch.undropped.insert(c);
         }
+    }
+    if any && matches!(ak.as_str(), "/secrets" | "/keys") {
+        crate::apply::keys::rebuild_intro(tx, &BTreeSet::from([*tid]))?;
     }
     // held snapshots' copies of the writes of deltas now never received are carried writes
     if !owned.is_empty() {

@@ -1831,6 +1831,47 @@ mod keys_tests {
         }
     }
 
+    // spec/crypto.md §4 (an epoch a departed party's rotation introduced does not cover its
+    // departure), spec/commits.md §5: admin P rotates read (removing R); the owner grants X at
+    // that epoch, compacts and drops P's rotation bodies. The epoch's introducer stays P's
+    // rotation (not the later grant), at open and after a rebuild.
+    #[test]
+    fn dropped_rotation_keeps_its_epoch_intro_spec_crypto_4() {
+        let mut lp = LocalPeer::new(4, 931, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let (me, p, r, x) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3));
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        m.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let e = |role| ct::Edge { role, until: None, invite: None, since: None };
+        lp.peers[0].engine.grant(&t, &p, &e(Role::Admin)).unwrap();
+        lp.peers[0].engine.grant(&t, &r, &e(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        let rot = lp.peers[1].engine.demote(&t, &crate::flows::Demotion { member: r, new: None, presync: crate::flows::PreSync::Synced }).unwrap().commits;
+        lp.sync_all().unwrap();
+        let ep = lp.peers[0].engine.core.epochs(&t).unwrap().role(Role::Read).newest().unwrap();
+        let intro = |lp: &LocalPeer| lp.peers[0].engine.core.ix.epoch_intro.get(&(t, Role::Read, ep)).map(|v| v.1);
+        assert_eq!(intro(&lp), Some(p));
+        lp.peers[0].engine.grant(&t, &x, &e(Role::Read)).unwrap();
+        for k in ["/secrets", "/keys"] {
+            let k = osis_base::Ak::new(k).unwrap();
+            lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+            for c in &rot {
+                if lp.peers[0].engine.body_not_dropped(c, &t, &k) {
+                    lp.peers[0].engine.drop_body(c, &t, &k).unwrap();
+                }
+            }
+        }
+        assert!(rot.iter().any(|c| !lp.peers[0].engine.body_not_dropped(c, &t, &osis_base::Ak::new("/secrets").unwrap())), "rotation body dropped");
+        assert_eq!(intro(&lp), Some(p), "the rotation, not the later grant");
+        let d0 = lp.peers[0].engine.index_digest();
+        lp.peers[0].engine.rebuild_index().unwrap();
+        assert_eq!(intro(&lp), Some(p), "rebuilt");
+        assert_eq!(d0.first_diff(&lp.peers[0].engine.index_digest()), None);
+    }
+
     // spec/permissions.md §3, spec/crypto.md §4: a writer rotates read and write only. A removal
     // carries its entry's key and acts only on the entry of that key (spec/crdt.md §5.6), so it
     // needs the role its key names: a writer's removal of admin boxes and admin history boxes is

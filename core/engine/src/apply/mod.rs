@@ -812,6 +812,11 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 if d.overreach {
                     tx.core.ix.grant_overreach.insert((id, *ai));
                 }
+                if let Some(a) = h.aspects.get(*ai) {
+                    for (r, e) in &d.intros {
+                        keys::note_intro(tx.core, &h, &a.tid, *r, *e);
+                    }
+                }
             }
             atomic::index_commit(tx.core, &id, &m.view);
             validity::note_imports(tx.core, &id, &h, &[]).map_err(|_| Error::Corrupt("commit imports"))?;

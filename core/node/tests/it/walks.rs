@@ -344,8 +344,10 @@ fn open_equals_rebuild_decoding(e: &mut Engine, things: &[Tid], decoded: usize, 
     let had = (validity(e.index_digest()), e.perm_digest(false), states(e, things));
     e.reload().unwrap();
     assert_eq!(e.headers_decoded(), decoded, "{at}: headers the open decoded");
+    assert_eq!(had.0.first_diff(&validity(e.index_digest())), None, "{at}: index opened");
     assert_eq!((validity(e.index_digest()), e.perm_digest(false), states(e, things)), had, "{at}: opened from the index");
     e.rebuild_index().unwrap();
+    assert_eq!(had.0.first_diff(&validity(e.index_digest())), None, "{at}: index rebuilt");
     assert_eq!((validity(e.index_digest()), e.perm_digest(false), states(e, things)), had, "{at}: rebuilt");
 }
 
@@ -484,6 +486,80 @@ fn open_equals_rebuild_after_a_secrets_compaction() {
     open_equals_rebuild(&mut lp.peers[0].engine, &[t], "rotated after");
     compact(&mut lp.peers[0].engine, &mut ids);
     open_equals_rebuild(&mut lp.peers[0].engine, &[t], "compacted again");
+}
+
+// as above, randomized: four nodes grant, demote (rotations), compact `/secrets` and `/keys`
+// dropping what the snapshot covers, and pass commits on late and out of order; at random points
+// and at the end an open equals a rebuild, whole index included. Seeds: OSIS_WALKS_SECRETS_START,
+// OSIS_WALKS_SECRETS_SEEDS (default 0..4), a thread per core (OSIS_WALKS_THREADS).
+#[test]
+fn open_equals_rebuild_random_secrets_compactions() {
+    let range = osis_base::testenv::Seeds::from_env("OSIS_WALKS_SECRETS_START", "OSIS_WALKS_SECRETS_SEEDS", 0..4);
+    let seeds: Vec<u64> = range.range.clone().collect();
+    let name = "walks::open_equals_rebuild_random_secrets_compactions";
+    let replay = |s: u64| format!("OSIS_WALKS_SECRETS_START={s} OSIS_WALKS_SECRETS_SEEDS=1 cargo test --workspace --test it {name} -- --exact");
+    let dropped: usize = run_seeds_noted(name, &seeds, range.overridden, "OSIS_WALKS_THREADS", replay, secrets_history).into_iter().sum();
+    if !range.overridden {
+        assert!(dropped > 0, "no membership body dropped");
+    }
+}
+
+/// One random history of `open_equals_rebuild_random_secrets_compactions`; how many membership
+/// bodies it dropped.
+fn secrets_history(seed: u64) -> usize {
+    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+    let mut lp = LocalPeer::new(4, 0x5ec0 + seed, T0).unwrap();
+    lp.sync_all().unwrap();
+    let ids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
+    let t = new_thing(&mut lp, 0);
+    let _ = lp.peers[0].engine.grant(&t, &ids[1], &edge(Role::Admin));
+    for m in &ids[2..] {
+        let _ = lp.peers[0].engine.grant(&t, m, &edge(Role::Read));
+    }
+    lp.sync_all().unwrap();
+    let mut dropped = 0;
+    for step in 0..30 {
+        let i = rng.below(4) as usize;
+        let m = ids[1 + rng.below(3) as usize];
+        match rng.below(8) {
+            0 | 1 => {
+                let role = [Role::Read, Role::Write, Role::Admin][rng.below(3) as usize];
+                let _ = lp.peers[i].engine.grant(&t, &m, &edge(role));
+            }
+            2 => {
+                let d = osis_node::flows::Demotion { member: m, new: None, presync: osis_node::flows::PreSync::Synced };
+                let _ = lp.peers[i].engine.demote(&t, &d);
+            }
+            3 | 4 => {
+                let k = ak(["/secrets", "/keys"][rng.below(2) as usize]);
+                let e = &mut lp.peers[i].engine;
+                if let Ok(Some(snap)) = e.snapshot(&t, &k) {
+                    let on: Vec<_> = e.commit_ids().into_iter().filter(|c| *c != snap && e.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t && x.ak == k))).collect();
+                    for c in on {
+                        if e.body_not_dropped(&c, &t, &k) && e.covered(&snap, &c, &t, &k).is_ok_and(|x| x == Some(true)) {
+                            e.drop_body(&c, &t, &k).unwrap();
+                            dropped += 1;
+                        }
+                    }
+                }
+            }
+            5 | 6 => {
+                let j = (i + 1 + rng.below(3) as usize) % 4;
+                let pk = lp.packages(i).unwrap();
+                let n = pk.len() as u64;
+                for _ in 0..1 + rng.below(n + 1) {
+                    let _ = lp.deliver(j, &pk[rng.below(n) as usize]);
+                }
+            }
+            _ => open_equals_rebuild(&mut lp.peers[i].engine, &[t], &format!("seed {seed} step {step} peer {i}")),
+        }
+        lp.peers[i].clock.advance(1 + rng.below(3));
+    }
+    lp.sync_all().unwrap();
+    for i in 0..4 {
+        open_equals_rebuild(&mut lp.peers[i].engine, &[t], &format!("seed {seed} end, peer {i}"));
+    }
+    dropped
 }
 
 // spec/requirements.md, Decentralization; spec/commits.md §4 (all or none): a crash at any
