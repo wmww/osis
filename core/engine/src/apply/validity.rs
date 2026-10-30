@@ -828,6 +828,30 @@ pub(crate) fn invalid_snapshot(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) ->
     core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction()) && !snapshot_valid(core, c, tid, ak)
 }
 
+/// Whether held commit `c` owns its `Commit(c)` dots on `(tid, ak)`: a commit-form commit with
+/// own writes and a delta of that aspect (spec/permissions.md §5.2), as `any_owner` prefers it.
+pub(crate) fn owns_commit_dots(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
+    core.ix.commits.get(c).is_some_and(|m| m.view.form == Form::Commit && m.view.kind.has_own_writes() && m.view.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak))
+}
+
+/// The imports that commit `id` (header `h`, being applied) makes void: itself if it is an
+/// import naming as origin a held commit with a delta on its thing, else the held imports on its
+/// things naming it (spec/permissions.md §7: origins are commits of other things).
+pub(crate) fn self_origin_imports(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
+    let mut out = BTreeSet::new();
+    if h.kind == Kind::Import {
+        if h.origins.iter().any(|o| core.ix.commits.get(&o.commit).is_some_and(|m| m.view.aspects.iter().any(|x| h.aspects.iter().any(|a| a.tid == x.tid)))) {
+            out.insert(*id);
+        }
+        return out;
+    }
+    let things: BTreeSet<Tid> = h.aspects.iter().map(|a| a.tid).collect();
+    for t in things {
+        out.extend(core.ix.imports.get(&(t, *id)).into_iter().flatten().copied());
+    }
+    out
+}
+
 /// Records the held imports per (thing, origin) (`Core::imports`: which delta owns a `Commit`
 /// source's writes on a thing, spec/permissions.md §7), and refuses carried writes stamped after
 /// the commit carrying them (spec/crdt.md §8, §7): a node's next stamp exceeds every stamp it
