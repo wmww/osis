@@ -71,8 +71,8 @@ fn model_order_independent(seeds: u64) {
     let map = Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register));
     let mixes = [vec![a, b], vec![Ty::Register, Ty::Counter, set, Ty::Max, map, Ty::Min], vec![sink_no_seq(), Ty::Register, Ty::Counter]];
     for (mi, types) in mixes.iter().enumerate() {
-        for seed in 0..seeds {
-            let mut r = crate::testutil::rng(seed | 1);
+        for seed in (1..seeds).step_by(2) {
+            let mut r = crate::testutil::rng(seed);
             let commits = history(&mut r, types, types.len().max(3), 5);
             let (mut s1, mut s2) = (None, None);
             for c in &commits {

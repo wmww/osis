@@ -1230,11 +1230,13 @@ fn random_window_one_capped_server_spec_sync_9() {
     }
 }
 
-/// The tier-2 random-window seeds: OSIS_EPH_SEEDS (default 200) from OSIS_EPH_START (default 0).
-fn eph_seeds() -> std::ops::Range<u64> {
+/// A tier-2 random-window run: OSIS_EPH_SEEDS (default 200) from OSIS_EPH_START (default 0), a
+/// thread per core (OSIS_EPH_THREADS); every failing seed is reported with its replay command.
+fn eph_large(name: &str, single: bool, inflight: bool) {
     let s = osis_base::testenv::Seeds::from_env("OSIS_EPH_START", "OSIS_EPH_SEEDS", 0..200);
-    s.announce("random_window");
-    s.range
+    let seeds: Vec<u64> = s.range.clone().collect();
+    let replay = |seed: u64| format!("OSIS_EPH_START={seed} OSIS_EPH_SEEDS=1 cargo test --workspace --test it {name} -- --ignored --exact");
+    crate::common::run_seeds_noted(name, &seeds, s.overridden, "OSIS_EPH_THREADS", replay, |seed| random_window_run_on(seed, single, inflight));
 }
 
 // the same with one capped server: holders converge through what it holds, or an entry stays out
@@ -1242,10 +1244,7 @@ fn eph_seeds() -> std::ops::Range<u64> {
 #[test]
 #[ignore]
 fn random_window_one_capped_server_large() {
-    for seed in eph_seeds() {
-        eprintln!("seed {seed}");
-        random_window_run_on(seed, true, false);
-    }
+    eph_large("ephemeral::random_window_one_capped_server_large", true, false);
 }
 
 // notes/ephemeral.md Convergence (randomized): holders of a shared window converge after random
@@ -1261,10 +1260,7 @@ fn random_window_converges_spec_sync_6() {
 #[test]
 #[ignore]
 fn random_window_converges_large() {
-    for seed in eph_seeds() {
-        eprintln!("seed {seed}");
-        random_window_run(seed);
-    }
+    eph_large("ephemeral::random_window_converges_large", false, false);
 }
 
 // the same with half the steps ending while messages are in flight, so writes meet unanswered
@@ -1280,10 +1276,7 @@ fn random_window_inflight_spec_sync_9() {
 #[test]
 #[ignore]
 fn random_window_inflight_large() {
-    for seed in eph_seeds() {
-        eprintln!("seed {seed}");
-        random_window_run_on(seed, false, true);
-    }
+    eph_large("ephemeral::random_window_inflight_large", false, true);
 }
 
 // the harness: a node restarted while its server's Hello is still on the way gets nothing of

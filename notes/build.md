@@ -43,19 +43,19 @@ Quiet machine, warm worktree, after the fixes this note records. If your numbers
 |---|---|
 | no-op `cargo build --workspace` / `--all-targets` | 0.4 s / 2 s |
 | one-line edit, `cargo test --workspace --no-run`: osis-node (`sync/`) / osis-engine | 2.5 s (4 crates) / 5.5 s (5 crates); before the split either was 5.5-7.5 s |
-| `cargo test --workspace` tests, built | 40 s quiet (the largest `it` binary, 439 tests, 23 s of it); 2-4x at load 25-35 |
+| `cargo test --workspace` tests, built | 45 s, 476 CPU-s quiet (osis-node `it`, 459 tests, 23 s of it); CPU-bound, so it scales with load (2-4x at load 25-35); notes/testing.md, Tier-1 cost |
 | edit osis-crdt or osis-base (bottom of the stack), all targets | 10-16 s |
 | clippy / clippy-net after a one-line edit | 3-7 s / 3.5 s |
 | clean `cargo build --workspace`; then `--all-targets`; first clippy; first clippy-net | 82 s; +53 s; +17 s; +69 s |
 | osis-engine and osis-node from scratch (their incremental state gone) | 27 s: osis-node starts on osis-engine's metadata at 5 s and the two codegen in parallel (one osis-node: 40 s) |
-| gate, warm, without / with the 5-seed sim sweep | about 1.5 / 2.5 min quiet (sweep step 51 s); 4-9 min while a periodic run shares the box at normal priority (tier 1 255-338 s, clippy 51 s each) |
-| sim sweep 5 / 30 / 300 seeds | 20 s / 2.2 min / about 20 min (5 in the gate, 300 per periodic check); 42 scenarios now: the gate's 5 seeds take 35 s at best, 30 seeds 6-10 min at load 30-36, and a periodic 300-seed run at load 25 hit its 2400 s budget at seed 215 |
+| gate, warm, without / with the 5-seed sim sweep | about 55 s / 1.5 min quiet: tier 1 47 s, sim sweep 38 s, everything else 6 s (policy, spec_map, unification 2-3 s, both clippy runs, schema check, deny), the GUI workspace's check 2 s or its steps 5 s (test 3-4 s warm; 137 s when `kit/target` is cold); 2 min at load 15; 4-9 min while a periodic run shares the box at normal priority |
+| sim sweep 5 / 30 / 300 seeds | 5: 38 s, 600 CPU-s quiet (45 scenarios; at 5 jobs per scenario the per-scenario costs sum to 270 CPU-s: 16 jobs on 8 cores buy little wall for twice the CPU); heaviest per seed `concurrent_writers`, `future_format`, `work_sets`, `link_race` about 2.5 CPU-s; 30 seeds 2.2 min / 300 about 20 min quiet (5 in the gate, 150 per periodic check); 30 seeds 6-10 min at load 30-36 |
 | `core/test/tla/run.sh small` | 95 s |
 | release `cargo test --release --workspace --no-run`: clean / after an edit (thin LTO relinks every test binary) | about 5 / 4 min at load 10-16; faster quiet |
 | release, one crate: `cargo test --release -p osis-node --test it --no-run` clean / after an osis-node edit | 2.9 / 1.7 min at load 20-30 (no other test binary relinks) |
 | `unification_check` in the gate (after the build) | 7 s |
 | release timing check at 10^4: build + setup + measure | build 1.7 min after an osis-node edit; then each `scale::` test alone, `OSIS_SCALE_N=10000`, quiet box: 1-60 s of setup (`sync_aspect_pass_cost` 31 s: its 10^4-thing closure 20 s, most of it the test rewriting the whole 10^4-item group set per 500-thing commit; `late_delta_deaths_cost` 61 s; `big_map_edit_cost` 55 s, the 10^6-key fill commit 51 s; `membership_change_and_open_cost` 49 s), each measured step milliseconds; all 14 one by one 6-7 min with the build. At load 7-25 2-3x that. In a dev build the sizes default smaller (`scale.rs` `size`): a first sync of 10^4 commits there takes 9 min (`check_unchanged` re-examines every pending commit), an edge write with 10^4 commits held 0.27 s; at the dev sizes each touched test runs 10-60 s |
-| tier-2 oracles `order::arrival_order_alike_large_spec_permissions_5_2` / `order::arrival_order_exhaustive_large_spec_crdt_4_8` | 18 s / 2 min on 16 threads (300 / 200 seeds: 104 s / 13 min) |
+| per-branch oracles at default sizes | notes/testing.md (Tiers): alike order 11 s, exhaustive order 106 s, perm set 3.6 min (1860 CPU-s), crdt set about 10 s, ephemeral node test 38 s, sim 30 ephemeral seeds 15 s, at load 6-30 |
 | tier 2 as a whole | not measured since the perm set was sharded (2.4 min) and the budgets moved to release; the remaining single-threaded tails are the crdt decoder differentials at 1024 cases; a periodic check, never per branch |
 | a task worktree's `target/` | about 4-6 GB after a gate and `wt release` (+0.3-0.7 GB release); `kit/target` 2-3 GB more |
 | test executables | 53 (tests and bins), about 0.65 GB with zlib-compressed debug sections; an osis-node or osis-engine edit relinks the ten above it inside the build |
