@@ -66,7 +66,7 @@ impl Engine {
     }
 
     /// Commits with a dropped part, commits with an invalid part, and snapshots kept for their
-    /// dropped parts' frontiers (`Meta::gives`). Tests: what a random history reached.
+    /// dropped parts' frontiers (`Dropped::gives`). Tests: what a random history reached.
     #[doc(hidden)]
     pub fn drop_counts(&self) -> [usize; 3] {
         let ms = || self.core.ix.commits.values();
@@ -81,7 +81,9 @@ impl Engine {
         let c = &self.core;
         let mut out = String::new();
         for (id, m) in c.ix.commits.iter() {
-            let _ = writeln!(out, "commit {id:?} {:?} {:?} {:?} {:?} {:?} gives={:?} missing {:?}", m.valid, m.dropped, m.received, m.origin, m.view, m.gives, m.missing);
+            let dropped: std::collections::BTreeSet<usize> = m.dropped.keys().copied().collect();
+            let gives: BTreeMap<usize, &crate::engine::Gives> = m.dropped.iter().filter_map(|(ai, d)| Some((*ai, d.gives.as_ref()?))).collect();
+            let _ = writeln!(out, "commit {id:?} {:?} {dropped:?} {:?} {:?} {:?} gives={gives:?} missing {:?}", m.valid, m.received, m.origin, m.view, m.missing);
         }
         let held = osis_perm::HeldSet::things(&c.ix.held);
         for t in held {
@@ -260,10 +262,10 @@ impl Engine {
         for (c, m) in self.core.ix.commits.iter() {
             let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
             let h = &m.header;
-            let dropped: Vec<usize> = m.dropped.iter().filter(|d| d.0 == ai).map(|d| d.1).collect();
+            let dropped = m.dropped.get(&ai);
             let missing = m.missing.contains(&ai);
             let valid = m.valid.get(ai).copied().unwrap_or(true);
-            let _ = writeln!(out, "  {c:?} {:?} by {} ts {:?}: dropped {dropped:?} missing {missing} valid {valid} covered by {:?}", h.kind, h.author, h.ts, m.covered_by.get(&ai));
+            let _ = writeln!(out, "  {c:?} {:?} by {} ts {:?}: dropped {:?} missing {missing} valid {valid} covered by {:?}", h.kind, h.author, h.ts, dropped.is_some(), dropped.map(|d| &d.covered_by));
         }
         let state = self.state(tid, ak).map(|s| format!("{s:?}")).unwrap_or_else(|e| format!("error {e}"));
         let _ = writeln!(out, "  state {state}");

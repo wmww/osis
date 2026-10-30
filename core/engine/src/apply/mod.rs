@@ -325,7 +325,9 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
     let held = tx.get_commit(id)?.ok_or(Error::Corrupt("commit record"))?;
     let meta = tx.core.ix.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
     let mut skip: BTreeSet<(usize, usize)> = held.parts.iter().map(|p| (p.ai, p.di)).collect();
-    skip.extend(meta.dropped.iter().copied());
+    for ai in meta.dropped.keys() {
+        skip.extend((0..meta.header.aspects.get(*ai).map_or(0, |a| a.hashes.len())).map(|di| (*ai, di)));
+    }
     if tx.core.ix.pending.contains_key(id)
         && let Some((PendingKind::Pending, old)) = tx.txn.get_pending(id)?
         && let Ok(old) = CommitBlob::decode(&old)
@@ -800,13 +802,13 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let id = blob.id();
             let h = Arc::new(blob.header.clone());
             let valid = vec![true; h.aspects.len()];
-            let missing = (0..h.aspects.len()).filter(|ai| !blob.parts.iter().any(|p| p.ai == *ai) && !head.dropped.iter().any(|x| x.0 == *ai)).collect();
+            let missing = (0..h.aspects.len()).filter(|ai| !blob.parts.iter().any(|p| p.ai == *ai) && !head.dropped.contains_key(ai)).collect();
             let m = Meta::new(h.clone(), valid, head, missing);
             atomic::index_commit(tx.core, &id, &m.view);
             validity::note_imports(tx.core, &id, &h, &[]).map_err(|_| Error::Corrupt("commit imports"))?;
             tx.core.ix.commits.insert(id, m);
             atomic::note_gives(tx.core, &id);
-            if is_kind_snapshot(blob.header.kind) {
+            if blob.header.kind.is_compaction() {
                 snaps.push(blob.clone());
             }
             if blob.header.kind.is_membership() {
@@ -983,10 +985,6 @@ pub struct Creation {
     pub node: Tid,
     pub actor: Tid,
     pub received: WallMs,
-}
-
-pub(crate) fn is_kind_snapshot(k: Kind) -> bool {
-    matches!(k, Kind::ContentSnapshot | Kind::MembershipSnapshot)
 }
 
 #[cfg(test)]

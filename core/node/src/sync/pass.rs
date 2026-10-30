@@ -1391,7 +1391,7 @@ impl SyncEngine {
     fn holds_nothing(&self, g: &Tid, c: &CommitId, parts: &[(usize, usize)]) -> bool {
         let Some(m) = self.engine.core.ix.commits.get(c) else { return false };
         let x = self.engine.group_actor(g);
-        parts.iter().any(|p| m.dropped.contains(p) || m.header.aspects.get(p.0).is_some_and(|a| !self.engine.core.may_read(&x, &self.engine.core.reader_of(&a.tid))))
+        parts.iter().any(|p| m.dropped.contains_key(&p.0) || m.header.aspects.get(p.0).is_some_and(|a| !self.engine.core.may_read(&x, &self.engine.core.reader_of(&a.tid))))
     }
 
     /// The genuine entry under `l` holding exactly this body, not tombstoned at `server`, whoever
@@ -1824,7 +1824,7 @@ impl SyncEngine {
             note.at(t);
         }
         let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
-        if parts.iter().any(|p| m.dropped.contains(p)) {
+        if parts.iter().any(|p| m.dropped.contains_key(&p.0)) {
             // every delta's live writes count, the kept ones' too (spec/sync.md §7, `carried`)
             let live = parts.iter().any(|p| self.part_live(&h, commit, p));
             return Ok(Some((Hold::MustNot(Why::Dropped), live, aspects)));
@@ -2171,7 +2171,7 @@ impl SyncEngine {
             if !self.engine.core.may_read(&x, &self.engine.core.reader_of(&t)) || !self.part_live(&m.header, commit, p) {
                 continue;
             }
-            let dropped = m.dropped.contains(p);
+            let dropped = m.dropped.contains_key(&p.0);
             if !dropped && self.carried_by(server, g, l, commit, &[*p]) || self.snapshot_carries(at, commit, &t, &a, dropped)? {
                 continue;
             }
@@ -2271,7 +2271,7 @@ impl SyncEngine {
                     let class: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| a.keys == ch.keys).map(|(ai, _)| ai).collect();
                     let ais: Vec<usize> = if class.is_empty() { (0..h.aspects.len()).collect() } else { class };
                     let parts = parts_of(h, |i| ais.contains(&i));
-                    let dropped = !parts.is_empty() && parts.iter().all(|p| m.dropped.contains(p));
+                    let dropped = !parts.is_empty() && parts.iter().all(|p| m.dropped.contains_key(&p.0));
                     if dropped {
                         first.get_or_insert((id, ch.clone()));
                     } else {

@@ -598,7 +598,7 @@ pub fn coverer_revoked(seed: u64) -> Res<Report> {
     let part = |sim: &mut NetSim| -> Res<Option<(bool, bool)>> {
         let e = sim.engine(w)?;
         let Some(m) = e.core.ix.commits.get(&s1) else { return Ok(None) };
-        Ok(m.view.aspects.iter().position(|x| x.tid == t && x.ak == k).map(|ai| (m.dropped.contains(&(ai, 0)), m.missing.contains(&ai))))
+        Ok(m.view.aspects.iter().position(|x| x.tid == t && x.ak == k).map(|ai| (m.dropped.contains_key(&ai), m.missing.contains(&ai))))
     };
     if part(&mut sim)? != Some((true, false)) {
         return Err(sim.fail("W did not drop S1 under S2"));

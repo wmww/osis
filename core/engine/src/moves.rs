@@ -84,7 +84,7 @@ fn imported(core: &Core, tid: &Tid, ak: &Ak, carrier: Option<&Carrier>, own: Opt
 fn from_own(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
     let Some(k) = core.commit_of(tid, ak, d) else { return false };
     let Some(m) = core.ix.commits.get(&k) else { return false };
-    m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak).is_some_and(|ai| m.valid.get(ai).copied().unwrap_or(false) && !m.dropped.contains(&(ai, 0)))
+    m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak).is_some_and(|ai| m.valid.get(ai).copied().unwrap_or(false) && !m.dropped.contains_key(&ai))
 }
 
 /// The schema table entry of aspect `ai` of a header.
@@ -123,7 +123,7 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
     };
     let mut deltas = Vec::new();
     for (ai, a) in h.aspects.iter().enumerate() {
-        if a.tid != *t || is_membership_class(a.ak.as_str()) || a.ak.as_str() == "/created" || a.expires.is_some() || !meta.valid.get(ai).copied().unwrap_or(false) || meta.dropped.contains(&(ai, 0)) {
+        if a.tid != *t || is_membership_class(a.ak.as_str()) || a.ak.as_str() == "/created" || a.expires.is_some() || !meta.valid.get(ai).copied().unwrap_or(false) || meta.dropped.contains_key(&ai) {
             continue;
         }
         let carrier = carriers.get(&a.ak);
@@ -213,7 +213,7 @@ fn carriers(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeMap<Ak, Carrier>> {
         for (ts, id) in snaps.into_iter().rev() {
             let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
             let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *t && a.ak == ak) else { continue };
-            if m.header.kind != Kind::ContentSnapshot || m.dropped.contains(&(ai, 0)) || !m.valid.get(ai).copied().unwrap_or(false) {
+            if m.header.kind != Kind::ContentSnapshot || m.dropped.contains_key(&ai) || !m.valid.get(ai).copied().unwrap_or(false) {
                 continue;
             }
             let Some(Decoded::Snapshot(s)) = crate::apply::held_parts(tx, &id, ai)?.into_iter().next() else { continue };

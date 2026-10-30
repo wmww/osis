@@ -71,27 +71,33 @@ pub struct Meta {
     pub origin: Origin,
     /// Validity per aspect (spec/permissions.md §5.2).
     pub valid: Vec<bool>,
-    /// Parts dropped (purge, expiry, keep at most): they count as held.
-    pub dropped: BTreeSet<(usize, usize)>,
+    /// Aspects whose deltas were all dropped (purge, expiry, keep at most, compaction), with
+    /// what each keeps: they count as held.
+    pub dropped: BTreeMap<usize, Dropped>,
     /// Aspects none of whose deltas is held here (neither held nor dropped): a part that may
     /// still arrive late, or never, or one dropped under a cover since turned invalid
     /// (`retention::uncover`) (spec/permissions.md §5.2: a snapshot's copies of their writes
     /// count).
     pub missing: BTreeSet<usize>,
-    /// Aspects of a compaction snapshot whose body had a write in the state when dropped (what
-    /// it carried went with it, spec/commits.md §5; `retention::snapshot_live` starts from this).
-    pub live_drops: BTreeSet<usize>,
-    /// Per dropped aspect, the held valid snapshots that covered its body when it dropped
-    /// (spec/commits.md §5): their copies of its writes are its writes (`apply::rebuild`); once
-    /// none carries it, the part is missing again (`retention::uncover`).
-    pub covered_by: BTreeMap<usize, BTreeSet<CommitId>>,
-    /// Aspects dropped as covered (compaction, `Engine::drop_body`), not for their bounds, a
-    /// purge or expiry: only these come back as missing (`retention::uncover`).
-    pub cover_drops: BTreeSet<usize>,
-    /// Per aspect of a compaction snapshot dropped other than as covered (bound, purge,
-    /// expiry), the frontiers and `Absorbed` its body had: counters and IDs, no content, which
-    /// count as received while the part is valid (spec/commits.md §5, `receipt::received`).
-    pub gives: BTreeMap<usize, Gives>,
+}
+
+/// What a dropped part keeps in its commit record (spec/commits.md §5).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Dropped {
+    /// The held valid snapshots that covered its body when it dropped: their copies of its
+    /// writes are its writes (`apply::rebuild`); once none carries it, a part dropped as
+    /// covered is missing again (`retention::uncover`).
+    pub covered_by: BTreeSet<CommitId>,
+    /// Dropped as covered (compaction, `Engine::drop_body`, with a coverer), not for its bounds,
+    /// a purge or expiry: only these come back as missing.
+    pub as_cover: bool,
+    /// A compaction snapshot whose body had a write in the state when dropped (what it carried
+    /// went with it; `retention::snapshot_live` starts from this).
+    pub live: bool,
+    /// A compaction snapshot dropped other than as covered: the frontiers and `Absorbed` its
+    /// body had (counters and IDs, no content), which count as received while the part is
+    /// valid (`receipt::received`; indexed by `ix.dropped_snapshots`).
+    pub gives: Option<Gives>,
 }
 
 /// A snapshot part's frontiers and `Absorbed` (commit, author).
@@ -100,7 +106,7 @@ pub(crate) type Gives = (osis_crdt::Frontiers, Vec<(CommitId, Tid)>);
 impl Meta {
     /// A commit's meta from its decoded header.
     pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
-        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, missing, live_drops: head.live_drops, covered_by: head.covered_by, cover_drops: head.cover_drops, gives: head.gives }
+        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, missing }
     }
 }
 
@@ -364,7 +370,7 @@ indexes! {
     /// carrying a write besides its own (deaths, spec/commits.md §5); what valid ones count as
     /// received (`receipt::received`).
     pub snapshots: JMap<(Tid, Ak), Vec<HeldSnapshot>>,
-    /// Snapshots per aspect whose dropped part kept its frontiers (`Meta::gives`; derived at
+    /// Snapshots per aspect whose dropped part kept its frontiers (`Dropped::gives`; derived at
     /// open, not persisted).
     pub dropped_snapshots: JSetMap<(Tid, Ak), CommitId>,
     /// Writes held snapshots carry whose own delta was never received, per aspect
@@ -1059,14 +1065,13 @@ impl Tx<'_> {
         Ok(self.txn.get_aspect(tid, ak)?.unwrap_or_default())
     }
 
-    /// Writes a commit record (`index::record_head`: received, origin, dropped parts and which
-    /// were live; then its
-    /// blob), and for a membership commit its `node/edges` row (`edges`: what the caller already
+    /// Writes a commit record (`index::record_head`: received, origin, dropped parts and what
+    /// they keep; then its blob), and for a membership commit its `node/edges` row (`edges`: what the caller already
     /// read of `blob` with `edge_parts_of`, else decoded here).
     pub(crate) fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, edges: Option<&crate::apply::validity::EdgeParts>) -> Result<()> {
         // a part is held, dropped or missing: never both of the last two (an open derives
         // missing as neither in the blob nor dropped)
-        debug_assert!(meta.dropped.iter().all(|d| !meta.missing.contains(&d.0)), "{id:?}: parts both dropped and missing: dropped {:?} missing {:?}", meta.dropped, meta.missing);
+        debug_assert!(meta.dropped.keys().all(|ai| !meta.missing.contains(ai)), "{id:?}: parts both dropped and missing: dropped {:?} missing {:?}", meta.dropped, meta.missing);
         self.core.bodies.remove(id);
         self.core.mark_changed(*id);
         let v = [index::record_head(meta), blob.encode()].concat();

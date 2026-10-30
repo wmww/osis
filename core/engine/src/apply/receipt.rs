@@ -5,7 +5,7 @@
 //! ctr]`) and `Absorbed` (spec/crdt.md §8) are not recorded: `received` adds those of the
 //! snapshots valid now, at their receipt time, so a snapshot turning invalid takes them back
 //! whatever the arrival order (spec/permissions.md §5.2); a snapshot dropped other than as
-//! covered keeps them in its record (`Meta::gives`, spec/commits.md §5). Demotions read it "as
+//! covered keeps them in its record (`Dropped::gives`, spec/commits.md §5). Demotions read it "as
 //! of T" for their frontier.
 
 use crate::engine::records::{self, Rd, Wr};
@@ -137,29 +137,26 @@ pub(crate) fn received(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, as_of: u64) -> Resul
     }
     r.commits.retain(|_, x| x.1 <= as_of);
     let core = &*tx.core;
-    let held = core.ix.snapshots.get(&(*tid, ak.clone()));
-    // received by `as_of` at their part's receipt time (`record`; a late part's, not its header's)
-    let at: Vec<Option<u64>> = held.iter().flat_map(|v| v.iter()).map(|x| r.commits.get(&x.1).map(|c| c.1)).collect();
-    for ((_, s, fr, abs), at) in held.into_iter().flatten().zip(at) {
-        let Some(at) = at else { continue };
-        if !super::validity::snapshot_valid(core, s, tid, ak) {
-            continue;
-        }
-        for (n, c) in &fr.0 {
-            r.add(*n, 1, c.saturating_add(1), at);
-        }
-        for (c, a) in abs {
-            r.commits.entry(*c).or_insert((*a, at));
+    let k = (*tid, ak.clone());
+    // held ones, then dropped ones that kept their frontiers (`Dropped::gives`) and are not
+    // missing again
+    let held = core.ix.snapshots.get(&k).into_iter().flatten().map(|(_, s, fr, abs)| (s, fr, abs));
+    let kept = core.ix.dropped_snapshots.get(&k).into_iter().flatten().filter_map(|s| {
+        let m = core.ix.commits.get(s)?;
+        let ai = m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak)?;
+        let (fr, abs) = m.dropped.get(&ai)?.gives.as_ref()?;
+        Some((s, fr, abs))
+    });
+    let mut add = Vec::new();
+    for (s, fr, abs) in held.chain(kept) {
+        // received by `as_of` at their part's receipt time (`record`; a late part's, not its
+        // header's)
+        let Some(at) = r.commits.get(s).map(|c| c.1) else { continue };
+        if super::validity::snapshot_valid(core, s, tid, ak) {
+            add.push((at, fr, abs));
         }
     }
-    // dropped ones that kept their frontiers (`Meta::gives`), while valid and not missing again
-    for s in core.ix.dropped_snapshots.get(&(*tid, ak.clone())).into_iter().flatten() {
-        let Some(m) = core.ix.commits.get(s) else { continue };
-        let Some(ai) = m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
-        let (Some((fr, abs)), Some(at)) = (m.gives.get(&ai), r.commits.get(s).map(|c| c.1)) else { continue };
-        if m.missing.contains(&ai) || !m.dropped.contains(&(ai, 0)) || !m.valid.get(ai).copied().unwrap_or(false) {
-            continue;
-        }
+    for (at, fr, abs) in add {
         for (n, c) in &fr.0 {
             r.add(*n, 1, c.saturating_add(1), at);
         }
