@@ -811,6 +811,36 @@ fn padded_created_refused_spec_sync_9() {
     assert!(net.engine(b).ephemeral_thing(&w).is_some(), "the unpadded one is taken");
 }
 
+// spec/sync.md §9 (a carried `/created` is exactly one minting): an own cover joining the records
+// its commits carried, two copies of one thing (as after a restart between first sights) now
+// durable here, carries one of them, and receivers take it
+#[test]
+fn own_cover_of_two_created_copies_taken_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let w = e.new_thing(&mut m, g);
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+    e.write(m).unwrap();
+    let ak = osis_base::Ak::new(STATE).unwrap();
+    net.engine(a).forge_ephemeral(w, &ak, s("1")).unwrap().unwrap();
+    net.engine(a).remint_created(&w).unwrap();
+    net.engine(a).forge_ephemeral(w, &ak, s("2")).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.set(w, &REG, &s("saved")).unwrap();
+    net.engine(a).write(m).unwrap();
+    assert!(net.engine(a).ephemeral_thing(&w).is_none(), "durable now");
+    let covers = net.engine(a).compact_own_ephemeral(true).unwrap();
+    assert_eq!(covers.len(), 1);
+    net.run();
+    net.engine(b).ingest_ephemeral(covers[0].blob.clone()).unwrap();
+}
+
 // spec/sync.md §9 (an ephemeral commit carries only its author's writes): a write under another
 // node's source (not a session its `Authors` attributes to the author) is not joined either
 #[test]
