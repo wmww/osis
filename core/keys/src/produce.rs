@@ -193,7 +193,8 @@ fn carried(m: &Recipient, roles: &BTreeSet<Role>, removed: &BTreeSet<BoxKey>) ->
 }
 
 /// Rotates `roles` of `actor` (spec/crypto.md §4, spec/permissions.md §3): per role a fresh
-/// secret at n+1 (n = greatest n known, forks and unestablished epochs included), boxes for
+/// secret at n+1 (n = greatest n of the current epochs it supersedes; epochs
+/// merely seen, unestablished, never count), boxes for
 /// every member holding the role (owner included, as a recipient with admin), the history box of
 /// every distinct earlier established secret held (spec/crypto.md §4: never one got by re-seal
 /// before its rotation commit), the keyset, and the removal of the role's boxes held at the
@@ -233,12 +234,12 @@ pub fn rotate(
     let mut wrap = None;
     for &r in &roles {
         let re = held.role(r);
-        let n = re.max_n().ok_or(Error::NoEpoch(r))?;
+        let supersedes: BTreeSet<Epoch> = re.current().into_iter().collect();
+        let n = supersedes.iter().map(Epoch::n).max().ok_or(Error::NoEpoch(r))?;
         let mut nonce = [0u8; 16];
         rng.fill_bytes(&mut nonce);
-        let epoch = Epoch::new(n.saturating_add(1), nonce)?;
+        let epoch = Epoch::new(n + 1, nonce)?;
         let secret = Secret32::random(rng);
-        let supersedes: BTreeSet<Epoch> = re.current().into_iter().collect();
         if r == Role::Read {
             wrap = newest_of(supersedes.iter().filter(|e| re.secret(e).is_some()));
         }

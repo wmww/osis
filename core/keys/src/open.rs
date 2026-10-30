@@ -136,7 +136,10 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs
             match opened {
                 Ok(earlier) => {
                     let re = epochs.role_mut(k.role);
-                    re.rotation(e, earlier.iter().map(|(x, _)| *x));
+                    // what an unchecked box lists supersedes nothing; reopened once e is checked
+                    if !unchecked {
+                        re.rotation(e, earlier.iter().map(|(x, _)| *x));
+                    }
                     for (x, sx) in earlier {
                         // what a reading-only secret opens is reading-only too, from its source
                         if unchecked {
@@ -172,7 +175,10 @@ pub fn ingest(actor: &Tid, secrets: &Secrets, opener: &Opener, epochs: &mut Acto
 
 /// `ingest` trying every live entry of the history keys in `alts`.
 pub fn ingest_with(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, opener: &Opener, epochs: &mut ActorEpochs, unchecked: Option<Unchecked>) -> Result<Vec<Error>, Error> {
-    observe_secrets(secrets, epochs)?;
+    // an unchecked source records no epoch beyond its bounded reading-only candidates
+    if unchecked.is_none() {
+        observe_secrets(secrets, epochs)?;
+    }
     let (opened, failed) = open_boxes(actor, secrets, opener);
     for o in opened {
         let re = epochs.role_mut(o.role);

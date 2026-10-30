@@ -1859,3 +1859,78 @@ fn linked_tenure_frontier_spec_perm_6() {
     assert_eq!(lp.peers[2].engine.roster(&t), lp.peers[0].engine.roster(&t));
     assert_eq!(tags(&mut lp, 2, t), BTreeSet::from(["by x".to_string()]), "x's covered write stands");
 }
+
+/// A membership commit by a made-up node (its chain unknown everywhere, so held pending forever)
+/// writing `secrets` as `/secrets` on `t`.
+fn stranger_secrets(lp: &mut LocalPeer, t: Tid, secrets: &ct::Secrets) -> Vec<u8> {
+    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{Delta, Source, Writer, create, encode_delta};
+    use osis_schema::Codec;
+    let keys = osis_crypto::KeyActorKeys::from_seed(&osis_crypto::Secret32::from_bytes([0x55; 32]));
+    let author = Tid::from_bytes([0x77; 15]);
+    let ts = osis_base::Ts::make(lp.peers[0].engine.now(), 0).unwrap();
+    let a = ak("/secrets");
+    let view = osis_schema::core_schema().view(a.as_str()).unwrap();
+    let own = Source::commit(CommitId([0; 32]));
+    let mut w = Writer::new(ts, own.clone(), 1);
+    let f = create(&mut w, &view, &secrets.to_value()).unwrap();
+    let r = w.range();
+    let mut cx = writer_ctx(Kind::Membership, ts, author, r.lo, r.hi);
+    cx.own = own;
+    // small enough to stay inline: no page blobs to deliver
+    let mut pages = osis_crdt::MemoryPages::default();
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, Some(&mut pages)).unwrap();
+    assert!(pages.is_empty());
+    let mut aw = AspectWrite::new(t, a.clone(), r.lo, r.hi, bytes);
+    aw.retention = osis_commit::retention::write_retention(a.as_str(), None, None).unwrap();
+    let mut cb = CommitBuilder::new(Kind::Membership, ts, author, author, Form::Commit);
+    cb.aspects.push(aw);
+    let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
+    cb.build(&keys.signing, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+}
+
+// spec/crypto.md §4 (a rotation's n is 1 + the greatest n it supersedes; a pending commit's
+// secrets are kept for reading only): a stranger's pending commit boxing alice's actor at the top
+// of the int range, plus a hundred unopenable boxes at huge epochs, neither grows alice's
+// epoch records nor stops her removing bob (the removal's rotation counts up from her own
+// established epoch), across a restart.
+#[test]
+fn planted_epoch_blocks_no_removal_spec_crypto_4() {
+    let (mut lp, ps) = people(2, 523);
+    let (pa, pb) = (ps[0], ps[1]);
+    let d = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    let before = lp.peers[0].engine.epochs(&d).unwrap();
+    let n0 = before.read.newest().unwrap().n();
+    // an openable box to pa at the top, and unopenable ones (keyed to bob) at huge epochs
+    let top = osis_crypto::Epoch::new(i64::MAX as u64, [1; 16]).unwrap();
+    let mut v = osis_keys::ActorEpochs::default();
+    v.read.set_secret(top, osis_crypto::Secret32::from_bytes([0xee; 32]));
+    v.read.set_established(top, osis_keys::Provenance::Own);
+    let pk = lp.peers[0].engine.get_typed(&pa, &ct::KEYS).unwrap().unwrap();
+    let rc = osis_keys::Recipient { member: pa, role: Role::Admin, keys: osis_keys::MemberKeys::from_keys(&pk).unwrap() };
+    let w = osis_keys::box_member(&d, &v, &ct::Secrets::default(), &rc, &BTreeSet::from([Role::Read]), &mut osis_crypto::SeededRng::from_u64(5)).unwrap().unwrap();
+    let mut s = ct::Secrets::default();
+    w.apply(&mut s);
+    let junk = ct::SecretBox::Symmetric(ct::SymmetricBox { epoch: osis_keys::aspects::to_schema(&top), wrap: vec![0; 49] });
+    for i in 0..100u64 {
+        let e = osis_crypto::Epoch::new(i64::MAX as u64 - 1 - i, [2; 16]).unwrap();
+        s.boxes.insert(osis_keys::aspects::box_key(pb, Role::Read, &e), junk.clone());
+    }
+    let forged = stranger_secrets(&mut lp, d, &s);
+    lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap();
+    assert!(!lp.peers[0].engine.pending().is_empty(), "held pending: its author is unknown");
+    let held = lp.peers[0].engine.epochs(&d).unwrap();
+    assert!(held.read.is_reading_only(&top), "the openable box: a reading-only candidate");
+    assert_eq!(held.read.epochs().count(), before.read.epochs().count() + 1, "no entry for the unopenable boxes");
+    let done = lp.peers[0].engine.demote(&d, &Demotion { member: pb, new: None, presync: PreSync::Synced }).unwrap();
+    assert!(!done.commits.is_empty());
+    let after = lp.peers[0].engine.epochs(&d).unwrap();
+    assert_eq!(after.read.newest().unwrap().n(), n0 + 1);
+    assert!(!lp.peers[0].engine.roster(&d).contains_key(&pb));
+    lp.peers[0].restart(5231).unwrap();
+    let after = lp.peers[0].engine.epochs(&d).unwrap();
+    assert_eq!(after.read.newest().unwrap().n(), n0 + 1);
+    assert!(after.read.epochs().all(|(e, _)| e.n() <= n0 + 1 || *e == top));
+}

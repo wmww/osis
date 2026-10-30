@@ -99,6 +99,11 @@ pub const UNKNOWN_AUTHOR: Tid = Tid::from_bytes([0; 15]);
 pub const MAX_READING: usize = 256;
 pub const MAX_READING_PER_AUTHOR: usize = 64;
 
+/// The greatest n an epoch established by chain or snapshot may have without an established
+/// epoch at n-1 or above (spec/crypto.md §4): leaves 2^62 rotations before n+1 overflows the
+/// int range, far above any genuine first n (derived from an owner's).
+pub const MAX_FREE_N: u64 = 1 << 62;
+
 impl EpochInfo {
     /// The checked secret, else every reading-only candidate.
     fn readable(&self) -> Vec<&Secret32> {
@@ -167,7 +172,14 @@ impl RoleEpochs {
             i.reading.retain(|(_, u)| u.commit != *commit);
             any |= i.reading.len() != n;
         }
+        self.drop_bare();
         any
+    }
+
+    /// Drops entries holding nothing (an epoch known only from dropped reading-only candidates):
+    /// nothing from an unchecked source outlives it.
+    fn drop_bare(&mut self) {
+        self.map.retain(|_, i| *i != EpochInfo::default());
     }
 
     /// Drops the reading-only candidates of `e` that `keep` refuses (a published keyset of `e`
@@ -176,7 +188,9 @@ impl RoleEpochs {
         let Some(i) = self.map.get_mut(e) else { return false };
         let n = i.reading.len();
         i.reading.retain(|(s, _)| keep(s));
-        i.reading.len() != n
+        let changed = i.reading.len() != n;
+        self.drop_bare();
+        changed
     }
 
     /// The source of `e`'s reading-only candidate `secret`.
@@ -218,31 +232,47 @@ impl RoleEpochs {
 
     /// Recomputes `Chain` and `Snapshot` establishment (spec/crypto.md §4), a fixpoint: an epoch
     /// whose rotation commit is applied is `Chain` once every epoch that commit supersedes is
-    /// established; else `Snapshot` when a held snapshot keys it. Sticky provenances stay.
-    /// Returns whether anything changed.
+    /// established; else `Snapshot` when a held snapshot keys it. Either only within headroom
+    /// (`within_headroom`). Sticky provenances stay. Returns whether anything changed.
     pub fn establish(&mut self) -> bool {
         let before: Vec<Option<Provenance>> = self.map.values().map(|i| i.established).collect();
         for i in self.map.values_mut() {
             if !i.established.is_some_and(Provenance::sticky) {
-                i.established = i.snapshot.then_some(Provenance::Snapshot);
+                i.established = None;
             }
         }
         loop {
-            let ready: Vec<Epoch> = self
+            let ready: Vec<(Epoch, Provenance)> = self
                 .map
                 .iter()
                 .filter(|(_, i)| !matches!(i.established, Some(p) if p.sticky() || p == Provenance::Chain))
-                .filter(|(_, i)| i.applied.as_ref().is_some_and(|sup| sup.iter().all(|s| self.is_established(s))))
-                .map(|(e, _)| *e)
+                .filter_map(|(e, i)| {
+                    let chain = i.applied.as_ref().is_some_and(|sup| sup.iter().all(|s| self.is_established(s)));
+                    let p = if chain {
+                        Provenance::Chain
+                    } else if i.snapshot && i.established.is_none() {
+                        Provenance::Snapshot
+                    } else {
+                        return None;
+                    };
+                    self.within_headroom(e).then_some((*e, p))
+                })
                 .collect();
             if ready.is_empty() {
                 break;
             }
-            for e in ready {
-                self.observe(e).established = Some(Provenance::Chain);
+            for (e, p) in ready {
+                self.observe(e).established = Some(p);
             }
         }
         self.map.values().map(|i| i.established).ne(before)
+    }
+
+    /// Whether `e` may be established by chain or snapshot (spec/crypto.md §4): n at most
+    /// `MAX_FREE_N`, or an established epoch other than `e` has n at least n-1. Every established
+    /// n is so at most `MAX_FREE_N` plus the number of rotations, so n+1 never overflows.
+    fn within_headroom(&self, e: &Epoch) -> bool {
+        e.n() <= MAX_FREE_N || self.map.iter().any(|(x, i)| x != e && i.established.is_some() && x.n() + 1 >= e.n())
     }
 
     pub fn is_established(&self, e: &Epoch) -> bool {
@@ -284,11 +314,6 @@ impl RoleEpochs {
 
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
-    }
-
-    /// Greatest n known, of any epoch.
-    pub fn max_n(&self) -> Option<u64> {
-        self.map.keys().map(Epoch::n).max()
     }
 
     /// Superseded by an established rotation.

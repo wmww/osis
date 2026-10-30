@@ -119,7 +119,7 @@ fn r9_reseal_before_rotation_commit() {
     let r2 = w.rotate(&a2v, &s2, &[w.p, w.a2, w.m1]);
     let e2 = r2.rotated[0].epoch;
     assert_eq!(r2.rotated[0].supersedes, [w.e0].into_iter().collect());
-    assert!(e2.n() > e1.n());
+    assert_eq!(e2.n(), e1.n(), "a fork: n from established epochs only");
     let mut s3 = s2.clone();
     r2.secrets.apply(&mut s3);
     r2.record(&mut a2v);
@@ -219,4 +219,78 @@ fn snapshot_established_no_reseal() {
     assert!(!v.read.newest_is_snapshot());
     assert_eq!(reseal_needed(&s1, &v, &members, WallMs(0), &|_, _, _| true), vec![(g, read())]);
     assert!(reseal_member(&w.a, &v, &s1, &rc, &read(), &mut rng(4)).unwrap().is_some());
+}
+
+const TOP: u64 = i64::MAX as u64;
+
+/// A box for a2 at epoch `e` (n of the planter's choosing) under a made-up secret.
+fn planted(w: &World, e: Epoch) -> Secrets {
+    let mut v = ActorEpochs::default();
+    v.read.set_secret(e, osis_crypto::Secret32::from_bytes([0xee; 32]));
+    v.read.set_established(e, Provenance::Own);
+    let out = box_member(&w.a, &v, &Secrets::default(), &w.rcpt(w.a2), &read(), &mut rng(77)).unwrap().unwrap();
+    let mut s = Secrets::default();
+    out.apply(&mut s);
+    s
+}
+
+// spec/crypto.md §4 (a rotation's n is 1 + the greatest n it supersedes; a pending commit's
+// secrets are kept for reading only): epochs seen only in an unchecked commit (an unopenable box,
+// a reading-only candidate) or named by an applied box without establishing are never a base for
+// n, even at the top of the int range; an unchecked source leaves nothing behind once dropped.
+#[test]
+fn planted_epochs_never_base_a_rotation() {
+    let mut w = World::new();
+    let mut v = w.a2v.clone();
+    let top = Epoch::new(TOP, [1; 16]).unwrap();
+    let from = osis_keys::Unchecked { author: osis_keys::UNKNOWN_AUTHOR, commit: osis_base::CommitId([9; 32]) };
+    // an unopenable box at the top (keyed to someone else): no entry at all
+    let mut s = planted(&w, top);
+    let k = s.boxes.keys().next().unwrap().clone();
+    let b = s.boxes.remove(&k).unwrap();
+    s.boxes.insert(box_key(w.m1, Role::Read, &top), b);
+    ingest(&w.a, &s, &Opener::Actor { member: w.a2, epochs: &w.a2e }, &mut v, Some(from)).unwrap();
+    assert!(v.read.get(&top).is_none(), "an unchecked box records no epoch");
+    // an openable one: a reading-only candidate, never a base
+    let s = planted(&w, top);
+    ingest(&w.a, &s, &Opener::Actor { member: w.a2, epochs: &w.a2e }, &mut v, Some(from)).unwrap();
+    assert!(v.read.is_reading_only(&top));
+    // an applied box naming an epoch establishes nothing
+    let other = Epoch::new(TOP, [2; 16]).unwrap();
+    v.read.observe(other);
+    let r = w.rotate(&v, &w.s0.clone(), &[w.p, w.a2]);
+    assert_eq!(r.rotated[0].epoch.n(), w.e0.n() + 1);
+    assert_eq!(r.rotated[0].supersedes, [w.e0].into_iter().collect());
+    // the pending commit dropped: its epoch goes with its candidate
+    assert!(v.drop_reading_from(&from.commit));
+    assert!(v.read.get(&top).is_none());
+}
+
+// spec/crypto.md §4 (headroom): an applied rotation commit or a snapshot naming an epoch above
+// `MAX_FREE_N` establishes it only next to an established epoch at n-1 or above, so a writer
+// jumping to the top of the int range blocks no later rotation; a jump within the headroom
+// establishes and later rotations count up from it.
+#[test]
+fn jumped_epochs_keep_rotation_possible() {
+    let mut w = World::new();
+    let mut v = w.a2v.clone();
+    let top = Epoch::new(TOP, [1; 16]).unwrap();
+    v.read.set_applied(top, [w.e0]);
+    v.read.set_snapshot(Epoch::new(TOP - 1, [1; 16]).unwrap());
+    v.establish();
+    assert!(!v.read.is_established(&top));
+    assert_eq!(v.read.current(), vec![w.e0]);
+    let r = w.rotate(&v, &w.s0.clone(), &[w.p, w.a2]);
+    assert_eq!(r.rotated[0].epoch.n(), w.e0.n() + 1);
+    // within the headroom: established, and the chain goes on above it
+    let free = Epoch::new(osis_keys::MAX_FREE_N, [1; 16]).unwrap();
+    v.read.set_applied(free, [w.e0]);
+    v.establish();
+    assert_eq!(v.read.current(), vec![free]);
+    let next = Epoch::new(osis_keys::MAX_FREE_N + 1, [1; 16]).unwrap();
+    let skip = Epoch::new(osis_keys::MAX_FREE_N + 3, [1; 16]).unwrap();
+    v.read.set_applied(next, [free]);
+    v.read.set_applied(skip, [free]);
+    v.establish();
+    assert!(v.read.is_established(&next) && !v.read.is_established(&skip));
 }
