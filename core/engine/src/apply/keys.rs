@@ -806,6 +806,31 @@ mod tests {
         assert!(lp.peers[1].engine.core.ix.secrets.get(&t).is_none());
     }
 
+    // spec/permissions.md §3: a pending commit waiting on its author's chain is stored unchecked;
+    // only a signature by the named admin over a header listing its `/secrets` part makes it
+    // a grant that keeps lost secrets (a stranger naming the admin as author keeps nothing).
+    #[test]
+    fn pending_grant_counts_only_signed_spec_perm_3() {
+        let (mut lp, t) = removed_reader(913);
+        let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
+        let v = ct::Secrets::default().to_value();
+        let genuine = osis_commit::CommitBlob::decode(&forge_membership(&mut lp, 0, t, &rec, &v, None)).unwrap();
+        let kem = lp.peers[1].engine.identity().keys().kem.public().clone();
+        let rcpt = osis_keys::Recipient { member: lp.peers[1].engine.tid(), role: Role::Read, keys: osis_keys::MemberKeys::KeyActor { kem, seed: None } };
+        let mut held = ActorEpochs::default();
+        held.read.set_established(Epoch::new(1, [0; 16]).unwrap(), osis_keys::Provenance::Own);
+        let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &|_, _| true, &mut osis_crypto::SeededRng::from_u64(3)).unwrap();
+        let boxed = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
+        let mut forged = osis_commit::CommitBlob::decode(&forge_membership(&mut lp, 2, t, &rec, &boxed, None)).unwrap();
+        forged.header.author = lp.peers[0].engine.tid();
+        let core = &lp.peers[1].engine.core;
+        assert!(crate::rotation::authentic(core, &genuine, &genuine.id(), &t));
+        assert!(!crate::rotation::authentic(core, &forged, &forged.id(), &t), "signed by another");
+        let mut swapped = genuine.clone();
+        swapped.parts = forged.parts.clone();
+        assert!(!crate::rotation::authentic(core, &swapped, &swapped.id(), &t), "a part its header does not list");
+    }
+
     fn candidates(lp: &LocalPeer, t: &Tid) -> usize {
         lp.peers[1].engine.core.ix.secrets.get(t).map_or(0, |e| osis_keys::ROLES.iter().map(|r| e.role(*r).held_newest_first().len()).sum())
     }
