@@ -535,14 +535,16 @@ pub(crate) fn pending_secrets_writes(core: &Core, blob: &osis_commit::CommitBlob
 
 impl crate::engine::Engine {
     /// Records a read secret learned from a label's entry box (a recovery or link key opening
-    /// by static entry, spec/sync.md §2): kept for reading, unestablished.
+    /// by static entry, spec/sync.md §2): unestablished, and an unverified candidate kept for
+    /// reading only (anyone holding the head's step key, a removed admin among them, can write
+    /// the box) until it derives the epoch's published keyset or an applied valid box carries
+    /// the secret (spec/crypto.md §4).
     pub fn learn_read_secret(&mut self, g: &Tid, e: osis_crypto::Epoch, secret: osis_crypto::Secret32) -> Result<()> {
         let g = *g;
         self.run(|tx| {
             tx.core.touch();
             let ep = tx.core.ix.secrets.entry_or_default(g);
-            ep.role_mut(Role::Read).observe(e);
-            ep.role_mut(Role::Read).set_secret(e, secret);
+            ep.role_mut(Role::Read).learn_unverified(e, secret);
             crate::flows::save_epochs(tx, &g)
         })
     }
@@ -798,6 +800,34 @@ mod tests {
         lp.sync(0, 1).unwrap();
         assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("/x/a").unwrap()).unwrap(), Some(Value::Int(1)));
         (lp, t)
+    }
+
+    // spec/crypto.md §4, spec/sync.md §2: a read secret from a label's entry box (written by
+    // whoever holds the head's step key: a removed admin before the remover re-registers) is
+    // reading-only: it names the next epoch before that epoch's rotation reaches the node, yet
+    // the genuine box replaces it and the node encrypts under the genuine secret only.
+    #[test]
+    fn entry_box_secret_reading_only_until_box_spec_crypto_4() {
+        let (mut lp, t) = removed_reader(931);
+        let c = lp.peers[2].engine.tid();
+        lp.sync(2, 0).unwrap();
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+        lp.peers[0].engine.grant(&t, &c, &edge).unwrap();
+        let before = lp.peers[0].engine.epochs(&t).unwrap().read.newest().unwrap();
+        lp.peers[0].engine.demote(&t, &Demotion { member: c, new: None, presync: PreSync::Synced }).unwrap();
+        let e0 = lp.peers[0].engine.epochs(&t).unwrap();
+        let e_new = e0.read.newest().unwrap();
+        assert_ne!(e_new, before, "the removal rotated");
+        let genuine = e0.read.secret(&e_new).cloned().unwrap();
+        let planted = Secret32::from_bytes([0x66; 32]);
+        lp.peers[1].engine.learn_read_secret(&t, e_new, planted.clone()).unwrap();
+        let e1 = lp.peers[1].engine.epochs(&t).unwrap();
+        assert!(e1.read.secret(&e_new).is_none() && e1.read.reading_secrets(&e_new) == vec![&planted]);
+        lp.sync(0, 1).unwrap();
+        let e1 = lp.peers[1].engine.epochs(&t).unwrap();
+        assert_eq!(e1.read.newest_held(), Some((e_new, &genuine)));
+        assert_eq!(e1.read.reading_secrets(&e_new), vec![&genuine], "the planted one is gone");
+        assert_eq!(lp.peers[1].engine.wrap_secret(&t, None).unwrap().as_ref(), Some(&genuine));
     }
 
     fn remove(lp: &mut LocalPeer, t: Tid) {
