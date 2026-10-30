@@ -308,9 +308,14 @@ impl ServerConnection {
         Ok(false)
     }
 
+    /// Forgets everything the connection keeps per label for an open, so its maps stay within
+    /// the labels opened (`MAX_OPEN_LABELS`).
     fn end_open(&mut self, label: &LabelId) {
         self.opened.remove(label);
         self.subs.remove(label);
+        self.synced.remove(label);
+        self.inline.remove(label);
+        self.replays.remove(label);
         self.owed.retain(|x| x != label);
     }
 
