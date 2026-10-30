@@ -433,10 +433,8 @@ impl Engine {
         if let Some(f) = &th.created {
             return Some(f.clone());
         }
-        let (rec, ts) = (th.record.to_value(), th.ts);
-        let w = Writer::new(ts, self.eph.src.clone(), self.eph.next);
-        let (f, r) = run_ops(&Fragment::default(), w, &[PathOp { path: Vec::new(), op: Op::Set(rec) }], &AnyView).ok()??;
-        self.eph.next = r.hi;
+        let (f, hi) = mint_created(&th.record, th.ts, self.eph.src.clone(), self.eph.next)?;
+        self.eph.next = hi;
         if let Some(th) = self.eph.things.get_mut(t) {
             th.created = Some(f.clone());
         }
@@ -732,6 +730,9 @@ impl Engine {
             let rec = CreationRecord::from_value(&v).ok_or(Error::BadInput("/created is not a creation record"))?;
             if rec.tid() != a.tid {
                 return Err(Error::BadInput("/created does not hash to its tid"));
+            }
+            if !is_minted(&s.fragment, &rec) {
+                return Err(Error::BadInput("/created is not one minting of its record"));
             }
             carried.insert(a.tid, rec);
         }
@@ -1277,6 +1278,19 @@ impl Engine {
         self.build_ephemeral_with(class, me, vec![(tid, ak.clone(), f, None)], &BTreeMap::new(), &foreign)
     }
 
+    /// Tests: pads the `/created` ephemeral thing `t`'s commits carry with a losing write of
+    /// `junk` (a writer's padding, to test receivers).
+    #[doc(hidden)]
+    pub fn pad_created(&mut self, t: &Tid, junk: Value) -> Option<()> {
+        let mut f = self.created_fragment(t)?;
+        let w = Writer::new(Ts::from_u64(1)?, self.eph.src.clone(), self.eph.next);
+        let (pad, r) = run_ops(&Fragment::default(), w, &[PathOp { path: Vec::new(), op: Op::Set(junk) }], &AnyView).ok()??;
+        self.eph.next = r.hi;
+        f.join(pad);
+        self.eph.things.get_mut(t)?.created = Some(f);
+        Some(())
+    }
+
     /// Held ephemeral commits and their encoded delta bytes (tests, diagnostics).
     pub fn held_ephemeral(&self) -> Vec<(CommitId, usize, bool)> {
         self.eph.remote.held.iter().map(|(id, h)| (*id, h.bytes, h.own)).collect()
@@ -1293,6 +1307,27 @@ impl Engine {
             self.eph.remote.pending.remove(id);
         }
     }
+}
+
+/// `/created` of `rec`: one write of its record by a writer at `ts` under `src` from counter
+/// `lo`, and the next unused counter.
+fn mint_created(rec: &CreationRecord, ts: Ts, src: Source, lo: u64) -> Option<(Fragment, u64)> {
+    let w = Writer::new(ts, src, lo);
+    let (f, r) = run_ops(&Fragment::default(), w, &[PathOp { path: Vec::new(), op: Op::Set(rec.to_value()) }], &AnyView).ok()??;
+    Some((f, r.hi))
+}
+
+/// Whether `f` is exactly what `mint_created` makes of `rec` under a session source (spec/sync.md
+/// §9): no other write
+/// (losing junk honest carriers would repeat) fits.
+fn is_minted(f: &Fragment, rec: &CreationRecord) -> bool {
+    let writes = f.writes();
+    let Some((first, Some(ts))) = writes.first() else { return false };
+    if !matches!(first.src.kind(), SourceKind::Commit(_)) || writes.iter().any(|(d, t)| d.src != first.src || *t != Some(*ts)) {
+        return false;
+    }
+    let lo = writes.iter().map(|(d, _)| d.ctr).min().unwrap_or(first.ctr);
+    mint_created(rec, *ts, first.src.clone(), lo).is_some_and(|(m, _)| m == *f)
 }
 
 /// Whether held commit `h` is one of `me`'s plain ones without expiry (what an own cover
