@@ -843,7 +843,7 @@ fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, forged: Option<&BTreeSet<osis_cr
     // to a write since invalid (spec/permissions.md §5.2, spec/commits.md §5)
     for (f, s) in bodies.iter_mut() {
         let Some(s) = *s else { continue };
-        strip_copies_where(core, tid, ak, f, &|c, m, ai| !(m.dropped.contains_key(&ai) && crate::retention::coverers(core, c, ai).contains(&s)));
+        strip_copies_where(core, tid, ak, f, &|c, m, ai| !(m.dropped.contains_key(&ai) && crate::retention::any_coverer(core, c, ai, &|x| *x == s)));
     }
     let mut st = Fragment::default();
     let mut ch = Changes::new();
