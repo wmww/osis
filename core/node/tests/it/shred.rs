@@ -30,7 +30,7 @@ fn peer(seed: u64) -> Peer {
 }
 
 fn net2(seed: u64) -> LocalPeer {
-    LocalPeer { peers: vec![peer(seed), peer(seed + 1)] }
+    LocalPeer::of(vec![peer(seed), peer(seed + 1)], seed)
 }
 
 fn big(marker: &str) -> String {

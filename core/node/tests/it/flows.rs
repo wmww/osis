@@ -44,6 +44,42 @@ fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId]) {
     }
 }
 
+/// `spread` as labels carry commits (`SealedPackage`): each peer opens only what the read
+/// secrets it holds unwrap.
+fn spread_sealed(lp: &mut LocalPeer) {
+    let n = lp.peers.len();
+    for _ in 0..2 {
+        for a in 0..n {
+            let ids = lp.peers[a].engine.commit_ids();
+            let pks = lp.sealed(a, &ids).unwrap();
+            for b in (0..n).filter(|b| *b != a) {
+                lp.deliver_sealed(b, &pks).unwrap();
+            }
+        }
+    }
+}
+
+/// Peer `from` writes `v` on `t` and sends it sealed (`SealedPackage`) to every other peer: the
+/// peers that read it then. One that does not read it opened none of its bodies (it lacks the key,
+/// not the delivery).
+fn sealed_write(lp: &mut LocalPeer, from: usize, t: Tid, v: &str) -> BTreeSet<usize> {
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s(v)).unwrap();
+    let c = lp.peers[from].commit(m).unwrap().unwrap();
+    let pks = lp.sealed(from, &[c]).unwrap();
+    assert!(!pks.is_empty() && !pks[0].entries.is_empty(), "the writer seals its write");
+    let mut out = BTreeSet::new();
+    for i in (0..lp.peers.len()).filter(|i| *i != from) {
+        let left = lp.deliver_sealed(i, &pks).unwrap();
+        let reads = lp.peers[i].engine.get(&t, &ak("/t/reg")).unwrap() == Some(s(v));
+        assert_eq!(left.is_empty(), reads, "peer {i}: opened iff it reads");
+        if reads {
+            out.insert(i);
+        }
+    }
+    out
+}
+
 /// Carries out a flow's deliveries addressed to the peers of `lp` (direct sends and inbox
 /// blobs; placement under labels is node-sync's and is skipped here).
 fn carry(lp: &mut LocalPeer, from: usize, done: &Done) {
@@ -231,10 +267,12 @@ fn removal_rotates_spec_perm_3() {
     assert!(done.deliveries.iter().any(|x| matches!(x, Delivery::First { .. })));
     let e1 = newest_read(&lp, 0, d).unwrap();
     assert_ne!(e0, e1);
-    spread(&mut lp);
+    // sealed: the removal is wrapped under the epoch it supersedes, so bob still opens it
+    spread_sealed(&mut lp);
     assert_eq!(newest_read(&lp, 2, d), Some(e1), "carol is boxed at the new epoch");
     assert_eq!(lp.peers[1].engine.epochs(&d).unwrap().read.secret(&e1), None, "bob is not");
     assert_eq!(lp.peers[1].engine.role_on(&d), None);
+    assert_eq!(sealed_write(&mut lp, 0, d, "after"), BTreeSet::from([2]), "bob does not read what follows");
     let lost = lp.peers[1].engine.drop_lost_secrets().unwrap();
     assert!(lost.contains(&d));
     assert!(lp.peers[1].engine.epochs(&d).is_none_or(|e| e.read.held().next().is_none()));
@@ -345,7 +383,7 @@ fn lost_setup(seed: u64) -> Lost {
 /// `lost_setup`, bob removed from e instead of d when `from_e` (he still reads e through d).
 fn lost_setup_from(seed: u64, from_e: bool) -> Lost {
     let faults = osis_store::Faults::new();
-    let mut lp = LocalPeer { peers: vec![forensic_peer(seed, &osis_store::Faults::new()), forensic_peer(seed + 1, &faults)] };
+    let mut lp = LocalPeer::of(vec![forensic_peer(seed, &osis_store::Faults::new()), forensic_peer(seed + 1, &faults)], seed);
     let pa = lp.peers[0].engine.create_person(&servers()).unwrap().0.person;
     let pb = lp.peers[1].engine.create_person(&servers()).unwrap().0.person;
     spread(&mut lp);
@@ -418,12 +456,11 @@ fn removal_erases_lost_content_spec_perm_3() {
     reopen(&mut x.lp, 1, 2).unwrap();
     assert!(x.lp.peers[1].engine.drop_lost_secrets().unwrap().is_empty());
     assert_forgotten(&mut x);
-    // bob keeps syncing what he reads
-    let mut m = Mutation::new();
-    m.set(x.e, &REG, &s("later")).unwrap();
-    let c = x.lp.peers[0].engine.commit(m).unwrap().unwrap();
-    send(&mut x.lp, 0, 1, &[c]);
-    assert_eq!(x.lp.peers[1].engine.get(&x.e, &ak("/t/reg")).unwrap(), Some(s("later")));
+    // bob keeps syncing what he reads, and only that
+    assert_eq!(sealed_write(&mut x.lp, 0, x.e, "later"), BTreeSet::from([1]));
+    for t in [x.d, x.f] {
+        assert!(sealed_write(&mut x.lp, 0, t, "after").is_empty());
+    }
 }
 
 // spec/permissions.md §3 (drop lost secrets); spec/commits.md §4 (a transaction lands whole or
@@ -891,6 +928,8 @@ fn cascade_two_hops_spec_perm_3() {
     assert_eq!(newest_read(&lp, 2, u), Some(u1), "alice is boxed");
     assert!(lp.peers[0].engine.epochs(&u).unwrap().read.secret(&u1).is_none(), "d1 is not");
     assert!(lp.peers[0].engine.epochs(&t).unwrap().read.secret(&t1).is_none());
+    assert_eq!(sealed_write(&mut lp, 1, u, "after"), BTreeSet::from([2]), "d1 reads nothing new on U");
+    assert_eq!(sealed_write(&mut lp, 1, t, "after"), BTreeSet::from([2]), "nor on T");
 }
 
 // spec/permissions.md §9 (recovery card), §5.1: a fresh device holding the card claims the
@@ -920,6 +959,7 @@ fn stolen_device_recovery_spec_perm_9() {
     }
     assert_eq!(newest_read(&lp, 1, p), Some(pe), "the honest device holds the new epoch");
     assert!(lp.peers[0].engine.epochs(&p).unwrap().read.secret(&pe).is_none(), "the thief does not");
+    assert_eq!(sealed_write(&mut lp, 3, p, "after"), BTreeSet::from([1]), "the thief reads nothing new");
     assert!(lp.peers[3].engine.departures(&p).unwrap().iter().any(|d| d.member == d1));
 }
 
@@ -1141,6 +1181,7 @@ fn link_bearer_and_until_spec_perm_9() {
     assert_ne!(k0, k1);
     sync(&mut lp, 0, 1);
     assert!(lp.peers[1].engine.epochs(&link.k).unwrap().read.secret(&k1).is_none(), "the bearer is out");
+    assert!(sealed_write(&mut lp, 0, d, "after").is_empty(), "and reads nothing new on the target");
 }
 
 // spec/permissions.md §9 (link finalized), §5.1: an expired link is due for finalization on both of the sharer's
@@ -1250,6 +1291,7 @@ fn reseal_raced_grant_spec_perm_3() {
     spread(&mut lp);
     assert!(lp.peers[3].engine.epochs(&t).is_none_or(|e| e.read.secret(&e1).is_none()), "dave stays out");
     assert!(lp.peers[1].engine.reseal_due(&t, &Pass).unwrap().commits.is_empty(), "nothing left");
+    assert_eq!(sealed_write(&mut lp, 0, t, "after"), BTreeSet::from([1, 2]), "carol reads, dave does not");
 }
 
 // spec/permissions.md §3 (re-seal), spec/crypto.md §4: a person actor's members are all key
@@ -1333,12 +1375,14 @@ fn stranded_device_repaired_spec_perm_3() {
     let e1 = newest_read(&lp, 1, p).unwrap();
     assert!(lp.peers[3].engine.epochs(&p).unwrap().read.secret(&e1).is_none(), "n is stranded");
     assert_eq!(lp.peers[3].engine.role_on(&p), Some(Role::Admin));
+    assert_eq!(sealed_write(&mut lp, 1, p, "stranded"), BTreeSet::from([0]), "n reads nothing new");
     // re-pairing an existing member re-seals it
     let again = lp.peers[0].engine.pair(&p, &n).unwrap();
     assert_eq!(again.commits.len(), 1);
     carry(&mut lp, 0, &again);
     assert_eq!(newest_read(&lp, 3, p), Some(e1));
     assert!(lp.peers[2].engine.epochs(&p).unwrap().read.secret(&e1).is_none());
+    assert_eq!(sealed_write(&mut lp, 1, p, "repaired"), BTreeSet::from([0, 3]));
 }
 
 /// Alice (0) grants carol (2) at e0 while bob (1) removes dave (rotation e1, without carol);
@@ -1687,6 +1731,7 @@ fn writer_leaves_spec_perm_3() {
     let e1 = newest_read(&lp, 0, d).unwrap();
     spread(&mut lp);
     assert!(lp.peers[1].engine.epochs(&d).is_none_or(|e| e.read.secret(&e1).is_none()));
+    assert!(sealed_write(&mut lp, 0, d, "after").is_empty(), "the leaver's old secrets open nothing new");
 }
 
 // spec/permissions.md §2, §3: a device removing its person from a team (its only authority
@@ -1708,6 +1753,7 @@ fn device_removes_person_from_team_spec_perm_3() {
     for i in [0, 1] {
         assert!(lp.peers[i].engine.epochs(&t).is_none_or(|e| e.read.secret(&e1).is_none()), "device {i}");
     }
+    assert!(sealed_write(&mut lp, 2, t, "after").is_empty(), "neither device reads what follows");
 }
 
 // spec/crypto.md §4, spec/permissions.md §6: departures are also read from state (a box at a
@@ -1728,6 +1774,7 @@ fn reader_leaves_then_snapshot_spec_perm_6() {
     spread(&mut lp);
     assert!(lp.peers[2].engine.epochs(&t).is_none_or(|e| e.read.secret(&e1).is_none()));
     assert!(lp.peers[1].engine.ensure_rotated(&t).unwrap().0.commits.is_empty(), "nothing left");
+    assert_eq!(sealed_write(&mut lp, 0, t, "after"), BTreeSet::from([1]), "carol reads nothing new");
 }
 
 // spec/permissions.md §3 (who rotates): a write-link redemption boxes K under the cascade run
@@ -1753,6 +1800,7 @@ fn write_link_rotates_as_signer_spec_perm_3() {
     spread(&mut lp);
     assert_eq!(lp.peers[2].engine.role_on(&d), Some(Role::Write));
     assert!(lp.peers[1].engine.epochs(&link.k).is_none_or(|e| e.read.secret(&e1).is_none()));
+    assert_eq!(sealed_write(&mut lp, 0, d, "after"), BTreeSet::from([2]), "the removed joiner reads nothing new");
 }
 
 // spec/crypto.md §4, spec/sync.md §2: signing a label's genesis step and sealing its entry
@@ -2084,3 +2132,4 @@ fn planted_epoch_blocks_no_removal_spec_crypto_4() {
     assert_eq!(after.read.newest().unwrap().n(), n0 + 1);
     assert!(after.read.epochs().all(|(e, _)| e.n() <= n0 + 1 || *e == top));
 }
+
