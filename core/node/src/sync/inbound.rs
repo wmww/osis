@@ -964,13 +964,13 @@ impl SyncEngine {
         let now = self.raw_now();
         if let Some(o) = self.outbox.get_mut(&(server, l, b)).filter(|o| o.sent.is_some()) {
             // refused for now (not registered yet, rate limit, budget full while the label's
-            // writers are away): sent again until taken or moot; signed by an earlier deposit key
+            // writers are away, the server at a storage cap): sent again until taken or moot; signed by an earlier deposit key
             // (a refreshed deposit seed): the same bytes never verify, so signed again first
             o.tries = o.tries.saturating_add(1);
             o.sent = None;
             let tries = o.tries;
             let resigned = code == Code::NOT_HEAD && self.resign_deposit(&server, &l, &b)?;
-            let retry = matches!(code, Code::UNKNOWN_LABEL | Code::RATE_LIMITED | Code::BUDGET_FULL) || resigned;
+            let retry = matches!(code, Code::UNKNOWN_LABEL | Code::RATE_LIMITED | Code::BUDGET_FULL | Code::STORAGE_CAP) || resigned;
             if retry && !self.deposit_moot(&server, &l, &b) {
                 // retry_ms, doubling per refusal, at most DEPOSIT_RETRY_CAP_MS; re-signed: at once
                 let back = if resigned { 0 } else { self.cfg.retry_ms.saturating_mul(1u64 << (tries - 1).min(20)).min(super::local::DEPOSIT_RETRY_CAP_MS) };
