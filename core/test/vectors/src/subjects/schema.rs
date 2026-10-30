@@ -15,7 +15,7 @@ fn tid(n: u8) -> Tid {
     Tid::from_bytes([n; 15])
 }
 fn epoch(n: u64) -> Epoch {
-    Epoch { n, nonce: [8; 16] }
+    Epoch { n, nonce: [8; 32] }
 }
 fn edge_key() -> EdgeKey {
     let ts = match Ts::make(WallMs(1_700_000_000_000), 3) {

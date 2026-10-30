@@ -51,7 +51,7 @@ pub fn tips(label: &Label) -> Result<Vec<StepId>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::step::tests::Group;
+    use crate::step::tests::{Group, TG};
     use crate::step::{Parent, register};
     use osis_crypto::{Epoch, SeededRng};
     use osis_schema::Codec;
@@ -62,10 +62,10 @@ mod tests {
     fn records() {
         let mut rng = SeededRng::from_u64(1);
         let g = Group::new(10);
-        let e = Epoch::new(0, [0; 16]).unwrap();
-        let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (e, &g.read), &mut rng).unwrap();
-        let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, s0.keys, &[], (e, &g.read), &mut rng).unwrap();
-        let (s2, _) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, s0.keys, &[], (e, &g.read), &mut rng).unwrap();
+        let e = Epoch::new(0, [0; 32]).unwrap();
+        let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, e, &g.read), &mut rng).unwrap();
+        let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, s0.keys, &[], (&TG, e, &g.read), &mut rng).unwrap();
+        let (s2, _) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, s0.keys, &[], (&TG, e, &g.read), &mut rng).unwrap();
         let mut label = Label { index: 0, steps: BTreeMap::new(), servers: vec![], replaced: false };
         label.steps.insert(s0.id().0, step_record(&s0, Some(&c0)));
         label.steps.insert(s1.id().0, step_record(&s1, Some(&c1)));

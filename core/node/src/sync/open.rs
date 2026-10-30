@@ -343,7 +343,7 @@ impl SyncEngine {
     fn static_secret(&mut self, conn: ConnId, l: LabelId, g: &Tid, head: &Step, b: &SecretBox) -> Result<bool> {
         let Some(Try::Static { kem, .. }) = self.current_try(conn, &l) else { return Ok(false) };
         let Some(index) = self.lc(conn, &l).map(|x| x.index) else { return Ok(false) };
-        let (e, secret) = match osis_label::open_entry_box(b, head, osis_label::EntryKey::Kem(&kem)) {
+        let (e, secret) = match osis_label::open_entry_box(b, head, osis_label::EntryKey::Kem(&kem), g) {
             Ok((Some(e), secret)) => (e, secret),
             Ok((None, _)) => {
                 self.diag("entry box without its epoch".into());
@@ -358,8 +358,7 @@ impl SyncEngine {
             self.diag("entry box secret does not derive the head's sync key".into());
             return Ok(false);
         }
-        self.engine.learn_read_secret(g, e, secret)?;
-        Ok(true)
+        self.engine.learn_read_secret(g, e, secret)
     }
 
     /// The head is good: derive its keys, subscribe, sync.

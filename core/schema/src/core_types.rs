@@ -85,7 +85,7 @@ impl Codec for CreationRecord {
 
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub struct Epoch { 0 n: u64, 1 nonce: [u8; 16] }
+    pub struct Epoch { 0 n: u64, 1 nonce: [u8; 32] }
 }
 codec_struct! {
     /// Transport URL and 32-byte server static key.

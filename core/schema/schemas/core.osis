@@ -9,7 +9,7 @@ type sealed = enum { 1 x25519_mlkem768(blob) };       // ct_x || ct_m || AEAD
 type creation = struct { 0 owner: tid, 1 key: signing_key, 2 nonce: blob, 3 creator: tid };
 
 type role = enum { 0 read, 1 write, 2 admin };
-type epoch = struct { 0 n: int, 1 nonce: blob };                 // nonce: 16 bytes
+type epoch = struct { 0 n: int, 1 nonce: blob };                 // nonce: 32 bytes (spec/crypto.md §4)
 type address = struct { 0 url: string, 1 key: blob };            // transport URL, 32-byte server static key
 type edge_key = struct { 0 ts: int, 1 node: tid, 2 commit: blob };   // (ts, author node, 32-byte commit ID) of a write
 type edge = struct { 0 role: role, 1 until: option<timestamp>, 2 invite: option<role>, 3 since: option<edge_key> };

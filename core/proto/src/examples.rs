@@ -48,12 +48,12 @@ impl Fixture {
         let reader = X25519Secret::from_secret(&s32(b + 4));
         let key_actor = SigningSecret::from_seed(&s32(b + 5));
         let s = s32(b + 6);
-        let epoch_s = Epoch::new(0, [b; 16]).expect("small epoch");
-        let read_epoch = Epoch::new(1, [b + 1; 16]).expect("small epoch");
-        let readers = [Reader::Dh(reader.public()), Reader::Static { signing: key_actor.verifying_key(), entry: EntryTo::Symmetric { s: &s, epoch_s } }];
+        let epoch_s = Epoch::new(0, [b; 32]).expect("small epoch");
+        let read_epoch = Epoch::new(1, [b + 1; 32]).expect("small epoch");
+        let readers = [Reader::Dh(reader.public()), Reader::Static { signing: key_actor.verifying_key(), entry: EntryTo::Symmetric { s: &s, epoch_s: &epoch_s } }];
         let mut rng = SeededRng::from_seed([b + 7; 32]);
-        let (genesis, genesis_claims) = register(Parent::Genesis(&delete), keys, &readers, (read_epoch, &read), &mut rng).expect("fixed genesis");
-        let (child, child_claims) = register(Parent::Child { step: &genesis, delete: &delete }, keys, &readers, (read_epoch, &read), &mut rng).expect("fixed child");
+        let (genesis, genesis_claims) = register(Parent::Genesis(&delete), keys, &readers, (&osis_base::Tid::from_bytes([b; 15]), read_epoch, &read), &mut rng).expect("fixed genesis");
+        let (child, child_claims) = register(Parent::Child { step: &genesis, delete: &delete }, keys, &readers, (&osis_base::Tid::from_bytes([b; 15]), read_epoch, &read), &mut rng).expect("fixed child");
         Fixture {
             label,
             genesis,
@@ -131,9 +131,10 @@ impl Label {
             deposit: osis_crypto::deposit_key(&s32(DEPOSIT_SEED), &self.id),
         };
         let s = s32(0x33);
-        let readers = [Reader::Dh(self.reader.public()), Reader::Static { signing: self.key_actor.verifying_key(), entry: EntryTo::Symmetric { s: &s, epoch_s: Epoch::new(0, [0; 16]).expect("small epoch") } }];
+        let readers = [Reader::Dh(self.reader.public()), Reader::Static { signing: self.key_actor.verifying_key(), entry: EntryTo::Symmetric { s: &s, epoch_s: &Epoch::new(0, [0; 32]).expect("small epoch") } }];
         let mut rng = SeededRng::from_seed([b; 32]);
-        let read_epoch = (Epoch::new(1, [b; 16]).expect("small epoch"), &read);
+        let group = osis_base::Tid::from_bytes([b; 15]);
+        let read_epoch = (&group, Epoch::new(1, [b; 32]).expect("small epoch"), &read);
         let (step, set) = match (&parent, self.steps.last()) {
             (Some(d), Some(prev)) => register(Parent::Child { step: prev, delete: d }, pk, &readers, read_epoch, &mut rng).expect("child step"),
             _ => register(Parent::Genesis(&keys.delete), pk, &readers, read_epoch, &mut rng).expect("genesis step"),
