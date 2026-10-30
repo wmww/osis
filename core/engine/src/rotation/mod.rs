@@ -1090,6 +1090,32 @@ mod tests {
         assert!(revokes.get(&rz).is_none_or(|p| p.iter().all(|(ai, _)| *ai != si)), "Z's removal is covered: not placed whole");
     }
 
+    // spec/permissions.md §4 (the revoke of a departure inside a member is the write lowering
+    // the departed member's edge on the actor it left, the last on its chain): G <- X1 <- ... <-
+    // Xk, W a writer of Xk leaves it by itself; G's admin finds W's removal on Xk at every depth.
+    #[test]
+    fn nested_departure_revoke_is_the_leavers_write_spec_permissions_4() {
+        for k in 1..=4 {
+            let mut lp = LocalPeer::new(3, 935 + k as u64, WallMs(1_700_000_000_000)).unwrap();
+            lp.sync_all().unwrap();
+            let w = lp.peers[2].engine.tid();
+            let xs: Vec<Tid> = (0..k).map(|_| group(&mut lp, 1)).collect();
+            lp.peers[1].engine.grant(&xs[k - 1], &w, &edge(Role::Write)).unwrap();
+            for i in (1..k).rev() {
+                lp.peers[1].engine.grant(&xs[i - 1], &xs[i], &edge(Role::Write)).unwrap();
+            }
+            let g = group(&mut lp, 0);
+            lp.sync_all().unwrap();
+            lp.peers[0].engine.grant(&g, &xs[0], &edge(Role::Write)).unwrap();
+            assert!(lp.peers[0].engine.inside_member_revokes(&g, &Default::default()).is_empty(), "k={k}: nothing departed yet");
+            let rw = *lp.peers[2].engine.demote(&xs[k - 1], &Demotion { member: w, new: None, presync: PreSync::Synced }).unwrap().commits.first().unwrap();
+            lp.sync(2, 0).unwrap();
+            assert!(lp.peers[0].engine.ensure_rotated(&g).unwrap().1.contains(&Role::Read), "k={k}: W's departure leaves G uncovered");
+            let revokes = lp.peers[0].engine.inside_member_revokes(&g, &Default::default());
+            assert!(revokes.contains_key(&rw), "k={k}: W's removal from X{k} is placed");
+        }
+    }
+
     // spec/crypto.md §4 (a node holding no secret of member M judges by M's keyset and the
     // boxes of M it holds; holding none, a departure from M that M's keyset predates is not
     // covered): W leaves team X by self-removal (nothing rotates X); G's admin, who holds no
