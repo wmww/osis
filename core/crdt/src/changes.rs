@@ -1,15 +1,17 @@
 //! What a join did: whether the read may have changed and which writes died (spec/crdt.md §4.8),
 //! so the node fires listeners and tracks retention per body without re-reading the state.
 
-use crate::stamp::Stamp;
+use crate::stamp::{Dot, Stamp};
 use osis_base::Ts;
 
 /// A write superseded by the join: pruned by a reset, beaten as a register, case, flag or
-/// position winner, or its element removed. `at` is the `ts` of the superseding write.
+/// position winner, or its element removed. `at` is the `ts` of the superseding write, `by` its
+/// dot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Death {
     pub stamp: Stamp,
     pub at: Ts,
+    pub by: Dot,
 }
 
 /// Change summary of one join.
@@ -41,9 +43,9 @@ impl Changes {
     pub(crate) fn take_changed(&mut self) -> bool {
         std::mem::take(&mut self.changed)
     }
-    /// Records that the write stamped `stamp` died at `at`.
-    pub(crate) fn died(&mut self, stamp: &Stamp, at: Ts) {
+    /// Records that the write stamped `stamp` died, superseded by the write stamped `by`.
+    pub(crate) fn died(&mut self, stamp: &Stamp, by: &Stamp) {
         self.changed = true;
-        self.deaths.push(Death { stamp: stamp.clone(), at });
+        self.deaths.push(Death { stamp: stamp.clone(), at: by.ts, by: by.dot.clone() });
     }
 }

@@ -226,7 +226,7 @@ fn prune_fields(d: &Dot, el: &mut SeqElem, e: Option<&Stamp>, ch: &mut Changes) 
             }
             // the creation write's death is reported with `created`
             if s.dot != *d {
-                ch.died(s, e.ts);
+                ch.died(s, e);
             }
             false
         });
@@ -257,13 +257,13 @@ fn join_pos(d: &Dot, s: &mut Vec<(Stamp, Anchor)>, inc: Vec<(Stamp, Anchor)>, ch
         ch.touch();
     }
     for f in fresh.iter().filter(|f| **f != cur && f.dot != *d) {
-        ch.died(f, cur.ts);
+        ch.died(f, &cur);
     }
     if let Some(o) = old
         && o != cur
         && o.dot != *d
     {
-        ch.died(&o, cur.ts);
+        ch.died(&o, &cur);
     }
 }
 
@@ -303,7 +303,7 @@ fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Sta
         && let (Some((c, _)), Some((f, _))) = (&se.created, &se.deleted)
     {
         // a deleted element's creation write is dead (§4.8)
-        ch.died(c, f.ts);
+        ch.died(c, f);
     }
     join_pos(d, &mut se.pos, de.pos, ch);
     prune_fields(d, se, e, ch);

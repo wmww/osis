@@ -749,9 +749,9 @@ fn dating_history(seed: u64) {
             }
             let x = lp.peers[4].engine.deaths(c, &t, a).unwrap();
             let y = lp.peers[5].engine.deaths(c, &t, a).unwrap();
-            // a snapshot's writes die for it after its `ts`; node 5's recompute dates none whose
-            // earliest superseder is before it, so a death node 4 met later has no counterpart
-            let after = |x: (osis_base::Ts, osis_base::Ts)| lp.peers[4].engine.header(c).is_some_and(|h| x.0 > h.ts);
+            // a snapshot's writes die for it no earlier than its `ts` (a write already dead when
+            // it was taken, its superseder unseen by its author, at its `ts`)
+            let after = |x: (osis_base::Ts, osis_base::Ts)| lp.peers[4].engine.header(c).is_some_and(|h| x.0 >= h.ts);
             let ok = match (x, y, snap) {
                 (Some(x), Some(y), false) => x.0 >= y.0 && x.1 >= y.1,
                 (None, None, _) => true,
@@ -759,7 +759,7 @@ fn dating_history(seed: u64) {
                 (Some(x), Some(y), true) => after(x) && x.1 >= y.1,
                 _ => false,
             };
-            assert!(ok, "seed {seed} {a:?} {c:?}: here {x:?}, earliest superseders {y:?}");
+            assert!(ok, "seed {seed} {a:?} {c:?} (snapshot {snap}): here {x:?}, earliest superseders {y:?}");
         }
     }
 }
