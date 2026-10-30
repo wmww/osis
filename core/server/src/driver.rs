@@ -65,6 +65,8 @@ struct ConnState {
     reader: JoinHandle<()>,
     /// A dial task waiting for this peer link to end.
     done: Option<oneshot::Sender<()>>,
+    /// `LinkTx::taken` when last reported (`Hub::sent`).
+    taken: u64,
 }
 
 struct Driver<B: Backend> {
@@ -102,7 +104,7 @@ impl<B: Backend> Driver<B> {
             }
             let _ = ev.send(Ev::Closed(id)).await;
         });
-        self.conns.insert(id, ConnState { tx, reader, done });
+        self.conns.insert(id, ConnState { tx, reader, done, taken: 0 });
         id
     }
 
@@ -137,6 +139,18 @@ impl<B: Backend> Driver<B> {
 
     fn tick(&mut self) {
         let now = self.now();
+        let mut moved = Vec::new();
+        for (id, c) in &mut self.conns {
+            let n = c.tx.taken();
+            if n != c.taken {
+                c.taken = n;
+                moved.push(*id);
+            }
+        }
+        if !moved.is_empty() {
+            let out = blocking(|| self.hub.sent(now, &moved));
+            self.apply(out);
+        }
         let out = blocking(|| self.hub.tick(now));
         self.apply(out);
     }

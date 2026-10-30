@@ -30,7 +30,7 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | rotation `MAX_DEPTH` 8 | `engine/rotation/mod.rs` | departures more than 8 member actors deep are never rotated (security) | fixed: no cap; departures one per covers class (fixpoint over the member graph, polynomial), cascade iterative, each actor once; tests `rotation::tests::removal_twelve_deep_rotates_every_level_spec_crypto_4`, `wide_lattice_departures_bounded`, differential `walk_matches_path_walk` |
 | `HINT_INDEXES` 4 | `node/sync/open.rs` | a label of index 4 or more cannot be opened from a hint (inbox, link) | fixed: inbox things carry the label index (spec/wire.md §9), links and cards name index 0; test `inbox_retry::hint_opens_a_label_replaced_many_times_spec_wire_9` |
 | `MAX_INBOX_TRIES` 8 | `node/sync/local.rs`, `inbound.rs` | a deposit refused for about 21 min (budget full while the recipient is offline) is dropped; resent only after `INBOX_LIFETIME` | fixed: retried at the capped back-off until taken or moot (delivery forgotten or re-sealed, label replaced); test `inbox_retry::inbox_deposit_retried_for_hours_spec_sync_5` |
-| `MAX_QUEUED` 64 MiB, server `max_queued_bytes` 32 MiB, `REQUEST_TIMEOUT_MS` 2 min | `node/sync/driver.rs`, `server/`, `proto/client.rs` | no send window: a large upload or fetch on a slow link closes the connection, the redial repeats it | issues/sync-flow-control.md |
+| `MAX_QUEUED` 64 MiB, server `max_queued_bytes` 32 MiB, `REQUEST_TIMEOUT_MS` 2 min | `node/sync/driver.rs`, `server/`, `proto/client.rs` | no send window: a large upload or fetch on a slow link closes the connection, the redial repeats it | fixed: request window `WINDOW` (spec/sync.md §6 Flow control) keeps both queues under `WINDOW_QUEUE`; `STALL_TIMEOUT_MS` from the last progress; tests `slow_link::*`. Pushes to a slow subscriber left: issues/sync-flow-control.md |
 | `CLOSE_WAIT` 5 s | `osis/handle.rs` | `close` returns Ok with the database still held when a callback or engine call outlasts it | issues/api-close-wait.md |
 
 ## Table
@@ -65,7 +65,8 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | `PING_INTERVAL_MS` 5 min | M | ping storm / offset never refreshed |
 | `OFFSET_DIAGNOSTIC_MS` 5 s | M (diagnostic only) | always reported / never |
 | `MAX_SAMPLE_RTT_MS` 10 s | M (spec: ignore long round trips) | no samples / suspend-length errors |
-| `REQUEST_TIMEOUT_MS` 2 min | X | see issues/sync-flow-control.md |
+| `STALL_TIMEOUT_MS` 2 min | M (liveness: nothing moved either way while requests are in flight) | every session closes / a hung peer holds it; a link moving under one `WRITE_CHUNK` per timeout counts as stalled |
+| `WINDOW` 16 MiB (spec), `SMALL_REPLY` 64 KiB | R/P (per-peer buffer vs throughput, `WINDOW` per round trip; one request always goes) | one request at a time / queues overflow the caps |
 | `MAX_RECONCILE_MESSAGES` 4096, `MAX_RECONCILE_IDS` 2^21, `MAX_RECONCILE_QUEUED` 2^17 | R (abandon as peer error) | no reconciliation / a splitting responder holds us forever |
 | `MAX_EMPTY_PAGES` 16 | R | first empty page fails / a cursor-only peer loops forever |
 
@@ -83,7 +84,7 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | `MAX_RELAY_SEEN` 2^16 | M (commented) | |
 | `RelayLimits` 6000 / 32 MiB per 60 s | R (rate, code 4) | no relays / relay floods |
 | `Policy` defaults: caps per label (2^20 entries, 16 GiB), totals (2^20 labels, 2^26 entries, 256 GiB), rates per 60 s (deletes, replacements 20 000, deposits 600, `entry_replacements` 4), ephemeral 16 MiB/label, 1 GiB total, presence 4 MiB, `log_keep` 2^20, `max_connections` 10 000, `hello_ms` 10 s, `max_buffered_bytes` 512 MiB | R (operator config; refuse with a code or close) | |
-| `max_queued_bytes` 32 MiB | X | issues/sync-flow-control.md |
+| `max_queued_bytes` 32 MiB (at least `WINDOW_QUEUE`, config refuses less) | R (a peer that does not read; pushes beyond the link: issues/sync-flow-control.md) | sessions keeping the window closed / unbounded buffer |
 | `MAX_PATH` 2^20 | R (corrupt-store guard) | |
 | replicate `RETRY_MIN/MAX_MS` 1-60 s, driver `BACKOFF_MIN/MAX` 1-60 s, `SWEEP_BACKOFF_MS` 1 s, `MAX_IDLE` 60 s, `FINISH_WAIT` 10 s | M | busy loop / never retries |
 
@@ -108,9 +109,11 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | `PENDING_SHARE` 4, `RELAYS_REMEMBERED` 2^16 | R (commented) | |
 | `MAX_PEER_STEPS` 64, `LAN_HEARD` 4, `LAN_CHANGE_MS` 5 s | R | |
 | `LOG_KEEP` 4096 | M (a cursor below replays) | |
-| `MAX_QUEUED` 64 MiB | X | issues/sync-flow-control.md |
+| `MAX_QUEUED` 64 MiB (at least `WINDOW_QUEUE`, asserted) | R (a peer that does not read; pushes beyond the link) | sessions keeping the window closed / unbounded buffer |
+| link `WRITE_CHUNK` 16 KiB | M (grain of send progress for the stall timeout) | no progress shown / a link under a chunk per stall timeout counts as stalled |
 | `SERVE_IDLE` / `serve_idle_ms` 120 s, `serve_open_ms` 30 s, `max_served` 64 | R | |
-| `MAX_IDLE` 60 s, `MIN_WAKE_MS` 1 s, `FINISH_WAIT` 10 s, `RELISTEN_RETRY` 5 s, `RESEND_MS` 30 s | M | |
+| `MAX_IDLE` 60 s, `MIN_WAKE_MS` 1 s, `FINISH_WAIT` 10 s, `RELISTEN_RETRY` 5 s | M | |
+| `RESEND_MS` 30 s | M (not while the session holds requests back for the window: at most one extra copy of what is in flight per slow burst) | resend every pass / a lost reply holds it until the connection ends |
 | `LAN_CHECK` 5 s, `LAN_ANNOUNCE` 30 s, `LAN_REJOIN_MIN` 30 s (provisional) | M | |
 | `LAN_FRESH_MS` 2 windows, `PEERS_TTL_MS` 60 s | M (dialing only; opens check access) | |
 | `SETTLE_MS` 30 s, `RELAY_MIN_MS` 5 s | M (co-writers both upload: duplicate work, idempotent) | |

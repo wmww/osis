@@ -11,6 +11,7 @@
 
 use crate::store::Policy;
 use osis_label::{Address, address_from_text};
+use osis_proto::client::WINDOW_QUEUE as MIN_QUEUED;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,7 +64,12 @@ pub fn parse(text: &str) -> Result<Config, String> {
             "max_bytes" => p.max_bytes = n()?,
             "max_connections" => p.max_connections = usize::try_from(n()?).map_err(|_| bad("too large"))?,
             "hello_ms" => p.hello_ms = n()?,
-            "max_queued_bytes" => p.max_queued_bytes = usize::try_from(n()?).map_err(|_| bad("too large"))?,
+            "max_queued_bytes" => {
+                p.max_queued_bytes = usize::try_from(n()?).map_err(|_| bad("too large"))?;
+                if p.max_queued_bytes < MIN_QUEUED {
+                    return Err(bad(&format!("below {MIN_QUEUED} (a client's window plus a message, spec/sync.md §6)")));
+                }
+            }
             "max_buffered_bytes" => p.max_buffered_bytes = usize::try_from(n()?).map_err(|_| bad("too large"))?,
             _ => return Err(bad(&format!("unknown key {k}"))),
         }
@@ -100,5 +106,8 @@ mod tests {
         assert!(parse("listen = x\n").is_err());
         assert!(parse("listen = x\nkey = k\ndata = d\nbogus = 1\n").is_err());
         assert!(parse("listen = x\nkey = k\ndata = d\nephemeral_bytes = many\n").is_err());
+        assert!(parse(&format!("listen = x\nkey = k\nmax_queued_bytes = {}\n", MIN_QUEUED - 1)).is_err());
+        assert!(parse(&format!("listen = x\nkey = k\nmax_queued_bytes = {MIN_QUEUED}\n")).is_ok());
+        assert!(Policy::default().max_queued_bytes >= MIN_QUEUED);
     }
 }

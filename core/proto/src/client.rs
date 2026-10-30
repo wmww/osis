@@ -9,6 +9,7 @@ use crate::hello::{Hello, OFFSET_DIAGNOSTIC_MS, OffsetSample, PROTOCOL_VERSION, 
 use crate::msg::*;
 use crate::rbsr::Reconciler;
 use crate::server::REPLY_BUDGET;
+use osis_base::format::MAX_MESSAGE;
 use osis_base::{BlobId, LabelId};
 use osis_crypto::SigningSecret;
 use std::collections::{BTreeMap, VecDeque};
@@ -17,9 +18,22 @@ use std::collections::{BTreeMap, VecDeque};
 pub const INITIAL_PINGS: usize = 3;
 /// Interval of later pings.
 pub const PING_INTERVAL_MS: u64 = 5 * 60 * 1000;
-/// A request unanswered this long closes the session (a peer or middlebox that drops replies
-/// on an open stream; the node redials, spec/sync.md §6).
-pub const REQUEST_TIMEOUT_MS: u64 = 2 * 60 * 1000;
+/// Requests in flight with nothing moving this long (no byte received, none of ours taken by the
+/// transport, `ClientInput::Sent`) close the session; the node redials (spec/sync.md §6). Liveness
+/// only, any link speed passes: 0 closes every session at once, infinity keeps a hung peer.
+pub const STALL_TIMEOUT_MS: u64 = 2 * 60 * 1000;
+/// Bytes in flight per session (spec/sync.md §6): per request sent and not answered, its frame
+/// plus its reply allowance. The next request goes while below it, so one always goes: 0 sends
+/// one at a time, infinity lets the peer's or our send queue overflow. Per-peer buffer against
+/// throughput on long fat links (at most `WINDOW` per round trip).
+pub const WINDOW: usize = 16 << 20;
+/// Request bytes at the requester, or reply bytes at its peer, that a session within `WINDOW`
+/// can have waiting to be written (the window plus one request or reply that overshoots it, and
+/// its frame header): a send queue cap at or above it (plus pushes) never closes such a session.
+pub const WINDOW_QUEUE: usize = WINDOW + MAX_MESSAGE + 4;
+/// Reply allowance of a request whose reply holds no events, items, steps or ranges (Status of
+/// 1024 codes and a head step, Opened, Budget, Pong, Ok, Error).
+pub const SMALL_REPLY: usize = MAX_MESSAGE - REPLY_BUDGET;
 /// Clock samples kept.
 const MAX_SAMPLES: usize = 9;
 /// Round trips before a clock offset is reported (one outlier among three moves nothing).
@@ -86,6 +100,9 @@ pub enum ClientInput {
     Bytes(Vec<u8>),
     /// The timer last set by `SetTimer` fired.
     Timer,
+    /// The transport took bytes this session wrote since the last `Sent` (progress for
+    /// `STALL_TIMEOUT_MS`; a driver may report it only when the timer fires).
+    Sent,
     Command(Command),
 }
 
@@ -209,6 +226,22 @@ impl Pending {
     }
 }
 
+impl Pending {
+    /// The most reply bytes the peer may queue for this request (spec/sync.md §6).
+    fn allowance(&self) -> usize {
+        match self {
+            Pending::Path(_) | Pending::PathStopped(_) | Pending::Sync { .. } | Pending::Reconcile(..) | Pending::Fetch(..) => MAX_MESSAGE,
+            _ => SMALL_REPLY,
+        }
+    }
+}
+
+/// A request: `sent` (when, and its cost against `WINDOW`) once it left the queue.
+struct Req {
+    sent: Option<(u64, usize)>,
+    p: Pending,
+}
+
 struct Rec {
     r: Reconciler,
     own: Vec<BlobId>,
@@ -222,8 +255,15 @@ pub struct ClientSession {
     peer: Option<Hello>,
     closed: bool,
     next_id: Id,
-    /// Requests sent and not yet answered, with when they were sent.
-    pending: BTreeMap<Id, (u64, Pending)>,
+    /// Requests not yet answered: sent, or waiting in `waiting` for room in the window.
+    pending: BTreeMap<Id, Req>,
+    /// Requests not yet sent, in order.
+    waiting: VecDeque<(Id, Message)>,
+    /// Bytes in flight (costs of the sent requests of `pending`).
+    in_flight: usize,
+    /// Last progress (a byte received, `Sent`, the first request going out after none was in
+    /// flight).
+    progress: u64,
     /// `now` of the running `handle`.
     now: u64,
     next_ping: u64,
@@ -245,6 +285,9 @@ impl ClientSession {
             closed: false,
             next_id: 0,
             pending: BTreeMap::new(),
+            waiting: VecDeque::new(),
+            in_flight: 0,
+            progress: 0,
             now: 0,
             next_ping: 0,
             timer: 0,
@@ -264,9 +307,19 @@ impl ClientSession {
         self.closed
     }
 
-    /// Requests sent and not yet answered.
+    /// Requests not yet answered (sent or waiting to be sent).
     pub fn outstanding(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Requests waiting for room in the window (`WINDOW`).
+    pub fn unsent(&self) -> usize {
+        self.waiting.len()
+    }
+
+    /// Bytes in flight against `WINDOW`.
+    pub fn in_flight(&self) -> usize {
+        self.in_flight
     }
 
     pub fn handle(&mut self, now: u64, input: ClientInput) -> Vec<ClientOutput> {
@@ -281,6 +334,9 @@ impl ClientSession {
                 out.push(ClientOutput::Send(encode_frame(&Hello::new(now, self.cfg.challenge).encode())));
             }
             ClientInput::Bytes(b) => {
+                if !b.is_empty() {
+                    self.progress = now;
+                }
                 self.decoder.push(&b);
                 while !self.closed {
                     // the peer's first frame is its Hello (spec/wire.md §11.1)
@@ -297,16 +353,17 @@ impl ClientSession {
             }
             ClientInput::Timer => {
                 self.timer = 0;
-                if self.oldest_request().is_some_and(|t| t.saturating_add(REQUEST_TIMEOUT_MS) <= now) {
+                if self.in_flight > 0 && self.progress.saturating_add(STALL_TIMEOUT_MS) <= now {
                     event(&mut out, ClientEvent::PeerError(Error::Timeout));
                     self.close(&mut out);
                     return out;
                 }
                 if self.is_ready() && self.next_ping <= now {
-                    self.request(&mut out, |id| Message::Ping { id, wall_ms: now }, Pending::Ping { sent: now });
+                    self.request(|id| Message::Ping { id, wall_ms: now }, Pending::Ping { sent: now });
                     self.next_ping = now.saturating_add(PING_INTERVAL_MS);
                 }
             }
+            ClientInput::Sent => self.progress = now,
             ClientInput::Command(c) => {
                 if self.is_ready() {
                     self.command(c, &mut out);
@@ -315,12 +372,30 @@ impl ClientSession {
                 }
             }
         }
+        self.flush(&mut out);
         self.arm(&mut out);
         out
     }
 
-    fn oldest_request(&self) -> Option<u64> {
-        self.pending.values().map(|(t, _)| *t).min()
+    /// Sends waiting requests while the window has room (one always goes when none is in flight).
+    fn flush(&mut self, out: &mut Vec<ClientOutput>) {
+        while !self.closed && self.in_flight < WINDOW.max(1) {
+            let Some((id, mut msg)) = self.waiting.pop_front() else { break };
+            let Some(req) = self.pending.get_mut(&id) else { continue };
+            if let (Pending::Ping { sent }, Message::Ping { wall_ms, .. }) = (&mut req.p, &mut msg) {
+                // the clock sample starts when the ping leaves
+                *sent = self.now;
+                *wall_ms = self.now;
+            }
+            let frame = encode_frame(&msg.encode());
+            let cost = frame.len().saturating_add(req.p.allowance());
+            if self.in_flight == 0 {
+                self.progress = self.now;
+            }
+            req.sent = Some((self.now, cost));
+            self.in_flight = self.in_flight.saturating_add(cost);
+            out.push(ClientOutput::Send(frame));
+        }
     }
 
     /// Asks for the timer at the next ping or request deadline, if that changed.
@@ -329,8 +404,8 @@ impl ClientSession {
             return;
         }
         let mut t = self.next_ping;
-        if let Some(s) = self.oldest_request() {
-            t = t.min(s.saturating_add(REQUEST_TIMEOUT_MS));
+        if self.in_flight > 0 {
+            t = t.min(self.progress.saturating_add(STALL_TIMEOUT_MS));
         }
         if t != self.timer {
             self.timer = t;
@@ -343,7 +418,8 @@ impl ClientSession {
         out.push(ClientOutput::Close);
     }
 
-    fn request(&mut self, out: &mut Vec<ClientOutput>, msg: impl FnOnce(Id) -> Message, pending: Pending) {
+    /// Queues a request; `flush` sends it when the window has room.
+    fn request(&mut self, msg: impl FnOnce(Id) -> Message, pending: Pending) {
         loop {
             self.next_id = self.next_id.wrapping_add(1);
             if self.next_id != 0 && !self.pending.contains_key(&self.next_id) {
@@ -351,8 +427,8 @@ impl ClientSession {
             }
         }
         let id = self.next_id;
-        self.pending.insert(id, (self.now, pending));
-        send(out, msg(id));
+        self.pending.insert(id, Req { sent: None, p: pending });
+        self.waiting.push_back((id, msg(id)));
     }
 
     fn command(&mut self, c: Command, out: &mut Vec<ClientOutput>) {
@@ -366,13 +442,13 @@ impl ClientSession {
                     OpenKey::Static(k) => Proof::static_entry(k, &label, &ch, &sk),
                     OpenKey::Member(k) => Proof::member(k, &label, &ch, &sk),
                 };
-                self.request(out, |id| Message::Open { id, label, proof }, Pending::Open(label));
+                self.request(|id| Message::Open { id, label, proof }, Pending::Open(label));
             }
-            Command::Register { label, step, claim_set } => self.request(out, |id| Message::Register { id, label, step, claim_set }, Pending::Register(label)),
-            Command::Path { label, after } => self.request(out, |id| Message::Path { id, label, after }, Pending::Path(label)),
+            Command::Register { label, step, claim_set } => self.request(|id| Message::Register { id, label, step, claim_set }, Pending::Register(label)),
+            Command::Path { label, after } => self.request(|id| Message::Path { id, label, after }, Pending::Path(label)),
             Command::Sync { label, cursor, inline_limit, entries, gained } => {
                 if gained.len() > MAX_GAINED {
-                    self.upload(label, entries, out);
+                    self.upload(label, entries);
                     event(out, ClientEvent::NeedReconcile { label });
                     return;
                 }
@@ -389,8 +465,8 @@ impl ClientSession {
                     }
                 }
                 let pending = Pending::Sync { label, cursor, entries: inline.clone(), inline_limit, gained: gained.clone(), empty: 0 };
-                self.request(out, |id| Message::Sync { id, label, cursor, inline_limit, entries: inline, gained }, pending);
-                self.upload(label, rest, out);
+                self.request(|id| Message::Sync { id, label, cursor, inline_limit, entries: inline, gained }, pending);
+                self.upload(label, rest);
             }
             Command::Reconcile { label, mut ids } => {
                 ids.sort();
@@ -400,13 +476,13 @@ impl ClientSession {
             }
             Command::Fetch { label, ids } => {
                 for chunk in ids.chunks(MAX_ITEMS) {
-                    self.request(out, |id| Message::Fetch { id, label, ids: chunk.to_vec() }, Pending::Fetch(label, chunk.to_vec()));
+                    self.request(|id| Message::Fetch { id, label, ids: chunk.to_vec() }, Pending::Fetch(label, chunk.to_vec()));
                 }
             }
-            Command::Upload { label, entries } => self.upload(label, entries, out),
+            Command::Upload { label, entries } => self.upload(label, entries),
             Command::Deposit { label, blob, wrap, sig } => {
                 let blob_id = osis_label::blob_id(&blob);
-                self.request(out, |id| Message::Deposit { id, label, blob, wrap, sig }, Pending::Deposit(label, blob_id));
+                self.request(|id| Message::Deposit { id, label, blob, wrap, sig }, Pending::Deposit(label, blob_id));
             }
             Command::Delete { label, items } => {
                 let (items, bad): (Vec<DeleteItem>, Vec<DeleteItem>) = items.into_iter().partition(|i| i.to_value().is_ok());
@@ -415,23 +491,23 @@ impl ClientSession {
                 }
                 for chunk in items.chunks(MAX_ITEMS) {
                     let ids = chunk.iter().map(|i| i.blob).collect();
-                    self.request(out, |id| Message::Delete { id, label, items: chunk.to_vec() }, Pending::Delete(label, ids));
+                    self.request(|id| Message::Delete { id, label, items: chunk.to_vec() }, Pending::Delete(label, ids));
                 }
             }
             Command::Subscribe { labels } => {
                 for chunk in labels.chunks(MAX_LABELS) {
-                    self.request(out, |id| Message::Subscribe { id, labels: chunk.to_vec() }, Pending::Subscribe(chunk.to_vec()));
+                    self.request(|id| Message::Subscribe { id, labels: chunk.to_vec() }, Pending::Subscribe(chunk.to_vec()));
                 }
             }
             Command::Unsubscribe { labels } => {
                 for chunk in labels.chunks(MAX_LABELS) {
-                    self.request(out, |id| Message::Unsubscribe { id, labels: chunk.to_vec() }, Pending::Unsubscribe);
+                    self.request(|id| Message::Unsubscribe { id, labels: chunk.to_vec() }, Pending::Unsubscribe);
                 }
             }
             Command::StopPath { label } => {
-                for (_, p) in self.pending.values_mut() {
-                    if matches!(p, Pending::Path(l) if *l == label) {
-                        *p = Pending::PathStopped(label);
+                for r in self.pending.values_mut() {
+                    if matches!(r.p, Pending::Path(l) if l == label) {
+                        r.p = Pending::PathStopped(label);
                     }
                 }
             }
@@ -440,26 +516,26 @@ impl ClientSession {
     }
 
     /// Uploads in batches within the item cap and the message size.
-    fn upload(&mut self, label: LabelId, entries: Vec<Entry>, out: &mut Vec<ClientOutput>) {
+    fn upload(&mut self, label: LabelId, entries: Vec<Entry>) {
         let mut batch: Vec<Entry> = Vec::new();
         let mut used = 0;
         for e in entries {
             let size = entry_size(&e);
             if !batch.is_empty() && (batch.len() == MAX_ITEMS || used + size > REPLY_BUDGET) {
-                self.upload_batch(label, std::mem::take(&mut batch), out);
+                self.upload_batch(label, std::mem::take(&mut batch));
                 used = 0;
             }
             used += size;
             batch.push(e);
         }
         if !batch.is_empty() {
-            self.upload_batch(label, batch, out);
+            self.upload_batch(label, batch);
         }
     }
 
-    fn upload_batch(&mut self, label: LabelId, entries: Vec<Entry>, out: &mut Vec<ClientOutput>) {
+    fn upload_batch(&mut self, label: LabelId, entries: Vec<Entry>) {
         let ids = entries.iter().map(|e| osis_label::blob_id(&e.blob)).collect();
-        self.request(out, |id| Message::Upload { id, label, entries }, Pending::Upload(label, ids));
+        self.request(|id| Message::Upload { id, label, entries }, Pending::Upload(label, ids));
     }
 
     fn reconcile_send(&mut self, label: LabelId, out: &mut Vec<ClientOutput>) {
@@ -482,7 +558,7 @@ impl ClientSession {
             return;
         }
         for (token, ranges) in batches {
-            self.request(out, |id| Message::Reconcile { id, label, ranges }, Pending::Reconcile(label, token));
+            self.request(|id| Message::Reconcile { id, label, ranges }, Pending::Reconcile(label, token));
         }
     }
 
@@ -506,7 +582,7 @@ impl ClientSession {
             self.peer = Some(hello);
             event(out, ClientEvent::Ready { version });
             for _ in 0..INITIAL_PINGS {
-                self.request(out, |id| Message::Ping { id, wall_ms: now }, Pending::Ping { sent: now });
+                self.request(|id| Message::Ping { id, wall_ms: now }, Pending::Ping { sent: now });
             }
             self.next_ping = now.saturating_add(PING_INTERVAL_MS);
             while let Some(c) = self.queued.pop_front() {
@@ -532,7 +608,7 @@ impl ClientSession {
                 // entries from before the push: keeping the push's cursor would skip them for
                 // good if the connection ended first; likewise while a reconciliation runs (the
                 // Sync from the kept cursor follows it)
-                let syncing = self.pending.values().any(|(_, p)| matches!(p, Pending::Sync { label: l, .. } | Pending::Reconcile(l, _) if *l == label));
+                let syncing = self.pending.values().any(|r| matches!(r.p, Pending::Sync { label: l, .. } | Pending::Reconcile(l, _) if l == label));
                 event(out, ClientEvent::Events { label, events, cursor: (!syncing).then_some(cursor) })
             }
             m if m.is_request() => send(out, Message::Error { id: m.id(), code: Code::UNSUPPORTED }),
@@ -541,10 +617,12 @@ impl ClientSession {
     }
 
     fn reply(&mut self, now: u64, m: Message, out: &mut Vec<ClientOutput>) {
-        let Some((_, pending)) = self.pending.remove(&m.id()) else {
+        let Some(Req { sent: Some((_, cost)), .. }) = self.pending.get(&m.id()) else {
             event(out, ClientEvent::PeerError(Error::Malformed("reply to no request")));
             return;
         };
+        self.in_flight = self.in_flight.saturating_sub(*cost);
+        let Some(Req { p: pending, .. }) = self.pending.remove(&m.id()) else { return };
         use ClientEvent as E;
         use Message as M;
         match (pending, m) {
@@ -560,7 +638,7 @@ impl ClientSession {
             }
             (Pending::Sync { label, entries, .. }, M::Error { code: Code::CURSOR_INVALID, .. }) => {
                 // The entries were not taken: send them on their own.
-                self.upload(label, entries, out);
+                self.upload(label, entries);
                 event(out, E::NeedReconcile { label });
             }
             (Pending::Reconcile(label, _), M::Error { code, .. }) => {
@@ -578,7 +656,7 @@ impl ClientSession {
                 let last = steps.last().map(Step::id);
                 event(out, E::PathSteps { label, steps, more });
                 match (more, last) {
-                    (true, Some(after)) => self.request(out, |id| Message::Path { id, label, after: Some(after) }, Pending::Path(label)),
+                    (true, Some(after)) => self.request(|id| Message::Path { id, label, after: Some(after) }, Pending::Path(label)),
                     (true, None) => event(out, E::PeerError(Error::Malformed("path page without steps"))),
                     _ => {}
                 }
@@ -610,7 +688,7 @@ impl ClientSession {
                     event(out, E::PeerError(Error::Malformed("sync page without progress")));
                 } else if more {
                     let next = |id| Message::Sync { id, label, cursor: Some(cursor), inline_limit, entries: vec![], gained: vec![] };
-                    self.request(out, next, Pending::Sync { label, cursor: Some(cursor), entries: vec![], inline_limit, gained: vec![], empty });
+                    self.request(next, Pending::Sync { label, cursor: Some(cursor), entries: vec![], inline_limit, gained: vec![], empty });
                 } else {
                     event(out, E::Synced { label });
                 }
@@ -631,7 +709,7 @@ impl ClientSession {
                 event(out, E::Fetched { label, items });
                 let rest: Vec<BlobId> = ids.get(n..).unwrap_or(&[]).to_vec();
                 if n > 0 && !rest.is_empty() {
-                    self.request(out, |id| Message::Fetch { id, label, ids: rest.clone() }, Pending::Fetch(label, rest.clone()));
+                    self.request(|id| Message::Fetch { id, label, ids: rest.clone() }, Pending::Fetch(label, rest.clone()));
                 } else if !rest.is_empty() {
                     event(out, E::Refused { label: Some(label), kind: Request::Fetch, code: Code::TOO_LARGE });
                 }

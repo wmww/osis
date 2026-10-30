@@ -657,19 +657,23 @@ fn loopback_converges_at_size() {
     assert!(net.flights <= 8, "{} flights", net.flights);
 }
 
-// spec/sync.md §6: a request left unanswered on an open stream closes the session at its
-// deadline (the node redials); answered ones never do
+// spec/sync.md §6: requests in flight with nothing moving on the stream close the session at
+// the deadline (the node redials); a byte received or one of ours taken by the transport moves it
 #[test]
-fn unanswered_request_times_out() {
+fn stalled_requests_time_out() {
+    let t = client::STALL_TIMEOUT_MS;
     let mut c = ClientSession::new(ClientConfig { peer_static_key: [1; 32], challenge: [2; 32] });
     c.handle(T0, ClientInput::Start);
     let hello = encode_frame(&Hello::new(T0, [3; 32]).encode());
     let out = c.handle(T0, ClientInput::Bytes(hello));
-    assert!(out.iter().any(|o| matches!(o, ClientOutput::SetTimer(t) if *t == T0 + client::REQUEST_TIMEOUT_MS)), "{out:?}");
-    // the initial pings stay unanswered
-    let early = c.handle(T0 + client::REQUEST_TIMEOUT_MS - 1, ClientInput::Timer);
+    assert!(out.iter().any(|o| matches!(o, ClientOutput::SetTimer(x) if *x == T0 + t)), "{out:?}");
+    // the initial pings stay unanswered; progress either way pushes the deadline
+    let out = c.handle(T0 + t - 1, ClientInput::Sent);
+    assert!(out.iter().any(|o| matches!(o, ClientOutput::SetTimer(x) if *x == T0 + 2 * t - 1)), "{out:?}");
+    c.handle(T0 + 2 * t - 2, ClientInput::Bytes(vec![0]));
+    let early = c.handle(T0 + 3 * t - 3, ClientInput::Timer);
     assert!(!early.iter().any(|o| matches!(o, ClientOutput::Close)));
-    let late = c.handle(T0 + client::REQUEST_TIMEOUT_MS, ClientInput::Timer);
+    let late = c.handle(T0 + 3 * t - 2, ClientInput::Timer);
     assert!(late.iter().any(|o| matches!(o, ClientOutput::Close)), "{late:?}");
     assert!(c.is_closed());
 }

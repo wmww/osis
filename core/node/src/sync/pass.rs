@@ -353,7 +353,7 @@ impl SyncEngine {
                     None => false,
                 };
             }
-            if !seen.insert(o.id) || settled || self.conns.get(&conn).is_some_and(|c| super::in_flight(&c.req.sent, (l, o.id), raw)) {
+            if !seen.insert(o.id) || settled || self.conns.get(&conn).is_some_and(|c| super::in_flight(c, &c.req.sent, (l, o.id), raw)) {
                 continue;
             }
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
@@ -1157,7 +1157,7 @@ impl SyncEngine {
         self.deposit_seen.retain(|k, _| self.state.deposited.contains(k));
         let mut out = Vec::new();
         for (id, e) in ids {
-            if self.conns.get(&conn).is_some_and(|c| super::in_flight(&c.req.sent, (l, id), raw)) {
+            if self.conns.get(&conn).is_some_and(|c| super::in_flight(c, &c.req.sent, (l, id), raw)) {
                 continue;
             }
             let seen = *self.deposit_seen.entry((server, l, id)).or_insert(raw);
@@ -2012,7 +2012,7 @@ impl SyncEngine {
         let desired = desired(bodies);
         // deletes in flight on this connection are not sent again (`RESEND_MS`)
         let raw = self.raw_now();
-        let busy = |s: &Self, id: &BlobId| s.conns.get(&conn).is_some_and(|c| super::in_flight(&c.req.deleting, (l, *id), raw));
+        let busy = |s: &Self, id: &BlobId| s.conns.get(&conn).is_some_and(|c| super::in_flight(c, &c.req.deleting, (l, *id), raw));
         let send = |s: &mut Self, id: BlobId| {
             if let Some(c) = s.conns.get_mut(&conn) {
                 c.req.deleting.insert((l, id), raw);

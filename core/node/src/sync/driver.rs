@@ -28,8 +28,12 @@ pub const SERVE_IDLE: Duration = Duration::from_secs(120);
 pub const MAX_IDLE: Duration = Duration::from_secs(60);
 /// How long a session's end waits for the server to take our last bytes.
 pub const FINISH_WAIT: Duration = Duration::from_secs(10);
-/// Bytes queued for a connection and not yet taken by the transport before it is dropped.
+/// Bytes queued for a connection and not yet taken by the transport before it is dropped: a peer
+/// that does not read, or pushes beyond the link (resource bound; a session's own traffic stays
+/// within `WINDOW_QUEUE`, spec/sync.md §6). 0 drops every session with a request queued behind
+/// another, infinity buffers a non-reading peer without end.
 pub const MAX_QUEUED: usize = 64 * 1024 * 1024;
+const _: () = assert!(MAX_QUEUED >= osis_proto::client::WINDOW_QUEUE);
 /// LAN loop: how often it looks whether an announcement is due, and how often they repeat
 /// (provisional). Network changes come from `lan::NetWatch`.
 pub const LAN_CHECK: Duration = Duration::from_secs(5);
@@ -113,6 +117,8 @@ async fn forward(conn: ConnId, mut rx: link::LinkRx, ev: mpsc::Sender<Ev>) {
 struct Conn {
     tx: Option<LinkTx>,
     task: JoinHandle<()>,
+    /// `LinkTx::taken` when last reported (`Event::Sent`).
+    taken: u64,
 }
 
 fn blocking<R>(f: impl FnOnce() -> R) -> R {
@@ -270,7 +276,7 @@ impl<T: Transport, H: Host> Driver<T, H> {
                             forward(conn, rx, ev).await;
                         }
                     });
-                    self.conns.insert(conn, Conn { tx: None, task });
+                    self.conns.insert(conn, Conn { tx: None, task, taken: 0 });
                 }
                 Action::Send { conn, bytes } => {
                     let ok = self.conns.get(&conn).and_then(|c| c.tx.as_ref()).is_some_and(|tx| tx.send(bytes, MAX_QUEUED));
@@ -285,6 +291,21 @@ impl<T: Transport, H: Host> Driver<T, H> {
                 Action::Reach => self.relisten = true,
             }
         }
+    }
+
+    /// Reports the connections whose bytes the transport took since the last report, then ticks.
+    fn tick(&mut self) {
+        let mut moved = Vec::new();
+        for (id, c) in &mut self.conns {
+            if let Some(n) = c.tx.as_ref().map(LinkTx::taken).filter(|n| *n != c.taken) {
+                c.taken = n;
+                moved.push(*id);
+            }
+        }
+        if !moved.is_empty() {
+            self.feed(Event::Sent { conns: moved });
+        }
+        self.feed(Event::Tick);
     }
 
     fn close(&mut self, conn: ConnId) {
@@ -389,7 +410,7 @@ impl<T: Transport, H: Host> Driver<T, H> {
         });
         if let Some(conn) = conn {
             let task = tokio::spawn(forward(conn, rx, self.ev_tx.clone()));
-            self.conns.insert(conn, Conn { tx: Some(tx), task });
+            self.conns.insert(conn, Conn { tx: Some(tx), task, taken: 0 });
             let conns = &self.conns;
             let v = self.served_by.entry(key).or_default();
             v.retain(|c| conns.contains_key(c));
@@ -544,7 +565,7 @@ impl<T: Transport, H: Host> Driver<T, H> {
     async fn control(&mut self, c: Option<Control>) -> bool {
         match c {
             Some(Control::Local) => self.feed(Event::Local),
-            Some(Control::Tick) => self.feed(Event::Tick),
+            Some(Control::Tick) => self.tick(),
             Some(Control::Call(f)) => {
                 let mut f = Some(f);
                 self.call(&mut |s| f.take().map(|f| f(s)).unwrap_or_default());
@@ -678,7 +699,7 @@ pub async fn run_host<T: Transport, H: Host>(host: H, transport: T, listeners: V
             _ = sleep_until(d.relisten_at), if quiet => {}
             _ = tokio::time::sleep(idle), if quiet => {
                 d.wake = None;
-                d.feed(Event::Tick);
+                d.tick();
             }
         }
         d.after_rotation().await;
