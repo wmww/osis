@@ -80,6 +80,9 @@ fn queued_deposit_survives_forgetting_spec_sync_5() {
     let b = net.tid(1);
     let d = osis_node::flows::Demotion { member: b, new: None, presync: osis_node::flows::PreSync::Synced };
     let done = net.engine(0).demote(&g, &d).unwrap();
+    // the admin stays offline: the label keeps the deposit key node 1 signed with (the removal
+    // refreshed the deposit seed, spec/crypto.md §3; registered, it refuses node 1's deposit)
+    net.set_online(0, false);
     let acts = net.sync(0).carry_out(done).unwrap();
     net.actions(0, acts);
     net.run();
@@ -92,6 +95,8 @@ fn queued_deposit_survives_forgetting_spec_sync_5() {
     net.run();
     net.advance(61_000);
     assert!(log(&net, sv, &l).0 > before.0, "node 1 deposited after forgetting the label");
+    net.set_online(0, true);
+    net.run();
     assert_eq!(copies(&mut net, 0, &l, &c), 1, "the deposit reached the label");
 }
 

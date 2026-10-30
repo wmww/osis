@@ -172,7 +172,8 @@ impl Engine {
 
     /// The step an admin issues at a server whose head is `head` of `group`'s label `label`
     /// (spec/sync.md §5): when it holds the head's epochs and an established epoch newer than
-    /// the head's, a child at its newest epochs with the current readers, recorded in `/label`
+    /// the head's, or the head's deposit key is not the one the actor's deposit seed derives
+    /// (refreshed), a child at its newest epochs with the current readers, recorded in `/label`
     /// (a membership commit; node-sync uploads the rotation commits first, then registers, then
     /// the rest). `None` when nothing is newer, or when it does not hold the head's epochs (it
     /// walks first). `fresh`: issue a step without a rotation (to list readers granted since).
@@ -200,19 +201,20 @@ impl Engine {
                 }
             }
             let [_, _, Some(head_admin)] = at else { return Ok(None) };
-            if !fresh && !osis_keys::newer_than_head(&epochs, at) {
+            let deposit = deposit_seed(tx, &g)?;
+            let deposit_key = osis_crypto::deposit_key(&deposit, &head.label).verifying_key();
+            if !fresh && !osis_keys::newer_than_head(&epochs, at) && head.keys.deposit == deposit_key {
                 return Ok(None);
             }
             if !epochs.role(Role::Admin).is_established(&head_admin) {
                 return Ok(None);
             }
             let admin_secret = epochs.role(Role::Admin).secret(&head_admin).cloned().ok_or(Error::Misuse("head admin secret"))?;
-            let deposit = deposit_seed(tx, &g)?;
             let [(re, _), (we, _), (ae, _)] = registration_epochs(&epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
             // a child of the head already recorded at these epochs (another admin's, or this
             // node's own for another server): reused, so one rotation gives one step
             if !fresh {
-                let current = |c: &Step| [(Role::Read, re), (Role::Write, we), (Role::Admin, ae)].into_iter().all(|(r, e)| osis_keys::registered_epoch(epochs.role(r), r, rec.index, c.keys.get(osis_keys::label_role(r))) == Some(e));
+                let current = |c: &Step| c.keys.deposit == deposit_key && [(Role::Read, re), (Role::Write, we), (Role::Admin, ae)].into_iter().all(|(r, e)| osis_keys::registered_epoch(epochs.role(r), r, rec.index, c.keys.get(osis_keys::label_role(r))) == Some(e));
                 if let Some((c, Some(set))) = steps.values().filter(|(c, _)| c.prev == Some(h) && current(c)).min_by_key(|(c, _)| c.id()) {
                     return Ok(Some((c.clone(), set.clone())));
                 }

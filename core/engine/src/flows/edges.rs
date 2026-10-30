@@ -266,6 +266,9 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
             let skip: Vec<(Tid, Option<Role>)> = std::iter::once((member, d.new.as_ref().map(|e| e.role))).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
             let members = rotation::recipients(tx, &target, &skip)?;
             let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &members)?;
+            if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
+                rotation::fresh_deposit_seed(tx, &mut m, target)?;
+            }
             unreached = rotation::unreached(tx, &target, &r)?;
             rot = Some(r);
         }

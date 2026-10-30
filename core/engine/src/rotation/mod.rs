@@ -516,6 +516,22 @@ pub(crate) fn recipients(tx: &mut Tx<'_>, a: &Tid, skip: &[(Tid, Option<Role>)])
     Ok(out)
 }
 
+/// A fresh deposit seed for `a` in `m` (spec/crypto.md §3; an admin's write).
+pub(crate) fn fresh_deposit_seed(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid) -> Result<()> {
+    let mut seed = [0u8; 32];
+    tx.rng.fill_bytes(&mut seed);
+    m.op(a, &osis_schema::core_types::KEYS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(5)], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&Some(seed))) })?;
+    seed.fill(0);
+    Ok(())
+}
+
+/// Whether a rotation of `roles` of `a` by `who` also refreshes `a`'s deposit seed (spec/crypto.md
+/// §3): it rotates read for a departure, so the departed party (which read the seed in `/keys`)
+/// can no longer deposit under `a`'s labels, and `who` is an admin (the seed is admin-written).
+pub(crate) fn refreshes_deposit(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>) -> bool {
+    roles.contains(&Role::Read) && may_rotate(core, who, a).contains(&Role::Admin)
+}
+
 /// The rotation of `roles` of `a` (boxes for `members`), written into `m`. The superseded
 /// epochs' secrets must be held: `held` is this node's view (derived epochs for the switch to
 /// secrets of its own).
@@ -586,6 +602,9 @@ pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Rol
     let members = recipients(tx, &a, &[])?;
     let mut m = Mutation::new();
     let rot = rotation_into(tx, &mut m, a, roles, &held, &members)?;
+    if refreshes_deposit(tx.core, &who, &a, roles) {
+        fresh_deposit_seed(tx, &mut m, a)?;
+    }
     let unreached = unreached(tx, &a, &rot)?;
     if let Some(s) = signer_of(tx, who) {
         m.sign_as(s);
@@ -681,10 +700,7 @@ pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()
     let members = recipients(tx, &t, &[])?;
     let mut m = Mutation::new();
     let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &members)?;
-    let mut seed = [0u8; 32];
-    tx.rng.fill_bytes(&mut seed);
-    m.op(t, &osis_schema::core_types::KEYS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(5)], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&Some(seed))) })?;
-    seed.fill(0);
+    fresh_deposit_seed(tx, &mut m, t)?;
     let c = Engine::commit_tx(tx, m)?;
     record(tx, t, &rot)?;
     done.add(c);
