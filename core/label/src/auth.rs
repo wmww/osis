@@ -4,14 +4,13 @@
 
 use crate::blob::{Level, Prefix};
 use crate::cbor::{get_bytes, get_key, get_opt, get_uint, uint};
-use crate::step::{ClaimSet, Step, StepId};
+use crate::step::{Step, StepId};
 use crate::Error;
 use osis_base::cbor::encode;
 use osis_base::format::{DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER};
 use osis_base::{BlobId, LabelId, Value, WallMs};
 use osis_crypto::{DeleteSecret, Domain, LabelRole, Signature, SigningSecret, VerifyingKey, open_digest, sign_open, static_entry, verify_delete, verify_open};
 use osis_schema::core_types::SecretBox;
-use std::sync::Arc;
 
 /// Open proof (spec/wire.md §11.2): `[0, sync_pk, sig] | [1, step_id, claim_pk, sig] |
 /// [2, signing_pk, sig] | [3, dialable_pk, sig]`.
@@ -92,8 +91,10 @@ pub trait PathIndex {
     type Error;
     /// The newest step on the path registering sync key `pk`.
     fn step_with_sync(&self, pk: &VerifyingKey) -> Result<Option<StepId>, Self::Error>;
-    /// The claim set of a step on the path, while held; none for a step not on it.
-    fn claims(&self, step: &StepId) -> Result<Option<Arc<ClaimSet>>, Self::Error>;
+    /// Whether `key` (a claim key or a static entry) is in the held claim set of step `step` on
+    /// the path, with its entry box if it has one; none if not, or the set is not held. A
+    /// lookup, never a whole set: a stranger's Open must not cost a claim set's size.
+    fn claim(&self, step: &StepId, key: &[u8; 32]) -> Result<Option<Option<SecretBox>>, Self::Error>;
     /// The child on the path of a step on it; none past the head.
     fn child(&self, step: &StepId) -> Result<Option<Step>, Self::Error>;
 }
@@ -114,16 +115,16 @@ pub fn evaluate_open<I: PathIndex>(head: &Step, index: &I, proof: &Proof, challe
             None => Ok(OpenOutcome::Refused),
         },
         Proof::Claim { step, pk, .. } => {
-            if !index.claims(step)?.is_some_and(|c| c.contains(&pk.to_bytes())) {
+            if index.claim(step, &pk.to_bytes())?.is_none() {
                 return Ok(OpenOutcome::Refused);
             }
             if *step == head.id() { Ok(OpenOutcome::Opened(None)) } else { child_of(step) }
         }
         Proof::Static { signing, .. } => {
             let e = static_entry(&head.label, signing);
-            Ok(match index.claims(&head.id())? {
-                Some(c) if c.contains(&e) => OpenOutcome::Opened(c.entries.get(&e).cloned()),
-                _ => OpenOutcome::Refused,
+            Ok(match index.claim(&head.id(), &e)? {
+                Some(entry_box) => OpenOutcome::Opened(entry_box),
+                None => OpenOutcome::Refused,
             })
         }
         // only a member peer that knows the key's node opens it (`ServerConnection`)
@@ -252,7 +253,8 @@ impl DeleteItem {
 mod tests {
     use super::*;
     use crate::step::tests::{Group, TG};
-    use crate::step::{Parent, Reader, register};
+    use crate::step::{ClaimSet, Parent, Reader, register};
+    use std::sync::Arc;
     use osis_crypto::{Epoch, KeyActorKeys, SeededRng, Secret32, X25519Secret, label_role_key};
     use proptest::prelude::*;
 
@@ -267,8 +269,8 @@ mod tests {
         fn step_with_sync(&self, pk: &VerifyingKey) -> Result<Option<StepId>, Self::Error> {
             Ok(self.path.iter().rev().find(|s| s.keys.sync == *pk).map(|s| s.id()))
         }
-        fn claims(&self, step: &StepId) -> Result<Option<Arc<ClaimSet>>, Self::Error> {
-            Ok(self.sets.iter().find(|(id, _)| id == step).map(|(_, c)| c.clone()))
+        fn claim(&self, step: &StepId, key: &[u8; 32]) -> Result<Option<Option<SecretBox>>, Self::Error> {
+            Ok(self.sets.iter().find(|(id, _)| id == step).and_then(|(_, c)| c.contains(key).then(|| c.entries.get(key).cloned())))
         }
         fn child(&self, step: &StepId) -> Result<Option<Step>, Self::Error> {
             Ok(self.path.iter().position(|s| s.id() == *step).and_then(|i| self.path.get(i + 1)).cloned())

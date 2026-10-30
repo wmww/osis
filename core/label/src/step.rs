@@ -280,6 +280,16 @@ impl ClaimSet {
     }
 }
 
+/// An entry box as canonical bytes (a store's claim index).
+pub fn entry_box_bytes(b: &SecretBox) -> Vec<u8> {
+    encode(&b.to_value())
+}
+
+/// An entry box from `entry_box_bytes`, as strictly as in a claim set.
+pub fn parse_entry_box(b: &[u8]) -> Result<SecretBox, Error> {
+    parse_box(&decode(b, &OBJECT_LIMITS)?)
+}
+
 /// A `box` value in the sealed form (spec/wire.md §7), strictly: it must re-encode to itself.
 fn parse_box(v: &Value) -> Result<SecretBox, Error> {
     let b = SecretBox::from_value(v).map_err(|e| match e.kind {

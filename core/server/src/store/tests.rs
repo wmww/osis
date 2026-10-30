@@ -145,7 +145,7 @@ fn deposit_budget() {
 fn storage_cap() {
     // the genesis step and its claim set count too
     let f = Fixture::new(0x10);
-    let genesis = (f.genesis.to_bytes().len() + f.genesis_claims.to_bytes().len()) as u64;
+    let genesis = f.genesis.to_bytes().len() as u64 + claim_set_bytes(&f.label, &f.genesis.id(), &f.genesis_claims);
     let mut e = env(Policy { cap_entries: 2, cap_bytes: genesis + 1000, ..Policy::default() });
     let l = e.f.label;
     assert_eq!(e.store.put(&l, put(&blob(1), true, None)).unwrap(), Code::OK);
@@ -666,8 +666,9 @@ fn steps_count_toward_byte_caps() {
     let e = env(Policy::default());
     let set = e.f.child_claims.clone();
     let step = e.f.child.to_bytes().len() as u64;
-    let one = step + set.to_bytes().len() as u64;
-    let genesis = (e.f.genesis.to_bytes().len() + e.f.genesis_claims.to_bytes().len()) as u64;
+    // a set counts the same at every step of a label (its index keys are as long)
+    let one = step + claim_set_bytes(&e.f.label, &e.f.child.id(), &set);
+    let genesis = e.f.genesis.to_bytes().len() as u64 + claim_set_bytes(&e.f.label, &e.f.genesis.id(), &e.f.genesis_claims);
     assert_eq!(e.store.totals().unwrap().bytes, genesis);
     // room for two children with sets and one more step
     let room = genesis + 2 * one + step;
@@ -731,3 +732,81 @@ fn registers_rate_limited() {
     assert_eq!(e.store.push_step(&l, t.clone(), None).unwrap(), Code::OK);
     assert_eq!(e.store.head(&l).unwrap(), Some(t.id()));
 }
+
+/// Counts the bytes reads return.
+#[derive(Clone)]
+struct Reads {
+    inner: MemoryBackend,
+    read: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Backend for Reads {
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, BackendError> {
+        let v = self.inner.get(key)?;
+        self.read.fetch_add(v.as_ref().map_or(0, Vec::len), std::sync::atomic::Ordering::Relaxed);
+        Ok(v)
+    }
+    fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, BackendError> {
+        let v = self.inner.scan(start, end, limit)?;
+        self.read.fetch_add(v.iter().map(|(k, v)| k.len() + v.len()).sum(), std::sync::atomic::Ordering::Relaxed);
+        Ok(v)
+    }
+    fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
+        self.inner.commit(batch)
+    }
+    fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError> {
+        self.inner.get_blob(id)
+    }
+    fn read_blob(&self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, BackendError> {
+        self.inner.read_blob(id, offset, len)
+    }
+    fn blob_len(&self, id: &BlobId) -> Result<Option<u64>, BackendError> {
+        self.inner.blob_len(id)
+    }
+}
+
+// spec/sync.md §5 (Open by claim or static entry), spec/requirements.md (peer input never causes
+// unbounded work): an Open looks its key up in the claim index, reading at most an entry box
+// however large the set (here MAX_CLAIMS keys, 2 MiB); the index goes with the set when the sweep
+// drops it, in budgeted steps, and its bytes leave the totals
+#[test]
+fn claim_lookup_reads_no_set() {
+    let clock = Arc::new(ManualClock::new(WallMs(T0)));
+    let reads = Reads { inner: MemoryBackend::new(), read: Arc::default() };
+    let mut store = BackendStore::open(reads.clone(), clock.clone(), Policy::default(), &mut SeededRng::from_seed([1; 32])).unwrap();
+    let f = Fixture::new(0x10);
+    let l = f.label;
+    let g = f.genesis.id();
+    let mut set = f.genesis_claims.clone();
+    let mut n = 0u64;
+    while set.claims.len() < osis_base::format::MAX_CLAIMS {
+        n += 1;
+        set.claims.push(osis_base::hash::hash(&n.to_be_bytes()));
+    }
+    assert_eq!(store.push_step(&l, f.genesis.clone(), Some(set.clone())).unwrap(), Code::OK);
+    let (member, stat) = (set.claims[0], *set.entries.keys().next().unwrap());
+    let lookups = [(member, Some(set.entries.get(&member).cloned())), (stat, Some(set.entries.get(&stat).cloned())), ([0xee; 32], None)];
+    for (k, want) in &lookups {
+        reads.read.store(0, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(store.claim(&l, &g, k).unwrap(), *want);
+        assert!(reads.read.load(std::sync::atomic::Ordering::Relaxed) < 4096, "{} bytes read", reads.read.load(std::sync::atomic::Ordering::Relaxed));
+    }
+    // superseded and swept: the index rows go over several budgeted sweeps, then the set
+    let step = f.genesis.to_bytes().len() as u64;
+    assert_eq!(store.totals().unwrap().bytes, step + claim_set_bytes(&l, &g, &set));
+    let child = { let mut s = f.genesis.clone(); s.prev = Some(g); s };
+    store.push_step(&l, child.clone(), None).unwrap();
+    let mut sweeps = 0;
+    loop {
+        sweeps += 1;
+        if !store.sweep(T0 + MEMBERSHIP_KEEP_MS, SWEEP_TEST_BUDGET).unwrap().more {
+            break;
+        }
+    }
+    assert!(sweeps > osis_base::format::MAX_CLAIMS / SWEEP_TEST_BUDGET, "{sweeps} sweeps");
+    assert_eq!(store.claim(&l, &g, &member).unwrap(), None);
+    assert!(store.claim_set(&l, &g).unwrap().is_none());
+    assert_eq!(store.totals().unwrap().bytes, step + child.to_bytes().len() as u64);
+}
+
+const SWEEP_TEST_BUDGET: usize = 1024;
