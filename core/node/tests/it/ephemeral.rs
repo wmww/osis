@@ -1248,10 +1248,12 @@ fn random_window_one_capped_server_large() {
 }
 
 // notes/ephemeral.md Convergence (randomized): holders of a shared window converge after random
-// writes, partitions and restarts heal
+// writes, partitions and restarts heal (5327166: a restarted author's re-cover stamped below its
+// earlier session's cover of the same content; each held one took the other for redundant and
+// both were deleted at the servers)
 #[test]
 fn random_window_converges_spec_sync_6() {
-    for seed in 0..4 {
+    for seed in [0, 1, 2, 3, 5327166] {
         random_window_run(seed);
     }
 }
