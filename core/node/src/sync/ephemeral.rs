@@ -24,7 +24,7 @@ use super::{Action, ConnId, Phase, SyncEngine};
 use crate::ephemeral::{EphCommit, EphIngest};
 use crate::error::Result;
 use crate::events::{Diagnostic, DiagnosticKind};
-use crate::labeling::{HeadKeys, delete_item, open_commit, seal_body_as};
+use crate::labeling::{HeadKeys, delete_item, open_commit, resign_delete, seal_body_as};
 use osis_base::{BlobId, CommitId, LabelId, Tid};
 use osis_commit::{DeleteKey, EphClass};
 use osis_crypto::{Signature, SigningSecret, VerifyingKey};
@@ -274,7 +274,7 @@ impl SyncEngine {
                 self.eph.restamp.remove(&(conn, l, b));
                 continue;
             }
-            if self.group_of(&l).is_none_or(|g| self.engine.role_on(&g) < Some(osis_base::Role::Write)) {
+            if !self.eph_writes(&l) {
                 self.eph.restamp.remove(&(conn, l, b));
                 lost.insert(l);
                 continue;
@@ -288,6 +288,11 @@ impl SyncEngine {
             self.eph_report(&l, "this node no longer writes the label: its own ephemeral entries are not sent");
         }
         Ok(())
+    }
+
+    /// Whether this node writes label `l` (its group's role).
+    fn eph_writes(&mut self, l: &LabelId) -> bool {
+        self.group_of(l).is_some_and(|g| self.engine.role_on(&g) >= Some(osis_base::Role::Write))
     }
 
     /// Whether an entry of commit `c` under `l` is held at server `s`.
@@ -380,7 +385,17 @@ impl SyncEngine {
         if !self.eph.deletes.insert((conn, l, b)) {
             return Ok(());
         }
+        let item = self.eph_resign(conn, l, item);
         self.command(conn, Command::Delete { label: l, items: vec![item] }, out)
+    }
+
+    /// A delete made under an earlier head (waiting for a cover, or carried by one refused 9)
+    /// signed under the head `l` is open with on `conn` now.
+    fn eph_resign(&self, conn: ConnId, l: LabelId, item: osis_label::DeleteItem) -> osis_label::DeleteItem {
+        match self.lc(conn, &l) {
+            Some(lc) => resign_delete(&lc.keys, &l, item),
+            None => item,
+        }
     }
 
     /// What waits for an own ephemeral upload in flight (sent, not answered): the groups of the
@@ -582,23 +597,27 @@ impl SyncEngine {
             if self.eph.uploads.contains(&(conn, l, *b)) {
                 continue;
             }
-            let Some(e) = self.eph.entries.get_mut(&(l, *b)) else { continue };
-            if e.foreign_presence() {
+            let Some((own, foreign)) = self.eph.entries.get(&(l, *b)).map(|e| (e.own, e.foreign_presence())) else { continue };
+            if foreign {
                 continue;
             }
             // an own entry is stamped under this connection's head: one stamped before a
             // rotation (built offline, or for another server) is refused under it (code 9);
-            // with no write key there it waits for one (`eph_restamp`)
+            // with no write key there it waits for one (`eph_restamp`), unless this node does
+            // not write the label (a thing also under a group it only reads): never sent there
+            if own && keys.write.is_none() {
+                if self.eph_writes(&l) {
+                    self.eph.restamp.insert((conn, l, *b), None);
+                }
+                continue;
+            }
+            let Some(e) = self.eph.entries.get_mut(&(l, *b)) else { continue };
             let stamp = match (e.stamp, &keys.write) {
                 (_, Some(w)) if e.own => {
                     let s = osis_label::sign_stamp(w, &l, b, &e.wrap);
                     e.stamp = Some(s);
                     self.eph.stamped.insert((conn, l, *b), w.verifying_key());
                     s
-                }
-                _ if e.own => {
-                    self.eph.restamp.insert((conn, l, *b), None);
-                    continue;
                 }
                 (Some(s), _) => s,
                 _ => continue,
@@ -637,7 +656,7 @@ impl SyncEngine {
         let mut moved = Vec::new();
         for x in ready {
             let Some((cs, item)) = self.eph.waiting.remove(&(l, x, server)) else { continue };
-            replaces.push(if self.eph.tied.contains(&(conn, l, x)) { osis_proto::Replace::Untie(x) } else { osis_proto::Replace::Delete(item.clone()) });
+            replaces.push(if self.eph.tied.contains(&(conn, l, x)) { osis_proto::Replace::Untie(x) } else { osis_proto::Replace::Delete(self.eph_resign(conn, l, item.clone())) });
             moved.push((x, cs, item));
         }
         *room -= replaces.len();
