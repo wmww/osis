@@ -20,7 +20,7 @@ mod moving;
 pub use roster::ROSTER_SNAPSHOT_AFTER;
 
 pub use edges::{Demotion, PreSync};
-pub use links::{LINK_SEED, LinkSpec};
+pub use links::{HeldLink, LINK_SEED, LinkSpec};
 pub use person::Person;
 
 use crate::engine::{Core, Engine, Tx};

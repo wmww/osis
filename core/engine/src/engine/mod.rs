@@ -533,7 +533,7 @@ pub struct Core {
     pub(crate) published: Option<Published>,
     /// `Engine::held_links`: dropped when a `/link/seed` state or index entry changes and on
     /// rollback.
-    pub(crate) links: Option<std::sync::Arc<Vec<(Tid, Tid, Tid)>>>,
+    pub(crate) links: Option<std::sync::Arc<Vec<crate::flows::HeldLink>>>,
     /// The sync records this engine's transactions write or drop (`SyncRecords`), set by
     /// node-sync (`Engine::set_sync_records`; `None`: no node-sync, no sync records).
     pub sync_records: Option<&'static dyn SyncRecords>,

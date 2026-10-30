@@ -298,7 +298,7 @@ fn until_link(w: &mut World) -> (Osis, Osis, Tid, Tid, Tid) {
 /// Whether `db` holds link (k, l) and has nothing of it left to finalize (L's edge on K is
 /// gone by an explicit removal: it expired, so it is not alive).
 fn finalized(db: &Osis, k: Tid, l: Tid) -> bool {
-    db.engine(|e| e.held_links().unwrap().iter().any(|x| (x.0, x.1) == (k, l)) && e.links_due().unwrap().is_empty())
+    db.engine(|e| e.held_links().unwrap().iter().any(|x| (x.k, x.l) == (k, l)) && e.links_due().unwrap().is_empty())
 }
 
 // spec/permissions.md §9 (`until` finalized by a sharer device's removal of L): with Alice's
@@ -312,7 +312,7 @@ fn until_link_finalized_by_other_device_spec_permissions_9() {
     let (_, reply) = alice.pair_accept(join.request()).unwrap();
     let alice2 = join.finish(&reply).unwrap();
     w.run();
-    assert!(alice2.engine(|e| e.held_links().unwrap().iter().any(|x| (x.0, x.1) == (k, l))), "the other device holds the seed thing");
+    assert!(alice2.engine(|e| e.held_links().unwrap().iter().any(|x| (x.k, x.l) == (k, l))), "the other device holds the seed thing");
     w.set_online(&alice, false);
     w.advance(3_600_000);
     w.run();
