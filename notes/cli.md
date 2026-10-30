@@ -15,7 +15,7 @@
 - **Delivering commands** (`grant`, `edge`, `leave`, `link make`, `card show`, `group sync`): their API call queues inbox deposits or a new label's first commits that the engine holds only in memory, so they open with sync on and end with `sync_now` + `wait_synced(All)` within `--timeout` (exit 6 "done locally, not yet at the servers"); skipped for a store without servers. Other writes stay local and go out with the next networked command.
 - **Write output**: `create` prints the tid; other writes print the commit id (nothing when nothing changed).
 - **`serve`**: calls `osis_server::serve::run` (the `osis-server` binary's body, moved into the library); without `--config`: listen `quic://127.0.0.1:0`, data `osis-server-data`, key `<data>/server.key`. The address `<url>#<key>` is the first stdout line; logs go to stderr.
-- **`inspect`** is `Debug` dumps over `Osis::engine()` (commits per aspect, CRDT state, items of a group, pending commits, actor epochs, headers). Not stable.
+- **`inspect`** is `Debug` dumps over `osis::internals::Internals::engine` (commits per aspect, CRDT state, items of a group, pending commits, actor epochs, headers). Not stable.
 
 ## Deviations from the original design (the deleted CLI plan)
 - `commits --limit N` is `--max N` (`--limit` is the global materialization bound).
@@ -61,10 +61,10 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `status [--watch]` / `sync` / `wait` | `status`, `watch_status` / `sync_now`, `wait_synced` | now |
 | `group sync/unsync/policy` | `sync` / `unsync` / sync_policy | now (policy 2nd) |
 | `bundle export/import` | `export_bundle` / `import_bundle` | now |
-| `inspect thing/group/actor/commit` | `engine` (escape hatch), `read`, `knows` | now |
+| `inspect thing/group/actor/commit` | `Internals::engine` (`osis::internals`, doc-hidden), `read`, `knows` | now |
 | `diag [--follow]` / `daemon` | `on_diagnostic`, `settle` | now (no stored log yet) |
 | `schema add/rm/ls` / `check` / `gen` | `register_schema_file` (each run) / osis-schema `check_lock` / `generate_file` | now |
-| (internal) | `open`, `close`, `downgrade`, `key`, `at`, `write_with`, `materialize_limit` (`--limit`), `register_schema`, `register_schema_source`; hidden test hooks `sync_engine`, `take_actions`, `feed`, `waiting` | |
+| (internal) | `open`, `close`, `downgrade`, `key`, `at`, `write_with`, `materialize_limit` (`--limit`), `register_schema`, `register_schema_source`; test hooks `sync_engine`, `take_actions`, `feed`, `waiting` live on `osis::internals::Internals` | |
 
 ## Value syntax
 CBOR diagnostic notation narrowed to one printed form per value. Printer: `cli/src/text.rs` `print`; parser `parse`; property test: `parse(print(v)) == v`, numbered and named.
