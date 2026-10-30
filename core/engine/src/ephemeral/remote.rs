@@ -848,7 +848,18 @@ impl Engine {
         let absorbs = parts.iter().any(|p| !p.absorbed.is_empty());
         self.eph.remote.held.insert(id, Held { header: header.clone(), parts, own: false, bytes });
         if !waits.is_empty() {
-            self.eph.remote.pending.insert(id, (blob, waits));
+            // another blob of this commit may wait too (a commit past a blob splits): both kept
+            match self.eph.remote.pending.get_mut(&id) {
+                Some((b, needs)) => {
+                    let mut more = blob.parts;
+                    more.retain(|p| !b.parts.iter().any(|q| (q.ai, q.di) == (p.ai, p.di)));
+                    b.parts.extend(more);
+                    needs.extend(waits);
+                }
+                None => {
+                    self.eph.remote.pending.insert(id, (blob, waits));
+                }
+            }
         }
         if absorbs {
             self.drop_absorbed();
@@ -858,6 +869,10 @@ impl Engine {
         if !changed.is_empty() {
             self.core.events.queue(Event::Ephemeral { id: ChangeId::Commit(id), origin: Origin::Remote, author: header.author, actor: header.actor, ts: header.ts, received, changed, signals: Vec::new() });
             self.core.events.flush();
+        }
+        // records it brought: what waited for them (another blob of this commit or of others)
+        if !carried.is_empty() {
+            self.retry_waiting();
         }
         Ok(EphIngest::Held { new })
     }
@@ -991,6 +1006,20 @@ impl Engine {
         keys.iter().filter_map(|k| crate::engine::Core::delete_secret(k.level, &k.key, &thing, &author).map(|d| (k.level, d))).collect()
     }
 
+    /// Ingests again the commits waiting for a record that is held now (the rest costs nothing
+    /// to keep waiting); one waiting again goes back.
+    fn retry_waiting(&mut self) {
+        let empty = BTreeMap::new();
+        let ready: Vec<CommitId> = self.eph.remote.pending.iter().filter(|(_, (_, needs))| needs.iter().any(|t| self.record_of(t, &empty).is_some())).map(|(c, _)| *c).collect();
+        for c in ready {
+            if let Some((b, _)) = self.eph.remote.pending.remove(&c)
+                && let Err(e) = self.ingest_ephemeral(b)
+            {
+                self.report_eph(&format!("ephemeral commit {c:?}: {e}"));
+            }
+        }
+    }
+
     /// Judges held ephemeral commits again when the held durable set changed (rights, records),
     /// rebuilds the aspects whose parts flipped (un-merge or re-merge, spec/crdt.md §4.6), retries
     /// commits waiting for their author's record and forgets ephemeral records of things that
@@ -1004,16 +1033,8 @@ impl Engine {
         for t in durable {
             self.eph.things.remove(&t);
         }
-        // only what waits for a record that arrived (the rest costs nothing to keep waiting)
+        self.retry_waiting();
         let empty = BTreeMap::new();
-        let ready: Vec<CommitId> = self.eph.remote.pending.iter().filter(|(_, (_, needs))| needs.iter().any(|t| self.record_of(t, &empty).is_some())).map(|(c, _)| *c).collect();
-        for c in ready {
-            if let Some((b, _)) = self.eph.remote.pending.remove(&c)
-                && let Err(e) = self.ingest_ephemeral(b)
-            {
-                self.report_eph(&format!("ephemeral commit {c:?}: {e}"));
-            }
-        }
         let mut flips: BTreeSet<(Tid, Ak)> = BTreeSet::new();
         let ids: Vec<CommitId> = self.eph.remote.held.keys().copied().collect();
         for id in ids {

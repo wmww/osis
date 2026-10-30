@@ -1584,3 +1584,47 @@ fn cover_past_page_target_bounded_spec_sync_9() {
     net.run();
     assert_eq!(notes(&mut net, b, w), want);
 }
+
+// spec/sync.md §3, §9, spec/crdt.md §8: an ephemeral commit past a blob (two aspects of one label,
+// each delta unpaged and most of a blob) goes as several blobs under the label; a holder joins
+// them all, a cover of it is several blobs too, deletes what it absorbs, and a restarted holder
+// gets it all back from the server
+#[test]
+fn commit_past_a_blob_splits_spec_sync_9() {
+    let mut net = Net::new();
+    let cap: u64 = 64 << 20;
+    let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: cap, ..osis_server::Policy::default() });
+    let a = net.node(1, &[sv]);
+    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let (w1, w2) = (window(&mut net, a, g, "1"), window(&mut net, a, g, "2"));
+    net.run();
+    let l = net.label(a);
+    let before = net.sync(b).ephemeral_entries(&l);
+    let big = "v".repeat(5 << 20);
+    let mut m = Mutation::new();
+    for w in [w1, w2] {
+        m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("big"))], op: Op::Set(s(&big)) }).unwrap();
+    }
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert_eq!(net.sync(b).ephemeral_entries(&l), before + 2, "one commit, two blobs");
+    for w in [w1, w2] {
+        assert_eq!(notes(&mut net, b, w).get("big").map(String::len), Some(big.len()));
+    }
+    note(&mut net, a, w1, "small", "x");
+    net.run();
+    let acts = net.sync(a).compact_ephemeral_now().unwrap();
+    net.actions(a, acts);
+    net.run();
+    let at_sv = net.servers[sv].hub.store().ephemeral_bytes(&l) as usize;
+    assert!(at_sv < 2 * big.len() + (1 << 20), "absorbed entries deleted: server {at_sv} B");
+    let want: Vec<_> = [w1, w2].into_iter().map(|w| notes(&mut net, a, w)).collect();
+    net.restart(b, 22);
+    net.run();
+    let got: Vec<_> = [w1, w2].into_iter().map(|w| notes(&mut net, b, w)).collect();
+    // the second blob may come first: its parts wait for the record the first one carries
+    assert!(got == want, "restarted holder reads the author's state");
+}
