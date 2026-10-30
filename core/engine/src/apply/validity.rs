@@ -1162,6 +1162,7 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
         }
     }
     super::keys::rebuild_intro(tx, &intro_flips)?;
+    super::keys::refresh_own_keys(tx, &intro_flips, true)?;
     for (c, ai, now_valid) in secrets_flips {
         if now_valid {
             super::keys::revalidated(tx, &c, ai)?;

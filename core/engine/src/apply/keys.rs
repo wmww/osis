@@ -160,6 +160,74 @@ pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet
     Ok(())
 }
 
+/// Notes the `/keys` parts of membership commit `h` whose bodies write a keyset, whatever their
+/// validity (`records::OWN_KEYS`: a fact of the body, kept once it drops or goes missing), then
+/// re-derives `own_keys` of their things.
+fn note_keyset_parts(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)]) -> Result<()> {
+    if !h.kind.is_membership() {
+        return Ok(());
+    }
+    let id = h.id();
+    let mut things = std::collections::BTreeSet::new();
+    for (ai, _, d) in parts {
+        let Some(a) = h.aspects.get(*ai) else { continue };
+        if a.ak.as_str() != "/keys" || keys_write(d.fragment()).keysets.is_empty() {
+            continue;
+        }
+        if tx.core.ix.keyset_parts.insert(a.tid, id) {
+            tx.core.touch();
+            tx.txn.put_local(&crate::engine::records::own_keys_key(&a.tid, &id), &[], Shred::No)?;
+        }
+        things.insert(a.tid);
+    }
+    refresh_own_keys(tx, &things, true)
+}
+
+/// Re-derives whether each of `things` has secrets of its own (spec/crypto.md §3): a held
+/// commit's valid `/keys` part wrote a keyset in its body (held, or dropped or missing since).
+/// Called once a part is noted, after validity flips and at load (`!regain`). A thing that loses
+/// it (that commit turned invalid) derives from its owner again; what it learned stays for
+/// reading (`Core::epochs`). One that regains it starts its epochs again from those.
+pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTreeSet<Tid>, regain: bool) -> Result<()> {
+    for t in things {
+        let ids: Vec<CommitId> = tx.core.ix.keyset_parts.get(t).into_iter().flatten().copied().collect();
+        let mut own = false;
+        for id in ids {
+            let Some(m) = tx.core.ix.commits.get(&id) else {
+                // forgotten
+                tx.core.touch();
+                tx.core.ix.keyset_parts.remove(t, &id);
+                tx.txn.remove_local(&crate::engine::records::own_keys_key(t, &id), Shred::No)?;
+                continue;
+            };
+            own |= m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid == *t && a.ak.as_str() == "/keys" && m.valid.get(ai).copied().unwrap_or(false));
+        }
+        if own == tx.core.ix.own_keys.contains(t) {
+            continue;
+        }
+        tx.core.touch();
+        if own {
+            // epochs kept from a rotation found invalid earlier: start again from the derived
+            // ones (`Core::epochs`), so a stale derived epoch stays current nowhere
+            let derived = |e: &osis_keys::ActorEpochs| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.established == Some(osis_keys::Provenance::Derived)));
+            let restart = regain && tx.core.ix.secrets.get(t).is_some_and(derived) && tx.core.own_epochs(t).is_none();
+            let base = restart.then(|| tx.core.epochs(t)).flatten();
+            tx.core.ix.own_keys.insert(*t);
+            if let Some(mut b) = base {
+                b.establish();
+                tx.core.ix.secrets.insert(*t, b);
+                save(tx, t)?;
+            }
+        } else {
+            tx.core.ix.own_keys.remove(t);
+        }
+        // reader actors of things below it change
+        tx.core.bodies.clear();
+        tx.core.membership_changed();
+    }
+    Ok(())
+}
+
 pub(crate) fn note_intro(core: &mut Core, h: &Header, actor: &Tid, r: Role, e: osis_crypto::Epoch) {
     let v = (h.ts, h.author, h.actor, h.id());
     core.ix.epoch_intro.upsert((*actor, r, e), || v, |slot| *slot = (*slot).min(v));
@@ -228,6 +296,7 @@ pub(crate) struct Pending {
 }
 
 pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)], valid: &[bool]) -> Result<Vec<Pending>> {
+    note_keyset_parts(tx, h, parts)?;
     let mut out = Vec::new();
     if h.kind != Kind::Membership {
         return Ok(out);
@@ -1019,5 +1088,70 @@ mod tests {
         assert!(lp.peers[0].engine.core.ix.lost_due.contains(&x));
         lp.peers[0].engine.drop_lost_due().unwrap();
         assert!(lp.peers[0].engine.core.ix.secrets.get(&x).is_none_or(|e| e.read.held_newest_first().is_empty()));
+    }
+
+    // spec/crypto.md §3 (a thing has secrets of its own while a valid `/keys` part wrote a
+    // keyset), §4 (secrets of an invalid commit are kept for reading only): admin A of G grants
+    // X on G's plain thing T (T's first `/keys`, a rotation from derived epochs) after the owner
+    // removed A. Once A's grant is invalid, every node derives T from G again (encrypting under
+    // G's epoch rotated past A, not A's), delete base G, open = rebuild; peer 3 had A's commit
+    // applied valid first (Y: a reader of G). The owner's own grant then gives T secrets of its own everywhere.
+    #[test]
+    fn keyset_of_invalid_rotation_leaves_thing_plain_spec_crypto_3() {
+        let mut lp = LocalPeer::new(4, 941, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let (me, a, x) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2));
+        let edge = |role| ct::Edge { role, until: None, invite: None, since: None };
+        let g = thing_of(&mut lp, 0, me);
+        lp.peers[0].engine.grant(&g, &a, &edge(Role::Admin)).unwrap();
+        let y = tid(&mut lp, 3);
+        lp.peers[0].engine.grant(&g, &y, &edge(Role::Read)).unwrap();
+        let t = thing_of(&mut lp, 0, g);
+        lp.sync_all().unwrap();
+        lp.peers[0].engine.demote(&g, &Demotion { member: a, new: None, presync: PreSync::Synced }).unwrap();
+        // A's clock runs ahead: its grant is stamped after its removal
+        lp.peers[1].clock.advance(120_000);
+        lp.peers[1].engine.grant(&t, &x, &edge(Role::Read)).unwrap();
+        let rot = lp.peers[1].engine.core.epochs(&t).unwrap().role(Role::Read).newest().unwrap();
+        assert!(lp.peers[1].engine.core.ix.own_keys.contains(&t));
+        lp.sync(1, 3).unwrap();
+        assert!(lp.peers[3].engine.core.ix.own_keys.contains(&t), "applied valid at peer 3");
+        lp.sync_all().unwrap();
+        let derived = |lp: &LocalPeer, i: usize| {
+            let core = &lp.peers[i].engine.core;
+            osis_keys::ActorEpochs::derived(&core.epochs(&g).unwrap(), &t).role(Role::Read).newest()
+        };
+        for i in 0..4 {
+            let core = &lp.peers[i].engine.core;
+            assert!(!core.ix.own_keys.contains(&t), "peer {i}: plain again");
+            assert!(!core.has_own_secrets(&t), "peer {i}");
+            let held = core.epochs(&t).unwrap_or_default();
+            // X holds nothing of G
+            if i != 2 {
+                assert_eq!(held.role(Role::Read).newest(), derived(&lp, i), "peer {i}: derived from G");
+                assert_ne!(held.role(Role::Read).newest(), Some(rot), "peer {i}");
+            }
+            assert!(!held.role(Role::Read).is_established(&rot), "peer {i}: A's epoch is for reading only");
+            assert!(matches!(core.delete_base(&t), Some(crate::engine::secrets::DeleteBase::Actor(b, _)) if b == g), "peer {i}: delete base G");
+            let d0 = lp.peers[i].engine.index_digest();
+            lp.peers[i].engine.rebuild_index().unwrap();
+            assert_eq!(d0.first_diff(&lp.peers[i].engine.index_digest()), None, "peer {i}: open = rebuild");
+        }
+        // the owner's grant: secrets of T's own, from G's derived epochs
+        lp.peers[0].engine.grant(&t, &x, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        let own = lp.peers[0].engine.core.epochs(&t).unwrap().role(Role::Read).newest().unwrap();
+        assert_ne!(own, rot);
+        for i in 0..4 {
+            let core = &lp.peers[i].engine.core;
+            assert!(core.ix.own_keys.contains(&t), "peer {i}: own keys");
+            if i != 1 {
+                assert_eq!(core.epochs(&t).unwrap().role(Role::Read).newest(), Some(own), "peer {i}");
+            }
+            let d0 = lp.peers[i].engine.index_digest();
+            lp.peers[i].engine.rebuild_index().unwrap();
+            assert_eq!(d0.first_diff(&lp.peers[i].engine.index_digest()), None, "peer {i}: open = rebuild");
+        }
     }
 }

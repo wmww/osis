@@ -27,7 +27,8 @@ pub const TIMER: &[u8] = b"x/";
 pub const SYNCING: &[u8] = b"s/";
 /// Commits voided by overlapping node-form ranges: `o/` + commit ID.
 pub const VOID: &[u8] = b"o/";
-/// Things seen with keysets in their `/keys` (`Core::own_keys`; never removed): `g/` + tid.
+/// Commits whose `/keys` part on a thing wrote a keyset in its body (`Indexes::keyset_parts`;
+/// kept while the commit is held, whatever becomes of the body): `g/` + tid + commit ID.
 pub const OWN_KEYS: &[u8] = b"g/";
 /// Aspects whose deaths wait for a recompute (`retention::settle_deaths`): `e/` + aspect key.
 pub const DEATHS_DUE: &[u8] = b"e/";
@@ -72,6 +73,10 @@ pub fn aspect_key(prefix: &[u8], tid: &Tid, ak: &Ak) -> Vec<u8> {
     k.extend_from_slice(&(a.len() as u16).to_be_bytes());
     k.extend_from_slice(a);
     k
+}
+
+pub fn own_keys_key(tid: &Tid, id: &CommitId) -> Vec<u8> {
+    [OWN_KEYS, tid.as_bytes(), &id.0[..]].concat()
 }
 
 pub fn commit_key(id: &CommitId) -> Vec<u8> {

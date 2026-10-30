@@ -399,8 +399,12 @@ indexes! {
     pub valueless: JMap<(Tid, Ak), Vec<Owned>>,
     /// Actors with secrets of their own whose epochs this node holds.
     pub secrets: JMap<Tid, ActorEpochs>,
-    /// Things known to have secrets of their own (a `/keys` with keysets).
+    /// Things with secrets of their own here (`apply::keys::refresh_own_keys`): a held commit's
+    /// valid `/keys` part wrote a keyset.
     pub own_keys: JSet<Tid>,
+    /// Held commits whose `/keys` part on a thing wrote a keyset in its body, any validity
+    /// (`records::OWN_KEYS`): thing -> commits.
+    pub keyset_parts: JSetMap<Tid, CommitId>,
     /// Things with a `/label` delta held (`Engine::labeled_groups`).
     pub labeled: JSet<Tid>,
     /// Admin and write delete keys of things an inbox payload named (`[admin, write]` bytes),

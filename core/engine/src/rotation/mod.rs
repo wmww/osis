@@ -594,11 +594,10 @@ pub(crate) fn deliver_rotation(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::Com
 /// Records a rotation this node made (spec/crypto.md §4: its own epochs are established).
 pub(crate) fn record(tx: &mut Tx<'_>, a: Tid, rot: &Rotation) -> Result<()> {
     tx.core.touch();
-    let base = match tx.core.ix.secrets.get(&a) {
-        Some(e) => e.clone(),
-        None => tx.core.epochs(&a).unwrap_or_default(),
-    };
-    let e = tx.core.ix.secrets.entry_or(a, || base);
+    // a plain thing's: derived from its owner, with what an invalid rotation gave it for reading
+    let base = tx.core.epochs(&a).or_else(|| tx.core.ix.secrets.get(&a).cloned()).unwrap_or_default();
+    tx.core.ix.secrets.insert(a, base);
+    let e = tx.core.ix.secrets.entry_or_default(a);
     rot.record(e);
     e.establish();
     save_epochs(tx, &a)

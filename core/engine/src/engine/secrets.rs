@@ -26,12 +26,34 @@ impl Core {
     }
 
     /// The epochs this node holds for `tid`: its own, opened ones, or derived from the owner's
-    /// for a plain thing without secrets of its own.
+    /// for a plain thing without secrets of its own. A plain thing's epochs learned from a
+    /// rotation since found invalid (`stale_epochs`) are added for reading only.
     pub(crate) fn epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
+        let stale = self.stale_epochs(tid);
+        let mut d = self.chain_epochs(tid);
+        match (&mut d, stale) {
+            (Some(d), Some(x)) => {
+                for r in ROLES {
+                    for (ep, info) in x.role(r).epochs() {
+                        if d.role(r).get(ep).is_none() {
+                            let i = d.role_mut(r).observe(*ep);
+                            *i = info.clone();
+                            i.established = None;
+                        }
+                    }
+                }
+            }
+            (None, Some(x)) => return Some(x.clone()),
+            _ => {}
+        }
+        d
+    }
+
+    fn chain_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
         let mut chain = Vec::new();
         let mut cur = *tid;
         for _ in 0..MAX_CHAIN {
-            let held = (cur == self.id.tid()).then(|| self.id.epochs()).or_else(|| self.key_actors.get(&cur).map(|k| k.epochs())).or_else(|| self.ix.secrets.get(&cur).cloned());
+            let held = (cur == self.id.tid()).then(|| self.id.epochs()).or_else(|| self.key_actors.get(&cur).map(|k| k.epochs())).or_else(|| self.own_epochs(&cur).cloned());
             if let Some(mut e) = held {
                 for t in chain.iter().rev() {
                     e = ActorEpochs::derived(&e, t);
@@ -52,6 +74,36 @@ impl Core {
         None
     }
 
+    /// The opened epochs of `tid` when they make it an actor with secrets of its own here: it is
+    /// in `own_keys`, is no known thing, or, its `/keys` part not held yet, holds an epoch
+    /// established by an applied valid rotation or a held snapshot, a valid `/secrets` part or an
+    /// inbox hint of its delete keys. Not by this node's own rotation alone: that commit may have
+    /// turned invalid.
+    pub(crate) fn own_epochs(&self, tid: &Tid) -> Option<&ActorEpochs> {
+        let e = self.ix.secrets.get(tid)?;
+        let thing = matches!(self.created(tid), Some(CreationRecord::Thing { .. }));
+        let rotated = || ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| matches!(i.established, Some(Provenance::Chain | Provenance::Snapshot))));
+        (self.ix.own_keys.contains(tid) || !thing || rotated() || self.ix.delete_hints.contains_key(tid) || self.valid_secrets_part(tid)).then_some(e)
+    }
+
+    /// Whether a held membership commit's `/secrets` part on `tid` is valid (only a thing with
+    /// secrets of its own has boxes: a grant whose target's `/keys` is not held yet).
+    fn valid_secrets_part(&self, tid: &Tid) -> bool {
+        let Ok(ak) = osis_base::Ak::new("/secrets") else { return false };
+        self.ix.by_aspect.get(&(*tid, ak)).into_iter().flatten().any(|(_, c)| {
+            self.ix.commits.get(c).is_some_and(|m| m.view.kind.is_membership() && m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid == *tid && a.ak.as_str() == "/secrets" && m.valid.get(ai).copied().unwrap_or(false)))
+        })
+    }
+
+    /// The opened epochs of a plain thing `tid` that are not its own (`own_epochs`): what a
+    /// rotation since found invalid gave it (spec/crypto.md §3, §4), kept for reading.
+    fn stale_epochs(&self, tid: &Tid) -> Option<&ActorEpochs> {
+        if self.own_epochs(tid).is_some() {
+            return None;
+        }
+        self.ix.secrets.get(tid)
+    }
+
     /// The delete base of `tid` (spec/crypto.md §7): the nearest actor in its owner chain,
     /// itself first, with secrets of its own (all three roles at once, spec/crypto.md §3), or the
     /// key actor the chain ends at.
@@ -64,7 +116,7 @@ impl Core {
             if let Some(k) = self.key_actors.get(&cur) {
                 return Some(DeleteBase::KeyActor(k.keys().signing.verifying_key()));
             }
-            if let Some(e) = self.ix.secrets.get(&cur) {
+            if let Some(e) = self.own_epochs(&cur) {
                 return Some(DeleteBase::Actor(cur, Some(e.clone())));
             }
             if self.ix.own_keys.contains(&cur) {
@@ -234,25 +286,17 @@ impl Core {
         }
     }
 
-    /// Notes `/keys` of `actor`: keysets mean secrets of its own (spec/permissions.md §3).
-    /// Whether `actor` joined `own_keys` (the caller persists that: a keyset seen once keeps
-    /// it there, though the `/keys` state may lose it again, `retention::uncover`).
-    pub(crate) fn observe_keys(&mut self, actor: &Tid, keys: &Keys) -> bool {
-        let mut new = false;
+    /// Notes the `/keys` state of `actor`: its published delete keys replace any inbox hint, and
+    /// the keysets' epochs and suites are recorded with its epochs. Whether it has secrets of its
+    /// own is the parts' (`apply::keys::refresh_own_keys`), not the state's.
+    pub(crate) fn observe_keys(&mut self, actor: &Tid, keys: &Keys) {
         if keys.read.is_some() || keys.write.is_some() || keys.admin.is_some() {
-            // its published delete keys replace any inbox hint
             self.ix.delete_hints.remove(actor);
-            if self.ix.own_keys.insert(*actor) {
-                // reader actors of things below it change
-                self.bodies.clear();
-                new = true;
-            }
             self.membership_changed();
             if let Some(e) = self.ix.secrets.get_mut(actor) {
                 let _ = osis_keys::observe_keys(keys, e);
             }
         }
-        new
     }
 }
 

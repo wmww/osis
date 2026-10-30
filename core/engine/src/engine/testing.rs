@@ -120,6 +120,7 @@ impl Engine {
             ("epoch_intro", format!("{:?}", *ix.epoch_intro)),
             ("box_written", format!("{:?}", *ix.box_written)),
             ("own_keys", format!("{:?}", *ix.own_keys)),
+            ("keyset_parts", format!("{:?}", *ix.keyset_parts)),
             ("member_keys", format!("{:?}", *ix.member_keys)),
             ("unresolved", format!("{:?}", *ix.unresolved)),
             ("was", format!("{:?}", *ix.was)),
