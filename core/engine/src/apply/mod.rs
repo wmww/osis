@@ -753,6 +753,13 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         Ok(())
     })?;
     tx.core.ix.secrets.extend(secrets);
+    // kept from the first keyset seen on, even once the `/keys` state lost it
+    let mut own = Vec::new();
+    tx.scan(records::OWN_KEYS, |k, _| {
+        own.push(Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("own keys"))?));
+        Ok(())
+    })?;
+    tx.core.ix.own_keys.extend(own);
     let mut schemas = Vec::new();
     tx.scan(records::SCHEMAS, |_, v| {
         let bad = |_| Error::Corrupt("schema");

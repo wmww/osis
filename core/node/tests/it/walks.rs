@@ -491,11 +491,17 @@ fn open_equals_rebuild_after_a_secrets_compaction() {
 // as above, randomized: four nodes grant, demote (rotations), compact `/secrets` and `/keys`
 // dropping what the snapshot covers, and pass commits on late and out of order; at random points
 // and at the end an open equals a rebuild, whole index included. Seeds: OSIS_WALKS_SECRETS_START,
-// OSIS_WALKS_SECRETS_SEEDS (default 0..4), a thread per core (OSIS_WALKS_THREADS).
+// OSIS_WALKS_SECRETS_SEEDS (default 0..4 and FOUND), a thread per core (OSIS_WALKS_THREADS).
+// FOUND: 10607 kept a thing in `own_keys` after its `/keys` went back to missing, which a rebuild
+// lost.
 #[test]
 fn open_equals_rebuild_random_secrets_compactions() {
+    const FOUND: [u64; 1] = [10607];
     let range = osis_base::testenv::Seeds::from_env("OSIS_WALKS_SECRETS_START", "OSIS_WALKS_SECRETS_SEEDS", 0..4);
-    let seeds: Vec<u64> = range.range.clone().collect();
+    let mut seeds: Vec<u64> = range.range.clone().collect();
+    if !range.overridden {
+        seeds.extend(FOUND);
+    }
     let name = "walks::open_equals_rebuild_random_secrets_compactions";
     let replay = |s: u64| format!("OSIS_WALKS_SECRETS_START={s} OSIS_WALKS_SECRETS_SEEDS=1 cargo test --workspace --test it {name} -- --exact");
     let dropped: usize = run_seeds_noted(name, &seeds, range.overridden, "OSIS_WALKS_THREADS", replay, secrets_history).into_iter().sum();
