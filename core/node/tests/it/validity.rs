@@ -312,6 +312,36 @@ fn forge_membership(lp: &mut LocalPeer, by: usize, t: Tid, ak: &osis_base::Ak, v
     cb.build(&lp.peers[by].engine.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
 }
 
+// spec/permissions.md §3 (lost access): only an unfinalized single-use link race defers a
+// loss. Bob, who held invite on D, left on his own; his later grant of Carol (forged past his
+// writer rules) is void because he left, yet it is no redemption: once Alice removes Carol,
+// Carol drops D's secrets.
+#[test]
+fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
+    let mut lp = net(3, 523);
+    lp.sync_all().unwrap();
+    let d = new_thing(&mut lp, 0);
+    let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    let inv = osis_schema::core_types::Edge { invite: Some(Role::Read), ..edge(Role::Read) };
+    lp.peers[0].engine.grant(&d, &b, &inv).unwrap();
+    lp.peers[0].engine.grant(&d, &c, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    lp.peers[1].engine.demote(&d, &osis_node::flows::Demotion { member: b, new: None, presync: osis_node::flows::PreSync::Synced }).unwrap();
+    lp.advance(1_000);
+    let grant = Value::Map(BTreeMap::from([(Value::Tid(c), edge(Role::Read).to_value())]));
+    let forged = forge_membership(&mut lp, 1, d, &ak("/members"), &grant, 1 << 40);
+    lp.sync_all().unwrap();
+    lp.peers[2].engine.ingest(&forged, Vec::new()).unwrap();
+    assert!(!lp.peers[2].engine.roster(&d).contains_key(&b), "Bob left");
+    lp.advance(1_000);
+    lp.peers[0].engine.demote(&d, &osis_node::flows::Demotion { member: c, new: None, presync: osis_node::flows::PreSync::Synced }).unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[2].engine.role_on(&d), None);
+    lp.peers[2].engine.drop_lost_secrets().unwrap();
+    assert!(lp.peers[2].engine.epochs(&d).is_none(), "Carol kept D's secrets");
+}
+
 // spec/permissions.md §1 (membership-class by admins): a writer's `/moved`, `/was` or `/label`
 // write, forged past its own node's writer-side refusal, is invalid where it is received (the
 // same write by its author once an admin applies).
