@@ -38,13 +38,13 @@ fn seen(fr: &osis_crdt::Frontiers, by: &osis_crdt::Dot) -> bool {
 /// The held bodies with a relative bound carrying the write of death `d` of `(tid, ak)`, each
 /// with the date it dies for that body: its own commit's at `d.at`; every compaction snapshot
 /// taken before `d.at` whose frontier holds it (a snapshot carries every write live at its time
-/// up to its frontier, spec/crdt.md §8) at `d.at`; while the state holds no write of its stamp,
-/// a snapshot taken at or after `d.at` whose frontier lacks the superseder (its author had not
-/// seen it) and whose body holds a write of the stamp, at the snapshot's `ts` (spec/commits.md
-/// §5: a snapshot's writes die for it no earlier than its `ts`). Commit-form writes are found in
-/// their own commit only (snapshots keep no frontier for them). Dropped bodies are not. Cost: in
-/// memory, but for a superseder some later snapshot had not seen: the state's walk and that
-/// snapshot's part (read once per `parts`).
+/// up to its frontier, spec/crdt.md §8) at `d.at`; a snapshot taken at or after `d.at` whose
+/// frontier lacks the superseder (its author had not seen it) and whose body carries the write
+/// the state now holds dead (`Parts::dead`), at the snapshot's `ts` (spec/commits.md §5: a
+/// snapshot's writes die for it no earlier than its `ts`). Commit-form writes are found in their
+/// own commit only (snapshots keep no frontier for them). Dropped bodies are not. Cost: in
+/// memory, but for a superseder some later snapshot had not seen: that snapshot's part joined
+/// into a copy of the state (once per `parts`).
 fn carriers(tx: &mut Tx<'_>, parts: &mut Parts, tid: &Tid, ak: &Ak, d: &Death) -> Result<Vec<(CommitId, usize, Ts)>> {
     let (dot, at) = (&d.stamp.dot, d.at);
     let mut out = Vec::new();
@@ -68,31 +68,46 @@ fn carriers(tx: &mut Tx<'_>, parts: &mut Parts, tid: &Tid, ak: &Ak, d: &Death) -
     for (ts, s, ai, saw) in snaps {
         if ts < at {
             out.push((s, ai, at));
-        } else if !saw && !state_holds(tx, tid, ak, &d.stamp)? && parts.of(tx, &s, ai)?.iter().any(|f| f.holds_stamp(&d.stamp)) {
+        } else if !saw && parts.dead(tx, tid, ak, &s, ai)?.contains(&d.stamp) {
             out.push((s, ai, ts));
         }
     }
     Ok(out)
 }
 
-/// Whether the state of `(tid, ak)` holds a write stamped `s` (a stamp names several writes: a
-/// map entry's creation outlives its value write).
-fn state_holds(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, s: &Stamp) -> Result<bool> {
-    tx.load(tid, ak)?;
-    Ok(tx.core.states.get(&(*tid, ak.clone())).is_some_and(|st| st.as_ref().is_some_and(|f| f.holds_stamp(s))))
+/// The superseder of `d`.
+fn killer(d: &Death) -> Stamp {
+    Stamp { ts: d.at, dot: d.by.clone() }
 }
 
-/// Decoded snapshot parts read by `carriers`, per transaction step.
+/// Whether death `d`, reported by joining `f` into a state, is of a write `f` carries: `f` holds
+/// a write of its stamp but not its superseder (a stamp names several writes: a map entry's
+/// creation outlives its value write, and a state's write superseded by one of `f` shares its
+/// stamp with `f`'s creation of the entry).
+fn dies_in(f: &Fragment, d: &Death) -> bool {
+    f.holds_stamp(&d.stamp) && !f.holds_stamp(&killer(d))
+}
+
+/// Per snapshot read by `carriers`, the stamps of the writes its part carries that the state
+/// holds superseded (its part joined into a copy of the state), per transaction step.
 #[derive(Default)]
-struct Parts(BTreeMap<CommitId, Vec<Fragment>>);
+struct Parts(BTreeMap<CommitId, BTreeSet<Stamp>>);
 
 impl Parts {
-    fn of(&mut self, tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<&[Fragment]> {
+    fn dead(&mut self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) -> Result<&BTreeSet<Stamp>> {
         if !self.0.contains_key(c) {
-            let v = crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect();
-            self.0.insert(*c, v);
+            tx.load(tid, ak)?;
+            let st = tx.core.states.get(&(*tid, ak.clone())).cloned().flatten();
+            let mut dead = BTreeSet::new();
+            for f in crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment) {
+                let Some(mut st) = st.clone() else { break };
+                let mut ch = Changes::new();
+                st.join_into(f.clone(), None, &mut ch);
+                dead.extend(ch.into_deaths().into_iter().filter(|d| dies_in(&f, d)).map(|d| d.stamp));
+            }
+            self.0.insert(*c, dead);
         }
-        Ok(self.0.get(c).map_or(&[], Vec::as_slice))
+        Ok(self.0.entry(*c).or_default())
     }
 }
 
@@ -129,10 +144,9 @@ pub(crate) fn note_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, deaths: &[Death])
 }
 
 /// A valid snapshot `c` just joined on `(tid, ak)`: the writes it carries that the state already
-/// superseded die for it at the superseder's `ts`, or at the snapshot's when that is later, its
-/// author had not seen the superseder and the state then holds no write of its stamp (as
-/// `carriers`), its copies of writes whose own
-/// delta is held (left out of its join) included.
+/// superseded die for it at the superseder's `ts`, or at the snapshot's when that is later and
+/// its author had not seen the superseder (as `carriers`), its copies of writes whose own delta
+/// is held (left out of its join) included.
 /// Cost: the snapshot's part and the aspect's state, only for a bounded part.
 pub(crate) fn note_copies(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<()> {
     let Some(ai) = bounded_part(tx.core, c, tid, ak) else { return Ok(()) };
@@ -146,7 +160,7 @@ pub(crate) fn note_copies(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> 
         let mut st = st.clone();
         let mut ch = Changes::new();
         st.join_into(f.clone(), None, &mut ch);
-        deaths.extend(ch.into_deaths().into_iter().filter(|d| f.holds_stamp(&d.stamp) && (d.at > ts || !seen(&fr, &d.by) && !st.holds_stamp(&d.stamp))).map(|d| d.at.max(ts)));
+        deaths.extend(ch.into_deaths().into_iter().filter(|d| f.holds_stamp(&d.stamp) && (d.at > ts || !seen(&fr, &d.by) && dies_in(&f, d))).map(|d| d.at.max(ts)));
     }
     if deaths.is_empty() {
         return Ok(());
