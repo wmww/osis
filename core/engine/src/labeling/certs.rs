@@ -57,6 +57,40 @@ impl Engine {
         Some((c, ais))
     }
 
+    /// The members each `/members` or `/secrets` aspect of applied membership commit `c` is
+    /// about (spec/sync.md §3): those whose edge a `/members` delta writes, those a `/secrets`
+    /// delta boxes. Empty for any other commit kind.
+    pub fn members_named(&mut self, c: &CommitId) -> BTreeMap<usize, BTreeSet<Tid>> {
+        let mut out: BTreeMap<usize, BTreeSet<Tid>> = BTreeMap::new();
+        let Some(h) = self.header(c) else { return out };
+        if !h.kind.is_membership() {
+            return out;
+        }
+        let id = *c;
+        let keep = |ai: usize| h.aspects.get(ai).is_some_and(|a| matches!(a.ak.as_str(), "/members" | "/secrets"));
+        let Ok(parts) = self.run(|tx| crate::apply::held_parts_at(tx, &id, &keep)) else { return out };
+        for (ai, _, d) in parts {
+            let (Some(a), Decoded::Delta(d)) = (h.aspects.get(ai), &d) else { continue };
+            let named: Vec<Tid> = match a.ak.as_str() {
+                "/members" => crate::apply::validity::edge_members(&self.core, &a.tid, &d.fragment),
+                _ => crate::apply::keys::secrets_write(&self.core, &a.tid, &d.fragment).0.boxes.into_keys().map(|k| k.member).collect(),
+            };
+            out.entry(ai).or_default().extend(named);
+        }
+        out
+    }
+
+    /// Whether commit `c` gave this node a read secret of `t` (an inbox payload's label is
+    /// followed only for such a thing, spec/sync.md §3): applied with a valid `/secrets` delta
+    /// on `t`, or held pending with a reading-only read candidate from it (its box opened).
+    pub fn boxed_by(&self, c: &CommitId, t: &Tid) -> bool {
+        if let Some(m) = self.core.ix.commits.get(c) {
+            return m.header.aspects.iter().enumerate().any(|(i, a)| a.tid == *t && a.ak.as_str() == "/secrets" && m.valid.get(i).copied().unwrap_or(false));
+        }
+        self.core.ix.pending.contains_key(c)
+            && self.core.ix.secrets.get(t).is_some_and(|e| e.role(osis_base::Role::Read).epochs().any(|(_, i)| i.reading.iter().any(|(_, u)| u.commit == *c)))
+    }
+
     /// The deltas of roster snapshot `c` on `things` a chain needs (spec/permissions.md §6):
     /// those naming one of `members`, and those naming nobody (the reset alone). None when the
     /// commit cannot be read here (diagnostic): never the whole roster.

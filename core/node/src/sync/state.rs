@@ -142,6 +142,17 @@ pub struct Hint {
     pub servers: Vec<Address>,
     /// The key actor whose static entry may open it; no other key actor's is presented.
     pub via: Option<Tid>,
+    /// The inbox entry it came from (`SyncEngine::vet_inbox_hints`): a hint with no `via` goes
+    /// with that entry, at its expiry, or when its commit is judged invalid.
+    pub inbox: Option<InboxSource>,
+}
+
+/// An opened inbox entry a hint came from, with the inbox blob's prefix expiry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InboxSource {
+    pub label: LabelId,
+    pub blob: BlobId,
+    pub until: u64,
 }
 
 /// What changed under a label since its passes last looked (`SyncEngine::spread_touches`): a
@@ -453,8 +464,10 @@ impl State {
                     let thing = x.tid()?;
                     let index = x.u64()?;
                     let servers = decode_addrs(&mut x, "hint")?;
-                    let via = if x.is_empty() { None } else { Some(x.tid()?) };
-                    s.hints.insert(l, Hint { thing, index, servers, via });
+                    let flags = x.u8()?;
+                    let via = if flags & 1 != 0 { Some(x.tid()?) } else { None };
+                    let inbox = if flags & 2 != 0 { Some(InboxSource { label: LabelId(x.arr()?), blob: BlobId(x.arr()?), until: x.u64()? }) } else { None };
+                    s.hints.insert(l, Hint { thing, index, servers, via, inbox });
                 }
                 _ => {}
             }
@@ -906,9 +919,13 @@ impl State {
         if h.via.is_none() {
             h.via = self.hints.get(&l).and_then(|x| x.via);
         }
-        let mut w = encode_addrs(Wr::new().raw(h.thing.as_bytes()).u64(h.index), &h.servers);
+        let flags = u8::from(h.via.is_some()) | u8::from(h.inbox.is_some()) << 1;
+        let mut w = encode_addrs(Wr::new().raw(h.thing.as_bytes()).u64(h.index), &h.servers).u8(flags);
         if let Some(v) = &h.via {
             w = w.raw(v.as_bytes());
+        }
+        if let Some(i) = &h.inbox {
+            w = w.raw(&i.label.0).raw(&i.blob.0).u64(i.until);
         }
         self.put(key(HINT, &[&l.0]), w.take());
         self.hints.insert(l, h);
@@ -1132,14 +1149,32 @@ mod tests {
         assert!(e.core.sync_records.is_some());
     }
 
+    // spec: none (local store format): a hint with its key actor and inbox source round trips.
+    #[test]
+    fn hint_round_trips() {
+        let mut lp = crate::local_peer::LocalPeer::new(1, 964, osis_base::WallMs(1_700_000_000_000)).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let mut s = State::default();
+        let src = InboxSource { label: LabelId([4; 16]), blob: BlobId([5; 32]), until: 77 };
+        let addr = Address { url: "quic://s".into(), key: [6; 32] };
+        s.add_hint(LabelId([1; 16]), Hint { thing: Tid::from_bytes([2; 15]), index: 3, servers: vec![addr], via: Some(Tid::from_bytes([3; 15])), inbox: Some(src) });
+        s.add_hint(LabelId([2; 16]), Hint { thing: Tid::from_bytes([2; 15]), index: 0, servers: Vec::new(), via: None, inbox: None });
+        s.flush(e).unwrap();
+        let back = State::load(e).unwrap();
+        let h = back.hints.get(&LabelId([1; 16])).unwrap();
+        assert_eq!((h.index, h.via, h.inbox, h.servers.len()), (3, Some(Tid::from_bytes([3; 15])), Some(src), 1));
+        let h = back.hints.get(&LabelId([2; 16])).unwrap();
+        assert_eq!((h.via, h.inbox), (None, None));
+    }
+
     // spec/sync.md §5: a followed label keeps the key actor it follows for when an inbox
     // payload names the same label first (its static entry is still tried).
     #[test]
     fn inbox_hint_keeps_followed_key_actor_spec_sync_5() {
         let mut s = State::default();
         let (l, t, k) = (LabelId([1; 16]), Tid::from_bytes([2; 15]), Tid::from_bytes([3; 15]));
-        s.add_hint(l, Hint { thing: t, index: 0, servers: Vec::new(), via: Some(k) });
-        s.add_hint(l, Hint { thing: t, index: 0, servers: Vec::new(), via: None });
+        s.add_hint(l, Hint { thing: t, index: 0, servers: Vec::new(), via: Some(k), inbox: None });
+        s.add_hint(l, Hint { thing: t, index: 0, servers: Vec::new(), via: None, inbox: None });
         assert_eq!(s.hints.get(&l).and_then(|h| h.via), Some(k));
     }
 }

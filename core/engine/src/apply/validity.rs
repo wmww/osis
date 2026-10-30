@@ -176,6 +176,19 @@ fn edge_ops(core: &Core, target: &Tid, es: &[Entry], dots: Dots, own: Option<&Ow
     (per.into_iter().map(|(member, edge)| EdgeOp { target: *target, member, edge, dots }).collect(), known)
 }
 
+/// Members whose edge on `target` a `/members` delta writes: an entry it creates names its key,
+/// an entry reset the member its creation keyed (known here or not named).
+pub(crate) fn edge_members(core: &Core, target: &Tid, f: &Fragment) -> Vec<Tid> {
+    entries(f)
+        .into_iter()
+        .filter_map(|(d, k, v)| match (k, v) {
+            (Some(Value::Tid(m)), Some(_)) => Some(m),
+            (_, None) => core.ix.member_keys.get(&(*target, d)).copied(),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Members a roster snapshot's `/members` or `/tenures` delta names (its edges or ledger
 /// entries): what a certificate copy of it is projected by (spec/permissions.md §6).
 pub(crate) fn named_members(ak: &str, f: &Fragment) -> Vec<Tid> {

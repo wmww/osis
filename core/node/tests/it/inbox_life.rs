@@ -236,3 +236,114 @@ fn inbox_hint_never_dials_peer_spec_sync_3() {
     assert_eq!(net.read(b, t), Some(s("for bob")), "the grant went through");
     assert!(!net.dialed.iter().any(|(n, x)| *n == b && x.key == node.key), "{:?}", net.dialed);
 }
+
+/// Seals commit `c` (held by node `from`) with `things` to `to` and puts it under `l` at server
+/// `sv` with prefix expiry `expiry`, as a stranger holding the deposit seed could. Returns the
+/// blob's ID.
+fn plant_inbox(net: &mut Net, from: usize, (sv, l): (usize, &LabelId), to: Tid, c: &osis_base::CommitId, things: Vec<osis_label::InboxThing>, expiry: u64) -> osis_base::BlobId {
+    let bytes = net.engine(from).commit_bytes(c).unwrap().unwrap();
+    let commit = osis_base::decode(&bytes, &osis_base::Limits { max_depth: 64, max_bytes: bytes.len() }).unwrap();
+    let keys = net.engine(from).get_typed(&to, &ct::KEYS).unwrap().unwrap();
+    let ct::KemKey::X25519MlKem768(kb) = &keys.read.unwrap().kem_key;
+    let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
+    let payload = osis_label::InboxPayload { commit, things };
+    // the prefix carries `now + INBOX_LIFETIME`: seal "earlier" for a shorter expiry
+    let blob = osis_label::seal_inbox_blob(&to, &kem, &payload, osis_base::WallMs(expiry - INBOX_LIFETIME_MS), &mut osis_crypto::SeededRng::from_u64(9)).unwrap();
+    let id = osis_label::blob_id(&blob);
+    let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(expiry), ephemeral: false, presence: false, tie: 0, replaces: &[], now: 0 };
+    osis_proto::LabelStore::put(net.servers[sv].hub.store_mut(), l, put).unwrap();
+    id
+}
+
+// spec/sync.md §3, spec/requirements.md (read access never stores arbitrary content): a valid
+// commit an inbox blob carries that is no membership commit about the actor is applied but
+// never copied under its home label; nor are its things' labels followed (no box to the actor):
+// their servers are never dialed.
+#[test]
+fn stranger_inbox_commit_not_copied_nor_dialed_spec_sync_3() {
+    let (mut net, sv, a, b, _, bob, g, home) = alice_and_bob();
+    grant(&mut net, a, g, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    let t = net.item(a, g, g, "big content");
+    net.run();
+    let c = net.engine(a).commit_ids().into_iter().find(|c| net.engine(a).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "/created"))).unwrap();
+    let rogue = osis_label::Address { url: "quic://rogue".into(), key: [0x77; 32] };
+    let things = vec![osis_label::InboxThing { tid: t, label: LabelId([0x55; 16]), index: 0, servers: vec![rogue.clone()], delete_keys: None }];
+    let exp = net.now() + INBOX_LIFETIME_MS;
+    net.set_online(b, false);
+    let id = plant_inbox(&mut net, a, (sv, &home), bob, &c, things, exp);
+    net.set_online(b, true);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(net.sync(b).entries(&home).iter().any(|(x, k)| *x == id && matches!(k, EntryKind::Inbox(Some(_)))), "Bob opened it");
+    assert!(net.engine(b).commit_ids().contains(&c), "the commit applied");
+    let copied = net.sync(b).entries(&home).into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == c));
+    assert!(!copied, "no copy of a commit not about Bob");
+    assert_eq!(under(&mut net, b, sv, &home, t, "/created"), 0);
+    assert!(!net.dialed.iter().any(|(_, x)| x.key == rogue.key), "an unvetted hint is never dialed");
+}
+
+/// Alice's grant on `g` to `bob` (node `b` offline), its inbox blob deleted at the server;
+/// returns the grant commit and the inbox thing a genuine delivery names.
+fn grant_undelivered(net: &mut Net, a: usize, b: usize, sv: usize, home: &LabelId, g: Tid, bob: Tid) -> (osis_base::CommitId, osis_label::InboxThing) {
+    use osis_node::flows::Delivery;
+    net.set_online(b, false);
+    let before = net.server_ids(sv, home);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+    let done = net.engine(a).grant(&g, &bob, &edge).unwrap();
+    let c = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { resend, .. } = d { Some(resend.commit) } else { None }).expect("an inbox delivery");
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let fresh: Vec<osis_base::BlobId> = net.server_ids(sv, home).into_iter().filter(|x| !before.contains(x)).collect();
+    assert_eq!(fresh.len(), 1, "the genuine inbox blob");
+    let now = net.now();
+    osis_proto::LabelStore::delete(net.servers[sv].hub.store_mut(), home, &fresh[0], now).unwrap();
+    let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
+    (c, osis_label::InboxThing { tid: g, label: gl.id, index: gl.index, servers: gl.servers.clone(), delete_keys: None })
+}
+
+// spec/sync.md §3: an inbox blob whose expiry is far below `INBOX_LIFETIME` gets no copy (its
+// sender would get the deposit budget back for the next one); the grant it carries still
+// applies, its label followed by the vetted hint (the grant boxes Bob on g).
+#[test]
+fn short_lived_inbox_blob_not_copied_spec_sync_3() {
+    let (mut net, sv, a, b, _, bob, g, home) = alice_and_bob();
+    let t = net.item(a, g, g, "for bob");
+    let (c, thing) = grant_undelivered(&mut net, a, b, sv, &home, g, bob);
+    let exp = net.now() + 10 * 60_000;
+    plant_inbox(&mut net, a, (sv, &home), bob, &c, vec![thing], exp);
+    net.set_online(b, true);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.read(b, t), Some(s("for bob")), "the grant applied, g's label reached by its hint");
+    assert_eq!(under(&mut net, b, sv, &home, g, "/members"), 0, "no copy from a short-lived blob");
+}
+
+// spec/sync.md §3: a vetted inbox hint (the grant boxes Bob on g) goes with its blob: once the
+// blob expired, the server it named is dialed no more, though its label never opened.
+#[test]
+fn inbox_hint_goes_with_its_blob_spec_sync_3() {
+    let (mut net, sv, a, b, _, bob, g, home) = alice_and_bob();
+    let (c, mut thing) = grant_undelivered(&mut net, a, b, sv, &home, g, bob);
+    let rogue = osis_label::Address { url: "quic://rogue".into(), key: [0x77; 32] };
+    thing.label = LabelId([0x55; 16]);
+    thing.servers = vec![rogue.clone()];
+    let ttl = 10 * 60_000;
+    let exp = net.now() + ttl;
+    plant_inbox(&mut net, a, (sv, &home), bob, &c, vec![thing], exp);
+    net.set_online(b, true);
+    net.advance(60_000);
+    assert!(net.dialed.iter().any(|(n, x)| *n == b && x.key == rogue.key), "the vetted hint is followed while the blob lives");
+    net.advance(ttl);
+    net.advance(60_000);
+    let n = net.dialed.len();
+    for _ in 0..6 {
+        net.advance(30 * 60_000);
+    }
+    assert!(!net.dialed[n..].iter().any(|(n, x)| *n == b && x.key == rogue.key), "dialed no more after the blob expired");
+}

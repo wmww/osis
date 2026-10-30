@@ -1,0 +1,2 @@
+- `cargo test ... | grep ...; echo ${PIPESTATUS[0]}` inside a backgrounded compound command is easy to get wrong; a one-line `tools/` wrapper printing only failing `test result` lines plus cargo's exit would save a step per run.
+- The brief asked for hints "only from a blob whose grant was verified and applied"; that cannot work for first contact (the granter's chain sits under the label the hint leads to), so the issue's "box that opens" rule was used instead.

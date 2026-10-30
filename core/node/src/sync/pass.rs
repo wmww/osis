@@ -37,6 +37,14 @@ pub struct Verdicts {
 /// places it as its own chain certificate (ms; the periodic pass picks it up after).
 const SETTLE_MS: u64 = 30_000;
 
+/// The least lifetime an inbox blob must have left for its grant to be copied under the home
+/// label (`inbox_copies`, spec/sync.md §3): the copy outlives the blob, so a sender's short
+/// expiry would free its deposit budget for the next copy at once. At 0 a stranger with the
+/// deposit seed stores grants without bound; at `INBOX_LIFETIME` no device ever copies. Past it a
+/// device opening a late blob applies the grant without copying; the sender re-sends unanswered
+/// grants after `INBOX_LIFETIME` and another device that opened it earlier copied it.
+const INBOX_COPY_MIN_LEFT: u64 = osis_base::format::INBOX_LIFETIME_MS / 2;
+
 /// The least a writer waits, after receiving another node's commit or seeing a deposit, before
 /// it uploads or promotes it itself (ms); the most is `SETTLE_MS`. The point in between is this
 /// node's per blob (`relay_due`), so the author or the first co-writer is usually done and the
@@ -1558,29 +1566,44 @@ impl SyncEngine {
     }
 
     /// A grantee device places a certificate copy of what its inbox (label `l` of `g`) brought,
-    /// once applied, under that label: every part the inbox blob carried (its boxes included,
-    /// sealed to the actor anyway), with the `/label` and `/created` commits of the things it
-    /// named, so the actor's other devices find the grant and its labels there (spec/sync.md
-    /// §3); not what an entry there already holds (each member of a group actor reads its inbox
-    /// and placed the same copy again). The consumed inbox blob stays until it expires: its label hints are what a later
-    /// member that cannot apply the copied `/label` yet (the granter's chain pending) opens the
-    /// thing's label by.
+    /// once applied, under that label (spec/sync.md §3): of a membership commit, the carried
+    /// parts on the things it writes an edge of `g` or an actor it owns on, or boxes one on
+    /// (boxes are sealed to the actor anyway), with the `/label` and `/created` commits of
+    /// those things, so the actor's other devices find the grant and its labels
+    /// there; nothing from a blob expiring less than `INBOX_COPY_MIN_LEFT` from now (an expiry
+    /// is the sender's word: a short one would free the deposit budget for the next copy), and
+    /// not what an entry there already holds (each member of a group actor reads its inbox and
+    /// placed the same copy again). The consumed inbox blob stays until it expires: its label
+    /// hints are what a later member that cannot apply the copied `/label` yet (the granter's
+    /// chain pending) opens the thing's label by.
     fn inbox_copies(&mut self, g: &Tid, l: LabelId) -> Result<()> {
         // only under the actor's home label (spec/sync.md §3): an inbox at another group's label
         // would show that group's readers the actor's edges, labels and box keys
         if self.engine.core.secret_actor(g) != Some(*g) || !self.inbox_actors(&l).contains(g) {
             return Ok(());
         }
+        let now = self.now();
         let opened: Vec<(BlobId, CommitId)> = self.state.label_entries(&l).filter_map(|(b, e)| if let Kind::Inbox(Some(c)) = e.kind { Some((b, c)) } else { None }).collect();
         for (b, c) in opened {
             if self.state.certs.contains(&(l, c)) || self.engine.core.ix.pending.contains_key(&c) {
                 continue;
             }
             let Some(m) = self.engine.core.ix.commits.get(&c).cloned() else { continue };
-            let Some((ais, things)) = self.inbox_parts(&l, &b)? else { continue };
-            // a valid commit only, and labels only of things it touches (the payload's list is
-            // the sender's word: it could name any thing this device holds)
-            if !ais.iter().all(|ai| m.valid.get(*ai).copied().unwrap_or(false)) {
+            let Some(o) = self.inbox_opened(&l, &b)? else { continue };
+            if o.until < now.saturating_add(INBOX_COPY_MIN_LEFT) {
+                continue;
+            }
+            // a valid commit only
+            if !o.ais.iter().all(|ai| m.valid.get(*ai).copied().unwrap_or(false)) {
+                continue;
+            }
+            // the carried parts on the things the commit has an edge or box of the actor on (the
+            // payload carries the sender's choice of parts; a membership commit's are all
+            // membership-class)
+            let named = self.engine.members_named(&c);
+            let on: BTreeSet<Tid> = named.iter().filter(|(_, ms)| ms.iter().any(|x| self.engine.owner_chain(x).any(|y| y == *g))).filter_map(|(ai, _)| m.header.aspects.get(*ai).map(|a| a.tid)).collect();
+            let ais: BTreeSet<usize> = o.ais.iter().copied().filter(|ai| m.header.aspects.get(*ai).is_some_and(|a| on.contains(&a.tid))).collect();
+            if ais.is_empty() {
                 continue;
             }
             // another member's copy is there: done, as if placed here
@@ -1588,8 +1611,9 @@ impl SyncEngine {
                 self.state.add_cert(l, c);
                 continue;
             }
-            let touched: BTreeSet<Tid> = m.header.aspects.iter().map(|a| a.tid).collect();
-            for t in things.into_iter().filter(|t| touched.contains(t)) {
+            // labels only of those things the payload names (its list is the sender's word: it
+            // could name any thing this device holds)
+            for t in o.things.iter().map(|t| t.tid).filter(|t| on.contains(t)) {
                 for ak in ["/created", "/label"] {
                     let Some((x, xs)) = self.engine.aspect_commit(&t, ak) else { continue };
                     if !self.state.certs.contains(&(l, x)) && !self.held_whole(g, l, &x, &xs)? {

@@ -159,7 +159,7 @@ impl SyncEngine {
     /// link's label: the thing's first, index 0, spec/wire.md §10): opened by the static entry
     /// of `via`, a held key actor, or a held read secret.
     pub fn follow(&mut self, via: Tid, thing: Tid, label: LabelId, servers: Vec<osis_label::Address>) -> Vec<super::Action> {
-        self.state.add_hint(label, super::state::Hint { thing, index: 0, servers, via: Some(via) });
+        self.state.add_hint(label, super::state::Hint { thing, index: 0, servers, via: Some(via), inbox: None });
         self.handle(super::Event::Local)
     }
 
