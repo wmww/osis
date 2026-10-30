@@ -223,6 +223,42 @@ fn projections_wait_for_the_full_commit_spec_sync_5() {
     assert_eq!(net.sync(x).deliveries_pending(), 0);
 }
 
+// spec/sync.md §5 (the wait ends at `PLACE_WAIT`), spec/commits.md §4 (atomic apply): K's
+// server unreachable for the redeemer past the bound, its copies go anyway; the sharer, who
+// syncs K, holds the `/members` part of the redemption and waits for the rest
+// (issues/link-race-edge-only-pending.md: forever if it never reaches K), applying it once
+// the deposit lands.
+#[test]
+fn projections_go_after_the_bound_spec_sync_5() {
+    let mut net = Net::new();
+    let (a, x, _, link, px, held) = link_setup(&mut net);
+    let (s0, s1) = (0, 1);
+    net.set_online(x, false);
+    net.blocked.insert((x, s1));
+    net.set_online(x, true);
+    let done = net.engine(x).redeem(&link, &px, true).unwrap();
+    let c = *done.commits.last().unwrap();
+    net.engine(x).drop_key_actor(&held);
+    carry(&mut net, x, done);
+    for _ in 0..7 {
+        net.run();
+        net.advance(61_000);
+    }
+    net.run();
+    assert!(net.sync(x).take_diagnostics().iter().any(|d| d.contains("not placed")), "reported");
+    let at0 = all_ids(&net, s0);
+    assert!(entries_of(&mut net, x, &c).iter().any(|id| at0.contains(id)), "its copies went to the other server");
+    assert!(net.engine(a).pending().iter().any(|(p, r)| *p == c && *r == osis_node::Reason::WaitDeltas), "the sharer waits for the rest");
+    assert!(!net.engine(a).roster(&link.k).contains_key(&px));
+    net.blocked.remove(&(x, s1));
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    assert!(net.engine(a).roster(&link.k).contains_key(&px), "applied once placed");
+    assert!(net.engine(a).pending().is_empty());
+}
+
 // spec/sync.md §3, §5: a crash between a redemption's commit and carrying out its deliveries
 // loses neither: the inbox delivery's record was written in the commit's transaction, and
 // the deposit of the redeemer's own membership write is placed by its next pass. Single use
