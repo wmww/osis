@@ -75,9 +75,16 @@ fn blob_bytes_once_per_node() {
     e.store.put(&e.f.label, put(&b, true, None)).unwrap();
     e.store.put(&g.label, put(&b, true, None)).unwrap();
     e.store.delete(&e.f.label, &id(7), T0).unwrap();
-    assert_eq!(e.store.blob(&id(7)).unwrap(), Some(b));
+    assert_eq!(e.store.blob(&id(7)).unwrap(), Some(b.clone()));
+    // the prefix bytes a delete by level checks live in the reference row, not the blob
+    let big = vec![1u8; 4096];
+    e.store.put(&e.f.label, put(&big, true, None)).unwrap();
+    assert_eq!(e.store.blob_prefix(&osis_label::blob_id(&big)).unwrap(), Some(big[..osis_label::MAX_PREFIX_LEN].to_vec()));
+    assert_eq!(e.store.blob_prefix(&id(7)).unwrap(), Some(b));
+    e.store.delete(&e.f.label, &osis_label::blob_id(&big), T0).unwrap();
     e.store.delete(&g.label, &id(7), T0).unwrap();
     assert_eq!(e.store.blob(&id(7)).unwrap(), None);
+    assert_eq!(e.store.blob_prefix(&id(7)).unwrap(), None);
     assert!(e.backend.scan_prefix(b"R", 10).unwrap().is_empty());
 }
 

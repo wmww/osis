@@ -21,7 +21,7 @@ pub mod tree;
 
 pub use addr::{Address, address_from_text, address_from_value, address_to_text};
 pub use auth::{DeleteItem, OpenOutcome, Proof, entry_digest, evaluate_open, key_for_level, sign_deposit, sign_stamp, verify_stamp};
-pub use blob::{Class, Level, Prefix, blob_id, check_size, frame, open, server_prefix, unwrap_any};
+pub use blob::{Class, Level, MAX_PREFIX_LEN, Prefix, blob_id, check_size, frame, open, server_prefix, unwrap_any};
 pub use chunks::{LargeParams, LargeReader, StringReader, ValueWriter, chunk_value, read_value};
 pub use bundle::{BundleEvent, BundleReader, BundleWriter, Importer, Record};
 pub use error::Error;

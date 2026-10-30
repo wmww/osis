@@ -6,7 +6,8 @@
 //! Rows (all cleartext metadata a blind node sees anyway; blobs are ciphertext):
 //! `I` seed; `L label` meta; `K label` the head's earlier role keys (`HeadKeys`); `S label step`
 //! step; `C label step` claim set; `E label blob` entry;
-//! `T label blob` tombstone time; `G label seq` log record; `R blob` reference count;
+//! `T label blob` tombstone time; `G label seq` log record; `R blob` reference count and the
+//! blob's prefix bytes (`blob_prefix`);
 //! sweep indexes `X t label blob` (expiry), `P t label blob` (pending deletion),
 //! `Y t label blob` (tombstone drop), `Z t label step` (claim-set drop);
 //! `Q peer label` replication position; `N` node-wide totals (labels, entries, bytes).
@@ -916,18 +917,20 @@ impl<B: Backend> BackendStore<B> {
             tx.batch.put(key(b'Y', &[&be(drop), &l, &blob.0]), vec![]);
             tx.append(&LogRecord::Deleted(*blob));
         }
-        let refs = self.refs(blob)?;
+        let (refs, prefix) = self.refs(blob)?;
         if refs <= 1 {
             tx.batch.delete(key(b'R', &[&blob.0]));
             tx.batch.delete_blob(*blob);
         } else {
-            tx.batch.put(key(b'R', &[&blob.0]), be(refs - 1).to_vec());
+            tx.batch.put(key(b'R', &[&blob.0]), [&be(refs - 1)[..], &prefix].concat());
         }
         Ok(())
     }
 
-    fn refs(&self, blob: &BlobId) -> Result<u64, StoreError> {
-        self.backend.get(&key(b'R', &[&blob.0])).map_err(err)?.map_or(Ok(0), |b| read_u64(&b, 0))
+    /// A blob's reference count and its prefix bytes (`R` row; 0 and none when not held).
+    fn refs(&self, blob: &BlobId) -> Result<(u64, Vec<u8>), StoreError> {
+        let Some(b) = self.backend.get(&key(b'R', &[&blob.0])).map_err(err)? else { return Ok((0, Vec::new())) };
+        Ok((read_u64(&b, 0)?, b.get(8..).unwrap_or_default().to_vec()))
     }
 
     /// Up to `limit` due index rows `tag t ...` with `t <= now`: (row key, rest after `t`).
@@ -1116,6 +1119,14 @@ impl<B: Backend> LabelStore for BackendStore<B> {
         self.backend.get_blob(blob_id).map_err(err)
     }
 
+    fn blob_prefix(&self, blob_id: &BlobId) -> Result<Option<Vec<u8>>, StoreError> {
+        if let Some((b, _)) = self.eph.blobs.get(blob_id) {
+            return Ok(Some(b.get(..osis_label::MAX_PREFIX_LEN).unwrap_or(b).to_vec()));
+        }
+        let (refs, prefix) = self.refs(blob_id)?;
+        Ok((refs > 0).then_some(prefix))
+    }
+
     fn put(&mut self, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError> {
         let mut tx = self.tx(label)?;
         let held = self.row(label, &put.blob_id)?;
@@ -1181,11 +1192,12 @@ impl<B: Backend> LabelStore for BackendStore<B> {
                 if let Some(t) = put.expiry {
                     tx.batch.put(key(b'X', &[&be(t), &l, &put.blob_id.0]), vec![]);
                 }
-                let refs = self.refs(&put.blob_id)?;
+                let (refs, _) = self.refs(&put.blob_id)?;
                 if refs == 0 {
                     tx.batch.put_blob(put.blob_id, put.blob.to_vec());
                 }
-                tx.batch.put(key(b'R', &[&put.blob_id.0]), be(refs + 1).to_vec());
+                let prefix = put.blob.get(..osis_label::MAX_PREFIX_LEN).unwrap_or(put.blob);
+                tx.batch.put(key(b'R', &[&put.blob_id.0]), [&be(refs + 1)[..], prefix].concat());
                 Row { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, size, add_seq: seq, pending_delete: None }, expiry: put.expiry }
             }
         };

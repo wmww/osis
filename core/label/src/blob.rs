@@ -8,6 +8,8 @@ use osis_crypto::{CryptoRngCore, Secret32, VerifyingKey, commitment, decrypt_blo
 
 /// At most one commitment per level.
 const MAX_LEVELS: usize = 3;
+/// Longest prefix: the bytes of a blob `Prefix::parse` can read.
+pub const MAX_PREFIX_LEN: usize = PREFIX_FIXED_LEN + COMMITMENT_LEN * MAX_LEVELS;
 
 /// A delete level (spec/wire.md §1): 1 thing admin, 2 author chain, 3 thing write.
 pub type Level = u8;

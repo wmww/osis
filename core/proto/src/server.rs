@@ -13,7 +13,7 @@ use osis_base::format::MAX_MESSAGE;
 use osis_base::{BlobId, LabelId, WallMs};
 use osis_crypto::{Domain, LabelRole, verify_delete};
 use osis_label::auth::delete_digest;
-use osis_label::{Class, OpenOutcome, entry_digest, evaluate_open, key_for_level, server_prefix};
+use osis_label::{Class, OpenOutcome, Prefix, entry_digest, evaluate_open, key_for_level, server_prefix};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -881,12 +881,12 @@ impl ServerConnection {
         };
         let code = check(k, key, Domain::Delete, &digest, &item.sig);
         // A delete-key signature is checked against the blob's prefix: without the blob it cannot
-        // be (nor a tombstone revealed). The blob is read only for an item whose label signature
-        // holds (an unsigned item would cost a blob read of up to MAX_BLOB each).
+        // be (nor a tombstone revealed). The prefix (`blob_prefix`, never the whole blob) is read
+        // only for an item whose label signature holds.
         if let Some((level, dsig)) = by {
             let prefix = match (code, &entry) {
                 (Code::REFUSED, _) | (_, None) => None,
-                _ => store.blob(&item.blob)?.and_then(|b| server_prefix(&b).ok().flatten()),
+                _ => store.blob_prefix(&item.blob)?.and_then(|b| Prefix::parse(&b).ok()),
             };
             if !prefix.and_then(|p| p.key_at(level)).is_some_and(|k| verify_delete(&k, &digest, dsig).is_ok()) {
                 return Ok(Code::REFUSED);
@@ -1051,5 +1051,29 @@ mod tests {
         let codes = out.iter().find_map(|o| if let ServerOutput::Send(b) = o { if let Ok(Message::Status { codes, .. }) = Message::decode(&b[4..]) { Some(codes) } else { None } } else { None }).unwrap();
         assert_eq!(codes, vec![Code::REFUSED; 64]);
         assert_eq!(store.blob_reads.get(), 0);
+    }
+
+    // spec/sync.md §5 (Delete): a signed delete by level checks the blob's prefix
+    // (`blob_prefix`), never reading the whole blob (up to MAX_BLOB per item)
+    #[test]
+    fn delete_by_level_reads_prefix_only() {
+        let f = Fixture::new(0x10);
+        let mut store = MemoryLabelStore::new([1; 32]);
+        store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
+        let dk = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([0x7a; 32]));
+        let commit = osis_crypto::commitment(2, &dk.verifying_key(), &[1; 16], &[0x7e; 16]).unwrap();
+        let e = f.entry(Fixture::blob_with(1, None, vec![commit]));
+        let blob_id = osis_label::blob_id(&e.blob);
+        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+        c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Message::Upload { id: 1, label: f.label, entries: vec![e] }.encode())));
+        let item = DeleteItem::sign_by(&f.sync, &dk, 2, &[1; 16], &[0x7e; 16], &f.label, blob_id, None).unwrap();
+        let wrong = DeleteItem::sign_by(&f.sync, &dk, 2, &[2; 16], &[0x7e; 16], &f.label, blob_id, None).unwrap();
+        store.blob_reads.set(0);
+        let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Message::Delete { id: 2, label: f.label, items: vec![wrong, item] }.encode())));
+        let Message::Status { codes, .. } = reply(&out) else { panic!("{out:?}") };
+        assert_eq!(codes, vec![Code::REFUSED, Code::OK]);
+        assert_eq!(store.blob_reads.get(), 0);
+        assert!(store.entry(&f.label, &blob_id).unwrap().is_none());
     }
 }
