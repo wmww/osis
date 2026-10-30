@@ -234,7 +234,8 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     // and IDs): what it gave still counts as received while it is valid (spec/commits.md §5);
     // a covered one's coverers reach them
     let gives = if snapshot && !as_cover { tx.core.ix.snapshots.get(&k).and_then(|v| v.iter().find(|x| x.1 == *c)).map(|g| (g.2.clone(), g.3.clone())) } else { None };
-    m.dropped.insert(ai, Dropped { covered_by, as_cover, live, gives });
+    let (role, overreach) = (tx.core.ix.rotation_role.get(&(*c, ai)).copied(), tx.core.ix.grant_overreach.contains(&(*c, ai)));
+    m.dropped.insert(ai, Dropped { covered_by, as_cover, live, gives, role, overreach });
     // a part missing (again, `uncover`) and dropped is dropped, as an open reads it: received,
     // so snapshots' copies of its writes are carried writes no more
     if m.missing.remove(&ai) {
@@ -248,6 +249,7 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
         tx.put_commit(c, &rest, &m, Shred::Yes, None)?;
     }
     let (body, _) = body_class(tx.core, &m.header, c, ai);
+    let header = m.header.clone();
     let vouched = snapshot && m.valid.get(ai).copied().unwrap_or(false);
     tx.core.ix.commits.insert(*c, m);
     crate::apply::note_gives(tx.core, c);
@@ -255,6 +257,7 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     tx.core.forget_live(&a.tid, &a.ak);
     tx.txn.drop_body(&body, &[k])?;
     tx.shred_bodies(&a.tid, &a.ak, &bodies)?;
+    crate::apply::keys::forget_dropped(tx, &header, ai, &bodies)?;
     // a valid snapshot dropped vouches no more for invalid deltas' writes it carried
     // (spec/permissions.md §5.2)
     if vouched && !crate::apply::invalid_of(tx.core, &a.tid, &a.ak).is_empty() && crate::apply::unmerge_fell(tx, &a.tid, &a.ak, None)? {

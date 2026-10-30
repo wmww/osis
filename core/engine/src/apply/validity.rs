@@ -1820,8 +1820,8 @@ mod keys_tests {
         let d0 = lp.peers[0].engine.index_digest();
         lp.peers[0].engine.rebuild_index().unwrap();
         assert!(v(&lp), "rebuilt alike");
-        // validity alike (what dropped bodies noted beyond it: issues/rebuild-dropped-body-notes.md)
-        assert_eq!(d0.commits, lp.peers[0].engine.index_digest().commits);
+        // the whole index alike: what dropped bodies noted went with them, or is in their records
+        assert_eq!(d0.first_diff(&lp.peers[0].engine.index_digest()), None);
         lp.sync_all().unwrap();
         let want = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         assert!(!want.boxes.contains_key(&rk));

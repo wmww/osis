@@ -152,12 +152,14 @@ pub fn observe_secrets(s: &Secrets, epochs: &mut ActorEpochs) -> Result<(), Erro
 }
 
 /// A held compaction snapshot of `/secrets` (`s`, its pages joined) keys these epochs: they are
-/// established (`Snapshot`, spec/crypto.md §4). Returns whether establishment changed.
+/// established (`Snapshot`, spec/crypto.md §4). Returns whether anything changed (an epoch's
+/// snapshot mark or establishment): what the caller persists.
 pub fn snapshot_keyed(s: &Secrets, epochs: &mut ActorEpochs) -> Result<bool, Error> {
+    let mut changed = false;
     for (r, e) in keyed(s)? {
-        epochs.role_mut(r).set_snapshot(e);
+        changed |= epochs.role_mut(r).set_snapshot(e);
     }
-    Ok(epochs.establish())
+    Ok(epochs.establish() | changed)
 }
 
 /// The `/secrets` compaction gate (spec/crypto.md §4): every epoch the state `s` keys is
