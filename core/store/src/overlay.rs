@@ -1,5 +1,5 @@
-//! The memory overlay (notes/local-store.md, Memory overlay): rows of the memory class (spec/
-//! commits.md §1: what memory commits derive) kept in plain maps beside the encrypted store,
+//! The memory overlay (notes/local-store.md, Memory overlay): rows of the memory class (what
+//! ephemeral data derives, issues/eph-unify.md) kept in plain maps beside the encrypted store,
 //! never written to the backend. A store opens with an empty overlay. A transaction changes it in
 //! place and keeps an undo journal, replayed when the transaction is dropped uncommitted.
 
@@ -29,7 +29,7 @@ pub(crate) enum Undo {
     Row(u64, Vec<u8>, Option<Vec<u8>>),
     Table(u64, Option<Rows>),
     Blob(BlobId, Option<Vec<u8>>),
-    Aspect((Tid, Ak), bool),
+    Aspect((Tid, Ak)),
     NextTable(u64),
 }
 
@@ -61,12 +61,8 @@ impl Drop for MemTxn<'_> {
                         None => self.o.blobs.remove(&id),
                     };
                 }
-                Undo::Aspect(a, was) => {
-                    if was {
-                        self.o.aspects.insert(a);
-                    } else {
-                        self.o.aspects.remove(&a);
-                    }
+                Undo::Aspect(a) => {
+                    self.o.aspects.remove(&a);
                 }
                 Undo::NextTable(n) => self.o.next_table = n,
             }
@@ -136,18 +132,12 @@ impl MemTxn<'_> {
             self.undo.push(Undo::Blob(*id, Some(old)));
         }
     }
-    pub fn mark_aspect(&mut self, tid: &Tid, ak: &Ak, on: bool) {
+    /// Marks an aspect memory-class (for the rest of the store's life).
+    pub fn mark_aspect(&mut self, tid: &Tid, ak: &Ak) {
         let k = (*tid, ak.clone());
-        let was = self.o.aspects.contains(&k);
-        if was == on {
-            return;
+        if self.o.aspects.insert(k.clone()) {
+            self.undo.push(Undo::Aspect(k));
         }
-        if on {
-            self.o.aspects.insert(k.clone());
-        } else {
-            self.o.aspects.remove(&k);
-        }
-        self.undo.push(Undo::Aspect(k, was));
     }
 }
 

@@ -3187,3 +3187,53 @@ fn restarted_cover_skips_label_at_no_server_spec_sync_9() {
     let held = net.engine(a).held_ephemeral();
     assert!(held.iter().all(|x| x.2), "the earlier session's commits covered: {held:?}");
 }
+
+// issues/eph-unify.md step 2 (write cost): `OSIS_BENCH_N` local sets of one string register, each
+// its own batch, by `OSIS_BENCH_MODE`: `ephemeral` (today's local ephemeral write, `Engine::write`),
+// `memory` (an ordinary commit through Core with every row in the store's memory overlay,
+// `Engine::commit_in_memory`) or `durable` (an ordinary commit, in-memory backend). Compare with
+// tools/icount on a release build, subtracting a run with `OSIS_BENCH_N=0` (notes/testing.md);
+// `-- --nocapture` prints wall time per write and the phase spans. spec: none (cost)
+#[test]
+#[ignore = "bench: release, by hand"]
+fn bench_local_writes() {
+    let n: u32 = std::env::var("OSIS_BENCH_N").ok().and_then(|v| v.parse().ok()).unwrap_or(2000);
+    let mode = std::env::var("OSIS_BENCH_MODE").unwrap_or_else(|_| "memory".into());
+    let mut lp = crate::common::net(1, 5);
+    // a thing whose `/t/reg` holds no durable row
+    let mut m = Mutation::new();
+    let me = lp.peers[0].engine.tid();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    m.set(t, &crate::common::TAGS, &Value::Set(Default::default())).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    let reg = crate::common::ak("/t/reg");
+    let eph = osis_schema::Untyped::new(reg.clone(), Lifetime::Ephemeral);
+    osis_node::costs::take();
+    let start = std::time::Instant::now();
+    for i in 0..n {
+        let mut m = Mutation::new();
+        let v = Value::Str(format!("v{i}"));
+        let e = &mut lp.peers[0].engine;
+        match mode.as_str() {
+            "ephemeral" => {
+                m.set(t, &eph, &v).unwrap();
+                e.write(m).unwrap();
+            }
+            "memory" => {
+                m.set(t, &crate::common::REG, &v).unwrap();
+                e.commit_in_memory(m).unwrap();
+            }
+            _ => {
+                m.set(t, &crate::common::REG, &v).unwrap();
+                e.commit(m).unwrap();
+            }
+        }
+    }
+    let per = start.elapsed() / n.max(1);
+    eprintln!("{mode}: {per:?} per write");
+    for (k, d, c) in osis_node::costs::take() {
+        eprintln!("  {k:28} {:>9.1} us/write (x{c})", d.as_secs_f64() * 1e6 / f64::from(n.max(1)));
+    }
+    let got = lp.peers[0].engine.get(&t, &reg).unwrap();
+    assert_eq!(got, n.checked_sub(1).map(|i| Value::Str(format!("v{i}"))));
+}

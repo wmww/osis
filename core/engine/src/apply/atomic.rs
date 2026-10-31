@@ -244,7 +244,11 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     let id = blob.id();
     let h = Arc::new(blob.header.clone());
     tx.core.hlc.observe(h.ts);
-    tx.txn.put_local(records::HLC, &tx.core.hlc.last().to_u64().to_be_bytes(), Shred::No)?;
+    // a memory-class application writes nothing durable (the next durable commit persists the
+    // clock)
+    if !tx.txn.is_memory() {
+        tx.txn.put_local(records::HLC, &tx.core.hlc.last().to_u64().to_be_bytes(), Shred::No)?;
+    }
 
     // creation records first: perm and dedup secrets need them
     let mut held_changed = note_created(tx, &h, &parts)?;
