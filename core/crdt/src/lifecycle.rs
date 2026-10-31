@@ -177,6 +177,13 @@ impl Fragment {
         walk(&mut HoldsStamp(s), self)
     }
 
+    /// The stamps `holds_stamp` finds here, indexed: one walk, then a lookup per stamp.
+    pub fn stamps(&self) -> Stamps {
+        let mut s = Stamps::default();
+        walk(&mut s, self);
+        s
+    }
+
     /// Whether a keyed map entry record carries a reset: a removal or tombstone naming its key,
     /// allowed only in membership-class aspects (spec/crdt.md §5.6).
     pub fn keyed_resets(&self) -> bool {
@@ -223,6 +230,43 @@ impl Visit for HoldsStamp<'_> {
             }
         };
         if hit { Next::Stop } else { Next::On }
+    }
+}
+
+/// `Fragment::stamps`: the stamps `HoldsStamp` matches exactly, and the sequence records'
+/// creations by `ts` (a range record's elements are created at its `ts`, `seq_span`).
+#[derive(Default)]
+pub struct Stamps {
+    exact: std::collections::BTreeSet<Stamp>,
+    created: BTreeMap<osis_base::Ts, Vec<(Dot, u64)>>,
+}
+
+impl Stamps {
+    /// `Fragment::holds_stamp(s)` of the fragment indexed.
+    pub fn holds(&self, s: &Stamp) -> bool {
+        self.exact.contains(s) || self.created.get(&s.ts).is_some_and(|v| v.iter().any(|(d, span)| crate::seq_span::holds(d, *span, &s.dot)))
+    }
+}
+
+impl Visit for Stamps {
+    fn stamp(&mut self, x: &Stamp) -> bool {
+        self.exact.insert(x.clone());
+        false
+    }
+    fn rec(&mut self, r: Rec<'_>) -> Next {
+        match r {
+            Rec::Elem(..) => {}
+            Rec::Entry(_, e) => self.exact.extend(e.created.clone()),
+            Rec::Seq(d, el) => {
+                if let Some((c, _)) = &el.created {
+                    self.exact.insert(c.clone());
+                    self.created.entry(c.ts).or_default().push((d.clone(), el.span));
+                }
+                self.exact.extend(el.pos.iter().map(|p| p.0.clone()));
+                self.exact.extend(el.deleted.as_ref().map(|x| x.0.clone()));
+            }
+        }
+        Next::On
     }
 }
 

@@ -13,7 +13,7 @@ use crate::engine::{Core, Tx};
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_commit::Decoded;
-use osis_crdt::{Changes, Death, Fragment, Stamp};
+use osis_crdt::{Changes, Death, Fragment, Stamp, Stamps};
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -111,11 +111,12 @@ fn dies_in(f: &Fragment, d: &Death) -> bool {
 /// Per snapshot read by `carriers` and source of superseders (a held body, or the state), the
 /// writes of its part that a superseder from there supersedes, as (dead stamp, superseder):
 /// the source joined into a copy of the part (the state: the part into a copy of the state),
-/// per transaction step; and the snapshot parts read whole (`holds`).
+/// per transaction step; and the snapshot parts read whole, with their stamps (`holds`).
 #[derive(Default)]
 struct Parts {
     killed: BTreeMap<(CommitId, Option<CommitId>), Killed>,
     read: BTreeMap<CommitId, Vec<Fragment>>,
+    stamps: BTreeMap<CommitId, Vec<Stamps>>,
 }
 
 /// Writes superseded, as (dead stamp, superseder).
@@ -132,9 +133,14 @@ impl Parts {
     }
 
     /// Whether part `ai` of snapshot `c` holds a write stamped `s` (so its author had applied
-    /// that write's commit, spec/crdt.md §8).
+    /// that write's commit, spec/crdt.md §8). Cost: the part walked once per step (many deaths
+    /// ask of one part), then a lookup.
     fn holds(&mut self, tx: &mut Tx<'_>, c: &CommitId, ai: usize, s: &Stamp) -> Result<bool> {
-        Ok(self.part(tx, c, ai)?.iter().any(|f| f.holds_stamp(s)))
+        if !self.stamps.contains_key(c) {
+            let ix = self.part(tx, c, ai)?.iter().map(Fragment::stamps).collect();
+            self.stamps.insert(*c, ix);
+        }
+        Ok(self.stamps.get(c).is_some_and(|v| v.iter().any(|x| x.holds(s))))
     }
 
     /// Whether part `ai` of snapshot `c` carries the write `d` killed, a write of its stamp that

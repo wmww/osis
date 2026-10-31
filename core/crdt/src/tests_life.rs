@@ -3,7 +3,7 @@
 use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
 use crate::fragment::Fragment;
 use crate::page::{MemoryPages, PageParams, PageSink};
-use crate::stamp::{CounterRange, Dot, Interner, Source};
+use crate::stamp::{CounterRange, Dot, Interner, Source, Stamp};
 use crate::testutil::{TyView, frag, history, mapply, ostate, sink_no_seq, source, ts};
 use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Received, Snapshot};
 use crate::Batch;
@@ -116,8 +116,13 @@ pub(crate) fn holds_stamp_check(seed: u64, ty: &Ty) {
         let mut st = a.clone();
         let mut ch = crate::changes::Changes::new();
         st.join_into(b.clone(), None, &mut ch);
+        let (ia, ib) = (a.stamps(), b.stamps());
         for d in ch.into_deaths() {
             assert!(a.holds_stamp(&d.stamp) || b.holds_stamp(&d.stamp), "a dead write is a side's: {d:?}");
+            for s in [&d.stamp, &Stamp { ts: d.at, dot: d.by.clone() }] {
+                assert_eq!(ia.holds(s), a.holds_stamp(s), "stamps index agrees: {s:?}");
+                assert_eq!(ib.holds(s), b.holds_stamp(s), "stamps index agrees: {s:?}");
+            }
         }
     }
 }
