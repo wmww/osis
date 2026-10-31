@@ -1662,6 +1662,7 @@ impl SyncEngine {
     /// opens under the newest read secret.
     fn certificates(&mut self, g: &Tid, l: LabelId, revokes_only: bool, authors: &BTreeSet<Tid>) -> Result<()> {
         let closure = self.engine.closure(g);
+        let mut own_removals = BTreeSet::new();
         let wanted = if revokes_only {
             // under an epoch a departure inside a member leaves uncovered: those revokes and keysets only
             let actor = self.engine.group_actor(g);
@@ -1680,13 +1681,23 @@ impl SyncEngine {
             for (c, p) in self.engine.revoke_certificates(&authors, &closure) {
                 wanted.entry(c).or_default().extend(p);
             }
+            // removals of the label's actor's edges on things in its closure, whoever made them
+            // (spec/permissions.md §2): its members still holding such an edge would re-upload
+            // the thing's bodies that others delete, on every pass
+            let actor = self.engine.group_actor(g);
+            let (removals, own) = self.engine.removal_certificates(&actor, &closure);
+            for (c, p) in removals {
+                wanted.entry(c).or_default().extend(p);
+            }
+            own_removals = own;
             wanted
         };
         for (c, want) in wanted {
             let (mine, have) = self.held_parts(g, l, &c)?;
             // what the label's closure bodies carry is never copied (a copy duplicating closure
-            // parts is a strict subset others delete)
-            let inside = self.engine.header(&c).map(|h| inside(&h, &closure)).unwrap_or_default();
+            // parts is a strict subset others delete), but a removal's own parts: no body carries
+            // them once the label's actor reads the thing no more
+            let inside = if own_removals.contains(&c) { Default::default() } else { self.engine.header(&c).map(|h| inside(&h, &closure)).unwrap_or_default() };
             let missing: BTreeSet<(usize, usize)> = want.difference(&have).filter(|(ai, _)| !inside.contains(ai)).copied().collect();
             // this node's own copy placed before and gone since (deleted at the server): not
             // placed again, but for its own card while it reads the label's actor (admins delete
