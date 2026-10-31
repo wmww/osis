@@ -949,7 +949,8 @@ impl SyncEngine {
     /// Whether every server this node syncs `actor`'s labels with, and every co-reader it
     /// received one of them from and has a connection up to, has had a complete pass of it since
     /// the last membership commit of the actor applied from elsewhere (`flows::SyncState`;
-    /// spec/permissions.md §3 re-seal timing).
+    /// spec/permissions.md §3 re-seal timing); a label with neither passes once the peer wait is
+    /// over (`label_passed`).
     pub fn complete_pass(&self, actor: &Tid) -> bool {
         crate::flows::SyncState::complete_pass(self, actor)
     }
