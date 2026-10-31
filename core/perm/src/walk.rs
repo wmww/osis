@@ -1390,8 +1390,6 @@ struct Pass<'a> {
     /// A shadow walk (`Walked::insert`): the walk whose records before each point audits also
     /// read.
     outer: Option<&'a Walked>,
-    /// `spilled`: the history changes restarts rolled back.
-    spill: Option<Vec<Change>>,
 }
 
 /// A node's cached roles (`Pass::roles`): the answer, also by dense index (`Pass::ids`, for
@@ -1482,7 +1480,7 @@ impl<'a> Pass<'a> {
 
     fn resume(input: &'a Input, epoch: BTreeMap<Tid, CommitId>, dropped: BTreeMap<WriteId, Point>, w: Walked) -> Pass<'a> {
         let graph = input.dense(&w.edges);
-        Pass { input, epoch, dropped, fresh: Vec::new(), w, roles: BTreeMap::new(), graph, untouched: None, outer: None, spill: None }
+        Pass { input, epoch, dropped, fresh: Vec::new(), w, roles: BTreeMap::new(), graph, untouched: None, outer: None }
     }
 
     /// A shadow of `outer` at edge state `edges` (`Walked::insert`): no records of its own
@@ -1607,12 +1605,7 @@ impl<'a> Pass<'a> {
                 *stash = tail;
                 *n = h;
             }
-            _ => {
-                if let Some(s) = &mut self.spill {
-                    s.extend_from_slice(self.w.history.get(h..).unwrap_or_default());
-                }
-                self.w.history.truncate(h);
-            }
+            _ => self.w.history.truncate(h),
         }
         self.w.marks.truncate(i);
         self.roles.clear();
@@ -2032,6 +2025,18 @@ struct Entry {
 }
 
 impl Items {
+    /// Every edge value an item can set, at its point: commit ops, snapshot rosters and
+    /// ledger tenures (`Virtual`). A walk's grants are among them.
+    pub(crate) fn grants(&self) -> impl Iterator<Item = (Point, Tid, Tid, Edge)> + '_ {
+        self.list.iter().flat_map(|x| -> Vec<(Point, Tid, Tid, Edge)> {
+            match &x.item {
+                Item::Commit(c) => c.ops.iter().filter_map(|o| o.edge.map(|e| (x.point, o.member, o.target, e))).collect(),
+                Item::Snap(s) => s.roster.iter().map(|(m, e)| (x.point, *m, s.thing, *e)).collect(),
+                Item::Virtual(v) => v.edge.map(|e| (x.point, v.member, v.thing, e)).into_iter().collect(),
+            }
+        })
+    }
+
     /// The items at point `q` (a commit or snapshot, then ledger writes keyed there).
     fn at(&self, q: Point) -> std::ops::Range<usize> {
         self.list.partition_point(|a| a.point < q)..self.list.partition_point(|a| a.point <= q)
@@ -2160,21 +2165,14 @@ impl Pass<'_> {
 
 /// Evaluates the timeline from scratch: walks until a walk adds nothing to D (§5.1 step 5).
 pub(crate) fn run(input: &Input) -> Outcome {
-    drive(input, None, false).0
-}
-
-/// The edge changes of `run`'s walks under its final epoch starts that a restart rolled
-/// back: with the final walk's history, every change some walk made (each walk with fewer
-/// drops is the final one's until it found its next drop, which is sticky).
-pub(crate) fn spilled(input: &Input) -> Vec<Change> {
-    drive(input, None, true).1
+    drive(input, None)
 }
 
 /// Continues a converged evaluation over `input`, which adds membership commits at or after
 /// `r.from` (and nothing else): equal to `run`, since the drops found before the first one
 /// found at or after `r.from` are found again in the same order (see `drive`).
 pub(crate) fn resume(input: &Input, r: Resume) -> Outcome {
-    drive(input, Some(r), false).0
+    drive(input, Some(r))
 }
 
 /// Epoch starts in rounds (spec/permissions.md §6). A walk under fixed starts restarts only
@@ -2194,7 +2192,7 @@ pub(crate) fn resume(input: &Input, r: Resume) -> Outcome {
 /// from none. Exclusions are never lifted, so at most one restart per snapshot plus one, each
 /// of at most T+1 rounds: the evaluation terminates and no start is accepted and rejected
 /// forever.
-fn drive(input: &Input, resume: Option<Resume>, spill: bool) -> (Outcome, Vec<Change>) {
+fn drive(input: &Input, resume: Option<Resume>) -> Outcome {
     let limit = input.snaps.values().map(|s| s.thing).collect::<BTreeSet<_>>().len() + 1;
     let (mut epoch, mut epoch_changed, mut reach, mut it, mut p, mut from);
     match resume {
@@ -2203,7 +2201,6 @@ fn drive(input: &Input, resume: Option<Resume>, spill: bool) -> (Outcome, Vec<Ch
             (epoch_changed, reach) = (false, None);
             it = items(input, &epoch);
             p = Pass::new(input, epoch.clone(), BTreeMap::new(), it.initial.clone());
-            p.spill = spill.then(Vec::new);
             from = 0;
         }
         Some(r) => {
@@ -2246,9 +2243,8 @@ fn drive(input: &Input, resume: Option<Resume>, spill: bool) -> (Outcome, Vec<Ch
         let next = p.choose(&excluded);
         if next == epoch {
             let common = p.common();
-            let spilled = p.spill.take().unwrap_or_default();
             let (walked, dropped) = p.finish();
-            return (Outcome { walked, dropped, epoch_starts: epoch, passes, epoch_changed, reach, items: Some(it), common }, spilled);
+            return Outcome { walked, dropped, epoch_starts: epoch, passes, epoch_changed, reach, items: Some(it), common };
         }
         if round >= limit {
             let (a, b): (BTreeSet<CommitId>, BTreeSet<CommitId>) = (epoch.values().copied().collect(), next.values().copied().collect());
@@ -2262,7 +2258,6 @@ fn drive(input: &Input, resume: Option<Resume>, spill: bool) -> (Outcome, Vec<Ch
         it = items(input, &epoch);
         // D is rebuilt, so writes a new start ignores leave no drops behind
         p = Pass::new(input, epoch.clone(), BTreeMap::new(), it.initial.clone());
-        p.spill = spill.then(Vec::new);
         from = 0;
         reach = None;
     }

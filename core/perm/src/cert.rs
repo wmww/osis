@@ -3,16 +3,15 @@
 //! chain; and verification from certificates alone.
 //!
 //! Readings: the things on the chain are those on any path from the node to the thing at the
-//! point (edges alive then, any role, owner links); "every held demotion" is every held edge
-//! write between two things of the chain and every held roster snapshot of one, applied or
-//! not, at any time (a superset: a demotion that was itself dropped can still have dropped a
-//! write, drops being sticky); each later one that may demote the node (a static check, applied
-//! or not) brings the node's chain for the same thing at its point, since whether its class fell
-//! depends on its other paths there. That includes one on a path the node gained after the
-//! point: an edge write or snapshot on the node's chain at its own point. The edge state at
-//! a point has every grant of the walks with fewer drops too (`walk::spilled`): a drop such a
-//! walk found, or did not find, stands, and a grant it applied (dropped later, or left without
-//! authority by a later drop) can have kept a demoted node's class there.
+//! point (edges set before it, alive then or not, any role; owner links); "every held
+//! demotion" is every held edge write between two things of the chain and every held roster
+//! snapshot of one, applied or not, at any time (a superset: a demotion that was itself
+//! dropped can still have dropped a write, drops being sticky); each later one that may demote
+//! the node (a static check, applied or not) brings the node's chain for the same thing at
+//! its point, since whether its class fell depends on its other paths there. That includes one
+//! on a path the node gained after the point: an edge write or snapshot on the node's chain at
+//! its own point. The edges at a point are every value any item of the final round can set
+//! before it, joined and never removed (`Timeline::ever_before`), not the final walk's.
 
 use crate::graph::{Dense, EdgesAt, View};
 use crate::held::{HeldSet, MemoryHeldSet};
@@ -45,7 +44,7 @@ type Chain = (Point, BTreeSet<Tid>);
 /// An edge change: its point, member, target and value.
 type Set = (Point, Tid, Tid, Option<Edge>);
 
-/// The edge state at one position of `Timeline::replayed` by dense index (`Dense`), moved
+/// The edge state at one position of `Timeline::ever_before` by dense index (`Dense`), moved
 /// between positions by applying the changes in between or their previous values, with
 /// `roles_from` per node and `reach_backward` per thing at the current point.
 struct Chains {
@@ -63,7 +62,7 @@ struct Chains {
 impl Chains {
     fn new(tl: &Timeline) -> Chains {
         let mut cur: BTreeMap<(Tid, Tid), Edge> = tl.walked.initial.iter().map(|(m, t, e)| ((*m, *t), *e)).collect();
-        let changes = tl.cert_index().replayed.clone();
+        let changes = tl.cert_index().ever.clone();
         let prev = changes.iter().map(|c| put(&mut cur, (c.1, c.2), c.3)).collect();
         Chains { dense: tl.input.dense(&tl.walked.initial), changes, h: 0, prev, at: None, roles: BTreeMap::new(), backs: BTreeMap::new() }
     }
@@ -107,15 +106,6 @@ impl Chains {
         c.insert(*thing);
         Some(c)
     }
-
-    /// Whether `node` reaches `m` and `tg` reaches `thing` just before `at`: an edge from `m`
-    /// to `tg` would be on the chain (`None`: not `whole`).
-    fn through(&mut self, node: &Tid, thing: &Tid, m: &Tid, tg: &Tid, at: Point) -> Option<bool> {
-        self.chain(node, thing, at)?;
-        let (mi, ti) = (*self.dense.ids.get(m)?, *self.dense.ids.get(tg)?);
-        let ((_, reached), to) = (self.roles.get(node)?, self.backs.get(thing)?);
-        Some(reached.contains(&mi) && to.get(ti).copied().unwrap_or(false))
-    }
 }
 
 /// Held membership commits by the member and target of their edge writes and roster snapshots
@@ -130,8 +120,8 @@ pub(crate) struct CertIndex {
     entered: BTreeSet<Tid>,
     /// Every possible demotion by point.
     demotions: Vec<(Point, Demotion)>,
-    /// `Timeline::replayed`: with drops, it walks from scratch once.
-    replayed: Vec<Set>,
+    /// `Timeline::ever_before`.
+    ever: Vec<Set>,
 }
 
 /// Everything `start` reaches by `next`, itself included.
@@ -226,7 +216,7 @@ impl Timeline {
                 x.demotions.extend(ends.chain([s.point()]).map(|q| (q, Demotion::Thing(s.thing))));
             }
             x.demotions.sort_by_key(|d| d.0);
-            x.replayed = self.replayed();
+            x.ever = self.ever_before();
             x
         })
     }
@@ -242,62 +232,52 @@ impl Timeline {
         self.chain_searched(node, thing, at, &chains.changes)
     }
 
-    /// The final walk's edge changes, by point, with each grant an earlier walk made (one with
-    /// fewer drops, `walk::spilled`) at its point where its edge is absent then: every walk's
-    /// paths. Removals and lowerings only take paths away.
-    fn replayed(&self) -> Vec<Set> {
-        let mut v: Vec<(Set, bool)> = self.walked.history.iter().map(|c| ((c.point, c.member, c.target, c.edge), false)).collect();
-        if !self.dropped().is_empty() {
-            v.extend(walk::spilled(&self.input).into_iter().map(|c| ((c.point, c.member, c.target, c.edge), true)));
-        }
-        v.sort_by_key(|c| c.0 .0);
+    /// The edges just before each point for chains: the final walk's changes and every value an
+    /// item of the final round of §6 can set (`Items::grants`), each joined into its edge
+    /// (`walk::join`: no `until`) and never removed, as changes by point.
+    ///
+    /// Why not the final walk's edges: an earlier walk of that round (one with fewer drops) is
+    /// the final one up to the first write its successor drops, and from there makes changes
+    /// the final walk does not (a grant later dropped, or applied only by authority a later
+    /// drop removes; a removal not applied: its author lost authority by a write later dropped)
+    /// until it finds its drop. Its findings stand: the drop is sticky, and a write it audited
+    /// without dropping it (another path kept the class) is not dropped by the final walk when
+    /// that demotion is itself dropped later. So a verifier must see every path any walk of the
+    /// round had at the points it audits (OSIS_PERM_SEED=115000, `..._regained_..._4`). Every
+    /// walk's edge at a point was set before it by one of these items (or is initial), with a
+    /// value this one covers, so the chain over it holds every path any walk had: no replay of
+    /// the walks needed. A write lowering an edge the node left itself audits from the edge as
+    /// restored (§5.1 step 4); that edge was set before, so it is on the chain too
+    /// (OSIS_PERM_SEED=116000, `..._left_edge_..._4`).
+    fn ever_before(&self) -> Vec<Set> {
+        let mut v: Vec<(Point, Tid, Tid, Edge)> = self.items.grants().collect();
+        v.extend(self.walked.history.iter().filter_map(|c| c.edge.map(|e| (c.point, c.member, c.target, e))));
+        v.sort_by_key(|c| c.0);
         let mut cur: BTreeMap<(Tid, Tid), Edge> = self.walked.initial.iter().map(|(m, t, e)| ((*m, *t), *e)).collect();
         let mut out = Vec::with_capacity(v.len());
-        for (c, earlier) in v {
-            // a path needs the edge alive, any role: one alive at least as long already gives it
-            let lasts = |e: &Edge| e.alive_at(Some(c.0.ts)) && (e.until.is_none() || c.3.is_some_and(|n| n.until.is_some() && n.until <= e.until));
-            if earlier && (c.3.is_none() || cur.get(&(c.1, c.2)).is_some_and(lasts)) {
-                continue;
+        for (p, m, t, e) in v {
+            let old = cur.get(&(m, t)).copied();
+            let new = walk::join(old, e);
+            if old != Some(new) {
+                cur.insert((m, t), new);
+                out.push((p, m, t, Some(new)));
             }
-            put(&mut cur, (c.1, c.2), c.3);
-            out.push(c);
         }
         out
     }
 
     fn chain_searched(&self, node: &Tid, thing: &Tid, at: Point, changes: &[Set]) -> BTreeSet<Tid> {
-        let (from, to) = self.reach_searched(node, thing, at, changes);
-        let mut c: BTreeSet<Tid> = from.into_keys().filter(|t| to.contains(t)).collect();
-        c.insert(*node);
-        c.insert(*thing);
-        c
-    }
-
-    /// `roles_from(node)` and `reach_backward(thing)` just before `at`, by a search over `View`.
-    fn reach_searched(&self, node: &Tid, thing: &Tid, at: Point, changes: &[Set]) -> (BTreeMap<Tid, Role>, BTreeSet<Tid>) {
         let mut edges = self.walked.initial.clone();
         for c in changes.iter().take_while(|c| c.0 < at) {
             edges.set(c.1, c.2, c.3);
         }
         let edges = EdgesAt::new(&edges);
         let view = View::at(&self.input.owners, &edges, Some(at.ts));
-        (view.roles_from(node), view.reach_backward(thing))
-    }
-
-    /// Whether an edge from `m` to `tg` would be on `node`'s chain to `thing` just before `at`:
-    /// a write lowering it audits from the edge as restored (§5.1 step 4), so it may demote
-    /// `node` when `node` has left that edge itself.
-    fn through(&self, node: &Tid, thing: &Tid, m: &Tid, tg: &Tid, at: Point, chains: &mut Chains) -> bool {
-        if let Some(b) = chains.through(node, thing, m, tg, at) {
-            #[cfg(debug_assertions)]
-            {
-                let (from, to) = self.reach_searched(node, thing, at, &chains.changes);
-                debug_assert!(b == (from.contains_key(m) && to.contains(tg)));
-            }
-            return b;
-        }
-        let (from, to) = self.reach_searched(node, thing, at, &chains.changes);
-        from.contains_key(m) && to.contains(tg)
+        let to = view.reach_backward(thing);
+        let mut c: BTreeSet<Tid> = view.roles_from(node).into_keys().filter(|t| to.contains(t)).collect();
+        c.insert(*node);
+        c.insert(*thing);
+        c
     }
 
     /// Things reachable from `node` over every edge any held write, roster or ledger can set
@@ -413,9 +393,6 @@ impl Timeline {
             // A later demotion on a path n gains after p (an edge on no path of n's at p) may
             // demote n as well: n's chain at its point goes along when the lowered edge or the
             // snapshot's thing is on it there.
-            // A write lowering an edge n left itself audits from the edge as restored: it goes
-            // along with that edge's history when the edge would be on n's chain then.
-            let mut restored: Vec<(Tid, Tid)> = Vec::new();
             let first = index.demotions.partition_point(|d| d.0 <= p);
             if first < index.demotions.len() {
                 let up = &*ups.entry(n).or_insert_with(|| self.ever_up_from(&n));
@@ -431,21 +408,12 @@ impl Timeline {
                     }
                     let c = self.chain_things(&n, &t, *q, &mut chains);
                     let on = match d {
-                        Demotion::Edge(m, tg, _) if !(c.contains(m) && c.contains(tg)) && self.through(&n, &t, m, tg, *q, &mut chains) => {
-                            restored.push((*m, *tg));
-                            true
-                        }
                         Demotion::Edge(m, tg, _) => c.contains(m) && c.contains(tg),
                         Demotion::Thing(x) => c.contains(x),
                     };
                     if on {
                         later.insert((*q, n, t));
                     }
-                }
-            }
-            for (m, tg) in restored {
-                if let Some(ws) = index.by_edge.get(&m).and_then(|x| x.get(&tg)).filter(|_| edges_in.insert((m, tg))) {
-                    add_edge(ws, &mut out, &mut todo);
                 }
             }
             for s in chain.iter().filter_map(|t| index.by_thing.get(t)).flatten().filter_map(|id| self.input.snaps.get(id)) {

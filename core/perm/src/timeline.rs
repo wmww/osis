@@ -40,7 +40,7 @@ pub struct Timeline {
     /// The inputs walked (`append` adds to them).
     pub(crate) input: Input,
     /// The final walk's items over `input`.
-    items: walk::Items,
+    pub(crate) items: walk::Items,
     pub(crate) walked: walk::Walked,
     dropped: BTreeMap<WriteId, Point>,
     epoch_starts: BTreeMap<Tid, CommitId>,

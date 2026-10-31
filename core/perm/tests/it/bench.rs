@@ -16,6 +16,12 @@ use std::time::Instant;
 /// 10 docs; 300 member nodes; `n` edge writes (grants, changes, removals on teams and docs)
 /// by admins, a few percent received late.
 fn org(n: usize, rng: &mut Rng) -> (World, Vec<Tid>) {
+    let (w, nodes, _) = org_root(n, rng);
+    (w, nodes)
+}
+
+/// `org` and its root actor.
+fn org_root(n: usize, rng: &mut Rng) -> (World, Vec<Tid>, Tid) {
     let mut w = World::new();
     let nodes = w.nodes(311);
     let k = nodes[0];
@@ -42,7 +48,7 @@ fn org(n: usize, rng: &mut Rng) -> (World, Vec<Tid>) {
         let recv: Vec<(Tid, u64)> = admins.iter().map(|a| (*a, if late { LATE } else { t })).collect();
         w.set(author, target, member, e, t, &recv);
     }
-    (w, nodes)
+    (w, nodes, root)
 }
 
 // spec: none (cost measurement)
@@ -346,4 +352,59 @@ fn bench_late_write() {
         prev = held;
     }
     drop(prev);
+}
+
+// spec: none (cost measurement): `bench_certificates` on the org history with drops: every
+// 40th write, an admin writes unseen (received late), another admin removes it from the root
+// at once (dropping that write) and grants it back. Then one more write: extended, and the
+// certificates of the extended timeline (its first, which builds the index).
+#[test]
+#[ignore]
+fn bench_certificates_drops() {
+    let n: usize = std::env::var("OSIS_BENCH_N").ok().and_then(|v| v.parse().ok()).unwrap_or(10_000);
+    let (mut w, nodes, root) = org_root(n, &mut Rng(0x5eed_0401));
+    let admins = &nodes[1..11];
+    let doc = *w.created.keys().last().unwrap();
+    let mut rng = Rng(0x5eed_0402);
+    for i in (0..n).step_by(40) {
+        let t = n as u64 + 10 + 4 * i as u64;
+        let a = 1 + rng.below(10);
+        let b = 1 + (a + rng.below(9)) % 10;
+        let (a, b) = (nodes[a], nodes[b]);
+        let unseen: Vec<(Tid, u64)> = admins.iter().map(|x| (*x, if *x == a { t } else { LATE })).collect();
+        w.set(a, doc, nodes[11 + rng.below(300)], edge(Write), t, &unseen);
+        let seen: Vec<(Tid, u64)> = admins.iter().map(|x| (*x, t + 1)).collect();
+        w.set(b, root, a, None, t + 1, &seen);
+        let seen: Vec<(Tid, u64)> = admins.iter().map(|x| (*x, t + 2)).collect();
+        w.set(b, root, a, edge(Admin), t + 2, &seen);
+    }
+    let held = w.held();
+    let te = Instant::now();
+    let tl = Timeline::evaluate(&held);
+    let eval = te.elapsed();
+    let end_t = n as u64 + 10 + 4 * n as u64 + 10;
+    let end = osis_perm::Point { ts: ts(end_t), node: nodes[1], commit: osis_base::CommitId([0xff; 32]) };
+    let t0 = Instant::now();
+    let certs = tl.certificates(&nodes[1], &doc, end);
+    let first = t0.elapsed();
+    let t1 = Instant::now();
+    let again = tl.certificates(&nodes[2], &doc, end);
+    let second = t1.elapsed();
+    let mut w2 = w.clone();
+    w2.set(nodes[1], doc, nodes[200], edge(Write), end_t + 1, &[]);
+    let held2 = w2.held();
+    let dropped = tl.dropped().len();
+    let t2 = Instant::now();
+    let tl2 = tl.extend(&held2).unwrap();
+    let ext = t2.elapsed();
+    let t3 = Instant::now();
+    let c2 = tl2.certificates(&nodes[1], &doc, end);
+    let after = t3.elapsed();
+    eprintln!(
+        "{n} edge writes + {} drops: evaluate {eval:?}, certificates first {first:?} ({} commits), second {second:?} ({}); one more write: extend {ext:?}, certificates {after:?} ({})",
+        dropped,
+        certs.commits.len(),
+        again.commits.len(),
+        c2.commits.len()
+    );
 }
