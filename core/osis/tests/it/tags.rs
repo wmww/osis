@@ -87,7 +87,7 @@ fn share(db: &Osis, tag: Tid, person: Tid, role: Role, invite: Option<Role>) -> 
 #[test]
 fn shared_tag_per_item() {
     let mut w = World::new();
-    let sv = w.add_server().unwrap();
+    let sv = w.add_server();
     let alice = person(&mut w, 1, sv);
     let bob = person(&mut w, 2, sv);
     let b = introduce(&mut w, &alice, &bob);
@@ -126,7 +126,7 @@ fn shared_tag_per_item() {
 #[test]
 fn sub_tags_chain_rosters_and_only_what_you_may_share() {
     let mut w = World::new();
-    let sv = w.add_server().unwrap();
+    let sv = w.add_server();
     let alice = person(&mut w, 1, sv);
     let bob = person(&mut w, 2, sv);
     let carol = person(&mut w, 3, sv);
@@ -160,7 +160,7 @@ fn sub_tags_chain_rosters_and_only_what_you_may_share() {
 #[ignore = "tier 2"]
 fn tag_owned_cards_reader_writer_demotion() {
     let mut w = World::new();
-    let sv = w.add_server().unwrap();
+    let sv = w.add_server();
     let alice = person(&mut w, 1, sv);
     let [reader, writer] = [2, 3].map(|s| person(&mut w, s, sv));
     let team = new_tag(&alice, "Team").unwrap();
@@ -185,7 +185,7 @@ fn tag_owned_cards_reader_writer_demotion() {
     assert_eq!(text(&alice, notes).unwrap().as_deref(), Some("from the writer"));
     assert_eq!(text(&reader, spec).unwrap().as_deref(), Some("v2"));
 
-    w.until(alice.demote(team, wr, Lower::To(Role::Read), Demotion::default()), 1000, 20).expect("pre-sync").unwrap();
+    w.until(alice.demote(team, wr, Lower::To(Role::Read), Demotion::default()), 1000, 20).unwrap();
     w.run();
     assert_eq!(writer.role_on(team), Some(Role::Read));
     assert!(matches!(edit(&writer, spec, "v2", "v3"), Err(Error::Permission { .. })));
@@ -198,7 +198,7 @@ fn tag_owned_cards_reader_writer_demotion() {
 #[ignore = "tier 2"]
 fn invite_holder_shares_on() {
     let mut w = World::new();
-    let sv = w.add_server().unwrap();
+    let sv = w.add_server();
     let alice = person(&mut w, 1, sv);
     let [inviter, guest] = [4, 5].map(|s| person(&mut w, s, sv));
     let team = new_tag(&alice, "Team").unwrap();
@@ -221,7 +221,7 @@ fn invite_holder_shares_on() {
 #[test]
 fn ownership_transfer_is_a_copy() {
     let mut w = World::new();
-    let sv = w.add_server().unwrap();
+    let sv = w.add_server();
     let alice = person(&mut w, 1, sv);
     let bob = person(&mut w, 2, sv);
     let team = new_tag(&alice, "Shared").unwrap();

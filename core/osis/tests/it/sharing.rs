@@ -1,10 +1,10 @@
 //! More of the sharing and sync surface through blind servers in process (notes/api.md Sharing
-//! and membership, Sync configuration and status, Diagnostics), no tokio: see common/world.rs.
+//! and membership, Sync configuration and status, Diagnostics), no tokio: see osis_sim::world.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis::internals::Internals as _;
 use crate::common;
-use common::world::World;
+use osis_sim::world::World;
 use common::*;
 use crate::common::CreateIn;
 use osis::{Demotion, DiagnosticKind, Error, Lower, Osis, Role, SyncScope, SyncState, Tid, Value, WaitForSync};
@@ -267,7 +267,7 @@ fn invite_requests_accept_and_decline_spec_sync_3() {
     let sv = w.add_server();
     let (alice, _) = w.person(1, &[sv]);
     let (bob, _) = w.person(2, &[sv]);
-    let bi = w.index(&bob);
+    let bi = w.index(&bob).unwrap();
     w.holds_invites.insert(bi);
     w.run();
     let card = bob.contact_card().unwrap();
@@ -303,7 +303,7 @@ fn contact_invite_goes_through_spec_sync_3() {
     let sv = w.add_server();
     let (alice, _) = w.person(1, &[sv]);
     let (bob, _) = w.person(2, &[sv]);
-    let bi = w.index(&bob);
+    let bi = w.index(&bob).unwrap();
     w.holds_invites.insert(bi);
     w.run();
     let (bc, ac) = (bob.contact_card().unwrap(), alice.contact_card().unwrap());

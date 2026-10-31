@@ -5,7 +5,7 @@
 use osis::internals::Internals as _;
 use crate::common::*;
 use crate::common::CreateIn;
-use crate::common::world::World;
+use osis_sim::world::World;
 use osis::{ChangeId, Config, Error, Lifetimes, MemStore, Osis, Role, Source, StoreAt, Value};
 use std::sync::mpsc::channel;
 use std::time::Duration;

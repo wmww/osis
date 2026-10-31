@@ -236,7 +236,7 @@ fn undo_redo_across_devices_spec_commits_7() {
 #[test]
 fn find_another_actors_revert_api_commits() {
     let mut w = World::new();
-    let sv = w.add_server().unwrap();
+    let sv = w.add_server();
     let alice = crate::scenario::person(&mut w, 1, sv);
     let bob = crate::scenario::person(&mut w, 2, sv);
     let b = crate::scenario::introduce(&mut w, &alice, &bob);
@@ -525,7 +525,7 @@ fn next_reports_what_undo_and_redo_revert_api_commits() {
 #[test]
 fn undo_of_creation_shared_spec_crdt_4_6() {
     let mut w = World::new();
-    let sv = w.add_server().unwrap();
+    let sv = w.add_server();
     let alice = crate::scenario::person(&mut w, 1, sv);
     let bob = crate::scenario::person(&mut w, 2, sv);
     let b = crate::scenario::introduce(&mut w, &alice, &bob);

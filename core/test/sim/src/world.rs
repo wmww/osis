@@ -1,14 +1,13 @@
 //! An API-level world: `osis::Osis` handles on `Runtime::Manual` exchange bytes with osis-server
 //! `Hub`s over in-memory queues under one `ManualClock`. No tokio, no threads of its own, no
-//! sleeps: time moves only by `advance`, so a run is a function of its seeds. The example apps
-//! (examples/*) and their end-to-end tests drive it; core/osis/tests/it/common/world.rs is the
-//! osis crate's own copy (it cannot depend on this crate).
+//! sleeps: time moves only by `advance`, so a run is a function of its seeds. The osis crate's
+//! tests drive it. It panics rather than return failure: a storm, a future that never resolves.
 
 use osis::internals::node::sync::{Action, ConnId, Event};
 use osis::internals::{Internals, ManualNet};
 use osis::{Config, ManualClock, MemStore, Osis, RecoveryCard, Runtime, ServerAddr, StoreAt, WallMs};
 use osis_crypto::SeededRng;
-use osis_proto::{FrameDecoder, Message, StoreError};
+use osis_proto::{FrameDecoder, Message};
 use osis_server::{BackendStore, Hub, HubOutput, Policy};
 use osis_store::MemoryBackend;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -100,14 +99,17 @@ impl World {
     }
 
     /// A new blind server (keys and rng from its index).
-    pub fn add_server(&mut self) -> Result<usize, StoreError> {
+    pub fn add_server(&mut self) -> usize {
         let i = self.servers.len();
         let b = 0x50u8.wrapping_add(i as u8);
         let key = [b; 32];
-        let store = BackendStore::open(MemoryBackend::new(), self.clock.clone(), Policy::default(), &mut SeededRng::from_u64(900 + i as u64))?;
+        let store = match BackendStore::open(MemoryBackend::new(), self.clock.clone(), Policy::default(), &mut SeededRng::from_u64(900 + i as u64)) {
+            Ok(s) => s,
+            Err(e) => panic!("server store: {e:?}"),
+        };
         let hub = Hub::new(store, key, Box::new(SeededRng::from_u64(950 + i as u64)));
         self.servers.push(Server { hub, addr: ServerAddr::new(&format!("quic://server{i}:1"), key) });
-        Ok(i)
+        i
     }
 
     pub fn addr(&self, s: usize) -> Option<ServerAddr> {
@@ -125,10 +127,13 @@ impl World {
         c
     }
 
-    /// A new person's database syncing with `servers`, with its recovery card (`None` without
-    /// servers).
-    pub fn person(&mut self, seed: u64, servers: &[usize]) -> osis::Result<(Osis, Option<RecoveryCard>)> {
-        Osis::create(self.cfg(seed, servers))
+    /// A new person's database syncing with `servers` (at least one), with its recovery card.
+    pub fn person(&mut self, seed: u64, servers: &[usize]) -> (Osis, RecoveryCard) {
+        match Osis::create(self.cfg(seed, servers)) {
+            Ok((db, Some(card))) => (db, card),
+            Ok((_, None)) => panic!("person without servers has no recovery card"),
+            Err(e) => panic!("create: {e:?}"),
+        }
     }
 
     fn dbs(&mut self) -> Vec<Option<Osis>> {
@@ -456,22 +461,22 @@ impl World {
     }
 
     /// Drives the world until `f` resolves: settling, then stepping time by `step_ms`, at most
-    /// `steps` times. `None` if it did not resolve (every database's diagnostics printed).
-    pub fn until<F: Future>(&mut self, f: F, step_ms: u64, steps: usize) -> Option<F::Output> {
+    /// `steps` times. Panics if it did not resolve, after printing every database's diagnostics.
+    pub fn until<F: Future>(&mut self, f: F, step_ms: u64, steps: usize) -> F::Output {
         let mut f = std::pin::pin!(f);
         let mut cx = Context::from_waker(Waker::noop());
         for _ in 0..steps {
             if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-                return Some(v);
+                return v;
             }
             self.run();
             if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-                return Some(v);
+                return v;
             }
             self.advance(step_ms);
         }
         self.trace();
-        None
+        panic!("future did not resolve in {steps} steps of {step_ms} ms");
     }
 }
 

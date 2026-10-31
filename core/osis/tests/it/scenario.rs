@@ -9,7 +9,7 @@ use osis_sim::world::World;
 
 /// A person on server `sv`, settled.
 pub fn person(w: &mut World, seed: u64, sv: usize) -> Osis {
-    let db = w.person(seed, &[sv]).unwrap().0;
+    let db = w.person(seed, &[sv]).0;
     w.run();
     db
 }
@@ -18,7 +18,7 @@ pub fn person(w: &mut World, seed: u64, sv: usize) -> Osis {
 pub fn introduce(w: &mut World, db: &Osis, other: &Osis) -> Tid {
     let card = other.contact_card().unwrap();
     w.run();
-    w.until(db.import_contact(&card), 1000, 10).expect("card imported").unwrap()
+    w.until(db.import_contact(&card), 1000, 10).unwrap()
 }
 
 /// A tag owned by the person, synced under its own label (a shareable root, not placed in home).

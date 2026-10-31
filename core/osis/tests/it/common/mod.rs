@@ -1,7 +1,6 @@
 //! Shared test helpers: deterministic databases, waiting on channels (never on time).
 #![allow(dead_code)]
 
-pub mod world;
 
 use osis::internals::Internals as _;
 use osis::{Ak, Config, ManualClock, MemStore, Osis, StoreAt, WallMs};

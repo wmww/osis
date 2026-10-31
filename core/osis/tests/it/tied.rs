@@ -44,7 +44,7 @@ struct Setup {
 
 fn setup() -> Setup {
     let mut w = World::new();
-    let sv = w.add_server().unwrap();
+    let sv = w.add_server();
     let [alice, bob, carol] = [1, 2, 3].map(|s| person(&mut w, s, sv));
     let b = introduce(&mut w, &alice, &bob);
     let c = introduce(&mut w, &alice, &carol);
@@ -81,10 +81,10 @@ fn share_into_unplace_and_stale_placement() {
     // shared again, then Bob revokes the edge: the placement stays and re-grants nothing
     assert_eq!(bob.share_into(t, g, Role::Read, ShareOpts::default()).unwrap(), Share::Tied(Role::Read));
     w.run();
-    w.until(bob.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).expect("pre-sync").unwrap();
-    assert!(w.run(), "settles");
+    w.until(bob.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).unwrap();
+    w.run();
     w.advance(60_000);
-    assert!(w.run(), "settles");
+    w.run();
     assert!(listed(&bob, g, t), "the placement stays");
     assert!(!bob.roster(t).contains_key(&g), "and grants nothing");
     assert_eq!(reach_of(&bob, t, g).map(|r| r.share), Some(Share::Excluded));
@@ -239,8 +239,8 @@ fn receipts_only_scope_left_to_holders() {
 #[test]
 fn edge_before_placement_is_not_removed() {
     let mut w = World::new();
-    let s1 = w.add_server().unwrap();
-    let s2 = w.add_server().unwrap();
+    let s1 = w.add_server();
+    let s2 = w.add_server();
     let alice = person(&mut w, 1, s1);
     let bob = person(&mut w, 2, s2);
     let join = Osis::pair(w.cfg(3, &[]), &bob.pair_offer().unwrap()).unwrap();
@@ -278,8 +278,8 @@ fn edge_before_placement_is_not_removed() {
 #[test]
 fn edge_first_then_placement_then_unplace_removes_it() {
     let mut w = World::new();
-    let s1 = w.add_server().unwrap();
-    let s2 = w.add_server().unwrap();
+    let s1 = w.add_server();
+    let s2 = w.add_server();
     let alice = person(&mut w, 1, s1);
     let bob = person(&mut w, 2, s2);
     let join = Osis::pair(w.cfg(3, &[]), &bob.pair_offer().unwrap()).unwrap();
@@ -361,7 +361,7 @@ fn invalidated_placement_removes_the_tied_edge() {
     w.run();
     w.set_online(&bob, false);
     assert_eq!(bob.share_into(t, g, Role::Read, ShareOpts::default()).unwrap(), Share::Tied(Role::Read));
-    w.until(alice.demote(g, bob.me(), osis::Lower::To(Role::Read), osis::Demotion::default()), 1000, 20).expect("pre-sync").unwrap();
+    w.until(alice.demote(g, bob.me(), osis::Lower::To(Role::Read), osis::Demotion::default()), 1000, 20).unwrap();
     w.run();
     w.set_online(&bob, true);
     for _ in 0..4 {
@@ -389,8 +389,8 @@ fn group_members_learn_edge_removal() {
     }
     let seed = |db: &Osis| db.get(t, osis::core::KEYS).unwrap().and_then(|k| k.deposit_seed);
     let old = seed(&bob);
-    w.until(bob.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).expect("pre-sync").unwrap();
-    assert!(w.run(), "settles");
+    w.until(bob.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).unwrap();
+    w.run();
     for db in [&alice, &bob, &carol] {
         assert!(!db.roster(t).contains_key(&g), "the removal reached {}", db.me());
         assert_eq!(reach_of(db, t, g).map(|r| r.share), Some(Share::Excluded));
@@ -410,13 +410,13 @@ fn inherited_inbox_opens() {
     let Setup { mut w, alice, bob, carol, g } = setup();
     let t = new_tag(&bob, "Bob's").unwrap();
     bob.grant(t, g, Role::Read, EdgeOpts::default()).unwrap();
-    assert!(w.run());
+    w.run();
     for db in [&alice, &carol] {
         assert!(db.roster(t).contains_key(&g), "the grant reached {}", db.me());
         assert_eq!(db.get(t, osis::core::NAME).unwrap(), Some("Bob's".to_string()));
     }
-    w.until(bob.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).expect("pre-sync").unwrap();
-    assert!(w.run());
+    w.until(bob.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).unwrap();
+    w.run();
     for db in [&alice, &carol] {
         assert!(!db.roster(t).contains_key(&g), "and its removal {}", db.me());
     }
@@ -437,7 +437,7 @@ fn group_admin_learns_removal_elsewhere() {
     let h = new_tag(&dave, "H").unwrap();
     dave.grant(h, b, Role::Write, EdgeOpts::default()).unwrap();
     dave.grant(h, a, Role::Read, EdgeOpts::default()).unwrap();
-    assert!(w.run());
+    w.run();
     let t = card(&bob, "plan");
     bob.write_with(|w| {
         w.place(t, g)?;
@@ -446,14 +446,14 @@ fn group_admin_learns_removal_elsewhere() {
     .unwrap();
     bob.grant(t, g, Role::Read, EdgeOpts::default()).unwrap();
     bob.grant(t, h, Role::Admin, EdgeOpts::default()).unwrap();
-    assert!(w.run());
+    w.run();
     assert_eq!(text(&carol, t).as_deref(), Some("plan"));
     let seed = |db: &Osis| db.get(t, osis::core::KEYS).unwrap().and_then(|k| k.deposit_seed);
     let old = seed(&carol);
-    w.until(dave.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).expect("pre-sync").unwrap();
-    assert!(w.run(), "settles");
+    w.until(dave.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).unwrap();
+    w.run();
     w.advance(60_000);
-    assert!(w.run(), "settles");
+    w.run();
     let stale: Vec<&str> = [("alice", &alice), ("bob", &bob), ("carol", &carol), ("dave", &dave)].into_iter().filter(|(_, db)| db.roster(t).contains_key(&g)).map(|(n, _)| n).collect();
     assert!(stale.is_empty(), "the removal reached everyone; not {stale:?}");
     assert_ne!(seed(&bob), old, "the removal refreshed the card's deposit seed");
@@ -461,6 +461,6 @@ fn group_admin_learns_removal_elsewhere() {
     // and the deletes are not undone again
     w.start_tally();
     w.advance(3_600_000);
-    assert!(w.run(), "settles");
+    w.run();
     assert!(!w.tally(&carol).contains_key("Upload"), "Carol uploads nothing: {:?}", w.tally(&carol));
 }
