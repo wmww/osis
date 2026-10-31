@@ -1884,7 +1884,7 @@ mod tests {
         })
     }
 
-    // spec/crypto.md §4, spec/permissions.md §3 (Membership cycles): X and Y readers of each
+    // spec/crypto.md §4, spec/permissions.md §3 (left out): X and Y readers of each
     // other, D a reader of X (2-cycle), or X <- Y <- Z <- X (3-cycle). D's removal from X
     // rotates X, leaving out its member actor whose epoch D opens; D, keeping its old secrets,
     // opens no epoch judged covered after the removal, and no new epoch after the cascade and
@@ -1991,7 +1991,7 @@ mod tests {
         assert_eq!(settle(&mut lp, &[0, 2], &[x, y]), 0, "settled");
     }
 
-    // spec/permissions.md §3 (Left out): D leaves M by itself (no rotation of M yet); a grant
+    // spec/permissions.md §3 (left out): D leaves M by itself (no rotation of M yet); a grant
     // of M on T boxes T's epoch to M's newest, which D holds, so it leaves M out; M is re-sealed
     // on T once M rotates.
     #[test]
