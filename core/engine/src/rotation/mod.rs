@@ -123,13 +123,48 @@ type Class = (Option<Tid>, Tid, Tid, Role, [bool; 3]);
 
 /// Whether `v`'s newest epoch of each role covers `d` (seen from `v`); unheld counts as not.
 /// The covers rule reaches below `v` only through these verdicts (`osis_keys::covers`).
-fn verdicts(held: &MemoryHeldActors, v: &Tid, d: &Departure) -> [bool; 3] {
+fn verdicts(held: &dyn osis_keys::HeldActors, v: &Tid, d: &Departure) -> [bool; 3] {
     let (Some(s), Some(e)) = (osis_keys::HeldActors::secrets(held, v), osis_keys::HeldActors::epochs(held, v)) else { return [false; 3] };
-    ROLES.map(|r| e.role(r).newest().is_some_and(|k| osis_keys::covers(s, e, r, &k, d, held)))
+    ROLES.map(|r| e.role(r).newest().is_some_and(|k| osis_keys::covers(v, s, e, r, &k, d, held)))
 }
 
-fn class_of(held: &MemoryHeldActors, v: &Tid, d: &Departure) -> Class {
+fn class_of(held: &dyn osis_keys::HeldActors, v: &Tid, d: &Departure) -> Class {
     (d.via.first().copied(), d.via.last().copied().unwrap_or(*v), d.member, d.from, verdicts(held, v, d))
+}
+
+/// The covers rule's view of this node (spec/crypto.md §4): what it holds of each actor
+/// (`held_actors`) and who introduced each epoch, so that "written by a departed party" is
+/// judged wherever an epoch is, `a`'s own and every member actor's along a chain alike.
+pub(crate) struct Judge<'c> {
+    core: &'c Core,
+    held: &'c MemoryHeldActors,
+}
+
+impl<'c> Judge<'c> {
+    pub(crate) fn new(core: &'c Core, held: &'c MemoryHeldActors) -> Self {
+        Judge { core, held }
+    }
+}
+
+impl osis_keys::HeldActors for Judge<'_> {
+    fn secrets(&self, actor: &Tid) -> Option<&osis_schema::core_types::Secrets> {
+        self.held.secrets(actor)
+    }
+    fn epochs(&self, actor: &Tid) -> Option<&ActorEpochs> {
+        self.held.epochs(actor)
+    }
+    fn stale_box_carries(&self, key: &BoxKey, r: Role, e: &Epoch) -> bool {
+        self.held.stale_box_carries(key, r, e)
+    }
+    fn departed_wrote(&self, a: &Tid, r: Role, e: &Epoch, d: &Departure) -> bool {
+        match introduced_by(self.core, a, r, e) {
+            Some((au, ac, _)) => written_by(self.core, a, r, &au, &ac, &d.member),
+            // the rotation commit not held (synced after a compaction, or its body missing
+            // again): a node that may rotate r counts it as written by any departed party that
+            // could have rotated r (a rotation more, never a leak); one that may not, as not
+            None => may_rotate(self.core, &self.core.id.tid(), a).contains(&r) && could_rotate(self.core, a, d, r),
+        }
+    }
 }
 
 /// The departures of `departures`: the walk below `a` (`a` too when it is on a cycle), then
@@ -146,7 +181,8 @@ fn collect(tx: &mut Tx<'_>, a: &Tid, horizon: &mut Option<WallMs>, pending: &[De
         let d = direct_departures(tx, &v, horizon)?;
         direct.push((v, d));
     }
-    let found = walk(&parents, direct, |v, d| class_of(&held, v, d));
+    let judge = Judge::new(tx.core, &held);
+    let found = walk(&parents, direct, |v, d| class_of(&judge, v, d));
     let mut out = mine;
     for (m, ps) in &parents {
         if !ps.contains(a) {
@@ -390,10 +426,11 @@ pub(crate) fn uncovered_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Depar
     let Some(epochs) = tx.core.epochs(a) else { return Ok(Vec::new()) };
     let secrets = secrets_in(tx, a)?;
     let held = held_actors(tx)?;
+    let judge = Judge::new(tx.core, &held);
     let mut out: Vec<Departure> = Vec::new();
     for r in ROLES {
         let Some((e, _)) = epochs.role(r).newest_held() else { continue };
-        for d in uncovered(&secrets, &epochs, r, &e, &deps, &held) {
+        for d in uncovered(a, &secrets, &epochs, r, &e, &deps, &judge) {
             if !out.contains(d) {
                 out.push(d.clone());
             }
@@ -444,18 +481,11 @@ pub fn uncovered_roles_of(tx: &mut Tx<'_>, a: &Tid, deps: Vec<Departure>) -> Res
     let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
     let secrets = secrets_in(tx, a)?;
     let held = held_actors(tx)?;
-    let may = may_rotate(tx.core, &tx.core.id.tid(), a);
+    let judge = Judge::new(tx.core, &held);
     let mut out = BTreeSet::new();
     for r in ROLES {
         let Some((e, _)) = epochs.role(r).newest_held() else { continue };
-        let by_departed = || match introduced_by(tx.core, a, r, &e) {
-            Some((au, ac, _)) => deps.iter().any(|d| d.from <= r && written_by(tx.core, a, r, &au, &ac, &d.member)),
-            // the rotation commit not held (synced after a compaction, or its body missing
-            // again): a node that may rotate r counts it as written by any departed party that
-            // could have rotated r (a rotation more, never a leak)
-            None => may.contains(&r) && deps.iter().any(|d| d.from <= r && could_rotate(tx.core, a, d, r)),
-        };
-        if !uncovered(&secrets, &epochs, r, &e, &deps, &held).is_empty() || by_departed() {
+        if !uncovered(a, &secrets, &epochs, r, &e, &deps, &judge).is_empty() {
             out.insert(r);
         }
     }
@@ -481,7 +511,7 @@ fn rotation_helps(tx: &mut Tx<'_>, a: &Tid, uncovered_roles: &BTreeSet<Role>) ->
     let mut on_cycle: BTreeMap<Tid, bool> = BTreeMap::new();
     'roles: for &r in uncovered_roles {
         if let Some((e, _)) = epochs.role(r).newest_held() {
-            for d in uncovered(&secrets, &epochs, r, &e, &deps, &held) {
+            for d in uncovered(a, &secrets, &epochs, r, &e, &deps, &Judge::new(tx.core, &held)) {
                 if let Some((m, rest)) = d.via.split_first()
                     && current.contains(m)
                     && !*on_cycle.entry(*m).or_insert_with(|| below_of(tx.core, m).0.contains(a))
@@ -546,7 +576,7 @@ fn fresh_box_covers(tx: &mut Tx<'_>, held: &MemoryHeldActors, m: &Tid, r: Role, 
         Some(es) if osis_keys::symmetric_box(&es, ks.as_ref()) => Some(es),
         _ => ks,
     };
-    Ok(me.role(r).newest().is_some_and(|k| named == Some(k) && osis_keys::covers(ms, me, r, &k, inner, held)))
+    Ok(me.role(r).newest().is_some_and(|k| named == Some(k) && osis_keys::covers(m, ms, me, r, &k, inner, &Judge::new(tx.core, held))))
 }
 
 /// Current members of `a` as box recipients; each of `skip` gets its new role or is left out
@@ -604,7 +634,8 @@ pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &B
             boxed.push(rc);
         }
     }
-    let may_carry = |r: Role, e: &Epoch| uncovered(&secrets, held, r, e, &deps, &actors).is_empty();
+    let judge = Judge::new(tx.core, &actors);
+    let may_carry = |r: Role, e: &Epoch| uncovered(&a, &secrets, held, r, e, &deps, &judge).is_empty();
     let rot = rotate(&a, roles, held, &secrets, &boxed, &may_carry, &mut *tx.rng)?;
     put_secrets(m, a, &rot.secrets, false)?;
     put_keysets(m, a, &rot.keys)?;
@@ -1578,6 +1609,8 @@ mod tests {
     /// classes per role at `a`'s newest held epoch, and the uncovered roles.
     fn decisions(tx: &mut Tx<'_>, a: &Tid, deps: Vec<Departure>) -> Decisions {
         let held = super::held_actors(tx).unwrap();
+        let secrets = crate::flows::secrets_in(tx, a).unwrap();
+        let held = super::Judge::new(tx.core, &held);
         let key = |d: &Departure| (d.via.first().copied(), d.via.get(1).copied(), d.via.last().copied().unwrap_or(*a), d.member, d.from);
         let classes = deps
             .iter()
@@ -1588,9 +1621,8 @@ mod tests {
             .collect();
         let mut per_role = Vec::new();
         if let Some(epochs) = tx.core.epochs(a) {
-            let secrets = crate::flows::secrets_in(tx, a).unwrap();
             for r in osis_keys::ROLES {
-                let un = epochs.role(r).newest_held().map(|(e, _)| osis_keys::uncovered(&secrets, &epochs, r, &e, &deps, &held).into_iter().map(key).collect()).unwrap_or_default();
+                let un = epochs.role(r).newest_held().map(|(e, _)| osis_keys::uncovered(a, &secrets, &epochs, r, &e, &deps, &held).into_iter().map(key).collect()).unwrap_or_default();
                 per_role.push(un);
             }
         }
@@ -2031,6 +2063,64 @@ mod tests {
         }
     }
 
+    /// Peer `i` rotates `roles` of `a` as a malicious writer would: boxing every current member,
+    /// itself only at `keep` (the role it is about to keep), so the box rule finds no box for it
+    /// at the roles it leaves, while it holds the new secrets.
+    fn rotate_unboxed(lp: &mut LocalPeer, i: usize, a: Tid, roles: &[Role], keep: Option<Role>) {
+        let me = lp.peers[i].engine.tid();
+        let roles: BTreeSet<Role> = roles.iter().copied().collect();
+        lp.peers[i]
+            .engine
+            .run(|tx| {
+                let held = tx.core.epochs(&a).unwrap();
+                let members = super::recipients(tx, &a, &[(me, keep)])?;
+                let mut m = Mutation::new();
+                let rot = super::rotation_into(tx, &mut m, a, &roles, &held, &members, &[])?;
+                crate::engine::Engine::commit_tx(tx, m)?;
+                super::record(tx, a, &rot)
+            })
+            .unwrap();
+    }
+
+    // spec/crypto.md §4 (written by a departed party, along a chain): D, a writer of M, rotates
+    // M's read and write (its untouched write box would carry read) without boxing itself, then
+    // leaves M. M reads A; A's admin reads M (so holds M's `/secrets`) but may not rotate it.
+    // M's newest epoch has no box for D but D wrote it, so it does not cover D's departure: A's
+    // admin waits for M (or leaves it out) instead of boxing A's new epoch to an epoch D holds;
+    // once M's admin rotates M, everything is boxed again and D opens nothing new.
+    #[test]
+    fn member_epoch_written_by_departed_spec_crypto_4() {
+        let mut lp = LocalPeer::new(3, 959, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let d = lp.peers[1].engine.tid();
+        let a = group(&mut lp, 0);
+        let m = group(&mut lp, 2);
+        lp.sync_all().unwrap();
+        let p0 = lp.peers[0].engine.tid();
+        lp.peers[2].engine.grant(&m, &d, &edge(Role::Write)).unwrap();
+        lp.peers[2].engine.grant(&m, &p0, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        rotate_unboxed(&mut lp, 1, m, &[Role::Read, Role::Write], None);
+        lp.sync_all().unwrap();
+        let start = held_by(&lp, 1, &[m, a]);
+        assert!(start.contains(&(m, Role::Read, newest_read(&lp, 2, m).unwrap())), "D holds M's newest");
+        lp.peers[1].engine.demote(&m, &Demotion { member: d, new: None, presync: PreSync::Synced }).unwrap();
+        lp.sync_all().unwrap();
+        assert!(lp.peers[0].engine.departures(&a).unwrap().iter().any(|q| q.member == d && q.via == vec![m]), "A sees D leave M");
+        let before = newest_read(&lp, 0, a);
+        let _ = lp.peers[0].engine.ensure_rotated(&a).unwrap();
+        let _ = lp.peers[0].engine.reseal_due(&a, &Pass).unwrap();
+        lp.sync_all().unwrap();
+        assert_eq!(leaks_judged_covered(&mut lp, &[(m, 2), (a, 0)], d, &start), vec![], "before M rotates");
+        let rotated = newest_read(&lp, 0, a) != before;
+        assert!(!rotated || !leaked(&mut lp, 0, &[m, a], d, start.clone()).contains(&a), "A's new epoch not boxed to D's");
+        settle(&mut lp, &[0, 2], &[m, a]);
+        assert!(all_boxed(&mut lp, 0, &[a]) && all_boxed(&mut lp, 2, &[m]), "re-sealed");
+        assert_eq!(leaked(&mut lp, 0, &[m, a], d, start), Vec::<Tid>::new());
+    }
+
     /// Pairs (actor, role) whose newest epoch at the owner peer `owner(t)` is judged covered there
     /// but that `d` opens from its old secrets `start` beyond what boxes to `d` itself give it.
     fn leaks_judged_covered(lp: &mut LocalPeer, gs: &[(Tid, usize)], d: Tid, start: &BTreeSet<(Tid, Role, osis_crypto::Epoch)>) -> Vec<(Tid, Role)> {
@@ -2056,7 +2146,8 @@ mod tests {
 
     // spec/crypto.md §4, spec/permissions.md §3 (Membership cycles): random role graphs of 2-4
     // actors through a forced cycle, owned by one or two peers (sometimes with a common admin),
-    // a party D on one or two of them; D is removed or demoted on one. After the removal, and
+    // a party D on one or two of them; D is removed or demoted on one, or leaves by itself (a
+    // writer having first rotated it without boxing itself). After the removal, and
     // after each admin acting alone (cascade and re-seal trigger) until nothing changes, D's old
     // secrets open no newest epoch its owner judges covered beyond what D's remaining boxes give
     // it; then nothing stays uncovered and every member holds a box at the newest epoch.
@@ -2074,7 +2165,7 @@ mod tests {
     /// `cycle_removals_leak_nothing_random` over `seeds`; peers: 0 and 2 admins, 1 the party D.
     fn cycle_removals(seeds: std::ops::Range<u64>) {
         let roles = [Role::Read, Role::Write, Role::Admin];
-        let (mut rounds, mut runs, mut lonely) = (0, 0, 0);
+        let (mut rounds, mut runs, mut lonely, mut wrote) = (0, 0, 0, 0);
         for seed in seeds {
             let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
             let mut lp = LocalPeer::new(3, 1_300 + seed, WallMs(1_700_000_000_000)).unwrap();
@@ -2116,14 +2207,24 @@ mod tests {
             }
             lp.sync_all().unwrap();
             let all: Vec<Tid> = gs.iter().map(|g| g.0).collect();
-            let start = held_by(&lp, 1, &all);
             let (t, o, r) = held_by_d[rng.next(held_by_d.len() as u64) as usize];
             let new = match (r, rng.next(2)) {
                 (Role::Admin, 0) => Some(edge(Role::Write)),
                 (Role::Admin | Role::Write, 1) => Some(edge(Role::Read)),
                 _ => None,
             };
-            lp.peers[o].engine.demote(&t, &Demotion { member: d, new, presync: PreSync::Synced }).unwrap();
+            // sometimes D, before leaving by itself, rotates the roles of `t` it leaves without
+            // boxing itself at them (spec/crypto.md §4: written by a departed party)
+            let by_d = rng.next(2) == 0;
+            let keep = new.as_ref().map(|e| e.role);
+            if by_d && r >= Role::Write {
+                let rot: Vec<Role> = roles.into_iter().filter(|x| Some(*x) > keep && *x <= r).collect();
+                rotate_unboxed(&mut lp, 1, t, &rot, keep);
+                lp.sync_all().unwrap();
+                wrote += 1;
+            }
+            let start = held_by(&lp, 1, &all);
+            lp.peers[if by_d { 1 } else { o }].engine.demote(&t, &Demotion { member: d, new, presync: PreSync::Synced }).unwrap();
             lp.sync_all().unwrap();
             assert_eq!(leaks_judged_covered(&mut lp, &gs, d, &start), vec![], "seed {seed}: after the removal");
             let admins: &[usize] = if two { &[0, 2] } else { &[0] };
@@ -2136,7 +2237,7 @@ mod tests {
             runs += 1;
             lonely += usize::from(two && !common && gs.iter().any(|g| g.1 == 0) && gs.iter().any(|g| g.1 == 2));
         }
-        eprintln!("cycle removals: {runs} runs, {lonely} with disjoint admins, at most {rounds} rounds to settle");
+        eprintln!("cycle removals: {runs} runs, {lonely} with disjoint admins, {wrote} written by D, at most {rounds} rounds to settle");
     }
 
     // A lattice 4 wide and 10 deep, each actor a member of all 4 above it (4^9 chains from the

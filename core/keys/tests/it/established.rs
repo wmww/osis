@@ -138,8 +138,8 @@ fn r9_reseal_before_rotation_commit() {
     assert_eq!(a2v.read.provenance(&e1), Some(Provenance::Chain));
     let deps = [Departure::member(w.m1, Role::Read)];
     let none = MemoryHeldActors::default();
-    assert!(!may_encrypt_under(&s3, &a2v, Role::Read, &e2, &deps, &none));
-    assert!(may_encrypt_under(&s3, &a2v, Role::Read, &e1, &deps, &none));
+    assert!(!may_encrypt_under(&tid(0), &s3, &a2v, Role::Read, &e2, &deps, &none));
+    assert!(may_encrypt_under(&tid(0), &s3, &a2v, Role::Read, &e1, &deps, &none));
 }
 
 // spec/crypto.md §4, spec/permissions.md §3; TLC `MC_reorder`: a1 removes m1 (e1) and rotates

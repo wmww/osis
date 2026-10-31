@@ -82,7 +82,7 @@ fn two_hop_departure() {
     let p2 = rotated(&p, &[owner(), dev(d2t, &d2seed)], 4);
     let read_ok = |a: &Actor, h: &MemoryHeldActors, deps: &[Departure]| {
         let (e, _) = a.view.read.newest_held().unwrap();
-        may_encrypt_under(&a.s, &a.view, Role::Read, &e, deps, h)
+        may_encrypt_under(&a.tid, &a.s, &a.view, Role::Read, &e, deps, h)
     };
     // T unrotated: U's epoch does not cover (T's box names T's newest, which does not).
     assert!(!read_ok(&u, &held(&[&p2, &t]), &deps));
