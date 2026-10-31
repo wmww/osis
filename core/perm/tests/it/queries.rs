@@ -273,6 +273,35 @@ fn certificates_self_demotion_regained_spec_permissions_4() {
     assert_eq!(cert_check(&w), None);
 }
 
+/// As above, but n0's admin edge on A0 comes from n3 (at 4), made an admin of A0 by n1 at 3.
+/// Dropping n1's grant leaves n3's without authority: in no walk's D, yet the first walk
+/// applied it, and that walk kept n0's class when n1 removed n0 from A1.
+#[test]
+fn certificates_self_demotion_regained_indirect_spec_permissions_4() {
+    let mut w = World::new();
+    let n = w.nodes(4);
+    let a0 = w.thing(n[2]);
+    let a1 = w.thing(a0);
+    let a2 = w.thing(n[2]);
+    let all0: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(n[2], a1, n[0], edge(Admin), 0, &all0);
+    w.set(n[2], a0, n[1], edge(Admin), 0, &all0);
+    w.set(n[2], a1, n[1], edge(Admin), 0, &all0);
+    w.set(n[2], a2, n[2], edge(Write), 0, &all0);
+    w.set(n[2], a2, a0, edge(Admin), 0, &all0);
+    w.set(n[2], a0, a2, edge(Admin), 0, &all0);
+    w.set(n[2], a1, a2, edge(Admin), 0, &all0);
+    let r = |a: u64, b: u64, c: u64, d: u64| vec![(n[0], a), (n[1], b), (n[2], c), (n[3], d)];
+    w.set(n[0], a1, n[0], edge(Write), 2, &r(2, LATE, 1, 2));
+    w.set(n[1], a0, n[3], edge(Admin), 3, &r(3, 3, LATE, 3));
+    w.set(n[3], a0, n[0], edge(Admin), 4, &r(4, 4, LATE, 4));
+    w.set(n[1], a1, n[0], None, 6, &r(LATE, 6, LATE, LATE));
+    w.set(n[2], a0, n[1], None, 7, &r(LATE, LATE, 7, LATE));
+    let tl = Timeline::evaluate(&w.held());
+    assert_eq!(tl.dropped().len(), 2);
+    assert_eq!(cert_check(&w), None);
+}
+
 #[test]
 fn certificates_project_joint() {
     cert_run_joint(80, 0x5eed_0201);
