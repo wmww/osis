@@ -219,8 +219,8 @@ pub(crate) struct Lane {
     /// (one arriving meanwhile from elsewhere is not known there).
     pub reconciled: BTreeSet<(ServerKey, LabelId)>,
     pub reconciling: BTreeMap<(ConnId, LabelId), BTreeSet<BlobId>>,
-    /// Entries whose commit waits for its author's record (not verified: neither applied, served
-    /// nor spread), with where they came from; their bytes per label (`PENDING_SHARE`).
+    /// Entries not fully checked (a part waits for a record, or none is valid yet): neither
+    /// served nor spread, with where they came from; their bytes per label (`PENDING_SHARE`).
     pub pending: BTreeMap<(LabelId, BlobId), (LaneEntry, Option<ServerKey>)>,
     pub pending_bytes: BTreeMap<LabelId, u64>,
     /// Held entry IDs by blob (serving a fetch by ID).
@@ -234,8 +234,8 @@ pub(crate) struct Lane {
     pub presence: BTreeSet<CommitId>,
 }
 
-/// The share of `SyncConfig::ephemeral_bytes` a label's unverified entries (waiting for their
-/// author's record) may take. Resource bound: past it further such entries are not kept (they
+/// The share of `SyncConfig::ephemeral_bytes` a label's unverified entries (waiting for a record
+/// or for validity) may take. Resource bound: past it further such entries are not kept (they
 /// come back at a restart's reconciliation); 1 (the whole cap): a writer's commits under made-up
 /// authors could fill what honest ones need; infinity (none): an honest commit arriving before
 /// its author's record is lost until then.
@@ -586,10 +586,11 @@ impl SyncEngine {
         for (l, b) in keys {
             let Some((e, _)) = self.eph.pending.get(&(l, b)) else { continue };
             let c = e.commit;
-            let held = self.engine.holds_ephemeral(&c);
-            if !held && self.engine.pending_ephemeral(&c) {
+            // still waiting (some of its parts may be held: the blob is not checked yet)
+            if self.engine.pending_ephemeral(&c) {
                 continue;
             }
+            let held = self.engine.holds_ephemeral(&c);
             let Some((e, from)) = self.eph.pending.remove(&(l, b)) else { continue };
             if let Some(n) = self.eph.pending_bytes.get_mut(&l) {
                 *n = n.saturating_sub(e.blob.len() as u64);
@@ -1019,7 +1020,11 @@ impl SyncEngine {
         let commit = cb.id();
         let h = cb.header.clone();
         let first = osis_commit::CommitBlob::decode(&pt).ok().and_then(|c| c.parts.first().map(|p| p.ai)).unwrap_or(0);
-        let ingested = self.engine.ingest_ephemeral(cb);
+        // unverified blobs wait under a share of the cap: one past it is not kept apart, and
+        // what already waits (an honest copy of the same commit included) stays
+        let pending_used = self.eph.pending_bytes.get(&l).copied().unwrap_or(0);
+        let may_wait = pending_used.saturating_add(size) <= self.cfg.ephemeral_bytes / PENDING_SHARE;
+        let ingested = self.engine.ingest_ephemeral_within(cb, may_wait);
         let salt = osis_label::Prefix::parse(&blob).map(|p| *p.salt()).unwrap_or_default();
         let a = h.aspects.get(first);
         let keys = a.map(|a| a.keys.iter().filter_map(|i| h.keys.get(*i).copied()).collect()).unwrap_or_default();
@@ -1027,12 +1032,11 @@ impl SyncEngine {
         match ingested {
             Ok(EphIngest::Held { .. }) if self.engine.holds_ephemeral(&commit) => {}
             Ok(EphIngest::Pending) => {
-                // unverified: kept apart under a share of the cap, neither served nor spread
-                let p = self.eph.pending_bytes.get(&l).copied().unwrap_or(0);
-                if p.saturating_add(size) > self.cfg.ephemeral_bytes / PENDING_SHARE {
-                    self.engine.forget_pending_ephemeral(&commit);
+                // not fully checked: kept apart under a share of the cap, neither served nor
+                // spread (its verified parts may be held already)
+                if !may_wait {
                     if self.eph.refused.insert(l) {
-                        self.eph_report(&l, "this node's share for ephemeral commits by unknown authors was reached: further ones are not kept");
+                        self.eph_report(&l, "this node's share for unverified ephemeral commits was reached: further ones are not kept");
                     }
                     return Ok(());
                 }

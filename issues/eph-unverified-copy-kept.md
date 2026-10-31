@@ -1,7 +1,0 @@
-# A blob whose parts all wait for records is kept and spread unverified
-> Summary: with the author's record here but a part's thing record missing, `ingest_ephemeral` holds the commit with zero verified parts and returns `Held`, so the lane keeps the blob, counts it and spreads it (stamped) though no part was checked. A junk copy (real header and signature, junk parts) is kept beside the real one; state stays right (the retry picks the matching copy, `sift_waiting`), only bytes and spread are wasted. Also: a blob past the pending share forgets the whole waiting commit, honest copies included. Low.
-> Tags: security, engine, node, ephemeral
-
-Repro: test `ephemeral::junk_copy_of_waiting_commit_not_kept_once_held_spec_sync_9`, but with the author known at b and the thing's record missing (deaf b, a new item, a's commit on it): junk pushed first returns `Held { new: false }` with no parts and stays in `ephemeral_entries_of`. The author-unknown path (both copies pending, then promoted) is fixed: `eph_promote` re-runs `eph_added`, which checks the copy against the held commit.
-
-Fix direction: hold a commit (and keep a blob) only once one of its parts verified; a blob with every part waiting returns `Pending` and goes to node pending under its share. Then `eph_promote` must not re-open such a blob every step while the engine still waits for it (skip while `pending_ephemeral` and the blob verified nothing). For the share: on overflow forget only what that blob added (or refuse it before ingest by size), not the whole `Waiting`.
