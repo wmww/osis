@@ -20,7 +20,7 @@ use crate::retention::forget::Forgotten;
 use osis_base::{Role, Tid, Ts, WallMs};
 use osis_crypto::Epoch;
 use osis_keys::{ActorEpochs, Departure, MemoryHeldActors, ROLES, Recipient, Rotation, rotate, uncovered};
-use osis_perm::{At, WriteId};
+use osis_perm::{At, EdgeOp, MembershipCommit, Timeline, WriteId};
 use osis_schema::core_types::BoxKey;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -32,6 +32,30 @@ fn above_role(cur: Option<Role>) -> Option<Role> {
         Some(Role::Write) => Some(Role::Admin),
         Some(Role::Admin) => None,
     }
+}
+
+/// The applied writes on edges into `t` in its timeline `tl`, each with its commit.
+fn edge_writes<'t>(tl: &'t Timeline, t: &'t Tid) -> impl Iterator<Item = (&'t MembershipCommit, &'t EdgeOp)> + 't {
+    tl.applied()
+        .keys()
+        .filter_map(|w| match w {
+            WriteId::Op(c, i) => tl.membership_commit(c).and_then(|mc| mc.ops.get(*i as usize).map(|op| (&**mc, op))),
+            _ => None,
+        })
+        .filter(move |(_, op)| op.target == *t)
+}
+
+/// The departure edge write `op` of `mc` on `t` makes, if it lowers the member's edge. An edge
+/// past its `until` at the write still counts: its departure is the `until`'s.
+fn departure_of(tl: &Timeline, t: &Tid, mc: &MembershipCommit, op: &EdgeOp) -> Option<Departure> {
+    let old = tl.edges_at(Some(mc.point())).get(&op.member, t).map(|e| e.role);
+    let new = op.edge.filter(|e| e.alive_at(Some(mc.ts))).map(|e| e.role);
+    Departure::of_change(op.member, old, new)
+}
+
+/// Each member's role on `a` at `now`, from `a`'s timeline `tl`.
+fn roles_now(tl: &Timeline, a: &Tid, now: Ts) -> BTreeMap<Tid, Role> {
+    tl.roster(a, At::now(now)).into_iter().map(|(m, e)| (m, e.role)).collect()
 }
 
 /// Departures from `a` itself: lowered edges whose member holds less now than before, edges
@@ -47,20 +71,11 @@ pub(crate) fn direct_departures(tx: &mut Tx<'_>, a: &Tid, horizon: &mut Option<W
         }
     };
     let owner = tx.core.owner(a);
-    let current: BTreeMap<Tid, Role> = tx.core.timelines.get(a).map(|tl| tl.roster(a, At::now(now)).into_iter().map(|(m, e)| (m, e.role)).collect()).unwrap_or_default();
+    let current = tx.core.timelines.get(a).map(|tl| roles_now(tl, a, now)).unwrap_or_default();
     if let Some(tl) = tx.core.timelines.get(a) {
-        for wid in tl.applied().keys() {
-            let WriteId::Op(c, i) = wid else { continue };
-            let Some(mc) = tl.membership_commit(c) else { continue };
-            let Some(op) = mc.ops.get(*i as usize) else { continue };
-            if op.target != *a {
-                continue;
-            }
+        for (mc, op) in edge_writes(tl, a) {
             later(mc.ts.wall_ms());
-            // an edge past its `until` still counts: its departure is the `until`'s
-            let old = tl.edges_at(Some(mc.point())).get(&op.member, a).map(|e| e.role);
-            let new = op.edge.filter(|e| e.alive_at(Some(mc.ts))).map(|e| e.role);
-            out.extend(Departure::of_change(op.member, old, new));
+            out.extend(departure_of(tl, a, mc, op));
         }
         // a roster snapshot ahead of the clock changes the roster when its `ts` passes
         for sn in tx.core.ix.held.snapshots_of(a) {
@@ -340,20 +355,12 @@ pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
 fn presumed_boxes(tx: &mut Tx<'_>, a: &Tid, e: &ActorEpochs, s: &mut osis_schema::core_types::Secrets) -> Result<()> {
     let Some(tl) = tx.core.timelines.get(a) else { return Ok(()) };
     let now = now_ts(tx.core);
-    let current: BTreeMap<Tid, Role> = tl.roster(a, At::now(now)).into_iter().map(|(m, x)| (m, x.role)).collect();
+    let current = roles_now(tl, a, now);
     // (member, the role it left and above, the commit that made the departure)
     let mut left: Vec<(Tid, Role, Option<osis_base::CommitId>)> = Vec::new();
-    for wid in tl.applied().keys() {
-        let WriteId::Op(c, i) = wid else { continue };
-        let Some(mc) = tl.membership_commit(c) else { continue };
-        let Some(op) = mc.ops.get(*i as usize) else { continue };
-        if op.target != *a {
-            continue;
-        }
-        let old = tl.edges_at(Some(mc.point())).get(&op.member, a).map(|x| x.role);
-        let new = op.edge.filter(|x| x.alive_at(Some(mc.ts))).map(|x| x.role);
-        if let Some(d) = Departure::of_change(op.member, old, new) {
-            left.push((op.member, d.from, Some(*c)));
+    for (mc, op) in edge_writes(tl, a) {
+        if let Some(d) = departure_of(tl, a, mc, op) {
+            left.push((op.member, d.from, Some(mc.id)));
         }
     }
     for (m, x) in tl.edges_at(None).members(a) {
@@ -483,19 +490,9 @@ pub fn departures_placing(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Departure, Op
 fn own_leaving(core: &Core, a: &Tid, d: &Departure) -> Option<osis_base::CommitId> {
     let t = d.via.last().unwrap_or(a);
     let tl = core.timelines.get(t)?;
-    let (mc, op) = tl
-        .applied()
-        .keys()
-        .filter_map(|w| match w {
-            WriteId::Op(c, i) => tl.membership_commit(c).and_then(|mc| mc.ops.get(*i as usize).map(|op| (mc, op))),
-            _ => None,
-        })
-        .filter(|(_, op)| op.target == *t && op.member == d.member)
-        .max_by_key(|(mc, _)| mc.point())?;
-    let old = tl.edges_at(Some(mc.point())).get(&op.member, t).map(|e| e.role);
-    let new = op.edge.filter(|e| e.alive_at(Some(mc.ts))).map(|e| e.role);
+    let (mc, op) = edge_writes(tl, t).filter(|(_, op)| op.member == d.member).max_by_key(|(mc, _)| mc.point())?;
     let own = mc.author == core.id.tid() || core.ix.commits.get(&mc.id).is_some_and(|m| m.origin == crate::events::Origin::Local);
-    (own && Departure::of_change(op.member, old, new).is_some() && crate::apply::validity::self_removal(core, &mc.author, t, &op.member, mc.ts)).then_some(mc.id)
+    (own && departure_of(tl, t, mc, op).is_some() && crate::apply::validity::self_removal(core, &mc.author, t, &op.member, mc.ts)).then_some(mc.id)
 }
 
 pub fn uncovered_roles_of(tx: &mut Tx<'_>, a: &Tid, deps: Vec<Departure>) -> Result<BTreeSet<Role>> {
