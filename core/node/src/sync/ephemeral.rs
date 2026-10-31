@@ -167,6 +167,56 @@ impl WaitingDeletes {
     }
 }
 
+/// Ephemeral entries per label that can never fit this node's cap for it (encoded past the whole
+/// cap, or a part whose decoded bound is, `Engine::ephemeral_bound`, or refused for the cap with
+/// nothing else held there): not fetched or opened again, so each drop under the cap does not
+/// fetch them again (up to `MAX_BLOB` each). Forgotten when a server deletes them; past
+/// `UNFIT_MAX` per label the oldest is forgotten (fetched once more, then remembered again).
+#[derive(Default)]
+pub(crate) struct Unfit {
+    ids: BTreeSet<(LabelId, BlobId)>,
+    order: BTreeMap<LabelId, std::collections::VecDeque<BlobId>>,
+}
+
+/// Never-fitting entries remembered per label (`Unfit`). Resource bound: about 100 bytes each,
+/// 400 KiB per label at the bound; a server's cap holds a few hundred such entries per label
+/// (about 25 KB each at the least), so honest servers never reach it (0: each is fetched again
+/// after every drop under the cap; infinity: a writer uploading and deleting such entries grows
+/// the set for good).
+const UNFIT_MAX: usize = 1 << 12;
+
+impl Unfit {
+    pub fn contains(&self, l: LabelId, b: BlobId) -> bool {
+        self.ids.contains(&(l, b))
+    }
+
+    /// Remembers `b` of `l`; whether `l` had none before.
+    pub fn insert(&mut self, l: LabelId, b: BlobId) -> bool {
+        if !self.ids.insert((l, b)) {
+            return false;
+        }
+        let q = self.order.entry(l).or_default();
+        q.push_back(b);
+        if q.len() > UNFIT_MAX
+            && let Some(old) = q.pop_front()
+        {
+            self.ids.remove(&(l, old));
+        }
+        q.len() == 1
+    }
+
+    pub fn remove(&mut self, l: LabelId, b: BlobId) {
+        if self.ids.remove(&(l, b))
+            && let Some(q) = self.order.get_mut(&l)
+        {
+            q.retain(|x| *x != b);
+            if q.is_empty() {
+                self.order.remove(&l);
+            }
+        }
+    }
+}
+
 /// The lane's state (in memory).
 #[derive(Default)]
 pub(crate) struct Lane {
@@ -182,6 +232,8 @@ pub(crate) struct Lane {
     /// leaves it, which reconciles the label: room in the cap is no room in the share, and
     /// reconciling at it fetched what the share refused again at every drop).
     pub refused_pending: BTreeSet<LabelId>,
+    /// Entries that can never fit their label's cap here (`Unfit`): not fetched again.
+    pub unfit: Unfit,
     /// Per connection and label: whether the first Sync listed the held entries, and those it
     /// listed that the peer has not asked for yet.
     pub announced: BTreeSet<(ConnId, LabelId)>,
@@ -230,7 +282,8 @@ pub(crate) struct Lane {
     pub caught_up: BTreeSet<LabelId>,
     /// Entries not fully checked (a part waits for a record, or none is valid yet): neither
     /// served nor spread, with where they came from; their charge per label (`PENDING_SHARE`:
-    /// encoded bytes, or what parts of it the engine holds already, `Engine::ephemeral_charge`).
+    /// what the blob could cost decoded, `Engine::ephemeral_bound`, at least its bytes): what
+    /// its promotion is counted at most (`eph_promote`).
     pub pending: BTreeMap<(LabelId, BlobId), (LaneEntry, Option<ServerKey>)>,
     pub pending_bytes: BTreeMap<LabelId, u64>,
     /// Held entry IDs by blob (serving a fetch by ID).
@@ -358,7 +411,26 @@ impl SyncEngine {
         }
         self.eph_restamp(out)?;
         self.eph_redelete(out)?;
-        self.eph_flush(out)
+        self.eph_flush(out)?;
+        #[cfg(debug_assertions)]
+        self.eph_check_counts();
+        Ok(())
+    }
+
+    /// Debug builds: the labels' counts are their entries' charges.
+    #[cfg(debug_assertions)]
+    fn eph_check_counts(&self) {
+        let mut bytes: BTreeMap<LabelId, u64> = BTreeMap::new();
+        for ((l, _), e) in self.eph.entries.iter().filter(|(_, e)| !e.own) {
+            *bytes.entry(*l).or_default() += e.charge;
+        }
+        let mut pending: BTreeMap<LabelId, u64> = BTreeMap::new();
+        for ((l, _), (e, _)) in &self.eph.pending {
+            *pending.entry(*l).or_default() += e.charge;
+        }
+        let nonzero = |m: &BTreeMap<LabelId, u64>| m.iter().filter(|(_, n)| **n > 0).map(|(l, n)| (*l, *n)).collect::<BTreeMap<_, _>>();
+        assert_eq!(nonzero(&bytes), nonzero(&self.eph.bytes), "label counts");
+        assert_eq!(nonzero(&pending), nonzero(&self.eph.pending_bytes), "waiting counts");
     }
 
     /// Whether every synced label has caught up once since start: on some connection to one of
@@ -624,6 +696,7 @@ impl SyncEngine {
             return Ok(());
         }
         let keys: Vec<(LabelId, BlobId)> = self.eph.pending.keys().copied().collect();
+        let mut promoted = BTreeSet::new();
         for (l, b) in keys {
             let Some((e, _)) = self.eph.pending.get(&(l, b)) else { continue };
             let c = e.commit;
@@ -632,6 +705,7 @@ impl SyncEngine {
                 continue;
             }
             let held = self.engine.holds_ephemeral(&c);
+            promoted.insert(c);
             let Some((e, from)) = self.eph.pending.remove(&(l, b)) else { continue };
             if let Some(n) = self.eph.pending_bytes.get_mut(&l) {
                 *n = n.saturating_sub(e.charge);
@@ -643,10 +717,16 @@ impl SyncEngine {
             // the commit is held now, but this blob may be a junk copy (the real header with junk
             // parts or signature, kept apart beside the real one): it arrives again, so its copy
             // is checked against the held commit before it is kept or spread
+            // (counted even past the cap: the engine decoded it within its share, and holds it)
             if held && !self.eph.entries.contains_key(&(l, b)) {
                 let class = if e.presence { Class::Presence } else { Class::Ephemeral };
-                self.eph_added(RelayFrom::Server(from), l, b, e.blob, e.wrap, e.stamp, class, out)?;
+                self.eph_added_with(RelayFrom::Server(from), l, b, e.blob, e.wrap, e.stamp, class, Some(e.charge), out)?;
             }
+        }
+        // the node counts what the engine holds: a waiting commit held now is kept by an entry
+        // (a junk copy is not; the real one, also waiting, is)
+        for c in promoted {
+            debug_assert!(!self.engine.holds_ephemeral(&c) || self.eph.by_commit.contains_key(&c) || self.engine.pending_ephemeral(&c), "promoted ephemeral commit {c:?} held by the engine, counted by no entry");
         }
         Ok(())
     }
@@ -655,6 +735,14 @@ impl SyncEngine {
     fn eph_capped(&mut self, l: LabelId) {
         if self.eph.refused.insert(l) {
             self.eph_report(&l, "this node's ephemeral cap for the label refused a commit: commits that would pass it are not applied here");
+        }
+    }
+
+    /// Ephemeral entry `b` of `l` can never fit this node's cap for it: remembered (`Unfit`),
+    /// reported once while the label has such entries.
+    fn eph_unfit(&mut self, l: LabelId, b: BlobId) {
+        if self.eph.unfit.insert(l, b) {
+            self.eph_report(&l, "an ephemeral commit larger than this node's whole ephemeral cap for the label is not applied");
         }
     }
 
@@ -1015,6 +1103,14 @@ impl SyncEngine {
     /// one delivered and passed on (`relay_in`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn eph_added(&mut self, from: RelayFrom, l: LabelId, b: BlobId, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], stamp: Option<Signature>, class: Class, out: &mut Vec<Action>) -> Result<()> {
+        self.eph_added_with(from, l, b, blob, wrap, stamp, class, None, out)
+    }
+
+    /// `eph_added`; `promoted`: a waiting entry whose commit the engine holds now, with what
+    /// its wait was charged: kept and counted past the cap (the node's count is what the engine
+    /// holds), its copy checked within that charge.
+    #[allow(clippy::too_many_arguments)]
+    fn eph_added_with(&mut self, from: RelayFrom, l: LabelId, b: BlobId, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], stamp: Option<Signature>, class: Class, promoted: Option<u64>, out: &mut Vec<Action>) -> Result<()> {
         // the ID must name these bytes: the wrap's nonce is only its first 24 bytes, so one blob
         // would open under 2^64 IDs, each kept and charged apart (the durable path checks in
         // `put_blobs`)
@@ -1024,6 +1120,9 @@ impl SyncEngine {
         }
         if class == Class::Relay {
             return self.relay_in(from, l, b, blob, wrap, stamp, out);
+        }
+        if self.eph.unfit.contains(l, b) {
+            return Ok(());
         }
         let server = from.server();
         // the one routing point: a blob whose prefix says ephemeral is the lane's, whatever an
@@ -1064,20 +1163,30 @@ impl SyncEngine {
         // the engine decodes it only within the room left (a blob of tiny map entries decodes to
         // about 200 times its size)
         let size = blob.len() as u64;
+        let cap = self.cfg.ephemeral_bytes;
+        let (bound, part) = crate::Engine::ephemeral_bound(&cb);
+        if size > cap || part > cap {
+            self.eph_unfit(l, b);
+            return Ok(());
+        }
         let used = self.eph.bytes.get(&l).copied().unwrap_or(0);
-        let room = self.cfg.ephemeral_bytes.saturating_sub(used);
-        if size > room {
+        let room = cap.saturating_sub(used);
+        if promoted.is_none() && size > room {
             self.eph_capped(l);
             return Ok(());
         }
+        let room = promoted.map_or(room, |r| room.max(r));
         let commit = cb.id();
         let h = cb.header.clone();
         let ais: Vec<usize> = osis_commit::CommitBlob::decode(&pt).map(|c| c.parts.iter().map(|p| p.ai).collect()).unwrap_or_default();
         let first = ais.first().copied().unwrap_or(0);
-        // unverified blobs wait under a share of the cap: one past it is not kept apart, and
-        // what already waits (an honest copy of the same commit included) stays
+        // unverified blobs wait under a share of the cap, charged by what they could cost
+        // decoded (their retry decodes within it, and is counted at promotion): one past it is
+        // not kept apart, and what already waits (an honest copy of the same commit included)
+        // stays
+        let waits = bound.max(size);
         let pending_used = self.eph.pending_bytes.get(&l).copied().unwrap_or(0);
-        let may_wait = pending_used.saturating_add(size) <= self.cfg.ephemeral_bytes / PENDING_SHARE;
+        let may_wait = pending_used.saturating_add(waits) <= cap / PENDING_SHARE;
         let ingested = self.engine.ingest_ephemeral_within(cb, may_wait, room);
         let salt = osis_label::Prefix::parse(&blob).map(|p| *p.salt()).unwrap_or_default();
         let a = h.aspects.get(first);
@@ -1094,14 +1203,20 @@ impl SyncEngine {
                     }
                     return Ok(());
                 }
-                // its verified parts the engine may hold already count as held ones would
+                // what it could cost decoded: its verified parts the engine may hold already
+                // included
                 let mut e = e;
-                e.charge = self.engine.ephemeral_charge(&commit, &ais).max(size);
+                e.charge = self.engine.ephemeral_charge(&commit, &ais).max(waits);
                 *self.eph.pending_bytes.entry(l).or_default() += e.charge;
                 if let Some(s) = server {
                     self.eph.present.insert((s, l, b));
                 }
                 self.eph.pending.insert((l, b), (e, server));
+                return Ok(());
+            }
+            // refused with nothing else held here: it never fits
+            Ok(EphIngest::TooLarge) if used == 0 && promoted.is_none() => {
+                self.eph_unfit(l, b);
                 return Ok(());
             }
             Ok(EphIngest::TooLarge) => {
@@ -1234,6 +1349,7 @@ impl SyncEngine {
 
     /// An ephemeral entry was deleted at `server`: no longer present there.
     pub(crate) fn eph_deleted(&mut self, server: Option<ServerKey>, l: LabelId, b: BlobId) -> bool {
+        self.eph.unfit.remove(l, b);
         if let Some(s) = server {
             self.eph.waiting.remove(&(l, b, s));
             let conns: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.server == s).map(|(id, _)| *id).collect();

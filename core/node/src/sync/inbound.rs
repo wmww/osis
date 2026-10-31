@@ -138,6 +138,8 @@ impl SyncEngine {
                     self.eph_added(from, l, blob_id, blob, wrap, stamp, class, out)?;
                     continue;
                 }
+                // one that never fits here is not fetched again (`Unfit`)
+                LogEvent::Added { blob_id, blob: None, .. } if self.eph.unfit.contains(l, blob_id) => continue,
                 LogEvent::Added { blob_id, blob: None, .. } if self.eph.entries.contains_key(&(l, blob_id)) => {
                     if let Some(s) = server {
                         self.eph.present.insert((s, l, blob_id));
@@ -820,6 +822,7 @@ impl SyncEngine {
                 c.req.missing.remove(b);
             }
         }
+        let need: Vec<BlobId> = need.into_iter().filter(|b| !self.eph.unfit.contains(l, *b)).collect();
         self.fetch_on(conn, l, need, out)?;
         // a reconciliation after a start: the cursor stays (`sync_label`)
         if self.eph.reconciling.remove(&(conn, l)).is_some() {
