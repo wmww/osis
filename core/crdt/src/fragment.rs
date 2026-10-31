@@ -417,6 +417,22 @@ impl Fragment {
         }
     }
 
+    /// Whether some reset is written anywhere in this fragment (a fragment's, a register's, an
+    /// element's or entry's, tombstones included; `has_reset` judges the top alone); a sequence
+    /// counts as having one (its deletes and moves are not judged here).
+    pub fn has_any_reset(&self) -> bool {
+        let elems = |m: &Meta, e: &BTreeMap<Dot, Elem>| m.reset.is_some() || e.values().any(|x| x.reset.is_some() || x.frag.as_deref().is_some_and(Fragment::has_any_reset));
+        match self {
+            Fragment::Register(r) => r.reset.is_some(),
+            Fragment::Bag(Bag { meta, elems: e, .. }) | Fragment::Set(Set { meta, elems: e }) => elems(meta, e),
+            Fragment::Struct(s) => s.meta.reset.is_some() || s.fields.values().any(Fragment::has_any_reset),
+            Fragment::Enum(x) => x.meta.reset.is_some() || x.payloads.values().any(Fragment::has_any_reset),
+            Fragment::Map(m) => m.meta.reset.is_some() || m.entries.values().any(|e| e.reset.is_some() || e.frag.as_deref().is_some_and(Fragment::has_any_reset)),
+            Fragment::Seq(_) => true,
+            Fragment::Slots(s) => s.reg.as_ref().is_some_and(|r| r.reset.is_some()) || s.members.values().any(Fragment::has_any_reset),
+        }
+    }
+
     /// The empty fragment of `enc`; `Slots` has none (it is formed by join).
     pub fn empty(enc: Encoding) -> Option<Fragment> {
         Some(match enc {
