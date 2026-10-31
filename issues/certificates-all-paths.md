@@ -1,0 +1,5 @@
+# Certificates: every record on any path that ever existed
+> Summary: replace the point-based certificate closure (chains at a point, later-demotion rounds, `ever_before`, item 156) with: certificates for (node, thing) are every record on edges between things on any path that ever existed from the node to the thing, plus every snapshot of those things, closed under authors. Same commits on the bench (347/847), ~12 ms vs ~0.2 s, deletes most of cert.rs's closure logic. Privacy: readers learn an author's past membership paths; item 156 already reveals about that for chains at now. Owner informed; proceed unless the owner objects.
+> Tags: perm, security, simplification
+
+Found by the second review of certs-115000 (probe, not committed): passed the joint and edges projection oracles at seeds 128000 and 129000. Needs: the rule in spec/permissions.md §4, cert.rs rewritten around it, the projection oracles (joint, edges, plus a node-card differential like review 3's) at many seeds, roster snapshots and ledgers covered (the random oracles generate none), and the bench.
