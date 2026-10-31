@@ -885,12 +885,9 @@ impl SyncEngine {
                 Err(e) => self.diag(format!("secrets of its own for {t}: {e}")),
             }
         }
-        match self.engine.reseal_due(&a, &Passed) {
-            Ok(done) => self.take_done(done)?,
-            Err(e) => self.diag(format!("re-seal of {a}: {e}")),
-        }
         // the newest heartbeat of each node under the label, when it reports it stranded
-        // (`Work::beats`)
+        // (`Work::beats`); before the boxes `reseal_due` adds, which would box a stranded member
+        // lacking one twice
         let beats: Vec<(Tid, CommitId)> = w.beats.iter().filter_map(|(n, s)| s.iter().next_back().map(|(_, c)| (*n, *c))).collect();
         for (node, c) in beats {
             if self.resealed.contains(&c) || !self.engine.get_typed(&node, &ct::SEEN)?.is_some_and(|s| s.stranded) {
@@ -906,6 +903,10 @@ impl SyncEngine {
             {
                 self.take_done(done)?;
             }
+        }
+        match self.engine.reseal_due(&a, &Passed) {
+            Ok(done) => self.take_done(done)?,
+            Err(e) => self.diag(format!("re-seal of {a}: {e}")),
         }
         Ok(())
     }
