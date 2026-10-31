@@ -1360,7 +1360,8 @@ fn reset_peak() {
     let _ = std::fs::write("/proc/self/clear_refs", "5");
 }
 
-// spec/requirements.md, Scale (a value needs not be whole in memory), issues/durable-decode-bound.md:
+// spec/requirements.md, Scale (a value needs not be whole in memory), spec/crdt.md §8 (pages),
+// issues/durable-decode-bound.md:
 // peak memory above the resident set before each step, while one node writes an N-key map in one
 // commit and snapshots it, a member applies that commit, and a third node starts from the
 // snapshot alone. The stores are in memory, so what a step stores stays resident too (`kept`).
