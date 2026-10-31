@@ -333,8 +333,9 @@ impl Engine {
                         f.writes.entry(t).or_default().entry(ak.as_str().to_string()).or_default().insert(node, c);
                     }
                 }
+                // never a memory commit (a session's counters are not asked for either)
                 for (id, (a, _)) in &r.commits {
-                    if *a == node {
+                    if *a == node && !tx.core.ix.commits.get(id).is_some_and(|m| m.view.memory) {
                         f.commits.insert(*id);
                     }
                 }

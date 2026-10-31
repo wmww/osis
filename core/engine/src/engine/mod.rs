@@ -132,6 +132,9 @@ pub struct View {
     pub actor: Tid,
     /// Some list goes by link: the header is resolved from blobs at open (decoded there).
     pub linked: bool,
+    /// A memory commit (the ephemeral marker): held in memory, never durable to node-sync,
+    /// receipts or demotion frontiers.
+    pub memory: bool,
     pub aspects: Vec<AspectView>,
     /// A membership commit's frontier (`validity::header_frontier`; perm's adaptation reads it
     /// for demotions); `None` on other kinds.
@@ -160,6 +163,7 @@ impl View {
             author: h.author,
             actor: h.actor,
             linked: h.links != osis_commit::Links::default(),
+            memory: h.ephemeral.is_some(),
             aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, bounded: crate::retention::bounded(a) }).collect(),
             frontier: if h.kind == osis_commit::Kind::Membership { crate::apply::validity::header_frontier(h) } else { None },
             chunks: h.chunks.iter().map(|c| c.blob).collect(),
@@ -535,6 +539,11 @@ pub struct Core {
     /// Bumped whenever a transaction changes the indexes or a state, rolls back, or the caches
     /// reload (it never goes back): caches derived from them (the sync engine's) compare it.
     pub generation: u64,
+    /// `generation` for memory transactions (`Tx::set_memory`): what they change is in memory
+    /// only, so durable-derived caches (node-sync's) keep theirs.
+    pub memory_generation: u64,
+    /// The running transaction is a memory one (`Tx::set_memory`).
+    pub memory_tx: bool,
     /// `Engine::labels_of` per group: dropped when its `/label` state is written (`wrote`) and
     /// on rollback.
     pub(crate) labels: BTreeMap<Tid, Vec<std::sync::Arc<crate::labeling::GroupLabel>>>,
@@ -593,6 +602,11 @@ impl Changed {
 pub(crate) type EpochIntro = JMap<(Tid, osis_base::Role, osis_crypto::Epoch), (Ts, Tid, Tid, CommitId)>;
 
 impl Core {
+    /// The held durable commits with a delta on `k` (`by_aspect` without memory commits).
+    pub fn durable_on<'a>(&'a self, k: &(Tid, Ak)) -> impl Iterator<Item = CommitId> + 'a {
+        self.ix.by_aspect.get(k).into_iter().flatten().map(|x| x.1).filter(|c| !self.ix.commits.get(c).is_some_and(|m| m.view.memory))
+    }
+
     /// The held aspects of `t` and their commits (a range of `by_aspect`).
     pub fn aspects_of(&self, t: &Tid) -> impl Iterator<Item = (&(Tid, Ak), &std::collections::BTreeSet<(Ts, CommitId)>)> {
         let t = *t;
@@ -647,16 +661,23 @@ impl Core {
         });
     }
 
-    /// Marks commit `c` changed for node-sync (`changed`).
+    /// Marks commit `c` changed for node-sync (`changed`); never a memory commit.
     pub fn mark_changed(&mut self, c: CommitId) {
+        if self.memory_tx || self.ix.commits.get(&c).is_some_and(|m| m.view.memory) {
+            return;
+        }
         if let Some(s) = &mut self.changed {
             s.commits.insert(c);
         }
     }
 
     /// Marks the state of `(tid, ak)` changed for node-sync (`changed`): the commits whose
-    /// parts changed are marked on their own.
+    /// parts changed are marked on their own. Not in a memory transaction (a durable one
+    /// touching a memory aspect marks it: one extra judgment).
     pub fn mark_aspect_changed(&mut self, tid: &Tid, ak: &Ak) {
+        if self.memory_tx {
+            return;
+        }
         if let Some(s) = &mut self.changed {
             s.aspects.insert((*tid, ak.clone()));
         }
@@ -676,7 +697,11 @@ impl Core {
     /// Notes that the running transaction changes the indexes or a state (drops derived caches).
     pub fn touch(&mut self) {
         self.live_trees.clear();
-        self.generation += 1;
+        if self.memory_tx {
+            self.memory_generation += 1;
+        } else {
+            self.generation += 1;
+        }
         self.dirty = true;
     }
 
@@ -696,7 +721,11 @@ impl Core {
             self.live_trees.clear();
             self.live_bodies.clear();
             self.bodies.clear();
-            self.generation += 1;
+            if self.memory_tx {
+                self.memory_generation += 1;
+            } else {
+                self.generation += 1;
+            }
             self.membership_changed();
             self.labels.clear();
             self.links = None;
@@ -750,6 +779,8 @@ impl Core {
             live_bodies: BTreeMap::new(),
             copy_index: BTreeMap::new(),
             generation: 0,
+            memory_generation: 0,
+            memory_tx: false,
             labels: BTreeMap::new(),
             published: None,
             links: None,
@@ -798,6 +829,32 @@ pub struct Tx<'a> {
 }
 
 impl Tx<'_> {
+    /// Makes this a memory transaction: every new row in the store's memory overlay, the
+    /// change counter `memory_generation`, nothing marked for node-sync (`Core::changed`).
+    pub fn set_memory(&mut self) {
+        self.txn.set_memory(true);
+        self.core.memory_tx = true;
+    }
+
+    /// Runs `f` as work on data of class `memory` (issues/eph-unify.md): rows it creates for a
+    /// memory commit or aspect inside a durable transaction go to memory, and it neither steps
+    /// `generation` nor marks node-sync's changes. A memory transaction stays memory.
+    pub fn in_class<T>(&mut self, memory: bool, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
+        let was = self.core.memory_tx;
+        let on = was || memory;
+        self.txn.set_memory(on);
+        self.core.memory_tx = on;
+        let r = f(self);
+        self.txn.set_memory(was);
+        self.core.memory_tx = was;
+        r
+    }
+
+    /// Whether commit `c` is a memory commit.
+    pub fn is_memory_commit(&self, c: &CommitId) -> bool {
+        self.core.ix.commits.get(c).is_some_and(|m| m.view.memory)
+    }
+
     /// Loads the state of `(tid, ak)` into the cache: a paged state lazily (its skeleton; pages
     /// as `ensure_*` and `load` need them).
     pub fn load_lazy(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
@@ -1353,6 +1410,7 @@ impl Engine {
         // changes made outside a transaction are not this one's to undo
         self.core.commit_journal();
         let stale_all = self.core.stale_all;
+        self.core.memory_tx = false;
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
                 let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };

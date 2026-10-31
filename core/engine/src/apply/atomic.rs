@@ -398,7 +398,12 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     if origin != Origin::Local {
         crate::rotation::mark_lost_due(tx, rosters.iter().copied())?;
     }
-    tx.core.events.queue(Event::Applied { id, origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect() });
+    // a memory commit is ephemeral state to watchers and nothing to node-sync
+    if h.ephemeral.is_some() {
+        tx.core.events.queue(Event::Ephemeral { id: id.into(), origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect(), signals: Vec::new() });
+    } else {
+        tx.core.events.queue(Event::Applied { id, origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect() });
+    }
     if !flipped.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::Validity, changed: flipped });
     }

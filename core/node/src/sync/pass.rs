@@ -504,7 +504,7 @@ impl SyncEngine {
                 commits.extend(std::mem::take(&mut w.held_back));
             }
             for (t, a) in &moved {
-                commits.extend(self.engine.core.ix.by_aspect.get(&(*t, a.clone())).into_iter().flatten().map(|x| x.1));
+                commits.extend(self.engine.core.durable_on(&(*t, a.clone())));
             }
         }
         if full {

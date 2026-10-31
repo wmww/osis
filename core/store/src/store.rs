@@ -630,9 +630,12 @@ impl Transaction<'_> {
         }
         self.pager.txn_put_blob(&mut self.d, *id, ciphertext, &mut *self.rng)
     }
+    /// Deletes a blob. A memory blob never had a durable copy, and memory-mode work touches no
+    /// durable blob: neither writes anything durable.
     pub fn delete_blob(&mut self, id: &BlobId) {
-        self.mem.blob_remove(id);
-        self.pager.txn_delete_blob(&mut self.d, *id);
+        if !self.mem.blob_remove(id) && !self.memory {
+            self.pager.txn_delete_blob(&mut self.d, *id);
+        }
     }
     pub fn get_blob(&mut self, id: &BlobId) -> Result<Option<Vec<u8>>, Error> {
         self.read_blob(id, 0, usize::MAX)

@@ -393,6 +393,22 @@ fn put_map<K: Rec + Ord + Clone, V: Rec + Clone>(txn: &mut Transaction<'_>, name
     put_rows(txn, name, keys, |k| m.get(k).map(enc))
 }
 
+/// `put_map` of a map keyed by aspect: a memory aspect's row is memory, whichever transaction
+/// writes it.
+fn put_aspect_map<V: Rec + Clone>(txn: &mut Transaction<'_>, name: &[u8], m: &JMap<(Tid, osis_base::Ak), V>, all: bool) -> Result<()> {
+    let keys: Vec<(Tid, osis_base::Ak)> = if all { m.keys().cloned().collect() } else { m.logged() };
+    if keys.is_empty() {
+        return Ok(());
+    }
+    let mode = txn.is_memory();
+    let (mem, dur): (Vec<_>, Vec<_>) = keys.into_iter().partition(|(t, a)| txn.is_memory_aspect(t, a));
+    put_rows(txn, name, dur, |k| m.get(k).map(enc))?;
+    txn.set_memory(true);
+    let r = put_rows(txn, name, mem, |k| m.get(k).map(enc));
+    txn.set_memory(mode);
+    r
+}
+
 /// `put_map` of a map of sets: a row per (key, item).
 fn put_setmap<K: Rec + Ord + Clone, T: Rec + Ord + Clone>(txn: &mut Transaction<'_>, name: &[u8], s: &JSetMap<K, T>, all: bool) -> Result<()> {
     let items = if all { s.iter().flat_map(|(k, x)| x.iter().map(|t| (k.clone(), t.clone()))).collect() } else { s.logged() };
@@ -509,7 +525,7 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
         osis_commit::Form::Commit => w.u8(1),
         osis_commit::Form::Session(n) => w.u8(2).raw(&n),
     };
-    w = w.raw(v.author.as_bytes()).raw(v.actor.as_bytes()).u8(u8::from(v.linked));
+    w = w.raw(v.author.as_bytes()).raw(v.actor.as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1));
     for a in &v.aspects {
         let ak = a.ak.as_str().as_bytes();
         w = w.raw(a.tid.as_bytes()).raw(&(ak.len() as u16).to_be_bytes()).raw(ak).u64(a.lo).u64(a.hi).u8(u8::from(a.bounded));
@@ -545,7 +561,8 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
         _ => return Err(Error::Corrupt("meta row form")),
     };
     let (author, actor) = (r.tid()?, r.tid()?);
-    let linked = r.u8()? != 0;
+    let flags = r.u8()?;
+    let (linked, memory) = (flags & 1 != 0, flags & 2 != 0);
     let mut aspects = Vec::with_capacity(n);
     for _ in 0..n {
         let (tid, ak) = (r.tid()?, r.ak()?);
@@ -567,7 +584,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
         _ => return Err(Error::Corrupt("meta row frontier")),
     };
     r.end()?;
-    Ok((parts, super::View { ts, kind, form, author, actor, linked, aspects, frontier, chunks }))
+    Ok((parts, super::View { ts, kind, form, author, actor, linked, memory, aspects, frontier, chunks }))
 }
 
 /// A commit record's head and its blob bytes.
@@ -632,10 +649,18 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     };
     if !ids.is_empty() {
         let t = txn.index(METAS)?;
+        let mode = txn.is_memory();
         for id in &ids {
             match c.ix.commits.get(id) {
-                Some(m) => txn.table_put(t, &id.0, meta_row(c, id, m), Shred::No)?,
-                None => txn.table_remove(t, &id.0, Shred::No)?,
+                Some(m) => {
+                    // a memory commit's row is memory, whichever transaction writes it
+                    txn.set_memory(mode || m.view.memory);
+                    txn.table_put(t, &id.0, meta_row(c, id, m), Shred::No)?;
+                    txn.set_memory(mode);
+                }
+                None => {
+                    txn.table_remove(t, &id.0, Shred::No)?;
+                }
             };
         }
     }
@@ -643,8 +668,8 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_map(txn, EPOCH_INTRO, &c.ix.epoch_intro, all)?;
     put_map(txn, BOX_WRITTEN, &c.ix.box_written, all)?;
     put_map(txn, DELETE_HINTS, &c.ix.delete_hints, all)?;
-    put_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
-    put_map(txn, CARRIED, &c.ix.carried, all)?;
+    put_aspect_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
+    put_aspect_map(txn, CARRIED, &c.ix.carried, all)?;
     put_setmap(txn, IMPORTS, &c.ix.imports, all)?;
     // after the indexes and in their transaction: a saved walk never runs ahead of the
     // commits it covers

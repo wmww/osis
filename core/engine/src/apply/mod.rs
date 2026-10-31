@@ -635,9 +635,9 @@ impl Engine {
         self.run(|tx| Ok(tx.txn.get_blob(&id)?))
     }
 
-    /// IDs of applied commits, in (`ts`, ID) order.
+    /// IDs of applied durable commits (no memory commit), in (`ts`, ID) order.
     pub fn commit_ids(&self) -> Vec<CommitId> {
-        let mut v: Vec<(osis_base::Ts, CommitId)> = self.core.ix.commits.iter().map(|(id, m)| (m.view.ts, *id)).collect();
+        let mut v: Vec<(osis_base::Ts, CommitId)> = self.core.ix.commits.iter().filter(|(_, m)| !m.view.memory).map(|(id, m)| (m.view.ts, *id)).collect();
         v.sort();
         v.into_iter().map(|x| x.1).collect()
     }

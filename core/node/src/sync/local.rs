@@ -87,7 +87,7 @@ impl SyncEngine {
         let now = self.engine.now();
         let held: Vec<CommitId> = match only {
             Some(o) => o.to_vec(),
-            None => self.engine.core.ix.by_aspect.get(&(*t, ak.clone())).map(|x| x.iter().map(|(_, c)| *c).collect()).unwrap_or_default(),
+            None => self.engine.core.durable_on(&(*t, ak.clone())).collect(),
         };
         let mut dropped = Vec::new();
         for c in held {
