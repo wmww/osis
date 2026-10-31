@@ -3313,3 +3313,80 @@ fn memory_commit_expiry_stays_in_memory() {
     assert_eq!(e.core.generation, generation);
     assert_eq!(lp.peers[0].backend.faults().writes(), writes, "nothing durable written");
 }
+
+// spec/commits.md §2 (records beside a delta of the things it places with its reader): an
+// ephemeral thing under another reader placed into a group goes with its record beside its own
+// deltas only, never beside the group's `/placed` delta (its nonce, its dedup secret, would show
+// to the group's readers)
+#[test]
+fn placed_record_only_to_its_reader_spec_commits_2() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let e = net.engine(a);
+    let me = e.tid();
+    let mut m = Mutation::new();
+    let p = e.new_thing(&mut m, me);
+    m.set(p, &ct::NAME, &"private".to_string()).unwrap();
+    e.write(m).unwrap();
+    let mut m = Mutation::new();
+    let w = e.new_thing(&mut m, p);
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+    m.set(w, &eph(STATE), &s("hi")).unwrap();
+    e.write(m).unwrap();
+    assert_ne!(e.ephemeral_reader(&w), e.ephemeral_reader(&g));
+    let built = e.take_ephemeral().unwrap();
+    let parts: Vec<(String, Tid, Vec<Tid>)> = built.iter().flat_map(|c| c.blob.parts.iter().map(|p| { let a = &c.blob.header.aspects[p.ai]; (a.ak.as_str().to_string(), a.tid, p.records.iter().map(|r| r.tid()).collect()) }).collect::<Vec<_>>()).collect();
+    assert!(parts.iter().any(|(ak, t, rs)| ak == "/placed" && *t == g && !rs.contains(&w)), "{parts:?}");
+    assert!(parts.iter().any(|(ak, t, rs)| ak == STATE && *t == w && rs.contains(&w)), "{parts:?}");
+}
+
+// spec/sync.md §9 (Caps: held ephemeral bodies counted at an estimate of what they take held):
+// records beside a part are held as ephemeral things with it, so the pre-decode bound and the
+// node cap count them (a member padding a commit's parts with records cannot pass the cap)
+#[test]
+fn records_beside_parts_counted_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "x");
+    let ak = osis_base::Ak::new(STATE).unwrap();
+    let c = net.engine(a).forge_ephemeral(w, &ak, s("y")).unwrap().unwrap();
+    let mut padded = c.blob.clone();
+    let mut junk: Vec<osis_base::CreationRecord> = (0..200u8).map(|n| osis_base::CreationRecord::Thing { owner: g, nonce: [n; 32], creator: None }).collect();
+    junk.append(&mut padded.parts[0].records);
+    junk.sort_by_key(osis_base::CreationRecord::tid);
+    padded.parts[0].records = junk;
+    let (plain, _) = osis_node::Engine::ephemeral_bound(&c.blob);
+    let (more, _) = osis_node::Engine::ephemeral_bound(&padded);
+    assert!(more >= plain + 200 * 50, "{plain} {more}");
+    net.engine(b).ingest_ephemeral(padded).unwrap();
+    assert!(net.engine(b).ephemeral_charge(&c.id, &[]) >= 200 * 50 * 2);
+}
+
+// issues/eph-unify.md step 3 (persisting a memory-marked aspect): a durable write on an aspect a
+// memory commit wrote before the thing persisted routes to memory and is lost at restart. spec:
+// spec/data-model.md §1
+#[test]
+#[ignore = "issues/eph-unify.md: durable write on a memory-marked aspect lost at restart"]
+fn repro_persisted_aspect_lost_at_restart() {
+    let mut lp = crate::common::net(1, 5);
+    let t = crate::common::new_thing(&mut lp, 0);
+    let reg = crate::common::ak("/t/reg");
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let leaf = e.new_thing(&mut m, t);
+    m.set(leaf, &crate::common::REG, &Value::Str("m".into())).unwrap();
+    e.commit_in_memory(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.set(leaf, &crate::common::REG, &Value::Str("d".into())).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.peers[0].restart(6).unwrap();
+    assert_eq!(lp.peers[0].engine.get(&leaf, &reg).unwrap(), Some(Value::Str("d".into())));
+}

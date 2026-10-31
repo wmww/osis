@@ -3,7 +3,9 @@
 //! (`unindex_commit`, the mirror of what applying a commit indexes) and its aspects' memory rows
 //! (one store call). Freeing leaves the indexes as if those commits had never applied
 //! (`tests::free_equals_never_indexed`); a commit that also touches a thing not freed stays, and
-//! so does every thing it is on, whole, until all of them are freed.
+//! so does every thing it is on, whole, until all of them are freed; so does the owner of a held
+//! thing not freed. A memory commit that also touches a durable thing (an item's writes with its
+//! `/placed` add into a durable group) keeps its things until it goes by retention.
 
 use crate::engine::records;
 use crate::engine::{Core, Tx};
@@ -16,28 +18,48 @@ use std::collections::BTreeSet;
 const ASPECT_RECORDS: [&[u8]; 5] = [records::ASPECTS, records::RECEIPT, records::VALUELESS, records::PURGES, records::DEATHS_DUE];
 
 /// Frees the memory things among `things` and those freed before but still in use (`freeing`):
-/// each memory commit all of whose things are among them goes, then the record and aspects of
-/// each of them no commit is on any more; the others stay in `freeing`.
+/// a thing stays (in `freeing`) while a commit on it touches a thing not freed or it owns a held
+/// thing not freed; the others go with their records, aspects and every commit on them.
 pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
     let mut freed: BTreeSet<Tid> = things.iter().filter(|t| tx.core.ix.held.is_memory(t)).copied().collect();
     if freed.is_empty() {
         return Ok(());
     }
     tx.core.touch();
-    freed.extend(tx.core.ix.freeing.iter().copied());
-    let cands: BTreeSet<CommitId> = freed.iter().flat_map(|t| tx.core.ix.by_thing.get(t).into_iter().flatten().copied()).collect();
-    for c in cands {
-        let Some(m) = tx.core.ix.commits.get(&c) else { continue };
-        // a durable commit is on durable things only
-        if m.view.memory && m.view.aspects.iter().all(|a| freed.contains(&a.tid)) {
-            unindex_commit(tx, &c)?;
+    // a thing waiting in `freeing` may have persisted since
+    let waiting: Vec<Tid> = tx.core.ix.freeing.iter().copied().collect();
+    for t in waiting {
+        if tx.core.ix.held.is_memory(&t) {
+            freed.insert(t);
+        } else {
+            tx.core.ix.freeing.remove(&t);
         }
     }
-    for t in &freed {
-        if tx.core.ix.by_thing.get(t).is_some_and(|s| !s.is_empty()) {
-            tx.core.ix.freeing.insert(*t);
-            continue;
+    // what stays, to a fixpoint: a thing a commit is on that also touches a thing not freed (or
+    // a durable commit, defensively), and the owner of a held thing not freed (its chain)
+    loop {
+        let core = &*tx.core;
+        let stays: Vec<Tid> = freed
+            .iter()
+            .filter(|t| {
+                core.ix.held.owned(t).any(|x| !freed.contains(x))
+                    || core.ix.by_thing.get(t).into_iter().flatten().any(|c| core.ix.commits.get(c).is_some_and(|m| !m.view.memory || m.view.aspects.iter().any(|a| !freed.contains(&a.tid))))
+            })
+            .copied()
+            .collect();
+        if stays.is_empty() {
+            break;
         }
+        for t in stays {
+            freed.remove(&t);
+            tx.core.ix.freeing.insert(t);
+        }
+    }
+    let cands: BTreeSet<CommitId> = freed.iter().flat_map(|t| tx.core.ix.by_thing.get(t).into_iter().flatten().copied()).collect();
+    for c in cands {
+        unindex_commit(tx, &c)?;
+    }
+    for t in &freed {
         tx.core.ix.freeing.remove(t);
         tx.core.ix.held.free(t);
         tx.txn.remove_local(&[records::CREATED, t.as_bytes()].concat(), Shred::No)?;
@@ -148,6 +170,12 @@ mod tests {
             m.set(top, &ak("/t/b"), &Value::Set([Value::Str(format!("z{i}"))].into())).unwrap();
             e.commit_in_memory(m).unwrap().unwrap();
         }
+        // an owner no commit is on, of a thing one is on
+        let mut m = Mutation::new();
+        let boss = e.new_thing(&mut m, g);
+        let kid = e.new_thing(&mut m, boss);
+        m.set(kid, &ak("/t/a"), &Value::Str("k".into())).unwrap();
+        e.commit_in_memory(m).unwrap().unwrap();
         // the first write expires: held value-less, its timer gone
         lp.advance(61_000);
         let e = &mut lp.peers[0].engine;
@@ -155,6 +183,10 @@ mod tests {
         assert!(e.core.ix.valueless.keys().any(|(t, _)| *t == leaf));
         assert_ne!(digest(e), before);
         assert!(!rows(e).is_empty());
+        e.free_memory(&BTreeSet::from([boss])).unwrap();
+        assert!(e.core.created(&boss).is_some(), "the owner of a held thing stays");
+        e.free_memory(&BTreeSet::from([kid])).unwrap();
+        assert!(e.core.created(&boss).is_none() && e.core.created(&kid).is_none());
         e.free_memory(&BTreeSet::from([top])).unwrap();
         assert!(e.core.created(&top).is_some() && e.core.created(&leaf).is_some(), "a commit on a thing not freed keeps its things");
         assert_eq!(e.get(&top, &ak("/t/b")).unwrap(), Some(Value::Set([Value::Str("z1".into())].into())));

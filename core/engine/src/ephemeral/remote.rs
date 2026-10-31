@@ -97,9 +97,10 @@ type Unsent = BTreeMap<(Tid, Option<u64>), Fragment>;
 pub(crate) struct HeldPart {
     pub ai: usize,
     pub fragment: Fragment,
-    /// Its encoded delta's length.
+    /// Its encoded delta's length, plus its records' (`records_bytes`).
     pub bytes: usize,
-    /// Its decoded fragment's heap size at decode (`Fragment::approx_bytes`; `ephemeral_charge`).
+    /// Its decoded fragment's heap size at decode (`Fragment::approx_bytes`; `ephemeral_charge`),
+    /// plus its records' encoded size.
     pub heap: usize,
     /// The commits it lists as absorbed.
     pub absorbed: BTreeSet<CommitId>,
@@ -130,7 +131,7 @@ impl HeldPart {
 /// A verified ephemeral commit none of whose parts was valid on arrival (`Remote::invalid`).
 pub(crate) struct Invalid {
     pub blob: CommitBlob,
-    /// The aspects of its decoded non-`/created` parts.
+    /// The aspects of its decoded parts.
     pub ais: Vec<usize>,
     /// The records it carries.
     pub carried: BTreeMap<Tid, CreationRecord>,
@@ -668,16 +669,17 @@ impl Engine {
         if deltas.is_empty() {
             return Ok(Attempt::Empty);
         }
-        // the records each delta carries: of its thing and the things it places, up their
-        // ephemeral chains (spec/commits.md §2)
+        // the records each delta carries: of its thing and the things it places that have its
+        // reader (a record names its nonce, its dedup secret), up their ephemeral chains
+        // (spec/commits.md §2)
         let mut chains = Vec::with_capacity(deltas.len());
         for (t, ak, f, _) in &deltas {
             let mut recs = BTreeSet::from([*t]);
             if ak.as_str() == PLACED.ak()
                 && let Some((items, subs)) = super::place::def_of(f)
             {
-                recs.extend(items);
-                recs.extend(subs);
+                let reader = self.ephemeral_reader(t);
+                recs.extend(items.into_iter().chain(subs).filter(|x| self.ephemeral_reader(x) == reader));
             }
             recs.retain(|t| self.eph.things.contains_key(t));
             chains.push(self.record_chain(&recs));
@@ -961,8 +963,9 @@ impl Engine {
             let dedup = dedup_secret(rec.nonce());
             match osis_commit::verify_part(&h, &id, p, &dedup, &mut interner, Some(&mut Unpaged))? {
                 osis_commit::Decoded::Snapshot(s) => {
-                    spent = spent.saturating_add(part_charge(s.fragment.approx_bytes(), p.delta.len()));
-                    decoded.push((p.ai, s, p.delta.len()));
+                    let recs = records_bytes(p);
+                    spent = spent.saturating_add(part_charge(s.fragment.approx_bytes().saturating_add(recs), p.delta.len().saturating_add(recs)));
+                    decoded.push((p.ai, s, p.delta.len(), recs));
                 }
                 osis_commit::Decoded::Delta(_) => return Err(Error::BadInput("ephemeral commit with a writer delta")),
             }
@@ -973,7 +976,7 @@ impl Engine {
         // its new parts, judged (spec/permissions.md §5.2), others' writes stripped
         let (have, own): (BTreeSet<usize>, bool) = self.eph.remote.held.get(&id).map_or((BTreeSet::new(), false), |x| (x.parts.iter().map(|p| p.ai).collect(), x.own));
         let mut fresh: Vec<HeldPart> = Vec::new();
-        for (ai, s, len) in decoded {
+        for (ai, s, len, recs) in decoded {
             if have.contains(&ai) || fresh.iter().any(|p| p.ai == ai) {
                 continue;
             }
@@ -982,6 +985,8 @@ impl Engine {
                 continue;
             }
             let mut hp = HeldPart::new(ai, s, len);
+            hp.heap = hp.heap.saturating_add(recs);
+            hp.bytes = hp.bytes.saturating_add(recs);
             hp.only_of(h.author);
             hp.valid = own || self.eph_part_valid(&h, &id, ai, &carried);
             fresh.push(hp);
@@ -1190,7 +1195,7 @@ impl Engine {
     /// Delivers the parts of verified relay-only commit `id` this blob carries once each:
     /// remembered as delivered (`MAX_DELIVERED`, per-author floors), its valid signal parts not
     /// delivered before fired (a commit whose parts have different readers goes as several blobs).
-    fn deliver_relay(&mut self, id: CommitId, h: &Header, decoded: Vec<(usize, Snapshot, usize)>, carried: &BTreeMap<Tid, CreationRecord>, now: u64) -> EphIngest {
+    fn deliver_relay(&mut self, id: CommitId, h: &Header, decoded: Vec<(usize, Snapshot, usize, usize)>, carried: &BTreeMap<Tid, CreationRecord>, now: u64) -> EphIngest {
         let r = &mut self.eph.remote;
         let seen = match r.delivered_set.get_mut(&id) {
             Some(d) => std::mem::take(d),
@@ -1199,9 +1204,9 @@ impl Engine {
                 BTreeSet::new()
             }
         };
-        let decoded: Vec<_> = decoded.into_iter().filter(|(ai, _, _)| !seen.contains(ai)).collect();
+        let decoded: Vec<_> = decoded.into_iter().filter(|(ai, _, _, _)| !seen.contains(ai)).collect();
         let mut all = seen;
-        all.extend(decoded.iter().map(|(ai, _, _)| *ai));
+        all.extend(decoded.iter().map(|(ai, _, _, _)| *ai));
         r.delivered_set.insert(id, all);
         while r.delivered.len() > MAX_DELIVERED || r.delivered.front().is_some_and(|(_, t, _)| t.saturating_add(MAX_DRIFT_MS) < now) {
             if let Some((c, t, a)) = r.delivered.pop_front() {
@@ -1215,7 +1220,7 @@ impl Engine {
         }
         r.delivered_floor.retain(|_, f| f.saturating_add(MAX_DRIFT_MS) >= now);
         let mut signals = Vec::new();
-        for (ai, s, _) in decoded {
+        for (ai, s, _, _) in decoded {
             let Some(a) = h.aspects.get(ai) else { continue };
             if !self.eph_part_valid(h, &id, ai, carried) {
                 continue;
@@ -1936,7 +1941,14 @@ fn part_weight(bytes: usize) -> usize {
 /// (`osis_crdt::decoded_bound`): a part of tiny map entries decodes to about 200 times its size.
 fn part_bound(p: &osis_commit::Part) -> Result<u64> {
     let heap = osis_crdt::decoded_bound(&p.delta).map_err(|_| Error::BadInput("ephemeral part not one CBOR value"))?;
-    Ok(part_charge(heap, p.delta.len()))
+    let recs = records_bytes(p);
+    Ok(part_charge(heap.saturating_add(recs), p.delta.len().saturating_add(recs)))
+}
+
+/// The encoded bytes of the records beside part `p`: held as ephemeral things while the commit
+/// is, so the node cap counts them with the part (a record decoded is about its encoded size).
+fn records_bytes(p: &osis_commit::Part) -> usize {
+    p.records.iter().fold(0usize, |n, r| n.saturating_add(osis_base::encode(&r.to_value()).len()))
 }
 
 /// The records ephemeral commit `blob` carries beside its deltas (each hashes to its tid by
