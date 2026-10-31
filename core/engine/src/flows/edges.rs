@@ -276,6 +276,12 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         let roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r)).collect();
         if !roles.is_empty() {
             let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
+            // rotating or carrying a role without its current secret would drop that secret
+            // from the history boxes (it reaches the target through a member actor left out)
+            let carried = rotation::carried_unheld(tx, &target)?;
+            if roles.iter().any(|r| carried.contains(r) || held.role(*r).newest_held().is_none()) {
+                return Err(Error::Misuse("this node lacks a current secret of the target its rotation needs: it waits for a re-seal (or an admin holding them removes)"));
+            }
             let skip: Vec<(Tid, Option<Role>)> = std::iter::once((member, d.new.as_ref().map(|e| e.role))).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
             let members = rotation::recipients(tx, &target, &skip)?;
             let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &members, &pending)?;
