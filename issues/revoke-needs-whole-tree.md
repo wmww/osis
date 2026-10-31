@@ -1,6 +1,6 @@
 # Safe revocation needs one node holding everything the member could write
 > Summary: a demotion's frontier is the revoker's own receipts (spec/permissions.md §5.1), and writes it had not received are lost until re-grant (spec/requirements.md Permissions), so the pre-sync (§5.3) must download, decrypt and verify every label of every thing the member could write before stamping. spec/requirements.md also says total data may exceed what any node tracks and removal cost is "never to content or history". Both cannot hold: in a tree larger than any one node, every removal loses some of the member's data, or the removal is made from a node sized to the tree. The design states the rule and the pre-sync, not this consequence.
-> Tags: permissions, spec, owner-call
+> Tags: permissions, spec
 
 Scale: removing a device of a person who writes to 500 groups syncs 500 labels first; removing a member from a 100 GB organisation from a phone that holds 2 GB of it loses that member's unseen edits in the other 98 GB (`WaitForSync::Required` fails, `Try`/`Skip` lose). Organisations are told to demote from a node that tracks the tree (notes/api.md Demotion), which reintroduces a node that holds everything.
 
@@ -16,3 +16,6 @@ Remaining gap after this: servers the remover cannot reach at removal time, and 
 Other uses of the receipts-only mode: activity and history views over groups a device does not hold (headers carry author, time, aspects), the own-counter recovery a restored node needs (issues/restored-node-counter-reuse.md), lightweight admin devices (an org root that holds nothing), header-level forensics of rejected writes.
 
 Rejected along the way: trusting the author's timestamp for content (a removed writer plus a colluding reader could inject backdated edits that honest writers then re-stamp and spread: "readers only read" breaks); scoped removals via `until` (works today with no new rule, but needs a device holding the tree to finalize, which cannot be relied on).
+
+
+Owner (round 13): the direction above is adopted; the implementer may improvise where needed, in line with the requirements and what makes sense.
