@@ -598,6 +598,11 @@ impl Transaction<'_> {
             })
             .collect()
     }
+    /// The pending commits held in the memory overlay, by ID.
+    pub fn memory_pending(&self) -> Result<Vec<(CommitId, Vec<u8>)>, Error> {
+        let p = [kind::PENDING];
+        self.mem.o.cat.range(p.to_vec()..).take_while(|(k, _)| k.starts_with(&p)).map(|(k, v)| Ok((CommitId(tail(k)?), decode_pending(v)?.1))).collect()
+    }
     /// Removes a pending commit; `Shred::Yes` when its content is being purged rather than applied.
     pub fn remove_pending(&mut self, id: &CommitId, shred: Shred) -> Result<bool, Error> {
         self.cat_remove(&W::new().u8(kind::PENDING).raw(&id.0).take(), shred)

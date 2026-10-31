@@ -5,3 +5,5 @@
 Replay: `OSIS_EPH_START=100013 OSIS_EPH_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact ephemeral::random_window_inflight_large --nocapture` (cap 4000; no refusal reported). The other 199 seeds from 100000, and the `converges`/`one_capped_server` variants at 200 seeds, pass.
 
 Possibly the step-1 divergence noted in issues/eph-unify.md (an author gets its thing back without its own earlier writes); step 3 (held bodies through Core) is expected to remove it: check this seed there.
+
+Checked after eph-unify-3cd: still fails (received ephemeral commits still go through `Remote`; only the Core half of their `ingest` path exists). Check again once the swap lands.
