@@ -393,7 +393,13 @@ pub struct GroupPolicy {
 }
 
 impl crate::Osis {
-    /// Sets `group`'s sync policy (stored). Co-readers of groups without `/reach` are not
+    /// `group`'s sync policy as set (`sync_policy`; the default when never set).
+    pub fn group_policy(&self, group: osis_base::Tid) -> GroupPolicy {
+        self.locked(|x| GroupPolicy { publish_reach: x.sync.reach_policy(&group), receipts_only: x.sync.receipts_only().contains(&group) })
+    }
+
+    /// Sets `group`'s whole sync policy (stored): fields left at their default are reset, so to
+    /// change one, start from `group_policy`. Co-readers of groups without `/reach` are not
     /// dialed. When the group's labels already hold this node's `/reach` and it no longer goes
     /// there, the node's reach rotates (`rotate_reach`), so readers there cannot dial it any more.
     pub fn sync_policy(&self, group: osis_base::Tid, policy: GroupPolicy) {

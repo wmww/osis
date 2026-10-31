@@ -192,6 +192,43 @@ fn nested_tied_shares() {
 }
 
 
+// spec/permissions.md §2 (tied edge removed), notes/sync.md Receipts-only reads: Bob's phone
+// holds his sub-tag for receipts only. Carol unplaces it from the tag while Alice and Bob's
+// laptop are away: the phone, admin of the sub-tag by Bob, sees the tie die but leaves the
+// edge to the sub-tag's holders; Bob's laptop removes it once back.
+#[test]
+fn receipts_only_scope_left_to_holders() {
+    let Setup { mut w, alice, bob, carol, g } = setup();
+    let join = Osis::pair(w.cfg(4, &[]), &bob.pair_offer().unwrap()).unwrap();
+    let (_, reply) = bob.pair_accept(join.request()).unwrap();
+    let phone = join.finish(&reply).unwrap();
+    let sub = bob.write_with(|w| {
+        let s = w.create(bob.me())?;
+        w.make_group(s)?;
+        Ok(s)
+    })
+    .unwrap();
+    bob.sync(sub, &[]).unwrap();
+    assert_eq!(bob.share_into(sub, g, Role::Read, ShareOpts::default()).unwrap(), Share::Tied(Role::Read));
+    w.run();
+    phone.sync_policy(sub, osis::GroupPolicy { receipts_only: true, ..Default::default() });
+    w.run();
+    assert_eq!(phone.roster(sub).get(&g).map(|e| e.tied), Some(true));
+    w.set_online(&alice, false);
+    w.set_online(&bob, false);
+    carol.write_with(|w| w.unplace(sub, g)).unwrap();
+    w.run();
+    w.advance(60_000);
+    w.run();
+    assert!(!listed(&phone, g, sub), "the phone saw the unplace");
+    assert!(phone.roster(sub).contains_key(&g), "but left the tied edge alone");
+    w.set_online(&alice, true);
+    w.set_online(&bob, true);
+    w.advance(60_000);
+    w.run();
+    assert!(!bob.roster(sub).contains_key(&g), "a holder removed it");
+}
+
 // spec/permissions.md §2 (tied edge removed only once the placement is gone): Bob's laptop
 // shares his card into Alice's tag while it reaches Bob's server but not the tag's; Bob's phone
 // gets the tied edge from Bob's server and, after an unrelated write by Alice, passes the tag's
