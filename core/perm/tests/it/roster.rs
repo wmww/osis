@@ -536,9 +536,10 @@ fn adversarial_ledger_grants_nothing_spec_permissions_6() {
 /// unseen, so n1's grant of admin on G to n2 does not apply and n2's own lowering of that edge
 /// to write is a raise through P, which k's removal of n2 audits. That removal also drops
 /// n2's removal of n1; on the restart n1's grant applies and n2's lowering is a self-removal,
-/// never audited, but D keeps it: sticky residue, which re-snapshotting P repairs.
+/// attributed to n2's class on G, which k's removal of n2 audits too: no residue, and
+/// re-snapshotting P is neutral.
 #[test]
-fn resnapshot_repairs_self_removal_residue_spec_permissions_6() {
+fn self_removal_dropped_without_residue_spec_permissions_6() {
     let mut w = World::new();
     let n = w.nodes(3);
     let k = n[0];
@@ -555,11 +556,7 @@ fn resnapshot_repairs_self_removal_residue_spec_permissions_6() {
     let lower = WriteId::Op(lower, 0);
     assert!(tl.dropped().contains_key(&lower));
     assert_eq!(tl.roster(&g, At::END).get(&n[2]).map(|e| e.role), Some(Admin));
-    assert_eq!(residue(&tl), BTreeSet::from([lower]));
-    let mut w2 = w.clone();
-    w2.snapshot_state(k, p, tl.roster_state(&p), END_T);
-    let t2 = Timeline::evaluate(&w2.held());
-    assert!(t2.is_applied(&lower), "the snapshot repairs the residue");
+    assert!(residue(&tl).is_empty());
     assert_eq!(neutral(&w, p, k, &[p, g], &[]), None);
 }
 

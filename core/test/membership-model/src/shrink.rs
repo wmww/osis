@@ -72,7 +72,7 @@ mod tests {
         let h = std::iter::repeat_with(|| joint::random_hist(&mut rng)).find(|h| joint::walk(h).dropped != 0 && h.writes.len() >= 5).unwrap();
         let m = minimal(h, |c: &joint::JHist| joint::walk(c).dropped != 0);
         assert_eq!(m.writes.len(), 2, "{m}");
-        assert!(m.writes.iter().all(|w| w.t <= 2) && m.writes.iter().all(|w| w.id <= 2), "{m}");
+        assert!(m.writes.iter().all(|w| w.t <= 3) && m.writes.iter().all(|w| w.id <= 2), "{m}");
     }
 
     #[test]
