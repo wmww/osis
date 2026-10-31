@@ -38,7 +38,7 @@ pub type PublicKey = [u8; 32];
 /// Where a connection comes from, as far as the transport can tell: an IPv4 address (as
 /// IPv4-mapped IPv6), the /64 of an IPv6 address (the usual allocation to one site; minor: a
 /// holder of a larger prefix counts as many sources), an in-process endpoint's name hashed. A
-/// server shares its connection slots by it (`evict_for`). Connections whose source is unknown
+/// host shares its connection slots by it (`evict_for`). Connections whose source is unknown
 /// count as one source.
 pub type Source = [u8; 16];
 
@@ -141,7 +141,7 @@ pub trait Transport: Send + Sync + 'static {
     type Listener: Listener<Conn = Self::Conn>;
     fn dial(&self, addr: &Address) -> impl Future<Output = Result<Self::Conn, Error>> + Send;
     /// Dials authenticating with the static key of `secret` instead of an ephemeral one: for a
-    /// server dialing a peer server, which must see the dialer's own key (echo suppression).
+    /// host dialing a peer host, which must see the dialer's own key (echo suppression).
     fn dial_as(&self, addr: &Address, secret: &StaticSecret) -> impl Future<Output = Result<Self::Conn, Error>> + Send;
     fn listen(&self, cfg: ListenConfig) -> impl Future<Output = Result<Self::Listener, Error>> + Send;
 }
@@ -161,7 +161,7 @@ pub trait Listener: Send + 'static {
 pub trait Connection: Clone + Send + Sync + 'static {
     type Send: SendStream;
     type Recv: RecvStream;
-    /// The key the transport authenticated for the peer: a server's address key, a client's
+    /// The key the transport authenticated for the peer: a host's address key, a client's
     /// per-connection ephemeral key, a peer's dialable key (spec/wire.md §11.1).
     fn peer_key(&self) -> PublicKey;
     /// Where the connection comes from, when the transport can tell (`Source`).
@@ -194,7 +194,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    // spec: none (server policy): full slots go to the source holding the most only while it holds
+    // spec: none (host policy): full slots go to the source holding the most only while it holds
     // two more than the newcomer's; repeated arrivals end in equal shares
     #[test]
     fn evict_for_shares_fairly() {

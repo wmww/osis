@@ -16,7 +16,7 @@ impl Engine {
     /// Moves `t` to `owner` (an actor this node is admin of): the copy with `t`'s history,
     /// each current member of `t` re-granted its edge on the copy (with boxes, by inbox), and
     /// `/moved` on `t` when this node is its admin. A labeled `t`'s copy gets secrets of its
-    /// own and a label at `t`'s servers first. Returns the copy.
+    /// own and a label at `t`'s hosts first. Returns the copy.
     pub fn move_to(&mut self, t: &Tid, owner: &Tid) -> Result<(Tid, Done)> {
         let ts = super::now_ts(&self.core);
         let roster: Vec<(Tid, Edge)> = self
@@ -25,14 +25,14 @@ impl Engine {
             .filter(|(_, e)| e.alive_at(Some(ts)))
             .map(|(m, e)| (m, Edge { role: e.role, until: e.until, invite: e.invite, since: None, tied: e.tied.map(super::tied::tie_ct) }))
             .collect();
-        let servers = self.group_labels(t)?.into_iter().find(|l| !l.replaced).map(|l| l.servers);
+        let hosts = self.group_labels(t)?.into_iter().find(|l| !l.replaced).map(|l| l.hosts);
         let (copy, imports) = self.move_thing(t, *owner)?;
         let mut done = Done { commits: imports, ..Done::default() };
-        // a labeled thing's copy gets a label at the same servers before the re-grants, so their
+        // a labeled thing's copy gets a label at the same hosts before the re-grants, so their
         // inbox payloads name it and its members sync and write it whatever else they read
-        if let Some(servers) = servers {
+        if let Some(hosts) = hosts {
             done.extend(self.give_own_secrets(&copy)?);
-            let (_, d) = self.create_label(&copy, &servers)?;
+            let (_, d) = self.create_label(&copy, &hosts)?;
             done.extend(d);
         }
         for (m, e) in roster {

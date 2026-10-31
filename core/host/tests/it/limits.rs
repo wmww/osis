@@ -1,5 +1,5 @@
 //! Negative cases (spec/sync.md §5; notes/sync.md "Limits"): what a stale, reading or hostile
-//! client cannot do at a blind node.
+//! client cannot do at a host.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common;

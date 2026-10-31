@@ -70,14 +70,14 @@ fn future_commit(sim: &mut NetSim, n: usize, c: &CommitId) -> Res<(Vec<u8>, Comm
 
 /// A newer format (spec/versioning.md §1, §2): a writer of a newer build uploads a commit of
 /// format version `FORMAT_VERSION + 1` (stamped and wrapped like any). Expected: every old node
-/// stores it parked (pending, not read, no failure); a reader relays it to a server the writer
+/// stores it parked (pending, not read, no failure); a reader relays it to a host the writer
 /// does not reach; an old writer compacting the aspect and deleting what its snapshot covers
-/// leaves it at the servers (an old writer never destroys what it cannot read).
+/// leaves it at the hosts (an old writer never destroys what it cannot read).
 pub fn future_format(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xf5);
     let mut sim = sim("future_format", seed, NetWeights::default());
-    let s0 = sim.add_server()?;
-    let s1 = sim.add_server()?;
+    let s0 = sim.add_host()?;
+    let s1 = sim.add_host()?;
     let a = sim.add_node(&[s0], clock(&mut d))?;
     let w = sim.add_node(&[s0], clock(&mut d))?;
     let r = sim.add_node(&[s0, s1], clock(&mut d))?;
@@ -121,7 +121,7 @@ pub fn future_format(seed: u64) -> Res<Report> {
     }
     let at = |sim: &NetSim, s: usize, l: &LabelId, b: &BlobId| sim.hub(s).is_some_and(|h| h.store().live_ids(l).unwrap_or_default().contains(b));
     if !at(&sim, s1, &k.label, &bid) {
-        return Err(sim.fail("the reader did not relay the parked commit's blob to the other server"));
+        return Err(sim.fail("the reader did not relay the parked commit's blob to the other host"));
     }
     // an old writer compacts the aspect the newer commit wrote
     let tk = ak(&sim, &crate::workload::STORY)?;
@@ -131,7 +131,7 @@ pub fn future_format(seed: u64) -> Res<Report> {
     sim.run_until_quiescent(40)?;
     for s in [s0, s1] {
         if !at(&sim, s, &k.label, &bid) {
-            return Err(sim.fail(format!("an old writer destroyed the newer commit's blob at server {s}")));
+            return Err(sim.fail(format!("an old writer destroyed the newer commit's blob at host {s}")));
         }
     }
     for n in [a, w, r, c] {
@@ -150,7 +150,7 @@ pub fn future_format(seed: u64) -> Res<Report> {
 pub fn newer_schema(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x5c);
     let mut sim = sim("newer_schema", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let n = sim.add_node(&[s], clock(&mut d))?;
     let [pa, pn] = persons(&mut sim, [a, n], [s, s])?;

@@ -1,4 +1,4 @@
-//! Signatures of label operations and their server-side checks (spec/sync.md §5, spec/wire.md
+//! Signatures of label operations and their serving-side checks (spec/sync.md §5, spec/wire.md
 //! §9, §11.2): open proofs and their evaluation against a registration path, stamps, deposits,
 //! deletes by the label delete key or by a delete-key signature.
 
@@ -20,7 +20,7 @@ pub enum Proof {
     Claim { step: StepId, pk: VerifyingKey, sig: Signature },
     Static { signing: VerifyingKey, sig: Signature },
     /// A node's dialable key, to a member peer (spec/sync.md §5): signed under
-    /// `"osis v1 member open"`; blind nodes refuse it.
+    /// `"osis v1 member open"`; hosts refuse it.
     Member { dialable: VerifyingKey, sig: Signature },
 }
 
@@ -73,7 +73,7 @@ impl Proof {
     }
 }
 
-/// What a server answers an open with (spec/sync.md §5).
+/// What a host answers an open with (spec/sync.md §5).
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(clippy::large_enum_variant)] // one per Open, consumed at once
 pub enum OpenOutcome {
@@ -85,7 +85,7 @@ pub enum OpenOutcome {
     Refused,
 }
 
-/// What `evaluate_open` reads of a server's path besides its head: indexes the store keeps as
+/// What `evaluate_open` reads of a host's path besides its head: indexes the store keeps as
 /// steps are added, so an open costs a constant number of lookups however long the path.
 pub trait PathIndex {
     type Error;
@@ -99,7 +99,7 @@ pub trait PathIndex {
     fn child(&self, step: &StepId) -> Result<Option<Step>, Self::Error>;
 }
 
-/// Evaluates an open against a server's head and its path indexes. The signature is checked
+/// Evaluates an open against a host's head and its path indexes. The signature is checked
 /// first. A sync key matches the head, else the newest superseded step bearing it; a claim at
 /// step j needs V in j's set (head: open; on the path: its child); a static proof needs the
 /// key's static entry in the head's set. At most three lookups.
@@ -204,7 +204,7 @@ impl DeleteItem {
         Ok(DeleteItem { sig: key.sign(Domain::Delete, &d), ..self.clone() })
     }
 
-    /// Server check against its head and the entry's blob prefix (none: unknown framing, no
+    /// Host check against its head and the entry's blob prefix (none: unknown framing, no
     /// commitments): without a level the delete key; with one, the delete-key signature under
     /// the prefix's commitment at that level and the label key the level needs.
     pub fn verify(&self, head: &Step, prefix: Option<&Prefix>) -> Result<(), Error> {

@@ -14,9 +14,9 @@ use osis_schema::AspectKey;
 #[test]
 fn read_fetches_its_tree_only_spec_sync_6() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
-    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], inline_limit: 0, ..SyncConfig::default() });
+    let b = net.add_node(2, SyncConfig { hosts: vec![net.address(sv)], inline_limit: 0, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Read)], &[sv]);
     let t = net.item(a, g, g, "x");
     let u = net.item(a, g, g, "y");

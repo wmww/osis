@@ -1,4 +1,4 @@
-//! Server addresses (spec/sync.md §10, spec/data-model.md §9 `address`): strict value decoding,
+//! Host addresses (spec/sync.md §10, spec/data-model.md §9 `address`): strict value decoding,
 //! the text form (key in osis-base's unpadded base64url).
 
 use crate::Error;
@@ -34,7 +34,7 @@ pub fn address_from_text(s: &str) -> Result<Address, Error> {
 mod tests {
     use super::*;
 
-    // spec/sync.md §10: an address is a URL and the server's 32-byte key; text form round trips.
+    // spec/sync.md §10: an address is a URL and the host's 32-byte key; text form round trips.
     #[test]
     fn address_text() {
         let a = Address { url: "quic://example.org:4433".into(), key: [7; 32] };

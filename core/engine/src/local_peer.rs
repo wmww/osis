@@ -1,4 +1,4 @@
-//! `LocalPeer`: engines exchanging commits directly, with no labels or servers (the simulator's
+//! `LocalPeer`: engines exchanging commits directly, with no labels or hosts (the simulator's
 //! seed, notes/testing.md, Simulator). Each engine has its own `MemoryBackend`, `ManualClock` and
 //! seeded rng; delivery is explicit and order is the caller's. `Package` is plaintext (a direct
 //! connection: pairing, or a test of what arrives regardless of keys); `SealedPackage` is what a

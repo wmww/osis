@@ -1,6 +1,6 @@
 //! Blind-to-blind replication, push only (spec/sync.md §5 Upload: anyone holding a stamped entry
-//! may relay it; download needs an open, so a blind node never pulls). A `Replicator` drives an
-//! osis-proto `ClientSession` on a connection this node dialed to a peer server: per label it
+//! may relay it; download needs an open, so a host never pulls). A `Replicator` drives an
+//! osis-proto `ClientSession` on a connection this node dialed to a peer host: per label it
 //! walks its own log from the position the peer acknowledged, registers the steps it logged
 //! (with their claim sets) and uploads the stamped entries still live, in log order; deposits
 //! (no stamp), deletions and pending deletions cannot be relayed (their signatures are not
@@ -77,7 +77,7 @@ fn retryable(c: Code) -> bool {
 }
 
 impl Replicator {
-    /// `peer`: the peer server's static key. Every held label is enumerated (in bounded steps).
+    /// `peer`: the peer host's static key. Every held label is enumerated (in bounded steps).
     pub fn new(peer: [u8; 32], challenge: [u8; 32]) -> Replicator {
         Replicator {
             peer,

@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! What a blind node learns (spec/requirements.md, Untrusted nodes; notes/sync.md "What a blind
+//! What a host learns (spec/requirements.md, Untrusted nodes; notes/sync.md "What a blind
 //! node learns"): real engines sync scripted scenarios through an osis-host hub, then the
 //! hub's stored bytes are searched for every secret and identifier of the scenario, blob sizes
 //! checked against Padmé, labels checked for shared bytes, claim sets for reader counts and
@@ -19,9 +19,9 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
-/// Every live blob a server holds, per label, with its wrap.
+/// Every live blob a host holds, per label, with its wrap.
 fn stored(net: &Net, sv: usize) -> Vec<(LabelId, BlobId, Vec<u8>, [u8; 49])> {
-    let s = &net.servers[sv];
+    let s = &net.hosts[sv];
     let mut out = Vec::new();
     for l in net.labels_at(sv) {
         for id in s.hub.store().live_ids(&l).unwrap() {
@@ -48,11 +48,11 @@ const MARK_A: &str = "plaintext-marker-alpha-7f3a91";
 const MARK_B: &str = "plaintext-marker-beta-c4e82d";
 const MAP_KEY: &str = "map-key-marker-5b0e66";
 
-/// Admin a, writer b, reader c in one group at one server: values, a map key, heartbeats.
+/// Admin a, writer b, reader c in one group at one host: values, a map key, heartbeats.
 fn scenario() -> (Net, usize, [usize; 3], Tid, Tid) {
     let mut net = Net::new();
-    let sv = net.add_server();
-    net.servers[sv].backend.record_history();
+    let sv = net.add_host();
+    net.hosts[sv].backend.record_history();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -71,7 +71,7 @@ fn scenario() -> (Net, usize, [usize; 3], Tid, Tid) {
 }
 
 // spec/sync.md §4, spec/requirements.md Untrusted nodes: no plaintext value or map key, tid, AK,
-// schema ID, member identity (node tid or signing key) or role secret reaches the blind node's
+// schema ID, member identity (node tid or signing key) or role secret reaches the host's
 // storage, live or overwritten
 #[test]
 fn blind_node_stores_nothing_forbidden() {
@@ -98,7 +98,7 @@ fn blind_node_stores_nothing_forbidden() {
         let (_, sec) = ep.role(r).newest_secret().unwrap();
         needles.push((format!("{r:?} secret"), sec.expose().to_vec()));
     }
-    let history = net.servers[sv].backend.history();
+    let history = net.hosts[sv].backend.history();
     let blobs = stored(&net, sv);
     assert!(history.len() > 20 && blobs.len() > 10, "the scenario stored something");
     // control: what the node may know (the label ID) is found by the same search
@@ -106,7 +106,7 @@ fn blind_node_stores_nothing_forbidden() {
     assert!(history.iter().any(|(k, v)| contains(k, &l.0) || contains(v, &l.0)));
     for (what, needle) in &needles {
         for (k, v) in &history {
-            assert!(!contains(k, needle) && !contains(v, needle), "{what} in the server's records");
+            assert!(!contains(k, needle) && !contains(v, needle), "{what} in the host's records");
         }
         for (_, _, b, w) in &blobs {
             assert!(!contains(b, needle) && !contains(w, needle), "{what} in a stored blob");
@@ -131,7 +131,7 @@ fn stored_sizes_are_padme() {
         net.run();
         let blobs: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter_map(|(id, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == c).then_some(id)).collect();
         assert_eq!(blobs.len(), 1);
-        let b = net.servers[sv].backend.get_blob(&blobs[0]).unwrap().unwrap();
+        let b = net.hosts[sv].backend.get_blob(&blobs[0]).unwrap().unwrap();
         let n = padded_len(&b);
         assert_eq!(osis_crypto::padme(n), n);
         sizes.insert(b.len());
@@ -144,7 +144,7 @@ fn stored_sizes_are_padme() {
 #[test]
 fn no_linkage_across_labels() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let addr = vec![net.address(sv)];
@@ -172,12 +172,12 @@ fn no_linkage_across_labels() {
     assert!(c1.intersection(&c2).next().is_some(), "certificate commits travel under both labels (as distinct blobs)");
 }
 
-// spec/sync.md §2 (claim set), notes/sync.md "What a blind node learns": claim sets are padded
+// spec/sync.md §2 (claim set), notes/sync.md "What a host learns": claim sets are padded
 // to a power of two in random order: labels with 3 and 4 readers show the same set size
 #[test]
 fn claim_sets_hide_reader_counts() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let n: Vec<usize> = (1..=5).map(|i| net.node(i, &[sv])).collect();
     let readers = |k: usize| n[1..=k].iter().map(|x| (*x, Role::Read)).collect::<Vec<_>>();
     let addr = vec![net.address(sv)];
@@ -187,7 +187,7 @@ fn claim_sets_hide_reader_counts() {
     net.run();
     let set = |net: &mut Net, g: Tid| {
         let l = label_of(net, n[0], g);
-        let store = net.servers[sv].hub.store();
+        let store = net.hosts[sv].hub.store();
         let head = store.head(&l).unwrap().unwrap();
         store.claim_set(&l, &head).unwrap().unwrap().claims.clone()
     };

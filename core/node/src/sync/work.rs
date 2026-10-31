@@ -1,5 +1,5 @@
-//! Pass work sets (spec/sync.md §6, §7; spec/requirements.md, Scale): what a pass at one server,
-//! or a local pass of a label served with no server (`SyncEngine::local_work`), judges again. A verdict on a commit's bodies and entries changes only through a trigger:
+//! Pass work sets (spec/sync.md §6, §7; spec/requirements.md, Scale): what a pass at one host,
+//! or a local pass of a label served with no host (`SyncEngine::local_work`), judges again. A verdict on a commit's bodies and entries changes only through a trigger:
 //! its entries or their presence, certificate or timed-delete records changed (`State::touch`),
 //! the engine marked it changed (`Engine::take_changed`: applied, late parts, a drop, a fired
 //! timer, its thing's creation record, its validity flipped, its deaths moved), a snapshot or a
@@ -67,7 +67,7 @@ impl Inputs {
     }
 }
 
-/// One label's work set at one connection's server (`LConn::work`).
+/// One label's work set at one connection's host (`LConn::work`).
 #[derive(Default)]
 pub(crate) struct Work {
     /// Judge everything next pass.

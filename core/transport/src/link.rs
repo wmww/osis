@@ -241,7 +241,7 @@ mod tests {
         assert_eq!(b.rx.recv().await, None);
     }
 
-    // spec: none (server policy): full connection slots are shared by source: a newcomer from
+    // spec: none (host policy): full connection slots are shared by source: a newcomer from
     // another source takes the newest connection of the source holding the most; one from that
     // source is refused
     #[tokio::test]

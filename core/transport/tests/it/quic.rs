@@ -24,7 +24,7 @@ async fn read_to_end<R: RecvStream>(r: &mut R) -> Vec<u8> {
 }
 
 /// Listens on localhost; echoes every stream; records each connection's peer key.
-async fn echo_server(seed: u8) -> (Address, Keys) {
+async fn echo_listener(seed: u8) -> (Address, Keys) {
     let cfg = ListenConfig { url: "quic://127.0.0.1:0".into(), secret: StaticSecret::from_bytes([seed; 32]) };
     let mut l = Quic::new().listen(cfg).await.unwrap();
     let addr = l.address();
@@ -54,12 +54,12 @@ async fn echo(c: &QuicConn, data: &[u8]) -> Vec<u8> {
     read_to_end(&mut r).await
 }
 
-// spec/sync.md §10: pinned server key, ephemeral client key per connection, ordered byte stream.
+// spec/sync.md §10: pinned host key, ephemeral client key per connection, ordered byte stream.
 #[test]
 #[ignore]
 fn quic_round_trip_keys() {
     rt().block_on(async {
-        let (addr, keys) = echo_server(7).await;
+        let (addr, keys) = echo_listener(7).await;
         assert_eq!(addr.key, Quic::public_key(&StaticSecret::from_bytes([7; 32])).unwrap());
         let t = Quic::new();
         let c1 = t.dial(&addr).await.unwrap();
@@ -74,13 +74,13 @@ fn quic_round_trip_keys() {
     });
 }
 
-// spec/sync.md §10: a client MUST check the server's key against the address.
-// spec/sync.md §10 (server key check)
+// spec/sync.md §10: a client MUST check the host's key against the address.
+// spec/sync.md §10 (host key check)
 #[test]
 #[ignore]
 fn quic_pinned_key_mismatch_refused() {
     rt().block_on(async {
-        let (mut addr, _keys) = echo_server(8).await;
+        let (mut addr, _keys) = echo_listener(8).await;
         addr.key[5] ^= 0x40;
         let r = Quic::new().dial(&addr).await.map(|_| ());
         assert_eq!(r, Err(Error::KeyMismatch));
@@ -92,7 +92,7 @@ fn quic_pinned_key_mismatch_refused() {
 #[ignore]
 fn quic_large_transfer() {
     rt().block_on(async {
-        let (addr, _keys) = echo_server(9).await;
+        let (addr, _keys) = echo_listener(9).await;
         let c = Quic::new().dial(&addr).await.unwrap();
         let data: Vec<u8> = (0..(16u32 << 20)).map(|k| (k ^ (k >> 13)) as u8).collect();
         assert!(echo(&c, &data).await == data);

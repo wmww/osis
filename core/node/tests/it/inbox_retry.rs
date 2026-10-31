@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Inbox deposits refused for now (spec/sync.md §3; notes/sync.md Limits): the grantee's inbox
-//! label is not registered yet, so the server answers code 13; the sender keeps the blob and
+//! label is not registered yet, so the host answers code 13; the sender keeps the blob and
 //! deposits it again (backing off from `retry_ms`) until the label exists.
 
 use crate::net;
@@ -14,11 +14,11 @@ use osis_schema::core_types as ct;
 #[test]
 fn refused_inbox_deposit_retried_spec_sync_3() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let addr = net.address(sv);
-    // Bob's device cannot reach the server yet: his home label (his inbox) is not registered
+    // Bob's device cannot reach the host yet: his home label (his inbox) is not registered
     net.blocked.insert((b, sv));
     let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -64,12 +64,12 @@ fn refused_inbox_deposit_retried_spec_sync_3() {
     assert_eq!((e.perm_digest(false), held(e.index_digest()), e.edges_rows().unwrap()), (perm, index, rows), "rebuilt");
 }
 
-/// Nodes a (Alice's device) and b (Bob's), persons on one server, Bob's device cut from it
+/// Nodes a (Alice's device) and b (Bob's), persons on one host, Bob's device cut from it
 /// (his inbox label unregistered); Alice's group `g` with a label replaced `replaced` times and
 /// an item in it. Returns (net, a, b, bob's person, g, the item).
 fn persons(replaced: usize, seed: u64) -> (Net, usize, usize, osis_base::Tid, osis_base::Tid, osis_base::Tid) {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(seed, &[sv]);
     let b = net.node(seed + 1, &[sv]);
     let addr = net.address(sv);
@@ -107,7 +107,7 @@ fn persons(replaced: usize, seed: u64) -> (Net, usize, usize, osis_base::Tid, os
     (net, a, b, bob.person, g, item)
 }
 
-// spec/sync.md §3, §5 (a deposit goes until its server takes it): Bob's device is away for
+// spec/sync.md §3, §5 (a deposit goes until its host takes it): Bob's device is away for
 // hours, so every deposit of the grant's inbox blob is refused; Alice keeps one queued deposit
 // and Bob gets the grant once his device is back. Past `INBOX_LIFETIME` the re-sent seal
 // replaces the queued one.

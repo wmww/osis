@@ -1,7 +1,7 @@
 //! `Multi`: one transport over several, picked by URL scheme (spec/sync.md §10): `mem://` to
 //! `InProcess`, `quic://` to `Quic`, `peer://` to `Iroh` (feature `iroh`), else to
 //! `InProcess` (which finds a `peer://` listener by key). A scheme without its transport is
-//! `UnknownScheme`. Lets one driver reach servers and peers.
+//! `UnknownScheme`. Lets one driver reach hosts and peers.
 
 use crate::{Address, Connection, Error, InProcess, ListenConfig, Listener, MemConn, MemListener, MemRecv, MemSend, PublicKey, RecvStream, SendStream, StaticSecret, Transport};
 #[cfg(feature = "iroh")]

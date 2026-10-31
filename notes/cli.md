@@ -12,9 +12,9 @@
 - **Commit ids** print as 64 lower-case hex digits (input for `revert`, `commits --reverts/--reverted-by/--after`, `inspect commit`).
 - **`write` scripts**: lines are tokenized at whitespace outside quotes and brackets, so a value is one token with its quotes kept; a token wholly in single quotes loses them (`''` is the root path). `$NAME` (from `create --as NAME`) works as a tid argument and inside values. Errors from a line's arguments carry `line N`; rights and unknown things are checked at commit (no line). Output: the commit id (or `-`), then `NAME<TAB>tid` per bound name.
 - **`edit` on a terminal**: the value goes to a new temp file (`create_new`, random name, mode 0600, in `$XDG_RUNTIME_DIR` when set), then `$EDITOR`; the file is removed whatever the editor does.
-- **Delivering commands** (`grant`, `edge`, `leave`, `share-into`, `remove-edge-of`, `link make`, `card show`, `group sync`): their API call queues inbox deposits or a new label's first commits that the engine holds only in memory, so they open with sync on and end with `sync_now` + `wait_synced(All)` within `--timeout` (exit 6 "done locally, not yet at the servers"); skipped for a store without servers. Other writes stay local and go out with the next networked command.
+- **Delivering commands** (`grant`, `edge`, `leave`, `share-into`, `remove-edge-of`, `link make`, `card show`, `group sync`): their API call queues inbox deposits or a new label's first commits that the engine holds only in memory, so they open with sync on and end with `sync_now` + `wait_synced(All)` within `--timeout` (exit 6 "done locally, not yet at the hosts"); skipped for a store without hosts. Other writes stay local and go out with the next networked command.
 - **Write output**: `create` prints the tid; other writes print the commit id (nothing when nothing changed).
-- **`serve`**: calls `osis_host::serve::run`; without `--config`: listen `quic://127.0.0.1:0`, data `osis-host-data`, key `<data>/server.key`. The address `<url>#<key>` is the first stdout line; logs go to stderr.
+- **`serve`**: calls `osis_host::serve::run`; without `--config`: listen `quic://127.0.0.1:0`, data `osis-host-data`, key `<data>/host.key`. The address `<url>#<key>` is the first stdout line; logs go to stderr.
 - **`inspect`** is `Debug` dumps over `osis::internals::Internals::engine` (commits per aspect, CRDT state, items of a group, pending commits, actor epochs, headers). Not stable.
 
 ## Deviations from the original design (the deleted CLI plan)
@@ -23,7 +23,7 @@
 - `edit` takes the whole aspect: the API's `edit(base, new)` has no path form.
 - `-v` is accepted and ignored (no engine log sink yet); `-q` silences `serve`'s log.
 - `diag --since` dropped: there is no stored diagnostics log yet.
-- `init --server`, `restore --server`, `pair join --server` seed `Config.servers`. Commands that talk to other nodes (`init` with servers, `restore`, `pair`, `device rm`, `demote`, `link redeem/revoke`, `card import`, `status`, `sync`, `wait`, `daemon`, `signal`, `watch`, `roster --watch`, `diag --follow`) open the store with sync on `Runtime::Own` over QUIC; the others stay local (`Runtime::None`) and their writes go out with the next networked command.
+- `init --host`, `restore --host`, `pair join --host` seed `Config.hosts`. Commands that talk to other nodes (`init` with hosts, `restore`, `pair`, `device rm`, `demote`, `link redeem/revoke`, `card import`, `status`, `sync`, `wait`, `daemon`, `signal`, `watch`, `roster --watch`, `diag --follow`) open the store with sync on `Runtime::Own` over QUIC; the others stay local (`Runtime::None`) and their writes go out with the next networked command.
 - Pairing is two lines carried by the user (the API is transport-agnostic): `pair offer` prints the offer, reads the request on stdin, prints the reply and the new node; `pair join OFFER` prints the request and reads the reply on stdin.
 - `roster T --watch` added for `watch_roster`.
 
@@ -32,12 +32,12 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 
 | command | API | state |
 |---|---|---|
-| `init [--server A]` | `create` (prints the recovery card first) | now |
+| `init [--host A]` | `create` (prints the recovery card first) | now |
 | `restore CARD` (or `@FILE`, `-`) | `restore` | now |
-| `whoami` | `me`, `node`, `home`, `servers` | now |
+| `whoami` | `me`, `node`, `home`, `hosts` | now |
 | `pair offer` / `pair join OFFER` | `pair_offer`, `pair_accept` / `pair`, `Joining::finish` (the two devices exchange one line each over stdin/stdout: request, reply) | now |
 | `device ls` / `device rm N` | `devices` / `remove_device` | now |
-| `server ls/add/rm` | `servers`, `add_server`, `remove_server` | now |
+| `hosts ls/add/rm` | `hosts`, `add_host`, `remove_host` | now |
 | `serve` | osis-host `serve::run` | now |
 | `create --owner A [--in G\|--in-all G,G] [--group] [AK V]…` (nothing durable: exit 2, the thing would vanish at exit; `--in`/`--group` alone are ephemeral writes) | `write`, `Write::create`, `place`, `make_group`, `set`, `commit` | now |
 | `get T AK [PATH]` | `get`, `at().path().get_value()`; `--stream` / `--len`: `stream()` (raw bytes to stdout) / its `len` | now |

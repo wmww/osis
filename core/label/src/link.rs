@@ -35,7 +35,7 @@ pub struct ShareLink {
     pub target: Tid,
     pub k: Tid,
     pub k_label: LabelId,
-    pub servers: Vec<Address>,
+    pub hosts: Vec<Address>,
     pub peers: Vec<Peer>,
     /// `flags` bit 0: the redemption removes L's own edge (spec/permissions.md §9).
     pub single_use: bool,
@@ -51,7 +51,7 @@ pub struct RecoveryCard {
     pub seed: Secret32,
     pub person: Tid,
     pub home_label: LabelId,
-    pub servers: Vec<Address>,
+    pub hosts: Vec<Address>,
 }
 
 fn check_url(u: &str) -> Result<(), Error> {
@@ -61,7 +61,7 @@ fn check_url(u: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn servers_value(s: &[Address]) -> Result<Value, Error> {
+fn hosts_value(s: &[Address]) -> Result<Value, Error> {
     if s.len() > MAX_ADDRESSES {
         return Err(Error::Malformed("more than 8 addresses"));
     }
@@ -69,7 +69,7 @@ fn servers_value(s: &[Address]) -> Result<Value, Error> {
     Ok(Value::List(s.iter().map(Codec::to_value).collect()))
 }
 
-fn get_servers(v: &Value) -> Result<Vec<Address>, Error> {
+fn get_hosts(v: &Value) -> Result<Vec<Address>, Error> {
     let Value::List(l) = v else { return Err(Error::Malformed("addresses")) };
     if l.len() > MAX_ADDRESSES {
         return Err(Error::Malformed("more than 8 addresses"));
@@ -111,7 +111,7 @@ impl ShareLink {
             tid(&self.target),
             tid(&self.k),
             Value::bytes(&self.k_label.0),
-            servers_value(&self.servers)?,
+            hosts_value(&self.hosts)?,
             Value::List(peers),
         ];
         // `flags` only when a bit is set: one encoding per link
@@ -135,7 +135,7 @@ impl ShareLink {
             }
             _ => (rest, false),
         };
-        let [seed, target, k, k_label, servers, Value::List(peers)] = rest else { return Err(Error::Malformed("link")) };
+        let [seed, target, k, k_label, hosts, Value::List(peers)] = rest else { return Err(Error::Malformed("link")) };
         if peers.len() > MAX_PEERS {
             return Err(Error::Malformed("more than 4 peers"));
         }
@@ -162,7 +162,7 @@ impl ShareLink {
             target: get_tid(target, "link target")?,
             k: get_tid(k, "link k")?,
             k_label: LabelId(get_bytes(k_label, "link label")?),
-            servers: get_servers(servers)?,
+            hosts: get_hosts(hosts)?,
             peers,
             single_use,
         })
@@ -183,7 +183,7 @@ impl ShareLink {
 
 impl RecoveryCard {
     pub fn to_value(&self) -> Result<Value, Error> {
-        if self.servers.is_empty() {
+        if self.hosts.is_empty() {
             return Err(Error::Malformed("card without addresses"));
         }
         Ok(Value::List(vec![
@@ -191,7 +191,7 @@ impl RecoveryCard {
             Value::bytes(self.seed.expose()),
             tid(&self.person),
             Value::bytes(&self.home_label.0),
-            servers_value(&self.servers)?,
+            hosts_value(&self.hosts)?,
         ]))
     }
 
@@ -199,16 +199,16 @@ impl RecoveryCard {
         let Value::List(items) = v else { return Err(Error::Malformed("card")) };
         let (f, rest) = items.split_first().ok_or(Error::Malformed("card"))?;
         format_of(f)?;
-        let [seed, person, home, servers] = rest else { return Err(Error::Malformed("card")) };
-        let servers = get_servers(servers)?;
-        if servers.is_empty() {
+        let [seed, person, home, hosts] = rest else { return Err(Error::Malformed("card")) };
+        let hosts = get_hosts(hosts)?;
+        if hosts.is_empty() {
             return Err(Error::Malformed("card without addresses"));
         }
         Ok(RecoveryCard {
             seed: Secret32::from_bytes(get_bytes(seed, "card seed")?),
             person: get_tid(person, "card person")?,
             home_label: LabelId(get_bytes(home, "card label")?),
-            servers,
+            hosts,
         })
     }
 
@@ -235,7 +235,7 @@ pub(crate) mod tests {
             target: Tid::from_bytes([2; 15]),
             k: Tid::from_bytes([3; 15]),
             k_label: LabelId([4; 16]),
-            servers: vec![Address { url: "quic://a".into(), key: [5; 32] }],
+            hosts: vec![Address { url: "quic://a".into(), key: [5; 32] }],
             peers: vec![Peer { dialable: [6; 32], relays: vec!["https://relay".into()] }],
             single_use: false,
         }
@@ -271,9 +271,9 @@ pub(crate) mod tests {
         assert_eq!(ShareLink::from_text(&t).unwrap(), l);
         let mut bare = link();
         bare.peers.clear();
-        bare.servers.clear();
+        bare.hosts.clear();
         assert_eq!(ShareLink::from_text(&bare.to_text().unwrap()).unwrap(), bare);
-        let c = RecoveryCard { seed: Secret32::from_bytes([7; 32]), person: Tid::from_bytes([8; 15]), home_label: LabelId([9; 16]), servers: l.servers.clone() };
+        let c = RecoveryCard { seed: Secret32::from_bytes([7; 32]), person: Tid::from_bytes([8; 15]), home_label: LabelId([9; 16]), hosts: l.hosts.clone() };
         assert_eq!(RecoveryCard::from_text(&c.to_text().unwrap()).unwrap(), c);
         assert!(ShareLink::from_text(&c.to_text().unwrap()).is_err());
         assert!(!format!("{l:?}").contains("[1, 1"));
@@ -285,7 +285,7 @@ pub(crate) mod tests {
     fn caps() {
         let a = Address { url: "quic://a".into(), key: [5; 32] };
         let mut l = link();
-        l.servers = vec![a.clone(); 9];
+        l.hosts = vec![a.clone(); 9];
         assert!(l.to_value().is_err());
         let mut v = link().to_value().unwrap();
         if let Value::List(items) = &mut v {
@@ -306,7 +306,7 @@ pub(crate) mod tests {
             items[0] = Value::Int(2);
         }
         assert_eq!(ShareLink::from_value(&v), Err(Error::UnknownFormat(2)));
-        let c = RecoveryCard { seed: Secret32::from_bytes([7; 32]), person: Tid::from_bytes([8; 15]), home_label: LabelId([9; 16]), servers: vec![] };
+        let c = RecoveryCard { seed: Secret32::from_bytes([7; 32]), person: Tid::from_bytes([8; 15]), home_label: LabelId([9; 16]), hosts: vec![] };
         assert!(c.to_value().is_err());
         assert!(ShareLink::from_text("osis://link/!!").is_err());
     }

@@ -1,6 +1,6 @@
 //! File bundles (spec/wire.md §12, spec/sync.md §11): `osisbndl`, then length-framed canonical
 //! CBOR records. `BundleWriter` streams records out; `BundleReader` streams them in;
-//! `Importer` verifies paths, stamps and blob IDs as a server does and yields the events a
+//! `Importer` verifies paths, stamps and blob IDs as a host does and yields the events a
 //! peer's log would.
 
 use crate::auth::verify_stamp;
@@ -211,7 +211,7 @@ pub enum BundleEvent {
     TimedDelete { label: LabelId, blob: BlobId, at: WallMs },
 }
 
-/// Verifies bundle records as a server does: paths step by step, stamps against the path's head,
+/// Verifies bundle records as a host does: paths step by step, stamps against the path's head,
 /// entries only for blobs given earlier. Unknown records are skipped.
 #[derive(Default)]
 pub struct Importer {
@@ -234,7 +234,7 @@ impl Importer {
             Record::Path { label, steps } => {
                 let path: Vec<Step> = steps.iter().map(|(s, _)| s.clone()).collect();
                 verify_path(&label, &path)?;
-                // Like a server: a later path must pass through the current head (extend it).
+                // Like a host: a later path must pass through the current head (extend it).
                 if let Some(cur) = self.heads.get(&label) {
                     let id = cur.id();
                     if !path.iter().any(|s| s.id() == id) {

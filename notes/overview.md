@@ -14,7 +14,7 @@ The repo is meant to become a small monorepo of projects worked on independently
 The MVP is built: every subsystem of the spec is implemented and tested (final report, deviations and open issues: notes/mvp-progress.md). Design is settled; byte layouts are in spec/wire.md; conformance vectors are all provisional until the first stable release (nothing is frozen or logged as a format change before then).
 
 Code map (crate DAG and rules: notes/architecture.md):
-- `core/` (package names keep the `osis-` prefix): `base` osis-base (values, CBOR, ids, chunker), -crypto, -crdt, -schema, -perm, -store (encrypted local store), -commit, -keys, -label (blobs, labels, steps, large values), -proto (sans-I/O sync protocol), -transport (in-process, QUIC, iroh, LAN), -server (blind node), -node (engine, sync engine, membership flows), `osis` (the app API), `bench` osis-bench. `cli/` osis-cli (binary `osis`).
+- `core/` (package names keep the `osis-` prefix): `base` osis-base (values, CBOR, ids, chunker), -crypto, -crdt, -schema, -perm, -store (encrypted local store), -commit, -keys, -label (blobs, labels, steps, large values), -proto (sans-I/O sync protocol), -transport (in-process, QUIC, iroh, LAN), -host (host), -node (engine, sync engine, membership flows), `osis` (the app API), `bench` osis-bench. `cli/` osis-cli (binary `osis`).
 - `kit/` osis-kit (UI toolkit over Masonry) and `app/` osis-app (binary `osis-app`, prototype notes app): their own Cargo workspace rooted at kit/Cargo.toml (notes/app.md).
 - `schema/` the first-party schema files, their scenario tests in core/osis's test binary (notes/std.md); `core/test/sim/` the deterministic simulator (notes/testing.md); `core/test/vectors/` conformance vectors; `core/test/fuzz/` cargo-fuzz targets; `core/test/crdt-model` and `core/test/membership-model` reference models, `core/test/tla` TLA+ `sync`, `rotation` and `membership`; `tools/` policy.py, spec_map.py, fixpoint.
 
@@ -25,8 +25,8 @@ What runs where (details and latest numbers: notes/testing.md):
 - Behind features, off by default: iroh P2P (`iroh`, transport and node only), LAN announcements (`lan`). Tests of those run with `cargo test-net` (tier 2). QUIC and the redb file store are always built.
 
 How to run:
-- CLI: `cargo run --bin osis -- --help`; `osis -s DIR init`, writes, `osis serve` for a local server (notes/cli.md).
-- Server: `osis serve`; prints `quic://host:port#key`.
+- CLI: `cargo run --bin osis -- --help`; `osis -s DIR init`, writes, `osis serve` for a local host (notes/cli.md).
+- Host: `osis serve`; prints `quic://host:port#key`.
 - Standard data scenarios: core/osis's `contact`, `event`, `notes`, `tags` tests in `cargo test --workspace`.
 - Sim: `cargo run --bin sim-sweep -- --seeds N --budget-secs T`; replay a failing seed with `osis_sim::replay("<scenario>", <seed>)`.
 - Models: `core/test/tla/run.sh small` (Java); their tests run in `cargo test --workspace`; `cargo run --bin membership-model`.
@@ -44,12 +44,12 @@ Known open (issues/): owner tradeoffs stated in user terms (aspect-key-format); 
 - notes/versioning.md: transition conventions, write policy, blessed paths for hard schema changes.
 - notes/crdt.md: merge design reasons, anomalies, reference model, text size, worked examples.
 - notes/permissions.md: permission rules' reasons, membership model findings, move (copy) and revocation reasoning, sharing patterns.
-- notes/sync.md: sync and blind-node reasons, limits, what a blind node learns, policy defaults.
+- notes/sync.md: sync and host reasons, limits, what a blind node learns, policy defaults.
 - notes/crypto.md: suite choices, costs, crates.
-- notes/ephemeral.md: ephemeral data design and what is built (in-memory things and aspects, persistence, placements, undo, ephemeral commits held in memory at nodes and servers, relay-only signals; values kept alive by their author's rewrites), expiry, the all-nodes predicate, heartbeats and the stranded flag.
+- notes/ephemeral.md: ephemeral data design and what is built (in-memory things and aspects, persistence, placements, undo, ephemeral commits held in memory at nodes and hosts, relay-only signals; values kept alive by their author's rewrites), expiry, the all-nodes predicate, heartbeats and the stranded flag.
 - notes/chat.md: the chat pattern derived from the current design, with costs (thrown out; kept for its measured costs until the redesign, notes/std.md).
 - notes/tags.md: the standard core aspects (`/name`, `/body`, `/tag`), tags as marked groups in a graph, sharing a tag per item through one nested roster, the confirmation guideline.
-- notes/networking.md: transports (iroh, direct servers), official infrastructure, push wake-up proposal, risks.
+- notes/networking.md: transports (iroh, direct hosts), official infrastructure, push wake-up proposal, risks.
 - notes/local-store.md: encrypted local store and key-erasure deletion.
 - notes/node.md: osis-engine and osis-node module layout, engine surface, store records, node-core readings.
 - notes/cli.md: the `osis` command-line tool (command table, value syntax, JSON, exit codes).

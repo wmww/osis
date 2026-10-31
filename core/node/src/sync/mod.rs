@@ -1,13 +1,13 @@
 //! The sans-I/O sync engine (notes/sync.md; notes/architecture.md §2): one synchronous
 //! state machine per node, `SyncEngine::handle(Event) -> Vec<Action>`, holding the engine, one
-//! osis-proto `ClientSession` per server connection, the labeling decisions and the convergence
+//! osis-proto `ClientSession` per host connection, the labeling decisions and the convergence
 //! loop (spec/sync.md §5-§9). Two drivers move its bytes and timers: the tokio driver
 //! (`driver`, feature `driver`) and the simulator's step driver. No sync logic lives in a driver.
 //!
-//! Per server and label: open (sync key of the head, else walk by stale key or claim key),
+//! Per host and label: open (sync key of the head, else walk by stale key or claim key),
 //! verify the head, download (cursor sync, reconciliation fallback), apply membership commits
 //! first, then the pass: re-registration when an admin holds newer epochs (the actor's
-//! membership commits the server lacks first, then the step, then the rest), uploads of
+//! membership commits the host lacks first, then the step, then the rest), uploads of
 //! must-hold bodies, relays, certificates and heartbeats, deletions of must-not-hold bodies.
 
 mod bundle;
@@ -33,7 +33,7 @@ use osis_base::{Clock, LabelId, Tid};
 use osis_crypto::CryptoRngCore;
 use osis_label::{Address, Step};
 use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Command};
-use state::{ServerKey, State};
+use state::{HostKey, State};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -72,8 +72,8 @@ pub type ConnId = u64;
 
 #[derive(Clone, Debug)]
 pub struct SyncConfig {
-    /// Servers to keep a connection to besides those the labels name.
-    pub servers: Vec<Address>,
+    /// Hosts to keep a connection to besides those the labels name.
+    pub hosts: Vec<Address>,
     /// Subscribe to every opened label (pushes, spec/sync.md §8).
     pub subscribe: bool,
     /// Blobs above this many bytes are announced without their bytes and fetched when needed
@@ -85,7 +85,7 @@ pub struct SyncConfig {
     pub heartbeat_lifetime_ms: u64,
     /// Re-sync interval of opened labels without a subscription.
     pub resync_ms: u64,
-    /// Pause before re-dialing a server.
+    /// Pause before re-dialing a host.
     pub retry_ms: u64,
     /// Deposits skip heartbeats when fewer entries are left in the budget.
     pub tight_budget: u64,
@@ -97,7 +97,7 @@ pub struct SyncConfig {
     pub max_peers_per_label: usize,
     pub max_peers: usize,
     /// Bytes one peer key, and all peers together, may have uploaded or deposited here that
-    /// are not opened, not at a server and still held (member-peer serving).
+    /// are not opened, not at a host and still held (member-peer serving).
     pub peer_bytes: u64,
     pub peer_total_bytes: u64,
     /// Peer sessions served at once (more are closed at once).
@@ -107,9 +107,9 @@ pub struct SyncConfig {
     /// A served session that opened no label this long after it started is closed.
     pub serve_open_ms: u64,
     /// How long a complete pass waits for co-readers after a membership change (then it counts
-    /// servers only).
+    /// hosts only).
     pub peer_pass_wait_ms: u64,
-    /// Unopened unvouched entries a label may hold per server (an inbox label a sixteenth).
+    /// Unopened unvouched entries a label may hold per host (an inbox label a sixteenth).
     pub unvouched_cap: usize,
     /// Every pass judges everything (no work sets): a check that the work sets miss no trigger.
     pub full_passes: bool,
@@ -121,7 +121,7 @@ pub struct SyncConfig {
 impl Default for SyncConfig {
     fn default() -> SyncConfig {
         SyncConfig {
-            servers: Vec::new(),
+            hosts: Vec::new(),
             subscribe: true,
             inline_limit: osis_base::format::MAX_BLOB as u64,
             heartbeats: true,
@@ -169,7 +169,7 @@ pub enum Event {
 /// Outputs for the driver.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
-    /// Open a connection to `address` (checking the server's key against it, spec/sync.md §10)
+    /// Open a connection to `address` (checking the host's key against it, spec/sync.md §10)
     /// and report `Up` or `Down`. Always with an ephemeral transport key; a co-reader learns
     /// this node by its member proof (spec/sync.md §5).
     Dial { conn: ConnId, address: Address },
@@ -188,9 +188,9 @@ pub enum Action {
 pub(crate) enum Phase {
     /// Trying open keys in order.
     Opening,
-    /// Registering the recorded path at a server that lacks the label.
+    /// Registering the recorded path at a host that lacks the label.
     Registering,
-    /// Waiting for the server's path to verify its head.
+    /// Waiting for the host's path to verify its head.
     Verifying,
     Open,
     /// No key opens it here.
@@ -200,7 +200,7 @@ pub(crate) enum Phase {
 /// Counters of the work passes did (`SyncEngine::pass_stats`; scale checks).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PassStats {
-    /// Passes at servers and local passes (labels served with no server), and how many judged
+    /// Passes at hosts and local passes (labels served with no host), and how many judged
     /// everything.
     pub passes: u64,
     pub full: u64,
@@ -234,11 +234,11 @@ pub(crate) struct LConn {
     pub budget: Option<u64>,
     pub last_sync: u64,
     pub path: Vec<Step>,
-    /// A hinted open walked to an unverified step: the server's path is checked after the open.
+    /// A hinted open walked to an unverified step: the host's path is checked after the open.
     pub walk: Option<Step>,
-    /// A static-entry open's entry box, opened once the server's path verified the head.
+    /// A static-entry open's entry box, opened once the host's path verified the head.
     pub entry_box: Option<osis_schema::core_types::SecretBox>,
-    /// Write keys of a server path verified here (a label not recorded in `/label`): stamps
+    /// Write keys of a host path verified here (a label not recorded in `/label`): stamps
     /// under them vouch for an entry.
     pub writers: Vec<osis_crypto::VerifyingKey>,
     /// Read for receipts only (`receipts`): no pass, nothing placed, nothing kept.
@@ -258,11 +258,11 @@ impl LConn {
 }
 
 pub(crate) struct Conn {
-    /// A server's address key, or a co-reader node's dialable key (its LAN address may present
+    /// A host's address key, or a co-reader node's dialable key (its LAN address may present
     /// another transport key).
-    pub server: ServerKey,
+    pub host: HostKey,
     pub address: Address,
-    /// A co-reader node, not a server.
+    /// A co-reader node, not a host.
     pub peer: bool,
     pub session: ClientSession,
     pub up: bool,
@@ -272,7 +272,7 @@ pub(crate) struct Conn {
     pub req: Requests,
 }
 
-/// Requests on a connection not answered yet, and what its server would not deliver: they go
+/// Requests on a connection not answered yet, and what its host would not deliver: they go
 /// with the connection (asked again on the next one).
 #[derive(Default)]
 pub(crate) struct Requests {
@@ -282,14 +282,14 @@ pub(crate) struct Requests {
     pub sent: BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>,
     /// Deletes sent, likewise.
     pub deleting: BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>,
-    /// Timed deletes sent: recorded once the server says OK.
+    /// Timed deletes sent: recorded once the host says OK.
     pub timed_sent: BTreeSet<(LabelId, osis_base::BlobId)>,
     /// Uploads sent replacing entries (spec/sync.md §5): those are gone once one is answered OK.
     /// A plain upload of the same blob waits meanwhile (two statuses could not be told apart).
     pub replacing: BTreeMap<(LabelId, osis_base::BlobId), Vec<osis_base::BlobId>>,
     /// Blobs asked for and not received yet.
     pub fetching: BTreeSet<osis_base::BlobId>,
-    /// Blobs the server did not deliver when fetched (since it last announced them).
+    /// Blobs the host did not deliver when fetched (since it last announced them).
     pub missing: BTreeSet<osis_base::BlobId>,
     /// Reopens in a row per label.
     pub reopens: BTreeMap<LabelId, u32>,
@@ -311,14 +311,14 @@ impl Requests {
 pub struct LabelStatus {
     pub group: Tid,
     pub label: LabelId,
-    pub servers: usize,
-    /// Connections up to its servers.
+    pub hosts: usize,
+    /// Connections up to its hosts.
     pub connected: usize,
     /// Connections on which it is open.
     pub open: usize,
     /// Of those, the ones whose last pass ended with nothing outstanding.
     pub idle: usize,
-    /// Some server refused every key this node holds (waits for a re-seal).
+    /// Some host refused every key this node holds (waits for a re-seal).
     pub stranded: bool,
     pub last_sync: Option<u64>,
 }
@@ -327,7 +327,7 @@ pub struct LabelStatus {
 type BodyKey = (osis_base::CommitId, Vec<(usize, usize)>);
 
 /// First back-off after re-encrypting an aspect's deleted chunks, and its cap (local policy:
-/// a server deleting each fresh chunk drives at most this rate of commits).
+/// a host deleting each fresh chunk drives at most this rate of commits).
 pub(crate) const RELINK_BACKOFF_MS: u64 = 3_600_000;
 pub(crate) const RELINK_BACKOFF_MAX_MS: u64 = 7 * 24 * 3_600_000;
 
@@ -336,9 +336,9 @@ pub(crate) const RELINK_BACKOFF_MAX_MS: u64 = 7 * 24 * 3_600_000;
 pub(crate) struct Synced {
     key: (u64, usize, u64),
     labels: Vec<(Tid, Arc<GroupLabel>)>,
-    /// Per label, the actor its keys derive from and its servers, `peer://` nodes left out
-    /// (`complete_pass`, `peers::server_keys`).
-    pub actors: BTreeMap<LabelId, (Tid, Vec<ServerKey>)>,
+    /// Per label, the actor its keys derive from and its hosts, `peer://` nodes left out
+    /// (`complete_pass`, `peers::host_keys`).
+    pub actors: BTreeMap<LabelId, (Tid, Vec<HostKey>)>,
 }
 
 impl Default for Synced {
@@ -356,18 +356,18 @@ pub struct SyncEngine {
     pub(crate) cfg: SyncConfig,
     pub(crate) conns: BTreeMap<ConnId, Conn>,
     next_conn: ConnId,
-    /// Servers not connected: when to dial again.
-    retry: BTreeMap<ServerKey, (Address, u64)>,
+    /// Hosts not connected: when to dial again.
+    retry: BTreeMap<HostKey, (Address, u64)>,
     pub(crate) state: State,
     /// Event counter: pass completions and remote membership commits are ordered by it.
     pub(crate) seq: u64,
-    /// Per (server, label), the last pass end: its `seq` and when (corrected wall ms).
+    /// Per (host, label), the last pass end: its `seq` and when (corrected wall ms).
     /// Kept across disconnects on purpose: readers ask "a pass ended after X", never "on the live
     /// connection". `complete_pass` counts only passes after the actor's last remote membership
     /// commit (`membership_seen`), and finalizing an expired link only those ended after `until`;
-    /// what reached the server after a pass end is the same race online, and a duplicate re-seal
-    /// costs a box. Clearing would block re-seal and link finalization while one server is down.
-    pub(crate) passes: BTreeMap<(ServerKey, LabelId), (u64, u64)>,
+    /// what reached the host after a pass end is the same race online, and a duplicate re-seal
+    /// costs a box. Clearing would block re-seal and link finalization while one host is down.
+    pub(crate) passes: BTreeMap<(HostKey, LabelId), (u64, u64)>,
     pub(crate) membership_seen: BTreeMap<Tid, u64>,
     wake: Option<u64>,
     /// When the last Tick was handled (raw wall ms).
@@ -375,13 +375,13 @@ pub struct SyncEngine {
     /// Recent diagnostics (also sent as engine events).
     diagnostics: Vec<String>,
     /// Where each queued deposit (`State::outbox`: inbox blobs, a non-writer's own writes)
-    /// stands: waiting for its server, or sent and not answered yet.
-    pub(crate) outbox: BTreeMap<(ServerKey, LabelId, osis_base::BlobId), local::Outgoing>,
+    /// stands: waiting for its host, or sent and not answered yet.
+    pub(crate) outbox: BTreeMap<(HostKey, LabelId, osis_base::BlobId), local::Outgoing>,
     /// Deposits for a label this node syncs with nobody: logged here, as a peer's deposit would
     /// be (`send_outbox`).
     pub(crate) local_inbox: Vec<(LabelId, Vec<u8>, [u8; osis_crypto::WRAP_LEN])>,
     /// Tree node blobs a judgment of dropped chunks waits for (`dropped_chunks`); a pass
-    /// fetches those its server holds.
+    /// fetches those its host holds.
     pub(crate) tree_wants: BTreeSet<osis_base::BlobId>,
     /// Blobs each body's deltas link (`pass::body_blobs`), once the walk was complete: a body
     /// never changes.
@@ -395,8 +395,8 @@ pub struct SyncEngine {
     /// Deleted chunks an aspect's back-off holds back, and when to try them again (memory only).
     pub(crate) relink_pending: BTreeSet<osis_base::BlobId>,
     pub(crate) relink_at: u64,
-    /// Servers where a replaced label is done with (`retire_at`).
-    pub(crate) retired_at: BTreeSet<(ServerKey, LabelId)>,
+    /// Hosts where a replaced label is done with (`retire_at`).
+    pub(crate) retired_at: BTreeSet<(HostKey, LabelId)>,
     /// Certificate copies waiting for a rotation (group, commit, aspects).
     pub(crate) deferred: Vec<(Tid, osis_base::CommitId, BTreeSet<usize>)>,
     /// Commit blobs whose every delta was checked against its header hash (`true`) or found
@@ -415,11 +415,11 @@ pub struct SyncEngine {
     pub(crate) local_expiry: BTreeMap<osis_base::BlobId, Option<u64>>,
     /// The work sets of the local passes, by label (`LConn::work` for a label served here).
     pub(crate) local_work: BTreeMap<osis_base::LabelId, work::Work>,
-    /// When this node first saw each entry deposited at a server (raw ms; the promotion wait).
-    pub(crate) deposit_seen: BTreeMap<(ServerKey, LabelId, osis_base::BlobId), u64>,
-    /// This node's uploads a server refused for the label's cap (code 12), until taken there
+    /// When this node first saw each entry deposited at a host (raw ms; the promotion wait).
+    pub(crate) deposit_seen: BTreeMap<(HostKey, LabelId, osis_base::BlobId), u64>,
+    /// This node's uploads a host refused for the label's cap (code 12), until taken there
     /// or no longer held: a purged body they would carry goes first (spec/sync.md §7).
-    pub(crate) capped: BTreeSet<(ServerKey, LabelId, osis_base::BlobId)>,
+    pub(crate) capped: BTreeSet<(HostKey, LabelId, osis_base::BlobId)>,
     /// Stranded heartbeats already answered by a re-seal.
     pub(crate) resealed: BTreeSet<osis_base::CommitId>,
     /// Links whose finalization failed in this run (`finalize_links`): not tried again.
@@ -433,7 +433,7 @@ pub struct SyncEngine {
     /// A self-removal was carried out: its lost secrets are dropped once every label is idle
     /// (it is uploaded by then).
     pub(crate) drop_when_idle: bool,
-    /// Sessions of forgotten labels whose pushes the server is still to stop.
+    /// Sessions of forgotten labels whose pushes the host is still to stop.
     pub(crate) unsubscribe: BTreeSet<(ConnId, LabelId)>,
     /// The synced labels as last computed (`labels()`).
     pub(crate) synced: Synced,
@@ -451,7 +451,7 @@ pub struct SyncEngine {
     /// Steps peers registered here since start, by label.
     pub(crate) peer_steps: BTreeMap<LabelId, Vec<(Step, Option<osis_label::ClaimSet>)>>,
     /// Co-readers found on the LAN: their address there and when (raw ms).
-    pub(crate) lan: BTreeMap<ServerKey, peers::LanRoute>,
+    pub(crate) lan: BTreeMap<HostKey, peers::LanRoute>,
     /// The next `publish_reach` writes a fresh lan secret.
     pub(crate) lan_rotate: bool,
     /// Whether `/reach` placed under a label that no longer qualifies is to be looked for
@@ -467,7 +467,7 @@ pub struct SyncEngine {
     pub(crate) peer_cache: peers::PeerCache,
     /// Co-readers this node received entries of a label from (complete passes wait for them
     /// while a connection to them is up, spec/permissions.md §3).
-    pub(crate) peer_received: BTreeMap<LabelId, BTreeSet<ServerKey>>,
+    pub(crate) peer_received: BTreeMap<LabelId, BTreeSet<HostKey>>,
     /// When the last remote membership commit of each actor applied (raw ms; the peer part of
     /// `complete_pass` waits at most `peer_pass_wait_ms` from it).
     pub(crate) membership_at: BTreeMap<Tid, u64>,
@@ -482,7 +482,7 @@ pub struct SyncEngine {
     pub(crate) placed_cache: (u64, BTreeMap<osis_base::CommitId, bool>),
     /// Per label, the co-readers a complete pass waits for now (`peer_received` narrowed to
     /// those still reading it with a connection up that has it started; set by `handle`).
-    pub(crate) pass_peers: BTreeMap<LabelId, BTreeSet<ServerKey>>,
+    pub(crate) pass_peers: BTreeMap<LabelId, BTreeSet<HostKey>>,
     /// A membership or roster change since the last step (`members_changed`).
     pub(crate) members_moved: bool,
     /// Commit blobs with linked header lists whose prefix was checked against the resolved
@@ -490,7 +490,7 @@ pub struct SyncEngine {
     pub(crate) prefix_checked: BTreeSet<osis_base::BlobId>,
     /// Ephemeral entries held in memory (`ephemeral`).
     pub(crate) eph: ephemeral::Lane,
-    /// Relay-only uploads served sessions made (spec/sync.md §5, as a server admits them).
+    /// Relay-only uploads served sessions made (spec/sync.md §5, as a host admits them).
     pub(crate) relay_gate: osis_proto::RelayGate,
     /// Labels read for receipts only (`read_receipts`; memory only).
     pub(crate) receipts: BTreeMap<LabelId, receipts::Read>,
@@ -611,7 +611,7 @@ impl SyncEngine {
         self.conns.values().any(|c| c.req.fetching.contains(b))
     }
 
-    /// Blob `b` arrived, or a server said it does not hold it: no longer in flight.
+    /// Blob `b` arrived, or a host said it does not hold it: no longer in flight.
     pub(crate) fn fetched(&mut self, b: &osis_base::BlobId) {
         for c in self.conns.values_mut() {
             c.req.fetching.remove(b);
@@ -721,7 +721,7 @@ impl SyncEngine {
                 if let Some(c) = self.conns.get_mut(&conn) {
                     c.up = true;
                     let o = c.session.handle(now, ClientInput::Start);
-                    let lan = c.peer.then(|| (c.server, c.address.clone()));
+                    let lan = c.peer.then(|| (c.host, c.address.clone()));
                     self.outputs(conn, o, out)?;
                     if let Some((k, a)) = lan
                         && self.lan_up(k, &a)
@@ -783,22 +783,22 @@ impl SyncEngine {
     pub(crate) fn lost(&mut self, conn: ConnId) {
         // its requests not answered go with it (asked again on the next connection)
         if let Some(c) = self.conns.remove(&conn) {
-            self.eph_lost(conn, c.server, &c.req.fetching);
+            self.eph_lost(conn, c.host, &c.req.fetching);
             // deposits not answered on this connection go out again on the next one
             for o in self.outbox.values_mut().filter(|o| o.sent == Some(conn)) {
                 o.sent = None;
             }
             // a LAN address that never came up: back off that address, not the peer (the next
             // route is dialed at once)
-            if c.peer && !c.up && self.lan_failed(c.server, &c.address) {
+            if c.peer && !c.up && self.lan_failed(c.host, &c.address) {
                 return;
             }
             // another route failed while a LAN candidate waited: it goes now (once per pause)
-            if c.peer && !c.up && self.lan_cut(c.server) {
+            if c.peer && !c.up && self.lan_cut(c.host) {
                 return;
             }
             let pause = if c.peer { self.cfg.peer_retry_ms } else { self.cfg.retry_ms };
-            self.retry.insert(c.server, (c.address, self.raw_now().saturating_add(pause)));
+            self.retry.insert(c.host, (c.address, self.raw_now().saturating_add(pause)));
         }
     }
 
@@ -950,7 +950,7 @@ impl SyncEngine {
         }
     }
 
-    /// Whether every server this node syncs `actor`'s labels with, and every co-reader it
+    /// Whether every host this node syncs `actor`'s labels with, and every co-reader it
     /// received one of them from and has a connection up to, has had a complete pass of it since
     /// the last membership commit of the actor applied from elsewhere (`flows::SyncState`;
     /// spec/permissions.md §3 re-seal timing); a label with neither passes once the peer wait is
@@ -960,7 +960,7 @@ impl SyncEngine {
     }
 
     /// Labels this node syncs: every non-replaced label of a labeled group it holds read
-    /// secrets of; an admin also keeps its replaced labels until done with them at every server
+    /// secrets of; an admin also keeps its replaced labels until done with them at every host
     /// (spec/sync.md §2: it places the membership-class commits there, the replacement's
     /// `/label` among them, and deletes the content entries; `retire_at`, `retire_replaced`).
     pub fn labels(&mut self) -> Vec<(Tid, Arc<GroupLabel>)> {
@@ -976,7 +976,7 @@ impl SyncEngine {
             }
         } else {
             let labels = self.compute_labels(now);
-            let actors = labels.iter().map(|(g, l)| (l.id, (self.engine.core.secret_actor(g).unwrap_or(*g), peers::server_keys(&l.servers).collect()))).collect();
+            let actors = labels.iter().map(|(g, l)| (l.id, (self.engine.core.secret_actor(g).unwrap_or(*g), peers::host_keys(&l.hosts).collect()))).collect();
             self.synced = Synced { key, labels, actors };
         }
         self.synced.labels.clone()
@@ -999,7 +999,7 @@ impl SyncEngine {
     }
 
     /// Retires the replaced labels an admin still syncs once `MEMBERSHIP_KEEP_MS` passed since it
-    /// first saw them replaced: a server where the label was lost may never settle a pass.
+    /// first saw them replaced: a host where the label was lost may never settle a pass.
     fn retire_replaced(&mut self) {
         let now = self.now();
         let replaced: Vec<LabelId> = self.labels().iter().filter(|(_, l)| l.replaced).map(|(_, l)| l.id).collect();
@@ -1010,15 +1010,15 @@ impl SyncEngine {
         }
     }
 
-    /// Where each synced label stands (the API's status): per label, its group, its servers,
+    /// Where each synced label stands (the API's status): per label, its group, its hosts,
     /// how many connections are up and have it open, whether every one of those finished a pass
     /// with nothing outstanding, whether any could not open it (stranded), and when it last
     /// synced (raw wall ms).
     pub fn label_status(&mut self) -> Vec<LabelStatus> {
         let mut out = Vec::new();
         for (g, l) in self.labels() {
-            let mut st = LabelStatus { group: g, label: l.id, servers: l.servers.len(), connected: 0, open: 0, idle: 0, stranded: false, last_sync: None };
-            for c in self.conns.values().filter(|c| l.servers.iter().any(|a| a.key == c.server)) {
+            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), connected: 0, open: 0, idle: 0, stranded: false, last_sync: None };
+            for c in self.conns.values().filter(|c| l.hosts.iter().any(|a| a.key == c.host)) {
                 if c.up {
                     st.connected += 1;
                 }
@@ -1042,14 +1042,14 @@ impl SyncEngine {
         out
     }
 
-    /// Servers with a connection up.
+    /// Hosts with a connection up.
     pub fn connected(&self) -> usize {
         self.conns.values().filter(|c| c.up).count()
     }
 
-    /// Replaces the servers kept connected besides those the labels name.
-    pub fn set_servers(&mut self, servers: Vec<Address>) {
-        self.cfg.servers = servers;
+    /// Replaces the hosts kept connected besides those the labels name.
+    pub fn set_hosts(&mut self, hosts: Vec<Address>) {
+        self.cfg.hosts = hosts;
         self.touched.full = true;
     }
 
@@ -1102,24 +1102,24 @@ impl SyncEngine {
         self.engine.run(|tx| crate::rotation::uncovered_roles_of(tx, a, deps))
     }
 
-    /// The servers and co-reader nodes to keep connections to (true: a node).
-    fn wanted_servers(&mut self) -> BTreeMap<ServerKey, (Address, bool)> {
-        let mut m: BTreeMap<ServerKey, (Address, bool)> = self.cfg.servers.iter().map(|a| (a.key, (a.clone(), false))).collect();
+    /// The hosts and co-reader nodes to keep connections to (true: a node).
+    fn wanted_hosts(&mut self) -> BTreeMap<HostKey, (Address, bool)> {
+        let mut m: BTreeMap<HostKey, (Address, bool)> = self.cfg.hosts.iter().map(|a| (a.key, (a.clone(), false))).collect();
         for (_, l) in self.labels() {
-            // an admin's word: servers only (`peer://` nodes come from `/reach` or a link)
-            for a in l.servers.iter().filter(|a| !peers::is_peer(a)).cloned() {
+            // an admin's word: hosts only (`peer://` nodes come from `/reach` or a link)
+            for a in l.hosts.iter().filter(|a| !peers::is_peer(a)).cloned() {
                 m.entry(a.key).or_insert((a, false));
             }
         }
         for h in self.state.hints.values() {
-            for a in h.servers.iter().filter(|a| !peers::is_peer(a)) {
+            for a in h.hosts.iter().filter(|a| !peers::is_peer(a)) {
                 m.entry(a.key).or_insert_with(|| (a.clone(), false));
             }
         }
         let reads: Vec<Tid> = self.receipts.values().map(|r| r.group).collect();
         for g in reads {
             for l in self.engine.labels_of(&g) {
-                for a in l.servers.iter().filter(|a| !peers::is_peer(a)) {
+                for a in l.hosts.iter().filter(|a| !peers::is_peer(a)) {
                     m.entry(a.key).or_insert_with(|| (a.clone(), false));
                 }
             }
@@ -1136,17 +1136,17 @@ impl SyncEngine {
         m
     }
 
-    /// Dials wanted servers without a connection (after their retry time); adds labels to
+    /// Dials wanted hosts without a connection (after their retry time); adds labels to
     /// open connections.
     fn connect(&mut self, out: &mut Vec<Action>) {
         let now = self.raw_now();
-        let wanted = self.wanted_servers();
-        // a server no longer wanted keeps no retry time (it would hold the wake in the past)
+        let wanted = self.wanted_hosts();
+        // a host no longer wanted keeps no retry time (it would hold the wake in the past)
         self.retry.retain(|k, _| wanted.contains_key(k));
         for (key, (addr, peer)) in wanted {
             // a co-reader reached off the LAN that is heard on it: its LAN route is dialed beside
             // the running connection, which goes once that is up (`lan_switched`)
-            if self.conns.values().any(|c| c.server == key) && !(peer && self.lan_probe(&key, &addr)) {
+            if self.conns.values().any(|c| c.host == key) && !(peer && self.lan_probe(&key, &addr)) {
                 continue;
             }
             if self.retry.get(&key).is_some_and(|(_, t)| *t > now) {
@@ -1159,7 +1159,7 @@ impl SyncEngine {
             self.rng.fill_bytes(&mut challenge);
             // the key the transport authenticates (a LAN address presents its own)
             let session = ClientSession::new(ClientConfig { peer_static_key: addr.key, challenge });
-            self.conns.insert(conn, Conn { server: key, address: addr.clone(), peer, session, up: false, labels: BTreeMap::new(), timer: None, offset: None, req: Requests::default() });
+            self.conns.insert(conn, Conn { host: key, address: addr.clone(), peer, session, up: false, labels: BTreeMap::new(), timer: None, offset: None, req: Requests::default() });
             out.push(Action::Dial { conn, address: addr });
         }
     }
@@ -1170,8 +1170,8 @@ impl SyncEngine {
         if self.conns.values().all(|c| !c.peer) {
             return;
         }
-        let wanted: BTreeSet<ServerKey> = if self.cfg.peers { self.peers().keys().copied().chain(self.link_routes().into_keys()).collect() } else { BTreeSet::new() };
-        let gone: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.peer && !wanted.contains(&c.server)).map(|(id, _)| *id).collect();
+        let wanted: BTreeSet<HostKey> = if self.cfg.peers { self.peers().keys().copied().chain(self.link_routes().into_keys()).collect() } else { BTreeSet::new() };
+        let gone: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.peer && !wanted.contains(&c.host)).map(|(id, _)| *id).collect();
         for conn in gone {
             out.push(Action::Close { conn });
             self.lost(conn);
@@ -1258,7 +1258,7 @@ impl SyncEngine {
             self.receipts_refused(conn, l, fetch);
         }
         match e {
-            // Hellos done: every label this server holds starts opening
+            // Hellos done: every label this host holds starts opening
             E::Ready { .. } => self.add_new_labels(out)?,
             E::ClockOffset { offset_ms, .. } => {
                 if let Some(c) = self.conns.get_mut(&conn) {
@@ -1279,7 +1279,7 @@ impl SyncEngine {
             E::Budget { label, blob_id, code, budget } => self.budget(conn, label, blob_id, code, budget.map(|b| b.0))?,
             // a Push names its label: one not started on this connection is junk (spec/wire.md
             // §11.2; peer input never grows storage unasked)
-            E::Events { label, .. } if !self.conns.get(&conn).is_some_and(|c| c.labels.contains_key(&label)) => self.diag("server pushed a label not opened".into()),
+            E::Events { label, .. } if !self.conns.get(&conn).is_some_and(|c| c.labels.contains_key(&label)) => self.diag("host pushed a label not opened".into()),
             // a session not open yet: a push left from an earlier session (a forgotten label's,
             // a reopen's) would move the cursor past what its replay has not listed
             E::Events { label, .. } if !self.lc(conn, &label).is_some_and(|x| x.phase == Phase::Open) => {}
@@ -1298,7 +1298,7 @@ impl SyncEngine {
                 self.eph_synced(conn, label, out)?
             }
             E::NeedReconcile { label } => {
-                let s = self.conns.get(&conn).map(|c| c.server);
+                let s = self.conns.get(&conn).map(|c| c.host);
                 if let Some(s) = s {
                     self.state.set_cursor(s, label, None);
                     // a lane reconciliation running lists the present entries too and syncs from
@@ -1342,17 +1342,17 @@ impl SyncEngine {
                 }
                 self.refused(conn, label, kind, code, out)?
             }
-            E::PeerError(e) => self.diag(format!("server: {e}")),
+            E::PeerError(e) => self.diag(format!("host: {e}")),
         }
         Ok(())
     }
 
-    /// Labels to open, with their group and server keys: the synced labels and inbox hints.
-    fn wanted_labels(&mut self) -> Vec<(Tid, LabelId, Vec<ServerKey>)> {
-        let mut want: Vec<(Tid, LabelId, Vec<ServerKey>)> = self.labels().into_iter().map(|(g, l)| (g, l.id, l.servers.iter().map(|a| a.key).collect())).collect();
+    /// Labels to open, with their group and host keys: the synced labels and inbox hints.
+    fn wanted_labels(&mut self) -> Vec<(Tid, LabelId, Vec<HostKey>)> {
+        let mut want: Vec<(Tid, LabelId, Vec<HostKey>)> = self.labels().into_iter().map(|(g, l)| (g, l.id, l.hosts.iter().map(|a| a.key).collect())).collect();
         for (l, h) in &self.state.hints {
             if !want.iter().any(|(_, x, _)| x == l) {
-                want.push((h.thing, *l, h.servers.iter().map(|a| a.key).collect()));
+                want.push((h.thing, *l, h.hosts.iter().map(|a| a.key).collect()));
             }
         }
         if self.cfg.peers && self.conns.values().any(|c| c.peer) {
@@ -1365,7 +1365,7 @@ impl SyncEngine {
                 }
             }
         }
-        // receipts-only reads: at their servers only
+        // receipts-only reads: at their hosts only
         for r in self.receipts_wanted() {
             if !want.iter().any(|(_, x, _)| *x == r.1) {
                 want.push(r);
@@ -1374,17 +1374,17 @@ impl SyncEngine {
         want
     }
 
-    /// Starts every wanted label not yet on a ready connection to one of its servers.
+    /// Starts every wanted label not yet on a ready connection to one of its hosts.
     fn add_new_labels(&mut self, out: &mut Vec<Action>) -> Result<()> {
-        let conns: Vec<(ConnId, ServerKey)> = self.conns.iter().filter(|(_, c)| c.session.is_ready()).map(|(id, c)| (*id, c.server)).collect();
+        let conns: Vec<(ConnId, HostKey)> = self.conns.iter().filter(|(_, c)| c.session.is_ready()).map(|(id, c)| (*id, c.host)).collect();
         if conns.is_empty() {
             return Ok(());
         }
         let labels = self.wanted_labels();
-        for (conn, server) in conns {
-            for (g, l, servers) in &labels {
+        for (conn, host) in conns {
+            for (g, l, hosts) in &labels {
                 let known = self.conns.get(&conn).is_some_and(|c| c.labels.contains_key(l));
-                if !known && servers.contains(&server) {
+                if !known && hosts.contains(&host) {
                     self.start_label(conn, *g, *l, out)?;
                 }
             }
@@ -1467,7 +1467,7 @@ impl SyncEngine {
                 continue;
             }
             // a label not reconciled since a cap refusal made room (`eph_forget`) syncs again
-            let unreconciled = self.conns.get(&conn).is_some_and(|c| !self.eph.reconciled.contains(&(c.server, label)) && self.state.cursors.contains_key(&(c.server, label)));
+            let unreconciled = self.conns.get(&conn).is_some_and(|c| !self.eph.reconciled.contains(&(c.host, label)) && self.state.cursors.contains_key(&(c.host, label)));
             if !self.cfg.subscribe || unreconciled || self.lc(conn, &label).is_some_and(|l| !l.synced) {
                 self.sync_label(conn, label, out)?;
                 self.eph_retry_deletes(conn, label, out)?;
@@ -1518,7 +1518,7 @@ impl SyncEngine {
         if let Some(x) = self.state.sent_inbox.values().filter(|s| s.at != 0).map(|s| s.at.saturating_add(osis_base::format::INBOX_LIFETIME_MS)).min() {
             at((x as i64).saturating_sub(skew).max(0) as u64);
         }
-        // a due inbox blob goes once its server's connection is ready (an event of its own)
+        // a due inbox blob goes once its host's connection is ready (an event of its own)
         for o in self.outbox.values().filter(|o| o.sent.is_none() && o.after > now) {
             at(o.after);
         }
@@ -1534,7 +1534,7 @@ impl SyncEngine {
         t.map(|x| x.max(self.last_tick.saturating_add(MIN_WAKE_MS)))
     }
 
-    /// Inbox blobs (grants, notices) not yet sent or not yet answered by a server (the outbox
+    /// Inbox blobs (grants, notices) not yet sent or not yet answered by a host (the outbox
     /// and the delivery records are stored and restored at open); `wait_synced` waits for none.
     pub fn deliveries_pending(&self) -> usize {
         self.outbox.len() + self.state.sent_inbox.values().filter(|s| s.at == 0).count()
@@ -1561,17 +1561,17 @@ impl SyncEngine {
         let now = self.raw_now();
         let inline_limit = self.cfg.inline_limit;
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
-        let server = c.server;
+        let host = c.host;
         let Some(l) = c.labels.get_mut(&label) else { return Ok(()) };
         l.syncing = true;
         l.last_sync = now;
-        let cursor = self.state.cursors.get(&(server, label)).copied();
-        // the first sync of a label at a server since start reconciles the live sets first: the
+        let cursor = self.state.cursors.get(&(host, label)).copied();
+        // the first sync of a label at a host since start reconciles the live sets first: the
         // ephemeral entries a cursor already passed are back in no memory here (notes/ephemeral.md
         // Convergence); the cursor stays for what follows
         // (a replay from no cursor lists everything: nothing to reconcile after it)
         if cursor.is_none() {
-            self.eph.reconciled.insert((server, label));
+            self.eph.reconciled.insert((host, label));
         }
         // marked reconciled when the reply arrives (`reconciled`): a connection ending first
         // reconciles again on the next one. More ephemeral entries than a Sync's gained list
@@ -1580,12 +1580,12 @@ impl SyncEngine {
         if many {
             self.eph.announced.insert((conn, label));
         }
-        if many || (cursor.is_some() && !self.eph.reconciled.contains(&(server, label))) {
+        if many || (cursor.is_some() && !self.eph.reconciled.contains(&(host, label))) {
             if self.eph.reconciling.contains_key(&(conn, label)) {
                 return Ok(());
             }
             let listed: BTreeSet<osis_base::BlobId> = SyncEngine::eph_entries_of(&self.eph, &label).map(|(b, _)| b).collect();
-            let mut ids = self.state.present_at(&server, &label);
+            let mut ids = self.state.present_at(&host, &label);
             ids.extend(listed.iter().copied());
             ids.sort();
             ids.dedup();
@@ -1593,14 +1593,14 @@ impl SyncEngine {
             return self.command(conn, Command::Reconcile { label, ids }, out);
         }
         // a replay lists the live entries only: presence starts over from it (a cursor lost in a
-        // crash otherwise kept entries a wiped server no longer holds "present" for good)
+        // crash otherwise kept entries a wiped host no longer holds "present" for good)
         if cursor.is_none() {
-            for b in self.state.present_at(&server, &label) {
-                self.state.set_present(server, label, b, false);
+            for b in self.state.present_at(&host, &label) {
+                self.state.set_present(host, label, b, false);
             }
         }
-        // the ephemeral entries held, listed once per connection: the server asks for those it
-        // lacks (a restarted server, another server's)
+        // the ephemeral entries held, listed once per connection: the host asks for those it
+        // lacks (a restarted host, another host's)
         let gained = self.eph_gained(conn, label);
         self.command(conn, Command::Sync { label, cursor, inline_limit, entries: Vec::new(), gained }, out)
     }
@@ -1707,14 +1707,14 @@ mod tests {
         for down in [false, true] {
             let lp = crate::local_peer::LocalPeer::new(1, 964, osis_base::WallMs(1_700_000_000_000)).unwrap();
             let p = lp.peers.into_iter().next().unwrap();
-            let server = Address { url: "quic://server:1".into(), key: [7; 32] };
-            let cfg = SyncConfig { servers: vec![server.clone()], ..SyncConfig::default() };
+            let host = Address { url: "quic://host:1".into(), key: [7; 32] };
+            let cfg = SyncConfig { hosts: vec![host.clone()], ..SyncConfig::default() };
             let mut s = SyncEngine::new(p.engine, p.clock, Box::new(osis_crypto::SeededRng::from_u64(965)), cfg).unwrap();
             let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
             let b = osis_base::BlobId([1; 32]);
             s.conns.get_mut(&conn).unwrap().req.fetching.insert(b);
             let d = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
-            s.queue_deposit(LabelId([1; 16]), std::slice::from_ref(&server), &d, vec![9; 40], [3; osis_crypto::WRAP_LEN], None);
+            s.queue_deposit(LabelId([1; 16]), std::slice::from_ref(&host), &d, vec![9; 40], [3; osis_crypto::WRAP_LEN], None);
             for o in s.outbox.values_mut() {
                 o.sent = Some(conn);
             }
@@ -1729,14 +1729,14 @@ mod tests {
         }
     }
 
-    // spec/sync.md §6: a blob a connection's server did not deliver is not fetched there again
-    // until that server announces it (it holds it now).
+    // spec/sync.md §6: a blob a connection's host did not deliver is not fetched there again
+    // until that host announces it (it holds it now).
     #[test]
     fn undelivered_blob_fetched_again_once_announced_spec_sync_6() {
         let lp = crate::local_peer::LocalPeer::new(1, 968, osis_base::WallMs(1_700_000_000_000)).unwrap();
         let p = lp.peers.into_iter().next().unwrap();
-        let server = Address { url: "quic://server:1".into(), key: [7; 32] };
-        let cfg = SyncConfig { servers: vec![server], ..SyncConfig::default() };
+        let host = Address { url: "quic://host:1".into(), key: [7; 32] };
+        let cfg = SyncConfig { hosts: vec![host], ..SyncConfig::default() };
         let mut s = SyncEngine::new(p.engine, p.clock, Box::new(osis_crypto::SeededRng::from_u64(969)), cfg).unwrap();
         let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
         let (l, b) = (LabelId([1; 16]), osis_base::BlobId([1; 32]));
@@ -1747,7 +1747,7 @@ mod tests {
         s.log_events(Some(conn), l, vec![added], None, &mut Vec::new()).unwrap();
         s.fetch_on(conn, l, [b], &mut Vec::new()).unwrap();
         assert!(s.fetching(&b), "asked once announced");
-        // likewise when a reconciliation finds the server holding it
+        // likewise when a reconciliation finds the host holding it
         let b2 = osis_base::BlobId([2; 32]);
         s.conns.get_mut(&conn).unwrap().req.missing.insert(b2);
         s.reconciled(conn, l, vec![b2], Vec::new(), &mut Vec::new()).unwrap();
@@ -1764,11 +1764,11 @@ mod tests {
         for case in ["down", "answered", "refused"] {
             let lp = crate::local_peer::LocalPeer::new(1, 970, osis_base::WallMs(1_700_000_000_000)).unwrap();
             let p = lp.peers.into_iter().next().unwrap();
-            let server = Address { url: "quic://server:1".into(), key: [7; 32] };
-            let cfg = SyncConfig { servers: vec![server], ..SyncConfig::default() };
+            let host = Address { url: "quic://host:1".into(), key: [7; 32] };
+            let cfg = SyncConfig { hosts: vec![host], ..SyncConfig::default() };
             let mut s = SyncEngine::new(p.engine, p.clock, Box::new(osis_crypto::SeededRng::from_u64(971)), cfg).unwrap();
             let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
-            let key = s.conns[&conn].server;
+            let key = s.conns[&conn].host;
             let (l, b) = (LabelId([1; 16]), osis_base::BlobId([1; 32]));
             s.eph.reconciling.insert((conn, l), BTreeSet::new());
             s.reconciled(conn, l, vec![b], Vec::new(), &mut Vec::new()).unwrap();
@@ -1787,18 +1787,18 @@ mod tests {
         }
     }
 
-    // spec/sync.md §5: a deposit is kept until each of its servers answers it, also across a
-    // restart; one blob queued under two labels at one server is two deposits.
+    // spec/sync.md §5: a deposit is kept until each of its hosts answers it, also across a
+    // restart; one blob queued under two labels at one host is two deposits.
     #[test]
     fn one_blob_queued_under_two_labels_spec_sync_5() {
         let lp = crate::local_peer::LocalPeer::new(1, 966, osis_base::WallMs(1_700_000_000_000)).unwrap();
         let p = lp.peers.into_iter().next().unwrap();
-        let server = Address { url: "quic://server:1".into(), key: [7; 32] };
+        let host = Address { url: "quic://host:1".into(), key: [7; 32] };
         let mut s = SyncEngine::new(p.engine, p.clock, Box::new(osis_crypto::SeededRng::from_u64(967)), SyncConfig::default()).unwrap();
         let d = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
         let delivery = Some((osis_base::Tid::from_bytes([4; 15]), osis_base::CommitId([6; 32])));
         for (l, x) in [(LabelId([1; 16]), None), (LabelId([2; 16]), delivery)] {
-            s.queue_deposit(l, std::slice::from_ref(&server), &d, vec![9; 40], [3; osis_crypto::WRAP_LEN], x);
+            s.queue_deposit(l, std::slice::from_ref(&host), &d, vec![9; 40], [3; osis_crypto::WRAP_LEN], x);
         }
         assert_eq!(s.deliveries_pending(), 2);
         s.state.flush(&mut s.engine).unwrap();

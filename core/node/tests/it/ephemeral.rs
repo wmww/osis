@@ -1,5 +1,5 @@
 //! Synced ephemeral data (notes/ephemeral.md step 3, spec/sync.md §4-§6): ephemeral commits held
-//! in memory at nodes and servers, carried by the ordinary sync path; signals as relay-only
+//! in memory at nodes and hosts, carried by the ordinary sync path; signals as relay-only
 //! commits.
 
 use crate::net;
@@ -20,7 +20,7 @@ pub(crate) fn write_key(net: &mut Net, n: usize, g: Tid) -> osis_crypto::Signing
 }
 
 /// Seals ephemeral commit `c` under `g`'s label as node `w` would, stamped with `stamp` when
-/// given: (blob ID, the log event a server pushes).
+/// given: (blob ID, the log event a host pushes).
 pub(crate) fn sealed(net: &mut Net, w: usize, g: Tid, c: &osis_commit::CommitBlob, stamp: Option<&osis_crypto::SigningSecret>, seed: u64) -> (osis_base::BlobId, osis_proto::Event) {
     let p = osis_commit::project(c, |_| ()).unwrap().remove(0);
     let class = osis_label::Class::of_marker(c.header.ephemeral);
@@ -33,7 +33,7 @@ pub(crate) fn sealed(net: &mut Net, w: usize, g: Tid, c: &osis_commit::CommitBlo
     (s.id, osis_proto::Event::Added { blob_id: s.id, blob: Some(s.blob), wrap, stamp })
 }
 
-/// Server `sv` pushes `events` of label `l` to node `n` (a replay or a hostile server's push);
+/// Host `sv` pushes `events` of label `l` to node `n` (a replay or a hostile host's push);
 /// the node's actions.
 pub(crate) fn push(net: &mut Net, n: usize, sv: usize, l: osis_base::LabelId, events: Vec<osis_proto::Event>) -> Vec<osis_node::sync::Action> {
     let conn = net.conn_to(n, sv).unwrap();
@@ -122,17 +122,17 @@ pub(crate) fn rows(b: &osis_store::MemoryBackend) -> usize {
 }
 
 // notes/ephemeral.md step 3, spec/sync.md §4: an ephemeral window placed in a synced group
-// reaches the other member's reads and watches; neither its store nor the server's gains a row
-// (the server reserves log numbers in its label meta, the same row)
+// reaches the other member's reads and watches; neither its store nor the host's gains a row
+// (the host reserves log numbers in its label meta, the same row)
 #[test]
 fn window_reaches_member_no_store_rows_spec_sync_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
-    let (rb, rs) = (rows(&net.nodes[b].backend), rows(&net.servers[sv].backend));
+    let (rb, rs) = (rows(&net.nodes[b].backend), rows(&net.hosts[sv].backend));
     let commits = net.engine(b).commit_ids().len();
     let rx = net.listen(b);
     let w = window(&mut net, a, g, "hello");
@@ -142,7 +142,7 @@ fn window_reaches_member_no_store_rows_spec_sync_4() {
     let changed: Vec<_> = rx.try_iter().filter_map(|e| if let osis_node::Event::Ephemeral { changed, origin: osis_node::Origin::Remote, .. } = e { Some(changed) } else { None }).flatten().collect();
     assert!(changed.iter().any(|(t, ak)| *t == w && ak.as_str() == STATE), "{changed:?}");
     assert_eq!(rows(&net.nodes[b].backend), rb, "nothing stored at the member");
-    assert_eq!(rows(&net.servers[sv].backend), rs, "nothing stored at the server");
+    assert_eq!(rows(&net.hosts[sv].backend), rs, "nothing stored at the host");
     assert_eq!(net.engine(b).commit_ids().len(), commits);
 }
 
@@ -152,7 +152,7 @@ fn window_reaches_member_no_store_rows_spec_sync_4() {
 #[test]
 fn expiring_write_before_entering_closure_goes_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -180,11 +180,11 @@ fn expiring_write_before_entering_closure_goes_spec_sync_9() {
 }
 
 // notes/ephemeral.md Owner direction (the shared window): two holders keep editing while one is
-// offline; on reconnect both converge on the merge, through a server
+// offline; on reconnect both converge on the merge, through a host
 #[test]
 fn shared_window_merges_after_offline_spec_sync_6() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -236,11 +236,11 @@ fn shared_window_merges_over_peer_link_spec_sync_5() {
 }
 
 // notes/ephemeral.md Holders: a restarted node forgets the ephemeral state and gets it back from
-// the server (its first sync of the label reconciles: its cursor had passed those entries)
+// the host (its first sync of the label reconciles: its cursor had passed those entries)
 #[test]
 fn restarted_node_gets_state_back_spec_sync_6() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -256,13 +256,13 @@ fn restarted_node_gets_state_back_spec_sync_6() {
     assert_eq!(notes(&mut net, b, w), map(&[("b", "before")]), "its own old writes come back too");
 }
 
-// notes/ephemeral.md At servers: a server restart loses its ephemeral entries; the holders bring
-// them back (they list what they hold in their first Sync, the server wants what it lacks), so a
+// notes/ephemeral.md At hosts: a host restart loses its ephemeral entries; the holders bring
+// them back (they list what they hold in their first Sync, the host wants what it lacks), so a
 // node arriving later still gets the state
 #[test]
-fn server_restart_holders_upload_again_spec_sync_4() {
+fn host_restart_holders_upload_again_spec_sync_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -272,12 +272,12 @@ fn server_restart_holders_upload_again_spec_sync_4() {
     let w = window(&mut net, a, g, "survives");
     net.run();
     let l = net.label(a);
-    assert!(net.servers[sv].hub.store().ephemeral_bytes(&l) > 0);
-    net.restart_server(sv);
-    assert_eq!(net.servers[sv].hub.store().ephemeral_bytes(&l), 0);
+    assert!(net.hosts[sv].hub.store().ephemeral_bytes(&l) > 0);
+    net.restart_host(sv);
+    assert_eq!(net.hosts[sv].hub.store().ephemeral_bytes(&l), 0);
     net.run();
     net.advance(10_000);
-    assert!(net.servers[sv].hub.store().ephemeral_bytes(&l) > 0, "uploaded again");
+    assert!(net.hosts[sv].hub.store().ephemeral_bytes(&l) > 0, "uploaded again");
     net.set_online(a, false);
     net.set_online(b, false);
     net.set_online(c, true);
@@ -285,12 +285,12 @@ fn server_restart_holders_upload_again_spec_sync_4() {
     assert_eq!(net.eph_read(c, w, STATE), Some(s("survives")));
 }
 
-// notes/ephemeral.md Convergence (a holder bridging two servers carries ephemeral state across):
-// A only on server 1 and C only on server 2 converge through B on both
+// notes/ephemeral.md Convergence (a holder bridging two hosts carries ephemeral state across):
+// A only on host 1 and C only on host 2 converge through B on both
 #[test]
-fn bridge_node_carries_between_servers_spec_sync_6() {
+fn bridge_node_carries_between_hosts_spec_sync_6() {
     let mut net = Net::new();
-    let (s1, s2) = (net.add_server(), net.add_server());
+    let (s1, s2) = (net.add_host(), net.add_host());
     let a = net.node(1, &[s1]);
     let b = net.node(2, &[s1, s2]);
     let c = net.node(3, &[s2]);
@@ -314,7 +314,7 @@ fn bridge_node_carries_between_servers_spec_sync_6() {
 #[test]
 fn ephemeral_thing_persists_same_tid_elsewhere_spec_data_model_1() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -336,13 +336,13 @@ fn ephemeral_thing_persists_same_tid_elsewhere_spec_data_model_1() {
 
 // spec/data-model.md §8, spec/crdt.md §4.6 (undoing a save restores the draft's ephemeral
 // placement): a durable thing whose placement is ephemeral (here a draft saved, the save undone,
-// the node restarted and its ephemeral writes back from the server: no undo log, nothing marks
+// the node restarted and its ephemeral writes back from the host: no undo log, nothing marks
 // it a draft) gets that placement converted by its next durable write, as at its first; the
 // other member sees it placed durably again
 #[test]
 fn ephemeral_placement_of_durable_thing_converts_spec_data_model_8() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -381,7 +381,7 @@ fn ephemeral_placement_of_durable_thing_converts_spec_data_model_8() {
 #[test]
 fn removed_writer_ephemeral_unmerged_spec_permissions_5_2() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -413,15 +413,15 @@ fn removed_writer_ephemeral_unmerged_spec_permissions_5_2() {
     assert_eq!(notes(&mut net, a, w), map(&[("a", "1")]));
 }
 
-// notes/ephemeral.md Bounds (server ephemeral bytes per label): past the cap uploads are refused;
+// notes/ephemeral.md Bounds (host ephemeral bytes per label): past the cap uploads are refused;
 // the writer compacts, deletes what the compaction covers and the label syncs again
 #[test]
-fn server_cap_compaction_frees_it_spec_sync_5() {
+fn host_cap_compaction_frees_it_spec_sync_5() {
     let mut net = Net::new();
     // a few entries with their per-entry overhead (about 900 bytes each); tuned so one upload is
     // refused and the writer's own compaction later makes room (a refused write left alone with
     // no compaction due stays refused: issues/eph-unify.md step 5, Replace at cap)
-    let sv = net.add_server_with(osis_host::HostPolicy { ephemeral_bytes: 6_300, ..osis_host::HostPolicy::default() });
+    let sv = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: 6_300, ..osis_host::HostPolicy::default() });
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -433,23 +433,23 @@ fn server_cap_compaction_frees_it_spec_sync_5() {
         net.run();
     }
     let l = net.label(a);
-    assert!(net.servers[sv].hub.store().ephemeral_bytes(&l) <= 6_300);
+    assert!(net.hosts[sv].hub.store().ephemeral_bytes(&l) <= 6_300);
     assert!(net.engine(a).held_ephemeral().len() < 30, "compacted: {}", net.engine(a).held_ephemeral().len());
     let want: BTreeMap<String, String> = (0..30).map(|i| (format!("k{i}"), "v".to_string())).collect();
     assert_eq!(notes(&mut net, b, w), want);
-    // a node arriving now gets the whole state from what the server kept
+    // a node arriving now gets the whole state from what the host kept
     net.restart(b, 23);
     net.advance(10_000);
     assert_eq!(notes(&mut net, b, w), want);
 }
 
-// a server cap too small for the compacted state: the writer compacts, the cover is refused, and
+// a host cap too small for the compacted state: the writer compacts, the cover is refused, and
 // it reports instead of compacting the cover into the next cover forever (a livelock found while
-// charging per-entry overhead at servers)
+// charging per-entry overhead at hosts)
 #[test]
-fn server_cap_below_state_reports_spec_sync_5() {
+fn host_cap_below_state_reports_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server_with(osis_host::HostPolicy { ephemeral_bytes: 2_500, ..osis_host::HostPolicy::default() });
+    let sv = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: 2_500, ..osis_host::HostPolicy::default() });
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -465,13 +465,13 @@ fn server_cap_below_state_reports_spec_sync_5() {
     assert!(refused, "reported");
 }
 
-// notes/ephemeral.md Bounds (server cap): one write too large for the cap has nothing to compact
-// (one held part): the label reports and that write stays out of the server, the defined outcome;
+// notes/ephemeral.md Bounds (host cap): one write too large for the cap has nothing to compact
+// (one held part): the label reports and that write stays out of the host, the defined outcome;
 // later writes that fit still sync
 #[test]
-fn server_cap_one_huge_write_reports_spec_sync_5() {
+fn host_cap_one_huge_write_reports_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server_with(osis_host::HostPolicy { ephemeral_bytes: 4_000, ..osis_host::HostPolicy::default() });
+    let sv = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: 4_000, ..osis_host::HostPolicy::default() });
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -500,10 +500,10 @@ fn server_cap_one_huge_write_reports_spec_sync_5() {
 #[test]
 fn node_cap_bounds_decoded_size_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let cap = 236_000;
-    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
+    let b = net.add_node(2, SyncConfig { hosts: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     let t = net.item(a, g, g, "doc");
     net.run();
@@ -519,8 +519,8 @@ fn node_cap_bounds_decoded_size_spec_sync_9() {
         net.run();
     };
     tiny(&mut net, 0, 500);
-    let at_server = net.servers[sv].hub.store().ephemeral_bytes(&l);
-    assert!(at_server < 40_000, "{at_server} B at the server: fits the cap encoded");
+    let at_host = net.hosts[sv].hub.store().ephemeral_bytes(&l);
+    assert!(at_host < 40_000, "{at_host} B at the host: fits the cap encoded");
     assert_eq!(net.sync(b).ephemeral_bytes(&l), 0, "refused before decoding");
     assert_eq!(net.eph_read(b, t, NOTES), None);
     assert!(rx.try_iter().any(|e| matches!(e, osis_node::Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::EphemeralRefused)), "reported");
@@ -540,9 +540,9 @@ fn node_cap_bounds_decoded_size_spec_sync_9() {
 #[test]
 fn ephemeral_flood_bounded_spec_requirements_scale() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
-    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 400_000, ..SyncConfig::default() });
+    let b = net.add_node(2, SyncConfig { hosts: vec![net.address(sv)], ephemeral_bytes: 400_000, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
     let w = window(&mut net, a, g, "flood");
@@ -569,7 +569,7 @@ fn ephemeral_flood_bounded_spec_requirements_scale() {
 #[test]
 fn reader_cannot_write_ephemeral_spec_permissions_1() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[sv]);
     let g = net.group(a, &[(r, Role::Read)], &[sv]);
@@ -590,12 +590,12 @@ fn reader_cannot_write_ephemeral_spec_permissions_1() {
 }
 
 // notes/ephemeral.md Signals: a signal reaches each device connected now once, also over two
-// servers (no duplicate); a device connecting later never gets it; no server holds an entry; a
+// hosts (no duplicate); a device connecting later never gets it; no host holds an entry; a
 // restarted node does not see it again
 #[test]
 fn signal_once_to_connected_devices_spec_sync_5() {
     let mut net = Net::new();
-    let (s1, s2) = (net.add_server(), net.add_server());
+    let (s1, s2) = (net.add_host(), net.add_host());
     let a = net.node(1, &[s1, s2]);
     let b = net.node(2, &[s1, s2]);
     let c = net.node(3, &[s1]);
@@ -603,15 +603,15 @@ fn signal_once_to_connected_devices_spec_sync_5() {
     let t = net.item(a, g, g, "x");
     net.set_online(c, false);
     net.run();
-    let held = (rows(&net.servers[s1].backend), rows(&net.servers[s2].backend));
+    let held = (rows(&net.hosts[s1].backend), rows(&net.hosts[s2].backend));
     let (ra, rb, rc) = (net.listen(a), net.listen(b), net.listen(c));
     net.eph_write(a, t, &ukey("/t/ring", Lifetime::Signal), s("ding"));
     net.run();
-    assert_eq!(fired(&rb).len(), 1, "once, though both servers pushed it");
+    assert_eq!(fired(&rb).len(), 1, "once, though both hosts pushed it");
     assert_eq!(fired(&ra).len(), 1, "once at the sender (no echo)");
-    assert_eq!((rows(&net.servers[s1].backend), rows(&net.servers[s2].backend)), held, "no server holds it");
+    assert_eq!((rows(&net.hosts[s1].backend), rows(&net.hosts[s2].backend)), held, "no host holds it");
     let l = net.label(a);
-    assert_eq!(net.servers[s1].hub.store().ephemeral_bytes(&l), 0);
+    assert_eq!(net.hosts[s1].hub.store().ephemeral_bytes(&l), 0);
     net.set_online(c, true);
     net.advance(10_000);
     assert!(fired(&rc).is_empty(), "a device connecting later never gets it");
@@ -626,7 +626,7 @@ fn signal_once_to_connected_devices_spec_sync_5() {
 #[test]
 fn signal_commit_in_several_blobs_all_delivered_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -657,11 +657,11 @@ fn signal_commit_in_several_blobs_all_delivered_spec_sync_5() {
 
 // spec/crdt.md §4.7, spec/sync.md §1 (an ephemeral commit's expiry rides in its header and its
 // blob prefix): a typing indicator written with an expiry reaches the other member and is gone
-// everywhere at its time, servers included
+// everywhere at its time, hosts included
 #[test]
 fn ephemeral_expiry_everywhere_spec_crdt_4_7() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -676,23 +676,23 @@ fn ephemeral_expiry_everywhere_spec_crdt_4_7() {
     net.run();
     assert_eq!(net.eph_read(b, w, "/win/typing"), Some(Value::Bool(true)));
     let l = net.label(a);
-    let before = net.servers[sv].hub.store().ephemeral_bytes(&l);
+    let before = net.hosts[sv].hub.store().ephemeral_bytes(&l);
     net.advance(6_000);
     assert_eq!(net.eph_read(a, w, "/win/typing"), None);
     assert_eq!(net.eph_read(b, w, "/win/typing"), None);
-    assert!(net.servers[sv].hub.store().ephemeral_bytes(&l) < before, "the server dropped it unattended");
+    assert!(net.hosts[sv].hub.store().ephemeral_bytes(&l) < before, "the host dropped it unattended");
 }
 
 // spec/crdt.md §4.7 (expiry), spec/sync.md §9 (notes/ephemeral.md Values that live while their
 // author is there): a cursor (a map entry under the author's key, expiring 30 s after each write)
-// its author rewrites every 15 s stays up at B without a gap, the server holding at most a few
+// its author rewrites every 15 s stays up at B without a gap, the host holding at most a few
 // of its entries; once the author goes away the refreshes stop and the cursor is gone at B and
-// at the server by the last write's expiry, with nobody noticing the departure
+// at the host by the last write's expiry, with nobody noticing the departure
 #[test]
 fn refreshed_value_lives_while_author_present_spec_crdt_4_7() {
     const E: u64 = 30_000;
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -710,7 +710,7 @@ fn refreshed_value_lives_while_author_present_spec_crdt_4_7() {
         net.engine(a).write(m).unwrap();
         local(net, a);
     };
-    let entries = |net: &Net| osis_proto::LabelStore::live_ids(net.servers[sv].hub.store(), &l).unwrap().len();
+    let entries = |net: &Net| osis_proto::LabelStore::live_ids(net.hosts[sv].hub.store(), &l).unwrap().len();
     let base = entries(&net);
     refresh(&mut net, "c1");
     net.run();
@@ -724,7 +724,7 @@ fn refreshed_value_lives_while_author_present_spec_crdt_4_7() {
         refresh(&mut net, "c1");
         net.run();
         assert_eq!(net.eph_read(b, w, CURSOR), want);
-        assert!(entries(&net) <= base + 3, "the server holds the writes of one expiry window: {}", entries(&net) - base);
+        assert!(entries(&net) <= base + 3, "the host holds the writes of one expiry window: {}", entries(&net) - base);
     }
     // the author's device goes away: no departure is seen, the last write expires
     net.set_online(a, false);
@@ -732,7 +732,7 @@ fn refreshed_value_lives_while_author_present_spec_crdt_4_7() {
     assert_eq!(net.eph_read(b, w, CURSOR), want, "until the last write's expiry");
     net.advance(1);
     assert_eq!(net.eph_read(b, w, CURSOR), None);
-    assert_eq!(entries(&net), base, "the server dropped every one of its entries");
+    assert_eq!(entries(&net), base, "the host dropped every one of its entries");
 }
 
 // spec/crdt.md §5.1 (a nested register carries no reset): a `Replace` at a map key of an
@@ -740,7 +740,7 @@ fn refreshed_value_lives_while_author_present_spec_crdt_4_7() {
 #[test]
 fn eph_replace_at_map_key_read_at_holder_spec_crdt_5_1() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -762,7 +762,7 @@ fn eph_replace_at_map_key_read_at_holder_spec_crdt_5_1() {
 #[test]
 fn ephemeral_owner_chain_travels_spec_data_model_1() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -788,7 +788,7 @@ fn ephemeral_owner_chain_travels_spec_data_model_1() {
 #[test]
 fn ephemeral_part_waits_for_its_record_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -818,7 +818,7 @@ fn ephemeral_part_waits_for_its_record_spec_sync_9() {
 fn junk_copy_of_waiting_commit_evicts_nothing_spec_sync_9() {
     for junk_sig in [false, true] {
         let mut net = Net::new();
-        let sv = net.add_server();
+        let sv = net.add_host();
         let a = net.node(1, &[sv]);
         let b = net.node(2, &[]);
         let c = net.node(3, &[sv]);
@@ -854,14 +854,14 @@ fn junk_copy_of_waiting_commit_evicts_nothing_spec_sync_9() {
 #[test]
 fn junk_copy_of_waiting_commit_not_kept_once_held_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let x = net.node(3, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     let t = net.item(a, g, g, "durable");
     net.run();
-    // b hears nothing from the server: x joins unseen by it
+    // b hears nothing from the host: x joins unseen by it
     net.deaf.insert(b);
     net.pair(x, a);
     let (at, bt, xt) = (net.tid(a), net.tid(b), net.tid(x));
@@ -898,7 +898,7 @@ fn junk_copy_of_waiting_commit_not_kept_once_held_spec_sync_9() {
     assert_eq!(net.sync(b).ephemeral_pending_bytes(&l), 0);
 }
 
-/// A commit by `a` on a durable thing `b` has not heard of (b deaf to the server): (thing, real
+/// A commit by `a` on a durable thing `b` has not heard of (b deaf to the host): (thing, real
 /// blob, a junk copy with the real header and signature).
 fn waiting_on_thing(net: &mut Net, a: usize, b: usize, g: Tid, v: &Value) -> (Tid, osis_commit::CommitBlob, osis_commit::CommitBlob) {
     net.deaf.insert(b);
@@ -923,7 +923,7 @@ fn waiting_on_thing(net: &mut Net, a: usize, b: usize, g: Tid, v: &Value) -> (Ti
 #[test]
 fn junk_copy_waiting_on_thing_not_kept_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -958,7 +958,7 @@ fn junk_copy_waiting_on_thing_not_kept_spec_sync_9() {
 #[test]
 fn waiting_blob_retried_within_its_room_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -985,9 +985,9 @@ fn partly_verified_blob_counted_or_not_held_spec_sync_9() {
     // 2400: the blob fits the cap but not its share (a quarter)
     for cap in [2400, SyncConfig::default().ephemeral_bytes] {
         let mut net = Net::new();
-        let sv = net.add_server();
+        let sv = net.add_host();
         let a = net.node(1, &[sv]);
-        let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
+        let b = net.add_node(2, SyncConfig { hosts: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
         let g = net.group(a, &[(b, Role::Write)], &[sv]);
         net.run();
         net.deaf.insert(b);
@@ -1027,12 +1027,12 @@ fn partly_verified_blob_counted_or_not_held_spec_sync_9() {
 #[test]
 fn waiting_share_overflow_keeps_honest_copy_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     // the share (a quarter of the cap) fits one blob of the commit by its bound, not two; the
     // cap fits the blob decoded (`osis_crdt::decoded_bound`: a string, about 6 times its bytes)
     let cap = 1_000_000;
-    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
+    let b = net.add_node(2, SyncConfig { hosts: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
     let v = s(&"c".repeat(30_000));
@@ -1058,12 +1058,12 @@ fn waiting_share_overflow_keeps_honest_copy_spec_sync_9() {
     assert_eq!(kept, vec![real]);
 }
 
-/// Node `b` (cap `cap`) deaf to the server while writer `x` joins `g`, so `x`'s record is not
-/// there: (server, a, b, x, g, a durable thing of `g` all know).
+/// Node `b` (cap `cap`) deaf to the host while writer `x` joins `g`, so `x`'s record is not
+/// there: (host, a, b, x, g, a durable thing of `g` all know).
 fn unknown_writer(net: &mut Net, cap: u64) -> (usize, usize, usize, usize, Tid, Tid) {
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
-    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
+    let b = net.add_node(2, SyncConfig { hosts: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
     let x = net.node(3, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     let t = net.item(a, g, g, "durable");
@@ -1160,11 +1160,11 @@ fn waiting_blob_charged_by_bound_spec_sync_9() {
 #[test]
 fn never_fitting_blob_not_fetched_again_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let x = net.node(2, &[sv]);
     let cap = 330_000;
-    let b = net.add_node(3, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
+    let b = net.add_node(3, SyncConfig { hosts: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
     let g = net.group(a, &[(x, Role::Write), (b, Role::Write)], &[sv]);
     let t = net.item(a, g, g, "doc");
     net.run();
@@ -1189,7 +1189,7 @@ fn never_fitting_blob_not_fetched_again_spec_sync_9() {
 #[test]
 fn forged_copy_of_held_commit_refused_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -1211,12 +1211,12 @@ fn forged_copy_of_held_commit_refused_spec_sync_9() {
 }
 
 // spec/sync.md §4 (blob ID = BLAKE3 of the bytes), spec/requirements.md ("Nothing trusts a
-// server's word"): a server pushing a held ephemeral blob again under other IDs (the wrap's
+// host's word"): a host pushing a held ephemeral blob again under other IDs (the wrap's
 // nonce is only the ID's first 24 bytes, so it still opens) adds no entry and charges nothing
 #[test]
 fn ephemeral_blob_under_wrong_id_dropped_spec_sync_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -1250,7 +1250,7 @@ fn ephemeral_blob_under_wrong_id_dropped_spec_sync_4() {
 #[test]
 fn own_cover_survives_rebuild_spec_crdt_4_6() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -1295,7 +1295,7 @@ fn own_cover_survives_rebuild_spec_crdt_4_6() {
 #[test]
 fn own_cover_absorbs_every_own_commit_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -1337,7 +1337,7 @@ fn own_cover_absorbs_every_own_commit_spec_sync_9() {
 #[test]
 fn removed_member_writes_go_after_covers_spec_permissions_5_2() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -1379,7 +1379,7 @@ fn removed_member_writes_go_after_covers_spec_permissions_5_2() {
 #[test]
 fn others_writes_in_a_commit_not_joined_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -1414,7 +1414,7 @@ fn session_dots(net: &mut Net, n: usize, t: Tid, ak: &str) -> Vec<(osis_crdt::Se
 #[test]
 fn restart_starts_a_new_session_spec_crdt_2_1() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let g = net.group(a, &[], &[sv]);
     net.run();
@@ -1432,7 +1432,7 @@ fn restart_starts_a_new_session_spec_crdt_2_1() {
     let second = net.engine(a).ephemeral_session();
     assert_eq!(second.node, first.node, "the same node");
     assert_ne!(second.nonce, first.nonce, "a new session");
-    assert_eq!(notes(&mut net, a, w), map(&[("k1", "v"), ("k2", "v")]), "the earlier session's writes back from the server");
+    assert_eq!(notes(&mut net, a, w), map(&[("k1", "v"), ("k2", "v")]), "the earlier session's writes back from the host");
     note(&mut net, a, w, "k3", "v");
     net.run();
     assert_eq!(session_dots(&mut net, a, w, NOTES), vec![(first, 1), (first, 2), (second, 1)]);
@@ -1455,7 +1455,7 @@ fn sessions_of_one_node_never_collide_spec_crdt_2_1() {
         x => panic!("node {n}: {x:?}"),
     };
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -1476,7 +1476,7 @@ fn sessions_of_one_node_never_collide_spec_crdt_2_1() {
     }
     net.restart(b, 13);
     net.run();
-    assert_eq!(items(&mut net, b, w), want, "a restarted holder, from the server");
+    assert_eq!(items(&mut net, b, w), want, "a restarted holder, from the host");
 }
 
 // spec/crdt.md §2.1 (counters never reused within a session): a thing freed here while others
@@ -1484,7 +1484,7 @@ fn sessions_of_one_node_never_collide_spec_crdt_2_1() {
 #[test]
 fn freed_thing_received_again_keeps_counters_spec_crdt_2_1() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -1520,7 +1520,7 @@ fn freed_thing_received_again_keeps_counters_spec_crdt_2_1() {
 #[test]
 fn node_sourced_write_in_a_commit_not_joined_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -1541,14 +1541,14 @@ fn node_sourced_write_in_a_commit_not_joined_spec_sync_9() {
     assert_eq!(notes(&mut net, a, w), map(&[("a", "1")]), "b passed a write off as one of a's sessions'");
 }
 
-// spec/sync.md §9 (what a cover absorbs is deleted at a server once the cover is held there):
-// the author crashes before its cover reaches the server; nothing was deleted, so the state
-// stays at the server for holders, a restarted holder and the author itself (deleting first
+// spec/sync.md §9 (what a cover absorbs is deleted at a host once the cover is held there):
+// the author crashes before its cover reaches the host; nothing was deleted, so the state
+// stays at the host for holders, a restarted holder and the author itself (deleting first
 // lost those writes there for good: the tombstones keep holders from bringing them back)
 #[test]
 fn author_crash_before_cover_lands_keeps_state_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -1573,16 +1573,16 @@ fn author_crash_before_cover_lands_keeps_state_spec_sync_9() {
     assert_eq!(notes(&mut net, a, w), want, "the author gets its writes back");
     net.restart(b, 78);
     net.advance(10_000);
-    assert_eq!(notes(&mut net, b, w), want, "the server still holds them");
+    assert_eq!(notes(&mut net, b, w), want, "the host still holds them");
 }
 
 // spec/sync.md §5 (code 4: the delete rate is used up, replacements counting), §9 (absorbed
-// entries leave a server once the cover is held there): a cover refused for the rate goes again
-// at the periodic pass, and what it absorbs leaves the server then
+// entries leave a host once the cover is held there): a cover refused for the rate goes again
+// at the periodic pass, and what it absorbs leaves the host then
 #[test]
 fn cover_refused_for_rate_retried_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server_with(osis_host::HostPolicy { deletes: 3, ..osis_host::HostPolicy::default() });
+    let sv = net.add_host_with(osis_host::HostPolicy { deletes: 3, ..osis_host::HostPolicy::default() });
     let a = net.node(1, &[sv]);
     let g = net.group(a, &[], &[sv]);
     net.run();
@@ -1600,12 +1600,12 @@ fn cover_refused_for_rate_retried_spec_sync_9() {
     };
     // two absorbed (two deletes of three), then three more: refused 4
     cover(&mut net, 0..2);
-    let one = net.servers[sv].hub.store().ephemeral_bytes(&l);
+    let one = net.hosts[sv].hub.store().ephemeral_bytes(&l);
     cover(&mut net, 2..4);
-    let refused = net.servers[sv].hub.store().ephemeral_bytes(&l);
+    let refused = net.hosts[sv].hub.store().ephemeral_bytes(&l);
     assert!(refused > one, "the second cover is not there: its absorbed entries stay");
     net.advance(130_000);
-    let after = net.servers[sv].hub.store().ephemeral_bytes(&l);
+    let after = net.hosts[sv].hub.store().ephemeral_bytes(&l);
     assert!(after < refused, "the cover went again and replaced what it absorbs: {after} {refused}");
     assert_eq!(net.sync(a).ephemeral_held_entries(&l).len(), 1);
     net.restart(a, 31);
@@ -1613,28 +1613,28 @@ fn cover_refused_for_rate_retried_spec_sync_9() {
     assert_eq!(notes(&mut net, a, w).len(), 4);
 }
 
-// harness (random_window_inflight seed 173899): bytes a slow server held back for a connection
+// harness (random_window_inflight seed 173899): bytes a slow host held back for a connection
 // that closed when it restarted never reach the restarted node's new connection of that number
 // (they carried another connection's challenge: every open there was refused)
 #[test]
-fn restarted_node_gets_no_old_server_bytes() {
+fn restarted_node_gets_no_old_host_bytes() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
     let w = window(&mut net, a, g, "w");
     net.run();
-    // b's first connection since a restart (numbered 1): the server's greeting held back
+    // b's first connection since a restart (numbered 1): the host's greeting held back
     net.set_online(b, false);
     net.restart(b, 49);
-    net.held_servers.insert(sv);
+    net.held_hosts.insert(sv);
     net.set_online(b, true);
     net.run();
-    // the server restarts (b redials, connection 2), then b (connection 1 again): the old
+    // the host restarts (b redials, connection 2), then b (connection 1 again): the old
     // greeting must not reach it
-    net.restart_server(sv);
+    net.restart_host(sv);
     net.run();
     net.restart(b, 50);
     net.run();
@@ -1648,18 +1648,18 @@ fn restarted_node_gets_no_old_server_bytes() {
 }
 
 /// One random run of the shared window (notes/ephemeral.md Convergence): four writers on two
-/// servers (odd seeds: one with a random ephemeral cap, 0 and below one cover included), random
-/// ephemeral writes, partitions (offline, one server blocked), node restarts and server
-/// restarts; after healing every holder reads the same notes (through the uncapped server), and
+/// hosts (odd seeds: one with a random ephemeral cap, 0 and below one cover included), random
+/// ephemeral writes, partitions (offline, one host blocked), node restarts and host
+/// restarts; after healing every holder reads the same notes (through the uncapped host), and
 /// each writer's own held commits cost at most twice their cover (spec/sync.md §9).
 fn random_window_run(seed: u64) {
     random_window_run_on(seed, false, false)
 }
 
-/// `single`: one server only, always capped (what it holds is all others get): holders read
+/// `single`: one host only, always capped (what it holds is all others get): holders read
 /// alike unless an entry a holder has stays out of it because it genuinely does not fit there.
 /// `inflight`: half the steps end after one hop of delivery instead of settling, so later
-/// writes meet uploads still in flight (coalesced, spec/sync.md §9), and the second server is
+/// writes meet uploads still in flight (coalesced, spec/sync.md §9), and the second host is
 /// at times slow (its messages held back for some steps).
 fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
@@ -1670,15 +1670,15 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
         x % n
     };
     let mut net = Net::new();
-    // odd seeds (and `single`): a random ephemeral cap at the first server, from nothing fitting
+    // odd seeds (and `single`): a random ephemeral cap at the first host, from nothing fitting
     // to the whole state fitting
     let cap = [0, 1_500, 4_000, 8_000, 16_000, 64_000][(seed / 2 % 6) as usize];
-    let s1 = if single || seed % 2 == 1 { net.add_server_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() }) } else { net.add_server() };
-    let s2 = net.add_server();
-    let servers: Vec<usize> = if single { vec![s1] } else { vec![s1, s2] };
-    let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &servers)).collect();
+    let s1 = if single || seed % 2 == 1 { net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() }) } else { net.add_host() };
+    let s2 = net.add_host();
+    let hosts: Vec<usize> = if single { vec![s1] } else { vec![s1, s2] };
+    let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &hosts)).collect();
     let members: Vec<(usize, Role)> = nodes[1..].iter().map(|n| (*n, Role::Write)).collect();
-    let g = net.group(nodes[0], &members, &servers);
+    let g = net.group(nodes[0], &members, &hosts);
     net.run();
     let w = window(&mut net, nodes[0], g, "w");
     net.run();
@@ -1735,8 +1735,8 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
             }
             8 if rnd(4) == 0 => {
                 let s = if rnd(2) == 0 || single { s1 } else { s2 };
-                log.push(format!("server {s} restarts"));
-                net.restart_server(s);
+                log.push(format!("host {s} restarts"));
+                net.restart_host(s);
             }
             _ => {
                 log.push("advance".into());
@@ -1744,14 +1744,14 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
                 continue;
             }
         }
-        // a slow server: its answers and pushes held back for a while
+        // a slow host: its answers and pushes held back for a while
         if inflight && !single && irnd() && irnd() {
-            if net.held_servers.remove(&s2) {
-                log.push(format!("server {s2} answers"));
+            if net.held_hosts.remove(&s2) {
+                log.push(format!("host {s2} answers"));
                 net.release();
             } else {
-                log.push(format!("server {s2} slow"));
-                net.held_servers.insert(s2);
+                log.push(format!("host {s2} slow"));
+                net.held_hosts.insert(s2);
             }
         }
         if inflight && irnd() {
@@ -1773,7 +1773,7 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     for _ in 0..4 {
         net.advance(15_000);
     }
-    // one more periodic pass: entries a full server refused go again once room appeared
+    // one more periodic pass: entries a full host refused go again once room appeared
     net.advance(61_000);
     // and more while room appeared only after a pass (deletes of what an entry accepted at that
     // pass absorbs): the retry is the next pass's (spec/sync.md §9, "later"). Each such pass
@@ -1781,8 +1781,8 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     if single {
         let l = net.label(nodes[0]);
         let pending = |net: &mut Net| {
-            let ids: BTreeSet<osis_base::BlobId> = net.server_ids(s1, &l).into_iter().collect();
-            let store = net.servers[s1].hub.store();
+            let ids: BTreeSet<osis_base::BlobId> = net.host_ids(s1, &l).into_iter().collect();
+            let store = net.hosts[s1].hub.store();
             let entries: Vec<(osis_base::BlobId, usize)> = nodes.iter().filter_map(|n| net.nodes[*n].sync.as_ref()).flat_map(|x| x.ephemeral_held_entries(&l)).collect();
             (entries.len(), entries.iter().any(|(b, size)| !ids.contains(b) && store.ephemeral_fits(&l, *size as u64)))
         };
@@ -1798,16 +1798,16 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     let holders: Vec<usize> = nodes.iter().copied().filter(|n| syncs(&mut net, *n, w)).collect();
     let Some(&h0) = holders.first() else {
         // lost only when no node holds it (spec/requirements.md Ephemeral data): every node that
-        // held it restarted since (a server holding it would have handed it back)
+        // held it restarted since (a host holding it would have handed it back)
         assert!(kept.is_empty(), "seed {seed}: nobody holds the window, though nodes {kept:?} held it and never restarted since\n{}", log.join("\n"));
         return;
     };
     let l = net.label(h0);
-    // spec/sync.md §5 (defined outcome past a cap): an entry some holder has that the only server
+    // spec/sync.md §5 (defined outcome past a cap): an entry some holder has that the only host
     // lacks and could not fit
     let refused = single && {
-        let ids: BTreeSet<osis_base::BlobId> = net.server_ids(s1, &l).into_iter().collect();
-        let store = net.servers[s1].hub.store();
+        let ids: BTreeSet<osis_base::BlobId> = net.host_ids(s1, &l).into_iter().collect();
+        let store = net.hosts[s1].hub.store();
         let mut out = false;
         for n in &holders {
             for (b, size) in net.nodes[*n].sync.as_ref().unwrap().ephemeral_held_entries(&l) {
@@ -1816,15 +1816,15 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
         }
         out
     };
-    // and the refusal is genuine: the server keeps no plain entry that no node holds (one every
+    // and the refusal is genuine: the host keeps no plain entry that no node holds (one every
     // holder dropped as absorbed, whose deletion never came, would fill it and excuse divergence)
     if refused {
-        let store = net.servers[s1].hub.store();
-        let plain: Vec<osis_base::BlobId> = net.server_ids(s1, &l).into_iter().filter(|b| osis_proto::LabelStore::blob(store, b).ok().flatten().and_then(|x| osis_label::Prefix::parse(&x).ok()).is_some_and(|p| p.class() == osis_label::Class::Ephemeral)).collect();
+        let store = net.hosts[s1].hub.store();
+        let plain: Vec<osis_base::BlobId> = net.host_ids(s1, &l).into_iter().filter(|b| osis_proto::LabelStore::blob(store, b).ok().flatten().and_then(|x| osis_label::Prefix::parse(&x).ok()).is_some_and(|p| p.class() == osis_label::Class::Ephemeral)).collect();
         let held: BTreeSet<osis_base::BlobId> = nodes.iter().flat_map(|n| net.nodes[*n].sync.as_ref().unwrap().ephemeral_held_entries(&l).into_iter().map(|x| x.0)).collect();
         let stale: Vec<_> = plain.iter().filter(|b| !held.contains(b)).collect();
         if !stale.is_empty() {
-            panic!("seed {seed}: the full server keeps entries {stale:?} no node holds (cap {cap})\n{}\n{}", log.join("\n"), lane_dump(&mut net, &nodes, &servers, &l, w));
+            panic!("seed {seed}: the full host keeps entries {stale:?} no node holds (cap {cap})\n{}\n{}", log.join("\n"), lane_dump(&mut net, &nodes, &hosts, &l, w));
         }
     }
     // past a refusal, holders of the same plain commits still read alike (a node's state is its
@@ -1840,7 +1840,7 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     for (n, got, h) in &reads[1..] {
         let Some((m, want, _)) = reads.iter().find(|(_, _, h2)| !refused || h2 == h) else { continue };
         if got != want {
-            panic!("seed {seed}: node {n} differs from node {m} (cap {cap})\n{}\n{}", log.join("\n"), lane_dump(&mut net, &nodes, &servers, &l, w));
+            panic!("seed {seed}: node {n} differs from node {m} (cap {cap})\n{}\n{}", log.join("\n"), lane_dump(&mut net, &nodes, &hosts, &l, w));
         }
     }
     // spec/sync.md §9 (own compaction): each writer's own held commits within twice their cover
@@ -1853,14 +1853,14 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
 }
 
 /// Whether node `n` holds ephemeral thing `w` in a labeled closure (it syncs it: a record that
-/// came without its placement, which a full server kept out, leaves the node writing it locally).
+/// came without its placement, which a full host kept out, leaves the node writing it locally).
 fn syncs(net: &mut Net, n: usize, w: Tid) -> bool {
     let e = net.engine(n);
     e.ephemeral_thing(&w).is_some() && e.ephemeral_synced(&w)
 }
 
-/// Failure detail: each node's reads and lane, each server's entries.
-fn lane_dump(net: &mut Net, nodes: &[usize], servers: &[usize], l: &osis_base::LabelId, w: Tid) -> String {
+/// Failure detail: each node's reads and lane, each host's entries.
+fn lane_dump(net: &mut Net, nodes: &[usize], hosts: &[usize], l: &osis_base::LabelId, w: Tid) -> String {
     let mut out = String::new();
     for m in nodes {
         let n = notes(net, *m, w);
@@ -1874,16 +1874,16 @@ fn lane_dump(net: &mut Net, nodes: &[usize], servers: &[usize], l: &osis_base::L
             out.push_str(&format!("  held {id:?} by {:?} {:?} own {own} {bytes} B\n", h.author, h.ephemeral));
         }
     }
-    for sv in servers {
-        out.push_str(&format!("server {sv} holds {:?}, {} B\n", net.server_ids(*sv, l), net.servers[*sv].hub.store().ephemeral_bytes(l)));
+    for sv in hosts {
+        out.push_str(&format!("host {sv} holds {:?}, {} B\n", net.host_ids(*sv, l), net.hosts[*sv].hub.store().ephemeral_bytes(l)));
     }
     out
 }
 
-// the same with one capped server (caps 0 to fitting all; 173658: room appears only after the
+// the same with one capped host (caps 0 to fitting all; 173658: room appears only after the
 // last periodic pass)
 #[test]
-fn random_window_one_capped_server_spec_sync_9() {
+fn random_window_one_capped_host_spec_sync_9() {
     for seed in [0, 2, 4, 6, 8, 10, 63, 105, 162, 173658] {
         random_window_run_on(seed, true, false);
     }
@@ -1898,18 +1898,18 @@ fn eph_large(name: &str, single: bool, inflight: bool) {
     crate::common::run_seeds_noted(name, &seeds, s.overridden, "OSIS_EPH_THREADS", replay, |seed| random_window_run_on(seed, single, inflight));
 }
 
-// the same with one capped server: holders converge through what it holds, or an entry stays out
+// the same with one capped host: holders converge through what it holds, or an entry stays out
 // of it that genuinely does not fit
 #[test]
 #[ignore]
-fn random_window_one_capped_server_large() {
-    eph_large("ephemeral::random_window_one_capped_server_large", true, false);
+fn random_window_one_capped_host_large() {
+    eph_large("ephemeral::random_window_one_capped_host_large", true, false);
 }
 
 // notes/ephemeral.md Convergence (randomized): holders of a shared window converge after random
 // writes, partitions and restarts heal (5327166: a restarted author's re-cover stamped below its
 // earlier session's cover of the same content; each held one took the other for redundant and
-// both were deleted at the servers)
+// both were deleted at the hosts)
 #[test]
 fn random_window_converges_spec_sync_6() {
     for seed in [0, 1, 2, 3, 5327166] {
@@ -1942,10 +1942,10 @@ fn random_window_inflight_large() {
 
 const FLAG: &str = "/win/flag";
 
-/// One random run of superseded expiring writes (spec/sync.md §9): four writers on two servers
+/// One random run of superseded expiring writes (spec/sync.md §9): four writers on two hosts
 /// make expiring and plain writes at a few shared and own keys of a map and to a register
 /// (several ops per batch, sometimes two aspects), removals and replaces (resets), undos of
-/// their own changes, demotions and promotions of writers, with partitions and node and server
+/// their own changes, demotions and promotions of writers, with partitions and node and host
 /// restarts; once every writer may write again and the network healed, every holder never
 /// demoted reads the same. Whether a node drops a superseded commit must depend only on what it holds.
 fn random_churn_run(seed: u64) {
@@ -1957,10 +1957,10 @@ fn random_churn_run(seed: u64) {
         x % n
     };
     let mut net = Net::new();
-    let servers = vec![net.add_server(), net.add_server()];
-    let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &servers)).collect();
+    let hosts = vec![net.add_host(), net.add_host()];
+    let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &hosts)).collect();
     let members: Vec<(usize, Role)> = nodes[1..].iter().map(|n| (*n, Role::Write)).collect();
-    let g = net.group(nodes[0], &members, &servers);
+    let g = net.group(nodes[0], &members, &hosts);
     net.run();
     let w = window(&mut net, nodes[0], g, "w");
     net.run();
@@ -2037,7 +2037,7 @@ fn random_churn_run(seed: u64) {
                         net.set_online(n, on);
                     }
                     1 => {
-                        let sv = servers[rnd(2) as usize];
+                        let sv = hosts[rnd(2) as usize];
                         let blocked = !net.blocked.remove(&(n, sv));
                         if blocked {
                             net.blocked.insert((n, sv));
@@ -2058,9 +2058,9 @@ fn random_churn_run(seed: u64) {
                         net.set_online(n, on);
                     }
                     _ => {
-                        let sv = servers[rnd(2) as usize];
-                        log.push(format!("server {sv} restarts"));
-                        net.restart_server(sv);
+                        let sv = hosts[rnd(2) as usize];
+                        log.push(format!("host {sv} restarts"));
+                        net.restart_host(sv);
                     }
                 }
                 ""
@@ -2126,7 +2126,7 @@ fn random_churn_run(seed: u64) {
                 h0.difference(h).collect::<Vec<_>>(),
                 all.join("\n"),
                 log.join("\n"),
-                lane_dump(&mut net, &nodes, &servers, &l, w)
+                lane_dump(&mut net, &nodes, &hosts, &l, w)
             );
         }
     }
@@ -2152,14 +2152,14 @@ fn random_churn_converges_large() {
     crate::common::run_seeds_noted(name, &seeds, s.overridden, "OSIS_EPH_THREADS", replay, random_churn_run);
 }
 
-// the harness: a node restarted while its server's Hello is still on the way gets nothing of
+// the harness: a node restarted while its host's Hello is still on the way gets nothing of
 // the old connection on the new one of the same number (`random_window_inflight_large` seed
 // 3300065: the stale Hello's challenge made every Open there refused, so the restarted node never
-// reopened the label at that server)
+// reopened the label at that host)
 #[test]
 fn restart_mid_handshake_reopens() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     net.group(a, &[(b, Role::Write)], &[sv]);
@@ -2180,7 +2180,7 @@ fn restart_mid_handshake_reopens() {
 #[test]
 fn concurrent_persist_one_thing_spec_data_model_1() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -2226,10 +2226,10 @@ fn concurrent_persist_one_thing_spec_data_model_1() {
 #[test]
 fn unverified_ephemeral_not_kept_or_spread_spec_sync_9() {
     let mut net = Net::new();
-    let (s1, s2) = (net.add_server(), net.add_server());
+    let (s1, s2) = (net.add_host(), net.add_host());
     let a = net.node(1, &[s1]);
     let cap = 400_000;
-    let b = net.add_node(2, SyncConfig { servers: vec![net.address(s1), net.address(s2)], ephemeral_bytes: cap, ..SyncConfig::default() });
+    let b = net.add_node(2, SyncConfig { hosts: vec![net.address(s1), net.address(s2)], ephemeral_bytes: cap, ..SyncConfig::default() });
     let x = net.node(3, &[]);
     let g = net.group(a, &[(b, Role::Write)], &[s1, s2]);
     net.run();
@@ -2249,7 +2249,7 @@ fn unverified_ephemeral_not_kept_or_spread_spec_sync_9() {
     assert!(!net.engine(b).holds_ephemeral(&future.id), "not held");
     assert_eq!(net.eph_read(b, w, STATE), Some(s("w")));
     let entries = net.sync(b).ephemeral_entries(&l);
-    let at_s2 = net.servers[s2].hub.store().ephemeral_bytes(&l);
+    let at_s2 = net.hosts[s2].hub.store().ephemeral_bytes(&l);
     // commits under an author nobody here knows, stamped by a writer
     let rx = net.listen(b);
     let xt = net.tid(x);
@@ -2264,7 +2264,7 @@ fn unverified_ephemeral_not_kept_or_spread_spec_sync_9() {
     assert!(net.sync(b).ephemeral_pending_bytes(&l) > 0, "kept apart while it waits");
     assert!(rx.try_iter().any(|e| matches!(e, osis_node::Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::EphemeralRefused)), "reported");
     assert_eq!(net.sync(b).ephemeral_entries(&l), entries, "nothing unverified in the lane");
-    assert_eq!(net.servers[s2].hub.store().ephemeral_bytes(&l), at_s2, "nothing spread to the other server");
+    assert_eq!(net.hosts[s2].hub.store().ephemeral_bytes(&l), at_s2, "nothing spread to the other host");
 }
 
 // spec/sync.md §9 (security review L2): a replay of an entry its author's held valid cover
@@ -2272,7 +2272,7 @@ fn unverified_ephemeral_not_kept_or_spread_spec_sync_9() {
 #[test]
 fn replayed_covered_entry_dropped_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -2308,7 +2308,7 @@ fn replayed_covered_entry_dropped_spec_sync_9() {
 #[test]
 fn replay_from_covers_back_not_held_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -2364,7 +2364,7 @@ fn replay_from_covers_back_not_held_spec_sync_9() {
 #[test]
 fn cover_without_its_commits_drops_nothing_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let wr = net.node(2, &[sv]);
     let b = net.node(3, &[sv]);
@@ -2393,7 +2393,7 @@ fn cover_without_its_commits_drops_nothing_spec_sync_9() {
 #[test]
 fn invalid_on_arrival_held_once_valid_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[sv]);
     let d = net.node(3, &[sv]);
@@ -2432,10 +2432,10 @@ fn invalid_on_arrival_held_once_valid_spec_sync_9() {
 #[test]
 fn capped_label_reconciles_once_room_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let x = net.node(2, &[sv]);
-    let b = net.add_node(3, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 330_000, ..SyncConfig::default() });
+    let b = net.add_node(3, SyncConfig { hosts: vec![net.address(sv)], ephemeral_bytes: 330_000, ..SyncConfig::default() });
     let g = net.group(a, &[(x, Role::Write), (b, Role::Write)], &[sv]);
     let t = net.item(a, g, g, "doc");
     net.run();
@@ -2458,7 +2458,7 @@ fn capped_label_reconciles_once_room_spec_sync_9() {
 #[test]
 fn core_aspect_part_refused_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -2471,11 +2471,11 @@ fn core_aspect_part_refused_spec_sync_9() {
 }
 
 // open question of the step 3 review: a device reachable only through a member peer gets the
-// signals that peer receives from a server, and its own reach the server's devices; each once
+// signals that peer receives from a host, and its own reach the host's devices; each once
 #[test]
 fn signals_through_member_peer_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -2486,7 +2486,7 @@ fn signals_through_member_peer_spec_sync_5() {
     let g = net.group(a, &[(b, Role::Write), (c, Role::Write)], &[sv]);
     let t = net.item(a, g, g, "x");
     net.run();
-    // c loses the server: only b's peer link is left
+    // c loses the host: only b's peer link is left
     net.blocked.insert((c, sv));
     net.restart(c, 33);
     net.advance(10_000);
@@ -2498,7 +2498,7 @@ fn signals_through_member_peer_spec_sync_5() {
     net.eph_write(c, t, &ukey("/t/ring", Lifetime::Signal), s("from c"));
     net.run();
     assert_eq!(fired(&rb).len(), 1);
-    assert_eq!(fired(&ra).iter().filter(|x| x.2 == s("from c")).count(), 1, "the peer passes it to the server, once");
+    assert_eq!(fired(&ra).iter().filter(|x| x.2 == s("from c")).count(), 1, "the peer passes it to the host, once");
 }
 
 // spec/sync.md §4 (ephemeral entries are held in memory only): an ephemeral entry announced
@@ -2507,9 +2507,9 @@ fn signals_through_member_peer_spec_sync_5() {
 #[test]
 fn announced_ephemeral_leaves_no_sync_record_spec_sync_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
-    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], inline_limit: 0, ..SyncConfig::default() });
+    let b = net.add_node(2, SyncConfig { hosts: vec![net.address(sv)], inline_limit: 0, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
     let l = net.label(a);
@@ -2526,11 +2526,11 @@ fn announced_ephemeral_leaves_no_sync_record_spec_sync_4() {
     assert!(net.sync(b).ephemeral_entries(&l) >= 2);
 }
 
-/// Bytes nodes send to the server while `b` writes 20 notes one by one, after `a` wrote `stuck`
-/// bytes in one write (`a` holds an own entry the server refuses for good when it exceeds the cap).
+/// Bytes nodes send to the host while `b` writes 20 notes one by one, after `a` wrote `stuck`
+/// bytes in one write (`a` holds an own entry the host refuses for good when it exceeds the cap).
 fn bytes_under_stuck_entry(stuck: usize) -> usize {
     let mut net = Net::new();
-    let sv = net.add_server_with(osis_host::HostPolicy { ephemeral_bytes: 12_000, ..osis_host::HostPolicy::default() });
+    let sv = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: 12_000, ..osis_host::HostPolicy::default() });
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -2552,11 +2552,11 @@ fn bytes_under_stuck_entry(stuck: usize) -> usize {
     net.sent_bytes - before
 }
 
-// spec/sync.md §5 (a refusal triggers nothing but the periodic retry): an own entry the server
+// spec/sync.md §5 (a refusal triggers nothing but the periodic retry): an own entry the host
 // refuses for good (one write over the cap) is not re-uploaded at every other node's write (it
 // was, by the compaction a refusal triggered: 5.5x the bytes)
 #[test]
-fn server_cap_stuck_entry_no_churn_spec_sync_9() {
+fn host_cap_stuck_entry_no_churn_spec_sync_9() {
     let fits = bytes_under_stuck_entry(100);
     let stuck = bytes_under_stuck_entry(13_000);
     assert!(stuck < fits + fits / 4, "{stuck} bytes sent with a refused entry held, {fits} without");
@@ -2571,22 +2571,22 @@ fn expiring(net: &mut Net, n: usize, w: Tid, ak: &str, len: usize, ms: u64) {
     local(net, n);
 }
 
-// spec/sync.md §9 (holders upload what a server lacks): an entry a full server refused, that no
+// spec/sync.md §9 (holders upload what a host lacks): an entry a full host refused, that no
 // compaction can cover (it expires), goes up again once room is made without a deletion (b's
 // entries expire there), at the periodic pass (it stayed out until a reconnect: sim
 // `ephemeral_capped` seed 14)
 #[test]
-fn server_cap_refused_entry_retried_spec_sync_9() {
+fn host_cap_refused_entry_retried_spec_sync_9() {
     let cap = 8_000;
     let mut net = Net::new();
-    let sv = net.add_server_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() });
+    let sv = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() });
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     let t = net.item(a, g, g, "x");
     net.run();
     let l = net.label(a);
-    let held = |net: &Net| net.servers[sv].hub.store().ephemeral_bytes(&l);
+    let held = |net: &Net| net.hosts[sv].hub.store().ephemeral_bytes(&l);
     // b fills it with entries that expire soon, until one is refused
     for i in 0.. {
         assert!(i < 20, "nothing refused under a {cap} B cap");
@@ -2615,7 +2615,7 @@ fn uploads_sent(net: &Net) -> usize {
 #[test]
 fn burst_coalesced_while_upload_in_flight_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -2638,7 +2638,7 @@ fn burst_coalesced_while_upload_in_flight_spec_sync_9() {
     assert_eq!(uploads_sent(&net) - up, 3, "A's first edit, A's other 20 in one commit, B's");
     assert_eq!(notes(&mut net, a, w), want);
     assert_eq!(notes(&mut net, b, w), want);
-    // a restarted holder gets the same back from the server
+    // a restarted holder gets the same back from the host
     net.restart(b, 21);
     net.advance(10_000);
     assert_eq!(notes(&mut net, b, w), want);
@@ -2647,11 +2647,11 @@ fn burst_coalesced_while_upload_in_flight_spec_sync_9() {
 /// `authors` nodes in one group move their cursors every 33 ms (30 a second) for `secs`
 /// simulated seconds, each move a fresh entry under the author's own key of one cursor map
 /// expiring 30 s out (what `osis::KeepAlive::set` writes), messages taking one 33 ms round per hop
-/// (a 66 ms round trip), at a server whose delete rates and ephemeral cap are the defaults scaled
+/// (a 66 ms round trip), at a host whose delete rates and ephemeral cap are the defaults scaled
 /// to the run (the rates to its share of their minute window, the cap to its share of the
 /// expiry, what the entries of a run that short would fill): no upload is refused, every author
 /// stays visible at every node throughout, and at the end every node reads every author's latest
-/// cursor and the server holds one entry per author. Returns (uploads, deletes, the server's peak
+/// cursor and the host holds one entry per author. Returns (uploads, deletes, the host's peak
 /// ephemeral bytes, its cap).
 fn many_authors_run(authors: usize, secs: u64) -> (usize, usize, u64, u64) {
     const E: u64 = 30_000;
@@ -2660,14 +2660,14 @@ fn many_authors_run(authors: usize, secs: u64) -> (usize, usize, u64, u64) {
     let d = osis_host::HostPolicy::default();
     let (deletes, replacements) = ((d.deletes as u64 * window_ms / 60_000) as u32, (d.replacements as u64 * window_ms / 60_000) as u32);
     let cap = d.ephemeral_bytes * window_ms.min(E) / E;
-    let sv = net.add_server_with(osis_host::HostPolicy { window_ms, deletes, replacements, ephemeral_bytes: cap, ..d });
+    let sv = net.add_host_with(osis_host::HostPolicy { window_ms, deletes, replacements, ephemeral_bytes: cap, ..d });
     let ns: Vec<usize> = (0..authors).map(|i| net.node(1 + i as u64, &[sv])).collect();
     let members: Vec<(usize, Role)> = ns[1..].iter().map(|n| (*n, Role::Write)).collect();
     let g = net.group(ns[0], &members, &[sv]);
     let t = net.item(ns[0], g, g, "doc");
     net.run();
     let l = net.label(ns[0]);
-    let live = |net: &Net| osis_proto::LabelStore::live_ids(net.servers[sv].hub.store(), &l).unwrap().len();
+    let live = |net: &Net| osis_proto::LabelStore::live_ids(net.hosts[sv].hub.store(), &l).unwrap().len();
     let held = live(&net);
     let up_del = |net: &Net| (uploads_sent(net), net.sent_kinds.get(&14).copied().unwrap_or(0));
     let (up, del) = up_del(&net);
@@ -2688,7 +2688,7 @@ fn many_authors_run(authors: usize, secs: u64) -> (usize, usize, u64, u64) {
             local(&mut net, *n);
         }
         net.round();
-        peak = peak.max(net.servers[sv].hub.store().ephemeral_bytes(&l));
+        peak = peak.max(net.hosts[sv].hub.store().ephemeral_bytes(&l));
         if r % 30 == 29 {
             for x in &ns {
                 for (n, k) in ns.iter().zip(&keys) {
@@ -2709,16 +2709,16 @@ fn many_authors_run(authors: usize, secs: u64) -> (usize, usize, u64, u64) {
     // at most one commit per author per round trip (two rounds), and one more at the end
     let most = authors * (rounds as usize / 2 + 2);
     assert!(up2 - up <= most, "{} uploads: more than one per round trip ({most})", up2 - up);
-    assert!(peak < cap, "the server's ephemeral bytes reached {peak} of its cap {cap}");
+    assert!(peak < cap, "the host's ephemeral bytes reached {peak} of its cap {cap}");
     (up2 - up, del2 - del, peak, cap)
 }
 
 // spec/sync.md §9 (an expiring commit superseded by its author's later writes is dropped and its
-// author deletes it, coalescing while an upload is in flight), §5 (servers rate-limit deletes and
+// author deletes it, coalescing while an upload is in flight), §5 (hosts rate-limit deletes and
 // cap ephemeral bytes per label): 4 authors at 30 cursor moves a second, scaled to a 1 s window
 // (10 authors took 4.5-12 s: tier 2 below)
 #[test]
-fn many_authors_under_server_rates_spec_sync_9() {
+fn many_authors_under_host_rates_spec_sync_9() {
     let (up, del, peak, cap) = many_authors_run(4, 1);
     eprintln!("4 authors, 1 s: {up} uploads, {del} deletes, peak {peak} of {cap} ephemeral bytes");
 }
@@ -2726,7 +2726,7 @@ fn many_authors_under_server_rates_spec_sync_9() {
 // tier 2: 10 authors for 1 s, then for a whole simulated minute at the default policy
 #[test]
 #[ignore]
-fn many_authors_under_server_rates_large() {
+fn many_authors_under_host_rates_large() {
     let (up, del, peak, cap) = many_authors_run(10, 1);
     eprintln!("10 authors, 1 s: {up} uploads, {del} deletes, peak {peak} of {cap} ephemeral bytes");
     let (up, del, peak, cap) = many_authors_run(10, 60);
@@ -2739,7 +2739,7 @@ fn many_authors_under_server_rates_large() {
 #[test]
 fn superseded_unsent_moves_one_commit_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -2767,7 +2767,7 @@ fn superseded_unsent_moves_one_commit_spec_sync_9() {
 #[test]
 fn superseded_stays_gone_when_newer_removed_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -2811,7 +2811,7 @@ fn superseded_stays_gone_when_newer_removed_spec_sync_9() {
 #[test]
 fn superseding_needs_later_stamps_and_no_reset_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -2847,7 +2847,7 @@ fn superseding_needs_later_stamps_and_no_reset_spec_sync_9() {
 #[test]
 fn superseding_part_expires_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -2898,7 +2898,7 @@ fn superseding_part_expires_spec_sync_9() {
 #[test]
 fn superseding_needs_later_expiry_and_own_records_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -2933,7 +2933,7 @@ fn superseding_needs_later_expiry_and_own_records_spec_sync_9() {
 #[test]
 fn signals_not_held_back_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -2953,45 +2953,45 @@ fn signals_not_held_back_spec_sync_9() {
 }
 
 // spec/sync.md §9 (own plain writes wait only while every connection of the label has an own
-// upload unanswered): with one server slow to answer, each edit reaches B through the other at
+// upload unanswered): with one host slow to answer, each edit reaches B through the other at
 // once
 #[test]
-fn slow_server_holds_nothing_back_spec_sync_9() {
+fn slow_host_holds_nothing_back_spec_sync_9() {
     let mut net = Net::new();
-    let (fast, slow) = (net.add_server(), net.add_server());
+    let (fast, slow) = (net.add_host(), net.add_host());
     let a = net.node(1, &[fast, slow]);
     let b = net.node(2, &[fast]);
     let g = net.group(a, &[(b, Role::Write)], &[fast, slow]);
     net.run();
     let w = window(&mut net, a, g, "shared");
     net.run();
-    net.held_servers.insert(slow);
+    net.held_hosts.insert(slow);
     let mut want = BTreeMap::new();
     for i in 0..5 {
         note(&mut net, a, w, &format!("k{i}"), &format!("v{i}"));
         want.insert(format!("k{i}"), format!("v{i}"));
         net.run();
-        assert_eq!(notes(&mut net, b, w), want, "edit {i} reached B through the fast server");
+        assert_eq!(notes(&mut net, b, w), want, "edit {i} reached B through the fast host");
     }
     net.release();
     net.run();
     assert_eq!(notes(&mut net, b, w), want);
 }
 
-/// A writes notes while server `slow` holds its answers, then compacts: the covered entries'
+/// A writes notes while host `slow` holds its answers, then compacts: the covered entries'
 /// uploads are unanswered there. `reconnect`: the connection to `slow` ends before it answers
 /// and is made again; else `slow` answers. B only reads (it deletes nothing). Returns what each
-/// server then holds under the label.
+/// host then holds under the label.
 fn covered_while_slow(reconnect: bool) -> (BTreeSet<osis_base::BlobId>, BTreeSet<osis_base::BlobId>) {
     let mut net = Net::new();
-    let (fast, slow) = (net.add_server(), net.add_server());
+    let (fast, slow) = (net.add_host(), net.add_host());
     let a = net.node(1, &[fast, slow]);
     let b = net.node(2, &[fast]);
     let g = net.group(a, &[(b, Role::Read)], &[fast, slow]);
     net.run();
     let w = window(&mut net, a, g, "shared");
     net.run();
-    net.held_servers.insert(slow);
+    net.held_hosts.insert(slow);
     for i in 0..4 {
         note(&mut net, a, w, &format!("k{i}"), &format!("v{i}"));
         net.run();
@@ -3008,11 +3008,11 @@ fn covered_while_slow(reconnect: bool) -> (BTreeSet<osis_base::BlobId>, BTreeSet
     assert!(net.conn_to(a, slow).is_some(), "reconnected");
     assert_eq!(notes(&mut net, b, w).len(), 4);
     let l = net.label(a);
-    (net.server_ids(fast, &l).into_iter().collect(), net.server_ids(slow, &l).into_iter().collect())
+    (net.host_ids(fast, &l).into_iter().collect(), net.host_ids(slow, &l).into_iter().collect())
 }
 
 // spec/sync.md §9 (a covered entry deleted where it was uploaded, once that upload is
-// answered): a slow server ends holding what the fast one does
+// answered): a slow host ends holding what the fast one does
 #[test]
 fn covered_while_slow_deleted_once_answered_spec_sync_9() {
     let (fast, slow) = covered_while_slow(false);
@@ -3030,11 +3030,11 @@ fn covered_while_slow_deleted_after_reconnect_spec_sync_9() {
 
 // spec/sync.md §9 (own covers), spec/crdt.md §8: ephemeral deltas are not paged, so an author's
 // own state of one aspect far past the page target is still covered: holders converge and every
-// copy (the author's held commits, a holder's lane, the server) stays within about twice it
+// copy (the author's held commits, a holder's lane, the host) stays within about twice it
 #[test]
 fn cover_past_page_target_bounded_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -3050,14 +3050,14 @@ fn cover_past_page_target_bounded_spec_sync_9() {
         let load = net.engine(a).own_ephemeral_load();
         let [(_, held, cover, largest)] = load[..] else { panic!("one actor: {load:?}") };
         assert!(held <= osis_node::ephemeral::COVER_FACTOR * cover + largest, "write {i}: {held} B of own commits, cover {cover} B");
-        let (at_b, at_sv) = (encoded_held(&mut net, b, &l), net.servers[sv].hub.store().ephemeral_bytes(&l) as usize);
-        assert!(at_b <= 3 * cover && at_sv <= 4 * cover, "write {i}: holder {at_b} B, server {at_sv} B, cover {cover} B");
+        let (at_b, at_sv) = (encoded_held(&mut net, b, &l), net.hosts[sv].hub.store().ephemeral_bytes(&l) as usize);
+        assert!(at_b <= 3 * cover && at_sv <= 4 * cover, "write {i}: holder {at_b} B, host {at_sv} B, cover {cover} B");
         peak = (cover, at_b, at_sv);
     }
     assert!(peak.0 > 6 * osis_base::format::PAGE_TARGET, "state far past the page target: {peak:?}");
     assert_eq!(notes(&mut net, a, w).len(), 400);
     assert_eq!(notes(&mut net, b, w), notes(&mut net, a, w));
-    // a restarted holder gets it all back from the server
+    // a restarted holder gets it all back from the host
     let want = notes(&mut net, a, w);
     net.restart(b, 22);
     net.run();
@@ -3067,17 +3067,17 @@ fn cover_past_page_target_bounded_spec_sync_9() {
 // spec/sync.md §3, §9, spec/crdt.md §8: an ephemeral commit past a blob (two aspects of one label,
 // each delta unpaged and most of a blob) goes as several blobs under the label; a holder joins
 // them all, a cover of it is several blobs too, deletes what it absorbs, and a restarted holder
-// gets it all back from the server
+// gets it all back from the host
 #[test]
 fn commit_past_a_blob_splits_spec_sync_9() {
     let mut net = Net::new();
     let cap: u64 = 64 << 20;
-    let sv = net.add_server_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() });
+    let sv = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() });
     let a = net.node(1, &[sv]);
     // the holder's share for waiting blobs does not fit a blob's bound (about 6 times a
     // string's bytes): after the restart the second blob may come first, is refused for the
     // share, and is fetched again once the record the first carries is here (`eph_refetch`)
-    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
+    let b = net.add_node(2, SyncConfig { hosts: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
     let (w1, w2) = (window(&mut net, a, g, "1"), window(&mut net, a, g, "2"));
@@ -3101,8 +3101,8 @@ fn commit_past_a_blob_splits_spec_sync_9() {
     let acts = net.sync(a).compact_ephemeral_now().unwrap();
     net.actions(a, acts);
     net.run();
-    let at_sv = net.servers[sv].hub.store().ephemeral_bytes(&l) as usize;
-    assert!(at_sv < 2 * big.len() + (1 << 20), "absorbed entries deleted: server {at_sv} B");
+    let at_sv = net.hosts[sv].hub.store().ephemeral_bytes(&l) as usize;
+    assert!(at_sv < 2 * big.len() + (1 << 20), "absorbed entries deleted: host {at_sv} B");
     let want: Vec<_> = [w1, w2].into_iter().map(|w| notes(&mut net, a, w)).collect();
     net.restart(b, 22);
     net.run();
@@ -3118,7 +3118,7 @@ fn commit_past_a_blob_splits_spec_sync_9() {
 #[test]
 fn expired_commit_leaves_no_records_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -3199,13 +3199,13 @@ fn read_many(net: &mut Net, n: usize, g: Tid, count: usize) -> Vec<Option<Value>
 
 // spec/sync.md §9 (own covers), spec/commits.md §2 (no list by link): an author's commits and
 // covers over more aspects than inline header lists hold go as several commits, each covering
-// the own commits on its aspects; the author's held commits, a holder's lane and the server stay
+// the own commits on its aspects; the author's held commits, a holder's lane and the host stay
 // within a few covers, holders converge, and a restarted holder gets it all back
 #[test]
 fn own_cover_split_by_aspect_spec_sync_9() {
     const N: usize = 2000;
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -3219,8 +3219,8 @@ fn own_cover_split_by_aspect_spec_sync_9() {
         let load = net.engine(a).own_ephemeral_load();
         let [(_, held, cover, largest)] = load[..] else { panic!("one actor: {load:?}") };
         assert!(held <= osis_node::ephemeral::COVER_FACTOR * cover + largest, "round {round}: {held} B of own commits, cover {cover} B");
-        let (at_b, at_sv) = (encoded_held(&mut net, b, &l), net.servers[sv].hub.store().ephemeral_bytes(&l) as usize);
-        assert!(at_b <= 3 * cover && at_sv <= 4 * cover, "round {round}: holder {at_b} B, server {at_sv} B, cover {cover} B");
+        let (at_b, at_sv) = (encoded_held(&mut net, b, &l), net.hosts[sv].hub.store().ephemeral_bytes(&l) as usize);
+        assert!(at_b <= 3 * cover && at_sv <= 4 * cover, "round {round}: holder {at_b} B, host {at_sv} B, cover {cover} B");
         assert_eq!(read_many(&mut net, b, g, N), read_many(&mut net, a, g, N), "round {round}");
     }
     assert_eq!(net.eph_read(b, g, "/x/a0000"), Some(s("r6")));
@@ -3246,9 +3246,9 @@ fn own_cover_split_by_aspect_spec_sync_9() {
 fn aspect_past_a_blob_refuses_writes_spec_sync_9() {
     let mut net = Net::new();
     let cap: u64 = 64 << 20;
-    let sv = net.add_server_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() });
+    let sv = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() });
     let a = net.node(1, &[sv]);
-    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
+    let b = net.add_node(2, SyncConfig { hosts: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
     let w = window(&mut net, a, g, "w");
@@ -3301,7 +3301,7 @@ fn aspect_past_a_blob_refuses_writes_spec_sync_9() {
 fn split_cover_pieces_under_different_labels_spec_sync_9() {
     const N: usize = 1500;
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g1 = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -3328,10 +3328,10 @@ fn split_cover_pieces_under_different_labels_spec_sync_9() {
     let entries: BTreeMap<osis_base::LabelId, osis_base::BlobId> = net.sync(a).ephemeral_entries_of(&c).into_iter().map(|(l, b, _)| (l, b)).collect();
     assert_eq!(entries.len(), 2, "under both labels");
     for (l, b) in &entries {
-        assert!(net.server_ids(sv, l).contains(b));
+        assert!(net.host_ids(sv, l).contains(b));
     }
-    // the server's answers held back: nothing tells the author its pieces are held there
-    net.held_servers.insert(sv);
+    // the host's answers held back: nothing tells the author its pieces are held there
+    net.held_hosts.insert(sv);
     let acts = net.sync(a).compact_ephemeral_now().unwrap();
     net.actions(a, acts);
     // the pieces that absorb `c`, each on one group's things only
@@ -3349,11 +3349,11 @@ fn split_cover_pieces_under_different_labels_spec_sync_9() {
     assert_eq!(on.len(), 2, "two pieces absorb it: {on:?}");
     let piece_blobs = |net: &mut Net, p: &osis_base::CommitId, l: &osis_base::LabelId| -> Vec<osis_base::BlobId> { net.sync(a).ephemeral_entries_of(p).into_iter().filter(|x| x.0 == *l).map(|x| x.1).collect() };
     // an entry goes only with (or after) its piece under that label: the piece's upload names it
-    // as replaced, so the server removes it as it admits the piece, answered or not
+    // as replaced, so the host removes it as it admits the piece, answered or not
     let check = |net: &mut Net| {
         for g in [g1, g2] {
             let l = labels[&g];
-            let ids = net.server_ids(sv, &l);
+            let ids = net.host_ids(sv, &l);
             if !ids.contains(&entries[&l]) {
                 let pb = piece_blobs(net, &on[&g], &l);
                 assert!(!pb.is_empty() && pb.iter().all(|b| ids.contains(b)), "deleted under {g:?} before its piece was held there");
@@ -3373,7 +3373,7 @@ fn split_cover_pieces_under_different_labels_spec_sync_9() {
     net.run();
     for g in [g1, g2] {
         let l = labels[&g];
-        assert!(!net.server_ids(sv, &l).contains(&entries[&l]), "deleted under {g:?}");
+        assert!(!net.host_ids(sv, &l).contains(&entries[&l]), "deleted under {g:?}");
         assert_eq!(read_many(&mut net, b, g, N), read_many(&mut net, a, g, N));
     }
 }
@@ -3381,12 +3381,12 @@ fn split_cover_pieces_under_different_labels_spec_sync_9() {
 
 // spec/sync.md §5 (a new sync key ends an open), §6 (a first Sync lists the held ephemeral
 // entries as gained): a Sync refused 8 because a read rotation landed between its Open and it
-// listed nothing to the server, so the Sync after the reopen on the same connection lists them
+// listed nothing to the host, so the Sync after the reopen on the same connection lists them
 // again (it counted the refused list as held there and never uploaded b's offline note).
 #[test]
 fn gained_announced_again_after_refused_sync_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -3424,7 +3424,7 @@ fn gained_announced_again_after_refused_sync_spec_sync_5() {
 #[test]
 fn offline_entry_across_rotation_restamped_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -3453,7 +3453,7 @@ fn offline_entry_across_rotation_restamped_spec_sync_5() {
 #[test]
 fn demoted_writer_entry_stops_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -3480,7 +3480,7 @@ fn demoted_writer_entry_stops_spec_sync_5() {
 
 // spec/sync.md §5, §9: a writer compacts before it reads a rotation: the cover and the deletes
 // of what it absorbs (carried as replacements) are signed under the old write key and refused 9;
-// once the writer reads the rotation the cover lands and the absorbed entries go at the server.
+// once the writer reads the rotation the cover lands and the absorbed entries go at the host.
 // Code 9 carries no head (spec/wire.md §11.2): the writer learns it by push, or unsubscribed by
 // its next resync's Sync.
 #[test]
@@ -3491,9 +3491,9 @@ fn cover_across_unread_rotation_lands_spec_sync_9() {
 
 fn cover_across_unread_rotation(subscribe: bool) {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
-    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], subscribe, ..SyncConfig::default() });
+    let b = net.add_node(2, SyncConfig { hosts: vec![net.address(sv)], subscribe, ..SyncConfig::default() });
     let c = net.node(3, &[sv]);
     let x = net.node(4, &[sv]);
     let g = net.group(a, &[(b, Role::Write), (c, Role::Write), (x, Role::Read)], &[sv]);
@@ -3515,7 +3515,7 @@ fn cover_across_unread_rotation(subscribe: bool) {
     remove_member(e, g, xt, &rs, 9);
     net.run();
     let l = net.label(a);
-    let before: BTreeSet<osis_base::BlobId> = net.server_ids(sv, &l).into_iter().collect();
+    let before: BTreeSet<osis_base::BlobId> = net.host_ids(sv, &l).into_iter().collect();
     let acts = net.sync(b).compact_ephemeral_now().unwrap();
     net.actions(b, acts);
     net.run();
@@ -3528,23 +3528,23 @@ fn cover_across_unread_rotation(subscribe: bool) {
     };
     assert_eq!(held_b(&mut net, c), 1, "c holds b's cover alone");
     assert_eq!(notes(&mut net, c, w).len(), 4);
-    let after: BTreeSet<osis_base::BlobId> = net.server_ids(sv, &l).into_iter().collect();
+    let after: BTreeSet<osis_base::BlobId> = net.host_ids(sv, &l).into_iter().collect();
     assert_eq!(after.difference(&before).count(), 1, "the cover landed");
-    assert!(before.difference(&after).count() > 0, "what it absorbs is deleted at the server");
+    assert!(before.difference(&after).count() > 0, "what it absorbs is deleted at the host");
 }
 
 // spec/sync.md §5, §9: a plain delete of an absorbed entry sent before the writer reads a
-// rotation is refused 9; it goes again under the next key and the entry leaves the server. The
+// rotation is refused 9; it goes again under the next key and the entry leaves the host. The
 // writer's last note is in flight when it compacts: its delete waits for the OK, then for the
 // cover's (`orphans`, `waiting`), so it goes alone after the rotation. The admin holds no
 // ephemeral entries of others, nor the writer it removes: the writer alone deletes.
 #[test]
 fn delete_across_unread_rotation_retried_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
-    let a = net.add_node(1, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 0, ..SyncConfig::default() });
+    let sv = net.add_host();
+    let a = net.add_node(1, SyncConfig { hosts: vec![net.address(sv)], ephemeral_bytes: 0, ..SyncConfig::default() });
     let b = net.node(2, &[sv]);
-    let c = net.add_node(3, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 0, ..SyncConfig::default() });
+    let c = net.add_node(3, SyncConfig { hosts: vec![net.address(sv)], ephemeral_bytes: 0, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write), (c, Role::Write)], &[sv]);
     net.run();
     let w = window(&mut net, a, g, "w");
@@ -3554,11 +3554,11 @@ fn delete_across_unread_rotation_retried_spec_sync_9() {
         net.run();
     }
     let l = net.label(a);
-    let before: BTreeSet<osis_base::BlobId> = net.server_ids(sv, &l).into_iter().collect();
+    let before: BTreeSet<osis_base::BlobId> = net.host_ids(sv, &l).into_iter().collect();
     net.held_to.insert(b);
     note(&mut net, b, w, "k4", "v4");
     net.run();
-    let k4: Vec<osis_base::BlobId> = net.server_ids(sv, &l).into_iter().filter(|i| !before.contains(i)).collect();
+    let k4: Vec<osis_base::BlobId> = net.host_ids(sv, &l).into_iter().filter(|i| !before.contains(i)).collect();
     assert_eq!(k4.len(), 1, "the last note landed");
     let acts = net.sync(b).compact_ephemeral_now().unwrap();
     net.actions(b, acts);
@@ -3571,7 +3571,7 @@ fn delete_across_unread_rotation_retried_spec_sync_9() {
     net.release();
     net.run();
     net.advance(60_000);
-    let after: BTreeSet<osis_base::BlobId> = net.server_ids(sv, &l).into_iter().collect();
+    let after: BTreeSet<osis_base::BlobId> = net.host_ids(sv, &l).into_iter().collect();
     assert!(!after.contains(&k4[0]), "the plain delete refused 9 went again under the next key");
 }
 
@@ -3583,7 +3583,7 @@ fn delete_across_unread_rotation_retried_spec_sync_9() {
 #[test]
 fn restarted_cover_waits_for_every_label_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -3655,12 +3655,12 @@ fn restarted_cover_waits_for_every_label_spec_sync_9() {
     assert_eq!(notes(&mut net, c, w), map(&[("a", "1")]), "and from the cover");
 }
 
-// spec/sync.md §9 (an earlier session's commits are covered once each label at a server caught
-// up): a label at no server catches up nowhere and does not hold the author's covers back
+// spec/sync.md §9 (an earlier session's commits are covered once each label at a host caught
+// up): a label at no host catches up nowhere and does not hold the author's covers back
 #[test]
-fn restarted_cover_skips_label_at_no_server_spec_sync_9() {
+fn restarted_cover_skips_label_at_no_host_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let g1 = net.group(a, &[], &[sv]);
     net.group_seeded(a, &[], vec![], 12);
@@ -3869,7 +3869,7 @@ fn memory_commit_expiry_stays_in_memory() {
 #[test]
 fn placed_record_only_to_its_reader_spec_commits_2() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -3898,7 +3898,7 @@ fn placed_record_only_to_its_reader_spec_commits_2() {
 #[test]
 fn records_beside_parts_counted_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -4133,13 +4133,13 @@ fn repro_durable_write_on_memory_marked_aspect_lost() {
 // spec/sync.md §9 (an expiring commit superseded by its author's later writes is dropped and
 // deleted by its author; superseded unsent writes are not sent): a cursor moved 30 times a second,
 // each move a fresh entry at the author's key expiring 30 s out (what `osis::KeepAlive::set`
-// writes), costs about one held commit at every node and one entry at the server, not one per
+// writes), costs about one held commit at every node and one entry at the host, not one per
 // move until each expires (was issues/eph-expiring-churn.md: 60 here)
 #[test]
 fn moving_cursor_one_entry_per_author_spec_sync_9() {
     const E: u64 = 30_000;
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -4148,7 +4148,7 @@ fn moving_cursor_one_entry_per_author_spec_sync_9() {
     net.run();
     let l = net.label(a);
     let me = s(&net.tid(a).to_string());
-    let entries = |net: &Net| osis_proto::LabelStore::live_ids(net.servers[sv].hub.store(), &l).unwrap().len();
+    let entries = |net: &Net| osis_proto::LabelStore::live_ids(net.hosts[sv].hub.store(), &l).unwrap().len();
     let base = entries(&net);
     let held = |net: &mut Net, n: usize| net.engine(n).held_ephemeral().len();
     let (ha, hb) = (held(&mut net, a), held(&mut net, b));
@@ -4159,12 +4159,12 @@ fn moving_cursor_one_entry_per_author_spec_sync_9() {
         net.engine(a).write(m).unwrap();
         local(&mut net, a);
         net.advance(33);
-        assert!(entries(&net) - base <= 3, "move {i}: the server holds {} entries of one cursor", entries(&net) - base);
+        assert!(entries(&net) - base <= 3, "move {i}: the host holds {} entries of one cursor", entries(&net) - base);
     }
     net.run();
     assert_eq!(net.eph_read(b, w, CURSOR), Some(Value::Map([(me.clone(), s("c59"))].into())));
     assert_eq!(net.eph_read(a, w, CURSOR), Some(Value::Map([(me, s("c59"))].into())));
-    assert_eq!(entries(&net) - base, 1, "one entry of the cursor at the server");
+    assert_eq!(entries(&net) - base, 1, "one entry of the cursor at the host");
     assert_eq!((held(&mut net, a) - ha, held(&mut net, b) - hb), (1, 1), "one commit of it held at the author and the holder");
     // the last move still expires everywhere
     net.advance(E);
@@ -4178,7 +4178,7 @@ fn moving_cursor_one_entry_per_author_spec_sync_9() {
 #[ignore]
 fn repro_set_into_expired_entry_differs() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);

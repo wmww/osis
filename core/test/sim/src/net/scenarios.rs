@@ -1,4 +1,4 @@
-//! Phase B scenarios: sync engines and blind servers under message faults, partitions,
+//! Phase B scenarios: sync engines and hosts under message faults, partitions,
 //! crashes and data loss. Each is a function of the seed; `crate::replay` reruns any. Setup runs
 //! calm (no faults) and settles with `quiet`; `run` is the faulty random schedule; every
 //! scenario ends with `run_until_quiescent` (the invariants of `check`).
@@ -55,9 +55,9 @@ pub fn persons<const N: usize>(sim: &mut NetSim, ns: [usize; N], homes: [usize; 
     ps.try_into().map_err(|_| sim.fail("persons"))
 }
 
-/// A group of node `a`'s person at `servers`, granted to each (person, role) in turn.
-pub fn shared_group(sim: &mut NetSim, a: usize, pa: Tid, servers: &[usize], grants: &[(Tid, Role)]) -> Res<Tid> {
-    let g = sim.group(a, pa, servers)?;
+/// A group of node `a`'s person at `hosts`, granted to each (person, role) in turn.
+pub fn shared_group(sim: &mut NetSim, a: usize, pa: Tid, hosts: &[usize], grants: &[(Tid, Role)]) -> Res<Tid> {
+    let g = sim.group(a, pa, hosts)?;
     for (p, r) in grants {
         sim.grant(a, g, *p, *r)?;
         sim.quiet(40)?;
@@ -85,13 +85,13 @@ pub fn write_gone(sim: &mut NetSim, n: usize, t: Tid, v: &str) -> Res<osis_base:
     sim.commit(n, m)?.ok_or_else(|| sim.fail("wrote nothing"))
 }
 
-/// Two devices of one person through one blind server (spec/sync.md §2, §6): the person's
+/// Two devices of one person through one host (spec/sync.md §2, §6): the person's
 /// home label, the second device paired; both write items of the person's group under a lossy
 /// network with crashes mid-write.
-pub fn two_devices_server(seed: u64) -> Res<Report> {
+pub fn two_devices_host(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xb2);
-    let mut sim = sim("two_devices_server", seed, NetWeights { crash: 1, restart: 2, ..NetWeights::default() });
-    let s = sim.add_server()?;
+    let mut sim = sim("two_devices_host", seed, NetWeights { crash: 1, restart: 2, ..NetWeights::default() });
+    let s = sim.add_host()?;
     let d0 = sim.add_node(&[s], clock(&mut d))?;
     let d1 = sim.add_node(&[s], clock(&mut d))?;
     let p = sim.person(d0, &[s])?.person;
@@ -103,15 +103,15 @@ pub fn two_devices_server(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// Three persons share a group through two replicating servers (spec/sync.md §5 replication,
+/// Three persons share a group through two replicating hosts (spec/sync.md §5 replication,
 /// §6): A (admin, reaches both), B (writer, s0 only), C (reader, s1 only); grants by inbox;
-/// server crashes mid-write, partitions.
-pub fn three_persons_two_servers(seed: u64) -> Res<Report> {
+/// host crashes mid-write, partitions.
+pub fn three_persons_two_hosts(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x3b);
-    let w = NetWeights { server_crash: 1, server_restart: 2, partition: 1, heal: 2, ..NetWeights::default() };
-    let mut sim = sim("three_persons_two_servers", seed, w);
-    let s0 = sim.add_server()?;
-    let s1 = sim.add_server()?;
+    let w = NetWeights { host_crash: 1, host_restart: 2, partition: 1, heal: 2, ..NetWeights::default() };
+    let mut sim = sim("three_persons_two_hosts", seed, w);
+    let s0 = sim.add_host()?;
+    let s1 = sim.add_host()?;
     sim.replicate(s0, s1)?;
     let a = sim.add_node(&[s0, s1], clock(&mut d))?;
     let b = sim.add_node(&[s0], clock(&mut d))?;
@@ -130,12 +130,12 @@ pub fn three_persons_two_servers(seed: u64) -> Res<Report> {
 
 /// A removed writer's bodies deleted by delete key (spec/sync.md §5 deletion by delete key; spec/commits.md
 /// §5): W writes a writer-purgeable aspect, the admin removes W, then a remaining writer (no
-/// delete key) purges W's body while the admin is away; it is gone from the server and from
+/// delete key) purges W's body while the admin is away; it is gone from the host and from
 /// every honest node.
 pub fn removed_writer(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x7e);
     let mut sim = sim("removed_writer", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let w = sim.add_node(&[s], clock(&mut d))?;
@@ -174,12 +174,12 @@ pub fn removed_writer(seed: u64) -> Res<Report> {
 }
 
 /// Compaction, then deletion (spec/sync.md §7): two writers compact aspects while writing;
-/// covered bodies are deleted at the server once the snapshot is there; then a purge; no
+/// covered bodies are deleted at the host once the snapshot is there; then a purge; no
 /// ping-pong.
 pub fn compaction(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xc0);
     let mut sim = sim("compaction", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
@@ -197,7 +197,7 @@ pub fn compaction(seed: u64) -> Res<Report> {
     }
     sim.run_until_quiescent(40)?;
     if deletions(&sim, s) == deleted0 {
-        return Err(sim.fail("compaction deleted nothing at the server"));
+        return Err(sim.fail("compaction deleted nothing at the host"));
     }
     let c = write_gone(&mut sim, a, t, "later")?;
     sim.quiet(40)?;
@@ -207,7 +207,7 @@ pub fn compaction(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// Deleted records in the logs of server `s`.
+/// Deleted records in the logs of host `s`.
 fn deletions(sim: &NetSim, s: usize) -> usize {
     use osis_proto::LabelStore;
     let Some(h) = sim.hub(s) else { return 0 };
@@ -219,15 +219,15 @@ fn deletions(sim: &NetSim, s: usize) -> usize {
     k
 }
 
-/// A reader relays (spec/sync.md §5, §6): two servers that do not replicate; the writer reaches
+/// A reader relays (spec/sync.md §5, §6): two hosts that do not replicate; the writer reaches
 /// only s0, a reader both, a second reader only s1; the second reader reads the writer's content
 /// carried by the first. The readers open the label while the admin registers the steps of the
 /// grants' rotations (an open answered with the old head follows the new one).
 pub fn reader_relays(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x2e);
     let mut sim = sim("reader_relays", seed, NetWeights::default());
-    let s0 = sim.add_server()?;
-    let s1 = sim.add_server()?;
+    let s0 = sim.add_host()?;
+    let s1 = sim.add_host()?;
     let a = sim.add_node(&[s0, s1], clock(&mut d))?;
     let r = sim.add_node(&[s0, s1], clock(&mut d))?;
     let c = sim.add_node(&[s1], clock(&mut d))?;
@@ -245,12 +245,12 @@ pub fn reader_relays(seed: u64) -> Res<Report> {
 
 /// A stranded device re-sealed (spec/permissions.md §3, §4; notes/sync.md Limits): one device of
 /// a person is off while two others are removed (the person rotates twice, the home label steps
-/// twice) and stays off past `MEMBERSHIP_KEEP`, so the server dropped the claim set it needs; it
+/// twice) and stays off past `MEMBERSHIP_KEEP`, so the host dropped the claim set it needs; it
 /// cannot read the new epoch; re-paired over a direct connection it does.
 pub fn stranded_reseal(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x5d);
     let mut sim = sim("stranded_reseal", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let d0 = sim.add_node(&[s], clock(&mut d))?;
     let d1 = sim.add_node(&[s], clock(&mut d))?;
     let d2 = sim.add_node(&[s], clock(&mut d))?;
@@ -294,13 +294,13 @@ pub fn stranded_reseal(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// A server loses its data (spec/sync.md §6: a writer uploads every must-hold body the label
+/// A host loses its data (spec/sync.md §6: a writer uploads every must-hold body the label
 /// lacks): writers re-register the labels and re-upload; the quiescent check finds every
 /// must-hold body back.
-pub fn server_loses_data(seed: u64) -> Res<Report> {
+pub fn host_loses_data(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x10);
-    let mut sim = sim("server_loses_data", seed, NetWeights { crash: 1, restart: 2, ..NetWeights::default() });
-    let s = sim.add_server()?;
+    let mut sim = sim("host_loses_data", seed, NetWeights { crash: 1, restart: 2, ..NetWeights::default() });
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
@@ -308,7 +308,7 @@ pub fn server_loses_data(seed: u64) -> Res<Report> {
     sim.item(a, g)?;
     sim.quiet(40)?;
     sim.run(120)?;
-    sim.wipe_server(s)?;
+    sim.wipe_host(s)?;
     sim.run(120)?;
     sim.run_until_quiescent(40)?;
     sim.finish()
@@ -321,7 +321,7 @@ pub fn server_loses_data(seed: u64) -> Res<Report> {
 pub fn offline_rotation(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x0f);
     let mut sim = sim("offline_rotation", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let c = sim.add_node(&[s], clock(&mut d))?;
@@ -363,7 +363,7 @@ pub fn offline_rotation(seed: u64) -> Res<Report> {
 pub fn disk_loss(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xd1);
     let mut sim = sim("disk_loss", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let d0 = sim.add_node(&[s], clock(&mut d))?;
     let d1 = sim.add_node(&[s], clock(&mut d))?;
     let person = sim.person(d0, &[s])?;
@@ -379,7 +379,7 @@ pub fn disk_loss(seed: u64) -> Res<Report> {
     let card = person.card.clone();
     let r = sim.engine(fresh)?.hold_key_actor(card.seed.clone());
     let rk = r.map_err(|e| sim.fail(format!("hold_key_actor: {e}")))?;
-    let acts = sim.sync(fresh)?.follow(rk, card.person, card.home_label, card.servers.clone());
+    let acts = sim.sync(fresh)?.follow(rk, card.person, card.home_label, card.hosts.clone());
     sim.actions(fresh, acts)?;
     sim.quiet(40)?;
     let lost = sim.tid(d0)?;
@@ -403,11 +403,11 @@ pub fn disk_loss(seed: u64) -> Res<Report> {
 
 
 /// A grant whose inbox deposit is lost (spec/sync.md §3, §5): the admin's device crashes right
-/// after granting, before the deposit reached the server; the grant reaches the grantee once the restarted device re-sends it.
+/// after granting, before the deposit reached the host; the grant reaches the grantee once the restarted device re-sends it.
 pub fn grant_lost_on_crash(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x9c);
     let mut sim = sim("grant_lost_on_crash", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
@@ -439,7 +439,7 @@ fn new_chunk_bytes(old: &[u8], new: &[u8]) -> u64 {
     cuts(new).into_iter().filter(|c| !have.contains(c)).map(|c| c.len() as u64).sum()
 }
 
-/// Two devices of one person edit a large blob of many chunks in turn through one blind server
+/// Two devices of one person edit a large blob of many chunks in turn through one host
 /// (spec/requirements.md Scale: a change inside a huge value costs O(change); spec/sync.md §1
 /// chunk reuse): each reads the value whole (fetching the chunks it lacks), changes a few
 /// bytes and writes it back; what it uploads per edit stays within 1.2x of the chunks the
@@ -447,7 +447,7 @@ fn new_chunk_bytes(old: &[u8], new: &[u8]) -> u64 {
 pub fn large_edits(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x1a);
     let mut sim = NetSim::new("large_edits", seed, NetConfig::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let d0 = sim.add_node(&[s], clock(&mut d))?;
     let d1 = sim.add_node(&[s], clock(&mut d))?;
     let p = sim.person(d0, &[s])?.person;
@@ -495,15 +495,15 @@ pub fn large_edits(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// Pass work sets against full passes (spec/sync.md §6, §7): two replicating servers, an admin
+/// Pass work sets against full passes (spec/sync.md §6, §7): two replicating hosts, an admin
 /// and two writers writing at random under faults, then compactions (snapshots), keep-at-most
 /// and expiring writes, a purge, a demotion of a writer, time past the bounds. Run as is and
 /// under `with_full_passes`, it must give the same run (`core/test/sim/tests/it/work_sets.rs`).
 pub fn work_sets(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x3e7);
     let mut sim = sim("work_sets", seed, NetWeights { partition: 1, heal: 2, ..NetWeights::default() });
-    let s0 = sim.add_server()?;
-    let s1 = sim.add_server()?;
+    let s0 = sim.add_host()?;
+    let s1 = sim.add_host()?;
     sim.replicate(s0, s1)?;
     let a = sim.add_node(&[s0, s1], clock(&mut d))?;
     let b = sim.add_node(&[s0, s1], clock(&mut d))?;
@@ -552,7 +552,7 @@ pub fn work_sets(seed: u64) -> Res<Report> {
 
 /// A snapshot dropped under a cover that turns invalid (spec/permissions.md §5.2, spec/sync.md
 /// §6, §7): A compacts the tags (S1); while A is away, C writes and compacts over it (S2) and W
-/// drops S1 under S2's cover, deleting it at the server; A, not having seen S2, removes C (S2
+/// drops S1 under S2's cover, deleting it at the host; A, not having seen S2, removes C (S2
 /// invalid). S1 is missing again at W; A, holding it uncovered, uploads it again while it has a
 /// live write; W fetches it, and A and W read alike. Random writes while A is away: a part W
 /// dropped under S2 and deleted reaches A never, and its commit applies there without it
@@ -560,7 +560,7 @@ pub fn work_sets(seed: u64) -> Res<Report> {
 pub fn coverer_revoked(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xc5);
     let mut sim = sim("coverer_revoked", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let c = sim.add_node(&[s], clock(&mut d))?;
     let w = sim.add_node(&[s], clock(&mut d))?;
@@ -593,7 +593,7 @@ pub fn coverer_revoked(seed: u64) -> Res<Report> {
     let acts = sim.sync(c)?.compact(&t, &k).map_err(|e| sim.fail(format!("node {c} compact: {e}")))?;
     sim.actions(c, acts)?;
     sim.run(20)?;
-    // past `MAX_DRIFT`: W drops S1 under S2 and deletes it at the server
+    // past `MAX_DRIFT`: W drops S1 under S2 and deletes it at the host
     sim.advance(2 * 3_600_000)?;
     sim.quiet(40)?;
     // (dropped, missing) of S1's part at W

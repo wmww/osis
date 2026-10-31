@@ -23,7 +23,7 @@ fn blobs_of(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::Comm
 #[test]
 fn rotates_before_wrapping_after_until_spec_crypto_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -55,11 +55,11 @@ fn rotates_before_wrapping_after_until_spec_crypto_4() {
 
 // spec/commits.md §5 (purge drops every copy): after a purge applied, a reader holds neither
 // the purged body's key nor its ciphertext; a writer without the delete key deletes it at the
-// server by delete key.
+// host by delete key.
 #[test]
 fn purge_leaves_no_copy_spec_commits_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let r = net.node(3, &[sv]);
@@ -83,7 +83,7 @@ fn purge_leaves_no_copy_spec_commits_5() {
     net.trace(&[b, r]);
     for id in &ids {
         assert!(!net.sync(r).holds_blob(id), "the reader keeps no key or ciphertext");
-        assert!(!net.server_ids(sv, &l).contains(id), "deleted at the server by delete key");
+        assert!(!net.host_ids(sv, &l).contains(id), "deleted at the host by delete key");
     }
     let gone = Ak::new(GONE.ak()).unwrap();
     assert_eq!(net.engine(r).get(&t, &gone).unwrap(), None);
@@ -95,7 +95,7 @@ fn purge_leaves_no_copy_spec_commits_5() {
 #[test]
 fn purged_superset_holds_nothing_spec_sync_6() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -120,7 +120,7 @@ fn purged_superset_holds_nothing_spec_sync_6() {
     net.settle(200_000);
     let q: Vec<_> = blobs_of(&mut net, a, &l, &c).into_iter().filter(|id| !p.contains(id)).collect();
     assert_eq!(q.len(), 1, "a's rewrite placed");
-    let ids = net.server_ids(sv, &l);
+    let ids = net.host_ids(sv, &l);
     assert!(ids.contains(&q[0]), "q uploaded at once");
     net.run();
     net.run();
@@ -129,7 +129,7 @@ fn purged_superset_holds_nothing_spec_sync_6() {
     net.advance(6_000);
     net.run();
     net.trace(&[a, b]);
-    let ids = net.server_ids(sv, &l);
+    let ids = net.host_ids(sv, &l);
     assert!(!ids.contains(&p[0]), "p deleted once carried");
     assert!(ids.contains(&q[0]), "q kept");
     assert_eq!(net.engine(b).get(&t2, &gone).unwrap(), Some(s("kept")));
@@ -138,11 +138,11 @@ fn purged_superset_holds_nothing_spec_sync_6() {
 
 // spec/sync.md §7 (a body with live writes leaves only while a carrier stays): writer a purges
 // one delta of commit c whose two-delta blob p also holds a live write; a's rewrite q is lost on
-// the way, so p stays (and the live write with it) until q is at the server.
+// the way, so p stays (and the live write with it) until q is at the host.
 #[test]
 fn purged_body_waits_for_its_rewrite_spec_sync_7() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -166,7 +166,7 @@ fn purged_body_waits_for_its_rewrite_spec_sync_7() {
     net.run();
     let q: Vec<_> = blobs_of(&mut net, a, &l, &c).into_iter().filter(|id| !p.contains(id)).collect();
     assert_eq!(q.len(), 1, "a's rewrite placed");
-    let ids = net.server_ids(sv, &l);
+    let ids = net.host_ids(sv, &l);
     assert!(!ids.contains(&q[0]), "q lost on the way");
     assert!(ids.contains(&p[0]), "p waits for its carrier");
     net.lose_uploads.clear();
@@ -174,7 +174,7 @@ fn purged_body_waits_for_its_rewrite_spec_sync_7() {
     net.advance(60_000);
     net.run();
     net.trace(&[a, b]);
-    let ids = net.server_ids(sv, &l);
+    let ids = net.host_ids(sv, &l);
     assert!(ids.contains(&q[0]), "q uploaded again");
     assert!(!ids.contains(&p[0]), "p deleted once carried");
     assert_eq!(net.engine(b).get(&t2, &gone).unwrap(), Some(s("kept")));
@@ -184,12 +184,12 @@ fn purged_body_waits_for_its_rewrite_spec_sync_7() {
 // spec/sync.md §7 (a rewrite the label refuses for its cap goes up again replacing the purged
 // body), §5 (Replace), spec/requirements.md (purge is prompt): as above, but the label is at its
 // entry cap, so a's rewrite q is refused (code 12); q goes up again naming p as replaced, and the
-// server admits it in p's room and removes p in one step: after every hop the server holds p or
+// host admits it in p's room and removes p in one step: after every hop the host holds p or
 // q (the kept live write is never absent), and ends with q only.
 #[test]
 fn purged_body_leaves_full_label_spec_sync_7() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -205,8 +205,8 @@ fn purged_body_leaves_full_label_spec_sync_7() {
     let l = net.label(a);
     let p = blobs_of(&mut net, a, &l, &c);
     assert_eq!(p.len(), 1);
-    let full = net.server_ids(sv, &l).len() as u64;
-    net.restart_server_with(sv, osis_host::HostPolicy { cap_entries: full, ..osis_host::HostPolicy::default() });
+    let full = net.host_ids(sv, &l).len() as u64;
+    net.restart_host_with(sv, osis_host::HostPolicy { cap_entries: full, ..osis_host::HostPolicy::default() });
     net.run();
     // past the redial pause
     net.advance(66_000);
@@ -218,15 +218,15 @@ fn purged_body_leaves_full_label_spec_sync_7() {
     let (up, del) = (net.sent_kinds.get(&10).copied().unwrap_or(0), net.sent_kinds.get(&14).copied().unwrap_or(0));
     for _ in 0..200 {
         net.round();
-        let ids = net.server_ids(sv, &l);
+        let ids = net.host_ids(sv, &l);
         let q: Vec<_> = blobs_of(&mut net, a, &l, &c).into_iter().filter(|id| !p.contains(id)).collect();
-        assert!(ids.contains(&p[0]) || q.iter().any(|x| ids.contains(x)), "neither p nor its rewrite at the server");
+        assert!(ids.contains(&p[0]) || q.iter().any(|x| ids.contains(x)), "neither p nor its rewrite at the host");
     }
     net.run();
     net.trace(&[a, b]);
     let q: Vec<_> = blobs_of(&mut net, a, &l, &c).into_iter().filter(|id| !p.contains(id)).collect();
     assert_eq!(q.len(), 1, "a's rewrite placed");
-    let ids = net.server_ids(sv, &l);
+    let ids = net.host_ids(sv, &l);
     assert!(!ids.contains(&p[0]), "p deleted though its rewrite was refused");
     assert!(ids.contains(&q[0]), "q uploaded in the room p freed");
     assert!(net.sent_kinds.get(&10).copied().unwrap_or(0) > up, "uploads sent");
@@ -239,7 +239,7 @@ fn purged_body_leaves_full_label_spec_sync_7() {
 #[test]
 fn complete_pass_after_push_spec_permissions_3() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[]);
@@ -260,9 +260,9 @@ fn complete_pass_after_push_spec_permissions_3() {
 #[test]
 fn no_reupload_ping_pong_spec_sync_6() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
-    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], inline_limit: 0, ..SyncConfig::default() });
+    let b = net.add_node(2, SyncConfig { hosts: vec![net.address(sv)], inline_limit: 0, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     let t = net.item(a, g, g, "v1");
     net.write(a, t, "v2");
@@ -273,11 +273,11 @@ fn no_reupload_ping_pong_spec_sync_6() {
     net.actions(a, acts);
     net.run();
     net.run();
-    let n1 = net.server_ids(sv, &l);
+    let n1 = net.host_ids(sv, &l);
     net.advance(70_000);
     net.advance(70_000);
     net.trace(&[a, b]);
-    assert_eq!(net.server_ids(sv, &l), n1, "settled: nothing re-uploaded, nothing deleted again");
+    assert_eq!(net.host_ids(sv, &l), n1, "settled: nothing re-uploaded, nothing deleted again");
     assert_eq!(net.read(b, t), Some(s("v3")));
 }
 
@@ -287,7 +287,7 @@ fn no_reupload_ping_pong_spec_sync_6() {
 #[test]
 fn private_and_shared_split_spec_sync_3() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Read)], &[sv]);
@@ -317,11 +317,11 @@ fn private_and_shared_split_spec_sync_3() {
 }
 
 // spec/sync.md §7: compaction deletes exactly the covered bodies, after the snapshot is at the
-// server, and the snapshot stays.
+// host, and the snapshot stays.
 #[test]
 fn compaction_deletes_exactly_covered_spec_sync_7() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let g = net.group(a, &[], &[sv]);
     let t = net.item(a, g, g, "v1");
@@ -330,13 +330,13 @@ fn compaction_deletes_exactly_covered_spec_sync_7() {
     net.run();
     let l = net.label(a);
     let old: Vec<_> = [c2, c3].iter().flat_map(|c| blobs_of(&mut net, a, &l, c)).collect();
-    assert!(old.iter().all(|id| net.server_ids(sv, &l).contains(id)));
+    assert!(old.iter().all(|id| net.host_ids(sv, &l).contains(id)));
     let ak = Ak::new(REG.ak()).unwrap();
     let acts = net.sync(a).compact(&t, &ak).unwrap();
     net.actions(a, acts);
     net.run();
     net.run();
-    let ids = net.server_ids(sv, &l);
+    let ids = net.host_ids(sv, &l);
     assert!(old.iter().all(|id| !ids.contains(id)), "covered bodies deleted");
     let snaps: Vec<_> = net.sync(a).entries(&l).into_iter().filter_map(|(id, k)| match k {
         EntryKind::Commit { commit, .. } if net.engine(a).header(&commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot) => Some(id),
@@ -347,12 +347,12 @@ fn compaction_deletes_exactly_covered_spec_sync_7() {
 }
 
 // spec/permissions.md §3 (complete pass): a pass from before going offline still counts (it
-// proves what the server held then); a remote membership commit received while offline (here
+// proves what the host held then); a remote membership commit received while offline (here
 // directly) restarts it.
 #[test]
 fn complete_pass_survives_disconnect_spec_permissions_3() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[]);

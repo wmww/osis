@@ -42,15 +42,15 @@ pub const MAX_DELIVERED: usize = 1 << 16;
 /// An author covers its own held ephemeral commits once they cost more than this many times their
 /// cover (spec/sync.md §9). Performance switch between correct strategies: 0 covers whenever two
 /// own commits are held (at every write), infinity never (bodies pile up to
-/// the node and server caps, past which entries are refused). Rebuilds cost O(1) per byte written
-/// for any value above 1; a server cap of this many times the sum of the authors' covers holds
+/// the node and host caps, past which entries are refused). Rebuilds cost O(1) per byte written
+/// for any value above 1; a host cap of this many times the sum of the authors' covers holds
 /// every entry.
 pub const COVER_FACTOR: usize = 2;
 
 /// Bytes charged per held ephemeral commit besides its parts (`part_weight`) when an author
-/// weighs its own held commits against their cover (spec/sync.md §9): about a server's per-entry
+/// weighs its own held commits against their cover (spec/sync.md §9): about a host's per-entry
 /// and log record overhead plus the commit header. Performance switch: 0 lets small writes pile up as entries
-/// whose overhead dwarfs their bytes (a server's cap fills with overhead the trigger never sees),
+/// whose overhead dwarfs their bytes (a host's cap fills with overhead the trigger never sees),
 /// infinity compacts at every write.
 pub const ENTRY_CHARGE: usize = 1024;
 
@@ -500,7 +500,7 @@ impl Engine {
 
     /// Whether held commit `id` was dropped as superseded by its author's later commits
     /// (`drop_superseded_by`; until `take_dropped_ephemeral` hands it over): only its author
-    /// deletes its entries at servers (each holder doing so would send one delete per holder
+    /// deletes its entries at hosts (each holder doing so would send one delete per holder
     /// and change; one the author fails to delete goes there at its expiry).
     pub fn ephemeral_superseded(&self, id: &CommitId) -> bool {
         self.eph.remote.superseded.contains_key(id)
@@ -824,7 +824,7 @@ impl Engine {
     /// author did not hold it then) is not. Stamps do not order an author's sessions (a session
     /// after a restart may stamp below the last one's covers), so a cover is redundant only by a
     /// list: lists form no cycle, and two covers of equal content each taking the other for the
-    /// later one would both be deleted at servers.
+    /// later one would both be deleted at hosts.
     fn eph_containers(&self, id: &CommitId, h: &Header, parts: &[HeldPart]) -> Option<BTreeSet<CommitId>> {
         if h.ephemeral != Some(EphClass::Plain) {
             return None;

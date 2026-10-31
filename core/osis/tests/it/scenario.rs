@@ -1,4 +1,4 @@
-//! Shared setup for the standard-data scenarios: databases and a blind server in process
+//! Shared setup for the standard-data scenarios: databases and a host in process
 //! (osis-sim's `World`: manual clock, in-memory hubs, no sleeps, no network).
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -7,7 +7,7 @@ use osis::core::{NAME, TAG, Tag};
 use osis::{Osis, Result, Tid};
 use osis_sim::world::World;
 
-/// A person on server `sv`, settled.
+/// A person on host `sv`, settled.
 pub fn person(w: &mut World, seed: u64, sv: usize) -> Osis {
     let db = w.person(seed, &[sv]).0;
     w.run();

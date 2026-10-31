@@ -3,7 +3,7 @@
 //! nodes it knows from theirs, and LAN discovery tags. A co-reader of a label is a node thing
 //! other than this node, holding `/reach`, that may read the label's group; this node dials it at
 //! `peer://` + its relays (osis-transport finds it by key), or at the address a matching LAN
-//! announcement gave, and syncs those labels with it as with a server.
+//! announcement gave, and syncs those labels with it as with a host.
 
 use super::{Action, Event, SyncEngine};
 use crate::error::Result;
@@ -36,21 +36,21 @@ pub fn lan_tag(lan_secret: &[u8; 32], unix_ms: u64) -> [u8; 16] {
     t
 }
 
-/// Whether an address names a node by dialable key (`peer://`), not a server.
+/// Whether an address names a node by dialable key (`peer://`), not a host.
 pub fn is_peer(a: &Address) -> bool {
     osis_transport::peer_relays(&a.url).is_some()
 }
 
-/// Whether a label at `servers` syncs with no server (none listed, or `peer://` nodes only):
+/// Whether a label at `hosts` syncs with no host (none listed, or `peer://` nodes only):
 /// this node serves it.
-pub(crate) fn serverless(servers: &[Address]) -> bool {
-    servers.iter().all(is_peer)
+pub(crate) fn hostless(hosts: &[Address]) -> bool {
+    hosts.iter().all(is_peer)
 }
 
-/// The keys of the servers a label at `servers` syncs with: `peer://` nodes are never dialed
-/// from a label's list, so a complete pass never waits for them there (`serverless`).
-pub(crate) fn server_keys(servers: &[Address]) -> impl Iterator<Item = super::state::ServerKey> + '_ {
-    servers.iter().filter(|a| !is_peer(a)).map(|a| a.key)
+/// The keys of the hosts a label at `hosts` syncs with: `peer://` nodes are never dialed
+/// from a label's list, so a complete pass never waits for them there (`hostless`).
+pub(crate) fn host_keys(hosts: &[Address]) -> impl Iterator<Item = super::state::HostKey> + '_ {
+    hosts.iter().filter(|a| !is_peer(a)).map(|a| a.key)
 }
 
 /// A co-reader node this node may dial.
@@ -145,7 +145,7 @@ impl SyncEngine {
     /// with the new key and joins the LAN with a fresh one. The osis handle also rotates when a
     /// direct link ends. A co-reader removed since can no longer dial this node or recognise it
     /// on a LAN; a link holder (who got the dialable key only, never the lan secret) can no
-    /// longer dial it. Direct links still open lose first contact (they work through servers).
+    /// longer dial it. Direct links still open lose first contact (they work through hosts).
     #[must_use]
     pub fn rotate_reach(&mut self) -> Vec<Action> {
         let mut out = Vec::new();
@@ -374,7 +374,7 @@ impl SyncEngine {
     pub(crate) fn lan_probe(&self, peer: &[u8; 32], addr: &Address) -> bool {
         let Some(r) = self.lan.get(peer) else { return false };
         let lan = [&r.good, &r.candidate].into_iter().flatten().any(|(a, _)| a == addr) && !r.failed.contains_key(addr);
-        let mut running = self.conns.values().filter(|c| c.server == *peer);
+        let mut running = self.conns.values().filter(|c| c.host == *peer);
         lan && matches!((running.next(), running.next()), (Some(c), None) if c.up && c.address != *addr)
     }
 
@@ -382,7 +382,7 @@ impl SyncEngine {
     /// it (a relay route it ran over before) close; its labels go on over the LAN connection
     /// from their cursors (spec/sync.md §10: the proven route first).
     pub(crate) fn lan_switched(&mut self, conn: super::ConnId, peer: [u8; 32], out: &mut Vec<Action>) {
-        let old: Vec<super::ConnId> = self.conns.iter().filter(|(id, c)| **id != conn && c.server == peer).map(|(id, _)| *id).collect();
+        let old: Vec<super::ConnId> = self.conns.iter().filter(|(id, c)| **id != conn && c.host == peer).map(|(id, _)| *id).collect();
         if old.is_empty() {
             return;
         }
@@ -397,7 +397,7 @@ impl SyncEngine {
     /// Connections to co-readers: dialable key, the address dialed (a LAN route or `peer://`
     /// with relays) and whether it is up.
     pub fn peer_routes(&self) -> Vec<([u8; 32], Address, bool)> {
-        self.conns.values().filter(|c| c.peer).map(|c| (c.server, c.address.clone(), c.up)).collect()
+        self.conns.values().filter(|c| c.peer).map(|c| (c.host, c.address.clone(), c.up)).collect()
     }
 
     /// Records the sharer node a followed link names (`peers`: its `peer://` addresses, from
@@ -481,7 +481,7 @@ impl SyncEngine {
         for (l, ks) in &self.peer_received {
             for k in ks {
                 let reads = peers.get(k).is_some_and(|p| p.labels.contains(l));
-                if reads && self.conns.values().any(|c| c.peer && c.up && c.server == *k && c.labels.contains_key(l)) {
+                if reads && self.conns.values().any(|c| c.peer && c.up && c.host == *k && c.labels.contains_key(l)) {
                     out.entry(*l).or_default().insert(*k);
                 }
             }
@@ -582,7 +582,7 @@ impl SyncEngine {
         }
         // nothing to do while its pause holds, or while a connection to the peer runs but over
         // a relay, where the LAN route is dialed beside it (`lan_probe`)
-        let running = self.conns.values().any(|c| c.server == k);
+        let running = self.conns.values().any(|c| c.host == k);
         if running && !self.lan_probe(&k, &dialed) || !running && self.retry.get(&k).is_some_and(|(_, t)| *t > raw) {
             return (Some(k), Vec::new());
         }
@@ -593,7 +593,7 @@ impl SyncEngine {
     /// waits for that co-reader while a connection to it is up (spec/permissions.md §3).
     pub(crate) fn received_from(&mut self, conn: super::ConnId, label: LabelId) {
         if let Some(c) = self.conns.get(&conn).filter(|c| c.peer) {
-            self.peer_received.entry(label).or_default().insert(c.server);
+            self.peer_received.entry(label).or_default().insert(c.host);
         }
     }
 

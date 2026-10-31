@@ -1,5 +1,5 @@
 //! Hand-driven client sessions (adversaries): an osis-proto `ClientSession` connected straight to
-//! a server's `Hub`, its requests and the replies exchanged synchronously, no faults. Whatever
+//! a host's `Hub`, its requests and the replies exchanged synchronously, no faults. Whatever
 //! keys, blobs, wraps and stamps the scenario builds go on the wire as they are: a removed
 //! member's stale steps and replays, malformed blobs, deposit floods.
 
@@ -38,9 +38,9 @@ pub struct LabelKeys {
 }
 
 impl NetSim {
-    /// Bytes as if server `s` sent them to node `n` on its open connections there (a lying
-    /// server's word, in order after what is in flight); how many connections got them.
-    pub fn server_says(&mut self, s: usize, n: usize, bytes: &[u8]) -> usize {
+    /// Bytes as if host `s` sent them to node `n` on its open connections there (a lying
+    /// host's word, in order after what is in flight); how many connections got them.
+    pub fn host_says(&mut self, s: usize, n: usize, bytes: &[u8]) -> usize {
         let to: Vec<(u64, End)> = self
             .links
             .iter()
@@ -61,9 +61,9 @@ impl NetSim {
         self.check.equivocations.insert(c);
     }
 
-    /// A hand-driven session of an adversary at server `s` (Hellos exchanged).
+    /// A hand-driven session of an adversary at host `s` (Hellos exchanged).
     pub fn rogue(&mut self, s: usize) -> Res<Rogue> {
-        let key = self.servers.get(s).map(|x| x.key).ok_or_else(|| self.fail(format!("no server {s}")))?;
+        let key = self.hosts.get(s).map(|x| x.key).ok_or_else(|| self.fail(format!("no host {s}")))?;
         let hc = self.next_hub_conn;
         self.next_hub_conn += 1;
         let mut challenge = [0u8; 32];
@@ -74,10 +74,10 @@ impl NetSim {
         peer[..8].copy_from_slice(&self.dice.u64().to_le_bytes());
         let mut r = Rogue { s, hc, session: ClientSession::new(ClientConfig { peer_static_key: key, challenge }), events: Vec::new(), closed: false };
         let now = self.now();
-        let out = self.servers.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.accept(now, hc, peer)).unwrap_or_default();
+        let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.accept(now, hc, peer)).unwrap_or_default();
         self.pump(&mut r, out, vec![ClientInput::Start])?;
         if !r.session.is_ready() {
-            return Err(self.fail(format!("rogue session at server {s} not ready: {:?}", r.events)));
+            return Err(self.fail(format!("rogue session at host {s} not ready: {:?}", r.events)));
         }
         Ok(r)
     }
@@ -98,13 +98,13 @@ impl NetSim {
         self.report.rogue_sent = self.report.rogue_sent.saturating_add(1);
         let k = r.events.len();
         let now = self.now();
-        let out = self.servers.get_mut(r.s).and_then(|x| x.hub.as_mut()).map(|h| h.input(now, r.hc, bytes)).unwrap_or_default();
+        let out = self.hosts.get_mut(r.s).and_then(|x| x.hub.as_mut()).map(|h| h.input(now, r.hc, bytes)).unwrap_or_default();
         self.pump(r, out, Vec::new())?;
         Ok(r.events.get(k..).map(|x| x.to_vec()).unwrap_or_default())
     }
 
     pub fn rogue_close(&mut self, r: &mut Rogue) {
-        let out = self.servers.get_mut(r.s).and_then(|x| x.hub.as_mut()).map(|h| h.closed(r.hc)).unwrap_or_default();
+        let out = self.hosts.get_mut(r.s).and_then(|x| x.hub.as_mut()).map(|h| h.closed(r.hc)).unwrap_or_default();
         self.hub_outputs(r.s, out);
         r.closed = true;
     }
@@ -130,10 +130,10 @@ impl NetSim {
                 continue;
             }
             if let Some(b) = to_hub.pop_front() {
-                if r.closed || !self.servers.get(r.s).is_some_and(|x| x.up) {
+                if r.closed || !self.hosts.get(r.s).is_some_and(|x| x.up) {
                     continue;
                 }
-                let out = self.servers.get_mut(r.s).and_then(|x| x.hub.as_mut()).map(|h| h.input(now, r.hc, b)).unwrap_or_default();
+                let out = self.hosts.get_mut(r.s).and_then(|x| x.hub.as_mut()).map(|h| h.input(now, r.hc, b)).unwrap_or_default();
                 from_hub.extend(out);
                 continue;
             }
@@ -158,12 +158,12 @@ impl NetSim {
         }
     }
 
-    /// The keys node `n` holds for group `g`'s label at server `s`'s current head.
+    /// The keys node `n` holds for group `g`'s label at host `s`'s current head.
     pub fn label_keys(&mut self, n: usize, s: usize, g: &Tid) -> Res<LabelKeys> {
         let gl = self.sync(n)?.labels().into_iter().find(|(t, _)| t == g).map(|x| x.1).ok_or_else(|| self.fail(format!("node {n} knows no label of {g}")))?;
-        let hub = self.hub(s).ok_or_else(|| self.fail(format!("server {s} is down")))?;
+        let hub = self.hub(s).ok_or_else(|| self.fail(format!("host {s} is down")))?;
         let head = hub.store().head(&gl.id).ok().flatten().and_then(|h| hub.store().step(&gl.id, &h).ok().flatten());
-        let head = head.ok_or_else(|| self.fail(format!("server {s} holds no head of {:?}", gl.id)))?;
+        let head = head.ok_or_else(|| self.fail(format!("host {s} holds no head of {:?}", gl.id)))?;
         let keys = self.engine(n)?.head_keys(g, gl.index, &head);
         let keys = keys.map_err(|x| self.fail(format!("head keys: {x}")))?;
         let read = self.engine(n)?.epochs(g).and_then(|x| x.read.newest_held().map(|y| y.1.clone()));
@@ -171,7 +171,7 @@ impl NetSim {
         Ok(LabelKeys { g: *g, label: gl.id, head, keys, read, deposit })
     }
 
-    /// Whether node `n` may reach server `s`.
+    /// Whether node `n` may reach host `s`.
     pub fn reaches(&self, n: usize, s: usize) -> bool {
         !self.is_blocked(Party::N(n), Party::S(s))
     }

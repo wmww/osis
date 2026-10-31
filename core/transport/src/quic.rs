@@ -1,6 +1,6 @@
-//! `Quic`: direct server transport, `quic://host:port` (spec/sync.md §10).
+//! `Quic`: direct host transport, `quic://host:port` (spec/sync.md §10).
 //! QUIC v1 (quinn) with TLS 1.3 (rustls, ring provider), ALPN `osis`, both sides authenticated by
-//! RFC 7250 raw Ed25519 public keys: the server's is its address key (pinned by the client), the
+//! RFC 7250 raw Ed25519 public keys: the host's is its address key (pinned by the client), the
 //! client's a fresh key per connection. No certificates, no CA. Needs a tokio runtime.
 
 use crate::{Address, Connection, Error, ListenConfig, Listener, PublicKey, Transport};
@@ -19,7 +19,7 @@ pub const SCHEME: &str = "quic";
 /// TLS ALPN protocol ID (spec/sync.md §10), also iroh's.
 pub const ALPN: &[u8] = b"osis";
 /// SNI sent by clients; not checked (the key is).
-const SERVER_NAME: &str = "osis";
+const SNI_NAME: &str = "osis";
 // QUIC settings shared with `iroh` (all provisional):
 /// Keep-alive so idle subscriptions survive NAT and the idle timeout.
 pub(crate) const KEEP_ALIVE: Duration = Duration::from_secs(15);
@@ -188,14 +188,14 @@ fn verify_sig(msg: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct
     verify_tls13_signature_with_raw_key(msg, &SubjectPublicKeyInfoDer::from(cert.as_ref()), dss, &algs())
 }
 
-/// Client side: accepts exactly the pinned server key.
+/// Client side: accepts exactly the pinned host key.
 #[derive(Debug)]
-struct PinnedServer {
+struct PinnedHost {
     key: PublicKey,
     mismatch: AtomicBool,
 }
 
-impl ServerCertVerifier for PinnedServer {
+impl ServerCertVerifier for PinnedHost {
     fn verify_server_cert(
         &self,
         end_entity: &CertificateDer<'_>,
@@ -208,7 +208,7 @@ impl ServerCertVerifier for PinnedServer {
             Ok(ServerCertVerified::assertion())
         } else {
             self.mismatch.store(true, Ordering::Relaxed);
-            Err(tls_err("server key does not match the address"))
+            Err(tls_err("host key does not match the address"))
         }
     }
     fn verify_tls12_signature(&self, _: &[u8], _: &CertificateDer<'_>, _: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, rustls::Error> {
@@ -225,7 +225,7 @@ impl ServerCertVerifier for PinnedServer {
     }
 }
 
-/// Server side: any Ed25519 client key (clients are ephemeral; authorization is above the transport).
+/// Serving side: any Ed25519 client key (clients are ephemeral; authorization is above the transport).
 #[derive(Debug)]
 struct AnyClientKey;
 
@@ -321,11 +321,11 @@ async fn handshake(
     cfg.transport_config(transport_config()?);
     let bind: SocketAddr = if sa.is_ipv6() { (std::net::Ipv6Addr::UNSPECIFIED, 0).into() } else { (std::net::Ipv4Addr::UNSPECIFIED, 0).into() };
     let ep = quinn::Endpoint::client(bind).map_err(|e| Error::Io(e.to_string()))?;
-    let connecting = ep.connect_with(cfg, sa, SERVER_NAME).map_err(|e| Error::BadUrl(format!("{url}: {e}")))?;
+    let connecting = ep.connect_with(cfg, sa, SNI_NAME).map_err(|e| Error::BadUrl(format!("{url}: {e}")))?;
     connecting.await.map_err(handshake_err)
 }
 
-/// The QUIC transport. Each dial uses its own UDP socket, so a server cannot link a client's
+/// The QUIC transport. Each dial uses its own UDP socket, so a host cannot link a client's
 /// connections by source port.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Quic;
@@ -350,7 +350,7 @@ impl Quic {
                 keypair(&seed)?.1
             }
         };
-        let pin = Arc::new(PinnedServer { key: addr.key, mismatch: AtomicBool::new(false) });
+        let pin = Arc::new(PinnedHost { key: addr.key, mismatch: AtomicBool::new(false) });
         match handshake(sa, &addr.url, me, pin.clone(), ALPN).await {
             Ok(c) => Ok(QuicConn { c, peer: addr.key }),
             Err(_) if pin.mismatch.load(Ordering::Relaxed) => Err(Error::KeyMismatch),
@@ -499,14 +499,14 @@ mod tests {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
     }
 
-    async fn server(seed: u8) -> (QuicListener, SocketAddr) {
+    async fn listener(seed: u8) -> (QuicListener, SocketAddr) {
         let cfg = ListenConfig { url: "quic://127.0.0.1:0".into(), secret: StaticSecret::from_bytes([seed; 32]) };
         let l = Quic::new().listen(cfg).await.unwrap();
         let sa = resolve(&l.address().url).await.unwrap();
         (l, sa)
     }
 
-    /// Accepts any server key; optionally blocks its thread (a client that never finishes).
+    /// Accepts any host key; optionally blocks its thread (a client that never finishes).
     #[derive(Debug)]
     struct Lax(bool);
 
@@ -536,7 +536,7 @@ mod tests {
     #[ignore]
     fn wrong_alpn_is_protocol_error() {
         rt().block_on(async {
-            let (_l, sa) = server(1).await;
+            let (_l, sa) = listener(1).await;
             let me = keypair(&[2; 32]).unwrap().1;
             let r = handshake(sa, "x", me, Arc::new(Lax(false)), b"nope").await;
             let e = r.err().unwrap();
@@ -550,7 +550,7 @@ mod tests {
     #[ignore]
     fn stalled_handshake_does_not_block_accept() {
         let main = rt();
-        let (mut l, sa) = main.block_on(server(3));
+        let (mut l, sa) = main.block_on(listener(3));
         // the stalled client runs on its own thread and runtime; its verifier blocks it
         let stall = std::thread::spawn(move || {
             rt().block_on(async move {
@@ -621,15 +621,15 @@ mod tests {
         });
     }
 
-    // spec/sync.md §10 (mutual auth): a client presenting no key is refused: the server yields
+    // spec/sync.md §10 (mutual auth): a client presenting no key is refused: the serving side yields
     // no connection and the client's is closed.
     #[test]
     #[ignore]
     fn client_without_key_refused() {
         rt().block_on(async {
-            let (mut l, sa) = server(6).await;
+            let (mut l, sa) = listener(6).await;
             let ep = endpoint();
-            let connecting = ep.connect_with(lax_client(false, None), sa, SERVER_NAME).unwrap();
+            let connecting = ep.connect_with(lax_client(false, None), sa, SNI_NAME).unwrap();
             if let Ok(Ok(c)) = tokio::time::timeout(Duration::from_secs(5), connecting).await {
                 tokio::time::timeout(Duration::from_secs(5), c.closed()).await.unwrap();
             }
@@ -637,23 +637,23 @@ mod tests {
         });
     }
 
-    // spec/sync.md §10 (no 0-rtt): the server issues no session tickets, so a client asking for
+    // spec/sync.md §10 (no 0-rtt): the serving side issues no session tickets, so a client asking for
     // 0-RTT cannot use it on its next connection.
     #[test]
     #[ignore]
     fn no_zero_rtt() {
         rt().block_on(async {
-            let (mut l, sa) = server(7).await;
+            let (mut l, sa) = listener(7).await;
             let me = keypair(&[8; 32]).unwrap().1;
             let cfg = lax_client(true, Some(me));
             let ep = endpoint();
-            let c1 = ep.connect_with(cfg.clone(), sa, SERVER_NAME).unwrap().await.unwrap();
+            let c1 = ep.connect_with(cfg.clone(), sa, SNI_NAME).unwrap().await.unwrap();
             let _s = tokio::time::timeout(Duration::from_secs(2), l.accept()).await.unwrap().unwrap();
             // a round trip, so post-handshake messages (tickets, were any sent) have arrived
             let _ = c1.open_bi().await;
             tokio::time::sleep(Duration::from_millis(300)).await;
             c1.close(0u32.into(), b"");
-            let connecting = ep.connect_with(cfg, sa, SERVER_NAME).unwrap();
+            let connecting = ep.connect_with(cfg, sa, SNI_NAME).unwrap();
             assert!(connecting.into_0rtt().is_err(), "0-RTT offered");
         });
     }

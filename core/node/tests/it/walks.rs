@@ -414,9 +414,9 @@ fn open_equals_rebuild_after_each_kind_of_change() {
 #[test]
 fn open_equals_rebuild_after_a_forget() {
     let mut lp = LocalPeer::new(2, 0xf0e7, T0).unwrap();
-    let servers = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
-    let pa = lp.peers[0].engine.create_person(&servers).unwrap().0.person;
-    let pb = lp.peers[1].engine.create_person(&servers).unwrap().0.person;
+    let hosts = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
+    let pa = lp.peers[0].engine.create_person(&hosts).unwrap().0.person;
+    let pb = lp.peers[1].engine.create_person(&hosts).unwrap().0.person;
     lp.sync_all().unwrap();
     let mut m = Mutation::new();
     let d = lp.peers[0].engine.new_thing(&mut m, pa);

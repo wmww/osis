@@ -52,7 +52,7 @@ v1 notes app: `/note/tasks: list<task>`, `task { 1 title: string, 2 done: bool }
 - Later v2 drops `done`: reserve ID 2; v1 fails to type tasks created after that, so only once v1 readers no longer matter.
 
 ## Version numbers on the wire
-Format version 1 is the header's first field; the blob prefix has its own framing version byte so a blind node can tell a framing it cannot parse (it then keeps the blob without expiry or commitments); the node-to-node protocol negotiates its version in Hello, independent of both. Links, cards and bundles carry a format number of their own.
+Format version 1 is the header's first field; the blob prefix has its own framing version byte so a host can tell a framing it cannot parse (it then keeps the blob without expiry or commitments); the node-to-node protocol negotiates its version in Hello, independent of both. Links, cards and bundles carry a format number of their own.
 
 ## Rejected
 - Terminal reset / retire marker in the lattice (irreversible, per-thing markers forever, half-migrated groups).

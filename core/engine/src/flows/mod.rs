@@ -79,7 +79,7 @@ pub struct Resend {
 
 /// What node-sync knows that flows need (notes/node.md, hooks).
 pub trait SyncState {
-    /// A complete pass of `actor`'s labels (the log of every server and peer it syncs them with
+    /// A complete pass of `actor`'s labels (the log of every host and peer it syncs them with
     /// read to its end) since the last membership commit of the actor applied from elsewhere
     /// (spec/permissions.md §3).
     fn complete_pass(&self, actor: &Tid) -> bool;
@@ -258,11 +258,11 @@ pub(crate) fn inbox_of(tx: &mut Tx<'_>, member: &Tid) -> Result<Option<(Tid, Inb
     Ok(None)
 }
 
-/// The newest label of `tid` (not replaced), with its servers.
-/// The newest unreplaced label of `tid`: ID, index, servers.
+/// The newest label of `tid` (not replaced), with its hosts.
+/// The newest unreplaced label of `tid`: ID, index, hosts.
 pub(crate) fn own_label(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<(LabelId, u64, Vec<Address>)>> {
     let labels = tx.state(tid, &ak("/label")?)?.and_then(Fragment::read).and_then(|v| ct::LABEL.decode(&v).ok()).unwrap_or_default();
-    Ok(labels.into_iter().filter(|(_, l)| !l.replaced).max_by_key(|(_, l)| l.index).map(|(id, l)| (id, l.index, l.servers)))
+    Ok(labels.into_iter().filter(|(_, l)| !l.replaced).max_by_key(|(_, l)| l.index).map(|(id, l)| (id, l.index, l.hosts)))
 }
 
 /// A label a member can reach `tid` under: its own, a group's containing it, or the home label

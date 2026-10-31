@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Certificates and heartbeats, pages and lazy chunks, reconciliation, inbox blobs through a
-//! blind node (spec/sync.md §3, §6; spec/permissions.md §4).
+//! host (spec/sync.md §3, §6; spec/permissions.md §4).
 
 use crate::net;
 use net::*;
@@ -31,7 +31,7 @@ fn commits_under(net: &mut Net, n: usize, l: &osis_base::LabelId) -> Vec<(osis_b
 #[test]
 fn certificates_and_heartbeats_spec_permissions_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[sv]);
     let _g = net.group(a, &[(r, Role::Read)], &[sv]);
@@ -49,7 +49,7 @@ fn certificates_and_heartbeats_spec_permissions_4() {
     assert!(!seen.stranded);
     // the writer promoted the reader's deposited card (re-uploaded stamped); never a heartbeat
     let entries = net.sync(a).entries(&l);
-    let store = net.servers[sv].hub.store();
+    let store = net.hosts[sv].hub.store();
     let mut card = 0;
     for (id, k) in entries {
         let EntryKind::Commit { commit, .. } = k else { continue };
@@ -67,9 +67,9 @@ fn certificates_and_heartbeats_spec_permissions_4() {
     }
     assert!(card > 0);
     // a heartbeat at most once per interval
-    let n = net.server_ids(sv, &l).len();
+    let n = net.host_ids(sv, &l).len();
     net.advance(60_000);
-    assert_eq!(net.server_ids(sv, &l).len(), n);
+    assert_eq!(net.host_ids(sv, &l).len(), n);
 }
 
 // spec/permissions.md §4 (chain certificates per label: what any entry already holds is not
@@ -79,7 +79,7 @@ fn certificates_and_heartbeats_spec_permissions_4() {
 #[test]
 fn certificates_once_per_label_spec_permissions_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let w = net.node(2, &[sv]);
     let r = net.node(3, &[sv]);
@@ -92,7 +92,7 @@ fn certificates_once_per_label_spec_permissions_4() {
     net.set_online(r, true);
     net.run();
     let l = net.label(a);
-    let ids: BTreeSet<osis_base::BlobId> = net.server_ids(sv, &l).into_iter().collect();
+    let ids: BTreeSet<osis_base::BlobId> = net.host_ids(sv, &l).into_iter().collect();
     let mut held: std::collections::BTreeMap<osis_base::CommitId, Vec<(usize, usize)>> = Default::default();
     for (id, k) in net.sync(a).entries(&l) {
         if let EntryKind::Commit { commit, parts, .. } = k
@@ -114,9 +114,9 @@ fn certificates_once_per_label_spec_permissions_4() {
 #[test]
 fn pages_and_lazy_chunks_spec_sync_6() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
-    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], inline_limit: 0, ..SyncConfig::default() });
+    let b = net.add_node(2, SyncConfig { hosts: vec![net.address(sv)], inline_limit: 0, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Read)], &[sv]);
     let t = net.item(a, g, g, "x");
     let big: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
@@ -140,12 +140,12 @@ fn pages_and_lazy_chunks_spec_sync_6() {
     assert_eq!(net.engine(b).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(big)));
 }
 
-// spec/sync.md §6: a cursor the server no longer serves (log trimmed) falls back to range
+// spec/sync.md §6: a cursor the host no longer serves (log trimmed) falls back to range
 // reconciliation, then a fresh cursor.
 #[test]
 fn reconciliation_fallback_spec_sync_6() {
     let mut net = Net::new();
-    let sv = net.add_server_with(HostPolicy { log_keep: 16, ..HostPolicy::default() });
+    let sv = net.add_host_with(HostPolicy { log_keep: 16, ..HostPolicy::default() });
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Read)], &[sv]);
@@ -167,7 +167,7 @@ fn reconciliation_fallback_spec_sync_6() {
 #[test]
 fn inbox_delivery_spec_sync_3() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let s_ = net.node(3, &[sv]);
@@ -175,7 +175,7 @@ fn inbox_delivery_spec_sync_3() {
     let p = net.group(a, &[(b, Role::Write)], &[sv]);
     let (_, home) = net.sync(a).labels().into_iter().next().unwrap();
     let mut m = Mutation::new();
-    let inbox = ct::Inbox { label: home.id, servers: home.servers.clone() };
+    let inbox = ct::Inbox { label: home.id, hosts: home.hosts.clone() };
     m.op(p, &ct::KEYS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(4)], op: osis_crdt::Op::Replace(Some(inbox).to_value()) }).unwrap();
     net.engine(a).commit(m).unwrap();
     net.run();
@@ -204,7 +204,7 @@ use osis_schema::Codec;
 #[test]
 fn label_published_under_home_label_spec_sync_2() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let p = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -240,7 +240,7 @@ fn label_published_under_home_label_spec_sync_2() {
 #[test]
 fn label_replacement_spec_sync_2() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -260,8 +260,8 @@ fn label_replacement_spec_sync_2() {
     assert_ne!(new, old);
     let labels: Vec<_> = net.sync(b).labels().into_iter().map(|(_, l)| (l.id, l.index)).collect();
     assert_eq!(labels, vec![(new, 1)], "only the new label is synced");
-    assert!(!net.server_ids(sv, &new).is_empty());
-    let live: BTreeSet<_> = net.server_ids(sv, &old).into_iter().collect();
+    assert!(!net.host_ids(sv, &new).is_empty());
+    let live: BTreeSet<_> = net.host_ids(sv, &old).into_iter().collect();
     let under: Vec<_> = net.sync(a).entries(&old).into_iter().filter(|(id, _)| live.contains(id)).collect();
     let mut labels_after = 0;
     for (_, k) in under {
@@ -277,7 +277,7 @@ fn label_replacement_spec_sync_2() {
     net.write(b, t, "on the new label");
     net.run();
     assert_eq!(net.read(a, t), Some(s("on the new label")));
-    assert_eq!(net.server_ids(sv, &old).into_iter().collect::<BTreeSet<_>>(), live, "nothing more under the old label");
+    assert_eq!(net.host_ids(sv, &old).into_iter().collect::<BTreeSet<_>>(), live, "nothing more under the old label");
 }
 
 // spec/permissions.md §4, §6; spec/sync.md §3: a node's chain to a group runs node → P → T → G
@@ -288,7 +288,7 @@ fn label_replacement_spec_sync_2() {
 #[test]
 fn nested_chain_empty_projection_spec_perm_6() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let x = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -342,20 +342,20 @@ fn nested_chain_empty_projection_spec_perm_6() {
     let _ = x;
 }
 
-/// Whether label `l` at server `s` holds a commit carrying a `/label` write the admin `n` made
+/// Whether label `l` at host `s` holds a commit carrying a `/label` write the admin `n` made
 /// after `before`.
 fn label_commit_at(net: &mut Net, n: usize, s: usize, l: &osis_base::LabelId, before: &BTreeSet<osis_base::CommitId>) -> bool {
-    let live: BTreeSet<_> = net.server_ids(s, l).into_iter().collect();
+    let live: BTreeSet<_> = net.host_ids(s, l).into_iter().collect();
     let entries: Vec<_> = net.sync(n).entries(l).into_iter().filter(|(id, _)| live.contains(id)).collect();
     entries.into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if !before.contains(&commit) && net.engine(n).header(&commit).is_some_and(|h| h.aspects.iter().any(|x| x.ak.as_str() == "/label"))))
 }
 
-// spec/sync.md §2 (replacement): at a server that lost the old label the admin registers its
+// spec/sync.md §2 (replacement): at a host that lost the old label the admin registers its
 // recorded path again so the replacement's `/label` commit is found there, then is done.
 #[test]
 fn replaced_label_reregistered_where_lost_spec_sync_2() {
     let mut net = Net::new();
-    let (s0, s1) = (net.add_server(), net.add_server());
+    let (s0, s1) = (net.add_host(), net.add_host());
     let a = net.node(1, &[s0, s1]);
     let b = net.node(2, &[s0, s1]);
     let g = net.group(a, &[(b, Role::Write)], &[s0, s1]);
@@ -364,8 +364,8 @@ fn replaced_label_reregistered_where_lost_spec_sync_2() {
     let old = net.label(a);
     let before: BTreeSet<_> = commits_under(&mut net, a, &old).into_iter().map(|x| x.0).collect();
     net.set_online(a, false);
-    net.wipe_server(s1);
-    assert!(net.server_path(s1, &old).is_empty());
+    net.wipe_host(s1);
+    assert!(net.host_path(s1, &old).is_empty());
     net.set_online(a, true);
     let (new, acts) = net.sync(a).replace_label(&g, &old).unwrap();
     net.actions(a, acts);
@@ -374,18 +374,18 @@ fn replaced_label_reregistered_where_lost_spec_sync_2() {
     net.advance(120_000);
     net.run();
     net.run();
-    assert!(!net.server_path(s1, &old).is_empty(), "the old label registered again where it was lost");
+    assert!(!net.host_path(s1, &old).is_empty(), "the old label registered again where it was lost");
     assert!(label_commit_at(&mut net, a, s1, &old, &before), "the replacement /label commit is found there");
     let labels: Vec<_> = net.sync(a).labels().into_iter().map(|(_, l)| l.id).collect();
-    assert_eq!(labels, vec![new], "done at both servers");
+    assert_eq!(labels, vec![new], "done at both hosts");
 }
 
-// spec/sync.md §2 (replacement): a server of the old label the admin cannot reach never settles a
+// spec/sync.md §2 (replacement): a host of the old label the admin cannot reach never settles a
 // pass; the admin stops syncing the old label after `MEMBERSHIP_KEEP` all the same.
 #[test]
-fn replaced_label_retired_with_server_unreachable_spec_sync_2() {
+fn replaced_label_retired_with_host_unreachable_spec_sync_2() {
     let mut net = Net::new();
-    let (s0, s1) = (net.add_server(), net.add_server());
+    let (s0, s1) = (net.add_host(), net.add_host());
     let a = net.node(1, &[s0, s1]);
     let b = net.node(2, &[s0, s1]);
     let g = net.group(a, &[(b, Role::Write)], &[s0, s1]);
@@ -400,7 +400,7 @@ fn replaced_label_retired_with_server_unreachable_spec_sync_2() {
     net.run();
     net.run();
     let labels: BTreeSet<_> = net.sync(a).labels().into_iter().map(|(_, l)| l.id).collect();
-    assert_eq!(labels, BTreeSet::from([new, old]), "not done at the unreachable server");
+    assert_eq!(labels, BTreeSet::from([new, old]), "not done at the unreachable host");
     net.advance(osis_base::format::MEMBERSHIP_KEEP_MS + 1);
     net.run();
     let labels: Vec<_> = net.sync(a).labels().into_iter().map(|(_, l)| l.id).collect();
@@ -413,7 +413,7 @@ fn replaced_label_retired_with_server_unreachable_spec_sync_2() {
 #[test]
 fn replaced_label_dropped_when_admin_edge_expires_spec_sync_2() {
     let mut net = Net::new();
-    let (s0, s1) = (net.add_server(), net.add_server());
+    let (s0, s1) = (net.add_host(), net.add_host());
     let a = net.node(1, &[s0, s1]);
     let b = net.node(2, &[s0, s1]);
     let g = net.group(a, &[], &[s0, s1]);
@@ -427,7 +427,7 @@ fn replaced_label_dropped_when_admin_edge_expires_spec_sync_2() {
     net.run();
     assert_eq!(net.engine(b).role_on(&g), Some(Role::Admin));
     let old = net.label(b);
-    // the old label never settles at a server b cannot reach: b keeps it
+    // the old label never settles at a host b cannot reach: b keeps it
     net.set_online(b, false);
     net.blocked.insert((b, s1));
     net.set_online(b, true);
@@ -449,7 +449,7 @@ fn replaced_label_dropped_when_admin_edge_expires_spec_sync_2() {
 #[test]
 fn grant_by_inbox_end_to_end_spec_sync_3() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let addr = net.address(sv);
@@ -491,7 +491,7 @@ fn grant_by_inbox_end_to_end_spec_sync_3() {
 #[test]
 fn static_entry_opens_home_label_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let c = net.node(3, &[sv]);
     let addr = net.address(sv);
@@ -502,7 +502,7 @@ fn static_entry_opens_home_label_spec_sync_5() {
     net.run();
     let card = alice.card.clone();
     let rk = net.engine(c).hold_key_actor(card.seed.clone()).unwrap();
-    let acts = net.sync(c).follow(rk, card.person, card.home_label, card.servers.clone());
+    let acts = net.sync(c).follow(rk, card.person, card.home_label, card.hosts.clone());
     net.actions(c, acts);
     net.run();
     net.run();
@@ -516,7 +516,7 @@ fn static_entry_opens_home_label_spec_sync_5() {
 #[test]
 fn grant_by_inbox_reads_earlier_content_spec_crypto_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let addr = net.address(sv);
@@ -558,7 +558,7 @@ fn grant_by_inbox_reads_earlier_content_spec_crypto_4() {
 #[test]
 fn heartbeat_outlives_earlier_spec_permissions_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[sv]);
     let _g = net.group(a, &[(r, Role::Read)], &[sv]);
@@ -583,12 +583,12 @@ fn noise(n: usize, seed: u64) -> Vec<u8> {
 // spec/sync.md §1 (a reused chunk keeps its blob), §7 (chunk blobs still linked from a retained
 // version are kept); spec/commits.md §5 (a purge drops every body carrying the values): purging
 // a version whose chunks the next version reuses deletes only the chunks only it reached, at
-// the server and locally; the shared ones still read through the live version, also at a
+// the host and locally; the shared ones still read through the live version, also at a
 // reader that fetches them afterwards.
 #[test]
 fn purge_shreds_only_unique_chunks_spec_sync_7() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Read)], &[sv]);
@@ -615,17 +615,17 @@ fn purge_shreds_only_unique_chunks_spec_sync_7() {
     assert!(shared.len() > unique.len() && !unique.is_empty(), "shared {} unique {}", shared.len(), unique.len());
     assert!(second.is_disjoint(&first), "reused chunks are not listed again");
     let l = net.label(a);
-    let at_server = |net: &Net| -> BTreeSet<osis_base::BlobId> { net.server_ids(sv, &l).into_iter().collect() };
-    assert!(first.is_subset(&at_server(&net)));
+    let at_host = |net: &Net| -> BTreeSet<osis_base::BlobId> { net.host_ids(sv, &l).into_iter().collect() };
+    assert!(first.is_subset(&at_host(&net)));
     let mut m = Mutation::new();
     m.set(t, &REG, &s("purged v1")).unwrap();
     m.purge(osis_commit::PurgeItem::Commit { commit: c1, tid: t, ak: blob_ak.clone() });
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     net.trace(&[a, b]);
-    let server = at_server(&net);
-    assert!(unique.is_disjoint(&server), "a chunk only the purged version reached is gone at the server");
-    assert!(shared.is_subset(&server), "shared chunks stay");
+    let host = at_host(&net);
+    assert!(unique.is_disjoint(&host), "a chunk only the purged version reached is gone at the host");
+    assert!(shared.is_subset(&host), "shared chunks stay");
     for id in &unique {
         assert!(net.engine(a).blob(id).unwrap().is_none(), "unique chunk kept locally");
     }
@@ -636,13 +636,13 @@ fn purge_shreds_only_unique_chunks_spec_sync_7() {
     assert_eq!(net.engine(b).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v2)));
 }
 
-/// Commits in the order server `s` logged their blobs under `l` (blob IDs mapped through node
+/// Commits in the order host `s` logged their blobs under `l` (blob IDs mapped through node
 /// `n`'s entries; first appearance).
 fn logged_commits(net: &mut Net, s: usize, n: usize, l: &osis_base::LabelId) -> Vec<osis_base::CommitId> {
     use osis_proto::LabelStore;
     let of: std::collections::BTreeMap<osis_base::BlobId, osis_base::CommitId> =
         net.sync(n).entries(l).into_iter().filter_map(|(id, k)| if let EntryKind::Commit { commit, .. } = k { Some((id, commit)) } else { None }).collect();
-    let log = net.servers[s].hub.store().log_after(l, 0, 100_000).unwrap().unwrap();
+    let log = net.hosts[s].hub.store().log_after(l, 0, 100_000).unwrap().unwrap();
     let mut out = Vec::new();
     for (_, r) in log {
         if let osis_proto::LogRecord::Added(id) = r
@@ -662,7 +662,7 @@ fn logged_commits(net: &mut Net, s: usize, n: usize, l: &osis_base::LabelId) -> 
 fn removal_placed_first_under_every_label_spec_perm_3() {
     use osis_node::flows::{Delivery, Demotion, PreSync};
     let mut net = Net::new();
-    let (s0, s1) = (net.add_server(), net.add_server());
+    let (s0, s1) = (net.add_host(), net.add_host());
     let a = net.node(1, &[s0, s1]);
     let b = net.node(2, &[s0, s1]);
     let c = net.node(3, &[s0, s1]);
@@ -691,7 +691,7 @@ fn removal_placed_first_under_every_label_spec_perm_3() {
     for (s, l) in [(s0, labels.iter().find(|l| **l != l1).copied().unwrap()), (s1, l1)] {
         let order = logged_commits(&mut net, s, a, &l);
         let (r, w) = (order.iter().position(|x| *x == removal), order.iter().position(|x| *x == after));
-        assert!(r.is_some() && w.is_some() && r < w, "server {s}: removal at {r:?}, later content at {w:?}");
+        assert!(r.is_some() && w.is_some() && r < w, "host {s}: removal at {r:?}, later content at {w:?}");
     }
     assert_eq!(net.read(b, t), Some(s("after")));
 }
@@ -730,7 +730,7 @@ fn reused_blob(net: &mut Net, a: usize, b: usize, role: Role, sv: usize) -> (osi
 #[test]
 fn reused_chunks_follow_a_new_label_spec_sync_3() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let (t, blob_ak, [c1, _], v2, shared, _) = reused_blob(&mut net, a, b, Role::Read, sv);
@@ -746,7 +746,7 @@ fn reused_chunks_follow_a_new_label_spec_sync_3() {
     net.run();
     net.run();
     net.trace(&[a, b]);
-    let under: BTreeSet<_> = net.server_ids(sv, &new).into_iter().collect();
+    let under: BTreeSet<_> = net.host_ids(sv, &new).into_iter().collect();
     assert!(shared.is_subset(&under), "reused chunks under the new label: {} of {}", shared.intersection(&under).count(), shared.len());
     let acts = net.sync(b).fetch_missing();
     net.actions(b, acts);
@@ -760,7 +760,7 @@ fn reused_chunks_follow_a_new_label_spec_sync_3() {
 #[test]
 fn body_links_stay_in_the_closure_spec_sync_3() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Read)], &[sv]);
@@ -784,7 +784,7 @@ fn body_links_stay_in_the_closure_spec_sync_3() {
     let h = net.engine(a).header(&both).unwrap();
     let t2_part = net.sync(a).entries(&l).into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if commit == both && parts.iter().any(|(ai, _)| h.aspects[*ai].tid == t2)));
     assert!(t2_part, "the commit's body under the label touches t2");
-    let under: BTreeSet<_> = net.server_ids(sv, &l).into_iter().collect();
+    let under: BTreeSet<_> = net.host_ids(sv, &l).into_iter().collect();
     assert!(outside.is_disjoint(&under), "{} blobs of an outside thing under the label", outside.intersection(&under).count());
 }
 
@@ -795,10 +795,10 @@ fn body_links_stay_in_the_closure_spec_sync_3() {
 #[test]
 fn lazy_node_shreds_dropped_chunks_spec_sync_7() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     // b fetches chunk and tree-node blobs only on demand
-    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], inline_limit: 0, ..SyncConfig::default() });
+    let b = net.add_node(2, SyncConfig { hosts: vec![net.address(sv)], inline_limit: 0, ..SyncConfig::default() });
     let (t, blob_ak, [c1, c2], v2, shared, unique) = reused_blob(&mut net, a, b, Role::Admin, sv);
     let root = match net.engine(a).get(&t, &blob_ak).unwrap() {
         Some(Value::Link(l)) => l.blob,
@@ -816,9 +816,9 @@ fn lazy_node_shreds_dropped_chunks_spec_sync_7() {
     net.run();
     net.trace(&[b]);
     let l = net.label(b);
-    let server: BTreeSet<_> = net.server_ids(sv, &l).into_iter().collect();
-    assert!(unique.is_disjoint(&server), "a chunk only the purged version reached is gone at the server");
-    assert!(shared.is_subset(&server), "shared chunks stay");
+    let host: BTreeSet<_> = net.host_ids(sv, &l).into_iter().collect();
+    assert!(unique.is_disjoint(&host), "a chunk only the purged version reached is gone at the host");
+    assert!(shared.is_subset(&host), "shared chunks stay");
     let acts = net.sync(b).fetch_missing();
     net.actions(b, acts);
     net.settle(100_000);
@@ -835,9 +835,9 @@ fn chain_commit(net: &mut Net, n: usize, g: osis_base::Tid, author: osis_base::T
         .expect("a chain commit")
 }
 
-/// The entries under `l` that node `n` knows holding commit `c` and present at server `sv`.
+/// The entries under `l` that node `n` knows holding commit `c` and present at host `sv`.
 fn entries_of(net: &mut Net, n: usize, sv: usize, l: &osis_base::LabelId, c: &osis_base::CommitId) -> Vec<(osis_base::BlobId, EntryKind)> {
-    let live: BTreeSet<osis_base::BlobId> = net.server_ids(sv, l).into_iter().collect();
+    let live: BTreeSet<osis_base::BlobId> = net.host_ids(sv, l).into_iter().collect();
     net.sync(n).entries(l).into_iter().filter(|(id, k)| live.contains(id) && matches!(k, EntryKind::Commit { commit, .. } if commit == c)).collect()
 }
 
@@ -848,7 +848,7 @@ fn entries_of(net: &mut Net, n: usize, sv: usize, l: &osis_base::LabelId, c: &os
 #[test]
 fn forged_certificate_copy_ignored_spec_commits_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let w = net.node(2, &[sv]);
     let g = net.group(a, &[(w, Role::Write)], &[sv]);
@@ -868,7 +868,7 @@ fn forged_certificate_copy_ignored_spec_commits_4() {
         let s = osis_node::labeling::seal_body(&fake, &mut osis_crypto::SeededRng::from_u64(7)).unwrap();
         let wrap = osis_crypto::wrap(&secret, &s.id, &s.key).unwrap();
         let put = osis_proto::Put { blob_id: s.id, blob: &s.blob, wrap, stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0 };
-        osis_proto::LabelStore::put(net.servers[sv].hub.store_mut(), &l, put).unwrap();
+        osis_proto::LabelStore::put(net.hosts[sv].hub.store_mut(), &l, put).unwrap();
         forged.push(s.id);
     }
     net.set_online(w, true);
@@ -879,12 +879,12 @@ fn forged_certificate_copy_ignored_spec_commits_4() {
 }
 
 // spec/permissions.md §4 (another node's copy counts while it is there): the reader relies on
-// the admin's copy of the admin's card; once that copy is deleted at the server, the reader
+// the admin's copy of the admin's card; once that copy is deleted at the host, the reader
 // places its own.
 #[test]
 fn deleted_copy_placed_again_spec_permissions_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[sv]);
     let g = net.group(a, &[(r, Role::Read)], &[sv]);
@@ -900,7 +900,7 @@ fn deleted_copy_placed_again_spec_permissions_4() {
     net.set_online(r, false);
     for (id, _) in &before {
         let now = net.now();
-        osis_proto::LabelStore::delete(net.servers[sv].hub.store_mut(), &l, id, now).unwrap();
+        osis_proto::LabelStore::delete(net.hosts[sv].hub.store_mut(), &l, id, now).unwrap();
     }
     net.set_online(r, true);
     net.run();
@@ -917,7 +917,7 @@ fn deleted_copy_placed_again_spec_permissions_4() {
 #[test]
 fn others_fresh_keys_left_to_author_spec_permissions_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[sv]);
     let g = net.group(a, &[(r, Role::Read)], &[sv]);
@@ -946,7 +946,7 @@ fn others_fresh_keys_left_to_author_spec_permissions_4() {
 #[test]
 fn newcomer_after_rotation_reads_older_copies_spec_crypto_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let w = net.node(2, &[sv]);
     let r = net.node(3, &[sv]);
@@ -969,21 +969,21 @@ fn newcomer_after_rotation_reads_older_copies_spec_crypto_4() {
     // the writer's card went up only under the old epoch
     let (cc, _) = chain_commit(&mut net, w, g, wt, "/node");
     let cards: Vec<osis_base::BlobId> = net.sync(w).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == cc)).map(|(id, _)| id).collect();
-    let store = net.servers[sv].hub.store();
+    let store = net.hosts[sv].hub.store();
     assert!(!cards.is_empty() && cards.iter().all(|id| osis_proto::LabelStore::entry(store, &l, id).unwrap().is_some_and(|m| osis_crypto::unwrap(&old, id, &m.wrap).is_ok())));
     net.set_online(r, true);
     net.run();
     assert_eq!(net.read(r, t), Some(s("after")), "the newcomer verified the writer");
 }
 
-// spec/sync.md §1 (a chunk reused by a later delta keeps its blob; one a server deleted is
+// spec/sync.md §1 (a chunk reused by a later delta keeps its blob; one a host deleted is
 // re-encrypted), §7: a purger that has not seen a co-writer's concurrent reuse deletes the
-// shared chunks at the server; the reuser, seeing them deleted, writes its value again with
+// shared chunks at the host; the reuser, seeing them deleted, writes its value again with
 // them re-encrypted, so every reader still reads it whole.
 #[test]
 fn purged_chunk_reused_concurrently_is_reencrypted_spec_sync_1() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -1013,8 +1013,8 @@ fn purged_chunk_reused_concurrently_is_reencrypted_spec_sync_1() {
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let l = net.label(a);
-    let server: BTreeSet<osis_base::BlobId> = net.server_ids(sv, &l).into_iter().collect();
-    assert!(reused.is_disjoint(&server), "the purger deleted the chunks it judged dead");
+    let host: BTreeSet<osis_base::BlobId> = net.host_ids(sv, &l).into_iter().collect();
+    assert!(reused.is_disjoint(&host), "the purger deleted the chunks it judged dead");
     net.set_online(b, true);
     // past the redial pause
     net.advance(6_000);
@@ -1039,10 +1039,10 @@ fn own_writes(net: &mut Net, n: usize, t: osis_base::Tid, ak: &Ak) -> Vec<Option
 }
 
 /// A writer `b` edits an untyped `{big, note}` value offline, reusing v1's chunks, while the
-/// admin `a` purges v1 (deleting every chunk at the server) and writes `note` offline.
+/// admin `a` purges v1 (deleting every chunk at the host) and writes `note` offline.
 fn reuse_race(expires: Option<u64>) -> (Net, [usize; 3], osis_base::Tid, Ak, Vec<u8>) {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -1110,7 +1110,7 @@ fn reencrypted_chunk_keeps_expiry_spec_sync_1() {
     assert!(w.iter().all(|e| *e == Some(at)), "{w:?}");
 }
 
-// spec/sync.md §1: a single hostile server (it alone decides what is gone) deleting each fresh
+// spec/sync.md §1: a single hostile host (it alone decides what is gone) deleting each fresh
 // chunk again drives at most one repair per back-off interval per aspect, the interval doubling;
 // what the back-off holds back is retried when it passes.
 #[test]
@@ -1119,14 +1119,14 @@ fn reencrypt_loop_bounded_spec_sync_1() {
     let repairs = |net: &mut Net| own_writes(net, b, t, &doc).len();
     let first = repairs(&mut net);
     let l = net.label(a);
-    // the server drops every chunk the live value links, then b syncs again
+    // the host drops every chunk the live value links, then b syncs again
     let spam = |net: &mut Net| {
         let live = net.engine(b).live_trees(&t).unwrap().blobs;
         let now = net.now();
-        let ids = net.server_ids(0, &l);
+        let ids = net.host_ids(0, &l);
         for id in ids {
             if live.contains(&id) {
-                osis_proto::LabelStore::delete(net.servers[0].hub.store_mut(), &l, &id, now).unwrap();
+                osis_proto::LabelStore::delete(net.hosts[0].hub.store_mut(), &l, &id, now).unwrap();
             }
         }
         net.set_online(b, false);
@@ -1159,7 +1159,7 @@ fn reencrypt_loop_bounded_spec_sync_1() {
 fn grant_by_inbox_writes_before_keys_spec_crypto_7() {
     use osis_node::flows::{Delivery, Demotion, PreSync};
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let addr = net.address(sv);
@@ -1209,7 +1209,7 @@ fn grant_by_inbox_writes_before_keys_spec_crypto_7() {
 fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     use osis_node::flows::Delivery;
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let (a, b, c) = (net.node(1, &[sv]), net.node(2, &[sv]), net.node(3, &[sv]));
     let addr = net.address(sv);
     let mut persons = Vec::new();
@@ -1258,7 +1258,7 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     let mut rng = osis_crypto::SeededRng::from_u64(7);
     for id in [cc, unrelated] {
         let commit = osis_base::decode(&net.engine(c).package(&id).unwrap().unwrap().bytes, &osis_base::Limits { max_depth: 512, max_bytes: 1 << 24 }).unwrap();
-        let payload = osis_label::InboxPayload { commit, things: vec![osis_label::InboxThing { tid: g, label: osis_base::LabelId([0; 16]), index: 0, servers: vec![], delete_keys: Some((ck, ck)) }] };
+        let payload = osis_label::InboxPayload { commit, things: vec![osis_label::InboxThing { tid: g, label: osis_base::LabelId([0; 16]), index: 0, hosts: vec![], delete_keys: Some((ck, ck)) }] };
         let blob = osis_label::seal_inbox_blob(&bob.person, &kem, &payload, osis_base::WallMs(net.now()), &mut rng).unwrap();
         let _ = net.engine(b).accept_inbox(&blob);
     }
@@ -1279,7 +1279,7 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
 #[test]
 fn membership_change_judges_only_its_labels_spec_sync_6() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -1322,7 +1322,7 @@ fn membership_change_judges_only_its_labels_spec_sync_6() {
 #[test]
 fn departed_reader_connected_across_new_step_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[sv]);
     let x = net.node(3, &[sv]);
@@ -1339,18 +1339,18 @@ fn departed_reader_connected_across_new_step_spec_sync_5() {
     let rs = recipients_of(e, &[(at, Role::Admin), (rt, Role::Read)]);
     remove_member(e, g, xt, &rs, 45);
     net.run();
-    assert_eq!(net.server_path(sv, &l).len(), 2, "a newer step");
-    let before: BTreeSet<_> = net.server_ids(sv, &l).into_iter().collect();
+    assert_eq!(net.host_path(sv, &l).len(), 2, "a newer step");
+    let before: BTreeSet<_> = net.host_ids(sv, &l).into_iter().collect();
     let t = net.item(a, g, g, "y");
     net.run();
     net.write(a, t, "z");
     net.run();
-    let new: Vec<_> = net.server_ids(sv, &l).into_iter().filter(|b| !before.contains(b)).collect();
+    let new: Vec<_> = net.host_ids(sv, &l).into_iter().filter(|b| !before.contains(b)).collect();
     assert!(!new.is_empty());
     let told = &net.told[&x];
     assert!(new.iter().all(|b| !told.contains(b)), "the departed reader was told of an entry added after the step");
     assert_eq!(net.read(r, t), Some(s("z")));
     assert_eq!([a, r, x].map(|n| net.conn_to(n, sv).expect("connected")), conns, "same connections");
-    assert!(net.servers[sv].hub.connections() >= 3);
+    assert!(net.hosts[sv].hub.connections() >= 3);
     assert_eq!(net.sent_kinds.get(&17).copied().unwrap_or(0), reconciles, "no reconciliation");
 }

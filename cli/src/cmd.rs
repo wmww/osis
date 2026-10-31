@@ -146,8 +146,8 @@ fn opt_scope(ctx: &Ctx<'_>, s: &Scope) -> anyhow::Result<Option<osis::Scope>> {
     }
 }
 
-fn servers(ctx: &mut Ctx<'_>, list: &[String]) -> anyhow::Result<Vec<osis::ServerAddr>> {
-    list.iter().map(|s| Ok(ctx.arg_text(s)?.parse::<osis::ServerAddr>()?)).collect()
+fn hosts(ctx: &mut Ctx<'_>, list: &[String]) -> anyhow::Result<Vec<osis::HostAddr>> {
+    list.iter().map(|s| Ok(ctx.arg_text(s)?.parse::<osis::HostAddr>()?)).collect()
 }
 
 /// A value as text or JSON at a key's type (`--raw`: numbered).
@@ -186,7 +186,7 @@ fn needs_net(c: &Cmd) -> bool {
 
 /// Commands whose API call hands other nodes something the engine keeps only in memory until
 /// sent (inbox grants, a new label's first commits):
-/// they run with sync on and wait until it is at the servers before the process exits.
+/// they run with sync on and wait until it is at the hosts before the process exits.
 fn delivers(c: &Cmd) -> bool {
     matches!(c, Cmd::Grant { .. } | Cmd::Edge { .. } | Cmd::Leave { .. } | Cmd::ShareInto { .. } | Cmd::RemoveEdgeOf { .. } | Cmd::Link(LinkCmd::Make { .. }) | Cmd::Card(CardCmd::Show) | Cmd::Group(GroupCmd::Sync { .. }))
 }
@@ -196,7 +196,7 @@ fn deliver(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     db.sync_now()?;
     let t = ctx.timeout()?.unwrap_or(FOREVER);
-    wait(ctx, db.wait_synced(SyncScope::All, t)).map_err(|e| exit(6, format!("done locally, not yet at the servers: {e}")))
+    wait(ctx, db.wait_synced(SyncScope::All, t)).map_err(|e| exit(6, format!("done locally, not yet at the hosts: {e}")))
 }
 
 /// Runs one parsed command.
@@ -219,17 +219,17 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
         }
         _ => {}
     }
-    let seed = |list: &[String]| list.iter().map(|s| s.parse::<osis::ServerAddr>().map_err(anyhow::Error::from)).collect::<anyhow::Result<Vec<_>>>();
+    let seed = |list: &[String]| list.iter().map(|s| s.parse::<osis::HostAddr>().map_err(anyhow::Error::from)).collect::<anyhow::Result<Vec<_>>>();
     let mut card = None;
     let db = match &cli.cmd {
-        Cmd::Init { server } => {
-            let (db, c) = crate::create(&sel, &g, seed(server)?)?;
+        Cmd::Init { host } => {
+            let (db, c) = crate::create(&sel, &g, seed(host)?)?;
             card = c;
             db
         }
-        Cmd::Restore { card, server } => {
+        Cmd::Restore { card, host } => {
             let mut cfg = crate::config(&sel, &g, true);
-            cfg.servers = seed(server)?;
+            cfg.hosts = seed(host)?;
             let card: osis::RecoveryCard = crate::arg_text(&mut *stdin, card)?.parse()?;
             let t = crate::timeout_of(&g, Some(crate::DEFAULT_WAIT))?;
             match block_on(Osis::restore(cfg, &card), t) {
@@ -237,10 +237,10 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
                 None => return Err(exit(6, "timed out")),
             }
         }
-        Cmd::Pair(PairCmd::Join { offer, server }) => {
+        Cmd::Pair(PairCmd::Join { offer, host }) => {
             // the app carries two messages: print the request, read the reply
             let mut cfg = crate::config(&sel, &g, true);
-            cfg.servers = seed(server)?;
+            cfg.hosts = seed(host)?;
             let offer: osis::PairOffer = offer.parse()?;
             let join = Osis::pair(cfg, &offer)?;
             writeln!(out, "{}", join.request())?;
@@ -257,7 +257,7 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
     let mut ctx = Ctx::new(g, db, sel, out, stdin, tty)?;
     let flush = delivers(&cli.cmd);
     let mut r = run(&mut ctx, cli.cmd);
-    if r.is_ok() && flush && !ctx.db.servers().is_empty() {
+    if r.is_ok() && flush && !ctx.db.hosts().is_empty() {
         r = deliver(&mut ctx);
     }
     ctx.db.settle();
@@ -296,9 +296,9 @@ fn one_write(ctx: &mut Ctx<'_>, c: ScriptCmd) -> anyhow::Result<()> {
 fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     match cmd {
-        Cmd::Init { server } | Cmd::Restore { server, .. } | Cmd::Pair(PairCmd::Join { server, .. }) => {
-            for s in servers(ctx, &server)? {
-                db.add_server(&s)?;
+        Cmd::Init { host } | Cmd::Restore { host, .. } | Cmd::Pair(PairCmd::Join { host, .. }) => {
+            for s in hosts(ctx, &host)? {
+                db.add_host(&s)?;
             }
             whoami(ctx)
         }
@@ -321,12 +321,12 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let d = demotion(&d, ctx)?;
             wait(ctx, db.remove_device(n, d))
         }
-        Cmd::Server(ServerCmd::Ls) => {
-            let s = db.servers();
+        Cmd::Hosts(HostsCmd::Ls) => {
+            let s = db.hosts();
             ctx.emit(&s.iter().map(|s| s.to_string()).collect::<Vec<_>>(), J::Arr(s.iter().map(|s| J::str(s.to_string())).collect()))
         }
-        Cmd::Server(ServerCmd::Add { addr }) => Ok(db.add_server(&ctx.arg_text(&addr)?.parse()?)?),
-        Cmd::Server(ServerCmd::Rm { addr }) => Ok(db.remove_server(&ctx.arg_text(&addr)?.parse()?)?),
+        Cmd::Hosts(HostsCmd::Add { addr }) => Ok(db.add_host(&ctx.arg_text(&addr)?.parse()?)?),
+        Cmd::Hosts(HostsCmd::Rm { addr }) => Ok(db.remove_host(&ctx.arg_text(&addr)?.parse()?)?),
         Cmd::Serve { .. } | Cmd::Schema(_) => unreachable!("handled before opening"),
         Cmd::Create(a) => one_write(ctx, ScriptCmd::Create(a)),
         Cmd::Set(a) => one_write(ctx, ScriptCmd::Set(a)),
@@ -500,7 +500,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let timeout = ctx.timeout_or(None)?;
             stream_lines(ctx, &rx, None, timeout)
         }
-        // `wait_synced` asks the servers to sync first: `sync` and `wait` are one call
+        // `wait_synced` asks the hosts to sync first: `sync` and `wait` are one call
         Cmd::Sync { group } | Cmd::Wait { group } => {
             let s = match group {
                 Some(g) => SyncScope::Group(ctx.tid(&g)?),
@@ -509,9 +509,9 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let t = ctx.timeout()?.unwrap_or(FOREVER);
             wait(ctx, db.wait_synced(s, t))
         }
-        Cmd::Group(GroupCmd::Sync { g, server }) => {
+        Cmd::Group(GroupCmd::Sync { g, host }) => {
             let g = ctx.tid(&g)?;
-            let s = if server.is_empty() { db.servers() } else { servers(ctx, &server)? };
+            let s = if host.is_empty() { db.hosts() } else { hosts(ctx, &host)? };
             Ok(db.sync(g, &s)?)
         }
         Cmd::Group(GroupCmd::Unsync { g }) => Ok(db.unsync(ctx.tid(&g)?)?),
@@ -539,17 +539,17 @@ fn whoami(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
         StoreSel::Dir(d) => d.display().to_string(),
         StoreSel::Memory(_) => "(memory)".into(),
     };
-    let servers = db.servers();
+    let hosts = db.hosts();
     let sw = format!("osis {}", env!("CARGO_PKG_VERSION"));
     let mut lines = vec![format!("me\t{}", db.me().to_uri()), format!("node\t{}", db.node().to_uri()), format!("home\t{}", db.home().to_uri())];
-    lines.extend(servers.iter().map(|s| format!("server\t{s}")));
+    lines.extend(hosts.iter().map(|s| format!("host\t{s}")));
     lines.push(format!("store\t{store}"));
     lines.push(format!("software\t{sw}"));
     let j = J::obj([
         ("me", J::tid(db.me())),
         ("node", J::tid(db.node())),
         ("home", J::tid(db.home())),
-        ("servers", J::Arr(servers.iter().map(|s| J::str(s.to_string())).collect())),
+        ("hosts", J::Arr(hosts.iter().map(|s| J::str(s.to_string())).collect())),
         ("store", J::str(store)),
         ("software", J::str(sw)),
     ]);
@@ -1052,7 +1052,7 @@ fn serve(g: &crate::args::Global, config: &Option<std::path::PathBuf>, listen: &
     }
     match key {
         Some(k) => cfg.key = k.clone(),
-        None if config.is_none() => cfg.key = cfg.data.join("server.key"),
+        None if config.is_none() => cfg.key = cfg.data.join("host.key"),
         None => {}
     }
     std::fs::create_dir_all(&cfg.data).map_err(|e| anyhow!("{}: {e}", cfg.data.display()))?;

@@ -6,7 +6,7 @@
 //! runs on such a label, no step is recorded or registered, no subscription is made, and its
 //! log events never reach the entry records (`log_events`).
 
-use super::state::ServerKey;
+use super::state::HostKey;
 use super::{Action, ConnId, Phase, SyncEngine};
 use crate::error::Result;
 use crate::labeling::open_commit;
@@ -19,17 +19,17 @@ pub(crate) struct Read {
     pub group: Tid,
     /// Callers that asked for it and have not ended it (`read_receipts`, `end_receipts`).
     users: u32,
-    /// The label's servers (peers excluded: a receipts-only read is never served by a co-reader).
-    pub servers: Vec<ServerKey>,
-    /// Per server read on its current connection: the log listed to its end, and the commit
+    /// The label's hosts (peers excluded: a receipts-only read is never served by a co-reader).
+    pub hosts: Vec<HostKey>,
+    /// Per host read on its current connection: the log listed to its end, and the commit
     /// blobs asked for and not here yet.
-    at: BTreeMap<ServerKey, AtServer>,
+    at: BTreeMap<HostKey, AtHost>,
     /// Commit blobs whose header was taken (recorded or not verifiable here): not fetched again.
     seen: BTreeSet<BlobId>,
 }
 
 #[derive(Default)]
-struct AtServer {
+struct AtHost {
     listed: bool,
     fetching: BTreeSet<BlobId>,
     /// Listed entries no held read secret opened (yet): tried again when secrets arrive.
@@ -87,28 +87,28 @@ impl SyncEngine {
                 if self.state.retired.contains(&l.id) {
                     continue;
                 }
-                let r = self.receipts.entry(l.id).or_insert_with(|| Read { group: *g, users: 0, servers: Vec::new(), at: BTreeMap::new(), seen: BTreeSet::new() });
+                let r = self.receipts.entry(l.id).or_insert_with(|| Read { group: *g, users: 0, hosts: Vec::new(), at: BTreeMap::new(), seen: BTreeSet::new() });
                 r.users += 1;
-                r.servers = l.servers.iter().filter(|a| !super::peers::is_peer(a)).map(|a| a.key).collect();
+                r.hosts = l.hosts.iter().filter(|a| !super::peers::is_peer(a)).map(|a| a.key).collect();
             }
         }
         self.handle(super::Event::Local)
     }
 
     /// Whether the receipts-only reads of `groups` are done: `None` while one runs, `Err` with
-    /// the groups whose read cannot finish (a label with no server, or one no held key opens at
-    /// some server), `Ok` once every label was listed to its end at each of its servers and
+    /// the groups whose read cannot finish (a label with no host, or one no held key opens at
+    /// some host), `Ok` once every label was listed to its end at each of its hosts and
     /// every commit blob listed there was taken.
     pub fn receipts_read(&self, groups: &[Tid]) -> Option<std::result::Result<(), Vec<Tid>>> {
         let mut bad = Vec::new();
         let mut done = true;
         for (l, r) in self.receipts.iter().filter(|(_, r)| groups.contains(&r.group)) {
             let failed = self.conns.values().any(|c| c.labels.get(l).is_some_and(|x| x.receipts && x.phase == Phase::Failed));
-            if r.servers.is_empty() || failed {
+            if r.hosts.is_empty() || failed {
                 bad.push(r.group);
                 continue;
             }
-            done &= r.servers.iter().all(|s| r.at.get(s).is_some_and(|a| a.listed && a.fetching.is_empty()));
+            done &= r.hosts.iter().all(|s| r.at.get(s).is_some_and(|a| a.listed && a.fetching.is_empty()));
         }
         if !bad.is_empty() {
             bad.sort();
@@ -131,9 +131,9 @@ impl SyncEngine {
         }
     }
 
-    /// Receipts-only labels to open: their group, label and servers.
-    pub(crate) fn receipts_wanted(&self) -> Vec<(Tid, LabelId, Vec<ServerKey>)> {
-        self.receipts.iter().map(|(l, r)| (r.group, *l, r.servers.clone())).collect()
+    /// Receipts-only labels to open: their group, label and hosts.
+    pub(crate) fn receipts_wanted(&self) -> Vec<(Tid, LabelId, Vec<HostKey>)> {
+        self.receipts.iter().map(|(l, r)| (r.group, *l, r.hosts.clone())).collect()
     }
 
     /// Whether `l` is read for receipts only on `conn`.
@@ -144,9 +144,9 @@ impl SyncEngine {
     /// A receipts-only label starts (again) on `conn`: what an earlier connection read there
     /// counts no more.
     pub(crate) fn receipts_start(&mut self, conn: ConnId, l: &LabelId) {
-        let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return };
+        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return };
         if let Some(r) = self.receipts.get_mut(l) {
-            r.at.remove(&server);
+            r.at.remove(&host);
         }
     }
 
@@ -154,12 +154,12 @@ impl SyncEngine {
     /// fetched alone), announcing nothing.
     pub(crate) fn receipts_sync(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<Action>) -> Result<()> {
         let now = self.raw_now();
-        let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
+        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
         let Some(lc) = self.lc_mut(conn, &l) else { return Ok(()) };
         lc.syncing = true;
         lc.last_sync = now;
         if let Some(r) = self.receipts.get_mut(&l) {
-            r.at.insert(server, AtServer::default());
+            r.at.insert(host, AtHost::default());
         }
         self.command(conn, Command::Sync { label: l, cursor: None, inline_limit: 0, entries: Vec::new(), gained: Vec::new() }, out)
     }
@@ -167,14 +167,14 @@ impl SyncEngine {
     /// A data event on a receipts-only label (`data_label`); false when `e` is none.
     pub(crate) fn receipts_event(&mut self, conn: ConnId, e: &ClientEvent, out: &mut Vec<Action>) -> Result<bool> {
         let Some(l) = data_label(e).filter(|l| self.receipts_lc(conn, l)) else { return Ok(false) };
-        let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(true) };
+        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(true) };
         let open = self.lc(conn, &l).is_some_and(|x| x.phase == Phase::Open);
         let secrets = self.secrets_count();
         match e {
             ClientEvent::Events { events, .. } if open => {
                 for ev in events {
                     match ev {
-                        LogEvent::Added { blob_id, blob, wrap, .. } => self.receipts_entry(conn, server, l, *blob_id, blob.as_deref(), wrap, out)?,
+                        LogEvent::Added { blob_id, blob, wrap, .. } => self.receipts_entry(conn, host, l, *blob_id, blob.as_deref(), wrap, out)?,
                         LogEvent::Head(step) => self.new_head(conn, l, step.clone(), out)?,
                         LogEvent::Deleted(_) | LogEvent::Pending { .. } => {}
                     }
@@ -183,9 +183,9 @@ impl SyncEngine {
             ClientEvent::Fetched { items, .. } => {
                 for f in items {
                     match &f.entry {
-                        Some((blob, wrap, _)) => self.receipts_entry(conn, server, l, f.blob_id, Some(blob), wrap, out)?,
+                        Some((blob, wrap, _)) => self.receipts_entry(conn, host, l, f.blob_id, Some(blob), wrap, out)?,
                         // not there (deleted since it was listed): nothing to take
-                        None => self.receipts_taken(server, l, f.blob_id),
+                        None => self.receipts_taken(host, l, f.blob_id),
                     }
                 }
             }
@@ -194,7 +194,7 @@ impl SyncEngine {
                     lc.syncing = false;
                     lc.synced = true;
                 }
-                if let Some(a) = self.receipts.get_mut(&l).and_then(|r| r.at.get_mut(&server)) {
+                if let Some(a) = self.receipts.get_mut(&l).and_then(|r| r.at.get_mut(&host)) {
                     a.listed = true;
                 }
             }
@@ -205,9 +205,9 @@ impl SyncEngine {
         let mut before = secrets;
         while self.secrets_count() != before {
             before = self.secrets_count();
-            let retry: Vec<(BlobId, Vec<u8>)> = self.receipts.get_mut(&l).and_then(|r| r.at.get_mut(&server)).map(|a| std::mem::take(&mut a.unopened).into_iter().collect()).unwrap_or_default();
+            let retry: Vec<(BlobId, Vec<u8>)> = self.receipts.get_mut(&l).and_then(|r| r.at.get_mut(&host)).map(|a| std::mem::take(&mut a.unopened).into_iter().collect()).unwrap_or_default();
             for (b, wrap) in retry {
-                self.receipts_entry(conn, server, l, b, None, &wrap, out)?;
+                self.receipts_entry(conn, host, l, b, None, &wrap, out)?;
             }
         }
         Ok(true)
@@ -215,14 +215,14 @@ impl SyncEngine {
 
     /// Fetches refused on a receipts-only label count as taken (the read does not wait on them).
     pub(crate) fn receipts_refused(&mut self, conn: ConnId, l: &LabelId, fetch: &[BlobId]) {
-        let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return };
+        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return };
         for b in fetch {
-            self.receipts_taken(server, *l, *b);
+            self.receipts_taken(host, *l, *b);
         }
     }
 
-    fn receipts_taken(&mut self, server: ServerKey, l: LabelId, b: BlobId) {
-        if let Some(a) = self.receipts.get_mut(&l).and_then(|r| r.at.get_mut(&server)) {
+    fn receipts_taken(&mut self, host: HostKey, l: LabelId, b: BlobId) {
+        if let Some(a) = self.receipts.get_mut(&l).and_then(|r| r.at.get_mut(&host)) {
             a.fetching.remove(&b);
         }
     }
@@ -230,27 +230,27 @@ impl SyncEngine {
     /// One listed or fetched entry of a receipts-only label: a commit blob (its wrap opens under
     /// a held read secret) is fetched, then its header recorded; anything else is passed over.
     #[allow(clippy::too_many_arguments)]
-    fn receipts_entry(&mut self, conn: ConnId, server: ServerKey, l: LabelId, b: BlobId, blob: Option<&[u8]>, wrap: &[u8], out: &mut Vec<Action>) -> Result<()> {
+    fn receipts_entry(&mut self, conn: ConnId, host: HostKey, l: LabelId, b: BlobId, blob: Option<&[u8]>, wrap: &[u8], out: &mut Vec<Action>) -> Result<()> {
         let Some(group) = self.receipts.get(&l).map(|r| r.group) else { return Ok(()) };
         if self.receipts.get(&l).is_some_and(|r| r.seen.contains(&b)) {
-            self.receipts_taken(server, l, b);
+            self.receipts_taken(host, l, b);
             return Ok(());
         }
         // ephemeral and relay-only entries: never in a frontier (spec/permissions.md §5.2)
         if blob.is_some_and(|x| osis_label::Prefix::parse(x).is_ok_and(|p| p.class() != osis_label::Class::Durable)) {
-            self.receipts_taken(server, l, b);
+            self.receipts_taken(host, l, b);
             return Ok(());
         }
         let secrets = self.read_secrets(&group);
         let Some((_, key)) = osis_label::unwrap_any(secrets.iter(), &b, wrap) else {
-            self.receipts_taken(server, l, b);
-            if let Some(a) = self.receipts.get_mut(&l).and_then(|r| r.at.get_mut(&server)) {
+            self.receipts_taken(host, l, b);
+            if let Some(a) = self.receipts.get_mut(&l).and_then(|r| r.at.get_mut(&host)) {
                 a.unopened.insert(b, wrap.to_vec());
             }
             return Ok(());
         };
         let Some(bytes) = blob else {
-            let Some(a) = self.receipts.get_mut(&l).and_then(|r| r.at.get_mut(&server)) else { return Ok(()) };
+            let Some(a) = self.receipts.get_mut(&l).and_then(|r| r.at.get_mut(&host)) else { return Ok(()) };
             if a.fetching.insert(b) {
                 self.command(conn, Command::Fetch { label: l, ids: vec![b] }, out)?;
             }
@@ -275,7 +275,7 @@ impl SyncEngine {
         if let Some(r) = self.receipts.get_mut(&l) {
             r.seen.insert(b);
         }
-        self.receipts_taken(server, l, b);
+        self.receipts_taken(host, l, b);
         Ok(())
     }
 }

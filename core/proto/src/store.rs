@@ -1,4 +1,4 @@
-//! What the server engine asks of a blind node's storage (spec/sync.md §4): the `LabelStore`
+//! What the host engine asks of a host's storage (spec/sync.md §4): the `LabelStore`
 //! trait, which osis-host implements over osis-store, and `MemoryLabelStore` for tests.
 
 use crate::msg::{ClaimSet, Code, SecretBox, Signature, Step, StepId, Wrap};
@@ -50,7 +50,7 @@ pub enum LogRecord {
 
 /// An entry to add or replace, already authorized by the engine. An ephemeral entry
 /// (`ephemeral`, from the blob's prefix class) is held in memory only, under a per-label byte
-/// cap (spec/sync.md §4, §5). `replaces` (by their delete proofs, as the server engine
+/// cap (spec/sync.md §4, §5). `replaces` (by their delete proofs, as the host engine
 /// authorized them; one no longer held is skipped, one naming the uploaded entry itself is
 /// ignored) go in the same step: all of them iff the entry is admitted
 /// (logged after its add), the room they free counted toward its cap.
@@ -154,7 +154,7 @@ impl HeadKeys {
     }
 }
 
-/// Blind-node state per label. Mutations append their log records; the store applies policy
+/// Host state per label. Mutations append their log records; the store applies policy
 /// (storage caps, the ephemeral cap, deposit budget, rate limits on wrap replacements and
 /// deletes) and
 /// answers with a status code.
@@ -205,7 +205,7 @@ pub trait LabelStore {
     }
     /// Whether `dialable` (a verified member proof's key) is the dialable key of a node of a
     /// current reader of the label (a member peer serving it, spec/sync.md §5): the label then
-    /// opens (no entry box). Blind nodes: never.
+    /// opens (no entry box). Hosts: never.
     fn member_open(&self, _dialable: &[u8; 32], _label: &LabelId) -> Result<bool, StoreError> {
         Ok(false)
     }
@@ -286,7 +286,7 @@ impl LabelState {
     }
 }
 
-/// In-memory blind-node store with the recommended deposit budget (spec/sync.md §5).
+/// In-memory host store with the recommended deposit budget (spec/sync.md §5).
 #[derive(Clone, Debug, Default)]
 pub struct MemoryLabelStore {
     seed: [u8; 32],
@@ -480,7 +480,7 @@ impl LabelStore for MemoryLabelStore {
             if held.is_none() && cap.is_some_and(|c| s.entries.len().saturating_sub(gone.len()) >= c) {
                 return Ok(Code::STORAGE_CAP);
             }
-            // an unstamped ephemeral blob never gets here (the server engine refuses it for every
+            // an unstamped ephemeral blob never gets here (the host engine refuses it for every
             // store, spec/sync.md §5)
             if put.ephemeral && held.is_none() && ecap.is_some_and(|c| s.ephemeral_bytes.saturating_sub(freed_bytes) + put.blob.len() as u64 > c) {
                 return Ok(Code::STORAGE_CAP);

@@ -1,6 +1,6 @@
 ------------------------------- MODULE Rotation -------------------------------
 (* Read-role rotation, removals, grants, label registration steps, claims and *)
-(* re-seal for one actor whose label sits at one blind server (spec/crypto.md  *)
+(* re-seal for one actor whose label sits at one host (spec/crypto.md         *)
 (* §3-§5, spec/sync.md §2 and §5, spec/permissions.md §3-§4, commits §2).      *)
 (* Crypto is access: sec[x] is the set of epochs whose secret x holds; a box   *)
 (* is a member in ep[e].ob or a grant or re-seal commit in bx; a wrap is the  *)
@@ -14,11 +14,11 @@ CONSTANTS Admins,     \* may rotate, register, grant, write content
           Departing,  \* members it may remove
           MaxE,       \* epoch ids 0..MaxE (0 = the initial epoch)
           Writes,     \* content writes in a run
-          DropClaims, \* TRUE: the server may drop superseded steps' claim sets
+          DropClaims, \* TRUE: the host may drop superseded steps' claim sets
           Refresh,    \* TRUE: every rotation refreshes the deposit seed (a MAY)
           Offs,       \* offline transitions in a run
           Plants,     \* adversary: boxes planted by a non-member in a run
-          InOrder     \* TRUE: one source, the server's log order (cursor sync);
+          InOrder     \* TRUE: one source, the host's log order (cursor sync);
                       \* FALSE: any order, and member peers serve rotations
 
 Nodes == Admins \cup Readers
@@ -35,7 +35,7 @@ VARIABLES ep,       \* ep[e] = [n, sup, ob, hist, rem]; ob = members the
           mem,      \* mem[x]: members x knows were granted
           removed,  \* departures that happened
           granted,  \* Late members granted so far
-          srvRot,   \* rotation commits at the server
+          srvRot,   \* rotation commits at the host
           before,   \* before[k]: rotations logged before rotation k's upload
           bx,       \* grant and re-seal commits under the label:
                     \* [m: member boxed, eps: epochs boxed, w: wrap epoch, g: grant]
@@ -106,7 +106,7 @@ CanOpen(x) ==
          steps[k].ep \in sec[x] \/ (x \in steps[k].cl /\ ~steps[k].dr)
 
 \* Download of rotation commit k: readable under its wrap epoch. From the
-\* server (after an open; InOrder: in log order) or, if ~InOrder, from an
+\* host (after an open; InOrder: in log order) or, if ~InOrder, from an
 \* online member peer y that holds it.
 Readable(x, k) == k \notin kn[x] /\ WrapOf(k) \in sec[x]
 FromSrv(x, k) == /\ CanOpen(x) /\ k \in srvRot /\ Readable(x, k)
@@ -114,8 +114,8 @@ FromSrv(x, k) == /\ CanOpen(x) /\ k \in srvRot /\ Readable(x, k)
 FromPeer(x, y, k) == ~InOrder /\ y # x /\ online[y] /\ k \in kn[y] /\ Readable(x, k)
 
 \* permissions §3: re-seal is decided "at the end of a complete sync pass of
-\* the actor's labels (one that read the log of every server and peer it
-\* syncs them with to its end)": the server, and every member peer the node
+\* the actor's labels (one that read the log of every host and peer it
+\* syncs them with to its end)": the host, and every member peer the node
 \* has synced with (received from) that is online (R8).
 SrvDone(a) == /\ CanOpen(a)
               /\ \A k \in srvRot : ~Readable(a, k)
@@ -186,7 +186,7 @@ RotateForced(a) ==
   /\ Rotate(a)
 
 \* sync §5: first upload the actor's membership commits it holds that the
-\* server lacks (UploadRot), then register.
+\* host lacks (UploadRot), then register.
 Register(a) ==
   /\ online[a] /\ NeedsReg(a) /\ kn[a] \ {0} \subseteq srvRot
   /\ steps' = Append(steps, [ep |-> EncEp(a), cl |-> Holders(a, EncEp(a)), dr |-> FALSE])

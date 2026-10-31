@@ -1,4 +1,4 @@
-//! Connection helpers for node and server drivers: reconnect with backoff, graceful close.
+//! Connection helpers for node and host drivers: reconnect with backoff, graceful close.
 //! Runtime-free: the caller passes its sleep (`tokio::time::sleep`, `Net::sleep`).
 //! One connection serves many labels: proto multiplexes them on a session stream by message id.
 
@@ -17,7 +17,7 @@ pub struct Backoff {
 }
 
 impl Backoff {
-    /// Defaults for reconnecting to a server (provisional): 500 ms doubling to 60 s.
+    /// Defaults for reconnecting to a host (provisional): 500 ms doubling to 60 s.
     pub fn new(seed: u64) -> Backoff {
         Backoff::with(500, 60_000, seed)
     }

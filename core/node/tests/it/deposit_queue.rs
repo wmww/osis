@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! A non-writer's deposit of its own membership write (spec/sync.md §5): queued once, sent
-//! until a server answers, also after the depositor forgot the label.
+//! until a host answers, also after the depositor forgot the label.
 
 use crate::net;
 use net::*;
@@ -27,10 +27,10 @@ fn invite(net: &mut Net, sv: usize) -> (osis_base::Tid, osis_base::LabelId, osis
     (g, l, commit, done)
 }
 
-/// Records of the server's log of `l`: (added, deleted).
+/// Records of the host's log of `l`: (added, deleted).
 fn log(net: &Net, sv: usize, l: &osis_base::LabelId) -> (usize, usize) {
     use osis_proto::LabelStore;
-    let recs = net.servers[sv].hub.store().log_after(l, 0, 1 << 20).ok().flatten().unwrap_or_default();
+    let recs = net.hosts[sv].hub.store().log_after(l, 0, 1 << 20).ok().flatten().unwrap_or_default();
     let del = recs.iter().filter(|(_, r)| matches!(r, osis_proto::LogRecord::Deleted(_))).count();
     (recs.len() - del, del)
 }
@@ -41,11 +41,11 @@ fn copies(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::Commit
 
 // spec/sync.md §5: an invite grant by a reader goes under the label as one deposit: its
 // author records the queued deposit as its entry at once, so no pass places a second
-// encryption while the server has not answered.
+// encryption while the host has not answered.
 #[test]
 fn invite_grant_deposited_once_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     for i in 0..3 {
         net.node(10 + i, &[sv]);
     }
@@ -63,11 +63,11 @@ fn invite_grant_deposited_once_spec_sync_5() {
 }
 
 // spec/sync.md §5, spec/permissions.md §3: the deposit goes even when its author forgot the
-// label before the server answered.
+// label before the host answered.
 #[test]
 fn queued_deposit_survives_forgetting_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     for i in 0..3 {
         net.node(20 + i, &[sv]);
     }
@@ -106,7 +106,7 @@ fn queued_deposit_survives_forgetting_spec_sync_5() {
 fn queued_deposit_survives_a_restart_spec_sync_5() {
     for sent in [false, true] {
         let mut net = Net::new();
-        let sv = net.add_server();
+        let sv = net.add_host();
         for i in 0..3 {
             net.node(40 + i, &[sv]);
         }
@@ -144,25 +144,25 @@ fn entries_of(net: &mut Net, n: usize, c: &osis_base::CommitId) -> Vec<osis_base
     out
 }
 
-/// Every live entry a server holds, over all its labels.
+/// Every live entry a host holds, over all its labels.
 fn all_ids(net: &Net, sv: usize) -> Vec<osis_base::BlobId> {
-    net.labels_at(sv).iter().flat_map(|l| net.server_ids(sv, l)).collect()
+    net.labels_at(sv).iter().flat_map(|l| net.host_ids(sv, l)).collect()
 }
 
-/// Node `a`'s person shares group T (label at server 0) by a single-use link whose K has its
-/// label at server 1; node `x` (a person too) follows K's label. Returns (a, x, T, link, x's
+/// Node `a`'s person shares group T (label at host 0) by a single-use link whose K has its
+/// label at host 1; node `x` (a person too) follows K's label. Returns (a, x, T, link, x's
 /// person, the held link key).
 fn link_setup(net: &mut Net) -> (usize, usize, osis_base::Tid, osis_label::ShareLink, osis_base::Tid, osis_base::Tid) {
-    net.add_server();
-    net.add_server();
+    net.add_host();
+    net.add_host();
     link_setup_at(net, &[1])
 }
 
-/// `link_setup` over the servers `net` has (server 0 the home and T's), K's label at `k`.
+/// `link_setup` over the hosts `net` has (host 0 the home and T's), K's label at `k`.
 fn link_setup_at(net: &mut Net, k: &[usize]) -> (usize, usize, osis_base::Tid, osis_label::ShareLink, osis_base::Tid, osis_base::Tid) {
     use osis_node::Mutation;
     let s0 = 0;
-    let all: Vec<usize> = (0..net.servers.len()).collect();
+    let all: Vec<usize> = (0..net.hosts.len()).collect();
     let a = net.node(30, &all);
     let x = net.node(31, &all);
     let home = vec![net.address(s0)];
@@ -179,12 +179,12 @@ fn link_setup_at(net: &mut Net, k: &[usize]) -> (usize, usize, osis_base::Tid, o
     let (_, acts) = net.sync(a).create_label(&t, home.clone()).unwrap();
     net.actions(a, acts);
     net.run();
-    let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: None, servers: k.iter().map(|s| net.address(*s)).collect(), peers: Vec::new(), single_use: true };
+    let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts: k.iter().map(|s| net.address(*s)).collect(), peers: Vec::new(), single_use: true };
     let (link, _, done) = net.engine(a).create_link(&pa.person, &spec).unwrap();
     carry(net, a, done);
     net.run();
     let held = net.engine(x).hold_key_actor(link.seed.clone()).unwrap();
-    let acts = net.sync(x).follow(held, link.k, link.k_label, link.servers.clone());
+    let acts = net.sync(x).follow(held, link.k, link.k_label, link.hosts.clone());
     net.actions(x, acts);
     net.run();
     (a, x, t, link, px.person, held)
@@ -196,11 +196,11 @@ fn missing(net: &mut Net, n: usize, c: &osis_base::CommitId) -> usize {
 }
 
 // spec/commits.md §4 (atomic apply: a membership commit held in part applies, the rest joins on
-// arrival), spec/sync.md §3, §5: a redeemer whose redemption never reaches K's server sends its
+// arrival), spec/sync.md §3, §5: a redeemer whose redemption never reaches K's host sends its
 // projections at once (its chain copy under the target's label, the inbox blob to its own
 // person); the sharer, who syncs K, applies the redemption from them (without the rule it waits
 // for the rest from K's label) and stays converged
-// while the redeemer is gone; once the redeemer is back and reaches K's server, its deposit
+// while the redeemer is gone; once the redeemer is back and reaches K's host, its deposit
 // lands and the sharer holds the whole commit.
 #[test]
 fn projection_applies_when_k_never_gets_it_spec_commits_4() {
@@ -219,9 +219,9 @@ fn projection_applies_when_k_never_gets_it_spec_commits_4() {
         net.advance(61_000);
     }
     let at0 = all_ids(&net, s0);
-    assert!(entries_of(&mut net, x, &c).iter().any(|id| at0.contains(id)), "its copies went to the other server");
+    assert!(entries_of(&mut net, x, &c).iter().any(|id| at0.contains(id)), "its copies went to the other host");
     assert!(net.sync(x).deliveries_pending() > 0, "the deposit under K waits");
-    // the redeemer gone (its disk lost, or K's server never takes it): nothing waits
+    // the redeemer gone (its disk lost, or K's host never takes it): nothing waits
     net.set_online(x, false);
     for _ in 0..3 {
         net.run();
@@ -267,19 +267,19 @@ fn deliveries_survive_a_crash_before_carry_out_spec_sync_5() {
     }
 }
 
-// spec/sync.md §5 (a refused deposit at one server does not hold what another accepted; a
-// storage-cap refusal is for now), spec/sync.md §3: K's label at two servers, one refusing every
+// spec/sync.md §5 (a refused deposit at one host does not hold what another accepted; a
+// storage-cap refusal is for now), spec/sync.md §3: K's label at two hosts, one refusing every
 // entry (storage cap); the redeemer's deposit lands at the other, and its inbox blob to its own
-// person goes; the deposit at the full server is sent again and lands once it has room.
+// person goes; the deposit at the full host is sent again and lands once it has room.
 #[test]
-fn inbox_goes_when_one_server_refuses_spec_sync_5() {
+fn inbox_goes_when_one_host_refuses_spec_sync_5() {
     let mut net = Net::new();
-    net.add_server();
-    net.add_server();
-    net.add_server_with(osis_host::HostPolicy { cap_entries: 0, ..osis_host::HostPolicy::default() });
+    net.add_host();
+    net.add_host();
+    net.add_host_with(osis_host::HostPolicy { cap_entries: 0, ..osis_host::HostPolicy::default() });
     let (a, x, _, link, px, held) = link_setup_at(&mut net, &[1, 2]);
     let inbox = net.engine(x).get_typed(&px, &ct::KEYS).unwrap().unwrap().inbox.unwrap().label;
-    let before = net.server_ids(0, &inbox).len();
+    let before = net.host_ids(0, &inbox).len();
     let done = net.engine(x).redeem(&link, &px, true).unwrap();
     net.engine(x).drop_key_actor(&held);
     carry(&mut net, x, done);
@@ -288,27 +288,27 @@ fn inbox_goes_when_one_server_refuses_spec_sync_5() {
         net.advance(61_000);
     }
     assert!(net.engine(a).roster(&link.k).contains_key(&px), "the sharer applied the redemption");
-    assert!(net.server_ids(0, &inbox).len() > before, "the inbox blob reached its label");
-    assert_eq!(net.sync(x).deliveries_pending(), 1, "the full server's deposit is kept");
-    let full = net.server_ids(2, &link.k_label).len();
-    net.restart_server_with(2, osis_host::HostPolicy::default());
+    assert!(net.host_ids(0, &inbox).len() > before, "the inbox blob reached its label");
+    assert_eq!(net.sync(x).deliveries_pending(), 1, "the full host's deposit is kept");
+    let full = net.host_ids(2, &link.k_label).len();
+    net.restart_host_with(2, osis_host::HostPolicy::default());
     for _ in 0..4 {
         net.run();
         net.advance(3_600_000);
     }
     net.run();
     assert_eq!(net.sync(x).deliveries_pending(), 0);
-    assert!(net.server_ids(2, &link.k_label).len() > full, "the deposit landed once there was room");
+    assert!(net.host_ids(2, &link.k_label).len() > full, "the deposit landed once there was room");
 }
 
 // spec/permissions.md §3 (a removal goes under the labels the removed party could read in the
 // same sync, before any other upload), spec/commits.md §4: with the
-// target's server down, the removal's copy under another label still goes.
+// target's host down, the removal's copy under another label still goes.
 #[test]
 fn removal_copies_not_held_spec_permissions_3() {
     let mut net = Net::new();
-    let s0 = net.add_server();
-    let s1 = net.add_server();
+    let s0 = net.add_host();
+    let s1 = net.add_host();
     let a = net.node(40, &[s0, s1]);
     let b = net.node(41, &[s0, s1]);
     // K (label at s1) with member b, a member of T (label at s0)
@@ -332,7 +332,7 @@ fn removal_copies_not_held_spec_permissions_3() {
     let at1 = all_ids(&net, s1);
     let at0 = all_ids(&net, s0);
     let ids = entries_of(&mut net, a, &c);
-    assert!(ids.iter().all(|id| !at1.contains(id)), "the target's server is down");
+    assert!(ids.iter().all(|id| !at1.contains(id)), "the target's host is down");
     assert!(ids.iter().any(|id| at0.contains(id)), "the removal's copy under T went");
 }
 
@@ -343,7 +343,7 @@ fn removal_copies_not_held_spec_permissions_3() {
 #[test]
 fn queued_deposit_after_seed_refresh_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     for i in 0..4 {
         net.node(60 + i, &[sv]);
     }
@@ -380,14 +380,14 @@ fn queued_deposit_after_seed_refresh_spec_sync_5() {
 // spec/sync.md §5, spec/permissions.md §3: after an admin refreshes the deposit seed alone and
 // registers the new deposit key, a second admin that comes online before it applied the `/keys`
 // write registers no step back to the old key (it waits until what it can open under the label
-// is applied), so the server's head keeps the new deposit key.
+// is applied), so the host's head keeps the new deposit key.
 #[test]
 fn lagging_admin_keeps_refreshed_deposit_key_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     net.node(80, &[sv]);
     // blobs never inline: the new head arrives before the `/keys` write it fetches
-    net.add_node(81, osis_node::sync::SyncConfig { servers: vec![net.address(sv)], inline_limit: 0, ..Default::default() });
+    net.add_node(81, osis_node::sync::SyncConfig { hosts: vec![net.address(sv)], inline_limit: 0, ..Default::default() });
     let g = net.group(0, &[(1, Role::Admin)], &[sv]);
     for _ in 0..3 {
         net.run();
@@ -396,19 +396,19 @@ fn lagging_admin_keeps_refreshed_deposit_key_spec_sync_5() {
     let l = net.engine(0).group_labels(&g).unwrap()[0].id;
     let actor = net.engine(0).group_actor(&g);
     let old = net.engine(1).deposit_seed(&g).unwrap().unwrap();
-    let before = net.server_path(sv, &l).len();
+    let before = net.host_path(sv, &l).len();
     let done = net.engine(0).refresh_deposit_seed(&actor).unwrap();
     carry(&mut net, 0, done);
     net.run();
     let new = net.engine(0).deposit_seed(&g).unwrap().unwrap();
     let (old_pk, new_pk) = (osis_crypto::deposit_key(&old, &l).verifying_key(), osis_crypto::deposit_key(&new, &l).verifying_key());
-    assert_eq!(net.server_path(sv, &l).last().unwrap().keys.deposit, new_pk, "the refresh registered");
+    assert_eq!(net.host_path(sv, &l).last().unwrap().keys.deposit, new_pk, "the refresh registered");
     for _ in 0..6 {
         net.run();
         net.advance(61_000);
     }
     assert_eq!(net.engine(1).deposit_seed(&g).unwrap().unwrap().expose(), new.expose(), "the laggard applied the write");
-    let path = net.server_path(sv, &l);
+    let path = net.host_path(sv, &l);
     assert!(path[before..].iter().all(|s| s.keys.deposit != old_pk), "no step back to the old deposit key");
     assert_eq!(path.len(), before + 1, "the refresh's step only");
     assert_eq!(path.last().unwrap().keys.deposit, new_pk);

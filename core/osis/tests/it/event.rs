@@ -59,7 +59,7 @@ fn civil_dates_are_days_since_the_epoch() {
 #[test]
 fn calendar_shared_read_only() {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let alice = person(&mut w, 1, sv);
     let bob = person(&mut w, 2, sv);
     let b = introduce(&mut w, &alice, &bob);

@@ -1,14 +1,14 @@
 //! Member-peer serving (spec/sync.md §5 last bullet, §10): a node serves the labels it syncs to
-//! the peers that dial it, through osis-proto's server engine over its own label state
+//! the peers that dial it, through osis-proto's host engine over its own label state
 //! (`PeerStore`, a `LabelStore` over the sync state's entries and the engine's blobs). Opens,
-//! stamps and deposits are checked as a blind node checks them, against the registration path
+//! stamps and deposits are checked as a host checks them, against the registration path
 //! recorded in `/label` (the deepest recorded step is the head). Accepted entries go through the
 //! same path as downloaded ones; the log is in memory (`Feed`, a fresh log ID per start, so a
 //! peer's old cursor replays). A peer's deletion hides the entry from peers only, a registration
 //! extends the served path in memory: this node's own state follows its own rules. Entries this
 //! node dropped stay refused for `TOMBSTONE_LIFETIME` (`State::tombs`). What peers upload or
 //! deposit is charged to the label it went under (dialer keys are fresh per connection) and to a node-wide total (`SyncConfig`
-//! `peer_bytes`, `peer_total_bytes`) until it opens, reaches a server or is dropped; past either,
+//! `peer_bytes`, `peer_total_bytes`) until it opens, reaches a host or is dropped; past either,
 //! uploads get code 12 and deposits code 5. A member proof by the dialable key of a node that
 //! currently reads a label opens it (spec/sync.md §5, member peer); budgets are then charged to
 //! that dialable key.
@@ -198,7 +198,7 @@ impl Charges {
     }
 }
 
-/// What a served request accepted, carried out after the server engine returns.
+/// What a served request accepted, carried out after the host engine returns.
 #[derive(Default)]
 struct Accepted {
     entries: Vec<(LabelId, osis_proto::Event)>,
@@ -350,7 +350,7 @@ impl LabelStore for PeerStore<'_> {
     }
 
     fn tombstoned(&self, label: &LabelId, blob_id: &BlobId) -> std::result::Result<bool, StoreError> {
-        // dropped here (a server's deletion, our own delete or drop): never back from a peer
+        // dropped here (a host's deletion, our own delete or drop): never back from a peer
         if self.tombs.get(&(*label, *blob_id)).is_some_and(|t| t.saturating_add(TOMBSTONE_LIFETIME_MS) > self.wall) {
             return Ok(true);
         }
@@ -486,7 +486,7 @@ impl SyncEngine {
     /// `SyncConfig.max_served` sessions running, the oldest one that has opened nothing is
     /// closed to make room (dialer keys are ephemeral, so a per-key cap would bind nothing);
     /// when every one has opened a label, this one is closed. Opens are
-    /// checked as a blind node checks them, plus member proofs by the dialable key of a node
+    /// checked as a host checks them, plus member proofs by the dialable key of a node
     /// thing currently reading the label (spec/sync.md §5).
     pub fn accept(&mut self, local: [u8; 32], peer: [u8; 32]) -> (ConnId, Vec<Action>) {
         let conn = self.next_conn;
@@ -551,7 +551,7 @@ impl SyncEngine {
     }
 
     /// Drops charges that no longer count: entries no longer held, opened since, or present at
-    /// a server or peer.
+    /// a host or peer.
     pub(crate) fn prune_charges(&mut self) {
         let st = &self.state;
         let stale: Vec<(LabelId, BlobId)> = self.charges.by_entry.keys().filter(|(l, b)| !(st.entries.get(&(*l, *b)).is_some_and(|e| matches!(e.kind, super::state::Kind::Unknown | super::state::Kind::Bad | super::state::Kind::Parked(_))) && !st.present_anywhere(l, b))).copied().collect();
@@ -640,7 +640,7 @@ impl SyncEngine {
             by_label.entry(l).or_default().push(ev);
         }
         for (l, evs) in by_label {
-            // stamps were checked against the served head by the server engine
+            // stamps were checked against the served head by the host engine
             self.log_events_from(None, Some(conn), l, evs, None, out)?;
         }
         // what the uploads replaced goes after them (peers see the new entry first)
@@ -664,7 +664,7 @@ impl SyncEngine {
             }
         }
         // a relay-only entry: delivered here and passed on (the other served sessions, the
-        // servers of the label), held by nobody (spec/sync.md §5)
+        // hosts of the label), held by nobody (spec/sync.md §5)
         for r in relays {
             self.relay_in(super::ephemeral::RelayFrom::Served(conn), r.label, r.blob_id, r.blob.to_vec(), r.wrap, Some(r.stamp), out)?;
         }

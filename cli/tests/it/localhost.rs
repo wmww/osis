@@ -11,10 +11,10 @@ use std::process::{Child, Command, Stdio};
 
 const OSIS: &str = env!("CARGO_BIN_EXE_osis");
 
-/// Kills the server when the test ends, also on a panic.
-struct Server(Child);
+/// Kills the host when the test ends, also on a panic.
+struct Host(Child);
 
-impl Drop for Server {
+impl Drop for Host {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
@@ -49,12 +49,12 @@ fn field<'a>(json: &'a str, key: &str) -> &'a str {
 
 /// Pairs `new` (an empty store) to the person of `old`: the offer and request/reply lines are
 /// carried between the two processes, as a person would by QR code.
-fn pair(old: &Path, new: &Path, server: &str) {
+fn pair(old: &Path, new: &Path, host: &str) {
     let mut offer = Command::new(OSIS).arg("-s").arg(old).args(["--timeout", "60s", "pair", "offer"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut offer_out = BufReader::new(offer.stdout.take().unwrap());
     let mut line = String::new();
     offer_out.read_line(&mut line).unwrap();
-    let mut join = Command::new(OSIS).arg("-s").arg(new).args(["--timeout", "60s", "pair", "join", "--server", server, line.trim()]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut join = Command::new(OSIS).arg("-s").arg(new).args(["--timeout", "60s", "pair", "join", "--host", host, line.trim()]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut join_out = BufReader::new(join.stdout.take().unwrap());
     let mut req = String::new();
     join_out.read_line(&mut req).unwrap();
@@ -68,21 +68,21 @@ fn pair(old: &Path, new: &Path, server: &str) {
 
 // spec/sync.md §10 (QUIC to a known address), spec/permissions.md §9 (links), notes/api.md
 // (Devices, Sync), notes/cli.md Tests (tier 2): two people and three devices meet only through
-// one blind server process.
+// one host process.
 #[test]
 #[ignore]
-fn two_people_three_devices_one_server_localhost() {
-    let sd = dir("server");
+fn two_people_three_devices_one_host_localhost() {
+    let sd = dir("host");
     let mut serve = Command::new(OSIS).args(["serve", "--data"]).arg(&sd).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
     let mut addr = String::new();
     BufReader::new(serve.stdout.take().unwrap()).read_line(&mut addr).unwrap();
-    let _server = Server(serve);
+    let _host = Host(serve);
     let addr = addr.trim().to_string();
     assert!(addr.starts_with("quic://127.0.0.1:"), "{addr}");
 
     let (a1, a2, b) = (dir("alice1"), dir("alice2"), dir("bob"));
-    osis(&a1, &["init", "--server", &addr]);
-    osis(&b, &["init", "--server", &addr]);
+    osis(&a1, &["init", "--host", &addr]);
+    osis(&b, &["init", "--host", &addr]);
     pair(&a1, &a2, &addr);
     let me1 = osis(&a1, &["--json", "whoami"]);
     let me2 = osis(&a2, &["--json", "whoami"]);
@@ -95,7 +95,7 @@ fn two_people_three_devices_one_server_localhost() {
     let t = osis(&a1, &["create", "--owner", &g, "--in", &g, "/t/x", "\"hello\""]);
     let link = osis(&a1, &["link", "make", &g, "write"]);
     osis(&a1, &["sync"]);
-    // Alice's devices are all closed now: the link works from the server alone
+    // Alice's devices are all closed now: the link works from the host alone
     assert_eq!(osis(&b, &["link", "redeem", &link]), g);
     osis(&b, &["sync"]);
     assert_eq!(osis(&b, &["get", &t, "/t/x"]), "\"hello\"");

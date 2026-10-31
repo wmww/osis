@@ -74,12 +74,12 @@ fn upload_codes(evs: &[ClientEvent]) -> Vec<Code> {
     evs.iter().filter_map(|e| if let ClientEvent::EntryStatus { codes, .. } = e { Some(codes.clone()) } else { None }).flatten().collect()
 }
 
-// spec/sync.md §5 (tombstones, member peer): a body a server deleted is refused when a peer
-// uploads it again (code 6), and never goes back to the server.
+// spec/sync.md §5 (tombstones, member peer): a body a host deleted is refused when a peer
+// uploads it again (code 6), and never goes back to the host.
 #[test]
 fn dropped_entry_refused_from_peer_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -89,23 +89,23 @@ fn dropped_entry_refused_from_peer_spec_sync_5() {
     net.run();
     let l = net.label(b);
     let x = net.sync(b).entries(&l).into_iter().find(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).unwrap().0;
-    let meta = net.servers[sv].hub.store().entry(&l, &x).unwrap().unwrap();
-    let blob = net.servers[sv].hub.store().blob(&x).unwrap().unwrap();
+    let meta = net.hosts[sv].hub.store().entry(&l, &x).unwrap().unwrap();
+    let blob = net.hosts[sv].hub.store().blob(&x).unwrap().unwrap();
     let now = net.now();
-    assert_eq!(net.servers[sv].hub.store_mut().delete(&l, &x, now).unwrap(), Code::OK);
+    assert_eq!(net.hosts[sv].hub.store_mut().delete(&l, &x, now).unwrap(), Code::OK);
     let acts = net.sync(b).sync_now();
     net.actions(b, acts);
     net.settle(100_000);
-    assert!(!net.sync(b).entries(&l).iter().any(|(id, _)| *id == x), "the server's deletion reached b");
+    assert!(!net.sync(b).entries(&l).iter().any(|(id, _)| *id == x), "the host's deletion reached b");
     let (mut p, _) = dial_in(&mut net, b);
     let evs = command(&mut net, b, &mut p, Command::Upload { label: l, entries: vec![osis_proto::Entry { blob, wrap: meta.wrap, stamp: meta.stamp.unwrap(), replaces: Vec::new() }] });
     assert_eq!(upload_codes(&evs), vec![Code::TOMBSTONED]);
     net.run();
     assert!(!net.sync(b).entries(&l).iter().any(|(id, _)| *id == x));
-    assert!(!net.server_ids(sv, &l).contains(&x), "never re-uploaded");
+    assert!(!net.host_ids(sv, &l).contains(&x), "never re-uploaded");
 }
 
-// spec/sync.md §5 (servers cap storage per label; member peer applies the same rule): a peer's
+// spec/sync.md §5 (hosts cap storage per label; member peer applies the same rule): a peer's
 // uploads past its byte budget get code 12 and are not kept.
 #[test]
 fn peer_budget_refuses_spec_sync_5() {
@@ -182,7 +182,7 @@ fn stranger_refused_spec_sync_5() {
 #[test]
 fn removed_member_not_dialed_nor_served_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[]);
     reach(&mut net, a, 0xa1);
@@ -199,7 +199,7 @@ fn removed_member_not_dialed_nor_served_spec_sync_5() {
     net.set_online(r, false);
     net.run();
     let la = net.label(a);
-    assert!(net.server_path(sv, &la).len() >= 2, "a registered a new step");
+    assert!(net.host_path(sv, &la).len() >= 2, "a registered a new step");
     assert!(!net.sync(a).peers().contains_key(&[0xb1; 32]), "not dialed");
     net.write(a, t, "after");
     net.set_online(r, true);
@@ -401,12 +401,12 @@ fn silent_session_closed_spec_sync_5() {
 }
 
 // spec/permissions.md §3: a complete pass also waits for every co-reader the node received the
-// label from and can reach: with that peer's replies held back, the server's pass alone is not
+// label from and can reach: with that peer's replies held back, the host's pass alone is not
 // enough; a node that is no co-reader is never waited for.
 #[test]
 fn complete_pass_counts_peers_spec_permissions_3() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -438,7 +438,7 @@ fn complete_pass_counts_peers_spec_permissions_3() {
 #[test]
 fn complete_pass_drops_removed_coreader_spec_permissions_3() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let x = net.node(2, &[sv]);
     let b = net.node(3, &[sv]);
@@ -469,7 +469,7 @@ fn complete_pass_drops_removed_coreader_spec_permissions_3() {
 fn reach_excluded_per_label_spec_permissions_4() {
     for excluded in [false, true] {
         let mut net = Net::new();
-        let sv = net.add_server();
+        let sv = net.add_host();
         let a = net.node(1, &[sv]);
         let b = net.node(2, &[sv]);
         let g = net.group(a, &[(b, Role::Read)], &[sv]);

@@ -114,17 +114,17 @@
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
-//! # Sync, servers and the recovery card
+//! # Sync, hosts and the recovery card
 //! `create` makes a person (owned by a recovery key) whose home group is synced on
-//! `Config.servers`; it returns the recovery card, the only copy of that key. Sync runs on a
+//! `Config.hosts`; it returns the recovery card, the only copy of that key. Sync runs on a
 //! runtime (`Runtime::Own`, or the app's tokio handle); without one everything works locally.
 //! Status, waiting until synced and restoring from the card are the network-facing calls.
 //! ```no_run
-//! # use osis::{Config, Osis, Runtime, ServerAddr, SyncScope};
+//! # use osis::{Config, Osis, Runtime, HostAddr, SyncScope};
 //! # async fn demo() -> osis::Result<()> {
 //! let mut cfg = Config::memory();
 //! cfg.runtime = Runtime::Own;
-//! cfg.servers = vec!["quic://example.org:4433#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".parse()?];
+//! cfg.hosts = vec!["quic://example.org:4433#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".parse()?];
 //! let (db, card) = Osis::create(cfg.clone())?;
 //! db.wait_synced(SyncScope::All, std::time::Duration::from_secs(10)).await?;
 //! // on a fresh device: the same person from the card
@@ -135,8 +135,8 @@
 //! ```
 //! # use osis::{Config, Osis, SyncState};
 //! let (db, card) = Osis::create(Config::memory())?;
-//! assert!(card.is_none(), "no servers: nothing to restore from");
-//! assert_eq!(db.status()?.groups[&db.home()].state, SyncState::NoServers);
+//! assert!(card.is_none(), "no hosts: nothing to restore from");
+//! assert_eq!(db.status()?.groups[&db.home()].state, SyncState::NoHosts);
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -159,10 +159,10 @@
 //! Grants need the member's keys (a contact card, a shared group); links need nothing. Things a
 //! group owns are what its members read: create shared things with the group as owner.
 //! ```
-//! # use osis::{Config, Osis, Role, LinkOpts, ServerAddr};
-//! // a link names servers (or is direct, `LinkOpts::direct`)
+//! # use osis::{Config, Osis, Role, LinkOpts, HostAddr};
+//! // a link names hosts (or is direct, `LinkOpts::direct`)
 //! let mut cfg = Config::memory();
-//! cfg.servers = vec![ServerAddr::new("quic://example.org:4433", [7; 32])];
+//! cfg.hosts = vec![HostAddr::new("quic://example.org:4433", [7; 32])];
 //! let db = Osis::create(cfg)?.0;
 //! let mut w = db.write();
 //! let g = w.create(db.me())?;
@@ -271,7 +271,7 @@ pub use keep::{KeepAlive, REFRESH_DIVISOR};
 pub use keys::{Key, core};
 pub use large::ValueStream;
 pub use read::{AspectRef, Edge, GroupsOf, PathRef, Reader, Roster, Stamp};
-pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupReach, GroupSync, InviteId, LinkInfo, LinkOpts, Lower, PRESYNC_WAIT, RecoveryCard, ServerAddr, Share, ShareLink, ShareOpts, Status, SyncScope, SyncState, WaitForSync};
+pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupReach, GroupSync, InviteId, LinkInfo, LinkOpts, Lower, PRESYNC_WAIT, RecoveryCard, HostAddr, Share, ShareLink, ShareOpts, Status, SyncScope, SyncState, WaitForSync};
 pub use text::{Splice, TextSession};
 pub use commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Next, Scope};
 pub use watch::{Change, Changed, CommitInfo, Dispatcher, Source, Subscription, Watch};

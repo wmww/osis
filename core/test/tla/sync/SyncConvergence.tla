@@ -1,5 +1,5 @@
 ---------------------------- MODULE SyncConvergence ----------------------------
-(* Blob convergence of one label at one blind server (spec/sync.md §5-§7,      *)
+(* Blob convergence of one label at one host (spec/sync.md §5-§7,              *)
 (* spec/commits.md §5). A scenario module (MC_*.tla) fixes the commits.        *)
 (* Crypto is access: a blob is [c, ds, v] = commit, delta set, encryption.     *)
 EXTENDS Naturals, FiniteSets
@@ -143,7 +143,7 @@ Write(n, c) ==
   /\ held' = [held EXCEPT ![n] = @ \cup {[c |-> c, ds |-> CD[c], v |-> 0]}]
   /\ UNCHANGED <<now, seen, compacted, online, srv, dep, stamped, tomb, timed, adv>>
 
-\* commits §5 / sync §5: the replacing writer sends the server a delete timed
+\* commits §5 / sync §5: the replacing writer sends the host a delete timed
 \* at the bound (first death plus D), with a covering snapshot already under
 \* the label when the body still has live writes.
 SendTimed(n, b) ==
@@ -153,7 +153,7 @@ SendTimed(n, b) ==
   /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, online, srv, dep,
                  stamped, tomb, adv>>
 
-\* Cursor sync delivers each log entry once, in any order (reordering server).
+\* Cursor sync delivers each log entry once, in any order (reordering host).
 Recv(n, b) ==
   /\ online[n] /\ b \in srv /\ b \notin seen[n]
   /\ seen' = [seen EXCEPT ![n] = @ \cup {b}]
@@ -233,7 +233,7 @@ Delete(n, b) ==
   /\ Remove({b}, TRUE)
   /\ UNCHANGED <<state, now, created, applied, held, compacted, online, stamped, adv>>
 
-\* sync §7 compaction: drop, and delete at the server, a covered body past
+\* sync §7 compaction: drop, and delete at the host, a covered body past
 \* keep-at-least, once per body (commit and delta set, sync §6). Optional,
 \* so unfair.
 Compact(n, b) ==
@@ -259,7 +259,7 @@ GoOff(n) == /\ online[n] /\ adv.off < Offs
 GoOn(n) == /\ ~online[n] /\ online' = [online EXCEPT ![n] = TRUE]
            /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, srv, dep, stamped, tomb, timed, adv>>
 
-\* Adversarial server: loses an entry; replays a stale stamped entry.
+\* Adversarial host: loses an entry; replays a stale stamped entry.
 AdvDrop(b) == /\ b \in srv /\ adv.drop < AdvDrops
               /\ srv' = srv \ {b} /\ dep' = dep \ {b} /\ adv' = [adv EXCEPT !.drop = @ + 1]
               /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, online, stamped, tomb, timed>>
@@ -297,12 +297,12 @@ Node(n) ==
   \/ \E b \in held[n] \cup srv : Compact(n, b)
   \/ GoOn(n)
 
-Server == \E b \in srv \cup tomb : TimedFire(b) \/ ExpireAt(b) \/ TombGC(b)
+Host == \E b \in srv \cup tomb : TimedFire(b) \/ ExpireAt(b) \/ TombGC(b)
 Adversary == \/ \E n \in Nodes : GoOff(n)
              \/ \E b \in srv : AdvDrop(b)
              \/ \E b \in stamped : AdvReplay(b)
 
-Next == Tick \/ (\E n \in Nodes : Node(n)) \/ Server \/ Adversary
+Next == Tick \/ (\E n \in Nodes : Node(n)) \/ Host \/ Adversary
 
 \* Weak fairness of every honest step kind per node and commit; compaction,
 \* snapshots that are not due, and the adversary are unfair.
@@ -329,7 +329,7 @@ Fairness ==
 Spec == Init /\ [][Next]_vars /\ Fairness
 
 -----------------------------------------------------------------------------
-(* Properties. Global view: everything written, snapshots at the server.    *)
+(* Properties. Global view: everything written, snapshots at the host.         *)
 GA == {c \in Commits : created[c] # Inf}
 CurBody(c) == [c |-> c, ds |-> {d \in CD[c] : ~Purged(GA, d)}, v |-> 0]
 GLive(d) == DC(d) \in GA /\ ~Dead(GA, d) /\ ~Purged(GA, d)
@@ -342,13 +342,13 @@ TypeOK == /\ now \in 0..MaxT
 
 \* sync §7 "A body with live writes ... is deleted at a label only while other
 \* entries under it carry each of them": no honest step removes the last
-\* server copy of a live write that reached it (checked with AdvDrops = 0).
+\* host copy of a live write that reached it (checked with AdvDrops = 0).
 NoLiveLoss == \A d \in Deltas :
   (GLive(d) /\ \E b \in stamped \cup dep : d \in b.ds) => Carried(srv, GA, d)
 
 \* sync §7 "Live state is never lost: a node keeps it in its own state ... and
 \* a label in an entry": every live write is in some node's state or carried
-\* at the server (true by construction: nothing evicts state).
+\* at the host (true by construction: nothing evicts state).
 LiveKept == \A d \in Deltas :
   GLive(d) => (\E n \in Nodes : d \in state[n]) \/ Carried(srv, GA, d)
 \* sync §7 "a member serves current state from the bodies and snapshots it
@@ -362,9 +362,9 @@ Serves == <>[](\A n \in Nodes, d \in Deltas :
 Converge == <>[](\A c \in GA :
   MustHold(GA, {}, srv, CurBody(c)) => GHolds(CurBody(c)))
 \* sync §6: must-not-hold bodies (purged, expired, past keep-at-most, strict
-\* subsets, §7 duplicates) do not persist at the server.
+\* subsets, §7 duplicates) do not persist at the host.
 Clean == <>[](\A b \in srv : ~MustNot(GA, srv, b) /\ ~DupHigher(b))
-\* No infinite upload/delete alternation: the server's entries settle.
+\* No infinite upload/delete alternation: the host's entries settle.
 Quiesce == <>[][srv' = srv]_vars
 \* sync §5: a deposited commit the label must hold is eventually stamped.
 Promoted == <>[](\A b \in dep : ~MustHold(GA, {}, srv, b))

@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Node sync engines through blind nodes, in process (spec/sync.md §2-§9, §11).
+//! Node sync engines through hosts, in process (spec/sync.md §2-§9, §11).
 
 use crate::net;
 use net::*;
@@ -7,12 +7,12 @@ use osis_base::{Ak, Role, Value};
 use osis_schema::AspectKey;
 use osis_node::sync::Event;
 
-// spec/sync.md §3, §5, §6: two nodes of one group converge through one blind server: closure
+// spec/sync.md §3, §5, §6: two nodes of one group converge through one host: closure
 // bodies uploaded stamped, downloaded, unwrapped and applied, both ways.
 #[test]
 fn two_nodes_converge_spec_sync_6() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -30,13 +30,13 @@ fn two_nodes_converge_spec_sync_6() {
     assert!(net.steps - before < 8, "a quiet round exchanged {} messages", net.steps - before);
 }
 
-// spec/sync.md §5, §6: a reader relays the stamped must-hold entries it holds to a server
+// spec/sync.md §5, §6: a reader relays the stamped must-hold entries it holds to a host
 // lacking them; it originates nothing it may not (no stamp of its own).
 #[test]
 fn reader_relays_spec_sync_6() {
     let mut net = Net::new();
-    let s1 = net.add_server();
-    let s2 = net.add_server();
+    let s1 = net.add_host();
+    let s2 = net.add_host();
     let a = net.node(1, &[s1]);
     let r = net.node(2, &[s1, s2]);
     let c = net.node(3, &[s2]);
@@ -49,14 +49,14 @@ fn reader_relays_spec_sync_6() {
     net.advance(30_000);
     net.trace(&[a, r, c]);
     assert_eq!(net.read(r, t), Some(s("relayed")));
-    assert_eq!(net.read(c, t), Some(s("relayed")), "the reader carried the writer's entries to the second server");
+    assert_eq!(net.read(c, t), Some(s("relayed")), "the reader carried the writer's entries to the second host");
 }
 
 // spec/sync.md §8: a subscribed node gets new log events pushed without asking.
 #[test]
 fn subscription_push_spec_sync_8() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -76,7 +76,7 @@ fn subscription_push_spec_sync_8() {
 #[test]
 fn signals_relay_only_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -84,7 +84,7 @@ fn signals_relay_only_spec_sync_5() {
     let t = net.item(a, g, g, "x");
     net.run();
     let rx: Vec<_> = [a, b, c].iter().map(|n| net.listen(*n)).collect();
-    let rows = osis_store::Backend::scan(&net.servers[sv].backend, &[], None, usize::MAX).unwrap().len();
+    let rows = osis_store::Backend::scan(&net.hosts[sv].backend, &[], None, usize::MAX).unwrap().len();
     let ring = ukey("/t/typing", osis_schema::Lifetime::Signal);
     net.eph_write(a, t, &ring, Value::Bool(true));
     net.settle(10_000);
@@ -93,7 +93,7 @@ fn signals_relay_only_spec_sync_5() {
     for (i, n) in [(1, b), (2, c)] {
         assert_eq!(got[i].iter().map(|x| (x.0, x.1.clone(), x.2.clone(), x.3)).collect::<Vec<_>>(), vec![(t, "/t/typing".into(), Value::Bool(true), osis_node::Origin::Remote)], "node {n}");
     }
-    assert_eq!(osis_store::Backend::scan(&net.servers[sv].backend, &[], None, usize::MAX).unwrap().len(), rows, "stored nowhere");
+    assert_eq!(osis_store::Backend::scan(&net.hosts[sv].backend, &[], None, usize::MAX).unwrap().len(), rows, "stored nowhere");
     assert_eq!(net.eph_read(b, t, "/t/typing"), None);
     // a reader may not fire one
     let mut m = osis_node::Mutation::new();
@@ -102,11 +102,11 @@ fn signals_relay_only_spec_sync_5() {
 }
 
 // spec/sync.md §11: a bundle replays a label as a peer with no cursor; a member that never
-// reached a server ends up with the content.
+// reached a host ends up with the content.
 #[test]
 fn bundle_round_trip_spec_sync_11() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[]);
     net.blocked.insert((b, sv));
@@ -127,28 +127,28 @@ fn bundle_round_trip_spec_sync_11() {
 #[test]
 fn restart_resumes_spec_sync_6() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     let t = net.item(a, g, g, "one");
     net.run();
     let l = net.label(a);
-    let n = net.server_ids(sv, &l).len();
+    let n = net.host_ids(sv, &l).len();
     net.restart(b, 22);
     net.run();
-    assert_eq!(net.server_ids(sv, &l).len(), n, "nothing placed twice");
+    assert_eq!(net.host_ids(sv, &l).len(), n, "nothing placed twice");
     net.write(a, t, "two");
     net.run();
     assert_eq!(net.read(b, t), Some(s("two")));
 }
 
 // spec/sync.md §5-§7 (headline): two devices that are never online together converge through
-// one blind server, across a rotation, a compaction and an expiring write.
+// one host, across a rotation, a compaction and an expiring write.
 #[test]
 fn briefly_online_devices_spec_sync_6() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);

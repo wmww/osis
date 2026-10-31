@@ -95,16 +95,16 @@ pub enum Cmd {
     /// Create a store: new device, person and home group
     Init {
         #[arg(long, value_name = "ADDR")]
-        server: Vec<String>,
+        host: Vec<String>,
     },
     /// Restore a person on a fresh store from its recovery card
     Restore {
         /// The card, `@FILE` or `-` (stdin)
         card: String,
         #[arg(long, value_name = "ADDR")]
-        server: Vec<String>,
+        host: Vec<String>,
     },
-    /// This store's person, device, home group and servers
+    /// This store's person, device, home group and hosts
     Whoami,
     /// Pair devices
     #[command(subcommand)]
@@ -112,10 +112,10 @@ pub enum Cmd {
     /// This person's devices
     #[command(subcommand)]
     Device(DeviceCmd),
-    /// Servers this store syncs through
+    /// Hosts this store syncs through
     #[command(subcommand)]
-    Server(ServerCmd),
-    /// Run a blind server (prints its address first)
+    Hosts(HostsCmd),
+    /// Run a host (prints its address first)
     Serve {
         #[arg(long, value_name = "FILE")]
         config: Option<PathBuf>,
@@ -332,12 +332,12 @@ pub enum Cmd {
         #[arg(long)]
         watch: bool,
     },
-    /// Sync now and wait until everything (or G) is at a server
+    /// Sync now and wait until everything (or G) is at a host
     Sync {
         #[arg(long, value_name = "G")]
         group: Option<String>,
     },
-    /// Wait until everything (or G) is at a server
+    /// Wait until everything (or G) is at a host
     Wait {
         #[arg(long, value_name = "G")]
         group: Option<String>,
@@ -423,7 +423,7 @@ pub enum PairCmd {
     Join {
         offer: String,
         #[arg(long, value_name = "ADDR")]
-        server: Vec<String>,
+        host: Vec<String>,
     },
 }
 
@@ -438,7 +438,7 @@ pub enum DeviceCmd {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum ServerCmd {
+pub enum HostsCmd {
     Ls,
     Add { addr: String },
     Rm { addr: String },
@@ -482,11 +482,11 @@ pub enum CardCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum GroupCmd {
-    /// Make G synced (default: the store's servers)
+    /// Make G synced (default: the store's hosts)
     Sync {
         g: String,
         #[arg(long, value_name = "ADDR")]
-        server: Vec<String>,
+        host: Vec<String>,
     },
     Unsync { g: String },
     Policy {

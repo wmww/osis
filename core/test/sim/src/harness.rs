@@ -122,15 +122,15 @@ pub struct Report {
     pub parked: u64,
     pub crashes: u64,
     pub restarts: u64,
-    /// Phase B: messages duplicated, server crashes, partitions, engine and hub diagnostics.
+    /// Phase B: messages duplicated, host crashes, partitions, engine and hub diagnostics.
     pub duplicated: u64,
-    pub server_crashes: u64,
+    pub host_crashes: u64,
     pub partitions: u64,
     pub diagnostics: u64,
-    /// Must-hold bodies found at servers by the quiescent label check.
+    /// Must-hold bodies found at hosts by the quiescent label check.
     pub held_checked: u64,
-    /// Phase C: messages an evil server dropped, held back or replayed; requests an adversary's
-    /// hand-driven session sent and those the server refused.
+    /// Phase C: messages an evil host dropped, held back or replayed; requests an adversary's
+    /// hand-driven session sent and those the host refused.
     pub evil: u64,
     pub rogue_sent: u64,
     pub rogue_refused: u64,

@@ -3,14 +3,14 @@
 //! - spec/requirements.md (convergence): nodes holding the same commits read the same; the
 //!   members of a labeled group read the same values of its items.
 //! - spec/sync.md §6 (convergence): every body a writer judges must-hold at a label is in a live
-//!   entry at every server of the label it reaches; no entry a node judges must-not-hold (and may
+//!   entry at every host of the label it reaches; no entry a node judges must-not-hold (and may
 //!   delete) stays live there; a writer promotes the deposited entries it verified (§5).
 //! - spec/sync.md §4, §5: no live entry is tombstoned, and a blob seen tombstoned never comes
-//!   back while the server keeps its data.
-//! - spec/commits.md §5: a purged body is at no server and no honest node keeps its key or
+//!   back while the host keeps its data.
+//! - spec/commits.md §5: a purged body is at no host and no honest node keeps its key or
 //!   ciphertext.
 //! - spec/sync.md §6 (no ping-pong): once quiescent, further resync passes add and delete
-//!   nothing at any server.
+//!   nothing at any host.
 //! - spec/commits.md §4: nothing pends at quiescence (every reason resolved).
 //! - spec/requirements.md (Scale: state grows with the edits ever made; peer input never causes
 //!   unbounded storage): a node stores at most a fixed factor of what it must hold, plus a
@@ -40,7 +40,7 @@ pub fn quiescent(sim: &mut NetSim) -> Res<()> {
 
 /// Bound on a node's stored bytes: `STATE_FACTOR` times what it must hold, plus `STATE_PER_ENTRY`
 /// per entry it must hold, `STATE_PER_LABEL` per label and `STATE_BASE`. What it must hold is
-/// taken from honest servers only (the live entries of its labels, the fullest server per
+/// taken from honest hosts only (the live entries of its labels, the fullest host per
 /// label), never from its own holdings, so junk a peer made it keep (or pending commits) raises
 /// no bound. Calibrated on seeds 0..3 of every scenario: nodes used at most 0.47 of the
 /// bound (stored bytes at most 2.11x what they must hold; notes/testing.md, Simulator); junk
@@ -67,12 +67,12 @@ fn state_size(sim: &mut NetSim) -> Res<()> {
         let (mut must, mut entries) = (0u64, 0u64);
         for (_, gl) in &labels {
             let mut most = (0u64, 0u64);
-            for a in &gl.servers {
-                let Some(i) = sim.servers.iter().position(|x| x.key == a.key) else { continue };
+            for a in &gl.hosts {
+                let Some(i) = sim.hosts.iter().position(|x| x.key == a.key) else { continue };
                 if sim.dishonest.contains(&i) {
                     continue;
                 }
-                let Some(hub) = sim.servers.get(i).and_then(|x| x.hub.as_ref()) else { continue };
+                let Some(hub) = sim.hosts.get(i).and_then(|x| x.hub.as_ref()) else { continue };
                 let st = hub.store();
                 let ids = st.live_ids(&gl.id).unwrap_or_default();
                 let bytes: u64 = ids.iter().map(|b| st.blob(b).ok().flatten().map_or(0, |x| x.len() as u64)).sum();
@@ -111,7 +111,7 @@ fn aspect_view(e: &mut Engine) -> Result<AspectView, String> {
     let mut out = AspectView::new();
     for (t, a) in e.all_aspects().map_err(|x| x.to_string())? {
         // an aspect with ephemeral state (`/placed`): its durable side alone (ephemeral state
-        // converges only where server caps let it through, `ephemeral::check`)
+        // converges only where host caps let it through, `ephemeral::check`)
         let v = if e.has_ephemeral(&t, &a) { e.get_durable(&t, &a) } else { e.get(&t, &a) }.map_err(|x| x.to_string())?;
         let k = (t, a.as_str().to_string());
         out.insert(k.clone(), (deltas.remove(&k).unwrap_or_default(), format!("{v:?}")));
@@ -167,7 +167,7 @@ fn pending(sim: &mut NetSim) -> Res<()> {
                 format!("{h:?}; blobs {blobs:?}")
             });
             let c0 = p.first().map(|x| x.0);
-            let keys: Vec<[u8; 32]> = sim.servers.iter().map(|x| x.key).collect();
+            let keys: Vec<[u8; 32]> = sim.hosts.iter().map(|x| x.key).collect();
             let ks: Vec<(LabelId, BlobId)> = sim.known.iter().filter(|(_, (kc, _))| Some(*kc) == c0).map(|(k, _)| *k).collect();
             let mut bodies = Vec::new();
             for m in 0..sim.nodes.len() {
@@ -283,11 +283,11 @@ fn aspect_dump(sim: &mut NetSim, t: &Tid, ak: &osis_base::Ak) -> String {
     out
 }
 
-/// Each node's verdicts on the group's labels at each server (failure detail): writer, number of
+/// Each node's verdicts on the group's labels at each host (failure detail): writer, number of
 /// must-hold bodies, unsettled aspects.
 fn views(sim: &mut NetSim, g: &Tid) -> Vec<String> {
     let mut out = Vec::new();
-    let keys: Vec<[u8; 32]> = sim.servers.iter().map(|s| s.key).collect();
+    let keys: Vec<[u8; 32]> = sim.hosts.iter().map(|s| s.key).collect();
     for n in 0..sim.nodes.len() {
         let Some(s) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { continue };
         let ls: Vec<LabelId> = s.labels().into_iter().filter(|(x, _)| x == g).map(|(_, l)| l.id).collect();
@@ -295,7 +295,7 @@ fn views(sim: &mut NetSim, g: &Tid) -> Vec<String> {
             for (i, k) in keys.iter().enumerate() {
                 if let Ok(Some(v)) = s.verdicts(k, &l) {
                     out.push(format!("node {n} at s{i}: writer {} must-hold {} unsettled {:?}", v.writer, v.must_hold.len(), v.unsettled));
-                    if let Some(h) = sim.servers.get(i).and_then(|x| x.hub.as_ref()).and_then(|h| h.store().head(&l).ok().flatten()) {
+                    if let Some(h) = sim.hosts.get(i).and_then(|x| x.hub.as_ref()).and_then(|h| h.store().head(&l).ok().flatten()) {
                         out.push(format!("s{i} head {}", h.0[0]));
                         out.push(format!("{:?}", s.describe()));
                     }
@@ -319,7 +319,7 @@ fn gap(sim: &NetSim, m: usize, n: usize, items: &[Tid]) -> String {
             if kc != c {
                 continue;
             }
-            for s in 0..sim.servers.len() {
+            for s in 0..sim.hosts.len() {
                 if sim.hub(s).is_some_and(|h| h.store().live_ids(l).unwrap_or_default().contains(b)) {
                     v.push(format!("s{s} {kp:?}"));
                 }
@@ -334,9 +334,9 @@ fn gap(sim: &NetSim, m: usize, n: usize, items: &[Tid]) -> String {
     format!("only {m}: {:?}; only {n}: {:?}", only(&hm, &hn, n), only(&hn, &hm, m))
 }
 
-/// spec/sync.md §4-§6 at every up server and every label it holds.
+/// spec/sync.md §4-§6 at every up host and every label it holds.
 fn labels(sim: &mut NetSim) -> Res<()> {
-    for s in 0..sim.servers.len() {
+    for s in 0..sim.hosts.len() {
         if sim.dishonest.contains(&s) {
             continue;
         }
@@ -350,10 +350,10 @@ fn labels(sim: &mut NetSim) -> Res<()> {
             let live: BTreeSet<BlobId> = st.live_ids(l).map_err(|e| sim.fail(e.to_string()))?.into_iter().collect();
             for b in &live {
                 if st.tombstoned(l, b).unwrap_or(false) {
-                    return Err(sim.fail(format!("server {s}: live entry {b:?} under {l:?} is tombstoned")));
+                    return Err(sim.fail(format!("host {s}: live entry {b:?} under {l:?} is tombstoned")));
                 }
                 if sim.tombs.get(&s).is_some_and(|t| t.contains(&(*l, *b))) {
-                    return Err(sim.fail(format!("server {s}: blob {b:?} under {l:?} came back after its tombstone")));
+                    return Err(sim.fail(format!("host {s}: blob {b:?} under {l:?} came back after its tombstone")));
                 }
                 if st.entry(l, b).ok().flatten().is_some_and(|e| e.stamp.is_none()) {
                     deposited.push((*l, *b));
@@ -367,16 +367,16 @@ fn labels(sim: &mut NetSim) -> Res<()> {
             lives.insert(*l, live);
         }
         sim.tombs.entry(s).or_default().extend(newly_tombed);
-        let key = sim.servers.get(s).map(|x| x.key).unwrap_or([0; 32]);
+        let key = sim.hosts.get(s).map(|x| x.key).unwrap_or([0; 32]);
         for n in 0..sim.nodes.len() {
             if sim.excused.contains(&n) || sim.is_blocked(Party::N(n), Party::S(s)) {
                 continue;
             }
             let Some(sync) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { continue };
-            let mine: Vec<(Tid, LabelId)> = sync.labels().into_iter().filter(|(_, gl)| gl.servers.iter().any(|a| a.key == key)).map(|(g, gl)| (g, gl.id)).collect();
+            let mine: Vec<(Tid, LabelId)> = sync.labels().into_iter().filter(|(_, gl)| gl.hosts.iter().any(|a| a.key == key)).map(|(g, gl)| (g, gl.id)).collect();
             for (g, l) in mine {
                 let Some(live) = lives.get(&l) else {
-                    return Err(sim.fail(format!("node {n}: its label {l:?} of group {g} is not at server {s}")));
+                    return Err(sim.fail(format!("node {n}: its label {l:?} of group {g} is not at host {s}")));
                 };
                 let v = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()).map(|x| x.verdicts(&key, &l));
                 let v = match v {
@@ -386,24 +386,24 @@ fn labels(sim: &mut NetSim) -> Res<()> {
                 };
                 let Some(v) = v else {
                     let d = sim.nodes.get(n).and_then(|x| x.sync.as_ref()).map(|x| x.describe()).unwrap_or_default();
-                    return Err(sim.fail(format!("node {n}: label {l:?} of group {g} not open at server {s} at quiescence: {d:?}")));
+                    return Err(sim.fail(format!("node {n}: label {l:?} of group {g} not open at host {s} at quiescence: {d:?}")));
                 };
                 if v.writer {
                     for (c, parts) in &v.must_hold {
                         let held = live.iter().any(|b| sim.known.get(&(l, *b)).is_some_and(|(kc, kp)| kc == c && parts.iter().all(|p| kp.contains(p))));
                         sim.report.held_checked = sim.report.held_checked.saturating_add(1);
                         if !held {
-                            // the node's entries of that commit, and what the server says of them
+                            // the node's entries of that commit, and what the host says of them
                             let ents: Vec<(BlobId, osis_node::sync::EntryKind)> = sim.nodes.get(n).and_then(|x| x.sync.as_ref()).map(|x| x.entries(&l)).unwrap_or_default().into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commit == c)).collect();
                             let st = sim.hub(s).map(|h| h.store());
                             let at: Vec<String> = ents.iter().map(|(b, k)| format!("{b:?} {k:?} live {} tombstoned {}", live.contains(b), st.and_then(|x| x.tombstoned(&l, b).ok()).unwrap_or(false))).collect();
-                            return Err(sim.fail(format!("server {s}: label {l:?} lacks body {c:?} {parts:?} that writer node {n} judges must-hold; its entries {at:?}")));
+                            return Err(sim.fail(format!("host {s}: label {l:?} lacks body {c:?} {parts:?} that writer node {n} judges must-hold; its entries {at:?}")));
                         }
                     }
                 }
                 for (b, why) in &v.must_not {
                     if live.contains(b) {
-                        return Err(sim.fail(format!("server {s}: label {l:?} still holds {b:?}, must-not-hold ({why}) for node {n}")));
+                        return Err(sim.fail(format!("host {s}: label {l:?} still holds {b:?}, must-not-hold ({why}) for node {n}")));
                     }
                 }
                 // spec/sync.md §5: a writer re-uploads stamped the deposited commits it verified
@@ -420,7 +420,7 @@ fn labels(sim: &mut NetSim) -> Res<()> {
                         }
                         let ek = sync.entries(&l).into_iter().find(|(x, _)| x == db).map(|x| x.1);
                         let what = format!("author {} actor {} kind {:?} aspects {:?} pending {:?}, its entry {ek:?}", h.author, h.actor, h.kind, h.aspects.iter().map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>(), sync.engine().pending().iter().find(|p| p.0 == c));
-                        return Err(sim.fail(format!("server {s}: deposited {db:?} (commit {c:?}: {what}) under {l:?} not promoted by writer node {n}")));
+                        return Err(sim.fail(format!("host {s}: deposited {db:?} (commit {c:?}: {what}) under {l:?} not promoted by writer node {n}")));
                     }
                 }
             }
@@ -429,7 +429,7 @@ fn labels(sim: &mut NetSim) -> Res<()> {
     Ok(())
 }
 
-/// spec/commits.md §5: purged bodies are gone from servers and honest nodes.
+/// spec/commits.md §5: purged bodies are gone from hosts and honest nodes.
 fn purged(sim: &mut NetSim) -> Res<()> {
     let purged = sim.purged.clone();
     for (c, t, ak) in purged {
@@ -442,14 +442,14 @@ fn purged(sim: &mut NetSim) -> Res<()> {
         }
         let Some(ai) = ai else { continue };
         let blobs: Vec<(LabelId, BlobId)> = sim.known.iter().filter(|(_, (kc, kp))| *kc == c && kp.iter().any(|p| p.0 == ai)).map(|(k, _)| *k).collect();
-        for s in 0..sim.servers.len() {
+        for s in 0..sim.hosts.len() {
             if sim.dishonest.contains(&s) {
                 continue;
             }
             let Some(hub) = sim.hub(s) else { continue };
             for (l, b) in &blobs {
                 if hub.store().live_ids(l).unwrap_or_default().contains(b) {
-                    return Err(sim.fail(format!("server {s}: purged body {b:?} of {c:?} still live under {l:?}")));
+                    return Err(sim.fail(format!("host {s}: purged body {b:?} of {c:?} still live under {l:?}")));
                 }
             }
         }
@@ -468,7 +468,7 @@ fn purged(sim: &mut NetSim) -> Res<()> {
     Ok(())
 }
 
-/// spec/sync.md §6: after quiescence, resync passes add and delete nothing at any server.
+/// spec/sync.md §6: after quiescence, resync passes add and delete nothing at any host.
 fn no_ping_pong(sim: &mut NetSim) -> Res<()> {
     let heads = log_heads(sim);
     for _ in 0..IDLE_ROUNDS {
@@ -485,10 +485,10 @@ fn no_ping_pong(sim: &mut NetSim) -> Res<()> {
 
 pub type Heads = BTreeMap<(usize, LabelId), ([u8; 16], u64)>;
 
-/// Every label's log head at every up server.
+/// Every label's log head at every up host.
 pub fn log_heads(sim: &NetSim) -> Heads {
     let mut m = BTreeMap::new();
-    for s in 0..sim.servers.len() {
+    for s in 0..sim.hosts.len() {
         if sim.dishonest.contains(&s) {
             continue;
         }

@@ -1,5 +1,5 @@
 //! Labels as membership writes (spec/sync.md §2, §5): a group's genesis step and `/label`
-//! record, registration steps an admin issues after rotations (at each server when it next
+//! record, registration steps an admin issues after rotations (at each host when it next
 //! syncs there, after uploading the membership commits it registers: node-sync orders that),
 //! the claim set's readers.
 
@@ -109,10 +109,10 @@ pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, index: u
 }
 
 /// `/label` write: a new label of `group` with its genesis step, or a step added.
-pub(crate) fn put_label(m: &mut Mutation, group: Tid, label: LabelId, index: u64, step: &Step, set: &ClaimSet, servers: Option<&[Address]>) -> Result<()> {
-    match servers {
-        Some(servers) => {
-            let l = ct::Label { index, steps: [(step.id().0, step_record(step, Some(set)))].into_iter().collect(), servers: servers.to_vec(), replaced: false };
+pub(crate) fn put_label(m: &mut Mutation, group: Tid, label: LabelId, index: u64, step: &Step, set: &ClaimSet, hosts: Option<&[Address]>) -> Result<()> {
+    match hosts {
+        Some(hosts) => {
+            let l = ct::Label { index, steps: [(step.id().0, step_record(step, Some(set)))].into_iter().collect(), hosts: hosts.to_vec(), replaced: false };
             m.op(group, &ct::LABEL, PathOp { path: vec![PathSeg::Key(label.to_value())], op: Op::Set(l.to_value()) })?;
         }
         None => {
@@ -125,10 +125,10 @@ pub(crate) fn put_label(m: &mut Mutation, group: Tid, label: LabelId, index: u64
 
 /// A new label of `group` (its home label when `group` is an actor): genesis step at its
 /// newest epochs, written to `/label` in `m`. Returns the label ID.
-pub(crate) fn new_label(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs: &ActorEpochs, readers: &[ReaderKey], deposit: &Secret32, servers: &[Address]) -> Result<LabelId> {
+pub(crate) fn new_label(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs: &ActorEpochs, readers: &[ReaderKey], deposit: &Secret32, hosts: &[Address]) -> Result<LabelId> {
     let index = labels_of(tx, &group)?.values().map(|l| l.index.saturating_add(1)).max().unwrap_or(0);
     let (step, set) = issue(tx, &group, epochs, index, None, readers, deposit)?;
-    put_label(m, group, step.label, index, &step, &set, Some(servers))?;
+    put_label(m, group, step.label, index, &step, &set, Some(hosts))?;
     Ok(step.label)
 }
 
@@ -150,9 +150,9 @@ pub(crate) fn labels_of(tx: &mut Tx<'_>, group: &Tid) -> Result<ct::Labels> {
 }
 
 impl Engine {
-    /// Gives `group` a label (its home label, for an actor) on `servers`: genesis step at its
+    /// Gives `group` a label (its home label, for an actor) on `hosts`: genesis step at its
     /// newest epochs, recorded in `/label` (spec/sync.md §2). node-sync registers it.
-    pub fn create_label(&mut self, group: &Tid, servers: &[Address]) -> Result<(LabelId, Done)> {
+    pub fn create_label(&mut self, group: &Tid, hosts: &[Address]) -> Result<(LabelId, Done)> {
         let g = *group;
         self.run(|tx| {
             // signing the step and sealing entry boxes encrypt under the group's epochs
@@ -164,13 +164,13 @@ impl Engine {
             let (re, _) = epochs.role(Role::Read).newest_held().ok_or(Error::Misuse("no read secret"))?;
             let rs = readers(tx, &g, &re)?;
             let mut m = Mutation::new();
-            let id = new_label(tx, &mut m, g, &epochs, &rs, &deposit, servers)?;
+            let id = new_label(tx, &mut m, g, &epochs, &rs, &deposit, hosts)?;
             done.add(Engine::commit_tx(tx, m)?);
             Ok((id, done))
         })
     }
 
-    /// The step an admin issues at a server whose head is `head` of `group`'s label `label`
+    /// The step an admin issues at a host whose head is `head` of `group`'s label `label`
     /// (spec/sync.md §5): when it holds the head's epochs and an established epoch newer than
     /// the head's, or the head's deposit key is not the one the actor's deposit seed derives
     /// (refreshed), a child at its newest epochs with the current readers, recorded in `/label`
@@ -212,7 +212,7 @@ impl Engine {
             let admin_secret = epochs.role(Role::Admin).secret(&head_admin).cloned().ok_or(Error::Misuse("head admin secret"))?;
             let [(re, _), (we, _), (ae, _)] = registration_epochs(&epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
             // a child of the head already recorded at these epochs (another admin's, or this
-            // node's own for another server): reused, so one rotation gives one step
+            // node's own for another host): reused, so one rotation gives one step
             if !fresh {
                 let current = |c: &Step| c.keys.deposit == deposit_key && [(Role::Read, re), (Role::Write, we), (Role::Admin, ae)].into_iter().all(|(r, e)| osis_keys::registered_epoch(epochs.role(r), r, rec.index, c.keys.get(osis_keys::label_role(r))) == Some(e));
                 if let Some((c, Some(set))) = steps.values().filter(|(c, _)| c.prev == Some(h) && current(c)).min_by_key(|(c, _)| c.id()) {
@@ -232,7 +232,7 @@ impl Engine {
     /// Replaces label `old` of `group` (spec/sync.md §2; an admin), in one transaction: rotates
     /// the admin secret first when the newest admin epoch is one a step of the old label
     /// registers (whoever took the label may hold it; a plain group gets secrets of its own),
-    /// then writes a new label one index above the highest at the old label's servers and marks
+    /// then writes a new label one index above the highest at the old label's hosts and marks
     /// the old one replaced, in one commit. node-sync uploads the live blobs under the new label
     /// and deletes the old label's content entries.
     pub fn replace_label(&mut self, group: &Tid, old: &LabelId) -> Result<(LabelId, Done)> {
@@ -257,7 +257,7 @@ impl Engine {
             let (re, _) = epochs.role(Role::Read).newest_held().ok_or(Error::Misuse("no read secret"))?;
             let rs = readers(tx, &g, &re)?;
             let mut m = Mutation::new();
-            let id = new_label(tx, &mut m, g, &epochs, &rs, &deposit, &rec.servers)?;
+            let id = new_label(tx, &mut m, g, &epochs, &rs, &deposit, &rec.hosts)?;
             let path = vec![PathSeg::Key(o.to_value()), PathSeg::Field(3)];
             m.op(g, &ct::LABEL, PathOp { path, op: Op::Set(Value::Bool(true)) })?;
             done.add(Engine::commit_tx(tx, m)?);
@@ -265,10 +265,10 @@ impl Engine {
         })
     }
 
-    /// The newest label of `group` with its servers.
+    /// The newest label of `group` with its hosts.
     pub fn label_of(&mut self, group: &Tid) -> Result<Option<(LabelId, Vec<Address>)>> {
         let g = *group;
-        Ok(self.run(|tx| own_label(tx, &g))?.map(|(id, _, servers)| (id, servers)))
+        Ok(self.run(|tx| own_label(tx, &g))?.map(|(id, _, hosts)| (id, hosts)))
     }
 }
 

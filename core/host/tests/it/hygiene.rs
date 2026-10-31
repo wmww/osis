@@ -1,4 +1,4 @@
-//! What a blind node learns (spec/requirements.md, Untrusted nodes; notes/sync.md "What a blind
+//! What a host learns (spec/requirements.md, Untrusted nodes; notes/sync.md "What a blind
 //! node learns"): a scripted run whose blobs carry tids, AKs and author keys in their plaintext,
 //! then every byte the node ever wrote is searched for them.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]

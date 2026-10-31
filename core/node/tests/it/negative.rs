@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Retention bounds a compactor must not cross (spec/commits.md §5), through a blind node.
+//! Retention bounds a compactor must not cross (spec/commits.md §5), through a host.
 
 use crate::net;
 use net::*;
@@ -20,11 +20,11 @@ const KEPT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/k/kept", &KE
 const SHORT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/k/short", &KEEP);
 
 // spec/commits.md §5 (keep at least): a compaction before the bound neither drops the covered
-// bodies nor deletes them at the blind node; once the bound has passed (by MAX_DRIFT) it does both.
+// bodies nor deletes them at the host; once the bound has passed (by MAX_DRIFT) it does both.
 #[test]
 fn compaction_keeps_bodies_until_keep_at_least_spec_commits_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let g = net.group(a, &[], &[sv]);
     let t = net.item(a, g, g, "x");
@@ -50,8 +50,8 @@ fn compaction_keeps_bodies_until_keep_at_least_spec_commits_5() {
     for c in &bodies[..2] {
         assert!(net.engine(a).body_not_dropped(c, &t, &ak), "dead body dropped before its keep-at-least bound");
     }
-    let at = net.server_ids(sv, &l);
-    assert!(dead.iter().all(|id| at.contains(id)), "deleted at the blind node before the bound");
+    let at = net.host_ids(sv, &l);
+    assert!(dead.iter().all(|id| at.contains(id)), "deleted at the host before the bound");
     // compaction waits MAX_DRIFT past the bound (spec/sync.md §7)
     net.advance(86_400_000 + osis_base::format::MAX_DRIFT_MS);
     let acts = net.sync(a).compact(&t, &ak).unwrap();
@@ -60,27 +60,27 @@ fn compaction_keeps_bodies_until_keep_at_least_spec_commits_5() {
     for c in &bodies[..2] {
         assert!(!net.engine(a).body_not_dropped(c, &t, &ak), "covered body past its bound kept");
     }
-    let at = net.server_ids(sv, &l);
-    assert!(dead.iter().all(|id| !at.contains(id)), "covered bodies past the bound left at the blind node");
+    let at = net.host_ids(sv, &l);
+    assert!(dead.iter().all(|id| !at.contains(id)), "covered bodies past the bound left at the host");
     assert_eq!(net.engine(a).get(&t, &ak).unwrap(), Some(s("v3")));
 }
 
-/// Deletions in server `sv`'s log of label `l`.
+/// Deletions in host `sv`'s log of label `l`.
 fn deletions(net: &Net, sv: usize, l: &osis_base::LabelId) -> usize {
     use osis_proto::{LabelStore, LogRecord};
-    let recs = net.servers[sv].hub.store().log_after(l, 0, 1 << 20).unwrap().unwrap_or_default();
+    let recs = net.hosts[sv].hub.store().log_after(l, 0, 1 << 20).unwrap().unwrap_or_default();
     recs.iter().filter(|(_, r)| matches!(r, LogRecord::Deleted(_))).count()
 }
 
 /// Two writers, one with its corrected clock `MAX_DRIFT` ahead (its median offset counts a
-/// second server that far ahead), compact two dead bodies and pass their keep-at-least bound.
-/// Returns the server's log deletions over the crossing and how many blobs of those bodies
+/// second host that far ahead), compact two dead bodies and pass their keep-at-least bound.
+/// Returns the host's log deletions over the crossing and how many blobs of those bodies
 /// either node knew.
 fn compact_across_skew(a_ahead: bool) -> (usize, usize) {
     let mut net = Net::new();
-    let sv = net.add_server();
-    let sk = net.add_server();
-    net.servers[sk].skew = osis_base::format::MAX_DRIFT_MS as i64;
+    let sv = net.add_host();
+    let sk = net.add_host();
+    net.hosts[sk].skew = osis_base::format::MAX_DRIFT_MS as i64;
     let (fast, slow): (&[usize], &[usize]) = (&[sv, sk], &[sv]);
     let a = net.node(1, if a_ahead { fast } else { slow });
     let b = net.node(2, if a_ahead { slow } else { fast });
@@ -124,7 +124,7 @@ fn compact_across_skew(a_ahead: bool) -> (usize, usize) {
 
 // spec/sync.md §7 (compaction waits MAX_DRIFT past keep-at-least): two right holders whose
 // corrected clocks differ by MAX_DRIFT, either way, cross a keep-at-least bound: the two dead
-// bodies are deleted at the server once each and nobody places them again (the node past the
+// bodies are deleted at the host once each and nobody places them again (the node past the
 // bound used to delete what the other, still before it, placed again as must-hold).
 #[test]
 fn compaction_across_skew_no_churn_spec_sync_7() {
@@ -135,7 +135,7 @@ fn compaction_across_skew_no_churn_spec_sync_7() {
 
 // spec/commits.md §5 (deaths dated per node), spec/sync.md §6: X < Y < Z on a kept register
 // and on a keep-at-most-10m one; right holder A held Y before Z (X dies at Y), B held Z before Y
-// (X dies at Z, two hours later). Once A's bound has passed it deletes X at the blind node
+// (X dies at Z, two hours later). Once A's bound has passed it deletes X at the host
 // (kept: covered by its compaction; at most: a timed delete); B, still before its own bound,
 // does not place it again (it has no live write): one deletion, no fresh encryption, and B
 // drops it by its own bound.
@@ -146,11 +146,11 @@ fn deletion_across_local_dating_no_churn_spec_sync_6() {
     }
 }
 
-/// The scenario of `deletion_across_local_dating_no_churn_*`: the server's deletions of X's
+/// The scenario of `deletion_across_local_dating_no_churn_*`: the host's deletions of X's
 /// blobs and how many blobs of X either node knew.
 fn local_dating_churn(at_most: bool) -> (usize, usize) {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -212,7 +212,7 @@ fn local_dating_churn(at_most: bool) -> (usize, usize) {
     assert!(!net.engine(a).body_not_dropped(&x, &t, &ak), "A past its bound");
     assert!(!net.engine(b).body_not_dropped(&x, &t, &ak), "B past its bound");
     use osis_proto::{LabelStore, LogRecord};
-    let recs = net.servers[sv].hub.store().log_after(&l, 0, 1 << 20).unwrap().unwrap_or_default();
+    let recs = net.hosts[sv].hub.store().log_after(&l, 0, 1 << 20).unwrap().unwrap_or_default();
     let of_x = recs.iter().filter(|(_, r)| matches!(r, LogRecord::Deleted(id) if seen.contains(id))).count();
     (of_x, seen.len())
 }

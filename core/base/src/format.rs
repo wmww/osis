@@ -106,7 +106,7 @@ pub const CORE_SCHEMA_ID: SchemaId = SchemaId([0; 16]);
 /// Core schema revision (spec/wire.md §2, spec/data-model.md §9).
 pub const CORE_SCHEMA_REVISION: u64 = 1;
 
-/// Blind-node policy default, not a format constant (spec/wire.md §2).
+/// Host policy default, not a format constant (spec/wire.md §2).
 pub const TOMBSTONE_LIFETIME_MS: u64 = 30 * DAY_MS;
 
 // Decoder limits (spec/wire.md §13, spec/data-model.md §5). Depth counts the arrays, maps and

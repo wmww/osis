@@ -620,11 +620,11 @@ mod tests {
     // (the engine fails the operation where the whole state teaches more).
     #[test]
     fn per_entry_secrets_ingestion_equals_whole_state_spec_crypto_4() {
-        let servers = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
+        let hosts = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
         let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None };
         for seed in 0..4u64 {
             let mut lp = LocalPeer::new(4, 530 + seed, WallMs(1_700_000_000_000)).unwrap();
-            let ps: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.create_person(&servers).unwrap().0.person).collect();
+            let ps: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.create_person(&hosts).unwrap().0.person).collect();
             spread(&mut lp);
             for p in &mut lp.peers {
                 p.engine.core.check_ingest = true;
@@ -753,7 +753,7 @@ mod tests {
             fn dedup(&self, _: &Tid) -> Option<Secret32> {
                 Some(osis_crypto::dedup_secret(self.0.nonce()))
             }
-            // made-up delete keys (servers' business)
+            // made-up delete keys (hosts' business)
             fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
                 Some(osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([3; 32])).verifying_key())
             }

@@ -16,20 +16,20 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 pub type Scenario = fn(u64) -> Res<Report>;
 
 /// Every scenario by name: phase A (commits engine to engine), then phase B (sync engines and
-/// blind servers, `crate::net`).
+/// hosts, `crate::net`).
 pub const SCENARIOS: &[(&str, Scenario)] = &[
     ("two_devices", two_devices),
     ("three_random", three_random),
     ("crash_restart", crash_restart),
     ("drift_parks", drift_parks),
     ("revoke_while_writing", revoke_while_writing),
-    ("two_devices_server", net::two_devices_server),
-    ("three_persons_two_servers", net::three_persons_two_servers),
+    ("two_devices_host", net::two_devices_host),
+    ("three_persons_two_hosts", net::three_persons_two_hosts),
     ("removed_writer", net::removed_writer),
     ("compaction", net::compaction),
     ("reader_relays", net::reader_relays),
     ("stranded_reseal", net::stranded_reseal),
-    ("server_loses_data", net::server_loses_data),
+    ("host_loses_data", net::host_loses_data),
     ("offline_rotation", net::offline_rotation),
     ("disk_loss", net::disk_loss),
     ("grant_lost_on_crash", net::grant_lost_on_crash),
@@ -53,8 +53,8 @@ pub const SCENARIOS: &[(&str, Scenario)] = &[
     ("disappearing", library::disappearing),
     ("keep_at_most", library::keep_at_most),
     ("concurrent_writers", library::concurrent_writers),
-    ("evil_server", adversary::evil_server),
-    ("evil_server_drops", adversary::evil_server_drops),
+    ("evil_host", adversary::evil_host),
+    ("evil_host_drops", adversary::evil_host_drops),
     ("removed_replayer", adversary::removed_replayer),
     ("malformed_blobs", adversary::malformed_blobs),
     ("deposit_flood", adversary::deposit_flood),

@@ -1,11 +1,11 @@
-//! Phase B harness: real node sync engines (`SyncEngine`) and blind servers (osis-host `Hub`
+//! Phase B harness: real node sync engines (`SyncEngine`) and hosts (osis-host `Hub`
 //! over `HostStore<MemoryBackend>`) exchanging proto bytes engine to engine, no tokio
 //! (notes/architecture.md §2). Connections are ordered byte streams: a fault cuts one (a lost
 //! message on a stream is a broken stream), delays a message (per-stream order kept), duplicates
-//! one, or reorders deliveries across streams. Partitions block (node, server) and (server,
-//! server) pairs; nodes and servers crash (now, or at a durable write) and restart over their
-//! durable state; a server may lose its data; a node may lose its disk (recovery from the card).
-//! Servers replicate to their peers (push). Everything is driven from one `Dice`.
+//! one, or reorders deliveries across streams. Partitions block (node, host) and (host,
+//! host) pairs; nodes and hosts crash (now, or at a durable write) and restart over their
+//! durable state; a host may lose its data; a node may lose its disk (recovery from the card).
+//! Hosts replicate to their peers (push). Everything is driven from one `Dice`.
 
 pub mod adversary;
 pub mod check;
@@ -35,7 +35,7 @@ use std::sync::mpsc::Receiver;
 const TRACE: usize = 60;
 /// Messages one settle may deliver before it calls the run a storm.
 const STORM: u64 = 5_000;
-/// Extra delay of a slow server's messages, at most (off while calm).
+/// Extra delay of a slow host's messages, at most (off while calm).
 const SLOW_MS: u64 = 30_000;
 
 /// Faults on connections, per message sent (off during quiescence).
@@ -58,19 +58,19 @@ pub struct NetWeights {
     pub tick: u32,
     pub crash: u32,
     pub restart: u32,
-    pub server_crash: u32,
-    pub server_restart: u32,
+    pub host_crash: u32,
+    pub host_restart: u32,
     pub partition: u32,
     pub heal: u32,
     /// A random ephemeral or signal write (`ephemeral::random_write`).
     pub ephemeral: u32,
-    /// A random server turns slow (its messages delayed by up to `SLOW_MS`) or fast again.
+    /// A random host turns slow (its messages delayed by up to `SLOW_MS`) or fast again.
     pub slow: u32,
 }
 
 impl Default for NetWeights {
     fn default() -> NetWeights {
-        NetWeights { write: 3, deliver: 12, tick: 2, crash: 0, restart: 0, server_crash: 0, server_restart: 0, partition: 0, heal: 0, ephemeral: 0, slow: 0 }
+        NetWeights { write: 3, deliver: 12, tick: 2, crash: 0, restart: 0, host_crash: 0, host_restart: 0, partition: 0, heal: 0, ephemeral: 0, slow: 0 }
     }
 }
 
@@ -117,7 +117,7 @@ pub struct NetNode {
     /// Its disk is gone for good.
     pub lost: bool,
     pub tid: Tid,
-    /// Bytes the node sent (to servers and peers) so far.
+    /// Bytes the node sent (to hosts and peers) so far.
     pub sent_bytes: u64,
 }
 
@@ -128,26 +128,26 @@ impl NetNode {
     }
 }
 
-/// One blind server.
-pub struct NetServer {
+/// One host.
+pub struct NetHost {
     hub: Option<Hub<MemoryBackend>>,
     backend: MemoryBackend,
     pub faults: Faults,
     pub key: [u8; 32],
     pub address: Address,
-    /// Servers it replicates to.
+    /// Hosts it replicates to.
     pub peers: Vec<usize>,
     pub up: bool,
-    /// A dishonest server: what it does to its outgoing messages.
+    /// A dishonest host: what it does to its outgoing messages.
     pub evil: Option<Evil>,
-    /// Messages it sent per connection (an evil server replays them).
+    /// Messages it sent per connection (an evil host replays them).
     sent: BTreeMap<u64, Vec<Vec<u8>>>,
     pub policy: HostPolicy,
     /// Its messages are delayed by up to `SLOW_MS` (while not calm).
     pub slow: bool,
 }
 
-/// A dishonest server's behavior on what it sends (adversary scenarios): per message, silently
+/// A dishonest host's behavior on what it sends (adversary scenarios): per message, silently
 /// drop it (the stream stays up), hold it back and send it after the next one or when `quiet`
 /// starts (reorder within the stream; never while calm), or also replay an older message of the
 /// same connection.
@@ -216,11 +216,11 @@ pub struct NetSim {
     pub scenario: String,
     pub seed: u64,
     pub dice: Dice,
-    /// Virtual time since T0 (ms); servers run on true time.
+    /// Virtual time since T0 (ms); hosts run on true time.
     pub elapsed: u64,
-    server_clock: Arc<ManualClock>,
+    host_clock: Arc<ManualClock>,
     pub nodes: Vec<NetNode>,
-    pub servers: Vec<NetServer>,
+    pub hosts: Vec<NetHost>,
     pub groups: Vec<Group>,
     pub cfg: NetConfig,
     pub report: Report,
@@ -241,7 +241,7 @@ pub struct NetSim {
     pub known: Known,
     /// Purges issued: (commit, thing, aspect).
     pub purged: Vec<(CommitId, Tid, osis_base::Ak)>,
-    /// Tombstones seen per server (cleared when the server loses its data).
+    /// Tombstones seen per host (cleared when the host loses its data).
     pub tombs: BTreeMap<usize, BTreeSet<(LabelId, osis_base::BlobId)>>,
     /// Nodes no check expects to read (removed, stranded on purpose).
     pub excused: BTreeSet<usize>,
@@ -253,14 +253,14 @@ pub struct NetSim {
     pub waivers: BTreeSet<&'static str>,
     /// Record entry kinds after every node call (failure detail).
     watch: bool,
-    /// Servers whose stores the label invariants do not judge (adversaries).
+    /// Hosts whose stores the label invariants do not judge (adversaries).
     pub dishonest: BTreeSet<usize>,
     /// Commits expected to stay parked at quiescence (version skew: a newer format).
     pub parked_ok: BTreeSet<CommitId>,
     /// Entries each node sent by Upload while `count_uploads` is on: (node, label, blob).
     pub uploads: Vec<(usize, LabelId, osis_base::BlobId)>,
     pub count_uploads: bool,
-    /// Held-back messages of evil servers per connection.
+    /// Held-back messages of evil hosts per connection.
     held: BTreeMap<(usize, u64), Vec<u8>>,
     /// Blobs whose uploads and deposits by nodes are counted in `sent_watched` (adversaries).
     pub watched: BTreeSet<osis_base::BlobId>,
@@ -305,7 +305,7 @@ fn watched_in(watched: &BTreeSet<osis_base::BlobId>, b: &[u8]) -> u64 {
     n
 }
 
-pub fn server_key(i: usize) -> [u8; 32] {
+pub fn host_key(i: usize) -> [u8; 32] {
     let mut k = [0x50u8; 32];
     k[0] = 0x50u8.wrapping_add(i as u8);
     k
@@ -328,9 +328,9 @@ impl NetSim {
             seed,
             dice: Dice::new(seed),
             elapsed: 0,
-            server_clock: Arc::new(ManualClock::new(WallMs(T0))),
+            host_clock: Arc::new(ManualClock::new(WallMs(T0))),
             nodes: Vec::new(),
-            servers: Vec::new(),
+            hosts: Vec::new(),
             groups: Vec::new(),
             cfg,
             report: Report::default(),
@@ -386,52 +386,52 @@ impl NetSim {
         self.waivers.contains(issue)
     }
 
-    // ---- servers
+    // ---- hosts
 
-    pub fn add_server(&mut self) -> Res<usize> {
+    pub fn add_host(&mut self) -> Res<usize> {
         let policy = self.cfg.policy.clone();
-        self.add_server_with(policy)
+        self.add_host_with(policy)
     }
 
-    /// A server with its own policy (caps).
-    pub fn add_server_with(&mut self, policy: HostPolicy) -> Res<usize> {
-        let i = self.servers.len();
-        let key = server_key(i);
+    /// A host with its own policy (caps).
+    pub fn add_host_with(&mut self, policy: HostPolicy) -> Res<usize> {
+        let i = self.hosts.len();
+        let key = host_key(i);
         let faults = Faults::new();
         let backend = MemoryBackend::with_faults(faults.clone());
-        self.servers.push(NetServer { hub: None, backend, faults, key, address: Address { url: format!("quic://server{i}:1"), key }, peers: Vec::new(), up: false, evil: None, sent: BTreeMap::new(), policy, slow: false });
-        self.start_server(i)?;
+        self.hosts.push(NetHost { hub: None, backend, faults, key, address: Address { url: format!("quic://host{i}:1"), key }, peers: Vec::new(), up: false, evil: None, sent: BTreeMap::new(), policy, slow: false });
+        self.start_host(i)?;
         Ok(i)
     }
 
-    fn start_server(&mut self, s: usize) -> Res<()> {
+    fn start_host(&mut self, s: usize) -> Res<()> {
         let seed = self.dice.u64();
-        let clock: Arc<dyn Clock> = self.server_clock.clone();
-        let sv = self.server(s)?;
+        let clock: Arc<dyn Clock> = self.host_clock.clone();
+        let sv = self.host(s)?;
         let policy = sv.policy.clone();
         sv.faults.revive();
         let store = HostStore::open(sv.backend.clone(), clock, policy, &mut SeededRng::from_u64(seed));
-        let store = store.map_err(|e| self.fail(format!("server {s} open: {e}")))?;
-        let sv = self.server(s)?;
+        let store = store.map_err(|e| self.fail(format!("host {s} open: {e}")))?;
+        let sv = self.host(s)?;
         sv.hub = Some(Hub::new(store, sv.key, Box::new(SeededRng::from_u64(seed ^ 0x5eed))));
         sv.up = true;
         Ok(())
     }
 
-    /// Server `a` replicates to `b` and back.
+    /// Host `a` replicates to `b` and back.
     pub fn replicate(&mut self, a: usize, b: usize) -> Res<()> {
-        self.server(a)?.peers.push(b);
-        self.server(b)?.peers.push(a);
+        self.host(a)?.peers.push(b);
+        self.host(b)?.peers.push(a);
         Ok(())
     }
 
-    fn server(&mut self, s: usize) -> Res<&mut NetServer> {
-        let f = self.fail(format!("no server {s}"));
-        self.servers.get_mut(s).ok_or(f)
+    fn host(&mut self, s: usize) -> Res<&mut NetHost> {
+        let f = self.fail(format!("no host {s}"));
+        self.hosts.get_mut(s).ok_or(f)
     }
 
     pub fn address(&self, s: usize) -> Address {
-        self.servers.get(s).map(|x| x.address.clone()).unwrap_or(Address { url: String::new(), key: [0; 32] })
+        self.hosts.get(s).map(|x| x.address.clone()).unwrap_or(Address { url: String::new(), key: [0; 32] })
     }
 
     pub fn addresses(&self, ss: &[usize]) -> Vec<Address> {
@@ -439,14 +439,14 @@ impl NetSim {
     }
 
     pub fn hub(&self, s: usize) -> Option<&Hub<MemoryBackend>> {
-        self.servers.get(s).and_then(|x| x.hub.as_ref())
+        self.hosts.get(s).and_then(|x| x.hub.as_ref())
     }
 
     // ---- nodes
 
-    /// A node knowing servers `servers` (its `SyncConfig.servers`).
-    pub fn add_node(&mut self, servers: &[usize], spec: ClockSpec) -> Res<usize> {
-        let cfg = SyncConfig { servers: self.addresses(servers), ..SyncConfig::default() };
+    /// A node knowing hosts `hosts` (its `SyncConfig.hosts`).
+    pub fn add_node(&mut self, hosts: &[usize], spec: ClockSpec) -> Res<usize> {
+        let cfg = SyncConfig { hosts: self.addresses(hosts), ..SyncConfig::default() };
         self.add_node_with(cfg, spec)
     }
 
@@ -603,8 +603,8 @@ impl NetSim {
     }
 
     fn dial(&mut self, n: usize, conn: ConnId, address: &Address) -> Res<()> {
-        let s = self.servers.iter().position(|x| x.key == address.key);
-        let ok = s.filter(|s| self.servers.get(*s).is_some_and(|x| x.up) && !self.is_blocked(Party::N(n), Party::S(*s)));
+        let s = self.hosts.iter().position(|x| x.key == address.key);
+        let ok = s.filter(|s| self.hosts.get(*s).is_some_and(|x| x.up) && !self.is_blocked(Party::N(n), Party::S(*s)));
         let Some(s) = ok else {
             self.push(0, End::Node(n, conn), 0, Payload::Down);
             return Ok(());
@@ -618,7 +618,7 @@ impl NetSim {
         let mut peer = [0u8; 32];
         peer[..8].copy_from_slice(&self.dice.u64().to_le_bytes());
         let now = self.now();
-        let out = match self.servers.get_mut(s).and_then(|x| x.hub.as_mut()) {
+        let out = match self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()) {
             Some(h) => h.accept(now, hc, peer),
             None => Vec::new(),
         };
@@ -686,11 +686,11 @@ impl NetSim {
         self.push(id, to, at, what);
     }
 
-    /// Whether the end sending on link `id` towards `to` is a slow server.
+    /// Whether the end sending on link `id` towards `to` is a slow host.
     fn slow_sender(&self, id: u64, to: End) -> bool {
         let Some(l) = self.links.get(&id) else { return false };
         let from = if l.acceptor == to { l.dialer } else { l.acceptor };
-        matches!(from, End::Hub(s, _) if self.servers.get(s).is_some_and(|x| x.slow))
+        matches!(from, End::Hub(s, _) if self.hosts.get(s).is_some_and(|x| x.slow))
     }
 
     /// Cuts a link: both ends learn it is gone.
@@ -709,7 +709,7 @@ impl NetSim {
                 self.push(0, e, at, Payload::Down);
             }
             End::Hub(s, hc) => {
-                let out = self.servers.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.closed(hc)).unwrap_or_default();
+                let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.closed(hc)).unwrap_or_default();
                 self.hub_outputs(s, out);
             }
         }
@@ -717,10 +717,10 @@ impl NetSim {
 
     fn hub_out(&mut self, s: usize, out: Vec<HubOutput>) -> Res<()> {
         self.hub_outputs(s, out);
-        if self.servers.get(s).is_some_and(|x| x.up && x.faults.crashed()) {
-            self.report.server_crashes = self.report.server_crashes.saturating_add(1);
-            self.note(format!("server {s} crashed mid-write"));
-            self.server_down(s)?;
+        if self.hosts.get(s).is_some_and(|x| x.up && x.faults.crashed()) {
+            self.report.host_crashes = self.report.host_crashes.saturating_add(1);
+            self.note(format!("host {s} crashed mid-write"));
+            self.host_down(s)?;
         }
         Ok(())
     }
@@ -730,7 +730,7 @@ impl NetSim {
         for o in out {
             match o {
                 HubOutput::Send(hc, bytes) => {
-                    let evil = self.servers.get(s).and_then(|x| x.evil);
+                    let evil = self.hosts.get(s).and_then(|x| x.evil);
                     let msgs = match evil {
                         Some(e) => self.evil_send(s, hc, e, bytes),
                         None => vec![bytes],
@@ -749,18 +749,18 @@ impl NetSim {
                 }
                 HubOutput::Diagnostic(d) => {
                     self.report.diagnostics = self.report.diagnostics.saturating_add(1);
-                    self.note(format!("server {s} diagnostic: {}", d.chars().take(160).collect::<String>()));
+                    self.note(format!("host {s} diagnostic: {}", d.chars().take(160).collect::<String>()));
                 }
             }
         }
     }
 
-    /// What an evil server sends instead of `bytes` on connection `hc`.
+    /// What an evil host sends instead of `bytes` on connection `hc`.
     fn evil_send(&mut self, s: usize, hc: u64, e: Evil, bytes: Vec<u8>) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         if self.dice.pct(e.drop_pct) {
             self.report.evil = self.report.evil.saturating_add(1);
-            self.note(format!("server {s} drops a message on conn {hc}"));
+            self.note(format!("host {s} drops a message on conn {hc}"));
         } else if !self.calm && !self.held.contains_key(&(s, hc)) && self.dice.pct(e.hold_pct) {
             self.report.evil = self.report.evil.saturating_add(1);
             self.held.insert((s, hc), bytes.clone());
@@ -771,13 +771,13 @@ impl NetSim {
             }
         }
         if self.dice.pct(e.replay_pct) {
-            let old = self.servers.get(s).and_then(|x| x.sent.get(&hc)).and_then(|v| self.dice.pick(v).cloned());
+            let old = self.hosts.get(s).and_then(|x| x.sent.get(&hc)).and_then(|v| self.dice.pick(v).cloned());
             if let Some(o) = old {
                 self.report.evil = self.report.evil.saturating_add(1);
                 out.push(o);
             }
         }
-        if let Some(sv) = self.servers.get_mut(s) {
+        if let Some(sv) = self.hosts.get_mut(s) {
             let v = sv.sent.entry(hc).or_default();
             if v.len() < 64 {
                 v.push(bytes);
@@ -786,7 +786,7 @@ impl NetSim {
         out
     }
 
-    /// Evil servers send what they held back (a delay, not a drop).
+    /// Evil hosts send what they held back (a delay, not a drop).
     fn flush_held(&mut self) {
         for ((s, hc), b) in std::mem::take(&mut self.held) {
             if let Some((id, to)) = self.peer_end(End::Hub(s, hc)) {
@@ -843,8 +843,8 @@ impl NetSim {
         Ok(())
     }
 
-    /// Server `s` stops: its connections drop.
-    pub fn server_down(&mut self, s: usize) -> Res<()> {
+    /// Host `s` stops: its connections drop.
+    pub fn host_down(&mut self, s: usize) -> Res<()> {
         for id in self.links_of(Party::S(s)) {
             if let Some(l) = self.links.remove(&id) {
                 for e in [l.dialer, l.acceptor] {
@@ -854,29 +854,29 @@ impl NetSim {
                 }
             }
         }
-        let sv = self.server(s)?;
+        let sv = self.host(s)?;
         sv.up = false;
         sv.hub = None;
         Ok(())
     }
 
-    pub fn restart_server(&mut self, s: usize) -> Res<()> {
-        self.note(format!("server {s} restarted"));
+    pub fn restart_host(&mut self, s: usize) -> Res<()> {
+        self.note(format!("host {s} restarted"));
         *self.eph.boots.entry(Party::S(s)).or_default() += 1;
         self.report.restarts = self.report.restarts.saturating_add(1);
-        self.start_server(s)
+        self.start_host(s)
     }
 
-    /// Server `s` loses everything it stored and starts empty.
-    pub fn wipe_server(&mut self, s: usize) -> Res<()> {
-        self.server_down(s)?;
-        let sv = self.server(s)?;
+    /// Host `s` loses everything it stored and starts empty.
+    pub fn wipe_host(&mut self, s: usize) -> Res<()> {
+        self.host_down(s)?;
+        let sv = self.host(s)?;
         sv.faults = Faults::new();
         sv.backend = MemoryBackend::with_faults(sv.faults.clone());
         self.tombs.remove(&s);
-        self.note(format!("server {s} lost its data"));
+        self.note(format!("host {s} lost its data"));
         *self.eph.boots.entry(Party::S(s)).or_default() += 1;
-        self.start_server(s)
+        self.start_host(s)
     }
 
     // ---- time
@@ -884,20 +884,20 @@ impl NetSim {
     /// Moves virtual time on by `ms` and fires what is due.
     pub fn advance(&mut self, ms: u64) -> Res<()> {
         self.elapsed = self.elapsed.saturating_add(ms);
-        self.server_clock.set(WallMs(self.now()));
+        self.host_clock.set(WallMs(self.now()));
         for n in &self.nodes {
             n.clock.set(WallMs(wall_of(n.spec, self.elapsed)));
         }
         self.timers()
     }
 
-    /// Node wakes, server ticks, server redials.
+    /// Node wakes, host ticks, host redials.
     fn timers(&mut self) -> Res<()> {
         let now = self.now();
-        for s in 0..self.servers.len() {
-            let due = self.servers.get(s).and_then(|x| x.hub.as_ref()).and_then(|h| h.next_due(now)).is_some_and(|t| t <= now);
+        for s in 0..self.hosts.len() {
+            let due = self.hosts.get(s).and_then(|x| x.hub.as_ref()).and_then(|h| h.next_due(now)).is_some_and(|t| t <= now);
             if due {
-                let out = self.servers.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.tick(now)).unwrap_or_default();
+                let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.tick(now)).unwrap_or_default();
                 self.hub_out(s, out)?;
             }
         }
@@ -912,13 +912,13 @@ impl NetSim {
         Ok(())
     }
 
-    /// Servers dial the peers they replicate to when not connected.
+    /// Hosts dial the peers they replicate to when not connected.
     fn redial(&mut self) -> Res<()> {
-        for s in 0..self.servers.len() {
-            let peers = self.servers.get(s).filter(|x| x.up).map(|x| x.peers.clone()).unwrap_or_default();
+        for s in 0..self.hosts.len() {
+            let peers = self.hosts.get(s).filter(|x| x.up).map(|x| x.peers.clone()).unwrap_or_default();
             for p in peers {
                 let linked = self.links.values().any(|l| matches!(l.dialer, End::Hub(x, _) if x == s) && matches!(l.acceptor, End::Hub(y, _) if y == p));
-                if linked || !self.servers.get(p).is_some_and(|x| x.up) || self.is_blocked(Party::S(s), Party::S(p)) {
+                if linked || !self.hosts.get(p).is_some_and(|x| x.up) || self.is_blocked(Party::S(s), Party::S(p)) {
                     continue;
                 }
                 let (hs, hp) = (self.next_hub_conn, self.next_hub_conn + 1);
@@ -927,10 +927,10 @@ impl NetSim {
                 self.next_link += 1;
                 self.links.insert(id, Link { dialer: End::Hub(s, hs), acceptor: End::Hub(p, hp), last: [0; 2] });
                 let now = self.now();
-                let (ks, kp) = (server_key(s), server_key(p));
-                let out = self.servers.get_mut(p).and_then(|x| x.hub.as_mut()).map(|h| h.accept(now, hp, ks)).unwrap_or_default();
+                let (ks, kp) = (host_key(s), host_key(p));
+                let out = self.hosts.get_mut(p).and_then(|x| x.hub.as_mut()).map(|h| h.accept(now, hp, ks)).unwrap_or_default();
                 self.hub_out(p, out)?;
-                let out = self.servers.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.peer_up(now, hs, kp)).unwrap_or_default();
+                let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.peer_up(now, hs, kp)).unwrap_or_default();
                 self.hub_out(s, out)?;
             }
         }
@@ -969,7 +969,7 @@ impl NetSim {
             (End::Node(n, c), Payload::Up) if alive => self.feed(n, Event::Up { conn: c })?,
             (End::Node(n, c), Payload::Bytes(b)) if alive => self.feed(n, Event::Bytes { conn: c, bytes: b })?,
             (End::Hub(s, hc), Payload::Bytes(b)) if alive => {
-                let out = self.servers.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.input(now, hc, b)).unwrap_or_default();
+                let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.input(now, hc, b)).unwrap_or_default();
                 self.hub_out(s, out)?;
             }
             _ => {}
@@ -983,7 +983,7 @@ impl NetSim {
         while self.deliver_next()? {
             k += 1;
             if k > STORM {
-                // what the storm keeps changing at the servers
+                // what the storm keeps changing at the hosts
                 self.observe()?;
                 let heads = check::log_heads(self);
                 self.watch = true;
@@ -1012,7 +1012,7 @@ impl NetSim {
         let w = self.cfg.weights;
         let calm = self.calm;
         let any_down = self.nodes.iter().any(|n| !n.up && !n.lost);
-        let server_down = self.servers.iter().any(|s| !s.up);
+        let host_down = self.hosts.iter().any(|s| !s.up);
         let gate = |on: bool, x: u32| if on { x } else { 0 };
         let options: [(u32, u8); 11] = [
             (gate(!calm, w.write), 0),
@@ -1020,8 +1020,8 @@ impl NetSim {
             (w.tick.max(1), 2),
             (gate(!calm, w.crash), 3),
             (gate(any_down, w.restart), 4),
-            (gate(!calm, w.server_crash), 5),
-            (gate(server_down, w.server_restart), 6),
+            (gate(!calm, w.host_crash), 5),
+            (gate(host_down, w.host_restart), 6),
             (gate(!calm, w.partition), 7),
             (gate(!self.blocked.is_empty(), w.heal), 8),
             (gate(!calm, w.ephemeral), 9),
@@ -1049,23 +1049,23 @@ impl NetSim {
                     self.restart_node(n)?;
                 }
             }
-            5 => self.random_server_crash()?,
+            5 => self.random_host_crash()?,
             6 => {
-                let down: Vec<usize> = (0..self.servers.len()).filter(|i| self.servers.get(*i).is_some_and(|s| !s.up)).collect();
+                let down: Vec<usize> = (0..self.hosts.len()).filter(|i| self.hosts.get(*i).is_some_and(|s| !s.up)).collect();
                 if let Some(&s) = self.dice.pick(&down) {
-                    self.restart_server(s)?;
+                    self.restart_host(s)?;
                 }
             }
             7 => self.random_partition(),
             9 => self.random_ephemeral()?,
             10 => {
-                let ns = self.servers.len();
+                let ns = self.hosts.len();
                 if ns > 0 {
                     let s = self.dice.index(ns);
-                    let sv = self.server(s)?;
+                    let sv = self.host(s)?;
                     sv.slow = !sv.slow;
                     let slow = sv.slow;
-                    self.note(format!("server {s} slow {slow}"));
+                    self.note(format!("host {s} slow {slow}"));
                 }
             }
             8 => {
@@ -1144,24 +1144,24 @@ impl NetSim {
         }
     }
 
-    fn random_server_crash(&mut self) -> Res<()> {
-        let ups: Vec<usize> = (0..self.servers.len()).filter(|s| self.servers.get(*s).is_some_and(|x| x.up)).collect();
+    fn random_host_crash(&mut self) -> Res<()> {
+        let ups: Vec<usize> = (0..self.hosts.len()).filter(|s| self.hosts.get(*s).is_some_and(|x| x.up)).collect();
         let Some(&s) = self.dice.pick(&ups) else { return Ok(()) };
         if self.dice.pct(50) {
-            self.report.server_crashes = self.report.server_crashes.saturating_add(1);
-            self.note(format!("server {s} crashed"));
-            self.server_down(s)
+            self.report.host_crashes = self.report.host_crashes.saturating_add(1);
+            self.note(format!("host {s} crashed"));
+            self.host_down(s)
         } else {
             let at = self.dice.below(8);
-            self.note(format!("server {s} will crash at its write {at}"));
-            self.server(s)?.faults.at(at, Fault::Crash);
+            self.note(format!("host {s} will crash at its write {at}"));
+            self.host(s)?.faults.at(at, Fault::Crash);
             Ok(())
         }
     }
 
-    /// Blocks a random (node, server) or (server, server) pair and cuts its links.
+    /// Blocks a random (node, host) or (host, host) pair and cuts its links.
     fn random_partition(&mut self) {
-        let (nn, ns) = (self.nodes.len(), self.servers.len());
+        let (nn, ns) = (self.nodes.len(), self.hosts.len());
         if ns == 0 {
             return;
         }
@@ -1181,7 +1181,7 @@ impl NetSim {
         self.cut_pair(a, b);
     }
 
-    /// `a` and `b` never connect again (a node that cannot reach a server).
+    /// `a` and `b` never connect again (a node that cannot reach a host).
     pub fn sever(&mut self, a: Party, b: Party) {
         self.unreachable.insert((a, b));
         self.cut_pair(a, b);
@@ -1194,7 +1194,7 @@ impl NetSim {
         }
     }
 
-    /// Cuts every node's connections (they redial and reopen at the servers' current heads).
+    /// Cuts every node's connections (they redial and reopen at the hosts' current heads).
     pub fn reconnect_all(&mut self) {
         let ids: Vec<u64> = self.links.iter().filter(|(_, l)| matches!(l.dialer, End::Node(..))).map(|(id, _)| *id).collect();
         for id in ids {
@@ -1260,9 +1260,9 @@ impl NetSim {
         self.direct(x, y)
     }
 
-    /// Node `n` creates a person with its home label at `servers`.
-    pub fn person(&mut self, n: usize, servers: &[usize]) -> Res<osis_node::flows::Person> {
-        let addrs = self.addresses(servers);
+    /// Node `n` creates a person with its home label at `hosts`.
+    pub fn person(&mut self, n: usize, hosts: &[usize]) -> Res<osis_node::flows::Person> {
+        let addrs = self.addresses(hosts);
         let r = self.engine(n)?.create_person(&addrs);
         let (p, done) = r.map_err(|e| self.fail(format!("node {n} create_person: {e}")))?;
         self.carry(n, done)?;
@@ -1289,13 +1289,13 @@ impl NetSim {
         Ok(())
     }
 
-    /// Node `n` creates a group owned by `owner` with a label at `servers`.
-    pub fn group(&mut self, n: usize, owner: Tid, servers: &[usize]) -> Res<Tid> {
-        self.group_with(n, owner, servers, false)
+    /// Node `n` creates a group owned by `owner` with a label at `hosts`.
+    pub fn group(&mut self, n: usize, owner: Tid, hosts: &[usize]) -> Res<Tid> {
+        self.group_with(n, owner, hosts, false)
     }
 
     /// `group`, with secrets of its own before the label when `own`.
-    pub fn group_with(&mut self, n: usize, owner: Tid, servers: &[usize], own: bool) -> Res<Tid> {
+    pub fn group_with(&mut self, n: usize, owner: Tid, hosts: &[usize], own: bool) -> Res<Tid> {
         let e = self.engine(n)?;
         let mut m = Mutation::new();
         let g = e.new_thing(&mut m, owner);
@@ -1307,7 +1307,7 @@ impl NetSim {
             let done = r.map_err(|e| self.fail(format!("node {n} own secrets: {e}")))?;
             self.carry(n, done)?;
         }
-        let addrs = self.addresses(servers);
+        let addrs = self.addresses(hosts);
         let r = self.sync(n)?.create_label(&g, addrs);
         let (_, acts) = r.map_err(|e| self.fail(format!("node {n} create_label: {e}")))?;
         self.after_node(n, acts)?;
@@ -1397,7 +1397,7 @@ impl NetSim {
 
     // ---- quiescence
 
-    /// Stops writes, crashes and faults, heals partitions, restarts every node and server, and
+    /// Stops writes, crashes and faults, heals partitions, restarts every node and host, and
     /// lets the system run (time moving a resync interval at a time) until every node is idle
     /// and nothing changes for two rounds; then the quiescent invariants. Fails past
     /// `max_rounds`.
@@ -1412,14 +1412,14 @@ impl NetSim {
         self.calm = true;
         self.blocked.clear();
         self.flush_held();
-        for sv in &mut self.servers {
+        for sv in &mut self.hosts {
             sv.slow = false;
         }
-        for s in 0..self.servers.len() {
-            if !self.servers.get(s).is_some_and(|x| x.up) {
-                self.restart_server(s)?;
+        for s in 0..self.hosts.len() {
+            if !self.hosts.get(s).is_some_and(|x| x.up) {
+                self.restart_host(s)?;
             }
-            self.server(s)?.faults.revive();
+            self.host(s)?.faults.revive();
         }
         for n in 0..self.nodes.len() {
             if !self.is_up(n) {
@@ -1451,7 +1451,7 @@ impl NetSim {
             self.advance(61_000)?;
         }
         let busy: Vec<String> = (0..self.nodes.len()).filter_map(|n| self.nodes.get(n).and_then(|x| x.sync.as_ref()).filter(|s| !s.is_idle()).map(|s| format!("node {n}: {:?}", s.describe()))).collect();
-        // what the rounds changed at the servers
+        // what the rounds changed at the hosts
         self.watch = true;
         self.observe()?;
         let heads = heads0;
@@ -1463,7 +1463,7 @@ impl NetSim {
         Err(self.fail(format!("not quiescent after {max_rounds} rounds; one more round changes {churn:?}; busy: {busy:?}; fingerprint {last:?} -> {fp:?}")))
     }
 
-    /// What changes while the system is still moving: nodes' commits and pending, servers' logs.
+    /// What changes while the system is still moving: nodes' commits and pending, hosts' logs.
     fn fingerprint(&self) -> Vec<u64> {
         let mut v = Vec::new();
         for n in &self.nodes {
@@ -1472,7 +1472,7 @@ impl NetSim {
                 v.push(s.engine().pending().len() as u64);
             }
         }
-        for s in &self.servers {
+        for s in &self.hosts {
             let Some(h) = &s.hub else { continue };
             use osis_proto::LabelStore;
             for l in h.store().labels_after(None, 4096).unwrap_or_default() {
@@ -1497,7 +1497,7 @@ impl NetSim {
             let r = r.map_err(|x| self.fail(format!("read: {x}")))?;
             h.update(format!("{r:?}").as_bytes());
         }
-        for s in &self.servers {
+        for s in &self.hosts {
             let Some(hub) = &s.hub else { continue };
             use osis_proto::LabelStore;
             for l in hub.store().labels_after(None, 4096).unwrap_or_default() {
@@ -1528,7 +1528,7 @@ mod tests {
 
     // spec/sync.md §6 (ordered streams): a message sent on a stream after its cut can be due
     // before its predecessors; delivery waits for the stream's head instead of spinning
-    // (evil_server sweep seed 134 reported this as a message storm).
+    // (evil_host sweep seed 134 reported this as a message storm).
     #[test]
     fn stream_head_due_after_successor_spec_sync_6() {
         let mut sim = NetSim::new("t", 1, NetConfig::default());

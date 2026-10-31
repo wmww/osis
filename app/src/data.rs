@@ -12,20 +12,20 @@
 
 use crate::schema::{APP, COLOR, DEMO, FAVORITES, MODE, Mode, OPEN, THEME, VIEW, View};
 use osis::core::{BODY, GROUP, NAME, TAG};
-use osis::{AspectKey, ChangeId, CommitKind, CommitQuery, Config, Edge, Error, Osis, Result, Runtime, Scope, ServerAddr, Tid, Transport, p};
+use osis::{AspectKey, ChangeId, CommitKind, CommitQuery, Config, Edge, Error, Osis, Result, Runtime, Scope, HostAddr, Tid, Transport, p};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// Opens the store in `dir`, creating it (with its home group on `servers`) when `dir` holds
+/// Opens the store in `dir`, creating it (with its home group on `hosts`) when `dir` holds
 /// none. Sync runs on osis's own runtime over QUIC while the app runs.
-pub fn open(dir: &Path, servers: Vec<ServerAddr>) -> Result<Osis> {
+pub fn open(dir: &Path, hosts: Vec<HostAddr>) -> Result<Osis> {
     let mut cfg = Config::dir(dir);
     cfg.runtime = Runtime::Own;
     cfg.transport = Some(Transport::Quic);
     if dir.join("db.redb").exists() {
         Osis::open(cfg)
     } else {
-        cfg.servers = servers;
+        cfg.hosts = hosts;
         Ok(Osis::create(cfg)?.0)
     }
 }

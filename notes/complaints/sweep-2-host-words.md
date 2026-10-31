@@ -1,0 +1,3 @@
+- Rename script: protecting rustls's `with_server_*` by pattern also protected a test name (`..._with_server_unreachable_...`); protect exact third-party names, not prefixes.
+- The step-2 hunt `G -i server` always matches issues/one-node-kind.md (its own rename table) and the mvp-progress entry of step 1; the issue's residue list could name both.
+- Tracked browser console logs under app/mockup/.playwright-cli/ match every word hunt; they look like stray tool output.

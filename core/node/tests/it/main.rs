@@ -13,7 +13,7 @@ mod driver;
 mod encodings;
 mod ephemeral;
 mod flows;
-mod hostile_server;
+mod hostile_host;
 mod inbox_life;
 mod inbox_retry;
 mod keys;

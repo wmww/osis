@@ -1,5 +1,5 @@
 //! Bundle import (spec/sync.md §11, spec/wire.md §12): osis-label's reader and importer (paths,
-//! stamps and blob IDs verified as a server does) presented as a peer with no cursor, yielding
+//! stamps and blob IDs verified as a host does) presented as a peer with no cursor, yielding
 //! the client events a Sync would.
 
 use crate::Error;

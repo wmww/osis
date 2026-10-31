@@ -41,7 +41,7 @@ pub fn static_secret(path: &Path, log: &Log) -> Result<[u8; 32], String> {
 pub fn run(cfg: Config, log: Log, address: impl FnOnce(&str)) -> Result<(), String> {
     let secret = static_secret(&cfg.key, &log)?;
     std::fs::create_dir_all(&cfg.data).map_err(|e| format!("{}: {e}", cfg.data.display()))?;
-    let backend = RedbBackend::open(&cfg.data.join("server.redb")).map_err(|e| e.to_string())?;
+    let backend = RedbBackend::open(&cfg.data.join("host.redb")).map_err(|e| e.to_string())?;
     let clock = Arc::new(SystemClock);
     let store = HostStore::open(backend, clock.clone(), cfg.policy.clone(), &mut OsRng).map_err(|e| e.to_string())?;
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;

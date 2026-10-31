@@ -1,10 +1,10 @@
 //! Carrying out what membership flows produce (`flows::Done`, `flows::Delivery`) and the sync
-//! state flows ask about (`flows::SyncState`): inbox blobs deposited at the inbox's servers,
+//! state flows ask about (`flows::SyncState`): inbox blobs deposited at the inbox's hosts,
 //! direct commits handed to the app's pairing channel, placements before any other upload,
 //! certificate copies under a home label, deposits; commits that travel by inbox only are never
 //! placed under a label (spec/permissions.md §3, re-seal).
 
-use super::{Action, ServerKey, SyncEngine};
+use super::{Action, HostKey, SyncEngine};
 use crate::error::Result;
 use crate::flows::{Delivery, Done, SyncState};
 use crate::local_peer::Package;
@@ -179,7 +179,7 @@ impl SyncEngine {
     /// Whether this node's commit `c` is placed (spec/sync.md §5): no deposit of it queued here
     /// under a label where no entry of it is present yet, and under every label this node syncs
     /// of the things it touches, each body of it the label must hold is in an entry present at
-    /// one of the label's servers (a label with no server: an entry this node serves, if it
+    /// one of the label's hosts (a label with no host: an entry this node serves, if it
     /// serves any) or covered by a snapshot there. Cached until entries, presence, the outbox or
     /// the engine change.
     pub(crate) fn placed(&mut self, c: &CommitId) -> Result<bool> {
@@ -207,7 +207,7 @@ impl SyncEngine {
             if gl.replaced || !self.under_own_label(&g, c) {
                 continue;
             }
-            let local = super::peers::serverless(&gl.servers);
+            let local = super::peers::hostless(&gl.hosts);
             if local && self.own_reach().is_none() {
                 continue;
             }
@@ -226,10 +226,10 @@ impl SyncEngine {
         Ok(true)
     }
 
-    /// Whether entries of `c` under `l` (present at a server when `present`) hold `parts`
+    /// Whether entries of `c` under `l` (present at a host when `present`) hold `parts`
     /// (any part when `None`). For `placed` of this node's own commit: any entry counts, at any
-    /// one server. Not `held_parts` (`pass/`), which asks whether another node's entries spare
-    /// this node a certificate copy, and so counts them only genuine, at every server and, with
+    /// one host. Not `held_parts` (`pass/`), which asks whether another node's entries spare
+    /// this node a certificate copy, and so counts them only genuine, at every host and, with
     /// a rotation, readable under the newest secret.
     fn held_at(&self, l: &LabelId, c: &CommitId, parts: Option<&[(usize, usize)]>, present: bool) -> bool {
         let mut held: BTreeSet<(usize, usize)> = BTreeSet::new();
@@ -292,8 +292,8 @@ impl SyncEngine {
 impl SyncEngine {
     /// Finalizes the links due here (`Engine::links_due`, spec/permissions.md §9) after a
     /// complete pass of K's labels (`complete_pass`) that, for an expired link, ended at every
-    /// server after `until` (a pass from before going offline does not count); at once when K's
-    /// labels have no server (`peer://` nodes only count as none) and this node made the link (the redeemers reached it directly;
+    /// host after `until` (a pass from before going offline does not count); at once when K's
+    /// labels have no host (`peer://` nodes only count as none) and this node made the link (the redeemers reached it directly;
     /// another device of the sharer may not have their grants yet). A link whose finalization
     /// failed is not tried again in this run.
     pub(crate) fn finalize_links(&mut self) -> Result<()> {
@@ -304,10 +304,10 @@ impl SyncEngine {
         self.labels();
         for (h, until) in due {
             let k = h.k;
-            let labels: Vec<(LabelId, &Vec<ServerKey>)> = self.synced.actors.iter().filter(|(_, (a, _))| *a == k).map(|(id, (_, s))| (*id, s)).collect();
-            let serverless = !labels.is_empty() && labels.iter().all(|(_, s)| s.is_empty());
+            let labels: Vec<(LabelId, &Vec<HostKey>)> = self.synced.actors.iter().filter(|(_, (a, _))| *a == k).map(|(id, (_, s))| (*id, s)).collect();
+            let hostless = !labels.is_empty() && labels.iter().all(|(_, s)| s.is_empty());
             let after = labels.iter().all(|(id, s)| s.iter().all(|sv| self.passes.get(&(*sv, *id)).is_some_and(|p| until.is_none_or(|u| p.1 >= u.0))));
-            let ready = if serverless { h.here } else { after && self.complete_pass(&k) };
+            let ready = if hostless { h.here } else { after && self.complete_pass(&k) };
             if self.links_failed.contains(&k) || !ready {
                 continue;
             }
@@ -419,7 +419,7 @@ impl SyncEngine {
     /// counted from the last remote membership commit of any of `actors`.
     fn passed_since(&self, groups: &BTreeSet<Tid>, since: u64, actors: &[Tid]) -> bool {
         let waited = actors.iter().all(|a| self.peers_waited(a));
-        self.synced.labels.iter().filter(|(g, _)| groups.contains(g)).all(|(_, l)| self.label_passed(&l.id, super::peers::server_keys(&l.servers), since, waited))
+        self.synced.labels.iter().filter(|(g, _)| groups.contains(g)).all(|(_, l)| self.label_passed(&l.id, super::peers::host_keys(&l.hosts), since, waited))
     }
 
     /// Whether a complete pass may stop waiting for peers on `actor`'s change: `peer_pass_wait_ms`
@@ -431,13 +431,13 @@ impl SyncEngine {
     }
 
     /// Whether label `l` passed completely after `since` (spec/permissions.md §3): at each of
-    /// `servers` and, until `waited`, at each co-reader it was received from with a connection up
+    /// `hosts` and, until `waited`, at each co-reader it was received from with a connection up
     /// (`pass_peers`). With neither, nothing upstream holds what it lacks: it passes once
     /// `waited` (a node serving it alone, spec/sync.md §5, else never re-seals or unties).
-    fn label_passed(&self, l: &LabelId, servers: impl Iterator<Item = ServerKey>, since: u64, waited: bool) -> bool {
+    fn label_passed(&self, l: &LabelId, hosts: impl Iterator<Item = HostKey>, since: u64, waited: bool) -> bool {
         let peers = self.pass_peers.get(l).into_iter().flatten().filter(|_| !waited).copied();
         let mut any = false;
-        for s in servers.chain(peers) {
+        for s in hosts.chain(peers) {
             any = true;
             if self.passes.get(&(s, *l)).is_none_or(|p| p.0 <= since) {
                 return false;
@@ -453,6 +453,6 @@ impl SyncState for SyncEngine {
         let waited = self.peers_waited(actor);
         // no label of the actor known (at start, before `labels()`): no pass yet
         let mut labels = self.synced.actors.iter().filter(|(_, (a, _))| a == actor).peekable();
-        labels.peek().is_some() && labels.all(|(l, (_, servers))| self.label_passed(l, servers.iter().copied(), since, waited))
+        labels.peek().is_some() && labels.all(|(l, (_, hosts))| self.label_passed(l, hosts.iter().copied(), since, waited))
     }
 }

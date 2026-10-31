@@ -4,7 +4,7 @@
 
 use crate::common;
 
-use common::driven::Server;
+use common::driven::Host;
 use common::*;
 use osis_proto::*;
 use osis_store::MemoryBackend;
@@ -14,8 +14,8 @@ use osis_transport::Quic;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn quic_clients_and_replication() {
-    let s2 = Server::start(Quic::new(), "quic://127.0.0.1:0", 0x52, MemoryBackend::new(), vec![]).await;
-    let s1 = Server::start(Quic::new(), "quic://127.0.0.1:0", 0x51, MemoryBackend::new(), vec![s2.addr.clone()]).await;
+    let s2 = Host::start(Quic::new(), "quic://127.0.0.1:0", 0x52, MemoryBackend::new(), vec![]).await;
+    let s1 = Host::start(Quic::new(), "quic://127.0.0.1:0", 0x51, MemoryBackend::new(), vec![s2.addr.clone()]).await;
     let l = Label::new(3);
     let mut b = s2.client(&Quic::new()).await;
     b.run(l.register_cmd(0)).await;
