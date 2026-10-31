@@ -482,6 +482,9 @@ fn removal_from_partial_device_keeps_unheld_edits_spec_permissions_5_3() {
     w.until(phone.demote(g, ids[0], Lower::Remove, Demotion::default()), 1000, 30).unwrap();
     w.run();
     assert_eq!(log(&w), before, "the phone placed nothing under H's label");
+    // received by header only: by commit ID, never by counters (spec/permissions.md §5.1)
+    let r = phone.engine(|e| e.receipt(&in_h, &ak("/t/x")).unwrap());
+    assert!(r.nodes.is_empty() && r.commits.len() == 1, "{r:?}");
     for db in [&alice, bob, carol] {
         w.set_online(db, true);
     }
@@ -491,6 +494,35 @@ fn removal_from_partial_device_keeps_unheld_edits_spec_permissions_5_3() {
     assert!(!carol.roster(g).contains_key(&ids[0]));
     assert_eq!(x(carol, in_g), Some(s("bob in g")));
     assert_eq!(x(carol, in_h), Some(s("bob in h")), "his edit under H stays: the phone's frontier covers it");
+}
+
+// notes/api.md Sync configuration and status: a group held for receipts only shows as such in
+// the status, and `wait_synced` leaves it out.
+#[test]
+fn receipts_only_status() {
+    let mut w = World::new();
+    let (alice, _, _) = people(&mut w, 1);
+    let g = group(&alice);
+    let h = {
+        let mut wr = alice.write();
+        let h = wr.create_in(g, &[]).unwrap();
+        wr.make_group(h).unwrap();
+        wr.commit().unwrap();
+        h
+    };
+    alice.sync(h, &[]).unwrap();
+    w.run();
+    let join = Osis::pair(w.cfg(9, &[]), &alice.pair_offer().unwrap()).unwrap();
+    let (_, reply) = alice.pair_accept(join.request()).unwrap();
+    let phone = join.finish(&reply).unwrap();
+    phone.sync_policy(h, osis::GroupPolicy { receipts_only: true, ..Default::default() });
+    w.run();
+    let st = phone.status().unwrap();
+    assert_eq!(st.groups.get(&h).map(|s| s.state), Some(SyncState::ReceiptsOnly), "{st:?}");
+    assert_eq!(st.groups.get(&g).map(|s| s.state), Some(SyncState::Synced), "{st:?}");
+    // nothing of H goes into a wait for it
+    w.until(phone.wait_synced(SyncScope::All, Duration::from_secs(10)), 1000, 10).unwrap();
+    assert!(w.until(phone.wait_synced(SyncScope::Group(h), Duration::from_secs(10)), 1000, 10).is_err(), "H is not synced here");
 }
 
 // spec/sync.md §5 (relay-only entries), notes/api.md Signals: a signal aspect set on a shared
