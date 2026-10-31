@@ -18,3 +18,6 @@ Options:
 - A leaner in-memory layout (about 300-500 bytes per item today; issues/eph-node-cost-bounds.md) lowers every figure under either option; it is no bound by itself.
 
 Open for B: whether redb keeps a large write transaction's dirty pages in memory; a snapshot root's `Sources` and `Commits` tables are never paged (one `Commits` entry per absorbed commit, 32 bytes per commit-form source), so a snapshot of an aspect written by very many commits may not fit a blob (unverified).
+
+
+Owner decision (round 13): option B. First a per-blob item cap (2^20, checked from the encoding before decoding), then page-by-page decode and apply inside the commit's one store transaction, so memory stays about one page. B is the design the Scale requirement already asks for (a 10^6-key snapshot decodes whole today, ~2.5 GB, for honest data too); refactor cost is not a concern, ongoing complexity is, and B adds structure to one path rather than a second mechanism.
