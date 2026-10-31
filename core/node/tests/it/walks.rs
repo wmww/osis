@@ -758,8 +758,9 @@ fn open_equals_rebuild_random_histories_unheld_part_dies() {
 
 // spec/requirements.md, Decentralization and Out of scope ("malicious readers can only waste
 // storage"); spec/permissions.md §5.2: as above, with nodes taking hostile snapshots that copy a
-// held tag's dot and `ts` with another value, sent on like any commit: open equals rebuild, and
-// once every node holds everything no forged value shows and the tags agree. Seeds:
+// held tag's dot and `ts` with another value, sent on like any commit, and compactors dropping
+// what they cover: open equals rebuild, and once every node holds everything the tags agree
+// (a valid snapshot's copy governs where the original is held too). Seeds:
 // OSIS_WALKS_FORGED_START, OSIS_WALKS_FORGED_SEEDS (default 0..16), a thread per core.
 #[test]
 fn open_equals_rebuild_random_histories_forged() {
@@ -853,10 +854,7 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool, forge: bool) -> ([
             6 => {
                 let a = ak(["/t/keptset", "/t/gonemap", "/t/tags"][rng.below(3) as usize]);
                 let e = &mut lp.peers[i].engine;
-                // not with forged snapshots: a forged copy under the dot of a body dropped before
-                // others got it shows where the original never arrived (issues/forged-cover.md)
                 if let Ok(Some(snap)) = e.snapshot(&t, &a)
-                    && !forge
                     && rng.below(2) == 0
                 {
                     // the compactor drops what it covers (node-sync's compaction): such a body
@@ -945,12 +943,10 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool, forge: bool) -> ([
         open_equals_rebuild_any(&mut lp.peers[i].engine, &things, &format!("seed {seed} end, peer {i}"));
     }
     if forge {
-        // every node holds every commit now: forged copies show on no original, and the tags
-        // agree (a copy may hold one its mover imported while it lacked the forged write's own
-        // commit: the forging snapshot vouched for it, spec/permissions.md §5.2)
+        // every node holds every commit it has not dropped: the tags agree, a valid forger's
+        // copies showing wherever they are held, the original or not (spec/permissions.md §5.2)
         let tagged = |lp: &mut LocalPeer, i: usize| things.iter().map(|t| lp.peers[i].engine.get(t, &ak("/t/tags")).unwrap()).collect::<Vec<_>>();
         let first = tagged(&mut lp, 0);
-        assert!(!format!("{:?}", &first[..2]).contains("forged"), "seed {seed}: a forged copy shows: {first:?}");
         for i in 1..3 {
             assert_eq!(tagged(&mut lp, i), first, "seed {seed}: peer {i} differs ({forged} forged)");
         }

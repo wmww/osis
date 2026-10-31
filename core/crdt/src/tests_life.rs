@@ -271,7 +271,8 @@ pub(crate) fn copies_check(seed: u64, ty: &Ty) {
 }
 
 /// spec/permissions.md §5.2: a copy of a write with another value, `ts` or position, or a write
-/// under a dot its delta does not use, is not within the delta; a value-less one is.
+/// under a dot its delta does not use, is not within the delta; a value-less one is, and
+/// misstates it unless the delta expires.
 #[test]
 fn forged_copies_differ_spec_perm_5_2() {
     use crate::ops::{Writer, create};
@@ -295,6 +296,17 @@ fn forged_copies_differ_spec_perm_5_2() {
     let mut vl = state.clone();
     vl.strip(&|d| d.src == x);
     assert!(vl.copies_within(&[&delta], &owned), "value-less");
+    // misstatement (a valid snapshot against a held delta): a value-less copy only where the
+    // delta expires
+    let ranges = [(x.clone(), 0, 10)];
+    let lax = |f: &Fragment, l: bool| f.copy_index().misstated(&ranges, &[&delta], l);
+    assert!(lax(&state, false).is_empty(), "honest");
+    assert!(lax(&vl, true).is_empty(), "value-less, expiring");
+    assert!(!lax(&vl, false).is_empty(), "value-less, not expiring");
+    assert!(!lax(&join(&other, &make(5, &map("k", "zzz"))), true).is_empty(), "value");
+    assert!(!lax(&join(&state, &extra), true).is_empty(), "a dot the delta does not use");
+    assert_eq!(vl.misstated(&[&state], &owned, &|_| false), lax(&vl, false), "against a state");
+    assert!(vl.misstated(&[&state], &owned, &|_| true).is_empty(), "against a state, expiring");
 }
 
 /// §8 bootstrap from a snapshot, then concurrent edits of type `ty`.
