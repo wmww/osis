@@ -492,7 +492,7 @@ fn inflated_frontier_keeps_write_in_move_spec_perm_7() {
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
     let a = lp.peers[0].engine.tid();
-    let fr = osis_crdt::Frontiers(BTreeMap::from([(b, 1 << 40)]));
+    let fr = osis_crdt::Frontiers::of_nodes(BTreeMap::from([(b, 1 << 40)]));
     let snap = forge_snapshot_with(&mut lp, 2, d, &m_ak, now, entry_by(a, now, 1 << 42, "c", "alice"), fr);
     lp.peers[0].engine.ingest(&snap, Vec::new()).unwrap();
     let want = Some(Value::Map(BTreeMap::from([(s("c"), s("alice")), (s("k"), s("bob"))])));
@@ -645,15 +645,13 @@ fn entry_created_after_demotion(snapshot_first: bool) {
     assert_eq!(read(&mut lp, 0), read(&mut lp, 3), "Dave, rebuilt");
 }
 
-// spec/crdt.md §8 (`Authors`), spec/permissions.md §5.2: commit-form writes a valid snapshot
-// carries count, whatever `Authors` it names (none here, or a claim of Bob's before his grant):
-// nothing judges them per claimed author.
+// spec/permissions.md §5.2: commit-form writes a valid snapshot carries count: nothing judges
+// them per author.
 #[test]
 fn commit_form_carried_writes_vouched_spec_perm_5_2() {
-    let (mut lp, d, b, _) = setup(63);
+    let (mut lp, d, _, _) = setup(63);
     let m_ak = ak("/x/m");
     lp.advance(1_000);
-    let a = lp.peers[0].engine.tid();
     let old = osis_base::Ts::make(WallMs(T0.0 - DAY), 0).unwrap();
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
     let (x, y) = (osis_base::CommitId([0xA1; 32]), osis_base::CommitId([0xB2; 32]));
@@ -667,13 +665,9 @@ fn commit_form_carried_writes_vouched_spec_perm_5_2() {
         Some(Value::Map(m)) => m.into_keys().collect::<BTreeSet<_>>(),
         _ => BTreeSet::new(),
     };
-    let missing = forge_snapshot(&mut lp, 2, d, &m_ak, now, f.clone());
+    let missing = forge_snapshot(&mut lp, 2, d, &m_ak, now, f);
     lp.peers[0].engine.ingest(&missing, Vec::new()).unwrap();
-    assert_eq!(keys(&mut lp, 0), BTreeSet::from([s("alice"), s("bob")]), "no Authors");
-    let authors = BTreeMap::from([(x, (b, old)), (y, (a, now))]);
-    let snap = forge_snapshot_full(&mut lp, 2, d, &m_ak, now, f, Default::default(), authors);
-    lp.peers[1].engine.ingest(&snap, Vec::new()).unwrap();
-    assert_eq!(keys(&mut lp, 1), BTreeSet::from([s("alice"), s("bob")]), "a claim of Bob's before his grant");
+    assert_eq!(keys(&mut lp, 0), BTreeSet::from([s("alice"), s("bob")]));
 }
 
 /// Delivers commits `ids` of peer `from` to peer `to`.
@@ -1382,7 +1376,6 @@ fn snapshot_forging_import_dot_changes_nothing_spec_perm_5_2() {
     }
     let tags = ak("/t/tags");
     let before = states(&mut lp.peers[2].engine, &[t, copy]);
-    let ih = lp.peers[0].engine.header(imports.iter().find(|i| lp.peers[0].engine.header(i).unwrap().origins.iter().any(|o| o.commit == c)).unwrap()).unwrap();
     let ch = lp.peers[0].engine.header(&c).unwrap();
     let hi = ch.aspects.iter().find(|x| x.tid == t && x.ak == tags).unwrap().hi;
     // the reader adds "evil" at (Commit(C), hi + 10) to the copy's state, and snapshots it
@@ -1394,7 +1387,7 @@ fn snapshot_forging_import_dot_changes_nothing_spec_perm_5_2() {
     f.join(extra);
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
-    let forged = forge_snapshot_full(&mut lp, 1, copy, &tags, now, f, osis_crdt::Frontiers::default(), BTreeMap::from([(c, (a, ih.ts))]));
+    let forged = forge_snapshot_with(&mut lp, 1, copy, &tags, now, f, osis_crdt::Frontiers::default());
     let got = lp.peers[2].engine.ingest(&forged, Vec::new());
     assert_eq!(states(&mut lp.peers[2].engine, &[t, copy]), before, "a reader's snapshot added an element as the import's: {got:?}, {:?}", lp.peers[2].engine.get(&copy, &tags));
     // the snapshot first: the copy's creation and the rest, the snapshot, then the imports
@@ -1444,7 +1437,7 @@ fn snapshot_copy_of_a_delta_never_held_counts_spec_perm_5_2() {
     let lo = h.aspects.iter().find(|x| x.tid == t && x.ak == m_ak).unwrap().lo;
     let hi = h.aspects.iter().find(|x| x.tid == t && x.ak == m_ak).unwrap().hi;
     let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
-    let forged = forge_snapshot_with(&mut lp, 1, t, &m_ak, now, entry_by(a, h.ts, lo, "k", "zzz forged"), osis_crdt::Frontiers(BTreeMap::from([(a, hi - 1)])));
+    let forged = forge_snapshot_with(&mut lp, 1, t, &m_ak, now, entry_by(a, h.ts, lo, "k", "zzz forged"), osis_crdt::Frontiers::of_nodes(BTreeMap::from([(a, hi - 1)])));
     let feed = |lp: &mut LocalPeer, seed: u64, seq: &[&[u8]]| {
         let now = lp.peers[0].engine.now();
         lp.peers.push(osis_node::local_peer::Peer::new(seed, now).unwrap());
@@ -1500,7 +1493,7 @@ fn forged_snapshot_covers_nothing_spec_commits_5() {
     let x = h.aspects.iter().find(|x| x.tid == t && x.ak == m_ak).unwrap();
     let now = osis_base::Ts::make(lp.peers[0].engine.now(), 0).unwrap();
     sync(&mut lp, 0, 1);
-    let forged = forge_snapshot_with(&mut lp, 1, t, &m_ak, now, entry_by(a, h.ts, x.lo, "k", "zzz forged"), osis_crdt::Frontiers(BTreeMap::from([(a, x.hi - 1)])));
+    let forged = forge_snapshot_with(&mut lp, 1, t, &m_ak, now, entry_by(a, h.ts, x.lo, "k", "zzz forged"), osis_crdt::Frontiers::of_nodes(BTreeMap::from([(a, x.hi - 1)])));
     let f = match lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap() {
         Ingested::Applied(id) => id,
         other => panic!("{other:?}"),
@@ -1561,7 +1554,6 @@ fn snapshot_forging_dropped_import_dot_changes_nothing_spec_perm_5_2() {
         sync(&mut lp, 0, i);
     }
     let imp = *imports.iter().find(|i| lp.peers[0].engine.header(i).unwrap().origins.iter().any(|o| o.commit == c)).unwrap();
-    let ih = lp.peers[0].engine.header(&imp).unwrap();
     assert_eq!(lp.peers[2].engine.covered(&honest, &imp, &copy, &tags).unwrap(), Some(true));
     lp.peers[2].engine.drop_body(&imp, &copy, &tags).unwrap();
     let before = lp.peers[2].engine.get(&copy, &tags).unwrap();
@@ -1575,7 +1567,7 @@ fn snapshot_forging_dropped_import_dot_changes_nothing_spec_perm_5_2() {
     f.join(extra);
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
-    let forged = forge_snapshot_full(&mut lp, 1, copy, &tags, now, f, osis_crdt::Frontiers::default(), BTreeMap::from([(c, (a, ih.ts))]));
+    let forged = forge_snapshot_with(&mut lp, 1, copy, &tags, now, f, osis_crdt::Frontiers::default());
     let got = lp.peers[2].engine.ingest(&forged, Vec::new());
     assert_eq!(lp.peers[2].engine.get(&copy, &tags).unwrap(), before, "{got:?}");
 }
@@ -1723,40 +1715,6 @@ fn reader_copy_voids_no_valid_carrier_spec_perm_5_2() {
     }
 }
 
-// spec/crdt.md §8 (`Authors` judges nothing), spec/permissions.md §5.2: a reader's snapshot
-// naming itself, earlier, as the author of a commit-form write a writer's snapshot carries
-// changes nothing, in either order.
-#[test]
-fn reader_snapshot_authors_change_nothing_spec_crdt_8() {
-    for reader_first in [false, true] {
-        let mut lp = net(3, 0x5f86);
-        lp.sync_all().unwrap();
-        let d = new_thing(&mut lp, 0);
-        let (a, c, r) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-        set_edge(&mut lp.peers[0].engine, d, c, Some(edge(Role::Write)), None);
-        set_edge(&mut lp.peers[0].engine, d, r, Some(edge(Role::Read)), None);
-        lp.sync_all().unwrap();
-        lp.advance(1_000);
-        let m_ak = ak("/x/m");
-        let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
-        let early = osis_base::Ts::make(WallMs(lp.peers[1].engine.now().0 - 10), 0).unwrap();
-        let y = osis_base::CommitId([0xC3; 32]);
-        let mut w = osis_crdt::Writer::new(early, osis_crdt::Source::commit(y), 1);
-        let f = osis_crdt::create(&mut w, &osis_crdt::AnyView, &Value::Map(BTreeMap::from([(s("alice"), s("v"))]))).unwrap();
-        let honest = forge_snapshot_full(&mut lp, 1, d, &m_ak, now, f.clone(), Default::default(), BTreeMap::from([(y, (a, now))]));
-        let forged = forge_snapshot_full(&mut lp, 2, d, &m_ak, now, f, Default::default(), BTreeMap::from([(y, (r, early))]));
-        let seq = if reader_first { [&forged, &honest] } else { [&honest, &forged] };
-        for b in seq {
-            lp.peers[0].engine.ingest(b, Vec::new()).unwrap();
-        }
-        let keys = match lp.peers[0].engine.get(&d, &m_ak).unwrap() {
-            Some(Value::Map(m)) => m.into_keys().collect::<BTreeSet<_>>(),
-            _ => BTreeSet::new(),
-        };
-        assert_eq!(keys, BTreeSet::from([s("alice")]), "reader first: {reader_first}");
-    }
-}
-
 // spec/permissions.md §5.2 (an invalid snapshot gives nothing; a received delta's dots take no
 // copies), §5.1: a writer's snapshot, made after its author's demotion and backdated before it,
 // carries an extra element under a dropped import's `Commit(C)`. It never shows, whether the
@@ -1782,7 +1740,6 @@ fn demoted_writer_dropped_dot_copy_alike_spec_perm_5_2() {
         sync(&mut lp, 0, i);
     }
     let imp = *imports.iter().find(|i| lp.peers[0].engine.header(i).unwrap().origins.iter().any(|o| o.commit == c)).unwrap();
-    let ih = lp.peers[0].engine.header(&imp).unwrap();
     for i in 2..4 {
         assert_eq!(lp.peers[i].engine.covered(&honest, &imp, &copy, &tags).unwrap(), Some(true));
         lp.peers[i].engine.drop_body(&imp, &copy, &tags).unwrap();
@@ -1798,7 +1755,7 @@ fn demoted_writer_dropped_dot_copy_alike_spec_perm_5_2() {
     f.join(extra);
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
-    let forged = forge_snapshot_full(&mut lp, 1, copy, &tags, now, f, osis_crdt::Frontiers::default(), BTreeMap::from([(c, (a, ih.ts))]));
+    let forged = forge_snapshot_with(&mut lp, 1, copy, &tags, now, f, osis_crdt::Frontiers::default());
     lp.advance(1_000);
     let rv = set_edge(&mut lp.peers[0].engine, copy, w, None, Some(osis_schema::core_types::Frontier::default().to_value()));
     let rv_pk = packages(&mut lp, 0).into_iter().find(|p| p.id == rv).unwrap();
@@ -1882,7 +1839,6 @@ fn forged_copy_under_dropped_delta_alike_spec_perm_5_2() {
             sync(&mut lp, 0, i);
         }
         let imp = *imports.iter().find(|i| lp.peers[0].engine.header(i).unwrap().origins.iter().any(|o| o.commit == c)).unwrap();
-        let ih = lp.peers[0].engine.header(&imp).unwrap();
         let before = lp.peers[2].engine.get(&copy, &tags).unwrap();
         assert!(before.is_some());
         let ch = lp.peers[0].engine.header(&c).unwrap();
@@ -1895,7 +1851,7 @@ fn forged_copy_under_dropped_delta_alike_spec_perm_5_2() {
         f.join(extra);
         lp.advance(1_000);
         let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
-        let forged = forge_snapshot_full(&mut lp, 1, copy, &tags, now, f, osis_crdt::Frontiers::default(), BTreeMap::from([(c, (a, ih.ts))]));
+        let forged = forge_snapshot_with(&mut lp, 1, copy, &tags, now, f, osis_crdt::Frontiers::default());
         let with = match &before {
             Some(Value::Set(v)) => Some(Value::Set(v.iter().cloned().chain([s("evil")]).collect())),
             other => panic!("{other:?}"),
@@ -2653,7 +2609,7 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
         let ts = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
         let f = lp.peers[1].engine.state(&d, &tags_ak).unwrap().unwrap();
         let ghost = osis_base::CommitId([9; 32]);
-        let forged = forge_snapshot_absorbing(&mut lp, 1, d, &tags_ak, ts, f, osis_crdt::Frontiers(BTreeMap::from([(b, 1 << 40)])), BTreeMap::new(), BTreeMap::from([(ghost, b)]));
+        let forged = forge_snapshot_absorbing(&mut lp, 1, d, &tags_ak, ts, f, osis_crdt::Frontiers::of_nodes(BTreeMap::from([(b, 1 << 40)])), BTreeMap::from([(ghost, b)]));
         if snap_first {
             assert!(matches!(lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap(), Ingested::Applied(_)));
             sync(&mut lp, 1, 0);

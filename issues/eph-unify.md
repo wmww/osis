@@ -35,13 +35,20 @@ Gone: eph-caught-up-stall, eph-unpaged-cover, eph-cover-invalidated-loses-absorb
 
 ## Plan
 Each step merges alone and passes the gate. Line counts are rough (now: engine `ephemeral/` 3442, node `sync/ephemeral.rs` 1807, tier-1 ephemeral tests about 4900).
-1. Session source as node form (`Session(node, nonce)`, per-aspect counters, frontiers; `Authors` gone). crdt §2.1, §8. About +300/-250.
+1. Session source as node form (`Session(node, nonce)`, per-aspect counters, frontiers; `Authors` gone). crdt §2.1, §8. Built (step 1 as built below).
 2. Store memory overlay and routing by class; `/placed` replaces the ephemeral side of `/group`; local ephemeral writes become ordinary commits applied in memory; measure write cost (decision point above). About +800/-500 (`mod.rs`, `place.rs`, joined reads).
 3. Received memory commits through Core: durable verify, pending, validity, un-merge, atomic apply; `Remote` held/judge/rebuild/waiting go; header forgetting. About +400/-1500.
 4. Sync: memory bodies through the durable must-hold/upload/delete path; the lane keeps presence sources and ties, relay-only, restart reconcile, node cap. Coalescing as compaction before upload. About +400/-1200.
 5. Automatic compaction policy for both classes (trigger, randomized delay, Replace at cap); own covers deleted; presence as at-most-0 with rewrite keep-alive. About +300/-600.
 6. Undo over held bodies for memory commits; undo log and `ephemeral_history` go; mixed batch pairing. About +100/-350.
 7. Spec (commits §1-2, §5; sync §6, §9; crdt §2.1, §8; data-model §2, §8; permissions §5.2) and notes rewrite.
+
+### Step 1 as built
+- `SourceKind::Session(Session { node, nonce })` (osis-crdt `stamp.rs`, crdt-model `Source::Session`): wire `bytes(31)`, order `Node` < `Session` < `Commit`; `Frontiers { nodes, sessions }`; the snapshot `Authors` array, `Remote::mine` and `authors_of` gone; receivers keep a part's writes under the author's sessions only (`only_of`, `own_session`). `EphemeralId.session` is the nonce.
+- Counters per (thing, aspect) per session (`Eph::next`), taken when a batch applies (`apply_ephemeral`), so the old reset-on-failure is gone.
+- Not yet: no commit's own writes are a session's (ephemeral commits stay commit-form snapshots carrying session stamps, frontiers empty); receipt and validity read `Node` frontier entries only; durable code treats a session dot as owned by no commit. Step 2/3 needs a header dot form whose own source is a session (or node form keyed by session), and receipt/`ranges` per session source.
+- Found: the own-cover trigger counts delta bytes plus `ENTRY_CHARGE` per commit, while a holder's node cap charges `PART_OVERHEAD` (2 KiB) per part; with `Authors` gone deltas shrank, covers came later, and a holder of several 1000-part small commits filled its 16 MiB cap before the cover came, refusing it (`own_cover_split_by_aspect`; `cover_past_page_target_bounded` similarly by a cover's decode bound). Both tests now give the holder a 64 MiB cap. Step 5's trigger must weigh what holders are charged, per part.
+
 Tests: behavioural ephemeral and presence tests (convergence, restart, caps, presence leave, signals) carry over; cover-specific ones go. The randomized `random_window_*` and sim `ephemeral*` scenarios are the acceptance oracles for steps 3-5. Steps 3-5 are intricate changes in one area: one at a time.
 
 

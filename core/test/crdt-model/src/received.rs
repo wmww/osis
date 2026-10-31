@@ -30,9 +30,9 @@ impl Received {
             _ => 0,
         }
     }
-    /// Frontiers of every `Node` source with at least counter 1 applied.
+    /// Frontiers of every `Node` and `Session` source with at least counter 1 applied.
     pub fn frontiers(&self) -> Vec<(Source, u64)> {
-        self.0.keys().filter(|s| matches!(s, Source::Node(_))).map(|s| (s.clone(), self.frontier(s))).filter(|x| x.1 > 0).collect()
+        self.0.keys().filter(|s| matches!(s, Source::Node(_) | Source::Session(_))).map(|s| (s.clone(), self.frontier(s))).filter(|x| x.1 > 0).collect()
     }
     /// A snapshot's frontier closes `[1, ctr]`.
     pub fn add_frontiers(&mut self, fr: &[(Source, u64)]) {

@@ -20,7 +20,7 @@ use crate::engine::{Engine, Mutation};
 use crate::error::{Error, Result};
 use crate::events::{Cause, ChangeId, Diagnostic, DiagnosticKind, EphemeralId, Event, Origin};
 use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs};
-use osis_crdt::{AnyView, CounterRange, Fragment, Op, PathOp, Source, Writer};
+use osis_crdt::{AnyView, CounterRange, Fragment, Op, PathOp, Session, Source, Writer};
 use osis_schema::core_types::{CREATED, GROUP};
 use osis_schema::{AspectKey, Lifetime, Schema};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -42,7 +42,7 @@ pub struct EphThing {
 }
 
 /// One ephemeral aspect: its joined state and which of its writes expire when. Expiry classes
-/// are kept as the counter ranges of this session's writes per expiry time (`strip` asks by
+/// are kept as the counter ranges of this session's writes to it per expiry time (`strip` asks by
 /// dot); a class past its time stays in `expired`, so a later join that repeats one of its
 /// records is stripped again (spec/crdt.md §4.7).
 #[derive(Clone, Debug, Default)]
@@ -74,11 +74,14 @@ fn in_ranges(d: &osis_crdt::Dot, src: &Source, ranges: &[(u64, u64)]) -> bool {
 
 /// The engine's ephemeral state.
 pub struct Eph {
-    session: [u8; 32],
-    /// Source of every local ephemeral write: `Commit(session)` (spec/crdt.md §2.1).
+    session: Session,
+    /// Source of every local ephemeral write: `Session(node, nonce)` (spec/crdt.md §2.1).
     src: Source,
-    /// The next session counter (dots are unique per session across aspects).
-    next: u64,
+    /// Per aspect written this session, its next counter (contiguous from 1, as a node's; a
+    /// write's counters are taken when it applies, so a refused one takes none). Kept for the
+    /// session, but for things freed (never written again): a counter used twice would make two
+    /// writes one dot.
+    next: HashMap<Tid, HashMap<Ak, u64>>,
     batches: u64,
     things: HashMap<Tid, EphThing>,
     /// Ephemeral records added to `things` so far (`Engine::records_seen`).
@@ -112,9 +115,25 @@ pub struct Written {
 }
 
 impl Eph {
-    /// Empty, under a new random session.
-    pub fn new(session: [u8; 32]) -> Eph {
-        Eph { session, src: Source::commit(CommitId(session)), next: 1, batches: 0, things: HashMap::new(), records: 0, aspects: HashMap::new(), timers: BTreeMap::new(), defs: BTreeMap::new(), log: log::Log::default(), drafts: BTreeMap::new(), remote: remote::Remote::default(), dropped: Vec::new(), unheld: Vec::new() }
+    /// Empty, under a new session.
+    pub fn new(session: Session) -> Eph {
+        Eph { session, src: Source::session(session), next: HashMap::new(), batches: 0, things: HashMap::new(), records: 0, aspects: HashMap::new(), timers: BTreeMap::new(), defs: BTreeMap::new(), log: log::Log::default(), drafts: BTreeMap::new(), remote: remote::Remote::default(), dropped: Vec::new(), unheld: Vec::new() }
+    }
+
+    /// The next session counter of `(tid, ak)`.
+    fn ctr(&self, tid: &Tid, ak: &Ak) -> u64 {
+        self.next.get(tid).and_then(|m| m.get(ak)).copied().unwrap_or(1)
+    }
+
+    /// Takes the session counters of `(tid, ak)` below `hi`.
+    fn take_ctrs(&mut self, tid: &Tid, ak: &Ak, hi: u64) {
+        let n = self.next.entry(*tid).or_default();
+        match n.get_mut(ak) {
+            Some(c) => *c = (*c).max(hi),
+            None => {
+                n.insert(ak.clone(), hi);
+            }
+        }
     }
 
     fn state(&self, tid: &Tid, ak: &Ak) -> Option<&Fragment> {
@@ -163,6 +182,17 @@ impl Engine {
     /// Whether `tid` is a draft again here (`Eph::drafts`), not deleted.
     pub fn is_draft_again(&self, tid: &Tid) -> bool {
         self.eph.drafts.get(tid) == Some(&false)
+    }
+
+    /// This open's session (spec/crdt.md §2.1): the source of its ephemeral writes.
+    pub fn ephemeral_session(&self) -> Session {
+        self.eph.session
+    }
+
+    /// Tests: the ephemeral state of `(tid, ak)` (own writes joined with the valid held parts).
+    #[doc(hidden)]
+    pub fn ephemeral_state(&self, tid: &Tid, ak: &Ak) -> Option<&Fragment> {
+        self.eph.state(tid, ak)
     }
 
     /// Whether `(tid, ak)` has ephemeral state here.
@@ -264,8 +294,7 @@ impl Engine {
         }
         let ts = self.core.hlc.next();
         let now = self.now();
-        let first = self.eph.next;
-        let mut resolved = Vec::new();
+        let mut resolved: Vec<Resolved> = Vec::new();
         let mut signals = Vec::new();
         let mut unfull = Vec::new();
         {
@@ -306,23 +335,15 @@ impl Engine {
             }
             let expires = am.expires.or_else(|| am.default_expiry.map(|d| ts.wall_ms().0.saturating_add(d)));
             if expires.is_some_and(|t| t <= now.0) {
-                self.eph.next = first;
                 return Err(Error::Misuse("an expiry must be in the future"));
             }
             // a presence value lives while its author is connected (notes/ephemeral.md Presence)
             if am.lifetime == Lifetime::Presence && expires.is_some() {
-                self.eph.next = first;
                 return Err(Error::Misuse("a presence write takes no expiry"));
             }
             // resolved against the joined state (a conversion's reset against the ephemeral
             // side); the ephemeral side alone (borrowed) when no durable delta is held
-            let durable = match if op.conversion { Ok(None) } else { self.durable_state(tid, ak) } {
-                Ok(d) => d,
-                Err(e) => {
-                    self.eph.next = first;
-                    return Err(e);
-                }
-            };
+            let durable = if op.conversion { None } else { self.durable_state(tid, ak)? };
             let empty = Fragment::default();
             let joined;
             let base = match (durable, self.eph.state(tid, ak)) {
@@ -335,18 +356,14 @@ impl Engine {
                     &joined
                 }
             };
-            let w = Writer::new(ts, self.eph.src.clone(), self.eph.next);
+            // counters taken at apply (`apply_ephemeral`): after an earlier write of the batch to
+            // the aspect, else the session's next
+            let lo = resolved.iter().rev().find(|r| r.tid == *tid && r.ak == *ak).map_or_else(|| self.eph.ctr(tid, ak), |r| r.range.1);
+            let w = Writer::new(ts, self.eph.src.clone(), lo);
             let view = am.schema.as_ref().and_then(|s| s.view(ak.as_str()));
             let out = match &view {
-                Some(v) => run_ops(base, w, &am.ops, v),
-                None => run_ops(base, w, &am.ops, &AnyView),
-            };
-            let out = match out {
-                Ok(o) => o,
-                Err(e) => {
-                    self.eph.next = first;
-                    return Err(e);
-                }
+                Some(v) => run_ops(base, w, &am.ops, v)?,
+                None => run_ops(base, w, &am.ops, &AnyView)?,
             };
             if let Some((delta, r)) = out {
                 let log = Some((base.footprint(&delta), am.schema.clone()));
@@ -354,28 +371,18 @@ impl Engine {
                 // (spec/sync.md §9)
                 if am.lifetime != Lifetime::Presence {
                     match self.check_full(tid, ak, &delta) {
-                        None => {
-                            self.eph.next = first;
-                            return Err(Error::Misuse("an ephemeral aspect's own state does not fit a blob"));
-                        }
+                        None => return Err(Error::Misuse("an ephemeral aspect's own state does not fit a blob")),
                         Some(true) => unfull.push((*tid, ak.clone())),
                         Some(false) => {}
                     }
                 }
-                self.eph.next = r.hi;
                 resolved.push(Resolved { tid: *tid, ak: ak.clone(), delta, range: (r.lo, r.hi), expires, presence: am.lifetime == Lifetime::Presence, log });
             }
         }
         let free = std::mem::take(&mut m.free);
         let commit = if durable {
             m.ts = Some(ts);
-            match self.commit(m) {
-                Ok(c) => c,
-                Err(e) => {
-                    self.eph.next = first;
-                    return Err(e);
-                }
-            }
+            self.commit(m)?
         } else {
             None
         };
@@ -408,6 +415,7 @@ impl Engine {
         let mut logged = Vec::new();
         let mut written = Vec::new();
         for r in resolved {
+            self.eph.take_ctrs(&r.tid, &r.ak, r.range.1);
             let src = self.eph.src.clone();
             let a = self.eph.aspects.entry(r.tid).or_default().entry(r.ak.clone()).or_default();
             let strip = !a.expired.is_empty() && r.delta.holds_dots(&|d| in_ranges(d, &src, &a.expired));
@@ -467,7 +475,7 @@ impl Engine {
             None if changed.is_empty() && signals.is_empty() && making.is_empty() => return None,
             None => {
                 self.eph.batches += 1;
-                ChangeId::Ephemeral(EphemeralId { session: self.eph.session, n: self.eph.batches })
+                ChangeId::Ephemeral(EphemeralId { session: self.eph.session.nonce, n: self.eph.batches })
             }
         };
         let cap = self.cfg.ephemeral_history;
@@ -506,6 +514,7 @@ impl Engine {
         }
         for t in &gone {
             self.eph.things.remove(t);
+            self.eph.next.remove(t);
             self.eph.remote.local.remove(t);
             self.eph.remote.presence.retain(|(x, _), _| x != t);
             self.eph.defs.remove(t);
@@ -530,19 +539,20 @@ impl Engine {
         let core = osis_schema::core_schema();
         let view = core.view(GROUP.ak());
         for (g, ops) in unplace {
-            let Some((gak, a)) = self.eph.aspects.get_mut(&g).and_then(|m| m.iter_mut().find(|(k, _)| k.as_str() == GROUP.ak())) else { continue };
-            let w = Writer::new(ts, self.eph.src.clone(), self.eph.next);
+            let Some((gak, a)) = self.eph.aspects.get(&g).and_then(|m| m.iter().find(|(k, _)| k.as_str() == GROUP.ak())) else { continue };
+            let gak = gak.clone();
+            let w = Writer::new(ts, self.eph.src.clone(), self.eph.ctr(&g, &gak));
             let out = match &view {
                 Some(v) => run_ops(&a.state, w, &ops, v),
                 None => run_ops(&a.state, w, &ops, &AnyView),
             };
             if let Ok(Some((delta, r))) = out {
-                self.eph.next = r.hi;
+                self.eph.take_ctrs(&g, &gak, r.hi);
+                let Some(a) = self.eph.aspects.get_mut(&g).and_then(|m| m.get_mut(&gak)) else { continue };
                 if let Some(o) = &mut a.own {
                     o.join(delta.clone());
                 }
                 a.state.join(delta);
-                let gak = gak.clone();
                 self.refresh_def(&g, &gak);
                 changed.push((g, gak));
             }

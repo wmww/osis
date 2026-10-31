@@ -283,7 +283,7 @@ fn wrap(x: usize, n: usize) -> usize {
 /// `f` through a snapshot; the bytes re-encode identically (§3.3).
 fn rebooted(f: &Fragment) -> Fragment {
     let cx = snap_cx();
-    let snap = |f: &Fragment| Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Default::default() };
+    let snap = |f: &Fragment| Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Default::default() };
     let bytes = encode_snapshot(&snap(f), &cx, None).expect("snapshot encodes");
     let back = decode_snapshot(&bytes, &cx, &mut Interner::new(), None).expect("own snapshot decodes").fragment;
     assert_eq!(encode_snapshot(&snap(&back), &cx, None).expect("snapshot encodes"), bytes, "a decoded snapshot re-encodes to its bytes");

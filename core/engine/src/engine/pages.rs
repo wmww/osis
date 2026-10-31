@@ -133,8 +133,12 @@ fn dot_key(d: &Dot, out: &mut Vec<u8>) {
             out.push(0);
             out.extend_from_slice(t.as_bytes());
         }
-        SourceKind::Commit(c) => {
+        SourceKind::Session(s) => {
             out.push(1);
+            out.extend_from_slice(&s.to_bytes());
+        }
+        SourceKind::Commit(c) => {
+            out.push(2);
             out.extend_from_slice(&c.0);
         }
         SourceKind::Derived(x) => dot_key(x, out),

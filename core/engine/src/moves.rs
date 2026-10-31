@@ -35,7 +35,7 @@ impl Carrier {
     /// of a node-form write; it carries writes of a commit-form write's commit.
     fn covers_dot(&self, x: &Dot) -> bool {
         match x.src.kind() {
-            SourceKind::Node(n) => self.frontiers.0.get(n).is_some_and(|f| *f >= x.ctr),
+            SourceKind::Node(n) => self.frontiers.nodes.get(n).is_some_and(|f| *f >= x.ctr),
             SourceKind::Commit(c) => self.rank.keys().any(|d| matches!(d.src.kind(), SourceKind::Commit(y) if y == c)),
             _ => false,
         }
@@ -49,7 +49,7 @@ impl Carrier {
         }
         let Some(a) = h.aspects.get(ai) else { return false };
         match h.form {
-            Form::Node => self.frontiers.0.get(&h.author).is_some_and(|f| a.hi > 0 && *f >= a.hi - 1),
+            Form::Node => self.frontiers.nodes.get(&h.author).is_some_and(|f| a.hi > 0 && *f >= a.hi - 1),
             Form::Commit => self.rank.keys().any(|d| matches!(d.src.kind(), SourceKind::Commit(x) if x == c)),
         }
     }

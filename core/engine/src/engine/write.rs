@@ -424,8 +424,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
             tx.rng.fill_bytes(&mut nonce);
             let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
             bytes.push(match frontiers.take() {
-                // a compaction snapshot names no `Authors` (spec/crdt.md §8)
-                Some((frontiers, absorbed)) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers, absorbed, authors: BTreeMap::new() }, &cx, Some(&mut bw))?,
+                Some((frontiers, absorbed)) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers, absorbed }, &cx, Some(&mut bw))?,
                 None => encode_delta(&Delta { nonce, fragment }, &cx, Some(&mut bw))?,
             });
         }

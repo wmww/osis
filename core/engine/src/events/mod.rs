@@ -29,10 +29,11 @@ pub enum Cause {
     LostAccess,
 }
 
-/// An ephemeral batch of this node (notes/ephemeral.md): its session and its number there.
+/// An ephemeral batch of this node (notes/ephemeral.md): its session's nonce (spec/crdt.md §2.1)
+/// and its number there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EphemeralId {
-    pub session: [u8; 32],
+    pub session: [u8; osis_crdt::SESSION_NONCE_LEN],
     pub n: u64,
 }
 

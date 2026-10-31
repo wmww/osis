@@ -30,7 +30,7 @@ fuzz_target!(|data: &[u8]| {
         let _ = st.read();
         st.join(d.fragment);
         let read = st.read();
-        let snap = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: st.clone(), frontiers: Default::default() };
+        let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: st.clone(), frontiers: Default::default() };
         let Ok(b) = encode_snapshot(&snap, &scx, None) else { continue };
         let fresh = decode_snapshot(&b, &scx, &mut Interner::new(), None).expect("own snapshot decodes");
         assert_eq!(fresh.fragment.read(), read);

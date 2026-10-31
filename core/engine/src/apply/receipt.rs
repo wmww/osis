@@ -156,7 +156,7 @@ pub(crate) fn received(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, as_of: u64) -> Resul
     let mut absorbed: Vec<(CommitId, u64)> = Vec::new();
     for (s, _, fr, abs) in valid_snapshots(core, tid, ak) {
         let Some(at) = r.commits.get(&s).map(|c| c.1) else { continue };
-        for (n, c) in &fr.0 {
+        for (n, c) in &fr.nodes {
             claims.entry(*n).or_default().push((*c, at));
         }
         absorbed.extend(abs.iter().map(|(c, _)| (*c, at)));
@@ -208,7 +208,7 @@ pub(crate) fn listed(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: 
     let Some(a) = h.aspects.get(ai) else { return false };
     let node_form = h.form == Form::Node && h.kind.has_own_writes();
     held_snapshots(core, &a.tid, &a.ak).any(|(_, ts, fr, abs)| {
-        ts > h.ts && if node_form { fr.0.get(&h.author).is_some_and(|c| *c >= a.hi.saturating_sub(1)) } else { abs.iter().any(|x| x.0 == *id) }
+        ts > h.ts && if node_form { fr.nodes.get(&h.author).is_some_and(|c| *c >= a.hi.saturating_sub(1)) } else { abs.iter().any(|x| x.0 == *id) }
     })
 }
 

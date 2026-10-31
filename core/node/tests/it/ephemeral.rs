@@ -1346,8 +1346,89 @@ fn own_cover_of_two_created_copies_taken_spec_sync_9() {
     net.engine(b).ingest_ephemeral(covers[0].blob.clone()).unwrap();
 }
 
+// spec/crdt.md §2.1: a write's session names its node, so a node's own writes are its sessions'
+// (the dots of `node`'s writes on `(t, ak)` here)
+fn session_dots(net: &mut Net, n: usize, t: Tid, ak: &str) -> Vec<(osis_crdt::Session, u64)> {
+    let ak = osis_base::Ak::new(ak).unwrap();
+    let f = net.engine(n).ephemeral_state(&t, &ak).cloned().unwrap_or_default();
+    let mut out: Vec<(osis_crdt::Session, u64)> = f.writes().into_iter().filter_map(|(d, _)| d.src.as_session().map(|s| (s, d.ctr))).collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+// spec/crdt.md §2.1: a restart starts a new session of the same node; counters run per aspect
+// from 1, contiguous, in each session
+#[test]
+fn restart_starts_a_new_session_spec_crdt_2_1() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let g = net.group(a, &[], &[sv]);
+    net.run();
+    let first = net.engine(a).ephemeral_session();
+    assert_eq!(first.node, net.tid(a));
+    let w = window(&mut net, a, g, "w");
+    note(&mut net, a, w, "k1", "v");
+    note(&mut net, a, w, "k2", "v");
+    net.run();
+    // the window's state and its notes count apart, from 1
+    assert_eq!(session_dots(&mut net, a, w, STATE), vec![(first, 1)]);
+    assert_eq!(session_dots(&mut net, a, w, NOTES), vec![(first, 1), (first, 2)]);
+    net.restart(a, 11);
+    net.run();
+    let second = net.engine(a).ephemeral_session();
+    assert_eq!(second.node, first.node, "the same node");
+    assert_ne!(second.nonce, first.nonce, "a new session");
+    assert_eq!(notes(&mut net, a, w), map(&[("k1", "v"), ("k2", "v")]), "the earlier session's writes back from the server");
+    note(&mut net, a, w, "k3", "v");
+    net.run();
+    assert_eq!(session_dots(&mut net, a, w, NOTES), vec![(first, 1), (first, 2), (second, 1)]);
+}
+
+// spec/crdt.md §2.1: two sessions of one node never collide: the same counter of one aspect in
+// each makes two elements, everywhere
+#[test]
+fn sessions_of_one_node_never_collide_spec_crdt_2_1() {
+    const ITEMS: &str = "/win/items";
+    // a list of `v` (on an empty state: its element takes the aspect's first counter)
+    let list = |net: &mut Net, n: usize, w: Tid, v: &str| {
+        let mut m = Mutation::new();
+        m.set(w, &eph(ITEMS), &Value::List(vec![s(v)])).unwrap();
+        net.engine(n).write(m).unwrap();
+        local(net, n);
+    };
+    let items = |net: &mut Net, n: usize, w: Tid| match net.eph_read(n, w, ITEMS) {
+        Some(Value::List(l)) => l.into_iter().collect::<BTreeSet<Value>>(),
+        x => panic!("node {n}: {x:?}"),
+    };
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    // an ephemeral aspect of the (durable) group: writable at once after a restart
+    let w = g;
+    list(&mut net, a, w, "x");
+    net.run();
+    net.restart(a, 12);
+    // written before the earlier session's state is back: counter 1 again, another element
+    list(&mut net, a, w, "y");
+    net.run();
+    let want = BTreeSet::from([s("x"), s("y")]);
+    for n in [a, b] {
+        assert_eq!(items(&mut net, n, w), want, "node {n}");
+        let ctrs: Vec<u64> = session_dots(&mut net, n, w, ITEMS).into_iter().map(|(_, c)| c).collect();
+        assert_eq!(ctrs, vec![1, 1], "node {n}: two sessions, one counter each");
+    }
+    net.restart(b, 13);
+    net.run();
+    assert_eq!(items(&mut net, b, w), want, "a restarted holder, from the server");
+}
+
 // spec/sync.md §9 (an ephemeral commit carries only its author's writes): a write under another
-// node's source (not a session its `Authors` attributes to the author) is not joined either
+// node's source or another node's session is not joined either
 #[test]
 fn node_sourced_write_in_a_commit_not_joined_spec_sync_9() {
     let mut net = Net::new();
@@ -1366,6 +1447,10 @@ fn node_sourced_write_in_a_commit_not_joined_spec_sync_9() {
     let forged = net.engine(b).forge_ephemeral_as_node(w, &ak, v, at).unwrap().unwrap();
     net.engine(a).ingest_ephemeral(forged.blob).unwrap();
     assert_eq!(notes(&mut net, a, w), map(&[("a", "1")]), "b passed a write off as a's node's");
+    let v = Value::Map(BTreeMap::from([(s("y"), s("forged"))]));
+    let forged = net.engine(b).forge_ephemeral_as_session(w, &ak, v, at).unwrap().unwrap();
+    net.engine(a).ingest_ephemeral(forged.blob).unwrap();
+    assert_eq!(notes(&mut net, a, w), map(&[("a", "1")]), "b passed a write off as one of a's sessions'");
 }
 
 // spec/sync.md §9 (what a cover absorbs is deleted at a server once the cover is held there):
@@ -2421,7 +2506,9 @@ fn cover_past_page_target_bounded_spec_sync_9() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
+    // a cover's decode bound (about 25 times its bytes for 1 KB strings) must fit beside what
+    // the holder holds: past the cap is its own outcome, tested elsewhere
+    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 64 << 20, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
     let w = window(&mut net, a, g, "w");
@@ -2592,7 +2679,10 @@ fn own_cover_split_by_aspect_spec_sync_9() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
+    // the holder's cap charges 2 KiB per part, which several 1000-part commits fill before the
+    // author's cover (weighed by delta bytes) comes: past the cap is its own outcome, tested
+    // elsewhere
+    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 64 << 20, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
     let l = net.label(a);
@@ -2605,7 +2695,8 @@ fn own_cover_split_by_aspect_spec_sync_9() {
         let [(_, held, cover, largest)] = load[..] else { panic!("one actor: {load:?}") };
         assert!(held <= osis_node::ephemeral::COVER_FACTOR * cover + largest, "round {round}: {held} B of own commits, cover {cover} B");
         let (at_b, at_sv) = (encoded_held(&mut net, b, &l), net.servers[sv].hub.store().ephemeral_bytes(&l) as usize);
-        assert!(at_b <= 3 * cover && at_sv <= 4 * cover, "round {round}: holder {at_b} B, server {at_sv} B, cover {cover} B");
+        // headers weigh about what these small deltas do (the trigger counts deltas alone)
+        assert!(at_b <= 4 * cover && at_sv <= 4 * cover, "round {round}: holder {at_b} B, server {at_sv} B, cover {cover} B");
         assert_eq!(read_many(&mut net, b, g, N), read_many(&mut net, a, g, N), "round {round}");
     }
     assert_eq!(net.eph_read(b, g, "/x/a0000"), Some(s("r6")));

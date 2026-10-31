@@ -775,7 +775,7 @@ impl Core {
                 let (_, (hi, c)) = m.range(..=d.ctr).next_back()?;
                 (d.ctr < *hi).then_some(*c)
             }
-            SourceKind::Derived(_) => None,
+            SourceKind::Session(_) | SourceKind::Derived(_) => None,
         }
     }
 }
@@ -1195,11 +1195,11 @@ pub struct Engine {
     pub(crate) cfg: Config,
 }
 
-/// A random session for this open's ephemeral writes.
-fn session(rng: &mut dyn CryptoRngCore) -> crate::ephemeral::Eph {
-    let mut s = [0u8; 32];
-    rng.fill_bytes(&mut s);
-    crate::ephemeral::Eph::new(s)
+/// A new session of node `node` for this open's ephemeral writes (spec/crdt.md §2.1).
+fn session(node: Tid, rng: &mut dyn CryptoRngCore) -> crate::ephemeral::Eph {
+    let mut nonce = [0u8; osis_crdt::SESSION_NONCE_LEN];
+    rng.fill_bytes(&mut nonce);
+    crate::ephemeral::Eph::new(osis_crdt::Session { node, nonce })
 }
 
 impl Engine {
@@ -1211,7 +1211,7 @@ impl Engine {
         rng.fill_bytes(&mut seed);
         let store_rng = SeededRng::from_seed(seed);
         let id = Identity::generate(&mut *rng);
-        let eph = session(&mut *rng);
+        let eph = session(id.tid(), &mut *rng);
         let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone()), eph, clock, cfg };
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
@@ -1235,7 +1235,7 @@ impl Engine {
         };
         let s: [u8; 32] = s.as_slice().try_into().map_err(|_| Error::Corrupt("seed"))?;
         let id = Identity::from_seed(osis_crypto::Secret32::from_bytes(s));
-        let eph = session(&mut *rng);
+        let eph = session(id.tid(), &mut *rng);
         let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone()), eph, clock, cfg };
         e.reload()?;
         e.reexamine()?;

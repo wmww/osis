@@ -8,7 +8,7 @@ use crate::error::Error;
 use crate::fragment::{Bag, CaseWrite, Eid, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
 use crate::page::{PageError, PageParams, PageSink, PageSource};
 use crate::seq::{self, Seq};
-use crate::stamp::{Dot, Interner, Source, Stamp};
+use crate::stamp::{Dot, Interner, Source, SourceKind, Stamp};
 use crate::wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, NONCE_LEN, Snapshot, as_array, as_uint, uint};
 use osis_base::format::{MAX_BLOB, MAX_OBJECT_DEPTH, MAX_VALUE_DEPTH};
 use osis_base::{Limits, PageCutter, Value};
@@ -220,11 +220,11 @@ pub(crate) fn encode_fragment(cx: &mut Enc, f: &Fragment) -> Result<Value, Error
 fn encode_top<'p>(cx: &DeltaCtx, f: &Fragment, frontiers: Option<&Frontiers>, pages: Option<&'p mut dyn PageSink>) -> Result<(Enc<'p>, Value, Option<Value>), Error> {
     let mut enc = Enc::new(cx, pages);
     encode_fragment(&mut enc, f)?;
-    let extra: Vec<Source> = frontiers.map(|fr| fr.0.keys().map(|t| Source::node(*t)).collect()).unwrap_or_default();
+    let extra: Vec<Source> = frontiers.map(|fr| fr.sources().map(|(s, _)| s).collect()).unwrap_or_default();
     enc.finish_collecting(&extra);
     let frag = encode_fragment(&mut enc, f)?;
     let fr = frontiers.map(|fr| {
-        let mut entries: Vec<(Value, u64)> = fr.0.iter().map(|(t, c)| (enc.src(&Source::node(*t)), *c)).collect();
+        let mut entries: Vec<(Value, u64)> = fr.sources().map(|(s, c)| (enc.src(&s), c)).collect();
         entries.sort_by_key(|(i, _)| match i {
             Value::Int(i) => *i,
             _ => i64::MAX,
@@ -243,22 +243,13 @@ pub fn encode_delta(d: &Delta, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) 
 
 /// Encodes a snapshot delta (§8). The caller strips values of expiring deltas first (§4.7).
 pub fn encode_snapshot(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
-    if s.frontiers.0.values().any(|c| *c == 0) {
+    if s.frontiers.sources().any(|(_, c)| c == 0) {
         return Err(Error::Mismatch("frontier counter 0"));
     }
     let (enc, frag, fr) = encode_top(cx, &s.fragment, Some(&s.frontiers), pages)?;
     let fr = fr.unwrap_or(Value::List(Vec::new()));
     let absorbed = Value::List(s.absorbed.iter().map(|(c, a)| Value::List(vec![Value::Bytes(c.0.to_vec()), Value::Tid(*a)])).collect());
-    let mut top = vec![Value::Bytes(s.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag, fr, absorbed];
-    // `Authors := [[Src, tid, Ts]+]` by `Src`, only when one is given (§8)
-    let authors: Vec<Value> = enc
-        .commit_sources()
-        .into_iter()
-        .filter_map(|(i, c)| s.authors.get(&c).map(|(n, ts)| Value::List(vec![uint(i), Value::bytes(n.as_bytes()), uint(ts.to_u64())])))
-        .collect();
-    if !authors.is_empty() {
-        top.push(Value::List(authors));
-    }
+    let top = vec![Value::Bytes(s.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag, fr, absorbed];
     Ok(osis_base::encode(&Value::List(top)))
 }
 
@@ -709,21 +700,20 @@ pub fn decode_delta<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner,
 pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Snapshot, Error> {
     check_root(bytes, pages.as_deref())?;
     let top = osis_base::decode(bytes, &LIMITS)?;
-    let (n, sources, commits, frag, fr, ab, au) = match as_array(&top)? {
-        [n, sources, commits, frag, fr, ab] => (n, sources, commits, frag, fr, ab, None),
-        [n, sources, commits, frag, fr, ab, au] => (n, sources, commits, frag, fr, ab, Some(au)),
-        _ => return Err(Error::Malformed("snapshot arity")),
-    };
+    let [n, sources, commits, frag, fr, ab] = as_array(&top)? else { return Err(Error::Malformed("snapshot arity")) };
     let mut dec = Dec::new(cx, interner, pages);
     dec.load_sources(sources)?;
     dec.load_commits(commits)?;
     let fragment = decode_fragment(&mut dec, frag, true)?;
-    let mut frontiers = BTreeMap::new();
+    let mut frontiers = Frontiers::default();
     for e in as_array(fr)? {
         let [i, c] = as_array(e)? else { return Err(Error::Malformed("frontier")) };
-        let tid = dec.src(i)?.as_node().ok_or(Error::Malformed("frontier of a non-node source"))?;
+        let src = dec.src(i)?;
+        if !matches!(src.kind(), SourceKind::Node(_) | SourceKind::Session(_)) {
+            return Err(Error::Malformed("frontier of a source neither node nor session"));
+        }
         let c = as_uint(c)?;
-        if c == 0 || frontiers.insert(tid, c).is_some() {
+        if c == 0 || !frontiers.insert(&src, c) {
             return Err(Error::Malformed("frontier counter 0 or repeated"));
         }
     }
@@ -736,22 +726,8 @@ pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Intern
             return Err(Error::Malformed("absorbed commit repeated"));
         }
     }
-    let mut authors = BTreeMap::new();
-    let mut last = 0u64;
-    for e in au.map(as_array).transpose()?.unwrap_or_default() {
-        let [i, t, ts] = as_array(e)? else { return Err(Error::Malformed("author")) };
-        let i = as_uint(i)?;
-        let t = osis_base::Tid::from_bytes(t.as_array().ok_or(Error::Malformed("author tid"))?);
-        let ts = osis_base::Ts::from_u64(as_uint(ts)?).ok_or(Error::Malformed("author ts"))?;
-        let c = dec.source(i)?.as_commit().ok_or(Error::Malformed("author of a non-commit source"))?;
-        if i <= last {
-            return Err(Error::Malformed("authors out of order"));
-        }
-        last = i;
-        authors.insert(c, (t, ts));
-    }
     let mut replay = dec.replay();
-    let s = Snapshot { nonce: nonce(n)?, fragment, frontiers: Frontiers(frontiers), absorbed, authors };
+    let s = Snapshot { nonce: nonce(n)?, fragment, frontiers, absorbed };
     canonical(bytes, encode_snapshot(&s, cx, Some(&mut replay)))?;
     Ok(s)
 }

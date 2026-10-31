@@ -80,6 +80,6 @@ pub use seq_diff::{EditWindow, changes, edit_window};
 pub use seq_ops::cut_dots;
 pub use seq_place::{PlaceBlock, PlaceDiff, PlaceMisses, PlaceRow, PlaceTop, SeqPlace};
 pub use lifecycle::Stamps;
-pub use stamp::{CounterRange, Dot, Interner, Source, SourceKind, Stamp};
+pub use stamp::{CounterRange, Dot, Interner, SESSION_NONCE_LEN, Session, Source, SourceKind, Stamp};
 pub use view::{AnyView, View};
 pub use wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, Received, MAX_RUN, NONCE_LEN, Snapshot};

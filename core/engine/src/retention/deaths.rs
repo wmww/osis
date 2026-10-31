@@ -36,12 +36,12 @@ pub(crate) fn any_bounded(core: &Core, tid: &Tid, ak: &Ak) -> bool {
 fn took(core: &Core, tid: &Tid, fr: &osis_crdt::Frontiers, abs: &[(CommitId, Tid)], o: &osis_crdt::Dot) -> bool {
     let o = o.owner();
     match o.src.kind() {
-        osis_crdt::SourceKind::Node(n) => fr.0.get(n).is_some_and(|f| *f >= o.ctr),
+        osis_crdt::SourceKind::Node(n) => fr.nodes.get(n).is_some_and(|f| *f >= o.ctr),
         osis_crdt::SourceKind::Commit(c) => {
             let imports = core.ix.imports.get(&(*tid, *c));
             abs.iter().any(|(a, _)| a == c || imports.is_some_and(|i| i.contains(a)))
         }
-        osis_crdt::SourceKind::Derived(_) => false,
+        osis_crdt::SourceKind::Session(_) | osis_crdt::SourceKind::Derived(_) => false,
     }
 }
 
