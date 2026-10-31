@@ -258,7 +258,7 @@ fn bench_certificates() {
     let certs = tl.certificates(&nodes[1], &doc, end);
     let t1 = Instant::now();
     let certs_mid = tl.certificates(&nodes[2], &doc, mid);
-    eprintln!("{n} edge writes: evaluate {eval:?}, chain certificates at the end {:?} ({} commits), at the middle {:?} ({} commits)", t1 - t0, certs.commits.len(), t1.elapsed(), certs_mid.commits.len());
+    eprintln!("{n} edge writes ({} dropped): evaluate {eval:?}, chain certificates at the end {:?} ({} commits), at the middle {:?} ({} commits)", tl.dropped().len(), t1 - t0, certs.commits.len(), t1.elapsed(), certs_mid.commits.len());
 }
 
 // spec: none (cost measurement, issues/perm-eval-cost.md): layer-2 re-judging alone on the org
