@@ -489,6 +489,7 @@ fn node_cap_bounds_decoded_size_spec_sync_9() {
     assert_eq!(net.sync(b).ephemeral_bytes(&l), 0, "refused before decoding");
     assert_eq!(net.eph_read(b, t, NOTES), None);
     assert!(rx.try_iter().any(|e| matches!(e, osis_node::Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::EphemeralRefused)), "reported");
+    assert!(net.diagnostics(b).iter().any(|d| d.starts_with("EphemeralRefused")), "the harness lists it");
     tiny(&mut net, 500, 3);
     let held = net.sync(b).ephemeral_bytes(&l);
     assert!(held > 3 * 2048 && held <= cap, "{held} counted here");

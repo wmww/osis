@@ -13,7 +13,7 @@ use osis_server::{BackendStore, Hub, HubOutput, Policy};
 use osis_store::MemoryBackend;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 /// Start of the world's wall clock (ms).
@@ -66,6 +66,8 @@ pub struct World {
     /// With `tally`: upstream frames per (database, message kind): count and bytes.
     tally: Option<BTreeMap<(usize, String), (u64, u64)>>,
     decoders: BTreeMap<(usize, ConnId), FrameDecoder>,
+    /// Engine diagnostics per database since the last `diagnostics` call.
+    diags: Arc<Mutex<BTreeMap<usize, Vec<String>>>>,
 }
 
 impl Default for World {
@@ -89,6 +91,7 @@ impl World {
             traffic: Vec::new(),
             tally: None,
             decoders: BTreeMap::new(),
+            diags: Arc::default(),
         }
     }
 
@@ -131,6 +134,12 @@ impl World {
     fn dbs(&mut self) -> Vec<Option<Osis>> {
         let v = self.net.dbs();
         if v.len() > self.offline.len() {
+            for (i, db) in v.iter().enumerate().skip(self.offline.len()) {
+                if let Some(db) = db {
+                    let diags = self.diags.clone();
+                    db.on_diagnostic(move |_, d| diags.lock().unwrap_or_else(|e| e.into_inner()).entry(i).or_default().push(format!("{:?}: {}", d.kind, d.detail))).detach();
+                }
+            }
             self.offline.resize(v.len(), false);
             self.traffic.resize(v.len(), Traffic::default());
         }
@@ -140,6 +149,33 @@ impl World {
     /// The index of a database in this world.
     pub fn index(&mut self, db: &Osis) -> Option<usize> {
         self.dbs().iter().position(|d| d.as_ref().is_some_and(|d| d.node() == db.node()))
+    }
+
+    /// `db`'s diagnostics since the last call: the sync engine's and the engine's (refusals that
+    /// change nothing a test reads, e.g. a value past a bound). Those from before the world first
+    /// saw `db` (its first settle) are the sync engine's only.
+    pub fn diagnostics(&mut self, db: &Osis) -> Vec<String> {
+        let mut out = db.sync_engine(|s| s.take_diagnostics());
+        let Some(i) = self.index(db) else { return out };
+        let engine = self.diags.lock().unwrap_or_else(|e| e.into_inner()).remove(&i).unwrap_or_default();
+        for d in engine {
+            if !out.iter().any(|x| d.ends_with(x.as_str())) {
+                out.push(d);
+            }
+        }
+        out
+    }
+
+    /// Prints every database's diagnostics (stderr, shown when a test fails).
+    pub fn trace(&mut self) {
+        for (i, db) in self.dbs().iter().enumerate() {
+            if let Some(db) = db {
+                let d = self.diagnostics(db);
+                if !d.is_empty() {
+                    eprintln!("db {i}: {d:?}");
+                }
+            }
+        }
     }
 
     /// Starts counting the messages databases send, by kind (cost analysis; slows the run).
@@ -420,7 +456,7 @@ impl World {
     }
 
     /// Drives the world until `f` resolves: settling, then stepping time by `step_ms`, at most
-    /// `steps` times. `None` if it did not resolve.
+    /// `steps` times. `None` if it did not resolve (every database's diagnostics printed).
     pub fn until<F: Future>(&mut self, f: F, step_ms: u64, steps: usize) -> Option<F::Output> {
         let mut f = std::pin::pin!(f);
         let mut cx = Context::from_waker(Waker::noop());
@@ -434,6 +470,7 @@ impl World {
             }
             self.advance(step_ms);
         }
+        self.trace();
         None
     }
 }

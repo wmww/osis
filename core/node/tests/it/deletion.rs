@@ -10,15 +10,6 @@ use osis_node::sync::EntryKind;
 use osis_schema::AspectKey;
 use osis_schema::core_types as ct;
 
-fn diags(net: &mut Net, nodes: &[usize]) {
-    for n in nodes {
-        let d = net.sync(*n).take_diagnostics();
-        if !d.is_empty() {
-            eprintln!("node {n}: {d:?}");
-        }
-    }
-}
-
 // spec/sync.md §3 (retag), §5 (deletion by delete key), §6: a thing leaving the folder takes its own
 // bodies out of the folder's label; a writer without the label delete key deletes them by delete key.
 #[test]
@@ -44,7 +35,7 @@ fn thing_leaving_deleted_by_delete_key_spec_sync_5() {
     m.set(g, &ct::GROUP, &grp).unwrap();
     e.commit(m).unwrap();
     net.run();
-    diags(&mut net, &[b]);
+    net.trace(&[b]);
     assert!(!net.engine(b).closure(&g).contains(&t));
     let ids = net.server_ids(sv, &l);
     assert!(blobs.iter().all(|id| !ids.contains(id)), "the commit only on the departed thing went");
@@ -71,12 +62,12 @@ fn compaction_then_deletion_spec_sync_7() {
     net.actions(a, acts);
     net.run();
     net.run();
-    diags(&mut net, &[a]);
+    net.trace(&[a]);
     let after = net.server_ids(sv, &l).len();
     assert!(after < before, "covered bodies deleted after the snapshot: {before} -> {after}");
     net.blocked.clear();
     net.advance(10_000);
-    diags(&mut net, &[c]);
+    net.trace(&[c]);
     assert_eq!(net.read(c, t), Some(s("v3")), "the live value is served from the snapshot");
 }
 
@@ -119,7 +110,7 @@ fn rotation_at_full_server_waits_spec_sync_5() {
     assert!(!st.stranded && st.open == 1, "{st:?}");
     net.advance(wait);
     net.advance(60_000);
-    diags(&mut net, &[a]);
+    net.trace(&[a]);
     assert_eq!(net.server_path(sv, &l).len(), 3, "it lands after over_cap_step_ms");
 }
 
@@ -148,7 +139,7 @@ fn reregistration_after_rotation_spec_sync_5() {
     remove_member(e, g, ct_, &rs, 41);
     net.write(a, t, "after");
     net.run();
-    diags(&mut net, &[a, b]);
+    net.trace(&[a, b]);
     assert_eq!(net.server_path(sv, &l).len(), 2, "a child step was registered");
     assert_eq!(net.sync(a).labels()[0].1.steps.len(), 2, "and recorded in /label");
     assert_eq!(net.read(b, t), Some(s("after")));
@@ -186,7 +177,7 @@ fn timed_delete_spec_sync_5() {
     net.engine(a).commit(m).unwrap();
     net.run();
     net.run();
-    diags(&mut net, &[a]);
+    net.trace(&[a]);
     let before = net.server_ids(sv, &l).len();
     net.set_online(a, false);
     net.clock.advance(3_600_000 + 1_000);

@@ -12,15 +12,6 @@ use osis_schema::core_types as ct;
 use osis_server::Policy;
 use std::collections::BTreeSet;
 
-fn diags(net: &mut Net, nodes: &[usize]) {
-    for n in nodes {
-        let d = net.sync(*n).take_diagnostics();
-        if !d.is_empty() {
-            eprintln!("node {n}: {d:?}");
-        }
-    }
-}
-
 /// Commits under label `l` that `n` knows, with the aspects their headers touch.
 fn commits_under(net: &mut Net, n: usize, l: &osis_base::LabelId) -> Vec<(osis_base::CommitId, osis_base::Tid, BTreeSet<String>)> {
     let entries = net.sync(n).entries(l);
@@ -47,7 +38,7 @@ fn certificates_and_heartbeats_spec_permissions_4() {
     net.run();
     // a deposit is promoted after a writer's relay wait (spec/sync.md §5)
     net.advance(30_000);
-    diags(&mut net, &[a, r]);
+    net.trace(&[a, r]);
     let l = net.label(a);
     let rt = net.tid(r);
     let under = commits_under(&mut net, a, &l);
@@ -137,7 +128,7 @@ fn pages_and_lazy_chunks_spec_sync_6() {
     m.set(t, &BIG, &Value::Map(map.clone())).unwrap();
     net.engine(a).commit(m).unwrap();
     net.run();
-    diags(&mut net, &[a, b]);
+    net.trace(&[a, b]);
     let big_ak = Ak::new(BIG.ak()).unwrap();
     let got = net.engine(b).get(&t, &big_ak).unwrap();
     assert!(got == Some(Value::Map(map)), "the paged delta applied; pending {:?}", net.engine(b).pending());
@@ -167,7 +158,7 @@ fn reconciliation_fallback_spec_sync_6() {
     }
     net.set_online(b, true);
     net.advance(10_000);
-    diags(&mut net, &[b]);
+    net.trace(&[b]);
     assert_eq!(net.read(b, t), Some(s("v39")));
 }
 
@@ -201,7 +192,7 @@ fn inbox_delivery_spec_sync_3() {
     let acts = net.sync(s_).deliver_inbox(&p, &c, &all).unwrap();
     net.actions(s_, acts);
     net.run();
-    diags(&mut net, &[s_, b]);
+    net.trace(&[s_, b]);
     assert!(net.sync(b).entries(&home.id).iter().any(|(_, k)| matches!(k, EntryKind::Inbox(_))));
     assert_eq!(net.read(b, x), Some(s("for P")));
 }
@@ -234,7 +225,7 @@ fn label_published_under_home_label_spec_sync_2() {
     let t = net.item(a, g2, g2, "inside");
     net.run();
     net.run();
-    diags(&mut net, &[a, b]);
+    net.trace(&[a, b]);
     let labels = net.engine(b).get_typed(&g2, &ct::LABEL).unwrap();
     assert!(labels.is_some_and(|l| l.len() == 1), "B found the group's label through P's home label");
     // B is listed by P's claim key (P owns the group): it claims, downloads the rotation under
@@ -265,7 +256,7 @@ fn label_replacement_spec_sync_2() {
     net.restart(a, 9);
     net.run();
     net.run();
-    diags(&mut net, &[a, b]);
+    net.trace(&[a, b]);
     assert_ne!(new, old);
     let labels: Vec<_> = net.sync(b).labels().into_iter().map(|(_, l)| (l.id, l.index)).collect();
     assert_eq!(labels, vec![(new, 1)], "only the new label is synced");
@@ -489,7 +480,7 @@ fn grant_by_inbox_end_to_end_spec_sync_3() {
     for _ in 0..3 {
         net.advance(70_000);
     }
-    diags(&mut net, &[a, b]);
+    net.trace(&[a, b]);
     assert!(net.engine(b).pending().is_empty(), "the grant applied: {:?}", net.engine(b).pending());
     assert_eq!(net.read(b, t), Some(s("for bob")));
 }
@@ -515,7 +506,7 @@ fn static_entry_opens_home_label_spec_sync_5() {
     net.actions(c, acts);
     net.run();
     net.run();
-    diags(&mut net, &[c]);
+    net.trace(&[c]);
     assert_eq!(net.read(c, t), Some(s("on the card's label")));
 }
 
@@ -557,7 +548,7 @@ fn grant_by_inbox_reads_earlier_content_spec_crypto_4() {
     for _ in 0..3 {
         net.advance(70_000);
     }
-    diags(&mut net, &[a, b]);
+    net.trace(&[a, b]);
     assert!(net.engine(b).pending().is_empty(), "the grant applied: {:?}", net.engine(b).pending());
     assert_eq!(net.read(b, t), Some(s("before bob")));
 }
@@ -631,7 +622,7 @@ fn purge_shreds_only_unique_chunks_spec_sync_7() {
     m.purge(osis_commit::PurgeItem::Commit { commit: c1, tid: t, ak: blob_ak.clone() });
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
-    diags(&mut net, &[a, b]);
+    net.trace(&[a, b]);
     let server = at_server(&net);
     assert!(unique.is_disjoint(&server), "a chunk only the purged version reached is gone at the server");
     assert!(shared.is_subset(&server), "shared chunks stay");
@@ -754,7 +745,7 @@ fn reused_chunks_follow_a_new_label_spec_sync_3() {
     net.actions(a, acts);
     net.run();
     net.run();
-    diags(&mut net, &[a, b]);
+    net.trace(&[a, b]);
     let under: BTreeSet<_> = net.server_ids(sv, &new).into_iter().collect();
     assert!(shared.is_subset(&under), "reused chunks under the new label: {} of {}", shared.intersection(&under).count(), shared.len());
     let acts = net.sync(b).fetch_missing();
@@ -785,7 +776,7 @@ fn body_links_stay_in_the_closure_spec_sync_3() {
     let both = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     net.run();
-    diags(&mut net, &[a, b]);
+    net.trace(&[a, b]);
     let outside = net.engine(a).live_trees(&t2).unwrap().blobs;
     assert!(outside.len() > 4);
     let l = net.label(a);
@@ -823,7 +814,7 @@ fn lazy_node_shreds_dropped_chunks_spec_sync_7() {
     net.engine(b).commit(m).unwrap().unwrap();
     net.run();
     net.run();
-    diags(&mut net, &[b]);
+    net.trace(&[b]);
     let l = net.label(b);
     let server: BTreeSet<_> = net.server_ids(sv, &l).into_iter().collect();
     assert!(unique.is_disjoint(&server), "a chunk only the purged version reached is gone at the server");

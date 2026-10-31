@@ -17,6 +17,7 @@ use osis_server::{BackendStore, Hub, HubOutput, Policy};
 use osis_store::{MemoryBackend, MemoryRoot};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 
 pub const T0: u64 = 1_700_000_000_000;
 
@@ -38,6 +39,8 @@ pub struct Node {
     pub life: u64,
     /// Its user accepts every invite request (spec/sync.md §3) as it appears (default).
     pub accepts: bool,
+    /// Its engine's durable events, for `diagnostics`.
+    events: Receiver<osis_node::Event>,
 }
 
 /// Messages to a node carry its `life` when sent: one sent before it restarted is dropped (it
@@ -218,8 +221,9 @@ impl Net {
         let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
         let c: Arc<dyn Clock> = self.clock.clone();
         let engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c.clone(), Box::new(SeededRng::from_u64(seed))).unwrap();
-        let sync = SyncEngine::new(engine, c, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
-        self.nodes.push(Node { sync: Some(sync), backend, root, online: true, wake: None, life: 0, accepts: true });
+        let mut sync = SyncEngine::new(engine, c, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
+        let events = sync.engine_mut().subscribe_durable();
+        self.nodes.push(Node { sync: Some(sync), backend, root, online: true, wake: None, life: 0, accepts: true, events });
         self.nodes.len() - 1
     }
 
@@ -256,7 +260,33 @@ impl Net {
         node.sync = None;
         node.life += 1;
         let engine = Engine::open(Box::new(node.backend.clone()), Box::new(node.root.clone()), Config::default(), c.clone(), Box::new(SeededRng::from_u64(seed))).unwrap();
-        node.sync = Some(SyncEngine::new(engine, c, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap());
+        let mut sync = SyncEngine::new(engine, c, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
+        node.events = sync.engine_mut().subscribe_durable();
+        node.sync = Some(sync);
+    }
+
+    /// Node `n`'s diagnostics since the last call: the sync engine's and the engine's (refusals
+    /// that change nothing a test reads, e.g. an ephemeral commit past its room).
+    pub fn diagnostics(&mut self, n: usize) -> Vec<String> {
+        let mut out = self.sync(n).take_diagnostics();
+        for e in self.nodes[n].events.try_iter() {
+            if let osis_node::Event::Diagnostic(d) = e
+                && !out.contains(&d.detail)
+            {
+                out.push(format!("{:?}: {}", d.kind, d.detail));
+            }
+        }
+        out
+    }
+
+    /// Prints the diagnostics of `nodes` (stderr, shown when a test fails).
+    pub fn trace(&mut self, nodes: &[usize]) {
+        for n in nodes {
+            let d = self.diagnostics(*n);
+            if !d.is_empty() {
+                eprintln!("node {n}: {d:?}");
+            }
+        }
     }
 
     fn disconnect(&mut self, n: usize) {
