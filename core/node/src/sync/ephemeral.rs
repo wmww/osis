@@ -1760,7 +1760,7 @@ mod tests {
         assert_eq!((w.at(l, s1), w.at(l, s2)), (WAITING_MAX - 1, 1));
     }
 
-    // notes/ephemeral.md (entries refused for the waiting share bounded per label by the
+    // spec/sync.md §9, notes/ephemeral.md (entries refused for the waiting share bounded per label by the
     // records they lack): past the weight the oldest go, other labels untouched; a replacement
     // is weighed anew; one heavier than the bound is not kept
     #[test]
