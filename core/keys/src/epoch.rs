@@ -121,8 +121,7 @@ pub const MAX_READING_PER_AUTHOR: usize = 64;
 
 /// The greatest n an epoch established by chain or snapshot may have without an established
 /// epoch at n-1 or above (spec/crypto.md §4): leaves 2^62 rotations before n+1 overflows the
-/// int range, far above any genuine first n (a thing's own chain starts at 1, derived epochs being
-/// at 0).
+/// int range, far above any genuine first n (derived epochs are capped below it).
 pub const MAX_FREE_N: u64 = 1 << 62;
 
 /// The epochs of one role of one actor.
@@ -385,9 +384,18 @@ impl RoleEpochs {
     }
 }
 
+/// The n of the epochs derived from an owner epoch at `n` (spec/crypto.md §3): the owner's, capped
+/// so that a thing's own chain starts at most at `MAX_FREE_N` and a member holding no secret of
+/// the owner establishes it within headroom, whatever n a writer of the owner jumped to. Below the
+/// cap derived epochs order as the owner's (a re-registrar steps a plain group's labels on each
+/// owner rotation, a writer picks the owner's newest fork).
+fn derived_n(n: u64) -> u64 {
+    n.min(MAX_FREE_N - 1)
+}
+
 /// The nonce of the placeholder `ActorEpochs::derived` keeps for owner epoch `e` whose secret is
 /// not held: a hash of all of `e` (local only), so distinct owner epochs never share one even
-/// when made-up ones share a nonce.
+/// when made-up ones share a nonce or are capped to one n.
 fn placeholder_nonce(e: &Epoch) -> [u8; 32] {
     osis_base::hash::derive_key("osis v1 derived placeholder", &[e.n().to_le_bytes().as_slice(), e.nonce()].concat())
 }
@@ -429,12 +437,10 @@ impl ActorEpochs {
     }
 
     /// A plain thing's derived role secrets `kdf("thing <role>", owner's secret, tid)`, one per
-    /// epoch of the owner, forks included, each at the epoch with n 0 that the nonce rule gives
-    /// it (spec/crypto.md §3): the thing's own chain then starts at 1 whatever the owner's n, so
-    /// a member holding no secret of the owner establishes it within headroom. Established
-    /// (`Derived`) where the owner's is. An owner epoch whose secret is not held stays known as
-    /// a placeholder at n 0 (`placeholder_nonce`) that no secret names, so that what it
-    /// supersedes stays superseded.
+    /// epoch of the owner, forks included, each at the epoch with n `derived_n` of the owner's
+    /// that the nonce rule gives it (spec/crypto.md §3). Established (`Derived`) where the
+    /// owner's is. An owner epoch whose secret is not held stays known as a placeholder at that
+    /// n (`placeholder_nonce`) that no secret names, so that what it supersedes stays superseded.
     pub fn derived(owner: &ActorEpochs, tid: &Tid) -> ActorEpochs {
         let mut a = ActorEpochs::default();
         for r in ROLES {
@@ -444,9 +450,10 @@ impl ActorEpochs {
                 .iter()
                 .map(|(e, i)| {
                     let ds = i.secret.as_ref().map(|s| thing_role_secret(s, r, tid));
+                    let n = derived_n(e.n());
                     let de = match &ds {
-                        Some(s) => Epoch::derive(tid, r, 0, s),
-                        None => Epoch::new(0, placeholder_nonce(e)),
+                        Some(s) => Epoch::derive(tid, r, n, s),
+                        None => Epoch::new(n, placeholder_nonce(e)),
                     };
                     let de = de.unwrap_or(*e);
                     (*e, (de, ds))
@@ -607,17 +614,45 @@ mod tests {
         }
         owner.read.observe(ep(3, 0));
         let d = ActorEpochs::derived(&owner, &t);
-        let de = |b: u8| Epoch::derive(&t, Role::Read, 0, &thing_role_secret(&Secret32::from_bytes([b; 32]), Role::Read, &t)).unwrap();
-        let ph = |e: Epoch| Epoch::new(0, placeholder_nonce(&e)).unwrap();
-        assert_ne!(ph(ep(2, 0)), ph(ep(3, 0)));
-        let mut want = vec![de(2), ph(ep(2, 0))];
-        want.sort();
-        assert_eq!(d.read.current(), want);
+        let de = |b: u8| Epoch::derive(&t, Role::Read, 1, &thing_role_secret(&Secret32::from_bytes([b; 32]), Role::Read, &t)).unwrap();
+        let ph = |e: Epoch| Epoch::new(e.n(), placeholder_nonce(&e)).unwrap();
+        assert_eq!(d.read.current(), vec![de(2), ph(ep(2, 0))]);
         assert!(d.read.superseded(&de(1)));
         assert_eq!(d.read.provenance(&de(1)), Some(Provenance::Derived));
         assert_eq!(d.read.provenance(&ph(ep(3, 0))), None);
-        assert!(d.read.epochs().all(|(e, _)| e.n() == 0));
         assert_eq!(d.read.held().count(), 2);
+    }
+
+    // spec/crypto.md §3: derived epochs keep the owner's n below the cap, so each owner rotation
+    // gives a newer derived epoch (a plain group's labels are stepped on it, spec/sync.md §5);
+    // owner epochs past the cap (a writer of the owner jumped them) all derive at the cap, so a
+    // thing's own chain starts at most at `MAX_FREE_N`; placeholders there stay distinct.
+    #[test]
+    fn derived_n_follows_owner_below_cap() {
+        let t = Tid::from_bytes([3; 15]);
+        for b in 0..32u8 {
+            let mut owner = ActorEpochs::default();
+            let s = |x: u8| Secret32::from_bytes([x; 32]);
+            owner.read.set_secret(ep(1, 1), s(b));
+            owner.read.set_secret(ep(2, 2), s(b ^ 0x80));
+            owner.read.rotation(ep(2, 2), [ep(1, 1)]);
+            for e in [ep(1, 1), ep(2, 2)] {
+                owner.read.set_established(e, Provenance::Chain);
+            }
+            let d = ActorEpochs::derived(&owner, &t);
+            let old = Epoch::derive(&t, Role::Read, 1, &thing_role_secret(&s(b), Role::Read, &t)).unwrap();
+            assert!(crate::is_newer(&d.read.newest().unwrap(), &old));
+        }
+        let mut owner = ActorEpochs::default();
+        for (i, n) in [MAX_FREE_N - 2, MAX_FREE_N + 5, MAX_FREE_N + 6].into_iter().enumerate() {
+            owner.read.set_secret(ep(n, 1), Secret32::from_bytes([i as u8; 32]));
+            owner.read.set_established(ep(n, 1), Provenance::Chain);
+        }
+        owner.read.observe(ep(MAX_FREE_N + 7, 9));
+        owner.read.observe(ep(MAX_FREE_N + 8, 9));
+        let d = ActorEpochs::derived(&owner, &t);
+        let ns: Vec<u64> = d.read.epochs().map(|(e, _)| e.n()).collect();
+        assert_eq!(ns, [MAX_FREE_N - 2, MAX_FREE_N - 1, MAX_FREE_N - 1, MAX_FREE_N - 1, MAX_FREE_N - 1]);
     }
 
     // spec/crypto.md §4: a secret known only from pending commits is reading-only, one per
