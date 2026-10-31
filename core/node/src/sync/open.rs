@@ -557,6 +557,13 @@ impl SyncEngine {
                 lc.path.remove(0);
             }
             if lc.path.is_empty() {
+                // deposits refused while the label was unknown there go now, not after their
+                // back-off (a node's own deposits under a label it just created)
+                if let Some(server) = self.conns.get(&conn).map(|c| c.server) {
+                    for (_, o) in self.outbox.range_mut((server, l, osis_base::BlobId([0; 32]))..=(server, l, osis_base::BlobId([0xff; 32]))) {
+                        o.after = 0;
+                    }
+                }
                 return self.reopen(conn, l, out);
             }
             return Ok(());
