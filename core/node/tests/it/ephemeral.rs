@@ -2396,6 +2396,157 @@ fn burst_coalesced_while_upload_in_flight_spec_sync_9() {
     assert_eq!(notes(&mut net, b, w), want);
 }
 
+/// `authors` nodes in one group move their cursors every 33 ms (30 a second) for `secs`
+/// simulated seconds, each move a fresh entry under the author's own key of one cursor map
+/// expiring 30 s out (what `osis::KeepAlive::set` writes), messages taking one 33 ms round per hop
+/// (a 66 ms round trip), at a server whose delete rates and ephemeral cap are the defaults scaled
+/// to the run (the rates to its share of their minute window, the cap to its share of the
+/// expiry, what the entries of a run that short would fill): no upload is refused, every author
+/// stays visible at every node throughout, and at the end every node reads every author's latest
+/// cursor and the server holds one entry per author. Returns (uploads, deletes, the server's peak
+/// ephemeral bytes, its cap).
+fn many_authors_run(authors: usize, secs: u64) -> (usize, usize, u64, u64) {
+    const E: u64 = 30_000;
+    let mut net = Net::new();
+    let window_ms = secs * 1000;
+    let d = osis_server::Policy::default();
+    let (deletes, replacements) = ((d.deletes as u64 * window_ms / 60_000) as u32, (d.replacements as u64 * window_ms / 60_000) as u32);
+    let cap = d.ephemeral_bytes * window_ms.min(E) / E;
+    let sv = net.add_server_with(osis_server::Policy { window_ms, deletes, replacements, ephemeral_bytes: cap, ..d });
+    let ns: Vec<usize> = (0..authors).map(|i| net.node(1 + i as u64, &[sv])).collect();
+    let members: Vec<(usize, Role)> = ns[1..].iter().map(|n| (*n, Role::Write)).collect();
+    let g = net.group(ns[0], &members, &[sv]);
+    let t = net.item(ns[0], g, g, "doc");
+    net.run();
+    let l = net.label(ns[0]);
+    let live = |net: &Net| osis_proto::LabelStore::live_ids(net.servers[sv].hub.store(), &l).unwrap().len();
+    let held = live(&net);
+    let up_del = |net: &Net| (uploads_sent(net), net.sent_kinds.get(&14).copied().unwrap_or(0));
+    let (up, del) = up_del(&net);
+    let keys: Vec<Value> = ns.iter().map(|n| s(&net.tid(*n).to_string())).collect();
+    let cursor_of = |net: &mut Net, x: usize, k: &Value| match net.eph_read(x, t, CURSOR) {
+        Some(Value::Map(m)) => m.get(k).cloned(),
+        _ => None,
+    };
+    let rounds = window_ms / 33;
+    let mut peak = 0;
+    for r in 0..rounds {
+        net.clock.advance(33);
+        for (n, k) in ns.iter().zip(&keys) {
+            let mut m = Mutation::new();
+            m.op(t, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(k.clone())], op: Op::Put(s(&format!("{n}@{r}"))) }).unwrap();
+            m.expires(t, &eph(CURSOR), osis_base::WallMs(net.now() + E)).unwrap();
+            net.engine(*n).write(m).unwrap();
+            local(&mut net, *n);
+        }
+        net.round();
+        peak = peak.max(net.servers[sv].hub.store().ephemeral_bytes(&l));
+        if r % 30 == 29 {
+            for x in &ns {
+                for (n, k) in ns.iter().zip(&keys) {
+                    assert!(cursor_of(&mut net, *x, k).is_some(), "round {r}: author {n} not visible at {x}");
+                }
+            }
+        }
+    }
+    net.run();
+    let (up2, del2) = up_del(&net);
+    for x in &ns {
+        for (n, k) in ns.iter().zip(&keys) {
+            assert_eq!(cursor_of(&mut net, *x, k), Some(s(&format!("{n}@{}", rounds - 1))), "author {n} at {x}");
+        }
+    }
+    assert_eq!(live(&net), held + authors, "one entry per author");
+    assert!(((del2 - del) as u64) < u64::from(deletes), "{} deletes against a limit of {deletes}", del2 - del);
+    // at most one commit per author per round trip (two rounds), and one more at the end
+    let most = authors * (rounds as usize / 2 + 2);
+    assert!(up2 - up <= most, "{} uploads: more than one per round trip ({most})", up2 - up);
+    assert!(peak < cap, "the server's ephemeral bytes reached {peak} of its cap {cap}");
+    (up2 - up, del2 - del, peak, cap)
+}
+
+// spec/sync.md §9 (an expiring commit superseded by its author's later writes is dropped and its
+// author deletes it, coalescing while an upload is in flight), §5 (servers rate-limit deletes and
+// cap ephemeral bytes per label): 10 authors at 30 cursor moves a second, scaled to a 1 s window
+#[test]
+fn many_authors_under_server_rates_spec_sync_9() {
+    let (up, del, peak, cap) = many_authors_run(10, 1);
+    eprintln!("10 authors, 1 s: {up} uploads, {del} deletes, peak {peak} of {cap} ephemeral bytes");
+}
+
+// tier 2: the same for a whole simulated minute at the default policy
+#[test]
+#[ignore]
+fn many_authors_under_server_rates_large() {
+    let (up, del, peak, cap) = many_authors_run(10, 60);
+    eprintln!("10 authors, 60 s: {up} uploads, {del} deletes, peak {peak} of {cap} ephemeral bytes");
+}
+
+// spec/sync.md §9 (an unsent write superseded by a later one expiring no earlier is not sent):
+// cursor moves made before the next take (an upload in flight), each expiring at its own time,
+// go as one commit, the last move's, not one per expiry
+#[test]
+fn superseded_unsent_moves_one_commit_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let me = s(&net.tid(a).to_string());
+    let mut last = 0;
+    for i in 0..5 {
+        last = net.now() + 30_000;
+        let mut m = Mutation::new();
+        m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(me.clone())], op: Op::Put(s(&format!("c{i}"))) }).unwrap();
+        m.expires(w, &eph(CURSOR), osis_base::WallMs(last)).unwrap();
+        net.engine(a).write(m).unwrap();
+        net.clock.advance(33);
+    }
+    let cs = net.engine(a).take_ephemeral().unwrap();
+    assert_eq!(cs.len(), 1, "one commit for five moves");
+    assert_eq!(cs[0].blob.header.aspects.iter().map(|x| x.expires).collect::<Vec<_>>(), vec![Some(last)], "the last move's");
+}
+
+// spec/sync.md §9 (only a later write expiring no earlier, none of whose writes is into a record
+// it did not create, supersedes): a move expiring sooner than the one before leaves that one
+// held, so it reads again once the sooner one expires; a `Set` into the entry a move created
+// supersedes nothing (it goes with that entry); holders read as the author throughout
+#[test]
+fn superseding_needs_later_expiry_and_own_records_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let me = s(&net.tid(a).to_string());
+    let write = |net: &mut Net, op: Op, ms: u64| {
+        let mut m = Mutation::new();
+        m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(me.clone())], op }).unwrap();
+        m.expires(w, &eph(CURSOR), osis_base::WallMs(net.now() + ms)).unwrap();
+        net.engine(a).write(m).unwrap();
+        local(net, a);
+        net.run();
+    };
+    let at = |net: &mut Net, n: usize| net.eph_read(n, w, CURSOR);
+    let want = |v: &str| Some(Value::Map([(me.clone(), s(v))].into()));
+    write(&mut net, Op::Put(s("long")), 30_000);
+    write(&mut net, Op::Put(s("short")), 5_000);
+    assert_eq!((at(&mut net, a), at(&mut net, b)), (want("short"), want("short")));
+    net.advance(6_000);
+    assert_eq!((at(&mut net, a), at(&mut net, b)), (want("long"), want("long")), "the earlier move reads again");
+    write(&mut net, Op::Set(s("into")), 60_000);
+    assert_eq!((at(&mut net, a), at(&mut net, b)), (want("into"), want("into")));
+    net.advance(30_000);
+    let gone = Some(Value::Map(BTreeMap::new()));
+    assert_eq!((at(&mut net, a), at(&mut net, b)), (gone.clone(), gone), "gone with the entry it wrote into");
+}
+
 // spec/sync.md §9: signals are never held back or merged: each signal write sent while a plain
 // upload of the label is in flight is its own relay-only commit at once, and each fires once at B
 #[test]
@@ -3598,12 +3749,13 @@ fn repro_durable_write_on_memory_marked_aspect_lost() {
     assert_eq!(memory_tags(&mut lp, 0, d), Some(Value::Set([s("durable")].into())));
 }
 
-// issues/eph-expiring-churn.md: an expiring value its author changes often (a cursor moved 30
-// times a second, `KeepAlive::set`) costs one upload and one held entry per change until each
-// expires, where the old presence cover kept one; at most a few should be held
+// spec/sync.md §9 (an expiring commit superseded by its author's later writes is dropped and
+// deleted by its author; superseded unsent writes are not sent): a cursor moved 30 times a second,
+// each move a fresh entry at the author's key expiring 30 s out (what `osis::KeepAlive::set`
+// writes), costs about one held commit at every node and one entry at the server, not one per
+// move until each expires (was issues/eph-expiring-churn.md: 60 here)
 #[test]
-#[ignore = "repro: issues/eph-expiring-churn.md"]
-fn repro_moving_cursor_entry_per_move() {
+fn moving_cursor_one_entry_per_author_spec_sync_9() {
     const E: u64 = 30_000;
     let mut net = Net::new();
     let sv = net.add_server();
@@ -3617,6 +3769,8 @@ fn repro_moving_cursor_entry_per_move() {
     let me = s(&net.tid(a).to_string());
     let entries = |net: &Net| osis_proto::LabelStore::live_ids(net.servers[sv].hub.store(), &l).unwrap().len();
     let base = entries(&net);
+    let held = |net: &mut Net, n: usize| net.engine(n).held_ephemeral().len();
+    let (ha, hb) = (held(&mut net, a), held(&mut net, b));
     for i in 0..60 {
         let mut m = Mutation::new();
         m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(me.clone())], op: Op::Put(s(&format!("c{i}"))) }).unwrap();
@@ -3624,8 +3778,15 @@ fn repro_moving_cursor_entry_per_move() {
         net.engine(a).write(m).unwrap();
         local(&mut net, a);
         net.advance(33);
+        assert!(entries(&net) - base <= 3, "move {i}: the server holds {} entries of one cursor", entries(&net) - base);
     }
     net.run();
-    assert_eq!(net.eph_read(b, w, CURSOR), Some(Value::Map([(me, s("c59"))].into())));
-    assert!(entries(&net) - base <= 3, "the server holds {} entries of one cursor", entries(&net) - base);
+    assert_eq!(net.eph_read(b, w, CURSOR), Some(Value::Map([(me.clone(), s("c59"))].into())));
+    assert_eq!(net.eph_read(a, w, CURSOR), Some(Value::Map([(me, s("c59"))].into())));
+    assert_eq!(entries(&net) - base, 1, "one entry of the cursor at the server");
+    assert_eq!((held(&mut net, a) - ha, held(&mut net, b) - hb), (1, 1), "one commit of it held at the author and the holder");
+    // the last move still expires everywhere
+    net.advance(E);
+    assert_eq!(net.eph_read(b, w, CURSOR), None);
+    assert_eq!(entries(&net), base);
 }

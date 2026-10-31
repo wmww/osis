@@ -163,6 +163,9 @@ pub(crate) struct Remote {
     /// exact by `index_lists`/`unindex_lists` around every change of `held`'s lists), so arrival
     /// and drop cost what the commit lists rather than every held commit.
     pub absorbers: BTreeMap<CommitId, BTreeSet<CommitId>>,
+    /// Held commits dropped as superseded (`drop_superseded_by`) not yet taken by the sync layer
+    /// (`take_dropped_ephemeral`), with the held commits superseding them.
+    pub superseded: BTreeMap<CommitId, BTreeSet<CommitId>>,
     /// Commits whose author's record, or a part's thing's, is not here yet, with the things
     /// whose records they wait for (bounded by the sync layer, which forgets what it drops),
     /// retried when one of those records arrives.
@@ -346,7 +349,11 @@ impl Engine {
         if self.ephemeral_synced(tid) {
             let r = &mut self.eph.remote;
             r.noted = true;
-            r.unsent.entry((*tid, ak.clone())).or_default().entry((actor, expires)).or_default().join(delta.clone());
+            let u = r.unsent.entry((*tid, ak.clone())).or_default();
+            // the actor's earlier unsent writes this one supersedes are never sent (spec/sync.md
+            // §9): a cursor moved during an upload in flight goes once, not once per expiry
+            u.retain(|(x, exp), f| *x != actor || *exp == expires || !supersedes(delta, expires, f, *exp));
+            u.entry((actor, expires)).or_default().join(delta.clone());
         } else {
             self.eph.remote.local.insert(*tid);
         }
@@ -462,7 +469,95 @@ impl Engine {
     /// when an own cover was split by aspect, spec/sync.md §9).
     pub fn ephemeral_absorbers(&self, id: &CommitId) -> BTreeSet<CommitId> {
         let r = &self.eph.remote;
-        r.absorbers.get(id).into_iter().flatten().filter(|c| r.held.get(c).is_some_and(|h| h.parts.iter().any(|p| p.valid && p.absorbed.contains(id)))).copied().collect()
+        let listed = r.absorbers.get(id).into_iter().flatten().filter(|c| r.held.get(c).is_some_and(|h| h.parts.iter().any(|p| p.valid && p.absorbed.contains(id))));
+        listed.chain(r.superseded.get(id).into_iter().flatten()).copied().collect()
+    }
+
+    /// Whether held commit `id` was dropped as superseded by its author's later commits
+    /// (`drop_superseded_by`; until `take_dropped_ephemeral` hands it over): only its author
+    /// deletes its entries at servers (each holder doing so would send one delete per holder
+    /// and change; one the author fails to delete goes there at its expiry).
+    pub fn ephemeral_superseded(&self, id: &CommitId) -> bool {
+        self.eph.remote.superseded.contains_key(id)
+    }
+
+    /// The held commits superseding every part of commit `id` (header `h`, `parts` its held or
+    /// received parts), plain and expiring: per part, a valid held part of another plain commit
+    /// of its author on its aspect that supersedes it (`supersedes`, spec/sync.md §9). `None`
+    /// when a part has none.
+    fn eph_superseders(&self, id: &CommitId, h: &Header, parts: &[HeldPart]) -> Option<BTreeSet<CommitId>> {
+        if h.ephemeral != Some(EphClass::Plain) || parts.is_empty() {
+            return None;
+        }
+        let r = &self.eph.remote;
+        let mut by = BTreeSet::new();
+        for p in parts {
+            let a = h.aspects.get(p.ai)?;
+            if a.expires.is_none() || is_core_aspect(a.ak.as_str()) {
+                return None;
+            }
+            let ea = self.eph.aspects.get(&a.tid).and_then(|m| m.get(&a.ak))?;
+            let (c, _) = ea.parts.iter().find(|(c, ai)| {
+                c != id
+                    && r.held.get(c).is_some_and(|x| {
+                        let q_exp = x.header.aspects.get(*ai).and_then(|xa| xa.expires);
+                        may_absorb(&x.header, h) && x.parts.iter().any(|q| q.ai == *ai && q.valid && supersedes(&q.fragment, q_exp, &p.fragment, a.expires))
+                    })
+            })?;
+            by.insert(*c);
+        }
+        Some(by)
+    }
+
+    /// Drops the held commits whose every part is superseded (`eph_superseders`) now that held
+    /// commit `id` supersedes one of their parts (spec/sync.md §9). A dropped commit's writes go
+    /// from the state as at their expiry (spec/crdt.md §4.7; this session's own ones are in the
+    /// own writes, which their own expiry strips: nothing reads them meanwhile); the sync layer
+    /// forgets it and its author deletes its entries once the superseders are held where they
+    /// are (`ephemeral_absorbers`, `ephemeral_superseded`). Costs a check per held part on
+    /// `id`'s aspects of its author, each about the two parts' size.
+    fn drop_superseded_by(&mut self, id: CommitId) {
+        let r = &self.eph.remote;
+        let Some(q) = r.held.get(&id).filter(|q| q.header.ephemeral == Some(EphClass::Plain)) else { return };
+        let mut cands = BTreeSet::new();
+        for qp in q.parts.iter().filter(|p| p.valid) {
+            let Some(qa) = q.header.aspects.get(qp.ai) else { continue };
+            let Some(ea) = self.eph.aspects.get(&qa.tid).and_then(|m| m.get(&qa.ak)) else { continue };
+            for (c, ai) in &ea.parts {
+                if *c == id || cands.contains(c) {
+                    continue;
+                }
+                let Some(x) = r.held.get(c).filter(|x| may_absorb(&q.header, &x.header)) else { continue };
+                let p_exp = x.header.aspects.get(*ai).and_then(|a| a.expires);
+                if x.parts.iter().any(|p| p.ai == *ai && supersedes(&qp.fragment, qa.expires, &p.fragment, p_exp)) {
+                    cands.insert(*c);
+                }
+            }
+        }
+        for c in cands {
+            let Some(x) = self.eph.remote.held.get(&c) else { continue };
+            let Some(by) = self.eph_superseders(&c, &x.header, &x.parts) else { continue };
+            if !x.own {
+                let header = x.header.clone();
+                let stripped: Vec<(Tid, Ak, BTreeSet<osis_crdt::Dot>)> = x
+                    .parts
+                    .iter()
+                    .filter(|p| p.valid)
+                    // its own writes (stamped), not the records of others it wrote into
+                    .filter_map(|p| header.aspects.get(p.ai).map(|a| (a.tid, a.ak.clone(), p.fragment.writes().into_iter().filter_map(|(d, ts)| ts.map(|_| d)).collect())))
+                    .collect();
+                for (t, ak, dots) in stripped {
+                    if let Some(ea) = self.eph.aspects.get_mut(&t).and_then(|m| m.get_mut(&ak)) {
+                        ea.state.strip(&|d| dots.contains(d));
+                        if let Some(o) = &mut ea.own {
+                            o.strip(&|d| dots.contains(d));
+                        }
+                    }
+                }
+            }
+            self.eph.remote.superseded.insert(c, by);
+            self.forget_unused(&c);
+        }
     }
 
     /// The ephemeral things of `recs` up their ephemeral owner chains: the things whose records
@@ -624,6 +719,7 @@ impl Engine {
             if !absorbed.is_empty() {
                 self.drop_absorbed_of(absorbed.values().flatten().copied().collect());
             }
+            self.drop_superseded_by(id);
         }
         Ok(Attempt::Made(Box::new(EphCommit { id, class, blob })))
     }
@@ -868,6 +964,11 @@ impl Engine {
             {
                 return Ok(EphIngest::Covered(by));
             }
+            // superseded on arrival by held commits of its author (a late or replayed cursor
+            // move): not held, and only its author deletes it anywhere (`ephemeral_superseded`)
+            if waits.is_empty() && self.eph_superseders(&id, &h, &fresh).is_some() {
+                return Ok(EphIngest::Dropped);
+            }
             // every part invalid on arrival: neither held nor counted until the held durable set
             // changes so that one is valid (`rejudge_ephemeral`)
             let content: Vec<usize> = fresh.iter().map(|p| p.ai).collect();
@@ -951,6 +1052,7 @@ impl Engine {
         if !weigh.is_empty() {
             self.drop_absorbed_of(weigh);
         }
+        self.drop_superseded_by(id);
         changed.sort();
         changed.dedup();
         if !changed.is_empty() {
@@ -1224,7 +1326,11 @@ impl Engine {
 
     /// The held ephemeral commits dropped since the last call (covered or expired): the sync layer forgets their blobs and deletes them where it may.
     pub fn take_dropped_ephemeral(&mut self) -> Vec<CommitId> {
-        std::mem::take(&mut self.eph.dropped)
+        let d = std::mem::take(&mut self.eph.dropped);
+        // the superseders of what goes now, for the sync layer's `ephemeral_absorbers`
+        let gone: BTreeSet<&CommitId> = d.iter().collect();
+        self.eph.remote.superseded.retain(|c, _| gone.contains(c));
+        d
     }
 
     /// The held ephemeral commits let go since the last call because every part turned invalid
@@ -1797,6 +1903,28 @@ fn contains(c: &Fragment, x: &Fragment) -> bool {
         debug_assert!(!yes || j == *c, "a piece contains what the whole does not");
     }
     yes
+}
+
+/// Whether writes `q` of an author supersede its earlier writes `p` on one aspect (spec/sync.md
+/// §9): `p` expires (`p_exp`), `q` no earlier (`q_exp`, `None` never), every write of `q` is
+/// later than every write of `p` and none is into a record it did not create (it would be
+/// hidden with `p`'s), and `p` joined into `q` reads as `q` alone (a cursor's newer entry at
+/// its key, a register's newer write). While `q` is held nothing reads `p`, and `p` goes first.
+fn supersedes(q: &Fragment, q_exp: Option<u64>, p: &Fragment, p_exp: Option<u64>) -> bool {
+    let Some(tp) = p_exp else { return false };
+    // a sequence's or bag's elements all show in the read: none shadows another's (cheap out
+    // for appended events)
+    if q_exp.is_some_and(|t| t < tp) || matches!(q, Fragment::Seq(_) | Fragment::Bag(_)) {
+        return false;
+    }
+    let Some(newest_p) = p.writes().into_iter().filter_map(|(_, ts)| ts).max() else { return false };
+    let qw = q.writes();
+    if qw.is_empty() || !qw.iter().all(|(_, ts)| ts.is_some_and(|t| t > newest_p)) {
+        return false;
+    }
+    let mut j = q.clone();
+    j.join(p.clone());
+    j.read() == q.read()
 }
 
 /// The encoding context of an ephemeral commit's snapshot deltas by `me` at `ts`.

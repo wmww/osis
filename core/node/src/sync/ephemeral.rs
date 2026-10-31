@@ -1375,6 +1375,8 @@ impl SyncEngine {
             // what absorbed it (none: expired); deletes waiting for
             // it wait for that now, and go once they wait for nothing
             let cover = self.engine.ephemeral_absorbers(c);
+            // superseded by its author's later writes: the author deletes it, nobody else
+            let author_only = self.engine.ephemeral_superseded(c);
             let moved: Vec<(LabelId, BlobId, ServerKey)> = self.eph.waiting.iter().filter(|(_, (w, _))| w.contains(c)).map(|(k, _)| *k).collect();
             for k in moved {
                 let Some(w) = self.eph.waiting.get_mut(&k) else { continue };
@@ -1394,7 +1396,7 @@ impl SyncEngine {
                 for (conn, server, hk) in self.eph_conns(&l) {
                     self.eph.capped.remove(&(conn, l, b));
                     let present = self.eph.present.remove(&(server, l, b));
-                    if !(present || self.eph.uploads.contains(&(conn, l, b))) {
+                    if !(present || self.eph.uploads.contains(&(conn, l, b))) || (author_only && !e.own) {
                         continue;
                     }
                     if let Some(item) = eph_delete_item(&hk, &l, b, &e, &dks) {
