@@ -370,7 +370,7 @@ impl SyncEngine {
     }
 
     /// The next time the clock alone changes a roster that entitlement and departures under a
-    /// label of `g` read (`rotation::direct_departures` has the same horizon per actor): the
+    /// label of `g` read (`rotation::departures::direct_departures` has the same horizon per actor): the
     /// components of its actor and of its closure's reader actors.
     fn roster_horizon(&self, closure: &BTreeSet<Tid>, g: &Tid) -> Option<u64> {
         let now = self.now();
