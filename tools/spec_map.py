@@ -283,6 +283,9 @@ def render():
 
 
 def main():
+    args = sys.argv[1:]
+    if len(args) > 1 or any(a not in ("--uncited", "--gaps") for a in args):
+        sys.exit(f"usage: spec_map.py [--uncited | --gaps] (got {' '.join(args)})")
     text, uncited, open_r, problems = render()
     if "--uncited" in sys.argv:
         for u in uncited:

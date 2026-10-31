@@ -31,7 +31,6 @@ Read this if you coordinate, if a build or test run feels slow, or if disk is gr
 - **Harness and tool footguns (13f)**:
   - `osis_sim::world::World::pump` panics after `STORM` (5000) rounds without settling, listing what the storm carries.
   - In the node net harness, `set_online(n, false)` drops n's `Dial` actions, so the node never redials. To cut one server off, use `net.blocked.insert((n, s))` with `net.drop_link(n, s)`.
-  - `tools/spec_map.py` ignores unknown flags, writes the map and says so (`--check` is not a flag).
   - `cargo test -p <crate> --test it --no-run` prints that crate's `Executable` path: copy that binary, don't probe `target/debug/deps/it-*`.
   - `git rebase --exec` runs under dash, so no `${PIPESTATUS}`.
   - `git diff main` in a worktree compares with main's tip: use `git diff $(git merge-base HEAD main)`.
