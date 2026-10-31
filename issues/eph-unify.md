@@ -43,3 +43,6 @@ Each step merges alone and passes the gate. Line counts are rough (now: engine `
 6. Undo over held bodies for memory commits; undo log and `ephemeral_history` go; mixed batch pairing. About +100/-350.
 7. Spec (commits §1-2, §5; sync §6, §9; crdt §2.1, §8; data-model §2, §8; permissions §5.2) and notes rewrite.
 Tests: behavioural ephemeral and presence tests (convergence, restart, caps, presence leave, signals) carry over; cover-specific ones go. The randomized `random_window_*` and sim `ephemeral*` scenarios are the acceptance oracles for steps 3-5. Steps 3-5 are intricate changes in one area: one at a time.
+
+
+Owner (round 13, key format): presence is not baked into the aspect key. Replace it with ephemeral plus expiry refreshed by the author while present; consider a write-level expiry kind "when the author is no longer connected" if it stays simple. Check whether signal belongs on the aspect (AK marker `*`) or on the write.
