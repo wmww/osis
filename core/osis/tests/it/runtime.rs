@@ -130,7 +130,7 @@ async fn redeem_over<T: osis_transport::Transport>(server_ep: T, url: &str, a: T
     let home = alice.home();
     assert!(alice.sync_engine(|s| s.publishes_reach(&home)));
     assert!(!alice.sync_engine(|s| s.publishes_reach(&g)));
-    alice.sync_policy(g, osis::GroupPolicy { publish_reach: Some(true) });
+    alice.sync_policy(g, osis::GroupPolicy { publish_reach: Some(true), ..Default::default() });
     assert!(alice.sync_engine(|s| s.publishes_reach(&g)));
     drop((alice, bob));
     assert!(sctl.send(osis_server::Control::Shutdown).await.is_ok());

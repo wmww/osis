@@ -385,6 +385,11 @@ pub struct GroupPolicy {
     /// co-readers there can dial it off the LAN (spec/permissions.md §4). `None`: only when
     /// every reader of the group is this person, a thing it owns or a contact (`import_contact`).
     pub publish_reach: Option<bool>,
+    /// This device holds none of the group (receipts-only): its labels are not synced, nothing
+    /// of it is downloaded or placed from here; what is already here stays, no longer updated.
+    /// A demotion reads the group's commit headers only, so the member's edits there are kept
+    /// (spec/permissions.md §5.3).
+    pub receipts_only: bool,
 }
 
 impl crate::Osis {
@@ -392,7 +397,13 @@ impl crate::Osis {
     /// dialed. When the group's labels already hold this node's `/reach` and it no longer goes
     /// there, the node's reach rotates (`rotate_reach`), so readers there cannot dial it any more.
     pub fn sync_policy(&self, group: osis_base::Tid, policy: GroupPolicy) {
-        self.act(|l| l.sync.set_reach_policy(group, policy.publish_reach));
+        self.act(|l| {
+            let mut acts = l.sync.set_reach_policy(group, policy.publish_reach);
+            if l.sync.receipts_only().contains(&group) != policy.receipts_only {
+                acts.extend(l.sync.set_receipts_only(group, policy.receipts_only));
+            }
+            acts
+        });
     }
 
     /// Gives this device a new dialable key and LAN secret (spec/sync.md §10): it listens with

@@ -226,6 +226,79 @@ fn demotion(name: &str, seed: u64, synced: bool) -> Res<Report> {
     sim.finish()
 }
 
+/// A demotion from a node holding part of the tree (notes/sync.md Receipts-only reads;
+/// spec/permissions.md §5.1, §5.3): Alice's phone holds her group G but holds its subgroup H for
+/// receipts only. Bob writes under both; the phone, alone with the server, reads H's commit
+/// headers and removes Bob: H's log there does not move (the phone uploads, deletes and places
+/// nothing under it), and Bob's edit under H, which the phone never held, stays everywhere.
+pub fn demotion_receipts(seed: u64) -> Res<Report> {
+    let mut d = Dice::new(seed ^ 0x4ec);
+    let mut sim = sim("demotion_receipts", seed, NetWeights::default());
+    let s = sim.add_server()?;
+    let a = sim.add_node(&[s], clock(&mut d))?;
+    let b = sim.add_node(&[s], clock(&mut d))?;
+    let c = sim.add_node(&[s], clock(&mut d))?;
+    let [pa, pb, pc] = persons(&mut sim, [a, b, c], [s, s, s])?;
+    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write), (pc, Role::Write)])?;
+    let h = sim.group(a, g, &[s])?;
+    let t = sim.item(a, g)?;
+    let u = sim.item(a, h)?;
+    // random writes stay within G: a commit spanning G and H shares one projection, and the
+    // phone would wait for H's item's creation record (issues/revoke-needs-whole-tree.md)
+    sim.groups.retain(|x| x.g != h);
+    sim.quiet(40)?;
+    let phone = sim.add_node(&[s], clock(&mut d))?;
+    let acts = sim.sync(phone)?.set_receipts_only(h, true);
+    sim.actions(phone, acts)?;
+    sim.pair(a, phone, pa)?;
+    sim.quiet(40)?;
+    add_tag(&mut sim, b, t, "in g")?;
+    add_tag(&mut sim, b, u, "in h")?;
+    sim.run(40)?;
+    sim.quiet(40)?;
+    if !sim.engine(phone)?.knows(&t) || sim.engine(phone)?.knows(&u) {
+        return Err(sim.fail("the phone should hold G's item and none of H's"));
+    }
+    // the phone alone with the server
+    for n in [a, b, c] {
+        sim.sever(Party::N(n), Party::S(s));
+    }
+    let label = sim.engine(a)?.group_labels(&h).map_err(|e| sim.fail(e.to_string()))?.first().map(|l| l.id).ok_or_else(|| sim.fail("H has no label"))?;
+    let log = |sim: &NetSim| sim.hub(s).map(|x| osis_proto::store::LabelStore::log_head(x.store(), &label).ok());
+    let before = log(&sim);
+    let acts = sim.sync(phone)?.read_receipts(&[h]);
+    sim.actions(phone, acts)?;
+    let mut read = None;
+    for _ in 0..400 {
+        sim.run(5)?;
+        read = sim.sync(phone)?.receipts_read(&[h]);
+        if read.is_some() {
+            break;
+        }
+    }
+    if read != Some(Ok(())) {
+        return Err(sim.fail(format!("the receipts-only read of H did not finish: {read:?}")));
+    }
+    sim.sync(phone)?.end_receipts(&[h]);
+    demote(&mut sim, phone, g, pb, None, PreSync::Synced)?;
+    sim.run(30)?;
+    if log(&sim) != before {
+        return Err(sim.fail("the phone wrote under H's label"));
+    }
+    sim.excused.insert(b);
+    for n in [a, b, c] {
+        sim.unsever(Party::N(n), Party::S(s));
+    }
+    sim.run(60)?;
+    sim.run_until_quiescent(40)?;
+    expect_tags(&mut sim, &[a, c, phone], t, &["in g"], &["in g"])?;
+    expect_tags(&mut sim, &[a, c], u, &["in h"], &["in h"])?;
+    if sim.engine(a)?.roster(&g).contains_key(&pb) {
+        return Err(sim.fail("Bob is still on G's roster"));
+    }
+    sim.finish()
+}
+
 /// A person on node `n` follows a link's label and redeems it (spec/permissions.md §9), as the
 /// osis crate does: hold L, follow K's label, wait, redeem, drop L. Err when the redemption is
 /// refused (a used single-use link).

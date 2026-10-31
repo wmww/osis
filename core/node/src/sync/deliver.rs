@@ -236,7 +236,8 @@ impl SyncEngine {
 
     /// Groups with a label whose closure holds `t` (the thing itself when labeled).
     fn groups_holding(&mut self, t: &Tid) -> Vec<Tid> {
-        let mut out: Vec<Tid> = self.engine.labeled_groups().into_iter().filter(|g| g == t || self.engine.durable_groups_of(t).contains(g)).collect();
+        // receipts-only groups: nothing goes under their labels from here
+        let mut out: Vec<Tid> = self.engine.labeled_groups().into_iter().filter(|g| !self.state.receipts_only.contains(g) && (g == t || self.engine.durable_groups_of(t).contains(g))).collect();
         out.dedup();
         out
     }

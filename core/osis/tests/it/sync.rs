@@ -439,6 +439,60 @@ fn removal_rotates_spec_permissions_3() {
     assert_eq!(x(carol, by_bob), Some(s("bob was here")));
 }
 
+// spec/permissions.md §5.1 (received means header verified), §5.3 (pre-sync), notes/sync.md
+// Receipts-only reads: Alice's phone holds group G but none of its subgroup H (receipts-only).
+// Bob writes in both; the phone removes him with the required pre-sync, which reads H's commit
+// headers only. His edit in H, which the phone never held, is kept at Carol; nothing went under
+// H's label from the phone.
+#[test]
+fn removal_from_partial_device_keeps_unheld_edits_spec_permissions_5_3() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 2);
+    let (bob, carol) = (&others[0], &others[1]);
+    let g = group(&alice);
+    let h = {
+        let mut wr = alice.write();
+        let h = wr.create_in(g, &[]).unwrap();
+        wr.make_group(h).unwrap();
+        wr.commit().unwrap();
+        h
+    };
+    alice.sync(h, &[]).unwrap();
+    for id in &ids {
+        alice.grant(g, *id, Role::Write, Default::default()).unwrap();
+    }
+    w.run();
+    let join = Osis::pair(w.cfg(9, &[]), &alice.pair_offer().unwrap()).unwrap();
+    let (_, reply) = alice.pair_accept(join.request()).unwrap();
+    let phone = join.finish(&reply).unwrap();
+    phone.sync_policy(h, osis::GroupPolicy { receipts_only: true, ..Default::default() });
+    w.run();
+    let in_g = item(bob, g, g, "bob in g");
+    let in_h = item(bob, h, h, "bob in h");
+    w.run();
+    assert_eq!(x(&phone, in_g), Some(s("bob in g")));
+    assert_eq!(x(&phone, in_h), None, "the phone holds nothing of H");
+    assert_eq!(x(carol, in_h), Some(s("bob in h")));
+    let label = alice.engine(|e| e.group_labels(&h).unwrap())[0].id;
+    let log = |w: &World| osis_proto::store::LabelStore::log_head(w.servers[0].hub.store(), &label).unwrap();
+    for db in [&alice, bob, carol] {
+        w.set_online(db, false);
+    }
+    let before = log(&w);
+    w.until(phone.demote(g, ids[0], Lower::Remove, Demotion::default()), 1000, 30).unwrap();
+    w.run();
+    assert_eq!(log(&w), before, "the phone placed nothing under H's label");
+    for db in [&alice, bob, carol] {
+        w.set_online(db, true);
+    }
+    // the dials wait for their retry time
+    w.advance(10_000);
+    w.run();
+    assert!(!carol.roster(g).contains_key(&ids[0]));
+    assert_eq!(x(carol, in_g), Some(s("bob in g")));
+    assert_eq!(x(carol, in_h), Some(s("bob in h")), "his edit under H stays: the phone's frontier covers it");
+}
+
 // spec/sync.md §5 (relay-only entries), notes/api.md Signals: a signal aspect set on a shared
 // thing reaches another person's connected device through the server once; local callbacks fire
 // too; nothing is held.

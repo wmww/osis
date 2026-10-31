@@ -546,6 +546,9 @@ pub struct Core {
     /// The sync records this engine's transactions write or drop (`SyncRecords`), set by
     /// node-sync (`Engine::set_sync_records`; `None`: no node-sync, no sync records).
     pub sync_records: Option<&'static dyn SyncRecords>,
+    /// Aspects whose receipts came from headers alone in this run (`Engine::record_header`, a
+    /// receipts-only read): a demotion's frontier reads them besides its scope's held aspects.
+    pub header_receipts: BTreeSet<(Tid, Ak)>,
 }
 
 /// `Core::published`: the counts it was taken at, the published things per actor.
@@ -745,6 +748,7 @@ impl Core {
             labels: BTreeMap::new(),
             published: None,
             links: None,
+            header_receipts: BTreeSet::new(),
         }
     }
 

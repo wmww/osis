@@ -192,7 +192,7 @@ impl SyncEngine {
     pub(crate) fn pass(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(c) = self.conns.get(&conn) else { return Ok(()) };
         let server = c.server;
-        let Some(lc) = c.labels.get(&l) else { return Ok(()) };
+        let Some(lc) = c.labels.get(&l).filter(|x| !x.receipts) else { return Ok(()) };
         let (g, index) = (lc.group, lc.index);
         let Some(head) = lc.head.clone() else { return Ok(()) };
         // secrets may have arrived since the head was accepted

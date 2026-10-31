@@ -190,10 +190,12 @@ impl SyncEngine {
             entry_box: None,
             writers: Vec::new(),
             work: super::work::Work::fresh(),
+            receipts: self.receipts.contains_key(&l),
         };
         if let Some(c) = self.conns.get_mut(&conn) {
             c.labels.insert(l, lc);
         }
+        self.receipts_start(conn, &l);
         self.try_next(conn, l, out)
     }
 
@@ -201,8 +203,9 @@ impl SyncEngine {
     fn try_next(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.lc_mut(conn, &l) else { return Ok(()) };
         if lc.tries.is_empty() {
-            let (g, claimed) = (lc.group, lc.tried_claim);
+            let (g, claimed) = (lc.group, lc.tried_claim && !lc.receipts);
             self.fail(conn, l);
+            // a stranded heartbeat is a member's act: never under a receipts-only label
             if claimed {
                 self.stranded(conn, g, l, out)?;
             }
@@ -368,7 +371,7 @@ impl SyncEngine {
             lc.phase = Phase::Open;
             lc.tries.clear();
         }
-        if self.cfg.subscribe {
+        if self.cfg.subscribe && !self.receipts_lc(conn, &l) {
             self.command(conn, Command::Subscribe { labels: vec![l] }, out)?;
         }
         // a step registered between the Open reply and the subscription is in neither the
@@ -534,6 +537,11 @@ impl SyncEngine {
     /// The server does not hold the label: register the recorded path from the genesis step
     /// along the deepest branch (relayable by any node, spec/sync.md §5), then open.
     fn register_path(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
+        // a receipts-only read registers nothing: the label is not there to read
+        if self.receipts_lc(conn, &l) {
+            self.fail(conn, l);
+            return Ok(());
+        }
         let Some(g) = self.lc(conn, &l).map(|x| x.group) else { return Ok(()) };
         let Some(gl) = self.group_label(&g, &l) else { return self.drop_try(conn, l, out) };
         let Some(path) = deepest_path(&gl.steps) else { return self.drop_try(conn, l, out) };
@@ -606,6 +614,10 @@ impl SyncEngine {
     /// Records steps in `/label` of `g` when this node may write it (an admin; spec/sync.md
     /// §2, §5: "records the steps in /label"). Steps already recorded are left alone.
     pub(crate) fn record_steps(&mut self, g: &Tid, l: &LabelId, steps: &[Step], claims: Option<(StepId, ClaimSet)>) -> Result<()> {
+        // a receipts-only read writes nothing (`receipts`)
+        if self.state.receipts_only.contains(g) {
+            return Ok(());
+        }
         let Some(gl) = self.group_label(g, l) else { return Ok(()) };
         let new: Vec<&Step> = steps.iter().filter(|s| !gl.steps.contains_key(&s.id())).collect();
         if new.is_empty() || self.engine.role_on(g) < Some(osis_base::Role::Admin) {

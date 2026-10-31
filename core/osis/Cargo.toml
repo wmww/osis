@@ -35,5 +35,6 @@ tokio.workspace = true
 osis-schema.workspace = true
 
 [dev-dependencies]
+osis-proto.workspace = true
 osis-server.workspace = true
 osis-sim.workspace = true

@@ -25,6 +25,14 @@ fn work_sets_keep_at_most_seed_1() {
     same("keep_at_most", 1);
 }
 
+// spec/sync.md §6, §7, notes/sync.md Receipts-only reads: a node reading a label for receipts
+// only runs no pass there, with work sets or full passes alike.
+#[test]
+#[ignore = "tier 2"]
+fn work_sets_demotion_receipts_seed_1() {
+    same("demotion_receipts", 1);
+}
+
 // spec/sync.md §6, §7: random writes on two replicating servers, snapshots, keep-at-most,
 // expiry, a purge and a demotion: work sets give the full passes' run (about 20 s per run in
 // debug).

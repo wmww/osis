@@ -2564,6 +2564,7 @@ dependencies = [
  "osis-crypto",
  "osis-label",
  "osis-node",
+ "osis-proto",
  "osis-schema",
  "osis-server",
  "osis-sim",
