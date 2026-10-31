@@ -1,6 +1,6 @@
 # Sharing through a group: tie the role grant to the placement
 > Summary: sharing what is in a group is today two untied records (the placement on the group, a role grant on each member thing), and apps cannot keep them in step. Proposal: keep both records where they are, mark a grant as **tied** to the placement that made it, write both in one commit, and make the grant's removal after an unplace a core obligation (like link finalization). Rejected: "placement grants access" (the rights record would leave the thing, so its admins could no longer see or revoke shares). Also found: pain point 3 is an API gap (no call for a group's admin to self-remove the group's edge). Owner call on the open decisions at the end.
-> Tags: permissions, crypto, api, owner-call
+> Tags: permissions, crypto, api
 
 Terms (owner decision, rename pending in issues/rename-roles-members.md): a **role grant** or **edge** is the rights record (actor, target, role; today `/members`); a thing is a **member of a group** when the group's `/group` lists it (a **placement**). A tag is a group with `/tag`; nothing here depends on that.
 
@@ -54,3 +54,6 @@ Keep placement (on G, write on G, organizes and syncs) and the edge (on T, admin
 3. The owner rule "no helper; place plus grant is the operation" is withdrawn for this one operation.
 4. Eventual edge removal after unplace (the obligation) is accepted, as link finalization is.
 5. A removal by T's admin drops edits by G's holders on T that the admin had not received (the frontier rule, spec/requirements.md Permissions). For "remove from a shared tag" that is centralized semantics with the remover as the server. Yes or no.
+
+
+Owner decision (round 13): all five open decisions as recommended (tied grants; explicit `share_into`; the "no helper" rule withdrawn for this operation; eventual tied-edge removal after unplace accepted; a removal by T's admin drops G holders' edits it had not received, softened later by receipts-only sync, issues/revoke-needs-whole-tree.md). Ready to implement.
