@@ -103,8 +103,7 @@ fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn Crypto
             for i in items {
                 let ks = keysets.get(&i.role);
                 let b = match own.get(&i.role) {
-                    // Symmetric unless the writer holds a newer keyset than the secret.
-                    Some((es, s)) if ks.is_none_or(|(ek, _)| !is_newer(ek, es)) => symmetric(actor, member, i, s, *es)?,
+                    Some((es, s)) if symmetric_box(es, ks.map(|(ek, _)| ek)) => symmetric(actor, member, i, s, *es)?,
                     _ => {
                         let Some((ek, pk)) = ks else { return Ok(None) };
                         let slot = BoxSlot::Secrets { actor: *actor, member, role: i.role, epoch: i.epoch };
@@ -118,6 +117,13 @@ fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn Crypto
         }
     }
     Ok(Some(items.iter().map(|i| (i.role, i.epoch)).collect()))
+}
+
+/// Whether a box to an actor member is symmetric under its secret at `own` (the member's newest
+/// the writer holds) rather than sealed to its `keyset` epoch (the newest the writer holds):
+/// unless that keyset is newer.
+pub fn symmetric_box(own: &Epoch, keyset: Option<&Epoch>) -> bool {
+    keyset.is_none_or(|ek| !is_newer(ek, own))
 }
 
 fn symmetric(actor: &Tid, member: Tid, i: &Item, s: &Secret32, epoch_s: Epoch) -> Result<SecretBox, Error> {

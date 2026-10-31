@@ -138,7 +138,7 @@ fn key_actor_opens_deep_member_chain_spec_crypto_4() {
     let spec = osis_node::flows::LinkSpec { target: chain[0], role: Role::Read, until: None, servers: Vec::new(), peers: Vec::new(), single_use: false };
     let (link, _, _) = lp.peers[0].engine.create_link(&sharer, &spec).unwrap();
     sync(&mut lp, 0, 1);
-    let held = |lp: &LocalPeer, t: &Tid| lp.peers[1].engine.epochs(t).is_some_and(|e| !e.read.held_newest_first().is_empty());
+    let held = |lp: &LocalPeer, t: &Tid| lp.peers[1].engine.epochs(t).is_some_and(|e| e.read.holds_any());
     assert!(chain.iter().all(|t| !held(&lp, t)), "nothing opens before the key");
     lp.peers[1].engine.hold_key_actor(link.seed.clone()).unwrap();
     assert!(held(&lp, &link.k), "K, boxed to L");

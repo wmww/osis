@@ -827,7 +827,7 @@ fn hinted_walk_claims_for_boxed_actor_spec_sync_5() {
     let rcpt = recipients_of(e, &[(bt, Role::Admin), (p, Role::Read)]);
     rotation(e, g, &rcpt, 11, false);
     net.pair(b, a);
-    assert!(net.engine(a).epochs(&g).is_some_and(|x| !x.read.held_newest_first().is_empty()), "a reads g through P's box");
+    assert!(net.engine(a).epochs(&g).is_some_and(|x| x.read.holds_any()), "a reads g through P's box");
     assert!(!net.engine(a).get_typed(&g, &osis_schema::core_types::MEMBERS).unwrap().unwrap_or_default().contains_key(&p), "no edge of P on g");
     let k = net.engine(a).hold_key_actor(Secret32::from_bytes([0x40; 32])).unwrap();
     let kem = |net: &mut Net, t| net.engine(a).epochs(&t).unwrap().read.held_newest_first().into_iter().map(|(_, s)| osis_crypto::role_kem(s).x25519().clone()).collect::<Vec<_>>();

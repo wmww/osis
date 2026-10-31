@@ -973,7 +973,7 @@ impl SyncEngine {
         let me = self.engine.tid();
         let mut out = Vec::new();
         for g in self.engine.labeled_groups() {
-            if self.engine.epochs(&g).is_none_or(|e| e.read.held_newest_first().is_empty()) {
+            if self.engine.epochs(&g).is_none_or(|e| !e.read.holds_any()) {
                 continue;
             }
             let admin = crate::engine::write::role_of(&self.engine.core, &me, &g, ts) == Some(osis_base::Role::Admin);

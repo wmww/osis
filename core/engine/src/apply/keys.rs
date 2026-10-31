@@ -483,7 +483,7 @@ pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         let Some(mut e) = tx.core.ix.secrets.get(&a).cloned() else { continue };
         e.drop_reading_from(id);
         // an actor left with no secret is the lost-access trigger's: it forgets what they read
-        if ROLES.iter().all(|r| e.role(*r).held_newest_first().is_empty()) {
+        if !e.holds_any() {
             lost.push(a);
             continue;
         }
@@ -699,7 +699,7 @@ mod tests {
         lp.deliver(1, &p1).unwrap();
         lp.deliver(2, &p2).unwrap();
         assert!(!lp.peers[2].engine.pending().is_empty());
-        let held = |lp: &LocalPeer, i: usize| lp.peers[i].engine.core.ix.secrets.get(&t).is_some_and(|e| !e.read.held_newest_first().is_empty());
+        let held = |lp: &LocalPeer, i: usize| lp.peers[i].engine.core.ix.secrets.get(&t).is_some_and(|e| e.read.holds_any());
         assert!(held(&lp, 2), "under the cap: read");
         assert!(!held(&lp, 1), "at the cap: not read");
     }
@@ -1087,7 +1087,7 @@ mod tests {
         lp.peers[0].engine.run(|tx| super::forget_unchecked(tx, &c)).unwrap();
         assert!(lp.peers[0].engine.core.ix.lost_due.contains(&x));
         lp.peers[0].engine.drop_lost_due().unwrap();
-        assert!(lp.peers[0].engine.core.ix.secrets.get(&x).is_none_or(|e| e.read.held_newest_first().is_empty()));
+        assert!(lp.peers[0].engine.core.ix.secrets.get(&x).is_none_or(|e| !e.read.holds_any()));
     }
 
     // spec/crypto.md §3 (a thing has secrets of its own while a valid `/keys` part wrote a

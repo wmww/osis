@@ -268,7 +268,7 @@ fn lying_box_ignored_in_either_order_spec_crypto_4() {
     for unchecked in [None, Some(from(3))] {
         let mut lie_first = ActorEpochs::default();
         ingest(&f.a, &lie, &opener, &mut lie_first, unchecked).unwrap();
-        assert!(lie_first.read.held_newest_first().is_empty());
+        assert!(!lie_first.read.holds_any());
         ingest(&f.a, &s, &opener, &mut lie_first, None).unwrap();
         let mut lie_last = ActorEpochs::default();
         ingest(&f.a, &s, &opener, &mut lie_last, None).unwrap();

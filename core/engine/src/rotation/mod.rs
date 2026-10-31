@@ -489,7 +489,7 @@ fn rotation_helps(tx: &mut Tx<'_>, a: &Tid, uncovered_roles: &BTreeSet<Role>) ->
                 (Some(me), Some(ms)) => {
                     let ks = keysets.get(&(*m, r)).copied().flatten();
                     let named = match me.role(r).newest_held().map(|x| x.0) {
-                        Some(es) if ks.is_none_or(|ek| !osis_keys::is_newer(&ek, &es)) => Some(es),
+                        Some(es) if osis_keys::symmetric_box(&es, ks.as_ref()) => Some(es),
                         _ => ks,
                     };
                     me.role(r).newest().is_some_and(|k| named == Some(k) && osis_keys::covers(ms, me, r, &k, &inner, &held))
@@ -1000,8 +1000,7 @@ fn may_grant(core: &Core, author: &Tid, x: &Tid) -> bool {
 /// until it applies, so any other would keep a node that lost access holding it for good;
 /// reading-only candidates go with the commit that gave them.
 fn lost_among(tx: &mut Tx<'_>, cands: Vec<Tid>) -> Result<Vec<Tid>> {
-    let holds = |e: &ActorEpochs| ROLES.iter().any(|r| !e.role(*r).held_newest_first().is_empty());
-    let unread: Vec<Tid> = cands.into_iter().filter(|a| tx.core.ix.secrets.get(a).is_some_and(holds) && !readable(tx.core, a)).collect();
+    let unread: Vec<Tid> = cands.into_iter().filter(|a| tx.core.ix.secrets.get(a).is_some_and(ActorEpochs::holds_any) && !readable(tx.core, a)).collect();
     if unread.is_empty() {
         return Ok(unread);
     }
