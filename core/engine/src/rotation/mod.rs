@@ -65,11 +65,7 @@ fn roles_now(tl: &Timeline, a: &Tid, now: Ts) -> BTreeMap<Tid, Role> {
 pub(crate) fn direct_departures(tx: &mut Tx<'_>, a: &Tid, horizon: &mut Option<WallMs>) -> Result<BTreeSet<Departure>> {
     let mut out = BTreeSet::new();
     let now = now_ts(tx.core);
-    let mut later = |t: WallMs| {
-        if t > now.wall_ms() && horizon.is_none_or(|h| t < h) {
-            *horizon = Some(t);
-        }
-    };
+    let mut later = |t: WallMs| lower_horizon(horizon, t, now.wall_ms());
     let owner = tx.core.owner(a);
     let current = tx.core.timelines.get(a).map(|tl| roles_now(tl, a, now)).unwrap_or_default();
     if let Some(tl) = tx.core.timelines.get(a) {
@@ -225,14 +221,16 @@ fn until_horizon<'t>(core: &Core, actors: impl Iterator<Item = &'t Tid>, horizon
             continue;
         }
         seen.push(tl);
-        for (_, _, e) in tl.edges_at(None).iter() {
-            if let Some(u) = e.until
-                && u > now
-                && horizon.is_none_or(|h| u < h)
-            {
-                *horizon = Some(u);
-            }
+        for u in tl.edges_at(None).iter().filter_map(|(_, _, e)| e.until) {
+            lower_horizon(horizon, u, now);
         }
+    }
+}
+
+/// Lowers `horizon` to `t` when `t` is ahead of `now` and before it.
+fn lower_horizon(horizon: &mut Option<WallMs>, t: WallMs, now: WallMs) {
+    if t > now && horizon.is_none_or(|h| t < h) {
+        *horizon = Some(t);
     }
 }
 
@@ -450,19 +448,11 @@ fn could_rotate(core: &Core, a: &Tid, d: &Departure, r: Role) -> bool {
 /// The known departures `a`'s newest held epochs (any role) do not cover now.
 pub(crate) fn uncovered_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Departure>> {
     let deps = departures(tx, a)?;
-    if deps.is_empty() {
-        return Ok(Vec::new());
-    }
-    let Some(epochs) = tx.core.epochs(a) else { return Ok(Vec::new()) };
-    let secrets = secrets_in(tx, a)?;
-    let held = held_actors(tx)?;
-    let judge = Judge::new(tx.core, &held);
     let mut out: Vec<Departure> = Vec::new();
-    for r in ROLES {
-        let Some((e, _)) = epochs.role(r).newest_held() else { continue };
-        for d in uncovered(a, &secrets, &epochs, r, &e, &deps, &judge) {
-            if !out.contains(d) {
-                out.push(d.clone());
+    for (_, ds) in uncovered_by_role(tx, a, &deps)?.map(|x| x.1).unwrap_or_default() {
+        for d in ds {
+            if !out.contains(&d) {
+                out.push(d);
             }
         }
     }
@@ -473,6 +463,27 @@ pub(crate) fn uncovered_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Depar
 pub(crate) fn uncovered_roles(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Role>> {
     let deps = departures(tx, a)?;
     uncovered_roles_of(tx, a, deps)
+}
+
+pub fn uncovered_roles_of(tx: &mut Tx<'_>, a: &Tid, deps: Vec<Departure>) -> Result<BTreeSet<Role>> {
+    Ok(uncovered_by_role(tx, a, &deps)?.map(|x| x.1).unwrap_or_default().into_iter().filter(|(_, ds)| !ds.is_empty()).map(|(r, _)| r).collect())
+}
+
+type ByRole = Vec<(Role, Vec<Departure>)>;
+
+/// For each role of `a` with a held epoch, the departures of `deps` its newest held epoch does
+/// not cover, with the held actors they were judged over (`held_actors`); `None` when `deps` is
+/// empty or no epochs of `a` are held.
+fn uncovered_by_role(tx: &mut Tx<'_>, a: &Tid, deps: &[Departure]) -> Result<Option<(MemoryHeldActors, ByRole)>> {
+    if deps.is_empty() {
+        return Ok(None);
+    }
+    let Some(epochs) = tx.core.epochs(a) else { return Ok(None) };
+    let secrets = secrets_in(tx, a)?;
+    let held = held_actors(tx)?;
+    let judge = Judge::new(tx.core, &held);
+    let by_role = ROLES.into_iter().filter_map(|r| Some((r, uncovered(a, &secrets, &epochs, r, &epochs.role(r).newest_held()?.0, deps, &judge).into_iter().cloned().collect()))).collect();
+    Ok(Some((held, by_role)))
 }
 
 /// The known departures of `a`, each with the commit that made it when that is this node's
@@ -494,51 +505,30 @@ fn own_leaving(core: &Core, a: &Tid, d: &Departure) -> Option<osis_base::CommitI
     (own && departure_of(tl, t, mc, op).is_some() && crate::apply::validity::self_removal(core, &mc.author, t, &op.member, mc.ts)).then_some(mc.id)
 }
 
-pub fn uncovered_roles_of(tx: &mut Tx<'_>, a: &Tid, deps: Vec<Departure>) -> Result<BTreeSet<Role>> {
-    if deps.is_empty() {
-        return Ok(BTreeSet::new());
-    }
-    let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
-    let secrets = secrets_in(tx, a)?;
-    let held = held_actors(tx)?;
-    let judge = Judge::new(tx.core, &held);
-    let mut out = BTreeSet::new();
-    for r in ROLES {
-        let Some((e, _)) = epochs.role(r).newest_held() else { continue };
-        if !uncovered(a, &secrets, &epochs, r, &e, &deps, &judge).is_empty() {
-            out.insert(r);
-        }
-    }
-    Ok(out)
-}
-
-/// The roles of `uncovered_roles` a rotation of `a` is worth now (spec/permissions.md §3): none
-/// of their uncovered departures lies inside a current member M whose fresh box would not cover
-/// the rest (`fresh_box_covers`) and that `a` is not below (no membership cycle through both).
-/// Such an M heals by its own rotation: the node waits for it, so that `a`'s rotation then
-/// reaches M's members in-band. An M on a cycle with `a` may wait on `a`: `a` rotates, leaving
-/// M out (`rotation_into`). So no actor waits on itself through others.
-fn rotation_helps(tx: &mut Tx<'_>, a: &Tid, uncovered_roles: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
-    if uncovered_roles.is_empty() {
-        return Ok(BTreeSet::new());
-    }
+/// The roles of `a` that `may` (the roles the rotator may rotate) holds and a rotation of `a` is
+/// worth now (spec/permissions.md §3): their newest held epoch does not cover a known departure,
+/// and none of those lies inside a current member M whose fresh box would not cover the rest
+/// (`fresh_box_covers`) and that `a` is not below (no membership cycle through both). Such an M
+/// heals by its own rotation: the node waits for it, so that `a`'s rotation then reaches M's
+/// members in-band. An M on a cycle with `a` may wait on `a`: `a` rotates, leaving M out
+/// (`rotation_into`). So no actor waits on itself through others.
+fn rotation_due(tx: &mut Tx<'_>, a: &Tid, may: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
     let deps = departures(tx, a)?;
-    let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
-    let secrets = secrets_in(tx, a)?;
-    let held = held_actors(tx)?;
+    let Some((held, by_role)) = uncovered_by_role(tx, a, &deps)? else { return Ok(BTreeSet::new()) };
     let current: BTreeSet<Tid> = tx.core.current_members(a).into_iter().map(|x| x.0).collect();
     let mut out = BTreeSet::new();
     let mut on_cycle: BTreeMap<Tid, bool> = BTreeMap::new();
-    'roles: for &r in uncovered_roles {
-        if let Some((e, _)) = epochs.role(r).newest_held() {
-            for d in uncovered(a, &secrets, &epochs, r, &e, &deps, &Judge::new(tx.core, &held)) {
-                if let Some((m, rest)) = d.via.split_first()
-                    && current.contains(m)
-                    && !*on_cycle.entry(*m).or_insert_with(|| below_of(tx.core, m).0.contains(a))
-                    && !fresh_box_covers(tx, &held, m, r, &Departure { via: rest.clone(), member: d.member, from: d.from })?
-                {
-                    continue 'roles;
-                }
+    'roles: for (r, ds) in by_role {
+        if ds.is_empty() || !may.contains(&r) {
+            continue;
+        }
+        for d in ds {
+            if let Some((m, rest)) = d.via.split_first()
+                && current.contains(m)
+                && !*on_cycle.entry(*m).or_insert_with(|| below_of(tx.core, m).0.contains(a))
+                && !fresh_box_covers(tx, &held, m, r, &Departure { via: rest.clone(), member: d.member, from: d.from })?
+            {
+                continue 'roles;
             }
         }
         out.insert(r);
@@ -725,15 +715,22 @@ pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Rol
         m.sign_as(s);
     }
     let c = Engine::commit_tx(tx, m)?;
-    record(tx, a, &rot)?;
     let mut done = Done::default();
+    recorded(tx, a, c, &rot, &unreached, &mut done)?;
+    Ok(done)
+}
+
+/// Records rotation `rot` of `a`, committed as `c`, into `done` with its deliveries: by inbox to
+/// `to`, and first under the labels above `a`, which must learn its new `/keys`
+/// (spec/permissions.md §3).
+fn recorded(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, rot: &Rotation, to: &[Tid], done: &mut Done) -> Result<()> {
+    record(tx, a, rot)?;
     done.add(c);
-    done.deliveries.extend(deliver_rotation(tx, a, c, &unreached)?);
-    // the rotated actor's new /keys travels under the labels above it (spec/permissions.md §3)
+    done.deliveries.extend(deliver_rotation(tx, a, c, to)?);
     if let Some(c) = c {
         done.deliveries.push(Delivery::First { commits: vec![c], under: above(tx.core, &a) });
     }
-    Ok(done)
+    Ok(())
 }
 
 /// Things whose labels must learn a rotated actor's new `/keys`: what it is a member of and
@@ -753,7 +750,7 @@ pub(crate) fn above(core: &Core, a: &Tid) -> Vec<Tid> {
 /// encrypts under its secrets: first those of the intermediate actors of departures inside
 /// members (bottom-up: each actor after every actor on its departures' chains below it, each
 /// once; on a membership cycle, in walk order), then `a`'s uncovered roles `who` may rotate
-/// (spec/permissions.md §3) where that helps (`rotation_helps`). Returns the roles still
+/// (spec/permissions.md §3) where that helps (`rotation_due`). Returns the roles still
 /// uncovered: it must not encrypt under them.
 pub(crate) fn ensure_rotated(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done) -> Result<BTreeSet<Role>> {
     // a plain thing follows its owner's epochs
@@ -782,10 +779,8 @@ pub(crate) fn ensure_rotated(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done)
         }
         let x = *x;
         stack.pop();
-        let due = uncovered_roles(tx, &x)?;
         let may = may_rotate(tx.core, &who, &x);
-        let mine: BTreeSet<Role> = due.intersection(&may).copied().collect();
-        let mine = rotation_helps(tx, &x, &mine)?;
+        let mine = rotation_due(tx, &x, &may)?;
         if !mine.is_empty() {
             done.extend(rotate_now(tx, who, x, &mine)?);
         }
@@ -858,12 +853,7 @@ fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
     let Some((c, rot, mut to)) = own_secrets_rot(tx, t, &mut done)? else { return Ok(done) };
     let owner = tx.core.owner(&t);
     to.retain(|m| Some(*m) != owner);
-    record(tx, t, &rot)?;
-    done.add(c);
-    done.deliveries.extend(deliver_rotation(tx, t, c, &to)?);
-    if let Some(c) = c {
-        done.deliveries.push(Delivery::First { commits: vec![c], under: above(tx.core, &t) });
-    }
+    recorded(tx, t, c, &rot, &to, &mut done)?;
     Ok(done)
 }
 
@@ -970,6 +960,11 @@ fn readable(core: &Core, a: &Tid) -> bool {
     core.role_now(&node, a).is_some() || core.key_actors.keys().any(|k| core.role_now(k, a).is_some())
 }
 
+/// Whether box recipient `m` is this node, a held key actor or an actor it holds and reads now.
+fn ours(core: &Core, m: &Tid) -> bool {
+    *m == core.id.tid() || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m))
+}
+
 /// Whether a role on `x` gives one on `a`: `x` is `a`, on its owner chain, or holds a role on it.
 fn reaches(core: &Core, x: &Tid, a: &Tid) -> bool {
     let mut cur = *a;
@@ -1006,7 +1001,6 @@ struct PendingGrant {
 /// may yet get (their secrets may be read already, spec/crypto.md §4), never a loss.
 fn pending_grants(tx: &mut Tx<'_>) -> Result<Vec<PendingGrant>> {
     let mut out = Vec::new();
-    let node = tx.core.id.tid();
     let now = tx.now().0;
     let mut after = None;
     loop {
@@ -1019,8 +1013,7 @@ fn pending_grants(tx: &mut Tx<'_>) -> Result<Vec<PendingGrant>> {
             let recent = ts.saturating_add(PENDING_GRANT_WAIT_MS) > now && ts <= now.saturating_add(osis_base::format::MAX_DRIFT_MS);
             for (x, w) in crate::apply::keys::pending_secrets_writes(&blob, &id) {
                 let core = &*tx.core;
-                let ours = |m: &Tid| *m == node || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m));
-                if w.boxes.keys().any(|k| ours(&k.member)) {
+                if w.boxes.keys().any(|k| ours(core, &k.member)) {
                     out.push(PendingGrant { x, plausible: recent && may_grant(core, &author, &x) && authentic(core, &blob, &id, &x) });
                 }
             }
@@ -1044,9 +1037,7 @@ pub(crate) fn boxes_kept(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_
     if core.ix.commits.contains_key(id) {
         return BTreeSet::new();
     }
-    let node = core.id.tid();
-    let ours = |m: &Tid| *m == node || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m));
-    let newer = |x: &Tid, k: &BoxKey| ours(&k.member) && k.role == Role::Read && held.get(x).is_none_or(|n| k.epoch.n > *n);
+    let newer = |x: &Tid, k: &BoxKey| ours(core, &k.member) && k.role == Role::Read && held.get(x).is_none_or(|n| k.epoch.n > *n);
     crate::apply::keys::pending_secrets_writes(blob, id).into_iter().filter(|(x, w)| w.boxes.keys().any(|k| newer(x, k)) && may_grant(core, &blob.header.author, x) && authentic(core, blob, id, x)).map(|(x, _)| x).collect()
 }
 
@@ -1122,8 +1113,6 @@ fn lost_among(tx: &mut Tx<'_>, cands: Vec<Tid>) -> Result<Vec<Tid>> {
 /// beside a grant: a plain leave followed by a void grant (a leaver's forgery) defers nothing.
 fn contested(core: &Core, k: &Tid) -> bool {
     let Some(tl) = core.timelines.get(k) else { return false };
-    let node = core.id.tid();
-    let ours = |m: &Tid| *m == node || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m));
     let op = |mc: &osis_perm::MembershipCommit, i: usize| osis_perm::WriteId::Op(mc.id, i as u32);
     // the index of the redemption's self-removal
     let leave = |mc: &osis_perm::MembershipCommit| {
@@ -1133,7 +1122,7 @@ fn contested(core: &Core, k: &Tid) -> bool {
     let reds: Vec<_> = core.ix.by_thing.get(k).into_iter().flatten().filter_map(|c| tl.membership_commit(c)).filter_map(|mc| Some((mc, leave(mc)?))).collect();
     reds.iter().any(|(mc, j)| {
         tl.lowered_unaudited(&mc.author, k)
-            && mc.ops.iter().enumerate().any(|(i, o)| i != *j && o.target == *k && o.edge.is_some() && ours(&o.member) && !tl.is_applied(&op(mc, i)))
+            && mc.ops.iter().enumerate().any(|(i, o)| i != *j && o.target == *k && o.edge.is_some() && ours(core, &o.member) && !tl.is_applied(&op(mc, i)))
             && reds.iter().any(|(w, jw)| w.author == mc.author && w.id != mc.id && tl.is_applied(&op(w, *jw)))
     })
 }
