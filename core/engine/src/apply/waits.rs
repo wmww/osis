@@ -45,7 +45,7 @@ enum On {
     Record { tid: Tid, had: bool },
     /// The missing deltas, and the earliest expiry among them still to come. Only commits
     /// whose signature and chain were checked get here: the header judges the missing deltas
-    /// (`waits_for_deltas`: receipts, purge rights).
+    /// (`waits_for_deltas`: held snapshots, purge rights).
     Deltas { header: Arc<Header>, missing: Vec<(usize, usize)>, expiry: Option<u64> },
 }
 

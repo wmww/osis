@@ -554,7 +554,9 @@ pub fn work_sets(seed: u64) -> Res<Report> {
 /// §6, §7): A compacts the tags (S1); while A is away, C writes and compacts over it (S2) and W
 /// drops S1 under S2's cover, deleting it at the server; A, not having seen S2, removes C (S2
 /// invalid). S1 is missing again at W; A, holding it uncovered, uploads it again while it has a
-/// live write; W fetches it, and A and W read alike.
+/// live write; W fetches it, and A and W read alike. Random writes while A is away: a part W
+/// dropped under S2 and deleted reaches A never, and its commit applies there without it
+/// (S2 lists it, spec/commits.md §4).
 pub fn coverer_revoked(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xc5);
     let mut sim = sim("coverer_revoked", seed, NetWeights::default());
@@ -587,10 +589,10 @@ pub fn coverer_revoked(seed: u64) -> Res<Report> {
     sim.sever(Party::N(a), Party::S(s));
     // a write of C's first: S2 covers S1 strictly (of covered-equal ones the higher ID goes)
     add(&mut sim, c, "by c")?;
-    sim.quiet(40)?;
+    sim.run(10)?;
     let acts = sim.sync(c)?.compact(&t, &k).map_err(|e| sim.fail(format!("node {c} compact: {e}")))?;
     sim.actions(c, acts)?;
-    sim.quiet(40)?;
+    sim.run(20)?;
     // past `MAX_DRIFT`: W drops S1 under S2 and deletes it at the server
     sim.advance(2 * 3_600_000)?;
     sim.quiet(40)?;
