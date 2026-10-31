@@ -641,7 +641,7 @@ impl Transaction<'_> {
     pub fn read_blob(&mut self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, Error> {
         if let Some(b) = self.mem.o.blobs.get(id) {
             let start = usize::try_from(offset).unwrap_or(usize::MAX).min(b.len());
-            return Ok(Some(b[start..start.saturating_add(len).min(b.len())].to_vec()));
+            return Ok(b.get(start..start.saturating_add(len).min(b.len())).map(<[u8]>::to_vec));
         }
         self.pager.txn_get_blob(&self.d, id, offset, len)
     }
