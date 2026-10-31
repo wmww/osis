@@ -55,17 +55,19 @@ fn reader_cannot_write() {
     w.setup(c, &l);
     let sk = l.head_keys().sync.clone();
     assert_eq!(statuses(&w.run(c, Command::Upload { label: l.id, entries: vec![l.entry_by(blob(1), &sk)] })), vec![Code::REFUSED]);
-    assert_eq!(statuses(&w.run(c, l.deposit(blob(2), &sk))), vec![Code::REFUSED]);
+    // a badly signed deposit learns its code only, not the budget (spec/sync.md §5)
+    let ev = w.run(c, l.deposit(blob(2), &sk));
+    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::REFUSED, budget: None, .. }]), "{ev:?}");
     w.run(c, Command::Upload { label: l.id, entries: vec![l.entry(blob(3))] });
     let item = DeleteItem::sign(&sk, &l.id, bid(3), None).unwrap();
     assert_eq!(statuses(&w.run(c, Command::Delete { label: l.id, items: vec![item] })), vec![Code::REFUSED]);
-    // a register under a reader's key: answered with the head
+    // a register under a stranger's key: code 9 alone, never the head (spec/sync.md §5)
     let mut fork = Label::new(3);
     let (child, _) = fork.rotate(60);
     let mut forged = child.clone();
     forged.sig.0[0] ^= 1;
     let ev = w.run(c, Command::Register { label: l.id, step: forged, claim_set: None });
-    assert!(matches!(&ev[..], [ClientEvent::Head { head, .. }] if head.id() == l.steps[0].id()), "{ev:?}");
+    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::NOT_HEAD, .. }]), "{ev:?}");
 }
 
 // spec/sync.md §5 Delete, spec/crypto.md §7: a delete-key signature deletes only the body whose prefix commits to it (under that body's salt), at its level
@@ -128,7 +130,7 @@ fn budget_tombstone_and_fetch_scope() {
     assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::UNKNOWN_LABEL, .. }]), "{ev:?}");
 }
 
-// spec/sync.md §5: a genesis step for an existing label (another admin's) is answered with the head; only a child of the head is accepted
+// spec/sync.md §5: a genesis step for an existing label (another admin's) is refused (code 9, without the head); only a child of the head is accepted
 // spec/sync.md §5 (register)
 #[test]
 fn registration_squatting() {
@@ -139,9 +141,9 @@ fn registration_squatting() {
     let (s2, cs2) = l.rotate(40);
     // a grandchild is not a child of the head
     let ev = w.run(c, Command::Register { label: l.id, step: s2.clone(), claim_set: Some(cs2.clone()) });
-    assert!(matches!(&ev[..], [ClientEvent::Head { head, .. }] if *head == l.steps[0]), "{ev:?}");
+    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::NOT_HEAD, .. }]), "{ev:?}");
     assert_eq!(w.run(c, Command::Register { label: l.id, step: s1, claim_set: Some(cs1) }), vec![ClientEvent::Registered { label: l.id }]);
     assert_eq!(w.run(c, Command::Register { label: l.id, step: s2, claim_set: Some(cs2) }), vec![ClientEvent::Registered { label: l.id }]);
     let ev = w.run(c, l.register_cmd(0));
-    assert!(matches!(&ev[..], [ClientEvent::Head { head, .. }] if *head == l.steps[2]), "{ev:?}");
+    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::NOT_HEAD, .. }]), "{ev:?}");
 }

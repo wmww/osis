@@ -587,14 +587,6 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// A Register was answered with the server's head: open again (the head changed under us).
-    pub(crate) fn head_reply(&mut self, conn: ConnId, l: LabelId, _head: Step, out: &mut Vec<super::Action>) -> Result<()> {
-        if let Some(lc) = self.lc_mut(conn, &l) {
-            lc.registering = None;
-        }
-        self.reopen(conn, l, out)
-    }
-
     /// Records steps in `/label` of `g` when this node may write it (an admin; spec/sync.md
     /// §2, §5: "records the steps in /label"). Steps already recorded are left alone.
     pub(crate) fn record_steps(&mut self, g: &Tid, l: &LabelId, steps: &[Step], claims: Option<(StepId, ClaimSet)>) -> Result<()> {

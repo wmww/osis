@@ -298,11 +298,11 @@ fn stale_sync_key_gets_one_signed_step() {
     assert!(matches!(&ev[..], [ClientEvent::Refused { kind: osis_proto::Request::Sync, code: Code::NOT_OPENED, .. }]), "{ev:?}");
     let ev = net.run(0, Command::Open { label: l.id, key: OpenKey::Sync(SigningSecret::from_seed(&s32(99))) });
     assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]));
-    // a step on another branch is answered with the head
+    // a step on another branch is refused with code 9 alone, never the head (spec/sync.md §5)
     let mut fork = Label::new(3);
     let (other, _) = fork.rotate(40);
     let ev = net.run(0, Command::Register { label: l.id, step: other, claim_set: None });
-    assert!(matches!(&ev[..], [ClientEvent::Head { head, .. }] if *head == child));
+    assert!(matches!(&ev[..], [ClientEvent::Refused { kind: osis_proto::Request::Register, code: Code::NOT_HEAD, .. }]), "{ev:?}");
     net.open(0, &l);
     let ev = net.run(0, Command::Path { label: l.id, after: None });
     assert_eq!(ev, vec![ClientEvent::PathSteps { label: l.id, steps: l.steps.clone(), more: false }]);
@@ -454,19 +454,20 @@ fn deposit_budget() {
     };
     let dk = l.head_keys().deposit.clone();
     let ev = net.run(0, deposit(&l, 0, &dk));
-    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::OK, entries_left, .. }] if *entries_left == max - 1), "{ev:?}");
+    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::OK, budget: Some((n, _)), .. }] if *n == max - 1), "{ev:?}");
+    // a deposit not signed by the deposit key learns its code only, not the budget
     let ev = net.run(0, deposit(&l, 1, &l.head_keys().write.clone()));
-    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::REFUSED, .. }]));
+    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::REFUSED, budget: None, .. }]), "{ev:?}");
     for n in 1..max {
         net.run(0, deposit(&l, n, &dk));
     }
     let ev = net.run(0, deposit(&l, 500, &dk));
-    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::BUDGET_FULL, entries_left: 0, .. }]), "{ev:?}");
+    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::BUDGET_FULL, budget: Some((0, _)), .. }]), "{ev:?}");
     // stamping a deposited entry takes it out of the budget
     let ev = net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(0))] });
     assert_eq!(statuses(&ev), vec![Code::OK]);
     let ev = net.run(0, deposit(&l, 500, &dk));
-    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::OK, entries_left: 0, .. }]), "{ev:?}");
+    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::OK, budget: Some((0, _)), .. }]), "{ev:?}");
     net.open(0, &l);
     let (evs, _) = events_of(&net.run(0, sync(l.id, None, vec![], vec![])));
     assert!(evs.iter().any(|e| matches!(e, Event::Added { stamp: None, .. })));

@@ -952,13 +952,16 @@ impl SyncEngine {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn budget(&mut self, conn: ConnId, l: LabelId, b: BlobId, code: Code, entries_left: u64, head: Option<Step>, out: &mut Vec<super::Action>) -> Result<()> {
+    /// A deposit's answer; `entries_left` only when the server checked its signature under the
+    /// head (a stale one learns nothing: the head comes by the open connection, spec/sync.md §5).
+    pub(crate) fn budget(&mut self, conn: ConnId, l: LabelId, b: BlobId, code: Code, entries_left: Option<u64>) -> Result<()> {
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
         let server = c.server;
         c.req.sent.remove(&(l, b));
-        if let Some(lc) = self.lc_mut(conn, &l) {
-            lc.budget = Some(entries_left);
+        if let Some(n) = entries_left
+            && let Some(lc) = self.lc_mut(conn, &l)
+        {
+            lc.budget = Some(n);
         }
         // a queued deposit's answer
         let now = self.raw_now();
@@ -990,11 +993,7 @@ impl SyncEngine {
                 self.state.set_present(server, l, b, true);
                 self.reached(&l, &b);
             }
-            Code::NOT_HEAD => {
-                if let Some(h) = head {
-                    self.new_head(conn, l, h, out)?;
-                }
-            }
+            Code::NOT_HEAD => {}
             Code::TOMBSTONED => self.state.set_gone(server, l, b),
             c => self.diag(format!("deposit refused: code {}", c.0)),
         }

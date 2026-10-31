@@ -117,13 +117,13 @@ pub enum ClientEvent {
     /// delete key before use (`Step::verify_child`).
     Step { label: LabelId, step: Step },
     Registered { label: LabelId },
-    /// A Register was not accepted: the server's head.
-    Head { label: LabelId, head: Step },
     PathSteps { label: LabelId, steps: Vec<Step>, more: bool },
     /// Status per entry of an Upload or a Sync, with the head when a code is 9.
     EntryStatus { label: LabelId, blob_ids: Vec<BlobId>, codes: Vec<Code>, head: Option<Step> },
     DeleteStatus { label: LabelId, blob_ids: Vec<BlobId>, codes: Vec<Code>, head: Option<Step> },
-    Budget { label: LabelId, blob_id: BlobId, code: Code, entries_left: u64, bytes_left: u64, head: Option<Step> },
+    /// A Deposit's answer; `budget` (entries, bytes left) only when it was signed by the head's
+    /// deposit key.
+    Budget { label: LabelId, blob_id: BlobId, code: Code, budget: Option<(u64, u64)> },
     /// Log events of a Sync reply or a Push, in order; then keep `cursor` for the label (none:
     /// a bundle, a peer with no cursor, a Push while a Sync of the label runs).
     Events { label: LabelId, events: Vec<Event>, cursor: Option<Cursor> },
@@ -698,7 +698,6 @@ impl ClientSession {
             (Pending::Open(label), M::Opened { head, entry_box, .. }) => event(out, E::Opened { label, head, entry_box }),
             (Pending::Open(label), M::Step { step, .. }) => event(out, E::Step { label, step }),
             (Pending::Register(label), M::Ok { .. }) => event(out, E::Registered { label }),
-            (Pending::Register(label), M::Step { step, .. }) => event(out, E::Head { label, head: step }),
             (Pending::PathStopped(_), M::PathReply { .. }) => {}
             (Pending::Path(label), M::PathReply { steps, more, .. }) => {
                 let last = steps.last().map(Step::id);
@@ -713,7 +712,7 @@ impl ClientSession {
             (Pending::Delete(label, blob_ids), M::Status { codes, head, .. }) if codes.len() == blob_ids.len() => event(out, E::DeleteStatus { label, blob_ids, codes, head }),
             (Pending::Subscribe(labels), M::Status { codes, .. }) if codes.len() == labels.len() => event(out, E::Subscribed { labels, codes }),
             (Pending::Unsubscribe, M::Ok { .. }) => {}
-            (Pending::Deposit(label, blob_id), M::Budget { code, entries_left, bytes_left, head, .. }) => event(out, E::Budget { label, blob_id, code, entries_left, bytes_left, head }),
+            (Pending::Deposit(label, blob_id), M::Budget { code, budget, .. }) => event(out, E::Budget { label, blob_id, code, budget }),
             (Pending::Sync { label, cursor: asked, entries, inline_limit, gained, empty }, M::SyncReply { events, want, codes, cursor, more, .. }) if codes.len() == entries.len() => {
                 if !entries.is_empty() {
                     let blob_ids = entries.iter().map(|e| osis_label::blob_id(&e.blob)).collect();

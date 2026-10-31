@@ -174,7 +174,11 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
         let wrap = osis_crypto::wrap(&read, &id, &key).map_err(|e| sim.fail(e.to_string()))?;
         if let Some(dk) = &old.deposit {
             let sig = osis_label::sign_deposit(dk, &old.label, &id, &wrap);
-            sim.rogue_do(&mut r, Command::Deposit { label: old.label, blob: blob.clone(), wrap, sig })?;
+            let ev = sim.rogue_do(&mut r, Command::Deposit { label: old.label, blob: blob.clone(), wrap, sig })?;
+            // its stale key learns the code alone: no head, no budget (spec/sync.md §5)
+            if ev.iter().any(|e| matches!(e, ClientEvent::Budget { budget: Some(_), .. })) {
+                return Err(sim.fail(format!("a deposit under the removed member's key was told the budget: {ev:?}")));
+            }
         }
         if let Ok(e) = stamped(&sim, &old, &id, blob, &key) {
             sim.rogue_do(&mut r, Command::Upload { label: old.label, entries: vec![e] })?;
@@ -338,7 +342,7 @@ pub fn deposit_flood(seed: u64) -> Res<Report> {
         let sig = osis_label::sign_deposit(&dk, &k.label, &id, &wrap);
         let evs = sim.rogue_do(&mut r, Command::Deposit { label: k.label, blob, wrap, sig })?;
         for e in &evs {
-            if let ClientEvent::Budget { code: Code::OK, entries_left, .. } = e
+            if let ClientEvent::Budget { code: Code::OK, budget: Some((entries_left, _)), .. } = e
                 && budget.is_none()
             {
                 budget = Some(entries_left + 1);

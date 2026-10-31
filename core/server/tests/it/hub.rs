@@ -74,14 +74,14 @@ fn deposits_and_budget() {
     let max = 64 + 4 * l.sets[0].claims.len() as u64;
     let dk = l.head_keys().deposit.clone();
     let ev = w.run(a, l.deposit(blob(0), &dk));
-    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::OK, entries_left, .. }] if *entries_left == max - 1), "{ev:?}");
+    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::OK, budget: Some((n, _)), .. }] if *n == max - 1), "{ev:?}");
     let ev = w.run(a, l.deposit(blob(1), &l.head_keys().write.clone()));
     assert_eq!(statuses(&ev), vec![Code::REFUSED]);
     for n in 1..max {
         w.run(a, l.deposit(blob(n), &dk));
     }
     let ev = w.run(a, l.deposit(blob(500), &dk));
-    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::BUDGET_FULL, entries_left: 0, .. }]), "{ev:?}");
+    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::BUDGET_FULL, budget: Some((0, _)), .. }]), "{ev:?}");
     // a writer promotes one: out of the budget
     assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(0))] })), vec![Code::OK]);
     assert_eq!(statuses(&w.run(a, l.deposit(blob(500), &dk))), vec![Code::OK]);

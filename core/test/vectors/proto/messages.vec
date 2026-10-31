@@ -117,7 +117,7 @@ hex: 860c0c505bfef53b291bbbccdb5d1337e9f642f058410102020202020202020202020202020
 case: budget
 spec: spec/wire.md §11.2
 kind: 13
-hex: 860d0c00183f1a001f800080
+hex: 840d0c008182183f1a001f8000
 
 case: delete
 spec: spec/wire.md §11.2
