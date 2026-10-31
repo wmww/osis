@@ -260,12 +260,12 @@ impl Input {
     }
 
     /// What reaches any of `seeds` (included) at any time: owner links and `ever` edges.
-    fn ever_back(&self, seeds: impl IntoIterator<Item = Tid>) -> BTreeSet<Tid> {
+    pub(crate) fn ever_back(&self, seeds: impl IntoIterator<Item = Tid>) -> BTreeSet<Tid> {
         self.ever_reach(seeds, false)
     }
 
     /// What any of `seeds` (included) reaches at any time.
-    fn ever_forward(&self, seeds: impl IntoIterator<Item = Tid>) -> BTreeSet<Tid> {
+    pub(crate) fn ever_forward(&self, seeds: impl IntoIterator<Item = Tid>) -> BTreeSet<Tid> {
         self.ever_reach(seeds, true)
     }
 

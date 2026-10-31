@@ -3,8 +3,9 @@
 //! things, closed under authors; and verification from certificates alone.
 //!
 //! "Ever existed" is over every edge any held write, roster or ledger tenure can set
-//! (`Input::ever`) and owner links, whatever the walk applied or when: a superset of the paths
-//! any walk of any round had at any point, so no point and no replay is needed.
+//! (`Input::ever`) and owner links (`Input::ever_forward`, `ever_back`), whatever the walk
+//! applied or when: a superset of the paths any walk of any round had at any point, so no
+//! point and no replay is needed.
 
 use crate::held::{HeldSet, MemoryHeldSet};
 use crate::timeline::{At, Timeline};
@@ -34,20 +35,6 @@ pub(crate) struct CertIndex {
     by_thing: BTreeMap<Tid, Vec<Arc<RosterSnapshot>>>,
 }
 
-/// Everything `start` reaches by `next`, itself included.
-fn search(start: &Tid, next: impl Fn(&Tid) -> Vec<Tid>) -> BTreeSet<Tid> {
-    let mut seen = BTreeSet::from([*start]);
-    let mut todo = vec![*start];
-    while let Some(x) = todo.pop() {
-        for y in next(&x) {
-            if seen.insert(y) {
-                todo.push(y);
-            }
-        }
-    }
-    seen
-}
-
 impl Timeline {
     fn cert_index(&self) -> &CertIndex {
         self.memo.certs.get_or_init(|| {
@@ -62,18 +49,6 @@ impl Timeline {
             }
             x
         })
-    }
-
-    /// Things reachable from `node` over every edge ever held and owner links.
-    fn ever_up_from(&self, node: &Tid) -> BTreeSet<Tid> {
-        let ever = &self.input.ever;
-        search(node, |x| ever.targets.get(x).into_iter().flatten().chain(self.input.owners.owned(x)).copied().collect())
-    }
-
-    /// Things reaching `thing` likewise.
-    fn ever_down_to(&self, thing: &Tid) -> BTreeSet<Tid> {
-        let ever = &self.input.ever;
-        search(thing, |y| ever.members.get(y).into_iter().flatten().copied().chain(self.input.owners.owner_actor(y)).collect())
     }
 
     /// The chain certificates of `node` for writes on `thing` (§4).
@@ -118,8 +93,8 @@ impl Timeline {
             if !seen.insert((n, t)) {
                 continue;
             }
-            let up = ups.entry(n).or_insert_with(|| self.ever_up_from(&n));
-            let down = downs.entry(t).or_insert_with(|| self.ever_down_to(&t));
+            let up = ups.entry(n).or_insert_with(|| self.input.ever_forward([n]));
+            let down = downs.entry(t).or_insert_with(|| self.input.ever_back([t]));
             let mut things: BTreeSet<Tid> = up.intersection(down).copied().collect();
             things.insert(n);
             things.insert(t);
