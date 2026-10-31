@@ -14,7 +14,7 @@
 - An aspect is identified by (tid, AK). An **AK** is a string, slash-prefixed and slash-separated (`/note/body`). AKs go on the wire as strings.
 - Single-segment AKs belong to the core schema (§9). App AKs have two or more segments; the first is a namespace owned by the schema maintainer.
 - An aspect is present iff its root fragment is present (spec/crdt.md §4.3).
-- A schema declares per AK: the type, the default retention (purgeable by, keep at least, keep at most, in any form; spec/commits.md §5), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags. `ro`, `synthetic`, `guaranteed`, `indexed` are local; nothing on the wire enforces them. At most one **lifetime flag** decides where writes of the AK go: none, durable commits; `ephemeral`, a value held in memory by the nodes holding the thing, never in a durable commit (it syncs as ephemeral commits, spec/commits.md §2, spec/sync.md §9); `presence`, an `ephemeral` value tied to its author's presence (it goes at every holder once no path to its author is left, spec/sync.md §9; no expiry, default or written); `signal`, an ephemeral write with no lasting value (delivered to listeners here and on the devices connected now, never in state; only a whole-value set). Ephemeral writes carry no retention; expiry applies (spec/crdt.md §4.7, in memory). Core aspects are durable. An aspect reads the join of its durable and ephemeral states (spec/crdt.md §4.1).
+- A schema declares per AK: the type, the default retention (purgeable by, keep at least, keep at most, in any form; spec/commits.md §5), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags. `ro`, `synthetic`, `guaranteed`, `indexed` are local; nothing on the wire enforces them. At most one **lifetime flag** decides where writes of the AK go: none, durable commits; `ephemeral`, a value held in memory by the nodes holding the thing, never in a durable commit (it syncs as ephemeral commits, spec/commits.md §2, spec/sync.md §9); `presence`, an `ephemeral` value tied to its author's presence (it goes at every holder once no path to its author is left, spec/sync.md §9; no expiry, default or written); `signal`, an ephemeral write with no lasting value (delivered to listeners here and on the devices connected now, never in state; only a whole-value set). Ephemeral writes carry no retention; expiry applies (spec/crdt.md §4.7, in memory). Core aspects are durable but `/placed` (§8), which is ephemeral. An aspect reads the join of its durable and ephemeral states (spec/crdt.md §4.1).
 
 ## 3. Types
 - Scalars: `string` (UTF-8), `blob` (bytes), `bool`, `int` (i64), `float` (f64), `tid`.
@@ -77,10 +77,10 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - There is no thing hash and no state hash.
 
 ## 8. Groups
-- A **group** is a thing with a `/group` aspect: `items: set<tid>`, `subgroups: set<tid>`. Its members are its items plus, transitively, the members of its subgroups. Groups may overlap, nest and be cyclic; membership changes over time.
+- A **group** is a thing with a `/group` aspect: `items: set<tid>`, `subgroups: set<tid>`. Its members are the items of its `/group` and `/placed` plus, transitively, the members of their subgroups. Groups may overlap, nest and be cyclic; membership changes over time.
 - Groups are the sync unit (spec/sync.md §3). Being in a group grants no rights (spec/permissions.md).
-- `/groups` (synthetic) on a thing: the locally known groups containing it, directly or transitively, through both sides of `/group`.
-- `/group` is the one core aspect with an ephemeral side. Adding or removing an item or subgroup that is ephemeral after the write is an ephemeral write of the group's `/group`, needing write on the group; any other write of an ephemeral group's `/group` is ephemeral too. Adding a durable item or subgroup is durable and persists the group (§1). When a thing persists, the persisting commit adds it durably to each group it is ephemerally placed in that the persisting node may write, with that placement's expiry, and the node removes the ephemeral element; a placement into a group it may not write stays ephemeral. Likewise every later content commit with a durable delta on a durable thing adds each of its ephemeral placements durably (a placement made while it persisted elsewhere, or restored by an undo), and removing a durable item or subgroup also removes its ephemeral element. A persisting thing with an ephemeral `/group` and no durable one gets an empty durable `/group` in that commit.
+- `/groups` (synthetic) on a thing: the locally known groups containing it, directly or transitively, through `/group` and `/placed`.
+- `/placed`, of `/group`'s type, is the one ephemeral core aspect: the ephemeral placements into the group, written by group operations only. Adding or removing an item or subgroup that is ephemeral after the write is a write of the group's `/placed`, needing write on the group; any other write of an ephemeral group's `/group` is ephemeral too and goes to `/placed`. Adding a durable item or subgroup is durable and persists the group (§1). When a thing persists, the persisting commit adds it durably to each group it is ephemerally placed in that the persisting node may write, with that placement's expiry, and the node removes it from `/placed`; a placement into a group it may not write stays ephemeral. Likewise every later content commit with a durable delta on a durable thing adds each of its ephemeral placements durably (a placement made while it persisted elsewhere, or restored by an undo), and removing a durable item or subgroup also removes it from `/placed`. A persisting thing with a `/placed` and no `/group` gets an empty durable `/group` in that commit.
 
 ## 9. Core schema
 The core aspects form the core schema, schema ID 16 zero bytes, revision 1, evolving under spec/versioning.md. Exact types below (DSL of notes/data-model.md); `creation`, `signing_key`, `kem_key`, `sealed` are spec/wire.md §3.
@@ -101,6 +101,7 @@ The core aspects form the core schema, schema ID 16 zero bytes, revision 1, evol
 | `/reach` | struct { dialable key, relays, lan secret } | on a node thing (spec/sync.md §10); never direct addresses |
 | `/seen` | struct { ts: timestamp, stranded: bool } | on a node thing: heartbeat, always written with `expires` (spec/permissions.md §4) |
 | `/group` | struct { items: set<tid>, subgroups: set<tid> } | §8 |
+| `/placed` | struct { items: set<tid>, subgroups: set<tid> } | ephemeral: the ephemeral placements, §8 |
 | `/groups` | set<tid> | synthetic, guaranteed, local |
 | `/name` | string | what humans call the thing |
 | `/body` | markdown | freeform content: a note's text, notes on anything |
@@ -150,6 +151,7 @@ aspect /node: struct { 0 software: string, 1 schemas: map<blob, int> };   // sch
 aspect /reach: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret: blob };   // 32-byte P2P key, relay URLs, 32 bytes
 aspect /seen: struct { 0 ts: timestamp, 1 stranded: bool };    // ts: wall ms of the commit's ts
 aspect /group: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
+aspect /placed: struct { 0 items: set<tid>, 1 subgroups: set<tid> } [ephemeral];
 aspect /groups: set<tid> [synthetic, guaranteed];
 aspect /name: string;
 aspect /body: markdown;

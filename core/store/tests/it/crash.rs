@@ -87,10 +87,12 @@ fn crash_every_write(dev_name: &str, kind: u8) {
         setup(&mut s, &mut rng);
         let epoch = dev.root().load().unwrap().unwrap().epoch;
         dev.faults().at(n, Fault::Crash);
-        let mut t = s.transaction(&mut rng).unwrap();
-        let result = match scenario(&mut t, kind) {
-            Ok(()) => t.commit(),
-            Err(e) => Err(e),
+        let result = {
+            let mut t = s.transaction(&mut rng).unwrap();
+            match scenario(&mut t, kind) {
+                Ok(()) => t.commit(),
+                Err(e) => Err(e),
+            }
         };
         let crashed = dev.faults().crashed();
         assert_eq!(result.is_err(), crashed, "write {n}");

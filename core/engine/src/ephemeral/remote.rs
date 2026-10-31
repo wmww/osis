@@ -33,7 +33,7 @@ use osis_crdt::{AnyView, Fragment, Frontiers, Interner, Op, PathOp, Snapshot, So
 use osis_crypto::{DeleteSecret, VerifyingKey, dedup_secret};
 use osis_perm::{Dots, Point, Validity};
 use osis_schema::AspectKey;
-use osis_schema::core_types::{CREATED, GROUP, is_membership_class};
+use osis_schema::core_types::{CREATED, PLACED, is_membership_class};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
@@ -683,7 +683,7 @@ impl Engine {
         let mut recs: BTreeSet<Tid> = BTreeSet::new();
         for (t, ak, f, _) in &deltas {
             recs.insert(*t);
-            if ak.as_str() == GROUP.ak()
+            if ak.as_str() == PLACED.ak()
                 && let Some((items, subs)) = super::place::def_of(f)
             {
                 recs.extend(items);
@@ -827,7 +827,7 @@ impl Engine {
         if ak == CREATED.ak() {
             return true;
         }
-        if is_membership_class(ak) || (is_core_aspect(ak) && ak != GROUP.ak()) {
+        if is_membership_class(ak) || (is_core_aspect(ak) && ak != PLACED.ak()) {
             return false;
         }
         self.eph_write_valid(&a.tid, ak, h.author, h.ts, id, carried)
@@ -1108,7 +1108,7 @@ impl Engine {
                 }
                 ea.state.join(f);
                 strip_own_expired(ea, &src);
-                if a.ak.as_str() == GROUP.ak() {
+                if a.ak.as_str() == PLACED.ak() {
                     let (t, ak) = (a.tid, a.ak.clone());
                     self.refresh_def(&t, &ak);
                 }
@@ -1616,7 +1616,7 @@ impl Engine {
             ea.state = f;
             strip_own_expired(ea, &src);
         }
-        if ak.as_str() == GROUP.ak() {
+        if ak.as_str() == PLACED.ak() {
             self.refresh_def(t, ak);
         }
     }
@@ -1654,7 +1654,7 @@ impl Engine {
                         o.strip(&|d| dots.contains(d));
                     }
                 }
-                if a.ak.as_str() == GROUP.ak() {
+                if a.ak.as_str() == PLACED.ak() {
                     let (t, ak) = (a.tid, a.ak.clone());
                     self.refresh_def(&t, &ak);
                 }

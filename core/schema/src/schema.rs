@@ -307,8 +307,10 @@ impl Schema {
             if lifetimes > 1 {
                 bad(&item, "at most one of ephemeral, presence, signal".into());
             }
-            if lifetimes > 0 && self.is_core() {
-                bad(&item, "core aspects are durable".into());
+            // `/placed`, the ephemeral placements (spec/data-model.md §8), is the one core aspect
+            // that is not durable
+            if self.is_core() && (def.lifetime() != Lifetime::Durable) != (ak.as_str() == "/placed") {
+                bad(&item, "core aspects are durable, /placed ephemeral".into());
             }
             if lifetimes > 0 && def.retention != Retention::default() {
                 bad(&item, "retention applies to durable aspects only".into());

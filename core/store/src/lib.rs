@@ -9,6 +9,7 @@ mod codec;
 mod error;
 mod file;
 mod memory;
+mod overlay;
 mod pager;
 mod root;
 mod store;
