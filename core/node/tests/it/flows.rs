@@ -2235,3 +2235,35 @@ fn receipts_only_frontier_by_id_spec_perm_5_1() {
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
     assert!(!counted(&f) && e.iter().all(|c| f.commits.contains(c)), "by ID: {f:?}");
 }
+
+// spec/permissions.md §5.1 (frontier: chain certificates as of T): the demoter's own grant by
+// X, stamped before the cutoff but received after it, is not listed, so a revoke of X cut off
+// before that receipt would drop the grant its own authority rests on: refused here. Cut off
+// after the receipt, it removes X and keeps the grant.
+#[test]
+fn backdated_revoke_before_own_grant_received_spec_perm_5_1() {
+    const HOUR: u64 = 3_600_000;
+    let mut lp = net(3, 526);
+    let (x, a) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+    let pa = lp.peers[2].engine.create_person(&servers()).unwrap().0.person;
+    let t = thing_of(&mut lp, 2, pa);
+    spread(&mut lp);
+    lp.peers[2].engine.grant(&t, &x, &edge_of(Role::Admin)).unwrap();
+    spread(&mut lp);
+    lp.peers[0].engine.grant(&t, &a, &edge_of(Role::Admin)).unwrap();
+    lp.advance(HOUR);
+    let early = lp.peers[0].engine.now();
+    lp.advance(HOUR);
+    spread(&mut lp);
+    assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Admin));
+    lp.advance(HOUR);
+    let late = osis_base::WallMs(lp.peers[1].engine.now().0 - HOUR / 2);
+    let cut = |w| Demotion { member: x, new: None, presync: PreSync::Backdated(w) };
+    assert!(lp.peers[1].engine.demote(&t, &cut(early)).is_err());
+    lp.peers[1].engine.demote(&t, &cut(late)).unwrap();
+    spread(&mut lp);
+    for i in 0..3 {
+        let r = lp.peers[i].engine.roster(&t);
+        assert!(!r.contains_key(&x) && r.get(&a).is_some_and(|e| e.role == Role::Admin), "peer {i}");
+    }
+}
