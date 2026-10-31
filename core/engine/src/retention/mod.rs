@@ -802,6 +802,19 @@ impl Engine {
         Ok(live)
     }
 
+    /// The lowest `ts` among the writes the held body of aspect `ak` of `c` carries (`None`: not
+    /// held, or none stamped). Tests: the order harness bounds which invalid writes may have
+    /// killed a snapshot's carried write.
+    #[doc(hidden)]
+    pub fn body_min_ts(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Ts>> {
+        let (c, tid, ak) = (*c, *tid, ak.clone());
+        self.run(|tx| {
+            let Some(ai) = aspect_index(tx.core, &c, &tid, &ak) else { return Ok(None) };
+            let parts = crate::apply::held_parts(tx, &c, ai)?;
+            Ok(parts.into_iter().flat_map(|p| p.into_fragment().writes()).filter_map(|(_, t)| t).min())
+        })
+    }
+
     /// Whether `c` is known with an aspect `(tid, ak)` whose body is not dropped: true for a
     /// missing part too (`Engine::aspect_dump` shows which).
     pub fn body_not_dropped(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {

@@ -497,7 +497,9 @@ fn facts_text(e: &mut osis_node::Engine) -> String {
             // the node-form counters its writes own (`-`: commit form, a snapshot)
             let owns = if h.form == osis_commit::Form::Node && a.lo < a.hi { format!("N{:?}:{}-{}", h.author, a.lo, a.hi) } else { "-".into() };
             let copies = !h.kind.has_own_writes();
-            let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}|{:?}|{approx}|{owns}|{copies}", a.tid, a.ak.as_str(), h.ts);
+            // a held copies body's lowest carried `ts` (`-`: dropped, or not copies)
+            let low = if copies { e.body_min_ts(&id, &a.tid, &a.ak).unwrap().map_or("-".into(), |t| format!("{t:?}")) } else { "-".to_string() };
+            let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}|{:?}|{approx}|{owns}|{copies}|{low}", a.tid, a.ak.as_str(), h.ts);
             aspects.insert((a.tid, a.ak.clone()));
         }
     }
@@ -585,6 +587,8 @@ struct Fact {
     /// A snapshot or import body (copies): its carried writes die for it at its `ts` when
     /// killed by a lower-stamped write (spec/commits.md §5).
     copies: bool,
+    /// Held there, a copies body's lowest carried write `ts` (a killer is stamped after it).
+    low: Option<u64>,
 }
 
 impl Fact {
@@ -630,7 +634,7 @@ fn facts_of(text: &str) -> (Facts, Invalid) {
             continue;
         }
         let b = |i: usize| f[i] == "true";
-        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { at_most: b(3), held: b(4), valid: b(5), ts: ts_of(f[6]), approx: b(7), owns: f[8].into(), copies: b(9) });
+        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { at_most: b(3), held: b(4), valid: b(5), ts: ts_of(f[6]), approx: b(7), owns: f[8].into(), copies: b(9), low: (f[10] != "-").then(|| ts_of(f[10])) });
     }
     (out, inv)
 }
@@ -642,12 +646,13 @@ type Invalid = BTreeMap<(String, String), Vec<(String, u64)>>;
 /// The drop-before-flip difference on body `k` between nodes with facts `w` and `g`: held at
 /// one node only, under keep at most, with its own write invalid (its delta, or a write it
 /// carries) or an invalid write of its aspect that may have killed it: stamped at or after it,
-/// or for a snapshot at any `ts` (a lower-stamped kill of a write it carries kills it at its
-/// own `ts`).
+/// or for a snapshot or import at or after the lowest write it carries (a lower-stamped kill of
+/// a carried write kills it at its own `ts`; the node holding it reads that bound).
 fn flip(w: &Facts, g: &Facts, inv: &Invalid, k: &BodyKey) -> bool {
     let (w, g) = (&w[k], &g[k]);
     let own = !w.valid || inv.get(&(k.1.clone(), k.2.clone())).is_some_and(|v| v.iter().any(|(c, _)| *c == k.0));
-    let killer = inv.get(&(k.1.clone(), k.2.clone())).is_some_and(|v| v.iter().any(|(c, ts)| *c != k.0 && (*ts >= w.ts || w.copies)));
+    let after = if w.copies { w.low.or(g.low).unwrap_or(w.ts) } else { w.ts };
+    let killer = inv.get(&(k.1.clone(), k.2.clone())).is_some_and(|v| v.iter().any(|(c, ts)| *c != k.0 && *ts >= after));
     w.held != g.held && w.at_most && (own || killer)
 }
 
