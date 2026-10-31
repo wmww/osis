@@ -35,7 +35,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 ## Untrusted (blind) nodes
 - Keyless nodes without access to the data they store or relay are a first-class feature.
 - They may learn volume and the structure selective sync needs: which opaque groups a blob is in and how groups overlap, counts, padded sizes, timing, addresses, and what they must act on: each blob's expiry, its class (durable, ephemeral, presence, relayed), its deletion class and whether a reader deposited it. They must not learn identifiers, keys, values, authors, membership, device identities, or structure beyond that.
-- Different groups of one owner are unlinkable beyond their overlap.
+- Nothing stored or relayed links different groups of one owner beyond their overlap. What a connection reveals (its address, the labels it opens) is network metadata, hidden only by routing through a relay or an anonymity network.
 - One protocol for all nodes. Trusted and untrusted peers differ only in which keys they hold.
 - An untrusted node may hold the only copy. Reading never allows deleting data or forcing a re-upload.
 - Read access never allows storing arbitrary content there. It stores content only on a writer's word, beyond a small flagged budget per group open to anyone who must reach the group's members. Members can clear the budget; while it is full, what goes through it (grants, readers' own membership writes) waits.
