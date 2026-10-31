@@ -2161,6 +2161,9 @@ fn invalid_on_arrival_held_once_valid_spec_sync_9() {
     assert_eq!(net.engine(d).ingest_ephemeral(junk.blob).unwrap(), osis_node::ephemeral::EphIngest::Pending);
     assert!(!net.engine(d).holds_ephemeral(&junk.id), "a reader's write: not held");
     net.set_online(d, false);
+    // the promotion strictly after the junk write (r's clock has seen a's commits, so at one
+    // wall time its next stamp can equal a's)
+    net.clock.advance(1);
     let (at, rt, dt) = (net.tid(a), net.tid(r), net.tid(d));
     let e = net.engine(a);
     set_edge(e, g, rt, Role::Write);
