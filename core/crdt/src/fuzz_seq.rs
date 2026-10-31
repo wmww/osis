@@ -165,13 +165,7 @@ pub fn random_script(r: &mut Rng, steps: usize) -> Script {
         5 | 6 => LocalOp::Edit { at: w(r), del: b(r), item: b(r), stale: r.chance(1, 4) },
         _ => LocalOp::Set { item: b(r) },
     };
-    // a quarter of the scripts move and undo on a short text: a cached placement follows a
-    // delta moving an element beside a sibling whose record names its anchor with another key
-    // than the one its row sits by (§6.1, `Sibs`)
-    if r.chance(1, 4) {
-        return moves_script(r, steps);
-    }
-    // a third of the rest only what the model writes too: their replicas follow the model
+    // a third of the scripts only what the model writes too: their replicas follow the model
     let modelled = r.chance(1, 3);
     let steps = (0..steps)
         .map(|_| {
@@ -206,8 +200,10 @@ pub fn random_script(r: &mut Rng, steps: usize) -> Script {
 
 /// A script of moves, each undone at once, on a text whose chars are all HEAD's children (each
 /// typed at the start), with joins of the latest commits: restoring writes carry lower sibling
-/// keys than the writes they replace.
-fn moves_script(r: &mut Rng, steps: usize) -> Script {
+/// keys than the writes they replace, so a cached placement follows a delta moving an element
+/// beside a sibling whose record names its anchor with another key than the one its row sits by
+/// (§6.1, `Sibs`).
+pub fn moves_script(r: &mut Rng, steps: usize) -> Script {
     let w = |r: &mut Rng| r.below(1 << 16) as u16;
     // one char each
     let typed = (0..8).map(|_| LocalOp::Insert { at: 0, item: 3 * r.below(85) as u8 }).collect();
@@ -552,8 +548,8 @@ impl World {
         }
         // a move where concurrent moves closed cycles (§6.2: broken by demotion) may re-place
         // the elements of a broken cycle too
-        let cycles = pops.iter().any(|o| matches!(o.op, Op::Move { .. } | Op::Paste { .. })) && st.seq_place().is_some_and(|p| !p.top().cyc.is_empty());
-        known &= !cycles;
+        let cyc = st.seq_place().map(|p| p.top().cyc).unwrap_or_default();
+        known &= cyc.is_empty() || !pops.iter().any(|o| matches!(o.op, Op::Move { .. } | Op::Paste { .. }));
         let now = self.now();
         let (t, src, lo) = if skew > 0 {
             self.fresh += 1;
@@ -643,8 +639,9 @@ impl World {
         }
         // (a list item's field first written in a present item stays: no nested register reset,
         // §4.6 "Absent before"; an element moved whose `cur` was demoted is not restored exactly,
-        // §4.6 Exactness: any move beside a broken cycle)
-        let restores = !cycles && !pops.iter().any(|o| self.list && !matches!(o.op, Op::Insert { .. } | Op::Delete { .. }));
+        // §4.6 Exactness: here any element moved that is on a broken cycle)
+        let demoted = matches!(&d, Fragment::Seq(ds) if ds.elems().iter().any(|(k, e)| e.created.is_none() && !e.pos.is_empty() && cyc.contains(k)));
+        let restores = !demoted && !pops.iter().any(|o| self.list && !matches!(o.op, Op::Insert { .. } | Op::Delete { .. }));
         if skew == 0 {
             self.reps[i].lo = range.hi;
         }
@@ -737,15 +734,21 @@ impl World {
 mod tests {
     use super::*;
 
+    /// The scripts of `random_scripts_replay_spec_5_7`: 24 of `random_script`, then 8 of
+    /// `moves_script`.
+    const SCRIPTS: u64 = 32;
+    fn script(seed: u64) -> Script {
+        let mut r = crate::testutil::rng(2 * seed + 1);
+        if seed < 24 { random_script(&mut r, 48) } else { moves_script(&mut r, 48) }
+    }
+
     /// §4.5, §4.6, §5.7, §6, §8: random scripts of local ops, model commits, undos, joins in
     /// any order and snapshot bootstraps on three replicas pass every check of `replay`.
     #[test]
     fn random_scripts_replay_spec_5_7() {
         let mut all = Stats::default();
-        for seed in 0..24u64 {
-            let mut r = crate::testutil::rng(2 * seed + 1);
-            let s = random_script(&mut r, 48);
-            let x = replay(&s);
+        for seed in 0..SCRIPTS {
+            let x = replay(&script(seed));
             all.commits += x.commits;
             all.partial += x.partial;
             all.one_by_one += x.one_by_one;
@@ -757,7 +760,7 @@ mod tests {
             all.model_joins += x.model_joins;
             all.merged += x.merged;
         }
-        assert!(all.commits > 150 && all.partial > 40 && all.one_by_one > 40 && all.model_ops > 15 && all.model_joins > 8 && all.undos > 10 && all.restores > 2 && all.joins > 300 && all.merged > 20, "{all:?}");
+        assert!(all.commits > 150 && all.partial > 40 && all.one_by_one > 40 && all.model_ops > 40 && all.model_joins > 8 && all.undos > 10 && all.restores > 2 && all.joins > 300 && all.merged > 20, "{all:?}");
     }
 
     /// §6.2: a move on a replica holding a broken cycle (shrunk from a random script) re-places
@@ -775,8 +778,7 @@ mod tests {
     #[ignore]
     fn shrink_script() {
         let Ok(seed) = std::env::var("OSIS_SHRINK") else { return };
-        let mut r = crate::testutil::rng(2 * seed.parse::<u64>().unwrap() + 1);
-        let mut s = random_script(&mut r, 48);
+        let mut s = script(seed.parse().unwrap());
         let fails = |s: &Script| std::panic::catch_unwind(|| replay(s)).is_err();
         assert!(fails(&s), "does not fail");
         std::panic::set_hook(Box::new(|_| {}));
