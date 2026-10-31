@@ -1196,8 +1196,26 @@ mod tests {
         // spec/permissions.md §3: at the end of a complete pass of G's labels, each admin (the
         // owner's node, B) gives T secrets of its own again, boxing Z (concurrently: a fork at
         // one n); A (removed), X and Z (readers) do nothing; nothing more once T has them
-        let ran: Vec<usize> = (0..5).map(|i| own_due(&mut lp, i, &g, &t)).collect();
-        assert_eq!(ran, vec![1, 0, 0, 1, 0]);
+        let runs: Vec<(usize, Vec<Delivery>)> = (0..5).map(|i| own_due_done(&mut lp, i, &g, &t)).collect();
+        assert_eq!(runs.iter().map(|r| r.0).collect::<Vec<_>>(), vec![1, 0, 0, 1, 0]);
+        // each admin's rotation goes to Z directly (it holds no box at a current epoch of T),
+        // never to T's owner G (it reads the derived epochs), and first under T's labels; Z,
+        // given only B's, holds T's new epochs
+        for i in [0usize, 3] {
+            let ds = &runs[i].1;
+            let to: Vec<Tid> = ds.iter().filter_map(|d| if let Delivery::Direct { to, .. } = d { Some(*to) } else { None }).collect();
+            assert_eq!(to, vec![z], "peer {i}: delivered to Z only");
+            assert!(!ds.iter().any(|d| matches!(d, Delivery::Inbox { .. })), "peer {i}");
+            assert!(ds.iter().any(|d| matches!(d, Delivery::First { under, .. } if under.contains(&t))), "peer {i}: first under T");
+        }
+        let Some(Delivery::Direct { commits, .. }) = runs[3].1.iter().find(|d| matches!(d, Delivery::Direct { .. })) else { unreachable!() };
+        for c in commits.clone() {
+            let pk = lp.peers[3].engine.package(&c).unwrap().unwrap();
+            lp.deliver(4, &pk).unwrap();
+        }
+        let b_rot = lp.peers[3].engine.core.epochs(&t).unwrap().role(Role::Read).newest().unwrap();
+        let zs = lp.peers[4].engine.core.epochs(&t).unwrap();
+        assert!(lp.peers[4].engine.core.has_own_secrets(&t) && zs.role(Role::Read).is_current(&b_rot) && zs.role(Role::Read).secret(&b_rot).is_some(), "Z holds B's epoch");
         lp.sync_all().unwrap();
         lp.sync_all().unwrap();
         assert_eq!((0..5).map(|i| own_due(&mut lp, i, &g, &t)).sum::<usize>(), 0, "one rotation per admin");
@@ -1226,18 +1244,25 @@ mod tests {
     /// Runs `own_secrets_due` on `actor` at peer `i` as after a complete pass; the commits made
     /// for `t` (each other thing makes none).
     fn own_due(lp: &mut LocalPeer, i: usize, actor: &Tid, t: &Tid) -> usize {
+        own_due_done(lp, i, actor, t).0
+    }
+
+    /// `own_due` with the deliveries made.
+    fn own_due_done(lp: &mut LocalPeer, i: usize, actor: &Tid, t: &Tid) -> (usize, Vec<Delivery>) {
         struct Passed;
         impl crate::flows::SyncState for Passed {
             fn complete_pass(&self, _: &Tid) -> bool {
                 true
             }
         }
-        let mut n = 0;
+        let (mut n, mut ds) = (0, Vec::new());
         for (x, r) in lp.peers[i].engine.own_secrets_due(actor, &Passed).unwrap() {
             assert_eq!(x, *t, "peer {i}: only T");
-            n += r.unwrap().commits.len();
+            let done = r.unwrap();
+            n += done.commits.len();
+            ds.extend(done.deliveries);
         }
-        n
+        (n, ds)
     }
 
     // spec/permissions.md §3: a plain thing with no non-owner member gets no secrets of its own

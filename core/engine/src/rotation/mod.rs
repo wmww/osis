@@ -734,11 +734,15 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<Option<Ow
 /// part turning invalid, spec/crypto.md §3); each gets secrets of its own again.
 pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
     let me = core.id.tid();
-    let targets: BTreeSet<Tid> = core.ix.member_keys.iter().map(|((t, _), _)| *t).filter(|t| !core.has_own_secrets(t)).collect();
-    targets
-        .into_iter()
-        .filter(|t| !core.is_key_actor(t) && core.secret_actor(t) == Some(*a) && core.role_now(&me, t) == Some(Role::Admin))
-        .filter(|t| core.current_members(t).iter().any(|(m, _, _)| Some(*m) != core.owner(t)))
+    // keys sort by target: each target once (a scan per call; only plain targets go further)
+    let mut last = None;
+    core.ix
+        .member_keys
+        .keys()
+        .map(|(t, _)| *t)
+        .filter(|t| last.replace(*t) != Some(*t))
+        .filter(|t| !core.has_own_secrets(t) && !core.is_key_actor(t) && core.secret_actor(t) == Some(*a))
+        .filter(|t| core.role_now(&me, t) == Some(Role::Admin) && core.current_members(t).iter().any(|(m, _, _)| Some(*m) != core.owner(t)))
         .collect()
 }
 
