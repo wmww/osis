@@ -1,7 +1,7 @@
 //! Which epoch to wrap under (spec/crypto.md §5) and which epochs label role keys come from
 //! (spec/sync.md §2, §5). osis-label derives and uses the keys.
 
-use crate::epoch::{ActorEpochs, RoleEpochs};
+use crate::epoch::{ActorEpochs, ROLES, RoleEpochs};
 use osis_base::Role;
 use osis_crypto::{Epoch, LabelRole, Secret32, VerifyingKey, label_role_key};
 
@@ -69,7 +69,7 @@ pub fn registered_secret<'a>(re: &'a RoleEpochs, r: Role, index: u64, key: &Veri
 /// commit first).
 pub fn newer_than_head(a: &ActorEpochs, head: [Option<Epoch>; 3]) -> bool {
     let mut newer = false;
-    for (r, h) in [Role::Read, Role::Write, Role::Admin].into_iter().zip(head) {
+    for (r, h) in ROLES.into_iter().zip(head) {
         let Some(h) = h else { return false };
         if r == Role::Admin && !a.role(r).is_established(&h) {
             return false;

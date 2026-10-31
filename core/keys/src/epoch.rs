@@ -265,7 +265,8 @@ impl RoleEpochs {
             let ready: Vec<(Epoch, Provenance)> = self
                 .map
                 .iter()
-                .filter(|(_, i)| !matches!(i.established, Some(p) if p.sticky() || p == Provenance::Chain))
+                // unestablished, or by snapshot (a chain beats it)
+                .filter(|(_, i)| matches!(i.established, None | Some(Provenance::Snapshot)))
                 .filter_map(|(e, i)| {
                     let chain = i.applied.values().any(|sup| sup.iter().all(|s| self.is_established(s)));
                     let p = if chain {
@@ -480,6 +481,7 @@ impl ActorEpochs {
                         Some(s) => Epoch::derive(tid, r, n, s),
                         None => Epoch::new(n, placeholder_nonce(e)),
                     };
+                    // never falls back: n is below the cap, within the int range
                     let de = de.unwrap_or(*e);
                     (*e, (de, ds))
                 })
