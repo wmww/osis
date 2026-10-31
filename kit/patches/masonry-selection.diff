@@ -1,0 +1,15 @@
+--- src/widgets/text_area.rs
++++ src/widgets/text_area.rs	2026-10-31 01:48:24.560983229 -0700
+@@ -389,6 +389,12 @@
+         this.ctx.request_paint_only();
+     }
+ 
++    /// The selection as byte indices: its anchor and its focus (the caret).
++    pub fn selection_bytes(&self) -> (usize, usize) {
++        let s = self.editor.raw_selection();
++        (s.anchor().index(), s.focus().index())
++    }
++
+     /// Set the selection to the given byte range.
+     ///
+     /// No-op if either index is not a char boundary.

@@ -13,11 +13,11 @@ mod content;
 mod screens;
 
 use crate::data::{Data, NewKind};
-use crate::edit::splice;
+use crate::edit::{map_byte, shown_edits, splice};
 use crate::schema::Mode as ModeChoice;
 use content::Content;
 use osis::core::{BODY, NAME};
-use osis::{Path, Subscription, TextSession, Tid};
+use osis::{Path, Splice, Subscription, TextSession, Tid};
 use osis_kit::marshal::{Inbox, Mailbox};
 use osis_kit::masonry::core::{ErasedAction, NewWidget, Widget, WidgetId, WidgetTag};
 use osis_kit::masonry::widgets::{Label, SizedBox, TextAction, TextArea};
@@ -28,7 +28,7 @@ use osis_kit::masonry_winit::winit::dpi::PhysicalSize;
 use osis_kit::masonry_winit::winit::window::Theme as WinitTheme;
 use osis_kit::window::Wakeup;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub const ROOT: WidgetTag<Root> = WidgetTag::new("root");
 
@@ -126,6 +126,8 @@ struct Field {
     id: Option<WidgetId>,
     /// The text as the widget shows it (a remote merge may be newer).
     shown: String,
+    /// The edits of remote merges since `shown` (the session reports them on its thread).
+    reported: Arc<Mutex<Vec<Splice>>>,
 }
 
 /// The open thing's text sessions: typing goes there, one commit per pause.
@@ -429,6 +431,7 @@ impl Ui {
         {
             for f in &mut e.fields {
                 f.shown = f.session.text();
+                f.reported.lock().unwrap_or_else(|e| e.into_inner()).clear();
                 f.id = None;
             }
             return Ok(());
@@ -443,10 +446,13 @@ impl Ui {
                 FieldKey::Location => db.edit_text(t, crate::event::LOCATION, Path::root())?,
             };
             let mb = self.mb.clone();
-            session.on_remote(move |_| {
+            let reported = Arc::new(Mutex::new(Vec::new()));
+            let r = reported.clone();
+            session.on_remote(move |_, edits| {
+                r.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(edits);
                 mb.post(Msg::Remote(t));
             });
-            fields.push(Field { key: *key, shown: session.text(), session, id: None });
+            fields.push(Field { key: *key, shown: session.text(), session, id: None, reported });
         }
         self.editor = Some(Editor { tid: t, fields });
         Ok(())
@@ -477,8 +483,8 @@ impl Ui {
             Act::Theme(id) => self.data.set_theme(id),
             Act::Mode(m) => self.data.set_mode(m),
             Act::Delete(t) => {
-                // close the editor first: its sessions commit pending typing on drop, which
-                // after the delete would recreate the thing
+                // close the editor first: its sessions commit pending typing on drop (after the
+                // delete they would drop it and report it)
                 self.editor = None;
                 self.data.delete(t)
             }
@@ -549,20 +555,31 @@ impl Ui {
         }
     }
 
-    /// A remote merge into the open thing's sessions: show it.
+    /// A remote merge into the open thing's sessions: show it, the selection mapped through
+    /// the merge's edits.
     fn remote(&mut self, ctx: &mut DriverCtx<'_, '_>, t: Tid) {
         let Some(e) = self.editor.as_mut().filter(|e| e.tid == t) else { return };
         let root = ctx.render_root(self.window);
         for f in &mut e.fields {
+            let reported = std::mem::take(&mut *f.reported.lock().unwrap_or_else(|e| e.into_inner()));
             let text = f.session.text();
-            f.shown = text.clone();
+            let shown = std::mem::replace(&mut f.shown, text.clone());
             if let Some(id) = f.id
                 && root.has_widget(id)
             {
                 root.edit_widget(id, |mut w| {
                     let mut a = w.downcast::<TextArea<true>>();
-                    if a.widget.text() != text.as_str() {
-                        TextArea::reset_text(&mut a, &text);
+                    let now = a.widget.text().to_string();
+                    if now == text {
+                        return;
+                    }
+                    let (anchor, focus) = a.widget.selection_bytes();
+                    TextArea::reset_text(&mut a, &text);
+                    // the widget shows `shown` unless an input method is composing
+                    if now == shown {
+                        let edits = shown_edits(&shown, reported, &text);
+                        let m = |b| map_byte(&shown, &edits, &text, b);
+                        TextArea::select_byte_range(&mut a, m(anchor), m(focus));
                     }
                 });
             }

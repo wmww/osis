@@ -66,5 +66,6 @@ masonry_winit.workspace = true
 
 # Patched low-level crates, vendored in patches/ (notes/app.md, Patches).
 [patch.crates-io]
+masonry = { path = "patches/masonry" }
 masonry_core = { path = "patches/masonry_core" }
 masonry_winit = { path = "patches/masonry_winit" }

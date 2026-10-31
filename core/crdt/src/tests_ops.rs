@@ -775,3 +775,22 @@ fn decoded_bound_holds_random_values() {
     }
     assert!(checked > 1000, "{checked} of 1200 unpaged");
 }
+
+proptest! {
+    /// `changes` (session splices, notes/api.md Text sessions): disjoint ascending stretches,
+    /// applied in order they turn `a` into `b`, and the kept chars are a common subsequence.
+    #[test]
+    fn changes_rebuild_new(a in "[ab]{0,12}", b in "[ab]{0,12}") {
+        let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+        let ch = crate::changes(&a, &b);
+        let (mut out, mut i) = (Vec::new(), 0);
+        for (o, n) in &ch {
+            prop_assert!(o.start >= i && (!o.is_empty() || !n.is_empty()));
+            out.extend_from_slice(&a[i..o.start]);
+            out.extend_from_slice(&b[n.clone()]);
+            i = o.end;
+        }
+        out.extend_from_slice(&a[i..]);
+        prop_assert_eq!(out, b);
+    }
+}

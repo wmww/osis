@@ -76,7 +76,7 @@ pub use page::{MemoryPages, PageError, PageParams, PageSink, PageSource, Unpaged
 pub use paging::{PagedTouch, Paths, Step};
 pub use state::MemberRef;
 pub use seq::{Anchor, Seq, SeqContent, SeqElem};
-pub use seq_diff::{EditWindow, edit_window};
+pub use seq_diff::{EditWindow, changes, edit_window};
 pub use seq_ops::cut_dots;
 pub use seq_place::{PlaceBlock, PlaceDiff, PlaceMisses, PlaceRow, PlaceTop, SeqPlace};
 pub use lifecycle::Stamps;
