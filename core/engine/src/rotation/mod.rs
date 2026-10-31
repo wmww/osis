@@ -475,12 +475,13 @@ fn rotation_helps(tx: &mut Tx<'_>, a: &Tid, uncovered_roles: &BTreeSet<Role>) ->
     let held = held_actors(tx)?;
     let current: BTreeSet<Tid> = tx.core.current_members(a).into_iter().map(|x| x.0).collect();
     let mut out = BTreeSet::new();
+    let mut on_cycle: BTreeMap<Tid, bool> = BTreeMap::new();
     'roles: for &r in uncovered_roles {
         if let Some((e, _)) = epochs.role(r).newest_held() {
             for d in uncovered(&secrets, &epochs, r, &e, &deps, &held) {
                 if let Some((m, rest)) = d.via.split_first()
                     && current.contains(m)
-                    && !below_of(tx.core, m).0.contains(a)
+                    && !*on_cycle.entry(*m).or_insert_with(|| below_of(tx.core, m).0.contains(a))
                     && !fresh_box_covers(tx, &held, m, r, &Departure { via: rest.clone(), member: d.member, from: d.from })?
                 {
                     continue 'roles;
@@ -506,6 +507,30 @@ fn member_covers(tx: &mut Tx<'_>, held: &MemoryHeldActors, deps: &[Departure], m
         }
     }
     Ok(true)
+}
+
+/// `rc` with its role cut at the first its newest epoch does not cover (`member_covers`, given
+/// `deps` of the actor boxing it); `None` when that leaves no role. Key actors are kept whole.
+pub(crate) fn left_out(tx: &mut Tx<'_>, held: &MemoryHeldActors, deps: &[Departure], rc: &Recipient) -> Result<Option<Recipient>> {
+    if !matches!(rc.keys, osis_keys::MemberKeys::Actor { .. }) {
+        return Ok(Some(rc.clone()));
+    }
+    let mut top = None;
+    for r in ROLES.into_iter().filter(|r| *r <= rc.role) {
+        if !member_covers(tx, held, deps, &rc.member, r)? {
+            break;
+        }
+        top = Some(r);
+    }
+    Ok(top.map(|role| Recipient { role, ..rc.clone() }))
+}
+
+/// `left_out` for a grant to `rc.member`: by its own departures, as the target will see them
+/// once it is a member.
+pub(crate) fn grantee_left_out(tx: &mut Tx<'_>, rc: &Recipient) -> Result<Option<Recipient>> {
+    let deps: Vec<Departure> = departures(tx, &rc.member)?.iter().map(|d| Departure::inside(rc.member, d)).collect();
+    let held = held_actors(tx)?;
+    left_out(tx, &held, &deps, rc)
 }
 
 /// Whether a fresh box of role `r` to member actor `m` would name `m`'s newest epoch (its
@@ -572,21 +597,9 @@ pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &B
     let actors = held_actors(tx)?;
     let mut boxed = Vec::with_capacity(members.len());
     for rc in members {
-        let mut rc = rc.clone();
-        if matches!(rc.keys, osis_keys::MemberKeys::Actor { .. }) {
-            let mut top = None;
-            for r in ROLES.into_iter().filter(|r| *r <= rc.role) {
-                if !member_covers(tx, &actors, &deps, &rc.member, r)? {
-                    break;
-                }
-                top = Some(r);
-            }
-            match top {
-                Some(r) => rc.role = r,
-                None => continue,
-            }
+        if let Some(rc) = left_out(tx, &actors, &deps, rc)? {
+            boxed.push(rc);
         }
-        boxed.push(rc);
     }
     let may_carry = |r: Role, e: &Epoch| uncovered(&secrets, held, r, e, &deps, &actors).is_empty();
     let rot = rotate(&a, roles, held, &secrets, &boxed, &may_carry, &mut *tx.rng)?;
@@ -1976,6 +1989,30 @@ mod tests {
             assert_eq!(leaked(&mut lp, i, &[x, y], d, start.clone()), Vec::<Tid>::new());
         }
         assert_eq!(settle(&mut lp, &[0, 2], &[x, y]), 0, "settled");
+    }
+
+    // spec/permissions.md §3 (Left out): D leaves M by itself (no rotation of M yet); a grant
+    // of M on T boxes T's epoch to M's newest, which D holds, so it leaves M out; M is re-sealed
+    // on T once M rotates.
+    #[test]
+    fn grant_to_stale_member_leaves_out_spec_permissions_3() {
+        let mut lp = LocalPeer::new(2, 957, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let d = lp.peers[1].engine.tid();
+        let m = group(&mut lp, 0);
+        lp.peers[0].engine.grant(&m, &d, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        let start = held_by(&lp, 1, &[m]);
+        lp.peers[1].engine.demote(&m, &Demotion { member: d, new: None, presync: PreSync::Synced }).unwrap();
+        lp.sync_all().unwrap();
+        assert!(uncovered_at(&mut lp, 0, m).contains(&Role::Read), "M stale");
+        let t = group(&mut lp, 0);
+        lp.peers[0].engine.grant(&t, &m, &edge(Role::Write)).unwrap();
+        assert!(!leaked(&mut lp, 0, &[m, t], d, start.clone()).contains(&t), "after the grant");
+        assert!(!all_boxed(&mut lp, 0, &[t]), "M left out");
+        settle(&mut lp, &[0], &[m, t]);
+        assert!(all_boxed(&mut lp, 0, &[m, t]), "re-sealed");
+        assert_eq!(leaked(&mut lp, 0, &[m, t], d, start), Vec::<Tid>::new());
     }
 
     /// Pairs (actor, role) whose newest epoch at the owner peer `owner(t)` is judged covered there

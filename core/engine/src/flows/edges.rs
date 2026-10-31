@@ -150,8 +150,13 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, member
     rotation::require_covered(tx, who, target, &roles, &mut done)?;
     let epochs = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
     let secrets = secrets_in(tx, &target)?;
+    // a member actor whose newest epoch does not cover its departures is left out of the roles
+    // above them (re-sealed once it rotates, spec/permissions.md §3)
     let rcpt = recipient(tx, member, edge.role)?;
-    let boxes = box_member(&target, &epochs, &secrets, &rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the member's keyset is unknown"))?;
+    let boxes = match rotation::grantee_left_out(tx, &rcpt)? {
+        Some(rcpt) => box_member(&target, &epochs, &secrets, &rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the member's keyset is unknown"))?,
+        None => Default::default(),
+    };
     // an edge past its `until` is out of the roster but still in the state: a set over it would
     // keep its fields the new edge leaves out (the `until` among them)
     let held = old.is_some() || tx.core.timelines.get(&target).is_some_and(|tl| tl.edges_at(None).get(&member, &target).is_some());
