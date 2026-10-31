@@ -570,6 +570,7 @@ fn uncommitted(db: &Osis) -> (osis::Subscription, std::sync::mpsc::Receiver<Vec<
 // notes/api.md Text sessions (`on_remote` edits): a remote edit in the middle of the text
 // reaches the session as splices, each at the text before it; applied in order they give the
 // merged text, and a caret mapped through them stays on its char.
+// spec: none (API surface, notes/api.md)
 #[test]
 fn text_session_remote_splices_map_caret() {
     let (mut w, _da, db, t, sa) = text_pair();
@@ -601,6 +602,7 @@ fn text_session_remote_splices_map_caret() {
 
 // notes/api.md Text sessions: a session whose thing another device deleted drops its pending
 // text when it is dropped and reports it (`Uncommitted`): it never recreates the thing.
+// spec: none (API surface, notes/api.md)
 #[test]
 fn text_session_after_remote_delete_drops() {
     let (mut w, da, db, t, sa) = text_pair();
@@ -620,6 +622,7 @@ fn text_session_after_remote_delete_drops() {
 }
 
 // notes/api.md Text sessions: the same for a delete on the session's own device.
+// spec: none (API surface, notes/api.md)
 #[test]
 fn text_session_after_local_delete_drops() {
     let (mut w, da, db, t, sa) = text_pair();
@@ -637,6 +640,7 @@ fn text_session_after_local_delete_drops() {
 
 // notes/api.md Text sessions: a commit after the delete fails `UnknownThing` and keeps the
 // edits; once the delete is undone they commit.
+// spec: none (API surface, notes/api.md)
 #[test]
 fn text_session_keeps_edits_across_delete_undo() {
     let (_w, da, _db, t, sa) = text_pair();
