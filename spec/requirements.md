@@ -5,7 +5,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 
 ## Purpose
 - End-user apps with small-to-large interconnected data across users and devices. Many apps, app versions, generic tools and agents share the same data, like a file format.
-- Simple, safe Rust. Nothing on the wire path depends on third-party parsers or serialization frameworks.
+- Simple, safe Rust. Nothing on the wire path depends on third-party parsers or serialization frameworks. Runs in browsers.
 
 ## Decentralization
 - No central or trusted coordinator, consensus or sequencer. Peer-to-peer like git; any node may be offline indefinitely and return.
@@ -21,7 +21,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 - Every operation completes with nobody else online. Only propagation waits.
 - No helper is required: relays, discovery and hosted servers are replaceable and self-hostable. Works over LAN, through any untrusted node, or to a known address.
 - No dependence on one transport. Sync works over any ordered byte stream, including files carried by hand.
-- The network layer identifies devices to untrusted nodes and relays no further than the network itself does (addresses).
+- To untrusted nodes and relays the network layer reveals no more about a device than the network itself does: addresses, never identities.
 - Nothing syncs by being owned: apps place things into synced groups explicitly, and a thing placed nowhere stays local.
 
 ## Cost (goal)
@@ -34,11 +34,10 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 
 ## Untrusted (blind) nodes
 - Keyless nodes without access to the data they store or relay are a first-class feature.
-- They may learn volume and the structure selective sync needs: which opaque groups a blob is in and how groups overlap, counts, padded sizes, timing, addresses. They must not learn identifiers, keys, values, authors, membership, device identities, or structure beyond that.
+- They may learn volume and the structure selective sync needs: which opaque groups a blob is in and how groups overlap, counts, padded sizes, timing, addresses, and what they must act on: each blob's expiry, its class (durable, ephemeral, presence, relayed), its deletion class and whether a reader deposited it. They must not learn identifiers, keys, values, authors, membership, device identities, or structure beyond that.
 - Different groups of one owner are unlinkable beyond their overlap.
 - One protocol for all nodes. Trusted and untrusted peers differ only in which keys they hold.
 - An untrusted node may hold the only copy. Reading never allows deleting data or forcing a re-upload.
-- Each edit names who may delete it: its author, admins, or every writer if the author allows. The right is judged by the role the deleter had when the edit was written, and needs current membership. So a demoted member can still delete what its old role allowed, until the next member sync restores the data.
 - Read access never allows storing arbitrary content there. It stores content only on a writer's word, beyond a small flagged budget per group open to anyone who must reach the group's members. Members can clear the budget; while it is full, what goes through it (grants, readers' own membership writes) waits.
 - It knows no members and never waits on their liveness.
 - Goal: it can limit abuse (storage, rate) without learning identities.
@@ -49,12 +48,14 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 - Readers of shared data may learn each other's device identities, the chain that authorizes each author, and the sizes of the rosters in that chain, never the entries of rosters they are not part of.
 - Deleting content leaves the fact, time, author and aspect of the edit visible to readers.
 - No secret ever passes where an untrusted node could read it.
+- Secrets that must stay secret for years resist a future quantum attacker. Signatures need not.
 
 ## Deletion
-- Retention per edit: who may purge it (nobody, admins, the author, any writer) and how long its history is kept (at least and at most, absolute or after it is replaced). Defaults per aspect, overridable per change, immutable once written.
+- Retention per edit: who may purge it (nobody, admins, the author, any writer) and how long its history is kept (at least and at most, absolute or after it is replaced). Defaults per aspect, overridable per change, immutable once written. Honest nodes judge the purge right at the time of the request. An untrusted node can only check the role the deleter held when the edit was written plus current membership, so a demoted member can still delete there what its old role allowed, until the next member sync restores the data.
 - Data may carry an expiry at which every node, untrusted ones included, drops it with nobody online.
 - Purge is prompt: no honest node keeps purged content once it has seen the deletion. No batching. Undo never brings back what another party purged. Purged content is recoverable only from nodes whose retention still holds it; no node keeps a bin.
 - Untrusted nodes act on their own only for expiry and for deletes scheduled when a value is replaced. Every other retention bound takes effect at them when a right holder next syncs.
+- Erasure is final: a body dropped at its keep-at-most bound stays dropped if the write that replaced it later turns invalid. This is the one place where nodes holding the same data may read differently: whether that erased value shows again.
 - Granularity is one edit of one aspect. Part of a value's history can be purged. An author's purge of a large value removes at untrusted nodes only the chunks that author wrote; an admin's removes all of them.
 - No fingerprint: nothing retained lets anyone, even a reader, confirm a guess of purged content, however low-entropy. Deduplication is therefore only against content the writer already holds.
 - Forward secure: a node that deleted honestly and is compromised later yields nothing. A node that lost access to data yields nothing it can no longer read.
@@ -73,7 +74,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 - State grows with the number of edits and removals ever made, a few bytes each, not only with live data. No horizon ever drops an edit.
 - Direct rosters hold thousands of members; larger ones nest.
 - Every wire object has a fixed maximum size. Peer input never causes unbounded allocation, work, storage or diagnostics.
-- Runs in browsers. Large values stream; no whole value is ever needed in memory.
+- Large values stream; no whole value is ever needed in memory.
 
 ## Generality (goal)
 The properties above hold for any use of the data. The only usage rules are:
@@ -83,6 +84,7 @@ The properties above hold for any use of the data. The only usage rules are:
 - Keep direct rosters in the thousands; nest larger ones (header cost).
 
 ## Versioning
+Binds released formats only; until a stable release formats change in place (spec/overview.md, Conventions).
 - Never discard, reject or crash on data not understood: store it, relay it, merge what can be merged, re-examine after upgrade.
 - Old data stays readable forever. Nodes write what older nodes can read until a new feature is actually used.
 - Everything on the wire is open and only grows: no identifier reused, nothing removed, no in-place change of meaning. Nothing in the data is irreversible.
@@ -95,7 +97,6 @@ The properties above hold for any use of the data. The only usage rules are:
 - Every datum is an aspect of a thing. Values are typed by the writer's schema. References may dangle.
 - Per-aspect merge with one conflict rule everywhere. A newer write never loses to an older removal: a write into a container concurrent with the container's removal brings the container back holding that write alone. The one exception is an enum: a write into a case's payload concurrent with a switch to another case stays hidden. Removing from a collection drops only what the remover had seen.
 - Collaborative text and lists.
-- Secrets that must stay secret for years resist a future quantum attacker. Signatures need not.
 
 ## Permissions
 - Three concepts only: actor, membership, ownership. Every thing has exactly one owner, fixed at creation. Moving a thing to another owner is a copy with imported history, and rare; the old owner keeps power only over the original. Sharing never changes a thing's identity.

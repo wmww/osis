@@ -1,0 +1,7 @@
+# Forward-secure deletion rests on an in-place file overwrite; the hardware root tier is unimplemented
+> Summary: spec/requirements.md Deletion requires that a node that deleted honestly and is compromised later yields nothing. The local store achieves this by erasing unit keys through a key tree whose root is the one thing that must really be erased; the only root storage built is `FileRoot` (two 64-byte slots overwritten in place with fsync, tier `FileOverwrite`); `RootTier::Hardware` is a variant with no implementation. On SSDs (FTL remapping), copy-on-write filesystems (APFS, btrfs) and most cloud disks an in-place overwrite does not destroy the old root, so a chip-off or snapshot-level attacker can recover old roots and with them every "shredded" unit. notes/mvp-progress.md Deviations does not list this.
+> Tags: security, store, owner-call
+
+What holds today: deletion is unrecoverable through the normal filesystem API and against an attacker who reads only current file contents; it is not forward-secure against block-level recovery. notes/local-store.md says "best effort below hardware-backed" and a diagnostic reports the tier.
+
+To do (platform work, no wire change): Secure Enclave/Keychain, Android Keystore, TPM-sealed or DPAPI roots; a kernel keyring/secret-service tier for Linux desktops; until then, state the deviation in spec/requirements.md or notes/mvp-progress.md so it is not read as met.

@@ -1,0 +1,7 @@
+# A blind node links every label one connection syncs, against "unlinkable beyond their overlap"
+> Summary: spec/requirements.md says different groups of one owner are unlinkable at untrusted nodes beyond their overlap, but a client opens and syncs all its labels on one connection (spec/sync.md §6), so a server learns the full label set of each device per session, plus its IP, heartbeat and deposit timing per label. notes/sync.md "What a blind node learns" admits "which labels one connection opens"; the requirement was not amended and no mitigation (one connection per label or per actor, padding of label sets, Tor) exists.
+> Tags: security, sync, spec, owner-call
+
+Consequence: one de-anonymized label (a group whose membership is public) de-anonymizes the device's whole label set at that server, with sizes and activity. Relays see the same (notes/networking.md Risks). With a stable NAT'd IP the linkage even persists across sessions.
+
+Options (owner): amend the requirement to say what holds (linkable per connection); or one connection per owner actor (labels of one actor are linkable anyway through certificates, so this costs about one connection per person/team the device acts for); or per label (expensive: 4096-label cap per connection exists for a reason); or route connections through a relay/Tor so IP is not shared. The protocol needs no change for any of these; the client's connection policy does.
