@@ -285,3 +285,84 @@ fn crash_during_create() {
         t.commit().unwrap();
     }
 }
+
+// notes/local-store.md, Memory overlay: rows written in memory mode, and every row of a memory-class
+// aspect, stay in memory (no backend write), read merged with durable rows, roll back with an
+// aborted transaction and are gone after a reopen; durable rows beside them persist.
+// spec/commits.md §1
+#[test]
+fn memory_overlay_rows() {
+    let dev = MemDevice::new();
+    let mut rng = SeededRng::from_u64(3);
+    let mut s = create(&dev, &mut rng);
+    let (t1, a, b) = (tid(1), ak("/mem"), ak("/dur"));
+    let unit = AspectUnit { state: b"m".to_vec(), undo: vec![], snapshots: vec![] };
+    {
+        let mut t = s.transaction(&mut rng).unwrap();
+        t.put_local(b"z/1", b"durable", Shred::No).unwrap();
+        t.put_aspect(&t1, &b, &unit, Shred::No).unwrap();
+        t.commit().unwrap();
+    }
+    let writes = dev.faults.writes();
+    let ix;
+    {
+        let mut t = s.transaction(&mut rng).unwrap();
+        ix = t.index(b"ix").unwrap();
+        t.commit().unwrap();
+    }
+    let writes = writes.max(dev.faults.writes());
+    {
+        let mut t = s.transaction(&mut rng).unwrap();
+        t.set_memory(true);
+        t.put_local(b"z/2", b"memory", Shred::No).unwrap();
+        t.put_aspect(&t1, &a, &unit, Shred::No).unwrap();
+        t.put_blob(&BlobId([7; 32]), b"blob".to_vec()).unwrap();
+        t.table_put(ix, b"k2", b"m".to_vec(), Shred::No).unwrap();
+        let tab = t.create_table(&t1, &a, 0).unwrap();
+        t.table_put(tab, b"x", b"y".to_vec(), Shred::No).unwrap();
+        t.commit().unwrap();
+    }
+    assert_eq!(dev.faults.writes(), writes, "memory rows reach no backend");
+    {
+        // a memory-class aspect's rows stay memory in a durable-mode transaction
+        let mut t = s.transaction(&mut rng).unwrap();
+        assert!(t.is_memory_aspect(&t1, &a) && !t.is_memory_aspect(&t1, &b));
+        t.reserve_counters(&t1, &a, 3).unwrap();
+        t.put_local(b"z/3", b"durable", Shred::No).unwrap();
+        t.table_put(ix, b"k1", b"d".to_vec(), Shred::No).unwrap();
+        t.table_put(ix, b"k3", b"d".to_vec(), Shred::No).unwrap();
+        let keys: Vec<_> = t.scan_local(b"z/", b"", 10).unwrap().into_iter().map(|(k, _)| k).collect();
+        assert_eq!(keys, vec![b"z/1".to_vec(), b"z/2".to_vec(), b"z/3".to_vec()], "merged in key order");
+        let rows: Vec<_> = t.table_range(ix, b"", None, 10).unwrap().into_iter().map(|(k, _)| k).collect();
+        assert_eq!(rows, vec![b"k1".to_vec(), b"k2".to_vec(), b"k3".to_vec()]);
+        assert_eq!((t.table_len(ix).unwrap(), t.table_rank(ix, b"k3").unwrap()), (3, 2));
+        assert_eq!(t.table_range(ix, b"", None, 2).unwrap().len(), 2, "limit over both layers");
+        t.commit().unwrap();
+    }
+    {
+        // dropped: the memory changes roll back
+        let mut t = s.transaction(&mut rng).unwrap();
+        t.set_memory(true);
+        t.put_local(b"z/4", b"memory", Shred::No).unwrap();
+        assert!(t.remove_local(b"z/2", Shred::No).unwrap());
+    }
+    {
+        let mut t = s.transaction(&mut rng).unwrap();
+        assert_eq!(t.get_local(b"z/2").unwrap(), Some(b"memory".to_vec()));
+        assert_eq!(t.get_local(b"z/4").unwrap(), None);
+        assert_eq!(t.get_blob(&BlobId([7; 32])).unwrap(), Some(b"blob".to_vec()));
+        assert_eq!(t.counter(&t1, &a).unwrap(), 4);
+    }
+    drop(s);
+    let mut s = reopen(&dev);
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert_eq!(t.get_local(b"z/2").unwrap(), None);
+    assert_eq!(t.get_aspect(&t1, &a).unwrap(), None);
+    assert_eq!(t.counter(&t1, &a).unwrap(), 1);
+    assert_eq!(t.get_blob(&BlobId([7; 32])).unwrap(), None);
+    assert_eq!(t.table(&t1, &a, 0).unwrap(), None);
+    assert_eq!(t.get_local(b"z/3").unwrap(), Some(b"durable".to_vec()));
+    assert_eq!(t.get_aspect(&t1, &b).unwrap(), Some(unit));
+    let rows: Vec<_> = t.table_range(ix, b"", None, 10).unwrap().into_iter().map(|(k, _)| k).collect();
+    assert_eq!(rows, vec![b"k1".to_vec(), b"k3".to_vec()]);
+}

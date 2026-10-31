@@ -105,7 +105,7 @@ impl Engine {
                 let r = self.core.roster_of(&tid);
                 (!r.is_empty()).then(|| Value::Map(r.iter().map(|(m, e)| (Value::Tid(*m), edge_value(e))).collect()))
             }
-            _ if self.has_ephemeral(&tid, &ak) => self.joined_state(&tid, &ak)?.as_ref().and_then(Fragment::read),
+            _ if self.has_ephemeral(&tid, &ak) => self.ephemeral_value(&tid, &ak)?,
             _ => self.run(|tx| Ok(tx.state(&tid, &ak)?.and_then(Fragment::read)))?,
         };
         Ok(self.resolved(&tid, &ak, v))

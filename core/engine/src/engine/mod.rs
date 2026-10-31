@@ -1409,9 +1409,11 @@ impl Engine {
             fresh.check_ingest = self.core.check_ingest;
         }
         self.core = fresh;
-        let txn = self.store.transaction(&mut self.store_rng)?;
-        let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
-        let r = crate::apply::load(&mut tx, rebuild);
+        let r = {
+            let txn = self.store.transaction(&mut self.store_rng)?;
+            let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
+            crate::apply::load(&mut tx, rebuild)
+        };
         self.core.commit_journal();
         r
     }

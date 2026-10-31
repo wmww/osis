@@ -510,30 +510,36 @@ fn mixed_batch_resolution_failure_and_partial_chain() {
     let mut w = db.write();
     w.at(p, ak("/group").ephemeral()).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(_))));
+    // `/placed` is written by group ops only
+    let mut w = db.write();
+    w.at(p, ak("/placed").ephemeral()).set(&Value::Int(1)).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Invalid(_))));
 }
 
+/// What `g` lists: its `/group` and its ephemeral placements (`/placed`).
 fn group_of(db: &Osis, g: osis::Tid) -> osis::core::Group {
-    db.get(g, osis::core::GROUP).unwrap().unwrap_or_default()
+    let mut d = db.get(g, osis::core::GROUP).unwrap().unwrap_or_default();
+    let p = db.get(g, osis::core::PLACED).unwrap().unwrap_or_default();
+    d.items.extend(p.items);
+    d.subgroups.extend(p.subgroups);
+    d
 }
 
-/// The durable side of `g`'s `/group` (what the store holds; reads join the ephemeral side).
+/// `g`'s `/group` items (durable).
 fn durable_items(db: &Osis, g: osis::Tid) -> Vec<osis::Tid> {
-    db.engine(|e| {
-        let v = e.state(&g, &ak("/group")).unwrap().and_then(|f| f.read());
-        v.map(|v| osis::schema::AspectKey::decode(&osis::core::GROUP, &v).unwrap().items.into_iter().collect()).unwrap_or_default()
-    })
+    db.get(g, osis::core::GROUP).unwrap().unwrap_or_default().items.into_iter().collect()
 }
 
 // notes/ephemeral.md Ephemeral placements: an ephemeral item placed in a durable group is an
-// ephemeral write of the group's `/group`: it lists in the group, in its `/groups` and in a
-// watch of the group, with no commit and no store write; unplacing it is ephemeral too.
+// ephemeral write of the group's `/placed`: it lists there, in its `/groups` and in a watch of
+// `/placed`, with no commit and no store write; unplacing it is ephemeral too.
 // spec/data-model.md §8
 #[test]
 fn ephemeral_placement_lists_without_commit_spec_data_model_8() {
     let (db, _c) = setup(30);
     let home = db.home();
     let (tx, rx) = channel();
-    let _sub = db.at(home, osis::core::GROUP).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
+    let _sub = db.at(home, osis::core::PLACED).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     recv(&rx);
     let before = durable_marks(&db);
     let mut w = db.write();

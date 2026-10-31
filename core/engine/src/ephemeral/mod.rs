@@ -21,7 +21,7 @@ use crate::error::{Error, Result};
 use crate::events::{Cause, ChangeId, Diagnostic, DiagnosticKind, EphemeralId, Event, Origin};
 use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs};
 use osis_crdt::{AnyView, CounterRange, Fragment, Op, PathOp, Session, Source, Writer};
-use osis_schema::core_types::{CREATED, GROUP};
+use osis_schema::core_types::{CREATED, GROUP, PLACED};
 use osis_schema::{AspectKey, Lifetime, Schema};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -155,9 +155,6 @@ pub(crate) struct EphOp {
     pub tid: Tid,
     pub ak: Ak,
     pub am: AspectMut,
-    /// The reset of a placement made durable by this batch: resolved against the ephemeral
-    /// side alone.
-    pub conversion: bool,
 }
 
 /// One resolved ephemeral aspect write of a batch.
@@ -245,16 +242,14 @@ impl Engine {
         let mut gops: Vec<(Tid, AspectMut)> = Vec::new();
         for ((tid, ak), a) in std::mem::take(&mut m.aspects) {
             let group = ak.as_str() == GROUP.ak();
-            if a.lifetime.is_durable() {
-                if group {
-                    gops.push((tid, a));
-                } else {
-                    m.aspects.insert((tid, ak), a);
-                }
+            if ak.as_str() == PLACED.ak() || (group && !a.lifetime.is_durable()) {
+                return Err(Error::Misuse("ephemeral placements are written through group ops only"));
             } else if group {
-                return Err(Error::Misuse("/group takes ephemeral writes through group ops only"));
+                gops.push((tid, a));
+            } else if a.lifetime.is_durable() {
+                m.aspects.insert((tid, ak), a);
             } else {
-                eph_ops.push(EphOp { tid, ak, am: a, conversion: false });
+                eph_ops.push(EphOp { tid, ak, am: a });
             }
         }
         // what the durable half persists: each ephemeral thing it writes, persists or places
@@ -341,9 +336,9 @@ impl Engine {
             if am.lifetime == Lifetime::Presence && expires.is_some() {
                 return Err(Error::Misuse("a presence write takes no expiry"));
             }
-            // resolved against the joined state (a conversion's reset against the ephemeral
-            // side); the ephemeral side alone (borrowed) when no durable delta is held
-            let durable = if op.conversion { None } else { self.durable_state(tid, ak)? };
+            // resolved against the joined state; the ephemeral side alone (borrowed) when no
+            // durable delta is held
+            let durable = self.durable_state(tid, ak)?;
             let empty = Fragment::default();
             let joined;
             let base = match (durable, self.eph.state(tid, ak)) {
@@ -436,7 +431,7 @@ impl Engine {
                 a.expiring.entry(t).or_default().push(r.range);
                 self.eph.timers.entry(t).or_default().insert((r.tid, r.ak.clone()));
             }
-            if r.ak.as_str() == GROUP.ak() {
+            if r.ak.as_str() == PLACED.ak() {
                 self.refresh_def(&r.tid, &r.ak);
             }
             changed.push((r.tid, r.ak));
@@ -536,9 +531,9 @@ impl Engine {
             .filter(|(_, ops)| !ops.is_empty())
             .collect();
         let core = osis_schema::core_schema();
-        let view = core.view(GROUP.ak());
+        let view = core.view(PLACED.ak());
         for (g, ops) in unplace {
-            let Some((gak, a)) = self.eph.aspects.get(&g).and_then(|m| m.iter().find(|(k, _)| k.as_str() == GROUP.ak())) else { continue };
+            let Some((gak, a)) = self.eph.aspects.get(&g).and_then(|m| m.iter().find(|(k, _)| k.as_str() == PLACED.ak())) else { continue };
             let gak = gak.clone();
             let w = Writer::new(ts, self.eph.src.clone(), self.eph.ctr(&g, &gak));
             let out = match &view {
@@ -587,7 +582,7 @@ impl Engine {
                     o.strip(&|d| in_ranges(d, &src, &ranges));
                 }
                 a.expired.extend(ranges);
-                if ak.as_str() == GROUP.ak() {
+                if ak.as_str() == PLACED.ak() {
                     self.refresh_def(&tid, &ak);
                 }
                 changed.insert((tid, ak));
@@ -610,7 +605,17 @@ impl Engine {
             "/aspects" => Some(Value::Set(self.eph.present(tid).into_iter().map(|a| Value::Str(a.as_str().to_string())).collect())),
             "/groups" => Some(Value::Set(self.groups_of(tid).into_iter().map(Value::Tid).collect())),
             "/members" => None,
-            _ => self.eph.state(tid, ak).and_then(Fragment::read),
+            _ => self.ephemeral_value(tid, ak)?,
         })
+    }
+
+    /// The read value of `(tid, ak)` when it has ephemeral state. `/placed` reads as the group
+    /// its items and subgroups make (its adds carry no presence of the struct).
+    pub(crate) fn ephemeral_value(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Value>> {
+        let Some(f) = self.joined_state(tid, ak)? else { return Ok(None) };
+        if ak.as_str() == PLACED.ak() {
+            return Ok(place::def_of(&f).map(|(items, subgroups)| PLACED.encode(&osis_schema::core_types::Group { items, subgroups })));
+        }
+        Ok(f.read())
     }
 }

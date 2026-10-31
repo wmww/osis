@@ -237,6 +237,8 @@ pub const NODE: Aspect<NodeInfo> = Aspect::new("/node", &CORE);
 pub const REACH: Aspect<Reach> = Aspect::new("/reach", &CORE);
 pub const SEEN: Aspect<Seen> = Aspect::new("/seen", &CORE);
 pub const GROUP: Aspect<Group> = Aspect::new("/group", &CORE);
+/// The ephemeral placements into a group (spec/data-model.md §8): written by group ops only.
+pub const PLACED: Aspect<Group> = Aspect::new("/placed", &CORE);
 pub const GROUPS: Aspect<BTreeSet<Tid>> = Aspect::new("/groups", &CORE);
 pub const NAME: Aspect<String> = Aspect::new("/name", &CORE);
 pub const BODY: Aspect<String> = Aspect::new("/body", &CORE);

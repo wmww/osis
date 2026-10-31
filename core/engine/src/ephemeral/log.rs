@@ -13,7 +13,7 @@ use crate::events::{ChangeId, EphemeralId};
 use crate::undo::in_effect;
 use osis_base::{Ak, Tid, Ts, WallMs};
 use osis_crdt::{AnyView, CounterRange, Fragment, Op, PathOp, Stamp, Undone, Writer};
-use osis_schema::core_types::{CREATED, GROUP, is_membership_class};
+use osis_schema::core_types::{CREATED, PLACED, is_membership_class};
 use osis_schema::{AspectKey, Schema};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
@@ -206,7 +206,7 @@ impl Engine {
         let mut out: Vec<(Tid, Ak)> = self.eph.things.keys().chain(self.eph.drafts.keys()).map(|t| (*t, created.clone())).collect();
         for (t, m) in &self.eph.aspects {
             let eph = self.eph.draft_like(t);
-            out.extend(m.keys().filter(|ak| eph || ak.as_str() == GROUP.ak()).map(|ak| (*t, ak.clone())));
+            out.extend(m.keys().filter(|ak| eph || ak.as_str() == PLACED.ak()).map(|ak| (*t, ak.clone())));
         }
         out
     }
@@ -314,7 +314,7 @@ impl Engine {
         }
         for (g, (items, subs)) in &self.eph.defs {
             let v = super::place::unplace_ops(items, subs, del);
-            let gak = self.eph.aspects.get(g).and_then(|m| m.keys().find(|k| k.as_str() == GROUP.ak()));
+            let gak = self.eph.aspects.get(g).and_then(|m| m.keys().find(|k| k.as_str() == PLACED.ak()));
             if let Some(gak) = gak.filter(|_| !del.contains(g) && !v.is_empty()) {
                 ops.entry((*g, gak.clone())).or_default().extend(v);
             }
@@ -328,7 +328,7 @@ impl Engine {
             if let Some(r) = at.and_then(|i| out.get(i)) {
                 state.join(r.delta.clone());
             }
-            let schema = (ak.as_str() == GROUP.ak()).then(|| core.clone());
+            let schema = (ak.as_str() == PLACED.ak()).then(|| core.clone());
             let view = schema.as_ref().and_then(|s| s.view(ak.as_str()));
             // after what `out` already writes to the aspect
             let lo = at.and_then(|i| out.get(i)).map_or_else(|| self.eph.ctr(&tid, &ak), |r| r.range.1);

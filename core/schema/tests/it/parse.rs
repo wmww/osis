@@ -26,11 +26,12 @@ fn core_schema_parses_spec_data_model_9() {
     let aks: Vec<&str> = s.aspects.keys().map(String::as_str).collect();
     for ak in [
         "/tid", "/aspects", "/created", "/members", "/keys", "/secrets", "/tenures", "/label", "/moved", "/was", "/node",
-        "/reach", "/seen", "/group", "/groups", "/name", "/body", "/tag",
+        "/reach", "/seen", "/group", "/placed", "/groups", "/name", "/body", "/tag",
     ] {
         assert!(aks.contains(&ak), "{ak}");
     }
-    assert_eq!(aks.len(), 18);
+    assert_eq!(aks.len(), 19);
+    assert_eq!(s.aspects["/placed"].lifetime(), osis_schema::Lifetime::Ephemeral);
     let members = &s.aspects["/members"];
     assert_eq!(members.retention.by, PurgeBy::Admin);
     assert_eq!(members.retention.at_least.rel, Some(MEMBERSHIP_KEEP_MS));
