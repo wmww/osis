@@ -361,6 +361,11 @@ pub struct SyncEngine {
     /// Event counter: pass completions and remote membership commits are ordered by it.
     pub(crate) seq: u64,
     /// Per (server, label), the last pass end: its `seq` and when (corrected wall ms).
+    /// Kept across disconnects on purpose: readers ask "a pass ended after X", never "on the live
+    /// connection". `complete_pass` counts only passes after the actor's last remote membership
+    /// commit (`membership_seen`), and finalizing an expired link only those ended after `until`;
+    /// what reached the server after a pass end is the same race online, and a duplicate re-seal
+    /// costs a box. Clearing would block re-seal and link finalization while one server is down.
     pub(crate) passes: BTreeMap<(ServerKey, LabelId), (u64, u64)>,
     pub(crate) membership_seen: BTreeMap<Tid, u64>,
     wake: Option<u64>,

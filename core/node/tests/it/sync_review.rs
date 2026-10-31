@@ -354,3 +354,34 @@ fn compaction_deletes_exactly_covered_spec_sync_7() {
     assert!(!snaps.is_empty() && snaps.iter().all(|id| ids.contains(id)), "the carrier snapshot stays");
     let _ = Value::Bool(true);
 }
+
+// spec/permissions.md §3 (complete pass): a pass from before going offline still counts (it
+// proves what the server held then); a remote membership commit received while offline (here
+// directly) restarts it.
+#[test]
+fn complete_pass_survives_disconnect_spec_permissions_3() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    assert!(net.sync(b).complete_pass(&g));
+    net.blocked.insert((b, sv));
+    net.drop_link(b, sv);
+    net.advance(61_000);
+    assert!(net.sync(b).complete_pass(&g), "the pass before going offline still counts");
+    net.pair(c, a);
+    let ct_ = net.tid(c);
+    set_edge(net.engine(a), g, ct_, Role::Read);
+    net.pair(a, b);
+    net.feed(b, Event::Local);
+    net.run();
+    assert!(net.engine(b).roster(&g).contains_key(&ct_), "arrived directly");
+    assert!(!net.sync(b).complete_pass(&g), "a remote membership commit restarts it");
+    net.blocked.remove(&(b, sv));
+    net.advance(61_000);
+    net.settle(100_000);
+    assert!(net.sync(b).complete_pass(&g), "a pass after reconnecting completes it");
+}
