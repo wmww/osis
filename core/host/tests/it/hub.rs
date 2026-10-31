@@ -1,4 +1,4 @@
-//! Scripted clients against blind nodes (`Hub` over `BackendStore`): every operation through the
+//! Scripted clients against blind nodes (`Hub` over `HostStore`): every operation through the
 //! protocol engines (spec/sync.md §4-§9, spec/wire.md §11).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -9,7 +9,7 @@ use osis_base::{BlobId, WallMs};
 use osis_crypto::SigningSecret;
 use osis_proto::msg::DeleteItem;
 use osis_proto::*;
-use osis_server::Policy;
+use osis_host::HostPolicy;
 use osis_store::Backend;
 
 // spec/sync.md §5, §6: register, open, upload inline with Sync, download by replay, cursor sync with gained and want
@@ -19,7 +19,7 @@ const HB: [u8; 16] = [0x4b; 16];
 #[test]
 fn register_open_sync_download() {
     let mut w = World::new();
-    let h = w.add_hub(Policy::default());
+    let h = w.add_hub(HostPolicy::default());
     let (a, b) = (w.connect(h), w.connect(h));
     let l = Label::new(3);
     w.setup(a, &l);
@@ -48,7 +48,7 @@ fn register_open_sync_download() {
 #[test]
 fn claims_and_static_entries() {
     let mut w = World::new();
-    let h = w.add_hub(Policy::default());
+    let h = w.add_hub(HostPolicy::default());
     let a = w.connect(h);
     let l = Label::new(3);
     let ev = w.run(a, Command::Register { label: l.id, step: l.steps[0].clone(), claim_set: Some(Label::new(4).sets[0].clone()) });
@@ -67,7 +67,7 @@ fn claims_and_static_entries() {
 #[test]
 fn deposits_and_budget() {
     let mut w = World::new();
-    let h = w.add_hub(Policy::default());
+    let h = w.add_hub(HostPolicy::default());
     let a = w.connect(h);
     let l = Label::new(3);
     w.setup(a, &l);
@@ -96,7 +96,7 @@ fn deposits_and_budget() {
 #[test]
 fn deletes_and_tombstones() {
     let mut w = World::new();
-    let h = w.add_hub(Policy::default());
+    let h = w.add_hub(HostPolicy::default());
     let a = w.connect(h);
     let l = Label::new(3);
     w.setup(a, &l);
@@ -128,7 +128,7 @@ fn deletes_and_tombstones() {
 #[test]
 fn timed_deletes_and_expiry() {
     let mut w = World::new();
-    let h = w.add_hub(Policy::default());
+    let h = w.add_hub(HostPolicy::default());
     let (a, b) = (w.connect(h), w.connect(h));
     let l = Label::new(3);
     w.setup(a, &l);
@@ -166,7 +166,7 @@ fn timed_deletes_and_expiry() {
 #[test]
 fn horizon_falls_back_to_reconciliation() {
     let mut w = World::new();
-    let h = w.add_hub(Policy { log_keep: 64, ..Policy::default() });
+    let h = w.add_hub(HostPolicy { log_keep: 64, ..HostPolicy::default() });
     let (a, b) = (w.connect(h), w.connect(h));
     let l = Label::new(3);
     w.setup(a, &l);
@@ -209,7 +209,7 @@ fn relay_blob(w: &World, n: u8) -> Vec<u8> {
 #[test]
 fn subscriptions_and_relays() {
     let mut w = World::new();
-    let h = w.add_hub(Policy::default());
+    let h = w.add_hub(HostPolicy::default());
     let (a, b, c) = (w.connect(h), w.connect(h), w.connect(h));
     let l = Label::new(3);
     w.setup(a, &l);
@@ -259,7 +259,7 @@ fn subscriptions_and_relays() {
 #[test]
 fn relay_reaches_subscribers_only() {
     let mut w = World::new();
-    let h = w.add_hub(Policy::default());
+    let h = w.add_hub(HostPolicy::default());
     let (a, b) = (w.connect(h), w.connect(h));
     let others: Vec<usize> = (0..20).map(|_| w.connect(h)).collect();
     let l = Label::new(3);
@@ -282,7 +282,7 @@ fn relay_reaches_subscribers_only() {
 #[test]
 fn relay_replay_flood_bounded_spec_sync_5() {
     let mut w = World::new();
-    let h = w.add_hub(Policy { relays: 5, ..Policy::default() });
+    let h = w.add_hub(HostPolicy { relays: 5, ..HostPolicy::default() });
     let (a, b) = (w.connect(h), w.connect(h));
     let l = Label::new(3);
     w.setup(a, &l);
@@ -321,7 +321,7 @@ fn relay_replay_flood_bounded_spec_sync_5() {
 fn ephemeral_entries_in_memory() {
     let mut w = World::new();
     // two entries fit with their per-entry overhead (about 1000 bytes each), three do not
-    let policy = Policy { ephemeral_bytes: 2_400, ..Policy::default() };
+    let policy = HostPolicy { ephemeral_bytes: 2_400, ..HostPolicy::default() };
     let h = w.add_hub(policy.clone());
     let (a, b) = (w.connect(h), w.connect(h));
     let l = Label::new(3);
@@ -363,7 +363,7 @@ fn ephemeral_entries_in_memory() {
 #[test]
 fn upload_replaces_by_delete_proof_at_cap_spec_sync_5() {
     let mut w = World::new();
-    let h = w.add_hub(Policy { cap_entries: 3, ..Policy::default() });
+    let h = w.add_hub(HostPolicy { cap_entries: 3, ..HostPolicy::default() });
     let a = w.connect(h);
     let l = Label::new(3);
     w.setup(a, &l);
@@ -385,7 +385,7 @@ fn upload_replaces_by_delete_proof_at_cap_spec_sync_5() {
 #[test]
 fn two_servers_replicate() {
     let mut w = World::new();
-    let (s1, s2) = (w.add_hub(Policy::default()), w.add_hub(Policy::default()));
+    let (s1, s2) = (w.add_hub(HostPolicy::default()), w.add_hub(HostPolicy::default()));
     let a = w.connect(s1);
     let l = Label::new(3);
     w.setup(a, &l);
@@ -433,7 +433,7 @@ fn two_servers_replicate() {
 #[test]
 fn replication_replays_past_the_horizon() {
     let mut w = World::new();
-    let (s1, s2) = (w.add_hub(Policy { log_keep: 16, ..Policy::default() }), w.add_hub(Policy::default()));
+    let (s1, s2) = (w.add_hub(HostPolicy { log_keep: 16, ..HostPolicy::default() }), w.add_hub(HostPolicy::default()));
     let a = w.connect(s1);
     let mut l = Label::new(3);
     w.setup(a, &l);
@@ -456,7 +456,7 @@ fn replication_replays_past_the_horizon() {
 #[test]
 fn restart_keeps_state() {
     let mut w = World::new();
-    let h = w.add_hub(Policy::default());
+    let h = w.add_hub(HostPolicy::default());
     let a = w.connect(h);
     let l = Label::new(3);
     w.setup(a, &l);
@@ -466,7 +466,7 @@ fn restart_keeps_state() {
     let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0), Some(WallMs(now + 1_000))).unwrap();
     w.run(a, Command::Delete { label: l.id, items: vec![item] });
     let (_, cursor) = events_of(&w.run(a, sync(l.id, None, vec![], vec![])));
-    w.restart(h, Policy::default());
+    w.restart(h, HostPolicy::default());
     let a = w.connect(h);
     w.open(a, &l);
     w.advance(1_000);

@@ -127,7 +127,7 @@ pub fn evaluate_open<I: PathIndex>(head: &Step, index: &I, proof: &Proof, challe
                 None => OpenOutcome::Refused,
             })
         }
-        // only a member peer that knows the key's node opens it (`ServerConnection`)
+        // only a member peer that knows the key's node opens it (`ServingSession`)
         Proof::Member { .. } => Ok(OpenOutcome::Refused),
     }
 }

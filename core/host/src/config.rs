@@ -1,17 +1,17 @@
-//! The binary's config file: `key = value` lines; `#` at a line start or after whitespace starts
+//! The `osis serve --config` file: `key = value` lines; `#` at a line start or after whitespace starts
 //! a comment (an address's `url#key` has none before it); blank lines ignored.
 //!
 //! ```text
 //! listen = quic://0.0.0.0:7400        # required: transport URL to listen on
 //! key = /var/lib/osis/server.key      # required: 32-byte static secret (created if missing)
-//! data = /var/lib/osis                # data directory, server.redb inside (default: osis-server-data)
+//! data = /var/lib/osis                # data directory, server.redb inside (default: osis-host-data)
 //! peer = quic://b.example:7400#<key>  # replication peer, repeatable (address text form)
-//! cap_entries = 1048576               # policy knobs, all optional (`Policy` field names)
+//! cap_entries = 1048576               # policy knobs, all optional (`HostPolicy` field names)
 //! ```
 
-use crate::store::Policy;
+use crate::store::HostPolicy;
 use osis_label::{Address, address_from_text};
-use osis_proto::server::SEND_QUEUE as MIN_QUEUED;
+use osis_proto::serving::SEND_QUEUE as MIN_QUEUED;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,14 +20,14 @@ pub struct Config {
     pub key: PathBuf,
     pub data: PathBuf,
     pub peers: Vec<Address>,
-    pub policy: Policy,
+    pub policy: HostPolicy,
 }
 
 /// The data directory when the config names none (relative to the working directory).
-pub const DEFAULT_DATA: &str = "osis-server-data";
+pub const DEFAULT_DATA: &str = "osis-host-data";
 
 pub fn parse(text: &str) -> Result<Config, String> {
-    let (mut listen, mut key, mut data, mut peers, mut p) = (None, None, None, Vec::new(), Policy::default());
+    let (mut listen, mut key, mut data, mut peers, mut p) = (None, None, None, Vec::new(), HostPolicy::default());
     for (i, line) in text.lines().enumerate() {
         let line = strip_comment(line).trim();
         if line.is_empty() {
@@ -102,13 +102,13 @@ mod tests {
         assert_eq!(c.listen, "quic://0.0.0.0:7400");
         assert_eq!(c.data, PathBuf::from("/d"));
         assert_eq!(c.peers, vec![Address { url: "quic://b:7400".into(), key: [7; 32] }]);
-        assert_eq!((c.policy.ephemeral_bytes, c.policy.cap_bytes, c.policy.deposits), (5, 1000, Policy::default().deposits));
+        assert_eq!((c.policy.ephemeral_bytes, c.policy.cap_bytes, c.policy.deposits), (5, 1000, HostPolicy::default().deposits));
         assert_eq!(parse("listen = x\nkey = k\nmax_connections = 3\n").unwrap().data, PathBuf::from(DEFAULT_DATA));
         assert!(parse("listen = x\n").is_err());
         assert!(parse("listen = x\nkey = k\ndata = d\nbogus = 1\n").is_err());
         assert!(parse("listen = x\nkey = k\ndata = d\nephemeral_bytes = many\n").is_err());
         assert!(parse(&format!("listen = x\nkey = k\nmax_queued_bytes = {}\n", MIN_QUEUED - 1)).is_err());
         assert!(parse(&format!("listen = x\nkey = k\nmax_queued_bytes = {MIN_QUEUED}\n")).is_ok());
-        assert!(Policy::default().max_queued_bytes >= MIN_QUEUED);
+        assert!(HostPolicy::default().max_queued_bytes >= MIN_QUEUED);
     }
 }

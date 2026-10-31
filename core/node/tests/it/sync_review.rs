@@ -206,7 +206,7 @@ fn purged_body_leaves_full_label_spec_sync_7() {
     let p = blobs_of(&mut net, a, &l, &c);
     assert_eq!(p.len(), 1);
     let full = net.server_ids(sv, &l).len() as u64;
-    net.restart_server_with(sv, osis_server::Policy { cap_entries: full, ..osis_server::Policy::default() });
+    net.restart_server_with(sv, osis_host::HostPolicy { cap_entries: full, ..osis_host::HostPolicy::default() });
     net.run();
     // past the redial pause
     net.advance(66_000);

@@ -1040,9 +1040,9 @@ fn serve(g: &crate::args::Global, config: &Option<std::path::PathBuf>, listen: &
     let mut cfg = match config {
         Some(f) => {
             let text = std::fs::read_to_string(f).map_err(|e| usage(format!("{}: {e}", f.display())))?;
-            osis_server::config::parse(&text).map_err(|e| usage(format!("{}: {e}", f.display())))?
+            osis_host::config::parse(&text).map_err(|e| usage(format!("{}: {e}", f.display())))?
         }
-        None => osis_server::Config { listen: "quic://127.0.0.1:0".into(), key: Default::default(), data: osis_server::config::DEFAULT_DATA.into(), peers: Vec::new(), policy: osis_server::Policy::default() },
+        None => osis_host::Config { listen: "quic://127.0.0.1:0".into(), key: Default::default(), data: osis_host::config::DEFAULT_DATA.into(), peers: Vec::new(), policy: osis_host::HostPolicy::default() },
     };
     if let Some(l) = listen {
         cfg.listen = l.clone();
@@ -1057,13 +1057,13 @@ fn serve(g: &crate::args::Global, config: &Option<std::path::PathBuf>, listen: &
     }
     std::fs::create_dir_all(&cfg.data).map_err(|e| anyhow!("{}: {e}", cfg.data.display()))?;
     let quiet = g.quiet;
-    let log: osis_server::Log = Arc::new(move |m: &str| {
+    let log: osis_host::Log = Arc::new(move |m: &str| {
         if !quiet {
             eprintln!("osis serve: {m}");
         }
     });
     let out = Mutex::new(out);
-    osis_server::serve::run(cfg, log, |a| {
+    osis_host::serve::run(cfg, log, |a| {
         let mut o = out.lock().unwrap_or_else(|e| e.into_inner());
         let _ = writeln!(o, "{a}");
         let _ = o.flush();

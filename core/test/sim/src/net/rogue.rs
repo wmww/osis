@@ -10,7 +10,7 @@ use osis_crypto::{Secret32, SigningSecret};
 use osis_label::Step;
 use osis_node::labeling::HeadKeys;
 use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Command, LabelStore};
-use osis_server::HubOutput;
+use osis_host::HubOutput;
 use std::collections::VecDeque;
 
 /// Exchanges one session may cause before it is called a storm.

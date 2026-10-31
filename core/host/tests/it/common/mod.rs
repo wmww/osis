@@ -1,4 +1,4 @@
-//! Scripted clients (osis-proto `ClientSession`) and blind nodes (`Hub` over `BackendStore` on
+//! Scripted clients (osis-proto `ClientSession`) and blind nodes (`Hub` over `HostStore` on
 //! `MemoryBackend`) wired by in-memory byte queues; a label with rotations; blobs.
 #![allow(dead_code)]
 
@@ -6,7 +6,7 @@ use osis_base::{BlobId, Clock, LabelId, ManualClock, WallMs};
 use osis_crypto::{SeededRng, Secret32};
 use osis_proto::*;
 pub use osis_proto::examples::{Label, bid, blob, blob_with, salt};
-use osis_server::{BackendStore, ConnId, Hub, HubOutput, Policy};
+use osis_host::{HostStore, ConnId, Hub, HubOutput, HostPolicy};
 use osis_store::MemoryBackend;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -61,23 +61,23 @@ impl World {
         self.clock.now_wall_ms().0
     }
 
-    pub fn add_hub(&mut self, policy: Policy) -> usize {
+    pub fn add_hub(&mut self, policy: HostPolicy) -> usize {
         let i = self.hubs.len();
         let backend = MemoryBackend::new();
         self.backends.push(backend.clone());
-        let store = BackendStore::open(backend, self.clock.clone(), policy, &mut SeededRng::from_seed([i as u8; 32])).unwrap();
+        let store = HostStore::open(backend, self.clock.clone(), policy, &mut SeededRng::from_seed([i as u8; 32])).unwrap();
         self.hubs.push(Hub::new(store, hub_key(i), Box::new(SeededRng::from_seed([0x70 + i as u8; 32]))));
         i
     }
 
     /// Replaces hub `i` by a fresh one over the same backend: every connection of it is gone.
-    pub fn restart(&mut self, i: usize, policy: Policy) {
+    pub fn restart(&mut self, i: usize, policy: HostPolicy) {
         for l in self.links.iter_mut() {
             if matches!(l.a, End::Hub(h, _) if h == i) || matches!(l.b, End::Hub(h, _) if h == i) {
                 l.open = false;
             }
         }
-        let store = BackendStore::open(self.backends[i].clone(), self.clock.clone(), policy, &mut SeededRng::from_seed([0xff; 32])).unwrap();
+        let store = HostStore::open(self.backends[i].clone(), self.clock.clone(), policy, &mut SeededRng::from_seed([0xff; 32])).unwrap();
         self.hubs[i] = Hub::new(store, hub_key(i), Box::new(SeededRng::from_seed([0x90 + i as u8; 32])));
     }
 

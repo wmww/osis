@@ -1,5 +1,5 @@
 //! osis-proto: the node-to-node sync protocol (spec/sync.md §5-§9, §11; spec/wire.md §11-§13):
-//! frames, Hello, every message, range reconciliation, and sans-I/O client and server engines
+//! frames, Hello, every message, range reconciliation, and sans-I/O client and serving engines
 //! (`handle(now, Input) -> Vec<Output>`; no async, no sockets, time passed in).
 //! Layer 5 (notes/architecture.md). Notes: notes/sync.md (Protocol implementation).
 #![forbid(unsafe_code)]
@@ -15,12 +15,12 @@ pub mod hello;
 pub mod msg;
 pub mod rbsr;
 pub mod relay;
-pub mod server;
+pub mod serving;
 pub mod store;
 
 pub use client::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Command, OpenKey, Request};
 pub use error::Error;
-pub use server::{Relayed, ServerConfig, ServerConnection, ServerInput, ServerOutput};
+pub use serving::{Relayed, ServingConfig, ServingSession, ServingInput, ServingOutput};
 pub use relay::{RelayGate, RelayLimits, RelayVerdict};
 pub use store::{Budget, EntryMeta, HeadKeys, LabelStore, LogRecord, MemoryLabelStore, Put, StepKey, StoreError};
 pub use frame::{FrameDecoder, MAX_HELLO_BYTES, encode_frame};

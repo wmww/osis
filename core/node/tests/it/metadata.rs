@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! What a blind node learns (spec/requirements.md, Untrusted nodes; notes/sync.md "What a blind
-//! node learns"): real engines sync scripted scenarios through an osis-server hub, then the
+//! node learns"): real engines sync scripted scenarios through an osis-host hub, then the
 //! hub's stored bytes are searched for every secret and identifier of the scenario, blob sizes
 //! checked against Padmé, labels checked for shared bytes, claim sets for reader counts and
 //! heartbeats for content beyond `/seen`.

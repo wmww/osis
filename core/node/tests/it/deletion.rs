@@ -87,7 +87,7 @@ fn rotation_at_full_server_waits_spec_sync_5() {
     net.run();
     let l = net.label(a);
     assert_eq!(net.server_path(sv, &l).len(), 1);
-    let policy = osis_server::Policy { max_bytes: 1, ..osis_server::Policy::default() };
+    let policy = osis_host::HostPolicy { max_bytes: 1, ..osis_host::HostPolicy::default() };
     let wait = policy.over_cap_step_ms;
     net.restart_server_with(sv, policy);
     net.run();

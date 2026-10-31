@@ -1,4 +1,4 @@
-//! BackendStore over the redb file backend: state survives closing and reopening the file
+//! HostStore over the redb file backend: state survives closing and reopening the file
 //! (spec/sync.md §4). Tier 2 (disk): `cargo test --workspace --test it file:: -- --ignored`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -6,7 +6,7 @@ use osis_base::{LabelId, ManualClock, WallMs};
 use osis_crypto::{SeededRng, Signature};
 use osis_proto::examples::Fixture;
 use osis_proto::{Code, LabelStore, LogRecord, Put};
-use osis_server::{BackendStore, Policy};
+use osis_host::{HostStore, HostPolicy};
 use osis_store::RedbBackend;
 use std::sync::Arc;
 
@@ -20,7 +20,7 @@ fn put(b: &[u8]) -> Put<'_> {
 #[test]
 #[ignore]
 fn redb_store_survives_reopen() {
-    let dir = std::env::temp_dir().join(format!("osis-server-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("osis-host-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("server.redb");
     let _ = std::fs::remove_file(&path);
@@ -29,7 +29,7 @@ fn redb_store_survives_reopen() {
     let l: LabelId = f.label;
     let blobs: Vec<Vec<u8>> = (1..=3).map(Fixture::blob).collect();
     let (log_id, head) = {
-        let mut s = BackendStore::open(RedbBackend::open(&path).unwrap(), clock.clone(), Policy::default(), &mut SeededRng::from_seed([1; 32])).unwrap();
+        let mut s = HostStore::open(RedbBackend::open(&path).unwrap(), clock.clone(), HostPolicy::default(), &mut SeededRng::from_seed([1; 32])).unwrap();
         s.push_step(&l, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
         for b in &blobs {
             assert_eq!(s.put(&l, put(b)).unwrap(), Code::OK);
@@ -38,7 +38,7 @@ fn redb_store_survives_reopen() {
         s.schedule_delete(&l, &osis_label::blob_id(&blobs[1]), T0 + 100).unwrap();
         s.log_head(&l).unwrap()
     };
-    let mut s = BackendStore::open(RedbBackend::open(&path).unwrap(), clock, Policy::default(), &mut SeededRng::from_seed([9; 32])).unwrap();
+    let mut s = HostStore::open(RedbBackend::open(&path).unwrap(), clock, HostPolicy::default(), &mut SeededRng::from_seed([9; 32])).unwrap();
     assert_eq!(s.log_head(&l).unwrap(), (log_id, head));
     assert_eq!(s.path(&l).unwrap(), vec![f.genesis.clone()]);
     assert!(s.claim_set(&l, &f.genesis.id()).unwrap().is_some());
@@ -55,22 +55,22 @@ fn redb_store_survives_reopen() {
 
 // spec: none (cost, notes/sync.md Hub stall bounds): one whole-space Reconcile over a label of
 // `OSIS_SCALE_N` (default 10^5) live entries on redb, against 1024 lazily committed puts. By hand,
-// release: `cargo test --release -p osis-server --test it -- --ignored reconcile_whole_space_budget --nocapture`
+// release: `cargo test --release -p osis-host --test it -- --ignored reconcile_whole_space_budget --nocapture`
 #[test]
 #[ignore]
 fn reconcile_whole_space_budget() {
     use osis_proto::rbsr::{self, Bound};
     use osis_proto::{Mode, Range};
     let n = osis_base::testenv::u64_var("OSIS_SCALE_N").unwrap_or(100_000);
-    let dir = std::env::temp_dir().join(format!("osis-server-rfp-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("osis-host-rfp-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("server.redb");
     let _ = std::fs::remove_file(&path);
     let f = Fixture::new(0x10);
     let l: LabelId = f.label;
-    let mut s = BackendStore::open(RedbBackend::open(&path).unwrap(), Arc::new(ManualClock::new(WallMs(T0))), Policy::unlimited(), &mut SeededRng::from_seed([1; 32])).unwrap();
+    let mut s = HostStore::open(RedbBackend::open(&path).unwrap(), Arc::new(ManualClock::new(WallMs(T0))), HostPolicy::unlimited(), &mut SeededRng::from_seed([1; 32])).unwrap();
     s.push_step(&l, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
-    let puts = |s: &mut BackendStore<RedbBackend>, r: std::ops::Range<u64>| {
+    let puts = |s: &mut HostStore<RedbBackend>, r: std::ops::Range<u64>| {
         s.defer_durability();
         let t = std::time::Instant::now();
         for i in r {

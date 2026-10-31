@@ -8,11 +8,11 @@ use common::*;
 use osis_base::LabelId;
 use osis_proto::msg::DeleteItem;
 use osis_proto::*;
-use osis_server::Policy;
+use osis_host::HostPolicy;
 
 fn world() -> (World, usize) {
     let mut w = World::new();
-    let h = w.add_hub(Policy::default());
+    let h = w.add_hub(HostPolicy::default());
     let c = w.connect(h);
     (w, c)
 }

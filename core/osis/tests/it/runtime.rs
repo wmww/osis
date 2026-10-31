@@ -1,6 +1,6 @@
 //! The background runtime (notes/api.md Design rules: async only where another node is waited
 //! on; sync runs on the handle's tokio runtime): two databases on `Runtime::Tokio` reach an
-//! osis-server driver (one on the app's runtime, one on `Runtime::Own`) over in-process sessions (tier 1, a guard timeout against a hang) and over
+//! osis-host driver (one on the app's runtime, one on `Runtime::Own`) over in-process sessions (tier 1, a guard timeout against a hang) and over
 //! localhost QUIC (tier 2, ignored).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -10,7 +10,7 @@ use common::ak;
 use crate::common::CreateIn;
 use osis::{Config, MemStore, Osis, Runtime, ServerAddr, StoreAt, SyncScope, Transport, Value};
 use osis_crypto::SeededRng;
-use osis_server::{BackendStore, Endpoint, Hub, Policy};
+use osis_host::{HostStore, Endpoint, Hub, HostPolicy};
 use osis_store::MemoryBackend;
 use osis_transport::{ListenConfig, Listener, StaticSecret, Transport as _};
 use std::sync::Arc;
@@ -36,10 +36,10 @@ async fn round_trip<T: osis_transport::Transport>(server_ep: T, url: &str, a: Tr
     let listener = server_ep.listen(ListenConfig { url: url.into(), secret: secret.clone() }).await.unwrap();
     let addr = listener.address();
     let clock: Arc<dyn osis::Clock> = Arc::new(osis_base::SystemClock);
-    let store = BackendStore::open(MemoryBackend::new(), clock.clone(), Policy::default(), &mut SeededRng::from_u64(5)).unwrap();
+    let store = HostStore::open(MemoryBackend::new(), clock.clone(), HostPolicy::default(), &mut SeededRng::from_u64(5)).unwrap();
     let hub = Hub::new(store, addr.key, Box::new(SeededRng::from_u64(6)));
     let (sctl, srx) = mpsc::channel(8);
-    let server = tokio::spawn(osis_server::run(hub, Endpoint { transport: server_ep, listener, secret }, vec![], clock, srx, Arc::new(|_: &str| {})));
+    let server = tokio::spawn(osis_host::run(hub, Endpoint { transport: server_ep, listener, secret }, vec![], clock, srx, Arc::new(|_: &str| {})));
     let sv = ServerAddr::new(&addr.url, addr.key);
 
     let (da, card) = Osis::create(cfg(1, vec![sv.clone()], a)).unwrap();
@@ -57,7 +57,7 @@ async fn round_trip<T: osis_transport::Transport>(server_ep: T, url: &str, a: Tr
     // the server, and the first device as a co-reader once its connection is up
     assert!(db.status().unwrap().connected >= 1);
     if p2p {
-        assert!(sctl.send(osis_server::Control::Shutdown).await.is_ok());
+        assert!(sctl.send(osis_host::Control::Shutdown).await.is_ok());
         let mut w = da.write();
         w.at(t, ak("/t/x")).set(&Value::Str("peer to peer".into())).unwrap();
         w.commit().unwrap();
@@ -76,7 +76,7 @@ async fn round_trip<T: osis_transport::Transport>(server_ep: T, url: &str, a: Tr
     assert!(weak.upgrade().is_none());
     drop(db);
     if !p2p {
-        assert!(sctl.send(osis_server::Control::Shutdown).await.is_ok());
+        assert!(sctl.send(osis_host::Control::Shutdown).await.is_ok());
     }
     server.await.unwrap();
 }
@@ -110,10 +110,10 @@ async fn redeem_over<T: osis_transport::Transport>(server_ep: T, url: &str, a: T
     let listener = server_ep.listen(ListenConfig { url: url.into(), secret: secret.clone() }).await.unwrap();
     let addr = listener.address();
     let clock: Arc<dyn osis::Clock> = Arc::new(osis_base::SystemClock);
-    let store = BackendStore::open(MemoryBackend::new(), clock.clone(), Policy::default(), &mut SeededRng::from_u64(7)).unwrap();
+    let store = HostStore::open(MemoryBackend::new(), clock.clone(), HostPolicy::default(), &mut SeededRng::from_u64(7)).unwrap();
     let hub = Hub::new(store, addr.key, Box::new(SeededRng::from_u64(8)));
     let (sctl, srx) = mpsc::channel(8);
-    let server = tokio::spawn(osis_server::run(hub, Endpoint { transport: server_ep, listener, secret }, vec![], clock, srx, Arc::new(|_: &str| {})));
+    let server = tokio::spawn(osis_host::run(hub, Endpoint { transport: server_ep, listener, secret }, vec![], clock, srx, Arc::new(|_: &str| {})));
     let sv = ServerAddr::new(&addr.url, addr.key);
     let alice = Osis::create(cfg(1, vec![sv.clone()], a)).unwrap().0;
     let bob = Osis::create(cfg(2, vec![sv.clone()], b)).unwrap().0;
@@ -133,7 +133,7 @@ async fn redeem_over<T: osis_transport::Transport>(server_ep: T, url: &str, a: T
     alice.sync_policy(g, osis::GroupPolicy { publish_reach: Some(true), ..Default::default() });
     assert!(alice.sync_engine(|s| s.publishes_reach(&g)));
     drop((alice, bob));
-    assert!(sctl.send(osis_server::Control::Shutdown).await.is_ok());
+    assert!(sctl.send(osis_host::Control::Shutdown).await.is_ok());
     server.await.unwrap();
 }
 
@@ -231,10 +231,10 @@ async fn redeem_direct_in_process_spec_permissions_9() {
     let listener = server_ep.listen(ListenConfig { url: "mem://s".into(), secret: secret.clone() }).await.unwrap();
     let addr = listener.address();
     let clock: Arc<dyn osis::Clock> = Arc::new(osis_base::SystemClock);
-    let store = BackendStore::open(MemoryBackend::new(), clock.clone(), Policy::default(), &mut SeededRng::from_u64(9)).unwrap();
+    let store = HostStore::open(MemoryBackend::new(), clock.clone(), HostPolicy::default(), &mut SeededRng::from_u64(9)).unwrap();
     let hub = Hub::new(store, addr.key, Box::new(SeededRng::from_u64(10)));
     let (sctl, srx) = mpsc::channel(8);
-    let server = tokio::spawn(osis_server::run(hub, Endpoint { transport: server_ep, listener, secret }, vec![], clock, srx, Arc::new(|_: &str| {})));
+    let server = tokio::spawn(osis_host::run(hub, Endpoint { transport: server_ep, listener, secret }, vec![], clock, srx, Arc::new(|_: &str| {})));
     let sv = ServerAddr::new(&addr.url, addr.key);
     net.partition("b", "s");
     let alice = Osis::create(cfg(1, vec![sv], Transport::InProcess(net.endpoint("a")))).unwrap().0;
@@ -349,7 +349,7 @@ async fn redeem_direct_in_process_spec_permissions_9() {
     assert!(tokio::time::timeout(Duration::from_millis(300), dave.redeem(&link)).await.is_err());
     assert!(dave.sync_engine(|s| s.link_peer_keys()).is_empty());
     drop((alice, bob, carol, dave, erin));
-    assert!(sctl.send(osis_server::Control::Shutdown).await.is_ok());
+    assert!(sctl.send(osis_host::Control::Shutdown).await.is_ok());
     server.await.unwrap();
 }
 
@@ -407,10 +407,10 @@ async fn single_use_direct_keeps_key_in_process_spec_permissions_9() {
     let listener = server_ep.listen(ListenConfig { url: "mem://s".into(), secret: secret.clone() }).await.unwrap();
     let addr = listener.address();
     let clock: Arc<dyn osis::Clock> = Arc::new(osis_base::SystemClock);
-    let store = BackendStore::open(MemoryBackend::new(), clock.clone(), Policy::default(), &mut SeededRng::from_u64(11)).unwrap();
+    let store = HostStore::open(MemoryBackend::new(), clock.clone(), HostPolicy::default(), &mut SeededRng::from_u64(11)).unwrap();
     let hub = Hub::new(store, addr.key, Box::new(SeededRng::from_u64(12)));
     let (sctl, srx) = mpsc::channel(8);
-    let server = tokio::spawn(osis_server::run(hub, Endpoint { transport: server_ep, listener, secret }, vec![], clock, srx, Arc::new(|_: &str| {})));
+    let server = tokio::spawn(osis_host::run(hub, Endpoint { transport: server_ep, listener, secret }, vec![], clock, srx, Arc::new(|_: &str| {})));
     net.partition("b", "s");
     let alice = Osis::create(cfg(1, vec![ServerAddr::new(&addr.url, addr.key)], Transport::InProcess(net.endpoint("a")))).unwrap().0;
     let mut c = cfg(2, vec![], Transport::InProcess(net.endpoint("b")));
@@ -448,7 +448,7 @@ async fn single_use_direct_keeps_key_in_process_spec_permissions_9() {
     .await
     .unwrap();
     drop((alice, bob));
-    assert!(sctl.send(osis_server::Control::Shutdown).await.is_ok());
+    assert!(sctl.send(osis_host::Control::Shutdown).await.is_ok());
     server.await.unwrap();
 }
 

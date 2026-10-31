@@ -2562,11 +2562,11 @@ dependencies = [
  "osis-commit",
  "osis-crdt",
  "osis-crypto",
+ "osis-host",
  "osis-label",
  "osis-node",
  "osis-proto",
  "osis-schema",
- "osis-server",
  "osis-sim",
  "osis-store",
  "osis-transport",
@@ -2601,8 +2601,8 @@ dependencies = [
  "anyhow",
  "clap",
  "osis",
+ "osis-host",
  "osis-schema",
- "osis-server",
  "proptest",
 ]
 
@@ -2659,6 +2659,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "osis-host"
+version = "0.1.0"
+dependencies = [
+ "osis-base",
+ "osis-crypto",
+ "osis-label",
+ "osis-proto",
+ "osis-store",
+ "osis-transport",
+ "proptest",
+ "tokio",
+]
+
+[[package]]
 name = "osis-keys"
 version = "0.1.0"
 dependencies = [
@@ -2690,12 +2704,12 @@ dependencies = [
  "osis-crdt",
  "osis-crypto",
  "osis-engine",
+ "osis-host",
  "osis-keys",
  "osis-label",
  "osis-perm",
  "osis-proto",
  "osis-schema",
- "osis-server",
  "osis-store",
  "osis-transport",
  "tokio",
@@ -2730,20 +2744,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "osis-server"
-version = "0.1.0"
-dependencies = [
- "osis-base",
- "osis-crypto",
- "osis-label",
- "osis-proto",
- "osis-store",
- "osis-transport",
- "proptest",
- "tokio",
-]
-
-[[package]]
 name = "osis-sim"
 version = "0.1.0"
 dependencies = [
@@ -2752,11 +2752,11 @@ dependencies = [
  "osis-commit",
  "osis-crdt",
  "osis-crypto",
+ "osis-host",
  "osis-label",
  "osis-node",
  "osis-proto",
  "osis-schema",
- "osis-server",
  "osis-store",
 ]
 

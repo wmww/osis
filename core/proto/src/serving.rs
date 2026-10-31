@@ -36,8 +36,8 @@ pub const PUSH_QUEUE: usize = MAX_MESSAGE + 4;
 /// Bytes a peer can have unwritten to a compliant subscriber: its windowed replies plus the
 /// pushes it holds. A send queue cap at or above it never closes such a connection.
 pub const SEND_QUEUE: usize = crate::client::WINDOW_QUEUE + PUSH_QUEUE;
-/// How often a driver reports `ServerInput::Taken` while a connection holds pushes back
-/// (`ServerConnection::held`; ms). Minor consequence: pushes resume up to this late after the
+/// How often a driver reports `ServingInput::Taken` while a connection holds pushes back
+/// (`ServingSession::held`; ms). Minor consequence: pushes resume up to this late after the
 /// queue has room; 0 spins the driver while a slow subscriber drains, infinity leaves them to
 /// the next unrelated tick.
 pub const PUSH_POLL_MS: u64 = 1000;
@@ -45,7 +45,7 @@ pub const PUSH_POLL_MS: u64 = 1000;
 const REPLAY: &str = "osis v1 replay";
 
 #[derive(Clone, Debug)]
-pub struct ServerConfig {
+pub struct ServingConfig {
     /// This side's static key (bound by open signatures).
     pub static_key: [u8; 32],
     /// This side's Hello challenge: 32 random bytes per connection.
@@ -53,7 +53,7 @@ pub struct ServerConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ServerInput {
+pub enum ServingInput {
     /// The connection is up: send Hello.
     Start,
     /// Bytes received on the stream.
@@ -83,13 +83,13 @@ pub struct Relayed {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ServerOutput {
+pub enum ServingOutput {
     /// A frame to write.
     Send(Vec<u8>),
     Close,
-    /// This connection grew a label's log: deliver `ServerInput::Changed` to every connection.
+    /// This connection grew a label's log: deliver `ServingInput::Changed` to every connection.
     Changed(LabelId),
-    /// A relay-only entry accepted: deliver `ServerInput::Relay` to every other connection.
+    /// A relay-only entry accepted: deliver `ServingInput::Relay` to every other connection.
     Relay(Relayed),
     /// The peer broke a protocol rule (diagnostic).
     PeerError(Error),
@@ -150,8 +150,8 @@ enum Under {
     Member,
 }
 
-pub struct ServerConnection {
-    cfg: ServerConfig,
+pub struct ServingSession {
+    cfg: ServingConfig,
     decoder: FrameDecoder,
     version: Option<u64>,
     closed: bool,
@@ -176,7 +176,7 @@ pub struct ServerConnection {
     member: Option<[u8; 32]>,
     /// Bytes of `Send` outputs so far.
     written: u64,
-    /// The last `ServerInput::Taken` (none: never reported, no flow control).
+    /// The last `ServingInput::Taken` (none: never reported, no flow control).
     taken: Option<u64>,
     /// Subscribed labels whose pushes wait for room in the send queue (from their position in
     /// `subs`), in the order they were held: resumed in turn, so a busy label starves no other.
@@ -225,9 +225,9 @@ fn after_pos(pos: u64) -> BlobId {
     BlobId(b)
 }
 
-impl ServerConnection {
-    pub fn new(cfg: ServerConfig) -> ServerConnection {
-        ServerConnection {
+impl ServingSession {
+    pub fn new(cfg: ServingConfig) -> ServingSession {
+        ServingSession {
             cfg,
             decoder: FrameDecoder::new(),
             version: None,
@@ -307,7 +307,7 @@ impl ServerConnection {
         self.version
     }
 
-    /// Whether pushes wait for the transport to take bytes (`ServerInput::Taken`).
+    /// Whether pushes wait for the transport to take bytes (`ServingInput::Taken`).
     pub fn held(&self) -> bool {
         !self.owed.is_empty()
     }
@@ -320,22 +320,22 @@ impl ServerConnection {
     }
 
     /// Bytes written and not taken by the transport, with those in `out` (0 without reports).
-    fn backlog(&self, out: &[ServerOutput]) -> usize {
+    fn backlog(&self, out: &[ServingOutput]) -> usize {
         let Some(t) = self.taken else { return 0 };
-        let o: usize = out.iter().map(|x| if let ServerOutput::Send(b) = x { b.len() } else { 0 }).sum();
+        let o: usize = out.iter().map(|x| if let ServingOutput::Send(b) = x { b.len() } else { 0 }).sum();
         usize::try_from(self.written.saturating_sub(t)).unwrap_or(usize::MAX).saturating_add(o)
     }
 
     /// Bytes written and not taken (as far as reported), with those in `out`.
-    fn unsent(&self, out: &[ServerOutput]) -> usize {
-        let o: usize = out.iter().map(|x| if let ServerOutput::Send(b) = x { b.len() } else { 0 }).sum();
+    fn unsent(&self, out: &[ServingOutput]) -> usize {
+        let o: usize = out.iter().map(|x| if let ServingOutput::Send(b) = x { b.len() } else { 0 }).sum();
         let w = self.taken.map_or(0, |t| usize::try_from(self.written.saturating_sub(t)).unwrap_or(usize::MAX));
         w.saturating_add(o)
     }
 
     /// Whether a push of about `size` bytes waits: something is unwritten and it would not fit
     /// `REPLY_BUDGET` behind it.
-    fn no_room(&self, out: &[ServerOutput], size: usize) -> bool {
+    fn no_room(&self, out: &[ServingOutput], size: usize) -> bool {
         let b = self.backlog(out);
         b > 0 && b.saturating_add(size) > REPLY_BUDGET
     }
@@ -345,21 +345,21 @@ impl ServerConnection {
         self.decoder.pending()
     }
 
-    pub fn handle(&mut self, now: u64, store: &mut dyn LabelStore, input: ServerInput) -> Vec<ServerOutput> {
+    pub fn handle(&mut self, now: u64, store: &mut dyn LabelStore, input: ServingInput) -> Vec<ServingOutput> {
         let mut out = Vec::new();
         if self.closed {
             return out;
         }
         self.input(now, store, input, &mut out);
-        let n: usize = out.iter().map(|x| if let ServerOutput::Send(b) = x { b.len() } else { 0 }).sum();
+        let n: usize = out.iter().map(|x| if let ServingOutput::Send(b) = x { b.len() } else { 0 }).sum();
         self.written = self.written.saturating_add(n as u64);
         out
     }
 
-    fn input(&mut self, now: u64, store: &mut dyn LabelStore, input: ServerInput, out: &mut Vec<ServerOutput>) {
+    fn input(&mut self, now: u64, store: &mut dyn LabelStore, input: ServingInput, out: &mut Vec<ServingOutput>) {
         match input {
-            ServerInput::Start => out.push(ServerOutput::Send(encode_frame(&Hello::new(now, self.cfg.challenge).encode()))),
-            ServerInput::Bytes(b) => {
+            ServingInput::Start => out.push(ServingOutput::Send(encode_frame(&Hello::new(now, self.cfg.challenge).encode()))),
+            ServingInput::Bytes(b) => {
                 self.decoder.push(&b);
                 // frame bytes plus reply allowances of this input's requests, all unanswered
                 // when the last was sent (`MAX_UNANSWERED`)
@@ -375,13 +375,13 @@ impl ServerConnection {
                             // further requests cost reads and memory, not after (the driver's
                             // queue cap sees only what this input made)
                             if self.unsent(out) > SEND_QUEUE {
-                                out.push(ServerOutput::PeerError(Error::Cap("replies past the request window")));
+                                out.push(ServingOutput::PeerError(Error::Cap("replies past the request window")));
                                 self.close(out);
                             }
                         }
                         Ok(None) => break,
                         Err(e) => {
-                            out.push(ServerOutput::PeerError(e));
+                            out.push(ServingOutput::PeerError(e));
                             send(out, Message::Error { id: 0, code: Code::MALFORMED });
                             self.close(out);
                         }
@@ -389,39 +389,39 @@ impl ServerConnection {
                 }
             }
             // while pushes are held, a label waits its turn (`owed`)
-            ServerInput::Changed(label) if self.held() => {
+            ServingInput::Changed(label) if self.held() => {
                 if self.subs.contains_key(&label) {
                     self.owe(label);
                 }
             }
-            ServerInput::Changed(label) => {
+            ServingInput::Changed(label) => {
                 if let Err(e) = self.push(store, &label, out) {
-                    out.push(ServerOutput::StoreError(e));
+                    out.push(ServingOutput::StoreError(e));
                 }
             }
-            ServerInput::Relay(r) => {
+            ServingInput::Relay(r) => {
                 // a slow subscriber misses relay-only entries rather than queueing them
                 let ev = Event::Added { blob_id: r.blob_id, blob: Some(r.blob.to_vec()), wrap: r.wrap, stamp: Some(r.stamp) };
                 // an open a new head ended gets none (its held push ends it)
                 if let Some(seq) = self.subs.get(&r.label).copied()
                     && !self.no_room(out, event_size(&ev))
                     && self.holds(store, &r.label).unwrap_or_else(|e| {
-                        out.push(ServerOutput::StoreError(e));
+                        out.push(ServingOutput::StoreError(e));
                         false
                     })
                 {
                     match store.log_head(&r.label) {
                         Ok((log_id, _)) => send(out, Message::Push { label: r.label, events: vec![ev], cursor: Cursor { log_id, seq } }),
-                        Err(e) => out.push(ServerOutput::StoreError(e)),
+                        Err(e) => out.push(ServingOutput::StoreError(e)),
                     }
                 }
             }
-            ServerInput::Taken(n) => {
+            ServingInput::Taken(n) => {
                 self.taken = Some(self.taken.map_or(n, |t| t.max(n)));
                 // in turn: one held again goes to the back, and the rest keep their place
                 while let Some(l) = self.owed.pop_front() {
                     if let Err(e) = self.push(store, &l, out) {
-                        out.push(ServerOutput::StoreError(e));
+                        out.push(ServingOutput::StoreError(e));
                         self.owe(l);
                     }
                     if self.owed.back() == Some(&l) {
@@ -432,17 +432,17 @@ impl ServerConnection {
         }
     }
 
-    fn close(&mut self, out: &mut Vec<ServerOutput>) {
+    fn close(&mut self, out: &mut Vec<ServingOutput>) {
         self.closed = true;
-        out.push(ServerOutput::Close);
+        out.push(ServingOutput::Close);
     }
 
-    fn frame(&mut self, now: u64, store: &mut dyn LabelStore, body: &[u8], charged: &mut usize, out: &mut Vec<ServerOutput>) {
+    fn frame(&mut self, now: u64, store: &mut dyn LabelStore, body: &[u8], charged: &mut usize, out: &mut Vec<ServingOutput>) {
         if self.version.is_none() {
             match Hello::decode(body).and_then(|h| negotiate(&[PROTOCOL_VERSION], &h.versions)) {
                 Ok(v) => self.version = Some(v),
                 Err(e) => {
-                    out.push(ServerOutput::PeerError(e));
+                    out.push(ServingOutput::PeerError(e));
                     self.close(out);
                 }
             }
@@ -454,7 +454,7 @@ impl ServerConnection {
             Err(r) => {
                 let code = r.code();
                 let id = r.id;
-                out.push(ServerOutput::PeerError(r.error));
+                out.push(ServingOutput::PeerError(r.error));
                 send(out, Message::Error { id, code });
                 return;
             }
@@ -464,7 +464,7 @@ impl ServerConnection {
         // requests' reads (a Reconcile reads its ranges' live IDs: up to the whole label)
         *charged = charged.saturating_add(crate::client::allowance(&msg));
         if *charged > crate::client::MAX_UNANSWERED {
-            out.push(ServerOutput::PeerError(Error::Cap("requests past the request window")));
+            out.push(ServingOutput::PeerError(Error::Cap("requests past the request window")));
             self.close(out);
             return;
         }
@@ -474,7 +474,7 @@ impl ServerConnection {
             Ok(Some(reply)) => send(out, reply),
             Ok(None) => {}
             Err(e) => {
-                out.push(ServerOutput::StoreError(e));
+                out.push(ServingOutput::StoreError(e));
                 send(out, Message::Error { id, code: Code::REFUSED });
             }
         }
@@ -488,7 +488,7 @@ impl ServerConnection {
         Ok(self.keys(store, label)?.map(|k| k.head.clone()))
     }
 
-    fn dispatch(&mut self, now: u64, store: &mut dyn LabelStore, msg: Message, out: &mut Vec<ServerOutput>) -> Result<Option<Message>, StoreError> {
+    fn dispatch(&mut self, now: u64, store: &mut dyn LabelStore, msg: Message, out: &mut Vec<ServingOutput>) -> Result<Option<Message>, StoreError> {
         use Message as M;
         Ok(Some(match msg {
             M::Ping { id, .. } => M::Pong { id, wall_ms: now },
@@ -599,7 +599,7 @@ impl ServerConnection {
         })
     }
 
-    fn register(&mut self, store: &mut dyn LabelStore, id: Id, label: LabelId, step: Step, claim_set: Option<ClaimSet>, out: &mut Vec<ServerOutput>) -> Result<Message, StoreError> {
+    fn register(&mut self, store: &mut dyn LabelStore, id: Id, label: LabelId, step: Step, claim_set: Option<ClaimSet>, out: &mut Vec<ServingOutput>) -> Result<Message, StoreError> {
         if step.label != label || claim_set.as_ref().is_some_and(|c| c.hash() != step.claims_hash) {
             return Ok(Message::Error { id, code: Code::MALFORMED });
         }
@@ -628,7 +628,7 @@ impl ServerConnection {
         if code != Code::OK {
             return Ok(Message::Error { id, code });
         }
-        out.push(ServerOutput::Changed(label));
+        out.push(ServingOutput::Changed(label));
         Ok(Message::Ok { id })
     }
 
@@ -713,7 +713,7 @@ impl ServerConnection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn sync(&mut self, store: &mut dyn LabelStore, now: u64, id: Id, label: LabelId, cursor: Option<Cursor>, inline_limit: u64, entries: Vec<Entry>, gained: Vec<BlobId>, out: &mut Vec<ServerOutput>) -> Result<Message, StoreError> {
+    fn sync(&mut self, store: &mut dyn LabelStore, now: u64, id: Id, label: LabelId, cursor: Option<Cursor>, inline_limit: u64, entries: Vec<Entry>, gained: Vec<BlobId>, out: &mut Vec<ServingOutput>) -> Result<Message, StoreError> {
         if !self.still_open(store, &label)? {
             return Ok(Message::Error { id, code: Code::NOT_OPENED });
         }
@@ -819,7 +819,7 @@ impl ServerConnection {
 
     /// Pushes `label`'s new log events. An open a new head ends (`still_open`) gets the events up
     /// to and with that head's, and nothing after: its subscription ends.
-    fn push(&mut self, store: &dyn LabelStore, label: &LabelId, out: &mut Vec<ServerOutput>) -> Result<(), StoreError> {
+    fn push(&mut self, store: &dyn LabelStore, label: &LabelId, out: &mut Vec<ServingOutput>) -> Result<(), StoreError> {
         let Some(mut seq) = self.subs.get(label).copied() else { return Ok(()) };
         if self.backlog(out) >= REPLY_BUDGET {
             self.owe(*label);
@@ -889,7 +889,7 @@ impl ServerConnection {
     }
 
     /// The stamped entries of an Upload or Sync (`ids`: their blob IDs), one code each.
-    fn accept_all(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, entries: &[Entry], ids: &[BlobId], out: &mut Vec<ServerOutput>) -> Result<Vec<Code>, StoreError> {
+    fn accept_all(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, entries: &[Entry], ids: &[BlobId], out: &mut Vec<ServingOutput>) -> Result<Vec<Code>, StoreError> {
         let mut codes = Vec::with_capacity(entries.len());
         for (e, b) in entries.iter().zip(ids) {
             codes.push(self.accept(store, now, label, *b, &e.blob, e.wrap, Some(e.stamp), &e.replaces, out)?);
@@ -900,9 +900,9 @@ impl ServerConnection {
 
     /// Upload (stamp) or deposit (no stamp, already authorized) of one entry (spec/sync.md §5),
     /// with the entries it replaces: each authorized as a Delete of it would be, all removed iff the entry is admitted. A relay-only blob (stamped
-    /// only) is not stored: it goes to the other connections' subscribers (`ServerOutput::Relay`).
+    /// only) is not stored: it goes to the other connections' subscribers (`ServingOutput::Relay`).
     #[allow(clippy::too_many_arguments)]
-    fn accept(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_id: BlobId, blob: &[u8], wrap: Wrap, stamp: Option<Signature>, replaces: &[DeleteItem], out: &mut Vec<ServerOutput>) -> Result<Code, StoreError> {
+    fn accept(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_id: BlobId, blob: &[u8], wrap: Wrap, stamp: Option<Signature>, replaces: &[DeleteItem], out: &mut Vec<ServingOutput>) -> Result<Code, StoreError> {
         // An oversized blob never gets here: the message decoder refuses it (msg tests `field_sizes`).
         debug_assert!(blob.len() <= osis_base::format::MAX_BLOB);
         let Some(k) = head_keys(&mut self.keys, store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
@@ -937,7 +937,7 @@ impl ServerConnection {
             let Some(stamp) = stamp.filter(|_| replaces.is_empty()) else { return Ok(Code::REFUSED) };
             return Ok(match store.relay(label, &blob_id, blob.len(), expiry, now)? {
                 RelayVerdict::Push => {
-                    out.push(ServerOutput::Relay(Relayed { label: *label, blob_id, blob: blob.into(), wrap, stamp }));
+                    out.push(ServingOutput::Relay(Relayed { label: *label, blob_id, blob: blob.into(), wrap, stamp }));
                     Code::OK
                 }
                 RelayVerdict::Seen => Code::OK,
@@ -1012,15 +1012,15 @@ impl ServerConnection {
     }
 }
 
-impl From<Vec<u8>> for ServerOutput {
-    fn from(frame: Vec<u8>) -> ServerOutput {
-        ServerOutput::Send(frame)
+impl From<Vec<u8>> for ServingOutput {
+    fn from(frame: Vec<u8>) -> ServingOutput {
+        ServingOutput::Send(frame)
     }
 }
 
-fn changed(codes: &[Code], label: &LabelId, out: &mut Vec<ServerOutput>) {
-    if codes.contains(&Code::OK) && !out.contains(&ServerOutput::Changed(*label)) {
-        out.push(ServerOutput::Changed(*label));
+fn changed(codes: &[Code], label: &LabelId, out: &mut Vec<ServingOutput>) {
+    if codes.contains(&Code::OK) && !out.contains(&ServingOutput::Changed(*label)) {
+        out.push(ServingOutput::Changed(*label));
     }
 }
 
@@ -1038,11 +1038,11 @@ mod tests {
         let f = Fixture::new(0x10);
         let mut store = MemoryLabelStore::new([1; 32]);
         store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
-        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
-        let mut feed = |c: &mut ServerConnection, body: Vec<u8>| c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&body)));
+        let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        let mut feed = |c: &mut ServingSession, body: Vec<u8>| c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&body)));
         feed(&mut c, Hello::new(0, [2; 32]).encode());
         let out = feed(&mut c, Message::Open { id: 1, label: f.label, proof: Proof::sync(&f.sync, &f.label, &CHALLENGE, &STATIC_KEY) }.encode());
-        assert!(out.iter().any(|o| matches!(o, ServerOutput::Send(b) if matches!(Message::decode(&b[4..]), Ok(Message::Opened { .. })))));
+        assert!(out.iter().any(|o| matches!(o, ServingOutput::Send(b) if matches!(Message::decode(&b[4..]), Ok(Message::Opened { .. })))));
         let n = MAX_CROSSED / 2 + 1;
         for round in 0..3u32 {
             let entries = (0..n).map(|i| Entry { blob: [round.to_be_bytes(), (i as u32).to_be_bytes()].concat(), wrap: [0; WRAP_LEN], stamp: Signature([0; 64]), replaces: Vec::new() }).collect();
@@ -1052,17 +1052,17 @@ mod tests {
         assert!(!c.is_closed());
     }
 
-    fn opened(f: &Fixture, store: &mut MemoryLabelStore) -> ServerConnection {
-        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
-        c.handle(0, store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+    fn opened(f: &Fixture, store: &mut MemoryLabelStore) -> ServingSession {
+        let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        c.handle(0, store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
         let open = Message::Open { id: 1, label: f.label, proof: Proof::sync(&f.sync, &f.label, &CHALLENGE, &STATIC_KEY) };
-        let out = c.handle(0, store, ServerInput::Bytes(encode_frame(&open.encode())));
-        assert!(out.iter().any(|o| matches!(o, ServerOutput::Send(b) if matches!(Message::decode(&b[4..]), Ok(Message::Opened { .. })))));
+        let out = c.handle(0, store, ServingInput::Bytes(encode_frame(&open.encode())));
+        assert!(out.iter().any(|o| matches!(o, ServingOutput::Send(b) if matches!(Message::decode(&b[4..]), Ok(Message::Opened { .. })))));
         c
     }
 
-    fn reply(out: &[ServerOutput]) -> Message {
-        out.iter().find_map(|o| if let ServerOutput::Send(b) = o { Message::decode(&b[4..]).ok() } else { None }).unwrap()
+    fn reply(out: &[ServingOutput]) -> Message {
+        out.iter().find_map(|o| if let ServingOutput::Send(b) = o { Message::decode(&b[4..]).ok() } else { None }).unwrap()
     }
 
     // spec/sync.md §6 (request window), spec/requirements.md (peer input never causes unbounded
@@ -1079,17 +1079,17 @@ mod tests {
         assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
         let mut c = opened(&f, &mut store);
         let taken = c.written;
-        c.handle(0, &mut store, ServerInput::Taken(taken));
+        c.handle(0, &mut store, ServingInput::Taken(taken));
         let mut sent = 0;
         for id in 0..50u32 {
             let mut bytes = Vec::new();
             for k in 0..2 {
                 bytes.extend(encode_frame(&Message::Fetch { id: 10 + 2 * id + k, label: f.label, ids: vec![blob_id] }.encode()));
             }
-            let out = c.handle(0, &mut store, ServerInput::Bytes(bytes));
-            sent += out.iter().map(|x| if let ServerOutput::Send(b) = x { b.len() } else { 0 }).sum::<usize>();
+            let out = c.handle(0, &mut store, ServingInput::Bytes(bytes));
+            sent += out.iter().map(|x| if let ServingOutput::Send(b) = x { b.len() } else { 0 }).sum::<usize>();
             if c.is_closed() {
-                assert!(out.iter().any(|o| matches!(o, ServerOutput::PeerError(Error::Cap("replies past the request window")))), "{out:?}");
+                assert!(out.iter().any(|o| matches!(o, ServingOutput::PeerError(Error::Cap("replies past the request window")))), "{out:?}");
                 break;
             }
         }
@@ -1113,12 +1113,12 @@ mod tests {
             assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
         }
         let whole = |id| encode_frame(&Message::Reconcile { id, label: f.label, ranges: vec![Range { lower: rbsr::Bound::empty(), upper: rbsr::Bound::empty(), mode: Mode::Fingerprint([0; 16]) }] }.encode());
-        let replies = |out: &[ServerOutput]| out.iter().filter(|o| matches!(o, ServerOutput::Send(b) if matches!(Message::decode(&b[4..]), Ok(Message::ReconcileReply { .. })))).count();
+        let replies = |out: &[ServingOutput]| out.iter().filter(|o| matches!(o, ServingOutput::Send(b) if matches!(Message::decode(&b[4..]), Ok(Message::ReconcileReply { .. })))).count();
         // within the bound: three per input, input after input
         let mut c = opened(&f, &mut store);
         store.ids_read.set(0);
         for round in 0..4u32 {
-            let out = c.handle(0, &mut store, ServerInput::Bytes((0..3).flat_map(|k| whole(10 + 3 * round + k)).collect()));
+            let out = c.handle(0, &mut store, ServingInput::Bytes((0..3).flat_map(|k| whole(10 + 3 * round + k)).collect()));
             assert_eq!(replies(&out), 3);
         }
         assert!(!c.is_closed());
@@ -1126,9 +1126,9 @@ mod tests {
         // past it in one input: closed before the fourth runs
         let mut c = opened(&f, &mut store);
         store.ids_read.set(0);
-        let out = c.handle(0, &mut store, ServerInput::Bytes((0..1000).flat_map(whole).collect()));
+        let out = c.handle(0, &mut store, ServingInput::Bytes((0..1000).flat_map(whole).collect()));
         assert!(c.is_closed());
-        assert!(out.iter().any(|o| matches!(o, ServerOutput::PeerError(Error::Cap("requests past the request window")))), "{out:?}");
+        assert!(out.iter().any(|o| matches!(o, ServingOutput::PeerError(Error::Cap("requests past the request window")))), "{out:?}");
         assert_eq!(replies(&out), 3);
         assert_eq!(store.ids_read.get(), 3 * u64::from(n));
     }
@@ -1157,7 +1157,7 @@ mod tests {
         for (i, mode) in [Mode::Fingerprint([0; 16]), Mode::Ids(vec![])].into_iter().enumerate() {
             store.ids_read.set(0);
             let msg = Message::Reconcile { id: 2 + i as u32, label: f.label, ranges: vec![Range { lower: lo.clone(), upper: hi.clone(), mode }] };
-            let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&msg.encode())));
+            let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&msg.encode())));
             let Message::ReconcileReply { ranges, .. } = reply(&out) else { panic!("{out:?}") };
             let want = match i {
                 0 => Mode::Ids(ids[100..110].to_vec()),
@@ -1168,7 +1168,7 @@ mod tests {
         }
         store.ids_read.set(0);
         let whole = Message::Reconcile { id: 9, label: f.label, ranges: vec![Range { lower: rbsr::Bound::empty(), upper: rbsr::Bound::empty(), mode: Mode::Fingerprint([0; 16]) }] };
-        let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&whole.encode())));
+        let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&whole.encode())));
         assert!(matches!(reply(&out), Message::ReconcileReply { ranges, .. } if ranges.len() == rbsr::SPLIT));
         assert_eq!(store.ids_read.get(), u64::from(n));
     }
@@ -1192,11 +1192,11 @@ mod tests {
         let bad = Entry { stamp: Signature([0; 64]), ..e };
         for _ in 0..2 {
             // a fresh connection: nothing cached
-            let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
-            c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+            let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+            c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
             store.step_reads.set(0);
             let up = Message::Upload { id: 1, label: f.label, entries: vec![old.clone(), bad.clone()] };
-            let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&up.encode())));
+            let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&up.encode())));
             let Message::Status { codes, .. } = reply(&out) else { panic!("{out:?}") };
             assert_eq!(codes, vec![Code::NOT_HEAD, Code::REFUSED]);
             assert_eq!(store.step_reads.get(), 0);
@@ -1220,11 +1220,11 @@ mod tests {
         // step 5's write key (by `path`'s rule above)
         let old = Entry { stamp: osis_label::sign_stamp(&crate::store::tests::secret(7), &f.label, &blob_id, &e.wrap), ..e.clone() };
         let bad = Entry { stamp: Signature([0; 64]), ..e };
-        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
-        c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+        let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
         for (i, (entries, want)) in [(vec![old.clone(), bad.clone()], vec![Code::NOT_HEAD, Code::REFUSED]), (vec![bad.clone(), old.clone()], vec![Code::REFUSED, Code::REFUSED]), (vec![old.clone()], vec![Code::NOT_HEAD])].into_iter().enumerate() {
             let up = Message::Upload { id: 1 + i as u32, label: f.label, entries };
-            let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&up.encode())));
+            let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&up.encode())));
             let Message::Status { codes, .. } = reply(&out) else { panic!("{out:?}") };
             assert_eq!(codes, want, "message {i}");
         }
@@ -1258,12 +1258,12 @@ mod tests {
             (proof(200), Some(999)),
         ];
         for (n, (pr, want)) in cases.into_iter().enumerate() {
-            let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
-            c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+            let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+            c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
             for round in 0..3u32 {
                 store.step_reads.set(0);
                 let open = Message::Open { id: 1 + round, label: f.label, proof: pr.clone() };
-                let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&open.encode())));
+                let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&open.encode())));
                 let m = reply(&out);
                 let ok = match (&m, want) {
                     (Message::Error { code, .. }, None) => *code == Code::REFUSED,
@@ -1313,9 +1313,9 @@ mod tests {
             }
             cases.push((Proof::claim(StepId([7; 32]), &claim, &f.label, &CHALLENGE, &STATIC_KEY), None));
             for (pr, want) in cases {
-                let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
-                c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
-                let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Message::Open { id: 1, label: f.label, proof: pr.clone() }.encode())));
+                let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+                c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+                let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Open { id: 1, label: f.label, proof: pr.clone() }.encode())));
                 let m = reply(&out);
                 let ok = match (&m, want) {
                     (Message::Error { code, .. }, None) => *code == Code::REFUSED,
@@ -1345,14 +1345,14 @@ mod tests {
         for s in &path {
             store.push_step(&f.label, s.clone(), None).unwrap();
         }
-        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
-        c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+        let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
         let head_key = crate::store::tests::secret(1 + ((path.len() - 1) % 200) as u8);
         let open = Message::Open { id: 1, label: f.label, proof: Proof::sync(&head_key, &f.label, &CHALLENGE, &STATIC_KEY) };
-        assert!(matches!(reply(&c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&open.encode())))), Message::Opened { .. }));
-        let ask = |c: &mut ServerConnection, store: &mut MemoryLabelStore, id: u32, after: Option<StepId>| {
+        assert!(matches!(reply(&c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&open.encode())))), Message::Opened { .. }));
+        let ask = |c: &mut ServingSession, store: &mut MemoryLabelStore, id: u32, after: Option<StepId>| {
             store.step_reads.set(0);
-            let out = c.handle(0, store, ServerInput::Bytes(encode_frame(&Message::Path { id, label: f.label, after }.encode())));
+            let out = c.handle(0, store, ServingInput::Bytes(encode_frame(&Message::Path { id, label: f.label, after }.encode())));
             (reply(&out), store.step_reads.get())
         };
         let (mut got, mut after, mut id) = (Vec::new(), None, 2);
@@ -1383,16 +1383,16 @@ mod tests {
         store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
         let e = f.entry(Fixture::blob(1));
         let blob_id = osis_label::blob_id(&e.blob);
-        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
-        c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
-        let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Message::Upload { id: 1, label: f.label, entries: vec![e] }.encode())));
-        assert!(out.iter().any(|o| matches!(o, ServerOutput::Changed(_))), "uploaded");
+        let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+        let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Upload { id: 1, label: f.label, entries: vec![e] }.encode())));
+        assert!(out.iter().any(|o| matches!(o, ServingOutput::Changed(_))), "uploaded");
         let dk = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([0x7a; 32]));
         let mut item = DeleteItem::sign_by(&f.sync, &dk, 2, &[0x7d; 16], &[0x7e; 16], &f.label, blob_id, None).unwrap();
         item.sig = Signature([0; 64]);
         store.blob_reads.set(0);
-        let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Message::Delete { id: 2, label: f.label, items: vec![item; 64] }.encode())));
-        let codes = out.iter().find_map(|o| if let ServerOutput::Send(b) = o { if let Ok(Message::Status { codes, .. }) = Message::decode(&b[4..]) { Some(codes) } else { None } } else { None }).unwrap();
+        let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Delete { id: 2, label: f.label, items: vec![item; 64] }.encode())));
+        let codes = out.iter().find_map(|o| if let ServingOutput::Send(b) = o { if let Ok(Message::Status { codes, .. }) = Message::decode(&b[4..]) { Some(codes) } else { None } } else { None }).unwrap();
         assert_eq!(codes, vec![Code::REFUSED; 64]);
         assert_eq!(store.blob_reads.get(), 0);
     }
@@ -1408,13 +1408,13 @@ mod tests {
         let commit = osis_crypto::commitment(2, &dk.verifying_key(), &[1; 16], &[0x7e; 16]).unwrap();
         let e = f.entry(Fixture::blob_with(1, None, vec![commit]));
         let blob_id = osis_label::blob_id(&e.blob);
-        let mut c = ServerConnection::new(ServerConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
-        c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
-        c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Message::Upload { id: 1, label: f.label, entries: vec![e] }.encode())));
+        let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+        c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Upload { id: 1, label: f.label, entries: vec![e] }.encode())));
         let item = DeleteItem::sign_by(&f.sync, &dk, 2, &[1; 16], &[0x7e; 16], &f.label, blob_id, None).unwrap();
         let wrong = DeleteItem::sign_by(&f.sync, &dk, 2, &[2; 16], &[0x7e; 16], &f.label, blob_id, None).unwrap();
         store.blob_reads.set(0);
-        let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&Message::Delete { id: 2, label: f.label, items: vec![wrong, item] }.encode())));
+        let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Delete { id: 2, label: f.label, items: vec![wrong, item] }.encode())));
         let Message::Status { codes, .. } = reply(&out) else { panic!("{out:?}") };
         assert_eq!(codes, vec![Code::REFUSED, Code::OK]);
         assert_eq!(store.blob_reads.get(), 0);

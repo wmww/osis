@@ -276,7 +276,7 @@ fn inbox_goes_when_one_server_refuses_spec_sync_5() {
     let mut net = Net::new();
     net.add_server();
     net.add_server();
-    net.add_server_with(osis_server::Policy { cap_entries: 0, ..osis_server::Policy::default() });
+    net.add_server_with(osis_host::HostPolicy { cap_entries: 0, ..osis_host::HostPolicy::default() });
     let (a, x, _, link, px, held) = link_setup_at(&mut net, &[1, 2]);
     let inbox = net.engine(x).get_typed(&px, &ct::KEYS).unwrap().unwrap().inbox.unwrap().label;
     let before = net.server_ids(0, &inbox).len();
@@ -291,7 +291,7 @@ fn inbox_goes_when_one_server_refuses_spec_sync_5() {
     assert!(net.server_ids(0, &inbox).len() > before, "the inbox blob reached its label");
     assert_eq!(net.sync(x).deliveries_pending(), 1, "the full server's deposit is kept");
     let full = net.server_ids(2, &link.k_label).len();
-    net.restart_server_with(2, osis_server::Policy::default());
+    net.restart_server_with(2, osis_host::HostPolicy::default());
     for _ in 0..4 {
         net.run();
         net.advance(3_600_000);

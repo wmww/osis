@@ -159,7 +159,7 @@ pub enum Event {
     Bytes { conn: ConnId, bytes: Vec<u8> },
     /// The transport took bytes sent on these connections since the last `Sent`, with how many it
     /// took in all: progress for the session stall timeout, room for a served session's pushes
-    /// (`osis_proto::ServerInput::Taken`). The driver reports it before a `Tick` and before a
+    /// (`osis_proto::ServingInput::Taken`). The driver reports it before a `Tick` and before a
     /// connection's `Bytes`; a driver that never does delivers instantly.
     Sent { conns: Vec<(ConnId, u64)> },
     /// A connection is gone, or its dial failed.
@@ -730,7 +730,7 @@ impl SyncEngine {
                     }
                 }
             }
-            Event::Bytes { conn, bytes } if self.served.contains_key(&conn) => self.serve(conn, osis_proto::ServerInput::Bytes(bytes), out)?,
+            Event::Bytes { conn, bytes } if self.served.contains_key(&conn) => self.serve(conn, osis_proto::ServingInput::Bytes(bytes), out)?,
             Event::Down { conn } if self.served.contains_key(&conn) => {
                 self.served.remove(&conn);
             }
@@ -746,7 +746,7 @@ impl SyncEngine {
                 let now = self.raw_now();
                 for (conn, n) in conns {
                     if self.served.contains_key(&conn) {
-                        self.serve(conn, osis_proto::ServerInput::Taken(n), out)?;
+                        self.serve(conn, osis_proto::ServingInput::Taken(n), out)?;
                     } else if let Some(c) = self.conns.get_mut(&conn) {
                         let o = c.session.handle(now, ClientInput::Sent);
                         self.outputs(conn, o, out)?;

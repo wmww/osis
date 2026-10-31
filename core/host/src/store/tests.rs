@@ -1,4 +1,4 @@
-//! BackendStore rules (spec/sync.md §4, §5): the state a blind node keeps, the policy it applies,
+//! HostStore rules (spec/sync.md §4, §5): the state a blind node keeps, the policy it applies,
 //! durability, and agreement with osis-proto's reference `MemoryLabelStore`.
 
 use super::*;
@@ -14,15 +14,15 @@ const DAY_MS: u64 = 86_400_000;
 
 struct Env {
     clock: Arc<ManualClock>,
-    store: BackendStore<MemoryBackend>,
+    store: HostStore<MemoryBackend>,
     backend: MemoryBackend,
     f: Fixture,
 }
 
-fn env(policy: Policy) -> Env {
+fn env(policy: HostPolicy) -> Env {
     let clock = Arc::new(ManualClock::new(WallMs(T0)));
     let backend = MemoryBackend::new();
-    let mut store = BackendStore::open(backend.clone(), clock.clone(), policy, &mut SeededRng::from_seed([1; 32])).unwrap();
+    let mut store = HostStore::open(backend.clone(), clock.clone(), policy, &mut SeededRng::from_seed([1; 32])).unwrap();
     let f = Fixture::new(0x10);
     store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
     Env { clock, store, backend, f }
@@ -45,13 +45,13 @@ fn id(n: u8) -> BlobId {
 // spec/sync.md §4: entries, log with sequence numbers, the head and its claim set; durable across reopen with the same log ID
 #[test]
 fn state_survives_reopen() {
-    let mut e = env(Policy::default());
+    let mut e = env(HostPolicy::default());
     let l = e.f.label;
     assert_eq!(e.store.put(&l, put(&blob(1), true, None)).unwrap(), Code::OK);
     assert_eq!(e.store.put(&l, put(&blob(2), false, Some(T0 + 10))).unwrap(), Code::OK);
     e.store.push_step(&l, e.f.child.clone(), None).unwrap();
     let before = (e.store.log_head(&l).unwrap(), e.store.live_by_id(&l, None, 100).unwrap(), e.store.log_after(&l, 0, 100).unwrap());
-    let again = BackendStore::open(e.backend.clone(), e.clock.clone(), Policy::default(), &mut SeededRng::from_seed([2; 32])).unwrap();
+    let again = HostStore::open(e.backend.clone(), e.clock.clone(), HostPolicy::default(), &mut SeededRng::from_seed([2; 32])).unwrap();
     let after = (again.log_head(&l).unwrap(), again.live_by_id(&l, None, 100).unwrap(), again.log_after(&l, 0, 100).unwrap());
     assert_eq!(before, after);
     assert_eq!(again.head(&l).unwrap(), Some(e.f.child.id()));
@@ -60,7 +60,7 @@ fn state_survives_reopen() {
     assert_eq!(again.claim_set(&l, &e.f.child.id()).unwrap(), None);
     assert_eq!(again.blob(&id(1)).unwrap(), Some(blob(1)));
     // a fresh instance names its logs differently: old cursors are invalid there
-    let mut fresh = BackendStore::open(MemoryBackend::new(), e.clock.clone(), Policy::default(), &mut SeededRng::from_seed([3; 32])).unwrap();
+    let mut fresh = HostStore::open(MemoryBackend::new(), e.clock.clone(), HostPolicy::default(), &mut SeededRng::from_seed([3; 32])).unwrap();
     fresh.push_step(&l, e.f.genesis.clone(), None).unwrap();
     assert_ne!(fresh.log_head(&l).unwrap().0, before.0.0);
 }
@@ -68,7 +68,7 @@ fn state_survives_reopen() {
 // spec/sync.md §4: blob bytes are stored once per node and deleted when no label references them
 #[test]
 fn blob_bytes_once_per_node() {
-    let mut e = env(Policy::default());
+    let mut e = env(HostPolicy::default());
     let g = Fixture::new(0x20);
     e.store.push_step(&g.label, g.genesis.clone(), None).unwrap();
     let b = blob(7);
@@ -91,7 +91,7 @@ fn blob_bytes_once_per_node() {
 // spec/sync.md §5: an upload of a held blob replaces wrap and stamp and clears the deposited flag; a deposit of a held blob changes nothing
 #[test]
 fn replace_and_deposited_flag() {
-    let mut e = env(Policy::default());
+    let mut e = env(HostPolicy::default());
     let l = e.f.label;
     let b = blob(3);
     e.store.put(&l, put(&b, false, None)).unwrap();
@@ -112,7 +112,7 @@ fn replace_and_deposited_flag() {
 // spec/sync.md §5: deposit budget 64 + 4 x claim slots entries and x 32 KiB bytes; freed on stamp, delete, expiry
 #[test]
 fn deposit_budget() {
-    let mut e = env(Policy::default());
+    let mut e = env(HostPolicy::default());
     let l = e.f.label;
     let max = 64 + 4 * e.f.genesis_claims.claims.len() as u64;
     assert_eq!(e.store.budget(&l).unwrap(), Budget { entries_left: max, bytes_left: max * DEPOSIT_ENTRY_BYTES });
@@ -146,7 +146,7 @@ fn storage_cap() {
     // the genesis step and its claim set count too
     let f = Fixture::new(0x10);
     let genesis = f.genesis.to_bytes().len() as u64 + claim_set_bytes(&f.label, &f.genesis.id(), &f.genesis_claims);
-    let mut e = env(Policy { cap_entries: 2, cap_bytes: genesis + 1000, ..Policy::default() });
+    let mut e = env(HostPolicy { cap_entries: 2, cap_bytes: genesis + 1000, ..HostPolicy::default() });
     let l = e.f.label;
     assert_eq!(e.store.put(&l, put(&blob(1), true, None)).unwrap(), Code::OK);
     assert_eq!(e.store.put(&l, put(&vec![5; 1000], true, None)).unwrap(), Code::STORAGE_CAP);
@@ -163,7 +163,7 @@ fn storage_cap() {
 // spec/sync.md §5: rate limits per label on deletes, wrap replacements (also per entry) and deposits (code 4); a new window resets them
 #[test]
 fn rate_limits() {
-    let mut e = env(Policy { deletes: 2, replacements: 3, entry_replacements: 2, deposits: 1, ..Policy::default() });
+    let mut e = env(HostPolicy { deletes: 2, replacements: 3, entry_replacements: 2, deposits: 1, ..HostPolicy::default() });
     let l = e.f.label;
     for n in 0..5 {
         e.store.put(&l, put(&blob(n), true, None)).unwrap();
@@ -171,7 +171,7 @@ fn rate_limits() {
     assert_eq!(e.store.delete(&l, &id(0), T0).unwrap(), Code::OK);
     assert_eq!(e.store.schedule_delete(&l, &id(1), T0 + 100).unwrap(), Code::OK);
     assert_eq!(e.store.delete(&l, &id(2), T0).unwrap(), Code::RATE_LIMITED);
-    let replace = |s: &mut BackendStore<MemoryBackend>, n: u8, w: u8| {
+    let replace = |s: &mut HostStore<MemoryBackend>, n: u8, w: u8| {
         let b = blob(n);
         let mut p = put(&b, true, None);
         p.wrap = [w; WRAP_LEN];
@@ -192,7 +192,7 @@ fn rate_limits() {
 // spec/sync.md §5: timed deletes (earliest wins) execute at their time with a tombstone and a log event; expiry removes outright, no tombstone, no event; tombstones last TOMBSTONE_LIFETIME
 #[test]
 fn timed_deletes_expiry_tombstones() {
-    let mut e = env(Policy::default());
+    let mut e = env(HostPolicy::default());
     let l = e.f.label;
     e.store.put(&l, put(&blob(1), true, None)).unwrap();
     e.store.put(&l, put(&blob(2), true, Some(T0 + 50))).unwrap();
@@ -221,7 +221,7 @@ fn timed_deletes_expiry_tombstones() {
 // spec/sync.md §4: a claim set is kept until its step has been superseded for MEMBERSHIP_KEEP
 #[test]
 fn claim_sets_dropped_after_membership_keep() {
-    let mut e = env(Policy::default());
+    let mut e = env(HostPolicy::default());
     let l = e.f.label;
     e.store.push_step(&l, e.f.child.clone(), Some(e.f.child_claims.clone())).unwrap();
     let g = e.f.genesis.id();
@@ -236,7 +236,7 @@ fn claim_sets_dropped_after_membership_keep() {
 // spec/wire.md §11.2 Sync: the log keeps a horizon; cursors below it are refused (reconciliation fallback)
 #[test]
 fn log_horizon() {
-    let mut e = env(Policy { log_keep: 8, ..Policy::default() });
+    let mut e = env(HostPolicy { log_keep: 8, ..HostPolicy::default() });
     let l = e.f.label;
     for n in 0..20 {
         e.store.put(&l, put(&blob(n), true, None)).unwrap();
@@ -268,7 +268,7 @@ fn eph_blob(n: u32, len: usize) -> Vec<u8> {
 #[test]
 fn ephemeral_churn_memory_bounded() {
     let cap = 64 << 10;
-    let mut e = env(Policy { ephemeral_bytes: cap, deletes: 200, ..Policy::default() });
+    let mut e = env(HostPolicy { ephemeral_bytes: cap, deletes: 200, ..HostPolicy::default() });
     let l = e.f.label;
     let mut codes = BTreeMap::new();
     for n in 0..5_000u32 {
@@ -290,7 +290,7 @@ fn ephemeral_churn_memory_bounded() {
     assert!(left <= live * (48 + ENTRY_OVERHEAD) + EPH_LOG_KEEP as u64 * REC_OVERHEAD, "{left}");
     assert!(e.store.eph.due.len() as u64 <= live, "due index holds only live entries' times");
     // a deleted entry stays refused for the tombstone's lifetime only
-    let mut e = env(Policy::default());
+    let mut e = env(HostPolicy::default());
     let l = e.f.label;
     let now = e.clock.now_wall_ms().0;
     let b = eph_blob(99_999, 40);
@@ -307,7 +307,7 @@ fn ephemeral_churn_memory_bounded() {
 #[test]
 fn ephemeral_total_evicts_largest_label() {
     let per = 32 << 10;
-    let mut e = env(Policy { ephemeral_bytes: per, ephemeral_total: 4 * per, ..Policy::default() });
+    let mut e = env(HostPolicy { ephemeral_bytes: per, ephemeral_total: 4 * per, ..HostPolicy::default() });
     let mut strangers = Vec::new();
     for i in 0..6u8 {
         let f = Fixture::new(0x20 + 6 * i);
@@ -334,7 +334,7 @@ fn ephemeral_total_evicts_largest_label() {
 // neither trims durable records nor sends a durable cursor back to reconciliation
 #[test]
 fn ephemeral_churn_keeps_durable_cursors() {
-    let mut e = env(Policy { log_keep: 8, deletes: u32::MAX, ..Policy::default() });
+    let mut e = env(HostPolicy { log_keep: 8, deletes: u32::MAX, ..HostPolicy::default() });
     let l = e.f.label;
     for n in 0..4 {
         e.store.put(&l, put(&blob(n), true, None)).unwrap();
@@ -382,7 +382,7 @@ fn overheads_cover_the_structures() {
 // spec/sync.md §4: `live_by_id` pages ascending from after a given ID
 #[test]
 fn live_by_id_pages() {
-    let mut e = env(Policy::default());
+    let mut e = env(HostPolicy::default());
     let l = e.f.label;
     for n in 0..10 {
         e.store.put(&l, put(&blob(n), true, None)).unwrap();
@@ -423,10 +423,10 @@ fn expiry_of(n: u8) -> Option<u64> {
 }
 
 proptest! {
-    // spec/sync.md §4, §5: BackendStore answers exactly as the reference MemoryLabelStore (no policy limits), and its log replays to its state
+    // spec/sync.md §4, §5: HostStore answers exactly as the reference MemoryLabelStore (no policy limits), and its log replays to its state
     #[test]
     fn agrees_with_reference_and_replays(ops in prop::collection::vec(op(), 1..40)) {
-        let mut e = env(Policy::unlimited());
+        let mut e = env(HostPolicy::unlimited());
         let g = Fixture::new(0x20);
         e.store.push_step(&g.label, g.genesis.clone(), None).unwrap();
         let mut r = MemoryLabelStore::new([0; 32]);
@@ -523,7 +523,7 @@ proptest! {
 #[test]
 fn deletion_records_within_cap() {
     let cap = 8 << 10;
-    let mut e = env(Policy { ephemeral_bytes: cap, deletes: 1_000, ..Policy::default() });
+    let mut e = env(HostPolicy { ephemeral_bytes: cap, deletes: 1_000, ..HostPolicy::default() });
     let l = e.f.label;
     let mut n = 0u32;
     // plain entries up to the cap
@@ -539,7 +539,7 @@ fn deletion_records_within_cap() {
 /// The path indexes (`V`, `W` rows) against the whole path: each step's child is the next one,
 /// the genesis the child of none, none past the head; each key of `pool` names the newest step
 /// registering it as sync key.
-fn check_indexes(store: &BackendStore<MemoryBackend>, l: &LabelId, path: &[Step], pool: &[osis_crypto::VerifyingKey]) -> Result<(), String> {
+fn check_indexes(store: &HostStore<MemoryBackend>, l: &LabelId, path: &[Step], pool: &[osis_crypto::VerifyingKey]) -> Result<(), String> {
     let ids: Vec<StepId> = path.iter().map(|s| s.id()).collect();
     let mut want = vec![(None, ids.first().copied())];
     want.extend(ids.iter().enumerate().map(|(i, id)| (Some(*id), ids.get(i + 1).copied())));
@@ -567,7 +567,7 @@ fn check_indexes(store: &BackendStore<MemoryBackend>, l: &LabelId, path: &[Step]
 fn path_records_follow_path_across_reopen() {
     let key = |n: u8| osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([n; 32])).verifying_key();
     for seed in 0..8u8 {
-        let mut e = env(Policy::unlimited());
+        let mut e = env(HostPolicy::unlimited());
         let l = e.f.label;
         let mut prev = e.f.genesis.clone();
         for i in 0..40u32 {
@@ -582,7 +582,7 @@ fn path_records_follow_path_across_reopen() {
             e.store.push_step(&l, s.clone(), None).unwrap();
             prev = s;
             if h[4].is_multiple_of(7) {
-                e.store = BackendStore::open(e.backend.clone(), e.clock.clone(), Policy::unlimited(), &mut SeededRng::from_seed([h[5]; 32])).unwrap();
+                e.store = HostStore::open(e.backend.clone(), e.clock.clone(), HostPolicy::unlimited(), &mut SeededRng::from_seed([h[5]; 32])).unwrap();
             }
             let path = e.store.path(&l).unwrap();
             assert_eq!(e.store.head_keys(&l).unwrap(), osis_proto::HeadKeys::of_path(&path), "seed {seed} step {i}");
@@ -606,7 +606,7 @@ fn child_of(f: &Fixture, prev: &Step) -> Step {
 // refused rotation would keep a removed member's keys valid), and a new label is refused (code 12)
 #[test]
 fn steps_count_toward_byte_caps() {
-    let e = env(Policy::default());
+    let e = env(HostPolicy::default());
     let set = e.f.child_claims.clone();
     let step = e.f.child.to_bytes().len() as u64;
     // a set counts the same at every step of a label (its index keys are as long)
@@ -615,7 +615,7 @@ fn steps_count_toward_byte_caps() {
     assert_eq!(e.store.totals().unwrap().bytes, genesis);
     // room for two children with sets and one more step
     let room = genesis + 2 * one + step;
-    for cap in [Policy { cap_bytes: room, ..Policy::default() }, Policy { max_bytes: room, ..Policy::default() }] {
+    for cap in [HostPolicy { cap_bytes: room, ..HostPolicy::default() }, HostPolicy { max_bytes: room, ..HostPolicy::default() }] {
         let mut e = env(cap.clone());
         let l = e.f.label;
         let mut prev = e.f.genesis.clone();
@@ -638,7 +638,7 @@ fn steps_count_toward_byte_caps() {
         assert_eq!(e.store.push_step(&l, t.clone(), Some(set.clone())).unwrap(), Code::OK);
         assert_eq!(e.store.totals().unwrap().bytes, before + 2 * step);
         let v = child_of(&e.f, &t);
-        let mut again = BackendStore::open(e.backend.clone(), e.clock.clone(), cap.clone(), &mut SeededRng::from_seed([2; 32])).unwrap();
+        let mut again = HostStore::open(e.backend.clone(), e.clock.clone(), cap.clone(), &mut SeededRng::from_seed([2; 32])).unwrap();
         for st in [&mut e.store, &mut again] {
             let (log, totals) = (st.log_head(&l).unwrap(), st.totals().unwrap());
             assert_eq!(st.push_step(&l, v.clone(), None).unwrap(), Code::STORAGE_CAP);
@@ -668,12 +668,12 @@ fn steps_count_toward_byte_caps() {
         let u = child_of(&e.f, &t);
         assert_eq!(e.store.push_step(&l, u.clone(), Some(set.clone())).unwrap(), Code::OK);
         assert!(e.store.claim_set(&l, &u.id()).unwrap().is_some());
-        let again = BackendStore::open(e.backend.clone(), e.clock.clone(), Policy::default(), &mut SeededRng::from_seed([2; 32])).unwrap();
+        let again = HostStore::open(e.backend.clone(), e.clock.clone(), HostPolicy::default(), &mut SeededRng::from_seed([2; 32])).unwrap();
         assert_eq!(again.totals().unwrap(), e.store.totals().unwrap());
     }
     // a new label's genesis step past a cap: refused, nothing changed
     let g = Fixture::new(0x30);
-    let mut e = env(Policy { max_bytes: genesis + 1, ..Policy::default() });
+    let mut e = env(HostPolicy { max_bytes: genesis + 1, ..HostPolicy::default() });
     let totals = e.store.totals().unwrap();
     assert_eq!(e.store.push_step(&g.label, g.genesis.clone(), Some(g.genesis_claims.clone())).unwrap(), Code::STORAGE_CAP);
     assert_eq!((e.store.head(&g.label).unwrap(), e.store.totals().unwrap()), (None, totals));
@@ -682,7 +682,7 @@ fn steps_count_toward_byte_caps() {
 // spec/sync.md §5 Register: servers may rate-limit registrations per label (code 4, nothing changed)
 #[test]
 fn registers_rate_limited() {
-    let mut e = env(Policy { registers: 2, ..Policy::default() });
+    let mut e = env(HostPolicy { registers: 2, ..HostPolicy::default() });
     let l = e.f.label;
     // the genesis step took one
     let s = child_of(&e.f, &e.f.genesis);
@@ -693,7 +693,7 @@ fn registers_rate_limited() {
     // another label has its own count
     let g = Fixture::new(0x20);
     assert_eq!(e.store.push_step(&g.label, g.genesis.clone(), None).unwrap(), Code::OK);
-    e.clock.set(WallMs(T0 + Policy::default().window_ms));
+    e.clock.set(WallMs(T0 + HostPolicy::default().window_ms));
     assert_eq!(e.store.push_step(&l, t.clone(), None).unwrap(), Code::OK);
     assert_eq!(e.store.head(&l).unwrap(), Some(t.id()));
 }
@@ -738,7 +738,7 @@ impl Backend for Reads {
 fn claim_lookup_reads_no_set() {
     let clock = Arc::new(ManualClock::new(WallMs(T0)));
     let reads = Reads { inner: MemoryBackend::new(), read: Arc::default() };
-    let mut store = BackendStore::open(reads.clone(), clock.clone(), Policy::default(), &mut SeededRng::from_seed([1; 32])).unwrap();
+    let mut store = HostStore::open(reads.clone(), clock.clone(), HostPolicy::default(), &mut SeededRng::from_seed([1; 32])).unwrap();
     let f = Fixture::new(0x10);
     let l = f.label;
     let g = f.genesis.id();
@@ -781,7 +781,7 @@ const SWEEP_TEST_BUDGET: usize = 1024;
 // listing, a hostile set left up to 6 MiB of phantom bytes in the node total per step)
 #[test]
 fn repeated_claims_count_once() {
-    let mut e = env(Policy::default());
+    let mut e = env(HostPolicy::default());
     let l = e.f.label;
     let child = e.f.child.clone();
     let mut set = e.f.child_claims.clone();

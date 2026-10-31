@@ -8,7 +8,7 @@ use crate::frame::{FrameDecoder, encode_frame, send};
 use crate::hello::{Hello, OFFSET_DIAGNOSTIC_MS, OffsetSample, PROTOCOL_VERSION, estimate_offset, negotiate};
 use crate::msg::*;
 use crate::rbsr::Reconciler;
-use crate::server::REPLY_BUDGET;
+use crate::serving::REPLY_BUDGET;
 use osis_base::format::MAX_MESSAGE;
 use osis_base::{BlobId, LabelId};
 use osis_crypto::SigningSecret;
@@ -37,7 +37,7 @@ pub const SMALL_REPLY: usize = MAX_MESSAGE - REPLY_BUDGET;
 /// Frame bytes plus allowances of the requests a session within `WINDOW` can have unanswered:
 /// below `WINDOW` before its last one, which adds at most a whole frame and `MAX_MESSAGE`. A peer
 /// that receives more before answering any of them closes the connection (spec/sync.md §6;
-/// `ServerConnection`), so a pipelining peer cannot make one input cost more than a compliant one.
+/// `ServingSession`), so a pipelining peer cannot make one input cost more than a compliant one.
 pub const MAX_UNANSWERED: usize = WINDOW + (MAX_MESSAGE + 4) + MAX_MESSAGE;
 
 /// The most reply bytes the peer may queue for a request (spec/sync.md §6): `MAX_MESSAGE` for
