@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 
 const HOUR_MS: u64 = 3_600_000;
 
-/// The story marks node `n` reads on `t` (`/s/story`).
+/// The story marks node `n` reads on `t` (`s:story.0`).
 pub fn tags(sim: &mut NetSim, n: usize, t: Tid) -> Res<BTreeSet<String>> {
     let k = super::scenarios::ak(sim, &workload::STORY)?;
     let v = sim.engine(n)?.get(&t, &k).map_err(|e| sim.fail(format!("node {n} read: {e}")))?;
@@ -471,7 +471,7 @@ pub fn move_import(seed: u64) -> Res<Report> {
     for n in [a, b] {
         let moved = sim.engine(n)?.get_typed(&doc, &ct::MOVED).map_err(|e| sim.fail(e.to_string()))?;
         if moved != Some(copy) {
-            return Err(sim.fail(format!("node {n}: /moved of the old thing is {moved:?}")));
+            return Err(sim.fail(format!("node {n}: moved.0 of the old thing is {moved:?}")));
         }
     }
     let _ = t;
@@ -480,7 +480,7 @@ pub fn move_import(seed: u64) -> Res<Report> {
 
 /// Group chat join and leave (notes/chat.md): chat actor C with its own label, participants
 /// writers of C; each joins with a persona P owned by its person (secrets of its own), C made a
-/// reader of P, P listed in C's items and subgroups; messages are things owned by P in P's `/group`. A
+/// reader of P, P listed in C's items and subgroups; messages are things owned by P in P's `group.0`. A
 /// participant is removed: C rotates; it holds no later epoch, the others keep posting and
 /// converge.
 pub fn chat_join_leave(seed: u64) -> Res<Report> {
@@ -558,7 +558,7 @@ pub fn persona(sim: &mut NetSim, n: usize, p: Tid, chat: Tid) -> Res<Tid> {
     let done = r.map_err(|e| sim.fail(format!("node {n} persona secrets: {e}")))?;
     sim.carry(n, done)?;
     sim.grant(n, persona, chat, Role::Read)?;
-    // an item too: the persona's own writes (`/created`, `/group`, secrets) are in C's closure
+    // an item too: the persona's own writes (`created.0`, `group.0`, secrets) are in C's closure
     // only as a member (spec/data-model.md §8: members are items and the subgroups' members)
     let mut grp = sim.engine(n)?.get_typed(&chat, &ct::GROUP).map_err(|e| sim.fail(e.to_string()))?.unwrap_or_default();
     grp.items.insert(persona);
@@ -570,7 +570,7 @@ pub fn persona(sim: &mut NetSim, n: usize, p: Tid, chat: Tid) -> Res<Tid> {
     Ok(persona)
 }
 
-/// A chat message: a thing owned by the persona, placed in its `/group`.
+/// A chat message: a thing owned by the persona, placed in its `group.0`.
 pub fn message(sim: &mut NetSim, n: usize, persona: Tid, text: &str) -> Res<Tid> {
     sim.item(n, persona).and_then(|t| {
         let mut m = Mutation::new();
@@ -626,7 +626,7 @@ pub fn label_replacement(seed: u64) -> Res<Report> {
     replacement("label_replacement", seed, false)
 }
 
-/// Label replacement with a holder offline (spec/sync.md §2: the replacement `/label` commit
+/// Label replacement with a holder offline (spec/sync.md §2: the replacement `label.0` commit
 /// stays under the old label, whose content entries the admin deletes, so a node that knows only
 /// the old label finds the new one).
 pub fn label_replacement_offline(seed: u64) -> Res<Report> {
@@ -665,7 +665,7 @@ fn replacement(name: &str, seed: u64, offline: bool) -> Res<Report> {
         // the old label keeps role-class commits and certificates (chain certificates,
         // node cards, heartbeats: they verify what stays, spec/permissions.md §4) only
         let live = sim.hub(s).map(|h| h.store().live_ids(&old).unwrap_or_default()).unwrap_or_default();
-        let kept = |ak: &str| ct::is_role_class(ak) || matches!(ak, "/created" | "/node" | "/reach" | "/seen" | "/keys");
+        let kept = |ak: &str| ct::is_role_class(ak) || matches!(ak, "created.0" | "node.0" | "reach.0" | "seen.0" | "keys.0");
         let mut content = 0;
         for ((l, b), (c, parts)) in &sim.known {
             if *l != old || !live.contains(b) {

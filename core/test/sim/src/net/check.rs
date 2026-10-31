@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 const IDLE_ROUNDS: u64 = 3;
 
 pub fn quiescent(sim: &mut NetSim) -> Res<()> {
-    // first: a window held unevenly also shows as a durable `/group` read divergence
+    // first: a window held unevenly also shows as a durable `group.0` read divergence
     super::ephemeral::check(sim)?;
     convergence(sim)?;
     pending(sim)?;
@@ -110,7 +110,7 @@ fn aspect_view(e: &mut Engine) -> Result<AspectView, String> {
     }
     let mut out = AspectView::new();
     for (t, a) in e.all_aspects().map_err(|x| x.to_string())? {
-        // an aspect with ephemeral state (`/placed`): its durable side alone (ephemeral state
+        // an aspect with ephemeral state (`placed.0~`): its durable side alone (ephemeral state
         // converges only where host caps let it through, `ephemeral::check`)
         let v = if e.has_ephemeral(&t, &a) { e.get_durable(&t, &a) } else { e.get(&t, &a) }.map_err(|x| x.to_string())?;
         let k = (t, a.as_str().to_string());
@@ -415,7 +415,7 @@ fn labels(sim: &mut NetSim) -> Res<()> {
                         let Some((c, _)) = sim.known.get(&(l, *db)).cloned() else { continue };
                         let Some(sync) = sim.nodes.get(n).and_then(|x| x.sync.as_ref()) else { continue };
                         let Some(h) = sync.engine().header(&c) else { continue };
-                        if h.aspects.iter().any(|a| a.ak.as_str() == "/seen") || !sync.entries(&l).iter().any(|(x, _)| x == db) {
+                        if h.aspects.iter().any(|a| a.ak.as_str() == "seen.0") || !sync.entries(&l).iter().any(|(x, _)| x == db) {
                             continue;
                         }
                         let ek = sync.entries(&l).into_iter().find(|(x, _)| x == db).map(|x| x.1);

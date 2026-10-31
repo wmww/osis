@@ -391,7 +391,7 @@ pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp],
     Ok(blobs.written)
 }
 
-/// A roster snapshot's `/tenures` value (spec/permissions.md §6, spec/data-model.md §6): a
+/// A roster snapshot's `tenures.0` value (spec/permissions.md §6, spec/data-model.md §6): a
 /// tenure's frontier above `CHUNK_THRESHOLD` becomes a link to a fresh chunk tree, so every
 /// blob it needs is in the commit's chunk list (receivers fetch frontiers by it before judging).
 /// Returns the blobs written.

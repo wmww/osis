@@ -78,27 +78,27 @@ const OPS: u8 = 27;
 
 fn aspect_of(op: u8) -> Ak {
     ak(match op % OPS {
-        0 => "/t/reg",
-        1 | 2 => "/t/tags",
-        3..=5 => "/t/map",
-        6 | 7 => "/t/book",
-        8 | 9 => "/t/docs",
-        10 | 11 => "/t/text",
-        12 => "/t/brief",
-        13 => "/t/count",
-        14 => "/t/list",
-        15 => "/t/rec",
+        0 => "t:reg.0",
+        1 | 2 => "t:tags.0",
+        3..=5 => "t:map.0",
+        6 | 7 => "t:book.0",
+        8 | 9 => "t:docs.0",
+        10 | 11 => "t:text.0",
+        12 => "t:brief.0",
+        13 => "t:count.0",
+        14 => "t:list.0",
+        15 => "t:rec.0",
         // with a keep bound (deaths count only there): registers, a map under keep at most 0
         // (bodies drop as they die), a kept set, kept writes into a map (nested, removals), a
         // kept text, a kept text in a map entry
-        16 => "/t/kept",
-        17 => "/t/short",
-        18 => "/t/gone",
-        19 | 20 => "/t/gonemap",
-        21 => "/t/keptset",
-        22 | 25 => "/t/map",
-        23 | 24 => "/t/text",
-        _ => "/t/docs",
+        16 => "t:kept.0",
+        17 => "t:short.0",
+        18 => "t:gone.0",
+        19 | 20 => "t:gonemap.0",
+        21 => "t:keptset.0",
+        22 | 25 => "t:map.0",
+        23 | 24 => "t:text.0",
+        _ => "t:docs.0",
     })
 }
 
@@ -189,9 +189,9 @@ fn random_step(rng: &mut Rng) -> Step {
 /// `holder`'s edge on `t` as remove + put (`None`: removed), spec/permissions.md §2.
 fn edge_write(t: Tid, holder: Tid, role: Option<Role>) -> Mutation {
     let mut m = Mutation::new();
-    m.op(t, &osis_schema::core_types::MEMBERS, PathOp { path: vec![], op: Op::Remove(Value::Tid(holder)) }).unwrap();
+    m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Tid(holder)) }).unwrap();
     if let Some(role) = role {
-        m.op(t, &osis_schema::core_types::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge(role).to_value()) }).unwrap();
+        m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge(role).to_value()) }).unwrap();
     }
     m
 }
@@ -287,7 +287,7 @@ fn play(seed: u64, steps: &[Step]) -> Played {
             }
             Step::Leave { by, t } => {
                 let mut m = Mutation::new();
-                m.op(th(t), &osis_schema::core_types::MEMBERS, PathOp { path: vec![], op: Op::Remove(Value::Tid(ids[by])) }).unwrap();
+                m.op(th(t), &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Tid(ids[by])) }).unwrap();
                 let _ = lp.peers[by].commit(m);
                 Some(by)
             }
@@ -419,7 +419,7 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
         let whole = deliver(played, &(0..played.packs.len()).collect::<Vec<_>>());
         for (i, pk) in played.packs.iter().enumerate() {
             let Some(h) = whole.engine.header(&pk.id) else { continue };
-            if !held.contains(&i) && common::owns_carried(&h, &pk.id, &want) && !h.kind.is_role() && h.kind.has_own_writes() && h.aspects.iter().all(|a| a.ak.as_str() != "/created") {
+            if !held.contains(&i) && common::owns_carried(&h, &pk.id, &want) && !h.kind.is_role() && h.kind.has_own_writes() && h.aspects.iter().all(|a| a.ak.as_str() != "created.0") {
                 let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
             }
         }
@@ -1202,7 +1202,7 @@ fn deaths_dated_per_node_spec_commits_5() {
     assert!(seen[0].len() == 2 && at(0, x).zip(at(1, x)).is_some_and(|(a, b)| a.0 < b.0) && at(0, y).is_some() && at(0, y) == at(1, y), "{seen:?}");
 }
 
-// spec/crdt.md §4.8, order seed 7855 (exhaustive, shrunk): W1 and W2 put one `/t/gonemap` key, U
+// spec/crdt.md §4.8, order seed 7855 (exhaustive, shrunk): W1 and W2 put one `t:gonemap.0` key, U
 // undoes W1 (removes the entry), W3 puts it again, S compacts. A recompute holding every body
 // dates W1 (W2, U): S's copy of U's removal kills W1's entry creation, which a recompute skipped
 // as a snapshot's copy re-dying (W1's value, dead at W2, shares its stamp). Delivered W1, W2,
@@ -1475,7 +1475,7 @@ fn creation_lost_by_drop_then_flip_tolerated_spec_commits_5() {
     let got = judged(&mut deliver(&played, &order), &played);
     let differs = alike(&want, &got, &|_, _| false).expect("the creation stamp differs");
     assert!(differs.contains("states on") && differs.contains("created: None"), "{differs}");
-    assert!(played.things.iter().any(|t| flipped(&played, &order, None, &format!("{t:?}"), "/t/gonemap")), "the order flips");
+    assert!(played.things.iter().any(|t| flipped(&played, &order, None, &format!("{t:?}"), "t:gonemap.0")), "the order flips");
     assert_eq!(alike(&want, &got, &|t, a| flipped(&played, &order, None, t, a)), None);
 }
 
@@ -1570,7 +1570,7 @@ fn snapshot_dropped_before_flip_keeps_frontiers_tolerated_spec_commits_5() {
     let order = [16, 7, 20, 13, 12, 5, 8, 21, 1, 10, 0, 18, 19, 9, 15, 3, 14, 6, 2, 17, 11, 4];
     let want = judged(&mut deliver(&played, &made), &played);
     let got = judged(&mut deliver(&played, &order), &played);
-    let snap = |j: &Judged| j.index.as_ref().unwrap().commits.values().find(|c| c.kind == osis_commit::Kind::ContentSnapshot && c.rest.contains("/t/gone")).unwrap().clone();
+    let snap = |j: &Judged| j.index.as_ref().unwrap().commits.values().find(|c| c.kind == osis_commit::Kind::ContentSnapshot && c.rest.contains("t:gone.0")).unwrap().clone();
     assert!(snap(&want).gives.is_empty() && !snap(&got).gives.is_empty(), "dropped in one order only, keeping its frontiers");
     assert_eq!(alike(&want, &got, &|_, _| false), None);
     check(3401073, &h, LARGE).unwrap();
@@ -1599,7 +1599,7 @@ fn snapshot_dropped_by_earlier_stamped_kill_tolerated_spec_commits_5() {
     let rev: Vec<usize> = made.iter().rev().copied().collect();
     let want = judged(&mut deliver(&played, &made), &played);
     let got = judged(&mut deliver(&played, &rev), &played);
-    let snap = |j: &Judged| j.index.as_ref().unwrap().commits.values().find(|c| c.kind == osis_commit::Kind::ContentSnapshot && c.rest.contains("/t/gonemap")).unwrap().clone();
+    let snap = |j: &Judged| j.index.as_ref().unwrap().commits.values().find(|c| c.kind == osis_commit::Kind::ContentSnapshot && c.rest.contains("t:gonemap.0")).unwrap().clone();
     assert!(!snap(&want).dropped.is_empty() && !snap(&want).gives.is_empty() && snap(&got).dropped.is_empty(), "dropped in one order only, keeping its frontiers");
     assert_eq!(alike(&want, &got, &|_, _| false), None);
     check(21187, &h, LARGE).unwrap();

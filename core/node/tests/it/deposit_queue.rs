@@ -378,7 +378,7 @@ fn queued_deposit_after_seed_refresh_spec_sync_5() {
 }
 
 // spec/sync.md §5, spec/permissions.md §3: after an admin refreshes the deposit seed alone and
-// registers the new deposit key, a second admin that comes online before it applied the `/keys`
+// registers the new deposit key, a second admin that comes online before it applied the `keys.0`
 // write registers no step back to the old key (it waits until what it can open under the label
 // is applied), so the host's head keeps the new deposit key.
 #[test]
@@ -386,7 +386,7 @@ fn lagging_admin_keeps_refreshed_deposit_key_spec_sync_5() {
     let mut net = Net::new();
     let host = net.add_host();
     net.node(80, &[host]);
-    // blobs never inline: the new head arrives before the `/keys` write it fetches
+    // blobs never inline: the new head arrives before the `keys.0` write it fetches
     net.add_node(81, osis_node::sync::SyncConfig { hosts: vec![net.address(host)], inline_limit: 0, ..Default::default() });
     let g = net.group(0, &[(1, Role::Admin)], &[host]);
     for _ in 0..3 {

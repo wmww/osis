@@ -141,7 +141,7 @@ fn reregistration_after_rotation_spec_sync_5() {
     net.run();
     net.trace(&[a, b]);
     assert_eq!(net.host_path(host, &l).len(), 2, "a child step was registered");
-    assert_eq!(net.sync(a).labels()[0].1.steps.len(), 2, "and recorded in /label");
+    assert_eq!(net.sync(a).labels()[0].1.steps.len(), 2, "and recorded in label.0");
     assert_eq!(net.read(b, t), Some(s("after")));
     net.write(b, t, "from b");
     net.run();

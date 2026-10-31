@@ -62,7 +62,7 @@ fn text(db: &Osis, card: Tid) -> Result<Option<String>> {
     db.get(card, BODY)
 }
 
-/// The things in a tag and its sub-tags (subgroups carrying `/tag`).
+/// The things in a tag and its sub-tags (subgroups carrying `tag.0`).
 fn list(db: &Osis, tag: Tid) -> Result<(Vec<Tid>, Vec<Tid>)> {
     let g = db.get(tag, GROUP)?.unwrap_or_default();
     let things = g.items.iter().filter(|t| !g.subgroups.contains(t)).copied().collect();

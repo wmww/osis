@@ -19,55 +19,55 @@ revision 1;
 type item = struct { 0 name: string, 1 n: int };
 type shape = enum { 0 dot, 1 circle(int) };
 type book = struct { 0 entries: map<string, string>, 1 note: string };
-aspect /t/reg: string;
-aspect /t/count: counter<int>;
-aspect /t/hi: max<int>;
-aspect /t/lo: min<int>;
-aspect /t/rec: item;
-aspect /t/shape: shape;
-aspect /t/tags: set<string>;
-aspect /t/map: map<string, item>;
-aspect /t/big: map<string, string>;
-aspect /t/gone: string [by: writer, keep_at_most: 0s];
-aspect /t/gone2: string [by: writer, keep_at_most: 0s];
-aspect /t/gonemap: map<string, string> [by: writer, keep_at_most: 0s];
-aspect /t/brief: string [expires: 1h];
-aspect /t/kept: string [by: writer, keep_at_least: 1d];
-aspect /t/keptset: set<string> [by: writer, keep_at_least: 1d];
-aspect /t/short: string [by: writer, keep_at_most: 10m];
-aspect /t/short2: string [by: writer, keep_at_most: 10m];
-aspect /t/list: list<string>;
-aspect /t/text: text;
-aspect /t/blob: blob;
-aspect /t/book: book;
-aspect /t/docs: map<string, text>;
-aspect /t/shortmap: map<string, string> [by: writer, keep_at_most: 10m];
+aspect t:reg.0: string;
+aspect t:count.0: counter<int>;
+aspect t:hi.0: max<int>;
+aspect t:lo.0: min<int>;
+aspect t:rec.0: item;
+aspect t:shape.0: shape;
+aspect t:tags.0: set<string>;
+aspect t:map.0: map<string, item>;
+aspect t:big.0: map<string, string>;
+aspect t:gone.0: string [by: writer, keep_at_most: 0s];
+aspect t:gone2.0: string [by: writer, keep_at_most: 0s];
+aspect t:gonemap.0: map<string, string> [by: writer, keep_at_most: 0s];
+aspect t:brief.0: string [expires: 1h];
+aspect t:kept.0: string [by: writer, keep_at_least: 1d];
+aspect t:keptset.0: set<string> [by: writer, keep_at_least: 1d];
+aspect t:short.0: string [by: writer, keep_at_most: 10m];
+aspect t:short2.0: string [by: writer, keep_at_most: 10m];
+aspect t:list.0: list<string>;
+aspect t:text.0: text;
+aspect t:blob.0: blob;
+aspect t:book.0: book;
+aspect t:docs.0: map<string, text>;
+aspect t:shortmap.0: map<string, string> [by: writer, keep_at_most: 10m];
 "#,
 );
 
-pub const REG: Aspect<Value> = Aspect::new("/t/reg", &TEST);
-pub const COUNT: Aspect<Value> = Aspect::new("/t/count", &TEST);
-pub const HI: Aspect<Value> = Aspect::new("/t/hi", &TEST);
-pub const LO: Aspect<Value> = Aspect::new("/t/lo", &TEST);
-pub const REC: Aspect<Value> = Aspect::new("/t/rec", &TEST);
-pub const SHAPE: Aspect<Value> = Aspect::new("/t/shape", &TEST);
-pub const TAGS: Aspect<Value> = Aspect::new("/t/tags", &TEST);
-pub const MAP: Aspect<Value> = Aspect::new("/t/map", &TEST);
-pub const BIG: Aspect<Value> = Aspect::new("/t/big", &TEST);
-pub const GONE: Aspect<Value> = Aspect::new("/t/gone", &TEST);
-pub const GONE2: Aspect<Value> = Aspect::new("/t/gone2", &TEST);
-pub const GONEMAP: Aspect<Value> = Aspect::new("/t/gonemap", &TEST);
-pub const BRIEF: Aspect<Value> = Aspect::new("/t/brief", &TEST);
-pub const KEPT: Aspect<Value> = Aspect::new("/t/kept", &TEST);
-pub const KEPTSET: Aspect<Value> = Aspect::new("/t/keptset", &TEST);
-pub const SHORT: Aspect<Value> = Aspect::new("/t/short", &TEST);
-pub const SHORT2: Aspect<Value> = Aspect::new("/t/short2", &TEST);
-pub const LIST: Aspect<Value> = Aspect::new("/t/list", &TEST);
-pub const TEXT: Aspect<Value> = Aspect::new("/t/text", &TEST);
-pub const BLOB: Aspect<Value> = Aspect::new("/t/blob", &TEST);
-pub const BOOK: Aspect<Value> = Aspect::new("/t/book", &TEST);
-pub const DOCS: Aspect<Value> = Aspect::new("/t/docs", &TEST);
-pub const SHORTMAP: Aspect<Value> = Aspect::new("/t/shortmap", &TEST);
+pub const REG: Aspect<Value> = Aspect::new("t:reg.0", &TEST);
+pub const COUNT: Aspect<Value> = Aspect::new("t:count.0", &TEST);
+pub const HI: Aspect<Value> = Aspect::new("t:hi.0", &TEST);
+pub const LO: Aspect<Value> = Aspect::new("t:lo.0", &TEST);
+pub const REC: Aspect<Value> = Aspect::new("t:rec.0", &TEST);
+pub const SHAPE: Aspect<Value> = Aspect::new("t:shape.0", &TEST);
+pub const TAGS: Aspect<Value> = Aspect::new("t:tags.0", &TEST);
+pub const MAP: Aspect<Value> = Aspect::new("t:map.0", &TEST);
+pub const BIG: Aspect<Value> = Aspect::new("t:big.0", &TEST);
+pub const GONE: Aspect<Value> = Aspect::new("t:gone.0", &TEST);
+pub const GONE2: Aspect<Value> = Aspect::new("t:gone2.0", &TEST);
+pub const GONEMAP: Aspect<Value> = Aspect::new("t:gonemap.0", &TEST);
+pub const BRIEF: Aspect<Value> = Aspect::new("t:brief.0", &TEST);
+pub const KEPT: Aspect<Value> = Aspect::new("t:kept.0", &TEST);
+pub const KEPTSET: Aspect<Value> = Aspect::new("t:keptset.0", &TEST);
+pub const SHORT: Aspect<Value> = Aspect::new("t:short.0", &TEST);
+pub const SHORT2: Aspect<Value> = Aspect::new("t:short2.0", &TEST);
+pub const LIST: Aspect<Value> = Aspect::new("t:list.0", &TEST);
+pub const TEXT: Aspect<Value> = Aspect::new("t:text.0", &TEST);
+pub const BLOB: Aspect<Value> = Aspect::new("t:blob.0", &TEST);
+pub const BOOK: Aspect<Value> = Aspect::new("t:book.0", &TEST);
+pub const DOCS: Aspect<Value> = Aspect::new("t:docs.0", &TEST);
+pub const SHORTMAP: Aspect<Value> = Aspect::new("t:shortmap.0", &TEST);
 
 pub fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()
@@ -105,9 +105,9 @@ pub fn edge(role: Role) -> ct::Edge {
 pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge>, frontier: Option<Value>) -> CommitId {
     // an edge change is remove + put (spec/permissions.md §2)
     let mut m = Mutation::new();
-    m.op(thing, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
+    m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
     if let Some(x) = edge {
-        m.op(thing, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(x.to_value()) }).unwrap();
+        m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(x.to_value()) }).unwrap();
     }
     if let Some(f) = frontier {
         m.frontier(f);

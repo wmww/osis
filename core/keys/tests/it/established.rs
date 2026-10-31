@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Established epochs (spec/crypto.md §4; spec/permissions.md §3 re-seal): the TLC traces of
-//! core/test/tla/rotation/AMBIGUITIES.md (R9, `MC_reorder`), snapshot establishment, the `/secrets`
+//! core/test/tla/rotation/AMBIGUITIES.md (R9, `MC_reorder`), snapshot establishment, the `secrets.0`
 //! compaction gate.
 
 use crate::common;
@@ -33,7 +33,7 @@ struct World {
     pe: ActorEpochs,
     a2e: ActorEpochs,
     m1e: ActorEpochs,
-    /// a1's view and A's `/secrets` after the first rotation.
+    /// a1's view and A's `secrets.0` after the first rotation.
     a1v: ActorEpochs,
     s0: Secrets,
     k0: Keys,

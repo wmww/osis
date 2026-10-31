@@ -3,6 +3,7 @@
 
 use crate::types::{Case, EnumType, Field, StructType, Type, is_reserved_name};
 use osis_base::format::CORE_SCHEMA_ID;
+pub use osis_base::Lifetime;
 use osis_base::{Ak, SchemaId, Value};
 use osis_crdt::Encoding;
 use std::borrow::Cow;
@@ -132,23 +133,6 @@ pub struct Retention {
     pub at_most: Bound,
 }
 
-/// Where an aspect's writes live (notes/ephemeral.md Model): durable commits, or in memory.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub enum Lifetime {
-    #[default]
-    Durable,
-    /// A value held in memory.
-    Ephemeral,
-    /// A write with no lasting value: delivered to callbacks, never in state.
-    Signal,
-}
-
-impl Lifetime {
-    pub fn is_durable(self) -> bool {
-        self == Lifetime::Durable
-    }
-}
-
 /// Per-AK write defaults (notes/api.md Keys).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub struct AspectDefaults {
@@ -167,10 +151,6 @@ pub struct Invalid {
 impl Schema {
     pub fn new(id: SchemaId, revision: u64) -> Schema {
         Schema { id, revision, types: BTreeMap::new(), aspects: BTreeMap::new(), doc: None }
-    }
-
-    pub fn is_core(&self) -> bool {
-        self.id == CORE_SCHEMA_ID
     }
 
     /// Write defaults for an AK this schema declares.
@@ -279,10 +259,12 @@ impl Schema {
         }
         for (ak, def) in &self.aspects {
             let item = format!("aspect {ak}");
+            let core = self.id == CORE_SCHEMA_ID;
             match Ak::new(ak.as_str()) {
-                Ok(a) if a.is_core() != self.is_core() => {
-                    bad(&item, "core AKs have one segment and belong to the core schema; app AKs have two or more".into())
+                Ok(_) if crate::core_types::is_core_key(ak) != core => {
+                    bad(&item, "core AKs have one name segment and no tid and belong to the core schema; app AKs have two or more, or a tid".into())
                 }
+                Ok(a) if a.lifetime() != def.lifetime() => bad(&item, "the AK's lifetime marker must match its flags: `~` ephemeral, `*` signal".into()),
                 Ok(_) => {}
                 Err(_) => bad(&item, "invalid AK".into()),
             }
@@ -301,10 +283,10 @@ impl Schema {
             if lifetimes > 1 {
                 bad(&item, "at most one of ephemeral, signal".into());
             }
-            // `/placed`, the ephemeral placements (spec/data-model.md §8), is the one core aspect
+            // `placed.0~`, the ephemeral placements (spec/data-model.md §8), is the one core aspect
             // that is not durable
-            if self.is_core() && (def.lifetime() != Lifetime::Durable) != (ak.as_str() == "/placed") {
-                bad(&item, "core aspects are durable, /placed ephemeral".into());
+            if core && (def.lifetime() != Lifetime::Durable) != (ak.as_str() == "placed.0~") {
+                bad(&item, "core aspects are durable, placed.0~ ephemeral".into());
             }
             if lifetimes > 0 && def.retention != Retention::default() {
                 bad(&item, "retention applies to durable aspects only".into());

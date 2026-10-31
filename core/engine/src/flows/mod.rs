@@ -50,7 +50,7 @@ pub enum Delivery {
     /// Commits for node `to` over a direct connection (pairing; a node has no inbox).
     Direct { to: Tid, commits: Vec<CommitId> },
     /// Commits to place, in the same sync and before any other upload, under every label the
-    /// node tracks of the things listed (a removal and the affected actors' new `/keys`,
+    /// node tracks of the things listed (a removal and the affected actors' new `keys.0`,
     /// spec/permissions.md §3), stamped or by deposit.
     First { commits: Vec<CommitId>, under: Vec<Tid> },
     /// A certificate copy to place under the home label of `under` (spec/sync.md §3: a grantee
@@ -60,7 +60,7 @@ pub enum Delivery {
     /// invite grant, spec/sync.md §5).
     Deposit { commit: CommitId, under: Tid },
     /// A removal or lowering of actor `under`'s edge, placed under every label holding `under`
-    /// as a certificate copy without its `/secrets` and `/keys` deltas (spec/permissions.md §2:
+    /// as a certificate copy without its `secrets.0` and `keys.0` deltas (spec/permissions.md §2:
     /// those are for the target's remaining holders; a refreshed deposit seed is not the
     /// departed's to read).
     Removal { commit: CommitId, under: Tid },
@@ -68,7 +68,7 @@ pub enum Delivery {
 
 /// What seals an inbox delivery again (spec/sync.md §3: re-sent after `INBOX_LIFETIME` while
 /// the holder has not acted): the holder, the commit, the things named, whether only its
-/// `/members` parts went (a removal).
+/// `roles.0` parts went (a removal).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resend {
     pub holder: Tid,
@@ -110,7 +110,7 @@ pub(crate) fn ak(s: &str) -> Result<Ak> {
     Ak::new(s).map_err(|_| Error::Misuse("ak"))
 }
 
-/// Writes a `/secrets` write into `m`: removed boxes reset; boxes and history boxes as remove +
+/// Writes a `secrets.0` write into `m`: removed boxes reset; boxes and history boxes as remove +
 /// put, so a re-seal or grant re-writing an entry is a new entry there, not a write into one the
 /// holder never got or nothing for an unchanged value (spec/crypto.md §4), and one live entry
 /// per key stays. `invite`: an invite grant, which may reset nothing (spec/permissions.md §2):
@@ -155,12 +155,12 @@ pub(crate) fn put_keysets(m: &mut Mutation, actor: Tid, w: &KeysWrite) -> Result
 /// the state holds for it, valid or one the timeline dropped, is reset, never written into.
 pub(crate) fn put_edge(m: &mut Mutation, target: Tid, holder: Tid, e: &ct::Edge) -> Result<()> {
     remove_edge(m, target, holder)?;
-    m.op(target, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(e.to_value()) })?;
+    m.op(target, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(e.to_value()) })?;
     Ok(())
 }
 
 pub(crate) fn remove_edge(m: &mut Mutation, target: Tid, holder: Tid) -> Result<()> {
-    m.op(target, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) })?;
+    m.op(target, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) })?;
     Ok(())
 }
 
@@ -169,9 +169,9 @@ pub(crate) fn now_ts(core: &Core) -> osis_base::Ts {
 }
 
 impl Core {
-    /// The typed state of `/keys` of `tid`.
+    /// The typed state of `keys.0` of `tid`.
     pub(crate) fn keys_in(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<Keys>> {
-        Ok(tx.state(tid, &ak("/keys")?)?.and_then(Fragment::read).and_then(|v| ct::KEYS.decode(&v).ok()))
+        Ok(tx.state(tid, &ak("keys.0")?)?.and_then(Fragment::read).and_then(|v| ct::KEYS.decode(&v).ok()))
     }
 
     /// Effective role of `node` on `tid` now.
@@ -216,7 +216,7 @@ impl Core {
     }
 }
 
-/// A recipient for boxes of `actor` to `holder` at `role`, from the holder's held `/keys`.
+/// A recipient for boxes of `actor` to `holder` at `role`, from the holder's held `keys.0`.
 pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Recipient> {
     let keys = Core::keys_in(tx, &holder)?;
     let keys = match (tx.core.is_key_actor(&holder), keys) {
@@ -224,9 +224,9 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Reci
         (true, None) if holder == tx.core.id.tid() => HolderKeys::KeyActor { kem: tx.core.id.keys().kem.public().clone(), seed: None },
         (true, None) => match tx.core.key_actors.get(&holder) {
             Some(k) => HolderKeys::KeyActor { kem: k.keys().kem.public().clone(), seed: None },
-            None => return Err(Error::Misuse("no /keys held for the holder")),
+            None => return Err(Error::Misuse("no keys.0 held for the holder")),
         },
-        // a key-actor KEM key on an actor's `/keys` is never sealed to (only key actors have one)
+        // a key-actor KEM key on an actor's `keys.0` is never sealed to (only key actors have one)
         (false, Some(k)) => {
             let mk = HolderKeys::from_keys(&Keys { key: None, ..k })?;
             match tx.core.own_epochs(&holder) {
@@ -261,7 +261,7 @@ pub(crate) fn inbox_of(tx: &mut Tx<'_>, holder: &Tid) -> Result<Option<(Tid, Inb
 /// The newest label of `tid` (not replaced), with its hosts.
 /// The newest unreplaced label of `tid`: ID, index, hosts.
 pub(crate) fn own_label(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<(LabelId, u64, Vec<Address>)>> {
-    let labels = tx.state(tid, &ak("/label")?)?.and_then(Fragment::read).and_then(|v| ct::LABEL.decode(&v).ok()).unwrap_or_default();
+    let labels = tx.state(tid, &ak("label.0")?)?.and_then(Fragment::read).and_then(|v| ct::LABEL.decode(&v).ok()).unwrap_or_default();
     Ok(labels.into_iter().filter(|(_, l)| !l.replaced).max_by_key(|(_, l)| l.index).map(|(id, l)| (id, l.index, l.hosts)))
 }
 
@@ -292,23 +292,23 @@ pub(crate) fn label_for(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<(LabelId, u
     Ok(None)
 }
 
-/// Whether key actor `t` is a node (it has a `/node` card), not a recovery or link key.
+/// Whether key actor `t` is a node (it has a `node.0` card), not a recovery or link key.
 pub(crate) fn is_node(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
-    Ok(*t == tx.core.id.tid() || tx.core.ix.by_aspect.contains_key(&(*t, ak("/node")?)))
+    Ok(*t == tx.core.id.tid() || tx.core.ix.by_aspect.contains_key(&(*t, ak("node.0")?)))
 }
 
-/// The deposit seed in `/keys` of `actor`.
+/// The deposit seed in `keys.0` of `actor`.
 pub(crate) fn deposit_of(tx: &mut Tx<'_>, actor: &Tid) -> Result<[u8; 32]> {
-    Core::keys_in(tx, actor)?.and_then(|k| k.deposit_seed).ok_or(Error::Misuse("no deposit seed in /keys"))
+    Core::keys_in(tx, actor)?.and_then(|k| k.deposit_seed).ok_or(Error::Misuse("no deposit seed in keys.0"))
 }
 
 pub(crate) fn secrets_in(tx: &mut Tx<'_>, actor: &Tid) -> Result<Secrets> {
-    Ok(tx.state(actor, &ak("/secrets")?)?.and_then(Fragment::read).and_then(|v| crate::engine::secrets::secrets_value(&v)).unwrap_or_default())
+    Ok(tx.state(actor, &ak("secrets.0")?)?.and_then(Fragment::read).and_then(|v| crate::engine::secrets::secrets_value(&v)).unwrap_or_default())
 }
 
-/// `crate::engine::secrets::history_alts` of `actor`'s `/secrets` state.
+/// `crate::engine::secrets::history_alts` of `actor`'s `secrets.0` state.
 pub(crate) fn secrets_alts(tx: &mut Tx<'_>, actor: &Tid) -> Result<osis_keys::HistoryAlts> {
-    Ok(tx.state(actor, &ak("/secrets")?)?.map(crate::engine::secrets::history_alts).unwrap_or_default())
+    Ok(tx.state(actor, &ak("secrets.0")?)?.map(crate::engine::secrets::history_alts).unwrap_or_default())
 }
 
 /// Persists the epochs held for `actor` (the `k/` record node-core loads).
@@ -321,7 +321,7 @@ pub(crate) fn save_epochs(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
     Ok(())
 }
 
-/// Re-opens the `/secrets` of every actor that boxes to `learned` after this node learned
+/// Re-opens the `secrets.0` of every actor that boxes to `learned` after this node learned
 /// secrets of `learned` (an actor's boxes open only once its holder's epochs are held), to a
 /// fixpoint. Called by node-core's state observation (engine hook). Terminates without a step
 /// cap: an actor is pushed only when its held epochs grew, and they only grow, bounded by the
@@ -329,7 +329,7 @@ pub(crate) fn save_epochs(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
 pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
     let mut work = vec![learned];
     while let Some(m) = work.pop() {
-        // the boxes keyed to `m`, per actor: from the index of keyed `/secrets` entries
+        // the boxes keyed to `m`, per actor: from the index of keyed `secrets.0` entries
         let mut per: std::collections::BTreeMap<Tid, Vec<osis_base::Value>> = std::collections::BTreeMap::new();
         for (a, k) in tx.core.ix.boxes_to.get(&m).into_iter().flatten() {
             if *a != m {
@@ -346,12 +346,12 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
     Ok(())
 }
 
-/// Re-opens every held `/secrets` (after a key actor was taken up), to a fixpoint: what an
+/// Re-opens every held `secrets.0` (after a key actor was taken up), to a fixpoint: what an
 /// actor learns reopens its dependents at once (`reopen_dependents`, so a holder-actor chain
 /// opens in one sweep whatever its tid order); sweeps repeat until one learns nothing (held
 /// epochs only grow, so no round cap is needed; a cap left deep chains unopened).
 fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
-    let secrets_ak = ak("/secrets")?;
+    let secrets_ak = ak("secrets.0")?;
     let actors: BTreeSet<Tid> = tx.core.ix.by_aspect.keys().filter(|(_, a)| *a == secrets_ak).map(|(t, _)| *t).collect();
     loop {
         let mut any = false;

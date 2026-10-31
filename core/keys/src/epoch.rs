@@ -40,7 +40,7 @@ pub enum Provenance {
     Derived,
     /// Its rotation commit is applied and valid and every epoch it supersedes is established.
     Chain,
-    /// A held compaction snapshot of `/secrets` keys a box or history box with it.
+    /// A held compaction snapshot of `secrets.0` keys a box or history box with it.
     Snapshot,
 }
 
@@ -69,9 +69,9 @@ pub struct EpochInfo {
     /// chain condition of `establish`): a holder may re-claim an epoch in a later commit, and
     /// invalidating that one leaves the others.
     pub applied: BTreeMap<CommitId, BTreeSet<Epoch>>,
-    /// A held `/secrets` compaction snapshot keys it.
+    /// A held `secrets.0` compaction snapshot keys it.
     pub snapshot: bool,
-    /// Established (spec/crypto.md §4): persisted, never inferred from the applied `/secrets`
+    /// Established (spec/crypto.md §4): persisted, never inferred from the applied `secrets.0`
     /// state. Unestablished epochs are kept for reading only: never current, supersede nothing,
     /// never encrypted under, never put in a history box.
     pub established: Option<Provenance>,
@@ -244,7 +244,7 @@ impl RoleEpochs {
         }
     }
 
-    /// Records that a held `/secrets` compaction snapshot keys `e`; whether that is new. Call
+    /// Records that a held `secrets.0` compaction snapshot keys `e`; whether that is new. Call
     /// `establish` after.
     pub fn set_snapshot(&mut self, e: Epoch) -> bool {
         !std::mem::replace(&mut self.observe(e).snapshot, true)

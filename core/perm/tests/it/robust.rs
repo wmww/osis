@@ -47,7 +47,7 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
     let frontier = |rng: &mut Rng, tids: &[Tid]| -> Option<Arc<Frontier>> {
         (rng.below(2) == 0).then(|| {
             let mut f = Frontier::default();
-            f.writes.entry(pick(rng, tids)).or_default().entry("/members".into()).or_default().insert(pick(rng, tids), pick(rng, &[0, 3, u64::MAX]));
+            f.writes.entry(pick(rng, tids)).or_default().entry("roles.0".into()).or_default().insert(pick(rng, tids), pick(rng, &[0, 3, u64::MAX]));
             f.commits.insert(cid(rng.below(40) as u32));
             Arc::new(f)
         })
@@ -96,7 +96,7 @@ fn junk_never_panics() {
                     let _ = (tl.role(x, t, at), tl.invite(x, t, at), tl.class(x, t, at), tl.roster(t, at));
                 }
                 let p = Point { ts: ts(rng.below(12) as u64), node: *x, commit: cid(3) };
-                let _ = tl.delta_valid(p, t, "/doc", Dots::Node { lo: 0, hi: u64::MAX }, Role::Write);
+                let _ = tl.delta_valid(p, t, "doc.0", Dots::Node { lo: 0, hi: u64::MAX }, Role::Write);
             }
         }
     }

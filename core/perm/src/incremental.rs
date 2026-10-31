@@ -53,7 +53,7 @@ pub struct Changed {
     /// Things of components evaluated from scratch: anything about them may have changed.
     pub evaluated: BTreeSet<Tid>,
     /// Things of components whose walk only went on: the targets of the commits added, and
-    /// things added by a `/created` record alone (a new leaf). Authority changed only on what
+    /// things added by a `created.0` record alone (a new leaf). Authority changed only on what
     /// is reachable from them (owned things, targets of their edges).
     pub extended: BTreeSet<Tid>,
 }
@@ -163,7 +163,7 @@ impl Timelines {
     }
 
     /// Re-partitions only around `touched` (things whose held inputs changed since the last
-    /// update: a commit or snapshot on them added or removed, their `/created` recorded): their
+    /// update: a commit or snapshot on them added or removed, their `created.0` recorded): their
     /// components and every component newly linked to them, so the cost follows the affected
     /// components, not the held set. Equal to `update`. Returns what changed.
     pub fn update_touched(&mut self, held: &dyn HeldSet, touched: &BTreeSet<Tid>) -> Changed {
@@ -205,9 +205,9 @@ impl Timelines {
     }
 
     /// The common case of `update_touched` in O(what changed): every touched thing is in a
-    /// component, with its `/created` and snapshots as before, and only gained role
+    /// component, with its `created.0` and snapshots as before, and only gained role
     /// commits that join nothing (author, holders and targets in its component); each such
-    /// component goes on by `Timeline::append`. Or it is a new leaf (only its `/created` names
+    /// component goes on by `Timeline::append`. Or it is a new leaf (only its `created.0` names
     /// it) of a component that gained no commits: `Timeline::add_leaves`. `None`: the case does
     /// not apply, nothing done.
     /// Else what changed, the things of the components continued, and whether all of them
@@ -216,14 +216,14 @@ impl Timelines {
         // (new commits, commits per touched thing, new nodes joining, new leaves)
         type Work = (BTreeMap<CommitId, Arc<RoleCommit>>, BTreeMap<Tid, BTreeSet<CommitId>>, BTreeMap<Tid, Option<CreationRecord>>, Vec<(Tid, CreationRecord)>);
         let mut work: BTreeMap<u64, Work> = BTreeMap::new();
-        // Nothing held of `x` but its `/created`, in no component or alone in one (`known`:
+        // Nothing held of `x` but its `created.0`, in no component or alone in one (`known`:
         // with that record already).
         let unseen = |x: &Tid, known: bool| {
             held.edge_commits(x).is_empty()
                 && held.roster_snapshots(x).is_empty()
                 && self.of.get(x).is_none_or(|j| self.comps.get(j).is_some_and(|c| c.inputs.0.len() == 1 && c.inputs.1.is_empty() && c.inputs.2.len() == usize::from(known)))
         };
-        // A node new to every walk (nothing held of its own but its key actor's `/created`)
+        // A node new to every walk (nothing held of its own but its key actor's `created.0`)
         // joins the one component whose new commits name it.
         let lone = |x: &Tid| -> Option<Option<CreationRecord>> {
             let rec = held.created(x);
@@ -232,7 +232,7 @@ impl Timelines {
             }
             unseen(x, rec.is_some()).then_some(rec)
         };
-        // A thing whose `/created` is all that names it joins its owner's component.
+        // A thing whose `created.0` is all that names it joins its owner's component.
         let leaf = |x: &Tid| held.created(x).filter(|r| matches!(r, CreationRecord::Thing { .. }) && unseen(x, false) && r.tid() == *x);
         let mut joining: BTreeMap<Tid, u64> = BTreeMap::new();
         let mut unplaced = Vec::new();
@@ -456,7 +456,7 @@ impl Timelines {
                 Some(x) => x,
                 None => {
                     evaluated += 1;
-                    // a component that only gained commits, things and `/created` records
+                    // a component that only gained commits, things and `created.0` records
                     // continues its walk when it can (`Timeline::extend`): the one with the most
                     // commits and snapshots, then things (the things of the others are reported
                     // as new: continuing a lone node over a component without commits would
@@ -540,7 +540,7 @@ impl Timelines {
     /// The timeline of a component with no timeline here from a walk saved under one of its
     /// things (its root first; a component's root changes when a thing with a smaller tid
     /// joins it), continued as at run time: over the new leaves (things with only a
-    /// `/created` record), then over the commits added since; and how many commits and
+    /// `created.0` record), then over the commits added since; and how many commits and
     /// snapshots the walk saved under its root covered (0 when saved under another thing).
     /// Every other walk saved under its things is retired: one under a root that moved
     /// before the next `to_save` (a restart in between) is found only here.
@@ -566,7 +566,7 @@ impl Timelines {
 
     fn resume(s: &cache::Saved<'_>, inputs: &Inputs, part: &Only<'_>, salt: &[u8]) -> Option<Timeline> {
         let k = &s.inputs;
-        // as `update_region` at run time: things, `/created` records and commits added
+        // as `update_region` at run time: things, `created.0` records and commits added
         if !(k.0.is_subset(&inputs.0) && k.2.is_subset(&inputs.2) && k.1.is_subset(&inputs.1)) {
             return None;
         }

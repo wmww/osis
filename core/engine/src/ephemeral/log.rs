@@ -76,7 +76,7 @@ pub struct LoggedChange {
     pub actor: Tid,
     pub ts: Ts,
     pub received: WallMs,
-    /// Its ephemeral aspects, and `/created` of each ephemeral thing it made or deleted.
+    /// Its ephemeral aspects, and `created.0` of each ephemeral thing it made or deleted.
     pub aspects: Vec<(Tid, Ak)>,
 }
 
@@ -169,7 +169,7 @@ impl Log {
     }
 }
 
-/// `/created`, the key a thing's creation and deletion are listed under.
+/// `created.0`, the key a thing's creation and deletion are listed under.
 fn created_ak() -> Ak {
     Ak::new(CREATED.ak()).unwrap_or_else(|_| unreachable!("a core key"))
 }
@@ -198,8 +198,8 @@ impl Engine {
 
     /// The ephemeral keys `Scope::Thing` and `Scope::Group` cover (notes/ephemeral.md API delta,
     /// Undo): every aspect with ephemeral state of an ephemeral thing or a draft again
-    /// (`Eph::drafts`) and its `/created` (what its creation and deletion touch), and a
-    /// durable thing's `/placed`; not the ephemeral aspects of other durable
+    /// (`Eph::drafts`) and its `created.0` (what its creation and deletion touch), and a
+    /// durable thing's `placed.0~`; not the ephemeral aspects of other durable
     /// things.
     pub fn ephemeral_scope_keys(&self) -> Vec<(Tid, Ak)> {
         let created = created_ak();
@@ -224,7 +224,7 @@ impl Engine {
         }
         // undoing a creation deletes the thing, undoing that brings it back (spec/crdt.md §4.6):
         // the things a commit created are deleted by its undo commit, their ephemeral side here;
-        // a draft the change saved (persisted, carrying its `/created`) is no creation: it comes
+        // a draft the change saved (persisted, carrying its `created.0`) is no creation: it comes
         // back as a draft (`Eph::drafts`), and redo saves it again
         let entry = at.and_then(|i| self.eph.log.entries.get(i));
         let is_eph = |t: &&Tid| self.eph.draft_like(t);
@@ -297,8 +297,8 @@ impl Engine {
     }
 
     /// `delete`'s ephemeral writes for each of `del` (spec/crdt.md §4.6 Undoing a creation):
-    /// its ephemeral aspects reset and its entries removed from every `/placed` listing
-    /// it, resolved against that `/placed` after what `out` already writes
+    /// its ephemeral aspects reset and its entries removed from every `placed.0~` listing
+    /// it, resolved against that `placed.0~` after what `out` already writes
     /// there and joined into it.
     fn unmake_ephemeral(&mut self, del: &BTreeSet<Tid>, ts: Ts, out: &mut Vec<Resolved>) -> Result<()> {
         if del.is_empty() {

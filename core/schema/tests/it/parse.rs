@@ -25,19 +25,19 @@ fn core_schema_parses_spec_data_model_9() {
     assert_eq!(s.revision, CORE_SCHEMA_REVISION);
     let aks: Vec<&str> = s.aspects.keys().map(String::as_str).collect();
     for ak in [
-        "/tid", "/aspects", "/created", "/members", "/keys", "/secrets", "/tenures", "/label", "/moved", "/was", "/node",
-        "/reach", "/seen", "/group", "/placed", "/groups", "/name", "/body", "/tag",
+        "tid.0", "aspects.0", "created.0", "roles.0", "keys.0", "secrets.0", "tenures.0", "label.0", "moved.0", "was.0", "node.0",
+        "reach.0", "seen.0", "group.0", "placed.0~", "groups.0", "name.0", "body.0", "tag.0",
     ] {
         assert!(aks.contains(&ak), "{ak}");
     }
     assert_eq!(aks.len(), 19);
-    assert_eq!(s.aspects["/placed"].lifetime(), osis_schema::Lifetime::Ephemeral);
-    let holders = &s.aspects["/members"];
+    assert_eq!(s.aspects["placed.0~"].lifetime(), osis_schema::Lifetime::Ephemeral);
+    let holders = &s.aspects["roles.0"];
     assert_eq!(holders.retention.by, PurgeBy::Admin);
     assert_eq!(holders.retention.at_least.rel, Some(ROLE_KEEP_MS));
-    assert_eq!(s.aspects["/created"].retention.by, PurgeBy::Nobody);
-    assert_eq!(s.aspects["/seen"].retention, Retention::default());
-    assert!(s.aspects["/groups"].flags.contains(&Flag::Synthetic));
+    assert_eq!(s.aspects["created.0"].retention.by, PurgeBy::Nobody);
+    assert_eq!(s.aspects["seen.0"].retention, Retention::default());
+    assert!(s.aspects["groups.0"].flags.contains(&Flag::Synthetic));
 }
 
 #[test]
@@ -53,12 +53,12 @@ fn notes_schema_parses_items_spec_data_model_2() {
     assert_eq!(task.fields[&8].default, Some(Value::float(1.0)));
     assert_eq!(s.default_of(&task.fields[&4]), Some(Value::Enum(0, None)), "option defaults to none");
     assert_eq!(s.default_of(&task.fields[&1]), None);
-    assert_eq!(s.aspects["/note/last_opened"].expires, Some(30 * 86_400_000));
-    let pinned = &s.aspects["/note/pinned"].retention;
+    assert_eq!(s.aspects["note:last_opened.0"].expires, Some(30 * 86_400_000));
+    let pinned = &s.aspects["note:pinned.0"].retention;
     assert_eq!((pinned.by, pinned.at_most.rel), (PurgeBy::Writer, Some(0)));
-    assert!(s.aspects["/note/body"].flags.contains(&Flag::Indexed));
-    assert_eq!(s.aspects["/note/body"].doc.as_deref(), Some("Markdown; not guaranteed valid."));
-    assert!(s.aspects["/note/typing"].flags.contains(&Flag::Signal));
+    assert!(s.aspects["note:body.0"].flags.contains(&Flag::Indexed));
+    assert_eq!(s.aspects["note:body.0"].doc.as_deref(), Some("Markdown; not guaranteed valid."));
+    assert!(s.aspects["note:typing.0*"].flags.contains(&Flag::Signal));
     assert_eq!(s.types["tagged"].params, vec!["T".to_string()]);
 }
 
@@ -94,7 +94,7 @@ fn encoding_per_type_spec_crdt_3_1() {
     ] {
         assert_eq!(enc(t), e, "{t}");
     }
-    assert_eq!(s.encoding(&s.aspects["/note/views"].ty), Some(Encoding::Counter));
+    assert_eq!(s.encoding(&s.aspects["note:views.0"].ty), Some(Encoding::Counter));
 }
 
 #[test]
@@ -102,13 +102,13 @@ fn trailing_commas_docs_and_recursion() {
     let s = app(
         "/// A tree.\ntype tree = struct { 0 kids: list<tree>, 1 name: string, };\n\
          type e = enum { 0 a, 1 b(int), reserved (2, 3,), };\n\
-         aspect /x/t: tree [indexed, ro,];\naspect /x/old: int;\naspect /x/new: int succeeds (/x/old,) [];",
+         aspect x:t.0: tree [indexed, ro,];\naspect x:old.0: int;\naspect x:new.0: int succeeds (x:old.0,) [];",
     )
     .unwrap();
-    assert!(s.aspects["/x/t"].flags.contains(&Flag::Ro));
+    assert!(s.aspects["x:t.0"].flags.contains(&Flag::Ro));
     let Type::Enum(e) = &s.types["e"].body else { panic!() };
     assert_eq!(e.reserved.len(), 2);
-    assert!(s.aspects["/x/new"].succeeds.contains("/x/old"));
+    assert!(s.aspects["x:new.0"].succeeds.contains("x:old.0"));
 }
 
 #[test]
@@ -133,7 +133,7 @@ fn errors_carry_line_and_column() {
     let e = parse("f.osis", "schema 0x0102030405060708090a0b0c0d0e0f10;\nrevision 1;\ntype x = struct { 0 a int };").unwrap_err();
     assert_eq!((e.file.as_str(), e.line, e.col), ("f.osis", 3, 23));
     assert!(e.to_string().starts_with("f.osis:3:23: expected `:`"), "{e}");
-    let e = err("aspect /x/y: nope;");
+    let e = err("aspect x:y.0: nope;");
     assert_eq!((e.line, e.col), (3, 1));
     assert!(e.msg.contains("unknown type nope"), "{e}");
     let e = parse("f.osis", "revision 1;").unwrap_err();
@@ -163,28 +163,39 @@ fn validation_rules_spec_data_model_3() {
         ("type x = struct { 0 a: int = \"s\" };", "does not fit"),
         ("type x = enum { 0 a } ; type y = struct { 0 f: x = b };", "unknown case b"),
         ("type option = int;", "invalid type name"),
-        ("aspect /x/a: int [keep_at_most: 1d];", "needs by: writer"),
-        ("aspect /x: int;", "core AKs"),
-        ("aspect /x/a: int; aspect /x/a: int;", "duplicate aspect"),
-        ("aspect /x/a: int [frob];", "unknown attribute"),
-        ("aspect /x/a: int [by: everyone];", "expected nobody"),
+        ("aspect x:a.0: int [keep_at_most: 1d];", "needs by: writer"),
+        ("aspect x.0: int;", "core AKs"),
+        ("aspect x:a.0: int; aspect x:a.0: int;", "duplicate aspect"),
+        ("aspect x:a.0: int [frob];", "unknown attribute"),
+        ("aspect x:a.0: int [by: everyone];", "expected nobody"),
         ("type x<T> = struct { 0 a: T = 1 };", "cannot type a default"),
-        ("aspect /x/a: int [ephemeral, signal];", "at most one of"),
-        ("aspect /x/a: int [ephemeral, by: admin];", "durable aspects only"),
-        ("aspect /x/a: int [signal, expires: 5s];", "no value to expire"),
+        ("aspect x:a.0*: int [ephemeral, signal];", "at most one of"),
+        ("aspect x:a.0~: int [ephemeral, by: admin];", "durable aspects only"),
+        ("aspect x:a.0*: int [signal, expires: 5s];", "no value to expire"),
+        ("aspect x:a.0: int [ephemeral];", "lifetime marker"),
+        ("aspect x:a.0~: int;", "lifetime marker"),
+        ("aspect x:a.0~: int [signal];", "lifetime marker"),
+        ("aspect x:a.01: int;", "invalid AK"),
+        ("aspect x:a.0^^: int;", "invalid AK"),
+        ("aspect :AAAAAAAAAAAAAAAAAAA:a.0: int;", "invalid AK"),
+        ("aspect x:a: int;", "expected an AK"),
+        ("aspect /x/a: int;", "unexpected character '/'"),
     ] {
         let e = err(src);
         assert!(e.msg.contains(needle), "{src}: {e}");
     }
+    // a tid-prefixed app key, its successor version, a marker run (spec/data-model.md §2)
+    let s = app("aspect :AAAAAAAAAAAAAAAAAAAA:a.0: int; aspect :AAAAAAAAAAAAAAAAAAAA:a.1^~: text succeeds (:AAAAAAAAAAAAAAAAAAAA:a.0, x:b.0) [ephemeral];").unwrap();
+    assert_eq!(s.aspects[":AAAAAAAAAAAAAAAAAAAA:a.1^~"].succeeds.len(), 2);
     // lifetime flags (notes/ephemeral.md): the key's defaults carry them; the form round-trips
-    let s = app("aspect /x/e: int [ephemeral, expires: 5s]; aspect /x/s: string [signal]; aspect /x/d: int;").unwrap();
+    let s = app("aspect x:e.0~: int [ephemeral, expires: 5s]; aspect x:s.0*: string [signal]; aspect x:d.0: int;").unwrap();
     let life = |ak: &str| s.defaults(ak).unwrap().lifetime;
-    assert_eq!([life("/x/e"), life("/x/s"), life("/x/d")], [Lifetime::Ephemeral, Lifetime::Signal, Lifetime::Durable]);
-    assert_eq!(s.defaults("/x/e").unwrap().expires, Some(5_000));
+    assert_eq!([life("x:e.0~"), life("x:s.0*"), life("x:d.0")], [Lifetime::Ephemeral, Lifetime::Signal, Lifetime::Durable]);
+    assert_eq!(s.defaults("x:e.0~").unwrap().expires, Some(5_000));
     assert_eq!(Schema::from_value(&s.to_value()).unwrap(), s);
     // Wrappers are fine in mergeable positions, and under a parameter instantiated well.
     app("type c<T> = counter<T>; type x = struct { 0 a: c<int>, 1 b: map<string, max<float>>, 2 l: list<text> };").unwrap();
-    let e = err("type c<T> = counter<T>; aspect /x/a: c<string>;");
+    let e = err("type c<T> = counter<T>; aspect x:a.0: c<string>;");
     assert!(e.msg.contains("int or float"), "{e}");
 }
 
@@ -197,9 +208,9 @@ fn deep_nesting_is_an_error_not_a_crash() {
 
 #[test]
 fn core_aspects_only_in_core_schema() {
-    let e = parse("c.osis", "schema 0x00000000000000000000000000000000;\nrevision 1;\naspect /a/b: int;").unwrap_err();
+    let e = parse("c.osis", "schema 0x00000000000000000000000000000000;\nrevision 1;\naspect a:b.0: int;").unwrap_err();
     assert!(e.msg.contains("core AKs"), "{e}");
-    let s = parse("c.osis", "schema 0x00000000000000000000000000000000;\nrevision 1;\naspect /a: int;").unwrap();
+    let s = parse("c.osis", "schema 0x00000000000000000000000000000000;\nrevision 1;\naspect a.0: int;").unwrap();
     assert_eq!(s.id, SchemaId([0; 16]));
 }
 

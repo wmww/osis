@@ -29,7 +29,7 @@ impl DeleteSecret {
         &self.seed
     }
 
-    /// The delete verification key, listed in headers and published in `/keys`.
+    /// The delete verification key, listed in headers and published in `keys.0`.
     pub fn verifying_key(&self) -> VerifyingKey {
         VerifyingKey(ed25519_dalek::VerifyingKey::from(&self.esk))
     }

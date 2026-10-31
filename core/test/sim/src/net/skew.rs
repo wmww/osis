@@ -22,7 +22,7 @@ pub static SKEW1: StaticSchema = StaticSchema::new(
 schema 0x51a0000000000000000000000000005b;
 revision 1;
 type rec = struct { 0 a: string };
-aspect /k/rec: rec;
+aspect k:rec.0: rec;
 "#,
 );
 
@@ -33,14 +33,14 @@ pub static SKEW2: StaticSchema = StaticSchema::new(
 schema 0x51a0000000000000000000000000005b;
 revision 2;
 type rec = struct { 0 a: string, 1 b: string = "" };
-aspect /k/rec: rec;
-aspect /k/new: string;
+aspect k:rec.0: rec;
+aspect k:new.0: string;
 "#,
 );
 
-pub const REC1: Aspect<Value> = Aspect::new("/k/rec", &SKEW1);
-pub const REC2: Aspect<Value> = Aspect::new("/k/rec", &SKEW2);
-pub const NEW2: Aspect<Value> = Aspect::new("/k/new", &SKEW2);
+pub const REC1: Aspect<Value> = Aspect::new("k:rec.0", &SKEW1);
+pub const REC2: Aspect<Value> = Aspect::new("k:rec.0", &SKEW2);
+pub const NEW2: Aspect<Value> = Aspect::new("k:new.0", &SKEW2);
 
 fn rec(fields: &[(i64, &str)]) -> Value {
     Value::Map(fields.iter().map(|(k, v)| (Value::Int(*k), Value::Str((*v).into()))).collect::<BTreeMap<_, _>>())
@@ -158,7 +158,7 @@ pub fn newer_schema(seed: u64) -> Res<Report> {
     let t = sim.item(a, g)?;
     sim.reconnect_all();
     sim.quiet(40)?;
-    // separate commits: compacting /k/rec then drops whole commits
+    // separate commits: compacting k:rec.0 then drops whole commits
     let mut m = Mutation::new();
     m.set(t, &REC2, &rec(&[(0, "n"), (1, "nb")])).map_err(|e| sim.fail(e.to_string()))?;
     sim.commit(n, m)?;

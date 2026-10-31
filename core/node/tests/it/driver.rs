@@ -49,7 +49,7 @@ async fn call<R: Send + 'static>(ctl: &mpsc::UnboundedSender<Control>, f: impl F
 }
 
 fn read(s: &mut SyncEngine, t: Tid) -> Option<Value> {
-    s.engine_mut().get(&t, &osis_base::Ak::new("/t/reg").unwrap()).unwrap()
+    s.engine_mut().get(&t, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap()
 }
 
 /// Two nodes of one group under the tokio driver converge through the host's driver: the
@@ -117,7 +117,7 @@ fn s_(x: &str) -> Value {
     Value::Str(x.into())
 }
 
-/// How the nodes of `converge_p2p` find each other besides `/reach`.
+/// How the nodes of `converge_p2p` find each other besides `reach.0`.
 pub enum Direct<'a> {
     None,
     /// Each also listens at its URL with a fresh LAN key (`SyncEngine::lan_secret`) and the other hears
@@ -130,8 +130,8 @@ pub enum Direct<'a> {
 
 /// Two holders of a group whose label names no host converge peer to peer under the tokio
 /// driver: each listens on its endpoint with its dialable secret, publishes the listener's key
-/// in `/reach`, dials the other at `peer://` and serves the other's sessions (co-reader peer).
-/// `/reach` carries `relays` and no address; `direct` says how else the nodes find each other
+/// in `reach.0`, dials the other at `peer://` and serves the other's sessions (co-reader peer).
+/// `reach.0` carries `relays` and no address; `direct` says how else the nodes find each other
 /// (spec/sync.md §10).
 pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &str, relays: Vec<String>, direct: Direct<'_>) {
     let mut net = Net::new();
@@ -272,7 +272,7 @@ async fn driver_lan_loop_ipv6_localhost_spec_sync_10() {
     converge_p2p(Iroh::new(), "peer://127.0.0.1:0", Iroh::new(), "peer://127.0.0.1:0", vec![], Direct::Loop([cfg(base, base + 1), cfg(base + 1, base)])).await;
 }
 
-// spec/sync.md §10 (the proven route first): two nodes whose `/reach` names only a relay on
+// spec/sync.md §10 (the proven route first): two nodes whose `reach.0` names only a relay on
 // localhost also run the LAN loop: whatever route came up first, each ends on the other's LAN
 // route alone (a relay connection is replaced once the LAN one is up) (tier 2).
 // Run: `cargo test-net --test it driver:: -- --ignored`.
@@ -291,7 +291,7 @@ async fn driver_lan_replaces_relay_localhost_spec_sync_10() {
 }
 
 // spec/sync.md §10: two nodes over iroh reach each other through a self-hosted relay on
-// localhost, the only route `/reach` names (tier 2).
+// localhost, the only route `reach.0` names (tier 2).
 // Run: `cargo test-net --test it driver:: -- --ignored`.
 #[cfg(feature = "relay")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

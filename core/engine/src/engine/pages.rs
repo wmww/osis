@@ -1575,7 +1575,7 @@ mod tests {
     fn dropped_body_unindexed_spec_commits_5() {
         let mut rng = osis_crypto::SeededRng::from_u64(80);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([5; 15]), osis_base::Ak::new("/app/keys").unwrap());
+        let (tid, ak) = (Tid::from_bytes([5; 15]), osis_base::Ak::new("app:keys.0").unwrap());
         let node = Source::node(Tid::from_bytes([1; 15]));
         let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), node.clone(), 1);
         let body = create(&mut w, &AnyView, &ints(6000, 1)).unwrap();
@@ -1610,7 +1610,7 @@ mod tests {
     fn strip_touched_nested_rows_spec_commits_5() {
         let mut rng = osis_crypto::SeededRng::from_u64(82);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([7; 15]), osis_base::Ak::new("/app/nest").unwrap());
+        let (tid, ak) = (Tid::from_bytes([7; 15]), osis_base::Ak::new("app:nest.0").unwrap());
         let a = Source::node(Tid::from_bytes([1; 15]));
         let b = Source::node(Tid::from_bytes([2; 15]));
         let outer = |n: i64| Value::Map([(Value::Str("x".into()), ints(n, 1)), (Value::Str("y".into()), ints(n, 2))].into_iter().collect());
@@ -1650,7 +1650,7 @@ mod tests {
     fn set_value_index_spec_crdt_5_5() {
         let mut rng = osis_crypto::SeededRng::from_u64(81);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([6; 15]), osis_base::Ak::new("/app/set").unwrap());
+        let (tid, ak) = (Tid::from_bytes([6; 15]), osis_base::Ak::new("app:set.0").unwrap());
         let node = Source::node(Tid::from_bytes([1; 15]));
         let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), node.clone(), 1);
         let body = create(&mut w, &AnyView, &Value::Set((0..6000).map(Value::Int).collect())).unwrap();
@@ -1700,7 +1700,7 @@ mod tests {
         use osis_base::Float;
         let mut rng = osis_crypto::SeededRng::from_u64(177);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([3; 15]), osis_base::Ak::new("/app/s").unwrap());
+        let (tid, ak) = (Tid::from_bytes([3; 15]), osis_base::Ak::new("app:s.0").unwrap());
         let nodes = [Source::node(Tid::from_bytes([1; 15])), Source::node(Tid::from_bytes([2; 15]))];
         let link = |h: u8, b: u8| Value::Link(osis_base::Link { hash: [h; 32], blob: osis_base::BlobId([b; 32]), suite: 1, key: [b; 32] });
         let pool = |i: u64| -> Value {
@@ -1791,7 +1791,7 @@ mod tests {
     fn lazy_nested_paging_spec_requirements_scale() {
         let mut rng = osis_crypto::SeededRng::from_u64(77);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([3; 15]), osis_base::Ak::new("/app/nested").unwrap());
+        let (tid, ak) = (Tid::from_bytes([3; 15]), osis_base::Ak::new("app:nested.0").unwrap());
         let node = Source::node(Tid::from_bytes([1; 15]));
         let big_set = Value::Set((0..2000).map(|i| Value::Str(format!("s{i}"))).collect());
         let v = Value::Map(
@@ -1994,7 +1994,7 @@ mod tests {
     fn seq_placement_run_with(text: bool, n: u64, reset: bool) {
         let mut rng = osis_crypto::SeededRng::from_u64(181);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([7; 15]), osis_base::Ak::new("/app/seq").unwrap());
+        let (tid, ak) = (Tid::from_bytes([7; 15]), osis_base::Ak::new("app:seq.0").unwrap());
         let nodes = [Source::node(Tid::from_bytes([1; 15])), Source::node(Tid::from_bytes([2; 15]))];
         let view = SeqView::Root(text);
         let field = || vec![PathSeg::Field(1)];
@@ -2254,7 +2254,7 @@ mod tests {
     fn seq_cold_edits_keep_placement_spec_crdt_6_1() {
         let mut rng = osis_crypto::SeededRng::from_u64(187);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("/app/seq").unwrap());
+        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
         let nodes = [Source::node(Tid::from_bytes([1; 15])), Source::node(Tid::from_bytes([2; 15]))];
         let view = SeqView::Root(true);
         let field = || vec![PathSeg::Field(1)];
@@ -2397,7 +2397,7 @@ mod tests {
     fn seq_index_segment_on_pages_spec_crdt_5_7() {
         let mut rng = osis_crypto::SeededRng::from_u64(193);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("/app/seq").unwrap());
+        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
         let node = Source::node(Tid::from_bytes([1; 15]));
         let view = SeqView::Root(false);
         let mut ts = 1u64 << 16;
@@ -2472,7 +2472,7 @@ mod tests {
     fn seq_whole_session_and_hostile_delta_spec_crdt_6_2() {
         let mut rng = osis_crypto::SeededRng::from_u64(191);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("/app/seq").unwrap());
+        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
         let me = Source::node(Tid::from_bytes([1; 15]));
         let view = SeqView::Root(true);
         let field = || vec![PathSeg::Field(1)];
@@ -2560,7 +2560,7 @@ mod tests {
     fn seq_placement_rebuilt_spec_crdt_6() {
         let mut rng = osis_crypto::SeededRng::from_u64(185);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([8; 15]), osis_base::Ak::new("/app/seq").unwrap());
+        let (tid, ak) = (Tid::from_bytes([8; 15]), osis_base::Ak::new("app:seq.0").unwrap());
         let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), Source::node(Tid::from_bytes([1; 15])), 1);
         let st = create(&mut w, &SeqView::Root(true), &seq_value(true, 6_000)).unwrap();
         let want = vis_whole(&st);
@@ -2613,7 +2613,7 @@ mod tests {
     fn seq_placement_damaged_rows_spec_crdt_6() {
         let mut rng = osis_crypto::SeededRng::from_u64(197);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([7; 15]), osis_base::Ak::new("/app/seq").unwrap());
+        let (tid, ak) = (Tid::from_bytes([7; 15]), osis_base::Ak::new("app:seq.0").unwrap());
         let me = Source::node(Tid::from_bytes([1; 15]));
         let view = SeqView::Root(true);
         let field = || vec![PathSeg::Field(1)];

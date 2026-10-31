@@ -281,7 +281,7 @@ fn no_reupload_ping_pong_spec_sync_6() {
     assert_eq!(net.read(b, t), Some(s("v3")));
 }
 
-// spec/sync.md §3 (projection, entitlement), spec/commits.md §4 (pending on `/created` only
+// spec/sync.md §3 (projection, entitlement), spec/commits.md §4 (pending on `created.0` only
 // for things whose deltas the node holds or syncs): one commit touching a shared thing and a
 // private one places only the shared deltas under the group's label; a holder applies them.
 #[test]

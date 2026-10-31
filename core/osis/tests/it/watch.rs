@@ -30,7 +30,7 @@ fn thing(db: &Osis) -> osis::Tid {
 #[test]
 fn on_change_initial_then_local() {
     let db = db(1);
-    let k = ak("/t/x");
+    let k = ak("t:x.0");
     let t = thing(&db);
     db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap();
     let (tx, rx) = channel();
@@ -104,7 +104,7 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
 #[test]
 fn subscription_raii_and_detach() {
     let db = db(1);
-    let k = ak("/t/x");
+    let k = ak("t:x.0");
     let t = thing(&db);
     let (tx, rx) = channel();
     let tx2 = tx.clone();
@@ -125,7 +125,7 @@ fn subscription_raii_and_detach() {
 #[test]
 fn api_usable_from_callback() {
     let db = db(1);
-    let (a, b) = (ak("/t/a"), ak("/t/b"));
+    let (a, b) = (ak("t:a.0"), ak("t:b.0"));
     let t = thing(&db);
     let (tx, rx) = channel();
     let b2 = b.clone();
@@ -148,17 +148,17 @@ fn api_usable_from_callback() {
 fn watch_thing_all_aspects() {
     let db = db(1);
     let t = thing(&db);
-    db.write_with(|w| w.at(t, ak("/t/a")).set(&Value::Int(1))).unwrap();
+    db.write_with(|w| w.at(t, ak("t:a.0")).set(&Value::Int(1))).unwrap();
     let (tx, rx) = channel();
     let _s = db.watch_thing(t, move |_, c| tx.send((c.ak.as_str().to_string(), c.source == Source::Initial, c.value)).unwrap());
-    db.write_with(|w| w.at(t, ak("/t/b")).set(&Value::Int(2))).unwrap();
+    db.write_with(|w| w.at(t, ak("t:b.0")).set(&Value::Int(2))).unwrap();
     db.settle();
     let all: Vec<_> = rx.try_iter().collect();
     let initial: std::collections::BTreeSet<&str> = all.iter().filter(|r| r.1).map(|r| r.0.as_str()).collect();
     let present = db.aspects(t).unwrap();
-    assert_eq!(initial, present.iter().map(|a| a.as_str()).filter(|a| *a != "/t/b").collect());
-    assert!(initial.contains(&"/t/a"));
-    assert_eq!(all.iter().filter(|r| !r.1).cloned().collect::<Vec<_>>(), vec![("/t/b".to_string(), false, Ok(Some(Value::Int(2))))]);
+    assert_eq!(initial, present.iter().map(|a| a.as_str()).filter(|a| *a != "t:b.0").collect());
+    assert!(initial.contains(&"t:a.0"));
+    assert_eq!(all.iter().filter(|r| !r.1).cloned().collect::<Vec<_>>(), vec![("t:b.0".to_string(), false, Ok(Some(Value::Int(2))))]);
 }
 
 // spec/commits.md §6, notes/api.md Watching: an expiry changes a value without a commit;
@@ -167,7 +167,7 @@ fn watch_thing_all_aspects() {
 fn derived_change_on_expiry() {
     let c = clock();
     let db = Osis::create(cfg(1, MemStore::new(), &c)).unwrap().0;
-    let k = ak("/t/x");
+    let k = ak("t:x.0");
     let t = thing(&db);
     db.write_with(|w| w.at(t, k.clone()).expires_in(Duration::from_secs(5)).set(&Value::Int(1))).unwrap();
     let (tx, rx) = channel();
@@ -206,7 +206,7 @@ fn watch_roster_initial() {
 fn two_nodes_remote_watch() {
     let a = db(1);
     let b = db(2);
-    let k = ak("/t/x");
+    let k = ak("t:x.0");
     let t = thing(&a);
     deliver(&a, &b);
     let (tx, rx) = channel();
@@ -225,7 +225,7 @@ fn two_nodes_remote_watch() {
 /// Blocks the dispatcher inside a callback until the returned sender fires.
 fn block_dispatcher(db: &Osis) -> (osis::Subscription, std::sync::mpsc::Sender<()>) {
     let t = thing(db);
-    let k = ak("/t/gate");
+    let k = ak("t:gate.0");
     let (go_tx, go_rx) = channel::<()>();
     let (in_tx, in_rx) = channel();
     let go_rx = Mutex::new(go_rx);
@@ -249,7 +249,7 @@ fn block_dispatcher(db: &Osis) -> (osis::Subscription, std::sync::mpsc::Sender<(
 #[test]
 fn coalesced_call_carries_newest_source() {
     let db = db(1);
-    let k = ak("/t/x");
+    let k = ak("t:x.0");
     let t = thing(&db);
     let (tx, rx) = channel();
     let _s = db.at(t, k.clone()).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
@@ -274,7 +274,7 @@ fn errors_not_coalesced() {
     let mut cf = cfg(1, MemStore::new(), &c);
     cf.materialize_limit = 1000;
     let db = Osis::create(cf).unwrap().0;
-    let k = ak("/t/big");
+    let k = ak("t:big.0");
     let t = thing(&db);
     let (tx, rx) = channel();
     let _s = db.at(t, k.clone()).on_change(move |_, c| tx.send(c.value).unwrap()).unwrap();
@@ -293,7 +293,7 @@ fn errors_not_coalesced() {
 #[test]
 fn panicking_callback_is_a_diagnostic() {
     let db = db(1);
-    let k = ak("/t/x");
+    let k = ak("t:x.0");
     let t = thing(&db);
     let (dtx, drx) = channel();
     let _d = db.on_diagnostic(move |_, d| dtx.send(d.kind).unwrap());
@@ -311,7 +311,7 @@ fn panicking_callback_is_a_diagnostic() {
 #[test]
 fn drop_waits_for_call_in_flight() {
     let db = db(1);
-    let k = ak("/t/x");
+    let k = ak("t:x.0");
     let t = thing(&db);
     let done = Arc::new(Mutex::new(0));
     let d2 = done.clone();
@@ -344,7 +344,7 @@ fn drop_waits_for_call_in_flight() {
 #[test]
 fn watch_follows_move() {
     let db = db(1);
-    let k = ak("/t/x");
+    let k = ak("t:x.0");
     let t = thing(&db);
     let owner2 = thing(&db);
     let (tx, rx) = channel();
@@ -368,7 +368,7 @@ fn mistyped_value_watches_absent() {
     let (tx, rx) = channel();
     let _s = db.at(t, notes::TITLE).on_change(move |_, c| tx.send(c.value).unwrap()).unwrap();
     assert_eq!(recv(&rx), Ok(Some("a".to_string())));
-    db.write_with(|x| x.at(t, ak("/note/title")).set(&Value::Int(3))).unwrap();
+    db.write_with(|x| x.at(t, ak("note:title.0")).set(&Value::Int(3))).unwrap();
     assert_eq!(recv(&rx), Ok(None));
     db.settle();
     assert!(w.try_changed());
@@ -399,7 +399,7 @@ fn pump_dispatcher_runs_callbacks_in_settle() {
     let db = Osis::create(c).unwrap().0;
     weak.set(db.downgrade()).unwrap();
     db.settle();
-    let k = ak("/t/x");
+    let k = ak("t:x.0");
     let t = thing(&db);
     db.settle();
     let base = wakes.load(Ordering::SeqCst);

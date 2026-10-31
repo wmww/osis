@@ -2,7 +2,7 @@
 //! the peers that dial it, through osis-proto's host engine over its own label state
 //! (`PeerStore`, a `LabelStore` over the sync state's entries and the engine's blobs). Opens,
 //! stamps and deposits are checked as a host checks them, against the registration path
-//! recorded in `/label` (the deepest recorded step is the head). Accepted entries go through the
+//! recorded in `label.0` (the deepest recorded step is the head). Accepted entries go through the
 //! same path as downloaded ones; the log is in memory (`Feed`, a fresh log ID per start, so a
 //! peer's old cursor replays). A peer's deletion hides the entry from peers only, a registration
 //! extends the served path in memory: this node's own state follows its own rules. Entries this
@@ -528,7 +528,7 @@ impl SyncEngine {
     }
 
     /// The labels this node serves: those it syncs, at the deepest recorded step (and the steps
-    /// peers registered here since start). Cached until `/label`, role or the peer steps
+    /// peers registered here since start). Cached until `label.0`, role or the peer steps
     /// change.
     pub(crate) fn served_labels(&mut self) -> Arc<BTreeMap<LabelId, ServedLabel>> {
         if let Some(c) = &self.served_cache {

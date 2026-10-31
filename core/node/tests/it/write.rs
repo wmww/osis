@@ -18,7 +18,7 @@ fn peer(seed: u64) -> Peer {
 }
 
 // spec/data-model.md §1, §9; spec/permissions.md §4: a new node holds its own thing with
-// `/created`, `/node` and `/keys`.
+// `created.0`, `node.0` and `keys.0`.
 #[test]
 fn node_identity_spec_dm_1() {
     let mut p = peer(1);
@@ -28,9 +28,9 @@ fn node_identity_spec_dm_1() {
     assert!(p.engine.get_typed(&me, &ct::NODE).unwrap().is_some());
     let keys = p.engine.get_typed(&me, &ct::KEYS).unwrap().unwrap();
     assert!(keys.key.is_some());
-    assert_eq!(p.engine.get(&me, &ak("/tid")).unwrap(), Some(Value::Tid(me)));
+    assert_eq!(p.engine.get(&me, &ak("tid.0")).unwrap(), Some(Value::Tid(me)));
     let aspects = p.engine.aspects(&me).unwrap();
-    assert!(aspects.contains(&ak("/created")) && aspects.contains(&ak("/node")) && aspects.contains(&ak("/keys")));
+    assert!(aspects.contains(&ak("created.0")) && aspects.contains(&ak("node.0")) && aspects.contains(&ak("keys.0")));
     assert_eq!(p.engine.role_on(&me), Some(osis_base::Role::Admin));
 }
 
@@ -43,22 +43,22 @@ fn write_and_read_spec_crdt_4_5() {
     p.drain_events();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
-    let a = ak("/app/title");
+    let a = ak("app:title.0");
     m.set(t, &a, &Value::Str("hello".into())).unwrap();
     let mut map = BTreeMap::new();
     map.insert(Value::Str("x".into()), Value::Int(1));
-    m.set(t, &ak("/app/map"), &Value::Map(map)).unwrap();
+    m.set(t, &ak("app:map.0"), &Value::Map(map)).unwrap();
     let id = p.commit(m).unwrap().unwrap();
     assert_eq!(p.engine.get(&t, &a).unwrap(), Some(Value::Str("hello".into())));
     let ev = p.drain_events();
     let Some(Event::Applied { id: eid, origin, changed, .. }) = ev.iter().find(|e| matches!(e, Event::Applied { .. })) else { panic!("{ev:?}") };
     assert_eq!((*eid, *origin), (id, Origin::Local));
-    assert!(changed.contains(&(t, a.clone())) && changed.contains(&(t, ak("/created"))));
+    assert!(changed.contains(&(t, a.clone())) && changed.contains(&(t, ak("created.0"))));
     // path op into the map, then a no-op set writes nothing
     let mut m = Mutation::new();
-    m.op(t, &ak("/app/map"), PathOp { path: vec![PathSeg::Key(Value::Str("y".into()))], op: Op::Set(Value::Int(2)) }).unwrap();
+    m.op(t, &ak("app:map.0"), PathOp { path: vec![PathSeg::Key(Value::Str("y".into()))], op: Op::Set(Value::Int(2)) }).unwrap();
     p.commit(m).unwrap().unwrap();
-    let v = p.engine.get(&t, &ak("/app/map")).unwrap().unwrap();
+    let v = p.engine.get(&t, &ak("app:map.0")).unwrap().unwrap();
     let Value::Map(v) = v else { panic!() };
     assert_eq!(v.len(), 2);
     let mut m = Mutation::new();
@@ -78,15 +78,15 @@ fn counters_contiguous_spec_crdt_2_3() {
     let me = p.engine.tid();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
-    m.set(t, &ak("/app/n"), &Value::Int(0)).unwrap();
+    m.set(t, &ak("app:n.0"), &Value::Int(0)).unwrap();
     p.commit(m).unwrap();
     let mut ranges = Vec::new();
     for i in 1..5 {
         let mut m = Mutation::new();
-        m.set(t, &ak("/app/n"), &Value::Int(i)).unwrap();
+        m.set(t, &ak("app:n.0"), &Value::Int(i)).unwrap();
         let id = p.commit(m).unwrap().unwrap();
         let h = p.engine.header(&id).unwrap();
-        let a = h.aspects.iter().find(|a| a.ak.as_str() == "/app/n").unwrap();
+        let a = h.aspects.iter().find(|a| a.ak.as_str() == "app:n.0").unwrap();
         ranges.push((a.lo, a.hi));
     }
     assert_eq!(ranges, vec![(2, 3), (3, 4), (4, 5), (5, 6)]);
@@ -100,10 +100,10 @@ fn commit_form_spec_commits_3() {
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
     m.commit_form();
-    m.set(t, &ak("/app/x"), &Value::Int(7)).unwrap();
+    m.set(t, &ak("app:x.0"), &Value::Int(7)).unwrap();
     let id = p.commit(m).unwrap().unwrap();
     assert_eq!(p.engine.header(&id).unwrap().form, osis_commit::Form::Commit);
-    assert_eq!(p.engine.get(&t, &ak("/app/x")).unwrap(), Some(Value::Int(7)));
+    assert_eq!(p.engine.get(&t, &ak("app:x.0")).unwrap(), Some(Value::Int(7)));
 }
 
 // spec/permissions.md §1: writing a thing needs write on it; an unknown thing is refused.
@@ -115,21 +115,21 @@ fn authority_checked_before_signing_spec_perm_1() {
         let me = a.engine.tid();
         let mut m = Mutation::new();
         let t = a.engine.new_thing(&mut m, me);
-        m.set(t, &ak("/app/x"), &Value::Int(1)).unwrap();
+        m.set(t, &ak("app:x.0"), &Value::Int(1)).unwrap();
         a.commit(m).unwrap();
         t
     };
     let mut m = Mutation::new();
-    m.set(ta, &ak("/app/x"), &Value::Int(2)).unwrap();
+    m.set(ta, &ak("app:x.0"), &Value::Int(2)).unwrap();
     assert!(matches!(b.commit(m), Err(osis_node::Error::UnknownThing(_))));
     // after receiving the thing, b still holds no role on it
     for id in a.engine.commit_ids() {
         let pk = a.engine.package(&id).unwrap().unwrap();
         b.engine.ingest(&pk.bytes, pk.blobs).unwrap();
     }
-    assert_eq!(b.engine.get(&ta, &ak("/app/x")).unwrap(), Some(Value::Int(1)));
+    assert_eq!(b.engine.get(&ta, &ak("app:x.0")).unwrap(), Some(Value::Int(1)));
     let mut m = Mutation::new();
-    m.set(ta, &ak("/app/x"), &Value::Int(2)).unwrap();
+    m.set(ta, &ak("app:x.0"), &Value::Int(2)).unwrap();
     assert!(matches!(b.commit(m), Err(osis_node::Error::Permission { .. })));
 }
 
@@ -141,15 +141,15 @@ fn restart_keeps_state() {
     let me = p.engine.tid();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
-    m.set(t, &ak("/app/x"), &Value::Str("kept".into())).unwrap();
+    m.set(t, &ak("app:x.0"), &Value::Str("kept".into())).unwrap();
     p.commit(m).unwrap();
     let n = p.engine.commit_ids().len();
     p.restart(70).unwrap();
     assert_eq!(p.engine.tid(), me);
     assert_eq!(p.engine.commit_ids().len(), n);
-    assert_eq!(p.engine.get(&t, &ak("/app/x")).unwrap(), Some(Value::Str("kept".into())));
+    assert_eq!(p.engine.get(&t, &ak("app:x.0")).unwrap(), Some(Value::Str("kept".into())));
     let mut m = Mutation::new();
-    m.set(t, &ak("/app/x"), &Value::Str("again".into())).unwrap();
+    m.set(t, &ak("app:x.0"), &Value::Str("again".into())).unwrap();
     let id = p.commit(m).unwrap().unwrap();
     let h = p.engine.header(&id).unwrap();
     assert_eq!(h.aspects[0].lo, 2);
@@ -166,7 +166,7 @@ fn paged_state_edits_and_restart() {
     let me = p.engine.tid();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
-    let (am, aset) = (ak("/app/big"), ak("/app/bigset"));
+    let (am, aset) = (ak("app:big.0"), ak("app:bigset.0"));
     let pad = "x".repeat(40);
     let mut model: BTreeMap<Value, Value> = (0..3000i64).map(|i| (Value::Int(i), Value::Str(format!("{pad}{i}")))).collect();
     let mut smodel: std::collections::BTreeSet<Value> = (0..3000i64).map(|i| Value::Str(format!("{pad}{i}"))).collect();
@@ -264,7 +264,7 @@ fn new_chunk_bytes(old: &[u8], new: &[u8]) -> usize {
 fn large_edit_reuses_chunks_spec_sync_1() {
     let mut p = peer(12);
     let me = p.engine.tid();
-    let a = ak("/app/file");
+    let a = ak("app:file.0");
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
     let mut cur = noise(4 << 20, 1);
@@ -304,7 +304,7 @@ fn large_edit_reuses_chunks_spec_sync_1() {
 fn large_list_insert_chunked_spec_dm_6() {
     let mut p = peer(13);
     let me = p.engine.tid();
-    let (key, a) = (&common::LIST, ak("/t/list"));
+    let (key, a) = (&common::LIST, ak("t:list.0"));
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
     m.set(t, key, &Value::List(vec![common::s("a")])).unwrap();
@@ -329,9 +329,9 @@ const WIDE_SRC: &str = concat!(
     "30 f30: string, 31 f31: string, 32 f32: string, 33 f33: string, 34 f34: string, 35 f35: string, 36 f36: string, 37 f37: string, 38 f38: string, 39 f39: string, ",
     "40 f40: string, 41 f41: string, 42 f42: string, 43 f43: string, 44 f44: string, 45 f45: string, 46 f46: string, 47 f47: string, 48 f48: string, 49 f49: string, ",
     "50 f50: string, 51 f51: string, 52 f52: string, 53 f53: string, 54 f54: string, 55 f55: string, 56 f56: string, 57 f57: string, 58 f58: string, 59 f59: string, ",
-    "60 f60: string, 61 f61: string, 62 f62: string, 63 f63: string, 64 f64: string };\naspect /w/wide: wide;\n"
+    "60 f60: string, 61 f61: string, 62 f62: string, 63 f63: string, 64 f64: string };\naspect w:wide.0: wide;\n"
 );
-const WIDE_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/w/wide", &WIDE);
+const WIDE_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("w:wide.0", &WIDE);
 
 // spec/commits.md §1 (delta fits a blob), spec/crdt.md §8: a struct of many near-`CHUNK_THRESHOLD`
 // registers (no field chunked) outgrows one blob, so its field map is paged: the write commits,
@@ -343,7 +343,7 @@ fn wide_struct_paged_fits_spec_commits_1() {
     let me = p.engine.tid();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
-    m.set(t, &ak("/app/x"), &Value::Int(1)).unwrap();
+    m.set(t, &ak("app:x.0"), &Value::Int(1)).unwrap();
     p.commit(m).unwrap().unwrap();
     let field = "w".repeat(CHUNK_THRESHOLD - 16);
     let wide = |n: i64| Value::Map((0..65).map(|i| (Value::Int(i), Value::Str(if i < n { field.clone() } else { String::new() }))).collect());
@@ -352,7 +352,7 @@ fn wide_struct_paged_fits_spec_commits_1() {
     m.set(t, &WIDE_AK, &wide(65)).unwrap();
     let id = p.commit(m).unwrap().unwrap();
     assert!(!p.engine.package(&id).unwrap().unwrap().blobs.is_empty(), "the field map pages");
-    let Some(Value::Map(got)) = p.engine.get(&t, &ak("/w/wide")).unwrap() else { panic!() };
+    let Some(Value::Map(got)) = p.engine.get(&t, &ak("w:wide.0")).unwrap() else { panic!() };
     assert_eq!(got.values().filter(|v| **v == Value::Str(field.clone())).count(), 65);
 }
 
@@ -363,7 +363,7 @@ fn wide_struct_paged_fits_spec_commits_1() {
 fn large_list_edit_chunked_spec_dm_6() {
     let mut p = peer(14);
     let me = p.engine.tid();
-    let (key, a) = (&common::LIST, ak("/t/list"));
+    let (key, a) = (&common::LIST, ak("t:list.0"));
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
     let big1 = Value::Str("first ".repeat(50_000));
@@ -413,7 +413,7 @@ fn paged_list_edits_match_whole_spec_crdt_5_7() {
 fn list_edits_match_whole(seed: u64, with_large: bool) {
     let small = |id: usize| Value::Str(format!("item {id} of the list"));
     let big = |id: usize| if with_large { Value::Str(format!("L{id}:{}", "x".repeat(osis_base::format::CHUNK_THRESHOLD + 10))) } else { Value::Str(format!("item {id} (not large)")) };
-    let (key, a) = (&common::LIST, ak("/t/list"));
+    let (key, a) = (&common::LIST, ak("t:list.0"));
     let (mut cold, mut whole) = (peer(seed), peer(seed));
     let me = cold.engine.tid();
     let mut model: Vec<Value> = (0..3000).map(small).collect();
@@ -496,7 +496,7 @@ fn list_edits_match_whole(seed: u64, with_large: bool) {
 fn edit_of_gone_item_lists_nothing_spec_commits_1() {
     let mut p = peer(15);
     let me = p.engine.tid();
-    let (key, a) = (&common::LIST, ak("/t/list"));
+    let (key, a) = (&common::LIST, ak("t:list.0"));
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
     m.set(t, key, &Value::List(vec![common::s("a"), common::s("x"), common::s("b")])).unwrap();
@@ -537,7 +537,7 @@ fn large_values_by_value_spec_crdt_5_5() {
     for (seed, n) in [(40u64, 10i64), (41, 2000)] {
         let mut p = peer(seed);
         let me = p.engine.tid();
-        let a = ak("/app/set");
+        let a = ak("app:set.0");
         let mut m = Mutation::new();
         let t = p.engine.new_thing(&mut m, me);
         let mut v: std::collections::BTreeSet<Value> = (0..n).map(|i| Value::Str(format!("e{i}"))).collect();
@@ -555,7 +555,7 @@ fn large_values_by_value_spec_crdt_5_5() {
         assert!(op_at(&mut p, t, &a, vec![], Op::Remove(large("L"))), "n {n}: removed again");
         assert_eq!(links(&p.engine.get(&t, &a).unwrap().unwrap()), 0);
         // a map with a large key
-        let a = ak("/app/map");
+        let a = ak("app:map.0");
         let mut m = Mutation::new();
         let mut kv: BTreeMap<Value, Value> = (0..n).map(|i| (Value::Int(i), Value::Int(i))).collect();
         kv.insert(large("K"), Value::Int(-1));
@@ -572,8 +572,8 @@ fn large_values_by_value_spec_crdt_5_5() {
     }
 }
 
-static TEXTS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("write-text.osis", "schema 0x7e577e577e577e577e577e577e577e50; revision 1; aspect /w/text: text;\n");
-const TEXT_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/w/text", &TEXTS);
+static TEXTS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("write-text.osis", "schema 0x7e577e577e577e577e577e577e577e50; revision 1; aspect w:text.0: text;\n");
+const TEXT_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("w:text.0", &TEXTS);
 
 // spec/crdt.md §5.7 (ops by index), §6.1 (a new insert lands right after its anchor), §4.6
 // (undo), §8: local inserts and deletes by index into a paged text, each in a new session, load a
@@ -584,7 +584,7 @@ const TEXT_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/w/text", 
 fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
     let mut p = peer(9);
     let me = p.engine.tid();
-    let a = ak("/w/text");
+    let a = ak("w:text.0");
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
     // 4-byte chars: the state is above PAGE_TARGET, so the text is paged
@@ -666,7 +666,7 @@ fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
 fn paged_text_reset_then_edits_by_index_spec_crdt_5_7() {
     let mut p = peer(11);
     let me = p.engine.tid();
-    let a = ak("/w/text");
+    let a = ak("w:text.0");
     let text = |n: u32, off: u32| -> Vec<char> { (0..n).map(|i| char::from_u32(0x1F600 + (i + off) % 64).unwrap()).collect() };
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);

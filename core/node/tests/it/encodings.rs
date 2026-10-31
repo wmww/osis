@@ -49,9 +49,9 @@ fn every_encoding_converges_spec_crdt_5() {
     let bb = states(&mut lp.peers[1].engine, &[t]);
     assert_eq!(a, bb);
     // counter sums every increment: 1+2+3 + 5+6+7
-    let c = a.iter().find(|x| x.1.as_str() == "/t/count").unwrap();
+    let c = a.iter().find(|x| x.1.as_str() == "t:count.0").unwrap();
     assert_eq!(c.2, Some(Value::Int(24)));
-    let tags = a.iter().find(|x| x.1.as_str() == "/t/tags").unwrap();
+    let tags = a.iter().find(|x| x.1.as_str() == "t:tags.0").unwrap();
     let Some(Value::Set(tags)) = &tags.2 else { panic!() };
     assert_eq!(tags.len(), 6);
     // the states themselves (canonical) agree
@@ -77,7 +77,7 @@ fn paged_delta_spec_crdt_8() {
     let id = lp.peers[0].commit(m).unwrap().unwrap();
     let h = lp.peers[0].engine.header(&id).unwrap();
     assert!(!h.chunks.is_empty(), "paged delta lists its pages");
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/big")).unwrap(), Some(Value::Map(big.clone())));
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:big.0")).unwrap(), Some(Value::Map(big.clone())));
     // without its pages the commit waits; with them it applies
     let pk = lp.packages(0).unwrap().into_iter().find(|p| p.id == id).unwrap();
     for p in lp.packages(0).unwrap() {
@@ -89,8 +89,8 @@ fn paged_delta_spec_crdt_8() {
     assert!(matches!(r, osis_node::Ingested::Pending(_, osis_node::Reason::WaitBlobs)), "{r:?}");
     lp.deliver(1, &pk).unwrap();
     lp.peers[1].engine.reexamine().unwrap();
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/big")).unwrap(), Some(Value::Map(big)));
-    assert_eq!(lp.peers[0].engine.state(&t, &ak("/t/big")).unwrap(), lp.peers[1].engine.state(&t, &ak("/t/big")).unwrap());
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:big.0")).unwrap(), Some(Value::Map(big)));
+    assert_eq!(lp.peers[0].engine.state(&t, &ak("t:big.0")).unwrap(), lp.peers[1].engine.state(&t, &ak("t:big.0")).unwrap());
 }
 
 // spec/crdt.md §5.7: lists and texts through the write path; concurrent inserts converge.
@@ -117,9 +117,9 @@ fn sequences_converge_spec_crdt_5_7() {
     sync(&mut lp, 1, 0);
     let a = states(&mut lp.peers[0].engine, &[t]);
     assert_eq!(a, states(&mut lp.peers[1].engine, &[t]));
-    let l = a.iter().find(|x| x.1.as_str() == "/t/list").unwrap();
+    let l = a.iter().find(|x| x.1.as_str() == "t:list.0").unwrap();
     assert_eq!(l.2, Some(Value::List(vec![s("a"), s("x"), s("b")])));
-    let tx = a.iter().find(|x| x.1.as_str() == "/t/text").unwrap();
+    let tx = a.iter().find(|x| x.1.as_str() == "t:text.0").unwrap();
     assert_eq!(tx.2, Some(s(">hello world")));
 }
 
@@ -135,9 +135,9 @@ fn big_list_insert_fits_blobs_spec_crdt_3_3() {
     let mut m = Mutation::new();
     m.set(t, &LIST, &Value::List(items.clone())).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/list")).unwrap(), Some(Value::List(items.clone())));
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:list.0")).unwrap(), Some(Value::List(items.clone())));
     sync(&mut lp, 0, 1);
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/list")).unwrap(), Some(Value::List(items)));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:list.0")).unwrap(), Some(Value::List(items)));
 }
 
 // spec/data-model.md §6: a large atomic value is a link to a chunk tree; its chunks travel as
@@ -151,13 +151,13 @@ fn large_value_spec_dm_6() {
     m.set(t, &BLOB, &Value::Bytes(data.clone())).unwrap();
     let id = lp.peers[0].commit(m).unwrap().unwrap();
     assert!(!lp.peers[0].engine.header(&id).unwrap().chunks.is_empty());
-    assert!(matches!(lp.peers[0].engine.get(&t, &ak("/t/blob")).unwrap(), Some(Value::Link(_))));
-    assert_eq!(lp.peers[0].engine.get_full(&t, &ak("/t/blob")).unwrap(), Some(Value::Bytes(data.clone())));
+    assert!(matches!(lp.peers[0].engine.get(&t, &ak("t:blob.0")).unwrap(), Some(Value::Link(_))));
+    assert_eq!(lp.peers[0].engine.get_full(&t, &ak("t:blob.0")).unwrap(), Some(Value::Bytes(data.clone())));
     let mut m = Mutation::new();
     m.set(t, &BLOB, &Value::Bytes(data.clone())).unwrap();
     assert_eq!(lp.peers[0].commit(m).unwrap(), None);
     sync(&mut lp, 0, 1);
-    assert_eq!(lp.peers[1].engine.get_full(&t, &ak("/t/blob")).unwrap(), Some(Value::Bytes(data)));
+    assert_eq!(lp.peers[1].engine.get_full(&t, &ak("t:blob.0")).unwrap(), Some(Value::Bytes(data)));
 }
 
 // spec/crdt.md §4.1, §8; notes/local-store.md, Units; spec/requirements.md, Scale: a large map in a field of a struct
@@ -197,13 +197,13 @@ fn paged_struct_field_converges() {
             lp.peers[1].restart(77).unwrap();
         }
         for p in 0..2 {
-            assert_eq!(lp.peers[p].engine.get(&t, &ak("/t/book")).unwrap(), Some(book(&model, &note)), "round {round} peer {p}");
+            assert_eq!(lp.peers[p].engine.get(&t, &ak("t:book.0")).unwrap(), Some(book(&model, &note)), "round {round} peer {p}");
         }
     }
-    let x = lp.peers[0].engine.state(&t, &ak("/t/book")).unwrap();
-    assert_eq!(x, lp.peers[1].engine.state(&t, &ak("/t/book")).unwrap());
+    let x = lp.peers[0].engine.state(&t, &ak("t:book.0")).unwrap();
+    assert_eq!(x, lp.peers[1].engine.state(&t, &ak("t:book.0")).unwrap());
     let k = s("k5");
-    assert_eq!(lp.peers[1].engine.get_at(&t, &ak("/t/book"), &[PathSeg::Field(0), PathSeg::Key(k.clone())]).unwrap(), model.get(&k).cloned());
+    assert_eq!(lp.peers[1].engine.get_at(&t, &ak("t:book.0"), &[PathSeg::Field(0), PathSeg::Key(k.clone())]).unwrap(), model.get(&k).cloned());
 }
 
 // spec/crdt.md §8 (the join of a state's pages is the state), notes/local-store.md Units: a
@@ -226,17 +226,17 @@ fn range_delta_rewrites_its_pages_spec_crdt_8() {
     lp.peers[1].commit(m).unwrap().unwrap();
     sync(&mut lp, 1, 0);
     let want: String = text.chars().take(5_000).chain(text.chars().skip(55_000)).collect();
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/text")).unwrap(), Some(s(&want)));
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:text.0")).unwrap(), Some(s(&want)));
     // pages hold what a snapshot carries (deleted chars dropped): compare those bytes
     let carried = |f: Option<osis_crdt::Fragment>| {
         let cx = osis_crdt::DeltaCtx { ts: osis_base::Ts::from_u64(1 << 40).unwrap(), own: osis_crdt::Source::node(b), range: osis_crdt::CounterRange::EMPTY, kind: osis_crdt::DeltaKind::Snapshot };
         let snap = osis_crdt::Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: f.unwrap(), frontiers: Default::default() };
         osis_crdt::encode_snapshot(&snap, &cx, None).unwrap()
     };
-    let before = carried(lp.peers[0].engine.state(&t, &ak("/t/text")).unwrap());
+    let before = carried(lp.peers[0].engine.state(&t, &ak("t:text.0")).unwrap());
     lp.peers[0].restart(140).unwrap();
-    assert!(carried(lp.peers[0].engine.state(&t, &ak("/t/text")).unwrap()) == before, "state after restart");
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/text")).unwrap(), Some(s(&want)));
+    assert!(carried(lp.peers[0].engine.state(&t, &ak("t:text.0")).unwrap()) == before, "state after restart");
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:text.0")).unwrap(), Some(s(&want)));
 }
 
 // spec/crdt.md §5.7 (Read: the visible elements in placement order), §6, §8: a read by index
@@ -265,13 +265,13 @@ fn range_reads_by_index_spec_crdt_5_7() {
     sync(&mut lp, 1, 0);
     sync(&mut lp, 0, 1);
     for p in 0..2 {
-        let Some(Value::List(all)) = lp.peers[p].engine.get(&t, &ak("/t/list")).unwrap() else { panic!() };
+        let Some(Value::List(all)) = lp.peers[p].engine.get(&t, &ak("t:list.0")).unwrap() else { panic!() };
         assert_eq!(all.len(), 2501);
         assert!(all.contains(&s("from b")));
         // the edits kept the stored placement: no read lays it out anew
         lp.peers[p].restart(59).unwrap();
         osis_node::costs::take();
-        assert_eq!(lp.peers[p].engine.get_range(&t, &ak("/t/list"), &[], 0..2).unwrap(), Some(Value::List(all[0..2].to_vec())));
+        assert_eq!(lp.peers[p].engine.get_range(&t, &ak("t:list.0"), &[], 0..2).unwrap(), Some(Value::List(all[0..2].to_vec())));
         let loads = osis_node::costs::take().iter().find(|x| x.0 == "state page load").map_or(0, |x| x.2);
         assert!((1..=3).contains(&loads), "kept through the edits: {loads} pages");
         for r in [1195..1210, 1490..1510, 0..3, 2495..2600] {
@@ -279,19 +279,19 @@ fn range_reads_by_index_spec_crdt_5_7() {
             lp.peers[p].restart(60 + r.start as u64).unwrap();
             let want = all.get(r.start.min(all.len())..r.end.min(all.len())).unwrap().to_vec();
             osis_node::costs::take();
-            assert_eq!(lp.peers[p].engine.get_range(&t, &ak("/t/list"), &[], r.clone()).unwrap(), Some(Value::List(want)), "peer {p} {r:?}");
+            assert_eq!(lp.peers[p].engine.get_range(&t, &ak("t:list.0"), &[], r.clone()).unwrap(), Some(Value::List(want)), "peer {p} {r:?}");
             let loads = osis_node::costs::take().iter().find(|x| x.0 == "state page load").map_or(0, |x| x.2);
             assert!((1..=3).contains(&loads), "peer {p} {r:?}: {loads} pages loaded");
         }
         lp.peers[p].restart(70).unwrap();
         osis_node::costs::take();
-        lp.peers[p].engine.get(&t, &ak("/t/list")).unwrap();
+        lp.peers[p].engine.get(&t, &ak("t:list.0")).unwrap();
         let loads = osis_node::costs::take().iter().find(|x| x.0 == "state page load").map_or(0, |x| x.2);
         assert!(loads >= 6, "the whole list: {loads} pages");
         let e = &mut lp.peers[p].engine;
-        assert_eq!(e.get_range(&t, &ak("/t/text"), &[], 6..20).unwrap(), Some(s("world")));
-        assert_eq!(e.get_range(&t, &ak("/t/reg"), &[], 0..2).unwrap(), None);
-        assert_eq!(e.get_range(&t, &ak("/t/short"), &[], 0..2).unwrap(), None);
+        assert_eq!(e.get_range(&t, &ak("t:text.0"), &[], 6..20).unwrap(), Some(s("world")));
+        assert_eq!(e.get_range(&t, &ak("t:reg.0"), &[], 0..2).unwrap(), None);
+        assert_eq!(e.get_range(&t, &ak("t:short.0"), &[], 0..2).unwrap(), None);
     }
 }
 
@@ -306,9 +306,9 @@ fn reversed_range_reads_empty_spec_crdt_5_7() {
     m.set(t, &LIST, &Value::List(items)).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     let reversed = std::ops::Range { start: 10, end: 5 };
-    assert_eq!(lp.peers[0].engine.get_range(&t, &ak("/t/list"), &[], reversed.clone()).unwrap(), Some(Value::List(Vec::new())));
+    assert_eq!(lp.peers[0].engine.get_range(&t, &ak("t:list.0"), &[], reversed.clone()).unwrap(), Some(Value::List(Vec::new())));
     lp.peers[0].restart(7).unwrap();
-    assert_eq!(lp.peers[0].engine.get_range(&t, &ak("/t/list"), &[], reversed.clone()).unwrap(), Some(Value::List(Vec::new())));
+    assert_eq!(lp.peers[0].engine.get_range(&t, &ak("t:list.0"), &[], reversed.clone()).unwrap(), Some(Value::List(Vec::new())));
 }
 
 // spec/crdt.md §5.6 (a removed key reads absent), §5.7: a range read under a removed map key
@@ -323,7 +323,7 @@ fn range_under_removed_key_absent_spec_crdt_5_6() {
     m.op(t, &DOCS, PathOp { path: vec![PathSeg::Key(s("b"))], op: Op::Set(big('b')) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.peers[0].restart(5).unwrap();
-    assert_eq!(lp.peers[0].engine.get_range(&t, &ak("/t/docs"), &[PathSeg::Key(s("a"))], 0..5).unwrap(), Some(s("aaaaa")));
+    assert_eq!(lp.peers[0].engine.get_range(&t, &ak("t:docs.0"), &[PathSeg::Key(s("a"))], 0..5).unwrap(), Some(s("aaaaa")));
     let mut m = Mutation::new();
     m.op(t, &DOCS, PathOp { path: vec![], op: Op::Remove(s("a")) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -332,8 +332,8 @@ fn range_under_removed_key_absent_spec_crdt_5_6() {
             lp.peers[0].restart(6).unwrap();
         }
         let e = &mut lp.peers[0].engine;
-        assert_eq!(e.get_at(&t, &ak("/t/docs"), &[PathSeg::Key(s("a"))]).unwrap(), None);
-        assert_eq!(e.get_range(&t, &ak("/t/docs"), &[PathSeg::Key(s("a"))], 0..5).unwrap(), None, "session {session}");
-        assert_eq!(e.get_range(&t, &ak("/t/docs"), &[PathSeg::Key(s("b"))], 0..5).unwrap(), Some(s("bbbbb")), "session {session}");
+        assert_eq!(e.get_at(&t, &ak("t:docs.0"), &[PathSeg::Key(s("a"))]).unwrap(), None);
+        assert_eq!(e.get_range(&t, &ak("t:docs.0"), &[PathSeg::Key(s("a"))], 0..5).unwrap(), None, "session {session}");
+        assert_eq!(e.get_range(&t, &ak("t:docs.0"), &[PathSeg::Key(s("b"))], 0..5).unwrap(), Some(s("bbbbb")), "session {session}");
     }
 }

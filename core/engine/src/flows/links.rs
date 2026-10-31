@@ -23,7 +23,7 @@ use osis_schema::core_types::{self as ct, Edge, Inbox};
 use std::sync::Arc;
 
 /// The untyped aspect of the sharer-only thing that keeps a link's seed.
-pub const LINK_SEED: &str = "/link/seed";
+pub const LINK_SEED: &str = "link:seed.0";
 
 /// A link whose seed this node holds (`Engine::held_links`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -53,7 +53,7 @@ pub struct LinkSpec {
 impl Engine {
     /// Creates a link to `spec.target` for actor `sharer` (an actor this node is admin of):
     /// K (owned by `sharer`, secrets of its own, home label on `spec.hosts` listing L by
-    /// static entry), L (key actor from a fresh seed, `/created` and `/keys` signed by itself),
+    /// static entry), L (key actor from a fresh seed, `created.0` and `keys.0` signed by itself),
     /// L's edge (r, invite r, `until`) on K with its boxes, K's edge on the target, and a
     /// sharer-only thing keeping the seed. Returns the link and the seed thing.
     pub fn create_link(&mut self, sharer: &Tid, spec: &LinkSpec) -> Result<(ShareLink, Tid, Done)> {
@@ -100,8 +100,8 @@ impl Engine {
         self.demote(k, &crate::flows::Demotion { holder: *l, new: None, presync: crate::flows::PreSync::Synced })
     }
 
-    /// The links whose seed this node holds (a sharer-only thing's `/link/seed`, readable on
-    /// every device of the sharer). Cached until a `/link/seed` changes.
+    /// The links whose seed this node holds (a sharer-only thing's `link:seed.0`, readable on
+    /// every device of the sharer). Cached until a `link:seed.0` changes.
     pub fn held_links(&mut self) -> Result<Arc<Vec<HeldLink>>> {
         if let Some(l) = &self.core.links {
             return Ok(l.clone());
@@ -197,7 +197,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
         return Err(Error::Permission { tid: sharer });
     }
     let mut done = Done::default();
-    // L: creation and /keys, signed by itself
+    // L: creation and keys.0, signed by itself
     let lkeys = KeyActorKeys::from_seed(seed);
     let mut m = Mutation::new();
     m.create(key_actor_record(&lkeys, seed));
@@ -228,7 +228,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     m.op(k, &ct::KEYS, PathOp { path: vec![PathSeg::Field(4)], op: Op::Set(Some(Inbox { label, hosts: spec.hosts.clone() }).to_value()) })?;
     done.add(Engine::commit_tx(tx, m)?);
     // L's card under K's label: a redeemer holds only the seed, and verifiers of L's commits
-    // need L's `/created`
+    // need L's `created.0`
     if let Some(c) = lc {
         done.deliveries.push(Delivery::Certificate { commits: vec![c], under: k });
     }

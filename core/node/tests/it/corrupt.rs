@@ -60,7 +60,7 @@ fn bit_flips_error_never_panic() {
             Err(_) => errors += 1,
             Ok(mut e) => {
                 // whatever opens reads the value written or fails
-                match e.get(&t, &ak("/t/reg")) {
+                match e.get(&t, &ak("t:reg.0")) {
                     Ok(Some(v)) => assert_eq!(v, s("value")),
                     Ok(None) | Err(_) => errors += 1,
                 }

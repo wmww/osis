@@ -24,7 +24,7 @@
 use crate::content::{overlapping, Range};
 use crate::graph::{Class, Dense, Edges, Owners, Reads, Standing, View};
 use crate::held::HeldSet;
-use crate::types::{earliest, lowers, mark, pop, put, Dots, Edge, EdgeOp, Frontier, RoleCommit, Point, RosterSnapshot, WriteId, MEMBERS};
+use crate::types::{earliest, lowers, mark, pop, put, Dots, Edge, EdgeOp, Frontier, RoleCommit, Point, RosterSnapshot, WriteId, ROLES};
 use osis_base::{CommitId, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -90,7 +90,7 @@ pub(crate) struct Input {
     pub ever_admins: BTreeMap<Tid, BTreeSet<Tid>>,
     /// The earliest held write (edge op or roster snapshot) per (author, target).
     pub first_write: BTreeMap<(Tid, Tid), Point>,
-    /// Node-form `/members` ranges of every gathered commit and snapshot, voided ones
+    /// Node-form `roles.0` ranges of every gathered commit and snapshot, voided ones
     /// included, by (node, thing), with their largest end: what `can_append` checks against.
     pub ranges: BTreeMap<(Tid, Tid), (Spans, u64)>,
     /// Every edge any held write, roster or ledger can set (any role, any time), holder to
@@ -174,14 +174,14 @@ impl Input {
                 }
             }
         }
-        // Overlapping node-form ranges on `/members` void both commits (spec/commits.md §4);
+        // Overlapping node-form ranges on `roles.0` void both commits (spec/commits.md §4);
         // the node voids commits overlapping on its other aspects before handing them over.
         let ranges: Vec<Range> = commits
             .values()
             .flat_map(|c| c.ops.iter().map(move |o| (c.id, c.author, o.target, o.dots)))
             .chain(snaps.values().map(|s| (s.id, s.author, s.thing, s.dots)))
             .filter_map(|(commit, node, tid, d)| match d {
-                Dots::Node { lo, hi } => Some(Range { commit, node, tid, ak: MEMBERS.to_string(), lo, hi }),
+                Dots::Node { lo, hi } => Some(Range { commit, node, tid, ak: ROLES.to_string(), lo, hi }),
                 Dots::Commit => None,
             })
             .collect();
@@ -1860,7 +1860,7 @@ impl<'a> Pass<'a> {
                 continue;
             }
             let covered = aud.commit == Some(id.commit())
-                || aud.frontier.is_some_and(|f| f.covers(&a.target, MEMBERS, x, a.dots, &id.commit()));
+                || aud.frontier.is_some_and(|f| f.covers(&a.target, ROLES, x, a.dots, &id.commit()));
             if !covered && !self.dropped.contains_key(&id) {
                 self.dropped.insert(id, aud.point);
                 self.fresh.push(id);

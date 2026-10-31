@@ -1,4 +1,4 @@
-//! Opening `/secrets` (spec/crypto.md §4): a holder's boxes with any key it holds, then older
+//! Opening `secrets.0` (spec/crypto.md §4): a holder's boxes with any key it holds, then older
 //! epochs through history boxes.
 
 use crate::aspects::{from_schema, observe_secrets};
@@ -31,7 +31,7 @@ pub struct Opened {
     pub secret: Secret32,
 }
 
-/// Opens every box of `actor`'s `/secrets` addressed to the opener. Boxes it cannot open (a key
+/// Opens every box of `actor`'s `secrets.0` addressed to the opener. Boxes it cannot open (a key
 /// it does not hold, bad bytes) are returned with the reason; they are not fatal.
 pub fn open_boxes(actor: &Tid, secrets: &Secrets, opener: &Opener) -> (Vec<Opened>, Vec<(BoxKey, Error)>) {
     let holder = opener.holder();
@@ -158,7 +158,7 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs
     failed.into_iter().collect()
 }
 
-/// Everything a node learns from `actor`'s `/secrets`: the epochs named, its boxes' secrets,
+/// Everything a node learns from `actor`'s `secrets.0`: the epochs named, its boxes' secrets,
 /// then older ones by history. Establishes nothing (spec/crypto.md §4): the caller runs
 /// `SecretsWrite::applied` per applied rotation commit and `snapshot_keyed` per held snapshot.
 /// `unchecked`: `None` when `secrets` is the applied valid state; the source for boxes of a

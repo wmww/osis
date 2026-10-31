@@ -40,7 +40,7 @@ Known open (issues/): owner tradeoffs stated in user terms (aspect-key-format); 
 - notes/architecture.md: crate map and DAG, fixed abstractions, error classes, build and test rules, dependency allowlist, osis-base and osis-schema surfaces, where each crate's notes live.
 - notes/mvp-progress.md: the MVP final report and how to resume.
 - notes/api.md: the designed API shape (sync data API, typed keys, watches, `Write` with `set`/`edit`, sharing and sync surface), fixed directions, footguns closed, rejected shapes.
-- notes/data-model.md: tids, CBOR, large values, namespaces, schema DSL sketch.
+- notes/data-model.md: tids, CBOR, large values, AK grammar, schema DSL sketch.
 - notes/versioning.md: transition conventions, write policy, blessed paths for hard schema changes.
 - notes/crdt.md: merge design reasons, anomalies, reference model, text size, worked examples.
 - notes/permissions.md: permission rules' reasons, roles model findings, move (copy) and revocation reasoning, sharing patterns.
@@ -48,7 +48,7 @@ Known open (issues/): owner tradeoffs stated in user terms (aspect-key-format); 
 - notes/crypto.md: suite choices, costs, crates.
 - notes/ephemeral.md: ephemeral data design and what is built (in-memory things and aspects, persistence, placements, undo, ephemeral commits held in memory at nodes and hosts, relay-only signals; values kept alive by their author's rewrites), expiry, the all-nodes predicate, heartbeats and the stranded flag.
 - notes/chat.md: the chat pattern derived from the current design, with costs (thrown out; kept for its measured costs until the redesign, notes/std.md).
-- notes/tags.md: the standard core aspects (`/name`, `/body`, `/tag`), tags as marked groups in a graph, sharing a tag per item through one nested roster, the confirmation guideline.
+- notes/tags.md: the standard core aspects (`name.0`, `body.0`, `tag.0`), tags as marked groups in a graph, sharing a tag per item through one nested roster, the confirmation guideline.
 - notes/networking.md: transports (iroh, direct hosts), official infrastructure, push wake-up proposal, risks.
 - notes/local-store.md: encrypted local store and key-erasure deletion.
 - notes/node.md: osis-engine and osis-node module layout, engine surface, store records, node-core readings.

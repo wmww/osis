@@ -1,5 +1,5 @@
-//! Reads (notes/api.md Reads): aspect values from local state, the synthetic aspects `/tid`,
-//! `/aspects`, `/groups` (spec/data-model.md §8, §9), `/members` as the role timeline's
+//! Reads (notes/api.md Reads): aspect values from local state, the synthetic aspects `tid.0`,
+//! `aspects.0`, `groups.0` (spec/data-model.md §8, §9), `roles.0` as the role timeline's
 //! roster (spec/permissions.md §2), roles, and move resolution of tids in returned values
 //! (spec/permissions.md §7).
 
@@ -26,12 +26,12 @@ impl MoveIndex for Moves<'_> {
 
 /// Aspects whose tids are not resolved through moves: they name things as such.
 fn unresolved_ak(ak: &str) -> bool {
-    matches!(ak, "/tid" | "/created" | "/was" | "/moved")
+    matches!(ak, "tid.0" | "created.0" | "was.0" | "moved.0")
 }
 
 /// Aspects read from the in-memory indexes, not from a state.
 fn synthetic_ak(ak: &str) -> bool {
-    matches!(ak, "/tid" | "/aspects" | "/groups" | "/members")
+    matches!(ak, "tid.0" | "aspects.0" | "groups.0" | "roles.0")
 }
 
 /// Navigates a read value along `path` (synthetic aspects).
@@ -98,10 +98,10 @@ impl Engine {
             return Ok(self.resolved(&tid, &ak, v));
         }
         let v = match ak.as_str() {
-            "/tid" => Some(Value::Tid(tid)),
-            "/aspects" => Some(Value::Set(self.aspects(&tid)?.into_iter().map(|a| Value::Str(a.as_str().to_string())).collect())),
-            "/groups" => Some(Value::Set(self.groups_of(&tid).into_iter().map(Value::Tid).collect())),
-            "/members" => {
+            "tid.0" => Some(Value::Tid(tid)),
+            "aspects.0" => Some(Value::Set(self.aspects(&tid)?.into_iter().map(|a| Value::Str(a.as_str().to_string())).collect())),
+            "groups.0" => Some(Value::Set(self.groups_of(&tid).into_iter().map(Value::Tid).collect())),
+            "roles.0" => {
                 let r = self.core.roster_of(&tid);
                 (!r.is_empty()).then(|| Value::Map(r.iter().map(|(m, e)| (Value::Tid(*m), edge_value(e))).collect()))
             }
@@ -194,7 +194,7 @@ impl Engine {
         }
     }
 
-    /// AKs present on the thing (`/aspects`).
+    /// AKs present on the thing (`aspects.0`).
     pub fn aspects(&mut self, tid: &Tid) -> Result<Vec<Ak>> {
         let tid = *tid;
         let eph = self.ephemeral_aspects(&tid);
@@ -228,7 +228,7 @@ impl Engine {
     }
 
     /// Whether the thing holds content: some present aspect a content write sets (not
-    /// `/created`, not role-class), durable or ephemeral. Stops at the first.
+    /// `created.0`, not role-class), durable or ephemeral. Stops at the first.
     pub fn has_content(&mut self, tid: &Tid) -> Result<bool> {
         let content = |ak: &Ak| ak.as_str() != ct::CREATED.ak() && !ct::is_role_class(ak.as_str());
         if self.ephemeral_aspects(tid).iter().any(content) {
@@ -286,7 +286,7 @@ impl Engine {
         self.core.epochs(tid).or_else(|| self.core.ix.secrets.get(tid).cloned())
     }
 
-    /// Whether `/created` of `tid` is held, or it is an ephemeral thing here.
+    /// Whether `created.0` of `tid` is held, or it is an ephemeral thing here.
     pub fn knows(&self, tid: &Tid) -> bool {
         self.core.created(tid).is_some() || self.ephemeral_thing(tid).is_some()
     }

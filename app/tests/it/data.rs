@@ -8,7 +8,7 @@ fn data() -> Data {
     Data::new(Osis::create(Config::memory()).unwrap().0)
 }
 
-/// One app group, an item and subgroup of home with no `/tag`, holding the four views, which
+/// One app group, an item and subgroup of home with no `tag.0`, holding the four views, which
 /// start as the favorites.
 #[test]
 fn app_group_and_views() {

@@ -86,7 +86,7 @@ pub struct Eph {
     aspects: HashMap<Tid, BTreeMap<Ak, EphAspect>>,
     /// Expiry times and the aspects with writes expiring then.
     timers: BTreeMap<u64, BTreeSet<(Tid, Ak)>>,
-    /// Each `/placed` held, as read (`groups_of`).
+    /// Each `placed.0~` held, as read (`groups_of`).
     defs: BTreeMap<Tid, place::Def>,
     /// Own batches for undo.
     log: log::Log,
@@ -590,16 +590,16 @@ impl Engine {
     pub(crate) fn ephemeral_get(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Value>> {
         let Some(th) = self.eph.things.get(tid) else { return Ok(None) };
         Ok(match ak.as_str() {
-            "/tid" => Some(Value::Tid(*tid)),
-            "/created" => Some(th.record.to_value()),
-            "/aspects" => Some(Value::Set(self.eph.present(tid).into_iter().map(|a| Value::Str(a.as_str().to_string())).collect())),
-            "/groups" => Some(Value::Set(self.groups_of(tid).into_iter().map(Value::Tid).collect())),
-            "/members" => None,
+            "tid.0" => Some(Value::Tid(*tid)),
+            "created.0" => Some(th.record.to_value()),
+            "aspects.0" => Some(Value::Set(self.eph.present(tid).into_iter().map(|a| Value::Str(a.as_str().to_string())).collect())),
+            "groups.0" => Some(Value::Set(self.groups_of(tid).into_iter().map(Value::Tid).collect())),
+            "roles.0" => None,
             _ => self.ephemeral_value(tid, ak)?,
         })
     }
 
-    /// The read value of `(tid, ak)` when it has ephemeral state. `/placed` reads as the group
+    /// The read value of `(tid, ak)` when it has ephemeral state. `placed.0~` reads as the group
     /// its items and subgroups make (its adds carry no presence of the struct).
     pub(crate) fn ephemeral_value(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Value>> {
         let Some(f) = self.joined_state(tid, ak)? else { return Ok(None) };

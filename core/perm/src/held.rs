@@ -11,13 +11,13 @@ use std::sync::Arc;
 /// commit ID (the node's are inline in the signed header or linked by content hash): a saved
 /// walk is matched to its input by everything else in full, frontiers by their sizes.
 pub trait HeldSet {
-    /// Things with a held edge write, roster snapshot or `/created` record.
+    /// Things with a held edge write, roster snapshot or `created.0` record.
     fn things(&self) -> Vec<Tid>;
     /// Role commits with an edge write on `thing` (roster snapshots excluded).
     fn edge_commits(&self, thing: &Tid) -> Vec<Arc<RoleCommit>>;
     /// Roster snapshots of `thing`.
     fn roster_snapshots(&self, thing: &Tid) -> Vec<Arc<RosterSnapshot>>;
-    /// The `/created` record of `thing`, if held.
+    /// The `created.0` record of `thing`, if held.
     fn created(&self, thing: &Tid) -> Option<CreationRecord>;
 }
 

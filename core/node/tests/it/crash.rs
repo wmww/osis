@@ -58,7 +58,7 @@ fn setup(dev: &Dev) -> (Engine, Tid, osis_base::CommitId) {
 fn purge(t: Tid, secret: osis_base::CommitId) -> Mutation {
     let mut m = Mutation::new();
     m.set(t, &REG, &s("public")).unwrap();
-    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("/t/reg") });
+    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("t:reg.0") });
     m
 }
 
@@ -67,7 +67,7 @@ fn purge(t: Tid, secret: osis_base::CommitId) -> Mutation {
 // between; it then commits on, and a commit that did land keeps its counters
 #[test]
 fn crash_every_write_of_a_purging_commit() {
-    let reg = ak("/t/reg");
+    let reg = ak("t:reg.0");
     for n in 0.. {
         let dev = Dev::new();
         let (mut e, t, secret) = setup(&dev);

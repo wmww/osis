@@ -58,7 +58,7 @@ type prio = enum { 0 low, 1 high(int), 2 tagged(list<string>) };
 type rec = struct { 0 title: string, 1 done: bool, 2 when: timestamp, 3 tags: set<string>, 4 prio: prio,
   5 waits: map<int, duration>, 6 score: option<float>, 7 extra: any, 8 owner: tid, 9 body: markdown,
   10 n: counter<int>, 11 at: map<timestamp, int>, 12 lens: map<duration, bool>, 13 when_set: set<timestamp> };
-aspect /t/rec: rec;
+aspect t:rec.0: rec;
 ";
 
 fn schema() -> Schema {
@@ -128,7 +128,7 @@ proptest! {
     #[test]
     fn named_round_trip(v in rec()) {
         let sc = schema();
-        let ty = &sc.aspects["/t/rec"].ty;
+        let ty = &sc.aspects["t:rec.0"].ty;
         let s = print(&v, Some((&sc, ty)));
         prop_assert_eq!(parse(&s, Some((&sc, ty)), &no_aliases), Ok(v.clone()), "{}", s);
         // numbered text reads at the type too
@@ -198,7 +198,7 @@ fn input_forms_plan_cli_3() {
     assert_eq!(parse("[me]", None, &al), Ok(Value::List(vec![Value::Tid(t)])));
     // with a schema, JSON objects read as the struct
     let sc = schema();
-    let ty = &sc.aspects["/t/rec"].ty;
+    let ty = &sc.aspects["t:rec.0"].ty;
     let v = parse(r#"{"title": "x", "done": true, "when": 0}"#, Some((&sc, ty)), &no_aliases).unwrap();
     assert_eq!(v, m(vec![(Value::Int(0), Value::Str("x".into())), (Value::Int(1), Value::Bool(true)), (Value::Int(2), Value::Int(0))]));
 }
@@ -208,7 +208,7 @@ fn input_forms_plan_cli_3() {
 #[test]
 fn time_keys_and_edges_notes_cli() {
     let sc = schema();
-    let ty = &sc.aspects["/t/rec"].ty;
+    let ty = &sc.aspects["t:rec.0"].ty;
     let v = parse("{at: {2026-01-02T03:04:05Z: 1, 2026-01-02: 2}, lens: {1h30m: true, -5s: false}}", Some((&sc, ty)), &no_aliases).unwrap();
     assert_eq!(print(&v, Some((&sc, ty))), "{at: {2026-01-02T00:00:00Z: 2, 2026-01-02T03:04:05Z: 1}, lens: {1h30m: true, -5s: false}}");
     assert!(parse("{at: {2026-02-31T00:00:00Z: 1}}", Some((&sc, ty)), &no_aliases).is_err());
@@ -224,7 +224,7 @@ fn time_keys_and_edges_notes_cli() {
 #[test]
 fn named_forms_notes_cli() {
     let sc = schema();
-    let ty = &sc.aspects["/t/rec"].ty;
+    let ty = &sc.aspects["t:rec.0"].ty;
     let src = r#"{title: "x", when: 2026-10-19T12:00:00.5+02:00, tags: #{"a"}, prio: #high(3), waits: {1: 1h30m}, score: #some(1.5), 99: 1}"#;
     let v = parse(src, Some((&sc, ty)), &no_aliases).unwrap();
     assert_eq!(
@@ -259,7 +259,7 @@ fn json_mapping_plan_cli_5() {
     assert_eq!(j(&m(vec![(Value::Str("set".into()), Value::Int(1))])), r#"{"set":1}"#);
     assert_eq!(j(&Value::Unknown(Unknown::new(259, CanonicalBytes::from_value(&Value::Int(7))).unwrap())), r#"{"$tag":259,"$bytes":"Bw"}"#);
     let sc = schema();
-    let ty = &sc.aspects["/t/rec"].ty;
+    let ty = &sc.aspects["t:rec.0"].ty;
     let v = parse(r#"{title: "x", prio: #high(3), waits: {1: 2s}}"#, Some((&sc, ty)), &no_aliases).unwrap();
     assert_eq!(json::value(&v, Some((&sc, ty))).text(), r#"{"title":"x","prio":{"$case":"high","$payload":3},"waits":{"$map":[[1,2000]]}}"#);
     let mut m2 = BTreeMap::new();

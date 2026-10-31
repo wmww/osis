@@ -195,7 +195,7 @@ pub fn verify_path(label: &LabelId, path: &[Step]) -> Result<(), Error> {
 }
 
 /// The verified path from the genesis step to `head` through a set of steps (the tree by
-/// `prev`, as `/label` holds it).
+/// `prev`, as `label.0` holds it).
 pub fn path_to(steps: &BTreeMap<StepId, Step>, head: &StepId) -> Result<Vec<Step>, Error> {
     let mut path = Vec::new();
     let mut at = Some(*head);

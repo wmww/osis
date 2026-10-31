@@ -44,7 +44,7 @@ use std::sync::mpsc::Receiver;
 /// Engine configuration.
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// `/node` software revision.
+    /// `node.0` software revision.
     pub software: String,
     pub store: StoreConfig,
     /// Bytes of own ephemeral batches kept for undo (notes/ephemeral.md Bounds): older ones are
@@ -104,7 +104,7 @@ pub struct Dropped {
     /// kept so re-judging the part (and a rebuild) needs no body.
     pub role: Option<osis_base::Role>,
     pub overreach: bool,
-    /// The epochs a role commit's `/keys` body keyed (`epoch_intro` candidates,
+    /// The epochs a role commit's `keys.0` body keyed (`epoch_intro` candidates,
     /// `apply::keys::intro_epochs`): which commit introduced an epoch is a judgment the covers
     /// rule needs.
     pub intros: Vec<(osis_base::Role, osis_crypto::Epoch)>,
@@ -370,7 +370,7 @@ macro_rules! indexes {
 }
 
 indexes! {
-    /// Perm inputs: applied role commits, roster snapshots, `/created` records.
+    /// Perm inputs: applied role commits, roster snapshots, `created.0` records.
     pub held: held::Held,
     pub commits: JMap<CommitId, Meta>,
     /// Commits with a part invalid here, per aspect (`Core::index_validity`), so a join finds the
@@ -405,36 +405,36 @@ indexes! {
     /// Actors with secrets of their own whose epochs this node holds.
     pub secrets: JMap<Tid, ActorEpochs>,
     /// Things with secrets of their own here (`apply::keys::refresh_own_keys`): a held commit's
-    /// valid `/keys` part wrote a keyset.
+    /// valid `keys.0` part wrote a keyset.
     pub own_keys: JSet<Tid>,
-    /// Held commits whose `/keys` part on a thing wrote a keyset in its body, any validity
+    /// Held commits whose `keys.0` part on a thing wrote a keyset in its body, any validity
     /// (`records::OWN_KEYS`): thing -> commits.
     pub keyset_parts: JSetMap<Tid, CommitId>,
-    /// Things with a `/label` delta held (`Engine::labeled_groups`).
+    /// Things with a `label.0` delta held (`Engine::labeled_groups`).
     pub labeled: JSet<Tid>,
     /// Admin and write delete keys of things an inbox payload named (`[admin, write]` bytes),
-    /// listed until their `/keys` arrives (spec/crypto.md §7, spec/wire.md §9): taken only from
+    /// listed until their `keys.0` arrives (spec/crypto.md §7, spec/wire.md §9): taken only from
     /// a commit that applied valid, by an admin of the thing, touching it; the first kept.
     pub delete_hints: JMap<Tid, osis_base::Value>,
-    /// `/was` index: t -> things whose `/was` reads t.
+    /// `was.0` index: t -> things whose `was.0` reads t.
     pub was: JSetMap<Tid, Tid>,
-    /// The `/was` each thing reads.
+    /// The `was.0` each thing reads.
     pub was_of: JMap<Tid, Tid>,
     pub moved: JMap<Tid, Tid>,
-    /// `/group` definitions and `/groups` (thing -> groups containing it, transitively).
+    /// `group.0` definitions and `groups.0` (thing -> groups containing it, transitively).
     pub groups: groups::Groups,
-    /// Keyed `/members` entries seen: (target, entry dot) -> (holder, created value).
+    /// Keyed `roles.0` entries seen: (target, entry dot) -> (holder, created value).
     pub holder_keys: JMap<(Tid, Dot), Tid>,
     /// Role commits whose removed keys are not known yet.
     pub unresolved: JSet<CommitId>,
-    /// Roles `/secrets` and `/keys` deltas need (by commit and aspect index).
+    /// Roles `secrets.0` and `keys.0` deltas need (by commit and aspect index).
     pub rotation_role: JMap<(CommitId, usize), osis_base::Role>,
-    /// `/secrets` parts of role commits that write beyond their grantees' boxes (an invite
+    /// `secrets.0` parts of role commits that write beyond their grantees' boxes (an invite
     /// grant may carry only those, spec/permissions.md §2).
     pub grant_overreach: JSet<(CommitId, usize)>,
-    /// Keyed boxes per holder: holder -> (actor, box key), from `/secrets` entries seen.
+    /// Keyed boxes per holder: holder -> (actor, box key), from `secrets.0` entries seen.
     pub boxes_to: JSetMap<Tid, (Tid, osis_base::Value)>,
-    /// The earliest valid held commit writing an epoch's keyset in `/keys` (its rotation):
+    /// The earliest valid held commit writing an epoch's keyset in `keys.0` (its rotation):
     /// (actor, role, epoch) -> (`ts`, author node, actor acted for, commit). Absent: the
     /// introducer is unknown (`rotation`).
     pub epoch_intro: EpochIntro,
@@ -508,7 +508,7 @@ pub struct Core {
     /// Set when a lazily held header failed to decode (`LazyHeader`): every later transaction
     /// fails (`Error::Corrupt`).
     pub header_fault: Arc<std::sync::atomic::AtomicBool>,
-    /// Tests: after each per-entry `/secrets` ingestion, check that ingesting the whole state
+    /// Tests: after each per-entry `secrets.0` ingestion, check that ingesting the whole state
     /// learns nothing more (`apply::atomic::observe_secrets_keys`).
     #[cfg(test)]
     pub check_ingest: bool,
@@ -547,13 +547,13 @@ pub struct Core {
     pub memory_generation: u64,
     /// The running transaction is a memory one (`Tx::set_memory`).
     pub memory_tx: bool,
-    /// `Engine::labels_of` per group: dropped when its `/label` state is written (`wrote`) and
+    /// `Engine::labels_of` per group: dropped when its `label.0` state is written (`wrote`) and
     /// on rollback.
     pub(crate) labels: BTreeMap<Tid, Vec<std::sync::Arc<crate::labeling::GroupLabel>>>,
     /// `Engine::published_under` for every actor, with the counts it was taken at (held
     /// records, `own_keys`, `labeled`).
     pub(crate) published: Option<Published>,
-    /// `Engine::held_links`: dropped when a `/link/seed` state or index entry changes and on
+    /// `Engine::held_links`: dropped when a `link:seed.0` state or index entry changes and on
     /// rollback.
     pub(crate) links: Option<std::sync::Arc<Vec<crate::flows::HeldLink>>>,
     /// The sync records this engine's transactions write or drop (`SyncRecords`), set by
@@ -616,7 +616,7 @@ impl Core {
         self.ix.by_aspect.range((t, Ak::MIN)..).take_while(move |((x, _), _)| *x == t)
     }
 
-    /// Drops what is derived from rosters, `/secrets` and held epochs (the departures cache):
+    /// Drops what is derived from rosters, `secrets.0` and held epochs (the departures cache):
     /// called wherever those change.
     pub fn role_changed(&mut self) {
         if !self.ix.departures.is_empty() {
@@ -688,7 +688,7 @@ impl Core {
 
     /// Notes that the running transaction writes the state of `k` (evicted on rollback).
     pub fn wrote(&mut self, k: (Tid, Ak)) {
-        if k.1.as_str() == "/label" {
+        if k.1.as_str() == "label.0" {
             self.labels.remove(&k.0);
         }
         if k.1.as_str() == crate::flows::LINK_SEED {
@@ -1286,8 +1286,8 @@ fn session(node: Tid, rng: &mut dyn CryptoRngCore) -> crate::ephemeral::Eph {
 }
 
 impl Engine {
-    /// A new node over an empty backend: fresh identity, its node thing with `/created`,
-    /// `/node` and `/keys` (spec/permissions.md §4 node card).
+    /// A new node over an empty backend: fresh identity, its node thing with `created.0`,
+    /// `node.0` and `keys.0` (spec/permissions.md §4 node card).
     pub fn create(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: Config, clock: Arc<dyn Clock>, mut rng: Box<dyn CryptoRngCore + Send>) -> Result<Engine> {
         let store = Store::create(backend, root, cfg.store, &mut *rng)?;
         let mut seed = [0u8; 32];
@@ -1325,7 +1325,7 @@ impl Engine {
         Ok(e)
     }
 
-    /// The node thing's first commits: `/created` with `/node`, then `/keys` (its KEM key).
+    /// The node thing's first commits: `created.0` with `node.0`, then `keys.0` (its KEM key).
     fn bootstrap(&mut self) -> Result<()> {
         use osis_schema::core_types as ct;
         let node = self.tid();
@@ -1574,12 +1574,12 @@ mod tests {
             None => (Vec::new(), Op::Remove(Value::Tid(m))),
         };
         let mut mu = Mutation::new();
-        mu.op(t, &ct::MEMBERS, PathOp { path, op }).unwrap();
+        mu.op(t, &ct::ROLES, PathOp { path, op }).unwrap();
         mu
     }
 
     fn write(m: &mut Mutation, t: Tid, v: &str) {
-        m.set(t, &Ak::new("/t/reg").unwrap(), &Value::Str(v.into())).unwrap();
+        m.set(t, &Ak::new("t:reg.0").unwrap(), &Value::Str(v.into())).unwrap();
     }
 
     // spec/commits.md §4 (one storage transaction per commit): a transaction whose store commit
@@ -1631,7 +1631,7 @@ mod tests {
         let mut lp = LocalPeer::new(3, 952, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-        let (reg, kept) = (Ak::new("/t/reg").unwrap(), Ak::new("/t/kept").unwrap());
+        let (reg, kept) = (Ak::new("t:reg.0").unwrap(), Ak::new("t:kept.0").unwrap());
         let mut failed = 0;
         let g = failing(&mut lp.peers[0], &mut failed, |e| {
             let mut m = Mutation::new();

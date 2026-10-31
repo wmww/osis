@@ -45,7 +45,7 @@ fn budget_minimal_commit() {
     let fragment = create(&mut w, &AnyView, &Value::Str("hello".into())).unwrap();
     let d = encode_delta(&Delta { nonce: [1; 16], fragment }, &writer_ctx(Kind::Content, at, author, 1, 2), None).unwrap();
     let mut b = CommitBuilder::new(Kind::Content, at, author, Tid::from_bytes([2; 15]), Form::Node);
-    b.aspects.push(AspectWrite::new(Tid::from_bytes([3; 15]), Ak::new("/app/title").unwrap(), 1, 2, d));
+    b.aspects.push(AspectWrite::new(Tid::from_bytes([3; 15]), Ak::new("app:title.0").unwrap(), 1, 2, d));
     let key = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
     let c = b.build(&key, &Secrets, &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit;
     assert_budget("minimal content commit plaintext", c.encode().len(), 330);

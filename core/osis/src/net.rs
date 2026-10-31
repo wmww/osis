@@ -197,7 +197,7 @@ impl Net {
 
     /// Starts the driver task over one transport for hosts and co-readers (`Multi`). With
     /// `p2p` (`Config.peers`) and a co-reader transport, it listens with the dialable secret
-    /// (registered at `relays`) and publishes `/reach`; with feature `lan` and QUIC it also runs
+    /// (registered at `relays`) and publishes `reach.0`; with feature `lan` and QUIC it also runs
     /// the LAN loop. Without a co-reader transport no co-reader is dialed.
     pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, transport: Option<Transport>, p2p: bool, relays: Vec<String>, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
         let Net::Driver { handle, ctl, stop } = self else { return Ok(()) };
@@ -381,7 +381,7 @@ impl crate::Osis {
 /// A group's sync policy (`Osis::sync_policy`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GroupPolicy {
-    /// Whether this node's `/reach` (its dialable key) goes under the group's labels, so
+    /// Whether this node's `reach.0` (its dialable key) goes under the group's labels, so
     /// co-readers there can dial it off the LAN (spec/permissions.md §4). `None`: only when
     /// every reader of the group is this person, a thing it owns or a contact (`import_contact`).
     pub publish_reach: Option<bool>,
@@ -399,8 +399,8 @@ impl crate::Osis {
     }
 
     /// Sets `group`'s whole sync policy (stored): fields left at their default are reset, so to
-    /// change one, start from `group_policy`. Co-readers of groups without `/reach` are not
-    /// dialed. When the group's labels already hold this node's `/reach` and it no longer goes
+    /// change one, start from `group_policy`. Co-readers of groups without `reach.0` are not
+    /// dialed. When the group's labels already hold this node's `reach.0` and it no longer goes
     /// there, the node's reach rotates (`rotate_reach`), so readers there cannot dial it any more.
     pub fn sync_policy(&self, group: osis_base::Tid, policy: GroupPolicy) {
         self.act(|l| {
@@ -413,11 +413,11 @@ impl crate::Osis {
     }
 
     /// Gives this device a new dialable key and LAN secret (spec/sync.md §10): it listens with
-    /// the new key at once and publishes it only under groups that get `/reach`. A co-reader
+    /// the new key at once and publishes it only under groups that get `reach.0`. A co-reader
     /// removed since can no longer dial it or recognise it on a LAN; a link holder (who got the
     /// dialable key from a direct link, never the lan secret) can no longer dial it. Direct links
     /// still open lose first contact (they still work through hosts). Done by itself when a
-    /// group holding its `/reach` stops qualifying and when a direct link ends.
+    /// group holding its `reach.0` stops qualifying and when a direct link ends.
     pub fn rotate_reach(&self) {
         self.act(|l| l.sync.rotate_reach());
     }

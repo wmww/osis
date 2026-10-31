@@ -41,7 +41,7 @@ const DELETE_HINTS: &[u8] = b"node/delete hints";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
 pub(super) const CARRIED: &[u8] = b"node/carried";
 const IMPORTS: &[u8] = b"node/imports";
-/// Per role commit, what perm's adaptation reads of its held `/members` and `/tenures`
+/// Per role commit, what perm's adaptation reads of its held `roles.0` and `tenures.0`
 /// parts (`validity::EdgeParts`): written with the commit record (`Tx::put_commit`), so an open
 /// adapts these rows instead of decoding the bodies.
 pub(super) const EDGES: &[u8] = b"node/edges";

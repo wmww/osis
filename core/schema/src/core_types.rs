@@ -11,10 +11,16 @@ use osis_base::{CommitId, CreationRecord, LabelId, Role, SchemaId, Tid, Ts, Valu
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Role-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.
-pub const ROLE_CLASS: [&str; 7] = ["/members", "/secrets", "/keys", "/label", "/tenures", "/moved", "/was"];
+pub const ROLE_CLASS: [&str; 7] = ["roles.0", "secrets.0", "keys.0", "label.0", "tenures.0", "moved.0", "was.0"];
 
 pub fn is_role_class(ak: &str) -> bool {
     ROLE_CLASS.contains(&ak)
+}
+
+/// Whether `ak` is a core schema key by its form: one name segment, no tid (spec/data-model.md
+/// §2), declared there or not.
+pub fn is_core_key(ak: &str) -> bool {
+    osis_base::Ak::new(ak).is_ok_and(|a| a.tid().is_none() && a.segments().count() == 1)
 }
 
 fn mismatch(expected: &'static str) -> PathError {
@@ -65,7 +71,7 @@ agility!(
     Sealed, X25519MlKem768, None
 );
 
-/// `/created`: the creation record (spec/wire.md §3).
+/// `created.0`: the creation record (spec/wire.md §3).
 impl Codec for CreationRecord {
     const CHECKS_ITSELF: bool = true;
     fn to_value(&self) -> Value {
@@ -103,7 +109,7 @@ codec_enum! {
     pub enum Source { 0 Node(t: Tid), 1 Commit(c: CommitId) }
 }
 codec_struct! {
-    /// The `/group` element a tied edge names: its creation stamp and whether it is a subgroup
+    /// The `group.0` element a tied edge names: its creation stamp and whether it is a subgroup
     /// (spec/permissions.md §2).
     #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Tie { 0 ts: Ts, 1 source: Source, 2 ctr: u64, 3 subgroup: bool }
@@ -167,7 +173,7 @@ codec_struct! {
     pub struct Label { 0 index: u64, 1 steps: BTreeMap<[u8; 32], StepRecord>, 2 hosts: Vec<Address>, 3 replaced: bool }
 }
 codec_struct! {
-    /// `/keys`: keysets per role (actors other than key actors), a key actor's KEM key, inbox,
+    /// `keys.0`: keysets per role (actors other than key actors), a key actor's KEM key, inbox,
     /// 32-byte deposit seed.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Keys {
@@ -180,17 +186,17 @@ codec_struct! {
     pub struct Secrets { 0 boxes: BTreeMap<BoxKey, SecretBox>, 1 history: BTreeMap<HistoryKey, Vec<u8>> }
 }
 codec_struct! {
-    /// `/node`: software revision, schema ID -> revision.
+    /// `node.0`: software revision, schema ID -> revision.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct NodeInfo { 0 software: String, 1 schemas: BTreeMap<SchemaId, u64> }
 }
 codec_struct! {
-    /// `/reach`: 32-byte P2P key, relay URLs, 32-byte LAN secret.
+    /// `reach.0`: 32-byte P2P key, relay URLs, 32-byte LAN secret.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Reach { 0 dialable: [u8; 32], 1 relays: Vec<String>, 2 lan_secret: [u8; 32] }
 }
 codec_struct! {
-    /// `/seen`: heartbeat (wall ms of the commit's ts).
+    /// `seen.0`: heartbeat (wall ms of the commit's ts).
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Seen { 0 ts: WallMs, 1 stranded: bool }
 }
@@ -199,12 +205,12 @@ codec_struct! {
     pub struct Group { 0 items: BTreeSet<Tid>, 1 subgroups: BTreeSet<Tid> }
 }
 codec_struct! {
-    /// `/tag`: marks a group as a user-facing tag (notes/tags.md).
+    /// `tag.0`: marks a group as a user-facing tag (notes/tags.md).
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Tag { 0 color: Option<String> }
 }
 
-/// `/tenures`: a set of tenures (kept as a list in canonical order: `Link` has no `Ord`).
+/// `tenures.0`: a set of tenures (kept as a list in canonical order: `Link` has no `Ord`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Tenures(pub Vec<Tenure>);
 
@@ -223,23 +229,23 @@ impl Codec for Tenures {
 pub type Holders = BTreeMap<Tid, Edge>;
 pub type Labels = BTreeMap<LabelId, Label>;
 
-pub const TID: Aspect<Tid> = Aspect::new("/tid", &CORE);
-pub const ASPECTS: Aspect<BTreeSet<String>> = Aspect::new("/aspects", &CORE);
-pub const CREATED: Aspect<CreationRecord> = Aspect::new("/created", &CORE);
-pub const MEMBERS: Aspect<Holders> = Aspect::new("/members", &CORE);
-pub const KEYS: Aspect<Keys> = Aspect::new("/keys", &CORE);
-pub const SECRETS: Aspect<Secrets> = Aspect::new("/secrets", &CORE);
-pub const TENURES: Aspect<Tenures> = Aspect::new("/tenures", &CORE);
-pub const LABEL: Aspect<Labels> = Aspect::new("/label", &CORE);
-pub const MOVED: Aspect<Tid> = Aspect::new("/moved", &CORE);
-pub const WAS: Aspect<Tid> = Aspect::new("/was", &CORE);
-pub const NODE: Aspect<NodeInfo> = Aspect::new("/node", &CORE);
-pub const REACH: Aspect<Reach> = Aspect::new("/reach", &CORE);
-pub const SEEN: Aspect<Seen> = Aspect::new("/seen", &CORE);
-pub const GROUP: Aspect<Group> = Aspect::new("/group", &CORE);
+pub const TID: Aspect<Tid> = Aspect::new("tid.0", &CORE);
+pub const ASPECTS: Aspect<BTreeSet<String>> = Aspect::new("aspects.0", &CORE);
+pub const CREATED: Aspect<CreationRecord> = Aspect::new("created.0", &CORE);
+pub const ROLES: Aspect<Holders> = Aspect::new("roles.0", &CORE);
+pub const KEYS: Aspect<Keys> = Aspect::new("keys.0", &CORE);
+pub const SECRETS: Aspect<Secrets> = Aspect::new("secrets.0", &CORE);
+pub const TENURES: Aspect<Tenures> = Aspect::new("tenures.0", &CORE);
+pub const LABEL: Aspect<Labels> = Aspect::new("label.0", &CORE);
+pub const MOVED: Aspect<Tid> = Aspect::new("moved.0", &CORE);
+pub const WAS: Aspect<Tid> = Aspect::new("was.0", &CORE);
+pub const NODE: Aspect<NodeInfo> = Aspect::new("node.0", &CORE);
+pub const REACH: Aspect<Reach> = Aspect::new("reach.0", &CORE);
+pub const SEEN: Aspect<Seen> = Aspect::new("seen.0", &CORE);
+pub const GROUP: Aspect<Group> = Aspect::new("group.0", &CORE);
 /// The ephemeral placements into a group (spec/data-model.md §8): written by group ops only.
-pub const PLACED: Aspect<Group> = Aspect::new("/placed", &CORE);
-pub const GROUPS: Aspect<BTreeSet<Tid>> = Aspect::new("/groups", &CORE);
-pub const NAME: Aspect<String> = Aspect::new("/name", &CORE);
-pub const BODY: Aspect<String> = Aspect::new("/body", &CORE);
-pub const TAG: Aspect<Tag> = Aspect::new("/tag", &CORE);
+pub const PLACED: Aspect<Group> = Aspect::new("placed.0~", &CORE);
+pub const GROUPS: Aspect<BTreeSet<Tid>> = Aspect::new("groups.0", &CORE);
+pub const NAME: Aspect<String> = Aspect::new("name.0", &CORE);
+pub const BODY: Aspect<String> = Aspect::new("body.0", &CORE);
+pub const TAG: Aspect<Tag> = Aspect::new("tag.0", &CORE);

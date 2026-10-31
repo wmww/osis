@@ -47,7 +47,7 @@ fn lost_device_owner_rotation() {
         pe2.role_mut(r).set_established(ep(2, 0x21), osis_keys::Provenance::Own);
         pe2.role_mut(r).set_secret(ep(2, 0x21), Secret32::from_bytes([0x90 + i as u8; 32]));
     }
-    // P's own /secrets after the rotation hold no box for the device.
+    // P's own secrets.0 after the rotation hold no box for the device.
     let mut newest = MemoryHeldActors::default();
     newest.map.insert(p, (Secrets::default(), pe2.clone()));
     let deps = [Departure::inside(p, &Departure::holder(tid(9), Role::Read))];

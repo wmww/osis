@@ -1,4 +1,4 @@
-//! osis-keys: per-role epochs with forks, `/keys` and `/secrets` writes, box production and
+//! osis-keys: per-role epochs with forks, `keys.0` and `secrets.0` writes, box production and
 //! opening, history boxes, derived secrets, the covers rule, the rotation planner, wrap epoch
 //! choice, label epochs and delete keys (spec/crypto.md §3–§5, §7; spec/permissions.md §3).
 //! Layer 3 (notes/architecture.md). Notes: notes/crypto.md (osis-keys).

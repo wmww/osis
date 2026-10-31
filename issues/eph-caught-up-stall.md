@@ -2,7 +2,7 @@
 > Summary: own covers absorb an earlier session's commits only once every label at a host caught up since start (`eph_caught_up`); a label whose hosts are all down blocks that for every label, and each restart adds the previous session's covers to what stays uncovered; catching up at one host of several is also taken as the label's.
 > Tags: node-sync, ephemeral
 
-Measured (review of eph-partial-label, probe not kept): g1 at a live host, g2 at a blocked one, the same six keys rewritten each session: after restarts 1..5 the author held 1, 2, 3, 4, 5 commits (853 to 3077 bytes) of a state that did not grow. They sit at g1's host too, so with a host cap of about twice the covers the author's new entries get refused after a few restarts while g2 stays down (a decommissioned host still in `/label`).
+Measured (review of eph-partial-label, probe not kept): g1 at a live host, g2 at a blocked one, the same six keys rewritten each session: after restarts 1..5 the author held 1, 2, 3, 4, 5 commits (853 to 3077 bytes) of a state that did not grow. They sit at g1's host too, so with a host cap of about twice the covers the author's new entries get refused after a few restarts while g2 stays down (a decommissioned host still in `label.0`).
 
 Other side: catching up at S1 when the label is also at S2 is taken as caught up; a placement the author uploaded only to S2 (S1 down then, restart before S1 got it) comes back later, after the cover went under the other labels only: the loss of the deleted issue eph-cover-partial-label again. Requiring every host makes the stall above likelier.
 

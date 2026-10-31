@@ -76,7 +76,7 @@ pub fn commit_with(db: &Osis, f: impl FnOnce(&mut osis::Write<'_>) -> osis::Resu
 /// `create` and `place` into `groups` in one batch.
 pub trait CreateIn {
     fn create_in(&mut self, owner: osis::Tid, groups: &[osis::Tid]) -> osis::Result<osis::Tid>;
-    /// `create` with a durable write (`/t/made`), so the thing is persisted by this batch.
+    /// `create` with a durable write (`t:made.0`), so the thing is persisted by this batch.
     fn create_durable(&mut self, owner: osis::Tid) -> osis::Result<osis::Tid>;
 }
 
@@ -90,7 +90,7 @@ impl CreateIn for osis::Write<'_> {
     }
     fn create_durable(&mut self, owner: osis::Tid) -> osis::Result<osis::Tid> {
         let t = self.create(owner)?;
-        self.at(t, ak("/t/made")).set(&osis::Value::Bool(true))?;
+        self.at(t, ak("t:made.0")).set(&osis::Value::Bool(true))?;
         Ok(t)
     }
 }

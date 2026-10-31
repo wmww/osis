@@ -117,7 +117,7 @@ pub(crate) fn grantee_left_out(tx: &mut Tx<'_>, rc: &Recipient) -> Result<Option
 }
 
 /// Whether a fresh box of role `r` to holder actor `m` would name `m`'s newest epoch (its
-/// newest held secret, else its keyset in `/keys`) and that epoch covers `inner`.
+/// newest held secret, else its keyset in `keys.0`) and that epoch covers `inner`.
 fn fresh_box_covers(tx: &mut Tx<'_>, held: &MemoryHeldActors, m: &Tid, r: Role, inner: &Departure) -> Result<bool> {
     let (Some(me), Some(ms)) = (osis_keys::HeldActors::epochs(held, m), osis_keys::HeldActors::secrets(held, m)) else { return Ok(false) };
     let keys = Core::keys_in(tx, m)?;
@@ -162,7 +162,7 @@ pub(crate) fn fresh_deposit_seed(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid) -> R
 }
 
 /// Whether a rotation of `roles` of `a` by `who` also refreshes `a`'s deposit seed (spec/crypto.md
-/// §3): it rotates read for a departure, so the departed party (which read the seed in `/keys`)
+/// §3): it rotates read for a departure, so the departed party (which read the seed in `keys.0`)
 /// can no longer deposit under `a`'s labels, and `who` is an admin (the seed is admin-written).
 pub(crate) fn refreshes_deposit(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>) -> bool {
     roles.contains(&Role::Read) && may_rotate(core, who, a).contains(&Role::Admin)
@@ -256,7 +256,7 @@ pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Rol
 }
 
 /// Records rotation `rot` of `a`, committed as `c`, into `done` with its deliveries: by inbox to
-/// `to`, and first under the labels above `a`, which must learn its new `/keys`
+/// `to`, and first under the labels above `a`, which must learn its new `keys.0`
 /// (spec/permissions.md §3).
 fn recorded(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, rot: &Rotation, to: &[Tid], done: &mut Done) -> Result<()> {
     record(tx, a, rot)?;
@@ -268,7 +268,7 @@ fn recorded(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, rot: &Rotat
     Ok(())
 }
 
-/// Things whose labels must learn a rotated actor's new `/keys`: what it is a holder of and
+/// Things whose labels must learn a rotated actor's new `keys.0`: what it is a holder of and
 /// itself.
 pub(crate) fn above(core: &Core, a: &Tid) -> Vec<Tid> {
     let mut out = vec![*a];
@@ -335,7 +335,7 @@ pub(crate) fn require_covered(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSe
 /// Gives `t` secrets of its own (spec/permissions.md §3, spec/crypto.md §3): a rotation of all
 /// three roles from its derived epochs (the owner's: rotated first where a departure is
 /// uncovered, the history boxes carry them), boxed to its owner and current holders, with a
-/// `/keys` carrying the keysets and a fresh deposit seed. Nothing when it has them already.
+/// `keys.0` carrying the keysets and a fresh deposit seed. Nothing when it has them already.
 pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()> {
     if let Some((c, rot, _)) = own_secrets_rot(tx, t, done)? {
         record(tx, t, &rot)?;
@@ -382,7 +382,7 @@ pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
 
 /// `own_secrets` for a plain thing with current holders, delivering the rotation by inbox to
 /// each holder it boxes (they hold no box at the derived epochs it wraps under) and placing it
-/// first under the labels above the thing (its new `/keys`).
+/// first under the labels above the thing (its new `keys.0`).
 fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
     let mut done = Done::default();
     let Some((c, rot, mut to)) = own_secrets_rot(tx, t, &mut done)? else { return Ok(done) };

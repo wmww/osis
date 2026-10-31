@@ -39,7 +39,7 @@ fn generated_code_is_current() {
 fn list_struct_warning() {
     let g = generate_file(std::path::Path::new(&format!("{DIR}schemas/notes.osis"))).unwrap();
     assert_eq!(g.warnings.len(), 1);
-    assert!(g.warnings[0].contains("/note/tasks"), "{:?}", g.warnings);
+    assert!(g.warnings[0].contains("note:tasks.0"), "{:?}", g.warnings);
 }
 
 fn task() -> notes::Task {
@@ -104,8 +104,8 @@ fn generated_meta_reads_schema_values_spec_data_model_10() {
     let v = core_schema().to_value();
     let s = meta::Schema::try_from(&v).unwrap();
     assert_eq!(s.revision, 1);
-    assert!(s.aspects.contains_key("/members"));
-    let ty = &s.aspects["/members"].r#type;
+    assert!(s.aspects.contains_key("roles.0"));
+    let ty = &s.aspects["roles.0"].r#type;
     assert!(matches!(ty.as_ref(), meta::TypeExpr::Map(_)));
     assert_eq!(Codec::to_value(&s), v);
 }

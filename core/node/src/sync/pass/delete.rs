@@ -231,7 +231,7 @@ impl SyncEngine {
                     return Ok(Some((Hold::MustNot(Why::Outside), false, aspects)));
                 }
                 // other certificates (role-class, node cards, heartbeats) are not ours to judge
-                let card = h.aspects.iter().all(|a| matches!(a.ak.as_str(), "/keys" | "/node" | "/reach" | "/seen" | "/created"));
+                let card = h.aspects.iter().all(|a| matches!(a.ak.as_str(), "keys.0" | "node.0" | "reach.0" | "seen.0" | "created.0"));
                 if h.kind.is_role() || card {
                     return Ok(None);
                 }
@@ -277,9 +277,9 @@ impl SyncEngine {
     }
 
     /// Whether an entry of commit `c` holding `parts` is another node's card that no holder
-    /// needs (spec/permissions.md §4): every part is its author's `/node`, `/reach` or `/keys`,
+    /// needs (spec/permissions.md §4): every part is its author's `node.0`, `reach.0` or `keys.0`,
     /// and each is superseded by a newer commit on that aspect present here under `l`, or, for
-    /// `/node` and `/reach`, the node departed (a departed node is never dialed; its `/keys`
+    /// `node.0` and `reach.0`, the node departed (a departed node is never dialed; its `keys.0`
     /// stays while chains of its old writes may need it).
     fn stale_card(&mut self, at: &At, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)]) -> bool {
         let (g, l, host) = (&at.g, &at.l, at.host.as_ref());
@@ -309,7 +309,7 @@ impl SyncEngine {
                 })
             });
         aks.into_iter().all(|ak| {
-            if departed && ak != "/keys" {
+            if departed && ak != "keys.0" {
                 return true;
             }
             // newer: the node's own valid write, with an entry here checked genuine (anyone may
@@ -623,8 +623,8 @@ impl SyncEngine {
             return Ok(());
         }
         for (t, a) in aspects {
-            // `/created` is kept forever and never compacted
-            if is_role(a) || a.as_str() == "/created" || self.engine.role_on(t) < Some(Role::Write) {
+            // `created.0` is kept forever and never compacted
+            if is_role(a) || a.as_str() == "created.0" || self.engine.role_on(t) < Some(Role::Write) {
                 continue;
             }
             if self.carrier_of(body, t, a).is_some() {

@@ -39,7 +39,7 @@ pub struct Row {
 }
 
 /// Core aspects that are the system's, not the user's.
-const HIDDEN: [&str; 14] = ["/created", "/group", "/placed", "/groups", "/members", "/keys", "/secrets", "/label", "/reach", "/seen", "/tenures", "/node", "/moved", "/was"];
+const HIDDEN: [&str; 14] = ["created.0", "group.0", "placed.0~", "groups.0", "roles.0", "keys.0", "secrets.0", "label.0", "reach.0", "seen.0", "tenures.0", "node.0", "moved.0", "was.0"];
 
 impl Data {
     /// The fallback view's rows for `t`, by aspect key.
@@ -284,13 +284,13 @@ impl Data {
         let o = self.get(t, ORG)?;
         let field = |label: &str, ph: &str, row: Row| FormRow { label: label.into(), value: row.value.clone(), placeholder: ph.into(), act: FormAct::Field(row) };
         let mut out = vec![
-            field("Given name", "", text_row("/contact/names", Path::root().push(names::GIVEN), "given", n.as_ref().and_then(|n| n.given.clone()).unwrap_or_default(), true)),
-            field("Family name", "", text_row("/contact/names", Path::root().push(names::FAMILY), "family", n.as_ref().and_then(|n| n.family.clone()).unwrap_or_default(), true)),
-            field("Nickname", "", text_row("/contact/nickname", Path::root(), "nickname", self.get(t, NICKNAME)?.unwrap_or_default(), false)),
-            field("Title", "", text_row("/contact/org", Path::root().push(org::TITLE), "title", o.as_ref().map(|o| o.title.clone()).unwrap_or_default(), false)),
-            field("Organisation", "", text_row("/contact/org", Path::root().push(org::NAME), "name", o.as_ref().map(|o| o.name.clone()).unwrap_or_default(), false)),
+            field("Given name", "", text_row("contact:names.0", Path::root().push(names::GIVEN), "given", n.as_ref().and_then(|n| n.given.clone()).unwrap_or_default(), true)),
+            field("Family name", "", text_row("contact:names.0", Path::root().push(names::FAMILY), "family", n.as_ref().and_then(|n| n.family.clone()).unwrap_or_default(), true)),
+            field("Nickname", "", text_row("contact:nickname.0", Path::root(), "nickname", self.get(t, NICKNAME)?.unwrap_or_default(), false)),
+            field("Title", "", text_row("contact:org.0", Path::root().push(org::TITLE), "title", o.as_ref().map(|o| o.title.clone()).unwrap_or_default(), false)),
+            field("Organisation", "", text_row("contact:org.0", Path::root().push(org::NAME), "name", o.as_ref().map(|o| o.name.clone()).unwrap_or_default(), false)),
         ];
-        for (ak, key, label, add) in [("/contact/emails", EMAILS, "Email", "Add an email"), ("/contact/phones", PHONES, "Phone", "Add a phone")] {
+        for (ak, key, label, add) in [("contact:emails.0", EMAILS, "Email", "Add an email"), ("contact:phones.0", PHONES, "Phone", "Add a phone")] {
             for k in self.get(t, key)?.unwrap_or_default().into_keys() {
                 out.push(FormRow { label: label.into(), value: k.clone(), placeholder: "removed when empty".into(), act: FormAct::RenameKey { ak, old: k } });
             }

@@ -29,3 +29,5 @@ Dependent: issues/eph-unify.md (Left item 0) needs the lifetime marker so a rece
 Implementation: a format change everywhere AKs appear (spec, wire, DSL, codegen, schemas, vectors, tests, notes). Do it in the same sweep as issues/rename-roles-members.md and issues/one-node-kind.md (one churn), with a remnant-hunting review (owner completeness standard).
 
 Sweep plan (steps, order, remnant hunts): issues/one-node-kind.md, Sweep plan.
+
+Built (sweep step 5): the grammar (`osis_base::Ak`), the new spelling everywhere, `roles.0`; markers only parse and must match the schema's lifetime flags; untyped test keys carry them by convention. Left: step 6 (schema ID and revision off the wire), step 7 (markers carry meaning).

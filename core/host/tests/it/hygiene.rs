@@ -29,7 +29,7 @@ fn stored_bytes_hold_no_plaintext_identifiers() {
     w.setup(a, &l);
     w.open(a, &l);
     let tid = [0xa7u8; 15];
-    let ak = b"/profile/display_name".to_vec();
+    let ak = b"profile:display_name.0".to_vec();
     let author = [0xa9u8; 32];
     let plaintext = [&tid[..], &ak, &author].concat();
     let mut rng = SeededRng::from_seed([5; 32]);

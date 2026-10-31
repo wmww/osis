@@ -1,4 +1,4 @@
-//! Notes (notes/std.md): a note is `/name` plus a markdown `/body`; a notebook is a tag that owns
+//! Notes (notes/std.md): a note is `name.0` plus a markdown `body.0`; a notebook is a tag that owns
 //! its notes. Tier 1.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 

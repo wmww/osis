@@ -36,23 +36,23 @@ use osis_schema::{Lifetime, Untyped};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// `map<string, string>`, ephemeral.
-pub const NOTES: &str = "/e/notes";
+pub const NOTES: &str = "e:notes.0~";
 /// A string, ephemeral.
-pub const STATE: &str = "/e/state";
+pub const STATE: &str = "e:state.0~";
 /// A bool written with an expiry 5-30 s out (a typing indicator).
-pub const TYPING: &str = "/e/typing";
+pub const TYPING: &str = "e:typing.0~";
 /// A map from the author's node index to its cursor, each write a fresh entry at the author's
 /// key expiring `CURSOR_MS` out, refreshed by its author while there (as `osis::KeepAlive`
 /// does).
-pub const CURSOR: &str = "/e/cursor";
+pub const CURSOR: &str = "e:cursor.0~";
 /// A cursor write's expiry, from the write.
 pub const CURSOR_MS: u64 = 30_000;
 /// Signal: a unique string per write.
-pub const RING: &str = "/e/ring";
+pub const RING: &str = "e:ring.0*";
 
 /// Whether `ak` is one of the simulator's ephemeral aspects (the durable checks skip them).
 pub fn is_ephemeral(ak: &Ak) -> bool {
-    ak.as_str().starts_with("/e/")
+    !ak.lifetime().is_durable()
 }
 
 /// An ephemeral window and who held it.
@@ -87,7 +87,7 @@ impl NetSim {
         Ak::new(ak).map_err(|e| self.fail(e.to_string()))
     }
 
-    /// Node `n` makes an ephemeral window owned by and placed in `g` (its `/placed`) and tracks it.
+    /// Node `n` makes an ephemeral window owned by and placed in `g` (its `placed.0~`) and tracks it.
     pub fn window(&mut self, n: usize, g: Tid) -> Res<Tid> {
         let state = self.ukey(STATE, Lifetime::Ephemeral)?;
         let e = self.engine(n)?;

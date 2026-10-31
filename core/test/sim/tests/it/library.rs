@@ -163,21 +163,21 @@ fn link_race_seed_46() {
     ok("link_race", 46);
 }
 
-// spec/sync.md §5, spec/permissions.md §4: sweep seed 50 after the chat-cost fix, the loser's promoted `/keys` copy left pending (same cause as seed 41).
+// spec/sync.md §5, spec/permissions.md §4: sweep seed 50 after the chat-cost fix, the loser's promoted `keys.0` copy left pending (same cause as seed 41).
 #[test]
 #[ignore = "tier 2"]
 fn link_race_seed_50() {
     ok("link_race", 50);
 }
 
-// spec/sync.md §5, spec/permissions.md §3: sweep seed 1792, a redemption reached the sharer without its `/secrets` part (WaitDeltas); passes on main since the sweep; since then a held part of a role commit applies (spec/commits.md §4).
+// spec/sync.md §5, spec/permissions.md §3: sweep seed 1792, a redemption reached the sharer without its `secrets.0` part (WaitDeltas); passes on main since the sweep; since then a held part of a role commit applies (spec/commits.md §4).
 #[test]
 #[ignore = "tier 2"]
 fn link_race_seed_1792() {
     ok("link_race", 1792);
 }
 
-// spec/sync.md §5, spec/permissions.md §3: sweep seed 2255, a redemption reached the sharer without its `/secrets` part (WaitDeltas); passes on main since the sweep; since then a held part of a role commit applies (spec/commits.md §4).
+// spec/sync.md §5, spec/permissions.md §3: sweep seed 2255, a redemption reached the sharer without its `secrets.0` part (WaitDeltas); passes on main since the sweep; since then a held part of a role commit applies (spec/commits.md §4).
 #[test]
 #[ignore = "tier 2"]
 fn link_race_seed_2255() {
@@ -191,7 +191,7 @@ fn link_race_seed_2898() {
     ok("link_race", 2898);
 }
 
-// spec/sync.md §5, spec/permissions.md §3: sweep seed 3926, a redemption reached the sharer without its `/secrets` part (WaitDeltas); passes on main since the sweep; since then a held part of a role commit applies (spec/commits.md §4).
+// spec/sync.md §5, spec/permissions.md §3: sweep seed 3926, a redemption reached the sharer without its `secrets.0` part (WaitDeltas); passes on main since the sweep; since then a held part of a role commit applies (spec/commits.md §4).
 #[test]
 #[ignore = "tier 2"]
 fn link_race_seed_3926() {

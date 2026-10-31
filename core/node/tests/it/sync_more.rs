@@ -43,8 +43,8 @@ fn certificates_and_heartbeats_spec_permissions_4() {
     let rt = net.tid(r);
     let under = commits_under(&mut net, a, &l);
     let by_r: Vec<&BTreeSet<String>> = under.iter().filter(|(_, au, _)| *au == rt).map(|(_, _, a)| a).collect();
-    assert!(by_r.iter().any(|a| a.contains("/node")), "the reader's node card: {under:?}");
-    assert!(by_r.iter().any(|a| a.contains("/seen")), "the reader's heartbeat");
+    assert!(by_r.iter().any(|a| a.contains("node.0")), "the reader's node card: {under:?}");
+    assert!(by_r.iter().any(|a| a.contains("seen.0")), "the reader's heartbeat");
     let seen = net.engine(a).get_typed(&rt, &ct::SEEN).unwrap().unwrap();
     assert!(!seen.stranded);
     // the writer promoted the reader's deposited card (re-uploaded stamped); never a heartbeat
@@ -58,9 +58,9 @@ fn certificates_and_heartbeats_spec_permissions_4() {
             continue;
         }
         let stamped = osis_proto::LabelStore::entry(store, &l, &id).unwrap().unwrap().stamp.is_some();
-        if aks.contains("/seen") {
+        if aks.contains("seen.0") {
             assert!(!stamped, "heartbeats are never promoted");
-        } else if aks.contains("/node") {
+        } else if aks.contains("node.0") {
             assert!(stamped, "the card was promoted");
             card += 1;
         }
@@ -105,7 +105,7 @@ fn certificates_once_per_label_spec_permissions_4() {
     }
     for n in [w, r] {
         let t = net.tid(n);
-        assert!(held.keys().any(|c| net.engine(a).header(c).is_some_and(|h| h.author == t && h.aspects.iter().any(|x| x.ak.as_str() == "/node"))), "node {n}'s card is there");
+        assert!(held.keys().any(|c| net.engine(a).header(c).is_some_and(|h| h.author == t && h.aspects.iter().any(|x| x.ak.as_str() == "node.0"))), "node {n}'s card is there");
     }
 }
 
@@ -179,7 +179,7 @@ fn inbox_delivery_spec_sync_3() {
     m.op(p, &ct::KEYS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(4)], op: osis_crdt::Op::Replace(Some(inbox).to_value()) }).unwrap();
     net.engine(a).commit(m).unwrap();
     net.run();
-    // the sender knows P's /keys (paired with A) and B knows the sender's chain
+    // the sender knows P's keys.0 (paired with A) and B knows the sender's chain
     net.pair(a, s_);
     net.pair(s_, b);
     let me = net.tid(s_);
@@ -199,7 +199,7 @@ fn inbox_delivery_spec_sync_3() {
 
 use osis_schema::Codec;
 
-// spec/sync.md §2: a group's `/label` (with its `/created`) is also published under the home
+// spec/sync.md §2: a group's `label.0` (with its `created.0`) is also published under the home
 // label of the nearest owner-chain actor that has one, so that actor's other devices find it.
 #[test]
 fn label_published_under_home_label_spec_sync_2() {
@@ -235,7 +235,7 @@ fn label_published_under_home_label_spec_sync_2() {
 
 // spec/sync.md §2 (replacement): the admin secret the old label registers is rotated first; a
 // new label at the next index takes the live blobs; the old one is marked replaced and no
-// longer synced by holders; the admin places the replacement's `/label` commit under it,
+// longer synced by holders; the admin places the replacement's `label.0` commit under it,
 // deletes its content entries there, and then stops syncing it.
 #[test]
 fn label_replacement_spec_sync_2() {
@@ -268,10 +268,10 @@ fn label_replacement_spec_sync_2() {
         let EntryKind::Commit { commit, .. } = k else { continue };
         let h = net.engine(a).header(&commit).unwrap();
         assert!(h.aspects.iter().all(|x| x.tid != t), "content of the item left under the old label");
-        labels_after += usize::from(!before.contains(&commit) && h.aspects.iter().any(|x| x.ak.as_str() == "/label"));
+        labels_after += usize::from(!before.contains(&commit) && h.aspects.iter().any(|x| x.ak.as_str() == "label.0"));
     }
     // the new label's record with the old one marked replaced
-    assert_eq!(labels_after, 1, "the replacement's /label commit under the old label");
+    assert_eq!(labels_after, 1, "the replacement's label.0 commit under the old label");
     let labels: Vec<_> = net.sync(a).labels().into_iter().map(|(_, l)| l.id).collect();
     assert_eq!(labels, vec![new], "the admin is done with the old label");
     net.write(b, t, "on the new label");
@@ -342,16 +342,16 @@ fn nested_chain_empty_projection_spec_perm_6() {
     let _ = x;
 }
 
-/// Whether label `l` at host `s` holds a commit carrying a `/label` write the admin `n` made
+/// Whether label `l` at host `s` holds a commit carrying a `label.0` write the admin `n` made
 /// after `before`.
 fn label_commit_at(net: &mut Net, n: usize, s: usize, l: &osis_base::LabelId, before: &BTreeSet<osis_base::CommitId>) -> bool {
     let live: BTreeSet<_> = net.host_ids(s, l).into_iter().collect();
     let entries: Vec<_> = net.sync(n).entries(l).into_iter().filter(|(id, _)| live.contains(id)).collect();
-    entries.into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if !before.contains(&commit) && net.engine(n).header(&commit).is_some_and(|h| h.aspects.iter().any(|x| x.ak.as_str() == "/label"))))
+    entries.into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if !before.contains(&commit) && net.engine(n).header(&commit).is_some_and(|h| h.aspects.iter().any(|x| x.ak.as_str() == "label.0"))))
 }
 
 // spec/sync.md §2 (replacement): at a host that lost the old label the admin registers its
-// recorded path again so the replacement's `/label` commit is found there, then is done.
+// recorded path again so the replacement's `label.0` commit is found there, then is done.
 #[test]
 fn replaced_label_reregistered_where_lost_spec_sync_2() {
     let mut net = Net::new();
@@ -375,7 +375,7 @@ fn replaced_label_reregistered_where_lost_spec_sync_2() {
     net.run();
     net.run();
     assert!(!net.host_path(s1, &old).is_empty(), "the old label registered again where it was lost");
-    assert!(label_commit_at(&mut net, a, s1, &old, &before), "the replacement /label commit is found there");
+    assert!(label_commit_at(&mut net, a, s1, &old, &before), "the replacement label.0 commit is found there");
     let labels: Vec<_> = net.sync(a).labels().into_iter().map(|(_, l)| l.id).collect();
     assert_eq!(labels, vec![new], "done at both hosts");
 }
@@ -460,7 +460,7 @@ fn grant_by_inbox_end_to_end_spec_sync_3() {
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
     net.run();
-    // Alice's device knows Bob's card (his `/keys`), nothing more travels directly
+    // Alice's device knows Bob's card (his `keys.0`), nothing more travels directly
     net.pair(b, a);
     let e = net.engine(a);
     let mut m = Mutation::new();
@@ -553,7 +553,7 @@ fn grant_by_inbox_reads_earlier_content_spec_crypto_4() {
     assert_eq!(net.read(b, t), Some(s("before bob")));
 }
 
-// spec/crdt.md §9, §4.7; spec/permissions.md §4: a heartbeat writes `/seen` whole, so the
+// spec/crdt.md §9, §4.7; spec/permissions.md §4: a heartbeat writes `seen.0` whole, so the
 // expiry of an earlier heartbeat takes no field of a later one.
 #[test]
 fn heartbeat_outlives_earlier_spec_permissions_4() {
@@ -656,7 +656,7 @@ fn logged_commits(net: &mut Net, s: usize, n: usize, l: &osis_base::LabelId) -> 
 }
 
 // spec/permissions.md §3 (removal placement): a content write, then a removal, both before the
-// next sync; that sync places the removal (which carries the group's new `/keys`) under both of
+// next sync; that sync places the removal (which carries the group's new `keys.0`) under both of
 // the group's labels before the earlier content write.
 #[test]
 fn removal_placed_first_under_every_label_spec_perm_3() {
@@ -684,7 +684,7 @@ fn removal_placed_first_under_every_label_spec_perm_3() {
     assert!(done.deliveries.iter().any(|d| matches!(d, Delivery::First { .. })));
     let removal = done.commits[0];
     let h = net.engine(a).header(&removal).unwrap();
-    assert!(h.aspects.iter().any(|x| x.ak.as_str() == "/keys"), "the removal carries the new /keys");
+    assert!(h.aspects.iter().any(|x| x.ak.as_str() == "keys.0"), "the removal carries the new keys.0");
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
@@ -765,7 +765,7 @@ fn body_links_stay_in_the_closure_spec_sync_3() {
     let b = net.node(2, &[host]);
     let g = net.group(a, &[(b, Role::Read)], &[host]);
     let t1 = net.item(a, g, g, "in");
-    // t2: owned by g, not in its /group
+    // t2: owned by g, not in its group.0
     let mut m = Mutation::new();
     let t2 = net.engine(a).new_thing(&mut m, g);
     m.set(t2, &BLOB, &Value::Bytes(noise(1 << 20, 9))).unwrap();
@@ -856,7 +856,7 @@ fn forged_certificate_copy_ignored_spec_commits_4() {
     net.run();
     let l = net.label(a);
     let wt = net.tid(w);
-    let (cc, ais) = chain_commit(&mut net, w, g, wt, "/node");
+    let (cc, ais) = chain_commit(&mut net, w, g, wt, "node.0");
     let secret = net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
     let mut forged = Vec::new();
     for b in net.engine(w).part_bodies(&cc, &ais).unwrap() {
@@ -894,7 +894,7 @@ fn deleted_copy_placed_again_spec_permissions_4() {
     net.run();
     let l = net.label(a);
     let at = net.tid(a);
-    let (cc, _) = chain_commit(&mut net, r, g, at, "/node");
+    let (cc, _) = chain_commit(&mut net, r, g, at, "node.0");
     let before = entries_of(&mut net, r, host, &l, &cc);
     assert_eq!(before.len(), 2, "the admin's copy only (two retention classes): {before:?}");
     net.set_online(r, false);
@@ -911,7 +911,7 @@ fn deleted_copy_placed_again_spec_permissions_4() {
     assert!(!after.is_empty() && after.iter().all(|x| !before.contains(x)), "the reader placed its own: {after:?}");
 }
 
-// spec/permissions.md §3, §4 (another node's new `/keys` is its author's to place; a node may
+// spec/permissions.md §3, §4 (another node's new `keys.0` is its author's to place; a node may
 // wait at most `SETTLE_MS` after receipt): the reader receives the admin's new card keys while
 // the admin is offline, holds back its copy, and places it once the wait is over.
 #[test]
@@ -925,14 +925,14 @@ fn others_fresh_keys_left_to_author_spec_permissions_4() {
     let l = net.label(a);
     let at = net.tid(a);
     net.set_online(a, false);
-    // a change of the admin node's `/keys` (a deposit seed field it lacked)
+    // a change of the admin node's `keys.0` (a deposit seed field it lacked)
     let mut m = Mutation::new();
     let op = osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(5)], op: osis_crdt::Op::Replace(osis_schema::Codec::to_value(&Some([0x5e; 32]))) };
     m.op(at, &ct::KEYS, op).unwrap();
     let c = net.engine(a).commit(m).unwrap().unwrap();
     net.pair(a, r);
     net.run();
-    assert_eq!(chain_commit(&mut net, r, g, at, "/keys").0, c, "the new keys are on the reader's chain");
+    assert_eq!(chain_commit(&mut net, r, g, at, "keys.0").0, c, "the new keys are on the reader's chain");
     assert!(entries_of(&mut net, r, host, &l, &c).is_empty(), "left to its author for now");
     net.advance(31_000);
     net.run();
@@ -967,7 +967,7 @@ fn newcomer_after_rotation_reads_older_copies_spec_crypto_4() {
     let t = net.item(w, g, g, "after");
     net.run();
     // the writer's card went up only under the old epoch
-    let (cc, _) = chain_commit(&mut net, w, g, wt, "/node");
+    let (cc, _) = chain_commit(&mut net, w, g, wt, "node.0");
     let cards: Vec<osis_base::BlobId> = net.sync(w).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == cc)).map(|(id, _)| id).collect();
     let store = net.hosts[host].hub.store();
     assert!(!cards.is_empty() && cards.iter().all(|id| osis_proto::LabelStore::entry(store, &l, id).unwrap().is_some_and(|m| osis_crypto::unwrap(&old, id, &m.wrap).is_ok())));
@@ -1048,7 +1048,7 @@ fn reuse_race(expires: Option<u64>) -> (Net, [usize; 3], osis_base::Tid, Ak, Vec
     let c = net.node(3, &[host]);
     let g = net.group(a, &[(b, Role::Admin), (c, Role::Read)], &[host]);
     let t = net.item(a, g, g, "x");
-    let doc = Ak::new("/u/doc").unwrap();
+    let doc = Ak::new("u:doc.0").unwrap();
     let k = |s: &str| Value::Str(s.into());
     let v1 = noise(1 << 20, 11);
     let mut m = Mutation::new();
@@ -1153,7 +1153,7 @@ fn reencrypt_loop_bounded_spec_sync_1() {
 }
 
 // spec/crypto.md §7, spec/wire.md §9: an inbox grant names the target's current admin and write
-// delete keys, so a grantee that holds the grant but not yet the target's `/keys` writes at once,
+// delete keys, so a grantee that holds the grant but not yet the target's `keys.0` writes at once,
 // and a self-removal by it succeeds too; the keys it lists are the target's.
 #[test]
 fn grant_by_inbox_writes_before_keys_spec_crypto_7() {
@@ -1179,8 +1179,8 @@ fn grant_by_inbox_writes_before_keys_spec_crypto_7() {
     let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
     let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
     let blob = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { blob, .. } = d { Some(blob.clone()) } else { None }).expect("an inbox blob");
-    // everything but the commits writing g's `/keys` reaches b directly; the grant by inbox
-    let keys_ak = Ak::new("/keys").unwrap();
+    // everything but the commits writing g's `keys.0` reaches b directly; the grant by inbox
+    let keys_ak = Ak::new("keys.0").unwrap();
     for id in net.engine(a).commit_ids() {
         let h = net.engine(a).header(&id).unwrap();
         if h.aspects.iter().any(|x| x.tid == g && x.ak == keys_ak) {
@@ -1190,7 +1190,7 @@ fn grant_by_inbox_writes_before_keys_spec_crypto_7() {
         let _ = net.engine(b).ingest(&pk.bytes, pk.blobs);
     }
     net.engine(b).accept_inbox(&blob).unwrap();
-    assert!(net.engine(b).get_typed(&g, &ct::KEYS).unwrap().is_none(), "b holds no /keys of g");
+    assert!(net.engine(b).get_typed(&g, &ct::KEYS).unwrap().is_none(), "b holds no keys.0 of g");
     let mut m = Mutation::new();
     m.set(g, &REG, &s("by bob")).unwrap();
     let c = net.engine(b).commit(m).unwrap().unwrap();
@@ -1238,8 +1238,8 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     m.set(g, &REG, &s("by carl")).unwrap();
     let cc = net.engine(c).commit(m).unwrap().unwrap();
     let unrelated = net.engine(c).commit_ids().into_iter().find(|id| net.engine(c).header(id).unwrap().aspects.iter().all(|x| x.tid != g)).unwrap();
-    // b gets everything but g's `/keys` commits
-    let keys_ak = Ak::new("/keys").unwrap();
+    // b gets everything but g's `keys.0` commits
+    let keys_ak = Ak::new("keys.0").unwrap();
     for n in [a, c] {
         for id in net.engine(n).commit_ids() {
             let h = net.engine(n).header(&id).unwrap();
@@ -1263,7 +1263,7 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
         let _ = net.engine(b).accept_inbox(&blob);
     }
     net.engine(b).accept_inbox(&genuine).unwrap();
-    assert!(net.engine(b).get_typed(&g, &ct::KEYS).unwrap().is_none(), "b holds no /keys of g");
+    assert!(net.engine(b).get_typed(&g, &ct::KEYS).unwrap().is_none(), "b holds no keys.0 of g");
     let mut m = Mutation::new();
     m.set(g, &REG, &s("by bob")).unwrap();
     let id = net.engine(b).commit(m).unwrap().unwrap();

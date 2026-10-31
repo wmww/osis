@@ -170,7 +170,7 @@ pub(crate) struct Remote {
     /// whose records they wait for (bounded by the sync layer, which forgets what it drops),
     /// retried when one of those records arrives.
     pub pending: BTreeMap<CommitId, Waiting>,
-    /// Commits whose parts were all invalid on arrival (`/created` ones aside): neither held nor
+    /// Commits whose parts were all invalid on arrival (`created.0` ones aside): neither held nor
     /// counted, judged again when the held durable set changes (bounded like `pending`).
     pub invalid: BTreeMap<CommitId, Invalid>,
     /// Per actor, the cost of the own cover last weighed (plus the own held commits it could not
@@ -304,14 +304,14 @@ pub struct EphCommit {
 
 impl Engine {
     /// Whether `tid` is in some labeled closure here: synced itself, or in a group that is, through
-    /// either side of `/group`.
+    /// either side of `group.0`.
     pub fn ephemeral_synced(&self, tid: &Tid) -> bool {
         let s = &self.core.ix.syncing;
         s.contains(tid) || self.groups_of(tid).iter().any(|g| s.contains(g))
     }
 
     /// Whether `t` is in the closure of `g` (`Engine::closure` and the ephemeral things placed in
-    /// it, transitively through `/placed`), without walking it.
+    /// it, transitively through `placed.0~`), without walking it.
     pub fn in_ephemeral_closure(&self, g: &Tid, t: &Tid) -> bool {
         t == g || self.closure(g).contains(t) || self.groups_of(t).contains(g)
     }
@@ -518,7 +518,7 @@ impl Engine {
         let mut by = BTreeSet::new();
         for p in parts {
             let a = h.aspects.get(p.ai)?;
-            if a.expires.is_none() || is_core_aspect(a.ak.as_str()) {
+            if a.expires.is_none() || osis_schema::core_types::is_core_key(a.ak.as_str()) {
                 return None;
             }
             let ea = self.eph.aspects.get(&a.tid).and_then(|m| m.get(&a.ak))?;
@@ -607,7 +607,7 @@ impl Engine {
 
     /// Builds, signs and holds one ephemeral commit of `deltas` (thing, aspect, fragment,
     /// expiry), carrying the records of the ephemeral things the deltas touch and of those its
-    /// `/group` deltas place, with their ephemeral owner chains; `absorbed`: per aspect, the held
+    /// `group.0` deltas place, with their ephemeral owner chains; `absorbed`: per aspect, the held
     /// commits it covers. Writes but this node's sessions' are not carried. `None` when it
     /// would carry nothing or cannot be built (a delete key not held: reported).
     fn build_ephemeral(&mut self, class: EphClass, actor: Tid, deltas: Vec<EphDelta>, absorbed: &Absorbs) -> Result<Option<EphCommit>> {
@@ -780,11 +780,11 @@ impl Engine {
 
     /// Whether part `ai` of ephemeral commit `h` is valid here (spec/permissions.md §5.2): judged
     /// as its author's snapshot delta at its `ts`, by commit ID. Role-class aspects and
-    /// the other core aspects but `/group` (spec/data-model.md §8) take no ephemeral part.
+    /// the other core aspects but `group.0` (spec/data-model.md §8) take no ephemeral part.
     fn eph_part_valid(&self, h: &Header, id: &CommitId, ai: usize, carried: &BTreeMap<Tid, CreationRecord>) -> bool {
         let Some(a) = h.aspects.get(ai) else { return false };
         let ak = a.ak.as_str();
-        if is_role_class(ak) || (is_core_aspect(ak) && ak != PLACED.ak()) {
+        if is_role_class(ak) || (osis_schema::core_types::is_core_key(ak) && ak != PLACED.ak()) {
             return false;
         }
         self.eph_write_valid(&a.tid, ak, h.author, h.ts, id, carried)
@@ -2007,12 +2007,7 @@ fn strip_own_expired(a: &mut EphAspect, src: &Source) {
     }
 }
 
-/// Whether `ak` is a core aspect (one segment, spec/data-model.md §9) rather than a schema's.
 /// Whether commit `h` has a part not expired at `now`.
 fn live_parts(h: &Header, now: u64) -> bool {
     h.aspects.iter().any(|a| !a.expires.is_some_and(|t| t <= now))
-}
-
-fn is_core_aspect(ak: &str) -> bool {
-    ak.matches('/').count() == 1
 }

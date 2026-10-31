@@ -22,7 +22,7 @@ fn snapshot(s: &mut Store) -> State {
     let mut rng = SeededRng::from_u64(99);
     let mut t = s.transaction(&mut rng).unwrap();
     let locals = t.scan_local(b"", b"", usize::MAX).unwrap();
-    let table = match t.table(&tid(1), &ak("/t"), 0).unwrap() {
+    let table = match t.table(&tid(1), &ak("t.0"), 0).unwrap() {
         Some(tb) => t.table_range(tb, b"", None, usize::MAX).unwrap(),
         None => Vec::new(),
     };
@@ -34,7 +34,7 @@ fn setup(s: &mut Store, rng: &mut SeededRng) {
     for i in 0..30u8 {
         t.put_local(&[b'k', i], &[i; 20], Shred::No).unwrap();
     }
-    let tb = t.create_table(&tid(1), &ak("/t"), 0).unwrap();
+    let tb = t.create_table(&tid(1), &ak("t.0"), 0).unwrap();
     for i in 0..200u32 {
         t.table_put(tb, &i.to_be_bytes(), vec![1; 24], Shred::No).unwrap();
     }
@@ -43,7 +43,7 @@ fn setup(s: &mut Store, rng: &mut SeededRng) {
 
 /// Transaction shapes: 0 plain, 1 shredding, 2 large (spills) and shredding.
 fn scenario(t: &mut Transaction, kind: u8) -> Result<(), Error> {
-    let tb = t.table(&tid(1), &ak("/t"), 0)?.unwrap();
+    let tb = t.table(&tid(1), &ak("t.0"), 0)?.unwrap();
     let shred = if kind == 0 { Shred::No } else { Shred::Yes };
     for i in 0..10u8 {
         t.put_local(&[b'k', i], b"changed", shred)?;

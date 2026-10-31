@@ -31,18 +31,18 @@ fn some(v: Value) -> Value {
 const V1: &str = "\
 type status = enum { 0 todo, 1 done };
 type task = struct { 1 title: string, 2 done: bool };
-aspect /n/tasks: list<task>;
-aspect /n/st: status;
+aspect n:tasks.0: list<task>;
+aspect n:st.0: status;
 ";
 const V2: &str = "\
 type status = enum { 0 todo, 1 done, 2 blocked };
 type task = struct { 1 title: string, 2 done: bool, 3 status: option<status>, 4 weight: float = 1.5 };
-aspect /n/tasks: list<task>;
-aspect /n/st: status;
+aspect n:tasks.0: list<task>;
+aspect n:st.0: status;
 ";
 
 fn tasks(s: &Schema) -> Type {
-    s.aspects["/n/tasks"].ty.clone()
+    s.aspects["n:tasks.0"].ty.clone()
 }
 
 #[test]
@@ -73,7 +73,7 @@ fn typed_read_errors_carry_paths_spec_versioning_5() {
     let newer = st(&[(1, s("b")), (2, Value::Bool(false)), (3, some(Value::Enum(2, None)))]);
     let e = typed_read(&v2, &Value::List(vec![good.clone(), newer.clone()]), &tasks(&v2));
     assert!(e.is_ok());
-    let e = typed_read(&v1, &Value::Enum(2, None), &v1.aspects["/n/st"].ty).unwrap_err();
+    let e = typed_read(&v1, &Value::Enum(2, None), &v1.aspects["n:st.0"].ty).unwrap_err();
     assert_eq!(e.kind, PathErrorKind::UnknownCase(2));
     assert_eq!(osis_base::Classified::class(&e), osis_base::ErrorClass::Parked);
     // Type mismatch at [1].2.
@@ -113,10 +113,10 @@ fn writes_need_every_declared_field_spec_versioning_5() {
 
 #[test]
 fn any_reads_back_struct_as_map_spec_data_model_3() {
-    let s1 = schema(1, "aspect /n/a: any;");
+    let s1 = schema(1, "aspect n:a.0: any;");
     let v = st(&[(0, s("x"))]);
     assert_eq!(typed_read(&s1, &v, &Type::Any).unwrap(), v);
-    let view = s1.view("/n/a").unwrap();
+    let view = s1.view("n:a.0").unwrap();
     assert_eq!(view.encoding(), None);
     assert_eq!(view.field(3).unwrap().encoding(), None);
 }
@@ -124,7 +124,7 @@ fn any_reads_back_struct_as_map_spec_data_model_3() {
 #[test]
 fn view_projects_onto_writer_schema_spec_crdt_9() {
     let (v1, v2) = (schema(1, V1), schema(2, V2));
-    let view = v1.view("/n/tasks").unwrap();
+    let view = v1.view("n:tasks.0").unwrap();
     assert_eq!(view.encoding(), Some(Encoding::List));
     let el = view.element().unwrap();
     assert_eq!(el.encoding(), Some(Encoding::Struct));
@@ -136,9 +136,9 @@ fn view_projects_onto_writer_schema_spec_crdt_9() {
     assert!(matches!(el.project(&same).unwrap(), std::borrow::Cow::Borrowed(_)));
     // An element the writer cannot type is opaque.
     assert!(el.project(&st(&[(1, Value::Int(3)), (2, Value::Bool(false))])).is_none());
-    assert!(v1.view("/n/st").unwrap().project(&Value::Enum(2, None)).is_none());
+    assert!(v1.view("n:st.0").unwrap().project(&Value::Enum(2, None)).is_none());
     // Fields, declared defaults (never materialized), cases.
-    let el2 = v2.view("/n/tasks").unwrap().element().unwrap();
+    let el2 = v2.view("n:tasks.0").unwrap().element().unwrap();
     assert_eq!(el2.field(1).unwrap().encoding(), Some(Encoding::Register));
     assert_eq!(el2.field(3).unwrap().encoding(), Some(Encoding::Enum));
     assert!(el2.field(9).is_none());
@@ -153,12 +153,12 @@ fn view_projects_onto_writer_schema_spec_crdt_9() {
     let full = st(&[(1, s("a")), (2, Value::Bool(false)), (3, none()), (4, Value::float(1.5))]);
     assert_eq!(el2.project(&old).unwrap().into_owned(), full);
     // Maps, sets, bags.
-    let s3 = schema(1, "aspect /n/m: map<string, set<tid>>; aspect /n/c: counter<int>;");
-    let m = s3.view("/n/m").unwrap();
+    let s3 = schema(1, "aspect n:m.0: map<string, set<tid>>; aspect n:c.0: counter<int>;");
+    let m = s3.view("n:m.0").unwrap();
     assert_eq!(m.key().unwrap().encoding(), Some(Encoding::Register));
     assert_eq!(m.element().unwrap().encoding(), Some(Encoding::Set));
     assert_eq!(m.element().unwrap().element().unwrap().encoding(), Some(Encoding::Register));
-    let c = s3.view("/n/c").unwrap();
+    let c = s3.view("n:c.0").unwrap();
     assert_eq!(c.encoding(), Some(Encoding::Counter));
     assert_eq!(c.element().unwrap().project(&Value::Int(4)).unwrap().into_owned(), Value::Int(4));
 }
@@ -166,7 +166,7 @@ fn view_projects_onto_writer_schema_spec_crdt_9() {
 // spec/data-model.md §6 (chunk threshold)
 #[test]
 fn large_atomic_positions_spec_data_model_6() {
-    let sc = schema(1, "aspect /n/a: struct { 0 b: blob, 1 t: text, 2 s: set<string>, 3 m: map<blob, string>, 4 x: any };");
+    let sc = schema(1, "aspect n:a.0: struct { 0 b: blob, 1 t: text, 2 s: set<string>, 3 m: map<blob, string>, 4 x: any };");
     let big = "x".repeat(CHUNK_THRESHOLD);
     let bigb = vec![7u8; CHUNK_THRESHOLD];
     let v = st(&[
@@ -176,7 +176,7 @@ fn large_atomic_positions_spec_data_model_6() {
         (3, Value::Map(BTreeMap::from([(Value::Bytes(bigb.clone()), s(&big))]))),
         (4, s(&big)),
     ]);
-    let ty = &sc.aspects["/n/a"].ty;
+    let ty = &sc.aspects["n:a.0"].ty;
     let got = large_positions(&sc, &v, ty);
     let l = |path: Vec<Step>, map_key| Large { path: Path(path), map_key };
     let want = vec![
@@ -250,9 +250,9 @@ proptest! {
     /// spec/versioning.md §5: a value a writer writes reads back as itself through its type,
     /// also after the canonical encoding round trip.
     #[test]
-    fn typed_read_of_written_is_identity(v in arb(core_schema(), &core_schema().aspects["/keys"].ty, 2)) {
+    fn typed_read_of_written_is_identity(v in arb(core_schema(), &core_schema().aspects["keys.0"].ty, 2)) {
         let sc = core_schema();
-        let ty = &sc.aspects["/keys"].ty;
+        let ty = &sc.aspects["keys.0"].ty;
         validate_write(sc, &v, ty).unwrap();
         let back = osis_base::decode(&osis_base::encode(&v), &Limits::DEFAULT).unwrap();
         prop_assert_eq!(typed_read(sc, &back, ty).unwrap(), v);

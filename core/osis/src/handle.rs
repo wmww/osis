@@ -63,9 +63,9 @@ pub struct Config {
     /// How hosts and co-reader nodes are dialed (default: QUIC).
     pub transport: Option<Transport>,
     /// Sync with co-reader nodes directly (spec/sync.md §5, §10; default on): listen with the
-    /// dialable key, publish `/reach`, and with feature `lan` announce on the LAN.
+    /// dialable key, publish `reach.0`, and with feature `lan` announce on the LAN.
     pub peers: bool,
-    /// Relay URLs published in `/reach` (self-hosted `iroh-relay`s; feature `iroh`).
+    /// Relay URLs published in `reach.0` (self-hosted `iroh-relay`s; feature `iroh`).
     pub relays: Vec<String>,
     /// Hosts for `create`, `restore` and `pair`; an opened database keeps its stored list.
     pub hosts: Vec<HostAddr>,

@@ -1,10 +1,10 @@
 # A snapshot's or a content commit's projection still pends at a syncer of its thing
-> Summary: The link-race fix (atomic apply: a plain role commit held in part applies) leaves out content commits (a thing's `/created` chain copy) and role-class snapshots (a roster snapshot's projection carries its reset). A syncer of the thing holding only such a copy waits for the rest; forever if the author's full commit never reaches the thing's label. With the placement order gone the copies may go first.
+> Summary: The link-race fix (atomic apply: a plain role commit held in part applies) leaves out content commits (a thing's `created.0` chain copy) and role-class snapshots (a roster snapshot's projection carries its reset). A syncer of the thing holding only such a copy waits for the rest; forever if the author's full commit never reaches the thing's label. With the placement order gone the copies may go first.
 > Tags: node, sync
 
-Code: `apply::examine` (`projection`), certificates in `labeling/certs.rs` (`parts_of(.., ["/created"])`, roster projection with the reset).
+Code: `apply::examine` (`projection`), certificates in `labeling/certs.rs` (`parts_of(.., ["created.0"])`, roster projection with the reset).
 
-Why left out: applying the `/created` part alone would split every thing creation (its `/created` blob is its own retention class under the thing's label, so atomic apply would weaken for content commits, spec/requirements.md); a roster snapshot's partial apply resets the roster to the projected holders until the rest arrives (writes of the others judged invalid meanwhile).
+Why left out: applying the `created.0` part alone would split every thing creation (its `created.0` blob is its own retention class under the thing's label, so atomic apply would weaken for content commits, spec/requirements.md); a roster snapshot's partial apply resets the roster to the projected holders until the rest arrives (writes of the others judged invalid meanwhile).
 
 How likely: the author must lose its disk (or the thing's label never take the commit) between sending the copy and placing the commit. Not seen in sims.
 

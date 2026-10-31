@@ -166,7 +166,7 @@ impl Timeline {
     }
 
     /// This timeline for `held`, which holds the same roster snapshots, every role commit
-    /// walked here, maybe more, and maybe new things, `/created` records and nodes (equal to
+    /// walked here, maybe more, and maybe new things, `created.0` records and nodes (equal to
     /// `evaluate`). Before the first point `p` where the walk meets anything new (a new commit,
     /// or an item naming a thing whose owner link is new, one below it, or a new node), the
     /// walk is the same but for the demotions on those things: they have no edges there, so a
@@ -269,7 +269,7 @@ impl Timeline {
     }
 
     /// This timeline with role commits `new` added (not held here, on things of this
-    /// timeline, by and for its nodes or nodes that reach nothing here) and the `/created` of
+    /// timeline, by and for its nodes or nodes that reach nothing here) and the `created.0` of
     /// key actors `keys` new here (nodes `new` names, nothing else held of them): `extend`
     /// without gathering the held set again. Each commit, in timeline order, is placed in the walk
     /// without walking again where that is exact (`Walked::insert`: it applies nothing, or no
@@ -342,7 +342,7 @@ impl Timeline {
         Ok(self)
     }
 
-    /// This timeline with things `leaves` new here that only their `/created` names (no item
+    /// This timeline with things `leaves` new here that only their `created.0` names (no item
     /// names them, they own nothing held): `extend` without gathering the held set again. The
     /// walk is the same but for their demotions, which are their owners' (`Walked::alias_leaves`).
     /// `Err(self)`, unchanged, when one is known here, owned by none, or the owner links cycle.

@@ -90,28 +90,28 @@ fn two_people_three_devices_one_host_localhost() {
     assert_eq!(osis(&a1, &["device", "ls"]).lines().count(), 2);
 
     // Alice shares a group by link; Bob redeems it
-    let g = osis(&a1, &["create", "--owner", "me", "--in", "home", "--group", "/t/made", "true"]);
+    let g = osis(&a1, &["create", "--owner", "me", "--in", "home", "--group", "t:made.0", "true"]);
     osis(&a1, &["group", "sync", &g]);
-    let t = osis(&a1, &["create", "--owner", &g, "--in", &g, "/t/x", "\"hello\""]);
+    let t = osis(&a1, &["create", "--owner", &g, "--in", &g, "t:x.0", "\"hello\""]);
     let link = osis(&a1, &["link", "make", &g, "write"]);
     osis(&a1, &["sync"]);
     // Alice's devices are all closed now: the link works from the host alone
     assert_eq!(osis(&b, &["link", "redeem", &link]), g);
     osis(&b, &["sync"]);
-    assert_eq!(osis(&b, &["get", &t, "/t/x"]), "\"hello\"");
+    assert_eq!(osis(&b, &["get", &t, "t:x.0"]), "\"hello\"");
 
     // writes on all three devices meet
-    osis(&b, &["set", &t, "/t/y", "1"]);
+    osis(&b, &["set", &t, "t:y.0", "1"]);
     osis(&a2, &["sync"]);
-    osis(&a2, &["set", &t, "/t/z", "2"]);
+    osis(&a2, &["set", &t, "t:z.0", "2"]);
     osis(&b, &["sync"]);
     osis(&a2, &["sync"]);
     osis(&a1, &["sync"]);
     for s in [&a1, &a2, &b] {
         osis(s, &["sync"]);
-        let j = osis(s, &["--json", "get", &t, "/t/y"]);
+        let j = osis(s, &["--json", "get", &t, "t:y.0"]);
         assert_eq!(j, "1", "{}", s.display());
-        assert_eq!(osis(s, &["get", &t, "/t/z"]), "2");
+        assert_eq!(osis(s, &["get", &t, "t:z.0"]), "2");
     }
     let st = osis(&a1, &["--json", "status"]);
     assert!(st.contains(&g) && !st.contains("unreachable"), "{st}");
@@ -120,15 +120,15 @@ fn two_people_three_devices_one_host_localhost() {
     osis(&a1, &["undo", "--thing", &t]);
     osis(&a1, &["sync"]);
     osis(&b, &["sync"]);
-    let absent = Command::new(OSIS).arg("-s").arg(&b).args(["get", &t, "/t/z"]).output().unwrap();
+    let absent = Command::new(OSIS).arg("-s").arg(&b).args(["get", &t, "t:z.0"]).output().unwrap();
     assert_eq!(absent.status.code(), Some(3), "Alice's last change undone everywhere: absent");
 
     // a bundle carries the home group to the other device by hand
-    let n = osis(&a1, &["create", "--owner", "me", "--in", "home", "/t/x", "\"by hand\""]);
+    let n = osis(&a1, &["create", "--owner", "me", "--in", "home", "t:x.0", "\"by hand\""]);
     // a bundle holds what is placed under the label: a pass places it (the device syncs; a2 does not)
     osis(&a1, &["sync"]);
     let bundle = osis_in(&a1, &["bundle", "export", "home"], b"");
     osis_in(&a2, &["bundle", "import"], &bundle);
-    assert_eq!(osis(&a2, &["get", &n, "/t/x"]), "\"by hand\"");
-    assert!(osis(&a2, &["inspect", "thing", &n]).contains("/t/x"));
+    assert_eq!(osis(&a2, &["get", &n, "t:x.0"]), "\"by hand\"");
+    assert!(osis(&a2, &["inspect", "thing", &n]).contains("t:x.0"));
 }

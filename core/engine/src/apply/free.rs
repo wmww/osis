@@ -5,7 +5,7 @@
 //! (`tests::free_equals_never_indexed`); a commit that also touches a thing not freed stays, and
 //! so does every thing it is on, whole, until all of them are freed; so does the owner of a held
 //! thing not freed. A memory commit that also touches a durable thing (an item's writes with its
-//! `/placed` add into a durable group) keeps its things until it goes by retention.
+//! `placed.0~` add into a durable group) keeps its things until it goes by retention.
 
 use crate::engine::records;
 use crate::engine::{Core, Tx};
@@ -167,7 +167,7 @@ mod tests {
         let me = e.tid();
         let mut m = Mutation::new();
         let g = e.new_thing(&mut m, me);
-        m.set(g, &ak("/t/reg"), &Value::Str("g".into())).unwrap();
+        m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
         e.commit(m).unwrap();
         let before = digest(e);
         let rows = |e: &mut Engine| e.run(|tx| Ok(tx.txn.memory_local_keys(b""))).unwrap();
@@ -175,20 +175,20 @@ mod tests {
         let mut m = Mutation::new();
         let top = e.new_thing(&mut m, g);
         let leaf = e.new_thing(&mut m, top);
-        m.set(leaf, &eph("/t/a"), &Value::Str("x".into())).unwrap();
-        m.expires(leaf, &eph("/t/a"), WallMs(e.now().0 + 60_000)).unwrap();
+        m.set(leaf, &eph("t:a.0~"), &Value::Str("x".into())).unwrap();
+        m.expires(leaf, &eph("t:a.0~"), WallMs(e.now().0 + 60_000)).unwrap();
         e.commit_in_memory(m).unwrap().unwrap();
         for i in 0..2 {
             let mut m = Mutation::new();
-            m.set(leaf, &eph("/t/a"), &Value::Str(format!("y{i}"))).unwrap();
-            m.set(top, &eph("/t/b"), &Value::Set([Value::Str(format!("z{i}"))].into())).unwrap();
+            m.set(leaf, &eph("t:a.0~"), &Value::Str(format!("y{i}"))).unwrap();
+            m.set(top, &eph("t:b.0~"), &Value::Set([Value::Str(format!("z{i}"))].into())).unwrap();
             e.commit_in_memory(m).unwrap().unwrap();
         }
         // an owner no commit is on, of a thing one is on
         let mut m = Mutation::new();
         let boss = e.new_thing(&mut m, g);
         let kid = e.new_thing(&mut m, boss);
-        m.set(kid, &eph("/t/a"), &Value::Str("k".into())).unwrap();
+        m.set(kid, &eph("t:a.0~"), &Value::Str("k".into())).unwrap();
         e.commit_in_memory(m).unwrap().unwrap();
         // the first write expires: held value-less, its timer gone
         lp.advance(61_000);
@@ -203,7 +203,7 @@ mod tests {
         assert!(e.core.created(&boss).is_none() && e.core.created(&kid).is_none());
         e.free_memory(&BTreeSet::from([top])).unwrap();
         assert!(e.core.created(&top).is_some() && e.core.created(&leaf).is_some(), "a commit on a thing not freed keeps its things");
-        assert_eq!(e.get(&top, &ak("/t/b")).unwrap(), Some(Value::Set([Value::Str("z1".into())].into())));
+        assert_eq!(e.get(&top, &ak("t:b.0~")).unwrap(), Some(Value::Set([Value::Str("z1".into())].into())));
         e.free_memory(&BTreeSet::from([leaf])).unwrap();
         assert_eq!(digest(e), before);
         assert!(rows(e).is_empty(), "{:?}", rows(e));

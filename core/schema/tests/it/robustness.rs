@@ -22,7 +22,7 @@ fn err(body: &str) -> ParseError {
 fn wrapper_of_itself_with_default() {
     let e = err("type a = counter<a>; type s = struct { 0 x: a = 1 };");
     assert!(e.msg.contains("int or float"), "{e}");
-    let e = err("type a = max<a>; aspect /x/y: a;");
+    let e = err("type a = max<a>; aspect x:y.0: a;");
     assert!(e.msg.contains("int or float"), "{e}");
 }
 
@@ -30,21 +30,21 @@ fn wrapper_of_itself_with_default() {
 // parameters unchanged), else expansion never repeats.
 #[test]
 fn polymorphic_recursion_rejected() {
-    let e = err("type t<T> = struct { 0 a: option<t<list<T>>> }; aspect /x/y: t<int>;");
+    let e = err("type t<T> = struct { 0 a: option<t<list<T>>> }; aspect x:y.0: t<int>;");
     assert!(e.msg.contains("recursive reference"), "{e}");
     let e = err("type t<T> = struct { 0 a: list<t<list<T>>> };");
     assert!(e.msg.contains("recursive reference"), "{e}");
     let e = err("type a<T> = struct { 0 x: option<b<T>> }; type b<U> = struct { 0 y: option<a<set<U>>> };");
     assert!(e.msg.contains("recursive reference"), "{e}");
     // Regular recursion, also mutual, is fine.
-    parse("t.osis", &src("type a<T> = struct { 0 x: option<b<T>>, 1 v: T }; type b<U> = struct { 0 y: list<a<U>> }; aspect /x/y: a<int>;"))
+    parse("t.osis", &src("type a<T> = struct { 0 x: option<b<T>>, 1 v: T }; type b<U> = struct { 0 y: list<a<U>> }; aspect x:y.0: a<int>;"))
         .unwrap();
 }
 
 // spec/versioning.md §4: the checker on schemas that bypass validation stops with a violation.
 #[test]
 fn checker_refuses_unvalidated_irregular_schemas() {
-    let good = parse("t.osis", &src("aspect /x/y: int;")).unwrap();
+    let good = parse("t.osis", &src("aspect x:y.0: int;")).unwrap();
     let mut bad = good.clone();
     let body = Type::Struct(StructType {
         fields: BTreeMap::from([(0, Field::new("a", Type::List(Box::new(Type::Named("t".into(), vec![Type::List(Box::new(Type::Param("T".into())))])))))]),
@@ -63,7 +63,7 @@ fn chain(n: usize) -> String {
     for i in 0..n {
         s.push_str(&format!("type a{i} = list<a{}>;\n", i + 1));
     }
-    s.push_str(&format!("type a{n} = int;\naspect /x/y: a0;\n"));
+    s.push_str(&format!("type a{n} = int;\naspect x:y.0: a0;\n"));
     s
 }
 
@@ -86,7 +86,7 @@ fn long_type_chains_error_fast() {
     for i in 0..100 {
         a.push_str(&format!("type b{i} = b{};\n", i + 1));
     }
-    a.push_str("type b100 = int;\naspect /x/y: b0;");
+    a.push_str("type b100 = int;\naspect x:y.0: b0;");
     let e = err(&a);
     assert!(e.msg.contains("alias chain too long"), "{e}");
 }
@@ -98,7 +98,7 @@ fn exponential_instances_bounded() {
     for i in 0..40 {
         s.push_str(&format!("type p{i}<T> = struct {{ 0 x: p{n}<list<T>>, 1 y: p{n}<set<T>> }};\n", n = i + 1));
     }
-    s.push_str("type p40<T> = T;\naspect /x/y: p0<int>;");
+    s.push_str("type p40<T> = T;\naspect x:y.0: p0<int>;");
     let t = Instant::now();
     let e = err(&s);
     assert!(e.msg.contains("too many type instances"), "{e}");
@@ -109,9 +109,9 @@ fn exponential_instances_bounded() {
 // field step (field IDs are non-negative).
 #[test]
 fn negative_keys_are_not_fields() {
-    let s = parse("t.osis", &src("aspect /x/y: struct { 3 b: blob };")).unwrap();
+    let s = parse("t.osis", &src("aspect x:y.0: struct { 3 b: blob };")).unwrap();
     let big = Value::Bytes(vec![1; CHUNK_THRESHOLD]);
     let v = Value::Map(BTreeMap::from([(Value::Int(-3), big.clone())]));
-    let got = large_positions(&s, &v, &s.aspects["/x/y"].ty);
+    let got = large_positions(&s, &v, &s.aspects["x:y.0"].ty);
     assert_eq!(got, vec![Large { path: Path(vec![Step::Key(Value::Int(-3))]), map_key: false }]);
 }

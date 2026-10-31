@@ -341,7 +341,7 @@ impl SyncEngine {
         self.engine.read_secrets(g)
     }
 
-    /// Actor `a`'s inbox label: named in its `/keys`, or the nearest one named up its owner
+    /// Actor `a`'s inbox label: named in its `keys.0`, or the nearest one named up its owner
     /// chain (spec/sync.md §2; bounded by `MAX_OWNER_DEPTH`).
     pub(crate) fn inbox_label(&mut self, a: &Tid) -> Option<LabelId> {
         let chain: Vec<Tid> = self.engine.owner_chain(a).collect();

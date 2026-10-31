@@ -23,14 +23,14 @@
 //! ```
 //! # use osis::{Config, Osis, Ak, Value};
 //! # let db = Osis::create(Config::memory())?.0;
-//! let title = Ak::new("/note/title").unwrap();
+//! let title = Ak::new("note:title.0").unwrap();
 //! let t = db.write_with(|w| {
 //!     let t = w.create(db.me())?;
 //!     w.at(t, title.clone()).set(&Value::Str("Groceries".into()))?;
 //!     Ok(t)
 //! })?;
 //! assert_eq!(db.get(t, title.clone())?, Some(Value::Str("Groceries".into())));
-//! assert_eq!(db.get(t, Ak::new("/note/other").unwrap())?, None);
+//! assert_eq!(db.get(t, Ak::new("note:other.0").unwrap())?, None);
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -40,7 +40,7 @@
 //! ```
 //! # use osis::{Config, Osis, Ak, Value, p};
 //! # let db = Osis::create(Config::memory())?.0;
-//! let tags = Ak::new("/note/tags").unwrap();
+//! let tags = Ak::new("note:tags.0").unwrap();
 //! let mut w = db.write();
 //! let t = w.create(db.me())?;
 //! w.at(t, tags.clone()).path(p![]).put(&"color".to_string(), &"red".to_string())?;
@@ -58,7 +58,7 @@
 //! # use osis::{Config, Osis, Ak, Value};
 //! # use std::collections::BTreeMap;
 //! # let db = Osis::create(Config::memory())?.0;
-//! let form = Ak::new("/app/form").unwrap();
+//! let form = Ak::new("app:form.0").unwrap();
 //! let shown = Value::Map(BTreeMap::from([(Value::Int(0), Value::Str("a".into())), (Value::Int(1), Value::Int(1))]));
 //! let mut w = db.write();
 //! let t = w.create(db.me())?;
@@ -78,7 +78,7 @@
 //! ```
 //! # use osis::{Config, Osis, Ak, Value, Source};
 //! # let db = Osis::create(Config::memory())?.0;
-//! let k = Ak::new("/app/count").unwrap();
+//! let k = Ak::new("app:count.0").unwrap();
 //! let mut w = db.write();
 //! let t = w.create(db.me())?;
 //! w.commit()?;
@@ -99,7 +99,7 @@
 //! ```
 //! # use osis::{Config, Osis, Ak, Value, Scope, CommitQuery, CommitKind};
 //! # let db = Osis::create(Config::memory())?.0;
-//! let k = Ak::new("/app/x").unwrap();
+//! let k = Ak::new("app:x.0").unwrap();
 //! let mut w = db.write();
 //! let t = w.create(db.me())?;
 //! w.at(t, k.clone()).set(&Value::Int(1))?;
@@ -182,7 +182,7 @@
 //! # use osis::{Config, Osis, Ak, Value, Lifetimes};
 //! let db = Osis::create(Config::memory())?.0;
 //! let t = db.write_with(|w| w.create(db.me()))?;
-//! let ring = Ak::new("/app/ring").unwrap().signal();
+//! let ring = Ak::new("app:ring.0*").unwrap().signal();
 //! let (tx, rx) = std::sync::mpsc::channel();
 //! let _sub = db.at(t, ring.clone()).on_change(move |_, c| { let _ = tx.send(c.value); })?;
 //! assert_eq!(rx.recv().unwrap(), Ok(None));
@@ -199,7 +199,7 @@
 //! # use osis::{Config, Osis, Ak, Path};
 //! # use std::io::Read;
 //! let db = Osis::create(Config::memory())?.0;
-//! let k = Ak::new("/app/body").unwrap();
+//! let k = Ak::new("app:body.0").unwrap();
 //! let mut w = db.write();
 //! let t = w.create(db.me())?;
 //! w.at(t, k.clone()).set_stream(&b"some bytes"[..])?;
@@ -207,7 +207,7 @@
 //! let mut s = String::new();
 //! db.at(t, k.clone()).stream()?.unwrap().read_to_string(&mut s).unwrap();
 //! assert_eq!(s, "some bytes");
-//! let title = Ak::new("/app/title").unwrap();
+//! let title = Ak::new("app:title.0").unwrap();
 //! let ed = db.edit_text(t, title.clone(), Path::root())?;
 //! ed.insert(0, "Hello")?;
 //! ed.insert(5, " world")?;

@@ -13,7 +13,7 @@ pub const HLC: &[u8] = b"hlc";
 pub const COMMIT: &[u8] = b"c/";
 /// Creation records: `t/` + tid.
 pub const CREATED: &[u8] = b"t/";
-/// Aspects with a state (the `/aspects` index): `a/` + aspect key, empty value.
+/// Aspects with a state (the `aspects.0` index): `a/` + aspect key, empty value.
 pub const ASPECTS: &[u8] = b"a/";
 /// Receipt record per aspect: `r/` + aspect key.
 pub const RECEIPT: &[u8] = b"r/";
@@ -27,7 +27,7 @@ pub const TIMER: &[u8] = b"x/";
 pub const SYNCING: &[u8] = b"s/";
 /// Commits voided by overlapping node-form ranges: `o/` + commit ID.
 pub const VOID: &[u8] = b"o/";
-/// Commits whose `/keys` part on a thing wrote a keyset in its body (`Indexes::keyset_parts`;
+/// Commits whose `keys.0` part on a thing wrote a keyset in its body (`Indexes::keyset_parts`;
 /// kept while the commit is held, whatever becomes of the body): `g/` + tid + commit ID.
 pub const OWN_KEYS: &[u8] = b"g/";
 /// Aspects whose deaths wait for a recompute (`retention::settle_deaths`): `e/` + aspect key.

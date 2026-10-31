@@ -16,7 +16,7 @@ use osis_schema::Codec;
 /// A thing the commit names: its label ID, the label's index (its role keys derive from it,
 /// spec/sync.md §2) and host addresses, and for a thing with secrets
 /// of its own its current admin and write delete keys (spec/crypto.md §7), which the grantee
-/// lists until it holds the thing's `/keys`.
+/// lists until it holds the thing's `keys.0`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InboxThing {
     pub tid: Tid,

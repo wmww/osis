@@ -299,7 +299,7 @@ fn apply_one(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mu
 }
 
 /// Splits a script line into arguments: whitespace separates, except inside quotes and
-/// brackets, so a value is one argument with its quotes kept (`set $a /x/y {a: "b c"}`). A
+/// brackets, so a value is one argument with its quotes kept (`set $a x:y.0 {a: "b c"}`). A
 /// token wholly in single quotes loses them (`''` is the empty path).
 pub fn split_line(line: &str) -> Result<Vec<String>, String> {
     let mut out = Vec::new();

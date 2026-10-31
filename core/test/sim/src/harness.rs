@@ -283,7 +283,7 @@ impl Sim {
         let holder = self.tid(j)?;
         let edge = ct::Edge { role, until: None, invite: None, since: None, tied: None };
         let mut m = Mutation::new();
-        m.op(thing, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge.to_value()) }).map_err(|e| self.fail(e.to_string()))?;
+        m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge.to_value()) }).map_err(|e| self.fail(e.to_string()))?;
         let id = self.commit(i, m)?;
         id.ok_or_else(|| self.fail("grant changed nothing"))
     }
@@ -292,7 +292,7 @@ impl Sim {
     pub fn revoke(&mut self, i: usize, thing: Tid, j: usize) -> Res<CommitId> {
         let holder = self.tid(j)?;
         let mut m = Mutation::new();
-        m.op(thing, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).map_err(|e| self.fail(e.to_string()))?;
+        m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).map_err(|e| self.fail(e.to_string()))?;
         let id = self.commit(i, m)?;
         id.ok_or_else(|| self.fail("removal changed nothing"))
     }

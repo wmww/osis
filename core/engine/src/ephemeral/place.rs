@@ -1,11 +1,11 @@
 //! Ephemeral placements (notes/ephemeral.md Step 2 as built, spec/data-model.md §8): a group op
-//! whose item stays ephemeral after the batch is an ephemeral write into the group's `/placed`
-//! (the core ephemeral aspect read with `/group`); one on a durable item is a durable write of
-//! `/group` and persists the group. When a thing persists, each of its ephemeral placements the node may write becomes a
+//! whose item stays ephemeral after the batch is an ephemeral write into the group's `placed.0~`
+//! (the core ephemeral aspect read with `group.0`); one on a durable item is a durable write of
+//! `group.0` and persists the group. When a thing persists, each of its ephemeral placements the node may write becomes a
 //! durable add (with the placement's expiry) in the persisting commit and an ephemeral reset
 //! removes the ephemeral element; a group it may not write keeps it ephemeral
 //! (`PlacementNotPersisted`). A persisting thing that is a group ephemerally gets an empty
-//! durable `/group`.
+//! durable `group.0`.
 
 use super::EphOp;
 use crate::engine::write::{AspectMut, Records, check_authority_with};
@@ -18,11 +18,11 @@ use osis_schema::{AspectKey, Lifetime};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// `/group` field ids (spec/data-model.md §8).
+/// `group.0` field ids (spec/data-model.md §8).
 pub(crate) const ITEMS: u64 = 0;
 pub(crate) const SUBGROUPS: u64 = 1;
 
-/// A `/group` definition: (items, subgroups).
+/// A `group.0` definition: (items, subgroups).
 pub(super) type Def = (BTreeSet<Tid>, BTreeSet<Tid>);
 
 pub(super) fn group_ak() -> Result<Ak> {
@@ -58,7 +58,7 @@ pub(super) fn unplace_ops(items: &BTreeSet<Tid>, subs: &BTreeSet<Tid>, gone: &BT
     i.chain(s).collect()
 }
 
-/// The definition a `/placed` state holds: its items and subgroups read field by field (an add
+/// The definition a `placed.0~` state holds: its items and subgroups read field by field (an add
 /// carries no presence of the struct itself).
 pub(super) fn def_of(f: &Fragment) -> Option<Def> {
     let tids = |field: u64| -> BTreeSet<Tid> {
@@ -79,9 +79,9 @@ pub(super) struct Placed {
     /// Drafts again (`Eph::drafts`) the durable half writes: saved again (their ephemeral
     /// placements convert like any durable thing's written durably).
     pub saved: BTreeSet<Tid>,
-    /// Durable `/group` writes by group.
+    /// Durable `group.0` writes by group.
     pub durable: BTreeMap<Tid, AspectMut>,
-    /// `/placed` writes, conversions' resets included.
+    /// `placed.0~` writes, conversions' resets included.
     pub eph: Vec<EphOp>,
     /// (item, group): placements of a persisted thing kept ephemeral (no write on the group).
     pub refused: Vec<(Tid, Tid)>,
@@ -90,7 +90,7 @@ pub(super) struct Placed {
 }
 
 impl Engine {
-    /// Splits `gops` (the batch's durable-keyed `/group` writes) and computes what the batch
+    /// Splits `gops` (the batch's durable-keyed `group.0` writes) and computes what the batch
     /// persists: the things its durable aspects and `persist` name, groups getting a durable
     /// add, and the groups each persisted thing's (or saved draft's) ephemeral placements
     /// convert into, each with its ephemeral owner chain, to a fixpoint.
@@ -216,7 +216,7 @@ impl Engine {
             }
         }
         for t in &converting {
-            // a group ephemerally: its (empty) `/group` persists, its ephemeral items do not;
+            // a group ephemerally: its (empty) `group.0` persists, its ephemeral items do not;
             // after the conversions, whose expiry it takes: an empty group has no value for
             // expiry to remove (spec/crdt.md §4.7), so it stays a group
             if self.eph.defs.contains_key(t) && !self.has_durable(t, &gak) {
@@ -262,7 +262,7 @@ impl Engine {
         Some(None)
     }
 
-    /// Re-reads `g`'s `/placed` (`pak`; `groups_of`).
+    /// Re-reads `g`'s `placed.0~` (`pak`; `groups_of`).
     pub(super) fn refresh_def(&mut self, g: &Tid, pak: &Ak) {
         match self.eph.state(g, pak).and_then(def_of) {
             Some(d) => self.eph.defs.insert(*g, d),
@@ -270,7 +270,7 @@ impl Engine {
         };
     }
 
-    /// Groups containing the thing, transitively, through `/group` and `/placed` (`/groups`).
+    /// Groups containing the thing, transitively, through `group.0` and `placed.0~` (`groups.0`).
     pub fn groups_of(&self, tid: &Tid) -> BTreeSet<Tid> {
         let durable = self.durable_groups_of(tid);
         if self.eph.defs.is_empty() {
@@ -289,7 +289,7 @@ impl Engine {
         out
     }
 
-    /// The groups whose `/group` or `/placed` lists the thing directly: (as an item, as a
+    /// The groups whose `group.0` or `placed.0~` lists the thing directly: (as an item, as a
     /// subgroup). From the in-memory group index, rebuilt from the definitions at open.
     pub fn listed_in(&self, tid: &Tid) -> (BTreeSet<Tid>, BTreeSet<Tid>) {
         let ix = &self.core.ix.groups;
@@ -307,7 +307,7 @@ impl Engine {
         (items, subs)
     }
 
-    /// Groups containing the thing through `/group` only (the closure sync uses).
+    /// Groups containing the thing through `group.0` only (the closure sync uses).
     pub fn durable_groups_of(&self, tid: &Tid) -> BTreeSet<Tid> {
         self.core.ix.groups.of.get(tid).cloned().unwrap_or_default()
     }

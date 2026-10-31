@@ -44,7 +44,7 @@ pub struct Mutation {
     pub(crate) form: Form,
     pub(crate) purge: Vec<PurgeItem>,
     pub(crate) undoes: Option<CommitId>,
-    /// With `undoes`: things whose `/created` the undone commit carries that it saved (drafts
+    /// With `undoes`: things whose `created.0` the undone commit carries that it saved (drafts
     /// before it, `Engine::revert_change`): their writes are undone, they are not deleted.
     pub(crate) undo_keep: std::collections::BTreeSet<Tid>,
     pub(crate) frontier: Option<Value>,
@@ -104,7 +104,7 @@ impl Mutation {
         self
     }
 
-    /// Records a new thing; its `/created` goes into this commit.
+    /// Records a new thing; its `created.0` goes into this commit.
     pub fn create(&mut self, record: CreationRecord) -> Tid {
         let t = record.tid();
         self.creates.insert(t, record);
@@ -218,21 +218,21 @@ impl Mutation {
     }
 }
 
-/// The role a write of `ak` needs (spec/permissions.md §1, §3): admin for edges, `/label`,
-/// `/moved`, `/was`, `/tenures`; write for rotations (`/secrets`, `/keys`) and content.
+/// The role a write of `ak` needs (spec/permissions.md §1, §3): admin for edges, `label.0`,
+/// `moved.0`, `was.0`, `tenures.0`; write for rotations (`secrets.0`, `keys.0`) and content.
 pub(crate) fn required_role(ak: &str) -> Role {
     match ak {
-        "/members" | "/label" | "/moved" | "/was" | "/tenures" => Role::Admin,
+        "roles.0" | "label.0" | "moved.0" | "was.0" | "tenures.0" => Role::Admin,
         _ => Role::Write,
     }
 }
 
 /// The role a compaction snapshot of `ak` needs (spec/permissions.md §5.2): the strictest any
-/// write it carries could need, so admin for `/keys` and `/secrets` (admin keysets, inbox,
+/// write it carries could need, so admin for `keys.0` and `secrets.0` (admin keysets, inbox,
 /// deposit seed, admin boxes and tombstones), else the aspect's role.
 pub(crate) fn snapshot_role(ak: &str) -> Role {
     match ak {
-        "/keys" | "/secrets" => Role::Admin,
+        "keys.0" | "secrets.0" => Role::Admin,
         _ => required_role(ak),
     }
 }
@@ -295,7 +295,7 @@ fn within_depth(core: &Core, records: Records<'_>, tid: &Tid) -> bool {
     false
 }
 
-/// `/created` of `rec`: one write of its record by a writer at `ts` under `src` from counter
+/// `created.0` of `rec`: one write of its record by a writer at `ts` under `src` from counter
 /// `lo`, and the next unused counter.
 pub(crate) fn mint_created(rec: &CreationRecord, ts: Ts, src: Source, lo: u64) -> Option<(Fragment, u64)> {
     let w = Writer::new(ts, src, lo);
@@ -565,7 +565,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     }
     let kind = match m.roster {
         true if role_commit => Kind::RosterSnapshot,
-        true => return Err(Error::Misuse("a roster snapshot writes /members and /tenures only")),
+        true => return Err(Error::Misuse("a roster snapshot writes roles.0 and tenures.0 only")),
         false if role_commit => Kind::Role,
         false => Kind::Content,
     };
@@ -613,7 +613,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         let mut chunks = Vec::new();
         if let Some(framing) = &framing {
             chunks = super::large::chunk_ops(tx, &tid, &ak, &mut am.ops, &edits, am.schema.as_deref(), framing, &m.fresh)?;
-        } else if kind == Kind::RosterSnapshot && ak.as_str() == "/tenures" {
+        } else if kind == Kind::RosterSnapshot && ak.as_str() == "tenures.0" {
             let (_, _, framing) = framing_for(tx.core, &plan, &published, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
             chunks = super::large::chunk_frontiers(tx, &mut am.ops, &framing)?;
         }
@@ -685,7 +685,7 @@ pub(crate) fn memory_chain(core: &Core, t: &Tid) -> Vec<(Tid, CreationRecord)> {
 }
 
 /// The records a memory commit carries beside its delta on `(tid, ak)` (spec/commits.md §2):
-/// the memory chains of `tid` and, on `/placed`, of the things its ops place that have `tid`'s
+/// the memory chains of `tid` and, on `placed.0~`, of the things its ops place that have `tid`'s
 /// reader (a record names its nonce, its dedup secret: never shown to another reader).
 fn memory_records(core: &Core, tid: &Tid, ak: &Ak, ops: &[PathOp]) -> Vec<CreationRecord> {
     let mut things = vec![*tid];

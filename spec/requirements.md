@@ -88,7 +88,7 @@ Binds released formats only; until a stable release formats change in place (spe
 - Never discard, reject or crash on data not understood: store it, relay it, merge what can be merged, re-examine after upgrade.
 - Old data stays readable forever. Nodes write what older nodes can read until a new feature is actually used.
 - Everything on the wire is open and only grows: no identifier reused, nothing removed, no in-place change of meaning. Nothing in the data is irreversible.
-- Each aspect has one schema authority, held by convention (namespaced keys); a collision between two schemas is detected at read time, never prevented. Merge needs no schema. The core distributes no schemas.
+- Each aspect has one schema authority, held by convention (first-party keys in the osis repository, others prefixed by a tid their maker owns); a collision between two schemas is detected at read time, never prevented. Merge needs no schema. The core distributes no schemas.
 - An app update never by itself changes stored data. No migrations. No global agreement on who has upgraded.
 - Cryptographic primitives can be replaced without re-encrypting or re-signing old data.
 

@@ -107,7 +107,7 @@ pub(crate) fn direct_departures(tx: &mut Tx<'_>, a: &Tid, horizon: &mut Option<W
 /// actor, same actor left, holder and role, and the same verdict of the first actor's newest
 /// epoch of each role) are one departure, carrying one of them: work is polynomial in the actor
 /// graph below `a`, whatever its depth, and finite with cycles. Cached per actor
-/// (`Core::departures`) until a roster, `/secrets`, `/keys` or held epochs change, or the clock
+/// (`Core::departures`) until a roster, `secrets.0`, `keys.0` or held epochs change, or the clock
 /// reaches the next time the answer may change.
 pub(crate) fn departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Departure>> {
     let now = tx.core.now();
@@ -278,11 +278,11 @@ pub(super) fn walk(parents: &BTreeMap<Tid, Vec<Tid>>, direct: Vec<(Tid, BTreeSet
 }
 
 /// What the covers rule needs of every actor this node holds secrets of; an actor with secrets
-/// of its own whose secrets it does not hold is judged by its newest `/keys` keysets (spec/crypto.md
-/// §4): those epochs, established in this view only, with the `/secrets` boxes held of it.
+/// of its own whose secrets it does not hold is judged by its newest `keys.0` keysets (spec/crypto.md
+/// §4): those epochs, established in this view only, with the `secrets.0` boxes held of it.
 /// Epochs observed without any secret (boxes or keysets seen) are not holding: such an actor is
-/// judged by its `/keys` too, or a newer keyset arriving alone never covered its departures.
-/// Holding no `/secrets` state of it, a departure from it counts as boxed at a keyset epoch
+/// judged by its `keys.0` too, or a newer keyset arriving alone never covered its departures.
+/// Holding no `secrets.0` state of it, a departure from it counts as boxed at a keyset epoch
 /// unless that keyset's rotation commit is not ordered before the departure (`presumed_boxes`).
 pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
     let mut h = MemoryHeldActors::default();
@@ -333,11 +333,11 @@ pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
     Ok(h)
 }
 
-/// Boxes presumed in actor `a`'s keyset epochs, on top of the `/secrets` boxes held of it
+/// Boxes presumed in actor `a`'s keyset epochs, on top of the `secrets.0` boxes held of it
 /// (spec/crypto.md §4): a holder that left a role of `a` (an applied lowering write, or an edge
 /// past its `until`) and holds less now counts as boxed at `a`'s keyset epoch of each role it
 /// left, unless that keyset was set by the commit that made the departure (a removal carrying
-/// its rotation), or this node holds the `/secrets` delta of the commit that set it and that
+/// its rotation), or this node holds the `secrets.0` delta of the commit that set it and that
 /// delta boxes no such holder (a rotation boxes every holder current to its author). Times are
 /// the authors' word, so they decide nothing: a self-removal backdated before a rotation that
 /// still boxed the leaver, or a rotation made unaware of a departure, presumes the leaver
@@ -382,9 +382,9 @@ fn presumed_boxes(tx: &mut Tx<'_>, a: &Tid, e: &ActorEpochs, s: &mut osis_schema
     Ok(())
 }
 
-/// The box keys commit `c`'s `/secrets` delta on `a` writes, when this node holds that delta.
+/// The box keys commit `c`'s `secrets.0` delta on `a` writes, when this node holds that delta.
 fn rotation_boxes(tx: &mut Tx<'_>, a: &Tid, c: &osis_base::CommitId) -> Result<Option<BTreeSet<BoxKey>>> {
-    let Some(ai) = tx.core.ix.commits.get(c).and_then(|m| m.header.aspects.iter().position(|x| x.tid == *a && x.ak.as_str() == "/secrets")) else { return Ok(None) };
+    let Some(ai) = tx.core.ix.commits.get(c).and_then(|m| m.header.aspects.iter().position(|x| x.tid == *a && x.ak.as_str() == "secrets.0")) else { return Ok(None) };
     let parts = crate::apply::held_parts(tx, c, ai)?;
     if parts.is_empty() {
         return Ok(None);
@@ -418,7 +418,7 @@ pub fn may_rotate(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Role> {
 }
 
 /// The commit that introduced epoch `e` of role `r` of `a` (its rotation: the earliest valid
-/// held commit writing its keyset in `/keys`), if held: its author node, actor and `ts`.
+/// held commit writing its keyset in `keys.0`), if held: its author node, actor and `ts`.
 fn introduced_by(core: &Core, a: &Tid, r: Role, e: &Epoch) -> Option<(Tid, Tid, Ts)> {
     core.ix.epoch_intro.get(&(*a, r, *e)).map(|(ts, au, ac, _)| (*au, *ac, *ts))
 }

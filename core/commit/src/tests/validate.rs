@@ -90,12 +90,12 @@ pub(crate) fn role_header(ak: &str) -> Header {
 }
 
 // spec/commits.md §2, §5: role commits carry no expires, keep fixed retention, may carry
-// several sorted delta hashes per aspect, may touch /secrets and /keys of several things; a
-// frontier only on role commits; roster snapshots only /members and /tenures of one thing.
+// several sorted delta hashes per aspect, may touch secrets.0 and keys.0 of several things; a
+// frontier only on role commits; roster snapshots only roles.0 and tenures.0 of one thing.
 // spec/commits.md §2 (role commit no expires)
 #[test]
 fn validate_role_commit() {
-    let h = role_header("/members");
+    let h = role_header("roles.0");
     h.validate().unwrap();
     // spec/commits.md §3, §4: a node-form role commit is bad input
     for k in [Kind::Role, Kind::RosterSnapshot] {
@@ -120,7 +120,7 @@ fn validate_role_commit() {
     c.frontier = x.frontier.clone();
     assert!(invalid(&c).to_string().contains("frontier"));
     let mut x = h.clone();
-    for (n, ak) in [(4, "/secrets"), (5, "/keys"), (6, "/secrets")] {
+    for (n, ak) in [(4, "secrets.0"), (5, "keys.0"), (6, "secrets.0")] {
         let mut a = x.aspects[0].clone();
         a.tid = t(n);
         a.ak = Ak::new(ak).unwrap();
@@ -131,7 +131,7 @@ fn validate_role_commit() {
     x.kind = Kind::RosterSnapshot;
     x.validate().unwrap();
     let mut a = x.aspects[0].clone();
-    a.ak = Ak::new("/secrets").unwrap();
+    a.ak = Ak::new("secrets.0").unwrap();
     x.aspects.push(a);
     assert!(invalid(&x).to_string().contains("roster"));
     let mut x = h.clone();
@@ -139,7 +139,7 @@ fn validate_role_commit() {
     x.aspects[0].lo = 0;
     x.aspects[0].hi = 0;
     x.aspects[0].hashes.truncate(1);
-    assert!(invalid(&x).to_string().contains("/members"));
+    assert!(invalid(&x).to_string().contains("roles.0"));
 }
 
 // spec/commits.md §5, §6: expires after ts; no expires with a purge request; purge never names
@@ -152,11 +152,11 @@ fn validate_expiry_purge_retention() {
     x.aspects[0].expires = Some(h.ts.wall_ms().0);
     assert!(invalid(&x).to_string().contains("expires"));
     let mut x = h.clone();
-    x.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("/app/title").unwrap() });
+    x.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("app:title.0").unwrap() });
     assert!(invalid(&x).to_string().contains("purge request"));
     x.aspects[0].expires = None;
     x.validate().unwrap();
-    x.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("/members").unwrap() });
+    x.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("roles.0").unwrap() });
     x.purge.sort_by_key(|p| osis_base::encode(&crate::header::purge_value(p)));
     assert!(invalid(&x).to_string().contains("role-class"));
     let mut x = h.clone();
@@ -171,34 +171,34 @@ fn retention_rules() {
     use osis_base::format::ROLE_KEEP_MS;
     use osis_schema::AspectDefaults;
     use retention::*;
-    assert_eq!(fixed_retention("/secrets"), Some(ROLE_RETENTION));
-    assert_eq!(fixed_retention("/created").unwrap().by, PurgeBy::Nobody);
-    assert_eq!(fixed_retention("/app/x"), None);
-    assert_eq!(write_retention("/app/x", None, None).unwrap(), Retention::default());
+    assert_eq!(fixed_retention("secrets.0"), Some(ROLE_RETENTION));
+    assert_eq!(fixed_retention("created.0").unwrap().by, PurgeBy::Nobody);
+    assert_eq!(fixed_retention("app:x.0"), None);
+    assert_eq!(write_retention("app:x.0", None, None).unwrap(), Retention::default());
     assert_eq!(Retention::default().by, PurgeBy::Author);
-    assert_eq!(write_expires("/app/x", ts(10), None, None).unwrap(), None);
+    assert_eq!(write_expires("app:x.0", ts(10), None, None).unwrap(), None);
     let d = AspectDefaults {
         retention: Retention { by: PurgeBy::Author, at_least: Bound { abs: Some(7), rel: None }, at_most: Bound::default() },
         expires: Some(100),
         ..Default::default()
     };
-    assert_eq!(write_retention("/app/x", Some(&d), None).unwrap(), d.retention);
-    assert_eq!(write_expires("/app/x", ts(10), Some(&d), None).unwrap(), Some(110));
-    assert_eq!(write_expires("/app/x", ts(10), Some(&d), Some(50)).unwrap(), Some(50));
-    assert_eq!(write_expires("/members", ts(10), Some(&d), Some(50)).unwrap(), None);
-    assert!(write_retention("/members", None, Some(Retention::default())).is_err());
+    assert_eq!(write_retention("app:x.0", Some(&d), None).unwrap(), d.retention);
+    assert_eq!(write_expires("app:x.0", ts(10), Some(&d), None).unwrap(), Some(110));
+    assert_eq!(write_expires("app:x.0", ts(10), Some(&d), Some(50)).unwrap(), Some(50));
+    assert_eq!(write_expires("roles.0", ts(10), Some(&d), Some(50)).unwrap(), None);
+    assert!(write_retention("roles.0", None, Some(Retention::default())).is_err());
     let bad = Retention { by: PurgeBy::Author, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(1) } };
-    assert!(write_retention("/app/x", None, Some(bad)).is_err());
+    assert!(write_retention("app:x.0", None, Some(bad)).is_err());
     // the own deltas' longest relative keep at least (no absolute one) and strictest keep at
     // most (a passed absolute bound counts as 0 after replaced)
     let own = |least: Bound, abs: Option<u64>, rel: Option<u64>| Retention { by: PurgeBy::Author, at_least: least, at_most: Bound { abs, rel } };
     let none = Bound::default();
-    let s = snapshot_retention("/app/x", [own(Bound { abs: Some(900), rel: Some(5) }, Some(500), Some(30)), own(none, Some(300), None), own(Bound { abs: None, rel: Some(7) }, None, Some(10))], 100);
+    let s = snapshot_retention("app:x.0", [own(Bound { abs: Some(900), rel: Some(5) }, Some(500), Some(30)), own(none, Some(300), None), own(Bound { abs: None, rel: Some(7) }, None, Some(10))], 100);
     assert_eq!(s, Retention { by: PurgeBy::Writer, at_least: Bound { abs: None, rel: Some(7) }, at_most: Bound { abs: Some(300), rel: Some(10) } });
-    assert_eq!(snapshot_retention("/app/x", [], 100), Retention { by: PurgeBy::Writer, ..Default::default() });
-    let s = snapshot_retention("/app/x", [own(none, Some(100), None), own(none, Some(400), Some(9))], 100);
+    assert_eq!(snapshot_retention("app:x.0", [], 100), Retention { by: PurgeBy::Writer, ..Default::default() });
+    let s = snapshot_retention("app:x.0", [own(none, Some(100), None), own(none, Some(400), Some(9))], 100);
     assert_eq!(s.at_most, Bound { abs: Some(400), rel: Some(0) });
-    assert_eq!(snapshot_retention("/keys", [own(none, None, Some(1))], 0), ROLE_RETENTION);
+    assert_eq!(snapshot_retention("keys.0", [own(none, None, Some(1))], 0), ROLE_RETENTION);
     let r = Retention { by: PurgeBy::Writer, at_least: Bound { abs: Some(100), rel: Some(50) }, at_most: Bound { abs: Some(400), rel: Some(10) } };
     assert_eq!(keep_at_least(&r, None), 100);
     assert_eq!(keep_at_least(&r, Some(80)), 130);
@@ -207,7 +207,7 @@ fn retention_rules() {
     let h = sample_header();
     assert_eq!(body_keep(&h, &r, Some(20), Some(80), false), Keep { at_least: 30, at_most: Some(30) });
     let mut p = h.clone();
-    p.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("/app/title").unwrap() });
+    p.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("app:title.0").unwrap() });
     let floor = h.ts.wall_ms().0 + ROLE_KEEP_MS;
     assert_eq!(purge_keep_until(&p), Some(floor));
     assert_eq!(body_keep(&p, &r, Some(20), Some(80), false), Keep { at_least: floor, at_most: Some(floor) });

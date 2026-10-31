@@ -257,7 +257,7 @@ impl SyncEngine {
             return Ok(());
         };
         match open_commit(bytes, &key) {
-            // the group's role commits apply: their `/secrets` open the rest of the label
+            // the group's role commits apply: their `secrets.0` open the rest of the label
             // (a group with secrets of its own seals them only there); applying records them
             Ok((pt, c)) if c.header.kind.is_role() => {
                 if let Err(e) = self.engine.ingest(&pt, Vec::new()) {

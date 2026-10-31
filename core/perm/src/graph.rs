@@ -8,7 +8,7 @@ use osis_base::{CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// A thing's owner link, from its verified `/created` record.
+/// A thing's owner link, from its verified `created.0` record.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Owner {
     Actor(Tid),
@@ -40,7 +40,7 @@ impl Standing {
     }
 }
 
-/// Owner links of every thing with a verified `/created`.
+/// Owner links of every thing with a verified `created.0`.
 #[derive(Clone, Debug, Default)]
 pub struct Owners {
     owner: BTreeMap<Tid, Owner>,
@@ -53,7 +53,7 @@ pub struct Owners {
 type Chain = (Vec<Tid>, Option<Tid>);
 
 impl Owners {
-    /// From the held `/created` records; one that does not hash to its tid is ignored.
+    /// From the held `created.0` records; one that does not hash to its tid is ignored.
     pub fn from_held(held: &dyn HeldSet, things: &BTreeSet<Tid>) -> Owners {
         let mut o = Owners::default();
         for t in things {
@@ -121,7 +121,7 @@ impl Owners {
     }
 }
 
-/// An edge state: every current `/members` edge. The per-target and per-holder maps are
+/// An edge state: every current `roles.0` edge. The per-target and per-holder maps are
 /// shared between clones until written (a kept state costs O(targets + holders), not
 /// O(edges)).
 #[derive(Clone, Debug, Default, PartialEq)]

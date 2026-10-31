@@ -1,7 +1,7 @@
 //! The actions layer (notes/app.md Layers): toolkit-free, every intent becomes osis reads and
 //! writes here, and every screen reads what it shows from here.
 //!
-//! The app's internal group (marked `/osis-app/app`, no `/tag`) is an item and a subgroup of
+//! The app's internal group (marked `osis_app:app.0`, no `tag.0`) is an item and a subgroup of
 //! home: its own aspects sync (favorites, the views) and so do its items. Every thing the app
 //! makes is placed in it; tags are also its subgroups, so their items sync too. Two devices that
 //! start before syncing each make one: every marked group among home's subgroups is read, and
@@ -33,15 +33,15 @@ pub fn open(dir: &Path, hosts: Vec<HostAddr>) -> Result<Osis> {
 /// What a thing is, by its aspects: the first that applies.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// One of the app's views (`/osis-app/view`).
+    /// One of the app's views (`osis_app:view.0`).
     View(View),
-    /// A tag (`/tag`).
+    /// A tag (`tag.0`).
     Tag,
     /// An event (any `/event/` aspect).
     Event,
     /// A contact (any `/contact/` aspect).
     Contact,
-    /// Anything else: a note (`/name`, `/body`) or an empty thing.
+    /// Anything else: a note (`name.0`, `body.0`) or an empty thing.
     Note,
 }
 
@@ -70,7 +70,7 @@ pub const VIEWS: [(View, &str, &str); 4] =
 pub struct Tile {
     pub tid: Tid,
     pub kind: Kind,
-    /// `/name`, `""` when unnamed.
+    /// `name.0`, `""` when unnamed.
     pub name: String,
     /// A line under the name (a note's first line, an event's time, a tag's size, ...).
     pub sub: String,
@@ -263,11 +263,11 @@ impl Data {
         }
         let aks = self.db.aspects(t)?;
         let has = |pre: &str| aks.iter().any(|a| a.as_str().starts_with(pre));
-        Ok(if aks.iter().any(|a| a.as_str() == "/tag") {
+        Ok(if aks.iter().any(|a| a.as_str() == "tag.0") {
             Kind::Tag
-        } else if has("/event/") {
+        } else if has("event:") {
             Kind::Event
-        } else if has("/contact/") {
+        } else if has("contact:") {
             Kind::Contact
         } else {
             Kind::Note
@@ -282,7 +282,7 @@ impl Data {
         Ok(self.get(t, BODY)?.unwrap_or_default())
     }
 
-    /// The thing's own colour: a tag's `/tag.color`, else `/osis-app/color`.
+    /// The thing's own colour: a tag's `tag.0` color, else `osis_app:color.0`.
     pub fn own_color(&self, t: Tid) -> Result<Option<String>> {
         if let Some(c) = self.get(t, TAG)?.and_then(|g| g.color) {
             return Ok(Some(c));
@@ -498,7 +498,7 @@ impl Data {
         Ok(r)
     }
 
-    /// A person's display name: their profile's `/name`, else a contact naming that profile,
+    /// A person's display name: their profile's `name.0`, else a contact naming that profile,
     /// else a short id.
     pub fn person_name(&self, p: Tid) -> Result<String> {
         let db = &self.db;
@@ -587,7 +587,7 @@ impl Data {
     }
 
     /// The events touching local wall ms `[from, to)`, repeating ones expanded (an occurrence
-    /// replaced by an event naming it in `/event/overrides` is left out), by start.
+    /// replaced by an event naming it in `event:overrides.0` is left out), by start.
     pub fn events_between(&self, from: i64, to: i64) -> Result<Vec<Shown>> {
         use crate::event::{END, OVERRIDES, REPEAT, START};
         let evs = self.view_items(&View::Calendar)?;
@@ -879,7 +879,7 @@ impl Data {
     }
 
     /// A new thing of `kind` in the app group, opened on this device. An event starts at the
-    /// next full hour for an hour; a contact gets an empty `/contact/names`; a tag the next
+    /// next full hour for an hour; a contact gets an empty `contact:names.0`; a tag the next
     /// colour of `TAG_COLORS`.
     pub fn create(&self, kind: NewKind) -> Result<Tid> {
         let g = self.main_group()?;

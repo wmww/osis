@@ -89,7 +89,7 @@ pub struct SyncConfig {
     pub retry_ms: u64,
     /// Deposits skip heartbeats when fewer entries are left in the budget.
     pub tight_budget: u64,
-    /// Dial co-reader nodes known from their `/reach` (spec/sync.md §5, §10).
+    /// Dial co-reader nodes known from their `reach.0` (spec/sync.md §5, §10).
     pub peers: bool,
     /// Pause before re-dialing a co-reader node.
     pub peer_retry_ms: u64,
@@ -238,7 +238,7 @@ pub(crate) struct LConn {
     pub walk: Option<Step>,
     /// A static-entry open's entry box, opened once the host's path verified the head.
     pub entry_box: Option<osis_schema::core_types::SecretBox>,
-    /// Write keys of a host path verified here (a label not recorded in `/label`): stamps
+    /// Write keys of a host path verified here (a label not recorded in `label.0`): stamps
     /// under them vouch for an entry.
     pub writers: Vec<osis_crypto::VerifyingKey>,
     /// Read for receipts only (`receipts`): no pass, nothing placed, nothing kept.
@@ -425,7 +425,7 @@ pub struct SyncEngine {
     /// Links whose finalization failed in this run (`finalize_links`): not tried again.
     pub(crate) links_failed: BTreeSet<Tid>,
     /// Tied edges to remove (`untie_unplaced`): what changed since they were last derived
-    /// (groups whose `/group` changed, things whose `/members` or roster changed, or all), the
+    /// (groups whose `group.0` changed, things whose `roles.0` or roster changed, or all), the
     /// (target, group) pairs whose placement is gone, and those whose removal failed in this run.
     pub(crate) tied: deliver::TiedWork,
     /// Commits placed before any other upload (`Delivery::First`).
@@ -454,10 +454,10 @@ pub struct SyncEngine {
     pub(crate) lan: BTreeMap<HostKey, peers::LanRoute>,
     /// The next `publish_reach` writes a fresh lan secret.
     pub(crate) lan_rotate: bool,
-    /// Whether `/reach` placed under a label that no longer qualifies is to be looked for
+    /// Whether `reach.0` placed under a label that no longer qualifies is to be looked for
     /// (`check_reach`: at start, after role, policy and contact changes).
     pub(crate) reach_check: bool,
-    /// Served labels, until `/label`, role or peer steps change.
+    /// Served labels, until `label.0`, role or peer steps change.
     pub(crate) served_cache: Option<Arc<BTreeMap<LabelId, serve::ServedLabel>>>,
     pub(crate) charges: serve::Charges,
     /// The engine's actors with secrets of their own when its events were last taken.
@@ -474,7 +474,7 @@ pub struct SyncEngine {
     /// When this engine was built (raw ms): a role change applied before it came no later,
     /// so the peer wait of an actor with none in `roles_at` counts from here.
     pub(crate) started: u64,
-    /// When the last remote role commit writing an actor's `/secrets` (a rotation, the
+    /// When the last remote role commit writing an actor's `secrets.0` (a rotation, the
     /// only change its author registers a step for) applied (raw ms; `step_settled`).
     pub(crate) rotation_at: BTreeMap<Tid, u64>,
     /// `placed` answers by commit, valid while `State::version` (the first field) is unchanged and
@@ -818,11 +818,11 @@ impl SyncEngine {
                     self.placed_cache.0 = u64::MAX;
                     let Some(h) = self.engine.header(&id) else { continue };
                     // a placement applied invalid changes no state but may decide a tie
-                    self.tied.groups.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "/group").map(|a| a.tid));
+                    self.tied.groups.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "group.0").map(|a| a.tid));
                     // a creation record moves the roles downstream of the thing
-                    roots.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "/created").map(|a| a.tid));
+                    roots.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "created.0").map(|a| a.tid));
                     let role_commit = h.kind.is_role();
-                    if role_commit || h.aspects.iter().any(|a| a.ak.as_str() == "/label") {
+                    if role_commit || h.aspects.iter().any(|a| a.ak.as_str() == "label.0") {
                         self.served_cache = None;
                         self.holders_moved = true;
                         self.touched.keys = true;
@@ -836,7 +836,7 @@ impl SyncEngine {
                             self.roles_at.insert(actor, at);
                             // only an admin registers its rotation's step: another's (a writer
                             // rotating for a departure) is this admin's to register at once
-                            if a.ak.as_str() == "/secrets" && self.engine.core.role_now(&h.author, &actor) == Some(osis_base::Role::Admin) {
+                            if a.ak.as_str() == "secrets.0" && self.engine.core.role_now(&h.author, &actor) == Some(osis_base::Role::Admin) {
                                 self.rotation_at.insert(actor, at);
                             }
                         }
@@ -867,7 +867,7 @@ impl SyncEngine {
                             self.touched.keys = true;
                         }
                         // a late creation record (`note_created`)
-                        roots.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "/created").map(|a| a.tid));
+                        roots.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "created.0").map(|a| a.tid));
                     }
                 }
                 crate::Event::Roster { thing } => {
@@ -962,7 +962,7 @@ impl SyncEngine {
     /// Labels this node syncs: every non-replaced label of a labeled group it holds read
     /// secrets of; an admin also keeps its replaced labels until done with them at every host
     /// (spec/sync.md §2: it places the role-class commits there, the replacement's
-    /// `/label` among them, and deletes the content entries; `retire_at`, `retire_replaced`).
+    /// `label.0` among them, and deletes the content entries; `retire_at`, `retire_replaced`).
     pub fn labels(&mut self) -> Vec<(Tid, Arc<GroupLabel>)> {
         // the inputs: engine state, retirements, and the time (an admin edge's `until`)
         let now = self.now();
@@ -1106,7 +1106,7 @@ impl SyncEngine {
     fn wanted_hosts(&mut self) -> BTreeMap<HostKey, (Address, bool)> {
         let mut m: BTreeMap<HostKey, (Address, bool)> = self.cfg.hosts.iter().map(|a| (a.key, (a.clone(), false))).collect();
         for (_, l) in self.labels() {
-            // an admin's word: hosts only (`peer://` nodes come from `/reach` or a link)
+            // an admin's word: hosts only (`peer://` nodes come from `reach.0` or a link)
             for a in l.hosts.iter().filter(|a| !peers::is_peer(a)).cloned() {
                 m.entry(a.key).or_insert((a, false));
             }
@@ -1165,7 +1165,7 @@ impl SyncEngine {
     }
 
     /// Closes connections to co-readers no longer wanted (removed, or sharing only labels
-    /// whose `/reach` this node withholds).
+    /// whose `reach.0` this node withholds).
     fn drop_unwanted_peers(&mut self, out: &mut Vec<Action>) {
         if self.conns.values().all(|c| !c.peer) {
             return;
@@ -1396,7 +1396,7 @@ impl SyncEngine {
     fn run_dirty(&mut self, out: &mut Vec<Action>) -> Result<()> {
         self.add_new_labels(out)?;
         self.vet_inbox_hints()?;
-        // a hint is done once the thing's `/label` names the label
+        // a hint is done once the thing's `label.0` names the label
         let hints: Vec<(LabelId, Tid)> = self.state.hints.iter().map(|(l, h)| (*l, h.thing)).collect();
         for (l, t) in hints {
             if self.engine.labels_of(&t).iter().any(|x| x.id == l) {

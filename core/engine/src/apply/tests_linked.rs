@@ -13,13 +13,13 @@ use std::collections::{BTreeMap, BTreeSet};
 const T0: WallMs = WallMs(1_700_000_000_000);
 
 fn tags(lp: &mut LocalPeer, i: usize, t: Tid) -> Option<Value> {
-    lp.peers[i].engine.get(&t, &osis_base::Ak::new("/t/tags").unwrap()).unwrap()
+    lp.peers[i].engine.get(&t, &osis_base::Ak::new("t:tags.0").unwrap()).unwrap()
 }
 
-/// A frontier covering `x`'s first write on `t`'s `/t/tags`, padded past `CHUNK_THRESHOLD`
+/// A frontier covering `x`'s first write on `t`'s `t:tags.0`, padded past `CHUNK_THRESHOLD`
 /// with `pad` (distinct pads give distinct frontiers).
 fn big_frontier(t: Tid, x: Tid, pad: u8) -> ct::Frontier {
-    let tags = |n: u64| BTreeMap::from([("/t/tags".to_string(), BTreeMap::from([(x, n)]))]);
+    let tags = |n: u64| BTreeMap::from([("t:tags.0".to_string(), BTreeMap::from([(x, n)]))]);
     let mut writes = BTreeMap::from([(t, tags(1))]);
     for i in 0..4000u32 {
         let b = i.to_be_bytes();
@@ -41,12 +41,12 @@ fn demoted_writer_of(n: usize) -> (LocalPeer, Tid, Tid, CommitId) {
     let x = lp.peers[1].engine.tid();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
-    m.set(t, &osis_base::Ak::new("/t/reg").unwrap(), &Value::Int(1)).unwrap();
+    m.set(t, &osis_base::Ak::new("t:reg.0").unwrap(), &Value::Int(1)).unwrap();
     lp.peers[0].commit(m).unwrap();
     edge(&mut lp, t, x, Some(Role::Write), None);
     lp.sync(0, 1).unwrap();
     let mut m = Mutation::new();
-    m.op(t, &osis_base::Ak::new("/t/tags").unwrap(), PathOp { path: Vec::new(), op: Op::Add(Value::Str("by x".into())) }).unwrap();
+    m.op(t, &osis_base::Ak::new("t:tags.0").unwrap(), PathOp { path: Vec::new(), op: Op::Add(Value::Str("by x".into())) }).unwrap();
     lp.peers[1].commit(m).unwrap();
     lp.sync(1, 0).unwrap();
     edge(&mut lp, t, x, None, Some(big_frontier(t, x, 1).to_value()));
@@ -60,7 +60,7 @@ fn edge(lp: &mut LocalPeer, t: Tid, m: Tid, role: Option<Role>, frontier: Option
         Some(role) => PathOp { path: vec![PathSeg::Key(Value::Tid(m))], op: Op::Set(ct::Edge { role, until: None, invite: None, since: None, tied: None }.to_value()) },
         None => PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(m)) },
     };
-    mu.op(t, &ct::MEMBERS, op).unwrap();
+    mu.op(t, &ct::ROLES, op).unwrap();
     if let Some(f) = frontier {
         mu.frontier(f);
     }
@@ -112,7 +112,7 @@ fn load_with_missing_frontier_blob_spec_perm_6() {
 /// `tenures` (values as written); returns the commit.
 fn raw_snapshot(lp: &mut LocalPeer, t: Tid, tenures: Vec<Value>) -> CommitId {
     let mut m = Mutation::new();
-    m.op(t, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Replace(Value::Map(BTreeMap::new())) }).unwrap();
+    m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Replace(Value::Map(BTreeMap::new())) }).unwrap();
     m.op(t, &ct::TENURES, PathOp { path: Vec::new(), op: Op::Replace(Value::Set(tenures.into_iter().collect())) }).unwrap();
     m.roster = true;
     lp.peers[0].engine.core.skip_writer_rules = true;
@@ -232,7 +232,7 @@ fn linked_frontier_amplification_bound_spec_perm_6() {
     assert_eq!(check(&mut lp, c2, 3 * size).unwrap(), 2);
 }
 
-// spec/permissions.md §6: a roster snapshot naming one holder in two `/members` deltas is bad
+// spec/permissions.md §6: a roster snapshot naming one holder in two `roles.0` deltas is bad
 // input (which one counts would depend on the deltas a node holds).
 #[test]
 fn holder_named_twice_spec_perm_6() {
@@ -249,7 +249,7 @@ fn holder_named_twice_spec_perm_6() {
         let h = (*tx.core.ix.commits.get(&c).unwrap().header).clone();
         let mut parts = super::held_parts_at(tx, &c, &|_| true)?;
         super::validity::check_roster_parts(&h, &parts)?;
-        let named = parts.iter().find(|(ai, _, d)| h.aspects[*ai].ak.as_str() == "/members" && matches!(d, osis_commit::Decoded::Delta(d) if super::validity::named_holders("/members", &d.fragment) == vec![x])).cloned().unwrap();
+        let named = parts.iter().find(|(ai, _, d)| h.aspects[*ai].ak.as_str() == "roles.0" && matches!(d, osis_commit::Decoded::Delta(d) if super::validity::named_holders("roles.0", &d.fragment) == vec![x])).cloned().unwrap();
         parts.push(named);
         super::validity::check_roster_parts(&h, &parts)
     });
@@ -273,7 +273,7 @@ fn unreadable_snapshot_certificate_fails_closed_spec_perm_6() {
     assert!(diag, "a diagnostic says why");
 }
 
-// spec/data-model.md §6, spec/permissions.md §6: a `/tenures` element is never chunked whole,
+// spec/data-model.md §6, spec/permissions.md §6: a `tenures.0` element is never chunked whole,
 // its frontier is: a frontier just under `CHUNK_THRESHOLD` stays inline (no link) while
 // its tenure element is above it, and the snapshot applies elsewhere, judging by that frontier.
 #[test]
@@ -285,16 +285,16 @@ fn tenure_with_frontier_under_threshold_spec_perm_6() {
     let x = lp.peers[1].engine.tid();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
-    m.set(t, &osis_base::Ak::new("/t/reg").unwrap(), &Value::Int(1)).unwrap();
+    m.set(t, &osis_base::Ak::new("t:reg.0").unwrap(), &Value::Int(1)).unwrap();
     lp.peers[0].commit(m).unwrap();
     edge(&mut lp, t, x, Some(Role::Write), None);
     lp.sync(0, 1).unwrap();
     let mut m = Mutation::new();
-    m.op(t, &osis_base::Ak::new("/t/tags").unwrap(), PathOp { path: Vec::new(), op: Op::Add(Value::Str("by x".into())) }).unwrap();
+    m.op(t, &osis_base::Ak::new("t:tags.0").unwrap(), PathOp { path: Vec::new(), op: Op::Add(Value::Str("by x".into())) }).unwrap();
     lp.peers[1].commit(m).unwrap();
     lp.sync(1, 0).unwrap();
     // the largest frontier of this shape at or under the threshold
-    let tw = |n: u64| BTreeMap::from([("/t/tags".to_string(), BTreeMap::from([(x, n)]))]);
+    let tw = |n: u64| BTreeMap::from([("t:tags.0".to_string(), BTreeMap::from([(x, n)]))]);
     let frontier = |n: u32| {
         let mut f = ct::Frontier { writes: BTreeMap::from([(t, tw(1))]), commits: BTreeSet::new() };
         for i in 0..n {
@@ -317,7 +317,7 @@ fn tenure_with_frontier_under_threshold_spec_perm_6() {
     assert!(size(&f) <= CHUNK_THRESHOLD && size(&f) + 64 > CHUNK_THRESHOLD);
     edge(&mut lp, t, x, None, Some(f.to_value()));
     let s = *lp.peers[0].engine.roster_snapshot(&t, None).unwrap().commits.last().unwrap();
-    let ledger = lp.peers[0].engine.get(&t, &osis_base::Ak::new("/tenures").unwrap()).unwrap();
+    let ledger = lp.peers[0].engine.get(&t, &osis_base::Ak::new("tenures.0").unwrap()).unwrap();
     let Some(Value::Set(ledger)) = ledger else { panic!("no ledger") };
     let mut links = Vec::new();
     ledger.iter().for_each(|e| crate::engine::large::links_in(e, &mut links));
@@ -343,8 +343,8 @@ fn redemption_on_two_targets_refused_spec_commits_2() {
     lp.sync_all().unwrap();
     let x = Tid::from_bytes([9; 15]);
     let mut mu = Mutation::new();
-    mu.op(n, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(a)) }).unwrap();
-    mu.op(k, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
+    mu.op(n, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(a)) }).unwrap();
+    mu.op(k, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
     let r = lp.peers[1].commit(mu);
     assert!(matches!(r, Err(crate::Error::BadInput(m)) if m.contains("more than one edge")), "{r:?}");
 }

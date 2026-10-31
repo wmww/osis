@@ -200,7 +200,7 @@ impl<'a> Parser<'a> {
                     locs.insert(key, at);
                 }
                 "aspect" => {
-                    let Tok::Ak(ak) = self.next() else { return self.err_at(at, "expected an AK (/a/b)") };
+                    let Tok::Ak(ak) = self.next() else { return self.err_at(at, "expected an AK (a:b.0)") };
                     self.expect(':')?;
                     let ty = self.ty()?;
                     let succeeds = if self.is_kw("succeeds") { self.succeeds_aks()? } else { BTreeSet::new() };

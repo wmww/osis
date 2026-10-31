@@ -1,4 +1,4 @@
-//! Labels as role writes (spec/sync.md §2, §5): a group's genesis step and `/label`
+//! Labels as role writes (spec/sync.md §2, §5): a group's genesis step and `label.0`
 //! record, registration steps an admin issues after rotations (at each host when it next
 //! syncs there, after uploading the role commits it registers: node-sync orders that),
 //! the claim set's readers.
@@ -82,7 +82,7 @@ fn reader_key(tx: &mut Tx<'_>, m: &Tid) -> Result<Option<ReaderKey>> {
 /// The deposit seed of the actor `group`'s labels derive from (spec/sync.md §2).
 fn deposit_seed(tx: &mut Tx<'_>, group: &Tid) -> Result<Secret32> {
     let actor = if tx.core.has_own_secrets(group) { *group } else { tx.core.owner(group).ok_or(Error::UnknownThing(*group))? };
-    let k = Core::keys_in(tx, &actor)?.and_then(|k| k.deposit_seed).ok_or(Error::Misuse("no deposit seed in /keys"))?;
+    let k = Core::keys_in(tx, &actor)?.and_then(|k| k.deposit_seed).ok_or(Error::Misuse("no deposit seed in keys.0"))?;
     Ok(Secret32::from_bytes(k))
 }
 
@@ -108,7 +108,7 @@ pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, index: u
     Ok(register(p, keys, &rk, (group, re, rs), &mut *tx.rng)?)
 }
 
-/// `/label` write: a new label of `group` with its genesis step, or a step added.
+/// `label.0` write: a new label of `group` with its genesis step, or a step added.
 pub(crate) fn put_label(m: &mut Mutation, group: Tid, label: LabelId, index: u64, step: &Step, set: &ClaimSet, hosts: Option<&[Address]>) -> Result<()> {
     match hosts {
         Some(hosts) => {
@@ -124,7 +124,7 @@ pub(crate) fn put_label(m: &mut Mutation, group: Tid, label: LabelId, index: u64
 }
 
 /// A new label of `group` (its home label when `group` is an actor): genesis step at its
-/// newest epochs, written to `/label` in `m`. Returns the label ID.
+/// newest epochs, written to `label.0` in `m`. Returns the label ID.
 pub(crate) fn new_label(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs: &ActorEpochs, readers: &[ReaderKey], deposit: &Secret32, hosts: &[Address]) -> Result<LabelId> {
     let index = labels_of(tx, &group)?.values().map(|l| l.index.saturating_add(1)).max().unwrap_or(0);
     let (step, set) = issue(tx, &group, epochs, index, None, readers, deposit)?;
@@ -146,12 +146,12 @@ fn admin_registered(tx: &mut Tx<'_>, group: &Tid, label: &ct::Label) -> Result<b
 }
 
 pub(crate) fn labels_of(tx: &mut Tx<'_>, group: &Tid) -> Result<ct::Labels> {
-    Ok(tx.state(group, &ak("/label")?)?.and_then(Fragment::read).and_then(|v| ct::LABEL.decode(&v).ok()).unwrap_or_default())
+    Ok(tx.state(group, &ak("label.0")?)?.and_then(Fragment::read).and_then(|v| ct::LABEL.decode(&v).ok()).unwrap_or_default())
 }
 
 impl Engine {
     /// Gives `group` a label (its home label, for an actor) on `hosts`: genesis step at its
-    /// newest epochs, recorded in `/label` (spec/sync.md §2). node-sync registers it.
+    /// newest epochs, recorded in `label.0` (spec/sync.md §2). node-sync registers it.
     pub fn create_label(&mut self, group: &Tid, hosts: &[Address]) -> Result<(LabelId, Done)> {
         let g = *group;
         self.run(|tx| {
@@ -173,7 +173,7 @@ impl Engine {
     /// The step an admin issues at a host whose head is `head` of `group`'s label `label`
     /// (spec/sync.md §5): when it holds the head's epochs and an established epoch newer than
     /// the head's, or the head's deposit key is not the one the actor's deposit seed derives
-    /// (refreshed), a child at its newest epochs with the current readers, recorded in `/label`
+    /// (refreshed), a child at its newest epochs with the current readers, recorded in `label.0`
     /// (a role commit; node-sync uploads the rotation commits first, then registers, then
     /// the rest). `None` when nothing is newer, or when it does not hold the head's epochs (it
     /// walks first). `fresh`: issue a step without a rotation (to list readers granted since).
@@ -272,8 +272,8 @@ impl Engine {
     }
 }
 
-/// The label IDs `/label` of `g` records, inside a transaction (unparsable: none).
+/// The label IDs `label.0` of `g` records, inside a transaction (unparsable: none).
 pub(crate) fn labels_in(tx: &mut Tx<'_>, g: &Tid) -> Result<Vec<LabelId>> {
-    let Some(v) = tx.state(g, &ak("/label")?)?.and_then(Fragment::read) else { return Ok(Vec::new()) };
+    let Some(v) = tx.state(g, &ak("label.0")?)?.and_then(Fragment::read) else { return Ok(Vec::new()) };
     Ok(ct::LABEL.decode(&v).map(|m| m.into_keys().collect()).unwrap_or_default())
 }

@@ -33,7 +33,7 @@ fn answers(held: &MemoryHeldSet, things: &[Tid], probes: &[Point], keep: &dyn Fn
             .iter()
             .flat_map(|p| things.iter().flat_map(move |t| [Role::Write, Role::Admin].map(|r| (*t, r))).map(move |(t, r)| (*p, t, r)))
             .map(|(p, t, r)| {
-                let v = tl.delta_valid(p, &t, "/doc", Dots::Commit, r) == osis_perm::Validity::Valid;
+                let v = tl.delta_valid(p, &t, "doc.0", Dots::Commit, r) == osis_perm::Validity::Valid;
                 // §5.2: `valid_from`'s bound only ever answers valid
                 assert!(v || !tl.valid_from(&p.node, &t, r).is_some_and(|b| b.is_none_or(|b| b <= p)), "valid_from at {p:?}");
                 v
@@ -333,7 +333,7 @@ fn later_audit_is_an_entry_spec_permissions_6() {
     w.set(d1, a, d1, None, 3, &all);
     let rm = w.set(k, p, d1, None, 5, &all);
     let tl = Timeline::evaluate(&w.held());
-    assert!(matches!(tl.delta_valid(x, &p, "/doc", Dots::Commit, Write), osis_perm::Validity::Invalid { .. }));
+    assert!(matches!(tl.delta_valid(x, &p, "doc.0", Dots::Commit, Write), osis_perm::Validity::Invalid { .. }));
     let ledger = tl.roster_state(&p).ledger;
     let key = |t, node, commit| Point { ts: ts(t), node, commit };
     let shape: Vec<_> = ledger.iter().filter(|t| t.holder == d1).map(|t| (t.role, t.since, t.until, t.frontier.is_some())).collect();
@@ -360,7 +360,7 @@ fn own_demotion_replayed_spec_permissions_6() {
     w.set(d2, p, d2, None, 3, &all);
     w.set(k, p, a, None, 5, &all);
     let tl = Timeline::evaluate(&w.held());
-    assert!(matches!(tl.delta_valid(x, &p, "/doc", Dots::Commit, Write), osis_perm::Validity::Invalid { .. }));
+    assert!(matches!(tl.delta_valid(x, &p, "doc.0", Dots::Commit, Write), osis_perm::Validity::Invalid { .. }));
     let ledger = tl.roster_state(&p).ledger;
     assert!(ledger.iter().any(|t| t.holder == a && t.since.is_some_and(|s| s == t.until) && t.until.node == k && t.frontier.is_some()), "{ledger:?}");
     assert_eq!(neutral(&w, p, k, &[p, a], &[x]), None);
@@ -486,7 +486,7 @@ fn expiry_before_same_ts_write_spec_permissions_6() {
     let y = w.content(m, 2, &[(d, 3)]);
     w.set(d, p, m, None, 5, &all);
     let tl = Timeline::evaluate(&w.held());
-    let valid = |pt| tl.delta_valid(pt, &p, "/doc", Dots::Commit, Write) == osis_perm::Validity::Valid;
+    let valid = |pt| tl.delta_valid(pt, &p, "doc.0", Dots::Commit, Write) == osis_perm::Validity::Valid;
     assert_eq!((valid(x), valid(y)), (false, true), "d's removal audits the expired edge");
     assert_eq!(neutral(&w, p, k, &[p], &[x, y]), None);
 }

@@ -61,9 +61,9 @@ fn sent(acts: &[osis_node::sync::Action], conn: osis_node::sync::ConnId) -> Vec<
     out
 }
 
-const STATE: &str = "/win/state";
-const NOTES: &str = "/win/notes";
-const CURSOR: &str = "/win/cursor";
+const STATE: &str = "win:state.0~";
+const NOTES: &str = "win:notes.0~";
+const CURSOR: &str = "win:cursor.0~";
 
 fn eph(ak: &str) -> osis_schema::Untyped {
     ukey(ak, Lifetime::Ephemeral)
@@ -74,7 +74,7 @@ fn local(net: &mut Net, n: usize) {
     net.actions(n, acts);
 }
 
-/// Node `n` makes an ephemeral window owned by `g`, placed in `g` (its `/placed`), with `/win/state` = `v`.
+/// Node `n` makes an ephemeral window owned by `g`, placed in `g` (its `placed.0~`), with `win:state.0` = `v`.
 fn window(net: &mut Net, n: usize, g: Tid, v: &str) -> Tid {
     let e = net.engine(n);
     let mut m = Mutation::new();
@@ -87,7 +87,7 @@ fn window(net: &mut Net, n: usize, g: Tid, v: &str) -> Tid {
     w
 }
 
-/// Node `n` sets key `k` of `/win/notes` of `w` to `v`.
+/// Node `n` sets key `k` of `win:notes.0` of `w` to `v`.
 fn note(net: &mut Net, n: usize, w: Tid, k: &str, v: &str) {
     let mut m = Mutation::new();
     m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Put(s(v)) }).unwrap();
@@ -480,13 +480,13 @@ fn host_cap_one_huge_write_reports_spec_sync_5() {
     net.run();
     let rx = net.listen(a);
     let mut m = Mutation::new();
-    m.op(w, &eph("/win/big"), PathOp { path: Vec::new(), op: Op::Set(s(&"x".repeat(6_000))) }).unwrap();
+    m.op(w, &eph("win:big.0~"), PathOp { path: Vec::new(), op: Op::Set(s(&"x".repeat(6_000))) }).unwrap();
     net.engine(a).write(m).unwrap();
     local(&mut net, a);
     net.run();
     let refused = rx.try_iter().any(|e| matches!(e, osis_node::Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::EphemeralRefused));
     assert!(refused, "reported");
-    assert_eq!(net.eph_read(b, w, "/win/big"), None);
+    assert_eq!(net.eph_read(b, w, "win:big.0~"), None);
     note(&mut net, a, w, "k", "v");
     net.run();
     assert_eq!(notes(&mut net, b, w), map(&[("k", "v")]), "a later write that fits syncs");
@@ -605,7 +605,7 @@ fn signal_once_to_connected_devices_spec_sync_5() {
     net.run();
     let held = (rows(&net.hosts[s1].backend), rows(&net.hosts[s2].backend));
     let (ra, rb, rc) = (net.listen(a), net.listen(b), net.listen(c));
-    net.eph_write(a, t, &ukey("/t/ring", Lifetime::Signal), s("ding"));
+    net.eph_write(a, t, &ukey("t:ring.0*", Lifetime::Signal), s("ding"));
     net.run();
     assert_eq!(fired(&rb).len(), 1, "once, though both hosts pushed it");
     assert_eq!(fired(&ra).len(), 1, "once at the sender (no echo)");
@@ -634,8 +634,8 @@ fn signal_commit_in_several_blobs_all_delivered_spec_sync_5() {
     let t2 = net.item(a, g, g, "y");
     net.run();
     let mut m = Mutation::new();
-    m.set(t1, &ukey("/t/ring", Lifetime::Signal), &s("one")).unwrap();
-    m.set(t2, &ukey("/t/ring", Lifetime::Signal), &s("two")).unwrap();
+    m.set(t1, &ukey("t:ring.0*", Lifetime::Signal), &s("one")).unwrap();
+    m.set(t2, &ukey("t:ring.0*", Lifetime::Signal), &s("two")).unwrap();
     net.engine(a).write(m).unwrap();
     let cs = net.engine(a).take_ephemeral().unwrap();
     let blob = cs.iter().find(|c| c.class == osis_commit::EphClass::Relay).unwrap().blob.clone();
@@ -669,17 +669,17 @@ fn ephemeral_expiry_everywhere_spec_crdt_4_7() {
     let w = window(&mut net, a, g, "w");
     net.run();
     let mut m = Mutation::new();
-    m.set(w, &eph("/win/typing"), &Value::Bool(true)).unwrap();
-    m.expires(w, &eph("/win/typing"), osis_base::WallMs(net.now() + 5_000)).unwrap();
+    m.set(w, &eph("win:typing.0~"), &Value::Bool(true)).unwrap();
+    m.expires(w, &eph("win:typing.0~"), osis_base::WallMs(net.now() + 5_000)).unwrap();
     net.engine(a).write(m).unwrap();
     local(&mut net, a);
     net.run();
-    assert_eq!(net.eph_read(b, w, "/win/typing"), Some(Value::Bool(true)));
+    assert_eq!(net.eph_read(b, w, "win:typing.0~"), Some(Value::Bool(true)));
     let l = net.label(a);
     let before = net.hosts[host].hub.store().ephemeral_bytes(&l);
     net.advance(6_000);
-    assert_eq!(net.eph_read(a, w, "/win/typing"), None);
-    assert_eq!(net.eph_read(b, w, "/win/typing"), None);
+    assert_eq!(net.eph_read(a, w, "win:typing.0~"), None);
+    assert_eq!(net.eph_read(b, w, "win:typing.0~"), None);
     assert!(net.hosts[host].hub.store().ephemeral_bytes(&l) < before, "the host dropped it unattended");
 }
 
@@ -797,17 +797,17 @@ fn ephemeral_part_waits_for_its_record_spec_sync_9() {
     let t = net.item(a, g, g, "durable");
     net.run();
     let mut m = Mutation::new();
-    m.set(t, &eph("/doc/cursor"), &Value::Int(7)).unwrap();
+    m.set(t, &eph("doc:cursor.0~"), &Value::Int(7)).unwrap();
     net.engine(a).write(m).unwrap();
     let cs = net.engine(a).take_ephemeral().unwrap();
     assert_eq!(cs.len(), 1);
     assert!(net.engine(b).core.created(&t).is_none());
     net.engine(b).ingest_ephemeral(cs[0].blob.clone()).unwrap();
-    assert_eq!(net.eph_read(b, t, "/doc/cursor"), None, "waits for the record");
+    assert_eq!(net.eph_read(b, t, "doc:cursor.0~"), None, "waits for the record");
     net.set_online(b, true);
     net.advance(10_000);
     assert_eq!(net.read(b, t), Some(s("durable")));
-    assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(Value::Int(7)));
+    assert_eq!(net.eph_read(b, t, "doc:cursor.0~"), Some(Value::Int(7)));
 }
 
 // spec/commits.md §4, spec/sync.md §9 (only verified commits are held): a copy of a waiting
@@ -826,7 +826,7 @@ fn junk_copy_of_waiting_commit_evicts_nothing_spec_sync_9() {
         let t = net.item(c, g, g, "durable");
         net.run();
         let mut m = Mutation::new();
-        m.set(t, &eph("/doc/cursor"), &Value::Int(7)).unwrap();
+        m.set(t, &eph("doc:cursor.0~"), &Value::Int(7)).unwrap();
         net.engine(c).write(m).unwrap();
         let cs = net.engine(c).take_ephemeral().unwrap();
         let blob = cs[0].blob.clone();
@@ -843,7 +843,7 @@ fn junk_copy_of_waiting_commit_evicts_nothing_spec_sync_9() {
         net.pair(a, b);
         net.engine(b).rejudge_ephemeral().unwrap();
         assert_eq!(net.read(b, t), Some(s("durable")));
-        assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(Value::Int(7)), "junk_sig {junk_sig}");
+        assert_eq!(net.eph_read(b, t, "doc:cursor.0~"), Some(Value::Int(7)), "junk_sig {junk_sig}");
     }
 }
 
@@ -873,7 +873,7 @@ fn junk_copy_of_waiting_commit_not_kept_once_held_spec_sync_9() {
     net.run();
     net.pair(a, x);
     assert!(net.engine(b).core.created(&xt).is_none() && net.read(x, t) == Some(s("durable")));
-    let ak = osis_base::Ak::new("/doc/cursor").unwrap();
+    let ak = osis_base::Ak::new("doc:cursor.0~").unwrap();
     let blob = net.engine(x).forge_ephemeral(t, &ak, Value::Int(7)).unwrap().unwrap().blob;
     let mut junk = blob.clone();
     let last = junk.parts[0].delta.len() - 1;
@@ -892,7 +892,7 @@ fn junk_copy_of_waiting_commit_not_kept_once_held_spec_sync_9() {
     net.pair(a, b);
     net.engine(b).rejudge_ephemeral().unwrap();
     net.advance(10_000);
-    assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(Value::Int(7)));
+    assert_eq!(net.eph_read(b, t, "doc:cursor.0~"), Some(Value::Int(7)));
     let kept: Vec<_> = net.sync(b).ephemeral_entries_of(&blob.id()).into_iter().map(|(_, x, _)| x).collect();
     assert_eq!(kept, vec![real], "only the real copy is kept");
     assert_eq!(net.sync(b).ephemeral_pending_bytes(&l), 0);
@@ -907,7 +907,7 @@ fn waiting_on_thing(net: &mut Net, a: usize, b: usize, g: Tid, v: &Value) -> (Ti
     let at = net.tid(a);
     assert!(net.engine(b).core.created(&t).is_none() && net.engine(b).core.created(&at).is_some(), "author known, thing not");
     let mut m = Mutation::new();
-    m.set(t, &eph("/doc/cursor"), v).unwrap();
+    m.set(t, &eph("doc:cursor.0~"), v).unwrap();
     net.engine(a).write(m).unwrap();
     let blob = net.engine(a).take_ephemeral().unwrap().remove(0).blob;
     let mut junk = blob.clone();
@@ -946,7 +946,7 @@ fn junk_copy_waiting_on_thing_not_kept_spec_sync_9() {
     net.engine(b).rejudge_ephemeral().unwrap();
     net.advance(10_000);
     assert_eq!(net.read(b, t), Some(s("durable")));
-    assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(Value::Int(7)));
+    assert_eq!(net.eph_read(b, t, "doc:cursor.0~"), Some(Value::Int(7)));
     let kept: Vec<_> = net.sync(b).ephemeral_entries_of(&blob.id()).into_iter().map(|(_, x, _)| x).collect();
     assert_eq!(kept, vec![real], "only the real copy is kept");
     assert_eq!(net.sync(b).ephemeral_pending_bytes(&l), 0);
@@ -994,8 +994,8 @@ fn partly_verified_blob_counted_or_not_held_spec_sync_9() {
         let t = net.item(a, g, g, "durable");
         net.run();
         let mut m = Mutation::new();
-        m.set(g, &eph("/doc/cursor"), &Value::Int(1)).unwrap();
-        m.set(t, &eph("/doc/cursor"), &Value::Int(7)).unwrap();
+        m.set(g, &eph("doc:cursor.0~"), &Value::Int(1)).unwrap();
+        m.set(t, &eph("doc:cursor.0~"), &Value::Int(7)).unwrap();
         net.engine(a).write(m).unwrap();
         let blob = net.engine(a).take_ephemeral().unwrap().remove(0).blob;
         assert_eq!(blob.parts.len(), 2);
@@ -1012,10 +1012,10 @@ fn partly_verified_blob_counted_or_not_held_spec_sync_9() {
         if cap == 2400 {
             assert!(!net.engine(b).holds_ephemeral(&blob.id()), "nothing of it held");
             assert_eq!(pending, 0);
-            assert_eq!(net.eph_read(b, g, "/doc/cursor"), None);
+            assert_eq!(net.eph_read(b, g, "doc:cursor.0~"), None);
         } else {
             assert!(net.engine(b).holds_ephemeral(&blob.id()), "its verified part held");
-            assert_eq!(net.eph_read(b, g, "/doc/cursor"), Some(Value::Int(1)));
+            assert_eq!(net.eph_read(b, g, "doc:cursor.0~"), Some(Value::Int(1)));
             assert!(pending >= net.engine(b).ephemeral_charge(&blob.id(), &[]) && pending > 2048, "{pending}");
         }
     }
@@ -1053,7 +1053,7 @@ fn waiting_share_overflow_keeps_honest_copy_spec_sync_9() {
     net.engine(b).rejudge_ephemeral().unwrap();
     net.advance(10_000);
     assert_eq!(net.read(b, t), Some(s("durable")));
-    assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(v), "the honest copy waited on");
+    assert_eq!(net.eph_read(b, t, "doc:cursor.0~"), Some(v), "the honest copy waited on");
     let kept: Vec<_> = net.sync(b).ephemeral_entries_of(&blob.id()).into_iter().map(|(_, x, _)| x).collect();
     assert_eq!(kept, vec![real]);
 }
@@ -1091,7 +1091,7 @@ fn promoted_waiting_blob_counted_spec_sync_9() {
     let mut net = Net::new();
     let cap = 1_200_000;
     let (host, a, b, x, g, t) = unknown_writer(&mut net, cap);
-    let ak = osis_base::Ak::new("/doc/cursor").unwrap();
+    let ak = osis_base::Ak::new("doc:cursor.0~").unwrap();
     let blob = net.engine(x).forge_ephemeral(t, &ak, s(&"c".repeat(40_000))).unwrap().unwrap().blob;
     assert!(osis_node::Engine::ephemeral_bound(&blob).0 <= cap / 4, "waits within the share");
     let wk = write_key(&mut net, b, g);
@@ -1104,7 +1104,7 @@ fn promoted_waiting_blob_counted_spec_sync_9() {
     assert!(net.sync(b).ephemeral_pending_bytes(&l) > 0, "waits apart");
     // the label fills with small commits of a's until one is refused
     for i in 0..1000 {
-        let ak = osis_base::Ak::new(format!("/doc/f{i}")).unwrap();
+        let ak = osis_base::Ak::new(format!("doc:f{i}.0")).unwrap();
         let c = net.engine(a).forge_ephemeral(t, &ak, s("ffff")).unwrap().unwrap().blob;
         let before = net.sync(b).ephemeral_bytes(&l);
         let (_, ev) = sealed(&mut net, b, g, &c, Some(&wk), 10 + i);
@@ -1122,7 +1122,7 @@ fn promoted_waiting_blob_counted_spec_sync_9() {
     net.pair(a, b);
     net.engine(b).rejudge_ephemeral().unwrap();
     net.advance(10_000);
-    assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(s(&"c".repeat(40_000))), "held");
+    assert_eq!(net.eph_read(b, t, "doc:cursor.0~"), Some(s(&"c".repeat(40_000))), "held");
     assert!(!net.sync(b).ephemeral_entries_of(&blob.id()).is_empty(), "counted");
     let held: Vec<_> = net.engine(b).held_ephemeral().into_iter().filter(|h| !h.2).map(|h| h.0).collect();
     let charged: u64 = held.iter().map(|c| net.engine(b).ephemeral_charge(c, &[])).sum();
@@ -1139,7 +1139,7 @@ fn waiting_blob_charged_by_bound_spec_sync_9() {
     let mut net = Net::new();
     let cap = 600_000;
     let (host, _, b, x, g, t) = unknown_writer(&mut net, cap);
-    let ak = osis_base::Ak::new("/doc/cursor").unwrap();
+    let ak = osis_base::Ak::new("doc:cursor.0~").unwrap();
     let v = Value::Map((0..25).map(|i| (Value::Int(i), Value::Int(1))).collect());
     let blob = net.engine(x).forge_ephemeral(t, &ak, v).unwrap().unwrap().blob;
     let (bound, part) = osis_node::Engine::ephemeral_bound(&blob);
@@ -1169,16 +1169,16 @@ fn never_fitting_blob_not_fetched_again_spec_sync_9() {
     let t = net.item(a, g, g, "doc");
     net.run();
     let l = net.label(a);
-    net.eph_write_expiring(x, t, &eph("/doc/cursor"), s(&"c".repeat(50_000)), Some(5_000));
+    net.eph_write_expiring(x, t, &eph("doc:cursor.0~"), s(&"c".repeat(50_000)), Some(5_000));
     net.run();
-    assert!(net.eph_read(b, t, "/doc/cursor").is_some());
+    assert!(net.eph_read(b, t, "doc:cursor.0~").is_some());
     let v = Value::Map((0..2000).map(|i| (Value::Int(i), Value::Int(1))).collect());
-    net.eph_write(a, t, &ukey("/doc/tiny", Lifetime::Ephemeral), v);
+    net.eph_write(a, t, &ukey("doc:tiny.0~", Lifetime::Ephemeral), v);
     net.run();
-    assert_eq!(net.eph_read(b, t, "/doc/tiny"), None, "refused for the cap");
+    assert_eq!(net.eph_read(b, t, "doc:tiny.0~"), None, "refused for the cap");
     net.fetched.insert(b, Vec::new());
     net.advance(5_000);
-    assert_eq!(net.eph_read(b, t, "/doc/cursor"), None);
+    assert_eq!(net.eph_read(b, t, "doc:cursor.0~"), None);
     assert!(net.sync(b).ephemeral_bytes(&l) < 1_000);
     net.advance(SyncConfig::default().resync_ms + 1_000);
     assert_eq!(net.fetched[&b], Vec::new(), "not fetched again");
@@ -1196,7 +1196,7 @@ fn forged_copy_of_held_commit_refused_spec_sync_9() {
     let t = net.item(a, g, g, "durable");
     net.run();
     let mut m = Mutation::new();
-    m.set(t, &eph("/doc/cursor"), &Value::Int(7)).unwrap();
+    m.set(t, &eph("doc:cursor.0~"), &Value::Int(7)).unwrap();
     net.engine(a).write(m).unwrap();
     let cs = net.engine(a).take_ephemeral().unwrap();
     let blob = cs[0].blob.clone();
@@ -1223,14 +1223,14 @@ fn ephemeral_blob_under_wrong_id_dropped_spec_sync_4() {
     let t = net.item(a, g, g, "durable");
     net.run();
     let mut m = Mutation::new();
-    m.set(t, &eph("/doc/cursor"), &Value::Int(7)).unwrap();
+    m.set(t, &eph("doc:cursor.0~"), &Value::Int(7)).unwrap();
     net.engine(a).write(m).unwrap();
     let cs = net.engine(a).take_ephemeral().unwrap();
     let wk = write_key(&mut net, a, g);
     let (id, ev) = sealed(&mut net, a, g, &cs[0].blob, Some(&wk), 9);
     let l = net.label(a);
     push(&mut net, b, host, l, vec![ev.clone()]);
-    assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(Value::Int(7)));
+    assert_eq!(net.eph_read(b, t, "doc:cursor.0~"), Some(Value::Int(7)));
     let held = (net.sync(b).ephemeral_bytes(&l), net.sync(b).ephemeral_held_entries(&l));
     assert_eq!(held.1.iter().map(|e| e.0).collect::<Vec<_>>(), vec![id]);
     for n in 0..4u8 {
@@ -1442,7 +1442,7 @@ fn restart_starts_a_new_session_spec_crdt_2_1() {
 // each makes two elements, everywhere
 #[test]
 fn sessions_of_one_node_never_collide_spec_crdt_2_1() {
-    const ITEMS: &str = "/win/items";
+    const ITEMS: &str = "win:items.0~";
     // a list of `v` (on an empty state: its element takes the aspect's first counter)
     let list = |net: &mut Net, n: usize, w: Tid, v: &str| {
         let mut m = Mutation::new();
@@ -1940,7 +1940,7 @@ fn random_window_inflight_large() {
     eph_large("ephemeral::random_window_inflight_large", false, true);
 }
 
-const FLAG: &str = "/win/flag";
+const FLAG: &str = "win:flag.0~";
 
 /// One random run of superseded expiring writes (spec/sync.md §9): four writers on two hosts
 /// make expiring and plain writes at a few shared and own keys of a map and to a register
@@ -2440,21 +2440,21 @@ fn capped_label_reconciles_once_room_spec_sync_9() {
     let t = net.item(a, g, g, "doc");
     net.run();
     let l = net.label(a);
-    net.eph_write_expiring(x, t, &eph("/doc/cursor"), s(&"c".repeat(50_000)), Some(5_000));
+    net.eph_write_expiring(x, t, &eph("doc:cursor.0~"), s(&"c".repeat(50_000)), Some(5_000));
     net.run();
-    assert!(net.eph_read(b, t, "/doc/cursor").is_some());
-    net.eph_write(a, t, &ukey("/doc/big", Lifetime::Ephemeral), s(&"b".repeat(40_000)));
+    assert!(net.eph_read(b, t, "doc:cursor.0~").is_some());
+    net.eph_write(a, t, &ukey("doc:big.0~", Lifetime::Ephemeral), s(&"b".repeat(40_000)));
     net.run();
-    assert_eq!(net.eph_read(b, t, "/doc/big"), None, "refused for the cap");
+    assert_eq!(net.eph_read(b, t, "doc:big.0~"), None, "refused for the cap");
     net.advance(5_000);
-    assert_eq!(net.eph_read(b, t, "/doc/cursor"), None);
+    assert_eq!(net.eph_read(b, t, "doc:cursor.0~"), None);
     assert!(net.sync(b).ephemeral_bytes(&l) < 1_000);
     net.advance(SyncConfig::default().resync_ms + 1_000);
-    assert_eq!(net.eph_read(b, t, "/doc/big"), Some(s(&"b".repeat(40_000))), "fetched again");
+    assert_eq!(net.eph_read(b, t, "doc:big.0~"), Some(s(&"b".repeat(40_000))), "fetched again");
 }
 
 // spec/sync.md §9 (ephemeral parts on core aspects; security review L3): a writer's ephemeral
-// part on a core aspect other than `/group` (here `/reach`) is invalid: never joined
+// part on a core aspect other than `group.0` (here `reach.0`) is invalid: never joined
 #[test]
 fn core_aspect_part_refused_spec_sync_9() {
     let mut net = Net::new();
@@ -2464,10 +2464,10 @@ fn core_aspect_part_refused_spec_sync_9() {
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     let t = net.item(a, g, g, "durable");
     net.run();
-    let ak = osis_base::Ak::new("/reach").unwrap();
+    let ak = osis_base::Ak::new("reach.0").unwrap();
     let forged = net.engine(a).forge_ephemeral(t, &ak, s("injected")).unwrap().unwrap();
     net.engine(b).ingest_ephemeral(forged.blob).unwrap();
-    assert_eq!(net.eph_read(b, t, "/reach"), None, "not joined");
+    assert_eq!(net.eph_read(b, t, "reach.0"), None, "not joined");
 }
 
 // open question of the step 3 review: a device reachable only through a co-reader peer gets the
@@ -2491,11 +2491,11 @@ fn signals_through_co_reader_peer_spec_sync_5() {
     net.restart(c, 33);
     net.advance(10_000);
     let (ra, rb, rc) = (net.listen(a), net.listen(b), net.listen(c));
-    net.eph_write(a, t, &ukey("/t/ring", Lifetime::Signal), s("from a"));
+    net.eph_write(a, t, &ukey("t:ring.0*", Lifetime::Signal), s("from a"));
     net.run();
     assert_eq!(fired(&rb).len(), 1);
     assert_eq!(fired(&rc).len(), 1, "through the co-reader peer, once");
-    net.eph_write(c, t, &ukey("/t/ring", Lifetime::Signal), s("from c"));
+    net.eph_write(c, t, &ukey("t:ring.0*", Lifetime::Signal), s("from c"));
     net.run();
     assert_eq!(fired(&rb).len(), 1);
     assert_eq!(fired(&ra).iter().filter(|x| x.2 == s("from c")).count(), 1, "the peer passes it to the host, once");
@@ -2538,7 +2538,7 @@ fn bytes_under_stuck_entry(stuck: usize) -> usize {
     let w = window(&mut net, a, g, "w");
     net.run();
     let mut m = Mutation::new();
-    m.op(w, &eph("/win/big"), PathOp { path: Vec::new(), op: Op::Set(s(&"x".repeat(stuck))) }).unwrap();
+    m.op(w, &eph("win:big.0~"), PathOp { path: Vec::new(), op: Op::Set(s(&"x".repeat(stuck))) }).unwrap();
     net.engine(a).write(m).unwrap();
     local(&mut net, a);
     net.run();
@@ -2591,17 +2591,17 @@ fn host_cap_refused_entry_retried_spec_sync_9() {
     for i in 0.. {
         assert!(i < 20, "nothing refused under a {cap} B cap");
         let before = held(&net);
-        expiring(&mut net, b, t, &format!("/win/b{i}"), 1_500, 20_000);
+        expiring(&mut net, b, t, &format!("win:b{i}.0~"), 1_500, 20_000);
         net.run();
         if held(&net) == before {
             break;
         }
     }
-    expiring(&mut net, a, t, "/win/a", 1_500, 600_000);
+    expiring(&mut net, a, t, "win:a.0~", 1_500, 600_000);
     net.run();
-    assert!(net.eph_read(b, t, "/win/a").is_none(), "refused ({} B held, cap {cap})", held(&net));
+    assert!(net.eph_read(b, t, "win:a.0~").is_none(), "refused ({} B held, cap {cap})", held(&net));
     net.advance(61_000);
-    assert!(net.eph_read(b, t, "/win/a").is_some(), "a's write reached b");
+    assert!(net.eph_read(b, t, "win:a.0~").is_some(), "a's write reached b");
 }
 
 /// Upload messages nodes sent so far (osis-proto message kind 10).
@@ -2943,11 +2943,11 @@ fn signals_not_held_back_spec_sync_9() {
     let up = uploads_sent(&net);
     let rb = net.listen(b);
     for i in 0..5 {
-        net.eph_write(a, t, &ukey("/t/ring", Lifetime::Signal), s(&format!("ding {i}")));
+        net.eph_write(a, t, &ukey("t:ring.0*", Lifetime::Signal), s(&format!("ding {i}")));
     }
     assert_eq!(uploads_sent(&net) - up, 5, "one relay-only upload per signal, none waits");
     net.run();
-    let got: Vec<Value> = fired(&rb).into_iter().filter(|(x, ak, _, _)| *x == t && ak == "/t/ring").map(|(_, _, v, _)| v).collect();
+    let got: Vec<Value> = fired(&rb).into_iter().filter(|(x, ak, _, _)| *x == t && ak == "t:ring.0*").map(|(_, _, v, _)| v).collect();
     assert_eq!(got.len(), 5, "{got:?}");
     assert_eq!(net.eph_read(b, w, STATE), Some(s("busy")));
 }
@@ -3112,7 +3112,7 @@ fn commit_past_a_blob_splits_spec_sync_9() {
 }
 
 // spec/crdt.md §4.7, spec/sync.md §9 (a commit's records serve its other parts): an
-// ephemeral commit whose expiring parts went is dropped with its `/created` parts, at its author
+// ephemeral commit whose expiring parts went is dropped with its `created.0` parts, at its author
 // and at holders, and the record of a thing nothing else uses goes with it; a copy received
 // again after its expiry is not held. Expiring things do not pile up in memory.
 #[test]
@@ -3183,18 +3183,18 @@ fn expired_commit_leaves_no_records_spec_sync_9() {
     }
 }
 
-/// Node `n` sets ephemeral aspects `/x/a<i>` of `g` to `v` for each `i` of `keys`, in one batch.
+/// Node `n` sets ephemeral aspects `x:a.0<i>` of `g` to `v` for each `i` of `keys`, in one batch.
 fn set_many(net: &mut Net, n: usize, g: Tid, keys: impl Iterator<Item = usize>, v: &str) {
     let mut m = Mutation::new();
     for i in keys {
-        m.set(g, &eph(&format!("/x/a{i:04}")), &s(v)).unwrap();
+        m.set(g, &eph(&format!("x:a{i:04}.0~")), &s(v)).unwrap();
     }
     net.engine(n).write(m).unwrap();
     local(net, n);
 }
 
 fn read_many(net: &mut Net, n: usize, g: Tid, count: usize) -> Vec<Option<Value>> {
-    (0..count).map(|i| net.eph_read(n, g, &format!("/x/a{i:04}"))).collect()
+    (0..count).map(|i| net.eph_read(n, g, &format!("x:a{i:04}.0~"))).collect()
 }
 
 // spec/sync.md §9 (own covers), spec/commits.md §2 (no list by link): an author's commits and
@@ -3223,7 +3223,7 @@ fn own_cover_split_by_aspect_spec_sync_9() {
         assert!(at_b <= 3 * cover && at_sv <= 4 * cover, "round {round}: holder {at_b} B, host {at_sv} B, cover {cover} B");
         assert_eq!(read_many(&mut net, b, g, N), read_many(&mut net, a, g, N), "round {round}");
     }
-    assert_eq!(net.eph_read(b, g, "/x/a0000"), Some(s("r6")));
+    assert_eq!(net.eph_read(b, g, "x:a0000.0~"), Some(s("r6")));
     // a cover of it all goes as several commits, which together absorb every other own one
     let acts = net.sync(a).compact_ephemeral_now().unwrap();
     net.actions(a, acts);
@@ -3315,7 +3315,7 @@ fn split_cover_pieces_under_different_labels_spec_sync_9() {
     // one commit on both groups' things: an entry under each label
     let mut m = Mutation::new();
     for g in [g1, g2] {
-        m.set(g, &eph("/x/a0000"), &s("both")).unwrap();
+        m.set(g, &eph("x:a0000.0~"), &s("both")).unwrap();
     }
     net.engine(a).write(m).unwrap();
     local(&mut net, a);
@@ -3342,7 +3342,7 @@ fn split_cover_pieces_under_different_labels_spec_sync_9() {
         let ts = tids(&mut net, p);
         assert_eq!(ts.len(), 1, "a piece on one group's things");
         let h = net.engine(a).ephemeral_header(p).unwrap();
-        if h.aspects.iter().any(|x| x.ak.as_str() == "/x/a0000") {
+        if h.aspects.iter().any(|x| x.ak.as_str() == "x:a0000.0~") {
             on.insert(*ts.iter().next().unwrap(), *p);
         }
     }
@@ -3694,13 +3694,13 @@ fn bench_local_writes() {
     let n: u32 = std::env::var("OSIS_BENCH_N").ok().and_then(|v| v.parse().ok()).unwrap_or(2000);
     let mode = std::env::var("OSIS_BENCH_MODE").unwrap_or_else(|_| "memory".into());
     let mut lp = crate::common::net(1, 5);
-    // a thing whose `/t/reg` holds no durable row
+    // a thing whose `t:reg.0` holds no durable row
     let mut m = Mutation::new();
     let me = lp.peers[0].engine.tid();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &crate::common::TAGS, &Value::Set(Default::default())).unwrap();
     lp.peers[0].commit(m).unwrap();
-    let reg = crate::common::ak("/t/reg");
+    let reg = crate::common::ak("t:reg.0");
     let eph = osis_schema::Untyped::new(reg.clone(), Lifetime::Ephemeral);
     osis_node::costs::take();
     let start = std::time::Instant::now();
@@ -3739,14 +3739,14 @@ fn bench_local_writes() {
 fn memory_commit_session_form_spec_commits_3() {
     let mut lp = crate::common::net(1, 5);
     let t = crate::common::new_thing(&mut lp, 0);
-    let reg = crate::common::ak("/t/tags");
+    let reg = crate::common::ak("t:tags.0~");
     let e = &mut lp.peers[0].engine;
     let me = e.tid();
     let session = e.ephemeral_session();
     let mut ids = Vec::new();
     for i in 0..2 {
         let mut m = Mutation::new();
-        m.set(t, &eph("/t/tags"), &Value::Set([Value::Str(format!("v{i}"))].into())).unwrap();
+        m.set(t, &eph("t:tags.0~"), &Value::Set([Value::Str(format!("v{i}"))].into())).unwrap();
         ids.push(e.commit_in_memory(m).unwrap().unwrap());
     }
     let h = e.header(&ids[1]).unwrap();
@@ -3764,23 +3764,23 @@ fn memory_commit_session_form_spec_commits_3() {
 }
 
 // spec/commits.md §2 (records beside the deltas), spec/data-model.md §1: a thing a memory commit
-// makes is held as a memory-class record; the commit carries no `/created` aspect, its parts carry
+// makes is held as a memory-class record; the commit carries no `created.0` aspect, its parts carry
 // the thing's record and its memory owner chain; the first durable write on the thing persists
-// the chain (`/created` in that commit); a restart keeps only what was persisted.
+// the chain (`created.0` in that commit); a restart keeps only what was persisted.
 #[test]
 fn memory_records_beside_deltas_spec_commits_2() {
     let mut lp = crate::common::net(1, 5);
     let t = crate::common::new_thing(&mut lp, 0);
-    let tags = crate::common::ak("/t/tags");
+    let tags = crate::common::ak("t:tags.0~");
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
     let top = e.new_thing(&mut m, t);
     let leaf = e.new_thing(&mut m, top);
     let lone = e.new_thing(&mut m, t);
-    m.set(leaf, &eph("/t/tags"), &Value::Set([Value::Str("x".into())].into())).unwrap();
+    m.set(leaf, &eph("t:tags.0~"), &Value::Set([Value::Str("x".into())].into())).unwrap();
     let id = e.commit_in_memory(m).unwrap().unwrap();
     let blob = e.run(|tx| tx.get_commit(&id)).unwrap().unwrap();
-    assert!(blob.header.aspects.iter().all(|a| a.ak.as_str() != "/created"));
+    assert!(blob.header.aspects.iter().all(|a| a.ak.as_str() != "created.0"));
     let carried: Vec<osis_base::Tid> = blob.parts.iter().flat_map(|p| p.records.iter().map(|r| r.tid())).collect();
     assert!(carried.contains(&leaf) && carried.contains(&top) && !carried.contains(&lone), "{carried:?}");
     for x in [top, leaf, lone] {
@@ -3793,7 +3793,7 @@ fn memory_records_beside_deltas_spec_commits_2() {
     let d = lp.peers[0].commit(m).unwrap().unwrap();
     let e = &mut lp.peers[0].engine;
     let h = e.header(&d).unwrap();
-    let created: Vec<osis_base::Tid> = h.aspects.iter().filter(|a| a.ak.as_str() == "/created").map(|a| a.tid).collect();
+    let created: Vec<osis_base::Tid> = h.aspects.iter().filter(|a| a.ak.as_str() == "created.0").map(|a| a.tid).collect();
     assert_eq!(created.len(), 2);
     assert!(created.contains(&leaf) && created.contains(&top));
     assert!(e.core.durable_created(&leaf).is_some() && e.core.durable_created(&top).is_some() && e.core.durable_created(&lone).is_none());
@@ -3801,7 +3801,7 @@ fn memory_records_beside_deltas_spec_commits_2() {
     let e = &mut lp.peers[0].engine;
     assert!(e.core.durable_created(&leaf).is_some() && e.core.durable_created(&top).is_some());
     assert!(e.core.created(&lone).is_none(), "an unpersisted memory thing is gone at restart");
-    assert_eq!(e.get(&leaf, &crate::common::ak("/t/reg")).unwrap(), Some(Value::Str("d".into())));
+    assert_eq!(e.get(&leaf, &crate::common::ak("t:reg.0")).unwrap(), Some(Value::Str("d".into())));
 }
 
 // issues/eph-unify.md step 3: a memory commit is nothing durable to node-sync: no change mark,
@@ -3817,13 +3817,13 @@ fn memory_commit_not_durable_to_sync() {
     let durable = e.subscribe_durable();
     let (generation, ids) = (e.core.generation, e.commit_ids());
     let mut m = Mutation::new();
-    m.set(t, &eph("/t/tags"), &Value::Set([Value::Str("x".into())].into())).unwrap();
+    m.set(t, &eph("t:tags.0~"), &Value::Set([Value::Str("x".into())].into())).unwrap();
     let id = e.commit_in_memory(m).unwrap().unwrap();
     assert!(e.take_changed().is_empty());
     assert_eq!(e.core.generation, generation);
     assert!(e.core.memory_generation > 0);
     assert_eq!(e.commit_ids(), ids);
-    assert_eq!(e.core.durable_on(&(t, crate::common::ak("/t/tags"))).count(), 0);
+    assert_eq!(e.core.durable_on(&(t, crate::common::ak("t:tags.0~"))).count(), 0);
     let evs: Vec<_> = all.try_iter().collect();
     assert!(evs.iter().any(|ev| matches!(ev, osis_node::events::Event::Ephemeral { id: c, .. } if c.commit() == Some(id))), "{evs:?}");
     assert!(!evs.iter().any(|ev| matches!(ev, osis_node::events::Event::Applied { .. })));
@@ -3844,12 +3844,12 @@ fn memory_commit_not_durable_to_sync() {
 fn memory_commit_expiry_stays_in_memory() {
     let mut lp = crate::common::net(1, 5);
     let t = crate::common::new_thing(&mut lp, 0);
-    let tags = crate::common::ak("/t/tags");
+    let tags = crate::common::ak("t:tags.0~");
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
-    m.set(t, &eph("/t/tags"), &Value::Set([Value::Str("x".into())].into())).unwrap();
+    m.set(t, &eph("t:tags.0~"), &Value::Set([Value::Str("x".into())].into())).unwrap();
     let at = osis_base::WallMs(e.now().0 + 1000);
-    m.expires(t, &eph("/t/tags"), at).unwrap();
+    m.expires(t, &eph("t:tags.0~"), at).unwrap();
     e.commit_in_memory(m).unwrap().unwrap();
     assert!(e.get(&t, &tags).unwrap().is_some());
     let writes = lp.peers[0].backend.faults().writes();
@@ -3864,7 +3864,7 @@ fn memory_commit_expiry_stays_in_memory() {
 
 // spec/commits.md §2 (records beside a delta of the things it places with its reader): an
 // ephemeral thing under another reader placed into a group goes with its record beside its own
-// deltas only, never beside the group's `/placed` delta (its nonce, its dedup secret, would show
+// deltas only, never beside the group's `placed.0~` delta (its nonce, its dedup secret, would show
 // to the group's readers)
 #[test]
 fn placed_record_only_to_its_reader_spec_commits_2() {
@@ -3888,7 +3888,7 @@ fn placed_record_only_to_its_reader_spec_commits_2() {
     assert_ne!(e.ephemeral_reader(&w), e.ephemeral_reader(&g));
     let built = e.take_ephemeral().unwrap();
     let parts: Vec<(String, Tid, Vec<Tid>)> = built.iter().flat_map(|c| c.blob.parts.iter().map(|p| { let a = &c.blob.header.aspects[p.ai]; (a.ak.as_str().to_string(), a.tid, p.records.iter().map(|r| r.tid()).collect()) }).collect::<Vec<_>>()).collect();
-    assert!(parts.iter().any(|(ak, t, rs)| ak == "/placed" && *t == g && !rs.contains(&w)), "{parts:?}");
+    assert!(parts.iter().any(|(ak, t, rs)| ak == "placed.0~" && *t == g && !rs.contains(&w)), "{parts:?}");
     assert!(parts.iter().any(|(ak, t, rs)| ak == STATE && *t == w && rs.contains(&w)), "{parts:?}");
 }
 
@@ -3926,7 +3926,7 @@ fn records_beside_parts_counted_spec_sync_9() {
 fn memory_commit_durable_aspect_refused_spec_data_model_1() {
     let mut lp = crate::common::net(1, 5);
     let t = crate::common::new_thing(&mut lp, 0);
-    let reg = crate::common::ak("/t/reg");
+    let reg = crate::common::ak("t:reg.0");
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
     let leaf = e.new_thing(&mut m, t);
@@ -3935,7 +3935,7 @@ fn memory_commit_durable_aspect_refused_spec_data_model_1() {
     assert!(e.core.created(&leaf).is_none(), "nothing of a refused memory commit applies");
     let mut m = Mutation::new();
     let leaf = e.new_thing(&mut m, t);
-    m.set(leaf, &eph("/t/tags"), &s("m")).unwrap();
+    m.set(leaf, &eph("t:tags.0~"), &s("m")).unwrap();
     e.commit_in_memory(m).unwrap().unwrap();
     let mut m = Mutation::new();
     m.set(leaf, &crate::common::REG, &Value::Str("d".into())).unwrap();
@@ -3943,7 +3943,7 @@ fn memory_commit_durable_aspect_refused_spec_data_model_1() {
     lp.peers[0].restart(6).unwrap();
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.get(&leaf, &reg).unwrap(), Some(Value::Str("d".into())));
-    assert_eq!(e.get(&leaf, &crate::common::ak("/t/tags")).unwrap(), None, "the memory aspect is gone at restart");
+    assert_eq!(e.get(&leaf, &crate::common::ak("t:tags.0~")).unwrap(), None, "the memory aspect is gone at restart");
 }
 
 /// Peers 0 and 1, durable state synced; 0 owns `d` and grants 1 write. Returns `d`.
@@ -3957,15 +3957,26 @@ fn memory_pair(seed: u64) -> (osis_node::local_peer::LocalPeer, Tid) {
     (lp, d)
 }
 
-/// Peer `i` writes `v` into the ephemeral `/t/tags` of `t` as a memory commit.
+/// Peer `i` writes `v` into the ephemeral `t:tags.0` of `t` as a memory commit.
 fn memory_write(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: Tid, v: &str) -> osis_base::CommitId {
     let mut m = Mutation::new();
-    m.op(t, &eph("/t/tags"), PathOp { path: Vec::new(), op: Op::Add(s(v)) }).unwrap();
+    m.op(t, &eph("t:tags.0~"), PathOp { path: Vec::new(), op: Op::Add(s(v)) }).unwrap();
+    lp.peers[i].engine.commit_in_memory(m).unwrap().unwrap()
+}
+
+fn durable_tags(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: Tid) -> Option<Value> {
+    lp.peers[i].engine.get(&t, &crate::common::ak("t:tags.0")).unwrap()
+}
+
+/// `memory_write` on the durable key `t:tags.0`: a writer breaking the marker rule.
+fn memory_write_unmarked(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: Tid, v: &str) -> osis_base::CommitId {
+    let mut m = Mutation::new();
+    m.op(t, &eph("t:tags.0"), PathOp { path: Vec::new(), op: Op::Add(s(v)) }).unwrap();
     lp.peers[i].engine.commit_in_memory(m).unwrap().unwrap()
 }
 
 fn memory_tags(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: Tid) -> Option<Value> {
-    lp.peers[i].engine.get(&t, &crate::common::ak("/t/tags")).unwrap()
+    lp.peers[i].engine.get(&t, &crate::common::ak("t:tags.0~")).unwrap()
 }
 
 // spec/commits.md §4 (a received commit is verified, pending or applied; memory class),
@@ -3978,7 +3989,7 @@ fn received_memory_commit_in_memory_spec_commits_4() {
     let d = crate::common::new_thing(&mut lp, 0);
     let mut m = Mutation::new();
     let w = lp.peers[0].engine.new_thing(&mut m, d);
-    m.set(w, &eph("/t/tags"), &s("x")).unwrap();
+    m.set(w, &eph("t:tags.0~"), &s("x")).unwrap();
     let id = lp.peers[0].engine.commit_in_memory(m).unwrap().unwrap();
     let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
     let faults = lp.peers[1].backend.faults().clone();
@@ -3999,7 +4010,7 @@ fn received_memory_commit_in_memory_spec_commits_4() {
     assert!(matches!(lp.peers[1].engine.ingest_memory(&pk.bytes).unwrap(), osis_node::Ingested::Duplicate(_)));
     let id2 = {
         let mut m = Mutation::new();
-        m.set(w, &eph("/t/tags"), &s("y")).unwrap();
+        m.set(w, &eph("t:tags.0~"), &s("y")).unwrap();
         lp.peers[0].engine.commit_in_memory(m).unwrap().unwrap()
     };
     let pk2 = lp.peers[0].engine.package(&id2).unwrap().unwrap();
@@ -4054,12 +4065,12 @@ fn received_memory_part_on_durable_aspect_dropped_spec_data_model_1() {
     m.set(d, &crate::common::TAGS, &Value::Set([s("durable")].into())).unwrap();
     lp.peers[1].commit(m).unwrap();
     // 0 has not seen 1's durable write: writes the aspect as memory
-    let id = memory_write(&mut lp, 0, d, "memory");
+    let id = memory_write_unmarked(&mut lp, 0, d, "memory");
     let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
     lp.peers[1].engine.ingest_memory(&pk.bytes).unwrap();
-    assert_eq!(memory_tags(&mut lp, 1, d), Some(Value::Set([s("durable")].into())));
+    assert_eq!(durable_tags(&mut lp, 1, d), Some(Value::Set([s("durable")].into())));
     lp.peers[1].restart(34).unwrap();
-    assert_eq!(memory_tags(&mut lp, 1, d), Some(Value::Set([s("durable")].into())));
+    assert_eq!(durable_tags(&mut lp, 1, d), Some(Value::Set([s("durable")].into())));
 }
 
 // issues/eph-unify.md step 3 (freeing): a thing freed while a received memory commit on it is
@@ -4069,7 +4080,7 @@ fn freed_thing_drops_pending_memory_commit() {
     let (mut lp, d) = memory_pair(35);
     let mut m = Mutation::new();
     let w = lp.peers[0].engine.new_thing(&mut m, d);
-    m.set(w, &eph("/t/tags"), &s("x")).unwrap();
+    m.set(w, &eph("t:tags.0~"), &s("x")).unwrap();
     let id = lp.peers[0].engine.commit_in_memory(m).unwrap().unwrap();
     let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
     lp.peers[1].engine.ingest_memory(&pk.bytes).unwrap();
@@ -4119,7 +4130,7 @@ fn removed_writer_memory_commits_unmerged_spec_permissions_5_2() {
 #[ignore = "issues/eph-unify.md: durable write on a memory-marked aspect lost at restart"]
 fn repro_durable_write_on_memory_marked_aspect_lost() {
     let (mut lp, d) = memory_pair(41);
-    let id = memory_write(&mut lp, 1, d, "memory");
+    let id = memory_write_unmarked(&mut lp, 1, d, "memory");
     let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
     lp.peers[0].engine.ingest_memory(&pk.bytes).unwrap();
     let mut m = Mutation::new();
@@ -4127,7 +4138,7 @@ fn repro_durable_write_on_memory_marked_aspect_lost() {
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.peers[0].restart(42).unwrap();
     lp.sync_all().unwrap();
-    assert_eq!(memory_tags(&mut lp, 0, d), Some(Value::Set([s("durable")].into())));
+    assert_eq!(durable_tags(&mut lp, 0, d), Some(Value::Set([s("durable")].into())));
 }
 
 // spec/sync.md §9 (an expiring commit superseded by its author's later writes is dropped and

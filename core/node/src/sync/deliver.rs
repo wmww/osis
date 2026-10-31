@@ -135,7 +135,7 @@ impl SyncEngine {
                 }
                 Delivery::Removal { commit, under } => {
                     for g in self.groups_holding(&under) {
-                        self.place_aspects(&g, &commit, |a| !matches!(a.ak.as_str(), "/secrets" | "/keys"))?;
+                        self.place_aspects(&g, &commit, |a| !matches!(a.ak.as_str(), "secrets.0" | "keys.0"))?;
                     }
                 }
             }
@@ -143,18 +143,18 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Places `c`'s certificate deltas (edges, `/keys`, `/created`: spec/permissions.md §4) on
+    /// Places `c`'s certificate deltas (edges, `keys.0`, `created.0`: spec/permissions.md §4) on
     /// things outside `g`'s closure as a certificate copy under `g`'s labels; deltas on things
     /// inside it go up as its closure bodies (a whole copy duplicated them, and carried
-    /// `/secrets` boxes the label's readers cannot open).
+    /// `secrets.0` boxes the label's readers cannot open).
     pub(crate) fn place_chain(&mut self, g: &Tid, c: &CommitId) -> Result<()> {
         let closure = self.engine.closure(g);
-        self.place_aspects(g, c, |a| matches!(a.ak.as_str(), "/members" | "/tenures" | "/keys" | "/created") && !closure.contains(&a.tid))
+        self.place_aspects(g, c, |a| matches!(a.ak.as_str(), "roles.0" | "tenures.0" | "keys.0" | "created.0") && !closure.contains(&a.tid))
     }
 
     /// Places the aspects of `c` that `keep` admits as a certificate copy under the labels of
-    /// `g` (`Delivery::Deposit`: all of them; `Delivery::Removal`: all but `/secrets` and
-    /// `/keys`); nothing when it admits none.
+    /// `g` (`Delivery::Deposit`: all of them; `Delivery::Removal`: all but `secrets.0` and
+    /// `keys.0`); nothing when it admits none.
     fn place_aspects(&mut self, g: &Tid, c: &CommitId, keep: impl Fn(&osis_commit::AspectEntry) -> bool) -> Result<()> {
         let Some(h) = self.engine.header(c) else { return Ok(()) };
         let ais: BTreeSet<usize> = h.aspects.iter().enumerate().filter(|(_, a)| keep(a)).map(|(i, _)| i).collect();
@@ -254,7 +254,7 @@ impl SyncEngine {
         out
     }
 
-    /// The actor up `to`'s owner chain whose `/keys` names `label` as its inbox (its deposit
+    /// The actor up `to`'s owner chain whose `keys.0` names `label` as its inbox (its deposit
     /// seed signs the deposit).
     pub(crate) fn inbox_owner(&mut self, to: &Tid, label: &LabelId) -> Result<Option<Tid>> {
         let chain: Vec<Tid> = self.engine.owner_chain(to).collect();
@@ -331,9 +331,9 @@ impl SyncEngine {
 pub(crate) struct TiedWork {
     /// Derive every pair again (at start).
     pub all: bool,
-    /// Groups whose `/group` changed.
+    /// Groups whose `group.0` changed.
     pub groups: BTreeSet<Tid>,
-    /// Things whose `/members` or roster changed.
+    /// Things whose `roles.0` or roster changed.
     pub targets: BTreeSet<Tid>,
     /// (target, group): a tied edge whose placement this node holds dead.
     pub due: BTreeSet<(Tid, Tid)>,
@@ -345,10 +345,10 @@ impl TiedWork {
     pub(crate) fn touched(&mut self, changed: &[(Tid, osis_base::Ak)]) {
         for (t, ak) in changed {
             match ak.as_str() {
-                "/group" => {
+                "group.0" => {
                     self.groups.insert(*t);
                 }
-                "/members" => {
+                "roles.0" => {
                     self.targets.insert(*t);
                 }
                 _ => {}
@@ -359,7 +359,7 @@ impl TiedWork {
 
 impl SyncEngine {
     /// Removes the tied edges whose placement is gone (spec/permissions.md §2): a tied edge
-    /// (G, T) whose named `/group` element this node holds dead (`Engine::tie_dead`). As an
+    /// (G, T) whose named `group.0` element this node holds dead (`Engine::tie_dead`). As an
     /// explicit demotion by an admin of T, after a complete pass of every label holding a thing
     /// of its pre-sync scope ended after the last remote role commit of G and of T (its
     /// pre-sync, none for an empty scope); else as a self-removal by an admin of G; nothing when

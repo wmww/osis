@@ -13,7 +13,7 @@ pub enum Error {
     Path(osis_schema::PathError),
     /// This node may not write that aspect (local writes, checked before signing).
     Permission { tid: Tid },
-    /// The thing's `/created` record is not held.
+    /// The thing's `created.0` record is not held.
     UnknownThing(Tid),
     /// A placement left `tid` in no synced group while `group`'s own data syncs
     /// (`Mutation::require_synced`). Local.

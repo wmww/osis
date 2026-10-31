@@ -8,7 +8,7 @@
 //! added since go on through `Timeline::extend`, as at run time.
 //!
 //! Layout: tag (32) ‖ body; body = the component's things, held commit and snapshot IDs and
-//! `/created` tids (`Inputs`), then the walk (`Walked` with its undo log, D, epoch starts,
+//! `created.0` tids (`Inputs`), then the walk (`Walked` with its undo log, D, epoch starts,
 //! passes, `reach`). Frontiers are referenced by where the input holds them (a commit's, or
 //! a snapshot's ledger entry), not copied.
 
@@ -24,7 +24,7 @@ use std::sync::Arc;
 const FORMAT: &[u8] = b"osis-perm walk cache";
 
 /// A component's exact inputs: its things, the IDs of its commits and snapshots, and its
-/// held `/created` records (by tid; a record's tid fixes its content).
+/// held `created.0` records (by tid; a record's tid fixes its content).
 pub(crate) type Inputs = (BTreeSet<Tid>, BTreeSet<CommitId>, BTreeSet<Tid>);
 
 /// Where a frontier sits in the input.
@@ -685,7 +685,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Option<Saved<'_>> {
     Some(Saved { tag, body, inputs: (things, ids, created), tids, walk: r.b })
 }
 
-/// The held set of `held` restricted to `things`, and to the `/created` records of `created`
+/// The held set of `held` restricted to `things`, and to the `created.0` records of `created`
 /// and the commits and snapshots in `ids` where given (else all of `things`').
 pub(crate) struct Only<'a> {
     pub held: &'a dyn HeldSet,
@@ -724,7 +724,7 @@ impl HeldSet for Only<'_> {
 }
 
 /// The timeline `s` saved, over `held` (a held set holding at least the saved inputs: their
-/// things, `/created` records and commits): `None` unless its tag matches `salt` and the input
+/// things, `created.0` records and commits): `None` unless its tag matches `salt` and the input
 /// `held` gives for exactly those.
 pub(crate) fn restore(s: &Saved<'_>, held: &dyn HeldSet, salt: &[u8]) -> Option<Timeline> {
     let input = Input::gather(&Only { held, things: &s.inputs.0, created: Some(&s.inputs.2), ids: Some(&s.inputs.1) });

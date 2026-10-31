@@ -54,14 +54,14 @@ const LABEL: LabelId = LabelId([4; 16]);
 /// Writes `marker` into every kind of unit, then rewrites some of them without shredding so old
 /// versions pile up in the history.
 fn plant(s: &mut Store, rng: &mut SeededRng, marker: &[u8]) {
-    let (t1, a) = (tid(1), ak("/doc"));
+    let (t1, a) = (tid(1), ak("doc.0"));
     let mut t = s.transaction(rng).unwrap();
     let unit = AspectUnit { state: b"live".to_vec(), undo: [b"undo:", marker].concat(), snapshots: [b"snap:", marker].concat() };
     t.put_aspect(&t1, &a, &unit, Shred::No).unwrap();
     t.put_wrap(&LABEL, &BlobId([1; 32]), &[marker, b"wrap"].concat()).unwrap();
     t.put_wrap(&LABEL, &BlobId([2; 32]), b"other wrap").unwrap();
     t.put_secrets(&tid(9), &[b"secrets:", marker].concat(), Shred::No).unwrap();
-    let big = t.create_table(&t1, &ak("/big"), 0).unwrap();
+    let big = t.create_table(&t1, &ak("big.0"), 0).unwrap();
     for i in 0..300u32 {
         t.table_put(big, &i.to_be_bytes(), format!("element {i}").into_bytes(), Shred::No).unwrap();
     }
@@ -81,7 +81,7 @@ fn plant(s: &mut Store, rng: &mut SeededRng, marker: &[u8]) {
 
 /// The shredded drops of every unit kind holding the marker.
 fn shred_all(s: &mut Store, rng: &mut SeededRng) {
-    let (t1, a) = (tid(1), ak("/doc"));
+    let (t1, a) = (tid(1), ak("doc.0"));
     let mut t = s.transaction(rng).unwrap();
     let mut u = t.get_aspect(&t1, &a).unwrap().unwrap();
     u.undo.clear();
@@ -89,7 +89,7 @@ fn shred_all(s: &mut Store, rng: &mut SeededRng) {
     t.put_aspect(&t1, &a, &u, Shred::Yes).unwrap();
     assert!(t.drop_wrap(&LABEL, &BlobId([1; 32])).unwrap());
     assert!(t.drop_actor_secrets(&tid(9)).unwrap());
-    let big = t.table(&t1, &ak("/big"), 0).unwrap().unwrap();
+    let big = t.table(&t1, &ak("big.0"), 0).unwrap().unwrap();
     t.table_put(big, &150u32.to_be_bytes(), b"element 150".to_vec(), Shred::Yes).unwrap();
     assert!(t.remove_pending(&CommitId([3; 32]), Shred::Yes).unwrap());
     t.commit().unwrap();
@@ -126,8 +126,8 @@ fn dropped_aspect_is_unrecoverable() {
     let mut s = create(&dev, &mut rng);
     plant(&mut s, &mut rng, b"MARKER-big");
     let mut t = s.transaction(&mut rng).unwrap();
-    t.drop_aspect(&tid(1), &ak("/big")).unwrap();
-    t.drop_aspect(&tid(1), &ak("/doc")).unwrap();
+    t.drop_aspect(&tid(1), &ak("big.0")).unwrap();
+    t.drop_aspect(&tid(1), &ak("doc.0")).unwrap();
     t.commit().unwrap();
     let plains = attack(&mut s, &dev.backend.history());
     assert!(!plains.iter().any(|p| contains(p, b"element 77") || contains(p, b"undo:")));

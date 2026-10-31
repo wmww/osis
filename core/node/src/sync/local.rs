@@ -1,6 +1,6 @@
 //! Requests of the app and of role flows: compaction
 //! (spec/sync.md §7), certificate placement under a group's labels (spec/permissions.md §3, §4:
-//! the grantee's `/keys`, a removal's new `/keys`), inbox delivery (spec/sync.md §3), label
+//! the grantee's `keys.0`, a removal's new `keys.0`), inbox delivery (spec/sync.md §3), label
 //! creation.
 
 use super::state::{Entry, Kind, HostKey};
@@ -48,7 +48,7 @@ impl SyncEngine {
     /// admin rotation if the loss calls for it, a new label at the same hosts, the old one
     /// marked replaced); passes then upload the live blobs under the new label, and under the
     /// old one (an admin keeps syncing it until done there, `labels`) only role-class
-    /// commits, the replacement's `/label` among them, deleting its content entries;
+    /// commits, the replacement's `label.0` among them, deleting its content entries;
     /// certificates stay.
     pub fn replace_label(&mut self, g: &Tid, old: &LabelId) -> Result<(LabelId, Vec<Action>)> {
         let (new, done) = self.engine.replace_label(g, old)?;
@@ -212,7 +212,7 @@ impl SyncEngine {
 
     /// After a settled pass of replaced label `l` of `g` at `host` that had nothing left to
     /// upload (`quiet`): done there when no content entry is present any more (spec/sync.md §2:
-    /// role-class commits, the replacement's `/label` among them, and certificates stay);
+    /// role-class commits, the replacement's `label.0` among them, and certificates stay);
     /// once done at every host of the label (or no key opens it there), this admin stops
     /// syncing it for good; `labels` retires it after `ROLE_KEEP` whatever.
     pub(crate) fn retire_at(&mut self, host: super::state::HostKey, g: &Tid, l: LabelId) -> Result<()> {
@@ -252,7 +252,7 @@ impl SyncEngine {
 
     /// Delivers commit `c`'s deltas on `aspects` to actor `recipient` as an inbox blob
     /// (spec/sync.md §3; spec/crypto.md §5): sealed to its read keyset's KEM key, with the label
-    /// IDs and hosts of the things the commit names, deposited under its inbox (its `/keys`,
+    /// IDs and hosts of the things the commit names, deposited under its inbox (its `keys.0`,
     /// else the nearest owner-chain actor's).
     pub fn deliver_inbox(&mut self, recipient: &Tid, c: &CommitId, aspects: &BTreeSet<usize>) -> Result<Vec<Action>> {
         let id = *c;
@@ -362,7 +362,7 @@ impl SyncEngine {
     }
 
     /// Signs queued deposit `(host, l, b)` again with the label's current deposit key (an
-    /// inbox's from its owner's `/keys`), after its host found it signed by an earlier one;
+    /// inbox's from its owner's `keys.0`), after its host found it signed by an earlier one;
     /// false when this node holds no other key, so it can never be taken.
     pub(crate) fn resign_deposit(&mut self, host: &HostKey, l: &LabelId, b: &BlobId) -> Result<bool> {
         let Some(o) = self.state.outbox.get(&(*host, *l, *b)).cloned() else { return Ok(false) };
@@ -390,7 +390,7 @@ impl SyncEngine {
     /// since then must not hand it the target's current label).
     fn still_holder(&self, holder: &Tid, c: &CommitId) -> bool {
         let Some(h) = self.engine.header(c) else { return false };
-        let targets: BTreeSet<Tid> = h.aspects.iter().filter(|a| matches!(a.ak.as_str(), "/members" | "/secrets")).map(|a| a.tid).collect();
+        let targets: BTreeSet<Tid> = h.aspects.iter().filter(|a| matches!(a.ak.as_str(), "roles.0" | "secrets.0")).map(|a| a.tid).collect();
         targets.iter().any(|t| self.engine.core.current_holders(t).iter().any(|(m, _, _)| m == holder))
     }
 

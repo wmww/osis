@@ -30,7 +30,7 @@ fn settle(net: &mut Net) {
 }
 
 // spec/permissions.md §4 (the node card is placed again when it changes): once a reader's new
-// `/reach` is under the label, the admin deletes the superseded card commit's entries.
+// `reach.0` is under the label, the admin deletes the superseded card commit's entries.
 #[test]
 fn superseded_card_deleted_spec_permissions_4() {
     let mut net = Net::new();
@@ -43,17 +43,17 @@ fn superseded_card_deleted_spec_permissions_4() {
     settle(&mut net);
     let l = net.label(a);
     let rt = net.tid(r);
-    let old = card_entries(&mut net, a, host, &l, rt, "/reach");
+    let old = card_entries(&mut net, a, host, &l, rt, "reach.0");
     assert!(!old.is_empty(), "the first card is there");
     let acts = net.sync(r).publish_reach([2; 32], Vec::new()).unwrap();
     net.actions(r, acts);
     settle(&mut net);
-    let now = card_entries(&mut net, a, host, &l, rt, "/reach");
+    let now = card_entries(&mut net, a, host, &l, rt, "reach.0");
     assert!(!now.is_empty() && now.iter().all(|(_, c)| old.iter().all(|(_, o)| o != c)), "only the newer card is left: {old:?} {now:?}");
 }
 
-// spec/permissions.md §4, spec/sync.md §6 (required set): a removed reader's `/reach` and
-// `/node` go from the label; its `/keys`, which chains of its old writes may need, stays.
+// spec/permissions.md §4, spec/sync.md §6 (required set): a removed reader's `reach.0` and
+// `node.0` go from the label; its `keys.0`, which chains of its old writes may need, stays.
 #[test]
 fn departed_node_card_deleted_spec_permissions_4() {
     let mut net = Net::new();
@@ -66,22 +66,22 @@ fn departed_node_card_deleted_spec_permissions_4() {
     settle(&mut net);
     let l = net.label(a);
     let rt = net.tid(r);
-    assert!(!card_entries(&mut net, a, host, &l, rt, "/reach").is_empty());
-    let keys = card_entries(&mut net, a, host, &l, rt, "/keys");
+    assert!(!card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty());
+    let keys = card_entries(&mut net, a, host, &l, rt, "keys.0");
     assert!(!keys.is_empty());
     net.set_online(r, false);
     let done = net.engine(a).demote(&g, &Demotion { holder: rt, new: None, presync: PreSync::Synced }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     settle(&mut net);
-    assert!(card_entries(&mut net, a, host, &l, rt, "/reach").is_empty(), "the departed node's /reach went");
-    assert!(card_entries(&mut net, a, host, &l, rt, "/node").is_empty(), "and its /node");
-    assert!(!card_entries(&mut net, a, host, &l, rt, "/keys").is_empty(), "its /keys stays");
+    assert!(card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "the departed node's reach.0 went");
+    assert!(card_entries(&mut net, a, host, &l, rt, "node.0").is_empty(), "and its node.0");
+    assert!(!card_entries(&mut net, a, host, &l, rt, "keys.0").is_empty(), "its keys.0 stays");
 }
 
 // spec/permissions.md §4 (a holder node places its card under the labels it reads): a reader
 // removed while offline, its card deleted by the admin, then re-granted, places its card again
-// when it is back, though its `/reach` did not change.
+// when it is back, though its `reach.0` did not change.
 #[test]
 fn regranted_node_card_placed_again_spec_permissions_4() {
     let mut net = Net::new();
@@ -94,14 +94,14 @@ fn regranted_node_card_placed_again_spec_permissions_4() {
     settle(&mut net);
     let l = net.label(a);
     let rt = net.tid(r);
-    let first = card_entries(&mut net, a, host, &l, rt, "/reach");
+    let first = card_entries(&mut net, a, host, &l, rt, "reach.0");
     assert!(!first.is_empty());
     net.set_online(r, false);
     let done = net.engine(a).demote(&g, &Demotion { holder: rt, new: None, presync: PreSync::Synced }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     settle(&mut net);
-    assert!(card_entries(&mut net, a, host, &l, rt, "/reach").is_empty(), "the departed node's /reach went");
+    assert!(card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "the departed node's reach.0 went");
     let at = net.tid(a);
     let e = net.engine(a);
     set_edge(e, g, rt, Role::Read);
@@ -111,13 +111,13 @@ fn regranted_node_card_placed_again_spec_permissions_4() {
     net.set_online(r, true);
     settle(&mut net);
     settle(&mut net);
-    let back = card_entries(&mut net, a, host, &l, rt, "/reach");
-    assert!(back.iter().any(|(_, c)| first.iter().any(|(_, f)| f == c)), "the re-granted node's unchanged /reach is under the label again: {first:?} {back:?}");
+    let back = card_entries(&mut net, a, host, &l, rt, "reach.0");
+    assert!(back.iter().any(|(_, c)| first.iter().any(|(_, f)| f == c)), "the re-granted node's unchanged reach.0 is under the label again: {first:?} {back:?}");
 }
 
 // spec/sync.md §3 (a certificate copy carries the blobs its parts link), §6: once no entry of
 // the copied commit is under the label any more, the admin deletes the linked blobs the copy
-// placed (here an owner's `/created` from a commit whose aspect list goes by link).
+// placed (here an owner's `created.0` from a commit whose aspect list goes by link).
 #[test]
 fn linked_blobs_of_gone_copy_deleted_spec_sync_3() {
     let mut net = Net::new();
@@ -128,7 +128,7 @@ fn linked_blobs_of_gone_copy_deleted_spec_sync_3() {
     let mut m = osis_node::Mutation::new();
     let p = e.new_thing(&mut m, me);
     for i in 0..800 {
-        m.set(p, &osis_base::Ak::new(format!("/u/{}{i:05}", "a".repeat(100))).unwrap(), &s("v")).unwrap();
+        m.set(p, &osis_base::Ak::new(format!("u:{}{i:05}.0", "a".repeat(100))).unwrap(), &s("v")).unwrap();
     }
     let pc = e.commit(m).unwrap().unwrap();
     assert!(net.engine(a).header(&pc).unwrap().links.aspects.is_some(), "the aspect list goes by link");
@@ -146,7 +146,7 @@ fn linked_blobs_of_gone_copy_deleted_spec_sync_3() {
     let copies: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == pc)).map(|(id, _)| id).collect();
     let linked: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| *k == EntryKind::Unknown).map(|(id, _)| id).collect();
     let ids = net.host_ids(host, &l);
-    assert!(!copies.is_empty() && copies.iter().all(|c| ids.contains(c)), "the owner's /created copy is there");
+    assert!(!copies.is_empty() && copies.iter().all(|c| ids.contains(c)), "the owner's created.0 copy is there");
     assert!(!linked.is_empty() && linked.iter().all(|b| ids.contains(b)), "with its linked aspect list");
     // the copy deleted at the host behind the node's back; it learns at its next sync
     net.set_online(a, false);
@@ -183,7 +183,7 @@ fn person_reader(net: &mut Net, a: usize, r: usize, host: usize, until: Option<o
     for _ in 0..3 {
         net.advance(70_000);
     }
-    // the group has a holder who is no contact of the reader: its `/reach` goes there by choice
+    // the group has a holder who is no contact of the reader: its `reach.0` goes there by choice
     let acts = net.sync(r).set_reach_policy(g, Some(true));
     net.actions(r, acts);
     let acts = net.sync(r).publish_reach([1; 32], Vec::new()).unwrap();
@@ -194,8 +194,8 @@ fn person_reader(net: &mut Net, a: usize, r: usize, host: usize, until: Option<o
 }
 
 // spec/permissions.md §4, spec/sync.md §6 (required set): a node that departs through its
-// person's removal (its own edge on the person stands) leaves the label's `/reach` and `/node`;
-// its `/keys` stays.
+// person's removal (its own edge on the person stands) leaves the label's `reach.0` and `node.0`;
+// its `keys.0` stays.
 #[test]
 fn person_removed_node_card_deleted_spec_permissions_4() {
     let mut net = Net::new();
@@ -204,18 +204,18 @@ fn person_removed_node_card_deleted_spec_permissions_4() {
     let r = net.node(2, &[host]);
     let (g, p, l) = person_reader(&mut net, a, r, host, None);
     let rt = net.tid(r);
-    assert!(!card_entries(&mut net, a, host, &l, rt, "/reach").is_empty(), "the reader's card is under the group's label");
+    assert!(!card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "the reader's card is under the group's label");
     let done = net.engine(a).demote(&g, &Demotion { holder: p, new: None, presync: PreSync::Synced }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     settle(&mut net);
-    assert!(card_entries(&mut net, a, host, &l, rt, "/reach").is_empty(), "the departed node's /reach went");
-    assert!(card_entries(&mut net, a, host, &l, rt, "/node").is_empty(), "and its /node");
-    assert!(!card_entries(&mut net, a, host, &l, rt, "/keys").is_empty(), "its /keys stays");
+    assert!(card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "the departed node's reach.0 went");
+    assert!(card_entries(&mut net, a, host, &l, rt, "node.0").is_empty(), "and its node.0");
+    assert!(!card_entries(&mut net, a, host, &l, rt, "keys.0").is_empty(), "its keys.0 stays");
 }
 
 // spec/permissions.md §4, spec/sync.md §6: a node whose person's edge passes its `until` leaves
-// the label's `/reach` and `/node` once the clock passes it (no write says so).
+// the label's `reach.0` and `node.0` once the clock passes it (no write says so).
 #[test]
 fn until_expired_node_card_deleted_spec_permissions_4() {
     let mut net = Net::new();
@@ -225,18 +225,18 @@ fn until_expired_node_card_deleted_spec_permissions_4() {
     let until = osis_base::WallMs(net.now() + 3_600_000);
     let (_, _, l) = person_reader(&mut net, a, r, host, Some(until));
     let rt = net.tid(r);
-    assert!(!card_entries(&mut net, a, host, &l, rt, "/reach").is_empty(), "the reader's card is under the group's label");
+    assert!(!card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "the reader's card is under the group's label");
     net.clock.advance(3_600_000);
     settle(&mut net);
     settle(&mut net);
-    assert!(card_entries(&mut net, a, host, &l, rt, "/reach").is_empty(), "the departed node's /reach went");
-    assert!(card_entries(&mut net, a, host, &l, rt, "/node").is_empty(), "and its /node");
-    assert!(!card_entries(&mut net, a, host, &l, rt, "/keys").is_empty(), "its /keys stays");
+    assert!(card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "the departed node's reach.0 went");
+    assert!(card_entries(&mut net, a, host, &l, rt, "node.0").is_empty(), "and its node.0");
+    assert!(!card_entries(&mut net, a, host, &l, rt, "keys.0").is_empty(), "its keys.0 stays");
 }
 
 // spec/permissions.md §4, spec/sync.md §6: when a person is removed, a device of it whose chain
 // this view does not hold (its edge on the person never reached the admin) keeps its card: "reads
-// no more" alone proves nothing; the device whose chain is held loses its `/reach`.
+// no more" alone proves nothing; the device whose chain is held loses its `reach.0`.
 #[test]
 fn unheld_chain_card_kept_spec_permissions_4() {
     let mut net = Net::new();
@@ -285,7 +285,7 @@ fn unheld_chain_card_kept_spec_permissions_4() {
     net.set_online(a, true);
     settle(&mut net);
     assert!(!net.engine(a).may_read(&r2t, &p), "the admin does not hold r2's edge on the person");
-    assert!(!card_entries(&mut net, a, host, &l, r2t, "/reach").is_empty(), "r2's card is under the group's label");
+    assert!(!card_entries(&mut net, a, host, &l, r2t, "reach.0").is_empty(), "r2's card is under the group's label");
     // the admin's timelines know r2 otherwise: an edge on another thing of the admin's
     let at = net.tid(a);
     let e = net.engine(a);
@@ -299,8 +299,8 @@ fn unheld_chain_card_kept_spec_permissions_4() {
     net.actions(a, acts);
     settle(&mut net);
     let rt = net.tid(r);
-    assert!(card_entries(&mut net, a, host, &l, rt, "/reach").is_empty(), "the node whose chain is held lost its /reach");
-    assert!(!card_entries(&mut net, a, host, &l, r2t, "/reach").is_empty(), "the node whose chain is not held keeps its card");
+    assert!(card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "the node whose chain is held lost its reach.0");
+    assert!(!card_entries(&mut net, a, host, &l, r2t, "reach.0").is_empty(), "the node whose chain is not held keeps its card");
 }
 
 // spec/permissions.md §2 (edges, `until`): a holder re-granted after its edge passed its
@@ -328,5 +328,5 @@ fn regrant_after_until_reads_again_spec_permissions_2() {
     }
     settle(&mut net);
     assert!(net.engine(r).may_read(&p, &g), "and at the holder's device");
-    assert!(!card_entries(&mut net, a, host, &l, rt, "/reach").is_empty(), "its card is under the label again");
+    assert!(!card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "its card is under the label again");
 }

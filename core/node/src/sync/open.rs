@@ -2,7 +2,7 @@
 //! recorded step this node holds the key of; a superseded key or a claim answered with the next
 //! step is a walk, each step verified under its parent's delete key; a host lacking the label
 //! gets the recorded path registered; a refused claim places a stranded heartbeat. An opened head
-//! not recorded in `/label` is checked against the host's path.
+//! not recorded in `label.0` is checked against the host's path.
 
 use super::{ConnId, LConn, Phase, SyncEngine};
 use crate::error::Result;
@@ -30,7 +30,7 @@ pub(crate) enum Try {
     /// entry box gives the read secret (spec/sync.md §2, §5).
     Static { kem: osis_crypto::KemSecret, key: SigningSecret },
     /// Last on a co-reader connection: a co-reader proof under this node's dialable key, which a
-    /// peer holding this node's `/reach` opens while the node reads the label (spec/sync.md
+    /// peer holding this node's `reach.0` opens while the node reads the label (spec/sync.md
     /// §5, co-reader peer). The transport key stays ephemeral.
     CoReader { key: SigningSecret },
 }
@@ -110,10 +110,10 @@ impl SyncEngine {
         let Some(gl) = self.group_label(g, l) else {
             let Some((index, via)) = self.state.hints.get(l).map(|h| (h.index, h.via)) else { return (0, Vec::new()) };
             let mut v: Vec<Try> = held.iter().map(|s| Try::Sync { step: None, key: label_role_key(LabelRole::Sync, s, index) }).collect();
-            // only the key actor the hint follows for and those the thing's held `/members` lists
+            // only the key actor the hint follows for and those the thing's held `roles.0` lists
             // (spec/sync.md §5): presenting every held one would link their labels at this host
             // (spec/requirements.md, hosts)
-            let holders = self.engine.get_typed(g, &osis_schema::core_types::MEMBERS).ok().flatten().unwrap_or_default();
+            let holders = self.engine.get_typed(g, &osis_schema::core_types::ROLES).ok().flatten().unwrap_or_default();
             v.extend(self.static_tries().into_iter().filter(|(t, _)| Some(*t) == via || holders.contains_key(t)).map(|(_, x)| x));
             return (index, v);
         };
@@ -145,7 +145,7 @@ impl SyncEngine {
         }
         // a key actor's signing key goes only where it is listed: elsewhere it would link labels
         // and name the key to the host
-        let holders = self.engine.get_typed(g, &osis_schema::core_types::MEMBERS).ok().flatten().unwrap_or_default();
+        let holders = self.engine.get_typed(g, &osis_schema::core_types::ROLES).ok().flatten().unwrap_or_default();
         v.extend(self.static_tries().into_iter().filter(|(t, _)| holders.contains_key(t)).map(|(_, x)| x));
         (index, v)
     }
@@ -167,7 +167,7 @@ impl SyncEngine {
         let Some((host, peer)) = self.conns.get(&conn).map(|c| (c.host, c.peer)) else { return Ok(()) };
         let (index, mut tries) = self.tries(&host, &g, &l);
         // the co-reader proof names this node's dialable key: only to co-readers of a group whose
-        // labels carry its `/reach` anyway, never to a link's sharer (spec/sync.md §5)
+        // labels carry its `reach.0` anyway, never to a link's sharer (spec/sync.md §5)
         if peer && self.state.reach_secret.is_some() && self.publishes_reach(&g) && self.peers().contains_key(&host) {
             tries.push(Try::CoReader { key: SigningSecret::from_seed(&self.dialable_secret()) });
         }
@@ -611,8 +611,8 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Records steps in `/label` of `g` when this node may write it (an admin; spec/sync.md
-    /// §2, §5: "records the steps in /label"). Steps already recorded are left alone.
+    /// Records steps in `label.0` of `g` when this node may write it (an admin; spec/sync.md
+    /// §2, §5: "records the steps in label.0"). Steps already recorded are left alone.
     pub(crate) fn record_steps(&mut self, g: &Tid, l: &LabelId, steps: &[Step], claims: Option<(StepId, ClaimSet)>) -> Result<()> {
         // a receipts-only read writes nothing (`receipts`)
         if self.state.receipts_only.contains(g) {

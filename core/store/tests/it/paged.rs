@@ -17,7 +17,7 @@ fn changed_units(before: &[(Vec<u8>, Vec<u8>)], after: &[(Vec<u8>, Vec<u8>)]) ->
 
 /// Fills a map aspect: table 0 holds elements by map key, table 1 indexes dot -> key.
 fn fill(s: &mut Store, rng: &mut SeededRng, n: u32, batch: u32) {
-    let (t1, a) = (tid(1), ak("/big"));
+    let (t1, a) = (tid(1), ak("big.0"));
     for chunk in 0..n.div_ceil(batch) {
         let mut t = s.transaction(rng).unwrap();
         let elems = t.create_table(&t1, &a, 0).unwrap();
@@ -41,7 +41,7 @@ fn edit_is_o_change() {
     fill(&mut s, &mut rng, 4000, 1000);
     let before = dev.backend.dump();
     let mut t = s.transaction(&mut rng).unwrap();
-    let (t1, a) = (tid(1), ak("/big"));
+    let (t1, a) = (tid(1), ak("big.0"));
     let elems = t.table(&t1, &a, 0).unwrap().unwrap();
     let dots = t.table(&t1, &a, 1).unwrap().unwrap();
     assert_eq!(t.table_len(elems).unwrap(), 4000);
@@ -61,7 +61,7 @@ fn stream_and_positions() {
     let mut s = create(&dev, &mut rng);
     fill(&mut s, &mut rng, 1500, 1500);
     let mut t = s.transaction(&mut rng).unwrap();
-    let elems = t.table(&tid(1), &ak("/big"), 0).unwrap().unwrap();
+    let elems = t.table(&tid(1), &ak("big.0"), 0).unwrap().unwrap();
     let mut from = Vec::new();
     let mut seen = 0u32;
     loop {
@@ -84,7 +84,7 @@ fn stream_and_positions() {
     let bounded = t.table_range(elems, b"key00000005", Some(b"key00000012"), 100).unwrap();
     assert_eq!(bounded.len(), 6);
     // Dropping the aspect drops every page of both tables.
-    t.drop_aspect(&tid(1), &ak("/big")).unwrap();
+    t.drop_aspect(&tid(1), &ak("big.0")).unwrap();
     t.commit().unwrap();
     let units = dev.backend.dump().iter().filter(|(k, _)| k[0] == b'u').count();
     assert!(units <= 3, "{units} unit rows left (catalog)");
@@ -108,7 +108,7 @@ fn million_keys() {
         let before = b.dump();
         let t1 = std::time::Instant::now();
         let mut t = s.transaction(&mut rng).unwrap();
-        let elems = t.table(&tid(1), &ak("/big"), 0).unwrap().unwrap();
+        let elems = t.table(&tid(1), &ak("big.0"), 0).unwrap().unwrap();
         assert_eq!(t.table_len(elems).unwrap(), u64::from(n));
         let key = format!("key{:08}", n / 2);
         t.table_put(elems, key.as_bytes(), b"edited".to_vec(), Shred::Yes).unwrap();

@@ -16,7 +16,7 @@ use crate::types::{Edge, Point, Tenure};
 use osis_base::{Role, Tid, Ts};
 use std::collections::BTreeMap;
 
-/// The `/members` and `/tenures` state a roster snapshot of a thing carries.
+/// The `roles.0` and `tenures.0` state a roster snapshot of a thing carries.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct RosterState {
     pub roster: BTreeMap<Tid, Edge>,

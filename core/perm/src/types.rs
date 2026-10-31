@@ -23,7 +23,7 @@ impl Point {
     }
 }
 
-/// A `/members` edge value (spec/data-model.md §9 `edge`).
+/// A `roles.0` edge value (spec/data-model.md §9 `edge`).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Edge {
     pub role: Role,
@@ -37,7 +37,7 @@ pub struct Edge {
     pub tied: Option<Tie>,
 }
 
-/// The `/group` element a tied edge names (spec/permissions.md §2): its creation stamp (`ts`,
+/// The `group.0` element a tied edge names (spec/permissions.md §2): its creation stamp (`ts`,
 /// dot source, counter, spec/crdt.md §2) and the set it is in.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Tie {
@@ -126,14 +126,14 @@ impl Frontier {
     }
 }
 
-/// One `/members` edge write of a role commit: the edge of `holder` on `target`, `None`
+/// One `roles.0` edge write of a role commit: the edge of `holder` on `target`, `None`
 /// for a removal.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct EdgeOp {
     pub target: Tid,
     pub holder: Tid,
     pub edge: Option<Edge>,
-    /// The commit's dots on `(target, /members)`.
+    /// The commit's dots on `(target, roles.0)`.
     pub dots: Dots,
 }
 
@@ -184,7 +184,7 @@ pub struct Tenure {
     pub frontier: Option<Arc<Frontier>>,
 }
 
-/// A roster snapshot of `thing` (spec/permissions.md §6): its `/members` and `/tenures` state.
+/// A roster snapshot of `thing` (spec/permissions.md §6): its `roles.0` and `tenures.0` state.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RosterSnapshot {
     pub id: CommitId,
@@ -192,7 +192,7 @@ pub struct RosterSnapshot {
     pub author: Tid,
     pub actor: Tid,
     pub thing: Tid,
-    /// The commit's dots on `(thing, /members)`.
+    /// The commit's dots on `(thing, roles.0)`.
     pub dots: Dots,
     pub roster: BTreeMap<Tid, Edge>,
     pub ledger: Vec<Tenure>,
@@ -203,8 +203,8 @@ impl RosterSnapshot {
         Point { ts: self.ts, node: self.author, commit: self.id }
     }
 
-    /// `RoleCommit::same_input` for a roster snapshot (its `/tenures` part may arrive
-    /// after its `/members` part).
+    /// `RoleCommit::same_input` for a roster snapshot (its `tenures.0` part may arrive
+    /// after its `roles.0` part).
     pub(crate) fn same_input(&self, o: &RosterSnapshot) -> bool {
         (self.id, self.ts, self.author, self.actor, self.thing, self.dots, &self.roster) == (o.id, o.ts, o.author, o.actor, o.thing, o.dots, &o.roster)
             && self.ledger.len() == o.ledger.len()
@@ -227,8 +227,8 @@ impl WriteId {
     }
 }
 
-/// The `/members` AK.
-pub const MEMBERS: &str = "/members";
+/// The `roles.0` AK.
+pub const ROLES: &str = "roles.0";
 
 /// Sets `k` to `v` in `m` (`None`: removes it); the value before.
 pub(crate) fn put<K: Ord, V>(m: &mut std::collections::BTreeMap<K, V>, k: K, v: Option<V>) -> Option<V> {

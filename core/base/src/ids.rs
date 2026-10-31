@@ -147,29 +147,169 @@ impl CreationRecord {
     }
 }
 
-/// Aspect key: `/seg/seg...`, non-empty segments; one segment is a core aspect (spec/data-model.md §2).
+/// Where an aspect's writes live (notes/ephemeral.md Model): durable commits, or in memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum Lifetime {
+    #[default]
+    Durable,
+    /// A value held in memory.
+    Ephemeral,
+    /// A write with no lasting value: delivered to callbacks, never in state.
+    Signal,
+}
+
+impl Lifetime {
+    pub fn is_durable(self) -> bool {
+        self == Lifetime::Durable
+    }
+}
+
+/// Aspect key (spec/data-model.md §2): name segments `[a-z_][a-z0-9_]*` joined by `:`, after an
+/// optional leading `:<tid>` segment; then `.N`, the aspect version; then the markers `^`
+/// (admin-only) and at most one of `~` (ephemeral) or `*` (signal): `name.0`,
+/// `contact:names.0`, `:<tid>:foo.1^~`.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Ak(String);
+
+/// Byte offsets and fields of a valid AK.
+#[derive(Clone, Copy)]
+struct Parsed {
+    /// Start of the name segments: 0, or after the tid segment.
+    names: usize,
+    /// The `.` before the version.
+    dot: usize,
+    version: u64,
+    admin: bool,
+    lifetime: Lifetime,
+}
+
+const fn name_start(c: u8) -> bool {
+    c.is_ascii_lowercase() || c == b'_'
+}
+
+/// The grammar of [`Ak`]; `const` so key constants are checked at build time ([`Ak::check`]).
+const fn parse(s: &[u8]) -> Option<Parsed> {
+    if s.len() > MAX_AK_BYTES {
+        return None;
+    }
+    let mut rest = s;
+    let mut names = 0;
+    if let [b':', tail @ ..] = rest {
+        let mut t = tail;
+        let mut n = 0;
+        while n < TID_TEXT_LEN {
+            match t {
+                [c, r @ ..] if c.is_ascii_alphanumeric() || *c == b'-' || *c == b'_' => t = r,
+                _ => return None,
+            }
+            n += 1;
+        }
+        let [b':', r @ ..] = t else { return None };
+        rest = r;
+        names = TID_TEXT_LEN + 2;
+    }
+    loop {
+        match rest {
+            [c, r @ ..] if name_start(*c) => rest = r,
+            _ => return None,
+        }
+        while let [c, r @ ..] = rest {
+            if !(name_start(*c) || c.is_ascii_digit()) {
+                break;
+            }
+            rest = r;
+        }
+        match rest {
+            [b':', r @ ..] => rest = r,
+            _ => break,
+        }
+    }
+    let [b'.', r @ ..] = rest else { return None };
+    let dot = s.len() - rest.len();
+    rest = r;
+    // the version: decimal, no leading zero
+    let mut version: u64 = 0;
+    let mut digits = 0;
+    while let [c, r @ ..] = rest {
+        if !c.is_ascii_digit() || (digits == 1 && version == 0) {
+            break;
+        }
+        version = match version.checked_mul(10) {
+            Some(v) => match v.checked_add((*c - b'0') as u64) {
+                Some(v) => v,
+                None => return None,
+            },
+            None => return None,
+        };
+        digits += 1;
+        rest = r;
+    }
+    if digits == 0 {
+        return None;
+    }
+    let mut admin = false;
+    if let [b'^', r @ ..] = rest {
+        admin = true;
+        rest = r;
+    }
+    let lifetime = match rest {
+        [] => Lifetime::Durable,
+        [b'~'] => Lifetime::Ephemeral,
+        [b'*'] => Lifetime::Signal,
+        _ => return None,
+    };
+    Some(Parsed { names, dot, version, admin, lifetime })
+}
 
 impl Ak {
     pub fn new(s: impl Into<String>) -> Result<Ak, AkError> {
         let s = s.into();
-        let rest = s.strip_prefix('/').ok_or(AkError)?;
-        if s.len() > MAX_AK_BYTES || rest.split('/').any(str::is_empty) {
-            return Err(AkError);
+        match parse(s.as_bytes()) {
+            Some(_) => Ok(Ak(s)),
+            None => Err(AkError),
         }
-        Ok(Ak(s))
+    }
+    /// `s` if it is a valid AK, else a panic: at build time in a `const` (key constants).
+    pub const fn check(s: &'static str) -> &'static str {
+        assert!(parse(s.as_bytes()).is_some(), "invalid aspect key");
+        s
     }
     pub fn as_str(&self) -> &str {
         &self.0
     }
-    /// One segment: belongs to the core schema.
-    pub fn is_core(&self) -> bool {
-        !self.0.get(1..).unwrap_or("").contains('/')
+    fn parsed(&self) -> Parsed {
+        // only `MIN` fails to parse: it reads as no segments, version 0, no markers
+        parse(self.0.as_bytes()).unwrap_or(Parsed { names: 0, dot: 0, version: 0, admin: false, lifetime: Lifetime::Durable })
     }
-    /// First segment (the schema maintainer's namespace for app AKs).
-    pub fn namespace(&self) -> &str {
-        self.0.get(1..).unwrap_or("").split('/').next().unwrap_or("")
+    /// The name segments (the tid segment is [`Ak::tid`]).
+    pub fn segments(&self) -> impl Iterator<Item = &str> {
+        let p = self.parsed();
+        self.0.get(p.names..p.dot).unwrap_or("").split(':').filter(|s| !s.is_empty())
+    }
+    /// The aspect version, `N` of `.N`.
+    pub fn version(&self) -> u64 {
+        self.parsed().version
+    }
+    /// The leading tid segment, if any.
+    pub fn tid(&self) -> Option<Tid> {
+        if self.parsed().names == 0 {
+            return None;
+        }
+        self.0.get(1..=TID_TEXT_LEN).and_then(|t| Tid::parse(t).ok())
+    }
+    /// The `^` marker: admin-only.
+    pub fn admin(&self) -> bool {
+        self.parsed().admin
+    }
+    /// The lifetime marker: none durable, `~` ephemeral, `*` signal.
+    pub fn lifetime(&self) -> Lifetime {
+        self.parsed().lifetime
+    }
+    /// Whether this key is a later version of `other`: the same tid and name segments, a higher
+    /// version, any markers (spec/data-model.md §2).
+    pub fn successor_of(&self, other: &Ak) -> bool {
+        let (p, q) = (self.parsed(), other.parsed());
+        self.0.get(..p.dot) == other.0.get(..q.dot) && p.version > q.version
     }
     /// Sorts before every key, valid none: the start of a range over one thing's aspects.
     pub const MIN: Ak = Ak(String::new());
@@ -325,17 +465,43 @@ mod tests {
         assert_eq!(with(&|m| { m.insert(Value::Int(3), Value::Tid(owner)); m.insert(Value::Int(4), Value::Int(0)); }), None);
     }
 
-    // spec/data-model.md §2: AKs are slash-prefixed, slash-separated; one segment = core.
+    // spec/data-model.md §2: the AK grammar and its accessors.
     #[test]
     fn ak_rules() {
-        let a = Ak::new("/note/body").unwrap();
-        assert!(!a.is_core());
-        assert_eq!(a.namespace(), "note");
-        assert!(Ak::new("/members").unwrap().is_core());
-        for bad in ["", "/", "note", "/note/", "//x", "/a//b"] {
+        let a = Ak::new("note:body.0").unwrap();
+        assert_eq!(a.segments().collect::<Vec<_>>(), ["note", "body"]);
+        assert_eq!((a.version(), a.tid(), a.admin(), a.lifetime()), (0, None, false, Lifetime::Durable));
+        let t = Tid::from_bytes([7; 15]);
+        let b = Ak::new(format!(":{t}:a_1:b.12^~")).unwrap();
+        assert_eq!(b.segments().collect::<Vec<_>>(), ["a_1", "b"]);
+        assert_eq!((b.version(), b.tid(), b.admin(), b.lifetime()), (12, Some(t), true, Lifetime::Ephemeral));
+        assert_eq!(Ak::new("roles.0").unwrap().segments().count(), 1);
+        assert_eq!(Ak::new("x.3*").unwrap().lifetime(), Lifetime::Signal);
+        assert!(Ak::new("note:body.1").unwrap().successor_of(&a));
+        assert!(Ak::new("note:body.1~").unwrap().successor_of(&a));
+        assert!(!a.successor_of(&a) && !Ak::new("note:bod.1").unwrap().successor_of(&a) && !Ak::new(format!(":{t}:note:body.1")).unwrap().successor_of(&a));
+        let max = format!("x.{}", u64::MAX);
+        assert_eq!(Ak::new(max).unwrap().version(), u64::MAX);
+        for bad in [
+            "", "x", "x.", ".0", "/x.0", "x.00", "x.01", "x.-1", "X.0", "1x.0", "x:.0", ":x.0", "x::y.0", "x-y.0", "x.0~^", "x.0~*", "x.0^^",
+            "x.0 ", "x.0.0", "x.18446744073709551616", "x:Y.0", ":AAAAAAAAAAAAAAAAAAAA.0", ":AAAAAAAAAAAAAAAAAAA:x.0", ":AAAAAAAAAAAAAAAAAAA=:x.0",
+        ] {
             assert_eq!(Ak::new(bad), Err(AkError), "{bad}");
         }
-        assert!(Ak::new(format!("/{}", "a".repeat(MAX_AK_BYTES))).is_err());
+        assert!(Ak::new(":AAAAAAAAAAAAAAAAAAAA:x.0").is_ok());
+        assert!(Ak::new(format!("{}.0", "a".repeat(MAX_AK_BYTES - 2))).is_ok());
+        assert!(Ak::new(format!("{}.0", "a".repeat(MAX_AK_BYTES - 1))).is_err());
+        assert_eq!(Ak::MIN.segments().count(), 0);
+    }
+
+    // A key constant is checked at build time: `Ak::check` is a `const fn` panicking on a
+    // non-AK, and every `Aspect::new` constant evaluates it.
+    const CHECKED: &str = Ak::check("note:body.0^~");
+    #[test]
+    #[should_panic(expected = "invalid aspect key")]
+    fn ak_check_rejects() {
+        assert_eq!(CHECKED, "note:body.0^~");
+        let _ = Ak::check(std::hint::black_box("/note/body"));
     }
 
     #[test]

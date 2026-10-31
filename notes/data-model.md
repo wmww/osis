@@ -1,5 +1,5 @@
 # Data model and serialization: rationale
-> Summary: Why spec/data-model.md looks the way it does (tids, CBOR profile, large values, AK namespaces, groups), the schema DSL as implemented in osis-schema, storage layering, rejected options. Mostly owner decisions; shapes of `any` and the core aspects' types are proposals.
+> Summary: Why spec/data-model.md looks the way it does (tids, CBOR profile, large values, AK grammar, groups), the schema DSL as implemented in osis-schema, storage layering, rejected options. Mostly owner decisions; shapes of `any` and the core aspects' types are proposals.
 
 ## Tids
 - Self-certifying tids bind a thing to its first owner so nobody can publish a competing creation. The nonce keeps a bare tid from revealing its owner and seeds the dedup secret. References stay bare tids; the record is checked only when the thing's data arrives.
@@ -32,13 +32,17 @@
 ## Wire choices (spec/wire.md)
 - Tags 1616-1619 sit in the IANA registry's unassigned 1401-18299 block (checked against the registry); every tag >= 256 costs a 3-byte head, so no cheaper choice existed in the allowed range. Registering them is optional.
 - Core schema ID is 16 zero bytes: well known, and no randomly minted ID collides with it.
-- The creation record is a struct value so `/created` stores exactly the hashed bytes. Link and recovery keys derive their nonce from the seed, so the link or card alone names the key actor's tid.
+- The creation record is a struct value so `created.0` stores exactly the hashed bytes. Link and recovery keys derive their nonce from the seed, so the link or card alone names the key actor's tid.
 - Tree-node content hashes cover their children's hashes, not the bytes below: an edit rehashes one path (O(change)), while covered-bytes hashing rehashes up to the whole value per level. The root stays a function of the value's bytes, so equality by content holds. Nodes close on a content-hash byte (prolly-tree style) so an insert does not shift every later node.
 - `MAX_BLOB / CHUNK_THRESHOLD = 64`: 128 KiB keeps ordinary documents inline; 8 MiB blobs fit one protocol message and browser memory.
 - Value depth 64, any object 512: bounds decoder recursion; deeper app values are refused at write.
 
-## AK namespaces
-No registry exists, so namespace collisions between schemas are detected (schema ID in headers), never prevented; until detected their writes merge like concurrent writes (spec/requirements.md, Versioning). Pick namespaces unlikely to collide (app or org name).
+## AKs
+- Grammar: spec/data-model.md §2 (owner decisions, round 13). A string on the wire, readable in diagnostics, whose structure is a grammar; markers are positional reserved characters, never substrings; one spelling per key (`.0` always written, no leading zeros, fixed marker order). The version is a standard, not a codegen convention: same tid and name segments with a higher version is the successor, usable without any schema.
+- Collisions: no registry. First-party AKs live in this repo (`contact:names.0`); other apps' start with a tid their maker owns. A collision is detected (schema ID in headers), never prevented; until detected the writes merge like concurrent writes (spec/requirements.md, Versioning).
+- Codegen is the one writer of the strings: app code uses generated constants, each checked at build time (`Aspect::new` calls the `const fn` `Ak::check`).
+- Markers today: `~`/`*` must match the schema's lifetime flag (validation); untyped keys carry them by convention (the tests' ephemeral and signal keys do), nothing checks them; `^` parses and carries no rule. Step 7 of issues/one-node-kind.md makes the marker decide.
+- Generated constant names: the AK's name segments joined by `_`, upper-cased, the first dropped when every key of the schema shares it, `_V<n>` appended for a version above 0 (`note:last_opened.0` -> `LAST_OPENED`).
 
 ## Groups
 Example: spreadsheet thing = group of two axis things, each a group of row/column things, each a group of cells (each cell in two groups). Nothing is in a group by being owned (owner): apps place things explicitly (spec/requirements.md, Offline and network).
@@ -60,17 +64,18 @@ type task = struct {
 };
 type tagged<T> = struct { 0 label: string, 1 value: T };
 
-aspect /note/body: markdown [indexed];
-aspect /note/last_opened: timestamp [expires: 30d];
-aspect /note/pinned: map<tid, tagged<int>> [by: writer, keep_at_most: 0s];
-aspect /note/title2: string succeeds /note/title;
-aspect /note/typing: struct { 0 who: tid, 1 at: timestamp } [signal];
+aspect note:body.0: markdown [indexed];
+aspect note:last_opened.0: timestamp [expires: 30d];
+aspect note:pinned.0: map<tid, tagged<int>> [by: writer, keep_at_most: 0s];
+aspect note:title.1: text succeeds note:title.0;
+aspect note:typing.0*: struct { 0 who: tid, 1 at: timestamp } [signal];
 ```
+- AKs (after `aspect` and `succeeds`) are written as on the wire (`contact:names.0`, `note:typing.0*`); the lexer reads one where a name or `:` run reaches `.` and a digit, the validation checks its grammar.
 - Aspect attributes: flags `ro`, `synthetic`, `guaranteed`, `indexed`; `by: nobody|admin|author|writer` (default `author`); `keep_at_least:`/`keep_at_most:` a duration (relative, after replaced) and/or `abs <wall ms>`; `expires: <duration>`. Durations `250ms`, `10s`, `5m`, `12h`, `30d`. Trailing commas everywhere.
 - Default literals: numbers, strings, `0x` bytes, `true`/`false`, case names with optional `(payload)`, `[..]` for lists and sets, `{k: v}` for maps and structs (fields by name or ID; omitted fields take their defaults). A tid default is its text form.
-- Validation: names resolve with the right arity; IDs unique, never both declared and reserved; `succeeds` names an ID of the same struct/enum; wrappers (`counter`/`max`/`min` of int or float only, `text`, `markdown`) never inside set elements or map keys (also through named and parametric types); named types must reach a structure (`type a = a;` fails); defaults typed; core AKs (one segment) only in the core schema (ID 0); a relative `keep_at_most` needs `by: writer`.
+- Validation: names resolve with the right arity; IDs unique, never both declared and reserved; `succeeds` names an ID of the same struct/enum; wrappers (`counter`/`max`/`min` of int or float only, `text`, `markdown`) never inside set elements or map keys (also through named and parametric types); named types must reach a structure (`type a = a;` fails); defaults typed; core AKs (one name segment, no tid) only in the core schema (ID 0); lifetime markers match the flags; a relative `keep_at_most` needs `by: writer`.
 - Schema value (spec/data-model.md §10): every field written, `none` included, docs included; the meta-schema is `core/schema/schemas/meta.osis` (local ID `ff..ff`, never written anywhere). Lock files hold the canonical bytes so the checker can compare; the codegen bin publishes them.
-- `creation` is the one struct the type system cannot express (fields 0 and 1 exclusive): typed keys read `/created` through `CreationRecord` (`Codec::CHECKS_ITSELF`).
+- `creation` is the one struct the type system cannot express (fields 0 and 1 exclusive): typed keys read `created.0` through `CreationRecord` (`Codec::CHECKS_ITSELF`).
 
 ## Storage
 Multiple backends (in-memory, sqlite, ...). Storage API kept simple; sync, conflict resolution and listeners live above it. Backends hold ciphertext only (notes/local-store.md).

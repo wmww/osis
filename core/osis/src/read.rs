@@ -54,11 +54,11 @@ fn stamp(c: osis_node::Creation) -> Stamp {
 /// The groups a thing is in (`Osis::groups_of`), each list in tid order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GroupsOf {
-    /// Groups whose `/group` lists it as an item.
+    /// Groups whose `group.0` lists it as an item.
     pub item_of: Vec<Tid>,
-    /// Groups whose `/group` lists it as a subgroup (its items count as theirs).
+    /// Groups whose `group.0` lists it as a subgroup (its items count as theirs).
     pub subgroup_of: Vec<Tid>,
-    /// Every group holding it as an item, directly or through subgroup lists (`/groups`,
+    /// Every group holding it as an item, directly or through subgroup lists (`groups.0`,
     /// spec/data-model.md §8): what sync follows for its own aspects. Not the groups it is
     /// only a subgroup of.
     pub within: Vec<Tid>,
@@ -193,7 +193,7 @@ impl Reader<'_> {
     }
 
     /// The groups the thing is in: those listing it as an item or as a subgroup, and every
-    /// group holding it transitively. `/group` and `/placed`, local indexes only.
+    /// group holding it transitively. `group.0` and `placed.0~`, local indexes only.
     pub fn groups_of(&self, tid: Tid) -> GroupsOf {
         let t = self.resolve(tid);
         let (items, subs) = self.e.listed_in(&t);
@@ -231,16 +231,16 @@ impl Reader<'_> {
         self.e.owner(&self.resolve(tid)).map(|o| self.resolve(o))
     }
 
-    /// When the thing was created: the oldest valid commit carrying its `/created` that is no
+    /// When the thing was created: the oldest valid commit carrying its `created.0` that is no
     /// snapshot (an ephemeral thing's batch, `commit: None`); `None` while it is unknown or
-    /// only a snapshot carrying its `/created` is here. Follows moves: a moved thing reports
+    /// only a snapshot carrying its `created.0` is here. Follows moves: a moved thing reports
     /// its copy's creation, the move.
     pub fn created(&self, tid: Tid) -> Option<Stamp> {
         self.e.creation(&self.resolve(tid)).map(stamp)
     }
 
     /// When the thing's content last changed: of the held changes, reverts and imports
-    /// writing its aspects (not `/created`, `/group` or role-class ones: placement and
+    /// writing its aspects (not `created.0`, `group.0` or role-class ones: placement and
     /// sharing are no content change; not ephemeral writes), the one with the latest
     /// `shown()`, else its creation. A delete is a change. A change known here only from a
     /// snapshot is not seen (notes/api.md Attribution). Follows moves.

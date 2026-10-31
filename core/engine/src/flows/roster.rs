@@ -1,6 +1,6 @@
 //! Roster snapshots (spec/permissions.md §6): by owner-chain authority, the roster with `since`
 //! and the tenure ledger as perm's timeline computes them (`Timeline::roster_state`); policy:
-//! due once the thing's held `/members` deltas pass `ROSTER_SNAPSHOT_AFTER`. The writer splits
+//! due once the thing's held `roles.0` deltas pass `ROSTER_SNAPSHOT_AFTER`. The writer splits
 //! the replace into one reset-plus-state delta per edge and per ledger entry (spec/commits.md
 //! §2) and links frontiers above `CHUNK_THRESHOLD`; certificate copies carry the chain's deltas.
 
@@ -12,7 +12,7 @@ use osis_base::{CommitId, Tid};
 use osis_schema::Chunked;
 use osis_schema::core_types::{self as ct, EdgeKey, Holders, Tenures};
 
-/// Held `/members` deltas of a thing after which a roster snapshot is due (local policy).
+/// Held `roles.0` deltas of a thing after which a roster snapshot is due (local policy).
 pub const ROSTER_SNAPSHOT_AFTER: usize = 64;
 
 fn key(k: osis_perm::Point) -> EdgeKey {
@@ -28,7 +28,7 @@ impl Engine {
     /// may write it.
     pub fn roster_snapshot_due(&self, thing: &Tid, signer: Option<&Tid>) -> bool {
         let who = signer.copied().unwrap_or(self.tid());
-        let Ok(holders) = ak("/members") else { return false };
+        let Ok(holders) = ak("roles.0") else { return false };
         let n = self.core.ix.by_aspect.get(&(*thing, holders)).map_or(0, |s| s.len());
         let ts = super::now_ts(&self.core);
         n > ROSTER_SNAPSHOT_AFTER && self.core.timelines.get(thing).is_some_and(|tl| tl.may_roster_snapshot(&who, thing, ts))
@@ -83,7 +83,7 @@ impl Engine {
             return Err(Error::Misuse("the ledger's frontiers exceed MAX_LINKED_FRONTIERS"));
         }
         let mut m = Mutation::new();
-        m.replace(t, &ct::MEMBERS, &roster)?;
+        m.replace(t, &ct::ROLES, &roster)?;
         m.replace(t, &ct::TENURES, &ledger)?;
         m.roster = true;
         if let Some(s) = signer {

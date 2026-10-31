@@ -17,13 +17,13 @@ fn s(x: &str) -> Value {
 fn item(db: &Osis, owner: Tid, g: Tid, v: &str) -> Tid {
     let mut w = db.write();
     let t = w.create_in(owner, &[g]).unwrap();
-    w.at(t, ak("/t/x")).set(&s(v)).unwrap();
+    w.at(t, ak("t:x.0")).set(&s(v)).unwrap();
     w.commit().unwrap();
     t
 }
 
 fn x(db: &Osis, t: Tid) -> Option<Value> {
-    db.get(t, ak("/t/x")).unwrap()
+    db.get(t, ak("t:x.0")).unwrap()
 }
 
 fn group(db: &Osis) -> Tid {

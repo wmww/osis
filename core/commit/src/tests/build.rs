@@ -24,7 +24,7 @@ pub(crate) fn content(n: usize) -> CommitBuilder {
     for i in 0..n {
         let d = register_delta(t(1), at, 1, &format!("v{i}"));
         let tid = Tid::from_bytes([(i % 251) as u8, (i / 251) as u8, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]);
-        b.aspects.push(AspectWrite::new(tid, Ak::new("/app/title").unwrap(), 1, 2, d));
+        b.aspects.push(AspectWrite::new(tid, Ak::new("app:title.0").unwrap(), 1, 2, d));
     }
     b
 }
@@ -59,7 +59,7 @@ fn build_content() {
 fn build_role_commit_and_refusals() {
     let at = ts(1_000_000);
     let mut b = CommitBuilder::new(Kind::Role, at, t(1), t(2), Form::Commit);
-    let mut a = AspectWrite::new(t(3), Ak::new("/members").unwrap(), 1, 2, register_delta(t(1), at, 1, "a"));
+    let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, register_delta(t(1), at, 1, "a"));
     a.deltas.push(register_delta(t(1), at, 1, "b"));
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
@@ -73,7 +73,7 @@ fn build_role_commit_and_refusals() {
     assert!(matches!(build(bad, &mut sink), Err(Error::Build(_))));
     let mut p = content(1);
     p.aspects[0].expires = Some(at.wall_ms().0 + 10);
-    p.purge.push(PurgeItem::Aspect { tid: t(9), ak: Ak::new("/app/title").unwrap() });
+    p.purge.push(PurgeItem::Aspect { tid: t(9), ak: Ak::new("app:title.0").unwrap() });
     assert!(matches!(build(p.clone(), &mut sink), Err(Error::Build(_))));
     p.aspects[0].expires = None;
     let built = build(p, &mut sink).unwrap();
@@ -135,7 +135,7 @@ fn mixed() -> CommitBlob {
     for (i, a) in b.aspects.iter_mut().enumerate() {
         // one thing, so the key sets differ only by retention
         a.tid = t(3);
-        a.ak = Ak::new(format!("/app/f{i}")).unwrap();
+        a.ak = Ak::new(format!("app:f{i}.0")).unwrap();
         if i % 2 == 1 {
             a.retention = Retention { by: PurgeBy::Writer, ..Default::default() };
         }
@@ -185,7 +185,7 @@ fn projection_splits_by_size() {
     let at = ts(1_000_000);
     let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), Form::Node);
     for i in 0..4u8 {
-        b.aspects.push(AspectWrite::new(t(3), Ak::new(format!("/app/f{i}")).unwrap(), 1, 2, big_delta(t(1), at, 3 << 20)));
+        b.aspects.push(AspectWrite::new(t(3), Ak::new(format!("app:f{i}.0")).unwrap(), 1, 2, big_delta(t(1), at, 3 << 20)));
     }
     let c = build(b, &mut MemoryBlobs::default()).unwrap().commit;
     let ps = project(&c, |_| ()).unwrap();
@@ -194,7 +194,7 @@ fn projection_splits_by_size() {
         assert!(p.plaintext.len() < MAX_BLOB);
     }
     let mut huge = CommitBuilder::new(Kind::Content, at, t(1), t(2), Form::Node);
-    huge.aspects.push(AspectWrite::new(t(3), Ak::new("/app/f").unwrap(), 1, 2, big_delta(t(1), at, MAX_BLOB)));
+    huge.aspects.push(AspectWrite::new(t(3), Ak::new("app:f.0").unwrap(), 1, 2, big_delta(t(1), at, MAX_BLOB)));
     assert!(matches!(build(huge, &mut MemoryBlobs::default()), Err(Error::Build(_))));
 }
 
@@ -246,7 +246,7 @@ fn wide_struct_delta_fits_spec_commits_1() {
     let attempt = |delta: Vec<u8>| {
         let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), Form::Node);
         b.max_blob = max_blob;
-        b.aspects.push(AspectWrite::new(t(3), Ak::new("/app/w").unwrap(), 1, hi, delta));
+        b.aspects.push(AspectWrite::new(t(3), Ak::new("app:w.0").unwrap(), 1, hi, delta));
         build(b, &mut MemoryBlobs::default())
     };
     let paged = enc(small);
@@ -282,7 +282,7 @@ fn build_import() {
     let fragment = create(&mut w, &AnyView, &Value::Str("moved".into())).unwrap();
     let d = encode_delta(&Delta { nonce: [2; 16], fragment }, &writer_ctx(Kind::Import, at, t(1), 0, 0), None).unwrap();
     let mut b = CommitBuilder::new(Kind::Import, at, t(1), t(2), Form::Node);
-    let mut a = AspectWrite::new(t(3), Ak::new("/app/title").unwrap(), 0, 0, d);
+    let mut a = AspectWrite::new(t(3), Ak::new("app:title.0").unwrap(), 0, 0, d);
     a.retention = Retention { by: PurgeBy::Writer, ..Default::default() };
     b.aspects.push(a);
     b.origins.push(Origin { commit: origin, author: t(5), actor: t(6), ts: ots });

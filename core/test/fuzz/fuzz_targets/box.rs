@@ -1,5 +1,5 @@
 //! Box and wrap openers (spec/wire.md §7, spec/crypto.md §4–§6) on attacker bytes under fixed
-//! keys, plus the `/secrets` and `/keys` value decoders: never panic.
+//! keys, plus the `secrets.0` and `keys.0` value decoders: never panic.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

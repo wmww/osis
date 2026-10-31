@@ -31,7 +31,7 @@ fn admin_edge() -> Edge {
     Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None }
 }
 
-/// A key actor's `/keys`: its KEM key (spec/crypto.md §3).
+/// A key actor's `keys.0`: its KEM key (spec/crypto.md §3).
 pub(crate) fn key_actor_keys(m: &mut Mutation, t: Tid, keys: &KeyActorKeys) -> Result<()> {
     let k = Keys { key: Some(KemKey::X25519MlKem768(keys.kem.public().as_bytes().to_vec())), ..Default::default() };
     m.set(t, &ct::KEYS, &k)?;
@@ -40,8 +40,8 @@ pub(crate) fn key_actor_keys(m: &mut Mutation, t: Tid, keys: &KeyActorKeys) -> R
 
 impl Engine {
     /// Creates a person actor (spec/permissions.md §1): a fresh recovery key owns it; in one
-    /// commit signed by that key: both creation records, the key's `/keys`, the person's
-    /// secrets of its own (boxed to the key and to this node), its `/keys` with inbox (its home
+    /// commit signed by that key: both creation records, the key's `keys.0`, the person's
+    /// secrets of its own (boxed to the key and to this node), its `keys.0` with inbox (its home
     /// label) and deposit seed, the home label's genesis step on `hosts` (the key listed by
     /// static entry) and this node's admin edge. The seed leaves only in the card.
     pub fn create_person(&mut self, hosts: &[Address]) -> Result<(Person, Done)> {
@@ -57,10 +57,10 @@ impl Engine {
     }
 
     /// Pairing, existing device side (spec/sync.md §2: the only way a node receives a grant):
-    /// `node`'s card (`/created`, `/keys`) was received over the direct connection. A device
+    /// `node`'s card (`created.0`, `keys.0`) was received over the direct connection. A device
     /// that is not a holder of `person` is granted admin; one that is (stranded, notes/sync.md
     /// Limits) is re-sealed. Returns the commits to send it directly: the grant or re-seal, the
-    /// person's certificates and its `/label` commits (a few KB plus the grant's boxes, whatever
+    /// person's certificates and its `label.0` commits (a few KB plus the grant's boxes, whatever
     /// the person holds: the new device downloads the rest under the home label).
     pub fn pair(&mut self, person: &Tid, node: &Tid) -> Result<Done> {
         let (p, n) = (*person, *node);
@@ -70,10 +70,10 @@ impl Engine {
         let holder = self.roster(&p).get(&n).is_some_and(|e| e.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())));
         let mut done = if holder { self.reshare(&p, &n)? } else { self.grant(&p, &n, &admin_edge())? };
         // the person's certificates (this node's card, the chain to the person and its edges)
-        // and its `/label` commits, never its content: the new device downloads the rest from
+        // and its `label.0` commits, never its content: the new device downloads the rest from
         // the home label
         let mut all: Vec<CommitId> = self.certificates(&p).into_keys().collect();
-        let label = osis_base::Ak::new("/label").map_err(|_| Error::Misuse("ak"))?;
+        let label = osis_base::Ak::new("label.0").map_err(|_| Error::Misuse("ak"))?;
         all.extend(self.core.ix.by_aspect.get(&(p, label)).into_iter().flatten().map(|(_, c)| *c));
         all.sort_by_key(|c| self.header(c).map(|h| h.ts));
         for d in &done.deliveries {
