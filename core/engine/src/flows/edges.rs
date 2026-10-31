@@ -246,8 +246,8 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         m.frontier(f);
     }
     // an explicit demotion carries the target's rotation of the roles the members left
-    let mut rot = None;
-    let mut unreached = Vec::new();
+    let mut rots: Vec<(Tid, osis_keys::Rotation)> = Vec::new();
+    let mut unreached: Vec<(Tid, Vec<Tid>)> = Vec::new();
     let new_role = d.new.as_ref().filter(|e| e.until.is_none_or(|u| u > ts.wall_ms())).map(|e| e.role);
     let mut left: BTreeSet<Role> = BTreeSet::new();
     for (x, o, n) in std::iter::once((member, old, new_role)).chain(gone.iter().map(|(x, e)| (*x, Some(*e), None))) {
@@ -265,12 +265,21 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
             let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
             let skip: Vec<(Tid, Option<Role>)> = std::iter::once((member, d.new.as_ref().map(|e| e.role))).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
             let members = rotation::recipients(tx, &target, &skip)?;
-            let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &members)?;
-            if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
-                rotation::fresh_deposit_seed(tx, &mut m, target)?;
+            let mut parts = vec![(target, roles.clone(), held, members)];
+            // a membership cycle through the target rotates with it (spec/permissions.md §3)
+            for (v, rs) in rotation::cycle_partners(tx.core, &who, &target, &roles) {
+                let held = tx.core.epochs(&v).ok_or(Error::Misuse("no secrets held for a cycle actor"))?;
+                let members = rotation::recipients(tx, &v, &[])?;
+                parts.push((v, rs, held, members));
             }
-            unreached = rotation::unreached(tx, &target, &r)?;
-            rot = Some(r);
+            let rs = rotation::rotations_into(tx, &mut m, &parts)?;
+            for ((v, roles, _, _), r) in parts.into_iter().zip(rs) {
+                if rotation::refreshes_deposit(tx.core, &who, &v, &roles) {
+                    rotation::fresh_deposit_seed(tx, &mut m, v)?;
+                }
+                unreached.push((v, rotation::unreached(tx, &v, &r)?));
+                rots.push((v, r));
+            }
         }
     }
     if let Some(s) = signer {
@@ -280,15 +289,17 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         m.unchecked();
     }
     let c = Engine::commit_tx(tx, m)?;
-    if let Some(r) = &rot {
-        rotation::record(tx, target, r)?;
+    for (v, r) in &rots {
+        rotation::record(tx, *v, r)?;
     }
     done.add(c);
     if let Some(c) = c {
         for x in std::iter::once(member).chain(gone.iter().map(|(x, _)| *x)) {
             done.deliveries.extend(deliver_parts(tx, x, c, &[target], Parts::Edge)?);
         }
-        done.deliveries.extend(rotation::deliver_rotation(tx, target, Some(c), &unreached)?);
+        for (v, to) in &unreached {
+            done.deliveries.extend(rotation::deliver_rotation(tx, *v, Some(c), to)?);
+        }
         // every label the removed parties could read: the target and what its roles open
         let graph = osis_keys::PermGraph { timeline: tx.core.timelines.get(&target).ok_or(Error::UnknownThing(target))?, at: At::now(ts), own_secrets: &|t: &Tid| tx.core.has_own_secrets(t) };
         let mut under: Vec<Tid> = osis_keys::reached(&graph, target, member).into_iter().collect();
