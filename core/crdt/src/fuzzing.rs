@@ -73,7 +73,7 @@ pub fn seq_follow_state() -> Fragment {
         st.join(d);
     }
     let cx = seq_follow_snap_cx();
-    let snap = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: st.clone(), frontiers: Default::default() };
+    let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: st.clone(), frontiers: Default::default() };
     encode_snapshot(&snap, &cx, None).and_then(|b| decode_snapshot(&b, &cx, &mut Interner::new(), None)).map_or(st, |s| s.fragment)
 }
 

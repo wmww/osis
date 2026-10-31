@@ -87,6 +87,7 @@ pub fn source(s: &crdt_model::stamp::Source) -> Source {
     use crdt_model::stamp::Source as S;
     match s {
         S::Node(b) => Source::node(Tid::from_bytes(*b)),
+        S::Session(b) => Source::session(crate::Session::from_bytes(b)),
         S::Commit(b) => Source::commit(CommitId(*b)),
         S::Derived(d) => Source::derived(dot(d)).unwrap(),
     }

@@ -66,7 +66,7 @@ impl Replica {
 /// `f` through a snapshot: deleted chars dropped, uniform stretches as range records (§3.3).
 fn rebooted(f: &Fragment) -> Fragment {
     let cx = crate::tests_wire::snap_cx();
-    let snap = crate::wire::Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Default::default() };
+    let snap = crate::wire::Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Default::default() };
     let bytes = crate::encode_snapshot(&snap, &cx, None).unwrap();
     crate::decode_snapshot(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment
 }
@@ -605,7 +605,7 @@ fn budget_big_text_spec_6() {
         let _ = bt.finish();
         big_batch.push(format!("{:?}", t.elapsed()));
     }
-    let snap = crate::wire::Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: a.state.clone(), frontiers: Default::default() };
+    let snap = crate::wire::Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: a.state.clone(), frontiers: Default::default() };
     let cx = DeltaCtx { ts: ts(1 << 40), own: node(9), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let mut pages = crate::MemoryPages::new();
     let t = Instant::now();
@@ -618,7 +618,7 @@ fn budget_big_text_spec_6() {
     // undelete of part of it and an insert anchored inside it split the record
     let gone = crate::cut_dots(&a.state, 30_000, 100).unwrap();
     a.commit(3000, &[op(Op::Delete { at: 30_000, len: 100 })], &text_view());
-    let snap = crate::wire::Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: a.state.clone(), frontiers: Default::default() };
+    let snap = crate::wire::Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: a.state.clone(), frontiers: Default::default() };
     let bytes = crate::encode_snapshot(&snap, &cx, Some(&mut pages)).unwrap();
     let mut boot = crate::decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut pages)).unwrap().fragment;
     let Fragment::Seq(full) = &a.state else { panic!() };

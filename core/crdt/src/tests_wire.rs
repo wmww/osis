@@ -24,9 +24,6 @@ pub(crate) fn snap_cx() -> DeltaCtx {
 /// and decodes back to itself under the writer's header; snapshots of the joined state likewise.
 fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
     let mut r = crate::testutil::rng(seed | 1);
-    // commit-form sources get an author (§8 `Authors`)
-    let mau: crdt_model::wire::Authors = sources.iter().filter_map(|s| if let MSource::Commit(c) = s { Some((*c, ([1; 15], 5u64 << 16))) } else { None }).collect();
-    let authors: BTreeMap<osis_base::CommitId, (osis_base::Tid, osis_base::Ts)> = mau.iter().map(|(c, (t, ts))| (osis_base::CommitId(*c), (osis_base::Tid::from_bytes(*t), osis_base::Ts::from_u64(*ts).unwrap()))).collect();
     let commits = history_with(&mut r, types, sources, 5);
     let mut state = None;
     for c in &commits {
@@ -43,17 +40,17 @@ fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
         let st = state.as_ref().unwrap();
         let mut fr = crdt_model::received::Received::default();
         fr.add(&c.w.source, 1, c.w.hi());
-        let mfr: Vec<(MSource, u64)> = fr.frontiers().into_iter().filter(|(s, _)| matches!(s, MSource::Node(_))).collect();
-        let msnap = crdt_model::wire::encode_snapshot_authors(st, &mfr, &mau, [3; 16], &mut Ctx::new(1 << 40, MSource::node(250), 1));
-        let frontiers = Frontiers(mfr.iter().map(|(s, c)| (source(s).as_node().unwrap(), *c)).collect());
-        let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers, authors: authors.clone() };
+        let mfr: Vec<(MSource, u64)> = fr.frontiers();
+        let msnap = crdt_model::wire::encode_snapshot(st, &mfr, [3; 16], &mut Ctx::new(1 << 40, MSource::node(250), 1));
+        let mut frontiers = Frontiers::default();
+        for (s, c) in &mfr {
+            assert!(frontiers.insert(&source(s), *c), "a node or session frontier");
+        }
+        let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers };
         let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
         assert_eq!(sbytes, msnap, "snapshot bytes equal the model's");
-        let mut back = decode_snapshot(&sbytes, &snap_cx(), &mut Interner::new(), None).unwrap();
+        let back = decode_snapshot(&sbytes, &snap_cx(), &mut Interner::new(), None).unwrap();
         crate::testutil::check_bound(&sbytes, &back.fragment);
-        // the authors of the sources the fragment holds, those of others not carried
-        assert!(back.authors.iter().all(|(c, v)| s.authors.get(c) == Some(v)));
-        back.authors = s.authors.clone();
         assert_eq!(back, s, "snapshot round trip");
     }
 }
@@ -63,6 +60,14 @@ proptest! {
     #[test]
     fn wire_matches_model_spec_3(seed in any::<u64>()) {
         let sources = (1..=3).map(MSource::node).collect();
+        wire_matches(seed, &[sink_no_seq()], sources);
+    }
+
+    /// §2.1, §2.2, §8: session sources (two sessions of one node and another node's) beside a
+    /// node source: 31-byte `Source`, order `Node` < `Session`, frontiers per session.
+    #[test]
+    fn wire_matches_model_sessions_spec_2_1(seed in any::<u64>()) {
+        let sources = vec![MSource::session(1, 0xf0), MSource::node(2), MSource::session(1, 0x10), MSource::session(3, 0x80)];
         wire_matches(seed, &[sink_no_seq()], sources);
     }
 
@@ -271,17 +276,26 @@ fn rejects_deep_values_spec_3_3() {
 #[test]
 fn snapshot_frontiers_spec_8() {
     let scx = DeltaCtx { ts: ts(9 << 16), own: Source::node(tid(2)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
-    let s = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: crate::Fragment::default(), frontiers: Frontiers(BTreeMap::from([(tid(5), 7), (tid(2), 3)])) };
+    let session = crate::Session { node: tid(5), nonce: [1; crate::SESSION_NONCE_LEN] };
+    let frontiers = Frontiers { nodes: BTreeMap::from([(tid(5), 7), (tid(2), 3)]), sessions: BTreeMap::from([(session, 4)]) };
+    let s = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: crate::Fragment::default(), frontiers };
     let b = encode_snapshot(&s, &scx, None).unwrap();
-    // own (Src 0) first; the frontier-only source last in Sources
+    // own (Src 0) first; the frontier-only sources last in Sources, a node before its session
     let back = decode_snapshot(&b, &scx, &mut Interner::new(), None).unwrap();
     assert_eq!(back, s);
     let top = osis_base::decode(&b, &osis_base::Limits::DEFAULT).unwrap();
     let Value::List(a) = top else { panic!() };
-    assert_eq!(a[4], l(vec![l(vec![i(0), i(3)]), l(vec![i(1), i(7)])]));
-    // a commit-form writer (own a commit) cannot be named by a frontier; a zero counter is refused
-    let bad = Snapshot { frontiers: Frontiers(BTreeMap::from([(tid(5), 0)])), ..s };
+    assert_eq!(a[1], l(vec![Value::Bytes(tid(5).as_bytes().to_vec()), Value::Bytes(session.to_bytes().to_vec())]));
+    assert_eq!(a[4], l(vec![l(vec![i(0), i(3)]), l(vec![i(1), i(7)]), l(vec![i(2), i(4)])]));
+    // a zero counter is refused
+    let bad = Snapshot { frontiers: Frontiers::of_nodes(BTreeMap::from([(tid(5), 0)])), ..s.clone() };
     assert!(encode_snapshot(&bad, &scx, None).is_err());
+    // a frontier naming a commit source is bad input
+    let mut a = a.clone();
+    a[1] = l(vec![Value::Bytes(vec![7; 32])]);
+    a[4] = l(vec![l(vec![i(1), i(4)])]);
+    let e = decode_snapshot(&osis_base::encode(&Value::List(a)), &scx, &mut Interner::new(), None).unwrap_err();
+    assert_eq!(e.class(), ErrorClass::BadInput, "{e}");
 }
 
 /// spec/crdt.md §3.2 (set elements), §3.3 rule 7, §5.5: a set element of a struct type is one

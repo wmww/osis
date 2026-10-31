@@ -154,16 +154,16 @@ impl Rec for osis_base::Ak {
 }
 impl Rec for osis_crdt::Frontiers {
     fn to(&self) -> Value {
-        Value::List(self.0.iter().map(|(t, c)| Value::List(vec![t.to(), Value::uint(*c)])).collect())
+        Value::List(self.sources().map(|(s, c)| Value::List(vec![s.to(), Value::uint(c)])).collect())
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(x) = v else { return None };
-        let mut out = std::collections::BTreeMap::new();
+        let mut out = osis_crdt::Frontiers::default();
         for e in x {
-            let (t, c) = <(Tid, usize) as Rec>::from(e)?;
-            out.insert(t, c as u64);
+            let (s, c) = <(osis_crdt::Source, usize) as Rec>::from(e)?;
+            out.insert(&s, c as u64).then_some(())?;
         }
-        Some(osis_crdt::Frontiers(out))
+        Some(out)
     }
 }
 impl<T: Rec> Rec for Vec<T> {
@@ -179,6 +179,7 @@ impl Rec for osis_crdt::Source {
     fn to(&self) -> Value {
         Value::Bytes(match self.kind() {
             osis_crdt::SourceKind::Node(t) => t.as_bytes().to_vec(),
+            osis_crdt::SourceKind::Session(s) => s.to_bytes().to_vec(),
             osis_crdt::SourceKind::Commit(c) => c.0.to_vec(),
             osis_crdt::SourceKind::Derived(_) => Vec::new(),
         })
@@ -187,6 +188,9 @@ impl Rec for osis_crdt::Source {
         let Value::Bytes(b) = v else { return None };
         if let Ok(t) = <[u8; 15]>::try_from(b.as_slice()) {
             return Some(osis_crdt::Source::node(Tid::from_bytes(t)));
+        }
+        if let Ok(s) = <[u8; 31]>::try_from(b.as_slice()) {
+            return Some(osis_crdt::Source::session(osis_crdt::Session::from_bytes(&s)));
         }
         Some(osis_crdt::Source::commit(CommitId(b.as_slice().try_into().ok()?)))
     }
@@ -464,9 +468,13 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
             w = w.u8(0);
             continue;
         };
-        w = w.u8(1).u32(fr.0.len() as u32);
-        for (n, c) in &fr.0 {
+        w = w.u8(1).u32(fr.nodes.len() as u32);
+        for (n, c) in &fr.nodes {
             w = w.raw(n.as_bytes()).u64(*c);
+        }
+        w = w.u32(fr.sessions.len() as u32);
+        for (s, c) in &fr.sessions {
+            w = w.raw(&s.to_bytes()).u64(*c);
         }
         w = w.u32(abs.len() as u32);
         for (c, n) in abs {
@@ -580,16 +588,20 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
         let gives = match r.u8()? {
             0 => None,
             _ => {
-                let mut fr = BTreeMap::new();
+                let mut fr = osis_crdt::Frontiers::default();
                 for _ in 0..r.u32()? {
                     let n = r.tid()?;
-                    fr.insert(n, r.u64()?);
+                    fr.nodes.insert(n, r.u64()?);
+                }
+                for _ in 0..r.u32()? {
+                    let s = osis_crdt::Session::from_bytes(&r.arr()?);
+                    fr.sessions.insert(s, r.u64()?);
                 }
                 let mut abs = Vec::new();
                 for _ in 0..r.u32()? {
                     abs.push((CommitId(r.arr()?), r.tid()?));
                 }
-                Some((osis_crdt::Frontiers(fr), abs))
+                Some((fr, abs))
             }
         };
         let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from((flags >> 2) & 3).wrapping_sub(1)).copied();

@@ -220,7 +220,7 @@ impl Engine {
         if let ChangeId::Ephemeral(e) = id
             && at.is_none()
         {
-            return if e.session == self.eph.session && e.n <= self.eph.batches { Ok(Reverted::Compacted) } else { Err(Error::Misuse("no undo log for this ephemeral change (another node's, or from before a restart)")) };
+            return if e.session == self.eph.session.nonce && e.n <= self.eph.batches { Ok(Reverted::Compacted) } else { Err(Error::Misuse("no undo log for this ephemeral change (another node's, or from before a restart)")) };
         }
         // undoing a creation deletes the thing, undoing that brings it back (spec/crdt.md §4.6):
         // the things a commit created are deleted by its undo commit, their ephemeral side here;
@@ -239,36 +239,23 @@ impl Engine {
             del.extend(crate::undo::made_by(&h, &m.valid).difference(&keep));
         }
         let ts = self.core.hlc.next();
-        let first = self.eph.next;
-        let resolved = match at {
-            Some(i) => self.ephemeral_undo(i, ts, &del),
-            None => Ok(Vec::new()),
+        // session counters are taken when the writes apply (`apply_ephemeral`)
+        let mut resolved = match at {
+            Some(i) => self.ephemeral_undo(i, ts, &del)?,
+            None => Vec::new(),
         };
-        let resolved = match resolved.and_then(|mut r| self.unmake_ephemeral(&del, ts, &mut r).map(|()| r)) {
-            Ok(r) => r,
-            Err(e) => {
-                self.eph.next = first;
-                return Err(e);
-            }
-        };
+        self.unmake_ephemeral(&del, ts, &mut resolved)?;
         let commit = match id {
             ChangeId::Commit(c) => {
                 let mut m = Mutation::new();
                 m.act_as(actor).undo(c);
                 m.undo_keep = keep;
                 m.ts = Some(ts);
-                match self.commit(m) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        self.eph.next = first;
-                        return Err(e);
-                    }
-                }
+                self.commit(m)?
             }
             ChangeId::Ephemeral(_) => None,
         };
         if commit.is_none() && resolved.is_empty() && making.is_empty() {
-            self.eph.next = first;
             return Ok(Reverted::Superseded);
         }
         let ts = match commit {
@@ -291,7 +278,7 @@ impl Engine {
                 Some(s) => s,
                 None => self.durable_state(&la.tid, &la.ak)?.unwrap_or_default(),
             };
-            let mut w = Writer::new(ts, src.clone(), self.eph.next);
+            let mut w = Writer::new(ts, src.clone(), self.eph.ctr(&la.tid, &la.ak));
             let log = &self.eph.log;
             let restored = |s: &Stamp| log.restored(s, &src, &la.tid, &la.ak, at, &undoers);
             let undone = Undone { delta: &la.delta, source: &src, range: la.range, restored: &restored };
@@ -302,7 +289,6 @@ impl Engine {
             };
             if let Some(delta) = delta {
                 let r = w.range();
-                self.eph.next = r.hi;
                 let pre = state.footprint(&delta);
                 out.push(Resolved { tid: la.tid, ak: la.ak, delta, range: (r.lo, r.hi), expires: None, presence: false, log: Some((pre, la.schema)) });
             }
@@ -344,13 +330,14 @@ impl Engine {
             }
             let schema = (ak.as_str() == GROUP.ak()).then(|| core.clone());
             let view = schema.as_ref().and_then(|s| s.view(ak.as_str()));
-            let w = Writer::new(ts, self.eph.src.clone(), self.eph.next);
+            // after what `out` already writes to the aspect
+            let lo = at.and_then(|i| out.get(i)).map_or_else(|| self.eph.ctr(&tid, &ak), |r| r.range.1);
+            let w = Writer::new(ts, self.eph.src.clone(), lo);
             let res = match &view {
                 Some(v) => run_ops(&state, w, &ops, v)?,
                 None => run_ops(&state, w, &ops, &AnyView)?,
             };
             let Some((delta, r)) = res else { continue };
-            self.eph.next = r.hi;
             let pre = a.state.footprint(&delta);
             match at.and_then(|i| out.get_mut(i)) {
                 Some(x) => {

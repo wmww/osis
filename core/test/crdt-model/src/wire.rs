@@ -153,6 +153,7 @@ impl Ctx {
                 .iter()
                 .map(|s| match s {
                     Source::Node(b) => Item::Bytes(b.to_vec()),
+                    Source::Session(b) => Item::Bytes(b.to_vec()),
                     Source::Commit(b) => Item::Bytes(b.to_vec()),
                     Source::Derived(d) => Item::Array(vec![u(self.idx_of(&d.source)), u(d.ctr)]),
                 })
@@ -164,6 +165,7 @@ impl Ctx {
         for s in it.array()? {
             let src = match s {
                 Item::Bytes(b) if b.len() == 15 => Source::Node(b[..].try_into().unwrap()),
+                Item::Bytes(b) if b.len() == 31 => Source::Session(b[..].try_into().unwrap()),
                 Item::Bytes(b) if b.len() == 32 => Source::Commit(b[..].try_into().unwrap()),
                 Item::Array(a) if a.len() == 2 => {
                     let d = Dot { source: self.source(a[0].uint()?)?, ctr: nonzero(a[1].uint()?)? };
@@ -1147,23 +1149,14 @@ pub fn decode_delta(bytes: &[u8], cx: &mut Ctx) -> Result<Frag, Error> {
 }
 
 /// Snapshot delta: `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed]`, `Frontiers := [[Src, ctr]*]` sorted
-/// by `Src`, one entry per `Node` source (§8). The caller strips the values of expiring deltas first (§4.7).
-/// Frontier-only sources come last in `Sources`. `Absorbed` (absorbed commit-form commits) is always empty here:
-/// the model keeps no per-commit receipts.
+/// by `Src`, one entry per `Node` or `Session` source (§8). The caller strips the values of expiring deltas first
+/// (§4.7). Frontier-only sources come last in `Sources`. `Absorbed` (absorbed commit-form commits) is always empty
+/// here: the model keeps no per-commit receipts.
 pub fn encode_snapshot(f: &Frag, frontiers: &[(Source, u64)], nonce: [u8; 16], cx: &mut Ctx) -> Vec<u8> {
-    encode_snapshot_authors(f, frontiers, &BTreeMap::new(), nonce, cx)
-}
-
-/// Per `Commit` source, the node (tid bytes) and `ts` its writes are judged as (§8 `Authors`).
-pub type Authors = BTreeMap<[u8; 32], ([u8; 15], Ts)>;
-
-/// A snapshot with `Authors` (entries for sources the fragment does not hold are dropped; the
-/// array is omitted when empty).
-pub fn encode_snapshot_authors(f: &Frag, frontiers: &[(Source, u64)], authors: &Authors, nonce: [u8; 16], cx: &mut Ctx) -> Vec<u8> {
     let extra: Vec<Source> = frontiers
         .iter()
         .map(|(s, c)| {
-            assert!(matches!(s, Source::Node(_)) && *c >= 1, "frontiers name node sources");
+            assert!(matches!(s, Source::Node(_) | Source::Session(_)) && *c >= 1, "frontiers name node or session sources");
             s.clone()
         })
         .collect();
@@ -1172,33 +1165,13 @@ pub fn encode_snapshot_authors(f: &Frag, frontiers: &[(Source, u64)], authors: &
     let mut fr: Vec<(u64, u64)> = frontiers.iter().map(|(s, c)| (cx.idx_of(s), *c)).collect();
     fr.sort();
     let fr = Item::Array(fr.into_iter().map(|(i, c)| Item::Array(vec![u(i), u(c)])).collect());
-    let mut top = vec![Item::Bytes(nonce.to_vec()), cx.sources_item(), cx.commits_item(), frag, fr, Item::Array(Vec::new())];
-    let au: Vec<Item> = cx
-        .sources
-        .iter()
-        .enumerate()
-        .filter_map(|(i, s)| match s {
-            Source::Commit(c) => authors.get(c).map(|(n, ts)| Item::Array(vec![u(i as u64 + 1), Item::Bytes(n.to_vec()), u(*ts)])),
-            _ => None,
-        })
-        .collect();
-    if !au.is_empty() {
-        top.push(Item::Array(au));
-    }
+    let top = vec![Item::Bytes(nonce.to_vec()), cx.sources_item(), cx.commits_item(), frag, fr, Item::Array(Vec::new())];
     cbor::encode(&Item::Array(top))
 }
 
 pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source, u64)>), Error> {
-    decode_snapshot_authors(bytes, cx).map(|(f, fr, _)| (f, fr))
-}
-
-pub fn decode_snapshot_authors(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source, u64)>, Authors), Error> {
     let it = cbor::decode(bytes)?;
-    let (n, sources, commits, f, fr, ab, au) = match it.array()? {
-        [n, sources, commits, f, fr, ab] => (n, sources, commits, f, fr, ab, None),
-        [n, sources, commits, f, fr, ab, au] => (n, sources, commits, f, fr, ab, Some(au)),
-        _ => return Err(Error::Bad("snapshot")),
-    };
+    let [n, sources, commits, f, fr, ab] = it.array()? else { return Err(Error::Bad("snapshot")) };
     if !ab.array()?.is_empty() {
         return Err(Error::Bad("absorbed commits (not modeled)"));
     }
@@ -1220,7 +1193,7 @@ pub fn decode_snapshot_authors(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<
                 }
                 last = Some(i);
                 let s = cx.source(i)?;
-                if !matches!(s, Source::Node(_)) {
+                if !matches!(s, Source::Node(_) | Source::Session(_)) {
                     return Err(Error::Bad("frontier source"));
                 }
                 out.push((s, c));
@@ -1233,26 +1206,7 @@ pub fn decode_snapshot_authors(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<
             if own {
                 return Err(Error::Bad("own write in a snapshot"));
             }
-            let mut authors = Authors::new();
-            if let Some(au) = au {
-                let mut last = 0u64;
-                let es = au.array()?;
-                if es.is_empty() {
-                    return Err(Error::Bad("empty authors"));
-                }
-                for e in es {
-                    let [i, Item::Bytes(t), ts] = e.array()? else { return Err(Error::Bad("author")) };
-                    let i = i.uint()?;
-                    if i <= last {
-                        return Err(Error::Bad("authors order"));
-                    }
-                    last = i;
-                    let Source::Commit(c) = cx.source(i)? else { return Err(Error::Bad("author of a non-commit source")) };
-                    let t: [u8; 15] = t.as_slice().try_into().map_err(|_| Error::Bad("author tid"))?;
-                    authors.insert(c, (t, ts.uint()?));
-                }
-            }
-            Ok((frag, out, authors))
+            Ok((frag, out))
         }
         _ => Err(Error::Bad("snapshot")),
     }

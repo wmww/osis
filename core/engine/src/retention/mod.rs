@@ -42,6 +42,7 @@ pub(crate) fn encode_owned(v: &[Owned]) -> Vec<u8> {
             Owned::Dots { src, ctrs } => {
                 let b = match src.kind() {
                     osis_crdt::SourceKind::Node(t) => t.as_bytes().to_vec(),
+                    osis_crdt::SourceKind::Session(s) => s.to_bytes().to_vec(),
                     osis_crdt::SourceKind::Commit(c) => c.0.to_vec(),
                     osis_crdt::SourceKind::Derived(_) => Vec::new(),
                 };
@@ -66,6 +67,7 @@ pub(crate) fn decode_owned(b: &[u8]) -> Result<Vec<Owned>> {
             _ => {
                 let src = match r.u8()? {
                     15 => osis_crdt::Source::node(r.tid()?),
+                    31 => osis_crdt::Source::session(osis_crdt::Session::from_bytes(&r.arr()?)),
                     32 => osis_crdt::Source::commit(CommitId(r.arr()?)),
                     _ => return Err(crate::error::Error::Corrupt("owned source")),
                 };
@@ -892,7 +894,7 @@ impl Engine {
                     fr.insert(*n, next - 1);
                 }
             }
-            let frontiers = Frontiers(fr);
+            let frontiers = Frontiers::of_nodes(fr);
             // commits judged by ID (commit form, imports) whose valid writes the state reflects
             let mut absorbed = std::collections::BTreeMap::new();
             for (_, c) in tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten() {
@@ -953,7 +955,7 @@ fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> R
     if let (Some(m), [Decoded::Snapshot(sn)]) = (tx.core.ix.commits.get(c), parts.as_slice()) {
         let h = &m.header;
         let by_frontier = h.form == Form::Node && h.kind.has_own_writes();
-        let unseen = by_frontier && h.aspects.get(cai).is_some_and(|a| sn.frontiers.0.get(&h.author).is_none_or(|f| f.saturating_add(1) < a.hi));
+        let unseen = by_frontier && h.aspects.get(cai).is_some_and(|a| sn.frontiers.nodes.get(&h.author).is_none_or(|f| f.saturating_add(1) < a.hi));
         if unseen || (by_id(h.kind, h.form) && !sn.absorbed.contains_key(c)) {
             return Ok(Some(false));
         }
@@ -962,7 +964,7 @@ fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> R
     // a snapshot covers another only if its frontiers hold the other's too: otherwise a
     // holder of it alone does not count what the other's frontier gave as received
     if let ([osis_commit::Decoded::Snapshot(sn)], [osis_commit::Decoded::Snapshot(other)]) = (parts.as_slice(), held.as_slice())
-        && (other.frontiers.0.iter().any(|(n, f)| sn.frontiers.0.get(n).is_none_or(|g| g < f)) || other.absorbed.keys().any(|c| !sn.absorbed.contains_key(c)))
+        && (other.frontiers.sources().any(|(s, f)| sn.frontiers.of(&s) < f) || other.absorbed.keys().any(|c| !sn.absorbed.contains_key(c)))
     {
         return Ok(Some(false));
     }

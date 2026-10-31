@@ -7,11 +7,41 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+/// Length of a session's random nonce (§2.1).
+pub const SESSION_NONCE_LEN: usize = 16;
+
+/// A node's in-memory session (§2.1): the node, and a nonce drawn at random at each start. Its
+/// writes belong to the node; its counters run per aspect, as a node's do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Session {
+    pub node: Tid,
+    pub nonce: [u8; SESSION_NONCE_LEN],
+}
+
+impl Session {
+    /// Its wire bytes: tid, then nonce (31 bytes).
+    pub fn to_bytes(&self) -> [u8; 31] {
+        let mut b = [0u8; 31];
+        b[..15].copy_from_slice(self.node.as_bytes());
+        b[15..].copy_from_slice(&self.nonce);
+        b
+    }
+    pub fn from_bytes(b: &[u8; 31]) -> Session {
+        let mut t = [0u8; 15];
+        t.copy_from_slice(&b[..15]);
+        let mut nonce = [0u8; SESSION_NONCE_LEN];
+        nonce.copy_from_slice(&b[15..]);
+        Session { node: Tid::from_bytes(t), nonce }
+    }
+}
+
 /// Who minted a run of counters (§2.1).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SourceKind {
     /// A node's signing identity.
     Node(Tid),
+    /// A node's in-memory session (ephemeral writes).
+    Session(Session),
     /// A commit-form commit.
     Commit(CommitId),
     /// Synthetic source of an embedding (§7); the dot's source is never `Derived`.
@@ -22,16 +52,18 @@ impl SourceKind {
     fn rank(&self) -> u8 {
         match self {
             SourceKind::Node(_) => 0,
-            SourceKind::Commit(_) => 1,
-            SourceKind::Derived(_) => 2,
+            SourceKind::Session(_) => 1,
+            SourceKind::Commit(_) => 2,
+            SourceKind::Derived(_) => 3,
         }
     }
 }
 
-/// Order of two sources that are not `Derived`: `Node` < `Commit`, then bytes (§2.2).
+/// Order of two sources that are not `Derived`: `Node` < `Session` < `Commit`, then bytes (§2.2).
 pub(crate) fn base_cmp(a: &Source, b: &Source) -> Ordering {
     match (a.kind(), b.kind()) {
         (SourceKind::Node(x), SourceKind::Node(y)) => x.cmp(y),
+        (SourceKind::Session(x), SourceKind::Session(y)) => x.cmp(y),
         (SourceKind::Commit(x), SourceKind::Commit(y)) => x.cmp(y),
         (x, y) => x.rank().cmp(&y.rank()),
     }
@@ -66,10 +98,14 @@ impl Source {
     pub fn node(tid: Tid) -> Source {
         Source(Arc::new(SourceKind::Node(tid)))
     }
+    pub fn session(s: Session) -> Source {
+        Source(Arc::new(SourceKind::Session(s)))
+    }
     pub fn commit(id: CommitId) -> Source {
         Source(Arc::new(SourceKind::Commit(id)))
     }
-    /// `None` if `dot`'s source is itself `Derived` (§3.2: Derived of a Node or Commit dot only).
+    /// `None` if `dot`'s source is itself `Derived` (§3.2: Derived of a Node, Session or Commit
+    /// dot only).
     pub fn derived(dot: Dot) -> Option<Source> {
         if dot.src.is_derived() {
             return None;
@@ -93,6 +129,21 @@ impl Source {
     pub fn as_node(&self) -> Option<Tid> {
         match &*self.0 {
             SourceKind::Node(t) => Some(*t),
+            _ => None,
+        }
+    }
+    pub fn as_session(&self) -> Option<Session> {
+        match &*self.0 {
+            SourceKind::Session(s) => Some(*s),
+            _ => None,
+        }
+    }
+    /// The node its writes belong to: a `Node` source's, a `Session` source's node, a `Derived`
+    /// source's underlying author's (§2.1); `None` for a `Commit` source.
+    pub fn node_of(&self) -> Option<Tid> {
+        match self.author().kind() {
+            SourceKind::Node(t) => Some(*t),
+            SourceKind::Session(s) => Some(s.node),
             _ => None,
         }
     }
@@ -140,6 +191,7 @@ impl fmt::Debug for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &*self.0 {
             SourceKind::Node(t) => write!(f, "N{t:?}"),
+            SourceKind::Session(s) => write!(f, "S{:?}/{}", s.node, osis_base::hex::encode(&s.nonce[..4])),
             SourceKind::Commit(c) => write!(f, "C{c:?}"),
             SourceKind::Derived(d) => write!(f, "D({d:?})"),
         }
@@ -160,6 +212,9 @@ impl Interner {
     }
     pub fn node(&mut self, tid: Tid) -> Source {
         self.intern(&Source::node(tid))
+    }
+    pub fn session(&mut self, s: Session) -> Source {
+        self.intern(&Source::session(s))
     }
     pub fn commit(&mut self, id: CommitId) -> Source {
         self.intern(&Source::commit(id))
@@ -265,11 +320,13 @@ mod tests {
         let n1 = Source::node(tid(1));
         let n2 = Source::node(tid(2));
         let c = Source::commit(CommitId([0; 32]));
+        let s = Source::session(Session { node: tid(9), nonce: [0xff; SESSION_NONCE_LEN] });
         let d = Source::derived(Dot::new(n1.clone(), 1)).unwrap();
         // ts first
         assert!(Stamp::new(ts(1), d.clone(), 9) < Stamp::new(ts(2), n1.clone(), 1));
-        // then kind: Node < Commit < Derived
-        assert!(Stamp::new(ts(1), n2.clone(), 9) < Stamp::new(ts(1), c.clone(), 1));
+        // then kind: Node < Session < Commit < Derived
+        assert!(Stamp::new(ts(1), n2.clone(), 9) < Stamp::new(ts(1), s.clone(), 1));
+        assert!(Stamp::new(ts(1), s.clone(), 9) < Stamp::new(ts(1), c.clone(), 1));
         // Derived(d) right after d: above node 1's counter 1, below its counter 2 and node 2
         assert!(Stamp::new(ts(1), n1.clone(), 1) < Stamp::new(ts(1), d.clone(), 7));
         assert!(Stamp::new(ts(1), d.clone(), 7) < Stamp::new(ts(1), n1.clone(), 2));

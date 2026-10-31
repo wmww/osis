@@ -799,7 +799,8 @@ pub(crate) fn any_owner(core: &Core, tid: &Tid, ak: &Ak, d: &Dot, f: &dyn Fn(&Co
             }
             core.ix.imports.get(&(*tid, *c)).is_some_and(|s| s.iter().any(|i| core.ix.commits.get(i).is_some_and(|m| at(m).is_some_and(|ai| f(i, m, ai)))))
         }
-        osis_crdt::SourceKind::Derived(_) => false,
+        // a session's writes are ephemeral: no durable commit owns them
+        osis_crdt::SourceKind::Session(_) | osis_crdt::SourceKind::Derived(_) => false,
     }
 }
 

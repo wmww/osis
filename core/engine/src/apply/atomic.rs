@@ -447,7 +447,7 @@ fn core_holds_owner(core: &Core, tid: &Tid, ak: &Ak, src: &osis_crdt::Source, lo
     match src.kind() {
         osis_crdt::SourceKind::Node(n) => core.ix.ranges.get(&(*tid, ak.clone(), *n)).is_some_and(|m| m.range(..hi).next_back().is_some_and(|(_, (h, _))| *h > lo)),
         osis_crdt::SourceKind::Commit(_) => true,
-        osis_crdt::SourceKind::Derived(_) => false,
+        osis_crdt::SourceKind::Session(_) | osis_crdt::SourceKind::Derived(_) => false,
     }
 }
 

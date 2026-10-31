@@ -89,7 +89,7 @@ fn snapshot() -> CommitBlob {
     let at = ts(1_700_000_002_000);
     let mut w = Writer::new(ts(1_700_000_000_000), Source::node(AUTHOR), 1);
     let fragment = create(&mut w, &AnyView, &Value::Str("hello".into())).unwrap();
-    let s = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [4; 16], fragment, frontiers: Frontiers([(AUTHOR, 1)].into_iter().collect()) };
+    let s = Snapshot { absorbed: Default::default(), nonce: [4; 16], fragment, frontiers: Frontiers::of_nodes([(AUTHOR, 1)].into_iter().collect()) };
     let bytes = encode_snapshot(&s, &writer_ctx(Kind::ContentSnapshot, at, AUTHOR, 0, 0), None).unwrap();
     let mut b = CommitBuilder::new(Kind::ContentSnapshot, at, AUTHOR, ACTOR, Form::Node);
     let mut a = AspectWrite::new(THING, Ak::new("/app/title").unwrap(), 0, 0, bytes);
@@ -99,13 +99,14 @@ fn snapshot() -> CommitBlob {
 }
 
 /// An ephemeral commit (spec/commits.md §2): a commit-form content snapshot with the marker,
-/// carrying a session-source write named in `Authors`.
+/// carrying a write under a session of its author (spec/crdt.md §2.1) and that session's frontier.
 fn ephemeral(class: osis_commit::EphClass) -> CommitBlob {
     let at = ts(1_700_000_004_000);
-    let session = CommitId([0x27; 32]);
-    let mut w = Writer::new(ts(1_700_000_003_500), Source::commit(session), 1);
+    let session = osis_crdt::Session { node: AUTHOR, nonce: [0x27; osis_crdt::SESSION_NONCE_LEN] };
+    let mut w = Writer::new(ts(1_700_000_003_500), Source::session(session), 1);
     let fragment = create(&mut w, &AnyView, &Value::Str("typing".into())).unwrap();
-    let s = Snapshot { absorbed: Default::default(), authors: [(session, (AUTHOR, at))].into_iter().collect(), nonce: [6; 16], fragment, frontiers: Frontiers::default() };
+    let frontiers = Frontiers { sessions: [(session, 1)].into_iter().collect(), ..Default::default() };
+    let s = Snapshot { absorbed: Default::default(), nonce: [6; 16], fragment, frontiers };
     let mut cx = writer_ctx(Kind::ContentSnapshot, at, AUTHOR, 0, 0);
     cx.own = Source::commit(CommitId([0; 32]));
     let bytes = encode_snapshot(&s, &cx, None).unwrap();

@@ -8,7 +8,7 @@
 use crate::error::Error;
 use crate::fragment::Fragment;
 use crate::page::{PageSink, PageSource};
-use crate::stamp::{CounterRange, Dot, Interner, Source, SourceKind, Stamp};
+use crate::stamp::{CounterRange, Dot, Interner, Session, Source, SourceKind, Stamp};
 use osis_base::{CommitId, Tid, Ts, Value, WallMs};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -42,27 +42,57 @@ pub struct DeltaCtx {
     pub kind: DeltaKind,
 }
 
-/// Per `Node` source, the largest counter up to which the snapshot writer applied all of that
-/// node's writes in the aspect (§8).
+/// Per `Node` and `Session` source, the largest counter up to which the snapshot writer applied
+/// all of that source's writes in the aspect (§8).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Frontiers(pub BTreeMap<Tid, u64>);
+pub struct Frontiers {
+    pub nodes: BTreeMap<Tid, u64>,
+    pub sessions: BTreeMap<Session, u64>,
+}
 
-/// Received counter ranges per `Node` source for one aspect: what a snapshot's frontiers say
-/// and what revoke frontiers are built from (§8; spec/permissions.md §5.1). Parked commits are
-/// not added until joined.
+impl Frontiers {
+    /// Node frontiers only.
+    pub fn of_nodes(nodes: BTreeMap<Tid, u64>) -> Frontiers {
+        Frontiers { nodes, sessions: BTreeMap::new() }
+    }
+    /// Every entry as its source, with its counter.
+    pub fn sources(&self) -> impl Iterator<Item = (Source, u64)> + '_ {
+        self.nodes.iter().map(|(t, c)| (Source::node(*t), *c)).chain(self.sessions.iter().map(|(s, c)| (Source::session(*s), *c)))
+    }
+    /// The frontier of `src` (0 when none, or not a `Node` or `Session` source).
+    pub fn of(&self, src: &Source) -> u64 {
+        match src.kind() {
+            SourceKind::Node(t) => self.nodes.get(t).copied().unwrap_or(0),
+            SourceKind::Session(s) => self.sessions.get(s).copied().unwrap_or(0),
+            _ => 0,
+        }
+    }
+    /// Sets the frontier of `src`; false when `src` is neither a `Node` nor a `Session` source.
+    pub fn insert(&mut self, src: &Source, ctr: u64) -> bool {
+        match src.kind() {
+            SourceKind::Node(t) => self.nodes.insert(*t, ctr).is_none(),
+            SourceKind::Session(s) => self.sessions.insert(*s, ctr).is_none(),
+            _ => false,
+        }
+    }
+}
+
+/// Received counter ranges per `Node` and `Session` source for one aspect: what a snapshot's
+/// frontiers say and what revoke frontiers are built from (§8; spec/permissions.md §5.1).
+/// Parked commits are not added until joined.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Received(BTreeMap<Tid, Vec<(u64, u64)>>);
+pub struct Received(BTreeMap<Source, Vec<(u64, u64)>>);
 
 impl Received {
     pub fn new() -> Received {
         Received::default()
     }
-    /// Records counters `range` of node `tid` as applied.
-    pub fn add(&mut self, tid: Tid, range: CounterRange) {
-        if range.is_empty() {
+    /// Records counters `range` of `src` (a `Node` or `Session` source) as applied.
+    pub fn add(&mut self, src: &Source, range: CounterRange) {
+        if range.is_empty() || !matches!(src.kind(), SourceKind::Node(_) | SourceKind::Session(_)) {
             return;
         }
-        let v = self.0.entry(tid).or_default();
+        let v = self.0.entry(src.clone()).or_default();
         v.push((range.lo, range.hi));
         v.sort_unstable();
         let mut out: Vec<(u64, u64)> = Vec::with_capacity(v.len());
@@ -75,21 +105,28 @@ impl Received {
         *v = out;
     }
     /// The largest `ctr` with `[1, ctr]` applied; 0 if none.
-    pub fn frontier(&self, tid: &Tid) -> u64 {
-        match self.0.get(tid).and_then(|v| v.first()) {
+    pub fn frontier(&self, src: &Source) -> u64 {
+        match self.0.get(src).and_then(|v| v.first()) {
             Some((1, hi)) => hi.saturating_sub(1),
             _ => 0,
         }
     }
-    /// The frontiers a snapshot of this state carries (nodes with counter 1 applied).
+    /// The frontiers a snapshot of this state carries (sources with counter 1 applied).
     pub fn frontiers(&self) -> Frontiers {
-        Frontiers(self.0.keys().map(|t| (*t, self.frontier(t))).filter(|x| x.1 > 0).collect())
+        let mut fr = Frontiers::default();
+        for s in self.0.keys() {
+            let c = self.frontier(s);
+            if c > 0 {
+                fr.insert(s, c);
+            }
+        }
+        fr
     }
     /// A received snapshot closes `[1, ctr]` per frontier (tests).
     #[cfg(test)]
     pub(crate) fn add_frontiers(&mut self, fr: &Frontiers) {
-        for (t, c) in &fr.0 {
-            self.add(*t, CounterRange { lo: 1, hi: c.saturating_add(1) });
+        for (s, c) in fr.sources() {
+            self.add(&s, CounterRange { lo: 1, hi: c.saturating_add(1) });
         }
     }
 }
@@ -101,8 +138,7 @@ pub struct Delta {
     pub fragment: Fragment,
 }
 
-/// `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed]` or, with commit-form sources'
-/// authors, `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed, Authors]` (§8).
+/// `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed]` (§8).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub nonce: [u8; NONCE_LEN],
@@ -111,9 +147,6 @@ pub struct Snapshot {
     /// Commits judged by commit ID (commit form, imports) whose writes in this aspect the
     /// writer had applied, with their author nodes (§8).
     pub absorbed: BTreeMap<CommitId, Tid>,
-    /// Per `Commit` source of the fragment, the node its writes are judged as and at which `ts`
-    /// (spec/permissions.md §5.2). Entries for sources the fragment does not hold are dropped.
-    pub authors: BTreeMap<CommitId, (Tid, Ts)>,
 }
 
 /// A non-negative integer as a value. Counters and `ts` stay below 2^63 (decoded ones are `Int`).
@@ -307,14 +340,6 @@ impl<'p> Enc<'p> {
         Value::List(s.map(|s| self.stamp(s)).into_iter().collect())
     }
 
-    /// The `Commit` sources of `Sources` with their `Src`, ascending.
-    pub(crate) fn commit_sources(&self) -> Vec<(u64, CommitId)> {
-        self.sources.iter().enumerate().filter_map(|(i, s)| match s.kind() {
-            SourceKind::Commit(c) => Some((i as u64 + 1, *c)),
-            _ => None,
-        }).collect()
-    }
-
     /// `Sources := [Source*]`.
     pub(crate) fn sources_value(&self) -> Value {
         Value::List(
@@ -322,6 +347,7 @@ impl<'p> Enc<'p> {
                 .iter()
                 .map(|s| match s.kind() {
                     SourceKind::Node(t) => Value::Bytes(t.as_bytes().to_vec()),
+                    SourceKind::Session(x) => Value::Bytes(x.to_bytes().to_vec()),
                     SourceKind::Commit(c) => Value::Bytes(c.0.to_vec()),
                     SourceKind::Derived(d) => Value::List(vec![uint(self.src_index(&d.src)), uint(d.ctr)]),
                 })
@@ -563,6 +589,8 @@ impl<'a> Dec<'a> {
                 Value::Bytes(b) => {
                     if let Ok(t) = <[u8; 15]>::try_from(b.as_slice()) {
                         Source::node(Tid::from_bytes(t))
+                    } else if let Ok(x) = <[u8; 31]>::try_from(b.as_slice()) {
+                        Source::session(Session::from_bytes(&x))
                     } else if let Ok(c) = <[u8; 32]>::try_from(b.as_slice()) {
                         Source::commit(CommitId(c))
                     } else {

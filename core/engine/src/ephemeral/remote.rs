@@ -103,9 +103,6 @@ pub(crate) struct HeldPart {
     pub heap: usize,
     /// The commits it lists as absorbed.
     pub absorbed: BTreeSet<CommitId>,
-    /// Its `Authors`: the node each session is attributed to, and at which `ts` (writes of
-    /// sessions not attributed to the commit's author are stripped on arrival, `only_of`).
-    pub authors: BTreeMap<CommitId, (Tid, Ts)>,
     /// Valid here (spec/permissions.md §5.2).
     pub valid: bool,
 }
@@ -113,15 +110,15 @@ pub(crate) struct HeldPart {
 impl HeldPart {
     fn new(ai: usize, s: Snapshot, bytes: usize) -> HeldPart {
         let heap = s.fragment.approx_bytes();
-        HeldPart { ai, fragment: s.fragment, bytes, heap, absorbed: s.absorbed.into_keys().collect(), authors: s.authors, valid: true }
+        HeldPart { ai, fragment: s.fragment, bytes, heap, absorbed: s.absorbed.into_keys().collect(), valid: true }
     }
 
-    /// Strips the writes of sessions its `Authors` does not attribute to `author` (an ephemeral
-    /// commit carries its author's writes only, spec/sync.md §9).
+    /// Strips the writes but those of `author`'s sessions (an ephemeral commit carries its
+    /// author's writes only, spec/sync.md §9).
     fn only_of(&mut self, author: Tid) {
-        let authors = &self.authors;
-        // a write under any other source (another session, a node's) is not its author's
-        self.fragment.strip_copies(&|d| !matches!(d.src.author().kind(), SourceKind::Commit(c) if authors.get(c).is_some_and(|(n, _)| *n == author)));
+        // a write under any other source (another node's session, a node's, a commit's) is not
+        // its author's
+        self.fragment.strip_copies(&|d| !own_session(d, author));
     }
 
     /// The writes that count here: none when invalid, else all.
@@ -175,9 +172,6 @@ pub(crate) struct Remote {
     /// Commits whose parts were all invalid on arrival (`/created` ones aside): neither held nor
     /// counted, judged again when the held durable set changes (bounded like `pending`).
     pub invalid: BTreeMap<CommitId, Invalid>,
-    /// This node's sessions (its earlier ones as its own held commits name them in `Authors`):
-    /// an own cover carries their writes as its own. Bounded by this node's restarts.
-    pub mine: BTreeSet<CommitId>,
     /// Per actor, the cost of the own cover last weighed (plus the own held commits it could not
     /// absorb, over `COVER_FACTOR`): an own compaction is weighed again once the own held commits
     /// cost more than `COVER_FACTOR` times this (`compact_own_ephemeral`).
@@ -471,9 +465,9 @@ impl Engine {
     fn take_signals(&mut self) -> Result<Vec<EphCommit>> {
         let mut by_actor: BTreeMap<Tid, Vec<EphDelta>> = BTreeMap::new();
         for (tid, ak, v, ts, actor) in std::mem::take(&mut self.eph.remote.signals) {
-            let w = Writer::new(ts, self.eph.src.clone(), self.eph.next);
+            let w = Writer::new(ts, self.eph.src.clone(), self.eph.ctr(&tid, &ak));
             if let Ok(Some((f, r))) = run_ops(&Fragment::default(), w, &[PathOp { path: Vec::new(), op: Op::Set(v) }], &AnyView) {
-                self.eph.next = r.hi;
+                self.eph.take_ctrs(&tid, &ak, r.hi);
                 by_actor.entry(actor).or_default().push((tid, ak, f, None));
             }
         }
@@ -606,8 +600,9 @@ impl Engine {
         if let Some(f) = &th.created {
             return Some(f.clone());
         }
-        let (f, hi) = mint_created(&th.record, th.ts, self.eph.src.clone(), self.eph.next)?;
-        self.eph.next = hi;
+        let cak = Ak::new(CREATED.ak()).ok()?;
+        let (f, hi) = mint_created(&th.record, th.ts, self.eph.src.clone(), self.eph.ctr(t, &cak))?;
+        self.eph.take_ctrs(t, &cak, hi);
         if let Some(th) = self.eph.things.get_mut(t) {
             th.created = Some(f.clone());
         }
@@ -637,10 +632,10 @@ impl Engine {
     /// Builds, signs and holds one ephemeral commit of `deltas` (thing, aspect, fragment,
     /// expiry), carrying the records of the ephemeral things the deltas touch and of those its
     /// `/group` deltas place, with their ephemeral owner chains; `absorbed`: per aspect, the held
-    /// commits it covers. Writes of sessions not this node's are not carried. `None` when it
+    /// commits it covers. Writes but this node's sessions' are not carried. `None` when it
     /// would carry nothing or cannot be built (a delete key not held: reported).
     fn build_ephemeral(&mut self, class: EphClass, actor: Tid, deltas: Vec<EphDelta>, absorbed: &Absorbs) -> Result<Option<EphCommit>> {
-        self.build_ephemeral_with(class, actor, deltas, absorbed, &BTreeMap::new())
+        self.build_ephemeral_with(class, actor, deltas, absorbed, false)
     }
 
     /// Builds plain ephemeral commits of `deltas` (`build_ephemeral`): one, or, while a commit's
@@ -650,7 +645,7 @@ impl Engine {
     /// `left`, each flagged when it does not fit a blob alone (reported).
     fn build_fitting(&mut self, actor: Tid, deltas: Vec<EphDelta>, absorbed: &Absorbs, out: &mut Vec<EphCommit>, left: &mut Vec<(EphDelta, bool)>) -> Result<()> {
         let mut copy = deltas.clone();
-        match self.try_build(EphClass::Plain, actor, deltas, absorbed, &BTreeMap::new())? {
+        match self.try_build(EphClass::Plain, actor, deltas, absorbed, false)? {
             Attempt::Made(c) => out.push(*c),
             Attempt::Empty => {}
             Attempt::Large if copy.len() > 1 => {
@@ -668,10 +663,10 @@ impl Engine {
         Ok(())
     }
 
-    /// `build_ephemeral`, also carrying the writes of the sessions `foreign` attributes to other
-    /// nodes, named so (tests: forging).
-    fn build_ephemeral_with(&mut self, class: EphClass, actor: Tid, deltas: Vec<EphDelta>, absorbed: &Absorbs, foreign: &BTreeMap<CommitId, Tid>) -> Result<Option<EphCommit>> {
-        Ok(match self.try_build(class, actor, deltas, absorbed, foreign)? {
+    /// `build_ephemeral`, with `carry_all` also carrying the writes not this node's sessions'
+    /// (tests: forging).
+    fn build_ephemeral_with(&mut self, class: EphClass, actor: Tid, deltas: Vec<EphDelta>, absorbed: &Absorbs, carry_all: bool) -> Result<Option<EphCommit>> {
+        Ok(match self.try_build(class, actor, deltas, absorbed, carry_all)? {
             Attempt::Made(c) => Some(*c),
             Attempt::Large => {
                 self.report_eph("an ephemeral commit too large for a blob or inline header lists was not sent");
@@ -682,7 +677,7 @@ impl Engine {
     }
 
     /// One attempt of `build_ephemeral_with` (a failure other than size reported here).
-    fn try_build(&mut self, class: EphClass, actor: Tid, deltas: Vec<EphDelta>, absorbed: &Absorbs, foreign: &BTreeMap<CommitId, Tid>) -> Result<Attempt> {
+    fn try_build(&mut self, class: EphClass, actor: Tid, deltas: Vec<EphDelta>, absorbed: &Absorbs, carry_all: bool) -> Result<Attempt> {
         let me = self.tid();
         // the records: of the things written and placed, up their ephemeral chains
         let mut recs: BTreeSet<Tid> = BTreeSet::new();
@@ -719,18 +714,17 @@ impl Engine {
         let cx = snapshot_ctx(ts, me);
         let mut writes = Vec::with_capacity(parts.len());
         for (tid, ak, mut fragment, expires) in parts {
-            let (authors, unknown) = self.authors_of(&fragment, ts, foreign);
             // only own writes are carried (spec/sync.md §9: receivers strip the rest), and records
             // whoever minted them (a record hashes to its tid)
-            if !unknown.is_empty() && ak.as_str() != CREATED.ak() {
-                fragment.strip_copies(&|d| matches!(d.src.author().kind(), SourceKind::Commit(c) if unknown.contains(c)));
+            if !carry_all && ak.as_str() != CREATED.ak() && fragment.holds_dots(&|d| !own_session(d, me)) {
+                fragment.strip_copies(&|d| !own_session(d, me));
                 // what is left only for a join (an entry's creation alone) goes before encoding
                 fragment.prune(None, &mut osis_crdt::Changes::new());
             }
             let absorbed_here: BTreeMap<CommitId, Tid> = absorbed.get(&(tid, ak.clone())).into_iter().flatten().filter_map(|c| self.eph.remote.held.get(c).map(|h| (*c, h.header.author))).collect();
             let mut nonce = [0u8; osis_crdt::NONCE_LEN];
             self.rng.fill_bytes(&mut nonce);
-            let bytes = match osis_crdt::encode_snapshot(&Snapshot { nonce, fragment, frontiers: Frontiers::default(), absorbed: absorbed_here, authors }, &cx, Some(&mut Unpaged)) {
+            let bytes = match osis_crdt::encode_snapshot(&Snapshot { nonce, fragment, frontiers: Frontiers::default(), absorbed: absorbed_here }, &cx, Some(&mut Unpaged)) {
                 Ok(b) => b,
                 Err(e) => {
                     self.report_eph(&format!("an ephemeral commit could not be built: {e}"));
@@ -794,31 +788,7 @@ impl Engine {
         Ok(Attempt::Made(Box::new(EphCommit { id, class, blob })))
     }
 
-    /// The `Authors` of an ephemeral delta of `f` built at `ts`: this node for its sessions'
-    /// writes, `foreign`'s node for those it names; and the sessions of the other writes (not
-    /// carried).
-    fn authors_of(&self, f: &Fragment, ts: Ts, foreign: &BTreeMap<CommitId, Tid>) -> (BTreeMap<CommitId, (Tid, Ts)>, BTreeSet<CommitId>) {
-        let me = self.tid();
-        let mut authors = BTreeMap::new();
-        let mut unknown = BTreeSet::new();
-        for (d, _) in f.writes() {
-            if let SourceKind::Commit(c) = d.src.author().kind()
-                && !authors.contains_key(c)
-                && !unknown.contains(c)
-            {
-                if c.0 == self.eph.session || self.eph.remote.mine.contains(c) {
-                    authors.insert(*c, (me, ts));
-                } else if let Some(n) = foreign.get(c) {
-                    authors.insert(*c, (*n, ts));
-                } else {
-                    unknown.insert(*c);
-                }
-            }
-        }
-        (authors, unknown)
-    }
-
-    /// The cost of an own cover of `deltas`: its encoded deltas (unpaged, with their `Authors`,
+    /// The cost of an own cover of `deltas`: its encoded deltas (unpaged, with their `Sources`,
     /// which dominate small values) plus `ENTRY_CHARGE`. Each lists one commit absorbed, as the
     /// next cover will (the cover itself: what it absorbs now goes with the next one), so a held
     /// cover weighs what its own cover would.
@@ -830,7 +800,7 @@ impl Engine {
             .iter()
             .map(|(_, _, f, _)| {
                 let absorbed = BTreeMap::from([(CommitId([0; 32]), me)]);
-                let s = Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: f.clone(), frontiers: Frontiers::default(), absorbed, authors: self.authors_of(f, ts, &BTreeMap::new()).0 };
+                let s = Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: f.clone(), frontiers: Frontiers::default(), absorbed };
                 // unpaged encoding fails only on a malformed fragment: counted as nothing
                 osis_crdt::encode_snapshot(&s, &cx, Some(&mut Unpaged)).map_or(0, |b| b.len())
             })
@@ -1038,7 +1008,6 @@ impl Engine {
             return Ok(self.deliver_relay(id, &h, decoded, &carried, now));
         }
         // its new parts, judged (spec/permissions.md §5.2), others' writes stripped
-        let me = self.tid();
         let (have, own): (BTreeSet<usize>, bool) = self.eph.remote.held.get(&id).map_or((BTreeSet::new(), false), |x| (x.parts.iter().map(|p| p.ai).collect(), x.own));
         let mut fresh: Vec<HeldPart> = Vec::new();
         for (ai, s, len) in decoded {
@@ -1123,10 +1092,6 @@ impl Engine {
         let mut changed = Vec::new();
         for hp in &fresh {
             let Some(a) = header.aspects.get(hp.ai) else { continue };
-            // an earlier session of this node: an own cover carries its writes
-            if header.author == me {
-                self.eph.remote.mine.extend(hp.authors.iter().filter(|(_, (n, _))| *n == me).map(|(c, _)| *c));
-            }
             if let Some(t) = a.expires {
                 self.eph.remote.timers.entry(t).or_default().insert((id, hp.ai));
             }
@@ -1896,6 +1861,14 @@ impl Engine {
         self.forge_ephemeral_under(tid, ak, v, src)
     }
 
+    /// Tests: `forge_ephemeral` with the write under a session of node `node` (a write passed
+    /// off as another node's).
+    #[doc(hidden)]
+    pub fn forge_ephemeral_as_session(&mut self, tid: Tid, ak: &Ak, v: Value, node: Tid) -> Result<Option<EphCommit>> {
+        let nonce = self.eph.session.nonce;
+        self.forge_ephemeral_under(tid, ak, v, Source::session(osis_crdt::Session { node, nonce }))
+    }
+
     /// Tests: `forge_ephemeral` with the write under node `node`'s source (a write passed off as
     /// another node's).
     #[doc(hidden)]
@@ -1905,27 +1878,21 @@ impl Engine {
 
     fn forge_ephemeral_under(&mut self, tid: Tid, ak: &Ak, v: Value, src: Source) -> Result<Option<EphCommit>> {
         let ts = self.core.hlc.next();
-        let w = Writer::new(ts, src, self.eph.next);
+        let w = Writer::new(ts, src, self.eph.ctr(&tid, ak));
         let Some((f, r)) = run_ops(&Fragment::default(), w, &[PathOp { path: Vec::new(), op: Op::Set(v) }], &AnyView)? else { return Ok(None) };
-        self.eph.next = r.hi;
+        self.eph.take_ctrs(&tid, ak, r.hi);
         let me = self.tid();
-        self.build_ephemeral(EphClass::Plain, me, vec![(tid, ak.clone(), f, None)], &BTreeMap::new())
+        self.build_ephemeral_with(EphClass::Plain, me, vec![(tid, ak.clone(), f, None)], &BTreeMap::new(), true)
     }
 
     /// Tests: an ephemeral commit of class `class` by this node carrying the whole joined
-    /// ephemeral state of `(tid, ak)`, others' writes included under their authors' names (a
-    /// forged cover of someone else's writes).
+    /// ephemeral state of `(tid, ak)`, others' writes included under their sessions (a forged
+    /// cover of someone else's writes).
     #[doc(hidden)]
     pub fn forge_carrying(&mut self, class: EphClass, tid: Tid, ak: &Ak) -> Result<Option<EphCommit>> {
         let Some(f) = self.eph.state(&tid, ak).cloned() else { return Ok(None) };
-        let mut foreign = BTreeMap::new();
-        for h in self.eph.remote.held.values() {
-            for p in &h.parts {
-                foreign.extend(p.authors.iter().map(|(c, (n, _))| (*c, *n)));
-            }
-        }
         let me = self.tid();
-        self.build_ephemeral_with(class, me, vec![(tid, ak.clone(), f, None)], &BTreeMap::new(), &foreign)
+        self.build_ephemeral_with(class, me, vec![(tid, ak.clone(), f, None)], &BTreeMap::new(), true)
     }
 
     /// Tests: `forge_ephemeral` listing `absorbed` as absorbed on `(tid, ak)` without carrying
@@ -1933,9 +1900,9 @@ impl Engine {
     #[doc(hidden)]
     pub fn forge_cover(&mut self, tid: Tid, ak: &Ak, v: Value, absorbed: &[CommitId]) -> Result<Option<EphCommit>> {
         let ts = self.core.hlc.next();
-        let w = Writer::new(ts, self.eph.src.clone(), self.eph.next);
+        let w = Writer::new(ts, self.eph.src.clone(), self.eph.ctr(&tid, ak));
         let Some((f, r)) = run_ops(&Fragment::default(), w, &[PathOp { path: Vec::new(), op: Op::Set(v) }], &AnyView)? else { return Ok(None) };
-        self.eph.next = r.hi;
+        self.eph.take_ctrs(&tid, ak, r.hi);
         let me = self.tid();
         // listed on every aspect of their parts, as an own cover lists them
         let mut abs = Absorbs::new();
@@ -1952,9 +1919,10 @@ impl Engine {
     #[doc(hidden)]
     pub fn pad_created(&mut self, t: &Tid, junk: Value) -> Option<()> {
         let mut f = self.created_fragment(t)?;
-        let w = Writer::new(Ts::from_u64(1)?, self.eph.src.clone(), self.eph.next);
+        let cak = Ak::new(CREATED.ak()).ok()?;
+        let w = Writer::new(Ts::from_u64(1)?, self.eph.src.clone(), self.eph.ctr(t, &cak));
         let (pad, r) = run_ops(&Fragment::default(), w, &[PathOp { path: Vec::new(), op: Op::Set(junk) }], &AnyView).ok()??;
-        self.eph.next = r.hi;
+        self.eph.take_ctrs(t, &cak, r.hi);
         f.join(pad);
         self.eph.things.get_mut(t)?.created = Some(f);
         Some(())
@@ -2072,7 +2040,13 @@ fn created_record(h: &Header, id: &CommitId, p: &osis_commit::Part, interner: &m
 
 /// Whether `f` is exactly one minting of `rec` under a session source (spec/sync.md §9).
 fn is_minted(f: &Fragment, rec: &CreationRecord) -> bool {
-    f.writes().first().is_some_and(|(d, _)| matches!(d.src.kind(), SourceKind::Commit(_))) && is_minting(f, rec)
+    f.writes().first().is_some_and(|(d, _)| matches!(d.src.kind(), SourceKind::Session(_))) && is_minting(f, rec)
+}
+
+/// Whether dot `d` is a write of one of `node`'s sessions (a `Derived` dot: its underlying
+/// one's).
+fn own_session(d: &osis_crdt::Dot, node: Tid) -> bool {
+    matches!(d.src.author().kind(), SourceKind::Session(s) if s.node == node)
 }
 
 /// One minting of the record `f` reads out of `f`, a join of mintings of it: `f` if it is one,
@@ -2114,7 +2088,7 @@ fn snapshot_ctx(ts: Ts, me: Tid) -> osis_crdt::DeltaCtx {
 /// The length of `f` encoded as an unpaged snapshot delta of an ephemeral commit by `me`.
 fn delta_len(me: Tid, f: &Fragment) -> usize {
     let cx = snapshot_ctx(Ts::default(), me);
-    let s = Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: f.clone(), frontiers: Frontiers::default(), absorbed: BTreeMap::new(), authors: BTreeMap::new() };
+    let s = Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: f.clone(), frontiers: Frontiers::default(), absorbed: BTreeMap::new() };
     // unpaged encoding fails only on a malformed fragment: counted as nothing
     osis_crdt::encode_snapshot(&s, &cx, Some(&mut Unpaged)).map_or(0, |b| b.len())
 }
