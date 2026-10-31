@@ -239,6 +239,8 @@ pub fn rotate(
         let secret = Secret32::random(rng);
         let epoch = Epoch::derive(actor, r, n + 1, &secret)?;
         if r == Role::Read {
+            // by n, not order n (spec/crypto.md §5): uploaders judge from the thing's own epochs,
+            // where derived ones keep no order n
             wrap = newest_of(supersedes.iter().filter(|e| re.secret(e).is_some()));
         }
         let earlier: Vec<(Epoch, Secret32)> = re.held_established().map(|(e, s)| (e, s.clone())).collect();

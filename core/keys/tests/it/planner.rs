@@ -266,6 +266,11 @@ fn jumped_owner_forks_derive_owner_newest() {
         let de = Epoch::derive(&u, Role::Read, osis_keys::MAX_FREE_N - 1, &ds).unwrap();
         assert_eq!(d.read.newest(), Some(de), "seed {b}");
         assert_eq!(wrap_epoch(&d.read), WrapEpoch::Current(de), "seed {b}");
+        // nested: V owned by plain U carries P's order through U's derived epochs
+        let v = tid(12);
+        let vs = osis_crypto::thing_role_secret(&ds, Role::Read, &v);
+        let ve = Epoch::derive(&v, Role::Read, osis_keys::MAX_FREE_N - 1, &vs).unwrap();
+        assert_eq!(ActorEpochs::derived(&d, &v).read.newest(), Some(ve), "seed {b}");
     }
 }
 
