@@ -2473,7 +2473,7 @@ fn core_aspect_part_refused_spec_sync_9() {
 // open question of the step 3 review: a device reachable only through a co-reader peer gets the
 // signals that peer receives from a host, and its own reach the host's devices; each once
 #[test]
-fn signals_through_holder_peer_spec_sync_5() {
+fn signals_through_co_reader_peer_spec_sync_5() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);

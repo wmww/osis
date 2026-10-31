@@ -147,7 +147,7 @@ enum Under {
     /// The sync key of the head it was proven at.
     Sync(osis_crypto::VerifyingKey),
     /// A co-reader proof (spec/sync.md §5, co-reader peer): the store's word, not a step's.
-    Holder,
+    CoReader,
 }
 
 pub struct ServingSession {
@@ -173,7 +173,7 @@ pub struct ServingSession {
     /// A signature of the message being handled verified under no key (`check`).
     struck: bool,
     /// Dialable key of the last co-reader proof that opened a label.
-    holder: Option<[u8; 32]>,
+    co_reader: Option<[u8; 32]>,
     /// Bytes of `Send` outputs so far.
     written: u64,
     /// The last `ServingInput::Taken` (none: never reported, no flow control).
@@ -240,7 +240,7 @@ impl ServingSession {
             crossed: HashSet::new(),
             keys: HashMap::new(),
             struck: false,
-            holder: None,
+            co_reader: None,
             written: 0,
             taken: None,
             owed: VecDeque::new(),
@@ -248,8 +248,8 @@ impl ServingSession {
     }
 
     /// The dialable key of the last co-reader proof that opened a label here (spec/sync.md §5).
-    pub fn holder(&self) -> Option<[u8; 32]> {
-        self.holder
+    pub fn co_reader(&self) -> Option<[u8; 32]> {
+        self.co_reader
     }
 
     /// Labels opened on this connection (an open a new head ended stays listed until a
@@ -273,7 +273,7 @@ impl ServingSession {
     fn holds(&mut self, store: &dyn LabelStore, label: &LabelId) -> Result<bool, StoreError> {
         Ok(match self.opened.get(label).copied() {
             None => false,
-            Some(Under::Holder) => true,
+            Some(Under::CoReader) => true,
             Some(Under::Sync(k)) => self.keys(store, label)?.is_some_and(|h| h.head.keys.sync == k),
         })
     }
@@ -577,14 +577,14 @@ impl ServingSession {
         if !self.opened.contains_key(&label) && self.opened.len() >= MAX_OPEN_LABELS {
             return Ok(Message::Error { id, code: Code::RATE_LIMITED });
         }
-        // a holder node's proof: the store knows its dialable key (spec/sync.md §5)
+        // a co-reader node's proof: the store knows its dialable key (spec/sync.md §5)
         if let Proof::CoReader { dialable, .. } = &proof {
             let key = dialable.to_bytes();
             if !(proof.verify_sig(&label, &self.cfg.challenge, &self.cfg.static_key).is_ok() && store.co_reader_open(&key, &label)?) {
                 return Ok(Message::Error { id, code: Code::REFUSED });
             }
-            self.opened.insert(label, Under::Holder);
-            self.holder = Some(key);
+            self.opened.insert(label, Under::CoReader);
+            self.co_reader = Some(key);
             return Ok(Message::Opened { id, head, entry_box: None });
         }
         Ok(match evaluate_open(&head, &Index { store, label: &label }, &proof, &self.cfg.challenge, &self.cfg.static_key)? {

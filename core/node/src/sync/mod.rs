@@ -363,7 +363,7 @@ pub struct SyncEngine {
     pub(crate) seq: u64,
     /// Per (host, label), the last pass end: its `seq` and when (corrected wall ms).
     /// Kept across disconnects on purpose: readers ask "a pass ended after X", never "on the live
-    /// connection". `complete_pass` counts only passes after the actor's last remote roles
+    /// connection". `complete_pass` counts only passes after the actor's last remote role
     /// commit (`roles_seen`), and finalizing an expired link only those ended after `until`;
     /// what reached the host after a pass end is the same race online, and a duplicate re-seal
     /// costs a box. Clearing would block re-seal and link finalization while one host is down.
@@ -455,7 +455,7 @@ pub struct SyncEngine {
     /// The next `publish_reach` writes a fresh lan secret.
     pub(crate) lan_rotate: bool,
     /// Whether `/reach` placed under a label that no longer qualifies is to be looked for
-    /// (`check_reach`: at start, after roles, policy and contact changes).
+    /// (`check_reach`: at start, after role, policy and contact changes).
     pub(crate) reach_check: bool,
     /// Served labels, until `/label`, role or peer steps change.
     pub(crate) served_cache: Option<Arc<BTreeMap<LabelId, serve::ServedLabel>>>,
@@ -803,7 +803,7 @@ impl SyncEngine {
     }
 
     /// Drains the engine's changes: the changed commits (`Engine::take_changed`) go to every
-    /// label's work set and mark every open label for a pass; events carry roles: roles
+    /// label's work set and mark every open label for a pass; events carry role changes: roles
     /// moved, keys, and remote role commits restart `complete_pass` for the actors they
     /// touch.
     pub(crate) fn engine_events(&mut self) -> Result<()> {

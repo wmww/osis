@@ -480,8 +480,8 @@ fn add_role_commit_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgePart
 }
 
 /// Does a path of held edge writes and owner links lead from `author` to a thing on `chain`?
-/// (The author's chain certificates, spec/permissions.md §1, §4: a path climbs roles
-/// edges and owner links, as perm's effective role counts them.) Searched backward from
+/// (The author's chain certificates, spec/permissions.md §1, §4: a path climbs role
+/// grants and owner links, as perm's effective role counts them.) Searched backward from
 /// `chain`, as perm's `roles_to_any`: from a thing to its owner and to the holders named on
 /// it, so the search stays within what has authority over the chain.
 pub(crate) fn reaches(core: &Core, author: &Tid, chain: &[Tid]) -> bool {

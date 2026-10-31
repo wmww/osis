@@ -40,7 +40,7 @@ fn co_readers_sync_without_host_spec_sync_5() {
 // spec/sync.md §5, §10: a reader node with only a co-reader peer reachable gets the writer's
 // content; the peer relays nothing it may not originate.
 #[test]
-fn reader_served_by_holder_peer_spec_sync_5() {
+fn reader_served_by_co_reader_peer_spec_sync_5() {
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let r = net.node(2, &[]);

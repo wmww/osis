@@ -205,7 +205,7 @@ impl Timelines {
     }
 
     /// The common case of `update_touched` in O(what changed): every touched thing is in a
-    /// component, with its `/created` and snapshots as before, and only gained roles
+    /// component, with its `/created` and snapshots as before, and only gained role
     /// commits that join nothing (author, holders and targets in its component); each such
     /// component goes on by `Timeline::append`. Or it is a new leaf (only its `/created` names
     /// it) of a component that gained no commits: `Timeline::add_leaves`. `None`: the case does

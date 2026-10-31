@@ -16,7 +16,7 @@ pub enum Domain {
     Delete,
     /// A LAN announcement, by a dialable key (spec/sync.md §10).
     LanAnnounce,
-    /// A holder node's open at a co-reader peer, by its dialable key (spec/sync.md §5).
+    /// A co-reader node's open at a co-reader peer, by its dialable key (spec/sync.md §5).
     CoReaderOpen,
 }
 

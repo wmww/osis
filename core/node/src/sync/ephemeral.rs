@@ -340,7 +340,7 @@ const PENDING_SHARE: u64 = 4;
 /// becomes its label's floor, at or below which relay-only entries are dropped, so none is
 /// delivered twice (0: only increasing expiries pass; infinity: memory grows with every signal of
 /// the replay window). About 200 bytes each: 13 MiB at the bound.
-const RELAYS_REHOLDERED: usize = 1 << 16;
+const RELAYS_REMEMBERED: usize = 1 << 16;
 
 /// Relay-only entries received: (label, blob) until their prefix expiry, and a floor per label.
 #[derive(Default)]
@@ -381,7 +381,7 @@ impl RelaySeen {
             return;
         }
         self.by_expiry.insert((t, l, b));
-        if self.ids.len() > RELAYS_REHOLDERED
+        if self.ids.len() > RELAYS_REMEMBERED
             && let Some((t0, l0, b0)) = self.by_expiry.pop_first()
         {
             self.ids.remove(&(l0, b0));
@@ -1693,12 +1693,12 @@ mod tests {
         let now = 1_000_000;
         assert!(r.first(l, b(0), now + 10, now));
         assert!(!r.first(l, b(0), now + 10, now), "a repeat");
-        for n in 1..=RELAYS_REHOLDERED as u32 {
+        for n in 1..=RELAYS_REMEMBERED as u32 {
             assert!(r.first(l, b(n), now + 10 + u64::from(n), now));
         }
         assert!(!r.first(l, b(0), now + 10, now), "forgotten, under the floor: still not twice");
         assert!(r.first(other, b(0), now + 10, now), "the floor is per label");
-        assert!(r.first(l, b(RELAYS_REHOLDERED as u32 + 1), now + 20 + RELAYS_REHOLDERED as u64, now));
+        assert!(r.first(l, b(RELAYS_REMEMBERED as u32 + 1), now + 20 + RELAYS_REMEMBERED as u64, now));
         // past their expiry entries and floors go
         assert!(r.first(l, b(7), now + 1_000_000_000, now + 500_000_000));
         assert_eq!(r.ids.len(), 1);

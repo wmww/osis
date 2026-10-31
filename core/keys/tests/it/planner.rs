@@ -80,7 +80,7 @@ fn demotion_scope() {
     assert!(plan_departure(&g, tid(2), tid(1), Role::Admin, Role::Write).entries.is_empty());
 }
 
-// spec/permissions.md §3: cycles of role terminate; a node that lost read access drops the
+// spec/permissions.md §3: role cycles terminate; a node that lost read access drops the
 // actor and what it reads by no other path.
 // spec/permissions.md §3 (drop lost secrets)
 #[test]

@@ -618,8 +618,8 @@ fn demotion_heavy_open() {
         } else {
             let w = 1 + rnd(5) as usize;
             let roles = [None, Some(Role::Read), Some(Role::Write)];
-            let (d, mem, r) = (docs[rnd(20) as usize], holders[rnd(30) as usize], roles[rnd(3) as usize]);
-            if let Some(id) = set(&mut lp.peers[w].engine, d, mem, r) {
+            let (d, h, r) = (docs[rnd(20) as usize], holders[rnd(30) as usize], roles[rnd(3) as usize]);
+            if let Some(id) = set(&mut lp.peers[w].engine, d, h, r) {
                 queue.push((w, id));
             }
         }

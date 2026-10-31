@@ -289,7 +289,7 @@ fn same_stamp_copies_converge_spec_4_1() {
 /// a map slot's entry creation keeps that creation for the join (the slot is not judged below
 /// the register's embedding while it holds a creation another body's content needs).
 #[test]
-fn slots_unmerge_keeps_holder_creation_spec_7() {
+fn slots_unmerge_keeps_slot_creation_spec_7() {
     use crate::fragment::{Entry, Map};
     let (a, b) = (st(2, 1, 1), st(3, 2, 1));
     let k = Value::Str("k".into());

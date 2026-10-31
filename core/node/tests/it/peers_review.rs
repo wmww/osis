@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Holder-peer serving limits and LAN routes (spec/sync.md §5, §10): tombstones, budgets,
+//! Co-reader-peer serving limits and LAN routes (spec/sync.md §5, §10): tombstones, budgets,
 //! session caps, refused strangers and removed holders, LAN candidates, co-reader caps.
 
 use crate::net;
@@ -352,7 +352,7 @@ fn lan_route_proven_by_up_spec_sync_10() {
 // proof by another key or a sync key nobody registered is refused, and once the node is removed
 // from the group its proof is refused too and its open session closed.
 #[test]
-fn holder_node_opens_with_proof_spec_sync_5() {
+fn co_reader_node_opens_with_proof_spec_sync_5() {
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let b = net.node(2, &[]);
@@ -377,7 +377,7 @@ fn holder_node_opens_with_proof_spec_sync_5() {
     let rec = recipients_of(e, &[(ta, Role::Admin)]);
     remove_holder(e, g, tb, &rec, 79);
     let acts = net.sync(a).handle(Event::Local);
-    assert!(acts.contains(&Action::Close { conn: p.conn }), "the holder session closes: {acts:?}");
+    assert!(acts.contains(&Action::Close { conn: p.conn }), "the co-reader session closes: {acts:?}");
     net.actions(a, acts);
     let (mut r, _) = dial_in(&mut net, a);
     let evs = command(&mut net, a, &mut r, Command::Open { label: l, key: OpenKey::CoReader(db) });

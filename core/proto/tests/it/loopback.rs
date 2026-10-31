@@ -315,14 +315,14 @@ fn stale_sync_key_gets_one_signed_step() {
 // before the store knows the key, another dialable key, or a sync key nobody registered is
 // refused.
 #[test]
-fn holder_open_spec_sync_5() {
+fn co_reader_open_spec_sync_5() {
     let mut net = Net::new(1, 0);
     let l = Label::new(3);
     net.setup(&l);
     let d = SigningSecret::from_seed(&s32(97));
-    let holder = Command::Open { label: l.id, key: OpenKey::CoReader(d.clone()) };
+    let co_reader = Command::Open { label: l.id, key: OpenKey::CoReader(d.clone()) };
     let stranger = Command::Open { label: l.id, key: OpenKey::Sync(SigningSecret::from_seed(&s32(98))) };
-    let ev = net.run(0, holder.clone());
+    let ev = net.run(0, co_reader.clone());
     assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]), "{ev:?}");
     net.store.co_reader_labels.insert((d.verifying_key().to_bytes(), l.id));
     let other = Command::Open { label: l.id, key: OpenKey::CoReader(SigningSecret::from_seed(&s32(96))) };
@@ -330,7 +330,7 @@ fn holder_open_spec_sync_5() {
     assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]), "{ev:?}");
     let ev = net.run(0, stranger);
     assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]), "{ev:?}");
-    let ev = net.run(0, holder);
+    let ev = net.run(0, co_reader);
     assert!(matches!(&ev[..], [ClientEvent::Opened { head, entry_box: None, .. }] if *head == l.steps[0]), "{ev:?}");
     let ev = net.run(0, sync(l.id, None, vec![], vec![]));
     assert!(ev.contains(&ClientEvent::Synced { label: l.id }), "{ev:?}");
@@ -339,7 +339,7 @@ fn holder_open_spec_sync_5() {
 // spec/sync.md §5, spec/wire.md §11.2: a proof 3 binds the session's challenge: one signed for
 // another session is refused.
 #[test]
-fn holder_proof_bound_to_session_spec_sync_5() {
+fn co_reader_proof_bound_to_session_spec_sync_5() {
     let mut net = Net::new(1, 0);
     let l = Label::new(3);
     net.setup(&l);
