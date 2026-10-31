@@ -22,7 +22,7 @@ The build and test mechanics are in notes/build.md; this note is the process aro
 - After each periodic run, append a row to the bug log in notes/mvp-progress.md: per area, bugs found and from which oracle, so convergence is read directly.
 - Two agents, not three, while the box runs at load above about 20; waiting on builds is the main cost.
 - Performance: the coordinator owns it (owner: "a little slower than optimal but much simpler, more correct or more verifiable is a good trade"). Budgets in notes/testing.md (Performance budgets); a new incremental path needs a measured miss of a budget in a realistic scenario, and simple from-scratch code that meets the budget wins.
-- App work (kit/, app/): planned with the owner in a separate UX/planning session (notes/app.md); it runs alongside core work and counts toward the agent limit.
+- App work (kit/, app/): planned with the owner in a separate UX/planning session (notes/app.md); it runs alongside core work and counts toward the agent limit. When no app session is active (owner, round 13: "nobody else is working on the app, feel free to fix any problems"), the core coordinator fixes app breakage (failing app tests, API adoption) itself.
 - Core asks from app work: whatever kit/app needs from core and core lacks becomes an issue tagged `core-ask` (plus the component); app work uses a workaround meanwhile (e.g. durable data until ephemeral data lands), never edits core itself. If the fix is not obvious, also tag `owner-call`: the owner reviews it in a core coordinator session.
 
 ## Periodic checks
