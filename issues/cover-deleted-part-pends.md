@@ -1,6 +1,6 @@
 # A part deleted under a cover that turns invalid pends its commit forever where it was never held
 > Summary: W drops a delta of commit X under C's snapshot S2 and deletes it at the server (uploading X's rewrite without it); A, away, removes C before seeing S2 (S2 invalid at A). A gets the rewrite, never the delta: X waits for it (WaitDeltas) forever, so A lacks X's other parts while W applied them. On main before the dropped-voucher fix too.
-> Tags: node, engine, retention, sim, owner-call
+> Tags: node, engine, retention, sim
 
 Found by sim `coverer_revoked` with random writes during A's absence (seed 6 of a variant running `sim.run(10)`/`run(20)` instead of `quiet` after the sever; the merged scenario keeps those steps calm to avoid it). There X was C's own (invalid) 3-part commit; the same happens for a valid writer's commit (W's own: W then has the delta missing again, its own write gone, while its other parts stay applied at W and never apply at A).
 
@@ -9,3 +9,6 @@ Why: `apply::waits_for_deltas` stops waiting for a missing node-form delta only 
 Options: (a) a missing delta that no node can supply counts as lost deterministically: e.g. a commit stops waiting for a delta a held snapshot of the aspect (any validity) lists in its frontier or `Absorbed`, the part then missing (joins if it ever arrives). Weakens atomic apply against forged snapshots (a removed writer or a reader could make others' commits apply partially until the part arrives); needs an owner call. (b) never delete at a server under a cover by another author until that cover is past some confirmation (does not end: validity can always flip later). (c) the deleting node keeps a covered delta while the cover's author could still be removed concurrently (unbounded).
 
 Timing variant (same family, without any server delete): a commit of the aspect arriving while S is valid stops waiting for a delta S's frontier reaches and applies with the part missing; arriving after S turned invalid it waits (`receipt::received` counts only valid snapshots' frontiers since snapshot-receipts). Option (a) would close both.
+
+
+Owner decision (round 13): option (a). A commit stops waiting for a part that a held snapshot of the aspect (any validity) lists as included; the rest applies, the part joins if it ever arrives. Accepted cost: a forged snapshot can make others show a change partly until the part arrives (never wrong data). Closes the timing variant too.
