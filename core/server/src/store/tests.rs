@@ -706,7 +706,15 @@ fn steps_count_toward_byte_caps() {
         e.clock.advance(1);
         assert_eq!(e.store.push_step(&l, v.clone(), None).unwrap(), Code::OK);
         assert_eq!(e.store.totals().unwrap().bytes, before + 3 * step);
-        let t = v;
+        // a clock set back waits at most one interval from there, never the jump
+        let w = child_of(&e.f, &v);
+        assert_eq!(e.store.push_step(&l, w.clone(), None).unwrap(), Code::STORAGE_CAP);
+        let now = e.clock.now_wall_ms().0;
+        e.clock.set(WallMs(now - 10 * cap.over_cap_step_ms));
+        assert_eq!(e.store.push_step(&l, w.clone(), None).unwrap(), Code::OK);
+        assert_eq!(e.store.totals().unwrap().bytes, before + 4 * step);
+        e.clock.set(WallMs(now));
+        let t = w;
         // an entry finds the label full too
         let big = vec![1u8; 4096];
         assert_eq!(e.store.put(&l, put(&big, true, None)).unwrap(), Code::STORAGE_CAP);

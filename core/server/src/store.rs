@@ -1434,7 +1434,10 @@ impl<B: Backend> LabelStore for BackendStore<B> {
             set_rows = None;
             size = step_bytes.len() as u64;
             over = !fits(size, total);
-            if over && self.now() < meta.over_cap_until {
+            // a wait longer than the interval (a clock set back, a shorter interval configured)
+            // is over: a label never waits more than one interval
+            let wait = meta.over_cap_until.saturating_sub(self.now());
+            if over && wait > 0 && wait <= self.policy.over_cap_step_ms {
                 return Ok(Code::STORAGE_CAP);
             }
         }
