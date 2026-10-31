@@ -217,24 +217,13 @@ impl Timeline {
         self.chain_searched(node, thing, at, &chains.changes)
     }
 
-    /// The walk's edge changes, by point, with each dropped grant (snapshot rosters included)
-    /// at its point where its edge is absent then: an earlier round's paths, never fewer.
+    /// The final walk's edge changes, by point, with each grant an earlier walk made (one with
+    /// fewer drops, `walk::spilled`) at its point where its edge is absent then: every walk's
+    /// paths. Removals and lowerings only take paths away.
     fn replayed(&self) -> Vec<Set> {
         let mut v: Vec<(Set, bool)> = self.walked.history.iter().map(|c| ((c.point, c.member, c.target, c.edge), false)).collect();
-        for id in self.dropped().keys() {
-            match *id {
-                WriteId::Op(c, k) => {
-                    let Some(cm) = self.input.commits.get(&c) else { continue };
-                    if let Some(o) = usize::try_from(k).ok().and_then(|k| cm.ops.get(k)) {
-                        v.push(((cm.point(), o.member, o.target, o.edge), true));
-                    }
-                }
-                WriteId::Snapshot(c) => {
-                    if let Some(s) = self.input.snaps.get(&c) {
-                        v.extend(s.roster.iter().map(|(m, e)| ((s.point(), *m, s.thing, Some(*e)), true)));
-                    }
-                }
-            }
+        if !self.dropped().is_empty() {
+            v.extend(walk::spilled(&self.input).into_iter().map(|c| ((c.point, c.member, c.target, c.edge), true)));
         }
         v.sort_by_key(|c| c.0 .0);
         let mut cur: BTreeMap<(Tid, Tid), Edge> = self.walked.initial.iter().map(|(m, t, e)| ((*m, *t), *e)).collect();
