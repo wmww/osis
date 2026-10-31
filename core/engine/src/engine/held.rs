@@ -65,6 +65,10 @@ impl Held {
     pub fn created(&self, t: &Tid) -> Option<&CreationRecord> {
         self.created.get(t).map(|r| &r.record)
     }
+    /// The held things whose record names `t` as owner.
+    pub fn owned(&self, t: &Tid) -> impl Iterator<Item = &Tid> {
+        self.owned.get(t).into_iter().flatten()
+    }
     /// Whether `t`'s record is held and memory class.
     pub fn is_memory(&self, t: &Tid) -> bool {
         self.created.get(t).is_some_and(|r| r.memory)

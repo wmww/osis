@@ -679,12 +679,14 @@ pub(crate) fn memory_chain(core: &Core, t: &Tid) -> Vec<(Tid, CreationRecord)> {
 }
 
 /// The records a memory commit carries beside its delta on `(tid, ak)` (spec/commits.md §2):
-/// the memory chains of `tid` and, on `/placed`, of the things its ops place.
+/// the memory chains of `tid` and, on `/placed`, of the things its ops place that have `tid`'s
+/// reader (a record names its nonce, its dedup secret: never shown to another reader).
 fn memory_records(core: &Core, tid: &Tid, ak: &Ak, ops: &[PathOp]) -> Vec<CreationRecord> {
     let mut things = vec![*tid];
     if ak.as_str() == osis_schema::core_types::PLACED.ak() {
+        let reader = core.reader_of(tid);
         things.extend(ops.iter().filter_map(|o| match &o.op {
-            Op::Add(Value::Tid(x)) => Some(*x),
+            Op::Add(Value::Tid(x)) if core.reader_of(x) == reader => Some(*x),
             _ => None,
         }));
     }
