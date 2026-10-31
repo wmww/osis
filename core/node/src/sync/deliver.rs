@@ -170,7 +170,7 @@ impl SyncEngine {
     }
 
     /// Whether `g`'s closure holds a thing commit `c` touches (its labels are `c`'s own).
-    pub(crate) fn under_own_label(&self, g: &Tid, c: &CommitId) -> bool {
+    fn under_own_label(&self, g: &Tid, c: &CommitId) -> bool {
         let Some(h) = self.engine.header(c) else { return false };
         let closure = self.engine.closure(g);
         h.aspects.iter().any(|a| closure.contains(&a.tid))
@@ -385,18 +385,17 @@ impl SyncEngine {
             let Some(how) = self.engine.may_remove(&t, &g) else { continue };
             // a pair or scope reaching a group held for receipts only is left to its holders:
             // its state here is stale and nothing would go under its labels from here
-            let mut reach: BTreeSet<Tid> = [t, g].into();
-            if how == crate::flows::Untie::Explicit {
-                reach.extend(self.engine.presync_scope(&t, &g, None));
-            }
+            let explicit = how == crate::flows::Untie::Explicit;
+            let scope = if explicit { self.engine.presync_scope(&t, &g, None) } else { BTreeSet::new() };
+            let reach: BTreeSet<Tid> = scope.iter().copied().chain([t, g]).collect();
             if !self.receipts_groups(&reach).is_empty() {
                 continue;
             }
-            if how == crate::flows::Untie::Explicit {
+            if explicit {
                 let since = [g, t].iter().filter_map(|a| self.membership_seen.get(a)).copied().max().unwrap_or(0);
                 let mut holding: BTreeSet<Tid> = BTreeSet::new();
-                for x in self.engine.presync_scope(&t, &g, None) {
-                    holding.extend(self.groups_holding(&x));
+                for x in &scope {
+                    holding.extend(self.groups_holding(x));
                 }
                 if !holding.is_empty() && !self.passed_since(&holding, since, &[g, t]) {
                     continue;
