@@ -4,3 +4,4 @@
 - Adding `tied` to every `since: None }` edge literal by sed (~60 sites) worked; `ct::Edge` has no `Default`, so every new field touches every test literal.
 - Review: the sim World could cut a database off the network only as a whole; a partition from one server (the case the obligation's wait must survive) needed `World::set_reachable`.
 - I reverted my own uncommitted edits with `git checkout <file>` after a fix-disabled probe; for such probes, edit back by hand or commit a wip first.
+- Review 2: the first reviewer's findings were only in its report (subagent transcript), not in the branch or notes; I had to dig them out to check them.

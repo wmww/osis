@@ -309,3 +309,27 @@ fn placement_pruned_by_a_reset_counts_as_gone() {
         assert!(!db.roster(t).contains_key(&g), "the tied edge went");
     }
 }
+
+// spec/permissions.md §2 (held dead), §5 (a demotion invalidates the demoted writer's later
+// writes): offline, Bob shares his card into the tag while Alice demotes him to reader of the tag.
+// His placement is invalid everywhere and never arrives; his tied edge on his own card is valid.
+// The tie names an element no node will hold: the edge must go, not wait forever.
+#[test]
+fn invalidated_placement_removes_the_tied_edge() {
+    let Setup { mut w, alice, bob, carol, g } = setup();
+    let t = card(&bob, "plan");
+    bob.write_with(|w| w.place(t, bob.home())).unwrap();
+    w.run();
+    w.set_online(&bob, false);
+    assert_eq!(bob.share_into(t, g, Role::Read, ShareOpts::default()).unwrap(), Share::Tied(Role::Read));
+    w.until(alice.demote(g, bob.me(), osis::Lower::To(Role::Read), osis::Demotion::default()), 1000, 20).expect("pre-sync").unwrap();
+    w.run();
+    w.set_online(&bob, true);
+    for _ in 0..4 {
+        w.advance(70_000);
+    }
+    for db in [&alice, &bob, &carol] {
+        assert!(!listed(db, g, t), "the placement is invalid");
+        assert!(!db.roster(t).contains_key(&g), "the tied edge went");
+    }
+}
