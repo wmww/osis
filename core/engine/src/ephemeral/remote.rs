@@ -352,8 +352,24 @@ impl Engine {
             let u = r.unsent.entry((*tid, ak.clone())).or_default();
             // the actor's earlier unsent writes this one supersedes are never sent (spec/sync.md
             // §9): a cursor moved during an upload in flight goes once, not once per expiry
-            u.retain(|(x, exp), f| *x != actor || *exp == expires || !supersedes(delta, expires, f, *exp));
+            // and go from the author's state as from every holder's (`drop_superseded_by`)
+            let mut gone = BTreeSet::new();
+            u.retain(|(x, exp), f| {
+                let keep = *x != actor || *exp == expires || !supersedes(delta, expires, f, *exp);
+                if !keep {
+                    gone.extend(f.writes().into_iter().filter_map(|(d, ts)| ts.map(|_| d)));
+                }
+                keep
+            });
             u.entry((actor, expires)).or_default().join(delta.clone());
+            if !gone.is_empty()
+                && let Some(ea) = self.eph.aspects.get_mut(tid).and_then(|m| m.get_mut(ak))
+            {
+                ea.state.strip(&|d| gone.contains(d));
+                if let Some(o) = &mut ea.own {
+                    o.strip(&|d| gone.contains(d));
+                }
+            }
         } else {
             self.eph.remote.local.insert(*tid);
         }
@@ -537,21 +553,21 @@ impl Engine {
         for c in cands {
             let Some(x) = self.eph.remote.held.get(&c) else { continue };
             let Some(by) = self.eph_superseders(&c, &x.header, &x.parts) else { continue };
-            if !x.own {
-                let header = x.header.clone();
-                let stripped: Vec<(Tid, Ak, BTreeSet<osis_crdt::Dot>)> = x
-                    .parts
-                    .iter()
-                    .filter(|p| p.valid)
-                    // its own writes (stamped), not the records of others it wrote into
-                    .filter_map(|p| header.aspects.get(p.ai).map(|a| (a.tid, a.ak.clone(), p.fragment.writes().into_iter().filter_map(|(d, ts)| ts.map(|_| d)).collect())))
-                    .collect();
-                for (t, ak, dots) in stripped {
-                    if let Some(ea) = self.eph.aspects.get_mut(&t).and_then(|m| m.get_mut(&ak)) {
-                        ea.state.strip(&|d| dots.contains(d));
-                        if let Some(o) = &mut ea.own {
-                            o.strip(&|d| dots.contains(d));
-                        }
+            // its own writes (stamped), not the records of others it wrote into; at its author
+            // too (this session's are in the own writes): else the author alone would read it
+            // again once the newer write dies (a removal of the newer entry)
+            let header = x.header.clone();
+            let stripped: Vec<(Tid, Ak, BTreeSet<osis_crdt::Dot>)> = x
+                .parts
+                .iter()
+                .filter(|p| p.valid)
+                .filter_map(|p| header.aspects.get(p.ai).map(|a| (a.tid, a.ak.clone(), p.fragment.writes().into_iter().filter_map(|(d, ts)| ts.map(|_| d)).collect())))
+                .collect();
+            for (t, ak, dots) in stripped {
+                if let Some(ea) = self.eph.aspects.get_mut(&t).and_then(|m| m.get_mut(&ak)) {
+                    ea.state.strip(&|d| dots.contains(d));
+                    if let Some(o) = &mut ea.own {
+                        o.strip(&|d| dots.contains(d));
                     }
                 }
             }
@@ -997,6 +1013,9 @@ impl Engine {
                 return Ok(EphIngest::Pending);
             }
         }
+        // the clock advances to a held commit's ts (spec/crdt.md §2.2): a write here after it,
+        // such as a removal of what it put, stamps above it
+        self.core.hlc.observe(h.ts);
         // the records of ephemeral things it brings
         let received = self.now();
         for (t, rec) in &carried {
@@ -1434,6 +1453,8 @@ impl Engine {
         self.retry_invalid();
         let empty = BTreeMap::new();
         let mut flips: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+        // commits with a part turned valid: what they supersede goes, as on arrival
+        let mut valid_now = Vec::new();
         let ids: Vec<CommitId> = self.eph.remote.held.keys().copied().collect();
         for id in ids {
             let Some(mut h) = self.eph.remote.held.remove(&id) else { continue };
@@ -1444,6 +1465,9 @@ impl Engine {
                     && let Some(a) = h.header.aspects.get(p.ai)
                 {
                     flips.insert((a.tid, a.ak.clone()));
+                    if p.valid {
+                        valid_now.push(id);
+                    }
                 }
             }
             self.eph.remote.held.insert(id, h);
@@ -1474,6 +1498,9 @@ impl Engine {
                 self.free_unused_records(recs);
             }
             self.drop_absorbed();
+            for id in valid_now {
+                self.drop_superseded_by(id);
+            }
             self.core.events.queue(Event::Changed { cause: crate::events::Cause::Validity, changed });
             self.core.events.flush();
         }
@@ -1914,7 +1941,9 @@ fn supersedes(q: &Fragment, q_exp: Option<u64>, p: &Fragment, p_exp: Option<u64>
     let Some(tp) = p_exp else { return false };
     // a sequence's or bag's elements all show in the read: none shadows another's (cheap out
     // for appended events)
-    if q_exp.is_some_and(|t| t < tp) || matches!(q, Fragment::Seq(_) | Fragment::Bag(_)) {
+    // a reset in `q` would make the relation intransitive (a later write without it need not
+    // hide `p`), and the drop order-dependent
+    if q_exp.is_some_and(|t| t < tp) || matches!(q, Fragment::Seq(_) | Fragment::Bag(_)) || q.has_any_reset() {
         return false;
     }
     let Some(newest_p) = p.writes().into_iter().filter_map(|(_, ts)| ts).max() else { return false };

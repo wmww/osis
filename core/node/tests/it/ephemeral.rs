@@ -2467,17 +2467,20 @@ fn many_authors_run(authors: usize, secs: u64) -> (usize, usize, u64, u64) {
 
 // spec/sync.md §9 (an expiring commit superseded by its author's later writes is dropped and its
 // author deletes it, coalescing while an upload is in flight), §5 (servers rate-limit deletes and
-// cap ephemeral bytes per label): 10 authors at 30 cursor moves a second, scaled to a 1 s window
+// cap ephemeral bytes per label): 4 authors at 30 cursor moves a second, scaled to a 1 s window
+// (10 authors took 4.5-12 s: tier 2 below)
 #[test]
 fn many_authors_under_server_rates_spec_sync_9() {
-    let (up, del, peak, cap) = many_authors_run(10, 1);
-    eprintln!("10 authors, 1 s: {up} uploads, {del} deletes, peak {peak} of {cap} ephemeral bytes");
+    let (up, del, peak, cap) = many_authors_run(4, 1);
+    eprintln!("4 authors, 1 s: {up} uploads, {del} deletes, peak {peak} of {cap} ephemeral bytes");
 }
 
-// tier 2: the same for a whole simulated minute at the default policy
+// tier 2: 10 authors for 1 s, then for a whole simulated minute at the default policy
 #[test]
 #[ignore]
 fn many_authors_under_server_rates_large() {
+    let (up, del, peak, cap) = many_authors_run(10, 1);
+    eprintln!("10 authors, 1 s: {up} uploads, {del} deletes, peak {peak} of {cap} ephemeral bytes");
     let (up, del, peak, cap) = many_authors_run(10, 60);
     eprintln!("10 authors, 60 s: {up} uploads, {del} deletes, peak {peak} of {cap} ephemeral bytes");
 }
@@ -2508,6 +2511,85 @@ fn superseded_unsent_moves_one_commit_spec_sync_9() {
     let cs = net.engine(a).take_ephemeral().unwrap();
     assert_eq!(cs.len(), 1, "one commit for five moves");
     assert_eq!(cs[0].blob.header.aspects.iter().map(|x| x.expires).collect::<Vec<_>>(), vec![Some(last)], "the last move's");
+}
+
+// spec/sync.md §9 (a superseded commit's writes are held value-less at every node, its author
+// included): once a holder removes the newer entry at the key, the author and the holder both read
+// the key gone; the older entry does not show again at the author
+#[test]
+fn superseded_stays_gone_when_newer_removed_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let me = s(&net.tid(a).to_string());
+    let write = |net: &mut Net, n: usize, op: Op| {
+        let mut m = Mutation::new();
+        m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(me.clone())], op }).unwrap();
+        m.expires(w, &eph(CURSOR), osis_base::WallMs(net.now() + 30_000)).unwrap();
+        net.engine(n).write(m).unwrap();
+        local(net, n);
+        net.run();
+    };
+    write(&mut net, a, Op::Put(s("c0")));
+    net.advance(33);
+    write(&mut net, a, Op::Put(s("c1")));
+    // and a move superseded while unsent (never sent) goes from the author's state too
+    let mut m = Mutation::new();
+    m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(me.clone())], op: Op::Put(s("u")) }).unwrap();
+    m.expires(w, &eph(CURSOR), osis_base::WallMs(net.now() + 20_000)).unwrap();
+    net.engine(a).write(m).unwrap();
+    net.clock.advance(33);
+    write(&mut net, a, Op::Put(s("c1")));
+    let want = Some(Value::Map([(me.clone(), s("c1"))].into()));
+    assert_eq!((net.eph_read(a, w, CURSOR), net.eph_read(b, w, CURSOR)), (want.clone(), want));
+    // at the same wall time: the removal stamps above what it removes (spec/crdt.md §2.2)
+    let mut m = Mutation::new();
+    m.op(w, &eph(CURSOR), PathOp { path: vec![], op: Op::Remove(me.clone()) }).unwrap();
+    net.engine(b).write(m).unwrap();
+    local(&mut net, b);
+    net.run();
+    let gone = Some(Value::Map(BTreeMap::new()));
+    assert_eq!((net.eph_read(a, w, CURSOR), net.eph_read(b, w, CURSOR)), (gone.clone(), gone));
+}
+
+// spec/sync.md §9 (a superseding part's writes are all later than the superseded part's and it
+// carries no reset): an equal earlier write expiring later supersedes no later one, and a replace
+// of the aspect (a reset) supersedes nothing, so each stays held at the author and the holder
+#[test]
+fn superseding_needs_later_stamps_and_no_reset_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let me = s(&net.tid(a).to_string());
+    let held = |net: &mut Net, n: usize| net.engine(n).held_ephemeral().len();
+    let (ha, hb) = (held(&mut net, a), held(&mut net, b));
+    let write = |net: &mut Net, path: Vec<PathSeg>, op: Op, ms: u64| {
+        let mut m = Mutation::new();
+        m.op(w, &eph(CURSOR), PathOp { path, op }).unwrap();
+        m.expires(w, &eph(CURSOR), osis_base::WallMs(net.now() + ms)).unwrap();
+        net.engine(a).write(m).unwrap();
+        local(net, a);
+        net.run();
+        net.advance(33);
+    };
+    let key = vec![PathSeg::Key(me.clone())];
+    write(&mut net, key.clone(), Op::Put(s("x")), 60_000);
+    write(&mut net, key, Op::Put(s("x")), 30_000);
+    assert_eq!((held(&mut net, a) - ha, held(&mut net, b) - hb), (2, 2), "neither supersedes");
+    write(&mut net, Vec::new(), Op::Replace(Value::Map([(me.clone(), s("y"))].into())), 90_000);
+    assert_eq!((held(&mut net, a) - ha, held(&mut net, b) - hb), (3, 3), "a replace supersedes nothing");
+    let want = Some(Value::Map([(me, s("y"))].into()));
+    assert_eq!((net.eph_read(a, w, CURSOR), net.eph_read(b, w, CURSOR)), (want.clone(), want));
 }
 
 // spec/sync.md §9 (only a later write expiring no earlier, none of whose writes is into a record
