@@ -946,7 +946,7 @@ impl SyncEngine {
                     self.eph.capped.insert((conn, l, b));
                 }
                 // stamped under a write key older than the head's (a rotation this node had
-                // not read): again under the next one (the reply's head is taken meanwhile)
+                // not read): again under the next one (the new head comes by push or the next Sync)
                 Code::NOT_HEAD if key.is_some() => {
                     self.eph.restamp.insert((conn, l, b), key);
                 }
@@ -1297,10 +1297,9 @@ impl SyncEngine {
         self.eph_forget(&gone, out)
     }
 
-    /// Statuses of lane deletes are taken out (the rest returned for the durable path), with
-    /// whether one was refused under an older head (the reply's head is to be taken).
-    pub(crate) fn eph_delete_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>) -> (Vec<BlobId>, Vec<Code>, bool) {
-        let (mut rest, mut rest_codes, mut stale) = (Vec::new(), Vec::new(), false);
+    /// Statuses of lane deletes are taken out (the rest returned for the durable path).
+    pub(crate) fn eph_delete_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>) -> (Vec<BlobId>, Vec<Code>) {
+        let (mut rest, mut rest_codes) = (Vec::new(), Vec::new());
         for (b, code) in ids.into_iter().zip(codes) {
             let Some((item, key)) = self.eph.deletes.remove(&(conn, l, b)) else {
                 rest.push(b);
@@ -1311,7 +1310,6 @@ impl SyncEngine {
                 // signed under a key older than the head's (a rotation this node had not read):
                 // again under the next one
                 Code::NOT_HEAD => {
-                    stale = true;
                     self.eph.redelete.insert((conn, l, b), (item, Redo::Head(Some(key))));
                 }
                 Code::RATE_LIMITED => {
@@ -1323,7 +1321,7 @@ impl SyncEngine {
                 c => self.diag(format!("ephemeral delete refused: code {}", c.0)),
             }
         }
-        (rest, rest_codes, stale)
+        (rest, rest_codes)
     }
 
     /// Ephemeral entries held under `l` (serving peers): ID and entry.

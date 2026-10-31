@@ -118,9 +118,9 @@ pub enum ClientEvent {
     Step { label: LabelId, step: Step },
     Registered { label: LabelId },
     PathSteps { label: LabelId, steps: Vec<Step>, more: bool },
-    /// Status per entry of an Upload or a Sync, with the head when a code is 9.
-    EntryStatus { label: LabelId, blob_ids: Vec<BlobId>, codes: Vec<Code>, head: Option<Step> },
-    DeleteStatus { label: LabelId, blob_ids: Vec<BlobId>, codes: Vec<Code>, head: Option<Step> },
+    /// Status per entry of an Upload or a Sync.
+    EntryStatus { label: LabelId, blob_ids: Vec<BlobId>, codes: Vec<Code> },
+    DeleteStatus { label: LabelId, blob_ids: Vec<BlobId>, codes: Vec<Code> },
     /// A Deposit's answer; `budget` (entries, bytes left) only when it was signed by the head's
     /// deposit key.
     Budget { label: LabelId, blob_id: BlobId, code: Code, budget: Option<(u64, u64)> },
@@ -708,15 +708,15 @@ impl ClientSession {
                     _ => {}
                 }
             }
-            (Pending::Upload(label, blob_ids), M::Status { codes, head, .. }) if codes.len() == blob_ids.len() => event(out, E::EntryStatus { label, blob_ids, codes, head }),
-            (Pending::Delete(label, blob_ids), M::Status { codes, head, .. }) if codes.len() == blob_ids.len() => event(out, E::DeleteStatus { label, blob_ids, codes, head }),
+            (Pending::Upload(label, blob_ids), M::Status { codes, .. }) if codes.len() == blob_ids.len() => event(out, E::EntryStatus { label, blob_ids, codes }),
+            (Pending::Delete(label, blob_ids), M::Status { codes, .. }) if codes.len() == blob_ids.len() => event(out, E::DeleteStatus { label, blob_ids, codes }),
             (Pending::Subscribe(labels), M::Status { codes, .. }) if codes.len() == labels.len() => event(out, E::Subscribed { labels, codes }),
             (Pending::Unsubscribe, M::Ok { .. }) => {}
             (Pending::Deposit(label, blob_id), M::Budget { code, budget, .. }) => event(out, E::Budget { label, blob_id, code, budget }),
             (Pending::Sync { label, cursor: asked, entries, inline_limit, gained, empty }, M::SyncReply { events, want, codes, cursor, more, .. }) if codes.len() == entries.len() => {
                 if !entries.is_empty() {
                     let blob_ids = entries.iter().map(|e| osis_label::blob_id(&e.blob)).collect();
-                    event(out, E::EntryStatus { label, blob_ids, codes, head: None });
+                    event(out, E::EntryStatus { label, blob_ids, codes });
                 }
                 let empty = if events.is_empty() { empty.saturating_add(1) } else { 0 };
                 let stuck = more && events.is_empty() && (asked == Some(cursor) || empty >= MAX_EMPTY_PAGES);

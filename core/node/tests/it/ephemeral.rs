@@ -2512,18 +2512,29 @@ fn demoted_writer_entry_stops_spec_sync_5() {
 // spec/sync.md §5, §9: a writer compacts before it reads a rotation: the cover and the deletes
 // of what it absorbs (carried as replacements) are signed under the old write key and refused 9;
 // once the writer reads the rotation the cover lands and the absorbed entries go at the server.
+// Code 9 carries no head (spec/wire.md §11.2): the writer learns it by push, or unsubscribed by
+// its next resync's Sync.
 #[test]
 fn cover_across_unread_rotation_lands_spec_sync_9() {
+    cover_across_unread_rotation(true);
+    cover_across_unread_rotation(false);
+}
+
+fn cover_across_unread_rotation(subscribe: bool) {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
+    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], subscribe, ..SyncConfig::default() });
     let c = net.node(3, &[sv]);
     let x = net.node(4, &[sv]);
     let g = net.group(a, &[(b, Role::Write), (c, Role::Write), (x, Role::Read)], &[sv]);
     net.run();
     let w = window(&mut net, a, g, "w");
     net.run();
+    if !subscribe {
+        // the window reaches b by its resync
+        net.advance(60_000);
+    }
     for i in 0..4 {
         note(&mut net, b, w, &format!("k{i}"), &format!("v{i}"));
         net.run();

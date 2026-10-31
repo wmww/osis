@@ -175,7 +175,7 @@ pub enum Message {
     Path { id: Id, label: LabelId, after: Option<StepId> },
     PathReply { id: Id, steps: Vec<Step>, more: bool },
     Upload { id: Id, label: LabelId, entries: Vec<Entry> },
-    Status { id: Id, codes: Vec<Code>, head: Option<Step> },
+    Status { id: Id, codes: Vec<Code> },
     Deposit { id: Id, label: LabelId, blob: Vec<u8>, wrap: Wrap, sig: Signature },
     /// `budget` (entries, bytes left) only for a deposit signed by the head's deposit key.
     Budget { id: Id, code: Code, budget: Option<(u64, u64)> },
@@ -289,7 +289,7 @@ impl Message {
             M::Path { label, after, .. } => vec![k, id, l(label), Value::opt(after.as_ref().map(|a| Value::bytes(&a.0)))],
             M::PathReply { steps, more, .. } => vec![k, id, Value::List(steps.iter().map(step_value).collect()), Value::Bool(*more)],
             M::Upload { label, entries, .. } => vec![k, id, l(label), entries_value(entries)],
-            M::Status { codes, head, .. } => vec![k, id, codes_value(codes), Value::opt(head.as_ref().map(step_value))],
+            M::Status { codes, .. } => vec![k, id, codes_value(codes)],
             M::Deposit { label, blob, wrap, sig, .. } => vec![k, id, l(label), Value::bytes(blob), Value::bytes(wrap), Value::bytes(&sig.0)],
             M::Budget { code, budget, .. } => vec![k, id, Value::uint(code.0), Value::opt(budget.map(|(e, b)| Value::List(vec![Value::uint(e), Value::uint(b)])))],
             // An unencodable item (at above 2^63 - 1) becomes `[]`, which the peer rejects.
@@ -340,8 +340,8 @@ impl Message {
 fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
     let n = match kind {
         1 => 2,
-        0 | 2 | 3 | 6 | 18 | 20 | 21 | 22 => 3,
-        4 | 5 | 8 | 9 | 10 | 11 | 13 | 14 | 17 | 19 => 4,
+        0 | 2 | 3 | 6 | 11 | 18 | 20 | 21 | 22 => 3,
+        4 | 5 | 8 | 9 | 10 | 13 | 14 | 17 | 19 => 4,
         7 | 23 => 5,
         12 => 6,
         15 | 16 => 7,
@@ -373,7 +373,7 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
             Message::PathReply { id, steps, more: f.bool()? }
         }
         10 => Message::Upload { id, label: label(&mut f)?, entries: entries(f.list(1, MAX_ITEMS, "upload entries")?)? },
-        11 => Message::Status { id, codes: codes(f.list(1, usize::MAX, "status codes")?)?, head: f.opt()?.map(step_of).transpose()? },
+        11 => Message::Status { id, codes: codes(f.list(1, usize::MAX, "status codes")?)? },
         12 => Message::Deposit { id, label: label(&mut f)?, blob: f.bytes(MAX_BLOB)?, wrap: f.fixed()?, sig: Signature(f.fixed()?) },
         13 => Message::Budget { id, code: Code(f.uint()?), budget: f.opt()?.map(budget).transpose()? },
         14 => {
