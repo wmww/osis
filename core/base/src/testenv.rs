@@ -14,7 +14,7 @@ pub fn known() -> &'static [String] {
     static KNOWN: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     KNOWN.get_or_init(|| {
         let text = std::fs::read_to_string(KNOWN_FILE).unwrap_or_else(|e| panic!("reading {KNOWN_FILE}: {e}"));
-        text.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()
+        text.split_whitespace().map(String::from).collect()
     })
 }
 
