@@ -82,11 +82,15 @@ pub struct EpochInfo {
     /// (`MAX_READING`, `MAX_READING_PER_AUTHOR`); dropped with their last source commit
     /// (`drop_reading_from`).
     pub reading: BTreeSet<Unchecked>,
+    /// A derived epoch's order n where it differs from its n: the owner epoch's (past the cap,
+    /// `derived_n`). It orders (`RoleEpochs::is_newer`) by this, so derived epochs order as the
+    /// owner's (spec/crypto.md §3, §4).
+    pub order: Option<u64>,
 }
 
 impl Default for EpochInfo {
     fn default() -> EpochInfo {
-        EpochInfo { suite: SUITE, supersedes: BTreeSet::new(), applied: BTreeMap::new(), snapshot: false, established: None, secret: None, reading: BTreeSet::new() }
+        EpochInfo { suite: SUITE, supersedes: BTreeSet::new(), applied: BTreeMap::new(), snapshot: false, established: None, secret: None, reading: BTreeSet::new(), order: None }
     }
 }
 
@@ -343,22 +347,42 @@ impl RoleEpochs {
         self.is_established(e) && !self.superseded(e)
     }
 
+    /// `e`'s order n (spec/crypto.md §4): a derived epoch's is the owner epoch's, any other's
+    /// its n.
+    pub fn order(&self, e: &Epoch) -> u64 {
+        self.map.get(e).and_then(|i| i.order).unwrap_or(e.n())
+    }
+
+    /// Whether `a` is newer than `b` (spec/crypto.md §4): greater order n, then lower nonce.
+    /// `is_newer` where no derived epoch sits past the cap.
+    pub fn is_newer(&self, a: &Epoch, b: &Epoch) -> bool {
+        let (x, y) = (self.order(a), self.order(b));
+        x > y || (x == y && is_newer(a, b))
+    }
+
+    fn newest_of<'a>(&self, epochs: impl IntoIterator<Item = &'a Epoch>) -> Option<Epoch> {
+        epochs.into_iter().fold(None, |best: Option<Epoch>, e| match best {
+            Some(b) if !self.is_newer(e, &b) => Some(b),
+            _ => Some(*e),
+        })
+    }
+
     /// The newest current epoch.
     pub fn newest(&self) -> Option<Epoch> {
-        newest_of(&self.current())
+        self.newest_of(&self.current())
     }
 
     /// The newest current epoch whose secret is held.
     pub fn newest_held(&self) -> Option<(Epoch, &Secret32)> {
         let cur: Vec<Epoch> = self.current().into_iter().filter(|e| self.secret(e).is_some()).collect();
-        let e = newest_of(&cur)?;
+        let e = self.newest_of(&cur)?;
         self.secret(&e).map(|s| (e, s))
     }
 
     /// The newest established epoch whose secret is held, current or not (a stranded node's
     /// heartbeat, spec/permissions.md §4).
     pub fn newest_secret(&self) -> Option<(Epoch, &Secret32)> {
-        let e = newest_of(&self.held_established().map(|(e, _)| e).collect::<Vec<_>>())?;
+        let e = self.newest_of(&self.held_established().map(|(e, _)| e).collect::<Vec<_>>())?;
         self.secret(&e).map(|s| (e, s))
     }
 
@@ -378,17 +402,17 @@ impl RoleEpochs {
     /// reading-only ones included.
     pub fn held_newest_first(&self) -> Vec<(Epoch, &Secret32)> {
         let mut v: Vec<(Epoch, &Secret32)> = self.map.iter().filter_map(|(e, i)| i.secret.as_ref().map(|s| (*e, s))).collect();
-        // newest first: greater n, then lower nonce (`is_newer`)
-        v.sort_by_key(|(e, _)| (std::cmp::Reverse(e.n()), *e.nonce()));
+        // newest first: greater order n, then lower nonce (`is_newer`; one order n is one n)
+        v.sort_by_key(|(e, _)| (std::cmp::Reverse(self.order(e)), *e.nonce()));
         v
     }
 }
 
 /// The n of the epochs derived from an owner epoch at `n` (spec/crypto.md §3): the owner's, capped
 /// so that a thing's own chain starts at most at `MAX_FREE_N` and a member holding no secret of
-/// the owner establishes it within headroom, whatever n a writer of the owner jumped to. Below the
-/// cap derived epochs order as the owner's (a re-registrar steps a plain group's labels on each
-/// owner rotation, a writer picks the owner's newest fork).
+/// the owner establishes it within headroom, whatever n a writer of the owner jumped to. Derived
+/// epochs still order as the owner's (`EpochInfo::order`): a re-registrar steps a plain group's
+/// labels on each owner rotation, a writer picks the owner's newest fork.
 fn derived_n(n: u64) -> u64 {
     n.min(MAX_FREE_N - 1)
 }
@@ -472,6 +496,7 @@ impl ActorEpochs {
                     established: i.established.map(|_| Provenance::Derived),
                     secret: ds.clone(),
                     reading: i.reading.clone(),
+                    order: Some(o.order(e)).filter(|&x| x != de.n()),
                 };
                 a.role_mut(r).map.insert(*de, info);
             }
