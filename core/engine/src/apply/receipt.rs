@@ -18,7 +18,6 @@ use osis_crypto::VerifyingKey;
 use osis_crdt::{Frontiers, Source};
 use osis_perm::DemotionScope;
 use osis_schema::core_types::{Frontier, is_membership_class};
-use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Receipt-time granularity (local policy): adjacent ranges received within one bucket merge.
@@ -115,7 +114,7 @@ pub(crate) fn get(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Receipt> {
 
 fn put(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, r: &Receipt) -> Result<()> {
     tx.core.waits.wake(tid, ak);
-    Ok(tx.txn.put_local(&records::aspect_key(records::RECEIPT, tid, ak), &r.encode(), Shred::No)?)
+    tx.put_aspect_local(records::RECEIPT, tid, ak, &r.encode())
 }
 
 /// The held snapshots of `(tid, ak)`, any validity (bodies held, or dropped with their frontiers

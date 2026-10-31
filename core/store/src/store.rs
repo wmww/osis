@@ -633,7 +633,12 @@ impl Transaction<'_> {
     /// Deletes a blob. A memory blob never had a durable copy, and memory-mode work touches no
     /// durable blob: neither writes anything durable.
     pub fn delete_blob(&mut self, id: &BlobId) {
-        if !self.mem.blob_remove(id) && !self.memory {
+        if self.mem.blob_remove(id) {
+            return;
+        }
+        // a durable blob deleted in memory mode would be kept on disk: a bug
+        debug_assert!(!self.memory || self.pager.txn_get_blob(&self.d, id, 0, 0).ok().flatten().is_none(), "memory-mode delete of a durable blob");
+        if !self.memory {
             self.pager.txn_delete_blob(&mut self.d, *id);
         }
     }

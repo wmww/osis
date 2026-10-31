@@ -211,7 +211,7 @@ pub(crate) fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<
                 drop_part(tx, c, x)?;
             }
         } else {
-            tx.txn.put_local(&records::timer_key(t, c, ai), &[T_AT_MOST], Shred::No)?;
+            tx.put_timer(t, c, ai, T_AT_MOST)?;
         }
     }
     Ok(())
@@ -404,7 +404,7 @@ fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(Ti
         list.push(o.clone());
     }
     let enc = encode_owned(list);
-    tx.txn.put_local(&records::aspect_key(records::VALUELESS, &a.tid, &a.ak), &enc, Shred::No)?;
+    tx.put_aspect_local(records::VALUELESS, &a.tid, &a.ak, &enc)?;
     // the delta's writes lie where it touched the state (a page of a paged state)
     let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect();
     tx.strip_bodies(&a.tid, &a.ak, &bodies, &o)?;
@@ -624,7 +624,7 @@ pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(T
             if t <= tx.now().0 {
                 expire(tx, id, ai, &mut purged)?;
             } else {
-                tx.txn.put_local(&records::timer_key(t, id, ai), &[T_EXPIRY], Shred::No)?;
+                tx.put_timer(t, id, ai, T_EXPIRY)?;
             }
         }
         // purge requests held before this delta arrived

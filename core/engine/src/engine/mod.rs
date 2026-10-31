@@ -855,6 +855,19 @@ impl Tx<'_> {
         self.core.ix.commits.get(c).is_some_and(|m| m.view.memory)
     }
 
+    /// Writes the local record `records::aspect_key(prefix, tid, ak)`: memory for a memory
+    /// aspect (as the store routes the aspect's own rows), whichever transaction writes it.
+    pub(crate) fn put_aspect_local(&mut self, prefix: &[u8], tid: &Tid, ak: &Ak, val: &[u8]) -> Result<()> {
+        let memory = self.txn.is_memory_aspect(tid, ak);
+        self.in_class(memory, |tx| Ok(tx.txn.put_local(&records::aspect_key(prefix, tid, ak), val, Shred::No)?))
+    }
+
+    /// Sets a retention timer of commit `c`'s part `ai` at `t`: memory for a memory commit.
+    pub(crate) fn put_timer(&mut self, t: u64, c: &CommitId, ai: usize, kind: u8) -> Result<()> {
+        let memory = self.is_memory_commit(c);
+        self.in_class(memory, |tx| Ok(tx.txn.put_local(&records::timer_key(t, c, ai), &[kind], Shred::No)?))
+    }
+
     /// Loads the state of `(tid, ak)` into the cache: a paged state lazily (its skeleton; pages
     /// as `ensure_*` and `load` need them).
     pub fn load_lazy(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
@@ -1445,6 +1458,7 @@ impl Engine {
                     self.core.timelines.saved(d);
                 }
                 self.core.commit_journal();
+                self.core.memory_tx = false;
                 self.core.events.flush();
                 Ok(v)
             }
@@ -1453,6 +1467,7 @@ impl Engine {
                 self.core.events.discard();
                 self.core.rollback();
                 self.core.stale_all = stale_all;
+                self.core.memory_tx = false;
                 Err(e)
             }
         }

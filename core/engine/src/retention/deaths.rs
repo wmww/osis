@@ -29,19 +29,19 @@ pub(crate) fn any_bounded(core: &Core, tid: &Tid, ak: &Ak) -> bool {
 }
 
 /// Whether a snapshot with frontier `fr` and `Absorbed` `abs` on `tid` is known, from those
-/// alone, to have been taken after its author applied the write of dot `o`: a node-form one under
-/// its frontier, a commit-form one when `abs` lists its commit or a held import of it. A snapshot
+/// alone, to have been taken after its author applied the write of dot `o`: a node- or
+/// session-form one under its frontier, a commit-form one when `abs` lists its commit or a held import of it. A snapshot
 /// may carry writes past these (a node-form write applied before an earlier counter, an import
 /// whose header this node does not hold): `Parts::holds` reads its body.
 fn took(core: &Core, tid: &Tid, fr: &osis_crdt::Frontiers, abs: &[(CommitId, Tid)], o: &osis_crdt::Dot) -> bool {
     let o = o.owner();
     match o.src.kind() {
-        osis_crdt::SourceKind::Node(n) => fr.nodes.get(n).is_some_and(|f| *f >= o.ctr),
+        osis_crdt::SourceKind::Node(_) | osis_crdt::SourceKind::Session(_) => fr.of(&o.src) >= o.ctr,
         osis_crdt::SourceKind::Commit(c) => {
             let imports = core.ix.imports.get(&(*tid, *c));
             abs.iter().any(|(a, _)| a == c || imports.is_some_and(|i| i.contains(a)))
         }
-        osis_crdt::SourceKind::Session(_) | osis_crdt::SourceKind::Derived(_) => false,
+        osis_crdt::SourceKind::Derived(_) => false,
     }
 }
 
@@ -294,8 +294,7 @@ pub(crate) fn mark_deaths_due(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()>
     let k = (*tid, ak.clone());
     if tx.core.ix.deaths_due.insert(k) {
         // a memory aspect's mark is memory (gone at restart, with the aspect)
-        let memory = tx.txn.is_memory_aspect(tid, ak);
-        tx.in_class(memory, |tx| Ok(tx.txn.put_local(&records::aspect_key(records::DEATHS_DUE, tid, ak), &[], Shred::No)?))?;
+        tx.put_aspect_local(records::DEATHS_DUE, tid, ak, &[])?;
     }
     Ok(())
 }
