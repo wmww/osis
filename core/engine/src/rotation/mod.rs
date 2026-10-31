@@ -1991,28 +1991,41 @@ mod tests {
         assert_eq!(settle(&mut lp, &[0, 2], &[x, y]), 0, "settled");
     }
 
-    // spec/permissions.md §3 (left out): D leaves M by itself (no rotation of M yet); a grant
-    // of M on T boxes T's epoch to M's newest, which D holds, so it leaves M out; M is re-sealed
-    // on T once M rotates.
+    // spec/permissions.md §3 (left out), §2 (invite grants): D leaves M by itself (no rotation
+    // of M yet). A grant of M on T by a node that may not rotate M (a reader of M; T's admin,
+    // or an invite holder on T whose grant then carries no box and stays valid) would box T's
+    // epoch to M's newest, which D holds, so it leaves M out; M is re-sealed on T once M's admin
+    // rotates it. A granter that may rotate M rotates it first and boxes M at once
+    // (spec/crypto.md §4: boxing to M is encrypting under M's epoch).
     #[test]
     fn grant_to_stale_member_leaves_out_spec_permissions_3() {
-        let mut lp = LocalPeer::new(2, 957, WallMs(1_700_000_000_000)).unwrap();
-        lp.sync_all().unwrap();
-        let d = lp.peers[1].engine.tid();
-        let m = group(&mut lp, 0);
-        lp.peers[0].engine.grant(&m, &d, &edge(Role::Read)).unwrap();
-        lp.sync_all().unwrap();
-        let start = held_by(&lp, 1, &[m]);
-        lp.peers[1].engine.demote(&m, &Demotion { member: d, new: None, presync: PreSync::Synced }).unwrap();
-        lp.sync_all().unwrap();
-        assert!(uncovered_at(&mut lp, 0, m).contains(&Role::Read), "M stale");
-        let t = group(&mut lp, 0);
-        lp.peers[0].engine.grant(&t, &m, &edge(Role::Write)).unwrap();
-        assert!(!leaked(&mut lp, 0, &[m, t], d, start.clone()).contains(&t), "after the grant");
-        assert!(!all_boxed(&mut lp, 0, &[t]), "M left out");
-        settle(&mut lp, &[0], &[m, t]);
-        assert!(all_boxed(&mut lp, 0, &[m, t]), "re-sealed");
-        assert_eq!(leaked(&mut lp, 0, &[m, t], d, start), Vec::<Tid>::new());
+        // granter: 0 T's admin reading M, 2 M's admin owning T, 0 by invite on T owned by 3
+        for (g, owner) in [(0, 0), (2, 2), (0, 3)] {
+            let mut lp = LocalPeer::new(4, 957, WallMs(1_700_000_000_000)).unwrap();
+            lp.sync_all().unwrap();
+            let d = lp.peers[1].engine.tid();
+            let p0 = lp.peers[0].engine.tid();
+            let m = group(&mut lp, 2);
+            lp.peers[2].engine.grant(&m, &d, &edge(Role::Read)).unwrap();
+            lp.peers[2].engine.grant(&m, &p0, &edge(Role::Read)).unwrap();
+            let t = group(&mut lp, owner);
+            if owner != g {
+                lp.peers[owner].engine.grant(&t, &p0, &ct::Edge { invite: Some(Role::Write), ..edge(Role::Write) }).unwrap();
+            }
+            lp.sync_all().unwrap();
+            let start = held_by(&lp, 1, &[m]);
+            lp.peers[1].engine.demote(&m, &Demotion { member: d, new: None, presync: PreSync::Synced }).unwrap();
+            lp.sync_all().unwrap();
+            assert!(uncovered_at(&mut lp, 0, m).contains(&Role::Read), "M stale");
+            lp.peers[g].engine.grant(&t, &m, &edge(Role::Write)).unwrap();
+            lp.sync_all().unwrap();
+            assert_eq!(lp.peers[owner].engine.roster(&t).get(&m).map(|e| e.role), Some(Role::Write), "a valid grant");
+            assert!(!leaked(&mut lp, owner, &[m, t], d, start.clone()).contains(&t), "after the grant");
+            assert_eq!(all_boxed(&mut lp, owner, &[t]), g == 2, "M left out unless its admin granted");
+            settle(&mut lp, &[2, owner], &[m, t]);
+            assert!(all_boxed(&mut lp, owner, &[m, t]), "re-sealed");
+            assert_eq!(leaked(&mut lp, owner, &[m, t], d, start), Vec::<Tid>::new());
+        }
     }
 
     /// Pairs (actor, role) whose newest epoch at the owner peer `owner(t)` is judged covered there

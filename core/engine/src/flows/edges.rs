@@ -145,13 +145,19 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, member
         }
         rotation::own_secrets(tx, target, &mut done)?;
     }
-    // boxing is encrypting under: rotate first where a known departure is uncovered
+    // boxing is encrypting under: rotate first where a known departure is uncovered (a member
+    // actor's own epochs too, by this node where it may)
+    if !tx.core.is_key_actor(&member) {
+        let me = tx.core.id.tid();
+        rotation::ensure_rotated(tx, me, member, &mut done)?;
+    }
     let roles = roles_up_to(edge.role);
     rotation::require_covered(tx, who, target, &roles, &mut done)?;
     let epochs = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
     let secrets = secrets_in(tx, &target)?;
-    // a member actor whose newest epoch does not cover its departures is left out of the roles
-    // above them (re-sealed once it rotates, spec/permissions.md §3)
+    // a member actor whose newest epoch still does not cover its departures (this node may not
+    // rotate it) is left out of the roles above them (re-sealed once it rotates,
+    // spec/permissions.md §3)
     let rcpt = recipient(tx, member, edge.role)?;
     let boxes = match rotation::grantee_left_out(tx, &rcpt)? {
         Some(rcpt) => box_member(&target, &epochs, &secrets, &rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the member's keyset is unknown"))?,
