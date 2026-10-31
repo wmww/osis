@@ -44,8 +44,8 @@ struct Setup {
 
 fn setup() -> Setup {
     let mut w = World::new();
-    let sv = w.add_host();
-    let [alice, bob, carol] = [1, 2, 3].map(|s| person(&mut w, s, sv));
+    let host = w.add_host();
+    let [alice, bob, carol] = [1, 2, 3].map(|s| person(&mut w, s, host));
     let b = introduce(&mut w, &alice, &bob);
     let c = introduce(&mut w, &alice, &carol);
     let g = new_tag(&alice, "Shared").unwrap();

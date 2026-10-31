@@ -37,9 +37,9 @@ fn group(db: &Osis) -> Tid {
 
 /// Alice and Bob on one host, Bob granted `role` on Alice's synced group.
 fn alice_bob(w: &mut World, role: Role) -> (Osis, Osis, Tid) {
-    let sv = w.add_host();
-    let (alice, _) = w.person(1, &[sv]);
-    let (bob, _) = w.person(2, &[sv]);
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
+    let (bob, _) = w.person(2, &[host]);
     w.run();
     let card = bob.contact_card().unwrap();
     w.run();
@@ -87,8 +87,8 @@ fn change_edge_and_leave_spec_permissions_2() {
 #[test]
 fn revoke_link_spec_permissions_9() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let (alice, _) = w.person(1, &[sv]);
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
     let g = group(&alice);
     alice.make_link(g, Role::Read, Default::default()).unwrap();
     let ls = alice.links(g);
@@ -124,8 +124,8 @@ fn demotion_presync_policies_spec_permissions_5_3() {
 #[test]
 fn watch_status_and_stranded_spec_permissions_3() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let (da, _) = w.person(1, &[sv]);
+    let host = w.add_host();
+    let (da, _) = w.person(1, &[host]);
     let (tx, rx) = std::sync::mpsc::channel();
     let _sub = da.watch_status(move |_, st| {
         let _ = tx.send(st);
@@ -158,8 +158,8 @@ fn watch_status_and_stranded_spec_permissions_3() {
 #[test]
 fn bundle_round_trip_spec_sync_11() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let (da, _) = w.person(1, &[sv]);
+    let host = w.add_host();
+    let (da, _) = w.person(1, &[host]);
     w.run();
     let join = Osis::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
     let (_, reply) = da.pair_accept(join.request()).unwrap();
@@ -182,8 +182,8 @@ fn bundle_round_trip_spec_sync_11() {
 #[test]
 fn waits_time_out_and_roll_back_spec_api_handle() {
     let mut a = World::new();
-    let sv = a.add_host();
-    let (alice, card) = a.person(1, &[sv]);
+    let host = a.add_host();
+    let (alice, card) = a.person(1, &[host]);
     let g = group(&alice);
     let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
     a.run();
@@ -196,7 +196,7 @@ fn waits_time_out_and_roll_back_spec_api_handle() {
     let r = w.until(Osis::restore(c.clone(), &card), 1000, 10);
     assert!(matches!(r, Err(Error::Network(_))), "{r:?}");
     assert!(Osis::open(c).is_err(), "no person record after a failed restore");
-    let (bob, _) = a.person(2, &[sv]);
+    let (bob, _) = a.person(2, &[host]);
     {
         let f = bob.redeem(&link);
         let mut f = std::pin::pin!(f);
@@ -216,12 +216,12 @@ fn waits_time_out_and_roll_back_spec_api_handle() {
 #[test]
 fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let (alice, _) = w.person(1, &[sv]);
-    let (bob, _) = w.person(2, &[sv]);
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
+    let (bob, _) = w.person(2, &[host]);
     // Carol's own clock: kept with the world's, then left behind while she is offline
     let cl = clock();
-    let mut c = w.cfg(3, &[sv]);
+    let mut c = w.cfg(3, &[host]);
     c.clock = Some(cl.clone());
     let carol = Osis::create(c).unwrap().0;
     w.run();
@@ -264,9 +264,9 @@ fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
 #[test]
 fn invite_requests_accept_and_decline_spec_sync_3() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let (alice, _) = w.person(1, &[sv]);
-    let (bob, _) = w.person(2, &[sv]);
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
+    let (bob, _) = w.person(2, &[host]);
     let bi = w.index(&bob).unwrap();
     w.holds_invites.insert(bi);
     w.run();
@@ -300,9 +300,9 @@ fn invite_requests_accept_and_decline_spec_sync_3() {
 #[test]
 fn contact_invite_goes_through_spec_sync_3() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let (alice, _) = w.person(1, &[sv]);
-    let (bob, _) = w.person(2, &[sv]);
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
+    let (bob, _) = w.person(2, &[host]);
     let bi = w.index(&bob).unwrap();
     w.holds_invites.insert(bi);
     w.run();

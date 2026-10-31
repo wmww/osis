@@ -757,9 +757,9 @@ mod tests {
     fn unaccepted_conn_removed_on_drop() {
         let net = Net::new(1);
         let mut s = Sched::new(1, Some(net.clone()));
-        let srv = net.endpoint("srv");
+        let serving = net.endpoint("listener");
         let l = s
-            .block_on(async move { srv.listen(ListenConfig { url: "mem://srv".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap() })
+            .block_on(async move { serving.listen(ListenConfig { url: "mem://listener".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap() })
             .unwrap();
         let (cli, addr) = (net.endpoint("cli"), l.address());
         let c = s.block_on(async move { cli.dial(&addr).await.unwrap() }).unwrap();
@@ -774,9 +774,9 @@ mod tests {
     fn peer_url_dials_by_key_spec_sync_10() {
         let net = Net::new(2);
         let mut s = Sched::new(2, Some(net.clone()));
-        let srv = net.endpoint("srv");
+        let serving = net.endpoint("listener");
         let l = s
-            .block_on(async move { srv.listen(ListenConfig { url: "mem://srv".into(), secret: StaticSecret::from_bytes([3; 32]) }).await.unwrap() })
+            .block_on(async move { serving.listen(ListenConfig { url: "mem://listener".into(), secret: StaticSecret::from_bytes([3; 32]) }).await.unwrap() })
             .unwrap();
         let key = l.address().key;
         let cli = net.endpoint("cli");
@@ -797,9 +797,9 @@ mod tests {
     fn finished_streams_dropped() {
         let net = Net::new(3);
         let mut s = Sched::new(3, Some(net.clone()));
-        let srv = net.endpoint("srv");
+        let serving = net.endpoint("listener");
         let mut l = s
-            .block_on(async move { srv.listen(ListenConfig { url: "mem://srv".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap() })
+            .block_on(async move { serving.listen(ListenConfig { url: "mem://listener".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap() })
             .unwrap();
         let (cli, addr) = (net.endpoint("cli"), l.address());
         let c = s.block_on(async move { cli.dial(&addr).await.unwrap() }).unwrap();

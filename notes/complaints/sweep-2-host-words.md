@@ -1,3 +1,5 @@
 - Rename script: protecting rustls's `with_server_*` by pattern also protected a test name (`..._with_server_unreachable_...`); protect exact third-party names, not prefixes.
 - The step-2 hunt `G -i server` always matches issues/one-node-kind.md (its own rename table) and the mvp-progress entry of step 1; the issue's residue list could name both.
-- Tracked browser console logs under app/mockup/.playwright-cli/ match every word hunt; they look like stray tool output.
+- Review: app/mockup/.playwright-cli/ held 157 tracked playwright files (page snapshots and console logs), now deleted and ignored.
+- Review: the hunts miss abbreviations. `sv` (about 1250 test/sim locals) and `srv`/`srvRot` (transport tests, TLA) were left; a census of short forms (`sv`, `srv`) belongs in the hunt.
+- Review: TLA junction lists are indentation-sensitive. Renaming `FromSrv` to `FromHost` shifted its `/\` bullets one column and TLC failed TypeOK; a TLA rename must realign continuation bullets, then compare state counts with `run.sh small`.

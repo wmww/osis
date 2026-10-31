@@ -1,4 +1,4 @@
-//! Signatures of label operations and their serving-side checks (spec/sync.md §5, spec/wire.md
+//! Signatures of label operations and their checks at a host (spec/sync.md §5, spec/wire.md
 //! §9, §11.2): open proofs and their evaluation against a registration path, stamps, deposits,
 //! deletes by the label delete key or by a delete-key signature.
 

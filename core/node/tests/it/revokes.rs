@@ -16,14 +16,14 @@ use osis_schema::core_types as ct;
 #[test]
 fn revoke_about_author_placed_spec_permissions_4() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let w = net.node(3, &[sv]);
-    let r = net.node(4, &[sv]);
-    let x = net.group_seeded(b, &[(w, Role::Write), (r, Role::Read)], vec![net.address(sv)], 1);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let w = net.node(3, &[host]);
+    let r = net.node(4, &[host]);
+    let x = net.group_seeded(b, &[(w, Role::Write), (r, Role::Read)], vec![net.address(host)], 1);
     net.pair(b, a);
-    let g = net.group_seeded(a, &[], vec![net.address(sv)], 2);
+    let g = net.group_seeded(a, &[], vec![net.address(host)], 2);
     let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
     let done = net.engine(a).grant(&g, &x, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -48,7 +48,7 @@ fn revoke_about_author_placed_spec_permissions_4() {
         net.advance(31_000);
     }
     assert!(net.engine(r).header(&removal).is_some(), "R holds the revoke");
-    let ids = net.host_ids(sv, &lg);
+    let ids = net.host_ids(host, &lg);
     let placed = net.sync(r).entries(&lg).into_iter().any(|(id, k)| ids.contains(&id) && matches!(k, EntryKind::Commit { commit, .. } if commit == removal));
     assert!(placed, "the revoke of W on X is under G's label");
     // G's admin learns of it there and rotates G: W reads nothing new
@@ -70,19 +70,19 @@ fn revoke_about_author_placed_spec_permissions_4() {
 #[test]
 fn nested_departure_revoke_placed_spec_permissions_4() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let w = net.node(3, &[sv]);
-    let r = net.node(4, &[sv]);
-    let x2 = net.group_seeded(b, &[(w, Role::Write), (r, Role::Read)], vec![net.address(sv)], 1);
-    let x1 = net.group_seeded(b, &[], vec![net.address(sv)], 2);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let w = net.node(3, &[host]);
+    let r = net.node(4, &[host]);
+    let x2 = net.group_seeded(b, &[(w, Role::Write), (r, Role::Read)], vec![net.address(host)], 1);
+    let x1 = net.group_seeded(b, &[], vec![net.address(host)], 2);
     let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
     let done = net.engine(b).grant(&x1, &x2, &edge).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
     net.pair(b, a);
-    let g = net.group_seeded(a, &[], vec![net.address(sv)], 3);
+    let g = net.group_seeded(a, &[], vec![net.address(host)], 3);
     let done = net.engine(a).grant(&g, &x1, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -111,7 +111,7 @@ fn nested_departure_revoke_placed_spec_permissions_4() {
         net.advance(31_000);
     }
     assert!(net.engine(r).header(&removal).is_some(), "R holds the revoke");
-    let ids = net.host_ids(sv, &lg);
+    let ids = net.host_ids(host, &lg);
     let placed = net.sync(r).entries(&lg).into_iter().any(|(id, k)| ids.contains(&id) && matches!(k, EntryKind::Commit { commit, .. } if commit == removal));
     assert!(placed, "the revoke of W on X2 is under G's label");
     let u = net.item(a, g, g, "after w left");

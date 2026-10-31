@@ -497,8 +497,8 @@ impl State {
             s.index(*l, *b, e, true);
         }
         s.entries = entries;
-        s.present_by = s.present.iter().map(|(sv, l, b)| (*l, *b, *sv)).collect();
-        s.gone_by = s.gone.iter().map(|(sv, l, b)| (*l, *b, *sv)).collect();
+        s.present_by = s.present.iter().map(|(host, l, b)| (*l, *b, *host)).collect();
+        s.gone_by = s.gone.iter().map(|(host, l, b)| (*l, *b, *host)).collect();
         s.deleted = s.tombs.iter().filter_map(|((l, b), t)| s.blobs.get(b).filter(|r| !r.cert).map(|r| ((*l, r.commit), *t))).collect();
         Ok(s)
     }

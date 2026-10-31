@@ -10,8 +10,8 @@ use osis_schema::core_types as ct;
 
 /// Node 0 admin of a group with a label, node 1 a reader with invite read, node 2 a stranger
 /// node 1 knows. Returns (group, its label, node 1's invite grant of node 2).
-fn invite(net: &mut Net, sv: usize) -> (osis_base::Tid, osis_base::LabelId, osis_base::CommitId, osis_node::flows::Done) {
-    let g = net.group(0, &[(1, Role::Read)], &[sv]);
+fn invite(net: &mut Net, host: usize) -> (osis_base::Tid, osis_base::LabelId, osis_base::CommitId, osis_node::flows::Done) {
+    let g = net.group(0, &[(1, Role::Read)], &[host]);
     let b = net.tid(1);
     let raise = ct::Edge { role: Role::Read, until: None, invite: Some(Role::Read), since: None, tied: None };
     let done = net.engine(0).grant(&g, &b, &raise).unwrap();
@@ -28,9 +28,9 @@ fn invite(net: &mut Net, sv: usize) -> (osis_base::Tid, osis_base::LabelId, osis
 }
 
 /// Records of the host's log of `l`: (added, deleted).
-fn log(net: &Net, sv: usize, l: &osis_base::LabelId) -> (usize, usize) {
+fn log(net: &Net, host: usize, l: &osis_base::LabelId) -> (usize, usize) {
     use osis_proto::LabelStore;
-    let recs = net.hosts[sv].hub.store().log_after(l, 0, 1 << 20).ok().flatten().unwrap_or_default();
+    let recs = net.hosts[host].hub.store().log_after(l, 0, 1 << 20).ok().flatten().unwrap_or_default();
     let del = recs.iter().filter(|(_, r)| matches!(r, osis_proto::LogRecord::Deleted(_))).count();
     (recs.len() - del, del)
 }
@@ -45,19 +45,19 @@ fn copies(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::Commit
 #[test]
 fn invite_grant_deposited_once_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
+    let host = net.add_host();
     for i in 0..3 {
-        net.node(10 + i, &[sv]);
+        net.node(10 + i, &[host]);
     }
-    let (_, l, c, done) = invite(&mut net, sv);
-    let before = log(&net, sv, &l);
+    let (_, l, c, done) = invite(&mut net, host);
+    let before = log(&net, host, &l);
     let acts = net.sync(1).carry_out(done).unwrap();
     net.actions(1, acts);
     for _ in 0..3 {
         net.run();
         net.advance(61_000);
     }
-    let after = log(&net, sv, &l);
+    let after = log(&net, host, &l);
     assert_eq!(copies(&mut net, 0, &l, &c), 1, "one entry of the grant under the label");
     assert_eq!(after.1, before.1, "no second encryption deposited (and deleted as a duplicate)");
 }
@@ -67,11 +67,11 @@ fn invite_grant_deposited_once_spec_sync_5() {
 #[test]
 fn queued_deposit_survives_forgetting_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
+    let host = net.add_host();
     for i in 0..3 {
-        net.node(20 + i, &[sv]);
+        net.node(20 + i, &[host]);
     }
-    let (g, l, c, done) = invite(&mut net, sv);
+    let (g, l, c, done) = invite(&mut net, host);
     // the grantee stays offline: its inbox copy is no other route to the label
     net.set_online(2, false);
     net.set_online(1, false);
@@ -89,12 +89,12 @@ fn queued_deposit_survives_forgetting_spec_sync_5() {
     net.pair(0, 1);
     net.sync(1).drop_lost().unwrap();
     assert!(net.sync(1).labels().iter().all(|(_, x)| x.id != l), "node 1 forgot the label");
-    let before = log(&net, sv, &l);
+    let before = log(&net, host, &l);
     assert_eq!(copies(&mut net, 0, &l, &c), 0, "not under the label yet");
     net.set_online(1, true);
     net.run();
     net.advance(61_000);
-    assert!(log(&net, sv, &l).0 > before.0, "node 1 deposited after forgetting the label");
+    assert!(log(&net, host, &l).0 > before.0, "node 1 deposited after forgetting the label");
     net.set_online(0, true);
     net.run();
     assert_eq!(copies(&mut net, 0, &l, &c), 1, "the deposit reached the label");
@@ -106,12 +106,12 @@ fn queued_deposit_survives_forgetting_spec_sync_5() {
 fn queued_deposit_survives_a_restart_spec_sync_5() {
     for sent in [false, true] {
         let mut net = Net::new();
-        let sv = net.add_host();
+        let host = net.add_host();
         for i in 0..3 {
-            net.node(40 + i, &[sv]);
+            net.node(40 + i, &[host]);
         }
-        let (_, l, c, done) = invite(&mut net, sv);
-        let before = log(&net, sv, &l);
+        let (_, l, c, done) = invite(&mut net, host);
+        let before = log(&net, host, &l);
         let acts = net.sync(1).carry_out(done).unwrap();
         assert!(net.sync(1).deliveries_pending() > 0);
         if sent {
@@ -125,7 +125,7 @@ fn queued_deposit_survives_a_restart_spec_sync_5() {
         }
         assert_eq!(net.sync(1).deliveries_pending(), 0, "sent {sent}: answered");
         assert_eq!(copies(&mut net, 0, &l, &c), 1, "sent {sent}: one entry of the grant under the label");
-        assert_eq!(log(&net, sv, &l).1, before.1, "sent {sent}: no second encryption deposited");
+        assert_eq!(log(&net, host, &l).1, before.1, "sent {sent}: no second encryption deposited");
     }
 }
 
@@ -145,8 +145,8 @@ fn entries_of(net: &mut Net, n: usize, c: &osis_base::CommitId) -> Vec<osis_base
 }
 
 /// Every live entry a host holds, over all its labels.
-fn all_ids(net: &Net, sv: usize) -> Vec<osis_base::BlobId> {
-    net.labels_at(sv).iter().flat_map(|l| net.host_ids(sv, l)).collect()
+fn all_ids(net: &Net, host: usize) -> Vec<osis_base::BlobId> {
+    net.labels_at(host).iter().flat_map(|l| net.host_ids(host, l)).collect()
 }
 
 /// Node `a`'s person shares group T (label at host 0) by a single-use link whose K has its
@@ -343,11 +343,11 @@ fn removal_copies_not_held_spec_permissions_3() {
 #[test]
 fn queued_deposit_after_seed_refresh_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
+    let host = net.add_host();
     for i in 0..4 {
-        net.node(60 + i, &[sv]);
+        net.node(60 + i, &[host]);
     }
-    let (g, l, c, done) = invite(&mut net, sv);
+    let (g, l, c, done) = invite(&mut net, host);
     net.pair(3, 0);
     let d = net.tid(3);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
@@ -384,11 +384,11 @@ fn queued_deposit_after_seed_refresh_spec_sync_5() {
 #[test]
 fn lagging_admin_keeps_refreshed_deposit_key_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    net.node(80, &[sv]);
+    let host = net.add_host();
+    net.node(80, &[host]);
     // blobs never inline: the new head arrives before the `/keys` write it fetches
-    net.add_node(81, osis_node::sync::SyncConfig { hosts: vec![net.address(sv)], inline_limit: 0, ..Default::default() });
-    let g = net.group(0, &[(1, Role::Admin)], &[sv]);
+    net.add_node(81, osis_node::sync::SyncConfig { hosts: vec![net.address(host)], inline_limit: 0, ..Default::default() });
+    let g = net.group(0, &[(1, Role::Admin)], &[host]);
     for _ in 0..3 {
         net.run();
         net.advance(61_000);
@@ -396,19 +396,19 @@ fn lagging_admin_keeps_refreshed_deposit_key_spec_sync_5() {
     let l = net.engine(0).group_labels(&g).unwrap()[0].id;
     let actor = net.engine(0).group_actor(&g);
     let old = net.engine(1).deposit_seed(&g).unwrap().unwrap();
-    let before = net.host_path(sv, &l).len();
+    let before = net.host_path(host, &l).len();
     let done = net.engine(0).refresh_deposit_seed(&actor).unwrap();
     carry(&mut net, 0, done);
     net.run();
     let new = net.engine(0).deposit_seed(&g).unwrap().unwrap();
     let (old_pk, new_pk) = (osis_crypto::deposit_key(&old, &l).verifying_key(), osis_crypto::deposit_key(&new, &l).verifying_key());
-    assert_eq!(net.host_path(sv, &l).last().unwrap().keys.deposit, new_pk, "the refresh registered");
+    assert_eq!(net.host_path(host, &l).last().unwrap().keys.deposit, new_pk, "the refresh registered");
     for _ in 0..6 {
         net.run();
         net.advance(61_000);
     }
     assert_eq!(net.engine(1).deposit_seed(&g).unwrap().unwrap().expose(), new.expose(), "the laggard applied the write");
-    let path = net.host_path(sv, &l);
+    let path = net.host_path(host, &l);
     assert!(path[before..].iter().all(|s| s.keys.deposit != old_pk), "no step back to the old deposit key");
     assert_eq!(path.len(), before + 1, "the refresh's step only");
     assert_eq!(path.last().unwrap().keys.deposit, new_pk);

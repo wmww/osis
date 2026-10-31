@@ -118,9 +118,9 @@ fn quic_framed_session() {
         let cfg = ListenConfig { url: "quic://127.0.0.1:0".into(), secret: StaticSecret::from_bytes([4; 32]) };
         let mut l = Quic::new().listen(cfg).await.unwrap();
         let addr = l.address();
-        let srv = tokio::spawn(async move { common::serve(l.accept().await.unwrap()).await });
+        let serving = tokio::spawn(async move { common::serve(l.accept().await.unwrap()).await });
         let out = common::client(Quic::new().dial(&addr).await.unwrap(), 23).await;
         assert_eq!(out.len(), 23);
-        srv.await.unwrap();
+        serving.await.unwrap();
     });
 }

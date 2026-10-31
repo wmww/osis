@@ -79,20 +79,20 @@ fn upload_codes(evs: &[ClientEvent]) -> Vec<Code> {
 #[test]
 fn dropped_entry_refused_from_peer_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
     let t = net.item(a, g, g, "one");
     net.run();
     let c = net.write(a, t, "two");
     net.run();
     let l = net.label(b);
     let x = net.sync(b).entries(&l).into_iter().find(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).unwrap().0;
-    let meta = net.hosts[sv].hub.store().entry(&l, &x).unwrap().unwrap();
-    let blob = net.hosts[sv].hub.store().blob(&x).unwrap().unwrap();
+    let meta = net.hosts[host].hub.store().entry(&l, &x).unwrap().unwrap();
+    let blob = net.hosts[host].hub.store().blob(&x).unwrap().unwrap();
     let now = net.now();
-    assert_eq!(net.hosts[sv].hub.store_mut().delete(&l, &x, now).unwrap(), Code::OK);
+    assert_eq!(net.hosts[host].hub.store_mut().delete(&l, &x, now).unwrap(), Code::OK);
     let acts = net.sync(b).sync_now();
     net.actions(b, acts);
     net.settle(100_000);
@@ -102,7 +102,7 @@ fn dropped_entry_refused_from_peer_spec_sync_5() {
     assert_eq!(upload_codes(&evs), vec![Code::TOMBSTONED]);
     net.run();
     assert!(!net.sync(b).entries(&l).iter().any(|(id, _)| *id == x));
-    assert!(!net.host_ids(sv, &l).contains(&x), "never re-uploaded");
+    assert!(!net.host_ids(host, &l).contains(&x), "never re-uploaded");
 }
 
 // spec/sync.md §5 (hosts cap storage per label; member peer applies the same rule): a peer's
@@ -182,12 +182,12 @@ fn stranger_refused_spec_sync_5() {
 #[test]
 fn removed_member_not_dialed_nor_served_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
     let r = net.node(2, &[]);
     reach(&mut net, a, 0xa1);
     reach(&mut net, r, 0xb1);
-    let g = net.group(a, &[(r, Role::Read)], &[sv]);
+    let g = net.group(a, &[(r, Role::Read)], &[host]);
     let t = net.item(a, g, g, "before");
     net.run();
     assert_eq!(net.read(r, t), Some(s("before")));
@@ -199,7 +199,7 @@ fn removed_member_not_dialed_nor_served_spec_sync_5() {
     net.set_online(r, false);
     net.run();
     let la = net.label(a);
-    assert!(net.host_path(sv, &la).len() >= 2, "a registered a new step");
+    assert!(net.host_path(host, &la).len() >= 2, "a registered a new step");
     assert!(!net.sync(a).peers().contains_key(&[0xb1; 32]), "not dialed");
     net.write(a, t, "after");
     net.set_online(r, true);
@@ -406,15 +406,15 @@ fn silent_session_closed_spec_sync_5() {
 #[test]
 fn complete_pass_counts_peers_spec_permissions_3() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let c = net.node(3, &[sv]);
-    let x = net.node(4, &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let x = net.node(4, &[host]);
     reach_ed(&mut net, a);
     reach_ed(&mut net, b);
     reach_ed(&mut net, x);
-    let g = net.group(a, &[(b, Role::Admin), (c, Role::Read)], &[sv]);
+    let g = net.group(a, &[(b, Role::Admin), (c, Role::Read)], &[host]);
     net.item(b, g, g, "from b");
     net.run();
     assert!(net.sync(a).complete_pass(&g));
@@ -438,14 +438,14 @@ fn complete_pass_counts_peers_spec_permissions_3() {
 #[test]
 fn complete_pass_drops_removed_coreader_spec_permissions_3() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let x = net.node(2, &[sv]);
-    let b = net.node(3, &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let x = net.node(2, &[host]);
+    let b = net.node(3, &[host]);
     reach_ed(&mut net, a);
     reach_ed(&mut net, x);
-    let g = net.group(a, &[(x, Role::Write), (b, Role::Read)], &[sv]);
-    let g2 = net.group_seeded(a, &[(x, Role::Read)], vec![net.address(sv)], 2);
+    let g = net.group(a, &[(x, Role::Write), (b, Role::Read)], &[host]);
+    let g2 = net.group_seeded(a, &[(x, Role::Read)], vec![net.address(host)], 2);
     net.item(x, g, g, "from x");
     net.run();
     assert!(net.sync(a).complete_pass(&g) && net.sync(a).complete_pass(&g2));
@@ -469,10 +469,10 @@ fn complete_pass_drops_removed_coreader_spec_permissions_3() {
 fn reach_excluded_per_label_spec_permissions_4() {
     for excluded in [false, true] {
         let mut net = Net::new();
-        let sv = net.add_host();
-        let a = net.node(1, &[sv]);
-        let b = net.node(2, &[sv]);
-        let g = net.group(a, &[(b, Role::Read)], &[sv]);
+        let host = net.add_host();
+        let a = net.node(1, &[host]);
+        let b = net.node(2, &[host]);
+        let g = net.group(a, &[(b, Role::Read)], &[host]);
         let acts = net.sync(a).set_reach_policy(g, Some(!excluded));
         net.actions(a, acts);
         let ka = reach_ed(&mut net, a);

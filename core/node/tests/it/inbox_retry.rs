@@ -14,12 +14,12 @@ use osis_schema::core_types as ct;
 #[test]
 fn refused_inbox_deposit_retried_spec_sync_3() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let addr = net.address(sv);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let addr = net.address(host);
     // Bob's device cannot reach the host yet: his home label (his inbox) is not registered
-    net.blocked.insert((b, sv));
+    net.blocked.insert((b, host));
     let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -69,11 +69,11 @@ fn refused_inbox_deposit_retried_spec_sync_3() {
 /// an item in it. Returns (net, a, b, bob's person, g, the item).
 fn persons(replaced: usize, seed: u64) -> (Net, usize, usize, osis_base::Tid, osis_base::Tid, osis_base::Tid) {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(seed, &[sv]);
-    let b = net.node(seed + 1, &[sv]);
-    let addr = net.address(sv);
-    net.blocked.insert((b, sv));
+    let host = net.add_host();
+    let a = net.node(seed, &[host]);
+    let b = net.node(seed + 1, &[host]);
+    let addr = net.address(host);
+    net.blocked.insert((b, host));
     let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);

@@ -17,8 +17,8 @@ fn put_key(net: &mut Net, n: usize, t: Tid, asp: &osis_schema::Aspect<Value>, k:
 }
 
 /// Host entries of commit `c` under `l`, as node `n` knows them.
-fn at_host(net: &mut Net, n: usize, sv: usize, l: &LabelId, c: &CommitId) -> usize {
-    let ids = net.host_ids(sv, l);
+fn at_host(net: &mut Net, n: usize, host: usize, l: &LabelId, c: &CommitId) -> usize {
+    let ids = net.host_ids(host, l);
     net.sync(n).entries(l).into_iter().filter(|(id, k)| ids.contains(id) && matches!(k, EntryKind::Commit { commit, .. } if commit == c)).count()
 }
 
@@ -32,10 +32,10 @@ fn known(net: &mut Net, n: usize, l: &LabelId, c: &CommitId) -> usize {
 #[test]
 fn expiry_judges_only_the_expired_commit_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let g = net.group(a, &[(b, Role::Read)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Read)], &[host]);
     let u = net.item(a, g, g, "u");
     let x = put_key(&mut net, a, u, &BRIEFMAP, "first", "v");
     net.run();
@@ -49,7 +49,7 @@ fn expiry_judges_only_the_expired_commit_spec_sync_5() {
     net.advance(1_800_000);
     let s1 = net.sync(a).pass_stats();
     assert_eq!(known(&mut net, a, &l, &x), 0, "the expired commit was judged: its entry is gone");
-    assert!(live.iter().all(|c| at_host(&mut net, a, sv, &l, c) == 1), "the live ones stay");
+    assert!(live.iter().all(|c| at_host(&mut net, a, host, &l, c) == 1), "the live ones stay");
     assert!(s1.passes > s0.passes);
     assert!(s1.bodies - s0.bodies < 6, "the aspect's live bodies are not judged again: {s0:?} -> {s1:?}");
 }
@@ -60,9 +60,9 @@ fn expiry_judges_only_the_expired_commit_spec_sync_5() {
 #[test]
 fn keep_at_most_write_judges_the_bodies_it_killed_spec_commits_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let g = net.group(a, &[], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
     let t = net.item(a, g, g, "t");
     let live: Vec<CommitId> = (0..6).map(|i| put_key(&mut net, a, t, &SHORTMAP, &format!("k{i}"), "v")).collect();
     // writes only k0's value: dead once that is overwritten
@@ -79,8 +79,8 @@ fn keep_at_most_write_judges_the_bodies_it_killed_spec_commits_5() {
     // past the killed body's bound (its death plus 10 min): its timed delete went up
     net.set_online(a, false);
     net.advance(600_000 + 1_000);
-    assert_eq!(at_host(&mut net, a, sv, &l, &over), 0, "the killed body was judged: deleted at its bound");
-    assert!(live.iter().all(|c| at_host(&mut net, a, sv, &l, c) == 1), "the live ones stay");
+    assert_eq!(at_host(&mut net, a, host, &l, &over), 0, "the killed body was judged: deleted at its bound");
+    assert!(live.iter().all(|c| at_host(&mut net, a, host, &l, c) == 1), "the live ones stay");
 }
 
 // spec/sync.md §3 (closure), §6: a pass reuses an unchanged closure; a thing entering it is
@@ -88,9 +88,9 @@ fn keep_at_most_write_judges_the_bodies_it_killed_spec_commits_5() {
 #[test]
 fn closure_reused_until_it_changes_spec_sync_3() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let g = net.group(a, &[], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
     let t = net.item(a, g, g, "t");
     net.run();
     net.advance(61_000);
@@ -100,7 +100,7 @@ fn closure_reused_until_it_changes_spec_sync_3() {
     net.run();
     let s1 = net.sync(a).pass_stats();
     assert!(s1.passes > s0.passes);
-    assert_eq!(at_host(&mut net, a, sv, &l, &c), 1);
+    assert_eq!(at_host(&mut net, a, host, &l, &c), 1);
     assert_eq!(s1.closures, s0.closures, "an unchanged closure is not walked");
     let u = net.item(a, g, g, "u");
     net.run();
@@ -108,7 +108,7 @@ fn closure_reused_until_it_changes_spec_sync_3() {
     assert!(s2.closures > s1.closures, "a changed one is");
     let c = net.write(a, u, "u2");
     net.run();
-    assert_eq!(at_host(&mut net, a, sv, &l, &c), 1, "the new thing's commits go up");
+    assert_eq!(at_host(&mut net, a, host, &l, &c), 1, "the new thing's commits go up");
 }
 
 /// Commits one root op on map aspect `asp` of `t` at node `n`.
@@ -124,9 +124,9 @@ fn map_op(net: &mut Net, n: usize, t: Tid, asp: &osis_schema::Aspect<Value>, op:
 #[test]
 fn keep_at_most_removed_entry_no_live_write_spec_commits_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let g = net.group(a, &[], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
     let t = net.item(a, g, g, "t");
     let b = put_key(&mut net, a, t, &SHORTMAP, "k1", "v");
     net.run();
@@ -137,9 +137,9 @@ fn keep_at_most_removed_entry_no_live_write_spec_commits_5() {
     let ak = osis_base::Ak::new(osis_schema::AspectKey::ak(&SHORTMAP)).unwrap();
     assert!(net.engine(a).deaths(&b, &t, &ak).unwrap().is_some() && !net.engine(a).body_live(&b, &t, &ak).unwrap(), "dead, no live write");
     let l = net.label(a);
-    assert_eq!(at_host(&mut net, a, sv, &l, &b), 1);
+    assert_eq!(at_host(&mut net, a, host, &l, &b), 1);
     // past the removal plus 10 min (no grace: no live write): the timed delete went up
     net.set_online(a, false);
     net.advance(600_000);
-    assert_eq!(at_host(&mut net, a, sv, &l, &b), 0, "the body without a live write was deleted at its bound");
+    assert_eq!(at_host(&mut net, a, host, &l, &b), 0, "the body without a live write was deleted at its bound");
 }

@@ -276,7 +276,7 @@ fn transport_config() -> Result<Arc<quinn::TransportConfig>, Error> {
     Ok(Arc::new(t))
 }
 
-/// `host:port` of a `quic://` URL: port required, IPv6 hosts in brackets.
+/// `host:port` of a `quic://` URL: port required, IPv6 addresses in brackets.
 fn host_port(url: &str) -> Result<&str, Error> {
     crate::check_url(url)?;
     let bad = || Error::BadUrl(url.to_owned());

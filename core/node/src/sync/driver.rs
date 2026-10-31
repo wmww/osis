@@ -54,7 +54,7 @@ pub struct LanConfig {
     /// The announcement socket's port (`lan::PORT`; 0: any, tests).
     pub port: u16,
     /// Where announcements go (the IPv4 broadcast address and the IPv6 all-nodes group at
-    /// `lan::PORT`; hosts in tests). Each carries the listener's port on its family.
+    /// `lan::PORT`; single addresses in tests). Each carries the listener's port on its family.
     pub to: Vec<std::net::SocketAddr>,
     /// The LAN listener's URL (`peer://0.0.0.0:0 [::]:0`: all interfaces of both families, any
     /// port; IPv4 only where IPv6 cannot be bound).
@@ -172,7 +172,7 @@ fn listen_ports(url: &str) -> Ports {
     p
 }
 
-/// A listener URL without its IPv6 socket addresses (a host without IPv6).
+/// A listener URL without its IPv6 socket addresses (a machine without IPv6).
 #[cfg(feature = "lan")]
 fn v4_only(url: &str) -> Option<String> {
     let items = osis_transport::peer_relays(url)?;

@@ -20,10 +20,10 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 /// Every live blob a host holds, per label, with its wrap.
-fn stored(net: &Net, sv: usize) -> Vec<(LabelId, BlobId, Vec<u8>, [u8; 49])> {
-    let s = &net.hosts[sv];
+fn stored(net: &Net, host: usize) -> Vec<(LabelId, BlobId, Vec<u8>, [u8; 49])> {
+    let s = &net.hosts[host];
     let mut out = Vec::new();
-    for l in net.labels_at(sv) {
+    for l in net.labels_at(host) {
         for id in s.hub.store().live_ids(&l).unwrap() {
             let blob = s.backend.get_blob(&id).unwrap().unwrap();
             let wrap = s.hub.store().entry(&l, &id).unwrap().unwrap().wrap;
@@ -51,12 +51,12 @@ const MAP_KEY: &str = "map-key-marker-5b0e66";
 /// Admin a, writer b, reader c in one group at one host: values, a map key, heartbeats.
 fn scenario() -> (Net, usize, [usize; 3], Tid, Tid) {
     let mut net = Net::new();
-    let sv = net.add_host();
-    net.hosts[sv].backend.record_history();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let c = net.node(3, &[sv]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[sv]);
+    let host = net.add_host();
+    net.hosts[host].backend.record_history();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
     let t = net.item(a, g, g, MARK_A);
     net.run();
     net.write(b, t, MARK_B);
@@ -67,7 +67,7 @@ fn scenario() -> (Net, usize, [usize; 3], Tid, Tid) {
     net.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS + 60_000);
     net.run();
     assert_eq!(net.read(c, t), Some(s(MARK_B)));
-    (net, sv, [a, b, c], g, t)
+    (net, host, [a, b, c], g, t)
 }
 
 // spec/sync.md §4, spec/requirements.md Untrusted nodes: no plaintext value or map key, tid, AK,
@@ -75,7 +75,7 @@ fn scenario() -> (Net, usize, [usize; 3], Tid, Tid) {
 // storage, live or overwritten
 #[test]
 fn blind_node_stores_nothing_forbidden() {
-    let (mut net, sv, nodes, g, t) = scenario();
+    let (mut net, host, nodes, g, t) = scenario();
     let mut needles: Vec<(String, Vec<u8>)> = vec![
         ("value a".into(), MARK_A.as_bytes().to_vec()),
         ("value b".into(), MARK_B.as_bytes().to_vec()),
@@ -98,8 +98,8 @@ fn blind_node_stores_nothing_forbidden() {
         let (_, sec) = ep.role(r).newest_secret().unwrap();
         needles.push((format!("{r:?} secret"), sec.expose().to_vec()));
     }
-    let history = net.hosts[sv].backend.history();
-    let blobs = stored(&net, sv);
+    let history = net.hosts[host].backend.history();
+    let blobs = stored(&net, host);
     assert!(history.len() > 20 && blobs.len() > 10, "the scenario stored something");
     // control: what the node may know (the label ID) is found by the same search
     let l = label_of(&mut net, nodes[0], g);
@@ -119,8 +119,8 @@ fn blind_node_stores_nothing_forbidden() {
 // and a 100-byte value are in different classes, values within a class are not told apart)
 #[test]
 fn stored_sizes_are_padme() {
-    let (mut net, sv, [a, _, _], g, t) = scenario();
-    for (_, id, b, _) in stored(&net, sv) {
+    let (mut net, host, [a, _, _], g, t) = scenario();
+    for (_, id, b, _) in stored(&net, host) {
         let n = padded_len(&b);
         assert_eq!(osis_crypto::padme(n), n, "blob {id:?}: {n} bytes is not a Padmé length");
     }
@@ -131,7 +131,7 @@ fn stored_sizes_are_padme() {
         net.run();
         let blobs: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter_map(|(id, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == c).then_some(id)).collect();
         assert_eq!(blobs.len(), 1);
-        let b = net.hosts[sv].backend.get_blob(&blobs[0]).unwrap().unwrap();
+        let b = net.hosts[host].backend.get_blob(&blobs[0]).unwrap().unwrap();
         let n = padded_len(&b);
         assert_eq!(osis_crypto::padme(n), n);
         sizes.insert(b.len());
@@ -144,17 +144,17 @@ fn stored_sizes_are_padme() {
 #[test]
 fn no_linkage_across_labels() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let addr = vec![net.address(sv)];
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let addr = vec![net.address(host)];
     let g1 = net.group_seeded(a, &[(b, Role::Write)], addr.clone(), 11);
     let g2 = net.group_seeded(a, &[(b, Role::Write)], addr, 12);
     net.item(a, g1, g1, "one");
     net.item(b, g2, g2, "two");
     net.run();
     let (l1, l2) = (label_of(&mut net, a, g1), label_of(&mut net, a, g2));
-    let blobs = stored(&net, sv);
+    let blobs = stored(&net, host);
     let of = |l: LabelId| blobs.iter().filter(move |x| x.0 == l);
     let ids1: BTreeSet<BlobId> = of(l1).map(|x| x.1).collect();
     let salts1: BTreeSet<Vec<u8>> = of(l1).map(|x| x.2[1..17].to_vec()).collect();
@@ -177,17 +177,17 @@ fn no_linkage_across_labels() {
 #[test]
 fn claim_sets_hide_reader_counts() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let n: Vec<usize> = (1..=5).map(|i| net.node(i, &[sv])).collect();
+    let host = net.add_host();
+    let n: Vec<usize> = (1..=5).map(|i| net.node(i, &[host])).collect();
     let readers = |k: usize| n[1..=k].iter().map(|x| (*x, Role::Read)).collect::<Vec<_>>();
-    let addr = vec![net.address(sv)];
+    let addr = vec![net.address(host)];
     let g3 = net.group_seeded(n[0], &readers(2), addr.clone(), 13);
     let g4 = net.group_seeded(n[0], &readers(3), addr.clone(), 14);
     let g5 = net.group_seeded(n[0], &readers(4), addr, 15);
     net.run();
     let set = |net: &mut Net, g: Tid| {
         let l = label_of(net, n[0], g);
-        let store = net.hosts[sv].hub.store();
+        let store = net.hosts[host].hub.store();
         let head = store.head(&l).unwrap().unwrap();
         store.claim_set(&l, &head).unwrap().unwrap().claims.clone()
     };

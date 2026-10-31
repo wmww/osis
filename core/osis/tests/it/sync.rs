@@ -32,8 +32,8 @@ fn x(db: &Osis, t: Tid) -> Option<Value> {
 #[test]
 fn create_syncs_home_spec_sync_2() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let (db, _card) = w.person(1, &[sv]);
+    let host = w.add_host();
+    let (db, _card) = w.person(1, &[host]);
     w.run();
     let st = db.status().unwrap();
     assert_eq!(st.groups.get(&db.home()).map(|g| g.state), Some(SyncState::Synced), "{st:?}");
@@ -49,8 +49,8 @@ fn create_syncs_home_spec_sync_2() {
 #[test]
 fn pairing_spec_permissions_1() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let (da, _) = w.person(1, &[sv]);
+    let host = w.add_host();
+    let (da, _) = w.person(1, &[host]);
     w.run();
     let t = item(&da, da.me(), da.home(), "before pairing");
     for i in 0..10 {
@@ -86,8 +86,8 @@ fn pairing_spec_permissions_1() {
 #[test]
 fn restore_from_card_spec_permissions_9() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let (da, card) = w.person(1, &[sv]);
+    let host = w.add_host();
+    let (da, card) = w.person(1, &[host]);
     let t = item(&da, da.me(), da.home(), "kept by the host");
     w.run();
     let card: osis::RecoveryCard = card.to_string().parse().unwrap();
@@ -109,9 +109,9 @@ fn restore_from_card_spec_permissions_9() {
 #[test]
 fn delete_reaches_other_node_spec_api_writes() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let (alice, _) = w.person(1, &[sv]);
-    let (bob, _) = w.person(2, &[sv]);
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
+    let (bob, _) = w.person(2, &[host]);
     w.run();
     let g = group(&alice);
     let ro = group(&alice);
@@ -150,9 +150,9 @@ fn group(db: &Osis) -> Tid {
 #[test]
 fn grant_by_inbox_spec_sync_3() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let (alice, _) = w.person(1, &[sv]);
-    let (bob, _) = w.person(2, &[sv]);
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
+    let (bob, _) = w.person(2, &[host]);
     w.run();
     let g = group(&alice);
     let card: osis::ContactCard = bob.contact_card().unwrap().to_string().parse().unwrap();
@@ -172,9 +172,9 @@ fn grant_by_inbox_spec_sync_3() {
 
 /// Alice and `n` other people on one host; each other person's card imported by Alice.
 fn people(w: &mut World, n: usize) -> (Osis, Vec<Osis>, Vec<Tid>) {
-    let sv = w.add_host();
-    let (alice, _) = w.person(1, &[sv]);
-    let others: Vec<Osis> = (0..n).map(|i| w.person(2 + i as u64, &[sv]).0).collect();
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
+    let others: Vec<Osis> = (0..n).map(|i| w.person(2 + i as u64, &[host]).0).collect();
     w.run();
     let mut ids = Vec::new();
     for o in &others {
@@ -281,8 +281,8 @@ fn used_link_with_sharer_offline_spec_permissions_9() {
 /// Alice's synced group with a read link expiring in an hour, redeemed by Bob: (world, alice,
 /// bob, group, K, L).
 fn until_link(w: &mut World) -> (Osis, Osis, Tid, Tid, Tid) {
-    let sv = w.add_host();
-    let [alice, bob] = [1, 2].map(|i| w.person(i, &[sv]).0);
+    let host = w.add_host();
+    let [alice, bob] = [1, 2].map(|i| w.person(i, &[host]).0);
     w.run();
     let g = group(&alice);
     let until = osis::WallMs(w.now() + 3_600_000);
@@ -349,8 +349,8 @@ fn until_link_finalized_when_sharer_returns_spec_permissions_9() {
 /// bob, carol, group, link actor K, link key L).
 fn joined_by_link() -> (World, Osis, Osis, Osis, Tid, Tid, Tid) {
     let mut w = World::new();
-    let sv = w.add_host();
-    let [alice, bob, carol] = [1, 2, 3].map(|i| w.person(i, &[sv]).0);
+    let host = w.add_host();
+    let [alice, bob, carol] = [1, 2, 3].map(|i| w.person(i, &[host]).0);
     w.run();
     let g = group(&alice);
     let link = alice.make_link(g, Role::Read, osis::LinkOpts::default()).unwrap();
@@ -587,8 +587,8 @@ const TEXT_SCHEMA: &str = "schema 0x0123456789abcdef0123456789abcd01;\nrevision 
 #[test]
 fn text_sessions_merge_spec_crdt_5_7() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let (da, _) = w.person(1, &[sv]);
+    let host = w.add_host();
+    let (da, _) = w.person(1, &[host]);
     w.run();
     let join = Osis::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
     let (_, reply) = da.pair_accept(join.request()).unwrap();
@@ -627,8 +627,8 @@ fn text_sessions_merge_spec_crdt_5_7() {
 /// the first.
 fn text_pair() -> (World, Osis, Osis, Tid, osis::TextSession) {
     let mut w = World::new();
-    let sv = w.add_host();
-    let (da, _) = w.person(1, &[sv]);
+    let host = w.add_host();
+    let (da, _) = w.person(1, &[host]);
     w.run();
     let join = Osis::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
     let (_, reply) = da.pair_accept(join.request()).unwrap();
@@ -750,18 +750,18 @@ fn text_session_keeps_edits_across_delete_undo() {
 #[test]
 fn add_host_moves_labels_spec_sync_2() {
     let mut w = World::new();
-    let sv = w.add_host();
+    let host = w.add_host();
     let (a, card) = Osis::create(w.cfg(1, &[])).unwrap();
     assert!(card.is_none());
     w.run();
     assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::NoHosts);
-    a.add_host(&w.addr(sv).unwrap()).unwrap();
+    a.add_host(&w.addr(host).unwrap()).unwrap();
     w.run();
     assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::Synced);
     let inbox = a.get(a.me(), osis::core::KEYS).unwrap().unwrap().inbox.unwrap();
     assert_eq!(inbox.hosts.len(), 1);
     w.until(a.wait_synced(SyncScope::All, Duration::from_secs(10)), 1000, 10).unwrap();
-    a.remove_host(&w.addr(sv).unwrap()).unwrap();
+    a.remove_host(&w.addr(host).unwrap()).unwrap();
     w.run();
     assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::NoHosts);
 }

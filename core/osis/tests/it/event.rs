@@ -59,9 +59,9 @@ fn civil_dates_are_days_since_the_epoch() {
 #[test]
 fn calendar_shared_read_only() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let alice = person(&mut w, 1, sv);
-    let bob = person(&mut w, 2, sv);
+    let host = w.add_host();
+    let alice = person(&mut w, 1, host);
+    let bob = person(&mut w, 2, host);
     let b = introduce(&mut w, &alice, &bob);
     let work = new_tag(&alice, "Work").unwrap();
     let berlin = || Some("Europe/Berlin".to_string());

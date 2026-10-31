@@ -13,9 +13,9 @@ use osis_node::sync::EntryKind;
 #[test]
 fn replaced_register_needs_no_carrier_spec_sync_7() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let g = net.group(a, &[], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
     let t = net.item(a, g, g, "x");
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("v1")).unwrap();
@@ -29,17 +29,17 @@ fn replaced_register_needs_no_carrier_spec_sync_7() {
     net.run();
     let snapshots = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if net.engine(a).header(commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot))).count();
     assert_eq!(snapshots, 0, "no carrier for a body without live writes");
-    let before = net.host_ids(sv, &l).len();
+    let before = net.host_ids(host, &l).len();
     net.set_online(a, false);
     net.clock.advance(3_600_000 + 1_000);
     let now = net.now();
-    net.hosts[sv].hub.tick(now);
-    assert_eq!(net.host_ids(sv, &l).len() + 1, before, "the replaced body went at its bound, nobody online");
+    net.hosts[host].hub.tick(now);
+    assert_eq!(net.host_ids(host, &l).len() + 1, before, "the replaced body went at its bound, nobody online");
 }
 
 /// Host entries of commit `c` under `l`, as node `n` knows them.
-fn at_host(net: &mut Net, n: usize, sv: usize, l: &osis_base::LabelId, c: &osis_base::CommitId) -> Vec<osis_base::BlobId> {
-    let ids = net.host_ids(sv, l);
+fn at_host(net: &mut Net, n: usize, host: usize, l: &osis_base::LabelId, c: &osis_base::CommitId) -> Vec<osis_base::BlobId> {
+    let ids = net.host_ids(host, l);
     net.sync(n).entries(l).into_iter().filter(|(id, k)| ids.contains(id) && matches!(k, EntryKind::Commit { commit, .. } if commit == c)).map(|(id, _)| id).collect()
 }
 
@@ -58,11 +58,11 @@ fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
     let gone = osis_base::Ak::new("/t/gone").unwrap();
     for online in [true, false] {
         let mut net = Net::new();
-        let sv = net.add_host();
-        let a = net.node(3, &[sv]);
-        let b = net.node(4, &[sv]);
-        let late = net.node(5, &[sv]);
-        let g = net.group(a, &[(b, Role::Write), (late, Role::Read)], &[sv]);
+        let host = net.add_host();
+        let a = net.node(3, &[host]);
+        let b = net.node(4, &[host]);
+        let late = net.node(5, &[host]);
+        let g = net.group(a, &[(b, Role::Write), (late, Role::Read)], &[host]);
         net.set_online(late, false);
         let t = net.item(a, g, g, "x");
         net.run();
@@ -81,7 +81,7 @@ fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
         net.run();
         net.advance(1_000);
         assert_eq!(net.engine(a).get(&t, &gone).unwrap(), Some(s("v2")));
-        let first = at_host(&mut net, a, sv, &l, &c1);
+        let first = at_host(&mut net, a, host, &l, &c1);
         assert_eq!(first.len(), 1, "v1's body is at the host, its delete timed");
         // b revoked from before its write: v2 is void, v1 live again at a
         let bt = net.tid(b);
@@ -96,13 +96,13 @@ fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
         // past the plain bound: the host carries out the timed delete
         net.advance(3_600_000);
         net.run();
-        let again = at_host(&mut net, a, sv, &l, &c1);
+        let again = at_host(&mut net, a, host, &l, &c1);
         assert!(!again.contains(&first[0]), "the timed delete went at the plain bound");
         if online {
             // the next resync (`resync_ms`) finds the body missing there
             let resync = net.sync(a).config().resync_ms;
             net.advance(resync);
-            assert_eq!(at_host(&mut net, a, sv, &l, &c1).len(), 1, "uploaded again on the next resync");
+            assert_eq!(at_host(&mut net, a, host, &l, &c1).len(), 1, "uploaded again on the next resync");
             net.set_online(late, true);
             net.run();
             net.advance(resync);
@@ -112,13 +112,13 @@ fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
         assert!(again.is_empty(), "deleted while no right holder is online");
         net.set_online(a, true);
         net.run();
-        assert_eq!(at_host(&mut net, a, sv, &l, &c1).len(), 1, "uploaded again on the next sync");
+        assert_eq!(at_host(&mut net, a, host, &l, &c1).len(), 1, "uploaded again on the next sync");
         // revived, v1 has no death (spec/crdt.md §4.8: only applied valid writes supersede),
         // so no keep-at-most bound: the body stays, as at a node that never saw v2 valid
         assert_eq!(net.engine(a).deaths(&c1, &t, &gone).unwrap(), None);
         net.advance(osis_base::format::AT_MOST_GRACE_MS);
         net.advance(1_000);
-        assert_eq!(at_host(&mut net, a, sv, &l, &c1).len(), 1, "kept: v1 is current");
+        assert_eq!(at_host(&mut net, a, host, &l, &c1).len(), 1, "kept: v1 is current");
         assert!(net.engine(a).body_not_dropped(&c1, &t, &gone));
         net.set_online(late, true);
         net.run();
@@ -138,12 +138,12 @@ fn late_member_judges_backdated_revoke_alike_spec_permissions_5() {
     use osis_base::Role;
     use osis_node::flows::{Demotion, PreSync};
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(13, &[sv]);
-    let b = net.node(14, &[sv]);
-    let late = net.node(15, &[sv]);
-    let on = net.node(16, &[sv]);
-    let g = net.group(a, &[(b, Role::Write), (late, Role::Read), (on, Role::Read)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(13, &[host]);
+    let b = net.node(14, &[host]);
+    let late = net.node(15, &[host]);
+    let on = net.node(16, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (late, Role::Read), (on, Role::Read)], &[host]);
     net.set_online(late, false);
     let t = net.item(a, g, g, "v1");
     net.run();

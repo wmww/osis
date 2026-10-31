@@ -12,10 +12,10 @@ use osis_node::sync::Event;
 #[test]
 fn two_nodes_converge_spec_sync_6() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
     let t = net.item(a, g, g, "hello");
     net.run();
     net.trace(&[a, b]);
@@ -56,10 +56,10 @@ fn reader_relays_spec_sync_6() {
 #[test]
 fn subscription_push_spec_sync_8() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
     let t = net.item(a, g, g, "one");
     net.run();
     assert_eq!(net.read(b, t), Some(s("one")));
@@ -76,15 +76,15 @@ fn subscription_push_spec_sync_8() {
 #[test]
 fn signals_relay_only_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let c = net.node(3, &[sv]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
     let t = net.item(a, g, g, "x");
     net.run();
     let rx: Vec<_> = [a, b, c].iter().map(|n| net.listen(*n)).collect();
-    let rows = osis_store::Backend::scan(&net.hosts[sv].backend, &[], None, usize::MAX).unwrap().len();
+    let rows = osis_store::Backend::scan(&net.hosts[host].backend, &[], None, usize::MAX).unwrap().len();
     let ring = ukey("/t/typing", osis_schema::Lifetime::Signal);
     net.eph_write(a, t, &ring, Value::Bool(true));
     net.settle(10_000);
@@ -93,7 +93,7 @@ fn signals_relay_only_spec_sync_5() {
     for (i, n) in [(1, b), (2, c)] {
         assert_eq!(got[i].iter().map(|x| (x.0, x.1.clone(), x.2.clone(), x.3)).collect::<Vec<_>>(), vec![(t, "/t/typing".into(), Value::Bool(true), osis_node::Origin::Remote)], "node {n}");
     }
-    assert_eq!(osis_store::Backend::scan(&net.hosts[sv].backend, &[], None, usize::MAX).unwrap().len(), rows, "stored nowhere");
+    assert_eq!(osis_store::Backend::scan(&net.hosts[host].backend, &[], None, usize::MAX).unwrap().len(), rows, "stored nowhere");
     assert_eq!(net.eph_read(b, t, "/t/typing"), None);
     // a reader may not fire one
     let mut m = osis_node::Mutation::new();
@@ -106,11 +106,11 @@ fn signals_relay_only_spec_sync_5() {
 #[test]
 fn bundle_round_trip_spec_sync_11() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
     let b = net.node(2, &[]);
-    net.blocked.insert((b, sv));
-    let g = net.group(a, &[(b, Role::Read)], &[sv]);
+    net.blocked.insert((b, host));
+    let g = net.group(a, &[(b, Role::Read)], &[host]);
     let t = net.item(a, g, g, "bundled");
     net.run();
     let (_, l) = net.sync(a).labels().into_iter().next().unwrap();
@@ -127,17 +127,17 @@ fn bundle_round_trip_spec_sync_11() {
 #[test]
 fn restart_resumes_spec_sync_6() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
     let t = net.item(a, g, g, "one");
     net.run();
     let l = net.label(a);
-    let n = net.host_ids(sv, &l).len();
+    let n = net.host_ids(host, &l).len();
     net.restart(b, 22);
     net.run();
-    assert_eq!(net.host_ids(sv, &l).len(), n, "nothing placed twice");
+    assert_eq!(net.host_ids(host, &l).len(), n, "nothing placed twice");
     net.write(a, t, "two");
     net.run();
     assert_eq!(net.read(b, t), Some(s("two")));
@@ -148,10 +148,10 @@ fn restart_resumes_spec_sync_6() {
 #[test]
 fn briefly_online_devices_spec_sync_6() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
     net.set_online(b, false);
     let t = net.item(a, g, g, "a1");
     let mut m = osis_node::Mutation::new();

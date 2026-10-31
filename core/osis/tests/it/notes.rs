@@ -65,8 +65,8 @@ fn add_device(existing: &Osis, cfg: osis::Config) -> Result<Osis> {
 #[test]
 fn two_devices_offline_edits_and_undo() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let laptop = person(&mut w, 1, sv);
+    let host = w.add_host();
+    let laptop = person(&mut w, 1, host);
     let phone = add_device(&laptop, w.cfg(2, &[])).unwrap();
     let nb = new_tag(&laptop, "Home").unwrap();
     let note = new_note(&laptop, nb, "Groceries").unwrap();
@@ -104,9 +104,9 @@ fn two_devices_offline_edits_and_undo() {
 #[test]
 fn share_notebook_with_a_second_person() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let alice = person(&mut w, 1, sv);
-    let bob = person(&mut w, 2, sv);
+    let host = w.add_host();
+    let alice = person(&mut w, 1, host);
+    let bob = person(&mut w, 2, host);
     let b = introduce(&mut w, &alice, &bob);
     let nb = new_tag(&alice, "Trip").unwrap();
     let plan = new_note(&alice, nb, "Plan").unwrap();
@@ -144,8 +144,8 @@ fn share_notebook_with_a_second_person() {
 #[test]
 fn large_body_streams() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let laptop = person(&mut w, 1, sv);
+    let host = w.add_host();
+    let laptop = person(&mut w, 1, host);
     let mut cfg = w.cfg(2, &[]);
     cfg.materialize_limit = 64 << 10;
     let phone = add_device(&laptop, cfg).unwrap();

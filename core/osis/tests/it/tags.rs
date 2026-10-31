@@ -87,9 +87,9 @@ fn share(db: &Osis, tag: Tid, person: Tid, role: Role, invite: Option<Role>) -> 
 #[test]
 fn shared_tag_per_item() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let alice = person(&mut w, 1, sv);
-    let bob = person(&mut w, 2, sv);
+    let host = w.add_host();
+    let alice = person(&mut w, 1, host);
+    let bob = person(&mut w, 2, host);
     let b = introduce(&mut w, &alice, &bob);
     let trip = new_tag(&alice, "Trip").unwrap();
     let plan = new_card(&alice, alice.me(), "flights").unwrap();
@@ -126,10 +126,10 @@ fn shared_tag_per_item() {
 #[test]
 fn sub_tags_chain_rosters_and_only_what_you_may_share() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let alice = person(&mut w, 1, sv);
-    let bob = person(&mut w, 2, sv);
-    let carol = person(&mut w, 3, sv);
+    let host = w.add_host();
+    let alice = person(&mut w, 1, host);
+    let bob = person(&mut w, 2, host);
+    let carol = person(&mut w, 3, host);
     let b = introduce(&mut w, &alice, &bob);
     let a = introduce(&mut w, &carol, &alice);
     let work = new_tag(&alice, "Work").unwrap();
@@ -160,9 +160,9 @@ fn sub_tags_chain_rosters_and_only_what_you_may_share() {
 #[ignore = "tier 2"]
 fn tag_owned_cards_reader_writer_demotion() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let alice = person(&mut w, 1, sv);
-    let [reader, writer] = [2, 3].map(|s| person(&mut w, s, sv));
+    let host = w.add_host();
+    let alice = person(&mut w, 1, host);
+    let [reader, writer] = [2, 3].map(|s| person(&mut w, s, host));
     let team = new_tag(&alice, "Team").unwrap();
     let docs = new_sub_tag(&alice, team, team, "docs", Role::Write).unwrap();
     let spec = new_card(&alice, team, "v1").unwrap();
@@ -198,9 +198,9 @@ fn tag_owned_cards_reader_writer_demotion() {
 #[ignore = "tier 2"]
 fn invite_holder_shares_on() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let alice = person(&mut w, 1, sv);
-    let [inviter, guest] = [4, 5].map(|s| person(&mut w, s, sv));
+    let host = w.add_host();
+    let alice = person(&mut w, 1, host);
+    let [inviter, guest] = [4, 5].map(|s| person(&mut w, s, host));
     let team = new_tag(&alice, "Team").unwrap();
     let spec = new_card(&alice, team, "v1").unwrap();
     place(&alice, team, spec).unwrap();
@@ -221,9 +221,9 @@ fn invite_holder_shares_on() {
 #[test]
 fn ownership_transfer_is_a_copy() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let alice = person(&mut w, 1, sv);
-    let bob = person(&mut w, 2, sv);
+    let host = w.add_host();
+    let alice = person(&mut w, 1, host);
+    let bob = person(&mut w, 2, host);
     let team = new_tag(&alice, "Shared").unwrap();
     let f = new_card(&alice, team, "private now").unwrap();
     place(&alice, team, f).unwrap();
