@@ -1008,7 +1008,6 @@ fn check_more(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -
         return Some(d);
     }
     let full = Timeline::evaluate(held);
-    let end = osis_perm::Point { ts: ts(LATE), node: nodes[0], commit: osis_base::CommitId([0xff; 32]) };
     let mut fresh = Timelines::new();
     fresh.update(held);
     for t in held.things() {
@@ -1020,9 +1019,9 @@ fn check_more(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -
                 }
             }
             // (per component: a node of another one brings no `/keys` here)
-            let f = fresh.get(&t)?.certificates(n, &t, end);
-            if part.certificates(n, &t, end) != f {
-                return Some(format!("certificates of {n:?} on {t:?}: part {:?} fresh {f:?}", part.certificates(n, &t, end)));
+            let f = fresh.get(&t)?.certificates(n, &t);
+            if part.certificates(n, &t) != f {
+                return Some(format!("certificates of {n:?} on {t:?}: part {:?} fresh {f:?}", part.certificates(n, &t)));
             }
         }
     }

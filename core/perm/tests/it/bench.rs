@@ -150,15 +150,13 @@ fn bench_10k_edges() {
         }
         let rejudge_members = t7b.elapsed();
         drop(fresh);
-        // what a demotion's frontier lists (§5.1): an admin's chain certificates on a doc, at
-        // the end and at the middle
-        let end = osis_perm::Point { ts: ts(n as u64 + 10), node: nodes[1], commit: osis_base::CommitId([0xff; 32]) };
+        // what a demotion's frontier lists (§5.1): two admins' chain certificates on a doc
         let t8 = Instant::now();
-        let certs = tl.certificates(&nodes[1], &doc, end);
+        let certs = tl.certificates(&nodes[1], &doc);
         let cert = t8.elapsed();
         let t9 = Instant::now();
-        let _ = tl.certificates(&nodes[2], &doc, mid);
-        let cert_mid = t9.elapsed();
+        let _ = tl.certificates(&nodes[2], &doc);
+        let cert2 = t9.elapsed();
         // a restart: the walk saved (as a node's cache) and restored, exact and with the last
         // 1% of the writes added since the save
         let t10 = Instant::now();
@@ -202,7 +200,7 @@ fn bench_10k_edges() {
         }
         eprintln!("{n} edge writes: walk saved {save:?} ({bytes} bytes), restored {restore:?}, restored and continued over {} more {restore_stale:?}", n / 100);
         eprintln!(
-            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), one more write around its thing {appends:?} (mean of 100, {appended} appended), a late write in the middle {late:?} (from scratch {scratch3:?}, {passes3} passes), one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?}), {} deltas judged cold {rejudge:?}, {} members' deltas cold {rejudge_members:?} ({valid_members} valid), chain certificates at the end {cert:?} ({} commits, {} snapshots), at the middle {cert_mid:?}",
+            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), one more write around its thing {appends:?} (mean of 100, {appended} appended), a late write in the middle {late:?} (from scratch {scratch3:?}, {passes3} passes), one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?}), {} deltas judged cold {rejudge:?}, {} members' deltas cold {rejudge_members:?} ({valid_members} valid), chain certificates of an admin {cert:?} ({} commits, {} snapshots), of another {cert2:?}",
             tl.passes(),
             tl.dropped().len(),
             deltas.len(),
@@ -258,13 +256,11 @@ fn bench_certificates() {
     let tl = Timeline::evaluate(&held);
     let eval = te.elapsed();
     let doc = *w.created.keys().last().unwrap();
-    let end = osis_perm::Point { ts: ts(n as u64 + 10), node: nodes[1], commit: osis_base::CommitId([0xff; 32]) };
-    let mid = tl.applied().values().nth(tl.applied().len() / 2).map(|a| a.point).unwrap();
     let t0 = Instant::now();
-    let certs = tl.certificates(&nodes[1], &doc, end);
+    let certs = tl.certificates(&nodes[1], &doc);
     let t1 = Instant::now();
-    let certs_mid = tl.certificates(&nodes[2], &doc, mid);
-    eprintln!("{n} edge writes ({} dropped): evaluate {eval:?}, chain certificates at the end {:?} ({} commits), at the middle {:?} ({} commits)", tl.dropped().len(), t1 - t0, certs.commits.len(), t1.elapsed(), certs_mid.commits.len());
+    let certs2 = tl.certificates(&nodes[2], &doc);
+    eprintln!("{n} edge writes ({} dropped): evaluate {eval:?}, chain certificates of an admin {:?} ({} commits), of another {:?} ({} commits)", tl.dropped().len(), t1 - t0, certs.commits.len(), t1.elapsed(), certs2.commits.len());
 }
 
 // spec: none (cost measurement, issues/perm-eval-cost.md): layer-2 re-judging alone on the org
@@ -383,12 +379,11 @@ fn bench_certificates_drops() {
     let tl = Timeline::evaluate(&held);
     let eval = te.elapsed();
     let end_t = n as u64 + 10 + 4 * n as u64 + 10;
-    let end = osis_perm::Point { ts: ts(end_t), node: nodes[1], commit: osis_base::CommitId([0xff; 32]) };
     let t0 = Instant::now();
-    let certs = tl.certificates(&nodes[1], &doc, end);
+    let certs = tl.certificates(&nodes[1], &doc);
     let first = t0.elapsed();
     let t1 = Instant::now();
-    let again = tl.certificates(&nodes[2], &doc, end);
+    let again = tl.certificates(&nodes[2], &doc);
     let second = t1.elapsed();
     let mut w2 = w.clone();
     w2.set(nodes[1], doc, nodes[200], edge(Write), end_t + 1, &[]);
@@ -398,7 +393,7 @@ fn bench_certificates_drops() {
     let tl2 = tl.extend(&held2).unwrap();
     let ext = t2.elapsed();
     let t3 = Instant::now();
-    let c2 = tl2.certificates(&nodes[1], &doc, end);
+    let c2 = tl2.certificates(&nodes[1], &doc);
     let after = t3.elapsed();
     eprintln!(
         "{n} edge writes + {} drops: evaluate {eval:?}, certificates first {first:?} ({} commits), second {second:?} ({}); one more write: extend {ext:?}, certificates {after:?} ({})",

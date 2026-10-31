@@ -8,7 +8,6 @@ use crate::engine::Engine;
 use crate::error::Result;
 use osis_commit::Decoded;
 use osis_base::{Ak, BlobId, CommitId, CreationRecord, Tid};
-use osis_perm::Point;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Aspects a node card holds (each its own commit, spec/permissions.md §4).
@@ -150,28 +149,26 @@ impl Engine {
             };
         }
         if let Some(tl) = self.core.timelines.get(g) {
-            let ts = osis_base::Ts::make(self.now(), 0xffff).unwrap_or_default();
-            let certs = tl.certificates(&me, g, Point { ts, node: me, commit: CommitId([0xff; 32]) });
+            let certs = tl.certificates(&me, g);
             self.cert_parts(&certs, &mut out);
         }
         out
     }
 
     /// What a verifier needs beside `parts` of commit `c` to judge them (spec/permissions.md
-    /// §4): its author's chain certificates to each thing the parts touch, at the commit's
-    /// point, minus `parts` themselves. `None` when `c` is not applied here: a node that cannot
+    /// §4): its author's chain certificates to each thing the parts touch, minus `parts`
+    /// themselves. `None` when `c` is not applied here: a node that cannot
     /// verify it cannot tell.
     pub fn author_chain(&mut self, c: &CommitId, parts: &Parts) -> Option<BTreeMap<CommitId, Parts>> {
         if self.core.ix.pending.contains_key(c) {
             return None;
         }
         let h = self.core.ix.commits.get(c)?.header.clone();
-        let at = Point { ts: h.ts, node: h.author, commit: *c };
         let things: BTreeSet<Tid> = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| a.tid).collect();
         let mut found = Vec::new();
         for t in things.iter().chain([&h.author]) {
             let mut cs = match self.core.timelines.get(t) {
-                Some(tl) => tl.certificates(&h.author, t, at),
+                Some(tl) => tl.certificates(&h.author, t),
                 None => osis_perm::Certificates::default(),
             };
             // the owner chains up to their key actors, timeline or not

@@ -2025,18 +2025,6 @@ struct Entry {
 }
 
 impl Items {
-    /// Every edge value an item can set, at its point: commit ops, snapshot rosters and
-    /// ledger tenures (`Virtual`). A walk's grants are among them.
-    pub(crate) fn grants(&self) -> impl Iterator<Item = (Point, Tid, Tid, Edge)> + '_ {
-        self.list.iter().flat_map(|x| -> Vec<(Point, Tid, Tid, Edge)> {
-            match &x.item {
-                Item::Commit(c) => c.ops.iter().filter_map(|o| o.edge.map(|e| (x.point, o.member, o.target, e))).collect(),
-                Item::Snap(s) => s.roster.iter().map(|(m, e)| (x.point, *m, s.thing, *e)).collect(),
-                Item::Virtual(v) => v.edge.map(|e| (x.point, v.member, v.thing, e)).into_iter().collect(),
-            }
-        })
-    }
-
     /// The items at point `q` (a commit or snapshot, then ledger writes keyed there).
     fn at(&self, q: Point) -> std::ops::Range<usize> {
         self.list.partition_point(|a| a.point < q)..self.list.partition_point(|a| a.point <= q)

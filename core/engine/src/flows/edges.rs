@@ -407,9 +407,8 @@ impl Engine {
                     }
                 }
                 // this node's own chain counts only as listed: its chain certificates for the
-                // target at R's point, by commit ID (spec/permissions.md §5.1, §4)
-                let at = osis_perm::Point { ts, node: who, commit: CommitId([0; 32]) };
-                let certs = tl.certificates(&who, &t, at);
+                // target, by commit ID (spec/permissions.md §5.1, §4)
+                let certs = tl.certificates(&who, &t);
                 let mut f = self.frontier(&scope, as_of)?;
                 f.commits.extend(certs.commits);
                 f.commits.extend(certs.snapshots.into_keys());
