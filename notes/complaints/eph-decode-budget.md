@@ -1,0 +1,3 @@
+- Reviewer: the worker's new env vars (`OSIS_EPH_PER`, `OSIS_EPH_ROOM`) failed the gate's policy check (`core/base/testenv-known.txt`); workers do not run the gate, so a new `OSIS_*` var should be added to that list with the code (worth a line in the worker brief footer).
+- Reviewer: rebase conflicted in spec/sync.md §9 (Compaction and Caps lines are each one long line; any two branches touching §9 conflict on whole paragraphs).
+- Reviewer: gate took 355 s at load 18.
