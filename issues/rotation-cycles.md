@@ -1,6 +1,6 @@
 # Membership cycles keep a departed member reading
 > Summary: with actors X and Y (secrets of their own) members of each other, a member D removed from X keeps reading X and everything above it after any sequence of single-actor rotations: Y's epoch boxes X's old keyset, which D holds, and X's new epoch boxes Y's. The covers rule follows only simple chains, so it calls this covered.
-> Tags: security, engine, permissions, owner-call
+> Tags: security, engine, permissions
 
 D held X's old epoch kx. Y's current epoch ky has a box for X sealed to kx's keyset, so D opens ky. X rotates to kx', boxing Y at ky: D opens kx', and every epoch above X boxed to kx'. Rotating Y next (ky' boxed to X at kx') does not help, since D holds kx'; rotating X again repeats it. Every epoch of the cycle reachable from a key D held leaks. The chain X -> Y -> X is not simple, so `rotation::collect` (and the old path walk) never asks for it; asking for it would rotate without end. A fix rotates the whole strongly connected set at once (fresh secrets for every actor in it, each boxed to the others' new keysets) or forbids cycles of actors with secrets of their own (perm allows cycles; groups.rs also does). spec/crypto.md §4 is silent about cycles beyond "a chain never passes an actor twice".
 
