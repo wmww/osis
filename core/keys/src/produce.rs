@@ -217,14 +217,75 @@ pub fn rotate(
     may_carry: &dyn Fn(Role, &Epoch) -> bool,
     rng: &mut dyn CryptoRngCore,
 ) -> Result<Rotation, Error> {
-    let mut roles = roles.clone();
+    let part = Part { actor: *actor, roles: roles.clone(), held, held_secrets, members: members.to_vec(), may_carry };
+    let mut v = rotate_together(std::slice::from_ref(&part), rng)?;
+    v.pop().ok_or(Error::NoEpoch(Role::Read))
+}
+
+/// One actor of a joint rotation (`rotate_together`): `rotate`'s arguments.
+pub struct Part<'a> {
+    pub actor: Tid,
+    pub roles: BTreeSet<Role>,
+    pub held: &'a ActorEpochs,
+    pub held_secrets: &'a Secrets,
+    pub members: Vec<Recipient>,
+    pub may_carry: &'a dyn Fn(Role, &Epoch) -> bool,
+}
+
+/// Rotates several actors in one commit (spec/permissions.md §3: the actors of a membership
+/// cycle): each as `rotate`, except that a member that is another of the actors is boxed at
+/// the new epoch of each of its rotated roles (symmetric under the new secret), never at the one
+/// it supersedes.
+pub fn rotate_together(parts: &[Part], rng: &mut dyn CryptoRngCore) -> Result<Vec<Rotation>, Error> {
+    let mut fresh = Vec::with_capacity(parts.len());
+    for p in parts {
+        fresh.push(fresh_epochs(p, rng)?);
+    }
+    let new: BTreeMap<Tid, Vec<Rotated>> = parts.iter().zip(&fresh).map(|(p, f)| (p.actor, f.rotated.clone())).collect();
+    let mut out = Vec::with_capacity(parts.len());
+    for (p, mut f) in parts.iter().zip(fresh) {
+        let mut unboxed = Vec::new();
+        for m in &p.members {
+            let mut m = m.clone();
+            if let (Some(rs), MemberKeys::Actor { own, .. }) = (new.get(&m.member), &mut m.keys) {
+                for x in rs.iter() {
+                    own.insert(x.role, (x.epoch, x.secret.clone()));
+                }
+            }
+            let mut items: Vec<Item> = f.rotated.iter().filter(|x| x.role <= m.role).map(|x| Item { role: x.role, epoch: x.epoch, secret: &x.secret }).collect();
+            for r in carried(&m, &f.roles, &f.secrets.removed) {
+                let (epoch, secret) = p.held.role(r).newest_held().ok_or(Error::NoSecret(r))?;
+                items.push(Item { role: r, epoch, secret });
+            }
+            if !items.is_empty() && box_items(&p.actor, &m, &items, rng, &mut f.secrets)?.is_none() {
+                unboxed.push(m.member);
+            }
+        }
+        out.push(Rotation { rotated: f.rotated, secrets: f.secrets, keys: f.keys, unboxed, wrap: f.wrap });
+    }
+    Ok(out)
+}
+
+/// A rotation before its boxes: the roles rotated (carried ones added), the new epochs, the
+/// history boxes and removals, the keysets, the wrap epoch.
+struct Fresh {
+    roles: BTreeSet<Role>,
+    rotated: Vec<Rotated>,
+    secrets: SecretsWrite,
+    keys: KeysWrite,
+    wrap: Option<Epoch>,
+}
+
+fn fresh_epochs(p: &Part, rng: &mut dyn CryptoRngCore) -> Result<Fresh, Error> {
+    let held = p.held;
+    let mut roles = p.roles.clone();
     let removed = loop {
-        let removed = removals(&roles, held, held_secrets)?;
+        let removed = removals(&roles, held, p.held_secrets)?;
         let mut more = BTreeSet::new();
-        for m in members {
+        for m in &p.members {
             for r in carried(m, &roles, &removed) {
                 let (e, _) = held.role(r).newest_held().ok_or(Error::NoSecret(r))?;
-                if !may_carry(r, &e) {
+                if !(p.may_carry)(r, &e) {
                     more.insert(r);
                 }
             }
@@ -243,29 +304,18 @@ pub fn rotate(
         let supersedes: BTreeSet<Epoch> = re.current().into_iter().collect();
         let n = supersedes.iter().map(Epoch::n).max().ok_or(Error::NoEpoch(r))?;
         let secret = Secret32::random(rng);
-        let epoch = Epoch::derive(actor, r, n + 1, &secret)?;
+        let epoch = Epoch::derive(&p.actor, r, n + 1, &secret)?;
         if r == Role::Read {
             // by n, not order n (spec/crypto.md §5): uploaders judge from the thing's own epochs,
             // where derived ones keep no order n
             wrap = newest_of(supersedes.iter().filter(|e| re.secret(e).is_some()));
         }
         let earlier: Vec<(Epoch, Secret32)> = re.held_established().map(|(e, s)| (e, s.clone())).collect();
-        secrets.history.insert(history_key(r, &epoch), seal_history(&secret, actor, r, &epoch, &earlier)?);
+        secrets.history.insert(history_key(r, &epoch), seal_history(&secret, &p.actor, r, &epoch, &earlier)?);
         keys.keysets.insert(r, keyset(&epoch, &secret));
         rotated.push(Rotated { role: r, epoch, secret, supersedes });
     }
-    let mut unboxed = Vec::new();
-    for m in members {
-        let mut items: Vec<Item> = rotated.iter().filter(|x| x.role <= m.role).map(|x| Item { role: x.role, epoch: x.epoch, secret: &x.secret }).collect();
-        for r in carried(m, &roles, &secrets.removed) {
-            let (epoch, secret) = held.role(r).newest_held().ok_or(Error::NoSecret(r))?;
-            items.push(Item { role: r, epoch, secret });
-        }
-        if !items.is_empty() && box_items(actor, m, &items, rng, &mut secrets)?.is_none() {
-            unboxed.push(m.member);
-        }
-    }
-    Ok(Rotation { rotated, secrets, keys, unboxed, wrap })
+    Ok(Fresh { roles, rotated, secrets, keys, wrap })
 }
 
 /// A grant or re-seal (spec/crypto.md §4, spec/permissions.md §3): `rcpt`'s boxes for `roles`
