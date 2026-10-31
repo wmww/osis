@@ -218,19 +218,18 @@ pub(crate) fn listed(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: 
 /// carries counts through `received`).
 pub(crate) fn record(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)], received: WallMs) -> Result<()> {
     let held: BTreeSet<usize> = parts.iter().map(|p| p.0).collect();
-    record_aspects(tx, h, id, held, received)
-}
-
-/// Records aspects `ais` of commit `id` as received at `received`: a node-form commit's own
-/// writes by counter range, anything else (commit form, imports, snapshots) by commit ID
-/// (spec/permissions.md §5.1 frontier coverage).
-fn record_aspects(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ais: impl IntoIterator<Item = usize>, received: WallMs) -> Result<()> {
-    for ai in ais {
+    for ai in held {
         let Some(a) = h.aspects.get(ai) else { continue };
         let mut r = get(tx, &a.tid, &a.ak)?;
-        if h.kind.has_own_writes() && h.form == Form::Node {
-            r.add(h.author, a.lo, a.hi, received.0);
+        if h.kind.has_own_writes() {
+            match h.form {
+                Form::Node => r.add(h.author, a.lo, a.hi, received.0),
+                Form::Commit => {
+                    r.commits.insert(*id, (h.author, received.0));
+                }
+            }
         } else {
+            // imports count by commit ID (spec/permissions.md §5.1 frontier coverage)
             r.commits.insert(*id, (h.author, received.0));
         }
         put(tx, &a.tid, &a.ak, &r)?;
@@ -260,7 +259,17 @@ impl Engine {
         if osis_commit::verify_signature(&id, &c.signature, &vk).is_err() || h.validate().is_err() || h.ts.wall_ms().0 > now.0.saturating_add(MAX_DRIFT_MS) {
             return Ok(false);
         }
-        self.run(|tx| record_aspects(tx, h, &id, 0..h.aspects.len(), now))?;
+        // by commit ID, never by counters: this node keeps none of it, so a commit its author
+        // later signs on the same counters (overlap voids both, spec/commits.md §4) would meet
+        // no holder of this one and be covered (spec/permissions.md §5.1)
+        self.run(|tx| {
+            for a in &h.aspects {
+                let mut r = get(tx, &a.tid, &a.ak)?;
+                r.commits.insert(id, (h.author, now.0));
+                put(tx, &a.tid, &a.ak, &r)?;
+            }
+            Ok(())
+        })?;
         self.core.header_receipts.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
         Ok(true)
     }
@@ -288,8 +297,8 @@ impl Engine {
             }
         }
         // aspects known only from headers (receipts-only reads): this node cannot tell which
-        // the scope reaches, so each demoted node gets them all; an entry where its class did
-        // not fall is never consulted (spec/permissions.md §5.1)
+        // the scope reaches, so each demoted node's commits on them are listed by ID; one
+        // where its class did not fall is never consulted (spec/permissions.md §5.1)
         for (tid, ak) in &self.core.header_receipts {
             let membership = is_membership_class(ak.as_str());
             for node in scope.content.keys().chain(scope.membership.keys().filter(|_| membership)) {

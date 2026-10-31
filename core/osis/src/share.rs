@@ -208,6 +208,8 @@ pub enum SyncState {
     /// Waiting for a re-seal (spec/permissions.md §3).
     Stranded,
     NoServers,
+    /// Held for receipts only (`GroupPolicy::receipts_only`): not synced, what is here is stale.
+    ReceiptsOnly,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -217,7 +219,7 @@ pub struct GroupSync {
 }
 
 /// Sync status: servers connected and each synced group (`groups`: groups with a label this
-/// node reads).
+/// node reads, and those it holds for receipts only).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Status {
     pub connected: usize,
@@ -255,6 +257,9 @@ pub(crate) fn status_of(sync: &mut SyncEngine) -> Status {
             })
             .or_insert(GroupSync { state, last_sync: last });
     }
+    for g in sync.receipts_only() {
+        groups.insert(*g, GroupSync { state: SyncState::ReceiptsOnly, last_sync: None });
+    }
     Status { connected: sync.connected(), groups }
 }
 
@@ -275,7 +280,7 @@ fn needs_admin(e: osis_node::Error) -> Error {
 
 /// Synced groups holding any of `things` (the thing itself or its closure).
 fn groups_holding(sync: &mut SyncEngine, status: &Status, things: &BTreeSet<Tid>) -> Vec<Tid> {
-    status.groups.keys().copied().filter(|g| things.contains(g) || sync.engine().closure(g).iter().any(|t| things.contains(t))).collect()
+    status.groups.iter().filter(|(_, s)| s.state != SyncState::ReceiptsOnly).map(|(g, _)| *g).filter(|g| things.contains(g) || sync.engine().closure(g).iter().any(|t| things.contains(t))).collect()
 }
 
 impl Osis {
@@ -1047,7 +1052,7 @@ impl Osis {
         let groups = self.locked(|x| {
             let st = status_of(&mut x.sync);
             match scope {
-                SyncScope::All => st.groups.keys().copied().collect::<Vec<_>>(),
+                SyncScope::All => st.groups.iter().filter(|(_, s)| s.state != SyncState::ReceiptsOnly).map(|(g, _)| *g).collect::<Vec<_>>(),
                 SyncScope::Group(t) => {
                     let t = x.engine().resolve(&t, &t);
                     groups_holding(&mut x.sync, &st, &[t].into_iter().collect())

@@ -201,14 +201,12 @@ impl SyncEngine {
             _ => {}
         }
         // the group's membership commits brought secrets: entries they open are fetched now
-        while self.secrets_count() != secrets {
-            let secrets = self.secrets_count();
+        let mut before = secrets;
+        while self.secrets_count() != before {
+            before = self.secrets_count();
             let retry: Vec<(BlobId, Vec<u8>)> = self.receipts.get_mut(&l).and_then(|r| r.at.get_mut(&server)).map(|a| std::mem::take(&mut a.unopened).into_iter().collect()).unwrap_or_default();
             for (b, wrap) in retry {
                 self.receipts_entry(conn, server, l, b, None, &wrap, out)?;
-            }
-            if self.secrets_count() == secrets {
-                break;
             }
         }
         Ok(true)
