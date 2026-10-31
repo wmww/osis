@@ -1,3 +1,5 @@
+//! Rotation tests (spec/permissions.md §3, spec/crypto.md §4).
+
 #![allow(clippy::unwrap_used)]
 use crate::Mutation;
 use crate::flows::{Demotion, PreSync};
