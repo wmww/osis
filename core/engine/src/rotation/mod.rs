@@ -822,8 +822,11 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
     for (m, roles) in due {
         let mut keep = BTreeSet::new();
         for r in roles {
-            // a member actor left out of a rotation waits until its newest epoch covers
-            if may.contains(&r) && !epochs.role(r).newest_is_snapshot() && member_covers(tx, &held, &deps, &m, r)? {
+            // not without the secret (this node may reach the actor through a member actor left
+            // out); a member actor left out waits until its newest epoch covers
+            let re = epochs.role(r);
+            let holds = re.current().iter().any(|e| re.provenance(e).is_some_and(osis_keys::Provenance::reseals) && re.secret(e).is_some());
+            if may.contains(&r) && holds && !re.newest_is_snapshot() && member_covers(tx, &held, &deps, &m, r)? {
                 keep.insert(r);
             }
         }
