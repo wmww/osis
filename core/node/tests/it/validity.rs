@@ -2384,6 +2384,98 @@ fn flipped_snapshot_frontiers_not_received_alike_spec_perm_5_2() {
     assert_eq!(got[0], got[1], "snapshot first, then the removal");
 }
 
+/// Bob's commit X (a tag and the register; commit form if `commit_form`), Carol's snapshot S of
+/// the tags listing X (frontier or `Absorbed`), Alice's removal R of Carol not listing S. Gives
+/// the packages Alice holds, X, S and R.
+fn listed_part_setup(seed: u64, commit_form: bool) -> (LocalPeer, Tid, Vec<osis_node::local_peer::Package>, [osis_base::CommitId; 3]) {
+    let (mut lp, d, _, c) = setup(seed);
+    let mut m = Mutation::new();
+    if commit_form {
+        m.commit_form();
+    }
+    m.op(d, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("bob")) }).unwrap();
+    m.set(d, &REG, &s("bob")).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    let x = latest_of(&mut lp, 1);
+    sync(&mut lp, 1, 2);
+    lp.advance(1_000);
+    let snap = lp.peers[2].engine.snapshot(&d, &ak("/t/tags")).unwrap().unwrap();
+    sync(&mut lp, 2, 0);
+    lp.advance(DAY);
+    let scope = DemotionScope { membership: BTreeMap::from([(c, BTreeSet::from([d]))]), content: BTreeMap::from([(c, BTreeSet::from([d]))]) };
+    let now = lp.peers[0].engine.now();
+    let mut f = lp.peers[0].engine.frontier(&scope, now).unwrap();
+    f.commits.remove(&snap);
+    set_edge(&mut lp.peers[0].engine, d, c, None, Some(f.to_value()));
+    let rv = latest_of(&mut lp, 0);
+    let pks = packages(&mut lp, 0);
+    (lp, d, pks, [x, snap, rv])
+}
+
+/// A fresh peer given Alice's packages, with S, R and X (without its tags part) in `order`.
+fn listed_part_peer(lp: &mut LocalPeer, d: Tid, pks: &[osis_node::local_peer::Package], ids: [osis_base::CommitId; 3], order: &[osis_base::CommitId], seed: u64) -> usize {
+    let [x, ..] = ids;
+    let i = lp.peers.len();
+    lp.peers.push(osis_node::local_peer::Peer::new(seed, lp.peers[0].engine.now()).unwrap());
+    for p in pks.iter().filter(|p| !ids.contains(&p.id)) {
+        lp.deliver(i, p).unwrap();
+    }
+    lp.peers[i].engine.set_syncing(d, true).unwrap();
+    for id in order {
+        let p = pks.iter().find(|p| p.id == *id).unwrap();
+        if *id == x {
+            let h = lp.peers[0].engine.header(&x).unwrap();
+            let mut blob = osis_commit::CommitBlob::decode(&p.bytes).unwrap();
+            blob.parts.retain(|q| h.aspects[q.ai].ak != ak("/t/tags"));
+            lp.peers[i].engine.ingest(&blob.encode(), Vec::new()).unwrap();
+        } else {
+            lp.deliver(i, p).unwrap();
+        }
+    }
+    lp.peers[i].engine.reexamine().unwrap();
+    i
+}
+
+// spec/commits.md §4 (atomic apply), spec/permissions.md §5.2: a held snapshot of any validity
+// listing a missing part stands in for it. Carol's S lists Bob's X (its frontier, or its
+// `Absorbed` for a commit-form X); a node that got Carol's removal first (S invalid) and X
+// without its tags part applies the rest of X; the part joins once it arrives.
+#[test]
+fn part_listed_by_invalid_snapshot_applies_spec_commits_4() {
+    for commit_form in [false, true] {
+        let (mut lp, d, pks, ids) = listed_part_setup(0x5fd8, commit_form);
+        let [x, snap, rv] = ids;
+        let i = listed_part_peer(&mut lp, d, &pks, ids, &[rv, snap, x], 0x5fd9);
+        assert!(lp.peers[i].engine.pending().is_empty(), "commit form {commit_form}: {:?}", lp.peers[i].engine.pending());
+        assert_eq!(lp.peers[i].engine.get(&d, &ak("/t/reg")).unwrap(), Some(s("bob")), "commit form {commit_form}");
+        assert!(!tags(&mut lp, i, d).contains("bob"), "commit form {commit_form}");
+        lp.deliver(i, pks.iter().find(|p| p.id == x).unwrap()).unwrap();
+        assert!(tags(&mut lp, i, d).contains("bob"), "commit form {commit_form}: the part joined late");
+    }
+}
+
+// spec/commits.md §4 (atomic apply): whether X (without its tags part) arrives before S, while
+// S is valid, or after Carol's removal made it invalid, it applies alike: the register shows,
+// the tag does not, also after a restart.
+#[test]
+fn listed_part_alike_in_any_order_spec_commits_4() {
+    let (mut lp, d, pks, ids) = listed_part_setup(0x5fda, false);
+    let [x, snap, rv] = ids;
+    let orders = [[snap, x, rv], [x, snap, rv], [snap, rv, x], [rv, snap, x], [x, rv, snap], [rv, x, snap]];
+    for (n, order) in orders.iter().enumerate() {
+        let i = listed_part_peer(&mut lp, d, &pks, ids, order, 0x5fdb + n as u64);
+        for restarted in [false, true] {
+            if restarted {
+                lp.peers[i].restart(0x5fe9 + n as u64).unwrap();
+            }
+            let e = &mut lp.peers[i].engine;
+            assert!(e.pending().is_empty(), "order {n} restarted {restarted}: {:?}", e.pending());
+            assert_eq!(e.get(&d, &ak("/t/reg")).unwrap(), Some(s("bob")), "order {n} restarted {restarted}");
+            assert!(!tags(&mut lp, i, d).contains("bob"), "order {n} restarted {restarted}");
+        }
+    }
+}
+
 // spec/permissions.md §5.1 (frontier as of T), §5.2: a snapshot's frontiers count as received
 // from when its part arrived, not its header: a late part of Carol's snapshot S (Bob's tag
 // reaching the node only through it, his header held) is not in a frontier backdated to before

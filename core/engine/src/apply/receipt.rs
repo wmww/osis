@@ -56,17 +56,6 @@ impl Receipt {
         *v = out;
     }
 
-    /// Whether every counter in `[lo, hi)` of `node` was received.
-    pub fn holds(&self, node: &Tid, lo: u64, hi: u64) -> bool {
-        let mut next = lo;
-        for (a, b, _) in self.nodes.get(node).into_iter().flatten() {
-            if *a <= next && *b > next {
-                next = *b;
-            }
-        }
-        next >= hi
-    }
-
     /// Last counter (inclusive) of `node` received contiguously from 1 by time `t`; 0 if none.
     pub fn contiguous(&self, node: &Tid, t: u64) -> u64 {
         let mut next = 1u64;
@@ -127,18 +116,23 @@ fn put(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, r: &Receipt) -> Result<()> {
     Ok(tx.txn.put_local(&records::aspect_key(records::RECEIPT, tid, ak), &r.encode(), Shred::No)?)
 }
 
-/// The held snapshots of `(tid, ak)` valid now (bodies held, or dropped with their frontiers
+/// The held snapshots of `(tid, ak)`, any validity (bodies held, or dropped with their frontiers
 /// kept, `Dropped::gives`): ID, `ts`, frontiers, `Absorbed`.
-fn valid_snapshots<'a>(core: &'a crate::engine::Core, tid: &'a Tid, ak: &'a Ak) -> impl Iterator<Item = (CommitId, Ts, &'a Frontiers, &'a [(CommitId, Tid)])> + 'a {
+fn held_snapshots<'a>(core: &'a crate::engine::Core, tid: &'a Tid, ak: &'a Ak) -> impl Iterator<Item = (CommitId, Ts, &'a Frontiers, &'a [(CommitId, Tid)])> + 'a {
     let k = (*tid, ak.clone());
-    let held = core.ix.snapshots.get(&k).into_iter().flatten().filter(|(_, s, _, _)| super::validity::snapshot_valid(core, s, tid, ak)).map(|(ts, s, fr, abs)| (*s, *ts, fr, abs.as_slice()));
+    let held = core.ix.snapshots.get(&k).into_iter().flatten().map(|(ts, s, fr, abs)| (*s, *ts, fr, abs.as_slice()));
     let kept = core.ix.dropped_snapshots.get(&k).into_iter().flatten().filter_map(move |s| {
         let m = core.ix.commits.get(s)?;
         let ai = m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak)?;
         let (fr, abs) = m.dropped.get(&ai)?.gives.as_ref()?;
-        m.valid.get(ai).copied().unwrap_or(false).then_some((*s, m.view.ts, fr, abs.as_slice()))
+        Some((*s, m.view.ts, fr, abs.as_slice()))
     });
     held.chain(kept)
+}
+
+/// The held snapshots of `(tid, ak)` valid now.
+fn valid_snapshots<'a>(core: &'a crate::engine::Core, tid: &'a Tid, ak: &'a Ak) -> impl Iterator<Item = (CommitId, Ts, &'a Frontiers, &'a [(CommitId, Tid)])> + 'a {
+    held_snapshots(core, tid, ak).filter(move |s| super::validity::snapshot_valid(core, &s.0, tid, ak))
 }
 
 /// What this node had received of `(tid, ak)` by `as_of`: the record's entries received by
@@ -206,11 +200,16 @@ pub(crate) fn received(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, as_of: u64) -> Resul
     Ok(r)
 }
 
-/// Whether a held snapshot valid now stamped after `before` claims counters up to `ctr` of
-/// `node` on `(tid, ak)` (atomic apply: a commit's dropped delta counts as held,
+/// Whether a held snapshot of `(tid, ak)`, any validity, stamped after commit `id` lists its
+/// delta on the aspect as included: its frontier reaches a node-form commit's counters, or its
+/// `Absorbed` names the commit (atomic apply: the missing delta counts as dropped,
 /// spec/commits.md §4; a snapshot never absorbed a commit stamped after it, spec/crdt.md §2.2).
-pub(crate) fn claimed(core: &crate::engine::Core, tid: &Tid, ak: &Ak, node: &Tid, ctr: u64, before: Ts) -> bool {
-    valid_snapshots(core, tid, ak).any(|(_, ts, fr, _)| ts > before && fr.0.get(node).is_some_and(|c| *c >= ctr))
+pub(crate) fn listed(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: usize) -> bool {
+    let Some(a) = h.aspects.get(ai) else { return false };
+    let node_form = h.form == Form::Node && h.kind.has_own_writes();
+    held_snapshots(core, &a.tid, &a.ak).any(|(_, ts, fr, abs)| {
+        ts > h.ts && if node_form { fr.0.get(&h.author).is_some_and(|c| *c >= a.hi.saturating_sub(1)) } else { abs.iter().any(|x| x.0 == *id) }
+    })
 }
 
 /// Records what an applied commit's held parts gave this node (a snapshot: its ID; what it
@@ -300,18 +299,5 @@ mod tests {
         r.add(n, 1, 3, 400_000);
         assert_eq!(r.contiguous(&n, 15), 2);
         assert_eq!(Receipt::decode(&r.encode()).unwrap(), r);
-    }
-
-    // spec/commits.md §4 (dropped deltas count as held), spec/crdt.md §8 (snapshot frontiers):
-    // a counter range is held when received ranges cover it, across time buckets.
-    #[test]
-    fn holds_range_spec_commits_4() {
-        let n = Tid::from_bytes([1; 15]);
-        let mut r = Receipt::default();
-        r.add(n, 1, 4, 10);
-        r.add(n, 4, 9, 200_000);
-        assert!(r.holds(&n, 2, 9));
-        assert!(!r.holds(&n, 2, 10));
-        assert!(!r.holds(&Tid::from_bytes([2; 15]), 1, 2));
     }
 }
