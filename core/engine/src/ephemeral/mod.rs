@@ -79,8 +79,8 @@ pub struct Eph {
     src: Source,
     /// Per aspect written this session, its next counter (contiguous from 1, as a node's; a
     /// write's counters are taken when it applies, so a refused one takes none). Kept for the
-    /// session, but for things freed (never written again): a counter used twice would make two
-    /// writes one dot.
+    /// whole session, freed things' too (a freed thing's writes may be held elsewhere and the
+    /// thing received again): a counter used twice would make two writes one dot.
     next: HashMap<Tid, HashMap<Ak, u64>>,
     batches: u64,
     things: HashMap<Tid, EphThing>,
@@ -514,7 +514,6 @@ impl Engine {
         }
         for t in &gone {
             self.eph.things.remove(t);
-            self.eph.next.remove(t);
             self.eph.remote.local.remove(t);
             self.eph.remote.presence.retain(|(x, _), _| x != t);
             self.eph.defs.remove(t);
