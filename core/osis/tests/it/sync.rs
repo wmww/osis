@@ -439,7 +439,7 @@ fn removal_rotates_spec_permissions_3() {
     assert_eq!(x(carol, by_bob), Some(s("bob was here")));
 }
 
-// spec/permissions.md §5.1 (received means header verified), §5.3 (pre-sync), notes/sync.md
+// spec/permissions.md §5.1 (frontier received), §5.3 (receipts only), notes/sync.md
 // Receipts-only reads: Alice's phone holds group G but none of its subgroup H (receipts-only).
 // Bob writes in both; the phone removes him with the required pre-sync, which reads H's commit
 // headers only. His edit in H, which the phone never held, is kept at Carol; nothing went under
