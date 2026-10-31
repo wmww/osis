@@ -1,6 +1,0 @@
-# rebuild-notes
-> Summary: Workflow notes from the rebuild-dropped-body-notes branch.
-
-- The issue guessed all five notes were one problem; one (an epoch's snapshot mark) was a plain persistence bug: set in memory, saved only when establishment changed, so even a fast reopen lost it. Diffing the full `IndexDigest` first (with `show`) sorted them in one run.
-- Review: the walks oracle printed a whole `IndexDigest` tuple on mismatch (850 KB of output); `open_equals_rebuild` now asserts `first_diff` first. A randomized secrets-compaction walk found three more open/rebuild gaps in a few minutes that the hand-written test did not.
-- Re-review: an `eprintln!` probe inside a walk seed shows nothing without `-- --nocapture`; a grep of the log for it read as "0 hits" and nearly passed a mutation as uncaught. Open-equals-rebuild cannot see the introducer bug this branch fixed (both sides lose the same note); a cross-peer probe (an earlier introducer one peer names and another holds must be the other's too) caught the mutation in 184 of 300 seeds and found nothing on the branch. Not committed: a part missing when dropped keeps no intros (issues/epoch-intro-unheld-rotation.md), which would read as a false failure.

@@ -1,3 +1,0 @@
-- `wt` was not on PATH in the worker shell; the brief's PATH export worked.
-- A scripted multi-edit (python `str.replace` on a slice found by `index`) turned an empty match into an insert between every character of a file (3 MB of garbage); recovered by `git checkout`. Asserting the old text is non-empty and unique before replacing avoids it.
-- Reviewer: a pass re-sends a capped rewrite plain right before `deletions`, so guarding the replacing upload on a plain one in flight stalled the purge forever (caught by sync_review in the gate, reverted).
