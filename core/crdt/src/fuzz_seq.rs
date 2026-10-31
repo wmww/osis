@@ -106,7 +106,8 @@ struct Commit {
     range: CounterRange,
     before: Fragment,
     /// The undo of this commit restores `before`'s read when nothing joined after it (§4.6
-    /// Exactness): no list item write, no move beside a broken cycle, not a model commit.
+    /// Exactness): no list item write, no move of an element whose `cur` was demoted, not a model
+    /// commit.
     restores: bool,
 }
 
@@ -638,9 +639,13 @@ impl World {
             assert_eq!(f.read(), read, "ops in one commit read like the same ops one by one: {pops:?}");
         }
         // (a list item's field first written in a present item stays: no nested register reset,
-        // §4.6 "Absent before"; an element moved whose `cur` was demoted is not restored exactly,
-        // §4.6 Exactness: here any element moved that is on a broken cycle)
-        let demoted = matches!(&d, Fragment::Seq(ds) if ds.elems().iter().any(|(k, e)| e.created.is_none() && !e.pos.is_empty() && cyc.contains(k)));
+        // §4.6 "Absent before"; an element moved whose `cur` was demoted before is not restored
+        // exactly, §4.6 Exactness)
+        let was = match &st {
+            Fragment::Seq(sq) => crate::linearize::demoted(sq.elems()),
+            _ => Vec::new(),
+        };
+        let demoted = matches!(&d, Fragment::Seq(ds) if ds.elems().iter().any(|(k, e)| e.created.is_none() && !e.pos.is_empty() && was.contains(k)));
         let restores = !demoted && !pops.iter().any(|o| self.list && !matches!(o.op, Op::Insert { .. } | Op::Delete { .. }));
         if skew == 0 {
             self.reps[i].lo = range.hi;

@@ -35,6 +35,9 @@ pub(crate) struct Placed<'a> {
     pub head: Vec<bool>,
     /// Nodes on a cycle some demotion broke (§6.2).
     pub cyc: Vec<usize>,
+    /// Nodes whose `cur` was demoted (§6.2 step 2), for the undo exactness check (§4.6).
+    #[cfg(any(test, fuzzing))]
+    pub demoted: Vec<usize>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -212,14 +215,33 @@ pub(crate) fn place_idx(elems: &Elems) -> Placed<'_> {
     let cyc = break_cycles(&mut g);
     let (order, parent) = traverse(&g);
     let head = g.edge.iter().take(real).map(|e| *e == Edge::Head).collect();
+    // a node with a position write off candidate 0 (bare anchors have none and start on END)
+    #[cfg(any(test, fuzzing))]
+    let demoted = (0..real).filter(|i| g.cand.get(*i).is_some_and(|c| *c != 0)).collect();
     drop(g);
-    Placed { nodes, order, parent, waiting, head, cyc }
+    Placed {
+        nodes,
+        order,
+        parent,
+        waiting,
+        head,
+        cyc,
+        #[cfg(any(test, fuzzing))]
+        demoted,
+    }
 }
 
 /// Places the elements of a sequence (§6), by dot.
 #[cfg(any(test, fuzzing))]
 pub(crate) fn place(elems: &Elems, text: bool) -> crate::seq_lin::Placement {
     crate::seq_lin::Placement::of(&place_idx(elems), text)
+}
+
+/// The dots of the nodes whose `cur` the cycle breaking demoted (§6.2 step 2).
+#[cfg(any(test, fuzzing))]
+pub(crate) fn demoted(elems: &Elems) -> Vec<Dot> {
+    let p = place_idx(elems);
+    p.demoted.iter().filter_map(|i| p.nodes.get(*i)).map(|n| n.dot.clone().into_owned()).collect()
 }
 
 /// Demotes edges until the parent graph is acyclic (§6.2). Cycles are vertex-disjoint and each
