@@ -205,7 +205,7 @@ impl Transaction<'_> {
     fn aspect_mem(&mut self, tid: &Tid, ak: &Ak) -> bool {
         let on = self.memory || self.is_memory_aspect(tid, ak);
         if on {
-            self.mem.mark_aspect(tid, ak, true);
+            self.mem.mark_aspect(tid, ak);
         }
         on
     }

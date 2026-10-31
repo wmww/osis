@@ -493,6 +493,18 @@ impl Engine {
     pub fn commit(&mut self, m: Mutation) -> Result<Option<CommitId>> {
         self.run(|tx| commit_in(tx, m))
     }
+
+    /// Commits `m` through the same path with every row it derives in the store's memory
+    /// overlay (no disk I/O, gone at restart): what a memory commit costs (issues/eph-unify.md,
+    /// step 2 measurement). Benches only until memory commits land; the aspects it writes must
+    /// hold no durable row.
+    #[doc(hidden)]
+    pub fn commit_in_memory(&mut self, m: Mutation) -> Result<Option<CommitId>> {
+        self.run(|tx| {
+            tx.txn.set_memory(true);
+            commit_in(tx, m)
+        })
+    }
 }
 
 pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
