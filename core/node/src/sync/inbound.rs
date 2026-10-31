@@ -360,7 +360,7 @@ impl SyncEngine {
         out
     }
 
-    /// Opens entries of `l` not opened yet, ingests what they carry (role first), and
+    /// Opens entries of `l` not opened yet, ingests what they carry (role commits first), and
     /// retries every unopened entry while new secrets keep arriving.
     pub(crate) fn open_entries(&mut self, l: LabelId, ids: &[BlobId]) -> Result<()> {
         let mut todo: Vec<(LabelId, BlobId)> = ids.iter().map(|b| (l, *b)).collect();

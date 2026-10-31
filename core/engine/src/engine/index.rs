@@ -761,7 +761,7 @@ pub(crate) fn old_judgments(tx: &mut Tx<'_>) -> Option<OldJudgments> {
 }
 
 /// Loads the persisted index into `core`: commit metas (headers held undecoded, decoded on
-/// first use; those with lists by link resolved now), and the indexes derived from roles
+/// first use; those with lists by link resolved now), and the indexes derived from role-commit
 /// bodies.
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     // commit records: the head and the header's bytes only, nothing decoded

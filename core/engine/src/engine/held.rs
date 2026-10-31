@@ -1,4 +1,4 @@
-//! perm's held set (notes/architecture.md §2: the node implements `HeldSet`): applied roles
+//! perm's held set (notes/architecture.md §2: the node implements `HeldSet`): applied role
 //! commits by target, roster snapshots by thing, `/created` records, indexed by commit and by
 //! holder, journaled for rollback, and remembering which things' inputs changed since perm last
 //! looked (`take_touched`), so the timelines re-partition only around them.

@@ -1,4 +1,4 @@
-//! Holder-peer serving (spec/sync.md §5 last bullet, §10): a node serves the labels it syncs to
+//! Co-reader-peer serving (spec/sync.md §5 last bullet, §10): a node serves the labels it syncs to
 //! the peers that dial it, through osis-proto's host engine over its own label state
 //! (`PeerStore`, a `LabelStore` over the sync state's entries and the engine's blobs). Opens,
 //! stamps and deposits are checked as a host checks them, against the registration path
@@ -225,11 +225,11 @@ struct PeerStore<'a> {
     now: u64,
     /// Corrected wall ms (tombstones of this node's drops).
     wall: u64,
-    /// What is charged so far per charge key (`charge_key`), its limit, the session's holder
+    /// What is charged so far per charge key (`charge_key`), its limit, the session's co-reader
     /// key, and this request's charges per key; all peers together may still have `total_left`.
     charged: &'a BTreeMap<[u8; 32], u64>,
     limit: u64,
-    holder: Option<[u8; 32]>,
+    co_reader: Option<[u8; 32]>,
     used_here: BTreeMap<[u8; 32], u64>,
     total_left: u64,
     acc: Accepted,
@@ -241,8 +241,8 @@ struct PeerStore<'a> {
 /// Whom bytes a peer session put here are charged to: the dialable key its co-reader proof
 /// proved, else the label they went under (a dialer key is fresh per connection, so charging
 /// it would bound nothing: a link holder's sessions share its K label's budget).
-fn charge_key(holder: Option<[u8; 32]>, label: &LabelId) -> [u8; 32] {
-    holder.unwrap_or_else(|| {
+fn charge_key(co_reader: Option<[u8; 32]>, label: &LabelId) -> [u8; 32] {
+    co_reader.unwrap_or_else(|| {
         let mut k = [0xff; 32];
         if let Some(d) = k.get_mut(16..) {
             d.copy_from_slice(&label.0);
@@ -379,7 +379,7 @@ impl LabelStore for PeerStore<'_> {
         // a held entry costs nothing more (a new wrap or a stamp)
         if !self.entries.contains_key(&(*label, put.blob_id)) {
             let size = put.blob.len() as u64;
-            let key = charge_key(self.holder, label);
+            let key = charge_key(self.co_reader, label);
             if size > self.limit.saturating_sub(self.used(&key)) || size > self.total_left {
                 self.acc.full = true;
                 return Ok(if put.stamp.is_some() { Code::STORAGE_CAP } else { Code::BUDGET_FULL });
@@ -398,7 +398,7 @@ impl LabelStore for PeerStore<'_> {
     }
 
     fn budget(&self, label: &LabelId) -> std::result::Result<Budget, StoreError> {
-        let bytes_left = self.limit.saturating_sub(self.used(&charge_key(self.holder, label))).min(self.total_left);
+        let bytes_left = self.limit.saturating_sub(self.used(&charge_key(self.co_reader, label))).min(self.total_left);
         Ok(Budget { entries_left: bytes_left / ENTRY_UNIT, bytes_left })
     }
 
@@ -524,7 +524,7 @@ impl SyncEngine {
 
     /// The dialable keys co-reader proofs proved on the sessions served now (spec/sync.md §5).
     pub fn served_co_readers(&self) -> BTreeSet<[u8; 32]> {
-        self.served.values().filter_map(|s| s.conn.holder()).collect()
+        self.served.values().filter_map(|s| s.conn.co_reader()).collect()
     }
 
     /// The labels this node serves: those it syncs, at the deepest recorded step (and the steps
@@ -600,7 +600,7 @@ impl SyncEngine {
                 wall,
                 charged: &self.charges.per,
                 limit: self.cfg.peer_bytes,
-                holder: s.conn.holder(),
+                co_reader: s.conn.co_reader(),
                 used_here: BTreeMap::new(),
                 total_left: self.cfg.peer_total_bytes.saturating_sub(total),
                 acc: Accepted::default(),
@@ -610,9 +610,9 @@ impl SyncEngine {
             let o = s.conn.handle(now, &mut store, input);
             (o, store.acc)
         };
-        let peer = s.conn.holder().unwrap_or(s.peer);
-        let proven = s.conn.holder();
-        let holder = proven.is_some_and(|k| reach.contains_key(&k));
+        let peer = s.conn.co_reader().unwrap_or(s.peer);
+        let proven = s.conn.co_reader();
+        let co_reader = proven.is_some_and(|k| reach.contains_key(&k));
         if !s.conn.is_closed() {
             self.served.insert(conn, s);
         }
@@ -620,7 +620,7 @@ impl SyncEngine {
         for (l, b, n) in acc.charges {
             self.charges.charge(l, b, charge_key(proven, &l), n);
         }
-        if !acc.entries.is_empty() && holder {
+        if !acc.entries.is_empty() && co_reader {
             for (l, _) in &acc.entries {
                 self.peer_received.entry(*l).or_default().insert(peer);
             }
@@ -686,7 +686,7 @@ impl SyncEngine {
             .served
             .iter()
             .filter(|(_, s)| {
-                let Some(k) = s.conn.holder() else { return false };
+                let Some(k) = s.conn.co_reader() else { return false };
                 let node = reach.get(&k);
                 s.conn.opened().any(|l| labels.get(l).is_some_and(|x| node.is_none_or(|n| !self.engine.may_read(n, &x.group))))
             })

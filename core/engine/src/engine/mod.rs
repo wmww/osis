@@ -104,7 +104,7 @@ pub struct Dropped {
     /// kept so re-judging the part (and a rebuild) needs no body.
     pub role: Option<osis_base::Role>,
     pub overreach: bool,
-    /// The epochs a roles `/keys` body keyed (`epoch_intro` candidates,
+    /// The epochs a role commit's `/keys` body keyed (`epoch_intro` candidates,
     /// `apply::keys::intro_epochs`): which commit introduced an epoch is a judgment the covers
     /// rule needs.
     pub intros: Vec<(osis_base::Role, osis_crypto::Epoch)>,

@@ -241,7 +241,7 @@ impl fmt::Debug for Link {
     }
 }
 
-/// Role role, ordered read < write < admin.
+/// A role, ordered read < write < admin.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Role {
     Read,

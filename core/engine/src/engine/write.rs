@@ -130,7 +130,7 @@ impl Mutation {
         Ok(e)
     }
 
-    /// Persists `tid` with this batch if it is ephemeral (`Engine::write`): a roles
+    /// Persists `tid` with this batch if it is ephemeral (`Engine::write`): a role
     /// operation's or a move's target, persisted by a content commit first.
     pub fn persist(&mut self, tid: Tid) -> &mut Self {
         self.persist.insert(tid);
@@ -561,7 +561,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     let role_commit = m.aspects.keys().any(|(_, ak)| ak.as_str() != CREATED.ak() && is_role_class(ak.as_str()));
     let content = m.aspects.keys().any(|(_, ak)| ak.as_str() != CREATED.ak() && !is_role_class(ak.as_str()));
     if role_commit && content {
-        return Err(Error::Misuse("a commit is either content or roles"));
+        return Err(Error::Misuse("a commit is either a content or a role commit"));
     }
     let kind = match m.roster {
         true if role_commit => Kind::RosterSnapshot,

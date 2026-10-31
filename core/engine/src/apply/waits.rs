@@ -51,7 +51,7 @@ enum On {
 }
 
 pub(crate) struct Wait {
-    /// `reexamine`'s order: (not roles, `ts`).
+    /// `reexamine`'s order: (not a role commit, `ts`).
     pub key: (bool, Ts),
     /// The things the commit has deltas on.
     things: BTreeSet<Tid>,

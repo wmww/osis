@@ -566,7 +566,7 @@ fn uncovered_part_judged_anew() {
     open_equals_rebuild(&mut lp.peers[2].engine, &[t], "C removed");
 }
 
-/// One random history of `open_equals_rebuild_random_secrets_compactions`; how many roles
+/// One random history of `open_equals_rebuild_random_secrets_compactions`; how many role-class
 /// bodies it dropped.
 fn secrets_history(seed: u64) -> usize {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);

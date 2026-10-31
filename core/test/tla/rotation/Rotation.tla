@@ -91,7 +91,8 @@ Top == steps[Len(steps)]
 \* crypto §4: the history box holds "every distinct earlier secret of an
 \* established epoch the rotator holds".
 Hist(a) == Enc(a) \cap Est(a)
-Mem == (Nodes \ Late) \cup granted
+\* holders: boxed at epoch 0 or granted later
+Holding == (Nodes \ Late) \cup granted
 \* sync §5 re-registration: an admin that holds the head's epoch and an
 \* established epoch newer than it issues a child at its newest (crypto §4).
 NeedsReg(a) == Top.ep \in Enc(a) /\ HeldCur(a) # {} /\ Newer(EncEp(a), Top.ep)
@@ -308,7 +309,7 @@ Plant(x, e) ==
 \* refused if the deposit seed was refreshed by a rotation whose /keys the
 \* node has not read (crypto §3).
 Heartbeat(x) ==
-  /\ online[x] /\ x \in Mem /\ x \notin stranded /\ x \notin dep[x]
+  /\ online[x] /\ x \in Holding /\ x \notin stranded /\ x \notin dep[x]
   /\ \/ CanOpen(x) /\ Top.ep \notin sec[x] /\ ~\E k \in hostRot : FromHost(x, k)
      \/ ~CanOpen(x)
   /\ Refresh => Top.ep \in kn[x]
@@ -378,8 +379,8 @@ NoPlantedKey == ~leakP
 
 \* permissions §3 / sync §5: every current holder eventually opens every
 \* current epoch (by claims, downloads or re-seal) ...
-CurrentOpens == <>[](\A x \in Mem \ removed : GCur \subseteq sec[x])
+CurrentOpens == <>[](\A x \in Holding \ removed : GCur \subseteq sec[x])
 \* ... and reads the label: every epoch content was written under (for a
 \* grantee, older epochs by the history box, crypto §4).
-ReadsAll == <>[](\A x \in Mem \ removed : \A c \in enc : c[1] \in sec[x])
+ReadsAll == <>[](\A x \in Holding \ removed : \A c \in enc : c[1] \in sec[x])
 =============================================================================

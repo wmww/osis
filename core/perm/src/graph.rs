@@ -218,7 +218,7 @@ impl Edges {
         self.by_holder.get(holder).into_iter().flat_map(|s| s.iter())
     }
     pub fn iter(&self) -> impl Iterator<Item = (&Tid, &Tid, &Edge)> {
-        self.by_target.iter().flat_map(|(t, m)| m.iter().map(move |(mem, e)| (mem, t, e)))
+        self.by_target.iter().flat_map(|(t, m)| m.iter().map(move |(h, e)| (h, t, e)))
     }
 }
 

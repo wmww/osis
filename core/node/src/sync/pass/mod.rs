@@ -1,7 +1,7 @@
 //! The pass at one host for one label after its log was read to the end (spec/sync.md §5-§7;
 //! spec/permissions.md §4): re-registration first when this admin holds newer epochs than the
 //! head (the actor's role commits the host lacks, then the step; the rest after it is
-//! registered), then uploads of must-hold bodies (role first) or relays of stamped ones,
+//! registered), then uploads of must-hold bodies (role commits first) or relays of stamped ones,
 //! this node's certificates and node card, heartbeats, and deletions of must-not-hold bodies
 //! (`delete`: by the label delete key or a delete key, carriers first), timed deletes for
 //! relative keep-at-most.
