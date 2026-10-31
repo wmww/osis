@@ -382,12 +382,15 @@ impl ServerConnection {
             ServerInput::Start => out.push(ServerOutput::Send(encode_frame(&Hello::new(now, self.cfg.challenge).encode()))),
             ServerInput::Bytes(b) => {
                 self.decoder.push(&b);
+                // frame bytes plus reply allowances of this input's requests, all unanswered
+                // when the last was sent (`MAX_UNANSWERED`)
+                let mut charged = 0usize;
                 while !self.closed {
                     // before the peer's Hello only a Hello-sized frame is taken (spec/wire.md §11.1)
                     self.decoder.set_max(if self.version.is_some() { osis_base::format::MAX_MESSAGE } else { crate::frame::MAX_HELLO_BYTES });
                     match self.decoder.next_frame() {
                         Ok(Some(body)) => {
-                            self.frame(now, store, &body, out);
+                            self.frame(now, store, &body, &mut charged, out);
                             // a peer within its window (spec/sync.md §6) never has more replies
                             // unwritten: one that pipelines past it is closed here, before its
                             // further requests cost reads and memory, not after (the driver's
@@ -455,7 +458,7 @@ impl ServerConnection {
         out.push(ServerOutput::Close);
     }
 
-    fn frame(&mut self, now: u64, store: &mut dyn LabelStore, body: &[u8], out: &mut Vec<ServerOutput>) {
+    fn frame(&mut self, now: u64, store: &mut dyn LabelStore, body: &[u8], charged: &mut usize, out: &mut Vec<ServerOutput>) {
         if self.version.is_none() {
             match Hello::decode(body).and_then(|h| negotiate(&[PROTOCOL_VERSION], &h.versions)) {
                 Ok(v) => self.version = Some(v),
@@ -466,6 +469,7 @@ impl ServerConnection {
             }
             return;
         }
+        *charged = charged.saturating_add(body.len().saturating_add(4));
         let msg = match Message::decode(body) {
             Ok(m) => m,
             Err(r) => {
@@ -476,6 +480,15 @@ impl ServerConnection {
                 return;
             }
         };
+        // a peer within its window (spec/sync.md §6) never sends more before any is answered:
+        // one that does is closed before the request runs, so one input costs at most a few
+        // requests' reads (a Reconcile reads its ranges' live IDs: up to the whole label)
+        *charged = charged.saturating_add(crate::client::allowance(&msg));
+        if *charged > crate::client::MAX_UNANSWERED {
+            out.push(ServerOutput::PeerError(Error::Cap("requests past the request window")));
+            self.close(out);
+            return;
+        }
         let id = msg.id();
         self.struck = false;
         match self.dispatch(now, store, msg, out) {
@@ -1104,8 +1117,8 @@ mod tests {
     }
 
     // spec/sync.md §6 (request window), spec/requirements.md (peer input never causes unbounded
-    // work): a peer pipelining requests whose replies pass `SEND_QUEUE` in one input is closed
-    // there; the rest of its input costs nothing
+    // work): a peer pipelining requests (two per input, within `MAX_UNANSWERED`) without taking
+    // the replies is closed once they pass `SEND_QUEUE`; the rest of its input costs nothing
     #[test]
     fn pipelined_replies_bounded() {
         let f = Fixture::new(0x10);
@@ -1116,14 +1129,59 @@ mod tests {
         let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, presence: false, tie: 0, replaces: &[], now: 0 };
         assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
         let mut c = opened(&f, &mut store);
-        let mut bytes = Vec::new();
-        for id in 0..100u32 {
-            bytes.extend(encode_frame(&Message::Fetch { id: 10 + id, label: f.label, ids: vec![blob_id] }.encode()));
+        let taken = c.written;
+        c.handle(0, &mut store, ServerInput::Taken(taken));
+        let mut sent = 0;
+        for id in 0..50u32 {
+            let mut bytes = Vec::new();
+            for k in 0..2 {
+                bytes.extend(encode_frame(&Message::Fetch { id: 10 + 2 * id + k, label: f.label, ids: vec![blob_id] }.encode()));
+            }
+            let out = c.handle(0, &mut store, ServerInput::Bytes(bytes));
+            sent += out.iter().map(|x| if let ServerOutput::Send(b) = x { b.len() } else { 0 }).sum::<usize>();
+            if c.is_closed() {
+                assert!(out.iter().any(|o| matches!(o, ServerOutput::PeerError(Error::Cap("replies past the request window")))), "{out:?}");
+                break;
+            }
         }
-        let out = c.handle(0, &mut store, ServerInput::Bytes(bytes));
         assert!(c.is_closed());
-        let sent: usize = out.iter().map(|x| if let ServerOutput::Send(b) = x { b.len() } else { 0 }).sum();
         assert!(sent > SEND_QUEUE - MAX_MESSAGE && sent <= SEND_QUEUE + MAX_MESSAGE, "{sent}");
+    }
+
+    // spec/sync.md §6 (request window), spec/requirements.md (peer input never causes unbounded
+    // work): requests that would carry more than `MAX_UNANSWERED` unanswered in one input close
+    // the connection before they run, so repeating a whole-space Reconcile (which reads the whole
+    // label) costs at most three label reads per input; spread over inputs, each runs
+    #[test]
+    fn pipelined_requests_bounded() {
+        let f = Fixture::new(0x10);
+        let mut store = MemoryLabelStore::new([1; 32]);
+        store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
+        let n = 1000u32;
+        for i in 0..n {
+            let blob = i.to_be_bytes().to_vec();
+            let put = Put { blob_id: osis_label::blob_id(&blob), blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, presence: false, tie: 0, replaces: &[], now: 0 };
+            assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
+        }
+        let whole = |id| encode_frame(&Message::Reconcile { id, label: f.label, ranges: vec![Range { lower: rbsr::Bound::empty(), upper: rbsr::Bound::empty(), mode: Mode::Fingerprint([0; 16]) }] }.encode());
+        let replies = |out: &[ServerOutput]| out.iter().filter(|o| matches!(o, ServerOutput::Send(b) if matches!(Message::decode(&b[4..]), Ok(Message::ReconcileReply { .. })))).count();
+        // within the bound: three per input, input after input
+        let mut c = opened(&f, &mut store);
+        store.ids_read.set(0);
+        for round in 0..4u32 {
+            let out = c.handle(0, &mut store, ServerInput::Bytes((0..3).flat_map(|k| whole(10 + 3 * round + k)).collect()));
+            assert_eq!(replies(&out), 3);
+        }
+        assert!(!c.is_closed());
+        assert_eq!(store.ids_read.get(), 12 * u64::from(n));
+        // past it in one input: closed before the fourth runs
+        let mut c = opened(&f, &mut store);
+        store.ids_read.set(0);
+        let out = c.handle(0, &mut store, ServerInput::Bytes((0..1000).flat_map(whole).collect()));
+        assert!(c.is_closed());
+        assert!(out.iter().any(|o| matches!(o, ServerOutput::PeerError(Error::Cap("requests past the request window")))), "{out:?}");
+        assert_eq!(replies(&out), 3);
+        assert_eq!(store.ids_read.get(), 3 * u64::from(n));
     }
 
     // spec/wire.md §11.3, spec/requirements.md (peer input never causes unbounded work): a
