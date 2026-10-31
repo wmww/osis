@@ -9,7 +9,7 @@ Workspace root `Cargo.toml`: members `core/*` (library crates in unprefixed dire
 | 0 | `osis-base` | (this note, §7) | Value, canonical CBOR, Tid, Ak, Link, ids, time, `format` constants, chunker, hashing, hex, base64url, `Clock`, `impl_error!` |
 | 1 | `osis-crypto` | crypto | suite 1 primitives, kdf, sealed boxes, wraps, delete keys (blinded); `OsRng` for drivers |
 | 1 | `osis-crdt` | crdt-core, crdt-seq | merge encodings, delta grammar, join/read/diff, paging; `View`, `PageSink`, `PageSource` |
-| 1 | `osis-perm` | perm | membership validity rules over an abstract held set |
+| 1 | `osis-perm` | perm | role validity rules over an abstract held set |
 | 1 | `osis-transport` | transport, p2p | `Transport`; `InProcess`, QUIC, iroh (`iroh`), LAN announcements (`lan`); `link` sessions (channel pairs with tokio pump tasks) for the node and host drivers |
 | 2 | `osis-schema` | schema | DSL, types, core aspect types, implements `View` |
 | 2 | `osis-store` | store | `Backend`, `MemoryBackend`, `RedbBackend` and `FileRoot`, `RootStorage`, `Store`, `Transaction` |
@@ -18,7 +18,7 @@ Workspace root `Cargo.toml`: members `core/*` (library crates in unprefixed dire
 | 4 | `osis-label` | label, large-values | blobs, labels, steps, stamps, blob-backed tree and page sinks/sources, large values |
 | 5 | `osis-proto` | proto | sans-I/O sync protocol engines |
 | 6 | `osis-host` | host | hosting (storing and serving labels it need not read): `HostStore`, `HostPolicy`, sans-I/O `Hub`, async `driver` (default feature `driver`: tokio; also `serve`, which `osis serve` runs) |
-| 7 | `osis-engine` | node-core, membership-flows | engine, apply, retention, undo, events, identity, moves, labeling, flows, rotation, `local_peer`; the persisted index tag (`build.rs`); phase timers `costs` (always compiled, recording on a thread once it calls `costs::take`); `SyncRecords`, the hook node-sync installs for the sync records engine transactions write or drop |
+| 7 | `osis-engine` | node-core, role-flows | engine, apply, retention, undo, events, identity, moves, labeling, flows, rotation, `local_peer`; the persisted index tag (`build.rs`); phase timers `costs` (always compiled, recording on a thread once it calls `costs::take`); `SyncRecords`, the hook node-sync installs for the sync records engine transactions write or drop |
 | 8 | `osis-node` | node-sync | `sync` (sans-I/O sync engine) over osis-engine, whose modules it re-exports at the same paths (`osis_node::engine`, `osis_node::flows`, ...); default feature `driver` (tokio driver); `iroh`, `lan` (the driver's LAN loop), `relay` (tier-2 relay tests) |
 | 9 | `osis` | api | public API; the only crate apps depend on: the handle owns the node's `SyncEngine`; sync runs on a tokio driver (`Runtime::Tokio`/`Own`) over osis-transport `link` sessions (`Transport::Quic`, `Store::Dir` for the redb store; `iroh` adds co-readers over iroh, `lan` the LAN loop) |
 | 10 | `osis-cli` | cli | binary `osis` |
@@ -26,7 +26,7 @@ Workspace root `Cargo.toml`: members `core/*` (library crates in unprefixed dire
 | 10 | `osis-bench` | test-infra | bench harness (no deps) and benches; size budgets (tier 2) |
 | 10 | `osis-sim` (`core/test/sim/`) | sim | deterministic simulator; `world`: `Osis` handles and in-memory hubs under one manual clock (the example apps' tests) |
 | - | `crdt-model` (`core/test/crdt-model`) | | reference model of spec/crdt.md (notes/crdt.md) |
-| - | `membership-model` (`core/test/membership-model`) | | model of the membership rules (notes/permissions.md) |
+| - | `membership-model` (`core/test/membership-model`) | | model of the role rules (notes/permissions.md) |
 
 **GUI workspace** (separate, root manifest `kit/Cargo.toml`, notes/app.md): `osis-kit` (`kit/`, UI toolkit over Masonry) and `osis-app` (`app/`, the first-party app), depending on `osis` and `osis-schema` by path only.
 

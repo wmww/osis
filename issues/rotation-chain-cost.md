@@ -1,4 +1,4 @@
-# Deep member chains cost cubic time in the rotation cascade
+# Deep holder chains cost cubic time in the rotation cascade
 > Summary: the departure walk holds one shared-tail hop per kept departure (`osis_keys::Via`), but each kept departure still costs O(L) time on a chain of L actors (the simple-chain `contains` test and `verdicts` running `covers` down the chain), so one walk is O(L^2) and a cascade (`ensure_rotated`, one walk per actor) O(L^3). Fine at realistic depths, a cost lever for an admin who builds a very deep chain below a shared group.
 > Tags: engine, permissions
 

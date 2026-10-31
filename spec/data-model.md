@@ -78,6 +78,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 
 ## 8. Groups
 - A **group** is a thing with a `/group` aspect: `items: set<tid>`, `subgroups: set<tid>`. Its members are the items of its `/group` and `/placed` plus, transitively, the members of their subgroups. Groups may overlap, nest and be cyclic; membership changes over time.
+- Member, membership and member of a group mean only this placement. Rights come from role grants; their terms (role, holder, role commit, role-class aspect, role timeline) are spec/permissions.md §1.
 - Groups are the sync unit (spec/sync.md §3). Being in a group grants no rights (spec/permissions.md).
 - `/groups` (synthetic) on a thing: the locally known groups containing it, directly or transitively, through `/group` and `/placed`.
 - `/placed`, of `/group`'s type, is the one ephemeral core aspect: the ephemeral placements into the group, written by group operations only. Adding or removing an item or subgroup that is ephemeral after the write is a write of the group's `/placed`, needing write on the group; any other write of an ephemeral group's `/group` is ephemeral too and goes to `/placed`. Adding a durable item or subgroup is durable and persists the group (§1). When a thing persists, the persisting commit adds it durably to each group it is ephemerally placed in that the persisting node may write, with that placement's expiry, and the node removes it from `/placed`; a placement into a group it may not write stays ephemeral. Likewise every later content commit with a durable delta on a durable thing adds each of its ephemeral placements durably (a placement made while it persisted elsewhere, or restored by an undo), and removing a durable item or subgroup also removes it from `/placed`. A persisting thing with a `/placed` and no `/group` gets an empty durable `/group` in that commit.
@@ -90,9 +91,9 @@ The core aspects form the core schema, schema ID 16 zero bytes, revision 1, evol
 | `/tid` | tid | synthetic, guaranteed |
 | `/aspects` | set<string> | synthetic, guaranteed: AKs present on the thing |
 | `/created` | struct | guaranteed: the creation record; carried by the thing's first commit, retention `nobody` (spec/commits.md §2, §5) |
-| `/members` | map<tid, struct { role, until: option<timestamp>, invite: option<role>, since: option<edge_key>, tied: option<tie> }> | membership edges (`since` only in roster snapshots, spec/permissions.md §6; `tied`: the placement the edge goes with, spec/permissions.md §2); read as the membership timeline's roster (spec/permissions.md §5) |
+| `/members` | map<tid, struct { role, until: option<timestamp>, invite: option<role>, since: option<edge_key>, tied: option<tie> }> | role grants (`since` only in roster snapshots, spec/permissions.md §6; `tied`: the placement the edge goes with, spec/permissions.md §2); read as the role timeline's roster (spec/permissions.md §5) |
 | `/keys` | struct { read, write, admin: { epoch, kem_key, delete_key }, inbox, deposit seed } | an actor's current keysets per role, inbox and deposit seed (spec/crypto.md §3, spec/sync.md §2) |
-| `/secrets` | struct { boxes: map<(member, role, epoch), box>, history: map<(role, epoch), history box> } | spec/crypto.md §4 |
+| `/secrets` | struct { boxes: map<(holder, role, epoch), box>, history: map<(role, epoch), history box> } | spec/crypto.md §4 |
 | `/tenures` | set<struct { member: tid, role, since, until, frontier }> | tenure ledger, written only by roster snapshots (spec/permissions.md §6; an audit-only entry has `since` = `until`); a large frontier is a link |
 | `/label` | map<label ID, struct { index, steps: map<step ID, step>, hosts, replaced }> | labels of a synced group (spec/sync.md §2) |
 | `/moved` | tid (register) | the thing this one continued as (spec/permissions.md §7) |
@@ -107,7 +108,7 @@ The core aspects form the core schema, schema ID 16 zero bytes, revision 1, evol
 | `/body` | markdown | freeform content: a note's text, notes on anything |
 | `/tag` | struct { color: option<string> } | marks a group as a user-facing tag: its items are the tag's contents, its subgroups its sub-tags (§8) |
 
-**Membership-class aspects**: `/members`, `/secrets`, `/keys`, `/label`, `/tenures`, `/moved`, `/was`. Their rules: spec/commits.md §2, spec/permissions.md.
+**Role-class aspects**: `/members`, `/secrets`, `/keys`, `/label`, `/tenures`, `/moved`, `/was`. Their rules: spec/commits.md §2, spec/permissions.md.
 
 ```
 type role = enum { 0 read, 1 write, 2 admin };
@@ -158,7 +159,7 @@ aspect /body: markdown;
 aspect /tag: struct { 0 color: option<string> };
 ```
 - `creation`'s fields 0 and 1 are exclusive and field 3 needs field 0 (spec/wire.md §3): `/created` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
-- `option` fields default to `none`. Default retention of `/node`, `/reach`, `/seen`, `/group`, `/name`, `/body` and `/tag`: `author`, no keep bounds; membership-class aspects and `/created` have the fixed retention of spec/commits.md §5.
+- `option` fields default to `none`. Default retention of `/node`, `/reach`, `/seen`, `/group`, `/name`, `/body` and `/tag`: `author`, no keep bounds; role-class aspects and `/created` have the fixed retention of spec/commits.md §5.
 - Box payloads, history box layout and AD tuples: spec/wire.md §7.
 
 ## 10. Schemas

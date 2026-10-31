@@ -60,7 +60,7 @@ Part      := [ai, di, delta, [creation*]]
 Header fields by position:
 0. `version`: uint, the format version (1).
 1. `author`: tid of the signing key actor. 2. `actor`: tid of the actor it acts for.
-3. `kind`: 0 content, 1 membership, 2 content compaction snapshot, 3 membership compaction snapshot, 4 import, 5 roster snapshot (spec/commits.md §2).
+3. `kind`: 0 content, 1 role, 2 content compaction snapshot, 3 role compaction snapshot, 4 import, 5 roster snapshot (spec/commits.md §2).
 4. `ts` (spec/crdt.md §2.2). 5. `form`: 0 node form, 1 commit form, or `[2, nonce]` session form with the session's 16-byte nonce (spec/commits.md §3).
 6. `schemas`: `[[schema_id (16 bytes), revision]*]`, sorted by schema ID, distinct, at most 256.
 7. `aspects`: `[Aspect+]` sorted by the canonical bytes of `[tid, ak]`, distinct.
@@ -69,7 +69,7 @@ Header fields by position:
 10. `undoes`: `Opt(commit_id)`.
 11. `blind`: 16 random bytes (spec/crypto.md §7).
 12. `keys`: `[DeleteKey*]` sorted by canonical bytes, distinct: the delete keys of the commit's deltas (spec/crypto.md §7), `pk` a valid Ed25519 key (§1, spec/crypto.md §1), at most one at level 2 (the author chain); a key no aspect lists is bad input.
-13. `frontier`: `Opt(frontier)`, the frontier value (spec/data-model.md §9); present iff the commit is a membership commit carrying an explicit demotion (spec/permissions.md §5).
+13. `frontier`: `Opt(frontier)`, the frontier value (spec/data-model.md §9); present iff the commit is a role commit carrying an explicit demotion (spec/permissions.md §5).
 14. `origins`: `[Origin*]` sorted by commit ID, distinct; non-empty iff `kind` is 4 (spec/permissions.md §7).
 15. `ephemeral`: `Opt(uint)`, the ephemeral marker (spec/commits.md §2): 0 an ephemeral commit, 1 a relay-only one. Present only with `kind` 2 and `form` 1, or `kind` 0 and session form (session form only with the marker), no `chunks`, no `purge`, no `undoes`, no list by link and no `/created` aspect; with `kind` 2 every aspect's retention `by` is writer with the levels it calls for; a relay-only commit has no `expires`. Anything else is bad input.
 
@@ -78,7 +78,7 @@ Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most 1024 bytes); `
 - **Inline or link**: `aspects`, `chunks`, `purge`, `keys`, `origins` and the frontier are each inline iff their canonical encoding is at most `CHUNK_THRESHOLD` bytes; otherwise the position holds a LINK value (`Opt(LINK)` for the frontier) to a chunk tree (§6) of that canonical encoding, its content hashes keyed by the dedup secret of the header's `actor`. A decoder rejects an inline list above the threshold or a link below it. Header-list chunks carry the commitments of §5.
 - **Commit ID** = BLAKE3(canonical bytes of `Header`). The signature is the `signature` value of the author's key under `"osis v1 commit" || commit ID`.
 - **Commit blob** plaintext: `CommitBlobPlaintext`. A `Part` holds one delta: `ai` indexes `aspects`, `di` that aspect's `hashes`, `delta` is the embedded `Delta` or `Snapshot` array (spec/crdt.md §3.2, §8) whose canonical bytes hash to that delta hash, then the creation records (§3) carried beside it (spec/commits.md §2), sorted by tid, distinct; empty in a commit without the ephemeral marker, else bad input. Records are outside the header and delta hash: each hashes to its tid. Parts sorted by `(ai, di)`, distinct; zero parts is allowed (every delta purged). The blob's prefix commitments are those of the delete keys its parts' aspects list (§5); its expiry is their common `expires`.
-- A header violating a rule of spec/commits.md §2 (an aspect of the wrong class for its kind, `expires` or a purge item on a membership commit, `expires` on a commit with a purge request (spec/commits.md §5), a frontier outside a demotion, more than one hash for a kind with one delta per aspect) is bad input.
+- A header violating a rule of spec/commits.md §2 (an aspect of the wrong class for its kind, `expires` or a purge item on a role commit, `expires` on a commit with a purge request (spec/commits.md §5), a frontier outside a demotion, more than one hash for a kind with one delta per aspect) is bad input.
 
 ## 5. Blob framing
 A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixed byte layout:
@@ -112,8 +112,8 @@ A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixe
 
 ## 7. Boxes
 - A sealed box (spec/crypto.md §1) is `ct_x (32) || ct_m (1088) || AEAD_K(nonce 24 zero bytes, AD, payload)`, held in a `sealed` value (§3).
-- **`/secrets` box** (spec/crypto.md §4), a `box` value (spec/data-model.md §9) keyed by `box_key`. AD = `[actor, member, role, n, nonce, form]` with the key's epoch `[n, nonce]` and `form` = `[0, Opt([kn, knonce]), suite]` for the sealed form (the recipient keyset epoch, none for a key actor) or `[1, [sn, snonce]]` for the symmetric form (the epoch of s).
-  - Sealed payload: `[[role, n, secret]+]` ascending by role, secret 32 bytes: one item for an actor member, every role written for a key-actor member. Each item names the epoch (n, nonce of the secret under the actor's tid and the item's role, spec/crypto.md §4).
+- **`/secrets` box** (spec/crypto.md §4), a `box` value (spec/data-model.md §9) keyed by `box_key`. AD = `[actor, holder, role, n, nonce, form]` with the key's epoch `[n, nonce]` and `form` = `[0, Opt([kn, knonce]), suite]` for the sealed form (the recipient keyset epoch, none for a key actor) or `[1, [sn, snonce]]` for the symmetric form (the epoch of s).
+  - Sealed payload: `[[role, n, secret]+]` ascending by role, secret 32 bytes: one item for an actor holder, every role written for a key-actor holder. Each item names the epoch (n, nonce of the secret under the actor's tid and the item's role, spec/crypto.md §4).
   - Symmetric `wrap`: XChaCha20-Poly1305 under `kdf("box", s)`, nonce = first 24 bytes of BLAKE3(AD), plaintext `suite (1) || secret (32)`: 49 bytes.
 - **Entry box** (spec/sync.md §2): a `box` value in the sealed form with no keyset epoch, AD = `[label_id, step_key, form]`, payload as above with the read role only; its epoch is the label's group thing's. A claim set holding a box of another form is malformed.
 - **History box** (role r, epoch e): XChaCha20-Poly1305 under `kdf("history", secret_r[e])`, nonce 24 zero bytes, AD = `[actor, role, n, nonce]`, plaintext `[[n, secret]*]` ascending by the epochs they name (spec/crypto.md §4); the `/secrets` history map holds the ciphertext.
@@ -134,7 +134,7 @@ ClaimSet := [[claim+], {entry: box}]
 ## 9. Inbox blobs
 - **Inbox blob** (spec/crypto.md §5): prefix with expiry = the sender's corrected wall ms + `INBOX_LIFETIME` and no commitments, then a sealed box (§7) to the recipient's newest read keyset KEM key with AD = `[recipient, "inbox", prefix bytes]` and payload the padded (§5) canonical bytes of
   `InboxPayload := [CommitBlobPlaintext, [[tid, label_id, index, [address*], Opt([admin_pk, write_pk])]*]]`:
-  the membership commit with the parts about the recipient (§4), then for each thing it names, its label ID, that label's index (uint, spec/sync.md §2) and host addresses (`address` values, spec/data-model.md §9) and, for a thing with secrets of its own, its current admin and write delete keys (spec/crypto.md §7), sorted by tid.
+  the role commit with the parts about the recipient (§4), then for each thing it names, its label ID, that label's index (uint, spec/sync.md §2) and host addresses (`address` values, spec/data-model.md §9) and, for a thing with secrets of its own, its current admin and write delete keys (spec/crypto.md §7), sorted by tid.
 
 ## 10. Links and recovery cards
 ```
@@ -142,7 +142,7 @@ Link := [1, seed, target, k, k_label, [address*], [peer*], ? flags]
 peer := [dialable, [relay*]]
 Card := [1, seed, person, home_label, [address+]]
 ```
-- `Link` (spec/permissions.md §9): format 1, L's 32-byte seed, the target tid, K's tid, K's label ID, host addresses of K's label, and the sharer node's P2P reach for first contact: `dialable` its 32-byte dialable key, `relay` relay URLs (`/reach`, spec/data-model.md §9). A redeemer with no common host dials a peer, which serves K's label as a member peer (spec/sync.md §5). `flags` (uint): bit 0 single use (the redemption removes L's own edge, spec/permissions.md §9); other bits are reserved and MUST be zero; present only when nonzero (a link with `flags` 0 or a reserved bit set is malformed).
+- `Link` (spec/permissions.md §9): format 1, L's 32-byte seed, the target tid, K's tid, K's label ID, host addresses of K's label, and the sharer node's P2P reach for first contact: `dialable` its 32-byte dialable key, `relay` relay URLs (`/reach`, spec/data-model.md §9). A redeemer with no common host dials a peer, which serves K's label as a co-reader peer (spec/sync.md §5). `flags` (uint): bit 0 single use (the redemption removes L's own edge, spec/permissions.md §9); other bits are reserved and MUST be zero; present only when nonzero (a link with `flags` 0 or a reserved bit set is malformed).
 - `Card` (spec/permissions.md §9): format 1, the recovery key's 32-byte seed, the person actor's tid, its home label ID, host addresses.
 - The label a link or card names is the first label of K or of the person (index 0, spec/sync.md §2): both are created with it.
 - Caps: at most 8 addresses, 4 peers, 4 relays per peer; URLs at most 256 bytes.
@@ -189,7 +189,7 @@ mode   := [0, fingerprint] | [1, [blob_id*]] | [2, [blob_id*], [blob_id*]]
 ```
 Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canonical bytes as byte strings; blobs are byte strings; `wrap` 49 bytes; `sig`, `dsig`, `stamp` raw 64-byte Ed25519 signatures; `*_pk` raw 32-byte keys; `at` wall ms; `log_id` 16 bytes.
 
-- **Open** (spec/sync.md §5): `sig` under `"osis v1 label open"`, digest BLAKE3(canonical `[label_id, challenge, static_key]`) with the opened side's challenge and static key; proof 0 by a sync key, 1 by claim key `claim_pk` at step `step_id`, 2 by a key actor's signing key (its static entry), 3 by a node's dialable key under `"osis v1 member open"` instead (member peers only, spec/sync.md §5). Opened carries the head (without claim set) and, for proof 2, the head's entry box for that static entry. A match at a superseded step is answered by Step with that step's child (without claim set).
+- **Open** (spec/sync.md §5): `sig` under `"osis v1 label open"`, digest BLAKE3(canonical `[label_id, challenge, static_key]`) with the opened side's challenge and static key; proof 0 by a sync key, 1 by claim key `claim_pk` at step `step_id`, 2 by a key actor's signing key (its static entry), 3 by a node's dialable key under `"osis v1 member open"` instead (co-reader peers only, spec/sync.md §5). Opened carries the head (without claim set) and, for proof 2, the head's entry box for that static entry. A match at a superseded step is answered by Step with that step's child (without claim set).
 - **Register**: replies Ok, or Error 9 when the step is not accepted, without the head (spec/sync.md §5). Error 12 when a genesis step for a new label does not fit a storage cap (a child step that does not fit is accepted without its claim set, and past the cap even so at most once per label per policy interval), Error 4 when registrations are rate-limited.
 - **Path** (opened labels): the registration path after step `after` (from the genesis step when absent) toward the head, without claim sets, at most 1024 steps per reply; `more` is true when steps remain.
 - **Upload** and the entries of Sync: `stamp` under `"osis v1 upload"`, digest BLAKE3(canonical `[label_id, blob_id, wrap]`). Status gives one code per entry in order. A relay-only entry (prefix class 2) is not stored: the receiver admits it (spec/sync.md §5), pushes it to the subscribers of the label on its other connections as a Push of one add event carrying the blob (the Push's cursor the subscription's current position) and answers 0; a repeat of a blob ID it pushed under that label before the blob's expiry is answered 0 and pushed to nobody.

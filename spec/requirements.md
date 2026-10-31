@@ -26,20 +26,20 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 
 ## Cost (goal)
 - Bytes transferred are close to the size of the change: about 1.2x for large changes is fine, 2x-10x is not. Small changes may carry a fixed overhead of a few hundred bytes.
-- Round trips: a small constant in the common incremental case, logarithmic at worst; a member that missed k membership rotations may need k.
+- Round trips: a small constant in the common incremental case, logarithmic at worst; a holder that missed k rotations may need k.
 - Nothing a node already holds is sent again. A thing in many groups is stored and transferred once per node.
 - Compaction and deletion cost proportional to what changed, not to group size or history.
-- Removing a member costs proportional to the rosters of the actors and things it could read, plus one entry per aspect it wrote, never to content or history.
+- Removing a holder costs proportional to the rosters of the actors and things it could read, plus one entry per aspect it wrote, never to content or history.
 - Connected nodes see each other's changes promptly, pushed, not polled.
 
 ## Untrusted (blind) nodes
 - Keyless nodes without access to the data they store or relay are a first-class feature.
-- They may learn volume and the structure selective sync needs: which opaque groups a blob is in and how groups overlap, counts, padded sizes, timing, addresses, and what they must act on: each blob's expiry, its class (durable, ephemeral, relayed), its deletion class and whether a reader deposited it. They must not learn identifiers, keys, values, authors, membership, device identities, or structure beyond that.
+- They may learn volume and the structure selective sync needs: which opaque groups a blob is in and how groups overlap, counts, padded sizes, timing, addresses, and what they must act on: each blob's expiry, its class (durable, ephemeral, relayed), its deletion class and whether a reader deposited it. They must not learn identifiers, keys, values, authors, role grants, device identities, or structure beyond that.
 - Nothing stored or relayed links different groups of one owner beyond their overlap. What a connection reveals (its address, the labels it opens) is network metadata, hidden only by routing through a relay or an anonymity network.
 - One protocol for all nodes. Trusted and untrusted peers differ only in which keys they hold.
 - An untrusted node may hold the only copy. Reading never allows deleting data or forcing a re-upload.
-- Read access never allows storing arbitrary content there. It stores content only on a writer's word, beyond a small flagged budget per group open to anyone who must reach the group's members. Members can clear the budget; while it is full, what goes through it (grants, readers' own membership writes) waits.
-- It knows no members and never waits on their liveness.
+- Read access never allows storing arbitrary content there. It stores content only on a writer's word, beyond a small flagged budget per group open to anyone who must reach the group's readers. They can clear the budget; while it is full, what goes through it (grants, readers' own edge writes) waits.
+- It knows no role holders and never waits on their liveness.
 - Goal: it can limit abuse (storage, rate) without learning identities.
 
 ## Confidentiality between readers
@@ -51,7 +51,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 - Secrets that must stay secret for years resist a future quantum attacker. Signatures need not.
 
 ## Deletion
-- Retention per edit: who may purge it (nobody, admins, the author, any writer) and how long its history is kept (at least and at most, absolute or after it is replaced). Defaults per aspect, overridable per change, immutable once written. Honest nodes judge the purge right at the time of the request. An untrusted node can only check the role the deleter held when the edit was written plus current membership, so a demoted member can still delete there what its old role allowed, until the next member sync restores the data.
+- Retention per edit: who may purge it (nobody, admins, the author, any writer) and how long its history is kept (at least and at most, absolute or after it is replaced). Defaults per aspect, overridable per change, immutable once written. Honest nodes judge the purge right at the time of the request. An untrusted node can only check the role the deleter held when the edit was written plus current roles, so a demoted holder can still delete there what its old role allowed, until a co-reader's next sync restores the data.
 - Data may carry an expiry at which every node, untrusted ones included, drops it with nobody online.
 - Purge is prompt: no honest node keeps purged content once it has seen the deletion. No batching. Undo never brings back what another party purged. Purged content is recoverable only from nodes whose retention still holds it; no node keeps a bin.
 - Untrusted nodes act on their own only for expiry and for deletes scheduled when a value is replaced. Every other retention bound takes effect at them when a right holder next syncs.
@@ -72,7 +72,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 ## Scale
 - Many GB per node, multi-GB single values, maps with millions of keys, millions of blobs per group. No operation is O(total data) or O(history). A change inside a huge value costs O(change).
 - State grows with the number of edits and removals ever made, a few bytes each, not only with live data. No horizon ever drops an edit.
-- Direct rosters hold thousands of members; larger ones nest.
+- Direct rosters hold thousands of holders; larger ones nest.
 - Every wire object has a fixed maximum size. Peer input never causes unbounded allocation, work, storage or diagnostics.
 - Large values stream; no whole value is ever needed in memory.
 
@@ -80,7 +80,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 The properties above hold for any use of the data. The only usage rules are:
 - Share a set of things through one shared actor, not one by one (removal cost).
 - Commit per editing pause, never per keystroke (state growth).
-- Ephemeral membership such as presence or selections uses expiring ephemeral writes its author renews, not durable add and remove (state growth).
+- Ephemeral state such as presence or selections uses expiring ephemeral writes its author renews, not durable add and remove (state growth).
 - Keep direct rosters in the thousands; nest larger ones (header cost).
 
 ## Versioning
@@ -99,16 +99,16 @@ Binds released formats only; until a stable release formats change in place (spe
 - Collaborative text and lists.
 
 ## Permissions
-- Three concepts only: actor, membership, ownership. Every thing has exactly one owner, fixed at creation. Moving a thing to another owner is a copy with imported history, and rare; the old owner keeps power only over the original. Sharing never changes a thing's identity.
+- Three concepts only: actor, role, ownership. Every thing has exactly one owner, fixed at creation. Moving a thing to another owner is a copy with imported history, and rare; the old owner keeps power only over the original. Sharing never changes a thing's identity.
 - Grouping for sync grants no rights. A placement may be written together with a grant tied to it, which ends when the placement does.
 - Readers only read: posting into a shared space needs write on its actor.
 - Every write is attributable to a signing key actor (normally a device) and verifiable. Hiding authorship is a deliberate choice, never the default.
 - Rights held by different parties never combine into a right neither has alone.
-- Whether an edit by a revoked member counts is judged by what the revoker had received, never by the author's own timestamps. Edits the revoker had not received when it revoked are lost until re-grant, except those another writer compacted before it learned of the revocation, which stay.
-- A removal nobody stamps (a timed grant ending, a self-removal, a link expiring) cuts off nothing by itself: until another member publishes an explicit demotion, the member's own timestamps decide, within the allowed clock drift.
-- The owner may restart a thing's membership history at a roster snapshot; a membership write ordered before the snapshot that it did not include is lost.
+- Whether an edit by a revoked holder counts is judged by what the revoker had received, never by the author's own timestamps. Edits the revoker had not received when it revoked are lost until re-grant, except those another writer compacted before it learned of the revocation, which stay.
+- A removal nobody stamps (a timed grant ending, a self-removal, a link expiring) cuts off nothing by itself: until another holder publishes an explicit demotion, the removed holder's own timestamps decide, within the allowed clock drift.
+- The owner may restart a thing's role history at a roster snapshot; a role change ordered before the snapshot that it did not include is lost.
 - A share link is a bearer secret. One joiner is revoked only together with the link; the remaining joiners get a new one.
-- Removing a member never re-encrypts existing content. The member stops reading new content of an actor once a writer or admin of that actor has written after the removal; readers never rotate keys.
+- Removing a holder never re-encrypts existing content. The holder stops reading new content of an actor once a writer or admin of that actor has written after the removal; readers never rotate keys.
 
 ## API
 - Plain values and listeners. No CRDT concepts, no conflict UI, no correctness that depends on "surfacing it to the user". Diagnostics are informational.
@@ -121,7 +121,7 @@ Binds released formats only; until a stable release formats change in place (spe
 - Hostile admins. Authenticated malicious writers are bounded, not prevented. Malicious readers can only waste storage.
 - Deletion against offline copies, dishonest nodes, memory or swap.
 - Recovery of a lost owning key.
-- Revocation reaches a group only when one of the revoker's members next syncs it.
-- Forward secrecy against a removed member: what it could read before removal stays readable to it, from a copy it kept or from a dishonest untrusted node.
-- A member an untrusted node does not list yet (its grant raced a rotation) or that missed more rotations than the kept membership history reads from that node again only after a member with rotation rights re-seals; re-sealing is triggered, never guaranteed.
+- Revocation reaches a group only when one of the revoker's devices next syncs it.
+- Forward secrecy against a removed holder: what it could read before removal stays readable to it, from a copy it kept or from a dishonest untrusted node.
+- A holder an untrusted node does not list yet (its grant raced a rotation) or that missed more rotations than the kept role history reads from that node again only after a holder with rotation rights re-seals; re-sealing is triggered, never guaranteed.
 - Anonymity against network, timing and style analysis.
