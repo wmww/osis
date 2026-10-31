@@ -204,6 +204,12 @@ impl Engine {
         out
     }
 
+    /// Whether an edge write of commit `c` applies in `t`'s timeline (tests).
+    #[doc(hidden)]
+    pub fn edge_applied(&self, t: &Tid, c: &CommitId) -> bool {
+        self.core.timelines.get(t).is_some_and(|tl| tl.applied().keys().any(|w| matches!(w, osis_perm::WriteId::Op(x, _) if x == c)))
+    }
+
     /// Sets the least component saved (`WALK_CACHE_MIN`) for this session (tests).
     #[doc(hidden)]
     pub fn set_walk_cache_min(&mut self, n: usize) {
