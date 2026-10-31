@@ -228,8 +228,10 @@ impl Timeline {
         v.sort_by_key(|c| c.0 .0);
         let mut cur: BTreeMap<(Tid, Tid), Edge> = self.walked.initial.iter().map(|(m, t, e)| ((*m, *t), *e)).collect();
         let mut out = Vec::with_capacity(v.len());
-        for (c, dropped) in v {
-            if dropped && (c.3.is_none() || cur.get(&(c.1, c.2)).is_some_and(|e| e.alive_at(Some(c.0.ts)))) {
+        for (c, earlier) in v {
+            // a path needs the edge alive, any role: one alive at least as long already gives it
+            let lasts = |e: &Edge| e.alive_at(Some(c.0.ts)) && (e.until.is_none() || c.3.is_some_and(|n| n.until.is_some() && n.until <= e.until));
+            if earlier && (c.3.is_none() || cur.get(&(c.1, c.2)).is_some_and(lasts)) {
                 continue;
             }
             put(&mut cur, (c.1, c.2), c.3);
