@@ -110,7 +110,7 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | `MAX_REOPENS` 3 | M (then the retry timer) | |
 | `MAX_ROUNDS` 16 | M (the rest opens at the next pass: `refetch`) | |
 | `MAX_NOTIFY` 8 | M (the rest goes at the next `handle`) | |
-| `PENDING_SHARE` 4, `RELAYS_REMEMBERED` 2^16, `WAITING_MAX` 2^12 | R (commented) | |
+| `PENDING_SHARE` 4, `RELAYS_REMEMBERED` 2^16, `WAITING_MAX` 2^12, `UNFIT_MAX` 2^12, `SHARE_REFUSED_MAX` 2^12 | R (commented) | |
 | `MAX_PEER_STEPS` 64, `LAN_HEARD` 4, `LAN_BOUND` 64 (announcements bound to their source per co-reader; past it only a self-flooding co-reader reopens replays of its own), `LAN_CHANGE_MS` 5 s | R | |
 | `LOG_KEEP` 4096 | M (a cursor below replays) | |
 | `MAX_QUEUED` 64 MiB (at least `SEND_QUEUE`, asserted) | R (a peer that does not read) | sessions keeping the window closed / unbounded buffer |

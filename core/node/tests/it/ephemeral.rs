@@ -2459,9 +2459,10 @@ fn commit_past_a_blob_splits_spec_sync_9() {
     let cap: u64 = 64 << 20;
     let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: cap, ..osis_server::Policy::default() });
     let a = net.node(1, &[sv]);
-    // the holder's share for waiting blobs fits a blob's bound (about 6 times a string's bytes):
-    // after the restart the second blob may come first and wait for the record the first carries
-    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 4 * cap, ..SyncConfig::default() });
+    // the holder's share for waiting blobs does not fit a blob's bound (about 6 times a
+    // string's bytes): after the restart the second blob may come first, is refused for the
+    // share, and is fetched again once the record the first carries is here (`eph_refetch`)
+    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
     let (w1, w2) = (window(&mut net, a, g, "1"), window(&mut net, a, g, "2"));
@@ -2491,7 +2492,7 @@ fn commit_past_a_blob_splits_spec_sync_9() {
     net.restart(b, 22);
     net.run();
     let got: Vec<_> = [w1, w2].into_iter().map(|w| notes(&mut net, b, w)).collect();
-    // the second blob may come first: its parts wait for the record the first one carries
+    // the second blob may come first: refused for the share, it comes again with the record
     assert!(got == want, "restarted holder reads the author's state");
 }
 

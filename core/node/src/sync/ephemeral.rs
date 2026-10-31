@@ -167,53 +167,81 @@ impl WaitingDeletes {
     }
 }
 
-/// Ephemeral entries per label that can never fit this node's cap for it (encoded past the whole
-/// cap, or a part whose decoded bound is, `Engine::ephemeral_bound`, or refused for the cap with
-/// nothing else held there): not fetched or opened again, so each drop under the cap does not
-/// fetch them again (up to `MAX_BLOB` each). Forgotten when a server deletes them; past
-/// `UNFIT_MAX` per label the oldest is forgotten (fetched once more, then remembered again).
-#[derive(Default)]
-pub(crate) struct Unfit {
-    ids: BTreeSet<(LabelId, BlobId)>,
+/// Ephemeral entries remembered per label with a value, at most `max` per label, the oldest
+/// forgotten past it (`Lane::unfit`, `Lane::share_refused`).
+pub(crate) struct PerLabel<V> {
+    map: BTreeMap<(LabelId, BlobId), V>,
     order: BTreeMap<LabelId, std::collections::VecDeque<BlobId>>,
+    max: usize,
 }
 
-/// Never-fitting entries remembered per label (`Unfit`). Resource bound: about 100 bytes each,
-/// 400 KiB per label at the bound; a server's cap holds a few hundred such entries per label
-/// (about 25 KB each at the least), so honest servers never reach it (0: each is fetched again
-/// after every drop under the cap; infinity: a writer uploading and deleting such entries grows
-/// the set for good).
-const UNFIT_MAX: usize = 1 << 12;
-
-impl Unfit {
-    pub fn contains(&self, l: LabelId, b: BlobId) -> bool {
-        self.ids.contains(&(l, b))
+impl<V> PerLabel<V> {
+    fn new(max: usize) -> PerLabel<V> {
+        PerLabel { map: BTreeMap::new(), order: BTreeMap::new(), max }
     }
 
-    /// Remembers `b` of `l`; whether `l` had none before.
-    pub fn insert(&mut self, l: LabelId, b: BlobId) -> bool {
-        if !self.ids.insert((l, b)) {
+    pub fn contains(&self, l: LabelId, b: BlobId) -> bool {
+        self.map.contains_key(&(l, b))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&(LabelId, BlobId), &V)> {
+        self.map.iter()
+    }
+
+    /// Remembers `b` of `l` with `v` (replacing what it had); whether `l` had none before.
+    pub fn insert(&mut self, l: LabelId, b: BlobId, v: V) -> bool {
+        if self.map.insert((l, b), v).is_some() {
             return false;
         }
         let q = self.order.entry(l).or_default();
         q.push_back(b);
-        if q.len() > UNFIT_MAX
+        if q.len() > self.max
             && let Some(old) = q.pop_front()
         {
-            self.ids.remove(&(l, old));
+            self.map.remove(&(l, old));
         }
         q.len() == 1
     }
 
-    pub fn remove(&mut self, l: LabelId, b: BlobId) {
-        if self.ids.remove(&(l, b))
-            && let Some(q) = self.order.get_mut(&l)
-        {
+    pub fn remove(&mut self, l: LabelId, b: BlobId) -> Option<V> {
+        let v = self.map.remove(&(l, b))?;
+        if let Some(q) = self.order.get_mut(&l) {
             q.retain(|x| *x != b);
             if q.is_empty() {
                 self.order.remove(&l);
             }
         }
+        Some(v)
+    }
+}
+
+/// Never-fitting entries remembered per label (`Lane::unfit`). Resource bound: about 100 bytes
+/// each, 400 KiB per label at the bound; a server's cap holds a few hundred such entries per
+/// label (about 25 KB each at the least), so honest servers never reach it (0: each is fetched
+/// again after every drop under the cap; infinity: a writer uploading and deleting such entries
+/// grows the set for good).
+const UNFIT_MAX: usize = 1 << 12;
+
+/// Entries refused for the waiting share remembered per label (`Lane::share_refused`). Resource
+/// bound: about 150 bytes each; past it the oldest is forgotten and comes back only when a
+/// waiting entry leaves the share or at a restart's reconcile (0: a blob whose bound passes the
+/// share, arriving before its record, is lost to this node until then; infinity: a writer
+/// uploading blobs that wait for records that never come grows the set for good).
+const SHARE_REFUSED_MAX: usize = 1 << 12;
+
+impl Default for PerLabel<()> {
+    fn default() -> Self {
+        PerLabel::new(UNFIT_MAX)
+    }
+}
+
+impl Default for PerLabel<(Option<ServerKey>, BTreeSet<Tid>)> {
+    fn default() -> Self {
+        PerLabel::new(SHARE_REFUSED_MAX)
     }
 }
 
@@ -232,8 +260,17 @@ pub(crate) struct Lane {
     /// leaves it, which reconciles the label: room in the cap is no room in the share, and
     /// reconciling at it fetched what the share refused again at every drop).
     pub refused_pending: BTreeSet<LabelId>,
-    /// Entries that can never fit their label's cap here (`Unfit`): not fetched again.
-    pub unfit: Unfit,
+    /// Entries that can never fit their label's cap here (encoded past the whole cap, a part
+    /// whose decoded bound is, `Engine::ephemeral_bound`, or refused for the cap with nothing
+    /// else held there): not fetched or opened again, so each drop under the cap does not fetch
+    /// them again (up to `MAX_BLOB` each). Forgotten when a server deletes them.
+    pub unfit: PerLabel<()>,
+    /// Entries refused for the waiting share (`PENDING_SHARE`) while records they lack are not
+    /// here (`Engine::ephemeral_needs`), with the server they came from: fetched again once one
+    /// of those records is (`eph_refetch`), when they may be held without waiting (a blob whose
+    /// bound passes the share, a split commit's later blob arriving first, was lost to this node
+    /// until a restart). Forgotten when a server deletes them.
+    pub share_refused: PerLabel<(Option<ServerKey>, BTreeSet<Tid>)>,
     /// Per connection and label: whether the first Sync listed the held entries, and those it
     /// listed that the peer has not asked for yet.
     pub announced: BTreeSet<(ConnId, LabelId)>,
@@ -393,6 +430,7 @@ impl SyncEngine {
     pub(crate) fn eph_step(&mut self, out: &mut Vec<Action>) -> Result<()> {
         self.engine.rejudge_ephemeral()?;
         self.eph_promote(out)?;
+        self.eph_refetch(out)?;
         let (busy, busy_presence) = self.eph_busy();
         let mut commits = self.engine.take_ephemeral_if(&busy, &busy_presence)?;
         let caught_up = self.eph_caught_up();
@@ -731,6 +769,25 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// Entries refused for the waiting share whose lacking records include one held now: fetched
+    /// again from the server they came from (else their label reconciled at its next periodic
+    /// pass); one still lacking records may wait or be refused and remembered again, so each is
+    /// fetched again at most once per record it lacked.
+    fn eph_refetch(&mut self, out: &mut Vec<Action>) -> Result<()> {
+        if self.eph.share_refused.is_empty() {
+            return Ok(());
+        }
+        let ready: Vec<(LabelId, BlobId)> = self.eph.share_refused.iter().filter(|(_, (_, needs))| needs.iter().any(|t| self.engine.has_record(t))).map(|(k, _)| *k).collect();
+        for (l, b) in ready {
+            let Some((server, _)) = self.eph.share_refused.remove(l, b) else { continue };
+            match server.and_then(|s| self.eph_conn_to(&l, s)) {
+                Some(conn) => self.fetch_on(conn, l, [b], out)?,
+                None => self.eph.reconciled.retain(|(_, x)| *x != l),
+            }
+        }
+        Ok(())
+    }
+
     /// An ephemeral commit of `l` refused for this node's cap: reported once until bytes drop.
     fn eph_capped(&mut self, l: LabelId) {
         if self.eph.refused.insert(l) {
@@ -741,7 +798,7 @@ impl SyncEngine {
     /// Ephemeral entry `b` of `l` can never fit this node's cap for it: remembered (`Unfit`),
     /// reported once while the label has such entries.
     fn eph_unfit(&mut self, l: LabelId, b: BlobId) {
-        if self.eph.unfit.insert(l, b) {
+        if self.eph.unfit.insert(l, b, ()) {
             self.eph_report(&l, "an ephemeral commit larger than this node's whole ephemeral cap for the label is not applied");
         }
     }
@@ -1125,6 +1182,8 @@ impl SyncEngine {
             return Ok(());
         }
         let server = from.server();
+        // judged again now
+        self.eph.share_refused.remove(l, b);
         // the one routing point: a blob whose prefix says ephemeral is the lane's, whatever an
         // announcement without its bytes made the durable path record (spec/sync.md §4)
         if self.state.entries.contains_key(&(l, b)) {
@@ -1187,6 +1246,7 @@ impl SyncEngine {
         let waits = bound.max(size);
         let pending_used = self.eph.pending_bytes.get(&l).copied().unwrap_or(0);
         let may_wait = pending_used.saturating_add(waits) <= cap / PENDING_SHARE;
+        let needs = if may_wait { BTreeSet::new() } else { self.engine.ephemeral_needs(&cb) };
         let ingested = self.engine.ingest_ephemeral_within(cb, may_wait, room);
         let salt = osis_label::Prefix::parse(&blob).map(|p| *p.salt()).unwrap_or_default();
         let a = h.aspects.get(first);
@@ -1198,6 +1258,12 @@ impl SyncEngine {
                 // not fully checked: kept apart under a share of the cap, neither served nor
                 // spread (its verified parts may be held already)
                 if !may_wait {
+                    // fetched again once a record it lacks is here (none: a change of the held
+                    // durable set, left to `refused_pending`: refetching at every change would
+                    // download it each time)
+                    if !needs.is_empty() {
+                        self.eph.share_refused.insert(l, b, (server, needs));
+                    }
                     if self.eph.refused_pending.insert(l) {
                         self.eph_report(&l, "this node's share for unverified ephemeral commits was reached: further ones are not kept");
                     }
@@ -1350,6 +1416,7 @@ impl SyncEngine {
     /// An ephemeral entry was deleted at `server`: no longer present there.
     pub(crate) fn eph_deleted(&mut self, server: Option<ServerKey>, l: LabelId, b: BlobId) -> bool {
         self.eph.unfit.remove(l, b);
+        self.eph.share_refused.remove(l, b);
         if let Some(s) = server {
             self.eph.waiting.remove(&(l, b, s));
             let conns: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.server == s).map(|(id, _)| *id).collect();
