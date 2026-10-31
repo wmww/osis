@@ -771,3 +771,34 @@ fn push_during_reconcile_keeps_no_cursor() {
     let cursor = out.into_iter().find_map(|o| if let ClientOutput::Event(ClientEvent::Events { cursor, .. }) = o { Some(cursor) } else { None }).unwrap();
     assert_eq!(cursor, None, "no cursor while the reconciliation runs");
 }
+
+// spec/sync.md §6 (flow control): a client within its window never sends more unanswered
+// requests than `MAX_UNANSWERED`, so a server delivering everything it sent in one input (as
+// `pump` does) closes nothing: many reconciliations, fetches, paths and pings queued at once
+// all complete
+#[test]
+fn queued_requests_stay_within_the_unanswered_bound() {
+    let mut net = Net::new(2, 0);
+    let l = Label::new(3);
+    net.setup(&l);
+    net.open(0, &l);
+    net.open(1, &l);
+    net.run(0, Command::Upload { label: l.id, entries: (0..100).map(|n| l.entry(blob(n))).collect() });
+    let mut co = Vec::new();
+    for k in 0..8u64 {
+        let c = &mut net.clients[1];
+        co.extend(c.handle(net.now, ClientInput::Command(Command::Reconcile { label: l.id, ids: (k..90 + k).map(bid).collect() })));
+        co.extend(c.handle(net.now, ClientInput::Command(Command::Fetch { label: l.id, ids: vec![bid(k)] })));
+        co.extend(c.handle(net.now, ClientInput::Command(Command::Path { label: l.id, after: None })));
+        co.extend(c.handle(net.now, ClientInput::Command(sync(l.id, None, vec![], vec![]))));
+    }
+    net.client_out(1, co);
+    net.pump();
+    assert!(!net.servers[1].is_closed());
+    let ev = std::mem::take(&mut net.events[1]);
+    // reconciliations of one label: the last one given is the one that reports
+    assert_eq!(ev.iter().filter(|e| matches!(e, ClientEvent::Reconciled { .. })).count(), 1, "{ev:?}");
+    assert_eq!(ev.iter().filter(|e| matches!(e, ClientEvent::Fetched { .. })).count(), 8, "{ev:?}");
+    assert_eq!(ev.iter().filter(|e| matches!(e, ClientEvent::PathSteps { .. })).count(), 8, "{ev:?}");
+    assert_eq!(net.clients[1].outstanding(), 0);
+}

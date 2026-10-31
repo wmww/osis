@@ -34,6 +34,23 @@ pub const WINDOW_QUEUE: usize = WINDOW + MAX_MESSAGE + 4;
 /// Reply allowance of a request whose reply holds no events, items, steps or ranges (Status of
 /// 1024 codes and a head step, Opened, Budget, Pong, Ok, Error).
 pub const SMALL_REPLY: usize = MAX_MESSAGE - REPLY_BUDGET;
+/// Frame bytes plus allowances of the requests a session within `WINDOW` can have unanswered:
+/// below `WINDOW` before its last one, which adds at most a whole frame and `MAX_MESSAGE`. A peer
+/// that receives more before answering any of them closes the connection (spec/sync.md §6;
+/// `ServerConnection`), so a pipelining peer cannot make one input cost more than a compliant one.
+pub const MAX_UNANSWERED: usize = WINDOW + (MAX_MESSAGE + 4) + MAX_MESSAGE;
+
+/// The most reply bytes the peer may queue for a request (spec/sync.md §6): `MAX_MESSAGE` for
+/// Path, Sync, Reconcile and Fetch, `SMALL_REPLY` for every other request, 0 for a message that is
+/// no request.
+pub fn allowance(msg: &Message) -> usize {
+    use Message as M;
+    match msg {
+        M::Path { .. } | M::Sync { .. } | M::Reconcile { .. } | M::Fetch { .. } => MAX_MESSAGE,
+        M::Ping { .. } | M::Open { .. } | M::Register { .. } | M::Upload { .. } | M::Deposit { .. } | M::Delete { .. } | M::Subscribe { .. } | M::Unsubscribe { .. } => SMALL_REPLY,
+        M::Error { .. } | M::Ok { .. } | M::Pong { .. } | M::Opened { .. } | M::Step { .. } | M::PathReply { .. } | M::Status { .. } | M::Budget { .. } | M::SyncReply { .. } | M::ReconcileReply { .. } | M::FetchReply { .. } | M::Push { .. } => 0,
+    }
+}
 /// Clock samples kept.
 const MAX_SAMPLES: usize = 9;
 /// Round trips before a clock offset is reported (one outlier among three moves nothing).
@@ -226,16 +243,6 @@ impl Pending {
     }
 }
 
-impl Pending {
-    /// The most reply bytes the peer may queue for this request (spec/sync.md §6).
-    fn allowance(&self) -> usize {
-        match self {
-            Pending::Path(_) | Pending::PathStopped(_) | Pending::Sync { .. } | Pending::Reconcile(..) | Pending::Fetch(..) => MAX_MESSAGE,
-            _ => SMALL_REPLY,
-        }
-    }
-}
-
 /// A request: its `cost` against `WINDOW` once it left the queue, and the command it serves
 /// (`ClientSession::commands`; `NO_COMMAND` for pings).
 struct Req {
@@ -417,7 +424,7 @@ impl ClientSession {
                 *wall_ms = self.now;
             }
             let frame = encode_frame(&msg.encode());
-            let cost = frame.len().saturating_add(req.p.allowance());
+            let cost = frame.len().saturating_add(allowance(&msg));
             if self.in_flight == 0 {
                 self.progress = self.now;
             }
