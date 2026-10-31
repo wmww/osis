@@ -322,7 +322,6 @@ pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
     // secrets (a grant raced by a rotation of that role only): the covers rule counts them
     let mut stale = BTreeSet::new();
     for (a, (s, e)) in &h.map {
-        let knew = box_knew(tx.core, a);
         for (k, b) in &s.boxes {
             let osis_schema::core_types::SecretBox::Sealed(sb) = b else { continue };
             let Ok(ke) = osis_keys::aspects::from_schema(&k.epoch) else { continue };
@@ -331,7 +330,7 @@ pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
             }
             for r in ROLES.into_iter().filter(|r| *r < k.role) {
                 for ce in e.role(r).current() {
-                    if knew(k, r, &ce) {
+                    if box_knew(tx.core, a, k, r, &ce) != Some(false) {
                         stale.insert((k.clone(), r, ce));
                     }
                 }
@@ -407,17 +406,17 @@ fn rotation_boxes(tx: &mut Tx<'_>, a: &Tid, c: &osis_base::CommitId) -> Result<O
     Ok(Some(out))
 }
 
-/// For the covers rule: whether the commit that wrote key-actor box `k` may have known epoch `e`
-/// of role `r` (it carries that role's newest then). Only a box written before `e` was introduced
-/// (both commits held) is known not to carry it; unknown counts as carrying (a rotation, never a
-/// leak).
-fn box_knew<'c>(core: &'c Core, a: &Tid) -> impl Fn(&BoxKey, Role, &Epoch) -> bool + 'c {
-    let a = *a;
-    move |k: &BoxKey, r: Role, e: &Epoch| {
-        let boxed = core.ix.box_written.get(&(a, k.clone()));
-        let introduced = introduced_by(core, &a, r, e).map(|x| x.2);
-        !matches!((boxed, introduced), (Some(b), Some(i)) if *b < i)
-    }
+/// Whether the commit that wrote key-actor box `k` of `a` knew epoch `e` of role `r` (it
+/// carries that role's newest then, osis-keys `Carries`): its first write is ordered at or after
+/// the commit that introduced `e` (its rotation, `introduced_by`); `None` unless both are held.
+/// The first write, not the newest: a later rewrite of the box (a re-seal, a grant) by a writer
+/// ordered after `e` need not have held `e` (a concurrent fork), so it proves nothing; a
+/// rotation that introduces an epoch writes its key-actor boxes under fresh keys anyway.
+/// Unknown counts as carrying for the covers rule (a rotation, never a leak) and as not for the
+/// re-seal trigger (a re-seal to a current member costs a box, never a leak).
+fn box_knew(core: &Core, a: &Tid, k: &BoxKey, r: Role, e: &Epoch) -> Option<bool> {
+    let boxed = core.ix.box_written.get(&(*a, k.clone()))?;
+    Some(*boxed >= introduced_by(core, a, r, e)?.2)
 }
 
 /// The roles of `a` that `who` (this node, or a key actor it signs as) may rotate now: write
@@ -880,10 +879,8 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
     let Some(epochs) = tx.core.epochs(a) else { return Ok(Vec::new()) };
     let secrets = secrets_in(tx, a)?;
     let members: Vec<osis_keys::Member> = tx.core.current_members(a).into_iter().map(|(member, role, until)| osis_keys::Member { member, role, until }).collect();
-    let carries = carries_fn(tx.core, a);
     let now = tx.core.now();
-    let due = osis_keys::reseal_needed(&secrets, &epochs, &members, now, &|k, r, e| carries(k, r, e));
-    drop(carries);
+    let due = osis_keys::reseal_needed(&secrets, &epochs, &members, now, &|k, r, e| box_knew(tx.core, a, k, r, e) == Some(true));
     let deps = departures(tx, a)?;
     let held = held_actors(tx)?;
     let mut out = Vec::new();
@@ -903,22 +900,6 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
         }
     }
     Ok(out)
-}
-
-/// Whether the commit that wrote a key actor's box keyed at a higher role knew epoch `e` of
-/// role `r` (osis-keys `Carries`): its first write is ordered at or after the commit that
-/// introduced `e` (its rotation, `introduced_by`).
-/// The first write, not the newest: a later rewrite of the box (a re-seal, a grant) by a writer
-/// ordered after `e` need not have held `e` (a concurrent fork), so it proves nothing; a
-/// rotation that introduces an epoch writes its key-actor boxes under fresh keys anyway.
-/// Unknown: no (a re-seal to a current member costs a box, never a leak).
-fn carries_fn<'c>(core: &'c Core, a: &Tid) -> impl Fn(&BoxKey, Role, &Epoch) -> bool + 'c {
-    let a = *a;
-    move |k: &BoxKey, r: Role, e: &Epoch| {
-        let boxed = core.ix.box_written.get(&(a, k.clone()));
-        let introduced = introduced_by(core, &a, r, e).map(|x| x.2);
-        matches!((boxed, introduced), (Some(b), Some(i)) if *b >= i)
-    }
 }
 
 /// A re-seal of `member` for `roles` of `a` (spec/permissions.md §3): its boxes at the
