@@ -1031,6 +1031,13 @@ impl SyncEngine {
                 true
             }
         }
+        // plain things under `a` with members: secrets of their own again
+        for (t, r) in self.engine.own_secrets_due(&a, &Passed)? {
+            match r {
+                Ok(done) => self.take_done(done)?,
+                Err(e) => self.diag(format!("secrets of its own for {t}: {e}")),
+            }
+        }
         match self.engine.reseal_due(&a, &Passed) {
             Ok(done) => self.take_done(done)?,
             Err(e) => self.diag(format!("re-seal of {a}: {e}")),
