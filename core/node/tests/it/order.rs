@@ -496,7 +496,8 @@ fn facts_text(e: &mut osis_node::Engine) -> String {
             let held = e.body_not_dropped(&id, &a.tid, &a.ak);
             // the node-form counters its writes own (`-`: commit form, a snapshot)
             let owns = if h.form == osis_commit::Form::Node && a.lo < a.hi { format!("N{:?}:{}-{}", h.author, a.lo, a.hi) } else { "-".into() };
-            let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}|{:?}|{approx}|{owns}", a.tid, a.ak.as_str(), h.ts);
+            let copies = !h.kind.has_own_writes();
+            let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}|{:?}|{approx}|{owns}|{copies}", a.tid, a.ak.as_str(), h.ts);
             aspects.insert((a.tid, a.ak.clone()));
         }
     }
@@ -581,6 +582,9 @@ struct Fact {
     approx: bool,
     /// The node-form counters its writes own: `NTid(author):lo-hi`, or `-`.
     owns: String,
+    /// A snapshot or import body (copies): its carried writes die for it at its `ts` when
+    /// killed by a lower-stamped write (spec/commits.md §5).
+    copies: bool,
 }
 
 impl Fact {
@@ -626,7 +630,7 @@ fn facts_of(text: &str) -> (Facts, Invalid) {
             continue;
         }
         let b = |i: usize| f[i] == "true";
-        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { at_most: b(3), held: b(4), valid: b(5), ts: ts_of(f[6]), approx: b(7), owns: f[8].into() });
+        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { at_most: b(3), held: b(4), valid: b(5), ts: ts_of(f[6]), approx: b(7), owns: f[8].into(), copies: b(9) });
     }
     (out, inv)
 }
@@ -637,12 +641,13 @@ type Invalid = BTreeMap<(String, String), Vec<(String, u64)>>;
 
 /// The drop-before-flip difference on body `k` between nodes with facts `w` and `g`: held at
 /// one node only, under keep at most, with its own write invalid (its delta, or a write it
-/// carries) or an invalid write of its aspect stamped at or after it (one that may have killed
-/// it).
+/// carries) or an invalid write of its aspect that may have killed it: stamped at or after it,
+/// or for a snapshot at any `ts` (a lower-stamped kill of a write it carries kills it at its
+/// own `ts`).
 fn flip(w: &Facts, g: &Facts, inv: &Invalid, k: &BodyKey) -> bool {
     let (w, g) = (&w[k], &g[k]);
     let own = !w.valid || inv.get(&(k.1.clone(), k.2.clone())).is_some_and(|v| v.iter().any(|(c, _)| *c == k.0));
-    let killer = inv.get(&(k.1.clone(), k.2.clone())).is_some_and(|v| v.iter().any(|(c, ts)| *c != k.0 && *ts >= w.ts));
+    let killer = inv.get(&(k.1.clone(), k.2.clone())).is_some_and(|v| v.iter().any(|(c, ts)| *c != k.0 && (*ts >= w.ts || w.copies)));
     w.held != g.held && w.at_most && (own || killer)
 }
 
@@ -1572,4 +1577,25 @@ fn snapshot_dropped_before_flip_keeps_frontiers_tolerated_spec_commits_5() {
     let (want, got) = (judged(&mut deliver(&played, &held), &played), judged(&mut deliver(&played, &order), &played));
     assert_ne!(want.index.as_ref().unwrap().carried, got.index.as_ref().unwrap().carried, "the carried index differs");
     assert_eq!(alike(&want, &got, &|_, _| false), None);
+}
+
+// spec/commits.md §5 (a snapshot's carried write killed by a lower-stamped write dies for it at
+// its `ts`; a drop is final), order seed 21187: A's keep-at-most-0 snapshot carries B's entry,
+// which B's undo (stamped before the snapshot, unseen by A) killed; A's demotion of B then makes
+// the undo invalid. Held after the undo, the snapshot dropped (keeping its frontiers); with the
+// demotion first, it stays. A tolerated drop before a flip, though the invalid killer is stamped
+// before the snapshot (was a failure: only killers stamped at or after a body were counted).
+#[test]
+fn snapshot_dropped_by_earlier_stamped_kill_tolerated_spec_commits_5() {
+    use Step::*;
+    let h = vec![Write { by: 1, t: 1, op: 19, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Compact { by: 1, t: 4, op: 0 }, Undo { by: 1, back: 1 }, Advance { who: None, ms: 6766743 }, Compact { by: 0, t: 0, op: 20 }, Demote { by: 0, t: 6, member: 1, at: 1, to_read: false }];
+    let played = play(21187, &h);
+    let made: Vec<usize> = (0..played.packs.len()).collect();
+    let rev: Vec<usize> = made.iter().rev().copied().collect();
+    let want = judged(&mut deliver(&played, &made), &played);
+    let got = judged(&mut deliver(&played, &rev), &played);
+    let snap = |j: &Judged| j.index.as_ref().unwrap().commits.values().find(|c| c.kind == osis_commit::Kind::ContentSnapshot && c.rest.contains("/t/gonemap")).unwrap().clone();
+    assert!(!snap(&want).dropped.is_empty() && !snap(&want).gives.is_empty() && snap(&got).dropped.is_empty(), "dropped in one order only, keeping its frontiers");
+    assert_eq!(alike(&want, &got, &|_, _| false), None);
+    check(21187, &h, LARGE).unwrap();
 }
