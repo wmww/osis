@@ -296,6 +296,26 @@ pub fn item_prefix<'a>(input: &'a [u8], limits: &Limits) -> Result<&'a [u8], Dec
     Ok(input.get(..d.pos).unwrap_or(input))
 }
 
+/// Where an item sits, for `visit_items`: in an array of `len` items at `index`, or elsewhere
+/// (the top, a map, a tag).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    InArray { len: usize, index: usize },
+    Other,
+}
+
+/// Calls `visit(place, major type, argument)` for each data item of the one value spanning all
+/// of `input` (the argument: a string's length, an array's or map's count, an integer, a tag),
+/// in order, by its heads alone: nothing is allocated or checked past heads, lengths and depth.
+pub fn visit_items(input: &[u8], limits: &Limits, visit: &mut dyn FnMut(Place, u8, u64)) -> Result<(), DecodeError> {
+    let mut d = Decoder::new(input, limits);
+    d.walk(0, Place::Other, visit)?;
+    if d.pos != input.len() {
+        return Err(DecodeError::Trailing);
+    }
+    Ok(())
+}
+
 struct Decoder<'a> {
     /// Input cut at `max_bytes`.
     buf: &'a [u8],
@@ -390,35 +410,47 @@ impl<'a> Decoder<'a> {
 
     /// Steps over one item inside `depth` arrays, maps and tags.
     fn skip(&mut self, depth: usize) -> Result<(), DecodeError> {
+        self.walk(depth, Place::Other, &mut |_, _, _| {})
+    }
+
+    /// `skip`, calling `visit` for each item stepped over (`visit_items`).
+    fn walk(&mut self, depth: usize, place: Place, visit: &mut dyn FnMut(Place, u8, u64)) -> Result<(), DecodeError> {
         let ib = self.byte()?;
-        match ib >> 5 {
+        let major = ib >> 5;
+        match major {
             MAJOR_UINT | MAJOR_NINT => {
-                self.arg(ib)?;
+                visit(place, major, self.arg(ib)?);
             }
             MAJOR_BYTES | MAJOR_TEXT => {
                 let n = self.len(ib, 1)?;
+                visit(place, major, n as u64);
                 self.take(n)?;
             }
-            m @ (MAJOR_ARRAY | MAJOR_MAP) => {
+            MAJOR_ARRAY | MAJOR_MAP => {
                 self.enter(depth + 1)?;
-                let per = if m == MAJOR_MAP { 2 } else { 1 };
+                let per = if major == MAJOR_MAP { 2 } else { 1 };
                 let n = self.len(ib, per)?;
-                for _ in 0..n * per {
-                    self.skip(depth + 1)?;
+                visit(place, major, n as u64);
+                for index in 0..n * per {
+                    let at = if major == MAJOR_ARRAY { Place::InArray { len: n, index } } else { Place::Other };
+                    self.walk(depth + 1, at, visit)?;
                 }
             }
             MAJOR_TAG => {
-                self.arg(ib)?;
+                visit(place, major, self.arg(ib)?);
                 self.enter(depth + 1)?;
-                self.skip(depth + 1)?;
+                self.walk(depth + 1, Place::Other, visit)?;
             }
-            _ => match ib {
-                FALSE | TRUE => {}
-                FLOAT64 => {
-                    self.take(8)?;
+            _ => {
+                match ib {
+                    FALSE | TRUE => {}
+                    FLOAT64 => {
+                        self.take(8)?;
+                    }
+                    _ => return Err(DecodeError::BadSimple),
                 }
-                _ => return Err(DecodeError::BadSimple),
-            },
+                visit(place, major, 0);
+            }
         }
         Ok(())
     }

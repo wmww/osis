@@ -65,7 +65,7 @@ mod tests_decoder;
 
 pub use changes::{Changes, Death};
 pub use copies::CopyIndex;
-pub use codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot, page_array};
+pub use codec::{decoded_bound, decode_delta, decode_snapshot, encode_delta, encode_snapshot, page_array};
 pub use error::Error;
 pub use fragment::{BagKind, Bag, CaseWrite, Eid, Elem, Encoding, Entry, Key, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
 pub use shape::Shown;

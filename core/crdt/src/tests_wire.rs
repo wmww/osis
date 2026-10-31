@@ -37,6 +37,7 @@ fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
         let bytes = encode_delta(&d, &cx, None).unwrap();
         assert_eq!(bytes, mbytes, "delta bytes equal the model's");
         let back = decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap();
+        crate::testutil::check_bound(&bytes, &back.fragment);
         assert_eq!(back, d, "delta round trip");
         mapply(&mut state, c.delta.clone());
         let st = state.as_ref().unwrap();
@@ -49,6 +50,7 @@ fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
         let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
         assert_eq!(sbytes, msnap, "snapshot bytes equal the model's");
         let mut back = decode_snapshot(&sbytes, &snap_cx(), &mut Interner::new(), None).unwrap();
+        crate::testutil::check_bound(&sbytes, &back.fragment);
         // the authors of the sources the fragment holds, those of others not carried
         assert!(back.authors.iter().all(|(c, v)| s.authors.get(c) == Some(v)));
         back.authors = s.authors.clone();

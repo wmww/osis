@@ -651,6 +651,13 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// An ephemeral commit of `l` refused for this node's cap: reported once until bytes drop.
+    fn eph_capped(&mut self, l: LabelId) {
+        if self.eph.refused.insert(l) {
+            self.eph_report(&l, "this node's ephemeral cap for the label was reached: its further ephemeral data is not applied here");
+        }
+    }
+
     fn eph_report(&mut self, l: &LabelId, detail: &str) {
         let now = self.engine.now();
         let tids = self.group_of(l).into_iter().collect();
@@ -1053,13 +1060,14 @@ impl SyncEngine {
             self.diag(format!("ephemeral blob {b:?}: its commit's class is not its prefix's"));
             return Ok(());
         }
-        // the cap on what others make this node hold per label (notes/ephemeral.md Bounds)
+        // the cap on what others make this node hold per label (notes/ephemeral.md Node cap):
+        // the engine decodes it only within the room left (a blob of tiny map entries decodes to
+        // about 200 times its size)
         let size = blob.len() as u64;
         let used = self.eph.bytes.get(&l).copied().unwrap_or(0);
-        if used.saturating_add(size) > self.cfg.ephemeral_bytes {
-            if self.eph.refused.insert(l) {
-                self.eph_report(&l, "this node's ephemeral cap for the label was reached: its further ephemeral data is not applied here");
-            }
+        let room = self.cfg.ephemeral_bytes.saturating_sub(used);
+        if size > room {
+            self.eph_capped(l);
             return Ok(());
         }
         let commit = cb.id();
@@ -1070,7 +1078,7 @@ impl SyncEngine {
         // what already waits (an honest copy of the same commit included) stays
         let pending_used = self.eph.pending_bytes.get(&l).copied().unwrap_or(0);
         let may_wait = pending_used.saturating_add(size) <= self.cfg.ephemeral_bytes / PENDING_SHARE;
-        let ingested = self.engine.ingest_ephemeral_within(cb, may_wait);
+        let ingested = self.engine.ingest_ephemeral_within(cb, may_wait, room);
         let salt = osis_label::Prefix::parse(&blob).map(|p| *p.salt()).unwrap_or_default();
         let a = h.aspects.get(first);
         let keys = a.map(|a| a.keys.iter().filter_map(|i| h.keys.get(*i).copied()).collect()).unwrap_or_default();
@@ -1096,6 +1104,10 @@ impl SyncEngine {
                 self.eph.pending.insert((l, b), (e, server));
                 return Ok(());
             }
+            Ok(EphIngest::TooLarge) => {
+                self.eph_capped(l);
+                return Ok(());
+            }
             Ok(EphIngest::Covered(by)) => {
                 // a replay of a covered entry: a writer deletes it where it found it
                 if let Some(s) = server {
@@ -1113,7 +1125,7 @@ impl SyncEngine {
             self.eph.present.insert((s, l, b));
         }
         // counted as held in memory (decoded), not as its bytes: a blob of tiny entries takes
-        // about 200 times its size; admitted while under the cap, so past it by one blob at most
+        // about 200 times its size; within the room given, so the label stays under the cap
         let mut e = e;
         e.charge = self.engine.ephemeral_charge(&commit, &ais).max(size);
         self.eph_keep(l, b, e);
