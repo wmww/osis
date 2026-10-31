@@ -18,35 +18,21 @@ use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// An opened inbox blob: its prefix expiry (none: never), the aspect indexes its commit
-/// carries, the things its payload names, and its commit's author, actor and signature (an
-/// invite request is judged and shown by them).
+/// carries, the things its payload names, and its commit's author and signature (an invite
+/// request is judged by them).
 #[derive(Clone, Debug)]
 pub(crate) struct Opened {
     pub until: u64,
     pub ais: BTreeSet<usize>,
     pub things: Vec<osis_label::InboxThing>,
     pub author: Tid,
-    pub actor: Tid,
     pub signature: osis_crypto::Signature,
-    /// The first thing the commit writes an edge on (`/members`), else the first it names.
-    pub target: Option<Tid>,
 }
 
 impl Opened {
     fn new(prefix: &osis_label::Prefix, c: &osis_commit::CommitBlob, things: Vec<osis_label::InboxThing>) -> Opened {
-        let h = &c.header;
-        let target = h.aspects.iter().find(|a| a.ak.as_str() == "/members").map(|a| a.tid).or_else(|| things.first().map(|t| t.tid));
-        Opened { until: prefix.expiry().map_or(u64::MAX, |w| w.0), ais: c.parts.iter().map(|p| p.ai).collect(), things, author: h.author, actor: h.actor, signature: c.signature, target }
+        Opened { until: prefix.expiry().map_or(u64::MAX, |w| w.0), ais: c.parts.iter().map(|p| p.ai).collect(), things, author: c.header.author, signature: c.signature }
     }
-}
-
-/// An invite request (spec/sync.md §3): an inbox blob's commit held back until the user
-/// accepts. `actor` and `target` are the sender's word.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InviteRequest {
-    pub commit: CommitId,
-    pub actor: Tid,
-    pub target: Option<Tid>,
 }
 
 /// Rounds of "new secrets opened more entries" per batch.
@@ -467,13 +453,14 @@ impl SyncEngine {
 
     /// Whether an opened inbox blob carrying commit `c` is admitted (spec/sync.md §3, invite
     /// requests): `c` is held (from a label this node syncs: a sibling device accepted it and
-    /// placed its copy), or its sender is connected. `roots` caches what a sender must be named
-    /// under within one judging round.
+    /// placed its copy), or its sender is connected. `roots` caches what a sender must have a
+    /// role on within one judging round.
     fn admits(&mut self, c: &CommitId, o: &Opened, roots: &mut Option<BTreeSet<Tid>>) -> bool {
         if self.engine.core.ix.commits.contains_key(c) || self.engine.core.ix.pending.contains_key(c) {
             return true;
         }
-        // the author's node, then the actors it is named on as a member, transitively
+        // the author's node, then the actors it is named on as a member, transitively (held
+        // edges, past and invalid ones too: candidates only, its current role decides below)
         let held = &self.engine.core.ix.held;
         let mut up = BTreeSet::new();
         let mut stack = vec![o.author];
@@ -492,7 +479,9 @@ impl SyncEngine {
                 roots.insert(r)
             }
         };
-        if up.is_disjoint(roots) {
+        // a current role: an ex-member (a removed device, a kicked member) is a stranger again
+        let core = &self.engine.core;
+        if !up.intersection(roots).any(|r| *r == o.author || core.role_now(&o.author, r).is_some()) {
             return false;
         }
         // a connected author's signature: a stranger may name any node as the author
@@ -515,17 +504,16 @@ impl SyncEngine {
             .collect()
     }
 
-    /// The invite requests waiting for the user (spec/sync.md §3), one per commit, unexpired.
-    pub fn invite_requests(&mut self) -> Result<Vec<InviteRequest>> {
+    /// The invite requests waiting for the user (spec/sync.md §3), by commit, unexpired.
+    pub fn invite_requests(&mut self) -> Result<Vec<CommitId>> {
         let now = self.now();
-        let mut out: BTreeMap<CommitId, InviteRequest> = BTreeMap::new();
+        let mut out = BTreeSet::new();
         for (l, b, c) in self.request_entries() {
-            let Some(o) = self.inbox_opened(&l, &b)? else { continue };
-            if o.until > now {
-                out.entry(c).or_insert(InviteRequest { commit: c, actor: o.actor, target: o.target });
+            if self.inbox_opened(&l, &b)?.is_some_and(|o| o.until > now) {
+                out.insert(c);
             }
         }
-        Ok(out.into_values().collect())
+        Ok(out.into_iter().collect())
     }
 
     /// Admits the request entries of commit `c` (or of every admitted commit when `c` is none):

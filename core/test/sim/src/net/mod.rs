@@ -519,7 +519,7 @@ impl NetSim {
                 return Ok(acts);
             }
             for r in sync.invite_requests()? {
-                acts.extend(sync.accept_invite(r.commit)?.1);
+                acts.extend(sync.accept_invite(r)?.1);
             }
             Ok(acts)
         })();

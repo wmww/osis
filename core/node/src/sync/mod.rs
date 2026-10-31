@@ -38,7 +38,6 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
 pub use pass::Verdicts;
-pub use inbound::InviteRequest;
 pub use state::Kind as EntryKind;
 
 /// An upload, deposit or delete whose request was answered without settling it (a refusal, an

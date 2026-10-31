@@ -331,7 +331,7 @@ impl Net {
     pub fn accept_invites(&mut self, n: usize) -> Vec<Action> {
         let mut acts = Vec::new();
         for r in self.sync(n).invite_requests().unwrap() {
-            acts.extend(self.sync(n).accept_invite(r.commit).unwrap().1);
+            acts.extend(self.sync(n).accept_invite(r).unwrap().1);
         }
         acts
     }

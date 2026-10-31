@@ -80,21 +80,10 @@ pub struct LinkInfo {
 }
 
 /// An invite from a sender with no known connection to this database (spec/sync.md §3, invite
-/// requests): nothing it names is fetched or dialed until `accept_invite`. Both fields are the
-/// sender's word, unverified (an exception to Attribution, notes/api.md): a request never comes
-/// from a node known to be connected, so a known person here is a claim or a device of theirs
-/// not seen yet.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InviteRequest {
-    /// What `accept_invite` and `decline_invite` take.
-    pub id: InviteId,
-    /// The actor the sender says it acts for.
-    pub from: Tid,
-    /// The thing the invite grants on, if it names one.
-    pub thing: Option<Tid>,
-}
-
-/// An invite request's identity (its membership commit).
+/// requests): nothing it names is fetched or dialed until `accept_invite`. It says nothing about
+/// sender or thing: both would be the sender's unverified word (notes/api.md Attribution), and a
+/// request never comes from a node known to be connected, so a known name there would be a
+/// spoof or a device not seen yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InviteId(osis_base::CommitId);
 
@@ -733,10 +722,9 @@ impl Osis {
         who.ok_or(Error::Invalid("contact card: no person".into()))
     }
 
-    /// The invite requests waiting for the user (`InviteRequest`).
-    pub fn invite_requests(&self) -> Result<Vec<InviteRequest>> {
-        let v = self.locked(|x| x.sync.invite_requests())?;
-        Ok(v.into_iter().map(|r| InviteRequest { id: InviteId(r.commit), from: r.actor, thing: r.target }).collect())
+    /// The invite requests waiting for the user (`InviteId`).
+    pub fn invite_requests(&self) -> Result<Vec<InviteId>> {
+        Ok(self.locked(|x| x.sync.invite_requests())?.into_iter().map(InviteId).collect())
     }
 
     /// Accepts an invite request: its grant applies and its thing's servers are dialed (then
