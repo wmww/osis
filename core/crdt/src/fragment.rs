@@ -399,7 +399,7 @@ impl Fragment {
     /// narrowed the same way), of a map every record of the dots `x` holds records of, of a set
     /// or bag the elements `x` holds, each with this fragment's meta; anything else whole. A
     /// narrowed field left empty is left out (a join drops empty children).
-    fn part_at(&self, x: &Fragment) -> Fragment {
+    pub(crate) fn part_at(&self, x: &Fragment) -> Fragment {
         match (self, x) {
             (Fragment::Struct(s), Fragment::Struct(d)) => Fragment::Struct(Struct { meta: s.meta.clone(), fields: d.fields.iter().filter_map(|(id, df)| Some((*id, s.fields.get(id)?.part_at(df)))).filter(|(_, f)| !f.is_empty()).collect() }),
             (Fragment::Map(s), Fragment::Map(d)) => {

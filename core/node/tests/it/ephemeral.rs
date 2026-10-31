@@ -835,6 +835,50 @@ fn junk_copy_waiting_on_thing_not_kept_spec_sync_9() {
     assert_eq!(net.sync(b).ephemeral_pending_bytes(&l), 0);
 }
 
+// spec/sync.md §9 (unverified commits wait apart, bounded): a blob with one part verified and
+// one waiting for its thing's record is held nowhere past the share for waiting blobs (its
+// verified part was held, counted by no cap); within it, it counts what the engine holds of it
+#[test]
+fn partly_verified_blob_counted_or_not_held_spec_sync_9() {
+    // 2400: the blob fits the cap but not its share (a quarter)
+    for cap in [2400, SyncConfig::default().ephemeral_bytes] {
+        let mut net = Net::new();
+        let sv = net.add_server();
+        let a = net.node(1, &[sv]);
+        let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
+        let g = net.group(a, &[(b, Role::Write)], &[sv]);
+        net.run();
+        net.deaf.insert(b);
+        let t = net.item(a, g, g, "durable");
+        net.run();
+        let mut m = Mutation::new();
+        m.set(g, &eph("/doc/cursor"), &Value::Int(1)).unwrap();
+        m.set(t, &eph("/doc/cursor"), &Value::Int(7)).unwrap();
+        net.engine(a).write(m).unwrap();
+        let blob = net.engine(a).take_ephemeral().unwrap().remove(0).blob;
+        assert_eq!(blob.parts.len(), 2);
+        let wk = write_key(&mut net, b, g);
+        let l = net.label(b);
+        let (_, ev) = sealed(&mut net, b, g, &blob, Some(&wk), 1);
+        let osis_proto::Event::Added { blob: Some(bytes), .. } = &ev else { unreachable!() };
+        let len = bytes.len();
+        assert!(len <= 2400 && 4 * len > 2400, "blob of {len} bytes");
+        let acts = push(&mut net, b, sv, l, vec![ev]);
+        net.actions(b, acts);
+        assert!(net.sync(b).ephemeral_entries_of(&blob.id()).is_empty(), "not kept");
+        let pending = net.sync(b).ephemeral_pending_bytes(&l);
+        if cap == 2400 {
+            assert!(!net.engine(b).holds_ephemeral(&blob.id()), "nothing of it held");
+            assert_eq!(pending, 0);
+            assert_eq!(net.eph_read(b, g, "/doc/cursor"), None);
+        } else {
+            assert!(net.engine(b).holds_ephemeral(&blob.id()), "its verified part held");
+            assert_eq!(net.eph_read(b, g, "/doc/cursor"), Some(Value::Int(1)));
+            assert!(pending >= net.engine(b).ephemeral_charge(&blob.id(), &[]) && pending > 2048, "{pending}");
+        }
+    }
+}
+
 // spec/sync.md §9 (unverified commits wait apart, bounded): a copy past the share for waiting
 // blobs is refused without touching what waits: the honest copy that came first is held once its
 // thing's record is here (the overflow forgot the whole waiting commit)
