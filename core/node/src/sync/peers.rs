@@ -594,6 +594,11 @@ impl SyncEngine {
         self.policy_changed()
     }
 
+    /// `group`'s `/reach` policy as set (`set_reach_policy`); `None`: the default.
+    pub fn reach_policy(&self, group: &Tid) -> Option<bool> {
+        self.state.reach_policy.get(group).copied()
+    }
+
     /// Marks a person as a contact of this node's person (stored): groups whose readers are only
     /// contacts get `/reach` by default. Unmarking may rotate `/reach` (`check_reach`).
     #[must_use]

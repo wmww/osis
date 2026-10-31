@@ -549,6 +549,10 @@ pub struct Core {
     /// Aspects whose receipts came from headers alone in this run (`Engine::record_header`, a
     /// receipts-only read): a demotion's frontier reads them besides its scope's held aspects.
     pub header_receipts: BTreeSet<(Tid, Ak)>,
+    /// Groups this node holds for receipts only (set by node sync,
+    /// `SyncEngine::set_receipts_only`): what it applied of them it never uploads again, so a
+    /// demotion's frontier lists its commits there by ID (`Engine::frontier`).
+    pub receipts_only: BTreeSet<Tid>,
 }
 
 /// `Core::published`: the counts it was taken at, the published things per actor.
@@ -749,6 +753,7 @@ impl Core {
             published: None,
             links: None,
             header_receipts: BTreeSet::new(),
+            receipts_only: BTreeSet::new(),
         }
     }
 

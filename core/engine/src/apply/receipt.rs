@@ -265,7 +265,8 @@ impl Engine {
         self.run(|tx| {
             for a in &h.aspects {
                 let mut r = get(tx, &a.tid, &a.ak)?;
-                r.commits.insert(id, (h.author, now.0));
+                // a header read again keeps its first receipt time (`as_of` frontiers)
+                r.commits.entry(id).or_insert((h.author, now.0));
                 put(tx, &a.tid, &a.ak, &r)?;
             }
             Ok(())
@@ -307,13 +308,26 @@ impl Engine {
         }
         aspects.sort();
         aspects.dedup();
+        // things of groups held for receipts only: this node keeps what it applied there (their
+        // membership commits) but never uploads it again, so no holder of such a commit voids
+        // another its author signs later on the same counters after deleting it at the server;
+        // its held commits there are listed by ID, never by counters (spec/permissions.md §5.1)
+        let by_id: BTreeSet<Tid> = self.core.receipts_only.clone().into_iter().flat_map(|g| self.closure(&g).iter().copied().chain([g]).collect::<Vec<_>>()).collect();
         self.run(|tx| {
             let mut f = Frontier::default();
             for (node, t, ak) in aspects {
                 let r = received(tx, &t, &ak, as_of.0)?;
-                let c = r.contiguous(&node, as_of.0);
-                if c > 0 {
-                    f.writes.entry(t).or_default().entry(ak.as_str().to_string()).or_default().insert(node, c);
+                if by_id.contains(&t) {
+                    for (_, c) in tx.core.ix.ranges.get(&(t, ak.clone(), node)).into_iter().flat_map(|rs| rs.values()) {
+                        if tx.core.ix.commits.get(c).is_some_and(|m| m.received.0 <= as_of.0) {
+                            f.commits.insert(*c);
+                        }
+                    }
+                } else {
+                    let c = r.contiguous(&node, as_of.0);
+                    if c > 0 {
+                        f.writes.entry(t).or_default().entry(ak.as_str().to_string()).or_default().insert(node, c);
+                    }
                 }
                 for (id, (a, _)) in &r.commits {
                     if *a == node {

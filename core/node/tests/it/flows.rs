@@ -2183,3 +2183,30 @@ fn planted_epoch_blocks_no_removal_spec_crypto_4() {
     assert_eq!(after.read.newest().unwrap().n(), n0 + 1);
     assert!(after.read.epochs().all(|(e, _)| e.n() <= n0 + 1 || *e == top));
 }
+
+// spec/permissions.md §5.1 Frontier (a received commit not stored is listed by ID), notes/sync.md
+// Receipts-only reads: a node keeps what it applied of a group it holds for receipts only but
+// never uploads it again, so its frontier lists C's edit there by commit ID, never by C's
+// counters (C could delete the edit at the server and sign another on the same counters, which
+// no holder of the first would void).
+#[test]
+fn receipts_only_frontier_by_id_spec_perm_5_1() {
+    let (mut lp, ps) = people(3, 511);
+    let (pa, pc) = (ps[0], ps[2]);
+    let t = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Write)).unwrap();
+    spread(&mut lp);
+    let before = ids(&lp, 2);
+    add_tag(&mut lp, 2, t, "c");
+    let e = new_ids(&lp, 2, &before);
+    spread(&mut lp);
+    let nc = lp.peers[2].engine.tid();
+    let scope = osis_perm::DemotionScope { membership: [(nc, [t].into())].into(), content: [(nc, [t].into())].into() };
+    let now = lp.peers[0].engine.now();
+    let held = lp.peers[0].engine.frontier(&scope, now).unwrap();
+    let counted = |f: &ct::Frontier| f.writes.get(&t).is_some_and(|m| m.values().any(|n| n.contains_key(&nc)));
+    assert!(counted(&held) && !e.iter().any(|c| held.commits.contains(c)), "held and synced: by counters {held:?}");
+    lp.peers[0].engine.core.receipts_only.insert(t);
+    let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
+    assert!(!counted(&f) && e.iter().all(|c| f.commits.contains(c)), "by ID: {f:?}");
+}

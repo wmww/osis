@@ -502,6 +502,7 @@ impl SyncEngine {
         // keeps the changed commits from now on (`Engine::take_changed`)
         engine.take_changed();
         let mut state = State::load(&mut engine)?;
+        engine.core.receipts_only = state.receipts_only.clone();
         // deposits not answered before a restart go again
         let outbox = state.outbox.keys().map(|k| (*k, local::Outgoing::default())).collect();
         let mut rng = rng;

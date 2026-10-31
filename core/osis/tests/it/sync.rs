@@ -516,6 +516,9 @@ fn receipts_only_status_spec_permissions_5_3() {
     let (_, reply) = alice.pair_accept(join.request()).unwrap();
     let phone = join.finish(&reply).unwrap();
     phone.sync_policy(h, osis::GroupPolicy { receipts_only: true, ..Default::default() });
+    // one field changed from the policy as set keeps the others
+    phone.sync_policy(h, osis::GroupPolicy { publish_reach: Some(false), ..phone.group_policy(h) });
+    assert_eq!(phone.group_policy(h), osis::GroupPolicy { publish_reach: Some(false), receipts_only: true });
     w.run();
     let st = phone.status().unwrap();
     assert_eq!(st.groups.get(&h).map(|s| s.state), Some(SyncState::ReceiptsOnly), "{st:?}");
