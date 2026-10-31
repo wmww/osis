@@ -1274,7 +1274,9 @@ fn eph_absorb_lists_cost() {
 // issues/eph-node-cost-bounds.md (memory), spec/sync.md §9 (caps): RSS a holder gains per
 // encoded byte held, against what the node cap charges (`Engine::ephemeral_charge`), for
 // `OSIS_EPH_SHAPE` tiny (many tiny map entries), large (a few 8 KB strings) or aspects (one small
-// write on each of many aspects). Run each shape alone (a fresh process):
+// write on each of many aspects). `OSIS_EPH_PER` entries per commit (tiny), `OSIS_EPH_ROOM`: what
+// the holder may hold (`ingest_ephemeral_within`, as a node passes its cap's room; unset: no
+// bound). Run each shape alone (a fresh process):
 // `cargo test --release -p osis-node --test it -- --ignored --nocapture --test-threads 1 scale::eph_decoded_memory`.
 #[test]
 #[ignore]
@@ -1284,8 +1286,9 @@ fn eph_decoded_memory() {
     let (commits, per, value) = match shape.as_str() {
         "large" => (size("OSIS_EPH_COMMITS", 64, 4), 4, crate::net::s(&"v".repeat(8000))),
         "aspects" => (size("OSIS_EPH_COMMITS", 16, 2), 2000, Value::Int(1)),
-        _ => (size("OSIS_EPH_COMMITS", 64, 4), 2000, Value::Int(1)),
+        _ => (size("OSIS_EPH_COMMITS", 64, 4), size("OSIS_EPH_PER", 2000, 2000), Value::Int(1)),
     };
+    let room: u64 = std::env::var("OSIS_EPH_ROOM").ok().and_then(|s| s.parse().ok()).unwrap_or(u64::MAX);
     let blobs = if shape == "aspects" {
         // one register write on each of `per` aspects, `commits` times (fresh aspects each time)
         let mut blobs = Vec::new();
@@ -1303,9 +1306,14 @@ fn eph_decoded_memory() {
     };
     let blob_bytes: usize = blobs.iter().map(|b| b.parts.iter().map(|p| p.delta.len()).sum::<usize>()).sum();
     let rss0 = rss_kib();
+    let mut refused = 0;
     for bl in blobs {
-        net.engine(b).ingest_ephemeral(bl).unwrap();
+        let left = room.saturating_sub(net.engine(b).held_ephemeral().iter().map(|h| net.engine(b).ephemeral_charge(&h.0, &[])).sum());
+        if matches!(net.engine(b).ingest_ephemeral_within(bl, true, left).unwrap(), osis_node::ephemeral::EphIngest::TooLarge) {
+            refused += 1;
+        }
     }
+    println!("decoded memory ({shape}): {refused} commits refused for the room");
     let held: usize = net.engine(b).held_ephemeral().iter().map(|h| h.1).sum();
     let rss = rss_kib().saturating_sub(rss0);
     let writes = commits * per;
