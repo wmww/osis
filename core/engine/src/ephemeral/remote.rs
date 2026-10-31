@@ -137,6 +137,8 @@ pub(crate) struct Invalid {
     pub ais: Vec<usize>,
     /// The records it carries.
     pub carried: BTreeMap<Tid, CreationRecord>,
+    /// The most room it was given (`ingest_ephemeral_within`): what its retry may decode.
+    pub room: u64,
 }
 
 /// A held ephemeral commit (in memory).
@@ -273,6 +275,8 @@ pub(crate) struct Waiting {
     pub parts: Vec<osis_commit::Part>,
     /// The things whose records it waits for.
     pub needs: BTreeSet<Tid>,
+    /// The most room a copy was given (`ingest_ephemeral_within`): what its retry may decode.
+    pub room: u64,
 }
 
 /// Whether a cover `cover` may absorb `covered` (spec/sync.md §9): only its author's commits of
@@ -298,6 +302,9 @@ pub enum EphIngest {
     /// Not held: held commits of its author and class (these) contain it (`eph_containers`); a
     /// writer may delete its entry where it found it once they are there.
     Covered(BTreeSet<CommitId>),
+    /// Not held nor kept apart: holding it could cost more than the room given
+    /// (`ingest_ephemeral_within`), found before decoding past it.
+    TooLarge,
 }
 
 /// An ephemeral commit built here: its ID, class and blob (header and parts).
@@ -928,7 +935,7 @@ impl Engine {
     /// Receives an ephemeral commit blob (verified here; the blob's prefix was checked by the
     /// caller). Bad input is an error.
     pub fn ingest_ephemeral(&mut self, blob: CommitBlob) -> Result<EphIngest> {
-        self.ingest_ephemeral_within(blob, true)
+        self.ingest_ephemeral_within(blob, true, u64::MAX)
     }
 
     /// `ingest_ephemeral`; `may_wait` false: a blob that would wait (`Pending`) is not kept
@@ -936,7 +943,11 @@ impl Engine {
     /// stays as it was. A
     /// blob with a part that waits is `Pending` even when its other parts were verified and
     /// held: the blob is not fully checked, so it is neither kept nor spread until it is.
-    pub fn ingest_ephemeral_within(&mut self, blob: CommitBlob, may_wait: bool) -> Result<EphIngest> {
+    /// `room`: what holding it may cost, as `ephemeral_charge` counts it; each part is decoded
+    /// only while what the parts before it cost decoded and its own bound (`part_bound`) fit, so
+    /// nothing is decoded past it (`TooLarge`: nothing of it held or kept apart). A blob kept
+    /// apart is retried within the most room a copy of it was given.
+    pub fn ingest_ephemeral_within(&mut self, blob: CommitBlob, may_wait: bool, room: u64) -> Result<EphIngest> {
         let id = blob.id();
         let h = blob.header.clone();
         let Some(class) = h.ephemeral else { return Err(Error::BadInput("not an ephemeral commit")) };
@@ -983,29 +994,43 @@ impl Engine {
                     return Ok(EphIngest::Dropped);
                 }
                 if may_wait {
-                    self.wait_apart(id, blob, BTreeSet::from([h.author]));
+                    self.wait_apart(id, blob, BTreeSet::from([h.author]), room);
                 }
                 return Ok(EphIngest::Pending);
             }
         };
         osis_commit::verify_signature(&id, &blob.signature, &author)?;
         h.validate()?;
+        // what each part could cost decoded, from its bytes alone: none is decoded past `room`
+        let bounds: Vec<u64> = blob.parts.iter().map(part_bound).collect::<Result<_>>()?;
+        let created = |p: &osis_commit::Part| h.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == CREATED.ak());
+        if blob.parts.iter().zip(&bounds).any(|(p, b)| created(p) && *b > room) {
+            return Ok(EphIngest::TooLarge);
+        }
         // records the commit carries (their parts are decoded first: a thing's dedup secret
         // comes from its record)
         let mut interner = Interner::new();
         let carried = carried_records(&blob, &id, &mut interner)?;
         let mut decoded = Vec::with_capacity(blob.parts.len());
-        // a part on a thing whose record is not here yet waits (`retry_waiting`)
+        let mut spent = 0u64;
+        // a part on a thing whose record is not here yet waits (`retry_waiting`: decoded then,
+        // within the room given now)
         let mut waits: BTreeSet<Tid> = BTreeSet::new();
-        for p in &blob.parts {
+        for (p, bound) in blob.parts.iter().zip(&bounds) {
             let Some(a) = h.aspects.get(p.ai) else { continue };
             let Some(rec) = self.record_of(&a.tid, &carried) else {
                 waits.insert(a.tid);
                 continue;
             };
+            if spent.saturating_add(*bound) > room {
+                return Ok(EphIngest::TooLarge);
+            }
             let dedup = dedup_secret(rec.nonce());
             match osis_commit::verify_part(&h, &id, p, &dedup, &mut interner, Some(&mut Unpaged))? {
-                osis_commit::Decoded::Snapshot(s) => decoded.push((p.ai, s, p.delta.len())),
+                osis_commit::Decoded::Snapshot(s) => {
+                    spent = spent.saturating_add(part_charge(s.fragment.approx_bytes(), p.delta.len()));
+                    decoded.push((p.ai, s, p.delta.len()));
+                }
                 osis_commit::Decoded::Delta(_) => return Err(Error::BadInput("ephemeral commit with a writer delta")),
             }
         }
@@ -1038,7 +1063,7 @@ impl Engine {
             // held either (its verified parts would be held uncounted: the sync layer keeps no
             // entry for it)
             if may_wait {
-                self.wait_apart(id, blob, waits);
+                self.wait_apart(id, blob, waits, room);
             }
             return Ok(EphIngest::Pending);
         }
@@ -1059,7 +1084,7 @@ impl Engine {
                 }
                 if !waits.is_empty() {
                     // judged again once those records are here
-                    self.wait_apart(id, blob, waits);
+                    self.wait_apart(id, blob, waits, room);
                     return Ok(EphIngest::Pending);
                 }
                 match self.eph.remote.invalid.get_mut(&id) {
@@ -1069,9 +1094,10 @@ impl Engine {
                         x.blob.parts.extend(more);
                         x.ais.extend(content);
                         x.carried.extend(carried);
+                        x.room = x.room.max(room);
                     }
                     None => {
-                        self.eph.remote.invalid.insert(id, Invalid { blob, ais: content, carried });
+                        self.eph.remote.invalid.insert(id, Invalid { blob, ais: content, carried, room });
                     }
                 }
                 return Ok(EphIngest::Pending);
@@ -1137,7 +1163,7 @@ impl Engine {
         // this commit may wait too: a commit past a blob splits)
         let waiting = !waits.is_empty();
         if waiting && may_wait {
-            self.wait_apart(id, blob, waits);
+            self.wait_apart(id, blob, waits, room);
         }
         if presence && first {
             // the older presence commits of its author and actor go (un-merge): this one carries
@@ -1173,9 +1199,10 @@ impl Engine {
     /// Keeps `blob` of commit `id` waiting for the records of `needs` (`pending`), merged with
     /// the other copies of the commit waiting (a commit past a blob splits; a junk copy may come
     /// first): its signature and parts not held yet, but parts that fail their delta hash.
-    fn wait_apart(&mut self, id: CommitId, blob: CommitBlob, needs: BTreeSet<Tid>) {
+    fn wait_apart(&mut self, id: CommitId, blob: CommitBlob, needs: BTreeSet<Tid>, room: u64) {
         let parts: Vec<osis_commit::Part> = blob.parts.into_iter().filter(|p| self.part_matches(&blob.header, &id, p) != Some(false)).collect();
-        let w = self.eph.remote.pending.entry(id).or_insert_with(|| Waiting { header: blob.header, sigs: Vec::new(), parts: Vec::new(), needs: BTreeSet::new() });
+        let w = self.eph.remote.pending.entry(id).or_insert_with(|| Waiting { header: blob.header, sigs: Vec::new(), parts: Vec::new(), needs: BTreeSet::new(), room: 0 });
+        w.room = w.room.max(room);
         if !w.sigs.contains(&blob.signature) {
             w.sigs.push(blob.signature);
         }
@@ -1510,10 +1537,9 @@ impl Engine {
     fn retry_invalid(&mut self) {
         let ready: Vec<CommitId> = self.eph.remote.invalid.iter().filter(|(c, x)| x.ais.iter().any(|ai| self.eph_part_valid(&x.blob.header, c, *ai, &x.carried))).map(|(c, _)| *c).collect();
         for c in ready {
-            if let Some(x) = self.eph.remote.invalid.remove(&c)
-                && let Err(e) = self.ingest_ephemeral(x.blob)
-            {
-                self.report_eph(&format!("ephemeral commit {c:?}: {e}"));
+            if let Some(x) = self.eph.remote.invalid.remove(&c) {
+                let r = self.ingest_ephemeral_within(x.blob, true, x.room);
+                self.report_retry(&c, r);
             }
         }
     }
@@ -1524,12 +1550,21 @@ impl Engine {
         let empty = BTreeMap::new();
         let ready: Vec<CommitId> = self.eph.remote.pending.iter().filter(|(_, w)| w.needs.iter().any(|t| self.record_of(t, &empty).is_some())).map(|(c, _)| *c).collect();
         for c in ready {
-            if let Some(w) = self.eph.remote.pending.remove(&c)
-                && let Some(b) = self.sift_waiting(c, w)
-                && let Err(e) = self.ingest_ephemeral(b)
-            {
-                self.report_eph(&format!("ephemeral commit {c:?}: {e}"));
+            let Some(w) = self.eph.remote.pending.remove(&c) else { continue };
+            let room = w.room;
+            if let Some(b) = self.sift_waiting(c, w) {
+                let r = self.ingest_ephemeral_within(b, true, room);
+                self.report_retry(&c, r);
             }
+        }
+    }
+
+    /// Reports a retried commit that failed or did not fit the room it was given.
+    fn report_retry(&mut self, c: &CommitId, r: Result<EphIngest>) {
+        match r {
+            Err(e) => self.report_eph(&format!("ephemeral commit {c:?}: {e}")),
+            Ok(EphIngest::TooLarge) => self.report_eph(&format!("ephemeral commit {c:?}: past the room it was given, not held")),
+            Ok(_) => {}
         }
     }
 
@@ -1938,8 +1973,7 @@ impl Engine {
     /// decoded (`scale::eph_decoded_memory`).
     pub fn ephemeral_charge(&self, id: &CommitId, ais: &[usize]) -> u64 {
         let Some(h) = self.eph.remote.held.get(id) else { return 0 };
-        let per = h.parts.iter().filter(|p| ais.is_empty() || ais.contains(&p.ai)).map(|p| p.heap.max(p.bytes));
-        per.fold(0u64, |a, b| a.saturating_add(b.saturating_mul(HELD_COPIES).saturating_add(PART_OVERHEAD) as u64))
+        h.parts.iter().filter(|p| ais.is_empty() || ais.contains(&p.ai)).fold(0u64, |a, p| a.saturating_add(part_charge(p.heap, p.bytes)))
     }
 
     /// Held ephemeral commits and their encoded delta bytes (tests, diagnostics).
@@ -1952,6 +1986,19 @@ impl Engine {
     pub fn pending_ephemeral(&self, id: &CommitId) -> bool {
         self.eph.remote.pending.contains_key(id) || self.eph.remote.invalid.contains_key(id)
     }
+}
+
+/// What a held part costs (`ephemeral_charge`): its decoded heap size (`heap`, at least its
+/// encoded `bytes`) in each copy kept, and `PART_OVERHEAD`.
+fn part_charge(heap: usize, bytes: usize) -> u64 {
+    heap.max(bytes).saturating_mul(HELD_COPIES).saturating_add(PART_OVERHEAD) as u64
+}
+
+/// An upper bound on `part_charge` of part `p` once decoded, from its bytes alone
+/// (`osis_crdt::decoded_bound`): a part of tiny map entries decodes to about 200 times its size.
+fn part_bound(p: &osis_commit::Part) -> Result<u64> {
+    let heap = osis_crdt::decoded_bound(&p.delta).map_err(|_| Error::BadInput("ephemeral part not one CBOR value"))?;
+    Ok(part_charge(heap, p.delta.len()))
 }
 
 /// The records ephemeral commit `blob` (ID `id`) carries in its `/created` parts, each checked:

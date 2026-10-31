@@ -458,11 +458,13 @@ fn server_cap_one_huge_write_reports_spec_sync_5() {
     assert_eq!(notes(&mut net, b, w), map(&[("k", "v")]), "a later write that fits syncs");
 }
 
-// spec/sync.md §9 (caps), issues/eph-node-cost-bounds.md: the node cap counts what a held commit
-// takes in memory, not its encoded bytes: a commit of many tiny entries (about 200 times its size
-// decoded) fills it, and the next one is refused
+// spec/sync.md §9 (caps), notes/ephemeral.md Node cap: the node cap counts what a held commit
+// takes in memory, not its encoded bytes, and a commit is checked against the room left before it
+// is decoded (`Engine::ephemeral_bound`): one of many tiny entries (about 200 times its size
+// decoded) is refused whole and reported, never held past the cap; a small one is held, counted
+// at its decoded size
 #[test]
-fn node_cap_counts_decoded_size_spec_sync_9() {
+fn node_cap_bounds_decoded_size_spec_sync_9() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
@@ -472,22 +474,27 @@ fn node_cap_counts_decoded_size_spec_sync_9() {
     let t = net.item(a, g, g, "doc");
     net.run();
     let l = net.label(a);
-    let tiny = |net: &mut Net, from: usize| {
+    let rx = net.listen(b);
+    let tiny = |net: &mut Net, from: usize, n: usize| {
         let mut m = Mutation::new();
-        for k in from..from + 500 {
+        for k in from..from + n {
             m.op(t, &eph(NOTES), PathOp { path: vec![PathSeg::Key(Value::Int(k as i64))], op: Op::Set(Value::Int(1)) }).unwrap();
         }
         net.engine(a).write(m).unwrap();
         local(net, a);
         net.run();
     };
-    tiny(&mut net, 0);
-    let held = net.sync(b).ephemeral_bytes(&l);
+    tiny(&mut net, 0, 500);
     let at_server = net.servers[sv].hub.store().ephemeral_bytes(&l);
-    assert!(at_server < 40_000 && held > 500 * 2048, "{at_server} B at the server, {held} counted here");
-    tiny(&mut net, 500);
+    assert!(at_server < 40_000, "{at_server} B at the server: fits the cap encoded");
+    assert_eq!(net.sync(b).ephemeral_bytes(&l), 0, "refused before decoding");
+    assert_eq!(net.eph_read(b, t, NOTES), None);
+    assert!(rx.try_iter().any(|e| matches!(e, osis_node::Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::EphemeralRefused)), "reported");
+    tiny(&mut net, 500, 3);
+    let held = net.sync(b).ephemeral_bytes(&l);
+    assert!(held > 3 * 2048 && held <= cap, "{held} counted here");
     match net.eph_read(b, t, NOTES) {
-        Some(Value::Map(m)) => assert_eq!(m.len(), 500, "the second refused"),
+        Some(Value::Map(m)) => assert_eq!(m.len(), 3, "the small one held"),
         v => panic!("{v:?}"),
     }
 }
@@ -500,7 +507,7 @@ fn ephemeral_flood_bounded_spec_requirements_scale() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
-    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 4_000, ..SyncConfig::default() });
+    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 400_000, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
     let w = window(&mut net, a, g, "flood");
@@ -511,12 +518,13 @@ fn ephemeral_flood_bounded_spec_requirements_scale() {
         net.run();
     }
     let l = net.label(a);
-    // each admitted while the label's count was under the cap: past it by one entry at most
+    // each admitted only when its bound fit the room left: never past the cap
     let held = net.sync(b).ephemeral_held_from_others(&l);
     let charged: u64 = held.iter().map(|h| h.1).sum();
     assert_eq!(charged, net.sync(b).ephemeral_bytes(&l));
-    assert!(charged - held.iter().map(|h| h.1).max().unwrap_or(0) <= 4_000, "{held:?}");
-    assert!(notes(&mut net, b, w).len() < 40);
+    assert!(charged <= 400_000, "{held:?}");
+    let n = notes(&mut net, b, w).len();
+    assert!(n > 0 && n < 40, "{n}");
     let refused = rx.try_iter().any(|e| matches!(e, osis_node::Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::EphemeralRefused));
     assert!(refused, "reported");
 }
@@ -783,14 +791,14 @@ fn junk_copy_of_waiting_commit_not_kept_once_held_spec_sync_9() {
 
 /// A commit by `a` on a durable thing `b` has not heard of (b deaf to the server): (thing, real
 /// blob, a junk copy with the real header and signature).
-fn waiting_on_thing(net: &mut Net, a: usize, b: usize, g: Tid) -> (Tid, osis_commit::CommitBlob, osis_commit::CommitBlob) {
+fn waiting_on_thing(net: &mut Net, a: usize, b: usize, g: Tid, v: &Value) -> (Tid, osis_commit::CommitBlob, osis_commit::CommitBlob) {
     net.deaf.insert(b);
     let t = net.item(a, g, g, "durable");
     net.run();
     let at = net.tid(a);
     assert!(net.engine(b).core.created(&t).is_none() && net.engine(b).core.created(&at).is_some(), "author known, thing not");
     let mut m = Mutation::new();
-    m.set(t, &eph("/doc/cursor"), &Value::Int(7)).unwrap();
+    m.set(t, &eph("/doc/cursor"), v).unwrap();
     net.engine(a).write(m).unwrap();
     let blob = net.engine(a).take_ephemeral().unwrap().remove(0).blob;
     let mut junk = blob.clone();
@@ -811,7 +819,7 @@ fn junk_copy_waiting_on_thing_not_kept_spec_sync_9() {
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
-    let (t, blob, junk) = waiting_on_thing(&mut net, a, b, g);
+    let (t, blob, junk) = waiting_on_thing(&mut net, a, b, g, &Value::Int(7));
     let wk = write_key(&mut net, b, g);
     let l = net.label(b);
     let (_, jev) = sealed(&mut net, b, g, &junk, Some(&wk), 1);
@@ -833,6 +841,31 @@ fn junk_copy_waiting_on_thing_not_kept_spec_sync_9() {
     let kept: Vec<_> = net.sync(b).ephemeral_entries_of(&blob.id()).into_iter().map(|(_, x, _)| x).collect();
     assert_eq!(kept, vec![real], "only the real copy is kept");
     assert_eq!(net.sync(b).ephemeral_pending_bytes(&l), 0);
+}
+
+// notes/ephemeral.md Node cap: a blob kept apart (its part's thing's record missing, so not
+// decoded) is decoded at its retry only within the room it was given: past it, it is reported and
+// not held
+#[test]
+fn waiting_blob_retried_within_its_room_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let v = Value::Map((0..500).map(|i| (Value::Int(i), Value::Int(1))).collect());
+    let (t, blob, _) = waiting_on_thing(&mut net, a, b, g, &v);
+    let r = net.engine(b).ingest_ephemeral_within(blob.clone(), true, 50_000).unwrap();
+    assert!(matches!(r, osis_node::ephemeral::EphIngest::Pending), "{r:?}");
+    let rx = net.listen(b);
+    net.deaf.remove(&b);
+    net.pair(a, b);
+    net.engine(b).rejudge_ephemeral().unwrap();
+    net.advance(10_000);
+    assert_eq!(net.read(b, t), Some(s("durable")));
+    assert!(!net.engine(b).holds_ephemeral(&blob.id()) && !net.engine(b).pending_ephemeral(&blob.id()), "not held");
+    assert!(rx.try_iter().any(|e| matches!(e, osis_node::Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::EphemeralRefused)), "reported");
 }
 
 // spec/sync.md §9 (unverified commits wait apart, bounded): a blob with one part verified and
@@ -887,18 +920,21 @@ fn waiting_share_overflow_keeps_honest_copy_spec_sync_9() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
-    // the share (a quarter of the cap) fits one blob of the commit, not two
-    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 3_600, ..SyncConfig::default() });
+    // the share (a quarter of the cap) fits one blob of the commit, not two; the cap fits the
+    // blob decoded (`osis_crdt::decoded_bound`: a string, so mostly its bytes)
+    let cap = 200_000;
+    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
-    let (t, blob, junk) = waiting_on_thing(&mut net, a, b, g);
+    let v = s(&"c".repeat(30_000));
+    let (t, blob, junk) = waiting_on_thing(&mut net, a, b, g, &v);
     let wk = write_key(&mut net, b, g);
     let l = net.label(b);
     let (real, ev) = sealed(&mut net, b, g, &blob, Some(&wk), 2);
     let (_, jev) = sealed(&mut net, b, g, &junk, Some(&wk), 1);
     let osis_proto::Event::Added { blob: Some(bytes), .. } = &ev else { unreachable!() };
     let len = bytes.len();
-    assert!(len <= 900 && 2 * len > 900, "blob of {len} bytes");
+    assert!(len as u64 <= cap / 4 && 2 * len as u64 > cap / 4, "blob of {len} bytes");
     let acts = push(&mut net, b, sv, l, vec![ev, jev]);
     net.actions(b, acts);
     assert_eq!(net.sync(b).ephemeral_pending_bytes(&l), len as u64, "the junk copy past the share is not kept");
@@ -908,7 +944,7 @@ fn waiting_share_overflow_keeps_honest_copy_spec_sync_9() {
     net.engine(b).rejudge_ephemeral().unwrap();
     net.advance(10_000);
     assert_eq!(net.read(b, t), Some(s("durable")));
-    assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(Value::Int(7)), "the honest copy waited on");
+    assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(v), "the honest copy waited on");
     let kept: Vec<_> = net.sync(b).ephemeral_entries_of(&blob.id()).into_iter().map(|(_, x, _)| x).collect();
     assert_eq!(kept, vec![real]);
 }
@@ -1736,7 +1772,7 @@ fn unverified_ephemeral_not_kept_or_spread_spec_sync_9() {
     let mut net = Net::new();
     let (s1, s2) = (net.add_server(), net.add_server());
     let a = net.node(1, &[s1]);
-    let cap = 40_000;
+    let cap = 400_000;
     let b = net.add_node(2, SyncConfig { servers: vec![net.address(s1), net.address(s2)], ephemeral_bytes: cap, ..SyncConfig::default() });
     let x = net.node(3, &[]);
     let g = net.group(a, &[(b, Role::Write)], &[s1, s2]);
@@ -1762,7 +1798,7 @@ fn unverified_ephemeral_not_kept_or_spread_spec_sync_9() {
     let rx = net.listen(b);
     let xt = net.tid(x);
     for i in 0..60 {
-        let c = net.engine(x).forge_ephemeral(xt, &ak, s(&format!("junk {i} {}", "j".repeat(200)))).unwrap().unwrap();
+        let c = net.engine(x).forge_ephemeral(xt, &ak, s(&format!("junk {i} {}", "j".repeat(2_000)))).unwrap().unwrap();
         let (_, ev) = sealed(&mut net, a, g, &c.blob, Some(&wk), 10 + i);
         let acts = push(&mut net, b, s1, l, vec![ev]);
         net.actions(b, acts);
@@ -1932,22 +1968,23 @@ fn invalid_on_arrival_held_once_valid_spec_sync_9() {
 
 // notes/ephemeral.md Bounds, notes/ephemeral.md Own covers: entries refused for a node's cap are
 // fetched again once its bytes drop (here another's presence goes): the label is reconciled at
-// the next periodic pass instead of staying short until a restart
+// the next periodic pass instead of staying short until a restart. The cap fits the cursor and
+// the big write decoded (`osis_crdt::decoded_bound`: strings, so mostly their bytes), not both
 #[test]
 fn capped_label_reconciles_once_room_spec_sync_9() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
     let x = net.node(2, &[sv]);
-    let b = net.add_node(3, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 4_000, ..SyncConfig::default() });
+    let b = net.add_node(3, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 230_000, ..SyncConfig::default() });
     let g = net.group(a, &[(x, Role::Write), (b, Role::Write)], &[sv]);
     let t = net.item(a, g, g, "doc");
     net.run();
     let l = net.label(a);
-    net.eph_write(x, t, &ukey("/doc/cursor", Lifetime::Presence), s(&"c".repeat(2_500)));
+    net.eph_write(x, t, &ukey("/doc/cursor", Lifetime::Presence), s(&"c".repeat(50_000)));
     net.run();
     assert!(net.eph_read(b, t, "/doc/cursor").is_some());
-    net.eph_write(a, t, &ukey("/doc/big", Lifetime::Ephemeral), s(&"b".repeat(1_500)));
+    net.eph_write(a, t, &ukey("/doc/big", Lifetime::Ephemeral), s(&"b".repeat(40_000)));
     net.run();
     assert_eq!(net.eph_read(b, t, "/doc/big"), None, "refused for the cap");
     net.set_online(x, false);
@@ -1955,7 +1992,7 @@ fn capped_label_reconciles_once_room_spec_sync_9() {
     assert_eq!(net.eph_read(b, t, "/doc/cursor"), None);
     assert!(net.sync(b).ephemeral_bytes(&l) < 1_000);
     net.advance(SyncConfig::default().resync_ms + 1_000);
-    assert_eq!(net.eph_read(b, t, "/doc/big"), Some(s(&"b".repeat(1_500))), "fetched again");
+    assert_eq!(net.eph_read(b, t, "/doc/big"), Some(s(&"b".repeat(40_000))), "fetched again");
 }
 
 // spec/sync.md §9 (ephemeral parts on core aspects; security review L3): a writer's ephemeral

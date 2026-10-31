@@ -480,3 +480,9 @@ fn join_seq(s: &mut Seq, d: Seq) {
         *s = x;
     }
 }
+
+/// `decoded_bound` holds for `bytes` decoded to `f` (a memory bound, spec: none).
+pub fn check_bound(bytes: &[u8], f: &Fragment) {
+    let bound = crate::decoded_bound(bytes).unwrap();
+    assert!(f.approx_bytes() <= bound, "{} > bound {bound}", f.approx_bytes());
+}

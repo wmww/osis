@@ -655,3 +655,43 @@ fn approx_bytes_tracks_content() {
     let big = create(&mut w, &AnyView, &Value::Str("a".repeat(10_000))).unwrap();
     assert!(big.approx_bytes() > small.approx_bytes() + 9_000);
 }
+
+/// `decoded_bound` (a memory bound's measure, not a spec rule) holds for the shapes that take
+/// most per encoded byte: many tiny map entries, set elements, list elements, struct fields,
+/// text. spec: none (resource bound)
+#[test]
+fn decoded_bound_holds_dense_shapes() {
+    use crate::codec::{decode_snapshot, encode_snapshot};
+    use crate::wire::{DeltaCtx, DeltaKind, Snapshot};
+    let ints = |n: i64| (0..n).map(Value::Int);
+    let shapes = [
+        Value::Map(ints(2000).map(|i| (i.clone(), i)).collect()),
+        Value::Map(ints(2000).map(|i| (i, Value::Map(Default::default()))).collect()),
+        Value::Map((0..2000).map(|i| (Value::Str(format!("{i}")), Value::Bool(true))).collect()),
+        Value::Set(ints(2000).collect()),
+        Value::List(ints(2000).collect()),
+        Value::List(ints(2000).map(|_| Value::Map(Default::default())).collect()),
+        Value::Str("a".repeat(5000)),
+        Value::Map([(Value::Int(1), Value::Int(1))].into_iter().collect()),
+        Value::Int(1),
+        Value::Map(ints(500).map(|i| (i, Value::Map([(Value::Int(0), Value::Map([(Value::Int(0), Value::Int(0))].into_iter().collect()))].into_iter().collect()))).collect()),
+        Value::List(ints(500).map(|_| Value::List(vec![Value::List(vec![Value::Int(0)])])).collect()),
+        Value::Set(ints(500).map(|i| Value::Set([i].into_iter().collect())).collect()),
+    ];
+    let cx = DeltaCtx { ts: ts(1 << 40), own: Source::node(Tid::from_bytes([9; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+    for v in shapes {
+        let mut w = Writer::new(ts(1 << 30), Source::node(Tid::from_bytes([1; 15])), 1);
+        let f = create(&mut w, &AnyView, &v).unwrap();
+        let s = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: f, frontiers: Default::default() };
+        let bytes = encode_snapshot(&s, &cx, None).unwrap();
+        let back = decode_snapshot(&bytes, &cx, &mut crate::stamp::Interner::new(), None).unwrap();
+        crate::testutil::check_bound(&bytes, &back.fragment);
+    }
+    // a text: one record per character
+    let mut w = Writer::new(ts(1 << 30), Source::node(Tid::from_bytes([1; 15])), 1);
+    let f = create(&mut w, &crate::fuzzing::TextView, &Value::Str("a".repeat(5000))).unwrap();
+    let s = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: f, frontiers: Default::default() };
+    let bytes = encode_snapshot(&s, &cx, None).unwrap();
+    let back = decode_snapshot(&bytes, &cx, &mut crate::stamp::Interner::new(), None).unwrap();
+    crate::testutil::check_bound(&bytes, &back.fragment);
+}
