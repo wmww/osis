@@ -160,16 +160,59 @@ fn lan_match_dials_announced_key_spec_sync_10() {
     // candidate waits for the pause
     net.actions(a, acts);
     net.settle(100_000);
+    // b rejoins elsewhere (a fresh key)
     let other: SocketAddr = "192.168.1.6:47380".parse().unwrap();
-    let (hit, acts) = net.sync(a).lan_seen(&own, other);
+    let rejoined = net.sync(b).lan_announcement([0x78; 32], 4433).unwrap();
+    let (hit, acts) = net.sync(a).lan_seen(&rejoined, other);
     assert_eq!((hit, acts), (Some(kb), Vec::new()), "within LAN_CHANGE_MS");
     net.clock.advance(osis_node::sync::peers::LAN_CHANGE_MS);
-    let (hit, acts) = net.sync(a).lan_seen(&own, other);
+    let (hit, acts) = net.sync(a).lan_seen(&rejoined, other);
     assert_eq!(hit, Some(kb));
     assert!(dials(&acts).is_empty(), "the pause holds: {acts:?}");
     net.clock.advance(60_001);
     let acts = net.sync(a).handle(osis_node::sync::Event::Tick);
-    assert_eq!(dials(&acts), vec![Address { url: "peer://192.168.1.6:4433".into(), key: [0x77; 32] }]);
+    assert_eq!(dials(&acts), vec![Address { url: "peer://192.168.1.6:4433".into(), key: [0x78; 32] }]);
+}
+
+// spec/sync.md §10 (issue lan-announce-replay): an announcement counts only from the first
+// source it was verified from, so a LAN attacker replaying a co-reader's datagram from spoofed
+// sources never draws a dial (which would show it who reads that co-reader); nor does one of an
+// earlier window than the newest verified, whatever its source.
+#[test]
+fn lan_replay_from_other_source_ignored_spec_sync_10() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    reach_ed(&mut net, a);
+    let kb = reach_ed(&mut net, b);
+    net.blocked_peers.insert((a, b));
+    net.group_at(a, &[(b, Role::Write)], vec![]);
+    net.run();
+    net.clock.advance(60_001);
+    let now = net.now();
+    let own = net.sync(b).lan_announcement([0x77; 32], 4433).unwrap();
+    let real: SocketAddr = "192.168.1.5:47380".parse().unwrap();
+    let (hit, acts) = net.sync(a).lan_seen(&own, real);
+    assert_eq!(hit, Some(kb));
+    let route = Address { url: "peer://192.168.1.5:4433".into(), key: [0x77; 32] };
+    assert_eq!(dials(&acts), vec![route.clone()]);
+    net.actions(a, acts);
+    net.settle(100_000);
+    // replays from many spoofed sources, past LAN_CHANGE_MS and the retry pause
+    let prev = signed(&mut net, b, b, now.saturating_sub(LAN_WINDOW_MS), [0x76; 32], 4433);
+    for i in 0..20u8 {
+        net.clock.advance(osis_node::sync::peers::LAN_CHANGE_MS);
+        let spoof: SocketAddr = format!("192.168.1.{}:47380", 100 + i).parse().unwrap();
+        let (hit, acts) = net.sync(a).lan_seen(&own, spoof);
+        assert_eq!((hit, dials(&acts)), (Some(kb), vec![]), "replay from {spoof}");
+        let v6: SocketAddr = format!("[fe80::{i}%1]:47380").parse().unwrap();
+        assert!(dials(&net.sync(a).lan_seen(&own, v6).1).is_empty(), "replay from {v6}");
+        assert!(dials(&net.sync(a).lan_seen(&prev, spoof).1).is_empty(), "earlier window from {spoof}");
+    }
+    net.clock.advance(60_001);
+    let acts = net.sync(a).handle(osis_node::sync::Event::Tick);
+    // spoofed sources were 192.168.1.100.. and fe80::
+    assert!(dials(&acts).iter().all(|d| !d.url.starts_with("peer://192.168.1.1") && !d.url.contains("fe80")), "{acts:?}");
 }
 
 // spec/sync.md §10: the announcement is signed under the dialable key only when that key is

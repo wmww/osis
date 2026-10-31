@@ -68,16 +68,25 @@ pub(crate) struct LanRoute {
     pub cut: Option<u64>,
     /// When the candidate last changed (raw ms).
     pub changed: Option<u64>,
-    /// The last announcement whose signature verified (a repeat is not verified again).
-    pub verified: Option<Announce>,
+    /// Verified announcements of the newest window heard, each with the first source it came
+    /// from (at most `LAN_BOUND`, oldest evicted): a copy from another source is a replay and
+    /// ignored, one of an earlier window too; a repeat is not verified again.
+    pub bound: Vec<(Announce, Address)>,
+    /// The window of `bound`.
+    pub window: u64,
     /// Verified source addresses and how often each was heard (at most `LAN_HEARD`): a failed
-    /// candidate falls back to the most heard, so a replay from a spoofed source that wins the
-    /// candidate costs one failed dial.
+    /// candidate falls back to the most heard.
     pub heard: BTreeMap<Address, u32>,
 }
 
 /// Verified source addresses remembered per co-reader.
 const LAN_HEARD: usize = 4;
+/// Announcements bound to their source per co-reader. Resource bound: an honest node makes at
+/// most two per join (one per family) and rejoins at most every `LAN_REJOIN_MIN` (30 s) but for
+/// a rotation, about 40 per window; past it the oldest is forgotten, so only a co-reader
+/// flooding its own announcements reopens replays of them. 0: every replay counts (the leak);
+/// infinity: a co-reader grows this without bound.
+const LAN_BOUND: usize = 64;
 
 /// Co-readers' LAN tags (the cached window and its neighbours) to their dialable key, lan
 /// secret and window.
@@ -484,8 +493,9 @@ impl SyncEngine {
 
     /// A LAN announcement heard from `from` (spec/sync.md §10). It counts when the source can be
     /// on the LAN, the tag is a co-reader's for the current or an adjacent window (tags computed
-    /// once per window) and the signature verifies under that co-reader's dialable key; the
-    /// address then becomes the co-reader's candidate route. Returns whose dialable key matched,
+    /// once per window) and the signature verifies under that co-reader's dialable key, from the
+    /// first source that announcement came from (`LanRoute::bound`); the address then becomes the
+    /// co-reader's candidate route. Returns whose dialable key matched,
     /// and the actions (only when the candidate changed: a repeat costs a lookup).
     pub fn lan_seen(&mut self, a: &Announce, from: SocketAddr) -> (Option<[u8; 32]>, Vec<Action>) {
         if !osis_transport::lan::is_local(from.ip()) {
@@ -505,16 +515,33 @@ impl SyncEngine {
         let Some((k, secret, w)) = self.peer_cache.lan_tags.as_ref().and_then(|(_, t)| t.get(&a.tag)).copied() else { return (None, Vec::new()) };
         let raw = self.raw_now();
         let r = self.lan.entry(k).or_default();
-        if r.verified.as_ref() != Some(a) {
-            let ok = VerifyingKey::from_bytes(&k).is_ok_and(|vk| osis_crypto::open_lan_sig(&vk, &Secret32::from_bytes(secret), w, &a.tag, &a.key, a.port, &a.sig));
-            if !ok {
-                return (None, Vec::new());
-            }
-            r.verified = Some(*a);
-        }
         let at = a.address(from);
         let address = Address { url: at.url, key: at.key };
         let dialed = address.clone();
+        // an announcement counts from the first source it was verified from: a copy from another
+        // source, or one of an earlier window than the newest verified, is a replay (issue
+        // lan-announce-replay: dialing it would show a LAN attacker who reads this node)
+        match r.bound.iter().find(|(x, _)| x == a) {
+            Some((_, first)) if *first != address => return (Some(k), Vec::new()),
+            Some(_) => {}
+            None => {
+                let ok = VerifyingKey::from_bytes(&k).is_ok_and(|vk| osis_crypto::open_lan_sig(&vk, &Secret32::from_bytes(secret), w, &a.tag, &a.key, a.port, &a.sig));
+                if !ok {
+                    return (None, Vec::new());
+                }
+                if !r.bound.is_empty() && w < r.window {
+                    return (Some(k), Vec::new());
+                }
+                if w > r.window {
+                    r.bound.clear();
+                    r.window = w;
+                }
+                if r.bound.len() >= LAN_BOUND {
+                    r.bound.remove(0);
+                }
+                r.bound.push((*a, address.clone()));
+            }
+        }
         if r.failed.contains_key(&address) {
             return (Some(k), Vec::new());
         }

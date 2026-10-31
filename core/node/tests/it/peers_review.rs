@@ -263,8 +263,8 @@ fn lan_candidate_failure_keeps_route_spec_sync_10() {
     assert!(dials(&acts).is_empty());
 }
 
-// spec/sync.md §10: a candidate that fails falls back to the most heard verified source, so a
-// replay from a spoofed source that won the candidate costs one failed dial.
+// spec/sync.md §10: a candidate that fails falls back to the most heard verified source (a
+// rejoin's announcement from a second address that is not reachable, then the first again).
 #[test]
 fn lan_candidate_falls_back_to_most_heard_spec_sync_10() {
     let mut net = Net::new();
@@ -279,12 +279,14 @@ fn lan_candidate_falls_back_to_most_heard_spec_sync_10() {
     net.lan_keys.insert(lk, b);
     let ann = net.sync(b).lan_announcement(lk, 5000).unwrap();
     // the peer:// route failed (paused): the first real announcement cuts the pause and is
-    // dialed; repeats and the spoofed one meanwhile dial nothing
+    // dialed; repeats and the second address meanwhile dial nothing
     net.clock.advance(60_001);
     net.feed(a, Event::Tick);
     net.settle(100_000);
     let real = IP;
     let spoof = "192.168.7.66";
+    let lk2 = [0x55; 32];
+    let ann2 = net.sync(b).lan_announcement(lk2, 5000).unwrap();
     let (_, first) = net.sync(a).lan_seen(&ann, src(real));
     let real_addr = Address { url: format!("peer://{real}:5000"), key: lk };
     assert_eq!(dials(&first), vec![real_addr.clone()]);
@@ -292,12 +294,12 @@ fn lan_candidate_falls_back_to_most_heard_spec_sync_10() {
         assert!(dials(&net.sync(a).lan_seen(&ann, src(real)).1).is_empty());
     }
     net.clock.advance(osis_node::sync::peers::LAN_CHANGE_MS);
-    assert!(dials(&net.sync(a).lan_seen(&ann, src(spoof)).1).is_empty());
-    // that first dial got nowhere; the spoofed candidate is dialed after the pause and fails:
-    // the real one takes over
+    assert!(dials(&net.sync(a).lan_seen(&ann2, src(spoof)).1).is_empty());
+    // that first dial got nowhere; the second candidate is dialed after the pause and fails:
+    // the first one takes over
     let conn = first.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).unwrap();
     net.sync(a).handle(Event::Down { conn });
-    let spoofed = Address { url: format!("peer://{spoof}:5000"), key: lk };
+    let spoofed = Address { url: format!("peer://{spoof}:5000"), key: lk2 };
     net.blocked_peers.clear();
     net.clock.advance(61_000);
     let acts = net.sync(a).handle(Event::Tick);
