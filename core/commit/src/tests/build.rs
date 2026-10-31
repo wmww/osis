@@ -238,7 +238,7 @@ fn wide_struct_delta_fits_spec_commits_1() {
     let mut w = Writer::new(at, Source::node(t(1)), 1);
     let fragment = create(&mut w, &Wide(true), &v).unwrap();
     let hi = w.range().hi;
-    let small = PageParams { target: 4096, cut: osis_base::ChunkParams { min: 1024, max: 4096, mask_bits: 8 }, fanout: 8 };
+    let small = PageParams { target: 4096, cut: osis_base::ChunkParams { min: 1024, max: 4096, mask_bits: 8 }, fanout: 8, ..PageParams::FORMAT };
     let enc = |params: PageParams| {
         let mut pages = MemoryPages::with_params(params);
         encode_delta(&Delta { nonce: [1; 16], fragment: fragment.clone() }, &writer_ctx(Kind::Content, at, t(1), 1, hi), Some(&mut pages)).unwrap()

@@ -23,6 +23,8 @@ Format constants (fixed by format version 1, spec/versioning.md §1):
 | tree fan-out | at most 512 links per interior node or link page (§6) |
 | `MAX_CLAIMS` | 65 536 keys per claim set |
 | `MAX_DELTA_BARE` | 262 144 (2^18) sequence elements in runs without `Content` per writer or import delta, pages included (spec/crdt.md §3.3) |
+| `MAX_PAGE_ITEMS` | 2 097 152 (2^21) items (CBOR data items plus text string bytes) in a durable delta's root fragment or one of its pages (spec/crdt.md §8) |
+| `MAX_RUN` | 4096 (2^12) elements per sequence run (spec/crdt.md §3.3) |
 | `MAX_DRIFT` | 1 hour |
 | `MAX_RELAY_BLOB` | 64 KiB (65 536 bytes), whole relay-only blob (spec/sync.md §5, §9) |
 | `MAX_LEASE`, `KEEPALIVE` | 20 minutes, 15 minutes: a presence commit's lifetime from its `ts`, and how often an author with live presence values sends a fresh one (spec/sync.md §9; owner-agreed) |
@@ -223,4 +225,4 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 ## 13. Decoder limits
 - Any object: CBOR nesting at most 512 deep, values inside it at most 64 (spec/data-model.md §5); no array or map longer than the bytes that remain.
 - Blob `MAX_BLOB`; frame `MAX_MESSAGE`; AK 1024 bytes; URL 256 bytes.
-- Header: 256 schemas; each inline list at most `CHUNK_THRESHOLD` bytes. Prefix: 3 commitments. Claim set: `MAX_CLAIMS` keys; a claim set with its entry boxes is at most `MAX_MESSAGE` − 64 KiB. Tree node and link page: 512 links (a tree node one length per link); tree level 48. Sequence run: `2^16` elements, a list run's `Content` closing at `CHUNK_MAX` bytes; runs without `Content` in a writer or import delta: `MAX_DELTA_BARE` elements in all (spec/crdt.md §3.3). Link and card: §10. Messages: §11.2.
+- Header: 256 schemas; each inline list at most `CHUNK_THRESHOLD` bytes. Prefix: 3 commitments. Claim set: `MAX_CLAIMS` keys; a claim set with its entry boxes is at most `MAX_MESSAGE` − 64 KiB. Tree node and link page: 512 links (a tree node one length per link); tree level 48. Sequence run: `MAX_RUN` elements, a list run's `Content` closing at `CHUNK_MAX` bytes; runs without `Content` in a writer or import delta: `MAX_DELTA_BARE` elements in all (spec/crdt.md §3.3). Link and card: §10. Messages: §11.2.

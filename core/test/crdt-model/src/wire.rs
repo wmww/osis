@@ -7,7 +7,7 @@ use crate::value::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Runs never exceed this many elements (§3.3 rule 3).
-pub const MAX_RUN: usize = 1 << 16;
+pub const MAX_RUN: usize = 1 << 12;
 /// A list run closes once its content reaches this many bytes (§3.3 rule 3; spec/wire.md `CHUNK_MAX`).
 pub const CHUNK_MAX: usize = 256 * 1024;
 

@@ -304,6 +304,7 @@ fn fetch_page(cx: &mut Dec, link: &osis_base::Link) -> Result<(Value, Vec<u8>), 
     }
     let src = cx.pages.as_mut().ok_or(Error::Page(PageError::Missing))?;
     let bytes = src.get(link)?;
+    check_items(&bytes, src.params())?;
     let v = osis_base::decode(&bytes, &LIMITS)?;
     Ok((v, bytes))
 }
@@ -650,8 +651,48 @@ fn nonce(v: &Value) -> Result<[u8; NONCE_LEN], Error> {
     v.as_array().ok_or(Error::Malformed("nonce"))
 }
 
+/// Items `MAX_PAGE_ITEMS` counts in one value spanning `bytes` (§8): one per CBOR data item, one
+/// more per byte of a text string; by heads alone, at most `bytes.len()`.
+pub fn page_items(bytes: &[u8]) -> Result<usize, Error> {
+    let mut n = 0usize;
+    osis_base::visit_items(bytes, &LIMITS, &mut |_, major, arg| {
+        let text = if major == osis_base::cbor::MAJOR_TEXT { usize::try_from(arg).unwrap_or(usize::MAX) } else { 0 };
+        n = n.saturating_add(1).saturating_add(text);
+    })?;
+    Ok(n)
+}
+
+/// Bad input when a page or root fragment counts more than `params.max_items` (§8), checked
+/// before anything is decoded. The count never exceeds the bytes, so smaller blobs skip it.
+fn check_items(bytes: &[u8], params: PageParams) -> Result<(), Error> {
+    if bytes.len() > params.max_items && page_items(bytes)? > params.max_items {
+        return Err(Error::Malformed("page or root fragment above MAX_PAGE_ITEMS items"));
+    }
+    Ok(())
+}
+
+/// `check_items` on the fragment of a delta or snapshot root (its fourth item), found by heads;
+/// a root without one is left to the decoder to refuse.
+fn check_root(bytes: &[u8], pages: Option<&dyn PageSource>) -> Result<(), Error> {
+    let params = pages.map_or(PageParams::FORMAT, |p| p.params());
+    if bytes.len() <= params.max_items {
+        return Ok(());
+    }
+    // a 4-, 6- or 7-item array head (§3.2, §8)
+    let Some((0x84 | 0x86 | 0x87, mut rest)) = bytes.split_first() else { return Ok(()) };
+    for _ in 0..3 {
+        let Some(r) = osis_base::item_prefix(rest, &LIMITS).ok().and_then(|item| rest.get(item.len()..)) else { return Ok(()) };
+        rest = r;
+    }
+    match osis_base::item_prefix(rest, &LIMITS) {
+        Ok(frag) => check_items(frag, params),
+        Err(_) => Ok(()),
+    }
+}
+
 /// Decodes a delta (§3.2) against its header facts; bad input unless canonical.
 pub fn decode_delta<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Delta, Error> {
+    check_root(bytes, pages.as_deref())?;
     let top = osis_base::decode(bytes, &LIMITS)?;
     let [n, sources, commits, frag] = as_array(&top)? else { return Err(Error::Malformed("delta arity")) };
     let mut dec = Dec::new(cx, interner, pages);
@@ -666,6 +707,7 @@ pub fn decode_delta<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner,
 
 /// Decodes a snapshot delta (§8); bad input unless canonical.
 pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Snapshot, Error> {
+    check_root(bytes, pages.as_deref())?;
     let top = osis_base::decode(bytes, &LIMITS)?;
     let (n, sources, commits, frag, fr, ab, au) = match as_array(&top)? {
         [n, sources, commits, frag, fr, ab] => (n, sources, commits, frag, fr, ab, None),

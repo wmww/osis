@@ -127,6 +127,23 @@ fn verify_deltas() {
     let _ = ts(0);
 }
 
+// spec/crdt.md §8 `MAX_PAGE_ITEMS`: a signed commit whose delta's root fragment holds too many
+// tiny items is bad input at verification, before the delta is decoded.
+#[test]
+fn verify_refuses_page_items_spec_crdt_8() {
+    let (mut b, key) = one_commit();
+    let n = osis_base::format::MAX_PAGE_ITEMS;
+    let frag = Value::List(vec![Value::Int(0), Value::List(vec![]), Value::Int(0), Value::List(vec![Value::Int(0); n])]);
+    let delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), frag]));
+    b.header.aspects[0].hashes = vec![delta_hash(&sec(0xd0, &b.header.aspects[0].tid), &delta)];
+    b.signature = b.header.sign(&key);
+    b.parts[0].delta = delta;
+    let s = TestSecrets { admin: true };
+    let e = verify_blob(&b, &key.verifying_key(), &|t: &Tid| s.dedup(t), None).unwrap_err();
+    assert!(matches!(&e, Error::Delta(osis_crdt::Error::Malformed(m)) if m.contains("MAX_PAGE_ITEMS")), "{e}");
+    assert_eq!(e.class(), ErrorClass::BadInput);
+}
+
 // spec/crdt.md §5.6: a keyed map removal is malformed outside the membership-class aspects; the
 // keyless form is fine anywhere
 #[test]

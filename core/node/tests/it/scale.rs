@@ -1348,3 +1348,73 @@ fn eph_replay_cost() {
     let cover: usize = net.engine(b).held_ephemeral().iter().map(|h| h.1).max().unwrap_or(0);
     println!("replay: {:.1} us per replay of a small commit against a {} KiB cover", t2.elapsed().as_secs_f64() * 1e6 / replays as f64, cover / 1024);
 }
+
+/// Peak resident set (KiB) since the last `reset_peak` (Linux `VmHWM`).
+fn peak_kib() -> u64 {
+    let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    s.lines().find_map(|l| l.strip_prefix("VmHWM:")).and_then(|v| v.split_whitespace().next()?.parse().ok()).unwrap_or(0)
+}
+
+/// Resets `peak_kib` to the current resident set (Linux `clear_refs` 5).
+fn reset_peak() {
+    let _ = std::fs::write("/proc/self/clear_refs", "5");
+}
+
+// spec/requirements.md, Scale (a value needs not be whole in memory), issues/durable-decode-bound.md:
+// peak memory above the resident set before each step, while one node writes an N-key map in one
+// commit and snapshots it, a member applies that commit, and a third node starts from the
+// snapshot alone. The stores are in memory, so what a step stores stays resident too (`kept`).
+// `OSIS_SCALE_N` sets N (default 10^6 in release: the process peaks at about 14 GB, run it alone).
+#[test]
+#[ignore]
+fn big_map_apply_memory() {
+    let n = size("OSIS_SCALE_N", 1_000_000, 10_000);
+    let mut lp = osis_node::local_peer::LocalPeer::new(3, 49, WallMs(1_700_000_000_000)).unwrap();
+    let me = lp.peers[0].engine.tid();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    lp.peers[0].commit(m).unwrap().unwrap();
+    for i in [1, 2] {
+        let w = lp.peers[i].engine.tid();
+        let mut m = Mutation::new();
+        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None }.to_value()) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+    }
+    lp.sync_all().unwrap();
+    let a = ak("/app/big");
+    let kv: BTreeMap<Value, Value> = (0..n as i64).map(|i| (Value::Int(i), Value::Int(i))).collect();
+    let step = |what: &str, f: &mut dyn FnMut()| {
+        let rss0 = rss_kib();
+        reset_peak();
+        let t0 = Instant::now();
+        f();
+        let wall = t0.elapsed();
+        let (peak, rss1) = (peak_kib(), rss_kib());
+        println!("n={n} {what}: {wall:?}, peak +{} MiB, kept +{} MiB", peak.saturating_sub(rss0) / 1024, rss1.saturating_sub(rss0) / 1024);
+    };
+    let mut fill = None;
+    step("write the commit", &mut || {
+        let mut m = Mutation::new();
+        m.set(t, &a, &Value::Map(kv.clone())).unwrap();
+        fill = lp.peers[0].commit(m).unwrap();
+    });
+    let mut snap = None;
+    step("snapshot", &mut || snap = lp.peers[0].engine.snapshot(&t, &a).unwrap());
+    let pks = lp.packages(0).unwrap();
+    let size_of = |id: &osis_base::CommitId| pks.iter().find(|p| p.id == *id).map(|p| p.bytes.len() + p.blobs.iter().map(|b| b.1.len()).sum::<usize>()).unwrap();
+    let (fill, snap) = (fill.unwrap(), snap.unwrap());
+    println!("n={n}: commit {} KiB, snapshot {} KiB with pages", size_of(&fill) / 1024, size_of(&snap) / 1024);
+    let fill_pk = pks.iter().find(|p| p.id == fill).unwrap().clone();
+    let snap_pk = pks.iter().find(|p| p.id == snap).unwrap().clone();
+    step("apply the commit", &mut || {
+        lp.deliver(1, &fill_pk).unwrap();
+    });
+    step("apply the snapshot", &mut || {
+        lp.deliver(2, &snap_pk).unwrap();
+    });
+    assert_eq!(lp.peers[2].engine.get_at(&t, &a, &[PathSeg::Key(Value::Int(7))]).unwrap(), Some(Value::Int(7)));
+    step("reopen and read one key", &mut || {
+        lp.peers[1].restart(5).unwrap();
+        assert_eq!(lp.peers[1].engine.get_at(&t, &a, &[PathSeg::Key(Value::Int(7))]).unwrap(), Some(Value::Int(7)));
+    });
+}

@@ -344,7 +344,7 @@ pub(crate) fn bootstrap_check(seed: u64, ty: &Ty) {
 
 // ---- paging (§8, spec/wire.md §6)
 
-const SMALL: PageParams = PageParams { target: 2000, cut: ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8 };
+const SMALL: PageParams = PageParams { target: 2000, cut: ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8, ..PageParams::FORMAT };
 
 fn big_set(n: usize, order_seed: u64) -> Fragment {
     let node = |i: u8| Source::node(Tid::from_bytes([i; 15]));
@@ -423,7 +423,7 @@ fn paging_two_levels_and_limit_spec_8() {
     assert!(has_link_pages, "link pages appear above the link target");
     assert_eq!(decode_snapshot(&bytes, &scx(), &mut Interner::new(), Some(&mut rec.inner)).unwrap().fragment, st);
     // a fragment that would need a third level cannot be written
-    let tiny = PageParams { target: 200, cut: ChunkParams { min: 64, max: 256, mask_bits: 4 }, fanout: 2 };
+    let tiny = PageParams { target: 200, cut: ChunkParams { min: 64, max: 256, mask_bits: 4 }, fanout: 2, ..PageParams::FORMAT };
     let mut pages = MemoryPages::with_params(tiny);
     assert!(encode_snapshot(&snap(&st), &scx(), Some(&mut pages)).is_err());
 }
@@ -489,6 +489,94 @@ fn paging_format_size_spec_8() {
     let mut pages = MemoryPages::new();
     let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, Some(&mut pages)).unwrap();
     assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), Some(&mut pages)).unwrap().fragment, d);
+}
+
+const CAP_ERR: &str = "page or root fragment above MAX_PAGE_ITEMS items";
+
+fn is_cap(e: &crate::Error) -> bool {
+    matches!(e, crate::Error::Malformed(m) if *m == CAP_ERR)
+}
+
+/// §8 `MAX_PAGE_ITEMS`: a root fragment or page of more items (CBOR items, text bytes) is bad
+/// input at every durable reader, found from the heads before anything is decoded; at the cap
+/// the count passes. Ephemeral (unpaged) deltas are not counted.
+#[test]
+fn page_items_cap_spec_8() {
+    use osis_base::format::MAX_PAGE_ITEMS;
+    let none = || Value::List(Vec::new());
+    // a register whose value holds `n` items, or a text string of `n` bytes
+    let root = |val: Value, snapshot: bool| {
+        let mut top = vec![Value::Bytes(vec![0; 16]), none(), none(), Value::List(vec![Value::Int(0), none(), Value::Int(0), val])];
+        if snapshot {
+            top.extend([none(), none()]);
+        }
+        osis_base::encode(&Value::List(top))
+    };
+    let zeros = |n: usize| Value::List(vec![Value::Int(0); n]);
+    // the fragment `[0, [], 0, [0 * n]]` counts n + 5 items
+    let over = MAX_PAGE_ITEMS - 4;
+    for (val, capped) in [(zeros(over), true), (zeros(over - 1), false), (Value::Str("x".repeat(MAX_PAGE_ITEMS)), true)] {
+        for snapshot in [false, true] {
+            let bytes = root(val.clone(), snapshot);
+            let mut pages = MemoryPages::new();
+            let errs = if snapshot {
+                [decode_snapshot(&bytes, &scx(), &mut Interner::new(), None).unwrap_err(), decode_snapshot(&bytes, &scx(), &mut Interner::new(), Some(&mut pages)).unwrap_err()]
+            } else {
+                [decode_delta(&bytes, &scx(), &mut Interner::new(), None).unwrap_err(), decode_delta(&bytes, &scx(), &mut Interner::new(), Some(&mut pages)).unwrap_err()]
+            };
+            for e in errs {
+                assert_eq!(is_cap(&e), capped, "{e}");
+                assert_eq!(osis_base::Classified::class(&e), osis_base::ErrorClass::BadInput);
+            }
+            let e = decode_snapshot(&root(val.clone(), true), &scx(), &mut Interner::new(), Some(&mut crate::Unpaged)).unwrap_err();
+            assert!(!is_cap(&e), "ephemeral deltas are not counted: {e}");
+        }
+    }
+    // a page: the set's element array links to one page of too many items
+    for (n, capped) in [(MAX_PAGE_ITEMS, true), (MAX_PAGE_ITEMS - 1, false)] {
+        let mut pages = MemoryPages::new();
+        let link = pages.put(&osis_base::encode(&zeros(n))).unwrap();
+        let top = Value::List(vec![Value::Bytes(vec![0; 16]), none(), none(), Value::List(vec![Value::Int(6), none(), none(), Value::List(vec![Value::Link(link)])]), none(), none()]);
+        let e = decode_snapshot(&osis_base::encode(&top), &scx(), &mut Interner::new(), Some(&mut pages)).unwrap_err();
+        assert_eq!(is_cap(&e), capped, "{e}");
+    }
+}
+
+/// §8 `MAX_PAGE_ITEMS`, honest writers: a 10^5-key map and a 10^5-char text, as a writer's delta
+/// and a snapshot, page far below the cap (each page and root counts at most its bytes) and
+/// decode; a text's runs hold at most `MAX_RUN` elements.
+#[test]
+fn page_items_honest_spec_8() {
+    let node = Source::node(Tid::from_bytes([1; 15]));
+    let big_map = Value::Map((0..100_000).map(|i| (Value::Str(format!("key {i}")), Value::Int(i))).collect());
+    let text = Value::Str((0..100_000).map(|i| char::from(b'a' + (i % 26) as u8)).collect());
+    for (view, v) in [(TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register))), big_map), (TyView(Ty::Text), text)] {
+        let mut w = crate::Writer::new(ts(1 << 20), node.clone(), 1);
+        let d = crate::create(&mut w, &view, &v).unwrap();
+        let cx = DeltaCtx { ts: ts(1 << 20), own: node.clone(), range: w.range(), kind: DeltaKind::Writer };
+        let mut rec = Recording { inner: MemoryPages::new(), pages: Vec::new() };
+        let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, Some(&mut rec)).unwrap();
+        let (sbytes, mut srec) = paged(&d, PageParams::FORMAT);
+        for b in [&bytes, &sbytes].into_iter().chain(&rec.pages).chain(&srec.pages) {
+            let n = crate::page_items(b).unwrap();
+            assert!(n <= b.len() && n < 3 << 18, "{n} items in {} bytes", b.len());
+        }
+        assert!(!rec.pages.is_empty());
+        assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), Some(&mut rec.inner)).unwrap().fragment, d);
+        assert_eq!(decode_snapshot(&sbytes, &scx(), &mut Interner::new(), Some(&mut srec.inner)).unwrap().fragment, d);
+        if matches!(d, Fragment::Seq(_)) {
+            // runs `[Dot, n, ...]` of at most `MAX_RUN` elements
+            let ns: Vec<u64> = rec.pages.iter().flat_map(|p| match osis_base::decode(p, &osis_base::Limits::DEFAULT).unwrap() {
+                Value::List(runs) => runs.into_iter().filter_map(|r| match r {
+                    Value::List(r) if r.len() == 6 => r[1].as_uint(),
+                    _ => None,
+                }).collect(),
+                _ => Vec::new(),
+            }).collect();
+            assert_eq!(ns.iter().sum::<u64>(), 100_000);
+            assert!(ns.iter().all(|&n| n <= crate::MAX_RUN) && ns.contains(&crate::MAX_RUN), "{ns:?}");
+        }
+    }
 }
 
 /// A struct of `n` string fields of `len` bytes, the last one an enum whose payload is such a

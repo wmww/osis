@@ -433,7 +433,7 @@ mod tests {
     fn paged_snapshot() {
         use osis_crdt::{AnyView, CounterRange, DeltaCtx, DeltaKind, Frontiers, Interner, Snapshot, Source, Writer, create, decode_snapshot, encode_snapshot};
         use osis_base::{Tid, Ts};
-        let params = PageParams { target: 2000, cut: ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8 };
+        let params = PageParams { target: 2000, cut: ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8, ..PageParams::FORMAT };
         let ts = Ts::from_u64(1 << 40).unwrap();
         let own = Source::node(Tid::from_bytes([5; 15]));
         let elems: std::collections::BTreeSet<Value> = (0..500).map(|i| Value::Str(format!("element {i}"))).collect();
