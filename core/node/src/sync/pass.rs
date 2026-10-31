@@ -525,7 +525,7 @@ impl SyncEngine {
             self.local_any = false;
             return Ok(());
         }
-        let labels: Vec<(Tid, LabelId, u64)> = self.labels().into_iter().filter(|(_, l)| !l.replaced && l.servers.iter().all(super::peers::is_peer)).map(|(g, l)| (g, l.id, l.index)).collect();
+        let labels: Vec<(Tid, LabelId, u64)> = self.labels().into_iter().filter(|(_, l)| !l.replaced && super::peers::serverless(&l.servers)).map(|(g, l)| (g, l.id, l.index)).collect();
         self.local_any = !labels.is_empty();
         if labels.is_empty() {
             return Ok(());

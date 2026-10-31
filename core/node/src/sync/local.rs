@@ -416,7 +416,7 @@ impl SyncEngine {
         let d = osis_crypto::deposit_key(&osis_crypto::Secret32::from_bytes(seed), &label);
         let wrap = osis_crypto::filler_wrap(&mut *self.rng);
         // an inbox this node serves to nobody else's server: deposited here
-        if servers.iter().all(super::peers::is_peer) && self.labels().iter().any(|(_, x)| x.id == label) {
+        if super::peers::serverless(servers) && self.labels().iter().any(|(_, x)| x.id == label) {
             self.local_inbox.push((label, blob.clone(), wrap));
         }
         self.queue_deposit(label, servers, &d, blob, wrap, delivery);

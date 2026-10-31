@@ -41,6 +41,12 @@ pub fn is_peer(a: &Address) -> bool {
     osis_transport::peer_relays(&a.url).is_some()
 }
 
+/// Whether a label at `servers` syncs with no server (none listed, or `peer://` nodes only):
+/// this node serves it.
+pub(crate) fn serverless(servers: &[Address]) -> bool {
+    servers.iter().all(is_peer)
+}
+
 /// A co-reader node this node may dial.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Peer {

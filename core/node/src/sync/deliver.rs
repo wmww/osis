@@ -207,7 +207,7 @@ impl SyncEngine {
             if gl.replaced || !self.under_own_label(&g, c) {
                 continue;
             }
-            let local = gl.servers.iter().all(super::peers::is_peer);
+            let local = super::peers::serverless(&gl.servers);
             if local && self.own_reach().is_none() {
                 continue;
             }
