@@ -1,0 +1,5 @@
+# A member actor's epoch written by a party that left it counts as covering from above
+> Summary: the "written by a departed party" rule (spec/crypto.md §4, `rotation::written_by`) runs only for the actor's own newest epoch (`uncovered_roles_of`); the verdicts for member actors along a chain (`osis_keys::covers` in `verdicts`, `fresh_box_covers`, `member_covers`) use the box rule alone. So D leaves member M after writing M's newest epoch without boxing itself; a rotator of A that may not rotate M sees M's epoch as covering, boxes A's new epoch to it, and D reads A. Until M's admin rotates M (its own `uncovered_roles` catches it), and A's epoch then stays "covering".
+> Tags: security, engine, crypto
+
+Needs a malicious D (an honest rotation boxes every current member, itself included). Found in review of tag-regrant, not reproduced. Fix direction: fold `written_by` into the per-actor verdict (it needs the introducer, the timeline, `now`), so every covers judgment along a chain uses the same rule; keep the verdict class exact for the departure walk's merge (notes/permissions.md, departures inside members).
