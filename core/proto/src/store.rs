@@ -92,8 +92,8 @@ const MAX_PATH: usize = 1 << 20;
 
 /// Earlier distinct keys per role an Upload, Deposit or Delete is answered code 9 for rather
 /// than refused (each a signature check per refused item). Minor consequence: past it a signer
-/// that far behind gets code 1 (a stale deposit is dropped, not re-signed); 0 would refuse every earlier key, infinity
-/// would cost a check per key the label ever had.
+/// that far behind gets code 1 (a stale deposit is dropped, not re-signed); 0 would refuse
+/// every earlier key, infinity would cost a check per key the label ever had.
 pub const OLDER_KEYS: usize = 8;
 
 /// A role key a step registers.
