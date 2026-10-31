@@ -1907,6 +1907,218 @@ fn random_window_inflight_large() {
     eph_large("ephemeral::random_window_inflight_large", false, true);
 }
 
+const FLAG: &str = "/win/flag";
+
+/// One random run of superseded expiring writes (spec/sync.md §9): four writers on two servers
+/// make expiring and plain writes at a few shared and own keys of a map and to a register
+/// (several ops per batch, sometimes two aspects), removals and replaces (resets), undos of
+/// their own changes, demotions and promotions of writers, with partitions and node and server
+/// restarts; once every writer may write again and the network healed, every holder never
+/// demoted reads the same. Whether a node drops a superseded commit must depend only on what it holds.
+fn random_churn_run(seed: u64) {
+    let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    let mut rnd = move |n: u64| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x % n
+    };
+    let mut net = Net::new();
+    let servers = vec![net.add_server(), net.add_server()];
+    let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &servers)).collect();
+    let members: Vec<(usize, Role)> = nodes[1..].iter().map(|n| (*n, Role::Write)).collect();
+    let g = net.group(nodes[0], &members, &servers);
+    net.run();
+    let w = window(&mut net, nodes[0], g, "w");
+    net.run();
+    let tids: Vec<Tid> = nodes.iter().map(|n| net.tid(*n)).collect();
+    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, since: None, tied: None };
+    let mut demoted: BTreeSet<usize> = BTreeSet::new();
+    // nodes once demoted: a demoted author's view of its own writes differs from the others'
+    // (issues/eph-demoted-own-writes.md), so only the others' reads are compared
+    let mut ever: BTreeSet<usize> = BTreeSet::new();
+    let mut last: BTreeMap<usize, osis_node::ChangeId> = BTreeMap::new();
+    let mut restarts = 100;
+    let mut log = Vec::new();
+    for step in 0..60 {
+        let i = rnd(4) as usize;
+        let n = nodes[i];
+        let has = net.engine(n).ephemeral_thing(&w).is_some();
+        // 90 s expires before the end; the others outlive the run
+        let exp = [Some(90_000), Some(1_200_000), Some(2_400_000), None][rnd(4) as usize];
+        let key = |r: u64| if r == 0 { s(&tids[i].to_string()) } else { s(&format!("k{r}")) };
+        let mut m = Mutation::new();
+        let what = match rnd(12) {
+            _ if !has => "",
+            0..=4 => {
+                for _ in 0..1 + rnd(2) {
+                    // no `Set` into an entry: one into an entry that expired or was superseded
+                    // reads only where the entry was never held (issues/eph-set-into-dead-entry.md)
+                    let op = Op::Put(s(&format!("v{step}")));
+                    let k = key(rnd(3));
+                    log.push(format!("  {k:?} {op:?}"));
+                    m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(k)], op }).unwrap();
+                }
+                if rnd(4) == 0 {
+                    m.set(w, &eph(FLAG), &s(&format!("f{step}"))).unwrap();
+                }
+                "writes"
+            }
+            5 => {
+                m.set(w, &eph(FLAG), &s(&format!("f{step}"))).unwrap();
+                "flags"
+            }
+            6 => {
+                let op = if rnd(4) == 0 { Op::Replace(Value::Map([(key(rnd(3)), s(&format!("r{step}")))].into())) } else { Op::Remove(key(rnd(3))) };
+                log.push(format!("  {op:?}"));
+                m.op(w, &eph(CURSOR), PathOp { path: vec![], op }).unwrap();
+                "resets"
+            }
+            7 => {
+                if let Some(c) = last.remove(&n) {
+                    let r = net.engine(n).revert_change(c, tids[i]);
+                    log.push(format!("{n} undoes its last: {r:?}"));
+                }
+                ""
+            }
+            8 if i > 0 && net.nodes[nodes[0]].online => {
+                let done = if demoted.remove(&i) {
+                    log.push(format!("{n} promoted"));
+                    net.engine(nodes[0]).grant(&g, &tids[i], &edge(Role::Write)).unwrap()
+                } else {
+                    demoted.insert(i);
+                    ever.insert(nodes[i]);
+                    log.push(format!("{n} demoted"));
+                    let d = osis_node::flows::Demotion { member: tids[i], new: Some(edge(Role::Read)), presync: osis_node::flows::PreSync::Synced };
+                    net.engine(nodes[0]).demote(&g, &d).unwrap()
+                };
+                let acts = net.sync(nodes[0]).carry_out(done).unwrap();
+                net.actions(nodes[0], acts);
+                ""
+            }
+            8 | 9 => {
+                match rnd(4) {
+                    0 => {
+                        let on = !net.nodes[n].online;
+                        log.push(format!("{n} online {on}"));
+                        net.set_online(n, on);
+                    }
+                    1 => {
+                        let sv = servers[rnd(2) as usize];
+                        let blocked = !net.blocked.remove(&(n, sv));
+                        if blocked {
+                            net.blocked.insert((n, sv));
+                            if net.conn_to(n, sv).is_some() {
+                                let on = net.nodes[n].online;
+                                net.set_online(n, false);
+                                net.set_online(n, on);
+                            }
+                        }
+                        log.push(format!("{n} blocked from {sv} {blocked}"));
+                    }
+                    2 => {
+                        restarts += 1;
+                        log.push(format!("{n} restarts"));
+                        last.remove(&n);
+                        let on = net.nodes[n].online;
+                        net.restart(n, restarts);
+                        net.set_online(n, on);
+                    }
+                    _ => {
+                        let sv = servers[rnd(2) as usize];
+                        log.push(format!("server {sv} restarts"));
+                        net.restart_server(sv);
+                    }
+                }
+                ""
+            }
+            _ => {
+                log.push("advance".into());
+                net.advance(500 + rnd(10_000));
+                continue;
+            }
+        };
+        if !what.is_empty() {
+            if let Some(e) = exp {
+                for ak in [CURSOR, FLAG] {
+                    let _ = m.expires(w, &eph(ak), osis_base::WallMs(net.now() + e));
+                }
+            }
+            // a demoted writer that knows it is refused
+            let r = net.engine(n).write(m);
+            log.push(format!("{n} {what} step {step} expiring {exp:?}: {}", if r.is_ok() { "ok" } else { "refused" }));
+            if let Ok(Some(wr)) = r {
+                last.insert(n, wr.id);
+            }
+        }
+        if rnd(2) == 0 {
+            net.feed(n, Event::Local);
+            net.round();
+        } else {
+            net.run();
+        }
+        net.clock.advance(1 + rnd(40));
+    }
+    // every writer may write again, the network heals
+    for i in std::mem::take(&mut demoted) {
+        log.push(format!("{} promoted", nodes[i]));
+        let done = net.engine(nodes[0]).grant(&g, &tids[i], &edge(Role::Write)).unwrap();
+        let acts = net.sync(nodes[0]).carry_out(done).unwrap();
+        net.actions(nodes[0], acts);
+    }
+    net.blocked.clear();
+    net.release();
+    for n in &nodes {
+        net.set_online(*n, true);
+    }
+    for _ in 0..4 {
+        net.advance(15_000);
+    }
+    net.advance(61_000);
+    let holders: Vec<usize> = nodes.iter().copied().filter(|n| !ever.contains(n) && syncs(&mut net, *n, w)).collect();
+    let Some(&h0) = holders.first() else { return };
+    let l = net.label(h0);
+    let held = |net: &mut Net, n: usize| -> BTreeSet<osis_base::CommitId> { net.engine(n).held_ephemeral().into_iter().map(|x| x.0).collect() };
+    let mut reads = Vec::new();
+    for n in &holders {
+        reads.push((*n, net.eph_read(*n, w, CURSOR), net.eph_read(*n, w, FLAG), held(&mut net, *n)));
+    }
+    let all: Vec<String> = reads.iter().map(|(n, c, f, h)| format!("node {n}: {c:?} {f:?} holds {}", h.len())).collect();
+    let (m, c0, f0, h0) = reads[0].clone();
+    for (n, c, f, h) in &reads[1..] {
+        if (c, f) != (&c0, &f0) {
+            panic!(
+                "seed {seed}: node {n} reads {c:?} {f:?}, node {m} {c0:?} {f0:?}\nheld only at {n}: {:?}\nheld only at {m}: {:?}\n{}\n{}\n{}",
+                h.difference(&h0).collect::<Vec<_>>(),
+                h0.difference(h).collect::<Vec<_>>(),
+                all.join("\n"),
+                log.join("\n"),
+                lane_dump(&mut net, &nodes, &servers, &l, w)
+            );
+        }
+    }
+}
+
+// spec/sync.md §9 (superseded expiring writes, randomized): holders read alike after random
+// expiring writes, removals, resets, undos, demotions, partitions and restarts
+#[test]
+fn random_churn_converges_spec_sync_9() {
+    for seed in 0..4 {
+        random_churn_run(seed);
+    }
+}
+
+// the same over more seeds (tier 2): OSIS_EPH_SEEDS (default 200) from OSIS_EPH_START
+#[test]
+#[ignore]
+fn random_churn_converges_large() {
+    let name = "ephemeral::random_churn_converges_large";
+    let s = osis_base::testenv::Seeds::from_env("OSIS_EPH_START", "OSIS_EPH_SEEDS", 0..200);
+    let seeds: Vec<u64> = s.range.clone().collect();
+    let replay = |seed: u64| format!("OSIS_EPH_START={seed} OSIS_EPH_SEEDS=1 cargo test --workspace --test it {name} -- --ignored --exact");
+    crate::common::run_seeds_noted(name, &seeds, s.overridden, "OSIS_EPH_THREADS", replay, random_churn_run);
+}
+
 // the harness: a node restarted while its server's Hello is still on the way gets nothing of
 // the old connection on the new one of the same number (`random_window_inflight_large` seed
 // 3300065: the stale Hello's challenge made every Open there refused, so the restarted node never
@@ -2593,6 +2805,57 @@ fn superseding_needs_later_stamps_and_no_reset_spec_sync_9() {
     assert_eq!((held(&mut net, a) - ha, held(&mut net, b) - hb), (3, 3), "a replace supersedes nothing");
     let want = Some(Value::Map([(me, s("y"))].into()));
     assert_eq!((net.eph_read(a, w, CURSOR), net.eph_read(b, w, CURSOR)), (want.clone(), want));
+}
+
+// spec/sync.md §9 (a superseding part expires): a plain move after an expiring one supersedes
+// nothing. Else: b drops the expiring move for the plain one, a's cover absorbs the plain one,
+// and c, offline meanwhile, gets only the cover beside the move it held; b's removal of the key
+// tombstones the plain entry alone and the expiring move read again at c alone
+#[test]
+fn superseding_part_expires_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[sv]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let me = s(&net.tid(a).to_string());
+    let put = |net: &mut Net, v: &str, ms: Option<u64>| {
+        let mut m = Mutation::new();
+        m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(me.clone())], op: Op::Put(s(v)) }).unwrap();
+        if let Some(ms) = ms {
+            m.expires(w, &eph(CURSOR), osis_base::WallMs(net.now() + ms)).unwrap();
+        }
+        net.engine(a).write(m).unwrap();
+        local(net, a);
+        net.run();
+        net.advance(33);
+    };
+    // a plain write of a's at another key before, which the cover's part carries
+    let mut m = Mutation::new();
+    m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(s("z"))], op: Op::Put(s("old")) }).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    net.advance(33);
+    put(&mut net, "moving", Some(600_000));
+    net.set_online(c, false);
+    put(&mut net, "plain", None);
+    let acts = net.sync(a).compact_ephemeral_now().unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.set_online(c, true);
+    net.advance(30_000);
+    let mut m = Mutation::new();
+    m.op(w, &eph(CURSOR), PathOp { path: vec![], op: Op::Remove(me.clone()) }).unwrap();
+    net.engine(b).write(m).unwrap();
+    local(&mut net, b);
+    net.run();
+    let reads: Vec<Option<Value>> = [a, b, c].iter().map(|n| net.eph_read(*n, w, CURSOR)).collect();
+    assert!(reads.iter().all(|r| *r == reads[0]), "alike: {reads:?}");
 }
 
 // spec/sync.md §9 (only a later write expiring no earlier, none of whose writes is into a record
@@ -3874,4 +4137,36 @@ fn moving_cursor_one_entry_per_author_spec_sync_9() {
     net.advance(E);
     assert_eq!(net.eph_read(b, w, CURSOR), None);
     assert_eq!(entries(&net), base);
+}
+
+// issues/eph-set-into-dead-entry.md: b's `Set` into a's entry outlives the entry's expiry; a and
+// b, which held the entry, read the key absent, c restarted after the expiry reads b's value
+#[test]
+#[ignore]
+fn repro_set_into_expired_entry_differs() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[sv]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let wr = |net: &mut Net, n: usize, op: Op, ms: u64| {
+        let mut m = Mutation::new();
+        m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(s("k"))], op }).unwrap();
+        m.expires(w, &eph(CURSOR), osis_base::WallMs(net.now() + ms)).unwrap();
+        net.engine(n).write(m).unwrap();
+        local(net, n);
+        net.run();
+        net.advance(33);
+    };
+    wr(&mut net, a, Op::Put(s("v")), 5_000);
+    wr(&mut net, b, Op::Set(s("s")), 600_000);
+    net.advance(6_000);
+    net.restart(c, 77);
+    net.advance(10_000);
+    let reads: Vec<Option<Value>> = [a, b, c].iter().map(|n| net.eph_read(*n, w, CURSOR)).collect();
+    assert!(reads.iter().all(|r| *r == reads[0]), "alike: {reads:?}");
 }
