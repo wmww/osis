@@ -310,6 +310,10 @@ pub(crate) struct Lane {
     /// (one arriving meanwhile from elsewhere is not known there).
     pub reconciled: BTreeSet<(ServerKey, LabelId)>,
     pub reconciling: BTreeMap<(ConnId, LabelId), BTreeSet<BlobId>>,
+    /// What each label's reconciliation on a connection asked for: one ending with any of it
+    /// unanswered reconciles that label again on the next (nothing else here knows of an
+    /// ephemeral entry the cursor passed, so nothing would ask for it again).
+    pub reconcile_fetches: BTreeMap<(ConnId, LabelId), BTreeSet<BlobId>>,
     /// Labels caught up once since start (`eph_caught_up`): never cleared.
     pub caught_up: BTreeSet<LabelId>,
     /// Entries not fully checked (a part waits for a record, or none is valid yet): neither
@@ -1451,7 +1455,12 @@ impl SyncEngine {
     }
 
     /// A connection ended: what it knew of its peer goes with it.
-    pub(crate) fn eph_lost(&mut self, conn: ConnId, server: ServerKey) {
+    pub(crate) fn eph_lost(&mut self, conn: ConnId, server: ServerKey, fetching: &BTreeSet<BlobId>) {
+        let unanswered: Vec<LabelId> = self.eph.reconcile_fetches.iter().filter(|((c, _), ids)| *c == conn && !ids.is_disjoint(fetching)).map(|((_, l), _)| *l).collect();
+        for l in unanswered {
+            self.eph.reconciled.remove(&(server, l));
+        }
+        self.eph.reconcile_fetches.retain(|(c, _), _| *c != conn);
         self.eph.present.retain(|(s, _, _)| *s != server);
         self.eph.announced.retain(|(c, _)| *c != conn);
         self.eph.gained.retain(|(c, _), _| *c != conn);

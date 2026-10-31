@@ -969,6 +969,9 @@ impl SyncEngine {
             }
         }
         let need: Vec<BlobId> = need.into_iter().filter(|b| !self.eph.unfit.contains(l, *b)).collect();
+        if self.eph.reconciling.contains_key(&(conn, l)) {
+            self.eph.reconcile_fetches.insert((conn, l), need.iter().copied().collect());
+        }
         self.fetch_on(conn, l, need, out)?;
         // a reconciliation after a start: the cursor stays (`sync_label`)
         if self.eph.reconciling.remove(&(conn, l)).is_some() {
