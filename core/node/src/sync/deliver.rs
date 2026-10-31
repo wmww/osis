@@ -126,6 +126,11 @@ impl SyncEngine {
                         self.place_all(&g, &commit)?;
                     }
                 }
+                Delivery::Removal { commit, under } => {
+                    for g in self.groups_holding(&under) {
+                        self.place_removal(&g, &commit)?;
+                    }
+                }
             }
         }
         Ok(())
@@ -150,6 +155,14 @@ impl SyncEngine {
         let Some(h) = self.engine.header(c) else { return Ok(()) };
         let all: BTreeSet<usize> = (0..h.aspects.len()).collect();
         self.place_certificate_in(g, c, &all)
+    }
+
+    /// Places `c` without its `/secrets` and `/keys` deltas as a certificate copy under the
+    /// labels of `g` (`Delivery::Removal`).
+    fn place_removal(&mut self, g: &Tid, c: &CommitId) -> Result<()> {
+        let Some(h) = self.engine.header(c) else { return Ok(()) };
+        let ais: BTreeSet<usize> = h.aspects.iter().enumerate().filter(|(_, a)| !matches!(a.ak.as_str(), "/secrets" | "/keys")).map(|(i, _)| i).collect();
+        self.place_certificate_in(g, c, &ais)
     }
 
     /// Whether commit `c` is this node's own (made here, a held key actor's included).
