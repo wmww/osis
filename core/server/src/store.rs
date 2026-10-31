@@ -585,9 +585,11 @@ pub struct Swept {
     pub more: bool,
 }
 
-/// A held claim set's rows: the set (`C`) and its index (`H`, a key and its entry box or empty).
+/// A held claim set's rows: the set (`C`) and its index (`H`, a key and its entry box or empty),
+/// one row per distinct key (a set may list a key more than once; counting each listing would
+/// leave bytes in the totals the sweep never frees).
 fn set_rows(label: &LabelId, id: &StepId, c: &ClaimSet) -> (Vec<u8>, Vec<KeyValue>) {
-    let index = c.claims.iter().map(|k| (key(b'H', &[&label.0, &id.0, k]), c.entries.get(k).map(osis_label::step::entry_box_bytes).unwrap_or_default())).collect();
+    let index = c.claims.iter().collect::<BTreeSet<_>>().into_iter().map(|k| (key(b'H', &[&label.0, &id.0, k]), c.entries.get(k).map(osis_label::step::entry_box_bytes).unwrap_or_default())).collect();
     (c.to_bytes(), index)
 }
 

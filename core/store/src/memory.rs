@@ -20,6 +20,8 @@ struct FaultState {
     writes: u64,
     plan: Option<(u64, Fault)>,
     dead: bool,
+    /// Syncs that fail next (`fail_syncs`).
+    failing_syncs: u64,
 }
 
 /// A fault plan shared by the backends and root storages of one simulated device. Every durable
@@ -42,6 +44,21 @@ impl Faults {
         let mut s = self.lock();
         s.plan = None;
         s.dead = false;
+    }
+    /// The next `n` syncs after lazy commits fail (the commits stay visible, not durable).
+    pub fn fail_syncs(&self, n: u64) {
+        self.lock().failing_syncs = n;
+    }
+    fn check_sync(&self) -> Result<(), BackendError> {
+        let mut s = self.lock();
+        if s.dead {
+            return Err(BackendError::Crashed);
+        }
+        if s.failing_syncs > 0 {
+            s.failing_syncs -= 1;
+            return Err(BackendError::Fault);
+        }
+        Ok(())
     }
     /// Writes counted since the last `at` (or creation).
     pub fn writes(&self) -> u64 {
@@ -149,7 +166,10 @@ impl Backend for MemoryBackend {
 
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
         self.commit_lazy(batch)?;
-        self.sync()
+        let mut d = self.lock();
+        d.lazy = false;
+        d.syncs += 1;
+        Ok(())
     }
 
     /// Counted by the fault plan as a write, like `commit` (applied at once in memory).
@@ -180,6 +200,10 @@ impl Backend for MemoryBackend {
     }
 
     fn sync(&mut self) -> Result<(), BackendError> {
+        if !self.lock().lazy {
+            return Ok(());
+        }
+        self.faults.check_sync()?;
         let mut d = self.lock();
         if d.lazy {
             d.lazy = false;
