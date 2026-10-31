@@ -9,9 +9,11 @@
 //! write, drops being sticky); each later one that may demote the node (a static check, applied
 //! or not) brings the node's chain for the same thing at its point, since whether its class fell
 //! depends on its other paths there. That includes one on a path the node gained after the
-//! point: an edge write or snapshot on the node's chain at its own point.
+//! point: an edge write or snapshot on the node's chain at its own point. The edge state at
+//! a point replays the dropped writes too: an earlier round of the walk applied them, and a
+//! drop it found then is sticky (a later-dropped grant can keep a demoted node's class).
 
-use crate::graph::{Dense, View};
+use crate::graph::{Dense, EdgesAt, View};
 use crate::held::{HeldSet, MemoryHeldSet};
 use crate::timeline::{At, Timeline};
 use crate::types::{put, Edge, Point, RosterSnapshot, WriteId};
@@ -39,14 +41,18 @@ type EdgeValue = (Point, Option<Edge>, Option<CommitId>);
 /// A processed closure state's point and chain.
 type Chain = (Point, BTreeSet<Tid>);
 
-/// The edge state at one history position by dense index (`Dense`), moved between positions
-/// by applying the changes in between or their previous values, with `roles_from` per node
-/// and `reach_backward` per thing at the current point.
+/// An edge change: its point, member, target and value.
+type Set = (Point, Tid, Tid, Option<Edge>);
+
+/// The edge state at one position of `Timeline::replayed` by dense index (`Dense`), moved
+/// between positions by applying the changes in between or their previous values, with
+/// `roles_from` per node and `reach_backward` per thing at the current point.
 struct Chains {
     dense: Dense,
-    /// History changes applied.
+    changes: Vec<Set>,
+    /// Changes applied.
     h: usize,
-    /// Per history change: the edge's value before it.
+    /// Per change: the edge's value before it.
     prev: Vec<Option<Edge>>,
     at: Option<Point>,
     roles: BTreeMap<Tid, (Vec<Option<Role>>, Vec<usize>)>,
@@ -56,26 +62,27 @@ struct Chains {
 impl Chains {
     fn new(tl: &Timeline) -> Chains {
         let mut cur: BTreeMap<(Tid, Tid), Edge> = tl.walked.initial.iter().map(|(m, t, e)| ((*m, *t), *e)).collect();
-        let prev = tl.walked.history.iter().map(|c| put(&mut cur, (c.member, c.target), c.edge)).collect();
-        Chains { dense: tl.input.dense(&tl.walked.initial), h: 0, prev, at: None, roles: BTreeMap::new(), backs: BTreeMap::new() }
+        let changes = tl.replayed();
+        let prev = changes.iter().map(|c| put(&mut cur, (c.1, c.2), c.3)).collect();
+        Chains { dense: tl.input.dense(&tl.walked.initial), changes, h: 0, prev, at: None, roles: BTreeMap::new(), backs: BTreeMap::new() }
     }
 
     /// Things on any path from `node` to `thing` just before `at` (`None`: not `whole`).
-    fn chain(&mut self, tl: &Timeline, node: &Tid, thing: &Tid, at: Point) -> Option<BTreeSet<Tid>> {
+    fn chain(&mut self, node: &Tid, thing: &Tid, at: Point) -> Option<BTreeSet<Tid>> {
         if self.at != Some(at) {
-            let h = tl.walked.history.partition_point(|c| c.point < at);
+            let h = self.changes.partition_point(|c| c.0 < at);
             if h != self.h {
                 self.backs.clear();
             }
             while self.h < h {
-                let c = tl.walked.history.get(self.h)?;
-                self.dense.set(&c.member, &c.target, c.edge);
+                let c = self.changes.get(self.h)?;
+                self.dense.set(&c.1, &c.2, c.3);
                 self.h += 1;
             }
             while self.h > h {
                 self.h -= 1;
-                let c = tl.walked.history.get(self.h)?;
-                self.dense.set(&c.member, &c.target, self.prev.get(self.h).copied().flatten());
+                let c = self.changes.get(self.h)?;
+                self.dense.set(&c.1, &c.2, self.prev.get(self.h).copied().flatten());
             }
             self.at = Some(at);
             self.roles.clear();
@@ -202,16 +209,52 @@ impl Timeline {
     /// Things on any path from `node` to `thing` just before `at`, from the edge state there
     /// (by a search over `View`, when `Chains` has no dense state).
     fn chain_things(&self, node: &Tid, thing: &Tid, at: Point, chains: &mut Chains) -> BTreeSet<Tid> {
-        if let Some(c) = chains.chain(self, node, thing, at) {
+        if let Some(c) = chains.chain(node, thing, at) {
             #[cfg(debug_assertions)]
-            debug_assert!(c == self.chain_searched(node, thing, at));
+            debug_assert!(c == self.chain_searched(node, thing, at, &chains.changes));
             return c;
         }
-        self.chain_searched(node, thing, at)
+        self.chain_searched(node, thing, at, &chains.changes)
     }
 
-    fn chain_searched(&self, node: &Tid, thing: &Tid, at: Point) -> BTreeSet<Tid> {
-        let edges = self.edges_at(Some(at));
+    /// The walk's edge changes, by point, with each dropped grant (snapshot rosters included)
+    /// at its point where its edge is absent then: an earlier round's paths, never fewer.
+    fn replayed(&self) -> Vec<Set> {
+        let mut v: Vec<(Set, bool)> = self.walked.history.iter().map(|c| ((c.point, c.member, c.target, c.edge), false)).collect();
+        for id in self.dropped().keys() {
+            match *id {
+                WriteId::Op(c, k) => {
+                    let Some(cm) = self.input.commits.get(&c) else { continue };
+                    if let Some(o) = usize::try_from(k).ok().and_then(|k| cm.ops.get(k)) {
+                        v.push(((cm.point(), o.member, o.target, o.edge), true));
+                    }
+                }
+                WriteId::Snapshot(c) => {
+                    if let Some(s) = self.input.snaps.get(&c) {
+                        v.extend(s.roster.iter().map(|(m, e)| ((s.point(), *m, s.thing, Some(*e)), true)));
+                    }
+                }
+            }
+        }
+        v.sort_by_key(|c| c.0 .0);
+        let mut cur: BTreeMap<(Tid, Tid), Edge> = self.walked.initial.iter().map(|(m, t, e)| ((*m, *t), *e)).collect();
+        let mut out = Vec::with_capacity(v.len());
+        for (c, dropped) in v {
+            if dropped && (c.3.is_none() || cur.get(&(c.1, c.2)).is_some_and(|e| e.alive_at(Some(c.0.ts)))) {
+                continue;
+            }
+            put(&mut cur, (c.1, c.2), c.3);
+            out.push(c);
+        }
+        out
+    }
+
+    fn chain_searched(&self, node: &Tid, thing: &Tid, at: Point, changes: &[Set]) -> BTreeSet<Tid> {
+        let mut edges = self.walked.initial.clone();
+        for c in changes.iter().take_while(|c| c.0 < at) {
+            edges.set(c.1, c.2, c.3);
+        }
+        let edges = EdgesAt::new(&edges);
         let view = View::at(&self.input.owners, &edges, Some(at.ts));
         let to = view.reach_backward(thing);
         let mut c: BTreeSet<Tid> = view.roles_from(node).into_keys().filter(|t| to.contains(t)).collect();

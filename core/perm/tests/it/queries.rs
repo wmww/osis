@@ -247,6 +247,32 @@ fn certificates_carry_demotion_on_later_ledger_path_spec_permissions_4() {
     assert_eq!(cert_check(&w), None);
 }
 
+/// OSIS_PERM_SEED=115000: n0 lowers itself on A1 to Write at 2 (w0); n1 makes n0 an admin
+/// of A0 (an admin of A1 through A2) at 4 and removes n0 from A1 at 6; n2 removes n1 from A0
+/// at 7, unseen by n1.
+#[test]
+fn certificates_self_demotion_regained_spec_permissions_4() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let a0 = w.thing(n[2]);
+    let a1 = w.thing(a0);
+    let a2 = w.thing(n[2]);
+    let all0: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(n[2], a1, n[0], edge(Admin), 0, &all0);
+    w.set(n[2], a0, n[1], edge(Admin), 0, &all0);
+    w.set(n[2], a1, n[1], edge(Admin), 0, &all0);
+    w.set(n[2], a2, n[2], edge(Write), 0, &all0);
+    w.set(n[2], a2, a0, edge(Admin), 0, &all0);
+    w.set(n[2], a0, a2, edge(Admin), 0, &all0);
+    w.set(n[2], a1, a2, edge(Admin), 0, &all0);
+    let r = |a: u64, b: u64, c: u64| vec![(n[0], a), (n[1], b), (n[2], c)];
+    w.commit_id(cid(2921343996), n[0], 2, &[(a1, n[0], edge(Write))], &r(2, LATE, 1));
+    w.commit_id(cid(3991304582), n[1], 4, &[(a0, n[0], edge(Admin))], &r(2, 4, LATE));
+    w.commit_id(cid(2543417714), n[1], 6, &[(a1, n[0], None)], &r(LATE, 6, LATE));
+    w.commit_id(cid(1791504058), n[2], 7, &[(a0, n[1], None)], &r(LATE, LATE, 7));
+    assert_eq!(cert_check(&w), None);
+}
+
 #[test]
 fn certificates_project_joint() {
     cert_run_joint(80, 0x5eed_0201);
