@@ -556,11 +556,20 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     // (held parts). The keysets "before" are the current `/keys` state, which already holds this
     // commit's `/keys` when that part joined earlier: an approximation like `revalidated`'s (a
     // keyset the commit replaced is no longer known; its removed keys come from the index of
-    // held keyed entries, and a write whose removed keys are unknown waits as usual).
+    // held keyed entries, and a write whose removed keys are unknown waits as usual). A late
+    // `/keys` part likewise applies the held `/secrets` of its thing again: applied without
+    // the keyset (a membership commit applies from any held part), they made no rotation.
     let mut with_keys = parts.clone();
-    if h.kind == osis_commit::Kind::Membership && parts.iter().any(|(ai, _, _)| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "/secrets")) {
+    if h.kind == osis_commit::Kind::Membership {
+        let late_on = |ak: &str| -> BTreeSet<Tid> { parts.iter().filter_map(|(ai, _, _)| h.aspects.get(*ai)).filter(|a| a.ak.as_str() == ak).map(|a| a.tid).collect() };
+        let (late_secrets, late_keys) = (late_on("/secrets"), late_on("/keys"));
         for (ai, a) in h.aspects.iter().enumerate() {
-            if a.ak.as_str() == "/keys" && !parts.iter().any(|(x, _, _)| *x == ai) {
+            let want = match a.ak.as_str() {
+                "/keys" => late_secrets.contains(&a.tid),
+                "/secrets" => late_keys.contains(&a.tid),
+                _ => false,
+            };
+            if want && !parts.iter().any(|(x, _, _)| *x == ai) {
                 with_keys.extend(super::held_parts(tx, id, ai)?.into_iter().map(|d| (ai, 0, d)));
             }
         }

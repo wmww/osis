@@ -145,3 +145,35 @@ fn key_actor_opens_deep_member_chain_spec_crypto_4() {
     let missing: Vec<usize> = (0..chain.len()).filter(|i| !held(&lp, &chain[*i])).collect();
     assert!(missing.is_empty(), "levels left unopened: {missing:?}");
 }
+
+// spec/commits.md §4, spec/crypto.md §4: a syncer holding only a rotation's `/secrets` part
+// applies the membership commit; the `/keys` part joining later establishes the epoch as a
+// whole arrival does (a size-split body, or a projection, may come first).
+#[test]
+fn late_keys_part_establishes_rotation_spec_crypto_4() {
+    let mut lp = net(2, 86);
+    lp.sync_all().unwrap();
+    let a = new_thing(&mut lp, 0);
+    let (_, r1) = rotation_commit(&mut lp, a, 1, BTreeSet::from([Role::Read, Role::Write, Role::Admin]));
+    let e1 = r1.rotated.iter().find(|x| x.role == Role::Read).unwrap().epoch;
+    let (c2, r2) = rotation_commit(&mut lp, a, 2, BTreeSet::from([Role::Read]));
+    let e2 = r2.rotated[0].epoch;
+    let pks = lp.packages(0).unwrap();
+    for p in pks.iter().filter(|p| p.id != c2) {
+        let _ = lp.deliver(1, p);
+    }
+    assert!(lp.peers[1].engine.epochs(&a).unwrap().read.is_established(&e1));
+    lp.peers[1].engine.set_syncing(a, true).unwrap();
+    let p2 = pks.iter().find(|p| p.id == c2).unwrap().clone();
+    let h = lp.peers[0].engine.header(&c2).unwrap();
+    let mut only = osis_commit::CommitBlob::decode(&p2.bytes).unwrap();
+    only.parts.retain(|p| h.aspects[p.ai].ak.as_str() == "/secrets");
+    assert!(!only.parts.is_empty());
+    let mut first = p2.clone();
+    first.bytes = only.encode();
+    assert!(matches!(lp.deliver(1, &first).unwrap(), osis_node::Ingested::Applied(_)), "a held part of a membership commit applies");
+    lp.deliver(1, &p2).unwrap();
+    let v = lp.peers[1].engine.epochs(&a).unwrap();
+    assert!(v.read.is_established(&e2), "{:?}", v.read);
+    assert_eq!(v.read.current(), vec![e2]);
+}
