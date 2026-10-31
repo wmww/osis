@@ -81,8 +81,49 @@ impl EphClass {
 /// Dot form (spec/commits.md §3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Form {
-    Node = 0,
-    Commit = 1,
+    Node,
+    Commit,
+    /// Session form: dots `(Session(author, nonce), counter)`, counters per (aspect, session);
+    /// memory commits only.
+    Session([u8; osis_crdt::SESSION_NONCE_LEN]),
+}
+
+impl Form {
+    /// The own source of a commit of this form by `author` (`commit` for commit form).
+    pub fn own_source(&self, author: Tid, commit: CommitId) -> osis_crdt::Source {
+        match self {
+            Form::Node => osis_crdt::Source::node(author),
+            Form::Commit => osis_crdt::Source::commit(commit),
+            Form::Session(nonce) => osis_crdt::Source::session(osis_crdt::Session { node: author, nonce: *nonce }),
+        }
+    }
+
+    /// Counters per (aspect, source), contiguous: node and session form.
+    pub fn counted(&self) -> bool {
+        !matches!(self, Form::Commit)
+    }
+
+    fn value(&self) -> Value {
+        match self {
+            Form::Node => uint(0),
+            Form::Commit => uint(1),
+            Form::Session(n) => Value::List(vec![uint(2), Value::bytes(n)]),
+        }
+    }
+
+    fn from_value(v: &Value) -> Result<Form, Error> {
+        if let Value::List(l) = v {
+            return match l.as_slice() {
+                [k, n] if as_uint(k)? == 2 => Ok(Form::Session(as_bytes(n)?)),
+                _ => Err(Error::Malformed("dot form")),
+            };
+        }
+        match as_uint(v)? {
+            0 => Ok(Form::Node),
+            1 => Ok(Form::Commit),
+            _ => Err(Error::Malformed("dot form")),
+        }
+    }
 }
 
 /// One touched `(tid, ak)` (spec/wire.md §4 `Aspect`).
@@ -319,7 +360,7 @@ impl Header {
             tid(&self.actor),
             uint(self.kind.id()),
             uint(self.ts.to_u64()),
-            uint(self.form as u64),
+            self.form.value(),
             Value::List(schemas),
             self.position(ListField::Aspects),
             self.position(ListField::Chunks),
@@ -527,11 +568,7 @@ impl Header {
             actor: as_tid(actor)?,
             kind: Kind::from_id(as_uint(kind)?).ok_or(Error::Malformed("kind"))?,
             ts: as_ts(ts)?,
-            form: match as_uint(form)? {
-                0 => Form::Node,
-                1 => Form::Commit,
-                _ => return Err(Error::Malformed("dot form")),
-            },
+            form: Form::from_value(form)?,
             schemas,
             aspects: Vec::new(),
             chunks: Vec::new(),

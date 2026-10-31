@@ -15,7 +15,7 @@ use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, CommitId, CreationRecord, Tid, Ts, WallMs};
 use osis_commit::{CommitBlob, Decoded, Form, Header};
 use osis_crypto::VerifyingKey;
-use osis_crdt::Frontiers;
+use osis_crdt::{Frontiers, Source};
 use osis_perm::DemotionScope;
 use osis_schema::core_types::{Frontier, is_membership_class};
 use osis_store::Shred;
@@ -26,18 +26,18 @@ pub const GRANULARITY_MS: u64 = 60_000;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Receipt {
-    /// node -> sorted disjoint `(lo, hi, received)`.
-    pub nodes: BTreeMap<Tid, Vec<(u64, u64, u64)>>,
+    /// counted source (a node, a session) -> sorted disjoint `(lo, hi, received)`.
+    pub sources: BTreeMap<Source, Vec<(u64, u64, u64)>>,
     /// commit-form commits: ID -> (author, received).
     pub commits: BTreeMap<CommitId, (Tid, u64)>,
 }
 
 impl Receipt {
-    pub fn add(&mut self, node: Tid, lo: u64, hi: u64, t: u64) {
+    pub fn add(&mut self, src: &Source, lo: u64, hi: u64, t: u64) {
         if lo >= hi {
             return;
         }
-        let v = self.nodes.entry(node).or_default();
+        let v = self.sources.entry(src.clone()).or_default();
         // counters already held keep their earlier receipt time
         let mut pieces = vec![(lo, hi)];
         for (a, b, _) in v.iter() {
@@ -58,10 +58,10 @@ impl Receipt {
         *v = out;
     }
 
-    /// Last counter (inclusive) of `node` received contiguously from 1 by time `t`; 0 if none.
-    pub fn contiguous(&self, node: &Tid, t: u64) -> u64 {
+    /// Last counter (inclusive) of `src` received contiguously from 1 by time `t`; 0 if none.
+    pub fn contiguous(&self, src: &Source, t: u64) -> u64 {
         let mut next = 1u64;
-        for (lo, hi, at) in self.nodes.get(node).into_iter().flatten() {
+        for (lo, hi, at) in self.sources.get(src).into_iter().flatten() {
             if *lo > next || *at > t {
                 break;
             }
@@ -71,9 +71,9 @@ impl Receipt {
     }
 
     fn encode(&self) -> Vec<u8> {
-        let mut w = Wr::new().u32(self.nodes.len() as u32);
-        for (n, v) in &self.nodes {
-            w = w.raw(n.as_bytes()).u32(v.len() as u32);
+        let mut w = Wr::new().u32(self.sources.len() as u32);
+        for (n, v) in &self.sources {
+            w = crate::retention::write_source(w, n).u32(v.len() as u32);
             for (a, b, t) in v {
                 w = w.u64(*a).u64(*b).u64(*t);
             }
@@ -89,12 +89,12 @@ impl Receipt {
         let mut r = Rd::new(b);
         let mut out = Receipt::default();
         for _ in 0..r.u32()? {
-            let n = r.tid()?;
+            let n = crate::retention::read_source(&mut r)?;
             let mut v = Vec::new();
             for _ in 0..r.u32()? {
                 v.push((r.u64()?, r.u64()?, r.u64()?));
             }
-            out.nodes.insert(n, v);
+            out.sources.insert(n, v);
         }
         for _ in 0..r.u32()? {
             let c = CommitId(r.arr()?);
@@ -147,19 +147,19 @@ fn valid_snapshots<'a>(core: &'a crate::engine::Core, tid: &'a Tid, ak: &'a Ak) 
 /// the aspect's held and kept snapshots plus the claimed nodes' commits on it.
 pub(crate) fn received(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, as_of: u64) -> Result<Receipt> {
     let mut r = get(tx, tid, ak)?;
-    for v in r.nodes.values_mut() {
+    for v in r.sources.values_mut() {
         v.retain(|x| x.2 <= as_of);
     }
     r.commits.retain(|_, x| x.1 <= as_of);
     let core = &*tx.core;
     // valid ones received by `as_of`, at their part's receipt time (`record`; a late part's,
     // not its header's)
-    let mut claims: BTreeMap<Tid, Vec<(u64, u64)>> = BTreeMap::new();
+    let mut claims: BTreeMap<Source, Vec<(u64, u64)>> = BTreeMap::new();
     let mut absorbed: Vec<(CommitId, u64)> = Vec::new();
     for (s, _, fr, abs) in valid_snapshots(core, tid, ak) {
         let Some(at) = r.commits.get(&s).map(|c| c.1) else { continue };
-        for (n, c) in &fr.nodes {
-            claims.entry(*n).or_default().push((*c, at));
+        for (n, c) in fr.sources() {
+            claims.entry(n).or_default().push((c, at));
         }
         absorbed.extend(abs.iter().map(|(c, _)| (*c, at)));
     }
@@ -180,7 +180,7 @@ pub(crate) fn received(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, as_of: u64) -> Resul
         let mut first: Vec<u64> = cl.iter().rev().map(|x| { m = m.min(x.1); m }).collect();
         first.reverse();
         let top = cl.last().map_or(0, |x| x.0);
-        let Some(rs) = core.ix.ranges.get(&(*tid, ak.clone(), n)) else { continue };
+        let Some(rs) = core.ix.ranges.get(&(*tid, ak.clone(), n.clone())) else { continue };
         for (lo, (hi, c)) in rs.range(..=top) {
             let Some(hr) = core.ix.commits.get(c).map(|m| m.received.0) else { continue };
             let mut x = *lo;
@@ -190,14 +190,14 @@ pub(crate) fn received(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, as_of: u64) -> Resul
                 let end = (*hi).min(ctr.saturating_add(1));
                 let t = (*t0).max(hr);
                 if t <= as_of {
-                    adds.push((n, x, end, t));
+                    adds.push((n.clone(), x, end, t));
                 }
                 x = end;
             }
         }
     }
     for (n, lo, hi, t) in adds {
-        r.add(n, lo, hi, t);
+        r.add(&n, lo, hi, t);
     }
     Ok(r)
 }
@@ -208,9 +208,13 @@ pub(crate) fn received(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, as_of: u64) -> Resul
 /// spec/commits.md §4; a snapshot never absorbed a commit stamped after it, spec/crdt.md §2.2).
 pub(crate) fn listed(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: usize) -> bool {
     let Some(a) = h.aspects.get(ai) else { return false };
-    let node_form = h.form == Form::Node && h.kind.has_own_writes();
+    let counted = (h.form.counted() && h.kind.has_own_writes()).then(|| h.form.own_source(h.author, *id));
     held_snapshots(core, &a.tid, &a.ak).any(|(_, ts, fr, abs)| {
-        ts > h.ts && if node_form { fr.nodes.get(&h.author).is_some_and(|c| *c >= a.hi.saturating_sub(1)) } else { abs.iter().any(|x| x.0 == *id) }
+        ts > h.ts
+            && match &counted {
+                Some(src) => fr.of(src) > 0 && fr.of(src) >= a.hi.saturating_sub(1),
+                None => abs.iter().any(|x| x.0 == *id),
+            }
     })
 }
 
@@ -223,10 +227,10 @@ pub(crate) fn record(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(usize
         let mut r = get(tx, &a.tid, &a.ak)?;
         if h.kind.has_own_writes() {
             match h.form {
-                Form::Node => r.add(h.author, a.lo, a.hi, received.0),
                 Form::Commit => {
                     r.commits.insert(*id, (h.author, received.0));
                 }
+                f => r.add(&f.own_source(h.author, *id), a.lo, a.hi, received.0),
             }
         } else {
             // imports count by commit ID (spec/permissions.md §5.1 frontier coverage)
@@ -318,13 +322,13 @@ impl Engine {
             for (node, t, ak) in aspects {
                 let r = received(tx, &t, &ak, as_of.0)?;
                 if by_id.contains(&t) {
-                    for (_, c) in tx.core.ix.ranges.get(&(t, ak.clone(), node)).into_iter().flat_map(|rs| rs.values()) {
+                    for (_, c) in tx.core.ix.ranges.get(&(t, ak.clone(), Source::node(node))).into_iter().flat_map(|rs| rs.values()) {
                         if tx.core.ix.commits.get(c).is_some_and(|m| m.received.0 <= as_of.0) {
                             f.commits.insert(*c);
                         }
                     }
                 } else {
-                    let c = r.contiguous(&node, as_of.0);
+                    let c = r.contiguous(&Source::node(node), as_of.0);
                     if c > 0 {
                         f.writes.entry(t).or_default().entry(ak.as_str().to_string()).or_default().insert(node, c);
                     }
@@ -348,17 +352,22 @@ mod tests {
     // spec/permissions.md §5.1 (frontier received)
     #[test]
     fn contiguous_as_of_spec_5_1() {
-        let n = Tid::from_bytes([1; 15]);
+        let n = Source::node(Tid::from_bytes([1; 15]));
         let mut r = Receipt::default();
-        r.add(n, 1, 3, 10);
-        r.add(n, 5, 6, 11);
+        r.add(&n, 1, 3, 10);
+        r.add(&n, 5, 6, 11);
         assert_eq!(r.contiguous(&n, 100), 2);
-        r.add(n, 3, 5, 200_000);
+        r.add(&n, 3, 5, 200_000);
         assert_eq!(r.contiguous(&n, 300_000), 5);
         assert_eq!(r.contiguous(&n, 15), 2);
         // a repeat keeps the earlier time
-        r.add(n, 1, 3, 400_000);
+        r.add(&n, 1, 3, 400_000);
         assert_eq!(r.contiguous(&n, 15), 2);
+        // a session's counters are its own
+        let s = Source::session(osis_crdt::Session { node: Tid::from_bytes([1; 15]), nonce: [7; 16] });
+        r.add(&s, 1, 9, 10);
+        assert_eq!(r.contiguous(&n, 15), 2);
+        assert_eq!(r.contiguous(&s, 15), 8);
         assert_eq!(Receipt::decode(&r.encode()).unwrap(), r);
     }
 }

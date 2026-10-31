@@ -37,6 +37,7 @@ pub fn delta_ctx(h: &Header, id: &CommitId, ai: usize, interner: &mut Interner) 
     let own = match h.form {
         Form::Node => interner.node(h.author),
         Form::Commit => interner.commit(*id),
+        Form::Session(nonce) => interner.session(osis_crdt::Session { node: h.author, nonce }),
     };
     Ok(DeltaCtx { ts: h.ts, own, range: CounterRange { lo: a.lo, hi: a.hi }, kind: h.kind.delta_kind() })
 }

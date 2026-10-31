@@ -33,20 +33,39 @@ pub(crate) type LiveDrop = (CommitId, Vec<(Tid, Ak)>);
 const T_EXPIRY: u8 = 1;
 const T_AT_MOST: u8 = 2;
 
+/// A non-`Derived` source's bytes (its length tells the kind).
+fn source_bytes(src: &osis_crdt::Source) -> Vec<u8> {
+    match src.kind() {
+        osis_crdt::SourceKind::Node(t) => t.as_bytes().to_vec(),
+        osis_crdt::SourceKind::Session(s) => s.to_bytes().to_vec(),
+        osis_crdt::SourceKind::Commit(c) => c.0.to_vec(),
+        osis_crdt::SourceKind::Derived(_) => Vec::new(),
+    }
+}
+
+pub(crate) fn read_source(r: &mut Rd<'_>) -> Result<osis_crdt::Source> {
+    Ok(match r.u8()? {
+        15 => osis_crdt::Source::node(r.tid()?),
+        31 => osis_crdt::Source::session(osis_crdt::Session::from_bytes(&r.arr()?)),
+        32 => osis_crdt::Source::commit(CommitId(r.arr()?)),
+        _ => return Err(crate::error::Error::Corrupt("owned source")),
+    })
+}
+
+/// `src` (non-`Derived`) as its length and bytes.
+pub(crate) fn write_source(w: Wr, src: &osis_crdt::Source) -> Wr {
+    let b = source_bytes(src);
+    w.u8(b.len() as u8).raw(&b)
+}
+
 pub(crate) fn encode_owned(v: &[Owned]) -> Vec<u8> {
     let mut w = Wr::new().u32(v.len() as u32);
     for o in v {
         w = match o {
-            Owned::Node { node, lo, hi } => w.u8(0).raw(node.as_bytes()).u64(*lo).u64(*hi),
+            Owned::Range { src, lo, hi } => write_source(w.u8(0), src).u64(*lo).u64(*hi),
             Owned::Commit(c) => w.u8(1).raw(&c.0),
             Owned::Dots { src, ctrs } => {
-                let b = match src.kind() {
-                    osis_crdt::SourceKind::Node(t) => t.as_bytes().to_vec(),
-                    osis_crdt::SourceKind::Session(s) => s.to_bytes().to_vec(),
-                    osis_crdt::SourceKind::Commit(c) => c.0.to_vec(),
-                    osis_crdt::SourceKind::Derived(_) => Vec::new(),
-                };
-                let mut w = w.u8(2).u8(b.len() as u8).raw(&b).u32(ctrs.len() as u32);
+                let mut w = write_source(w.u8(2), src).u32(ctrs.len() as u32);
                 for c in ctrs {
                     w = w.u64(*c);
                 }
@@ -62,15 +81,10 @@ pub(crate) fn decode_owned(b: &[u8]) -> Result<Vec<Owned>> {
     let mut out = Vec::new();
     for _ in 0..r.u32()? {
         out.push(match r.u8()? {
-            0 => Owned::Node { node: r.tid()?, lo: r.u64()?, hi: r.u64()? },
+            0 => Owned::Range { src: read_source(&mut r)?, lo: r.u64()?, hi: r.u64()? },
             1 => Owned::Commit(CommitId(r.arr()?)),
             _ => {
-                let src = match r.u8()? {
-                    15 => osis_crdt::Source::node(r.tid()?),
-                    31 => osis_crdt::Source::session(osis_crdt::Session::from_bytes(&r.arr()?)),
-                    32 => osis_crdt::Source::commit(CommitId(r.arr()?)),
-                    _ => return Err(crate::error::Error::Corrupt("owned source")),
-                };
+                let src = read_source(&mut r)?;
                 let mut ctrs = Vec::new();
                 for _ in 0..r.u32()? {
                     ctrs.push(r.u64()?);
@@ -879,8 +893,8 @@ impl Engine {
                 st.strip(&|d| expiring.iter().any(|o| o.owns(d)));
             }
             // frontiers cover only counters whose writes this state reflects: applied, valid
-            let mut fr = std::collections::BTreeMap::new();
-            let from = (tid, ak.clone(), Tid::from_bytes([0; 15]));
+            let mut frontiers = Frontiers::default();
+            let from = (tid, ak.clone(), osis_crdt::Source::node(Tid::from_bytes([0; 15])));
             for ((_, _, n), ranges) in tx.core.ix.ranges.range(from..).take_while(|((t, a, _), _)| *t == tid && *a == ak) {
                 let mut next = 1u64;
                 for (lo, (hi, c)) in ranges {
@@ -891,10 +905,9 @@ impl Engine {
                     next = *hi;
                 }
                 if next > 1 {
-                    fr.insert(*n, next - 1);
+                    frontiers.insert(n, next - 1);
                 }
             }
-            let frontiers = Frontiers::of_nodes(fr);
             // commits judged by ID (commit form, imports) whose valid writes the state reflects
             let mut absorbed = std::collections::BTreeMap::new();
             for (_, c) in tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten() {

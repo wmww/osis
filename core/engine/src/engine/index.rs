@@ -503,10 +503,12 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
         out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.grant_overreach.contains(&(*id, ai))) << 3) | (u8::from(m.missing.contains(&ai)) << 4));
     }
     let v = &m.view;
-    let mut w = records::Wr(out).u64(v.ts.to_u64()).u8(v.kind.id() as u8).u8(match v.form {
-        osis_commit::Form::Node => 0,
-        osis_commit::Form::Commit => 1,
-    });
+    let mut w = records::Wr(out).u64(v.ts.to_u64()).u8(v.kind.id() as u8);
+    w = match v.form {
+        osis_commit::Form::Node => w.u8(0),
+        osis_commit::Form::Commit => w.u8(1),
+        osis_commit::Form::Session(n) => w.u8(2).raw(&n),
+    };
     w = w.raw(v.author.as_bytes()).raw(v.actor.as_bytes()).u8(u8::from(v.linked));
     for a in &v.aspects {
         let ak = a.ak.as_str().as_bytes();
@@ -539,6 +541,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
     let form = match r.u8()? {
         0 => osis_commit::Form::Node,
         1 => osis_commit::Form::Commit,
+        2 => osis_commit::Form::Session(r.take(osis_crdt::SESSION_NONCE_LEN)?.try_into().map_err(|_| Error::Corrupt("meta row form"))?),
         _ => return Err(Error::Corrupt("meta row form")),
     };
     let (author, actor) = (r.tid()?, r.tid()?);

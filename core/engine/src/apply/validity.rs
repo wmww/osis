@@ -975,8 +975,8 @@ pub(crate) fn owned_ranges(h: &Header, id: &CommitId, ai: usize) -> Vec<(osis_cr
     match (h.form, h.aspects.get(ai)) {
         (_, None) => Vec::new(),
         (_, Some(_)) if !h.kind.has_own_writes() => Vec::new(),
-        (Form::Node, Some(a)) => vec![(osis_crdt::Source::node(h.author), a.lo, a.hi)],
         (Form::Commit, Some(_)) => vec![(osis_crdt::Source::commit(*id), 1, u64::MAX)],
+        (f, Some(a)) => vec![(f.own_source(h.author, *id), a.lo, a.hi)],
     }
 }
 
@@ -1016,7 +1016,7 @@ pub(crate) fn vouched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owned: &[Owned], have
         let Some(ix) = copy_index(tx, &s, tid, ak, have.get(&s).copied())? else { continue };
         for o in owned {
             let (src, lo, hi) = match o {
-                Owned::Node { node, lo, hi } => (osis_crdt::Source::node(*node), *lo, *hi),
+                Owned::Range { src, lo, hi } => (src.clone(), *lo, *hi),
                 Owned::Commit(c) => (osis_crdt::Source::commit(*c), 0, u64::MAX),
                 Owned::Dots { src, ctrs } => (src.clone(), ctrs.first().copied().unwrap_or(0), ctrs.last().map_or(0, |x| x.saturating_add(1))),
             };
@@ -1530,7 +1530,7 @@ mod tests {
         let mut batch = Batch::new(&st, Writer::new(ts, Source::node(b), 1));
         batch.apply(&PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(g_key.to_value())], op: Op::Put(bx.to_value()) }, &view).unwrap();
         let (d, range) = batch.finish().unwrap();
-        let own = crate::engine::Owned::Node { node: b, lo: range.lo, hi: range.hi };
+        let own = crate::engine::Owned::Range { src: Source::node(b), lo: range.lo, hi: range.hi };
         let granted = std::collections::BTreeMap::from([((t, g), Role::Read)]);
         assert!(super::grantee_boxes_only(&t, &d, &granted, &own), "an honest put");
         let (g_dot, _) = box_entries(&d).remove(0);

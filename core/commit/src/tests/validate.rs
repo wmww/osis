@@ -235,3 +235,32 @@ fn at_most_grace_spec_commits_5() {
         assert_eq!(body_keep(x, &t, Some(20), Some(80), true).at_most, Some(30));
     }
 }
+
+// spec/commits.md §3, spec/wire.md §4: session form `[2, nonce]` round-trips, only on an
+// ephemeral content commit; an ephemeral commit is a commit-form content snapshot or a
+// session-form content commit.
+#[test]
+fn session_form_spec_commits_3() {
+    let mut h = sample_header();
+    h.undoes = None;
+    h.form = Form::Session([6; 16]);
+    assert_eq!(Header::decode(&h.encode()).unwrap(), h);
+    assert_ne!(h.id(), Header { form: Form::Session([7; 16]), ..h.clone() }.id());
+    assert!(invalid(&h).to_string().contains("session form"));
+    h.ephemeral = Some(EphClass::Plain);
+    h.validate().unwrap();
+    let mut x = h.clone();
+    x.form = Form::Node;
+    assert!(invalid(&x).to_string().contains("ephemeral commit"));
+    x.form = Form::Commit;
+    assert!(invalid(&x).to_string().contains("ephemeral commit"));
+    // the session's dots are its own: `(Session(author, nonce), ctr)`
+    let own = h.form.own_source(h.author, h.id());
+    assert_eq!(own.as_session(), Some(osis_crdt::Session { node: h.author, nonce: [6; 16] }));
+    // another form value is malformed
+    let mut v = h.to_value();
+    if let Value::List(items) = &mut v {
+        items[5] = Value::List(vec![Value::Int(3), Value::bytes(&[6; 16])]);
+    }
+    assert!(Header::from_value(&v).is_err());
+}

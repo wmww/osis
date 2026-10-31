@@ -101,10 +101,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
         }
         let parts = crate::apply::held_parts(tx, &target, ai)?;
         let Some(Decoded::Delta(d)) = parts.into_iter().next() else { continue };
-        let source = match h.form {
-            Form::Node => Source::node(h.author),
-            Form::Commit => Source::commit(target),
-        };
+        let source = h.form.own_source(h.author, target);
         let buffer = decode_buffer(&tx.unit(&a.tid, &a.ak)?.undo)?.into_iter().find(|x| x.0 == target).map(|x| x.1);
         let pre = match buffer {
             Some(b) if !b.is_empty() => Before { state: crate::engine::state::decode(&b)?, complete: true },
