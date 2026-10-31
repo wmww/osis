@@ -159,7 +159,11 @@ impl W {
                 self.u8(0);
                 self.class(c);
             }
-            Attr::SelfRemoval => self.u8(1),
+            Attr::SelfRemoval(c, on) => {
+                self.u8(1);
+                self.class(c);
+                self.tid(&on);
+            }
         }
         self.dots(&a.dots);
     }
@@ -609,7 +613,7 @@ impl<'a> R<'a> {
         let (author, target, point) = (self.tid()?, self.tid()?, self.point()?);
         let attr = match self.u8()? {
             0 => Attr::By(self.class()?),
-            1 => Attr::SelfRemoval,
+            1 => Attr::SelfRemoval(self.class()?, self.tid()?),
             _ => return None,
         };
         Some(Applied { author, target, point, attr, dots: self.dots()? })

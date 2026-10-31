@@ -3,8 +3,8 @@
 //! key actor (admin of itself, so effective invite = its edge's invite). An edge is (role,
 //! until, invite ≤ role). A commit (normally one op; a redemption has two) is ordered by (t,
 //! author, commit ID) and each op is judged on its own with the author's authority just before
-//! the commit: an op lowering the author's own edge is a self-removal (SelfOnly, even for an
-//! admin; never audited) except in a redemption, where it is attributed like the grant; an
+//! the commit: an op lowering the author's own edge is a self-removal, always applied and
+//! attributed to the author's class (Admin, its invite level, else SelfOnly: no class); an
 //! admin's (owner, or an alive admin edge) other ops apply (Admin); otherwise an op applies iff
 //! it adds an edge, role ≤ the author's invite, for an actor with no alive edge (Invite, with
 //! the author's invite level).
@@ -99,7 +99,7 @@ fn class((role, invite): (Role, Role)) -> u8 {
     }
 }
 
-/// Class an op was attributed to; Owner and SelfOnly are never audited.
+/// Class an op was attributed to; Owner and SelfOnly (no class) are never audited.
 fn attr_class(a: Attr) -> u8 {
     match a {
         Attr::Admin => 4,
@@ -174,8 +174,7 @@ impl EHist {
     /// author's authority class for that op) or Skipped. Each op is judged on its own against
     /// the edges just before the commit (spec/permissions.md §5.1), so a redemption's
     /// self-removal never depends on the redeemer's entry (with all-or-nothing commits a
-    /// verifier of L would need every redeemer's entry; projections then diverge) and is never
-    /// audited even when another op of the commit is.
+    /// verifier of L would need every redeemer's entry; projections then diverge).
     fn judge(&self, w: &EWrite, edges: &[Option<Edge>]) -> Vec<Attr> {
         let a = w.author;
         let (role, inv) = auth(edges[a], w.t);
@@ -187,13 +186,13 @@ impl EHist {
                 } else if a == O {
                     Attr::Owner
                 } else if x == a {
-                    // A self-removal is never audited, even by an admin: dropping it could only
-                    // hand its author back what it gave up. Except a redemption's (an invite
-                    // holder's commit that also grants): it is attributed like the grant, by
-                    // the author's authority alone, so a forged redemption falls whole when the
-                    // sharer finalizes. Raising itself needs admin.
+                    // A self-removal applies by the author's class and is audited like its
+                    // other writes (a redemption's falls with its grant when the sharer
+                    // finalizes). Raising itself needs admin.
                     if lowers(new, edges[a]) {
-                        if role < Role::Admin && inv > Role::None && w.ops.iter().any(|&(y, _)| y != a) {
+                        if role == Role::Admin {
+                            Attr::Admin
+                        } else if inv > Role::None {
                             Attr::Invite(inv)
                         } else {
                             Attr::SelfOnly
@@ -370,8 +369,7 @@ impl EHist {
     /// plain removal at T_x. Returns the history without each such x's commits the owner had
     /// not received before T_x (what its frontier does not cover), or None if there is no
     /// such x. Those commits should leave no trace. (When another admin removed x first, its
-    /// frontier is the one that counts, so such x are excluded; self-removals are never
-    /// audited, so they are kept.)
+    /// frontier is the one that counts, so such x are excluded.)
     pub fn residue(&self) -> Option<EHist> {
         let mut cut: Vec<Option<u32>> = vec![None; self.n()];
         let mut other = vec![false; self.n()];
@@ -392,16 +390,8 @@ impl EHist {
         if cut.iter().all(Option::is_none) {
             return None;
         }
-        // Uncovered commits keep only their self ops (self-removals are never dropped).
-        let mut r = self.clone();
-        for j in 0..self.writes.len() {
-            let w = &mut r.writes[j];
-            if !cut[w.author].map_or(true, |t| self.recv[j][O] < t) {
-                let a = w.author;
-                w.ops.retain(|&(x, _)| x == a);
-            }
-        }
-        Some(r)
+        let keep: Vec<usize> = (0..self.writes.len()).filter(|&j| cut[self.writes[j].author].map_or(true, |t| self.recv[j][O] < t)).collect();
+        Some(self.keep(&keep, self.genesis.clone()))
     }
 
     /// Authors that never hold an admin role (genesis or any write).

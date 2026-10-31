@@ -152,8 +152,8 @@ fn transitive_ownership_audit() {
     }
 }
 
-/// §2 self-removal: never dropped, so a later demotion of its author cannot hand back what
-/// it gave up; the next explicit removal by another node audits as if the member were admin.
+/// §2 self-removal: audits nothing; the next explicit removal by another node (which saw the
+/// leave, so the leave stands) audits as if the member were admin.
 #[test]
 fn self_removal_finalized_by_explicit_removal() {
     let (mut w, n, g) = group();

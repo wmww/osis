@@ -46,6 +46,12 @@ impl Timeline {
                 if sa.class < sb.class || sa.role < sb.role {
                     out.membership.entry(x).or_default().insert(*n);
                 }
+                // x's self-removals through n (n's edges elsewhere) fall with its class on n
+                if sa.class < sb.class {
+                    let ids = self.walked.by_author_target.get(&(x, *n)).into_iter().flatten();
+                    let on = ids.filter_map(|w| self.walked.applied.get(w)).map(|a| a.target).filter(|t| t != n);
+                    out.membership.entry(x).or_default().extend(on);
+                }
                 if sb.role >= Some(Role::Write) && sa.role < Some(Role::Write) {
                     out.content.entry(x).or_default().insert(*n);
                 }

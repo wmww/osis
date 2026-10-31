@@ -264,9 +264,8 @@ impl World {
 /// not, in the settled walk, an applied fall of the dropped write's author X on its target N
 /// past the write's class (R was dropped, or with the write dropped R is no fall, or not
 /// through that class). The write's class is X's class on N just before it in the settled
-/// walk; a write the settled walk would judge a self-removal (§2: it lowers X's own edge, or
-/// X's admin on the member is its only authority) has none, since self-removals are never
-/// audited (it was audited in an earlier walk, where it raised the edge). They stay dropped
+/// walk; a self-removal through a member (§2: X's admin on the member is its only authority)
+/// is audited on the member, by X's class there (§5.1 step 3). They stay dropped
 /// since D only grows, so the answer depends on the order drops were found, and a roster
 /// snapshot can repair them.
 pub fn residue(tl: &osis_perm::Timeline) -> BTreeSet<WriteId> {
@@ -286,28 +285,23 @@ fn residue_with(tl: &osis_perm::Timeline, self_supported_too: bool) -> BTreeSet<
         WriteId::Op(c, k) => tl.membership_commit(c).and_then(|m| Some((m.author, m.ops.get(usize::try_from(*k).ok()?)?.target, m.point()))),
         WriteId::Snapshot(c) => tl.roster_snapshot(c).map(|s| (s.author, s.thing, s.point())),
     };
-    let self_removal = |w: &WriteId| {
-        let WriteId::Op(c, k) = w else { return false };
-        let Some(m) = tl.membership_commit(c) else { return false };
-        let Some(op) = m.ops.get(usize::try_from(*k).unwrap_or(usize::MAX)) else { return false };
+    // the thing whose class fall audits w: the member for a self-removal through it
+    let audited_on = |w: &WriteId, target: Tid| {
+        let WriteId::Op(c, k) = w else { return target };
+        let Some(m) = tl.membership_commit(c) else { return target };
+        let Some(op) = m.ops.get(usize::try_from(*k).unwrap_or(usize::MAX)) else { return target };
         let at = osis_perm::At::before(m.point());
         let old = tl.edges_at(Some(m.point())).get(&op.member, &op.target).copied();
         let new = op.edge.map(|e| Edge { since: None, ..e });
-        if !osis_perm::types::lowers(new.as_ref(), old.as_ref()) {
-            return false;
-        }
         let class = tl.class(&m.author, &op.target, at);
-        if op.member == m.author {
-            // a single-use redemption's self-removal is attributed like its grant (§5.1)
-            return !(matches!(class, osis_perm::Class::Invite(_)) && m.ops.iter().any(|o| o.member != m.author));
-        }
-        tl.role(&m.author, &op.member, at) == Some(Role::Admin) && !matches!(class, osis_perm::Class::Chain | osis_perm::Class::Edge)
+        let through = op.member != m.author && osis_perm::types::lowers(new.as_ref(), old.as_ref()) && tl.role(&m.author, &op.member, at) == Some(Role::Admin) && !matches!(class, osis_perm::Class::Chain | osis_perm::Class::Edge);
+        if through { op.member } else { target }
     };
     // The audit that dropped a write saw it in effect; the settled walk does not. A fall that
     // holds only with the write's own edge gone justifies itself (OSIS_PERM_SEED=52011): with
     // the edge set as the write set it (if nothing in the settled walk changed it up to just
     // after R), X's class on N just after R must still be below the write's class.
-    let self_supported = |w: &WriteId, p: &osis_perm::Point, class: osis_perm::Class| {
+    let self_supported = |w: &WriteId, p: &osis_perm::Point, n: &Tid, class: osis_perm::Class| {
         if !self_supported_too {
             return false;
         }
@@ -329,15 +323,13 @@ fn residue_with(tl: &osis_perm::Timeline, self_supported_too: bool) -> BTreeSet<
         edges.set(op.member, op.target, op.edge);
         let view = osis_perm::graph::View::at(tl.owners(), &edges, Some(p.ts));
         let x = m.author;
-        view.standing(&x, &view.roles_from(&x), &op.target).class >= class
+        view.standing(&x, &view.roles_from(&x), n).class >= class
     };
     let audits = |w: &WriteId, p: &osis_perm::Point| {
-        let Some((x, n, at)) = by(w) else { return false };
-        if self_removal(w) {
-            return false;
-        }
+        let Some((x, t, at)) = by(w) else { return false };
+        let n = audited_on(w, t);
         let class = tl.class(&x, &n, osis_perm::At::before(at));
-        tl.falls(&x, &n).iter().any(|f| f.point == *p && f.now < class && class <= f.held) && !self_supported(w, p, class)
+        tl.falls(&x, &n).iter().any(|f| f.point == *p && f.now < class && class <= f.held) && !self_supported(w, p, &n, class)
     };
     tl.dropped().iter().filter(|(w, p)| !audits(w, p)).map(|(w, _)| *w).collect()
 }

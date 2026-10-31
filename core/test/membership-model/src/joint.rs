@@ -7,8 +7,8 @@
 //! the top), else edge admin (admin by any path), else none.
 //!
 //! A write applies iff its author has admin on the target (attributed to its class there) or
-//! it is a self-removal (lowers the edge of a member the author has admin on; never audited,
-//! audits nothing). After each applied write by A on edge (M, T), every other node X reaching
+//! it is a self-removal (lowers the edge of a member the author has admin on; attributed to
+//! its class on that member, or on the target for its own edge; audits nothing). After each applied write by A on edge (M, T), every other node X reaching
 //! M whose class on an actor N reachable from T fell below its class with the edge restored
 //! as if the member still held its role (the highest role the edge had since the last
 //! explicit write on it, self-removals and A's own writes auditing nothing) has its
@@ -63,7 +63,9 @@ pub enum Class {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Attr {
     Skipped,
-    SelfOnly,
+    /// A self-removal, attributed to the author's class on an actor (the member it is admin
+    /// of, or the target for its own edge) and audited when that falls.
+    SelfOnly(Class, usize),
     By(Class),
 }
 
@@ -234,7 +236,8 @@ impl JHist {
     /// self-removal, or the author's class on the target (admin needed: owner chain or edge).
     fn authority(&self, edges: &[Vec<Role>], r: &[Vec<Role>], w: &JWrite) -> Attr {
         if self.is_self_removal(edges, r, w) {
-            return Attr::SelfOnly;
+            let on = if w.member == w.author { w.target } else { w.member - self.nodes };
+            return Attr::SelfOnly(self.class(r, w.author, on), on);
         }
         match self.class(r, w.author, w.target) {
             Class::None => Attr::Skipped,
@@ -283,10 +286,14 @@ impl JHist {
                     continue;
                 }
                 for (j, wj) in self.writes.iter().enumerate() {
-                    if j == i || wj.author != x || wj.target != n {
+                    let (c, on) = match attr[j] {
+                        Attr::By(c) => (c, wj.target),
+                        Attr::SelfOnly(c, on) => (c, on),
+                        Attr::Skipped => continue,
+                    };
+                    if j == i || wj.author != x || on != n {
                         continue;
                     }
-                    let Attr::By(c) = attr[j] else { continue };
                     if now < c && c <= before && !self.covered(j, w) {
                         added |= 1 << j;
                     }
@@ -317,8 +324,8 @@ impl JHist {
             let own = self.reaching(&edges, w.member)[w.author];
             edges[w.member][w.target] = w.role;
             r = self.roles(&edges);
-            if attr[i] == Attr::SelfOnly {
-                // Never audited, audits nothing; the next explicit write restores `old`.
+            if let Attr::SelfOnly(..) = attr[i] {
+                // Audits nothing; the next explicit write restores `old`.
                 let s = &mut rest.since[w.member][w.target];
                 *s = (*s).max(old);
                 continue;
@@ -870,17 +877,20 @@ mod tests {
         }
     }
 
-    /// Self-removal through an actor: node 2, admin of A, removes A's edge on B (it is
-    /// admin of the member). Never audited: B's owner removing 2's other rights later
-    /// cannot hand A its edge back.
+    /// Self-removal through an actor: node 2, admin of A, removes A's write edge on B (admin
+    /// of the member is its only authority). Audited like a write on A: A's owner removing 2 from A without
+    /// having seen it hands A its edge back; having seen it, the removal stands.
     #[test]
-    fn self_removal_through_actor_never_dropped() {
-        let mut b = Jb::new(vec![Owner::Node(0), Owner::Node(1)], &[(2, A, Admin), (EA, B, Admin)]);
-        b.set(2, B, EA, None, 2, &[]);
-        b.set(0, A, 2, None, 4, &[]);
-        let o = b.0.eval(true);
-        assert_eq!(o.edges[EA][B], None);
-        assert_eq!(o.dropped, 0);
+    fn self_removal_through_actor_audited() {
+        for seen in [false, true] {
+            let mut b = Jb::new(vec![Owner::Node(0), Owner::Node(1)], &[(2, A, Admin), (EA, B, Role::Write)]);
+            b.set(2, B, EA, None, 2, if seen { &[(0, 3)] } else { &[] });
+            b.set(0, A, 2, None, 4, &[]);
+            let o = b.0.eval(true);
+            assert_eq!(o.edges[EA][B], if seen { None } else { Role::Write }, "seen {seen}");
+            assert_eq!(o.dropped != 0, !seen);
+            assert_order_independent(&b.0);
+        }
     }
 
     /// Transitive ownership audit: P (owned by node 0) owns Q, Q owns D. Node 3 is admin of P,

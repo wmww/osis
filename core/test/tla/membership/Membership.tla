@@ -6,7 +6,8 @@
 (* the walk over the history and check its verdicts.                           *)
 (* Things: actor A owned by key actor node 1; actor B owned by A. Edge members: *)
 (* nodes, and B on A. Roles 0 none, 1 read, 2 write, 3 admin. Classes 0 none,  *)
-(* 2 edge admin, 3 owner chain (attribution 1 = self-removal).                 *)
+(* 2 edge admin, 3 owner chain; a write is audited by its author's class on   *)
+(* `on`: its target, or for a self-removal through B, B.                      *)
 EXTENDS Integers, Sequences, FiniteSets, TLC
 
 CONSTANTS NN,           \* nodes 1..NN; node 1 is the key actor owning A
@@ -208,7 +209,7 @@ Change(st, e, nv, t, key, au, explicit, fr, cid, gen) ==
         dems == {[x |-> q.x, n |-> q.n, key |-> key, fr |-> fr, cid |-> cid, gen |-> gen]
                    : q \in {q \in pairs : q.rb >= 2 /\ q.ra < 2}}
         drops == {a \in st.app : a.attr >= 2 /\ a.cid \notin fr /\ a.cid # cid
-                    /\ \E f \in falls : f.x = a.au /\ f.n = a.tg /\ f.ca < a.attr /\ a.attr <= f.cb}
+                    /\ \E f \in falls : f.x = a.au /\ f.n = a.on /\ f.ca < a.attr /\ a.attr <= f.cb}
         own == au \in reach /\ base > 0
         K1 == [x \in Nodes |-> IF KeepStanding /\ own /\ x = au THEN Mx(base, kept[au]) ELSE 0]
     IN [st EXCEPT !.E = E1x, !.P[e] = 0, !.K[e] = K1, !.S[e] = cid,
@@ -224,28 +225,32 @@ Change(st, e, nv, t, key, au, explicit, fr, cid, gen) ==
                           after |-> [x \in Nodes |-> Class(R1, x, e[2])],
                           was |-> Mx(base, kept[au]), auReach |-> au \in reach]}]
 
-\* §5.1 step 2 and §2: -1 not applied, 1 self-removal, 2/3 by class.
+\* §5.1 step 2 and §2: a = -1 not applied, else the class attributed (on `on`);
+\* s: a self-removal (audits nothing), attributed to the author's class on the
+\* member it is admin of, or on the target for its own edge.
 Judge(st, R, c, k) ==
   LET o == c.ops[k]
       e == <<o.mb, o.tg>>
       nv == Norm([r |-> o.r, u |-> o.u], c.ts)
       cls == Class(R, c.au, o.tg)
-  IN IF o.mb = o.tg \/ (o.tg = A /\ o.mb = 1) \/ ~DepthOK(o.tg) \/ <<c.id, k>> \in st.D THEN -1
-     ELSE IF Lowers(nv, st.E[e], c.ts)
-             /\ (o.mb = c.au \/ (o.mb \in Things /\ RoleOn(R, c.au, o.mb) = 3 /\ cls < 2)) THEN 1
-     ELSE IF cls >= 2 THEN cls ELSE -1
+  IN IF o.mb = o.tg \/ (o.tg = A /\ o.mb = 1) \/ ~DepthOK(o.tg) \/ <<c.id, k>> \in st.D
+       THEN [a |-> -1, s |-> FALSE, on |-> o.tg]
+     ELSE IF Lowers(nv, st.E[e], c.ts) /\ o.mb = c.au THEN [a |-> cls, s |-> TRUE, on |-> o.tg]
+     ELSE IF Lowers(nv, st.E[e], c.ts) /\ o.mb \in Things /\ RoleOn(R, c.au, o.mb) = 3 /\ cls < 2
+       THEN [a |-> Class(R, c.au, o.mb), s |-> TRUE, on |-> o.mb]
+     ELSE [a |-> IF cls >= 2 THEN cls ELSE -1, s |-> FALSE, on |-> o.tg]
 
 RECURSIVE ApplyOps(_, _, _, _, _)
 ApplyOps(st, c, js, k, t) ==
   IF k > Len(c.ops) THEN st
-  ELSE IF js[k] = -1 THEN ApplyOps(st, c, js, k + 1, t)
+  ELSE IF js[k].a = -1 THEN ApplyOps(st, c, js, k + 1, t)
   ELSE LET o == c.ops[k]
            e == <<o.mb, o.tg>>
            nv == Norm([r |-> o.r, u |-> o.u], t)
-           rec == [w |-> <<c.id, k>>, cid |-> c.id, au |-> c.au, tg |-> o.tg, attr |-> js[k],
+           rec == [w |-> <<c.id, k>>, cid |-> c.id, au |-> c.au, tg |-> o.tg, attr |-> js[k].a, on |-> js[k].on,
                    key |-> c.key5, gen |-> c.gen]
            st1 == [st EXCEPT !.app = @ \cup {rec}]
-       IN ApplyOps(Change(st1, e, nv, t, c.key5, c.au, js[k] >= 2, c.fr, c.id, c.gen),
+       IN ApplyOps(Change(st1, e, nv, t, c.key5, c.au, js[k].a >= 2 /\ ~js[k].s, c.fr, c.id, c.gen),
                    c, js, k + 1, t)
 
 RECURSIVE ApplyRo(_, _, _, _, _)
@@ -279,7 +284,7 @@ Step(ev, st) ==
     [] ev.kind = "s" ->
          LET st1 == IF Class(R, ev.au, ev.tg) < 3 \/ <<ev.id, 1>> \in st.D THEN [st EXCEPT !.rej = TRUE]
                     ELSE [st EXCEPT !.app = @ \cup {[w |-> <<ev.id, 1>>, cid |-> ev.id, au |-> ev.au,
-                            tg |-> ev.tg, attr |-> 3, key |-> ev.key5, gen |-> ev.gen]}]
+                            tg |-> ev.tg, attr |-> 3, on |-> ev.tg, key |-> ev.key5, gen |-> ev.gen]}]
          IN UpdW(ApplyRo(st1, ev, MemSeq(ev.tg), 1, t), ev.key5, t)
 
 \* One walk. stop: restart at the first write that adds to D (the spec);
@@ -447,7 +452,7 @@ DropOrderFree == Chaos => WalkAll(Evs(hist), E00, {}) = {Verd(W0)}
 \* its edge writes generated after R and ordered before R are dropped; its
 \* content generated after its newest demotion, with no regain, is invalid.
 LateEdge == \A f \in W0.fall : \A a \in W0.app :
-              (a.au = f.x /\ a.tg = f.n /\ a.attr >= 2 /\ f.ca < a.attr /\ a.attr <= f.cb /\ a.gen > f.gen)
+              (a.au = f.x /\ a.on = f.n /\ a.attr >= 2 /\ f.ca < a.attr /\ a.attr <= f.cb /\ a.gen > f.gen)
                 => Before(f.key, a.key)
 LateContent == \A c \in W0.cinfo :
   LET ds == {d \in W0.dem : d.x = c.au /\ d.n = c.tg}
@@ -464,7 +469,7 @@ StandingAudited ==
       /\ r1.cid # 0 /\ r2.cid # 0 /\ r1.auReach /\ r1.was = 3 /\ r2.nv = Absent
       /\ r1.au \in r2.reachAdmin /\ r2.after[r1.au] < 2
       /\ ~\E r3 \in W0.ex : r3.m = B /\ r3.t = r1.t /\ Before(r1.key, r3.key) /\ Before(r3.key, r2.key) )
-    => ~\E a \in W0.app : a.au = r1.au /\ a.tg = r1.t /\ a.attr = 2 /\ Before(a.key, r1.key)
+    => ~\E a \in W0.app : a.au = r1.au /\ a.on = r1.t /\ a.attr = 2 /\ Before(a.key, r1.key)
                            /\ a.cid \notin r2.fr
 
 \* (5) Owner chain: chain authority confers write wherever the chain reaches

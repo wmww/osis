@@ -32,10 +32,21 @@ use std::sync::Arc;
 /// How an applied edge write was attributed (spec/permissions.md §5.1 step 3).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Attr {
-    /// By the author's authority class; audited when it falls.
+    /// By the author's authority class on the target; audited when it falls.
     By(Class),
-    /// A self-removal: never audited.
-    SelfRemoval,
+    /// A self-removal (§2), audited when the author's class `.0` on `.1` falls: the member
+    /// it is admin of, or the target for its own edge.
+    SelfRemoval(Class, Tid),
+}
+
+impl Attr {
+    /// The class audited and the thing whose fall audits it (`target`: the write's target).
+    pub fn audited(&self, target: Tid) -> (Class, Tid) {
+        match *self {
+            Attr::By(c) => (c, target),
+            Attr::SelfRemoval(c, on) => (c, on),
+        }
+    }
 }
 
 /// An applied edge write.
@@ -106,6 +117,12 @@ impl Ever {
             self.invites.insert(member);
         }
     }
+}
+
+/// The things a commit's edge writes are on, for `Input::first_write`: their targets, and
+/// their members other than the author (a self-removal through a member is audited there).
+pub(crate) fn written_on(c: &MembershipCommit) -> impl Iterator<Item = Tid> + '_ {
+    c.ops.iter().flat_map(|o| std::iter::once(o.target).chain((o.member != c.author).then_some(o.member)))
 }
 
 /// Node-form ranges `[lo, hi)` with their commits.
@@ -216,7 +233,7 @@ impl Input {
             }
         }
         let mut first_write: BTreeMap<(Tid, Tid), Point> = BTreeMap::new();
-        let writes = commits.values().flat_map(|c| c.ops.iter().map(move |o| (c.author, o.target, c.point()))).chain(snaps.values().map(|s| (s.author, s.thing, s.point())));
+        let writes = commits.values().flat_map(|c| written_on(c).map(move |t| (c.author, t, c.point()))).chain(snaps.values().map(|s| (s.author, s.thing, s.point())));
         for (a, t, p) in writes {
             let e = first_write.entry((a, t)).or_insert(p);
             *e = (*e).min(p);
@@ -315,6 +332,10 @@ impl Input {
     pub fn append(&mut self, new: &[Arc<MembershipCommit>]) {
         for c in new {
             self.nodes.insert(c.author);
+            for t in written_on(c) {
+                let e = self.first_write.entry((c.author, t)).or_insert(c.point());
+                *e = (*e).min(c.point());
+            }
             for o in &c.ops {
                 if self.owners.owner_actor(&o.member).is_none() {
                     self.nodes.insert(o.member);
@@ -328,8 +349,6 @@ impl Input {
                 if o.edge.is_some_and(|e| e.role == Role::Admin) {
                     self.ever_admins.entry(o.target).or_default().insert(o.member);
                 }
-                let e = self.first_write.entry((c.author, o.target)).or_insert(c.point());
-                *e = (*e).min(c.point());
                 if let Dots::Node { lo, hi } = o.dots
                     && lo < hi
                 {
@@ -551,7 +570,8 @@ impl Walked {
             }
         }
         let keys: BTreeSet<(Tid, Tid)> = placed.iter().map(|(_, o, _)| (o.member, o.target)).collect();
-        if keys.len() < placed.len() {
+        // (a self-removal through a member is listed on the member: walked again, rare)
+        if keys.len() < placed.len() || placed.iter().any(|(_, o, attr)| attr.audited(o.target).1 != o.target) {
             return Placement::Declined;
         }
         let mut r = Readers::default();
@@ -574,7 +594,7 @@ impl Walked {
         }
         // targets where its author's first held write moves to `p`: falls there up to the old
         // first write were not recorded; an audit of its author on one may find one
-        let moved: BTreeMap<Tid, Option<Point>> = c.ops.iter().map(|o| (o.target, first.get(&o.target).copied().flatten())).filter(|(_, q)| q.is_none_or(|q| q > p)).collect();
+        let moved: BTreeMap<Tid, Option<Point>> = written_on(c).map(|t| (t, first.get(&t).copied().flatten())).filter(|(_, q)| q.is_none_or(|q| q > p)).collect();
         if !moved.is_empty() {
             let reach = input.ever_forward([c.author]);
             // (the top of a thing's owner chain holds the chain class on it throughout)
@@ -1681,8 +1701,9 @@ impl<'a> Pass<'a> {
 
     /// Lists `id` among its author's writes on its target (audits read them).
     fn list_write(&mut self, id: WriteId, a: &Applied) {
-        self.w.by_author_target.entry((a.author, a.target)).or_default().push(id);
-        self.w.log.push(Undo::ByAuthorTarget((a.author, a.target)));
+        let k = (a.author, a.attr.audited(a.target).1);
+        self.w.by_author_target.entry(k).or_default().push(id);
+        self.w.log.push(Undo::ByAuthorTarget(k));
     }
 
     /// An explicit write changed edge `(member, target)`: every node X reaching the member
@@ -1834,12 +1855,12 @@ impl<'a> Pass<'a> {
         for id in ids {
             let a = applied_of(&self.w.applied, &self.w.candidates, &id).or_else(|| outer.and_then(|o| applied_of(&o.applied, &o.candidates, &id)));
             let Some(a) = a else { continue };
-            let Attr::By(c) = a.attr else { continue };
+            let (c, _) = a.attr.audited(a.target);
             if !(now < c && c <= held) {
                 continue;
             }
             let covered = aud.commit == Some(id.commit())
-                || aud.frontier.is_some_and(|f| f.covers(n, MEMBERS, x, a.dots, &id.commit()));
+                || aud.frontier.is_some_and(|f| f.covers(&a.target, MEMBERS, x, a.dots, &id.commit()));
             if !covered && !self.dropped.contains_key(&id) {
                 self.dropped.insert(id, aud.point);
                 self.fresh.push(id);
@@ -1974,13 +1995,10 @@ pub(crate) fn judge(view: &View<'_>, old: Option<&Edge>, c: &MembershipCommit, k
     // the target); otherwise the write is an explicit demotion by its class there.
     let authority_on_target = matches!(st.class, Class::Chain | Class::Edge);
     if lowers(new.as_ref(), old) && (m == a || (best.get(&m) == Some(&Role::Admin) && !authority_on_target)) {
-        // A single-use redemption's self-removal is attributed like its grant (§5.1).
-        if let (true, Class::Invite(l)) = (m == a, st.class)
-            && c.ops.iter().any(|o| o.member != a)
-        {
-            return Some(Attr::By(Class::Invite(l)));
-        }
-        return Some(Attr::SelfRemoval);
+        // Attributed to the author's class on the member it is admin of, or on the target
+        // for its own edge (a single-use redemption's: like its grant), §5.1 step 3.
+        let class = if m == a { st.class } else { view.standing(&a, best, &m).class };
+        return Some(Attr::SelfRemoval(class, if m == a { t } else { m }));
     }
     match st.class {
         Class::Chain | Class::Edge => Some(Attr::By(st.class)),

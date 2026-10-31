@@ -1780,6 +1780,32 @@ fn device_removes_person_from_team_spec_perm_3() {
     assert!(sealed_write(&mut lp, 2, t, "after").is_empty(), "neither device reads what follows");
 }
 
+// spec/permissions.md §2, §5.1: a self-removal is audited like any write. Device d1 removes
+// its person P from alice's doc, unseen; d2 then removes d1 from P with a frontier that misses
+// it (d1's backdated forgery, in effect): every reader drops it and P keeps its role. Had d2
+// received it first, its frontier covers it and the leave stands.
+#[test]
+fn removed_device_backdated_leave_dropped_spec_perm_5_1() {
+    for seen in [false, true] {
+        let (mut lp, p, pa, _) = devices_and_alice(523);
+        let d1 = lp.peers[0].engine.tid();
+        let t = thing_of(&mut lp, 2, pa);
+        lp.peers[2].engine.grant(&t, &p, &edge_of(Role::Write)).unwrap();
+        spread(&mut lp);
+        let leave = lp.peers[0].engine.demote(&t, &Demotion { member: p, new: None, presync: PreSync::Synced }).unwrap();
+        if seen {
+            send(&mut lp, 0, 1, &leave.commits);
+        }
+        lp.advance(1000);
+        lp.peers[1].engine.demote(&p, &Demotion { member: d1, new: None, presync: PreSync::Synced }).unwrap();
+        spread(&mut lp);
+        for i in 0..3 {
+            let role = lp.peers[i].engine.roster(&t).get(&p).map(|e| e.role);
+            assert_eq!(role, if seen { None } else { Some(Role::Write) }, "seen {seen}, peer {i}");
+        }
+    }
+}
+
 // spec/crypto.md §4, spec/permissions.md §6: departures are also read from state (a box at a
 // current epoch its holder no longer may hold); a roster snapshot first rotates them away.
 #[test]

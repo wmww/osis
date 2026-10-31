@@ -154,12 +154,13 @@ fn joint_model_agrees_large() {
 /// its own admin edge there), removes the now absent edge again, then removes itself; n0 (who
 /// received none of it) removes A1's edge. The second removal keeps n1's standing from the
 /// first (§5.1 "R never demotes its own author"), so n0's write audits both against it and
-/// drops them (perm lost the standing at the write on the absent edge).
+/// drops them, and n1's unseen self-removal with them (perm lost the standing at the write on
+/// the absent edge).
 #[test]
 fn joint_kept_standing_survives_absent_edge_removal() {
     let h = absent_edge_removal_hist();
     let o = joint::walk(&h);
-    assert_eq!(o.dropped, 0b1001, "model drops both of n1's explicit removals");
+    assert_eq!(o.dropped, 0b1101, "model drops both of n1's explicit removals and its leave");
     assert_eq!(joint_diff(&h), None);
 }
 
@@ -208,7 +209,7 @@ pub(crate) fn absent_edge_removal_spread_hist() -> joint::JHist {
 #[test]
 fn joint_kept_standing_spread_agrees() {
     let h = absent_edge_removal_spread_hist();
-    assert_eq!(joint::walk(&h).dropped, 0b11, "model drops both of n1's explicit removals");
+    assert_eq!(joint::walk(&h).dropped, 0b1011, "model drops both of n1's explicit removals and its leave");
     assert_eq!(joint_diff(&h), None);
 }
 
