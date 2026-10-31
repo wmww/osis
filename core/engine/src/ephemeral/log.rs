@@ -198,8 +198,8 @@ impl Engine {
 
     /// The ephemeral keys `Scope::Thing` and `Scope::Group` cover (notes/ephemeral.md API delta,
     /// Undo): every aspect with ephemeral state of an ephemeral thing or a draft again
-    /// (`Eph::drafts`) and its `/created` (what its creation and deletion touch), and the
-    /// ephemeral side of a durable thing's `/group`; not the ephemeral aspects of other durable
+    /// (`Eph::drafts`) and its `/created` (what its creation and deletion touch), and a
+    /// durable thing's `/placed`; not the ephemeral aspects of other durable
     /// things.
     pub fn ephemeral_scope_keys(&self) -> Vec<(Tid, Ak)> {
         let created = created_ak();
@@ -297,8 +297,8 @@ impl Engine {
     }
 
     /// `delete`'s ephemeral writes for each of `del` (spec/crdt.md §4.6 Undoing a creation):
-    /// its ephemeral aspects reset and its entries removed from the ephemeral side of every
-    /// `/group` listing it, resolved against the ephemeral side after what `out` already writes
+    /// its ephemeral aspects reset and its entries removed from every `/placed` listing
+    /// it, resolved against that `/placed` after what `out` already writes
     /// there and joined into it.
     fn unmake_ephemeral(&mut self, del: &BTreeSet<Tid>, ts: Ts, out: &mut Vec<Resolved>) -> Result<()> {
         if del.is_empty() {

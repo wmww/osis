@@ -193,7 +193,7 @@ impl Reader<'_> {
     }
 
     /// The groups the thing is in: those listing it as an item or as a subgroup, and every
-    /// group holding it transitively. Both sides of `/group`, local indexes only.
+    /// group holding it transitively. `/group` and `/placed`, local indexes only.
     pub fn groups_of(&self, tid: Tid) -> GroupsOf {
         let t = self.resolve(tid);
         let (items, subs) = self.e.listed_in(&t);

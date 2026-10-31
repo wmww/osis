@@ -642,6 +642,27 @@ fn draft_lands_in_folder_at_save_spec_data_model_8() {
     assert_eq!(group_of(&db, folder).items.into_iter().collect::<Vec<_>>(), vec![draft]);
 }
 
+// notes/ephemeral.md Ephemeral placements: an ephemeral thing holding ephemeral placements is a
+// group already: `make_group` on it in a later batch writes nothing (it neither clears `/placed`
+// nor persists the thing).
+// spec/data-model.md §8
+#[test]
+fn make_group_on_ephemeral_group_keeps_it_ephemeral_spec_data_model_8() {
+    let (db, _c) = setup(37);
+    let (g, t) = db
+        .write_with(|w| {
+            let g = w.create(db.me())?;
+            let t = w.create(db.me())?;
+            w.place(t, g)?;
+            Ok((g, t))
+        })
+        .unwrap();
+    assert!(group_of(&db, g).items.contains(&t));
+    db.write_with(|w| w.make_group(g)).unwrap();
+    assert!(group_of(&db, g).items.contains(&t), "its placements kept");
+    assert!(db.created(g).unwrap().commit.is_none(), "still ephemeral");
+}
+
 // notes/ephemeral.md Local engine (Restart), Ephemeral placements: a restart before persisting
 // leaves no ghost: no durable group names the ephemeral tid, and it reads unknown.
 // spec/data-model.md §8

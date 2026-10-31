@@ -17,7 +17,7 @@ use osis_node::undo::HeldCommit;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Which aspects a query, undo or redo ranges over; resolved when used. `Thing` and `Group`
-/// cover durable aspects and ephemeral things (and the ephemeral side of `/group`); an
+/// cover durable aspects and ephemeral things (and `/placed`); an
 /// ephemeral aspect of a durable thing (a cursor, a selection) is in scope only when named by
 /// `Aspects`.
 #[derive(Clone, Debug, PartialEq, Eq)]

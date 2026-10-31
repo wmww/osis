@@ -88,8 +88,7 @@ impl NetSim {
         Ak::new(ak).map_err(|e| self.fail(e.to_string()))
     }
 
-    /// Node `n` makes an ephemeral window owned by and placed in `g` (the ephemeral side of its
-    /// `/group`) and tracks it.
+    /// Node `n` makes an ephemeral window owned by and placed in `g` (its `/placed`) and tracks it.
     pub fn window(&mut self, n: usize, g: Tid) -> Res<Tid> {
         let state = self.ukey(STATE, Lifetime::Ephemeral)?;
         let e = self.engine(n)?;
