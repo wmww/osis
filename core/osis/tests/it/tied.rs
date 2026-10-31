@@ -62,7 +62,7 @@ fn setup() -> Setup {
 // admin's self-removal.
 #[test]
 fn share_into_unplace_and_stale_placement() {
-    let Setup { mut w, alice, bob, g, .. } = setup();
+    let Setup { mut w, alice, bob, carol, g } = setup();
     let t = card(&bob, "plan");
     assert_eq!(bob.share_into(t, g, Role::Write, ShareOpts::default()).unwrap(), Share::Tied(Role::Write));
     assert!(listed(&bob, g, t) && bob.roster(t)[&g].tied, "placement and edge at once");
@@ -88,10 +88,12 @@ fn share_into_unplace_and_stale_placement() {
     assert!(listed(&bob, g, t), "the placement stays");
     assert!(!bob.roster(t).contains_key(&g), "and grants nothing");
     assert_eq!(reach_of(&bob, t, g).map(|r| r.share), Some(Share::Excluded));
-    // (the tag's members are not told of the removal: issues/group-edge-removal-unseen.md)
+    for db in [&alice, &carol] {
+        assert!(!db.roster(t).contains_key(&g), "the tag's members learn the removal");
+    }
     edit(&bob, t, "plan v2");
     w.run();
-    assert_eq!(text(&alice, t).as_deref(), Some("plan"), "nothing new reaches the tag");
+    assert_eq!(text(&alice, t), None, "the tag lost the card, nothing new reaches it");
 
     // the tag's admin removes a hand grant of the tag on Bob's card (pain point 3)
     bob.grant(t, g, Role::Read, EdgeOpts::default()).unwrap();
@@ -369,4 +371,43 @@ fn invalidated_placement_removes_the_tied_edge() {
         assert!(!listed(db, g, t), "the placement is invalid");
         assert!(!db.roster(t).contains_key(&g), "the tied edge went");
     }
+}
+
+// spec/permissions.md §2 (a removal of another actor's edge is placed under the labels holding
+// it): Bob, the card's admin, removes the tag's hand-granted edge on his card placed in the tag;
+// the tag's admin and its other writer drop it from their roster and reach and lose the card
+// (the removal leaves the tag's closure bodies, so only that placement tells Carol).
+#[test]
+fn group_members_learn_edge_removal() {
+    let Setup { mut w, alice, bob, carol, g } = setup();
+    let t = card(&bob, "plan");
+    bob.write_with(|w| w.place(t, g)).unwrap();
+    bob.grant(t, g, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    for db in [&alice, &carol] {
+        assert!(db.roster(t).contains_key(&g), "granted");
+    }
+    w.until(bob.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).expect("pre-sync").unwrap();
+    assert!(w.run(), "settles");
+    for db in [&alice, &bob, &carol] {
+        assert!(!db.roster(t).contains_key(&g), "the removal reached {}", db.me());
+        assert_eq!(reach_of(db, t, g).map(|r| r.share), Some(Share::Excluded));
+    }
+    assert_eq!(text(&carol, t), None, "Carol lost the card");
+}
+
+// spec/sync.md §2 (an actor naming no inbox uses its owner's), §3: Bob grants the tag (which names
+// no inbox) read on his own tag; the blob sealed to the tag under Alice's home label opens there,
+// so Alice, the tag's admin, learns the grant and its removal.
+#[test]
+fn inherited_inbox_opens() {
+    let Setup { mut w, alice, bob, g, .. } = setup();
+    let t = new_tag(&bob, "Bob's").unwrap();
+    bob.grant(t, g, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    assert!(alice.roster(t).contains_key(&g), "the grant reached the tag's admin");
+    assert_eq!(alice.get(t, osis::core::NAME).unwrap(), Some("Bob's".to_string()));
+    w.until(bob.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).expect("pre-sync").unwrap();
+    w.run();
+    assert!(!alice.roster(t).contains_key(&g), "and its removal");
 }
