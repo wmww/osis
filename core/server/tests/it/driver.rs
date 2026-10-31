@@ -64,3 +64,38 @@ async fn servers_replicate_through_dialed_links() {
     s1.stop().await;
     s2.stop().await;
 }
+
+// spec: none (driver policy, notes/sync.md Hub stall bounds): connections take turns per input,
+// so one connection's backlog of inputs does not delay another's request: an opener writes a
+// flood of uploads at once (many 64 KiB reads queued behind its reader); a reader's Sync, sent
+// while the flood runs, waits a few of its inputs, not the backlog
+#[tokio::test]
+async fn flood_does_not_delay_others() {
+    const BLOB: usize = 16 << 10;
+    const FLOOD: u64 = 1500;
+    let net = Net::new(1);
+    let server = Server::start(net.endpoint("s"), "mem://s", 0x51, MemoryBackend::new(), vec![]).await;
+    let l = Label::new(3);
+    let mut a = server.client(&net.endpoint("a")).await;
+    a.run(l.register_cmd(0)).await;
+    let open = Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) };
+    a.run(open.clone()).await;
+    let mut b = server.client(&net.endpoint("b")).await;
+    b.run(open).await;
+    let count = |ev: &[ClientEvent]| added(&events_of(ev).0).len() as u64;
+    let probe = || Command::Sync { label: l.id, cursor: None, inline_limit: 0, entries: vec![], gained: vec![] };
+    // the flood: one upload frame per blob, written at once, its replies never read
+    let mut flood = Vec::new();
+    for n in 0..FLOOD {
+        let entry = l.entry(osis_proto::examples::blob_sized(1000 + n, 0, vec![], BLOB));
+        flood.extend(encode_frame(&Message::Upload { id: (1 << 30) + n as u32, label: l.id, entries: vec![entry] }.encode()));
+    }
+    assert!(a.link.tx.send(flood, usize::MAX));
+    let c0 = count(&b.run(probe()).await);
+    let c1 = count(&b.run(probe()).await);
+    assert!(c1 < FLOOD, "the flood ended before the probes: {c1}");
+    // a read is at most 64 KiB, 4 blobs; the flood gets one read per scheduler round while the
+    // probe travels there and back (48 blobs; 760 when the reader queued reads ahead)
+    assert!(c1 - c0 <= 100, "the second probe waited {} flood entries (first: {c0})", c1 - c0);
+    server.stop().await;
+}
