@@ -8,7 +8,7 @@ use common::*;
 use membership_model::{edges, joint, Rng};
 use osis_base::Role::{Admin, Read, Write};
 use osis_base::{Role, Tid};
-use osis_perm::{verify, At, Edge, MoveIndex, Point, PurgeBy, Timeline, WriteId};
+use osis_perm::{verify, At, Edge, HeldSet, MoveIndex, Point, PurgeBy, Timeline, WriteId};
 use std::collections::BTreeMap;
 
 /// §4: a stolen device's grant verifies from certificates until the removal that drops it is
@@ -189,6 +189,22 @@ fn cert_check_held(held: &osis_perm::MemoryHeldSet) -> Option<String> {
     }
     for s in held.snapshots.values().flatten() {
         writes.insert(WriteId::Snapshot(s.id), (s.point(), s.author, s.thing));
+    }
+    // node cards: each node's certificates for a thing give its role there at every write's
+    // point and at the end
+    let mut ats: Vec<At> = writes.values().map(|(p, _, _)| At::before(*p)).collect();
+    ats.push(At::now(ts(LATE * 4)));
+    let things = held.things();
+    for n in things.iter().filter(|n| tl.owners().is_key(n)) {
+        for t in &things {
+            let ct = Timeline::evaluate(&tl.certificate_set(&tl.certificates(n, t), held));
+            for at in &ats {
+                let (f, c) = (tl.role(n, t, *at), ct.role(n, t, *at));
+                if f != c {
+                    return Some(format!("node {n:?} on {t:?} at {at:?}: full {f:?}, certificates {c:?}"));
+                }
+            }
+        }
     }
     for (id, (at, author, target)) in writes {
         let certs = tl.write_certificates(&id).unwrap();
