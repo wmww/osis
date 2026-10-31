@@ -357,7 +357,10 @@ impl RoleEpochs {
         self.map.get(e).and_then(|i| i.order).unwrap_or(e.n())
     }
 
-    /// Sorts as `e` by age (spec/crypto.md §4): greater order n, then `by_n`, is newer.
+    /// Sorts as `e` by age (spec/crypto.md §4): greater order n, then `by_n`, is newer. One order
+    /// n holds one n among established epochs (a derived map's n is a function of its order n);
+    /// the n tie-break only orders reading-only epochs of an invalid rotation kept beside derived
+    /// ones (a reader's try order).
     fn by_order(&self, e: &Epoch) -> (u64, (u64, Reverse<[u8; 32]>)) {
         (self.order(e), by_n(e))
     }
@@ -408,6 +411,11 @@ impl RoleEpochs {
         v.sort_by_key(|(e, _)| Reverse(self.by_order(e)));
         v
     }
+
+    /// Whether any secret is held, reading-only ones included.
+    pub fn holds_any(&self) -> bool {
+        self.map.values().any(|i| i.secret.is_some())
+    }
 }
 
 /// The n of the epochs derived from an owner epoch at `n` (spec/crypto.md §3): the owner's, capped
@@ -441,6 +449,11 @@ impl ActorEpochs {
             Role::Write => &self.write,
             Role::Admin => &self.admin,
         }
+    }
+
+    /// Whether any role's secret is held, reading-only ones included.
+    pub fn holds_any(&self) -> bool {
+        ROLES.iter().any(|r| self.role(*r).holds_any())
     }
 
     pub fn role_mut(&mut self, r: Role) -> &mut RoleEpochs {
@@ -716,5 +729,98 @@ mod tests {
         assert_eq!(r.secret(&ep(1, 1)), Some(&s));
         r.set_reading_secret(ep(1, 1), s.clone(), u(3));
         assert!(!r.drop_reading_from(&cid(3)) && r.secret(&ep(1, 1)).is_some());
+    }
+
+    // Differential against the hand-written folds the ordering keys replaced: equal on random
+    // role epochs (forks, orders, provenances, reading-only secrets). `held_newest_first` differs
+    // only where one order n holds two n (the `order_ties_by_n` arm), which a derived map never
+    // has (its n is a function of its order n).
+    #[test]
+    fn ordering_keys_match_folds() {
+        fn old_is_newer(a: &Epoch, b: &Epoch) -> bool {
+            a.n() > b.n() || (a.n() == b.n() && a.nonce() < b.nonce())
+        }
+        fn old_newest_of<'a>(es: impl IntoIterator<Item = &'a Epoch>) -> Option<Epoch> {
+            es.into_iter().fold(None, |best: Option<Epoch>, e| match best {
+                Some(b) if !old_is_newer(e, &b) => Some(b),
+                _ => Some(*e),
+            })
+        }
+        fn old_r_is_newer(r: &RoleEpochs, a: &Epoch, b: &Epoch) -> bool {
+            let (x, y) = (r.order(a), r.order(b));
+            x > y || (x == y && old_is_newer(a, b))
+        }
+        fn old_r_newest_of(r: &RoleEpochs, es: &[Epoch]) -> Option<Epoch> {
+            es.iter().fold(None, |best: Option<Epoch>, e| match best {
+                Some(b) if !old_r_is_newer(r, e, &b) => Some(b),
+                _ => Some(*e),
+            })
+        }
+        fn old_held_newest_first(r: &RoleEpochs) -> Vec<Epoch> {
+            let mut v: Vec<Epoch> = r.map.iter().filter(|(_, i)| i.secret.is_some()).map(|(e, _)| *e).collect();
+            v.sort_by_key(|e| (std::cmp::Reverse(r.order(e)), *e.nonce()));
+            v
+        }
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut rnd = |m: u64| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x % m
+        };
+        let u = |b: u8| Unchecked { author: Tid::from_bytes([b; 15]), commit: cid(b) };
+        let mut tie_diffs = 0;
+        for case in 0..20000 {
+            let free = case % 2 == 1;
+            let base = if rnd(3) == 0 { MAX_FREE_N - 3 } else { 0 };
+            let mut r = RoleEpochs::default();
+            let mut es = Vec::new();
+            for _ in 0..1 + rnd(7) {
+                let e = ep(base + rnd(4), rnd(3) as u8);
+                es.push(e);
+                let i = r.observe(e);
+                // order n: free, or a function of n as in a derived map (capped n, owner's order)
+                i.order = match (free, rnd(3)) {
+                    (true, 0) => Some(base + rnd(5)),
+                    (false, 0) => Some(e.n() * 3 + 7),
+                    _ => None,
+                };
+                if !free && i.order.is_none() {
+                    i.order = Some(e.n() * 3 + 7);
+                }
+                i.established = [None, Some(Provenance::Own), Some(Provenance::Chain), Some(Provenance::Snapshot)][rnd(4) as usize];
+                match rnd(3) {
+                    0 => r.set_secret(e, Secret32::from_bytes([rnd(250) as u8; 32])),
+                    1 => r.set_reading_secret(e, Secret32::from_bytes([rnd(250) as u8; 32]), u(1)),
+                    _ => {}
+                }
+            }
+            for _ in 0..rnd(3) {
+                let (a, b) = (es[rnd(es.len() as u64) as usize], es[rnd(es.len() as u64) as usize]);
+                r.rotation(a, [b]);
+            }
+            for a in &es {
+                for b in &es {
+                    assert_eq!(is_newer(a, b), old_is_newer(a, b));
+                    assert_eq!(r.is_newer(a, b), old_r_is_newer(&r, a, b));
+                }
+            }
+            assert_eq!(newest_of(&es), old_newest_of(&es));
+            assert_eq!(r.newest(), old_r_newest_of(&r, &r.current()));
+            let cur_held: Vec<Epoch> = r.current().into_iter().filter(|e| r.secret(e).is_some()).collect();
+            assert_eq!(r.newest_held().map(|x| x.0), old_r_newest_of(&r, &cur_held));
+            let est_held: Vec<Epoch> = r.held_established().map(|(e, _)| e).collect();
+            assert_eq!(r.newest_secret().map(|x| x.0), old_r_newest_of(&r, &est_held));
+            let new: Vec<Epoch> = r.held_newest_first().into_iter().map(|x| x.0).collect();
+            let old = old_held_newest_first(&r);
+            if free && new != old {
+                tie_diffs += 1;
+                // order_ties_by_n: some two held epochs share an order n and differ in n
+                assert!(old.iter().any(|a| old.iter().any(|b| r.order(a) == r.order(b) && a.n() != b.n())));
+            } else {
+                assert_eq!(new, old, "case {case}");
+            }
+        }
+        assert!(tie_diffs > 0);
     }
 }

@@ -187,8 +187,8 @@ impl Core {
     pub(crate) fn ingest_secrets(&mut self, actor: &Tid, secrets: &Secrets, unchecked: Option<Unchecked>, alts: &HistoryAlts) -> bool {
         let before = self.ix.secrets.get(actor).cloned();
         // a bounded number of actors held through reading-only secrets alone
-        let reading_only = |e: &ActorEpochs| ROLES.iter().all(|r| e.role(*r).held().next().is_none()) && ROLES.iter().any(|r| !e.role(*r).held_newest_first().is_empty());
-        if unchecked.is_some() && before.as_ref().is_none_or(|e| ROLES.iter().all(|r| e.role(*r).held_newest_first().is_empty())) && self.ix.secrets.iter().filter(|(t, e)| *t != actor && reading_only(e)).count() >= MAX_READING_ACTORS {
+        let reading_only = |e: &ActorEpochs| ROLES.iter().all(|r| e.role(*r).held().next().is_none()) && e.holds_any();
+        if unchecked.is_some() && before.as_ref().is_none_or(|e| !e.holds_any()) && self.ix.secrets.iter().filter(|(t, e)| *t != actor && reading_only(e)).count() >= MAX_READING_ACTORS {
             return false;
         }
         let mut epochs = before.clone().unwrap_or_default();
@@ -204,7 +204,7 @@ impl Core {
             let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::Actor { member: *m, epochs: e }, &mut epochs, unchecked);
         }
         self.adopt_derived(actor, &mut epochs);
-        let held_any = ROLES.iter().any(|r| !epochs.role(*r).held_newest_first().is_empty());
+        let held_any = epochs.holds_any();
         if held_any && Some(&epochs) != before.as_ref() {
             self.ix.secrets.insert(*actor, epochs);
             self.membership_changed();

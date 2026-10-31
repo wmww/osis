@@ -551,7 +551,7 @@ fn pending_grant_survives_unrelated_removal_spec_perm_3() {
     x.lp.peers[1].engine.accept_inbox(blob).unwrap();
     assert!(!x.lp.peers[1].engine.pending().is_empty(), "the grant waits for g's chain");
     assert_eq!(x.lp.peers[1].engine.role_on(&g), None);
-    let reading = |x: &Lost| x.lp.peers[1].engine.epochs(&g).is_some_and(|e| !e.read.held_newest_first().is_empty());
+    let reading = |x: &Lost| x.lp.peers[1].engine.epochs(&g).is_some_and(|e| e.read.holds_any());
     assert!(reading(&x), "secrets from the pending grant");
     let lost = x.lp.peers[1].engine.drop_lost_due().unwrap();
     assert!(lost.contains(&x.d) && !lost.contains(&g), "{lost:?}");
@@ -584,7 +584,7 @@ fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
     blob.signature = osis_crypto::Signature::from_value(&Value::Enum(c, Some(Box::new(Value::Bytes(sig))))).unwrap();
     lp.peers[1].engine.ingest(&blob.encode(), pk.blobs.clone()).unwrap();
     assert!(!lp.peers[1].engine.pending().is_empty(), "held pending: its author is unknown");
-    assert!(lp.peers[1].engine.epochs(&g).is_some_and(|e| !e.read.held_newest_first().is_empty()), "read from the planted box");
+    assert!(lp.peers[1].engine.epochs(&g).is_some_and(|e| e.read.holds_any()), "read from the planted box");
     // everything else of alice's arrives, the trigger running after each: kept while the grant
     // is pending, dropped once it proves bad
     let rest: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| *c != grant).collect();
@@ -599,7 +599,7 @@ fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
         }
     }
     assert!(dropped);
-    assert!(lp.peers[1].engine.epochs(&g).is_none_or(|e| e.read.held_newest_first().is_empty()));
+    assert!(lp.peers[1].engine.epochs(&g).is_none_or(|e| !e.read.holds_any()));
 }
 
 // spec/permissions.md §2: an invite holder grants a new member up to its invite, and cannot
