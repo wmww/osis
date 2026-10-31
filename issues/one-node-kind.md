@@ -18,3 +18,6 @@
 - Which groups a node hosts, and how that is configured (osis data in a config group the node reads, CLI flags, both), and how clients find hosts (`/label` server lists become host lists).
 - A node hosting a group it can also read: serve its readable entries and the blind entries alike, or one path.
 - Terminology pass across spec, notes, code, API and CLI together with issues/rename-roles-members.md (do both renames in one sweep).
+
+## Owner: completeness (round 13)
+"host" accepted as the term. The refactor must be complete: review passes explicitly hunt for remnants of the old split (types, module and crate names, config, CLI, test harnesses, spec and notes wording, comments, error texts, metrics, diagnostics). The end state should read as if it had been built unified from the start; no adapters, aliases or "formerly server" notes. Same standard for the roles/members rename.
