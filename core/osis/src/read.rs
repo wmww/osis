@@ -202,7 +202,7 @@ impl Reader<'_> {
 
     /// The membership timeline's roster of `thing` (spec/permissions.md §2).
     pub fn roster(&self, thing: Tid) -> Roster {
-        self.e.roster(&self.resolve(thing)).into_iter().map(|(m, e)| (self.resolve(m), Edge { role: e.role, until: e.until, invite: e.invite, tied: e.tied })).collect()
+        self.e.roster(&self.resolve(thing)).into_iter().map(|(m, e)| (self.resolve(m), Edge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.is_some() })).collect()
     }
 
     /// This node's effective role on `tid` now (`None`: no access).

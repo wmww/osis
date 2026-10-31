@@ -15,7 +15,7 @@
 use crate::graph::{Class, Edges, Owner, Owners};
 use crate::held::HeldSet;
 use crate::timeline::Timeline;
-use crate::types::{Dots, Edge, Frontier, MembershipCommit, Point, RosterSnapshot, WriteId};
+use crate::types::{Dots, Edge, Frontier, MembershipCommit, Point, RosterSnapshot, Tie, TieSource, WriteId};
 use crate::walk::{Applied, Attr, Change, Demotion, Fall, Input, Outcome, Undo, Walked};
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -115,7 +115,22 @@ impl W {
         self.opt(e.until, |w, u| w.n(u.0));
         self.opt(e.invite, W::role);
         self.opt(e.since.as_ref(), W::point);
-        self.bool(e.tied);
+        self.opt(e.tied.as_ref(), W::tie);
+    }
+    fn tie(&mut self, t: &Tie) {
+        self.ts(t.ts);
+        match t.src {
+            TieSource::Node(n) => {
+                self.u8(0);
+                self.tid(&n);
+            }
+            TieSource::Commit(c) => {
+                self.u8(1);
+                self.cid(&c);
+            }
+        }
+        self.n(t.ctr);
+        self.bool(t.subgroup);
     }
     fn dots(&mut self, d: &Dots) {
         match d {
@@ -585,8 +600,17 @@ impl<'a> R<'a> {
         let until = self.opt(|r| r.n().map(WallMs))?;
         let invite = self.opt(R::role)?;
         let since = self.opt(R::point)?;
-        let tied = self.bool()?;
+        let tied = self.opt(R::tie)?;
         Some(Edge { role, until, invite, since, tied })
+    }
+    fn tie(&mut self) -> Option<Tie> {
+        let ts = self.ts()?;
+        let src = match self.u8()? {
+            0 => TieSource::Node(self.tid()?),
+            1 => TieSource::Commit(self.cid()?),
+            _ => return None,
+        };
+        Some(Tie { ts, src, ctr: self.n()?, subgroup: self.bool()? })
     }
     fn dots(&mut self) -> Option<Dots> {
         match self.u8()? {

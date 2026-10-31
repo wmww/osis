@@ -40,7 +40,7 @@ fn rotates_before_wrapping_after_until_spec_crypto_4() {
     net.pair(c, a);
     let ct_ = net.tid(c);
     let until = WallMs(net.now() + 1_000);
-    let done = net.engine(a).grant(&g, &ct_, &ct::Edge { role: Role::Read, until: Some(until), invite: None, since: None, tied: false }).unwrap();
+    let done = net.engine(a).grant(&g, &ct_, &ct::Edge { role: Role::Read, until: Some(until), invite: None, since: None, tied: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     for (_, pks) in net.sync(a).take_direct() {

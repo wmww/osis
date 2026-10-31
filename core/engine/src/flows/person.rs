@@ -28,7 +28,7 @@ pub struct Person {
 }
 
 fn admin_edge() -> Edge {
-    Edge { role: Role::Admin, until: None, invite: None, since: None, tied: false }
+    Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None }
 }
 
 /// A key actor's `/keys`: its KEM key (spec/crypto.md §3).

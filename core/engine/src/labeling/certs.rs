@@ -449,7 +449,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &ak, &Value::Int(1)).unwrap();
         let good = lp.peers[0].commit(m).unwrap().unwrap();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: false };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
         lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
         lp.sync_all().unwrap();
         lp.advance(60_000);

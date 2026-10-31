@@ -188,7 +188,7 @@ fn run_edges(samples: u64, seed: u64) {
                     membership_model::Role::Write => Some(Write),
                     membership_model::Role::Admin => Some(Admin),
                 },
-                since: None, tied: (e.until ^ e.role as u32 ^ e.invite as u32) & 1 == 1,
+                since: None, tied: crate::common::tie_if((e.until ^ e.role as u32 ^ e.invite as u32) & 1 == 1),
             })
         };
         let all0: Vec<(Tid, u64)> = nodes.iter().map(|n| (*n, 0)).collect();

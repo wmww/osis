@@ -195,11 +195,10 @@ fn nested_tied_shares() {
 // spec/permissions.md §2 (tied edge removed only once the placement is gone): Bob's laptop
 // shares his card into Alice's tag while it reaches Bob's server but not the tag's; Bob's phone
 // gets the tied edge from Bob's server and, after an unrelated write by Alice, passes the tag's
-// label, which lacks the placement. The placement is on its way, not gone: the edge must stay.
-// Fails today: issues/tied-edge-before-placement.md.
+// label, which lacks the placement. The placement is on its way, not gone: the edge must stay
+// (the tie names a placement the phone does not hold yet).
 #[test]
-#[ignore = "issues/tied-edge-before-placement.md"]
-fn repro_edge_before_placement_is_not_removed() {
+fn edge_before_placement_is_not_removed() {
     let mut w = World::new();
     let s1 = w.add_server().unwrap();
     let s2 = w.add_server().unwrap();
@@ -232,4 +231,81 @@ fn repro_edge_before_placement_is_not_removed() {
     w.advance(70_000);
     assert!(listed(&alice, g, t));
     assert_eq!(bob.roster(t).get(&g).map(|e| e.tied), Some(true), "the share stays");
+}
+
+// spec/permissions.md §2 (the tie names the placement): Bob's phone gets the tied edge before the
+// placement and keeps it; the placement arrives, then the phone (a writer of the tag, admin of the
+// card) unplaces it: no self-removal, so its obligation removes the edge as an explicit demotion.
+#[test]
+fn edge_first_then_placement_then_unplace_removes_it() {
+    let mut w = World::new();
+    let s1 = w.add_server().unwrap();
+    let s2 = w.add_server().unwrap();
+    let alice = person(&mut w, 1, s1);
+    let bob = person(&mut w, 2, s2);
+    let join = Osis::pair(w.cfg(3, &[]), &bob.pair_offer().unwrap()).unwrap();
+    let (_, reply) = bob.pair_accept(join.request()).unwrap();
+    let phone = join.finish(&reply).unwrap();
+    w.run();
+    let b = introduce(&mut w, &alice, &bob);
+    let g = new_tag(&alice, "Shared").unwrap();
+    alice.grant(g, b, Role::Write, EdgeOpts::default()).unwrap();
+    w.run();
+    let t = card(&bob, "plan");
+    bob.write_with(|w| w.place(t, bob.home())).unwrap();
+    for _ in 0..3 {
+        w.advance(70_000);
+    }
+    w.set_reachable(&bob, s1, false);
+    bob.share_into(t, g, Role::Read, ShareOpts::default()).unwrap();
+    w.advance(70_000);
+    assert!(phone.roster(t).get(&g).is_some_and(|e| e.tied) && !listed(&phone, g, t), "the edge first");
+    w.set_reachable(&bob, s1, true);
+    for _ in 0..3 {
+        w.advance(70_000);
+    }
+    assert!(listed(&phone, g, t) && listed(&alice, g, t), "then the placement");
+    assert!(phone.roster(t).get(&g).is_some_and(|e| e.tied));
+    assert_eq!(text(&alice, t).as_deref(), Some("plan"));
+    // Alice, admin of the tag, would remove it too: offline, the phone's obligation alone
+    w.set_online(&alice, false);
+    phone.write_with(|w| w.unplace(t, g)).unwrap();
+    assert!(phone.roster(t).contains_key(&g), "not a self-removal: left to the obligation");
+    w.advance(70_000);
+    assert!(!phone.roster(t).contains_key(&g) && !bob.roster(t).contains_key(&g), "the phone removed it");
+    w.set_online(&alice, true);
+    for _ in 0..3 {
+        w.advance(70_000);
+    }
+    for db in [&alice, &bob, &phone] {
+        assert!(!listed(db, g, t));
+        assert!(!db.roster(t).contains_key(&g), "the tied edge went");
+    }
+}
+
+// spec/permissions.md §2 (held dead), spec/crdt.md §4.2, §5.5: while Alice and Bob are offline,
+// Carol unplaces the card and then replaces the tag's whole `/group`: the reset prunes the placement's tombstone, so the
+// others never see the element; absent under a later reset counts as dead, and the edge goes.
+#[test]
+fn placement_pruned_by_a_reset_counts_as_gone() {
+    let Setup { mut w, alice, bob, carol, g } = setup();
+    let t = card(&bob, "plan");
+    let other = card(&carol, "other");
+    bob.share_into(t, g, Role::Read, ShareOpts::default()).unwrap();
+    w.run();
+    w.set_online(&alice, false);
+    w.set_online(&bob, false);
+    carol.write_with(|w| w.unplace(t, g)).unwrap();
+    w.run();
+    let group = osis::core::Group { items: [other].into(), subgroups: Default::default() };
+    carol.write_with(|w| w.at(g, GROUP).replace(&group)).unwrap();
+    w.run();
+    w.set_online(&alice, true);
+    w.set_online(&bob, true);
+    w.advance(60_000);
+    w.run();
+    for db in [&alice, &bob, &carol] {
+        assert!(!listed(db, g, t) && listed(db, g, other));
+        assert!(!db.roster(t).contains_key(&g), "the tied edge went");
+    }
 }

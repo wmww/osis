@@ -362,7 +362,7 @@ fn text_range_and_edit_cost() {
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     let b = lp.peers[1].engine.tid();
-    m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: false }.to_value()) }).unwrap();
+    m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     // not periodic: an edit whose window repeats elsewhere in its base matches the whole text
     let mut rng = SeededRng::from_u64(5);
@@ -521,7 +521,7 @@ fn membership_change_and_open_cost() {
     osis_node::costs::take();
     let t1 = Instant::now();
     let mut m = Mutation::new();
-    m.op(things[0], &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(other))], op: Op::Set(ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: false }.to_value()) }).unwrap();
+    m.op(things[0], &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(other))], op: Op::Set(ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
     e.commit(m).unwrap().unwrap();
     println!("one grant with 10^4 commits held: {:?}", t1.elapsed());
     for (k, d, c) in osis_node::costs::take() {
@@ -586,7 +586,7 @@ fn demotion_heavy_open() {
         let mut m = Mutation::new();
         m.op(t, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(member)) }).unwrap();
         if let Some(r) = role {
-            m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(member))], op: Op::Set(ct::Edge { role: r, until: None, invite: None, since: None, tied: false }.to_value()) }).unwrap();
+            m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(member))], op: Op::Set(ct::Edge { role: r, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
         }
         e.commit(m).ok().flatten()
     };
@@ -868,7 +868,7 @@ fn late_delta_deaths_cost_spec_crdt_4_8() {
         let b = lp.peers[1].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
-        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: false }.to_value()) }).unwrap();
+        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
         lp.sync_all().unwrap();
         let add = |lp: &mut osis_node::local_peer::LocalPeer, i: usize, v: String| {
@@ -952,7 +952,7 @@ fn validity_flip_cost_spec_permissions_5_2() {
     lp.peers[0].commit(m).unwrap().unwrap();
     for (x, r) in [(b, Role::Write), (c, Role::Admin)] {
         let mut m = Mutation::new();
-        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(ct::Edge { role: r, until: None, invite: None, since: None, tied: false }.to_value()) }).unwrap();
+        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(ct::Edge { role: r, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
     }
     lp.sync_all().unwrap();
@@ -1121,7 +1121,7 @@ fn snapshot_first_sync_cost_spec_permissions_5_2() {
     let w = lp.peers[1].engine.tid();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
-    m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: false }.to_value()) }).unwrap();
+    m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     let base = lp.packages(0).unwrap();
     for i in 0..n {
@@ -1168,7 +1168,7 @@ fn dropped_snapshot_receipts_cost_spec_commits_5() {
     let b = lp.peers[1].engine.tid();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
-    m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: false }.to_value()) }).unwrap();
+    m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
     let key = ak("/s/short");
@@ -1378,7 +1378,7 @@ fn big_map_apply_memory() {
     for i in [1, 2] {
         let w = lp.peers[i].engine.tid();
         let mut m = Mutation::new();
-        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: false }.to_value()) }).unwrap();
+        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
     }
     lp.sync_all().unwrap();
@@ -1434,7 +1434,7 @@ fn snapshot_join_cost_spec_permissions_5_2() {
         let w = lp.peers[1].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
-        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: false }.to_value()) }).unwrap();
+        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
         let t0 = Instant::now();
         let mut m = Mutation::new();

@@ -25,7 +25,7 @@ pub fn edge(role: Role) -> Option<Edge> {
 }
 
 pub fn edge_inv(role: Role, invite: Option<Role>, until: Option<u64>) -> Option<Edge> {
-    Some(Edge { role, until: until.map(WallMs), invite, since: None, tied: false })
+    Some(Edge { role, until: until.map(WallMs), invite, since: None, tied: None })
 }
 
 /// `n` key-actor records whose tids sort in index order (models order authors by index).
@@ -394,7 +394,7 @@ pub fn edges_world(h: &membership_model::edges::EHist, salt: u8) -> (World, Vec<
     let nodes = w.nodes_salted(h.n(), salt);
     let t = w.thing(nodes[0]);
     let me = |e: Option<MEdge>| {
-        e.map(|e| Edge { role: model_role(e.role).unwrap_or(Role::Read), until: (e.until != NEVER).then_some(WallMs(e.until as u64)), invite: model_role(e.invite), since: None, tied: (e.until ^ e.role as u32 ^ e.invite as u32) & 1 == 1 })
+        e.map(|e| Edge { role: model_role(e.role).unwrap_or(Role::Read), until: (e.until != NEVER).then_some(WallMs(e.until as u64)), invite: model_role(e.invite), since: None, tied: crate::common::tie_if((e.until ^ e.role as u32 ^ e.invite as u32) & 1 == 1) })
     };
     let all0: Vec<(Tid, u64)> = nodes.iter().map(|n| (*n, 0)).collect();
     for (x, e) in h.genesis.iter().enumerate().skip(1) {
@@ -548,4 +548,9 @@ pub fn sharded<T: Send>(samples: u64, seed: u64, run: impl Fn(u64, u64) -> T + S
             .collect();
         hs.into_iter().map(|h| h.join().unwrap_or_else(|_| panic!("a shard of seed {seed:#x} failed (message above)"))).collect()
     })
+}
+
+/// A tie for an edge the generators mark tied (carried, never an authority).
+pub fn tie_if(on: bool) -> Option<osis_perm::Tie> {
+    on.then_some(osis_perm::Tie { ts: Ts::default(), src: osis_perm::TieSource::Commit(osis_base::CommitId([3; 32])), ctr: 2, subgroup: false })
 }

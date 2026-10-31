@@ -36,7 +36,7 @@ fn refused_inbox_deposit_retried_spec_sync_3() {
     let (_, done) = net.engine(a).create_label(&g, std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: false };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
     let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -99,7 +99,7 @@ fn persons(replaced: usize, seed: u64) -> (Net, usize, usize, osis_base::Tid, os
         l = new;
     }
     assert_eq!(net.engine(a).group_labels(&g).unwrap().iter().find(|x| x.id == l).unwrap().index, replaced as u64);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: false };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
     let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);

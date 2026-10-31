@@ -57,7 +57,7 @@ fn demoted_writer_of(n: usize) -> (LocalPeer, Tid, Tid, CommitId) {
 fn edge(lp: &mut LocalPeer, t: Tid, m: Tid, role: Option<Role>, frontier: Option<Value>) {
     let mut mu = Mutation::new();
     let op = match role {
-        Some(role) => PathOp { path: vec![PathSeg::Key(Value::Tid(m))], op: Op::Set(ct::Edge { role, until: None, invite: None, since: None, tied: false }.to_value()) },
+        Some(role) => PathOp { path: vec![PathSeg::Key(Value::Tid(m))], op: Op::Set(ct::Edge { role, until: None, invite: None, since: None, tied: None }.to_value()) },
         None => PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(m)) },
     };
     mu.op(t, &ct::MEMBERS, op).unwrap();
@@ -344,7 +344,7 @@ fn redemption_on_two_targets_refused_spec_commits_2() {
     let x = Tid::from_bytes([9; 15]);
     let mut mu = Mutation::new();
     mu.op(n, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(a)) }).unwrap();
-    mu.op(k, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: false }.to_value()) }).unwrap();
+    mu.op(k, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
     let r = lp.peers[1].commit(mu);
     assert!(matches!(r, Err(crate::Error::BadInput(m)) if m.contains("more than one edge")), "{r:?}");
 }

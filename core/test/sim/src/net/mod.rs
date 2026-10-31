@@ -1347,7 +1347,7 @@ impl NetSim {
 
     /// Node `n` grants `member` `role` on `target` (spec/permissions.md §2).
     pub fn grant(&mut self, n: usize, target: Tid, member: Tid, role: Role) -> Res<()> {
-        let edge = ct::Edge { role, until: None, invite: None, since: None, tied: false };
+        let edge = ct::Edge { role, until: None, invite: None, since: None, tied: None };
         let r = self.engine(n)?.grant(&target, &member, &edge);
         let done = r.map_err(|e| self.fail(format!("node {n} grant: {e}")))?;
         self.carry(n, done)
