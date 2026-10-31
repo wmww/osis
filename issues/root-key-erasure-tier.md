@@ -4,4 +4,7 @@
 
 What holds today: deletion is unrecoverable through the normal filesystem API and against an attacker who reads only current file contents; it is not forward-secure against block-level recovery. notes/local-store.md says "best effort below hardware-backed" and a diagnostic reports the tier.
 
-To do (platform work, no wire change): Secure Enclave/Keychain, Android Keystore, TPM-sealed or DPAPI roots; a kernel keyring/secret-service tier for Linux desktops; until then, state the deviation in spec/requirements.md or notes/mvp-progress.md so it is not read as met.
+## Recommendation
+1. Implement the hardware tiers behind `RootStorage`: TPM 2.0 NV index with `TPMA_NV_WRITEDEFINE`-less overwrite (Linux, Windows; the NV write replaces the old value in the TPM's own flash), Secure Enclave keychain item (Apple), Android Keystore / StrongBox-wrapped root (Android). The trait already exists; each tier is a few hundred lines plus a platform dependency behind a feature.
+2. **Flag for the owner: browsers cannot meet the requirement.** IndexedDB and OPFS offer no erasable storage, WebAuthn PRF yields a key but cannot destroy an old one, so in a browser build "a node that deleted honestly and is compromised later yields nothing" cannot hold against anyone who can read the profile's storage history. Proposed wording for spec/requirements.md Deletion: "Forward secure where the platform offers erasable key storage (hardware keystore, TPM); elsewhere, including browsers, deletion is unrecoverable through the platform's own storage API only."
+3. Until 1 lands, list the deviation in notes/mvp-progress.md Deviations so the requirement is not read as met.

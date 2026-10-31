@@ -6,9 +6,11 @@ Mechanism: `Store::reserve_counters` hands out `counter(tid, ak)` from the store
 
 Common on consumer platforms: iOS/Android app-data backup restored onto a new phone, desktop file-level backups, container/VM snapshots.
 
-Fix directions (no wire change):
-- Detect at sync: when a node receives an own-authored node-form commit whose counters on `(tid, ak)` are at or above its reserved next, mark that aspect (or the whole node) "unsure" and write it in commit form from then on (spec/crdt.md §2.1 already allows). Closes the window after the first reconcile; writes made offline between restore and that reconcile still overlap.
-- Conservative: after an open that cannot prove continuity (a store generation counter checked against the newest own commit seen at each server, or simply any open on a copied store), use commit form on every aspect until each synced label has been reconciled once.
-- Store a random store-instance id in the persisted sync state and in a per-server record (the server already keeps per-connection nothing stable; the node could keep its last-seen own commit per aspect in the store, which a restore rolls back too, so detection must come from the server's log, not local state).
+## Recommended fix
+Make "sure of its last counter" (spec/crdt.md §2.1) a concrete, local predicate and act on it by default, instead of trying to detect a restore:
+1. **Commit form until caught up.** After every open, a node writes an aspect in commit form until the thing's labels have each completed one pass since the open (reconciled and read to the end at a server, and at the co-readers it is connected to: the existing complete-pass notion of spec/permissions.md §3). A thing in no labeled closure is always sure (nobody else can hold its commits). Cost: the first commits after each app launch are commit form (one 32-byte source entry per foreign commit referencing them, no run continuation into them); typing sessions commit every few seconds, so this is a handful of commits per launch.
+2. **Adopt counters from what the pass shows.** During the pass the engine records, per (aspect, own node), the greatest own counter it sees in own node-form commits and in valid snapshot frontiers for its node; the store's next counter becomes `max(stored, seen + 1)` before node form resumes. Frontiers are claims, but a claim about the node's own counters by a valid snapshot is already counted as received (spec/crdt.md §8), and over-adopting only skips counters.
+3. Spec: replace the §2.1 sentence with the predicate above; spec/commits.md §4 unchanged (the overlap rule stays as the backstop against revoked actors).
+Residual: a commit that reached only a peer the node never reconciles with before writing node form. Narrow, and the same loss as today.
 
-Repro to write: two nodes from one store copy (or a store rolled back after N commits synced), both write the same aspect, sync through a hub; expect both commits invalid everywhere.
+Rejected: a store-instance id checked against a server record (the server keeps nothing per client, by design); always commit form (text runs across commits and frontier size depend on node form).
