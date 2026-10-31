@@ -115,6 +115,10 @@ pub enum DiagnosticKind {
     /// writer's data, a newer schema revision's enum case); it read as absent (the `osis` API,
     /// spec/versioning.md §5; `tids`: the thing).
     Mismatch,
+    /// A valid snapshot copies a write of a delta held here otherwise than the delta holds it
+    /// (spec/permissions.md §5.2: the snapshot's copy governs; `commit`: the snapshot, `peer`:
+    /// its author, `tids`: the thing).
+    Misstated,
     /// A local storage condition: a store file or directory readable by others whose mode
     /// could not be tightened (the `osis` file store).
     Storage,

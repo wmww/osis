@@ -24,7 +24,7 @@ fn bounded_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> 
 
 /// Whether a held body of `(tid, ak)` has a relative bound. Cost: the aspect's commits (in
 /// memory); only flips and un-merges ask.
-fn any_bounded(core: &Core, tid: &Tid, ak: &Ak) -> bool {
+pub(crate) fn any_bounded(core: &Core, tid: &Tid, ak: &Ak) -> bool {
     core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().any(|(_, c)| bounded_part(core, c, tid, ak).is_some())
 }
 

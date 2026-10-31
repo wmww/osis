@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod deaths;
 pub(crate) mod forget;
 
-pub(crate) use deaths::{load_deaths_due, mark_deaths_due, mark_if_bounded, note_copies, note_deaths, rejudge_deaths, settle_due};
+pub(crate) use deaths::{any_bounded, load_deaths_due, mark_deaths_due, mark_if_bounded, note_copies, note_deaths, rejudge_deaths, settle_due};
 
 /// A body a due timer drops with a live write: its commit and every aspect of it.
 pub(crate) type LiveDrop = (CommitId, Vec<(Tid, Ak)>);
@@ -236,6 +236,9 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     let gives = if snapshot && !as_cover { tx.core.ix.snapshots.get(&k).and_then(|v| v.iter().find(|x| x.1 == *c)).map(|g| (g.2.clone(), g.3.clone())) } else { None };
     // the dropped deltas, to find what of the state holds copies of their writes
     let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect();
+    // a valid snapshot's misstated copies govern while it is held (spec/permissions.md §5.2):
+    // dropped, the held deltas give those writes again
+    let misstated = if snapshot && m.valid.get(ai).copied().unwrap_or(false) { crate::apply::validity::misstated_by(tx, c, &a.tid, &a.ak, bodies.first())? } else { BTreeSet::new() };
     let (role, overreach) = (tx.core.ix.rotation_role.get(&(*c, ai)).copied(), tx.core.ix.grant_overreach.contains(&(*c, ai)));
     let intros = crate::apply::keys::intro_epochs(&m.header, ai, &bodies);
     m.dropped.insert(ai, Dropped { covered_by, as_cover, live, gives, role, overreach, intros });
@@ -262,6 +265,16 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     // a valid snapshot dropped vouches no more for invalid deltas' writes it carried
     // (spec/permissions.md §5.2)
     if vouched && !crate::apply::invalid_of(tx.core, &a.tid, &a.ak).is_empty() && crate::apply::unmerge_fell(tx, &a.tid, &a.ak, None)? {
+        tx.core.mark_aspect_changed(&a.tid, &a.ak);
+    }
+    if !misstated.is_empty() {
+        let mut by: BTreeMap<osis_crdt::Source, Vec<u64>> = BTreeMap::new();
+        for d in misstated {
+            by.entry(d.src).or_default().push(d.ctr);
+        }
+        let gone: Vec<Owned> = by.into_iter().map(|(src, ctrs)| Owned::Dots { src, ctrs }).collect();
+        crate::apply::rebuild_without(tx, &a.tid, &a.ak, &gone)?;
+        mark_deaths_due(tx, &a.tid, &a.ak)?;
         tx.core.mark_aspect_changed(&a.tid, &a.ak);
     }
     Ok(())
@@ -962,12 +975,13 @@ fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> R
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
     let is_snapshot = m.header.kind.is_compaction();
     let mut body: Vec<Fragment> = held.into_iter().map(Decoded::into_fragment).collect();
-    // a snapshot body's copies of writes a received valid delta supplies count for
-    // nothing (spec/permissions.md §5.2): what it must carry is the rest, its copies of
-    // invalid deltas' writes included (it vouches for them)
-    if is_snapshot {
+    // a valid snapshot body's copies all count (spec/permissions.md §5.2): it must carry them
+    // all; an invalid one gives nothing, its copies of writes a received valid delta supplies
+    // are left out
+    if is_snapshot && !crate::apply::validity::snapshot_valid(tx.core, c, tid, ak) {
+        let core = &*tx.core;
         for b in &mut body {
-            crate::apply::strip_copies_where(tx.core, tid, ak, b, &|_, m, ai| m.valid.get(ai).copied().unwrap_or(false));
+            b.strip_copies(&|d| crate::apply::validity::any_owner(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && m.valid.get(ai).copied().unwrap_or(false)));
         }
     }
     let before = crate::engine::state::encode(snap)?;

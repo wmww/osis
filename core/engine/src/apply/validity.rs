@@ -760,8 +760,7 @@ fn valid_on(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai
 
 /// Writes a held compaction snapshot holds under dots whose owning delta was never received here
 /// (`owner_received`), per snapshot and source, counters sorted: the snapshots to compare with
-/// that delta once it arrives (`uncarry`, `differing_copies`), and what a snapshot gave, removed
-/// when it turns invalid (`given_by`). Kept for every held snapshot whatever its validity, in
+/// that delta once it arrives (`uncarry`, `differing_copies`). Kept for every held snapshot whatever its validity, in
 /// (snapshot, source) order whatever the arrival order. Nothing is judged per write: a valid
 /// snapshot vouches for every write it carries (spec/permissions.md §5.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -804,9 +803,7 @@ pub(crate) fn any_owner(core: &Core, tid: &Tid, ak: &Ak, d: &Dot, f: &dyn Fn(&Co
     }
 }
 
-/// Whether the delta owning dot `d` on `(tid, ak)` was ever held here (held or dropped): the
-/// write counts from that delta alone, a snapshot's copy of it for nothing (spec/permissions.md
-/// §5.2, `Fragment::strip_copies`).
+/// Whether the delta owning dot `d` on `(tid, ak)` was ever held here (held or dropped).
 pub(crate) fn owner_received(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
     any_owner(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai))
 }
@@ -896,13 +893,32 @@ pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, snap: &CommitId,
     }
 }
 
-/// The writes of held snapshot `snap` on `(tid, ak)` whose owning delta was never received: they
+/// The writes of held snapshot `snap` on `(tid, ak)` whose owning delta was never received here,
+/// or was dropped as covered with every coverer still giving its writes from a held body: they
 /// go from the state when it turns invalid (spec/permissions.md §5.2), all of them, also those
 /// another held valid snapshot carries (its body gives its own copy back in the rebuild; the
-/// state may hold this one's differing copy, which would otherwise stay).
-pub(crate) fn given_by(core: &Core, tid: &Tid, ak: &Ak, snap: &CommitId) -> Vec<Owned> {
-    let gs = core.ix.carried.get(&(*tid, ak.clone())).map(Vec::as_slice).unwrap_or_default();
-    gs.iter().filter(|g| g.snap == *snap).map(|g| Owned::Dots { src: g.src.clone(), ctrs: g.ctrs.clone() }).collect()
+/// state may hold this one's differing copy, which would otherwise stay), and the coverers give
+/// the dropped delta's writes back the same way. A write of a delta dropped otherwise, or under
+/// a coverer dropped for its bounds (whose writes the state alone holds), stays.
+pub(crate) fn given_by(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, snap: &CommitId) -> Result<Vec<Owned>> {
+    let Some(sai) = tx.core.ix.commits.get(snap).and_then(|m| m.view.aspects.iter().position(|x| x.tid == *tid && x.ak == *ak)) else { return Ok(Vec::new()) };
+    let mut by: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
+    for d in super::held_parts(tx, snap, sai)? {
+        for (d, ts) in d.fragment().writes() {
+            if ts.is_some() && !d.src.is_derived() && regiven(tx.core, tid, ak, &d) {
+                by.entry(d.src.clone()).or_default().insert(d.ctr);
+            }
+        }
+    }
+    Ok(by.into_iter().map(|(src, ctrs)| Owned::Dots { src, ctrs: ctrs.into_iter().collect() }).collect())
+}
+
+/// Whether the writes under dot `d` on `(tid, ak)` come back from held bodies alone (`given_by`):
+/// its owning delta never received, or dropped as covered where no coverer is a snapshot body
+/// dropped other than as covered (its writes live only in the state).
+fn regiven(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
+    let residue = |s: &CommitId| core.ix.commits.get(s).is_some_and(|m| m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak).and_then(|ai| m.dropped.get(&ai)).is_some_and(|x| !x.as_cover));
+    !owner_received(core, tid, ak, d) || any_owner(core, tid, ak, d, &|c, m, ai| m.dropped.get(&ai).is_some_and(|x| x.as_cover && !crate::retention::any_coverer(core, c, ai, &residue)))
 }
 
 /// Drops the carried writes a commit owns on the aspects whose deltas it now holds (`held`):
@@ -1010,20 +1026,59 @@ pub(crate) fn vouched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owned: &[Owned], have
 }
 
 /// The dots under which the snapshots `snaps` hold copies of the writes of commit `id`'s delta
-/// `ai` (header `h`, stored) otherwise than that delta holds them (spec/permissions.md §5.2:
-/// another value, `ts` or position, or a dot the delta does not use). Copies a snapshot taken
-/// here before the delta gave the state; a rebuild replaces those with the delta's. O(delta)
+/// `ai` (header `h`, stored) otherwise than that delta holds them (`misstated_in`). O(delta)
 /// once a snapshot is indexed.
 pub(crate) fn differing_copies(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize, snaps: &BTreeSet<CommitId>) -> Result<BTreeSet<Dot>> {
     let mut out = BTreeSet::new();
     let Some(a) = h.aspects.get(ai) else { return Ok(out) };
-    let ranges = owned_ranges(h, id, ai);
     let own: Vec<Fragment> = super::held_parts(tx, id, ai)?.into_iter().map(Decoded::into_fragment).collect();
     let own: Vec<&Fragment> = own.iter().collect();
     for s in snaps {
         if let Some(ix) = copy_index(tx, s, &a.tid, &a.ak, None)? {
-            out.extend(ix.outside(&ranges, &own));
+            out.extend(misstated_in(&ix, h, id, ai, &own));
         }
+    }
+    Ok(out)
+}
+
+/// The dots under which a snapshot (indexed `ix`) carries copies of the writes of commit `id`'s
+/// held delta `ai` (header `h`, parts `own`) otherwise than the delta holds them
+/// (spec/permissions.md §5.2: another value, `ts` or position, a dot the delta does not use, a
+/// value-less copy of a delta without expiry).
+pub(crate) fn misstated_in(ix: &osis_crdt::CopyIndex, h: &Header, id: &CommitId, ai: usize, own: &[&Fragment]) -> BTreeSet<Dot> {
+    let lax = h.aspects.get(ai).is_some_and(|a| a.expires.is_some());
+    ix.misstated(&owned_ranges(h, id, ai), own, lax)
+}
+
+/// Whether the delta owning dot `d` on `(tid, ak)` expires: snapshots carry its writes
+/// value-less (spec/crdt.md §4.7), no misstatement.
+pub(crate) fn owner_expires(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
+    any_owner(core, tid, ak, d, &|_, m, ai| m.header.aspects.get(ai).is_some_and(|a| a.expires.is_some()))
+}
+
+/// The dots under which held snapshot `s` of `(tid, ak)` (fragment `f`, when the caller read it)
+/// carries copies of held deltas' writes otherwise than those deltas hold them (`misstated_in`).
+pub(crate) fn misstated_by(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak, f: Option<&Fragment>) -> Result<BTreeSet<Dot>> {
+    let mut out = BTreeSet::new();
+    let Some(ix) = copy_index(tx, s, tid, ak, f)? else { return Ok(out) };
+    let owners = {
+        let core = &*tx.core;
+        let found = std::cell::RefCell::new(BTreeSet::new());
+        for d in ix.dots() {
+            any_owner(core, tid, ak, d, &|c, m, ai| {
+                if !m.missing.contains(&ai) && !m.dropped.contains_key(&ai) && !core.ix.void.contains(c) {
+                    found.borrow_mut().insert((*c, ai));
+                }
+                false
+            });
+        }
+        found.into_inner()
+    };
+    for (c, ai) in owners {
+        let Some(h) = tx.core.ix.commits.get(&c).map(|m| m.header.clone()) else { continue };
+        let own: Vec<Fragment> = super::held_parts(tx, &c, ai)?.into_iter().map(Decoded::into_fragment).collect();
+        let own: Vec<&Fragment> = own.iter().collect();
+        out.extend(misstated_in(&ix, &h, &c, ai, &own));
     }
     Ok(out)
 }
@@ -1147,7 +1202,10 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
             let snaps: Vec<CommitId> = fell.get(&k).into_iter().flatten().filter(|(c, _)| tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction())).map(|x| x.0).collect();
             if rose.contains(&k) || !snaps.is_empty() {
                 let _s = crate::costs::span("rejudge: rebuild");
-                let mut gone: Vec<Owned> = snaps.iter().flat_map(|s| given_by(tx.core, tid, ak, s)).collect();
+                let mut gone: Vec<Owned> = Vec::new();
+                for s in &snaps {
+                    gone.extend(given_by(tx, tid, ak, s)?);
+                }
                 // parts dropped under its cover alone are missing again, their writes gone
                 if !snaps.is_empty() {
                     gone.extend(crate::retention::uncover(tx, tid, ak)?);

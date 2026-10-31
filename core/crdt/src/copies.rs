@@ -1,8 +1,7 @@
 //! Copies of writes held by several bodies (spec/permissions.md §5.2, spec/commits.md §5): a
-//! snapshot's record of a write whose own commit is held counts for nothing (`strip_copies`),
-//! and a write's copies agree when each holds it at the same position with the same stamp and
+//! write's copies agree when each holds it at the same position with the same stamp and
 //! payload (`copies_within`). Honest copies of one write are identical; a copy that differs was
-//! forged.
+//! forged, and a valid snapshot's copy then governs (`misstated`).
 
 use crate::fragment::{Bag, Enum, Fragment, Map, Set, Slots, Struct};
 use crate::seq::{Anchor, SeqContent};
@@ -194,6 +193,17 @@ impl Fragment {
             .collect()
     }
 
+    /// The dots `pick` accepts, among those `others` hold writes under, under which `self` holds
+    /// a write that `others` do not hold alike (`agrees`; `lax(d)`: a value-less copy in `self`
+    /// matches, as for an expiring write's): where `self` is a valid snapshot and `others` a held
+    /// delta, a misstatement (spec/permissions.md §5.2).
+    pub fn misstated(&self, others: &[&Fragment], pick: &dyn Fn(&Dot) -> bool, lax: &dyn Fn(&Dot) -> bool) -> BTreeSet<Dot> {
+        let theirs: BTreeMap<Key, Option<Val>> = others.iter().flat_map(|o| o.copies(&|_| true)).collect();
+        let dots: BTreeSet<&Dot> = theirs.keys().map(|k| &k.2.dot).collect();
+        let mine = self.copies(&|d| dots.contains(d) && pick(d));
+        mine.into_iter().filter(|(k, v)| !theirs.get(k).is_some_and(|t| agrees(&k.1, v, t, lax(&k.2.dot)))).map(|(k, _)| k.2.dot).collect()
+    }
+
     /// Its writes by owner dot, for `CopyIndex::outside` against many deltas in turn.
     pub fn copy_index(&self) -> CopyIndex {
         let mut m: BTreeMap<Dot, Vec<(Key, Option<Val>)>> = BTreeMap::new();
@@ -205,15 +215,15 @@ impl Fragment {
 
     /// Removes every write whose owner dot `pred` accepts, element and entry creations with
     /// their chars and anchors included, keeping others' writes nested in what they created,
-    /// with the entry's key (their records repeat it, spec/crdt.md §3.2): a snapshot's copies
-    /// of writes whose own commit supplies them (spec/permissions.md §5.2).
+    /// with the entry's key (their records repeat it, spec/crdt.md §3.2): what an invalid
+    /// snapshot body or a snapshot turned invalid gave (spec/permissions.md §5.2).
     pub fn strip_copies(&mut self, pred: &dyn Fn(&Dot) -> bool) {
         self.remove_dots_in(pred, true);
         self.drop_creations(pred, false);
     }
 
-    /// `strip_copies`, the keys of the entries `pred` accepts included: copies found to differ
-    /// from their delta (`copies_outside`), whose key may be forged too.
+    /// `strip_copies`, the keys of the entries `pred` accepts included: writes under dots a
+    /// snapshot misstates (`misstated`), whose key may be forged too.
     pub fn strip_forged(&mut self, pred: &dyn Fn(&Dot) -> bool) {
         self.remove_dots_in(pred, true);
         self.drop_creations(pred, true);
@@ -251,6 +261,13 @@ impl Fragment {
     }
 }
 
+/// Whether copy `mine` of a write of kind `k` agrees with `theirs`: equal, or `theirs` held
+/// value-less (expired or purged there), or `mine` without its value where it may be: a deleted
+/// text element's char (§3.3 rule 5), or anything when `lax`.
+fn agrees(k: &Kind, mine: &Option<Val>, theirs: &Option<Val>, lax: bool) -> bool {
+    theirs.is_none() || mine == theirs || mine.is_none() && (lax || matches!(k, Kind::Created(_)))
+}
+
 /// A fragment's writes by owner dot (`Fragment::copy_index`).
 #[derive(Debug, Default)]
 pub struct CopyIndex(BTreeMap<Dot, Vec<(Key, Option<Val>)>>);
@@ -266,6 +283,25 @@ impl CopyIndex {
     /// The owner dots indexed of `src` with a counter in `lo..hi`.
     pub fn dots_in(&self, src: &Source, lo: u64, hi: u64) -> impl Iterator<Item = &Dot> {
         self.0.range(Dot::new(src.clone(), lo)..Dot::new(src.clone(), hi)).map(|(d, _)| d)
+    }
+    /// Every owner dot indexed.
+    pub fn dots(&self) -> impl Iterator<Item = &Dot> {
+        self.0.keys()
+    }
+    /// The dots in `ranges` whose writes here a held delta `own` holds otherwise
+    /// (`Fragment::misstated`; `lax`: the delta expires, so a value-less copy matches).
+    pub fn misstated(&self, ranges: &[(Source, u64, u64)], own: &[&Fragment], lax: bool) -> BTreeSet<Dot> {
+        let mut out = BTreeSet::new();
+        let mut theirs: Option<BTreeMap<Key, Option<Val>>> = None;
+        for (src, lo, hi) in ranges {
+            for (d, ws) in self.0.range(Dot::new(src.clone(), *lo)..Dot::new(src.clone(), *hi)) {
+                let t = theirs.get_or_insert_with(|| own.iter().flat_map(|o| o.copies(&|_| true)).collect());
+                if ws.iter().any(|(k, v)| !t.get(k).is_some_and(|x| agrees(&k.1, v, x, lax))) {
+                    out.insert(d.clone());
+                }
+            }
+        }
+        out
     }
     /// The dots in `ranges` (source, counters `lo..hi`) whose writes here are not all in
     /// `others` as `Fragment::copies_within` compares them.
