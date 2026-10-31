@@ -9,7 +9,7 @@
 - **No separate server project.** Hosting is part of the node; a CLI command starts a node that hosts (`osis serve` or similar); configuration may live in the osis database.
 
 ## Today
-- `core/server` (~3k lines: blind store over osis-store backends, the hub, flow control and caps, replication, the driver) is a separate crate and binary with no actor keys; `core/node` syncs readable groups and serves them to member peers (`ServerConnection` over its own entries, notes/networking.md).
+- `core/server` (~3k lines: blind store over osis-store backends, the hub, flow control and caps, replication, the driver) is a separate crate and binary with no actor keys; `core/node` syncs readable groups and serves them to co-reader peers (`ServerConnection` over its own entries, notes/networking.md).
 - spec/overview.md defines "Blind node: a node holding no read secret of a label it stores; 'server' is a blind node used as one", so the spec is already per label; the split is in code and wording.
 
 ## Design (answers to the design questions)

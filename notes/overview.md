@@ -14,7 +14,7 @@ The repo is meant to become a small monorepo of projects worked on independently
 The MVP is built: every subsystem of the spec is implemented and tested (final report, deviations and open issues: notes/mvp-progress.md). Design is settled; byte layouts are in spec/wire.md; conformance vectors are all provisional until the first stable release (nothing is frozen or logged as a format change before then).
 
 Code map (crate DAG and rules: notes/architecture.md):
-- `core/` (package names keep the `osis-` prefix): `base` osis-base (values, CBOR, ids, chunker), -crypto, -crdt, -schema, -perm, -store (encrypted local store), -commit, -keys, -label (blobs, labels, steps, large values), -proto (sans-I/O sync protocol), -transport (in-process, QUIC, iroh, LAN), -host (host), -node (engine, sync engine, membership flows), `osis` (the app API), `bench` osis-bench. `cli/` osis-cli (binary `osis`).
+- `core/` (package names keep the `osis-` prefix): `base` osis-base (values, CBOR, ids, chunker), -crypto, -crdt, -schema, -perm, -store (encrypted local store), -commit, -keys, -label (blobs, labels, steps, large values), -proto (sans-I/O sync protocol), -transport (in-process, QUIC, iroh, LAN), -host (host), -node (engine, sync engine, role flows), `osis` (the app API), `bench` osis-bench. `cli/` osis-cli (binary `osis`).
 - `kit/` osis-kit (UI toolkit over Masonry) and `app/` osis-app (binary `osis-app`, prototype notes app): their own Cargo workspace rooted at kit/Cargo.toml (notes/app.md).
 - `schema/` the first-party schema files, their scenario tests in core/osis's test binary (notes/std.md); `core/test/sim/` the deterministic simulator (notes/testing.md); `core/test/vectors/` conformance vectors; `core/test/fuzz/` cargo-fuzz targets; `core/test/crdt-model` and `core/test/membership-model` reference models, `core/test/tla` TLA+ `sync`, `rotation` and `membership`; `tools/` policy.py, spec_map.py, fixpoint.
 
@@ -43,7 +43,7 @@ Known open (issues/): owner tradeoffs stated in user terms (aspect-key-format); 
 - notes/data-model.md: tids, CBOR, large values, namespaces, schema DSL sketch.
 - notes/versioning.md: transition conventions, write policy, blessed paths for hard schema changes.
 - notes/crdt.md: merge design reasons, anomalies, reference model, text size, worked examples.
-- notes/permissions.md: permission rules' reasons, membership model findings, move (copy) and revocation reasoning, sharing patterns.
+- notes/permissions.md: permission rules' reasons, roles model findings, move (copy) and revocation reasoning, sharing patterns.
 - notes/sync.md: sync and host reasons, limits, what a blind node learns, policy defaults.
 - notes/crypto.md: suite choices, costs, crates.
 - notes/ephemeral.md: ephemeral data design and what is built (in-memory things and aspects, persistence, placements, undo, ephemeral commits held in memory at nodes and hosts, relay-only signals; values kept alive by their author's rewrites), expiry, the all-nodes predicate, heartbeats and the stranded flag.

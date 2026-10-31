@@ -13,7 +13,7 @@ Local storage, indexes, the node-to-node protocol (spec/sync.md §6, which negot
 - A node MUST NOT discard, reject or crash on data it cannot interpret: an unknown format version, encoding ID, tag, field ID, enum case, AK, algorithm case or suite. It stores and relays the data, joins what it can, treats the rest as not yet received, and re-examines it after an upgrade. A parked delta pends its whole commit (atomic apply, spec/commits.md §4).
 - A parked delta is kept as bytes with its header entry. A parked commit is pending (spec/commits.md §4).
 - A body a node could not join is never covered for it (spec/commits.md §5), so it never compacts one; purge requests, expiry and absolute keep-at-most bounds still apply. It relays other nodes' snapshots and deletions of such blobs like a host does.
-- A membership-class value the node cannot type (an unknown role case, say) counts as not received; what depends on it stays pending.
+- A role-class value the node cannot type (an unknown role case, say) counts as not received; what depends on it stays pending.
 - Malformed data (non-canonical bytes, out-of-range indices, a violated grammar rule) is bad input and MUST be rejected, never parked.
 
 ## 3. Schema identity

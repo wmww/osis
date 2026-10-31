@@ -6,7 +6,7 @@ Decided so far (owner, Oct 2026):
 - The key stays a string on the wire (readable in diagnostics, no struct encoding rules); its structure is a grammar over the string, equivalent to a struct for every purpose that matters.
 - Markers are positional with reserved characters, never substrings ("admin" appearing anywhere must not mean anything).
 - Major version in the key is a standard, not a codegen convention: same namespace and name with a higher major = successor form (spec/versioning.md §4: a type change is a new AK); a node may use the relation without the schema (diagnostics, grouping; no conversion implied).
-- Admin-only aspects: a marker in the key, judged by the validity path like membership-class aspects (notes/permissions.md); no schema dependence, no wire bytes.
+- Admin-only aspects: a marker in the key, judged by the validity path like role-class aspects (notes/permissions.md); no schema dependence, no wire bytes.
 - Schema source stays out of the key (it is the schema ID in the header's schema table: 128 random bits, spec/data-model.md §10).
 - A namespace registry (a file in this repo claimed by PR) is cheap and optional; none exists yet (notes/data-model.md AK namespaces).
 

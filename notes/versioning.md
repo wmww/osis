@@ -38,7 +38,7 @@ Policy inputs, all local: whether g is exact; (schema ID, revision) pairs in thi
 Cost where the new form is used: old apps see stale or missing data on that item, and their later edit wins through f at the granularity of the converted value. Nothing can do better: old code cannot know what new data means.
 
 ## Blessed paths for hard changes
-- **Restructuring across things** (inline tasks become task things): f cannot mint tids on read, and only owner-actor members can create the owner's things. Model the new structure as a case (a task gains `ref: option<tid>`; with a ref its inline fields are a stale copy that wins only by timestamp). Convert an element when a user edits or shares it, never in bulk.
+- **Restructuring across things** (inline tasks become task things): f cannot mint tids on read, and only owner-actor holders can create the owner's things. Model the new structure as a case (a task gains `ref: option<tid>`; with a ref its inline fields are a stale copy that wins only by timestamp). Convert an element when a user edits or shares it, never in bulk.
 - **Whole redesign**: an import (read old forms through f, write new forms) once policy says the group moved on; drop f only after that, or data "vanishes" on update.
 - **Enums**: cases are never removed; document dead ones. A new case is a value g cannot express, so where old readers matter it goes into a succeeding item; otherwise add it in place.
 - **Semantic reuse** (same ID, new meaning): the one cursed path cheaper than the blessed one and uncatchable by the checker. New ID, always.

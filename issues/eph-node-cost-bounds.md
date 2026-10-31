@@ -2,7 +2,7 @@
 > Summary: the ephemeral pre-decode bound is loose per part (and the waiting share is charged by it); a replayed take still scans the held parts of its aspects; the CRDT's in-memory size per map entry (about 2 KiB) is what makes the decode ratio. Low.
 > Tags: security, engine, node, crdt, ephemeral
 
-Fixed (notes/ephemeral.md Node cap): the node cap counts decoded memory (`Engine::ephemeral_charge`) and decodes a commit only within the room left, part by part (`ingest_ephemeral_within`, `osis_crdt::decoded_bound`), removed members' commits are let go at once, waiting blobs are charged by their bound and counted once promoted even past the cap, never-fitting blobs are remembered and not refetched (`Unfit`), absorbed lookups are indexed (`Remote::absorbers`), a replay judged contained compares a piece of the cover (`Fragment::contains`). Measurements: `scale::eph_*` (release, by hand).
+Fixed (notes/ephemeral.md Node cap): the node cap counts decoded memory (`Engine::ephemeral_charge`) and decodes a commit only within the room left, part by part (`ingest_ephemeral_within`, `osis_crdt::decoded_bound`), removed holders' commits are let go at once, waiting blobs are charged by their bound and counted once promoted even past the cap, never-fitting blobs are remembered and not refetched (`Unfit`), absorbed lookups are indexed (`Remote::absorbers`), a replay judged contained compares a piece of the cover (`Fragment::contains`). Measurements: `scale::eph_*` (release, by hand).
 
 Left:
 - Durable deltas: issues/durable-decode-bound.md.
