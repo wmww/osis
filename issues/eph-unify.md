@@ -79,3 +79,6 @@ Tests: behavioural ephemeral and presence tests (convergence, restart, caps, pre
 
 
 Owner (round 13, key format): presence is not baked into the aspect key. Replace it with ephemeral plus expiry refreshed by the author while present; consider a write-level expiry kind "when the author is no longer connected" if it stays simple. Check whether signal belongs on the aspect (AK marker `*`) or on the write.
+
+
+Coordinator decisions (round 13, after the step 3 review): (a) memory commits carry no `/created` part; an ephemeral thing's creation record travels beside the deltas (small wire change), keeping one storage class per aspect without exceptions. (b) Freeing: one `unindex_commit` mirroring `index_commit`, a freed thing's memory rows dropped by aspect in one store call, a commit freed only once every thing it touches is freed; guarded by a test that index then unindex equals never indexed (so a new index that forgets to unindex fails).
