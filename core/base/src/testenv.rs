@@ -4,84 +4,39 @@
 
 use std::ops::Range;
 
-/// Every `OSIS_*` variable anything in the repo reads (tests, harnesses, tools, binaries);
-/// tools/policy.py checks it against the sources. A set variable not listed is a typo.
-pub const KNOWN: &[&str] = &[
-    "OSIS_BENCH_DURABLE",
-    "OSIS_BENCH_MS",
-    "OSIS_BENCH_N",
-    "OSIS_CRDT_SEED",
-    "OSIS_EPH_COMMITS",
-    "OSIS_EPH_N",
-    "OSIS_EPH_REPLAYS",
-    "OSIS_EPH_SEEDS",
-    "OSIS_EPH_SHAPE",
-    "OSIS_EPH_START",
-    "OSIS_EPH_THREADS",
-    "OSIS_INDEX_RULES",
-    "OSIS_LARGE_MIB",
-    "OSIS_LOG",
-    "OSIS_ORDER_ALL_HELD",
-    "OSIS_ORDER_LEN",
-    "OSIS_ORDER_SEED",
-    "OSIS_ORDER_SEEDS",
-    "OSIS_ORDER_START",
-    "OSIS_ORDER_STATS",
-    "OSIS_ORDER_THREADS",
-    "OSIS_PERM_SEED",
-    "OSIS_PERM_THREADS",
-    "OSIS_REGEN_VECTORS",
-    "OSIS_SCALE_BATCH",
-    "OSIS_SCALE_CLOSURE",
-    "OSIS_SCALE_DEMOTE",
-    "OSIS_SCALE_EDGES",
-    "OSIS_SCALE_LABEL",
-    "OSIS_SCALE_MAX",
-    "OSIS_SCALE_N",
-    "OSIS_SCALE_PER",
-    "OSIS_SCALE_ROWS",
-    "OSIS_SHRINK",
-    "OSIS_SIM_FROM",
-    "OSIS_SIM_ONLY",
-    "OSIS_SIM_SEEDS",
-    "OSIS_SIM_TRACE",
-    "OSIS_SLOW",
-    "OSIS_STORE",
-    "OSIS_STRAYS_SEEDS",
-    "OSIS_STRAYS_START",
-    "OSIS_STRAYS_THREADS",
-    "OSIS_SYNC_TRACE",
-    "OSIS_TEST_DIAG",
-    "OSIS_TEST_TRACE",
-    "OSIS_TEXT_TRACE",
-    "OSIS_TRACE_UPLOADS",
-    "OSIS_WALKS_FORGED_SEEDS",
-    "OSIS_WALKS_FORGED_START",
-    "OSIS_WALKS_MOVES_DOUBLES",
-    "OSIS_WALKS_MOVES_SEEDS",
-    "OSIS_WALKS_SECRETS_START",
-    "OSIS_WALKS_SECRETS_SEEDS",
-    "OSIS_WALKS_MOVES_START",
-    "OSIS_WALKS_SEEDS",
-    "OSIS_WALKS_START",
-    "OSIS_WALKS_THREADS",
-];
+/// The file listing every `OSIS_*` variable anything in the repo reads (tests, harnesses,
+/// tools, binaries), one per line; tools/policy.py checks it against the sources. Read at run
+/// time so adding a name rebuilds nothing.
+pub const KNOWN_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/testenv-known.txt");
 
-/// Panics if a set `OSIS_*` variable is not in `KNOWN` (a typo would silently run defaults).
+/// The names in `KNOWN_FILE`, read once per process. A set variable not listed is a typo.
+pub fn known() -> &'static [String] {
+    static KNOWN: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    KNOWN.get_or_init(|| {
+        let text = std::fs::read_to_string(KNOWN_FILE).unwrap_or_else(|e| panic!("reading {KNOWN_FILE}: {e}"));
+        text.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()
+    })
+}
+
+fn is_known(var: &str) -> bool {
+    known().iter().any(|k| k == var)
+}
+
+/// Panics if a set `OSIS_*` variable is not in `known()` (a typo would silently run defaults).
 /// The environment is scanned once per process.
 pub fn check_known() {
     static UNKNOWN: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     let unknown = UNKNOWN.get_or_init(|| {
-        std::env::vars_os().filter_map(|(k, _)| k.into_string().ok()).filter(|k| k.starts_with("OSIS_") && !KNOWN.contains(&k.as_str())).collect()
+        std::env::vars_os().filter_map(|(k, _)| k.into_string().ok()).filter(|k| k.starts_with("OSIS_") && !is_known(k)).collect()
     });
-    assert!(unknown.is_empty(), "unknown environment variables {unknown:?} (known: osis_base::testenv::KNOWN)");
+    assert!(unknown.is_empty(), "unknown environment variables {unknown:?} (known: core/base/testenv-known.txt)");
 }
 
-/// `var` as a decimal u64, `None` when unset or empty; panics when unparsable or not in `KNOWN`,
+/// `var` as a decimal u64, `None` when unset or empty; panics when unparsable or not in `known()`,
 /// and on any unknown `OSIS_*` variable. A set value is printed once per process, past libtest's
 /// capture.
 pub fn u64_var(var: &str) -> Option<u64> {
-    assert!(KNOWN.contains(&var), "{var} is not in osis_base::testenv::KNOWN");
+    assert!(is_known(var), "{var} is not in core/base/testenv-known.txt");
     check_known();
     let v = std::env::var(var).ok().filter(|v| !v.is_empty())?;
     let n = v.parse().unwrap_or_else(|_| panic!("{var}={v:?} is not a decimal u64"));

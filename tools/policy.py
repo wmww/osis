@@ -2,7 +2,7 @@
 """Policy checks (notes/testing.md, Policy checks): unsafe forbidden everywhere in the workspace,
 workspace lints on, every external dependency has its line in notes/architecture.md §5, and no
 target marked `test = false` / `doctest = false` has unit tests / doctests that would silently not run,
-and osis_base::testenv::KNOWN lists exactly the `OSIS_*` variables the sources name.
+and core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name.
 Usage: python3 tools/policy.py [WORKSPACE]   (from the repo root; WORKSPACE: the directory of a
 workspace's root manifest, `.` (core, default) or `kit` (the GUI workspace, notes/app.md); vendored
 crates under `patches/` are not ours and are skipped; exit 1 on any violation)"""
@@ -86,25 +86,23 @@ for name, where in sorted(external.items()):
         errs.append(f"dependency `{name}` ({where}) has no line in notes/architecture.md §5")
 
 def env_vars():
-    """`osis_base::testenv::KNOWN` names every `OSIS_*` variable the repo's sources name, and no other
+    """core/base/testenv-known.txt names every `OSIS_*` variable the repo's sources name, and no other
     (a set variable it lacks fails the harnesses as a typo)."""
-    known_src = os.path.join(ROOT, "core/base/src/testenv.rs")
-    block = open(known_src).read().split("pub const KNOWN", 1)[1].split("];", 1)[0]
-    known = set(re.findall(r'"(OSIS_[A-Z0-9_]+)"', block))
+    known = set(open(os.path.join(ROOT, "core/base/testenv-known.txt")).read().split())
     used = set()
     for top in ("core", "cli", "kit", "app", "tools"):
         for dirpath, dirs, files in os.walk(os.path.join(ROOT, top)):
             dirs[:] = [d for d in dirs if d not in ("target", "patches")]
             for f in files:
                 path = os.path.join(dirpath, f)
-                if not f.endswith((".rs", ".sh", ".py", ".toml")) or path == known_src:
+                if not f.endswith((".rs", ".sh", ".py", ".toml")):
                     continue
                 # a name ending in `_` is a prefix (a filter over the environment)
                 used |= {v for v in re.findall(r"\bOSIS_[A-Z0-9_]+", open(path, errors="replace").read()) if not v.endswith("_")}
     for v in sorted(used - known):
-        yield f"{v} is read but not in osis_base::testenv::KNOWN"
+        yield f"{v} is read but not in core/base/testenv-known.txt"
     for v in sorted(known - used):
-        yield f"{v} is in osis_base::testenv::KNOWN but nothing reads it"
+        yield f"{v} is in core/base/testenv-known.txt but nothing reads it"
 
 if WS == ROOT:
     errs.extend(env_vars())
