@@ -350,7 +350,7 @@ fn inbox_hint_goes_with_its_blob_spec_sync_3() {
 
 /// The invite requests node `n` lists, by commit.
 fn requests(net: &mut Net, n: usize) -> Vec<osis_base::CommitId> {
-    net.sync(n).invite_requests().unwrap().into_iter().map(|r| r.commit).collect()
+    net.sync(n).invite_requests().unwrap()
 }
 
 /// Whether node `n` holds commit `c`, applied or pending.
@@ -382,10 +382,7 @@ fn stranger_invite_waits_for_accept_spec_sync_3() {
     for _ in 0..3 {
         net.advance(70_000);
     }
-    let r = net.sync(b).invite_requests().unwrap();
-    assert_eq!(r.len(), 1, "one request");
-    let alice_node = net.tid(a);
-    assert_eq!((r[0].commit, r[0].actor, r[0].target), (c, alice_node, Some(g)), "the grant's header: Alice's node acting as itself");
+    assert_eq!(requests(&mut net, b), vec![c], "one request");
     assert!(!holds(&mut net, b, &c), "not applied before accept");
     assert!(!net.dialed.iter().any(|(n, x)| *n == b && x.key == rogue.key), "g's servers not dialed before accept");
     assert_eq!(net.read(b, t), None);
@@ -503,4 +500,48 @@ fn invite_accepted_on_one_device_admitted_on_the_other_spec_sync_3() {
     assert_eq!(net.read(b, t), Some(s("for bob")));
     assert!(requests(&mut net, b2).is_empty(), "admitted on the other device");
     assert_eq!(net.read(b2, t), Some(s("for bob")));
+}
+
+// spec/sync.md §3: a sender is connected by a current role only: Carol, removed from g (which
+// Bob syncs), is a stranger to Bob again, and her invite is a request.
+#[test]
+fn removed_member_invite_is_request_spec_sync_3() {
+    use osis_node::flows::{Demotion, PreSync};
+    let (mut net, sv, a, b, _, bob, g, _) = alice_and_bob();
+    let c = net.node(3, &[sv]);
+    let addr = net.address(sv);
+    let (carol, done) = net.engine(c).create_person(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(c).carry_out(done).unwrap();
+    net.actions(c, acts);
+    net.run();
+    net.pair(c, a);
+    net.pair(b, c);
+    grant(&mut net, a, g, bob);
+    grant(&mut net, a, g, carol.person);
+    let _ = net.item(a, g, g, "for both");
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    let done = net.engine(a).demote(&g, &Demotion { member: carol.person, new: None, presync: PreSync::Synced }).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(net.engine(b).role_on(&g).is_some() && net.engine(b).roster(&g).keys().all(|m| *m != carol.person), "Bob syncs g and saw Carol leave it");
+    net.nodes[b].accepts = false;
+    let e = net.engine(c);
+    let mut m = Mutation::new();
+    let gc = e.new_thing(&mut m, carol.person);
+    m.set(gc, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    let (_, done) = net.engine(c).create_label(&gc, &[addr]).unwrap();
+    let acts = net.sync(c).carry_out(done).unwrap();
+    net.actions(c, acts);
+    let x = grant_commit(&mut net, c, gc, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(requests(&mut net, b), vec![x], "a removed member's invite waits");
+    assert!(!holds(&mut net, b, &x));
 }

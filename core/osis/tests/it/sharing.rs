@@ -259,7 +259,7 @@ fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
 }
 
 // spec/sync.md §3 (invite requests), notes/api.md Sharing: an invite from a stranger waits as a
-// request naming the thing; `decline_invite` forgets it, `accept_invite` joins; a request
+// request; `decline_invite` forgets it, `accept_invite` joins; a request
 // answered once is gone.
 #[test]
 fn invite_requests_accept_and_decline_spec_sync_3() {
@@ -279,16 +279,15 @@ fn invite_requests_accept_and_decline_spec_sync_3() {
     w.run();
     let r1 = bob.invite_requests().unwrap();
     assert_eq!(r1.len(), 1);
-    assert_eq!(r1[0].thing, Some(g1));
-    bob.decline_invite(r1[0].id).unwrap();
-    assert!(matches!(bob.accept_invite(r1[0].id), Err(Error::Invalid(_))), "declined: gone");
+    bob.decline_invite(r1[0]).unwrap();
+    assert!(matches!(bob.accept_invite(r1[0]), Err(Error::Invalid(_))), "declined: gone");
     alice.grant(g2, b, Role::Read, Default::default()).unwrap();
     w.run();
     w.advance(60_000);
     let r2 = bob.invite_requests().unwrap();
-    assert_eq!(r2.iter().map(|r| r.thing).collect::<Vec<_>>(), vec![Some(g2)], "the declined one stays gone");
+    assert!(r2.len() == 1 && r2[0] != r1[0], "the declined one stays gone");
     assert_eq!(x(&bob, t2), None);
-    bob.accept_invite(r2[0].id).unwrap();
+    bob.accept_invite(r2[0]).unwrap();
     w.run();
     w.advance(60_000);
     assert_eq!(x(&bob, t2), Some(s("two")));

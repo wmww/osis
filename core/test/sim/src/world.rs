@@ -354,7 +354,7 @@ impl World {
                 && !self.offline.get(d).copied().unwrap_or(false)
             {
                 for r in db.invite_requests().unwrap_or_default() {
-                    any |= db.accept_invite(r.id).is_ok();
+                    any |= db.accept_invite(r).is_ok();
                 }
             }
         }

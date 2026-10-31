@@ -261,7 +261,7 @@ impl World {
                 && !self.offline[d]
             {
                 for r in db.invite_requests().unwrap() {
-                    db.accept_invite(r.id).unwrap();
+                    db.accept_invite(r).unwrap();
                     any = true;
                 }
             }
