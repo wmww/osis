@@ -1,0 +1,10 @@
+# complete_pass never holds for labels served here alone
+> Summary: `complete_pass` (re-seal, own secrets, link finalization with servers) is false for an actor whose labels have no server and no received-from co-reader connected, so a node serving its labels to dialing members never re-seals there; `passed_since` (untie) passes such a label once the peer wait is over. The two also read "no remote membership change seen" oppositely (complete_pass waits for connected peers, passed_since skips them).
+> Tags: node-sync
+
+Found reviewing sync-cleanup (core/node/src/sync/deliver.rs, `complete_pass` vs `passed_since`).
+
+- `complete_pass` returns `any`: false when no server or `pass_peers` entry was counted for any of the actor's labels. `pass_peers` lists only co-readers this node received the label from as a client (`peer_received`), with a connection up. A node serving a label with no server (spec/sync.md §5, member peer) to members who dial in has none, so `reseal_due` and `own_secrets_due` never decide for that actor. Spec/permissions.md §3 defines the complete pass over servers and received-from peers; with neither, it is vacuously complete.
+- `passed_since` was fixed for the same case (review 2 tied-grants: "serverless pre-sync passes after the peer wait"): a label with neither passes once `peer_pass_wait_ms` after the last remote membership commit is over.
+- `waited` differs when no remote membership commit of the actor was seen in this run (`membership_at` is memory only): `complete_pass` counts connected received-from peers (`is_some_and`), `passed_since` skips them (`is_none_or`). Both are within the spec's "MAY stop waiting for peers a bounded time after the change", but unifying would make the empty label case decidable.
+- Care if fixing: keep "no labels of the actor known" false (at start `synced.actors` is empty until `labels()` runs, and returning true there would re-seal before any pass); `peers_review::complete_pass_counts_peers_spec_permissions_3` pins the peer wait.
