@@ -56,7 +56,7 @@ Chunk     := [blob_id, [ki*]]
 PurgeItem := [commit_id, tid, ak] | [tid, ak]
 Origin    := [commit_id, author, actor, ts]
 CommitBlobPlaintext := [Header, signature, [Part*]]
-Part      := [ai, di, delta]
+Part      := [ai, di, delta, [creation*]]
 ```
 Header fields by position:
 0. `version`: uint, the format version (1).
@@ -72,13 +72,13 @@ Header fields by position:
 12. `keys`: `[DeleteKey*]` sorted by canonical bytes, distinct: the delete keys of the commit's deltas (spec/crypto.md §7), `pk` a valid Ed25519 key (§1, spec/crypto.md §1), at most one at level 2 (the author chain); a key no aspect lists is bad input.
 13. `frontier`: `Opt(frontier)`, the frontier value (spec/data-model.md §9); present iff the commit is a membership commit carrying an explicit demotion (spec/permissions.md §5).
 14. `origins`: `[Origin*]` sorted by commit ID, distinct; non-empty iff `kind` is 4 (spec/permissions.md §7).
-15. `ephemeral`: `Opt(uint)`, the ephemeral marker (spec/commits.md §2): 0 an ephemeral commit, 1 a relay-only one, 2 a presence one. Present only with `kind` 2 and `form` 1, or `kind` 0 and session form (session form only with the marker), no `chunks`, no `purge`, no `undoes` and no list by link; with `kind` 2 every aspect's retention `by` is writer (`/created` included) with the levels it calls for; a relay-only or presence commit has no `expires`. Anything else is bad input.
+15. `ephemeral`: `Opt(uint)`, the ephemeral marker (spec/commits.md §2): 0 an ephemeral commit, 1 a relay-only one, 2 a presence one. Present only with `kind` 2 and `form` 1, or `kind` 0 and session form (session form only with the marker), no `chunks`, no `purge`, no `undoes`, no list by link and no `/created` aspect; with `kind` 2 every aspect's retention `by` is writer with the levels it calls for; a relay-only or presence commit has no `expires`. Anything else is bad input.
 
 Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most 1024 bytes); `lo`, `hi`: the counter range (`lo = hi = 0` for kinds 2, 3, 4; else `1 <= lo < hi`); `Retention`: `by` (purgeable-by class), `at_least` and `at_most` bounds, each a map with optional `0: abs` (wall ms; `2^63 - 1` means forever) and `1: rel` (ms after the body is replaced), `{}` for no bound; `expires`: `Opt(T)`; `schema`: `Opt(index into schemas)`; `keys`: `[ki*]`, ascending indices into the header's `keys`: one per level the retention calls for (spec/crypto.md §7), exactly those levels, else bad input; `hashes`: `[delta_hash+]` (32 bytes each), exactly one for kinds 0, 2, 3, 4, sorted and distinct for kinds 1 and 5.
 
 - **Inline or link**: `aspects`, `chunks`, `purge`, `keys`, `origins` and the frontier are each inline iff their canonical encoding is at most `CHUNK_THRESHOLD` bytes; otherwise the position holds a LINK value (`Opt(LINK)` for the frontier) to a chunk tree (§6) of that canonical encoding, its content hashes keyed by the dedup secret of the header's `actor`. A decoder rejects an inline list above the threshold or a link below it. Header-list chunks carry the commitments of §5.
 - **Commit ID** = BLAKE3(canonical bytes of `Header`). The signature is the `signature` value of the author's key under `"osis v1 commit" || commit ID`.
-- **Commit blob** plaintext: `CommitBlobPlaintext`. A `Part` holds one delta: `ai` indexes `aspects`, `di` that aspect's `hashes`, `delta` is the embedded `Delta` or `Snapshot` array (spec/crdt.md §3.2, §8) whose canonical bytes hash to that delta hash. Parts sorted by `(ai, di)`, distinct; zero parts is allowed (every delta purged). The blob's prefix commitments are those of the delete keys its parts' aspects list (§5); its expiry is their common `expires`.
+- **Commit blob** plaintext: `CommitBlobPlaintext`. A `Part` holds one delta: `ai` indexes `aspects`, `di` that aspect's `hashes`, `delta` is the embedded `Delta` or `Snapshot` array (spec/crdt.md §3.2, §8) whose canonical bytes hash to that delta hash, then the creation records (§3) carried beside it (spec/commits.md §2), sorted by tid, distinct; empty in a commit without the ephemeral marker, else bad input. Records are outside the header and delta hash: each hashes to its tid. Parts sorted by `(ai, di)`, distinct; zero parts is allowed (every delta purged). The blob's prefix commitments are those of the delete keys its parts' aspects list (§5); its expiry is their common `expires`.
 - A header violating a rule of spec/commits.md §2 (an aspect of the wrong class for its kind, `expires` or a purge item on a membership commit, `expires` on a commit with a purge request (spec/commits.md §5), a frontier outside a demotion, more than one hash for a kind with one delta per aspect) is bad input.
 
 ## 5. Blob framing

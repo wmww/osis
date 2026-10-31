@@ -11,10 +11,18 @@ use std::sync::Arc;
 
 #[derive(Debug)]
 enum Undo {
-    Created(Tid, Option<CreationRecord>),
+    Created(Tid, Option<Rec>),
     AddedCommit(Arc<MembershipCommit>),
     AddedSnapshot(Arc<RosterSnapshot>),
     Removed(Vec<Arc<MembershipCommit>>, Vec<Arc<RosterSnapshot>>),
+}
+
+/// A held creation record and whether it is memory class (an ephemeral thing's, carried by a
+/// memory commit or made here; gone at restart, notes/ephemeral.md).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Rec {
+    record: CreationRecord,
+    memory: bool,
 }
 
 /// What one commit ID holds: its edge commit and its roster snapshots (one per thing).
@@ -24,7 +32,7 @@ type Records = (Option<Arc<MembershipCommit>>, Vec<Arc<RosterSnapshot>>);
 pub struct Held {
     commits: BTreeMap<Tid, Vec<Arc<MembershipCommit>>>,
     snapshots: BTreeMap<Tid, Vec<Arc<RosterSnapshot>>>,
-    created: BTreeMap<Tid, CreationRecord>,
+    created: BTreeMap<Tid, Rec>,
     /// Member -> things it is named on (edge writes, rosters, ledgers), with counts.
     members: BTreeMap<Tid, BTreeMap<Tid, usize>>,
     /// Thing -> members named on it (the same pairs as `members`).
@@ -53,8 +61,13 @@ fn named_snapshot(s: &RosterSnapshot) -> Vec<(Tid, Tid)> {
 }
 
 impl Held {
+    /// The record of `t`, durable or memory class.
     pub fn created(&self, t: &Tid) -> Option<&CreationRecord> {
-        self.created.get(t)
+        self.created.get(t).map(|r| &r.record)
+    }
+    /// Whether `t`'s record is held and memory class.
+    pub fn is_memory(&self, t: &Tid) -> bool {
+        self.created.get(t).is_some_and(|r| r.memory)
     }
     pub fn generation(&self) -> u64 {
         self.generation
@@ -91,24 +104,29 @@ impl Held {
         out
     }
 
-    fn set_created(&mut self, t: Tid, r: Option<CreationRecord>) -> Option<CreationRecord> {
+    fn set_created(&mut self, t: Tid, r: Option<Rec>) -> Option<Rec> {
         let old = match r {
             Some(r) => {
-                if let CreationRecord::Thing { owner, .. } = &r {
+                if let CreationRecord::Thing { owner, .. } = &r.record {
                     self.owned.entry(*owner).or_default().insert(t);
                 }
                 self.created.insert(t, r)
             }
             None => self.created.remove(&t),
         };
-        if let Some(CreationRecord::Thing { owner, .. }) = &old
-            && self.created.get(&t).is_none_or(|n| !matches!(n, CreationRecord::Thing { owner: o, .. } if o == owner))
+        let class_only = matches!((&old, self.created.get(&t)), (Some(o), Some(n)) if o.record == n.record);
+        if let Some(Rec { record: CreationRecord::Thing { owner, .. }, .. }) = &old
+            && self.created.get(&t).is_none_or(|n| !matches!(&n.record, CreationRecord::Thing { owner: o, .. } if o == owner))
             && let Some(s) = self.owned.get_mut(owner)
         {
             s.remove(&t);
             if s.is_empty() {
                 self.owned.remove(owner);
             }
+        }
+        if class_only {
+            // persisted: the same record, nothing perm reads changed
+            return old;
         }
         self.touched.insert(t);
         self.generation += 1;
@@ -200,12 +218,32 @@ impl Held {
         (cs, ss)
     }
 
-    /// Adds a creation record under its tid.
+    /// Adds a creation record under its tid, durable (a memory one held becomes durable:
+    /// persisted).
     pub fn create(&mut self, record: CreationRecord) {
+        self.put_record(record, false);
+    }
+
+    /// Adds the memory-class record of an ephemeral thing (a durable or memory one held stays).
+    pub fn create_memory(&mut self, record: CreationRecord) {
+        if !self.created.contains_key(&record.tid()) {
+            self.put_record(record, true);
+        }
+    }
+
+    fn put_record(&mut self, record: CreationRecord, memory: bool) {
         let t = record.tid();
         self.records.push(t);
-        let old = self.set_created(t, Some(record));
+        let old = self.set_created(t, Some(Rec { record, memory }));
         self.log.push(Undo::Created(t, old));
+    }
+
+    /// Drops memory-class record `t` (a freed ephemeral thing); a durable one stays.
+    pub fn free(&mut self, t: &Tid) {
+        if self.is_memory(t) {
+            let old = self.set_created(*t, None);
+            self.log.push(Undo::Created(*t, old));
+        }
     }
 
     pub fn add_commit(&mut self, c: MembershipCommit) {
@@ -302,6 +340,6 @@ impl HeldSet for Held {
         self.snapshots.get(thing).cloned().unwrap_or_default()
     }
     fn created(&self, thing: &Tid) -> Option<CreationRecord> {
-        self.created.get(thing).cloned()
+        self.created.get(thing).map(|r| r.record.clone())
     }
 }

@@ -42,7 +42,8 @@ const MAX_WAITS_BYTES: usize = 16 << 20;
 
 enum On {
     /// The creation record of `tid`: held (`true`) or not when examined.
-    Record { tid: Tid, had: bool },
+    /// `memory`: the waiting commit is memory class (it sees memory records too).
+    Record { tid: Tid, memory: bool, had: bool },
     /// The missing deltas, and the earliest expiry among them still to come. Only commits
     /// whose signature and chain were checked get here: the header judges the missing deltas
     /// (`waits_for_deltas`: held snapshots, purge rights).
@@ -232,7 +233,10 @@ pub(crate) fn note(core: &mut Core, id: CommitId, blob: &osis_commit::CommitBlob
     }
     let h = &blob.header;
     let on = match reason {
-        Reason::UnknownCreated(t) | Reason::MissingChain(t) => On::Record { tid: *t, had: core.created(t).is_some() },
+        Reason::UnknownCreated(t) | Reason::MissingChain(t) => {
+            let memory = h.ephemeral.is_some();
+            On::Record { tid: *t, memory, had: core.created_for(t, memory).is_some() }
+        }
         Reason::WaitDeltas => {
             let missing = blob.missing();
             let expiry = next_expiry(h, &missing, now);
@@ -273,7 +277,7 @@ pub(crate) fn unchanged(core: &Core, id: &CommitId, now: u64) -> bool {
         return false;
     }
     match &w.on {
-        On::Record { tid, had } => core.created(tid).is_some() == *had,
+        On::Record { tid, memory, had } => core.created_for(tid, *memory).is_some() == *had,
         On::Deltas { expiry, .. } => core.ix.held.generation() == w.generation && expiry.is_none_or(|e| now < e),
     }
 }

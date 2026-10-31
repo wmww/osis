@@ -385,8 +385,10 @@ fn removed_writer_ephemeral_unmerged_spec_permissions_5_2() {
 #[test]
 fn server_cap_compaction_frees_it_spec_sync_5() {
     let mut net = Net::new();
-    // a few entries with their per-entry overhead (about 900 bytes each)
-    let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: 6_000, ..osis_server::Policy::default() });
+    // a few entries with their per-entry overhead (about 900 bytes each); tuned so one upload is
+    // refused and the writer's own compaction later makes room (a refused write left alone with
+    // no compaction due stays refused: issues/eph-unify.md step 5, Replace at cap)
+    let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: 6_300, ..osis_server::Policy::default() });
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -398,7 +400,7 @@ fn server_cap_compaction_frees_it_spec_sync_5() {
         net.run();
     }
     let l = net.label(a);
-    assert!(net.servers[sv].hub.store().ephemeral_bytes(&l) <= 6_000);
+    assert!(net.servers[sv].hub.store().ephemeral_bytes(&l) <= 6_300);
     assert!(net.engine(a).held_ephemeral().len() < 30, "compacted: {}", net.engine(a).held_ephemeral().len());
     let want: BTreeMap<String, String> = (0..30).map(|i| (format!("k{i}"), "v".to_string())).collect();
     assert_eq!(notes(&mut net, b, w), want);
@@ -1288,62 +1290,6 @@ fn others_writes_in_a_commit_not_joined_spec_sync_9() {
     let forged = net.engine(b).forge_carrying(osis_commit::EphClass::Plain, w, &ak).unwrap().unwrap();
     net.engine(c).ingest_ephemeral(forged.blob).unwrap();
     assert_eq!(notes(&mut net, c, w), map(&[("b", "1")]), "a's write is a's to send");
-}
-
-// spec/sync.md §9 (a carried `/created` is exactly one minting of its record): a writer that
-// pads an ephemeral thing's `/created` with a losing junk write has its commit refused, so no
-// honest node keeps that `/created` to carry in its own commits
-#[test]
-fn padded_created_refused_spec_sync_9() {
-    let mut net = Net::new();
-    let sv = net.add_server();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let g = net.group(a, &[(b, Role::Write)], &[sv]);
-    net.run();
-    let e = net.engine(a);
-    let mut m = Mutation::new();
-    let w = e.new_thing(&mut m, g);
-    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
-    e.write(m).unwrap();
-    let ak = osis_base::Ak::new(STATE).unwrap();
-    let honest = net.engine(a).forge_ephemeral(w, &ak, s("honest")).unwrap().unwrap();
-    net.engine(a).pad_created(&w, Value::Bytes(vec![7; 4096])).unwrap();
-    let padded = net.engine(a).forge_ephemeral(w, &ak, s("padded")).unwrap().unwrap();
-    assert!(net.engine(b).ingest_ephemeral(padded.blob).is_err(), "refused");
-    assert!(net.engine(b).ephemeral_thing(&w).is_none(), "its /created not kept");
-    net.engine(b).ingest_ephemeral(honest.blob).unwrap();
-    assert!(net.engine(b).ephemeral_thing(&w).is_some(), "the unpadded one is taken");
-}
-
-// spec/sync.md §9 (a carried `/created` is exactly one minting): an own cover joining the records
-// its commits carried, two copies of one thing (as after a restart between first sights) now
-// durable here, carries one of them, and receivers take it
-#[test]
-fn own_cover_of_two_created_copies_taken_spec_sync_9() {
-    let mut net = Net::new();
-    let sv = net.add_server();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let g = net.group(a, &[(b, Role::Write)], &[sv]);
-    net.run();
-    let e = net.engine(a);
-    let mut m = Mutation::new();
-    let w = e.new_thing(&mut m, g);
-    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
-    e.write(m).unwrap();
-    let ak = osis_base::Ak::new(STATE).unwrap();
-    net.engine(a).forge_ephemeral(w, &ak, s("1")).unwrap().unwrap();
-    net.engine(a).remint_created(&w).unwrap();
-    net.engine(a).forge_ephemeral(w, &ak, s("2")).unwrap().unwrap();
-    let mut m = Mutation::new();
-    m.set(w, &REG, &s("saved")).unwrap();
-    net.engine(a).write(m).unwrap();
-    assert!(net.engine(a).ephemeral_thing(&w).is_none(), "durable now");
-    let covers = net.engine(a).compact_own_ephemeral(true).unwrap();
-    assert_eq!(covers.len(), 1);
-    net.run();
-    net.engine(b).ingest_ephemeral(covers[0].blob.clone()).unwrap();
 }
 
 // spec/crdt.md §2.1: a write's session names its node, so a node's own writes are its sessions'
@@ -3267,6 +3213,47 @@ fn memory_commit_session_form_spec_commits_3() {
     assert_eq!(e.core.commit_of(&t, &reg, &osis_crdt::Dot::new(src.clone(), 1)), Some(ids[0]));
     assert_eq!(e.core.commit_of(&t, &reg, &osis_crdt::Dot::new(src, 2)), Some(ids[1]));
     assert_eq!(e.get(&t, &reg).unwrap(), Some(Value::Set([Value::Str("v1".into())].into())));
+}
+
+// spec/commits.md §2 (records beside the deltas), spec/data-model.md §1: a thing a memory commit
+// makes is held as a memory-class record; the commit carries no `/created` aspect, its parts carry
+// the thing's record and its memory owner chain; the first durable write on the thing persists
+// the chain (`/created` in that commit); a restart keeps only what was persisted.
+#[test]
+fn memory_records_beside_deltas_spec_commits_2() {
+    let mut lp = crate::common::net(1, 5);
+    let t = crate::common::new_thing(&mut lp, 0);
+    let tags = crate::common::ak("/t/tags");
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let top = e.new_thing(&mut m, t);
+    let leaf = e.new_thing(&mut m, top);
+    let lone = e.new_thing(&mut m, t);
+    m.set(leaf, &crate::common::TAGS, &Value::Set([Value::Str("x".into())].into())).unwrap();
+    let id = e.commit_in_memory(m).unwrap().unwrap();
+    let blob = e.run(|tx| tx.get_commit(&id)).unwrap().unwrap();
+    assert!(blob.header.aspects.iter().all(|a| a.ak.as_str() != "/created"));
+    let carried: Vec<osis_base::Tid> = blob.parts.iter().flat_map(|p| p.records.iter().map(|r| r.tid())).collect();
+    assert!(carried.contains(&leaf) && carried.contains(&top) && !carried.contains(&lone), "{carried:?}");
+    for x in [top, leaf, lone] {
+        assert!(e.core.created(&x).is_some() && e.core.durable_created(&x).is_none(), "memory-class record");
+    }
+    assert_eq!(e.get(&leaf, &tags).unwrap(), Some(Value::Set([Value::Str("x".into())].into())));
+    // a durable write persists the chain
+    let mut m = Mutation::new();
+    m.set(leaf, &crate::common::REG, &Value::Str("d".into())).unwrap();
+    let d = lp.peers[0].commit(m).unwrap().unwrap();
+    let e = &mut lp.peers[0].engine;
+    let h = e.header(&d).unwrap();
+    let created: Vec<osis_base::Tid> = h.aspects.iter().filter(|a| a.ak.as_str() == "/created").map(|a| a.tid).collect();
+    assert_eq!(created.len(), 2);
+    assert!(created.contains(&leaf) && created.contains(&top));
+    assert!(e.core.durable_created(&leaf).is_some() && e.core.durable_created(&top).is_some() && e.core.durable_created(&lone).is_none());
+    lp.peers[0].restart(6).unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert!(e.core.durable_created(&leaf).is_some() && e.core.durable_created(&top).is_some());
+    assert!(e.core.created(&lone).is_none(), "an unpersisted memory thing is gone at restart");
+    assert_eq!(e.get(&leaf, &crate::common::ak("/t/reg")).unwrap(), Some(Value::Str("d".into())));
 }
 
 // issues/eph-unify.md step 3: a memory commit is nothing durable to node-sync: no change mark,

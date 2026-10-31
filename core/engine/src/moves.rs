@@ -188,7 +188,7 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
         if f.is_empty() {
             continue;
         }
-        deltas.push(Resolved { tid: *m, ak: a.ak.clone(), fragment: f, lo: 0, hi: 0, schema: None, schema_ref: schema_of(&h, ai), retention: Some(a.retention), expires: None, frontiers: None, chunks: Vec::new(), split: false });
+        deltas.push(Resolved { tid: *m, ak: a.ak.clone(), fragment: f, lo: 0, hi: 0, schema: None, schema_ref: schema_of(&h, ai), retention: Some(a.retention), expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() });
     }
     if deltas.is_empty() {
         return Ok(None);
@@ -327,7 +327,7 @@ mod tests {
                 let node = tx.core.id.tid();
                 let ts = tx.core.hlc.next();
                 let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Node, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: vec![Origin { commit: c, author: ch.author, actor: ch.actor, ts: ch.ts }], signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
-                let r = Resolved { tid: copy, ak: a.ak.clone(), fragment: f, lo: 0, hi: 0, schema: None, schema_ref: schema_of(&h, ai), retention: Some(a.retention), expires: None, frontiers: None, chunks: Vec::new(), split: false };
+                let r = Resolved { tid: copy, ak: a.ak.clone(), fragment: f, lo: 0, hi: 0, schema: None, schema_ref: schema_of(&h, ai), retention: Some(a.retention), expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() };
                 build_and_apply(tx, plan, vec![r])
             })
             .unwrap();

@@ -452,6 +452,9 @@ indexes! {
     /// Things a roster snapshot of which was kept out of perm for a linked frontier not held
     /// here (`validity::add_membership`): no roster snapshot of them is written.
     pub frontier_unknown: JSet<Tid>,
+    /// Memory things freed while a memory commit on them also touches a thing still held: their
+    /// records and data stay until every thing of those commits is freed (`apply::free`).
+    pub freeing: JSet<Tid>,
 }
 
 /// A held compaction snapshot of an aspect: `ts`, ID, frontiers, `Absorbed` (commit, author).

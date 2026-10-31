@@ -214,18 +214,41 @@ pub(crate) fn strip_valueless(core: &Core, tid: &Tid, ak: &Ak, st: &mut Fragment
     }
 }
 
-/// Records the creation records `parts` carry that are not held yet; whether any was new.
-fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)]) -> Result<bool> {
+/// Records the creation records commit `blob` carries that are not held yet (a durable
+/// commit's `/created` parts, durable; an ephemeral one's beside its deltas, memory class);
+/// whether any was new. A durable record of a thing held as memory class persists it: its row
+/// moves to the store (rows stay in the class they were written in).
+fn note_created(tx: &mut Tx<'_>, h: &Header, blob: &CommitBlob, parts: &[(usize, usize, Decoded)]) -> Result<bool> {
     let mut any = false;
+    if h.ephemeral.is_some() {
+        for r in blob.parts.iter().flat_map(|p| &p.records) {
+            let t = r.tid();
+            if tx.core.created(&t).is_none() {
+                tx.in_class(true, |tx| Ok(tx.txn.put_local(&[records::CREATED, t.as_bytes()].concat(), &osis_base::encode(&r.to_value()), Shred::No)?))?;
+                tx.core.ix.held.create_memory(r.clone());
+                any = true;
+            }
+        }
+        return Ok(any);
+    }
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        if a.ak.as_str() != osis_commit::retention::CREATED || tx.core.created(&a.tid).is_some() {
+        if a.ak.as_str() != osis_commit::retention::CREATED || tx.core.durable_created(&a.tid).is_some() {
             continue;
         }
         let rec = d.fragment().read().as_ref().and_then(CreationRecord::from_value).ok_or(Error::BadInput("/created"))?;
         if rec.tid() == a.tid {
-            tx.txn.put_local(&[records::CREATED, a.tid.as_bytes()].concat(), &osis_base::encode(&rec.to_value()), Shred::No)?;
+            let key = [records::CREATED, a.tid.as_bytes()].concat();
+            let persisting = tx.core.ix.held.is_memory(&a.tid);
+            if persisting {
+                // a row stays in its class: the memory one goes first
+                tx.txn.remove_local(&key, Shred::No)?;
+            }
+            tx.txn.put_local(&key, &osis_base::encode(&rec.to_value()), Shred::No)?;
             tx.core.ix.held.create(rec);
+            if persisting {
+                continue;
+            }
             // the reader actor of the thing's deltas is known now
             let touching: Vec<CommitId> = tx.core.aspects_of(&a.tid).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
             for c in touching {
@@ -252,7 +275,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     }
 
     // creation records first: perm and dedup secrets need them
-    let mut held_changed = note_created(tx, &h, &parts)?;
+    let mut held_changed = note_created(tx, &h, blob, &parts)?;
     validity::note_imports(tx.core, &id, &h, &parts)?;
     let view = Arc::new(crate::engine::View::of(&h));
     if h.kind.is_membership() {
@@ -547,7 +570,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let uncarried = validity::uncarry(tx.core, id, &h, &|ai| parts.iter().any(|p| p.0 == ai));
     let received = tx.now();
     super::receipt::record(tx, &h, id, &parts, received)?;
-    let mut held_changed = note_created(tx, &h, &parts)?;
+    let mut held_changed = note_created(tx, &h, merged, &parts)?;
     validity::note_imports(tx.core, id, &h, &parts)?;
     let edges = h.kind.is_membership() && parts.iter().any(|(ai, _, _)| h.aspects.get(*ai).is_some_and(|a| matches!(a.ak.as_str(), "/members" | "/tenures")));
     if h.kind.is_membership() {

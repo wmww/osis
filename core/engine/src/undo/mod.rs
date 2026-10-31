@@ -166,7 +166,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
         };
         if let Some(f) = out {
             let r = w.range();
-            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, schema_ref: None, retention: None, expires: None, frontiers: None, chunks: Vec::new(), split: false });
+            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, schema_ref: None, retention: None, expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() });
         }
     }
     unmake(tx, &made, ts, node, &mut deltas)?;
@@ -247,7 +247,7 @@ fn unmake(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid, deltas: &mut
                 d.fragment.join(f);
                 d.hi = r.hi;
             }
-            None => deltas.push(Resolved { tid, ak, fragment: f, lo: r.lo, hi: r.hi, schema, schema_ref: None, retention: None, expires: None, frontiers: None, chunks: Vec::new(), split: false }),
+            None => deltas.push(Resolved { tid, ak, fragment: f, lo: r.lo, hi: r.hi, schema, schema_ref: None, retention: None, expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() }),
         }
     }
     Ok(())

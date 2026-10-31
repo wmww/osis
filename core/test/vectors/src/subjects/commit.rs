@@ -119,7 +119,8 @@ fn ephemeral(class: osis_commit::EphClass) -> CommitBlob {
 }
 
 /// A session-form ephemeral content commit (spec/commits.md §2, §3): its own write under
-/// `(Session(author, nonce), 1)`, the nonce in the header's form.
+/// `(Session(author, nonce), 1)`, the nonce in the header's form, and an ephemeral thing's
+/// creation record beside the delta.
 fn session_commit() -> CommitBlob {
     let at = ts(1_700_000_004_500);
     let nonce = [0x28; osis_crdt::SESSION_NONCE_LEN];
@@ -132,6 +133,7 @@ fn session_commit() -> CommitBlob {
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, Form::Session(nonce));
     let mut a = AspectWrite::new(THING, Ak::new("/app/state").unwrap(), 1, 2, bytes);
     a.retention = Retention { by: PurgeBy::Writer, ..Default::default() };
+    a.records = vec![osis_base::CreationRecord::Thing { owner: ACTOR, nonce: [0x29; 32], creator: None }];
     b.aspects.push(a);
     b.ephemeral = Some(osis_commit::EphClass::Plain);
     built(b)

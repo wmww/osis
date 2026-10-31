@@ -307,6 +307,13 @@ impl<K: Ord + Clone, K2: Ord + Clone, V: Clone> JNested<K, K2, V> {
         self.log.push((k, k2, old.clone()));
         old
     }
+    pub fn remove(&mut self, k: &K, k2: &K2) -> Option<V> {
+        let old = Self::put(&mut self.map, k.clone(), k2.clone(), None);
+        if old.is_some() {
+            self.log.push((k.clone(), k2.clone(), old.clone()));
+        }
+        old
+    }
 }
 
 impl<K: Ord + Clone + Debug, K2: Ord + Clone + Debug, V: Clone + Debug> Journaled for JNested<K, K2, V> {

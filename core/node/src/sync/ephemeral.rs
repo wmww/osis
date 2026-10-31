@@ -836,19 +836,8 @@ impl SyncEngine {
                 continue;
             }
             let l = gl.id;
-            let inside: Vec<bool> = c.blob.header.aspects.iter().map(|a| self.engine.in_ephemeral_closure(&g, &a.tid)).collect();
-            // the records of the owner chains of the things inside go along
-            let mut chains: BTreeSet<Tid> = BTreeSet::new();
-            for (a, _) in c.blob.header.aspects.iter().zip(&inside).filter(|(_, i)| **i) {
-                let mut cur = a.tid;
-                while let Some(o) = self.engine.ephemeral_thing(&cur).and_then(|_| self.engine.owner(&cur)) {
-                    if !chains.insert(o) {
-                        break;
-                    }
-                    cur = o;
-                }
-            }
-            let readers: Vec<Option<Tid>> = c.blob.header.aspects.iter().zip(&inside).map(|(a, i)| (*i || (a.ak.as_str() == "/created" && chains.contains(&a.tid))).then(|| self.engine.ephemeral_reader(&a.tid))).collect();
+            // the records of their owner chains ride beside the parts (spec/commits.md §2)
+            let readers: Vec<Option<Tid>> = c.blob.header.aspects.iter().map(|a| self.engine.in_ephemeral_closure(&g, &a.tid).then(|| self.engine.ephemeral_reader(&a.tid))).collect();
             if readers.iter().all(Option::is_none) {
                 continue;
             }

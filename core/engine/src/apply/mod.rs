@@ -4,6 +4,7 @@
 //! engine's indexes from the store lives here too, since it replays what apply records.
 
 mod atomic;
+mod free;
 mod waits;
 pub(crate) mod keys;
 pub(crate) mod receipt;
@@ -79,10 +80,17 @@ fn is_missing_page(e: &osis_commit::Error) -> bool {
     matches!(e, osis_commit::Error::Delta(osis_crdt::Error::Page(osis_crdt::PageError::Missing)) | osis_commit::Error::Missing)
 }
 
-/// Creation records a commit carries on `/created` (decoded without a hash check; the part is
-/// verified later under the record's own dedup secret).
-fn carried_records(h: &Header, blob: &CommitBlob, id: &CommitId) -> Result<BTreeMap<Tid, CreationRecord>> {
+/// Creation records a commit carries: a durable one's on `/created` (decoded without a hash
+/// check; the part is verified later under the record's own dedup secret), an ephemeral one's
+/// beside its deltas (a record hashes to its tid, spec/commits.md §2).
+pub(crate) fn carried_records(h: &Header, blob: &CommitBlob, id: &CommitId) -> Result<BTreeMap<Tid, CreationRecord>> {
     let mut out = BTreeMap::new();
+    if h.ephemeral.is_some() {
+        for r in blob.parts.iter().flat_map(|p| &p.records) {
+            out.insert(r.tid(), r.clone());
+        }
+        return Ok(out);
+    }
     let mut interner = Interner::new();
     for p in &blob.parts {
         let Some(a) = h.aspects.get(p.ai) else { continue };
@@ -140,8 +148,11 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     }
     let h = blob.header.clone();
     let carried = carried_records(&h, blob, id)?;
-    let held: BTreeMap<Tid, CreationRecord> = h.aspects.iter().map(|a| a.tid).chain([h.author, h.actor]).filter_map(|t| tx.core.created(&t).map(|r| (t, r.clone()))).collect();
-    let chain_rec = |t: &Tid, core: &crate::engine::Core| -> Option<CreationRecord> { core.created(t).cloned().or_else(|| carried.get(t).cloned()) };
+    // a durable commit sees durable records only: one on a thing held as memory class waits for
+    // the commit persisting it
+    let memory = h.ephemeral.is_some();
+    let held: BTreeMap<Tid, CreationRecord> = h.aspects.iter().map(|a| a.tid).chain([h.author, h.actor]).filter_map(|t| tx.core.created_for(&t, memory).map(|r| (t, r.clone()))).collect();
+    let chain_rec = |t: &Tid, core: &crate::engine::Core| -> Option<CreationRecord> { core.created_for(t, memory).cloned().or_else(|| carried.get(t).cloned()) };
     let record = |t: &Tid| -> Option<CreationRecord> { held.get(t).cloned().or_else(|| carried.get(t).cloned()) };
     let Some(author) = record(&h.author) else { return Ok(Exam::Pending(Reason::MissingChain(h.author))) };
     let CreationRecord::KeyActor { public_key, .. } = &author else { return Err(Error::BadInput("author is not a key actor")) };
@@ -394,6 +405,17 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, received: WallMs) 
 }
 
 impl Engine {
+    /// Frees the memory things among `things` (`free::free`: records, the memory commits all of
+    /// whose things are freed, their aspects' memory rows). Tests until local ephemeral writes
+    /// are memory commits (issues/eph-unify.md step 3).
+    #[doc(hidden)]
+    pub fn free_memory(&mut self, things: &BTreeSet<Tid>) -> Result<()> {
+        self.run(|tx| {
+            tx.set_memory();
+            free::free(tx, things)
+        })
+    }
+
     /// Whether every delta of `blob` hashes to its entry in the commit's header (the applied,
     /// resolved one when held; spec/commits.md §4): a blob of a held commit is otherwise never
     /// checked, its parts being skipped as held. `None` while a thing's `/created` (its dedup
@@ -720,14 +742,18 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         tx.core.hlc.observe(ts);
     }
     let mut created = Vec::new();
-    tx.scan(records::CREATED, |_, v| {
+    tx.scan(records::CREATED, |k, v| {
         let lim = osis_base::Limits { max_depth: 8, max_bytes: v.len() };
         let rec = osis_base::decode(&v, &lim).ok().and_then(|v| CreationRecord::from_value(&v)).ok_or(Error::Corrupt("creation record"))?;
-        created.push(rec);
+        created.push((k.to_vec(), rec));
         Ok(())
     })?;
-    for r in created {
-        tx.core.ix.held.create(r);
+    for (k, r) in created {
+        // a reload at run time sees the memory overlay's records too
+        match tx.txn.is_memory_local(&[records::CREATED, &k].concat()) {
+            true => tx.core.ix.held.create_memory(r),
+            false => tx.core.ix.held.create(r),
+        }
     }
     let mut syncing = Vec::new();
     tx.scan(records::SYNCING, |k, _| {
