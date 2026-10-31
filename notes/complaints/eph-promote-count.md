@@ -1,1 +1,0 @@
-- rereview: a new unit test without a spec citation in its comment fails the gate at spec_map.py after a full tier-1 run; running `python3 tools/spec_map.py --uncited` before the gate saves a gate round.
