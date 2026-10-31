@@ -106,7 +106,7 @@ struct Commit {
     range: CounterRange,
     before: Fragment,
     /// The undo of this commit restores `before`'s read when nothing joined after it (§4.6
-    /// Exactness): no list item write, not a model commit.
+    /// Exactness): no list item write, no move beside a broken cycle, not a model commit.
     restores: bool,
 }
 
@@ -165,7 +165,13 @@ pub fn random_script(r: &mut Rng, steps: usize) -> Script {
         5 | 6 => LocalOp::Edit { at: w(r), del: b(r), item: b(r), stale: r.chance(1, 4) },
         _ => LocalOp::Set { item: b(r) },
     };
-    // a third of the scripts only what the model writes too: their replicas follow the model
+    // a quarter of the scripts move and undo on a short text: a cached placement follows a
+    // delta moving an element beside a sibling whose record names its anchor with another key
+    // than the one its row sits by (§6.1, `Sibs`)
+    if r.chance(1, 4) {
+        return moves_script(r, steps);
+    }
+    // a third of the rest only what the model writes too: their replicas follow the model
     let modelled = r.chance(1, 3);
     let steps = (0..steps)
         .map(|_| {
@@ -196,6 +202,40 @@ pub fn random_script(r: &mut Rng, steps: usize) -> Script {
         })
         .collect();
     Script { list: !modelled && r.chance(1, 3), steps }
+}
+
+/// A script of moves, each undone at once, on a text whose chars are all HEAD's children (each
+/// typed at the start), with joins of the latest commits: restoring writes carry lower sibling
+/// keys than the writes they replace.
+fn moves_script(r: &mut Rng, steps: usize) -> Script {
+    let w = |r: &mut Rng| r.below(1 << 16) as u16;
+    // one char each
+    let typed = (0..8).map(|_| LocalOp::Insert { at: 0, item: 3 * r.below(85) as u8 }).collect();
+    let mut out = vec![Step::Ops { r: 0, ops: typed, skew: 0, per: 0 }, Step::Join { to: 1, pick: 0, n: 1, per: 0, merged: false }, Step::Join { to: 2, pick: 0, n: 1, per: 0, merged: false }];
+    // commits so far (about: an op or undo may write nothing)
+    let mut log = 1usize;
+    while out.len() < steps {
+        let rr = r.below(REPLICAS) as u8;
+        let per = if r.chance(1, 4) { 1 + r.below(4) as u8 } else { 0 };
+        match r.below(12) {
+            0..=8 => {
+                let ops = (0..1 + r.below(3)).map(|_| LocalOp::Move { at: w(r), len: r.below(3) as u8, to: w(r) }).collect();
+                out.push(Step::Ops { r: rr, ops, skew: 0, per });
+                out.push(Step::Undo { r: rr, back: 0 });
+                log += 2;
+            }
+            9 => {
+                out.push(Step::Undo { r: rr, back: r.below(3) as u8 });
+                log += 1;
+            }
+            _ => {
+                let n = 2 + r.below(3);
+                let pick = log.saturating_sub(n + r.below(3)) as u8;
+                out.push(Step::Join { to: rr, pick, n: n as u8, per, merged: r.chance(2, 3) });
+            }
+        }
+    }
+    Script { list: false, steps: out }
 }
 
 /// The read of a sequence position as items: a text's chars (one-char strings) or a list's items.
@@ -512,9 +552,8 @@ impl World {
         }
         // a move where concurrent moves closed cycles (§6.2: broken by demotion) may re-place
         // the elements of a broken cycle too
-        if pops.iter().any(|o| matches!(o.op, Op::Move { .. } | Op::Paste { .. })) && st.seq_place().is_some_and(|p| !p.top().cyc.is_empty()) {
-            known = false;
-        }
+        let cycles = pops.iter().any(|o| matches!(o.op, Op::Move { .. } | Op::Paste { .. })) && st.seq_place().is_some_and(|p| !p.top().cyc.is_empty());
+        known &= !cycles;
         let now = self.now();
         let (t, src, lo) = if skew > 0 {
             self.fresh += 1;
@@ -603,8 +642,9 @@ impl World {
             assert_eq!(f.read(), read, "ops in one commit read like the same ops one by one: {pops:?}");
         }
         // (a list item's field first written in a present item stays: no nested register reset,
-        // §4.6 "Absent before")
-        let restores = !pops.iter().any(|o| self.list && !matches!(o.op, Op::Insert { .. } | Op::Delete { .. }));
+        // §4.6 "Absent before"; an element moved whose `cur` was demoted is not restored exactly,
+        // §4.6 Exactness: any move beside a broken cycle)
+        let restores = !cycles && !pops.iter().any(|o| self.list && !matches!(o.op, Op::Insert { .. } | Op::Delete { .. }));
         if skew == 0 {
             self.reps[i].lo = range.hi;
         }
@@ -717,7 +757,7 @@ mod tests {
             all.model_joins += x.model_joins;
             all.merged += x.merged;
         }
-        assert!(all.commits > 150 && all.partial > 40 && all.one_by_one > 40 && all.model_ops > 40 && all.model_joins > 8 && all.undos > 10 && all.restores > 2 && all.joins > 300 && all.merged > 20, "{all:?}");
+        assert!(all.commits > 150 && all.partial > 40 && all.one_by_one > 40 && all.model_ops > 15 && all.model_joins > 8 && all.undos > 10 && all.restores > 2 && all.joins > 300 && all.merged > 20, "{all:?}");
     }
 
     /// §6.2: a move on a replica holding a broken cycle (shrunk from a random script) re-places
