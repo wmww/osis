@@ -72,7 +72,7 @@ fn pending_until_created_spec_commits_4() {
     // the last commit first: its author's /created is unknown
     let r = lp.deliver(1, pks.last().unwrap()).unwrap();
     assert!(matches!(r, Ingested::Pending(_, Reason::MissingChain(_))), "{r:?}");
-    assert!(lp.peers[1].engine.receipt(&t, &ak("/t/reg")).unwrap().nodes.is_empty());
+    assert!(lp.peers[1].engine.receipt(&t, &ak("/t/reg")).unwrap().sources.is_empty());
     // node commits, then the thing's creation
     for p in &pks[..2] {
         lp.deliver(1, p).unwrap();

@@ -6,7 +6,7 @@ use super::validity;
 use crate::engine::{Core, Meta, Owned, Tx, records};
 use crate::error::{Error, Result};
 use crate::events::{Cause, Event, Origin};
-use osis_commit::{CommitBlob, Decoded, Form, Header};
+use osis_commit::{CommitBlob, Decoded, Header};
 use osis_base::{Ak, CommitId, CreationRecord, Tid, Value, WallMs};
 use osis_crdt::{Changes, Fragment};
 use osis_store::Shred;
@@ -79,8 +79,8 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
             core.links = None;
         }
         core.ix.by_thing.insert(a.tid, *id);
-        if h.form == Form::Node && h.kind.has_own_writes() && a.lo < a.hi {
-            core.ix.ranges.insert((a.tid, a.ak.clone(), h.author), a.lo, (a.hi, *id));
+        if h.form.counted() && h.kind.has_own_writes() && a.lo < a.hi {
+            core.ix.ranges.insert((a.tid, a.ak.clone(), h.form.own_source(h.author, *id)), a.lo, (a.hi, *id));
         }
     }
     for b in &h.chunks {
@@ -88,15 +88,16 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
     }
 }
 
-/// Commits by the same node whose node-form ranges on one aspect overlap this one's
-/// (spec/commits.md §4: all are invalid).
+/// Commits by the same node (session) whose node-form (session-form) ranges on one aspect
+/// overlap this one's (spec/commits.md §4: all are invalid).
 fn overlaps(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
     let mut out = BTreeSet::new();
-    if h.form != Form::Node || !h.kind.has_own_writes() {
+    if !h.form.counted() || !h.kind.has_own_writes() {
         return out;
     }
+    let src = h.form.own_source(h.author, *id);
     for a in &h.aspects {
-        if let Some(m) = core.ix.ranges.get(&(a.tid, a.ak.clone(), h.author)) {
+        if let Some(m) = core.ix.ranges.get(&(a.tid, a.ak.clone(), src.clone())) {
             for (lo, (hi, c)) in m.range(..a.hi) {
                 if *hi > a.lo && *lo < a.hi && c != id {
                     out.insert(*c);
@@ -449,9 +450,9 @@ fn misstates_held(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: &Fragment) -> Result<b
 /// before `strip_copies`: a node-form range overlapping a held one, any commit source).
 fn core_holds_owner(core: &Core, tid: &Tid, ak: &Ak, src: &osis_crdt::Source, lo: u64, hi: u64) -> bool {
     match src.kind() {
-        osis_crdt::SourceKind::Node(n) => core.ix.ranges.get(&(*tid, ak.clone(), *n)).is_some_and(|m| m.range(..hi).next_back().is_some_and(|(_, (h, _))| *h > lo)),
+        osis_crdt::SourceKind::Node(_) | osis_crdt::SourceKind::Session(_) => core.ix.ranges.get(&(*tid, ak.clone(), src.clone())).is_some_and(|m| m.range(..hi).next_back().is_some_and(|(_, (h, _))| *h > lo)),
         osis_crdt::SourceKind::Commit(_) => true,
-        osis_crdt::SourceKind::Session(_) | osis_crdt::SourceKind::Derived(_) => false,
+        osis_crdt::SourceKind::Derived(_) => false,
     }
 }
 

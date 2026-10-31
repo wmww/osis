@@ -62,7 +62,7 @@ Header fields by position:
 0. `version`: uint, the format version (1).
 1. `author`: tid of the signing key actor. 2. `actor`: tid of the actor it acts for.
 3. `kind`: 0 content, 1 membership, 2 content compaction snapshot, 3 membership compaction snapshot, 4 import, 5 roster snapshot (spec/commits.md §2).
-4. `ts` (spec/crdt.md §2.2). 5. `form`: 0 node form, 1 commit form (spec/commits.md §3).
+4. `ts` (spec/crdt.md §2.2). 5. `form`: 0 node form, 1 commit form, or `[2, nonce]` session form with the session's 16-byte nonce (spec/commits.md §3).
 6. `schemas`: `[[schema_id (16 bytes), revision]*]`, sorted by schema ID, distinct, at most 256.
 7. `aspects`: `[Aspect+]` sorted by the canonical bytes of `[tid, ak]`, distinct.
 8. `chunks`: `[Chunk*]` sorted by blob ID, distinct: every chunk, tree-node and page blob the deltas introduce; `ki` are indices into `keys`, ascending: the delete keys of the delta that created the blob.
@@ -72,7 +72,7 @@ Header fields by position:
 12. `keys`: `[DeleteKey*]` sorted by canonical bytes, distinct: the delete keys of the commit's deltas (spec/crypto.md §7), `pk` a valid Ed25519 key (§1, spec/crypto.md §1), at most one at level 2 (the author chain); a key no aspect lists is bad input.
 13. `frontier`: `Opt(frontier)`, the frontier value (spec/data-model.md §9); present iff the commit is a membership commit carrying an explicit demotion (spec/permissions.md §5).
 14. `origins`: `[Origin*]` sorted by commit ID, distinct; non-empty iff `kind` is 4 (spec/permissions.md §7).
-15. `ephemeral`: `Opt(uint)`, the ephemeral marker (spec/commits.md §2): 0 an ephemeral commit, 1 a relay-only one, 2 a presence one. Present only with `kind` 2 and `form` 1, no `chunks`, no `purge`, no `undoes` and no list by link; every aspect's retention `by` is writer (`/created` included) with the levels it calls for; a relay-only or presence commit has no `expires`. Anything else is bad input.
+15. `ephemeral`: `Opt(uint)`, the ephemeral marker (spec/commits.md §2): 0 an ephemeral commit, 1 a relay-only one, 2 a presence one. Present only with `kind` 2 and `form` 1, or `kind` 0 and session form (session form only with the marker), no `chunks`, no `purge`, no `undoes` and no list by link; with `kind` 2 every aspect's retention `by` is writer (`/created` included) with the levels it calls for; a relay-only or presence commit has no `expires`. Anything else is bad input.
 
 Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most 1024 bytes); `lo`, `hi`: the counter range (`lo = hi = 0` for kinds 2, 3, 4; else `1 <= lo < hi`); `Retention`: `by` (purgeable-by class), `at_least` and `at_most` bounds, each a map with optional `0: abs` (wall ms; `2^63 - 1` means forever) and `1: rel` (ms after the body is replaced), `{}` for no bound; `expires`: `Opt(T)`; `schema`: `Opt(index into schemas)`; `keys`: `[ki*]`, ascending indices into the header's `keys`: one per level the retention calls for (spec/crypto.md §7), exactly those levels, else bad input; `hashes`: `[delta_hash+]` (32 bytes each), exactly one for kinds 0, 2, 3, 4, sorted and distinct for kinds 1 and 5.
 

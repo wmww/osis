@@ -49,8 +49,8 @@ impl Carrier {
         }
         let Some(a) = h.aspects.get(ai) else { return false };
         match h.form {
-            Form::Node => self.frontiers.nodes.get(&h.author).is_some_and(|f| a.hi > 0 && *f >= a.hi - 1),
             Form::Commit => self.rank.keys().any(|d| matches!(d.src.kind(), SourceKind::Commit(x) if x == c)),
+            f => a.hi > 0 && self.frontiers.of(&f.own_source(h.author, *c)) >= a.hi - 1,
         }
     }
 }
@@ -122,10 +122,7 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
     if h.aspects.iter().any(|a| a.tid == *m) && !tx.core.skip_writer_rules {
         return Err(Error::Misuse("an import origin with a delta on the copy"));
     }
-    let own = match h.form {
-        Form::Node => Source::node(h.author),
-        Form::Commit => Source::commit(*c),
-    };
+    let own = h.form.own_source(h.author, *c);
     let mut deltas = Vec::new();
     for (ai, a) in h.aspects.iter().enumerate() {
         if a.tid != *t || is_membership_class(a.ak.as_str()) || a.ak.as_str() == "/created" || a.expires.is_some() || !meta.valid.get(ai).copied().unwrap_or(false) || meta.dropped.contains_key(&ai) {

@@ -1196,7 +1196,7 @@ fn dropped_snapshot_receipts_cost_spec_commits_5() {
     let t2 = Instant::now();
     let f = e.frontier(&scope, now).unwrap();
     let frontier = t2.elapsed();
-    assert!(r.contiguous(&me, u64::MAX) >= (5 * k) as u64);
+    assert!(r.contiguous(&osis_crdt::Source::node(me), u64::MAX) >= (5 * k) as u64);
     assert!(!f.writes.is_empty());
     println!("k={k} ({kept} kept): fill {fill:?}; receipt {receipt:?}; demotion frontier {frontier:?}");
 }

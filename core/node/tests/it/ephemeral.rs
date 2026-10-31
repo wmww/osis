@@ -3236,3 +3236,34 @@ fn bench_local_writes() {
     let got = lp.peers[0].engine.get(&t, &reg).unwrap();
     assert_eq!(got, n.checked_sub(1).map(|i| Value::Str(format!("v{i}"))));
 }
+
+// spec/commits.md §3 (session form), issues/eph-unify.md step 3: a memory commit is session
+// form under the open's session with the ephemeral marker; its dots are `(Session(node,
+// nonce), ctr)`, counted per aspect from 1, received and owned by that source, never a node's.
+#[test]
+fn memory_commit_session_form_spec_commits_3() {
+    let mut lp = crate::common::net(1, 5);
+    let t = crate::common::new_thing(&mut lp, 0);
+    let reg = crate::common::ak("/t/tags");
+    let e = &mut lp.peers[0].engine;
+    let me = e.tid();
+    let session = e.ephemeral_session();
+    let mut ids = Vec::new();
+    for i in 0..2 {
+        let mut m = Mutation::new();
+        m.set(t, &crate::common::TAGS, &Value::Set([Value::Str(format!("v{i}"))].into())).unwrap();
+        ids.push(e.commit_in_memory(m).unwrap().unwrap());
+    }
+    let h = e.header(&ids[1]).unwrap();
+    assert_eq!(h.form, osis_commit::Form::Session(session.nonce));
+    assert_eq!(h.ephemeral, Some(osis_commit::EphClass::Plain));
+    let a = h.aspects.iter().find(|a| a.ak == reg).unwrap();
+    assert_eq!((a.lo, a.hi), (2, 3), "counters per aspect and session, from 1");
+    let src = osis_crdt::Source::session(session);
+    let r = e.receipt(&t, &reg).unwrap();
+    assert_eq!(r.contiguous(&src, u64::MAX), 2);
+    assert_eq!(r.contiguous(&osis_crdt::Source::node(me), u64::MAX), 0, "no node counters");
+    assert_eq!(e.core.commit_of(&t, &reg, &osis_crdt::Dot::new(src.clone(), 1)), Some(ids[0]));
+    assert_eq!(e.core.commit_of(&t, &reg, &osis_crdt::Dot::new(src, 2)), Some(ids[1]));
+    assert_eq!(e.get(&t, &reg).unwrap(), Some(Value::Set([Value::Str("v1".into())].into())));
+}

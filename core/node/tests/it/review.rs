@@ -305,7 +305,7 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
     set_edge(&mut lp.peers[0].engine, t, b, None, Some(f.to_value()));
     sync(&mut lp, 1, 0);
     let r = lp.peers[0].engine.receipt(&t, &ak("/t/reg")).unwrap();
-    assert_eq!(r.contiguous(&b, u64::MAX), 1, "received, though invalid");
+    assert_eq!(r.contiguous(&osis_crdt::Source::node(b), u64::MAX), 1, "received, though invalid");
     let snap = lp.peers[0].engine.snapshot(&t, &ak("/t/reg")).unwrap().unwrap();
     let mut lp2 = net(1, 77);
     lp2.advance(100);
@@ -317,7 +317,7 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
         }
     }
     assert!(lp2.peers[0].engine.commit_ids().contains(&snap));
-    assert_eq!(lp2.peers[0].engine.receipt(&t, &ak("/t/reg")).unwrap().contiguous(&b, u64::MAX), 0);
+    assert_eq!(lp2.peers[0].engine.receipt(&t, &ak("/t/reg")).unwrap().contiguous(&osis_crdt::Source::node(b), u64::MAX), 0);
     // snapshot retention takes the carried write's relative keep at least (1d)
     set(&mut lp, 0, t, &KEPT, "k");
     let ks = lp.peers[0].engine.snapshot(&t, &ak("/t/kept")).unwrap().unwrap();

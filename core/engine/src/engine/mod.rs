@@ -297,31 +297,32 @@ impl std::fmt::Debug for LazyHeader {
 /// one node (writes snapshots carry, `ctrs` sorted).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Owned {
-    Node { node: Tid, lo: u64, hi: u64 },
+    /// Counters `lo..hi` of a node or session source (node and session form).
+    Range { src: osis_crdt::Source, lo: u64, hi: u64 },
     Commit(CommitId),
     Dots { src: osis_crdt::Source, ctrs: Vec<u64> },
 }
 
 impl Owned {
+    fn of_form(form: Form, author: Tid, id: &CommitId, lo: u64, hi: u64) -> Owned {
+        match form {
+            Form::Commit => Owned::Commit(*id),
+            f => Owned::Range { src: f.own_source(author, *id), lo, hi },
+        }
+    }
     pub fn of(h: &Header, id: &CommitId, ai: usize) -> Option<Owned> {
         let a = h.aspects.get(ai)?;
-        Some(match h.form {
-            Form::Node => Owned::Node { node: h.author, lo: a.lo, hi: a.hi },
-            Form::Commit => Owned::Commit(*id),
-        })
+        Some(Owned::of_form(h.form, h.author, id, a.lo, a.hi))
     }
     /// `of` from the commit's `View`.
     pub fn of_view(v: &View, id: &CommitId, ai: usize) -> Option<Owned> {
         let a = v.aspects.get(ai)?;
-        Some(match v.form {
-            Form::Node => Owned::Node { node: v.author, lo: a.lo, hi: a.hi },
-            Form::Commit => Owned::Commit(*id),
-        })
+        Some(Owned::of_form(v.form, v.author, id, a.lo, a.hi))
     }
     /// Whether `d` (an owner dot, never `Derived`) belongs to this delta.
     pub fn owns(&self, d: &Dot) -> bool {
         match (self, d.src.kind()) {
-            (Owned::Node { node, lo, hi }, SourceKind::Node(t)) => t == node && *lo <= d.ctr && d.ctr < *hi,
+            (Owned::Range { src, lo, hi }, _) => d.src == *src && *lo <= d.ctr && d.ctr < *hi,
             (Owned::Commit(c), SourceKind::Commit(x)) => c == x,
             (Owned::Dots { src, ctrs }, _) => d.src == *src && ctrs.binary_search(&d.ctr).is_ok(),
             _ => false,
@@ -330,7 +331,7 @@ impl Owned {
     /// Whether a dot of `src` with a counter in `lo..hi` belongs to this delta.
     pub fn owns_range(&self, src: &osis_crdt::Source, lo: u64, hi: u64) -> bool {
         match (self, src.kind()) {
-            (Owned::Node { node, lo: a, hi: b }, SourceKind::Node(t)) => t == node && lo < *b && *a < hi,
+            (Owned::Range { src: s, lo: a, hi: b }, _) => s == src && lo < *b && *a < hi,
             (Owned::Commit(c), SourceKind::Commit(x)) => c == x,
             (Owned::Dots { src: s, ctrs }, _) => s == src && ctrs.get(ctrs.partition_point(|c| *c < lo)).is_some_and(|c| *c < hi),
             _ => false,
@@ -390,8 +391,8 @@ indexes! {
     pub by_thing: JSetMap<Tid, CommitId>,
     /// The commits whose header lists each chunk blob (`View::chunks`).
     pub by_chunk: JSetMap<osis_base::BlobId, CommitId>,
-    /// Node-form ranges per (tid, ak, node): lo -> (hi, commit).
-    pub ranges: JNested<(Tid, Ak, Tid), u64, (u64, CommitId)>,
+    /// Node- and session-form ranges per (tid, ak, own source): lo -> (hi, commit).
+    pub ranges: JNested<(Tid, Ak, osis_crdt::Source), u64, (u64, CommitId)>,
     pub pending: JMap<CommitId, Reason>,
     pub syncing: JSet<Tid>,
     pub void: JSet<CommitId>,
@@ -779,12 +780,12 @@ impl Core {
         let d = d.owner();
         match d.src.kind() {
             SourceKind::Commit(c) => Some(*c),
-            SourceKind::Node(n) => {
-                let m = self.ix.ranges.get(&(*tid, ak.clone(), *n))?;
+            SourceKind::Node(_) | SourceKind::Session(_) => {
+                let m = self.ix.ranges.get(&(*tid, ak.clone(), d.src.clone()))?;
                 let (_, (hi, c)) = m.range(..=d.ctr).next_back()?;
                 (d.ctr < *hi).then_some(*c)
             }
-            SourceKind::Session(_) | SourceKind::Derived(_) => None,
+            SourceKind::Derived(_) => None,
         }
     }
 }

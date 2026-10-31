@@ -143,11 +143,17 @@ impl Header {
         if self.origins.is_empty() == (kind == Kind::Import) {
             return Err(Error::Invalid("origins present iff import"));
         }
-        // an ephemeral commit is of snapshot form and carries nothing a stored commit is for
-        // (spec/commits.md §2)
+        // an ephemeral commit is a commit-form content snapshot or a session-form content commit
+        // and carries nothing a stored commit is for (spec/commits.md §2, §3)
+        use crate::header::Form;
         if let Some(c) = self.ephemeral {
-            if kind != Kind::ContentSnapshot || self.form != crate::header::Form::Commit {
-                return Err(Error::Invalid("ephemeral commit not a commit-form content snapshot"));
+            let shape = match self.form {
+                Form::Commit => kind == Kind::ContentSnapshot,
+                Form::Session(_) => kind == Kind::Content,
+                Form::Node => false,
+            };
+            if !shape {
+                return Err(Error::Invalid("ephemeral commit neither a commit-form content snapshot nor a session-form content commit"));
             }
             if !self.chunks.is_empty() || !self.purge.is_empty() || self.undoes.is_some() || self.links != crate::header::Links::default() {
                 return Err(Error::Invalid("ephemeral commit with chunks, a purge, an undo or linked lists"));
@@ -155,6 +161,8 @@ impl Header {
             if c != crate::header::EphClass::Plain && self.aspects.iter().any(|a| a.expires.is_some()) {
                 return Err(Error::Invalid("relay-only or presence commit with an expiry"));
             }
+        } else if matches!(self.form, Form::Session(_)) {
+            return Err(Error::Invalid("session form outside an ephemeral commit"));
         }
         Ok(())
     }

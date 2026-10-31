@@ -391,13 +391,10 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(
     Ok((retention, expires, framing))
 }
 
-/// The writer's own source: the author node, or for commit form a placeholder commit that
-/// sorts below every other commit like the real one will (spec/crdt.md §3.3 rule 2).
+/// The writer's own source: the author node or session, or for commit form a placeholder
+/// commit that sorts below every other commit like the real one will (spec/crdt.md §3.3 rule 2).
 fn own_source(form: Form, node: Tid) -> Source {
-    match form {
-        Form::Node => Source::node(node),
-        Form::Commit => Source::commit(osis_base::CommitId([0; 32])),
-    }
+    form.own_source(node, osis_base::CommitId([0; 32]))
 }
 
 /// Encodes, pages, reserves counters, builds, signs and applies locally. Returns the ID.
@@ -444,7 +441,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
             own = keep;
         }
         chunks.extend(own);
-        if plan.form == Form::Node && plan.kind.has_own_writes() {
+        if plan.form.counted() && plan.kind.has_own_writes() {
             let first = tx.txn.reserve_counters(&d.tid, &d.ak, d.hi.saturating_sub(d.lo))?;
             if first != d.lo {
                 return Err(Error::Misuse("counter moved under the writer"));
@@ -460,6 +457,8 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     b.frontier = plan.frontier;
     b.blind = Some(plan.blind);
     b.origins = plan.origins;
+    // a session-form commit is a memory commit (spec/commits.md §2, §3)
+    b.ephemeral = matches!(plan.form, Form::Session(_)).then_some(osis_commit::EphClass::Plain);
     let built = {
         let core: &Core = tx.core;
         let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published: &published };
@@ -494,12 +493,13 @@ impl Engine {
         self.run(|tx| commit_in(tx, m))
     }
 
-    /// Commits `m` through the same path with every row it derives in the store's memory
-    /// overlay (no disk I/O, gone at restart): what a memory commit costs (issues/eph-unify.md,
-    /// step 2 measurement). Benches only until memory commits land; the aspects it writes must
-    /// hold no durable row.
+    /// Commits `m` as a memory commit: session form under this open's session, the ephemeral
+    /// marker, every row it derives in the store's memory overlay (no disk I/O, gone at
+    /// restart). Benches and tests until memory commits land (issues/eph-unify.md step 3); the
+    /// aspects it writes must hold no durable row.
     #[doc(hidden)]
-    pub fn commit_in_memory(&mut self, m: Mutation) -> Result<Option<CommitId>> {
+    pub fn commit_in_memory(&mut self, mut m: Mutation) -> Result<Option<CommitId>> {
+        m.form = Form::Session(self.eph.session().nonce);
         self.run(|tx| {
             tx.txn.set_memory(true);
             commit_in(tx, m)
@@ -589,8 +589,9 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             chunks = super::large::chunk_frontiers(tx, &mut am.ops, &framing)?;
         }
         let lo = match m.form {
-            Form::Node => tx.txn.counter(&tid, &ak)?,
             Form::Commit => next_ctr,
+            // a session's counters: rows of memory aspects, gone with the session
+            Form::Node | Form::Session(_) => tx.txn.counter(&tid, &ak)?,
         };
         let empty = Fragment::default();
         let view = am.schema.as_ref().and_then(|s| s.view(ak.as_str()));

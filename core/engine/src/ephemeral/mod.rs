@@ -120,6 +120,11 @@ impl Eph {
         Eph { session, src: Source::session(session), next: HashMap::new(), batches: 0, things: HashMap::new(), records: 0, aspects: HashMap::new(), timers: BTreeMap::new(), defs: BTreeMap::new(), log: log::Log::default(), drafts: BTreeMap::new(), remote: remote::Remote::default(), dropped: Vec::new(), unheld: Vec::new() }
     }
 
+    /// This open's session.
+    pub(crate) fn session(&self) -> Session {
+        self.session
+    }
+
     /// The next session counter of `(tid, ak)`.
     fn ctr(&self, tid: &Tid, ak: &Ak) -> u64 {
         self.next.get(tid).and_then(|m| m.get(ak)).copied().unwrap_or(1)
