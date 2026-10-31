@@ -362,8 +362,8 @@ impl SyncEngine {
     /// (G, T) whose named `/group` element this node holds dead (`Engine::tie_dead`). As an
     /// explicit demotion by an admin of T, after a complete pass of every label holding a thing
     /// of its pre-sync scope ended after the last remote membership commit of G and of T (its
-    /// pre-sync, none for an empty scope); else
-    /// as a self-removal by an admin of G; nothing when this node may do neither.
+    /// pre-sync, none for an empty scope); else as a self-removal by an admin of G; nothing when
+    /// this node may do neither, or the pair or its scope meets a receipts-only group.
     pub(crate) fn untie_unplaced(&mut self) -> Result<()> {
         let w = &mut self.tied;
         if w.all || !w.groups.is_empty() || !w.targets.is_empty() {
