@@ -30,15 +30,19 @@ pub(crate) use lost::{PENDING_GRANT_WAIT_MS, authentic};
 /// (`fresh_box_covers`) and that `a` is not below (no membership cycle through both). Such an M
 /// heals by its own rotation: the node waits for it, so that `a`'s rotation then reaches M's
 /// members in-band. An M on a cycle with `a` may wait on `a`: `a` rotates, leaving M out
-/// (`rotation_into`). So no actor waits on itself through others.
+/// (`rotation_into`). So no actor waits on itself through others. A role whose rotation would
+/// carry a role this node holds no current secret of to a key-actor member (spec/crypto.md §4;
+/// it reaches `a` through a member actor a rotation left out) waits for a re-seal, as a role it
+/// may not rotate does.
 fn rotation_due(tx: &mut Tx<'_>, a: &Tid, may: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
     let deps = departures(tx, a)?;
     let Some((held, by_role)) = uncovered_by_role(tx, a, &deps)? else { return Ok(BTreeSet::new()) };
     let current: BTreeSet<Tid> = tx.core.current_members(a).into_iter().map(|x| x.0).collect();
+    let unheld = carried_unheld(tx, a)?;
     let mut out = BTreeSet::new();
     let mut on_cycle: BTreeMap<Tid, bool> = BTreeMap::new();
     'roles: for (r, ds) in by_role {
-        if ds.is_empty() || !may.contains(&r) {
+        if ds.is_empty() || !may.contains(&r) || unheld.contains(&r) {
             continue;
         }
         for d in ds {
@@ -53,6 +57,17 @@ fn rotation_due(tx: &mut Tx<'_>, a: &Tid, may: &BTreeSet<Role>) -> Result<BTreeS
         out.insert(r);
     }
     Ok(out)
+}
+
+/// The roles of `a` a rotation by this node could not make: one whose box to a key-actor
+/// member holding it carries a lower role (`osis_keys::rotate`) with no current secret held
+/// here. Roles without a current secret held are never rotated (`uncovered_by_role`), so a
+/// rotation never carries one it rotates.
+fn carried_unheld(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Role>> {
+    let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
+    let Some(lowest) = ROLES.into_iter().find(|r| epochs.role(*r).newest_held().is_none()) else { return Ok(BTreeSet::new()) };
+    let top = recipients(tx, a, &[])?.into_iter().filter(|rc| matches!(rc.keys, osis_keys::MemberKeys::KeyActor { seed: None, .. })).map(|rc| rc.role).max();
+    Ok(ROLES.into_iter().filter(|r| *r > lowest && top >= Some(*r)).collect())
 }
 
 /// Whether member actor `m` of `a` may be boxed role `r` of `a` (spec/permissions.md §3,

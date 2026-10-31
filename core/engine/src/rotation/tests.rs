@@ -1005,3 +1005,47 @@ fn regrant_after_tag_removal_spec_crypto_4() {
     let core = &lp.peers[0].engine.core;
     assert!(super::departures::written_by(core, &n, Role::Read, &bob, &bob, &tag), "Bob holds nothing on N now");
 }
+
+// spec/permissions.md §3 (left out), spec/crypto.md §4 (carried secrets): P writes A only
+// through member actor M (owned by peer 2). D leaves M by itself, so M's epoch is stale;
+// A's owner then removes D (also a reader of A) and its read rotation leaves M out, so P holds
+// A's write but no current read. E, a writer of A, leaves by itself. P may rotate A's write,
+// but a rotation of it carries read to A's owner (a key actor): P is stranded (no error) until
+// M rotates and A's owner, rotating A, boxes M again.
+#[test]
+fn rotator_lacking_carried_secret_stranded_spec_permissions_3() {
+    let mut lp = LocalPeer::new(5, 961, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let [p, d, e] = [1, 3, 4].map(|i| lp.peers[i].engine.tid());
+    let a = group(&mut lp, 0);
+    let m = group(&mut lp, 2);
+    lp.sync_all().unwrap();
+    lp.peers[2].engine.grant(&m, &p, &edge(Role::Write)).unwrap();
+    lp.peers[2].engine.grant(&m, &d, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&a, &m, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&a, &d, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&a, &e, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    assert!(newest_read(&lp, 1, a).is_some(), "P reads A through M");
+    lp.peers[3].engine.demote(&m, &Demotion { member: d, new: None, presync: PreSync::Synced }).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.demote(&a, &Demotion { member: d, new: None, presync: PreSync::Synced }).unwrap();
+    lp.sync_all().unwrap();
+    assert!(newest_read(&lp, 1, a).is_none(), "M left out of A's read");
+    assert!(lp.peers[1].engine.epochs(&a).unwrap().write.newest_held().is_some(), "P still holds A's write");
+    lp.peers[4].engine.demote(&a, &Demotion { member: e, new: None, presync: PreSync::Synced }).unwrap();
+    lp.sync_all().unwrap();
+    let write = |lp: &LocalPeer| lp.peers[1].engine.epochs(&a).unwrap().write.newest_held().map(|x| x.0);
+    let before = write(&lp);
+    // P may rotate M's read (D left it) first: that is fine
+    let (_, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
+    assert_eq!(write(&lp), before, "A's write not rotated");
+    assert!(still.contains(&Role::Write), "stranded on A's write: {still:?}");
+    let e = lp.peers[1].engine.epochs(&a).unwrap();
+    assert!(matches!(osis_keys::wrap_epoch(&e.read), osis_keys::WrapEpoch::Stranded(_)), "P's heartbeat reports it stranded on A");
+    settle(&mut lp, &[1, 2, 0], &[m, a]);
+    assert!(newest_read(&lp, 1, a).is_some(), "P re-sealed on A through M");
+    let (_, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
+    assert!(still.is_empty(), "{still:?}");
+}
