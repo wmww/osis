@@ -830,3 +830,125 @@ fn snapshot_dated_through_superseders_snapshot_spec_commits_5() {
     e.replay_deaths(&t, &k).unwrap();
     assert_eq!(e.deaths(&s1, &t, &k).unwrap(), Some((ts1, ts1)));
 }
+
+// spec/commits.md §5 (a snapshot's writes die for it no earlier than its `ts`): as above with K
+// commit-form, so S2 holds it through `Absorbed`, not its frontier. K's own body dropped, the
+// recompute finds the kill of W by K in S2 and dates S at its `ts` (was: only a frontier counted
+// as holding K, so the state named K2 and S got no death).
+#[test]
+fn snapshot_dated_through_commit_form_superseder_spec_commits_5() {
+    let mut lp = net(3, 93);
+    let t = new_thing(&mut lp, 0);
+    let p1 = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
+    let k = ak("/t/kept");
+    let w = set(&mut lp, 0, t, &KEPT, "w");
+    sync(&mut lp, 0, 1);
+    lp.advance(10);
+    let mut m = Mutation::new();
+    m.commit_form();
+    m.set(t, &KEPT, &s("k")).unwrap();
+    let kk = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.advance(10);
+    let s1 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.advance(10);
+    let s2 = lp.peers[1].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.advance(10);
+    set(&mut lp, 1, t, &KEPT, "k2");
+    let mut all = packages(&mut lp, 0);
+    all.extend(packages(&mut lp, 1));
+    let mut seen = std::collections::BTreeSet::new();
+    all.retain(|p| seen.insert(p.id));
+    for p in &all {
+        lp.deliver(2, p).unwrap();
+    }
+    let ts1 = lp.peers[0].engine.header(&s1).unwrap().ts;
+    let e = &mut lp.peers[2].engine;
+    assert!(e.body_not_dropped(&w, &t, &k) && e.body_not_dropped(&s2, &t, &k));
+    assert_eq!(e.deaths(&s1, &t, &k).unwrap(), Some((ts1, ts1)));
+    e.drop_body(&kk, &t, &k).unwrap();
+    e.replay_deaths(&t, &k).unwrap();
+    assert_eq!(e.deaths(&s1, &t, &k).unwrap(), Some((ts1, ts1)), "recompute");
+}
+
+// spec/commits.md §5 (deaths of carried writes): a snapshot S of a moved thing carries an
+// import's write (dot `Commit(origin)`) and lists the import in `Absorbed`; a node holding S but
+// not the import's header still dates S at the write's superseder, by joins and in a recompute
+// (was: the import could not be mapped to its origin, so S got no death).
+#[test]
+fn snapshot_of_unheld_import_dated_spec_commits_5() {
+    let mut lp = net(2, 94);
+    let t = new_thing(&mut lp, 0);
+    let me = lp.peers[0].engine.tid();
+    let k = ak("/t/kept");
+    let mut m = Mutation::new();
+    m.commit_form();
+    m.set(t, &KEPT, &s("one")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(10);
+    let (copy, imports) = lp.peers[0].engine.move_thing(&t, me).unwrap();
+    let imp = *imports.iter().find(|i| lp.peers[0].engine.header(i).is_some_and(|h| h.aspects.iter().any(|a| a.ak == k))).unwrap();
+    lp.advance(10);
+    let s2 = lp.peers[0].engine.snapshot(&copy, &k).unwrap().unwrap();
+    lp.advance(10);
+    let c2 = set(&mut lp, 0, copy, &KEPT, "two");
+    let all = packages(&mut lp, 0);
+    for p in all.iter().filter(|p| p.id != imp) {
+        let _ = lp.deliver(1, p);
+    }
+    let tc = lp.peers[0].engine.header(&c2).unwrap().ts;
+    let e = &mut lp.peers[1].engine;
+    assert!(e.header(&imp).is_none() && e.body_not_dropped(&s2, &copy, &k));
+    assert_eq!(e.deaths(&s2, &copy, &k).unwrap(), Some((tc, tc)));
+    e.replay_deaths(&copy, &k).unwrap();
+    assert_eq!(e.deaths(&s2, &copy, &k).unwrap(), Some((tc, tc)), "recompute");
+}
+
+// spec/commits.md §5 (deaths of carried writes): a snapshot S whose author applied W while an
+// earlier write X of W's author on the aspect never arrived (a late part) carries W past its
+// frontier; K kills W at a node holding S but not W's commit, and S dies at K, by joins and in a
+// recompute (was: only the frontier counted, so S got no death).
+#[test]
+fn snapshot_carrying_write_past_frontier_dated_spec_commits_5() {
+    let mut lp = net(4, 95);
+    let t = new_thing(&mut lp, 0);
+    for i in 1..3 {
+        let p = lp.peers[i].engine.tid();
+        set_edge(&mut lp.peers[0].engine, t, p, Some(edge(Role::Write)), None);
+    }
+    lp.sync_all().unwrap();
+    let k = ak("/t/kept");
+    let mut m = Mutation::new();
+    m.set(t, &KEPT, &s("x")).unwrap();
+    m.set(t, &REG, &s("r")).unwrap();
+    let x = lp.peers[1].commit(m).unwrap().unwrap();
+    let h = lp.peers[1].engine.header(&x).unwrap();
+    let mut b = osis_commit::CommitBlob::decode(&lp.peers[1].engine.package(&x).unwrap().unwrap().bytes).unwrap();
+    b.parts.retain(|p| h.aspects[p.ai].ak != k);
+    lp.peers[0].engine.set_syncing(t, true).unwrap();
+    lp.peers[0].engine.ingest(&b.encode(), Vec::new()).unwrap();
+    lp.advance(3_600_001);
+    lp.peers[0].engine.tick().unwrap();
+    let w = set(&mut lp, 1, t, &KEPT, "w");
+    let wp = lp.peers[1].engine.package(&w).unwrap().unwrap();
+    lp.deliver(0, &wp).unwrap();
+    assert_eq!(lp.peers[0].engine.get(&t, &k).unwrap(), Some(s("w")));
+    lp.deliver(2, &wp).unwrap();
+    lp.advance(10);
+    let s1 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.advance(10);
+    let kk = set(&mut lp, 2, t, &KEPT, "k");
+    let mut all = packages(&mut lp, 0);
+    all.extend(packages(&mut lp, 2));
+    let mut seen = std::collections::BTreeSet::new();
+    all.retain(|p| p.id != w && p.id != x && seen.insert(p.id));
+    for p in &all {
+        let _ = lp.deliver(3, p);
+    }
+    let tk = lp.peers[2].engine.header(&kk).unwrap().ts;
+    let e = &mut lp.peers[3].engine;
+    assert!(e.header(&w).is_none() && e.body_not_dropped(&s1, &t, &k));
+    assert_eq!(e.deaths(&s1, &t, &k).unwrap(), Some((tk, tk)));
+    e.replay_deaths(&t, &k).unwrap();
+    assert_eq!(e.deaths(&s1, &t, &k).unwrap(), Some((tk, tk)), "recompute");
+}
