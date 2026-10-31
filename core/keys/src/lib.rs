@@ -23,4 +23,4 @@ pub use osis_crypto::Epoch;
 pub use planner::{Entry, Graph, MemoryGraph, PermGraph, Plan, lost_access, plan_departure, plan_inside, reached};
 pub use delete::{delete_candidates, delete_key};
 pub use wrap::{WrapEpoch, label_role, newer_than_head, registered_epoch, registered_secret, registration_epochs, wrap_epoch};
-pub use produce::{MemberKeys, Part, Recipient, Rotated, Rotation, box_member, reseal_member, roles_up_to, rotate, rotate_together, symmetric_box};
+pub use produce::{MemberKeys, Recipient, Rotated, Rotation, box_member, reseal_member, roles_up_to, rotate, symmetric_box};

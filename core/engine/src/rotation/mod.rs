@@ -5,8 +5,10 @@
 //! through member and owner actors (departures inside a member); the covers rule over the held
 //! actors, plus: an epoch introduced by a departed party (or a node acting through it) does not
 //! cover its departure, nor, for a rotator, one whose rotation commit it does not hold and a
-//! departed party could have written; the cascade (`ensure_rotated`: intermediate actors first, top-down, where
-//! the signer may rotate; one that may not stays stranded on what is below); giving a thing
+//! departed party could have written; the cascade (`ensure_rotated`: intermediate actors first,
+//! bottom-up, where the signer may rotate; one that may not stays stranded on what is below; a
+//! member actor whose epoch does not cover is left out of a rotation and re-sealed once it
+//! rotates); giving a thing
 //! secrets of its own; re-seal decisions. Departures are recomputed on demand (O(edge history)),
 //! never stored.
 
@@ -17,7 +19,7 @@ use crate::Mutation;
 use crate::retention::forget::Forgotten;
 use osis_base::{Role, Tid, Ts, WallMs};
 use osis_crypto::Epoch;
-use osis_keys::{ActorEpochs, Departure, MemoryHeldActors, ROLES, Recipient, Rotation, uncovered};
+use osis_keys::{ActorEpochs, Departure, MemoryHeldActors, ROLES, Recipient, Rotation, rotate, uncovered};
 use osis_perm::{At, WriteId};
 use osis_schema::core_types::BoxKey;
 use std::collections::{BTreeMap, BTreeSet};
@@ -110,7 +112,7 @@ pub(crate) fn departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Departure>> {
         return Ok(d.clone());
     }
     let mut horizon = None;
-    let out: Vec<Departure> = collect(tx, a, &mut horizon)?.into_iter().collect();
+    let out: Vec<Departure> = collect(tx, a, &mut horizon, &[])?.into_iter().collect();
     tx.core.ix.departures.insert(*a, (out.clone(), horizon));
     Ok(out)
 }
@@ -131,12 +133,14 @@ fn class_of(held: &MemoryHeldActors, v: &Tid, d: &Departure) -> Class {
 }
 
 /// The departures of `departures`: the walk below `a` (`a` too when it is on a cycle), then
-/// `a`'s own departures and those inside its members.
-fn collect(tx: &mut Tx<'_>, a: &Tid, horizon: &mut Option<WallMs>) -> Result<BTreeSet<Departure>> {
+/// `a`'s own departures (`pending` added: ones a commit being made makes) and those inside its
+/// members.
+fn collect(tx: &mut Tx<'_>, a: &Tid, horizon: &mut Option<WallMs>, pending: &[Departure]) -> Result<BTreeSet<Departure>> {
     let held = held_actors(tx)?;
     let (below, parents) = below_of(tx.core, a);
     let mut direct = Vec::with_capacity(below.len() + 1);
-    let mine = direct_departures(tx, a, horizon)?;
+    let mut mine = direct_departures(tx, a, horizon)?;
+    mine.extend(pending.iter().cloned());
     direct.push((*a, mine.clone()));
     for v in below {
         let d = direct_departures(tx, &v, horizon)?;
@@ -455,59 +459,53 @@ pub fn uncovered_roles_of(tx: &mut Tx<'_>, a: &Tid, deps: Vec<Departure>) -> Res
     Ok(out)
 }
 
-/// The roles of `uncovered` that a fresh rotation of `a` would cover: one uncovered departure
-/// at least is a member's own (the rotation omits it), or lies inside a member M that is no
-/// longer current or whose newest epoch covers the rest and is the one its fresh box names (M's
-/// keyset in `/keys`: a node holding a newer `/keys` than secrets of M would otherwise rotate
-/// without end). A role whose departures a rotation cannot help is not rotated: the node may
-/// not encrypt under it until the intermediate rotates (spec/permissions.md §3).
+/// The roles of `uncovered_roles` a rotation of `a` is worth now (spec/permissions.md §3): none
+/// of their uncovered departures lies inside a current member M whose fresh box would not cover
+/// the rest (`fresh_box_covers`) and that `a` is not below (no membership cycle through both).
+/// Such an M heals by its own rotation: the node waits for it, so that `a`'s rotation then
+/// reaches M's members in-band. An M on a cycle with `a` may wait on `a`: `a` rotates, leaving
+/// M out (`rotation_into`). So no actor waits on itself through others.
 fn rotation_helps(tx: &mut Tx<'_>, a: &Tid, uncovered_roles: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
+    if uncovered_roles.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let deps = departures(tx, a)?;
+    let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
+    let secrets = secrets_in(tx, a)?;
+    let held = held_actors(tx)?;
+    let current: BTreeSet<Tid> = tx.core.current_members(a).into_iter().map(|x| x.0).collect();
     let mut out = BTreeSet::new();
-    for &r in uncovered_roles {
-        if joint_helps(tx, a, r, &BTreeSet::from([*a]))? {
-            out.insert(r);
+    'roles: for &r in uncovered_roles {
+        if let Some((e, _)) = epochs.role(r).newest_held() {
+            for d in uncovered(&secrets, &epochs, r, &e, &deps, &held) {
+                if let Some((m, rest)) = d.via.split_first()
+                    && current.contains(m)
+                    && !below_of(tx.core, m).0.contains(a)
+                    && !fresh_box_covers(tx, &held, m, r, &Departure { via: rest.clone(), member: d.member, from: d.from })?
+                {
+                    continue 'roles;
+                }
+            }
         }
+        out.insert(r);
     }
     Ok(out)
 }
 
-/// Whether rotating role `r` of every actor of `joint` together (`a` among them; one actor
-/// alone: `rotation_helps`) would cover one uncovered departure of `a` at least: following its
-/// chain from `a` through actors of `joint` (fresh epochs, boxing each other at the fresh
-/// ones), it ends inside them, reaches a member no longer current, or reaches a member M outside
-/// whose newest epoch covers the rest and is the one the fresh box names. Or `a`'s epoch is
-/// uncovered only for having been introduced by a departed party (any rotation replaces it).
-fn joint_helps(tx: &mut Tx<'_>, a: &Tid, r: Role, joint: &BTreeSet<Tid>) -> Result<bool> {
-    let deps = departures(tx, a)?;
-    let Some(epochs) = tx.core.epochs(a) else { return Ok(false) };
-    let Some((e, _)) = epochs.role(r).newest_held() else { return Ok(true) };
-    let secrets = secrets_in(tx, a)?;
-    let held = held_actors(tx)?;
-    let open: Vec<Departure> = uncovered(&secrets, &epochs, r, &e, &deps, &held).into_iter().cloned().collect();
-    if open.is_empty() {
-        return Ok(true);
-    }
-    for d in open {
-        let mut cur = *a;
-        let mut rest = d.via.clone();
-        let helps = loop {
-            let Some((m, tail)) = rest.split_first() else { break true };
-            let m = *m;
-            if !tx.core.current_members(&cur).iter().any(|x| x.0 == m) {
-                break true;
-            }
-            let inner = Departure { via: tail.clone(), member: d.member, from: d.from };
-            if !joint.contains(&m) {
-                break fresh_box_covers(tx, &held, &m, r, &inner)?;
-            }
-            cur = m;
-            rest = inner.via;
-        };
-        if helps {
-            return Ok(true);
+/// Whether member actor `m` of `a` may be boxed role `r` of `a` (spec/permissions.md §3,
+/// Membership cycles): a fresh box would name `m`'s newest epoch of `r` (`fresh_box_covers`)
+/// and that epoch covers every departure of `deps` (those of `a`) inside `m`. Boxing to an
+/// epoch is encrypting under it: a rotation leaves such a member out and the re-seal trigger
+/// skips it until `m` rotates.
+fn member_covers(tx: &mut Tx<'_>, held: &MemoryHeldActors, deps: &[Departure], m: &Tid, r: Role) -> Result<bool> {
+    for d in deps.iter().filter(|d| d.via.first() == Some(m) && r >= d.from) {
+        let Some((_, tail)) = d.via.split_first() else { continue };
+        let inner = Departure { via: tail.clone(), member: d.member, from: d.from };
+        if !fresh_box_covers(tx, held, m, r, &inner)? {
+            return Ok(false);
         }
     }
-    Ok(false)
+    Ok(true)
 }
 
 /// Whether a fresh box of role `r` to member actor `m` would name `m`'s newest epoch (its
@@ -565,42 +563,36 @@ pub(crate) fn refreshes_deposit(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSe
 
 /// The rotation of `roles` of `a` (boxes for `members`), written into `m`. The superseded
 /// epochs' secrets must be held: `held` is this node's view (derived epochs for the switch to
-/// secrets of its own).
-pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, members: &[Recipient]) -> Result<Rotation> {
-    let mut v = rotations_into(tx, m, &[(a, roles.clone(), held.clone(), members.to_vec())])?;
-    v.pop().ok_or(Error::Misuse("no rotation"))
-}
-
-/// Whether a rotation may carry role r's epoch e to key-actor members (the covers rule).
-type MayCarry<'a> = Box<dyn Fn(Role, &Epoch) -> bool + 'a>;
-
-/// Rotations of several actors written into `m` (`osis_keys::rotate_together`: those of a
-/// membership cycle box each other at their new epochs): per actor its roles, this node's view
-/// of it and the members to box.
-pub(crate) fn rotations_into(tx: &mut Tx<'_>, m: &mut Mutation, parts: &[(Tid, BTreeSet<Role>, ActorEpochs, Vec<Recipient>)]) -> Result<Vec<Rotation>> {
+/// secrets of its own). `pending`: departures from `a` the same commit makes (a removal's).
+/// A member actor is boxed only the roles up to the first its newest epoch does not cover
+/// (`member_covers`): left out, it is re-sealed once it rotates (spec/permissions.md §3).
+pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, members: &[Recipient], pending: &[Departure]) -> Result<Rotation> {
+    let secrets = secrets_in(tx, &a)?;
+    let deps = if pending.is_empty() { departures(tx, &a)? } else { collect(tx, &a, &mut None, pending)?.into_iter().collect() };
     let actors = held_actors(tx)?;
-    let mut ctx = Vec::new();
-    for (a, _, _, _) in parts {
-        ctx.push((secrets_in(tx, a)?, departures(tx, a)?));
+    let mut boxed = Vec::with_capacity(members.len());
+    for rc in members {
+        let mut rc = rc.clone();
+        if matches!(rc.keys, osis_keys::MemberKeys::Actor { .. }) {
+            let mut top = None;
+            for r in ROLES.into_iter().filter(|r| *r <= rc.role) {
+                if !member_covers(tx, &actors, &deps, &rc.member, r)? {
+                    break;
+                }
+                top = Some(r);
+            }
+            match top {
+                Some(r) => rc.role = r,
+                None => continue,
+            }
+        }
+        boxed.push(rc);
     }
-    let actors = &actors;
-    let carry: Vec<MayCarry<'_>> = parts
-        .iter()
-        .zip(&ctx)
-        .map(|((_, _, held, _), (secrets, deps))| -> MayCarry<'_> { Box::new(move |r: Role, e: &Epoch| uncovered(secrets, held, r, e, deps, actors).is_empty()) })
-        .collect();
-    let ps: Vec<osis_keys::Part> = parts
-        .iter()
-        .zip(&ctx)
-        .zip(&carry)
-        .map(|(((a, roles, held, members), (secrets, _)), may_carry)| osis_keys::Part { actor: *a, roles: roles.clone(), held, held_secrets: secrets, members: members.clone(), may_carry: may_carry.as_ref() })
-        .collect();
-    let rots = osis_keys::rotate_together(&ps, &mut *tx.rng)?;
-    for ((a, _, _, _), rot) in parts.iter().zip(&rots) {
-        put_secrets(m, *a, &rot.secrets, false)?;
-        put_keysets(m, *a, &rot.keys)?;
-    }
-    Ok(rots)
+    let may_carry = |r: Role, e: &Epoch| uncovered(&secrets, held, r, e, &deps, &actors).is_empty();
+    let rot = rotate(&a, roles, held, &secrets, &boxed, &may_carry, &mut *tx.rng)?;
+    put_secrets(m, a, &rot.secrets, false)?;
+    put_keysets(m, a, &rot.keys)?;
+    Ok(rot)
 }
 
 /// Members a rotation `rot` of `a` boxes that hold no box at a current read epoch before it (a
@@ -657,7 +649,7 @@ pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Rol
     let held = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
     let members = recipients(tx, &a, &[])?;
     let mut m = Mutation::new();
-    let rot = rotation_into(tx, &mut m, a, roles, &held, &members)?;
+    let rot = rotation_into(tx, &mut m, a, roles, &held, &members, &[])?;
     if refreshes_deposit(tx.core, &who, &a, roles) {
         fresh_deposit_seed(tx, &mut m, a)?;
     }
@@ -691,11 +683,11 @@ pub(crate) fn above(core: &Core, a: &Tid) -> Vec<Tid> {
 }
 
 /// Performs the rotations due on `a` before `who` (this node, or a key actor it signs as)
-/// encrypts under its secrets (spec/permissions.md §3): the actors reached through the first
-/// actors of departures' chains, bottom-up, each strongly connected set of them (a membership
-/// cycle) after every set below it; then `a`. One actor alone rotates its uncovered roles `who`
-/// may rotate (`rotation_helps`); a cycle rotates in one commit (`rotate_cycle`). Returns the
-/// roles of `a` still uncovered: it must not encrypt under them.
+/// encrypts under its secrets: first those of the intermediate actors of departures inside
+/// members (bottom-up: each actor after every actor on its departures' chains below it, each
+/// once; on a membership cycle, in walk order), then `a`'s uncovered roles `who` may rotate
+/// (spec/permissions.md §3) where that helps (`rotation_helps`). Returns the roles still
+/// uncovered: it must not encrypt under them.
 pub(crate) fn ensure_rotated(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done) -> Result<BTreeSet<Role>> {
     // a plain thing follows its owner's epochs
     let mut a = a;
@@ -710,59 +702,19 @@ pub(crate) fn ensure_rotated(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done)
         let f: BTreeSet<Tid> = departures(tx, x)?.into_iter().filter_map(|d| d.via.first().copied()).collect();
         Ok(f.into_iter().rev().collect())
     };
-    // Tarjan's strongly connected sets over x -> firsts(x), without recursion (chains have no
-    // depth bound): each set is complete after every set it reaches
-    let mut index: BTreeMap<Tid, (usize, usize)> = BTreeMap::new();
-    let mut stack: Vec<Tid> = Vec::new();
-    let mut on_stack: BTreeSet<Tid> = BTreeSet::new();
-    let f = firsts(tx, &a)?;
-    index.insert(a, (0, 0));
-    stack.push(a);
-    on_stack.insert(a);
-    let mut call = vec![(a, f)];
-    while let Some((x, next)) = call.last_mut() {
-        let x = *x;
+    // depth-first, post-order, without recursion (chains have no depth bound)
+    let mut entered = BTreeSet::from([a]);
+    let mut stack = vec![(a, firsts(tx, &a)?)];
+    while let Some((x, next)) = stack.last_mut() {
         if let Some(y) = next.pop() {
-            match index.get(&y) {
-                None => {
-                    let n = index.len();
-                    index.insert(y, (n, n));
-                    stack.push(y);
-                    on_stack.insert(y);
-                    let f = firsts(tx, &y)?;
-                    call.push((y, f));
-                }
-                Some(&(iy, _)) if on_stack.contains(&y) => {
-                    if let Some(ix) = index.get_mut(&x) {
-                        ix.1 = ix.1.min(iy);
-                    }
-                }
-                Some(_) => {}
+            if entered.insert(y) {
+                let f = firsts(tx, &y)?;
+                stack.push((y, f));
             }
             continue;
         }
-        call.pop();
-        let (ix, low) = index.get(&x).copied().unwrap_or_default();
-        if let Some((p, _)) = call.last()
-            && let Some(ip) = index.get_mut(p)
-        {
-            ip.1 = ip.1.min(low);
-        }
-        if low != ix {
-            continue;
-        }
-        let mut set = BTreeSet::new();
-        while let Some(y) = stack.pop() {
-            on_stack.remove(&y);
-            set.insert(y);
-            if y == x {
-                break;
-            }
-        }
-        if set.len() > 1 {
-            rotate_cycle(tx, who, &set, done)?;
-            continue;
-        }
+        let x = *x;
+        stack.pop();
         let due = uncovered_roles(tx, &x)?;
         let may = may_rotate(tx.core, &who, &x);
         let mine: BTreeSet<Role> = due.intersection(&may).copied().collect();
@@ -772,112 +724,6 @@ pub(crate) fn ensure_rotated(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done)
         }
     }
     uncovered_roles(tx, &a)
-}
-
-/// The actors of `within` that must rotate role `r` with `a` (spec/permissions.md §3): `a`,
-/// and every actor whose role `r` boxes one of them (a current member holding `r` or above, or
-/// its owner), transitively: a lone rotation of one would leave the others' boxes to it naming
-/// the epoch it supersedes.
-pub(crate) fn joint_set(core: &Core, a: &Tid, r: Role, within: &BTreeSet<Tid>) -> BTreeSet<Tid> {
-    let mut out = BTreeSet::from([*a]);
-    let mut work = vec![*a];
-    while let Some(m) = work.pop() {
-        for v in within {
-            if !out.contains(v) && core.current_members(v).iter().any(|x| x.0 == m && x.1 >= r) {
-                out.insert(*v);
-                work.push(*v);
-            }
-        }
-    }
-    out
-}
-
-/// The actors that rotate with `target` in a commit that removes or demotes a member of it
-/// (spec/permissions.md §3), and their roles: per rotated role r, the `joint_set` of the target
-/// among the actors on a membership cycle through it, when `who` may rotate r of all of them
-/// (else the target rotates r alone and stays uncovered until a node that may does).
-pub(crate) fn cycle_partners(core: &Core, who: &Tid, target: &Tid, roles: &BTreeSet<Role>) -> BTreeMap<Tid, BTreeSet<Role>> {
-    let (below, _) = below_of(core, target);
-    let within: BTreeSet<Tid> = below.into_iter().collect();
-    let mut out: BTreeMap<Tid, BTreeSet<Role>> = BTreeMap::new();
-    for &r in roles {
-        let joint = joint_set(core, target, r, &within);
-        if joint.iter().all(|x| may_rotate(core, who, x).contains(&r)) {
-            for x in joint.into_iter().filter(|x| x != target) {
-                out.entry(x).or_default().insert(r);
-            }
-        }
-    }
-    out
-}
-
-/// The rotations due on a membership cycle `set` (spec/permissions.md §3): for each actor and
-/// uncovered role r, its `joint_set` rotates r together, when `who` may rotate r of every one
-/// of them and that helps (`joint_helps`); else none of them rotates r for it (a lone rotation
-/// in a cycle leaves the others naming the superseded epoch). All in one commit.
-fn rotate_cycle(tx: &mut Tx<'_>, who: Tid, set: &BTreeSet<Tid>, done: &mut Done) -> Result<()> {
-    let mut due = Vec::new();
-    for v in set {
-        due.push((*v, uncovered_roles(tx, v)?));
-    }
-    let mut plan: BTreeMap<Tid, BTreeSet<Role>> = BTreeMap::new();
-    for (v, roles) in due {
-        for r in roles {
-            if plan.get(&v).is_some_and(|x| x.contains(&r)) {
-                continue;
-            }
-            let joint = joint_set(tx.core, &v, r, set);
-            if !joint.iter().all(|x| may_rotate(tx.core, &who, x).contains(&r)) || !joint_helps(tx, &v, r, &joint)? {
-                continue;
-            }
-            for x in joint {
-                plan.entry(x).or_default().insert(r);
-            }
-        }
-    }
-    if !plan.is_empty() {
-        done.extend(rotate_together_now(tx, who, &plan)?);
-    }
-    Ok(())
-}
-
-/// Rotates the roles `plan` names of each of its actors in one commit of its own (changes no
-/// edge), signed by `who`; actors of `plan` box each other at their new epochs.
-pub(crate) fn rotate_together_now(tx: &mut Tx<'_>, who: Tid, plan: &BTreeMap<Tid, BTreeSet<Role>>) -> Result<Done> {
-    let mut parts = Vec::new();
-    for (a, roles) in plan {
-        let held = tx.core.epochs(a).ok_or(Error::Misuse("no secrets held for the actor"))?;
-        let members = recipients(tx, a, &[])?;
-        parts.push((*a, roles.clone(), held, members));
-    }
-    let mut m = Mutation::new();
-    let rots = rotations_into(tx, &mut m, &parts)?;
-    let mut unreached_by = Vec::new();
-    for ((a, roles, _, _), rot) in parts.iter().zip(&rots) {
-        if refreshes_deposit(tx.core, &who, a, roles) {
-            fresh_deposit_seed(tx, &mut m, *a)?;
-        }
-        unreached_by.push(unreached(tx, a, rot)?);
-    }
-    if let Some(s) = signer_of(tx, who) {
-        m.sign_as(s);
-    }
-    let c = Engine::commit_tx(tx, m)?;
-    let mut done = Done::default();
-    done.add(c);
-    let mut under = Vec::new();
-    for (((a, _, _, _), rot), to) in parts.iter().zip(&rots).zip(unreached_by) {
-        record(tx, *a, rot)?;
-        done.deliveries.extend(deliver_rotation(tx, *a, c, &to)?);
-        under.extend(above(tx.core, a));
-    }
-    // the rotated actors' new `/keys` travel under the labels above them (spec/permissions.md §3)
-    if let Some(c) = c {
-        under.sort();
-        under.dedup();
-        done.deliveries.push(Delivery::First { commits: vec![c], under });
-    }
-    Ok(done)
 }
 
 /// `ensure_rotated`, failing when `roles` stay uncovered.
@@ -913,7 +759,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<Option<Ow
     let held = tx.core.epochs(&t).ok_or(Error::Misuse("the owner's secrets are not held"))?;
     let members = recipients(tx, &t, &[])?;
     let mut m = Mutation::new();
-    let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &members)?;
+    let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &members, &[])?;
     fresh_deposit_seed(tx, &mut m, t)?;
     let to = unreached(tx, &t, &rot)?;
     let c = Engine::commit_tx(tx, m)?;
@@ -968,11 +814,23 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
     let members: Vec<osis_keys::Member> = tx.core.current_members(a).into_iter().map(|(member, role, until)| osis_keys::Member { member, role, until }).collect();
     let carries = carries_fn(tx.core, a);
     let now = tx.core.now();
-    let out = osis_keys::reseal_needed(&secrets, &epochs, &members, now, &|k, r, e| carries(k, r, e))
-        .into_iter()
-        .map(|(m, roles)| (m, roles.into_iter().filter(|r| may.contains(r) && !epochs.role(*r).newest_is_snapshot()).collect::<BTreeSet<Role>>()))
-        .filter(|(_, roles)| !roles.is_empty())
-        .collect();
+    let due = osis_keys::reseal_needed(&secrets, &epochs, &members, now, &|k, r, e| carries(k, r, e));
+    drop(carries);
+    let deps = departures(tx, a)?;
+    let held = held_actors(tx)?;
+    let mut out = Vec::new();
+    for (m, roles) in due {
+        let mut keep = BTreeSet::new();
+        for r in roles {
+            // a member actor left out of a rotation waits until its newest epoch covers
+            if may.contains(&r) && !epochs.role(r).newest_is_snapshot() && member_covers(tx, &held, &deps, &m, r)? {
+                keep.insert(r);
+            }
+        }
+        if !keep.is_empty() {
+            out.push((m, keep));
+        }
+    }
     Ok(out)
 }
 
@@ -1347,6 +1205,13 @@ impl Engine {
             let roles: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r <= role && may.contains(r) && !epochs.role(*r).newest_is_snapshot()).collect();
             if roles.is_empty() {
                 return Err(Error::Misuse("this node may not re-seal that member"));
+            }
+            let deps = departures(tx, &a)?;
+            let held = held_actors(tx)?;
+            for &r in &roles {
+                if !member_covers(tx, &held, &deps, &m, r)? {
+                    return Err(Error::Misuse("the member's epoch does not cover a known departure (it must rotate first)"));
+                }
             }
             reseal_one(tx, a, m, &roles)
         })
@@ -1903,8 +1768,10 @@ mod tests {
         lp.peers[0].engine.demote(&q, &Demotion { member: d, new: None, presync: PreSync::Synced }).unwrap();
         let (done, still) = lp.peers[0].engine.ensure_rotated(&b).unwrap();
         assert!(still.is_empty(), "{still:?}");
-        assert_eq!(done.commits.len(), 1, "B (the removal rotated Q and P together)");
+        assert_eq!(done.commits.len(), 2, "P, then B (the removal rotated Q, leaving P out)");
+        assert_eq!(lp.peers[0].engine.reseal_due(&q, &Pass).unwrap().commits.len(), 1, "P re-sealed on Q");
         assert!(lp.peers[0].engine.ensure_rotated(&b).unwrap().0.commits.is_empty(), "no churn around the cycle");
+        assert!(lp.peers[0].engine.reseal_due(&q, &Pass).unwrap().commits.is_empty());
     }
 
     /// Every (actor, role, epoch) of `actors` a party holding `known` opens from the `/secrets`
@@ -1962,13 +1829,53 @@ mod tests {
         actors.iter().filter(|t| newest_read(lp, i, **t).is_some_and(|e| o.contains(&(**t, Role::Read, e)))).copied().collect()
     }
 
-    // spec/crypto.md §4, spec/permissions.md §3 (a departure inside a membership cycle is
-    // covered only by rotating the cycle in one commit): X and Y readers of each other, D a
-    // reader of X (2-cycle), or X <- Y <- Z <- X (3-cycle). D's removal from X rotates the
-    // cycle with it; D, keeping its old secrets, opens no new epoch, before or after the
-    // cascade, and a remaining member of X reads them all.
+    /// A complete pass of every actor's labels (re-seal decisions in tests).
+    struct Pass;
+    impl crate::flows::SyncState for Pass {
+        fn complete_pass(&self, _: &Tid) -> bool {
+            true
+        }
+    }
+
+    /// Rounds of every peer of `admins` acting alone on every actor of `actors` (the cascade,
+    /// then the re-seal trigger), synced after each, until nothing changes; the rounds taken.
+    fn settle(lp: &mut LocalPeer, admins: &[usize], actors: &[Tid]) -> usize {
+        for round in 0..8 {
+            let mut n = 0;
+            for &p in admins {
+                for x in actors {
+                    n += lp.peers[p].engine.ensure_rotated(x).unwrap().0.commits.len();
+                    n += lp.peers[p].engine.reseal_due(x, &Pass).unwrap().commits.len();
+                }
+                lp.sync_all().unwrap();
+            }
+            if n == 0 {
+                return round;
+            }
+        }
+        panic!("no fixpoint in 8 rounds");
+    }
+
+    /// Whether every current member of each of `actors`, at peer `i`, holds a box at each
+    /// current epoch of its roles (left-out members re-sealed).
+    fn all_boxed(lp: &mut LocalPeer, i: usize, actors: &[Tid]) -> bool {
+        actors.iter().all(|t| {
+            let e = lp.peers[i].engine.epochs(t).unwrap();
+            let s = lp.peers[i].engine.get_typed(t, &ct::SECRETS).unwrap().unwrap();
+            let core = &lp.peers[i].engine.core;
+            let ms: Vec<osis_keys::Member> = core.current_members(t).into_iter().map(|(member, role, until)| osis_keys::Member { member, role, until }).collect();
+            osis_keys::reseal_needed(&s, &e, &ms, core.now(), &|_, _, _| true).is_empty()
+        })
+    }
+
+    // spec/crypto.md §4, spec/permissions.md §3 (Membership cycles): X and Y readers of each
+    // other, D a reader of X (2-cycle), or X <- Y <- Z <- X (3-cycle). D's removal from X
+    // rotates X, leaving out its member actor whose epoch D opens; D, keeping its old secrets,
+    // opens no epoch judged covered after the removal, and no new epoch after the cascade and
+    // re-seals, after which every member is boxed again and a remaining member of X reads the
+    // whole cycle.
     #[test]
-    fn removal_in_cycle_rotates_cycle_spec_crypto_4() {
+    fn removal_in_cycle_leaves_out_spec_crypto_4() {
         for len in [2, 3] {
             let mut lp = LocalPeer::new(3, 950 + len as u64, WallMs(1_700_000_000_000)).unwrap();
             lp.sync_all().unwrap();
@@ -1983,11 +1890,14 @@ mod tests {
             let start = held_by(&lp, 1, &cyc);
             assert!(cyc.iter().all(|t| start.contains(&(*t, Role::Read, newest_read(&lp, 0, *t).unwrap()))), "len {len}: D reads the whole cycle");
             lp.peers[0].engine.demote(&cyc[0], &Demotion { member: d, new: None, presync: PreSync::Synced }).unwrap();
-            assert_eq!(leaked(&mut lp, 0, &cyc, d, start.clone()), Vec::<Tid>::new(), "len {len}: after the removal");
+            let gs: Vec<(Tid, usize)> = cyc.iter().map(|t| (*t, 0)).collect();
+            assert_eq!(leaks_judged_covered(&mut lp, &gs, d, &start), vec![], "len {len}: after the removal");
+            assert!(!all_boxed(&mut lp, 0, &cyc), "len {len}: the member actor is left out");
+            settle(&mut lp, &[0], &cyc);
             for t in &cyc {
-                let (_, still) = lp.peers[0].engine.ensure_rotated(t).unwrap();
-                assert!(still.is_empty(), "len {len}: {still:?}");
+                assert!(uncovered_at(&mut lp, 0, *t).is_empty(), "len {len}");
             }
+            assert!(all_boxed(&mut lp, 0, &cyc), "len {len}: re-sealed");
             assert_eq!(leaked(&mut lp, 0, &cyc, d, start), Vec::<Tid>::new(), "len {len}: after the cascade");
             lp.sync(0, 2).unwrap();
             for t in &cyc {
@@ -1998,9 +1908,10 @@ mod tests {
 
     // spec/crypto.md §4, spec/permissions.md §3: X and Y readers of each other, Z a reader of
     // X, D a reader of Z. D's removal from Z leaves X uncovered also through Y (X <- Y <- X <-
-    // Z); the cascade rotates X and Y in one commit, and D opens no new epoch.
+    // Z); the cascade rotates Y (leaving X out), then X, a re-seal boxes X on Y again, and D
+    // opens no new epoch.
     #[test]
-    fn departure_below_cycle_rotates_cycle_together_spec_crypto_4() {
+    fn departure_below_cycle_leaves_out_spec_crypto_4() {
         let mut lp = LocalPeer::new(2, 953, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let d = lp.peers[1].engine.tid();
@@ -2017,48 +1928,51 @@ mod tests {
         assert!(deps.iter().any(|q| q.member == d && q.via == vec![y, x, z]), "{deps:?}");
         let (done, still) = lp.peers[0].engine.ensure_rotated(&x).unwrap();
         assert!(still.is_empty(), "{still:?}");
-        assert_eq!(done.commits.len(), 1, "X and Y in one commit");
-        assert_eq!(leaked(&mut lp, 0, &all, d, start), Vec::<Tid>::new());
+        assert_eq!(done.commits.len(), 2, "Y (leaving X out), then X");
+        assert_eq!(leaked(&mut lp, 0, &all, d, start.clone()), Vec::<Tid>::new());
         assert!(lp.peers[0].engine.ensure_rotated(&y).unwrap().0.commits.is_empty(), "Y covered too");
+        assert_eq!(lp.peers[0].engine.reseal_due(&y, &Pass).unwrap().commits.len(), 1, "X re-sealed on Y");
+        assert!(all_boxed(&mut lp, 0, &all));
+        assert_eq!(leaked(&mut lp, 0, &all, d, start), Vec::<Tid>::new());
+        assert_eq!(settle(&mut lp, &[0], &all), 0, "settled");
     }
 
-    // spec/permissions.md §3 (a node that may not rotate an actor of the cycle stays stranded):
-    // X (peer 0's) and Y (peer 2's) readers of each other, D a reader of X, peer 3 an admin of
-    // both. Peer 0 removes D and may not rotate Y: its new epoch of X is boxed to Y's old one,
-    // which D opens, so it does not encrypt under X; nor peer 2 under Y. Peer 3 rotates both in
-    // one commit: D opens neither, and peers 0 and 2 are no longer stranded.
+    // spec/permissions.md §3 (Membership cycles; each admin acts alone): X (peer 0's) and Y
+    // (peer 2's) readers of each other, no common admin (two people's shared tags), D a reader
+    // of X. Peer 0 removes D: X rotates leaving Y out (Y's epoch boxes X's old one, which D
+    // holds), so peer 0 may encrypt under X at once. Peer 2's cascade rotates Y, boxing X's new
+    // epoch; peer 0's re-seal trigger then boxes X to Y's new one. D opens neither.
     #[test]
-    fn cycle_actor_not_rotatable_strands_spec_permissions_3() {
-        let mut lp = LocalPeer::new(4, 955, WallMs(1_700_000_000_000)).unwrap();
+    fn cycle_with_disjoint_admins_converges_spec_permissions_3() {
+        let mut lp = LocalPeer::new(3, 955, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let (d, c) = (lp.peers[1].engine.tid(), lp.peers[3].engine.tid());
+        let d = lp.peers[1].engine.tid();
         let x = group(&mut lp, 0);
         let y = group(&mut lp, 2);
         lp.sync_all().unwrap();
         lp.peers[0].engine.grant(&x, &y, &edge(Role::Read)).unwrap();
         lp.peers[0].engine.grant(&x, &d, &edge(Role::Read)).unwrap();
-        lp.peers[0].engine.grant(&x, &c, &edge(Role::Admin)).unwrap();
         lp.sync_all().unwrap();
         lp.peers[2].engine.grant(&y, &x, &edge(Role::Read)).unwrap();
-        lp.peers[2].engine.grant(&y, &c, &edge(Role::Admin)).unwrap();
         lp.sync_all().unwrap();
         let start = held_by(&lp, 1, &[x, y]);
         assert!(start.contains(&(y, Role::Read, newest_read(&lp, 1, y).unwrap())), "D reads Y through X");
         lp.peers[0].engine.demote(&x, &Demotion { member: d, new: None, presync: PreSync::Synced }).unwrap();
         let (_, still) = lp.peers[0].engine.ensure_rotated(&x).unwrap();
-        assert!(still.contains(&Role::Read), "peer 0 stranded on X: {still:?}");
+        assert!(still.is_empty(), "peer 0 not stranded on X: {still:?}");
+        assert!(lp.peers[0].engine.reseal_due(&x, &Pass).unwrap().commits.is_empty(), "Y not re-sealed before it rotates");
         lp.sync(0, 2).unwrap();
-        let (_, still) = lp.peers[2].engine.ensure_rotated(&y).unwrap();
-        assert!(still.contains(&Role::Read), "peer 2 stranded on Y: {still:?}");
-        lp.sync(0, 3).unwrap();
-        let (done, still) = lp.peers[3].engine.ensure_rotated(&x).unwrap();
+        let (done, still) = lp.peers[2].engine.ensure_rotated(&y).unwrap();
         assert!(still.is_empty(), "{still:?}");
-        assert_eq!(done.commits.len(), 1, "X and Y in one commit");
-        assert_eq!(leaked(&mut lp, 3, &[x, y], d, start), Vec::<Tid>::new());
-        lp.sync(3, 0).unwrap();
-        lp.sync(3, 2).unwrap();
-        assert!(lp.peers[0].engine.ensure_rotated(&x).unwrap().1.is_empty(), "peer 0 no longer stranded");
-        assert!(lp.peers[2].engine.ensure_rotated(&y).unwrap().1.is_empty(), "peer 2 no longer stranded");
+        assert_eq!(done.commits.len(), 1, "Y");
+        lp.sync(2, 0).unwrap();
+        assert_eq!(lp.peers[0].engine.reseal_due(&x, &Pass).unwrap().commits.len(), 1, "Y re-sealed on X");
+        lp.sync_all().unwrap();
+        for i in [0, 2] {
+            assert!(all_boxed(&mut lp, i, &[x, y]));
+            assert_eq!(leaked(&mut lp, i, &[x, y], d, start.clone()), Vec::<Tid>::new());
+        }
+        assert_eq!(settle(&mut lp, &[0, 2], &[x, y]), 0, "settled");
     }
 
     /// Pairs (actor, role) whose newest epoch at the owner peer `owner(t)` is judged covered there
@@ -2086,9 +2000,10 @@ mod tests {
 
     // spec/crypto.md §4, spec/permissions.md §3 (Membership cycles): random role graphs of 2-4
     // actors through a forced cycle, owned by one or two peers (sometimes with a common admin),
-    // a party D on one or two of them; D is removed or demoted on one. After the removal and
-    // after the cascade at every admin, D's old secrets open no newest epoch its owner judges
-    // covered beyond what D's remaining boxes give it. With one owner nothing stays uncovered.
+    // a party D on one or two of them; D is removed or demoted on one. After the removal, and
+    // after each admin acting alone (cascade and re-seal trigger) until nothing changes, D's old
+    // secrets open no newest epoch its owner judges covered beyond what D's remaining boxes give
+    // it; then nothing stays uncovered and every member holds a box at the newest epoch.
     #[test]
     fn cycle_removals_leak_nothing_random() {
         cycle_removals(0..6);
@@ -2103,7 +2018,7 @@ mod tests {
     /// `cycle_removals_leak_nothing_random` over `seeds`; peers: 0 and 2 admins, 1 the party D.
     fn cycle_removals(seeds: std::ops::Range<u64>) {
         let roles = [Role::Read, Role::Write, Role::Admin];
-        let (mut stuck, mut runs, mut lonely) = (0, 0, 0);
+        let (mut rounds, mut runs, mut lonely) = (0, 0, 0);
         for seed in seeds {
             let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
             let mut lp = LocalPeer::new(3, 1_300 + seed, WallMs(1_700_000_000_000)).unwrap();
@@ -2155,24 +2070,17 @@ mod tests {
             lp.peers[o].engine.demote(&t, &Demotion { member: d, new, presync: PreSync::Synced }).unwrap();
             lp.sync_all().unwrap();
             assert_eq!(leaks_judged_covered(&mut lp, &gs, d, &start), vec![], "seed {seed}: after the removal");
-            for _ in 0..2 {
-                for p in [0, 2] {
-                    for &(x, _) in &gs {
-                        lp.peers[p].engine.ensure_rotated(&x).unwrap();
-                    }
-                    lp.sync_all().unwrap();
-                }
+            let admins: &[usize] = if two { &[0, 2] } else { &[0] };
+            rounds = rounds.max(settle(&mut lp, admins, &all));
+            assert_eq!(leaks_judged_covered(&mut lp, &gs, d, &start), vec![], "seed {seed}: after the cascade and re-seals");
+            for &(x, i) in &gs {
+                assert!(uncovered_at(&mut lp, i, x).is_empty(), "seed {seed}: each admin alone covers every cycle");
             }
-            assert_eq!(leaks_judged_covered(&mut lp, &gs, d, &start), vec![], "seed {seed}: after the cascade");
-            let left: usize = gs.iter().map(|&(x, i)| uncovered_at(&mut lp, i, x).len()).sum();
-            if gs.iter().all(|g| g.1 == 0) || common {
-                assert_eq!(left, 0, "seed {seed}: an admin of every actor rotates every cycle");
-            }
+            assert!(gs.iter().all(|&(x, i)| all_boxed(&mut lp, i, &[x])), "seed {seed}: every member re-sealed");
             runs += 1;
-            stuck += usize::from(left > 0);
             lonely += usize::from(two && !common && gs.iter().any(|g| g.1 == 0) && gs.iter().any(|g| g.1 == 2));
         }
-        eprintln!("cycle removals: {runs} runs, {stuck} left uncovered, {lonely} with disjoint admins");
+        eprintln!("cycle removals: {runs} runs, {lonely} with disjoint admins, at most {rounds} rounds to settle");
     }
 
     // A lattice 4 wide and 10 deep, each actor a member of all 4 above it (4^9 chains from the

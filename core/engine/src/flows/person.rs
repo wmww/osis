@@ -144,7 +144,7 @@ fn create_person_in(tx: &mut Tx<'_>, r: Tid, seed: &Secret32, servers: &[Address
         Recipient { member: r, role: Role::Admin, keys: MemberKeys::KeyActor { kem: rkeys.kem.public().clone(), seed: None } },
         Recipient { member: me, role: Role::Admin, keys: MemberKeys::KeyActor { kem: node_kem.clone(), seed: None } },
     ];
-    let rot = rotation::rotation_into(tx, &mut m, p, &ROLES.into_iter().collect(), &held, &members)?;
+    let rot = rotation::rotation_into(tx, &mut m, p, &ROLES.into_iter().collect(), &held, &members, &[])?;
     let mut after = held.clone();
     rot.record(&mut after);
     let mut dep = [0u8; 32];
