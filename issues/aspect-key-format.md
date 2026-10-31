@@ -19,7 +19,7 @@ Open for the discussion: separators (slashes may change), the reserved character
 - **Spelling**:
   - segments separated by `:`, the version after `.`, always written (`.0` included): `name.0`, `foo:bar.5`;
   - name segments: lowercase ASCII letters, digits, `_`, not starting with a digit (expandable later);
-  - a tid-based AK starts with `:` then the 20-character tid segment: `:q3X9LmT0aB7cD2eF4gH:foo.1`;
+  - a tid-based AK starts with `:` then the 20-character tid segment: `:q3X9LmT0aB7cD2eF4gHJ:foo.1`;
   - markers after the version, in fixed order: `^` admin-only, then at most one lifetime: `~` ephemeral or `*` signal (`foo:bar.0^~`). One spelling per key.
 - **Presence is not in the AK**: it becomes ephemeral plus expiry, refreshed by the author while present; possibly a write-level expiry kind "when the author is no longer connected" (owner: could be cool, maybe too complex). Done (presence-expiry, notes/ephemeral.md Values that live while their author is there: the write-level kind not built). Signal stays a marker unless that evaluation shows it belongs on the write.
 - Core keys drop the leading slash (`name.0`, `keys.0`); `members` becomes `roles` with issues/rename-roles-members.md.

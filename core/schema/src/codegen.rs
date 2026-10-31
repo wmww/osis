@@ -40,8 +40,12 @@ pub fn generate(schema: &Schema, file: &str, src: &str) -> Result<Generated, Err
     }
     let drop_first = shared_first_segment(schema.aspects.keys());
     let mut consts = String::new();
+    let mut cnames = BTreeSet::from(["SCHEMA".to_string()]);
     for (ak, def) in &schema.aspects {
         let cname = const_name(ak, drop_first);
+        if !cnames.insert(cname.clone()) {
+            return Err(Error::Codegen(format!("aspect {ak}: constant {cname} collides with another key's")));
+        }
         let t = g.rust_type(&def.ty, &camel(&cname.to_lowercase()), false)?;
         if let Some(d) = &def.doc {
             doc_lines(&mut consts, d, "");
@@ -321,7 +325,8 @@ fn shared_first_segment<'a>(keys: impl Iterator<Item = &'a String>) -> bool {
 }
 
 /// `note:last_opened.0` → `LAST_OPENED` (shared first segment dropped); a later version adds
-/// `_V<n>`.
+/// `_V<n>`. Not injective (`a:b.0` and `a_b.0`, `x.1` and `x_v1.0`, keys differing in tid or
+/// markers): `generate` refuses a collision.
 fn const_name(ak: &str, drop_first: bool) -> String {
     let a = Ak::new(ak).ok();
     let mut segs: Vec<&str> = a.as_ref().map(|a| a.segments().collect()).unwrap_or_default();

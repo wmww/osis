@@ -42,7 +42,7 @@
 - Collisions: no registry. First-party AKs live in this repo (`contact:names.0`); other apps' start with a tid their maker owns. A collision is detected (schema ID in headers), never prevented; until detected the writes merge like concurrent writes (spec/requirements.md, Versioning).
 - Codegen is the one writer of the strings: app code uses generated constants, each checked at build time (`Aspect::new` calls the `const fn` `Ak::check`).
 - Markers today: `~`/`*` must match the schema's lifetime flag (validation); untyped keys carry them by convention (the tests' ephemeral and signal keys do), nothing checks them; `^` parses and carries no rule. Step 7 of issues/one-node-kind.md makes the marker decide.
-- Generated constant names: the AK's name segments joined by `_`, upper-cased, the first dropped when every key of the schema shares it, `_V<n>` appended for a version above 0 (`note:last_opened.0` -> `LAST_OPENED`).
+- Generated constant names: the AK's name segments joined by `_`, upper-cased, the first dropped when every key of the schema shares it, `_V<n>` appended for a version above 0 (`note:last_opened.0` -> `LAST_OPENED`); not injective (`a:b_c.0` and `a_b:c.0`, `x:y.1` and `x:y_v1.0`, keys differing only in tid or markers), so codegen refuses a schema whose names collide (also with `SCHEMA`).
 
 ## Groups
 Example: spreadsheet thing = group of two axis things, each a group of row/column things, each a group of cells (each cell in two groups). Nothing is in a group by being owned (owner): apps place things explicitly (spec/requirements.md, Offline and network).
