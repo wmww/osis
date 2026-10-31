@@ -63,7 +63,7 @@ impl Engine {
         let src = match s.dot.src.kind() {
             SourceKind::Node(n) => TieSource::Node(*n),
             SourceKind::Commit(c) => TieSource::Commit(*c),
-            SourceKind::Derived(_) => return Ok(None),
+            SourceKind::Derived(_) | SourceKind::Session(_) => return Ok(None),
         };
         Ok(Some(Tie { ts: s.ts, src, ctr: s.dot.ctr, subgroup }))
     }
