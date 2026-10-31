@@ -99,6 +99,7 @@ impl World {
     }
 
     /// A new blind server (keys and rng from its index).
+    #[allow(clippy::panic)] // test harness: fail the test loudly
     pub fn add_server(&mut self) -> usize {
         let i = self.servers.len();
         let b = 0x50u8.wrapping_add(i as u8);
@@ -128,6 +129,7 @@ impl World {
     }
 
     /// A new person's database syncing with `servers` (at least one), with its recovery card.
+    #[allow(clippy::panic)] // test harness: fail the test loudly
     pub fn person(&mut self, seed: u64, servers: &[usize]) -> (Osis, RecoveryCard) {
         match Osis::create(self.cfg(seed, servers)) {
             Ok((db, Some(card))) => (db, card),
@@ -325,6 +327,7 @@ impl World {
 
     /// Carries every queued action and message until nothing moves. Panics on a message storm
     /// (`STORM` rounds), naming what the storm carries.
+    #[allow(clippy::panic)] // test harness: fail the test loudly
     pub fn pump(&mut self) {
         for _ in 0..STORM {
             if !self.step(None) {
@@ -462,6 +465,7 @@ impl World {
 
     /// Drives the world until `f` resolves: settling, then stepping time by `step_ms`, at most
     /// `steps` times. Panics if it did not resolve, after printing every database's diagnostics.
+    #[allow(clippy::panic)] // test harness: fail the test loudly
     pub fn until<F: Future>(&mut self, f: F, step_ms: u64, steps: usize) -> F::Output {
         let mut f = std::pin::pin!(f);
         let mut cx = Context::from_waker(Waker::noop());

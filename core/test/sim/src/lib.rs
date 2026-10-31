@@ -13,8 +13,6 @@ pub mod harness;
 pub mod net;
 pub mod scenarios;
 pub mod workload;
-// test harness: a storm or a future that never resolves fails the test loudly
-#[allow(clippy::panic)]
 pub mod world;
 
 pub use harness::{ClockSpec, Config, Failure, NetFaults, Node, Report, Res, Sim, Weights};
