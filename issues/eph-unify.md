@@ -93,3 +93,6 @@ Owner (round 13, key format): presence is not baked into the aspect key. Replace
 
 
 Coordinator decisions (round 13, after the step 3 review): (a) memory commits carry no `/created` part; an ephemeral thing's creation record travels beside the deltas (small wire change), keeping one storage class per aspect without exceptions. (b) Freeing: one `unindex_commit` mirroring `index_commit`, a freed thing's memory rows dropped by aspect in one store call, a commit freed only once every thing it touches is freed; guarded by a test that index then unindex equals never indexed (so a new index that forgets to unindex fails).
+
+
+Coordinator note (round 13, on the persisted-aspect blocker found reviewing 3b): an aspect's class comes from its schema (lifetime marker), so a memory commit should only ever write memory-class aspects, and a durable-schema write on an ephemeral thing is a durable write that persists the thing (spec/data-model.md §1). Enforce that rule in the commit path (a memory commit carrying a durable-class aspect is refused) rather than teaching the store to move an aspect between classes; then `repro_persisted_aspect_lost_at_restart` (which writes a durable-schema aspect through the test hook) becomes a refused write. Check this holds before (c).
