@@ -364,6 +364,8 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
         if !several {
             tx.core.ix.grant_overreach.remove(&(c, ai));
         }
+        // those are inputs of its judgment (`validity::rejudge_all` judges it again)
+        tx.core.stale_commits.insert(c);
         if m.view.kind.has_own_writes() {
             owned.extend(Owned::of_view(&m.view, &c, ai));
         }

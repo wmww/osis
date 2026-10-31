@@ -493,10 +493,11 @@ fn open_equals_rebuild_after_a_secrets_compaction() {
 // and at the end an open equals a rebuild, whole index included. Seeds: OSIS_WALKS_SECRETS_START,
 // OSIS_WALKS_SECRETS_SEEDS (default 0..4 and FOUND), a thread per core (OSIS_WALKS_THREADS).
 // FOUND: 10607 kept a thing in `own_keys` after its `/keys` went back to missing, which a rebuild
-// lost.
+// lost; 225191 left a part `uncover` made missing judged by its dropped body's role
+// (`uncovered_part_judged_anew`).
 #[test]
 fn open_equals_rebuild_random_secrets_compactions() {
-    const FOUND: [u64; 1] = [10607];
+    const FOUND: [u64; 2] = [10607, 225191];
     let range = osis_base::testenv::Seeds::from_env("OSIS_WALKS_SECRETS_START", "OSIS_WALKS_SECRETS_SEEDS", 0..4);
     let mut seeds: Vec<u64> = range.range.clone().collect();
     if !range.overridden {
@@ -508,6 +509,61 @@ fn open_equals_rebuild_random_secrets_compactions() {
     if !range.overridden {
         assert!(dropped > 0, "no membership body dropped");
     }
+}
+
+// spec/permissions.md §5.2 (a part dropped as covered whose coverer turns invalid is missing
+// again, judged as at a node that never held it): B removes admin D, rotating the admin keyset;
+// C compacts `/keys` and drops the rotation's part; A demotes B to write (the rotation's `/keys`
+// part turns invalid: it needs admin) and removes C (the snapshot turns invalid): the part,
+// missing again, needs only write and turns valid, as a rebuild judges it. Shrunk from walks seed 225191, where
+// the flip went unjudged.
+#[test]
+fn uncovered_part_judged_anew() {
+    let mut lp = LocalPeer::new(4, 0x0c0e, T0).unwrap();
+    lp.sync_all().unwrap();
+    let ids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
+    let (b, c, d) = (ids[1], ids[2], ids[3]);
+    let t = new_thing(&mut lp, 0);
+    for m in [b, c, d] {
+        lp.peers[0].engine.grant(&t, &m, &edge(Role::Admin)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    let deliver = |lp: &mut LocalPeer, from: usize, to: usize, cs: &[osis_base::CommitId]| {
+        let pk = lp.packages(from).unwrap();
+        for p in pk.iter().filter(|p| cs.contains(&p.id)) {
+            lp.deliver(to, p).unwrap();
+        }
+    };
+    let tick = |lp: &mut LocalPeer| (0..4).for_each(|i| lp.peers[i].clock.advance(1));
+    // B's removal of D reaches C alone
+    tick(&mut lp);
+    let rm = osis_node::flows::Demotion { member: d, new: None, presync: osis_node::flows::PreSync::Synced };
+    let g = lp.peers[1].engine.demote(&t, &rm).unwrap().commits;
+    deliver(&mut lp, 1, 2, &g);
+    // C compacts `/keys`, dropping the rotation's part
+    tick(&mut lp);
+    let keys = ak("/keys");
+    let e = &mut lp.peers[2].engine;
+    let snap = e.snapshot(&t, &keys).unwrap().unwrap();
+    let on: Vec<_> = g.iter().filter(|x| e.header(x).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t && a.ak == keys))).copied().collect();
+    assert!(!on.is_empty(), "the removal writes `/keys`");
+    for x in &on {
+        assert_eq!(e.covered(&snap, x, &t, &keys).unwrap(), Some(true));
+        e.drop_body(x, &t, &keys).unwrap();
+    }
+    // A, having seen neither, demotes B to write and removes C
+    tick(&mut lp);
+    let to_write = osis_node::flows::Demotion { member: b, new: Some(edge(Role::Write)), presync: osis_node::flows::PreSync::Synced };
+    let db = lp.peers[0].engine.demote(&t, &to_write).unwrap().commits;
+    let gone = osis_node::flows::Demotion { member: c, new: None, presync: osis_node::flows::PreSync::Synced };
+    let dc = lp.peers[0].engine.demote(&t, &gone).unwrap().commits;
+    deliver(&mut lp, 0, 2, &db);
+    let valid = |e: &Engine, x: &osis_base::CommitId| e.body_valid(x, &t, &keys).unwrap();
+    assert!(on.iter().all(|x| !valid(&lp.peers[2].engine, x)), "B's admin write invalid after the demotion");
+    open_equals_rebuild(&mut lp.peers[2].engine, &[t], "B demoted");
+    deliver(&mut lp, 0, 2, &dc);
+    assert!(on.iter().all(|x| valid(&lp.peers[2].engine, x)), "missing again, the part needs write only");
+    open_equals_rebuild(&mut lp.peers[2].engine, &[t], "C removed");
 }
 
 /// One random history of `open_equals_rebuild_random_secrets_compactions`; how many membership
