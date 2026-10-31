@@ -702,11 +702,10 @@ fn refreshed_value_lives_while_author_present_spec_crdt_4_7() {
     assert_eq!(entries(&net), base, "the server dropped every one of its entries");
 }
 
-// issues/eph-replace-map-key.md: a `Replace` at a map key of an ephemeral aspect reads at its
-// author but not at a holder that holds its commit (a `Put` or `Set` there arrives)
+// spec/crdt.md §5.1 (a nested register carries no reset): a `Replace` at a map key of an
+// ephemeral aspect reads at a holder too (its delta once carried a reset there and was refused)
 #[test]
-#[ignore = "repro: issues/eph-replace-map-key.md"]
-fn repro_eph_replace_at_map_key_not_read() {
+fn eph_replace_at_map_key_read_at_holder_spec_crdt_5_1() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
@@ -3597,4 +3596,36 @@ fn repro_durable_write_on_memory_marked_aspect_lost() {
     lp.peers[0].restart(42).unwrap();
     lp.sync_all().unwrap();
     assert_eq!(memory_tags(&mut lp, 0, d), Some(Value::Set([s("durable")].into())));
+}
+
+// issues/eph-expiring-churn.md: an expiring value its author changes often (a cursor moved 30
+// times a second, `KeepAlive::set`) costs one upload and one held entry per change until each
+// expires, where the old presence cover kept one; at most a few should be held
+#[test]
+#[ignore = "repro: issues/eph-expiring-churn.md"]
+fn repro_moving_cursor_entry_per_move() {
+    const E: u64 = 30_000;
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let l = net.label(a);
+    let me = s(&net.tid(a).to_string());
+    let entries = |net: &Net| osis_proto::LabelStore::live_ids(net.servers[sv].hub.store(), &l).unwrap().len();
+    let base = entries(&net);
+    for i in 0..60 {
+        let mut m = Mutation::new();
+        m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(me.clone())], op: Op::Put(s(&format!("c{i}"))) }).unwrap();
+        m.expires(w, &eph(CURSOR), osis_base::WallMs(net.now() + E)).unwrap();
+        net.engine(a).write(m).unwrap();
+        local(&mut net, a);
+        net.advance(33);
+    }
+    net.run();
+    assert_eq!(net.eph_read(b, w, CURSOR), Some(Value::Map([(me, s("c59"))].into())));
+    assert!(entries(&net) - base <= 3, "the server holds {} entries of one cursor", entries(&net) - base);
 }

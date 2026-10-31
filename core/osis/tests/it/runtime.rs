@@ -172,7 +172,7 @@ async fn text_idle_commit_api_text_sessions() {
 }
 
 // notes/ephemeral.md Values that live while their author is there: a kept-alive cursor (a map
-// entry under the author's key, expiring 60 ms after each write) is rewritten every half
+// entry under the device's key, expiring 60 ms after each write) is rewritten every half
 // expiry while the `KeepAlive` lives, takes a new value at once, and is gone by its expiry once
 // dropped; a key without a default expiry is refused
 #[tokio::test]
@@ -182,8 +182,8 @@ async fn keep_alive_rewrites_until_dropped() {
     db.register_schema_source("c.osis", "schema 0x0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c;\nrevision 1;\naspect /c/cursor: map<tid, int> [ephemeral, expires: 60ms];\naspect /c/flag: map<tid, int> [ephemeral];\n").unwrap();
     let k = db.key("/c/cursor").unwrap();
     let t = db.write_with(|w| w.create(db.me())).unwrap();
-    let me = osis::Path(vec![osis::Step::Key(Value::Tid(db.me()))]);
-    let mine = |db: &Osis| db.get(t, k.clone()).unwrap().and_then(|v| if let Value::Map(m) = v { m.get(&Value::Tid(db.me())).cloned() } else { None });
+    let me = osis::Path(vec![osis::Step::Key(Value::Tid(db.node()))]);
+    let mine = |db: &Osis| db.get(t, k.clone()).unwrap().and_then(|v| if let Value::Map(m) = v { m.get(&Value::Tid(db.node())).cloned() } else { None });
     assert!(db.keep_alive(t, db.key("/c/flag").unwrap(), me.clone(), &Value::Int(1)).is_err(), "no default expiry");
     let ka = db.keep_alive(t, k.clone(), me, &Value::Int(1)).unwrap();
     assert_eq!(mine(&db), Some(Value::Int(1)));

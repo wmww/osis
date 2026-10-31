@@ -80,11 +80,14 @@ fn arm(db: &Osis, st: Weak<Mutex<Kept>>, every: Duration) -> bool {
 }
 
 impl Osis {
-    /// Writes `value` at `path` of an aspect (a map key, such as the author's own key in a
+    /// Writes `value` at `path` of an aspect (a map key, such as this device's key `node()` in a
     /// cursor map, or a register position) and rewrites it every half of the key's default
-    /// expiry while the returned `KeepAlive` lives. The key must be ephemeral with a default
-    /// expiry (schema `[ephemeral, expires: ...]`); the database needs its runtime (a
-    /// `Config::transport`) for the timer.
+    /// expiry while the returned `KeepAlive` lives. Two devices keeping one path alive (a
+    /// person's key) overwrite each other at every rewrite: key by device. The key must be
+    /// ephemeral with a default expiry (schema `[ephemeral, expires: ...]`) well above the
+    /// network delay and the clock differences between nodes; the database needs its runtime (a
+    /// `Config::transport`) for the timer. Nothing outlives the process: after a restart the app
+    /// calls this again.
     pub fn keep_alive<K: AspectKey, U: Codec>(&self, tid: Tid, key: K, path: Path, value: &U) -> Result<KeepAlive> {
         let d = key.defaults();
         let Some(exp) = d.expires.filter(|_| d.lifetime == osis_schema::Lifetime::Ephemeral) else {

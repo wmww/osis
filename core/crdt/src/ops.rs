@@ -419,7 +419,14 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
 pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op: &Op, root: bool) -> Result<Option<Fragment>, Error> {
     match op {
         Op::Set(v) => diff(w, cur, view, v),
-        Op::Replace(v) => replace(w, view, v).map(Some),
+        Op::Replace(v) => {
+            let mut f = replace(w, view, v)?;
+            // a nested register carries no `R`: its write implies one (§5.1)
+            if !root && let Fragment::Register(r) = &mut f {
+                r.reset = None;
+            }
+            Ok(Some(f))
+        }
         // a composite would merge with what is there (union, second entry, second copy)
         Op::Put(v) => match create(w, view, v)? {
             f if f.encoding() == Encoding::Register => Ok(Some(f)),

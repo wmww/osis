@@ -214,6 +214,34 @@ fn last_write_and_replace_win_spec_4_5() {
     assert_eq!(st.read(), Some(m(&[(3, 3)])));
 }
 
+/// §5.1: a replace at a nested register (a new or live map key, a struct field) writes no `R`
+/// there, so its delta decodes (a nested register with a reset is malformed) and reads the value.
+#[test]
+fn nested_register_replace_decodes_spec_5_1() {
+    use crate::codec::{decode_delta, encode_delta};
+    use crate::wire::{Delta, DeltaCtx, DeltaKind};
+    let node = Source::node(Tid::from_bytes([2; 15]));
+    let st = |kv: &[(i64, i64)]| Value::Map(kv.iter().map(|(k, v)| (Value::Int(*k), Value::Int(*v))).collect());
+    let cases: [(Fragment, PathOp, Value); 3] = [
+        (Fragment::default(), PathOp { path: vec![PathSeg::Key(Value::Int(1))], op: Op::Replace(Value::Int(7)) }, st(&[(1, 7)])),
+        (create(&mut Writer::new(ts(1 << 16), node.clone(), 1), &AnyView, &st(&[(1, 1)])).unwrap(), PathOp { path: vec![PathSeg::Key(Value::Int(1))], op: Op::Replace(Value::Int(7)) }, st(&[(1, 7)])),
+        (Fragment::default(), PathOp { path: vec![PathSeg::Field(0)], op: Op::Replace(Value::Int(7)) }, Value::Map([(Value::Int(0), Value::Int(7))].into())),
+    ];
+    for (state, op, want) in cases {
+        let view = if matches!(op.path[0], PathSeg::Field(_)) { TyView(Ty::Struct([(0, Ty::Register)].into())) } else { TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register))) };
+        let mut b = Batch::new(&state, Writer::new(ts(2 << 16), node.clone(), 5));
+        b.apply(&op, &view).unwrap();
+        let (d, range) = b.finish().unwrap();
+        let cx = DeltaCtx { ts: ts(2 << 16), own: node.clone(), range, kind: DeltaKind::Writer };
+        let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: d.clone() }, &cx, None).unwrap();
+        let back = decode_delta(&bytes, &cx, &mut crate::stamp::Interner::new(), None).unwrap();
+        assert_eq!(back.fragment, d, "{op:?}");
+        let mut s = state.clone();
+        s.join(back.fragment);
+        assert_eq!(read(&s), Some(want), "{op:?}");
+    }
+}
+
 /// §5.6: a put into a live key writes into the lowest live dot; a remove resets every live dot.
 #[test]
 fn map_put_lowest_dot_spec_5_6() {
