@@ -656,14 +656,34 @@ fn approx_bytes_tracks_content() {
     assert!(big.approx_bytes() > small.approx_bytes() + 9_000);
 }
 
-/// `decoded_bound` (a memory bound's measure, not a spec rule) holds for the shapes that take
-/// most per encoded byte: many tiny map entries, set elements, list elements, struct fields,
-/// text. spec: none (resource bound)
-#[test]
-fn decoded_bound_holds_dense_shapes() {
+/// Snapshot bytes of `f` and its decoded fragment's `approx_bytes` against `decoded_bound`;
+/// false when `f` would be paged (ephemeral deltas are not).
+fn check_snapshot_bound(f: Fragment) -> bool {
     use crate::codec::{decode_snapshot, encode_snapshot};
     use crate::wire::{DeltaCtx, DeltaKind, Snapshot};
+    let cx = DeltaCtx { ts: ts(1 << 40), own: Source::node(Tid::from_bytes([9; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+    let s = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: f, frontiers: Default::default() };
+    let Ok(bytes) = encode_snapshot(&s, &cx, None) else { return false };
+    let back = decode_snapshot(&bytes, &cx, &mut crate::stamp::Interner::new(), None).unwrap();
+    crate::testutil::check_bound(&bytes, &back.fragment);
+    true
+}
+
+fn created(v: &Value) -> Fragment {
+    create(&mut Writer::new(ts(1 << 30), Source::node(Tid::from_bytes([1; 15])), 1), &AnyView, v).unwrap()
+}
+
+/// `decoded_bound` (a memory bound's measure, not a spec rule) holds for the shapes that take
+/// most per encoded byte: many tiny map entries, set elements, list elements, text; values held
+/// whole (set elements, map keys, held three times) of one-entry maps and sets, nested or wide;
+/// big keys; deleted and reset text. spec: none (resource bound)
+#[test]
+fn decoded_bound_holds_dense_shapes() {
     let ints = |n: i64| (0..n).map(Value::Int);
+    let one = |k: Value, v: Value| Value::Map([(k, v)].into_iter().collect());
+    let set = |v: Value| Value::Set([v].into_iter().collect());
+    let nest = |d: i64| (0..d).fold(Value::Int(0), |v, i| one(Value::Int(i), v));
+    let as_key = |k: Value| one(k, Value::Int(1));
     let shapes = [
         Value::Map(ints(2000).map(|i| (i.clone(), i)).collect()),
         Value::Map(ints(2000).map(|i| (i, Value::Map(Default::default()))).collect()),
@@ -672,26 +692,86 @@ fn decoded_bound_holds_dense_shapes() {
         Value::List(ints(2000).collect()),
         Value::List(ints(2000).map(|_| Value::Map(Default::default())).collect()),
         Value::Str("a".repeat(5000)),
-        Value::Map([(Value::Int(1), Value::Int(1))].into_iter().collect()),
+        one(Value::Int(1), Value::Int(1)),
         Value::Int(1),
-        Value::Map(ints(500).map(|i| (i, Value::Map([(Value::Int(0), Value::Map([(Value::Int(0), Value::Int(0))].into_iter().collect()))].into_iter().collect()))).collect()),
+        Value::Map(ints(500).map(|i| (i, one(Value::Int(0), one(Value::Int(0), Value::Int(0))))).collect()),
         Value::List(ints(500).map(|_| Value::List(vec![Value::List(vec![Value::Int(0)])])).collect()),
-        Value::Set(ints(500).map(|i| Value::Set([i].into_iter().collect())).collect()),
+        Value::Set(ints(500).map(set).collect()),
+        as_key(Value::Str("k".repeat(60_000))),
+        as_key(Value::Bytes(vec![7; 60_000])),
+        Value::Map(ints(300).map(|i| (one(i, Value::Int(0)), Value::Int(1))).collect()),
+        Value::Map(ints(300).map(|i| (set(i), Value::Int(1))).collect()),
+        Value::Map(ints(300).map(|i| (Value::List(vec![i]), Value::Int(1))).collect()),
+        Value::Map(ints(300).map(|i| (Value::Enum(1, Some(Box::new(i))), Value::Int(1))).collect()),
+        as_key(nest(60)),
+        as_key(Value::List(ints(2000).map(|i| one(i, Value::Int(0))).collect())),
+        as_key(Value::List(ints(2000).map(set).collect())),
+        as_key(Value::List(ints(2000).map(|i| Value::Enum(0, Some(Box::new(i)))).collect())),
+        nest(60),
+        set(nest(60)),
+        set(Value::List(ints(2000).map(|i| one(i, Value::Int(0))).collect())),
+        set(Value::List(ints(2000).map(set).collect())),
+        Value::Set(ints(300).map(|i| one(i, Value::Int(0))).collect()),
+        Value::List(ints(300).map(|i| set(set(i))).collect()),
     ];
-    let cx = DeltaCtx { ts: ts(1 << 40), own: Source::node(Tid::from_bytes([9; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     for v in shapes {
-        let mut w = Writer::new(ts(1 << 30), Source::node(Tid::from_bytes([1; 15])), 1);
-        let f = create(&mut w, &AnyView, &v).unwrap();
-        let s = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: f, frontiers: Default::default() };
-        let bytes = encode_snapshot(&s, &cx, None).unwrap();
-        let back = decode_snapshot(&bytes, &cx, &mut crate::stamp::Interner::new(), None).unwrap();
-        crate::testutil::check_bound(&bytes, &back.fragment);
+        assert!(check_snapshot_bound(created(&v)));
     }
-    // a text: one record per character
-    let mut w = Writer::new(ts(1 << 30), Source::node(Tid::from_bytes([1; 15])), 1);
-    let f = create(&mut w, &crate::fuzzing::TextView, &Value::Str("a".repeat(5000))).unwrap();
-    let s = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: f, frontiers: Default::default() };
-    let bytes = encode_snapshot(&s, &cx, None).unwrap();
-    let back = decode_snapshot(&bytes, &cx, &mut crate::stamp::Interner::new(), None).unwrap();
-    crate::testutil::check_bound(&bytes, &back.fragment);
+    // a text: one record per character; deleted, reset
+    let n = 20_000;
+    let scripts = [
+        vec![Op::Insert { at: 0, items: vec![Value::Str("a".repeat(n))] }],
+        vec![Op::Insert { at: 0, items: vec![Value::Str("a".repeat(n))] }, Op::Delete { at: 0, len: n }],
+        vec![Op::Insert { at: 0, items: vec![Value::Str("a".repeat(n))] }, Op::Replace(Value::Str(String::new()))],
+        vec![Op::Insert { at: 0, items: vec![Value::Str("ab".repeat(n / 2))] }, Op::Delete { at: 10, len: n - 20 }],
+    ];
+    for ops in scripts {
+        let (mut st, mut lo) = (Fragment::default(), 1);
+        for (k, op) in ops.into_iter().enumerate() {
+            let mut b = Batch::new(&st, Writer::new(ts((1 << 30) + k as u64), Source::node(Tid::from_bytes([1; 15])), lo));
+            b.apply(&PathOp { path: vec![], op }, &crate::fuzzing::TextView).unwrap();
+            let (d, range) = b.finish().unwrap();
+            lo = range.hi;
+            st.join(d);
+        }
+        assert!(check_snapshot_bound(st));
+    }
+}
+
+/// A random value of up to `depth` levels: scalars, strings, one-entry and wider maps, sets,
+/// lists, enums.
+fn bound_value(r: &mut Rng, depth: u32) -> Value {
+    let width = |r: &mut Rng| if r.chance(1, 2) { 1 } else { r.below(12) };
+    match if depth == 0 { r.below(3) } else { r.below(8) } {
+        0 => Value::Int(r.below(1000) as i64),
+        1 => {
+            let max = if r.chance(1, 8) { 3000 } else { 8 };
+            Value::Str("s".repeat(r.below(max)))
+        }
+        2 => Value::Bytes(vec![1; r.below(40)]),
+        3 | 4 => Value::Map((0..width(r)).map(|_| (bound_value(r, depth - 1), bound_value(r, depth - 1))).collect()),
+        5 => Value::Set((0..width(r)).map(|_| bound_value(r, depth - 1)).collect()),
+        6 => Value::List((0..width(r)).map(|_| bound_value(r, depth - 1)).collect()),
+        _ => Value::Enum(r.below(3) as u64, r.chance(1, 2).then(|| Box::new(bound_value(r, depth - 1)))),
+    }
+}
+
+/// `decoded_bound` holds for random values held whole (set elements, map keys) and as fragments
+/// (map values, list elements). spec: none (resource bound)
+#[test]
+fn decoded_bound_holds_random_values() {
+    let mut checked = 0;
+    for seed in 0..300u64 {
+        let mut r = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+        let depth = 1 + r.below(5) as u32;
+        let vs: Vec<Value> = (0..1 + r.below(20)).map(|_| bound_value(&mut r, depth)).collect();
+        let shapes = [
+            Value::Set(vs.iter().cloned().collect()),
+            Value::Map(vs.iter().cloned().map(|k| (k, Value::Int(1))).collect()),
+            Value::Map(vs.iter().cloned().enumerate().map(|(i, v)| (Value::Int(i as i64), v)).collect()),
+            Value::List(vs),
+        ];
+        checked += shapes.iter().filter(|v| check_snapshot_bound(created(v))).count();
+    }
+    assert!(checked > 1000, "{checked} of 1200 unpaged");
 }

@@ -716,27 +716,46 @@ pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Intern
 
 /// `decoded_bound`'s charge per CBOR data item and per byte of a run's text content (each a
 /// character, an element held, §5.7): above the most `Fragment::approx_bytes` takes per item
-/// (measured about 300, a one-entry map or one-field struct per level: a whole B-tree node for a
-/// few items) and per character (about 380). Tests `decoded_bound_holds_dense_shapes` and the
-/// wire round trips. Resource estimate: 0 lets a blob of tiny entries pass a bound it decodes far
-/// past; infinity refuses every blob checked against it.
+/// outside map and set heads (measured about 300, a one-entry map or one-field struct per level: a
+/// whole B-tree node for a few items; a value item in a map key, held three times, about 320) and
+/// per character (about 380). Tests `decoded_bound_*` and the wire round trips. Resource
+/// estimate: 0 lets a blob of tiny entries pass a bound it decodes far past; infinity refuses
+/// every blob checked against it.
 pub const ITEM_BYTES: usize = 512;
 
-/// `decoded_bound`'s charge per encoded byte: a map key's string is held twice (entry and
-/// index). Resource estimate, as `ITEM_BYTES`.
-pub const BYTE_BYTES: usize = 2;
+/// `decoded_bound`'s charge per encoded byte: a map key's string is held three times (the entry
+/// ID's, the key index's key and the index's entry ID). Resource estimate, as `ITEM_BYTES`.
+pub const BYTE_BYTES: usize = 3;
+
+/// Copies of a map key's value held (`BYTE_BYTES`): the bound does not tell keys from other
+/// values, so every value-tree node counts that many times.
+const KEY_COPIES: usize = 3;
+
+/// `decoded_bound`'s extra charge per CBOR map head: a one-entry `Value::Map` or struct field map
+/// is a whole B-tree node (`Value` pairs, the biggest slot), in each copy of a key.
+const MAP_HEAD: usize = KEY_COPIES * crate::access::nodes(1, 2 * size_of::<Value>());
+
+/// `decoded_bound`'s extra charge per set tag (a `Value::Set`'s node), as `MAP_HEAD`.
+const SET_HEAD: usize = KEY_COPIES * crate::access::nodes(1, size_of::<Value>());
 
 /// An upper bound on the `Fragment::approx_bytes` of what `decode_delta` or `decode_snapshot`
 /// makes of unpaged `bytes`, found by its CBOR heads alone, nothing allocated: `ITEM_BYTES` per
 /// data item and per byte of a text string a run may carry as content (the fourth of six, §3.2
-/// `Run`), `BYTE_BYTES` per byte. Bad input when the bytes are not one CBOR value.
+/// `Run`), `MAP_HEAD` per map, `SET_HEAD` per set, `BYTE_BYTES` per byte. Bad input when the
+/// bytes are not one CBOR value.
 pub fn decoded_bound(bytes: &[u8]) -> Result<usize, Error> {
-    use osis_base::cbor::MAJOR_TEXT;
     use osis_base::Place;
-    let mut elems = 0usize;
+    use osis_base::cbor::{MAJOR_MAP, MAJOR_TAG, MAJOR_TEXT};
+    use osis_base::format::TAG_SET;
+    let mut sum = 0usize;
     osis_base::visit_items(bytes, &LIMITS, &mut |place, major, arg| {
-        let chars = if major == MAJOR_TEXT && place == (Place::InArray { len: 6, index: 3 }) { usize::try_from(arg).unwrap_or(usize::MAX) } else { 0 };
-        elems = elems.saturating_add(1).saturating_add(chars);
+        let each = match major {
+            MAJOR_TEXT if place == (Place::InArray { len: 6, index: 3 }) => usize::try_from(arg).unwrap_or(usize::MAX).saturating_add(1).saturating_mul(ITEM_BYTES),
+            MAJOR_MAP => ITEM_BYTES + MAP_HEAD,
+            MAJOR_TAG if arg == TAG_SET => ITEM_BYTES + SET_HEAD,
+            _ => ITEM_BYTES,
+        };
+        sum = sum.saturating_add(each);
     })?;
-    Ok(elems.saturating_mul(ITEM_BYTES).saturating_add(bytes.len().saturating_mul(BYTE_BYTES)))
+    Ok(sum.saturating_add(bytes.len().saturating_mul(BYTE_BYTES)))
 }
