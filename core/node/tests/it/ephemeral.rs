@@ -90,7 +90,7 @@ fn window(net: &mut Net, n: usize, g: Tid, v: &str) -> Tid {
 /// Node `n` sets key `k` of `/win/notes` of `w` to `v`.
 fn note(net: &mut Net, n: usize, w: Tid, k: &str, v: &str) {
     let mut m = Mutation::new();
-    m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Set(s(v)) }).unwrap();
+    m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Put(s(v)) }).unwrap();
     net.engine(n).write(m).unwrap();
     local(net, n);
 }
@@ -650,6 +650,81 @@ fn ephemeral_expiry_everywhere_spec_crdt_4_7() {
     assert!(net.servers[sv].hub.store().ephemeral_bytes(&l) < before, "the server dropped it unattended");
 }
 
+// spec/crdt.md §4.7 (expiry), spec/sync.md §9 (notes/ephemeral.md Values that live while their
+// author is there): a cursor (a map entry under the author's key, expiring 30 s after each write)
+// its author rewrites every 15 s stays up at B without a gap, the server holding at most a few
+// of its entries; once the author goes away the refreshes stop and the cursor is gone at B and
+// at the server by the last write's expiry, with nobody noticing the departure
+#[test]
+fn refreshed_value_lives_while_author_present_spec_crdt_4_7() {
+    const E: u64 = 30_000;
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let l = net.label(a);
+    let me = s(&net.tid(a).to_string());
+    // what `osis::KeepAlive` writes: a fresh entry at the key (an entry an expiring write created
+    // goes at its expiry with every later write into it)
+    let refresh = |net: &mut Net, v: &str| {
+        let mut m = Mutation::new();
+        m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(me.clone())], op: Op::Put(s(v)) }).unwrap();
+        m.expires(w, &eph(CURSOR), osis_base::WallMs(net.now() + E)).unwrap();
+        net.engine(a).write(m).unwrap();
+        local(net, a);
+    };
+    let entries = |net: &Net| osis_proto::LabelStore::live_ids(net.servers[sv].hub.store(), &l).unwrap().len();
+    let base = entries(&net);
+    refresh(&mut net, "c1");
+    net.run();
+    let want = Some(Value::Map([(me.clone(), s("c1"))].into()));
+    assert_eq!(net.eph_read(a, w, CURSOR), want, "at a");
+    assert_eq!(net.eph_read(b, w, CURSOR), want);
+    for _ in 0..6 {
+        // the last write's expiry passes now but for the refresh at half of it
+        net.advance(E / 2);
+        assert_eq!(net.eph_read(b, w, CURSOR), want, "no gap between refreshes");
+        refresh(&mut net, "c1");
+        net.run();
+        assert_eq!(net.eph_read(b, w, CURSOR), want);
+        assert!(entries(&net) <= base + 3, "the server holds the writes of one expiry window: {}", entries(&net) - base);
+    }
+    // the author's device goes away: no departure is seen, the last write expires
+    net.set_online(a, false);
+    net.advance(E - 1);
+    assert_eq!(net.eph_read(b, w, CURSOR), want, "until the last write's expiry");
+    net.advance(1);
+    assert_eq!(net.eph_read(b, w, CURSOR), None);
+    assert_eq!(entries(&net), base, "the server dropped every one of its entries");
+}
+
+// issues/eph-replace-map-key.md: a `Replace` at a map key of an ephemeral aspect reads at its
+// author but not at a holder that holds its commit (a `Put` or `Set` there arrives)
+#[test]
+#[ignore = "repro: issues/eph-replace-map-key.md"]
+fn repro_eph_replace_at_map_key_not_read() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let mut m = Mutation::new();
+    m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Replace(s("v")) }).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    let want = Some(Value::Map([(s("k"), s("v"))].into()));
+    assert_eq!(net.eph_read(a, w, CURSOR), want);
+    assert_eq!(net.eph_read(b, w, CURSOR), want);
+}
+
 // spec/data-model.md §1 (an ephemeral thing's owner may be ephemeral): a window owned by an
 // ephemeral workspace syncs with both records; rights come through the nearest durable owner
 #[test]
@@ -1062,7 +1137,7 @@ fn never_fitting_blob_not_fetched_again_spec_sync_9() {
     let t = net.item(a, g, g, "doc");
     net.run();
     let l = net.label(a);
-    net.eph_write(x, t, &ukey("/doc/cursor", Lifetime::Presence), s(&"c".repeat(50_000)));
+    net.eph_write_expiring(x, t, &eph("/doc/cursor"), s(&"c".repeat(50_000)), Some(5_000));
     net.run();
     assert!(net.eph_read(b, t, "/doc/cursor").is_some());
     let v = Value::Map((0..2000).map(|i| (Value::Int(i), Value::Int(1))).collect());
@@ -1070,8 +1145,7 @@ fn never_fitting_blob_not_fetched_again_spec_sync_9() {
     net.run();
     assert_eq!(net.eph_read(b, t, "/doc/tiny"), None, "refused for the cap");
     net.fetched.insert(b, Vec::new());
-    net.set_online(x, false);
-    net.run();
+    net.advance(5_000);
     assert_eq!(net.eph_read(b, t, "/doc/cursor"), None);
     assert!(net.sync(b).ephemeral_bytes(&l) < 1_000);
     net.advance(SyncConfig::default().resync_ms + 1_000);
@@ -1125,7 +1199,7 @@ fn ephemeral_blob_under_wrong_id_dropped_spec_sync_4() {
     let l = net.label(a);
     push(&mut net, b, sv, l, vec![ev.clone()]);
     assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(Value::Int(7)));
-    let held = (net.sync(b).ephemeral_bytes(&l), net.sync(b).ephemeral_plain_entries(&l));
+    let held = (net.sync(b).ephemeral_bytes(&l), net.sync(b).ephemeral_held_entries(&l));
     assert_eq!(held.1.iter().map(|e| e.0).collect::<Vec<_>>(), vec![id]);
     for n in 0..4u8 {
         let osis_proto::Event::Added { blob, wrap, stamp, .. } = ev.clone() else { unreachable!() };
@@ -1134,7 +1208,7 @@ fn ephemeral_blob_under_wrong_id_dropped_spec_sync_4() {
         let stamp = stamp.map(|_| osis_label::sign_stamp(&wk, &l, &forged, &wrap));
         push(&mut net, b, sv, l, vec![osis_proto::Event::Added { blob_id: forged, blob, wrap, stamp }]);
     }
-    assert_eq!((net.sync(b).ephemeral_bytes(&l), net.sync(b).ephemeral_plain_entries(&l)), held);
+    assert_eq!((net.sync(b).ephemeral_bytes(&l), net.sync(b).ephemeral_held_entries(&l)), held);
 }
 
 // spec/crdt.md §4.6 (un-merge rebuilds from what is held), spec/sync.md §9 (an own cover carries
@@ -1501,7 +1575,7 @@ fn cover_refused_for_rate_retried_spec_sync_9() {
     net.advance(130_000);
     let after = net.servers[sv].hub.store().ephemeral_bytes(&l);
     assert!(after < refused, "the cover went again and replaced what it absorbs: {after} {refused}");
-    assert_eq!(net.sync(a).ephemeral_plain_entries(&l).len(), 1);
+    assert_eq!(net.sync(a).ephemeral_held_entries(&l).len(), 1);
     net.restart(a, 31);
     net.advance(10_000);
     assert_eq!(notes(&mut net, a, w).len(), 4);
@@ -1580,16 +1654,6 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     let mut log = Vec::new();
     // nodes that held the window since their last restart
     let mut kept: BTreeSet<usize> = BTreeSet::from([nodes[0]]);
-    // each node's live cursor: its last presence write since its last restart
-    let mut cursors: BTreeMap<usize, String> = BTreeMap::new();
-    // presence writes come from their own stream, so a seed's other steps stay what they were
-    let mut y = seed.wrapping_mul(0xd1b5_4a32_d192_ed03) | 1;
-    let mut prnd = move |n: u64| {
-        y ^= y << 13;
-        y ^= y >> 7;
-        y ^= y << 17;
-        y % n
-    };
     // in-flight steps from a stream of their own as well
     let mut z = seed.wrapping_mul(0x94d0_49bb_1331_11eb) | 1;
     let mut irnd = move || {
@@ -1599,16 +1663,6 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
         z.is_multiple_of(2)
     };
     for step in 0..40 {
-        let p = nodes[prnd(4) as usize];
-        if prnd(4) == 0 && (net.engine(p).ephemeral_thing(&w).is_some() || net.eph_read(p, w, STATE).is_some()) {
-            // p's cursor, keyed by p
-            let v = format!("c{step}");
-            log.push(format!("{p} cursor {v}"));
-            let mut m = Mutation::new();
-            m.op(w, &ukey(CURSOR, Lifetime::Presence), PathOp { path: vec![PathSeg::Key(s(&p.to_string()))], op: Op::Set(s(&v)) }).unwrap();
-            net.engine(p).write(m).unwrap();
-            cursors.insert(p, v);
-        }
         let n = nodes[rnd(4) as usize];
         match rnd(10) {
             0..=4 => {
@@ -1642,7 +1696,6 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
             7 => {
                 restarts += 1;
                 log.push(format!("{n} restarts"));
-                cursors.remove(&n);
                 kept.remove(&n);
                 let on = net.nodes[n].online;
                 net.restart(n, restarts);
@@ -1698,7 +1751,7 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
         let pending = |net: &mut Net| {
             let ids: BTreeSet<osis_base::BlobId> = net.server_ids(s1, &l).into_iter().collect();
             let store = net.servers[s1].hub.store();
-            let entries: Vec<(osis_base::BlobId, usize)> = nodes.iter().filter_map(|n| net.nodes[*n].sync.as_ref()).flat_map(|x| x.ephemeral_plain_entries(&l)).collect();
+            let entries: Vec<(osis_base::BlobId, usize)> = nodes.iter().filter_map(|n| net.nodes[*n].sync.as_ref()).flat_map(|x| x.ephemeral_held_entries(&l)).collect();
             (entries.len(), entries.iter().any(|(b, size)| !ids.contains(b) && store.ephemeral_fits(&l, *size as u64)))
         };
         let (n, _) = pending(&mut net);
@@ -1725,7 +1778,7 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
         let store = net.servers[s1].hub.store();
         let mut out = false;
         for n in &holders {
-            for (b, size) in net.nodes[*n].sync.as_ref().unwrap().ephemeral_plain_entries(&l) {
+            for (b, size) in net.nodes[*n].sync.as_ref().unwrap().ephemeral_held_entries(&l) {
                 out |= !ids.contains(&b) && !store.ephemeral_fits(&l, size as u64);
             }
         }
@@ -1736,7 +1789,7 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     if refused {
         let store = net.servers[s1].hub.store();
         let plain: Vec<osis_base::BlobId> = net.server_ids(s1, &l).into_iter().filter(|b| osis_proto::LabelStore::blob(store, b).ok().flatten().and_then(|x| osis_label::Prefix::parse(&x).ok()).is_some_and(|p| p.class() == osis_label::Class::Ephemeral)).collect();
-        let held: BTreeSet<osis_base::BlobId> = nodes.iter().flat_map(|n| net.nodes[*n].sync.as_ref().unwrap().ephemeral_plain_entries(&l).into_iter().map(|x| x.0)).collect();
+        let held: BTreeSet<osis_base::BlobId> = nodes.iter().flat_map(|n| net.nodes[*n].sync.as_ref().unwrap().ephemeral_held_entries(&l).into_iter().map(|x| x.0)).collect();
         let stale: Vec<_> = plain.iter().filter(|b| !held.contains(b)).collect();
         if !stale.is_empty() {
             panic!("seed {seed}: the full server keeps entries {stale:?} no node holds (cap {cap})\n{}\n{}", log.join("\n"), lane_dump(&mut net, &nodes, &servers, &l, w));
@@ -1746,7 +1799,7 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     // own commits and the valid ones it received)
     let held = |net: &mut Net, n: usize| -> BTreeSet<osis_base::CommitId> {
         let e = net.engine(n);
-        e.held_ephemeral().into_iter().map(|x| x.0).filter(|c| !e.ephemeral_is_presence(c)).collect()
+        e.held_ephemeral().into_iter().map(|x| x.0).collect()
     };
     let mut reads: Vec<(usize, BTreeMap<String, String>, BTreeSet<osis_base::CommitId>)> = Vec::new();
     for n in &holders {
@@ -1765,27 +1818,6 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
             assert!(held <= osis_node::ephemeral::COVER_FACTOR * cover + largest, "seed {seed}: node {n} holds {held} B of own commits for {actor:?}, cover {cover} B\n{}", log.join("\n"));
         }
     }
-    // presence: every holder reads exactly the live cursors (their authors are all connected;
-    // presence has its own room at a server, apart from the capped ephemeral state); with an
-    // entry refused, at most those (a writer the window's placement did not reach sends nothing)
-    let want: BTreeMap<String, String> = cursors.iter().filter(|(n, _)| holders.contains(n)).map(|(n, v)| (n.to_string(), v.clone())).collect();
-    for n in &holders {
-        let got = str_map(net.eph_read(*n, w, CURSOR));
-        if got != want && !(refused && got.iter().all(|(k, v)| want.get(k) == Some(v))) {
-            panic!("seed {seed}: node {n}'s cursors {got:?}, expected {want:?} (cap {cap})\n{}\n{}", log.join("\n"), lane_dump(&mut net, &nodes, &servers, &l, w));
-        }
-    }
-    // and no server keeps a covered presence entry: at most one per live cursor
-    for sv in &servers {
-        let store = net.servers[*sv].hub.store();
-        let ids = osis_proto::LabelStore::live_ids(store, &l).unwrap_or_default();
-        let presence = ids.iter().filter(|b| osis_proto::LabelStore::blob(store, b).ok().flatten().and_then(|x| osis_label::Prefix::parse(&x).ok()).is_some_and(|p| p.class() == osis_label::Class::Presence)).count();
-        if presence > cursors.len() {
-            let pids: Vec<_> = ids.iter().filter(|b| osis_proto::LabelStore::blob(store, b).ok().flatten().and_then(|x| osis_label::Prefix::parse(&x).ok()).is_some_and(|p| p.class() == osis_label::Class::Presence)).collect();
-            let dump = lane_dump(&mut net, &nodes, &servers, &l, w);
-            panic!("seed {seed}: server {sv} holds {presence} presence entries {pids:?} for cursors {cursors:?}\n{}\n{dump}", log.join("\n"));
-        }
-    }
 }
 
 /// Whether node `n` holds ephemeral thing `w` in a labeled closure (it syncs it: a record that
@@ -1799,8 +1831,8 @@ fn syncs(net: &mut Net, n: usize, w: Tid) -> bool {
 fn lane_dump(net: &mut Net, nodes: &[usize], servers: &[usize], l: &osis_base::LabelId, w: Tid) -> String {
     let mut out = String::new();
     for m in nodes {
-        let (n, c) = (notes(net, *m, w), str_map(net.eph_read(*m, w, CURSOR)));
-        out.push_str(&format!("node {m} {:?} reads {n:?} cursors {c:?}\n{}", net.tid(*m), net.nodes[*m].sync.as_ref().unwrap().ephemeral_dump(l)));
+        let n = notes(net, *m, w);
+        out.push_str(&format!("node {m} {:?} reads {n:?}\n{}", net.tid(*m), net.nodes[*m].sync.as_ref().unwrap().ephemeral_dump(l)));
         for d in net.nodes[*m].sync.as_ref().unwrap().describe() {
             out.push_str(&format!("  {d}\n"));
         }
@@ -1814,20 +1846,6 @@ fn lane_dump(net: &mut Net, nodes: &[usize], servers: &[usize], l: &osis_base::L
         out.push_str(&format!("server {sv} holds {:?}, {} B\n", net.server_ids(*sv, l), net.servers[*sv].hub.store().ephemeral_bytes(l)));
     }
     out
-}
-
-/// A `map<string, string>` value as a map (absent: empty).
-fn str_map(v: Option<Value>) -> BTreeMap<String, String> {
-    match v {
-        Some(Value::Map(m)) => m
-            .into_iter()
-            .filter_map(|(k, v)| match (k, v) {
-                (Value::Str(k), Value::Str(v)) => Some((k, v)),
-                _ => None,
-            })
-            .collect(),
-        _ => BTreeMap::new(),
-    }
 }
 
 // the same with one capped server (caps 0 to fitting all; 173658: room appears only after the
@@ -2161,7 +2179,7 @@ fn invalid_on_arrival_held_once_valid_spec_sync_9() {
 }
 
 // notes/ephemeral.md Bounds, notes/ephemeral.md Own covers: entries refused for a node's cap are
-// fetched again once its bytes drop (here another's presence goes): the label is reconciled at
+// fetched again once its bytes drop (here another's write expires): the label is reconciled at
 // the next periodic pass instead of staying short until a restart. The cap fits the cursor and
 // the big write decoded (`osis_crdt::decoded_bound`: strings, so mostly their bytes), not both
 #[test]
@@ -2175,14 +2193,13 @@ fn capped_label_reconciles_once_room_spec_sync_9() {
     let t = net.item(a, g, g, "doc");
     net.run();
     let l = net.label(a);
-    net.eph_write(x, t, &ukey("/doc/cursor", Lifetime::Presence), s(&"c".repeat(50_000)));
+    net.eph_write_expiring(x, t, &eph("/doc/cursor"), s(&"c".repeat(50_000)), Some(5_000));
     net.run();
     assert!(net.eph_read(b, t, "/doc/cursor").is_some());
     net.eph_write(a, t, &ukey("/doc/big", Lifetime::Ephemeral), s(&"b".repeat(40_000)));
     net.run();
     assert_eq!(net.eph_read(b, t, "/doc/big"), None, "refused for the cap");
-    net.set_online(x, false);
-    net.run();
+    net.advance(5_000);
     assert_eq!(net.eph_read(b, t, "/doc/cursor"), None);
     assert!(net.sync(b).ephemeral_bytes(&l) < 1_000);
     net.advance(SyncConfig::default().resync_ms + 1_000);

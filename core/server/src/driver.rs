@@ -190,8 +190,7 @@ impl<B: Backend> Driver<B> {
                 let _ = d.send(());
             }
         }
-        let now = self.now();
-        let out = blocking(|| self.hub.closed(now, id));
+        let out = blocking(|| self.hub.closed(id));
         self.apply(out);
     }
 

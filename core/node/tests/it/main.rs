@@ -12,7 +12,6 @@ mod deposit_queue;
 mod driver;
 mod encodings;
 mod ephemeral;
-mod presence;
 mod flows;
 mod hostile_server;
 mod inbox_life;

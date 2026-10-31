@@ -14,7 +14,7 @@ const SCHEMA: &str = "schema 0x0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e;\nrevision 1;\n\
 type win = struct { 0 title: string, 1 notes: list<string> };\n\
 aspect /win/state: win [ephemeral];\n\
 aspect /win/typing: bool [ephemeral, expires: 5s];\n\
-aspect /win/cursor: map<tid, int> [presence];\n\
+aspect /win/cursor: map<tid, int> [ephemeral, expires: 30s];\n\
 aspect /win/ring: string [signal];\n\
 aspect /win/saved: string;\n";
 

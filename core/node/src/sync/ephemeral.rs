@@ -13,11 +13,6 @@
 //! entries when the cover arrives, and a writer deletes them at a server once the cover is held
 //! there (`waiting`). A server refusing an entry for its cap triggers nothing but a report and
 //! the retry at the periodic pass (`eph_retry`).
-//! Presence entries are uploaded by their author only (never spread, listed or reconciled up by
-//! another node); a node drops another's presence commit as soon as no server or peer it syncs
-//! the label with holds an entry of it (a pushed deletion, the loss of the connection, a served
-//! session that uploaded it closing), and reconciles that label on its next connection to the
-//! server it lost, so the entries come back while their author is still there.
 
 use super::state::ServerKey;
 use super::{Action, ConnId, Phase, SyncEngine};
@@ -67,18 +62,9 @@ pub(crate) struct LaneEntry {
     pub tid: Tid,
     pub actor: Tid,
     pub keys: Vec<DeleteKey>,
-    /// A presence entry (prefix class presence).
-    pub presence: bool,
     /// What it counts against the label's cap (others' entries: `Engine::ephemeral_charge` of
     /// its parts, at least its bytes).
     pub charge: u64,
-}
-
-impl LaneEntry {
-    /// Another node's presence entry: never uploaded from here (spec/sync.md §9).
-    fn foreign_presence(&self) -> bool {
-        self.presence && !self.own
-    }
 }
 
 /// A waiting delete (`Lane::waiting`) with its entry: what an upload carries as a replacement.
@@ -319,9 +305,6 @@ pub(crate) struct Lane {
     /// Replace: the server removes them iff it admits the upload), by upload: back in
     /// `waiting` unless it is answered OK.
     pub replacing: BTreeMap<(ConnId, LabelId, BlobId), Vec<Waiting>>,
-    /// Own presence entries a server took on this connection (tied to it there): replaced by
-    /// the tie alone (no delete signatures).
-    pub tied: BTreeSet<(ConnId, LabelId, BlobId)>,
     /// (server, label) reconciled since start, and the reconciliations running (`sync_label`)
     /// with the ephemeral entries their set listed: only those the reply can say the peer holds
     /// (one arriving meanwhile from elsewhere is not known there).
@@ -339,11 +322,6 @@ pub(crate) struct Lane {
     pub by_blob: BTreeSet<(BlobId, LabelId)>,
     /// Relay-only entries received (`RelaySeen`).
     pub relays: RelaySeen,
-    /// Presence entries of others the sessions this node serves uploaded, by session (a source
-    /// while the session is open, spec/sync.md §9).
-    pub served_src: BTreeMap<(LabelId, BlobId), BTreeSet<ConnId>>,
-    /// Others' presence commits held: dropped once no source holds them (`eph_presence`).
-    pub presence: BTreeSet<CommitId>,
 }
 
 /// The share of `SyncConfig::ephemeral_bytes` a label's unverified entries (waiting for a record
@@ -443,13 +421,12 @@ impl SyncEngine {
         self.engine.rejudge_ephemeral()?;
         self.eph_promote(out)?;
         self.eph_refetch(out)?;
-        let (busy, busy_presence) = self.eph_busy();
-        let mut commits = self.engine.take_ephemeral_if(&busy, &busy_presence)?;
+        let busy = self.eph_busy();
+        let mut commits = self.engine.take_ephemeral_if(&busy)?;
         let caught_up = self.eph_caught_up();
         self.engine.set_ephemeral_caught_up(caught_up);
         commits.extend(self.engine.compact_own_ephemeral(false)?);
         commits.retain(|c| c.class == EphClass::Relay || self.engine.holds_ephemeral(&c.id));
-        self.eph_presence(out)?;
         // what a cover absorbs is deleted at a server once the cover is held there (`waiting`):
         // a holder applies the cover first, and an author crashing in between loses nothing
         let dropped = self.engine.take_dropped_ephemeral();
@@ -704,39 +681,23 @@ impl SyncEngine {
     }
 
     /// What waits for an own ephemeral upload in flight (sent, not answered): the groups of the
-    /// labels where every connection the label is open on has an own plain entry in flight, the
-    /// actors whose own presence entries are in flight on every connection of every label their
-    /// presence commit went under. Their next writes wait and join (`Engine::take_ephemeral_if`)
-    /// until an answer (or a connection's end) frees one, so a node sends about one such commit
-    /// per label and kind per round trip of its fastest connection, whatever its write rate,
-    /// and a slow or silent connection holds up nothing another one can carry (spec/sync.md §9).
-    /// A thing under several labels waits while any of them is busy.
-    fn eph_busy(&self) -> (BTreeSet<Tid>, BTreeSet<Tid>) {
+    /// labels where every connection the label is open on has an own entry in flight. Their next
+    /// writes wait and join (`Engine::take_ephemeral_if`) until an answer (or a connection's end)
+    /// frees one, so a node sends about one such commit per label per round trip of its fastest
+    /// connection, whatever its write rate, and a slow or silent connection holds up nothing
+    /// another one can carry (spec/sync.md §9). A thing under several labels waits while any of
+    /// them is busy.
+    fn eph_busy(&self) -> BTreeSet<Tid> {
         let mut plain: BTreeMap<LabelId, (Option<Tid>, BTreeSet<ConnId>)> = BTreeMap::new();
-        // per actor its presence commits in flight, and where
-        let mut pres: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
-        let mut pres_at: BTreeSet<(Tid, LabelId, ConnId)> = BTreeSet::new();
         for (c, l, b) in &self.eph.uploads {
-            let Some(e) = self.eph.entries.get(&(*l, *b)).filter(|e| e.own) else { continue };
-            if e.presence {
-                pres.entry(e.actor).or_default().insert(e.commit);
-                pres_at.insert((e.actor, *l, *c));
-            } else {
-                let p = plain.entry(*l).or_default();
-                p.0 = p.0.or_else(|| self.conns.get(c).and_then(|x| x.labels.get(l)).map(|x| x.group));
-                p.1.insert(*c);
+            if !self.eph.entries.get(&(*l, *b)).is_some_and(|e| e.own) {
+                continue;
             }
+            let p = plain.entry(*l).or_default();
+            p.0 = p.0.or_else(|| self.conns.get(c).and_then(|x| x.labels.get(l)).map(|x| x.group));
+            p.1.insert(*c);
         }
-        let groups = plain.iter().filter(|(l, (_, cs))| self.eph_conns(l).iter().all(|(c, _, _)| cs.contains(c))).filter_map(|(_, (g, _))| *g).collect();
-        let actors = pres
-            .into_iter()
-            .filter(|(a, commits)| {
-                let labels: BTreeSet<LabelId> = commits.iter().filter_map(|c| self.eph.by_commit.get(c)).flatten().map(|(l, _)| *l).collect();
-                labels.iter().all(|l| self.eph_conns(l).iter().all(|(c, _, _)| pres_at.contains(&(*a, *l, *c))))
-            })
-            .map(|(a, _)| a)
-            .collect();
-        (groups, actors)
+        plain.iter().filter(|(l, (_, cs))| self.eph_conns(l).iter().all(|(c, _, _)| cs.contains(c))).filter_map(|(_, (g, _))| *g).collect()
     }
 
     /// Entries whose commit was waiting for its author's record: held now, they join the lane
@@ -769,8 +730,7 @@ impl SyncEngine {
             // is checked against the held commit before it is kept or spread
             // (counted even past the cap: the engine decoded it within its share, and holds it)
             if held && !self.eph.entries.contains_key(&(l, b)) {
-                let class = if e.presence { Class::Presence } else { Class::Ephemeral };
-                self.eph_added_with(RelayFrom::Server(from), l, b, e.blob, e.wrap, e.stamp, class, Some(e.charge), out)?;
+                self.eph_added_with(RelayFrom::Server(from), l, b, e.blob, e.wrap, e.stamp, Class::Ephemeral, Some(e.charge), out)?;
             }
         }
         // the node counts what the engine holds: a waiting commit held now is kept by an entry
@@ -860,7 +820,7 @@ impl SyncEngine {
                 }
                 let ai = p.parts.first().map_or(0, |x| x.0);
                 let a = c.blob.header.aspects.get(ai);
-                let e = LaneEntry { commit: c.id, blob: s.blob, wrap, stamp, own: true, salt: s.salt, blind: c.blob.header.blind, tid: a.map_or(g, |a| a.tid), actor: c.blob.header.actor, keys: p.keys, presence: c.class == EphClass::Presence, charge: 0 };
+                let e = LaneEntry { commit: c.id, blob: s.blob, wrap, stamp, own: true, salt: s.salt, blind: c.blob.header.blind, tid: a.map_or(g, |a| a.tid), actor: c.blob.header.actor, keys: p.keys, charge: 0 };
                 self.eph_keep(l, s.id, e);
                 self.eph_spread(l, s.id, None, out)?;
             }
@@ -872,9 +832,6 @@ impl SyncEngine {
     fn eph_keep(&mut self, l: LabelId, b: BlobId, e: LaneEntry) {
         if !e.own {
             *self.eph.bytes.entry(l).or_default() += e.charge;
-        }
-        if e.foreign_presence() {
-            self.eph.presence.insert(e.commit);
         }
         self.eph.by_commit.entry(e.commit).or_default().insert((l, b));
         self.eph.by_blob.insert((b, l));
@@ -919,9 +876,6 @@ impl SyncEngine {
     /// Uploads entry `b` of `l` on every connection where the label is open and the peer is not
     /// known to hold it (but `from`, where it came from).
     fn eph_spread(&mut self, l: LabelId, b: BlobId, from: Option<ServerKey>, out: &mut Vec<Action>) -> Result<()> {
-        if self.eph.entries.get(&(l, b)).is_some_and(LaneEntry::foreign_presence) {
-            return Ok(());
-        }
         for (conn, server, keys) in self.eph_conns(&l) {
             if Some(server) == from || self.eph.present.contains(&(server, l, b)) {
                 continue;
@@ -942,10 +896,7 @@ impl SyncEngine {
             if self.eph.uploads.contains(&(conn, l, *b)) {
                 continue;
             }
-            let Some((own, foreign)) = self.eph.entries.get(&(l, *b)).map(|e| (e.own, e.foreign_presence())) else { continue };
-            if foreign {
-                continue;
-            }
+            let Some(own) = self.eph.entries.get(&(l, *b)).map(|e| e.own) else { continue };
             // an own entry is stamped under this connection's head: one stamped before a
             // rotation (built offline, or for another server) is refused under it (code 9);
             // with no write key there it waits for one (`eph_restamp`), unless this node does
@@ -983,8 +934,7 @@ impl SyncEngine {
     /// they wait on are held there once `b` is), at most `room`: carried by its upload as
     /// replacements (spec/sync.md §5), so the server admits the cover and removes what it
     /// absorbs in one step (a holder sees the cover first; no window where neither is there).
-    /// Own presence entries tied to this connection go by the tie, the rest by delete proof.
-    fn eph_replaces(&mut self, conn: ConnId, l: LabelId, b: BlobId, room: &mut usize) -> Vec<osis_proto::Replace> {
+    fn eph_replaces(&mut self, conn: ConnId, l: LabelId, b: BlobId, room: &mut usize) -> Vec<osis_label::DeleteItem> {
         let Some(commit) = self.eph.entries.get(&(l, b)).filter(|e| e.own).map(|e| e.commit) else { return Vec::new() };
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Vec::new() };
         let g = self.group_of(&l);
@@ -999,19 +949,12 @@ impl SyncEngine {
         let mut replaces = Vec::new();
         let mut moved = Vec::new();
         for x in ready {
-            let tied = self.eph.tied.contains(&(conn, l, x));
             let Some((_, item)) = self.eph.waiting.get(&(l, x, server)) else { continue };
             // one this connection holds no key for stays waiting, uncarried (carried, it would
             // refuse the cover): it goes alone once the cover is held (`eph_delete_now`)
-            let signed = if tied { None } else {
-                let Some((signed, _)) = self.eph_resign(conn, l, item.clone()) else { continue };
-                Some(signed)
-            };
+            let Some((signed, _)) = self.eph_resign(conn, l, item.clone()) else { continue };
             let Some((cs, item)) = self.eph.waiting.remove(&(l, x, server)) else { continue };
-            replaces.push(match signed {
-                Some(d) => osis_proto::Replace::Delete(d),
-                None => osis_proto::Replace::Untie(x),
-            });
+            replaces.push(signed);
             moved.push((x, cs, item));
         }
         *room -= replaces.len();
@@ -1028,7 +971,6 @@ impl SyncEngine {
         for (x, cs, item) in moved {
             if ok {
                 self.eph.present.remove(&(server, l, x));
-                self.eph.tied.remove(&(conn, l, x));
             } else {
                 self.eph.waiting.insert((l, x, server), (cs, item));
             }
@@ -1050,7 +992,7 @@ impl SyncEngine {
         if !self.eph.announced.insert((conn, l)) {
             return Vec::new();
         }
-        let ids: BTreeSet<BlobId> = Self::eph_entries_of(&self.eph, &l).filter(|(_, e)| !e.foreign_presence()).map(|(b, _)| b).collect();
+        let ids: BTreeSet<BlobId> = Self::eph_entries_of(&self.eph, &l).map(|(b, _)| b).collect();
         if ids.is_empty() || ids.len() > osis_proto::msg::MAX_GAINED {
             if !ids.is_empty() {
                 self.eph.announced.remove(&(conn, l));
@@ -1120,15 +1062,6 @@ impl SyncEngine {
                 Code::OK => {
                     self.eph.capped.remove(&(conn, l, b));
                     self.eph.present.insert((server, l, b));
-                    if self.eph.entries.get(&(l, b)).is_some_and(|e| e.own && e.presence) {
-                        self.eph.tied.insert((conn, l, b));
-                    }
-                }
-                // presence has a cap of its own at servers: what this one absorbs goes anyway
-                // (its values must not stay up there)
-                Code::STORAGE_CAP if self.eph.entries.get(&(l, b)).is_some_and(|e| e.presence) => {
-                    self.eph_free_for(conn, server, l, b, out)?;
-                    self.eph_report(&l, "a server's presence cap was reached: this node's presence is not seen there");
                 }
                 // the defined outcome (spec/sync.md §5): it stays out there until room appears;
                 // nothing is compacted for it (only authors compact, by their own rule)
@@ -1194,11 +1127,6 @@ impl SyncEngine {
         if self.state.entries.contains_key(&(l, b)) {
             self.state.forget_ephemeral(l, b);
         }
-        if let RelayFrom::Served(c) = from
-            && class == Class::Presence
-        {
-            self.eph.served_src.entry((l, b)).or_default().insert(c);
-        }
         // an own entry forgotten while its upload was in flight (being deleted where it lands)
         if self.eph.orphans.range((l, b, 0)..).next().is_some_and(|((l2, b2, _), _)| (*l2, *b2) == (l, b)) {
             return Ok(());
@@ -1256,7 +1184,7 @@ impl SyncEngine {
         let salt = osis_label::Prefix::parse(&blob).map(|p| *p.salt()).unwrap_or_default();
         let a = h.aspects.get(first);
         let keys = a.map(|a| a.keys.iter().filter_map(|i| h.keys.get(*i).copied()).collect()).unwrap_or_default();
-        let e = LaneEntry { commit, blob, wrap, stamp, own: false, salt, blind: h.blind, tid: a.map_or(g, |a| a.tid), actor: h.actor, keys, presence: class == Class::Presence, charge: size };
+        let e = LaneEntry { commit, blob, wrap, stamp, own: false, salt, blind: h.blind, tid: a.map_or(g, |a| a.tid), actor: h.actor, keys, charge: size };
         match ingested {
             Ok(EphIngest::Held { .. }) if self.engine.holds_ephemeral(&commit) => {}
             Ok(EphIngest::Pending) => {
@@ -1444,8 +1372,7 @@ impl SyncEngine {
     /// level-3 delete key and the label's write key, spec/sync.md §5).
     fn eph_forget(&mut self, commits: &[CommitId], out: &mut Vec<Action>) -> Result<()> {
         for c in commits {
-            self.eph.presence.remove(c);
-            // what absorbed it (none: expired, or a presence commit gone); deletes waiting for
+            // what absorbed it (none: expired); deletes waiting for
             // it wait for that now, and go once they wait for nothing
             let cover = self.engine.ephemeral_absorbers(c);
             let moved: Vec<(LabelId, BlobId, ServerKey)> = self.eph.waiting.iter().filter(|(_, (w, _))| w.contains(c)).map(|(k, _)| *k).collect();
@@ -1467,8 +1394,7 @@ impl SyncEngine {
                 for (conn, server, hk) in self.eph_conns(&l) {
                     self.eph.capped.remove(&(conn, l, b));
                     let present = self.eph.present.remove(&(server, l, b));
-                    // another's presence entry is its author's to delete
-                    if e.foreign_presence() || !(present || self.eph.uploads.contains(&(conn, l, b))) {
+                    if !(present || self.eph.uploads.contains(&(conn, l, b))) {
                         continue;
                     }
                     if let Some(item) = eph_delete_item(&hk, &l, b, &e, &dks) {
@@ -1488,7 +1414,6 @@ impl SyncEngine {
     fn eph_unkeep(&mut self, l: LabelId, b: BlobId) -> Option<LaneEntry> {
         let e = self.eph.entries.remove(&(l, b))?;
         self.eph.by_blob.remove(&(b, l));
-        self.eph.served_src.remove(&(l, b));
         if !e.own
             && let Some(n) = self.eph.bytes.get_mut(&l)
         {
@@ -1509,7 +1434,6 @@ impl SyncEngine {
     /// back to wait apart until valid again.
     fn eph_unhold(&mut self, commits: &[CommitId]) {
         for c in commits {
-            self.eph.presence.remove(c);
             let Some(keys) = self.eph.by_commit.remove(c) else { continue };
             for (l, b) in keys {
                 if self.eph_unkeep(l, b).is_none() {
@@ -1526,13 +1450,6 @@ impl SyncEngine {
 
     /// A connection ended: what it knew of its peer goes with it.
     pub(crate) fn eph_lost(&mut self, conn: ConnId, server: ServerKey) {
-        // presence held there is dropped unless held elsewhere (`eph_presence`); the next
-        // connection reconciles the label to get back what is still there
-        let lane = &self.eph;
-        let relost: BTreeSet<LabelId> = lane.present.range((server, LabelId([0; 16]), BlobId([0; 32]))..).take_while(|(s, _, _)| *s == server).filter(|(_, l, b)| lane.entries.get(&(*l, *b)).is_some_and(LaneEntry::foreign_presence)).map(|(_, l, _)| *l).collect();
-        for l in relost {
-            self.eph.reconciled.remove(&(server, l));
-        }
         self.eph.present.retain(|(s, _, _)| *s != server);
         self.eph.announced.retain(|(c, _)| *c != conn);
         self.eph.gained.retain(|(c, _), _| *c != conn);
@@ -1544,42 +1461,10 @@ impl SyncEngine {
         self.eph.redelete.retain(|(c, _, _), _| *c != conn);
         self.eph.capped.retain(|(c, _, _)| *c != conn);
         self.eph.orphans.retain(|(_, _, c), _| *c != conn);
-        self.eph.tied.retain(|(c, _, _)| *c != conn);
         let carried: Vec<(ConnId, LabelId, BlobId)> = self.eph.replacing.keys().filter(|(c, _, _)| *c == conn).copied().collect();
         for (c, l, b) in carried {
             self.eph_replaced(c, server, l, b, false);
         }
-    }
-
-    /// A session this node served ended: the presence entries it uploaded lose it as a source.
-    pub(crate) fn eph_served_gone(&mut self, conn: ConnId) {
-        self.eph.served_src.retain(|_, cs| {
-            cs.remove(&conn);
-            !cs.is_empty()
-        });
-    }
-
-    /// Drops the presence commits of others that no server or peer this node syncs their
-    /// labels with holds any longer, nor a session it serves (spec/sync.md §9): un-merged in the
-    /// engine, forgotten here by `eph_forget` (their deletions fed to the sessions served).
-    fn eph_presence(&mut self, out: &mut Vec<Action>) -> Result<()> {
-        if self.eph.presence.is_empty() {
-            return Ok(());
-        }
-        let servers: BTreeSet<ServerKey> = self.conns.values().map(|c| c.server).collect();
-        let lane = &self.eph;
-        let gone: Vec<CommitId> = lane
-            .presence
-            .iter()
-            .filter(|c| {
-                !lane.by_commit.get(c).is_some_and(|keys| keys.iter().any(|(l, b)| servers.iter().any(|s| lane.present.contains(&(*s, *l, *b))) || lane.served_src.contains_key(&(*l, *b))))
-            })
-            .copied()
-            .collect();
-        for c in &gone {
-            self.engine.drop_ephemeral_presence(c);
-        }
-        self.eph_forget(&gone, out)
     }
 
     /// Statuses of lane deletes are taken out (the rest returned for the durable path).
@@ -1631,11 +1516,11 @@ impl SyncEngine {
         Ok(out)
     }
 
-    /// Tests: the ephemeral entries held under `l` that are not presence entries (blob ID and
-    /// size), to check them against a server's cap.
+    /// Tests: the ephemeral entries held under `l` (blob ID and size), to check them against a
+    /// server's cap.
     #[doc(hidden)]
-    pub fn ephemeral_plain_entries(&self, l: &LabelId) -> Vec<(BlobId, usize)> {
-        Self::eph_entries_of(&self.eph, l).filter(|(_, e)| !e.presence).map(|(b, e)| (b, e.blob.len())).collect()
+    pub fn ephemeral_held_entries(&self, l: &LabelId) -> Vec<(BlobId, usize)> {
+        Self::eph_entries_of(&self.eph, l).map(|(b, e)| (b, e.blob.len())).collect()
     }
 
     /// What the ephemeral entries held from others under `l` count against its cap (their
@@ -1670,9 +1555,8 @@ impl SyncEngine {
         keys.into_iter().map(|(l, b)| (l, b, self.eph.present.iter().filter(|(_, pl, pb)| *pl == l && *pb == b).map(|(s, _, _)| *s).collect())).collect()
     }
 
-    /// Tests, diagnostics: the lane under `l` as text, an entry per line (commit, own, presence,
-    /// bytes, the servers it is present at by key prefix, the sessions serving it, in-flight
-    /// uploads and cap refusals), then pending entries and the label's flags.
+    /// Tests, diagnostics: the lane under `l` as text, an entry per line (commit, own, bytes, the
+    /// servers it is present at by key prefix, in-flight uploads and cap refusals), then pending entries and the label's flags.
     #[doc(hidden)]
     pub fn ephemeral_dump(&self, l: &LabelId) -> String {
         use std::fmt::Write;
@@ -1683,7 +1567,7 @@ impl SyncEngine {
             let at: Vec<String> = lane.present.iter().filter(|(_, pl, pb)| pl == l && *pb == b).map(|(s, _, _)| key(s)).collect();
             let up: Vec<u64> = lane.uploads.iter().filter(|(_, ul, ub)| ul == l && *ub == b).map(|x| x.0).collect();
             let capped: Vec<u64> = lane.capped.iter().filter(|(_, cl, cb)| cl == l && *cb == b).map(|x| x.0).collect();
-            let _ = writeln!(out, "  {b:?} commit {:?} own {} presence {} {} B present {at:?} served {:?} uploading {up:?} capped {capped:?}", e.commit, e.own, e.presence, e.blob.len(), lane.served_src.get(&(*l, b)));
+            let _ = writeln!(out, "  {b:?} commit {:?} own {} {} B present {at:?} uploading {up:?} capped {capped:?}", e.commit, e.own, e.blob.len());
         }
         for ((pl, b), (e, from)) in &lane.pending {
             if pl == l {

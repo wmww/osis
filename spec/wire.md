@@ -27,7 +27,6 @@ Format constants (fixed by format version 1, spec/versioning.md §1):
 | `MAX_RUN` | 4096 (2^12) elements per sequence run (spec/crdt.md §3.3) |
 | `MAX_DRIFT` | 1 hour |
 | `MAX_RELAY_BLOB` | 64 KiB (65 536 bytes), whole relay-only blob (spec/sync.md §5, §9) |
-| `MAX_LEASE`, `KEEPALIVE` | 20 minutes, 15 minutes: a presence commit's lifetime from its `ts`, and how often an author with live presence values sends a fresh one (spec/sync.md §9; owner-agreed) |
 | `MEMBERSHIP_KEEP` | 90 days |
 | `AT_MOST_GRACE` | 1 hour: added to the relative keep-at-most bound of a body with a live write (spec/commits.md §5) |
 | `INBOX_LIFETIME` | 90 days |
@@ -72,7 +71,7 @@ Header fields by position:
 12. `keys`: `[DeleteKey*]` sorted by canonical bytes, distinct: the delete keys of the commit's deltas (spec/crypto.md §7), `pk` a valid Ed25519 key (§1, spec/crypto.md §1), at most one at level 2 (the author chain); a key no aspect lists is bad input.
 13. `frontier`: `Opt(frontier)`, the frontier value (spec/data-model.md §9); present iff the commit is a membership commit carrying an explicit demotion (spec/permissions.md §5).
 14. `origins`: `[Origin*]` sorted by commit ID, distinct; non-empty iff `kind` is 4 (spec/permissions.md §7).
-15. `ephemeral`: `Opt(uint)`, the ephemeral marker (spec/commits.md §2): 0 an ephemeral commit, 1 a relay-only one, 2 a presence one. Present only with `kind` 2 and `form` 1, or `kind` 0 and session form (session form only with the marker), no `chunks`, no `purge`, no `undoes`, no list by link and no `/created` aspect; with `kind` 2 every aspect's retention `by` is writer with the levels it calls for; a relay-only or presence commit has no `expires`. Anything else is bad input.
+15. `ephemeral`: `Opt(uint)`, the ephemeral marker (spec/commits.md §2): 0 an ephemeral commit, 1 a relay-only one. Present only with `kind` 2 and `form` 1, or `kind` 0 and session form (session form only with the marker), no `chunks`, no `purge`, no `undoes`, no list by link and no `/created` aspect; with `kind` 2 every aspect's retention `by` is writer with the levels it calls for; a relay-only commit has no `expires`. Anything else is bad input.
 
 Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most 1024 bytes); `lo`, `hi`: the counter range (`lo = hi = 0` for kinds 2, 3, 4; else `1 <= lo < hi`); `Retention`: `by` (purgeable-by class), `at_least` and `at_most` bounds, each a map with optional `0: abs` (wall ms; `2^63 - 1` means forever) and `1: rel` (ms after the body is replaced), `{}` for no bound; `expires`: `Opt(T)`; `schema`: `Opt(index into schemas)`; `keys`: `[ki*]`, ascending indices into the header's `keys`: one per level the retention calls for (spec/crypto.md §7), exactly those levels, else bad input; `hashes`: `[delta_hash+]` (32 bytes each), exactly one for kinds 0, 2, 3, 4, sorted and distinct for kinds 1 and 5.
 
@@ -89,14 +88,14 @@ A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixe
 | 0 | 1 | framing version: 1 |
 | 1 | 16 | salt, random per encryption |
 | 17 | 8 | expiry `T`: le64 wall ms; 0 means none |
-| 25 | 1 | class: 0 durable, 1 ephemeral, 2 relay-only, 3 presence (spec/sync.md §1); any other value is bad input |
+| 25 | 1 | class: 0 durable, 1 ephemeral, 2 relay-only (spec/sync.md §1); any other value is bad input |
 | 26 | 1 | n: number of commitments, 0..3 |
 | 27 | 33·n | commitments: level byte (1..3) `||` 32-byte blinded delete key (spec/crypto.md §7), levels strictly ascending |
 
 - The ciphertext runs from offset `27 + 33n` to the end: XChaCha20-Poly1305 under the blob key, nonce 24 zero bytes, AD = the prefix bytes, plaintext = the padded plaintext. **Blob ID** = BLAKE3(whole blob).
 - **Padding** (Padmé): for a plaintext P, let `L = len(P) + 1`, `E = floor(log2 L)`; if `E = 0`, `padme(L) = L`; else with `S` the bit length of `E` and `m = 2^(E - S) - 1`, `padme(L) = (L + m) & ~m`. The padded plaintext is `P || 0x80 || 0x00^(padme(L) - L)`. To unpad: strip trailing `0x00` bytes, then one `0x80`, which MUST be present; the padded length MUST equal `padme(len(P) + 1)`. Anything else is bad input.
 - Plaintext per blob kind: commit blob `CommitBlobPlaintext` (§4); chunk: the raw chunk bytes; tree node and link page: §6; page: §6; inbox blob: §9 (its ciphertext is a sealed box, not the AEAD above).
-- Class: a commit blob's class is that of its header's ephemeral marker (none: durable, 0: ephemeral, 1: relay-only, 2: presence); a mismatch is bad input. Chunks, tree nodes, pages and inbox blobs are durable. A relay-only commit blob's expiry `T` is its header's `ts` (wall ms) plus `MAX_DRIFT`, a presence commit blob's its `ts` plus `MAX_LEASE` (their aspects carry no `expires`); any other is bad input.
+- Class: a commit blob's class is that of its header's ephemeral marker (none: durable, 0: ephemeral, 1: relay-only); a mismatch is bad input. Chunks, tree nodes, pages and inbox blobs are durable. A relay-only commit blob's expiry `T` is its header's `ts` (wall ms) plus `MAX_DRIFT` (its aspects carry no `expires`); any other is bad input.
 - Commitments: a commit blob, chunk, tree node or page carries one commitment per delete key of the deltas it serves (spec/crypto.md §7), blinded by its own salt and the blind of the header listing it (for a chunk, tree node or page: of the header that introduced it): one per level. A chunk or tree node of a linked header list (§4) carries the commitment of the commit's level-2 key only (none for an import). A header-list chunk's expiry is the greatest `expires` of the commit's aspects when every aspect has one, else none.
 - **Wrap**: XChaCha20-Poly1305 under `kdf("wrap", label read secret)`, nonce = first 24 bytes of the blob ID, empty AD, plaintext `suite (1) || blob key (32)`: 49 bytes. A filler is 49 random bytes.
 - A node that does not know a blob's framing version stores and relays it as a blob with no expiry and no commitments.
@@ -181,7 +180,7 @@ Push      [23, 0, label_id, [event+], cursor]
 
 proof  := [0, sync_pk, sig] | [1, step_id, claim_pk, sig] | [2, signing_pk, sig] | [3, dialable_pk, sig]
 entry  := [blob, wrap, stamp] | [blob, wrap, stamp, [replace+]]
-replace := [blob_id] | [blob_id, sig] | [blob_id, level, dsig, sig]
+replace := [blob_id, sig] | [blob_id, level, dsig, sig]
 item   := [blob_id, Opt(at), Opt([level, dsig]), sig]
 cursor := [log_id, seq]
 event  := [0, blob_id, Opt(blob), wrap, Opt(stamp)] | [1, blob_id] | [2, blob_id, at] | [3, step]
@@ -194,7 +193,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 - **Register**: replies Ok, or Error 9 when the step is not accepted, without the head (spec/sync.md §5). Error 12 when a genesis step for a new label does not fit a storage cap (a child step that does not fit is accepted without its claim set, and past the cap even so at most once per label per policy interval), Error 4 when registrations are rate-limited.
 - **Path** (opened labels): the registration path after step `after` (from the genesis step when absent) toward the head, without claim sets, at most 1024 steps per reply; `more` is true when steps remain.
 - **Upload** and the entries of Sync: `stamp` under `"osis v1 upload"`, digest BLAKE3(canonical `[label_id, blob_id, wrap]`). Status gives one code per entry in order. A relay-only entry (prefix class 2) is not stored: the receiver admits it (spec/sync.md §5), pushes it to the subscribers of the label on its other connections as a Push of one add event carrying the blob (the Push's cursor the subscription's current position) and answers 0; a repeat of a blob ID it pushed under that label before the blob's expiry is answered 0 and pushed to nobody.
-- **Replace** (an entry's replace list, spec/sync.md §5): `[blob_id]` names an own presence entry by this connection's tie; the other forms carry the signatures of a Delete item of `blob_id` without `at` (`[blob_id, sig]` without a level, `[blob_id, level, dsig, sig]` with one), checked as for Delete. Status code 1 or 9 for a replacement's signatures refuses its entry.
+- **Replace** (an entry's replace list, spec/sync.md §5): each carries the signatures of a Delete item of `blob_id` without `at` (`[blob_id, sig]` without a level, `[blob_id, level, dsig, sig]` with one), checked as for Delete. Status code 1 or 9 for a replacement's signatures refuses its entry.
 - **Deposit**: `sig` by the deposit key under `"osis v1 deposit"`, digest as for a stamp. Budget reports what remains of the label's deposit budget after the request, present only when `sig` verified under the head's deposit key (spec/sync.md §5).
 - **Delete**: per item, signatures under `"osis v1 delete"` over digest BLAKE3(canonical `[label_id, blob_id, Opt(at), Opt(level)]`): without a level, `sig` by the head's delete key; with one, `dsig` by that level's delete key under the blob prefix's commitment at that level (spec/crypto.md §7) and `sig` by the head's write key for level 3, its sync key for level 1 or 2 (spec/sync.md §5). `at` requests a timed delete.
 - **Sync** (cursor sync and download, spec/sync.md §6): `cursor` is the peer's log position for the label (`log_id` names the log instance; a peer whose log no longer reaches `seq` or has another `log_id` answers Error 10); without a cursor the reply replays the label's live entries as add events, in ascending blob ID order. While such a replay has `more`, its cursor is `[replay_id, pos]`: `replay_id` the first 16 bytes of BLAKE3(`"osis v1 replay"` || `log_id`), `pos` the first 8 bytes of the last blob ID sent as a big-endian integer shifted right by one bit (its first 63 bits); a Sync carrying it continues with the IDs above that position, and the last page returns the log cursor taken when the replay started (a peer that no longer holds that replay answers Error 10). `entry` lists the requester's new stamped entries (status per entry in `[code*]`), `gained` the blob IDs gained from other sources since the cursor (at most 4096), `want` those the peer lacks. A blob's bytes travel inline in an add event iff its size is at most `inline_limit` and it has not crossed this connection yet. `more` true: repeat with the returned cursor.

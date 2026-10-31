@@ -320,8 +320,7 @@ impl Net {
         for (c, hc) in mine {
             self.links.remove(&(n, c));
             self.forget_conn(n, c);
-            let now = self.now_at(s);
-            let out = self.servers[s].hub.closed(now, hc);
+            let out = self.servers[s].hub.closed(hc);
             self.hub_out(s, out);
             if let Some(sy) = self.nodes[n].sync.as_mut() {
                 sy.handle(Event::Down { conn: c });
@@ -463,8 +462,7 @@ impl Net {
                 }
                 Action::Close { conn } => {
                     if let Some((s, hc)) = self.links.remove(&(n, conn)) {
-                        let now = self.now_at(s);
-                        let out = self.servers[s].hub.closed(now, hc);
+                        let out = self.servers[s].hub.closed(hc);
                         self.hub_out(s, out);
                     }
                 }
@@ -661,11 +659,19 @@ impl Net {
         self.engine(n).commit(m).unwrap().unwrap()
     }
 
-    /// Node `n` writes `v` to the ephemeral (or presence, signal) key `key` of `t`, then lets
-    /// its sync engine see it.
+    /// Node `n` writes `v` to the ephemeral (or signal) key `key` of `t`, then lets its sync
+    /// engine see it.
     pub fn eph_write(&mut self, n: usize, t: Tid, key: &osis_schema::Untyped, v: Value) {
+        self.eph_write_expiring(n, t, key, v, None);
+    }
+
+    /// `eph_write` whose write expires `ms` from now (`None`: never).
+    pub fn eph_write_expiring(&mut self, n: usize, t: Tid, key: &osis_schema::Untyped, v: Value, ms: Option<u64>) {
         let mut m = Mutation::new();
         m.set(t, key, &v).unwrap();
+        if let Some(ms) = ms {
+            m.expires(t, key, WallMs(self.now() + ms)).unwrap();
+        }
         self.engine(n).write(m).unwrap();
         let acts = self.sync(n).handle(Event::Local);
         self.actions(n, acts);

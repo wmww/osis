@@ -45,6 +45,7 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `op T AK PATH OP ARGS` | `PathWrite` ops | now (`undelete` 2nd; untyped sequence ops fail in the crdt) |
 | `edit T AK --base V` (stdin) | `write_with`, `edit` | now |
 | (none: interactive editors only) | `edit_text` (text sessions) | |
+| (none: a CLI process is not there to keep a value alive) | `keep_alive` | |
 | `write` (stdin) | one `write` batch | now |
 | `show T` | `aspects`, `get`, `knows` (`state present/deleted`), `groups_of`, `role_on`, `owner_of`, `created`, `changed` | now |
 | `aspects T` / `delete T` | `aspects` / `Write::delete` | now |

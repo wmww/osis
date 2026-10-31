@@ -62,7 +62,7 @@ pub struct NetWeights {
     pub server_restart: u32,
     pub partition: u32,
     pub heal: u32,
-    /// A random ephemeral, presence or signal write (`ephemeral::random_write`).
+    /// A random ephemeral or signal write (`ephemeral::random_write`).
     pub ephemeral: u32,
     /// A random server turns slow (its messages delayed by up to `SLOW_MS`) or fast again.
     pub slow: u32,
@@ -709,8 +709,7 @@ impl NetSim {
                 self.push(0, e, at, Payload::Down);
             }
             End::Hub(s, hc) => {
-                let now = self.now();
-                let out = self.servers.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.closed(now, hc)).unwrap_or_default();
+                let out = self.servers.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.closed(hc)).unwrap_or_default();
                 self.hub_outputs(s, out);
             }
         }
@@ -811,8 +810,6 @@ impl NetSim {
                 }
             }
         }
-        // its own presence state goes with it (notes/ephemeral.md Presence)
-        self.eph.cursors.retain(|k, _| k.1 != n);
         let node = self.node(n)?;
         node.up = false;
         node.sync = None;

@@ -529,7 +529,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         // an aspect's class is its schema lifetime: a memory commit writes memory-class aspects
         // only (a durable-schema write on a memory thing is a durable write persisting it,
         // spec/data-model.md §1)
-        if m.aspects.values().any(|a| !matches!(a.lifetime, Lifetime::Ephemeral | Lifetime::Presence)) {
+        if m.aspects.values().any(|a| a.lifetime != Lifetime::Ephemeral) {
             return Err(Error::Misuse("a memory commit writes ephemeral aspects only"));
         }
         // a memory commit's records are held here at once and travel beside its deltas

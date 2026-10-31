@@ -170,17 +170,16 @@ fn validation_rules_spec_data_model_3() {
         ("aspect /x/a: int [by: everyone];", "expected nobody"),
         ("type x<T> = struct { 0 a: T = 1 };", "cannot type a default"),
         ("aspect /x/a: int [ephemeral, signal];", "at most one of"),
-        ("aspect /x/a: int [presence, by: admin];", "durable aspects only"),
+        ("aspect /x/a: int [ephemeral, by: admin];", "durable aspects only"),
         ("aspect /x/a: int [signal, expires: 5s];", "no value to expire"),
-        ("aspect /x/a: int [presence, expires: 5s];", "no expiry"),
     ] {
         let e = err(src);
         assert!(e.msg.contains(needle), "{src}: {e}");
     }
     // lifetime flags (notes/ephemeral.md): the key's defaults carry them; the form round-trips
-    let s = app("aspect /x/e: int [ephemeral, expires: 5s]; aspect /x/p: int [presence]; aspect /x/s: string [signal]; aspect /x/d: int;").unwrap();
+    let s = app("aspect /x/e: int [ephemeral, expires: 5s]; aspect /x/s: string [signal]; aspect /x/d: int;").unwrap();
     let life = |ak: &str| s.defaults(ak).unwrap().lifetime;
-    assert_eq!([life("/x/e"), life("/x/p"), life("/x/s"), life("/x/d")], [Lifetime::Ephemeral, Lifetime::Presence, Lifetime::Signal, Lifetime::Durable]);
+    assert_eq!([life("/x/e"), life("/x/s"), life("/x/d")], [Lifetime::Ephemeral, Lifetime::Signal, Lifetime::Durable]);
     assert_eq!(s.defaults("/x/e").unwrap().expires, Some(5_000));
     assert_eq!(Schema::from_value(&s.to_value()).unwrap(), s);
     // Wrappers are fine in mergeable positions, and under a parameter instantiated well.

@@ -21,7 +21,7 @@ Open for the discussion: separators (slashes may change), the reserved character
   - name segments: lowercase ASCII letters, digits, `_`, not starting with a digit (expandable later);
   - a tid-based AK starts with `:` then the 20-character tid segment: `:q3X9LmT0aB7cD2eF4gH:foo.1`;
   - markers after the version, in fixed order: `^` admin-only, then at most one lifetime: `~` ephemeral or `*` signal (`foo:bar.0^~`). One spelling per key.
-- **Presence is not in the AK**: it becomes ephemeral plus expiry, refreshed by the author while present; possibly a write-level expiry kind "when the author is no longer connected" (owner: could be cool, maybe too complex). Evaluate in issues/eph-unify.md; signal stays a marker unless that evaluation shows it belongs on the write.
+- **Presence is not in the AK**: it becomes ephemeral plus expiry, refreshed by the author while present; possibly a write-level expiry kind "when the author is no longer connected" (owner: could be cool, maybe too complex). Done (presence-expiry, notes/ephemeral.md Values that live while their author is there: the write-level kind not built). Signal stays a marker unless that evaluation shows it belongs on the write.
 - Core keys drop the leading slash (`name.0`, `keys.0`); `members` becomes `roles` with issues/rename-roles-members.md.
 
 Dependent: issues/eph-unify.md (Left item 0) needs the lifetime marker so a receiver judges a part's storage class from the key alone.

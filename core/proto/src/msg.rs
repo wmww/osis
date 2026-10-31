@@ -61,7 +61,7 @@ pub struct Entry {
     pub wrap: Wrap,
     pub stamp: Signature,
     /// Entries this one replaces (spec/sync.md §5, Replace): removed iff it is admitted.
-    pub replaces: Vec<Replace>,
+    pub replaces: Vec<DeleteItem>,
 }
 
 impl Entry {
@@ -71,48 +71,29 @@ impl Entry {
     }
 }
 
-/// `replace := [blob_id] | [blob_id, sig] | [blob_id, level, dsig, sig]`: an entry an upload
-/// replaces, by the uploading connection's tie (own presence entries) or by the signatures a
-/// Delete of it without `at` carries.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Replace {
-    Untie(BlobId),
-    /// `at` is always `None`.
-    Delete(DeleteItem),
+/// `replace := [blob_id, sig] | [blob_id, level, dsig, sig]`: an entry an upload replaces, by
+/// the signatures a Delete of it without `at` carries (`at` is always `None`).
+fn replace_value(d: &DeleteItem) -> Value {
+    match d {
+        DeleteItem { blob, by: None, sig, .. } => Value::List(vec![Value::bytes(&blob.0), Value::bytes(&sig.0)]),
+        DeleteItem { blob, by: Some((level, dsig)), sig, .. } => Value::List(vec![Value::bytes(&blob.0), Value::uint(u64::from(*level)), Value::bytes(&dsig.0), Value::bytes(&sig.0)]),
+    }
 }
 
-impl Replace {
-    pub fn blob(&self) -> BlobId {
-        match self {
-            Replace::Untie(b) => *b,
-            Replace::Delete(i) => i.blob,
+fn replace_from_value(v: Value) -> Result<DeleteItem, Error> {
+    let mut f = Fields::range(v, 2, 4, "replace")?;
+    let blob = BlobId(f.fixed()?);
+    let r = match f.remaining() {
+        1 => DeleteItem { blob, at: None, by: None, sig: Signature(f.fixed()?) },
+        3 => {
+            let level = u8::try_from(f.uint()?).ok().filter(|l| (osis_base::format::DELETE_ADMIN..=osis_base::format::DELETE_WRITER).contains(l)).ok_or(Error::Malformed("replace level"))?;
+            let dsig = Signature(f.fixed()?);
+            DeleteItem { blob, at: None, by: Some((level, dsig)), sig: Signature(f.fixed()?) }
         }
-    }
-
-    fn to_value(&self) -> Value {
-        match self {
-            Replace::Untie(b) => Value::List(vec![Value::bytes(&b.0)]),
-            Replace::Delete(DeleteItem { blob, by: None, sig, .. }) => Value::List(vec![Value::bytes(&blob.0), Value::bytes(&sig.0)]),
-            Replace::Delete(DeleteItem { blob, by: Some((level, dsig)), sig, .. }) => Value::List(vec![Value::bytes(&blob.0), Value::uint(u64::from(*level)), Value::bytes(&dsig.0), Value::bytes(&sig.0)]),
-        }
-    }
-
-    fn from_value(v: Value) -> Result<Replace, Error> {
-        let mut f = Fields::range(v, 1, 4, "replace")?;
-        let blob = BlobId(f.fixed()?);
-        let r = match f.remaining() {
-            0 => Replace::Untie(blob),
-            1 => Replace::Delete(DeleteItem { blob, at: None, by: None, sig: Signature(f.fixed()?) }),
-            3 => {
-                let level = u8::try_from(f.uint()?).ok().filter(|l| (osis_base::format::DELETE_ADMIN..=osis_base::format::DELETE_WRITER).contains(l)).ok_or(Error::Malformed("replace level"))?;
-                let dsig = Signature(f.fixed()?);
-                Replace::Delete(DeleteItem { blob, at: None, by: Some((level, dsig)), sig: Signature(f.fixed()?) })
-            }
-            _ => return Err(Error::Malformed("replace")),
-        };
-        f.end()?;
-        Ok(r)
-    }
+        _ => return Err(Error::Malformed("replace")),
+    };
+    f.end()?;
+    Ok(r)
 }
 
 /// `cursor := [log_id, seq]`.
@@ -449,7 +430,7 @@ fn entries(vs: Vec<Value>) -> Result<Vec<Entry>, Error> {
                 _ => {
                     let rs = f.list(1, left, "replaces")?;
                     left -= rs.len();
-                    rs.into_iter().map(Replace::from_value).collect::<Result<_, _>>()?
+                    rs.into_iter().map(replace_from_value).collect::<Result<_, _>>()?
                 }
             };
             f.end()?;
@@ -464,7 +445,7 @@ fn entries_value(es: &[Entry]) -> Value {
             .map(|e| {
                 let mut v = vec![Value::bytes(&e.blob), Value::bytes(&e.wrap), Value::bytes(&e.stamp.0)];
                 if !e.replaces.is_empty() {
-                    v.push(Value::List(e.replaces.iter().map(Replace::to_value).collect()));
+                    v.push(Value::List(e.replaces.iter().map(replace_value).collect()));
                 }
                 Value::List(v)
             })

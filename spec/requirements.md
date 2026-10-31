@@ -34,7 +34,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 
 ## Untrusted (blind) nodes
 - Keyless nodes without access to the data they store or relay are a first-class feature.
-- They may learn volume and the structure selective sync needs: which opaque groups a blob is in and how groups overlap, counts, padded sizes, timing, addresses, and what they must act on: each blob's expiry, its class (durable, ephemeral, presence, relayed), its deletion class and whether a reader deposited it. They must not learn identifiers, keys, values, authors, membership, device identities, or structure beyond that.
+- They may learn volume and the structure selective sync needs: which opaque groups a blob is in and how groups overlap, counts, padded sizes, timing, addresses, and what they must act on: each blob's expiry, its class (durable, ephemeral, relayed), its deletion class and whether a reader deposited it. They must not learn identifiers, keys, values, authors, membership, device identities, or structure beyond that.
 - Nothing stored or relayed links different groups of one owner beyond their overlap. What a connection reveals (its address, the labels it opens) is network metadata, hidden only by routing through a relay or an anonymity network.
 - One protocol for all nodes. Trusted and untrusted peers differ only in which keys they hold.
 - An untrusted node may hold the only copy. Reading never allows deleting data or forcing a re-upload.
@@ -63,7 +63,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 
 ## Ephemeral data
 - Ephemeral state lives in memory, converges among the nodes holding it like any state, outlives contact with its author, and may be lost when no node holds it. A node that restarts gets it back from those that still do.
-- Values tied to their author's presence converge once every holder sees the departure.
+- A value that should live only while its author is there (a cursor, a selection) is ephemeral with an expiry its author renews by rewriting it while there; once the author is gone it is gone everywhere by its last write's expiry, with no departure seen by anyone.
 - Signals have no lasting value: they reach the devices connected at the time, once, with no delivery guarantee, and are held by nobody.
 - Ephemeral writes need the rights the durable write would need and are verified like it; readers cannot write ephemeral data. Memory spent on others' ephemeral data is bounded per group, with a defined outcome past the bound.
 - Ephemeral data is exempt from neither "Deterministic" nor "Convergence".
@@ -80,7 +80,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 The properties above hold for any use of the data. The only usage rules are:
 - Share a set of things through one shared actor, not one by one (removal cost).
 - Commit per editing pause, never per keystroke (state growth).
-- Ephemeral membership such as presence or selections uses presence aspects, not durable add and remove (state growth).
+- Ephemeral membership such as presence or selections uses expiring ephemeral writes its author renews, not durable add and remove (state growth).
 - Keep direct rosters in the thousands; nest larger ones (header cost).
 
 ## Versioning

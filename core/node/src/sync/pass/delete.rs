@@ -515,8 +515,7 @@ impl SyncEngine {
                 c.req.sent.insert((l, q), (raw, crate::sync::UNTAGGED));
                 c.req.replacing.insert((l, q), items.iter().map(|i| i.blob).collect());
             }
-            let replaces = items.into_iter().map(osis_proto::Replace::Delete).collect();
-            uploads.push(osis_proto::Entry { blob, wrap, stamp, replaces });
+            uploads.push(osis_proto::Entry { blob, wrap, stamp, replaces: items });
         }
         if !uploads.is_empty() {
             self.command(conn, Command::Upload { label: l, entries: uploads }, out)?;

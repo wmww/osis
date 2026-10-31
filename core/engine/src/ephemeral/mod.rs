@@ -1,5 +1,5 @@
 //! Ephemeral data (notes/ephemeral.md Local engine): things whose creation record no durable
-//! commit holds and aspects whose key is `ephemeral`, `presence` or `signal`, held in memory
+//! commit holds and aspects whose key is `ephemeral` or `signal`, held in memory
 //! beside `Core`, never in the store or the journaled indexes. A local ephemeral write is an HLC
 //! tick, the ops resolved by `osis_crdt` against the joined state, a join and an event: no store
 //! transaction, signature, hash or encryption. `Engine::write` splits a `Mutation` into its
@@ -55,9 +55,6 @@ struct EphAspect {
     own: Option<Fragment>,
     /// Held ephemeral commit parts on this aspect: (commit, aspect index).
     parts: BTreeSet<(CommitId, usize)>,
-    /// A presence aspect (written with that lifetime, or held from presence commits): its own
-    /// writes go out as presence commits and it is never compacted.
-    presence: bool,
 }
 
 impl EphAspect {
@@ -169,8 +166,6 @@ pub(crate) struct Resolved {
     delta: Fragment,
     range: (u64, u64),
     expires: Option<u64>,
-    /// A write of a presence aspect.
-    presence: bool,
     /// For the undo log: the touched positions before the write and the writer's schema.
     log: Option<(Fragment, Option<Arc<Schema>>)>,
 }
@@ -337,10 +332,6 @@ impl Engine {
             if expires.is_some_and(|t| t <= now.0) {
                 return Err(Error::Misuse("an expiry must be in the future"));
             }
-            // a presence value lives while its author is connected (notes/ephemeral.md Presence)
-            if am.lifetime == Lifetime::Presence && expires.is_some() {
-                return Err(Error::Misuse("a presence write takes no expiry"));
-            }
             // resolved against the joined state; the ephemeral side alone (borrowed) when no
             // durable delta is held
             let durable = self.durable_state(tid, ak)?;
@@ -369,14 +360,12 @@ impl Engine {
                 let log = Some((base.footprint(&delta), am.schema.clone()));
                 // an aspect whose own delta did not fit a blob takes only writes that make it fit
                 // (spec/sync.md §9)
-                if am.lifetime != Lifetime::Presence {
-                    match self.check_full(tid, ak, &delta) {
-                        None => return Err(Error::Misuse("an ephemeral aspect's own state does not fit a blob")),
-                        Some(true) => unfull.push((*tid, ak.clone())),
-                        Some(false) => {}
-                    }
+                match self.check_full(tid, ak, &delta) {
+                    None => return Err(Error::Misuse("an ephemeral aspect's own state does not fit a blob")),
+                    Some(true) => unfull.push((*tid, ak.clone())),
+                    Some(false) => {}
                 }
-                resolved.push(Resolved { tid: *tid, ak: ak.clone(), delta, range: (r.lo, r.hi), expires, presence: am.lifetime == Lifetime::Presence, log });
+                resolved.push(Resolved { tid: *tid, ak: ak.clone(), delta, range: (r.lo, r.hi), expires, log });
             }
         }
         let free = std::mem::take(&mut m.free);
@@ -422,8 +411,7 @@ impl Engine {
             if let Some((pre, schema)) = r.log {
                 logged.push(log::LogAspect { tid: r.tid, ak: r.ak.clone(), delta: r.delta.clone(), range: CounterRange { lo: r.range.0, hi: r.range.1 }, pre, schema });
             }
-            a.presence |= r.presence;
-            written.push((r.tid, r.ak.clone(), r.delta.clone(), r.expires, a.presence));
+            written.push((r.tid, r.ak.clone(), r.delta.clone(), r.expires));
             if let Some(o) = &mut a.own {
                 o.join(r.delta.clone());
             }
@@ -441,8 +429,8 @@ impl Engine {
             }
             changed.push((r.tid, r.ak));
         }
-        for (t, ak, delta, expires, presence) in &written {
-            self.note_written(t, ak, delta, *expires, *presence, actor);
+        for (t, ak, delta, expires) in &written {
+            self.note_written(t, ak, delta, *expires, actor);
         }
         for (t, ak, v) in &signals {
             self.note_signal(t, ak, v, ts, actor);
@@ -515,7 +503,6 @@ impl Engine {
         for t in &gone {
             self.eph.things.remove(t);
             self.eph.remote.local.remove(t);
-            self.eph.remote.presence.retain(|(x, _), _| x != t);
             self.eph.defs.remove(t);
             if let Some(m) = self.eph.aspects.remove(t) {
                 for (ak, a) in m {
@@ -564,8 +551,7 @@ impl Engine {
     /// When the next ephemeral expiry is due (corrected wall ms).
     pub fn next_ephemeral_timer(&self) -> Option<u64> {
         let r = &self.eph.remote;
-        let keepalive = r.presence_sent.values().min().map(|t| t.saturating_add(osis_base::format::KEEPALIVE_MS));
-        [self.eph.timers.keys().next().copied(), r.timers.keys().next().copied(), r.leases.keys().next().copied(), keepalive].into_iter().flatten().min()
+        [self.eph.timers.keys().next().copied(), r.timers.keys().next().copied()].into_iter().flatten().min()
     }
 
     /// Runs the ephemeral expiries due by the corrected clock: their value-carrying writes are
@@ -594,7 +580,6 @@ impl Engine {
             }
         }
         changed.extend(self.tick_remote(now));
-        self.tick_presence(now);
         if !changed.is_empty() {
             self.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
             self.core.events.flush();

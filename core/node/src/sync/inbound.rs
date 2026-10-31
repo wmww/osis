@@ -941,7 +941,7 @@ impl SyncEngine {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
         // held ephemeral entries the reconciled set listed: the peer lacks those in `have` (they
         // go up), holds the rest; one kept since and not seen there (from another server) goes up
-        // too (another's presence entry: neither, `eph_upload`)
+        // too
         if let Some(listed) = self.eph.reconciling.get(&(conn, l)) {
             let lacks: BTreeSet<BlobId> = have.iter().copied().collect();
             let held: Vec<BlobId> = SyncEngine::eph_entries_of(&self.eph, &l).map(|(b, _)| b).collect();

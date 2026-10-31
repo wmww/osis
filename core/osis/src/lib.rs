@@ -251,6 +251,7 @@ mod error;
 mod handle;
 #[doc(hidden)]
 pub mod internals;
+mod keep;
 mod keys;
 mod large;
 mod net;
@@ -266,6 +267,7 @@ pub use error::{Error, Result};
 pub use handle::{Config, DEFAULT_IDLE_COMMIT, DEFAULT_WAIT, DEFAULT_LIMIT, MemStore, Osis, StoreAt, WeakOsis};
 pub use net::{GroupPolicy, Runtime, Transport};
 pub use person::{Joining, OFFER_LIFETIME_MS, PairOffer, PairReply, PairRequest};
+pub use keep::{KeepAlive, REFRESH_DIVISOR};
 pub use keys::{Key, core};
 pub use large::ValueStream;
 pub use read::{AspectRef, Edge, GroupsOf, PathRef, Reader, Roster, Stamp};
