@@ -673,7 +673,7 @@ fn steps_count_toward_byte_caps() {
     // room for two children with sets and one more step
     let room = genesis + 2 * one + step;
     for cap in [Policy { cap_bytes: room, ..Policy::default() }, Policy { max_bytes: room, ..Policy::default() }] {
-        let mut e = env(cap);
+        let mut e = env(cap.clone());
         let l = e.f.label;
         let mut prev = e.f.genesis.clone();
         for _ in 0..2 {
@@ -689,10 +689,24 @@ fn steps_count_toward_byte_caps() {
         assert_eq!(e.store.head(&l).unwrap(), Some(s.id()));
         assert!(e.store.claim_set(&l, &s.id()).unwrap().is_none());
         assert_eq!(e.store.totals().unwrap().bytes, before + step);
-        // even past the cap
+        // even past the cap, once per `over_cap_step_ms` (kept across a restart); another in
+        // that time gets code 12, nothing changed
         let t = child_of(&e.f, &s);
         assert_eq!(e.store.push_step(&l, t.clone(), Some(set.clone())).unwrap(), Code::OK);
         assert_eq!(e.store.totals().unwrap().bytes, before + 2 * step);
+        let v = child_of(&e.f, &t);
+        let mut again = BackendStore::open(e.backend.clone(), e.clock.clone(), cap.clone(), &mut SeededRng::from_seed([2; 32])).unwrap();
+        for st in [&mut e.store, &mut again] {
+            let (log, totals) = (st.log_head(&l).unwrap(), st.totals().unwrap());
+            assert_eq!(st.push_step(&l, v.clone(), None).unwrap(), Code::STORAGE_CAP);
+            assert_eq!((st.head(&l).unwrap(), st.log_head(&l).unwrap(), st.totals().unwrap()), (Some(t.id()), log, totals));
+        }
+        e.clock.advance(cap.over_cap_step_ms - 1);
+        assert_eq!(e.store.push_step(&l, v.clone(), None).unwrap(), Code::STORAGE_CAP);
+        e.clock.advance(1);
+        assert_eq!(e.store.push_step(&l, v.clone(), None).unwrap(), Code::OK);
+        assert_eq!(e.store.totals().unwrap().bytes, before + 3 * step);
+        let t = v;
         // an entry finds the label full too
         let big = vec![1u8; 4096];
         assert_eq!(e.store.put(&l, put(&big, true, None)).unwrap(), Code::STORAGE_CAP);

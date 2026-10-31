@@ -56,6 +56,11 @@ pub struct Policy {
     /// Registered steps per label and window (each step and its claim set also count toward
     /// the byte caps): 0 registers nothing, unlimited leaves only the byte caps.
     pub registers: u32,
+    /// A child step past a byte cap even without its claim set is taken at most once per this
+    /// per label; another in that time gets code 12 (the registrar retries). Resource bound:
+    /// growth past the caps is at most `max_labels` steps per this; 0 leaves only `registers`,
+    /// infinity takes one such step per label until room appears (a later rotation waits there).
+    pub over_cap_step_ms: u64,
     /// Ephemeral memory charged per label, and over all labels: an ephemeral upload beyond the
     /// label's gets code 12; past the total, the label charged most gives way (notes/ephemeral.md).
     pub ephemeral_bytes: u64,
@@ -98,6 +103,7 @@ impl Default for Policy {
             replacements: 20_000,
             deposits: 600,
             registers: 600,
+            over_cap_step_ms: 3_600_000,
             ephemeral_bytes: 16 << 20,
             ephemeral_total: 1 << 30,
             presence_bytes: 4 << 20,
@@ -126,6 +132,7 @@ impl Policy {
             replacements: u32::MAX,
             deposits: u32::MAX,
             registers: u32::MAX,
+            over_cap_step_ms: 0,
             ephemeral_bytes: u64::MAX,
             ephemeral_total: u64::MAX,
             presence_bytes: u64::MAX,
@@ -220,9 +227,11 @@ struct Meta {
     /// Durable log records held (`G` rows): ephemeral records and reserved numbers take
     /// sequence numbers too, so the span `next_seq - horizon` does not count them.
     records: u64,
+    /// Wall ms before which a child step past a byte cap is refused (`Policy::over_cap_step_ms`).
+    over_cap_until: u64,
 }
 
-const META_LEN: usize = 16 + 1 + 32 + 8 * 9;
+const META_LEN: usize = 16 + 1 + 32 + 8 * 10;
 
 /// Sequence numbers reserved on disk at a time for ephemeral log records. Performance switch
 /// (notes/arbitrary-values.md): 1 writes the label meta per ephemeral upload, a large block skips
@@ -235,7 +244,7 @@ impl Meta {
         v.extend_from_slice(&self.log_id);
         v.push(u8::from(self.head.is_some()));
         v.extend_from_slice(&self.head.map_or([0; 32], |h| h.0));
-        for n in [self.next_seq, self.horizon, self.head_claims, self.entries, self.bytes, self.dep_n, self.dep_bytes, self.reserved, self.records] {
+        for n in [self.next_seq, self.horizon, self.head_claims, self.entries, self.bytes, self.dep_n, self.dep_bytes, self.reserved, self.records, self.over_cap_until] {
             v.extend_from_slice(&be(n));
         }
         v
@@ -258,6 +267,7 @@ impl Meta {
             dep_bytes: n(6)?,
             reserved: n(7)?,
             records: n(8)?,
+            over_cap_until: n(9)?,
         })
     }
 }
@@ -1393,7 +1403,8 @@ impl<B: Backend> LabelStore for BackendStore<B> {
 
     /// The step's and its claim set's bytes count toward the label's and the node's byte caps
     /// (the claim set's until the sweep drops it): past them a genesis step is refused, a child
-    /// step kept without its set; registrations are rate-limited per label.
+    /// step kept without its set (past them even so: once per `over_cap_step_ms`);
+    /// registrations are rate-limited per label.
     fn push_step(&mut self, label: &LabelId, step: Step, claim_set: Option<ClaimSet>) -> Result<Code, StoreError> {
         let (meta, new) = match self.meta(label)? {
             Some(m) => (m, false),
@@ -1412,14 +1423,20 @@ impl<B: Backend> LabelStore for BackendStore<B> {
         let fits = |n: u64, total: u64| meta.bytes.saturating_add(n) <= self.policy.cap_bytes && total.saturating_add(n) <= self.policy.max_bytes;
         let total = self.totals()?.bytes;
         let mut size = step_bytes.len() as u64 + set_rows.as_ref().map_or(0, rows_bytes);
+        let mut over = false;
         if !fits(size, total) {
-            // a new label is refused; a child step never is (a refused rotation would keep a
-            // removed member's open and write keys valid here): its claim set is not kept
+            // a new label is refused; a child step is taken without its claim set (a refused
+            // rotation keeps a removed member's open and write keys valid here), even past the
+            // cap once per `over_cap_step_ms`, so the label's own admin alone spends that room
             if new {
                 return Ok(Code::STORAGE_CAP);
             }
             set_rows = None;
             size = step_bytes.len() as u64;
+            over = !fits(size, total);
+            if over && self.now() < meta.over_cap_until {
+                return Ok(Code::STORAGE_CAP);
+            }
         }
         self.rates.roll(self.now(), self.policy.window_ms);
         if !self.rates.take(label, Rate::Register, self.policy.registers) {
@@ -1427,6 +1444,9 @@ impl<B: Backend> LabelStore for BackendStore<B> {
         }
         let mut tx = Tx { label: *label, before: (meta.entries, meta.bytes, new), meta, batch: WriteBatch::new(), grew: false };
         tx.meta.bytes = tx.meta.bytes.saturating_add(size);
+        if over {
+            tx.meta.over_cap_until = self.now().saturating_add(self.policy.over_cap_step_ms);
+        }
         tx.batch.put(key(b'K', &[&label.0]), encode_older(&keys.older));
         if let Some(prev) = tx.meta.head {
             let drop = self.now().saturating_add(self.policy.claim_keep_ms.max(MEMBERSHIP_KEEP_MS));
