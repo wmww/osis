@@ -50,6 +50,8 @@ pub struct World {
     next_hub: u64,
     /// Databases cut off the network.
     offline: Vec<bool>,
+    /// (db, server): a database cut off one server only.
+    cut: BTreeSet<(usize, usize)>,
     /// Databases whose user leaves invite requests alone (the others accept each as it
     /// appears, spec/sync.md §3), by start order.
     pub holds_invites: BTreeSet<usize>,
@@ -78,6 +80,7 @@ impl World {
             queue: VecDeque::new(),
             next_hub: 1,
             offline: Vec::new(),
+            cut: BTreeSet::new(),
             holds_invites: BTreeSet::new(),
             traffic: Vec::new(),
             tally: None,
@@ -197,12 +200,30 @@ impl World {
         }
     }
 
+    /// Cuts a database off one server (its connections there go down) or lets it dial it again.
+    pub fn set_reachable(&mut self, db: &Osis, server: usize, on: bool) {
+        let Some(i) = self.index(db) else { return };
+        if on {
+            self.cut.remove(&(i, server));
+            return;
+        }
+        self.cut.insert((i, server));
+        let mine: Vec<(ConnId, u64)> = self.links.iter().filter(|((d, _), (s, _))| *d == i && *s == server).map(|((_, c), (_, h))| (*c, *h)).collect();
+        for (c, hc) in mine {
+            self.links.remove(&(i, c));
+            let now = self.now();
+            let out = self.servers.get_mut(server).map(|sv| sv.hub.closed(now, hc)).unwrap_or_default();
+            self.hub_out(server, out);
+            db.feed(Event::Down { conn: c });
+        }
+    }
+
     fn actions(&mut self, d: usize, acts: Vec<Action>) {
         for a in acts {
             match a {
                 Action::Dial { conn, address } => {
                     let want = ServerAddr::new(&address.url, address.key).to_string();
-                    let s = self.servers.iter().position(|x| x.addr.to_string() == want).filter(|_| !self.is_offline(d));
+                    let s = self.servers.iter().position(|x| x.addr.to_string() == want).filter(|s| !self.is_offline(d) && !self.cut.contains(&(d, *s)));
                     let Some(s) = s else {
                         self.queue.push_back(Msg::Down(d, conn));
                         continue;

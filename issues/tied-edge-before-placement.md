@@ -1,0 +1,9 @@
+# A tied edge that arrives before its placement is removed as unplaced
+> Summary: share_into writes the placement (content on G) and the tied edge (membership on T) as two commits; nothing orders their uploads across labels, so a node can hold the edge, pass G's labels without the placement, and remove the share (as T's admin with a rotation, or as G's admin). The "complete pass of G's labels after the edge arrived" wait does not prevent it.
+> Tags: permissions, sync
+
+Repro: core/osis/tests/it/tied.rs `repro_edge_before_placement_is_not_removed` (ignored): Bob's laptop reaches Bob's server but not the tag's; his phone gets the edge from Bob's server, passes the tag's label after an unrelated write there, and demotes the tag's edge. Other paths: G's admin gets the edge from G's inbox before the placement reaches G's label (self-removal); one label's upload sends membership commits (prio 1) before content (prio 3), so a split upload can do it within G's label too. Without other activity under G's label the wait holds only because no new pass starts.
+
+The pass condition is a timing proxy; the receiver needs to know whether it has seen the placement. Options:
+- One commit (the owner-decided design): a receiver holds both or neither. The worker's reasons against it: a mixed-kind commit touches validation, retention, compaction, projection, undo.
+- The tie names the placement: `tied: option<dot>` (the `/group` element's dot). A node counts the placement gone only when its state of G's `/group` holds that element dead (a tombstone, or pruned by a later aspect reset) and T is not live there; an unknown dot means "not arrived", whatever the passes. Drops the pass wait. To check: a re-placed or persisted item (new dot, notes/ephemeral.md), share_into on an item already placed (tie to a live dot), tombstones surviving compaction and snapshots.
