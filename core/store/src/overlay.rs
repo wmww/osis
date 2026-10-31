@@ -127,9 +127,14 @@ impl MemTxn<'_> {
         let old = self.o.blobs.insert(id, b);
         self.undo.push(Undo::Blob(id, old));
     }
-    pub fn blob_remove(&mut self, id: &BlobId) {
-        if let Some(old) = self.o.blobs.remove(id) {
-            self.undo.push(Undo::Blob(*id, Some(old)));
+    /// Removes a memory blob; false when it was not one.
+    pub fn blob_remove(&mut self, id: &BlobId) -> bool {
+        match self.o.blobs.remove(id) {
+            Some(old) => {
+                self.undo.push(Undo::Blob(*id, Some(old)));
+                true
+            }
+            None => false,
         }
     }
     /// Marks an aspect memory-class (for the rest of the store's life).

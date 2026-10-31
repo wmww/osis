@@ -3267,3 +3267,61 @@ fn memory_commit_session_form_spec_commits_3() {
     assert_eq!(e.core.commit_of(&t, &reg, &osis_crdt::Dot::new(src, 2)), Some(ids[1]));
     assert_eq!(e.get(&t, &reg).unwrap(), Some(Value::Set([Value::Str("v1".into())].into())));
 }
+
+// issues/eph-unify.md step 3: a memory commit is nothing durable to node-sync: no change mark,
+// no generation step, not among `commit_ids` or a thing's durable commits, an `Ephemeral`
+// event (none on a durable subscription), no demotion frontier entry. spec: none (internal)
+#[test]
+fn memory_commit_not_durable_to_sync() {
+    let mut lp = crate::common::net(1, 5);
+    let t = crate::common::new_thing(&mut lp, 0);
+    let e = &mut lp.peers[0].engine;
+    e.take_changed();
+    let all = e.subscribe();
+    let durable = e.subscribe_durable();
+    let (generation, ids) = (e.core.generation, e.commit_ids());
+    let mut m = Mutation::new();
+    m.set(t, &crate::common::TAGS, &Value::Set([Value::Str("x".into())].into())).unwrap();
+    let id = e.commit_in_memory(m).unwrap().unwrap();
+    assert!(e.take_changed().is_empty());
+    assert_eq!(e.core.generation, generation);
+    assert!(e.core.memory_generation > 0);
+    assert_eq!(e.commit_ids(), ids);
+    assert_eq!(e.core.durable_on(&(t, crate::common::ak("/t/tags"))).count(), 0);
+    let evs: Vec<_> = all.try_iter().collect();
+    assert!(evs.iter().any(|ev| matches!(ev, osis_node::events::Event::Ephemeral { id: c, .. } if c.commit() == Some(id))), "{evs:?}");
+    assert!(!evs.iter().any(|ev| matches!(ev, osis_node::events::Event::Applied { .. })));
+    assert_eq!(durable.try_iter().count(), 0);
+    // a durable write still marks
+    let mut m = Mutation::new();
+    m.set(t, &crate::common::REG, &Value::Str("d".into())).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert!(!e.take_changed().is_empty());
+    assert!(e.core.generation > generation);
+}
+
+// issues/eph-unify.md step 3: work on a memory commit inside a durable transaction stays in
+// memory: its expiry's tick writes nothing durable and steps no durable generation, and the
+// value expires. spec: none (internal)
+#[test]
+fn memory_commit_expiry_stays_in_memory() {
+    let mut lp = crate::common::net(1, 5);
+    let t = crate::common::new_thing(&mut lp, 0);
+    let tags = crate::common::ak("/t/tags");
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    m.set(t, &crate::common::TAGS, &Value::Set([Value::Str("x".into())].into())).unwrap();
+    let at = osis_base::WallMs(e.now().0 + 1000);
+    m.expires(t, &crate::common::TAGS, at).unwrap();
+    e.commit_in_memory(m).unwrap().unwrap();
+    assert!(e.get(&t, &tags).unwrap().is_some());
+    let writes = lp.peers[0].backend.faults().writes();
+    let generation = lp.peers[0].engine.core.generation;
+    lp.advance(2000);
+    let e = &mut lp.peers[0].engine;
+    e.tick().unwrap();
+    assert!(e.get(&t, &tags).unwrap().is_none_or(|v| v == Value::Set(Default::default())), "expired");
+    assert_eq!(e.core.generation, generation);
+    assert_eq!(lp.peers[0].backend.faults().writes(), writes, "nothing durable written");
+}

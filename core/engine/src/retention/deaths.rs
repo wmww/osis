@@ -293,7 +293,9 @@ pub(crate) fn note_copies(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> 
 pub(crate) fn mark_deaths_due(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let k = (*tid, ak.clone());
     if tx.core.ix.deaths_due.insert(k) {
-        tx.txn.put_local(&records::aspect_key(records::DEATHS_DUE, tid, ak), &[], Shred::No)?;
+        // a memory aspect's mark is memory (gone at restart, with the aspect)
+        let memory = tx.txn.is_memory_aspect(tid, ak);
+        tx.in_class(memory, |tx| Ok(tx.txn.put_local(&records::aspect_key(records::DEATHS_DUE, tid, ak), &[], Shred::No)?))?;
     }
     Ok(())
 }

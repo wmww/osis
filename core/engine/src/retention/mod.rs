@@ -705,17 +705,24 @@ impl Engine {
         self.run(|tx| {
             let mut changed = BTreeSet::new();
             for (k, c, ai, kind) in due_timers(tx)? {
-                // judged again by node-sync whatever the timer did
-                tx.core.mark_changed(c);
-                tx.txn.remove_local(&[records::TIMER, &k].concat(), Shred::No)?;
-                match kind {
-                    T_EXPIRY => expire(tx, &c, ai, &mut changed)?,
-                    // judged again: liveness may have changed since the timer was set
-                    _ => check_at_most(tx, &c, ai)?,
-                }
-            }
-            for (t, a) in &changed {
-                tx.core.mark_aspect_changed(t, a);
+                // a memory commit's timer is memory work: what it writes stays in memory
+                let memory = tx.is_memory_commit(&c);
+                let mut ch = BTreeSet::new();
+                tx.in_class(memory, |tx| {
+                    // judged again by node-sync whatever the timer did
+                    tx.core.mark_changed(c);
+                    tx.txn.remove_local(&[records::TIMER, &k].concat(), Shred::No)?;
+                    match kind {
+                        T_EXPIRY => expire(tx, &c, ai, &mut ch)?,
+                        // judged again: liveness may have changed since the timer was set
+                        _ => check_at_most(tx, &c, ai)?,
+                    }
+                    for (t, a) in &ch {
+                        tx.core.mark_aspect_changed(t, a);
+                    }
+                    Ok(())
+                })?;
+                changed.extend(ch);
             }
             if !changed.is_empty() {
                 tx.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });

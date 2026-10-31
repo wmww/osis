@@ -304,7 +304,7 @@ impl SyncEngine {
                 }
             }
             for (t, a) in std::mem::take(&mut w.aspects) {
-                w.commits.extend(self.engine.core.ix.by_aspect.get(&(t, a)).into_iter().flatten().map(|x| x.1));
+                w.commits.extend(self.engine.core.durable_on(&(t, a)));
             }
             for t in std::mem::take(&mut w.things) {
                 w.commits.extend(self.commits_on_thing(&t));
@@ -428,10 +428,10 @@ impl SyncEngine {
         w.until = self.roster_horizon(closure, g);
     }
 
-    /// Every commit with a delta on thing `t`.
+    /// Every durable commit with a delta on thing `t`.
     fn commits_on_thing(&self, t: &Tid) -> BTreeSet<CommitId> {
-        let Ok(min) = Ak::new("/\0") else { return BTreeSet::new() };
-        self.engine.core.ix.by_aspect.range((*t, min)..).take_while(|((x, _), _)| x == t).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect()
+        let core = &self.engine.core;
+        core.aspects_of(t).flat_map(|(_, s)| s.iter().map(|x| x.1)).filter(|c| !core.ix.commits.get(c).is_some_and(|m| m.view.memory)).collect()
     }
 
     /// The aggregates of `w` from every entry under `l`.

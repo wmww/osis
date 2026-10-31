@@ -501,7 +501,7 @@ impl Engine {
     pub fn commit_in_memory(&mut self, mut m: Mutation) -> Result<Option<CommitId>> {
         m.form = Form::Session(self.eph.session().nonce);
         self.run(|tx| {
-            tx.txn.set_memory(true);
+            tx.set_memory();
             commit_in(tx, m)
         })
     }
