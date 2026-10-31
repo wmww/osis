@@ -280,19 +280,19 @@ impl Sim {
 
     /// Node `i` writes node `j`'s edge on `thing` (spec/permissions.md §2).
     pub fn grant(&mut self, i: usize, thing: Tid, j: usize, role: Role) -> Res<CommitId> {
-        let member = self.tid(j)?;
+        let holder = self.tid(j)?;
         let edge = ct::Edge { role, until: None, invite: None, since: None, tied: None };
         let mut m = Mutation::new();
-        m.op(thing, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(member))], op: Op::Set(edge.to_value()) }).map_err(|e| self.fail(e.to_string()))?;
+        m.op(thing, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge.to_value()) }).map_err(|e| self.fail(e.to_string()))?;
         let id = self.commit(i, m)?;
         id.ok_or_else(|| self.fail("grant changed nothing"))
     }
 
     /// Node `i` removes node `j`'s edge on `thing` (spec/permissions.md §5).
     pub fn revoke(&mut self, i: usize, thing: Tid, j: usize) -> Res<CommitId> {
-        let member = self.tid(j)?;
+        let holder = self.tid(j)?;
         let mut m = Mutation::new();
-        m.op(thing, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(member)) }).map_err(|e| self.fail(e.to_string()))?;
+        m.op(thing, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).map_err(|e| self.fail(e.to_string()))?;
         let id = self.commit(i, m)?;
         id.ok_or_else(|| self.fail("removal changed nothing"))
     }

@@ -36,11 +36,11 @@ pub fn seed() -> VecFile {
     let label = LabelId([0x0a; 16]);
     let step = X25519Secret::from_secret(&s32(0x06));
     let claim = claim_key(&step, &k.kem.public().x25519(), &label, &step.public()).unwrap();
-    let by_member = claim_key(k.kem.x25519(), &step.public(), &label, &step.public()).unwrap();
-    assert_eq!(claim.verifying_key(), by_member.verifying_key(), "both sides derive one claim key");
+    let by_holder = claim_key(k.kem.x25519(), &step.public(), &label, &step.public()).unwrap();
+    assert_eq!(claim.verifying_key(), by_holder.verifying_key(), "both sides derive one claim key");
     cases.push(
         case("claim key", "spec/sync.md §2")
-            .with("member-seed", hex(seed.expose()))
+            .with("holder-seed", hex(seed.expose()))
             .with("step-private", hex(s32(0x06).expose()))
             .with("step-key", hex(&step.public()))
             .with("label-id", hex(&label.0))

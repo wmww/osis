@@ -519,7 +519,7 @@ fn next_reports_what_undo_and_redo_revert_api_commits() {
 }
 
 // spec/crdt.md §4.6 Undoing a creation, shared: the undo of a creation reaches the other
-// member (deleted there), redo restores it there; a writer (not admin) may revert another's
+// holder (deleted there), redo restores it there; a writer (not admin) may revert another's
 // creation of a thing it may write; reverting the creation of a thing it may not write is
 // `Permission` and changes nothing (never a partial revert: unplaced but not deleted).
 #[test]

@@ -7,7 +7,7 @@
 use crate::common;
 
 use common::*;
-use membership_model::{edges, joint, snapshot, Rng};
+use roles_model::{edges, joint, snapshot, Rng};
 use osis_base::Role::{Admin, Write};
 use osis_base::{CommitId, Role, Tid};
 use osis_perm::{At, Dots, Edge, MemoryHeldSet, Point, Timeline, WriteId};
@@ -65,13 +65,13 @@ fn neutral(w: &World, thing: Tid, author: Tid, things: &[Tid], probes: &[Point])
     if before == after && before == compacted {
         return None;
     }
-    // a snapshot may repair sticky residue (core/test/tla/membership MC_sticky_snap), or leave
+    // a snapshot may repair sticky residue (core/test/tla/roles MC_sticky_snap), or leave
     // some (it drops a dropped write's transient effect, OSIS_PERM_SEED=89000), and either may
     // cascade (writes the repaired one enabled apply, and may genuinely drop others). Up to the
     // first changed write both walks see the same state, so that write's status differs only
     // by D: it must be a residue drop the snapshot undid or made. Compacted or not alike.
     let at = |x: &WriteId| match x {
-        WriteId::Op(c, _) => tl.membership_commit(c).map(|m| m.point()),
+        WriteId::Op(c, _) => tl.role_commit(c).map(|m| m.point()),
         WriteId::Snapshot(c) => tl.roster_snapshot(c).map(|s| s.point()),
     };
     let changed: Vec<(Option<Point>, WriteId)> = before.applied.symmetric_difference(&after.applied).map(|x| (at(x), *x)).collect();
@@ -128,8 +128,8 @@ fn run_joint(samples: u64, seed: u64) {
         let all0: Vec<(Tid, u64)> = nodes.iter().map(|n| (*n, 0)).collect();
         for (m, row) in h.genesis.iter().enumerate() {
             for (x, &r) in row.iter().enumerate() {
-                if r != membership_model::Role::None {
-                    let role = if r == membership_model::Role::Admin { Admin } else { Write };
+                if r != roles_model::Role::None {
+                    let role = if r == roles_model::Role::Admin { Admin } else { Write };
                     w.set(top[x], actors[x], ent(m), edge(role), 0, &all0);
                 }
             }
@@ -137,11 +137,11 @@ fn run_joint(samples: u64, seed: u64) {
         for (i, jw) in h.writes.iter().enumerate() {
             let recv: Vec<(Tid, u64)> = nodes.iter().enumerate().map(|(n, t)| (*t, h.recv[i][n] as u64)).collect();
             let e = match jw.role {
-                membership_model::Role::None => None,
-                membership_model::Role::Admin => edge(Admin),
+                roles_model::Role::None => None,
+                roles_model::Role::Admin => edge(Admin),
                 _ => edge(Write),
             };
-            w.commit_id(cid(jw.id), nodes[jw.author], jw.t as u64, &[(actors[jw.target], ent(jw.member), e)], &recv);
+            w.commit_id(cid(jw.id), nodes[jw.author], jw.t as u64, &[(actors[jw.target], ent(jw.holder), e)], &recv);
         }
         let ps = probes(&mut w, &nodes, &mut rng);
         for x in 0..actors.len() {
@@ -153,7 +153,7 @@ fn run_joint(samples: u64, seed: u64) {
     eprintln!("{samples} histories; snapshots that repaired or left sticky residue so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
 }
 
-/// §6: re-snapshotting any actor of a random joint history (mutual membership, owner chains)
+/// §6: re-snapshotting any actor of a random joint history (mutual roles, owner chains)
 /// is neutral, compacted or not.
 #[test]
 fn joint_resnapshot_neutral() {
@@ -177,16 +177,16 @@ fn run_edges(samples: u64, seed: u64) {
         let me = |e: Option<edges::Edge>| {
             e.map(|e| Edge {
                 role: match e.role {
-                    membership_model::Role::Admin => Admin,
-                    membership_model::Role::Write => Write,
+                    roles_model::Role::Admin => Admin,
+                    roles_model::Role::Write => Write,
                     _ => Role::Read,
                 },
                 until: (e.until != edges::NEVER).then_some(osis_base::WallMs(e.until as u64)),
                 invite: match e.invite {
-                    membership_model::Role::None => None,
-                    membership_model::Role::Read => Some(Role::Read),
-                    membership_model::Role::Write => Some(Write),
-                    membership_model::Role::Admin => Some(Admin),
+                    roles_model::Role::None => None,
+                    roles_model::Role::Read => Some(Role::Read),
+                    roles_model::Role::Write => Some(Write),
+                    roles_model::Role::Admin => Some(Admin),
                 },
                 since: None, tied: crate::common::tie_if((e.until ^ e.role as u32 ^ e.invite as u32) & 1 == 1),
             })
@@ -241,11 +241,11 @@ fn run_snapshot(samples: u64, seed: u64) {
         let p = w.thing(k);
         let g = w.thing(p);
         let all0: Vec<(Tid, u64)> = nodes.iter().map(|n| (*n, 0)).collect();
-        let mr = |r: membership_model::Role| match r {
-            membership_model::Role::Admin => Some(Admin),
-            membership_model::Role::Write => Some(Write),
-            membership_model::Role::Read => Some(Role::Read),
-            membership_model::Role::None => None,
+        let mr = |r: roles_model::Role| match r {
+            roles_model::Role::Admin => Some(Admin),
+            roles_model::Role::Write => Some(Write),
+            roles_model::Role::Read => Some(Role::Read),
+            roles_model::Role::None => None,
         };
         for (thing, roles) in [(p, &h.gp), (g, &h.gg)] {
             for (x, &r) in roles.iter().enumerate().skip(1) {
@@ -303,7 +303,7 @@ fn ledger_carried_forward() {
     w.set(d2, p, d1, None, 5, &[]);
     let s1 = Timeline::evaluate(&w.held()).roster_state(&p);
     assert_eq!(s1.ledger.len(), 1);
-    assert_eq!((s1.ledger[0].member, s1.ledger[0].role, s1.ledger[0].since), (d1, Admin, Some(Point { ts: ts(0), node: k, commit: g1 })));
+    assert_eq!((s1.ledger[0].holder, s1.ledger[0].role, s1.ledger[0].since), (d1, Admin, Some(Point { ts: ts(0), node: k, commit: g1 })));
     assert!(s1.ledger[0].frontier.is_some());
     w.snapshot_state(k, p, s1.clone(), 10);
     w.set(k, p, d3, edge(Write), 11, &[]);
@@ -336,12 +336,12 @@ fn later_audit_is_an_entry_spec_permissions_6() {
     assert!(matches!(tl.delta_valid(x, &p, "/doc", Dots::Commit, Write), osis_perm::Validity::Invalid { .. }));
     let ledger = tl.roster_state(&p).ledger;
     let key = |t, node, commit| Point { ts: ts(t), node, commit };
-    let shape: Vec<_> = ledger.iter().filter(|t| t.member == d1).map(|t| (t.role, t.since, t.until, t.frontier.is_some())).collect();
+    let shape: Vec<_> = ledger.iter().filter(|t| t.holder == d1).map(|t| (t.role, t.since, t.until, t.frontier.is_some())).collect();
     assert_eq!(shape, vec![(Admin, Some(key(0, k, g)), key(2, d1, leave), false), (Admin, Some(key(5, k, rm)), key(5, k, rm), true)]);
     assert_eq!(neutral(&w, p, k, &[p, a], &[x]), None);
 }
 
-/// §6, §5.1: a demoter that reaches the member it demoted keeps its standing until the next
+/// §6, §5.1: a demoter that reaches the holder it demoted keeps its standing until the next
 /// explicit write on that edge; the ledger entry's key node is that demoter, and the next
 /// write's audit is an entry of its own.
 #[test]
@@ -362,13 +362,13 @@ fn own_demotion_replayed_spec_permissions_6() {
     let tl = Timeline::evaluate(&w.held());
     assert!(matches!(tl.delta_valid(x, &p, "/doc", Dots::Commit, Write), osis_perm::Validity::Invalid { .. }));
     let ledger = tl.roster_state(&p).ledger;
-    assert!(ledger.iter().any(|t| t.member == a && t.since.is_some_and(|s| s == t.until) && t.until.node == k && t.frontier.is_some()), "{ledger:?}");
+    assert!(ledger.iter().any(|t| t.holder == a && t.since.is_some_and(|s| s == t.until) && t.until.node == k && t.frontier.is_some()), "{ledger:?}");
     assert_eq!(neutral(&w, p, k, &[p, a], &[x]), None);
 }
 
 /// §6: two commits of one node at one ts (a shared key used from two devices) that demote a
-/// member and re-grant it are told apart by the commit ID in ledger keys: the replay audits at
-/// the demotion, so the member's dropped edge write below the thing stays dropped after a
+/// holder and re-grant it are told apart by the commit ID in ledger keys: the replay audits at
+/// the demotion, so the holder's dropped edge write below the thing stays dropped after a
 /// re-snapshot, compacted or not.
 #[test]
 fn same_ts_demote_regrant_replayed_spec_permissions_6() {
@@ -386,7 +386,7 @@ fn same_ts_demote_regrant_replayed_spec_permissions_6() {
     let tl = Timeline::evaluate(&w.held());
     assert_eq!(tl.role(&z, &q, At::END), None, "the walk drops m's grant");
     let state = tl.roster_state(&p);
-    assert!(state.ledger.iter().any(|t| t.member == m && t.until.commit == c1 && t.frontier.is_some()), "{:?}", state.ledger);
+    assert!(state.ledger.iter().any(|t| t.holder == m && t.until.commit == c1 && t.frontier.is_some()), "{:?}", state.ledger);
     assert_eq!(state.roster.get(&m).and_then(|e| e.since).map(|k| k.commit), Some(c2));
     let mut w2 = w.clone();
     let s = w2.snapshot_state(k, p, state, END_T);
@@ -426,7 +426,7 @@ fn start_after_dropped_write_spec_permissions_6() {
     assert_eq!(neutral(&w, g, k, &[p, g], &[]), None);
 }
 
-/// §6 epoch start through mutual membership: B (owned by A) is an admin of A, so n2, admin
+/// §6 epoch start through mutual roles: B (owned by A) is an admin of A, so n2, admin
 /// of B, has owner-chain authority on B through B itself. Its snapshot of B at 5 leaving n2
 /// out applies only while it is not B's start, so the rounds do not settle and it is
 /// excluded: with no other snapshot B has no start; with an older one keeping n2 (at 3), that
@@ -471,7 +471,7 @@ fn ledger_entry_after_its_commit_spec_permissions_6() {
 }
 
 /// §6: an expiry by `until` is keyed before every write at its ts: an explicit demotion at
-/// that ts by a node whose tid sorts below the member's replays as the walk ordered it.
+/// that ts by a node whose tid sorts below the holder's replays as the walk ordered it.
 #[test]
 fn expiry_before_same_ts_write_spec_permissions_6() {
     let mut w = World::new();
@@ -491,7 +491,7 @@ fn expiry_before_same_ts_write_spec_permissions_6() {
     assert_eq!(neutral(&w, p, k, &[p], &[x, y]), None);
 }
 
-/// §6: a demoter's kept admin standing (it reaches the member it lowered to write) is audited
+/// §6: a demoter's kept admin standing (it reaches the holder it lowered to write) is audited
 /// by another node's write→write on that edge, which splits the write tenure in force.
 #[test]
 fn kept_standing_split_spec_permissions_6() {
@@ -509,11 +509,11 @@ fn kept_standing_split_spec_permissions_6() {
     w.set(k, p, a, edge(Write), 5, &all);
     let tl = Timeline::evaluate(&w.held());
     let ledger = tl.roster_state(&p).ledger;
-    assert!(ledger.iter().any(|t| t.member == a && t.until.node == k && t.until.ts == ts(5) && t.frontier.is_some()), "{ledger:?}");
+    assert!(ledger.iter().any(|t| t.holder == a && t.until.node == k && t.until.ts == ts(5) && t.frontier.is_some()), "{ledger:?}");
     assert_eq!(neutral(&w, p, k, &[p, a], &[x]), None);
 }
 
-/// §6 bad ledgers: a frontier entry keyed to the member itself, a zero-tid key, `since` after
+/// §6 bad ledgers: a frontier entry keyed to the holder itself, a zero-tid key, `since` after
 /// `until`, an audit-only entry: evaluated without panic, granting no role after the start.
 #[test]
 fn adversarial_ledger_grants_nothing_spec_permissions_6() {

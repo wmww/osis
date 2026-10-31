@@ -4,4 +4,4 @@
 
 Levers: verdicts at U are U's box for W plus W's verdicts (notes/permissions.md), so they can be computed from the inner departure's kept verdicts in O(1) instead of re-running `covers` (it must then stay exactly `covers`' rule); the `contains` test is needed only in cycles. A cascade recomputes `departures` for each actor after every rotation (each rotation clears the cache): reusing the inner actors' found sets across one cascade would cut it further.
 
-The second actor stays in the class key: the differential oracle keys on it (dropping it fails `walk_matches_path_walk`) and `inside_member_revokes` places the `/keys` of every chain actor.
+The second actor stays in the class key: the differential oracle keys on it (dropping it fails `walk_matches_path_walk`) and `inside_holder_revokes` places the `/keys` of every chain actor.

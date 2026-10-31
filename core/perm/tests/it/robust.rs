@@ -6,9 +6,9 @@
 use crate::common;
 
 use common::*;
-use membership_model::Rng;
+use roles_model::Rng;
 use osis_base::{Role, Tid, WallMs};
-use osis_perm::{At, Dots, Edge, EdgeOp, Frontier, MembershipCommit, MemoryHeldSet, Point, RosterSnapshot, Tenure, Timeline};
+use osis_perm::{At, Dots, Edge, EdgeOp, Frontier, RoleCommit, MemoryHeldSet, Point, RosterSnapshot, Tenure, Timeline};
 use std::sync::Arc;
 
 fn pick<T: Copy>(rng: &mut Rng, v: &[T]) -> T {
@@ -54,12 +54,12 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
     };
     for i in 0..(2 + rng.below(12)) {
         let target = pick(rng, &tids);
-        let mut ops = vec![EdgeOp { target, member: pick(rng, &tids), edge: any_edge(rng), dots: dots(rng) }];
+        let mut ops = vec![EdgeOp { target, holder: pick(rng, &tids), edge: any_edge(rng), dots: dots(rng) }];
         if rng.below(4) == 0 {
-            ops.push(EdgeOp { target: pick(rng, &tids), member: pick(rng, &tids), edge: any_edge(rng), dots: dots(rng) });
+            ops.push(EdgeOp { target: pick(rng, &tids), holder: pick(rng, &tids), edge: any_edge(rng), dots: dots(rng) });
         }
         let author = pick(rng, &tids);
-        h.add_commit(MembershipCommit { id: cid(i as u32), ts: ts(rng.below(12) as u64), author, actor: author, frontier: frontier(rng, &tids), ops });
+        h.add_commit(RoleCommit { id: cid(i as u32), ts: ts(rng.below(12) as u64), author, actor: author, frontier: frontier(rng, &tids), ops });
     }
     for i in 0..rng.below(4) {
         let mut roster = std::collections::BTreeMap::new();
@@ -70,7 +70,7 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
         }
         let ledger = (0..rng.below(4))
             .map(|_| Tenure {
-                member: pick(rng, &tids),
+                holder: pick(rng, &tids),
                 role: pick(rng, &roles),
                 since: (rng.below(2) == 0).then(|| Point { ts: ts(rng.below(14) as u64), node: pick(rng, &tids), commit: cid(rng.below(16) as u32) }),
                 until: Point { ts: ts(rng.below(14) as u64), node: pick(rng, &tids), commit: cid(rng.below(16) as u32) },

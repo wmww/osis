@@ -46,11 +46,11 @@ impl Rng {
 enum Step {
     /// A content write (`op` picks the aspect and shape) by `by` on thing `t`.
     Write { by: usize, t: usize, op: u8, k: u8, v: u8 },
-    /// `member`'s edge on `t` set to `role` (a grant, re-grant or demotion without frontier).
-    Edge { by: usize, t: usize, member: usize, role: Option<Role> },
-    /// An explicit demotion (removal, or to read) with a frontier as of one of the member's
+    /// `holder`'s edge on `t` set to `role` (a grant, re-grant or demotion without frontier).
+    Edge { by: usize, t: usize, holder: usize, role: Option<Role> },
+    /// An explicit demotion (removal, or to read) with a frontier as of one of the holder's
     /// writes (`at`: 0 before all of them, backdated; the last: now).
-    Demote { by: usize, t: usize, member: usize, at: u8, to_read: bool },
+    Demote { by: usize, t: usize, holder: usize, at: u8, to_read: bool },
     /// `by` removes its own edge on `t`.
     Leave { by: usize, t: usize },
     /// A roster snapshot of `t`.
@@ -160,8 +160,8 @@ fn random_step(rng: &mut Rng) -> Step {
             let op = rng.below(OPS as u64) as u8;
             Step::Write { by, t, op, k: rng.below(3) as u8, v: rng.below(10) as u8 }
         }
-        11..=13 => Step::Edge { by: rng.pick(&[0, 0, 2]), t, member: rng.pick(&[1, 2]), role: rng.pick(&[None, Some(Role::Read), Some(Role::Write), Some(Role::Write), Some(Role::Admin)]) },
-        14..=17 => Step::Demote { by: rng.pick(&[0, 0, 2]), t, member: rng.pick(&[1, 2]), at: rng.below(6) as u8, to_read: rng.below(3) == 0 },
+        11..=13 => Step::Edge { by: rng.pick(&[0, 0, 2]), t, holder: rng.pick(&[1, 2]), role: rng.pick(&[None, Some(Role::Read), Some(Role::Write), Some(Role::Write), Some(Role::Admin)]) },
+        14..=17 => Step::Demote { by: rng.pick(&[0, 0, 2]), t, holder: rng.pick(&[1, 2]), at: rng.below(6) as u8, to_read: rng.below(3) == 0 },
         18 => Step::Leave { by: rng.pick(&[1, 2]), t },
         19 => Step::Roster { by: rng.pick(&[0, 0, 2]), t },
         20..=22 => Step::Compact { by, t, op: rng.below(OPS as u64) as u8 },
@@ -186,12 +186,12 @@ fn random_step(rng: &mut Rng) -> Step {
     }
 }
 
-/// `member`'s edge on `t` as remove + put (`None`: removed), spec/permissions.md §2.
-fn edge_write(t: Tid, member: Tid, role: Option<Role>) -> Mutation {
+/// `holder`'s edge on `t` as remove + put (`None`: removed), spec/permissions.md §2.
+fn edge_write(t: Tid, holder: Tid, role: Option<Role>) -> Mutation {
     let mut m = Mutation::new();
-    m.op(t, &osis_schema::core_types::MEMBERS, PathOp { path: vec![], op: Op::Remove(Value::Tid(member)) }).unwrap();
+    m.op(t, &osis_schema::core_types::MEMBERS, PathOp { path: vec![], op: Op::Remove(Value::Tid(holder)) }).unwrap();
     if let Some(role) = role {
-        m.op(t, &osis_schema::core_types::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(member))], op: Op::Set(edge(role).to_value()) }).unwrap();
+        m.op(t, &osis_schema::core_types::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge(role).to_value()) }).unwrap();
     }
     m
 }
@@ -258,11 +258,11 @@ fn play(seed: u64, steps: &[Step]) -> Played {
                 }
                 Some(by)
             }
-            Step::Edge { by, t, member, role } => {
-                let _ = lp.peers[by].commit(edge_write(th(t), ids[member], role));
+            Step::Edge { by, t, holder, role } => {
+                let _ = lp.peers[by].commit(edge_write(th(t), ids[holder], role));
                 Some(by)
             }
-            Step::Demote { by, t, member, at, to_read } => {
+            Step::Demote { by, t, holder, at, to_read } => {
                 let t = th(t);
                 let mut below = BTreeSet::from([t]);
                 loop {
@@ -272,14 +272,14 @@ fn play(seed: u64, steps: &[Step]) -> Played {
                     }
                     below.extend(more);
                 }
-                let ms = &marks[member];
+                let ms = &marks[holder];
                 let as_of = match (at as usize).checked_sub(1) {
                     None => WallMs(ms.first().map_or(T0.0, |x| x.0 - 1)),
                     Some(i) => ms.get(i).copied().unwrap_or_else(|| lp.peers[by].engine.now()),
                 };
-                let scope = DemotionScope { membership: BTreeMap::from([(ids[member], BTreeSet::from([t]))]), content: BTreeMap::from([(ids[member], below)]) };
+                let scope = DemotionScope { roles: BTreeMap::from([(ids[holder], BTreeSet::from([t]))]), content: BTreeMap::from([(ids[holder], below)]) };
                 if let Ok(f) = lp.peers[by].engine.frontier(&scope, as_of) {
-                    let mut m = edge_write(t, ids[member], to_read.then_some(Role::Read));
+                    let mut m = edge_write(t, ids[holder], to_read.then_some(Role::Read));
                     m.frontier(f.to_value());
                     let _ = lp.peers[by].commit(m);
                 }
@@ -395,7 +395,7 @@ struct Oracle {
     deaths: Deaths,
     facts: String,
     /// Aspects a held snapshot carries writes of whose own commit the oracle does not hold (a
-    /// membership commit, a creation, or one not played): a recompute plays those at the
+    /// role commit, a creation, or one not played): a recompute plays those at the
     /// snapshot, not at their own `ts`, so the oracle does not judge them.
     carried: BTreeSet<(Tid, Ak)>,
 }
@@ -412,14 +412,14 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
         aspects.extend(p.engine.header(&id).into_iter().flat_map(|h| h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect::<Vec<_>>()));
     }
     // carried writes whose own commit is not held: the oracle takes those commits too where
-    // they are plain writes (no membership part, no creation), so its recompute plays them at
+    // they are plain writes (no role part, no creation), so its recompute plays them at
     // their own `ts`; more superseders date no later, so `dating` stays sound
     let want: BTreeSet<(Tid, Ak, osis_crdt::Dot)> = aspects.iter().flat_map(|(t, a)| p.engine.carried_dots(t, a).into_iter().map(|d| (*t, a.clone(), d))).collect();
     if !want.is_empty() {
         let whole = deliver(played, &(0..played.packs.len()).collect::<Vec<_>>());
         for (i, pk) in played.packs.iter().enumerate() {
             let Some(h) = whole.engine.header(&pk.id) else { continue };
-            if !held.contains(&i) && common::owns_carried(&h, &pk.id, &want) && !h.kind.is_membership() && h.kind.has_own_writes() && h.aspects.iter().all(|a| a.ak.as_str() != "/created") {
+            if !held.contains(&i) && common::owns_carried(&h, &pk.id, &want) && !h.kind.is_role() && h.kind.has_own_writes() && h.aspects.iter().all(|a| a.ak.as_str() != "/created") {
                 let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
             }
         }
@@ -1081,8 +1081,8 @@ fn focused_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
                 0..=6 => Step::Write { by: if (17..=20).contains(&op) || rng.below(3) == 0 { 0 } else { 1 + rng.below(2) as usize }, t, op, k: rng.below(2) as u8, v: rng.below(10) as u8 },
                 7 | 8 => Step::Compact { by: rng.pick(&[0, 0, by]), t, op },
                 9 | 10 => Step::Undo { by: rng.pick(&[0, by]), back: rng.below(3) as u8 },
-                11 | 12 => Step::Demote { by: rng.pick(&[0, 0, 2]), t, member: rng.pick(&[1, 2]), at: rng.below(4) as u8, to_read: rng.below(3) == 0 },
-                13 => Step::Edge { by: 0, t, member: rng.pick(&[1, 2]), role: rng.pick(&[None, Some(Role::Read), Some(Role::Write)]) },
+                11 | 12 => Step::Demote { by: rng.pick(&[0, 0, 2]), t, holder: rng.pick(&[1, 2]), at: rng.below(4) as u8, to_read: rng.below(3) == 0 },
+                13 => Step::Edge { by: 0, t, holder: rng.pick(&[1, 2]), role: rng.pick(&[None, Some(Role::Read), Some(Role::Write)]) },
                 14 => Step::Nested { by, other: (by + 1 + rng.below(2) as usize) % 3, t, k: rng.below(2) as u8, text: rng.below(2) == 0, compact: rng.below(2) == 0, also: rng.below(3) == 0 },
                 15 | 16 => Step::Advance { who: Some(rng.below(3) as usize), ms: 1 + rng.below(3_000) },
                 17 => Step::Advance { who: None, ms: HOUR / 4 + rng.below(HOUR) },
@@ -1229,12 +1229,12 @@ fn copy_kills_write_sharing_a_dead_stamp_spec_crdt_4_8() {
 fn arrival_order_found_histories_spec_crdt_4_6() {
     use Step::*;
     let mut cases = Vec::new();
-    let h = vec![Nested { by: 2, other: 1, t: 6, k: 0, text: false, compact: true, also: false }, New { by: 2, parent: 1, write: true }, Send { from: 1, to: 0, back: 1 }, Edge { by: 0, t: 2, member: 2, role: Some(Role::Read) }];
+    let h = vec![Nested { by: 2, other: 1, t: 6, k: 0, text: false, compact: true, also: false }, New { by: 2, parent: 1, write: true }, Send { from: 1, to: 0, back: 1 }, Edge { by: 0, t: 2, holder: 2, role: Some(Role::Read) }];
     cases.push((1038, h, LARGE));
     // seed 1558: C lowers its own edge (a nested write into the roster snapshot's entry) with a
     // clock behind A's, so it sorts before that snapshot: an open read it first and left it
     // waiting for the entry's creation, which a fresh apply had resolved
-    let h = vec![Demote { by: 0, t: 5, member: 1, at: 4, to_read: false }, Roster { by: 0, t: 4 }, Sync { from: 0, to: 1 }, Demote { by: 0, t: 6, member: 2, at: 1, to_read: false }, Sync { from: 1, to: 2 }, Write { by: 0, t: 7, op: 7, k: 0, v: 4 }, Send { from: 0, to: 2, back: 0 }, Edge { by: 2, t: 4, member: 2, role: Some(Role::Read) }];
+    let h = vec![Demote { by: 0, t: 5, holder: 1, at: 4, to_read: false }, Roster { by: 0, t: 4 }, Sync { from: 0, to: 1 }, Demote { by: 0, t: 6, holder: 2, at: 1, to_read: false }, Sync { from: 1, to: 2 }, Write { by: 0, t: 7, op: 7, k: 0, v: 4 }, Send { from: 0, to: 2, back: 0 }, Edge { by: 2, t: 4, holder: 2, role: Some(Role::Read) }];
     cases.push((1558, h, LARGE));
     // seed 1053 (spec/crdt.md §4.8): two writes of a keep-at-most-0 register with one `ts`; the
     // later by commit ID lost by dot and died on arrival, and its drop went before its own
@@ -1243,7 +1243,7 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     cases.push((1053, h, LARGE));
     // seed 1173 (spec/crdt.md §4.8): peer 0's kept write inside peer 1's entry dies at peer 2's;
     // peer 1's creation arriving invalid un-merged both, and nothing replayed the deaths
-    let h = vec![Nested { by: 1, other: 2, t: 7, k: 1, text: false, compact: false, also: false }, Send { from: 1, to: 0, back: 0 }, Edge { by: 2, t: 2, member: 1, role: Some(Role::Read) }, Write { by: 0, t: 0, op: 22, k: 1, v: 9 }];
+    let h = vec![Nested { by: 1, other: 2, t: 7, k: 1, text: false, compact: false, also: false }, Send { from: 1, to: 0, back: 0 }, Edge { by: 2, t: 2, holder: 1, role: Some(Role::Read) }, Write { by: 0, t: 0, op: 22, k: 1, v: 9 }];
     cases.push((1173, h, SMALL));
     // seed 93004 (spec/permissions.md §5.2): C's slot reset prunes its own nested entries'
     // creations; B's write inside them survives, held only in B's snapshot. Stripping the
@@ -1256,26 +1256,26 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     // valid snapshot carrying the creation, held later, made it valid again, but the join
     // stripped its copy of A's write (A's delta held) and nothing re-merged it (was: the next
     // in-place un-merge differed from a rebuild)
-    let h = vec![Nested { by: 1, other: 2, t: 0, k: 2, text: false, compact: true, also: true }, Sync { from: 2, to: 0 }, Write { by: 0, t: 1, op: 22, k: 2, v: 1 }, Compact { by: 0, t: 1, op: 25 }, Edge { by: 0, t: 3, member: 2, role: Some(Role::Read) }, New { by: 0, parent: 5, write: false }, New { by: 0, parent: 6, write: true }];
+    let h = vec![Nested { by: 1, other: 2, t: 0, k: 2, text: false, compact: true, also: true }, Sync { from: 2, to: 0 }, Write { by: 0, t: 1, op: 22, k: 2, v: 1 }, Compact { by: 0, t: 1, op: 25 }, Edge { by: 0, t: 3, holder: 2, role: Some(Role::Read) }, New { by: 0, parent: 5, write: false }, New { by: 0, parent: 6, write: true }];
     cases.push((12161, h, LARGE));
-    let h = vec![Edge { by: 0, t: 5, member: 1, role: Some(Role::Write) }, Nested { by: 0, other: 2, t: 2, k: 1, text: false, compact: true, also: true }, Edge { by: 0, t: 1, member: 2, role: None }, Write { by: 1, t: 5, op: 6, k: 1, v: 4 }, Edge { by: 2, t: 3, member: 1, role: Some(Role::Write) }, Write { by: 1, t: 4, op: 16, k: 0, v: 7 }, Nested { by: 1, other: 0, t: 0, k: 1, text: false, compact: true, also: true }];
+    let h = vec![Edge { by: 0, t: 5, holder: 1, role: Some(Role::Write) }, Nested { by: 0, other: 2, t: 2, k: 1, text: false, compact: true, also: true }, Edge { by: 0, t: 1, holder: 2, role: None }, Write { by: 1, t: 5, op: 6, k: 1, v: 4 }, Edge { by: 2, t: 3, holder: 1, role: Some(Role::Write) }, Write { by: 1, t: 4, op: 16, k: 0, v: 7 }, Nested { by: 1, other: 0, t: 0, k: 1, text: false, compact: true, also: true }];
     cases.push((12236, h, LARGE));
     // seed 61165 (spec/permissions.md §5.2, spec/crdt.md §7): A's entry, its creation held only
     // through C's snapshot, holds two encodings (a `Slots` position) with A's later writes in
     // its inner entries. Stripping the snapshot's copies of those writes re-joined the slots and
     // pruned the inner creations it keeps for the join; removing an invalid delta's dots from
     // the stripped snapshot (a rebuild after a flip) pruned them too: one held set, two states
-    let h = vec![New { by: 0, parent: 0, write: false }, Write { by: 0, t: 5, op: 15, k: 0, v: 5 }, Write { by: 0, t: 5, op: 1, k: 1, v: 3 }, Roster { by: 0, t: 2 }, Demote { by: 2, t: 4, member: 1, at: 2, to_read: true }, Nested { by: 0, other: 1, t: 6, k: 2, text: false, compact: true, also: true }, Write { by: 0, t: 6, op: 3, k: 0, v: 5 }, Send { from: 0, to: 2, back: 0 }, Write { by: 0, t: 3, op: 19, k: 1, v: 8 }, Write { by: 0, t: 4, op: 16, k: 0, v: 2 }, Demote { by: 0, t: 2, member: 1, at: 5, to_read: false }, Write { by: 2, t: 6, op: 7, k: 2, v: 0 }, Edge { by: 0, t: 4, member: 1, role: Some(Role::Write) }, Nested { by: 0, other: 2, t: 2, k: 0, text: false, compact: true, also: false }];
+    let h = vec![New { by: 0, parent: 0, write: false }, Write { by: 0, t: 5, op: 15, k: 0, v: 5 }, Write { by: 0, t: 5, op: 1, k: 1, v: 3 }, Roster { by: 0, t: 2 }, Demote { by: 2, t: 4, holder: 1, at: 2, to_read: true }, Nested { by: 0, other: 1, t: 6, k: 2, text: false, compact: true, also: true }, Write { by: 0, t: 6, op: 3, k: 0, v: 5 }, Send { from: 0, to: 2, back: 0 }, Write { by: 0, t: 3, op: 19, k: 1, v: 8 }, Write { by: 0, t: 4, op: 16, k: 0, v: 2 }, Demote { by: 0, t: 2, holder: 1, at: 5, to_read: false }, Write { by: 2, t: 6, op: 7, k: 2, v: 0 }, Edge { by: 0, t: 4, holder: 1, role: Some(Role::Write) }, Nested { by: 0, other: 2, t: 2, k: 0, text: false, compact: true, also: false }];
     cases.push((61165, h, LARGE));
     // seed 583175 (spec/permissions.md §5.2): B's snapshot, invalid, carries A's removal that is
     // not held; the oracle took A's commit as if a valid snapshot carried it and dated C's
     // removal dead at it (an invalid snapshot gives nothing: `carried_dots` skips it)
-    let h = vec![Demote { by: 2, t: 3, member: 1, at: 3, to_read: false }, Nested { by: 1, other: 2, t: 4, k: 1, text: false, compact: true, also: false }, Edge { by: 0, t: 3, member: 2, role: Some(Role::Write) }, Sync { from: 2, to: 1 }, Demote { by: 0, t: 5, member: 2, at: 4, to_read: false }, Advance { who: Some(0), ms: 1093 }, Sync { from: 1, to: 0 }, Write { by: 0, t: 3, op: 25, k: 1, v: 5 }, Send { from: 0, to: 1, back: 2 }, Edge { by: 0, t: 2, member: 2, role: Some(Role::Admin) }, Edge { by: 0, t: 2, member: 2, role: None }, Sync { from: 1, to: 2 }, Send { from: 0, to: 1, back: 2 }, Compact { by: 1, t: 2, op: 22 }, Write { by: 2, t: 0, op: 25, k: 1, v: 9 }];
+    let h = vec![Demote { by: 2, t: 3, holder: 1, at: 3, to_read: false }, Nested { by: 1, other: 2, t: 4, k: 1, text: false, compact: true, also: false }, Edge { by: 0, t: 3, holder: 2, role: Some(Role::Write) }, Sync { from: 2, to: 1 }, Demote { by: 0, t: 5, holder: 2, at: 4, to_read: false }, Advance { who: Some(0), ms: 1093 }, Sync { from: 1, to: 0 }, Write { by: 0, t: 3, op: 25, k: 1, v: 5 }, Send { from: 0, to: 1, back: 2 }, Edge { by: 0, t: 2, holder: 2, role: Some(Role::Admin) }, Edge { by: 0, t: 2, holder: 2, role: None }, Sync { from: 1, to: 2 }, Send { from: 0, to: 1, back: 2 }, Compact { by: 1, t: 2, op: 22 }, Write { by: 2, t: 0, op: 25, k: 1, v: 9 }];
     cases.push((583175, h, LARGE));
     // seed 15085 (spec/permissions.md §5.2, spec/crdt.md §5.6): two demotions of 1 and 2's
     // compacted `Nested` write: an un-merge pruned an entry's creation whose own dot stayed (a
     // rebuild kept it for the join), so the orders' states differed
-    let h = vec![Nested { by: 2, other: 0, t: 5, k: 2, text: false, compact: false, also: false }, Write { by: 0, t: 6, op: 3, k: 2, v: 9 }, Nested { by: 2, other: 0, t: 0, k: 2, text: false, compact: true, also: true }, Write { by: 1, t: 2, op: 0, k: 1, v: 0 }, Write { by: 1, t: 6, op: 16, k: 1, v: 2 }, Edge { by: 0, t: 2, member: 1, role: Some(Role::Write) }, Edge { by: 0, t: 7, member: 1, role: Some(Role::Write) }, Demote { by: 0, t: 4, member: 1, at: 1, to_read: true }, Edge { by: 0, t: 4, member: 2, role: Some(Role::Write) }, Demote { by: 0, t: 6, member: 1, at: 5, to_read: true }];
+    let h = vec![Nested { by: 2, other: 0, t: 5, k: 2, text: false, compact: false, also: false }, Write { by: 0, t: 6, op: 3, k: 2, v: 9 }, Nested { by: 2, other: 0, t: 0, k: 2, text: false, compact: true, also: true }, Write { by: 1, t: 2, op: 0, k: 1, v: 0 }, Write { by: 1, t: 6, op: 16, k: 1, v: 2 }, Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }, Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }, Demote { by: 0, t: 4, holder: 1, at: 1, to_read: true }, Edge { by: 0, t: 4, holder: 2, role: Some(Role::Write) }, Demote { by: 0, t: 6, holder: 1, at: 5, to_read: true }];
     cases.push((15085, h, LARGE));
     // seed 2700027 (spec/commits.md §5): B's snapshot of a keep-at-most-0 register carries A's
     // write that A's undo (`ts` below the snapshot's) already killed: held after the undo, the
@@ -1301,7 +1301,7 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
 #[test]
 fn dropped_snapshot_rebuilds_alike_spec_commits_5() {
     use Step::*;
-    let h = vec![Write { by: 0, t: 2, op: 18, k: 2, v: 3 }, Compact { by: 0, t: 3, op: 18 }, Demote { by: 0, t: 3, member: 1, at: 3, to_read: false }, Undo { by: 0, back: 2 }];
+    let h = vec![Write { by: 0, t: 2, op: 18, k: 2, v: 3 }, Compact { by: 0, t: 3, op: 18 }, Demote { by: 0, t: 3, holder: 1, at: 3, to_read: false }, Undo { by: 0, back: 2 }];
     check(1291, &h, LARGE).unwrap();
     // the dropped snapshot keeps no frontier: it dropped dead, so it stays dead
     let played = play(1291, &h);
@@ -1318,18 +1318,18 @@ fn dropped_snapshot_rebuilds_alike_spec_commits_5() {
 // that entry; her creating commit arriving last must give it back (`refill` rebuilds).
 #[test]
 fn invalid_snapshot_owner_late_seed_1006() {
-    let h = vec![Step::Edge { by: 0, t: 0, member: 2, role: None }, Step::Nested { by: 0, other: 1, t: 4, k: 2, text: false, compact: true, also: true }, Step::Write { by: 2, t: 6, op: 12, k: 1, v: 2 }, Step::Write { by: 0, t: 1, op: 18, k: 2, v: 6 }, Step::Demote { by: 0, t: 2, member: 1, at: 5, to_read: true }, Step::Write { by: 0, t: 0, op: 3, k: 2, v: 9 }];
+    let h = vec![Step::Edge { by: 0, t: 0, holder: 2, role: None }, Step::Nested { by: 0, other: 1, t: 4, k: 2, text: false, compact: true, also: true }, Step::Write { by: 2, t: 6, op: 12, k: 1, v: 2 }, Step::Write { by: 0, t: 1, op: 18, k: 2, v: 6 }, Step::Demote { by: 0, t: 2, holder: 1, at: 5, to_read: true }, Step::Write { by: 0, t: 0, op: 3, k: 2, v: 9 }];
     check(1006, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1 }).unwrap();
 }
 
 // as above, order seed 1042, shrunk (an in-place un-merge differed from a rebuild).
 #[test]
 fn invalid_snapshot_owner_late_seed_1042() {
-    let h = vec![Step::Nested { by: 0, other: 2, t: 1, k: 0, text: false, compact: true, also: true }, Step::New { by: 0, parent: 3, write: false }, Step::New { by: 0, parent: 6, write: false }, Step::Sync { from: 2, to: 1 }, Step::Demote { by: 2, t: 3, member: 1, at: 3, to_read: true }, Step::Nested { by: 2, other: 1, t: 0, k: 1, text: false, compact: true, also: true }];
+    let h = vec![Step::Nested { by: 0, other: 2, t: 1, k: 0, text: false, compact: true, also: true }, Step::New { by: 0, parent: 3, write: false }, Step::New { by: 0, parent: 6, write: false }, Step::Sync { from: 2, to: 1 }, Step::Demote { by: 2, t: 3, holder: 1, at: 3, to_read: true }, Step::Nested { by: 2, other: 1, t: 0, k: 1, text: false, compact: true, also: true }];
     check(1042, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1 }).unwrap();
 }
 
-// spec/commits.md §5 (a keep-at-most drop is final): histories the harness found with members
+// spec/commits.md §5 (a keep-at-most drop is final): histories the harness found with holders
 // writing keep-at-most ops (shrunk), where a body is dropped at one node and held at another:
 // seeds 1053, 1024 (its killer turned invalid), 1085, 1200 (its own write turned invalid, the op
 // 17 bound passed). They pass `alike`, though the judged texts differ; the same held-or-dropped
@@ -1338,10 +1338,10 @@ fn invalid_snapshot_owner_late_seed_1042() {
 fn drop_before_flip_tolerated_spec_commits_5() {
     use Step::*;
     let flips = vec![
-        (1053, vec![Write { by: 2, t: 4, op: 18, k: 2, v: 4 }, Write { by: 1, t: 6, op: 18, k: 1, v: 4 }, Demote { by: 0, t: 4, member: 2, at: 3, to_read: false }]),
-        (1024, vec![Write { by: 0, t: 7, op: 18, k: 0, v: 9 }, Edge { by: 0, t: 0, member: 2, role: Some(Role::Read) }, Write { by: 2, t: 4, op: 18, k: 2, v: 4 }]),
-        (1085, vec![Write { by: 2, t: 6, op: 17, k: 2, v: 7 }, Write { by: 0, t: 6, op: 17, k: 1, v: 4 }, Demote { by: 0, t: 0, member: 2, at: 0, to_read: false }, Advance { who: None, ms: 5203966 }]),
-        (1200, vec![Demote { by: 0, t: 7, member: 1, at: 5, to_read: true }, Write { by: 1, t: 5, op: 17, k: 0, v: 1 }, Write { by: 0, t: 5, op: 17, k: 0, v: 5 }, Advance { who: None, ms: 5183786 }]),
+        (1053, vec![Write { by: 2, t: 4, op: 18, k: 2, v: 4 }, Write { by: 1, t: 6, op: 18, k: 1, v: 4 }, Demote { by: 0, t: 4, holder: 2, at: 3, to_read: false }]),
+        (1024, vec![Write { by: 0, t: 7, op: 18, k: 0, v: 9 }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Write { by: 2, t: 4, op: 18, k: 2, v: 4 }]),
+        (1085, vec![Write { by: 2, t: 6, op: 17, k: 2, v: 7 }, Write { by: 0, t: 6, op: 17, k: 1, v: 4 }, Demote { by: 0, t: 0, holder: 2, at: 0, to_read: false }, Advance { who: None, ms: 5203966 }]),
+        (1200, vec![Demote { by: 0, t: 7, holder: 1, at: 5, to_read: true }, Write { by: 1, t: 5, op: 17, k: 0, v: 1 }, Write { by: 0, t: 5, op: 17, k: 0, v: 5 }, Advance { who: None, ms: 5183786 }]),
     ];
     for (seed, h) in &flips {
         check(*seed, h, LARGE).unwrap_or_else(|e| panic!("seed {seed}: {e}"));
@@ -1452,11 +1452,11 @@ fn next_perm(v: &[usize]) -> Option<Vec<usize>> {
 #[test]
 fn creation_lost_by_drop_then_flip_tolerated_spec_commits_5() {
     use Step::*;
-    let h = vec![Write { by: 1, t: 6, op: 19, k: 0, v: 3 }, Demote { by: 0, t: 4, member: 1, at: 5, to_read: false }, Write { by: 1, t: 4, op: 19, k: 0, v: 1 }, Advance { who: None, ms: 4484944 }, Edge { by: 0, t: 6, member: 1, role: Some(Role::Admin) }];
-    let h2 = vec![Demote { by: 0, t: 5, member: 2, at: 3, to_read: true }, Edge { by: 2, t: 3, member: 1, role: Some(Role::Write) }, Roster { by: 0, t: 0 }, Roster { by: 0, t: 5 }, Write { by: 2, t: 0, op: 19, k: 2, v: 1 }, New { by: 2, parent: 6, write: false }, Roster { by: 2, t: 1 }, Edge { by: 0, t: 0, member: 1, role: Some(Role::Admin) }, Compact { by: 1, t: 0, op: 0 }, Sync { from: 2, to: 0 }, Edge { by: 0, t: 1, member: 2, role: Some(Role::Admin) }, Write { by: 2, t: 1, op: 6, k: 0, v: 5 }, Send { from: 2, to: 1, back: 2 }, Write { by: 1, t: 3, op: 6, k: 1, v: 0 }, Write { by: 1, t: 6, op: 6, k: 2, v: 7 }, Edge { by: 0, t: 6, member: 2, role: Some(Role::Admin) }, Edge { by: 2, t: 3, member: 1, role: Some(Role::Write) }, Sync { from: 0, to: 1 }, Write { by: 1, t: 4, op: 19, k: 2, v: 6 }, Advance { who: None, ms: 5488242 }];
+    let h = vec![Write { by: 1, t: 6, op: 19, k: 0, v: 3 }, Demote { by: 0, t: 4, holder: 1, at: 5, to_read: false }, Write { by: 1, t: 4, op: 19, k: 0, v: 1 }, Advance { who: None, ms: 4484944 }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }];
+    let h2 = vec![Demote { by: 0, t: 5, holder: 2, at: 3, to_read: true }, Edge { by: 2, t: 3, holder: 1, role: Some(Role::Write) }, Roster { by: 0, t: 0 }, Roster { by: 0, t: 5 }, Write { by: 2, t: 0, op: 19, k: 2, v: 1 }, New { by: 2, parent: 6, write: false }, Roster { by: 2, t: 1 }, Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Compact { by: 1, t: 0, op: 0 }, Sync { from: 2, to: 0 }, Edge { by: 0, t: 1, holder: 2, role: Some(Role::Admin) }, Write { by: 2, t: 1, op: 6, k: 0, v: 5 }, Send { from: 2, to: 1, back: 2 }, Write { by: 1, t: 3, op: 6, k: 1, v: 0 }, Write { by: 1, t: 6, op: 6, k: 2, v: 7 }, Edge { by: 0, t: 6, holder: 2, role: Some(Role::Admin) }, Edge { by: 2, t: 3, holder: 1, role: Some(Role::Write) }, Sync { from: 0, to: 1 }, Write { by: 1, t: 4, op: 19, k: 2, v: 6 }, Advance { who: None, ms: 5488242 }];
     // seed 845143: B's two writes, lowered to read and raised by two grants; B's own creation
     // (the dropped body's) turns invalid and valid again (no single grant missing flips it)
-    let h3 = vec![Edge { by: 0, t: 2, member: 1, role: Some(Role::Read) }, Demote { by: 0, t: 0, member: 2, at: 2, to_read: false }, Edge { by: 0, t: 6, member: 1, role: Some(Role::Write) }, Edge { by: 0, t: 4, member: 1, role: Some(Role::Write) }, Write { by: 1, t: 6, op: 19, k: 0, v: 3 }, Write { by: 1, t: 6, op: 19, k: 0, v: 8 }, Advance { who: None, ms: 6234602 }, New { by: 0, parent: 2, write: true }];
+    let h3 = vec![Edge { by: 0, t: 2, holder: 1, role: Some(Role::Read) }, Demote { by: 0, t: 0, holder: 2, at: 2, to_read: false }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Write) }, Edge { by: 0, t: 4, holder: 1, role: Some(Role::Write) }, Write { by: 1, t: 6, op: 19, k: 0, v: 3 }, Write { by: 1, t: 6, op: 19, k: 0, v: 8 }, Advance { who: None, ms: 6234602 }, New { by: 0, parent: 2, write: true }];
     let cases = [(47289, h.clone()), (583188, h2), (845143, h3)];
     let idx: Vec<u64> = (0..cases.len() as u64).collect();
     for (r, (seed, _)) in par_map(&idx, threads("OSIS_ORDER_THREADS"), |i| check(cases[i as usize].0, &cases[i as usize].1, LARGE)).into_iter().zip(&cases) {
@@ -1564,7 +1564,7 @@ fn snapshot_sharing_stamp_of_unseen_death_not_dated_early_spec_commits_5() {
 #[test]
 fn snapshot_dropped_before_flip_keeps_frontiers_tolerated_spec_commits_5() {
     use Step::*;
-    let h = vec![Write { by: 0, t: 3, op: 18, k: 0, v: 2 }, Compact { by: 0, t: 4, op: 18 }, Edge { by: 0, t: 6, member: 1, role: Some(Role::Admin) }, Roster { by: 0, t: 6 }, Write { by: 1, t: 7, op: 15, k: 2, v: 7 }, Nested { by: 0, other: 2, t: 4, k: 0, text: false, compact: true, also: true }, Demote { by: 0, t: 0, member: 1, at: 4, to_read: false }, Edge { by: 2, t: 2, member: 2, role: Some(Role::Admin) }, Write { by: 2, t: 4, op: 0, k: 1, v: 8 }, Demote { by: 0, t: 4, member: 2, at: 1, to_read: true }, Write { by: 1, t: 0, op: 18, k: 2, v: 5 }];
+    let h = vec![Write { by: 0, t: 3, op: 18, k: 0, v: 2 }, Compact { by: 0, t: 4, op: 18 }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }, Roster { by: 0, t: 6 }, Write { by: 1, t: 7, op: 15, k: 2, v: 7 }, Nested { by: 0, other: 2, t: 4, k: 0, text: false, compact: true, also: true }, Demote { by: 0, t: 0, holder: 1, at: 4, to_read: false }, Edge { by: 2, t: 2, holder: 2, role: Some(Role::Admin) }, Write { by: 2, t: 4, op: 0, k: 1, v: 8 }, Demote { by: 0, t: 4, holder: 2, at: 1, to_read: true }, Write { by: 1, t: 0, op: 18, k: 2, v: 5 }];
     let played = play(3401073, &h);
     let made: Vec<usize> = (0..played.packs.len()).collect();
     let order = [16, 7, 20, 13, 12, 5, 8, 21, 1, 10, 0, 18, 19, 9, 15, 3, 14, 6, 2, 17, 11, 4];
@@ -1575,7 +1575,7 @@ fn snapshot_dropped_before_flip_keeps_frontiers_tolerated_spec_commits_5() {
     assert_eq!(alike(&want, &got, &|_, _| false), None);
     check(3401073, &h, LARGE).unwrap();
     // the seed's longer shrink: the dropped snapshot leaves the carried-writes index too
-    let h2 = vec![Roster { by: 0, t: 2 }, Nested { by: 1, other: 2, t: 0, k: 1, text: false, compact: false, also: false }, Demote { by: 2, t: 6, member: 2, at: 4, to_read: true }, Roster { by: 0, t: 0 }, Demote { by: 0, t: 6, member: 2, at: 1, to_read: false }, Write { by: 0, t: 3, op: 18, k: 0, v: 2 }, Compact { by: 0, t: 4, op: 18 }, Write { by: 1, t: 0, op: 15, k: 0, v: 3 }, Edge { by: 0, t: 4, member: 1, role: Some(Role::Read) }, Edge { by: 0, t: 6, member: 1, role: Some(Role::Admin) }, Roster { by: 0, t: 6 }, Advance { who: None, ms: 3721574 }, Write { by: 1, t: 7, op: 15, k: 2, v: 7 }, Nested { by: 0, other: 2, t: 4, k: 0, text: false, compact: true, also: true }, Demote { by: 0, t: 0, member: 1, at: 4, to_read: false }, Edge { by: 0, t: 7, member: 2, role: Some(Role::Write) }, Compact { by: 1, t: 7, op: 4 }, Sync { from: 0, to: 2 }, Write { by: 1, t: 1, op: 4, k: 1, v: 3 }, Write { by: 2, t: 4, op: 0, k: 1, v: 8 }, Demote { by: 0, t: 4, member: 2, at: 1, to_read: true }, Edge { by: 0, t: 7, member: 1, role: Some(Role::Write) }, Write { by: 1, t: 0, op: 18, k: 2, v: 5 }];
+    let h2 = vec![Roster { by: 0, t: 2 }, Nested { by: 1, other: 2, t: 0, k: 1, text: false, compact: false, also: false }, Demote { by: 2, t: 6, holder: 2, at: 4, to_read: true }, Roster { by: 0, t: 0 }, Demote { by: 0, t: 6, holder: 2, at: 1, to_read: false }, Write { by: 0, t: 3, op: 18, k: 0, v: 2 }, Compact { by: 0, t: 4, op: 18 }, Write { by: 1, t: 0, op: 15, k: 0, v: 3 }, Edge { by: 0, t: 4, holder: 1, role: Some(Role::Read) }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }, Roster { by: 0, t: 6 }, Advance { who: None, ms: 3721574 }, Write { by: 1, t: 7, op: 15, k: 2, v: 7 }, Nested { by: 0, other: 2, t: 4, k: 0, text: false, compact: true, also: true }, Demote { by: 0, t: 0, holder: 1, at: 4, to_read: false }, Edge { by: 0, t: 7, holder: 2, role: Some(Role::Write) }, Compact { by: 1, t: 7, op: 4 }, Sync { from: 0, to: 2 }, Write { by: 1, t: 1, op: 4, k: 1, v: 3 }, Write { by: 2, t: 4, op: 0, k: 1, v: 8 }, Demote { by: 0, t: 4, holder: 2, at: 1, to_read: true }, Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }, Write { by: 1, t: 0, op: 18, k: 2, v: 5 }];
     let played = play(3401073, &h2);
     let held = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 13, 14, 16, 17, 18, 20, 21, 23, 26, 27, 28, 30];
     let order = [3, 8, 13, 30, 20, 4, 27, 0, 11, 2, 28, 26, 14, 16, 18, 10, 5, 6, 21, 1, 17, 7, 23];
@@ -1593,7 +1593,7 @@ fn snapshot_dropped_before_flip_keeps_frontiers_tolerated_spec_commits_5() {
 #[test]
 fn snapshot_dropped_by_earlier_stamped_kill_tolerated_spec_commits_5() {
     use Step::*;
-    let h = vec![Write { by: 1, t: 1, op: 19, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Compact { by: 1, t: 4, op: 0 }, Undo { by: 1, back: 1 }, Advance { who: None, ms: 6766743 }, Compact { by: 0, t: 0, op: 20 }, Demote { by: 0, t: 6, member: 1, at: 1, to_read: false }];
+    let h = vec![Write { by: 1, t: 1, op: 19, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Compact { by: 1, t: 4, op: 0 }, Undo { by: 1, back: 1 }, Advance { who: None, ms: 6766743 }, Compact { by: 0, t: 0, op: 20 }, Demote { by: 0, t: 6, holder: 1, at: 1, to_read: false }];
     let played = play(21187, &h);
     let made: Vec<usize> = (0..played.packs.len()).collect();
     let rev: Vec<usize> = made.iter().rev().copied().collect();

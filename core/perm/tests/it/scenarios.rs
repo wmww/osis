@@ -1,4 +1,4 @@
-//! Named scenarios of notes/permissions.md and core/test/membership-model, layer 1 (spec/permissions.md
+//! Named scenarios of notes/permissions.md and core/test/roles-model, layer 1 (spec/permissions.md
 //! §2, §5.1, §6, §9). Receipt times give each demoter's frontier.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -17,8 +17,8 @@ fn role(tl: &Timeline, n: Tid, t: Tid) -> Option<Role> {
     tl.role(&n, &t, At::END)
 }
 
-fn edge_role(tl: &Timeline, member: Tid, t: Tid) -> Option<Role> {
-    tl.roster(&t, At::END).get(&member).map(|e| e.role)
+fn edge_role(tl: &Timeline, holder: Tid, t: Tid) -> Option<Role> {
+    tl.roster(&t, At::END).get(&holder).map(|e| e.role)
 }
 
 /// Owner O owns G; A1..A3 admins, M writer.
@@ -153,7 +153,7 @@ fn transitive_ownership_audit() {
 }
 
 /// §2 self-removal: audits nothing; the next explicit removal by another node (which saw the
-/// leave, so the leave stands) audits as if the member were admin.
+/// leave, so the leave stands) audits as if the holder were admin.
 #[test]
 fn self_removal_finalized_by_explicit_removal() {
     let (mut w, n, g) = group();
@@ -168,7 +168,7 @@ fn self_removal_finalized_by_explicit_removal() {
     assert!(tl.dropped().keys().all(|d| d.commit() == forged));
 }
 
-/// §5.1 Frontier (core/test/tla/membership M1, chain-write forgery): after n1 removes n2 having received
+/// §5.1 Frontier (core/test/tla/roles M1, chain-write forgery): after n1 removes n2 having received
 /// nothing of n2's, n2's backdated write on n1's own admin edge (admin until 9, stamped 6) is
 /// not covered by n1's frontier: it drops and n1 keeps its role.
 #[test]
@@ -216,7 +216,7 @@ fn received_chain_write_covered_spec_permissions_5_1() {
     assert_eq!(tl.roster(&g, At::END).get(&n[1]).and_then(|e| e.invite), Some(Write));
 }
 
-/// Link K: L (node 1) holds (write, invite write) on K owned by sharer 0; J, Z joiners, Y member.
+/// Link K: L (node 1) holds (write, invite write) on K owned by sharer 0; J, Z joiners, Y holder.
 fn link(l_edge: Option<Edge>) -> (World, Vec<Tid>, Tid) {
     let mut w = World::new();
     let n = w.nodes(5);
@@ -476,10 +476,10 @@ fn group_removal_by_owner_of_both() {
 }
 
 /// §6 epoch starts: a snapshot of N whose author's owner-chain authority comes through a
-/// member actor Q of N's owner is rejected while Q's start says the author was not in Q, and
+/// holder actor Q of N's owner is rejected while Q's start says the author was not in Q, and
 /// reconsidered when Q's start changes to one that lists it (Q is not N's owner ancestor).
 #[test]
-fn rejected_start_reconsidered_through_member_actor() {
+fn rejected_start_reconsidered_through_holder_actor() {
     let mut w = World::new();
     let n = w.nodes(5);
     let (k, k2, d, e, z) = (n[0], n[1], n[2], n[3], n[4]);
@@ -517,7 +517,7 @@ fn owner_not_removable_by_admins() {
 }
 
 /// §1: edges are written only by admins: a writer's grant, raise or removal never applies.
-// spec/permissions.md §1 (membership-class by admins)
+// spec/permissions.md §1 (role-class by admins)
 #[test]
 fn writer_cannot_write_edges() {
     let (mut w0, n, g) = group();

@@ -979,7 +979,7 @@ fn embedded_chars_order_right_after_their_write() {
 }
 
 /// spec §3.3 rule 3, rule 7, §7 Canonical form: the decoder rejects a register reset below the
-/// root, runs that are not maximal, and `Slots` members that are empty or add nothing to the
+/// root, runs that are not maximal, and `Slots` slots that are empty or add nothing to the
 /// register's embedding; the canonical forms decode.
 #[test]
 fn decoder_rejects_rule_7_strict() {
@@ -1005,7 +1005,7 @@ fn decoder_rejects_rule_7_strict() {
     assert!(decode_delta(&delta(vec![run(1, 1, 0, "a"), run(2, 1, 1, "b")]), &mut wcx(3)).is_err());
     // the second anchored elsewhere (HEAD): two runs are canonical
     assert!(decode_delta(&delta(vec![run(1, 1, 0, "a"), run(2, 1, 0, "b")]), &mut wcx(3)).is_ok());
-    // a snapshot's `Slots`: a set member equal to the register's embedding adds nothing
+    // a snapshot's `Slots`: a set slot equal to the register's embedding adds nothing
     let s = Stamp::new(ts, Source::node(2), 1);
     let r = Frag::Register { reset: None, write: Some((s.clone(), Some(Value::Str("x".into())))) };
     let slots = |set: Frag| Frag::Slots { reg: Some(Box::new(r.clone())), slots: BTreeMap::from([(6u8, set)]) };

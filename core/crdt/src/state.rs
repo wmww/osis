@@ -334,27 +334,27 @@ fn join_entries(m: &mut Map, d: BTreeMap<Eid, Entry>, e: Option<&Stamp>, ch: &mu
 /// Splits a position into its register slot and non-register slots (§7).
 fn parts(f: Fragment) -> (Option<Register>, BTreeMap<Encoding, Fragment>) {
     match f {
-        Fragment::Slots(s) => (s.reg, s.members),
+        Fragment::Slots(s) => (s.reg, s.slots),
         Fragment::Register(r) => (Some(r), BTreeMap::new()),
         f => (None, BTreeMap::from([(f.encoding(), f)])),
     }
 }
 
-/// The canonical position from its members: empty members go, a lone member stands alone,
+/// The canonical position from its slots: empty slots go, a lone slot stands alone,
 /// nothing is an empty register (§7 Canonical form).
-pub(crate) fn assemble(reg: Option<Register>, mut members: BTreeMap<Encoding, Fragment>) -> Fragment {
+pub(crate) fn assemble(reg: Option<Register>, mut slots: BTreeMap<Encoding, Fragment>) -> Fragment {
     let reg = reg.filter(|r| !Fragment::Register(r.clone()).is_empty());
-    members.retain(|_, f| !f.is_empty() && !reg.as_ref().is_some_and(|r| below_embedding(f, r)));
-    let mut it = members.into_iter();
+    slots.retain(|_, f| !f.is_empty() && !reg.as_ref().is_some_and(|r| below_embedding(f, r)));
+    let mut it = slots.into_iter();
     match (reg, it.len()) {
         (None, 0) => Fragment::default(),
         (Some(r), 0) => Fragment::Register(r),
         (None, 1) => it.next().map_or_else(Fragment::default, |(_, f)| f),
-        (reg, _) => Fragment::Slots(Slots { reg, members: it.collect() }),
+        (reg, _) => Fragment::Slots(Slots { reg, slots: it.collect() }),
     }
 }
 
-/// Whether member `f` adds nothing to the embedding of register `r`: `f ⊔ embed(r) = embed(r)`
+/// Whether slot `f` adds nothing to the embedding of register `r`: `f ⊔ embed(r) = embed(r)`
 /// (§7 Canonical form).
 fn below_embedding(f: &Fragment, r: &Register) -> bool {
     let Some(mut e) = embed(r, f.encoding()) else { return false };
@@ -499,8 +499,8 @@ impl Fragment {
                 seq::prune_elems(s, e.as_ref(), ch);
             }
             Fragment::Slots(_) => {
-                let (reg, members) = parts(std::mem::take(self));
-                *self = prune_slots(reg, members, e_parent, ch);
+                let (reg, slots) = parts(std::mem::take(self));
+                *self = prune_slots(reg, slots, e_parent, ch);
             }
         }
     }
@@ -521,7 +521,7 @@ impl Fragment {
             }
             Fragment::Struct(Struct { fields: m, .. }) | Fragment::Enum(Enum { payloads: m, .. }) => m.values_mut().for_each(|x| x.seqs_mut(f)),
             Fragment::Map(m) => m.entries.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(|x| x.seqs_mut(f)),
-            Fragment::Slots(s) => s.members.values_mut().for_each(|x| x.seqs_mut(f)),
+            Fragment::Slots(s) => s.slots.values_mut().for_each(|x| x.seqs_mut(f)),
             Fragment::Register(_) | Fragment::Set(_) | Fragment::Bag(_) => {}
         }
     }
@@ -545,11 +545,11 @@ impl Fragment {
         });
     }
 
-    /// Own reset; for `Slots` the greatest member reset (§7).
+    /// Own reset; for `Slots` the greatest slot reset (§7).
     pub(crate) fn reset(&self) -> Option<Stamp> {
         match self {
             Fragment::Register(r) => r.reset.clone(),
-            Fragment::Slots(s) => slots_reset(s.reg.as_ref(), &s.members, None),
+            Fragment::Slots(s) => slots_reset(s.reg.as_ref(), &s.slots, None),
             f => f.meta().and_then(|m| m.reset.clone()),
         }
     }
@@ -578,7 +578,7 @@ impl Fragment {
         }
     }
 
-    /// Sets the own reset (a `Slots` member carrying the position's reset, §7).
+    /// Sets the own reset (a `Slots` slot carrying the position's reset, §7).
     pub(crate) fn set_reset(&mut self, r: Option<Stamp>) {
         match self {
             Fragment::Register(x) => x.reset = r,
@@ -590,20 +590,20 @@ impl Fragment {
         }
     }
 
-    /// Members of a `Slots` position, or the fragment itself.
-    pub(crate) fn members(&self) -> Vec<MemberRef<'_>> {
+    /// Slots of a `Slots` position, or the fragment itself.
+    pub(crate) fn slots(&self) -> Vec<SlotRef<'_>> {
         match self {
-            Fragment::Slots(s) => s.reg.iter().map(MemberRef::Reg).chain(s.members.values().map(MemberRef::Frag)).collect(),
-            f => vec![MemberRef::Frag(f)],
+            Fragment::Slots(s) => s.reg.iter().map(SlotRef::Reg).chain(s.slots.values().map(SlotRef::Frag)).collect(),
+            f => vec![SlotRef::Frag(f)],
         }
     }
 
     /// The slot of encoding `enc` at this position (§7: ops write into their schema's slot).
-    pub fn slot(&self, enc: Encoding) -> Option<MemberRef<'_>> {
+    pub fn slot(&self, enc: Encoding) -> Option<SlotRef<'_>> {
         match self {
-            Fragment::Slots(s) if enc == Encoding::Register => s.reg.as_ref().map(MemberRef::Reg),
-            Fragment::Slots(s) => s.members.get(&enc).map(MemberRef::Frag),
-            f if f.encoding() == enc => Some(MemberRef::Frag(f)),
+            Fragment::Slots(s) if enc == Encoding::Register => s.reg.as_ref().map(SlotRef::Reg),
+            Fragment::Slots(s) => s.slots.get(&enc).map(SlotRef::Frag),
+            f if f.encoding() == enc => Some(SlotRef::Frag(f)),
             _ => None,
         }
     }
@@ -612,7 +612,7 @@ impl Fragment {
     pub fn written(&self) -> Option<Stamp> {
         match self {
             Fragment::Register(r) => reg_written(r),
-            Fragment::Slots(_) => self.chosen_member().written(),
+            Fragment::Slots(_) => self.chosen_slot().written(),
             f => max_opt(f.meta().and_then(|m| m.w.clone()), f.inner_max(true)),
         }
     }
@@ -622,19 +622,19 @@ impl Fragment {
     pub fn present(&self) -> bool {
         match self {
             Fragment::Register(r) => reg_written(r).is_some(),
-            Fragment::Slots(_) => self.chosen_member().present(),
+            Fragment::Slots(_) => self.chosen_slot().present(),
             f => f.meta().is_some_and(|m| m.w.is_some()) || f.inner_any(),
         }
     }
 
     /// `inner_max(true).is_some()`, stopping at the first write.
     fn inner_any(&self) -> bool {
-        let member = |m: &MemberRef| m.present() || m.reset().is_some();
-        let child = |f: &Fragment| member(&MemberRef::Frag(f));
+        let slot = |m: &SlotRef| m.present() || m.reset().is_some();
+        let child = |f: &Fragment| slot(&SlotRef::Frag(f));
         let elems_any = |elems: &BTreeMap<Dot, Elem>| elems.values().any(|e| e.reset.is_some() || e.frag.as_deref().is_some_and(child));
         match self {
             Fragment::Register(r) => r.write.as_ref().is_some_and(|w| w.value.is_some()),
-            Fragment::Slots(_) => self.members().iter().any(member),
+            Fragment::Slots(_) => self.slots().iter().any(slot),
             Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems_any(elems),
             Fragment::Struct(s) => s.fields.values().any(child),
             Fragment::Enum(s) => s.case.as_ref().is_some_and(|k| k.case.is_some()) || s.payloads.values().any(child),
@@ -646,12 +646,12 @@ impl Fragment {
     /// Greatest stamp inside (children, elements, case), excluding own reset and `W`. With
     /// `valued`, only presence-counting writes (value-less ones are skipped, §4.3, §4.7).
     pub(crate) fn inner_max(&self, valued: bool) -> Option<Stamp> {
-        let member = |m: &MemberRef| if valued { max_opt(m.written(), m.reset()) } else { m.all_max() };
-        let child = |f: &Fragment| member(&MemberRef::Frag(f));
+        let slot = |m: &SlotRef| if valued { max_opt(m.written(), m.reset()) } else { m.all_max() };
+        let child = |f: &Fragment| slot(&SlotRef::Frag(f));
         let elems_max = |elems: &BTreeMap<Dot, Elem>| elems.values().fold(None, |m, e| max_opt(max_opt(m, e.reset.clone()), e.frag.as_deref().and_then(child)));
         match self {
             Fragment::Register(r) => r.write.as_ref().filter(|w| !valued || w.value.is_some()).map(|w| w.stamp.clone()),
-            Fragment::Slots(_) => self.members().iter().fold(None, |x, m| max_opt(x, member(m))),
+            Fragment::Slots(_) => self.slots().iter().fold(None, |x, m| max_opt(x, slot(m))),
             Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems_max(elems),
             Fragment::Struct(s) => s.fields.values().fold(None, |m, f| max_opt(m, child(f))),
             Fragment::Enum(s) => {
@@ -680,35 +680,35 @@ impl Fragment {
             Fragment::Enum(s) => s.case.is_none() && s.payloads.values().all(Fragment::is_empty),
             Fragment::Map(m) => m.entries.is_empty(),
             Fragment::Seq(s) => !seq::has_records(s) && seq::inner_max(s, false).is_none(),
-            Fragment::Slots(_) => return self.members().iter().all(MemberRef::is_empty),
+            Fragment::Slots(_) => return self.slots().iter().all(SlotRef::is_empty),
         };
         no_children && self.meta().is_none_or(|m| m.reset.is_none() && m.w.is_none())
     }
 
-    /// The member a `Slots` position reads as: greatest stamp inside, ties by greater encoding
+    /// The slot a `Slots` position reads as: greatest stamp inside, ties by greater encoding
     /// id (§7 Read); the fragment itself otherwise.
     pub(crate) fn chosen(&self) -> Fragment {
-        self.chosen_member().to_fragment()
+        self.chosen_slot().to_fragment()
     }
 
-    /// `chosen` without cloning the member.
-    pub(crate) fn chosen_member(&self) -> MemberRef<'_> {
+    /// `chosen` without cloning the slot.
+    pub(crate) fn chosen_slot(&self) -> SlotRef<'_> {
         match self {
-            // a lone non-register member holds the register's embedding, so its greatest
+            // a lone non-register slot holds the register's embedding, so its greatest
             // stamp is at least the register's and it is chosen without a scan
-            Fragment::Slots(s) if s.members.len() == 1 => s.members.values().next().map_or(MemberRef::Frag(self), MemberRef::Frag),
+            Fragment::Slots(s) if s.slots.len() == 1 => s.slots.values().next().map_or(SlotRef::Frag(self), SlotRef::Frag),
             Fragment::Slots(_) => {
-                let key = |m: &MemberRef| (m.all_max(), m.encoding());
-                let mut best: Option<(MemberRef, _)> = None;
-                for m in self.members() {
+                let key = |m: &SlotRef| (m.all_max(), m.encoding());
+                let mut best: Option<(SlotRef, _)> = None;
+                for m in self.slots() {
                     let k = key(&m);
                     if best.as_ref().is_none_or(|(_, bk)| k >= *bk) {
                         best = Some((m, k));
                     }
                 }
-                best.map_or(MemberRef::Frag(self), |(m, _)| m)
+                best.map_or(SlotRef::Frag(self), |(m, _)| m)
             }
-            f => MemberRef::Frag(f),
+            f => SlotRef::Frag(f),
         }
     }
 
@@ -718,7 +718,7 @@ impl Fragment {
             return None;
         }
         match self {
-            Fragment::Slots(_) => self.chosen_member().read(),
+            Fragment::Slots(_) => self.chosen_slot().read(),
             Fragment::Register(r) => r.write.as_ref().and_then(|w| w.value.clone()),
             Fragment::Bag(b) => read_bag(b),
             Fragment::Struct(s) => Some(Value::Map(
@@ -762,20 +762,20 @@ impl Fragment {
     }
 }
 
-/// A member of a position: the register slot or another fragment.
+/// A slot of a position: the register slot or another fragment.
 #[derive(Clone, Copy, Debug)]
-pub enum MemberRef<'a> {
+pub enum SlotRef<'a> {
     Reg(&'a Register),
     Frag(&'a Fragment),
 }
 
-impl MemberRef<'_> {
+impl SlotRef<'_> {
     /// `r` on a register slot (not wrapped in a cloned `Fragment`: `Slots` reads call these per
-    /// member), `f` on another member.
+    /// slot), `f` on another slot.
     fn by<T>(&self, r: impl FnOnce(&Register) -> T, f: impl FnOnce(&Fragment) -> T) -> T {
         match self {
-            MemberRef::Reg(x) => r(x),
-            MemberRef::Frag(x) => f(x),
+            SlotRef::Reg(x) => r(x),
+            SlotRef::Frag(x) => f(x),
         }
     }
     fn written(&self) -> Option<Stamp> {
@@ -801,8 +801,8 @@ impl MemberRef<'_> {
     }
     pub fn to_fragment(self) -> Fragment {
         match self {
-            MemberRef::Reg(r) => Fragment::Register((*r).clone()),
-            MemberRef::Frag(x) => (*x).clone(),
+            SlotRef::Reg(r) => Fragment::Register((*r).clone()),
+            SlotRef::Frag(x) => (*x).clone(),
         }
     }
 }
@@ -822,10 +822,10 @@ fn drop_implied_reset(r: &mut Register, ch: &mut Changes) {
     }
 }
 
-/// The effective reset of a position with register slot `reg` and `members` under `e_parent`:
+/// The effective reset of a position with register slot `reg` and `slots` under `e_parent`:
 /// the greatest of them (§7).
-fn slots_reset(reg: Option<&Register>, members: &BTreeMap<Encoding, Fragment>, e_parent: Option<&Stamp>) -> Option<Stamp> {
-    reg.map(|r| r.reset.clone()).into_iter().chain(members.values().map(Fragment::reset)).fold(e_parent.cloned(), max_opt)
+fn slots_reset(reg: Option<&Register>, slots: &BTreeMap<Encoding, Fragment>, e_parent: Option<&Stamp>) -> Option<Stamp> {
+    reg.map(|r| r.reset.clone()).into_iter().chain(slots.values().map(Fragment::reset)).fold(e_parent.cloned(), max_opt)
 }
 
 /// `join_into` of two registers.
@@ -841,7 +841,7 @@ fn join_regs(a: Register, b: Register, ch: &mut Changes) -> Register {
 /// Join across encodings (§7): pointwise per encoding, the register slot embedded into every
 /// other slot, then one effective reset for the position. Into a `Slots` state whose register
 /// and effective reset the join leaves as they are (the common join: sequence writes), only the
-/// members `b` carries are joined, under that reset; else the whole position is re-embedded and
+/// slots `b` carries are joined, under that reset; else the whole position is re-embedded and
 /// pruned.
 fn join_slots(a: Fragment, b: Fragment, e_parent: Option<&Stamp>, ch: &mut Changes) -> Fragment {
     #[cfg(debug_assertions)]
@@ -867,20 +867,20 @@ fn uncached(f: &Fragment) -> Fragment {
 /// The effective reset `E` of `Slots` state `sa` when joining `b` leaves its register and `E` as
 /// they are; `None` when the position must be re-embedded and pruned whole.
 fn kept_reset(sa: &Slots, b: &Fragment, e_parent: Option<&Stamp>) -> Option<Option<Stamp>> {
-    let e = slots_reset(sa.reg.as_ref(), &sa.members, e_parent);
+    let e = slots_reset(sa.reg.as_ref(), &sa.slots, e_parent);
     let raises = |x: Option<Stamp>| x.is_some_and(|x| e.as_ref().is_none_or(|e| x > *e));
     let keeps = match b {
         Fragment::Register(rb) => sa.reg.as_ref().is_some_and(|ra| reg_absorbs(ra, rb)),
-        Fragment::Slots(sb) => sb.reg.as_ref().is_none_or(|rb| sa.reg.as_ref().is_some_and(|ra| reg_absorbs(ra, rb))) && !sb.members.values().any(|f| raises(f.reset())),
+        Fragment::Slots(sb) => sb.reg.as_ref().is_none_or(|rb| sa.reg.as_ref().is_some_and(|ra| reg_absorbs(ra, rb))) && !sb.slots.values().any(|f| raises(f.reset())),
         f => !raises(f.reset()),
     };
     keeps.then_some(e)
 }
 
-/// The incremental join of `join_slots` under `kept_reset`'s `e`. A `Slots` state's members
+/// The incremental join of `join_slots` under `kept_reset`'s `e`. A `Slots` state's slots
 /// already hold its register's embedding and are pruned under `e`; with the register and `e`
-/// staying, joining `b`'s members under `e` (a new one with the embedding) keeps that, and a
-/// joined member still adds something to the embedding.
+/// staying, joining `b`'s slots under `e` (a new one with the embedding) keeps that, and a
+/// joined slot still adds something to the embedding.
 fn join_slots_kept(mut sa: Slots, b: Fragment, e: Option<&Stamp>, ch: &mut Changes) -> Fragment {
     let (rb, mb) = parts(b);
     if let (Some(ra), Some(rb)) = (sa.reg.as_mut(), rb) {
@@ -891,7 +891,7 @@ fn join_slots_kept(mut sa: Slots, b: Fragment, e: Option<&Stamp>, ch: &mut Chang
         if let (Fragment::Seq(x), Some(r)) = (&mut fb, sa.reg.as_ref()) {
             seq::fit_embedding(x, r);
         }
-        match sa.members.get_mut(&k) {
+        match sa.slots.get_mut(&k) {
             Some(fa) => fa.join_into(fb, e, ch),
             None => {
                 let mut f = fb;
@@ -901,7 +901,7 @@ fn join_slots_kept(mut sa: Slots, b: Fragment, e: Option<&Stamp>, ch: &mut Chang
                 }
                 if !f.is_empty() && !sa.reg.as_ref().is_some_and(|r| below_embedding(&f, r)) {
                     ch.touch();
-                    sa.members.insert(k, f);
+                    sa.slots.insert(k, f);
                 }
             }
         }
@@ -936,14 +936,14 @@ fn join_slots_whole(a: Fragment, b: Fragment, e_parent: Option<&Stamp>, ch: &mut
     prune_slots(reg, ma, e_parent, ch)
 }
 
-/// Prunes a position's members under its one effective reset (an own reset below it goes,
+/// Prunes a position's slots under its one effective reset (an own reset below it goes,
 /// §4.2, §7) and assembles the canonical form.
-pub(crate) fn prune_slots(reg: Option<Register>, members: BTreeMap<Encoding, Fragment>, e_parent: Option<&Stamp>, ch: &mut Changes) -> Fragment {
-    // every member holds the register's embedding, whatever path the members came by (a
+pub(crate) fn prune_slots(reg: Option<Register>, slots: BTreeMap<Encoding, Fragment>, e_parent: Option<&Stamp>, ch: &mut Changes) -> Fragment {
+    // every slot holds the register's embedding, whatever path the slots came by (a
     // received snapshot's `Slots` included)
-    let mut members = members;
+    let mut slots = slots;
     if let Some(r) = &reg {
-        for (k, f) in members.iter_mut() {
+        for (k, f) in slots.iter_mut() {
             if let Fragment::Seq(x) = f {
                 seq::fit_embedding(x, r);
             }
@@ -952,7 +952,7 @@ pub(crate) fn prune_slots(reg: Option<Register>, members: BTreeMap<Encoding, Fra
             }
         }
     }
-    let e = slots_reset(reg.as_ref(), &members, e_parent);
+    let e = slots_reset(reg.as_ref(), &slots, e_parent);
     let fix = |mut f: Fragment, ch: &mut Changes| {
         f.prune(e.as_ref(), ch);
         f
@@ -961,8 +961,8 @@ pub(crate) fn prune_slots(reg: Option<Register>, members: BTreeMap<Encoding, Fra
         Fragment::Register(r) => Some(r),
         _ => None,
     });
-    let members = members.into_iter().map(|(k, f)| (k, fix(f, ch))).collect();
-    assemble(reg, members)
+    let slots = slots.into_iter().map(|(k, f)| (k, fix(f, ch))).collect();
+    assemble(reg, slots)
 }
 
 /// §5.2 order for max/min: ints by value; anything involving a float by IEEE 754 totalOrder.

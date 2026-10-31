@@ -70,7 +70,7 @@ fn departed_node_card_deleted_spec_permissions_4() {
     let keys = card_entries(&mut net, a, host, &l, rt, "/keys");
     assert!(!keys.is_empty());
     net.set_online(r, false);
-    let done = net.engine(a).demote(&g, &Demotion { member: rt, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: rt, new: None, presync: PreSync::Synced }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     settle(&mut net);
@@ -79,7 +79,7 @@ fn departed_node_card_deleted_spec_permissions_4() {
     assert!(!card_entries(&mut net, a, host, &l, rt, "/keys").is_empty(), "its /keys stays");
 }
 
-// spec/permissions.md §4 (a member node places its card under the labels it reads): a reader
+// spec/permissions.md §4 (a holder node places its card under the labels it reads): a reader
 // removed while offline, its card deleted by the admin, then re-granted, places its card again
 // when it is back, though its `/reach` did not change.
 #[test]
@@ -97,7 +97,7 @@ fn regranted_node_card_placed_again_spec_permissions_4() {
     let first = card_entries(&mut net, a, host, &l, rt, "/reach");
     assert!(!first.is_empty());
     net.set_online(r, false);
-    let done = net.engine(a).demote(&g, &Demotion { member: rt, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: rt, new: None, presync: PreSync::Synced }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     settle(&mut net);
@@ -183,7 +183,7 @@ fn person_reader(net: &mut Net, a: usize, r: usize, host: usize, until: Option<o
     for _ in 0..3 {
         net.advance(70_000);
     }
-    // the group has a member who is no contact of the reader: its `/reach` goes there by choice
+    // the group has a holder who is no contact of the reader: its `/reach` goes there by choice
     let acts = net.sync(r).set_reach_policy(g, Some(true));
     net.actions(r, acts);
     let acts = net.sync(r).publish_reach([1; 32], Vec::new()).unwrap();
@@ -205,7 +205,7 @@ fn person_removed_node_card_deleted_spec_permissions_4() {
     let (g, p, l) = person_reader(&mut net, a, r, host, None);
     let rt = net.tid(r);
     assert!(!card_entries(&mut net, a, host, &l, rt, "/reach").is_empty(), "the reader's card is under the group's label");
-    let done = net.engine(a).demote(&g, &Demotion { member: p, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: p, new: None, presync: PreSync::Synced }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     settle(&mut net);
@@ -294,7 +294,7 @@ fn unheld_chain_card_kept_spec_permissions_4() {
     m.set(h, &REG, &s("h")).unwrap();
     e.commit(m).unwrap();
     set_edge(e, h, r2t, Role::Read);
-    let done = net.engine(a).demote(&g, &Demotion { member: p, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: p, new: None, presync: PreSync::Synced }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     settle(&mut net);
@@ -303,7 +303,7 @@ fn unheld_chain_card_kept_spec_permissions_4() {
     assert!(!card_entries(&mut net, a, host, &l, r2t, "/reach").is_empty(), "the node whose chain is not held keeps its card");
 }
 
-// spec/permissions.md §2 (edges, `until`): a member re-granted after its edge passed its
+// spec/permissions.md §2 (edges, `until`): a holder re-granted after its edge passed its
 // `until` reads again; the expired edge's fields do not outlive the re-grant (the grant
 // removes the old entry first). Then its card goes back under the label.
 #[test]
@@ -327,6 +327,6 @@ fn regrant_after_until_reads_again_spec_permissions_2() {
         net.advance(70_000);
     }
     settle(&mut net);
-    assert!(net.engine(r).may_read(&p, &g), "and at the member's device");
+    assert!(net.engine(r).may_read(&p, &g), "and at the holder's device");
     assert!(!card_entries(&mut net, a, host, &l, rt, "/reach").is_empty(), "its card is under the label again");
 }

@@ -1,4 +1,4 @@
-//! Relay-only uploads at a host or a member peer serving a label (spec/sync.md §5): admitted
+//! Relay-only uploads at a host or a co-reader peer serving a label (spec/sync.md §5): admitted
 //! by prefix expiry and size, counted against a per-label rate, and pushed once per blob within
 //! its expiry window (a repeat is answered OK and pushed to nobody).
 
@@ -42,7 +42,7 @@ impl Default for RelayLimits {
 /// hours. Each pair costs about 200 bytes (a hash-set and a B-tree entry): 13 MiB at the bound.
 pub const MAX_RELAY_SEEN: usize = 1 << 16;
 
-/// The relay state of one host or member peer (in memory; a restart forgets it).
+/// The relay state of one host or co-reader peer (in memory; a restart forgets it).
 #[derive(Clone, Debug)]
 pub struct RelayGate {
     pub limits: RelayLimits,

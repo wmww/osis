@@ -62,7 +62,7 @@ proptest! {
 }
 
 /// §4.1, §7: the reference model itself joins nested multi-encoding positions independently
-/// of order (members are pruned like any fragment and dropped once below the register's
+/// of order (slots are pruned like any fragment and dropped once below the register's
 /// embedding; a register's reset below its write goes).
 fn model_order_independent(seeds: u64) {
     let a = Ty::Struct([(1, Ty::Register), (2, Ty::Counter)].into_iter().collect());

@@ -1,6 +1,6 @@
-//! Labels as membership writes (spec/sync.md §2, §5): a group's genesis step and `/label`
+//! Labels as role writes (spec/sync.md §2, §5): a group's genesis step and `/label`
 //! record, registration steps an admin issues after rotations (at each host when it next
-//! syncs there, after uploading the membership commits it registers: node-sync orders that),
+//! syncs there, after uploading the role commits it registers: node-sync orders that),
 //! the claim set's readers.
 
 use super::{Done, ak, own_label};
@@ -34,24 +34,24 @@ fn kem_of(k: &KemKey) -> Result<KemPublicKey> {
 /// (and key actors boxed at a higher role, whose box carries read), the owner included; a node
 /// by its KEM key, another key actor by static entry, an actor by its newest read keyset.
 pub(crate) fn readers(tx: &mut Tx<'_>, group: &Tid, e: &Epoch) -> Result<Vec<ReaderKey>> {
-    let mut members: Vec<Tid> = Vec::new();
+    let mut holders: Vec<Tid> = Vec::new();
     if let Some(o) = tx.core.owner(group) {
-        members.push(o);
+        holders.push(o);
     }
     let secrets = super::secrets_in(tx, group)?;
     let epochs = tx.core.epochs(group).unwrap_or_default();
     for k in secrets.boxes.keys() {
         let Ok(ke) = osis_keys::aspects::from_schema(&k.epoch) else { continue };
         let read_at_e = k.role == Role::Read && ke == *e;
-        let carried = k.role > Role::Read && epochs.role(k.role).is_current(&ke) && tx.core.is_key_actor(&k.member);
+        let carried = k.role > Role::Read && epochs.role(k.role).is_current(&ke) && tx.core.is_key_actor(&k.holder);
         if read_at_e || carried {
-            members.push(k.member);
+            holders.push(k.holder);
         }
     }
-    members.sort();
-    members.dedup();
+    holders.sort();
+    holders.dedup();
     let mut out = Vec::new();
-    for m in members {
+    for m in holders {
         out.extend(reader_key(tx, &m)?);
     }
     Ok(out)
@@ -174,7 +174,7 @@ impl Engine {
     /// (spec/sync.md §5): when it holds the head's epochs and an established epoch newer than
     /// the head's, or the head's deposit key is not the one the actor's deposit seed derives
     /// (refreshed), a child at its newest epochs with the current readers, recorded in `/label`
-    /// (a membership commit; node-sync uploads the rotation commits first, then registers, then
+    /// (a role commit; node-sync uploads the rotation commits first, then registers, then
     /// the rest). `None` when nothing is newer, or when it does not hold the head's epochs (it
     /// walks first). `fresh`: issue a step without a rotation (to list readers granted since).
     pub fn issue_step(&mut self, group: &Tid, label: &LabelId, head: &StepId, fresh: bool) -> Result<(Option<(Step, ClaimSet)>, Done)> {

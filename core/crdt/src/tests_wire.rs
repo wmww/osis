@@ -247,12 +247,12 @@ fn rejects_bad_slots_spec_3_3() {
     let commits = vec![l(vec![i(1), l(vec![l(vec![i(5), i(0), i(3)])])])];
     let reg = l(vec![i(0), l(vec![]), i(1), i(1)]);
     let set = l(vec![i(6), l(vec![]), l(vec![]), l(vec![l(vec![l(vec![i(1), i(3)]), l(vec![]), l(vec![l(vec![i(0), l(vec![]), i(1), i(1)])])])])]);
-    let ok = |members: Value, reg: Value| delta(srcs.clone(), commits.clone(), l(vec![i(10), reg, members]));
-    // one member only
+    let ok = |slots: Value, reg: Value| delta(srcs.clone(), commits.clone(), l(vec![i(10), reg, slots]));
+    // one slot only
     rejects(&ok(l(vec![]), l(vec![reg.clone()])), &scx, ErrorClass::BadInput);
-    // a register among the non-register members
+    // a register among the non-register slots
     rejects(&ok(l(vec![set.clone(), reg.clone()]), l(vec![])), &scx, ErrorClass::BadInput);
-    // a non-register first member
+    // a non-register first slot
     rejects(&ok(l(vec![set.clone()]), l(vec![set.clone()])), &scx, ErrorClass::BadInput);
     // repeated encodings
     rejects(&ok(l(vec![set.clone(), set.clone()]), l(vec![reg.clone()])), &scx, ErrorClass::BadInput);

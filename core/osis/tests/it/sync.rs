@@ -1,4 +1,4 @@
-//! Sharing and sync through hosts in process (notes/api.md Sharing and membership,
+//! Sharing and sync through hosts in process (notes/api.md Sharing and roles,
 //! Sync configuration and status), no tokio: see osis_sim::world.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -187,7 +187,7 @@ fn people(w: &mut World, n: usize) -> (Osis, Vec<Osis>, Vec<Tid>) {
 
 // spec/permissions.md §9 (links): Bob redeems a single-use write link to Alice's group and
 // reads what was there before; his redemption removes the link key (the link's `flags`, spec/
-// wire.md §10); Alice's device finalizes it when it sees that (K rotates), Bob stays a member and
+// wire.md §10); Alice's device finalizes it when it sees that (K rotates), Bob stays a holder and
 // a second redeemer is refused (`Network` after `wait_timeout`).
 #[test]
 fn link_redeem_spec_permissions_9() {
@@ -365,13 +365,13 @@ fn joined_by_link() -> (World, Osis, Osis, Osis, Tid, Tid, Tid) {
 }
 
 // spec/permissions.md §9 (a joiner is revoked together with the link key), notes/api.md
-// Sharing (`member_path`, `demote`): a link joiner reaches the target through K; removing it on
+// Sharing (`holder_path`, `demote`): a link joiner reaches the target through K; removing it on
 // the target removes it and L from K in one commit, so a failed pre-sync leaves both in place
 // and a retry completes; a second removal writes nothing; a joiner's role cannot be lowered.
 #[test]
 fn demote_link_joiner_spec_permissions_9() {
     let (mut w, alice, bob, carol, g, k, l) = joined_by_link();
-    assert_eq!(alice.member_path(g, bob.me()), vec![(g, k), (k, bob.me())]);
+    assert_eq!(alice.holder_path(g, bob.me()), vec![(g, k), (k, bob.me())]);
     // offline, the required pre-sync fails: nothing changed
     w.set_online(&alice, false);
     let r = w.until(alice.demote(g, bob.me(), Lower::Remove, Demotion::default()), 1000, 60);
@@ -382,7 +382,7 @@ fn demote_link_joiner_spec_permissions_9() {
     w.until(alice.demote(g, bob.me(), Lower::Remove, skip), 1000, 10).unwrap();
     let r = alice.roster(k);
     assert!(!r.contains_key(&bob.me()) && !r.contains_key(&l) && r.contains_key(&carol.me()));
-    assert!(alice.member_path(g, bob.me()).is_empty());
+    assert!(alice.holder_path(g, bob.me()).is_empty());
     assert!(alice.links(g).is_empty(), "the link ends with its joiner");
     let commits = alice.engine(|e| e.commit_ids().len());
     w.until(alice.demote(g, bob.me(), Lower::Remove, skip), 1000, 10).unwrap();
@@ -416,7 +416,7 @@ fn demote_link_joiner_content_spec_permissions_9() {
 // spec/permissions.md §3 (removal with rotation), §5.3 (pre-sync), notes/api.md Sharing
 // (demote): Alice removes Bob after the pre-sync; Carol keeps reading new content, Bob does
 // not; Bob's write made before the removal stays.
-// spec/crypto.md §4 (removed member)
+// spec/crypto.md §4 (removed holder)
 #[test]
 fn removal_rotates_spec_permissions_3() {
     let mut w = World::new();
@@ -558,7 +558,7 @@ fn remote_signal_spec_sync_5() {
 }
 
 // spec/commits.md §6 (expiry), notes/chat.md (disappearing messages): a message written with an
-// expiry reaches the other member and is gone everywhere once it expires.
+// expiry reaches the other holder and is gone everywhere once it expires.
 #[test]
 fn disappearing_message_spec_commits_6() {
     let mut w = World::new();

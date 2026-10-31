@@ -156,8 +156,8 @@
 //! ```
 //!
 //! # Sharing
-//! Grants need the member's keys (a contact card, a shared group); links need nothing. Things a
-//! group owns are what its members read: create shared things with the group as owner.
+//! Grants need the holder's keys (a contact card, a shared group); links need nothing. Things a
+//! group owns are what its holders read: create shared things with the group as owner.
 //! ```
 //! # use osis::{Config, Osis, Role, LinkOpts, HostAddr};
 //! // a link names hosts (or is direct, `LinkOpts::direct`)

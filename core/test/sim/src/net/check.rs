@@ -1,7 +1,7 @@
 //! Quiescent invariants of phase B (each returns the violated rule with the seed through the
 //! harness; none panics):
 //! - spec/requirements.md (convergence): nodes holding the same commits read the same; the
-//!   members of a labeled group read the same values of its items.
+//!   holders of a labeled group read the same values of its items.
 //! - spec/sync.md §6 (convergence): every body a writer judges must-hold at a label is in a live
 //!   entry at every host of the label it reaches; no entry a node judges must-not-hold (and may
 //!   delete) stays live there; a writer promotes the deposited entries it verified (§5).
@@ -121,11 +121,11 @@ fn aspect_view(e: &mut Engine) -> Result<AspectView, String> {
 
 /// spec/requirements.md (convergence) over up nodes that may hold different parts of a commit
 /// (projections): two nodes holding the same deltas of an aspect read it the same (removed
-/// members excused).
+/// holders excused).
 fn convergence(sim: &mut NetSim) -> Res<()> {
     let mut views: Vec<(usize, AspectView)> = Vec::new();
     for n in 0..sim.nodes.len() {
-        // a removed member's membership view stops at its removal: its validity judgments may differ
+        // a removed holder's role view stops at its removal: its validity judgments may differ
         if sim.excused.contains(&n) {
             continue;
         }
@@ -202,7 +202,7 @@ fn pending(sim: &mut NetSim) -> Res<()> {
     Ok(())
 }
 
-/// Liveness and agreement: every node of a current member (by an admin's roster, the owner's
+/// Liveness and agreement: every node of a current holder (by an admin's roster, the owner's
 /// devices included) reads the group, and all read the same items.
 fn groups(sim: &mut NetSim) -> Res<()> {
     let gs = sim.groups.clone();
@@ -236,7 +236,7 @@ fn groups(sim: &mut NetSim) -> Res<()> {
                     let (knows, pending) = (e.knows(&g.g), e.pending());
                     let labels: Vec<_> = s.labels().into_iter().map(|(t, l)| (t, l.id)).collect();
                     let d = format!("knows it {knows}, pending {pending:?}, labels {labels:?}, conns {:?}", s.describe());
-                    return Err(sim.fail(format!("node {n}, a member of group {}, cannot read it at quiescence (liveness): {d}", g.g)));
+                    return Err(sim.fail(format!("node {n}, a holder of group {}, cannot read it at quiescence (liveness): {d}", g.g)));
                 }
                 continue;
             }
@@ -263,7 +263,7 @@ fn groups(sim: &mut NetSim) -> Res<()> {
                     let gap = gap(sim, m, n, &items);
                     let views = views(sim, &g.g);
                     let dump = key.map(|(t, ak)| aspect_dump(sim, &t, &ak)).unwrap_or_default();
-                    return Err(sim.fail(format!("members {m} and {n} of group {} read differently at quiescence: {d}; {gap}; views {views:?}\n{dump}", g.g)));
+                    return Err(sim.fail(format!("holders {m} and {n} of group {} read differently at quiescence: {d}; {gap}; views {views:?}\n{dump}", g.g)));
                 }
                 Some(_) => {}
             }

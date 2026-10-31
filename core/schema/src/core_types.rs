@@ -10,11 +10,11 @@ use crate::statics::CORE;
 use osis_base::{CommitId, CreationRecord, LabelId, Role, SchemaId, Tid, Ts, Value, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Membership-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.
-pub const MEMBERSHIP_CLASS: [&str; 7] = ["/members", "/secrets", "/keys", "/label", "/tenures", "/moved", "/was"];
+/// Role-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.
+pub const ROLE_CLASS: [&str; 7] = ["/members", "/secrets", "/keys", "/label", "/tenures", "/moved", "/was"];
 
-pub fn is_membership_class(ak: &str) -> bool {
-    MEMBERSHIP_CLASS.contains(&ak)
+pub fn is_role_class(ak: &str) -> bool {
+    ROLE_CLASS.contains(&ak)
 }
 
 fn mismatch(expected: &'static str) -> PathError {
@@ -109,8 +109,8 @@ codec_struct! {
     pub struct Tie { 0 ts: Ts, 1 source: Source, 2 ctr: u64, 3 subgroup: bool }
 }
 codec_struct! {
-    /// A membership edge; `since` only in roster snapshots (spec/permissions.md §6); `tied`: the
-    /// placement of the target in its member, a group, the edge goes with (spec/permissions.md §2).
+    /// A role edge; `since` only in roster snapshots (spec/permissions.md §6); `tied`: the
+    /// placement of the target in its holder, a group, the edge goes with (spec/permissions.md §2).
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 3 since: Option<EdgeKey>, 4 tied: Option<Tie> }
 }
@@ -125,7 +125,7 @@ codec_struct! {
 }
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub struct BoxKey { 0 member: Tid, 1 role: Role, 2 epoch: Epoch }
+    pub struct BoxKey { 0 holder: Tid, 1 role: Role, 2 epoch: Epoch }
 }
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -154,7 +154,7 @@ codec_struct! {
 codec_struct! {
     /// A tenure ledger entry; a large frontier is a link.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Tenure { 0 member: Tid, 1 role: Role, 2 since: Option<EdgeKey>, 3 until: EdgeKey, 4 frontier: Option<Chunked<Frontier>> }
+    pub struct Tenure { 0 holder: Tid, 1 role: Role, 2 since: Option<EdgeKey>, 3 until: EdgeKey, 4 frontier: Option<Chunked<Frontier>> }
 }
 codec_struct! {
     /// Step and claim-set bytes (spec/wire.md §8).
@@ -220,13 +220,13 @@ impl Codec for Tenures {
     }
 }
 
-pub type Members = BTreeMap<Tid, Edge>;
+pub type Holders = BTreeMap<Tid, Edge>;
 pub type Labels = BTreeMap<LabelId, Label>;
 
 pub const TID: Aspect<Tid> = Aspect::new("/tid", &CORE);
 pub const ASPECTS: Aspect<BTreeSet<String>> = Aspect::new("/aspects", &CORE);
 pub const CREATED: Aspect<CreationRecord> = Aspect::new("/created", &CORE);
-pub const MEMBERS: Aspect<Members> = Aspect::new("/members", &CORE);
+pub const MEMBERS: Aspect<Holders> = Aspect::new("/members", &CORE);
 pub const KEYS: Aspect<Keys> = Aspect::new("/keys", &CORE);
 pub const SECRETS: Aspect<Secrets> = Aspect::new("/secrets", &CORE);
 pub const TENURES: Aspect<Tenures> = Aspect::new("/tenures", &CORE);

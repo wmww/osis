@@ -1,7 +1,7 @@
 //! The pass at one host for one label after its log was read to the end (spec/sync.md §5-§7;
 //! spec/permissions.md §4): re-registration first when this admin holds newer epochs than the
-//! head (the actor's membership commits the host lacks, then the step; the rest after it is
-//! registered), then uploads of must-hold bodies (membership first) or relays of stamped ones,
+//! head (the actor's role commits the host lacks, then the step; the rest after it is
+//! registered), then uploads of must-hold bodies (role first) or relays of stamped ones,
 //! this node's certificates and node card, heartbeats, and deletions of must-not-hold bodies
 //! (`delete`: by the label delete key or a delete key, carriers first), timed deletes for
 //! relative keep-at-most.
@@ -56,7 +56,7 @@ const INBOX_COPY_MIN_LEFT: u64 = osis_base::format::INBOX_LIFETIME_MS / 2;
 /// others skip it: writers online together otherwise each sent a copy (spec/sync.md §6, §7).
 const RELAY_MIN_MS: u64 = 5_000;
 
-/// An entry to send, by priority (membership and certificates before content before
+/// An entry to send, by priority (role and certificates before content before
 /// heartbeats).
 struct Out {
     prio: u8,
@@ -168,7 +168,7 @@ struct At<'a> {
 type Deposit = (BlobId, Entry, CommitId, Vec<(usize, usize)>);
 
 pub(super) fn is_snapshot(k: CKind) -> bool {
-    matches!(k, CKind::ContentSnapshot | CKind::MembershipSnapshot)
+    matches!(k, CKind::ContentSnapshot | CKind::RoleSnapshot)
 }
 
 /// A node card's aspects (spec/permissions.md §4).
@@ -176,9 +176,9 @@ pub(super) fn is_card(ak: &str) -> bool {
     matches!(ak, "/node" | "/reach" | "/keys")
 }
 
-/// What stays under a replaced label besides membership-class commits (spec/sync.md §2).
+/// What stays under a replaced label besides role-class commits (spec/sync.md §2).
 pub(super) fn kept_when_replaced(ak: &str) -> bool {
-    ct::is_membership_class(ak) || matches!(ak, "/created" | "/node" | "/reach" | "/seen")
+    ct::is_role_class(ak) || matches!(ak, "/created" | "/node" | "/reach" | "/seen")
 }
 
 /// Every part of `h` on the aspects `keep` admits.
@@ -301,7 +301,7 @@ impl SyncEngine {
                 let tight = self.lc(conn, &l).and_then(|x| x.budget).is_some_and(|b| b < self.cfg.tight_budget);
                 self.heartbeat(&g, l, keys, tight)?;
             } else if !self.may_rotate_read(&g) {
-                // the revokes of departures inside members and their chains' keysets only: they
+                // the revokes of departures inside holders and their chains' keysets only: they
                 // tell the label's rotators what keeps its epoch uncovered and what to seal to
                 // (spec/permissions.md §4 exception)
                 self.certificates(&g, l, true, &BTreeSet::new())?;
@@ -351,7 +351,7 @@ impl SyncEngine {
 
     /// Sends what a pass at `conn`'s host found to send, by priority: what the host lacks
     /// and is not in flight, stamped when this node writes (promoting due deposits too), else
-    /// relayed with its stamp, else deposited (this node's own membership writes queued in the
+    /// relayed with its stamp, else deposited (this node's own role writes queued in the
     /// outbox). What the host lacks is judged again next pass (`left`).
     fn send(&mut self, conn: ConnId, p: &Head, mut sends: Vec<Out>, left: &mut Left, out: &mut Vec<super::Action>) -> Result<()> {
         let (g, l, keys) = (p.g, p.l, &p.keys);
@@ -395,7 +395,7 @@ impl SyncEngine {
                     let sig = osis_label::sign_deposit(d, &l, &o.id, &e.wrap);
                     deposits.push((blob, e.wrap, sig));
                 } else {
-                    // this node's own membership write: queued, so neither a crash nor
+                    // this node's own role write: queued, so neither a crash nor
                     // forgetting the label recalls it
                     queue.push((blob, e.wrap, d.clone()));
                 }
@@ -518,7 +518,7 @@ impl SyncEngine {
 
     /// Local passes over the labels this node syncs with nobody (no host in their `/label`):
     /// this node is their host, so a peer that dials it (a direct link's redeemer,
-    /// spec/permissions.md §9) finds a complete state (spec/sync.md §5, member peer). Passes
+    /// spec/permissions.md §9) finds a complete state (spec/sync.md §5, co-reader peer). Passes
     /// otherwise run only per dialed connection, and a node serves only the entries they placed.
     pub(crate) fn local_passes(&mut self) -> Result<()> {
         self.local_dirty = false;
@@ -567,7 +567,7 @@ impl SyncEngine {
     /// Whether this node may issue a new step for a label of `g` now: another node's rotation
     /// of the actor (a `/secrets` write) received less than `SETTLE_MS` ago is its author's to
     /// register first (a second admin's step, issued before the author's reaches it, would be a
-    /// sibling); a wake brings the pass back then. Other membership writes (an admin recording
+    /// sibling); a wake brings the pass back then. Other role writes (an admin recording
     /// a step in `/label`, a `/keys` update) get no step from their author and delay nothing.
     fn step_settled(&mut self, g: &Tid) -> bool {
         let a = self.engine.core.secret_actor(g).unwrap_or(*g);
@@ -799,7 +799,7 @@ impl SyncEngine {
             };
             let prio = if self.first.contains(&b.commit) {
                 0
-            } else if b.membership {
+            } else if b.role_commit {
                 1
             } else {
                 3
@@ -863,9 +863,9 @@ impl SyncEngine {
     }
 
     /// Re-seals decided at the end of a complete pass of the actor's labels (spec/permissions.md
-    /// §3): members seen without a box at a current epoch (`Engine::reseal_due`) and members
+    /// §3): holders seen without a box at a current epoch (`Engine::reseal_due`) and holders
     /// whose node's heartbeat under the label reports it stranded (§4); delivered by inbox and
-    /// placed under the actor's labels like any membership commit.
+    /// placed under the actor's labels like any role commit.
     fn reseal(&mut self, g: &Tid, w: &Work) -> Result<()> {
         let Some(a) = self.engine.core.secret_actor(g) else { return Ok(()) };
         if self.engine.core.is_key_actor(&a) || !self.complete_pass(&a) {
@@ -878,7 +878,7 @@ impl SyncEngine {
                 true
             }
         }
-        // plain things under `a` with members: secrets of their own again
+        // plain things under `a` with holders: secrets of their own again
         for (t, r) in self.engine.own_secrets_due(&a, &Passed)? {
             match r {
                 Ok(done) => self.take_done(done)?,
@@ -886,7 +886,7 @@ impl SyncEngine {
             }
         }
         // the newest heartbeat of each node under the label, when it reports it stranded
-        // (`Work::beats`); before the boxes `reseal_due` adds, which would box a stranded member
+        // (`Work::beats`); before the boxes `reseal_due` adds, which would box a stranded holder
         // lacking one twice
         let beats: Vec<(Tid, CommitId)> = w.beats.iter().filter_map(|(n, s)| s.iter().next_back().map(|(_, c)| (*n, *c))).collect();
         for (node, c) in beats {
@@ -894,11 +894,11 @@ impl SyncEngine {
                 continue;
             }
             self.resealed.insert(c);
-            // the member of the actor the node reads through: itself or up its owner chain
-            let members: BTreeSet<Tid> = self.engine.core.current_members(&a).into_iter().map(|x| x.0).collect();
-            // a node that may not re-seal that member leaves it to one that may
-            let member = self.engine.owner_chain(&node).find(|t| members.contains(t));
-            if let Some(t) = member
+            // the holder of the actor the node reads through: itself or up its owner chain
+            let holders: BTreeSet<Tid> = self.engine.core.current_holders(&a).into_iter().map(|x| x.0).collect();
+            // a node that may not re-seal that holder leaves it to one that may
+            let holder = self.engine.owner_chain(&node).find(|t| holders.contains(t));
+            if let Some(t) = holder
                 && let Ok(done) = self.engine.reshare(&a, &t)
             {
                 self.take_done(done)?;
@@ -946,11 +946,11 @@ impl SyncEngine {
     }
 
     /// The bodies label `l` of `g` should hold: the closure's; under a replaced label
-    /// membership-class ones only (spec/sync.md §2: its content entries go).
+    /// role-class ones only (spec/sync.md §2: its content entries go).
     pub(super) fn bodies_under(&mut self, g: &Tid, l: &LabelId) -> Result<Vec<Body>> {
         let mut bodies = self.engine.label_bodies_meta(g)?;
         if self.is_replaced(g, l) {
-            bodies.retain(|b| b.membership);
+            bodies.retain(|b| b.role_commit);
         }
         Ok(bodies)
     }
@@ -1225,15 +1225,15 @@ impl SyncEngine {
         Some(due)
     }
 
-    /// Whether this node placed the entry (its certificates, heartbeats, membership writes).
+    /// Whether this node placed the entry (its certificates, heartbeats, role writes).
     fn mine(&self, e: &Entry) -> bool {
         e.cert || matches!(&e.kind, Kind::Commit { commit, .. } if self.own(commit))
     }
 
-    /// A non-writer deposits its own membership writes (an invite grant, a self-removal,
+    /// A non-writer deposits its own role writes (an invite grant, a self-removal,
     /// spec/sync.md §3).
     fn may_deposit(&self, keys: &HeadKeys, b: &Body) -> bool {
-        keys.deposit.is_some() && b.membership && self.own(&b.commit)
+        keys.deposit.is_some() && b.role_commit && self.own(&b.commit)
     }
 
     /// Must-hold for a closure body (spec/sync.md §6): before its keep-at-least bound, or
@@ -1450,15 +1450,15 @@ impl SyncEngine {
 
     /// A grantee device places a certificate copy of what `g`'s inbox brought, once applied,
     /// under `g`'s home label `l` (spec/sync.md §3; the inbox may be another label, its owner's:
-    /// a group's members learn its edges there, its inbox reaching only its admins): of a
-    /// membership commit, the carried parts on the things it writes an edge of `g` or an actor
+    /// a group's holders learn its edges there, its inbox reaching only its admins): of a
+    /// role commit, the carried parts on the things it writes an edge of `g` or an actor
     /// it owns on, or boxes one on (boxes are sealed to the actor anyway), with the `/label` and
     /// `/created` commits of those things, so the actor's other devices find the grant and its
     /// labels there; nothing from a blob expiring less than `INBOX_COPY_MIN_LEFT` from now (an expiry
     /// is the sender's word: a short one would free the deposit budget for the next copy), and
-    /// not what an entry there already holds (each member of a group actor reads its inbox and
+    /// not what an entry there already holds (each holder of a group actor reads its inbox and
     /// placed the same copy again). The consumed inbox blob stays until it expires: its label
-    /// hints are what a later member that cannot apply the copied `/label` yet (the granter's
+    /// hints are what a later holder that cannot apply the copied `/label` yet (the granter's
     /// chain pending) opens the thing's label by.
     fn inbox_copies(&mut self, g: &Tid, l: LabelId) -> Result<()> {
         // only under the actor's home label (spec/sync.md §3): an inbox at another group's label
@@ -1483,15 +1483,15 @@ impl SyncEngine {
                 continue;
             }
             // the carried parts on the things the commit has an edge or box of the actor on (the
-            // payload carries the sender's choice of parts; a membership commit's are all
-            // membership-class)
-            let named = self.engine.members_named(&c);
+            // payload carries the sender's choice of parts; a role commit's are all
+            // role-class)
+            let named = self.engine.holders_named(&c);
             let on: BTreeSet<Tid> = named.iter().filter(|(_, ms)| ms.iter().any(|x| self.engine.owner_chain(x).any(|y| y == *g))).filter_map(|(ai, _)| m.header.aspects.get(*ai).map(|a| a.tid)).collect();
             let ais: BTreeSet<usize> = o.ais.iter().copied().filter(|ai| m.header.aspects.get(*ai).is_some_and(|a| on.contains(&a.tid))).collect();
             if ais.is_empty() {
                 continue;
             }
-            // another member's copy is there: done, as if placed here
+            // another holder's copy is there: done, as if placed here
             if self.held_whole(g, l, &c, &ais)? {
                 self.state.add_cert(l, c);
                 continue;
@@ -1524,9 +1524,9 @@ impl SyncEngine {
         let closure = self.engine.closure(g);
         let mut own_removals = BTreeSet::new();
         let wanted = if revokes_only {
-            // under an epoch a departure inside a member leaves uncovered: those revokes and keysets only
+            // under an epoch a departure inside a holder leaves uncovered: those revokes and keysets only
             let actor = self.engine.group_actor(g);
-            self.engine.inside_member_revokes(&actor, &closure)
+            self.engine.inside_holder_revokes(&actor, &closure)
         } else {
             let mut wanted = self.card_certificates(g);
             // revokes and roster snapshots about authors seen under the label (spec/permissions.md
@@ -1542,7 +1542,7 @@ impl SyncEngine {
                 wanted.entry(c).or_default().extend(p);
             }
             // removals of the label's actor's edges on things in its closure, whoever made them
-            // (spec/permissions.md §2): its members still holding such an edge would re-upload
+            // (spec/permissions.md §2): its holders still holding such an edge would re-upload
             // the thing's bodies that others delete, on every pass
             let actor = self.engine.group_actor(g);
             let (removals, own) = self.engine.removal_certificates(&actor, &closure);
@@ -1566,7 +1566,7 @@ impl SyncEngine {
                 continue;
             }
             // another node's demotion or new `/keys` received less than `SETTLE_MS` ago is its
-            // author's to place (spec/permissions.md §3, §4): members that learn of it under
+            // author's to place (spec/permissions.md §3, §4): holders that learn of it under
             // another label first do not all copy it; a wake brings the pass back then
             let me = self.engine.tid();
             let now = self.now();
@@ -1597,7 +1597,7 @@ impl SyncEngine {
     }
 
     /// Whether entries under `l` already hold every delta of `c` on aspects `ais` (another
-    /// member's copy of the same grant counts: spec/permissions.md §4), so a copy would only be
+    /// holder's copy of the same grant counts: spec/permissions.md §4), so a copy would only be
     /// a duplicate.
     fn held_whole(&mut self, g: &Tid, l: LabelId, c: &CommitId, ais: &BTreeSet<usize>) -> Result<bool> {
         let Some(h) = self.engine.header(c) else { return Ok(false) };
@@ -1714,7 +1714,7 @@ impl SyncEngine {
     }
 
     /// Re-registration (spec/sync.md §5): an admin holding the head's epochs and a newer
-    /// established one uploads the actor's membership commits the host lacks under the head's
+    /// established one uploads the actor's role commits the host lacks under the head's
     /// keys, then registers a child step; the rest of the pass runs once it is registered.
     fn reregister(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<bool> {
         let Some(c) = self.conns.get(&conn) else { return Ok(false) };
@@ -1728,7 +1728,7 @@ impl SyncEngine {
         let (Some(write), Some(head)) = (keys.write.clone(), head) else { return Ok(false) };
         let a = self.engine.core.secret_actor(&g).unwrap_or(g);
         let core = &self.engine.core;
-        let ids: Vec<CommitId> = core.ix.by_thing.get(&a).into_iter().flatten().filter(|c| core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_membership())).copied().collect();
+        let ids: Vec<CommitId> = core.ix.by_thing.get(&a).into_iter().flatten().filter(|c| core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_role())).copied().collect();
         let mut uploads = Vec::new();
         for id in ids {
             for b in self.engine.bodies(&id)? {

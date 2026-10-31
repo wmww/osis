@@ -53,7 +53,7 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `watch T [AK]` | `at().on_change` / `watch_thing` | now |
 | `commits [SCOPE] [--actor A] [--kind K] [--reverts C] [--reverted-by C] [--in-effect B] [--since/--until TS] [--after C] [--max N] [--next undo\|redo]` / `undo` / `redo` / `revert C` | `commits` / `undo` / `redo` / `revert` | now |
 | `place` / `unplace` / `sub add/rm` / `groups` | `Write::place/unplace/add_subgroup/remove_subgroup`, `groups_of` (lines `item`/`subgroup`/`within` TAB group) | now |
-| `roster T [--watch]` / `role T` / `via T MEMBER` | `roster`, `watch_roster` / `role_on` / `member_path` | now |
+| `roster T [--watch]` / `role T` / `via T HOLDER` | `roster`, `watch_roster` / `role_on` / `holder_path` | now |
 | `now` | `now` | now |
 | `grant` / `edge` / `demote` / `leave` | `grant` / `change_edge` / `demote` / `leave` | now |
 | `share-into T G ROLE [--subgroup] [--place-anyway]` / `remove-edge-of G T` / `reach T` | `share_into` / `remove_edge_of` / `reach` | now |

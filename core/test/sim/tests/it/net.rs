@@ -2,7 +2,7 @@
 //! Phase B scenarios (sync engines and hosts engine to engine), seed 1 each: the quickest in tier
 //! 1 (osis-sim's whole tier 1 stays near 10 s), the rest tier 2 (`-- --ignored`).
 //! Every run ends with the quiescent invariants (core/test/sim/src/net/check.rs: convergence by held
-//! deltas, member liveness and agreement, label required sets at hosts, must-not-hold absent,
+//! deltas, holder liveness and agreement, label required sets at hosts, must-not-hold absent,
 //! deposit promotion, tombstones, purges, no ping-pong). A failure prints its seed and the
 //! `osis_sim::replay` call that reproduces it. Scenarios an engine bug breaks are ignored with
 //! the issue's name.
@@ -48,7 +48,7 @@ fn reader_relays() {
     ok("reader_relays", 1);
 }
 
-// spec/permissions.md §3, §4: a device stranded past MEMBERSHIP_KEEP is re-sealed by pairing.
+// spec/permissions.md §3, §4: a device stranded past ROLE_KEEP is re-sealed by pairing.
 #[test]
 #[ignore = "tier 2"]
 fn stranded_reseal() {
@@ -71,7 +71,7 @@ fn host_loses_data() {
 }
 
 // spec/sync.md §5 (open by stale sync key, walk); spec/permissions.md §3: a reader offline
-// across two rotations walks the steps; removed members hold no later epoch.
+// across two rotations walks the steps; removed holders hold no later epoch.
 #[test]
 #[ignore = "tier 2"]
 fn offline_rotation() {
@@ -166,7 +166,7 @@ fn stranded_reseal_seed_23() {
 }
 
 // spec/permissions.md §5.2, spec/commits.md §5: sweep seed 15110 (and 15061 before
-// ac49b521), a revoked member's removal un-merged at a node that had applied it valid lost the
+// ac49b521), a revoked holder's removal un-merged at a node that had applied it valid lost the
 // element whose delta its covering snapshot replaced; the tier-1 reduction is
 // osis-node `validity::covered_drop_restored_after_remover_revoked_alike_spec_perm_5_2`.
 #[test]

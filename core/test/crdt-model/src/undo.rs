@@ -412,6 +412,6 @@ fn valued(f: &Frag, out: &mut Vec<Stamp>) {
                 }
             }
         }
-        Frag::Slots { .. } => f.members().into_iter().for_each(|m| valued(m, out)),
+        Frag::Slots { .. } => f.slots().into_iter().for_each(|m| valued(m, out)),
     }
 }

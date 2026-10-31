@@ -28,9 +28,9 @@ impl Fragment {
             }
         };
         match self {
-            Fragment::Slots(Slots { reg: r, members }) => {
+            Fragment::Slots(Slots { reg: r, slots }) => {
                 r.iter_mut().for_each(reg);
-                members.values_mut().for_each(|f| f.strip_values(expired));
+                slots.values_mut().for_each(|f| f.strip_values(expired));
             }
             Fragment::Register(r) => reg(r),
             Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => {
@@ -78,7 +78,7 @@ impl Fragment {
                 // in place, not re-joined: a join would prune the creations kept below (a map
                 // entry holding only its creation); the consumer's join or prune embeds and
                 // prunes (§7)
-                let Fragment::Slots(Slots { reg, members }) = std::mem::take(self) else { return };
+                let Fragment::Slots(Slots { reg, slots }) = std::mem::take(self) else { return };
                 let reg = reg.map(|mut r| {
                     if bad(&r.reset) {
                         r.reset = None;
@@ -88,11 +88,11 @@ impl Fragment {
                     }
                     r
                 });
-                let members = members.into_iter().map(|(k, mut f)| {
+                let slots = slots.into_iter().map(|(k, mut f)| {
                     f.remove_dots_in(pred, nested);
                     (k, f)
                 });
-                *self = crate::state::assemble(reg, members.collect());
+                *self = crate::state::assemble(reg, slots.collect());
                 return;
             }
             Fragment::Register(r) => {
@@ -185,7 +185,7 @@ impl Fragment {
     }
 
     /// Whether a keyed map entry record carries a reset: a removal or tombstone naming its key,
-    /// allowed only in membership-class aspects (spec/crdt.md §5.6).
+    /// allowed only in role-class aspects (spec/crdt.md §5.6).
     pub fn keyed_resets(&self) -> bool {
         walk(&mut KeyedResets, self)
     }

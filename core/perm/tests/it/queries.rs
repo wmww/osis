@@ -5,7 +5,7 @@
 use crate::common;
 
 use common::*;
-use membership_model::{edges, joint, Rng};
+use roles_model::{edges, joint, Rng};
 use osis_base::Role::{Admin, Read, Write};
 use osis_base::{Role, Tid};
 use osis_perm::{verify, At, Edge, HeldSet, MoveIndex, Point, PurgeBy, Timeline, WriteId};
@@ -139,8 +139,8 @@ fn cert_run_joint(samples: u64, seed: u64) {
         let all0: Vec<(Tid, u64)> = nodes.iter().map(|n| (*n, 0)).collect();
         for (m, row) in h.genesis.iter().enumerate() {
             for (x, &r) in row.iter().enumerate() {
-                if r != membership_model::Role::None {
-                    let role = if r == membership_model::Role::Admin { Admin } else { Write };
+                if r != roles_model::Role::None {
+                    let role = if r == roles_model::Role::Admin { Admin } else { Write };
                     w.set(top[x], actors[x], ent(m), edge(role), 0, &all0);
                 }
             }
@@ -148,11 +148,11 @@ fn cert_run_joint(samples: u64, seed: u64) {
         for (i, jw) in h.writes.iter().enumerate() {
             let recv: Vec<(Tid, u64)> = nodes.iter().enumerate().map(|(n, t)| (*t, h.recv[i][n] as u64)).collect();
             let e = match jw.role {
-                membership_model::Role::None => None,
-                membership_model::Role::Admin => edge(Admin),
+                roles_model::Role::None => None,
+                roles_model::Role::Admin => edge(Admin),
                 _ => edge(Write),
             };
-            w.commit_id(cid(jw.id), nodes[jw.author], jw.t as u64, &[(actors[jw.target], ent(jw.member), e)], &recv);
+            w.commit_id(cid(jw.id), nodes[jw.author], jw.t as u64, &[(actors[jw.target], ent(jw.holder), e)], &recv);
         }
         if let Some(d) = cert_check(&w) {
             panic!("seed {seed:#x} sample {s}: {d}\n{h}");
@@ -380,16 +380,16 @@ fn cert_run_edges(samples: u64, seed: u64) {
         let me = |e: Option<edges::Edge>| {
             e.map(|e| Edge {
                 role: match e.role {
-                    membership_model::Role::Admin => Admin,
-                    membership_model::Role::Write => Write,
+                    roles_model::Role::Admin => Admin,
+                    roles_model::Role::Write => Write,
                     _ => Read,
                 },
                 until: (e.until != edges::NEVER).then_some(osis_base::WallMs(e.until as u64)),
                 invite: match e.invite {
-                    membership_model::Role::None => None,
-                    membership_model::Role::Read => Some(Read),
-                    membership_model::Role::Write => Some(Write),
-                    membership_model::Role::Admin => Some(Admin),
+                    roles_model::Role::None => None,
+                    roles_model::Role::Read => Some(Read),
+                    roles_model::Role::Write => Some(Write),
+                    roles_model::Role::Admin => Some(Admin),
                 },
                 since: None, tied: crate::common::tie_if((e.until ^ e.role as u32 ^ e.invite as u32) & 1 == 1),
             })
@@ -457,7 +457,7 @@ fn purge_rights() {
 }
 
 /// §3: write or above rotates its roles and below; readers rotate nothing.
-// spec/permissions.md §1 (membership-class by admins)
+// spec/permissions.md §1 (role-class by admins)
 #[test]
 fn rotation_rights() {
     let mut w = World::new();
@@ -516,7 +516,7 @@ fn move_resolution() {
 }
 
 /// §5.1 "Frontier": removing a device from P puts in question its writes on P and on G below
-/// (every aspect: it falls below write); lowering an admin to write only the membership-class
+/// (every aspect: it falls below write); lowering an admin to write only the role-class
 /// aspects; a grant nothing.
 #[test]
 fn demotion_scope() {
@@ -531,10 +531,10 @@ fn demotion_scope() {
     let tl = Timeline::evaluate(&w.held());
     let both: std::collections::BTreeSet<Tid> = [p, g].into_iter().collect();
     let s = tl.demotion_scope(&d2, &d1, &p, None, ts(5));
-    assert_eq!((s.content.get(&d1), s.membership.get(&d1)), (Some(&both), Some(&both)));
+    assert_eq!((s.content.get(&d1), s.roles.get(&d1)), (Some(&both), Some(&both)));
     let s = tl.demotion_scope(&d2, &d1, &p, edge(Write), ts(5));
     assert!(s.content.is_empty());
-    assert_eq!(s.membership.get(&d1), Some(&both));
+    assert_eq!(s.roles.get(&d1), Some(&both));
     assert!(tl.demotion_scope(&d2, &x, &g, edge(Write), ts(5)).is_empty());
     assert!(tl.demotion_scope(&d1, &d1, &p, None, ts(5)).is_empty(), "never its own subject");
 }

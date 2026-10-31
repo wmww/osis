@@ -1609,7 +1609,7 @@ fn resolved_ops_on_embedded_text_and_skew_spec_6_1() {
     let mut r = crate::testutil::rng(77);
     let text_of = |f: &Fragment| -> Fragment {
         match f {
-            Fragment::Slots(x) => x.members.get(&crate::fragment::Encoding::Text).cloned().unwrap(),
+            Fragment::Slots(x) => x.slots.get(&crate::fragment::Encoding::Text).cloned().unwrap(),
             f => f.clone(),
         }
     };

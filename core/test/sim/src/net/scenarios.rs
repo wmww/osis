@@ -8,7 +8,7 @@ use crate::dice::Dice;
 use crate::harness::{ClockSpec, Report, Res};
 use crate::workload;
 use osis_commit::PurgeItem;
-use osis_base::format::MEMBERSHIP_KEEP_MS;
+use osis_base::format::ROLE_KEEP_MS;
 use osis_base::{Ak, Role, Tid, Value, WallMs};
 use osis_node::Mutation;
 use osis_node::flows::PreSync;
@@ -245,7 +245,7 @@ pub fn reader_relays(seed: u64) -> Res<Report> {
 
 /// A stranded device re-sealed (spec/permissions.md §3, §4; notes/sync.md Limits): one device of
 /// a person is off while two others are removed (the person rotates twice, the home label steps
-/// twice) and stays off past `MEMBERSHIP_KEEP`, so the host dropped the claim set it needs; it
+/// twice) and stays off past `ROLE_KEEP`, so the host dropped the claim set it needs; it
 /// cannot read the new epoch; re-paired over a direct connection it does.
 pub fn stranded_reseal(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x5d);
@@ -274,7 +274,7 @@ pub fn stranded_reseal(seed: u64) -> Res<Report> {
     if after == before {
         return Err(sim.fail("the removals did not rotate the person"));
     }
-    sim.advance(MEMBERSHIP_KEEP_MS + 2 * DAY_MS)?;
+    sim.advance(ROLE_KEEP_MS + 2 * DAY_MS)?;
     sim.settle()?;
     sim.restart_node(d1)?;
     for _ in 0..4 {
@@ -282,7 +282,7 @@ pub fn stranded_reseal(seed: u64) -> Res<Report> {
         sim.settle()?;
     }
     if newest_read(&mut sim, d1, &p)? == after {
-        return Err(sim.fail("the device past MEMBERSHIP_KEEP was not stranded (it read the new epoch by claim)"));
+        return Err(sim.fail("the device past ROLE_KEEP was not stranded (it read the new epoch by claim)"));
     }
     // re-paired: a re-seal over the direct connection
     sim.pair(d0, d1, p)?;
@@ -316,7 +316,7 @@ pub fn host_loses_data(seed: u64) -> Res<Report> {
 
 /// A node offline across rotations walks the steps (spec/sync.md §5 Open, Claim): a reader is
 /// off while the admin removes a reader and then a writer (two rotations, two steps) and keeps
-/// writing; back online it walks by its stale sync key and reads; the removed members hold no
+/// writing; back online it walks by its stale sync key and reads; the removed holders hold no
 /// later epoch.
 pub fn offline_rotation(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x0f);

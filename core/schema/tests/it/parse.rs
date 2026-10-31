@@ -2,7 +2,7 @@
 //! DSL parser, validation and the encoding mapping (spec/data-model.md §2, §3, §9;
 //! spec/crdt.md §3.1).
 
-use osis_base::format::{CORE_SCHEMA_ID, CORE_SCHEMA_REVISION, MEMBERSHIP_KEEP_MS};
+use osis_base::format::{CORE_SCHEMA_ID, CORE_SCHEMA_REVISION, ROLE_KEEP_MS};
 use osis_base::{SchemaId, Value};
 use osis_crdt::Encoding;
 use osis_schema::*;
@@ -32,9 +32,9 @@ fn core_schema_parses_spec_data_model_9() {
     }
     assert_eq!(aks.len(), 19);
     assert_eq!(s.aspects["/placed"].lifetime(), osis_schema::Lifetime::Ephemeral);
-    let members = &s.aspects["/members"];
-    assert_eq!(members.retention.by, PurgeBy::Admin);
-    assert_eq!(members.retention.at_least.rel, Some(MEMBERSHIP_KEEP_MS));
+    let holders = &s.aspects["/members"];
+    assert_eq!(holders.retention.by, PurgeBy::Admin);
+    assert_eq!(holders.retention.at_least.rel, Some(ROLE_KEEP_MS));
     assert_eq!(s.aspects["/created"].retention.by, PurgeBy::Nobody);
     assert_eq!(s.aspects["/seen"].retention, Retention::default());
     assert!(s.aspects["/groups"].flags.contains(&Flag::Synthetic));

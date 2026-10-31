@@ -42,7 +42,7 @@ fn thing_leaving_deleted_by_delete_key_spec_sync_5() {
 }
 
 // spec/sync.md §7, spec/commits.md §5: compaction uploads the snapshot first, then drops and
-// deletes the covered bodies; a member joining later reads the live value from the snapshot.
+// deletes the covered bodies; a holder joining later reads the live value from the snapshot.
 #[test]
 fn compaction_then_deletion_spec_sync_7() {
     let mut net = Net::new();
@@ -94,13 +94,13 @@ fn rotation_at_full_host_waits_spec_sync_5() {
     let (at, bt, ct_, dt) = (net.tid(a), net.tid(b), net.tid(c), net.tid(d));
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write), (dt, Role::Read)]);
-    remove_member(e, g, ct_, &rs, 41);
+    remove_holder(e, g, ct_, &rs, 41);
     net.run();
     net.advance(60_000);
     assert_eq!(net.host_path(host, &l).len(), 2, "the first step past the cap is taken");
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write)]);
-    remove_member(e, g, dt, &rs, 42);
+    remove_holder(e, g, dt, &rs, 42);
     net.run();
     net.advance(60_000);
     assert_eq!(net.host_path(host, &l).len(), 2, "the second waits");
@@ -115,10 +115,10 @@ fn rotation_at_full_host_waits_spec_sync_5() {
 }
 
 // spec/sync.md §5 (re-registration, upload order), spec/permissions.md §3-§4 (stranded
-// heartbeat): an admin rotating out a member issues a child step at the host after uploading
-// the rotation commit; the remaining writer follows; the removed member's open walks to the new
+// heartbeat): an admin rotating out a holder issues a child step at the host after uploading
+// the rotation commit; the remaining writer follows; the removed holder's open walks to the new
 // step, its claim is refused and it places a stranded heartbeat by deposit.
-// spec/permissions.md §4 (stranded heartbeat), spec/crypto.md §4 (removed member)
+// spec/permissions.md §4 (stranded heartbeat), spec/crypto.md §4 (removed holder)
 #[test]
 fn reregistration_after_rotation_spec_sync_5() {
     let mut net = Net::new();
@@ -136,7 +136,7 @@ fn reregistration_after_rotation_spec_sync_5() {
     let (at, bt, ct_) = (net.tid(a), net.tid(b), net.tid(c));
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write)]);
-    remove_member(e, g, ct_, &rs, 41);
+    remove_holder(e, g, ct_, &rs, 41);
     net.write(a, t, "after");
     net.run();
     net.trace(&[a, b]);
@@ -146,7 +146,7 @@ fn reregistration_after_rotation_spec_sync_5() {
     net.write(b, t, "from b");
     net.run();
     assert_eq!(net.read(a, t), Some(s("from b")), "the writer stamps under the new step");
-    // the removed member comes back: walked to the new step, claim refused, stranded heartbeat
+    // the removed holder comes back: walked to the new step, claim refused, stranded heartbeat
     let n_before = net.host_ids(host, &l).len();
     net.set_online(c, true);
     net.advance(10_000);
@@ -154,7 +154,7 @@ fn reregistration_after_rotation_spec_sync_5() {
     assert!(net.host_ids(host, &l).len() > n_before, "a stranded heartbeat was deposited");
     net.run();
     let seen = net.engine(a).get_typed(&ct_, &ct::SEEN).unwrap();
-    assert!(seen.is_some_and(|x| x.stranded), "co-members read the stranded heartbeat");
+    assert!(seen.is_some_and(|x| x.stranded), "co-holders read the stranded heartbeat");
 }
 
 // spec/commits.md §5, spec/sync.md §5 (timed delete): replacing a body under a relative
@@ -248,7 +248,7 @@ fn kept_cases() -> Vec<(&'static osis_schema::Aspect<osis_base::Value>, u64, boo
 // plus `AT_MOST_GRACE`, the next compaction drops it first), spec/requirements.md (Scale: cost
 // per change): under keep at most 0 and 10 min, an erasing edit of a big record (a snapshot or
 // an ordinary commit) sends O(change), with no new snapshot; the next compaction drops the old
-// body here and at the host, and a member joining afterwards reads the record without the
+// body here and at the host, and a holder joining afterwards reads the record without the
 // erased entry.
 #[test]
 fn erasing_edit_then_compaction_spec_commits_5() {
@@ -288,7 +288,7 @@ fn erasing_edit_then_compaction_spec_commits_5() {
 // spec/commits.md §5 (a body with a live write keeps to its first death plus D plus
 // `AT_MOST_GRACE`), spec/sync.md §7 (snapshot first): with no compaction, under keep at most 0
 // and 10 min, the old body (a snapshot or an ordinary commit) is kept to its bound, with no
-// timed delete, then goes here and at the host after a covering snapshot is there; a member
+// timed delete, then goes here and at the host after a covering snapshot is there; a holder
 // joining after the bound reads every live entry.
 #[test]
 fn live_body_goes_at_grace_bound_spec_commits_5() {

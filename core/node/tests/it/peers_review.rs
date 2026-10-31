@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Member-peer serving limits and LAN routes (spec/sync.md §5, §10): tombstones, budgets,
-//! session caps, refused strangers and removed members, LAN candidates, co-reader caps.
+//! Holder-peer serving limits and LAN routes (spec/sync.md §5, §10): tombstones, budgets,
+//! session caps, refused strangers and removed holders, LAN candidates, co-reader caps.
 
 use crate::net;
 use net::*;
@@ -74,7 +74,7 @@ fn upload_codes(evs: &[ClientEvent]) -> Vec<Code> {
     evs.iter().filter_map(|e| if let ClientEvent::EntryStatus { codes, .. } = e { Some(codes.clone()) } else { None }).flatten().collect()
 }
 
-// spec/sync.md §5 (tombstones, member peer): a body a host deleted is refused when a peer
+// spec/sync.md §5 (tombstones, co-reader peer): a body a host deleted is refused when a peer
 // uploads it again (code 6), and never goes back to the host.
 #[test]
 fn dropped_entry_refused_from_peer_spec_sync_5() {
@@ -105,7 +105,7 @@ fn dropped_entry_refused_from_peer_spec_sync_5() {
     assert!(!net.host_ids(host, &l).contains(&x), "never re-uploaded");
 }
 
-// spec/sync.md §5 (hosts cap storage per label; member peer applies the same rule): a peer's
+// spec/sync.md §5 (hosts cap storage per label; co-reader peer applies the same rule): a peer's
 // uploads past its byte budget get code 12 and are not kept.
 #[test]
 fn peer_budget_refuses_spec_sync_5() {
@@ -123,7 +123,7 @@ fn peer_budget_refuses_spec_sync_5() {
 }
 
 // spec/sync.md §5: served sessions are capped: a new one evicts the oldest that has opened
-// nothing (so silent sessions cannot starve members), and is refused when every running one
+// nothing (so silent sessions cannot starve holders), and is refused when every running one
 // opened a label; idle ones are closed.
 #[test]
 fn served_sessions_capped_and_idle_closed_spec_sync_5() {
@@ -141,7 +141,7 @@ fn served_sessions_capped_and_idle_closed_spec_sync_5() {
     let (c1, a1) = net.sync(b).accept(LOCAL, [1; 32]);
     assert!(!a1.iter().any(|x| matches!(x, Action::Close { .. })));
     let (mut m, _) = dial_in(&mut net, b);
-    let evs = command(&mut net, b, &mut m, Command::Open { label: l, key: OpenKey::Member(da) });
+    let evs = command(&mut net, b, &mut m, Command::Open { label: l, key: OpenKey::CoReader(da) });
     assert!(evs.iter().any(|e| matches!(e, ClientEvent::Opened { .. })), "{evs:?}");
     let (c3, a3) = net.sync(b).accept(LOCAL, [3; 32]);
     assert!(a3.contains(&Action::Close { conn: c1 }), "the silent session makes room: {a3:?}");
@@ -149,14 +149,14 @@ fn served_sessions_capped_and_idle_closed_spec_sync_5() {
     net.actions(b, a3);
     let (_, a4) = net.sync(b).accept(LOCAL, [4; 32]);
     assert!(a4.contains(&Action::Close { conn: c3 }), "the next silent one goes: {a4:?}");
-    assert!(!a4.contains(&Action::Close { conn: m.conn }), "the member stays");
+    assert!(!a4.contains(&Action::Close { conn: m.conn }), "the holder stays");
     net.clock.advance(1_001);
     let acts = net.sync(b).handle(Event::Tick);
     assert!(acts.contains(&Action::Close { conn: m.conn }), "idle");
 }
 
 // spec/sync.md §5: a stranger without the label's sync key opens nothing.
-// spec/sync.md §5 (member peer)
+// spec/sync.md §5 (co-reader peer)
 #[test]
 fn stranger_refused_spec_sync_5() {
     let mut net = Net::new();
@@ -175,12 +175,12 @@ fn stranger_refused_spec_sync_5() {
     assert!(net.sync(b).served_opened()[&p.conn].is_empty());
 }
 
-// spec/sync.md §5, spec/permissions.md §3: a removed member's node is not dialed (its old
+// spec/sync.md §5, spec/permissions.md §3: a removed holder's node is not dialed (its old
 // `/reach` is held, it may not read now) and, once the label has a new step, opens nothing
 // served.
-// spec/sync.md §5 (member peer)
+// spec/sync.md §5 (co-reader peer)
 #[test]
-fn removed_member_not_dialed_nor_served_spec_sync_5() {
+fn removed_holder_not_dialed_nor_served_spec_sync_5() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -195,7 +195,7 @@ fn removed_member_not_dialed_nor_served_spec_sync_5() {
     let (ta, tr) = (net.tid(a), net.tid(r));
     let e = net.engine(a);
     let rec = recipients_of(e, &[(ta, Role::Admin)]);
-    remove_member(e, g, tr, &rec, 77);
+    remove_holder(e, g, tr, &rec, 77);
     net.set_online(r, false);
     net.run();
     let la = net.label(a);
@@ -347,12 +347,12 @@ fn lan_route_proven_by_up_spec_sync_10() {
     assert!(dials(&acts).iter().all(|d| *d != Address { url: "peer://192.168.7.8:5000".into(), key: lk }), "{acts:?}");
 }
 
-// spec/sync.md §5 (member peer), spec/wire.md §11.2 (proof 3): a member proof under the dialable
+// spec/sync.md §5 (co-reader peer), spec/wire.md §11.2 (proof 3): a co-reader proof under the dialable
 // key of a node that currently reads the label opens it over an ephemeral transport key; a
 // proof by another key or a sync key nobody registered is refused, and once the node is removed
 // from the group its proof is refused too and its open session closed.
 #[test]
-fn member_node_opens_with_proof_spec_sync_5() {
+fn holder_node_opens_with_proof_spec_sync_5() {
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let b = net.node(2, &[]);
@@ -364,10 +364,10 @@ fn member_node_opens_with_proof_spec_sync_5() {
     let db = SigningSecret::from_seed(&net.sync(b).dialable_secret());
     let stranger = SigningSecret::from_seed(&Secret32::from_bytes([0x99; 32]));
     let (mut p, _) = dial_in(&mut net, a);
-    let evs = command(&mut net, a, &mut p, Command::Open { label: l, key: OpenKey::Member(db.clone()) });
+    let evs = command(&mut net, a, &mut p, Command::Open { label: l, key: OpenKey::CoReader(db.clone()) });
     assert!(evs.iter().any(|e| matches!(e, ClientEvent::Opened { entry_box: None, .. })), "{evs:?}");
     let (mut q, _) = dial_in(&mut net, a);
-    for key in [OpenKey::Member(stranger.clone()), OpenKey::Sync(stranger)] {
+    for key in [OpenKey::CoReader(stranger.clone()), OpenKey::Sync(stranger)] {
         let evs = command(&mut net, a, &mut q, Command::Open { label: l, key });
         assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { .. })), "{evs:?}");
     }
@@ -375,12 +375,12 @@ fn member_node_opens_with_proof_spec_sync_5() {
     let (ta, tb) = (net.tid(a), net.tid(b));
     let e = net.engine(a);
     let rec = recipients_of(e, &[(ta, Role::Admin)]);
-    remove_member(e, g, tb, &rec, 79);
+    remove_holder(e, g, tb, &rec, 79);
     let acts = net.sync(a).handle(Event::Local);
-    assert!(acts.contains(&Action::Close { conn: p.conn }), "the member session closes: {acts:?}");
+    assert!(acts.contains(&Action::Close { conn: p.conn }), "the holder session closes: {acts:?}");
     net.actions(a, acts);
     let (mut r, _) = dial_in(&mut net, a);
-    let evs = command(&mut net, a, &mut r, Command::Open { label: l, key: OpenKey::Member(db) });
+    let evs = command(&mut net, a, &mut r, Command::Open { label: l, key: OpenKey::CoReader(db) });
     assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { .. })), "{evs:?}");
 }
 
@@ -424,7 +424,7 @@ fn complete_pass_counts_peers_spec_permissions_3() {
     let (tb, tc) = (net.tid(b), net.tid(c));
     let e = net.engine(b);
     let rec = recipients_of(e, &[(tb, Role::Admin)]);
-    remove_member(e, g, tc, &rec, 78);
+    remove_holder(e, g, tc, &rec, 78);
     net.run();
     assert!(!net.sync(a).complete_pass(&g), "b's pass is held back");
     net.release();
@@ -453,8 +453,8 @@ fn complete_pass_drops_removed_coreader_spec_permissions_3() {
     let (ta, tx) = (net.tid(a), net.tid(x));
     let e = net.engine(a);
     let rec = recipients_of(e, &[(ta, Role::Admin)]);
-    remove_member(e, g, tx, &rec, 81);
-    // a membership change of g from elsewhere: b's grant
+    remove_holder(e, g, tx, &rec, 81);
+    // a role change of g from elsewhere: b's grant
     let tb = net.tid(b);
     let e = net.engine(a);
     set_edge(e, g, tb, Role::Write);

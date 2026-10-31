@@ -2,8 +2,8 @@
 //! would otherwise re-derive at every open by decoding every commit and re-judging every delta.
 //! Each applied commit's meta (header and dropped parts in its record's head; per part its
 //! validity, rotation role and overreach in a small table), the indexes derived from
-//! membership bodies (box keys, epoch introductions, own keys, snapshots, carried writes) and
-//! perm's reading of each membership commit's held parts (`EDGES`, written with the commit
+//! role bodies (box keys, epoch introductions, own keys, snapshots, carried writes) and
+//! perm's reading of each role commit's held parts (`EDGES`, written with the commit
 //! record) are written in the transaction that changes them, from the journal of the in-memory
 //! indexes.
 //! Tagged with a hash of the sources its judgments follow from (`build.rs`): a build with other
@@ -29,7 +29,7 @@ pub(super) const VERSION_KEY: &[u8] = b"i/v";
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/", env!("OSIS_INDEX_RULES"));
 /// Per commit (`meta_row`): one byte per part (bit 0 valid, bits 1-2 the rotation role it
 /// needs: 0 none, 1 read, 2 write, 3 admin; bit 3 a grant's overreach), then its header's
-/// `View` (a membership commit's frontier and every chunk list with it), so an open indexes and adapts the commit
+/// `View` (a role commit's frontier and every chunk list with it), so an open indexes and adapts the commit
 /// without decoding its header.
 pub(super) const METAS: &[u8] = b"node/metas";
 // The derived indexes live in rebuildable store index tables of their own (a node's local
@@ -41,11 +41,11 @@ const DELETE_HINTS: &[u8] = b"node/delete hints";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
 pub(super) const CARRIED: &[u8] = b"node/carried";
 const IMPORTS: &[u8] = b"node/imports";
-/// Per membership commit, what perm's adaptation reads of its held `/members` and `/tenures`
+/// Per role commit, what perm's adaptation reads of its held `/members` and `/tenures`
 /// parts (`validity::EdgeParts`): written with the commit record (`Tx::put_commit`), so an open
 /// adapts these rows instead of decoding the bodies.
 pub(super) const EDGES: &[u8] = b"node/edges";
-/// Saved membership walks (osis-perm `Timelines::to_save`), by component root: a cache unit
+/// Saved role walks (osis-perm `Timelines::to_save`), by component root: a cache unit
 /// tagged with these rules and its exact inputs; one that does not match is evaluated anew.
 pub(super) const WALKS: &[u8] = b"node/walks";
 /// Components with fewer commits and snapshots are evaluated at open rather than saved.
@@ -308,7 +308,7 @@ impl Rec for crate::apply::validity::EdgeParts {
             self.0
                 .iter()
                 .map(|(ai, p)| match p {
-                    EdgePart::Members(es) => Value::List(vec![
+                    EdgePart::Holders(es) => Value::List(vec![
                         Value::uint(*ai as u64),
                         Value::Int(0),
                         Value::List(
@@ -339,7 +339,7 @@ impl Rec for crate::apply::validity::EdgeParts {
             out.push((
                 ai,
                 match kind {
-                    Value::Int(0) => EdgePart::Members(
+                    Value::Int(0) => EdgePart::Holders(
                         items
                             .iter()
                             .map(|e| {
@@ -415,7 +415,7 @@ fn put_setmap<K: Rec + Ord + Clone, T: Rec + Ord + Clone>(txn: &mut Transaction<
     put_rows(txn, name, items, |(k, t)| s.get(k).is_some_and(|x| x.contains(t)).then(Vec::new))
 }
 
-/// Writes a membership commit's `EDGES` row (with its record).
+/// Writes a role commit's `EDGES` row (with its record).
 pub(crate) fn put_edges(tx: &mut Tx<'_>, id: &CommitId, parts: &crate::apply::validity::EdgeParts, shred: Shred) -> Result<()> {
     let t = tx.txn.index(EDGES)?;
     tx.txn.table_put(t, &id.0, enc(parts), shred)?;
@@ -429,9 +429,9 @@ pub(crate) fn remove_edges(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     Ok(())
 }
 
-/// Every membership commit's `EDGES` row, from its record (after a rebuild).
+/// Every role commit's `EDGES` row, from its record (after a rebuild).
 fn write_edges_all(tx: &mut Tx<'_>) -> Result<()> {
-    let ids: Vec<CommitId> = tx.core.ix.commits.iter().filter(|(_, m)| m.view.kind.is_membership()).map(|(id, _)| *id).collect();
+    let ids: Vec<CommitId> = tx.core.ix.commits.iter().filter(|(_, m)| m.view.kind.is_role()).map(|(id, _)| *id).collect();
     for id in ids {
         let parts = crate::apply::edge_parts(tx, &id)?;
         put_edges(tx, &id, &parts, Shred::No)?;
@@ -439,7 +439,7 @@ fn write_edges_all(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// The `EDGES` rows of the held membership commits; an error when one is missing or does not
+/// The `EDGES` rows of the held role commits; an error when one is missing or does not
 /// decode (the open then rebuilds).
 pub(crate) fn load_edges(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::apply::validity::EdgeParts>> {
     let _s = crate::costs::span("open: edges rows");
@@ -701,7 +701,7 @@ pub(crate) fn update_timelines_saved(tx: &mut Tx<'_>) -> Result<()> {
     core.stale_things.extend(changed.evaluated);
     let below = core.ix.held.reach(&changed.extended);
     core.stale_things.extend(below);
-    core.membership_changed();
+    core.role_changed();
     Ok(())
 }
 
@@ -761,7 +761,7 @@ pub(crate) fn old_judgments(tx: &mut Tx<'_>) -> Option<OldJudgments> {
 }
 
 /// Loads the persisted index into `core`: commit metas (headers held undecoded, decoded on
-/// first use; those with lists by link resolved now), and the indexes derived from membership
+/// first use; those with lists by link resolved now), and the indexes derived from roles
 /// bodies.
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     // commit records: the head and the header's bytes only, nothing decoded

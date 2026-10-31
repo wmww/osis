@@ -1,5 +1,5 @@
-//! Phase C adversaries (notes/testing.md, Phase C; not built: issues/tests-unbuilt.md): a dishonest host, a removed member replaying
-//! what it kept, a member uploading malformed blobs, a flooding depositor. Each states its
+//! Phase C adversaries (notes/testing.md, Phase C; not built: issues/tests-unbuilt.md): a dishonest host, a removed holder replaying
+//! what it kept, a holder uploading malformed blobs, a flooding depositor. Each states its
 //! expected outcome; the invariant throughout is that honest nodes converge (through an honest
 //! host where one is dishonest) and never read an unauthorised write.
 //! Out of scope here: a stolen pairing offer (notes/api.md, Devices: offers, requests and replies
@@ -99,7 +99,7 @@ fn evil(name: &str, seed: u64, e: Evil) -> Res<Report> {
     sim.finish()
 }
 
-/// A removed member replays what it kept (spec/sync.md §2, §5; spec/permissions.md §5): it keeps
+/// A removed holder replays what it kept (spec/sync.md §2, §5; spec/permissions.md §5): it keeps
 /// the label's old keys, entries and step. After its removal (and a purge it saw) it opens with
 /// its old sync key, registers its old step, re-uploads the old entries, the purged one included,
 /// and deposits a commit it wrote offline after the removal. Expected: the stale step and the
@@ -154,7 +154,7 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
     let opened = sim.rogue_do(&mut r, Command::Open { label: old.label, key: OpenKey::Sync(k) })?;
     let stale = sim.rogue_do(&mut r, Command::Register { label: old.label, step: old.head.clone(), claim_set: None })?;
     if stale.iter().any(|e| matches!(e, ClientEvent::Registered { .. })) {
-        return Err(sim.fail(format!("the host accepted a stale step from the removed member: {stale:?}; open {opened:?}")));
+        return Err(sim.fail(format!("the host accepted a stale step from the removed holder: {stale:?}; open {opened:?}")));
     }
     let replay = sim.rogue_do(&mut r, Command::Upload { label: old.label, entries: kept.clone() })?;
     let purged_ids: Vec<BlobId> = sim.known.iter().filter(|(_, (c, _))| *c == gone).map(|(k, _)| k.1).collect();
@@ -177,7 +177,7 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
             let ev = sim.rogue_do(&mut r, Command::Deposit { label: old.label, blob: blob.clone(), wrap, sig })?;
             // its stale key learns the code alone: no head, no budget (spec/sync.md §5)
             if ev.iter().any(|e| matches!(e, ClientEvent::Budget { budget: Some(_), .. })) {
-                return Err(sim.fail(format!("a deposit under the removed member's key was told the budget: {ev:?}")));
+                return Err(sim.fail(format!("a deposit under the removed holder's key was told the budget: {ev:?}")));
             }
         }
         if let Ok(e) = stamped(&sim, &old, &id, blob, &key) {
@@ -191,7 +191,7 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
     for n in [a, b] {
         let ts = tags(&mut sim, n, t)?;
         if ts.contains("m-after") || !ts.contains("m-before") {
-            return Err(sim.fail(format!("node {n} reads {ts:?}: the removed member's write after removal is read, or its earlier one lost")));
+            return Err(sim.fail(format!("node {n} reads {ts:?}: the removed holder's write after removal is read, or its earlier one lost")));
         }
     }
     // colluding with the host (spec/requirements.md, Out of scope): every secret M holds opens
@@ -213,7 +213,7 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
             checked += 1;
             if osis_label::unwrap_any(secrets.iter(), &id, &e.wrap).is_some() {
                 let h = sim.nodes.get(a).and_then(|x| x.sync.as_ref()).and_then(|x| x.engine().header(c)).map(|h| format!("author {} kind {:?} ts {} (written after its author held the removal) aspects {:?}", h.author, h.kind, h.ts.wall_ms().0, h.aspects.iter().map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>()));
-                return Err(sim.fail(format!("the removed member's secrets open {id:?} of {c:?}, made after its removal: {h:?}; M epochs {me:?} A epochs {ae:?} a {ta} b {tb} m {mt}")));
+                return Err(sim.fail(format!("the removed holder's secrets open {id:?} of {c:?}, made after its removal: {h:?}; M epochs {me:?} A epochs {ae:?} a {ta} b {tb} m {mt}")));
             }
         }
     }
@@ -223,18 +223,18 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// Notes, per node tid, the commits it had authored when it is first seen holding `member`'s
+/// Notes, per node tid, the commits it had authored when it is first seen holding `holder`'s
 /// removal from `g` (noted after the step that brought it, so judged leniently, never wrongly
 /// late).
-fn note_removal(sim: &mut NetSim, nodes: [usize; 2], g: Tid, member: Tid, knew: &mut Knew) -> Res<()> {
+fn note_removal(sim: &mut NetSim, nodes: [usize; 2], g: Tid, holder: Tid, knew: &mut Knew) -> Res<()> {
     for n in nodes {
         let t = sim.tid(n)?;
         if knew.contains_key(&t) {
             continue;
         }
         let Some(e) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()).map(|x| x.engine_mut()) else { continue };
-        let members = e.get_typed(&g, &osis_schema::core_types::MEMBERS).ok().flatten().unwrap_or_default();
-        if !members.contains_key(&member) {
+        let holders = e.get_typed(&g, &osis_schema::core_types::MEMBERS).ok().flatten().unwrap_or_default();
+        if !holders.contains_key(&holder) {
             let own: BTreeSet<CommitId> = e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.author == t)).collect();
             knew.insert(t, own);
         }
@@ -243,17 +243,17 @@ fn note_removal(sim: &mut NetSim, nodes: [usize; 2], g: Tid, member: Tid, knew: 
 }
 
 /// `sim.run(n)` noting after each step who holds the removal.
-fn run_noting(sim: &mut NetSim, n: u64, nodes: [usize; 2], g: Tid, member: Tid, knew: &mut Knew) -> Res<()> {
-    note_removal(sim, nodes, g, member, knew)?;
+fn run_noting(sim: &mut NetSim, n: u64, nodes: [usize; 2], g: Tid, holder: Tid, knew: &mut Knew) -> Res<()> {
+    note_removal(sim, nodes, g, holder, knew)?;
     sim.calm = false;
     for _ in 0..n {
         sim.step()?;
-        note_removal(sim, nodes, g, member, knew)?;
+        note_removal(sim, nodes, g, holder, knew)?;
     }
     Ok(())
 }
 
-/// A member uploads malformed blobs (spec/sync.md §5, spec/commits.md §4; spec/versioning.md §2:
+/// A holder uploads malformed blobs (spec/sync.md §5, spec/commits.md §4; spec/versioning.md §2:
 /// malformed data is rejected, never parked): garbage bytes, a well-framed blob of garbage, a
 /// real commit under a prefix that disagrees with its header, a wrap for another blob. Expected:
 /// the host keeps them (it cannot judge them), honest nodes reject them without failing, keep

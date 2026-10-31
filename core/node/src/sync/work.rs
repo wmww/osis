@@ -5,7 +5,7 @@
 //! timer, its thing's creation record, its validity flipped, its deaths moved), a snapshot or a
 //! newer card write of its aspects changed under the label, its thing entered or left the
 //! closure, a time bound passed (keep at least, expiry; a local pass: an entry's prefix expiry), the state of an aspect its verdict
-//! waits on changed (liveness; a keep-at-most body: other than by a valid write's join), a role it reads changed (`membership_moved`), or it was
+//! waits on changed (liveness; a keep-at-most body: other than by a valid write's join), a role it reads changed (`roles_moved`), or it was
 //! judged while unsettled and that ended. Anything else (open, a change of the label actor's
 //! roster or own secrets, lost access, a forget, other inputs of the pass: keys and epochs, the
 //! home label's published things) judges everything. A commit or blob leaves the set only once its pass did
@@ -104,7 +104,7 @@ pub(crate) struct Work {
     pub links: BTreeMap<BlobId, BTreeSet<CommitId>>,
     pub inputs: Option<Inputs>,
     /// When the clock alone next changes a role the verdicts read (an edge's `until`, a
-    /// membership write ahead of the clock): everything is judged then.
+    /// role write ahead of the clock): everything is judged then.
     pub until: Option<u64>,
     /// Aggregates over the label's entries, kept by the touches (rebuilt by a full pass).
     pub closure: Arc<BTreeSet<Tid>>,
@@ -285,7 +285,7 @@ impl SyncEngine {
         if full {
             self.go_full(g, l, w, closure);
         } else {
-            self.membership_moved(g, l, w, closure);
+            self.roles_moved(g, l, w, closure);
             // an unchanged closure is the same `Arc` (`Groups::closures`)
             if !same_closure(closure, &w.closure) {
                 w.things.extend(closure.symmetric_difference(&w.closure).copied());
@@ -316,14 +316,14 @@ impl SyncEngine {
         full
     }
 
-    /// What membership changes that leave the actor of `g` alone move under its label `l`
+    /// What role changes that leave the actor of `g` alone move under its label `l`
     /// (spec/sync.md §3 entitlement, §6, §7; spec/permissions.md §4): the things of the closure,
     /// and of the `/label`s its home label publishes, whose roles changed (`Held::reach` of the
     /// changed rosters and owner links) or whose owner chain holds an actor that got or lost
     /// secrets of its own (reader actors); the label's own commits with a delta on such a thing
     /// (a superset's foreign deltas); other nodes' cards (their author's departure); deletes
     /// waiting for a key. A label they reach takes its roster horizon again.
-    fn membership_moved(&mut self, g: &Tid, l: &LabelId, w: &mut Work, closure: &BTreeSet<Tid>) {
+    fn roles_moved(&mut self, g: &Tid, l: &LabelId, w: &mut Work, closure: &BTreeSet<Tid>) {
         if std::mem::take(&mut w.keys) {
             w.commits.extend(std::mem::take(&mut w.keyless));
         }
@@ -395,7 +395,7 @@ impl SyncEngine {
             }
             for wid in tl.applied().keys() {
                 let ts = match wid {
-                    osis_perm::WriteId::Op(c, _) => tl.membership_commit(c).map(|m| m.ts),
+                    osis_perm::WriteId::Op(c, _) => tl.role_commit(c).map(|m| m.ts),
                     osis_perm::WriteId::Snapshot(c) => tl.roster_snapshot(c).map(|s| s.ts),
                 };
                 if let Some(ts) = ts {
@@ -541,7 +541,7 @@ impl SyncEngine {
         for c in commits {
             let mut bs = self.engine.commit_bodies_under(ctx, c)?;
             if replaced {
-                bs.retain(|b| b.membership);
+                bs.retain(|b| b.role_commit);
             }
             out.extend(bs);
         }

@@ -15,7 +15,7 @@ use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
 use osis_label::{BlobFetch, BlobReader, BlobWriter, Framing, HashSink, LargeParams, Reuse};
 use osis_schema::{Large, Path, Schema, Step, Type, large_positions, type_at};
-use osis_schema::core_types::is_membership_class;
+use osis_schema::core_types::is_role_class;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -573,7 +573,7 @@ impl Engine {
         let mut m = super::Mutation::new();
         m.fresh.clone_from(&held);
         for (tid, ak) in cands {
-            if is_membership_class(ak.as_str()) || self.role_on(&tid).is_none_or(|r| r < Role::Write) {
+            if is_role_class(ak.as_str()) || self.role_on(&tid).is_none_or(|r| r < Role::Write) {
                 continue;
             }
             // one field failing (a blob not held, a value too large) leaves the others

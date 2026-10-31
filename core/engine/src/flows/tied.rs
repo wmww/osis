@@ -1,4 +1,4 @@
-//! Tied grants (spec/permissions.md §2): an edge whose member is a group G, tied to G's placement
+//! Tied grants (spec/permissions.md §2): an edge whose holder is a group G, tied to G's placement
 //! of the target T, named by the `/group` element's creation stamp. Written after the placement
 //! (`Osis::share_into`); once a node's state of G's `/group` holds that element dead, the tied
 //! edge is to be removed by a node that may (the obligation node-sync runs,
@@ -108,32 +108,32 @@ impl Engine {
         })
     }
 
-    /// Whether this node may grant `member` `role` on `target` now (spec/permissions.md §2):
+    /// Whether this node may grant `holder` `role` on `target` now (spec/permissions.md §2):
     /// admin on the target, or an effective invite of at least `role` with no current edge of
-    /// the member (an invite grant).
-    pub fn may_grant(&self, target: &Tid, member: &Tid, role: Role) -> bool {
+    /// the holder (an invite grant).
+    pub fn may_grant(&self, target: &Tid, holder: &Tid, role: Role) -> bool {
         let me = self.tid();
         if self.core.role_now(&me, target) == Some(Role::Admin) {
             return true;
         }
         let at = osis_perm::At::now(now_ts(&self.core));
         let Some(tl) = self.core.timelines.get(target) else { return false };
-        !tl.roster(target, at).contains_key(member) && tl.invite(&me, target, at).is_some_and(|i| role <= i)
+        !tl.roster(target, at).contains_key(holder) && tl.invite(&me, target, at).is_some_and(|i| role <= i)
     }
 
-    /// How this node may remove `member`'s edge on `target` now, if at all: a self-removal
-    /// (admin on the member actor its only authority for it, spec/permissions.md §2), or an
+    /// How this node may remove `holder`'s edge on `target` now, if at all: a self-removal
+    /// (admin on the holder actor its only authority for it, spec/permissions.md §2), or an
     /// explicit demotion (admin on the target).
-    pub fn may_remove(&self, target: &Tid, member: &Tid) -> Option<Untie> {
+    pub fn may_remove(&self, target: &Tid, holder: &Tid) -> Option<Untie> {
         let me = self.tid();
-        if crate::apply::validity::self_removal(&self.core, &me, target, member, now_ts(&self.core)) {
+        if crate::apply::validity::self_removal(&self.core, &me, target, holder, now_ts(&self.core)) {
             return Some(Untie::SelfRemoval);
         }
         (self.core.role_now(&me, target) == Some(Role::Admin)).then_some(Untie::Explicit)
     }
 
     /// The tied edges whose placement this node holds dead (`tie_dead`), as (target, group):
-    /// those of every group in `groups` (from the targets it is named on as a member) and every
+    /// those of every group in `groups` (from the targets it is named on as a holder) and every
     /// tied edge on a thing in `targets`; with `all`, of every group this node holds a `/group`
     /// of.
     pub fn tied_unplaced(&mut self, groups: &BTreeSet<Tid>, targets: &BTreeSet<Tid>, all: bool) -> Result<BTreeSet<(Tid, Tid)>> {
@@ -144,7 +144,7 @@ impl Engine {
             pairs.extend(self.core.ix.held.named_on(g).map(|t| (*t, *g)));
         }
         for t in targets {
-            pairs.extend(self.core.ix.held.members_of(t).map(|g| (*t, *g)));
+            pairs.extend(self.core.ix.held.holders_of(t).map(|g| (*t, *g)));
         }
         self.ties_dead(pairs)
     }
@@ -152,6 +152,6 @@ impl Engine {
     /// Removes `group`'s tied edge on `t` (spec/permissions.md §2): an explicit demotion
     /// (stamped as pre-synced: the caller synced first) or a self-removal, as `may_remove` says.
     pub fn untie(&mut self, t: &Tid, group: &Tid) -> Result<Done> {
-        self.demote(t, &Demotion { member: *group, new: None, presync: PreSync::Synced })
+        self.demote(t, &Demotion { holder: *group, new: None, presync: PreSync::Synced })
     }
 }

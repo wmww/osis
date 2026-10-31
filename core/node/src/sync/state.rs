@@ -110,7 +110,7 @@ pub struct BlobRec {
     pub cert: bool,
 }
 
-/// A deposit (an inbox blob, a non-writer's membership write) sealed, wrapped and signed, kept
+/// A deposit (an inbox blob, a non-writer's role write) sealed, wrapped and signed, kept
 /// until its host answers (spec/sync.md §3, §5).
 #[derive(Clone, Debug)]
 pub struct OutRec {
@@ -124,12 +124,12 @@ pub struct OutRec {
     pub delivery: Option<(Tid, CommitId)>,
 }
 
-/// A membership commit delivered by inbox to `member` (spec/sync.md §3): re-sealed and sent
-/// again once `INBOX_LIFETIME` passed since `at` (corrected wall ms) unless the member acted;
+/// A role commit delivered by inbox to `holder` (spec/sync.md §3): re-sealed and sent
+/// again once `INBOX_LIFETIME` passed since `at` (corrected wall ms) unless the holder acted;
 /// `at` 0: not sent yet (`SyncEngine::send_inbox`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SentInbox {
-    pub member: Tid,
+    pub holder: Tid,
     pub commit: CommitId,
     pub things: Vec<Tid>,
     /// Only the `/members` parts went (a removal).
@@ -222,7 +222,7 @@ pub struct State {
     pub carriers: BTreeMap<CommitId, Vec<CommitId>>,
     /// This node's dialable transport secret (spec/sync.md §10).
     pub reach_secret: Option<Secret32>,
-    /// The label logs member-peer sessions see (in memory).
+    /// The label logs co-reader-peer sessions see (in memory).
     pub feed: super::serve::Feed,
     /// Entries this node dropped, by when (corrected wall ms): refused from peers for
     /// `TOMBSTONE_LIFETIME` (spec/sync.md §5), so a peer cannot replay a deleted body.
@@ -243,9 +243,9 @@ pub struct State {
     /// Replaced labels this admin no longer syncs (`y/q`, spec/sync.md §2).
     pub retired: BTreeSet<LabelId>,
     /// When this admin first saw each replaced label it still syncs (corrected wall ms, `y/q`
-    /// with a time): retired after `MEMBERSHIP_KEEP` whatever its hosts say.
+    /// with a time): retired after `ROLE_KEEP` whatever its hosts say.
     pub replaced_seen: BTreeMap<LabelId, u64>,
-    /// Inbox deliveries by (member, commit), until the member acts or the re-sends run out.
+    /// Inbox deliveries by (holder, commit), until the holder acts or the re-sends run out.
     pub sent_inbox: BTreeMap<(Tid, CommitId), SentInbox>,
     /// When a stranded heartbeat last went under each label (corrected wall ms).
     pub stranded: BTreeMap<LabelId, u64>,
@@ -447,7 +447,7 @@ impl State {
                 // a record that does not decode is a delivery not re-sent: never a failed load
                 b"v" => {
                     if let Ok(x) = decode_sent(&v) {
-                        s.sent_inbox.insert((x.member, x.commit), x);
+                        s.sent_inbox.insert((x.holder, x.commit), x);
                     }
                 }
                 b"u" => {
@@ -830,31 +830,31 @@ impl State {
     }
 
     /// Records an inbox delivery, or a re-send of one (counted).
-    pub fn note_sent(&mut self, member: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool, at: u64) {
-        let x = match self.sent_inbox.get(&(member, commit)) {
+    pub fn note_sent(&mut self, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool, at: u64) {
+        let x = match self.sent_inbox.get(&(holder, commit)) {
             // the first send of a delivery queued unsent (`at` 0) is no re-send
             Some(old) if old.at == 0 => SentInbox { at, ..old.clone() },
             Some(old) => SentInbox { at, tries: old.tries.saturating_add(1), ..old.clone() },
-            None => SentInbox { member, commit, things, edge_only, at, tries: 0 },
+            None => SentInbox { holder, commit, things, edge_only, at, tries: 0 },
         };
-        self.put(key(SENT_INBOX, &[member.as_bytes(), &commit.0]), encode_sent(&x));
-        self.sent_inbox.insert((member, commit), x);
+        self.put(key(SENT_INBOX, &[holder.as_bytes(), &commit.0]), encode_sent(&x));
+        self.sent_inbox.insert((holder, commit), x);
     }
 
     /// Records an inbox delivery not sent yet (`at` 0; `SyncEngine::send_inbox` seals and sends
     /// it at its next step), unless one is recorded already.
-    pub fn note_unsent(&mut self, member: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) {
-        if self.sent_inbox.contains_key(&(member, commit)) {
+    pub fn note_unsent(&mut self, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) {
+        if self.sent_inbox.contains_key(&(holder, commit)) {
             return;
         }
-        let x = SentInbox { member, commit, things, edge_only, at: 0, tries: 0 };
-        self.put(key(SENT_INBOX, &[member.as_bytes(), &commit.0]), encode_sent(&x));
-        self.sent_inbox.insert((member, commit), x);
+        let x = SentInbox { holder, commit, things, edge_only, at: 0, tries: 0 };
+        self.put(key(SENT_INBOX, &[holder.as_bytes(), &commit.0]), encode_sent(&x));
+        self.sent_inbox.insert((holder, commit), x);
     }
 
-    pub fn remove_sent(&mut self, member: &Tid, commit: &CommitId) {
-        if self.sent_inbox.remove(&(*member, *commit)).is_some() {
-            self.del(key(SENT_INBOX, &[member.as_bytes(), &commit.0]));
+    pub fn remove_sent(&mut self, holder: &Tid, commit: &CommitId) {
+        if self.sent_inbox.remove(&(*holder, *commit)).is_some() {
+            self.del(key(SENT_INBOX, &[holder.as_bytes(), &commit.0]));
         }
     }
 
@@ -1045,7 +1045,7 @@ fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet
             // a queued deposit is sealed and signed already: forgetting does not recall it
             b"o" => false,
             b"u" => lab(rest)?,
-            b"v" => decode_sent(&v).is_ok_and(|x| commits.contains(&x.commit) || things.contains(&x.member)),
+            b"v" => decode_sent(&v).is_ok_and(|x| commits.contains(&x.commit) || things.contains(&x.holder)),
             b"i" => lab(rest)? || things.contains(&Rd::new(&v).tid()?),
             _ => false,
         };
@@ -1063,7 +1063,7 @@ fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet
 }
 
 fn encode_sent(x: &SentInbox) -> Vec<u8> {
-    let mut w = Wr::new().raw(x.member.as_bytes()).raw(&x.commit.0).u8(u8::from(x.edge_only)).u64(x.at).u32(x.tries).u32(x.things.len() as u32);
+    let mut w = Wr::new().raw(x.holder.as_bytes()).raw(&x.commit.0).u8(u8::from(x.edge_only)).u64(x.at).u32(x.tries).u32(x.things.len() as u32);
     for t in &x.things {
         w = w.raw(t.as_bytes());
     }
@@ -1072,10 +1072,10 @@ fn encode_sent(x: &SentInbox) -> Vec<u8> {
 
 /// `State::note_unsent` inside a flow's transaction (the commit's own): a crash before
 /// `SyncEngine::carry_out` loses no inbox delivery.
-fn note_unsent_tx(tx: &mut Tx<'_>, member: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) -> Result<()> {
-    let k = key(SENT_INBOX, &[member.as_bytes(), &commit.0]);
+fn note_unsent_tx(tx: &mut Tx<'_>, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) -> Result<()> {
+    let k = key(SENT_INBOX, &[holder.as_bytes(), &commit.0]);
     if tx.txn.get_local(&k)?.is_none() {
-        let x = SentInbox { member, commit, things, edge_only, at: 0, tries: 0 };
+        let x = SentInbox { holder, commit, things, edge_only, at: 0, tries: 0 };
         tx.txn.put_local(&k, &encode_sent(&x), Shred::No)?;
     }
     Ok(())
@@ -1103,7 +1103,7 @@ fn decode_out(k: &[u8], v: &[u8]) -> Result<((HostKey, LabelId, BlobId), OutRec)
 
 fn decode_sent(v: &[u8]) -> Result<SentInbox> {
     let mut r = Rd::new(v);
-    let member = r.tid()?;
+    let holder = r.tid()?;
     let commit = CommitId(r.arr()?);
     let edge_only = r.u8()? == 1;
     let at = r.u64()?;
@@ -1113,15 +1113,15 @@ fn decode_sent(v: &[u8]) -> Result<SentInbox> {
     for _ in 0..n {
         things.push(r.tid()?);
     }
-    Ok(SentInbox { member, commit, things, edge_only, at, tries })
+    Ok(SentInbox { holder, commit, things, edge_only, at, tries })
 }
 
 /// The records engine transactions touch (`Engine::set_sync_records`).
 pub(crate) struct Records;
 
 impl crate::engine::SyncRecords for Records {
-    fn note_unsent(&self, tx: &mut Tx<'_>, member: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) -> Result<()> {
-        note_unsent_tx(tx, member, commit, things, edge_only)
+    fn note_unsent(&self, tx: &mut Tx<'_>, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) -> Result<()> {
+        note_unsent_tx(tx, holder, commit, things, edge_only)
     }
 
     fn forget(&self, tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet<Tid>, commits: &BTreeSet<CommitId>, parts: &BTreeMap<CommitId, BTreeSet<usize>>, extra: BTreeSet<BlobId>) -> Result<BTreeSet<BlobId>> {

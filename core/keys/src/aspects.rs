@@ -16,8 +16,8 @@ pub fn from_schema(e: &ct::Epoch) -> Result<Epoch, Error> {
     Ok(Epoch::new(e.n, e.nonce)?)
 }
 
-pub fn box_key(member: osis_base::Tid, role: Role, epoch: &Epoch) -> BoxKey {
-    BoxKey { member, role, epoch: to_schema(epoch) }
+pub fn box_key(holder: osis_base::Tid, role: Role, epoch: &Epoch) -> BoxKey {
+    BoxKey { holder, role, epoch: to_schema(epoch) }
 }
 
 pub fn history_key(role: Role, epoch: &Epoch) -> HistoryKey {
@@ -75,7 +75,7 @@ impl SecretsWrite {
     /// The epochs this write introduces per role and what each supersedes: a history box
     /// written for (r, e) with the epochs of the boxes of r it removes and, from `keys`
     /// (the commit's `/keys` write and the keysets held before it), the keyset epoch of r it
-    /// replaces; the latter covers an actor whose members are all key actors (their boxes are
+    /// replaces; the latter covers an actor whose holders are all key actors (their boxes are
     /// keyed at their top role, so a rotation of a lower role removes none). A grant or re-seal
     /// re-writes history boxes and removes nothing, so it supersedes nothing. Superseded epochs
     /// not below e are kept here; `RoleEpochs` drops them.

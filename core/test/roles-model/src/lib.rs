@@ -1,14 +1,14 @@
-//! Throwaway model of the membership rules (spec/permissions.md §5-§6; findings in
+//! Throwaway model of the role rules (spec/permissions.md §5-§6; findings in
 //! notes/permissions.md). Independent of any real implementation: a differential oracle for
 //! osis-perm. Patched only to follow the spec where it had simplified it (osis-perm's
 //! differential runs exposed each): `joint` judges a demotion against the edge restored as
-//! if the member still held its role (spec §5.1), ignores edges for the target's owner (§1),
-//! and treats removing a member one is admin of as a self-removal only without authority on
+//! if the holder still held its role (spec §5.1), ignores edges for the target's owner (§1),
+//! and treats removing a holder one is admin of as a self-removal only without authority on
 //! the target (§2). No model exempts the demoter's chain writes: only its frontier covers
 //! them (§5.1). Modules by spec section:
 //! - `single`: §5.1 on one actor, the adopted demoter-frontier rule and rejected variants.
-//! - `joint`: §5.1 steps 1-5 over several actors (owner chains, actor members, mutual
-//!   membership, commit-ID ties); `joint::walk`, `joint::random_hist`.
+//! - `joint`: §5.1 steps 1-5 over several actors (owner chains, actor holders, mutual
+//!   roles, commit-ID ties); `joint::walk`, `joint::random_hist`.
 //! - `edges`: §2 (`until`, invite power, self-removal) and §9 (links) on one target, with
 //!   §5.1 attribution by invite level; `edges::walk`, `edges::random_hist`.
 //! - `snapshot`: §6 roster snapshots, epoch starts and the tenure ledger on two levels.
@@ -20,7 +20,7 @@
 //! walk's code follows §5.1 step by step (`order`, `authority`, `audit`, `pass`, `eval`).
 //! Searches print each counterexample shrunk. `digest` hashes every verdict over random
 //! histories: a refactor must keep it (values in notes/testing.md, Models).
-//! Binary: `cargo run --bin membership-model -- [samples] [mode]`; `cargo test` runs
+//! Binary: `cargo run --bin roles-model -- [samples] [mode]`; `cargo test` runs
 //! the scenarios.
 
 pub mod content;
@@ -122,7 +122,7 @@ impl Rng {
 /// Digest of every walk verdict (edges, roles, applied and dropped sets, attributions, passes,
 /// epoch starts) over `samples` random histories of each model, and for snapshot histories
 /// their projections and compactions too. A refactor of the rule code must leave it unchanged
-/// (`membership-model -- N digest`).
+/// (`roles-model -- N digest`).
 pub fn digest(samples: u64, seed: u64) -> [(&'static str, u64); 4] {
     use std::hash::{Hash, Hasher};
     let mut hs: [std::collections::hash_map::DefaultHasher; 4] = Default::default();

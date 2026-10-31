@@ -18,7 +18,7 @@ use osis_commit::{Decoded, Form, Header, Kind, PurgeItem};
 use osis_base::{Ak, BlobId, CommitId, Tid, Ts};
 use osis_crdt::{Fragment, Frontiers};
 use osis_perm::{At, Point, PurgeBy};
-use osis_schema::core_types::is_membership_class;
+use osis_schema::core_types::is_role_class;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -138,12 +138,12 @@ pub(crate) fn body_class(core: &Core, h: &Header, c: &CommitId, ai: usize) -> (B
     let key = |a: &osis_commit::AspectEntry| (reader(core, &a.tid), a.retention, a.expires, a.keys.clone());
     let Some(me) = h.aspects.get(ai) else { return (BlobId(c.0), vec![ai]) };
     let k = key(me);
-    let members: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| key(a) == k).map(|(i, _)| i).collect();
-    let first = members.first().copied().unwrap_or(ai) as u32;
+    let holders: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| key(a) == k).map(|(i, _)| i).collect();
+    let first = holders.first().copied().unwrap_or(ai) as u32;
     let mut hs = osis_base::hash::Hasher::new();
     hs.update(&c.0);
     hs.update(&first.to_be_bytes());
-    (BlobId(hs.finalize()), members)
+    (BlobId(hs.finalize()), holders)
 }
 
 /// The ID of the body holding aspect `ai` of known commit `c` (`body_class`).
@@ -154,14 +154,14 @@ fn body_of(core: &Core, c: &CommitId, ai: usize) -> Option<BlobId> {
 
 /// First and last death so far over the deltas of the body holding aspect `ai` of `c`.
 fn deaths_of(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Option<(Ts, Ts)>> {
-    let (body, members) = body_class(tx.core, h, c, ai);
-    class_deaths(tx, h, &body, &members)
+    let (body, holders) = body_class(tx.core, h, c, ai);
+    class_deaths(tx, h, &body, &holders)
 }
 
 /// First and last death so far over a body's deltas.
-fn class_deaths(tx: &mut Tx<'_>, h: &Header, body: &BlobId, members: &[usize]) -> Result<Option<(Ts, Ts)>> {
+fn class_deaths(tx: &mut Tx<'_>, h: &Header, body: &BlobId, holders: &[usize]) -> Result<Option<(Ts, Ts)>> {
     let mut out: Option<(Ts, Ts)> = None;
-    for ai in members {
+    for ai in holders {
         let Some(a) = h.aspects.get(*ai) else { continue };
         if let Some(d) = tx.txn.death(&a.tid, &a.ak, body)? {
             out = Some(match out {
@@ -191,13 +191,13 @@ pub(crate) fn held_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option
 pub(crate) fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai) else { return Ok(()) };
-    let (body, members) = body_class(tx.core, &m.header, c, ai);
+    let (body, holders) = body_class(tx.core, &m.header, c, ai);
     // deaths awaiting a recompute may be early: the recompute judges the body (`settle_due`);
     // tests may keep every body (`Engine::keep_bodies`)
-    if tx.core.keep_bodies || members.iter().filter_map(|x| m.header.aspects.get(*x)).any(|x| tx.core.ix.deaths_due.contains(&(x.tid, x.ak.clone()))) {
+    if tx.core.keep_bodies || holders.iter().filter_map(|x| m.header.aspects.get(*x)).any(|x| tx.core.ix.deaths_due.contains(&(x.tid, x.ak.clone()))) {
         return Ok(());
     }
-    let d = class_deaths(tx, &m.header, &body, &members)?;
+    let d = class_deaths(tx, &m.header, &body, &holders)?;
     let live = a.retention.at_most.rel.is_some() && d.is_some() && live(tx, c, ai)?;
     let keep = osis_commit::retention::body_keep(&m.header, &a.retention, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0), live);
     if let Some(t) = keep.at_most {
@@ -207,7 +207,7 @@ pub(crate) fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<
         // it does not re-snapshot the aspect
         let zero = a.retention.at_most.rel == Some(0) && d.is_some() && !live;
         if t <= tx.now().0 || zero {
-            for x in members {
+            for x in holders {
                 drop_part(tx, c, x)?;
             }
         } else {
@@ -510,7 +510,7 @@ fn purge_by(p: osis_schema::PurgeBy) -> PurgeBy {
 /// `ch`), with its author holding the right at the request's time (spec/permissions.md §8)?
 fn purge_allowed(core: &Core, p: &Header, pc: &CommitId, item: &PurgeItem, ch: &Header, c: &CommitId, ai: usize) -> bool {
     let Some(a) = ch.aspects.get(ai) else { return false };
-    if is_membership_class(a.ak.as_str()) || a.tid != *item.tid() || a.ak != *item.ak() {
+    if is_role_class(a.ak.as_str()) || a.tid != *item.tid() || a.ak != *item.ak() {
         return false;
     }
     let names = match item {
@@ -742,8 +742,8 @@ impl Engine {
             let mut out = Vec::new();
             for (_, c, ai, _) in due_timers(tx)?.into_iter().filter(|x| x.3 == T_AT_MOST) {
                 let Some(h) = tx.core.ix.commits.get(&c).map(|m| m.header.clone()) else { continue };
-                let (_, members) = body_class(tx.core, &h, &c, ai);
-                let aspects: Vec<(Tid, Ak)> = members.iter().filter_map(|x| h.aspects.get(*x)).map(|a| (a.tid, a.ak.clone())).collect();
+                let (_, holders) = body_class(tx.core, &h, &c, ai);
+                let aspects: Vec<(Tid, Ak)> = holders.iter().filter_map(|x| h.aspects.get(*x)).map(|a| (a.tid, a.ak.clone())).collect();
                 out.push((c, aspects));
             }
             Ok(out)
@@ -925,7 +925,7 @@ impl Engine {
                     absorbed.insert(*c, m.header.author);
                 }
             }
-            let kind = if is_membership_class(ak.as_str()) { Kind::MembershipSnapshot } else { Kind::ContentSnapshot };
+            let kind = if is_role_class(ak.as_str()) { Kind::RoleSnapshot } else { Kind::ContentSnapshot };
             // bounds from the retention of the writes it carries, schema known here or not; it
             // names the schema of the newest delta naming one (spec/commits.md §5)
             let retention = osis_commit::retention::snapshot_retention(ak.as_str(), own_retentions(tx, &tid, &ak, &st)?, ts.wall_ms().0);
@@ -1037,11 +1037,11 @@ fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> R
 /// same ones.
 fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(true) };
-    let (_, members) = body_class(tx.core, &h, c, ai);
+    let (_, holders) = body_class(tx.core, &h, c, ai);
     if h.kind.is_compaction() {
-        return snapshot_live(tx, &h, c, &members);
+        return snapshot_live(tx, &h, c, &holders);
     }
-    for x in members {
+    for x in holders {
         let Some(a) = h.aspects.get(x) else { continue };
         let Some(o) = Owned::of(&h, c, x) else { return Ok(true) };
         // the pages holding the dots of every delta of the body (all pages when one is not
@@ -1080,10 +1080,10 @@ fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
 /// what it carried) or one without a `ts` (a bare anchor it may carry): an
 /// over-approximation, so its delete at hosts waits for a carrier (spec/sync.md §7).
 /// Never held: a write stamped at or before its `ts`.
-fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, members: &[usize]) -> Result<bool> {
+fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -> Result<bool> {
     // per dropped aspect, whether it was live then
     let dropped: BTreeMap<usize, bool> = tx.core.ix.commits.get(c).map(|m| m.dropped.iter().map(|(ai, d)| (*ai, d.live)).collect()).unwrap_or_default();
-    for x in members {
+    for x in holders {
         let Some(a) = h.aspects.get(*x) else { continue };
         let k = (a.tid, a.ak.clone());
         let parts = crate::apply::held_parts(tx, c, *x)?;
@@ -1144,7 +1144,7 @@ mod tests {
         lp.sync(1, 0).unwrap();
         let e = &mut lp.peers[0].engine;
         assert!(e.body_live(&c, &t, &ak).unwrap(), "W's write is the value");
-        e.demote(&t, &Demotion { member: w, new: None, presync: PreSync::Backdated(before) }).unwrap();
+        e.demote(&t, &Demotion { holder: w, new: None, presync: PreSync::Backdated(before) }).unwrap();
         assert!(!e.body_live(&c, &t, &ak).unwrap(), "invalid after the backdated removal: dead");
         e.grant(&t, &w, &write).unwrap();
         assert!(e.body_live(&c, &t, &ak).unwrap(), "valid again after the re-grant: live");
@@ -1177,7 +1177,7 @@ mod tests {
         lp.sync(1, 0).unwrap();
         let e = &mut lp.peers[0].engine;
         assert!(e.take_changed().commits.contains(&c), "applied");
-        e.demote(&t, &Demotion { member: w, new: None, presync: PreSync::Backdated(before) }).unwrap();
+        e.demote(&t, &Demotion { holder: w, new: None, presync: PreSync::Backdated(before) }).unwrap();
         let got = e.take_changed();
         assert!(got.commits.contains(&c), "the flipped commit");
         assert!(!got.commits.contains(&first), "not every commit on the flipped aspect");

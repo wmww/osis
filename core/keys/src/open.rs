@@ -1,4 +1,4 @@
-//! Opening `/secrets` (spec/crypto.md §4): a member's boxes with any key it holds, then older
+//! Opening `/secrets` (spec/crypto.md §4): a holder's boxes with any key it holds, then older
 //! epochs through history boxes.
 
 use crate::aspects::{from_schema, observe_secrets};
@@ -9,16 +9,16 @@ use osis_crypto::{BoxForm, BoxSlot, Epoch, KeyActorKeys, KemSecret, Secret32, ke
 use osis_schema::core_types::{BoxKey, HistoryKey, Sealed, SecretBox, Secrets};
 use std::collections::BTreeMap;
 
-/// Who opens: a key actor by its seed, or an actor member by the role secrets it holds.
+/// Who opens: a key actor by its seed, or an actor holder by the role secrets it holds.
 pub enum Opener<'a> {
-    KeyActor { member: Tid, seed: &'a Secret32 },
-    Actor { member: Tid, epochs: &'a ActorEpochs },
+    KeyActor { holder: Tid, seed: &'a Secret32 },
+    Actor { holder: Tid, epochs: &'a ActorEpochs },
 }
 
 impl Opener<'_> {
-    pub fn member(&self) -> Tid {
+    pub fn holder(&self) -> Tid {
         match self {
-            Opener::KeyActor { member, .. } | Opener::Actor { member, .. } => *member,
+            Opener::KeyActor { holder, .. } | Opener::Actor { holder, .. } => *holder,
         }
     }
 }
@@ -34,11 +34,11 @@ pub struct Opened {
 /// Opens every box of `actor`'s `/secrets` addressed to the opener. Boxes it cannot open (a key
 /// it does not hold, bad bytes) are returned with the reason; they are not fatal.
 pub fn open_boxes(actor: &Tid, secrets: &Secrets, opener: &Opener) -> (Vec<Opened>, Vec<(BoxKey, Error)>) {
-    let member = opener.member();
+    let holder = opener.holder();
     let mut kem_cache: Option<KemSecret> = None;
     let mut out = Vec::new();
     let mut failed = Vec::new();
-    for (k, b) in secrets.boxes.iter().filter(|(k, _)| k.member == member) {
+    for (k, b) in secrets.boxes.iter().filter(|(k, _)| k.holder == holder) {
         match open_one(actor, k, b, opener, &mut kem_cache) {
             Ok(Some(items)) => out.extend(items),
             Ok(None) => {}
@@ -51,7 +51,7 @@ pub fn open_boxes(actor: &Tid, secrets: &Secrets, opener: &Opener) -> (Vec<Opene
 /// `Ok(None)`: the opener holds no key for this box.
 fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener, kem_cache: &mut Option<KemSecret>) -> Result<Option<Vec<Opened>>, Error> {
     let epoch = from_schema(&k.epoch)?;
-    let slot = BoxSlot::Secrets { actor: *actor, member: k.member, role: k.role, epoch };
+    let slot = BoxSlot::Secrets { actor: *actor, holder: k.holder, role: k.role, epoch };
     match b {
         SecretBox::Sealed(sb) => {
             let keyset = sb.keyset.as_ref().map(from_schema).transpose()?;
@@ -61,7 +61,7 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener, kem_cache: 
                     Some(s) => role_kem(s),
                     None => return Ok(None),
                 },
-                _ => return Err(Error::Mismatch("sealed form does not fit the member kind")),
+                _ => return Err(Error::Mismatch("sealed form does not fit the holder kind")),
             };
             let Sealed::X25519MlKem768(bytes) = &sb.sealed;
             let items = open_box(&kem, &slot, BoxForm::Sealed { keyset, suite: sb.suite }, bytes)?;

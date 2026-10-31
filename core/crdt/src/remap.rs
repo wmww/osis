@@ -162,7 +162,7 @@ pub(crate) fn walk(v: &mut dyn Visit, f: &Fragment) -> bool {
                     n => n == Next::On && matches!(&e.content, SeqContent::Frag(x) if walk(v, x)),
                 })
         }
-        Fragment::Slots(Slots { reg, members }) => reg.as_ref().is_some_and(|r| reg_v(v, r)) || members.values().any(|f| walk(v, f)),
+        Fragment::Slots(Slots { reg, slots }) => reg.as_ref().is_some_and(|r| reg_v(v, r)) || slots.values().any(|f| walk(v, f)),
     }
 }
 
@@ -309,11 +309,11 @@ impl Fragment {
                 mp.reindex();
             }
             Fragment::Seq(s) => seq(s, f),
-            Fragment::Slots(Slots { reg, members }) => {
+            Fragment::Slots(Slots { reg, slots }) => {
                 if let Some(r) = reg {
                     register(r, f);
                 }
-                for x in members.values_mut() {
+                for x in slots.values_mut() {
                     x.map_dots(f);
                 }
             }

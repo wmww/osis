@@ -16,7 +16,7 @@ The MVP is built: every subsystem of the spec is implemented and tested (final r
 Code map (crate DAG and rules: notes/architecture.md):
 - `core/` (package names keep the `osis-` prefix): `base` osis-base (values, CBOR, ids, chunker), -crypto, -crdt, -schema, -perm, -store (encrypted local store), -commit, -keys, -label (blobs, labels, steps, large values), -proto (sans-I/O sync protocol), -transport (in-process, QUIC, iroh, LAN), -host (host), -node (engine, sync engine, role flows), `osis` (the app API), `bench` osis-bench. `cli/` osis-cli (binary `osis`).
 - `kit/` osis-kit (UI toolkit over Masonry) and `app/` osis-app (binary `osis-app`, prototype notes app): their own Cargo workspace rooted at kit/Cargo.toml (notes/app.md).
-- `schema/` the first-party schema files, their scenario tests in core/osis's test binary (notes/std.md); `core/test/sim/` the deterministic simulator (notes/testing.md); `core/test/vectors/` conformance vectors; `core/test/fuzz/` cargo-fuzz targets; `core/test/crdt-model` and `core/test/membership-model` reference models, `core/test/tla` TLA+ `sync`, `rotation` and `membership`; `tools/` policy.py, spec_map.py, fixpoint.
+- `schema/` the first-party schema files, their scenario tests in core/osis's test binary (notes/std.md); `core/test/sim/` the deterministic simulator (notes/testing.md); `core/test/vectors/` conformance vectors; `core/test/fuzz/` cargo-fuzz targets; `core/test/crdt-model` and `core/test/roles-model` reference models, `core/test/tla` TLA+ `sync`, `rotation` and `membership`; `tools/` policy.py, spec_map.py, fixpoint.
 
 What runs where (details and latest numbers: notes/testing.md):
 - Tier 1, `cargo test --workspace`: everything below the sim's long scenarios; green.
@@ -29,7 +29,7 @@ How to run:
 - Host: `osis serve`; prints `quic://host:port#key`.
 - Standard data scenarios: core/osis's `contact`, `event`, `notes`, `tags` tests in `cargo test --workspace`.
 - Sim: `cargo run --bin sim-sweep -- --seeds N --budget-secs T`; replay a failing seed with `osis_sim::replay("<scenario>", <seed>)`.
-- Models: `core/test/tla/run.sh small` (Java); their tests run in `cargo test --workspace`; `cargo run --bin membership-model`.
+- Models: `core/test/tla/run.sh small` (Java); their tests run in `cargo test --workspace`; `cargo run --bin roles-model`.
 
 Known open (issues/): owner tradeoffs stated in user terms (aspect-key-format); cost residues (perm-eval-cost, node-core-gaps, node-sequences-not-paged, crdt-seq-linearization-cost); rough edges (node-sync-gaps); api-deferred (queries are a design pass), in-memory-things; tests-unbuilt (10^4-seed sweep, model refactors).
 

@@ -51,7 +51,7 @@ enum On {
 }
 
 pub(crate) struct Wait {
-    /// `reexamine`'s order: (not membership, `ts`).
+    /// `reexamine`'s order: (not roles, `ts`).
     pub key: (bool, Ts),
     /// The things the commit has deltas on.
     things: BTreeSet<Tid>,
@@ -74,7 +74,7 @@ impl Wait {
             On::Record { .. } => 0,
         };
         let bytes = 160 + 48 * things.len() + header;
-        Wait { key: (!h.kind.is_membership(), h.ts), things, reason, on, generation: core.ix.held.generation(), edges: core.ix.held.edges(), now, bytes }
+        Wait { key: (!h.kind.is_role(), h.ts), things, reason, on, generation: core.ix.held.generation(), edges: core.ix.held.edges(), now, bytes }
     }
 }
 

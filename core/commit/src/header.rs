@@ -21,43 +21,43 @@ pub const FOREVER: u64 = i64::MAX as u64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Kind {
     Content = 0,
-    Membership = 1,
+    Role = 1,
     ContentSnapshot = 2,
-    MembershipSnapshot = 3,
+    RoleSnapshot = 3,
     Import = 4,
     RosterSnapshot = 5,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 6] = [Kind::Content, Kind::Membership, Kind::ContentSnapshot, Kind::MembershipSnapshot, Kind::Import, Kind::RosterSnapshot];
+    pub const ALL: [Kind; 6] = [Kind::Content, Kind::Role, Kind::ContentSnapshot, Kind::RoleSnapshot, Kind::Import, Kind::RosterSnapshot];
     pub fn id(self) -> u64 {
         self as u64
     }
     pub fn from_id(id: u64) -> Option<Kind> {
         Kind::ALL.into_iter().find(|k| k.id() == id)
     }
-    /// Deltas only on membership-class aspects.
-    pub fn is_membership(self) -> bool {
-        matches!(self, Kind::Membership | Kind::MembershipSnapshot | Kind::RosterSnapshot)
+    /// Deltas only on role-class aspects.
+    pub fn is_role(self) -> bool {
+        matches!(self, Kind::Role | Kind::RoleSnapshot | Kind::RosterSnapshot)
     }
     /// Carries own writes (a counter range); snapshots and imports do not.
     pub fn has_own_writes(self) -> bool {
-        !matches!(self, Kind::ContentSnapshot | Kind::MembershipSnapshot | Kind::Import)
+        !matches!(self, Kind::ContentSnapshot | Kind::RoleSnapshot | Kind::Import)
     }
     /// May carry several deltas per aspect.
     pub fn several_deltas(self) -> bool {
-        matches!(self, Kind::Membership | Kind::RosterSnapshot)
+        matches!(self, Kind::Role | Kind::RosterSnapshot)
     }
     /// Compaction snapshot.
     pub fn is_compaction(self) -> bool {
-        matches!(self, Kind::ContentSnapshot | Kind::MembershipSnapshot)
+        matches!(self, Kind::ContentSnapshot | Kind::RoleSnapshot)
     }
     /// How osis-crdt reads this kind's deltas (spec/crdt.md §2.4).
     pub fn delta_kind(self) -> DeltaKind {
         match self {
-            Kind::ContentSnapshot | Kind::MembershipSnapshot => DeltaKind::Snapshot,
+            Kind::ContentSnapshot | Kind::RoleSnapshot => DeltaKind::Snapshot,
             Kind::Import => DeltaKind::Import,
-            Kind::Content | Kind::Membership | Kind::RosterSnapshot => DeltaKind::Writer,
+            Kind::Content | Kind::Role | Kind::RosterSnapshot => DeltaKind::Writer,
         }
     }
 }

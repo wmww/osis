@@ -1,5 +1,5 @@
 //! Incremental evaluation (notes/permissions.md Implementation): the timeline split into connected components of
-//! things (edges join member, target and author; ownership joins a thing and its owner; a
+//! things (edges join holder, target and author; ownership joins a thing and its owner; a
 //! roster snapshot joins its thing, author and every node it names), each cached by its exact
 //! inputs. A held-set change touches only the components whose inputs changed: continued in
 //! place (`Timeline::append`, `add_leaves`), from the old walk (`Timeline::extend`), from a
@@ -9,7 +9,7 @@
 use crate::cache::{self, Inputs, Only};
 use crate::held::HeldSet;
 use crate::timeline::Timeline;
-use crate::types::{MembershipCommit, RosterSnapshot};
+use crate::types::{RoleCommit, RosterSnapshot};
 use osis_base::{CommitId, CreationRecord, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -110,22 +110,22 @@ pub struct SaveDone {
 
 /// The unions of the partition that thing `t`'s held inputs make (`created` its record,
 /// `commits` and `snaps` those held of it): with its owner; each edge write's author and
-/// member with its target; a snapshot's author, roster and ledger members with its thing, and
+/// holder with its target; a snapshot's author, roster and ledger holders with its thing, and
 /// the key's node of a ledger entry with a frontier (a demotion by it, §6).
-fn joins(t: Tid, created: Option<&CreationRecord>, commits: &[Arc<MembershipCommit>], snaps: &[Arc<RosterSnapshot>], mut join: impl FnMut(Tid, Tid)) {
+fn joins(t: Tid, created: Option<&CreationRecord>, commits: &[Arc<RoleCommit>], snaps: &[Arc<RosterSnapshot>], mut join: impl FnMut(Tid, Tid)) {
     if let Some(CreationRecord::Thing { owner, .. }) = created {
         join(t, *owner);
     }
     for c in commits {
         for o in &c.ops {
             join(c.author, o.target);
-            join(o.member, o.target);
+            join(o.holder, o.target);
         }
     }
     for s in snaps {
         join(s.author, s.thing);
         let demoters = s.ledger.iter().filter(|x| x.frontier.is_some()).map(|x| &x.until.node);
-        for m in s.roster.keys().chain(s.ledger.iter().map(|x| &x.member)).chain(demoters) {
+        for m in s.roster.keys().chain(s.ledger.iter().map(|x| &x.holder)).chain(demoters) {
             join(*m, s.thing);
         }
     }
@@ -205,8 +205,8 @@ impl Timelines {
     }
 
     /// The common case of `update_touched` in O(what changed): every touched thing is in a
-    /// component, with its `/created` and snapshots as before, and only gained membership
-    /// commits that join nothing (author, members and targets in its component); each such
+    /// component, with its `/created` and snapshots as before, and only gained roles
+    /// commits that join nothing (author, holders and targets in its component); each such
     /// component goes on by `Timeline::append`. Or it is a new leaf (only its `/created` names
     /// it) of a component that gained no commits: `Timeline::add_leaves`. `None`: the case does
     /// not apply, nothing done.
@@ -214,7 +214,7 @@ impl Timelines {
     /// were (else the general path must run: the ones continued are then cache hits).
     fn append(&mut self, held: &dyn HeldSet, touched: &BTreeSet<Tid>) -> Option<(Changed, BTreeSet<Tid>, bool)> {
         // (new commits, commits per touched thing, new nodes joining, new leaves)
-        type Work = (BTreeMap<CommitId, Arc<MembershipCommit>>, BTreeMap<Tid, BTreeSet<CommitId>>, BTreeMap<Tid, Option<CreationRecord>>, Vec<(Tid, CreationRecord)>);
+        type Work = (BTreeMap<CommitId, Arc<RoleCommit>>, BTreeMap<Tid, BTreeSet<CommitId>>, BTreeMap<Tid, Option<CreationRecord>>, Vec<(Tid, CreationRecord)>);
         let mut work: BTreeMap<u64, Work> = BTreeMap::new();
         // Nothing held of `x` but its `/created`, in no component or alone in one (`known`:
         // with that record already).
@@ -275,7 +275,7 @@ impl Timelines {
                 } else if c.inputs.1.contains(&m.id) {
                     return None;
                 } else {
-                    let names = std::iter::once(&m.author).chain(m.ops.iter().flat_map(|o| [&o.member, &o.target]));
+                    let names = std::iter::once(&m.author).chain(m.ops.iter().flat_map(|o| [&o.holder, &o.target]));
                     for x in names {
                         if c.inputs.0.contains(x) {
                             continue;
@@ -350,7 +350,7 @@ impl Timelines {
                 self.unsaved.insert(i);
             }
             if !new.is_empty() {
-                let list: Vec<Arc<MembershipCommit>> = new.values().cloned().collect();
+                let list: Vec<Arc<RoleCommit>> = new.values().cloned().collect();
                 let keys: Vec<(Tid, CreationRecord)> = join.iter().filter_map(|(x, r)| r.clone().map(|r| (*x, r))).collect();
                 match c.tl.append(&list, &keys) {
                     Ok(tl) => c.tl = tl,

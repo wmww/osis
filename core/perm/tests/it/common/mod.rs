@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
-use osis_perm::{Dots, Edge, EdgeOp, Frontier, MembershipCommit, MemoryHeldSet, RosterSnapshot, Tenure, WriteId};
+use osis_perm::{Dots, Edge, EdgeOp, Frontier, RoleCommit, MemoryHeldSet, RosterSnapshot, Tenure, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -60,7 +60,7 @@ pub struct CSpec {
 
 /// A ledger key (t, node, commit ID); `None`: the commit of that node at t (`World::key`).
 pub type KeySpec = (u64, Tid, Option<CommitId>);
-/// A ledger entry: (member, role, since, until, audited).
+/// A ledger entry: (holder, role, since, until, audited).
 pub type LedgerSpec = (Tid, Role, Option<KeySpec>, KeySpec, bool);
 
 #[derive(Clone, Debug)]
@@ -70,7 +70,7 @@ pub struct SSpec {
     pub t: u64,
     pub thing: Tid,
     pub roster: BTreeMap<Tid, Edge>,
-    /// (member, role, since, until); the tenure's frontier is the until node's receipts before
+    /// (holder, role, since, until); the tenure's frontier is the until node's receipts before
     /// the until time; `audited: false` leaves it without one.
     pub ledger: Vec<LedgerSpec>,
     pub recv: BTreeMap<Tid, u64>,
@@ -138,9 +138,9 @@ impl World {
         let id = self.commit(author, t, &[], recv);
         osis_perm::Point { ts: ts(t), node: author, commit: id }
     }
-    /// One edge write: `member`'s edge on `target`.
-    pub fn set(&mut self, author: Tid, target: Tid, member: Tid, e: Option<Edge>, t: u64, recv: &[(Tid, u64)]) -> CommitId {
-        self.commit(author, t, &[(target, member, e)], recv)
+    /// One edge write: `holder`'s edge on `target`.
+    pub fn set(&mut self, author: Tid, target: Tid, holder: Tid, e: Option<Edge>, t: u64, recv: &[(Tid, u64)]) -> CommitId {
+        self.commit(author, t, &[(target, holder, e)], recv)
     }
     pub fn snapshot(&mut self, author: Tid, thing: Tid, roster: &[(Tid, Edge)], t: u64, recv: &[(Tid, u64)]) -> CommitId {
         self.snapshot_l(author, thing, roster, &[], t, recv)
@@ -230,13 +230,13 @@ impl World {
             h.created.insert(*t, r.clone());
         }
         for c in self.commits.iter().filter(|c| !skip.contains(&c.id)) {
-            h.add_commit(MembershipCommit {
+            h.add_commit(RoleCommit {
                 id: c.id,
                 ts: ts(c.t),
                 author: c.author,
                 actor: c.author,
                 frontier: Some(Arc::new(self.frontier(c.author, c.t))),
-                ops: c.ops.iter().map(|&(target, member, edge)| EdgeOp { target, member, edge, dots: Dots::Commit }).collect(),
+                ops: c.ops.iter().map(|&(target, holder, edge)| EdgeOp { target, holder, edge, dots: Dots::Commit }).collect(),
             });
         }
         for s in self.raw.iter().filter(|s| !skip.contains(&s.id)) {
@@ -246,8 +246,8 @@ impl World {
             let ledger = s
                 .ledger
                 .iter()
-                .map(|&(member, role, since, until, audited)| Tenure {
-                    member,
+                .map(|&(holder, role, since, until, audited)| Tenure {
+                    holder,
                     role,
                     since: since.map(|k| self.key(k)),
                     until: self.key(until),
@@ -260,12 +260,12 @@ impl World {
     }
 }
 
-/// Sticky residue (notes/permissions.md, core/test/tla/membership M2): the drops whose cause R is
+/// Sticky residue (notes/permissions.md, core/test/tla/roles M2): the drops whose cause R is
 /// not, in the settled walk, an applied fall of the dropped write's author X on its target N
 /// past the write's class (R was dropped, or with the write dropped R is no fall, or not
 /// through that class). The write's class is X's class on N just before it in the settled
-/// walk; a self-removal through a member (§2: X's admin on the member is its only authority)
-/// is audited on the member, by X's class there (§5.1 step 3). They stay dropped
+/// walk; a self-removal through a holder (§2: X's admin on the holder is its only authority)
+/// is audited on the holder, by X's class there (§5.1 step 3). They stay dropped
 /// since D only grows, so the answer depends on the order drops were found, and a roster
 /// snapshot can repair them.
 pub fn residue(tl: &osis_perm::Timeline) -> BTreeSet<WriteId> {
@@ -282,20 +282,20 @@ pub fn resnapshot_residue(tl: &osis_perm::Timeline) -> BTreeSet<WriteId> {
 
 fn residue_with(tl: &osis_perm::Timeline, self_supported_too: bool) -> BTreeSet<WriteId> {
     let by = |w: &WriteId| match w {
-        WriteId::Op(c, k) => tl.membership_commit(c).and_then(|m| Some((m.author, m.ops.get(usize::try_from(*k).ok()?)?.target, m.point()))),
+        WriteId::Op(c, k) => tl.role_commit(c).and_then(|m| Some((m.author, m.ops.get(usize::try_from(*k).ok()?)?.target, m.point()))),
         WriteId::Snapshot(c) => tl.roster_snapshot(c).map(|s| (s.author, s.thing, s.point())),
     };
-    // the thing whose class fall audits w: the member for a self-removal through it
+    // the thing whose class fall audits w: the holder for a self-removal through it
     let audited_on = |w: &WriteId, target: Tid| {
         let WriteId::Op(c, k) = w else { return target };
-        let Some(m) = tl.membership_commit(c) else { return target };
+        let Some(m) = tl.role_commit(c) else { return target };
         let Some(op) = m.ops.get(usize::try_from(*k).unwrap_or(usize::MAX)) else { return target };
         let at = osis_perm::At::before(m.point());
-        let old = tl.edges_at(Some(m.point())).get(&op.member, &op.target).copied();
+        let old = tl.edges_at(Some(m.point())).get(&op.holder, &op.target).copied();
         let new = op.edge.map(|e| Edge { since: None, ..e });
         let class = tl.class(&m.author, &op.target, at);
-        let through = op.member != m.author && osis_perm::types::lowers(new.as_ref(), old.as_ref()) && tl.role(&m.author, &op.member, at) == Some(Role::Admin) && !matches!(class, osis_perm::Class::Chain | osis_perm::Class::Edge);
-        if through { op.member } else { target }
+        let through = op.holder != m.author && osis_perm::types::lowers(new.as_ref(), old.as_ref()) && tl.role(&m.author, &op.holder, at) == Some(Role::Admin) && !matches!(class, osis_perm::Class::Chain | osis_perm::Class::Edge);
+        if through { op.holder } else { target }
     };
     // The audit that dropped a write saw it in effect; the settled walk does not. A fall that
     // holds only with the write's own edge gone justifies itself (OSIS_PERM_SEED=52011): with
@@ -306,7 +306,7 @@ fn residue_with(tl: &osis_perm::Timeline, self_supported_too: bool) -> BTreeSet<
             return false;
         }
         let WriteId::Op(c, k) = w else { return false };
-        let Some(m) = tl.membership_commit(c) else { return false };
+        let Some(m) = tl.role_commit(c) else { return false };
         let Some(op) = m.ops.get(usize::try_from(*k).unwrap_or(usize::MAX)) else { return false };
         let mut next = p.commit.0;
         for b in next.iter_mut().rev() {
@@ -317,10 +317,10 @@ fn residue_with(tl: &osis_perm::Timeline, self_supported_too: bool) -> BTreeSet<
         }
         let after = osis_perm::Point { commit: CommitId(next), ..*p };
         let mut edges = tl.edges_at(Some(after));
-        if edges.get(&op.member, &op.target) != tl.edges_at(Some(m.point())).get(&op.member, &op.target) {
+        if edges.get(&op.holder, &op.target) != tl.edges_at(Some(m.point())).get(&op.holder, &op.target) {
             return false;
         }
-        edges.set(op.member, op.target, op.edge);
+        edges.set(op.holder, op.target, op.edge);
         let view = osis_perm::graph::View::at(tl.owners(), &edges, Some(p.ts));
         let x = m.author;
         view.standing(&x, &view.roles_from(&x), n).class >= class
@@ -344,18 +344,18 @@ pub fn dropped_commits(tl: &osis_perm::Timeline) -> BTreeSet<CommitId> {
     tl.dropped().keys().map(WriteId::commit).collect()
 }
 
-fn model_role(r: membership_model::Role) -> Option<Role> {
+fn model_role(r: roles_model::Role) -> Option<Role> {
     match r {
-        membership_model::Role::None => None,
-        membership_model::Role::Read => Some(Role::Read),
-        membership_model::Role::Write => Some(Role::Write),
-        membership_model::Role::Admin => Some(Role::Admin),
+        roles_model::Role::None => None,
+        roles_model::Role::Read => Some(Role::Read),
+        roles_model::Role::Write => Some(Role::Write),
+        roles_model::Role::Admin => Some(Role::Admin),
     }
 }
 
 /// A joint-model history as a world (genesis: writes by the top key actor at t=0).
-pub fn joint_world(h: &membership_model::joint::JHist, salt: u8) -> (World, Vec<Tid>, Vec<Tid>) {
-    use membership_model::joint::Owner;
+pub fn joint_world(h: &roles_model::joint::JHist, salt: u8) -> (World, Vec<Tid>, Vec<Tid>) {
+    use roles_model::joint::Owner;
     let mut w = World::new();
     w.next = 1000 + u32::from(salt) * 100_000;
     let nodes = w.nodes_salted(h.nodes, salt);
@@ -381,14 +381,14 @@ pub fn joint_world(h: &membership_model::joint::JHist, salt: u8) -> (World, Vec<
         let recv: Vec<(Tid, u64)> = nodes.iter().enumerate().map(|(n, t)| (*t, h.recv[i][n] as u64)).collect();
         let mut id = cid(jw.id);
         id.0[30] = salt;
-        w.commit_id(id, nodes[jw.author], jw.t as u64, &[(actors[jw.target], ent(jw.member), model_role(jw.role).map(Edge::new))], &recv);
+        w.commit_id(id, nodes[jw.author], jw.t as u64, &[(actors[jw.target], ent(jw.holder), model_role(jw.role).map(Edge::new))], &recv);
     }
     (w, nodes, actors)
 }
 
 /// An edges-model history as a world: node 0 owns the one target.
-pub fn edges_world(h: &membership_model::edges::EHist, salt: u8) -> (World, Vec<Tid>, Tid) {
-    use membership_model::edges::{Edge as MEdge, NEVER};
+pub fn edges_world(h: &roles_model::edges::EHist, salt: u8) -> (World, Vec<Tid>, Tid) {
+    use roles_model::edges::{Edge as MEdge, NEVER};
     let mut w = World::new();
     w.next = 1000 + u32::from(salt) * 100_000;
     let nodes = w.nodes_salted(h.n(), salt);
@@ -430,8 +430,8 @@ pub struct SnapWorld {
     pub ids: Vec<Option<CommitId>>,
 }
 
-pub fn snap_world(h: &membership_model::snapshot::SHist) -> SnapWorld {
-    use membership_model::snapshot::Thing;
+pub fn snap_world(h: &roles_model::snapshot::SHist) -> SnapWorld {
+    use roles_model::snapshot::Thing;
     let mut w = World::new();
     let nodes = w.nodes(h.n());
     let k = nodes[0];
@@ -469,12 +469,12 @@ pub fn snap_world(h: &membership_model::snapshot::SHist) -> SnapWorld {
                 let mut r: Vec<(Tid, Edge)> = Vec::new();
                 for (x, &rl) in roster.iter().enumerate().skip(1) {
                     if let Some(rl) = model_role(rl) {
-                        let open = sw.ledger.iter().find(|e| e.member == x && e.until.is_none());
+                        let open = sw.ledger.iter().find(|e| e.holder == x && e.until.is_none());
                         let since = open.and_then(|e| e.since).map(|k| w.key(key(k)));
                         r.push((nodes[x], Edge { since: if rl == Role::Admin { since } else { None }, ..Edge::new(rl) }));
                     }
                 }
-                let ledger: Vec<_> = sw.ledger.iter().filter_map(|e| e.until.map(|u| (nodes[e.member], Role::Admin, e.since.map(key), key(u), true))).collect();
+                let ledger: Vec<_> = sw.ledger.iter().filter_map(|e| e.until.map(|u| (nodes[e.holder], Role::Admin, e.since.map(key), key(u), true))).collect();
                 w.snapshot_id(mid(sw.id), author, thing, &r, &ledger, sw.t as u64, &recv)
             }
         };

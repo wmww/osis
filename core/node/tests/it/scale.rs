@@ -5,7 +5,7 @@
 use osis_base::{Ak, BlobId, Clock, ManualClock, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::{Epoch, KeyActorKeys, Secret32, SeededRng};
-use osis_keys::{MemberKeys, Recipient, rotate};
+use osis_keys::{HolderKeys, Recipient, rotate};
 use osis_node::{Config, Engine, Mutation};
 use osis_schema::{Aspect, AspectKey, Codec, StaticSchema};
 use osis_schema::core_types as ct;
@@ -144,10 +144,10 @@ fn big_map_edit_cost() {
     }
 }
 
-// spec/requirements.md, Scale: direct rosters hold thousands of members; spec/crypto.md §4: a
-// rotation boxes each remaining role secret to each member. Measures the rotation commit that a
-// removal from a roster of N writers carries (read and write rotated; each person member gets a
-// sealed box per role; notes/chat.md estimates 2.7 KB per member).
+// spec/requirements.md, Scale: direct rosters hold thousands of holders; spec/crypto.md §4: a
+// rotation boxes each remaining role secret to each holder. Measures the rotation commit that a
+// removal from a roster of N writers carries (read and write rotated; each person holder gets a
+// sealed box per role; notes/chat.md estimates 2.7 KB per holder).
 #[test]
 #[ignore]
 fn roster_removal_cost() {
@@ -157,20 +157,20 @@ fn roster_removal_cost() {
         let mut m = Mutation::new();
         let a = e.new_thing(&mut m, me);
         e.commit(m).unwrap().unwrap();
-        // Person-like members: keysets per role (one KEM key reused; box size does not depend on it).
+        // Person-like holders: keysets per role (one KEM key reused; box size does not depend on it).
         let kem = KeyActorKeys::from_seed(&Secret32::from_bytes([9; 32])).kem.public().clone();
         let ep = Epoch::new(1, [3; 32]).unwrap();
-        let mut members = vec![Recipient { member: me, role: Role::Admin, keys: MemberKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } }];
+        let mut holders = vec![Recipient { holder: me, role: Role::Admin, keys: HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } }];
         for i in 0..n - 1 {
             let mut b = [0u8; 15];
             b[..8].copy_from_slice(&(i as u64 + 1).to_le_bytes());
             let keysets = [Role::Read, Role::Write].into_iter().map(|r| (r, (ep, kem.clone()))).collect();
-            members.push(Recipient { member: Tid::from_bytes(b), role: Role::Write, keys: MemberKeys::Actor { keysets, own: BTreeMap::new() } });
+            holders.push(Recipient { holder: Tid::from_bytes(b), role: Role::Write, keys: HolderKeys::Actor { keysets, own: BTreeMap::new() } });
         }
         // secrets of its own are all three roles' (spec/crypto.md §3): the thing gets them first
         let all = BTreeSet::from([Role::Read, Role::Write, Role::Admin]);
         let view = e.epochs(&a).unwrap();
-        let r0 = rotate(&a, &all, &view, &Default::default(), &members[..1], &|_, _| true, &mut SeededRng::from_u64(2)).unwrap();
+        let r0 = rotate(&a, &all, &view, &Default::default(), &holders[..1], &|_, _| true, &mut SeededRng::from_u64(2)).unwrap();
         let mut m = Mutation::new();
         for (k, b) in &r0.secrets.boxes {
             m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();
@@ -191,7 +191,7 @@ fn roster_removal_cost() {
         let t0 = Instant::now();
         let view = e.epochs(&a).unwrap();
         let state = e.get(&a, &ak("/secrets")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap_or_default();
-        let r = rotate(&a, &roles, &view, &state, &members, &|_, _| true, &mut SeededRng::from_u64(1)).unwrap();
+        let r = rotate(&a, &roles, &view, &state, &holders, &|_, _| true, &mut SeededRng::from_u64(1)).unwrap();
         let sealed = t0.elapsed();
         let mut m = Mutation::new();
         for (k, b) in &r.secrets.boxes {
@@ -215,13 +215,13 @@ fn roster_removal_cost() {
         let total = pkg.bytes.len() + pkg.blobs.iter().map(|b| b.1.len()).sum::<usize>();
         let boxes = r.secrets.boxes.len();
         println!(
-            "roster {n}: rotation commit {total} B ({} blobs), {boxes} boxes, {:.0} B per remaining member; seal {sealed:?}, commit {committed:?}",
+            "roster {n}: rotation commit {total} B ({} blobs), {boxes} boxes, {:.0} B per remaining holder; seal {sealed:?}, commit {committed:?}",
             pkg.blobs.len(),
             total as f64 / (n - 1) as f64
         );
         assert!(boxes >= 2 * (n - 1));
-        // Budget: notes/chat.md, 2.7 KB per remaining member per rotation, plus about 10%.
-        assert!(total <= 3000 * (n - 1), "{total} B for {n} members");
+        // Budget: notes/chat.md, 2.7 KB per remaining holder per rotation, plus about 10%.
+        assert!(total <= 3000 * (n - 1), "{total} B for {n} holders");
         // One history entry more afterwards: with the box map paged, only the skeleton (the small
         // fields) is rewritten, not the whole `/secrets` state.
         let mut m2 = Mutation::new();
@@ -486,13 +486,13 @@ fn text_range_and_edit_cost() {
     assert_eq!(e.get(&t, &a).unwrap(), Some(Value::Str(before.into_iter().collect())));
 }
 
-// spec/permissions.md §5.1; spec/requirements.md, Scale (no operation O(history)): a membership change while the node
+// spec/permissions.md §5.1; spec/requirements.md, Scale (no operation O(history)): a role change while the node
 // holds 10^4 content commits on other things of its own tree, and opening that store; then 10^4
 // edge writes (`OSIS_SCALE_EDGES`, `OSIS_SCALE_DEMOTE`; 10^2 and 10^3 in a dev build, `size`).
 // spec: none (spec/requirements.md has no numbered sections)
 #[test]
 #[ignore = "tier 2"]
-fn membership_change_and_open_cost() {
+fn role_change_and_open_cost() {
     let a = ak("/app/v");
     let (mut e, batches, bytes, reopen) = engine_reopenable(6);
     let me = e.tid();
@@ -535,16 +535,16 @@ fn membership_change_and_open_cost() {
     e.rebuild_index().unwrap();
     println!("open with 10^4 commits held: {opened:?} (rebuilding the index from every commit record: {:?})", t3.elapsed());
     assert_eq!(e.roster(&things[0]).len(), 1);
-    // 10^4 edge writes in the tree's one membership component: 20 members' roles toggled
+    // 10^4 edge writes in the tree's one role component: 20 holders' roles toggled
     // a dev build: about 0.27 s per edge write with 10^4 commits held (debug-only checks)
     let n: usize = size("OSIS_SCALE_EDGES", 10_000, 100);
-    let members: Vec<Tid> = (0..20u8).map(|i| Tid::from_bytes([100 + i; 15])).collect();
+    let holders: Vec<Tid> = (0..20u8).map(|i| Tid::from_bytes([100 + i; 15])).collect();
     osis_node::costs::take();
     let t5 = Instant::now();
     for i in 0..n {
         let role = if (i / 20) % 2 == 0 { Role::Read } else { Role::Write };
         // an edge change is remove + put (spec/permissions.md §2)
-        crate::common::set_edge(&mut e, things[i % 100], members[i % 20], Some(crate::common::edge(role)), None);
+        crate::common::set_edge(&mut e, things[i % 100], holders[i % 20], Some(crate::common::edge(role)), None);
     }
     println!("{n} edge writes: {:?}", t5.elapsed());
     for (k, d, c) in osis_node::costs::take() {
@@ -557,7 +557,7 @@ fn membership_change_and_open_cost() {
         osis_node::costs::take();
         let t6 = Instant::now();
         let e = reopen.open(&batches, &bytes);
-        println!("open {k} with {n} edge writes held: {:?} ({} membership components restored from their saved walks)", t6.elapsed(), e.walks_restored());
+        println!("open {k} with {n} edge writes held: {:?} ({} role components restored from their saved walks)", t6.elapsed(), e.walks_restored());
         for (k, d, c) in osis_node::costs::take() {
             println!("  {k}: {d:?} ({c})");
         }
@@ -581,12 +581,12 @@ fn demotion_heavy_open() {
     let mut m = Mutation::new();
     let docs: Vec<Tid> = (0..20).map(|_| lp.peers[0].engine.new_thing(&mut m, org)).collect();
     lp.peers[0].engine.commit(m).unwrap();
-    let set = |e: &mut Engine, t: Tid, member: Tid, role: Option<Role>| -> Option<osis_base::CommitId> {
+    let set = |e: &mut Engine, t: Tid, holder: Tid, role: Option<Role>| -> Option<osis_base::CommitId> {
         // an edge change is remove + put (spec/permissions.md §2)
         let mut m = Mutation::new();
-        m.op(t, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(member)) }).unwrap();
+        m.op(t, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
         if let Some(r) = role {
-            m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(member))], op: Op::Set(ct::Edge { role: r, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
+            m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(ct::Edge { role: r, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
         }
         e.commit(m).ok().flatten()
     };
@@ -594,7 +594,7 @@ fn demotion_heavy_open() {
         set(&mut lp.peers[0].engine, org, *a, Some(Role::Admin)).unwrap();
     }
     lp.sync_all().unwrap();
-    let members: Vec<Tid> = (0..30u8).map(|i| Tid::from_bytes([150 + i; 15])).collect();
+    let holders: Vec<Tid> = (0..30u8).map(|i| Tid::from_bytes([150 + i; 15])).collect();
     let mut x: u64 = 0x5eed;
     let mut rnd = |k: u64| {
         x ^= x << 13;
@@ -618,7 +618,7 @@ fn demotion_heavy_open() {
         } else {
             let w = 1 + rnd(5) as usize;
             let roles = [None, Some(Role::Read), Some(Role::Write)];
-            let (d, mem, r) = (docs[rnd(20) as usize], members[rnd(30) as usize], roles[rnd(3) as usize]);
+            let (d, mem, r) = (docs[rnd(20) as usize], holders[rnd(30) as usize], roles[rnd(3) as usize]);
             if let Some(id) = set(&mut lp.peers[w].engine, d, mem, r) {
                 queue.push((w, id));
             }
@@ -752,7 +752,7 @@ fn sync_pass_cost() {
     }
 }
 
-// spec/sync.md §5 (member peer), §6; spec/requirements.md, Scale: a change to a label served
+// spec/sync.md §5 (co-reader peer), §6; spec/requirements.md, Scale: a change to a label served
 // with no host costs its local passes O(change). A dialable node and a writer, a label at no
 // host holding N content commits (100 things); then one more write: the passes it causes at
 // the serving node (time; passes, full, bodies, entries). `OSIS_SCALE_MAX` caps N (default 10^4).
@@ -788,14 +788,14 @@ fn sync_local_pass_cost() {
     }
 }
 
-// spec/sync.md §6, §7; spec/permissions.md §4; spec/requirements.md, Scale: a membership change
+// spec/sync.md §6, §7; spec/permissions.md §4; spec/requirements.md, Scale: a role change
 // re-judges only the labels whose verdicts can read it. 10 labels of `OSIS_SCALE_LABEL` (default
 // 10^3) content commits each at one host, a writer and a reader; then an edge write on an
 // actor no label's closure reaches (it should judge about nothing), then one on the first
 // label's group (only that label's entries).
 #[test]
 #[ignore = "tier 2"]
-fn sync_membership_pass_cost() {
+fn sync_roles_pass_cost() {
     let n: usize = size("OSIS_SCALE_LABEL", 1_000, 1_000);
     let mut net = net::Net::new();
     let host = net.add_host();
@@ -970,7 +970,7 @@ fn validity_flip_cost_spec_permissions_5_2() {
     let pk1 = lp.packages(1).unwrap();
     lp.deliver(0, pk1.iter().find(|p| p.id == bs).unwrap()).unwrap();
     // C revokes B without having seen the add
-    let scope = osis_perm::DemotionScope { membership: BTreeMap::from([(b, BTreeSet::from([t]))]), content: BTreeMap::from([(b, BTreeSet::from([t]))]) };
+    let scope = osis_perm::DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([t]))]), content: BTreeMap::from([(b, BTreeSet::from([t]))]) };
     let now = lp.peers[2].engine.now();
     let f = lp.peers[2].engine.frontier(&scope, now).unwrap();
     let mut m = Mutation::new();
@@ -1191,7 +1191,7 @@ fn dropped_snapshot_receipts_cost_spec_commits_5() {
     let t1 = Instant::now();
     let r = e.receipt(&t, &key).unwrap();
     let receipt = t1.elapsed();
-    let scope = osis_perm::DemotionScope { membership: BTreeMap::new(), content: BTreeMap::from([(me, BTreeSet::from([t]))]) };
+    let scope = osis_perm::DemotionScope { roles: BTreeMap::new(), content: BTreeMap::from([(me, BTreeSet::from([t]))]) };
     let now = e.now();
     let t2 = Instant::now();
     let f = e.frontier(&scope, now).unwrap();
@@ -1363,7 +1363,7 @@ fn reset_peak() {
 // spec/requirements.md, Scale (a value needs not be whole in memory), spec/crdt.md §8 (pages),
 // issues/durable-decode-bound.md:
 // peak memory above the resident set before each step, while one node writes an N-key map in one
-// commit and snapshots it, a member applies that commit, and a third node starts from the
+// commit and snapshots it, a holder applies that commit, and a third node starts from the
 // snapshot alone. The stores are in memory, so what a step stores stays resident too (`kept`).
 // `OSIS_SCALE_N` sets N (default 10^6 in release: the process peaks at about 14 GB, run it alone).
 #[test]

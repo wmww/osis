@@ -1,7 +1,7 @@
 //! The held-set queries perm needs (notes/architecture.md §2): the node implements `HeldSet`
 //! over its store; `MemoryHeldSet` serves tests. perm holds no state between calls.
 
-use crate::types::{MembershipCommit, RosterSnapshot};
+use crate::types::{RoleCommit, RosterSnapshot};
 use osis_base::{CreationRecord, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -13,8 +13,8 @@ use std::sync::Arc;
 pub trait HeldSet {
     /// Things with a held edge write, roster snapshot or `/created` record.
     fn things(&self) -> Vec<Tid>;
-    /// Membership commits with an edge write on `thing` (roster snapshots excluded).
-    fn edge_commits(&self, thing: &Tid) -> Vec<Arc<MembershipCommit>>;
+    /// Role commits with an edge write on `thing` (roster snapshots excluded).
+    fn edge_commits(&self, thing: &Tid) -> Vec<Arc<RoleCommit>>;
     /// Roster snapshots of `thing`.
     fn roster_snapshots(&self, thing: &Tid) -> Vec<Arc<RosterSnapshot>>;
     /// The `/created` record of `thing`, if held.
@@ -24,7 +24,7 @@ pub trait HeldSet {
 /// In-memory held set.
 #[derive(Clone, Debug, Default)]
 pub struct MemoryHeldSet {
-    pub commits: BTreeMap<Tid, Vec<Arc<MembershipCommit>>>,
+    pub commits: BTreeMap<Tid, Vec<Arc<RoleCommit>>>,
     pub snapshots: BTreeMap<Tid, Vec<Arc<RosterSnapshot>>>,
     pub created: BTreeMap<Tid, CreationRecord>,
 }
@@ -39,7 +39,7 @@ impl MemoryHeldSet {
         self.created.insert(tid, record);
         tid
     }
-    pub fn add_commit(&mut self, c: MembershipCommit) {
+    pub fn add_commit(&mut self, c: RoleCommit) {
         let c = Arc::new(c);
         let targets: BTreeSet<Tid> = c.ops.iter().map(|o| o.target).collect();
         for t in targets {
@@ -67,7 +67,7 @@ impl HeldSet for MemoryHeldSet {
         s.extend(self.created.keys().copied());
         s.into_iter().collect()
     }
-    fn edge_commits(&self, thing: &Tid) -> Vec<Arc<MembershipCommit>> {
+    fn edge_commits(&self, thing: &Tid) -> Vec<Arc<RoleCommit>> {
         self.commits.get(thing).cloned().unwrap_or_default()
     }
     fn roster_snapshots(&self, thing: &Tid) -> Vec<Arc<RosterSnapshot>> {

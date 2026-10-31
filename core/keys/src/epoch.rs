@@ -419,7 +419,7 @@ impl RoleEpochs {
 }
 
 /// The n of the epochs derived from an owner epoch at `n` (spec/crypto.md §3): the owner's, capped
-/// so that a thing's own chain starts at most at `MAX_FREE_N` and a member holding no secret of
+/// so that a thing's own chain starts at most at `MAX_FREE_N` and a holder holding no secret of
 /// the owner establishes it within headroom, whatever n a writer of the owner jumped to. Derived
 /// epochs still order as the owner's (`EpochInfo::order`): a re-registrar steps a plain group's
 /// labels on each owner rotation, a writer picks the owner's newest fork.

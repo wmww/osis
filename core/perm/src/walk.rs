@@ -5,7 +5,7 @@
 //! - R demotes X on N when R is an explicit write (applied, not a self-removal, not an invite
 //!   grant; or a ledger tenure end with a frontier) on edge (M, T), X is M or reaches M, N is T
 //!   or reachable from T (edges of any role and `until`, owner links), and X's class on N after
-//!   R is below its class with the edge restored ("as if the member still held the role"): the
+//!   R is below its class with the edge restored ("as if the holder still held the role"): the
 //!   join (componentwise maximum, alive) of its values since the last explicit write on it,
 //!   plus, for a node that demoted itself by an explicit write on it, its values before that.
 //! - Only R's frontier and R itself cover X's writes (§5.1): writes on A's own chain too (the
@@ -24,7 +24,7 @@
 use crate::content::{overlapping, Range};
 use crate::graph::{Class, Dense, Edges, Owners, Reads, Standing, View};
 use crate::held::HeldSet;
-use crate::types::{earliest, lowers, mark, pop, put, Dots, Edge, EdgeOp, Frontier, MembershipCommit, Point, RosterSnapshot, WriteId, MEMBERS};
+use crate::types::{earliest, lowers, mark, pop, put, Dots, Edge, EdgeOp, Frontier, RoleCommit, Point, RosterSnapshot, WriteId, MEMBERS};
 use osis_base::{CommitId, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -34,7 +34,7 @@ use std::sync::Arc;
 pub enum Attr {
     /// By the author's authority class on the target; audited when it falls.
     By(Class),
-    /// A self-removal (§2), audited when the author's class `.0` on `.1` falls: the member
+    /// A self-removal (§2), audited when the author's class `.0` on `.1` falls: the holder
     /// it is admin of, or the target for its own edge.
     SelfRemoval(Class, Tid),
 }
@@ -81,11 +81,11 @@ pub struct Demotion {
 /// Inputs gathered from the held set.
 pub(crate) struct Input {
     pub owners: Owners,
-    pub commits: BTreeMap<CommitId, Arc<MembershipCommit>>,
+    pub commits: BTreeMap<CommitId, Arc<RoleCommit>>,
     pub snaps: BTreeMap<CommitId, Arc<RosterSnapshot>>,
     /// Key actors and every author: who can hold a class.
     pub nodes: BTreeSet<Tid>,
-    /// Every member any held write, roster or ledger gives admin, per target (edges at any
+    /// Every holder any held write, roster or ledger gives admin, per target (edges at any
     /// time): owner-chain authority comes only through admin edges.
     pub ever_admins: BTreeMap<Tid, BTreeSet<Tid>>,
     /// The earliest held write (edge op or roster snapshot) per (author, target).
@@ -93,36 +93,36 @@ pub(crate) struct Input {
     /// Node-form `/members` ranges of every gathered commit and snapshot, voided ones
     /// included, by (node, thing), with their largest end: what `can_append` checks against.
     pub ranges: BTreeMap<(Tid, Tid), (Spans, u64)>,
-    /// Every edge any held write, roster or ledger can set (any role, any time), member to
-    /// targets and target to members: what any reach in any walk follows besides owner links.
+    /// Every edge any held write, roster or ledger can set (any role, any time), holder to
+    /// targets and target to holders: what any reach in any walk follows besides owner links.
     pub ever: Ever,
     /// The commits and snapshots voided by overlapping ranges, as held (`holds_same`).
-    pub voided: (BTreeMap<CommitId, Arc<MembershipCommit>>, BTreeMap<CommitId, Arc<RosterSnapshot>>),
+    pub voided: (BTreeMap<CommitId, Arc<RoleCommit>>, BTreeMap<CommitId, Arc<RosterSnapshot>>),
 }
 
 /// Edges at any time, both ways (`Input::ever`).
 #[derive(Default)]
 pub(crate) struct Ever {
     pub targets: BTreeMap<Tid, BTreeSet<Tid>>,
-    pub members: BTreeMap<Tid, BTreeSet<Tid>>,
-    /// Members of an edge with an invite.
+    pub holders: BTreeMap<Tid, BTreeSet<Tid>>,
+    /// Holders of an edge with an invite.
     pub invites: BTreeSet<Tid>,
 }
 
 impl Ever {
-    fn add(&mut self, member: Tid, target: Tid, e: &Edge) {
-        self.targets.entry(member).or_default().insert(target);
-        self.members.entry(target).or_default().insert(member);
+    fn add(&mut self, holder: Tid, target: Tid, e: &Edge) {
+        self.targets.entry(holder).or_default().insert(target);
+        self.holders.entry(target).or_default().insert(holder);
         if e.invite.is_some() {
-            self.invites.insert(member);
+            self.invites.insert(holder);
         }
     }
 }
 
 /// The things a commit's edge writes are on, for `Input::first_write`: their targets, and
-/// their members other than the author (a self-removal through a member is audited there).
-pub(crate) fn written_on(c: &MembershipCommit) -> impl Iterator<Item = Tid> + '_ {
-    c.ops.iter().flat_map(|o| std::iter::once(o.target).chain((o.member != c.author).then_some(o.member)))
+/// their holders other than the author (a self-removal through a holder is audited there).
+pub(crate) fn written_on(c: &RoleCommit) -> impl Iterator<Item = Tid> + '_ {
+    c.ops.iter().flat_map(|o| std::iter::once(o.target).chain((o.holder != c.author).then_some(o.holder)))
 }
 
 /// Node-form ranges `[lo, hi)` with their commits.
@@ -130,14 +130,14 @@ pub(crate) type Spans = Vec<(u64, u64, CommitId)>;
 
 impl Input {
     /// Whether owner-chain authority on some thing with a roster snapshot may come through that
-    /// thing itself (mutual membership): through its owners and the members with an admin edge
+    /// thing itself (mutual roles): through its owners and the holders with an admin edge
     /// of anything on the way, transitively, at any time. Otherwise the epoch starts have a
     /// unique fixed point (`drive`).
     pub fn cyclic(&self) -> bool {
         self.cyclic_with(&[])
     }
 
-    /// `cyclic` with the admin edges `extra` (target, member) also held.
+    /// `cyclic` with the admin edges `extra` (target, holder) also held.
     fn cyclic_with(&self, extra: &[(Tid, Tid)]) -> bool {
         let things: BTreeSet<Tid> = self.snaps.values().map(|s| s.thing).collect();
         things.iter().any(|t| {
@@ -195,32 +195,32 @@ impl Input {
         let voided = (commits.iter().filter(|(id, _)| void.contains(*id)).map(|(id, c)| (*id, c.clone())).collect(), snaps.iter().filter(|(id, _)| void.contains(*id)).map(|(id, s)| (*id, s.clone())).collect());
         commits.retain(|id, _| !void.contains(id));
         snaps.retain(|id, _| !void.contains(id));
-        // Who can hold a class: key actors, authors, and members that may be nodes.
+        // Who can hold a class: key actors, authors, and holders that may be nodes.
         let mut nodes: BTreeSet<Tid> = things.iter().filter(|t| owners.is_key(t)).copied().collect();
         nodes.extend(commits.values().map(|c| c.author));
         nodes.extend(snaps.values().map(|s| s.author));
-        let members = commits
+        let holders = commits
             .values()
-            .flat_map(|c| c.ops.iter().map(|o| o.member))
-            .chain(snaps.values().flat_map(|s| s.roster.keys().copied().chain(s.ledger.iter().map(|t| t.member))));
-        nodes.extend(members.filter(|m| owners.owner_actor(m).is_none()).collect::<Vec<_>>());
+            .flat_map(|c| c.ops.iter().map(|o| o.holder))
+            .chain(snaps.values().flat_map(|s| s.roster.keys().copied().chain(s.ledger.iter().map(|t| t.holder))));
+        nodes.extend(holders.filter(|m| owners.owner_actor(m).is_none()).collect::<Vec<_>>());
         // An invite of admin needs an admin edge, so admin edges carry all admin authority.
         let mut ever_admins: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
         for c in commits.values() {
             for o in c.ops.iter().filter(|o| o.edge.is_some_and(|e| e.role == Role::Admin)) {
-                ever_admins.entry(o.target).or_default().insert(o.member);
+                ever_admins.entry(o.target).or_default().insert(o.holder);
             }
         }
         for s in snaps.values() {
             let roster = s.roster.iter().filter(|(_, e)| e.role == Role::Admin).map(|(m, _)| *m);
-            let ledger = s.ledger.iter().filter(|t| t.role == Role::Admin).map(|t| t.member);
+            let ledger = s.ledger.iter().filter(|t| t.role == Role::Admin).map(|t| t.holder);
             ever_admins.entry(s.thing).or_default().extend(roster.chain(ledger));
         }
         let mut ever = Ever::default();
         for c in commits.values() {
             for o in &c.ops {
                 if let Some(e) = &o.edge {
-                    ever.add(o.member, o.target, e);
+                    ever.add(o.holder, o.target, e);
                 }
             }
         }
@@ -229,7 +229,7 @@ impl Input {
                 ever.add(*m, s.thing, e);
             }
             for t in &s.ledger {
-                ever.add(t.member, s.thing, &Edge::new(t.role));
+                ever.add(t.holder, s.thing, &Edge::new(t.role));
             }
         }
         let mut first_write: BTreeMap<(Tid, Tid), Point> = BTreeMap::new();
@@ -243,7 +243,7 @@ impl Input {
 
     /// Whether `c` is held here with this content (a record can grow under its ID: a part
     /// that arrives late).
-    pub fn holds_commit(&self, c: &MembershipCommit) -> bool {
+    pub fn holds_commit(&self, c: &RoleCommit) -> bool {
         self.commits.get(&c.id).or_else(|| self.voided.0.get(&c.id)).is_some_and(|o| o.same_input(c))
     }
 
@@ -276,7 +276,7 @@ impl Input {
             let next: Vec<Tid> = if forward {
                 self.owners.owned(&e).iter().chain(self.ever.targets.get(&e).into_iter().flatten()).copied().collect()
             } else {
-                self.owners.owner_actor(&e).into_iter().chain(self.ever.members.get(&e).into_iter().flatten().copied()).collect()
+                self.owners.owner_actor(&e).into_iter().chain(self.ever.holders.get(&e).into_iter().flatten().copied()).collect()
             };
             for y in next {
                 if seen.insert(y) {
@@ -287,8 +287,8 @@ impl Input {
         seen
     }
 
-    /// Whether a node (author, or member that may be one) can join with the commits naming it:
-    /// one here already, or one that reaches nothing here (no edge of it as member, it owns
+    /// Whether a node (author, or holder that may be one) can join with the commits naming it:
+    /// one here already, or one that reaches nothing here (no edge of it as holder, it owns
     /// nothing), so before those commits no walk meets it (it is in no audit's reach).
     fn may_be_node(&self, t: &Tid) -> bool {
         self.nodes.contains(t) || (self.owners.owner(t).is_none() && self.owners.owned(t).is_empty() && !self.ever.targets.contains_key(t))
@@ -297,9 +297,9 @@ impl Input {
     /// Whether `new` (commits not held here) can join this input without changing anything but
     /// the commits and new nodes that reach nothing here (`append`): no thing without an owner
     /// link here becoming owned, no overlapping node-form range (a void, spec/commits.md §4),
-    /// and with an epoch start ever changed, no membership cycle (`Timeline::extend`'s
+    /// and with an epoch start ever changed, no role cycle (`Timeline::extend`'s
     /// conditions).
-    pub fn can_append(&self, new: &[Arc<MembershipCommit>], epoch_changed: bool) -> bool {
+    pub fn can_append(&self, new: &[Arc<RoleCommit>], epoch_changed: bool) -> bool {
         let mut mine: BTreeMap<(Tid, Tid), Spans> = BTreeMap::new();
         let mut admins = Vec::new();
         for c in new {
@@ -307,11 +307,11 @@ impl Input {
                 return false;
             }
             for o in &c.ops {
-                if self.owners.owner_actor(&o.member).is_none() && !self.may_be_node(&o.member) {
+                if self.owners.owner_actor(&o.holder).is_none() && !self.may_be_node(&o.holder) {
                     return false;
                 }
                 if o.edge.is_some_and(|e| e.role == Role::Admin) {
-                    admins.push((o.target, o.member));
+                    admins.push((o.target, o.holder));
                 }
                 let Dots::Node { lo, hi } = o.dots else { continue };
                 if lo >= hi {
@@ -329,7 +329,7 @@ impl Input {
     }
 
     /// Adds `new`, which `can_append` accepted.
-    pub fn append(&mut self, new: &[Arc<MembershipCommit>]) {
+    pub fn append(&mut self, new: &[Arc<RoleCommit>]) {
         for c in new {
             self.nodes.insert(c.author);
             for t in written_on(c) {
@@ -337,17 +337,17 @@ impl Input {
                 *e = (*e).min(c.point());
             }
             for o in &c.ops {
-                if self.owners.owner_actor(&o.member).is_none() {
-                    self.nodes.insert(o.member);
+                if self.owners.owner_actor(&o.holder).is_none() {
+                    self.nodes.insert(o.holder);
                 }
                 if self.owners.is_key(&o.target) {
                     self.nodes.insert(o.target);
                 }
                 if let Some(e) = &o.edge {
-                    self.ever.add(o.member, o.target, e);
+                    self.ever.add(o.holder, o.target, e);
                 }
                 if o.edge.is_some_and(|e| e.role == Role::Admin) {
-                    self.ever_admins.entry(o.target).or_default().insert(o.member);
+                    self.ever_admins.entry(o.target).or_default().insert(o.holder);
                 }
                 if let Dots::Node { lo, hi } = o.dots
                     && lo < hi
@@ -398,7 +398,7 @@ fn too_costly(n: usize, rest: usize) -> bool {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Change {
     pub point: Point,
-    pub member: Tid,
+    pub holder: Tid,
     pub target: Tid,
     pub edge: Option<Edge>,
     /// An explicit write (may demote, §5.1 step 4) with its frontier.
@@ -422,7 +422,7 @@ pub(crate) struct Walked {
     /// on the thing, in walk order. None on a leaf (no write names it), so not aliased.
     pub falls: BTreeMap<(Tid, Tid), Vec<Fall>>,
     /// Per edge lowered or expired without an explicit write since: its value before, which
-    /// the next explicit write on it restores to judge falls (§5.1: as if the member still
+    /// the next explicit write on it restores to judge falls (§5.1: as if the holder still
     /// held the role).
     pub prior: BTreeMap<(Tid, Tid), Edge>,
     /// Edges whose current value was already expired when written.
@@ -450,11 +450,11 @@ pub(crate) struct Place<'a> {
     pub items: &'a Items,
     pub dropped: &'a BTreeMap<WriteId, Point>,
     pub epoch: &'a BTreeMap<Tid, CommitId>,
-    pub c: &'a MembershipCommit,
+    pub c: &'a RoleCommit,
 }
 
 /// The later items that may read a placed commit's edges (`Walked::dependents`): `dep`, and
-/// `audited`, those that may only through an audit of a node of `a` (what reaches a member
+/// `audited`, those that may only through an audit of a node of `a` (what reaches a holder
 /// of its edges) on a thing of `f` (what a target of them reaches).
 #[derive(Default)]
 struct Readers {
@@ -564,20 +564,20 @@ impl Walked {
                 if before_start {
                     continue;
                 }
-                if let Some(attr) = judge(&view, before.get(&o.member, &o.target), c, k, &best) {
+                if let Some(attr) = judge(&view, before.get(&o.holder, &o.target), c, k, &best) {
                     placed.push((k32, o, attr));
                 }
             }
         }
-        let keys: BTreeSet<(Tid, Tid)> = placed.iter().map(|(_, o, _)| (o.member, o.target)).collect();
-        // (a self-removal through a member is listed on the member: walked again, rare)
+        let keys: BTreeSet<(Tid, Tid)> = placed.iter().map(|(_, o, _)| (o.holder, o.target)).collect();
+        // (a self-removal through a holder is listed on the holder: walked again, rare)
         if keys.len() < placed.len() || placed.iter().any(|(_, o, attr)| attr.audited(o.target).1 != o.target) {
             return Placement::Declined;
         }
         let mut r = Readers::default();
         if !placed.is_empty() {
             // the widest role and whether an invite the new values or the old ones (at `p`) hold
-            let olds = placed.iter().map(|(_, o, _)| before.get(&o.member, &o.target).copied());
+            let olds = placed.iter().map(|(_, o, _)| before.get(&o.holder, &o.target).copied());
             let vals: Vec<Edge> = olds.chain(placed.iter().map(|(_, o, _)| o.edge)).flatten().collect();
             let level = vals.iter().map(|e| e.role).max().unwrap_or(Role::Read);
             let invite = vals.iter().any(|e| e.invite.is_some());
@@ -605,9 +605,9 @@ impl Walked {
                     let audits = match &x.item {
                         Item::Commit(d) => d.ops.iter().enumerate().any(|(k, o)| {
                             let explicit = u32::try_from(k).is_ok_and(|k| self.applied.get(&WriteId::Op(d.id, k)).is_some_and(|a| matches!(a.attr, Attr::By(Class::Chain | Class::Edge))));
-                            explicit && reach.contains(&o.member) && back.contains(&o.target)
+                            explicit && reach.contains(&o.holder) && back.contains(&o.target)
                         }),
-                        Item::Virtual(v) => v.audit.is_some() && reach.contains(&v.member) && back.contains(&v.thing),
+                        Item::Virtual(v) => v.audit.is_some() && reach.contains(&v.holder) && back.contains(&v.thing),
                         Item::Snap(_) => false,
                     };
                     if audits {
@@ -623,7 +623,7 @@ impl Walked {
         }
         // an explicit write that restores more than it sets audits (no later write on its edge,
         // so its state there is its state at the end)
-        let audits = placed.iter().any(|(_, o, attr)| matches!(attr, Attr::By(Class::Chain | Class::Edge)) && exceeds(self.restored((o.member, o.target)), o.edge.map(|e| Edge { since: None, ..e }), p.ts));
+        let audits = placed.iter().any(|(_, o, attr)| matches!(attr, Attr::By(Class::Chain | Class::Edge)) && exceeds(self.restored((o.holder, o.target)), o.edge.map(|e| Edge { since: None, ..e }), p.ts));
         if !audits && r.dep.is_empty() && r.audited.is_empty() {
             return self.place_plain(input, c, i, placed, before);
         }
@@ -637,13 +637,13 @@ impl Walked {
 
     /// `insert` of `c`'s `placed` writes when nothing later reads them and they audit nothing:
     /// its changes, undo entries and mark spliced in as `Pass::commit` would make them there.
-    fn place_plain(&mut self, input: &Input, c: &MembershipCommit, i: usize, placed: Vec<(u32, &EdgeOp, Attr)>, mut at: Edges) -> Placement {
+    fn place_plain(&mut self, input: &Input, c: &RoleCommit, i: usize, placed: Vec<(u32, &EdgeOp, Attr)>, mut at: Edges) -> Placement {
         let p = c.point();
         let (l, h) = self.marks.get(i).copied().unwrap_or((self.log.len(), self.history.len()));
         // logged apart, then spliced in at the mark
         let (log, hist) = (std::mem::take(&mut self.log), std::mem::take(&mut self.history));
         for (k, o, attr) in placed {
-            let key = (o.member, o.target);
+            let key = (o.holder, o.target);
             let id = WriteId::Op(c.id, k);
             let new = o.edge.map(|e| Edge { since: None, ..e });
             // as `Pass::record`, at its place in walk order
@@ -654,9 +654,9 @@ impl Walked {
             // as `Pass::change` (no audit: `insert`): the key's state at the end is its state here
             let old = self.set_alive(p, key, new);
             let explicit = matches!(attr, Attr::By(Class::Chain | Class::Edge));
-            let own = explicit && self.restores(key, old) && View::new(&input.owners, &at, Some(p.ts)).reach_backward(&o.member).contains(&c.author);
+            let own = explicit && self.restores(key, old) && View::new(&input.owners, &at, Some(p.ts)).reach_backward(&o.holder).contains(&c.author);
             self.set_edge(key, new);
-            at.set(o.member, o.target, new);
+            at.set(o.holder, o.target, new);
             if let Some((base, mine, _)) = self.record_change(p, key, old, new, Some(id), explicit.then(|| c.frontier.clone()))
                 && own
             {
@@ -709,17 +709,17 @@ impl Walked {
                 let (lj, hj) = self.marks.get(j).copied().unwrap_or(end);
                 let lj1 = self.marks.get(j + 1).map_or(end.0, |m| m.0);
                 for ch in self.history.get(at..hj).unwrap_or_default() {
-                    sh.set_tracked(ch.member, ch.target, ch.edge, ch.point.ts);
+                    sh.set_tracked(ch.holder, ch.target, ch.edge, ch.point.ts);
                 }
                 at = hj;
                 // an item that may read it only by auditing a node of A on a thing of F: it
-                // does not when, either way, no node of A reaches the member it audits from or
+                // does not when, either way, no node of A reaches the holder it audits from or
                 // its target reaches nothing in F (a standing there reads roles only on what
-                // the thing's owner chain and members reach, all in F if any is)
+                // the thing's owner chain and holders reach, all in F if any is)
                 if !dep.contains(&j) {
                     let (mt, ts) = match items.list.get(j).map(|x| &x.item) {
-                        Some(Item::Commit(d)) => (d.ops.first().map(|o| (o.member, o.target)), d.ts),
-                        Some(Item::Virtual(v)) => (Some((v.member, v.thing)), v.point.ts),
+                        Some(Item::Commit(d)) => (d.ops.first().map(|o| (o.holder, o.target)), d.ts),
+                        Some(Item::Virtual(v)) => (Some((v.holder, v.thing)), v.point.ts),
                         _ => (None, p.ts),
                     };
                     let Some((m, t)) = mt else { continue };
@@ -973,12 +973,12 @@ impl Walked {
     /// takes the kept standings and returns them (the base it restores, those of single nodes)
     /// and whether it lowered the edge as restored (then `keep_own`, after its audit).
     fn record_change(&mut self, point: Point, key: (Tid, Tid), old: Option<Edge>, edge: Option<Edge>, by: Option<WriteId>, explicit: Option<Option<Arc<Frontier>>>) -> Option<(Option<Edge>, BTreeMap<Tid, Edge>, bool)> {
-        let (member, target) = key;
+        let (holder, target) = key;
         self.set_setter(key, by);
         let Some(frontier) = explicit else {
             // No audit (self-removal, invite grant, epoch start, ledger end without a frontier):
             // everyone below keeps the standing it had, for the next explicit write.
-            self.history.push(Change { point, member, target, edge, explicit: None, audited: None });
+            self.history.push(Change { point, holder, target, edge, explicit: None, audited: None });
             if let Some(o) = old {
                 let p = self.prior.get(&key).copied();
                 self.set_prior(key, Some(join(p, o)));
@@ -993,7 +993,7 @@ impl Walked {
         let restored = mine.values().fold(base, |r, e| Some(join(r, *e)));
         let lowered = exceeds(restored, edge, point.ts);
         let audited = restored.filter(|_| lowered).map(|r| r.role);
-        self.history.push(Change { point, member, target, edge, explicit: Some(frontier), audited });
+        self.history.push(Change { point, holder, target, edge, explicit: Some(frontier), audited });
         Some((base, mine, lowered))
     }
 
@@ -1018,11 +1018,11 @@ impl Walked {
     }
 
     /// The items from `i` on that may read what setting edges `keys` changes (`insert`), with
-    /// A (what reaches a member of `keys`) and F (what a target of `keys` reaches); `None` when
+    /// A (what reaches a holder of `keys`) and F (what a target of `keys` reaches); `None` when
     /// one writes such an edge or is the epoch start of a thing of one. `level` is the widest role among their values
     /// before and after, `invite` whether one has an invite. A path through them is at most
     /// `level` wide, so roles change only up to it: classes (admin on the chain or the thing,
-    /// invites) change only through an admin value or an invite, met there or on a member in
+    /// invites) change only through an admin value or an invite, met there or on a holder in
     /// F; the role thresholds demotions record (write, admin) only through a value of write or
     /// more. What reaches what changes whatever the roles: an explicit write on (m, t) with
     /// `m` in F asks whether its author reaches `m` (the standing it keeps).
@@ -1057,17 +1057,17 @@ impl Walked {
         for (j, Entry { item, .. }) in rest.iter().enumerate() {
             let reads = match item {
                 Item::Commit(d) => {
-                    if d.ops.iter().any(|o| keys.contains(&(o.member, o.target))) {
+                    if d.ops.iter().any(|o| keys.contains(&(o.holder, o.target))) {
                         return None;
                     }
-                    let author = classes && a.contains(&d.author) && d.ops.iter().any(|o| f.contains(&o.target) || f.contains(&o.member));
+                    let author = classes && a.contains(&d.author) && d.ops.iter().any(|o| f.contains(&o.target) || f.contains(&o.holder));
                     let ops = d.ops.iter().enumerate().map(|(k, o)| {
-                        let r = explicit(&o.member, &o.target);
+                        let r = explicit(&o.holder, &o.target);
                         let applied = || u32::try_from(k).ok().and_then(|k| self.applied.get(&WriteId::Op(d.id, k)));
                         if r > 0 && applied().is_some_and(|x| matches!(x.attr, Attr::By(Class::Chain | Class::Edge))) { r } else { 0 }
                     });
                     let r = ops.max().unwrap_or(0);
-                    // (several ops: their changes may reach each other's members)
+                    // (several ops: their changes may reach each other's holders)
                     if author || r == 2 || (r == 1 && d.ops.len() > 1) { 2 } else { r }
                 }
                 Item::Snap(s) => {
@@ -1077,10 +1077,10 @@ impl Walked {
                     2 * u8::from(things.contains(&s.thing) || (classes && a.contains(&s.author) && f.contains(&s.thing)))
                 }
                 Item::Virtual(v) => {
-                    if keys.contains(&(v.member, v.thing)) {
+                    if keys.contains(&(v.holder, v.thing)) {
                         return None;
                     }
-                    if v.audit.is_some() { explicit(&v.member, &v.thing) } else { 0 }
+                    if v.audit.is_some() { explicit(&v.holder, &v.thing) } else { 0 }
                 }
             };
             match reads {
@@ -1235,7 +1235,7 @@ pub(crate) struct Resume {
 #[derive(Clone, Debug)]
 struct Virtual {
     thing: Tid,
-    member: Tid,
+    holder: Tid,
     edge: Option<Edge>,
     point: Point,
     /// An explicit demotion recorded by the ledger (§6): the demoter node and its frontier.
@@ -1243,7 +1243,7 @@ struct Virtual {
 }
 
 enum Item {
-    Commit(Arc<MembershipCommit>),
+    Commit(Arc<RoleCommit>),
     Snap(Arc<RosterSnapshot>),
     Virtual(Box<Virtual>),
 }
@@ -1262,12 +1262,12 @@ struct Auditor<'a> {
 /// values at the beginning and the changes at keys before `s`.
 fn ledger_writes(s: &RosterSnapshot) -> (Vec<(Tid, Edge)>, Vec<Virtual>) {
     let skey = s.point();
-    let mut members: BTreeSet<Tid> = s.roster.keys().copied().collect();
-    members.extend(s.ledger.iter().map(|t| t.member));
+    let mut holders: BTreeSet<Tid> = s.roster.keys().copied().collect();
+    holders.extend(s.ledger.iter().map(|t| t.holder));
     let mut initial = Vec::new();
     let mut out = Vec::new();
-    for m in members {
-        let tenures: Vec<_> = s.ledger.iter().filter(|t| t.member == m).collect();
+    for m in holders {
+        let tenures: Vec<_> = s.ledger.iter().filter(|t| t.holder == m).collect();
         let roster = s.roster.get(&m);
         // The value just after key `b` (`None`: the beginning); `with_roster: false` counts
         // the roster edge only where it starts at `b` itself.
@@ -1308,12 +1308,12 @@ fn ledger_writes(s: &RosterSnapshot) -> (Vec<(Tid, Edge)>, Vec<Virtual>) {
             // changes (an audit-only entry).
             if let Some(f) = tenures.iter().find(|t| t.until == b && t.frontier.is_some()).and_then(|t| t.frontier.clone()) {
                 let end = value(Some(b), false);
-                out.push(Virtual { thing: s.thing, member: m, edge: end, point: b, audit: Some((b.node, f)) });
+                out.push(Virtual { thing: s.thing, holder: m, edge: end, point: b, audit: Some((b.node, f)) });
                 prev = end;
             }
             let v = value(Some(b), true);
             if v != prev {
-                out.push(Virtual { thing: s.thing, member: m, edge: v, point: b, audit: None });
+                out.push(Virtual { thing: s.thing, holder: m, edge: v, point: b, audit: None });
                 prev = v;
             }
         }
@@ -1321,7 +1321,7 @@ fn ledger_writes(s: &RosterSnapshot) -> (Vec<(Tid, Edge)>, Vec<Virtual>) {
     (initial, out)
 }
 
-/// Componentwise maximum of two edge values, alive: what a member held across them.
+/// Componentwise maximum of two edge values, alive: what a holder held across them.
 pub(crate) fn join(a: Option<Edge>, b: Edge) -> Edge {
     match a {
         None => Edge { until: None, since: None, ..b },
@@ -1349,7 +1349,7 @@ pub(crate) fn exceeds(r: Option<Edge>, new: Option<Edge>, ts: Ts) -> bool {
 }
 
 /// How setting an edge from `old` to `new` at `ts` changes widest-path roles (§1) that are
-/// `(rm, cur)` on its member and its target.
+/// `(rm, cur)` on its holder and its target.
 fn widest_changes((rm, cur): (Option<Role>, Option<Role>), old: Option<Edge>, new: Option<Edge>, ts: Ts) -> Widest {
     let Some(rm) = rm else { return Widest::Same };
     let alive = |e: Option<Edge>| e.filter(|e| e.alive_at(Some(ts)));
@@ -1367,7 +1367,7 @@ fn widest_changes((rm, cur): (Option<Role>, Option<Role>), old: Option<Edge>, ne
 
 enum Widest {
     Same,
-    /// Only raised, from the edge's member on.
+    /// Only raised, from the edge's holder on.
     Raised,
     Unknown,
 }
@@ -1446,7 +1446,7 @@ impl Input {
             all.extend(self.owners.owned(t));
         }
         all.extend(self.ever.targets.keys().copied());
-        all.extend(self.ever.members.keys().copied());
+        all.extend(self.ever.holders.keys().copied());
         Dense::new(&self.owners, all, edges)
     }
 }
@@ -1555,7 +1555,7 @@ impl<'a> Pass<'a> {
     /// `Outcome::common` of this walk.
     fn common(&self) -> Option<(usize, Option<Point>)> {
         let (n, stash) = self.untouched.as_ref()?;
-        let same = |a: &Change, b: &Change| (a.point, a.member, a.target, a.edge) == (b.point, b.member, b.target, b.edge);
+        let same = |a: &Change, b: &Change| (a.point, a.holder, a.target, a.edge) == (b.point, b.holder, b.target, b.edge);
         let k = self.w.history.get(*n..).unwrap_or_default().iter().zip(stash).take_while(|(a, b)| same(a, b)).count();
         Some((n + k, stash.get(k).map(|c| c.point)))
     }
@@ -1625,13 +1625,13 @@ impl<'a> Pass<'a> {
         self.epoch.get(thing).and_then(|id| self.input.snaps.get(id))
     }
 
-    /// Sets edge (member, target) at `ts`, keeping the cached roles (`Pass::roles`) right:
+    /// Sets edge (holder, target) at `ts`, keeping the cached roles (`Pass::roles`) right:
     /// dropped where the change may narrow them, raised in place where it widens them.
-    fn set_tracked(&mut self, member: Tid, target: Tid, edge: Option<Edge>, ts: Ts) {
-        let was = self.w.edges.get(&member, &target).copied();
+    fn set_tracked(&mut self, holder: Tid, target: Tid, edge: Option<Edge>, ts: Ts) {
+        let was = self.w.edges.get(&holder, &target).copied();
         let mut raise = Vec::new();
-        let (mi, ti) = (self.graph.ids.get(&member).copied(), self.graph.ids.get(&target).copied());
-        self.roles.retain(|x, r| match widest_changes((r.on(&member, mi), r.on(&target, ti)), was, edge, ts) {
+        let (mi, ti) = (self.graph.ids.get(&holder).copied(), self.graph.ids.get(&target).copied());
+        self.roles.retain(|x, r| match widest_changes((r.on(&holder, mi), r.on(&target, ti)), was, edge, ts) {
             Widest::Same => true,
             Widest::Raised => {
                 raise.push(*x);
@@ -1639,12 +1639,12 @@ impl<'a> Pass<'a> {
             }
             Widest::Unknown => false,
         });
-        self.set_edge(member, target, edge);
+        self.set_edge(holder, target, edge);
         for x in raise {
             if let Some(r) = self.roles.get_mut(&x) {
                 #[cfg(debug_assertions)]
                 let old = r.best.clone();
-                let e = match self.graph.raise(&mut r.dense, &member, ts) {
+                let e = match self.graph.raise(&mut r.dense, &holder, ts) {
                     Some((raised, e)) => {
                         let best = Arc::make_mut(&mut r.best);
                         for i in raised {
@@ -1654,7 +1654,7 @@ impl<'a> Pass<'a> {
                         }
                         #[cfg(debug_assertions)]
                         {
-                            let (raised, until) = View::new(&self.input.owners, &self.w.edges, Some(ts)).roles_raised_expiring(&old, &[member]);
+                            let (raised, until) = View::new(&self.input.owners, &self.w.edges, Some(ts)).roles_raised_expiring(&old, &[holder]);
                             let mut want = (*old).clone();
                             want.extend(raised);
                             debug_assert!(*r.best == want && e == until, "raised roles of {x:?}");
@@ -1663,7 +1663,7 @@ impl<'a> Pass<'a> {
                     }
                     None => {
                         let view = View::new(&self.input.owners, &self.w.edges, Some(ts));
-                        let (raised, e) = view.roles_raised_expiring(&r.best, &[member]);
+                        let (raised, e) = view.roles_raised_expiring(&r.best, &[holder]);
                         r.raise(&self.graph.ids, raised);
                         e
                     }
@@ -1673,16 +1673,16 @@ impl<'a> Pass<'a> {
         }
     }
 
-    /// Sets edge (member, target); an explicit write (`auditor`) then audits what it took
+    /// Sets edge (holder, target); an explicit write (`auditor`) then audits what it took
     /// away. Returns whether D grew.
-    fn change(&mut self, point: Point, (member, target): (Tid, Tid), edge: Option<Edge>, by: Option<WriteId>, auditor: Option<&Auditor>) -> bool {
-        let key = (member, target);
+    fn change(&mut self, point: Point, (holder, target): (Tid, Tid), edge: Option<Edge>, by: Option<WriteId>, auditor: Option<&Auditor>) -> bool {
+        let key = (holder, target);
         let old = self.w.set_alive(point, key, edge);
-        // Before the change: does the author reach the member (a demotion of itself)? Only
+        // Before the change: does the author reach the holder (a demotion of itself)? Only
         // asked when the edge restores something.
         let restores = self.w.restores(key, old);
-        let own = auditor.and_then(|a| a.author).filter(|a| restores && self.view(point.ts).reach_backward(&member).contains(a));
-        self.set_tracked(member, target, edge, point.ts);
+        let own = auditor.and_then(|a| a.author).filter(|a| restores && self.view(point.ts).reach_backward(&holder).contains(a));
+        self.set_tracked(holder, target, edge, point.ts);
         let (Some(aud), Some((base, mine, lowered))) = (auditor, self.w.record_change(point, key, old, edge, by, auditor.map(|a| a.frontier_arc.clone()))) else {
             return false;
         };
@@ -1706,20 +1706,20 @@ impl<'a> Pass<'a> {
         self.w.log.push(Undo::ByAuthorTarget(k));
     }
 
-    /// An explicit write changed edge `(member, target)`: every node X reaching the member
+    /// An explicit write changed edge `(holder, target)`: every node X reaching the holder
     /// whose standing on a thing N reachable from the target is lower than with the edge
     /// `restored` (its value before, alive) was demoted by it (§5.1 step 4): record the
     /// demotion for layer 2 and audit the classes X fell through. Returns whether D grew.
-    fn audit_fall(&mut self, (member, target): (Tid, Tid), base: Option<Edge>, mine: &BTreeMap<Tid, Edge>, ts: Ts, aud: &Auditor) -> bool {
+    fn audit_fall(&mut self, (holder, target): (Tid, Tid), base: Option<Edge>, mine: &BTreeMap<Tid, Edge>, ts: Ts, aud: &Auditor) -> bool {
         let view = self.view(ts);
-        let xs: Vec<Tid> = view.reach_backward(&member).into_iter().filter(|x| self.input.nodes.contains(x) && aud.author != Some(*x)).collect();
-        let cur = self.w.edges.get(&member, &target).copied().filter(|e| e.alive_at(Some(ts)));
-        // Every x's roles on what its standing on the target reads (the member, the target,
-        // members with an invite, admin anywhere on its owner chain): from their forward roles
+        let xs: Vec<Tid> = view.reach_backward(&holder).into_iter().filter(|x| self.input.nodes.contains(x) && aud.author != Some(*x)).collect();
+        let cur = self.w.edges.get(&holder, &target).copied().filter(|e| e.alive_at(Some(ts)));
+        // Every x's roles on what its standing on the target reads (the holder, the target,
+        // holders with an invite, admin anywhere on its owner chain): from their forward roles
         // (`Pass::roles`, cached) when at most `FORWARD_MAX` are not cached, else by backward
         // searches, the same values.
-        let mut keys: BTreeSet<Tid> = BTreeSet::from([member, target]);
-        keys.extend(self.w.edges.members(&target).filter(|(_, e)| e.invite.is_some()).map(|(m, _)| *m));
+        let mut keys: BTreeSet<Tid> = BTreeSet::from([holder, target]);
+        keys.extend(self.w.edges.holders(&target).filter(|(_, e)| e.invite.is_some()).map(|(m, _)| *m));
         let (up, top) = self.input.owners.chain(&target);
         let forward = xs.iter().filter(|x| !self.roles_fresh(x, ts)).count() <= FORWARD_MAX;
         let (to, on_chain): (BTreeMap<Tid, BTreeMap<Tid, Role>>, _) = if forward {
@@ -1749,17 +1749,17 @@ impl<'a> Pass<'a> {
                 None => on_chain.get(&x).copied(),
             } == Some(Role::Admin);
             // An edge x does not reach (alive) confers nothing on x either way.
-            let Some(on_member) = role_on(&x, &member) else { continue };
+            let Some(on_holder) = role_on(&x, &holder) else { continue };
             // The restored edge (alive) is usually at least as wide as the current one; when
             // it raises nothing (not wider than x's role on the target), only the invite on the
             // target can differ.
             let wider = cur.is_none_or(|c| c.role <= restored.role);
-            let pairs: Vec<(Tid, Standing, Standing)> = if wider && Some(on_member.min(restored.role)) <= role_on(&x, &target) {
+            let pairs: Vec<(Tid, Standing, Standing)> = if wider && Some(on_holder.min(restored.role)) <= role_on(&x, &target) {
                 let small: BTreeMap<Tid, Role> = keys.iter().filter_map(|k| role_on(&x, k).map(|r| (*k, r))).collect();
                 let chain = top == Some(x) || chain_admin;
                 let role = role_on(&x, &target);
                 let view = self.view(ts);
-                let before = self.view(ts).patched(member, target, Some(restored));
+                let before = self.view(ts).patched(holder, target, Some(restored));
                 vec![(target, view.standing_from(chain, role, &small, &target), before.standing_from(chain, role, &small, &target))]
             } else {
                 let (ns, reads, readers) = reach.get_or_insert_with(|| {
@@ -1775,19 +1775,19 @@ impl<'a> Pass<'a> {
                     (ns, reads, readers)
                 });
                 let best = self.roles(x, ts);
-                let raised = if wider { self.raised_with(x, (member, target), restored, ts) } else { None };
-                let before = self.view(ts).patched(member, target, Some(restored));
+                let raised = if wider { self.raised_with(x, (holder, target), restored, ts) } else { None };
+                let before = self.view(ts).patched(holder, target, Some(restored));
                 let (best_was, raised) = if wider {
-                    let raised = raised.unwrap_or_else(|| before.roles_raised(&best, &[member]));
-                    debug_assert!(raised == before.roles_raised(&best, &[member]));
+                    let raised = raised.unwrap_or_else(|| before.roles_raised(&best, &[holder]));
+                    debug_assert!(raised == before.roles_raised(&best, &[holder]));
                     let mut b = (*best).clone();
                     b.extend(raised.iter().map(|(t, r)| (*t, *r)));
                     (b, Some(raised))
                 } else {
                     (before.roles_from(&x), None)
                 };
-                // A standing reads the role on the thing, on its owner chain and on its members
-                // with an invite; only the target's members differ between the views.
+                // A standing reads the role on the thing, on its owner chain and on its holders
+                // with an invite; only the target's holders differ between the views.
                 let target_before = before.reads(&target);
                 // only the things whose reads the raise reaches (and the target) can differ
                 let mut affected: BTreeSet<Tid> = BTreeSet::new();
@@ -1822,17 +1822,17 @@ impl<'a> Pass<'a> {
         grew
     }
 
-    /// What x's cached roles (fresh at `ts`) gain with edge (member, target) set to `restored`
+    /// What x's cached roles (fresh at `ts`) gain with edge (holder, target) set to `restored`
     /// (`roles_raised` over the patched view), by `Dense`.
-    fn raised_with(&mut self, x: Tid, (member, target): (Tid, Tid), restored: Edge, ts: Ts) -> Option<BTreeMap<Tid, Role>> {
-        if !(self.graph.ids.contains_key(&member) && self.graph.ids.contains_key(&target)) {
+    fn raised_with(&mut self, x: Tid, (holder, target): (Tid, Tid), restored: Edge, ts: Ts) -> Option<BTreeMap<Tid, Role>> {
+        if !(self.graph.ids.contains_key(&holder) && self.graph.ids.contains_key(&target)) {
             return None;
         }
         let mut d = self.roles.get(&x).filter(|r| r.fresh(ts))?.dense.clone();
-        let cur = self.w.edges.get(&member, &target).copied();
-        self.graph.set(&member, &target, Some(restored));
-        let r = self.graph.raise(&mut d, &member, ts);
-        self.graph.set(&member, &target, cur);
+        let cur = self.w.edges.get(&holder, &target).copied();
+        self.graph.set(&holder, &target, Some(restored));
+        let r = self.graph.raise(&mut d, &holder, ts);
+        self.graph.set(&holder, &target, cur);
         let (raised, _) = r?;
         Some(raised.into_iter().filter_map(|i| Some((*self.graph.tids.get(i)?, d.get(i).copied().flatten()?))).collect())
     }
@@ -1872,12 +1872,12 @@ impl<'a> Pass<'a> {
     }
 
     /// How op `k` of `c` applies against the state before `c` (§5.1 step 2, §2).
-    fn judge(&self, c: &MembershipCommit, k: usize, best: &BTreeMap<Tid, Role>) -> Option<Attr> {
+    fn judge(&self, c: &RoleCommit, k: usize, best: &BTreeMap<Tid, Role>) -> Option<Attr> {
         let op = c.ops.get(k)?;
-        judge(&self.view(c.ts), self.w.edges.get(&op.member, &op.target), c, k, best)
+        judge(&self.view(c.ts), self.w.edges.get(&op.holder, &op.target), c, k, best)
     }
 
-    fn commit(&mut self, c: &MembershipCommit) -> bool {
+    fn commit(&mut self, c: &RoleCommit) -> bool {
         let point = c.point();
         let best = self.roles(c.author, c.ts);
         let mut judged = Vec::new();
@@ -1905,7 +1905,7 @@ impl<'a> Pass<'a> {
                 ledger: false,
                 frontier_arc: c.frontier.clone(),
             });
-            grew |= self.change(point, (op.member, op.target), new, Some(id), auditor.as_ref());
+            grew |= self.change(point, (op.holder, op.target), new, Some(id), auditor.as_ref());
         }
         grew
     }
@@ -1934,7 +1934,7 @@ impl<'a> Pass<'a> {
         }
         // The epoch start itself: N's edges become its roster.
         let point = s.point();
-        let old: Vec<Tid> = self.w.edges.members(&s.thing).map(|(m, _)| *m).collect();
+        let old: Vec<Tid> = self.w.edges.holders(&s.thing).map(|(m, _)| *m).collect();
         for m in old {
             if !s.roster.contains_key(&m) {
                 self.change(point, (m, s.thing), None, None, None);
@@ -1976,26 +1976,26 @@ impl<'a> Pass<'a> {
             ledger: true,
             frontier_arc: Some(f.clone()),
         });
-        self.change(v.point, (v.member, v.thing), v.edge, None, auditor.as_ref())
+        self.change(v.point, (v.holder, v.thing), v.edge, None, auditor.as_ref())
     }
 }
 
 /// How op `k` of `c` applies against `view` (edges before `c`, at its `ts`), `old` the
 /// edge it writes there and `best` its author's roles (§5.1 step 2, §2).
-pub(crate) fn judge(view: &View<'_>, old: Option<&Edge>, c: &MembershipCommit, k: usize, best: &BTreeMap<Tid, Role>) -> Option<Attr> {
+pub(crate) fn judge(view: &View<'_>, old: Option<&Edge>, c: &RoleCommit, k: usize, best: &BTreeMap<Tid, Role>) -> Option<Attr> {
     let op = c.ops.get(k)?;
-    let (a, m, t) = (c.author, op.member, op.target);
+    let (a, m, t) = (c.author, op.holder, op.target);
     if m == t || view.owners.owner_actor(&t) == Some(m) || op.edge.is_some_and(|e| !e.well_formed()) {
         return None;
     }
     let new = op.edge.map(|e| Edge { since: None, ..e });
     let st = view.standing(&a, best, &t);
-    // Self-removal (§2): lowering one's own edge, or an edge of a member one is admin of
+    // Self-removal (§2): lowering one's own edge, or an edge of a holder one is admin of
     // when that is the only authority one has (no owner-chain or edge-admin authority on
     // the target); otherwise the write is an explicit demotion by its class there.
     let authority_on_target = matches!(st.class, Class::Chain | Class::Edge);
     if lowers(new.as_ref(), old) && (m == a || (best.get(&m) == Some(&Role::Admin) && !authority_on_target)) {
-        // Attributed to the author's class on the member it is admin of, or on the target
+        // Attributed to the author's class on the holder it is admin of, or on the target
         // for its own edge (a single-use redemption's: like its grant), §5.1 step 3.
         let class = if m == a { st.class } else { view.standing(&a, best, &m).class };
         return Some(Attr::SelfRemoval(class, if m == a { t } else { m }));
@@ -2040,21 +2040,21 @@ impl Items {
         self.initial.iter().any(|(m, t, _)| ts.contains(m) || ts.contains(t))
     }
 
-    /// The point of the first item before `until` that names one of `ts` (author, member,
-    /// target, snapshot thing, roster or ledger member, ledger key node).
+    /// The point of the first item before `until` that names one of `ts` (author, holder,
+    /// target, snapshot thing, roster or ledger holder, ledger key node).
     pub fn first_naming(&self, ts: &BTreeSet<Tid>, until: Option<Point>) -> Option<Point> {
         let names = |item: &Item| match item {
-            Item::Commit(c) => ts.contains(&c.author) || c.ops.iter().any(|o| ts.contains(&o.member) || ts.contains(&o.target)),
+            Item::Commit(c) => ts.contains(&c.author) || c.ops.iter().any(|o| ts.contains(&o.holder) || ts.contains(&o.target)),
             Item::Snap(s) => {
-                ts.contains(&s.author) || ts.contains(&s.thing) || s.roster.keys().any(|m| ts.contains(m)) || s.ledger.iter().any(|t| ts.contains(&t.member) || ts.contains(&t.until.node) || t.since.is_some_and(|k| ts.contains(&k.node)))
+                ts.contains(&s.author) || ts.contains(&s.thing) || s.roster.keys().any(|m| ts.contains(m)) || s.ledger.iter().any(|t| ts.contains(&t.holder) || ts.contains(&t.until.node) || t.since.is_some_and(|k| ts.contains(&k.node)))
             }
-            Item::Virtual(v) => ts.contains(&v.thing) || ts.contains(&v.member) || v.audit.as_ref().is_some_and(|a| ts.contains(&a.0)),
+            Item::Virtual(v) => ts.contains(&v.thing) || ts.contains(&v.holder) || v.audit.as_ref().is_some_and(|a| ts.contains(&a.0)),
         };
         self.list.iter().take_while(|a| until.is_none_or(|u| a.point < u)).find(|a| names(&a.item)).map(|a| a.point)
     }
 
     /// Where commit `c` goes in the list (before the ledger writes keyed at its point).
-    pub fn place(&self, c: &MembershipCommit) -> usize {
+    pub fn place(&self, c: &RoleCommit) -> usize {
         self.list_before(c.point())
     }
 
@@ -2071,7 +2071,7 @@ impl Items {
     }
 
     /// Adds commits not yet listed, in order: O(log n) each at the end, else O(n) (a move).
-    pub fn add(&mut self, new: &[Arc<MembershipCommit>]) {
+    pub fn add(&mut self, new: &[Arc<RoleCommit>]) {
         for c in new {
             let i = self.place(c);
             self.list.insert(i, Entry { point: c.point(), item: Item::Commit(c.clone()) });
@@ -2092,7 +2092,7 @@ pub(crate) fn items(input: &Input, epoch: &BTreeMap<Tid, CommitId>) -> Items {
         }
         for v in virt {
             // The filters real writes get: no self edge, no owner edge, invite at most the role.
-            if v.member == *thing || input.owners.owner_actor(thing) == Some(v.member) || v.edge.is_some_and(|e| !e.well_formed()) {
+            if v.holder == *thing || input.owners.owner_actor(thing) == Some(v.holder) || v.edge.is_some_and(|e| !e.well_formed()) {
                 continue;
             }
             // just after the commit its key names (whose writes on the thing S ignores), so
@@ -2108,7 +2108,7 @@ pub(crate) fn items(input: &Input, epoch: &BTreeMap<Tid, CommitId>) -> Items {
     }
     // a commit or snapshot first, then the ledger writes keyed at its point
     list.sort_by_key(|a| match &a.item {
-        Item::Virtual(v) => (a.point, Some((v.thing, v.member))),
+        Item::Virtual(v) => (a.point, Some((v.thing, v.holder))),
         _ => (a.point, None),
     });
     Items { initial, list }
@@ -2156,7 +2156,7 @@ pub(crate) fn run(input: &Input) -> Outcome {
     drive(input, None)
 }
 
-/// Continues a converged evaluation over `input`, which adds membership commits at or after
+/// Continues a converged evaluation over `input`, which adds role commits at or after
 /// `r.from` (and nothing else): equal to `run`, since the drops found before the first one
 /// found at or after `r.from` are found again in the same order (see `drive`).
 pub(crate) fn resume(input: &Input, r: Resume) -> Outcome {
@@ -2168,12 +2168,12 @@ pub(crate) fn resume(input: &Input, r: Resume) -> Outcome {
 /// starts E to F(E): each thing's newest snapshot that applied in the settled walk under E,
 /// excluded ones aside. Every snapshot is judged at its position whatever its thing's own
 /// start is (one ordered before the start too), by authority through what is above its thing
-/// (owners, members with an admin edge of anything on the way, at any time), and E acts on
+/// (owners, holders with an admin edge of anything on the way, at any time), and E acts on
 /// the walk only through each start's own thing. So unless owner-chain authority on N may
 /// come through N itself (`Input::cyclic`), F(E) on N depends only on E above N: from any E
 /// the rounds settle from the top down, at the unique fixed point, by round T+1 (T things
 /// with snapshots, at most T levels). That is why `Timeline::extend` may go on from the old
-/// starts. Through mutual membership a start can withdraw its own author's authority, and
+/// starts. Through mutual role a start can withdraw its own author's authority, and
 /// the rounds need not settle: if round T+1 since the last restart has not settled, the
 /// snapshots that are a start in exactly one of its starts and the next are excluded (at
 /// least one: the two differ and neither holds an excluded snapshot) and the rounds restart

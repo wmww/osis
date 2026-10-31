@@ -201,7 +201,7 @@ impl SyncEngine {
             // nothing is announced or uploaded under a receipts-only label
             _ => {}
         }
-        // the group's membership commits brought secrets: entries they open are fetched now
+        // the group's role commits brought secrets: entries they open are fetched now
         let mut before = secrets;
         while self.secrets_count() != before {
             before = self.secrets_count();
@@ -257,9 +257,9 @@ impl SyncEngine {
             return Ok(());
         };
         match open_commit(bytes, &key) {
-            // the group's membership commits apply: their `/secrets` open the rest of the label
+            // the group's role commits apply: their `/secrets` open the rest of the label
             // (a group with secrets of its own seals them only there); applying records them
-            Ok((pt, c)) if c.header.kind.is_membership() => {
+            Ok((pt, c)) if c.header.kind.is_role() => {
                 if let Err(e) = self.engine.ingest(&pt, Vec::new()) {
                     self.diag(format!("ingest {:?}: {e}", c.id()));
                 }

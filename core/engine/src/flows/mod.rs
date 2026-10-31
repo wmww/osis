@@ -1,10 +1,10 @@
-//! Membership flows (spec/permissions.md; notes/permissions.md Implementation): person actors under a
+//! Role flows (spec/permissions.md; notes/permissions.md Implementation): person actors under a
 //! recovery key, pairing, grants and inbox delivery, changes and removals with their rotation,
 //! demotions with the pre-sync and the receipt-record frontier, invite grants and self-removal,
 //! re-seal, registration steps, links, recovery cards, lost-access cleanup. Rotations, the
 //! cascade and departures live in `crate::rotation`.
 //!
-//! Flows build membership commits with `Mutation` (`sign_as` for a held recovery or link key,
+//! Flows build role commits with `Mutation` (`sign_as` for a held recovery or link key,
 //! `frontier`, `unchecked` where perm's invite and self-removal rules decide authority) and
 //! return what must travel as `Delivery` values: node-sync places them (inbox blobs, direct
 //! sends, placement before any other upload). Where a decision needs sync state (a complete pass
@@ -32,7 +32,7 @@ use crate::Mutation;
 use osis_base::{Ak, CommitId, CreationRecord, LabelId, Role, Tid, Value, WallMs};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
-use osis_keys::{KeysWrite, MemberKeys, Recipient, SecretsWrite};
+use osis_keys::{KeysWrite, HolderKeys, Recipient, SecretsWrite};
 use osis_label::Address;
 use osis_perm::At;
 use osis_schema::core_types::{self as ct, Inbox, Keys, Secrets};
@@ -61,17 +61,17 @@ pub enum Delivery {
     Deposit { commit: CommitId, under: Tid },
     /// A removal or lowering of actor `under`'s edge, placed under every label holding `under`
     /// as a certificate copy without its `/secrets` and `/keys` deltas (spec/permissions.md §2:
-    /// those are for the target's remaining members; a refreshed deposit seed is not the
+    /// those are for the target's remaining holders; a refreshed deposit seed is not the
     /// departed's to read).
     Removal { commit: CommitId, under: Tid },
 }
 
 /// What seals an inbox delivery again (spec/sync.md §3: re-sent after `INBOX_LIFETIME` while
-/// the member has not acted): the member, the commit, the things named, whether only its
+/// the holder has not acted): the holder, the commit, the things named, whether only its
 /// `/members` parts went (a removal).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resend {
-    pub member: Tid,
+    pub holder: Tid,
     pub commit: CommitId,
     pub things: Vec<Tid>,
     pub edge_only: bool,
@@ -80,7 +80,7 @@ pub struct Resend {
 /// What node-sync knows that flows need (notes/node.md, hooks).
 pub trait SyncState {
     /// A complete pass of `actor`'s labels (the log of every host and peer it syncs them with
-    /// read to its end) since the last membership commit of the actor applied from elsewhere
+    /// read to its end) since the last role commit of the actor applied from elsewhere
     /// (spec/permissions.md §3).
     fn complete_pass(&self, actor: &Tid) -> bool;
 }
@@ -112,7 +112,7 @@ pub(crate) fn ak(s: &str) -> Result<Ak> {
 
 /// Writes a `/secrets` write into `m`: removed boxes reset; boxes and history boxes as remove +
 /// put, so a re-seal or grant re-writing an entry is a new entry there, not a write into one the
-/// member never got or nothing for an unchanged value (spec/crypto.md §4), and one live entry
+/// holder never got or nothing for an unchanged value (spec/crypto.md §4), and one live entry
 /// per key stays. `invite`: an invite grant, which may reset nothing (spec/permissions.md §2):
 /// fresh puts only (`Op::Put`), a second live entry where the key is live.
 pub(crate) fn put_secrets(m: &mut Mutation, actor: Tid, w: &SecretsWrite, invite: bool) -> Result<()> {
@@ -151,16 +151,16 @@ pub(crate) fn put_keysets(m: &mut Mutation, actor: Tid, w: &KeysWrite) -> Result
 }
 
 /// An edge put (a change is remove + put, notes/node.md).
-/// Writes `member`'s edge on `target` as remove + put (spec/permissions.md §2): whatever entry
+/// Writes `holder`'s edge on `target` as remove + put (spec/permissions.md §2): whatever entry
 /// the state holds for it, valid or one the timeline dropped, is reset, never written into.
-pub(crate) fn put_edge(m: &mut Mutation, target: Tid, member: Tid, e: &ct::Edge) -> Result<()> {
-    remove_edge(m, target, member)?;
-    m.op(target, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(member))], op: Op::Set(e.to_value()) })?;
+pub(crate) fn put_edge(m: &mut Mutation, target: Tid, holder: Tid, e: &ct::Edge) -> Result<()> {
+    remove_edge(m, target, holder)?;
+    m.op(target, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(e.to_value()) })?;
     Ok(())
 }
 
-pub(crate) fn remove_edge(m: &mut Mutation, target: Tid, member: Tid) -> Result<()> {
-    m.op(target, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(member)) })?;
+pub(crate) fn remove_edge(m: &mut Mutation, target: Tid, holder: Tid) -> Result<()> {
+    m.op(target, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) })?;
     Ok(())
 }
 
@@ -191,9 +191,9 @@ impl Core {
         matches!(self.created(tid), Some(CreationRecord::KeyActor { .. }))
     }
 
-    /// Current members of `actor` with their role and `until` (alive edges), owner first as
+    /// Current holders of `actor` with their role and `until` (alive edges), owner first as
     /// admin.
-    pub fn current_members(&self, actor: &Tid) -> Vec<(Tid, Role, Option<WallMs>)> {
+    pub fn current_holders(&self, actor: &Tid) -> Vec<(Tid, Role, Option<WallMs>)> {
         let mut out = Vec::new();
         if let Some(o) = self.owner(actor) {
             out.push((o, Role::Admin, None));
@@ -216,33 +216,33 @@ impl Core {
     }
 }
 
-/// A recipient for boxes of `actor` to `member` at `role`, from the member's held `/keys`.
-pub(crate) fn recipient(tx: &mut Tx<'_>, member: Tid, role: Role) -> Result<Recipient> {
-    let keys = Core::keys_in(tx, &member)?;
-    let keys = match (tx.core.is_key_actor(&member), keys) {
-        (true, Some(k)) => MemberKeys::from_keys(&Keys { read: None, write: None, admin: None, ..k })?,
-        (true, None) if member == tx.core.id.tid() => MemberKeys::KeyActor { kem: tx.core.id.keys().kem.public().clone(), seed: None },
-        (true, None) => match tx.core.key_actors.get(&member) {
-            Some(k) => MemberKeys::KeyActor { kem: k.keys().kem.public().clone(), seed: None },
-            None => return Err(Error::Misuse("no /keys held for the member")),
+/// A recipient for boxes of `actor` to `holder` at `role`, from the holder's held `/keys`.
+pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Recipient> {
+    let keys = Core::keys_in(tx, &holder)?;
+    let keys = match (tx.core.is_key_actor(&holder), keys) {
+        (true, Some(k)) => HolderKeys::from_keys(&Keys { read: None, write: None, admin: None, ..k })?,
+        (true, None) if holder == tx.core.id.tid() => HolderKeys::KeyActor { kem: tx.core.id.keys().kem.public().clone(), seed: None },
+        (true, None) => match tx.core.key_actors.get(&holder) {
+            Some(k) => HolderKeys::KeyActor { kem: k.keys().kem.public().clone(), seed: None },
+            None => return Err(Error::Misuse("no /keys held for the holder")),
         },
         // a key-actor KEM key on an actor's `/keys` is never sealed to (only key actors have one)
         (false, Some(k)) => {
-            let mk = MemberKeys::from_keys(&Keys { key: None, ..k })?;
-            match tx.core.own_epochs(&member) {
+            let mk = HolderKeys::from_keys(&Keys { key: None, ..k })?;
+            match tx.core.own_epochs(&holder) {
                 Some(e) => mk.with_own(e),
                 None => mk,
             }
         }
-        (false, None) => return Err(Error::Misuse("the member has no secrets of its own")),
+        (false, None) => return Err(Error::Misuse("the holder has no secrets of its own")),
     };
-    Ok(Recipient { member, role, keys })
+    Ok(Recipient { holder, role, keys })
 }
 
-/// The inbox a membership write about `member` goes to (spec/sync.md §2): its own, else the
+/// The inbox a role write about `holder` goes to (spec/sync.md §2): its own, else the
 /// nearest actor's above it. `None` for a key actor (direct delivery only).
-pub(crate) fn inbox_of(tx: &mut Tx<'_>, member: &Tid) -> Result<Option<(Tid, Inbox)>> {
-    let mut cur = *member;
+pub(crate) fn inbox_of(tx: &mut Tx<'_>, holder: &Tid) -> Result<Option<(Tid, Inbox)>> {
+    let mut cur = *holder;
     for _ in 0..64 {
         if tx.core.is_key_actor(&cur) {
             return Ok(None);
@@ -265,7 +265,7 @@ pub(crate) fn own_label(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<(LabelId, u
     Ok(labels.into_iter().filter(|(_, l)| !l.replaced).max_by_key(|(_, l)| l.index).map(|(id, l)| (id, l.index, l.hosts)))
 }
 
-/// A label a member can reach `tid` under: its own, a group's containing it, or the home label
+/// A label a holder can reach `tid` under: its own, a group's containing it, or the home label
 /// of the nearest actor above it.
 pub(crate) fn label_for(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<(LabelId, u64, Vec<Address>)>> {
     if let Some(l) = own_label(tx, tid)? {
@@ -313,7 +313,7 @@ pub(crate) fn secrets_alts(tx: &mut Tx<'_>, actor: &Tid) -> Result<osis_keys::Hi
 
 /// Persists the epochs held for `actor` (the `k/` record node-core loads).
 pub(crate) fn save_epochs(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
-    tx.core.membership_changed();
+    tx.core.role_changed();
     if let Some(e) = tx.core.ix.secrets.get(actor) {
         let b = crate::engine::secrets::encode_epochs(e);
         tx.txn.put_local(&[b"k/".as_slice(), actor.as_bytes()].concat(), &b, Shred::Yes)?;
@@ -322,10 +322,10 @@ pub(crate) fn save_epochs(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
 }
 
 /// Re-opens the `/secrets` of every actor that boxes to `learned` after this node learned
-/// secrets of `learned` (an actor's boxes open only once its member's epochs are held), to a
+/// secrets of `learned` (an actor's boxes open only once its holder's epochs are held), to a
 /// fixpoint. Called by node-core's state observation (engine hook). Terminates without a step
 /// cap: an actor is pushed only when its held epochs grew, and they only grow, bounded by the
-/// boxes held (a cap would leave secrets of deep member chains unopened).
+/// boxes held (a cap would leave secrets of deep holder chains unopened).
 pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
     let mut work = vec![learned];
     while let Some(m) = work.pop() {
@@ -347,7 +347,7 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
 }
 
 /// Re-opens every held `/secrets` (after a key actor was taken up), to a fixpoint: what an
-/// actor learns reopens its dependents at once (`reopen_dependents`, so a member-actor chain
+/// actor learns reopens its dependents at once (`reopen_dependents`, so a holder-actor chain
 /// opens in one sweep whatever its tid order); sweeps repeat until one learns nothing (held
 /// epochs only grow, so no round cap is needed; a cap left deep chains unopened).
 fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
@@ -379,7 +379,7 @@ impl Engine {
         let id = Identity::from_seed(seed);
         let t = id.tid();
         self.core.key_actors.insert(t, Arc::new(id));
-        self.core.membership_changed();
+        self.core.role_changed();
         self.run(reopen_all)?;
         Ok(t)
     }
@@ -392,7 +392,7 @@ impl Engine {
     /// Forgets a held key actor (a redeemer discards the seed, spec/permissions.md §9).
     pub fn drop_key_actor(&mut self, tid: &Tid) {
         self.core.key_actors.remove(tid);
-        self.core.membership_changed();
+        self.core.role_changed();
     }
 
     /// Commits `m` in a running transaction.

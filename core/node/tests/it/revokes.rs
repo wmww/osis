@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Revokes about authors seen under a label (spec/permissions.md §4): a member that syncs the
+//! Revokes about authors seen under a label (spec/permissions.md §4): a holder that syncs the
 //! label and holds the revoke places it there, so verifiers judge the author's writes alike.
 
 use crate::net;
@@ -9,9 +9,9 @@ use osis_node::flows::{Demotion, PreSync};
 use osis_node::sync::EntryKind;
 use osis_schema::core_types as ct;
 
-// spec/permissions.md §4 (any member that syncs a label and holds a revoke about an author seen
+// spec/permissions.md §4 (any holder that syncs a label and holds a revoke about an author seen
 // under it places it there): W writes in G through team X; X's admin B, who does not sync G,
-// removes W from X; R, a member of X that syncs G through it, places that revoke under G's
+// removes W from X; R, a holder of X that syncs G through it, places that revoke under G's
 // label.
 #[test]
 fn revoke_about_author_placed_spec_permissions_4() {
@@ -40,7 +40,7 @@ fn revoke_about_author_placed_spec_permissions_4() {
     let lg = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
     assert!(net.sync(b).labels().iter().all(|(x, _)| *x != g), "B does not sync G");
     let wt = net.tid(w);
-    let done = net.engine(b).demote(&x, &Demotion { member: wt, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(b).demote(&x, &Demotion { holder: wt, new: None, presync: PreSync::Synced }).unwrap();
     let removal = *done.commits.first().unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
@@ -61,8 +61,8 @@ fn revoke_about_author_placed_spec_permissions_4() {
     assert_eq!(net.read(w, u), None);
 }
 
-// spec/permissions.md §4 (exception to spec/crypto.md §4: a member that may not rotate the
-// label's actor places the revoke of a departure inside a member, the write on the last actor of
+// spec/permissions.md §4 (exception to spec/crypto.md §4: a holder that may not rotate the
+// label's actor places the revoke of a departure inside a holder, the write on the last actor of
 // its chain, and each chain actor's newest `/keys`): G <- X1 <- X2 <- {W, R}; X2's admin B, who
 // does not sync G, removes W from X2 and rotates X2 and X1 (apart); R reads G through two levels,
 // may not rotate it, and places W's removal from X2 and X1's new keys under G's label; G's admin
@@ -103,7 +103,7 @@ fn nested_departure_revoke_placed_spec_permissions_4() {
     let lg = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
     assert!(net.sync(b).labels().iter().all(|(x, _)| *x != g), "B does not sync G");
     let wt = net.tid(w);
-    let done = net.engine(b).demote(&x2, &Demotion { member: wt, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(b).demote(&x2, &Demotion { holder: wt, new: None, presync: PreSync::Synced }).unwrap();
     let removal = *done.commits.first().unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);

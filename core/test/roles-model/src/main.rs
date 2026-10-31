@@ -1,13 +1,13 @@
-//! Search driver for the membership model: `[samples] [as|exempt|strat|stratw|frontier|snapshot|edges|edges-prov|joint|digest]`.
+//! Search driver for the roles model: `[samples] [as|exempt|strat|stratw|frontier|snapshot|edges|edges-prov|joint|digest]`.
 
-use membership_model::{edges, joint, single, snapshot};
+use roles_model::{edges, joint, single, snapshot};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let samples = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(2_000_000);
     match args.get(2).map(String::as_str) {
         Some("digest") => {
-            for (name, d) in membership_model::digest(samples, 0x5eed) {
+            for (name, d) in roles_model::digest(samples, 0x5eed) {
                 println!("{name} {d:016x}");
             }
         }

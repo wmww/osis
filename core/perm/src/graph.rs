@@ -1,5 +1,5 @@
 //! Authority over one edge state (spec/permissions.md §1, §2, §5.1 step 3): effective role as
-//! the widest path over membership edges and owner links, effective invite, authority class.
+//! the widest path over role edges and owner links, effective invite, authority class.
 
 use crate::held::HeldSet;
 use crate::types::{earliest, mark, put, Edge};
@@ -121,44 +121,44 @@ impl Owners {
     }
 }
 
-/// An edge state: every current `/members` edge. The per-target and per-member maps are
-/// shared between clones until written (a kept state costs O(targets + members), not
+/// An edge state: every current `/members` edge. The per-target and per-holder maps are
+/// shared between clones until written (a kept state costs O(targets + holders), not
 /// O(edges)).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Edges {
     by_target: BTreeMap<Tid, Arc<BTreeMap<Tid, Edge>>>,
-    by_member: BTreeMap<Tid, Arc<BTreeSet<Tid>>>,
+    by_holder: BTreeMap<Tid, Arc<BTreeSet<Tid>>>,
 }
 
 impl Edges {
-    pub fn get(&self, member: &Tid, target: &Tid) -> Option<&Edge> {
-        self.by_target.get(target).and_then(|m| m.get(member))
+    pub fn get(&self, holder: &Tid, target: &Tid) -> Option<&Edge> {
+        self.by_target.get(target).and_then(|m| m.get(holder))
     }
-    pub fn set(&mut self, member: Tid, target: Tid, edge: Option<Edge>) {
+    pub fn set(&mut self, holder: Tid, target: Tid, edge: Option<Edge>) {
         match edge {
             Some(e) => {
-                if self.get(&member, &target) == Some(&e) {
+                if self.get(&holder, &target) == Some(&e) {
                     return;
                 }
-                Arc::make_mut(self.by_target.entry(target).or_default()).insert(member, e);
-                Arc::make_mut(self.by_member.entry(member).or_default()).insert(target);
+                Arc::make_mut(self.by_target.entry(target).or_default()).insert(holder, e);
+                Arc::make_mut(self.by_holder.entry(holder).or_default()).insert(target);
             }
             None => {
-                if self.get(&member, &target).is_none() {
+                if self.get(&holder, &target).is_none() {
                     return;
                 }
                 if let Some(m) = self.by_target.get_mut(&target) {
                     let m = Arc::make_mut(m);
-                    m.remove(&member);
+                    m.remove(&holder);
                     if m.is_empty() {
                         self.by_target.remove(&target);
                     }
                 }
-                if let Some(s) = self.by_member.get_mut(&member) {
+                if let Some(s) = self.by_holder.get_mut(&holder) {
                     let s = Arc::make_mut(s);
                     s.remove(&target);
                     if s.is_empty() {
-                        self.by_member.remove(&member);
+                        self.by_holder.remove(&holder);
                     }
                 }
             }
@@ -167,7 +167,7 @@ impl Edges {
     /// Sets `changes` in each of `states`, consecutive kept states in order: a map two
     /// neighbours shared before stays shared (one copy per run of states sharing it).
     pub fn set_all<'a>(states: impl Iterator<Item = &'a mut Arc<Edges>>, changes: &[(Tid, Tid, Option<Edge>)]) {
-        /// The target's and the member's maps before and after a change, in the previous state.
+        /// The target's and the holder's maps before and after a change, in the previous state.
         type Was = ((Option<Arc<BTreeMap<Tid, Edge>>>, Option<Arc<BTreeMap<Tid, Edge>>>), (Option<Arc<BTreeSet<Tid>>>, Option<Arc<BTreeSet<Tid>>>));
         fn same<T>(a: &Option<Arc<T>>, b: &Option<Arc<T>>) -> bool {
             match (a, b) {
@@ -181,7 +181,7 @@ impl Edges {
             let s = Arc::make_mut(s);
             for (j, (m, t, e)) in changes.iter().enumerate() {
                 let old_t = s.by_target.get(t).cloned();
-                let old_m = s.by_member.get(m).cloned();
+                let old_m = s.by_holder.get(m).cloned();
                 let prev = last.get(j);
                 let new_t = match prev {
                     Some((p, _)) if same(&p.0, &old_t) => p.1.clone(),
@@ -200,7 +200,7 @@ impl Edges {
                     }
                 };
                 put(&mut s.by_target, *t, new_t.clone());
-                put(&mut s.by_member, *m, new_m.clone());
+                put(&mut s.by_holder, *m, new_m.clone());
                 let x = ((old_t, new_t), (old_m, new_m));
                 match last.get_mut(j) {
                     Some(l) => *l = x,
@@ -209,13 +209,13 @@ impl Edges {
             }
         }
     }
-    /// Edges on `target`, by member.
-    pub fn members(&self, target: &Tid) -> impl Iterator<Item = (&Tid, &Edge)> {
+    /// Edges on `target`, by holder.
+    pub fn holders(&self, target: &Tid) -> impl Iterator<Item = (&Tid, &Edge)> {
         self.by_target.get(target).into_iter().flat_map(|m| m.iter())
     }
-    /// Targets of `member`'s edges.
-    pub fn targets(&self, member: &Tid) -> impl Iterator<Item = &Tid> {
-        self.by_member.get(member).into_iter().flat_map(|s| s.iter())
+    /// Targets of `holder`'s edges.
+    pub fn targets(&self, holder: &Tid) -> impl Iterator<Item = &Tid> {
+        self.by_holder.get(holder).into_iter().flat_map(|s| s.iter())
     }
     pub fn iter(&self) -> impl Iterator<Item = (&Tid, &Tid, &Edge)> {
         self.by_target.iter().flat_map(|(t, m)| m.iter().map(move |(mem, e)| (mem, t, e)))
@@ -223,12 +223,12 @@ impl Edges {
 }
 
 /// Edges set over a base edge state: an edge here replaces the base's (`None`: removed). A
-/// few (at most a checkpoint interval), sorted by (member, target), with a 256-bit filter of
-/// the members and targets present so most lookups skip them.
+/// few (at most a checkpoint interval), sorted by (holder, target), with a 256-bit filter of
+/// the holders and targets present so most lookups skip them.
 #[derive(Clone, Debug, Default)]
 pub struct Overlay {
     set: Vec<(Tid, Tid, Option<Edge>)>,
-    members: [u64; 4],
+    holders: [u64; 4],
     targets: [u64; 4],
 }
 
@@ -251,37 +251,37 @@ fn set_bit(mask: &mut [u64; 4], t: &Tid) {
 }
 
 impl Overlay {
-    pub fn set(&mut self, member: Tid, target: Tid, edge: Option<Edge>) {
-        match self.set.binary_search_by(|x| (x.0, x.1).cmp(&(member, target))) {
+    pub fn set(&mut self, holder: Tid, target: Tid, edge: Option<Edge>) {
+        match self.set.binary_search_by(|x| (x.0, x.1).cmp(&(holder, target))) {
             Ok(i) => {
                 if let Some(x) = self.set.get_mut(i) {
                     x.2 = edge;
                 }
             }
-            Err(i) => self.set.insert(i, (member, target, edge)),
+            Err(i) => self.set.insert(i, (holder, target, edge)),
         }
-        set_bit(&mut self.members, &member);
+        set_bit(&mut self.holders, &holder);
         set_bit(&mut self.targets, &target);
     }
     fn is_empty(&self) -> bool {
         self.set.is_empty()
     }
-    /// The edges of `member` set here, by target.
-    fn of_member(&self, member: &Tid) -> &[(Tid, Tid, Option<Edge>)] {
-        if !has(&self.members, member) {
+    /// The edges of `holder` set here, by target.
+    fn of_holder(&self, holder: &Tid) -> &[(Tid, Tid, Option<Edge>)] {
+        if !has(&self.holders, holder) {
             return &[];
         }
-        let lo = self.set.partition_point(|x| x.0 < *member);
-        let hi = self.set.partition_point(|x| x.0 <= *member);
+        let lo = self.set.partition_point(|x| x.0 < *holder);
+        let hi = self.set.partition_point(|x| x.0 <= *holder);
         self.set.get(lo..hi).unwrap_or_default()
     }
-    /// The edges on `target` set here, by member.
+    /// The edges on `target` set here, by holder.
     fn of_target<'s>(&'s self, target: &'s Tid) -> impl Iterator<Item = (&'s Tid, &'s Option<Edge>)> + 's {
         let any = has(&self.targets, target);
         self.set.iter().filter(move |x| any && x.1 == *target).map(|x| (&x.0, &x.2))
     }
-    fn get(&self, member: &Tid, target: &Tid) -> Option<&Option<Edge>> {
-        let m = self.of_member(member);
+    fn get(&self, holder: &Tid, target: &Tid) -> Option<&Option<Edge>> {
+        let m = self.of_holder(holder);
         m.binary_search_by(|x| x.1.cmp(target)).ok().and_then(|i| m.get(i)).map(|x| &x.2)
     }
 }
@@ -298,25 +298,25 @@ impl<'a> EdgesAt<'a> {
     pub fn new(base: &'a Edges) -> EdgesAt<'a> {
         EdgesAt { base, over: Overlay::default() }
     }
-    pub fn set(&mut self, member: Tid, target: Tid, edge: Option<Edge>) {
-        self.over.set(member, target, edge);
+    pub fn set(&mut self, holder: Tid, target: Tid, edge: Option<Edge>) {
+        self.over.set(holder, target, edge);
     }
-    pub fn get(&self, member: &Tid, target: &Tid) -> Option<&Edge> {
-        match self.over.get(member, target) {
+    pub fn get(&self, holder: &Tid, target: &Tid) -> Option<&Edge> {
+        match self.over.get(holder, target) {
             Some(e) => e.as_ref(),
-            None => self.base.get(member, target),
+            None => self.base.get(holder, target),
         }
     }
-    /// Edges on `target`, by member.
-    pub fn members<'s>(&'s self, target: &'s Tid) -> impl Iterator<Item = (&'s Tid, &'s Edge)> + 's {
+    /// Edges on `target`, by holder.
+    pub fn holders<'s>(&'s self, target: &'s Tid) -> impl Iterator<Item = (&'s Tid, &'s Edge)> + 's {
         let over = &self.over;
-        let base = self.base.members(target).filter(move |(m, _)| over.get(m, target).is_none());
+        let base = self.base.holders(target).filter(move |(m, _)| over.get(m, target).is_none());
         base.chain(over.of_target(target).filter_map(|(m, e)| e.as_ref().map(|e| (m, e))))
     }
-    /// Targets of `member`'s edges.
-    pub fn targets<'s>(&'s self, member: &'s Tid) -> impl Iterator<Item = &'s Tid> + 's {
-        let over = self.over.of_member(member);
-        let base = self.base.targets(member).filter(move |t| over.binary_search_by(|x| x.1.cmp(t)).is_err());
+    /// Targets of `holder`'s edges.
+    pub fn targets<'s>(&'s self, holder: &'s Tid) -> impl Iterator<Item = &'s Tid> + 's {
+        let over = self.over.of_holder(holder);
+        let base = self.base.targets(holder).filter(move |t| over.binary_search_by(|x| x.1.cmp(t)).is_err());
         base.chain(over.iter().filter_map(|x| x.2.as_ref().map(|_| &x.1)))
     }
     pub fn iter(&self) -> impl Iterator<Item = (&Tid, &Tid, &Edge)> {
@@ -358,8 +358,8 @@ impl Dense {
         g
     }
 
-    pub fn set(&mut self, member: &Tid, target: &Tid, edge: Option<Edge>) {
-        let (Some(&m), Some(&t)) = (self.ids.get(member), self.ids.get(target)) else {
+    pub fn set(&mut self, holder: &Tid, target: &Tid, edge: Option<Edge>) {
+        let (Some(&m), Some(&t)) = (self.ids.get(holder), self.ids.get(target)) else {
             self.whole &= edge.is_none();
             return;
         };
@@ -460,7 +460,7 @@ impl Dense {
 }
 
 /// What a standing on a thing reads besides the node's roles: the thing's owner chain (and
-/// the key actor at its top) and its members holding an invite (edges alive).
+/// the key actor at its top) and its holders holding an invite (edges alive).
 pub struct Reads {
     pub up: Vec<Tid>,
     pub top: Option<Tid>,
@@ -489,7 +489,7 @@ fn class_of(chain: bool, role: Option<Role>, invite: impl FnOnce() -> Option<Rol
     }
 }
 
-/// One edge set to a value over an edge state: (member, target, value).
+/// One edge set to a value over an edge state: (holder, target, value).
 pub type Patch = (Tid, Tid, Option<Edge>);
 
 /// Authority queries over owners and an edge state (optionally a base with an overlay), with
@@ -511,20 +511,20 @@ impl<'a> View<'a> {
         let over = Some(&edges.over).filter(|o| !o.is_empty());
         View { owners, edges: edges.base, over, ts, patch: None }
     }
-    /// The same view with edge (member, target) set to `edge`.
-    pub fn patched(self, member: Tid, target: Tid, edge: Option<Edge>) -> View<'a> {
-        View { patch: Some((member, target, edge)), ..self }
+    /// The same view with edge (holder, target) set to `edge`.
+    pub fn patched(self, holder: Tid, target: Tid, edge: Option<Edge>) -> View<'a> {
+        View { patch: Some((holder, target, edge)), ..self }
     }
 
-    /// `f` on each edge of `member`: (target, value).
-    fn each_target(&self, member: &Tid, mut f: impl FnMut(&Tid, &Edge)) {
-        let patch = self.patch.as_ref().filter(|p| p.0 == *member);
-        let over = self.over.map_or(&[][..], |o| o.of_member(member));
-        for t in self.edges.targets(member) {
+    /// `f` on each edge of `holder`: (target, value).
+    fn each_target(&self, holder: &Tid, mut f: impl FnMut(&Tid, &Edge)) {
+        let patch = self.patch.as_ref().filter(|p| p.0 == *holder);
+        let over = self.over.map_or(&[][..], |o| o.of_holder(holder));
+        for t in self.edges.targets(holder) {
             if patch.is_some_and(|p| p.1 == *t) || (!over.is_empty() && over.binary_search_by(|x| x.1.cmp(t)).is_ok()) {
                 continue;
             }
-            if let Some(e) = self.edges.get(member, t) {
+            if let Some(e) = self.edges.get(holder, t) {
                 f(t, e);
             }
         }
@@ -538,11 +538,11 @@ impl<'a> View<'a> {
         }
     }
 
-    /// `f` on each edge on `target`: (member, value).
-    fn each_member(&self, target: &Tid, mut f: impl FnMut(&Tid, &Edge)) {
+    /// `f` on each edge on `target`: (holder, value).
+    fn each_holder(&self, target: &Tid, mut f: impl FnMut(&Tid, &Edge)) {
         let patch = self.patch.as_ref().filter(|p| p.1 == *target);
         let over = self.over.filter(|o| has(&o.targets, target));
-        for (m, e) in self.edges.members(target) {
+        for (m, e) in self.edges.holders(target) {
             if patch.is_none_or(|p| p.0 != *m) && over.is_none_or(|o| o.get(m, target).is_none()) {
                 f(m, e);
             }
@@ -645,7 +645,7 @@ impl<'a> View<'a> {
         while let Some(t) = stack.pop() {
             let Some(&level) = best.get(&t) else { continue };
             let mut up: Vec<(Tid, Role)> = self.owners.owner_actor(&t).map(|o| (o, level)).into_iter().collect();
-            self.each_member(&t, |m, e| {
+            self.each_holder(&t, |m, e| {
                 if e.alive_at(self.ts) {
                     up.push((*m, level.min(e.role)));
                 }
@@ -663,7 +663,7 @@ impl<'a> View<'a> {
     /// Effective invite on `n` given `x`'s roles (spec/permissions.md §2).
     pub fn invite(&self, best: &BTreeMap<Tid, Role>, n: &Tid) -> Option<Role> {
         let mut inv = None;
-        self.each_member(n, |m, e| {
+        self.each_holder(n, |m, e| {
             if let (Some(i), Some(&r), true) = (e.invite, best.get(m), e.alive_at(self.ts)) {
                 inv = inv.max(Some(i.min(r).min(e.role)));
             }
@@ -680,7 +680,7 @@ impl<'a> View<'a> {
     pub fn reads(&self, n: &Tid) -> Reads {
         let (up, top) = self.owners.chain(n);
         let mut invites = Vec::new();
-        self.each_member(n, |m, e| {
+        self.each_holder(n, |m, e| {
             if e.invite.is_some() && e.alive_at(self.ts) {
                 invites.push((*m, *e));
             }
@@ -689,7 +689,7 @@ impl<'a> View<'a> {
     }
 
     /// Standing on `n` from its parts: whether the node is admin on `n`'s owner chain, its role
-    /// on `n`, and its roles on `n`'s members (for the invite).
+    /// on `n`, and its roles on `n`'s holders (for the invite).
     pub fn standing_from(&self, chain: bool, role: Option<Role>, best: &BTreeMap<Tid, Role>, n: &Tid) -> Standing {
         Standing { class: class_of(chain, role, || self.invite(best, n)), role }
     }
@@ -720,7 +720,7 @@ impl<'a> View<'a> {
         let mut stack = vec![*start];
         while let Some(e) = stack.pop() {
             let mut up: Vec<Tid> = self.owners.owner_actor(&e).into_iter().collect();
-            self.each_member(&e, |m, _| up.push(*m));
+            self.each_holder(&e, |m, _| up.push(*m));
             for y in up {
                 if seen.insert(y) {
                     stack.push(y);

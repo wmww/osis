@@ -1,23 +1,23 @@
 //! Joint walk over several actors (spec/permissions.md §5.1): one timeline over every edge
 //! write of every actor, ordered by (t, author node, commit ID). Nodes are key actors; each
-//! actor is owned by a node or another actor; an edge (member: node or actor, target actor,
+//! actor is owned by a node or another actor; an edge (holder: node or actor, target actor,
 //! role). Effective role: max over paths of the min along the path, paths climbing edges and
-//! owner links, computed as a fixpoint so mutual membership is fine. Class of a node on an
+//! owner links, computed as a fixpoint so mutual role is fine. Class of a node on an
 //! actor: owner chain (admin of an actor strictly above it in its owner chain, or the node at
 //! the top), else edge admin (admin by any path), else none.
 //!
 //! A write applies iff its author has admin on the target (attributed to its class there) or
-//! it is a self-removal (lowers the edge of a member the author has admin on; attributed to
-//! its class on that member, or on the target for its own edge; audits nothing). After each applied write by A on edge (M, T), every other node X reaching
+//! it is a self-removal (lowers the edge of a holder the author has admin on; attributed to
+//! its class on that holder, or on the target for its own edge; audits nothing). After each applied write by A on edge (M, T), every other node X reaching
 //! M whose class on an actor N reachable from T fell below its class with the edge restored
-//! as if the member still held its role (the highest role the edge had since the last
+//! as if the holder still held its role (the highest role the edge had since the last
 //! explicit write on it, self-removals and A's own writes auditing nothing) has its
 //! earlier applied writes on N attributed to a class in (new, held] audited by A's frontier
 //! (A's receipts before t; nothing else counts, A's own chain writes included), and the walk
 //! restarts on
 //! any drop. Drops are sticky. No invites, `until` or snapshots here (edges.rs, snapshot.rs).
 //!
-//! Checked (`cargo run --bin membership-model [samples] joint`, `cargo test`): termination, input-order
+//! Checked (`cargo run --bin roles-model [samples] joint`, `cargo test`): termination, input-order
 //! independence (with commit-ID ties), nothing dropped with nobody offline.
 
 use crate::{Rng, Role};
@@ -37,8 +37,8 @@ pub struct JWrite {
     pub t: u32,
     pub id: u32,
     pub target: usize,
-    /// Member entity: nodes 0..nodes, actors nodes..nodes+actors.
-    pub member: usize,
+    /// Holder entity: nodes 0..nodes, actors nodes..nodes+actors.
+    pub holder: usize,
     pub role: Role,
 }
 
@@ -46,7 +46,7 @@ pub struct JWrite {
 pub struct JHist {
     pub nodes: usize,
     pub owners: Vec<Owner>,
-    /// [member entity][target actor].
+    /// [holder entity][target actor].
     pub genesis: Vec<Vec<Role>>,
     pub writes: Vec<JWrite>,
     /// [write][node] receipt time; author: its own t.
@@ -63,7 +63,7 @@ pub enum Class {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Attr {
     Skipped,
-    /// A self-removal, attributed to the author's class on an actor (the member it is admin
+    /// A self-removal, attributed to the author's class on an actor (the holder it is admin
     /// of, or the target for its own edge) and audited when that falls.
     SelfOnly(Class, usize),
     By(Class),
@@ -82,10 +82,10 @@ pub struct JOut {
 /// What the walk remembers per edge between explicit writes on it (§5.1 step 4, "the edge as
 /// restored").
 struct Restored {
-    /// [member][target]: the join of the edge's values since the last explicit write on it,
+    /// [holder][target]: the join of the edge's values since the last explicit write on it,
     /// values taken away by self-removal included.
     since: Vec<Vec<Role>>,
-    /// (member, target, author): the standing an author kept by its own explicit write on
+    /// (holder, target, author): the standing an author kept by its own explicit write on
     /// that edge ("R never demotes its own author"), until the next explicit write on it.
     kept: HashMap<(usize, usize, usize), Role>,
 }
@@ -121,7 +121,7 @@ impl JHist {
 
     /// §1 effective role [node][actor]: the maximum over paths of the minimum role along the
     /// path, paths climbing edges and owner links (an owner holds admin on what it owns).
-    /// A fixpoint, so mutual membership is fine.
+    /// A fixpoint, so mutual role is fine.
     fn roles(&self, edges: &[Vec<Role>]) -> Vec<Vec<Role>> {
         let (nn, na) = (self.nodes, self.actors());
         let mut r = vec![vec![Role::None; na]; nn];
@@ -213,7 +213,7 @@ impl JHist {
         }
     }
 
-    /// Whether node a has admin on member entity m (a node is its own admin).
+    /// Whether node a has admin on holder entity m (a node is its own admin).
     fn admin_of(&self, r: &[Vec<Role>], a: usize, m: usize) -> bool {
         m == a || m >= self.nodes && r[a][m - self.nodes] == Role::Admin
     }
@@ -221,22 +221,22 @@ impl JHist {
     /// §1: an edge for the target's owner is no write (the owner is implicitly admin and
     /// cannot be removed).
     fn is_owner_edge(&self, w: &JWrite) -> bool {
-        w.member == self.owner(w.target)
+        w.holder == self.owner(w.target)
     }
 
-    /// §2 self-removal: lowers an edge whose member the author has admin on, and either lowers
+    /// §2 self-removal: lowers an edge whose holder the author has admin on, and either lowers
     /// the author's own edge or the author has no owner-chain or edge-admin authority on the
     /// target at that point.
     fn is_self_removal(&self, edges: &[Vec<Role>], r: &[Vec<Role>], w: &JWrite) -> bool {
-        let lowers = w.role <= edges[w.member][w.target];
-        lowers && self.admin_of(r, w.author, w.member) && (w.member == w.author || self.class(r, w.author, w.target) == Class::None)
+        let lowers = w.role <= edges[w.holder][w.target];
+        lowers && self.admin_of(r, w.author, w.holder) && (w.holder == w.author || self.class(r, w.author, w.target) == Class::None)
     }
 
     /// §5.1 steps 2-3: whether write `w` applies at this point, and its attribution: a
     /// self-removal, or the author's class on the target (admin needed: owner chain or edge).
     fn authority(&self, edges: &[Vec<Role>], r: &[Vec<Role>], w: &JWrite) -> Attr {
         if self.is_self_removal(edges, r, w) {
-            let on = if w.member == w.author { w.target } else { w.member - self.nodes };
+            let on = if w.holder == w.author { w.target } else { w.holder - self.nodes };
             return Attr::SelfOnly(self.class(r, w.author, on), on);
         }
         match self.class(r, w.author, w.target) {
@@ -252,8 +252,8 @@ impl JHist {
     }
 
     /// §5.1 step 4 for the explicit write `i` (just applied: `edges`, `r` are after it; `old`
-    /// the edge before it; `own`: its author reached the member before it): the writes it adds
-    /// to D. Every other node x reaching the member whose class on an actor n below the target
+    /// the edge before it; `own`: its author reached the holder before it): the writes it adds
+    /// to D. Every other node x reaching the holder whose class on an actor n below the target
     /// fell (against the edge as restored, x's kept standing included) has its earlier applied
     /// writes on n attributed to a class it fell through, and not covered by i's frontier,
     /// added to D. The author keeps its standing instead.
@@ -261,7 +261,7 @@ impl JHist {
     fn audit(&self, i: usize, old: Role, own: bool, edges: &[Vec<Role>], r: &[Vec<Role>], attr: &[Attr], rest: &mut Restored, audit: bool) -> u64 {
         let (nn, na) = (self.nodes, self.actors());
         let w = &self.writes[i];
-        let (a, m, t) = (w.author, w.member, w.target);
+        let (a, m, t) = (w.author, w.holder, w.target);
         let base = rest.since[m][t].max(old);
         rest.since[m][t] = Role::None;
         let (up, down) = (self.reaching(edges, m), self.reachable(edges, nn + t));
@@ -320,13 +320,13 @@ impl JHist {
             if attr[i] == Attr::Skipped {
                 continue;
             }
-            let old = edges[w.member][w.target];
-            let own = self.reaching(&edges, w.member)[w.author];
-            edges[w.member][w.target] = w.role;
+            let old = edges[w.holder][w.target];
+            let own = self.reaching(&edges, w.holder)[w.author];
+            edges[w.holder][w.target] = w.role;
             r = self.roles(&edges);
             if let Attr::SelfOnly(..) = attr[i] {
                 // Audits nothing; the next explicit write restores `old`.
-                let s = &mut rest.since[w.member][w.target];
+                let s = &mut rest.since[w.holder][w.target];
                 *s = (*s).max(old);
                 continue;
             }
@@ -414,7 +414,7 @@ impl std::fmt::Display for JHist {
         }
         for i in self.order() {
             let w = &self.writes[i];
-            writeln!(f, "  w{i}: t={} {} (id {}) sets {} on A{} := {:?} | {}", w.t, nm(w.author), w.id, nm(w.member), w.target, w.role, crate::fmt_recv(&self.recv[i], w.author))?;
+            writeln!(f, "  w{i}: t={} {} (id {}) sets {} on A{} := {:?} | {}", w.t, nm(w.author), w.id, nm(w.holder), w.target, w.role, crate::fmt_recv(&self.recv[i], w.author))?;
         }
         Ok(())
     }
@@ -430,7 +430,7 @@ impl crate::shrink::Shrink for JHist {
         }
         // An unused node or actor.
         for k in (0..nn).filter(|_| nn > 1) {
-            let used = self.writes.iter().any(|w| w.author == k || w.member == k) || self.genesis[k].iter().any(|&r| r != Role::None) || self.owners.contains(&Owner::Node(k));
+            let used = self.writes.iter().any(|w| w.author == k || w.holder == k) || self.genesis[k].iter().any(|&r| r != Role::None) || self.owners.contains(&Owner::Node(k));
             if !used {
                 let mut h = self.clone();
                 h.nodes -= 1;
@@ -440,7 +440,7 @@ impl crate::shrink::Shrink for JHist {
                 }
                 for w in &mut h.writes {
                     w.author -= usize::from(w.author > k);
-                    w.member -= usize::from(w.member > k);
+                    w.holder -= usize::from(w.holder > k);
                 }
                 h.owners.iter_mut().for_each(|o| if let Owner::Node(n) = o { *n -= usize::from(*n > k) });
                 out.push(h);
@@ -448,7 +448,7 @@ impl crate::shrink::Shrink for JHist {
         }
         for x in (0..na).filter(|_| na > 1) {
             let e = nn + x;
-            let used = self.writes.iter().any(|w| w.target == x || w.member == e) || self.genesis[e].iter().any(|&r| r != Role::None) || self.genesis.iter().any(|row| row[x] != Role::None) || self.owners.contains(&Owner::Actor(x));
+            let used = self.writes.iter().any(|w| w.target == x || w.holder == e) || self.genesis[e].iter().any(|&r| r != Role::None) || self.genesis.iter().any(|row| row[x] != Role::None) || self.owners.contains(&Owner::Actor(x));
             if !used {
                 let mut h = self.clone();
                 h.owners.remove(x);
@@ -458,7 +458,7 @@ impl crate::shrink::Shrink for JHist {
                 }
                 for w in &mut h.writes {
                     w.target -= usize::from(w.target > x);
-                    w.member -= usize::from(w.member > e);
+                    w.holder -= usize::from(w.holder > e);
                 }
                 h.owners.iter_mut().for_each(|o| if let Owner::Actor(y) = o { *y -= usize::from(*y > x) });
                 out.push(h);
@@ -538,7 +538,7 @@ impl Stats {
 
     pub fn print(&self) {
         println!(
-            "joint: {} histories ({} with mutual membership, {} with a (t, author) tie) | max passes {} | order-dependent {} | drops with nobody offline {} | nodes disagreeing after every delivery {}",
+            "joint: {} histories ({} with mutual roles, {} with a (t, author) tie) | max passes {} | order-dependent {} | drops with nobody offline {} | nodes disagreeing after every delivery {}",
             self.histories, self.with_cycle, self.with_tie, self.max_passes, self.order_dep, self.honest_mismatch, self.disagree
         );
         // Shrunk while they still fail the same check.
@@ -586,7 +586,7 @@ pub fn random_hist(rng: &mut Rng) -> JHist {
             continue;
         }
         let target = rng.below(na);
-        let member = loop {
+        let holder = loop {
             let m = rng.below(ents);
             if m != nodes + target {
                 break m;
@@ -595,7 +595,7 @@ pub fn random_hist(rng: &mut Rng) -> JHist {
         let role = [Role::None, Role::None, Role::Write, Role::Admin][rng.below(4)];
         let mut r: Vec<u32> = (0..nodes).map(|_| if rng.below(3) == 0 { LATE } else { (t as i64 + rng.below(6) as i64 - 2).max(0) as u32 }).collect();
         r[author] = t;
-        h.writes.push(JWrite { author, t, id, target, member, role });
+        h.writes.push(JWrite { author, t, id, target, holder, role });
         h.recv.push(r);
     }
     // Entities each node may reach (any edge ever, owner links), for honest receipts.
@@ -613,7 +613,7 @@ pub fn random_hist(rng: &mut Rng) -> JHist {
                         Owner::Node(o) => o,
                         Owner::Actor(z) => nodes + z,
                     };
-                    let edge = (0..ents).any(|m| v[m] && (h.genesis[m][x] > Role::None || h.writes.iter().any(|w| w.member == m && w.target == x)));
+                    let edge = (0..ents).any(|m| v[m] && (h.genesis[m][x] > Role::None || h.writes.iter().any(|w| w.holder == m && w.target == x)));
                     if v[owner] || edge {
                         v[nodes + x] = true;
                         changed = true;
@@ -626,10 +626,10 @@ pub fn random_hist(rng: &mut Rng) -> JHist {
         })
         .collect();
     let ws: Vec<(usize, u32)> = h.writes.iter().map(|w| (w.author, w.t)).collect();
-    let members: Vec<usize> = h.writes.iter().map(|w| w.member).collect();
+    let holders: Vec<usize> = h.writes.iter().map(|w| w.holder).collect();
     let eligible: Vec<bool> = h.writes.iter().map(|w| w.role < Role::Admin).collect();
     let late = crate::late_writes(rng, &eligible);
-    crate::hold_chains(&ws, &late, |j, x| reach[x][members[j]], &mut h.recv);
+    crate::hold_chains(&ws, &late, |j, x| reach[x][holders[j]], &mut h.recv);
     h
 }
 
@@ -729,14 +729,14 @@ mod tests {
             }
             Jb(JHist { nodes: NODES, owners, genesis, writes: vec![], recv: vec![] })
         }
-        fn set(&mut self, author: usize, target: usize, member: usize, role: Role, t: u32, recv: &[(usize, u32)]) -> usize {
+        fn set(&mut self, author: usize, target: usize, holder: usize, role: Role, t: u32, recv: &[(usize, u32)]) -> usize {
             let mut r = vec![LATE; NODES];
             r[author] = t;
             for &(m, tm) in recv {
                 r[m] = tm;
             }
             let id = 100 + self.0.writes.len() as u32;
-            self.0.writes.push(JWrite { author, t, id, target, member, role });
+            self.0.writes.push(JWrite { author, t, id, target, holder, role });
             self.0.recv.push(r);
             self.0.writes.len() - 1
         }
@@ -769,11 +769,11 @@ mod tests {
         vec![(EA, B, Admin), (EB, A, Admin)]
     }
 
-    /// Mutual membership: A and B are admins of each other; node 2 is an admin of A, hence
+    /// Mutual roles: A and B are admins of each other; node 2 is an admin of A, hence
     /// of B. 2 grants node 3 admin on B; A's owner removes 2 from A. The grant falls iff the
     /// owner had not received it; both walks terminate.
     #[test]
-    fn mutual_membership() {
+    fn mutual_roles() {
         for seen in [false, true] {
             let mut edges = mutual();
             edges.push((2, A, Admin));
@@ -878,7 +878,7 @@ mod tests {
     }
 
     /// Self-removal through an actor: node 2, admin of A, removes A's write edge on B (admin
-    /// of the member is its only authority). Audited like a write on A: A's owner removing 2 from A without
+    /// of the holder is its only authority). Audited like a write on A: A's owner removing 2 from A without
     /// having seen it hands A its edge back; having seen it, the removal stands.
     #[test]
     fn self_removal_through_actor_audited() {

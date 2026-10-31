@@ -392,11 +392,11 @@ fn tree_in_one_batch_spec_permissions_1() {
     assert_eq!(b.engine(|e| e.commit_ids().len()), before);
 }
 
-// notes/api.md Writes: membership-class and synthetic aspects are not written by ops.
+// notes/api.md Writes: role-class and synthetic aspects are not written by ops.
 // spec/permissions.md §1
-// spec/permissions.md §1 (membership-class by admins): writer side
+// spec/permissions.md §1 (role-class by admins): writer side
 #[test]
-fn membership_class_refused_spec_permissions_1() {
+fn role_class_refused_spec_permissions_1() {
     let db = db(1);
     let t = db.me();
     let mut w = db.write();

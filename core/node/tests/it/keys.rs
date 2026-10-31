@@ -6,7 +6,7 @@ use common::*;
 use osis_base::{Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::SeededRng;
-use osis_keys::{MemberKeys, Provenance, Recipient, Rotation, rotate};
+use osis_keys::{HolderKeys, Provenance, Recipient, Rotation, rotate};
 use osis_node::Mutation;
 use osis_node::local_peer::LocalPeer;
 use osis_schema::AspectKey;
@@ -16,21 +16,21 @@ use std::collections::BTreeSet;
 
 fn rcpt(lp: &LocalPeer, i: usize, role: Role) -> Recipient {
     let e = &lp.peers[i].engine;
-    Recipient { member: e.tid(), role, keys: MemberKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } }
+    Recipient { holder: e.tid(), role, keys: HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } }
 }
 
-/// A read rotation of `a` from node 0's view, written as one membership commit.
+/// A read rotation of `a` from node 0's view, written as one role commit.
 fn rotation_commit(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Role>) -> (osis_base::CommitId, Rotation) {
-    let members = [rcpt(lp, 0, Role::Admin), rcpt(lp, 1, Role::Read)];
-    rotation_commit_to(lp, a, seed, roles, &members)
+    let holders = [rcpt(lp, 0, Role::Admin), rcpt(lp, 1, Role::Read)];
+    rotation_commit_to(lp, a, seed, roles, &holders)
 }
 
-/// A rotation of `a` from node 0's view boxing `members`.
-fn rotation_commit_to(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Role>, members: &[Recipient]) -> (osis_base::CommitId, Rotation) {
+/// A rotation of `a` from node 0's view boxing `holders`.
+fn rotation_commit_to(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Role>, holders: &[Recipient]) -> (osis_base::CommitId, Rotation) {
     let e = &mut lp.peers[0].engine;
     let view = e.epochs(&a).unwrap();
     let state = e.get(&a, &ak("/secrets")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap_or_default();
-    let r = rotate(&a, &roles, &view, &state, members, &|_, _| true, &mut SeededRng::from_u64(seed)).unwrap();
+    let r = rotate(&a, &roles, &view, &state, holders, &|_, _| true, &mut SeededRng::from_u64(seed)).unwrap();
     let mut m = Mutation::new();
     for (k, b) in &r.secrets.boxes {
         m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();
@@ -108,7 +108,7 @@ fn history_chain_from_state_spec_crypto_4() {
     let e = &mut lp.peers[0].engine;
     let view = e.epochs(&a).unwrap();
     let state = e.get(&a, &ak("/secrets")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap();
-    let w = osis_keys::box_member(&a, &view, &state, &rcpt(&lp, 1, Role::Read), &roles, &mut SeededRng::from_u64(3)).unwrap().unwrap();
+    let w = osis_keys::box_holder(&a, &view, &state, &rcpt(&lp, 1, Role::Read), &roles, &mut SeededRng::from_u64(3)).unwrap().unwrap();
     let mut m = Mutation::new();
     for (k, b) in &w.boxes {
         m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();
@@ -122,10 +122,10 @@ fn history_chain_from_state_spec_crypto_4() {
 }
 
 // spec/crypto.md §3, §4: a key actor taken up (a link's L) opens every box reachable from it,
-// however deep the chain of member actors (each box opens with the secrets of the member below
+// however deep the chain of holder actors (each box opens with the secrets of the holder below
 // it). Tids descend along the chain, so a bare sweep over actors in tid order opens one level per sweep.
 #[test]
-fn key_actor_opens_deep_member_chain_spec_crypto_4() {
+fn key_actor_opens_deep_holder_chain_spec_crypto_4() {
     let mut lp = net(2, 85);
     lp.sync_all().unwrap();
     let mut chain: Vec<Tid> = (0..12).map(|_| new_thing(&mut lp, 0)).collect();
@@ -147,7 +147,7 @@ fn key_actor_opens_deep_member_chain_spec_crypto_4() {
 }
 
 // spec/commits.md §4, spec/crypto.md §4: a syncer holding only a rotation's `/secrets` part
-// applies the membership commit; the `/keys` part joining later establishes the epoch as a
+// applies the role commit; the `/keys` part joining later establishes the epoch as a
 // whole arrival does (a size-split body, or a projection, may come first).
 #[test]
 fn late_keys_part_establishes_rotation_spec_crypto_4() {
@@ -171,7 +171,7 @@ fn late_keys_part_establishes_rotation_spec_crypto_4() {
     assert!(!only.parts.is_empty());
     let mut first = p2.clone();
     first.bytes = only.encode();
-    assert!(matches!(lp.deliver(1, &first).unwrap(), osis_node::Ingested::Applied(_)), "a held part of a membership commit applies");
+    assert!(matches!(lp.deliver(1, &first).unwrap(), osis_node::Ingested::Applied(_)), "a held part of a role commit applies");
     lp.deliver(1, &p2).unwrap();
     let v = lp.peers[1].engine.epochs(&a).unwrap();
     assert!(v.read.is_established(&e2), "{:?}", v.read);

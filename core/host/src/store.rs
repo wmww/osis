@@ -20,7 +20,7 @@
 //! sequence numbers from the label's log, reserved on disk in blocks (`SEQ_BLOCK`, the label
 //! meta's `reserved`), so no number handed out before a restart is handed out again.
 
-use osis_base::format::{MAX_DRIFT_MS, MEMBERSHIP_KEEP_MS, TOMBSTONE_LIFETIME_MS};
+use osis_base::format::{MAX_DRIFT_MS, ROLE_KEEP_MS, TOMBSTONE_LIFETIME_MS};
 use osis_base::{BlobId, Clock, LabelId};
 use osis_crypto::{CryptoRngCore, Signature};
 use osis_proto::msg::{ClaimSet, Code, SecretBox, Step, StepId, WRAP_LEN};
@@ -42,7 +42,7 @@ pub struct HostPolicy {
     pub cap_bytes: u64,
     /// Deposit budget = this × (64 + 4 × head claim slots) entries, × 32 KiB bytes; at least 1.
     pub deposit_factor: u64,
-    /// A claim set is kept this long after its step is superseded (at least `MEMBERSHIP_KEEP`).
+    /// A claim set is kept this long after its step is superseded (at least `ROLE_KEEP`).
     pub claim_keep_ms: u64,
     pub tombstone_ms: u64,
     /// Log records kept per label; older ones are dropped (cursors below fall back to reconciliation).
@@ -92,7 +92,7 @@ impl Default for HostPolicy {
             cap_entries: 1 << 20,
             cap_bytes: 16 << 30,
             deposit_factor: 1,
-            claim_keep_ms: MEMBERSHIP_KEEP_MS,
+            claim_keep_ms: ROLE_KEEP_MS,
             tombstone_ms: TOMBSTONE_LIFETIME_MS,
             log_keep: 1 << 20,
             window_ms: 60_000,
@@ -1333,7 +1333,7 @@ impl<B: Backend> LabelStore for HostStore<B> {
         let mut over = false;
         if !fits(size, total) {
             // a new label is refused; a child step is taken without its claim set (a refused
-            // rotation keeps a removed member's open and write keys valid here), even past the
+            // rotation keeps a removed holder's open and write keys valid here), even past the
             // cap once per `over_cap_step_ms`, so the label's own admin alone spends that room
             if new {
                 return Ok(Code::STORAGE_CAP);
@@ -1359,7 +1359,7 @@ impl<B: Backend> LabelStore for HostStore<B> {
         }
         tx.batch.put(key(b'K', &[&label.0]), encode_older(&keys.older));
         if let Some(prev) = tx.meta.head {
-            let drop = self.now().saturating_add(self.policy.claim_keep_ms.max(MEMBERSHIP_KEEP_MS));
+            let drop = self.now().saturating_add(self.policy.claim_keep_ms.max(ROLE_KEEP_MS));
             tx.batch.put(key(b'Z', &[&be(drop), &label.0, &prev.0]), vec![]);
         }
         tx.meta.head = Some(id);

@@ -1,7 +1,7 @@
 //! Certificate blobs (spec/permissions.md §4; spec/sync.md §3): this node's chain certificates
 //! for a group and its node card as (commit, parts) to place, a roster snapshot projected to the
-//! deltas of the chain's members, partial bodies of a commit and the blobs its parts link.
-//! Labels and steps are membership flows' (`Engine::create_label`, `Engine::issue_step`).
+//! deltas of the chain's holders, partial bodies of a commit and the blobs its parts link.
+//! Labels and steps are role flows' (`Engine::create_label`, `Engine::issue_step`).
 
 use super::blobs::Body;
 use crate::engine::Engine;
@@ -56,13 +56,13 @@ impl Engine {
         Some((c, ais))
     }
 
-    /// The members each `/members` or `/secrets` aspect of applied membership commit `c` is
+    /// The holders each `/members` or `/secrets` aspect of applied role commit `c` is
     /// about (spec/sync.md §3): those whose edge a `/members` delta writes, those a `/secrets`
     /// delta boxes. Empty for any other commit kind.
-    pub fn members_named(&mut self, c: &CommitId) -> BTreeMap<usize, BTreeSet<Tid>> {
+    pub fn holders_named(&mut self, c: &CommitId) -> BTreeMap<usize, BTreeSet<Tid>> {
         let mut out: BTreeMap<usize, BTreeSet<Tid>> = BTreeMap::new();
         let Some(h) = self.header(c) else { return out };
-        if !h.kind.is_membership() {
+        if !h.kind.is_role() {
             return out;
         }
         let id = *c;
@@ -71,8 +71,8 @@ impl Engine {
         for (ai, _, d) in parts {
             let (Some(a), Decoded::Delta(d)) = (h.aspects.get(ai), &d) else { continue };
             let named: Vec<Tid> = match a.ak.as_str() {
-                "/members" => crate::apply::validity::edge_members(&self.core, &a.tid, &d.fragment),
-                _ => crate::apply::keys::secrets_write(&d.fragment).boxes.into_keys().map(|k| k.member).collect(),
+                "/members" => crate::apply::validity::edge_holders(&self.core, &a.tid, &d.fragment),
+                _ => crate::apply::keys::secrets_write(&d.fragment).boxes.into_keys().map(|k| k.holder).collect(),
             };
             out.entry(ai).or_default().extend(named);
         }
@@ -91,9 +91,9 @@ impl Engine {
     }
 
     /// The deltas of roster snapshot `c` on `things` a chain needs (spec/permissions.md §6):
-    /// those naming one of `members`, and those naming nobody (the reset alone). None when the
+    /// those naming one of `holders`, and those naming nobody (the reset alone). None when the
     /// commit cannot be read here (diagnostic): never the whole roster.
-    pub(crate) fn snapshot_parts(&mut self, c: &CommitId, things: &BTreeSet<Tid>, members: &BTreeSet<Tid>) -> Parts {
+    pub(crate) fn snapshot_parts(&mut self, c: &CommitId, things: &BTreeSet<Tid>, holders: &BTreeSet<Tid>) -> Parts {
         let all = self.parts_of(c, things, &["/members", "/tenures"]);
         let ais: BTreeSet<usize> = all.iter().map(|x| x.0).collect();
         let id = *c;
@@ -109,8 +109,8 @@ impl Engine {
         let mut out = Parts::new();
         for (ai, di, d) in parts {
             let (Some(a), Decoded::Delta(d)) = (h.aspects.get(ai), &d) else { continue };
-            let named = crate::apply::validity::named_members(a.ak.as_str(), &d.fragment);
-            if named.is_empty() || named.iter().any(|m| members.contains(m)) {
+            let named = crate::apply::validity::named_holders(a.ak.as_str(), &d.fragment);
+            if named.is_empty() || named.iter().any(|m| holders.contains(m)) {
                 out.insert((ai, di));
             }
         }
@@ -118,7 +118,7 @@ impl Engine {
     }
 
     /// This node's chain certificates for `g` and its node card (spec/permissions.md §4), as
-    /// commits with the parts to carry; a roster snapshot projected to the chain's members.
+    /// commits with the parts to carry; a roster snapshot projected to the chain's holders.
     pub fn certificates(&mut self, g: &Tid) -> BTreeMap<CommitId, Parts> {
         let me = self.tid();
         let mut out: BTreeMap<CommitId, Parts> = BTreeMap::new();
@@ -201,7 +201,7 @@ impl Engine {
 
     /// The commits and parts certificates `certs` name (spec/permissions.md §4), added to `out`:
     /// edge writes projected to their edge deltas on the chain's things, roster snapshots to
-    /// their members' entries, the newest `/created` of each thing and `/keys` of each actor.
+    /// their holders' entries, the newest `/created` of each thing and `/keys` of each actor.
     fn cert_parts(&mut self, certs: &osis_perm::Certificates, out: &mut BTreeMap<CommitId, Parts>) {
         let mut add = |c: CommitId, parts: Parts| {
             if !parts.is_empty() {
@@ -212,8 +212,8 @@ impl Engine {
         for c in &certs.commits {
             add(*c, self.parts_of(c, &all, &["/members", "/tenures"]));
         }
-        for (c, members) in &certs.snapshots {
-            add(*c, self.snapshot_parts(c, &all, members));
+        for (c, holders) in &certs.snapshots {
+            add(*c, self.snapshot_parts(c, &all, holders));
         }
         for t in &certs.created {
             if let Some(c) = self.latest_on(t, "/created") {
@@ -227,23 +227,23 @@ impl Engine {
         }
     }
 
-    /// Revokes of the departures inside members of `actor` that leave its epochs uncovered now
+    /// Revokes of the departures inside holders of `actor` that leave its epochs uncovered now
     /// (`rotation::uncovered_departures`: a departure from M, the last actor on its chain, with
     /// secrets of its own and outside `closure`; the newest applied write lowering the departed
-    /// member's edge on M), each the whole write on M with what judges it, and the newest `/keys`
+    /// holder's edge on M), each the whole write on M with what judges it, and the newest `/keys`
     /// commit of each actor on the chain, projected to that `/keys`, with its author's chain: the only
     /// certificates a node that may not rotate places under such an epoch (spec/permissions.md
     /// §4). A departure by `until` has no write and places only the keysets.
-    pub fn inside_member_revokes(&mut self, actor: &Tid, closure: &BTreeSet<Tid>) -> BTreeMap<CommitId, Parts> {
+    pub fn inside_holder_revokes(&mut self, actor: &Tid, closure: &BTreeSet<Tid>) -> BTreeMap<CommitId, Parts> {
         let a = *actor;
         let deps = self.run(|tx| crate::rotation::uncovered_departures(tx, &a)).unwrap_or_default();
         let mut found: Vec<osis_perm::Certificates> = Vec::new();
         let mut whole: Vec<(CommitId, Tid)> = Vec::new();
         let mut keyed: BTreeSet<Tid> = BTreeSet::new();
         for d in deps {
-            // the actor left: the last on the chain (A's member via[0] is the first)
+            // the actor left: the last on the chain (A's holder via[0] is the first)
             let Some(m) = d.via.last().copied() else { continue };
-            let leaver = d.member;
+            let leaver = d.holder;
             if closure.contains(&m) || !self.core.has_own_secrets(&m) {
                 continue;
             }
@@ -254,12 +254,12 @@ impl Engine {
             let mut newest: Option<(osis_base::Ts, osis_perm::WriteId, CommitId)> = None;
             for wid in tl.applied().keys() {
                 let osis_perm::WriteId::Op(c, i) = wid else { continue };
-                let Some(mc) = tl.membership_commit(c) else { continue };
+                let Some(mc) = tl.role_commit(c) else { continue };
                 let Some(op) = mc.ops.get(*i as usize) else { continue };
-                if op.target != m || op.member != leaver {
+                if op.target != m || op.holder != leaver {
                     continue;
                 }
-                let old = tl.edges_at(Some(mc.point())).get(&op.member, &op.target).map(|e| e.role);
+                let old = tl.edges_at(Some(mc.point())).get(&op.holder, &op.target).map(|e| e.role);
                 let new = op.edge.filter(|e| e.alive_at(Some(mc.ts))).map(|e| e.role);
                 if new < old && newest.as_ref().is_none_or(|(t, _, _)| mc.ts > *t) {
                     newest = Some((mc.ts, *wid, *c));
@@ -291,7 +291,7 @@ impl Engine {
             out.entry(c).or_default().extend(p);
         }
         // the whole write on M (its rotation's `/keys` and `/secrets` too: boxes sealed to M's
-        // members): a reader that syncs M waits for every delta of it (spec/commits.md §4)
+        // holders): a reader that syncs M waits for every delta of it (spec/commits.md §4)
         for (c, m) in whole {
             let p = self.parts_of(&c, &BTreeSet::from([m]), &["/members", "/tenures", "/keys", "/secrets"]);
             if !p.is_empty() {
@@ -302,7 +302,7 @@ impl Engine {
     }
 
     /// Whether this node judges the parts `parts` of commit `c` valid (spec/permissions.md
-    /// §5): applied, not pending, each aspect valid, and, for a membership commit, each of its
+    /// §5): applied, not pending, each aspect valid, and, for a role commit, each of its
     /// edge ops applied (an aspect is valid while any op on it is: the loser of a single-use
     /// redemption race keeps its valid removal of L beside its void grant).
     pub fn judged_valid(&self, c: &CommitId, parts: &[(usize, usize)]) -> bool {
@@ -310,13 +310,13 @@ impl Engine {
         if self.core.ix.pending.contains_key(c) || parts.iter().any(|(ai, _)| !m.valid.get(*ai).copied().unwrap_or(false)) {
             return false;
         }
-        if !m.header.kind.is_membership() {
+        if !m.header.kind.is_role() {
             return true;
         }
         let targets: BTreeSet<Tid> = m.header.aspects.iter().filter(|a| matches!(a.ak.as_str(), "/members" | "/tenures")).map(|a| a.tid).collect();
         targets.iter().all(|t| {
             let Some(tl) = self.core.timelines.get(t) else { return true };
-            let Some(mc) = tl.membership_commit(c) else { return true };
+            let Some(mc) = tl.role_commit(c) else { return true };
             mc.ops.iter().enumerate().filter(|(_, op)| op.target == *t).all(|(i, _)| u32::try_from(i).is_ok_and(|i| tl.is_applied(&osis_perm::WriteId::Op(*c, i))))
         })
     }
@@ -333,23 +333,23 @@ impl Engine {
             for wid in tl.applied().keys() {
                 let about = match wid {
                     osis_perm::WriteId::Op(c, i) => {
-                        let Some(mc) = tl.membership_commit(c) else { continue };
+                        let Some(mc) = tl.role_commit(c) else { continue };
                         let Some(op) = mc.ops.get(*i as usize) else { continue };
-                        if op.member != *m || closure.contains(&op.target) {
+                        if op.holder != *m || closure.contains(&op.target) {
                             continue;
                         }
-                        let old = tl.edges_at(Some(mc.point())).get(&op.member, &op.target).map(|e| e.role);
+                        let old = tl.edges_at(Some(mc.point())).get(&op.holder, &op.target).map(|e| e.role);
                         let new = op.edge.filter(|e| e.alive_at(Some(mc.ts))).map(|e| e.role);
                         new < old
                     }
-                    osis_perm::WriteId::Snapshot(c) => tl.roster_snapshot(c).is_some_and(|s| !closure.contains(&s.thing) && (s.roster.contains_key(m) || s.ledger.iter().any(|t| t.member == *m))),
+                    osis_perm::WriteId::Snapshot(c) => tl.roster_snapshot(c).is_some_and(|s| !closure.contains(&s.thing) && (s.roster.contains_key(m) || s.ledger.iter().any(|t| t.holder == *m))),
                 };
                 if !about {
                     continue;
                 }
                 if let Some(mut cs) = tl.write_certificates(wid) {
-                    for members in cs.snapshots.values_mut() {
-                        members.retain(|x| authors.contains(x));
+                    for holders in cs.snapshots.values_mut() {
+                        holders.retain(|x| authors.contains(x));
                     }
                     found.push(cs);
                 }
@@ -364,7 +364,7 @@ impl Engine {
 
     /// Applied writes lowering `x`'s edge on a thing inside `closure` (`x`'s label's closure)
     /// that `x`'s edge there has not been raised again since, with what judges them
-    /// (spec/permissions.md §2, §4): `x`'s members still holding the edge would re-upload the
+    /// (spec/permissions.md §2, §4): `x`'s holders still holding the edge would re-upload the
     /// thing's bodies its delete-key holders drop. Also the commits whose own parts these are:
     /// placed though inside the closure (the label no longer carries them as bodies). Never a
     /// `/secrets` or `/keys` delta of such a commit (`cert_parts` takes its `/members` and
@@ -376,14 +376,14 @@ impl Engine {
             let current = tl.edges_at(None);
             for wid in tl.applied().keys() {
                 let osis_perm::WriteId::Op(c, i) = wid else { continue };
-                let Some(mc) = tl.membership_commit(c) else { continue };
+                let Some(mc) = tl.role_commit(c) else { continue };
                 let Some(op) = mc.ops.get(*i as usize) else { continue };
-                if op.member != *x || !closure.contains(&op.target) {
+                if op.holder != *x || !closure.contains(&op.target) {
                     continue;
                 }
-                let old = tl.edges_at(Some(mc.point())).get(&op.member, &op.target).map(|e| e.role);
+                let old = tl.edges_at(Some(mc.point())).get(&op.holder, &op.target).map(|e| e.role);
                 let new = op.edge.filter(|e| e.alive_at(Some(mc.ts))).map(|e| e.role);
-                let now = current.get(&op.member, &op.target).map(|e| e.role);
+                let now = current.get(&op.holder, &op.target).map(|e| e.role);
                 if new < old && now <= new
                     && let Some(cs) = tl.write_certificates(wid)
                 {
@@ -424,13 +424,13 @@ impl Engine {
         if cut.parts.is_empty() {
             return Ok(Vec::new());
         }
-        let membership = cut.header.kind.is_membership();
+        let role_commit = cut.header.kind.is_role();
         let resolved = match self.core.ix.commits.get(&id) {
             Some(m) if !cut.header.is_resolved() => m.header.arc(),
             _ => std::sync::Arc::new(cut.header.clone()),
         };
         let ps = osis_commit::project_resolved(&cut, &resolved, |_| ())?;
-        Ok(ps.into_iter().map(|p| Body { commit: id, reader: self.tid(), parts: p.parts, expires: p.expires, keys: p.keys, blind: cut.header.blind, plaintext: p.plaintext, membership }).collect())
+        Ok(ps.into_iter().map(|p| Body { commit: id, reader: self.tid(), parts: p.parts, expires: p.expires, keys: p.keys, blind: cut.header.blind, plaintext: p.plaintext, role_commit }).collect())
     }
 
     /// Blobs a certificate copy of `parts` of commit `c` needs beside its body (spec/sync.md

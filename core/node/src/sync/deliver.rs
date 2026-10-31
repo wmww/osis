@@ -1,4 +1,4 @@
-//! Carrying out what membership flows produce (`flows::Done`, `flows::Delivery`) and the sync
+//! Carrying out what role flows produce (`flows::Done`, `flows::Delivery`) and the sync
 //! state flows ask about (`flows::SyncState`): inbox blobs deposited at the inbox's hosts,
 //! direct commits handed to the app's pairing channel, placements before any other upload,
 //! certificate copies under a home label, deposits; commits that travel by inbox only are never
@@ -44,7 +44,7 @@ impl SyncEngine {
     }
 
     /// The lost-access trigger (`Engine::drop_lost_due`), run every step while received
-    /// membership commits left it work, until none is left (forgetting re-examines pending
+    /// role commits left it work, until none is left (forgetting re-examines pending
     /// commits, which may apply more).
     pub(crate) fn drop_lost_due(&mut self) -> Result<()> {
         for _ in 0..16 {
@@ -109,7 +109,7 @@ impl SyncEngine {
         for d in done.deliveries {
             match d {
                 // sealed and sent from its record (`send_inbox`)
-                Delivery::Inbox { resend, .. } => self.state.note_unsent(resend.member, resend.commit, resend.things, resend.edge_only),
+                Delivery::Inbox { resend, .. } => self.state.note_unsent(resend.holder, resend.commit, resend.things, resend.edge_only),
                 Delivery::Direct { to, commits } => self.state.add_direct(to, &commits),
                 Delivery::First { commits, under } => {
                     for c in &commits {
@@ -361,7 +361,7 @@ impl SyncEngine {
     /// Removes the tied edges whose placement is gone (spec/permissions.md §2): a tied edge
     /// (G, T) whose named `/group` element this node holds dead (`Engine::tie_dead`). As an
     /// explicit demotion by an admin of T, after a complete pass of every label holding a thing
-    /// of its pre-sync scope ended after the last remote membership commit of G and of T (its
+    /// of its pre-sync scope ended after the last remote role commit of G and of T (its
     /// pre-sync, none for an empty scope); else as a self-removal by an admin of G; nothing when
     /// this node may do neither, or the pair or its scope meets a receipts-only group.
     pub(crate) fn untie_unplaced(&mut self) -> Result<()> {
@@ -392,7 +392,7 @@ impl SyncEngine {
                 continue;
             }
             if explicit {
-                let since = [g, t].iter().filter_map(|a| self.membership_seen.get(a)).copied().max().unwrap_or(0);
+                let since = [g, t].iter().filter_map(|a| self.roles_seen.get(a)).copied().max().unwrap_or(0);
                 let mut holding: BTreeSet<Tid> = BTreeSet::new();
                 for x in &scope {
                     holding.extend(self.groups_holding(x));
@@ -416,18 +416,18 @@ impl SyncEngine {
     }
 
     /// Every label of `groups` passed completely after `since` (`label_passed`), the peer wait
-    /// counted from the last remote membership commit of any of `actors`.
+    /// counted from the last remote role commit of any of `actors`.
     fn passed_since(&self, groups: &BTreeSet<Tid>, since: u64, actors: &[Tid]) -> bool {
         let waited = actors.iter().all(|a| self.peers_waited(a));
         self.synced.labels.iter().filter(|(g, _)| groups.contains(g)).all(|(_, l)| self.label_passed(&l.id, super::peers::host_keys(&l.hosts), since, waited))
     }
 
     /// Whether a complete pass may stop waiting for peers on `actor`'s change: `peer_pass_wait_ms`
-    /// after its last remote membership commit, or after the start when none applied in this run
-    /// (`membership_at` is memory only; spec/permissions.md §3 bounds the wait after the change):
+    /// after its last remote role commit, or after the start when none applied in this run
+    /// (`roles_at` is memory only; spec/permissions.md §3 bounds the wait after the change):
     /// a restarted node first hears its peers out.
     fn peers_waited(&self, actor: &Tid) -> bool {
-        self.membership_at.get(actor).copied().unwrap_or(self.started).saturating_add(self.cfg.peer_pass_wait_ms) <= self.raw_now()
+        self.roles_at.get(actor).copied().unwrap_or(self.started).saturating_add(self.cfg.peer_pass_wait_ms) <= self.raw_now()
     }
 
     /// Whether label `l` passed completely after `since` (spec/permissions.md §3): at each of
@@ -449,7 +449,7 @@ impl SyncEngine {
 
 impl SyncState for SyncEngine {
     fn complete_pass(&self, actor: &Tid) -> bool {
-        let since = self.membership_seen.get(actor).copied().unwrap_or(0);
+        let since = self.roles_seen.get(actor).copied().unwrap_or(0);
         let waited = self.peers_waited(actor);
         // no label of the actor known (at start, before `labels()`): no pass yet
         let mut labels = self.synced.actors.iter().filter(|(_, (a, _))| a == actor).peekable();

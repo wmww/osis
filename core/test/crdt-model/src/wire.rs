@@ -803,7 +803,7 @@ pub fn decode(it: &Item, cx: &Ctx) -> Result<Frag, Error> {
     decode_at(it, cx, true)
 }
 
-/// Decode a fragment; `top`: an aspect root or a `Slots` member, the only registers that carry a reset (§3.3 rule 7).
+/// Decode a fragment; `top`: an aspect root or a `Slots` slot, the only registers that carry a reset (§3.3 rule 7).
 fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
     let a = it.array()?;
     if a.is_empty() {
@@ -906,7 +906,7 @@ fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
         }
     }
     if let Frag::Slots { .. } = &f {
-        // §7 canonical form (§3.3 rule 7): pruning changes nothing the wire carries (every member holds the
+        // §7 canonical form (§3.3 rule 7): pruning changes nothing the wire carries (every slot holds the
         // register's embedding, none is empty or adds nothing to it, nothing lies below the position's one reset);
         // the chars of deleted embedded elements are restored by the embedding but never carried (rule 5)
         // the pruned form is the result, so those chars are held again (a content-less undelete reads them)

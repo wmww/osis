@@ -1,5 +1,5 @@
 //! Reads (notes/api.md Reads): aspect values from local state, the synthetic aspects `/tid`,
-//! `/aspects`, `/groups` (spec/data-model.md §8, §9), `/members` as the membership timeline's
+//! `/aspects`, `/groups` (spec/data-model.md §8, §9), `/members` as the role timeline's
 //! roster (spec/permissions.md §2), roles, and move resolution of tids in returned values
 //! (spec/permissions.md §7).
 
@@ -228,9 +228,9 @@ impl Engine {
     }
 
     /// Whether the thing holds content: some present aspect a content write sets (not
-    /// `/created`, not membership-class), durable or ephemeral. Stops at the first.
+    /// `/created`, not role-class), durable or ephemeral. Stops at the first.
     pub fn has_content(&mut self, tid: &Tid) -> Result<bool> {
-        let content = |ak: &Ak| ak.as_str() != ct::CREATED.ak() && !ct::is_membership_class(ak.as_str());
+        let content = |ak: &Ak| ak.as_str() != ct::CREATED.ak() && !ct::is_role_class(ak.as_str());
         if self.ephemeral_aspects(tid).iter().any(content) {
             return Ok(true);
         }
@@ -255,7 +255,7 @@ impl Engine {
         })
     }
 
-    /// The membership timeline's roster of `thing` (spec/permissions.md §2).
+    /// The role timeline's roster of `thing` (spec/permissions.md §2).
     pub fn roster(&self, thing: &Tid) -> BTreeMap<Tid, Edge> {
         self.core.roster_of(thing)
     }

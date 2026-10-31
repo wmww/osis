@@ -4,7 +4,7 @@
 use osis_base::{Role, Tid};
 use osis_crypto::{Epoch, KeyActorKeys, Secret32, SeededRng};
 use osis_keys::aspects::keyset;
-use osis_keys::{ActorEpochs, MemberKeys, Provenance, ROLES, Recipient};
+use osis_keys::{ActorEpochs, HolderKeys, Provenance, ROLES, Recipient};
 use osis_schema::core_types::{KemKey, Keys};
 
 pub fn tid(b: u8) -> Tid {
@@ -50,10 +50,10 @@ pub fn key_actor_keys(seed: &Secret32) -> Keys {
     Keys { key: Some(KemKey::X25519MlKem768(kem.public().as_bytes().to_vec())), ..Keys::default() }
 }
 
-pub fn actor_rcpt(member: Tid, role: Role, a: &ActorEpochs) -> Recipient {
-    Recipient { member, role, keys: MemberKeys::from_keys(&keys_of(a)).unwrap() }
+pub fn actor_rcpt(holder: Tid, role: Role, a: &ActorEpochs) -> Recipient {
+    Recipient { holder, role, keys: HolderKeys::from_keys(&keys_of(a)).unwrap() }
 }
 
-pub fn key_rcpt(member: Tid, role: Role, seed: &Secret32) -> Recipient {
-    Recipient { member, role, keys: MemberKeys::from_keys(&key_actor_keys(seed)).unwrap() }
+pub fn key_rcpt(holder: Tid, role: Role, seed: &Secret32) -> Recipient {
+    Recipient { holder, role, keys: HolderKeys::from_keys(&key_actor_keys(seed)).unwrap() }
 }

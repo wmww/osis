@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! The saved membership walks (notes/local-store.md, rebuildable caches; notes/node.md, Open):
+//! The saved role walks (notes/local-store.md, rebuildable caches; notes/node.md, Open):
 //! an open resumes each component's walk from the store and gives what a from-scratch
 //! evaluation gives (spec/permissions.md §5.1 step 5: validity is a function of the held set);
 //! a damaged, truncated or foreign walk is evaluated anew, never an error; a crash at any write
 //! leaves no walk ahead of its commits. Likewise the index's rows of what perm reads of each
-//! membership commit (`node/edges`): an open from them equals a rebuild from the commit records.
+//! role commit (`node/edges`): an open from them equals a rebuild from the commit records.
 
 use crate::common;
 use common::*;
@@ -30,13 +30,13 @@ impl Rng {
     }
 }
 
-/// `member`'s edge on `thing` by the engine (`None` removes it); refusals are fine.
-fn try_edge(e: &mut Engine, thing: Tid, member: Tid, role: Option<Role>) {
+/// `holder`'s edge on `thing` by the engine (`None` removes it); refusals are fine.
+fn try_edge(e: &mut Engine, thing: Tid, holder: Tid, role: Option<Role>) {
     // remove + put (spec/permissions.md §2)
     let mut m = Mutation::new();
-    m.op(thing, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(member)) }).unwrap();
+    m.op(thing, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
     if let Some(r) = role {
-        m.op(thing, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(member))], op: Op::Set(edge(r).to_value()) }).unwrap();
+        m.op(thing, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge(r).to_value()) }).unwrap();
     }
     let _ = e.commit(m);
 }
@@ -76,7 +76,7 @@ fn reopen_equals_rebuild(e: &mut Engine, at: &str) {
 /// Two nodes: peer 0 owns the docs and a team, makes peer 1 admin of some, both write edges,
 /// peer 0 demotes peer 1 now and then (dropping its unreceived writes) and snapshots rosters;
 /// commits travel late and out of order.
-/// Returns how many membership snapshots it made.
+/// Returns how many role snapshots it made.
 fn history(seed: u64, steps: usize, mut each: impl FnMut(&mut LocalPeer, usize, &mut Rng)) -> usize {
     let mut rng = Rng(seed | 1);
     let mut snapshots = 0;
@@ -87,7 +87,7 @@ fn history(seed: u64, steps: usize, mut each: impl FnMut(&mut LocalPeer, usize, 
     let docs: Vec<Tid> = (0..4).map(|_| new_thing(&mut lp, 0)).collect();
     let team = new_thing(&mut lp, 0);
     let p1 = lp.peers[1].engine.tid();
-    let members: Vec<Tid> = (0..6u8).map(|i| Tid::from_bytes([50 + i; 15])).chain([team]).collect();
+    let holders: Vec<Tid> = (0..6u8).map(|i| Tid::from_bytes([50 + i; 15])).chain([team]).collect();
     for step in 0..steps {
         let doc = docs[rng.below(4) as usize];
         let roles = [None, Some(Role::Read), Some(Role::Write), Some(Role::Admin)];
@@ -95,12 +95,12 @@ fn history(seed: u64, steps: usize, mut each: impl FnMut(&mut LocalPeer, usize, 
             0 | 1 => try_edge(&mut lp.peers[0].engine, doc, p1, roles[rng.below(4) as usize]),
             2..=6 => {
                 let i = rng.below(2) as usize;
-                let m = members[rng.below(members.len() as u64) as usize];
+                let m = holders[rng.below(holders.len() as u64) as usize];
                 try_edge(&mut lp.peers[i].engine, doc, m, roles[rng.below(3) as usize]);
             }
             7 => {
                 let _ = lp.peers[0].engine.roster_snapshot(&doc, None);
-                // a membership snapshot (of the node's `/keys`) reaches perm's inputs too
+                // a role snapshot (of the node's `/keys`) reaches perm's inputs too
                 let node = lp.peers[0].engine.tid();
                 if let Ok(Some(_)) = lp.peers[0].engine.snapshot(&node, &osis_base::Ak::new("/keys").unwrap()) {
                     snapshots += 1;
@@ -138,7 +138,7 @@ fn reopen_from_saved_walks_equals_from_scratch() {
 // spec/permissions.md §5.1 step 5, §6; spec: none (local store index, notes/node.md Open): an
 // open adapting perm's inputs from the index's per-commit rows gives what a rebuild from the
 // commit records gives (timelines, validity, the rows themselves) over random two-node histories
-// with late arrivals, demotions, roster snapshots and membership snapshots
+// with late arrivals, demotions, roster snapshots and role snapshots
 #[test]
 fn reopen_from_edge_rows_equals_rebuild() {
     let mut snapshots = 0;
@@ -150,7 +150,7 @@ fn reopen_from_edge_rows_equals_rebuild() {
             }
         });
     }
-    assert!(snapshots > 0, "no membership snapshot");
+    assert!(snapshots > 0, "no role snapshot");
 }
 
 // spec: none (local store index, notes/node.md Open): a truncated, garbled or missing
@@ -333,7 +333,7 @@ fn new_things_between_opens_still_restore() {
 /// What a node computes, opened from the persisted index and then rebuilt from the commit
 /// records: validity, perm's timelines and the states of `things` all equal what it had; the
 /// open decodes no header (`LazyHeader`; perm's adaptation reads the views and `node/edges`
-/// rows, a membership commit's frontier among the view).
+/// rows, a role commit's frontier among the view).
 fn open_equals_rebuild(e: &mut Engine, things: &[Tid], at: &str) {
     open_equals_rebuild_decoding(e, things, 0, at);
 }
@@ -380,7 +380,7 @@ fn open_equals_rebuild_after_each_kind_of_change() {
     lp.deliver(0, pk1.iter().find(|p| p.id == bs).unwrap()).unwrap();
     open_equals_rebuild(&mut lp.peers[0].engine, &[t], "before");
     // C revokes B without having seen B's add: delivered to A, the add turns invalid
-    let scope = osis_perm::DemotionScope { membership: [(b, [t].into())].into(), content: [(b, [t].into())].into() };
+    let scope = osis_perm::DemotionScope { roles: [(b, [t].into())].into(), content: [(b, [t].into())].into() };
     let now = lp.peers[2].engine.now();
     let f = lp.peers[2].engine.frontier(&scope, now).unwrap();
     let mut m = Mutation::new();
@@ -409,7 +409,7 @@ fn open_equals_rebuild_after_each_kind_of_change() {
 }
 
 // spec/requirements.md, Decentralization; spec/permissions.md §3 (drop lost secrets): after a
-// member removed from a thing with secrets of its own forgets what it lost, an open from the
+// holder removed from a thing with secrets of its own forgets what it lost, an open from the
 // persisted index computes what a rebuild from the commit records computes
 #[test]
 fn open_equals_rebuild_after_a_forget() {
@@ -428,8 +428,8 @@ fn open_equals_rebuild_after_a_forget() {
     m.set(d, &REG, &s("by b")).unwrap();
     lp.peers[1].engine.commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
-    open_equals_rebuild(&mut lp.peers[1].engine, &[d], "member");
-    lp.peers[0].engine.demote(&d, &osis_node::flows::Demotion { member: pb, new: None, presync: osis_node::flows::PreSync::Synced }).unwrap();
+    open_equals_rebuild(&mut lp.peers[1].engine, &[d], "holder");
+    lp.peers[0].engine.demote(&d, &osis_node::flows::Demotion { holder: pb, new: None, presync: osis_node::flows::PreSync::Synced }).unwrap();
     lp.sync_all().unwrap();
     let (_, gone) = lp.peers[1].engine.forget_lost(true).unwrap();
     assert!(gone.things.contains(&d), "B forgets the thing");
@@ -457,7 +457,7 @@ fn open_equals_rebuild_after_a_secrets_compaction() {
         ids.extend(lp.peers[0].engine.grant(&t, &who, &edge(role)).unwrap().commits);
     }
     lp.sync_all().unwrap();
-    let demote = osis_node::flows::Demotion { member: r, new: None, presync: osis_node::flows::PreSync::Synced };
+    let demote = osis_node::flows::Demotion { holder: r, new: None, presync: osis_node::flows::PreSync::Synced };
     ids.extend(lp.peers[0].engine.demote(&t, &demote).unwrap().commits);
     lp.sync_all().unwrap();
     // the admin compacts both aspects and drops every body a snapshot covers
@@ -480,7 +480,7 @@ fn open_equals_rebuild_after_a_secrets_compaction() {
     open_equals_rebuild(&mut lp.peers[0].engine, &[t], "compacted");
     // a later grant and rotation over the compacted aspects, compacted again
     ids.extend(lp.peers[0].engine.grant(&t, &r2, &edge(Role::Read)).unwrap().commits);
-    let demote = osis_node::flows::Demotion { member: w, new: None, presync: osis_node::flows::PreSync::Synced };
+    let demote = osis_node::flows::Demotion { holder: w, new: None, presync: osis_node::flows::PreSync::Synced };
     ids.extend(lp.peers[0].engine.demote(&t, &demote).unwrap().commits);
     lp.sync_all().unwrap();
     open_equals_rebuild(&mut lp.peers[0].engine, &[t], "rotated after");
@@ -507,7 +507,7 @@ fn open_equals_rebuild_random_secrets_compactions() {
     let replay = |s: u64| format!("OSIS_WALKS_SECRETS_START={s} OSIS_WALKS_SECRETS_SEEDS=1 cargo test --workspace --test it {name} -- --exact");
     let dropped: usize = run_seeds_noted(name, &seeds, range.overridden, "OSIS_WALKS_THREADS", replay, secrets_history).into_iter().sum();
     if !range.overridden {
-        assert!(dropped > 0, "no membership body dropped");
+        assert!(dropped > 0, "no role body dropped");
     }
 }
 
@@ -537,7 +537,7 @@ fn uncovered_part_judged_anew() {
     let tick = |lp: &mut LocalPeer| (0..4).for_each(|i| lp.peers[i].clock.advance(1));
     // B's removal of D reaches C alone
     tick(&mut lp);
-    let rm = osis_node::flows::Demotion { member: d, new: None, presync: osis_node::flows::PreSync::Synced };
+    let rm = osis_node::flows::Demotion { holder: d, new: None, presync: osis_node::flows::PreSync::Synced };
     let g = lp.peers[1].engine.demote(&t, &rm).unwrap().commits;
     deliver(&mut lp, 1, 2, &g);
     // C compacts `/keys`, dropping the rotation's part
@@ -553,9 +553,9 @@ fn uncovered_part_judged_anew() {
     }
     // A, having seen neither, demotes B to write and removes C
     tick(&mut lp);
-    let to_write = osis_node::flows::Demotion { member: b, new: Some(edge(Role::Write)), presync: osis_node::flows::PreSync::Synced };
+    let to_write = osis_node::flows::Demotion { holder: b, new: Some(edge(Role::Write)), presync: osis_node::flows::PreSync::Synced };
     let db = lp.peers[0].engine.demote(&t, &to_write).unwrap().commits;
-    let gone = osis_node::flows::Demotion { member: c, new: None, presync: osis_node::flows::PreSync::Synced };
+    let gone = osis_node::flows::Demotion { holder: c, new: None, presync: osis_node::flows::PreSync::Synced };
     let dc = lp.peers[0].engine.demote(&t, &gone).unwrap().commits;
     deliver(&mut lp, 0, 2, &db);
     let valid = |e: &Engine, x: &osis_base::CommitId| e.body_valid(x, &t, &keys).unwrap();
@@ -566,7 +566,7 @@ fn uncovered_part_judged_anew() {
     open_equals_rebuild(&mut lp.peers[2].engine, &[t], "C removed");
 }
 
-/// One random history of `open_equals_rebuild_random_secrets_compactions`; how many membership
+/// One random history of `open_equals_rebuild_random_secrets_compactions`; how many roles
 /// bodies it dropped.
 fn secrets_history(seed: u64) -> usize {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
@@ -589,7 +589,7 @@ fn secrets_history(seed: u64) -> usize {
                 let _ = lp.peers[i].engine.grant(&t, &m, &edge(role));
             }
             2 => {
-                let d = osis_node::flows::Demotion { member: m, new: None, presync: osis_node::flows::PreSync::Synced };
+                let d = osis_node::flows::Demotion { holder: m, new: None, presync: osis_node::flows::PreSync::Synced };
                 let _ = lp.peers[i].engine.demote(&t, &d);
             }
             3 | 4 => {
@@ -930,7 +930,7 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool, forge: bool) -> ([
                 if let Some(e) = role {
                     m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(ids[1]))], op: Op::Set(edge(e).to_value()) }).unwrap();
                 }
-                let scope = osis_perm::DemotionScope { membership: [(ids[1], [t].into())].into(), content: [(ids[1], [t].into())].into() };
+                let scope = osis_perm::DemotionScope { roles: [(ids[1], [t].into())].into(), content: [(ids[1], [t].into())].into() };
                 let now = lp.peers[2].engine.now();
                 if role != Some(Role::Write)
                     && let Ok(f) = lp.peers[2].engine.frontier(&scope, now)
@@ -1370,7 +1370,7 @@ fn invalid_import_after_snapshot_alike_spec_perm_7() {
     let lesser = lp.peers[0].engine.reimport(&t, &copy).unwrap();
     // peer 2 removes peer 0 from P with what it received; peer 0, unaware, imports once more
     lp.sync(0, 2).unwrap();
-    let scope = osis_perm::DemotionScope { membership: [(a, [p].into())].into(), content: [(a, [p, copy].into())].into() };
+    let scope = osis_perm::DemotionScope { roles: [(a, [p].into())].into(), content: [(a, [p, copy].into())].into() };
     let now = lp.peers[2].engine.now();
     let f = lp.peers[2].engine.frontier(&scope, now).unwrap();
     set_edge(&mut lp.peers[2].engine, p, a, None, Some(f.to_value()));

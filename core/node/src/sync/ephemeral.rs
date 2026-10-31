@@ -340,7 +340,7 @@ const PENDING_SHARE: u64 = 4;
 /// becomes its label's floor, at or below which relay-only entries are dropped, so none is
 /// delivered twice (0: only increasing expiries pass; infinity: memory grows with every signal of
 /// the replay window). About 200 bytes each: 13 MiB at the bound.
-const RELAYS_REMEMBERED: usize = 1 << 16;
+const RELAYS_REHOLDERED: usize = 1 << 16;
 
 /// Relay-only entries received: (label, blob) until their prefix expiry, and a floor per label.
 #[derive(Default)]
@@ -381,7 +381,7 @@ impl RelaySeen {
             return;
         }
         self.by_expiry.insert((t, l, b));
-        if self.ids.len() > RELAYS_REMEMBERED
+        if self.ids.len() > RELAYS_REHOLDERED
             && let Some((t0, l0, b0)) = self.by_expiry.pop_first()
         {
             self.ids.remove(&(l0, b0));
@@ -814,7 +814,7 @@ impl SyncEngine {
                 if reader != actor && !self.engine.may_read(&actor, &reader) {
                     continue;
                 }
-                let body = crate::labeling::Body { commit: c.id, reader, parts: p.parts.clone(), expires: p.expires, keys: p.keys.clone(), blind: c.blob.header.blind, plaintext: p.plaintext, membership: false };
+                let body = crate::labeling::Body { commit: c.id, reader, parts: p.parts.clone(), expires: p.expires, keys: p.keys.clone(), blind: c.blob.header.blind, plaintext: p.plaintext, role_commit: false };
                 let s = seal_body_as(&body, class, &mut *self.rng)?;
                 let wrap = osis_crypto::wrap(&secret, &s.id, &s.key)?;
                 let stamp = stamp_key.as_ref().map(|w| osis_label::sign_stamp(w, &l, &s.id, &wrap));
@@ -844,14 +844,14 @@ impl SyncEngine {
     }
 
     /// Sends a relay-only entry on every connection where `l` is open (and to the served
-    /// sessions, as a member peer would push it), stamped.
+    /// sessions, as a co-reader peer would push it), stamped.
     fn eph_send_relay(&mut self, l: LabelId, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], stamp: Option<Signature>, out: &mut Vec<Action>) -> Result<()> {
         let blob_id = osis_label::blob_id(&blob);
         if blob.len() > osis_base::format::MAX_RELAY_BLOB {
             self.eph_report(&l, "a signal too large for a relay-only blob was not sent");
             return Ok(());
         }
-        // never delivered here again (a member peer's path may bring it back)
+        // never delivered here again (a co-reader peer's path may bring it back)
         let t = osis_label::Prefix::parse(&blob).ok().and_then(|p| p.expiry()).map_or(0, |t| t.0);
         let now = self.now();
         self.eph.relays.first(l, blob_id, t, now);
@@ -1693,12 +1693,12 @@ mod tests {
         let now = 1_000_000;
         assert!(r.first(l, b(0), now + 10, now));
         assert!(!r.first(l, b(0), now + 10, now), "a repeat");
-        for n in 1..=RELAYS_REMEMBERED as u32 {
+        for n in 1..=RELAYS_REHOLDERED as u32 {
             assert!(r.first(l, b(n), now + 10 + u64::from(n), now));
         }
         assert!(!r.first(l, b(0), now + 10, now), "forgotten, under the floor: still not twice");
         assert!(r.first(other, b(0), now + 10, now), "the floor is per label");
-        assert!(r.first(l, b(RELAYS_REMEMBERED as u32 + 1), now + 20 + RELAYS_REMEMBERED as u64, now));
+        assert!(r.first(l, b(RELAYS_REHOLDERED as u32 + 1), now + 20 + RELAYS_REHOLDERED as u64, now));
         // past their expiry entries and floors go
         assert!(r.first(l, b(7), now + 1_000_000_000, now + 500_000_000));
         assert_eq!(r.ids.len(), 1);

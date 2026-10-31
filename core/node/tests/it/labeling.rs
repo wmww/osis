@@ -70,7 +70,7 @@ fn projection_by_retention_class_spec_sync_3() {
 }
 
 // spec/crypto.md §5: content is wrapped under the newest current read epoch; a rotation commit
-// under the epoch it supersedes, so the members it seals to can open it.
+// under the epoch it supersedes, so the holders it seals to can open it.
 #[test]
 fn rotation_wrap_exception_spec_crypto_5() {
     let mut net = Net::new();

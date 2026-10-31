@@ -17,9 +17,9 @@ pub struct Edge {
     pub role: Role,
     /// The edge counts as removed from this wall time on.
     pub until: Option<WallMs>,
-    /// The role this member may grant others (invite grants).
+    /// The role this holder may grant others (invite grants).
     pub invite: Option<Role>,
-    /// Tied to the placement of the thing in this member, a group (`Osis::share_into`): removed
+    /// Tied to the placement of the thing in this holder, a group (`Osis::share_into`): removed
     /// once the placement is gone (spec/permissions.md §2).
     pub tied: bool,
 }
@@ -64,7 +64,7 @@ pub struct GroupsOf {
     pub within: Vec<Tid>,
 }
 
-/// The membership timeline's roster of a thing: member actor → edge.
+/// The role timeline's roster of a thing: holder actor → edge.
 pub type Roster = BTreeMap<Tid, Edge>;
 
 pub(crate) fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
@@ -200,7 +200,7 @@ impl Reader<'_> {
         GroupsOf { item_of: items.into_iter().collect(), subgroup_of: subs.into_iter().collect(), within: self.e.groups_of(&t).into_iter().collect() }
     }
 
-    /// The membership timeline's roster of `thing` (spec/permissions.md §2).
+    /// The role timeline's roster of `thing` (spec/permissions.md §2).
     pub fn roster(&self, thing: Tid) -> Roster {
         self.e.roster(&self.resolve(thing)).into_iter().map(|(m, e)| (self.resolve(m), Edge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.is_some() })).collect()
     }
@@ -213,7 +213,7 @@ impl Reader<'_> {
     /// Whether the thing is here: its creation is held and it has content, some aspect a
     /// `Write` sets, or it is ephemeral or a draft again (its save undone) here (content or
     /// not, unless an undo of its creation deleted it). `false` for an unknown thing and for a deleted one, which `created` still
-    /// reports; an actor carrying only membership data (a link key, a contact before any
+    /// reports; an actor carrying only role data (a link key, a contact before any
     /// data) reads `false` too.
     pub fn knows(&mut self, tid: Tid) -> bool {
         let t = self.resolve(tid);
@@ -240,7 +240,7 @@ impl Reader<'_> {
     }
 
     /// When the thing's content last changed: of the held changes, reverts and imports
-    /// writing its aspects (not `/created`, `/group` or membership-class ones: placement and
+    /// writing its aspects (not `/created`, `/group` or role-class ones: placement and
     /// sharing are no content change; not ephemeral writes), the one with the latest
     /// `shown()`, else its creation. A delete is a change. A change known here only from a
     /// snapshot is not seen (notes/api.md Attribution). Follows moves.

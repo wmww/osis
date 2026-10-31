@@ -12,7 +12,7 @@ fuzz_target!(|data: &[u8]| {
     let kem = KeyActorKeys::from_seed(&Secret32::from_bytes([1; 32])).kem;
     let s = Secret32::from_bytes([2; 32]);
     let actor = Tid::from_bytes([3; 15]);
-    let slot = BoxSlot::Secrets { actor, member: Tid::from_bytes([4; 15]), role: Role::Read, epoch: Epoch::ZERO };
+    let slot = BoxSlot::Secrets { actor, holder: Tid::from_bytes([4; 15]), role: Role::Read, epoch: Epoch::ZERO };
     let _ = open_box(&kem, &slot, BoxForm::Sealed { keyset: None, suite: 1 }, data);
     let _ = open_box(&kem, &slot, BoxForm::Sealed { keyset: Some(Epoch::ZERO), suite: 1 }, data);
     let _ = open_sealed(&kem, b"ad", data);

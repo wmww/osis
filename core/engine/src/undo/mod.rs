@@ -117,7 +117,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
                     let Some(m) = tx.core.ix.commits.get(&c) else { continue };
                     let Some(ci) = m.valid.iter().zip(&m.header.aspects).position(|(v, x)| *v && x.tid == a.tid && x.ak == a.ak) else { continue };
                     if (cts, c) > (h.ts, target) {
-                        complete &= !matches!(m.header.kind, Kind::ContentSnapshot | Kind::MembershipSnapshot | Kind::RosterSnapshot | Kind::Import);
+                        complete &= !matches!(m.header.kind, Kind::ContentSnapshot | Kind::RoleSnapshot | Kind::RosterSnapshot | Kind::Import);
                         continue;
                     }
                     if c == target {
@@ -147,7 +147,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
         // read in place: the undo reads the current state along the delta's paths only
         let empty = Fragment::default();
         let state = tx.core.states.get(&(a.tid, a.ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
-        let mut w = Writer::new(ts, Source::node(node), lo).keyed_removals(osis_schema::core_types::is_membership_class(a.ak.as_str()));
+        let mut w = Writer::new(ts, Source::node(node), lo).keyed_removals(osis_schema::core_types::is_role_class(a.ak.as_str()));
         let schema = a.schema.and_then(|i| h.schemas.get(i)).and_then(|(id, _)| tx.core.schemas.get(id).cloned()).or_else(|| a.ak.is_core().then(|| std::sync::Arc::new(osis_schema::core_schema().clone())));
         let view = schema.as_ref().and_then(|s| s.view(a.ak.as_str()));
         let buf: &dyn UndoBuffer = &pre;
@@ -190,7 +190,7 @@ pub(crate) fn made_by(h: &osis_commit::Header, valid: &[bool]) -> BTreeSet<Tid> 
 }
 
 /// Undoing a creation deletes the thing (spec/crdt.md §4.6): `delete`'s writes for each of
-/// `made`, its held aspects reset (not `/created` or membership-class ones) and its entries
+/// `made`, its held aspects reset (not `/created` or role-class ones) and its entries
 /// removed from every `/group` listing it that this node may write, each resolved after the
 /// undo's own delta of that aspect and joined into it. `Permission` when this node may not
 /// write one of `made` (`delete` would refuse; never a partial revert).
@@ -209,7 +209,7 @@ fn unmake(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid, deltas: &mut
             aks.push(Rd::new(k).ak()?);
             Ok(())
         })?;
-        for ak in aks.into_iter().filter(|a| a.as_str() != "/created" && !osis_schema::core_types::is_membership_class(a.as_str())) {
+        for ak in aks.into_iter().filter(|a| a.as_str() != "/created" && !osis_schema::core_types::is_role_class(a.as_str())) {
             ops.entry((*x, ak)).or_default().push(PathOp { path: Vec::new(), op: Op::RemoveAspect });
         }
     }
@@ -236,7 +236,7 @@ fn unmake(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid, deltas: &mut
         };
         let schema = ak.is_core().then(|| std::sync::Arc::new(osis_schema::core_schema().clone()));
         let view = schema.as_ref().and_then(|s| s.view(ak.as_str()));
-        let w = Writer::new(ts, Source::node(node), lo).keyed_removals(osis_schema::core_types::is_membership_class(ak.as_str()));
+        let w = Writer::new(ts, Source::node(node), lo).keyed_removals(osis_schema::core_types::is_role_class(ak.as_str()));
         let out = match &view {
             Some(v) => crate::engine::write::run_ops(&state, w, &ops, v)?,
             None => crate::engine::write::run_ops(&state, w, &ops, &AnyView)?,

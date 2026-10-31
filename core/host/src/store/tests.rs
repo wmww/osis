@@ -218,16 +218,16 @@ fn timed_deletes_expiry_tombstones() {
     assert_eq!(e.store.next_due().unwrap(), None);
 }
 
-// spec/sync.md §4: a claim set is kept until its step has been superseded for MEMBERSHIP_KEEP
+// spec/sync.md §4: a claim set is kept until its step has been superseded for ROLE_KEEP
 #[test]
-fn claim_sets_dropped_after_membership_keep() {
+fn claim_sets_dropped_after_role_keep() {
     let mut e = env(HostPolicy::default());
     let l = e.f.label;
     e.store.push_step(&l, e.f.child.clone(), Some(e.f.child_claims.clone())).unwrap();
     let g = e.f.genesis.id();
-    e.store.sweep(T0 + MEMBERSHIP_KEEP_MS - 1, 1024).unwrap();
+    e.store.sweep(T0 + ROLE_KEEP_MS - 1, 1024).unwrap();
     assert!(e.store.claim_set(&l, &g).unwrap().is_some());
-    e.store.sweep(T0 + MEMBERSHIP_KEEP_MS, 1024).unwrap();
+    e.store.sweep(T0 + ROLE_KEEP_MS, 1024).unwrap();
     assert!(e.store.claim_set(&l, &g).unwrap().is_none());
     assert!(e.store.claim_set(&l, &e.f.child.id()).unwrap().is_some());
     assert!(e.store.step(&l, &g).unwrap().is_some());
@@ -603,7 +603,7 @@ fn child_of(f: &Fixture, prev: &Step) -> Step {
 
 // spec/sync.md §5 Register: a step and its claim set count toward the label's and the node's byte
 // caps until the claim set is dropped; past them a child step is still taken, without its set (a
-// refused rotation would keep a removed member's keys valid), and a new label is refused (code 12)
+// refused rotation would keep a removed holder's keys valid), and a new label is refused (code 12)
 #[test]
 fn steps_count_toward_byte_caps() {
     let e = env(HostPolicy::default());
@@ -661,8 +661,8 @@ fn steps_count_toward_byte_caps() {
         // an entry finds the label full too
         let big = vec![1u8; 4096];
         assert_eq!(e.store.put(&l, put(&big, true, None)).unwrap(), Code::STORAGE_CAP);
-        // superseded claim sets dropped after MEMBERSHIP_KEEP free their bytes (the steps stay)
-        e.store.sweep(T0 + MEMBERSHIP_KEEP_MS, 1024).unwrap();
+        // superseded claim sets dropped after ROLE_KEEP free their bytes (the steps stay)
+        e.store.sweep(T0 + ROLE_KEEP_MS, 1024).unwrap();
         let steps: u64 = e.store.path(&l).unwrap().iter().map(|s| s.to_bytes().len() as u64).sum();
         assert_eq!(e.store.totals().unwrap().bytes, steps);
         let u = child_of(&e.f, &t);
@@ -749,8 +749,8 @@ fn claim_lookup_reads_no_set() {
         set.claims.push(osis_base::hash::hash(&n.to_be_bytes()));
     }
     assert_eq!(store.push_step(&l, f.genesis.clone(), Some(set.clone())).unwrap(), Code::OK);
-    let (member, stat) = (set.claims[0], *set.entries.keys().next().unwrap());
-    let lookups = [(member, Some(set.entries.get(&member).cloned())), (stat, Some(set.entries.get(&stat).cloned())), ([0xee; 32], None)];
+    let (holder, stat) = (set.claims[0], *set.entries.keys().next().unwrap());
+    let lookups = [(holder, Some(set.entries.get(&holder).cloned())), (stat, Some(set.entries.get(&stat).cloned())), ([0xee; 32], None)];
     for (k, want) in &lookups {
         reads.read.store(0, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(store.claim(&l, &g, k).unwrap(), *want);
@@ -764,12 +764,12 @@ fn claim_lookup_reads_no_set() {
     let mut sweeps = 0;
     loop {
         sweeps += 1;
-        if !store.sweep(T0 + MEMBERSHIP_KEEP_MS, SWEEP_TEST_BUDGET).unwrap().more {
+        if !store.sweep(T0 + ROLE_KEEP_MS, SWEEP_TEST_BUDGET).unwrap().more {
             break;
         }
     }
     assert!(sweeps > osis_base::format::MAX_CLAIMS / SWEEP_TEST_BUDGET, "{sweeps} sweeps");
-    assert_eq!(store.claim(&l, &g, &member).unwrap(), None);
+    assert_eq!(store.claim(&l, &g, &holder).unwrap(), None);
     assert!(store.claim_set(&l, &g).unwrap().is_none());
     assert_eq!(store.totals().unwrap().bytes, step + child.to_bytes().len() as u64);
 }
@@ -795,7 +795,7 @@ fn repeated_claims_count_once() {
     let mut grand = child.clone();
     grand.prev = Some(child.id());
     assert_eq!(e.store.push_step(&l, grand.clone(), None).unwrap(), Code::OK);
-    while e.store.sweep(T0 + 2 * MEMBERSHIP_KEEP_MS, SWEEP_TEST_BUDGET).unwrap().more {}
+    while e.store.sweep(T0 + 2 * ROLE_KEEP_MS, SWEEP_TEST_BUDGET).unwrap().more {}
     assert!(e.store.claim_set(&l, &child.id()).unwrap().is_none());
     assert_eq!(e.store.claim(&l, &child.id(), &k).unwrap(), None);
     let steps = (child.to_bytes().len() + grand.to_bytes().len()) as u64;

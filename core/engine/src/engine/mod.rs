@@ -104,7 +104,7 @@ pub struct Dropped {
     /// kept so re-judging the part (and a rebuild) needs no body.
     pub role: Option<osis_base::Role>,
     pub overreach: bool,
-    /// The epochs a membership `/keys` body keyed (`epoch_intro` candidates,
+    /// The epochs a roles `/keys` body keyed (`epoch_intro` candidates,
     /// `apply::keys::intro_epochs`): which commit introduced an epoch is a judgment the covers
     /// rule needs.
     pub intros: Vec<(osis_base::Role, osis_crypto::Epoch)>,
@@ -120,7 +120,7 @@ impl Meta {
     }
 }
 
-/// What the per-commit indexes (`apply::index_commit`, validity, the membership filter) read of
+/// What the per-commit indexes (`apply::index_commit`, validity, the role filter) read of
 /// a header; persisted in the commit's parts row (`engine::index`), so an open builds them
 /// without decoding headers.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,7 +136,7 @@ pub struct View {
     /// receipts or demotion frontiers.
     pub memory: bool,
     pub aspects: Vec<AspectView>,
-    /// A membership commit's frontier (`validity::header_frontier`; perm's adaptation reads it
+    /// A role commit's frontier (`validity::header_frontier`; perm's adaptation reads it
     /// for demotions); `None` on other kinds.
     pub frontier: Option<Arc<osis_perm::Frontier>>,
     /// The blobs of the chunk list (`Core::by_chunk`).
@@ -165,7 +165,7 @@ impl View {
             linked: h.links != osis_commit::Links::default(),
             memory: h.ephemeral.is_some(),
             aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, bounded: crate::retention::bounded(a) }).collect(),
-            frontier: if h.kind == osis_commit::Kind::Membership { crate::apply::validity::header_frontier(h) } else { None },
+            frontier: if h.kind == osis_commit::Kind::Role { crate::apply::validity::header_frontier(h) } else { None },
             chunks: h.chunks.iter().map(|c| c.blob).collect(),
         }
     }
@@ -370,7 +370,7 @@ macro_rules! indexes {
 }
 
 indexes! {
-    /// Perm inputs: applied membership commits, roster snapshots, `/created` records.
+    /// Perm inputs: applied role commits, roster snapshots, `/created` records.
     pub held: held::Held,
     pub commits: JMap<CommitId, Meta>,
     /// Commits with a part invalid here, per aspect (`Core::index_validity`), so a join finds the
@@ -423,16 +423,16 @@ indexes! {
     pub moved: JMap<Tid, Tid>,
     /// `/group` definitions and `/groups` (thing -> groups containing it, transitively).
     pub groups: groups::Groups,
-    /// Keyed `/members` entries seen: (target, entry dot) -> (member, created value).
-    pub member_keys: JMap<(Tid, Dot), Tid>,
-    /// Membership commits whose removed keys are not known yet.
+    /// Keyed `/members` entries seen: (target, entry dot) -> (holder, created value).
+    pub holder_keys: JMap<(Tid, Dot), Tid>,
+    /// Role commits whose removed keys are not known yet.
     pub unresolved: JSet<CommitId>,
     /// Roles `/secrets` and `/keys` deltas need (by commit and aspect index).
     pub rotation_role: JMap<(CommitId, usize), osis_base::Role>,
-    /// `/secrets` parts of membership commits that write beyond their grantees' boxes (an invite
+    /// `/secrets` parts of role commits that write beyond their grantees' boxes (an invite
     /// grant may carry only those, spec/permissions.md §2).
     pub grant_overreach: JSet<(CommitId, usize)>,
-    /// Keyed boxes per member: member -> (actor, box key), from `/secrets` entries seen.
+    /// Keyed boxes per holder: holder -> (actor, box key), from `/secrets` entries seen.
     pub boxes_to: JSetMap<Tid, (Tid, osis_base::Value)>,
     /// The earliest valid held commit writing an epoch's keyset in `/keys` (its rotation):
     /// (actor, role, epoch) -> (`ts`, author node, actor acted for, commit). Absent: the
@@ -445,12 +445,12 @@ indexes! {
     /// Aspects whose deaths wait for a recompute (`records::DEATHS_DUE`).
     pub deaths_due: JSet<(Tid, Ak)>,
     /// `rotation::departures` per actor with the time it holds until (an edge's `until`, a
-    /// write's future `ts`); cleared by `membership_changed`.
+    /// write's future `ts`); cleared by `role_changed`.
     pub departures: JMap<Tid, (Vec<osis_keys::Departure>, Option<WallMs>)>,
     /// Hints of opened inbox payloads whose commit has not applied yet (not persisted).
     pub hint_candidates: JMap<CommitId, Vec<(Tid, osis_base::Value)>>,
     /// Things a roster snapshot of which was kept out of perm for a linked frontier not held
-    /// here (`validity::add_membership`): no roster snapshot of them is written.
+    /// here (`validity::add_role_commit`): no roster snapshot of them is written.
     pub frontier_unknown: JSet<Tid>,
     /// Memory things freed while a memory commit on them also touches a thing still held: their
     /// records and data stay until every thing of those commits is freed (`apply::free`).
@@ -503,7 +503,7 @@ pub struct Core {
     pub events: Events,
     /// States the running transaction wrote (dropped from the cache on rollback).
     pub written: Vec<(Tid, Ak)>,
-    /// Tests: let local commits break the writer-side membership rules (to test receivers).
+    /// Tests: let local commits break the writer-side role rules (to test receivers).
     pub skip_writer_rules: bool,
     /// Set when a lazily held header failed to decode (`LazyHeader`): every later transaction
     /// fails (`Error::Corrupt`).
@@ -513,7 +513,7 @@ pub struct Core {
     #[cfg(test)]
     pub check_ingest: bool,
     /// Key actors other than the node whose seed this node holds for now (a recovery key from
-    /// its card, a link key; membership flows): they sign commits (`Mutation::sign_as`) and
+    /// its card, a link key; role flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
     pub key_actors: BTreeMap<Tid, Arc<Identity>>,
     /// Deaths recomputes wait for `Engine::settle_deaths` instead of ending each transaction
@@ -574,9 +574,9 @@ pub(crate) type Published = ((u64, u64, u64), BTreeMap<Tid, std::sync::Arc<BTree
 /// Node-sync's records that engine transactions touch: an inbox delivery a flow's commit owes
 /// (`flows::edges`) and what forgetting drops (`retention::forget`). Implemented by node-sync.
 pub trait SyncRecords: Sync {
-    /// Records the inbox delivery of `commit` to `member` in the commit's own transaction, so
+    /// Records the inbox delivery of `commit` to `holder` in the commit's own transaction, so
     /// a crash before node-sync carries it out loses none.
-    fn note_unsent(&self, tx: &mut Tx<'_>, member: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) -> Result<()>;
+    fn note_unsent(&self, tx: &mut Tx<'_>, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) -> Result<()>;
     /// Removes the sync records of what is forgotten (`labels`, `things`, `commits`, `parts`)
     /// and returns the blobs among those dropped and `extra` that no kept record names.
     fn forget(&self, tx: &mut Tx<'_>, labels: &BTreeSet<osis_base::LabelId>, things: &BTreeSet<Tid>, commits: &BTreeSet<CommitId>, parts: &BTreeMap<CommitId, BTreeSet<usize>>, extra: BTreeSet<osis_base::BlobId>) -> Result<BTreeSet<osis_base::BlobId>>;
@@ -618,7 +618,7 @@ impl Core {
 
     /// Drops what is derived from rosters, `/secrets` and held epochs (the departures cache):
     /// called wherever those change.
-    pub fn membership_changed(&mut self) {
+    pub fn role_changed(&mut self) {
         if !self.ix.departures.is_empty() {
             self.ix.departures.retain(|_, _| false);
         }
@@ -636,7 +636,7 @@ impl Core {
             let below = self.ix.held.reach(&changed.extended);
             self.stale_things.extend(below);
         }
-        self.membership_changed();
+        self.role_changed();
     }
 
     /// Whether some validity waits for `rejudge_all`.
@@ -647,8 +647,8 @@ impl Core {
     /// Drops what is derived from the state of `(tid, ak)` (a write changes it).
     fn state_changed(&mut self, tid: &Tid, ak: &Ak) {
         self.forget_live(tid, ak);
-        if osis_schema::core_types::is_membership_class(ak.as_str()) {
-            self.membership_changed();
+        if osis_schema::core_types::is_role_class(ak.as_str()) {
+            self.role_changed();
         }
     }
 
@@ -729,7 +729,7 @@ impl Core {
             } else {
                 self.generation += 1;
             }
-            self.membership_changed();
+            self.role_changed();
             self.labels.clear();
             self.links = None;
             for k in std::mem::take(&mut self.written) {
@@ -1168,7 +1168,7 @@ impl Tx<'_> {
     }
 
     /// Writes a commit record (`index::record_head`: received, origin, dropped parts and what
-    /// they keep; then its blob), and for a membership commit its `node/edges` row (`edges`: what the caller already
+    /// they keep; then its blob), and for a role commit its `node/edges` row (`edges`: what the caller already
     /// read of `blob` with `edge_parts_of`, else decoded here).
     pub(crate) fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, edges: Option<&crate::apply::validity::EdgeParts>) -> Result<()> {
         // a part is held, dropped or missing: never both of the last two (an open derives
@@ -1178,7 +1178,7 @@ impl Tx<'_> {
         self.core.mark_changed(*id);
         let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
-        if meta.header.kind.is_membership() {
+        if meta.header.kind.is_role() {
             // perm's reading of it, persisted beside the record (an open decodes no body)
             match edges {
                 Some(p) => index::put_edges(self, id, p, shred)?,
@@ -1568,7 +1568,7 @@ mod tests {
         }
     }
 
-    fn member(t: Tid, m: Tid, role: Option<Role>) -> Mutation {
+    fn holder(t: Tid, m: Tid, role: Option<Role>) -> Mutation {
         let (path, op) = match role {
             Some(role) => (vec![PathSeg::Key(Value::Tid(m))], Op::Set(ct::Edge { role, until: None, invite: None, since: None, tied: None }.to_value())),
             None => (Vec::new(), Op::Remove(Value::Tid(m))),
@@ -1598,8 +1598,8 @@ mod tests {
             e.commit(m).map(|_| t)
         };
         let g = failing(&mut lp.peers[0], &mut failed, |e| new_thing(e, a));
-        failing(&mut lp.peers[0], &mut failed, |e| e.commit(member(g, b, Some(Role::Write))));
-        failing(&mut lp.peers[0], &mut failed, |e| e.commit(member(g, c, Some(Role::Admin))));
+        failing(&mut lp.peers[0], &mut failed, |e| e.commit(holder(g, b, Some(Role::Write))));
+        failing(&mut lp.peers[0], &mut failed, |e| e.commit(holder(g, c, Some(Role::Admin))));
         lp.sync(0, 1).unwrap();
         lp.advance(1_000);
         failing(&mut lp.peers[1], &mut failed, |e| {
@@ -1610,7 +1610,7 @@ mod tests {
         lp.sync(1, 0).unwrap();
         lp.advance(1_000);
         failing(&mut lp.peers[0], &mut failed, |e| new_thing(e, g));
-        failing(&mut lp.peers[0], &mut failed, |e| e.commit(member(g, b, None)));
+        failing(&mut lp.peers[0], &mut failed, |e| e.commit(holder(g, b, None)));
         // received in reverse: most wait for what they depend on, then apply together
         let mut pks = lp.packages(0).unwrap();
         pks.reverse();
@@ -1639,7 +1639,7 @@ mod tests {
             write(&mut m, t, "new");
             e.commit(m).map(|_| t)
         });
-        failing(&mut lp.peers[0], &mut failed, |e| e.commit(member(g, b, Some(Role::Write))));
+        failing(&mut lp.peers[0], &mut failed, |e| e.commit(holder(g, b, Some(Role::Write))));
         lp.sync(0, 1).unwrap();
         lp.advance(10);
         // an older write by 1, delivered last: a replay of the aspect's deaths

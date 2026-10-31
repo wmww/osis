@@ -49,7 +49,7 @@ struct Copies<'a> {
     keep: &'a dyn Fn(&Dot) -> bool,
     path: Vec<Step>,
     out: Vec<(Key, Option<Val>)>,
-    /// A `Slots` register's stamps while its members are walked.
+    /// A `Slots` register's stamps while its slots are walked.
     embedded: Vec<Stamp>,
 }
 
@@ -149,13 +149,13 @@ impl Copies<'_> {
                     self.path.pop();
                 }
             }
-            Fragment::Slots(Slots { reg, members }) => {
+            Fragment::Slots(Slots { reg, slots }) => {
                 let n = self.embedded.len();
                 if let Some(r) = reg {
                     self.reg(r);
                     self.embedded.extend(r.reset.iter().cloned().chain(r.write.iter().map(|w| w.stamp.clone())));
                 }
-                for x in members.values() {
+                for x in slots.values() {
                     self.frag(x);
                 }
                 self.embedded.truncate(n);
@@ -252,8 +252,8 @@ impl Fragment {
                 }
             }
             Fragment::Seq(s) => crate::seq::drop_creations(s, pred, keys),
-            Fragment::Slots(Slots { members, .. }) => {
-                for x in members.values_mut() {
+            Fragment::Slots(Slots { slots, .. }) => {
+                for x in slots.values_mut() {
                     x.drop_creations(pred, keys);
                 }
             }

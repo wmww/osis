@@ -107,9 +107,9 @@ pub fn convergence(nodes: &mut [(usize, &mut Engine)]) -> std::result::Result<()
     for (k, (_, e)) in nodes.iter().enumerate() {
         groups.entry(held(e)).or_default().push(k);
     }
-    for members in groups.values() {
+    for holders in groups.values() {
         let mut first: Option<(usize, Reads)> = None;
-        for k in members {
+        for k in holders {
             let Some((i, e)) = nodes.get_mut(*k) else { continue };
             let i = *i;
             let r = reads(e).map_err(|x| format!("node {i}: read failed: {x}"))?;
@@ -120,7 +120,7 @@ pub fn convergence(nodes: &mut [(usize, &mut Engine)]) -> std::result::Result<()
                     // divergence dump: the differing aspect's parts and state on each of them
                     let mut dump = String::new();
                     if let Some((t, ak)) = key {
-                        for k in members {
+                        for k in holders {
                             if let Some((n, e)) = nodes.get_mut(*k) {
                                 dump.push_str(&format!("node {n} on {t} {}:\n{}", ak.as_str(), e.aspect_dump(&t, &ak)));
                             }

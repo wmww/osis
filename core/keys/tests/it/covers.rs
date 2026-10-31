@@ -6,32 +6,32 @@ use common::*;
 use osis_base::{Role, Tid, WallMs};
 use osis_crypto::Secret32;
 use osis_keys::{
-    ActorEpochs, Departure, Member, MemoryHeldActors, MemberKeys, Opener, ROLES, Recipient, box_member, ingest, may_encrypt_under, reseal_needed, roles_up_to, rotate, rotate_first,
+    ActorEpochs, Departure, Holder, MemoryHeldActors, HolderKeys, Opener, ROLES, Recipient, box_holder, ingest, may_encrypt_under, reseal_needed, roles_up_to, rotate, rotate_first,
 };
 use osis_schema::core_types::Secrets;
 use std::collections::BTreeSet;
 
 fn owner_rcpt(p: Tid, pe: &ActorEpochs) -> Recipient {
-    Recipient { member: p, role: Role::Admin, keys: MemberKeys::from_keys(&keys_of(pe)).unwrap().with_own(pe) }
+    Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(pe)).unwrap().with_own(pe) }
 }
 
 fn read() -> BTreeSet<Role> {
     [Role::Read].into_iter().collect()
 }
 
-/// Actor `a` owned by P after its own-secrets switch boxing `extra` members too.
+/// Actor `a` owned by P after its own-secrets switch boxing `extra` holders too.
 fn switched(a: Tid, p: Tid, pe: &ActorEpochs, extra: &[Recipient]) -> (ActorEpochs, Secrets) {
     let mut view = ActorEpochs::derived(pe, &a);
-    let mut members = vec![owner_rcpt(p, pe)];
-    members.extend_from_slice(extra);
-    let r = rotate(&a, &roles_up_to(Role::Admin), &view, &Secrets::default(), &members, &|_, _| true, &mut rng(1)).unwrap();
+    let mut holders = vec![owner_rcpt(p, pe)];
+    holders.extend_from_slice(extra);
+    let r = rotate(&a, &roles_up_to(Role::Admin), &view, &Secrets::default(), &holders, &|_, _| true, &mut rng(1)).unwrap();
     let mut s = Secrets::default();
     r.secrets.apply(&mut s);
     r.record(&mut view);
     (view, s)
 }
 
-// spec/crypto.md §4 (departure inside a member) and §3 (derived secrets): a device removed from
+// spec/crypto.md §4 (departure inside a holder) and §3 (derived secrets): a device removed from
 // person P makes P rotate; a thing T with secrets of its own still boxes P under P's old secret,
 // so T's epochs do not cover it and a node that may rotate T rotates first; a plain thing owned
 // by P derives from P's new epoch and needs nothing.
@@ -50,7 +50,7 @@ fn lost_device_owner_rotation() {
     // P's own /secrets after the rotation hold no box for the device.
     let mut newest = MemoryHeldActors::default();
     newest.map.insert(p, (Secrets::default(), pe2.clone()));
-    let deps = [Departure::inside(p, &Departure::member(tid(9), Role::Read))];
+    let deps = [Departure::inside(p, &Departure::holder(tid(9), Role::Read))];
     let all = roles_up_to(Role::Admin);
     for r in ROLES {
         let (e, _) = tview.role(r).newest_held().unwrap();
@@ -80,7 +80,7 @@ fn grant_raced_by_rotation() {
     let (a, p, g) = (tid(1), tid(2), tid(5));
     let (pe, ge) = (person(0x20), person(0x50));
     let (view, base) = switched(a, p, &pe, &[]);
-    let grant = box_member(&a, &view, &base, &actor_rcpt(g, Role::Read, &ge), &read(), &mut rng(3)).unwrap().unwrap();
+    let grant = box_holder(&a, &view, &base, &actor_rcpt(g, Role::Read, &ge), &read(), &mut rng(3)).unwrap().unwrap();
     let rot = rotate(&a, &read(), &view, &base, &[owner_rcpt(p, &pe)], &|_, _| true, &mut rng(4)).unwrap();
     let mut s = base.clone();
     rot.secrets.apply(&mut s);
@@ -88,17 +88,17 @@ fn grant_raced_by_rotation() {
     let mut v = view.clone();
     rot.record(&mut v);
     let now = WallMs(1_000_000_000);
-    let members = [Member { member: p, role: Role::Admin, until: None }, Member { member: g, role: Role::Read, until: None }];
-    assert_eq!(reseal_needed(&s, &v, &members, now, &|_, _, _| true), vec![(g, read())]);
-    let near = [Member { member: g, role: Role::Read, until: Some(WallMs(now.0 + 3_600_000)) }];
+    let holders = [Holder { holder: p, role: Role::Admin, until: None }, Holder { holder: g, role: Role::Read, until: None }];
+    assert_eq!(reseal_needed(&s, &v, &holders, now, &|_, _, _| true), vec![(g, read())]);
+    let near = [Holder { holder: g, role: Role::Read, until: Some(WallMs(now.0 + 3_600_000)) }];
     assert!(reseal_needed(&s, &v, &near, now, &|_, _, _| true).is_empty());
-    let far = [Member { member: g, role: Role::Read, until: Some(WallMs(now.0 + 3_600_001)) }];
+    let far = [Holder { holder: g, role: Role::Read, until: Some(WallMs(now.0 + 3_600_001)) }];
     assert_eq!(reseal_needed(&s, &v, &far, now, &|_, _, _| true).len(), 1);
-    let reseal = osis_keys::reseal_member(&a, &v, &s, &actor_rcpt(g, Role::Read, &ge), &read(), &mut rng(5)).unwrap().unwrap();
+    let reseal = osis_keys::reseal_holder(&a, &v, &s, &actor_rcpt(g, Role::Read, &ge), &read(), &mut rng(5)).unwrap().unwrap();
     reseal.apply(&mut s);
-    assert!(reseal_needed(&s, &v, &members, now, &|_, _, _| true).is_empty());
+    assert!(reseal_needed(&s, &v, &holders, now, &|_, _, _| true).is_empty());
     let mut gv = ActorEpochs::default();
-    ingest(&a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, None).unwrap();
+    ingest(&a, &s, &Opener::Actor { holder: g, epochs: &ge }, &mut gv, None).unwrap();
     assert!(gv.read.secret(&v.read.newest().unwrap()).is_some());
 }
 
@@ -125,7 +125,7 @@ fn rotation_held_before_the_removal() {
     removal.secrets.apply(&mut s);
     removal.record(&mut v);
     let e2r = removal.rotated[0].epoch;
-    let deps = [Departure::member(m, Role::Read)];
+    let deps = [Departure::holder(m, Role::Read)];
     assert!(!may_encrypt_under(&tid(0), &s, &v, Role::Read, &e2, &deps, &none));
     assert!(may_encrypt_under(&tid(0), &s, &v, Role::Read, &e2r, &deps, &none));
     let first = rotate_first(&tid(0), &s, &v, &read(), &read(), &deps, &none);
@@ -138,15 +138,15 @@ fn rotation_held_before_the_removal() {
     let e3 = heal.rotated[0].epoch;
     assert!(may_encrypt_under(&tid(0), &s, &v, Role::Read, &e3, &deps, &none));
     let mut mv = ActorEpochs::default();
-    ingest(&a, &s, &Opener::Actor { member: m, epochs: &me }, &mut mv, None).unwrap();
+    ingest(&a, &s, &Opener::Actor { holder: m, epochs: &me }, &mut mv, None).unwrap();
     assert!(mv.read.secret(&e3).is_none());
-    // A key-actor member's box keyed at a higher role counts as a box for the lower roles.
+    // A key-actor holder's box keyed at a higher role counts as a box for the lower roles.
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
-    let w = box_member(&a, &v, &s, &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(9)).unwrap().unwrap();
+    let w = box_holder(&a, &v, &s, &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(9)).unwrap().unwrap();
     w.apply(&mut s);
-    let kdep = [Departure::member(k, Role::Read)];
+    let kdep = [Departure::holder(k, Role::Read)];
     assert!(!may_encrypt_under(&tid(0), &s, &v, Role::Read, &e3, &kdep, &none));
-    assert!(reseal_needed(&s, &v, &[Member { member: k, role: Role::Write, until: None }], WallMs(0), &|_, _, _| true).is_empty());
+    assert!(reseal_needed(&s, &v, &[Holder { holder: k, role: Role::Write, until: None }], WallMs(0), &|_, _, _| true).is_empty());
 }
 
 // spec/crypto.md §4: "An epoch of role r covers a departure of M if it holds no box for M"; a
@@ -160,7 +160,7 @@ fn stale_key_actor_box_still_carries() {
     let pe = person(0x20);
     let (view, base) = switched(a, p, &pe, &[]);
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
-    let grant = box_member(&a, &view, &base, &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(9)).unwrap().unwrap();
+    let grant = box_holder(&a, &view, &base, &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(9)).unwrap().unwrap();
     let write: BTreeSet<Role> = [Role::Write].into_iter().collect();
     let rot = rotate(&a, &write, &view, &base, &[owner_rcpt(p, &pe)], &|_, _| true, &mut rng(7)).unwrap();
     let (mut s, mut v) = (base.clone(), view.clone());
@@ -170,11 +170,11 @@ fn stale_key_actor_box_still_carries() {
     let r0 = v.read.newest().unwrap();
     // K's box is keyed at the superseded write epoch and still opens r0
     let mut kv = ActorEpochs::default();
-    ingest(&a, &s, &Opener::KeyActor { member: k, seed: &seed }, &mut kv, None).unwrap();
+    ingest(&a, &s, &Opener::KeyActor { holder: k, seed: &seed }, &mut kv, None).unwrap();
     assert!(kv.read.reading_secret(&r0).is_some());
-    let deps = [Departure::member(k, Role::Read)];
+    let deps = [Departure::holder(k, Role::Read)];
     let mut held = MemoryHeldActors::default();
-    let key = s.boxes.keys().find(|x| x.member == k).unwrap().clone();
+    let key = s.boxes.keys().find(|x| x.holder == k).unwrap().clone();
     held.stale.insert((key, Role::Read, r0));
     assert!(!may_encrypt_under(&tid(0), &s, &v, Role::Read, &r0, &deps, &held));
     assert_eq!(rotate_first(&tid(0), &s, &v, &read(), &read(), &deps, &held), read());

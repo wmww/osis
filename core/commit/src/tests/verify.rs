@@ -173,10 +173,10 @@ fn verify_refuses_page_items_spec_crdt_8() {
     assert_eq!(e.class(), ErrorClass::BadInput);
 }
 
-// spec/crdt.md §5.6: a keyed map removal is malformed outside the membership-class aspects; the
+// spec/crdt.md §5.6: a keyed map removal is malformed outside the role-class aspects; the
 // keyless form is fine anywhere
 #[test]
-fn keyed_map_removal_only_in_membership_aspects_spec_crdt_5_6() {
+fn keyed_map_removal_only_in_role_class_aspects_spec_crdt_5_6() {
     let (mut b, _) = one_commit();
     let (author, at) = (b.header.author, b.header.ts);
     let dot = osis_crdt::Dot::new(Source::node(t(9)), 4);

@@ -18,7 +18,7 @@ use osis_commit::{Decoded, Form, Header, Kind, Origin};
 use osis_base::{Ak, CommitId, SchemaId, Tid, Ts};
 use osis_crdt::{Dot, Fragment, Shown, Source, SourceKind};
 use osis_schema::core_types as ct;
-use osis_schema::core_types::is_membership_class;
+use osis_schema::core_types::is_role_class;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The snapshot an aspect's writes are imported from where it carries them: its ID, its
@@ -125,7 +125,7 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
     let own = h.form.own_source(h.author, *c);
     let mut deltas = Vec::new();
     for (ai, a) in h.aspects.iter().enumerate() {
-        if a.tid != *t || is_membership_class(a.ak.as_str()) || a.ak.as_str() == "/created" || a.expires.is_some() || !meta.valid.get(ai).copied().unwrap_or(false) || meta.dropped.contains_key(&ai) {
+        if a.tid != *t || is_role_class(a.ak.as_str()) || a.ak.as_str() == "/created" || a.expires.is_some() || !meta.valid.get(ai).copied().unwrap_or(false) || meta.dropped.contains_key(&ai) {
             continue;
         }
         let carrier = carriers.get(&a.ak);
@@ -208,7 +208,7 @@ fn carriers(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeMap<Ak, Carrier>> {
     let mut out = BTreeMap::new();
     let aspects: Vec<(Ak, Vec<(Ts, CommitId)>)> = tx.core.ix.snapshots.iter().filter(|((x, _), _)| x == t).map(|((_, ak), v)| (ak.clone(), v.iter().map(|s| (s.0, s.1)).collect())).collect();
     for (ak, mut snaps) in aspects {
-        if is_membership_class(ak.as_str()) {
+        if is_role_class(ak.as_str()) {
             continue;
         }
         snaps.sort();

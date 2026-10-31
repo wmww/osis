@@ -1,5 +1,5 @@
 //! Share links (spec/permissions.md §9, spec/wire.md §10): K an actor owned by the sharer with
-//! secrets of its own, a member of the target with the link's role; L a key actor from the
+//! secrets of its own, a holder of the target with the link's role; L a key actor from the
 //! link's seed with (r, invite r) on K, listed in K's label steps by static entry. Redeem (an
 //! invite grant signed as L, single use with L's self-removal in the same commit), bearer use,
 //! finalization and revoking a joiner are demotions by a sharer device.
@@ -16,7 +16,7 @@ use crate::Mutation;
 use osis_base::{Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::{KeyActorKeys, Secret32};
-use osis_keys::{MemberKeys, Recipient, box_member, roles_up_to};
+use osis_keys::{HolderKeys, Recipient, box_holder, roles_up_to};
 use osis_label::{Address, ShareLink};
 use osis_schema::Codec;
 use osis_schema::core_types::{self as ct, Edge, Inbox};
@@ -80,7 +80,7 @@ impl Engine {
 
     fn redeem_in(&mut self, l: Tid, link: &ShareLink, grantee: Tid, single_use: bool) -> Result<Done> {
         let k = link.k;
-        let edge = self.roster(&k).get(&l).copied().ok_or(Error::Misuse("the link is no member of K (finalized or unknown)"))?;
+        let edge = self.roster(&k).get(&l).copied().ok_or(Error::Misuse("the link is no holder of K (finalized or unknown)"))?;
         if !edge.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())) {
             return Err(Error::Misuse("the link expired"));
         }
@@ -97,7 +97,7 @@ impl Engine {
     /// redemption (L's edge already gone: its entry is reset again, spec/permissions.md §2), or
     /// to revoke the link. K rotates before its next encryption (L's departure).
     pub fn finalize_link(&mut self, k: &Tid, l: &Tid) -> Result<Done> {
-        self.demote(k, &crate::flows::Demotion { member: *l, new: None, presync: crate::flows::PreSync::Synced })
+        self.demote(k, &crate::flows::Demotion { holder: *l, new: None, presync: crate::flows::PreSync::Synced })
     }
 
     /// The links whose seed this node holds (a sharer-only thing's `/link/seed`, readable on
@@ -179,7 +179,7 @@ impl Engine {
     /// §2); the remaining joiners need a new link. L already gone (a used single-use link):
     /// the joiner alone.
     pub fn revoke_joiner(&mut self, k: &Tid, l: &Tid, joiner: &Tid, presync: crate::flows::PreSync) -> Result<Done> {
-        let d = crate::flows::Demotion { member: *joiner, new: None, presync };
+        let d = crate::flows::Demotion { holder: *joiner, new: None, presync };
         let with_l = self.core.timelines.get(k).is_some_and(|tl| tl.edges_at(None).get(l, k).is_some());
         self.remove_signed(None, k, &d, if with_l { std::slice::from_ref(l) } else { &[] })
     }
@@ -213,8 +213,8 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     // L's edge (r, invite r, until) with its boxes, K's home label listing L, K's inbox
     let epochs = tx.core.epochs(&k).ok_or(Error::Misuse("K's secrets"))?;
     let secrets = secrets_in(tx, &k)?;
-    let rcpt = Recipient { member: l, role: spec.role, keys: MemberKeys::KeyActor { kem: lkeys.kem.public().clone(), seed: None } };
-    let boxes = box_member(&k, &epochs, &secrets, &rcpt, &roles_up_to(spec.role), &mut *tx.rng)?.ok_or(Error::Misuse("L's keys"))?;
+    let rcpt = Recipient { holder: l, role: spec.role, keys: HolderKeys::KeyActor { kem: lkeys.kem.public().clone(), seed: None } };
+    let boxes = box_holder(&k, &epochs, &secrets, &rcpt, &roles_up_to(spec.role), &mut *tx.rng)?.ok_or(Error::Misuse("L's keys"))?;
     let mut m = Mutation::new();
     put_edge(&mut m, k, l, &Edge { role: spec.role, until: spec.until, invite: Some(spec.role), since: None, tied: None })?;
     super::put_secrets(&mut m, k, &boxes, false)?;

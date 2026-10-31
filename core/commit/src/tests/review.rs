@@ -2,7 +2,7 @@
 
 use crate::tests::{sample_header, t, ts};
 use crate::tests::build::{content, key, rng};
-use crate::tests::validate::membership_header;
+use crate::tests::validate::role_header;
 use crate::tests::verify::{TestSecrets, register_delta, sec};
 use crate::*;
 use osis_base::{Ak, Link};
@@ -92,7 +92,7 @@ fn prefix_inputs_mixed_class_bad_input() {
 }
 
 // spec/crypto.md §7: delete levels are exactly those the retention calls for, level 1
-// included, on content and membership commits alike; level 2 only drops for imports.
+// included, on content and role commits alike; level 2 only drops for imports.
 #[test]
 fn delete_levels_strict() {
     let mut h = sample_header();
@@ -103,13 +103,13 @@ fn delete_levels_strict() {
     x.keys.remove(1);
     x.aspects[0].keys = vec![0];
     assert!(x.validate().unwrap_err().to_string().contains("delete levels"), "level 2 missing on a content commit");
-    let mut m = membership_header("/members");
+    let mut m = role_header("/members");
     m.keys.clear();
     m.aspects[0].keys.clear();
-    assert!(m.validate().unwrap_err().to_string().contains("delete levels"), "membership: level 1");
-    let mut b = CommitBuilder::new(Kind::Membership, ts(1_000_000), t(1), t(2), Form::Commit);
+    assert!(m.validate().unwrap_err().to_string().contains("delete levels"), "role commit: level 1");
+    let mut b = CommitBuilder::new(Kind::Role, ts(1_000_000), t(1), t(2), Form::Commit);
     let mut a = AspectWrite::new(t(3), Ak::new("/members").unwrap(), 1, 2, register_delta(t(1), ts(1_000_000), 1, "a"));
-    a.retention = retention::MEMBERSHIP_RETENTION;
+    a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
     assert!(matches!(b.clone().build(&key(), &TestSecrets { admin: false }, &mut MemoryBlobs::default(), &mut rng()), Err(Error::Build(_))));
     let c = b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).unwrap();
@@ -120,13 +120,13 @@ fn delete_levels_strict() {
 // without deltas.
 #[test]
 fn zero_deltas_refused() {
-    let mut h = membership_header("/members");
+    let mut h = role_header("/members");
     h.aspects[0].hashes.clear();
     assert!(matches!(h.validate(), Err(Error::Malformed(_))));
-    let mut b = CommitBuilder::new(Kind::Membership, ts(1_000_000), t(1), t(2), Form::Commit);
+    let mut b = CommitBuilder::new(Kind::Role, ts(1_000_000), t(1), t(2), Form::Commit);
     let mut a = AspectWrite::new(t(3), Ak::new("/members").unwrap(), 1, 2, vec![]);
     a.deltas.clear();
-    a.retention = retention::MEMBERSHIP_RETENTION;
+    a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
     assert!(matches!(b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()), Err(Error::Build(_))));
 }

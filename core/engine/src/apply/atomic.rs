@@ -1,5 +1,5 @@
 //! Atomic apply (spec/commits.md §4): one store transaction joins every valid delta of a commit
-//! after its membership records reach perm, records deaths, receipts, expiry and purges, and
+//! after its role records reach perm, records deaths, receipts, expiry and purges, and
 //! re-judges held deltas when the held set changed; events go out after it is durable.
 
 use super::validity;
@@ -278,9 +278,9 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     let mut held_changed = note_created(tx, &h, blob, &parts)?;
     validity::note_imports(tx.core, &id, &h, &parts)?;
     let view = Arc::new(crate::engine::View::of(&h));
-    if h.kind.is_membership() {
+    if h.kind.is_role() {
         validity::note_required(tx.core, &h, &id, &parts);
-        validity::add_membership(tx, &view, Some(&h), &id, &validity::EdgeParts::of(&h, &parts))?;
+        validity::add_role_commit(tx, &view, Some(&h), &id, &validity::EdgeParts::of(&h, &parts))?;
         held_changed = true;
     }
     if held_changed {
@@ -415,7 +415,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             observe_state(tx, tid, ak)?;
         }
     }
-    let rosters: BTreeSet<Tid> = if h.kind.is_membership() { h.aspects.iter().filter(|a| a.ak.as_str() == "/members" || a.ak.as_str() == "/tenures").map(|a| a.tid).collect() } else { BTreeSet::new() };
+    let rosters: BTreeSet<Tid> = if h.kind.is_role() { h.aspects.iter().filter(|a| a.ak.as_str() == "/members" || a.ak.as_str() == "/tenures").map(|a| a.tid).collect() } else { BTreeSet::new() };
     // a received roster change may end this node's read access (spec/permissions.md §3); its own
     // self-removals drop what they lost once uploaded (`Done::drop_lost`)
     if origin != Origin::Local {
@@ -572,8 +572,8 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     super::receipt::record(tx, &h, id, &parts, received)?;
     let mut held_changed = note_created(tx, &h, merged, &parts)?;
     validity::note_imports(tx.core, id, &h, &parts)?;
-    let edges = h.kind.is_membership() && parts.iter().any(|(ai, _, _)| h.aspects.get(*ai).is_some_and(|a| matches!(a.ak.as_str(), "/members" | "/tenures")));
-    if h.kind.is_membership() {
+    let edges = h.kind.is_role() && parts.iter().any(|(ai, _, _)| h.aspects.get(*ai).is_some_and(|a| matches!(a.ak.as_str(), "/members" | "/tenures")));
+    if h.kind.is_role() {
         // judged with the parts held before (a grant's `/members` part names what its
         // `/secrets` part may box)
         let mut all = parts.clone();
@@ -606,9 +606,9 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     // keyset the commit replaced is no longer known; its removed keys come from the index of
     // held keyed entries, and a write whose removed keys are unknown waits as usual). A late
     // `/keys` part likewise applies the held `/secrets` of its thing again: applied without
-    // the keyset (a membership commit applies from any held part), they made no rotation.
+    // the keyset (a role commit applies from any held part), they made no rotation.
     let mut with_keys = parts.clone();
-    if h.kind == osis_commit::Kind::Membership {
+    if h.kind == osis_commit::Kind::Role {
         let late_on = |ak: &str| -> BTreeSet<Tid> { parts.iter().filter_map(|(ai, _, _)| h.aspects.get(*ai)).filter(|a| a.ak.as_str() == ak).map(|a| a.tid).collect() };
         let (late_secrets, late_keys) = (late_on("/secrets"), late_on("/keys"));
         for (ai, a) in h.aspects.iter().enumerate() {
@@ -656,7 +656,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         joined.push((a.tid, a.ak.clone(), snap, held_deaths(ch, before.as_ref())));
     }
     // the record's `node/edges` row, read once: it is also the commit's edge writes again
-    let all = if h.kind.is_membership() { Some(super::edge_parts_of(tx, id, &h, merged.clone())?) } else { None };
+    let all = if h.kind.is_role() { Some(super::edge_parts_of(tx, id, &h, merged.clone())?) } else { None };
     tx.put_commit(id, merged, &meta, Shred::No, all.as_ref())?;
     rebuild_all(tx, &vouching, &mut changed, &mut touched)?;
     refill(tx, &h, id, &uncarried, &mut changed, &mut touched)?;
@@ -672,7 +672,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     }
     if edges && let Some(all) = &all {
         tx.core.ix.held.remove(id);
-        validity::add_membership(tx, &meta.view, Some(&h), id, all)?;
+        validity::add_role_commit(tx, &meta.view, Some(&h), id, all)?;
         held_changed = true;
     }
     if held_changed {
@@ -768,7 +768,7 @@ fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: 
     if ingest_secrets_keys(tx, actor, boxes, history)? && let Some(e) = tx.core.ix.secrets.get(actor) {
         let b = crate::engine::secrets::encode_epochs(e);
         tx.txn.put_local(&[b"k/".as_slice(), actor.as_bytes()].concat(), &b, Shred::Yes)?;
-        // boxes sealed to this actor elsewhere open now (membership flows hook)
+        // boxes sealed to this actor elsewhere open now (role flows hook)
         crate::flows::reopen_dependents(tx, *actor)?;
     }
     #[cfg(test)]
@@ -808,7 +808,7 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             {
                 let b = crate::engine::secrets::encode_epochs(e);
                 tx.txn.put_local(&[b"k/".as_slice(), tid.as_bytes()].concat(), &b, Shred::Yes)?;
-                // boxes sealed to this actor elsewhere open now (membership flows hook)
+                // boxes sealed to this actor elsewhere open now (role flows hook)
                 crate::flows::reopen_dependents(tx, *tid)?;
             }
         }

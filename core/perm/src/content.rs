@@ -1,5 +1,5 @@
 //! Layer 2 (spec/permissions.md §5.2): per-delta validity of content and of the
-//! membership-class writes judged like content, and the node-form overlap rule
+//! role-class writes judged like content, and the node-form overlap rule
 //! (spec/commits.md §4).
 
 use crate::graph::{EdgesAt, View};
@@ -122,11 +122,11 @@ impl Timeline {
             let i = r.pos;
             r.pos += 1;
             // `best` is exact while nothing expired, else at least the roles
-            let Some(&level) = r.best.get(&c.member) else { continue };
+            let Some(&level) = r.best.get(&c.holder) else { continue };
             let ts = c.point.ts;
             self.advance(&mut edges, pos, i);
-            let old = edges.get(&c.member, &c.target).copied();
-            edges.set(c.member, c.target, c.edge);
+            let old = edges.get(&c.holder, &c.target).copied();
+            edges.set(c.holder, c.target, c.edge);
             pos = i + 1;
             let view = View::at(&self.input.owners, &edges, Some(ts));
             let gives = |e: Option<Edge>| e.filter(|e| e.alive_at(Some(ts))).map(|e| level.min(e.role));
@@ -139,7 +139,7 @@ impl Timeline {
                     }
                 }
             } else if now > cur {
-                let (raised, until) = view.roles_raised_expiring(&r.best, &[c.member]);
+                let (raised, until) = view.roles_raised_expiring(&r.best, &[c.holder]);
                 for (t, role) in &raised {
                     if *role >= required {
                         r.first.entry(*t).or_insert(Some(c.point));
@@ -167,7 +167,7 @@ impl Timeline {
             return Some(None);
         }
         for c in &self.walked.history {
-            edges.set(c.member, c.target, c.edge);
+            edges.set(c.holder, c.target, c.edge);
             if holds(&edges, c.point.ts) {
                 return Some(Some(c.point));
             }

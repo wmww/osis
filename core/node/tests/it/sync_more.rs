@@ -27,7 +27,7 @@ fn commits_under(net: &mut Net, n: usize, l: &osis_base::LabelId) -> Vec<(osis_b
 }
 
 // spec/permissions.md §4, spec/sync.md §3, §5: every node placing under a label puts its node
-// card and heartbeat there, a reader by deposit; co-members apply them.
+// card and heartbeat there, a reader by deposit; co-holders apply them.
 #[test]
 fn certificates_and_heartbeats_spec_permissions_4() {
     let mut net = Net::new();
@@ -163,7 +163,7 @@ fn reconciliation_fallback_spec_sync_6() {
 }
 
 // spec/sync.md §2-§3, spec/crypto.md §5: an inbox blob sealed to an actor's read key and
-// deposited under its inbox (its home label) is opened by a member device and applied.
+// deposited under its inbox (its home label) is opened by a holder device and applied.
 #[test]
 fn inbox_delivery_spec_sync_3() {
     let mut net = Net::new();
@@ -235,7 +235,7 @@ fn label_published_under_home_label_spec_sync_2() {
 
 // spec/sync.md §2 (replacement): the admin secret the old label registers is rotated first; a
 // new label at the next index takes the live blobs; the old one is marked replaced and no
-// longer synced by members; the admin places the replacement's `/label` commit under it,
+// longer synced by holders; the admin places the replacement's `/label` commit under it,
 // deletes its content entries there, and then stops syncing it.
 #[test]
 fn label_replacement_spec_sync_2() {
@@ -281,10 +281,10 @@ fn label_replacement_spec_sync_2() {
 }
 
 // spec/permissions.md §4, §6; spec/sync.md §3: a node's chain to a group runs node → P → T → G
-// by ownership; T's roster snapshot names none of the chain (its member is another node), so
+// by ownership; T's roster snapshot names none of the chain (its holder is another node), so
 // the certificate copy under G's label carries T's reset-only deltas alone: the verifier, a
 // reader of G only, holds the snapshot as an epoch start with an empty roster, as perm's
-// certificate closure projects it, and never sees T's member.
+// certificate closure projects it, and never sees T's holder.
 #[test]
 fn nested_chain_empty_projection_spec_perm_6() {
     let mut net = Net::new();
@@ -338,7 +338,7 @@ fn nested_chain_empty_projection_spec_perm_6() {
     let held = osis_commit::CommitBlob::decode(&net.engine(c).commit_bytes(&snap).unwrap().expect("c holds the snapshot")).unwrap();
     let held: BTreeSet<(usize, usize)> = held.parts.iter().map(|p| (p.ai, p.di)).collect();
     assert_eq!(held, parts, "c holds the reset-only deltas alone");
-    assert!(net.engine(c).roster(&t).is_empty(), "T's member is not shown to c");
+    assert!(net.engine(c).roster(&t).is_empty(), "T's holder is not shown to c");
     let _ = x;
 }
 
@@ -381,7 +381,7 @@ fn replaced_label_reregistered_where_lost_spec_sync_2() {
 }
 
 // spec/sync.md §2 (replacement): a host of the old label the admin cannot reach never settles a
-// pass; the admin stops syncing the old label after `MEMBERSHIP_KEEP` all the same.
+// pass; the admin stops syncing the old label after `ROLE_KEEP` all the same.
 #[test]
 fn replaced_label_retired_with_host_unreachable_spec_sync_2() {
     let mut net = Net::new();
@@ -401,10 +401,10 @@ fn replaced_label_retired_with_host_unreachable_spec_sync_2() {
     net.run();
     let labels: BTreeSet<_> = net.sync(a).labels().into_iter().map(|(_, l)| l.id).collect();
     assert_eq!(labels, BTreeSet::from([new, old]), "not done at the unreachable host");
-    net.advance(osis_base::format::MEMBERSHIP_KEEP_MS + 1);
+    net.advance(osis_base::format::ROLE_KEEP_MS + 1);
     net.run();
     let labels: Vec<_> = net.sync(a).labels().into_iter().map(|(_, l)| l.id).collect();
-    assert_eq!(labels, vec![new], "retired after MEMBERSHIP_KEEP");
+    assert_eq!(labels, vec![new], "retired after ROLE_KEEP");
 }
 
 // spec/sync.md §2 (replacement), spec/permissions.md §2 (`until`): an admin keeps a replaced
@@ -680,7 +680,7 @@ fn removal_placed_first_under_every_label_spec_perm_3() {
     let ct_ = net.tid(c);
     // a content write not yet uploaded, then the removal
     let after = net.write(a, t, "after");
-    let done = net.engine(a).demote(&g, &Demotion { member: ct_, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: ct_, new: None, presync: PreSync::Synced }).unwrap();
     assert!(done.deliveries.iter().any(|d| matches!(d, Delivery::First { .. })));
     let removal = done.commits[0];
     let h = net.engine(a).header(&removal).unwrap();
@@ -1197,7 +1197,7 @@ fn grant_by_inbox_writes_before_keys_spec_crypto_7() {
     let h = net.engine(b).header(&c).unwrap();
     let admin = net.engine(a).epochs(&g).unwrap().admin.newest_held().map(|(_, s)| osis_crypto::DeleteSecret::derive(s).verifying_key().to_bytes()).unwrap();
     assert!(h.keys.iter().any(|k| k.level == 1 && k.key == admin), "b lists g's admin delete key");
-    let done = net.engine(b).demote(&g, &Demotion { member: bob.person, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(b).demote(&g, &Demotion { holder: bob.person, new: None, presync: PreSync::Synced }).unwrap();
     let _ = done;
 }
 
@@ -1273,11 +1273,11 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     assert!(h.keys.iter().all(|k| k.key != ck.to_bytes()), "no forged hint is used");
 }
 
-// spec/sync.md §3, §6; spec/permissions.md §4: a membership change re-judges only the labels
+// spec/sync.md §3, §6; spec/permissions.md §4: a role change re-judges only the labels
 // whose verdicts can read it: an edge on an actor no closure reaches judges no body and no
 // pass judges everything; one on a label's group judges that label in full, not the other.
 #[test]
-fn membership_change_judges_only_its_labels_spec_sync_6() {
+fn role_change_judges_only_its_labels_spec_sync_6() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -1337,7 +1337,7 @@ fn departed_reader_connected_across_new_step_spec_sync_5() {
     let (at, rt, xt) = (net.tid(a), net.tid(r), net.tid(x));
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin), (rt, Role::Read)]);
-    remove_member(e, g, xt, &rs, 45);
+    remove_holder(e, g, xt, &rs, 45);
     net.run();
     assert_eq!(net.host_path(host, &l).len(), 2, "a newer step");
     let before: BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();

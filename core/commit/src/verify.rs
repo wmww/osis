@@ -66,11 +66,11 @@ pub fn verify_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
 }
 
 /// A keyed map removal or tombstone (a keyed entry record with a reset) outside the
-/// membership-class aspects is malformed: an app map's key must not outlive its entry
+/// role-class aspects is malformed: an app map's key must not outlive its entry
 /// (spec/crdt.md §5.6).
 pub fn check_entry_keys(ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> {
-    if !osis_schema::core_types::is_membership_class(ak) && f.keyed_resets() {
-        return Err(Error::Malformed("keyed map removal outside a membership-class aspect"));
+    if !osis_schema::core_types::is_role_class(ak) && f.keyed_resets() {
+        return Err(Error::Malformed("keyed map removal outside a role-class aspect"));
     }
     Ok(())
 }

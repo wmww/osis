@@ -6,14 +6,14 @@
 use crate::common;
 
 use common::*;
-use membership_model::Rng;
+use roles_model::Rng;
 use osis_base::Role::{Admin, Read, Write};
 use osis_base::Tid;
 use osis_perm::{At, Timeline, Timelines};
 use std::time::Instant;
 
 /// An organization: key actor K owns root actor R (10 admins) owning 20 teams; each team owns
-/// 10 docs; 300 member nodes; `n` edge writes (grants, changes, removals on teams and docs)
+/// 10 docs; 300 holder nodes; `n` edge writes (grants, changes, removals on teams and docs)
 /// by admins, a few percent received late.
 fn org(n: usize, rng: &mut Rng) -> (World, Vec<Tid>) {
     let (w, nodes, _) = org_root(n, rng);
@@ -32,12 +32,12 @@ fn org_root(n: usize, rng: &mut Rng) -> (World, Vec<Tid>, Tid) {
     for (i, a) in admins.iter().enumerate() {
         w.set(k, root, *a, edge(Admin), 0, &[(nodes[i], 0)]);
     }
-    let members = &nodes[11..];
+    let holders = &nodes[11..];
     for i in 0..n {
         let t = 1 + i as u64;
         let author = admins[rng.below(admins.len())];
         let target = if rng.below(3) == 0 { teams[rng.below(teams.len())] } else { docs[rng.below(docs.len())] };
-        let member = if rng.below(10) == 0 { teams[rng.below(teams.len())] } else { members[rng.below(members.len())] };
+        let holder = if rng.below(10) == 0 { teams[rng.below(teams.len())] } else { holders[rng.below(holders.len())] };
         let e = match rng.below(5) {
             0 => None,
             1 => edge(Read),
@@ -46,7 +46,7 @@ fn org_root(n: usize, rng: &mut Rng) -> (World, Vec<Tid>, Tid) {
         };
         let late = rng.below(25) == 0;
         let recv: Vec<(Tid, u64)> = admins.iter().map(|a| (*a, if late { LATE } else { t })).collect();
-        w.set(author, target, member, e, t, &recv);
+        w.set(author, target, holder, e, t, &recv);
     }
     (w, nodes, root)
 }
@@ -96,8 +96,8 @@ fn bench_10k_edges() {
         let ta = Instant::now();
         for i in 0..100u8 {
             let id = osis_base::CommitId([i; 32]);
-            let op = osis_perm::EdgeOp { target: doc, member: nodes[210 + usize::from(i % 20)], edge: edge(if i % 2 == 0 { Read } else { Write }), dots: osis_perm::Dots::Commit };
-            held3.add_commit(osis_perm::MembershipCommit { id, ts: ts(n as u64 + 100 + u64::from(i)), author: nodes[1], actor: nodes[1], frontier: None, ops: vec![op] });
+            let op = osis_perm::EdgeOp { target: doc, holder: nodes[210 + usize::from(i % 20)], edge: edge(if i % 2 == 0 { Read } else { Write }), dots: osis_perm::Dots::Commit };
+            held3.add_commit(osis_perm::RoleCommit { id, ts: ts(n as u64 + 100 + u64::from(i)), author: nodes[1], actor: nodes[1], frontier: None, ops: vec![op] });
             inc.update_touched(&held3, &touched);
             appended += inc.appended();
         }
@@ -130,25 +130,25 @@ fn bench_10k_edges() {
         }
         let rejudge = t7.elapsed();
         drop(fresh);
-        // members' deltas: one by each member granted write or more, just after the grant
+        // holders' deltas: one by each holder granted write or more, just after the grant
         let fresh = Timeline::evaluate(&held);
-        let mut by_members = Vec::new();
+        let mut by_holders = Vec::new();
         for id in fresh.applied().keys() {
             let osis_perm::WriteId::Op(c, k) = id else { continue };
-            let cm = fresh.membership_commit(c).unwrap();
+            let cm = fresh.role_commit(c).unwrap();
             let o = &cm.ops[*k as usize];
-            if o.edge.is_some_and(|e| e.role >= Write) && nodes.contains(&o.member) {
+            if o.edge.is_some_and(|e| e.role >= Write) && nodes.contains(&o.holder) {
                 let p = cm.point();
-                by_members.push((osis_perm::Point { ts: ts(p.ts.wall_ms().0 + 1), node: o.member, commit: osis_base::CommitId([0x11; 32]) }, o.target));
+                by_holders.push((osis_perm::Point { ts: ts(p.ts.wall_ms().0 + 1), node: o.holder, commit: osis_base::CommitId([0x11; 32]) }, o.target));
             }
         }
-        by_members.truncate(1000);
+        by_holders.truncate(1000);
         let t7b = Instant::now();
-        let mut valid_members = 0;
-        for (p, t) in &by_members {
-            valid_members += usize::from(fresh.delta_valid(*p, t, "/app/x", osis_perm::Dots::Commit, Write) == osis_perm::Validity::Valid);
+        let mut valid_holders = 0;
+        for (p, t) in &by_holders {
+            valid_holders += usize::from(fresh.delta_valid(*p, t, "/app/x", osis_perm::Dots::Commit, Write) == osis_perm::Validity::Valid);
         }
-        let rejudge_members = t7b.elapsed();
+        let rejudge_holders = t7b.elapsed();
         drop(fresh);
         // what a demotion's frontier lists (§5.1): two admins' chain certificates on a doc
         let t8 = Instant::now();
@@ -200,11 +200,11 @@ fn bench_10k_edges() {
         }
         eprintln!("{n} edge writes: walk saved {save:?} ({bytes} bytes), restored {restore:?}, restored and continued over {} more {restore_stale:?}", n / 100);
         eprintln!(
-            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), one more write around its thing {appends:?} (mean of 100, {appended} appended), a late write in the middle {late:?} (from scratch {scratch3:?}, {passes3} passes), one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?}), {} deltas judged cold {rejudge:?}, {} members' deltas cold {rejudge_members:?} ({valid_members} valid), chain certificates of an admin {cert:?} ({} commits, {} snapshots), of another {cert2:?}",
+            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), one more write around its thing {appends:?} (mean of 100, {appended} appended), a late write in the middle {late:?} (from scratch {scratch3:?}, {passes3} passes), one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?}), {} deltas judged cold {rejudge:?}, {} holders' deltas cold {rejudge_holders:?} ({valid_holders} valid), chain certificates of an admin {cert:?} ({} commits, {} snapshots), of another {cert2:?}",
             tl.passes(),
             tl.dropped().len(),
             deltas.len(),
-            by_members.len(),
+            by_holders.len(),
             certs.commits.len(),
             certs.snapshots.len()
         );
@@ -212,7 +212,7 @@ fn bench_10k_edges() {
 }
 
 // spec: none (cost measurement, issues/perm-eval-cost.md): an owner chain of depth d (each thing
-// owned by the previous), one member granted at the top, 100 edge writes at the bottom; evaluate
+// owned by the previous), one holder granted at the top, 100 edge writes at the bottom; evaluate
 // and a role query at the leaf.
 #[test]
 #[ignore]
@@ -265,7 +265,7 @@ fn bench_certificates() {
 
 // spec: none (cost measurement, issues/perm-eval-cost.md): layer-2 re-judging alone on the org
 // history (`OSIS_BENCH_N`, default 10^4), for profiling: 1000 admins' deltas (one per applied
-// write, by its author on its target) and members' deltas (one by each member granted write,
+// write, by its author on its target) and holders' deltas (one by each holder granted write,
 // just after the grant), each on a fresh timeline.
 #[test]
 #[ignore]
@@ -281,22 +281,22 @@ fn bench_deltas() {
     }
     let admins = t0.elapsed();
     let fresh = Timeline::evaluate(&held);
-    let mut by_members = Vec::new();
+    let mut by_holders = Vec::new();
     for id in fresh.applied().keys() {
         let osis_perm::WriteId::Op(c, k) = id else { continue };
-        let cm = fresh.membership_commit(c).unwrap();
+        let cm = fresh.role_commit(c).unwrap();
         let o = &cm.ops[*k as usize];
-        if o.edge.is_some_and(|e| e.role >= Write) && nodes.contains(&o.member) {
+        if o.edge.is_some_and(|e| e.role >= Write) && nodes.contains(&o.holder) {
             let p = cm.point();
-            by_members.push((osis_perm::Point { ts: ts(p.ts.wall_ms().0 + 1), node: o.member, commit: osis_base::CommitId([0x11; 32]) }, o.target));
+            by_holders.push((osis_perm::Point { ts: ts(p.ts.wall_ms().0 + 1), node: o.holder, commit: osis_base::CommitId([0x11; 32]) }, o.target));
         }
     }
-    by_members.truncate(1000);
+    by_holders.truncate(1000);
     let t1 = Instant::now();
-    for (p, t) in &by_members {
+    for (p, t) in &by_holders {
         let _ = fresh.delta_valid(*p, t, "/app/x", osis_perm::Dots::Commit, Write);
     }
-    eprintln!("{n} edge writes: {} admins' deltas cold {admins:?}, {} members' deltas cold {:?}", deltas.len(), by_members.len(), t1.elapsed());
+    eprintln!("{n} edge writes: {} admins' deltas cold {admins:?}, {} holders' deltas cold {:?}", deltas.len(), by_holders.len(), t1.elapsed());
 }
 
 // spec: none (cost measurement, issues/perm-eval-cost.md): late writes in the middle of the org
@@ -326,10 +326,10 @@ fn bench_late_write() {
             }
         }
     }
-    let held_member = last.iter().find(|(_, e)| e.is_some()).map(|(m, _)| *m).unwrap();
+    let held_holder = last.iter().find(|(_, e)| e.is_some()).map(|(m, _)| *m).unwrap();
     let cases = [
         ("a read grant", nodes[2], doc, nodes[201], edge(Read)),
-        ("a removal", nodes[3], doc, held_member, None),
+        ("a removal", nodes[3], doc, held_holder, None),
         ("an admin grant", nodes[4], doc, nodes[202], edge(Admin)),
         ("a write grant on a team", nodes[5], team, nodes[203], edge(Write)),
         ("a read grant by the top", nodes[0], doc, nodes[204], edge(Read)),

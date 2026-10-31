@@ -1,9 +1,9 @@
-//! The membership timeline (spec/permissions.md §5.1) and its queries: roster, effective role,
+//! The role timeline (spec/permissions.md §5.1) and its queries: roster, effective role,
 //! effective invite and authority class at a point, the applied and dropped edge writes.
 
 use crate::graph::{Class, Edges, EdgesAt, Owners, Standing, View};
 use crate::held::HeldSet;
-use crate::types::{Edge, MembershipCommit, Point, RosterSnapshot, WriteId};
+use crate::types::{Edge, RoleCommit, Point, RosterSnapshot, WriteId};
 use crate::walk::{self, Applied, Demotion, Input};
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
@@ -94,7 +94,7 @@ fn checkpoints(w: &walk::Walked, mut out: Checkpoints) -> Checkpoints {
             out.push((i, Arc::new(e.clone())));
             next += CHECKPOINT;
         }
-        e.set(c.member, c.target, c.edge);
+        e.set(c.holder, c.target, c.edge);
     }
     out
 }
@@ -165,7 +165,7 @@ impl Timeline {
         }
     }
 
-    /// This timeline for `held`, which holds the same roster snapshots, every membership commit
+    /// This timeline for `held`, which holds the same roster snapshots, every role commit
     /// walked here, maybe more, and maybe new things, `/created` records and nodes (equal to
     /// `evaluate`). Before the first point `p` where the walk meets anything new (a new commit,
     /// or an item naming a thing whose owner link is new, one below it, or a new node), the
@@ -175,7 +175,7 @@ impl Timeline {
     /// rolled back to `p` (or to the first write a drop found after it dropped, D keeping what
     /// was found before) and goes on from there instead of starting over. `None` when that
     /// does not hold (other snapshots, a node gone that is not now owned, a new node owning a
-    /// thing walked before, a membership cycle after epoch starts changed, a record changed
+    /// thing walked before, a role cycle after epoch starts changed, a record changed
     /// under its ID): evaluate.
     pub fn extend(mut self, held: &dyn HeldSet) -> Option<Timeline> {
         let input = Input::gather(held);
@@ -268,7 +268,7 @@ impl Timeline {
         }))
     }
 
-    /// This timeline with membership commits `new` added (not held here, on things of this
+    /// This timeline with role commits `new` added (not held here, on things of this
     /// timeline, by and for its nodes or nodes that reach nothing here) and the `/created` of
     /// key actors `keys` new here (nodes `new` names, nothing else held of them): `extend`
     /// without gathering the held set again. Each commit, in timeline order, is placed in the walk
@@ -276,7 +276,7 @@ impl Timeline {
     /// later item reads what it changes); from the first that is not, the walk goes on from
     /// it. `Err(self)`, unchanged, when `extend` would not hold or the inputs would change
     /// otherwise (`Input::can_append`).
-    pub fn append(mut self, new: &[Arc<MembershipCommit>], keys: &[(Tid, CreationRecord)]) -> Result<Timeline, Box<Timeline>> {
+    pub fn append(mut self, new: &[Arc<RoleCommit>], keys: &[(Tid, CreationRecord)]) -> Result<Timeline, Box<Timeline>> {
         if new.is_empty() {
             return Ok(self);
         }
@@ -294,7 +294,7 @@ impl Timeline {
         for (j, c) in new.iter().enumerate() {
             let p = c.point();
             let first: BTreeMap<Tid, Option<Point>> = walk::written_on(c).map(|t| (t, self.input.first_write.get(&(c.author, t)).copied())).collect();
-            let mut fresh: BTreeSet<Tid> = c.ops.iter().map(|o| o.member).filter(|m| self.input.owners.owner_actor(m).is_none()).collect();
+            let mut fresh: BTreeSet<Tid> = c.ops.iter().map(|o| o.holder).filter(|m| self.input.owners.owner_actor(m).is_none()).collect();
             fresh.extend(c.ops.iter().map(|o| o.target).filter(|t| self.input.owners.is_key(t)));
             fresh.insert(c.author);
             fresh.retain(|t| !self.input.nodes.contains(t));
@@ -387,7 +387,7 @@ impl Timeline {
             None => (self.walked.initial.clone(), 0),
         };
         for x in self.walked.history.iter().take(h).skip(pos) {
-            e.set(x.member, x.target, x.edge);
+            e.set(x.holder, x.target, x.edge);
         }
         e
     }
@@ -396,7 +396,7 @@ impl Timeline {
     /// `Walked::insert`, which no later change touches the edges of: each later kept state
     /// moves by `n` and takes them; answers past `p` go.
     fn inserted(&mut self, h: usize, n: usize, p: Point) {
-        let changes: Vec<(Tid, Tid, Option<Edge>)> = self.walked.history.iter().skip(h).take(n).map(|c| (c.member, c.target, c.edge)).collect();
+        let changes: Vec<(Tid, Tid, Option<Edge>)> = self.walked.history.iter().skip(h).take(n).map(|c| (c.holder, c.target, c.edge)).collect();
         // a history that was empty kept no state: the initial one, so later gaps get split
         if self.checkpoints.is_empty() {
             self.checkpoints.push((0, Arc::new(self.walked.initial.clone())));
@@ -414,7 +414,7 @@ impl Timeline {
         {
             let mut e = (*base).clone();
             for c in self.walked.history.iter().skip(i).take(CHECKPOINT) {
-                e.set(c.member, c.target, c.edge);
+                e.set(c.holder, c.target, c.edge);
             }
             self.checkpoints.insert(k, (i + CHECKPOINT, Arc::new(e)));
         }
@@ -426,7 +426,7 @@ impl Timeline {
                 while let Some((j, s)) = cps.next_if(|x| x.0 == i) {
                     debug_assert!(**s == e, "kept state {j} after an insert at {h}");
                 }
-                e.set(c.member, c.target, c.edge);
+                e.set(c.holder, c.target, c.edge);
             }
             debug_assert!(cps.next().is_none(), "kept states past the history");
         }
@@ -475,24 +475,24 @@ impl Timeline {
     pub fn falls(&self, node: &Tid, thing: &Tid) -> &[crate::walk::Fall] {
         self.walked.falls.get(&(*node, *thing)).map_or(&[], |v| v.as_slice())
     }
-    /// Whether edge (`member`, `target`) was lowered by a write that audits nothing (a
+    /// Whether edge (`holder`, `target`) was lowered by a write that audits nothing (a
     /// self-removal, §2) with no explicit write on it since (§5.1 step 4: the next one restores
     /// it). An expiry by `until` is read from the edge itself.
-    pub fn lowered_unaudited(&self, member: &Tid, target: &Tid) -> bool {
-        self.walked.prior.contains_key(&(*member, *target))
+    pub fn lowered_unaudited(&self, holder: &Tid, target: &Tid) -> bool {
+        self.walked.prior.contains_key(&(*holder, *target))
     }
-    pub fn membership_commit(&self, id: &CommitId) -> Option<&Arc<MembershipCommit>> {
+    pub fn role_commit(&self, id: &CommitId) -> Option<&Arc<RoleCommit>> {
         self.input.commits.get(id)
     }
     pub fn roster_snapshot(&self, id: &CommitId) -> Option<&Arc<RosterSnapshot>> {
         self.input.snaps.get(id)
     }
 
-    /// The highest role edge (`member`, `target`) held anywhere in the walk (its initial state
+    /// The highest role edge (`holder`, `target`) held anywhere in the walk (its initial state
     /// and every change).
-    pub fn highest_edge(&self, member: &Tid, target: &Tid) -> Option<Role> {
-        let init = self.walked.initial.get(member, target).map(|e| e.role);
-        self.walked.history.iter().filter(|c| c.member == *member && c.target == *target).filter_map(|c| c.edge.map(|e| e.role)).chain(init).max()
+    pub fn highest_edge(&self, holder: &Tid, target: &Tid) -> Option<Role> {
+        let init = self.walked.initial.get(holder, target).map(|e| e.role);
+        self.walked.history.iter().filter(|c| c.holder == *holder && c.target == *target).filter_map(|c| c.edge.map(|e| e.role)).chain(init).max()
     }
 
     /// The edge state just before `point` (`None`: the current state).
@@ -515,14 +515,14 @@ impl Timeline {
             pos = *i;
         }
         for c in self.walked.history.iter().take(n).skip(pos) {
-            e.set(c.member, c.target, c.edge);
+            e.set(c.holder, c.target, c.edge);
         }
     }
 
     /// The roster of `thing` (§5.1): its edges alive at `at`.
     pub fn roster(&self, thing: &Tid, at: At) -> BTreeMap<Tid, Edge> {
         let edges = self.edges_at(at.point);
-        edges.members(thing).filter(|(_, e)| e.alive_at(at.ts)).map(|(m, e)| (*m, *e)).collect()
+        edges.holders(thing).filter(|(_, e)| e.alive_at(at.ts)).map(|(m, e)| (*m, *e)).collect()
     }
 
     /// `f` over the view at `at` and `node`'s roles there.

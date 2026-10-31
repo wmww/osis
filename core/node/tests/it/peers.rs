@@ -17,7 +17,7 @@ fn reach(net: &mut Net, n: usize, key: u8) {
     net.actions(n, acts);
 }
 
-// spec/sync.md §5 (member peer), §10: two members of a group whose label names no host sync
+// spec/sync.md §5 (co-reader peer), §10: two holders of a group whose label names no host sync
 // it directly: each dials the other by the dialable key in its `/reach` and is served the label
 // through the host engine over the other's label state; writes flow both ways.
 #[test]
@@ -37,10 +37,10 @@ fn co_readers_sync_without_host_spec_sync_5() {
     assert!(net.sync(a).is_idle() && net.sync(b).is_idle());
 }
 
-// spec/sync.md §5, §10: a reader node with only a member peer reachable gets the writer's
+// spec/sync.md §5, §10: a reader node with only a co-reader peer reachable gets the writer's
 // content; the peer relays nothing it may not originate.
 #[test]
-fn reader_served_by_member_peer_spec_sync_5() {
+fn reader_served_by_holder_peer_spec_sync_5() {
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let r = net.node(2, &[]);
@@ -53,7 +53,7 @@ fn reader_served_by_member_peer_spec_sync_5() {
 }
 
 // spec/sync.md §5, §10: co-readers are the nodes with a `/reach` this node holds that may read
-// a label it syncs; a node with `/reach` that is no member is not dialed, and nothing is dialed
+// a label it syncs; a node with `/reach` that is no holder is not dialed, and nothing is dialed
 // while it is the only one known.
 #[test]
 fn co_reader_selection_spec_sync_5() {

@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! A replaced label keeps membership-class commits and certificates only (spec/sync.md §2): the
+//! A replaced label keeps role-class commits and certificates only (spec/sync.md §2): the
 //! chunk and page entries of its content commits go with them.
 
 use crate::net;

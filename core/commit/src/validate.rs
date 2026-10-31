@@ -6,7 +6,7 @@ use crate::retention::{CREATED, check_retention, delete_levels, fixed_retention}
 use crate::Error;
 use osis_base::format::{DELETE_AUTHOR, FORMAT_VERSION};
 use osis_schema::PurgeBy;
-use osis_schema::core_types::is_membership_class;
+use osis_schema::core_types::is_role_class;
 
 const ROSTER_AKS: [&str; 2] = ["/members", "/tenures"];
 
@@ -32,9 +32,9 @@ impl Header {
         ord(strictly_ascending(&self.origins, |o| o.commit), "origins not sorted and distinct")?;
 
         let kind = self.kind;
-        // membership writes are commit form, so no later commit can void them (spec/commits.md §3)
-        if matches!(kind, Kind::Membership | Kind::RosterSnapshot) && self.form == crate::header::Form::Node {
-            return Err(Error::Invalid("node-form membership commit"));
+        // role writes are commit form, so no later commit can void them (spec/commits.md §3)
+        if matches!(kind, Kind::Role | Kind::RosterSnapshot) && self.form == crate::header::Form::Node {
+            return Err(Error::Invalid("node-form role commit"));
         }
         let wall = self.ts.wall_ms().0;
         let mut used = vec![false; self.keys.len()];
@@ -67,7 +67,7 @@ impl Header {
                 return Err(Error::Invalid("more than one delta on an aspect of this kind"));
             }
             // kinds and aspect classes
-            if ak != CREATED && is_membership_class(ak) != kind.is_membership() {
+            if ak != CREATED && is_role_class(ak) != kind.is_role() {
                 return Err(Error::Invalid("aspect of the wrong class for the commit kind"));
             }
             // `/created` is kept forever, so a snapshot or import never carries it: each part is
@@ -78,7 +78,7 @@ impl Header {
             }
             match kind {
                 Kind::RosterSnapshot if !ROSTER_AKS.contains(&ak) => return Err(Error::Invalid("roster snapshot of a non-roster aspect")),
-                Kind::MembershipSnapshot if ROSTER_AKS.contains(&ak) => return Err(Error::Invalid("compaction snapshot of /members or /tenures")),
+                Kind::RoleSnapshot if ROSTER_AKS.contains(&ak) => return Err(Error::Invalid("compaction snapshot of /members or /tenures")),
                 _ => {}
             }
             check_retention(&a.retention)?;
@@ -97,8 +97,8 @@ impl Header {
                 if fixed_retention(ak).is_some() {
                     return Err(Error::Invalid("expires on a fixed-retention aspect"));
                 }
-                if kind.is_membership() {
-                    return Err(Error::Invalid("expires on a membership commit"));
+                if kind.is_role() {
+                    return Err(Error::Invalid("expires on a role commit"));
                 }
                 if !self.purge.is_empty() {
                     return Err(Error::Invalid("expires on a commit with a purge request"));
@@ -129,15 +129,15 @@ impl Header {
             }
         }
         if !self.purge.is_empty() {
-            if kind.is_membership() {
-                return Err(Error::Invalid("purge request on a membership commit"));
+            if kind.is_role() {
+                return Err(Error::Invalid("purge request on a role commit"));
             }
-            if self.purge.iter().any(|p| is_membership_class(p.ak().as_str())) {
-                return Err(Error::Invalid("purge request naming membership deltas"));
+            if self.purge.iter().any(|p| is_role_class(p.ak().as_str())) {
+                return Err(Error::Invalid("purge request naming role-class deltas"));
             }
         }
-        if self.frontier.is_some() && kind != Kind::Membership {
-            return Err(Error::Invalid("frontier outside a membership commit"));
+        if self.frontier.is_some() && kind != Kind::Role {
+            return Err(Error::Invalid("frontier outside a role commit"));
         }
         if self.origins.is_empty() == (kind == Kind::Import) {
             return Err(Error::Invalid("origins present iff import"));
