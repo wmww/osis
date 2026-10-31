@@ -1454,6 +1454,23 @@ impl SyncEngine {
         }
     }
 
+    /// Fetches of `l` on `conn` answered (`refused` false) or refused: they leave
+    /// `reconcile_fetches`; a refused one a reconciliation asked for reconciles the label again
+    /// (on this connection's next sync, `sync_label`, or the next periodic pass).
+    pub(crate) fn eph_fetch_done(&mut self, conn: ConnId, l: LabelId, ids: &[BlobId], refused: bool) {
+        let Some(asked) = self.eph.reconcile_fetches.get_mut(&(conn, l)) else { return };
+        let mut lost = false;
+        for b in ids {
+            lost |= asked.remove(b) && refused;
+        }
+        if asked.is_empty() {
+            self.eph.reconcile_fetches.remove(&(conn, l));
+        }
+        if lost && let Some(c) = self.conns.get(&conn) {
+            self.eph.reconciled.remove(&(c.server, l));
+        }
+    }
+
     /// A connection ended: what it knew of its peer goes with it.
     pub(crate) fn eph_lost(&mut self, conn: ConnId, server: ServerKey, fetching: &BTreeSet<BlobId>) {
         let unanswered: Vec<LabelId> = self.eph.reconcile_fetches.iter().filter(|((c, _), ids)| *c == conn && !ids.is_disjoint(fetching)).map(|((_, l), _)| *l).collect();
