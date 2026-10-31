@@ -83,7 +83,7 @@ fn share(db: &Osis, tag: Tid, person: Tid, role: Role, invite: Option<Role>) -> 
 // spec/requirements.md (Permissions: grouping grants no rights): Alice's cards stay hers; each
 // one in the shared tag has an edge for the tag. Bob reads them (one added after he joined too),
 // capped by his role on the tag; a card only placed is not shared; a card removed from the tag
-// shows him nothing new.
+// is gone for him.
 #[test]
 fn shared_tag_per_item() {
     let mut w = World::new();
@@ -115,7 +115,7 @@ fn shared_tag_per_item() {
     assert!(!alice.roster(packing).contains_key(&trip), "the tied edge went after the unplace");
     edit(&alice, packing, "socks", "socks, hat").unwrap();
     w.run();
-    assert_eq!(text(&bob, packing).unwrap().as_deref(), Some("socks"), "removed from the tag: nothing new");
+    assert_eq!(text(&bob, packing).unwrap(), None, "removed from the tag: Bob lost it");
     assert!(tag_names(&bob, packing).unwrap().is_empty());
 }
 

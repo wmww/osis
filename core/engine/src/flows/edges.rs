@@ -309,11 +309,15 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
             under.insert(i, target);
         }
         done.deliveries.push(Delivery::First { commits: vec![c], under });
-        // a self-removal of another actor's edge (an admin of group G removing G's edge): the
-        // removal leaves G's closure bodies (G reads the target no more) and the target may have
-        // left it already (an unplace), so it goes whole under the labels holding G
-        if selfr && member != who && !tx.core.is_key_actor(&member) {
-            done.deliveries.push(Delivery::Deposit { commit: c, under: member });
+        // a removal of another actor G's edge (explicit, or a self-removal by an admin of G,
+        // lowering too): it leaves G's closure bodies (G reads the target no more) and the target
+        // may have left it already (an unplace), so it goes whole under the labels holding G,
+        // where G's members learn it (G's inbox reaches only its admins)
+        let first = (d.new.is_none() || selfr).then_some(member);
+        for x in first.into_iter().chain(gone.iter().map(|(x, _)| *x)) {
+            if x != who && !tx.core.is_key_actor(&x) {
+                done.deliveries.push(Delivery::Deposit { commit: c, under: x });
+            }
         }
     }
     // the leaver drops what it lost once the removal is placed (`Done::drop_lost`): it must

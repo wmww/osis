@@ -346,12 +346,14 @@ impl SyncEngine {
         self.inbox_of(l).into_iter().map(|(a, _)| a).collect()
     }
 
-    /// Actors whose inbox is `l`, with their held read KEM secrets.
+    /// Actors whose inbox is `l` (named in their `/keys`, or the nearest one named up the owner
+    /// chain: spec/sync.md §2), with their held read KEM secrets.
     fn inbox_of(&mut self, l: &LabelId) -> Vec<(Tid, Vec<Secret32>)> {
         let actors: Vec<Tid> = self.engine.core.ix.secrets.keys().copied().collect();
         let mut out = Vec::new();
         for a in actors {
-            let inbox = self.engine.get_typed(&a, &ct::KEYS).ok().flatten().and_then(|k| k.inbox);
+            let chain: Vec<Tid> = self.engine.owner_chain(&a).collect();
+            let inbox = chain.iter().find_map(|t| self.engine.get_typed(t, &ct::KEYS).ok().flatten().and_then(|k| k.inbox));
             if inbox.is_some_and(|i| i.label == *l) {
                 out.push((a, self.read_secrets(&a)));
             }
