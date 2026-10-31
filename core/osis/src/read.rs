@@ -116,6 +116,11 @@ pub struct Reader<'a> {
     limit: usize,
 }
 
+/// `Reader::knows` on an engine already locked (a check inside a commit).
+pub(crate) fn knows_in(e: &mut Engine, tid: Tid) -> bool {
+    Reader { e, limit: 0 }.knows(tid)
+}
+
 impl Reader<'_> {
     /// The tid that `t` continues as (spec/permissions.md §7).
     pub fn resolve(&self, t: Tid) -> Tid {

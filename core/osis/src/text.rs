@@ -5,8 +5,9 @@
 //! (local edits are committed first) and reported through `on_remote` with the edits as
 //! `Splice`s. A session commits on `commit`, after `Config::idle_commit` without edits (a timer
 //! on the database's runtime; without one, at the next edit), and on drop. A session whose thing
-//! was deleted since it was known drops its pending text instead (`UnknownThing`, reported as
-//! `Uncommitted` where no caller sees the error): it never recreates the thing.
+//! was deleted since it was known keeps its pending text uncommitted instead (`UnknownThing`,
+//! reported as `Uncommitted` where no caller sees the error; dropped with the session): it never
+//! recreates the thing, and commits if the thing comes back.
 //! Not built: cut/paste with remembered ranges (issues/api-deferred.md).
 
 use crate::error::{Error, Result};
@@ -132,13 +133,11 @@ fn flush(db: &Osis, b: &Bind, st: &mut State) -> Result<Option<Committed>> {
     if st.buf == st.base {
         return Ok(None);
     }
-    if st.known && !db.knows(b.tid) {
-        // deleted since: committing would recreate it
-        st.buf = st.base.clone();
-        return Err(Error::UnknownThing { tid: b.tid });
-    }
     let op = if b.seq { Op::Edit { base: Value::Str(st.base.clone()), new: Value::Str(st.buf.clone()) } } else { Op::Set(Value::Str(st.buf.clone())) };
     let mut w = db.write();
+    // known here before: committing after a delete would recreate it (`UnknownThing`, the
+    // edits kept: they commit if the thing comes back)
+    w.alive = st.known.then_some(b.tid);
     w.raw_op(b.tid, &b.key, PathOp { path: crate::write::segs(&b.path)?, op })?;
     let c = w.commit()?;
     st.base = st.buf.clone();
@@ -238,7 +237,7 @@ impl TextSession {
     }
 
     /// Commits what changed since the last commit as one commit; `UnknownThing` (the edits
-    /// dropped) when the thing was deleted since it was known here.
+    /// kept) when the thing was deleted since it was known here.
     pub fn commit(&self) -> Result<Option<Committed>> {
         let mut s = lock(&self.st);
         let c = flush(&self.db, &self.b, &mut s)?;
