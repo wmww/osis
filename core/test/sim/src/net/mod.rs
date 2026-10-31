@@ -509,7 +509,21 @@ impl NetSim {
             return Ok(());
         }
         let Some(sync) = node.sync.as_mut() else { return Ok(()) };
-        let acts = sync.handle(ev);
+        let mut acts = sync.handle(ev);
+        // its user accepts every invite request as it appears (spec/sync.md §3); not on a node
+        // that crashed mid-write (`after_node` takes it down)
+        let crashed = node.faults.crashed();
+        let accepted = (|| -> osis_node::Result<Vec<Action>> {
+            let mut acts = Vec::new();
+            if crashed {
+                return Ok(acts);
+            }
+            for r in sync.invite_requests()? {
+                acts.extend(sync.accept_invite(r.commit)?.1);
+            }
+            Ok(acts)
+        })();
+        acts.extend(accepted.map_err(|e| self.fail(format!("node {n} accept invites: {e}")))?);
         self.after_node(n, acts)
     }
 

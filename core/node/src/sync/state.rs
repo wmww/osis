@@ -47,6 +47,8 @@ const REACH_POLICY: &[u8] = b"y/n";
 const CONTACT: &[u8] = b"y/a";
 /// The sharer node a followed link names, by K (`SyncEngine::follow_link_peer`).
 const LINK_PEER: &[u8] = b"y/l";
+/// Commits of invite requests the user declined (`SyncEngine::decline_invite`).
+const DECLINED: &[u8] = b"y/m";
 
 /// A followed link's sharer node (spec/permissions.md §9): dialed at the link's `peer://`
 /// addresses for K's labels and the target's, nothing else.
@@ -68,6 +70,9 @@ pub enum Kind {
     /// An inbox blob this node opened, with the commit it carried (`None`: opened by an older
     /// build).
     Inbox(Option<CommitId>),
+    /// An opened inbox blob not admitted (spec/sync.md §3, invite requests): its commit is not
+    /// applied and nothing it names is followed until the user accepts or it is admitted.
+    Request(CommitId),
     /// Unwraps under a held secret but is no valid commit blob (spec/versioning.md §2: bad
     /// input): never retried, never judged.
     Bad,
@@ -172,6 +177,7 @@ impl Kind {
             Kind::Inbox(_) => Some(2),
             Kind::Bad => Some(3),
             Kind::Parked(_) => Some(4),
+            Kind::Request(_) => Some(5),
         }
     }
 }
@@ -247,6 +253,8 @@ pub struct State {
     pub reach_policy: BTreeMap<Tid, bool>,
     /// Persons marked as contacts (`y/a`).
     pub contacts: BTreeSet<Tid>,
+    /// Commits of declined invite requests (`y/m`).
+    pub declined: BTreeSet<CommitId>,
     /// Sharer nodes of followed links by K (`y/l`).
     pub link_peers: BTreeMap<Tid, LinkPeer>,
     /// Bumped by every change of entries, presence or the outbox (`SyncEngine::placed` caches
@@ -324,6 +332,7 @@ fn encode_entry(e: &Entry) -> Vec<u8> {
         Kind::Inbox(Some(c)) => w.u8(5).raw(&c.0),
         Kind::Bad => w.u8(3),
         Kind::Parked(c) => w.u8(4).raw(&c.0),
+        Kind::Request(c) => w.u8(7).raw(&c.0),
     }
     .take()
 }
@@ -347,6 +356,7 @@ fn decode_entry(b: &[u8]) -> Result<Entry> {
         5 => Kind::Inbox(Some(CommitId(r.arr()?))),
         3 => Kind::Bad,
         4 => Kind::Parked(CommitId(r.arr()?)),
+        7 => Kind::Request(CommitId(r.arr()?)),
         _ => return Err(Error::Corrupt("sync entry kind")),
     };
     Ok(Entry { wrap, stamp, cert, kind })
@@ -447,6 +457,9 @@ impl State {
                 }
                 b"a" => {
                     s.contacts.insert(r.tid()?);
+                }
+                b"m" => {
+                    s.declined.insert(CommitId(r.arr()?));
                 }
                 b"l" => {
                     let k = r.tid()?;
@@ -751,6 +764,11 @@ impl State {
                 self.reach_policy.remove(&g);
             }
         }
+    }
+
+    pub fn decline(&mut self, c: CommitId) {
+        self.put(key(DECLINED, &[&c.0]), Vec::new());
+        self.declined.insert(c);
     }
 
     pub fn set_contact(&mut self, person: Tid, contact: bool) {

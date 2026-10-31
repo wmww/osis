@@ -39,11 +39,14 @@ pub struct World {
     next_hub: u64,
     /// Databases cut off the network.
     pub offline: Vec<bool>,
+    /// Databases whose user leaves invite requests alone (the others accept each as it
+    /// appears, spec/sync.md §3), by index.
+    pub holds_invites: std::collections::BTreeSet<usize>,
 }
 
 impl World {
     pub fn new() -> World {
-        World { clock: Arc::new(ManualClock::new(WallMs(T0))), servers: Vec::new(), net: ManualNet::new(), links: BTreeMap::new(), queue: VecDeque::new(), next_hub: 1, offline: Vec::new() }
+        World { clock: Arc::new(ManualClock::new(WallMs(T0))), servers: Vec::new(), net: ManualNet::new(), links: BTreeMap::new(), queue: VecDeque::new(), next_hub: 1, offline: Vec::new(), holds_invites: Default::default() }
     }
 
     pub fn now(&self) -> u64 {
@@ -234,12 +237,36 @@ impl World {
     }
 
     /// Lets everything settle (several rounds: a pass may start another).
+    /// Invite requests that appeared are accepted (`accept_invites`) and settled again.
     pub fn run(&mut self) {
-        for _ in 0..3 {
+        loop {
+            for _ in 0..3 {
+                self.pump();
+                self.tick_all();
+            }
             self.pump();
-            self.tick_all();
+            if !self.accept_invites() {
+                break;
+            }
         }
-        self.pump();
+    }
+
+    /// Every database's user but those in `holds_invites` accepts its invite requests (a
+    /// user clicking accept). Whether any was.
+    fn accept_invites(&mut self) -> bool {
+        let mut any = false;
+        for (d, db) in self.dbs().iter().enumerate() {
+            if let Some(db) = db
+                && !self.holds_invites.contains(&d)
+                && !self.offline[d]
+            {
+                for r in db.invite_requests().unwrap() {
+                    db.accept_invite(r.id).unwrap();
+                    any = true;
+                }
+            }
+        }
+        any
     }
 
     /// Drives the world until `f` resolves: settling, then stepping time by `step_ms`, at most

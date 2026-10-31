@@ -36,6 +36,8 @@ pub struct Node {
     pub wake: Option<u64>,
     /// Restarts so far (`Msg`).
     pub life: u64,
+    /// Its user accepts every invite request (spec/sync.md §3) as it appears (default).
+    pub accepts: bool,
 }
 
 /// Messages to a node carry its `life` when sent: one sent before it restarted is dropped (it
@@ -217,7 +219,7 @@ impl Net {
         let c: Arc<dyn Clock> = self.clock.clone();
         let engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c.clone(), Box::new(SeededRng::from_u64(seed))).unwrap();
         let sync = SyncEngine::new(engine, c, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
-        self.nodes.push(Node { sync: Some(sync), backend, root, online: true, wake: None, life: 0 });
+        self.nodes.push(Node { sync: Some(sync), backend, root, online: true, wake: None, life: 0, accepts: true });
         self.nodes.len() - 1
     }
 
@@ -317,9 +319,21 @@ impl Net {
             return;
         }
         let t = std::time::Instant::now();
-        let acts = self.sync(n).handle(ev);
+        let mut acts = self.sync(n).handle(ev);
+        if self.nodes[n].accepts {
+            acts.extend(self.accept_invites(n));
+        }
         *self.busy.entry(n).or_default() += t.elapsed();
         self.actions(n, acts);
+    }
+
+    /// Node `n`'s user accepts every waiting invite request.
+    pub fn accept_invites(&mut self, n: usize) -> Vec<Action> {
+        let mut acts = Vec::new();
+        for r in self.sync(n).invite_requests().unwrap() {
+            acts.extend(self.sync(n).accept_invite(r.commit).unwrap().1);
+        }
+        acts
     }
 
     pub fn actions(&mut self, n: usize, acts: Vec<Action>) {
