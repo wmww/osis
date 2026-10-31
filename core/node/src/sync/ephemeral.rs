@@ -361,22 +361,24 @@ impl SyncEngine {
         self.eph_flush(out)
     }
 
-    /// Whether every synced label has caught up once since start: on some connection it was
-    /// reconciled (or replayed) and then read to its end, with nothing fetching there and no
-    /// entry of it waiting to be checked. Until then the placements of an earlier session's
-    /// things may be partly back, and an own cover may not absorb that session's commits
-    /// (`Engine::set_ephemeral_caught_up`). A label that never catches up (its servers down)
-    /// keeps those commits uncovered: they are what servers held of the earlier session, bounded
-    /// by the label caps, and nothing of this session waits on it.
+    /// Whether every synced label has caught up once since start: on some connection to one of
+    /// its servers it was reconciled (or replayed) and then read to its end, with nothing
+    /// fetching there and no entry of it waiting to be checked. A peer does not count (it holds
+    /// what it kept in memory, not what the server holds); a label at no server is skipped (no
+    /// server entry to delete, and it may never meet a peer). Until then the placements of an
+    /// earlier session's things may be partly back, and an own cover may not absorb that
+    /// session's commits (`Engine::set_ephemeral_caught_up`). A label that never catches up (its
+    /// servers down) keeps those commits uncovered: they are what servers held of the earlier
+    /// sessions, bounded by the label caps, and nothing of this session waits on it.
     fn eph_caught_up(&mut self) -> bool {
         let mut all = true;
         for (_, gl) in self.labels() {
             let l = gl.id;
-            if gl.replaced || self.eph.caught_up.contains(&l) {
+            if gl.replaced || gl.servers.iter().all(super::peers::is_peer) || self.eph.caught_up.contains(&l) {
                 continue;
             }
             let waiting = self.eph.pending.range((l, BlobId([0; 32]))..).next().is_some_and(|((x, _), _)| *x == l);
-            let read = !waiting && self.conns.values().any(|c| c.up && c.req.fetching.is_empty() && self.eph.reconciled.contains(&(c.server, l)) && c.labels.get(&l).is_some_and(|x| x.phase == Phase::Open && x.ready()));
+            let read = !waiting && self.conns.values().any(|c| c.up && !c.peer && c.req.fetching.is_empty() && self.eph.reconciled.contains(&(c.server, l)) && c.labels.get(&l).is_some_and(|x| x.phase == Phase::Open && x.ready()));
             if read {
                 self.eph.caught_up.insert(l);
             } else {

@@ -2868,3 +2868,30 @@ fn restarted_cover_waits_for_every_label_spec_sync_9() {
     net.advance(10_000);
     assert_eq!(notes(&mut net, c, w), map(&[("a", "1")]), "and from the cover");
 }
+
+// spec/sync.md §9 (an earlier session's commits are covered once each label at a server caught
+// up): a label at no server catches up nowhere and does not hold the author's covers back
+#[test]
+fn restarted_cover_skips_label_at_no_server_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let g1 = net.group(a, &[], &[sv]);
+    net.group_seeded(a, &[], vec![], 12);
+    net.run();
+    let w = window(&mut net, a, g1, "w");
+    net.run();
+    for i in 0..6 {
+        note(&mut net, a, w, &format!("k{i}"), "v");
+        net.run();
+    }
+    net.restart(a, 31);
+    net.run();
+    let held = net.engine(a).held_ephemeral();
+    assert!(!held.is_empty() && held.iter().all(|x| !x.2), "the earlier session's commits are back: {held:?}");
+    let acts = net.sync(a).compact_ephemeral_now().unwrap();
+    net.actions(a, acts);
+    net.run();
+    let held = net.engine(a).held_ephemeral();
+    assert!(held.iter().all(|x| x.2), "the earlier session's commits covered: {held:?}");
+}
