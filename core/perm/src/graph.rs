@@ -588,13 +588,18 @@ impl<'a> View<'a> {
     /// `roles_from` and the earliest `until` of an edge it followed: the answer holds at any
     /// later ts before that, while no edge of a node it reaches changes.
     pub fn roles_expiring(&self, x: &Tid) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
+        self.roles_avoiding(x, None)
+    }
+
+    /// `roles_expiring` over the paths that do not pass `avoid` (its own entry included).
+    pub fn roles_avoiding(&self, x: &Tid, avoid: Option<&Tid>) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
         let mut expires: Option<WallMs> = None;
         let mut best: BTreeMap<Tid, Role> = BTreeMap::from([(*x, Role::Admin)]);
         for level in [Role::Admin, Role::Write, Role::Read] {
             let mut stack: Vec<Tid> = best.iter().filter(|&(_, &r)| r == level).map(|(t, _)| *t).collect();
             while let Some(e) = stack.pop() {
                 let mut relax = |y: Tid, v: Role, stack: &mut Vec<Tid>| {
-                    if best.get(&y).is_none_or(|&b| v > b) {
+                    if Some(&y) != avoid && best.get(&y).is_none_or(|&b| v > b) {
                         best.insert(y, v);
                         if v == level {
                             stack.push(y);

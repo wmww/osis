@@ -3,8 +3,8 @@
 //! that lowered an edge, and edges past their `until`, whose member holds less now) and from
 //! state (every box holder at a current epoch that holds less than that role now), recursively
 //! through member and owner actors (departures inside a member); the covers rule over the held
-//! actors, plus: an epoch introduced by a departed party (or a node acting through it) does not
-//! cover its departure, nor, for a rotator, one whose rotation commit it does not hold and a
+//! actors, plus: an epoch introduced by a departed party (or a node holding that role on the
+//! actor only through it) does not cover its departure, nor, for a rotator, one whose rotation commit it does not hold and a
 //! departed party could have written; the cascade (`ensure_rotated`: intermediate actors first,
 //! bottom-up, where the signer may rotate; one that may not stays stranded on what is below; a
 //! member actor whose epoch does not cover is left out of a rotation and re-sealed once it
@@ -365,10 +365,15 @@ fn introduced_by(core: &Core, a: &Tid, r: Role, e: &Epoch) -> Option<(Tid, Tid, 
     core.ix.epoch_intro.get(&(*a, r, *e)).map(|(ts, au, ac, _)| (*au, *ac, *ts))
 }
 
-/// Whether the commit by `author` acting for `actor` at `ts` was written by departed party `m`
-/// or a node acting through it (spec/crypto.md §4: such an epoch does not cover `m`'s departure).
-fn written_by(core: &Core, author: &Tid, actor: &Tid, ts: Ts, m: &Tid) -> bool {
-    author == m || actor == m || core.timelines.get(m).is_some_and(|tl| tl.role(author, m, At::now(ts)).is_some())
+/// Whether the commit by `author` acting for `actor` at `ts`, introducing an epoch of role `r`
+/// of `a`, was written by departed party `m` or a node reaching `a` at `r` only through it
+/// (spec/crypto.md §4: such an epoch does not cover `m`'s departure).
+fn written_by(core: &Core, a: &Tid, r: Role, author: &Tid, actor: &Tid, ts: Ts, m: &Tid) -> bool {
+    if author == m || actor == m {
+        return true;
+    }
+    let at = At::now(ts);
+    core.timelines.get(m).is_some_and(|tl| tl.role(author, m, at).is_some()) && core.timelines.get(a).is_none_or(|tl| tl.role_avoiding(author, a, m, at) < Some(r))
 }
 
 /// Whether departed party `d` (or a node acting through it) may have rotated role `r` of `a`:
@@ -446,7 +451,7 @@ pub fn uncovered_roles_of(tx: &mut Tx<'_>, a: &Tid, deps: Vec<Departure>) -> Res
     for r in ROLES {
         let Some((e, _)) = epochs.role(r).newest_held() else { continue };
         let by_departed = || match introduced_by(tx.core, a, r, &e) {
-            Some((au, ac, ts)) => deps.iter().any(|d| d.from <= r && written_by(tx.core, &au, &ac, ts, &d.member)),
+            Some((au, ac, ts)) => deps.iter().any(|d| d.from <= r && written_by(tx.core, a, r, &au, &ac, ts, &d.member)),
             // the rotation commit not held (synced after a compaction, or its body missing
             // again): a node that may rotate r counts it as written by any departed party that
             // could have rotated r (a rotation more, never a leak)
@@ -2162,5 +2167,36 @@ mod tests {
         let (done, still) = lp.peers[0].engine.ensure_rotated(&top).unwrap();
         assert!(still.is_empty(), "{still:?}");
         assert_eq!(done.commits.len(), 8 * 4 + 1, "every actor above the bottom one once");
+    }
+
+    // spec/crypto.md §4 (an epoch does not cover a departure when its rotation commit's author
+    // reaches the actor at that role only through the departed party): Alice's thing N, her
+    // tag T shared with Bob; T a writer of N, then removed, then granted read again. Alice's
+    // node reaches T as its owner but N by its own chain, so her removal's rotation covers T's
+    // departure and the re-grant goes through. Bob, who reaches N's write only through T,
+    // counts as T (also with a read edge of his own on N), not at read.
+    #[test]
+    fn regrant_after_tag_removal_spec_crypto_4() {
+        let mut lp = LocalPeer::new(2, 944, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let (alice, bob) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let tag = group(&mut lp, 0);
+        let n = group(&mut lp, 0);
+        lp.peers[0].engine.grant(&tag, &bob, &edge(Role::Write)).unwrap();
+        lp.peers[0].engine.grant(&n, &tag, &edge(Role::Write)).unwrap();
+        lp.peers[0].engine.demote(&n, &Demotion { member: tag, new: None, presync: PreSync::Synced }).unwrap();
+        lp.peers[0].engine.grant(&n, &tag, &edge(Role::Read)).unwrap();
+        assert!(lp.peers[0].engine.ensure_rotated(&n).unwrap().1.is_empty(), "covered");
+        let core = &lp.peers[0].engine.core;
+        let ts = crate::flows::now_ts(core);
+        let by = |who: &Tid, r: Role| super::written_by(core, &n, r, who, who, ts, &tag);
+        assert!(!by(&alice, Role::Write) && !by(&alice, Role::Admin), "Alice's node reaches N by its own chain");
+        assert!(by(&bob, Role::Write), "Bob reaches N only through T");
+        assert!(by(&tag, Role::Read), "T itself");
+        lp.peers[0].engine.grant(&n, &bob, &edge(Role::Read)).unwrap();
+        let core = &lp.peers[0].engine.core;
+        let by = |who: &Tid, r: Role| super::written_by(core, &n, r, who, who, ts, &tag);
+        assert!(by(&bob, Role::Write), "Bob's own read edge gives no write");
+        assert!(!by(&bob, Role::Read), "Bob reads N on his own");
     }
 }

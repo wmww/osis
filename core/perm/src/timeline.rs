@@ -553,6 +553,12 @@ impl Timeline {
         out
     }
 
+    /// Effective role over the paths that do not pass `avoid`.
+    pub fn role_avoiding(&self, node: &Tid, thing: &Tid, avoid: &Tid, at: At) -> Option<Role> {
+        let edges = self.edges_at(at.point);
+        View::at(&self.input.owners, &edges, at.ts).roles_avoiding(node, Some(avoid)).0.get(thing).copied()
+    }
+
     /// Authority class (§5.1 step 3).
     pub fn class(&self, node: &Tid, thing: &Tid, at: At) -> Class {
         self.standing(node, thing, at).class
