@@ -519,8 +519,8 @@ impl SyncEngine {
         let address = Address { url: at.url, key: at.key };
         let dialed = address.clone();
         // an announcement counts from the first source it was verified from: a copy from another
-        // source, or one of an earlier window than the newest verified, is a replay (issue
-        // lan-announce-replay: dialing it would show a LAN attacker who reads this node)
+        // source, or one of an earlier window than the newest verified, is a replay (dialing
+        // it would show a LAN attacker who reads this node; spec/sync.md §10)
         match r.bound.iter().find(|(x, _)| x == a) {
             Some((_, first)) if *first != address => return (Some(k), Vec::new()),
             Some(_) => {}

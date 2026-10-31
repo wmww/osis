@@ -174,7 +174,7 @@ fn lan_match_dials_announced_key_spec_sync_10() {
     assert_eq!(dials(&acts), vec![Address { url: "peer://192.168.1.6:4433".into(), key: [0x78; 32] }]);
 }
 
-// spec/sync.md §10 (issue lan-announce-replay): an announcement counts only from the first
+// spec/sync.md §10 (lan replay): an announcement counts only from the first
 // source it was verified from, so a LAN attacker replaying a co-reader's datagram from spoofed
 // sources never draws a dial (which would show it who reads that co-reader); nor does one of an
 // earlier window than the newest verified, whatever its source.
