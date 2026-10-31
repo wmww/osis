@@ -726,6 +726,94 @@ fn junk_copy_of_waiting_commit_not_kept_once_held_spec_sync_9() {
     assert_eq!(net.sync(b).ephemeral_pending_bytes(&l), 0);
 }
 
+/// A commit by `a` on a durable thing `b` has not heard of (b deaf to the server): (thing, real
+/// blob, a junk copy with the real header and signature).
+fn waiting_on_thing(net: &mut Net, a: usize, b: usize, g: Tid) -> (Tid, osis_commit::CommitBlob, osis_commit::CommitBlob) {
+    net.deaf.insert(b);
+    let t = net.item(a, g, g, "durable");
+    net.run();
+    let at = net.tid(a);
+    assert!(net.engine(b).core.created(&t).is_none() && net.engine(b).core.created(&at).is_some(), "author known, thing not");
+    let mut m = Mutation::new();
+    m.set(t, &eph("/doc/cursor"), &Value::Int(7)).unwrap();
+    net.engine(a).write(m).unwrap();
+    let blob = net.engine(a).take_ephemeral().unwrap().remove(0).blob;
+    let mut junk = blob.clone();
+    let last = junk.parts[0].delta.len() - 1;
+    junk.parts[0].delta[last] ^= 1;
+    (t, blob, junk)
+}
+
+// spec/commits.md §4, spec/sync.md §9 (only verified commits are held and spread): with the
+// author's record here but the part's thing's missing, a junk copy pushed first is not held, kept
+// or spread (it held the commit with no part verified and kept the blob unchecked); once the
+// record is here only the real copy is kept
+#[test]
+fn junk_copy_waiting_on_thing_not_kept_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let (t, blob, junk) = waiting_on_thing(&mut net, a, b, g);
+    let wk = write_key(&mut net, b, g);
+    let l = net.label(b);
+    let (_, jev) = sealed(&mut net, b, g, &junk, Some(&wk), 1);
+    let acts = push(&mut net, b, sv, l, vec![jev]);
+    net.actions(b, acts);
+    assert!(!net.engine(b).holds_ephemeral(&blob.id()), "nothing of it verified: not held");
+    assert!(net.sync(b).ephemeral_entries_of(&blob.id()).is_empty(), "not kept");
+    let (real, ev) = sealed(&mut net, b, g, &blob, Some(&wk), 2);
+    let acts = push(&mut net, b, sv, l, vec![ev]);
+    net.actions(b, acts);
+    assert!(net.sync(b).ephemeral_entries_of(&blob.id()).is_empty(), "both wait apart");
+    // the record arrives (out of band here)
+    net.deaf.remove(&b);
+    net.pair(a, b);
+    net.engine(b).rejudge_ephemeral().unwrap();
+    net.advance(10_000);
+    assert_eq!(net.read(b, t), Some(s("durable")));
+    assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(Value::Int(7)));
+    let kept: Vec<_> = net.sync(b).ephemeral_entries_of(&blob.id()).into_iter().map(|(_, x, _)| x).collect();
+    assert_eq!(kept, vec![real], "only the real copy is kept");
+    assert_eq!(net.sync(b).ephemeral_pending_bytes(&l), 0);
+}
+
+// spec/sync.md §9 (unverified commits wait apart, bounded): a copy past the share for waiting
+// blobs is refused without touching what waits: the honest copy that came first is held once its
+// thing's record is here (the overflow forgot the whole waiting commit)
+#[test]
+fn waiting_share_overflow_keeps_honest_copy_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    // the share (a quarter of the cap) fits one blob of the commit, not two
+    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 3_600, ..SyncConfig::default() });
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let (t, blob, junk) = waiting_on_thing(&mut net, a, b, g);
+    let wk = write_key(&mut net, b, g);
+    let l = net.label(b);
+    let (real, ev) = sealed(&mut net, b, g, &blob, Some(&wk), 2);
+    let (_, jev) = sealed(&mut net, b, g, &junk, Some(&wk), 1);
+    let osis_proto::Event::Added { blob: Some(bytes), .. } = &ev else { unreachable!() };
+    let len = bytes.len();
+    assert!(len <= 900 && 2 * len > 900, "blob of {len} bytes");
+    let acts = push(&mut net, b, sv, l, vec![ev, jev]);
+    net.actions(b, acts);
+    assert_eq!(net.sync(b).ephemeral_pending_bytes(&l), len as u64, "the junk copy past the share is not kept");
+    // the record arrives (out of band here)
+    net.deaf.remove(&b);
+    net.pair(a, b);
+    net.engine(b).rejudge_ephemeral().unwrap();
+    net.advance(10_000);
+    assert_eq!(net.read(b, t), Some(s("durable")));
+    assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(Value::Int(7)), "the honest copy waited on");
+    let kept: Vec<_> = net.sync(b).ephemeral_entries_of(&blob.id()).into_iter().map(|(_, x, _)| x).collect();
+    assert_eq!(kept, vec![real]);
+}
+
 // spec/commits.md §4, spec/sync.md §9 (only verified commits are held and spread): another blob
 // of a held ephemeral commit, the same header with a junk delta or signature, is refused
 #[test]

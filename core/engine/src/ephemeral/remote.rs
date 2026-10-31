@@ -217,7 +217,8 @@ pub enum EphIngest {
     /// A relay-only commit verified for the first time: its valid signals delivered (`fired`).
     Relayed { fired: bool },
     /// Waits for its author's record, a part's thing's record, or (every part invalid on
-    /// arrival) a change of the held durable set; kept apart, `pending_ephemeral`.
+    /// arrival) a change of the held durable set; kept apart, `pending_ephemeral` (its parts
+    /// verified meanwhile may be held: the blob as a whole is not checked yet).
     Pending,
     /// Not held: a relay-only duplicate or one outside its window, a commit more than
     /// `MAX_DRIFT` ahead, or a presence commit older than one held of its author and actor.
@@ -846,6 +847,14 @@ impl Engine {
     /// Receives an ephemeral commit blob (verified here; the blob's prefix was checked by the
     /// caller). Bad input is an error.
     pub fn ingest_ephemeral(&mut self, blob: CommitBlob) -> Result<EphIngest> {
+        self.ingest_ephemeral_within(blob, true)
+    }
+
+    /// `ingest_ephemeral`; `may_wait` false: a blob that would wait (`Pending`) is not kept
+    /// apart (the sync layer has no room for it), so what already waits stays as it was. A
+    /// blob with a part that waits is `Pending` even when its other parts were verified and
+    /// held: the blob is not fully checked, so it is neither kept nor spread until it is.
+    pub fn ingest_ephemeral_within(&mut self, blob: CommitBlob, may_wait: bool) -> Result<EphIngest> {
         let id = blob.id();
         let h = blob.header.clone();
         let Some(class) = h.ephemeral else { return Err(Error::BadInput("not an ephemeral commit")) };
@@ -891,7 +900,9 @@ impl Engine {
                 if class == EphClass::Relay {
                     return Ok(EphIngest::Dropped);
                 }
-                self.wait_apart(id, blob, BTreeSet::from([h.author]));
+                if may_wait {
+                    self.wait_apart(id, blob, BTreeSet::from([h.author]));
+                }
                 return Ok(EphIngest::Pending);
             }
         };
@@ -938,6 +949,15 @@ impl Engine {
             hp.valid = own || self.eph_part_valid(&h, &id, ai, &carried);
             fresh.push(hp);
         }
+        let is_content = |p: &HeldPart| h.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() != CREATED.ak());
+        if !waits.is_empty() && !fresh.iter().any(is_content) {
+            // nothing of it checked but records: it waits whole (holding it would keep and spread
+            // a blob none of whose parts was verified)
+            if may_wait {
+                self.wait_apart(id, blob, waits);
+            }
+            return Ok(EphIngest::Pending);
+        }
         if first {
             // contained in held commits of its author (a replay of what a cover took in, at any
             // depth): not held (spec/sync.md §9)
@@ -948,8 +968,11 @@ impl Engine {
             }
             // every part invalid on arrival: neither held nor counted until the held durable set
             // changes so that one is valid (`rejudge_ephemeral`)
-            let content: Vec<usize> = fresh.iter().filter(|p| h.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() != CREATED.ak())).map(|p| p.ai).collect();
+            let content: Vec<usize> = fresh.iter().filter(|p| is_content(p)).map(|p| p.ai).collect();
             if !content.is_empty() && fresh.iter().all(|p| !p.valid || !content.contains(&p.ai)) {
+                if !may_wait {
+                    return Ok(EphIngest::Pending);
+                }
                 if !waits.is_empty() {
                     // judged again once those records are here
                     self.wait_apart(id, blob, waits);
@@ -1020,8 +1043,10 @@ impl Engine {
         let new = !changed.is_empty();
         let absorbs = parts.iter().any(|p| !p.absorbed.is_empty());
         self.eph.remote.held.insert(id, Held { header: header.clone(), parts, own, bytes });
-        if !waits.is_empty() {
-            // another blob of this commit may wait too (a commit past a blob splits): both kept
+        // a part waits: its verified parts are held, the blob waits for the rest (another blob of
+        // this commit may wait too: a commit past a blob splits)
+        let waiting = !waits.is_empty();
+        if waiting && may_wait {
             self.wait_apart(id, blob, waits);
         }
         if presence && first {
@@ -1052,7 +1077,7 @@ impl Engine {
         if !carried.is_empty() {
             self.retry_waiting();
         }
-        Ok(EphIngest::Held { new })
+        Ok(if waiting { EphIngest::Pending } else { EphIngest::Held { new } })
     }
 
     /// Keeps `blob` of commit `id` waiting for the records of `needs` (`pending`), merged with
@@ -1736,17 +1761,10 @@ impl Engine {
         self.eph.remote.held.iter().map(|(id, h)| (*id, h.bytes, h.own)).collect()
     }
 
-    /// Whether an ephemeral commit waits for its author's record (not verified yet).
+    /// Whether blobs of an ephemeral commit wait apart (for a record, or for a part to become
+    /// valid): not all checked yet, though its verified parts may be held.
     pub fn pending_ephemeral(&self, id: &CommitId) -> bool {
-        (self.eph.remote.pending.contains_key(id) || self.eph.remote.invalid.contains_key(id)) && !self.eph.remote.held.contains_key(id)
-    }
-
-    /// Forgets a waiting ephemeral commit (the sync layer dropped its blob).
-    pub fn forget_pending_ephemeral(&mut self, id: &CommitId) {
-        if !self.eph.remote.held.contains_key(id) {
-            self.eph.remote.pending.remove(id);
-            self.eph.remote.invalid.remove(id);
-        }
+        self.eph.remote.pending.contains_key(id) || self.eph.remote.invalid.contains_key(id)
     }
 }
 
