@@ -1,7 +1,7 @@
 //! Which epoch to wrap under (spec/crypto.md §5) and which epochs label role keys come from
 //! (spec/sync.md §2, §5). osis-label derives and uses the keys.
 
-use crate::epoch::{ActorEpochs, RoleEpochs, is_newer};
+use crate::epoch::{ActorEpochs, RoleEpochs};
 use osis_base::Role;
 use osis_crypto::{Epoch, LabelRole, Secret32, VerifyingKey, label_role_key};
 
@@ -75,7 +75,7 @@ pub fn newer_than_head(a: &ActorEpochs, head: [Option<Epoch>; 3]) -> bool {
             return false;
         }
         if let Some(n) = a.role(r).newest()
-            && is_newer(&n, &h)
+            && a.role(r).is_newer(&n, &h)
         {
             newer = true;
         }

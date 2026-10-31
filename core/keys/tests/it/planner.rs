@@ -5,7 +5,7 @@
 use crate::common;
 use common::*;
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts};
-use osis_crypto::{Secret32, label_role_key};
+use osis_crypto::{Epoch, Secret32, label_role_key};
 use osis_keys::{
     ActorEpochs, Departure, Graph, MemoryGraph, PermGraph, WrapEpoch, label_role, lost_access, newer_than_head, plan_departure, plan_inside, reached,
     registered_epoch, registration_epochs, roles_up_to, delete_candidates, delete_key, wrap_epoch,
@@ -207,6 +207,66 @@ fn label_epochs() {
     a.admin.rotation(ep(2, 2), [ep(1, 0x20)]);
     a.admin.set_established(ep(2, 2), osis_keys::Provenance::Own);
     assert!(registration_epochs(&a).is_none());
+}
+
+/// Person P (devices `k1`, `k2`) whose epochs a writer jumped past the cap, every role at
+/// `MAX_FREE_N + 5`, secrets varying with `b`.
+fn jumped_person(b: u8) -> ActorEpochs {
+    let mut pe = ActorEpochs::default();
+    for (i, r) in osis_keys::ROLES.into_iter().enumerate() {
+        let e = Epoch::derive(&tid(2), r, osis_keys::MAX_FREE_N + 5, &Secret32::from_bytes([b ^ (i as u8) << 6; 32])).unwrap();
+        pe.role_mut(r).set_secret(e, Secret32::from_bytes([b ^ (i as u8) << 6; 32]));
+        pe.role_mut(r).set_established(e, osis_keys::Provenance::Own);
+    }
+    pe
+}
+
+// spec/crypto.md §3, §4, spec/sync.md §5: past the cap derived epochs all sit at n 2^62 − 1 but
+// order as the owner's, so after P's rotation removing a device the plain group U's head (its
+// epochs before) is stepped every time, not by nonce luck.
+#[test]
+fn jumped_owner_rotation_steps_plain_group() {
+    let (p, u) = (tid(2), tid(11));
+    let s1 = Secret32::from_bytes([0x51; 32]);
+    for b in 0..32u8 {
+        let mut pe = jumped_person(b);
+        let before = ActorEpochs::derived(&pe, &u);
+        let head = registration_epochs(&before).unwrap().map(|(e, _)| Some(e));
+        assert!(!newer_than_head(&before, head));
+        // k2 removed: the rotation boxes k1 only
+        let r = osis_keys::rotate(&p, &roles_up_to(Role::Admin), &pe, &Default::default(), &[key_rcpt(tid(3), Role::Admin, &s1)], &|_, _| true, &mut rng(b.into())).unwrap();
+        r.record(&mut pe);
+        let after = ActorEpochs::derived(&pe, &u);
+        assert!(newer_than_head(&after, head), "seed {b}");
+        assert_eq!(after.read.newest().unwrap().n(), osis_keys::MAX_FREE_N - 1);
+    }
+}
+
+// spec/crypto.md §3, §4: concurrent owner forks past the cap; U's newest derived epoch is the one
+// derived from P's newest (greater n), whatever the derived nonces.
+#[test]
+fn jumped_owner_forks_derive_owner_newest() {
+    let (p, u) = (tid(2), tid(11));
+    for b in 0..32u8 {
+        let base = jumped_person(b);
+        // fork A: two rotations (n + 2); fork B: one (n + 1); both current
+        let mut a = base.clone();
+        for i in 0..2u64 {
+            let r = osis_keys::rotate(&p, &roles_up_to(Role::Admin), &a, &Default::default(), &[], &|_, _| true, &mut rng(u64::from(b) << 8 | i)).unwrap();
+            r.record(&mut a);
+        }
+        let mut pe = a.clone();
+        let rb = osis_keys::rotate(&p, &roles_up_to(Role::Admin), &base, &Default::default(), &[], &|_, _| true, &mut rng(u64::from(b) << 8 | 9)).unwrap();
+        rb.record(&mut pe);
+        let want = a.read.newest().unwrap();
+        assert_eq!(pe.read.current().len(), 2);
+        assert_eq!(pe.read.newest(), Some(want));
+        let d = ActorEpochs::derived(&pe, &u);
+        let ds = osis_crypto::thing_role_secret(a.read.secret(&want).unwrap(), Role::Read, &u);
+        let de = Epoch::derive(&u, Role::Read, osis_keys::MAX_FREE_N - 1, &ds).unwrap();
+        assert_eq!(d.read.newest(), Some(de), "seed {b}");
+        assert_eq!(wrap_epoch(&d.read), WrapEpoch::Current(de), "seed {b}");
+    }
 }
 
 // spec/crypto.md §7: delete keys per level from the newest held secret; level 2 from the
