@@ -58,7 +58,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 - Erasure is final: a body dropped at its keep-at-most bound stays dropped if the write that replaced it later turns invalid. This is the one place where nodes holding the same data may read differently: whether that erased value shows again.
 - Granularity is one edit of one aspect. Part of a value's history can be purged. An author's purge of a large value removes at untrusted nodes only the chunks that author wrote; an admin's removes all of them.
 - No fingerprint: nothing retained lets anyone, even a reader, confirm a guess of purged content, however low-entropy. Deduplication is therefore only against content the writer already holds.
-- Forward secure: a node that deleted honestly and is compromised later yields nothing. A node that lost access to data yields nothing it can no longer read.
+- Forward secure where the platform offers erasable key storage (a hardware keystore, a TPM): a node that deleted honestly and is compromised later yields nothing. Elsewhere, browsers included, deleted data is unrecoverable through the platform's own storage only. A node that lost access to data yields nothing it can no longer read.
 - Nothing depends on retaining full history.
 
 ## Ephemeral data
