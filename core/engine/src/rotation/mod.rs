@@ -703,8 +703,19 @@ pub(crate) fn require_covered(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSe
 /// uncovered, the history boxes carry them), boxed to its owner and current members, with a
 /// `/keys` carrying the keysets and a fresh deposit seed. Nothing when it has them already.
 pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()> {
+    if let Some((c, rot, _)) = own_secrets_rot(tx, t, done)? {
+        record(tx, t, &rot)?;
+        done.add(c);
+    }
+    Ok(())
+}
+
+/// `own_secrets` up to its commit, not yet recorded: the commit, the rotation, and the
+/// members it boxes that held no box at a current read epoch before it (`unreached`).
+type OwnRot = (Option<osis_base::CommitId>, Rotation, Vec<Tid>);
+fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<Option<OwnRot>> {
     if tx.core.has_own_secrets(&t) || tx.core.is_key_actor(&t) {
-        return Ok(());
+        return Ok(None);
     }
     let who = tx.core.id.tid();
     require_covered(tx, who, t, &ROLES.into_iter().collect(), done)?;
@@ -713,10 +724,39 @@ pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()
     let mut m = Mutation::new();
     let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &members)?;
     fresh_deposit_seed(tx, &mut m, t)?;
+    let to = unreached(tx, &t, &rot)?;
     let c = Engine::commit_tx(tx, m)?;
+    Ok(Some((c, rot, to)))
+}
+
+/// The plain things whose secrets derive from `a` that this node, an admin of each, sees with a
+/// current non-owner member (spec/permissions.md §3: such a thing is left by its only keyset
+/// part turning invalid, spec/crypto.md §3); each gets secrets of its own again.
+pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
+    let me = core.id.tid();
+    let targets: BTreeSet<Tid> = core.ix.member_keys.iter().map(|((t, _), _)| *t).filter(|t| !core.has_own_secrets(t)).collect();
+    targets
+        .into_iter()
+        .filter(|t| !core.is_key_actor(t) && core.secret_actor(t) == Some(*a) && core.role_now(&me, t) == Some(Role::Admin))
+        .filter(|t| core.current_members(t).iter().any(|(m, _, _)| Some(*m) != core.owner(t)))
+        .collect()
+}
+
+/// `own_secrets` for a plain thing with current members, delivering the rotation by inbox to
+/// each member it boxes (they hold no box at the derived epochs it wraps under) and placing it
+/// first under the labels above the thing (its new `/keys`).
+fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
+    let mut done = Done::default();
+    let Some((c, rot, mut to)) = own_secrets_rot(tx, t, &mut done)? else { return Ok(done) };
+    let owner = tx.core.owner(&t);
+    to.retain(|m| Some(*m) != owner);
     record(tx, t, &rot)?;
     done.add(c);
-    Ok(())
+    done.deliveries.extend(deliver_rotation(tx, t, c, &to)?);
+    if let Some(c) = c {
+        done.deliveries.push(Delivery::First { commits: vec![c], under: above(tx.core, &t) });
+    }
+    Ok(done)
 }
 
 /// The re-seal trigger for `a` (spec/permissions.md §3): current members lacking a box at a
@@ -1070,6 +1110,18 @@ impl Engine {
             own_secrets(tx, t, &mut done)?;
             Ok(done)
         })
+    }
+
+    /// Gives secrets of their own again to the plain things whose secrets derive from `actor`
+    /// that this node administers and sees with a current non-owner member (spec/permissions.md
+    /// §3), decided at the end of a complete pass of `actor`'s labels (`sync`); nothing
+    /// otherwise. Each thing in a run of its own: one that fails leaves the others.
+    pub fn own_secrets_due(&mut self, actor: &Tid, sync: &dyn SyncState) -> Result<Vec<(Tid, Result<Done>)>> {
+        if !sync.complete_pass(actor) {
+            return Ok(Vec::new());
+        }
+        let ts = own_secrets_candidates(&self.core, actor);
+        Ok(ts.into_iter().map(|t| (t, self.run(|tx| own_secrets_delivered(tx, t)))).collect())
     }
 
     /// Re-seals the members of `actor` the trigger names (spec/permissions.md §3), decided at

@@ -1193,5 +1193,71 @@ mod tests {
             lp.peers[i].engine.rebuild_index().unwrap();
             assert_eq!(d0.first_diff(&lp.peers[i].engine.index_digest()), None, "peer {i}: open = rebuild");
         }
+        // spec/permissions.md §3: at the end of a complete pass of G's labels, each admin (the
+        // owner's node, B) gives T secrets of its own again, boxing Z (concurrently: a fork at
+        // one n); A (removed), X and Z (readers) do nothing; nothing more once T has them
+        let ran: Vec<usize> = (0..5).map(|i| own_due(&mut lp, i, &g, &t)).collect();
+        assert_eq!(ran, vec![1, 0, 0, 1, 0]);
+        lp.sync_all().unwrap();
+        lp.sync_all().unwrap();
+        assert_eq!((0..5).map(|i| own_due(&mut lp, i, &g, &t)).sum::<usize>(), 0, "one rotation per admin");
+        for i in [0usize, 3] {
+            let mut m = Mutation::new();
+            m.set(t, &osis_base::Ak::new(format!("/x/new{i}")).unwrap(), &Value::Int(i as i64)).unwrap();
+            lp.peers[i].engine.commit(m).unwrap().unwrap();
+        }
+        lp.sync_all().unwrap();
+        lp.sync_all().unwrap();
+        for i in 0..5 {
+            let core = &lp.peers[i].engine.core;
+            assert!(core.has_own_secrets(&t), "peer {i}: own keys");
+            if i != 1 {
+                for w in [0i64, 3] {
+                    let v = lp.peers[i].engine.get(&t, &osis_base::Ak::new(format!("/x/new{w}")).unwrap()).unwrap();
+                    assert_eq!(v, Some(Value::Int(w)), "peer {i} reads peer {w}'s write");
+                }
+            }
+            let d0 = lp.peers[i].engine.index_digest();
+            lp.peers[i].engine.rebuild_index().unwrap();
+            assert_eq!(d0.first_diff(&lp.peers[i].engine.index_digest()), None, "peer {i}: open = rebuild");
+        }
+    }
+
+    /// Runs `own_secrets_due` on `actor` at peer `i` as after a complete pass; the commits made
+    /// for `t` (each other thing makes none).
+    fn own_due(lp: &mut LocalPeer, i: usize, actor: &Tid, t: &Tid) -> usize {
+        struct Passed;
+        impl crate::flows::SyncState for Passed {
+            fn complete_pass(&self, _: &Tid) -> bool {
+                true
+            }
+        }
+        let mut n = 0;
+        for (x, r) in lp.peers[i].engine.own_secrets_due(actor, &Passed).unwrap() {
+            assert_eq!(x, *t, "peer {i}: only T");
+            n += r.unwrap().commits.len();
+        }
+        n
+    }
+
+    // spec/permissions.md §3: a plain thing with no non-owner member gets no secrets of its own
+    // from the trigger, nor does an own-keyed thing with members.
+    #[test]
+    fn no_own_secrets_rotation_without_members_spec_permissions_3() {
+        let mut lp = LocalPeer::new(2, 943, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let (me, y) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let edge = ct::Edge { role: Role::Admin, until: None, invite: None, since: None };
+        let g = thing_of(&mut lp, 0, me);
+        lp.peers[0].engine.grant(&g, &y, &edge).unwrap();
+        let t = thing_of(&mut lp, 0, g);
+        lp.sync_all().unwrap();
+        for i in 0..2 {
+            let core = &lp.peers[i].engine.core;
+            assert!(!core.has_own_secrets(&t) && core.has_own_secrets(&g), "peer {i}");
+            for a in [me, g] {
+                assert_eq!(own_due(&mut lp, i, &a, &t), 0, "peer {i}");
+            }
+        }
     }
 }
