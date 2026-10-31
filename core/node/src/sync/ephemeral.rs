@@ -496,7 +496,7 @@ impl SyncEngine {
         let mut all = true;
         for (_, gl) in self.labels() {
             let l = gl.id;
-            if gl.replaced || gl.servers.iter().all(super::peers::is_peer) || self.eph.caught_up.contains(&l) {
+            if gl.replaced || super::peers::serverless(&gl.servers) || self.eph.caught_up.contains(&l) {
                 continue;
             }
             let waiting = self.eph.pending.range((l, BlobId([0; 32]))..).next().is_some_and(|((x, _), _)| *x == l);

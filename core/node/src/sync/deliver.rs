@@ -293,7 +293,7 @@ impl SyncEngine {
     /// Finalizes the links due here (`Engine::links_due`, spec/permissions.md §9) after a
     /// complete pass of K's labels (`complete_pass`) that, for an expired link, ended at every
     /// server after `until` (a pass from before going offline does not count); at once when K's
-    /// labels have no server and this node made the link (the redeemers reached it directly;
+    /// labels have no server (`peer://` nodes only count as none) and this node made the link (the redeemers reached it directly;
     /// another device of the sharer may not have their grants yet). A link whose finalization
     /// failed is not tried again in this run.
     pub(crate) fn finalize_links(&mut self) -> Result<()> {
@@ -427,9 +427,9 @@ impl SyncEngine {
             }
             let peers = self.pass_peers.get(&l.id).into_iter().flatten().filter(|_| !waited);
             let mut any = false;
-            for s in l.servers.iter().map(|a| &a.key).chain(peers) {
+            for s in super::peers::server_keys(&l.servers).chain(peers.copied()) {
                 any = true;
-                if self.passes.get(&(*s, l.id)).is_none_or(|p| p.0 <= since) {
+                if self.passes.get(&(s, l.id)).is_none_or(|p| p.0 <= since) {
                     return false;
                 }
             }
