@@ -257,3 +257,65 @@ fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
     }
     assert_eq!(bob.role_on(g), Some(Role::Admin));
 }
+
+// spec/sync.md §3 (invite requests), notes/api.md Sharing: an invite from a stranger waits as a
+// request naming the thing; `decline_invite` forgets it, `accept_invite` joins; a request
+// answered once is gone.
+#[test]
+fn invite_requests_accept_and_decline_spec_sync_3() {
+    let mut w = World::new();
+    let sv = w.add_server();
+    let (alice, _) = w.person(1, &[sv]);
+    let (bob, _) = w.person(2, &[sv]);
+    let bi = w.index(&bob);
+    w.holds_invites.insert(bi);
+    w.run();
+    let card = bob.contact_card().unwrap();
+    w.run();
+    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    let (g1, g2) = (group(&alice), group(&alice));
+    let t2 = item(&alice, g2, g2, "two");
+    alice.grant(g1, b, Role::Read, Default::default()).unwrap();
+    w.run();
+    let r1 = bob.invite_requests().unwrap();
+    assert_eq!(r1.len(), 1);
+    assert_eq!(r1[0].thing, Some(g1));
+    bob.decline_invite(r1[0].id).unwrap();
+    assert!(matches!(bob.accept_invite(r1[0].id), Err(Error::Invalid(_))), "declined: gone");
+    alice.grant(g2, b, Role::Read, Default::default()).unwrap();
+    w.run();
+    w.advance(60_000);
+    let r2 = bob.invite_requests().unwrap();
+    assert_eq!(r2.iter().map(|r| r.thing).collect::<Vec<_>>(), vec![Some(g2)], "the declined one stays gone");
+    assert_eq!(x(&bob, t2), None);
+    bob.accept_invite(r2[0].id).unwrap();
+    w.run();
+    w.advance(60_000);
+    assert_eq!(x(&bob, t2), Some(s("two")));
+    assert_eq!(bob.role_on(g1), None);
+    assert!(bob.invite_requests().unwrap().is_empty());
+}
+
+// spec/sync.md §3: a sender whose card was imported (a contact) is connected: its invite goes
+// through with no request.
+#[test]
+fn contact_invite_goes_through_spec_sync_3() {
+    let mut w = World::new();
+    let sv = w.add_server();
+    let (alice, _) = w.person(1, &[sv]);
+    let (bob, _) = w.person(2, &[sv]);
+    let bi = w.index(&bob);
+    w.holds_invites.insert(bi);
+    w.run();
+    let (bc, ac) = (bob.contact_card().unwrap(), alice.contact_card().unwrap());
+    w.run();
+    let b = w.until(alice.import_contact(&bc), 1000, 10).unwrap();
+    w.until(bob.import_contact(&ac), 1000, 10).unwrap();
+    let g = group(&alice);
+    let t = item(&alice, g, g, "hi");
+    alice.grant(g, b, Role::Read, Default::default()).unwrap();
+    w.run();
+    w.advance(60_000);
+    assert!(bob.invite_requests().unwrap().is_empty());
+    assert_eq!(x(&bob, t), Some(s("hi")));
+}

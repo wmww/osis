@@ -347,3 +347,160 @@ fn inbox_hint_goes_with_its_blob_spec_sync_3() {
     }
     assert!(!net.dialed[n..].iter().any(|(n, x)| *n == b && x.key == rogue.key), "dialed no more after the blob expired");
 }
+
+/// The invite requests node `n` lists, by commit.
+fn requests(net: &mut Net, n: usize) -> Vec<osis_base::CommitId> {
+    net.sync(n).invite_requests().unwrap().into_iter().map(|r| r.commit).collect()
+}
+
+/// Whether node `n` holds commit `c`, applied or pending.
+fn holds(net: &mut Net, n: usize, c: &osis_base::CommitId) -> bool {
+    net.engine(n).commit_ids().contains(c) || net.engine(n).pending().iter().any(|(x, _)| x == c)
+}
+
+/// Alice's grant on `g` to `bob`; the grant commit.
+fn grant_commit(net: &mut Net, a: usize, g: Tid, bob: Tid) -> osis_base::CommitId {
+    use osis_node::flows::Delivery;
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+    let done = net.engine(a).grant(&g, &bob, &edge).unwrap();
+    let c = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { resend, .. } = d { Some(resend.commit) } else { None }).expect("an inbox delivery");
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    c
+}
+
+// spec/sync.md §3 (invite requests): Bob shares nothing with Alice, so her invite is a request:
+// its commit is not applied and g's servers are never dialed until Bob accepts; accepting
+// applies it, dials them and joins g.
+#[test]
+fn stranger_invite_waits_for_accept_spec_sync_3() {
+    let rogue = osis_label::Address { url: "quic://g-only".into(), key: [0x78; 32] };
+    let (mut net, _, a, b, _, bob, g, _) = alice_and_bob_at(vec![rogue.clone()]);
+    net.nodes[b].accepts = false;
+    let t = net.item(a, g, g, "for bob");
+    let c = grant_commit(&mut net, a, g, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    let r = net.sync(b).invite_requests().unwrap();
+    assert_eq!(r.len(), 1, "one request");
+    let alice_node = net.tid(a);
+    assert_eq!((r[0].commit, r[0].actor, r[0].target), (c, alice_node, Some(g)), "the grant's header: Alice's node acting as itself");
+    assert!(!holds(&mut net, b, &c), "not applied before accept");
+    assert!(!net.dialed.iter().any(|(n, x)| *n == b && x.key == rogue.key), "g's servers not dialed before accept");
+    assert_eq!(net.read(b, t), None);
+    let (found, acts) = net.sync(b).accept_invite(c).unwrap();
+    assert!(found);
+    net.actions(b, acts);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(requests(&mut net, b).is_empty(), "accepted: no request left");
+    assert!(net.dialed.iter().any(|(n, x)| *n == b && x.key == rogue.key), "accepting dials g's servers");
+    assert_eq!(net.read(b, t), Some(s("for bob")), "and joins g");
+}
+
+// spec/sync.md §3: a declined request is forgotten: never listed again, its commit never
+// applied, across a restart and the sender's re-send after `INBOX_LIFETIME`.
+#[test]
+fn declined_invite_forgotten_spec_sync_3() {
+    let rogue = osis_label::Address { url: "quic://g-only".into(), key: [0x78; 32] };
+    let (mut net, sv, a, b, _, bob, g, home) = alice_and_bob_at(vec![rogue.clone()]);
+    net.nodes[b].accepts = false;
+    let c = grant_commit(&mut net, a, g, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(requests(&mut net, b), vec![c]);
+    assert!(net.sync(b).decline_invite(c).unwrap());
+    assert!(!net.sync(b).decline_invite(c).unwrap(), "no request left to decline");
+    assert!(!net.sync(b).accept_invite(c).unwrap().0, "nor to accept");
+    net.restart(b, 2);
+    net.nodes[b].accepts = false;
+    let first = net.server_ids(sv, &home);
+    net.advance(INBOX_LIFETIME_MS + 1_000);
+    assert!(net.server_ids(sv, &home).iter().any(|x| !first.contains(x)), "Alice re-sent it");
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(requests(&mut net, b).is_empty(), "never listed again");
+    assert!(!holds(&mut net, b, &c));
+    assert!(!net.dialed.iter().any(|(n, x)| *n == b && x.key == rogue.key));
+}
+
+// spec/sync.md §3: once Bob shares g with Alice (he accepted), her next invite comes from a
+// connected sender (her device is named on her person, g's owner) and goes through directly.
+#[test]
+fn connected_sender_invite_goes_through_spec_sync_3() {
+    let (mut net, _, a, b, alice, bob, g, _) = alice_and_bob();
+    net.nodes[b].accepts = false;
+    let c = grant_commit(&mut net, a, g, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    let (_, acts) = net.sync(b).accept_invite(c).unwrap();
+    net.actions(b, acts);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    // a second group of Alice's, with its own label
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let g2 = e.new_thing(&mut m, alice);
+    m.set(g2, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    let addr = net.address(0);
+    let (_, done) = net.engine(a).create_label(&g2, &[addr]).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let t = net.item(a, g2, g2, "second");
+    let c2 = grant_commit(&mut net, a, g2, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(requests(&mut net, b).is_empty(), "no request from a connected sender");
+    assert!(holds(&mut net, b, &c2));
+    assert_eq!(net.read(b, t), Some(s("second")), "joined directly");
+}
+
+// spec/sync.md §3: a request accepted on one of Bob's devices is admitted on his other one by
+// the grant's copy under his home label (a commit blob of it under a synced label).
+#[test]
+fn invite_accepted_on_one_device_admitted_on_the_other_spec_sync_3() {
+    let (mut net, sv, a, b, _, bob, g, _) = alice_and_bob();
+    let b2 = net.node(3, &[sv]);
+    net.pair(b2, b);
+    let b2t = net.tid(b2);
+    let done = net.engine(b).pair(&bob, &b2t).unwrap();
+    let paired = done.commits[0];
+    let acts = net.sync(b).carry_out(done).unwrap();
+    net.actions(b, acts);
+    for (_, pks) in net.sync(b).take_direct() {
+        for pk in pks {
+            let _ = net.engine(b2).ingest(&pk.bytes, pk.blobs);
+        }
+    }
+    let done = net.engine(b2).paired(&bob, &paired).unwrap();
+    let acts = net.sync(b2).carry_out(done).unwrap();
+    net.actions(b2, acts);
+    net.nodes[b].accepts = false;
+    net.nodes[b2].accepts = false;
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    let t = net.item(a, g, g, "for bob");
+    let c = grant_commit(&mut net, a, g, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(requests(&mut net, b), vec![c]);
+    assert_eq!(requests(&mut net, b2), vec![c]);
+    let (_, acts) = net.sync(b).accept_invite(c).unwrap();
+    net.actions(b, acts);
+    for _ in 0..4 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.read(b, t), Some(s("for bob")));
+    assert!(requests(&mut net, b2).is_empty(), "admitted on the other device");
+    assert_eq!(net.read(b2, t), Some(s("for bob")));
+}

@@ -79,6 +79,25 @@ pub struct LinkInfo {
     pub single_use: bool,
 }
 
+/// An invite from a sender with no known connection to this database (spec/sync.md §3, invite
+/// requests): nothing it names is fetched or dialed until `accept_invite`. Both fields are the
+/// sender's word, unverified (an exception to Attribution, notes/api.md): a request never comes
+/// from a node known to be connected, so a known person here is a claim or a device of theirs
+/// not seen yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InviteRequest {
+    /// What `accept_invite` and `decline_invite` take.
+    pub id: InviteId,
+    /// The actor the sender says it acts for.
+    pub from: Tid,
+    /// The thing the invite grants on, if it names one.
+    pub thing: Option<Tid>,
+}
+
+/// An invite request's identity (its membership commit).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct InviteId(osis_base::CommitId);
+
 fn bad(what: &str) -> impl Fn(osis_label::Error) -> Error + '_ {
     move |e| Error::Invalid(format!("{what}: {e}"))
 }
@@ -712,6 +731,34 @@ impl Osis {
             self.engine(|e| e.set_app_record(&format!("{PROFILE_OF}{who}"), p.to_string().as_bytes()))?;
         }
         who.ok_or(Error::Invalid("contact card: no person".into()))
+    }
+
+    /// The invite requests waiting for the user (`InviteRequest`).
+    pub fn invite_requests(&self) -> Result<Vec<InviteRequest>> {
+        let v = self.locked(|x| x.sync.invite_requests())?;
+        Ok(v.into_iter().map(|r| InviteRequest { id: InviteId(r.commit), from: r.actor, thing: r.target }).collect())
+    }
+
+    /// Accepts an invite request: its grant applies and its thing's servers are dialed (then
+    /// joined as for any invite). `Invalid` when no such request waits (accepted, declined or
+    /// expired).
+    pub fn accept_invite(&self, id: InviteId) -> Result<()> {
+        self.try_act(|x| {
+            let (found, acts) = x.sync.accept_invite(id.0)?;
+            if !found {
+                return Err(Error::Invalid("no such invite request".into()));
+            }
+            Ok(acts)
+        })
+    }
+
+    /// Declines an invite request: it is forgotten and never shown again (re-sends included).
+    /// `Invalid` when no such request waits.
+    pub fn decline_invite(&self, id: InviteId) -> Result<()> {
+        if !self.locked(|x| x.sync.decline_invite(id.0))? {
+            return Err(Error::Invalid("no such invite request".into()));
+        }
+        Ok(())
     }
 
     /// The person's devices: nodes with an edge on the person actor.

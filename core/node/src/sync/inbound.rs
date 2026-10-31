@@ -18,18 +18,35 @@ use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// An opened inbox blob: its prefix expiry (none: never), the aspect indexes its commit
-/// carries, the things its payload names.
+/// carries, the things its payload names, and its commit's author, actor and signature (an
+/// invite request is judged and shown by them).
 #[derive(Clone, Debug)]
 pub(crate) struct Opened {
     pub until: u64,
     pub ais: BTreeSet<usize>,
     pub things: Vec<osis_label::InboxThing>,
+    pub author: Tid,
+    pub actor: Tid,
+    pub signature: osis_crypto::Signature,
+    /// The first thing the commit writes an edge on (`/members`), else the first it names.
+    pub target: Option<Tid>,
 }
 
 impl Opened {
     fn new(prefix: &osis_label::Prefix, c: &osis_commit::CommitBlob, things: Vec<osis_label::InboxThing>) -> Opened {
-        Opened { until: prefix.expiry().map_or(u64::MAX, |w| w.0), ais: c.parts.iter().map(|p| p.ai).collect(), things }
+        let h = &c.header;
+        let target = h.aspects.iter().find(|a| a.ak.as_str() == "/members").map(|a| a.tid).or_else(|| things.first().map(|t| t.tid));
+        Opened { until: prefix.expiry().map_or(u64::MAX, |w| w.0), ais: c.parts.iter().map(|p| p.ai).collect(), things, author: h.author, actor: h.actor, signature: c.signature, target }
     }
+}
+
+/// An invite request (spec/sync.md §3): an inbox blob's commit held back until the user
+/// accepts. `actor` and `target` are the sender's word.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InviteRequest {
+    pub commit: CommitId,
+    pub actor: Tid,
+    pub target: Option<Tid>,
 }
 
 /// Rounds of "new secrets opened more entries" per batch.
@@ -426,17 +443,153 @@ impl SyncEngine {
         let Some((prefix, payload)) = self.open_inbox(&l, &bytes) else { return Ok(()) };
         let pt = osis_base::encode(&payload.commit);
         let c = osis_commit::CommitBlob::decode(&pt).ok();
-        if let Some(c) = &c {
-            self.engine.note_delete_hints(c.id(), &payload.things)?;
-        }
+        let o = c.as_ref().map(|c| Opened::new(&prefix, c, payload.things.clone()));
         // its labels are followed only once vetted (`vet_inbox_hints`)
-        self.inbox_opened.insert((l, b), c.as_ref().map(|c| Opened::new(&prefix, c, payload.things)));
-        e.kind = Kind::Inbox(c.as_ref().map(|c| c.id()));
-        self.state.set_entry(l, b, e);
-        if let Some(c) = c {
+        self.inbox_opened.insert((l, b), o.clone());
+        let (Some(c), Some(o)) = (c, o) else {
+            e.kind = Kind::Inbox(None);
+            self.state.set_entry(l, b, e);
+            return Ok(());
+        };
+        let id = c.id();
+        if self.state.declined.contains(&id) {
+            e.kind = Kind::Inbox(Some(id));
+        } else if !self.admits(&id, &o, &mut None) {
+            e.kind = Kind::Request(id);
+        } else {
+            self.engine.note_delete_hints(id, &payload.things)?;
+            e.kind = Kind::Inbox(Some(id));
             commits.push((pt, c));
         }
+        self.state.set_entry(l, b, e);
         Ok(())
+    }
+
+    /// Whether an opened inbox blob carrying commit `c` is admitted (spec/sync.md §3, invite
+    /// requests): `c` is held (from a label this node syncs: a sibling device accepted it and
+    /// placed its copy), or its sender is connected. `roots` caches what a sender must be named
+    /// under within one judging round.
+    fn admits(&mut self, c: &CommitId, o: &Opened, roots: &mut Option<BTreeSet<Tid>>) -> bool {
+        if self.engine.core.ix.commits.contains_key(c) || self.engine.core.ix.pending.contains_key(c) {
+            return true;
+        }
+        // the author's node, then the actors it is named on as a member, transitively
+        let held = &self.engine.core.ix.held;
+        let mut up = BTreeSet::new();
+        let mut stack = vec![o.author];
+        while let Some(t) = stack.pop() {
+            if up.insert(t) {
+                stack.extend(held.named_on(&t).copied());
+            }
+        }
+        let roots = match roots {
+            Some(r) => r,
+            None => {
+                let mut r = self.state.contacts.clone();
+                for (g, _) in self.labels() {
+                    r.extend(self.engine.owner_chain(&g));
+                }
+                roots.insert(r)
+            }
+        };
+        if up.is_disjoint(roots) {
+            return false;
+        }
+        // a connected author's signature: a stranger may name any node as the author
+        match self.engine.core.created(&o.author) {
+            Some(osis_base::CreationRecord::KeyActor { public_key, .. }) => VerifyingKey::from_slice(public_key).is_ok_and(|vk| osis_commit::verify_signature(c, &o.signature, &vk).is_ok()),
+            _ => false,
+        }
+    }
+
+    /// The request entries under the synced labels: (label, blob, commit).
+    fn request_entries(&mut self) -> Vec<(LabelId, BlobId, CommitId)> {
+        let labels: BTreeSet<LabelId> = self.labels().iter().map(|(_, x)| x.id).collect();
+        labels
+            .iter()
+            .flat_map(|l| self.state.of_kind(l, 5).into_iter().map(move |b| (*l, b)))
+            .filter_map(|(l, b)| match self.state.entries.get(&(l, b)).map(|e| &e.kind) {
+                Some(Kind::Request(c)) => Some((l, b, *c)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The invite requests waiting for the user (spec/sync.md §3), one per commit, unexpired.
+    pub fn invite_requests(&mut self) -> Result<Vec<InviteRequest>> {
+        let now = self.now();
+        let mut out: BTreeMap<CommitId, InviteRequest> = BTreeMap::new();
+        for (l, b, c) in self.request_entries() {
+            let Some(o) = self.inbox_opened(&l, &b)? else { continue };
+            if o.until > now {
+                out.entry(c).or_insert(InviteRequest { commit: c, actor: o.actor, target: o.target });
+            }
+        }
+        Ok(out.into_values().collect())
+    }
+
+    /// Admits the request entries of commit `c` (or of every admitted commit when `c` is none):
+    /// ingests the commit and lets `vet_inbox_hints` follow what it names. Whether any was.
+    fn release_requests(&mut self, c: Option<CommitId>) -> Result<bool> {
+        let mut released = false;
+        let mut roots = None;
+        for (l, b, x) in self.request_entries() {
+            if c.is_some_and(|c| c != x) {
+                continue;
+            }
+            if c.is_none() {
+                let Some(o) = self.inbox_opened(&l, &b)? else { continue };
+                if !self.admits(&x, &o, &mut roots) {
+                    continue;
+                }
+            }
+            let Some(bytes) = self.engine.blob(&b)? else { continue };
+            let Some((_, payload)) = self.open_inbox(&l, &bytes) else { continue };
+            let pt = osis_base::encode(&payload.commit);
+            let Ok(blob) = osis_commit::CommitBlob::decode(&pt) else { continue };
+            if let Some(mut e) = self.state.entries.get(&(l, b)).cloned() {
+                e.kind = Kind::Inbox(Some(x));
+                self.state.set_entry(l, b, e);
+            }
+            self.engine.note_delete_hints(x, &payload.things)?;
+            if let Err(e) = self.engine.ingest(&pt, Vec::new()) {
+                self.diag(format!("ingest {:?}: {e}", blob.id()));
+            }
+            released = true;
+        }
+        Ok(released)
+    }
+
+    /// Accepts invite request `c` (spec/sync.md §3): its commit applies and what it names is
+    /// followed. Whether a request of `c` was waiting.
+    pub fn accept_invite(&mut self, c: CommitId) -> Result<(bool, Vec<super::Action>)> {
+        if !self.release_requests(Some(c))? {
+            return Ok((false, Vec::new()));
+        }
+        self.engine.reexamine()?;
+        self.vet_inbox_hints()?;
+        self.state.flush(&mut self.engine)?;
+        Ok((true, self.handle(super::Event::Local)))
+    }
+
+    /// Declines invite request `c` (spec/sync.md §3): its commit stays unapplied for good, in
+    /// every blob carrying it. Whether a request of `c` was waiting.
+    pub fn decline_invite(&mut self, c: CommitId) -> Result<bool> {
+        let mut found = false;
+        for (l, b, x) in self.request_entries() {
+            if x == c
+                && let Some(mut e) = self.state.entries.get(&(l, b)).cloned()
+            {
+                e.kind = Kind::Inbox(Some(c));
+                self.state.set_entry(l, b, e);
+                found = true;
+            }
+        }
+        if found {
+            self.state.decline(c);
+            self.state.flush(&mut self.engine)?;
+        }
+        Ok(found)
     }
 
     /// Opens inbox blob `bytes` under the held keys of an actor whose inbox `l` is.
@@ -475,6 +628,10 @@ impl SyncEngine {
     /// a node to dial (`peer://`); a label a key actor's entry is followed for (`via`) is left
     /// to that follow. Other inbox hints are dropped.
     pub(crate) fn vet_inbox_hints(&mut self) -> Result<()> {
+        // requests admitted since (the sender became connected, a sibling device accepted)
+        if self.release_requests(None)? {
+            self.engine.reexamine()?;
+        }
         let now = self.now();
         // the synced labels' inbox entries (runs per `run_dirty`: never a scan of every entry)
         let labels: BTreeSet<LabelId> = self.labels().iter().map(|(_, x)| x.id).collect();

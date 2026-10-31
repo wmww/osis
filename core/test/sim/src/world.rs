@@ -11,7 +11,7 @@ use osis_crypto::SeededRng;
 use osis_proto::{FrameDecoder, Message, StoreError};
 use osis_server::{BackendStore, Hub, HubOutput, Policy};
 use osis_store::MemoryBackend;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
@@ -50,6 +50,9 @@ pub struct World {
     next_hub: u64,
     /// Databases cut off the network.
     offline: Vec<bool>,
+    /// Databases whose user leaves invite requests alone (the others accept each as it
+    /// appears, spec/sync.md §3), by start order.
+    pub holds_invites: BTreeSet<usize>,
     /// Per database, by start order.
     traffic: Vec<Traffic>,
     /// With `tally`: upstream frames per (database, message kind): count and bytes.
@@ -75,6 +78,7 @@ impl World {
             queue: VecDeque::new(),
             next_hub: 1,
             offline: Vec::new(),
+            holds_invites: BTreeSet::new(),
             traffic: Vec::new(),
             tally: None,
             decoders: BTreeMap::new(),
@@ -325,13 +329,36 @@ impl World {
     }
 
     /// Lets everything settle (several rounds: a pass may start another). False on a storm.
+    /// Invite requests that appeared are accepted (`accept_invites`) and settled again.
     pub fn run(&mut self) -> bool {
         let mut ok = true;
-        for _ in 0..3 {
+        loop {
+            for _ in 0..3 {
+                ok &= self.pump();
+                self.tick_all();
+            }
             ok &= self.pump();
-            self.tick_all();
+            if !ok || !self.accept_invites() {
+                return ok;
+            }
         }
-        ok & self.pump()
+    }
+
+    /// Every online database's user but those in `holds_invites` accepts its invite requests
+    /// (a user clicking accept). Whether any was.
+    fn accept_invites(&mut self) -> bool {
+        let mut any = false;
+        for (d, db) in self.dbs().iter().enumerate() {
+            if let Some(db) = db
+                && !self.holds_invites.contains(&d)
+                && !self.offline.get(d).copied().unwrap_or(false)
+            {
+                for r in db.invite_requests().unwrap_or_default() {
+                    any |= db.accept_invite(r.id).is_ok();
+                }
+            }
+        }
+        any
     }
 
     /// Drives the world until `f` resolves: settling, then stepping time by `step_ms`, at most
