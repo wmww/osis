@@ -42,18 +42,18 @@ impl Engine {
     /// Creates a person actor (spec/permissions.md §1): a fresh recovery key owns it; in one
     /// commit signed by that key: both creation records, the key's `/keys`, the person's
     /// secrets of its own (boxed to the key and to this node), its `/keys` with inbox (its home
-    /// label) and deposit seed, the home label's genesis step on `servers` (the key listed by
+    /// label) and deposit seed, the home label's genesis step on `hosts` (the key listed by
     /// static entry) and this node's admin edge. The seed leaves only in the card.
-    pub fn create_person(&mut self, servers: &[Address]) -> Result<(Person, Done)> {
+    pub fn create_person(&mut self, hosts: &[Address]) -> Result<(Person, Done)> {
         // a fresh seed, never copied to an unwiped stack array
         let seed = self.run(|tx| Ok(Secret32::random(&mut *tx.rng)))?;
         let r = self.hold_key_actor(seed.clone())?;
-        let res = self.run(|tx| create_person_in(tx, r, &seed, servers));
+        let res = self.run(|tx| create_person_in(tx, r, &seed, hosts));
         self.drop_key_actor(&r);
         let (p, label, c) = res?;
         let mut done = Done::default();
         done.add(c);
-        Ok((Person { person: p, card: RecoveryCard { seed, person: p, home_label: label, servers: servers.to_vec() } }, done))
+        Ok((Person { person: p, card: RecoveryCard { seed, person: p, home_label: label, hosts: hosts.to_vec() } }, done))
     }
 
     /// Pairing, existing device side (spec/sync.md §2: the only way a node receives a grant):
@@ -130,7 +130,7 @@ impl Engine {
     }
 }
 
-fn create_person_in(tx: &mut Tx<'_>, r: Tid, seed: &Secret32, servers: &[Address]) -> Result<(Tid, osis_base::LabelId, Option<CommitId>)> {
+fn create_person_in(tx: &mut Tx<'_>, r: Tid, seed: &Secret32, hosts: &[Address]) -> Result<(Tid, osis_base::LabelId, Option<CommitId>)> {
     let rkeys = KeyActorKeys::from_seed(seed);
     let mut m = Mutation::new();
     m.create(key_actor_record(&rkeys, seed));
@@ -152,8 +152,8 @@ fn create_person_in(tx: &mut Tx<'_>, r: Tid, seed: &Secret32, servers: &[Address
     let deposit = Secret32::from_bytes(dep);
     let rvk = rkeys.signing.verifying_key();
     let readers = [ReaderKey::Static(rvk, rkeys.kem.public().clone()), ReaderKey::Dh(node_kem.x25519())];
-    let label = new_label(tx, &mut m, p, &after, &readers, &deposit, servers)?;
-    m.op(p, &ct::KEYS, PathOp { path: vec![PathSeg::Field(4)], op: Op::Set(Some(Inbox { label, servers: servers.to_vec() }).to_value()) })?;
+    let label = new_label(tx, &mut m, p, &after, &readers, &deposit, hosts)?;
+    m.op(p, &ct::KEYS, PathOp { path: vec![PathSeg::Field(4)], op: Op::Set(Some(Inbox { label, hosts: hosts.to_vec() }).to_value()) })?;
     m.op(p, &ct::KEYS, PathOp { path: vec![PathSeg::Field(5)], op: Op::Set(Some(dep).to_value()) })?;
     put_edge(&mut m, p, me, &admin_edge())?;
     let c = Engine::commit_tx(tx, m)?;

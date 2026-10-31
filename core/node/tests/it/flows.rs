@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Membership flows over `LocalPeer`: commits and inbox blobs are
-//! delivered by hand between engines (no labels or servers).
+//! delivered by hand between engines (no labels or hosts).
 
 use crate::common;
 use common::*;
@@ -12,7 +12,7 @@ use osis_node::Mutation;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 
-fn servers() -> Vec<Address> {
+fn hosts() -> Vec<Address> {
     vec![Address { url: "quic://s1:1".into(), key: [7; 32] }]
 }
 
@@ -128,7 +128,7 @@ fn thing_of(lp: &mut LocalPeer, i: usize, owner: Tid) -> Tid {
 /// Peer 0 creates a person; peer 1 is paired as its second device.
 fn person_two_devices(seed: u64) -> (LocalPeer, Tid, osis_label::RecoveryCard) {
     let mut lp = net(2, seed);
-    let (p, done) = lp.peers[0].engine.create_person(&servers()).unwrap();
+    let (p, done) = lp.peers[0].engine.create_person(&hosts()).unwrap();
     assert_eq!(done.commits.len(), 1);
     // the new device's card over the direct connection
     let n = lp.peers[1].engine.tid();
@@ -176,7 +176,7 @@ fn people(n: usize, seed: u64) -> (LocalPeer, Vec<Tid>) {
     let mut lp = net(n, seed);
     let mut ps = Vec::new();
     for i in 0..n {
-        ps.push(lp.peers[i].engine.create_person(&servers()).unwrap().0.person);
+        ps.push(lp.peers[i].engine.create_person(&hosts()).unwrap().0.person);
     }
     spread(&mut lp);
     (lp, ps)
@@ -384,8 +384,8 @@ fn lost_setup(seed: u64) -> Lost {
 fn lost_setup_from(seed: u64, from_e: bool) -> Lost {
     let faults = osis_store::Faults::new();
     let mut lp = LocalPeer::of(vec![forensic_peer(seed, &osis_store::Faults::new()), forensic_peer(seed + 1, &faults)], seed);
-    let pa = lp.peers[0].engine.create_person(&servers()).unwrap().0.person;
-    let pb = lp.peers[1].engine.create_person(&servers()).unwrap().0.person;
+    let pa = lp.peers[0].engine.create_person(&hosts()).unwrap().0.person;
+    let pb = lp.peers[1].engine.create_person(&hosts()).unwrap().0.person;
     spread(&mut lp);
     let d = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Read)).unwrap();
@@ -569,8 +569,8 @@ fn pending_grant_survives_unrelated_removal_spec_perm_3() {
 #[test]
 fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
     let mut lp = net(2, 521);
-    let pa = lp.peers[0].engine.create_person(&servers()).unwrap().0.person;
-    let pb = lp.peers[1].engine.create_person(&servers()).unwrap().0.person;
+    let pa = lp.peers[0].engine.create_person(&hosts()).unwrap().0.person;
+    let pb = lp.peers[1].engine.create_person(&hosts()).unwrap().0.person;
     let bobs: Vec<CommitId> = lp.peers[1].engine.commit_ids();
     send(&mut lp, 1, 0, &bobs);
     let g = thing_of(&mut lp, 0, pa);
@@ -843,7 +843,7 @@ fn intermediate_grantor_covered_spec_perm_5_1() {
 
 // spec/crdt.md §8 (absorbed commits count only with a held header), spec/permissions.md §5.1,
 // §5.2 (a valid snapshot vouches for what it carries): X's removal of M (with X's rotation) is
-// compacted away: Alice snapshots `/secrets` and `/keys` and writes a roster snapshot, so servers
+// compacted away: Alice snapshots `/secrets` and `/keys` and writes a roster snapshot, so hosts
 // drop its blobs, header included, and late joiner Bob gets only the snapshots. Bob cannot tell
 // the absorbed commit from one X signed ahead, so his removal of X does not list it; Alice, still
 // holding it, judges its deltas invalid, but her snapshots vouch for its writes: she, Bob and
@@ -904,13 +904,13 @@ fn late_joiner_after_compaction_agrees_spec_crdt_8() {
 /// Peers 0 and 1 are devices of person P (created on 1, 0 paired); peer 2 is Alice (PA).
 fn devices_and_alice(seed: u64) -> (LocalPeer, Tid, Tid, osis_label::RecoveryCard) {
     let mut lp = net(3, seed);
-    let (p, _) = lp.peers[1].engine.create_person(&servers()).unwrap();
+    let (p, _) = lp.peers[1].engine.create_person(&hosts()).unwrap();
     let d1 = lp.peers[0].engine.tid();
     let ids = lp.peers[0].engine.commit_ids();
     send(&mut lp, 0, 1, &ids);
     let paired = lp.peers[1].engine.pair(&p.person, &d1).unwrap();
     carry(&mut lp, 1, &paired);
-    let pa = lp.peers[2].engine.create_person(&servers()).unwrap().0.person;
+    let pa = lp.peers[2].engine.create_person(&hosts()).unwrap().0.person;
     spread(&mut lp);
     assert_eq!(lp.peers[0].engine.role_on(&p.person), Some(Role::Admin));
     (lp, p.person, pa, p.card)
@@ -984,7 +984,7 @@ fn stolen_device_recovery_spec_perm_9() {
 }
 
 fn link_spec(target: Tid, role: Role, until: Option<osis_base::WallMs>) -> osis_node::flows::LinkSpec {
-    osis_node::flows::LinkSpec { target, role, until, servers: servers(), peers: Vec::new(), single_use: false }
+    osis_node::flows::LinkSpec { target, role, until, hosts: hosts(), peers: Vec::new(), single_use: false }
 }
 
 // spec/crdt.md §3.2 (commit form: own writes first among commits), spec/commits.md §4: a
@@ -1215,7 +1215,7 @@ fn until_link_backdated_grant_void_spec_perm_9() {
     let (mut lp, p, _) = person_two_devices(530);
     let mut more = net(3, 531);
     lp.peers.append(&mut more.peers);
-    let ps: Vec<Tid> = (2..5).map(|i| lp.peers[i].engine.create_person(&servers()).unwrap().0.person).collect();
+    let ps: Vec<Tid> = (2..5).map(|i| lp.peers[i].engine.create_person(&hosts()).unwrap().0.person).collect();
     let (joiner, forger) = (ps[0], ps[1]);
     spread(&mut lp);
     let d = thing_of(&mut lp, 0, p);
@@ -1329,7 +1329,7 @@ fn key_actor_members_not_resealed_spec_perm_3() {
         }
     }
     let mut lp = net(3, 533);
-    let (p, _) = lp.peers[0].engine.create_person(&servers()).unwrap();
+    let (p, _) = lp.peers[0].engine.create_person(&hosts()).unwrap();
     let p = p.person;
     for i in [1, 2] {
         let n = lp.peers[i].engine.tid();
@@ -1374,7 +1374,7 @@ fn departures_follow_the_clock_spec_crypto_4() {
 #[test]
 fn stranded_device_repaired_spec_perm_3() {
     let mut lp = net(4, 513);
-    let (p, _) = lp.peers[0].engine.create_person(&servers()).unwrap();
+    let (p, _) = lp.peers[0].engine.create_person(&hosts()).unwrap();
     let p = p.person;
     for i in [1, 2] {
         let n = lp.peers[i].engine.tid();
@@ -1574,7 +1574,7 @@ fn move_into_derived_owner_spec_perm_7() {
     assert!(e.write.newest_held().is_some(), "bob holds an established write epoch of the copy");
 }
 
-// spec/sync.md §2, §5: after a rotation an admin issues a child of the server's head at the
+// spec/sync.md §2, §5: after a rotation an admin issues a child of the host's head at the
 // newest epochs; the removed device has no claim key in it, the remaining one has.
 #[test]
 fn registration_step_after_rotation_spec_sync_5() {
@@ -1865,7 +1865,7 @@ fn create_label_after_inside_removal_spec_sync_2() {
     spread(&mut lp);
     let t0 = newest_read(&lp, 1, t).unwrap();
     lp.peers[1].engine.demote(&p, &Demotion { member: d1, new: None, presync: PreSync::Synced }).unwrap();
-    let (label, done) = lp.peers[1].engine.create_label(&t, &servers()).unwrap();
+    let (label, done) = lp.peers[1].engine.create_label(&t, &hosts()).unwrap();
     assert_eq!(done.commits.len(), 2, "T's rotation, then the label");
     let t1 = newest_read(&lp, 1, t).unwrap();
     assert_ne!(t0, t1);
@@ -1930,7 +1930,7 @@ fn backdated_revoke_lists_certs_as_of_cutoff_spec_perm_5_1() {
 }
 
 // spec/permissions.md §7, spec/sync.md §2: a labeled doc's copy gets a label of its own at the
-// doc's servers before its members are re-granted, so they sync and write it whatever else of
+// doc's hosts before its members are re-granted, so they sync and write it whatever else of
 // the new owner they read.
 #[test]
 fn move_labels_copy_spec_perm_7() {
@@ -1939,14 +1939,14 @@ fn move_labels_copy_spec_perm_7() {
     let team = thing_of(&mut lp, 0, pa);
     let d = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
-    lp.peers[0].engine.create_label(&d, &servers()).unwrap();
+    lp.peers[0].engine.create_label(&d, &hosts()).unwrap();
     spread(&mut lp);
     let (copy, _) = lp.peers[0].engine.move_to(&d, &team).unwrap();
     spread(&mut lp);
     for i in [0, 1] {
         let ls = lp.peers[i].engine.group_labels(&copy).unwrap();
         assert_eq!(ls.len(), 1, "peer {i}");
-        assert_eq!(ls[0].servers, servers());
+        assert_eq!(ls[0].hosts, hosts());
     }
     assert_eq!(lp.peers[1].engine.role_on(&copy), Some(Role::Write));
     // an unlabeled doc's copy gets none
@@ -2058,14 +2058,14 @@ fn roster_snapshot_one_delta_per_edge_spec_perm_6() {
 #[test]
 fn roster_snapshot_certificate_projected_spec_perm_6() {
     let mut lp = net(3, 531);
-    let (p, done) = lp.peers[0].engine.create_person(&servers()).unwrap();
+    let (p, done) = lp.peers[0].engine.create_person(&hosts()).unwrap();
     assert_eq!(done.commits.len(), 1);
     let n1 = lp.peers[1].engine.tid();
     let card1: Vec<CommitId> = lp.peers[1].engine.commit_ids();
     send(&mut lp, 1, 0, &card1);
     let paired = lp.peers[0].engine.pair(&p.person, &n1).unwrap();
     carry(&mut lp, 0, &paired);
-    let bob = lp.peers[2].engine.create_person(&servers()).unwrap().0.person;
+    let bob = lp.peers[2].engine.create_person(&hosts()).unwrap().0.person;
     spread(&mut lp);
     let g = thing_of(&mut lp, 0, p.person);
     lp.peers[0].engine.grant(&g, &bob, &edge_of(Role::Read)).unwrap();
@@ -2212,7 +2212,7 @@ fn planted_epoch_blocks_no_removal_spec_crypto_4() {
 // spec/permissions.md §5.1 Frontier (a received commit not stored is listed by ID), notes/sync.md
 // Receipts-only reads: a node keeps what it applied of a group it holds for receipts only but
 // never uploads it again, so its frontier lists C's edit there by commit ID, never by C's
-// counters (C could delete the edit at the server and sign another on the same counters, which
+// counters (C could delete the edit at the host and sign another on the same counters, which
 // no holder of the first would void).
 #[test]
 fn receipts_only_frontier_by_id_spec_perm_5_1() {
@@ -2245,7 +2245,7 @@ fn backdated_revoke_before_own_grant_received_spec_perm_5_1() {
     const HOUR: u64 = 3_600_000;
     let mut lp = net(3, 526);
     let (x, a) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-    let pa = lp.peers[2].engine.create_person(&servers()).unwrap().0.person;
+    let pa = lp.peers[2].engine.create_person(&hosts()).unwrap().0.person;
     let t = thing_of(&mut lp, 2, pa);
     spread(&mut lp);
     lp.peers[2].engine.grant(&t, &x, &edge_of(Role::Admin)).unwrap();

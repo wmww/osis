@@ -3,7 +3,7 @@
 //! dialer opens, peer key as the transport authenticated it); per link a reader task hands the
 //! hub its reads one at a time (the next once the hub took the last), served in turns
 //! round-robin by source (`Turns`); writes go to the link's queue (more than `max_queued_bytes`
-//! the transport has not taken drops the session); per configured peer a dial task (`dial_as` with this server's static
+//! the transport has not taken drops the session); per configured peer a dial task (`dial_as` with this host's static
 //! secret, so the peer sees its address key) reconnects with backoff; sweeps, Hello deadlines and
 //! replication work run when due. Hub calls (storage, fsyncs) run under `block_in_place` on a
 //! multi-thread runtime. The only async code of the crate.
@@ -29,7 +29,7 @@ const BACKOFF_MAX: u64 = 60_000;
 pub const FINISH_WAIT: Duration = Duration::from_secs(10);
 
 /// What the driver serves on: a transport, its listener and the static secret it listens with
-/// (also used to dial peer servers).
+/// (also used to dial peer hosts).
 pub struct Endpoint<T: Transport> {
     pub transport: T,
     pub listener: T::Listener,
@@ -246,7 +246,7 @@ impl<B: Backend> Driver<B> {
     }
 }
 
-/// Keeps a session to `addr` up: dials as this server, hands the link to the driver, waits for it
+/// Keeps a session to `addr` up: dials as this host, hands the link to the driver, waits for it
 /// to end, redials with seeded backoff. Stops on errors redialing cannot fix (bad URL, unknown
 /// scheme).
 async fn keep_dialing<T: Transport>(t: Arc<T>, secret: StaticSecret, addr: Address, ev: mpsc::UnboundedSender<Ev>, log: Log) {
@@ -273,7 +273,7 @@ async fn keep_dialing<T: Transport>(t: Arc<T>, secret: StaticSecret, addr: Addre
     }
 }
 
-/// Runs the blind node until `Control::Shutdown` (or the control sender is dropped): serves
+/// Runs the host until `Control::Shutdown` (or the control sender is dropped): serves
 /// sessions on `ep`, keeps a replication session to each of `peers`, and returns the hub. The
 /// hub's static key must be `ep.key()`.
 pub async fn run<B: Backend + 'static, T: Transport>(hub: Hub<B>, ep: Endpoint<T>, peers: Vec<Address>, clock: Arc<dyn Clock>, mut control: mpsc::Receiver<Control>, log: Log) -> Hub<B> {
@@ -286,7 +286,7 @@ pub async fn run<B: Backend + 'static, T: Transport>(hub: Hub<B>, ep: Endpoint<T
     let idle = Duration::from_millis(hub.store().policy().hello_ms);
     // transport connections capped like sessions (each connection may carry several)
     let max = hub.store().policy().max_connections;
-    let server = tokio::spawn(link::serve(listener, idle, FINISH_WAIT, in_tx, max));
+    let host = tokio::spawn(link::serve(listener, idle, FINISH_WAIT, in_tx, max));
     let mut d = Driver { hub, clock, log, conns: HashMap::new(), turns: Turns::default(), next: 1, ev_tx };
     let mut listening = true;
     loop {
@@ -317,7 +317,7 @@ pub async fn run<B: Backend + 'static, T: Transport>(hub: Hub<B>, ep: Endpoint<T
             _ = tokio::time::sleep(idle) => d.tick(),
         }
     }
-    server.abort();
+    host.abort();
     for t in dials {
         t.abort();
     }

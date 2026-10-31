@@ -35,7 +35,7 @@ P_Purges == F(P_Commits, "p", {"a"}, {})
 P_None == [c \in P_Commits |-> 99]
 
 (* D: a non-writer deposits a commit a writer promotes; an expiring write;  *)
-(* a reader relays; the server replays a stale entry.                        *)
+(* a reader relays; the host replays a stale entry.                          *)
 D_Commits == {"cr", "c4"}
 D_Author == [c \in D_Commits |-> IF c = "cr" THEN "r" ELSE "w1"]
 D_Deps == [c \in D_Commits |-> {}]

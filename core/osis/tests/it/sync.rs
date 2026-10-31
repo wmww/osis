@@ -1,4 +1,4 @@
-//! Sharing and sync through blind servers in process (notes/api.md Sharing and membership,
+//! Sharing and sync through hosts in process (notes/api.md Sharing and membership,
 //! Sync configuration and status), no tokio: see osis_sim::world.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -28,18 +28,18 @@ fn x(db: &Osis, t: Tid) -> Option<Value> {
 }
 
 // notes/api.md Handle (create), Sync status; spec/sync.md §2 (home label): a new person's home
-// label registers at its server; status turns Synced and wait_synced resolves after a write.
+// label registers at its host; status turns Synced and wait_synced resolves after a write.
 #[test]
 fn create_syncs_home_spec_sync_2() {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let (db, _card) = w.person(1, &[sv]);
     w.run();
     let st = db.status().unwrap();
     assert_eq!(st.groups.get(&db.home()).map(|g| g.state), Some(SyncState::Synced), "{st:?}");
     assert_eq!(st.connected, 1);
     item(&db, db.me(), db.home(), "hello");
-    assert_ne!(db.status().unwrap().groups.get(&db.home()).map(|g| g.state), Some(SyncState::Synced), "a local commit is not at the server yet");
+    assert_ne!(db.status().unwrap().groups.get(&db.home()).map(|g| g.state), Some(SyncState::Synced), "a local commit is not at the host yet");
     w.until(db.wait_synced(SyncScope::All, Duration::from_secs(60)), 1000, 10).unwrap();
 }
 
@@ -49,7 +49,7 @@ fn create_syncs_home_spec_sync_2() {
 #[test]
 fn pairing_spec_permissions_1() {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let (da, _) = w.person(1, &[sv]);
     w.run();
     let t = item(&da, da.me(), da.home(), "before pairing");
@@ -86,16 +86,16 @@ fn pairing_spec_permissions_1() {
 #[test]
 fn restore_from_card_spec_permissions_9() {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let (da, card) = w.person(1, &[sv]);
-    let t = item(&da, da.me(), da.home(), "kept by the server");
+    let t = item(&da, da.me(), da.home(), "kept by the host");
     w.run();
     let card: osis::RecoveryCard = card.to_string().parse().unwrap();
     w.advance(1000);
     let dc = w.until(Osis::restore(w.cfg(4, &[]), &card), 1000, 10).unwrap();
     w.run();
     assert_eq!(dc.me(), da.me());
-    assert_eq!(x(&dc, t), Some(s("kept by the server")));
+    assert_eq!(x(&dc, t), Some(s("kept by the host")));
     assert_eq!(dc.role_on(dc.me()), Some(Role::Admin));
     let u = item(&dc, dc.me(), dc.home(), "after restore");
     w.run();
@@ -109,7 +109,7 @@ fn restore_from_card_spec_permissions_9() {
 #[test]
 fn delete_reaches_other_node_spec_api_writes() {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let (alice, _) = w.person(1, &[sv]);
     let (bob, _) = w.person(2, &[sv]);
     w.run();
@@ -133,7 +133,7 @@ fn delete_reaches_other_node_spec_api_writes() {
     assert_eq!(alice.groups_of(t).item_of, vec![ro]);
 }
 
-/// A group owned by `db`'s person, synced on its servers.
+/// A group owned by `db`'s person, synced on its hosts.
 fn group(db: &Osis) -> Tid {
     let mut w = db.write();
     let g = w.create_in(db.me(), &[db.home()]).unwrap();
@@ -150,7 +150,7 @@ fn group(db: &Osis) -> Tid {
 #[test]
 fn grant_by_inbox_spec_sync_3() {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let (alice, _) = w.person(1, &[sv]);
     let (bob, _) = w.person(2, &[sv]);
     w.run();
@@ -170,9 +170,9 @@ fn grant_by_inbox_spec_sync_3() {
     assert_eq!(x(&alice, u), Some(s("from bob")));
 }
 
-/// Alice and `n` other people on one server; each other person's card imported by Alice.
+/// Alice and `n` other people on one host; each other person's card imported by Alice.
 fn people(w: &mut World, n: usize) -> (Osis, Vec<Osis>, Vec<Tid>) {
-    let sv = w.add_server();
+    let sv = w.add_host();
     let (alice, _) = w.person(1, &[sv]);
     let others: Vec<Osis> = (0..n).map(|i| w.person(2 + i as u64, &[sv]).0).collect();
     w.run();
@@ -281,7 +281,7 @@ fn used_link_with_sharer_offline_spec_permissions_9() {
 /// Alice's synced group with a read link expiring in an hour, redeemed by Bob: (world, alice,
 /// bob, group, K, L).
 fn until_link(w: &mut World) -> (Osis, Osis, Tid, Tid, Tid) {
-    let sv = w.add_server();
+    let sv = w.add_host();
     let [alice, bob] = [1, 2].map(|i| w.person(i, &[sv]).0);
     w.run();
     let g = group(&alice);
@@ -349,7 +349,7 @@ fn until_link_finalized_when_sharer_returns_spec_permissions_9() {
 /// bob, carol, group, link actor K, link key L).
 fn joined_by_link() -> (World, Osis, Osis, Osis, Tid, Tid, Tid) {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let [alice, bob, carol] = [1, 2, 3].map(|i| w.person(i, &[sv]).0);
     w.run();
     let g = group(&alice);
@@ -474,7 +474,7 @@ fn removal_from_partial_device_keeps_unheld_edits_spec_permissions_5_3() {
     assert_eq!(x(&phone, in_h), None, "the phone holds nothing of H");
     assert_eq!(x(carol, in_h), Some(s("bob in h")));
     let label = alice.engine(|e| e.group_labels(&h).unwrap())[0].id;
-    let log = |w: &World| osis_proto::store::LabelStore::log_head(w.servers[0].hub.store(), &label).unwrap();
+    let log = |w: &World| osis_proto::store::LabelStore::log_head(w.hosts[0].hub.store(), &label).unwrap();
     for db in [&alice, bob, carol] {
         w.set_online(db, false);
     }
@@ -529,7 +529,7 @@ fn receipts_only_status_spec_permissions_5_3() {
 }
 
 // spec/sync.md §5 (relay-only entries), notes/api.md Signals: a signal aspect set on a shared
-// thing reaches another person's connected device through the server once; local callbacks fire
+// thing reaches another person's connected device through the host once; local callbacks fire
 // too; nothing is held.
 #[test]
 fn remote_signal_spec_sync_5() {
@@ -587,7 +587,7 @@ const TEXT_SCHEMA: &str = "schema 0x0123456789abcdef0123456789abcd01;\nrevision 
 #[test]
 fn text_sessions_merge_spec_crdt_5_7() {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let (da, _) = w.person(1, &[sv]);
     w.run();
     let join = Osis::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
@@ -627,7 +627,7 @@ fn text_sessions_merge_spec_crdt_5_7() {
 /// the first.
 fn text_pair() -> (World, Osis, Osis, Tid, osis::TextSession) {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let (da, _) = w.person(1, &[sv]);
     w.run();
     let join = Osis::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
@@ -744,37 +744,37 @@ fn text_session_keeps_edits_across_delete_undo() {
     assert_eq!(da.get(t, da.key("/n/body").unwrap()).unwrap(), Some(osis::Value::Str("hello world!".into())));
 }
 
-// notes/api.md Sync configuration (`add_server`), spec/sync.md §2 (`/label` servers, inbox): a
-// database created without servers has its home label on none; adding a server moves the home
+// notes/api.md Sync configuration (`add_host`), spec/sync.md §2 (`/label` hosts, inbox): a
+// database created without hosts has its home label on none; adding a host moves the home
 // label and the person's inbox there, and the home group syncs.
 #[test]
-fn add_server_moves_labels_spec_sync_2() {
+fn add_host_moves_labels_spec_sync_2() {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let (a, card) = Osis::create(w.cfg(1, &[])).unwrap();
     assert!(card.is_none());
     w.run();
-    assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::NoServers);
-    a.add_server(&w.addr(sv).unwrap()).unwrap();
+    assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::NoHosts);
+    a.add_host(&w.addr(sv).unwrap()).unwrap();
     w.run();
     assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::Synced);
     let inbox = a.get(a.me(), osis::core::KEYS).unwrap().unwrap().inbox.unwrap();
-    assert_eq!(inbox.servers.len(), 1);
+    assert_eq!(inbox.hosts.len(), 1);
     w.until(a.wait_synced(SyncScope::All, Duration::from_secs(10)), 1000, 10).unwrap();
-    a.remove_server(&w.addr(sv).unwrap()).unwrap();
+    a.remove_host(&w.addr(sv).unwrap()).unwrap();
     w.run();
-    assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::NoServers);
+    assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::NoHosts);
 }
 
-// notes/api.md Sync configuration (`add_server` scope), spec/sync.md §2: Alice's server changes
+// notes/api.md Sync configuration (`add_host` scope), spec/sync.md §2: Alice's host changes
 // move her home label and her own shared group, not a group Bob owns that she co-administers,
-// not her link's actor (the link text names its servers); her shared group keeps its last
-// server.
+// not her link's actor (the link text names its hosts); her shared group keeps its last
+// host.
 #[test]
-fn add_server_scope_spec_sync_2() {
+fn add_host_scope_spec_sync_2() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 1);
-    let (s0, s1) = (0, w.add_server());
+    let (s0, s1) = (0, w.add_host());
     let bob = &others[0];
     let card = alice.contact_card().unwrap();
     w.run();
@@ -788,12 +788,12 @@ fn add_server_scope_spec_sync_2() {
     alice.make_link(mine, Role::Read, osis::LinkOpts::default()).unwrap();
     let k = alice.links(mine)[0].id;
     w.run();
-    let servers = |g: Tid| alice.engine(|e| e.group_labels(&g).unwrap().into_iter().find(|l| !l.replaced).unwrap().servers.len());
-    alice.add_server(&w.addr(s1).unwrap()).unwrap();
+    let hosts = |g: Tid| alice.engine(|e| e.group_labels(&g).unwrap().into_iter().find(|l| !l.replaced).unwrap().hosts.len());
+    alice.add_host(&w.addr(s1).unwrap()).unwrap();
     w.run();
-    assert_eq!((servers(alice.home()), servers(mine), servers(his), servers(k)), (2, 2, 1, 1));
-    alice.remove_server(&w.addr(s0).unwrap()).unwrap();
-    alice.remove_server(&w.addr(s1).unwrap()).unwrap();
+    assert_eq!((hosts(alice.home()), hosts(mine), hosts(his), hosts(k)), (2, 2, 1, 1));
+    alice.remove_host(&w.addr(s0).unwrap()).unwrap();
+    alice.remove_host(&w.addr(s1).unwrap()).unwrap();
     w.run();
-    assert_eq!((servers(alice.home()), servers(mine), servers(his), servers(k)), (0, 1, 1, 1), "a shared group keeps its last server");
+    assert_eq!((hosts(alice.home()), hosts(mine), hosts(his), hosts(k)), (0, 1, 1, 1), "a shared group keeps its last host");
 }

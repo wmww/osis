@@ -67,7 +67,7 @@ pub const MAX_EMPTY_PAGES: u32 = 16;
 
 #[derive(Clone, Debug)]
 pub struct ClientConfig {
-    /// The peer's static key (a server's address key), bound by open signatures.
+    /// The peer's static key (a host's address key), bound by open signatures.
     pub peer_static_key: [u8; 32],
     /// This side's Hello challenge: 32 random bytes per connection.
     pub challenge: [u8; 32],

@@ -3,13 +3,13 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use osis_label::{Prefix, server_prefix};
+use osis_label::{Prefix, host_prefix};
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(p) = Prefix::parse(data) {
         assert_eq!(&p.to_bytes()[..], &data[..p.len()]);
     }
-    let _ = server_prefix(data);
+    let _ = host_prefix(data);
     if let Ok(p) = osis_crypto::unpad(data) {
         assert_eq!(osis_crypto::pad(p), data);
     }

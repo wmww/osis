@@ -26,7 +26,7 @@ pub const SERVE_IDLE: Duration = Duration::from_secs(120);
 
 /// Longest wait between ticks.
 pub const MAX_IDLE: Duration = Duration::from_secs(60);
-/// How long a session's end waits for the server to take our last bytes.
+/// How long a session's end waits for the host to take our last bytes.
 pub const FINISH_WAIT: Duration = Duration::from_secs(10);
 /// Bytes queued for a connection and not yet taken by the transport before it is dropped: a peer
 /// that does not read (resource bound; a session's own traffic stays within `WINDOW_QUEUE`, a

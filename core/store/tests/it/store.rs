@@ -143,7 +143,7 @@ fn cursors_logs_local() {
     let mut rng = SeededRng::from_u64(6);
     let mut s = create(&dev, &mut rng);
     let mut t = s.transaction(&mut rng).unwrap();
-    t.put_cursor(b"server", b"c1").unwrap();
+    t.put_cursor(b"host", b"c1").unwrap();
     for i in 0..10u8 {
         assert_eq!(t.log_append(b"gained", &[i; 32]).unwrap(), u64::from(i));
     }
@@ -158,7 +158,7 @@ fn cursors_logs_local() {
     t.put_local(b"zzz", b"c", Shred::No).unwrap();
     t.commit().unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
-    assert_eq!(t.get_cursor(b"server").unwrap(), Some(b"c1".to_vec()));
+    assert_eq!(t.get_cursor(b"host").unwrap(), Some(b"c1".to_vec()));
     assert_eq!(t.scan_local(b"roster/", b"", 10).unwrap(), vec![(b"roster/1".to_vec(), b"a".to_vec()), (b"roster/2".to_vec(), b"b".to_vec())]);
     assert!(t.remove_local(b"zzz", Shred::No).unwrap());
 }

@@ -36,7 +36,7 @@ Format constants (fixed by format version 1, spec/versioning.md §1):
 | `MAX_LINKED_FRONTIERS` | 64 MiB (67 108 864 bytes): canonical bytes of the distinct linked tenure frontiers of one roster snapshot (spec/permissions.md §6) |
 | core schema ID | 16 zero bytes; revision 1 (spec/data-model.md §9, evolving additively under spec/versioning.md) |
 
-Blind-node policy (recommended): `TOMBSTONE_LIFETIME` 30 days; deposit budget spec/sync.md §5. Node-to-node protocol limits (version 1, not format constants): §11.
+Host policy (recommended): `TOMBSTONE_LIFETIME` 30 days; deposit budget spec/sync.md §5. Node-to-node protocol limits (version 1, not format constants): §11.
 
 ## 3. Creation records and agility enums
 - Agility enums (spec/crypto.md §8) are values: `signing_key = enum { 1 ed25519(blob) }` (32 bytes), `signature = enum { 1 ed25519(blob) }` (64 bytes), `kem_key = enum { 1 x25519_mlkem768(blob) }` (`pk_x || pk_m`, 1216 bytes), `sealed = enum { 1 x25519_mlkem768(blob) }` (`ct_x || ct_m || AEAD`). Each encodes as `1617([1, h'...'])`.
@@ -134,7 +134,7 @@ ClaimSet := [[claim+], {entry: box}]
 ## 9. Inbox blobs
 - **Inbox blob** (spec/crypto.md §5): prefix with expiry = the sender's corrected wall ms + `INBOX_LIFETIME` and no commitments, then a sealed box (§7) to the recipient's newest read keyset KEM key with AD = `[recipient, "inbox", prefix bytes]` and payload the padded (§5) canonical bytes of
   `InboxPayload := [CommitBlobPlaintext, [[tid, label_id, index, [address*], Opt([admin_pk, write_pk])]*]]`:
-  the membership commit with the parts about the recipient (§4), then for each thing it names, its label ID, that label's index (uint, spec/sync.md §2) and server addresses (`address` values, spec/data-model.md §9) and, for a thing with secrets of its own, its current admin and write delete keys (spec/crypto.md §7), sorted by tid.
+  the membership commit with the parts about the recipient (§4), then for each thing it names, its label ID, that label's index (uint, spec/sync.md §2) and host addresses (`address` values, spec/data-model.md §9) and, for a thing with secrets of its own, its current admin and write delete keys (spec/crypto.md §7), sorted by tid.
 
 ## 10. Links and recovery cards
 ```
@@ -142,8 +142,8 @@ Link := [1, seed, target, k, k_label, [address*], [peer*], ? flags]
 peer := [dialable, [relay*]]
 Card := [1, seed, person, home_label, [address+]]
 ```
-- `Link` (spec/permissions.md §9): format 1, L's 32-byte seed, the target tid, K's tid, K's label ID, server addresses of K's label, and the sharer node's P2P reach for first contact: `dialable` its 32-byte dialable key, `relay` relay URLs (`/reach`, spec/data-model.md §9). A redeemer with no common server dials a peer, which serves K's label as a member peer (spec/sync.md §5). `flags` (uint): bit 0 single use (the redemption removes L's own edge, spec/permissions.md §9); other bits are reserved and MUST be zero; present only when nonzero (a link with `flags` 0 or a reserved bit set is malformed).
-- `Card` (spec/permissions.md §9): format 1, the recovery key's 32-byte seed, the person actor's tid, its home label ID, server addresses.
+- `Link` (spec/permissions.md §9): format 1, L's 32-byte seed, the target tid, K's tid, K's label ID, host addresses of K's label, and the sharer node's P2P reach for first contact: `dialable` its 32-byte dialable key, `relay` relay URLs (`/reach`, spec/data-model.md §9). A redeemer with no common host dials a peer, which serves K's label as a member peer (spec/sync.md §5). `flags` (uint): bit 0 single use (the redemption removes L's own edge, spec/permissions.md §9); other bits are reserved and MUST be zero; present only when nonzero (a link with `flags` 0 or a reserved bit set is malformed).
+- `Card` (spec/permissions.md §9): format 1, the recovery key's 32-byte seed, the person actor's tid, its home label ID, host addresses.
 - The label a link or card names is the first label of K or of the person (index 0, spec/sync.md §2): both are created with it.
 - Caps: at most 8 addresses, 4 peers, 4 relays per peer; URLs at most 256 bytes.
 - Text forms: `osis://link/` or `osis://card/` followed by the unpadded base64url of the canonical bytes.
@@ -153,7 +153,7 @@ Card := [1, seed, person, home_label, [address+]]
 - Each direction of the stream (spec/sync.md §10) is a sequence of frames: a 4-byte big-endian length `len`, `1 <= len <= MAX_MESSAGE` (9 MiB, 9 437 184 bytes), then one canonical CBOR item of `len` bytes. A frame breaking a rule of this section is answered by Error 2 and may end the connection.
 - Each side sends `Hello := ["osis", [version+], wall_ms, challenge]` as its first frame, without waiting for the other's: supported protocol versions ascending (at most 16), its corrected wall clock, 32 random bytes. The session uses the greatest version both list; with none in common, both close. This section defines version 1.
 - Every later frame is a message `[kind, id, ...]`. `id < 2^32` is chosen by the requesting side and not reused while its request is outstanding; replies carry it; `id = 0` marks a message that has no reply (Push). Kind 24 is retired (never reused). Either side may send requests. A request of unknown kind gets Error 11. Replies may arrive in any order.
-- **Static key** of a side: the 32-byte key the transport authenticated for it (a server: its address key; a peer: its dialable key). An open signature binds the opened side's static key and Hello challenge.
+- **Static key** of a side: the 32-byte key the transport authenticated for it (a host: its address key; a peer: its dialable key). An open signature binds the opened side's static key and Hello challenge.
 - Clock offset (spec/sync.md §6) is estimated from Ping/Pong round trips and Hello.
 
 ### 11.2 Messages
@@ -200,9 +200,9 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 - **Events**: 0 an entry added or its wrap and stamp replaced (no stamp: deposited), 1 deleted, 2 a timed deletion pending at `at`, 3 a new head (without claim set). Expiry produces no event.
 - **Fetch** (spec/sync.md §5): items in request order, possibly a prefix of the request when the reply would exceed `MAX_MESSAGE`.
 - **Subscribe** (opened labels): the peer then sends Push with each new run of log events, with blobs as in Sync under the connection's last `inline_limit` for that label, and the relay-only entries other connections upload.
-- Once one signature of a message verifies under no key the server tries (code 1), it MAY check the message's later signatures against the head's keys only (code 1 where 9 would be due).
-- Code 9 refuses a signature under an earlier key of the label's role (a server answers it for some recent earlier keys, 1 past them) and carries nothing more, never the head: the signer learns the head where it opened the label (a push or Sync event, spec/sync.md §5) and signs again once it holds a newer key.
-- Status codes: 0 ok, 1 refused, 2 malformed, 3 too large (client-local: a server answers an oversized message as malformed), 4 rate limited, 5 deposit budget full, 6 tombstoned, 7 expired, 8 label not opened, 9 key not of the head, 10 cursor invalid, 11 unsupported, 12 storage cap reached, 13 unknown label.
+- Once one signature of a message verifies under no key the host tries (code 1), it MAY check the message's later signatures against the head's keys only (code 1 where 9 would be due).
+- Code 9 refuses a signature under an earlier key of the label's role (a host answers it for some recent earlier keys, 1 past them) and carries nothing more, never the head: the signer learns the head where it opened the label (a push or Sync event, spec/sync.md §5) and signs again once it holds a newer key.
+- Status codes: 0 ok, 1 refused, 2 malformed, 3 too large (client-local: a host answers an oversized message as malformed), 4 rate limited, 5 deposit budget full, 6 tombstoned, 7 expired, 8 label not opened, 9 key not of the head, 10 cursor invalid, 11 unsupported, 12 storage cap reached, 13 unknown label.
 - Per-message caps: Upload, Delete and the entries of Sync 1024 items; replace items 1024 per Upload or Sync over all its entries; Fetch 1024 IDs; `gained` and `want` 4096; Subscribe and Unsubscribe 1024 labels; Reconcile 256 ranges, ReconcileReply 4096; a peer may refuse to hold more than 4096 open labels per connection (code 4).
 
 ### 11.3 Range reconciliation
@@ -219,7 +219,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
   - `[2, blob]`: blob bytes, before the first entry naming them, once per bundle;
   - `[3, label_id, blob_id, wrap, Opt(stamp)]`: an entry (no stamp: deposited);
   - `[4, label_id, blob_id]`: a deletion; `[5, label_id, blob_id, at]`: a pending timed deletion.
-- An importer verifies paths and stamps as a server does and applies the records as a peer's log events received without a cursor; it skips records of unknown kind.
+- An importer verifies paths and stamps as a host does and applies the records as a peer's log events received without a cursor; it skips records of unknown kind.
 
 ## 13. Decoder limits
 - Any object: CBOR nesting at most 512 deep, values inside it at most 64 (spec/data-model.md §5); no array or map longer than the bytes that remain.

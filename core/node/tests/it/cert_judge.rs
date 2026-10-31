@@ -8,10 +8,10 @@ use osis_base::{BlobId, CommitId, LabelId, Role, Tid};
 use osis_node::flows::{Demotion, PreSync};
 use osis_node::sync::EntryKind;
 
-/// Entries present at server `sv` under `l` (as node `n` knows them) of commits touching
+/// Entries present at host `sv` under `l` (as node `n` knows them) of commits touching
 /// `(author, ak)`, with their commits.
 fn card_entries(net: &mut Net, n: usize, sv: usize, l: &LabelId, author: Tid, ak: &str) -> Vec<(BlobId, CommitId)> {
-    let ids = net.server_ids(sv, l);
+    let ids = net.host_ids(sv, l);
     let mut out = Vec::new();
     for (id, k) in net.sync(n).entries(l) {
         let EntryKind::Commit { commit, parts, .. } = k else { continue };
@@ -34,7 +34,7 @@ fn settle(net: &mut Net) {
 #[test]
 fn superseded_card_deleted_spec_permissions_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[sv]);
     let _g = net.group(a, &[(r, Role::Read)], &[sv]);
@@ -57,7 +57,7 @@ fn superseded_card_deleted_spec_permissions_4() {
 #[test]
 fn departed_node_card_deleted_spec_permissions_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[sv]);
     let g = net.group(a, &[(r, Role::Read)], &[sv]);
@@ -85,7 +85,7 @@ fn departed_node_card_deleted_spec_permissions_4() {
 #[test]
 fn regranted_node_card_placed_again_spec_permissions_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[sv]);
     let g = net.group(a, &[(r, Role::Read)], &[sv]);
@@ -121,7 +121,7 @@ fn regranted_node_card_placed_again_spec_permissions_4() {
 #[test]
 fn linked_blobs_of_gone_copy_deleted_spec_sync_3() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let me = net.tid(a);
     let e = net.engine(a);
@@ -145,22 +145,22 @@ fn linked_blobs_of_gone_copy_deleted_spec_sync_3() {
     settle(&mut net);
     let copies: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == pc)).map(|(id, _)| id).collect();
     let linked: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| *k == EntryKind::Unknown).map(|(id, _)| id).collect();
-    let ids = net.server_ids(sv, &l);
+    let ids = net.host_ids(sv, &l);
     assert!(!copies.is_empty() && copies.iter().all(|c| ids.contains(c)), "the owner's /created copy is there");
     assert!(!linked.is_empty() && linked.iter().all(|b| ids.contains(b)), "with its linked aspect list");
-    // the copy deleted at the server behind the node's back; it learns at its next sync
+    // the copy deleted at the host behind the node's back; it learns at its next sync
     net.set_online(a, false);
     for id in &copies {
         let now = net.now();
-        osis_proto::LabelStore::delete(net.servers[sv].hub.store_mut(), &l, id, now).unwrap();
+        osis_proto::LabelStore::delete(net.hosts[sv].hub.store_mut(), &l, id, now).unwrap();
     }
     net.set_online(a, true);
     settle(&mut net);
-    let ids = net.server_ids(sv, &l);
+    let ids = net.host_ids(sv, &l);
     assert!(linked.iter().all(|b| !ids.contains(b)), "the linked blobs went with the copy");
 }
 
-/// Node `n`'s person with its home label at server `sv`.
+/// Node `n`'s person with its home label at host `sv`.
 fn person(net: &mut Net, n: usize, sv: usize) -> Tid {
     let addr = net.address(sv);
     let (p, done) = net.engine(n).create_person(std::slice::from_ref(&addr)).unwrap();
@@ -199,7 +199,7 @@ fn person_reader(net: &mut Net, a: usize, r: usize, sv: usize, until: Option<osi
 #[test]
 fn person_removed_node_card_deleted_spec_permissions_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[sv]);
     let (g, p, l) = person_reader(&mut net, a, r, sv, None);
@@ -219,7 +219,7 @@ fn person_removed_node_card_deleted_spec_permissions_4() {
 #[test]
 fn until_expired_node_card_deleted_spec_permissions_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[sv]);
     let until = osis_base::WallMs(net.now() + 3_600_000);
@@ -240,11 +240,11 @@ fn until_expired_node_card_deleted_spec_permissions_4() {
 #[test]
 fn unheld_chain_card_kept_spec_permissions_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[sv]);
     let r2 = net.node(3, &[sv]);
-    // through the server only (a co-reader would serve the admin the chain)
+    // through the host only (a co-reader would serve the admin the chain)
     for n in [a, r, r2] {
         let acts = net.sync(n).set_peers(false);
         net.actions(n, acts);
@@ -274,13 +274,13 @@ fn unheld_chain_card_kept_spec_permissions_4() {
     let acts = net.sync(r2).publish_reach([2; 32], Vec::new()).unwrap();
     net.actions(r2, acts);
     settle(&mut net);
-    // the copies of r2's edge on the person go from the server before the admin is back
+    // the copies of r2's edge on the person go from the host before the admin is back
     let copies: Vec<BlobId> = net.sync(r2).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == grant)).map(|(id, _)| id).collect();
     assert!(!copies.is_empty(), "r2 placed its chain under the group's label");
     let now = net.now();
     for id in &copies {
         use osis_proto::LabelStore;
-        net.servers[sv].hub.store_mut().delete(&l, id, now).unwrap();
+        net.hosts[sv].hub.store_mut().delete(&l, id, now).unwrap();
     }
     net.set_online(a, true);
     settle(&mut net);
@@ -309,7 +309,7 @@ fn unheld_chain_card_kept_spec_permissions_4() {
 #[test]
 fn regrant_after_until_reads_again_spec_permissions_2() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[sv]);
     let until = osis_base::WallMs(net.now() + 3_600_000);

@@ -392,10 +392,10 @@ fn bench_btreemap_sets() {
 
 
 
-/// Alice's synced group `g` with Bob granted `role` on it, through one server.
+/// Alice's synced group `g` with Bob granted `role` on it, through one host.
 fn shared(role: Role) -> (World, Osis, Osis, osis::Tid) {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let (alice, _) = w.person(1, &[sv]);
     let (bob, _) = w.person(2, &[sv]);
     w.run();

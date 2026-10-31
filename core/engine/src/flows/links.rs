@@ -33,7 +33,7 @@ pub struct HeldLink {
     /// The seed thing's owner: only a K of that owner counts (a seed thing a co-reader made and
     /// placed in a shared group names no link of ours).
     pub owner: Tid,
-    /// This node wrote the seed: it made the link, so a redeemer of a link without servers
+    /// This node wrote the seed: it made the link, so a redeemer of a link without hosts
     /// reached this node.
     pub here: bool,
 }
@@ -44,7 +44,7 @@ pub struct LinkSpec {
     pub target: Tid,
     pub role: Role,
     pub until: Option<WallMs>,
-    pub servers: Vec<Address>,
+    pub hosts: Vec<Address>,
     pub peers: Vec<osis_label::Peer>,
     /// The link's `flags` bit 0: its redemption removes L (spec/permissions.md §9).
     pub single_use: bool,
@@ -52,7 +52,7 @@ pub struct LinkSpec {
 
 impl Engine {
     /// Creates a link to `spec.target` for actor `sharer` (an actor this node is admin of):
-    /// K (owned by `sharer`, secrets of its own, home label on `spec.servers` listing L by
+    /// K (owned by `sharer`, secrets of its own, home label on `spec.hosts` listing L by
     /// static entry), L (key actor from a fresh seed, `/created` and `/keys` signed by itself),
     /// L's edge (r, invite r, `until`) on K with its boxes, K's edge on the target, and a
     /// sharer-only thing keeping the seed. Returns the link and the seed thing.
@@ -63,7 +63,7 @@ impl Engine {
         let res = self.run(|tx| create_link_in(tx, *sharer, spec, l, &seed));
         self.drop_key_actor(&l);
         let (k, k_label, keep, done) = res?;
-        Ok((ShareLink { seed, target: spec.target, k, k_label, servers: spec.servers.clone(), peers: spec.peers.clone(), single_use: spec.single_use }, keep, done))
+        Ok((ShareLink { seed, target: spec.target, k, k_label, hosts: spec.hosts.clone(), peers: spec.peers.clone(), single_use: spec.single_use }, keep, done))
     }
 
     /// Redeems a link once K's label was claimed by L's static entry and downloaded (node-sync;
@@ -224,8 +224,8 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     let readers: Vec<ReaderKey> = super::labels::readers(tx, &k, &re)?;
     let deposit = osis_crypto::Secret32::from_bytes(super::super::flows::deposit_of(tx, &k)?);
     let mut m = Mutation::new();
-    let label = new_label(tx, &mut m, k, &epochs, &readers, &deposit, &spec.servers)?;
-    m.op(k, &ct::KEYS, PathOp { path: vec![PathSeg::Field(4)], op: Op::Set(Some(Inbox { label, servers: spec.servers.clone() }).to_value()) })?;
+    let label = new_label(tx, &mut m, k, &epochs, &readers, &deposit, &spec.hosts)?;
+    m.op(k, &ct::KEYS, PathOp { path: vec![PathSeg::Field(4)], op: Op::Set(Some(Inbox { label, hosts: spec.hosts.clone() }).to_value()) })?;
     done.add(Engine::commit_tx(tx, m)?);
     // L's card under K's label: a redeemer holds only the seed, and verifiers of L's commits
     // need L's `/created`

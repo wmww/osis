@@ -1,4 +1,4 @@
-//! More of the sharing and sync surface through blind servers in process (notes/api.md Sharing
+//! More of the sharing and sync surface through hosts in process (notes/api.md Sharing
 //! and membership, Sync configuration and status, Diagnostics), no tokio: see osis_sim::world.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -35,9 +35,9 @@ fn group(db: &Osis) -> Tid {
     g
 }
 
-/// Alice and Bob on one server, Bob granted `role` on Alice's synced group.
+/// Alice and Bob on one host, Bob granted `role` on Alice's synced group.
 fn alice_bob(w: &mut World, role: Role) -> (Osis, Osis, Tid) {
-    let sv = w.add_server();
+    let sv = w.add_host();
     let (alice, _) = w.person(1, &[sv]);
     let (bob, _) = w.person(2, &[sv]);
     w.run();
@@ -87,7 +87,7 @@ fn change_edge_and_leave_spec_permissions_2() {
 #[test]
 fn revoke_link_spec_permissions_9() {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let (alice, _) = w.person(1, &[sv]);
     let g = group(&alice);
     alice.make_link(g, Role::Read, Default::default()).unwrap();
@@ -124,7 +124,7 @@ fn demotion_presync_policies_spec_permissions_5_3() {
 #[test]
 fn watch_status_and_stranded_spec_permissions_3() {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let (da, _) = w.person(1, &[sv]);
     let (tx, rx) = std::sync::mpsc::channel();
     let _sub = da.watch_status(move |_, st| {
@@ -153,12 +153,12 @@ fn watch_status_and_stranded_spec_permissions_3() {
     assert!(recv(&stranded).contains(&home));
 }
 
-// spec/sync.md §11, notes/api.md Sync (bundles): a device that cannot reach the server takes
+// spec/sync.md §11, notes/api.md Sync (bundles): a device that cannot reach the host takes
 // what it misses from a bundle another device exported.
 #[test]
 fn bundle_round_trip_spec_sync_11() {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let (da, _) = w.person(1, &[sv]);
     w.run();
     let join = Osis::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
@@ -182,12 +182,12 @@ fn bundle_round_trip_spec_sync_11() {
 #[test]
 fn waits_time_out_and_roll_back_spec_api_handle() {
     let mut a = World::new();
-    let sv = a.add_server();
+    let sv = a.add_host();
     let (alice, card) = a.person(1, &[sv]);
     let g = group(&alice);
     let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
     a.run();
-    // a world without that server: nothing answers
+    // a world without that host: nothing answers
     let mut w = World::new();
     let store = osis::MemStore::new();
     let mut c = w.cfg(4, &[]);
@@ -216,7 +216,7 @@ fn waits_time_out_and_roll_back_spec_api_handle() {
 #[test]
 fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let (alice, _) = w.person(1, &[sv]);
     let (bob, _) = w.person(2, &[sv]);
     // Carol's own clock: kept with the world's, then left behind while she is offline
@@ -245,7 +245,7 @@ fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
     let until = osis::WallMs(w.now() + 3_600_000);
     carol.change_edge(g, b, Role::Admin, osis::EdgeOpts { until: Some(until), invite: None }).unwrap();
     assert_eq!(carol.roster(g).get(&b).and_then(|e| e.until), Some(until), "carol wrote it");
-    // straight to Alice and Bob (G's servers refuse her stale write key)
+    // straight to Alice and Bob (G's hosts refuse her stale write key)
     deliver(&carol, &alice);
     deliver(&carol, &bob);
     w.run();
@@ -264,7 +264,7 @@ fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
 #[test]
 fn invite_requests_accept_and_decline_spec_sync_3() {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let (alice, _) = w.person(1, &[sv]);
     let (bob, _) = w.person(2, &[sv]);
     let bi = w.index(&bob).unwrap();
@@ -300,7 +300,7 @@ fn invite_requests_accept_and_decline_spec_sync_3() {
 #[test]
 fn contact_invite_goes_through_spec_sync_3() {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let (alice, _) = w.person(1, &[sv]);
     let (bob, _) = w.person(2, &[sv]);
     let bi = w.index(&bob).unwrap();

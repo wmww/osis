@@ -6,7 +6,7 @@
 
 use crate::error::{Error, Result};
 use crate::net::{Net, Runtime, Transport, Waiter};
-use crate::share::{RecoveryCard, ServerAddr, Status};
+use crate::share::{RecoveryCard, HostAddr, Status};
 use crate::watch::{Dispatch, Dispatcher, Msg, lock};
 use osis_base::{Clock, SystemClock, Tid};
 use osis_crypto::{CryptoRngCore, OsRng, SeededRng};
@@ -60,15 +60,15 @@ pub struct Config {
     pub seed: Option<u64>,
     /// Where background sync runs (default `Runtime::None`: no network).
     pub runtime: Runtime,
-    /// How servers and co-reader nodes are dialed (default: QUIC).
+    /// How hosts and co-reader nodes are dialed (default: QUIC).
     pub transport: Option<Transport>,
     /// Sync with co-reader nodes directly (spec/sync.md §5, §10; default on): listen with the
     /// dialable key, publish `/reach`, and with feature `lan` announce on the LAN.
     pub peers: bool,
     /// Relay URLs published in `/reach` (self-hosted `iroh-relay`s; feature `iroh`).
     pub relays: Vec<String>,
-    /// Servers for `create`, `restore` and `pair`; an opened database keeps its stored list.
-    pub servers: Vec<ServerAddr>,
+    /// Hosts for `create`, `restore` and `pair`; an opened database keeps its stored list.
+    pub hosts: Vec<HostAddr>,
     /// A text session commits after this much inactivity.
     pub idle_commit: Duration,
     /// How long a call that waits for another node (`redeem`, `import_contact`, `restore`)
@@ -88,7 +88,7 @@ impl Config {
     }
 
     pub fn at(store: StoreAt) -> Config {
-        Config { store, materialize_limit: DEFAULT_LIMIT, clock: None, seed: None, runtime: Runtime::None, transport: None, peers: true, relays: Vec::new(), servers: Vec::new(), idle_commit: DEFAULT_IDLE_COMMIT, wait_timeout: DEFAULT_WAIT, ephemeral_history: osis_node::engine::DEFAULT_EPHEMERAL_HISTORY, dispatch: Dispatcher::Thread }
+        Config { store, materialize_limit: DEFAULT_LIMIT, clock: None, seed: None, runtime: Runtime::None, transport: None, peers: true, relays: Vec::new(), hosts: Vec::new(), idle_commit: DEFAULT_IDLE_COMMIT, wait_timeout: DEFAULT_WAIT, ephemeral_history: osis_node::engine::DEFAULT_EPHEMERAL_HISTORY, dispatch: Dispatcher::Thread }
     }
 
     pub fn dir(path: impl Into<std::path::PathBuf>) -> Config {
@@ -225,7 +225,7 @@ impl std::fmt::Debug for Inner {
 }
 
 pub(crate) const PERSON: &str = "person";
-pub(crate) const SERVERS: &str = "servers";
+pub(crate) const HOSTS: &str = "hosts";
 pub(crate) const LINKS: &str = "links";
 
 fn parts(cfg: &Config) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_store::RootStorage>)> {
@@ -264,16 +264,16 @@ fn tid_record(e: &mut Engine, name: &str) -> Result<Tid> {
     Ok(Tid::from_bytes(a))
 }
 
-/// Server addresses as one local record (text lines).
-pub(crate) fn save_servers(e: &mut Engine, s: &[ServerAddr]) -> Result<()> {
+/// Host addresses as one local record (text lines).
+pub(crate) fn save_hosts(e: &mut Engine, s: &[HostAddr]) -> Result<()> {
     let text: Vec<String> = s.iter().map(|a| a.to_string()).collect();
-    e.set_app_record(SERVERS, text.join("\n").as_bytes())?;
+    e.set_app_record(HOSTS, text.join("\n").as_bytes())?;
     Ok(())
 }
 
-fn load_servers(e: &mut Engine) -> Result<Option<Vec<ServerAddr>>> {
-    let Some(b) = e.app_record(SERVERS)? else { return Ok(None) };
-    let s = String::from_utf8(b).map_err(|_| Error::Storage("servers record".into()))?;
+fn load_hosts(e: &mut Engine) -> Result<Option<Vec<HostAddr>>> {
+    let Some(b) = e.app_record(HOSTS)? else { return Ok(None) };
+    let s = String::from_utf8(b).map_err(|_| Error::Storage("hosts record".into()))?;
     Ok(Some(s.lines().filter(|l| !l.is_empty()).map(|l| l.parse()).collect::<Result<_>>()?))
 }
 
@@ -283,36 +283,36 @@ pub(crate) struct Fresh {
     pub clock: Arc<dyn Clock>,
 }
 
-fn sync_over(engine: Engine, clock: &Arc<dyn Clock>, cfg: &Config, servers: &[ServerAddr]) -> Result<SyncEngine> {
-    let scfg = SyncConfig { servers: servers.iter().map(|s| s.0.clone()).collect(), peers: cfg.peers, ..SyncConfig::default() };
+fn sync_over(engine: Engine, clock: &Arc<dyn Clock>, cfg: &Config, hosts: &[HostAddr]) -> Result<SyncEngine> {
+    let scfg = SyncConfig { hosts: hosts.iter().map(|s| s.0.clone()).collect(), peers: cfg.peers, ..SyncConfig::default() };
     Ok(SyncEngine::new(engine, clock.clone(), rng(cfg, 7), scfg)?)
 }
 
-/// A new store's sync engine (its servers set later by `set_servers` where they change).
-pub(crate) fn fresh_engine(cfg: &Config, servers: &[ServerAddr]) -> Result<Fresh> {
+/// A new store's sync engine (its hosts set later by `set_hosts` where they change).
+pub(crate) fn fresh_engine(cfg: &Config, hosts: &[HostAddr]) -> Result<Fresh> {
     let (b, r) = parts(cfg)?;
     let clock = clock(cfg);
     let engine = Engine::create(b, r, engine_cfg(cfg), clock.clone(), rng(cfg, 0))?;
-    Ok(Fresh { sync: sync_over(engine, &clock, cfg, servers)?, clock })
+    Ok(Fresh { sync: sync_over(engine, &clock, cfg, hosts)?, clock })
 }
 
 impl Osis {
     /// Creates a database (notes/api.md, spec/permissions.md §1): a new node and a new person
     /// actor owned by a fresh recovery key, this node its admin, its home group (the person
-    /// itself, spec/sync.md §2) labeled on `Config.servers`. Returns the recovery card, the only
-    /// copy of the recovery key: show or store it, osis keeps none of it. Without servers there
+    /// itself, spec/sync.md §2) labeled on `Config.hosts`. Returns the recovery card, the only
+    /// copy of the recovery key: show or store it, osis keeps none of it. Without hosts there
     /// is nothing to restore from: no card (the key is discarded).
     pub fn create(cfg: Config) -> Result<(Osis, Option<RecoveryCard>)> {
-        let Fresh { mut sync, clock } = fresh_engine(&cfg, &cfg.servers)?;
+        let Fresh { mut sync, clock } = fresh_engine(&cfg, &cfg.hosts)?;
         let engine = sync.engine_mut();
-        let servers: Vec<osis_label::Address> = cfg.servers.iter().map(|s| s.0.clone()).collect();
-        let (p, done) = engine.create_person(&servers)?;
+        let hosts: Vec<osis_label::Address> = cfg.hosts.iter().map(|s| s.0.clone()).collect();
+        let (p, done) = engine.create_person(&hosts)?;
         let mut m = osis_node::Mutation::new();
         m.set(p.person, &ct::GROUP, &ct::Group::default())?;
         engine.commit(m)?;
         engine.set_app_record(PERSON, p.person.as_bytes())?;
-        save_servers(engine, &cfg.servers)?;
-        let card = if servers.is_empty() { None } else { Some(RecoveryCard(p.card.to_text().map_err(|e| Error::Invalid(e.to_string()))?)) };
+        save_hosts(engine, &cfg.hosts)?;
+        let card = if hosts.is_empty() { None } else { Some(RecoveryCard(p.card.to_text().map_err(|e| Error::Invalid(e.to_string()))?)) };
         let db = Osis::start(sync, clock, &cfg, p.person)?;
         db.carry(done)?;
         Ok((db, card))
@@ -324,8 +324,8 @@ impl Osis {
         let clock = clock(&cfg);
         let mut e = Engine::open(b, r, engine_cfg(&cfg), clock.clone(), rng(&cfg, 0))?;
         let me = tid_record(&mut e, PERSON)?;
-        let servers = load_servers(&mut e)?.unwrap_or_else(|| cfg.servers.clone());
-        let sync = sync_over(e, &clock, &cfg, &servers)?;
+        let hosts = load_hosts(&mut e)?.unwrap_or_else(|| cfg.hosts.clone());
+        let sync = sync_over(e, &clock, &cfg, &hosts)?;
         let db = Osis::start(sync, clock, &cfg, me)?;
         db.load_links()?;
         Ok(db)

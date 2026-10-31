@@ -5,8 +5,8 @@
 //! and the commits it needs), both authenticated by the offer's one-time secret.
 
 use crate::error::{Error, Result};
-use crate::handle::{Fresh, Osis, PERSON, fresh_engine, save_servers};
-use crate::share::{RecoveryCard, ServerAddr, SyncState};
+use crate::handle::{Fresh, Osis, PERSON, fresh_engine, save_hosts};
+use crate::share::{RecoveryCard, HostAddr, SyncState};
 use crate::Config;
 use osis_base::cbor::{Limits, decode, encode};
 use osis_base::{BlobId, CommitId, Tid, Value, base64url};
@@ -95,15 +95,15 @@ fn tag_ok(secret: &[u8; 32], purpose: &str, items: &[Value]) -> bool {
     same(&mac(secret, purpose, &Value::List(body.to_vec())), tag)
 }
 
-/// `cfg.servers` plus those of `more` it lacks.
-fn with_servers(cfg: &Config, more: Vec<ServerAddr>) -> Vec<ServerAddr> {
-    let mut servers = cfg.servers.clone();
+/// `cfg.hosts` plus those of `more` it lacks.
+fn with_hosts(cfg: &Config, more: Vec<HostAddr>) -> Vec<HostAddr> {
+    let mut hosts = cfg.hosts.clone();
     for a in more {
-        if !servers.contains(&a) {
-            servers.push(a);
+        if !hosts.contains(&a) {
+            hosts.push(a);
         }
     }
-    servers
+    hosts
 }
 
 fn same(a: &[u8], b: &[u8]) -> bool {
@@ -180,8 +180,8 @@ impl Joining {
             e.set_app_record(PERSON, person.as_bytes())?;
             Ok(done)
         })?;
-        let servers = self.db.servers();
-        self.db.engine(|e| save_servers(e, &servers))?;
+        let hosts = self.db.hosts();
+        self.db.engine(|e| save_hosts(e, &hosts))?;
         self.db.carry(done)?;
         Ok(self.db)
     }
@@ -190,20 +190,20 @@ impl Joining {
 impl Osis {
     /// Restores the person of a recovery card on this fresh device (spec/permissions.md §9):
     /// claims the home label by the card's key, downloads it, then (signing as the recovery key)
-    /// makes this node an admin of the person. Needs a runtime; the card's servers are added
-    /// to `Config.servers`. Fails `Network` after `Config::wait_timeout`; on any failure (or a
+    /// makes this node an admin of the person. Needs a runtime; the card's hosts are added
+    /// to `Config.hosts`. Fails `Network` after `Config::wait_timeout`; on any failure (or a
     /// dropped future) the recovery key is forgotten and the store gets no person record (it
     /// does not open as a database; use a fresh store for the next attempt).
     pub async fn restore(cfg: Config, card: &RecoveryCard) -> Result<Osis> {
         let c = card.parse()?;
-        let servers = with_servers(&cfg, c.servers.iter().cloned().map(ServerAddr).collect());
-        let Fresh { mut sync, clock } = fresh_engine(&cfg, &servers)?;
+        let hosts = with_hosts(&cfg, c.hosts.iter().cloned().map(HostAddr).collect());
+        let Fresh { mut sync, clock } = fresh_engine(&cfg, &hosts)?;
         let engine = sync.engine_mut();
         let r = engine.hold_key_actor(c.seed.clone())?;
-        save_servers(engine, &servers)?;
+        save_hosts(engine, &hosts)?;
         let db = Osis::start(sync, clock, &cfg, c.person)?;
         let key = crate::share::KeyGuard { db: db.downgrade(), l: r, link: None };
-        db.act(|x| x.sync.follow(r, c.person, c.home_label, c.servers.clone()));
+        db.act(|x| x.sync.follow(r, c.person, c.home_label, c.hosts.clone()));
         let p = c.person;
         db.wait_until(Some(db.inner.wait_timeout), Box::new(move |s, st| (s.engine().knows(&p) && st.groups.get(&p).is_some_and(|g| g.state == SyncState::Synced)).then_some(Ok(())))).await?;
         let done = db.engine(|e| e.recover(&c, &[], PreSync::Synced))?;
@@ -220,7 +220,7 @@ impl Osis {
     /// expires (10 minutes): show it only to the new device.
     pub fn pair_offer(&self) -> Result<PairOffer> {
         let (me, node) = (self.me(), self.node());
-        let servers: Vec<Value> = self.servers().iter().map(|s| Value::Str(s.to_string())).collect();
+        let hosts: Vec<Value> = self.hosts().iter().map(|s| Value::Str(s.to_string())).collect();
         let now = self.inner.clock.now_wall_ms().0;
         let secret = self.locked(|x| {
             let mut s = [0u8; 32];
@@ -229,7 +229,7 @@ impl Osis {
             x.offers.push((s, now.saturating_add(OFFER_LIFETIME_MS)));
             s
         });
-        Ok(PairOffer(pack(OFFER, &Value::List(vec![Value::Int(1), Value::Tid(me), Value::Tid(node), Value::Bytes(secret.to_vec()), Value::List(servers)]))))
+        Ok(PairOffer(pack(OFFER, &Value::List(vec![Value::Int(1), Value::Tid(me), Value::Tid(node), Value::Bytes(secret.to_vec()), Value::List(hosts)]))))
     }
 
     /// Accepts a new device's request to an offer of this device: makes it an admin of the
@@ -270,8 +270,8 @@ impl Osis {
         let [_, Value::Tid(person), Value::Tid(_), Value::Bytes(secret), Value::List(addrs)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing offer".into())) };
         let secret: [u8; 32] = secret.as_slice().try_into().map_err(|_| Error::Invalid("malformed pairing offer".into()))?;
         let addrs = addrs.iter().map(|a| if let Value::Str(s) = a { s.parse() } else { Err(Error::Invalid("malformed pairing offer".into())) }).collect::<Result<_>>()?;
-        let servers = with_servers(&cfg, addrs);
-        let Fresh { sync, clock } = fresh_engine(&cfg, &servers)?;
+        let hosts = with_hosts(&cfg, addrs);
+        let Fresh { sync, clock } = fresh_engine(&cfg, &hosts)?;
         let db = Osis::start(sync, clock, &cfg, *person)?;
         let node = db.node();
         let pks = db.engine(|e| -> Result<Vec<Package>> {

@@ -52,8 +52,8 @@ fn read(s: &mut SyncEngine, t: Tid) -> Option<Value> {
     s.engine_mut().get(&t, &osis_base::Ak::new("/t/reg").unwrap()).unwrap()
 }
 
-/// Two nodes of one group under the tokio driver converge through the server's driver: the
-/// server listens on `ep` at `url`; the nodes dial with `a` and `b`.
+/// Two nodes of one group under the tokio driver converge through the host's driver: the
+/// host listens on `ep` at `url`; the nodes dial with `a` and `b`.
 async fn converge<T: Transport>(ep: T, url: &str, a_ep: T, b_ep: T) {
     let secret = StaticSecret::from_bytes([0x51; 32]);
     let listener = ep.listen(ListenConfig { url: url.into(), secret: secret.clone() }).await.unwrap();
@@ -63,10 +63,10 @@ async fn converge<T: Transport>(ep: T, url: &str, a_ep: T, b_ep: T) {
     let store = HostStore::open(MemoryBackend::new(), clock.clone(), HostPolicy::default(), &mut SeededRng::from_u64(5)).unwrap();
     let hub = Hub::new(store, addr.key, Box::new(SeededRng::from_u64(6)));
     let (sctl, srx) = mpsc::channel(8);
-    let server = tokio::spawn(osis_host::run(hub, Endpoint { transport: ep, listener, secret }, vec![], clock.clone(), srx, log()));
+    let host = tokio::spawn(osis_host::run(hub, Endpoint { transport: ep, listener, secret }, vec![], clock.clone(), srx, log()));
 
     let addr = Address { url: addr.url, key: addr.key };
-    let cfg = osis_node::sync::SyncConfig { servers: vec![addr.clone()], ..Default::default() };
+    let cfg = osis_node::sync::SyncConfig { hosts: vec![addr.clone()], ..Default::default() };
     let a = net.add_node(1, cfg.clone());
     let b = net.add_node(2, cfg);
     let g = net.group_at(a, &[(b, Role::Write)], vec![addr]);
@@ -93,11 +93,11 @@ async fn converge<T: Transport>(ep: T, url: &str, a_ep: T, b_ep: T) {
     da.await.unwrap();
     db.await.unwrap();
     assert!(sctl.send(osis_host::Control::Shutdown).await.is_ok());
-    server.await.unwrap();
+    host.await.unwrap();
 }
 
-// spec/sync.md §5, §6, §10: two nodes under the tokio driver converge through the server's
-// driver over in-process sessions (ephemeral client keys, the server's key checked).
+// spec/sync.md §5, §6, §10: two nodes under the tokio driver converge through the host's
+// driver over in-process sessions (ephemeral client keys, the host's key checked).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_in_process_spec_sync_10() {
     let tnet = osis_transport::Net::new(3);
@@ -128,7 +128,7 @@ pub enum Direct<'a> {
     Loop([driver::LanConfig; 2]),
 }
 
-/// Two members of a group whose label names no server converge peer to peer under the tokio
+/// Two members of a group whose label names no host converge peer to peer under the tokio
 /// driver: each listens on its endpoint with its dialable secret, publishes the listener's key
 /// in `/reach`, dials the other at `peer://` and serves the other's sessions (member peer).
 /// `/reach` carries `relays` and no address; `direct` says how else the nodes find each other
@@ -217,7 +217,7 @@ pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &s
     db.await.unwrap();
 }
 
-// spec/sync.md §5 (member peer), §10: two nodes sync a label with no server under the tokio
+// spec/sync.md §5 (member peer), §10: two nodes sync a label with no host under the tokio
 // driver over in-process sessions, each dialing the other by its dialable key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_p2p_in_process_spec_sync_5() {

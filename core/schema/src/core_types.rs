@@ -88,7 +88,7 @@ codec_struct! {
     pub struct Epoch { 0 n: u64, 1 nonce: [u8; 32] }
 }
 codec_struct! {
-    /// Transport URL and 32-byte server static key.
+    /// Transport URL and 32-byte host static key.
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Address { 0 url: String, 1 key: [u8; 32] }
 }
@@ -121,7 +121,7 @@ codec_struct! {
 }
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Inbox { 0 label: LabelId, 1 servers: Vec<Address> }
+    pub struct Inbox { 0 label: LabelId, 1 hosts: Vec<Address> }
 }
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -164,7 +164,7 @@ codec_struct! {
 codec_struct! {
     /// A label of a synced group; steps by step ID.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Label { 0 index: u64, 1 steps: BTreeMap<[u8; 32], StepRecord>, 2 servers: Vec<Address>, 3 replaced: bool }
+    pub struct Label { 0 index: u64, 1 steps: BTreeMap<[u8; 32], StepRecord>, 2 hosts: Vec<Address>, 3 replaced: bool }
 }
 codec_struct! {
     /// `/keys`: keysets per role (actors other than key actors), a key actor's KEM key, inbox,

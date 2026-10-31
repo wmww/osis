@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! A label a node syncs with no server (spec/sync.md §5, member peer): the node serves it as
-//! such a server would hold it after its sync, so what the label must no longer hold leaves the
+//! A label a node syncs with no host (spec/sync.md §5, member peer): the node serves it as
+//! such a host would hold it after its sync, so what the label must no longer hold leaves the
 //! served state too, and a removal moves its head.
 
 use crate::net;
@@ -22,7 +22,7 @@ aspect /k/pairs: map<string, string> [by: writer, keep_at_most: 1h];
 );
 const KMAP: osis_schema::Aspect<osis_base::Value> = osis_schema::Aspect::new("/k/pairs", &KEEP);
 
-/// Node `a` (dialable: `/reach` published) with group `g` labeled at no server, and `b` a
+/// Node `a` (dialable: `/reach` published) with group `g` labeled at no host, and `b` a
 /// writer of it.
 fn setup() -> (Net, usize, usize, Tid, LabelId) {
     let mut net = Net::new();
@@ -33,7 +33,7 @@ fn setup() -> (Net, usize, usize, Tid, LabelId) {
     net.actions(a, acts);
     net.run();
     let l = net.label(a);
-    assert!(net.sync(a).labels()[0].1.servers.is_empty());
+    assert!(net.sync(a).labels()[0].1.hosts.is_empty());
     (net, a, b, g, l)
 }
 
@@ -71,7 +71,7 @@ fn purged_chunks_leave_local_label_spec_sync_5() {
 
 // spec/sync.md §5 (re-registration: an admin holding a newer established epoch issues a child of
 // the head), spec/permissions.md §3 (a removal rotates): removing a writer moves the head of the
-// label served with no server, so the removed member's old keys open nothing new.
+// label served with no host, so the removed member's old keys open nothing new.
 #[test]
 fn removal_moves_local_head_spec_sync_5() {
     let (mut net, a, b, g, l) = setup();
@@ -93,7 +93,7 @@ fn removal_moves_local_head_spec_sync_5() {
 }
 
 // spec/sync.md §5 (expiry: at the prefix's T the entry goes outright), spec/commits.md §5: an
-// expired body leaves the label served with no server.
+// expired body leaves the label served with no host.
 #[test]
 fn expired_body_leaves_local_label_spec_sync_5() {
     let (mut net, a, _, g, l) = setup();
@@ -117,7 +117,7 @@ fn expired_body_leaves_local_label_spec_sync_5() {
 // writes a covering snapshot first), spec/commits.md §5 (relative keep-at-most, plus
 // `AT_MOST_GRACE` while the body has a live write): a map body partly replaced, its other key
 // still live, is kept and served past first death plus D with no snapshot, then leaves the
-// label served with no server only with a snapshot carrying that key under it.
+// label served with no host only with a snapshot carrying that key under it.
 #[test]
 fn keep_at_most_body_carried_on_local_label_spec_sync_7() {
     use osis_crdt::{Op, PathOp, PathSeg};
@@ -156,10 +156,10 @@ fn keep_at_most_body_carried_on_local_label_spec_sync_7() {
 }
 
 // spec/sync.md §5 (re-registration issues a child of the head; a recorded path is registered
-// before a new step): three co-readers with no server, two of them admins; a removal's
+// before a new step): three co-readers with no host, two of them admins; a removal's
 // rotation gives the label one new step at every node, not one per admin or per connection.
 #[test]
-fn one_step_per_rotation_without_server_spec_sync_5() {
+fn one_step_per_rotation_without_host_spec_sync_5() {
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let b = net.node(2, &[]);
@@ -189,7 +189,7 @@ fn one_step_per_rotation_without_server_spec_sync_5() {
 }
 
 // spec/sync.md §3 (a certificate copy carries the blobs its parts link), §5 (member peer: what
-// a server's sync would delete leaves the served state): once the copy has gone (here expired),
+// a host's sync would delete leaves the served state): once the copy has gone (here expired),
 // the entries of the blobs it linked go too.
 #[test]
 fn linked_blobs_of_gone_copy_leave_local_label_spec_sync_5() {
@@ -235,7 +235,7 @@ fn served(net: &mut Net, ns: &[usize], l: &LabelId) -> Vec<String> {
     out
 }
 
-/// Local passes over a label served with no server, at two dialable co-writers: writes,
+/// Local passes over a label served with no host, at two dialable co-writers: writes,
 /// keep-at-most edits, an expiry, a purged chunked value, a certificate copy with a linked
 /// list that expires, the writer's writes, a removal. The served state after every step and
 /// again a little later, and the passes (full, total) at each node.
@@ -329,7 +329,7 @@ fn local_run(full: bool) -> (Vec<Vec<String>>, Vec<(u64, u64)>) {
     (steps, passes)
 }
 
-// spec/sync.md §5 (member peer: served as a server's sync would leave it), §6, §7: local passes
+// spec/sync.md §5 (member peer: served as a host's sync would leave it), §6, §7: local passes
 // over work sets serve what local passes judging everything serve, at every step.
 #[test]
 fn local_work_sets_match_full_passes_spec_sync_5() {
@@ -343,8 +343,8 @@ fn local_work_sets_match_full_passes_spec_sync_5() {
 }
 
 
-/// A person created with no server at dialable node `a`, and an inbox blob delivered to it
-/// (its home label is served with no server, so the blob is logged there); the served state of
+/// A person created with no host at dialable node `a`, and an inbox blob delivered to it
+/// (its home label is served with no host, so the blob is logged there); the served state of
 /// the home label after delivery, then after each of `waits` advances.
 fn local_inbox_run(full: bool, waits: &[u64]) -> Vec<Vec<String>> {
     let mut net = Net::new();
@@ -357,7 +357,7 @@ fn local_inbox_run(full: bool, waits: &[u64]) -> Vec<Vec<String>> {
     net.actions(a, acts);
     net.run();
     let home = alice.card.home_label;
-    assert!(net.sync(a).labels().iter().any(|(_, x)| x.id == home && x.servers.is_empty()), "home label served with no server");
+    assert!(net.sync(a).labels().iter().any(|(_, x)| x.id == home && x.hosts.is_empty()), "home label served with no host");
     let e = net.engine(a);
     let mut m = osis_node::Mutation::new();
     let t = e.new_thing(&mut m, alice.person);
@@ -377,7 +377,7 @@ fn local_inbox_run(full: bool, waits: &[u64]) -> Vec<Vec<String>> {
 }
 
 // spec/sync.md §3 (an inbox blob expires at its prefix's T), §5 (member peer: served as a
-// server's sync would leave it): an inbox blob logged under a label served with no server
+// host's sync would leave it): an inbox blob logged under a label served with no host
 // goes at its expiry, with local passes over work sets as with passes judging everything.
 #[test]
 fn local_inbox_blob_expires_spec_sync_5() {
@@ -394,8 +394,8 @@ fn local_inbox_blob_expires_spec_sync_5() {
 }
 
 // spec/sync.md §5 (a writer promotes a deposit it verified, completing the author's chain first;
-// member peer: served as a server's sync would leave it): a reader that dials the writer serving
-// a label with no server (the writer cannot dial back: no `/reach`) deposits its node card; the
+// member peer: served as a host's sync would leave it): a reader that dials the writer serving
+// a label with no host (the writer cannot dial back: no `/reach`) deposits its node card; the
 // writer's local pass stamps it as a promotion would, never the reader's heartbeat.
 #[test]
 fn deposit_promoted_on_local_label_spec_sync_5() {
@@ -485,13 +485,13 @@ fn deposit_chain_completed_on_local_label_spec_sync_5() {
     assert!(!cards.is_empty() && cards.iter().all(|x| x.3), "the card was promoted: {run:?}");
 }
 
-// spec/permissions.md §9 (link finalized: when K's labels have no server, at once by the node
+// spec/permissions.md §9 (link finalized: when K's labels have no host, at once by the node
 // that wrote the seed thing), spec/sync.md §5 (a label listing `peer://` nodes only is served by
-// this node, never dialed from `/label`): an expired link whose K label lists no server, or
+// this node, never dialed from `/label`): an expired link whose K label lists no host, or
 // only a `peer://` node, is finalized by its maker once it expires.
 #[test]
-fn expired_link_at_no_server_finalized_spec_permissions_9() {
-    for servers in [Vec::new(), vec![osis_label::Address { url: "peer://".into(), key: [0x99; 32] }]] {
+fn expired_link_at_no_host_finalized_spec_permissions_9() {
+    for hosts in [Vec::new(), vec![osis_label::Address { url: "peer://".into(), key: [0x99; 32] }]] {
         let mut net = Net::new();
         let a = net.node(1, &[]);
         let (pa, done) = net.engine(a).create_person(&[]).unwrap();
@@ -500,19 +500,19 @@ fn expired_link_at_no_server_finalized_spec_permissions_9() {
         let t = net.group(a, &[], &[]);
         net.run();
         let until = WallMs(net.now() + 3_600_000);
-        let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: Some(until), servers: servers.clone(), peers: Vec::new(), single_use: false };
+        let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: Some(until), hosts: hosts.clone(), peers: Vec::new(), single_use: false };
         let (link, _, done) = net.engine(a).create_link(&pa.person, &spec).unwrap();
         let acts = net.sync(a).carry_out(done).unwrap();
         net.actions(a, acts);
         net.run();
-        assert!(net.engine(a).held_links().unwrap().iter().any(|h| h.k == link.k && h.here), "{servers:?}: the maker holds the link");
+        assert!(net.engine(a).held_links().unwrap().iter().any(|h| h.k == link.k && h.here), "{hosts:?}: the maker holds the link");
         net.advance(3_600_000 + 60_000);
         net.run();
-        assert!(net.engine(a).links_due().unwrap().is_empty(), "{servers:?}: finalized at expiry");
+        assert!(net.engine(a).links_due().unwrap().is_empty(), "{hosts:?}: finalized at expiry");
     }
 }
 
-// spec/permissions.md §3 (re-seal at the end of a complete pass; a label with no server and no
+// spec/permissions.md §3 (re-seal at the end of a complete pass; a label with no host and no
 // peer it was received from passes vacuously, once the peer wait after the membership change is
 // over), spec/sync.md §5 (member peer): admin `a` serves g's label alone; admin `b`'s rotation
 // leaves reader `c` out and `b` goes away. `a` re-seals `c` after `peer_pass_wait_ms`, not
@@ -520,12 +520,12 @@ fn expired_link_at_no_server_finalized_spec_permissions_9() {
 // restarts after b's rotation reached it, the wait counts from the restart: it hears its peers
 // out before deciding.
 #[test]
-fn serverless_label_reseals_spec_permissions_3() {
-    serverless_reseal(false);
-    serverless_reseal(true);
+fn hostless_label_reseals_spec_permissions_3() {
+    hostless_reseal(false);
+    hostless_reseal(true);
 }
 
-fn serverless_reseal(restart: bool) {
+fn hostless_reseal(restart: bool) {
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let b = net.node(2, &[]);
@@ -537,7 +537,7 @@ fn serverless_reseal(restart: bool) {
     // c learns a's `/reach` and dials it
     net.pair(a, c);
     net.run();
-    assert!(net.sync(a).labels()[0].1.servers.is_empty());
+    assert!(net.sync(a).labels()[0].1.hosts.is_empty());
     let (ta, tb) = (net.tid(a), net.tid(b));
     net.set_online(b, false);
     let e = net.engine(b);

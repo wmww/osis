@@ -1,4 +1,4 @@
-//! Scripted clients (osis-proto `ClientSession`) and blind nodes (`Hub` over `HostStore` on
+//! Scripted clients (osis-proto `ClientSession`) and hosts (`Hub` over `HostStore` on
 //! `MemoryBackend`) wired by in-memory byte queues; a label with rotations; blobs.
 #![allow(dead_code)]
 
@@ -36,7 +36,7 @@ struct Link {
     open: bool,
 }
 
-/// Blind nodes and clients over in-memory links. One clock for all.
+/// Hosts and clients over in-memory links. One clock for all.
 pub struct World {
     pub clock: Arc<ManualClock>,
     pub hubs: Vec<Hub<MemoryBackend>>,

@@ -65,7 +65,7 @@ fn add_device(existing: &Osis, cfg: osis::Config) -> Result<Osis> {
 #[test]
 fn two_devices_offline_edits_and_undo() {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let laptop = person(&mut w, 1, sv);
     let phone = add_device(&laptop, w.cfg(2, &[])).unwrap();
     let nb = new_tag(&laptop, "Home").unwrap();
@@ -104,7 +104,7 @@ fn two_devices_offline_edits_and_undo() {
 #[test]
 fn share_notebook_with_a_second_person() {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let alice = person(&mut w, 1, sv);
     let bob = person(&mut w, 2, sv);
     let b = introduce(&mut w, &alice, &bob);
@@ -144,7 +144,7 @@ fn share_notebook_with_a_second_person() {
 #[test]
 fn large_body_streams() {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let laptop = person(&mut w, 1, sv);
     let mut cfg = w.cfg(2, &[]);
     cfg.materialize_limit = 64 << 10;
@@ -164,7 +164,7 @@ fn large_body_streams() {
 }
 
 // spec/crdt.md §4.6 (undo and redo); notes/api.md Undo (history lists everyone's changes; undo
-// and redo own ones), offline: one device without servers keeps a full local history. The stack
+// and redo own ones), offline: one device without hosts keeps a full local history. The stack
 // here walks two aspects.
 #[test]
 fn local_undo_redo_and_history() {

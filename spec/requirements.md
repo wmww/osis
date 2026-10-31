@@ -10,7 +10,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 ## Decentralization
 - No central or trusted coordinator, consensus or sequencer. Peer-to-peer like git; any node may be offline indefinitely and return.
 - No global registry. Identifiers are minted offline and cannot be hijacked. Total data may exceed what any node tracks.
-- Every node that can read data verifies identity and authorization itself from what travels with the data. Nothing trusts a server's word.
+- Every node that can read data verifies identity and authorization itself from what travels with the data. Nothing trusts a host's word.
 - No unit that must be synced whole. Groupings overlap, nest, may be cyclic and change over time. Syncing one row or one column of a table must each be efficient without duplicating the table at rest or in transfer.
 - Convergence under any delivery order, duplicates and partial receipt. No ordered delivery.
 - Deterministic: a node's state and its judgment of every write are functions of the data it holds, never of arrival order.

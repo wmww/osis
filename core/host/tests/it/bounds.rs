@@ -1,4 +1,4 @@
-//! Resource bounds and replication robustness (spec/sync.md §5: servers cap storage; spec/wire.md
+//! Resource bounds and replication robustness (spec/sync.md §5: hosts cap storage; spec/wire.md
 //! §11.2 Register Error 12): connection cap, Hello deadline, node-wide caps, bounded sweeps,
 //! sweep failures, retry after refusals, mutual replication.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
@@ -17,7 +17,7 @@ fn live(w: &World, h: usize, l: &Label) -> Vec<BlobId> {
     LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap()
 }
 
-// spec: none (server policy): connections beyond `max_connections` are closed; one without a Hello within `hello_ms` is closed
+// spec: none (host policy): connections beyond `max_connections` are closed; one without a Hello within `hello_ms` is closed
 #[test]
 fn connection_cap_and_hello_deadline() {
     let mut w = World::new();
@@ -35,7 +35,7 @@ fn connection_cap_and_hello_deadline() {
     assert_eq!(w.hubs[h].connections(), 1);
 }
 
-// spec: none (server policy): at `max_connections` the slots are shared by source: one source
+// spec: none (host policy): at `max_connections` the slots are shared by source: one source
 // holding them all gives up its newest to each newcomer from elsewhere until shares are equal;
 // then (and to its own) a newcomer is closed
 #[test]
@@ -219,7 +219,7 @@ fn replication_retries_after_refusal() {
     assert_eq!(w.hubs[s1].store().replica_pos(&hub_key(s2), &l.id).unwrap(), Some(head));
 }
 
-// spec/sync.md §5: two servers replicating to each other converge without sending entries back; one entry with two wraps settles
+// spec/sync.md §5: two hosts replicating to each other converge without sending entries back; one entry with two wraps settles
 #[test]
 fn mutual_replication_settles() {
     let mut w = World::new();

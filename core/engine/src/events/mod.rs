@@ -109,7 +109,7 @@ pub enum DiagnosticKind {
     /// A text session could not commit its edits (the `osis` API: lost write access, storage);
     /// they stay in its buffer.
     Uncommitted,
-    /// Ephemeral data was not synced or not applied: a server's or this node's ephemeral cap
+    /// Ephemeral data was not synced or not applied: a host's or this node's ephemeral cap
     /// was reached, or an ephemeral commit could not be built (notes/ephemeral.md Bounds).
     EphemeralRefused,
     /// A typed read found a stored value that does not match the reader's type (another

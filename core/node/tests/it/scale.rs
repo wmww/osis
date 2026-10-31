@@ -654,7 +654,7 @@ fn demotion_heavy_open() {
 use crate::net;
 
 // spec/sync.md §6; spec/requirements.md, Scale: a first sync of N commits costs O(N). A writer
-// writes N content commits (100 things, N/100 writes each) in a label at one server while a
+// writes N content commits (100 things, N/100 writes each) in a label at one host while a
 // fresh reader syncs: the time at the reader, the writer and the hub, and the engine phases
 // (`osis_node::costs`); then another fresh reader ingests every commit directly (`Engine::ingest`,
 // no sync). `OSIS_SCALE_N` sets N (default 10^4; 10^3 in a dev build, `size`, which checks no budget).
@@ -663,7 +663,7 @@ use crate::net;
 fn first_sync_cost() {
     let n: usize = size("OSIS_SCALE_N", 10_000, 1_000);
     let mut net = net::Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[]);
@@ -711,7 +711,7 @@ fn first_sync_cost() {
 }
 
 // spec/sync.md §6, §7; spec/requirements.md, Scale: a change costs O(change). A label holding N
-// content commits (100 things, N/100 writes each) at one server, synced by a writer and a
+// content commits (100 things, N/100 writes each) at one host, synced by a writer and a
 // reader; then one more write: the passes it causes at both nodes (time, and the entries and
 // bodies they judge) do not grow with N. `OSIS_SCALE_MAX` caps N (default 10^4; 10^3 in a dev
 // build, `size`).
@@ -722,7 +722,7 @@ fn sync_pass_cost() {
     let mut n = 1_000;
     while n <= max {
         let mut net = net::Net::new();
-        let sv = net.add_server();
+        let sv = net.add_host();
         let a = net.node(1, &[sv]);
         let b = net.node(2, &[sv]);
         let g = net.group(a, &[(b, Role::Read)], &[sv]);
@@ -736,8 +736,8 @@ fn sync_pass_cost() {
         net.run();
         let first = t1.elapsed();
         let l = net.label(a);
-        let held = net.server_ids(sv, &l).len();
-        assert!(held >= n, "{held} entries at the server");
+        let held = net.host_ids(sv, &l).len();
+        assert!(held >= n, "{held} entries at the host");
         // settled: a quiet round, then one new write
         net.advance(61_000);
         let before = (net.sync(a).pass_stats(), net.sync(b).pass_stats());
@@ -753,8 +753,8 @@ fn sync_pass_cost() {
 }
 
 // spec/sync.md §5 (member peer), §6; spec/requirements.md, Scale: a change to a label served
-// with no server costs its local passes O(change). A dialable node and a writer, a label at no
-// server holding N content commits (100 things); then one more write: the passes it causes at
+// with no host costs its local passes O(change). A dialable node and a writer, a label at no
+// host holding N content commits (100 things); then one more write: the passes it causes at
 // the serving node (time; passes, full, bodies, entries). `OSIS_SCALE_MAX` caps N (default 10^4).
 #[test]
 #[ignore = "tier 2"]
@@ -790,7 +790,7 @@ fn sync_local_pass_cost() {
 
 // spec/sync.md §6, §7; spec/permissions.md §4; spec/requirements.md, Scale: a membership change
 // re-judges only the labels whose verdicts can read it. 10 labels of `OSIS_SCALE_LABEL` (default
-// 10^3) content commits each at one server, a writer and a reader; then an edge write on an
+// 10^3) content commits each at one host, a writer and a reader; then an edge write on an
 // actor no label's closure reaches (it should judge about nothing), then one on the first
 // label's group (only that label's entries).
 #[test]
@@ -798,7 +798,7 @@ fn sync_local_pass_cost() {
 fn sync_membership_pass_cost() {
     let n: usize = size("OSIS_SCALE_LABEL", 1_000, 1_000);
     let mut net = net::Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
@@ -1019,7 +1019,7 @@ fn put_keys(net: &mut net::Net, n: usize, t: Tid, asp: &Aspect<Value>, ks: &[Str
 // a big aspect judges O(change), not the aspect. N keys on one thing (`OSIS_SCALE_N`, default
 // 10^3) in at most 10^3 commits (`OSIS_SCALE_PER` keys each, default N/10^3 rounded up: a commit
 // costs its joins at both nodes, about 14 ms per one-key commit at 10^4, so 10^4 bodies takes
-// `OSIS_SCALE_PER=1`) at one server, a writer and a reader: (1) under keep at most (every body
+// `OSIS_SCALE_PER=1`) at one host, a writer and a reader: (1) under keep at most (every body
 // live, waiting for its timed delete) one more key, then one overwriting the first body's keys
 // (kills that body); (2) under an expiry, an older commit expiring
 // alone; (3) N things in the group, one write (the closure taken once per pass;
@@ -1032,7 +1032,7 @@ fn sync_aspect_pass_cost() {
     let n: usize = size("OSIS_SCALE_N", 1_000, 1_000);
     let d = |x: osis_node::sync::PassStats, y: osis_node::sync::PassStats| (y.passes - x.passes, y.full - x.full, y.bodies - x.bodies, y.entries - x.entries);
     let mut net = net::Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Read)], &[sv]);
@@ -1211,7 +1211,7 @@ fn rss_kib() -> u64 {
 fn eph_net() -> (crate::net::Net, usize, usize, Tid) {
     use crate::net::*;
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let x = net.node(3, &[sv]);

@@ -67,7 +67,7 @@ pub fn genesis_label(admin: &Secret32, index: u64) -> LabelId {
 }
 
 /// Index into `candidates` of the role secret whose label key at `index` is `pk`: which held
-/// epoch a server's head registers (spec/sync.md §2).
+/// epoch a host's head registers (spec/sync.md §2).
 pub fn match_secret<'a>(pk: &VerifyingKey, role: LabelRole, index: u64, candidates: impl IntoIterator<Item = &'a Secret32>) -> Option<usize> {
     candidates.into_iter().position(|s| label_role_key(role, s, index).verifying_key() == *pk)
 }

@@ -16,7 +16,7 @@ use osis_schema::core_types as ct;
 #[test]
 fn revoke_about_author_placed_spec_permissions_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let w = net.node(3, &[sv]);
@@ -48,7 +48,7 @@ fn revoke_about_author_placed_spec_permissions_4() {
         net.advance(31_000);
     }
     assert!(net.engine(r).header(&removal).is_some(), "R holds the revoke");
-    let ids = net.server_ids(sv, &lg);
+    let ids = net.host_ids(sv, &lg);
     let placed = net.sync(r).entries(&lg).into_iter().any(|(id, k)| ids.contains(&id) && matches!(k, EntryKind::Commit { commit, .. } if commit == removal));
     assert!(placed, "the revoke of W on X is under G's label");
     // G's admin learns of it there and rotates G: W reads nothing new
@@ -70,7 +70,7 @@ fn revoke_about_author_placed_spec_permissions_4() {
 #[test]
 fn nested_departure_revoke_placed_spec_permissions_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let w = net.node(3, &[sv]);
@@ -111,7 +111,7 @@ fn nested_departure_revoke_placed_spec_permissions_4() {
         net.advance(31_000);
     }
     assert!(net.engine(r).header(&removal).is_some(), "R holds the revoke");
-    let ids = net.server_ids(sv, &lg);
+    let ids = net.host_ids(sv, &lg);
     let placed = net.sync(r).entries(&lg).into_iter().any(|(id, k)| ids.contains(&id) && matches!(k, EntryKind::Commit { commit, .. } if commit == removal));
     assert!(placed, "the revoke of W on X2 is under G's label");
     let u = net.item(a, g, g, "after w left");

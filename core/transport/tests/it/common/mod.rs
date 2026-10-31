@@ -24,7 +24,7 @@ pub fn take_frames(buf: &mut Vec<u8>) -> Vec<Vec<u8>> {
     out
 }
 
-/// Server side: answers each request frame with its body reversed, until the client finishes.
+/// Serving side: answers each request frame with its body reversed, until the client finishes.
 pub async fn serve<C: Connection>(c: C) {
     let (mut tx, mut rx) = c.accept_stream().await.unwrap();
     let mut buf = Vec::new();

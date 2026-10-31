@@ -14,7 +14,7 @@ pub struct Client {
 }
 
 impl Client {
-    /// Runs the handshake on `link` (a session dialed to the server under `key`).
+    /// Runs the handshake on `link` (a session dialed to the host under `key`).
     pub async fn start(link: Link, key: [u8; 32]) -> Client {
         assert_eq!(link.peer_key, key);
         let mut c = Client { s: ClientSession::new(ClientConfig { peer_static_key: key, challenge: [9; 32] }), link, events: vec![] };
@@ -75,16 +75,16 @@ impl Client {
     }
 }
 
-pub struct Server {
+pub struct Host {
     pub addr: osis_label::Address,
     pub control: tokio::sync::mpsc::Sender<osis_host::Control>,
     pub task: tokio::task::JoinHandle<osis_host::Hub<osis_store::MemoryBackend>>,
 }
 
-impl Server {
+impl Host {
     /// Starts the driver on `transport` listening on `url` (static secret from `seed`), on a
     /// manual clock at `T0`.
-    pub async fn start<T: osis_transport::Transport>(transport: T, url: &str, seed: u8, backend: osis_store::MemoryBackend, peers: Vec<osis_label::Address>) -> Server {
+    pub async fn start<T: osis_transport::Transport>(transport: T, url: &str, seed: u8, backend: osis_store::MemoryBackend, peers: Vec<osis_label::Address>) -> Host {
         use osis_transport::Listener;
         let clock = std::sync::Arc::new(osis_base::ManualClock::new(osis_base::WallMs(T0)));
         let store = osis_host::HostStore::open(backend, clock.clone(), osis_host::HostPolicy::default(), &mut osis_crypto::SeededRng::from_seed([seed; 32])).unwrap();
@@ -95,7 +95,7 @@ impl Server {
         let hub = osis_host::Hub::new(store, ep.key(), Box::new(osis_crypto::SeededRng::from_seed([1; 32])));
         let (control, rx) = tokio::sync::mpsc::channel(4);
         let task = tokio::spawn(osis_host::run(hub, ep, peers, clock, rx, std::sync::Arc::new(|m: &str| eprintln!("{m}"))));
-        Server { addr: osis_label::Address { url: a.url, key: a.key }, control, task }
+        Host { addr: osis_label::Address { url: a.url, key: a.key }, control, task }
     }
 
     /// A client session dialed on `transport` with an ephemeral key.

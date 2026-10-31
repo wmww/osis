@@ -3,7 +3,7 @@
 //! bodies with a live write, which get `AT_MOST_GRACE` more, else by timer), expiry at T
 //! (value-less, body dropped), purge requests judged by perm at the
 //! request's time (also against deltas arriving later), compaction snapshots and the covered
-//! test. node-sync judges what to delete at blind nodes and what to re-snapshot from the commit
+//! test. node-sync judges what to delete at hosts and what to re-snapshot from the commit
 //! index (dropped parts, `covered`), so no queue is kept here.
 //!
 //! A body here is one projection class of a commit (`body_class`): its deaths are kept under
@@ -219,7 +219,7 @@ pub(crate) fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<
 
 /// Drops the delta of aspect `ai` of `c` from its body (spec/commits.md §5): the commit is kept
 /// without it (same header), the body's death records for it shredded, the aspect's state
-/// rewritten shredded with its undo buffer cleared (node-sync deletes it at blind nodes, judged
+/// rewritten shredded with its undo buffer cleared (node-sync deletes it at hosts, judged
 /// from the dropped parts).
 pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     drop_part_as(tx, c, ai, false)
@@ -1075,10 +1075,10 @@ fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
 /// (spec/commits.md §5; kept frontiers, `Dropped::gives`, reach dead writes too), so whether it
 /// was live then is kept (`Dropped::live`): dropped dead it stays dead (undo and redo write
 /// new dots; a write a validity flip brings back comes from a held body,
-/// which carries it at blind nodes itself); dropped live, it is
+/// which carries it at hosts itself); dropped live, it is
 /// live while the state holds a write stamped at or before its `ts` (the header's `ts` bounds
 /// what it carried) or one without a `ts` (a bare anchor it may carry): an
-/// over-approximation, so its delete at blind nodes waits for a carrier (spec/sync.md §7).
+/// over-approximation, so its delete at hosts waits for a carrier (spec/sync.md §7).
 /// Never held: a write stamped at or before its `ts`.
 fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, members: &[usize]) -> Result<bool> {
     // per dropped aspect, whether it was live then

@@ -202,17 +202,17 @@ fn open(sel: &StoreSel, g: &Global, net: bool) -> anyhow::Result<Osis> {
     }
 }
 
-/// Creates a store with its home group on `servers`; refuses a non-empty directory. Returns the
-/// recovery card (none without servers).
-fn create(sel: &StoreSel, g: &Global, servers: Vec<osis::ServerAddr>) -> anyhow::Result<(Osis, Option<osis::RecoveryCard>)> {
+/// Creates a store with its home group on `hosts`; refuses a non-empty directory. Returns the
+/// recovery card (none without hosts).
+fn create(sel: &StoreSel, g: &Global, hosts: Vec<osis::HostAddr>) -> anyhow::Result<(Osis, Option<osis::RecoveryCard>)> {
     if let StoreSel::Dir(d) = sel
         && d.read_dir().is_ok_and(|mut r| r.next().is_some())
     {
         return Err(exit(8, format!("{} is not empty", d.display())));
     }
-    let net = !servers.is_empty();
+    let net = !hosts.is_empty();
     let mut cfg = config(sel, g, net);
-    cfg.servers = servers;
+    cfg.hosts = hosts;
     let db = Osis::create(cfg).map_err(|e| match sel {
         StoreSel::Dir(d) => lock_err(d, e),
         _ => e.into(),

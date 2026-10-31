@@ -3,7 +3,7 @@
 //! the grantee's `/keys`, a removal's new `/keys`), inbox delivery (spec/sync.md §3), label
 //! creation.
 
-use super::state::{Entry, Kind, ServerKey};
+use super::state::{Entry, Kind, HostKey};
 use super::{Action, ConnId, Phase, SyncEngine};
 use crate::error::{Error, Result};
 use crate::labeling::seal_body;
@@ -37,15 +37,15 @@ pub(crate) struct Outgoing {
 }
 
 impl SyncEngine {
-    /// Creates a label for group `g` at `servers` (an admin; spec/sync.md §2) and connects.
-    pub fn create_label(&mut self, g: &Tid, servers: Vec<Address>) -> Result<(LabelId, Vec<Action>)> {
-        let (l, done) = self.engine.create_label(g, &servers)?;
+    /// Creates a label for group `g` at `hosts` (an admin; spec/sync.md §2) and connects.
+    pub fn create_label(&mut self, g: &Tid, hosts: Vec<Address>) -> Result<(LabelId, Vec<Action>)> {
+        let (l, done) = self.engine.create_label(g, &hosts)?;
         self.take_done(done)?;
         Ok((l, self.handle(super::Event::Local)))
     }
 
     /// Replaces label `old` of `g` (spec/sync.md §2; an admin, `Engine::replace_label`: the
-    /// admin rotation if the loss calls for it, a new label at the same servers, the old one
+    /// admin rotation if the loss calls for it, a new label at the same hosts, the old one
     /// marked replaced); passes then upload the live blobs under the new label, and under the
     /// old one (an admin keeps syncing it until done there, `labels`) only membership-class
     /// commits, the replacement's `/label` among them, deleting its content entries;
@@ -58,7 +58,7 @@ impl SyncEngine {
 
     /// Compacts `(t, ak)` (spec/sync.md §7): writes a snapshot from this node's state, then
     /// drops the bodies it covers that this node may purge and whose keep-at-least bound is
-    /// `MAX_DRIFT` past; the next pass uploads the snapshot and deletes the dropped bodies at servers once
+    /// `MAX_DRIFT` past; the next pass uploads the snapshot and deletes the dropped bodies at hosts once
     /// the snapshot is there. Nothing when the snapshot would be a carrier only (spec/commits.md §5).
     pub fn compact(&mut self, t: &Tid, ak: &Ak) -> Result<Vec<Action>> {
         let Some(s) = self.engine.compaction_snapshot(t, ak)? else { return Ok(Vec::new()) };
@@ -161,10 +161,10 @@ impl SyncEngine {
 
     /// `place_certificate`. A copy of this node's own write under a label it does not write
     /// (its invite grant, self-removal, chain) is also queued as a deposit (`queue_deposit`),
-    /// so it reaches the label even when this node loses the label before a server answers:
+    /// so it reaches the label even when this node loses the label before a host answers:
     /// other nodes may hold parts of the commit from elsewhere and wait for the rest.
     pub(crate) fn place_certificate_in(&mut self, g: &Tid, c: &CommitId, aspects: &BTreeSet<usize>) -> Result<()> {
-        let labels: Vec<(LabelId, Vec<Address>)> = self.engine.group_labels(g)?.into_iter().filter(|l| !l.replaced).map(|l| (l.id, l.servers)).collect();
+        let labels: Vec<(LabelId, Vec<Address>)> = self.engine.group_labels(g)?.into_iter().filter(|l| !l.replaced).map(|l| (l.id, l.hosts)).collect();
         if labels.is_empty() {
             return Ok(());
         }
@@ -177,7 +177,7 @@ impl SyncEngine {
         }
         let own = self.engine.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local);
         let seed = if own && self.engine.role_on(&self.engine.group_actor(g)) < Some(Role::Write) { self.engine.deposit_seed(g)? } else { None };
-        for (l, servers) in labels {
+        for (l, hosts) in labels {
             if self.state.certs.contains(&(l, *c)) {
                 continue;
             }
@@ -189,7 +189,7 @@ impl SyncEngine {
                 let s = seal_body(&b, &mut *self.rng)?;
                 let wrap = osis_crypto::wrap(&secret, &s.id, &s.key)?;
                 if let Some(d) = &deposit {
-                    self.queue_deposit(l, &servers, d, s.blob.clone(), wrap, None);
+                    self.queue_deposit(l, &hosts, d, s.blob.clone(), wrap, None);
                 }
                 self.engine.put_blobs(vec![(s.id, s.blob)])?;
                 self.state.add_blob(s.id, super::state::BlobRec { commit: b.commit, parts: b.parts.clone(), key: s.key.clone(), cert: true });
@@ -201,7 +201,7 @@ impl SyncEngine {
                 for id in self.engine.linked_blobs(c, &parts)? {
                     let wrap = self.state.entries.get(&(l, id)).map(|e| e.wrap);
                     if let (Some(wrap), Some(blob)) = (wrap, self.engine.blob(&id)?) {
-                        self.queue_deposit(l, &servers, d, blob, wrap, None);
+                        self.queue_deposit(l, &hosts, d, blob, wrap, None);
                     }
                 }
             }
@@ -210,28 +210,28 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// After a settled pass of replaced label `l` of `g` at `server` that had nothing left to
+    /// After a settled pass of replaced label `l` of `g` at `host` that had nothing left to
     /// upload (`quiet`): done there when no content entry is present any more (spec/sync.md §2:
     /// membership-class commits, the replacement's `/label` among them, and certificates stay);
-    /// once done at every server of the label (or no key opens it there), this admin stops
+    /// once done at every host of the label (or no key opens it there), this admin stops
     /// syncing it for good; `labels` retires it after `MEMBERSHIP_KEEP` whatever.
-    pub(crate) fn retire_at(&mut self, server: super::state::ServerKey, g: &Tid, l: LabelId) -> Result<()> {
+    pub(crate) fn retire_at(&mut self, host: super::state::HostKey, g: &Tid, l: LabelId) -> Result<()> {
         // content commits' chunks and pages go too
-        if !self.replaced_leftovers(&server, &l).is_empty() {
+        if !self.replaced_leftovers(&host, &l).is_empty() {
             return Ok(());
         }
-        for b in self.state.present_at(&server, &l) {
+        for b in self.state.present_at(&host, &l) {
             let Some(Kind::Commit { commit, parts, .. }) = self.state.entries.get(&(l, b)).map(|e| &e.kind) else { continue };
             let Some(h) = self.engine.header(commit) else { return Ok(()) };
             if parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|a| !super::pass::kept_when_replaced(a.ak.as_str())) {
                 return Ok(());
             }
         }
-        self.retired_at.insert((server, l));
-        let servers: Vec<_> = self.engine.group_labels(g)?.into_iter().find(|x| x.id == l).map(|x| x.servers).unwrap_or_default();
-        // a server where no key opens the label (taken by whoever replaced it) counts as done
-        let failed = |k: &super::state::ServerKey| self.conns.values().any(|c| c.server == *k && c.labels.get(&l).is_some_and(|x| x.phase == Phase::Failed));
-        if servers.iter().all(|a| self.retired_at.contains(&(a.key, l)) || failed(&a.key)) {
+        self.retired_at.insert((host, l));
+        let hosts: Vec<_> = self.engine.group_labels(g)?.into_iter().find(|x| x.id == l).map(|x| x.hosts).unwrap_or_default();
+        // a host where no key opens the label (taken by whoever replaced it) counts as done
+        let failed = |k: &super::state::HostKey| self.conns.values().any(|c| c.host == *k && c.labels.get(&l).is_some_and(|x| x.phase == Phase::Failed));
+        if hosts.iter().all(|a| self.retired_at.contains(&(a.key, l)) || failed(&a.key)) {
             self.state.retire(l);
         }
         Ok(())
@@ -252,7 +252,7 @@ impl SyncEngine {
 
     /// Delivers commit `c`'s deltas on `aspects` to actor `recipient` as an inbox blob
     /// (spec/sync.md §3; spec/crypto.md §5): sealed to its read keyset's KEM key, with the label
-    /// IDs and servers of the things the commit names, deposited under its inbox (its `/keys`,
+    /// IDs and hosts of the things the commit names, deposited under its inbox (its `/keys`,
     /// else the nearest owner-chain actor's).
     pub fn deliver_inbox(&mut self, recipient: &Tid, c: &CommitId, aspects: &BTreeSet<usize>) -> Result<Vec<Action>> {
         let id = *c;
@@ -277,7 +277,7 @@ impl SyncEngine {
             for gl in self.engine.group_labels(&t)? {
                 if !gl.replaced {
                     let delete_keys = self.engine.own_delete_keys(&t)?;
-                    things.push(InboxThing { tid: t, label: gl.id, index: gl.index, servers: gl.servers, delete_keys });
+                    things.push(InboxThing { tid: t, label: gl.id, index: gl.index, hosts: gl.hosts, delete_keys });
                     break;
                 }
             }
@@ -286,7 +286,7 @@ impl SyncEngine {
             .map_err(|_| Error::Corrupt("commit blob"))?;
         let payload = InboxPayload { commit, things };
         let blob = osis_label::seal_inbox_blob(recipient, &kem, &payload, self.engine.now(), &mut *self.rng)?;
-        self.queue_inbox(&owner, inbox.label, &inbox.servers, blob, None)?;
+        self.queue_inbox(&owner, inbox.label, &inbox.hosts, blob, None)?;
         Ok(self.handle(super::Event::Local))
     }
 
@@ -319,7 +319,7 @@ impl SyncEngine {
             for d in r.unwrap_or_default() {
                 if let crate::flows::Delivery::Inbox { to, inbox, blob, .. } = d {
                     let owner = self.inbox_owner(&to, &inbox.label)?.unwrap_or(to);
-                    self.queue_inbox(&owner, inbox.label, &inbox.servers, blob, Some((s.member, s.commit)))?;
+                    self.queue_inbox(&owner, inbox.label, &inbox.hosts, blob, Some((s.member, s.commit)))?;
                     sent = true;
                 }
             }
@@ -342,7 +342,7 @@ impl SyncEngine {
     /// Drops the queued seals of inbox delivery `(member, c)`.
     fn drop_delivery_out(&mut self, member: &Tid, c: &CommitId) {
         let k = Some((*member, *c));
-        let ks: Vec<(ServerKey, LabelId, BlobId)> = self.state.outbox.iter().filter(|(_, o)| o.delivery == k).map(|(x, _)| *x).collect();
+        let ks: Vec<(HostKey, LabelId, BlobId)> = self.state.outbox.iter().filter(|(_, o)| o.delivery == k).map(|(x, _)| *x).collect();
         for (s, l, b) in ks {
             self.outbox.remove(&(s, l, b));
             self.state.remove_out(&s, &l, &b);
@@ -353,19 +353,19 @@ impl SyncEngine {
     /// rather than sent again: an inbox seal whose delivery is gone, or a deposit under a label
     /// this node sees replaced (spec/sync.md §2: no new step is issued for it, and what still
     /// matters goes under the new label). Anything else waits for its label to take it.
-    pub(crate) fn deposit_moot(&mut self, server: &ServerKey, l: &LabelId, b: &BlobId) -> bool {
-        let Some(o) = self.state.outbox.get(&(*server, *l, *b)) else { return true };
+    pub(crate) fn deposit_moot(&mut self, host: &HostKey, l: &LabelId, b: &BlobId) -> bool {
+        let Some(o) = self.state.outbox.get(&(*host, *l, *b)) else { return true };
         if let Some(k) = o.delivery {
             return !self.state.sent_inbox.contains_key(&k);
         }
         self.group_of(l).is_some_and(|g| self.is_replaced(&g, l))
     }
 
-    /// Signs queued deposit `(server, l, b)` again with the label's current deposit key (an
-    /// inbox's from its owner's `/keys`), after its server found it signed by an earlier one;
+    /// Signs queued deposit `(host, l, b)` again with the label's current deposit key (an
+    /// inbox's from its owner's `/keys`), after its host found it signed by an earlier one;
     /// false when this node holds no other key, so it can never be taken.
-    pub(crate) fn resign_deposit(&mut self, server: &ServerKey, l: &LabelId, b: &BlobId) -> Result<bool> {
-        let Some(o) = self.state.outbox.get(&(*server, *l, *b)).cloned() else { return Ok(false) };
+    pub(crate) fn resign_deposit(&mut self, host: &HostKey, l: &LabelId, b: &BlobId) -> Result<bool> {
+        let Some(o) = self.state.outbox.get(&(*host, *l, *b)).cloned() else { return Ok(false) };
         let seed = match o.delivery {
             Some((member, _)) => {
                 let owner = self.inbox_owner(&member, l)?.unwrap_or(member);
@@ -407,43 +407,43 @@ impl SyncEngine {
 
     /// Queues inbox blob `blob` for the inbox `label` of `owner` (its deposit seed signs, with
     /// a filler wrap), a seal of inbox delivery `delivery` when given.
-    pub(crate) fn queue_inbox(&mut self, owner: &Tid, label: LabelId, servers: &[Address], blob: Vec<u8>, delivery: Option<(Tid, CommitId)>) -> Result<()> {
+    pub(crate) fn queue_inbox(&mut self, owner: &Tid, label: LabelId, hosts: &[Address], blob: Vec<u8>, delivery: Option<(Tid, CommitId)>) -> Result<()> {
         let Some(seed) = self.engine.get_typed(owner, &ct::KEYS)?.and_then(|k| k.deposit_seed) else {
             self.diag(format!("inbox blob for {owner}: no deposit seed held for the inbox"));
             return Ok(());
         };
         let d = osis_crypto::deposit_key(&osis_crypto::Secret32::from_bytes(seed), &label);
         let wrap = osis_crypto::filler_wrap(&mut *self.rng);
-        // an inbox this node serves to nobody else's server: deposited here
-        if super::peers::serverless(servers) && self.labels().iter().any(|(_, x)| x.id == label) {
+        // an inbox this node serves to nobody else's host: deposited here
+        if super::peers::hostless(hosts) && self.labels().iter().any(|(_, x)| x.id == label) {
             self.local_inbox.push((label, blob.clone(), wrap));
         }
-        self.queue_deposit(label, servers, &d, blob, wrap, delivery);
+        self.queue_deposit(label, hosts, &d, blob, wrap, delivery);
         Ok(())
     }
 
-    /// Queues a deposit under `label`, signed now: kept durably until each of its servers takes
+    /// Queues a deposit under `label`, signed now: kept durably until each of its hosts takes
     /// it, refuses it for good, or it is moot (`deposit_moot`); a crash, a cut or forgetting the
     /// label does not recall it.
-    pub(crate) fn queue_deposit(&mut self, label: LabelId, servers: &[Address], deposit: &osis_crypto::SigningSecret, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], delivery: Option<(Tid, CommitId)>) {
+    pub(crate) fn queue_deposit(&mut self, label: LabelId, hosts: &[Address], deposit: &osis_crypto::SigningSecret, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], delivery: Option<(Tid, CommitId)>) {
         let sig = osis_label::sign_deposit(deposit, &label, &osis_label::blob_id(&blob), &wrap);
         let id = osis_label::blob_id(&blob);
-        for server in servers {
-            self.state.add_out(super::state::OutRec { label, server: server.clone(), blob: blob.clone(), wrap, sig, delivery });
-            self.outbox.entry((server.key, label, id)).or_default();
+        for host in hosts {
+            self.state.add_out(super::state::OutRec { label, host: host.clone(), blob: blob.clone(), wrap, sig, delivery });
+            self.outbox.entry((host.key, label, id)).or_default();
         }
     }
 
-    /// Sends queued deposits on connections to their servers (no open needed), and logs those
+    /// Sends queued deposits on connections to their hosts (no open needed), and logs those
     /// for labels synced with nobody here.
     pub(crate) fn send_outbox(&mut self, out: &mut Vec<Action>) -> Result<()> {
         for (l, blob, wrap) in std::mem::take(&mut self.local_inbox) {
             let blob_id = osis_label::blob_id(&blob);
             self.log_events(None, l, vec![osis_proto::Event::Added { blob_id, blob: Some(blob), wrap, stamp: None }], None, out)?;
         }
-        let ready: Vec<(ConnId, [u8; 32])> = self.conns.iter().filter(|(_, c)| c.session.is_ready()).map(|(id, c)| (*id, c.server)).collect();
+        let ready: Vec<(ConnId, [u8; 32])> = self.conns.iter().filter(|(_, c)| c.session.is_ready()).map(|(id, c)| (*id, c.host)).collect();
         let now = self.raw_now();
-        let due: Vec<((ServerKey, LabelId, BlobId), ConnId)> = self
+        let due: Vec<((HostKey, LabelId, BlobId), ConnId)> = self
             .outbox
             .iter()
             .filter(|(_, o)| o.sent.is_none() && o.after <= now)

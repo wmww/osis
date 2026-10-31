@@ -3,8 +3,8 @@
 //!
 //! ```text
 //! listen = quic://0.0.0.0:7400        # required: transport URL to listen on
-//! key = /var/lib/osis/server.key      # required: 32-byte static secret (created if missing)
-//! data = /var/lib/osis                # data directory, server.redb inside (default: osis-host-data)
+//! key = /var/lib/osis/host.key      # required: 32-byte static secret (created if missing)
+//! data = /var/lib/osis                # data directory, host.redb inside (default: osis-host-data)
 //! peer = quic://b.example:7400#<key>  # replication peer, repeatable (address text form)
 //! cap_entries = 1048576               # policy knobs, all optional (`HostPolicy` field names)
 //! ```
@@ -93,11 +93,11 @@ fn strip_comment(line: &str) -> &str {
 mod tests {
     use super::*;
 
-    // spec: none (server config file)
+    // spec: none (host config file)
     #[test]
     fn parses_keys_peers_and_knobs() {
         let peer = osis_label::address_to_text(&Address { url: "quic://b:7400".into(), key: [7; 32] });
-        let text = format!("# server\nlisten = quic://0.0.0.0:7400\nkey = /k\ndata = /d  # dir\npeer = {peer}\n\nephemeral_bytes = 5\ncap_bytes = 1000\n");
+        let text = format!("# host\nlisten = quic://0.0.0.0:7400\nkey = /k\ndata = /d  # dir\npeer = {peer}\n\nephemeral_bytes = 5\ncap_bytes = 1000\n");
         let c = parse(&text).unwrap();
         assert_eq!(c.listen, "quic://0.0.0.0:7400");
         assert_eq!(c.data, PathBuf::from("/d"));

@@ -1,5 +1,5 @@
 //! Phase C scenario library (notes/testing.md, Phase C; notes/permissions.md, notes/chat.md): the
-//! named membership and retention stories over sync engines and blind servers. Each sets up with
+//! named membership and retention stories over sync engines and hosts. Each sets up with
 //! flows, runs a faulty schedule around the story's critical moment, checks the story's expected
 //! outcome, and ends with the quiescent invariants (`check`).
 
@@ -77,7 +77,7 @@ pub fn revocation_carol(seed: u64) -> Res<Report> {
 fn revocation(name: &str, seed: u64, carol: bool) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xb0b);
     let mut sim = sim(name, seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let c = sim.add_node(&[s], clock(&mut d))?;
@@ -137,7 +137,7 @@ fn revocation(name: &str, seed: u64, carol: bool) -> Res<Report> {
 pub fn stolen_device(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x57);
     let mut sim = sim("stolen_device", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let d0 = sim.add_node(&[s], clock(&mut d))?;
     let d1 = sim.add_node(&[s], clock(&mut d))?;
     let p = sim.person(d1, &[s])?.person;
@@ -172,7 +172,7 @@ pub fn stolen_device(seed: u64) -> Res<Report> {
 }
 
 /// Demotion to read with the pre-sync (spec/permissions.md §5.3): the writer's edits reached the
-/// server before the demotion; the admin syncs first, so its frontier covers them and they stay.
+/// host before the demotion; the admin syncs first, so its frontier covers them and they stay.
 pub fn demotion_synced(seed: u64) -> Res<Report> {
     demotion("demotion_synced", seed, true)
 }
@@ -187,7 +187,7 @@ pub fn demotion_unsynced(seed: u64) -> Res<Report> {
 fn demotion(name: &str, seed: u64, synced: bool) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xde);
     let mut sim = sim(name, seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
@@ -208,7 +208,7 @@ fn demotion(name: &str, seed: u64, synced: bool) -> Res<Report> {
         }
         demote(&mut sim, a, g, pb, Some(Role::Read), PreSync::Synced)?;
     } else {
-        // the admin cannot reach the server; the late edit sits there
+        // the admin cannot reach the host; the late edit sits there
         sim.sever(Party::N(a), Party::S(s));
         add_tag(&mut sim, b, t, "late")?;
         sim.run(30)?;
@@ -228,13 +228,13 @@ fn demotion(name: &str, seed: u64, synced: bool) -> Res<Report> {
 
 /// A demotion from a node holding part of the tree (notes/sync.md Receipts-only reads;
 /// spec/permissions.md §5.1, §5.3): Alice's phone holds her group G but holds its subgroup H for
-/// receipts only. Bob writes under both; the phone, alone with the server, reads H's commit
+/// receipts only. Bob writes under both; the phone, alone with the host, reads H's commit
 /// headers and removes Bob: H's log there does not move (the phone uploads, deletes and places
 /// nothing under it), and Bob's edit under H, which the phone never held, stays everywhere.
 pub fn demotion_receipts(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x4ec);
     let mut sim = sim("demotion_receipts", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let c = sim.add_node(&[s], clock(&mut d))?;
@@ -259,7 +259,7 @@ pub fn demotion_receipts(seed: u64) -> Res<Report> {
     if !sim.engine(phone)?.knows(&t) || sim.engine(phone)?.knows(&u) {
         return Err(sim.fail("the phone should hold G's item and none of H's"));
     }
-    // the phone alone with the server
+    // the phone alone with the host
     for n in [a, b, c] {
         sim.sever(Party::N(n), Party::S(s));
     }
@@ -304,7 +304,7 @@ pub fn demotion_receipts(seed: u64) -> Res<Report> {
 /// refused (a used single-use link).
 fn redeem(sim: &mut NetSim, n: usize, link: &osis_label::ShareLink, person: Tid) -> Res<Result<(), String>> {
     let l = sim.engine(n)?.hold_key_actor(link.seed.clone()).map_err(|e| sim.fail(e.to_string()))?;
-    let acts = sim.sync(n)?.follow(l, link.k, link.k_label, link.servers.clone());
+    let acts = sim.sync(n)?.follow(l, link.k, link.k_label, link.hosts.clone());
     sim.actions(n, acts)?;
     sim.quiet(40)?;
     let r = sim.engine(n)?.redeem(link, &person, link.single_use);
@@ -335,7 +335,7 @@ pub fn link_redeem(seed: u64) -> Res<Report> {
 fn links(name: &str, seed: u64, single_use: bool) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x11);
     let mut sim = sim(name, seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let x = sim.add_node(&[s], clock(&mut d))?;
     let y = sim.add_node(&[s], clock(&mut d))?;
@@ -344,7 +344,7 @@ fn links(name: &str, seed: u64, single_use: bool) -> Res<Report> {
     let g = shared_group(&mut sim, a, pa, &[s], &[])?;
     sim.item(a, g)?;
     sim.quiet(40)?;
-    let spec = LinkSpec { target: g, role: Role::Read, until: None, servers: sim.addresses(&[s]), peers: Vec::new(), single_use };
+    let spec = LinkSpec { target: g, role: Role::Read, until: None, hosts: sim.addresses(&[s]), peers: Vec::new(), single_use };
     let r = sim.engine(a)?.create_link(&pa, &spec);
     let (link, _, done) = r.map_err(|e| sim.fail(format!("create_link: {e}")))?;
     sim.carry(a, done)?;
@@ -353,7 +353,7 @@ fn links(name: &str, seed: u64, single_use: bool) -> Res<Report> {
     // both follow K's label, then redeem before either sees the other
     for n in [x, y] {
         let held = sim.engine(n)?.hold_key_actor(link.seed.clone()).map_err(|e| sim.fail(e.to_string()))?;
-        let acts = sim.sync(n)?.follow(held, link.k, link.k_label, link.servers.clone());
+        let acts = sim.sync(n)?.follow(held, link.k, link.k_label, link.hosts.clone());
         sim.actions(n, acts)?;
     }
     sim.quiet(40)?;
@@ -431,7 +431,7 @@ fn links(name: &str, seed: u64, single_use: bool) -> Res<Report> {
 pub fn move_import(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x30);
     let mut sim = sim("move_import", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
@@ -486,7 +486,7 @@ pub fn move_import(seed: u64) -> Res<Report> {
 pub fn chat_join_leave(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xc4);
     let mut sim = sim("chat_join_leave", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let c = sim.add_node(&[s], clock(&mut d))?;
@@ -587,7 +587,7 @@ pub fn message(sim: &mut NetSim, n: usize, persona: Tid, text: &str) -> Res<Tid>
 pub fn folders(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xf0);
     let mut sim = sim("folders", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let c = sim.add_node(&[s], clock(&mut d))?;
@@ -637,7 +637,7 @@ fn replacement(name: &str, seed: u64, offline: bool) -> Res<Report> {
     use osis_proto::LabelStore;
     let mut d = Dice::new(seed ^ 0x1a);
     let mut sim = sim(name, seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
@@ -683,12 +683,12 @@ fn replacement(name: &str, seed: u64, offline: bool) -> Res<Report> {
     sim.finish()
 }
 
-/// Bundles by hand (spec/sync.md §8): a member cut off from every server gets the group's label
+/// Bundles by hand (spec/sync.md §8): a member cut off from every host gets the group's label
 /// as a bundle exported by the admin and reads what the admin reads; later online, it converges.
 pub fn bundles(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xbd);
     let mut sim = sim("bundles", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
@@ -720,11 +720,11 @@ pub fn bundles(seed: u64) -> Res<Report> {
 /// Expiry races and disappearing messages (spec/commits.md §5; notes/chat.md): members post
 /// messages (a thing with an expiring note, its placement expiring too) under a lossy network
 /// with crashes while time passes; after the expiry no honest node reads an expired note and no
-/// server holds a blob of one.
+/// host holds a blob of one.
 pub fn disappearing(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xd5);
     let mut sim = sim("disappearing", seed, NetWeights { crash: 1, restart: 2, ..NetWeights::default() });
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
@@ -769,7 +769,7 @@ pub fn disappearing(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// No up server holds a live entry, and no honest node a blob, of the `ak` bodies of `commits`.
+/// No up host holds a live entry, and no honest node a blob, of the `ak` bodies of `commits`.
 fn expired_absent(sim: &mut NetSim, commits: &[CommitId], ak: &osis_base::Ak) -> Res<()> {
     use osis_proto::LabelStore;
     let known = sim.known.clone();
@@ -782,10 +782,10 @@ fn expired_absent(sim: &mut NetSim, commits: &[CommitId], ak: &osis_base::Ak) ->
         if !parts.iter().all(|(ai, _)| h.aspects.get(*ai).is_some_and(|x| x.ak == *ak)) {
             continue;
         }
-        for s in 0..sim.servers.len() {
+        for s in 0..sim.hosts.len() {
             if sim.hub(s).is_some_and(|x| x.store().live_ids(&l).unwrap_or_default().contains(&b)) {
                 let meta = sim.hub(s).and_then(|x| x.store().entry(&l, &b).ok().flatten()).map(|m| (m.stamp.is_some(), m.pending_delete));
-                let key = sim.servers.get(s).map(|x| x.key).unwrap_or_default();
+                let key = sim.hosts.get(s).map(|x| x.key).unwrap_or_default();
                 let mut views = Vec::new();
                 for n in 0..sim.nodes.len() {
                     let Some(sy) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { continue };
@@ -794,7 +794,7 @@ fn expired_absent(sim: &mut NetSim, commits: &[CommitId], ak: &osis_base::Ak) ->
                     let held = h.aspects.first().is_some_and(|x| sy.engine().body_not_dropped(&c, &x.tid, ak));
                     views.push(format!("node {n}: entry {e:?} (writer, must-not, must-hold) {v:?} holds body {held}"));
                 }
-                return Err(sim.fail(format!("server {s} still holds the expired body {b:?} of {c:?} (stamped, pending delete) {meta:?}; {views:?}")));
+                return Err(sim.fail(format!("host {s} still holds the expired body {b:?} of {c:?} (stamped, pending delete) {meta:?}; {views:?}")));
             }
         }
         for n in 0..sim.nodes.len() {
@@ -813,11 +813,11 @@ fn expired_absent(sim: &mut NetSim, commits: &[CommitId], ak: &osis_base::Ak) ->
 
 /// Keep-at-most races (spec/commits.md §5): two writers overwrite an aspect kept at most 10
 /// minutes after replaced, under a lossy network; an hour later every replaced body is gone from
-/// the server and from honest nodes, the current value stays.
+/// the host and from honest nodes, the current value stays.
 pub fn keep_at_most(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x4a);
     let mut sim = sim("keep_at_most", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
@@ -878,7 +878,7 @@ pub fn keep_at_most(seed: u64) -> Res<Report> {
 pub fn concurrent_writers(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xc0);
     let mut sim = NetSim::new("concurrent_writers", seed, super::NetConfig::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let ns: Vec<usize> = (0..6).map(|_| sim.add_node(&[s], clock(&mut d))).collect::<Res<_>>()?;
     let [a, w1, w2, w3, r1, r2] = ns[..] else { return Err(sim.fail("nodes")) };
     let [pa, p1, p2, p3, q1, q2] = persons(&mut sim, [a, w1, w2, w3, r1, r2], [s; 6])?;

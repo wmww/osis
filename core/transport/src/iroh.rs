@@ -257,7 +257,7 @@ impl Connection for IrohConn {
 /// a listener's URL.
 #[cfg(feature = "relay")]
 pub struct TestRelay {
-    _server: iroh_relay::server::Server,
+    _relay: iroh_relay::server::Server,
     pub url: String,
 }
 
@@ -266,9 +266,9 @@ impl TestRelay {
     pub async fn spawn() -> Result<TestRelay, Error> {
         let mut cfg = iroh_relay::server::ServerConfig::default();
         cfg.relay = Some(iroh_relay::server::RelayConfig::new((std::net::Ipv4Addr::LOCALHOST, 0)));
-        let server = iroh_relay::server::Server::spawn(cfg).await.map_err(io)?;
-        let addr = server.http_addr().ok_or_else(|| Error::Io("relay without an http address".into()))?;
-        Ok(TestRelay { url: format!("http://{addr}"), _server: server })
+        let relay = iroh_relay::server::Server::spawn(cfg).await.map_err(io)?;
+        let addr = relay.http_addr().ok_or_else(|| Error::Io("relay without an http address".into()))?;
+        Ok(TestRelay { url: format!("http://{addr}"), _relay: relay })
     }
 }
 

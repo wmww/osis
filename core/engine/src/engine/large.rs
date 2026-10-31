@@ -545,7 +545,7 @@ impl Engine {
         Ok(r)
     }
 
-    /// Chunks or tree nodes `lost`, gone from every server of a label, that this node's own
+    /// Chunks or tree nodes `lost`, gone from every host of a label, that this node's own
     /// commit links (spec/sync.md §1: a purger that had not seen this node's reuse judged them
     /// dead). For each aspect whose newest own commit linking one is held: every large position
     /// of the current value whose tree holds one is written again (`Op::Put` at that position:

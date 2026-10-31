@@ -22,8 +22,8 @@ async fn read_to_end<R: RecvStream>(r: &mut R) -> Result<Vec<u8>, Error> {
     }
 }
 
-/// Echo server: for each connection, each stream: read to end, write it back, finish.
-fn echo_server(sp: &Spawner, mut l: MemListener) {
+/// Echo listener: for each connection, each stream: read to end, write it back, finish.
+fn echo_listener(sp: &Spawner, mut l: MemListener) {
     let sp2 = sp.clone();
     sp.spawn(async move {
         while let Ok(c) = l.accept().await {
@@ -53,7 +53,7 @@ async fn echo(c: &MemConn, data: &[u8]) -> Vec<u8> {
     read_to_end(&mut rx).await.unwrap()
 }
 
-// spec/sync.md §10: ordered bidirectional byte stream; the client checks the server key; ephemeral client keys.
+// spec/sync.md §10: ordered bidirectional byte stream; the client checks the host key; ephemeral client keys.
 #[test]
 fn round_trip_and_keys() {
     let net = Net::new(1);
@@ -61,7 +61,7 @@ fn round_trip_and_keys() {
     let l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
     let addr = l.address();
     assert_eq!(addr.key, InProcess::public_key(&secret(7)));
-    echo_server(&s.spawner(), l);
+    echo_listener(&s.spawner(), l);
     let cli = net.endpoint("cli");
     let out = s
         .block_on(async move {
@@ -76,7 +76,7 @@ fn round_trip_and_keys() {
     assert_eq!(out, (b"hello".to_vec(), b"world".to_vec()));
 }
 
-// spec/sync.md §10: each connection gets a fresh ephemeral client key, seen as the server's peer key.
+// spec/sync.md §10: each connection gets a fresh ephemeral client key, seen as the host's peer key.
 #[test]
 fn ephemeral_client_keys_differ() {
     let net = Net::new(2);
@@ -97,8 +97,8 @@ fn ephemeral_client_keys_differ() {
     assert_ne!(keys.0, keys.2);
 }
 
-// spec/sync.md §10: a client MUST check the server's key against the address.
-// spec/sync.md §10 (server key check)
+// spec/sync.md §10: a client MUST check the host's key against the address.
+// spec/sync.md §10 (host key check)
 #[test]
 fn pinned_key_mismatch_refused() {
     let net = Net::new(3);
@@ -138,7 +138,7 @@ fn partition_heals() {
     let mut s = Sched::new(5, Some(net.clone()));
     let l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
     let addr = l.address();
-    echo_server(&s.spawner(), l);
+    echo_listener(&s.spawner(), l);
     let cli = net.endpoint("cli");
     let (c1, a1) = (cli.clone(), addr.clone());
     let c = s.block_on(async move { c1.dial(&a1).await.unwrap() }).unwrap();
@@ -222,7 +222,7 @@ fn scenario(seed: u64) -> Vec<(u64, usize, usize)> {
     let mut s = Sched::new(seed, Some(net.clone()));
     let l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
     let addr = l.address();
-    echo_server(&s.spawner(), l);
+    echo_listener(&s.spawner(), l);
     let log = Rc::new(RefCell::new(Vec::new()));
     for i in 0..3usize {
         let (cli, addr, log, net) = (net.endpoint(&format!("c{i}")), addr.clone(), log.clone(), net.clone());
@@ -269,7 +269,7 @@ fn large_transfer_capped() {
     let mut s = Sched::new(8, Some(net.clone()));
     let l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
     let addr = l.address();
-    echo_server(&s.spawner(), l);
+    echo_listener(&s.spawner(), l);
     let cli = net.endpoint("cli");
     let data: Vec<u8> = (0..(4u32 << 20)).map(|k| (k ^ (k >> 11)) as u8).collect();
     let d2 = data.clone();
@@ -330,7 +330,7 @@ fn listener_close_ends_pending_read() {
     assert_eq!(*got.borrow(), Some(Err(Error::Closed)));
 }
 
-// spec/sync.md §10: a server dialing a peer server authenticates with its own static key.
+// spec/sync.md §10: a host dialing a peer host authenticates with its own static key.
 #[test]
 fn dial_as_presents_static_key() {
     let net = Net::new(14);
@@ -357,7 +357,7 @@ fn faulty(seed: u64) -> (Log, Vec<(usize, bool)>) {
     s.set_max_steps(200_000);
     let l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
     let addr = l.address();
-    echo_server(&s.spawner(), l);
+    echo_listener(&s.spawner(), l);
     let log = Rc::new(RefCell::new(Vec::new()));
     let ends = Rc::new(RefCell::new(Vec::new()));
     for i in 0..3usize {

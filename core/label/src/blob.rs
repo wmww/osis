@@ -14,7 +14,7 @@ pub const MAX_PREFIX_LEN: usize = PREFIX_FIXED_LEN + COMMITMENT_LEN * MAX_LEVELS
 /// A delete level (spec/wire.md §1): 1 thing admin, 2 author chain, 3 thing write.
 pub type Level = u8;
 
-/// A blob's class (spec/wire.md §5, spec/sync.md §1): what a blind node does with it. Durable
+/// A blob's class (spec/wire.md §5, spec/sync.md §1): what a host does with it. Durable
 /// blobs are stored; ephemeral ones are held in memory only; relay-only ones are pushed to the
 /// label's current subscribers and held by nobody.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -187,9 +187,9 @@ impl Prefix {
     }
 }
 
-/// Server-side view of a blob: its prefix, or none for an unknown framing version (spec/wire.md
+/// Serving side view of a blob: its prefix, or none for an unknown framing version (spec/wire.md
 /// §5: stored and relayed as a blob with no expiry and no commitments). Checks `MAX_BLOB`.
-pub fn server_prefix(blob: &[u8]) -> Result<Option<Prefix>, Error> {
+pub fn host_prefix(blob: &[u8]) -> Result<Option<Prefix>, Error> {
     check_size(blob)?;
     match Prefix::parse(blob) {
         Ok(p) if blob.len() >= p.len() + MIN_CIPHERTEXT => Ok(Some(p)),
@@ -305,7 +305,7 @@ mod tests {
         assert!(Prefix::parse(&b).is_err());
         b[0] = 2;
         assert_eq!(Prefix::parse(&b), Err(Error::UnknownFraming(2)));
-        assert_eq!(server_prefix(&b), Ok(None));
+        assert_eq!(host_prefix(&b), Ok(None));
         assert!(Prefix::new([0; 16], Some(WallMs(0)), vec![]).is_err());
     }
 
@@ -318,13 +318,13 @@ mod tests {
         let (k, blob) = frame(&p, b"chunk", &mut rng).unwrap();
         assert_eq!(open(&blob, &k).unwrap(), (p.clone(), b"chunk".to_vec()));
         assert_eq!(blob_id(&blob).0, osis_base::hash::hash(&blob));
-        assert_eq!(server_prefix(&blob), Ok(Some(p.clone())));
+        assert_eq!(host_prefix(&blob), Ok(Some(p.clone())));
         let mut t = blob.clone();
         t[20] ^= 1;
         assert!(open(&t, &k).is_err());
         assert!(matches!(frame(&p, &vec![0; MAX_BLOB], &mut rng), Err(Error::TooLarge(_))));
-        assert!(server_prefix(&vec![1; MAX_BLOB + 1]).is_err());
-        assert!(server_prefix(&p.to_bytes()).is_err());
+        assert!(host_prefix(&vec![1; MAX_BLOB + 1]).is_err());
+        assert!(host_prefix(&p.to_bytes()).is_err());
     }
 
     // spec/commits.md §4, spec/crypto.md §7: the prefix agrees with the header's delete keys and

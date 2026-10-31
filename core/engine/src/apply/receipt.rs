@@ -313,7 +313,7 @@ impl Engine {
         aspects.dedup();
         // things of groups held for receipts only: this node keeps what it applied there (their
         // membership commits) but never uploads it again, so no holder of such a commit voids
-        // another its author signs later on the same counters after deleting it at the server;
+        // another its author signs later on the same counters after deleting it at the host;
         // its held commits there are listed by ID, never by counters (spec/permissions.md §5.1)
         let by_id: BTreeSet<Tid> = self.core.receipts_only.clone().into_iter().flat_map(|g| self.closure(&g).iter().copied().chain([g]).collect::<Vec<_>>()).collect();
         self.run(|tx| {

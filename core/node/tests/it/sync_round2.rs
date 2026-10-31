@@ -24,7 +24,7 @@ fn blobs_of(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::Comm
 #[test]
 fn junk_entry_does_not_stall_uploads_spec_versioning_2() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -42,7 +42,7 @@ fn junk_entry_does_not_stall_uploads_spec_versioning_2() {
     let stamp = osis_label::sign_stamp(keys.write.as_ref().unwrap(), &gl.id, &id, &wrap);
     let e = Entry { blob, wrap, stamp, replaces: Vec::new() };
     let put = Put { blob_id: id, blob: &e.blob, wrap: e.wrap, stamp: Some(e.stamp), expiry: None, ephemeral: false, replaces: &[], now: 0 };
-    net.servers[sv].hub.store_mut().put(&gl.id, put).unwrap();
+    net.hosts[sv].hub.store_mut().put(&gl.id, put).unwrap();
     // reconnect: the cursor sync brings the junk entry
     net.restart(a, 11);
     net.restart(b, 12);
@@ -50,8 +50,8 @@ fn junk_entry_does_not_stall_uploads_spec_versioning_2() {
     assert!(net.sync(b).entries(&gl.id).iter().any(|(x, k)| *x == id && *k == EntryKind::Bad));
     let c = net.write(b, t, "v2");
     net.run();
-    let at = net.server_ids(sv, &gl.id);
-    assert!(blobs_of(&mut net, b, &gl.id, &c).iter().any(|x| at.contains(x)), "b's write reached the server");
+    let at = net.host_ids(sv, &gl.id);
+    assert!(blobs_of(&mut net, b, &gl.id, &c).iter().any(|x| at.contains(x)), "b's write reached the host");
     assert_eq!(net.read(a, t), Some(s("v2")));
 }
 
@@ -61,7 +61,7 @@ fn junk_entry_does_not_stall_uploads_spec_versioning_2() {
 #[test]
 fn pending_commit_does_not_withhold_uploads_spec_sync_6() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -76,7 +76,7 @@ fn pending_commit_does_not_withhold_uploads_spec_sync_6() {
     let c = net.write(a, t, "mine");
     net.run();
     let l = net.label(a);
-    let at = net.server_ids(sv, &l);
+    let at = net.host_ids(sv, &l);
     assert!(blobs_of(&mut net, a, &l, &c).iter().any(|x| at.contains(x)), "a's body went up beside the pending commit");
 }
 
@@ -125,7 +125,7 @@ fn wake_for_expiry_and_after_every_tick_spec_commits_5() {
 #[test]
 fn keep_at_most_drop_forgets_blob_spec_commits_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let g = net.group(a, &[], &[sv]);
     let t = net.item(a, g, g, "v1");
@@ -149,12 +149,12 @@ fn keep_at_most_drop_forgets_blob_spec_commits_5() {
 }
 
 // spec/commits.md §5, spec/sync.md §5 (timed delete): a timed delete lost with its connection
-// goes again on the next one, and the server deletes the replaced body at the bound with the
+// goes again on the next one, and the host deletes the replaced body at the bound with the
 // writer offline.
 #[test]
 fn timed_delete_resent_after_cut_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let g = net.group(a, &[], &[sv]);
     let t = net.item(a, g, g, "v1");
@@ -177,17 +177,17 @@ fn timed_delete_resent_after_cut_spec_sync_5() {
     net.set_online(a, false);
     net.clock.advance(2 * 3_600_000);
     let now = net.now();
-    let out = net.servers[sv].hub.tick(now);
+    let out = net.hosts[sv].hub.tick(now);
     drop(out);
-    let at = net.server_ids(sv, &l);
-    assert!(first.iter().all(|x| !at.contains(x)), "the server deleted the replaced body at its bound");
+    let at = net.host_ids(sv, &l);
+    assert!(first.iter().all(|x| !at.contains(x)), "the host deleted the replaced body at its bound");
 }
 
 // spec/sync.md §5 (deposits): deposits not answered yet are not sent again by later passes.
 #[test]
 fn deposits_in_flight_not_resent_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[sv]);
     let g = net.group(a, &[(r, Role::Read)], &[sv]);

@@ -1,4 +1,4 @@
-//! HostStore rules (spec/sync.md §4, §5): the state a blind node keeps, the policy it applies,
+//! HostStore rules (spec/sync.md §4, §5): the state a host keeps, the policy it applies,
 //! durability, and agreement with osis-proto's reference `MemoryLabelStore`.
 
 use super::*;
@@ -140,7 +140,7 @@ fn deposit_budget() {
     assert_eq!(e.store.budget(&l).unwrap().entries_left, 64u64.saturating_sub(max - 3));
 }
 
-// spec/sync.md §5: servers cap storage per label (code 12); replacing a held entry is not capped
+// spec/sync.md §5: hosts cap storage per label (code 12); replacing a held entry is not capped
 #[test]
 fn storage_cap() {
     // the genesis step and its claim set count too
@@ -679,7 +679,7 @@ fn steps_count_toward_byte_caps() {
     assert_eq!((e.store.head(&g.label).unwrap(), e.store.totals().unwrap()), (None, totals));
 }
 
-// spec/sync.md §5 Register: servers may rate-limit registrations per label (code 4, nothing changed)
+// spec/sync.md §5 Register: hosts may rate-limit registrations per label (code 4, nothing changed)
 #[test]
 fn registers_rate_limited() {
     let mut e = env(HostPolicy { registers: 2, ..HostPolicy::default() });

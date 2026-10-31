@@ -1,6 +1,6 @@
-//! `Hub`: the blind node's connections over one store, sans-I/O (spec/sync.md §5-§9). One
+//! `Hub`: the host's connections over one store, sans-I/O (spec/sync.md §5-§9). One
 //! osis-proto `ServingSession` per accepted connection, one `Replicator` per connection this
-//! node dialed to a peer server; cross-connection notices (`Changed` to every connection and
+//! node dialed to a peer host; cross-connection notices (`Changed` to every connection and
 //! replicator, `Relay` to every other connection), bounded sweeps, Hello deadlines, the
 //! connection cap and timers. The async driver and the simulator only move bytes and call `tick`
 //! when `next_due` says.
@@ -94,7 +94,7 @@ impl<B: Backend> Hub<B> {
     }
 
     /// A client connected from `source` (`osis_transport::Source`; none: unknown, all such
-    /// connections one source): start its server engine (sends Hello). At `max_connections`
+    /// connections one source): start its host engine (sends Hello). At `max_connections`
     /// the slots are shared by source (`osis_transport::evict_for`): the newest connection of
     /// the source holding the most is closed for it, or it is closed if that source holds fewer
     /// than two more than its own.
@@ -120,7 +120,7 @@ impl<B: Backend> Hub<B> {
         out
     }
 
-    /// A connection this node dialed to peer server `peer_key` is up: replicate to it.
+    /// A connection this node dialed to peer host `peer_key` is up: replicate to it.
     pub fn peer_up(&mut self, now: u64, id: ConnId, peer_key: [u8; 32]) -> Vec<HubOutput> {
         let challenge = self.challenge();
         self.conns.insert(id, Conn::Peer { r: Box::new(Replicator::new(peer_key, challenge)), timer: None });

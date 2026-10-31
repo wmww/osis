@@ -1,9 +1,9 @@
 //! `HostStore`: osis-proto's `LabelStore` over an osis-store `Backend` (spec/sync.md §4, §5):
 //! registration paths, entries, tombstones, per-label logs, blob bytes stored once with reference
-//! counts, timed deletes, expiry, claim-set retention, and the server policy (storage caps,
+//! counts, timed deletes, expiry, claim-set retention, and the host policy (storage caps,
 //! deposit budget, rate limits). Every mutation is one atomic `WriteBatch`.
 //!
-//! Rows (all cleartext metadata a blind node sees anyway; blobs are ciphertext):
+//! Rows (all cleartext metadata a host sees anyway; blobs are ciphertext):
 //! `I` seed; `L label` meta; `K label` the head's earlier role keys (`HeadKeys`); `S label step`
 //! step; `C label step` claim set, `H label step key` each of its keys (the entry box or empty:
 //! an Open looks one key up instead of loading the set); path indexes `V label sync_key` the newest step registering
@@ -32,7 +32,7 @@ use std::sync::Arc;
 /// Deposit budget unit (spec/sync.md §5 recommended minimum).
 pub const DEPOSIT_ENTRY_BYTES: u64 = 32 * 1024;
 
-/// Server policy (spec/sync.md §5: caps, budget, rate limits; notes/sync.md Policy defaults).
+/// Host policy (spec/sync.md §5: caps, budget, rate limits; notes/sync.md Policy defaults).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostPolicy {
     /// Live entries per label beyond which new entries get code 12.

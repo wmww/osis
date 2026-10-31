@@ -184,7 +184,7 @@ fn link_race_seed_2255() {
     ok("link_race", 2255);
 }
 
-// spec/sync.md §5, spec/permissions.md §3: sweep seed 2898, the losing redeemer forgot K before its deposit of the redemption reached the server; its partial copy under the target left the sharer pending (WaitDeltas).
+// spec/sync.md §5, spec/permissions.md §3: sweep seed 2898, the losing redeemer forgot K before its deposit of the redemption reached the host; its partial copy under the target left the sharer pending (WaitDeltas).
 #[test]
 #[ignore = "tier 2"]
 fn link_race_seed_2898() {
@@ -297,25 +297,25 @@ fn revocation_bob_seed_28() {
     ok("revocation_bob", 28);
 }
 
-// spec/sync.md §6: a dishonest server; honest nodes converge through the honest one.
+// spec/sync.md §6: a dishonest host; honest nodes converge through the honest one.
 #[test]
 #[ignore = "tier 2"]
-fn evil_server() {
-    ok("evil_server", 1);
+fn evil_host() {
+    ok("evil_host", 1);
 }
 
 // spec/sync.md §6: sweep seed 134, the sim spun on a message sent after its stream's cut.
 #[test]
 #[ignore = "tier 2"]
-fn evil_server_seed_134() {
-    ok("evil_server", 134);
+fn evil_host_seed_134() {
+    ok("evil_host", 134);
 }
 
-// spec/sync.md §6: a dishonest server that also drops replies on open streams.
+// spec/sync.md §6: a dishonest host that also drops replies on open streams.
 #[test]
 #[ignore = "tier 2"]
-fn evil_server_drops() {
-    ok("evil_server_drops", 1);
+fn evil_host_drops() {
+    ok("evil_host_drops", 1);
 }
 
 // spec/sync.md §2, §5; spec/permissions.md §5: a removed member's replays and deposits.
@@ -346,7 +346,7 @@ fn equivocating_writer() {
     ok("equivocating_writer", 1);
 }
 
-// spec/sync.md §5, §7: a server re-announcing purged entries brings nothing back.
+// spec/sync.md §5, §7: a host re-announcing purged entries brings nothing back.
 #[test]
 #[ignore = "tier 2"]
 fn tombstone_liar() {
@@ -375,11 +375,11 @@ fn concurrent_writers() {
     ok("concurrent_writers", 1);
 }
 
-// spec/sync.md §6: sweep seeds 804 and 1002, the evil server had nothing to misbehave on in 200 steps (the scenario runs on until it has).
+// spec/sync.md §6: sweep seeds 804 and 1002, the evil host had nothing to misbehave on in 200 steps (the scenario runs on until it has).
 #[test]
 #[ignore = "tier 2"]
-fn evil_server_seed_804() {
-    ok("evil_server", 804);
+fn evil_host_seed_804() {
+    ok("evil_host", 804);
 }
 
 // spec/sync.md §5: sweep seeds 1962, 3237 and 4084, all four writers' promotion points fell in one 1 s sim step for one blob (tolerated once per run).

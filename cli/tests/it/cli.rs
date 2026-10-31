@@ -172,7 +172,7 @@ fn json_output_plan_cli_5() {
     let t = o.out.split("\"tid\":\"").nth(1).unwrap().split('"').next().unwrap().to_string();
     assert_eq!(s.ok(&["--json", "get", &t, "/a/b"]).line(), "1.5");
     let w = s.ok(&["--json", "whoami"]).out;
-    assert!(w.contains("\"me\":\"osis://") && w.contains("\"node\":\"osis://") && w.contains("\"servers\":[]"), "{w}");
+    assert!(w.contains("\"me\":\"osis://") && w.contains("\"node\":\"osis://") && w.contains("\"hosts\":[]"), "{w}");
     let e = s.call(&["--json", "get", &t, "/a/b", ".x"], "");
     assert_eq!(e.code, 2);
     assert!(e.err.contains("\"kind\":\"Usage\""), "{}", e.err);
@@ -320,14 +320,14 @@ fn stream_and_len_plan_cli_4() {
 }
 
 // notes/cli.md Command table Sharing and membership, Sync, Identity and devices: the local half of the
-// sharing commands on one store (no servers): links, cards, devices, grants by error category,
+// sharing commands on one store (no hosts): links, cards, devices, grants by error category,
 // status (bundles are binary: the localhost e2e).
 #[test]
 fn sharing_commands_local_plan_cli_4() {
     let s = S::mem();
     let g = s.ok(&["create", "--owner", "me", "--in", "home", "--group", "/t/made", "true"]).line().to_string();
     s.ok(&["group", "sync", &g]);
-    // spec/permissions.md §9: without servers a link reaches nobody unless direct (opt-in)
+    // spec/permissions.md §9: without hosts a link reaches nobody unless direct (opt-in)
     assert_eq!(s.code(&["link", "make", &g, "write", "--single-use"]), 7);
     assert_eq!(s.code(&["card", "show"]), 7);
     assert_eq!(s.ok(&["--json", "link", "ls", &g]).line(), "[]");
@@ -337,11 +337,11 @@ fn sharing_commands_local_plan_cli_4() {
     assert_eq!(s.code(&["grant", &g, &stranger, "read"]), 3, "keys unknown: import a card first");
     assert_eq!(s.code(&["grant", &g, "me", "superuser"]), 2);
     let st = s.ok(&["--json", "status"]).line().to_string();
-    assert!(st.contains("no_servers") || st.contains("NoServers") || st.contains("\"groups\""), "{st}");
+    assert!(st.contains("no_hosts") || st.contains("NoHosts") || st.contains("\"groups\""), "{st}");
 }
 
 // notes/cli.md Command table: commands over API pieces not built yet (queries, backlinks) parse and
-// report Unsupported; sharing commands without a runtime or servers fail as the API does.
+// report Unsupported; sharing commands without a runtime or hosts fail as the API does.
 #[test]
 fn unbuilt_commands_report_unsupported_plan_cli_4() {
     let s = S::mem();
@@ -352,7 +352,7 @@ fn unbuilt_commands_report_unsupported_plan_cli_4() {
         assert!(o.err.contains("not supported yet"), "{args:?}: {}", o.err);
     }
     assert_eq!(s.ok(&["device", "ls"]).out.lines().count(), 1, "this device");
-    assert_eq!(s.ok(&["server", "ls"]).out, "");
+    assert_eq!(s.ok(&["hosts", "ls"]).out, "");
     assert_eq!(s.code(&["link", "redeem", "x"]), 7, "malformed link");
 }
 

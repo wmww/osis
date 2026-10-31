@@ -53,13 +53,13 @@ impl ManualNet {
     }
 }
 
-/// How servers and co-reader nodes are dialed (spec/sync.md §10).
+/// How hosts and co-reader nodes are dialed (spec/sync.md §10).
 #[derive(Clone)]
 pub enum Transport {
-    /// Servers over QUIC; co-readers over iroh (feature `iroh`, through
+    /// Hosts over QUIC; co-readers over iroh (feature `iroh`, through
     /// `Config.relays`), on the LAN too with feature `lan`. Without `iroh` no co-reader is dialed.
     Quic,
-    /// In-process endpoints for servers and co-readers (tests).
+    /// In-process endpoints for hosts and co-readers (tests).
     InProcess(osis_transport::InProcess),
 }
 
@@ -195,7 +195,7 @@ impl Net {
         }
     }
 
-    /// Starts the driver task over one transport for servers and co-readers (`Multi`). With
+    /// Starts the driver task over one transport for hosts and co-readers (`Multi`). With
     /// `p2p` (`Config.peers`) and a co-reader transport, it listens with the dialable secret
     /// (registered at `relays`) and publishes `/reach`; with feature `lan` and QUIC it also runs
     /// the LAN loop. Without a co-reader transport no co-reader is dialed.
@@ -416,7 +416,7 @@ impl crate::Osis {
     /// the new key at once and publishes it only under groups that get `/reach`. A co-reader
     /// removed since can no longer dial it or recognise it on a LAN; a link holder (who got the
     /// dialable key from a direct link, never the lan secret) can no longer dial it. Direct links
-    /// still open lose first contact (they still work through servers). Done by itself when a
+    /// still open lose first contact (they still work through hosts). Done by itself when a
     /// group holding its `/reach` stops qualifying and when a direct link ends.
     pub fn rotate_reach(&self) {
         self.act(|l| l.sync.rotate_reach());

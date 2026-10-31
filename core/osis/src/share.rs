@@ -1,10 +1,10 @@
-//! Sharing, links, cards, devices, servers and sync (notes/api.md Sharing and membership, Sync
+//! Sharing, links, cards, devices, hosts and sync (notes/api.md Sharing and membership, Sync
 //! configuration and status) over membership flows and the sync engine: each sharing call is
 //! one membership commit made locally (spec/permissions.md §2), whose deliveries the sync engine
 //! carries out; calls that wait for another node are `async` (runtime-agnostic futures).
 
 use crate::error::{Error, Result};
-use crate::handle::{LINKS, Locked, MadeLink, Osis, save_servers};
+use crate::handle::{LINKS, Locked, MadeLink, Osis, save_hosts};
 use crate::watch::{Delivery, Filter, Subscription};
 use osis_base::{Ak, Role, Tid, Value, WallMs};
 use osis_node::flows::{self, PreSync};
@@ -92,11 +92,11 @@ pub struct LinkOpts {
     /// the link when it sees that (spec/permissions.md §9).
     pub single_use: bool,
     /// Opt-in: the link text carries this device's dialable key and relays (never its lan
-    /// secret; spec/permissions.md §9), so a redeemer that shares no server with it reaches it
+    /// secret; spec/permissions.md §9), so a redeemer that shares no host with it reaches it
     /// directly while it is online. Anyone holding the link can dial this device until the link
     /// ends by revocation or expiry, when the key rotates (a single-use link's redemption keeps
     /// it: the redeemer keeps the direct path). Needs this device reachable (a runtime, `Config.peers`); a
-    /// database without servers can only make direct links.
+    /// database without hosts can only make direct links.
     pub direct: bool,
 }
 
@@ -169,27 +169,27 @@ text_type!(
     RecoveryCard, osis_label::RecoveryCard, osis_label::RecoveryCard::from_text, "recovery card"
 );
 
-/// A server: transport URL plus its key (`<url>#<base64url key>`).
+/// A host: transport URL plus its key (`<url>#<base64url key>`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ServerAddr(pub(crate) osis_label::Address);
+pub struct HostAddr(pub(crate) osis_label::Address);
 
-impl std::str::FromStr for ServerAddr {
+impl std::str::FromStr for HostAddr {
     type Err = Error;
-    fn from_str(s: &str) -> Result<ServerAddr> {
-        osis_label::address_from_text(s.trim()).map(ServerAddr).map_err(bad("server address"))
+    fn from_str(s: &str) -> Result<HostAddr> {
+        osis_label::address_from_text(s.trim()).map(HostAddr).map_err(bad("host address"))
     }
 }
 
-impl std::fmt::Display for ServerAddr {
+impl std::fmt::Display for HostAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&osis_label::address_to_text(&self.0))
     }
 }
 
-impl ServerAddr {
-    /// From a transport URL and the server's 32-byte key.
-    pub fn new(url: &str, key: [u8; 32]) -> ServerAddr {
-        ServerAddr(osis_label::Address { url: url.into(), key })
+impl HostAddr {
+    /// From a transport URL and the host's 32-byte key.
+    pub fn new(url: &str, key: [u8; 32]) -> HostAddr {
+        HostAddr(osis_label::Address { url: url.into(), key })
     }
 }
 
@@ -207,7 +207,7 @@ pub enum SyncState {
     Unreachable,
     /// Waiting for a re-seal (spec/permissions.md §3).
     Stranded,
-    NoServers,
+    NoHosts,
     /// Held for receipts only (`GroupPolicy::receipts_only`): not synced, what is here is stale.
     ReceiptsOnly,
 }
@@ -218,7 +218,7 @@ pub struct GroupSync {
     pub last_sync: Option<WallMs>,
 }
 
-/// Sync status: servers connected and each synced group (`groups`: groups with a label this
+/// Sync status: hosts connected and each synced group (`groups`: groups with a label this
 /// node reads, and those it holds for receipts only).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Status {
@@ -237,8 +237,8 @@ pub enum SyncScope {
 pub(crate) fn status_of(sync: &mut SyncEngine) -> Status {
     let mut groups: BTreeMap<Tid, GroupSync> = BTreeMap::new();
     for s in sync.label_status() {
-        let state = if s.servers == 0 {
-            SyncState::NoServers
+        let state = if s.hosts == 0 {
+            SyncState::NoHosts
         } else if s.stranded {
             SyncState::Stranded
         } else if s.open > 0 && s.idle == s.open {
@@ -473,7 +473,7 @@ impl Osis {
     }
 
     /// Resolves once every group in `groups` is `Synced` and the receipts-only reads of `reads`
-    /// are done (with `deliveries`, also once no inbox blob is unanswered); fails `Unsynced` when one is stranded or has no servers, `Network` after
+    /// are done (with `deliveries`, also once no inbox blob is unanswered); fails `Unsynced` when one is stranded or has no hosts, `Network` after
     /// `wait`.
     fn groups_synced(&self, groups: Vec<Tid>, reads: Vec<Tid>, wait: Duration, deliveries: bool) -> crate::net::Pending<Result<()>> {
         self.wait_until(
@@ -482,7 +482,7 @@ impl Osis {
                 if deliveries && sync.deliveries_pending() > 0 {
                     return None;
                 }
-                let mut bad: Vec<Tid> = groups.iter().copied().filter(|g| st.groups.get(g).is_some_and(|s| matches!(s.state, SyncState::Stranded | SyncState::NoServers))).collect();
+                let mut bad: Vec<Tid> = groups.iter().copied().filter(|g| st.groups.get(g).is_some_and(|s| matches!(s.state, SyncState::Stranded | SyncState::NoHosts))).collect();
                 let read = sync.receipts_read(&reads);
                 if let Some(Err(b)) = &read {
                     bad.extend(b);
@@ -593,20 +593,20 @@ impl Osis {
     }
 
     /// Makes a share link to `target` with `role` (spec/permissions.md §9): its actor K and key L
-    /// on this database's servers. Anyone holding the link can redeem it until `until` or
+    /// on this database's hosts. Anyone holding the link can redeem it until `until` or
     /// `revoke_link`.
     pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<ShareLink> {
         let t = self.resolved(target);
-        let servers = self.server_addrs();
+        let hosts = self.host_addrs();
         let me = self.me();
-        if servers.is_empty() && !opts.direct {
-            return Err(Error::Invalid("this database has no servers: a link reaches nobody unless it is direct (LinkOpts.direct)".into()));
+        if hosts.is_empty() && !opts.direct {
+            return Err(Error::Invalid("this database has no hosts: a link reaches nobody unless it is direct (LinkOpts.direct)".into()));
         }
         if opts.direct && self.locked(|x| x.sync.own_reach()).is_none() {
             return Err(Error::Invalid("a direct link needs this device reachable: a runtime with Config.peers on".into()));
         }
         self.persist(&[t])?;
-        let (mut link, keep, done) = self.engine(|e| e.create_link(&me, &flows::LinkSpec { target: t, role, until: opts.until, servers, peers: Vec::new(), single_use: opts.single_use })).map_err(needs_admin)?;
+        let (mut link, keep, done) = self.engine(|e| e.create_link(&me, &flows::LinkSpec { target: t, role, until: opts.until, hosts, peers: Vec::new(), single_use: opts.single_use })).map_err(needs_admin)?;
         // the seed thing in the home group: every device of this person holds it and may
         // finalize the link (spec/permissions.md §9)
         let home = self.home();
@@ -671,7 +671,7 @@ impl Osis {
         Ok(target)
     }
 
-    /// Holds a link's key and follows K's label at its servers and at the sharer's device when
+    /// Holds a link's key and follows K's label at its hosts and at the sharer's device when
     /// the link names it (first contact, spec/permissions.md §9: dialed at the link's dialable
     /// key and relays like a co-reader, for K and the target only, `follow_link_peer`); the key
     /// goes with the guard, and with it the follow unless the redemption went through.
@@ -680,7 +680,7 @@ impl Osis {
             let l = x.engine().hold_key_actor(link.seed.clone())?;
             let peers = link.peers.iter().map(|p| osis_label::Address { url: osis_transport::peer_url(&p.relays), key: p.dialable }).collect();
             x.sync.follow_link_peer(link.k, link.target, peers);
-            let acts = x.sync.follow(l, link.k, link.k_label, link.servers.clone());
+            let acts = x.sync.follow(l, link.k, link.k_label, link.hosts.clone());
             self.inner.net.apply(acts);
             Ok(l)
         })?;
@@ -785,7 +785,7 @@ impl Osis {
             return Ok(ContactCard(String::from_utf8(b).map_err(|_| Error::Storage("contact record".into()))?));
         }
         let me = self.me();
-        let servers = self.server_addrs();
+        let hosts = self.host_addrs();
         let p = self.write_with(|w| {
             let p = w.create(me)?;
             w.make_group(p)?;
@@ -797,7 +797,7 @@ impl Osis {
             let done = x.engine().give_own_secrets(&p)?;
             let acts = x.sync.carry_out(done)?;
             self.inner.net.apply(acts);
-            let (_, acts) = x.sync.create_label(&p, servers.clone())?;
+            let (_, acts) = x.sync.create_label(&p, hosts.clone())?;
             self.inner.net.apply(acts);
             // the person's creation and `/keys` commits, as certificates under P's label
             let e = x.engine();
@@ -879,7 +879,7 @@ impl Osis {
         Ok(self.locked(|x| x.sync.invite_requests())?.into_iter().map(InviteId).collect())
     }
 
-    /// Accepts an invite request: its grant applies and its thing's servers are dialed (then
+    /// Accepts an invite request: its grant applies and its thing's hosts are dialed (then
     /// joined as for any invite). `Invalid` when no such request waits (accepted, declined or
     /// expired).
     pub fn accept_invite(&self, id: InviteId) -> Result<()> {
@@ -922,43 +922,43 @@ impl Osis {
         self.demote(self.me(), node, Lower::Remove, d).await
     }
 
-    /// The servers new labels go to (and kept connected).
-    pub fn servers(&self) -> Vec<ServerAddr> {
-        self.server_addrs().into_iter().map(ServerAddr).collect()
+    /// The hosts new labels go to (and kept connected).
+    pub fn hosts(&self) -> Vec<HostAddr> {
+        self.host_addrs().into_iter().map(HostAddr).collect()
     }
 
-    fn server_addrs(&self) -> Vec<osis_label::Address> {
-        self.locked(|x| x.sync.config().servers.clone())
+    fn host_addrs(&self) -> Vec<osis_label::Address> {
+        self.locked(|x| x.sync.config().hosts.clone())
     }
 
-    /// Adds a server for new labels (links, `sync`) and keeps a connection to it. The person's
-    /// inbox and existing labels on the database's servers (those whose list equals it) move to
+    /// Adds a host for new labels (links, `sync`) and keeps a connection to it. The person's
+    /// inbox and existing labels on the database's hosts (those whose list equals it) move to
     /// the new list: the home label and groups the person owns (directly or through its
     /// actors) that this node administers; not links or the contact card (their text names
-    /// their servers), not groups owned by others. A database created without servers becomes
+    /// their hosts), not groups owned by others. A database created without hosts becomes
     /// reachable once one is added.
-    pub fn add_server(&self, s: &ServerAddr) -> Result<()> {
-        let mut v = self.servers();
+    pub fn add_host(&self, s: &HostAddr) -> Result<()> {
+        let mut v = self.hosts();
         if !v.contains(s) {
             v.push(s.clone());
         }
-        self.set_servers(v)
+        self.set_hosts(v)
     }
 
-    /// Removes a server, from the database's list and the labels that follow it (`add_server`);
-    /// a group with members besides the person's devices keeps its last server.
-    pub fn remove_server(&self, s: &ServerAddr) -> Result<()> {
-        let mut v = self.servers();
+    /// Removes a host, from the database's list and the labels that follow it (`add_host`);
+    /// a group with members besides the person's devices keeps its last host.
+    pub fn remove_host(&self, s: &HostAddr) -> Result<()> {
+        let mut v = self.hosts();
         v.retain(|x| x != s);
-        self.set_servers(v)
+        self.set_hosts(v)
     }
 
-    fn set_servers(&self, v: Vec<ServerAddr>) -> Result<()> {
+    fn set_hosts(&self, v: Vec<HostAddr>) -> Result<()> {
         let me = self.me();
         self.locked(|x| -> Result<()> {
-            let old: BTreeSet<osis_label::Address> = x.sync.config().servers.iter().cloned().collect();
+            let old: BTreeSet<osis_label::Address> = x.sync.config().hosts.iter().cloned().collect();
             let new: Vec<osis_label::Address> = v.iter().map(|s| s.0.clone()).collect();
-            // links and the contact card name their label's servers in their text: they stay
+            // links and the contact card name their label's hosts in their text: they stay
             let mut fixed: BTreeSet<Tid> = x.links.keys().copied().collect();
             if let Some(card) = x.engine().app_record(CONTACT)?
                 && let Ok(l) = ContactCard(String::from_utf8_lossy(&card).into_owned()).parse()
@@ -967,16 +967,16 @@ impl Osis {
             }
             // the labels first: a failed commit leaves the list as it was, so a retry matches
             follow_labels(x.engine(), me, &fixed, &old, &new)?;
-            save_servers(x.engine(), &v)?;
-            x.sync.set_servers(new.clone());
+            save_hosts(x.engine(), &v)?;
+            x.sync.set_hosts(new.clone());
             follow_inbox(x.engine(), me, &old, &new)
         })?;
         self.sync_now()
     }
 
-    /// Makes `group` synced through `servers` (default: this database's): its own label
+    /// Makes `group` synced through `hosts` (default: this database's): its own label
     /// (spec/sync.md §2); needs admin on the group. A no-op when it has one.
-    pub fn sync(&self, group: Tid, servers: &[ServerAddr]) -> Result<()> {
+    pub fn sync(&self, group: Tid, hosts: &[HostAddr]) -> Result<()> {
         let g = self.resolved(group);
         if !self.holds(g) {
             return Err(Error::UnknownThing { tid: g });
@@ -985,7 +985,7 @@ impl Osis {
             return Err(Error::Permission { tid: g, needs: Role::Admin });
         }
         self.persist(&[g])?;
-        let servers = if servers.is_empty() { self.server_addrs() } else { servers.iter().map(|s| s.0.clone()).collect() };
+        let hosts = if hosts.is_empty() { self.host_addrs() } else { hosts.iter().map(|s| s.0.clone()).collect() };
         self.locked(|x| -> Result<()> {
             if x.engine().group_labels(&g)?.iter().any(|l| !l.replaced) {
                 return Ok(());
@@ -995,7 +995,7 @@ impl Osis {
             let done = x.engine().give_own_secrets(&g)?;
             let acts = x.sync.carry_out(done)?;
             self.inner.net.apply(acts);
-            let (_, acts) = x.sync.create_label(&g, servers)?;
+            let (_, acts) = x.sync.create_label(&g, hosts)?;
             self.inner.net.apply(acts);
             Ok(())
         })
@@ -1044,9 +1044,9 @@ impl Osis {
     }
 
     /// Resolves once every label in scope finished a pass with nothing outstanding after the
-    /// local commits so far (they are at a server); fails `Unsynced` for a stranded or
-    /// server-less group in scope, `Network` after `timeout` or without a runtime. Also waits
-    /// for every queued deposit (any scope): a grant to a recipient whose inbox server refuses
+    /// local commits so far (they are at a host); fails `Unsynced` for a stranded or
+    /// host-less group in scope, `Network` after `timeout` or without a runtime. Also waits
+    /// for every queued deposit (any scope): a grant to a recipient whose inbox host refuses
     /// it for now (not registered yet, budget full) keeps it waiting until taken.
     pub async fn wait_synced(&self, scope: SyncScope, timeout: Duration) -> Result<()> {
         let groups = self.locked(|x| {
@@ -1069,7 +1069,7 @@ impl Osis {
         self.groups_synced(groups, Vec::new(), timeout, true).await
     }
 
-    /// Asks every server to sync every open label now.
+    /// Asks every host to sync every open label now.
     pub fn sync_now(&self) -> Result<()> {
         self.act(|x| x.sync.sync_now());
         Ok(())
@@ -1124,12 +1124,12 @@ fn same_set(s: &[osis_label::Address], old: &BTreeSet<osis_label::Address>) -> b
     s.iter().cloned().collect::<BTreeSet<_>>() == *old
 }
 
-/// Moves the labels whose server list is `old` (as a set) to `new` (spec/sync.md §2 `/label`
-/// servers; the sync engine registers a label's path at a server that does not know it): the
+/// Moves the labels whose host list is `old` (as a set) to `new` (spec/sync.md §2 `/label`
+/// hosts; the sync engine registers a label's path at a host that does not know it): the
 /// home label and the labels of groups in the person's own owner tree this node administers,
 /// except `fixed` ones (links, the contact card) and link actors made elsewhere (a key-actor
 /// member that is no device of the person). A group with members besides the person and its
-/// devices never loses its last server.
+/// devices never loses its last host.
 fn follow_labels(e: &mut osis_node::Engine, me: Tid, fixed: &BTreeSet<Tid>, old: &BTreeSet<osis_label::Address>, new: &[osis_label::Address]) -> Result<()> {
     let list = Codec::to_value(&new.to_vec());
     let devices: BTreeSet<Tid> = e.roster(&me).into_keys().collect();
@@ -1156,7 +1156,7 @@ fn follow_labels(e: &mut osis_node::Engine, me: Tid, fixed: &BTreeSet<Tid>, old:
         if members.iter().any(|x| e.owner(x).is_none()) || new.is_empty() && !members.is_empty() {
             continue;
         }
-        for l in e.group_labels(&g)?.into_iter().filter(|l| !l.replaced && same_set(&l.servers, old)) {
+        for l in e.group_labels(&g)?.into_iter().filter(|l| !l.replaced && same_set(&l.hosts, old)) {
             any = true;
             let path = vec![osis_crdt::PathSeg::Key(l.id.to_value()), osis_crdt::PathSeg::Field(2)];
             m.op(g, &ct::LABEL, osis_crdt::PathOp { path, op: osis_crdt::Op::Set(list.clone()) })?;
@@ -1171,7 +1171,7 @@ fn follow_labels(e: &mut osis_node::Engine, me: Tid, fixed: &BTreeSet<Tid>, old:
 /// Moves the person's inbox to `new` when it is on `old`.
 fn follow_inbox(e: &mut osis_node::Engine, me: Tid, old: &BTreeSet<osis_label::Address>, new: &[osis_label::Address]) -> Result<()> {
     let list = Codec::to_value(&new.to_vec());
-    if e.get_typed(&me, &ct::KEYS)?.and_then(|k| k.inbox).is_some_and(|i| same_set(&i.servers, old)) {
+    if e.get_typed(&me, &ct::KEYS)?.and_then(|k| k.inbox).is_some_and(|i| same_set(&i.hosts, old)) {
         let mut m = osis_node::Mutation::new();
         m.op(me, &ct::KEYS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(4), osis_crdt::PathSeg::Case(1), osis_crdt::PathSeg::Field(1)], op: osis_crdt::Op::Set(list) })?;
         e.commit(m)?;

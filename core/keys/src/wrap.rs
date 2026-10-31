@@ -47,8 +47,8 @@ pub fn registration_epochs(a: &ActorEpochs) -> Option<[(Epoch, &Secret32); 3]> {
     Some([get(Role::Read)?, get(Role::Write)?, get(Role::Admin)?])
 }
 
-/// The held epoch of role `r` whose label key at `index` is `key` (a server head's registered
-/// key): the node talks to that server with it (spec/sync.md §2). Any held secret, established
+/// The held epoch of role `r` whose label key at `index` is `key` (a host head's registered
+/// key): the node talks to that host with it (spec/sync.md §2). Any held secret, established
 /// or not: opening a label is not encrypting under (spec/crypto.md §4). A stamp, step or delete
 /// under it needs `RoleEpochs::is_established`.
 pub fn registered_epoch(re: &RoleEpochs, r: Role, index: u64, key: &VerifyingKey) -> Option<Epoch> {

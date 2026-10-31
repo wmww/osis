@@ -1,8 +1,8 @@
-//! Opening a label at a server (spec/sync.md §2, §5): the sync key of the head, else the newest
+//! Opening a label at a host (spec/sync.md §2, §5): the sync key of the head, else the newest
 //! recorded step this node holds the key of; a superseded key or a claim answered with the next
-//! step is a walk, each step verified under its parent's delete key; a server lacking the label
+//! step is a walk, each step verified under its parent's delete key; a host lacking the label
 //! gets the recorded path registered; a refused claim places a stranded heartbeat. An opened head
-//! not recorded in `/label` is checked against the server's path.
+//! not recorded in `/label` is checked against the host's path.
 
 use super::{ConnId, LConn, Phase, SyncEngine};
 use crate::error::Result;
@@ -103,7 +103,7 @@ impl SyncEngine {
 
     /// Open attempts in order: the known head, recorded steps deepest first by sync key, then
     /// by claim key; for a hint, the sync keys at the index it names.
-    fn tries(&mut self, server: &[u8; 32], g: &Tid, l: &LabelId) -> (u64, Vec<Try>) {
+    fn tries(&mut self, host: &[u8; 32], g: &Tid, l: &LabelId) -> (u64, Vec<Try>) {
         let epochs = self.engine.epochs(g);
         let held: Vec<osis_crypto::Secret32> = epochs.as_ref().map(|e| e.read.held_newest_first().into_iter().map(|(_, s)| s.clone()).collect()).unwrap_or_default();
         let sync_key = |step: &Step, index: u64| held.iter().map(|s| label_role_key(LabelRole::Sync, s, index)).find(|k| k.verifying_key() == step.keys.sync);
@@ -111,15 +111,15 @@ impl SyncEngine {
             let Some((index, via)) = self.state.hints.get(l).map(|h| (h.index, h.via)) else { return (0, Vec::new()) };
             let mut v: Vec<Try> = held.iter().map(|s| Try::Sync { step: None, key: label_role_key(LabelRole::Sync, s, index) }).collect();
             // only the key actor the hint follows for and those the thing's held `/members` lists
-            // (spec/sync.md §5): presenting every held one would link their labels at this server
-            // (spec/requirements.md, blind nodes)
+            // (spec/sync.md §5): presenting every held one would link their labels at this host
+            // (spec/requirements.md, hosts)
             let members = self.engine.get_typed(g, &osis_schema::core_types::MEMBERS).ok().flatten().unwrap_or_default();
             v.extend(self.static_tries().into_iter().filter(|(t, _)| Some(*t) == via || members.contains_key(t)).map(|(_, x)| x));
             return (index, v);
         };
         let index = gl.index;
         let mut v = Vec::new();
-        if let Some(h) = self.state.heads.get(&(*server, *l)).cloned()
+        if let Some(h) = self.state.heads.get(&(*host, *l)).cloned()
             && let Some(key) = sync_key(&h, index)
         {
             v.push(Try::Sync { step: Some(h), key });
@@ -144,7 +144,7 @@ impl SyncEngine {
             }
         }
         // a key actor's signing key goes only where it is listed: elsewhere it would link labels
-        // and name the key to the server
+        // and name the key to the host
         let members = self.engine.get_typed(g, &osis_schema::core_types::MEMBERS).ok().flatten().unwrap_or_default();
         v.extend(self.static_tries().into_iter().filter(|(t, _)| members.contains_key(t)).map(|(_, x)| x));
         (index, v)
@@ -155,20 +155,20 @@ impl SyncEngine {
         self.engine.core.key_actors.iter().map(|(t, id)| (*t, Try::Static { kem: id.keys().kem.clone(), key: id.keys().signing.clone() })).collect()
     }
 
-    /// Follows `thing`'s label known only by ID and servers (a recovery card's home label, a
+    /// Follows `thing`'s label known only by ID and hosts (a recovery card's home label, a
     /// link's label: the thing's first, index 0, spec/wire.md §10): opened by the static entry
     /// of `via`, a held key actor, or a held read secret.
-    pub fn follow(&mut self, via: Tid, thing: Tid, label: LabelId, servers: Vec<osis_label::Address>) -> Vec<super::Action> {
-        self.state.add_hint(label, super::state::Hint { thing, index: 0, servers, via: Some(via), inbox: None });
+    pub fn follow(&mut self, via: Tid, thing: Tid, label: LabelId, hosts: Vec<osis_label::Address>) -> Vec<super::Action> {
+        self.state.add_hint(label, super::state::Hint { thing, index: 0, hosts, via: Some(via), inbox: None });
         self.handle(super::Event::Local)
     }
 
     pub(crate) fn start_label(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some((server, peer)) = self.conns.get(&conn).map(|c| (c.server, c.peer)) else { return Ok(()) };
-        let (index, mut tries) = self.tries(&server, &g, &l);
+        let Some((host, peer)) = self.conns.get(&conn).map(|c| (c.host, c.peer)) else { return Ok(()) };
+        let (index, mut tries) = self.tries(&host, &g, &l);
         // the member proof names this node's dialable key: only to co-readers of a group whose
         // labels carry its `/reach` anyway, never to a link's sharer (spec/sync.md §5)
-        if peer && self.state.reach_secret.is_some() && self.publishes_reach(&g) && self.peers().contains_key(&server) {
+        if peer && self.state.reach_secret.is_some() && self.publishes_reach(&g) && self.peers().contains_key(&host) {
             tries.push(Try::Member { key: SigningSecret::from_seed(&self.dialable_secret()) });
         }
         let lc = LConn {
@@ -235,9 +235,9 @@ impl SyncEngine {
         self.conns.get(&conn)?.labels.get(l)?.tries.first().cloned()
     }
 
-    /// Opened at `head`: accept it when recorded or known, else verify the server's path.
+    /// Opened at `head`: accept it when recorded or known, else verify the host's path.
     pub(crate) fn opened(&mut self, conn: ConnId, l: LabelId, head: Step, entry_box: Option<SecretBox>, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
+        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
         let g = lc.group;
         let tried = lc.tries.first().cloned();
@@ -251,7 +251,7 @@ impl SyncEngine {
             return self.verify_path(conn, l, head, out);
         }
         let recorded = self.group_label(&g, &l).is_some_and(|gl| gl.steps.contains_key(&head.id()));
-        let known = self.state.heads.get(&(server, l)).is_some_and(|h| h.id() == head.id());
+        let known = self.state.heads.get(&(host, l)).is_some_and(|h| h.id() == head.id());
         let tried_step = tried.as_ref().and_then(Try::step).is_some_and(|s| s.id() == head.id());
         let walked = self.lc(conn, &l).is_some_and(|x| x.walk.is_some());
         if !walked && (recorded || known || tried_step) {
@@ -260,7 +260,7 @@ impl SyncEngine {
         self.verify_path(conn, l, head, out)
     }
 
-    /// Asks for the server's whole path to verify `head` (`path_steps`).
+    /// Asks for the host's whole path to verify `head` (`path_steps`).
     fn verify_path(&mut self, conn: ConnId, l: LabelId, head: Step, out: &mut Vec<super::Action>) -> Result<()> {
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.phase = Phase::Verifying;
@@ -291,7 +291,7 @@ impl SyncEngine {
             }
             return Ok(());
         }
-        // each page verified as it comes, so a server's bad path is never buffered (spec/sync.md
+        // each page verified as it comes, so a host's bad path is never buffered (spec/sync.md
         // §5: each step under its parent's delete key, the genesis step against the label ID)
         let mut ok = true;
         for s in steps {
@@ -330,7 +330,7 @@ impl SyncEngine {
                 self.accept_head(conn, l, h, out)
             }
             _ => {
-                self.diag("server path does not verify".into());
+                self.diag("host path does not verify".into());
                 if more {
                     self.command(conn, Command::StopPath { label: l }, out)?;
                 }
@@ -387,7 +387,7 @@ impl SyncEngine {
         let parent = tried.as_ref().and_then(Try::step).cloned();
         let Some(parent) = parent else {
             // a hinted label (no recorded steps, so no parent to verify under): walk on, and
-            // verify the server's whole path once a key opens it (`opened`)
+            // verify the host's whole path once a key opens it (`opened`)
             if let Some(Try::Sync { step: None, .. }) = &tried
                 && let Some(lc) = self.lc_mut(conn, &l)
             {
@@ -408,10 +408,10 @@ impl SyncEngine {
     }
 
     /// Continues a walk at `step` (verified): its sync key if held, else claims on it. On a
-    /// hinted label's walk the step is the server's word until the path verifies (`opened`):
+    /// hinted label's walk the step is the host's word until the path verifies (`opened`):
     /// claims there go only with the keys of the actors the hint is for (`Engine::hint_actors`,
     /// pending sources only the commits of inbox blobs naming the thing),
-    /// so a server handing out a step of its choosing learns no other actor's pseudonym.
+    /// so a host handing out a step of its choosing learns no other actor's pseudonym.
     fn walk_on(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
         let (g, index, hinted) = (lc.group, lc.index, lc.walk.is_some());
@@ -474,7 +474,7 @@ impl SyncEngine {
         if kind == Request::Reconcile {
             self.eph.reconciling.remove(&(conn, l));
         }
-        // a refused Sync listed nothing to the server: the next one announces the held entries
+        // a refused Sync listed nothing to the host: the next one announces the held entries
         // again (else `eph_synced` counted the stale list as held there)
         if kind == Request::Sync {
             self.eph.gained.remove(&(conn, l));
@@ -484,7 +484,7 @@ impl SyncEngine {
         match (kind, phase) {
             (Request::Open, Some(Phase::Opening)) if code == Code::UNKNOWN_LABEL => self.register_path(conn, l, out),
             (Request::Open, Some(Phase::Opening)) => self.drop_try(conn, l, out),
-            // a pass's step refused for now (a full server, the rate): the open stays and a later
+            // a pass's step refused for now (a full host, the rate): the open stays and a later
             // pass registers again
             (Request::Register, Some(Phase::Open)) if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED) => {
                 if let Some(lc) = self.lc_mut(conn, &l) {
@@ -502,7 +502,7 @@ impl SyncEngine {
             // sent before the open in flight (replies come in order): that open decides
             (Request::Sync | Request::Reconcile | Request::Path, Some(Phase::Opening)) if code == Code::NOT_OPENED => Ok(()),
             (Request::Sync | Request::Reconcile | Request::Path, _) if code == Code::NOT_OPENED || code == Code::UNKNOWN_LABEL => self.reopen(conn, l, out),
-            // the opened head is no longer on the server's path
+            // the opened head is no longer on the host's path
             (Request::Path, Some(Phase::Open)) => self.reopen(conn, l, out),
             (Request::Sync, _) => {
                 if let Some(lc) = self.lc_mut(conn, &l) {
@@ -534,7 +534,7 @@ impl SyncEngine {
         self.start_label(conn, g, l, out)
     }
 
-    /// The server does not hold the label: register the recorded path from the genesis step
+    /// The host does not hold the label: register the recorded path from the genesis step
     /// along the deepest branch (relayable by any node, spec/sync.md §5), then open.
     fn register_path(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         // a receipts-only read registers nothing: the label is not there to read
@@ -567,8 +567,8 @@ impl SyncEngine {
             if lc.path.is_empty() {
                 // deposits refused while the label was unknown there go now, not after their
                 // back-off (a node's own deposits under a label it just created)
-                if let Some(server) = self.conns.get(&conn).map(|c| c.server) {
-                    for (_, o) in self.outbox.range_mut((server, l, osis_base::BlobId([0; 32]))..=(server, l, osis_base::BlobId([0xff; 32]))) {
+                if let Some(host) = self.conns.get(&conn).map(|c| c.host) {
+                    for (_, o) in self.outbox.range_mut((host, l, osis_base::BlobId([0; 32]))..=(host, l, osis_base::BlobId([0xff; 32]))) {
                         o.after = 0;
                     }
                 }
@@ -595,14 +595,14 @@ impl SyncEngine {
         self.run_dirty(out)
     }
 
-    /// Takes `step` as the head of `l` on `conn`: its keys derived, recorded for the server, a
+    /// Takes `step` as the head of `l` on `conn`: its keys derived, recorded for the host, a
     /// pass wanted.
     pub(crate) fn set_head(&mut self, conn: ConnId, l: LabelId, step: Step) -> Result<()> {
-        let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
+        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
         let (g, index) = (lc.group, lc.index);
         let keys = self.engine.head_keys(&g, index, &step)?;
-        self.state.set_head(server, l, &step);
+        self.state.set_head(host, l, &step);
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.head = Some(step);
             lc.keys = keys;

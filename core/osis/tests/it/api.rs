@@ -472,24 +472,24 @@ fn move_and_same_thing_spec_permissions_7() {
 }
 
 // notes/api.md Sync configuration and status: without a runtime the surface works locally,
-// the stored server list survives a reopen, and waiting for another node fails `Network`.
+// the stored host list survives a reopen, and waiting for another node fails `Network`.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn local_sync_surface_spec_api_sync() {
     let c = clock();
     let store = MemStore::new();
     let db = Osis::create(cfg(1, store.clone(), &c)).unwrap().0;
-    assert!(db.servers().is_empty());
+    assert!(db.hosts().is_empty());
     let st = db.status().unwrap();
-    assert_eq!(st.groups.get(&db.home()).map(|g| g.state), Some(osis::SyncState::NoServers));
-    assert!("".parse::<osis::ServerAddr>().is_err());
-    let a = osis::ServerAddr::new("quic://h:1", [7; 32]);
-    assert_eq!(a.to_string().parse::<osis::ServerAddr>().unwrap(), a);
-    db.add_server(&a).unwrap();
+    assert_eq!(st.groups.get(&db.home()).map(|g| g.state), Some(osis::SyncState::NoHosts));
+    assert!("".parse::<osis::HostAddr>().is_err());
+    let a = osis::HostAddr::new("quic://h:1", [7; 32]);
+    assert_eq!(a.to_string().parse::<osis::HostAddr>().unwrap(), a);
+    db.add_host(&a).unwrap();
     assert!(matches!(common::block_on(db.wait_synced(osis::SyncScope::All, std::time::Duration::from_secs(1))), Err(Error::Network(_))));
     drop(db);
     let db = Osis::open(cfg(1, store, &c)).unwrap();
-    assert_eq!(db.servers(), vec![a]);
+    assert_eq!(db.hosts(), vec![a]);
 }
 
 // spec/data-model.md §9: `/created` is typed by its exclusivity rule (owner or key), not the

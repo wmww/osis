@@ -1,10 +1,10 @@
-//! Phase C adversaries (notes/testing.md, Phase C; not built: issues/tests-unbuilt.md): a dishonest server, a removed member replaying
+//! Phase C adversaries (notes/testing.md, Phase C; not built: issues/tests-unbuilt.md): a dishonest host, a removed member replaying
 //! what it kept, a member uploading malformed blobs, a flooding depositor. Each states its
 //! expected outcome; the invariant throughout is that honest nodes converge (through an honest
-//! server where one is dishonest) and never read an unauthorised write.
+//! host where one is dishonest) and never read an unauthorised write.
 //! Out of scope here: a stolen pairing offer (notes/api.md, Devices: offers, requests and replies
 //! are app texts authenticated by the offer's secret, carried by the app and never seen by sync
-//! engines or servers; within its lifetime a stolen offer pairs the thief's device, which is the
+//! engines or hosts; within its lifetime a stolen offer pairs the thief's device, which is the
 //! bound; osis crate tests own it).
 
 use super::library::{add_tag, tags};
@@ -52,25 +52,25 @@ pub fn codes(evs: &[ClientEvent]) -> Vec<Code> {
     v
 }
 
-/// A dishonest server (spec/sync.md §6; spec/requirements.md, Out of scope: servers are trusted
-/// for availability only): of two servers holding every label, one holds back (reorders within a
+/// A dishonest host (spec/sync.md §6; spec/requirements.md, Out of scope: hosts are trusted
+/// for availability only): of two hosts holding every label, one holds back (reorders within a
 /// stream) and replays its messages. Expected: honest nodes converge through the honest one (the
 /// label invariants judge only it) and survive the protocol violations.
-pub fn evil_server(seed: u64) -> Res<Report> {
-    evil("evil_server", seed, Evil { drop_pct: 0, hold_pct: 10, replay_pct: 5 })
+pub fn evil_host(seed: u64) -> Res<Report> {
+    evil("evil_host", seed, Evil { drop_pct: 0, hold_pct: 10, replay_pct: 5 })
 }
 
-/// `evil_server` also silently dropping messages on open streams. Expected: a request whose
+/// `evil_host` also silently dropping messages on open streams. Expected: a request whose
 /// reply never comes times out, the node redials, everything converges and goes idle.
-pub fn evil_server_drops(seed: u64) -> Res<Report> {
-    evil("evil_server_drops", seed, Evil { drop_pct: 10, hold_pct: 10, replay_pct: 5 })
+pub fn evil_host_drops(seed: u64) -> Res<Report> {
+    evil("evil_host_drops", seed, Evil { drop_pct: 10, hold_pct: 10, replay_pct: 5 })
 }
 
 fn evil(name: &str, seed: u64, e: Evil) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xe7);
     let mut sim = sim(name, seed, NetWeights::default());
-    let s0 = sim.add_server()?;
-    let s1 = sim.add_server()?;
+    let s0 = sim.add_host()?;
+    let s1 = sim.add_host()?;
     let a = sim.add_node(&[s0, s1], clock(&mut d))?;
     let b = sim.add_node(&[s0, s1], clock(&mut d))?;
     let c = sim.add_node(&[s0, s1], clock(&mut d))?;
@@ -80,12 +80,12 @@ fn evil(name: &str, seed: u64, e: Evil) -> Res<Report> {
     sim.item(a, g)?;
     sim.reconnect_all();
     sim.quiet(40)?;
-    if let Some(x) = sim.servers.get_mut(s1) {
+    if let Some(x) = sim.hosts.get_mut(s1) {
         x.evil = Some(e);
     }
     sim.dishonest.insert(s1);
     sim.run(200)?;
-    // a quiet stretch can leave the server nothing to misbehave on: run on until it has
+    // a quiet stretch can leave the host nothing to misbehave on: run on until it has
     for _ in 0..10 {
         if sim.report.evil > 0 {
             break;
@@ -94,7 +94,7 @@ fn evil(name: &str, seed: u64, e: Evil) -> Res<Report> {
     }
     sim.run_until_quiescent(60)?;
     if sim.report.evil == 0 {
-        return Err(sim.fail("the evil server never misbehaved"));
+        return Err(sim.fail("the evil host never misbehaved"));
     }
     sim.finish()
 }
@@ -104,11 +104,11 @@ fn evil(name: &str, seed: u64, e: Evil) -> Res<Report> {
 /// its old sync key, registers its old step, re-uploads the old entries, the purged one included,
 /// and deposits a commit it wrote offline after the removal. Expected: the stale step and the
 /// purged blob are refused, no honest node reads the post-removal write, honest nodes converge;
-/// colluding with the server, M's secrets open no body made after its removal.
+/// colluding with the host, M's secrets open no body made after its removal.
 pub fn removed_replayer(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x4e);
     let mut sim = sim("removed_replayer", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let m = sim.add_node(&[s], clock(&mut d))?;
@@ -124,7 +124,7 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
     // what M keeps: the keys at the current head, every live entry
     let old = sim.label_keys(m, s, &g)?;
     let kept: Vec<Entry> = {
-        let hub = sim.hub(s).ok_or_else(|| sim.fail("server down"))?;
+        let hub = sim.hub(s).ok_or_else(|| sim.fail("host down"))?;
         let st = hub.store();
         let mut v = Vec::new();
         for id in st.live_ids(&old.label).unwrap_or_default() {
@@ -154,11 +154,11 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
     let opened = sim.rogue_do(&mut r, Command::Open { label: old.label, key: OpenKey::Sync(k) })?;
     let stale = sim.rogue_do(&mut r, Command::Register { label: old.label, step: old.head.clone(), claim_set: None })?;
     if stale.iter().any(|e| matches!(e, ClientEvent::Registered { .. })) {
-        return Err(sim.fail(format!("the server accepted a stale step from the removed member: {stale:?}; open {opened:?}")));
+        return Err(sim.fail(format!("the host accepted a stale step from the removed member: {stale:?}; open {opened:?}")));
     }
     let replay = sim.rogue_do(&mut r, Command::Upload { label: old.label, entries: kept.clone() })?;
     let purged_ids: Vec<BlobId> = sim.known.iter().filter(|(_, (c, _))| *c == gone).map(|(k, _)| k.1).collect();
-    let hub = sim.hub(s).ok_or_else(|| sim.fail("server down"))?;
+    let hub = sim.hub(s).ok_or_else(|| sim.fail("host down"))?;
     for id in &purged_ids {
         if hub.store().live_ids(&old.label).unwrap_or_default().contains(id) {
             return Err(sim.fail(format!("the replay brought back the purged blob {id:?}: {:?}", codes(&replay))));
@@ -194,14 +194,14 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
             return Err(sim.fail(format!("node {n} reads {ts:?}: the removed member's write after removal is read, or its earlier one lost")));
         }
     }
-    // colluding with the server (spec/requirements.md, Out of scope): every secret M holds opens
+    // colluding with the host (spec/requirements.md, Out of scope): every secret M holds opens
     // no body of a commit made after its removal
     let secrets: Vec<osis_crypto::Secret32> = sim.engine(m)?.epochs(&g).map(|e| e.read.held().map(|x| x.1.clone()).collect()).unwrap_or_default();
     let mt = sim.tid(m)?;
     let me = sim.engine(m)?.epochs(&g).map(|e| e.read.held().map(|x| format!("{:?}", x.0).chars().take(14).collect::<String>()).collect::<Vec<_>>());
     let ae = sim.engine(a)?.epochs(&g).map(|e| e.read.held().map(|x| format!("{:?}", x.0).chars().take(14).collect::<String>()).collect::<Vec<_>>());
     let (ta, tb) = (sim.tid(a)?, sim.tid(b)?);
-    let hub = sim.hub(s).ok_or_else(|| sim.fail("server down"))?;
+    let hub = sim.hub(s).ok_or_else(|| sim.fail("host down"))?;
     let mut checked = 0;
     for id in hub.store().live_ids(&old.label).unwrap_or_default() {
         let Some((c, _)) = sim.known.get(&(old.label, id)) else { continue };
@@ -256,12 +256,12 @@ fn run_noting(sim: &mut NetSim, n: u64, nodes: [usize; 2], g: Tid, member: Tid, 
 /// A member uploads malformed blobs (spec/sync.md §5, spec/commits.md §4; spec/versioning.md §2:
 /// malformed data is rejected, never parked): garbage bytes, a well-framed blob of garbage, a
 /// real commit under a prefix that disagrees with its header, a wrap for another blob. Expected:
-/// the server keeps them (it cannot judge them), honest nodes reject them without failing, keep
+/// the host keeps them (it cannot judge them), honest nodes reject them without failing, keep
 /// syncing and converge.
 pub fn malformed_blobs(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x6a);
     let mut sim = sim("malformed_blobs", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let m = sim.add_node(&[s], clock(&mut d))?;
@@ -294,7 +294,7 @@ pub fn malformed_blobs(seed: u64) -> Res<Report> {
         let (id2, blob2, _) = seal(&mut sim, &body.plaintext)?;
         entries.push(stamped(&sim, &k, &id2, blob2, &key)?);
     }
-    // a blob whose framing version the server does not know is kept (spec/wire.md §5)
+    // a blob whose framing version the host does not know is kept (spec/wire.md §5)
     sim.rogue_do(&mut r, Command::Upload { label: k.label, entries })?;
     // a frame that is no message
     sim.rogue_raw(&mut r, osis_proto::encode_frame(&[0xff, 0x00, 0x13]))?;
@@ -309,14 +309,14 @@ pub fn malformed_blobs(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// A flooding depositor (spec/sync.md §5, deposit budget; notes/sync.md, server policy): a reader
+/// A flooding depositor (spec/sync.md §5, deposit budget; notes/sync.md, host policy): a reader
 /// holding the deposit key deposits hundreds of fresh encryptions of a body of the label.
-/// Expected: bounded: the server accepts at most the label's deposit budget and refuses the rest;
+/// Expected: bounded: the host accepts at most the label's deposit budget and refuses the rest;
 /// honest nodes delete the duplicates, keep writing and converge.
 pub fn deposit_flood(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xf1);
     let mut sim = sim("deposit_flood", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let f = sim.add_node(&[s], clock(&mut d))?;
@@ -405,7 +405,7 @@ pub fn equivocating_writer(seed: u64) -> Res<Report> {
     use osis_crdt::{AnyView, Delta, Source, Writer, create, encode_delta};
     let mut d = Dice::new(seed ^ 0xe9);
     let mut sim = sim("equivocating_writer", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let c = sim.add_node(&[s], clock(&mut d))?;
@@ -455,7 +455,7 @@ pub fn equivocating_writer(seed: u64) -> Res<Report> {
     let up = sim.rogue_do(&mut r, Command::Upload { label: k.label, entries })?;
     sim.rogue_close(&mut r);
     if codes(&up).iter().any(|x| *x != Code::OK) {
-        return Err(sim.fail(format!("the server refused the equivocating commit: {:?}", codes(&up))));
+        return Err(sim.fail(format!("the host refused the equivocating commit: {:?}", codes(&up))));
     }
     sim.run(60)?;
     sim.run_until_quiescent(40)?;
@@ -470,16 +470,16 @@ pub fn equivocating_writer(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// A server lying about tombstones (spec/sync.md §5: a tombstoned blob ID is refused; §7: a
-/// purge reaches every copy; spec/requirements.md: "nothing trusts a server's word"): after a
-/// purge is applied and deleted at the server, the server re-announces the purged entry, blob,
+/// A host lying about tombstones (spec/sync.md §5: a tombstoned blob ID is refused; §7: a
+/// purge reaches every copy; spec/requirements.md: "nothing trusts a host's word"): after a
+/// purge is applied and deleted at the host, the host re-announces the purged entry, blob,
 /// wrap and stamp as they were, to every node on its open connections. Expected: no node takes
 /// the body back (purged bodies at no honest node, the purged value stays gone), no node
-/// uploads or deposits it again (counted as nodes send, since the server's tombstone would refuse it), everything converges.
+/// uploads or deposits it again (counted as nodes send, since the host's tombstone would refuse it), everything converges.
 pub fn tombstone_liar(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x7b);
     let mut sim = sim("tombstone_liar", seed, NetWeights::default());
-    let s = sim.add_server()?;
+    let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let c = sim.add_node(&[s], clock(&mut d))?;
@@ -492,12 +492,12 @@ pub fn tombstone_liar(seed: u64) -> Res<Report> {
     sim.run(20)?;
     sim.quiet(40)?;
     sim.observe()?;
-    // what the server will lie with: every live entry of the body, as it held them
+    // what the host will lie with: every live entry of the body, as it held them
     let label = sim.label_keys(a, s, &g)?.label;
     let ids: Vec<BlobId> = sim.known.iter().filter(|(k, (cm, _))| k.0 == label && *cm == gone).map(|(k, _)| k.1).collect();
     let mut events = Vec::new();
     {
-        let hub = sim.hub(s).ok_or_else(|| sim.fail("server down"))?;
+        let hub = sim.hub(s).ok_or_else(|| sim.fail("host down"))?;
         let st = hub.store();
         for id in &ids {
             let (Some(e), Some(blob)) = (st.entry(&label, id).ok().flatten(), st.blob(id).ok().flatten()) else { continue };
@@ -505,26 +505,26 @@ pub fn tombstone_liar(seed: u64) -> Res<Report> {
         }
     }
     if events.is_empty() {
-        return Err(sim.fail("no entry of the body at the server"));
+        return Err(sim.fail("no entry of the body at the host"));
     }
     purge(&mut sim, a, gone, t)?;
     sim.quiet(40)?;
-    let live = sim.hub(s).ok_or_else(|| sim.fail("server down"))?.store().live_ids(&label).unwrap_or_default();
+    let live = sim.hub(s).ok_or_else(|| sim.fail("host down"))?.store().live_ids(&label).unwrap_or_default();
     if ids.iter().any(|id| live.contains(id)) {
-        return Err(sim.fail("the purged body is still live at the server before the lie"));
+        return Err(sim.fail("the purged body is still live at the host before the lie"));
     }
     // the lie, at the label's real log head
-    let (log_id, seq) = sim.hub(s).ok_or_else(|| sim.fail("server down"))?.store().log_head(&label).map_err(|e| sim.fail(e.to_string()))?;
+    let (log_id, seq) = sim.hub(s).ok_or_else(|| sim.fail("host down"))?.store().log_head(&label).map_err(|e| sim.fail(e.to_string()))?;
     let push = osis_proto::encode_frame(&osis_proto::Message::Push { label, events, cursor: osis_proto::Cursor { log_id, seq } }.encode());
     sim.watched.extend(ids.iter().copied());
     let mut told = 0;
     for n in [a, b, c] {
-        told += sim.server_says(s, n, &push);
+        told += sim.host_says(s, n, &push);
     }
     if told == 0 {
         return Err(sim.fail("no open connection to lie on"));
     }
-    sim.note(format!("server {s} re-announced {} purged entries on {told} connections", ids.len()));
+    sim.note(format!("host {s} re-announced {} purged entries on {told} connections", ids.len()));
     sim.run(60)?;
     sim.run_until_quiescent(40)?;
     let gk = super::scenarios::ak(&sim, &crate::workload::GONE)?;
@@ -535,11 +535,11 @@ pub fn tombstone_liar(seed: u64) -> Res<Report> {
         }
         for id in &ids {
             if sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()).is_some_and(|x| x.holds_blob(id)) {
-                return Err(sim.fail(format!("node {n} holds the purged blob {id:?} the server re-announced")));
+                return Err(sim.fail(format!("node {n} holds the purged blob {id:?} the host re-announced")));
             }
         }
     }
-    // the honest server would refuse a re-upload (tombstoned): count the attempts instead
+    // the honest host would refuse a re-upload (tombstoned): count the attempts instead
     if sim.sent_watched > 0 {
         return Err(sim.fail(format!("nodes sent the purged body {} times after the lie", sim.sent_watched)));
     }

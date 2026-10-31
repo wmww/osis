@@ -1,4 +1,4 @@
-//! A client against a server over a throttled link with the drivers' send queues (spec/sync.md
+//! A client against a host over a throttled link with the drivers' send queues (spec/sync.md
 //! §6: the request window, held pushes and the stall timeout): bulk uploads, fetches and pushes
 //! on a slow link finish on one connection, and neither side's queue outgrows `WINDOW_QUEUE`
 //! (`SEND_QUEUE` with pushes).
@@ -54,7 +54,7 @@ impl Pipe {
 struct Run {
     now: u64,
     client: ClientSession,
-    server: ServingSession,
+    host: ServingSession,
     store: MemoryLabelStore,
     up: Pipe,
     down: Pipe,
@@ -67,16 +67,16 @@ impl Run {
         let mut r = Run {
             now: T0,
             client: ClientSession::new(ClientConfig { peer_static_key: [0x5e; 32], challenge: [0x80; 32] }),
-            server: ServingSession::new(ServingConfig { static_key: [0x5e; 32], challenge: [0x40; 32] }),
+            host: ServingSession::new(ServingConfig { static_key: [0x5e; 32], challenge: [0x40; 32] }),
             store: MemoryLabelStore::new([9; 32]),
-            // the node's `MAX_QUEUED` and the server's default `max_queued_bytes`
+            // the node's `MAX_QUEUED` and the host's default `max_queued_bytes`
             up: Pipe::new(64 << 20),
             down: Pipe::new(48 << 20),
             timer: None,
             events: Vec::new(),
         };
-        let so = r.server.handle(T0, &mut r.store, ServingInput::Start);
-        r.server_out(so);
+        let so = r.host.handle(T0, &mut r.store, ServingInput::Start);
+        r.host_out(so);
         r.input(ClientInput::Start);
         r
     }
@@ -92,11 +92,11 @@ impl Run {
         }
     }
 
-    fn server_out(&mut self, out: Vec<ServingOutput>) {
+    fn host_out(&mut self, out: Vec<ServingOutput>) {
         for o in out {
             match o {
-                ServingOutput::Send(b) => self.down.push(b, "server"),
-                ServingOutput::Close => panic!("server closed"),
+                ServingOutput::Send(b) => self.down.push(b, "host"),
+                ServingOutput::Close => panic!("host closed"),
                 ServingOutput::StoreError(e) => panic!("{e}"),
                 ServingOutput::Changed(_) | ServingOutput::Relay(_) | ServingOutput::PeerError(_) => {}
             }
@@ -105,7 +105,7 @@ impl Run {
 
     /// Steps the link (`rate` bytes per direction per `step_ms`) until nothing is outstanding.
     fn settle(&mut self, rate: usize, step_ms: u64) {
-        while self.client.outstanding() > 0 || self.up.queued > 0 || self.down.queued > 0 || self.server.held() {
+        while self.client.outstanding() > 0 || self.up.queued > 0 || self.down.queued > 0 || self.host.held() {
             self.step(rate, step_ms);
         }
     }
@@ -116,14 +116,14 @@ impl Run {
         let b = self.up.take(rate);
         if !b.is_empty() {
             self.input(ClientInput::Sent);
-            let so = self.server.handle(self.now, &mut self.store, ServingInput::Bytes(b));
-            self.server_out(so);
+            let so = self.host.handle(self.now, &mut self.store, ServingInput::Bytes(b));
+            self.host_out(so);
         }
         let b = self.down.take(rate);
         if !b.is_empty() {
             // the driver reports what the transport took (before input and at ticks)
-            let so = self.server.handle(self.now, &mut self.store, ServingInput::Taken(self.down.taken));
-            self.server_out(so);
+            let so = self.host.handle(self.now, &mut self.store, ServingInput::Taken(self.down.taken));
+            self.host_out(so);
             self.input(ClientInput::Bytes(b));
         }
         if self.timer.is_some_and(|t| t <= self.now) {
@@ -199,7 +199,7 @@ fn window_holds_requests_back_spec_sync_6() {
 }
 
 // spec/sync.md §6 (flow control): writers fill a label far faster than its subscriber's 640 KB/s
-// link; the server holds the pushes (continued from the subscription's position as the queue
+// link; the host holds the pushes (continued from the subscription's position as the queue
 // drains, relay-only entries dropped meanwhile), so the queue stays within `SEND_QUEUE` and every
 // entry arrives by push on one connection (without `Taken` the first push overflows the cap)
 #[test]
@@ -222,19 +222,19 @@ fn pushes_to_slow_subscriber_spec_sync_6() {
         ids.extend(entries.iter().map(|e| osis_label::blob_id(&e.blob)));
         let out = w.handle(r.now, &mut r.store, ServingInput::Bytes(encode_frame(&Message::Upload { id: b + 1, label: l.id, entries }.encode())));
         assert!(out.contains(&ServingOutput::Changed(l.id)));
-        let so = r.server.handle(r.now, &mut r.store, ServingInput::Changed(l.id));
-        r.server_out(so);
+        let so = r.host.handle(r.now, &mut r.store, ServingInput::Changed(l.id));
+        r.host_out(so);
     }
-    assert!(r.server.held());
+    assert!(r.host.held());
     // 8 MiB of pushes are unwritten: room for a small relay, not for one of 1 MiB
     let relay = |n: usize| {
         let e = l.entry(vec![1; n]);
         ServingInput::Relay(Relayed { label: l.id, blob_id: osis_label::blob_id(&e.blob), blob: e.blob.into(), wrap: e.wrap, stamp: e.stamp })
     };
-    assert!(r.server.handle(r.now, &mut r.store, relay(1 << 20)).is_empty(), "no room: the relay is dropped");
-    let so = r.server.handle(r.now, &mut r.store, relay(100));
+    assert!(r.host.handle(r.now, &mut r.store, relay(1 << 20)).is_empty(), "no room: the relay is dropped");
+    let so = r.host.handle(r.now, &mut r.store, relay(100));
     assert_eq!(so.len(), 1);
-    r.server_out(so);
+    r.host_out(so);
     r.settle(rate, step_ms);
     let got: Vec<_> = r
         .events
@@ -307,8 +307,8 @@ fn subscribe(r: &mut Run, labels: &[&Label], rate: usize, step_ms: u64) {
 fn upload(r: &mut Run, w: &mut ServingSession, id: u32, l: &Label, e: Entry) {
     let out = w.handle(r.now, &mut r.store, ServingInput::Bytes(encode_frame(&Message::Upload { id, label: l.id, entries: vec![e] }.encode())));
     assert!(out.contains(&ServingOutput::Changed(l.id)));
-    let so = r.server.handle(r.now, &mut r.store, ServingInput::Changed(l.id));
-    r.server_out(so);
+    let so = r.host.handle(r.now, &mut r.store, ServingInput::Changed(l.id));
+    r.host_out(so);
 }
 
 /// The added blob IDs pushed to `r`'s client under `l`, in order.

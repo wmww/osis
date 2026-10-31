@@ -5,7 +5,7 @@
 //! open with nothing held are retried when new secrets arrive; pages of waiting commits are
 //! fetched before apply; ephemeral entries go to the ephemeral lane (`ephemeral`).
 
-use super::state::{BlobRec, Entry, Hint, Kind, ServerKey};
+use super::state::{BlobRec, Entry, Hint, Kind, HostKey};
 use super::{ConnId, Phase, RELINK_BACKOFF_MAX_MS, RELINK_BACKOFF_MS, SyncEngine};
 use crate::error::Result;
 use crate::labeling::open_commit;
@@ -97,21 +97,21 @@ impl SyncEngine {
     pub(crate) fn log_events_from(&mut self, conn: Option<ConnId>, served: Option<ConnId>, l: LabelId, events: Vec<LogEvent>, cursor: Option<Cursor>, out: &mut Vec<super::Action>) -> Result<()> {
         let from = match served {
             Some(c) => super::ephemeral::RelayFrom::Served(c),
-            None => super::ephemeral::RelayFrom::Server(conn.and_then(|c| self.conns.get(&c)).map(|c| c.server)),
+            None => super::ephemeral::RelayFrom::Host(conn.and_then(|c| self.conns.get(&c)).map(|c| c.host)),
         };
-        let server: Option<ServerKey> = conn.and_then(|c| self.conns.get(&c)).map(|c| c.server);
+        let host: Option<HostKey> = conn.and_then(|c| self.conns.get(&c)).map(|c| c.host);
         let mut blobs = Vec::new();
         let mut touched = Vec::new();
         let mut fetch = Vec::new();
-        // entries new here that no writer vouched for (a deposit, or a server's junk): no stamp
+        // entries new here that no writer vouched for (a deposit, or a host's junk): no stamp
         // under the head's write key, or before a head is known any step's this node knows (a
-        // server cannot make one; a superseded step's key may be a removed writer's)
+        // host cannot make one; a superseded step's key may be a removed writer's)
         let mut unvouched = Vec::new();
         // the head's write key now (a Head event in the batch moves it)
         let head_write = |s: &Self| conn.and_then(|c| s.lc(c, &l)).and_then(|x| x.head.as_ref()).map(|h| h.keys.write);
         let first_write = head_write(self);
         let mut writers: Vec<VerifyingKey> = Vec::new();
-        if first_write.is_none() && server.is_some() && events.iter().any(|e| matches!(e, LogEvent::Added { .. })) {
+        if first_write.is_none() && host.is_some() && events.iter().any(|e| matches!(e, LogEvent::Added { .. })) {
             writers = conn.and_then(|c| self.lc(c, &l)).map(|x| x.writers.clone()).unwrap_or_default();
             if let Some(g) = self.group_of(&l)
                 && let Some(gl) = self.group_label(&g, &l)
@@ -132,7 +132,7 @@ impl SyncEngine {
                     let class = osis_label::Prefix::parse(&blob).map(|p| p.class()).unwrap_or_default();
                     let head = conn.and_then(|c| self.lc(c, &l)).and_then(|x| x.head.as_ref()).map(|h| h.keys.write);
                     // a stamp counts if it verifies under the head's write key (a served peer's
-                    // upload was checked by the server engine)
+                    // upload was checked by the host engine)
                     let stamp = stamp.filter(|s| head.as_ref().map_or(conn.is_none(), |w| osis_label::verify_stamp(w, &l, &blob_id, &wrap, s).is_ok()));
                     if let Some(c) = conn.and_then(|c| self.conns.get_mut(&c)) {
                         c.req.missing.remove(&blob_id);
@@ -144,12 +144,12 @@ impl SyncEngine {
                 // one that never fits here is not fetched again (`Unfit`)
                 LogEvent::Added { blob_id, blob: None, .. } if self.eph.unfit.contains(l, blob_id) => continue,
                 LogEvent::Added { blob_id, blob: None, .. } if self.eph.entries.contains_key(&(l, blob_id)) => {
-                    if let Some(s) = server {
+                    if let Some(s) = host {
                         self.eph.present.insert((s, l, blob_id));
                     }
                     continue;
                 }
-                LogEvent::Deleted(b) if self.eph_deleted(server, l, b) => continue,
+                LogEvent::Deleted(b) if self.eph_deleted(host, l, b) => continue,
                 ev => ev,
             };
             match ev {
@@ -162,11 +162,11 @@ impl SyncEngine {
                         Some(w) => signed_by(w),
                         None => writers.iter().any(signed_by),
                     };
-                    if let Some(s) = server {
+                    if let Some(s) = host {
                         self.state.set_present(s, l, blob_id, true);
                         self.state.set_deposited(s, l, blob_id, stamp.is_none());
                     }
-                    // the server holds it now: fetched there again when wanted
+                    // the host holds it now: fetched there again when wanted
                     if let Some(c) = conn.and_then(|c| self.conns.get_mut(&c)) {
                         c.req.missing.remove(&blob_id);
                     }
@@ -175,7 +175,7 @@ impl SyncEngine {
                     let stamp = stamp.filter(|_| if cur.is_some() { by_head } else { conn.is_none() });
                     match self.state.entries.get(&(l, blob_id)).cloned() {
                         None => {
-                            if server.is_some() && stamp.is_none() && !vouched {
+                            if host.is_some() && stamp.is_none() && !vouched {
                                 // bytes held before (another label's entry) stay whatever happens
                                 let fresh = blob.is_some() && !self.engine.has_blob(&blob_id);
                                 unvouched.push((blob_id, fresh));
@@ -214,9 +214,9 @@ impl SyncEngine {
                     touched.push(blob_id);
                 }
                 LogEvent::Deleted(b) => {
-                    // gone from every server of the label: a chunk an own commit may link
+                    // gone from every host of the label: a chunk an own commit may link
                     let chunk = !self.state.blobs.contains_key(&b);
-                    if self.absent_at(server, l, b)? && chunk {
+                    if self.absent_at(host, l, b)? && chunk {
                         lost.insert(b);
                     }
                 }
@@ -237,7 +237,7 @@ impl SyncEngine {
             self.relink_at = 0;
             self.relink_lost()?;
         }
-        if let (Some(s), Some(c)) = (server, cursor) {
+        if let (Some(s), Some(c)) = (host, cursor) {
             self.state.set_cursor(s, l, Some(c));
         }
         // a push (no Sync running) brings the log to its end: a pass end
@@ -252,7 +252,7 @@ impl SyncEngine {
         self.touched.blobs.extend(blobs.iter().map(|(b, _)| *b));
         self.engine.put_blobs(blobs)?;
         self.open_entries(l, &touched)?;
-        if let Some(s) = server {
+        if let Some(s) = host {
             self.drop_unvouched(s, l, &unvouched)?;
         }
         // commit blobs announced without bytes are fetched now; the rest (chunks) lazily
@@ -263,7 +263,7 @@ impl SyncEngine {
             self.fetch_on(c, l, want, out)?;
             self.fetch_waiting(c, l, out)?;
         }
-        if pushed && let Some(s) = server {
+        if pushed && let Some(s) = host {
             self.bump_pass(s, l)?;
         }
         Ok(())
@@ -271,13 +271,13 @@ impl SyncEngine {
 
     /// New entries no writer vouched for that neither opened nor unwrap under a held read secret
     /// (a deposit under an epoch not held yet, an entry stamped under a step this node does not
-    /// know, or a server's junk): their bytes are not kept (fetched again once they unwrap,
+    /// know, or a host's junk): their bytes are not kept (fetched again once they unwrap,
     /// `refetch`), and beyond `SyncConfig::unvouched_cap` such entries under the label at that
-    /// server not even its presence there, nor the entry once no server has it
+    /// host not even its presence there, nor the entry once no host has it
     /// (spec/requirements.md: peer input never causes unbounded storage; a dropped real entry
-    /// comes back stamped once a writer promotes it, or with the next replay). Counted per server:
-    /// one server's junk does not crowd out what others announce.
-    fn drop_unvouched(&mut self, server: ServerKey, l: LabelId, ids: &[(BlobId, bool)]) -> Result<()> {
+    /// comes back stamped once a writer promotes it, or with the next replay). Counted per host:
+    /// one host's junk does not crowd out what others announce.
+    fn drop_unvouched(&mut self, host: HostKey, l: LabelId, ids: &[(BlobId, bool)]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
@@ -295,7 +295,7 @@ impl SyncEngine {
         // under a smaller cap
         let inbox = !self.inbox_of(&l).is_empty();
         let cap = if inbox { self.cfg.unvouched_cap >> 4 } else { self.cfg.unvouched_cap };
-        let mut held = self.state.present_at(&server, &l).into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| e.kind == Kind::Unknown && e.stamp.is_none())).count();
+        let mut held = self.state.present_at(&host, &l).into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| e.kind == Kind::Unknown && e.stamp.is_none())).count();
         let mut gone = Vec::new();
         let mut over = 0usize;
         for (b, fresh) in ids {
@@ -308,7 +308,7 @@ impl SyncEngine {
                 gone.push(*b);
             }
             if drop {
-                self.state.set_present(server, l, *b, false);
+                self.state.set_present(host, l, *b, false);
                 if !self.state.present_anywhere(&l, b) {
                     self.state.drop_entry(l, *b);
                     self.fetched(b);
@@ -613,7 +613,7 @@ impl SyncEngine {
     /// unexpired blob whose commit is applied or pending, the first payload thing with no known
     /// label that the commit gave this node a read secret of (`Engine::boxed_by`), one per blob
     /// (a delivery names one thing), so the hints a sender makes are bounded by the inbox's
-    /// deposit budget and go with the blob. The payload is the sender's word: servers only, never
+    /// deposit budget and go with the blob. The payload is the sender's word: hosts only, never
     /// a node to dial (`peer://`); a label a key actor's entry is followed for (`via`) is left
     /// to that follow. Other inbox hints are dropped.
     pub(crate) fn vet_inbox_hints(&mut self) -> Result<()> {
@@ -648,14 +648,14 @@ impl SyncEngine {
                 if !self.engine.labels_of(&t.tid).is_empty() || !self.engine.boxed_by(&c, &t.tid) {
                     continue;
                 }
-                let servers = t.servers.iter().filter(|a| !super::peers::is_peer(a)).cloned();
+                let hosts = t.hosts.iter().filter(|a| !super::peers::is_peer(a)).cloned();
                 let src = super::state::InboxSource { label: l, blob: b, until: o.until };
                 match want.get_mut(&t.label) {
-                    // two blobs naming one label: both servers, the later expiry
+                    // two blobs naming one label: both hosts, the later expiry
                     Some(h) if h.thing == t.tid && h.index == t.index => {
-                        for a in servers {
-                            if !h.servers.contains(&a) {
-                                h.servers.push(a);
+                        for a in hosts {
+                            if !h.hosts.contains(&a) {
+                                h.hosts.push(a);
                             }
                         }
                         if h.inbox.is_some_and(|i| i.until < o.until) {
@@ -664,7 +664,7 @@ impl SyncEngine {
                     }
                     Some(_) => {}
                     None => {
-                        want.insert(t.label, Hint { thing: t.tid, index: t.index, servers: servers.collect(), via: None, inbox: Some(src) });
+                        want.insert(t.label, Hint { thing: t.tid, index: t.index, hosts: hosts.collect(), via: None, inbox: Some(src) });
                     }
                 }
                 break;
@@ -676,7 +676,7 @@ impl SyncEngine {
         }
         for (l, h) in want {
             let old = self.state.hints.get(&l);
-            if old.is_some_and(|x| x.via.is_some() || (x.thing, x.index, &x.servers, x.inbox) == (h.thing, h.index, &h.servers, h.inbox)) {
+            if old.is_some_and(|x| x.via.is_some() || (x.thing, x.index, &x.hosts, x.inbox) == (h.thing, h.index, &h.hosts, h.inbox)) {
                 continue;
             }
             self.state.add_hint(l, h);
@@ -709,8 +709,8 @@ impl SyncEngine {
         self.state.flush(&mut self.engine)
     }
 
-    /// A new head in a server's log: a child of the current one moves on, and reopens when its
-    /// sync key is another (the server ended the open, spec/sync.md §5); anything else reopens.
+    /// A new head in a host's log: a child of the current one moves on, and reopens when its
+    /// sync key is another (the host ended the open, spec/sync.md §5); anything else reopens.
     /// An open in flight learns the head itself (`accept_head` asks for the path after it).
     pub(crate) fn new_head(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
@@ -736,23 +736,23 @@ impl SyncEngine {
         }
     }
 
-    /// A Sync ran through its last page: the pass at this server is complete.
+    /// A Sync ran through its last page: the pass at this host is complete.
     pub(crate) fn synced(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
+        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.syncing = false;
             lc.synced = true;
             lc.dirty = true;
         }
-        self.bump_pass(server, l)?;
+        self.bump_pass(host, l)?;
         self.fetch_waiting(conn, l, out)
     }
 
-    pub(crate) fn bump_pass(&mut self, server: ServerKey, l: LabelId) -> Result<()> {
+    pub(crate) fn bump_pass(&mut self, host: HostKey, l: LabelId) -> Result<()> {
         // membership commits applied by this run count before the pass end
         self.engine_events()?;
         self.seq += 1;
-        self.passes.insert((server, l), (self.seq, self.now()));
+        self.passes.insert((host, l), (self.seq, self.now()));
         Ok(())
     }
 
@@ -772,7 +772,7 @@ impl SyncEngine {
     }
 
     /// Fetches `ids` under `l` on `conn`, but those asked for already (on any connection) and
-    /// those its server did not deliver (since it last announced them). Every fetch goes this
+    /// those its host did not deliver (since it last announced them). Every fetch goes this
     /// way: a pass waits on the unopened entries in flight (`unsettled_sets`).
     pub(crate) fn fetch_on(&mut self, conn: ConnId, l: LabelId, ids: impl IntoIterator<Item = BlobId>, out: &mut Vec<super::Action>) -> Result<()> {
         let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.fetching(b)).collect();
@@ -784,11 +784,11 @@ impl SyncEngine {
         self.command(conn, Command::Fetch { label: l, ids }, out)
     }
 
-    /// Entry `b` under `l` is no longer at `server`: once no server holds it, the entry goes
+    /// Entry `b` under `l` is no longer at `host`: once no host holds it, the entry goes
     /// (tombstoned) with the blob's record and bytes where nothing else needs them. Whether it
     /// went.
-    pub(crate) fn absent_at(&mut self, server: Option<ServerKey>, l: LabelId, b: BlobId) -> Result<bool> {
-        if let Some(s) = server {
+    pub(crate) fn absent_at(&mut self, host: Option<HostKey>, l: LabelId, b: BlobId) -> Result<bool> {
+        if let Some(s) = host {
             self.state.set_present(s, l, b, false);
         }
         if self.state.present_anywhere(&l, &b) {
@@ -807,7 +807,7 @@ impl SyncEngine {
         let dropped = self.engine.core.ix.commits.get(&r.commit).is_some_and(|m| r.parts.iter().any(|p| m.dropped.contains_key(&p.0)));
         let unused = !self.state.named(b);
         if dropped || unused && (r.cert || !self.engine.core.ix.commits.contains_key(&r.commit)) {
-            // its entries stay (deletes at servers need no copy) with their wraps shredded
+            // its entries stay (deletes at hosts need no copy) with their wraps shredded
             let ls: Vec<LabelId> = self.state.labels_of(b);
             for l in ls {
                 if let Some(mut e) = self.state.entries.get(&(l, *b)).cloned() {
@@ -890,13 +890,13 @@ impl SyncEngine {
                 if lc.phase != Phase::Open {
                     continue;
                 }
-                let v: Vec<BlobId> = ids.iter().filter(|b| self.state.is_present(&c.server, l, b)).copied().collect();
+                let v: Vec<BlobId> = ids.iter().filter(|b| self.state.is_present(&c.host, l, b)).copied().collect();
                 if !v.is_empty() {
                     todo.push((*conn, *l, v));
                 }
             }
         }
-        // each blob from the first connection whose server may deliver it (`fetch_on` skips
+        // each blob from the first connection whose host may deliver it (`fetch_on` skips
         // those in flight, so those asked on an earlier one)
         for (conn, l, v) in todo {
             if let Err(e) = self.fetch_on(conn, l, v, &mut out) {
@@ -914,14 +914,14 @@ impl SyncEngine {
         Ok(self.fetch(&ids))
     }
 
-    /// Fetches every entry not held yet from the servers holding it (lazy chunks, on demand).
+    /// Fetches every entry not held yet from the hosts holding it (lazy chunks, on demand).
     pub fn fetch_missing(&mut self) -> Vec<super::Action> {
         let ids: Vec<BlobId> = self.state.entries.iter().filter(|(_, e)| e.kind == Kind::Unknown).map(|((_, b), _)| *b).collect();
         let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.engine.has_blob(b)).collect();
         self.fetch(&ids)
     }
 
-    /// Gained IDs the server lacks: upload the stamped entries held.
+    /// Gained IDs the host lacks: upload the stamped entries held.
     pub(crate) fn want(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, out: &mut Vec<super::Action>) -> Result<()> {
         let mut entries = Vec::new();
         for b in ids {
@@ -938,9 +938,9 @@ impl SyncEngine {
     /// Range reconciliation done: presence follows it; fetch what we lack, then a cursor-less
     /// metadata Sync for a fresh cursor.
     pub(crate) fn reconciled(&mut self, conn: ConnId, l: LabelId, need: Vec<BlobId>, have: Vec<BlobId>, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
+        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
         // held ephemeral entries the reconciled set listed: the peer lacks those in `have` (they
-        // go up), holds the rest; one kept since and not seen there (from another server) goes up
+        // go up), holds the rest; one kept since and not seen there (from another host) goes up
         // too
         if let Some(listed) = self.eph.reconciling.get(&(conn, l)) {
             let lacks: BTreeSet<BlobId> = have.iter().copied().collect();
@@ -948,21 +948,21 @@ impl SyncEngine {
             let mut up = Vec::new();
             let mut holds = Vec::new();
             for b in held {
-                if lacks.contains(&b) || !(listed.contains(&b) || self.eph.present.contains(&(server, l, b))) {
+                if lacks.contains(&b) || !(listed.contains(&b) || self.eph.present.contains(&(host, l, b))) {
                     up.push(b);
                 } else if listed.contains(&b) {
                     holds.push(b);
                 }
             }
             for b in holds {
-                self.eph.present.insert((server, l, b));
+                self.eph.present.insert((host, l, b));
             }
             self.eph_upload_on(conn, l, &up, out)?;
         }
         for b in have {
-            self.state.set_present(server, l, b, false);
+            self.state.set_present(host, l, b, false);
         }
-        // the server holds them now: undelivered before or not, asked again (like an announce)
+        // the host holds them now: undelivered before or not, asked again (like an announce)
         if let Some(c) = self.conns.get_mut(&conn) {
             for b in &need {
                 c.req.missing.remove(b);
@@ -975,7 +975,7 @@ impl SyncEngine {
         self.fetch_on(conn, l, need, out)?;
         // a reconciliation after a start: the cursor stays (`sync_label`)
         if self.eph.reconciling.remove(&(conn, l)).is_some() {
-            self.eph.reconciled.insert((server, l));
+            self.eph.reconciled.insert((host, l));
             return self.sync_label(conn, l, out);
         }
         if let Some(lc) = self.lc_mut(conn, &l) {
@@ -988,7 +988,7 @@ impl SyncEngine {
     /// here: the node uploads only where the label is open, so the new head comes by push or
     /// the next Sync (spec/sync.md §5), and its pass signs again under the new keys.
     pub(crate) fn entry_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
+        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
         let (ids, codes) = self.eph_status(conn, l, ids, codes, out)?;
         if ids.is_empty() {
             return Ok(());
@@ -1005,33 +1005,33 @@ impl SyncEngine {
                     c.req.deleting.remove(&(l, p));
                 }
                 if code == Code::OK {
-                    self.absent_at(Some(server), l, p)?;
+                    self.absent_at(Some(host), l, p)?;
                     grew = true;
                 }
             }
             if code == Code::STORAGE_CAP {
                 self.capped.retain(|(s, l, b)| self.state.entries.contains_key(&(*l, *b)) && !self.state.is_present(s, l, b));
                 // the bodies it would carry are judged again (`carried`), in a pass now
-                if self.capped.insert((server, l, b)) {
+                if self.capped.insert((host, l, b)) {
                     self.state.touch(l, b);
                     grew = true;
                 }
             } else {
-                self.capped.remove(&(server, l, b));
+                self.capped.remove(&(host, l, b));
             }
             match code {
                 Code::OK => {
-                    let new = !self.state.is_present(&server, &l, &b);
+                    let new = !self.state.is_present(&host, &l, &b);
                     grew |= new;
-                    self.state.set_present(server, l, b, true);
+                    self.state.set_present(host, l, b, true);
                     if new {
                         self.reached(&l, &b);
                     }
                     // a stamped upload of a deposited entry promoted it
-                    self.state.set_deposited(server, l, b, false);
+                    self.state.set_deposited(host, l, b, false);
                 }
                 Code::TOMBSTONED => {
-                    self.state.set_gone(server, l, b);
+                    self.state.set_gone(host, l, b);
                     if let Some(lc) = self.lc_mut(conn, &l) {
                         lc.dirty = true;
                     }
@@ -1043,7 +1043,7 @@ impl SyncEngine {
             // registered meanwhile) would otherwise all send it at the next pass
             if code != Code::OK {
                 let raw = self.raw_now();
-                if let Some(t) = self.deposit_seen.get_mut(&(server, l, b)) {
+                if let Some(t) = self.deposit_seen.get_mut(&(host, l, b)) {
                     *t = raw;
                 }
             }
@@ -1057,10 +1057,10 @@ impl SyncEngine {
 
     /// Delete statuses; code 9 as for `entry_status`.
     pub(crate) fn delete_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>) -> Result<()> {
-        let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
+        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
         let (ids, codes) = self.eph_delete_status(conn, l, ids, codes);
         for (b, code) in ids.into_iter().zip(codes) {
-            // a timed delete is done once the server took it (spec/commits.md §5)
+            // a timed delete is done once the host took it (spec/commits.md §5)
             let timed = self.conns.get_mut(&conn).is_some_and(|c| {
                 c.req.deleting.remove(&(l, b));
                 c.req.timed_sent.remove(&(l, b))
@@ -1068,13 +1068,13 @@ impl SyncEngine {
             match code {
                 Code::OK => {
                     if timed {
-                        self.state.set_timed(server, l, b);
+                        self.state.set_timed(host, l, b);
                         continue;
                     }
-                    if self.state.timed.contains(&(server, l, b)) {
+                    if self.state.timed.contains(&(host, l, b)) {
                         continue;
                     }
-                    self.absent_at(Some(server), l, b)?;
+                    self.absent_at(Some(host), l, b)?;
                 }
                 Code::NOT_HEAD => {}
                 c => self.diag(format!("delete refused: code {}", c.0)),
@@ -1090,7 +1090,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Entry `b` under `l` reached a server: when it holds a membership commit of this node,
+    /// Entry `b` under `l` reached a host: when it holds a membership commit of this node,
     /// every label passes again (its held copies may go now, spec/sync.md §5).
     fn reached(&mut self, l: &LabelId, b: &BlobId) {
         let Some(Kind::Commit { commit, .. }) = self.state.entries.get(&(*l, *b)).map(|e| &e.kind) else { return };
@@ -1099,11 +1099,11 @@ impl SyncEngine {
         }
     }
 
-    /// A deposit's answer; `entries_left` only when the server checked its signature under the
+    /// A deposit's answer; `entries_left` only when the host checked its signature under the
     /// head (a stale one learns nothing: the head comes by the open connection, spec/sync.md §5).
     pub(crate) fn budget(&mut self, conn: ConnId, l: LabelId, b: BlobId, code: Code, entries_left: Option<u64>) -> Result<()> {
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
-        let server = c.server;
+        let host = c.host;
         c.req.sent.remove(&(l, b));
         if let Some(n) = entries_left
             && let Some(lc) = self.lc_mut(conn, &l)
@@ -1112,36 +1112,36 @@ impl SyncEngine {
         }
         // a queued deposit's answer
         let now = self.raw_now();
-        if let Some(o) = self.outbox.get_mut(&(server, l, b)).filter(|o| o.sent.is_some()) {
+        if let Some(o) = self.outbox.get_mut(&(host, l, b)).filter(|o| o.sent.is_some()) {
             // refused for now (not registered yet, rate limit, budget full while the label's
-            // writers are away, the server at a storage cap): sent again until taken or moot; signed by an earlier deposit key
+            // writers are away, the host at a storage cap): sent again until taken or moot; signed by an earlier deposit key
             // (a refreshed deposit seed): the same bytes never verify, so signed again first
             o.tries = o.tries.saturating_add(1);
             o.sent = None;
             let tries = o.tries;
-            let resigned = code == Code::NOT_HEAD && self.resign_deposit(&server, &l, &b)?;
+            let resigned = code == Code::NOT_HEAD && self.resign_deposit(&host, &l, &b)?;
             let retry = matches!(code, Code::UNKNOWN_LABEL | Code::RATE_LIMITED | Code::BUDGET_FULL | Code::STORAGE_CAP) || resigned;
-            if retry && !self.deposit_moot(&server, &l, &b) {
+            if retry && !self.deposit_moot(&host, &l, &b) {
                 // retry_ms, doubling per refusal, at most DEPOSIT_RETRY_CAP_MS; re-signed: at once
                 let back = if resigned { 0 } else { self.cfg.retry_ms.saturating_mul(1u64 << (tries - 1).min(20)).min(super::local::DEPOSIT_RETRY_CAP_MS) };
-                if let Some(o) = self.outbox.get_mut(&(server, l, b)) {
+                if let Some(o) = self.outbox.get_mut(&(host, l, b)) {
                     o.after = now.saturating_add(back);
                 }
             } else {
                 if retry || code == Code::NOT_HEAD {
                     self.diag(format!("deposit under {l:?} moot after {tries} refusals (code {})", code.0));
                 }
-                self.outbox.remove(&(server, l, b));
-                self.state.remove_out(&server, &l, &b);
+                self.outbox.remove(&(host, l, b));
+                self.state.remove_out(&host, &l, &b);
             }
         }
         match code {
             Code::OK => {
-                self.state.set_present(server, l, b, true);
+                self.state.set_present(host, l, b, true);
                 self.reached(&l, &b);
             }
             Code::NOT_HEAD => {}
-            Code::TOMBSTONED => self.state.set_gone(server, l, b),
+            Code::TOMBSTONED => self.state.set_gone(host, l, b),
             c => self.diag(format!("deposit refused: code {}", c.0)),
         }
         Ok(())

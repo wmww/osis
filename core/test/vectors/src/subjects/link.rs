@@ -11,13 +11,13 @@ use osis_schema::Codec;
 const SPEC: &str = "spec/wire.md §10";
 
 pub fn links() -> VecFile {
-    let a = Address { url: "quic://server.example:4433".into(), key: [0x06; 32] };
+    let a = Address { url: "quic://host.example:4433".into(), key: [0x06; 32] };
     let link = ShareLink {
         seed: s32(0x03),
         target: Tid::from_bytes([0x01; 15]),
         k: Tid::from_bytes([0x02; 15]),
         k_label: LabelId([0x04; 16]),
-        servers: vec![a.clone()],
+        hosts: vec![a.clone()],
         peers: vec![Peer { dialable: [0x07; 32], relays: vec!["https://relay.example".into()] }],
         single_use: false,
     };
@@ -25,7 +25,7 @@ pub fn links() -> VecFile {
     bare.peers.clear();
     let mut once = bare.clone();
     once.single_use = true;
-    let card = RecoveryCard { seed: s32(0x04), person: Tid::from_bytes([0x05; 15]), home_label: LabelId([0x08; 16]), servers: vec![a.clone()] };
+    let card = RecoveryCard { seed: s32(0x04), person: Tid::from_bytes([0x05; 15]), home_label: LabelId([0x08; 16]), hosts: vec![a.clone()] };
     let mut cases = Vec::new();
     for (name, l) in [("link with a peer", &link), ("link without peers", &bare), ("single-use link (flags 1)", &once)] {
         let t = l.to_text().unwrap();

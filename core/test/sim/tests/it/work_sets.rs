@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Pass work sets against full passes (spec/sync.md §6, §7): the same scenario and seed run
 //! with work sets and with every pass judging everything (`osis_sim::net::with_full_passes`)
-//! give the same run: every message, the server logs (uploads and deletes in order, in the
+//! give the same run: every message, the host logs (uploads and deletes in order, in the
 //! report's digest) and the final state. A trigger the work sets miss shows as a divergence.
 
 use osis_sim::net::with_full_passes;
@@ -33,7 +33,7 @@ fn work_sets_demotion_receipts_seed_1() {
     same("demotion_receipts", 1);
 }
 
-// spec/sync.md §6, §7: random writes on two replicating servers, snapshots, keep-at-most,
+// spec/sync.md §6, §7: random writes on two replicating hosts, snapshots, keep-at-most,
 // expiry, a purge and a demotion: work sets give the full passes' run (about 20 s per run in
 // debug).
 #[test]

@@ -14,7 +14,7 @@ use osis_crypto::{CryptoRngCore, KemPublicKey, KemSecret, VerifyingKey, open_inb
 use osis_schema::Codec;
 
 /// A thing the commit names: its label ID, the label's index (its role keys derive from it,
-/// spec/sync.md §2) and server addresses, and for a thing with secrets
+/// spec/sync.md §2) and host addresses, and for a thing with secrets
 /// of its own its current admin and write delete keys (spec/crypto.md §7), which the grantee
 /// lists until it holds the thing's `/keys`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -22,7 +22,7 @@ pub struct InboxThing {
     pub tid: Tid,
     pub label: LabelId,
     pub index: u64,
-    pub servers: Vec<Address>,
+    pub hosts: Vec<Address>,
     pub delete_keys: Option<(VerifyingKey, VerifyingKey)>,
 }
 
@@ -44,7 +44,7 @@ impl InboxPayload {
                 tid(&t.tid),
                 Value::bytes(&t.label.0),
                 uint(t.index)?,
-                Value::List(t.servers.iter().map(Codec::to_value).collect()),
+                Value::List(t.hosts.iter().map(Codec::to_value).collect()),
                 Value::List(t.delete_keys.iter().map(|(a, w)| Value::List(vec![Value::bytes(&a.to_bytes()), Value::bytes(&w.to_bytes())])).collect()),
             ]));
         }
@@ -57,7 +57,7 @@ impl InboxPayload {
         let mut out: Vec<InboxThing> = Vec::with_capacity(things.len());
         for t in things {
             let Value::List(f) = t else { return Err(Error::Malformed("inbox thing")) };
-            let [tid, label, index, Value::List(servers), keys] = f.as_slice() else { return Err(Error::Malformed("inbox thing")) };
+            let [tid, label, index, Value::List(hosts), keys] = f.as_slice() else { return Err(Error::Malformed("inbox thing")) };
             let key = |v: &Value| get_key(v, "inbox delete key");
             let delete_keys = match get_opt(keys, "inbox delete keys")? {
                 None => None,
@@ -71,8 +71,8 @@ impl InboxPayload {
             if out.last().is_some_and(|p| p.tid >= tid) {
                 return Err(Error::Malformed("inbox things not sorted by tid"));
             }
-            let servers = servers.iter().map(address_from_value).collect::<Result<_, _>>()?;
-            out.push(InboxThing { tid, label: LabelId(get_bytes(label, "inbox label")?), index: get_uint(index, "inbox label index")?, servers, delete_keys });
+            let hosts = hosts.iter().map(address_from_value).collect::<Result<_, _>>()?;
+            out.push(InboxThing { tid, label: LabelId(get_bytes(label, "inbox label")?), index: get_uint(index, "inbox label index")?, hosts, delete_keys });
         }
         Ok(InboxPayload { commit: commit.clone(), things: out })
     }
@@ -111,8 +111,8 @@ mod tests {
         InboxPayload {
             commit: Value::List(vec![Value::List(vec![]), Value::Int(0), Value::List(vec![])]),
             things: vec![
-                InboxThing { tid: Tid::from_bytes([1; 15]), label: LabelId([2; 16]), index: 0, servers: vec![a.clone()], delete_keys: None },
-                InboxThing { tid: Tid::from_bytes([3; 15]), label: LabelId([4; 16]), index: 5, servers: vec![], delete_keys: Some((dk(1), dk(2))) },
+                InboxThing { tid: Tid::from_bytes([1; 15]), label: LabelId([2; 16]), index: 0, hosts: vec![a.clone()], delete_keys: None },
+                InboxThing { tid: Tid::from_bytes([3; 15]), label: LabelId([4; 16]), index: 5, hosts: vec![], delete_keys: Some((dk(1), dk(2))) },
             ],
         }
     }

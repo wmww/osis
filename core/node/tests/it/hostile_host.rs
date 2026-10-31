@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! A malicious blind node against a node's sync engine (spec/requirements.md: "Nothing trusts a
-//! server's word"; "Peer input never causes unbounded allocation, work, storage or
-//! diagnostics"): frames injected on a node's server connection, or a scripted server; plus
-//! what deletion must reach at a blind node.
+//! A malicious host against a node's sync engine (spec/requirements.md: "Nothing trusts a
+//! host's word"; "Peer input never causes unbounded allocation, work, storage or
+//! diagnostics"): frames injected on a node's host connection, or a scripted host; plus
+//! what deletion must reach at a host.
 
 use crate::net;
 use net::*;
@@ -50,7 +50,7 @@ fn foreign_step(b: u8) -> osis_label::Step {
 #[test]
 fn unsolicited_push_stores_nothing_spec_wire_11_2() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let g = net.group(a, &[], &[sv]);
     net.item(a, g, g, "x");
@@ -68,12 +68,12 @@ fn unsolicited_push_stores_nothing_spec_wire_11_2() {
 }
 
 // spec/sync.md §5 (walk: "verifying each step under its parent's delete key, the genesis step
-// against the label ID"), spec/requirements.md (no unbounded allocation): a server path that
-// does not verify is refused at its first page, not buffered until the server ends it.
+// against the label ID"), spec/requirements.md (no unbounded allocation): a host path that
+// does not verify is refused at its first page, not buffered until the host ends it.
 #[test]
 fn bad_path_refused_at_first_page_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let _g = net.group(a, &[], &[sv]);
     let mut se: SyncEngine = net.take(a);
@@ -88,16 +88,16 @@ fn bad_path_refused_at_first_page_spec_sync_5() {
     se.take_diagnostics();
     se.handle(Event::Bytes { conn, bytes: frame(Message::PathReply { id: pid, steps: vec![foreign_step(50); 4], more: true }) });
     let d = se.take_diagnostics();
-    assert!(d.iter().any(|x| x.contains("server path does not verify")), "refused at the first page: {d:?}");
+    assert!(d.iter().any(|x| x.contains("host path does not verify")), "refused at the first page: {d:?}");
 }
 
 // spec/sync.md §9 (a relay-only commit older than `MAX_DRIFT` is dropped, its only replay window;
-// one delivered is remembered): a server pushing a captured signal again fires nothing, at once
+// one delivered is remembered): a host pushing a captured signal again fires nothing, at once
 // or later.
 #[test]
 fn replayed_signal_dropped_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Read)], &[sv]);
@@ -129,13 +129,13 @@ fn replayed_signal_dropped_spec_sync_9() {
     assert!(fired(&rx).is_empty(), "a stale replay fires nothing");
 }
 
-// spec/sync.md §9, spec/requirements.md ("Nothing trusts a server's word"): a server pushing more
+// spec/sync.md §9, spec/requirements.md ("Nothing trusts a host's word"): a host pushing more
 // junk relay-only blobs (no keys needed: a relay prefix far ahead and random bytes) than a node
-// remembers cannot raise the label's floor, so a later real signal through any server still fires
+// remembers cannot raise the label's floor, so a later real signal through any host still fires
 #[test]
 fn junk_relays_raise_no_floor_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Read)], &[sv]);
@@ -174,14 +174,14 @@ fn junk_relays_raise_no_floor_spec_sync_9() {
     assert_eq!(fired(&rx).len(), 1, "the real signal fires");
 }
 
-// spec/requirements.md (blind nodes must not learn device identities; groups unlinkable beyond
+// spec/requirements.md (hosts must not learn device identities; groups unlinkable beyond
 // their overlap), spec/sync.md §2 (a key actor reads a label as a listed reader): a node holding a
 // key actor (a link or recovery key) never presents its signing key at a label whose group does
 // not list it, however its other opens fare.
 #[test]
 fn key_actor_not_presented_elsewhere_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let _g = net.group(a, &[], &[sv]);
     let ka = net.engine(a).hold_key_actor(Secret32::from_bytes([0x3c; 32])).unwrap();
@@ -211,13 +211,13 @@ fn key_actor_not_presented_elsewhere_spec_sync_5() {
 }
 
 // spec/requirements.md (peer input never causes unbounded storage), spec/sync.md §3 (only writers
-// add stamped entries; deposits are readable by co-readers): a server's made-up unstamped
+// add stamped entries; deposits are readable by co-readers): a host's made-up unstamped
 // entries under an opened label that open under nothing held leave no blob, and only a capped
 // number of entries.
 #[test]
 fn junk_under_opened_label_kept_nowhere_spec_sync_3() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let g = net.group(a, &[], &[sv]);
     net.item(a, g, g, "x");
@@ -232,25 +232,25 @@ fn junk_under_opened_label_kept_nowhere_spec_sync_3() {
     for b in &blobs {
         assert!(!net.sync(a).holds_blob(&osis_label::blob_id(b)), "no junk blob kept");
     }
-    // past the cap not even the entry: a server's endless junk leaves bounded metadata
+    // past the cap not even the entry: a host's endless junk leaves bounded metadata
     let n = net.sync(a).entries(&l).len();
     assert!(n <= before + 50, "{n}");
 }
 
 // spec/sync.md §2, §5 (a key actor claims the current step by its static entry; the step's entry
 // box carries the read secret; walks verify each step under its parent, the genesis against the
-// label ID), spec/crypto.md §4 (sealed boxes are unauthenticated): a server's forged head and
+// label ID), spec/crypto.md §4 (sealed boxes are unauthenticated): a host's forged head and
 // entry box teach the key actor no secret.
 #[test]
 fn forged_entry_box_teaches_nothing_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let seed = Secret32::from_bytes([0x3c; 32]);
     let ka = net.engine(a).hold_key_actor(seed.clone()).unwrap();
     let held = |se: &SyncEngine| se.engine().epochs(&ka).map(|e| e.read.held_newest_first().len()).unwrap_or(0);
     let keys = osis_crypto::KeyActorKeys::from_seed(&seed);
-    // the server's own label, its genesis boxing a secret of its choice to the key actor
+    // the host's own label, its genesis boxing a secret of its choice to the key actor
     let b = 0x60u8;
     let (read, write, admin, dep) = (Secret32::from_bytes([b; 32]), Secret32::from_bytes([b + 1; 32]), Secret32::from_bytes([b + 2; 32]), Secret32::from_bytes([b + 3; 32]));
     let skeys = StepKeys::derive(&read, &write, &admin, 0, &dep, &genesis_label(&admin, 0));
@@ -289,18 +289,18 @@ fn forged_entry_box_teaches_nothing_spec_sync_5() {
     let pid = path.expect("the head's path is asked for");
     se.take_diagnostics();
     se.handle(Event::Bytes { conn, bytes: frame(Message::PathReply { id: pid, steps: vec![fake.clone()], more: false }) });
-    assert!(se.take_diagnostics().iter().any(|x| x.contains("server path does not verify")));
+    assert!(se.take_diagnostics().iter().any(|x| x.contains("host path does not verify")));
     assert_eq!(held(&se), before, "a forged head's box teaches nothing");
 }
 
 // spec/sync.md §2 (a step's entry box carries the read secret of its epoch, whose sync key the
 // step registers), spec/crypto.md §4 (sealed boxes are unauthenticated): a genuine head with a
-// substituted entry box (sealed by the server to the key actor's public KEM key) teaches no
+// substituted entry box (sealed by the host to the key actor's public KEM key) teaches no
 // secret: one that does not derive the head's sync key is refused.
 #[test]
 fn substituted_entry_box_teaches_nothing_spec_sync_2() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let seed = Secret32::from_bytes([0x3d; 32]);
     let ka = net.engine(a).hold_key_actor(seed.clone()).unwrap();
@@ -357,12 +357,12 @@ fn substituted_entry_box_teaches_nothing_spec_sync_2() {
 
 // spec/requirements.md, Deletion ("an admin's [purge of a large value] removes all of [its
 // chunks]" at untrusted nodes), spec/sync.md §5 (delete-key holders delete must-not-hold bodies): a
-// purged large value's chunk blobs leave the server.
+// purged large value's chunk blobs leave the host.
 #[test]
-fn purged_chunks_leave_the_server_spec_sync_5() {
+fn purged_chunks_leave_the_host_spec_sync_5() {
     use osis_schema::AspectKey;
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -375,15 +375,15 @@ fn purged_chunks_leave_the_server_spec_sync_5() {
     let l = net.label(a);
     let chunks: Vec<osis_base::BlobId> = net.engine(a).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
     assert!(!chunks.is_empty(), "a chunked value");
-    assert!(chunks.iter().all(|id| net.server_ids(sv, &l).contains(id)), "chunks uploaded");
+    assert!(chunks.iter().all(|id| net.host_ids(sv, &l).contains(id)), "chunks uploaded");
     let mut m = osis_node::Mutation::new();
     m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(GONE.ak()).unwrap() });
     m.remove_aspect(t, &GONE).unwrap();
     net.engine(a).commit(m).unwrap();
     net.run();
     net.run();
-    let left: Vec<_> = chunks.iter().filter(|id| net.server_ids(sv, &l).contains(id)).collect();
-    assert!(left.is_empty(), "{} of {} chunks of the purged value stay at the server", left.len(), chunks.len());
+    let left: Vec<_> = chunks.iter().filter(|id| net.host_ids(sv, &l).contains(id)).collect();
+    assert!(left.is_empty(), "{} of {} chunks of the purged value stay at the host", left.len(), chunks.len());
 }
 
 // spec/crypto.md §7 (a chunk commits to the delete keys of the delta that created it),
@@ -393,7 +393,7 @@ fn purged_chunks_leave_the_server_spec_sync_5() {
 fn writer_purge_deletes_chunks_by_delete_key_spec_crypto_7() {
     use osis_schema::AspectKey;
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -406,7 +406,7 @@ fn writer_purge_deletes_chunks_by_delete_key_spec_crypto_7() {
     let l = net.label(a);
     let chunks: Vec<osis_base::BlobId> = net.engine(a).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
     assert!(!chunks.is_empty(), "a chunked value");
-    assert!(chunks.iter().all(|id| net.server_ids(sv, &l).contains(id)), "chunks uploaded");
+    assert!(chunks.iter().all(|id| net.host_ids(sv, &l).contains(id)), "chunks uploaded");
     // the admin (holder of the delete key) is gone: only the writer's delete key can delete
     net.set_online(a, false);
     let mut m = osis_node::Mutation::new();
@@ -416,17 +416,17 @@ fn writer_purge_deletes_chunks_by_delete_key_spec_crypto_7() {
     net.feed(b, Event::Local);
     net.run();
     net.run();
-    let left: Vec<_> = chunks.iter().filter(|id| net.server_ids(sv, &l).contains(id)).collect();
-    assert!(left.is_empty(), "{} of {} chunks of the purged value stay at the server", left.len(), chunks.len());
+    let left: Vec<_> = chunks.iter().filter(|id| net.host_ids(sv, &l).contains(id)).collect();
+    assert!(left.is_empty(), "{} of {} chunks of the purged value stay at the host", left.len(), chunks.len());
 }
 
 // spec/wire.md §5, spec/crypto.md §7, spec/sync.md §5: the chunks and tree nodes of a linked
-// header list carry exactly the commit's level-2 (author-chain) commitments; a server deletes
+// header list carry exactly the commit's level-2 (author-chain) commitments; a host deletes
 // them by the author-chain delete key, and refuses the thing-admin delete key of the same commit.
 #[test]
 fn header_list_chunks_level_2_only_spec_wire_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let g = net.group(a, &[], &[sv]);
     let t = net.item(a, g, g, "x");
@@ -444,13 +444,13 @@ fn header_list_chunks_level_2_only_spec_wire_5() {
     assert!(h.keys.iter().any(|x| x.level == 1), "the commit has a thing-admin key");
     let lists: Vec<osis_base::BlobId> = net.engine(a).package(&c).unwrap().unwrap().blobs.iter().map(|(id, _)| *id).collect();
     assert!(lists.len() > 1, "chunks and a tree node");
-    assert!(lists.iter().all(|id| net.server_ids(sv, &l).contains(id)), "header-list blobs uploaded");
+    assert!(lists.iter().all(|id| net.host_ids(sv, &l).contains(id)), "header-list blobs uploaded");
     // the commit's own delete secrets per level, found by the header's delete keys
     let mut ds = net.engine(a).delete_secrets_of(&c, &[(0, 0)]);
     assert_eq!(ds.iter().map(|x| x.0).collect::<Vec<_>>(), vec![1, 2]);
     let (chain, admin) = (ds.pop().unwrap().1, ds.pop().unwrap().1);
     let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
-    let head = net.server_path(sv, &l).last().unwrap().clone();
+    let head = net.host_path(sv, &l).last().unwrap().clone();
     let sync = net.engine(a).head_keys(&g, gl.index, &head).unwrap().sync.unwrap();
     let by = |dk: &osis_crypto::DeleteSecret, level: u8, id: u32, net: &mut Net| {
         let mut items = Vec::new();
@@ -464,7 +464,7 @@ fn header_list_chunks_level_2_only_spec_wire_5() {
         let conn = net.conn_to(a, sv).expect("connected");
         net.actions(a, vec![Action::Send { conn, bytes: frame(Message::Delete { id, label: l, items }) }]);
         net.settle(10_000);
-        lists.iter().filter(|id| net.server_ids(sv, &l).contains(id)).count()
+        lists.iter().filter(|id| net.host_ids(sv, &l).contains(id)).count()
     };
     assert_eq!(by(&admin, 1, 900_001, &mut net), lists.len(), "the thing-admin key deletes nothing");
     assert_eq!(by(&admin, 2, 900_002, &mut net), lists.len(), "the thing-admin key at level 2 deletes nothing");
@@ -477,7 +477,7 @@ fn header_list_chunks_level_2_only_spec_wire_5() {
 #[test]
 fn linked_header_prefix_checked_spec_commits_4() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -529,14 +529,14 @@ fn junk(l: &LabelId, tag: u8, n: u8, stamp_key: Option<&osis_crypto::SigningSecr
     (ids, Message::Push { label: *l, events, cursor: Cursor { log_id: [tag; 16], seq: 1 << 40 } })
 }
 
-// spec/sync.md §3 (unvouched entries); spec/requirements.md ("nothing trusts a server's word"; peer input never causes unbounded
-// storage): the cap on unvouched entries counts per server, so one server's junk does not evict
-// what another server announces
+// spec/sync.md §3 (unvouched entries); spec/requirements.md ("nothing trusts a host's word"; peer input never causes unbounded
+// storage): the cap on unvouched entries counts per host, so one host's junk does not evict
+// what another host announces
 #[test]
-fn unvouched_cap_per_server_spec_sync_3() {
+fn unvouched_cap_per_host_spec_sync_3() {
     let mut net = Net::new();
-    let (s1, s2) = (net.add_server(), net.add_server());
-    let cfg = osis_node::sync::SyncConfig { servers: vec![net.address(s1), net.address(s2)], unvouched_cap: 8, ..Default::default() };
+    let (s1, s2) = (net.add_host(), net.add_host());
+    let cfg = osis_node::sync::SyncConfig { hosts: vec![net.address(s1), net.address(s2)], unvouched_cap: 8, ..Default::default() };
     let a = net.add_node(1, cfg);
     let g = net.group(a, &[], &[s1, s2]);
     net.item(a, g, g, "x");
@@ -552,15 +552,15 @@ fn unvouched_cap_per_server_spec_sync_3() {
     assert!(net.sync(a).entries(&l).iter().any(|(b, _)| *b == ids[0]), "s2's entry crowded out by s1's junk");
 }
 
-// spec/sync.md §5 (honest servers take stamps under the head's write key only), spec/
+// spec/sync.md §5 (honest hosts take stamps under the head's write key only), spec/
 // requirements.md (peer input never causes unbounded storage): stamps under a superseded step's
 // write key (a removed writer's) vouch for nothing once the head is newer: such entries are
 // capped and their bytes not kept
 #[test]
 fn old_step_stamp_vouches_nothing_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
-    let cfg = osis_node::sync::SyncConfig { servers: vec![net.address(sv)], unvouched_cap: 8, ..Default::default() };
+    let sv = net.add_host();
+    let cfg = osis_node::sync::SyncConfig { hosts: vec![net.address(sv)], unvouched_cap: 8, ..Default::default() };
     let a = net.add_node(1, cfg);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -574,7 +574,7 @@ fn old_step_stamp_vouches_nothing_spec_sync_5() {
     let rs = recipients_of(e, &[(at, Role::Admin)]);
     remove_member(e, g, bt, &rs, 43);
     net.run();
-    assert_eq!(net.server_path(sv, &l).len(), 2, "a newer step");
+    assert_eq!(net.host_path(sv, &l).len(), 2, "a newer step");
     let before = net.sync(a).entries(&l).len();
     let conn = net.conn_to(a, sv).expect("connected");
     let (ids, push) = junk(&l, 3, 40, Some(&old_write));
@@ -587,7 +587,7 @@ fn old_step_stamp_vouches_nothing_spec_sync_5() {
     assert!(n <= before + 9, "{n}");
 }
 
-/// A Push of `events` under `l` (a server's word).
+/// A Push of `events` under `l` (a host's word).
 fn push(l: LabelId, events: Vec<osis_proto::Event>) -> Vec<u8> {
     frame(Message::Push { label: l, events, cursor: Cursor { log_id: [0; 16], seq: 1 << 40 } })
 }
@@ -604,13 +604,13 @@ fn entries_of(net: &mut Net, n: usize, l: &LabelId, t: osis_base::Tid) -> Vec<os
 }
 
 // spec/sync.md §5 (a wrap may be replaced by another holder's), spec/requirements.md ("nothing
-// trusts a server's word"): a server re-announcing a held entry with a wrap that opens under no
+// trusts a host's word"): a host re-announcing a held entry with a wrap that opens under no
 // held read secret, or opens to another blob key, changes nothing; a wrap of the same key under
 // another held read secret is taken.
 #[test]
 fn wrap_not_opening_to_known_key_ignored_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[sv]);
     let x = net.node(3, &[sv]);
@@ -645,14 +645,14 @@ fn wrap_not_opening_to_known_key_ignored_spec_sync_5() {
     assert_eq!(net.sync(r).entry_meta(&l, &id).unwrap().0, rewrap, "a re-wrap of the known key is taken");
 }
 
-// spec/sync.md §5 (honest servers take stamps under the head's write key only; anyone may relay
-// a stamped entry), spec/requirements.md ("nothing trusts a server's word"): a reader keeps an
+// spec/sync.md §5 (honest hosts take stamps under the head's write key only; anyone may relay
+// a stamped entry), spec/requirements.md ("nothing trusts a host's word"): a reader keeps an
 // announced entry's stamp only when it verifies under the head's write key, so it never relays
 // a forged one as stamped.
 #[test]
 fn relayed_stamp_checked_against_head_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let r = net.node(2, &[sv]);
     let g = net.group(a, &[(r, Role::Read)], &[sv]);
@@ -680,15 +680,15 @@ fn relayed_stamp_checked_against_head_spec_sync_5() {
 #[test]
 fn outside_delete_waits_for_settled_view_spec_sync_6() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let g = net.group(a, &[], &[sv]);
     let t = net.item(a, g, g, "x");
     net.run();
     let old = net.label(a);
     let ids = entries_of(&mut net, a, &old, t);
-    assert!(!ids.is_empty() && ids.iter().all(|i| net.server_ids(sv, &old).contains(i)));
-    // a server announces an entry that opens under the group's read secret, without its bytes
+    assert!(!ids.is_empty() && ids.iter().all(|i| net.host_ids(sv, &old).contains(i)));
+    // a host announces an entry that opens under the group's read secret, without its bytes
     let read = net.engine(a).epochs(&g).unwrap().read.newest_held().unwrap().1.clone();
     let blocker = osis_base::BlobId([0x99; 32]);
     let wrap = osis_crypto::wrap(&read, &blocker, &Secret32::from_bytes([1; 32])).unwrap();
@@ -698,25 +698,25 @@ fn outside_delete_waits_for_settled_view_spec_sync_6() {
     let (new, acts) = net.sync(a).replace_label(&g, &old).unwrap();
     net.actions(a, acts);
     net.run();
-    assert!(!net.server_ids(sv, &new).is_empty());
+    assert!(!net.host_ids(sv, &new).is_empty());
     let key = net.address(sv).key;
     let v = net.sync(a).verdicts(&key, &old).unwrap().unwrap();
     assert!(v.unsettled.contains(&None), "{:?}", v.unsettled);
-    assert!(ids.iter().all(|i| net.server_ids(sv, &old).contains(i)), "deleted as outside on an unsettled view");
-    // the server drops the unexplained entry: the view settles and the content goes
+    assert!(ids.iter().all(|i| net.host_ids(sv, &old).contains(i)), "deleted as outside on an unsettled view");
+    // the host drops the unexplained entry: the view settles and the content goes
     net.feed(a, Event::Bytes { conn, bytes: push(old, vec![osis_proto::Event::Deleted(blocker)]) });
     net.settle(10_000);
     net.advance(61_000);
-    assert!(ids.iter().all(|i| !net.server_ids(sv, &old).contains(i)), "content kept under the replaced label on a settled view");
+    assert!(ids.iter().all(|i| !net.host_ids(sv, &old).contains(i)), "content kept under the replaced label on a settled view");
 }
 
-// spec/requirements.md (blind nodes: a server cannot link labels), spec/sync.md §2, §5: a hinted
+// spec/requirements.md (hosts: a host cannot link labels), spec/sync.md §2, §5: a hinted
 // open (a link's or recovery card's label) presents only the static entry of the key actor it
 // follows for, never another held key actor's signing key.
 #[test]
 fn hinted_open_presents_only_its_key_actor_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let (s1, s2) = (Secret32::from_bytes([0x3d; 32]), Secret32::from_bytes([0x3e; 32]));
     let k1 = net.engine(a).hold_key_actor(s1.clone()).unwrap();
@@ -746,18 +746,18 @@ fn hinted_open_presents_only_its_key_actor_spec_sync_5() {
         acts = next;
     }
     assert!(statics.contains(&v1), "the followed key actor tries its static entry");
-    assert!(!statics.contains(&v2), "another held key actor is never named to the server");
+    assert!(!statics.contains(&v2), "another held key actor is never named to the host");
 }
 
 // spec/sync.md §5 (a superseded step's child is verified under its parent; a hinted label has
-// none recorded), spec/requirements.md (blind nodes: a server cannot link labels or recognise
-// devices): a server answering a hinted label's open with a step of its choosing gets claims
+// none recorded), spec/requirements.md (hosts: a host cannot link labels or recognise
+// devices): a host answering a hinted label's open with a step of its choosing gets claims
 // only by the actors the hint is for (the thing's members this node is), never by another
 // actor this node holds secrets of.
 #[test]
 fn hinted_walk_claims_only_for_its_actors_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     // a is a member of g (b's group) and admin of its own g2
@@ -786,7 +786,7 @@ fn hinted_walk_claims_only_for_its_actors_spec_sync_5() {
         for m in opens {
             let Message::Open { id, proof, .. } = m else { continue };
             let reply = match proof {
-                // the first guessed sync key is answered with the server's own "next step"
+                // the first guessed sync key is answered with the host's own "next step"
                 osis_label::Proof::Sync { .. } if !walked => {
                     walked = true;
                     Message::Step { id, step: forged.clone() }
@@ -804,7 +804,7 @@ fn hinted_walk_claims_only_for_its_actors_spec_sync_5() {
     assert!(walked, "the hinted open was answered with a step");
     assert_eq!(claims, vec![forged.claim_key(&own).unwrap().verifying_key()], "claims by this node's own key only (a's edge on g)");
     for x in &others {
-        assert!(!claims.contains(&forged.claim_key(x).unwrap().verifying_key()), "another actor's pseudonym went to the server");
+        assert!(!claims.contains(&forged.claim_key(x).unwrap().verifying_key()), "another actor's pseudonym went to the host");
     }
 }
 
@@ -814,7 +814,7 @@ fn hinted_walk_claims_only_for_its_actors_spec_sync_5() {
 #[test]
 fn hinted_walk_claims_for_boxed_actor_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     // P and g2: a's groups; g: b's, its rotation boxing P with no edge of P on g
@@ -871,12 +871,12 @@ fn hinted_walk_claims_for_boxed_actor_spec_sync_5() {
     assert!(!want.is_empty() && want.iter().all(|k| claims.contains(k)), "claims by P's keys");
     assert!(!claims.contains(&forged.claim_key(&own).unwrap().verifying_key()), "not by the node's own key (no edge of it on g)");
     for x in &others {
-        assert!(!claims.contains(&forged.claim_key(x).unwrap().verifying_key()), "another actor's pseudonym went to the server");
+        assert!(!claims.contains(&forged.claim_key(x).unwrap().verifying_key()), "another actor's pseudonym went to the host");
     }
 }
 
 // spec/crypto.md §7, spec/sync.md §5, spec/permissions.md §8: a thing's admin who is no admin of
-// its group deletes a write-only member's blobs at a server by the level-1 delete key the writer
+// its group deletes a write-only member's blobs at a host by the level-1 delete key the writer
 // listed from the thing's published `/keys` (the gap hashed tokens left), after a
 // rotation of the thing too (it holds the old epoch); the writer's own keys delete none of the
 // admin's `admin`-retention blobs (levels stay apart).
@@ -885,7 +885,7 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     use osis_node::sync::EntryKind;
     use osis_schema::AspectKey;
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let c = net.node(2, &[sv]);
     let w = net.node(3, &[sv]);
@@ -913,16 +913,16 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     net.run();
     let l = net.label(a);
     let blobs: Vec<_> = net.sync(w).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == cw)).map(|(id, _)| id).collect();
-    assert!(!blobs.is_empty() && blobs.iter().all(|id| net.server_ids(sv, &l).contains(id)), "w's body uploaded");
+    assert!(!blobs.is_empty() && blobs.iter().all(|id| net.host_ids(sv, &l).contains(id)), "w's body uploaded");
 
     // levels stay apart: w signs for c's rotation commit (admin retention: level 1 only) with
-    // its write key at level 3 and at level 1; the server refuses both
+    // its write key at level 3 and at level 1; the host refuses both
     assert!(net.engine(w).delete_secrets_of(&rot, &[(0, 0)]).is_empty(), "w holds no key of an admin body");
     let rblobs: Vec<_> = net.sync(c).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == rot)).map(|(id, _)| id).collect();
     assert!(!rblobs.is_empty());
     let wk = osis_crypto::DeleteSecret::derive(net.engine(w).epochs(&t).unwrap().write.newest_held().unwrap().1);
     let gl = net.sync(w).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
-    let head = net.server_path(sv, &l).last().unwrap().clone();
+    let head = net.host_path(sv, &l).last().unwrap().clone();
     let keys = net.engine(w).head_keys(&g, gl.index, &head).unwrap();
     let (sync, write) = (keys.sync.unwrap(), keys.write.unwrap());
     let rhb = net.engine(c).header(&rot).unwrap().blind;
@@ -936,10 +936,10 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     let conn = net.conn_to(w, sv).expect("connected");
     net.actions(w, vec![Action::Send { conn, bytes: frame(Message::Delete { id: 900_010, label: l, items }) }]);
     net.settle(10_000);
-    assert!(rblobs.iter().all(|id| net.server_ids(sv, &l).contains(id)), "the writer deleted an admin body");
+    assert!(rblobs.iter().all(|id| net.host_ids(sv, &l).contains(id)), "the writer deleted an admin body");
 
     // c rotates t again, then purges w's write with the group admin and w away: c has no label
-    // delete key, so its level-1 key of the old epoch deletes the body at the server
+    // delete key, so its level-1 key of the old epoch deletes the body at the host
     let e = net.engine(c);
     let rs = recipients_of(e, &[(ct_, Role::Admin), (wt, Role::Write), (g, Role::Read)]);
     rotation(e, t, &rs, 22, false);
@@ -957,18 +957,18 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     net.feed(c, Event::Local);
     net.run();
     net.run();
-    let left: Vec<_> = blobs.iter().filter(|id| net.server_ids(sv, &l).contains(id)).collect();
-    assert!(left.is_empty(), "{} of {} blobs of the purged write stay at the server", left.len(), blobs.len());
+    let left: Vec<_> = blobs.iter().filter(|id| net.host_ids(sv, &l).contains(id)).collect();
+    assert!(left.is_empty(), "{} of {} blobs of the purged write stay at the host", left.len(), blobs.len());
 }
 
 // spec/sync.md §5, spec/crypto.md §7, spec/requirements.md (deletion needs current membership):
 // a removed writer still holds a valid delete key for its own blob (its author chain), but its
-// label sync key is stale once the admin re-registers: the server refuses the delete.
+// label sync key is stale once the admin re-registers: the host refuses the delete.
 #[test]
 fn removed_writer_stale_label_key_refused_spec_sync_5() {
     use osis_node::sync::EntryKind;
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let w = net.node(2, &[sv]);
     let g = net.group(a, &[(w, Role::Write)], &[sv]);
@@ -984,7 +984,7 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
     let mut ds = net.engine(w).delete_secrets_of(&cw, &[(0, 0)]);
     let (level, dk) = ds.iter().position(|x| x.0 == 2).map(|i| ds.remove(i)).expect("w holds its level-2 key");
     let gl = net.sync(w).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
-    let old_head = net.server_path(sv, &l).last().unwrap().clone();
+    let old_head = net.host_path(sv, &l).last().unwrap().clone();
     let sync = net.engine(w).head_keys(&g, gl.index, &old_head).unwrap().sync.unwrap();
     let hb = net.engine(w).header(&cw).unwrap().blind;
     // positive control: the same delete verifies against the head before the removal
@@ -1002,7 +1002,7 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
     net.feed(a, Event::Local);
     net.run();
     net.run();
-    assert_ne!(net.server_path(sv, &l).last().unwrap().id(), old_head.id(), "the label stepped");
+    assert_ne!(net.host_path(sv, &l).last().unwrap().id(), old_head.id(), "the label stepped");
     let mut items = Vec::new();
     for (b, k) in &blobs {
         let EntryKind::Commit { salt, .. } = k else { unreachable!() };
@@ -1011,5 +1011,5 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
     let conn = net.conn_to(w, sv).expect("connected");
     net.actions(w, vec![Action::Send { conn, bytes: frame(Message::Delete { id: 900_020, label: l, items }) }]);
     net.settle(10_000);
-    assert!(blobs.iter().all(|(id, _)| net.server_ids(sv, &l).contains(id)), "a removed member's delete went through");
+    assert!(blobs.iter().all(|(id, _)| net.host_ids(sv, &l).contains(id)), "a removed member's delete went through");
 }

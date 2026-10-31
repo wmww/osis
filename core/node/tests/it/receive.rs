@@ -205,7 +205,7 @@ fn atomic_wait_and_late_delta_spec_commits_4() {
     assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("r")));
 }
 
-/// Secrets for hand-built commits: dedup, and made-up delete keys (servers' business).
+/// Secrets for hand-built commits: dedup, and made-up delete keys (hosts' business).
 struct Dedup(Vec<osis_base::CreationRecord>);
 impl osis_commit::Secrets for Dedup {
     fn dedup(&self, tid: &Tid) -> Option<Secret32> {

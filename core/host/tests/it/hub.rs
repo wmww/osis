@@ -1,4 +1,4 @@
-//! Scripted clients against blind nodes (`Hub` over `HostStore`): every operation through the
+//! Scripted clients against hosts (`Hub` over `HostStore`): every operation through the
 //! protocol engines (spec/sync.md §4-§9, spec/wire.md §11).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -351,7 +351,7 @@ fn ephemeral_entries_in_memory() {
     assert_eq!(added(&evs), vec![bid(9)], "the durable entry after the restart is not skipped");
     let (evs, _) = events_of(&w.run(b, sync(l.id, None, vec![], vec![])));
     assert!(added(&evs).iter().all(|x| !ids.contains(x)), "ephemeral entries are gone");
-    // a holder lists them as gained: the server wants them back
+    // a holder lists them as gained: the host wants them back
     let ev = w.run(b, sync(l.id, None, vec![], ids.clone()));
     let want: Vec<BlobId> = ev.iter().flat_map(|e| if let ClientEvent::Want { ids, .. } = e { ids.clone() } else { vec![] }).collect();
     assert_eq!(sorted(want), sorted(ids));
@@ -383,7 +383,7 @@ fn upload_replaces_by_delete_proof_at_cap_spec_sync_5() {
 
 // spec/sync.md §5: blind-to-blind replication is push only: steps with claim sets and stamped entries reach the peer; deposits and deletions do not travel
 #[test]
-fn two_servers_replicate() {
+fn two_hosts_replicate() {
     let mut w = World::new();
     let (s1, s2) = (w.add_hub(HostPolicy::default()), w.add_hub(HostPolicy::default()));
     let a = w.connect(s1);

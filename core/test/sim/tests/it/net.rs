@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Phase B scenarios (sync engines and blind servers engine to engine), seed 1 each: the quickest in tier
+//! Phase B scenarios (sync engines and hosts engine to engine), seed 1 each: the quickest in tier
 //! 1 (osis-sim's whole tier 1 stays near 10 s), the rest tier 2 (`-- --ignored`).
 //! Every run ends with the quiescent invariants (core/test/sim/src/net/check.rs: convergence by held
-//! deltas, member liveness and agreement, label required sets at servers, must-not-hold absent,
+//! deltas, member liveness and agreement, label required sets at hosts, must-not-hold absent,
 //! deposit promotion, tombstones, purges, no ping-pong). A failure prints its seed and the
 //! `osis_sim::replay` call that reproduces it. Scenarios an engine bug breaks are ignored with
 //! the issue's name.
@@ -15,20 +15,20 @@ fn ok(name: &str, seed: u64) -> Report {
     r
 }
 
-// spec/sync.md §2, §6; spec/commits.md §4: two devices of one person through one blind server
+// spec/sync.md §2, §6; spec/commits.md §4: two devices of one person through one host
 // under cut, delayed, reordered and duplicated messages and crashes mid-write.
 #[test]
-fn two_devices_server() {
-    let r = ok("two_devices_server", 1);
+fn two_devices_host() {
+    let r = ok("two_devices_host", 1);
     assert!(r.writes > 5 && r.crashes > 0 && r.dropped > 0 && r.held_checked > 0, "{r:?}");
 }
 
 // spec/sync.md §5 (replication, push only), §6; spec/sync.md §3 (grants by inbox): three
-// persons share a group through two replicating servers with server crashes and partitions.
+// persons share a group through two replicating hosts with host crashes and partitions.
 #[test]
 #[ignore = "tier 2"]
-fn three_persons_two_servers() {
-    let r = ok("three_persons_two_servers", 1);
+fn three_persons_two_hosts() {
+    let r = ok("three_persons_two_hosts", 1);
     assert!(r.writes > 10 && r.held_checked > 0 && r.partitions > 0, "{r:?}");
 }
 
@@ -40,7 +40,7 @@ fn removed_writer() {
     ok("removed_writer", 1);
 }
 
-// spec/sync.md §5, §6: a reader relays stamped entries to a server the writer cannot reach;
+// spec/sync.md §5, §6: a reader relays stamped entries to a host the writer cannot reach;
 // the readers' opens race the admin's registrations.
 #[test]
 #[ignore = "tier 2"]
@@ -64,10 +64,10 @@ fn stranded_reseal_seed_0() {
     ok("stranded_reseal", 0);
 }
 
-// spec/sync.md §6: a server that lost its data gets every must-hold body back from writers.
+// spec/sync.md §6: a host that lost its data gets every must-hold body back from writers.
 #[test]
-fn server_loses_data() {
-    ok("server_loses_data", 1);
+fn host_loses_data() {
+    ok("host_loses_data", 1);
 }
 
 // spec/sync.md §5 (open by stale sync key, walk); spec/permissions.md §3: a reader offline
@@ -81,7 +81,7 @@ fn offline_rotation() {
 // spec: none (replay): the same (scenario, seed) gives the same run, digest included.
 #[test]
 fn replay_is_exact() {
-    assert_eq!(ok("two_devices_server", 2), ok("two_devices_server", 2));
+    assert_eq!(ok("two_devices_host", 2), ok("two_devices_host", 2));
 }
 
 // spec/sync.md §7: compaction deletes covered bodies once the snapshot is there; then a purge.
@@ -113,7 +113,7 @@ fn disk_loss() {
 }
 
 // spec/permissions.md §4 (chain certificates, placed whenever they change): sweep seed 3, the
-// lost device's copy of the card key's `/created` never reached the server and the remaining
+// lost device's copy of the card key's `/created` never reached the host and the remaining
 // device's placed copy lacked it, so the recovering device could not verify the person.
 #[test]
 fn disk_loss_seed_3() {
@@ -123,8 +123,8 @@ fn disk_loss_seed_3() {
 // spec/sync.md §6, §8: sweep seed 11, a push during a replay moved the cursor past entries the
 // replay had not delivered; a crash then lost them for good.
 #[test]
-fn two_devices_server_seed_11() {
-    ok("two_devices_server", 11);
+fn two_devices_host_seed_11() {
+    ok("two_devices_host", 11);
 }
 
 // spec/sync.md §3, §5: a grant's inbox deposit survives a crash of the granting device.
@@ -136,19 +136,19 @@ fn grant_lost_on_crash() {
 // spec/sync.md §6; spec/commits.md §4: sweep seed 23, entries whose bytes were never fetched
 // freeze the writer's must-hold set; the other device waits for deltas for good.
 #[test]
-fn two_devices_server_seed_23() {
-    ok("two_devices_server", 23);
+fn two_devices_host_seed_23() {
+    ok("two_devices_host", 23);
 }
 
 // spec/sync.md §6: sweep seed 41, a must-hold body never re-uploaded after the wipe and crashes.
 #[test]
 #[ignore = "tier 2"]
-fn server_loses_data_seed_41() {
-    ok("server_loses_data", 41);
+fn host_loses_data_seed_41() {
+    ok("host_loses_data", 41);
 }
 
 // spec/requirements.md (Scale: a change inside a huge value costs O(change)); spec/sync.md §1
-// (chunk reuse): two devices edit an 8 MiB blob in turn through a server; each edit uploads
+// (chunk reuse): two devices edit an 8 MiB blob in turn through a host; each edit uploads
 // within 1.2x of the chunks it changed.
 #[test]
 #[ignore = "tier 2"]
@@ -158,7 +158,7 @@ fn large_edits() {
 
 // spec/sync.md §6, §7: a relayer whose upload of another node's commit was lost later re-uploaded
 // its own encryption although the author's was present, so the tiebreak deleted the author's after
-// quiescence (fixed: an entry present at the server is the body's entry).
+// quiescence (fixed: an entry present at the host is the body's entry).
 #[test]
 #[ignore = "tier 2"]
 fn stranded_reseal_seed_23() {
@@ -192,7 +192,7 @@ fn ephemeral() {
     assert!(r.writes > 20 && r.crashes > 0, "{r:?}");
 }
 
-// spec/sync.md §9 (holders upload what a server lacks): a plain entry the capped server refused
+// spec/sync.md §9 (holders upload what a host lacks): a plain entry the capped host refused
 // went up again, at the periodic pass, once others made room (it stayed out for good: divergence at
 // quiescence). Seeds of the fixed-cap runs; the cap is random now.
 #[test]
@@ -200,14 +200,14 @@ fn ephemeral_capped_seed_14() {
     ok("ephemeral_capped", 14);
 }
 
-// spec/sync.md §9: a run where covers absorbing others' commits left one stuck at the full server
+// spec/sync.md §9: a run where covers absorbing others' commits left one stuck at the full host
 // (before own covers).
 #[test]
 fn ephemeral_seed_83() {
     ok("ephemeral", 83);
 }
 
-// spec/sync.md §9: a run where the full server held `/created`-only commits no cover absorbed
+// spec/sync.md §9: a run where the full host held `/created`-only commits no cover absorbed
 // (before own covers).
 #[test]
 fn ephemeral_capped_seed_2400045() {

@@ -20,7 +20,7 @@ pub struct GroupLabel {
     pub index: u64,
     /// Steps by ID with their claim sets when recorded.
     pub steps: BTreeMap<StepId, (Step, Option<ClaimSet>)>,
-    pub servers: Vec<Address>,
+    pub hosts: Vec<Address>,
     pub replaced: bool,
 }
 
@@ -129,7 +129,7 @@ impl Engine {
         let mut out = Vec::new();
         for (id, l) in labels {
             let Ok(steps) = osis_label::label_steps(&l) else { continue };
-            out.push(Arc::new(GroupLabel { group: *g, id, index: l.index, steps, servers: l.servers, replaced: l.replaced }));
+            out.push(Arc::new(GroupLabel { group: *g, id, index: l.index, steps, hosts: l.hosts, replaced: l.replaced }));
         }
         out
     }

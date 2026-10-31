@@ -262,7 +262,7 @@ impl Reuse {
         Ok(Some((prefix, level, kids)))
     }
 
-    /// Never reuses `blob` (a chunk or node a server deleted, spec/sync.md §1): it is written
+    /// Never reuses `blob` (a chunk or node a host deleted, spec/sync.md §1): it is written
     /// afresh, and so is every node above it.
     pub fn exclude(&mut self, blob: &BlobId) {
         self.chunks.retain(|_, l| l.blob != *blob);

@@ -44,7 +44,7 @@ struct Setup {
 
 fn setup() -> Setup {
     let mut w = World::new();
-    let sv = w.add_server();
+    let sv = w.add_host();
     let [alice, bob, carol] = [1, 2, 3].map(|s| person(&mut w, s, sv));
     let b = introduce(&mut w, &alice, &bob);
     let c = introduce(&mut w, &alice, &carol);
@@ -232,15 +232,15 @@ fn receipts_only_scope_left_to_holders() {
 }
 
 // spec/permissions.md §2 (tied edge removed only once the placement is gone): Bob's laptop
-// shares his card into Alice's tag while it reaches Bob's server but not the tag's; Bob's phone
-// gets the tied edge from Bob's server and, after an unrelated write by Alice, passes the tag's
+// shares his card into Alice's tag while it reaches Bob's host but not the tag's; Bob's phone
+// gets the tied edge from Bob's host and, after an unrelated write by Alice, passes the tag's
 // label, which lacks the placement. The placement is on its way, not gone: the edge must stay
 // (the tie names a placement the phone does not hold yet).
 #[test]
 fn edge_before_placement_is_not_removed() {
     let mut w = World::new();
-    let s1 = w.add_server();
-    let s2 = w.add_server();
+    let s1 = w.add_host();
+    let s2 = w.add_host();
     let alice = person(&mut w, 1, s1);
     let bob = person(&mut w, 2, s2);
     let join = Osis::pair(w.cfg(3, &[]), &bob.pair_offer().unwrap()).unwrap();
@@ -278,8 +278,8 @@ fn edge_before_placement_is_not_removed() {
 #[test]
 fn edge_first_then_placement_then_unplace_removes_it() {
     let mut w = World::new();
-    let s1 = w.add_server();
-    let s2 = w.add_server();
+    let s1 = w.add_host();
+    let s2 = w.add_host();
     let alice = person(&mut w, 1, s1);
     let bob = person(&mut w, 2, s2);
     let join = Osis::pair(w.cfg(3, &[]), &bob.pair_offer().unwrap()).unwrap();

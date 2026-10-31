@@ -1,4 +1,4 @@
-//! Client engines against server engines over in-memory byte queues, with a `MemoryLabelStore`
+//! Client engines against host engines over in-memory byte queues, with a `MemoryLabelStore`
 //! (spec/sync.md §4-§9, spec/wire.md §11).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -16,15 +16,15 @@ fn s32(b: u8) -> Secret32 {
 
 const T0: u64 = 1_700_000_000_000;
 
-/// Clients each on their own connection to one server store.
+/// Clients each on their own connection to one host store.
 struct Net {
     now: u64,
-    server_skew: u64,
+    host_skew: u64,
     store: MemoryLabelStore,
-    servers: Vec<ServingSession>,
+    hosts: Vec<ServingSession>,
     clients: Vec<ClientSession>,
     events: Vec<Vec<ClientEvent>>,
-    to_server: Vec<VecDeque<Vec<u8>>>,
+    to_host: Vec<VecDeque<Vec<u8>>>,
     to_client: Vec<VecDeque<Vec<u8>>>,
     /// Events of the handshake, per client.
     handshake: Vec<Vec<ClientEvent>>,
@@ -33,16 +33,16 @@ struct Net {
 }
 
 impl Net {
-    fn new(n: usize, server_skew: u64) -> Net {
-        let mut net = Net { now: T0, server_skew, store: MemoryLabelStore::new([9; 32]), servers: vec![], clients: vec![], events: vec![], to_server: vec![], to_client: vec![], handshake: vec![], flights: 0 };
+    fn new(n: usize, host_skew: u64) -> Net {
+        let mut net = Net { now: T0, host_skew, store: MemoryLabelStore::new([9; 32]), hosts: vec![], clients: vec![], events: vec![], to_host: vec![], to_client: vec![], handshake: vec![], flights: 0 };
         for i in 0..n {
-            net.servers.push(ServingSession::new(ServingConfig { static_key: [0x5e; 32], challenge: [0x40 + i as u8; 32] }));
+            net.hosts.push(ServingSession::new(ServingConfig { static_key: [0x5e; 32], challenge: [0x40 + i as u8; 32] }));
             net.clients.push(ClientSession::new(ClientConfig { peer_static_key: [0x5e; 32], challenge: [0x80 + i as u8; 32] }));
             net.events.push(vec![]);
-            net.to_server.push(VecDeque::new());
+            net.to_host.push(VecDeque::new());
             net.to_client.push(VecDeque::new());
-            let so = net.servers[i].handle(T0 + server_skew, &mut net.store, ServingInput::Start);
-            net.server_out(i, so);
+            let so = net.hosts[i].handle(T0 + host_skew, &mut net.store, ServingInput::Start);
+            net.host_out(i, so);
             let co = net.clients[i].handle(T0, ClientInput::Start);
             net.client_out(i, co);
         }
@@ -54,27 +54,27 @@ impl Net {
     fn client_out(&mut self, i: usize, out: Vec<ClientOutput>) {
         for o in out {
             match o {
-                ClientOutput::Send(b) => self.to_server[i].push_back(b),
+                ClientOutput::Send(b) => self.to_host[i].push_back(b),
                 ClientOutput::Event(e) => self.events[i].push(e),
                 ClientOutput::Close | ClientOutput::SetTimer(_) => {}
             }
         }
     }
 
-    fn server_out(&mut self, i: usize, out: Vec<ServingOutput>) {
+    fn host_out(&mut self, i: usize, out: Vec<ServingOutput>) {
         for o in out {
             match o {
                 ServingOutput::Send(b) => self.to_client[i].push_back(b),
                 ServingOutput::Changed(l) => {
-                    for j in 0..self.servers.len() {
-                        let so = self.servers[j].handle(self.now + self.server_skew, &mut self.store, ServingInput::Changed(l));
-                        self.server_out(j, so);
+                    for j in 0..self.hosts.len() {
+                        let so = self.hosts[j].handle(self.now + self.host_skew, &mut self.store, ServingInput::Changed(l));
+                        self.host_out(j, so);
                     }
                 }
                 ServingOutput::Relay(r) => {
-                    for j in (0..self.servers.len()).filter(|j| *j != i) {
-                        let so = self.servers[j].handle(self.now + self.server_skew, &mut self.store, ServingInput::Relay(r.clone()));
-                        self.server_out(j, so);
+                    for j in (0..self.hosts.len()).filter(|j| *j != i) {
+                        let so = self.hosts[j].handle(self.now + self.host_skew, &mut self.store, ServingInput::Relay(r.clone()));
+                        self.host_out(j, so);
                     }
                 }
                 ServingOutput::Close | ServingOutput::PeerError(_) => {}
@@ -87,11 +87,11 @@ impl Net {
         loop {
             let mut moved = false;
             for i in 0..self.clients.len() {
-                let bytes: Vec<u8> = self.to_server[i].drain(..).flatten().collect();
+                let bytes: Vec<u8> = self.to_host[i].drain(..).flatten().collect();
                 if !bytes.is_empty() {
                     moved = true;
-                    let so = self.servers[i].handle(self.now + self.server_skew, &mut self.store, ServingInput::Bytes(bytes));
-                    self.server_out(i, so);
+                    let so = self.hosts[i].handle(self.now + self.host_skew, &mut self.store, ServingInput::Bytes(bytes));
+                    self.host_out(i, so);
                 }
             }
             if moved {
@@ -348,10 +348,10 @@ fn member_proof_bound_to_session_spec_sync_5() {
     // a proof for another session's challenge, sent raw on this one
     let proof = osis_label::Proof::member(&d, &l.id, &[0x77; 32], &[0x5e; 32]);
     let open = Message::Open { id: 99, label: l.id, proof };
-    let so = net.servers[0].handle(T0, &mut net.store, ServingInput::Bytes(encode_frame(&open.encode())));
+    let so = net.hosts[0].handle(T0, &mut net.store, ServingInput::Bytes(encode_frame(&open.encode())));
     let sent: Vec<Message> = so.into_iter().filter_map(|o| if let ServingOutput::Send(f) = o { Some(Message::decode(&f[4..]).unwrap()) } else { None }).collect();
     assert_eq!(sent, vec![Message::Error { id: 99, code: Code::REFUSED }]);
-    assert!(net.servers[0].none_opened());
+    assert!(net.hosts[0].none_opened());
 }
 
 // spec/sync.md §5: claim keys open at the head or get the child; static entries open with the entry box; a dropped set serves no claims
@@ -428,8 +428,8 @@ fn oversized_upload_refused_spec_sync_5() {
     let big = l.entry(blob_sized(1, 0, vec![], osis_base::format::MAX_BLOB));
     let body = Message::Upload { id: 77, label: l.id, entries: vec![big] }.encode();
     assert!(body.len() < osis_base::format::MAX_MESSAGE);
-    let so = net.servers[0].handle(T0, &mut net.store, ServingInput::Bytes(encode_frame(&body)));
-    net.server_out(0, so);
+    let so = net.hosts[0].handle(T0, &mut net.store, ServingInput::Bytes(encode_frame(&body)));
+    net.host_out(0, so);
     let reply: Vec<u8> = net.to_client[0].drain(..).flatten().collect();
     let mut d = FrameDecoder::new();
     d.set_max(osis_base::format::MAX_MESSAGE);
@@ -474,7 +474,7 @@ fn deposit_budget() {
 }
 
 // spec/sync.md §5 (readers write no ephemeral data; security review M5): an ephemeral or
-// relay-only blob deposited (no stamp) is refused by the server engine itself, whatever the store
+// relay-only blob deposited (no stamp) is refused by the host engine itself, whatever the store
 // behind it checks (a member peer's store did not), and nothing is stored or pushed
 #[test]
 fn ephemeral_deposit_refused_spec_sync_5() {
@@ -607,7 +607,7 @@ fn new_sync_key_ends_opens_spec_sync_5() {
         let ev = net.run(i, Command::Subscribe { labels: vec![l.id] });
         assert_eq!(ev, vec![ClientEvent::Subscribed { labels: vec![l.id], codes: vec![Code::NOT_OPENED] }]);
     }
-    assert_eq!(net.servers[1].opened().count(), 0);
+    assert_eq!(net.hosts[1].opened().count(), 0);
     // the old key gets the child only; the new one opens and syncs on from the cursor
     let ev = net.run(1, Command::Open { label: l.id, key: OpenKey::Sync(l.keys[0].sync.clone()) });
     assert!(matches!(&ev[..], [ClientEvent::Step { .. }]), "{ev:?}");
@@ -644,14 +644,14 @@ fn bad_frames() {
     let mut bytes = raw(Value::List(vec![Value::Int(99), Value::Int(5)]));
     bytes.extend(raw(Value::List(vec![Value::Int(19), Value::Int(6), Value::Bytes(vec![0; 16]), Value::List(vec![])])));
     let decode_sent = |out: Vec<Vec<u8>>| out.iter().map(|f| Message::decode(&f[4..]).unwrap()).collect::<Vec<_>>();
-    let so = net.servers[0].handle(T0, &mut net.store, ServingInput::Bytes(bytes.clone()));
+    let so = net.hosts[0].handle(T0, &mut net.store, ServingInput::Bytes(bytes.clone()));
     let want = vec![Message::Error { id: 5, code: Code::UNSUPPORTED }, Message::Error { id: 6, code: Code::MALFORMED }];
     assert_eq!(decode_sent(so.into_iter().filter_map(|o| if let ServingOutput::Send(f) = o { Some(f) } else { None }).collect()), want);
     let co = net.clients[0].handle(T0, ClientInput::Bytes(bytes));
     assert_eq!(decode_sent(co.into_iter().filter_map(|o| if let ClientOutput::Send(f) = o { Some(f) } else { None }).collect()), want);
-    let so = net.servers[0].handle(T0, &mut net.store, ServingInput::Bytes(vec![0, 0, 0, 0]));
+    let so = net.hosts[0].handle(T0, &mut net.store, ServingInput::Bytes(vec![0, 0, 0, 0]));
     assert!(so.contains(&ServingOutput::Close));
-    assert!(net.servers[0].is_closed());
+    assert!(net.hosts[0].is_closed());
     let mut s = ServingSession::new(ServingConfig { static_key: [0; 32], challenge: [0; 32] });
     let h = Hello { versions: vec![7], wall_ms: 0, challenge: [0; 32] };
     let so = s.handle(T0, &mut net.store, ServingInput::Bytes(encode_frame(&h.encode())));
@@ -773,7 +773,7 @@ fn push_during_reconcile_keeps_no_cursor() {
 }
 
 // spec/sync.md §6 (flow control): a client within its window never sends more unanswered
-// requests than `MAX_UNANSWERED`, so a server delivering everything it sent in one input (as
+// requests than `MAX_UNANSWERED`, so a host delivering everything it sent in one input (as
 // `pump` does) closes nothing: many reconciliations, fetches, paths and pings queued at once
 // all complete
 #[test]
@@ -794,7 +794,7 @@ fn queued_requests_stay_within_the_unanswered_bound() {
     }
     net.client_out(1, co);
     net.pump();
-    assert!(!net.servers[1].is_closed());
+    assert!(!net.hosts[1].is_closed());
     let ev = std::mem::take(&mut net.events[1]);
     // reconciliations of one label: the last one given is the one that reports
     assert_eq!(ev.iter().filter(|e| matches!(e, ClientEvent::Reconciled { .. })).count(), 1, "{ev:?}");

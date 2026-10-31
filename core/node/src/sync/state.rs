@@ -1,7 +1,7 @@
 //! The sync engine's durable state, in the engine's local records under `y/` (one write batch
 //! per `SyncEngine::handle`): label entries this node knows (wrap, stamp, what the blob is),
-//! presence per server, cursors and heads per (server, label), blob keys of commit blobs,
-//! certificates and heartbeats placed, blobs a server tombstoned, label hints from inbox blobs,
+//! presence per host, cursors and heads per (host, label), blob keys of commit blobs,
+//! certificates and heartbeats placed, blobs a host tombstoned, label hints from inbox blobs,
 //! inbox deliveries to re-send, stranded heartbeat times, direct commits for the app.
 
 use crate::engine::{Engine, Tx};
@@ -14,8 +14,8 @@ use osis_proto::Cursor;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A server, by its static key (its address key).
-pub type ServerKey = [u8; 32];
+/// A host, by its static key (its address key).
+pub type HostKey = [u8; 32];
 
 const ENTRY: &[u8] = b"y/e";
 const PRESENT: &[u8] = b"y/p";
@@ -111,11 +111,11 @@ pub struct BlobRec {
 }
 
 /// A deposit (an inbox blob, a non-writer's membership write) sealed, wrapped and signed, kept
-/// until its server answers (spec/sync.md §3, §5).
+/// until its host answers (spec/sync.md §3, §5).
 #[derive(Clone, Debug)]
 pub struct OutRec {
     pub label: LabelId,
-    pub server: Address,
+    pub host: Address,
     pub blob: Vec<u8>,
     pub wrap: [u8; WRAP_LEN],
     pub sig: Signature,
@@ -146,7 +146,7 @@ pub struct Hint {
     pub thing: Tid,
     /// The label's index (its role keys derive from it, spec/sync.md §2).
     pub index: u64,
-    pub servers: Vec<Address>,
+    pub hosts: Vec<Address>,
     /// The key actor whose static entry may open it; no other key actor's is presented.
     pub via: Option<Tid>,
     /// The inbox entry it came from (`SyncEngine::vet_inbox_hints`): a hint with no `via` goes
@@ -193,9 +193,9 @@ pub struct State {
     pub by_kind: BTreeSet<(LabelId, u8, BlobId)>,
     pub cert_entries: BTreeSet<(LabelId, BlobId)>,
     pub blob_labels: BTreeSet<(BlobId, LabelId)>,
-    /// `present` and `gone` by (label, blob, server).
-    present_by: BTreeSet<(LabelId, BlobId, ServerKey)>,
-    gone_by: BTreeSet<(LabelId, BlobId, ServerKey)>,
+    /// `present` and `gone` by (label, blob, host).
+    present_by: BTreeSet<(LabelId, BlobId, HostKey)>,
+    gone_by: BTreeSet<(LabelId, BlobId, HostKey)>,
     /// Entries, presence and certificates changed since the passes last looked, by label; and
     /// commits whose carriers changed (any label). In memory.
     pub touched: BTreeSet<(LabelId, Touch)>,
@@ -203,20 +203,20 @@ pub struct State {
     /// Commits whose blob records were added since `SyncEngine::forget_dropped` last looked (a
     /// dropped body's blob that came back).
     pub new_blobs: BTreeSet<CommitId>,
-    pub present: BTreeSet<(ServerKey, LabelId, BlobId)>,
-    /// Present entries the server holds deposited (no stamp there; spec/sync.md §5): a writer
-    /// promotes them at that server, whatever stamp this node knows.
-    pub deposited: BTreeSet<(ServerKey, LabelId, BlobId)>,
-    pub cursors: BTreeMap<(ServerKey, LabelId), Cursor>,
-    pub heads: BTreeMap<(ServerKey, LabelId), Step>,
+    pub present: BTreeSet<(HostKey, LabelId, BlobId)>,
+    /// Present entries the host holds deposited (no stamp there; spec/sync.md §5): a writer
+    /// promotes them at that host, whatever stamp this node knows.
+    pub deposited: BTreeSet<(HostKey, LabelId, BlobId)>,
+    pub cursors: BTreeMap<(HostKey, LabelId), Cursor>,
+    pub heads: BTreeMap<(HostKey, LabelId), Step>,
     pub blobs: BTreeMap<BlobId, BlobRec>,
     pub by_commit: BTreeMap<CommitId, BTreeSet<BlobId>>,
     pub certs: BTreeSet<(LabelId, CommitId)>,
     pub beats: BTreeMap<LabelId, u64>,
-    pub gone: BTreeSet<(ServerKey, LabelId, BlobId)>,
+    pub gone: BTreeSet<(HostKey, LabelId, BlobId)>,
     pub hints: BTreeMap<LabelId, Hint>,
     /// Timed deletes sent (spec/sync.md §5).
-    pub timed: BTreeSet<(ServerKey, LabelId, BlobId)>,
+    pub timed: BTreeSet<(HostKey, LabelId, BlobId)>,
     /// The snapshots carrying a body's live writes once it was dropped, one per aspect at most
     /// (spec/sync.md §7).
     pub carriers: BTreeMap<CommitId, Vec<CommitId>>,
@@ -234,8 +234,8 @@ pub struct State {
     /// holder whose bounds are dated later re-uploads it every pass until its own bound, at
     /// infinity memory grows with deletions; live writes are carried either way).
     pub deleted: BTreeMap<(LabelId, CommitId), u64>,
-    /// Inbox blobs not yet answered by their server, by (server, blob).
-    pub outbox: BTreeMap<(ServerKey, LabelId, BlobId), OutRec>,
+    /// Inbox blobs not yet answered by their host, by (host, blob).
+    pub outbox: BTreeMap<(HostKey, LabelId, BlobId), OutRec>,
     /// Corrected wall ms of the running `handle` (tombstone times).
     pub now: u64,
     /// Things forgotten whose opened inbox blobs are not yet checked (`y/f`).
@@ -243,7 +243,7 @@ pub struct State {
     /// Replaced labels this admin no longer syncs (`y/q`, spec/sync.md §2).
     pub retired: BTreeSet<LabelId>,
     /// When this admin first saw each replaced label it still syncs (corrected wall ms, `y/q`
-    /// with a time): retired after `MEMBERSHIP_KEEP` whatever its servers say.
+    /// with a time): retired after `MEMBERSHIP_KEEP` whatever its hosts say.
     pub replaced_seen: BTreeMap<LabelId, u64>,
     /// Inbox deliveries by (member, commit), until the member acts or the re-sends run out.
     pub sent_inbox: BTreeMap<(Tid, CommitId), SentInbox>,
@@ -483,11 +483,11 @@ impl State {
                     let mut x = Rd::new(&v);
                     let thing = x.tid()?;
                     let index = x.u64()?;
-                    let servers = decode_addrs(&mut x, "hint")?;
+                    let hosts = decode_addrs(&mut x, "hint")?;
                     let flags = x.u8()?;
                     let via = if flags & 1 != 0 { Some(x.tid()?) } else { None };
                     let inbox = if flags & 2 != 0 { Some(InboxSource { label: LabelId(x.arr()?), blob: BlobId(x.arr()?), until: x.u64()? }) } else { None };
-                    s.hints.insert(l, Hint { thing, index, servers, via, inbox });
+                    s.hints.insert(l, Hint { thing, index, hosts, via, inbox });
                 }
                 _ => {}
             }
@@ -634,7 +634,7 @@ impl State {
         }
     }
 
-    /// Forgets an entry that never counted (junk a server announced, an expired one): no
+    /// Forgets an entry that never counted (junk a host announced, an expired one): no
     /// tombstone. Whether there was one.
     pub fn drop_entry(&mut self, l: LabelId, b: BlobId) -> bool {
         self.touch(l, b);
@@ -649,8 +649,8 @@ impl State {
     /// Forgets every record of an entry that turned out ephemeral (its blob's prefix class):
     /// the lane holds it from now on, the sync records never (no tombstone).
     pub fn forget_ephemeral(&mut self, l: LabelId, b: BlobId) {
-        let servers: Vec<ServerKey> = self.present_by.range((l, b, [0u8; 32])..).take_while(|(x, y, _)| *x == l && *y == b).map(|(_, _, s)| *s).collect();
-        for s in servers {
+        let hosts: Vec<HostKey> = self.present_by.range((l, b, [0u8; 32])..).take_while(|(x, y, _)| *x == l && *y == b).map(|(_, _, s)| *s).collect();
+        for s in hosts {
             self.set_present(s, l, b, false);
         }
         self.drop_entry(l, b);
@@ -671,7 +671,7 @@ impl State {
         self.reach_secret = Some(s);
     }
 
-    pub fn set_present(&mut self, s: ServerKey, l: LabelId, b: BlobId, on: bool) {
+    pub fn set_present(&mut self, s: HostKey, l: LabelId, b: BlobId, on: bool) {
         let k = key(PRESENT, &[&s, &l.0, &b.0]);
         if on {
             if self.present.insert((s, l, b)) {
@@ -689,8 +689,8 @@ impl State {
         }
     }
 
-    /// Marks a present entry deposited at a server, or not (stamped there).
-    pub fn set_deposited(&mut self, s: ServerKey, l: LabelId, b: BlobId, on: bool) {
+    /// Marks a present entry deposited at a host, or not (stamped there).
+    pub fn set_deposited(&mut self, s: HostKey, l: LabelId, b: BlobId, on: bool) {
         if !self.present.contains(&(s, l, b)) {
             return;
         }
@@ -701,26 +701,26 @@ impl State {
         }
     }
 
-    pub fn is_present(&self, s: &ServerKey, l: &LabelId, b: &BlobId) -> bool {
+    pub fn is_present(&self, s: &HostKey, l: &LabelId, b: &BlobId) -> bool {
         self.present.contains(&(*s, *l, *b))
     }
 
-    /// Whether any server holds the entry.
+    /// Whether any host holds the entry.
     pub fn present_anywhere(&self, l: &LabelId, b: &BlobId) -> bool {
         self.present_by.range((*l, *b, [0; 32])..=(*l, *b, [0xff; 32])).next().is_some()
     }
 
-    /// Entry IDs known present at a server for a label.
-    pub fn present_at(&self, s: &ServerKey, l: &LabelId) -> Vec<BlobId> {
+    /// Entry IDs known present at a host for a label.
+    pub fn present_at(&self, s: &HostKey, l: &LabelId) -> Vec<BlobId> {
         self.present.range((*s, *l, BlobId([0; 32]))..=(*s, *l, BlobId([0xff; 32]))).map(|(_, _, b)| *b).collect()
     }
 
-    /// Entries deposited at a server under a label.
-    pub fn deposited_at(&self, s: &ServerKey, l: &LabelId) -> Vec<BlobId> {
+    /// Entries deposited at a host under a label.
+    pub fn deposited_at(&self, s: &HostKey, l: &LabelId) -> Vec<BlobId> {
         self.deposited.range((*s, *l, BlobId([0; 32]))..=(*s, *l, BlobId([0xff; 32]))).map(|(_, _, b)| *b).collect()
     }
 
-    pub fn set_cursor(&mut self, s: ServerKey, l: LabelId, c: Option<Cursor>) {
+    pub fn set_cursor(&mut self, s: HostKey, l: LabelId, c: Option<Cursor>) {
         let k = key(CURSOR, &[&s, &l.0]);
         match c {
             Some(c) => {
@@ -734,7 +734,7 @@ impl State {
         }
     }
 
-    pub fn set_head(&mut self, s: ServerKey, l: LabelId, step: &Step) {
+    pub fn set_head(&mut self, s: HostKey, l: LabelId, step: &Step) {
         self.put(key(HEAD, &[&s, &l.0]), step.to_bytes());
         self.heads.insert((s, l), step.clone());
     }
@@ -900,7 +900,7 @@ impl State {
         self.beats.insert(l, t);
     }
 
-    pub fn set_gone(&mut self, s: ServerKey, l: LabelId, b: BlobId) {
+    pub fn set_gone(&mut self, s: HostKey, l: LabelId, b: BlobId) {
         if self.gone.insert((s, l, b)) {
             self.gone_by.insert((l, b, s));
             self.touch(l, b);
@@ -923,7 +923,7 @@ impl State {
         self.put(key(CARRIER, &[&body.0]), v);
     }
 
-    pub fn set_timed(&mut self, s: ServerKey, l: LabelId, b: BlobId) {
+    pub fn set_timed(&mut self, s: HostKey, l: LabelId, b: BlobId) {
         if self.timed.insert((s, l, b)) {
             self.touch(l, b);
             self.put(key(TIMED, &[&s, &l.0, &b.0]), Vec::new());
@@ -932,17 +932,17 @@ impl State {
 
     pub fn add_out(&mut self, o: OutRec) {
         let id = osis_label::blob_id(&o.blob);
-        let mut w = Wr::new().raw(&o.label.0).bytes(o.server.url.as_bytes()).raw(&o.server.key).raw(&o.wrap).raw(&o.sig.0).bytes(&o.blob);
+        let mut w = Wr::new().raw(&o.label.0).bytes(o.host.url.as_bytes()).raw(&o.host.key).raw(&o.wrap).raw(&o.sig.0).bytes(&o.blob);
         if let Some((m, c)) = &o.delivery {
             w = w.raw(m.as_bytes()).raw(&c.0);
         }
         let v = w.take();
-        self.put(key(OUTBOX, &[&o.server.key, &o.label.0, &id.0]), v);
-        self.outbox.insert((o.server.key, o.label, id), o);
+        self.put(key(OUTBOX, &[&o.host.key, &o.label.0, &id.0]), v);
+        self.outbox.insert((o.host.key, o.label, id), o);
         self.version += 1;
     }
 
-    pub fn remove_out(&mut self, s: &ServerKey, l: &LabelId, b: &BlobId) {
+    pub fn remove_out(&mut self, s: &HostKey, l: &LabelId, b: &BlobId) {
         if self.outbox.remove(&(*s, *l, *b)).is_some() {
             self.version += 1;
             self.del(key(OUTBOX, &[s, &l.0, &b.0]));
@@ -956,7 +956,7 @@ impl State {
             h.via = self.hints.get(&l).and_then(|x| x.via);
         }
         let flags = u8::from(h.via.is_some()) | u8::from(h.inbox.is_some()) << 1;
-        let mut w = encode_addrs(Wr::new().raw(h.thing.as_bytes()).u64(h.index), &h.servers).u8(flags);
+        let mut w = encode_addrs(Wr::new().raw(h.thing.as_bytes()).u64(h.index), &h.hosts).u8(flags);
         if let Some(v) = &h.via {
             w = w.raw(v.as_bytes());
         }
@@ -1081,7 +1081,7 @@ fn note_unsent_tx(tx: &mut Tx<'_>, member: Tid, commit: CommitId, things: Vec<Ti
     Ok(())
 }
 
-fn decode_out(k: &[u8], v: &[u8]) -> Result<((ServerKey, LabelId, BlobId), OutRec)> {
+fn decode_out(k: &[u8], v: &[u8]) -> Result<((HostKey, LabelId, BlobId), OutRec)> {
     let mut r = Rd::new(k);
     let key = (r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?));
     let mut x = Rd::new(v);
@@ -1090,7 +1090,7 @@ fn decode_out(k: &[u8], v: &[u8]) -> Result<((ServerKey, LabelId, BlobId), OutRe
         return Err(Error::Corrupt("outbox"));
     }
     let url = String::from_utf8(x.bytes()?.to_vec()).map_err(|_| Error::Corrupt("outbox"))?;
-    let server = Address { url, key: x.arr()? };
+    let host = Address { url, key: x.arr()? };
     let wrap = x.arr()?;
     let sig = Signature(x.arr()?);
     let blob = x.bytes()?.to_vec();
@@ -1098,7 +1098,7 @@ fn decode_out(k: &[u8], v: &[u8]) -> Result<((ServerKey, LabelId, BlobId), OutRe
     if !x.is_empty() {
         return Err(Error::Corrupt("outbox"));
     }
-    Ok((key, OutRec { label, server, blob, wrap, sig, delivery }))
+    Ok((key, OutRec { label, host, blob, wrap, sig, delivery }))
 }
 
 fn decode_sent(v: &[u8]) -> Result<SentInbox> {
@@ -1193,12 +1193,12 @@ mod tests {
         let mut s = State::default();
         let src = InboxSource { label: LabelId([4; 16]), blob: BlobId([5; 32]), until: 77 };
         let addr = Address { url: "quic://s".into(), key: [6; 32] };
-        s.add_hint(LabelId([1; 16]), Hint { thing: Tid::from_bytes([2; 15]), index: 3, servers: vec![addr], via: Some(Tid::from_bytes([3; 15])), inbox: Some(src) });
-        s.add_hint(LabelId([2; 16]), Hint { thing: Tid::from_bytes([2; 15]), index: 0, servers: Vec::new(), via: None, inbox: None });
+        s.add_hint(LabelId([1; 16]), Hint { thing: Tid::from_bytes([2; 15]), index: 3, hosts: vec![addr], via: Some(Tid::from_bytes([3; 15])), inbox: Some(src) });
+        s.add_hint(LabelId([2; 16]), Hint { thing: Tid::from_bytes([2; 15]), index: 0, hosts: Vec::new(), via: None, inbox: None });
         s.flush(e).unwrap();
         let back = State::load(e).unwrap();
         let h = back.hints.get(&LabelId([1; 16])).unwrap();
-        assert_eq!((h.index, h.via, h.inbox, h.servers.len()), (3, Some(Tid::from_bytes([3; 15])), Some(src), 1));
+        assert_eq!((h.index, h.via, h.inbox, h.hosts.len()), (3, Some(Tid::from_bytes([3; 15])), Some(src), 1));
         let h = back.hints.get(&LabelId([2; 16])).unwrap();
         assert_eq!((h.via, h.inbox), (None, None));
     }
@@ -1209,8 +1209,8 @@ mod tests {
     fn inbox_hint_keeps_followed_key_actor_spec_sync_5() {
         let mut s = State::default();
         let (l, t, k) = (LabelId([1; 16]), Tid::from_bytes([2; 15]), Tid::from_bytes([3; 15]));
-        s.add_hint(l, Hint { thing: t, index: 0, servers: Vec::new(), via: Some(k), inbox: None });
-        s.add_hint(l, Hint { thing: t, index: 0, servers: Vec::new(), via: None, inbox: None });
+        s.add_hint(l, Hint { thing: t, index: 0, hosts: Vec::new(), via: Some(k), inbox: None });
+        s.add_hint(l, Hint { thing: t, index: 0, hosts: Vec::new(), via: None, inbox: None });
         assert_eq!(s.hints.get(&l).and_then(|h| h.via), Some(k));
     }
 }

@@ -135,7 +135,7 @@ fn unmerge_restores_register_spec_crdt_4_6() {
     assert_eq!(lp.peers[2].engine.get(&d, &ak("/t/reg")).unwrap(), Some(s("alice")));
 }
 
-/// Secrets for hand-built commits: dedup, and made-up delete keys (servers' business).
+/// Secrets for hand-built commits: dedup, and made-up delete keys (hosts' business).
 struct Dedup(osis_base::CreationRecord);
 impl osis_commit::Secrets for Dedup {
     fn dedup(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
@@ -350,7 +350,7 @@ fn forged_membership_class_unmerged_spec_perm_1() {
     use osis_schema::{AspectKey, core_types as ct};
     let (mut lp, d, _, _) = setup(49);
     let other = new_thing(&mut lp, 0);
-    let label = ct::Label { index: 0, steps: BTreeMap::new(), servers: Vec::new(), replaced: false };
+    let label = ct::Label { index: 0, steps: BTreeMap::new(), hosts: Vec::new(), replaced: false };
     let labels: ct::Labels = BTreeMap::from([(osis_base::LabelId([5; 16]), label)]);
     let writes = [(ct::MOVED.ak(), Value::Tid(other)), (ct::WAS.ak(), Value::Tid(other)), (ct::LABEL.ak(), labels.to_value())];
     for (a, v) in &writes {
@@ -890,8 +890,8 @@ fn edge_change_is_remove_and_put_spec_perm_2() {
 
 /// Person actors for `lp`'s peers, known to all.
 fn persons(lp: &mut LocalPeer) -> Vec<Tid> {
-    let servers = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
-    let ps = (0..lp.peers.len()).map(|i| lp.peers[i].engine.create_person(&servers).unwrap().0.person).collect();
+    let hosts = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
+    let ps = (0..lp.peers.len()).map(|i| lp.peers[i].engine.create_person(&hosts).unwrap().0.person).collect();
     lp.sync_all().unwrap();
     ps
 }
@@ -1407,7 +1407,7 @@ fn snapshot_forging_import_dot_changes_nothing_spec_perm_5_2() {
 
 // spec/permissions.md §5.2, spec/commits.md §5 (compaction): Alice's commit C writes `/x/m` and
 // `/t/reg` (another retention class, another blob). A node that gets Alice's snapshot of `/x/m`
-// and the blob of C without its `/x/m` delta (dropped at the server after compaction) holds C
+// and the blob of C without its `/x/m` delta (dropped at the host after compaction) holds C
 // without that delta and takes C's write from the snapshot, in either order; the delta coming
 // late changes nothing. A reader's snapshot copying C's `/x/m` write with another value counts
 // for nothing where C's delta is held, the delta arriving after the snapshot included.

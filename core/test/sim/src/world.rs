@@ -5,7 +5,7 @@
 
 use osis::internals::node::sync::{Action, ConnId, Event};
 use osis::internals::{Internals, ManualNet};
-use osis::{Config, ManualClock, MemStore, Osis, RecoveryCard, Runtime, ServerAddr, StoreAt, WallMs};
+use osis::{Config, ManualClock, MemStore, Osis, RecoveryCard, Runtime, HostAddr, StoreAt, WallMs};
 use osis_crypto::SeededRng;
 use osis_proto::{FrameDecoder, Message};
 use osis_host::{HostStore, Hub, HubOutput, HostPolicy};
@@ -24,10 +24,10 @@ pub const STORM: usize = 5_000;
 /// Rounds a storm is watched for after `STORM`, to name what it carries.
 const STORM_TRACE: usize = 500;
 
-/// One blind server.
-pub struct Server {
+/// One host.
+pub struct Host {
     pub hub: Hub<MemoryBackend>,
-    pub addr: ServerAddr,
+    pub addr: HostAddr,
 }
 
 enum Msg {
@@ -37,7 +37,7 @@ enum Msg {
     Down(usize, ConnId),
 }
 
-/// Bytes a database exchanged with servers.
+/// Bytes a database exchanged with hosts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Traffic {
     pub up: u64,
@@ -46,16 +46,16 @@ pub struct Traffic {
 
 pub struct World {
     pub clock: Arc<ManualClock>,
-    pub servers: Vec<Server>,
+    pub hosts: Vec<Host>,
     /// Every database made with `cfg`, by start order (also those a future opened).
     pub net: ManualNet,
-    /// (db, conn) -> (server, hub conn)
+    /// (db, conn) -> (host, hub conn)
     links: BTreeMap<(usize, ConnId), (usize, u64)>,
     queue: VecDeque<Msg>,
     next_hub: u64,
     /// Databases cut off the network.
     offline: Vec<bool>,
-    /// (db, server): a database cut off one server only.
+    /// (db, host): a database cut off one host only.
     cut: BTreeSet<(usize, usize)>,
     /// Databases whose user leaves invite requests alone (the others accept each as it
     /// appears, spec/sync.md §3), by start order.
@@ -79,7 +79,7 @@ impl World {
     pub fn new() -> World {
         World {
             clock: Arc::new(ManualClock::new(WallMs(T0))),
-            servers: Vec::new(),
+            hosts: Vec::new(),
             net: ManualNet::new(),
             links: BTreeMap::new(),
             queue: VecDeque::new(),
@@ -98,42 +98,42 @@ impl World {
         osis::Clock::now_wall_ms(&*self.clock).0
     }
 
-    /// A new blind server (keys and rng from its index).
+    /// A new host (keys and rng from its index).
     #[allow(clippy::panic)] // test harness: fail the test loudly
-    pub fn add_server(&mut self) -> usize {
-        let i = self.servers.len();
+    pub fn add_host(&mut self) -> usize {
+        let i = self.hosts.len();
         let b = 0x50u8.wrapping_add(i as u8);
         let key = [b; 32];
         let store = match HostStore::open(MemoryBackend::new(), self.clock.clone(), HostPolicy::default(), &mut SeededRng::from_u64(900 + i as u64)) {
             Ok(s) => s,
-            Err(e) => panic!("server store: {e:?}"),
+            Err(e) => panic!("host store: {e:?}"),
         };
         let hub = Hub::new(store, key, Box::new(SeededRng::from_u64(950 + i as u64)));
-        self.servers.push(Server { hub, addr: ServerAddr::new(&format!("quic://server{i}:1"), key) });
+        self.hosts.push(Host { hub, addr: HostAddr::new(&format!("quic://host{i}:1"), key) });
         i
     }
 
-    pub fn addr(&self, s: usize) -> Option<ServerAddr> {
-        self.servers.get(s).map(|x| x.addr.clone())
+    pub fn addr(&self, s: usize) -> Option<HostAddr> {
+        self.hosts.get(s).map(|x| x.addr.clone())
     }
 
     /// A config for a database of this world: manual runtime, the world's clock, `seed`, the
-    /// given servers, a fresh memory store.
-    pub fn cfg(&self, seed: u64, servers: &[usize]) -> Config {
+    /// given hosts, a fresh memory store.
+    pub fn cfg(&self, seed: u64, hosts: &[usize]) -> Config {
         let mut c = Config::at(StoreAt::Memory(MemStore::new()));
         c.seed = Some(seed);
         c.clock = Some(self.clock.clone());
         c.runtime = Runtime::Manual(self.net.clone());
-        c.servers = servers.iter().filter_map(|s| self.addr(*s)).collect();
+        c.hosts = hosts.iter().filter_map(|s| self.addr(*s)).collect();
         c
     }
 
-    /// A new person's database syncing with `servers` (at least one), with its recovery card.
+    /// A new person's database syncing with `hosts` (at least one), with its recovery card.
     #[allow(clippy::panic)] // test harness: fail the test loudly
-    pub fn person(&mut self, seed: u64, servers: &[usize]) -> (Osis, RecoveryCard) {
-        match Osis::create(self.cfg(seed, servers)) {
+    pub fn person(&mut self, seed: u64, hosts: &[usize]) -> (Osis, RecoveryCard) {
+        match Osis::create(self.cfg(seed, hosts)) {
             Ok((db, Some(card))) => (db, card),
-            Ok((_, None)) => panic!("person without servers has no recovery card"),
+            Ok((_, None)) => panic!("person without hosts has no recovery card"),
             Err(e) => panic!("create: {e:?}"),
         }
     }
@@ -208,7 +208,7 @@ impl World {
         }
     }
 
-    /// Bytes `db` exchanged with servers so far.
+    /// Bytes `db` exchanged with hosts so far.
     pub fn traffic(&mut self, db: &Osis) -> Traffic {
         self.index(db).and_then(|i| self.traffic.get(i).copied()).unwrap_or_default()
     }
@@ -233,7 +233,7 @@ impl World {
             let mine: Vec<(ConnId, (usize, u64))> = self.links.iter().filter(|((d, _), _)| *d == i).map(|((_, c), v)| (*c, *v)).collect();
             for (c, (s, hc)) in mine {
                 self.links.remove(&(i, c));
-                let out = self.servers.get_mut(s).map(|sv| sv.hub.closed(hc)).unwrap_or_default();
+                let out = self.hosts.get_mut(s).map(|sv| sv.hub.closed(hc)).unwrap_or_default();
                 self.hub_out(s, out);
                 db.feed(Event::Down { conn: c });
             }
@@ -241,19 +241,19 @@ impl World {
         }
     }
 
-    /// Cuts a database off one server (its connections there go down) or lets it dial it again.
-    pub fn set_reachable(&mut self, db: &Osis, server: usize, on: bool) {
+    /// Cuts a database off one host (its connections there go down) or lets it dial it again.
+    pub fn set_reachable(&mut self, db: &Osis, host: usize, on: bool) {
         let Some(i) = self.index(db) else { return };
         if on {
-            self.cut.remove(&(i, server));
+            self.cut.remove(&(i, host));
             return;
         }
-        self.cut.insert((i, server));
-        let mine: Vec<(ConnId, u64)> = self.links.iter().filter(|((d, _), (s, _))| *d == i && *s == server).map(|((_, c), (_, h))| (*c, *h)).collect();
+        self.cut.insert((i, host));
+        let mine: Vec<(ConnId, u64)> = self.links.iter().filter(|((d, _), (s, _))| *d == i && *s == host).map(|((_, c), (_, h))| (*c, *h)).collect();
         for (c, hc) in mine {
             self.links.remove(&(i, c));
-            let out = self.servers.get_mut(server).map(|sv| sv.hub.closed(hc)).unwrap_or_default();
-            self.hub_out(server, out);
+            let out = self.hosts.get_mut(host).map(|sv| sv.hub.closed(hc)).unwrap_or_default();
+            self.hub_out(host, out);
             db.feed(Event::Down { conn: c });
         }
     }
@@ -262,8 +262,8 @@ impl World {
         for a in acts {
             match a {
                 Action::Dial { conn, address } => {
-                    let want = ServerAddr::new(&address.url, address.key).to_string();
-                    let s = self.servers.iter().position(|x| x.addr.to_string() == want).filter(|s| !self.is_offline(d) && !self.cut.contains(&(d, *s)));
+                    let want = HostAddr::new(&address.url, address.key).to_string();
+                    let s = self.hosts.iter().position(|x| x.addr.to_string() == want).filter(|s| !self.is_offline(d) && !self.cut.contains(&(d, *s)));
                     let Some(s) = s else {
                         self.queue.push_back(Msg::Down(d, conn));
                         continue;
@@ -273,7 +273,7 @@ impl World {
                     self.links.insert((d, conn), (s, hc));
                     self.queue.push_back(Msg::Up(d, conn));
                     let now = self.now();
-                    let out = match self.servers.get_mut(s) {
+                    let out = match self.hosts.get_mut(s) {
                         Some(sv) => sv.hub.accept(now, hc, [0xe0; 32]),
                         None => Vec::new(),
                     };
@@ -290,7 +290,7 @@ impl World {
                 }
                 Action::Close { conn } => {
                     if let Some((s, hc)) = self.links.remove(&(d, conn)) {
-                        let out = self.servers.get_mut(s).map(|sv| sv.hub.closed(hc)).unwrap_or_default();
+                        let out = self.hosts.get_mut(s).map(|sv| sv.hub.closed(hc)).unwrap_or_default();
                         self.hub_out(s, out);
                     }
                 }
@@ -378,8 +378,8 @@ impl World {
         if let Some(seen) = seen {
             let k = match &m {
                 Msg::Up(d, c) => format!("up db {d} conn {c:?}"),
-                Msg::ToHub(s, hc, b) => format!("db {:?} -> server {s}: {}", self.links.iter().find(|(_, v)| **v == (*s, *hc)).map(|(k, _)| k.0), kind(b)),
-                Msg::ToDb(d, _, b) => format!("server -> db {d}: {}", kind(b)),
+                Msg::ToHub(s, hc, b) => format!("db {:?} -> host {s}: {}", self.links.iter().find(|(_, v)| **v == (*s, *hc)).map(|(k, _)| k.0), kind(b)),
+                Msg::ToDb(d, _, b) => format!("host -> db {d}: {}", kind(b)),
                 Msg::Down(d, c) => format!("down db {d} conn {c:?}"),
             };
             *seen.entry(k).or_default() += 1;
@@ -388,7 +388,7 @@ impl World {
         match m {
             Msg::Up(d, c) => self.with(d, |db| db.feed(Event::Up { conn: c })),
             Msg::ToHub(s, hc, b) => {
-                let out = match self.servers.get_mut(s) {
+                let out = match self.hosts.get_mut(s) {
                     Some(sv) => sv.hub.input(now, hc, b),
                     None => Vec::new(),
                 };
@@ -405,12 +405,12 @@ impl World {
         true
     }
 
-    /// Moves time on by `ms`: server ticks, database ticks, then everything settles.
+    /// Moves time on by `ms`: host ticks, database ticks, then everything settles.
     pub fn advance(&mut self, ms: u64) {
         self.clock.advance(ms);
         let now = self.now();
-        for s in 0..self.servers.len() {
-            let out = match self.servers.get_mut(s) {
+        for s in 0..self.hosts.len() {
+            let out = match self.hosts.get_mut(s) {
                 Some(sv) => sv.hub.tick(now),
                 None => Vec::new(),
             };

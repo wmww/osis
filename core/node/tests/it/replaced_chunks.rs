@@ -13,7 +13,7 @@ use osis_node::sync::EntryKind;
 #[test]
 fn replaced_label_chunks_deleted_spec_sync_2() {
     let mut net = Net::new();
-    let sv = net.add_server();
+    let sv = net.add_host();
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -31,9 +31,9 @@ fn replaced_label_chunks_deleted_spec_sync_2() {
     for _ in 0..3 {
         net.advance(31_000);
     }
-    assert!(!net.server_ids(sv, &new).is_empty());
+    assert!(!net.host_ids(sv, &new).is_empty());
     let known = net.sync(a).entries(&old);
-    let left: Vec<_> = net.server_ids(sv, &old).into_iter().filter(|id| known.iter().any(|(x, k)| x == id && *k == EntryKind::Unknown)).collect();
+    let left: Vec<_> = net.host_ids(sv, &old).into_iter().filter(|id| known.iter().any(|(x, k)| x == id && *k == EntryKind::Unknown)).collect();
     assert!(left.is_empty(), "no chunk of the content commit is left: {left:?}");
     let labels: Vec<_> = net.sync(a).labels().into_iter().map(|(_, l)| l.id).collect();
     assert_eq!(labels, vec![new], "the admin is done with the old label");

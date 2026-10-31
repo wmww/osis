@@ -22,14 +22,14 @@ fn backoff_grows_and_is_seeded() {
     assert!(b.next_delay_ms() <= 100);
 }
 
-// spec/sync.md §10: reconnect retries network failures until the server is back.
+// spec/sync.md §10: reconnect retries network failures until the host is back.
 #[test]
 fn connect_retries_until_listening() {
     let net = Net::new(11);
     let mut s = Sched::new(11, Some(net.clone()));
     let secret = StaticSecret::from_bytes([3; 32]);
     let addr = Address { url: "mem://srv".into(), key: InProcess::public_key(&secret) };
-    // the server comes up after 50 virtual steps
+    // the host comes up after 50 virtual steps
     let (n2, srv) = (net.clone(), net.endpoint("srv"));
     let keep = Rc::new(RefCell::new(None));
     let k2 = keep.clone();
@@ -95,7 +95,7 @@ fn framed_session_loopback() {
         let cli = net.endpoint("cli");
         let out = s.block_on(async move { common::client(cli.dial(&addr).await.unwrap(), 23).await }).unwrap();
         assert_eq!(out.len(), 23);
-        assert_eq!(s.run(), 0, "server task finished");
+        assert_eq!(s.run(), 0, "host task finished");
         assert_eq!(net.connections(), 0);
     }
 }

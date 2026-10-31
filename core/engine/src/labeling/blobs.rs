@@ -1,5 +1,5 @@
 //! Bodies, encryption, wraps, stamps, deposits and delete keys (spec/sync.md §1-§3, §5;
-//! spec/crypto.md §5, §7): what a commit becomes under a label, and the label keys a server's head calls for.
+//! spec/crypto.md §5, §7): what a commit becomes under a label, and the label keys a host's head calls for.
 
 use crate::engine::Engine;
 use crate::error::{Error, Result};
@@ -81,7 +81,7 @@ impl BodyCtx {
     }
 }
 
-/// The label keys this node holds for a server's head (spec/sync.md §2, §5).
+/// The label keys this node holds for a host's head (spec/sync.md §2, §5).
 #[derive(Clone, Default)]
 pub struct HeadKeys {
     /// Opens (any held secret, spec/crypto.md §4: opening is not encrypting under).

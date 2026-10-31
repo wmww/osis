@@ -17,11 +17,11 @@ fn reach(net: &mut Net, n: usize, key: u8) {
     net.actions(n, acts);
 }
 
-// spec/sync.md §5 (member peer), §10: two members of a group whose label names no server sync
+// spec/sync.md §5 (member peer), §10: two members of a group whose label names no host sync
 // it directly: each dials the other by the dialable key in its `/reach` and is served the label
-// through the server engine over the other's label state; writes flow both ways.
+// through the host engine over the other's label state; writes flow both ways.
 #[test]
-fn co_readers_sync_without_server_spec_sync_5() {
+fn co_readers_sync_without_host_spec_sync_5() {
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let b = net.node(2, &[]);

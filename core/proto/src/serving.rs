@@ -1,4 +1,4 @@
-//! Server side of one connection (spec/sync.md §4-§9, spec/wire.md §11): a sans-I/O state machine
+//! Serving side of one connection (spec/sync.md §4-§9, spec/wire.md §11): a sans-I/O state machine
 //! answering every request from a `LabelStore`. The driver feeds stream bytes and cross-connection
 //! notices and carries out the outputs.
 
@@ -13,7 +13,7 @@ use osis_base::format::MAX_MESSAGE;
 use osis_base::{BlobId, LabelId, WallMs};
 use osis_crypto::{Domain, LabelRole, verify_delete};
 use osis_label::auth::delete_digest;
-use osis_label::{Class, OpenOutcome, PathIndex, Prefix, entry_digest, evaluate_open, key_for_level, server_prefix};
+use osis_label::{Class, OpenOutcome, PathIndex, Prefix, entry_digest, evaluate_open, key_for_level, host_prefix};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -924,7 +924,7 @@ impl ServingSession {
             }
             replaced.push(item.blob);
         }
-        let Ok(prefix) = server_prefix(blob) else { return Ok(Code::MALFORMED) };
+        let Ok(prefix) = host_prefix(blob) else { return Ok(Code::MALFORMED) };
         let class = prefix.as_ref().map(|p| p.class()).unwrap_or_default();
         let expiry = prefix.and_then(|p| p.expiry()).map(|t| t.0);
         // readers write no ephemeral data: an ephemeral or relay-only blob needs a stamp, at

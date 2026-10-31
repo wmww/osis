@@ -11,7 +11,7 @@ use osis_base::{BlobId, LabelId, WallMs};
 use osis_crypto::{Epoch, KemSecret, LabelRole, SeededRng, Secret32, SigningSecret, X25519Secret, label_role_key};
 use osis_label::{Parent, Prefix, Reader, StepKeys, genesis_label, register, sign_deposit, sign_stamp};
 
-/// The server's static key and Hello challenge the examples sign opens for.
+/// The host's static key and Hello challenge the examples sign opens for.
 pub const STATIC_KEY: [u8; 32] = [0x5e; 32];
 pub const CHALLENGE: [u8; 32] = [0x40; 32];
 
@@ -95,7 +95,7 @@ pub struct Keys {
     pub deposit: SigningSecret,
 }
 
-/// A label that rotates (engine and server tests): its path, claim sets and keys; group secrets
+/// A label that rotates (engine and host tests): its path, claim sets and keys; group secrets
 /// from a byte each, the admin secret from `admin`.
 pub struct Label {
     pub id: LabelId,

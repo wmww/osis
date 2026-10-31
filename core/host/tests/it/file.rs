@@ -22,7 +22,7 @@ fn put(b: &[u8]) -> Put<'_> {
 fn redb_store_survives_reopen() {
     let dir = std::env::temp_dir().join(format!("osis-host-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("server.redb");
+    let path = dir.join("host.redb");
     let _ = std::fs::remove_file(&path);
     let clock = Arc::new(ManualClock::new(WallMs(T0)));
     let f = Fixture::new(0x10);
@@ -64,7 +64,7 @@ fn reconcile_whole_space_budget() {
     let n = osis_base::testenv::u64_var("OSIS_SCALE_N").unwrap_or(100_000);
     let dir = std::env::temp_dir().join(format!("osis-host-rfp-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("server.redb");
+    let path = dir.join("host.redb");
     let _ = std::fs::remove_file(&path);
     let f = Fixture::new(0x10);
     let l: LabelId = f.label;
