@@ -1088,9 +1088,21 @@ pub(crate) fn misstated_by(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak, f:
 /// of components evaluated anew, and below what a continued walk touched), the commits whose
 /// other inputs changed (`stale_commits`: void, required roles, overreach), every one after a
 /// rebuild at open (`stale_all`); so the cost follows the change, not the held set. Rebuilds
-/// aspects whose validity flipped; returns them.
+/// aspects whose validity flipped; returns them. Again while a rebuild left some stale (a part
+/// `retention::uncover` made missing loses what its body judged).
 pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     let _s = crate::costs::span("rejudge");
+    let mut out: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    loop {
+        out.extend(rejudge_once(tx, rebuild)?);
+        if !tx.core.stale() {
+            return Ok(out.into_iter().collect());
+        }
+    }
+}
+
+/// One pass of `rejudge_all`.
+fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     if resolve_unresolved(tx)? {
         tx.core.update_timelines();
     }
