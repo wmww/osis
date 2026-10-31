@@ -38,12 +38,15 @@ pub struct Write<'d> {
     /// Per group whose `/group` this batch writes through the group calls: the expiry those
     /// writes asked for. Expiry is per aspect write, so one batch cannot mix them.
     group_exp: BTreeMap<Tid, Option<Duration>>,
+    /// A thing that must still be known (`Osis::knows`) when the batch commits, checked under
+    /// the commit's lock: a text session never recreates a thing deleted since it knew it.
+    pub(crate) alive: Option<Tid>,
 }
 
 impl Osis {
     /// A new write batch acting as `me()`.
     pub fn write(&self) -> Write<'_> {
-        Write { db: self, m: Mutation::new(), actor: self.me(), created: Vec::new(), placed: Vec::new(), group_exp: BTreeMap::new() }
+        Write { db: self, m: Mutation::new(), actor: self.me(), created: Vec::new(), placed: Vec::new(), group_exp: BTreeMap::new(), alive: None }
     }
 
     /// Runs `f` on a new batch and commits it if `f` succeeds; returns what `f` returned (the
@@ -240,14 +243,22 @@ impl<'d> Write<'d> {
         self.m.act_as(self.actor);
         let m = std::mem::take(&mut self.m);
         let placed = std::mem::take(&mut self.placed);
-        self.db.engine(|e| match e.write(m)? {
-            Some(w) => {
-                if w.id.commit().is_some() {
-                    not_synced(e, &placed);
-                }
-                Ok(Some(Committed { id: w.id, ts: w.ts }))
+        let alive = self.alive;
+        self.db.engine(|e| {
+            if let Some(t) = alive
+                && !crate::read::knows_in(e, t)
+            {
+                return Err(Error::UnknownThing { tid: t });
             }
-            None => Ok(None),
+            Ok(match e.write(m)? {
+                Some(w) => {
+                    if w.id.commit().is_some() {
+                        not_synced(e, &placed);
+                    }
+                    Some(Committed { id: w.id, ts: w.ts })
+                }
+                None => None,
+            })
         })
     }
 }

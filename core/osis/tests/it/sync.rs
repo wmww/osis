@@ -635,6 +635,22 @@ fn text_session_after_local_delete_drops() {
     }
 }
 
+// notes/api.md Text sessions: a commit after the delete fails `UnknownThing` and keeps the
+// edits; once the delete is undone they commit.
+#[test]
+fn text_session_keeps_edits_across_delete_undo() {
+    let (_w, da, _db, t, sa) = text_pair();
+    sa.insert(11, "!").unwrap();
+    da.write_with(|w| w.delete(t)).unwrap();
+    assert!(matches!(sa.commit(), Err(osis::Error::UnknownThing { .. })));
+    assert!(!da.knows(t), "not recreated");
+    assert_eq!(sa.text(), "hello world!", "kept");
+    da.undo(&osis::Scope::Thing(t)).unwrap().unwrap();
+    assert!(da.knows(t));
+    sa.commit().unwrap().unwrap();
+    assert_eq!(da.get(t, da.key("/n/body").unwrap()).unwrap(), Some(osis::Value::Str("hello world!".into())));
+}
+
 // notes/api.md Sync configuration (`add_server`), spec/sync.md §2 (`/label` servers, inbox): a
 // database created without servers has its home label on none; adding a server moves the home
 // label and the person's inbox there, and the home group syncs.
