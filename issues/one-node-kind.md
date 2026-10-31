@@ -152,7 +152,7 @@ Terms: a node **hosts** a label (stores and serves it for anyone holding its rol
    - `osis serve` as in §3, with `daemon` and osis-host's `serve.rs`/`config.rs` deleted; the policy.py `host_blind` check; tests as in §1 plus own-mode admission, a node hosting a group it reads (a remote client is served from the host store, and the node's own copy is placed through the loopback), and the CLI `serve`.
    - Sim: a world node may host (the sim steps its `Hub`).
    - Hunt:
-     - `G 'static_secret|DEFAULT_DATA|osis-server-data|server\.(redb|key)|--config|\bdaemon\b|Daemon'` returns nothing.
+     - `G 'static_secret|DEFAULT_DATA|osis-host-data|server\.(redb|key)|--config|\bdaemon\b|Daemon'` returns nothing.
      - `G 'Hub::new' -- ':!core/host'` matches only the node driver and sim.
      - No second way to start hosting, and no "dedicated" or "standalone" hosting mode in code or notes.
      - Policy check: the reviewer adds `use osis_crypto::kdf;` to a host file once and confirms policy.py fails.

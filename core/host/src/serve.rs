@@ -73,3 +73,27 @@ pub fn run(cfg: Config, log: Log, address: impl FnOnce(&str)) -> Result<(), Stri
         Ok::<(), String>(())
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // spec/sync.md §10: the static key file `osis serve` uses is created owner-only (0600) and read
+    // back unchanged; a file of another length is refused (`osis serve` itself: osis-cli
+    // tests/it/localhost.rs)
+    #[test]
+    fn static_key_file_created_owner_only() {
+        let dir = std::env::temp_dir().join(format!("osis-host-key-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("key");
+        let log: Log = Arc::new(|m: &str| eprintln!("{m}"));
+        let k = static_secret(&path, &log).unwrap();
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&path).unwrap().permissions()) & 0o777, 0o600);
+        assert_eq!(static_secret(&path, &log).unwrap(), k);
+        std::fs::write(&path, [1u8; 31]).unwrap();
+        assert!(static_secret(&path, &log).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
