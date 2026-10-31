@@ -1261,6 +1261,36 @@ fn forged_copy_governs_held_original_alike_spec_perm_5_2() {
     }
 }
 
+// spec/permissions.md §5.2 (a value-less copy of a held delta's write without expiry misstates
+// it; reported only otherwise): Carol's snapshot carries Bob's held write value-less, as an
+// honest one taken after a purge not yet seen here would. Its copy governs (the value goes at
+// the holder, as where Bob's commit is not held) and no misstatement is reported.
+#[test]
+fn valueless_copy_governs_unreported_spec_perm_5_2() {
+    use osis_crdt::{Source, Writer, create};
+    let (mut lp, d, b, _) = setup(0x5fe0);
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("real")).unwrap();
+    let real = lp.peers[1].commit(m).unwrap().unwrap();
+    sync(&mut lp, 1, 0);
+    let h = lp.peers[1].engine.header(&real).unwrap();
+    let reg = ak("/t/reg");
+    let lo = h.aspects.iter().find(|x| x.tid == d && x.ak == reg).unwrap().lo;
+    let mut w = Writer::new(h.ts, Source::node(b), lo);
+    let mut f = create(&mut w, &osis_crdt::AnyView, &s("real")).unwrap();
+    f.strip(&|_| true);
+    lp.advance(1_000);
+    let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
+    let forged = forge_snapshot(&mut lp, 2, d, &reg, now, f);
+    lp.peers[0].drain_events();
+    lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap();
+    lp.peers[0].engine.reexamine().unwrap();
+    let evs = lp.peers[0].drain_events();
+    assert_eq!(lp.peers[0].engine.get(&d, &reg).unwrap(), None, "the snapshot's copy governs");
+    assert!(!evs.iter().any(|e| matches!(e, Event::Diagnostic(x) if x.kind == osis_node::DiagnosticKind::Misstated)), "not reported: {evs:?}");
+}
+
 // spec/requirements.md, Out of scope ("malicious readers can only waste storage"), Decentralization;
 // spec/permissions.md §5.2: a reader's snapshot gives nothing. A reader's snapshot carrying another
 // value under the dot and `ts` of a writer's node-form write changes nothing, whether it arrives

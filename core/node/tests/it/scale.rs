@@ -1419,3 +1419,54 @@ fn big_map_apply_memory() {
         assert_eq!(lp.peers[1].engine.get_at(&t, &a, &[PathSeg::Key(Value::Int(7))]).unwrap(), Some(Value::Int(7)));
     });
 }
+
+// spec/permissions.md §5.2 (a valid snapshot's copies govern a held original), notes/testing.md
+// budgets: B (1) holds N set elements as the owner's delta (one commit); the owner adds one
+// and snapshots; B joins that snapshot (copies of every held write), then one ordinary delta. For
+// an unbounded and a keep-at-least set. `OSIS_SCALE_N` sets N (default 10^5).
+#[test]
+#[ignore = "tier 2"]
+fn snapshot_join_cost_spec_permissions_5_2() {
+    let n: usize = size("OSIS_SCALE_N", 100_000, 10_000);
+    for (name, asp, key) in [("unbounded set", &TAGS, "/s/tags"), ("keep-at-least set", &KEPT, "/s/kept")] {
+        let mut lp = osis_node::local_peer::LocalPeer::new(2, 49, WallMs(1_700_000_000_000)).unwrap();
+        let me = lp.peers[0].engine.tid();
+        let w = lp.peers[1].engine.tid();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None }.to_value()) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        let t0 = Instant::now();
+        let mut m = Mutation::new();
+        m.set(t, asp, &Value::Set((0..n).map(|i| Value::Str(format!("e{i}"))).collect())).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        let fill = t0.elapsed();
+        let t0 = Instant::now();
+        lp.sync_all().unwrap();
+        let synced = t0.elapsed();
+        let k = ak(key);
+        let add = |lp: &mut osis_node::local_peer::LocalPeer, v: &str| {
+            let mut m = Mutation::new();
+            m.op(t, asp, PathOp { path: Vec::new(), op: Op::Add(Value::Str(v.into())) }).unwrap();
+            lp.peers[0].commit(m).unwrap().unwrap()
+        };
+        add(&mut lp, "x");
+        let snap = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+        let one = add(&mut lp, "y");
+        let pks = lp.packages(0).unwrap();
+        let x = pks.iter().find(|p| p.id != snap && p.id != one && lp.peers[1].engine.package(&p.id).unwrap().is_none()).unwrap().clone();
+        lp.deliver(1, &x).unwrap();
+        osis_node::costs::take();
+        let t0 = Instant::now();
+        lp.deliver(1, pks.iter().find(|p| p.id == snap).unwrap()).unwrap();
+        let join = t0.elapsed();
+        let t1 = Instant::now();
+        lp.deliver(1, pks.iter().find(|p| p.id == one).unwrap()).unwrap();
+        let delta = t1.elapsed();
+        assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), lp.peers[0].engine.get(&t, &k).unwrap());
+        println!("{name}, n={n}: fill {fill:?}, sync {synced:?}; valid snapshot join {join:?}; then one delta {delta:?}");
+        for (k, d, c) in osis_node::costs::take() {
+            println!("  {k}: {d:?} ({c})");
+        }
+    }
+}

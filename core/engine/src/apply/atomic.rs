@@ -880,7 +880,8 @@ pub(crate) fn rebuild_without(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned
     tx.set_state(tid, ak, st, Shred::Yes, false)
 }
 
-/// What `rebuild_without` writes, and the valid snapshots misstating a held delta. A held
+/// What `rebuild_without` writes, and the valid snapshots misstating a held delta other than by
+/// value-less copies. A held
 /// delta's writes under a dot a held valid snapshot misstates (`validity::misstated_in`) count
 /// for nothing: the snapshots' copies govern, joined by the copy order (spec/permissions.md
 /// §5.2). Under a dot any held snapshot misstates the current state's writes go first, so the
@@ -937,7 +938,11 @@ fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned]) -> Result<(Optio
                 }
                 strip_state.extend(dots.iter().cloned());
                 if valid {
-                    misstating.insert(s);
+                    // reported unless only value-less: an honest snapshot taken after a purge
+                    // this node has not seen yet (its copy governs all the same)
+                    if !ix.misstated(&validity::owned_ranges(h, c, *ai), &own, true).is_empty() {
+                        misstating.insert(s);
+                    }
                     strip_own.entry(*c).or_default().extend(dots);
                 }
             }
