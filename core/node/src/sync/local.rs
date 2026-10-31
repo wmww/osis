@@ -291,7 +291,7 @@ impl SyncEngine {
     }
 
     /// Inbox deliveries from their records (spec/sync.md §3, §5): one not sent yet (`at` 0) is
-    /// sealed and sent once its commit is placed (`hold`); one `INBOX_LIFETIME` old whose member
+    /// sealed and sent at once; one `INBOX_LIFETIME` old whose member
     /// has not acted is sealed again (to its newest keyset) and sent again, at most
     /// `MAX_INBOX_RESENDS` times; one whose commit is gone, or whose member acted or (for a grant
     /// or re-seal) left, is forgotten.
@@ -307,9 +307,6 @@ impl SyncEngine {
             };
             if gone || !s.edge_only && !self.still_member(&s.member, &s.commit) {
                 self.forget_delivery(&s.member, &s.commit);
-                continue;
-            }
-            if first && !s.edge_only && self.hold(&s.commit)? {
                 continue;
             }
             let parts = if s.edge_only { crate::flows::edges::Parts::Edge } else { crate::flows::edges::Parts::All };

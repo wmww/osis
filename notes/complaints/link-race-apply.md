@@ -1,0 +1,2 @@
+- Removing the placement order broke `used_link_with_sharer_offline` for a reason far from it: an inbox deposit to a just-created K raced K's registration, got `UNKNOWN_LABEL`, and backed off past the sharer going offline. The order had hidden it. Finding it took instrumenting `redeem`'s waits by hand; libtest hides eprintln of passing tests, so comparing a passing and failing run needs `--nocapture` on both.
+- `cargo run --release=false` is not a thing (a typo cost one background run).

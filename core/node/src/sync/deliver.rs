@@ -4,7 +4,7 @@
 //! certificate copies under a home label, deposits; commits that travel by inbox only are never
 //! placed under a label (spec/permissions.md §3, re-seal).
 
-use super::{Action, PLACE_WAIT_MS, ServerKey, SyncEngine};
+use super::{Action, ServerKey, SyncEngine};
 use crate::error::Result;
 use crate::flows::{Delivery, Done, SyncState};
 use crate::local_peer::Package;
@@ -101,7 +101,7 @@ impl SyncEngine {
     pub(crate) fn take_done(&mut self, done: Done) -> Result<()> {
         for d in done.deliveries {
             match d {
-                // sealed and sent from its record once its commit is placed (`send_inbox`)
+                // sealed and sent from its record (`send_inbox`)
                 Delivery::Inbox { resend, .. } => self.state.note_unsent(resend.member, resend.commit, resend.things, resend.edge_only),
                 Delivery::Direct { to, commits } => self.state.add_direct(to, &commits),
                 Delivery::First { commits, under } => {
@@ -162,36 +162,6 @@ impl SyncEngine {
         let Some(h) = self.engine.header(c) else { return false };
         let closure = self.engine.closure(g);
         h.aspects.iter().any(|a| closure.contains(&a.tid))
-    }
-
-    /// Whether a projection of commit `c` outside its things' labels (a certificate copy, an
-    /// inbox blob) waits (spec/sync.md §5): `c` is this node's, writes no `/keys` and carries no
-    /// frontier (removals, demotions and new keys go at once, spec/permissions.md §3), and is
-    /// not placed yet (`placed`), for at most `PLACE_WAIT_MS` from when this node, connected,
-    /// first found it not placed (in memory: a commit made offline waits from its first sync);
-    /// past that it goes anyway, with a diagnostic. A wake is set for the bound.
-    pub(crate) fn hold(&mut self, c: &CommitId) -> Result<bool> {
-        let Some(h) = self.engine.header(c) else { return Ok(false) };
-        if !self.own(c) || h.frontier.is_some() || h.aspects.iter().any(|a| a.ak.as_str() == "/keys") {
-            return Ok(false);
-        }
-        if self.placed(c)? {
-            self.wait_since.remove(c);
-            return Ok(false);
-        }
-        let now = self.raw_now();
-        if !self.conns.values().any(|x| x.up) {
-            return Ok(true);
-        }
-        let until = self.wait_since.entry(*c).or_insert(now).saturating_add(PLACE_WAIT_MS);
-        if until <= now {
-            if self.late.insert(*c) {
-                self.diag(format!("commit {c:?} not placed under its things' labels after {} s: its copies go anyway", PLACE_WAIT_MS / 1000));
-            }
-            return Ok(false);
-        }
-        self.settle_by(until);
-        Ok(true)
     }
 
     /// Whether this node's commit `c` is placed (spec/sync.md §5): no deposit of it queued here

@@ -224,7 +224,12 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::CollidingRecord, tids: vec![*t], commit: Some(*id), peer: Some(h.author), detail: String::new() }, now);
         }
     }
-    if waits_for_deltas(tx, &h, id, blob.missing().into_iter().filter(|x| !skip.contains(x)))? {
+    // a membership commit any part of which is held does not wait for the rest: it may be held
+    // only as a projection (a certificate copy, an inbox blob, spec/sync.md §3), whose rest
+    // need never come, and the node cannot tell one from its things' labels' bodies; the rest
+    // joins on arrival (spec/commits.md §4)
+    let projection = h.kind == Kind::Membership && !blob.parts.is_empty();
+    if !projection && waits_for_deltas(tx, &h, id, blob.missing().into_iter().filter(|x| !skip.contains(x)))? {
         return Ok(Exam::Pending(Reason::WaitDeltas));
     }
     let mut out = Vec::with_capacity(blob.parts.len());

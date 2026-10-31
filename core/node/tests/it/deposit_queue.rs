@@ -190,51 +190,20 @@ fn link_setup_at(net: &mut Net, k: &[usize]) -> (usize, usize, osis_base::Tid, o
     (a, x, t, link, px.person, held)
 }
 
-// spec/sync.md §5 (a node places its commit under its things' labels before any projection
-// of it elsewhere), spec/permissions.md §4, §9: a redeemer whose deposit of its redemption
-// cannot reach K's server sends no partial copy of it (its `/members` chain copy under the
-// target's label, the inbox blob to its own person) to the other server; once the deposit
-// lands, they follow and the sharer applies the redemption.
-#[test]
-fn projections_wait_for_the_full_commit_spec_sync_5() {
-    let mut net = Net::new();
-    let (a, x, t, link, px, held) = link_setup(&mut net);
-    let (s0, s1) = (0, 1);
-    // x loses K's server, then redeems
-    net.set_online(x, false);
-    net.blocked.insert((x, s1));
-    net.set_online(x, true);
-    let done = net.engine(x).redeem(&link, &px, true).unwrap();
-    let c = *done.commits.last().unwrap();
-    net.engine(x).drop_key_actor(&held);
-    carry(&mut net, x, done);
-    for _ in 0..3 {
-        net.run();
-        net.advance(61_000);
-    }
-    let at0 = all_ids(&net, s0);
-    assert!(entries_of(&mut net, x, &c).iter().all(|id| !at0.contains(id)), "no copy of the redemption at the other server");
-    assert!(net.engine(x).role_on(&t).is_some(), "x reads the target through K");
-    assert!(net.engine(a).header(&c).is_none(), "the sharer holds no part of it");
-    assert!(net.sync(x).deliveries_pending() > 0, "the inbox blob waits");
-    net.blocked.remove(&(x, s1));
-    for _ in 0..3 {
-        net.run();
-        net.advance(61_000);
-    }
-    assert!(net.engine(a).roster(&link.k).contains_key(&px), "the sharer applied the redemption");
-    let at0 = all_ids(&net, s0);
-    assert!(entries_of(&mut net, x, &c).iter().any(|id| at0.contains(id)), "its copies followed");
-    assert_eq!(net.sync(x).deliveries_pending(), 0);
+/// Commit `c`'s deltas node `n` lacks (none when it holds no copy of `c`).
+fn missing(net: &mut Net, n: usize, c: &osis_base::CommitId) -> usize {
+    net.engine(n).commit_bytes(c).unwrap().map_or(0, |b| osis_commit::CommitBlob::decode(&b).unwrap().missing().len())
 }
 
-// spec/sync.md §5 (the wait ends at `PLACE_WAIT`), spec/commits.md §4 (atomic apply): K's
-// server unreachable for the redeemer past the bound, its copies go anyway; the sharer, who
-// syncs K, holds the `/members` part of the redemption and waits for the rest
-// (issues/link-race-edge-only-pending.md: forever if it never reaches K), applying it once
-// the deposit lands.
+// spec/commits.md §4 (atomic apply: a membership commit held in part applies, the rest joins on
+// arrival), spec/sync.md §3, §5: a redeemer whose redemption never reaches K's server sends its
+// projections at once (its chain copy under the target's label, the inbox blob to its own
+// person); the sharer, who syncs K, applies the redemption from them (without the rule it waits
+// for the rest from K's label) and stays converged
+// while the redeemer is gone; once the redeemer is back and reaches K's server, its deposit
+// lands and the sharer holds the whole commit.
 #[test]
-fn projections_go_after_the_bound_spec_sync_5() {
+fn projection_applies_when_k_never_gets_it_spec_commits_4() {
     let mut net = Net::new();
     let (a, x, _, link, px, held) = link_setup(&mut net);
     let (s0, s1) = (0, 1);
@@ -245,22 +214,30 @@ fn projections_go_after_the_bound_spec_sync_5() {
     let c = *done.commits.last().unwrap();
     net.engine(x).drop_key_actor(&held);
     carry(&mut net, x, done);
-    for _ in 0..7 {
-        net.run();
-        net.advance(61_000);
-    }
-    net.run();
-    assert!(net.sync(x).take_diagnostics().iter().any(|d| d.contains("not placed")), "reported");
-    let at0 = all_ids(&net, s0);
-    assert!(entries_of(&mut net, x, &c).iter().any(|id| at0.contains(id)), "its copies went to the other server");
-    assert!(net.engine(a).pending().iter().any(|(p, r)| *p == c && *r == osis_node::Reason::WaitDeltas), "the sharer waits for the rest");
-    assert!(!net.engine(a).roster(&link.k).contains_key(&px));
-    net.blocked.remove(&(x, s1));
     for _ in 0..3 {
         net.run();
         net.advance(61_000);
     }
-    assert!(net.engine(a).roster(&link.k).contains_key(&px), "applied once placed");
+    let at0 = all_ids(&net, s0);
+    assert!(entries_of(&mut net, x, &c).iter().any(|id| at0.contains(id)), "its copies went to the other server");
+    assert!(net.sync(x).deliveries_pending() > 0, "the deposit under K waits");
+    // the redeemer gone (its disk lost, or K's server never takes it): nothing waits
+    net.set_online(x, false);
+    for _ in 0..3 {
+        net.run();
+        net.advance(3_600_000);
+    }
+    assert!(net.engine(a).roster(&link.k).contains_key(&px), "the sharer applied the redemption");
+    assert!(net.engine(a).pending().is_empty());
+    net.blocked.remove(&(x, s1));
+    net.set_online(x, true);
+    for _ in 0..4 {
+        net.run();
+        net.advance(3_600_000);
+    }
+    net.run();
+    assert_eq!(net.sync(x).deliveries_pending(), 0, "the deposit landed");
+    assert_eq!(missing(&mut net, a, &c), 0, "the sharer holds all of it");
     assert!(net.engine(a).pending().is_empty());
 }
 
@@ -325,7 +302,7 @@ fn inbox_goes_when_one_server_refuses_spec_sync_5() {
 }
 
 // spec/permissions.md §3 (a removal goes under the labels the removed party could read in the
-// same sync, before any other upload), spec/sync.md §5 (removals are not held): with the
+// same sync, before any other upload), spec/commits.md §4: with the
 // target's server down, the removal's copy under another label still goes.
 #[test]
 fn removal_copies_not_held_spec_permissions_3() {
