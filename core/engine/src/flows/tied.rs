@@ -1,13 +1,19 @@
 //! Tied grants (spec/permissions.md §2): an edge whose member is a group G, tied to G's placement
-//! of the target T. Written together with the placement (`Osis::share_into`); once a node's
-//! applied state holds G's `/group` without T, the tied edge is to be removed by a node that may
-//! (the obligation node-sync runs, `SyncEngine::untie_unplaced`): explicitly by an admin of T,
-//! else as a self-removal by an admin of G. One way only: a stale placement never re-grants.
+//! of the target T, named by the `/group` element's creation stamp. Written after the placement
+//! (`Osis::share_into`); once a node's state of G's `/group` holds that element dead, the tied
+//! edge is to be removed by a node that may (the obligation node-sync runs,
+//! `SyncEngine::untie_unplaced`): explicitly by an admin of T, else as a self-removal by an admin
+//! of G. An element not held yet is on its way: nothing. One way only: a stale placement never
+//! re-grants.
 
-use super::{Demotion, Done, PreSync, now_ts};
+use super::{Demotion, Done, PreSync, ak, now_ts};
 use crate::engine::Engine;
 use crate::error::Result;
-use osis_base::{Role, Tid};
+use osis_base::{Role, Tid, Value};
+use osis_crdt::{Held, Source, SourceKind, Stamp};
+use osis_perm::{Tie, TieSource};
+use osis_schema::AspectKey;
+use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 
 /// How this node may remove a tied edge.
@@ -19,11 +25,84 @@ pub enum Untie {
     Explicit,
 }
 
+pub fn tie_ct(t: Tie) -> ct::Tie {
+    let source = match t.src {
+        TieSource::Node(n) => ct::Source::Node(n),
+        TieSource::Commit(c) => ct::Source::Commit(c),
+    };
+    ct::Tie { ts: t.ts, source, ctr: t.ctr, subgroup: t.subgroup }
+}
+
+pub fn tie_perm(t: ct::Tie) -> Tie {
+    let src = match t.source {
+        ct::Source::Node(n) => TieSource::Node(n),
+        ct::Source::Commit(c) => TieSource::Commit(c),
+    };
+    Tie { ts: t.ts, src, ctr: t.ctr, subgroup: t.subgroup }
+}
+
+fn stamp_of(t: &Tie) -> Stamp {
+    let src = match t.src {
+        TieSource::Node(n) => Source::node(n),
+        TieSource::Commit(c) => Source::commit(c),
+    };
+    Stamp::new(t.ts, src, t.ctr)
+}
+
+/// The `/group` struct field of the items (0) or subgroups (1) set.
+fn field(subgroup: bool) -> u64 {
+    u64::from(subgroup)
+}
+
 impl Engine {
-    /// Whether `group`'s `/group` lists `t` as an item or subgroup; `None` when this node holds
-    /// no `/group` of it (it cannot judge, so it holds no obligation).
-    pub fn placed_in(&self, t: &Tid, group: &Tid) -> Option<bool> {
-        self.core.ix.groups.defs.get(group).map(|(items, subs)| items.contains(t) || subs.contains(t))
+    /// The live element placing `t` in `group`'s items (or subgroups) here, as a tie: the one of
+    /// greatest creation stamp; `None` when there is none.
+    pub fn placement(&mut self, t: &Tid, group: &Tid, subgroup: bool) -> Result<Option<Tie>> {
+        let Some(st) = self.state(group, &ak(ct::GROUP.ak())?)? else { return Ok(None) };
+        let Some(s) = st.set_live_elem(field(subgroup), &Value::Tid(*t)) else { return Ok(None) };
+        let src = match s.dot.src.kind() {
+            SourceKind::Node(n) => TieSource::Node(*n),
+            SourceKind::Commit(c) => TieSource::Commit(*c),
+            SourceKind::Derived(_) => return Ok(None),
+        };
+        Ok(Some(Tie { ts: s.ts, src, ctr: s.dot.ctr, subgroup }))
+    }
+
+    /// Whether `group`'s current tied edge on `t` names a placement this node holds dead
+    /// (spec/crdt.md §4.2, §5.5: a tombstone, or pruned by a later reset). One not held is on
+    /// its way, whatever else the node holds.
+    pub fn tie_dead(&mut self, t: &Tid, group: &Tid) -> Result<bool> {
+        Ok(self.ties_dead(BTreeSet::from([(*t, *group)]))?.contains(&(*t, *group)))
+    }
+
+    /// Of `pairs` (target, group), those whose current tied edge names a placement held dead.
+    fn ties_dead(&mut self, pairs: BTreeSet<(Tid, Tid)>) -> Result<BTreeSet<(Tid, Tid)>> {
+        let mut ties: Vec<(Tid, Tid, Tie)> = Vec::new();
+        let mut last: Option<(Tid, std::collections::BTreeMap<Tid, osis_perm::Edge>)> = None;
+        for (t, g) in pairs {
+            if last.as_ref().is_none_or(|(x, _)| *x != t) {
+                last = Some((t, self.core.roster_of(&t)));
+            }
+            if let Some(tie) = last.as_ref().and_then(|(_, r)| r.get(&g)?.tied) {
+                ties.push((t, g, tie));
+            }
+        }
+        if ties.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        // by group: one state read each
+        ties.sort_by_key(|(_, g, _)| *g);
+        let gak = ak(ct::GROUP.ak())?;
+        self.run(|tx| {
+            let mut out = BTreeSet::new();
+            for (t, g, tie) in &ties {
+                let Some(st) = tx.state(g, &gak)? else { continue };
+                if st.set_elem(field(tie.subgroup), &stamp_of(tie)) == Held::Dead {
+                    out.insert((*t, *g));
+                }
+            }
+            Ok(out)
+        })
     }
 
     /// Whether this node may grant `member` `role` on `target` now (spec/permissions.md §2):
@@ -50,11 +129,11 @@ impl Engine {
         (self.core.role_now(&me, target) == Some(Role::Admin)).then_some(Untie::Explicit)
     }
 
-    /// The tied edges whose placement this node's applied state lacks (`placed_in` is
-    /// `Some(false)`), as (target, group): those of every group in `groups` (from the targets it
-    /// is named on as a member) and every tied edge on a thing in `targets`; with `all`, of
-    /// every group this node holds a `/group` of.
-    pub fn tied_unplaced(&self, groups: &BTreeSet<Tid>, targets: &BTreeSet<Tid>, all: bool) -> BTreeSet<(Tid, Tid)> {
+    /// The tied edges whose placement this node holds dead (`tie_dead`), as (target, group):
+    /// those of every group in `groups` (from the targets it is named on as a member) and every
+    /// tied edge on a thing in `targets`; with `all`, of every group this node holds a `/group`
+    /// of.
+    pub fn tied_unplaced(&mut self, groups: &BTreeSet<Tid>, targets: &BTreeSet<Tid>, all: bool) -> Result<BTreeSet<(Tid, Tid)>> {
         let defs = &self.core.ix.groups.defs;
         let mut pairs: BTreeSet<(Tid, Tid)> = BTreeSet::new();
         let gs: Box<dyn Iterator<Item = &Tid>> = if all { Box::new(defs.keys()) } else { Box::new(groups.iter()) };
@@ -64,20 +143,7 @@ impl Engine {
         for t in targets {
             pairs.extend(self.core.ix.held.members_of(t).map(|g| (*t, *g)));
         }
-        let mut out = BTreeSet::new();
-        let mut last: Option<(Tid, std::collections::BTreeMap<Tid, osis_perm::Edge>)> = None;
-        for (t, g) in pairs {
-            if self.placed_in(&t, &g) != Some(false) {
-                continue;
-            }
-            if last.as_ref().is_none_or(|(x, _)| *x != t) {
-                last = Some((t, self.core.roster_of(&t)));
-            }
-            if last.as_ref().is_some_and(|(_, r)| r.get(&g).is_some_and(|e| e.tied)) {
-                out.insert((t, g));
-            }
-        }
-        out
+        self.ties_dead(pairs)
     }
 
     /// Removes `group`'s tied edge on `t` (spec/permissions.md §2): an explicit demotion

@@ -53,7 +53,7 @@ fn expect_tags(sim: &mut NetSim, ns: &[usize], t: Tid, story: &[&str], want: &[&
 }
 
 fn demote(sim: &mut NetSim, n: usize, target: Tid, member: Tid, new: Option<Role>, presync: PreSync) -> Res<()> {
-    let new = new.map(|role| ct::Edge { role, until: None, invite: None, since: None, tied: false });
+    let new = new.map(|role| ct::Edge { role, until: None, invite: None, since: None, tied: None });
     let r = sim.engine(n)?.demote(&target, &Demotion { member, new, presync });
     let done = r.map_err(|e| sim.fail(format!("node {n} demote: {e}")))?;
     sim.carry(n, done)

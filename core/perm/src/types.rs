@@ -32,14 +32,31 @@ pub struct Edge {
     pub invite: Option<Role>,
     /// Roster snapshots only: key of the write that established a write+ edge.
     pub since: Option<Point>,
-    /// Tied to its member group's placement of the target (spec/permissions.md §2): carried,
-    /// never an authority.
-    pub tied: bool,
+    /// The placement of the target in its member group this edge is tied to
+    /// (spec/permissions.md §2): carried, never an authority.
+    pub tied: Option<Tie>,
+}
+
+/// The `/group` element a tied edge names (spec/permissions.md §2): its creation stamp (`ts`,
+/// dot source, counter, spec/crdt.md §2) and the set it is in.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Tie {
+    pub ts: Ts,
+    pub src: TieSource,
+    pub ctr: u64,
+    pub subgroup: bool,
+}
+
+/// A dot's source (spec/crdt.md §2.1): a placement is durable, never `Derived`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum TieSource {
+    Node(Tid),
+    Commit(CommitId),
 }
 
 impl Edge {
     pub fn new(role: Role) -> Edge {
-        Edge { role, until: None, invite: None, since: None, tied: false }
+        Edge { role, until: None, invite: None, since: None, tied: None }
     }
     /// Alive at `ts`; `None` is the end of time, where every edge with an `until` is gone.
     pub fn alive_at(&self, ts: Option<Ts>) -> bool {

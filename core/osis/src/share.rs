@@ -259,7 +259,7 @@ pub(crate) fn status_of(sync: &mut SyncEngine) -> Status {
 }
 
 fn edge(role: Role, o: EdgeOpts) -> ct::Edge {
-    ct::Edge { role, until: o.until, invite: o.invite, since: None, tied: false }
+    ct::Edge { role, until: o.until, invite: o.invite, since: None, tied: None }
 }
 
 fn share_of(e: crate::Edge) -> Share {
@@ -314,7 +314,7 @@ impl Osis {
                 return Err(Error::UnknownActor { tid: member });
             }
             // an edge change keeps its tie; a new hand grant is untied
-            let tied = e.roster(&target).get(&member).is_some_and(|x| x.tied);
+            let tied = e.roster(&target).get(&member).and_then(|x| x.tied).map(flows::tied::tie_ct);
             e.grant(&target, &member, &ct::Edge { tied, ..edge(role, opts) }).map_err(needs_admin)
         })?;
         self.carry(done)
@@ -334,7 +334,10 @@ impl Osis {
             }
         }
         let existing = self.roster(t).get(&g).copied();
-        let grant = existing.is_none_or(|e| e.role < role);
+        // a tied edge whose placement is gone here is tied again to the new one
+        let retie = existing.is_some_and(|x| x.tied) && self.engine(|e| e.tie_dead(&t, &g))?;
+        let role = existing.filter(|_| retie).map_or(role, |x| x.role.max(role));
+        let grant = retie || existing.is_none_or(|e| e.role < role);
         let may = grant && self.engine(|e| e.may_grant(&t, &g, role));
         if grant && !may && !opts.place_anyway {
             return Err(Error::Permission { tid: t, needs: Role::Admin });
@@ -356,8 +359,17 @@ impl Osis {
         if !may {
             return Ok(Share::Excluded);
         }
-        let tied = existing.is_none_or(|e| e.tied);
-        let done = self.engine(|e| e.grant(&t, &g, &ct::Edge { role, until: None, invite: None, since: None, tied })).map_err(needs_admin)?;
+        // tied to the placement's live element (written above, or already there); an existing
+        // hand edge stays untied
+        let tied = existing.is_none_or(|x| x.tied);
+        let done = self.engine(|e| {
+            let tie = match tied {
+                true => Some(e.placement(&t, &g, opts.subgroup)?.ok_or_else(|| Error::Invalid(format!("{t} is not placed in {g} here")))?),
+                false => None,
+            };
+            let edge = ct::Edge { role, until: None, invite: None, since: None, tied: tie.map(flows::tied::tie_ct) };
+            e.grant(&t, &g, &edge).map_err(needs_admin)
+        })?;
         self.carry(done)?;
         Ok(if tied { Share::Tied(role) } else { Share::Untied(role) })
     }
@@ -368,7 +380,7 @@ impl Osis {
     pub(crate) fn untie_now(&self, pairs: &[(Tid, Tid)]) {
         for (t, g) in pairs {
             let done = self.engine(|e| {
-                let due = e.placed_in(t, g) == Some(false) && e.roster(t).get(g).is_some_and(|x| x.tied) && e.may_remove(t, g) == Some(flows::Untie::SelfRemoval);
+                let due = e.may_remove(t, g) == Some(flows::Untie::SelfRemoval) && e.tie_dead(t, g).unwrap_or(false);
                 if due { e.untie(t, g).ok() } else { None }
             });
             if let Some(done) = done {
@@ -546,7 +558,7 @@ impl Osis {
         let new = match to {
             Lower::To(role) => {
                 let cur = self.roster(t).get(&m).copied().ok_or(Error::Invalid(format!("{m} is no member of {t}")))?;
-                Some(ct::Edge { role, until: cur.until, invite: cur.invite.map(|i| i.min(role)), since: None, tied: cur.tied })
+                Some(ct::Edge { role, until: cur.until, invite: cur.invite.map(|i| i.min(role)), since: None, tied: self.engine(|e| e.roster(&t).get(&m).and_then(|x| x.tied)).map(flows::tied::tie_ct) })
             }
             Lower::Remove => None,
         };

@@ -97,7 +97,7 @@ pub fn new_thing(lp: &mut LocalPeer, i: usize) -> Tid {
 }
 
 pub fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, since: None, tied: false }
+    ct::Edge { role, until: None, invite: None, since: None, tied: None }
 }
 
 /// Peer `i` writes `member`'s edge on `thing` as remove + put (`None` removes it), with an

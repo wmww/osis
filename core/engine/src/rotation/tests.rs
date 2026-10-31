@@ -26,7 +26,7 @@ fn team(seed: u64) -> (LocalPeer, Tid, Tid, Tid, Tid) {
     let mut lp = LocalPeer::new(4, seed, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let (a, b, w, z) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
-    let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: false };
+    let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
     let mut m = Mutation::new();
     let x = lp.peers[1].engine.new_thing(&mut m, b);
     lp.peers[1].commit(m).unwrap();
@@ -140,7 +140,7 @@ fn departure_inside_unheld_actor_uncovered_spec_crypto_4() {
     let mut lp = LocalPeer::new(3, 931, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let (a, b, w) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-    let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: false };
+    let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
     // X: b's team with W
     let mut m = Mutation::new();
     let x = lp.peers[1].engine.new_thing(&mut m, b);
@@ -269,7 +269,7 @@ fn group(lp: &mut LocalPeer, i: usize) -> Tid {
 }
 
 fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, since: None, tied: false }
+    ct::Edge { role, until: None, invite: None, since: None, tied: None }
 }
 
 fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypto::Epoch> {

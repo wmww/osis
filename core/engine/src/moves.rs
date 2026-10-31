@@ -356,7 +356,7 @@ mod tests {
         }
         let (t, o, z) = (things[0], things[1], things[2]);
         let mut m = Mutation::new();
-        m.op(o, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(ct::Edge { role: Role::Admin, until: None, invite: None, since: None, tied: false }.to_value()) }).unwrap();
+        m.op(o, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(ct::Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.sync_all().unwrap();
         let (copy, _) = lp.peers[1].engine.move_thing(&t, o).unwrap();

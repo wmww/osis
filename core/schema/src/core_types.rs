@@ -97,11 +97,22 @@ codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct EdgeKey { 0 ts: Ts, 1 node: Tid, 2 commit: CommitId }
 }
+codec_enum! {
+    /// A dot's source (spec/crdt.md §2.1).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum Source { 0 Node(t: Tid), 1 Commit(c: CommitId) }
+}
+codec_struct! {
+    /// The `/group` element a tied edge names: its creation stamp and whether it is a subgroup
+    /// (spec/permissions.md §2).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct Tie { 0 ts: Ts, 1 source: Source, 2 ctr: u64, 3 subgroup: bool }
+}
 codec_struct! {
     /// A membership edge; `since` only in roster snapshots (spec/permissions.md §6); `tied`: the
-    /// edge exists because its member, a group, lists the target (spec/permissions.md §2).
+    /// placement of the target in its member, a group, the edge goes with (spec/permissions.md §2).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 3 since: Option<EdgeKey>, 4 tied: bool }
+    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 3 since: Option<EdgeKey>, 4 tied: Option<Tie> }
 }
 codec_struct! {
     /// A keyset: epoch, KEM key, suite ID of the epoch, delete key (spec/crypto.md §3, §4, §7, §8).

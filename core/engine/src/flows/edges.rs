@@ -38,7 +38,7 @@ pub struct Demotion {
 }
 
 fn perm_edge(e: &Edge) -> PermEdge {
-    PermEdge { role: e.role, until: e.until, invite: e.invite, since: None, tied: e.tied }
+    PermEdge { role: e.role, until: e.until, invite: e.invite, since: None, tied: e.tied.map(super::tied::tie_perm) }
 }
 
 /// Which parts of a commit an inbox blob carries.

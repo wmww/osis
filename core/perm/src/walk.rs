@@ -1245,7 +1245,7 @@ struct Virtual {
 enum Item {
     Commit(Arc<MembershipCommit>),
     Snap(Arc<RosterSnapshot>),
-    Virtual(Virtual),
+    Virtual(Box<Virtual>),
 }
 
 /// What an explicit demotion's frontier and exceptions cover.
@@ -2097,7 +2097,7 @@ pub(crate) fn items(input: &Input, epoch: &BTreeMap<Tid, CommitId>) -> Items {
             }
             // just after the commit its key names (whose writes on the thing S ignores), so
             // that commit's writes on other things are judged as in the full history
-            list.push(Entry { point: v.point, item: Item::Virtual(v) });
+            list.push(Entry { point: v.point, item: Item::Virtual(Box::new(v)) });
         }
     }
     for c in input.commits.values() {
