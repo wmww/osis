@@ -1236,8 +1236,8 @@ impl SyncEngine {
             E::Step { label, step } => self.stale_step(conn, label, step, out)?,
             E::Registered { label } => self.registered(conn, label, out)?,
             E::PathSteps { label, steps, more } => self.path_steps(conn, label, steps, more, out)?,
-            E::EntryStatus { label, blob_ids, codes, head } => self.entry_status(conn, label, blob_ids, codes, head, out)?,
-            E::DeleteStatus { label, blob_ids, codes, head } => self.delete_status(conn, label, blob_ids, codes, head, out)?,
+            E::EntryStatus { label, blob_ids, codes } => self.entry_status(conn, label, blob_ids, codes, out)?,
+            E::DeleteStatus { label, blob_ids, codes } => self.delete_status(conn, label, blob_ids, codes)?,
             E::Budget { label, blob_id, code, budget } => self.budget(conn, label, blob_id, code, budget.map(|b| b.0))?,
             // a Push names its label: one not started on this connection is junk (spec/wire.md
             // §11.2; peer input never grows storage unasked)

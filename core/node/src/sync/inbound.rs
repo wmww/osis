@@ -832,15 +832,15 @@ impl SyncEngine {
         self.command(conn, Command::Sync { label: l, cursor: None, inline_limit: 0, entries: Vec::new(), gained: Vec::new() }, out)
     }
 
-    /// Upload or Sync statuses.
-    pub(crate) fn entry_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>, head: Option<Step>, out: &mut Vec<super::Action>) -> Result<()> {
+    /// Upload or Sync statuses. Code 9 (signed under a key older than the head's) needs nothing
+    /// here: the node uploads only where the label is open, so the new head comes by push or
+    /// the next Sync (spec/sync.md §5), and its pass signs again under the new keys.
+    pub(crate) fn entry_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
-        let stale_head = codes.contains(&Code::NOT_HEAD);
         let (ids, codes) = self.eph_status(conn, l, ids, codes, out)?;
-        if ids.is_empty() && !stale_head {
+        if ids.is_empty() {
             return Ok(());
         }
-        let mut stale = false;
         let mut grew = false;
         for (b, code) in ids.into_iter().zip(codes) {
             let replaced = self.conns.get_mut(&conn).and_then(|c| {
@@ -884,7 +884,7 @@ impl SyncEngine {
                         lc.dirty = true;
                     }
                 }
-                Code::NOT_HEAD => stale = true,
+                Code::NOT_HEAD => {}
                 c => self.diag(format!("upload refused: code {}", c.0)),
             }
             // a refused promotion waits again (`RELAY_MIN_MS`): co-writers refused alike (a step
@@ -900,15 +900,13 @@ impl SyncEngine {
         if grew && let Some(lc) = self.lc_mut(conn, &l) {
             lc.dirty = true;
         }
-        if stale && let Some(h) = head {
-            self.new_head(conn, l, h, out)?;
-        }
         Ok(())
     }
 
-    pub(crate) fn delete_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>, head: Option<Step>, out: &mut Vec<super::Action>) -> Result<()> {
+    /// Delete statuses; code 9 as for `entry_status`.
+    pub(crate) fn delete_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>) -> Result<()> {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
-        let (ids, codes, mut stale) = self.eph_delete_status(conn, l, ids, codes);
+        let (ids, codes) = self.eph_delete_status(conn, l, ids, codes);
         for (b, code) in ids.into_iter().zip(codes) {
             // a timed delete is done once the server took it (spec/commits.md §5)
             let timed = self.conns.get_mut(&conn).is_some_and(|c| {
@@ -926,7 +924,7 @@ impl SyncEngine {
                     }
                     self.absent_at(Some(server), l, b)?;
                 }
-                Code::NOT_HEAD => stale = true,
+                Code::NOT_HEAD => {}
                 c => self.diag(format!("delete refused: code {}", c.0)),
             }
         }
@@ -936,9 +934,6 @@ impl SyncEngine {
             && let Some(lc) = self.lc_mut(conn, &l)
         {
             lc.dirty = true;
-        }
-        if stale && let Some(h) = head {
-            self.new_head(conn, l, h, out)?;
         }
         Ok(())
     }

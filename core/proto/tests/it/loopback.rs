@@ -382,7 +382,7 @@ fn claim_and_static_opens() {
     assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]));
 }
 
-// spec/sync.md §5: stamps under the head's write key; an old key gets 9 with the head; expiry, tombstone, unknown label; identical re-uploads log nothing
+// spec/sync.md §5: stamps under the head's write key; an old key gets 9 alone; expiry, tombstone, unknown label; identical re-uploads log nothing
 // spec/sync.md §5 (upload refusals): bad stamp, expired, tombstoned
 #[test]
 fn upload_rules() {
@@ -401,7 +401,7 @@ fn upload_rules() {
     let (child, cs) = l.rotate(20);
     net.run(0, Command::Register { label: l.id, step: child.clone(), claim_set: Some(cs) });
     let ev = net.run(0, Command::Upload { label: l.id, entries: vec![l.entry_by(blob(5), &old.write), l.entry(blob(6))] });
-    assert!(matches!(&ev[..], [ClientEvent::EntryStatus { codes, head: Some(h), .. }] if *codes == vec![Code::NOT_HEAD, Code::OK] && *h == child), "{ev:?}");
+    assert!(matches!(&ev[..], [ClientEvent::EntryStatus { codes, .. }] if *codes == vec![Code::NOT_HEAD, Code::OK]), "{ev:?}");
     net.open(0, &l);
     let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(6), None).unwrap();
     let ev = net.run(0, Command::Delete { label: l.id, items: vec![item] });

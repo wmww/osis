@@ -505,9 +505,8 @@ impl ServerConnection {
             M::Path { id, label, after } => self.path(store, id, label, after)?,
             M::Upload { id, label, entries } => {
                 let ids: Vec<BlobId> = entries.iter().map(|e| osis_label::blob_id(&e.blob)).collect();
-                let codes = self.accept_all(store, now, &label, &entries, &ids, out)?;
-                let head = if codes.contains(&Code::NOT_HEAD) { self.head(store, &label)? } else { None };
-                M::Status { id, codes, head }
+                // code 9 alone, never the head (an ex-writer would watch rotations, spec/sync.md §5)
+                M::Status { id, codes: self.accept_all(store, now, &label, &entries, &ids, out)? }
             }
             M::Deposit { id, label, blob, wrap, sig } => {
                 let Some(k) = head_keys(&mut self.keys, store, &label)? else {
@@ -531,8 +530,7 @@ impl ServerConnection {
                     codes.push(self.delete(store, now, &label, item)?);
                 }
                 changed(&codes, &label, out);
-                let head = if codes.contains(&Code::NOT_HEAD) { self.head(store, &label)? } else { None };
-                M::Status { id, codes, head }
+                M::Status { id, codes }
             }
             M::Sync { id, label, cursor, inline_limit, entries, gained } => self.sync(store, now, id, label, cursor, inline_limit, entries, gained, out)?,
             M::Reconcile { id, label, ranges } => {
@@ -568,7 +566,7 @@ impl ServerConnection {
                         Code::NOT_OPENED
                     });
                 }
-                M::Status { id, codes, head: None }
+                M::Status { id, codes }
             }
             M::Unsubscribe { id, labels } => {
                 for l in labels {
@@ -1171,7 +1169,7 @@ mod tests {
     // spec/sync.md §5, spec/requirements.md (peer input never causes unbounded work): checking
     // an Upload (which needs no open) reads the head keys the store keeps, never the label's
     // path, however long and whatever the connection has cached; a recent earlier key still
-    // gets code 9 and the head
+    // gets code 9
     #[test]
     fn upload_check_reads_no_path() {
         let f = Fixture::new(0x10);
@@ -1192,9 +1190,8 @@ mod tests {
             store.step_reads.set(0);
             let up = Message::Upload { id: 1, label: f.label, entries: vec![old.clone(), bad.clone()] };
             let out = c.handle(0, &mut store, ServerInput::Bytes(encode_frame(&up.encode())));
-            let Message::Status { codes, head, .. } = reply(&out) else { panic!("{out:?}") };
+            let Message::Status { codes, .. } = reply(&out) else { panic!("{out:?}") };
             assert_eq!(codes, vec![Code::NOT_HEAD, Code::REFUSED]);
-            assert_eq!(head.map(|h| h.id()), Some(path[999].id()));
             assert_eq!(store.step_reads.get(), 0);
         }
     }

@@ -41,9 +41,9 @@ fn stale_sync_key_gets_exactly_one_step() {
     }
     let ev = w.run(c, Command::Subscribe { labels: vec![l.id] });
     assert_eq!(ev, vec![ClientEvent::Subscribed { labels: vec![l.id], codes: vec![Code::NOT_OPENED] }]);
-    // the old write key gets 9 with the head
+    // the old write key gets 9 alone, not the head
     let ev = w.run(c, Command::Upload { label: l.id, entries: vec![l.entry_by(blob(2), &old.write)] });
-    assert!(matches!(&ev[..], [ClientEvent::EntryStatus { codes, head: Some(h), .. }] if *codes == vec![Code::NOT_HEAD] && h.id() == l.steps[2].id()), "{ev:?}");
+    assert!(matches!(&ev[..], [ClientEvent::EntryStatus { codes, .. }] if *codes == vec![Code::NOT_HEAD]), "{ev:?}");
 }
 
 // spec/sync.md §5 Stamp, Deposit: a reader (sync key only) cannot upload or deposit, nor sign deletes without a delete key
