@@ -90,7 +90,7 @@ The core aspects form the core schema, schema ID 16 zero bytes, revision 1, evol
 | `/tid` | tid | synthetic, guaranteed |
 | `/aspects` | set<string> | synthetic, guaranteed: AKs present on the thing |
 | `/created` | struct | guaranteed: the creation record; carried by the thing's first commit, retention `nobody` (spec/commits.md §2, §5) |
-| `/members` | map<tid, struct { role, until: option<timestamp>, invite: option<role>, since: option<edge_key> }> | membership edges (`since` only in roster snapshots, spec/permissions.md §6); read as the membership timeline's roster (spec/permissions.md §5) |
+| `/members` | map<tid, struct { role, until: option<timestamp>, invite: option<role>, since: option<edge_key>, tied: bool }> | membership edges (`since` only in roster snapshots, spec/permissions.md §6; `tied`: spec/permissions.md §2); read as the membership timeline's roster (spec/permissions.md §5) |
 | `/keys` | struct { read, write, admin: { epoch, kem_key, delete_key }, inbox, deposit seed } | an actor's current keysets per role, inbox and deposit seed (spec/crypto.md §3, spec/sync.md §2) |
 | `/secrets` | struct { boxes: map<(member, role, epoch), box>, history: map<(role, epoch), history box> } | spec/crypto.md §4 |
 | `/tenures` | set<struct { member: tid, role, since, until, frontier }> | tenure ledger, written only by roster snapshots (spec/permissions.md §6; an audit-only entry has `since` = `until`); a large frontier is a link |
@@ -113,7 +113,7 @@ type role = enum { 0 read, 1 write, 2 admin };
 type epoch = struct { 0 n: int, 1 nonce: blob };                 // nonce: 32 bytes (spec/crypto.md §4)
 type address = struct { 0 url: string, 1 key: blob };            // transport URL, 32-byte server static key
 type edge_key = struct { 0 ts: int, 1 node: tid, 2 commit: blob };   // (ts, author node, 32-byte commit ID) of a write
-type edge = struct { 0 role: role, 1 until: option<timestamp>, 2 invite: option<role>, 3 since: option<edge_key> };
+type edge = struct { 0 role: role, 1 until: option<timestamp>, 2 invite: option<role>, 3 since: option<edge_key>, 4 tied: bool };
 type keyset = struct { 0 epoch: epoch, 1 kem_key: kem_key, 2 suite: int, 3 delete_key: signing_key };   // suite ID of the epoch (spec/crypto.md §4, §8); delete key: spec/crypto.md §7
 type inbox = struct { 0 label: blob, 1 servers: list<address> };  // label ID: 16 bytes
 type box_key = struct { 0 member: tid, 1 role: role, 2 epoch: epoch };

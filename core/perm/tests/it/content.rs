@@ -253,7 +253,7 @@ fn regrant_replay_equals_search() {
             let role = [Read, Write, Admin][rng.below(3)];
             let invite = [None, Some(Read), Some(Write), Some(Admin)][rng.below(4)].map(|i: Role| i.min(role));
             let until = (rng.below(3) == 0).then(|| osis_base::WallMs(k + rng.below(10) as u64));
-            let e = (rng.below(4) != 0).then_some(Edge { role, until, invite, since: None });
+            let e = (rng.below(4) != 0).then_some(Edge { role, until, invite, since: None, tied: until.is_some() != invite.is_some() });
             if member != target {
                 w.set(author, target, member, e, 1 + k, &[]);
             }

@@ -313,6 +313,118 @@ impl SyncEngine {
     }
 }
 
+/// The obligation to remove tied edges whose placement is gone (`SyncEngine::untie_unplaced`).
+#[derive(Debug, Default)]
+pub(crate) struct TiedWork {
+    /// Derive every pair again (at start).
+    pub all: bool,
+    /// Groups whose `/group` changed.
+    pub groups: BTreeSet<Tid>,
+    /// Things whose `/members` or roster changed.
+    pub targets: BTreeSet<Tid>,
+    /// (target, group): a tied edge whose group's `/group` here lacks the target.
+    pub due: BTreeSet<(Tid, Tid)>,
+    /// Removals that failed in this run: not tried again.
+    pub failed: BTreeSet<(Tid, Tid)>,
+}
+
+impl TiedWork {
+    pub(crate) fn touched(&mut self, changed: &[(Tid, osis_base::Ak)]) {
+        for (t, ak) in changed {
+            match ak.as_str() {
+                "/group" => {
+                    self.groups.insert(*t);
+                }
+                "/members" => {
+                    self.targets.insert(*t);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+impl SyncEngine {
+    /// Removes the tied edges whose placement is gone (spec/permissions.md §2): a tied edge
+    /// (G, T) where G's `/group` here lacks T, once every label holding G (and, for an explicit
+    /// demotion, every label holding a thing of its pre-sync scope) passed completely after the
+    /// last remote membership commit of G and of T (the placement written with the edge has
+    /// arrived by then, and a concurrent removal is seen). As an explicit demotion by an admin
+    /// of T, else as a self-removal by an admin of G; nothing when this node may do neither.
+    pub(crate) fn untie_unplaced(&mut self) -> Result<()> {
+        let w = &mut self.tied;
+        if w.all || !w.groups.is_empty() || !w.targets.is_empty() {
+            let (all, groups, targets) = (std::mem::take(&mut w.all), std::mem::take(&mut w.groups), std::mem::take(&mut w.targets));
+            if all {
+                w.due.clear();
+            } else {
+                w.due.retain(|(t, g)| !groups.contains(g) && !targets.contains(t));
+            }
+            let found = self.engine.tied_unplaced(&groups, &targets, all);
+            self.tied.due.extend(found);
+        }
+        if self.tied.due.is_empty() {
+            return Ok(());
+        }
+        self.labels();
+        let due: Vec<(Tid, Tid)> = self.tied.due.iter().filter(|p| !self.tied.failed.contains(p)).copied().collect();
+        for (t, g) in due {
+            let Some(how) = self.engine.may_remove(&t, &g) else { continue };
+            let since = [g, t].iter().filter_map(|a| self.membership_seen.get(a)).copied().max().unwrap_or(0);
+            let mut holding: BTreeSet<Tid> = self.groups_holding(&g).into_iter().collect();
+            if how == crate::flows::Untie::Explicit {
+                for x in self.engine.presync_scope(&t, &g, None) {
+                    holding.extend(self.groups_holding(&x));
+                }
+            }
+            if !self.passed_since(&holding, since, &t) {
+                continue;
+            }
+            match self.engine.untie(&t, &g) {
+                Ok(done) => {
+                    self.tied.due.remove(&(t, g));
+                    if done.drop_lost {
+                        if done.deliveries.iter().any(|d| matches!(d, Delivery::First { under, .. } if !under.is_empty())) {
+                            self.drop_when_idle = true;
+                        } else {
+                            self.drop_lost()?;
+                        }
+                    }
+                    self.take_done(done)?;
+                    self.mark_dirty();
+                }
+                Err(e) => {
+                    self.tied.failed.insert((t, g));
+                    self.diag(format!("removing the tied edge of {g} on {t}: {e}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Every label of `groups` passed completely after `since` at its servers and at the
+    /// co-readers it was received from (those for at most `peer_pass_wait_ms` after the last
+    /// remote membership commit of `actor`), as `complete_pass`; false when this node syncs no
+    /// such label (it cannot judge the placement).
+    fn passed_since(&self, groups: &BTreeSet<Tid>, since: u64, actor: &Tid) -> bool {
+        let waited = self.membership_at.get(actor).is_none_or(|t| t.saturating_add(self.cfg.peer_pass_wait_ms) <= self.raw_now());
+        let mut any = false;
+        for (g, l) in &self.synced.labels {
+            if !groups.contains(g) {
+                continue;
+            }
+            any = true;
+            let peers = self.pass_peers.get(&l.id).into_iter().flatten().filter(|_| !waited);
+            for s in l.servers.iter().map(|a| &a.key).chain(peers) {
+                if self.passes.get(&(*s, l.id)).is_none_or(|p| p.0 <= since) {
+                    return false;
+                }
+            }
+        }
+        any
+    }
+}
+
 impl SyncState for SyncEngine {
     fn complete_pass(&self, actor: &Tid) -> bool {
         let since = self.membership_seen.get(actor).copied().unwrap_or(0);

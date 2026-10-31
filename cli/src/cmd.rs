@@ -188,7 +188,7 @@ fn needs_net(c: &Cmd) -> bool {
 /// sent (inbox grants, a new label's first commits):
 /// they run with sync on and wait until it is at the servers before the process exits.
 fn delivers(c: &Cmd) -> bool {
-    matches!(c, Cmd::Grant { .. } | Cmd::Edge { .. } | Cmd::Leave { .. } | Cmd::Link(LinkCmd::Make { .. }) | Cmd::Card(CardCmd::Show) | Cmd::Group(GroupCmd::Sync { .. }))
+    matches!(c, Cmd::Grant { .. } | Cmd::Edge { .. } | Cmd::Leave { .. } | Cmd::ShareInto { .. } | Cmd::RemoveEdgeOf { .. } | Cmd::Link(LinkCmd::Make { .. }) | Cmd::Card(CardCmd::Show) | Cmd::Group(GroupCmd::Sync { .. }))
 }
 
 /// Sends what a `delivers` command queued (within `--timeout`).
@@ -424,6 +424,17 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             wait(ctx, db.demote(t, m, to, d))
         }
         Cmd::Leave { t } => Ok(db.leave(ctx.tid(&t)?)?),
+        Cmd::ShareInto { t, g, role, subgroup, place_anyway } => {
+            let s = db.share_into(ctx.tid(&t)?, ctx.tid(&g)?, parse_role(&role)?, osis::ShareOpts { subgroup, place_anyway })?;
+            ctx.emit(&[share_text(s)], J::str(share_text(s)))
+        }
+        Cmd::RemoveEdgeOf { g, t } => Ok(db.remove_edge_of(ctx.tid(&g)?, ctx.tid(&t)?)?),
+        Cmd::Reach { t } => {
+            let r = db.reach(ctx.tid(&t)?);
+            let lines: Vec<String> = r.iter().map(|x| format!("{} {} {}", x.group.to_uri(), if x.placed { "placed" } else { "unplaced" }, share_text(x.share))).collect();
+            let j = J::Arr(r.iter().map(|x| J::obj([("group", J::tid(x.group)), ("placed", J::Bool(x.placed)), ("share", J::str(share_text(x.share)))])).collect());
+            ctx.emit(&lines, j)
+        }
         Cmd::Link(LinkCmd::Make { t, role, until, single_use }) => {
             let l = db.make_link(ctx.tid(&t)?, parse_role(&role)?, LinkOpts { until: opt_ts(&until)?, single_use, direct: false })?;
             ctx.emit(&[l.to_string()], J::obj([("link", J::str(l.to_string()))]))
@@ -878,11 +889,19 @@ fn undo(ctx: &mut Ctx<'_>, s: &Scope, redo: bool) -> anyhow::Result<()> {
     }
 }
 
+fn share_text(s: osis::Share) -> String {
+    match s {
+        osis::Share::Tied(r) => format!("tied {}", role_text(r)),
+        osis::Share::Untied(r) => format!("untied {}", role_text(r)),
+        osis::Share::Excluded => "excluded".into(),
+    }
+}
+
 fn roster_lines(r: &osis::Roster, raw: bool) -> Vec<String> {
     r.iter()
         .map(|(m, e)| {
             let until = e.until.map_or("-".into(), |u| ts_text(raw, u.0));
-            format!("{} {} {} {}", m.to_uri(), role_text(e.role), until, e.invite.map_or("-", role_text))
+            format!("{} {} {} {}{}", m.to_uri(), role_text(e.role), until, e.invite.map_or("-", role_text), if e.tied { " tied" } else { "" })
         })
         .collect()
 }
@@ -890,7 +909,7 @@ fn roster_lines(r: &osis::Roster, raw: bool) -> Vec<String> {
 fn roster_json(r: &osis::Roster) -> J {
     J::Arr(
         r.iter()
-            .map(|(m, e)| J::obj([("actor", J::tid(*m)), ("role", J::str(role_text(e.role))), ("until", J::opt(e.until.map(|u| J::int(u.0)))), ("invite", J::opt(e.invite.map(|r| J::str(role_text(r)))))]))
+            .map(|(m, e)| J::obj([("actor", J::tid(*m)), ("role", J::str(role_text(e.role))), ("until", J::opt(e.until.map(|u| J::int(u.0)))), ("invite", J::opt(e.invite.map(|r| J::str(role_text(r))))), ("tied", J::Bool(e.tied))]))
             .collect(),
     )
 }

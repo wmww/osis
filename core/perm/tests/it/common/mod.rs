@@ -25,7 +25,7 @@ pub fn edge(role: Role) -> Option<Edge> {
 }
 
 pub fn edge_inv(role: Role, invite: Option<Role>, until: Option<u64>) -> Option<Edge> {
-    Some(Edge { role, until: until.map(WallMs), invite, since: None })
+    Some(Edge { role, until: until.map(WallMs), invite, since: None, tied: false })
 }
 
 /// `n` key-actor records whose tids sort in index order (models order authors by index).
@@ -394,7 +394,7 @@ pub fn edges_world(h: &membership_model::edges::EHist, salt: u8) -> (World, Vec<
     let nodes = w.nodes_salted(h.n(), salt);
     let t = w.thing(nodes[0]);
     let me = |e: Option<MEdge>| {
-        e.map(|e| Edge { role: model_role(e.role).unwrap_or(Role::Read), until: (e.until != NEVER).then_some(WallMs(e.until as u64)), invite: model_role(e.invite), since: None })
+        e.map(|e| Edge { role: model_role(e.role).unwrap_or(Role::Read), until: (e.until != NEVER).then_some(WallMs(e.until as u64)), invite: model_role(e.invite), since: None, tied: (e.until ^ e.role as u32 ^ e.invite as u32) & 1 == 1 })
     };
     let all0: Vec<(Tid, u64)> = nodes.iter().map(|n| (*n, 0)).collect();
     for (x, e) in h.genesis.iter().enumerate().skip(1) {

@@ -98,9 +98,10 @@ codec_struct! {
     pub struct EdgeKey { 0 ts: Ts, 1 node: Tid, 2 commit: CommitId }
 }
 codec_struct! {
-    /// A membership edge; `since` only in roster snapshots (spec/permissions.md §6).
+    /// A membership edge; `since` only in roster snapshots (spec/permissions.md §6); `tied`: the
+    /// edge exists because its member, a group, lists the target (spec/permissions.md §2).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 3 since: Option<EdgeKey> }
+    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 3 since: Option<EdgeKey>, 4 tied: bool }
 }
 codec_struct! {
     /// A keyset: epoch, KEM key, suite ID of the epoch, delete key (spec/crypto.md §3, §4, §7, §8).

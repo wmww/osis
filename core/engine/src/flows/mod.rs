@@ -16,12 +16,14 @@ pub(crate) mod links;
 pub(crate) mod person;
 pub(crate) mod roster;
 mod moving;
+pub mod tied;
 
 pub use roster::ROSTER_SNAPSHOT_AFTER;
 
 pub use edges::{Demotion, PreSync};
 pub use links::{HeldLink, LINK_SEED, LinkSpec};
 pub use person::Person;
+pub use tied::Untie;
 
 use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};

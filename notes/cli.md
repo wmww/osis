@@ -12,7 +12,7 @@
 - **Commit ids** print as 64 lower-case hex digits (input for `revert`, `commits --reverts/--reverted-by/--after`, `inspect commit`).
 - **`write` scripts**: lines are tokenized at whitespace outside quotes and brackets, so a value is one token with its quotes kept; a token wholly in single quotes loses them (`''` is the root path). `$NAME` (from `create --as NAME`) works as a tid argument and inside values. Errors from a line's arguments carry `line N`; rights and unknown things are checked at commit (no line). Output: the commit id (or `-`), then `NAME<TAB>tid` per bound name.
 - **`edit` on a terminal**: the value goes to a new temp file (`create_new`, random name, mode 0600, in `$XDG_RUNTIME_DIR` when set), then `$EDITOR`; the file is removed whatever the editor does.
-- **Delivering commands** (`grant`, `edge`, `leave`, `link make`, `card show`, `group sync`): their API call queues inbox deposits or a new label's first commits that the engine holds only in memory, so they open with sync on and end with `sync_now` + `wait_synced(All)` within `--timeout` (exit 6 "done locally, not yet at the servers"); skipped for a store without servers. Other writes stay local and go out with the next networked command.
+- **Delivering commands** (`grant`, `edge`, `leave`, `share-into`, `remove-edge-of`, `link make`, `card show`, `group sync`): their API call queues inbox deposits or a new label's first commits that the engine holds only in memory, so they open with sync on and end with `sync_now` + `wait_synced(All)` within `--timeout` (exit 6 "done locally, not yet at the servers"); skipped for a store without servers. Other writes stay local and go out with the next networked command.
 - **Write output**: `create` prints the tid; other writes print the commit id (nothing when nothing changed).
 - **`serve`**: calls `osis_server::serve::run` (the `osis-server` binary's body, moved into the library); without `--config`: listen `quic://127.0.0.1:0`, data `osis-server-data`, key `<data>/server.key`. The address `<url>#<key>` is the first stdout line; logs go to stderr.
 - **`inspect`** is `Debug` dumps over `osis::internals::Internals::engine` (commits per aspect, CRDT state, items of a group, pending commits, actor epochs, headers). Not stable.
@@ -55,6 +55,7 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `roster T [--watch]` / `role T` / `via T MEMBER` | `roster`, `watch_roster` / `role_on` / `member_path` | now |
 | `now` | `now` | now |
 | `grant` / `edge` / `demote` / `leave` | `grant` / `change_edge` / `demote` / `leave` | now |
+| `share-into T G ROLE [--subgroup] [--place-anyway]` / `remove-edge-of G T` / `reach T` | `share_into` / `remove_edge_of` / `reach` | now |
 | `link make/redeem` / `link ls/revoke [--joiner A]` | `make_link` / `redeem` / `links`, `revoke_link`, `revoke_joiner` | now |
 | `card show/import/profile [PERSON]` | `contact_card` / `import_contact` / `profile`, `profile_of` | now |
 | `invite ls/accept/decline` | `invite_requests` / `accept_invite` / `decline_invite` | 2nd (`InviteId` has no text form yet) |

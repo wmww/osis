@@ -32,11 +32,14 @@ pub struct Edge {
     pub invite: Option<Role>,
     /// Roster snapshots only: key of the write that established a write+ edge.
     pub since: Option<Point>,
+    /// Tied to its member group's placement of the target (spec/permissions.md §2): carried,
+    /// never an authority.
+    pub tied: bool,
 }
 
 impl Edge {
     pub fn new(role: Role) -> Edge {
-        Edge { role, until: None, invite: None, since: None }
+        Edge { role, until: None, invite: None, since: None, tied: false }
     }
     /// Alive at `ts`; `None` is the end of time, where every edge with an `until` is gone.
     pub fn alive_at(&self, ts: Option<Ts>) -> bool {

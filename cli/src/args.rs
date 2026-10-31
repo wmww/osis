@@ -296,6 +296,22 @@ pub enum Cmd {
     },
     /// Remove this person's own edge on T
     Leave { t: String },
+    /// Place T in group G and give G a tied edge on T (it goes when the placement goes)
+    ShareInto {
+        t: String,
+        g: String,
+        role: String,
+        /// Place T as a subgroup of G, not an item
+        #[arg(long)]
+        subgroup: bool,
+        /// Place even when this node may not grant (T is then excluded)
+        #[arg(long)]
+        place_anyway: bool,
+    },
+    /// As an admin of group G, remove G's edge on T (a self-removal)
+    RemoveEdgeOf { g: String, t: String },
+    /// Per group listing T (or with a tied edge on it): tied, untied or excluded
+    Reach { t: String },
     /// Share links
     #[command(subcommand)]
     Link(LinkCmd),

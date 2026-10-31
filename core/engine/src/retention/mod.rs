@@ -1111,7 +1111,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ak, &Value::Int(0)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None };
+        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: false };
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
         lp.sync_all().unwrap();
         let before = lp.peers[0].engine.now();
@@ -1141,7 +1141,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ak, &Value::Int(0)).unwrap();
         let first = lp.peers[0].commit(m).unwrap().unwrap();
-        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None };
+        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: false };
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
         lp.sync_all().unwrap();
         let before = lp.peers[0].engine.now();

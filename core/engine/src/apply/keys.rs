@@ -621,7 +621,7 @@ mod tests {
     #[test]
     fn per_entry_secrets_ingestion_equals_whole_state_spec_crypto_4() {
         let servers = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
-        let edge = |role| ct::Edge { role, until: None, invite: None, since: None };
+        let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: false };
         for seed in 0..4u64 {
             let mut lp = LocalPeer::new(4, 530 + seed, WallMs(1_700_000_000_000)).unwrap();
             let ps: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.create_person(&servers).unwrap().0.person).collect();
@@ -687,7 +687,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: false };
         let g1 = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
         let g2 = *lp.peers[0].engine.grant(&t, &c, &edge).unwrap().commits.last().unwrap();
         let (p1, p2) = (lp.peers[0].engine.package(&g1).unwrap().unwrap(), lp.peers[0].engine.package(&g2).unwrap().unwrap());
@@ -804,7 +804,7 @@ mod tests {
     fn removed_reader(seed: u64) -> (LocalPeer, Tid) {
         let (mut lp, t) = grantee_world(seed, 3);
         let b = lp.peers[1].engine.tid();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: false };
         lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
         lp.sync(0, 1).unwrap();
         assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("/x/a").unwrap()).unwrap(), Some(Value::Int(1)));
@@ -820,7 +820,7 @@ mod tests {
         let (mut lp, t) = removed_reader(931);
         let c = lp.peers[2].engine.tid();
         lp.sync(2, 0).unwrap();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: false };
         lp.peers[0].engine.grant(&t, &c, &edge).unwrap();
         let before = lp.peers[0].engine.epochs(&t).unwrap().read.newest().unwrap();
         lp.peers[0].engine.demote(&t, &Demotion { member: c, new: None, presync: PreSync::Synced }).unwrap();
@@ -858,7 +858,7 @@ mod tests {
             let t = lp.peers[0].engine.new_thing(&mut mu, me);
             mu.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
             lp.peers[0].commit(mu).unwrap();
-            let edge = |role| ct::Edge { role, until: None, invite: None, since: None };
+            let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: false };
             lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
             lp.peers[0].engine.grant(&t, &m, &edge(Role::Read)).unwrap();
             lp.peers[0].engine.demote(&t, &Demotion { member: m, new: None, presync: PreSync::Synced }).unwrap();
@@ -990,7 +990,7 @@ mod tests {
     fn late_regrant_keeps_its_boxes_spec_perm_3() {
         let (mut lp, t) = grantee_world(914, 2);
         let b = lp.peers[1].engine.tid();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: false };
         lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
         lp.sync(0, 1).unwrap();
         let removal = lp.peers[0].engine.demote(&t, &Demotion { member: b, new: None, presync: PreSync::Synced }).unwrap();
@@ -1064,7 +1064,7 @@ mod tests {
     fn genuine_grant_applies_after_flood_spec_crypto_4() {
         let (mut lp, t) = grantee_world(910, 4);
         let b = lp.peers[1].engine.tid();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: false };
         let g = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
         flood(&mut lp, t, 40);
         let before = candidates(&lp, &t);
@@ -1102,7 +1102,7 @@ mod tests {
         lp.sync_all().unwrap();
         let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (me, a, x) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2));
-        let edge = |role| ct::Edge { role, until: None, invite: None, since: None };
+        let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: false };
         let g = thing_of(&mut lp, 0, me);
         lp.peers[0].engine.grant(&g, &a, &edge(Role::Admin)).unwrap();
         let y = tid(&mut lp, 3);
@@ -1166,7 +1166,7 @@ mod tests {
         lp.sync_all().unwrap();
         let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (me, a, x, b, z) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3), tid(&mut lp, 4));
-        let edge = |role| ct::Edge { role, until: None, invite: None, since: None };
+        let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: false };
         let g = thing_of(&mut lp, 0, me);
         lp.peers[0].engine.grant(&g, &a, &edge(Role::Admin)).unwrap();
         lp.peers[0].engine.grant(&g, &b, &edge(Role::Admin)).unwrap();
@@ -1272,7 +1272,7 @@ mod tests {
         let mut lp = LocalPeer::new(2, 943, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let (me, y) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-        let edge = ct::Edge { role: Role::Admin, until: None, invite: None, since: None };
+        let edge = ct::Edge { role: Role::Admin, until: None, invite: None, since: None, tied: false };
         let g = thing_of(&mut lp, 0, me);
         lp.peers[0].engine.grant(&g, &y, &edge).unwrap();
         let t = thing_of(&mut lp, 0, g);

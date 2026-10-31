@@ -226,7 +226,7 @@ fn medge(e: Option<edges::Edge>) -> Option<Edge> {
         role: role(e.role).unwrap_or(Role::Read),
         until: (e.until != edges::NEVER).then_some(osis_base::WallMs(e.until as u64)),
         invite: role(e.invite),
-        since: None,
+        since: None, tied: (e.until ^ e.role as u32 ^ e.invite as u32) & 1 == 1,
     })
 }
 

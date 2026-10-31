@@ -127,6 +127,7 @@ RULES = [
     ("spec/permissions.md", "3", "required rotation", "MUST do so before it next encrypts"),
     ("spec/permissions.md", "3", "left out", "MUST NOT box a member actor M"),
     ("spec/permissions.md", "3", "removal placement", "MUST, in the same sync and before any other upload"),
+    ("spec/permissions.md", "2", "tied edge removed", "MUST remove the edge when it may"),
     ("spec/permissions.md", "3", "drop lost secrets", "MUST drop those role secrets"),
     ("spec/permissions.md", "4", "stranded heartbeat", "It MUST place one with `stranded: true`"),
     ("spec/permissions.md", "5.1", "frontier received", "a frontier MUST NOT cover what A had not received"),
