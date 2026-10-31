@@ -22,6 +22,9 @@ struct FaultState {
     dead: bool,
     /// Syncs that fail next (`fail_syncs`).
     failing_syncs: u64,
+    /// `forbid_writes`: on, and the writes refused so far.
+    forbid: bool,
+    forbidden: u64,
 }
 
 /// A fault plan shared by the backends and root storages of one simulated device. Every durable
@@ -60,6 +63,15 @@ impl Faults {
         }
         Ok(())
     }
+    /// Tests: while on, every durable write fails without effect and is counted in `forbidden`,
+    /// so a test can assert that memory-only work never writes.
+    pub fn forbid_writes(&self, on: bool) {
+        self.lock().forbid = on;
+    }
+    /// Durable writes refused by `forbid_writes` so far.
+    pub fn forbidden(&self) -> u64 {
+        self.lock().forbidden
+    }
     /// Writes counted since the last `at` (or creation).
     pub fn writes(&self) -> u64 {
         self.lock().writes
@@ -72,6 +84,10 @@ impl Faults {
         let mut s = self.lock();
         if s.dead {
             return Err(BackendError::Crashed);
+        }
+        if s.forbid {
+            s.forbidden = s.forbidden.saturating_add(1);
+            return Err(BackendError::Fault);
         }
         let n = s.writes;
         s.writes = n.saturating_add(1);

@@ -111,6 +111,26 @@ fn memory_faults() {
     assert_eq!(reopened.get(b"d").unwrap(), None);
 }
 
+// spec: none (test hook): while writes are forbidden, a durable write fails without effect and
+// is counted.
+#[test]
+fn memory_forbid_writes() {
+    let mut b = MemoryBackend::new();
+    let put = |k: &[u8]| {
+        let mut w = WriteBatch::new();
+        w.put(k.to_vec(), b"v".to_vec());
+        w
+    };
+    b.faults().forbid_writes(true);
+    assert_eq!(b.commit(put(b"a")), Err(BackendError::Fault));
+    assert_eq!(b.commit_lazy(put(b"b")), Err(BackendError::Fault));
+    assert_eq!(b.faults().forbidden(), 2);
+    assert_eq!(b.get(b"a").unwrap(), None);
+    b.faults().forbid_writes(false);
+    b.commit(put(b"c")).unwrap();
+    assert_eq!(b.faults().forbidden(), 2);
+}
+
 mod file {
     use super::*;
     use osis_store::RedbBackend;
