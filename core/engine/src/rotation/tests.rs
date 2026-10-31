@@ -854,10 +854,13 @@ fn cycle_removals_leak_nothing_random() {
     cycle_removals(0..6);
 }
 
+/// Seeds: OSIS_CYCLE_START, OSIS_CYCLE_SEEDS.
 #[test]
 #[ignore = "tier 2"]
 fn cycle_removals_leak_nothing_random_large() {
-    cycle_removals(1_000..1_200);
+    let s = osis_base::testenv::Seeds::from_env("OSIS_CYCLE_START", "OSIS_CYCLE_SEEDS", 1_000..1_200);
+    s.announce("cycle_removals_leak_nothing_random_large");
+    cycle_removals(s.range);
 }
 
 /// `cycle_removals_leak_nothing_random` over `seeds`; peers: 0 and 2 admins, 1 the party D.
