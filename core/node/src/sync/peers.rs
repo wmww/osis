@@ -47,6 +47,12 @@ pub(crate) fn serverless(servers: &[Address]) -> bool {
     servers.iter().all(is_peer)
 }
 
+/// The keys of the servers a label at `servers` syncs with: `peer://` nodes are never dialed
+/// from a label's list, so a complete pass never waits for them there (`serverless`).
+pub(crate) fn server_keys(servers: &[Address]) -> impl Iterator<Item = super::state::ServerKey> + '_ {
+    servers.iter().filter(|a| !is_peer(a)).map(|a| a.key)
+}
+
 /// A co-reader node this node may dial.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Peer {

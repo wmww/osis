@@ -336,7 +336,8 @@ pub(crate) const RELINK_BACKOFF_MAX_MS: u64 = 7 * 24 * 3_600_000;
 pub(crate) struct Synced {
     key: (u64, usize, u64),
     labels: Vec<(Tid, Arc<GroupLabel>)>,
-    /// Per label, the actor its keys derive from and its servers (`complete_pass`).
+    /// Per label, the actor its keys derive from and its servers, `peer://` nodes left out
+    /// (`complete_pass`, `peers::server_keys`).
     pub actors: BTreeMap<LabelId, (Tid, Vec<ServerKey>)>,
 }
 
@@ -970,7 +971,7 @@ impl SyncEngine {
             }
         } else {
             let labels = self.compute_labels(now);
-            let actors = labels.iter().map(|(g, l)| (l.id, (self.engine.core.secret_actor(g).unwrap_or(*g), l.servers.iter().map(|a| a.key).collect()))).collect();
+            let actors = labels.iter().map(|(g, l)| (l.id, (self.engine.core.secret_actor(g).unwrap_or(*g), peers::server_keys(&l.servers).collect()))).collect();
             self.synced = Synced { key, labels, actors };
         }
         self.synced.labels.clone()

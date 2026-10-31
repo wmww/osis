@@ -484,3 +484,30 @@ fn deposit_chain_completed_on_local_label_spec_sync_5() {
     let cards: Vec<_> = run.iter().filter(|x| x.0 == "/node").collect();
     assert!(!cards.is_empty() && cards.iter().all(|x| x.3), "the card was promoted: {run:?}");
 }
+
+// spec/permissions.md §9 (link finalized: when K's labels have no server, at once by the node
+// that wrote the seed thing), spec/sync.md §5 (a label listing `peer://` nodes only is served by
+// this node, never dialed from `/label`): an expired link whose K label lists no server, or
+// only a `peer://` node, is finalized by its maker once it expires.
+#[test]
+fn expired_link_at_no_server_finalized_spec_permissions_9() {
+    for servers in [Vec::new(), vec![osis_label::Address { url: "peer://".into(), key: [0x99; 32] }]] {
+        let mut net = Net::new();
+        let a = net.node(1, &[]);
+        let (pa, done) = net.engine(a).create_person(&[]).unwrap();
+        let acts = net.sync(a).carry_out(done).unwrap();
+        net.actions(a, acts);
+        let t = net.group(a, &[], &[]);
+        net.run();
+        let until = WallMs(net.now() + 3_600_000);
+        let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: Some(until), servers: servers.clone(), peers: Vec::new(), single_use: false };
+        let (link, _, done) = net.engine(a).create_link(&pa.person, &spec).unwrap();
+        let acts = net.sync(a).carry_out(done).unwrap();
+        net.actions(a, acts);
+        net.run();
+        assert!(net.engine(a).held_links().unwrap().iter().any(|h| h.k == link.k && h.here), "{servers:?}: the maker holds the link");
+        net.advance(3_600_000 + 60_000);
+        net.run();
+        assert!(net.engine(a).links_due().unwrap().is_empty(), "{servers:?}: finalized at expiry");
+    }
+}
