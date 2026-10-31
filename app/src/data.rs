@@ -37,9 +37,9 @@ pub enum Kind {
     View(View),
     /// A tag (`tag.0`).
     Tag,
-    /// An event (any `/event/` aspect).
+    /// An event (any `event:*` aspect).
     Event,
-    /// A contact (any `/contact/` aspect).
+    /// A contact (any `contact:*` aspect).
     Contact,
     /// Anything else: a note (`name.0`, `body.0`) or an empty thing.
     Note,

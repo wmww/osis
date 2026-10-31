@@ -824,7 +824,7 @@ impl Osis {
     }
 
     /// This person's profile thing (notes/std.md): the target of its contact card, made on first
-    /// use. The person writes its profile aspects on it (`name.0`, `/contact/*`); everyone holding
+    /// use. The person writes its profile aspects on it (`name.0`, `contact:*`); everyone holding
     /// the card reads them.
     pub fn profile(&self) -> Result<Tid> {
         let card = self.contact_card()?;

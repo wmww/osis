@@ -477,13 +477,15 @@ mod tests {
         assert_eq!((b.version(), b.tid(), b.admin(), b.lifetime()), (12, Some(t), true, Lifetime::Ephemeral));
         assert_eq!(Ak::new("roles.0").unwrap().segments().count(), 1);
         assert_eq!(Ak::new("x.3*").unwrap().lifetime(), Lifetime::Signal);
+        let admin = Ak::new("x.0^").unwrap();
+        assert_eq!((admin.admin(), admin.lifetime()), (true, Lifetime::Durable));
         assert!(Ak::new("note:body.1").unwrap().successor_of(&a));
         assert!(Ak::new("note:body.1~").unwrap().successor_of(&a));
         assert!(!a.successor_of(&a) && !Ak::new("note:bod.1").unwrap().successor_of(&a) && !Ak::new(format!(":{t}:note:body.1")).unwrap().successor_of(&a));
         let max = format!("x.{}", u64::MAX);
         assert_eq!(Ak::new(max).unwrap().version(), u64::MAX);
         for bad in [
-            "", "x", "x.", ".0", "/x.0", "x.00", "x.01", "x.-1", "X.0", "1x.0", "x:.0", ":x.0", "x::y.0", "x-y.0", "x.0~^", "x.0~*", "x.0^^",
+            "", "x", "x.", ".0", "/x.0", "x.00", "x.01", "x.-1", "X.0", "1x.0", "x:.0", ":x.0", "x::y.0", "x-y.0", "x.0~^", "x.0~*", "x.0*~", "x.0~~", "x.0^^", "x^.0", "x.^", "x.0^0",
             "x.0 ", "x.0.0", "x.18446744073709551616", "x:Y.0", ":AAAAAAAAAAAAAAAAAAAA.0", ":AAAAAAAAAAAAAAAAAAA:x.0", ":AAAAAAAAAAAAAAAAAAA=:x.0",
         ] {
             assert_eq!(Ak::new(bad), Err(AkError), "{bad}");
