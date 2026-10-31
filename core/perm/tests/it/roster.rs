@@ -65,22 +65,27 @@ fn neutral(w: &World, thing: Tid, author: Tid, things: &[Tid], probes: &[Point])
     if before == after && before == compacted {
         return None;
     }
-    // a snapshot may repair sticky residue (core/test/tla/membership MC_sticky_snap), and the
-    // repair may cascade (writes the repaired one enabled apply, and may genuinely drop others).
-    // Up to the first changed write both walks see the same state, so that write's status
-    // differs only by D: it must be a residue drop the snapshot undid. Compacted or not alike.
+    // a snapshot may repair sticky residue (core/test/tla/membership MC_sticky_snap), or leave
+    // some (it drops a dropped write's transient effect, OSIS_PERM_SEED=89000), and either may
+    // cascade (writes the repaired one enabled apply, and may genuinely drop others). Up to the
+    // first changed write both walks see the same state, so that write's status differs only
+    // by D: it must be a residue drop the snapshot undid or made. Compacted or not alike.
     let at = |x: &WriteId| match x {
         WriteId::Op(c, _) => tl.membership_commit(c).map(|m| m.point()),
         WriteId::Snapshot(c) => tl.roster_snapshot(c).map(|s| s.point()),
     };
     let changed: Vec<(Option<Point>, WriteId)> = before.applied.symmetric_difference(&after.applied).map(|x| (at(x), *x)).collect();
     let first = changed.iter().map(|c| c.0).min();
-    let repaired = |x: &WriteId| residue.contains(x) && after.applied.contains(x);
+    // one the snapshot made is a sticky drop proper: its cause is dropped too
+    let t2 = Timeline::evaluate(&w2.held());
+    let left = common::residue(&t2);
+    let sticky = |x: &WriteId| t2.dropped().get(x).is_some_and(|p| t2.dropped().keys().any(|d| d.commit() == p.commit));
+    let repaired = |x: &WriteId| if after.applied.contains(x) { residue.contains(x) } else { left.contains(x) && sticky(x) };
     if after == compacted && first.is_some_and(|f| f.is_some() && changed.iter().filter(|c| c.0 == f).all(|c| repaired(&c.1))) {
         RESIDUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return None;
     }
-    Some(format!("snapshot of {thing:?} changed\nbefore {before:?}\nafter  {after:?}\ncompacted {compacted:?}\nledger {ledger:#?}\ndropped {:?}\nnodes {:?}", tl.dropped(), w.commits.iter().map(|c| (c.id, c.author, c.t, c.ops.clone())).collect::<Vec<_>>()))
+    Some(format!("snapshot of {thing:?} changed\nbefore {before:?}\nafter  {after:?}\ncompacted {compacted:?}\nledger {ledger:#?}\ndropped {:?}\nnodes {:?}", tl.dropped(), w.commits.iter().map(|c| (c.id, c.author, c.t, c.ops.clone(), c.recv.clone())).collect::<Vec<_>>()))
 }
 
 /// Content probes by every node at a few times, with random receipts.
@@ -142,7 +147,7 @@ fn run_joint(samples: u64, seed: u64) {
             }
         }
     }
-    eprintln!("{samples} histories; sticky-residue snapshots that repaired drops so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
+    eprintln!("{samples} histories; snapshots that repaired or left sticky residue so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting any actor of a random joint history (mutual membership, owner chains)
@@ -199,7 +204,7 @@ fn run_edges(samples: u64, seed: u64) {
             panic!("seed {seed:#x} sample {s}: {d}\n{h}");
         }
     }
-    eprintln!("{samples} histories; sticky-residue snapshots that repaired drops so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
+    eprintln!("{samples} histories; snapshots that repaired or left sticky residue so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting a thing with `until`, invites, links and self-removals is neutral.
@@ -266,7 +271,7 @@ fn run_snapshot(samples: u64, seed: u64) {
             }
         }
     }
-    eprintln!("{samples} histories; sticky-residue snapshots that repaired drops so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
+    eprintln!("{samples} histories; snapshots that repaired or left sticky residue so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting P (owning G) or G after churn, demotions and earlier snapshots is
@@ -631,4 +636,41 @@ fn resnapshot_repairs_self_supported_drop_spec_permissions_6() {
     assert!(t2.is_applied(&grant), "the snapshot repairs the residue");
     assert_eq!(t2.role(&n[0], &a0, At::END), Some(Admin));
     assert_eq!(neutral(&w, a0, n[1], &[a0, a1, a2], &[]), None);
+}
+
+
+/// §5.1, §6 (OSIS_PERM_SEED=89000, snapshot): n1 (admin on P, so on G) grants n2 admin on P
+/// at 4, then sets n2's edge on G to write at 8, unaware of n2's leave of G at 2. n2 holds G
+/// through P at 8, so that write is no fall and audits nothing; k's removal of n1 at 12 drops
+/// both n1 writes, and n2's leave stands. A re-snapshot of P drops the grant's transient
+/// tenure (its ledger holds only n1's), so the write at 8 demotes n2 from the edge as restored
+/// and drops the leave, and stays dropped after k's audit drops the write: the snapshot leaves
+/// sticky residue where there was none (as a plain write of n2 in place of the leave would).
+#[test]
+fn resnapshot_leaves_sticky_drop_spec_permissions_6() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let k = n[0];
+    let p = w.thing(k);
+    let g = w.thing(p);
+    let all0: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    let only = |i: usize, t: u64| -> Vec<(Tid, u64)> { vec![(n[i], t)] };
+    w.set(k, p, n[1], edge(Admin), 0, &all0);
+    w.set(k, g, n[2], edge(Admin), 0, &all0);
+    let leave = w.set(n[2], g, n[2], None, 2, &only(2, 2));
+    w.set(n[1], p, n[2], edge(Admin), 4, &only(1, 4));
+    let lower = w.set(n[1], g, n[2], edge(Write), 8, &only(1, 8));
+    w.set(k, p, n[1], None, 12, &only(0, 12));
+    let (leave, lower) = (WriteId::Op(leave, 0), WriteId::Op(lower, 0));
+    let tl = Timeline::evaluate(&w.held());
+    assert!(tl.is_applied(&leave) && tl.dropped().contains_key(&lower));
+    assert_eq!(tl.role(&n[2], &g, At::END), None);
+    assert!(residue(&tl).is_empty());
+    let mut w2 = w.clone();
+    w2.snapshot_state(k, p, tl.roster_state(&p), END_T);
+    let t2 = Timeline::evaluate(&w2.held());
+    assert!(t2.dropped().contains_key(&leave) && t2.dropped().contains_key(&lower));
+    assert_eq!(residue(&t2), BTreeSet::from([leave]));
+    assert_eq!(t2.role(&n[2], &g, At::END), Some(Admin));
+    assert_eq!(neutral(&w, p, k, &[p, g], &[]), None);
 }
