@@ -10,7 +10,7 @@ use osis_commit::PurgeItem;
 use osis_base::{Role, Tid, Ts, Value, WallMs};
 use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
 use osis_node::{ChangeId, Mutation};
-use osis_schema::core_types::{GROUP, is_membership_class};
+use osis_schema::core_types::{GROUP, PLACED, is_membership_class};
 use osis_schema::{AspectKey, CaseId, Codec, Path, PathError, Retention, Step, type_at, validate_write};
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -122,10 +122,11 @@ impl<'d> Write<'d> {
         Ok(t)
     }
 
-    /// Gives `tid` an empty `/group` if it has none (a group thing).
+    /// Gives `tid` an empty `/group` if it is no group yet (neither `/group` nor ephemeral
+    /// placements, `/placed`).
     pub fn make_group(&mut self, tid: Tid) -> Result<()> {
         let t = self.known(tid)?;
-        if !self.created.contains(&t) && self.db.get(t, GROUP)?.is_some() {
+        if !self.created.contains(&t) && (self.db.get(t, GROUP)?.is_some() || self.db.get(t, PLACED)?.is_some()) {
             return Ok(());
         }
         self.group_expiry(t, None)?;

@@ -89,7 +89,7 @@ pub struct Eph {
     aspects: HashMap<Tid, BTreeMap<Ak, EphAspect>>,
     /// Expiry times and the aspects with writes expiring then.
     timers: BTreeMap<u64, BTreeSet<(Tid, Ak)>>,
-    /// The ephemeral side of each `/group` that has one, as read (`groups_of`).
+    /// Each `/placed` held, as read (`groups_of`).
     defs: BTreeMap<Tid, place::Def>,
     /// Own batches for undo.
     log: log::Log,

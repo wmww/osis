@@ -74,8 +74,7 @@ fn local(net: &mut Net, n: usize) {
     net.actions(n, acts);
 }
 
-/// Node `n` makes an ephemeral window owned by `g`, placed in `g` (the ephemeral side of its
-/// `/group`), with `/win/state` = `v`.
+/// Node `n` makes an ephemeral window owned by `g`, placed in `g` (its `/placed`), with `/win/state` = `v`.
 fn window(net: &mut Net, n: usize, g: Tid, v: &str) -> Tid {
     let e = net.engine(n);
     let mut m = Mutation::new();

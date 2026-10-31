@@ -318,7 +318,7 @@ impl Engine {
     }
 
     /// Whether `t` is in the closure of `g` (`Engine::closure` and the ephemeral things placed in
-    /// it, transitively through the ephemeral side of `/group`), without walking it.
+    /// it, transitively through `/placed`), without walking it.
     pub fn in_ephemeral_closure(&self, g: &Tid, t: &Tid) -> bool {
         t == g || self.closure(g).contains(t) || self.groups_of(t).contains(g)
     }

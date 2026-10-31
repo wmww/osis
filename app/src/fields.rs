@@ -39,7 +39,7 @@ pub struct Row {
 }
 
 /// Core aspects that are the system's, not the user's.
-const HIDDEN: [&str; 13] = ["/created", "/group", "/groups", "/members", "/keys", "/secrets", "/label", "/reach", "/seen", "/tenures", "/node", "/moved", "/was"];
+const HIDDEN: [&str; 14] = ["/created", "/group", "/placed", "/groups", "/members", "/keys", "/secrets", "/label", "/reach", "/seen", "/tenures", "/node", "/moved", "/was"];
 
 impl Data {
     /// The fallback view's rows for `t`, by aspect key.

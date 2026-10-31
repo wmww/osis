@@ -345,6 +345,13 @@ fn memory_overlay_rows() {
         t.set_memory(true);
         t.put_local(b"z/4", b"memory", Shred::No).unwrap();
         assert!(t.remove_local(b"z/2", Shred::No).unwrap());
+        // a whole memory table dropped and a new one made, read back in the same transaction
+        t.drop_table(&t1, &a, 0).unwrap();
+        assert_eq!(t.table(&t1, &a, 0).unwrap(), None);
+        let tab = t.create_table(&t1, &a, 1).unwrap();
+        t.table_put(tab, b"n", b"1".to_vec(), Shred::No).unwrap();
+        assert_eq!(t.table_get(tab, b"n").unwrap(), Some(b"1".to_vec()));
+        assert!(t.table_remove(ix, b"k2", Shred::No).unwrap());
     }
     {
         let mut t = s.transaction(&mut rng).unwrap();
@@ -352,6 +359,10 @@ fn memory_overlay_rows() {
         assert_eq!(t.get_local(b"z/4").unwrap(), None);
         assert_eq!(t.get_blob(&BlobId([7; 32])).unwrap(), Some(b"blob".to_vec()));
         assert_eq!(t.counter(&t1, &a).unwrap(), 4);
+        let tab = t.table(&t1, &a, 0).unwrap().expect("dropped table restored");
+        assert_eq!(t.table_get(tab, b"x").unwrap(), Some(b"y".to_vec()));
+        assert_eq!(t.table(&t1, &a, 1).unwrap(), None);
+        assert_eq!(t.table_len(ix).unwrap(), 3);
     }
     drop(s);
     let mut s = reopen(&dev);
@@ -365,4 +376,36 @@ fn memory_overlay_rows() {
     assert_eq!(t.get_aspect(&t1, &b).unwrap(), Some(unit));
     let rows: Vec<_> = t.table_range(ix, b"", None, 10).unwrap().into_iter().map(|(k, _)| k).collect();
     assert_eq!(rows, vec![b"k1".to_vec(), b"k3".to_vec()]);
+}
+
+// notes/local-store.md, Memory overlay: a memory-mode transaction far past the spill threshold
+// writes nothing to the backend (memory rows never join the early write-out).
+// spec/commits.md §1
+#[test]
+fn memory_rows_never_spill() {
+    let dev = MemDevice::new();
+    let mut rng = SeededRng::from_u64(12);
+    let cfg = StoreConfig { spill_bytes: 100, ..cfg() };
+    let mut s = Store::create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
+    let ix = {
+        let mut t = s.transaction(&mut rng).unwrap();
+        let ix = t.index(b"ix").unwrap();
+        t.commit().unwrap();
+        ix
+    };
+    let writes = dev.faults.writes();
+    let mut t = s.transaction(&mut rng).unwrap();
+    t.set_memory(true);
+    let tb = t.create_table(&tid(1), &ak("/m"), 0).unwrap();
+    for i in 0..200u32 {
+        t.table_put(tb, &i.to_be_bytes(), vec![1; 300], Shred::No).unwrap();
+        t.table_put(ix, &i.to_be_bytes(), vec![2; 300], Shred::No).unwrap();
+        t.put_local(&[b"m/".as_slice(), &i.to_be_bytes()].concat(), &[3; 300], Shred::No).unwrap();
+        t.put_blob(&BlobId([i as u8; 32]), vec![4; 300]).unwrap();
+    }
+    t.commit().unwrap();
+    assert_eq!(dev.faults.writes(), writes, "no backend write");
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert_eq!(t.table_len(tb).unwrap(), 200);
+    assert_eq!(t.table_len(ix).unwrap(), 200);
 }
