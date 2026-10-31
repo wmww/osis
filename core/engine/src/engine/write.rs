@@ -526,6 +526,12 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         }
     }
     if memory {
+        // an aspect's class is its schema lifetime: a memory commit writes memory-class aspects
+        // only (a durable-schema write on a memory thing is a durable write persisting it,
+        // spec/data-model.md §1)
+        if m.aspects.values().any(|a| !matches!(a.lifetime, Lifetime::Ephemeral | Lifetime::Presence)) {
+            return Err(Error::Misuse("a memory commit writes ephemeral aspects only"));
+        }
         // a memory commit's records are held here at once and travel beside its deltas
         // (spec/commits.md §2): a thing made with no write is known all the same
         for rec in std::mem::take(&mut m.creates).into_values() {

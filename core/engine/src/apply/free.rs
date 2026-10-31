@@ -55,6 +55,16 @@ pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
             tx.core.ix.freeing.insert(t);
         }
     }
+    // a pending memory commit all of whose things are freed goes too (its records ride in it,
+    // so it would bring them back when it applied)
+    for (c, bytes) in tx.txn.memory_pending()? {
+        let Ok(b) = osis_commit::CommitBlob::decode(&bytes) else { continue };
+        if !b.header.aspects.is_empty() && b.header.aspects.iter().all(|a| freed.contains(&a.tid)) {
+            tx.txn.remove_pending(&c, Shred::No)?;
+            tx.core.ix.pending.remove(&c);
+            tx.core.waits.unpended(&c);
+        }
+    }
     let cands: BTreeSet<CommitId> = freed.iter().flat_map(|t| tx.core.ix.by_thing.get(t).into_iter().flatten().copied()).collect();
     for c in cands {
         unindex_commit(tx, &c)?;
@@ -142,6 +152,10 @@ mod tests {
         Ak::new(s).unwrap()
     }
 
+    fn eph(s: &str) -> osis_schema::Untyped {
+        osis_schema::Lifetimes::ephemeral(ak(s))
+    }
+
     // issues/eph-unify.md step 3 (freeing): memory commits applied on memory things, then those
     // things freed, leave every journaled index (and perm's view) as if the commits had never
     // applied, and no memory row but the session's counters: an index applying fills and
@@ -161,20 +175,20 @@ mod tests {
         let mut m = Mutation::new();
         let top = e.new_thing(&mut m, g);
         let leaf = e.new_thing(&mut m, top);
-        m.set(leaf, &ak("/t/a"), &Value::Str("x".into())).unwrap();
-        m.expires(leaf, &ak("/t/a"), WallMs(e.now().0 + 60_000)).unwrap();
+        m.set(leaf, &eph("/t/a"), &Value::Str("x".into())).unwrap();
+        m.expires(leaf, &eph("/t/a"), WallMs(e.now().0 + 60_000)).unwrap();
         e.commit_in_memory(m).unwrap().unwrap();
         for i in 0..2 {
             let mut m = Mutation::new();
-            m.set(leaf, &ak("/t/a"), &Value::Str(format!("y{i}"))).unwrap();
-            m.set(top, &ak("/t/b"), &Value::Set([Value::Str(format!("z{i}"))].into())).unwrap();
+            m.set(leaf, &eph("/t/a"), &Value::Str(format!("y{i}"))).unwrap();
+            m.set(top, &eph("/t/b"), &Value::Set([Value::Str(format!("z{i}"))].into())).unwrap();
             e.commit_in_memory(m).unwrap().unwrap();
         }
         // an owner no commit is on, of a thing one is on
         let mut m = Mutation::new();
         let boss = e.new_thing(&mut m, g);
         let kid = e.new_thing(&mut m, boss);
-        m.set(kid, &ak("/t/a"), &Value::Str("k".into())).unwrap();
+        m.set(kid, &eph("/t/a"), &Value::Str("k".into())).unwrap();
         e.commit_in_memory(m).unwrap().unwrap();
         // the first write expires: held value-less, its timer gone
         lp.advance(61_000);

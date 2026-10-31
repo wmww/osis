@@ -222,6 +222,15 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         })
         .map(|p| (p.ai, p.di))
         .collect();
+    // a memory part goes only to a memory-class aspect: one on an aspect of durable deltas here
+    // (schemas disagree, or a writer broke the rule) or on a core aspect but `/placed` is dropped
+    // alone, as its rows would shadow durable ones (spec/data-model.md §1)
+    let mut bad = bad;
+    if memory {
+        let placed = osis_schema::AspectKey::ak(&osis_schema::core_types::PLACED);
+        let core = |ak: &str| ak.matches('/').count() == 1 && ak != placed;
+        bad.extend(blob.parts.iter().filter(|p| h.aspects.get(p.ai).is_some_and(|a| core(a.ak.as_str()) || durable_class(tx, &a.tid, &a.ak))).map(|p| (p.ai, p.di)));
+    }
     if !bad.is_empty() {
         blob.parts.retain(|p| !bad.contains(&(p.ai, p.di)));
         let now = tx.now();
@@ -272,12 +281,26 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     Ok(Exam::Ready(out))
 }
 
+/// Whether `(tid, ak)` holds durable rows here: deltas held and the aspect not memory class (a
+/// memory commit's rows mark it memory).
+fn durable_class(tx: &Tx<'_>, tid: &Tid, ak: &osis_base::Ak) -> bool {
+    !tx.txn.is_memory_aspect(tid, ak) && tx.core.ix.by_aspect.get(&(*tid, ak.clone())).is_some_and(|s| !s.is_empty())
+}
+
 /// Applies or stores one decoded commit blob.
-fn ingest_blob(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<Ingested> {
-    // an ephemeral commit is never stored (`Engine::ingest_ephemeral`)
-    if blob.header.ephemeral.is_some() {
-        return Err(Error::BadInput("an ephemeral commit on the durable path"));
+/// A memory commit (session form, spec/commits.md §2-§3) is applied as memory work: every row it
+/// derives stays in the store's memory overlay, pending ones included.
+fn ingest_blob(tx: &mut Tx<'_>, blob: CommitBlob, origin: Origin) -> Result<Ingested> {
+    match (blob.header.ephemeral, blob.header.form) {
+        (None, _) => ingest_class(tx, blob, origin),
+        (Some(osis_commit::EphClass::Plain | osis_commit::EphClass::Presence), osis_commit::Form::Session(_)) => tx.in_class(true, |tx| ingest_class(tx, blob, origin)),
+        // own covers and relay-only commits stay with `Engine::ingest_ephemeral` until memory
+        // commits replace them (issues/eph-unify.md step 3)
+        _ => Err(Error::BadInput("an ephemeral snapshot or relay-only commit on the commit path")),
     }
+}
+
+fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<Ingested> {
     let id = blob.id();
     if tx.core.ix.commits.contains_key(&id) {
         return late_parts(tx, &id, blob);
@@ -448,12 +471,18 @@ impl Engine {
     pub fn ingest_from(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>) -> Result<Ingested> {
         let _s = crate::costs::span("ingest");
         let r = self.run(|tx| {
-            for (id, b) in blobs {
-                if osis_label::blob_id(&b) == id {
-                    tx.txn.put_blob(&id, b)?;
+            let decoded = CommitBlob::decode(bytes);
+            // a memory commit links no blob and stores nothing durable (spec/commits.md §2)
+            if matches!(&decoded, Ok(b) if b.header.ephemeral.is_some()) {
+                tx.set_memory();
+            } else {
+                for (id, b) in blobs {
+                    if osis_label::blob_id(&b) == id {
+                        tx.txn.put_blob(&id, b)?;
+                    }
                 }
             }
-            match CommitBlob::decode(bytes) {
+            match decoded {
                 Ok(blob) => ingest_blob(tx, blob, Origin::Remote),
                 Err(e) if e.class() == ErrorClass::Parked => {
                     let id = raw_id(bytes)?;
