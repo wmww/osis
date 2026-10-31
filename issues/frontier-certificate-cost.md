@@ -1,0 +1,12 @@
+# Demotion frontiers are replicated as certificates under every label a person writes to, forever
+> Summary: a device removal from person P carries a frontier over every (tid, ak) the device ever wrote (10 bytes each; 10^5-10^6 aspects for a long-lived device: megabytes, by link); that commit is a chain certificate of every later device that device granted, so its frontier chunks are re-encrypted and uploaded under every label those devices write to (`place_linked`), and the ledger of P's roster snapshot (which only the recovery key can write) carries it forward for good. Every verifier fetches the whole frontier to judge any one write. Cost grows as device churn × aspects written × labels, per person, and is never compacted away.
+> Tags: performance, permissions, sync, spec
+
+Where it comes from: spec/permissions.md §4 (certificates include every held demotion of the chain's authors, with frontier), §5.1 (frontier covers every aspect of everything the demoted authority gave write on), §6 (ledger entries never dropped, frontier inline or by link), spec/sync.md §3 (frontier chunks go under the label as certificate blobs); notes/permissions.md Revocation ("a frontier can reach megabytes ... every later roster snapshot re-carries it").
+
+Order of magnitude: a heavy user with 10^5 aspects and a device replaced yearly: ~1 MB per removal, placed under every label the successor device writes (hundreds), and in P's ledger forever. A team label with 100 such members accumulates ~1 GB of frontier chunks a decade in, which every new member fetches to judge old writes (`linked_frontiers` waits for the blobs before the roster snapshot applies).
+
+Directions:
+- Make the frontier indexable rather than fetched whole: a paged sorted map (the crdt's paging, spec/crdt.md §8) keyed by (tid, ak) so a verifier judging one write fetches O(log) pages. Wire change to the `frontier` type; the ledger could then reference pages by link without re-uploading unchanged ones (reuse across snapshots was dropped because receivers must fetch everything before judging; with on-demand fetch that reason goes).
+- Per-node global counters (one counter per node, gaps allowed) shrink a frontier to one number per node plus gaps; rejected before because it changes dot semantics, runs and the model. Worth re-weighing against the replication factor above.
+- Cheaper placement: a certificate copy could carry the frontier by hash and let the verifier fetch it from the demotion's own label; today the copy brings the chunks because a label's readers may not read that label.

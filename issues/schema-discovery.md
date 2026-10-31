@@ -1,0 +1,7 @@
+# No way to find a schema by ID: foreign data reads as numbered fields
+> Summary: the purpose is many apps, generic tools and agents sharing data "like a file format", and every delta names its (schema ID, revision), but the core distributes no schemas (owner decision) and the spec names no convention for where a schema with a given ID can be found. A generic tool or agent meeting an unknown schema ID sees a map with integer keys and nothing to resolve it with, which defeats the stated purpose for anyone but the app that minted the schema.
+> Tags: schema, api, spec, owner-call
+
+Observed: spec/data-model.md §10 defines the schema value and says "The core never distributes schemas"; `/node.schemas` lists IDs and revisions a node has, not the schemas; spec/versioning.md §3 detects collisions by ID. File formats solve this with magic numbers plus a registry or embedded descriptors.
+
+Directions (any is a convention, not core merge): a well-known schema thing per schema ID (tid derived from the schema ID with a fixed owner-less rule is impossible since tids need an owner; instead a `/schema` core aspect on a thing the schema's maintainer publishes, found through a registry group or a contact card), an optional `/node.schemas` extension carrying the canonical schema bytes (a few KB each) so co-readers can read what their peers write, or an out-of-band URL registry. The schema value already has a canonical encoding and hash, so authenticity is cheap once a place exists.

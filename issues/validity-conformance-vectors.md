@@ -1,0 +1,5 @@
+# No conformance artifact for validity: a second implementation cannot be checked against the spec
+> Summary: spec/permissions.md §5-§6 and spec/commits.md §5 were tuned by thousands of harness-found order-dependence cases (notes/mvp-progress.md round 13), and the reference models (`core/test/crdt-model`, `core/test/membership-model`) are the real definition of several rules; the conformance vectors (`core/test/vectors`) cover bytes (CBOR, crypto, commits, blobs, steps) but no judgment: there is no "held set in, verdicts out" vector, so a compatible implementation (spec/overview.md's stated goal) has nothing to test its validity, cover, death-dating or un-merge logic against except reading osis's code.
+> Tags: tests, permissions, retention, spec
+
+Ask: freeze a vector subject per rule family: a set of commits (bytes), the receiving node's identity, and the expected outcome (per-delta validity, roster, epoch starts, D, body coverage, deaths, state digests), generated from the order harness's shrunk seeds and the models' pinned counterexamples. Each vector doubles as a regression test and as the thing spec text can be checked against when it drifts.
