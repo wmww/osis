@@ -107,6 +107,15 @@ impl Chains {
         c.insert(*thing);
         Some(c)
     }
+
+    /// Whether `node` reaches `m` and `tg` reaches `thing` just before `at`: an edge from `m`
+    /// to `tg` would be on the chain (`None`: not `whole`).
+    fn through(&mut self, node: &Tid, thing: &Tid, m: &Tid, tg: &Tid, at: Point) -> Option<bool> {
+        self.chain(node, thing, at)?;
+        let (mi, ti) = (*self.dense.ids.get(m)?, *self.dense.ids.get(tg)?);
+        let ((_, reached), to) = (self.roles.get(node)?, self.backs.get(thing)?);
+        Some(reached.contains(&mi) && to.get(ti).copied().unwrap_or(false))
+    }
 }
 
 /// Held membership commits by the member and target of their edge writes and roster snapshots
@@ -135,6 +144,18 @@ fn search(start: &Tid, next: impl Fn(&Tid) -> Vec<Tid>) -> BTreeSet<Tid> {
         }
     }
     seen
+}
+
+/// Every commit writing one edge goes along, with its author's chains at its point.
+fn add_edge(ws: &[EdgeWrite], out: &mut Certificates, todo: &mut BTreeSet<(Point, Tid, Tid)>) {
+    for cm in ws.iter().map(|w| &w.commit) {
+        if out.commits.insert(cm.id) {
+            for o in &cm.ops {
+                todo.insert((cm.point(), cm.author, o.target));
+                todo.insert((cm.point(), cm.author, o.member));
+            }
+        }
+    }
 }
 
 /// A held record that may demote a node whose chain it is on: an edge write lowering
@@ -242,17 +263,38 @@ impl Timeline {
     }
 
     fn chain_searched(&self, node: &Tid, thing: &Tid, at: Point, changes: &[Set]) -> BTreeSet<Tid> {
+        let (from, to) = self.reach_searched(node, thing, at, changes);
+        let mut c: BTreeSet<Tid> = from.into_keys().filter(|t| to.contains(t)).collect();
+        c.insert(*node);
+        c.insert(*thing);
+        c
+    }
+
+    /// `roles_from(node)` and `reach_backward(thing)` just before `at`, by a search over `View`.
+    fn reach_searched(&self, node: &Tid, thing: &Tid, at: Point, changes: &[Set]) -> (BTreeMap<Tid, Role>, BTreeSet<Tid>) {
         let mut edges = self.walked.initial.clone();
         for c in changes.iter().take_while(|c| c.0 < at) {
             edges.set(c.1, c.2, c.3);
         }
         let edges = EdgesAt::new(&edges);
         let view = View::at(&self.input.owners, &edges, Some(at.ts));
-        let to = view.reach_backward(thing);
-        let mut c: BTreeSet<Tid> = view.roles_from(node).into_keys().filter(|t| to.contains(t)).collect();
-        c.insert(*node);
-        c.insert(*thing);
-        c
+        (view.roles_from(node), view.reach_backward(thing))
+    }
+
+    /// Whether an edge from `m` to `tg` would be on `node`'s chain to `thing` just before `at`:
+    /// a write lowering it audits from the edge as restored (§5.1 step 4), so it may demote
+    /// `node` when `node` has left that edge itself.
+    fn through(&self, node: &Tid, thing: &Tid, m: &Tid, tg: &Tid, at: Point, chains: &mut Chains) -> bool {
+        if let Some(b) = chains.through(node, thing, m, tg, at) {
+            #[cfg(debug_assertions)]
+            {
+                let (from, to) = self.reach_searched(node, thing, at, &chains.changes);
+                debug_assert!(b == (from.contains_key(m) && to.contains(tg)));
+            }
+            return b;
+        }
+        let (from, to) = self.reach_searched(node, thing, at, &chains.changes);
+        from.contains_key(m) && to.contains(tg)
     }
 
     /// Things reachable from `node` over every edge any held write, roster or ledger can set
@@ -362,19 +404,15 @@ impl Timeline {
                     }
                 }
                 if edges_in.insert((m, tg)) {
-                    for cm in ws.iter().map(|w| &w.commit) {
-                        if out.commits.insert(cm.id) {
-                            for o in &cm.ops {
-                                todo.insert((cm.point(), cm.author, o.target));
-                                todo.insert((cm.point(), cm.author, o.member));
-                            }
-                        }
-                    }
+                    add_edge(ws, &mut out, &mut todo);
                 }
             }
             // A later demotion on a path n gains after p (an edge on no path of n's at p) may
             // demote n as well: n's chain at its point goes along when the lowered edge or the
             // snapshot's thing is on it there.
+            // A write lowering an edge n left itself audits from the edge as restored: it goes
+            // along with that edge's history when the edge would be on n's chain then.
+            let mut restored: Vec<(Tid, Tid)> = Vec::new();
             let first = index.demotions.partition_point(|d| d.0 <= p);
             if first < index.demotions.len() {
                 let up = &*ups.entry(n).or_insert_with(|| self.ever_up_from(&n));
@@ -390,12 +428,21 @@ impl Timeline {
                     }
                     let c = self.chain_things(&n, &t, *q, &mut chains);
                     let on = match d {
+                        Demotion::Edge(m, tg, _) if !(c.contains(m) && c.contains(tg)) && self.through(&n, &t, m, tg, *q, &mut chains) => {
+                            restored.push((*m, *tg));
+                            true
+                        }
                         Demotion::Edge(m, tg, _) => c.contains(m) && c.contains(tg),
                         Demotion::Thing(x) => c.contains(x),
                     };
                     if on {
                         later.insert((*q, n, t));
                     }
+                }
+            }
+            for (m, tg) in restored {
+                if let Some(ws) = index.by_edge.get(&m).and_then(|x| x.get(&tg)).filter(|_| edges_in.insert((m, tg))) {
+                    add_edge(ws, &mut out, &mut todo);
                 }
             }
             for s in chain.iter().filter_map(|t| index.by_thing.get(t)).flatten().filter_map(|id| self.input.snaps.get(id)) {

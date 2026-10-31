@@ -302,6 +302,26 @@ fn certificates_self_demotion_regained_indirect_spec_permissions_4() {
     assert_eq!(cert_check(&w), None);
 }
 
+/// OSIS_PERM_SEED=116000: n1 leaves A0 at 1 and A1 at 3 (unseen by n0) and again at 4; n0
+/// removes n1 from A0 at 7, which restores n1's own earlier admin edge there, so n1's class on
+/// A1 below A0 falls and its unseen leave at 3 drops. A0 is on no path of n1's at 7.
+#[test]
+fn certificates_carry_demotion_of_left_edge_spec_permissions_4() {
+    let mut w = World::new();
+    let n = w.nodes(2);
+    let a0 = w.thing(n[0]);
+    let a1 = w.thing(a0);
+    let all0: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(n[0], a0, n[1], edge(Admin), 0, &all0);
+    w.set(n[0], a1, n[1], edge(Admin), 0, &all0);
+    w.commit_id(cid(3067972474), n[1], 1, &[(a0, n[1], None)], &[(n[0], 0)]);
+    w.commit_id(cid(3117608188), n[1], 3, &[(a1, n[1], None)], &[(n[0], LATE)]);
+    w.commit_id(cid(738872167), n[1], 4, &[(a1, n[1], None)], &[(n[0], 3)]);
+    w.commit_id(cid(4081336266), n[0], 6, &[(a1, a0, None)], &[(n[1], LATE)]);
+    w.commit_id(cid(393771808), n[0], 7, &[(a0, n[1], None)], &[(n[1], LATE)]);
+    assert_eq!(cert_check(&w), None);
+}
+
 #[test]
 fn certificates_project_joint() {
     cert_run_joint(80, 0x5eed_0201);
