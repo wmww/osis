@@ -304,8 +304,8 @@ fn jumped_epochs_keep_rotation_possible() {
 }
 
 // spec/crypto.md §3, §4 (headroom): a writer of the owner jumped its epochs past `MAX_FREE_N`;
-// a thing switching to secrets of its own still starts its chain at 1 (derived epochs are at 0,
-// not the owner's n), so a member holding no secret of the owner establishes the switch from the
+// a thing switching to secrets of its own still starts its chain at `MAX_FREE_N` at most (derived
+// epochs are capped below it), so a member holding no secret of the owner establishes the switch from the
 // rotation commit alone and the headroom rule needs nothing it cannot check.
 #[test]
 fn switch_under_jumped_owner_establishes_at_members() {
@@ -327,7 +327,7 @@ fn switch_under_jumped_owner_establishes_at_members() {
         ingest(&a, &s, &opener, &mut v, None).unwrap();
         rot.secrets.applied(&mut v, cid(1), (&rot.keys, &Keys::default())).unwrap();
         for x in &rot.rotated {
-            assert_eq!(x.epoch.n(), 1);
+            assert_eq!(x.epoch.n(), osis_keys::MAX_FREE_N);
             if who == p || x.role != Role::Admin {
                 assert!(v.role(x.role).is_established(&x.epoch), "{who:?} {:?}", x.role);
                 assert_eq!(v.role(x.role).newest(), Some(x.epoch));
