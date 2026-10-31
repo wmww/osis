@@ -1,7 +1,7 @@
 //! `/keys` and `/secrets` contents and the writes rotations, grants and re-seals make to them
 //! (spec/crypto.md §3, §4; types: osis-schema `core_types`).
 
-use crate::epoch::{ActorEpochs, SUITE};
+use crate::epoch::{ActorEpochs, ROLES, SUITE};
 use crate::Error;
 use osis_base::{CommitId, Role};
 use osis_crypto::{DeleteSecret, Epoch, Secret32, role_kem};
@@ -73,30 +73,25 @@ impl SecretsWrite {
     }
 
     /// The epochs this write introduces per role and what each supersedes: a history box
-    /// written for (r, e) with the boxes of r it removes at earlier epochs and, from `keys`
+    /// written for (r, e) with the epochs of the boxes of r it removes and, from `keys`
     /// (the commit's `/keys` write and the keysets held before it), the keyset epoch of r it
     /// replaces; the latter covers an actor whose members are all key actors (their boxes are
     /// keyed at their top role, so a rotation of a lower role removes none). A grant or re-seal
-    /// re-writes history boxes and removes nothing, so it supersedes nothing.
+    /// re-writes history boxes and removes nothing, so it supersedes nothing. Superseded epochs
+    /// not below e are kept here; `RoleEpochs` drops them.
     pub fn rotations(&self, keys: Option<(&KeysWrite, &Keys)>) -> Result<Vec<(Role, Epoch, BTreeSet<Epoch>)>, Error> {
         let mut out = Vec::new();
         for k in self.history.keys() {
             let e = from_schema(&k.epoch)?;
             let mut sup = BTreeSet::new();
             for b in self.removed.iter().filter(|b| b.role == k.role) {
-                let old = from_schema(&b.epoch)?;
-                if old.n() < e.n() {
-                    sup.insert(old);
-                }
+                sup.insert(from_schema(&b.epoch)?);
             }
             if let Some((w, prev)) = keys
                 && w.keysets.get(&k.role).is_some_and(|ks| ks.epoch == k.epoch)
                 && let Some(old) = keyset_of(prev, k.role)
             {
-                let old = from_schema(&old.epoch)?;
-                if old.n() < e.n() {
-                    sup.insert(old);
-                }
+                sup.insert(from_schema(&old.epoch)?);
             }
             out.push((k.role, e, sup));
         }
@@ -170,8 +165,8 @@ pub fn may_compact_secrets(s: &Secrets, epochs: &ActorEpochs) -> Result<bool, Er
 
 /// Records the suite each keyset of `/keys` names for its epoch. Establishes nothing.
 pub fn observe_keys(k: &Keys, epochs: &mut ActorEpochs) -> Result<(), Error> {
-    for (r, ks) in [(Role::Read, &k.read), (Role::Write, &k.write), (Role::Admin, &k.admin)] {
-        if let Some(ks) = ks {
+    for r in ROLES {
+        if let Some(ks) = keyset_of(k, r) {
             epochs.role_mut(r).set_suite(from_schema(&ks.epoch)?, ks.suite);
         }
     }
