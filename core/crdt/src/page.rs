@@ -1,7 +1,7 @@
 //! Page storage plugs for paged fragments (spec/crdt.md §8, spec/wire.md §6). osis-label and the
 //! node implement them over blobs; `MemoryPages` serves tests.
 
-use osis_base::format::{PAGE_TARGET, TREE_FANOUT};
+use osis_base::format::{MAX_PAGE_ITEMS, PAGE_TARGET, TREE_FANOUT};
 use osis_base::{BlobId, ChunkParams, Classified, ErrorClass, Link};
 use std::collections::HashMap;
 
@@ -40,12 +40,15 @@ pub struct PageParams {
     pub cut: ChunkParams,
     /// Links per link page at most.
     pub fanout: usize,
+    /// Items per page and per root fragment at most (`MAX_PAGE_ITEMS`); `usize::MAX`: unchecked.
+    pub max_items: usize,
 }
 
 impl PageParams {
-    pub const FORMAT: PageParams = PageParams { target: PAGE_TARGET, cut: ChunkParams::FORMAT, fanout: TREE_FANOUT };
-    /// Never pages: ephemeral deltas (spec/crdt.md §8), bounded by the blob alone.
-    pub const UNPAGED: PageParams = PageParams { target: usize::MAX, ..PageParams::FORMAT };
+    pub const FORMAT: PageParams = PageParams { target: PAGE_TARGET, cut: ChunkParams::FORMAT, fanout: TREE_FANOUT, max_items: MAX_PAGE_ITEMS };
+    /// Never pages: ephemeral deltas (spec/crdt.md §8), bounded by the blob alone (and at the
+    /// receiver by `decoded_bound` against its cap).
+    pub const UNPAGED: PageParams = PageParams { target: usize::MAX, max_items: usize::MAX, ..PageParams::FORMAT };
 }
 
 /// The page plug of a delta that is never paged (ephemeral deltas, spec/crdt.md §8): encodes

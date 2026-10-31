@@ -15,8 +15,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Nonce length of a delta (§3).
 pub const NONCE_LEN: usize = 16;
-/// Largest number of elements in a sequence run (§3.3 rule 3).
-pub const MAX_RUN: u64 = 1 << 16;
+/// Largest number of elements in a sequence run (§3.3 rule 3). Resource bound: a run is one page
+/// element, about 36 items per element at most (two position writes, a flag write, a segment,
+/// a char), so a run stays far below `MAX_PAGE_ITEMS` (notes/crdt.md, Page items); 0 allows no
+/// sequence, infinity an unbounded page.
+pub const MAX_RUN: u64 = 1 << 12;
 
 /// What kind of commit carries a delta (§2.4); decides which writes it may carry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -656,16 +656,18 @@ fn rejects_bad_runs_spec_3_3() {
 fn rejects_bare_and_oversized_runs_spec_3_3() {
     let other = osis_base::Tid::from_bytes([9; 15]);
     let srcs = || vec![Value::Bytes(other.as_bytes().to_vec())];
-    let flag = || vec![l(vec![i(0), i(65535), i(0), Value::Bool(true)])];
-    let runs = |k: i64, f: &dyn Fn() -> Vec<Value>| text_with((0..k).map(|j| run(l(vec![i(1), i(1 + j * 65536)]), 65536, l(vec![]), l(vec![]), vec![], f())).collect());
+    let m = crate::MAX_RUN as i64;
+    let k = (osis_base::format::MAX_DELTA_BARE / crate::MAX_RUN) as i64;
+    let flag = || vec![l(vec![i(0), i(m - 1), i(0), Value::Bool(true)])];
+    let runs = |k: i64, f: &dyn Fn() -> Vec<Value>| text_with((0..k).map(|j| run(l(vec![i(1), i(1 + j * m)]), m, l(vec![]), l(vec![]), vec![], f())).collect());
     let import = DeltaCtx { kind: DeltaKind::Import, ..wcx() };
     // bare anchors: rejected in a writer's delta, bounded in an import
     rejects(&delta(srcs(), vec![], runs(1, &Vec::new)), &wcx(), ErrorClass::BadInput);
-    decode_delta(&delta(srcs(), vec![], runs(4, &Vec::new)), &import, &mut Interner::new(), None).unwrap();
-    rejects(&delta(srcs(), vec![], runs(5, &Vec::new)), &import, ErrorClass::BadInput);
-    // 4 · 2^16 = MAX_DELTA_BARE flagged elements pass, 5 · 2^16 do not
-    decode_delta(&delta(srcs(), vec![], runs(4, &flag)), &wcx(), &mut Interner::new(), None).unwrap();
-    rejects(&delta(srcs(), vec![], runs(5, &flag)), &wcx(), ErrorClass::BadInput);
+    decode_delta(&delta(srcs(), vec![], runs(k, &Vec::new)), &import, &mut Interner::new(), None).unwrap();
+    rejects(&delta(srcs(), vec![], runs(k + 1, &Vec::new)), &import, ErrorClass::BadInput);
+    // k · MAX_RUN = MAX_DELTA_BARE flagged elements pass, one run more does not
+    decode_delta(&delta(srcs(), vec![], runs(k, &flag)), &wcx(), &mut Interner::new(), None).unwrap();
+    rejects(&delta(srcs(), vec![], runs(k + 1, &flag)), &wcx(), ErrorClass::BadInput);
     // a flag write off the delta stamp
     let off = text_with(vec![run(i(1), 1, l(vec![]), l(vec![]), vec![], vec![l(vec![i(0), i(0), l(vec![i(0), i(4)]), Value::Bool(true)])])]);
     rejects(&delta(vec![], vec![], off), &wcx(), ErrorClass::BadInput);
@@ -889,7 +891,7 @@ fn unknown_anchor_spec_example() {
 #[test]
 fn text_pages_spec_8() {
     use crate::page::{MemoryPages, PageParams};
-    let params = PageParams { target: 2000, cut: osis_base::ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8 };
+    let params = PageParams { target: 2000, cut: osis_base::ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8, ..PageParams::FORMAT };
     let text: String = (0..1500).map(|k| (b'a' + (k % 26) as u8) as char).collect();
     let (_, mut st) = typed(&text);
     // every third char deleted by its own commit: one run per char
@@ -952,11 +954,11 @@ fn snapshot_of(f: &Fragment) -> Vec<u8> {
     encode_snapshot(&Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default() }, &snap_cx(), None).unwrap()
 }
 
-/// §3.2 Run, issue run amplification: a snapshot run of 2^16 - 1 bare anchors (a reset text)
-/// or deleted elements is a few bytes and decodes to one record, not one per element.
+/// §3.2 Run, issue run amplification: a snapshot run of `MAX_RUN` - 1 bare anchors (a reset
+/// text) or deleted elements is a few bytes and decodes to one record, not one per element.
 #[test]
 fn snapshot_runs_decode_to_ranges_spec_3_2() {
-    let len = 65535;
+    let len = crate::MAX_RUN - 1;
     let mut bare = long_text(len);
     bare.join(seq_of(BTreeMap::new(), Some(st(2, 2, 1))));
     let mut deleted = long_text(len);
@@ -976,7 +978,7 @@ fn snapshot_runs_decode_to_ranges_spec_3_2() {
     let v = osis_base::decode(&snapshot_of(&bare), &osis_base::Limits { max_depth: 16, max_bytes: 1 << 20 }).unwrap();
     let Value::List(top) = v else { panic!("snapshot") };
     let Value::List(f) = &top[3] else { panic!("fragment") };
-    assert_eq!(f[3], l(vec![run(l(vec![i(2), i(1)]), 65535, l(vec![]), l(vec![]), vec![], vec![])]));
+    assert_eq!(f[3], l(vec![run(l(vec![i(2), i(1)]), len as i64, l(vec![]), l(vec![]), vec![], vec![])]));
 }
 
 /// §4.2, §5.7, §6: writes landing inside a range record (an insert anchored in it, a move and an
@@ -984,7 +986,7 @@ fn snapshot_runs_decode_to_ranges_spec_3_2() {
 /// give the same state, read and order as the per-element state.
 #[test]
 fn ranges_split_where_writes_land_spec_6() {
-    let len = 40_000;
+    let len = crate::MAX_RUN - 1;
     let mut deleted = long_text(len);
     deleted.join(one(Dot::new(n(1), 1), SeqElem { deleted: Some((st(2, 2, 1), true)), span: len, ..SeqElem::bare() }));
     let ranged = decode_snapshot(&snapshot_of(&deleted), &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
@@ -995,8 +997,8 @@ fn ranges_split_where_writes_land_spec_6() {
     let insert = one(x.dot.clone(), SeqElem { created: Some((x.clone(), at.clone())), content: SeqContent::Char('x'), pos: vec![(x.clone(), at, None)], deleted: None, span: 1 });
     let mv = one(Dot::new(n(1), 500), SeqElem { pos: vec![(st(4, 3, 2), Anchor::Head, None)], ..SeqElem::bare() });
     let undelete = one(Dot::new(n(1), 2000), SeqElem { deleted: Some((st(5, 3, 3), false)), content: SeqContent::Char('u'), ..SeqElem::bare() });
-    // creations of t = 1 below (1, node 1, 30000) go: a reset inside the chain
-    let reset = seq_of(BTreeMap::new(), Some(st(1, 1, 30_000)));
+    // creations of t = 1 below (1, node 1, 3000) go: a reset inside the chain
+    let reset = seq_of(BTreeMap::new(), Some(st(1, 1, 3_000)));
     let (mut a, mut b) = (ranged.clone(), flat.clone());
     for (k, d) in [insert, mv, undelete, reset].into_iter().enumerate() {
         if k == 3 {

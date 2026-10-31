@@ -34,6 +34,12 @@ pub const PAGE_TARGET: usize = 64 * KIB;
 /// Sequence elements in runs without `Content` per writer or import delta, pages included: bounds
 /// the records a small delta can create (spec/crdt.md §3.3 rule 7, spec/wire.md §2). fixed.
 pub const MAX_DELTA_BARE: u64 = 1 << 18;
+/// Most items in a durable delta's root fragment or one of its pages: one per CBOR data item, one
+/// more per byte of a text string, so never more than the blob's bytes (spec/crdt.md §8,
+/// spec/wire.md §2). fixed. Resource bound on what one blob decodes to (about 100-300 bytes per
+/// item): an honest page or root fragment counts at most about 1.4 x 2^20 (notes/crdt.md, Page
+/// items); 0 refuses every delta, infinity lets one 8 MiB blob decode to GBs.
+pub const MAX_PAGE_ITEMS: usize = 1 << 21;
 
 // Chunker (spec/wire.md §2, §6), shared by chunk trees and pages.
 /// Smallest chunk or page, except the last. fixed.
