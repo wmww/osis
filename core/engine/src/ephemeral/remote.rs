@@ -1783,7 +1783,10 @@ impl Engine {
     }
 
     /// Those of own held commits `ids` (with their costs) an own cover may absorb (every aspect
-    /// writable here now), and the cost of the rest.
+    /// writable here now, on a thing in a labeled closure here now), and the cost of the rest. A
+    /// thing in no closure here (an earlier session's commit fetched back before the one placing
+    /// its thing) would have its cover's parts placed under no label while the commits it absorbs
+    /// go, deleted where they were.
     fn coverable(&self, ids: Vec<(CommitId, usize)>) -> (Vec<(CommitId, usize)>, usize) {
         let me = self.tid();
         let ts = Ts::make(self.now(), 0).unwrap_or_default();
@@ -1791,7 +1794,7 @@ impl Engine {
         let records: crate::engine::write::Records<'_> = &|x| things.get(x).map(|e| &e.record);
         let writable = |id: &CommitId| {
             let Some(h) = self.eph.remote.held.get(id) else { return false };
-            h.parts.iter().filter_map(|p| h.header.aspects.get(p.ai)).filter(|a| a.ak.as_str() != CREATED.ak()).all(|a| crate::engine::write::check_authority_with(&self.core, me, records, &a.tid, a.ak.as_str(), ts).is_ok())
+            h.parts.iter().filter_map(|p| h.header.aspects.get(p.ai)).filter(|a| a.ak.as_str() != CREATED.ak()).all(|a| self.ephemeral_synced(&a.tid) && crate::engine::write::check_authority_with(&self.core, me, records, &a.tid, a.ak.as_str(), ts).is_ok())
         };
         let (ok, stuck): (Vec<_>, Vec<_>) = ids.into_iter().partition(|(id, _)| writable(id));
         (ok, stuck.iter().map(|(_, c)| c).sum())

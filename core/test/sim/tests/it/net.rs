@@ -212,3 +212,9 @@ fn ephemeral_seed_83() {
 fn ephemeral_capped_seed_2400045() {
     ok("ephemeral_capped", 2400045);
 }
+
+// spec/sync.md §9: periodic run 8, node 3 held a commit of node 0 with its /e/notes part missing.
+#[test]
+fn ephemeral_seed_21054() {
+    ok("ephemeral", 21054);
+}
