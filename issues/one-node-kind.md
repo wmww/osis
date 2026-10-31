@@ -120,11 +120,11 @@ Terms: a node **hosts** a label (stores and serves it for anyone holding its rol
    - Add one terminology section in spec/permissions.md §1, mirrored in spec/data-model.md:
      - **Rights:** role, role grant (edge), holder (of a role on X), role commit (was membership commit), role-class aspect (was membership-class), role timeline (was membership timeline), co-reader open (was member open, proof 3).
      - **Organization:** member, membership, member of a group (`/group`).
-     - **CRDT:** set "member" becomes element.
+     - **CRDT:** set "member" becomes element; a `Slots` "member" becomes slot (as spec/crdt.md §7 names it).
    - The `/members` literal stays until step 5.
    - Hunt: `G -w '[Mm]ember(s|ship|ships)?|MEMBER(S|SHIP)?' -- spec notes issues`. Every match must be the organization sense; read each one.
 4. **Roles words in code (b; L, about 4.5k occurrences).**
-   - Identifier renames: `MemberKeys` becomes `HolderKeys`, `is_membership_class` becomes `is_role_class`, `MembershipCommit` becomes `RoleCommit`, `remove_member` and the like become `*_holder`; `Proof::Member`/`OpenKey::Member` become `CoReader`, with domain `"osis v1 co-reader open"` and vectors regenerated.
+   - Identifier renames: `MemberKeys` becomes `HolderKeys`, `is_membership_class` becomes `is_role_class`, `MembershipCommit` becomes `RoleCommit`, `remove_member` and the like become `*_holder`; `Slots.members` (osis-crdt, crdt-model) becomes `slots`; `Proof::Member`/`OpenKey::Member` become `CoReader`, with domain `"osis v1 co-reader open"` and vectors regenerated.
    - `core/test/membership-model` becomes `roles-model`; TLA modules and the osis API and CLI words follow (`roster` lines `holder X`).
    - Hunt:
      - `G -w '[Mm]ember(s|ship)?'` plus the identifier census for `[Mm]ember` with `remember*` excluded: only placement-sense names remain.
