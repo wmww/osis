@@ -1,2 +1,4 @@
 - Moving tests out of a file into `tests.rs` drops the spec citations they inherited from the old file's `//!` header: `spec_map.py --uncited` caught three. Give a split-out tests file its own citing header.
 - `git diff main --stat` in a worktree compares against main's current tip, not the branch base: it showed 25 files after main moved. Use `git diff $(git merge-base HEAD main)`.
+- Reviewer: `git rebase --exec` runs its command under `sh` (dash here): `${PIPESTATUS[0]}` is a "Bad substitution" that stops the rebase. Per-commit clippy that works: `git rebase main --exec 'cargo clippy --workspace --all-targets -q -- -D warnings >/dev/null 2>&1 || exit 1'`.
+- Reviewer: the gate took 528 s at load 35 (expected 80-150 s).
