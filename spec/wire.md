@@ -23,7 +23,7 @@ Format constants (fixed by format version 1, spec/versioning.md §1):
 | tree fan-out | at most 512 links per interior node or link page (§6) |
 | `MAX_CLAIMS` | 65 536 keys per claim set |
 | `MAX_DELTA_BARE` | 262 144 (2^18) sequence elements in runs without `Content` per writer or import delta, pages included (spec/crdt.md §3.3) |
-| `MAX_PAGE_ITEMS` | 2 097 152 (2^21) items (CBOR data items plus text string bytes) in a durable delta's root fragment or one of its pages (spec/crdt.md §8) |
+| `MAX_PAGE_ITEMS` | 2 097 152 (2^21) items (CBOR heads plus text string content bytes) in a durable delta's root fragment or one of its pages (spec/crdt.md §8) |
 | `MAX_RUN` | 4096 (2^12) elements per sequence run (spec/crdt.md §3.3) |
 | `MAX_DRIFT` | 1 hour |
 | `MAX_RELAY_BLOB` | 64 KiB (65 536 bytes), whole relay-only blob (spec/sync.md §5, §9) |
