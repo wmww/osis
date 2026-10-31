@@ -672,6 +672,12 @@ fn carrier_only_snapshot_drops_nothing_alike_spec_sync_6() {
     for c in [sn, w, x, yz] {
         assert_eq!(at_srv(&mut net, c), 1, "at the server");
     }
+    // must-hold (uploaded again if lost), not may-hold under the carrier
+    let key = net.address(sv).key;
+    for n in [a, b] {
+        let v = net.sync(n).verdicts(&key, &l).unwrap().unwrap();
+        assert!([w, x, yz].iter().all(|c| v.must_hold.iter().any(|(m, _)| m == c)), "{n} must hold the bodies");
+    }
     let mut m = Mutation::new();
     m.op(t, &BIG, PathOp { path: Vec::new(), op: Op::Remove(s("w")) }).unwrap();
     m.op(t, &BIG, PathOp { path: Vec::new(), op: Op::Remove(s("y")) }).unwrap();
