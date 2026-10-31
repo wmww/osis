@@ -130,12 +130,12 @@ impl SyncEngine {
                 }
                 Delivery::Deposit { commit, under } => {
                     for g in self.groups_holding(&under) {
-                        self.place_all(&g, &commit)?;
+                        self.place_aspects(&g, &commit, |_| true)?;
                     }
                 }
                 Delivery::Removal { commit, under } => {
                     for g in self.groups_holding(&under) {
-                        self.place_removal(&g, &commit)?;
+                        self.place_aspects(&g, &commit, |a| !matches!(a.ak.as_str(), "/secrets" | "/keys"))?;
                     }
                 }
             }
@@ -148,27 +148,19 @@ impl SyncEngine {
     /// inside it go up as its closure bodies (a whole copy duplicated them, and carried
     /// `/secrets` boxes the label's readers cannot open).
     pub(crate) fn place_chain(&mut self, g: &Tid, c: &CommitId) -> Result<()> {
-        let Some(h) = self.engine.header(c) else { return Ok(()) };
         let closure = self.engine.closure(g);
-        let ais: BTreeSet<usize> = h.aspects.iter().enumerate().filter(|(_, a)| matches!(a.ak.as_str(), "/members" | "/tenures" | "/keys" | "/created") && !closure.contains(&a.tid)).map(|(i, _)| i).collect();
+        self.place_aspects(g, c, |a| matches!(a.ak.as_str(), "/members" | "/tenures" | "/keys" | "/created") && !closure.contains(&a.tid))
+    }
+
+    /// Places the aspects of `c` that `keep` admits as a certificate copy under the labels of
+    /// `g` (`Delivery::Deposit`: all of them; `Delivery::Removal`: all but `/secrets` and
+    /// `/keys`); nothing when it admits none.
+    fn place_aspects(&mut self, g: &Tid, c: &CommitId, keep: impl Fn(&osis_commit::AspectEntry) -> bool) -> Result<()> {
+        let Some(h) = self.engine.header(c) else { return Ok(()) };
+        let ais: BTreeSet<usize> = h.aspects.iter().enumerate().filter(|(_, a)| keep(a)).map(|(i, _)| i).collect();
         if ais.is_empty() {
             return Ok(());
         }
-        self.place_certificate_in(g, c, &ais)
-    }
-
-    /// Places every aspect of `c` as a certificate copy under the labels of `g`.
-    fn place_all(&mut self, g: &Tid, c: &CommitId) -> Result<()> {
-        let Some(h) = self.engine.header(c) else { return Ok(()) };
-        let all: BTreeSet<usize> = (0..h.aspects.len()).collect();
-        self.place_certificate_in(g, c, &all)
-    }
-
-    /// Places `c` without its `/secrets` and `/keys` deltas as a certificate copy under the
-    /// labels of `g` (`Delivery::Removal`).
-    fn place_removal(&mut self, g: &Tid, c: &CommitId) -> Result<()> {
-        let Some(h) = self.engine.header(c) else { return Ok(()) };
-        let ais: BTreeSet<usize> = h.aspects.iter().enumerate().filter(|(_, a)| !matches!(a.ak.as_str(), "/secrets" | "/keys")).map(|(i, _)| i).collect();
         self.place_certificate_in(g, c, &ais)
     }
 
