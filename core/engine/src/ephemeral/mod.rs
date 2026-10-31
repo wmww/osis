@@ -81,6 +81,8 @@ pub struct Eph {
     next: u64,
     batches: u64,
     things: HashMap<Tid, EphThing>,
+    /// Ephemeral records added to `things` so far (`Engine::records_seen`).
+    records: u64,
     aspects: HashMap<Tid, BTreeMap<Ak, EphAspect>>,
     /// Expiry times and the aspects with writes expiring then.
     timers: BTreeMap<u64, BTreeSet<(Tid, Ak)>>,
@@ -112,7 +114,7 @@ pub struct Written {
 impl Eph {
     /// Empty, under a new random session.
     pub fn new(session: [u8; 32]) -> Eph {
-        Eph { session, src: Source::commit(CommitId(session)), next: 1, batches: 0, things: HashMap::new(), aspects: HashMap::new(), timers: BTreeMap::new(), defs: BTreeMap::new(), log: log::Log::default(), drafts: BTreeMap::new(), remote: remote::Remote::default(), dropped: Vec::new(), unheld: Vec::new() }
+        Eph { session, src: Source::commit(CommitId(session)), next: 1, batches: 0, things: HashMap::new(), records: 0, aspects: HashMap::new(), timers: BTreeMap::new(), defs: BTreeMap::new(), log: log::Log::default(), drafts: BTreeMap::new(), remote: remote::Remote::default(), dropped: Vec::new(), unheld: Vec::new() }
     }
 
     fn state(&self, tid: &Tid, ak: &Ak) -> Option<&Fragment> {
@@ -387,6 +389,7 @@ impl Engine {
         let making = log::Making { made: fresh.keys().copied().collect(), saved: saved.into_iter().collect(), ..Default::default() };
         for (t, record) in fresh {
             self.eph.things.insert(t, EphThing { record, ts, node, actor, received: now, created: None, deleted: false });
+            self.eph.records += 1;
             self.note_created(&t);
         }
         for (item, group) in refused {
