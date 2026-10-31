@@ -180,6 +180,9 @@ pub(crate) struct Remote {
     /// absorb, over `COVER_FACTOR`): an own compaction is weighed again once the own held commits
     /// cost more than `COVER_FACTOR` times this (`compact_own_ephemeral`).
     pub cover_est: BTreeMap<Tid, usize>,
+    /// Every synced label caught up once since start (the sync layer's word,
+    /// `set_ephemeral_caught_up`): until then an own cover absorbs no earlier session's commit.
+    pub caught_up: bool,
     /// Expiry times of held parts.
     pub timers: BTreeMap<u64, BTreeSet<(CommitId, usize)>>,
     /// Relay-only commits delivered, oldest first, with their `ts` (wall ms).
@@ -1436,6 +1439,18 @@ impl Engine {
         true
     }
 
+    /// Whether every synced label has caught up once since start (reconciled, read to its end,
+    /// nothing fetching or waiting): only then may an own cover absorb an earlier session's
+    /// commits. Before, a thing's placements under some labels may not be back yet: the cover
+    /// would go under the others only while the absorbed commit is deleted everywhere. Turning
+    /// true weighs the own covers again.
+    pub fn set_ephemeral_caught_up(&mut self, yes: bool) {
+        if yes && !self.eph.remote.caught_up {
+            self.eph.remote.cover_est.clear();
+        }
+        self.eph.remote.caught_up = yes;
+    }
+
     /// The held ephemeral commits dropped since the last call (covered, expired, or presence gone
     /// from every source): the sync layer forgets their blobs and deletes them where it may.
     pub fn take_dropped_ephemeral(&mut self) -> Vec<CommitId> {
@@ -1783,10 +1798,11 @@ impl Engine {
     }
 
     /// Those of own held commits `ids` (with their costs) an own cover may absorb (every aspect
-    /// writable here now, on a thing in a labeled closure here now), and the cost of the rest. A
-    /// thing in no closure here (an earlier session's commit fetched back before the one placing
-    /// its thing) would have its cover's parts placed under no label while the commits it absorbs
-    /// go, deleted where they were.
+    /// writable here now, on a thing in a labeled closure here now; an earlier session's only once
+    /// every label caught up, `set_ephemeral_caught_up`), and the cost of the rest. A thing in no
+    /// closure here, or not yet in all of its (an earlier session's commit fetched back before the
+    /// ones placing its thing), would have its cover's parts placed under those labels only while
+    /// the commits it absorbs go, deleted where they were.
     fn coverable(&self, ids: Vec<(CommitId, usize)>) -> (Vec<(CommitId, usize)>, usize) {
         let me = self.tid();
         let ts = Ts::make(self.now(), 0).unwrap_or_default();
@@ -1794,7 +1810,7 @@ impl Engine {
         let records: crate::engine::write::Records<'_> = &|x| things.get(x).map(|e| &e.record);
         let writable = |id: &CommitId| {
             let Some(h) = self.eph.remote.held.get(id) else { return false };
-            h.parts.iter().filter_map(|p| h.header.aspects.get(p.ai)).filter(|a| a.ak.as_str() != CREATED.ak()).all(|a| self.ephemeral_synced(&a.tid) && crate::engine::write::check_authority_with(&self.core, me, records, &a.tid, a.ak.as_str(), ts).is_ok())
+            (h.own || self.eph.remote.caught_up) && h.parts.iter().filter_map(|p| h.header.aspects.get(p.ai)).filter(|a| a.ak.as_str() != CREATED.ak()).all(|a| self.ephemeral_synced(&a.tid) && crate::engine::write::check_authority_with(&self.core, me, records, &a.tid, a.ak.as_str(), ts).is_ok())
         };
         let (ok, stuck): (Vec<_>, Vec<_>) = ids.into_iter().partition(|(id, _)| writable(id));
         (ok, stuck.iter().map(|(_, c)| c).sum())

@@ -2792,3 +2792,79 @@ fn delete_across_unread_rotation_retried_spec_sync_9() {
     let after: BTreeSet<osis_base::BlobId> = net.server_ids(sv, &l).into_iter().collect();
     assert!(!after.contains(&k4[0]), "the plain delete refused 9 went again under the next key");
 }
+
+// spec/sync.md §9 (an own cover is placed under every label its absorbed commits were under),
+// issue eph-cover-partial-label: after a restart, the author held its earlier note on a window
+// placed in two groups while the placement in the second (and the note's entry there) was still
+// being fetched; its cover went under the first label only and the note's entry under the second
+// was deleted, so a reader of the second group alone lost the note
+#[test]
+fn restarted_cover_waits_for_every_label_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[sv]);
+    let g1 = net.group(a, &[(b, Role::Write)], &[sv]);
+    let g2 = net.group_seeded(a, &[(c, Role::Read)], vec![net.address(sv)], 12);
+    // g2 reads g1: g1's things placed in g2 go under g2's label too
+    let (at, bt) = (net.tid(a), net.tid(b));
+    let e = net.engine(a);
+    set_edge(e, g1, g2, Role::Read);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write), (g2, Role::Read)]);
+    rotation(e, g1, &rs, 5, false);
+    net.run();
+    let labels: BTreeMap<Tid, osis_base::LabelId> = net.sync(a).labels().into_iter().map(|(g, gl)| (g, gl.id)).collect();
+    let w = window(&mut net, a, g1, "w");
+    net.run();
+    // the window placed in g2 too, in a commit of its own
+    let mut m = Mutation::new();
+    m.op(g2, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    note(&mut net, a, w, "a", "1");
+    net.run();
+    assert_eq!(notes(&mut net, c, w), map(&[("a", "1")]), "g2's reader reads the note");
+    // the placement in g2 and the note's entry there: fetched late after the restart
+    let own: Vec<osis_base::CommitId> = net.engine(a).held_ephemeral().into_iter().filter(|x| x.2).map(|x| x.0).collect();
+    let l2 = labels[&g2];
+    let mut slow = BTreeSet::new();
+    for id in &own {
+        let h = net.engine(a).ephemeral_header(id).unwrap();
+        let placing = h.aspects.iter().any(|x| x.tid == g2);
+        let noting = h.aspects.iter().any(|x| x.ak.as_str() == NOTES);
+        if placing || noting {
+            slow.extend(net.sync(a).ephemeral_entries_of(id).into_iter().filter(|x| x.0 == l2).map(|x| x.1));
+        }
+    }
+    assert_eq!(slow.len(), 2, "the placement and the note under g2's label");
+    net.restart(a, 31);
+    net.hold_blobs = slow;
+    for _ in 0..200 {
+        net.feed(a, Event::Local);
+        net.round();
+    }
+    assert_eq!(notes(&mut net, a, w), map(&[("a", "1")]), "the note is back through g1's label");
+    let acts = net.sync(a).compact_ephemeral_now().unwrap();
+    net.actions(a, acts);
+    for _ in 0..200 {
+        net.round();
+    }
+    net.release();
+    net.run();
+    net.restart(c, 33);
+    net.advance(10_000);
+    assert_eq!(notes(&mut net, c, w), map(&[("a", "1")]), "g2's reader gets the note back after a restart");
+    // caught up: covered now, under both labels
+    let acts = net.sync(a).compact_ephemeral_now().unwrap();
+    net.actions(a, acts);
+    net.run();
+    let held = net.engine(a).held_ephemeral();
+    assert!(held.iter().all(|x| x.2), "a's earlier session's commits covered: {held:?}");
+    let under: BTreeSet<osis_base::LabelId> = held.iter().flat_map(|x| net.sync(a).ephemeral_entries_of(&x.0)).map(|x| x.0).collect();
+    assert_eq!(under, labels.values().copied().collect(), "the cover is under both labels");
+    net.restart(c, 34);
+    net.advance(10_000);
+    assert_eq!(notes(&mut net, c, w), map(&[("a", "1")]), "and from the cover");
+}
