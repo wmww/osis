@@ -17,8 +17,21 @@ use std::collections::BTreeMap;
 const MAX_CHAIN: usize = osis_base::format::MAX_OWNER_DEPTH + 1;
 
 impl Core {
+    /// The creation record of `tid`, durable or memory class (an ephemeral thing's).
     pub fn created(&self, tid: &Tid) -> Option<&CreationRecord> {
         self.ix.held.created(tid)
+    }
+
+    /// The record of `tid` if durable: what durable data may refer to (no durable row refers to
+    /// a memory row, notes/local-store.md Memory overlay).
+    pub fn durable_created(&self, tid: &Tid) -> Option<&CreationRecord> {
+        self.created(tid).filter(|_| !self.ix.held.is_memory(tid))
+    }
+
+    /// The record of `tid` as a commit of class `memory` may use: a durable commit sees durable
+    /// records only.
+    pub fn created_for(&self, tid: &Tid, memory: bool) -> Option<&CreationRecord> {
+        if memory { self.created(tid) } else { self.durable_created(tid) }
     }
 
     pub(crate) fn dedup(&self, tid: &Tid) -> Option<Secret32> {

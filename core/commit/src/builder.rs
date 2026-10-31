@@ -33,12 +33,14 @@ pub struct AspectWrite {
     /// Chunk, tree-node and page blobs the deltas introduce (framed with this aspect's delete
     /// keys, [`delete_keys`]).
     pub chunks: Vec<BlobId>,
+    /// Creation records each of its parts carries (an ephemeral commit, spec/commits.md §2).
+    pub records: Vec<osis_base::CreationRecord>,
 }
 
 impl AspectWrite {
     /// One delta with untyped defaults; set the other fields as needed.
     pub fn new(tid: Tid, ak: Ak, lo: u64, hi: u64, delta: Vec<u8>) -> AspectWrite {
-        AspectWrite { tid, ak, lo, hi, deltas: vec![delta], retention: Retention::default(), expires: None, schema: None, chunks: Vec::new() }
+        AspectWrite { tid, ak, lo, hi, deltas: vec![delta], retention: Retention::default(), expires: None, schema: None, chunks: Vec::new(), records: Vec::new() }
     }
 }
 
@@ -113,7 +115,12 @@ impl CommitBuilder {
         let mut aspect_keys = Vec::with_capacity(self.aspects.len());
         let mut entries = Vec::with_capacity(self.aspects.len());
         let mut deltas = Vec::with_capacity(self.aspects.len());
+        let mut records = Vec::with_capacity(self.aspects.len());
         for a in std::mem::take(&mut self.aspects) {
+            let mut rs = a.records;
+            rs.sort_by_cached_key(osis_base::CreationRecord::tid);
+            rs.dedup_by_key(|r| r.tid());
+            records.push(rs);
             let dedup = secrets.dedup(&a.tid).ok_or(Error::Build("dedup secret not supplied"))?;
             let mut hd: Vec<([u8; 32], Vec<u8>)> = a.deltas.into_iter().map(|d| (delta_hash(&dedup, &d), d)).collect();
             hd.sort_by_key(|x| x.0);
@@ -206,9 +213,12 @@ impl CommitBuilder {
 
         let signature = header.sign(key);
         let mut parts = Vec::new();
-        for (ai, ds) in deltas.into_iter().enumerate() {
+        for (ai, (ds, rs)) in deltas.into_iter().zip(records).enumerate() {
+            if !rs.is_empty() && header.ephemeral.is_none() {
+                return Err(Error::Build("creation records beside a durable commit's delta"));
+            }
             for (di, delta) in ds.into_iter().enumerate() {
-                parts.push(Part { ai, di, delta });
+                parts.push(Part { ai, di, delta, records: rs.clone() });
             }
         }
         let commit = CommitBlob { header, signature, parts };

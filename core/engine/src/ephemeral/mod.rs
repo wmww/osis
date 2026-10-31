@@ -34,8 +34,8 @@ pub struct EphThing {
     pub node: Tid,
     pub actor: Tid,
     pub received: WallMs,
-    /// Its `/created` as an ephemeral commit carries it (minted when first sent, or received).
-    pub created: Option<Fragment>,
+    /// Made by this session (not received from another node).
+    pub made_here: bool,
     /// Deleted by an undo of its creation (`log::Making`): it reads unknown until that is
     /// reverted.
     pub deleted: bool,
@@ -395,7 +395,7 @@ impl Engine {
         }
         let making = log::Making { made: fresh.keys().copied().collect(), saved: saved.into_iter().collect(), ..Default::default() };
         for (t, record) in fresh {
-            self.eph.things.insert(t, EphThing { record, ts, node, actor, received: now, created: None, deleted: false });
+            self.eph.things.insert(t, EphThing { record, ts, node, actor, received: now, made_here: true, deleted: false });
             self.eph.records += 1;
             self.note_created(&t);
         }

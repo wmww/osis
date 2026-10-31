@@ -1,7 +1,7 @@
 //! Projection of a commit into blobs, purge rewrite, prefix inputs (spec/sync.md §1, §3;
 //! spec/commits.md §5; spec/wire.md §4, §5).
 
-use crate::blob::{CommitBlob, Part, encode_parts};
+use crate::blob::{CommitBlob, Part, encode_parts, records_value};
 use crate::header::{AspectEntry, DeleteKey, Header, retention_value};
 use crate::Error;
 use osis_base::cbor::head_len;
@@ -34,7 +34,7 @@ fn blob_len(plain: usize, commitments: usize) -> usize {
 
 /// Encoded length of one part.
 fn part_len(p: &Part) -> usize {
-    (head_len(3) + head_len(p.ai as u64) + head_len(p.di as u64)).saturating_add(p.delta.len())
+    (head_len(4) + head_len(p.ai as u64) + head_len(p.di as u64)).saturating_add(p.delta.len()).saturating_add(osis_base::encode(&records_value(&p.records)).len())
 }
 
 /// Plaintext bytes outside the parts list: outer head, header, signature.

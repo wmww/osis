@@ -4,16 +4,25 @@ use crate::cbor::{as_idx, as_list, strictly_ascending};
 use crate::header::{Header, LIMITS};
 use crate::Error;
 use osis_base::cbor::{MAJOR_ARRAY, MAJOR_UINT, encode_into, head};
-use osis_base::{CommitId, Value};
+use osis_base::{CommitId, CreationRecord, Value};
 use osis_crypto::Signature;
 
 /// One delta of a commit blob: aspect index, index into that aspect's hashes, canonical delta
-/// (or snapshot) bytes.
+/// (or snapshot) bytes, and the creation records an ephemeral commit carries beside it
+/// (spec/commits.md §2): sorted by tid, distinct; none in a durable commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Part {
     pub ai: usize,
     pub di: usize,
     pub delta: Vec<u8>,
+    pub records: Vec<CreationRecord>,
+}
+
+impl Part {
+    /// A part carrying no records.
+    pub fn new(ai: usize, di: usize, delta: Vec<u8>) -> Part {
+        Part { ai, di, delta, records: Vec::new() }
+    }
 }
 
 /// A commit as carried by one blob: the header, the signature and the deltas this blob holds.
@@ -44,11 +53,18 @@ impl CommitBlob {
         let signature = Signature::from_value(sv)?;
         let mut parts = Vec::new();
         for p in as_list(pv)? {
-            let [ai, di, d] = as_list(p)? else { return Err(Error::Malformed("part arity")) };
+            let [ai, di, d, rs] = as_list(p)? else { return Err(Error::Malformed("part arity")) };
             if !matches!(d, Value::List(_)) {
                 return Err(Error::Malformed("part delta"));
             }
-            parts.push(Part { ai: as_idx(ai)?, di: as_idx(di)?, delta: osis_base::encode(d) });
+            let records = as_list(rs)?.iter().map(|r| CreationRecord::from_value(r).ok_or(Error::Malformed("creation record"))).collect::<Result<Vec<_>, _>>()?;
+            if !strictly_ascending(&records, CreationRecord::tid) {
+                return Err(Error::Malformed("part records not sorted and distinct"));
+            }
+            if !records.is_empty() && header.ephemeral.is_none() {
+                return Err(Error::Invalid("creation records beside a durable commit's delta"));
+            }
+            parts.push(Part { ai: as_idx(ai)?, di: as_idx(di)?, delta: osis_base::encode(d), records });
         }
         if !strictly_ascending(&parts, |p| (p.ai, p.di)) {
             return Err(Error::Malformed("parts not sorted and distinct"));
@@ -74,7 +90,7 @@ impl CommitBlob {
     }
 }
 
-/// `[Header, signature, [Part*]]` by concatenation: header bytes and delta bytes are already
+/// `[Header, signature, [Part*]]` (a part `[ai, di, delta, [creation*]]`) by concatenation: header bytes and delta bytes are already
 /// canonical items.
 pub(crate) fn encode_parts<'a>(header: &[u8], sig: &Signature, parts: impl ExactSizeIterator<Item = &'a Part>) -> Vec<u8> {
     let mut out = Vec::new();
@@ -83,10 +99,16 @@ pub(crate) fn encode_parts<'a>(header: &[u8], sig: &Signature, parts: impl Exact
     encode_into(&sig.to_value(), &mut out);
     head(&mut out, MAJOR_ARRAY, parts.len() as u64);
     for p in parts {
-        head(&mut out, MAJOR_ARRAY, 3);
+        head(&mut out, MAJOR_ARRAY, 4);
         head(&mut out, MAJOR_UINT, p.ai as u64);
         head(&mut out, MAJOR_UINT, p.di as u64);
         out.extend_from_slice(&p.delta);
+        encode_into(&records_value(&p.records), &mut out);
     }
     out
+}
+
+/// The records list of a part.
+pub(crate) fn records_value(rs: &[CreationRecord]) -> Value {
+    Value::List(rs.iter().map(CreationRecord::to_value).collect())
 }

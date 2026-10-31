@@ -16,7 +16,7 @@ use osis_label::{BlobWriter, Framing};
 use osis_perm::At;
 use osis_schema::core_types::{CREATED, is_membership_class};
 use osis_schema::{AspectKey, Lifetime, Retention, Schema};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// Ops on one aspect.
@@ -342,6 +342,8 @@ pub(crate) struct Resolved {
     pub chunks: Vec<osis_base::BlobId>,
     /// Written as one delta per root map entry or set element (a roster snapshot).
     pub split: bool,
+    /// Creation records carried beside the delta (a memory commit, `memory_records`).
+    pub records: Vec<CreationRecord>,
 }
 
 /// Inputs of a commit other than its deltas.
@@ -448,7 +450,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
             }
         }
         let schema: Option<(SchemaId, u64)> = d.schema.as_ref().filter(|s| s.aspects.contains_key(d.ak.as_str())).map(|s| (s.id, s.revision)).or(d.schema_ref);
-        writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, deltas: bytes, retention, expires, schema, chunks });
+        writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, deltas: bytes, retention, expires, schema, chunks, records: d.records });
     }
     let mut b = CommitBuilder::new(plan.kind, plan.ts, node, plan.actor, plan.form);
     b.aspects = writes;
@@ -517,10 +519,31 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         return Err(Error::Misuse("an undo mutation carries no other ops"));
     }
     let core_schema = Arc::new(osis_schema::core_schema().clone());
-    for (&t, rec) in &m.creates {
+    let memory = tx.txn.is_memory();
+    for &t in m.creates.keys() {
         if tx.core.created(&t).is_some() {
             return Err(Error::Misuse("thing already exists"));
         }
+    }
+    if memory {
+        // a memory commit's records are held here at once and travel beside its deltas
+        // (spec/commits.md §2): a thing made with no write is known all the same
+        for rec in std::mem::take(&mut m.creates).into_values() {
+            let t = rec.tid();
+            tx.txn.put_local(&[super::records::CREATED, t.as_bytes()].concat(), &osis_base::encode(&rec.to_value()), osis_store::Shred::No)?;
+            tx.core.ix.held.create_memory(rec);
+        }
+        tx.core.update_timelines();
+    } else {
+        // a durable write on a thing held as memory class persists it with its memory owner
+        // chain (spec/data-model.md §1)
+        for t in m.aspects.keys().map(|k| k.0).collect::<BTreeSet<Tid>>() {
+            for (x, rec) in memory_chain(tx.core, &t) {
+                m.creates.entry(x).or_insert(rec);
+            }
+        }
+    }
+    for (&t, rec) in &m.creates {
         let e = m.aspects.entry((t, Ak::new(CREATED.ak()).map_err(|_| Error::Misuse("ak"))?)).or_default();
         e.schema = Some(core_schema.clone());
         e.ops.push(PathOp { path: Vec::new(), op: Op::Set(rec.to_value()) });
@@ -558,7 +581,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     let published = super::secrets::published_keys(tx, &plan.creates, m.aspects.keys().map(|k| k.0))?;
     for ((tid, ak), mut am) in std::mem::take(&mut m.aspects) {
         let created_here = plan.creates.contains_key(&tid);
-        if !created_here && tx.core.created(&tid).is_none() {
+        if !created_here && tx.core.created_for(&tid, memory).is_none() {
             return Err(Error::UnknownThing(tid));
         }
         if !m.unchecked {
@@ -622,7 +645,8 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         if let Some(s) = &am.schema {
             keep_schema(tx, s, false)?;
         }
-        deltas.push(Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, schema_ref: None, retention: am.retention, expires: am.expires, frontiers: None, chunks, split: kind == Kind::RosterSnapshot });
+        let records = if memory { memory_records(tx.core, &tid, &ak, &am.ops) } else { Vec::new() };
+        deltas.push(Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, schema_ref: None, retention: am.retention, expires: am.expires, frontiers: None, chunks, split: kind == Kind::RosterSnapshot, records });
     }
     if deltas.is_empty() && plan.purge.is_empty() {
         return Ok(None);
@@ -635,12 +659,45 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     Ok(Some(id))
 }
 
+/// The memory-class records from `t` up its owner chain (each with its tid): what persisting `t`
+/// carries, and what a memory commit on `t` carries beside its delta.
+pub(crate) fn memory_chain(core: &Core, t: &Tid) -> Vec<(Tid, CreationRecord)> {
+    let mut out = Vec::new();
+    let mut cur = *t;
+    for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
+        if !core.ix.held.is_memory(&cur) {
+            break;
+        }
+        let Some(rec) = core.created(&cur) else { break };
+        out.push((cur, rec.clone()));
+        match rec {
+            CreationRecord::Thing { owner, .. } => cur = *owner,
+            CreationRecord::KeyActor { .. } => break,
+        }
+    }
+    out
+}
+
+/// The records a memory commit carries beside its delta on `(tid, ak)` (spec/commits.md §2):
+/// the memory chains of `tid` and, on `/placed`, of the things its ops place.
+fn memory_records(core: &Core, tid: &Tid, ak: &Ak, ops: &[PathOp]) -> Vec<CreationRecord> {
+    let mut things = vec![*tid];
+    if ak.as_str() == osis_schema::core_types::PLACED.ak() {
+        things.extend(ops.iter().filter_map(|o| match &o.op {
+            Op::Add(Value::Tid(x)) => Some(*x),
+            _ => None,
+        }));
+    }
+    let recs: BTreeMap<Tid, CreationRecord> = things.iter().flat_map(|t| memory_chain(core, t)).collect();
+    recs.into_values().collect()
+}
+
 /// `Mutation::require_synced`, over the state the commit left.
 fn check_synced(core: &Core, placed: &[(Tid, Tid)]) -> Result<()> {
     let lab = &core.ix.labeled;
     let in_synced = |x: &Tid| core.ix.groups.of.get(x).is_some_and(|s| s.iter().any(|h| lab.contains(h)));
     for (t, g) in placed {
-        if core.created(t).is_some() && !lab.contains(t) && !in_synced(t) && in_synced(g) {
+        if core.durable_created(t).is_some() && !lab.contains(t) && !in_synced(t) && in_synced(g) {
             return Err(Error::Unsynced { tid: *t, group: *g });
         }
     }

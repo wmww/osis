@@ -62,7 +62,7 @@ pub(crate) fn one_commit() -> (CommitBlob, SigningSecret) {
     let delta = register_delta(h.author, at, 1, "hello");
     h.aspects[0].hashes = vec![delta_hash(&sec(0xd0, &h.aspects[0].tid), &delta)];
     let signature = h.sign(&key);
-    (CommitBlob { header: h, signature, parts: vec![Part { ai: 0, di: 0, delta }] }, key)
+    (CommitBlob { header: h, signature, parts: vec![Part::new(0, 0, delta)] }, key)
 }
 
 // spec/wire.md §4: the commit blob plaintext round-trips; a header-only rewrite is allowed.
@@ -77,6 +77,35 @@ fn commit_blob_round_trip() {
     assert_eq!(CommitBlob::decode(&empty.encode()).unwrap(), empty);
     assert_eq!(empty.missing(), vec![(0, 0)]);
     assert_eq!(empty.id(), b.id());
+}
+
+// spec/commits.md §2, spec/wire.md §4: an ephemeral commit's parts carry creation records beside
+// their deltas (sorted by tid, distinct) and it holds no `/created` aspect; a durable commit's
+// parts carry none.
+#[test]
+fn records_beside_deltas_spec_commits_2() {
+    let rec = |n: u8| osis_base::CreationRecord::Thing { owner: t(9), nonce: [n; 32], creator: None };
+    let (mut b, key) = one_commit();
+    let mut durable = b.clone();
+    durable.parts[0].records = vec![rec(1)];
+    assert!(matches!(CommitBlob::decode(&durable.encode()), Err(Error::Invalid(_))));
+    b.header.undoes = None;
+    b.header.form = Form::Session([6; 16]);
+    b.header.ephemeral = Some(EphClass::Plain);
+    b.signature = b.header.sign(&key);
+    let mut rs = vec![rec(1), rec(2)];
+    rs.sort_by_key(osis_base::CreationRecord::tid);
+    b.parts[0].records = rs.clone();
+    assert_eq!(CommitBlob::decode(&b.encode()).unwrap(), b);
+    rs.reverse();
+    b.parts[0].records = rs;
+    assert!(matches!(CommitBlob::decode(&b.encode()), Err(Error::Malformed(_))));
+    let mut h = b.header.clone();
+    h.aspects[0].ak = osis_base::Ak::new("/created").unwrap();
+    h.aspects[0].retention = crate::retention::fixed_retention("/created").unwrap();
+    h.aspects[0].keys.clear();
+    h.keys.clear();
+    assert!(h.validate().unwrap_err().to_string().contains("/created"));
 }
 
 // spec/wire.md §4: parts are sorted and distinct; a non-array delta is malformed.

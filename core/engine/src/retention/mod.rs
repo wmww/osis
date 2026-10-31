@@ -938,7 +938,7 @@ impl Engine {
                 a.schema.and_then(|i| h.schemas.get(i)).copied()
             });
             let plan = CommitPlan { kind, ts, actor: node, form: Form::Node, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng) };
-            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, schema_ref, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new(), split: false };
+            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, schema_ref, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new(), split: false, records: Vec::new() };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })
     }
