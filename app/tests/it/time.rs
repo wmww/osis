@@ -31,25 +31,77 @@ fn zones() {
     assert_eq!(named, utc);
 }
 
+/// Week placement and nudges at fixed floating times in a week without clock changes (2026-10-28,
+/// a Wednesday), so the system zone does not matter; the zone cases are in `nudge_over_dst_and_midnight`.
 #[test]
 fn week_and_nudge() {
+    use osis_app::event::END;
     let d = Data::new(Osis::create(Config::memory()).unwrap().0);
     let e = d.create(NewKind::Event).unwrap();
-    let (s, end, _) = d.span(e).unwrap().unwrap();
-    assert_eq!(end - s, HOUR);
+    let Some(Start::At(w0)) = d.get(e, START).unwrap() else { panic!("a new event has a wall start") };
+    assert_eq!((w0.time % HOUR, w0.zone), (0, None), "on the hour, floating");
+    assert_eq!(d.get(e, END).unwrap(), Some(End::After(HOUR)), "for an hour");
+    let wed = 20_754;
+    let s = wed * DAY + 10 * HOUR;
+    d.db.write_with(|w| w.at(e, START).set(&Start::At(Wall { time: s, zone: None }))).unwrap();
     let monday = monday_of(s);
-    let week = d.week(monday).unwrap();
-    assert_eq!(week.len(), 7);
-    let on: Vec<usize> = week.iter().enumerate().filter(|(_, (_, ev))| ev.iter().any(|x| x.tid == e)).map(|(i, _)| i).collect();
-    assert_eq!(on, vec![((s - monday) / DAY) as usize]);
+    assert_eq!(monday, 20_752 * DAY);
+    let days_on = |d: &Data| -> Vec<usize> {
+        let week = d.week(monday).unwrap();
+        assert_eq!(week.len(), 7);
+        week.iter().enumerate().filter(|(_, (_, ev))| ev.iter().any(|x| x.tid == e)).map(|(i, _)| i).collect()
+    };
+    assert_eq!(days_on(&d), vec![2]);
     d.nudge(e, DAY, 30 * MINUTE).unwrap();
     assert_eq!(d.span(e).unwrap().unwrap(), (s + DAY, s + DAY + 90 * MINUTE, false));
     d.nudge(e, 0, -10 * HOUR).unwrap();
     let (s2, e2, _) = d.span(e).unwrap().unwrap();
     assert_eq!(e2 - s2, 15 * MINUTE, "never shorter than 15 min");
+    // late evening: an event past midnight shows on both days
+    let late = wed * DAY + 23 * HOUR + 30 * MINUTE;
+    d.db.write_with(|w| {
+        w.at(e, START).set(&Start::At(Wall { time: late, zone: None }))?;
+        w.at(e, END).set(&End::After(HOUR))
+    })
+    .unwrap();
+    assert_eq!(days_on(&d), vec![2, 3]);
+    d.nudge(e, DAY, 30 * MINUTE).unwrap();
+    assert_eq!(d.span(e).unwrap().unwrap(), (late + DAY, late + DAY + 90 * MINUTE, false));
+    assert_eq!(days_on(&d), vec![3, 4]);
     d.db.write_with(|w| w.at(e, START).set(&Start::Day(100))).unwrap();
     d.nudge(e, -HOUR, 0).unwrap();
     assert_eq!(d.get(e, START).unwrap(), Some(Start::Day(99)), "a day event moves by whole days");
+}
+
+/// Nudges in Los Angeles: a move keeps the wall time, a length is elapsed time, so over the
+/// autumn night (2026-11-01, 02:00 -> 01:00) 90 minutes from 01:00 end at 01:30 by the clock,
+/// and lengthening an end given as a wall time adds to its elapsed length, not its wall length.
+#[test]
+fn nudge_over_dst_and_midnight() {
+    use osis_app::time::{nudged_in, span_in};
+    let la = jiff::tz::TimeZone::get("America/Los_Angeles").unwrap();
+    let at = |t| Start::At(Wall { time: t, zone: None });
+    let nov1 = 20_758;
+    // 01:00 the day before, an hour, a day later and 30 min longer
+    let (ns, ne) = nudged_in(&at((nov1 - 1) * DAY + HOUR), Some(&End::After(HOUR)), DAY, 30 * MINUTE, &la);
+    assert_eq!((&ns, &ne), (&at(nov1 * DAY + HOUR), &Some(End::After(90 * MINUTE))));
+    assert_eq!(span_in(&ns, ne.as_ref(), &la), (nov1 * DAY + HOUR, nov1 * DAY + HOUR + 30 * MINUTE, false), "01:00 PDT + 90 min is 01:30 PST");
+    // 00:00 to 03:00 by the clock is four hours that night; 30 min longer ends at 03:30
+    let end = End::At(Wall { time: nov1 * DAY + 3 * HOUR, zone: None });
+    let (ns, ne) = nudged_in(&at(nov1 * DAY), Some(&end), 0, 30 * MINUTE, &la);
+    assert_eq!(ne, Some(End::After(4 * HOUR + 30 * MINUTE)));
+    assert_eq!(span_in(&ns, ne.as_ref(), &la).1, nov1 * DAY + 3 * HOUR + 30 * MINUTE);
+    // the same over the spring-forward night (2026-03-08, 02:00 -> 03:00): 00:00 to 04:00 is three hours
+    let mar8 = 20_520;
+    let end = End::At(Wall { time: mar8 * DAY + 4 * HOUR, zone: None });
+    let (ns, ne) = nudged_in(&at(mar8 * DAY), Some(&end), 0, HOUR, &la);
+    assert_eq!(ne, Some(End::After(4 * HOUR)));
+    assert_eq!(span_in(&ns, ne.as_ref(), &la).1, mar8 * DAY + 5 * HOUR);
+    // a move alone keeps a wall end a wall end, across midnight and the clock change
+    let late = (nov1 - 1) * DAY + 23 * HOUR + 30 * MINUTE;
+    let end = End::At(Wall { time: late + HOUR, zone: None });
+    let (ns, ne) = nudged_in(&at(late), Some(&end), DAY, 0, &la);
+    assert_eq!((ns, ne), (at(late + DAY), Some(End::At(Wall { time: late + DAY + HOUR, zone: None }))));
 }
 
 fn rep(freq: osis_app::event::RepeatFreq) -> osis_app::event::Repeat {

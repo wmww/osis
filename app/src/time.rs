@@ -61,10 +61,15 @@ pub fn to_local_in(w: &Wall, tz: &TimeZone) -> i64 {
     }
 }
 
+/// The instant of wall time `w`; a floating `w` is in `tz`.
+fn instant(w: &Wall, tz: &TimeZone) -> Option<Timestamp> {
+    let z = w.zone.as_deref().and_then(zone).unwrap_or_else(|| tz.clone());
+    civil(w.time)?.to_zoned(z).ok().map(|z| z.timestamp())
+}
+
 /// The wall time in `tz` a duration (elapsed ms) after wall time `w`; a floating `w` is in `tz`.
 fn after_in(w: &Wall, d: i64, tz: &TimeZone) -> Option<i64> {
-    let z = w.zone.as_deref().and_then(zone).unwrap_or_else(|| tz.clone());
-    let at = civil(w.time)?.to_zoned(z).ok()?.timestamp().checked_add(jiff::SignedDuration::from_millis(d)).ok()?;
+    let at = instant(w, tz)?.checked_add(jiff::SignedDuration::from_millis(d)).ok()?;
     Some(ms_of(at.to_zoned(tz.clone()).datetime()))
 }
 
@@ -93,6 +98,51 @@ pub fn span_in(start: &Start, end: Option<&End>, tz: &TimeZone) -> (i64, i64, bo
                 _ => *d,
             };
             (s, last.saturating_add(1).saturating_mul(DAY), true)
+        }
+    }
+}
+
+/// An event's start and end moved by `by` ms of wall time (the end along in its own form) and, for
+/// a nonzero `longer`, with its length set to the current one plus `longer` as an elapsed duration
+/// (not below 15 min; a day event moves and grows by whole days); a floating time is in `tz`.
+pub fn nudged_in(start: &Start, end: Option<&End>, by: i64, longer: i64, tz: &TimeZone) -> (Start, Option<End>) {
+    let (s, e, _) = span_in(start, end, tz);
+    match start {
+        Start::At(w) => {
+            let ns = Start::At(Wall { time: w.time.saturating_add(by), zone: w.zone.clone() });
+            let ne = if longer == 0 {
+                // a move keeps the end's form: a moment stays one, an end time moves along
+                match end {
+                    Some(End::At(x)) => Some(End::At(Wall { time: x.time.saturating_add(by), zone: x.zone.clone() })),
+                    other => other.cloned(),
+                }
+            } else {
+                // elapsed, not wall, length: over a clock change they differ
+                let len = match end {
+                    Some(End::After(d)) => *d,
+                    Some(End::At(x)) => match (instant(w, tz), instant(x, tz)) {
+                        (Some(a), Some(b)) => b.as_millisecond().saturating_sub(a.as_millisecond()).max(0),
+                        _ => e.saturating_sub(s),
+                    },
+                    _ => e.saturating_sub(s),
+                };
+                Some(End::After(len.saturating_add(longer).max(15 * MINUTE)))
+            };
+            (ns, ne)
+        }
+        Start::Day(d) => {
+            let days = by.div_euclid(DAY);
+            let nd = d.saturating_add(days);
+            let ne = if longer == 0 {
+                match end {
+                    Some(End::Day(x)) => Some(End::Day(x.saturating_add(days))),
+                    other => other.cloned(),
+                }
+            } else {
+                let span = (e.saturating_sub(s) / DAY).max(1).saturating_add(longer.div_euclid(DAY)).max(1);
+                if span > 1 { Some(End::Day(nd.saturating_add(span - 1))) } else { None }
+            };
+            (Start::Day(nd), ne)
         }
     }
 }
