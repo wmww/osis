@@ -5,3 +5,4 @@
 - A stranded node cannot grant on the stranded actor (granting boxes under its epoch), so a test that lifts stranding by a grant from the stranded admin fails: the lift has to come from a node that already may rotate the whole cycle.
 - (leave-out rework) The node test harness's groups are owned by bare nodes with no inbox, so a re-seal to an actor member has no inbox to go to: a design that relies on re-seal delivery to nested readers cannot be exercised there (found via `revokes::nested_departure_revoke_placed`).
 - Python string surgery on a 2000-line file: a non-greedy regex to drop a debug `eprintln!` stopped at the first `}` inside its format string and mangled the line; grep for leftovers after any regex cleanup.
+- (review) The branch's new `Left out` MUST had no `RULES` anchor in tools/spec_map.py, so the gate failed at `--gaps`; the worker had not gated. A new MUST sentence needs a `RULES` entry and a test citing its anchor.
