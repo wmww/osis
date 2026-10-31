@@ -7,15 +7,6 @@ use osis_base::{Ak, Role, Value};
 use osis_schema::AspectKey;
 use osis_node::sync::Event;
 
-pub fn trace(net: &mut Net, nodes: &[usize]) {
-    for n in nodes {
-        let d = net.sync(*n).take_diagnostics();
-        if !d.is_empty() {
-            eprintln!("node {n}: {d:?}");
-        }
-    }
-}
-
 // spec/sync.md §3, §5, §6: two nodes of one group converge through one blind server: closure
 // bodies uploaded stamped, downloaded, unwrapped and applied, both ways.
 #[test]
@@ -27,7 +18,7 @@ fn two_nodes_converge_spec_sync_6() {
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     let t = net.item(a, g, g, "hello");
     net.run();
-    trace(&mut net, &[a, b]);
+    net.trace(&[a, b]);
     assert_eq!(net.read(b, t), Some(s("hello")));
     net.write(b, t, "back");
     net.run();
@@ -56,7 +47,7 @@ fn reader_relays_spec_sync_6() {
     net.run();
     // another node's entries: left to their author for a while (spec/sync.md §6)
     net.advance(30_000);
-    trace(&mut net, &[a, r, c]);
+    net.trace(&[a, r, c]);
     assert_eq!(net.read(r, t), Some(s("relayed")));
     assert_eq!(net.read(c, t), Some(s("relayed")), "the reader carried the writer's entries to the second server");
 }
@@ -127,7 +118,7 @@ fn bundle_round_trip_spec_sync_11() {
     assert_eq!(net.read(b, t), None);
     let acts = net.sync(b).import_bundle(&bytes).unwrap();
     assert!(acts.is_empty());
-    trace(&mut net, &[b]);
+    net.trace(&[b]);
     assert_eq!(net.read(b, t), Some(s("bundled")));
 }
 
@@ -171,7 +162,7 @@ fn briefly_online_devices_spec_sync_6() {
 
     net.set_online(b, true);
     net.advance(10_000);
-    trace(&mut net, &[b]);
+    net.trace(&[b]);
     assert_eq!(net.read(b, t), Some(s("a1")));
     net.write(b, t, "b1");
     net.write(b, t, "b2");
@@ -191,14 +182,14 @@ fn briefly_online_devices_spec_sync_6() {
     net.run();
     net.write(a, t, "a2");
     net.run();
-    trace(&mut net, &[a]);
+    net.trace(&[a]);
     net.set_online(a, false);
 
     // an hour later the expiring write is gone everywhere; B catches up alone
     net.clock.advance(3_600_000);
     net.set_online(b, true);
     net.advance(10_000);
-    trace(&mut net, &[b]);
+    net.trace(&[b]);
     assert_eq!(net.read(b, t), Some(s("a2")));
     let brief = Ak::new(BRIEF.ak()).unwrap();
     assert_eq!(net.engine(b).get(&t, &brief).unwrap(), None);

@@ -11,15 +11,6 @@ use osis_node::sync::{EntryKind, Event, SyncConfig};
 use osis_schema::AspectKey;
 use osis_schema::core_types as ct;
 
-fn diags(net: &mut Net, nodes: &[usize]) {
-    for n in nodes {
-        let d = net.sync(*n).take_diagnostics();
-        if !d.is_empty() {
-            eprintln!("node {n}: {d:?}");
-        }
-    }
-}
-
 /// Blob IDs node `n` knows under `l` holding commit `c`.
 fn blobs_of(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::CommitId) -> Vec<osis_base::BlobId> {
     net.sync(n).entries(l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == c)).map(|(id, _)| id).collect()
@@ -89,7 +80,7 @@ fn purge_leaves_no_copy_spec_commits_5() {
     net.engine(b).commit(m).unwrap();
     net.run();
     net.run();
-    diags(&mut net, &[b, r]);
+    net.trace(&[b, r]);
     for id in &ids {
         assert!(!net.sync(r).holds_blob(id), "the reader keeps no key or ciphertext");
         assert!(!net.server_ids(sv, &l).contains(id), "deleted at the server by delete key");
@@ -137,7 +128,7 @@ fn purged_superset_holds_nothing_spec_sync_6() {
     // past the redial pause
     net.advance(6_000);
     net.run();
-    diags(&mut net, &[a, b]);
+    net.trace(&[a, b]);
     let ids = net.server_ids(sv, &l);
     assert!(!ids.contains(&p[0]), "p deleted once carried");
     assert!(ids.contains(&q[0]), "q kept");
@@ -182,7 +173,7 @@ fn purged_body_waits_for_its_rewrite_spec_sync_7() {
     // past the resend pause
     net.advance(60_000);
     net.run();
-    diags(&mut net, &[a, b]);
+    net.trace(&[a, b]);
     let ids = net.server_ids(sv, &l);
     assert!(ids.contains(&q[0]), "q uploaded again");
     assert!(!ids.contains(&p[0]), "p deleted once carried");
@@ -232,7 +223,7 @@ fn purged_body_leaves_full_label_spec_sync_7() {
         assert!(ids.contains(&p[0]) || q.iter().any(|x| ids.contains(x)), "neither p nor its rewrite at the server");
     }
     net.run();
-    diags(&mut net, &[a, b]);
+    net.trace(&[a, b]);
     let q: Vec<_> = blobs_of(&mut net, a, &l, &c).into_iter().filter(|id| !p.contains(id)).collect();
     assert_eq!(q.len(), 1, "a's rewrite placed");
     let ids = net.server_ids(sv, &l);
@@ -285,7 +276,7 @@ fn no_reupload_ping_pong_spec_sync_6() {
     let n1 = net.server_ids(sv, &l);
     net.advance(70_000);
     net.advance(70_000);
-    diags(&mut net, &[a, b]);
+    net.trace(&[a, b]);
     assert_eq!(net.server_ids(sv, &l), n1, "settled: nothing re-uploaded, nothing deleted again");
     assert_eq!(net.read(b, t), Some(s("v3")));
 }
