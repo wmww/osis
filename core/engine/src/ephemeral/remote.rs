@@ -59,6 +59,17 @@ pub const COVER_FACTOR: usize = 2;
 /// infinity compacts at every write.
 pub const ENTRY_CHARGE: usize = 1024;
 
+/// Copies a holder keeps of a received part's writes, each counted by the node cap
+/// (`ephemeral_charge`): the decoded part and the joined state.
+const HELD_COPIES: usize = 2;
+
+/// Bytes a holder spends per held part past its fragments (the part's and aspect's records, the
+/// header's aspect entry), as the node cap counts it (`ephemeral_charge`). Resource estimate,
+/// measured (`scale::eph_decoded_memory`, aspects shape: about 2.3 KiB of RSS per part with one
+/// small write, release, x86-64): 0 leaves a commit of many small aspects counted at a tenth of
+/// what it holds; infinity fills the cap with a label's first commit.
+pub const PART_OVERHEAD: usize = 2048;
+
 /// One delta of an ephemeral commit to build: thing, aspect, fragment, expiry.
 type EphDelta = (Tid, Ak, Fragment, Option<u64>);
 
@@ -88,6 +99,8 @@ pub(crate) struct HeldPart {
     pub fragment: Fragment,
     /// Its encoded delta's length.
     pub bytes: usize,
+    /// Its decoded fragment's heap size at decode (`Fragment::approx_bytes`; `ephemeral_charge`).
+    pub heap: usize,
     /// The commits it lists as absorbed.
     pub absorbed: BTreeSet<CommitId>,
     /// Its `Authors`: the node each session is attributed to, and at which `ts` (writes of
@@ -99,7 +112,8 @@ pub(crate) struct HeldPart {
 
 impl HeldPart {
     fn new(ai: usize, s: Snapshot, bytes: usize) -> HeldPart {
-        HeldPart { ai, fragment: s.fragment, bytes, absorbed: s.absorbed.into_keys().collect(), authors: s.authors, valid: true }
+        let heap = s.fragment.approx_bytes();
+        HeldPart { ai, fragment: s.fragment, bytes, heap, absorbed: s.absorbed.into_keys().collect(), authors: s.authors, valid: true }
     }
 
     /// Strips the writes of sessions its `Authors` does not attribute to `author` (an ephemeral
@@ -148,6 +162,10 @@ pub(crate) struct Remote {
     pub local: BTreeSet<Tid>,
     /// The ephemeral commit records.
     pub held: BTreeMap<CommitId, Held>,
+    /// Per commit ID some held commit's part lists as absorbed, the held commits listing it (kept
+    /// exact by `index_lists`/`unindex_lists` around every change of `held`'s lists), so arrival
+    /// and drop cost what the commit lists rather than every held commit.
+    pub absorbers: BTreeMap<CommitId, BTreeSet<CommitId>>,
     /// Commits whose author's record, or a part's thing's, is not here yet, with the things
     /// whose records they wait for (bounded by the sync layer, which forgets what it drops),
     /// retried when one of those records arrives.
@@ -188,6 +206,57 @@ pub(crate) struct Remote {
     /// Own writes, signals or keep-alives noted since the last `take_ephemeral_if` (what it held
     /// back goes when the sync layer's upload in flight is answered, not on a new local event).
     pub noted: bool,
+}
+
+impl Remote {
+    /// Adds held commit `id`'s lists to `absorbers`.
+    fn index_lists(&mut self, id: CommitId) {
+        let Some(h) = self.held.get(&id) else { return };
+        for c in h.parts.iter().flat_map(|p| p.absorbed.iter()) {
+            self.absorbers.entry(*c).or_default().insert(id);
+        }
+    }
+
+    /// Removes held commit `id`'s lists from `absorbers` (before they change or it goes).
+    fn unindex_lists(&mut self, id: &CommitId) {
+        let Some(h) = self.held.get(id) else { return };
+        for c in h.parts.iter().flat_map(|p| p.absorbed.iter()) {
+            if let Some(s) = self.absorbers.get_mut(c) {
+                s.remove(id);
+                if s.is_empty() {
+                    self.absorbers.remove(c);
+                }
+            }
+        }
+    }
+
+    /// Debug builds: `absorbers` is exactly what `held`'s lists say.
+    fn check_index(&self) {
+        if cfg!(debug_assertions) {
+            let mut want: BTreeMap<CommitId, BTreeSet<CommitId>> = BTreeMap::new();
+            for (id, h) in &self.held {
+                for c in h.parts.iter().flat_map(|p| p.absorbed.iter()) {
+                    want.entry(*c).or_default().insert(*id);
+                }
+            }
+            debug_assert!(want == self.absorbers, "the absorbers index drifted from the held lists");
+        }
+    }
+
+    /// The valid unexpiring parts of held commits of `h`'s author and class listing `id` as
+    /// absorbed on aspect `on` of `h` (`h` held as `id`).
+    fn listers(&self, id: &CommitId, h: &Header, on: &osis_commit::AspectEntry) -> Vec<PartId> {
+        let mut out = Vec::new();
+        for c in self.absorbers.get(id).into_iter().flatten() {
+            let Some(x) = self.held.get(c).filter(|x| may_absorb(&x.header, h)) else { continue };
+            for q in &x.parts {
+                if q.valid && q.absorbed.contains(id) && x.header.aspects.get(q.ai).is_some_and(|a| a.expires.is_none() && a.tid == on.tid && a.ak == on.ak) {
+                    out.push((*c, q.ai));
+                }
+            }
+        }
+        out
+    }
 }
 
 /// A commit waiting for records (`Remote::pending`): every distinct copy of its signature and
@@ -511,7 +580,8 @@ impl Engine {
     /// The valid held commits listing `id` as absorbed (the covers that took it in: several
     /// when an own cover was split by aspect, spec/sync.md §9).
     pub fn ephemeral_absorbers(&self, id: &CommitId) -> BTreeSet<CommitId> {
-        self.eph.remote.held.iter().filter(|(_, h)| h.parts.iter().any(|p| p.valid && p.absorbed.contains(id))).map(|(c, _)| *c).collect()
+        let r = &self.eph.remote;
+        r.absorbers.get(id).into_iter().flatten().filter(|c| r.held.get(c).is_some_and(|h| h.parts.iter().any(|p| p.valid && p.absorbed.contains(id)))).copied().collect()
     }
 
     /// Whether held ephemeral commit `id` is a presence commit.
@@ -694,6 +764,7 @@ impl Engine {
             }
             let bytes = held_parts.iter().map(|p| p.bytes).sum();
             self.eph.remote.held.insert(id, Held { header, parts: held_parts, own: true, bytes });
+            self.eph.remote.index_lists(id);
             let presence = class == EphClass::Presence;
             if presence {
                 self.eph.remote.leases.entry(ts.wall_ms().0.saturating_add(MAX_LEASE_MS)).or_default().insert(id);
@@ -707,7 +778,7 @@ impl Engine {
                 ea.presence |= presence && a.ak.as_str() != CREATED.ak();
             }
             if !absorbed.is_empty() {
-                self.drop_absorbed();
+                self.drop_absorbed_of(absorbed.values().flatten().copied().collect());
             }
         }
         Ok(Attempt::Made(Box::new(EphCommit { id, class, blob })))
@@ -831,11 +902,18 @@ impl Engine {
             if a.expires.is_some() {
                 return None;
             }
+            if !take {
+                // only a cover listing it: the index names those
+                let r = &self.eph.remote;
+                let found = r.listers(id, h, a).into_iter().find(|(c, ai)| c != id && r.held.get(c).and_then(|x| x.parts.iter().find(|q| q.ai == *ai)).is_some_and(|q| contains(&q.fragment, &p.fragment)));
+                by.insert(found?.0);
+                continue;
+            }
             let ea = self.eph.aspects.get(&a.tid).and_then(|m| m.get(&a.ak))?;
             let found = ea.parts.iter().find_map(|(c, ai)| {
                 let x = self.eph.remote.held.get(c).filter(|x| c != id && may_absorb(&x.header, h))?;
                 let q = x.parts.iter().find(|q| q.ai == *ai && q.valid)?;
-                let later = take && !q.absorbed.is_empty() && x.header.ts > h.ts;
+                let later = !q.absorbed.is_empty() && x.header.ts > h.ts;
                 let fits = x.header.aspects.get(*ai).is_some_and(|xa| xa.expires.is_none()) && (later || q.absorbed.contains(id));
                 (fits && contains(&q.fragment, &p.fragment)).then_some(*c)
             });
@@ -1007,6 +1085,7 @@ impl Engine {
             self.eph.remote.leases.entry(at.saturating_add(MAX_LEASE_MS)).or_default().insert(id);
         }
         // another blob of a held commit: an own one stays own
+        self.eph.remote.unindex_lists(&id);
         let mut parts = self.eph.remote.held.remove(&id).map_or(Vec::new(), |x| x.parts);
         let mut changed = Vec::new();
         for hp in &fresh {
@@ -1041,8 +1120,13 @@ impl Engine {
         parts.extend(fresh);
         let bytes = parts.iter().map(|p| p.bytes).sum();
         let new = !changed.is_empty();
-        let absorbs = parts.iter().any(|p| !p.absorbed.is_empty());
+        // what it lists, and itself when held commits list it, are weighed for dropping
+        let mut weigh: BTreeSet<CommitId> = parts.iter().flat_map(|p| p.absorbed.iter().copied()).collect();
+        if self.eph.remote.absorbers.contains_key(&id) {
+            weigh.insert(id);
+        }
         self.eph.remote.held.insert(id, Held { header: header.clone(), parts, own, bytes });
+        self.eph.remote.index_lists(id);
         // a part waits: its verified parts are held, the blob waits for the rest (another blob of
         // this commit may wait too: a commit past a blob splits)
         let waiting = !waits.is_empty();
@@ -1064,8 +1148,8 @@ impl Engine {
                 self.drop_ephemeral_presence(&c);
             }
         }
-        if absorbs {
-            self.drop_absorbed();
+        if !weigh.is_empty() {
+            self.drop_absorbed_of(weigh);
         }
         changed.sort();
         changed.dedup();
@@ -1221,75 +1305,110 @@ impl Engine {
     /// (a cover); their parts' writes stay in the state through the cover. A cover's part that
     /// does not contain the parts it lists (`contains`; an honest cover is their join) absorbs
     /// nothing: its list is cleared, so holders keep those commits and compute one join. Queued
-    /// for `take_dropped_ephemeral`.
+    /// for `take_dropped_ephemeral`. Every held commit some held commit lists is weighed.
     fn drop_absorbed(&mut self) {
+        let cands: BTreeSet<CommitId> = self.eph.remote.absorbers.keys().filter(|c| self.eph.remote.held.contains_key(c)).copied().collect();
+        self.drop_absorbed_of(cands);
+    }
+
+    /// `drop_absorbed`, weighing only held commits `cands` (what an arriving commit lists, or the
+    /// arriving commit when held commits list it): a commit drops only when a listing changes,
+    /// and a cover part is judged bad (`contains`) over its own list, so the cost is what those
+    /// lists hold, not every held commit.
+    fn drop_absorbed_of(&mut self, cands: BTreeSet<CommitId>) {
         let r = &self.eph.remote;
-        // per aspect, per held commit listed there, the cover parts listing it
-        let mut lists: BTreeMap<(Tid, Ak), BTreeMap<CommitId, Vec<PartId>>> = BTreeMap::new();
-        for (cid, h) in &r.held {
+        let is_created = |h: &Header, ai: usize| h.aspects.get(ai).is_none_or(|a| a.ak.as_str() == CREATED.ak());
+        // per listing cover part judged: whether it fails to contain a held part it lists there
+        let mut bad: BTreeMap<PartId, bool> = BTreeMap::new();
+        let mut gone = Vec::new();
+        for id in &cands {
+            let Some(h) = r.held.get(id) else { continue };
+            let mut all = true;
+            let mut per_part = Vec::new();
             for p in &h.parts {
-                if p.valid
-                    && !p.absorbed.is_empty()
-                    && let Some(a) = h.header.aspects.get(p.ai)
-                    && a.expires.is_none()
-                {
-                    let m = lists.entry((a.tid, a.ak.clone())).or_default();
-                    for c in p.absorbed.iter().filter(|c| r.held.get(c).is_some_and(|x| may_absorb(&h.header, &x.header))) {
-                        m.entry(*c).or_default().push((*cid, p.ai));
+                let Some(a) = h.header.aspects.get(p.ai) else { all = false; break };
+                let ls = r.listers(id, &h.header, a);
+                if ls.is_empty() {
+                    all = false;
+                    break;
+                }
+                if !is_created(&h.header, p.ai) {
+                    per_part.push(ls);
+                }
+            }
+            if !all {
+                // judged anyway: a cover that does not contain what it lists absorbs nothing
+                for p in h.parts.iter().filter(|p| !is_created(&h.header, p.ai)) {
+                    if let Some(a) = h.header.aspects.get(p.ai) {
+                        for l in r.listers(id, &h.header, a) {
+                            bad.entry(l).or_insert_with(|| self.cover_part_bad(l));
+                        }
                     }
                 }
+                continue;
             }
-        }
-        if lists.is_empty() {
-            return;
-        }
-        let listers = |id: &CommitId, h: &Held, p: &HeldPart| h.header.aspects.get(p.ai).and_then(|a| lists.get(&(a.tid, a.ak.clone()))).and_then(|m| m.get(id)).cloned();
-        let listed: Vec<CommitId> = r.held.iter().filter(|(id, h)| h.parts.iter().all(|p| listers(id, h, p).is_some())).map(|(id, _)| *id).collect();
-        // per listing cover part, every held part it lists (of commits listed on only some of
-        // their aspects too): it must contain them all
-        let mut vouch: BTreeMap<PartId, Vec<PartId>> = BTreeMap::new();
-        for (id, h) in &r.held {
-            for p in h.parts.iter().filter(|p| h.header.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() != CREATED.ak())) {
-                for c in listers(id, h, p).unwrap_or_default() {
-                    vouch.entry(c).or_default().push((*id, p.ai));
+            let mut drops = true;
+            for ls in per_part {
+                let mut any = false;
+                for l in ls {
+                    let b = *bad.entry(l).or_insert_with(|| self.cover_part_bad(l));
+                    any |= !b;
                 }
+                drops &= any;
+            }
+            if drops {
+                gone.push(*id);
             }
         }
-        let part = |c: &CommitId, ai: usize| r.held.get(c).and_then(|h| h.parts.iter().find(|p| p.ai == ai));
-        let mut bad: BTreeSet<PartId> = BTreeSet::new();
-        for ((c, ai), xs) in &vouch {
-            let Some(cp) = part(c, *ai) else { continue };
-            let mut j = cp.fragment.clone();
-            for (x, xai) in xs {
-                if let Some(xp) = part(x, *xai) {
-                    j.join(xp.fragment.clone());
-                }
+        for ((c, ai), b) in bad {
+            if !b {
+                continue;
             }
-            if j != cp.fragment {
-                bad.insert((*c, *ai));
-            }
-        }
-        let gone: Vec<CommitId> = listed
-            .into_iter()
-            .filter(|id| {
-                r.held.get(id).is_some_and(|h| {
-                    h.parts.iter().filter(|p| h.header.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() != CREATED.ak())).all(|p| listers(id, h, p).unwrap_or_default().iter().any(|c| !bad.contains(c)))
-                })
-            })
-            .collect();
-        for (c, ai) in bad {
+            self.eph.remote.unindex_lists(&c);
             if let Some(p) = self.eph.remote.held.get_mut(&c).and_then(|h| h.parts.iter_mut().find(|p| p.ai == ai)) {
                 p.absorbed.clear();
             }
+            self.eph.remote.index_lists(c);
         }
         for id in gone {
             self.forget_held(&id);
         }
+        self.eph.remote.check_index();
+    }
+
+    /// Whether held cover part `(c, ai)` fails to contain a held part it lists on its aspect (of
+    /// a commit of its author and class).
+    fn cover_part_bad(&self, (c, ai): PartId) -> bool {
+        let r = &self.eph.remote;
+        let Some(h) = r.held.get(&c) else { return false };
+        let Some(cp) = h.parts.iter().find(|p| p.ai == ai) else { return false };
+        let Some(a) = h.header.aspects.get(ai) else { return false };
+        if a.ak.as_str() == CREATED.ak() {
+            return false;
+        }
+        let mut j: Option<Fragment> = None;
+        for x in &cp.absorbed {
+            let Some(xh) = r.held.get(x).filter(|xh| may_absorb(&h.header, &xh.header)) else { continue };
+            for xp in &xh.parts {
+                if xh.header.aspects.get(xp.ai).is_some_and(|xa| xa.tid == a.tid && xa.ak == a.ak) {
+                    j.get_or_insert_with(|| cp.fragment.clone()).join(xp.fragment.clone());
+                }
+            }
+        }
+        j.is_some_and(|j| j != cp.fragment)
     }
 
     /// Forgets held commit `id` (its writes stay in the state); queued for `take_dropped_ephemeral`.
     fn forget_held(&mut self, id: &CommitId) {
-        let Some(h) = self.eph.remote.held.remove(id) else { return };
+        if self.release_held(id) {
+            self.eph.dropped.push(*id);
+        }
+    }
+
+    /// Forgets held commit `id` without queueing it; whether it was held.
+    fn release_held(&mut self, id: &CommitId) -> bool {
+        self.eph.remote.unindex_lists(id);
+        let Some(h) = self.eph.remote.held.remove(id) else { return false };
         if h.header.ephemeral == Some(EphClass::Presence) {
             let lease = h.header.ts.wall_ms().0.saturating_add(MAX_LEASE_MS);
             if let Some(s) = self.eph.remote.leases.get_mut(&lease) {
@@ -1311,13 +1430,20 @@ impl Engine {
                 }
             }
         }
-        self.eph.dropped.push(*id);
+        true
     }
 
     /// The held ephemeral commits dropped since the last call (covered, expired, or presence gone
     /// from every source): the sync layer forgets their blobs and deletes them where it may.
     pub fn take_dropped_ephemeral(&mut self) -> Vec<CommitId> {
         std::mem::take(&mut self.eph.dropped)
+    }
+
+    /// The held ephemeral commits let go since the last call because every part turned invalid
+    /// (a removal, a demotion): the sync layer forgets their blobs without deleting them anywhere
+    /// and reconciles their labels, so they wait apart (`Remote::invalid`) until valid again.
+    pub fn take_unheld_ephemeral(&mut self) -> Vec<CommitId> {
+        std::mem::take(&mut self.eph.unheld)
     }
 
     /// Whether an ephemeral commit is held here.
@@ -1426,6 +1552,26 @@ impl Engine {
             changed.push((t, ak));
         }
         if !changed.is_empty() {
+            // received commits with every part but `/created` invalid now are not held (as one
+            // received so would wait apart): neither counted nor served nor listed until valid
+            let gone: Vec<CommitId> = self
+                .eph
+                .remote
+                .held
+                .iter()
+                .filter(|(_, h)| {
+                    let content: Vec<&HeldPart> = h.parts.iter().filter(|p| h.header.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() != CREATED.ak())).collect();
+                    !h.own && !content.is_empty() && content.iter().all(|p| !p.valid)
+                })
+                .map(|(c, _)| *c)
+                .collect();
+            for id in gone {
+                let recs = self.carried_tids(&id);
+                if self.release_held(&id) {
+                    self.eph.unheld.push(id);
+                }
+                self.free_unused_records(recs);
+            }
             self.drop_absorbed();
             self.core.events.queue(Event::Changed { cause: crate::events::Cause::Validity, changed });
             self.core.events.flush();
@@ -1467,12 +1613,19 @@ impl Engine {
             }
             let (_, parts) = entry.remove_entry();
             for (id, ai) in parts {
+                self.eph.remote.unindex_lists(&id);
                 let Some(h) = self.eph.remote.held.get_mut(&id) else { continue };
-                let Some(k) = h.parts.iter().position(|p| p.ai == ai) else { continue };
+                let Some(k) = h.parts.iter().position(|p| p.ai == ai) else {
+                    self.eph.remote.index_lists(id);
+                    continue;
+                };
                 let part = h.parts.remove(k);
                 h.bytes = h.bytes.saturating_sub(part.bytes);
                 let header = h.header.clone();
                 let empty = h.parts.is_empty();
+                if !empty {
+                    self.eph.remote.index_lists(id);
+                }
                 let Some(a) = header.aspects.get(ai) else { continue };
                 let dots: BTreeSet<osis_crdt::Dot> = part.fragment.writes().into_iter().map(|(d, _)| d).collect();
                 if let Some(ea) = self.eph.aspects.get_mut(&a.tid).and_then(|m| m.get_mut(&a.ak)) {
@@ -1499,6 +1652,7 @@ impl Engine {
         for id in gone {
             self.forget_unused(&id);
         }
+        self.eph.remote.check_index();
         changed
     }
 
@@ -1756,6 +1910,16 @@ impl Engine {
         Some(())
     }
 
+    /// What held ephemeral commit `id`'s parts `ais` (all when empty) cost a holder in memory, as
+    /// the node cap counts it: their decoded heap size in each copy kept (`HELD_COPIES`) and
+    /// `PART_OVERHEAD` each. A blob of tiny map entries takes about 200 times its encoded size
+    /// decoded (`scale::eph_decoded_memory`).
+    pub fn ephemeral_charge(&self, id: &CommitId, ais: &[usize]) -> u64 {
+        let Some(h) = self.eph.remote.held.get(id) else { return 0 };
+        let per = h.parts.iter().filter(|p| ais.is_empty() || ais.contains(&p.ai)).map(|p| p.heap.max(p.bytes));
+        per.fold(0u64, |a, b| a.saturating_add(b.saturating_mul(HELD_COPIES).saturating_add(PART_OVERHEAD) as u64))
+    }
+
     /// Held ephemeral commits and their encoded delta bytes (tests, diagnostics).
     pub fn held_ephemeral(&self) -> Vec<(CommitId, usize, bool)> {
         self.eph.remote.held.iter().map(|(id, h)| (*id, h.bytes, h.own)).collect()
@@ -1822,11 +1986,17 @@ fn one_minting(f: &Fragment) -> Option<Fragment> {
     (j == *f && is_minted(&m, &rec)).then_some(m)
 }
 
-/// Whether `c` contains every write of `x` (joining `x` into it changes nothing).
+/// Whether `c` contains every write of `x` (joining `x` into it changes nothing), judged on the
+/// piece of `c` at `x`'s positions (`Fragment::contains`: a replayed small commit costs about its
+/// own size, not a copy of the whole cover). Debug builds check it against the whole join.
 fn contains(c: &Fragment, x: &Fragment) -> bool {
-    let mut j = c.clone();
-    j.join(x.clone());
-    j == *c
+    let yes = c.contains(x);
+    if cfg!(debug_assertions) {
+        let mut j = c.clone();
+        j.join(x.clone());
+        debug_assert!(!yes || j == *c, "a piece contains what the whole does not");
+    }
+    yes
 }
 
 /// The encoding context of an ephemeral commit's snapshot deltas by `me` at `ts`.

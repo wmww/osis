@@ -123,7 +123,7 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | `SETTLE_MS` 30 s, `RELAY_MIN_MS` 5 s | M (co-writers both upload: duplicate work, idempotent) | |
 | `RELINK_BACKOFF_MS` 1 h - 7 days | R (a server deleting fresh chunks) | |
 | `SyncConfig` defaults: `resync_ms` 60 s, `retry_ms` 5 s, `peer_retry_ms` 60 s, `tight_budget` 16, `peer_pass_wait_ms` 5 min, `heartbeat_lifetime_ms` 2 days | M | |
-| `SyncConfig` defaults: `max_peers_per_label` 8, `max_peers` 64, `peer_bytes` 64 MiB, `peer_total_bytes` 1 GiB, `unvouched_cap` 2^16, `ephemeral_bytes` 16 MiB | R | |
+| `SyncConfig` defaults: `max_peers_per_label` 8, `max_peers` 64, `peer_bytes` 64 MiB, `peer_total_bytes` 1 GiB, `unvouched_cap` 2^16, `ephemeral_bytes` 16 MiB (memory held, decoded: `Engine::ephemeral_charge`) | R | |
 | diagnostics kept 256 | M | |
 
 ### Engine, keys, perm, crdt, store, schema, API
@@ -141,6 +141,7 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | `MAX_REUSE` 16 GiB | P | |
 | `MAX_LIST_BYTES` 8 MiB, `MAX_READ` 1 GiB | R (sign-off) | |
 | `ENTRY_CHARGE` 1024, `COVER_FACTOR` 2, `MAX_DELIVERED` 2^16, `DEFAULT_EPHEMERAL_HISTORY` 16 MiB | P/R (commented) | |
+| `PART_OVERHEAD` 2048 (engine ephemeral, node cap charge per held part) | R, measured estimate (commented; `scale::eph_decoded_memory`) | |
 | events `PER_PEER` 64 per `WINDOW_MS` 60 s, `DEDUP` 1024 | M (diagnostics) | |
 | `GRANULARITY_MS` 60 s | M | |
 | perm `CHECKPOINT` 32, `FORWARD_MAX` 4, `SHADOW_SHARE` 8 (512), debug `check_scratch` above 400 | P | |
