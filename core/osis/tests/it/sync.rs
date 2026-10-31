@@ -1,10 +1,10 @@
 //! Sharing and sync through blind servers in process (notes/api.md Sharing and membership,
-//! Sync configuration and status), no tokio: see common/world.rs.
+//! Sync configuration and status), no tokio: see osis_sim::world.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis::internals::Internals as _;
 use crate::common;
-use common::world::World;
+use osis_sim::world::World;
 use common::*;
 use crate::common::CreateIn;
 use osis::{Demotion, Lower, Osis, Role, SyncScope, SyncState, Tid, Value};
@@ -755,13 +755,13 @@ fn add_server_moves_labels_spec_sync_2() {
     assert!(card.is_none());
     w.run();
     assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::NoServers);
-    a.add_server(&w.addr(sv)).unwrap();
+    a.add_server(&w.addr(sv).unwrap()).unwrap();
     w.run();
     assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::Synced);
     let inbox = a.get(a.me(), osis::core::KEYS).unwrap().unwrap().inbox.unwrap();
     assert_eq!(inbox.servers.len(), 1);
     w.until(a.wait_synced(SyncScope::All, Duration::from_secs(10)), 1000, 10).unwrap();
-    a.remove_server(&w.addr(sv)).unwrap();
+    a.remove_server(&w.addr(sv).unwrap()).unwrap();
     w.run();
     assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::NoServers);
 }
@@ -789,11 +789,11 @@ fn add_server_scope_spec_sync_2() {
     let k = alice.links(mine)[0].id;
     w.run();
     let servers = |g: Tid| alice.engine(|e| e.group_labels(&g).unwrap().into_iter().find(|l| !l.replaced).unwrap().servers.len());
-    alice.add_server(&w.addr(s1)).unwrap();
+    alice.add_server(&w.addr(s1).unwrap()).unwrap();
     w.run();
     assert_eq!((servers(alice.home()), servers(mine), servers(his), servers(k)), (2, 2, 1, 1));
-    alice.remove_server(&w.addr(s0)).unwrap();
-    alice.remove_server(&w.addr(s1)).unwrap();
+    alice.remove_server(&w.addr(s0).unwrap()).unwrap();
+    alice.remove_server(&w.addr(s1).unwrap()).unwrap();
     w.run();
     assert_eq!((servers(alice.home()), servers(mine), servers(his), servers(k)), (0, 1, 1, 1), "a shared group keeps its last server");
 }

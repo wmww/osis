@@ -65,7 +65,7 @@ fn add_device(existing: &Osis, cfg: osis::Config) -> Result<Osis> {
 #[test]
 fn two_devices_offline_edits_and_undo() {
     let mut w = World::new();
-    let sv = w.add_server().unwrap();
+    let sv = w.add_server();
     let laptop = person(&mut w, 1, sv);
     let phone = add_device(&laptop, w.cfg(2, &[])).unwrap();
     let nb = new_tag(&laptop, "Home").unwrap();
@@ -81,7 +81,7 @@ fn two_devices_offline_edits_and_undo() {
     w.run();
     assert_eq!(body(&laptop, note).unwrap(), "- milk", "the phone's edit waits for the network");
     w.set_online(&phone, true);
-    w.until(phone.wait_synced(SyncScope::All, Duration::from_secs(60)), 1000, 10).unwrap().unwrap();
+    w.until(phone.wait_synced(SyncScope::All, Duration::from_secs(60)), 1000, 10).unwrap();
     w.run();
     assert_eq!(body(&laptop, note).unwrap(), "- milk, eggs");
     assert_eq!(body(&phone, note).unwrap(), "- milk, eggs");
@@ -104,7 +104,7 @@ fn two_devices_offline_edits_and_undo() {
 #[test]
 fn share_notebook_with_a_second_person() {
     let mut w = World::new();
-    let sv = w.add_server().unwrap();
+    let sv = w.add_server();
     let alice = person(&mut w, 1, sv);
     let bob = person(&mut w, 2, sv);
     let b = introduce(&mut w, &alice, &bob);
@@ -130,7 +130,7 @@ fn share_notebook_with_a_second_person() {
     w.run();
     assert!(notes(&alice, nb).unwrap().contains(&packing));
 
-    w.until(alice.demote(nb, b, osis::Lower::Remove, Default::default()), 1000, 20).expect("pre-sync").unwrap();
+    w.until(alice.demote(nb, b, osis::Lower::Remove, Default::default()), 1000, 20).unwrap();
     let secret = new_note(&alice, nb, "Surprise").unwrap();
     w.run();
     assert_eq!(title(&bob, secret).unwrap(), None, "removed: nothing new");
@@ -144,7 +144,7 @@ fn share_notebook_with_a_second_person() {
 #[test]
 fn large_body_streams() {
     let mut w = World::new();
-    let sv = w.add_server().unwrap();
+    let sv = w.add_server();
     let laptop = person(&mut w, 1, sv);
     let mut cfg = w.cfg(2, &[]);
     cfg.materialize_limit = 64 << 10;

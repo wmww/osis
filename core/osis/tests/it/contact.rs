@@ -50,7 +50,7 @@ fn view(db: &Osis, contact: Tid) -> Result<View> {
 #[test]
 fn profile_and_contact_overlay() {
     let mut w = World::new();
-    let sv = w.add_server().unwrap();
+    let sv = w.add_server();
     let alice = person(&mut w, 1, sv);
     let bob = person(&mut w, 2, sv);
     let p = alice.profile().unwrap();
