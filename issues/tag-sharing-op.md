@@ -11,6 +11,6 @@ What an app has to do today (the app prototype's former `add_tag`/`share_below`/
 - No provenance: an edge from tagging cannot be told from one granted by hand or by another admin, so untag may revoke the latter.
 - `demote`'s "still reaches it another way" outcome is only in the error text (`Error::Invalid` containing "reaches").
 - Someone removing my thing from their tag cannot revoke the tag's edge on my thing (they are not admin), so their tag keeps access.
-- Regranting after a revoke fails (issues/tag-regrant-after-revoke.md).
+- Order on a failed half: placing before granting leaves the thing tagged but unshared when the grant fails (a regrant after a revoke used to fail this way, fixed); granting first would leave a grant behind a failed placement. One causal unit (Ask) removes the choice.
 
 Ask (directions, owner's call): `tag(t, tag)` / `untag(t, tag)` / nest as core calls whose access follows placement (an edge tied to its placement, or reach derived from placement under a shared tag), one commit or one causal unit so no device sees half; untag takes back exactly what tagging gave; typed outcomes; works offline or says clearly why not.
