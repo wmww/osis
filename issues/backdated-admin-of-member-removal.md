@@ -1,6 +1,6 @@
 # A removed admin of actor X can backdate removals of X's edges, never audited
 > Summary: a lowering of X's edge by an admin of X with no other authority on the target is a self-removal, and self-removals are never added to D; so a device removed from person P (properly, with a frontier) can write removals of P's edges on every shared thing stamped before its own removal, and they stand: P loses access until each admin re-grants, its gap edge writes stay dropped.
-> Tags: security, perm, spec, owner-call
+> Tags: security, perm, spec
 
 Severity: medium (spec-level; code matches spec).
 
@@ -9,3 +9,6 @@ Scenario: D is an admin of person actor P; P has edges on documents T1..Tn. An a
 The rationale for never auditing self-removals (a later demotion would hand back what one gave up) holds for lowering one's own edge (`m == a`), not for an edge lowered through admin of the member.
 
 Fix direction (spec change): only own-edge lowerings are immune; a lowering through admin of X is attributed to that admin-of-X standing and audited by a later demotion of the author from X like other writes, by its frontier.
+
+
+Owner decision (round 13): keep things as simple as practical. Preferred direction: drop the "self-removals are never dropped" immunity entirely; a self-removal keeps only its looser authority (no admin on the target needed) and carries no rotation, and is otherwise audited like any write (a dropped leave that restores access is fine; re-seal covers missing boxes). Keep some version of the immunity only if something important needs it, and say what.
