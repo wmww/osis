@@ -1109,6 +1109,7 @@ impl Engine {
             if self.core.created(t).is_none() && !self.eph.things.contains_key(t) {
                 let created = fresh.iter().find(|p| h.aspects.get(p.ai).is_some_and(|a| a.tid == *t && a.ak.as_str() == CREATED.ak())).map(|p| p.fragment.clone());
                 self.eph.things.insert(*t, EphThing { record: rec.clone(), ts: h.ts, node: h.author, actor: h.actor, received, created, deleted: false });
+                self.eph.records += 1;
             }
         }
         let header = Arc::new(h);
@@ -1998,9 +1999,17 @@ impl Engine {
         aspects().map(|a| a.tid).filter(|t| !carried.contains(t) && self.record_of(t, &empty).is_none()).collect()
     }
 
-    /// Whether the record of `t` is here, durable or ephemeral.
+    /// Whether a record `ephemeral_needs` named is here now: durable, or an ephemeral thing's (an
+    /// author's must be durable; an ephemeral key actor record never ends its wait, and counting
+    /// it fetched a blob waiting for that author again at every change).
     pub fn has_record(&self, t: &Tid) -> bool {
-        self.record_of(t, &BTreeMap::new()).is_some()
+        self.core.created(t).is_some() || self.eph.things.get(t).is_some_and(|e| matches!(e.record, CreationRecord::Thing { .. }))
+    }
+
+    /// Changes after which a record may be here that was not (`has_record`): the held durable
+    /// set's generation and the ephemeral records added.
+    pub fn records_seen(&self) -> (u64, u64) {
+        (self.core.generation, self.eph.records)
     }
 
     /// Held ephemeral commits and their encoded delta bytes (tests, diagnostics).

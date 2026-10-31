@@ -167,11 +167,12 @@ impl WaitingDeletes {
     }
 }
 
-/// Ephemeral entries remembered per label with a value, at most `max` per label, the oldest
-/// forgotten past it (`Lane::unfit`, `Lane::share_refused`).
+/// Ephemeral entries remembered per label with a value and a weight, at most `max` weight per
+/// label, the oldest forgotten past it (`Lane::unfit`, `Lane::share_refused`).
 pub(crate) struct PerLabel<V> {
-    map: BTreeMap<(LabelId, BlobId), V>,
-    order: BTreeMap<LabelId, std::collections::VecDeque<BlobId>>,
+    map: BTreeMap<(LabelId, BlobId), (V, usize)>,
+    /// Per label, its entries oldest first and their total weight.
+    order: BTreeMap<LabelId, (std::collections::VecDeque<BlobId>, usize)>,
     max: usize,
 }
 
@@ -189,28 +190,35 @@ impl<V> PerLabel<V> {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&(LabelId, BlobId), &V)> {
-        self.map.iter()
+        self.map.iter().map(|(k, (v, _))| (k, v))
     }
 
-    /// Remembers `b` of `l` with `v` (replacing what it had); whether `l` had none before.
-    pub fn insert(&mut self, l: LabelId, b: BlobId, v: V) -> bool {
-        if self.map.insert((l, b), v).is_some() {
-            return false;
-        }
-        let q = self.order.entry(l).or_default();
+    /// Remembers `b` of `l` with `v` weighing `w` (replacing what it had, as the newest);
+    /// whether `l` had none before.
+    pub fn insert(&mut self, l: LabelId, b: BlobId, v: V, w: usize) -> bool {
+        let had = self.order.contains_key(&l);
+        self.remove(l, b);
+        self.map.insert((l, b), (v, w));
+        let (q, total) = self.order.entry(l).or_default();
         q.push_back(b);
-        if q.len() > self.max
+        *total += w;
+        while *total > self.max
             && let Some(old) = q.pop_front()
+            && let Some((_, ow)) = self.map.remove(&(l, old))
         {
-            self.map.remove(&(l, old));
+            *total -= ow;
         }
-        q.len() == 1
+        if q.is_empty() {
+            self.order.remove(&l);
+        }
+        !had
     }
 
     pub fn remove(&mut self, l: LabelId, b: BlobId) -> Option<V> {
-        let v = self.map.remove(&(l, b))?;
-        if let Some(q) = self.order.get_mut(&l) {
+        let (v, w) = self.map.remove(&(l, b))?;
+        if let Some((q, total)) = self.order.get_mut(&l) {
             q.retain(|x| *x != b);
+            *total -= w;
             if q.is_empty() {
                 self.order.remove(&l);
             }
@@ -226,11 +234,13 @@ impl<V> PerLabel<V> {
 /// grows the set for good).
 const UNFIT_MAX: usize = 1 << 12;
 
-/// Entries refused for the waiting share remembered per label (`Lane::share_refused`). Resource
-/// bound: about 150 bytes each; past it the oldest is forgotten and comes back only when a
-/// waiting entry leaves the share or at a restart's reconcile (0: a blob whose bound passes the
-/// share, arriving before its record, is lost to this node until then; infinity: a writer
-/// uploading blobs that wait for records that never come grows the set for good).
+/// Records lacked by the entries refused for the waiting share, remembered per label
+/// (`Lane::share_refused`, each entry weighing the records it lacks: a blob may lack one per
+/// aspect, about 1500). Resource bound: about 50 bytes per record and 150 per entry; past it the
+/// oldest entry is forgotten and comes back only when a waiting entry leaves the share or at a
+/// restart's reconcile (0: a blob whose bound passes the share, arriving before its record, is
+/// lost to this node until then; infinity: a writer uploading blobs that wait for records that
+/// never come grows the set for good).
 const SHARE_REFUSED_MAX: usize = 1 << 12;
 
 impl Default for PerLabel<()> {
@@ -271,6 +281,8 @@ pub(crate) struct Lane {
     /// bound passes the share, a split commit's later blob arriving first, was lost to this node
     /// until a restart). Forgotten when a server deletes them.
     pub share_refused: PerLabel<(Option<ServerKey>, BTreeSet<Tid>)>,
+    /// `Engine::records_seen` when `share_refused` was last weighed (`eph_refetch`).
+    pub refetch_seen: (u64, u64),
     /// Per connection and label: whether the first Sync listed the held entries, and those it
     /// listed that the peer has not asked for yet.
     pub announced: BTreeSet<(ConnId, LabelId)>,
@@ -774,9 +786,13 @@ impl SyncEngine {
     /// pass); one still lacking records may wait or be refused and remembered again, so each is
     /// fetched again at most once per record it lacked.
     fn eph_refetch(&mut self, out: &mut Vec<Action>) -> Result<()> {
-        if self.eph.share_refused.is_empty() {
+        // only after a record may have arrived (a scan of every remembered record per step
+        // otherwise)
+        let seen = self.engine.records_seen();
+        if self.eph.share_refused.is_empty() || seen == self.eph.refetch_seen {
             return Ok(());
         }
+        self.eph.refetch_seen = seen;
         let ready: Vec<(LabelId, BlobId)> = self.eph.share_refused.iter().filter(|(_, (_, needs))| needs.iter().any(|t| self.engine.has_record(t))).map(|(k, _)| *k).collect();
         for (l, b) in ready {
             let Some((server, _)) = self.eph.share_refused.remove(l, b) else { continue };
@@ -798,7 +814,7 @@ impl SyncEngine {
     /// Ephemeral entry `b` of `l` can never fit this node's cap for it: remembered (`Unfit`),
     /// reported once while the label has such entries.
     fn eph_unfit(&mut self, l: LabelId, b: BlobId) {
-        if self.eph.unfit.insert(l, b, ()) {
+        if self.eph.unfit.insert(l, b, (), 1) {
             self.eph_report(&l, "an ephemeral commit larger than this node's whole ephemeral cap for the label is not applied");
         }
     }
@@ -1262,7 +1278,8 @@ impl SyncEngine {
                     // durable set, left to `refused_pending`: refetching at every change would
                     // download it each time)
                     if !needs.is_empty() {
-                        self.eph.share_refused.insert(l, b, (server, needs));
+                        let w = needs.len();
+                        self.eph.share_refused.insert(l, b, (server, needs), w);
                     }
                     if self.eph.refused_pending.insert(l) {
                         self.eph_report(&l, "this node's share for unverified ephemeral commits was reached: further ones are not kept");
@@ -1741,6 +1758,28 @@ mod tests {
         assert_eq!(w.at(l, s1), WAITING_MAX, "a replacement adds nothing");
         assert!(w.remove(&(l, b(0), s1)).is_some());
         assert_eq!((w.at(l, s1), w.at(l, s2)), (WAITING_MAX - 1, 1));
+    }
+
+    // notes/ephemeral.md (entries refused for the waiting share bounded per label by the
+    // records they lack): past the weight the oldest go, other labels untouched; a replacement
+    // is weighed anew; one heavier than the bound is not kept
+    #[test]
+    fn per_label_bounded_by_weight() {
+        let mut m: PerLabel<()> = PerLabel::new(10);
+        let (l1, l2) = (LabelId([1; 16]), LabelId([2; 16]));
+        assert!(m.insert(l1, b(0), (), 4));
+        assert!(!m.insert(l1, b(1), (), 4));
+        assert!(m.insert(l2, b(9), (), 10));
+        m.insert(l1, b(2), (), 4);
+        assert!(!m.contains(l1, b(0)) && m.contains(l1, b(1)) && m.contains(l1, b(2)) && m.contains(l2, b(9)), "the oldest of l1 forgotten");
+        m.insert(l1, b(1), (), 1);
+        m.insert(l1, b(3), (), 5);
+        assert!(m.contains(l1, b(1)) && m.contains(l1, b(2)) && m.contains(l1, b(3)), "the replacement weighs 1, now the newest but one");
+        assert!(m.remove(l1, b(2)).is_some());
+        m.insert(l1, b(4), (), 11);
+        assert!(!m.contains(l1, b(4)) && !m.contains(l1, b(1)) && !m.contains(l1, b(3)), "too heavy: kept nothing");
+        assert!(m.insert(l1, b(5), (), 10), "l1 empty again");
+        assert!(m.contains(l2, b(9)));
     }
 
     // spec/sync.md §9 (relay-only entries remembered, a floor past the bound; security review
