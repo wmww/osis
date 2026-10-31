@@ -920,9 +920,9 @@ fn waiting_share_overflow_keeps_honest_copy_spec_sync_9() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
-    // the share (a quarter of the cap) fits one blob of the commit, not two; the cap fits the
-    // blob decoded (`osis_crdt::decoded_bound`: a string, so mostly its bytes)
-    let cap = 236_000;
+    // the share (a quarter of the cap) fits one blob of the commit by its bound, not two; the
+    // cap fits the blob decoded (`osis_crdt::decoded_bound`: a string, about 6 times its bytes)
+    let cap = 1_000_000;
     let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
@@ -933,11 +933,11 @@ fn waiting_share_overflow_keeps_honest_copy_spec_sync_9() {
     let (real, ev) = sealed(&mut net, b, g, &blob, Some(&wk), 2);
     let (_, jev) = sealed(&mut net, b, g, &junk, Some(&wk), 1);
     let osis_proto::Event::Added { blob: Some(bytes), .. } = &ev else { unreachable!() };
-    let len = bytes.len();
-    assert!(len as u64 <= cap / 4 && 2 * len as u64 > cap / 4, "blob of {len} bytes");
+    let bound = osis_node::Engine::ephemeral_bound(&blob).0.max(bytes.len() as u64);
+    assert!(bound <= cap / 4 && 2 * bound > cap / 4, "blob of bound {bound}");
     let acts = push(&mut net, b, sv, l, vec![ev, jev]);
     net.actions(b, acts);
-    assert_eq!(net.sync(b).ephemeral_pending_bytes(&l), len as u64, "the junk copy past the share is not kept");
+    assert_eq!(net.sync(b).ephemeral_pending_bytes(&l), bound, "the junk copy past the share is not kept");
     // the record arrives (out of band here)
     net.deaf.remove(&b);
     net.pair(a, b);
@@ -947,6 +947,133 @@ fn waiting_share_overflow_keeps_honest_copy_spec_sync_9() {
     assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(v), "the honest copy waited on");
     let kept: Vec<_> = net.sync(b).ephemeral_entries_of(&blob.id()).into_iter().map(|(_, x, _)| x).collect();
     assert_eq!(kept, vec![real]);
+}
+
+/// Node `b` (cap `cap`) deaf to the server while writer `x` joins `g`, so `x`'s record is not
+/// there: (server, a, b, x, g, a durable thing of `g` all know).
+fn unknown_writer(net: &mut Net, cap: u64) -> (usize, usize, usize, usize, Tid, Tid) {
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
+    let x = net.node(3, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let t = net.item(a, g, g, "durable");
+    net.run();
+    net.deaf.insert(b);
+    net.pair(x, a);
+    let (at, bt, xt) = (net.tid(a), net.tid(b), net.tid(x));
+    let e = net.engine(a);
+    set_edge(e, g, xt, Role::Write);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write), (xt, Role::Write)]);
+    rotation(e, g, &rs, 7, false);
+    local(net, a);
+    net.run();
+    net.pair(a, x);
+    assert!(net.engine(b).core.created(&xt).is_none() && net.read(x, t) == Some(s("durable")));
+    (sv, a, b, x, g, t)
+}
+
+// spec/sync.md §9 (caps), notes/ephemeral.md Node cap: a writer queues a blob while the label is
+// empty (its record held back), fills the label, then lets the record through: the commit the
+// engine then holds is counted by the node, even past the cap (it was held uncounted: the
+// promotion was refused at the cap check)
+#[test]
+fn promoted_waiting_blob_counted_spec_sync_9() {
+    let mut net = Net::new();
+    let cap = 1_200_000;
+    let (sv, a, b, x, g, t) = unknown_writer(&mut net, cap);
+    let ak = osis_base::Ak::new("/doc/cursor").unwrap();
+    let blob = net.engine(x).forge_ephemeral(t, &ak, s(&"c".repeat(40_000))).unwrap().unwrap().blob;
+    assert!(osis_node::Engine::ephemeral_bound(&blob).0 <= cap / 4, "waits within the share");
+    let wk = write_key(&mut net, b, g);
+    let l = net.label(b);
+    let (_, ev) = sealed(&mut net, b, g, &blob, Some(&wk), 1);
+    let osis_proto::Event::Added { blob: Some(bytes), .. } = &ev else { unreachable!() };
+    let size = bytes.len() as u64;
+    let acts = push(&mut net, b, sv, l, vec![ev]);
+    net.actions(b, acts);
+    assert!(net.sync(b).ephemeral_pending_bytes(&l) > 0, "waits apart");
+    // the label fills with small commits of a's until one is refused
+    for i in 0..1000 {
+        let ak = osis_base::Ak::new(format!("/doc/f{i}")).unwrap();
+        let c = net.engine(a).forge_ephemeral(t, &ak, s("ffff")).unwrap().unwrap().blob;
+        let before = net.sync(b).ephemeral_bytes(&l);
+        let (_, ev) = sealed(&mut net, b, g, &c, Some(&wk), 10 + i);
+        let acts = push(&mut net, b, sv, l, vec![ev]);
+        net.actions(b, acts);
+        if net.sync(b).ephemeral_bytes(&l) == before {
+            break;
+        }
+    }
+    let used = net.sync(b).ephemeral_bytes(&l);
+    assert!(used <= cap && cap - used < size, "{used} of {cap}: no room for {size} bytes");
+    // the records arrive (out of band here)
+    net.deaf.remove(&b);
+    net.pair(x, b);
+    net.pair(a, b);
+    net.engine(b).rejudge_ephemeral().unwrap();
+    net.advance(10_000);
+    assert_eq!(net.eph_read(b, t, "/doc/cursor"), Some(s(&"c".repeat(40_000))), "held");
+    assert!(!net.sync(b).ephemeral_entries_of(&blob.id()).is_empty(), "counted");
+    let held: Vec<_> = net.engine(b).held_ephemeral().into_iter().filter(|h| !h.2).map(|h| h.0).collect();
+    let charged: u64 = held.iter().map(|c| net.engine(b).ephemeral_charge(c, &[])).sum();
+    assert!(net.sync(b).ephemeral_bytes(&l) >= charged, "every held commit counted");
+    assert!(net.sync(b).ephemeral_bytes(&l) <= cap + cap / 4, "past the cap by the share at most");
+}
+
+// spec/sync.md §9 (unverified commits wait apart, bounded), notes/ephemeral.md Node cap: a blob
+// waiting for its author's record counts against the share by what it could cost decoded, not
+// its bytes: one of tiny map entries small in bytes but past the share decoded is not kept apart
+// (the share in bytes let a quarter of the cap in such blobs decode at the record)
+#[test]
+fn waiting_blob_charged_by_bound_spec_sync_9() {
+    let mut net = Net::new();
+    let cap = 600_000;
+    let (sv, _, b, x, g, t) = unknown_writer(&mut net, cap);
+    let ak = osis_base::Ak::new("/doc/cursor").unwrap();
+    let v = Value::Map((0..25).map(|i| (Value::Int(i), Value::Int(1))).collect());
+    let blob = net.engine(x).forge_ephemeral(t, &ak, v).unwrap().unwrap().blob;
+    let (bound, part) = osis_node::Engine::ephemeral_bound(&blob);
+    assert!(bound > cap / 4 && part <= cap, "past the share decoded ({bound}), not the cap");
+    let wk = write_key(&mut net, b, g);
+    let l = net.label(b);
+    let (_, ev) = sealed(&mut net, b, g, &blob, Some(&wk), 1);
+    let osis_proto::Event::Added { blob: Some(bytes), .. } = &ev else { unreachable!() };
+    assert!((bytes.len() as u64) < cap / 4, "fits the share in bytes");
+    let acts = push(&mut net, b, sv, l, vec![ev]);
+    net.actions(b, acts);
+    assert_eq!(net.sync(b).ephemeral_pending_bytes(&l), 0, "not kept apart");
+    assert!(!net.engine(b).pending_ephemeral(&blob.id()));
+}
+
+// notes/ephemeral.md Node cap: a blob that could never fit the label's cap (its bound past the
+// whole cap) is remembered: a drop under the cap reconciles the label without fetching it again
+#[test]
+fn never_fitting_blob_not_fetched_again_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let x = net.node(2, &[sv]);
+    let cap = 330_000;
+    let b = net.add_node(3, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
+    let g = net.group(a, &[(x, Role::Write), (b, Role::Write)], &[sv]);
+    let t = net.item(a, g, g, "doc");
+    net.run();
+    let l = net.label(a);
+    net.eph_write(x, t, &ukey("/doc/cursor", Lifetime::Presence), s(&"c".repeat(50_000)));
+    net.run();
+    assert!(net.eph_read(b, t, "/doc/cursor").is_some());
+    let v = Value::Map((0..2000).map(|i| (Value::Int(i), Value::Int(1))).collect());
+    net.eph_write(a, t, &ukey("/doc/tiny", Lifetime::Ephemeral), v);
+    net.run();
+    assert_eq!(net.eph_read(b, t, "/doc/tiny"), None, "refused for the cap");
+    net.fetched.insert(b, Vec::new());
+    net.set_online(x, false);
+    net.run();
+    assert_eq!(net.eph_read(b, t, "/doc/cursor"), None);
+    assert!(net.sync(b).ephemeral_bytes(&l) < 1_000);
+    net.advance(SyncConfig::default().resync_ms + 1_000);
+    assert_eq!(net.fetched[&b], Vec::new(), "not fetched again");
 }
 
 // spec/commits.md §4, spec/sync.md §9 (only verified commits are held and spread): another blob
@@ -2332,7 +2459,9 @@ fn commit_past_a_blob_splits_spec_sync_9() {
     let cap: u64 = 64 << 20;
     let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: cap, ..osis_server::Policy::default() });
     let a = net.node(1, &[sv]);
-    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
+    // the holder's share for waiting blobs fits a blob's bound (about 6 times a string's bytes):
+    // after the restart the second blob may come first and wait for the record the first carries
+    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 4 * cap, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
     let (w1, w2) = (window(&mut net, a, g, "1"), window(&mut net, a, g, "2"));

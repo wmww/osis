@@ -89,6 +89,8 @@ pub struct Net {
     /// Per watched node, the blob IDs servers announced or sent it (pushes, sync and fetch
     /// replies).
     pub told: BTreeMap<usize, BTreeSet<osis_base::BlobId>>,
+    /// Per watched node, every blob a server's fetch reply carried it, in order.
+    pub fetched: BTreeMap<usize, Vec<osis_base::BlobId>>,
     /// Nodes that take nothing from servers (bytes dropped, connections kept): a node that
     /// ignores what it is sent.
     pub deaf: BTreeSet<usize>,
@@ -132,13 +134,26 @@ fn told_ids(b: &[u8]) -> Vec<osis_base::BlobId> {
     v
 }
 
+/// Blob IDs whole frames `b` from a server carry in fetch replies.
+fn fetched_ids(b: &[u8]) -> Vec<osis_base::BlobId> {
+    let mut d = osis_proto::FrameDecoder::new();
+    d.push(b);
+    let mut v = Vec::new();
+    while let Ok(Some(body)) = d.next_frame() {
+        if let Ok(osis_proto::Message::FetchReply { items, .. }) = osis_proto::Message::decode(&body) {
+            v.extend(items.iter().filter(|i| i.entry.is_some()).map(|i| i.blob_id));
+        }
+    }
+    v
+}
+
 pub fn server_key(i: usize) -> [u8; 32] {
     [0x50 + i as u8; 32]
 }
 
 impl Net {
     pub fn new() -> Net {
-        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_servers: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new() }
+        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_servers: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new() }
     }
 
     pub fn now(&self) -> u64 {
@@ -487,6 +502,9 @@ impl Net {
             Msg::ToNode(n, _, c, b) => {
                 if let Some(told) = self.told.get_mut(&n) {
                     told.extend(told_ids(&b));
+                }
+                if let Some(f) = self.fetched.get_mut(&n) {
+                    f.extend(fetched_ids(&b));
                 }
                 if !self.deaf.contains(&n) {
                     self.feed(n, Event::Bytes { conn: c, bytes: b })
