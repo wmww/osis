@@ -24,6 +24,8 @@ Open for the discussion: separators (slashes may change), the reserved character
 - **Presence is not in the AK**: it becomes ephemeral plus expiry, refreshed by the author while present; possibly a write-level expiry kind "when the author is no longer connected" (owner: could be cool, maybe too complex). Evaluate in issues/eph-unify.md; signal stays a marker unless that evaluation shows it belongs on the write.
 - Core keys drop the leading slash (`name.0`, `keys.0`); `members` becomes `roles` with issues/rename-roles-members.md.
 
+Dependent: issues/eph-unify.md (Left item 0) needs the lifetime marker so a receiver judges a part's storage class from the key alone.
+
 Implementation: a format change everywhere AKs appear (spec, wire, DSL, codegen, schemas, vectors, tests, notes). Do it in the same sweep as issues/rename-roles-members.md and issues/one-node-kind.md (one churn), with a remnant-hunting review (owner completeness standard).
 
 Sweep plan (steps, order, remnant hunts): issues/one-node-kind.md, Sweep plan.

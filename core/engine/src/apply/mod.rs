@@ -469,11 +469,27 @@ impl Engine {
 
     /// `ingest`, attributing diagnostics to `peer`.
     pub fn ingest_from(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>) -> Result<Ingested> {
+        self.ingest_class(bytes, blobs, peer, false)
+    }
+
+    /// Receives a memory commit (session form, spec/commits.md §2-§3) through the commit path,
+    /// every row it derives in memory. Hidden: no production caller until received ephemeral
+    /// commits leave `ingest_ephemeral` (issues/eph-unify.md step 3); `ingest` refuses them so a
+    /// writer cannot slip one in through the durable lane meanwhile.
+    #[doc(hidden)]
+    pub fn ingest_memory(&mut self, bytes: &[u8]) -> Result<Ingested> {
+        self.ingest_class(bytes, Vec::new(), None, true)
+    }
+
+    fn ingest_class(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>, memory: bool) -> Result<Ingested> {
         let _s = crate::costs::span("ingest");
         let r = self.run(|tx| {
             let decoded = CommitBlob::decode(bytes);
+            if matches!(&decoded, Ok(b) if b.header.ephemeral.is_some() != memory) {
+                return Err(Error::BadInput(if memory { "a durable commit on the memory path" } else { "an ephemeral commit on the durable path" }));
+            }
             // a memory commit links no blob and stores nothing durable (spec/commits.md §2)
-            if matches!(&decoded, Ok(b) if b.header.ephemeral.is_some()) {
+            if memory {
                 tx.set_memory();
             } else {
                 for (id, b) in blobs {

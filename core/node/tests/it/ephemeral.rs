@@ -3435,8 +3435,10 @@ fn received_memory_commit_in_memory_spec_commits_4() {
     let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
     let faults = lp.peers[1].backend.faults().clone();
     faults.forbid_writes(true);
+    // the durable path refuses it (no production caller yet: a writer cannot slip one in there)
+    assert!(matches!(lp.deliver(1, &pk), Err(osis_node::Error::BadInput(_))));
     // the author is not known yet: pending, in memory
-    let got = lp.deliver(1, &pk).unwrap();
+    let got = lp.peers[1].engine.ingest_memory(&pk.bytes).unwrap();
     assert!(matches!(got, osis_node::Ingested::Pending(..)), "{got:?}");
     assert_eq!(faults.forbidden(), 0);
     faults.forbid_writes(false);
@@ -3446,21 +3448,53 @@ fn received_memory_commit_in_memory_spec_commits_4() {
     assert!(e.core.created(&w).is_some() && e.core.durable_created(&w).is_none());
     assert!(e.run(|tx| Ok(tx.txn.pending(None, 16)?)).unwrap().is_empty());
     faults.forbid_writes(true);
-    assert!(matches!(lp.deliver(1, &pk).unwrap(), osis_node::Ingested::Duplicate(_)));
+    assert!(matches!(lp.peers[1].engine.ingest_memory(&pk.bytes).unwrap(), osis_node::Ingested::Duplicate(_)));
     let id2 = {
         let mut m = Mutation::new();
         m.set(w, &eph("/t/tags"), &s("y")).unwrap();
         lp.peers[0].engine.commit_in_memory(m).unwrap().unwrap()
     };
     let pk2 = lp.peers[0].engine.package(&id2).unwrap().unwrap();
-    assert!(matches!(lp.deliver(1, &pk2).unwrap(), osis_node::Ingested::Applied(_)));
+    assert!(matches!(lp.peers[1].engine.ingest_memory(&pk2.bytes).unwrap(), osis_node::Ingested::Applied(_)));
     assert_eq!(memory_tags(&mut lp, 1, w), Some(s("y")));
+    // one waiting for drift is re-examined and applied in memory too
+    lp.peers[0].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
+    let id3 = memory_write(&mut lp, 0, w, "z");
+    let pk3 = lp.peers[0].engine.package(&id3).unwrap().unwrap();
+    assert!(matches!(lp.peers[1].engine.ingest_memory(&pk3.bytes).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::Drift)));
+    lp.peers[1].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
+    lp.peers[1].engine.reexamine().unwrap();
+    assert!(lp.peers[1].engine.core.ix.commits.contains_key(&id3), "applied at re-examination");
     assert_eq!(faults.forbidden(), 0, "nothing durable written for a memory commit");
     faults.forbid_writes(false);
     lp.peers[1].restart(32).unwrap();
     let e = &mut lp.peers[1].engine;
-    assert!(e.core.created(&w).is_none() && !e.core.ix.commits.contains_key(&id) && !e.core.ix.commits.contains_key(&id2));
+    assert!(e.core.created(&w).is_none() && ![id, id2, id3].iter().any(|c| e.core.ix.commits.contains_key(c)));
     assert!(e.run(|tx| Ok(tx.txn.pending(None, 16)?)).unwrap().is_empty());
+    assert_no_durable_trace(e, &[id, id2, id3]);
+}
+
+/// No durable row (local record, or commit index row) names any of `ids` (after a restart: the
+/// memory overlay is empty).
+fn assert_no_durable_trace(e: &mut osis_node::Engine, ids: &[osis_base::CommitId]) {
+    let mut hits = Vec::new();
+    e.run(|tx| {
+        tx.scan(b"", |k, v| {
+            if ids.iter().any(|c| k.windows(32).chain(v.windows(32)).any(|w| w == c.0)) {
+                hits.push(k.to_vec());
+            }
+            Ok(())
+        })?;
+        let t = tx.txn.index(b"node/metas")?;
+        for c in ids {
+            if tx.txn.table_get(t, &c.0)?.is_some() {
+                hits.push(c.0.to_vec());
+            }
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert!(hits.is_empty(), "durable rows naming a memory commit: {hits:?}");
 }
 
 // spec/data-model.md §1 (one storage class per aspect): a received memory part on an aspect of
@@ -3474,7 +3508,7 @@ fn received_memory_part_on_durable_aspect_dropped_spec_data_model_1() {
     // 0 has not seen 1's durable write: writes the aspect as memory
     let id = memory_write(&mut lp, 0, d, "memory");
     let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
-    lp.deliver(1, &pk).unwrap();
+    lp.peers[1].engine.ingest_memory(&pk.bytes).unwrap();
     assert_eq!(memory_tags(&mut lp, 1, d), Some(Value::Set([s("durable")].into())));
     lp.peers[1].restart(34).unwrap();
     assert_eq!(memory_tags(&mut lp, 1, d), Some(Value::Set([s("durable")].into())));
@@ -3490,13 +3524,13 @@ fn freed_thing_drops_pending_memory_commit() {
     m.set(w, &eph("/t/tags"), &s("x")).unwrap();
     let id = lp.peers[0].engine.commit_in_memory(m).unwrap().unwrap();
     let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
-    lp.deliver(1, &pk).unwrap();
+    lp.peers[1].engine.ingest_memory(&pk.bytes).unwrap();
     assert_eq!(memory_tags(&mut lp, 1, w), Some(s("x")));
     // a later one from 0's clock far ahead waits for drift
     lp.peers[0].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
     let later = memory_write(&mut lp, 0, w, "y");
     let pk = lp.peers[0].engine.package(&later).unwrap().unwrap();
-    assert!(matches!(lp.deliver(1, &pk).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::Drift)));
+    assert!(matches!(lp.peers[1].engine.ingest_memory(&pk.bytes).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::Drift)));
     let e = &mut lp.peers[1].engine;
     e.free_memory(&BTreeSet::from([w])).unwrap();
     assert!(e.core.created(&w).is_none() && !e.core.ix.pending.contains_key(&later));
@@ -3515,7 +3549,7 @@ fn removed_writer_memory_commits_unmerged_spec_permissions_5_2() {
     memory_write(&mut lp, 0, d, "own");
     let id = memory_write(&mut lp, 1, d, "theirs");
     let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
-    assert!(matches!(lp.deliver(0, &pk).unwrap(), osis_node::Ingested::Applied(_)));
+    assert!(matches!(lp.peers[0].engine.ingest_memory(&pk.bytes).unwrap(), osis_node::Ingested::Applied(_)));
     assert_eq!(memory_tags(&mut lp, 0, d), Some(Value::Set([s("own"), s("theirs")].into())));
     let b = lp.peers[1].engine.tid();
     let scope = osis_perm::DemotionScope { membership: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
@@ -3524,4 +3558,26 @@ fn removed_writer_memory_commits_unmerged_spec_permissions_5_2() {
     crate::common::set_edge(&mut lp.peers[0].engine, d, b, None, Some(osis_schema::Codec::to_value(&f)));
     assert_eq!(memory_tags(&mut lp, 0, d), Some(Value::Set([s("own")].into())), "the removed writer's memory writes go");
     assert!(lp.peers[0].engine.core.ix.commits.get(&id).is_some_and(|m| m.valid.iter().all(|v| !v)));
+    // the un-merge, done in the removal's durable transaction, wrote nothing durable about it
+    lp.peers[0].restart(38).unwrap();
+    assert_no_durable_trace(&mut lp.peers[0].engine, &[id]);
+}
+
+// issues/eph-unify.md (Left: class by AK): a memory commit on an aspect with no durable delta here
+// yet marks it memory; a later durable write on it then routes to memory and is lost at restart,
+// and sync never brings it back (the node holds the commit). Reachable once received memory
+// commits get a production caller; the receiver rule needs the class from the key, not local state
+#[test]
+#[ignore = "issues/eph-unify.md: durable write on a memory-marked aspect lost at restart"]
+fn repro_durable_write_on_memory_marked_aspect_lost() {
+    let (mut lp, d) = memory_pair(41);
+    let id = memory_write(&mut lp, 1, d, "memory");
+    let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
+    lp.peers[0].engine.ingest_memory(&pk.bytes).unwrap();
+    let mut m = Mutation::new();
+    m.set(d, &crate::common::TAGS, &Value::Set([s("durable")].into())).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.peers[0].restart(42).unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(memory_tags(&mut lp, 0, d), Some(Value::Set([s("durable")].into())));
 }
