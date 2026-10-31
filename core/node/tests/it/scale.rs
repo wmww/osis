@@ -663,11 +663,11 @@ use crate::net;
 fn first_sync_cost() {
     let n: usize = size("OSIS_SCALE_N", 10_000, 1_000);
     let mut net = net::Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
     let c = net.node(3, &[]);
-    let g = net.group(a, &[(b, Role::Read), (c, Role::Read)], &[sv]);
+    let g = net.group(a, &[(b, Role::Read), (c, Role::Read)], &[host]);
     let things: Vec<Tid> = (0..100).map(|i| net.item(a, g, g, &format!("t{i}"))).collect();
     net.set_online(c, false);
     let t0 = Instant::now();
@@ -722,10 +722,10 @@ fn sync_pass_cost() {
     let mut n = 1_000;
     while n <= max {
         let mut net = net::Net::new();
-        let sv = net.add_host();
-        let a = net.node(1, &[sv]);
-        let b = net.node(2, &[sv]);
-        let g = net.group(a, &[(b, Role::Read)], &[sv]);
+        let host = net.add_host();
+        let a = net.node(1, &[host]);
+        let b = net.node(2, &[host]);
+        let g = net.group(a, &[(b, Role::Read)], &[host]);
         let things: Vec<Tid> = (0..100).map(|i| net.item(a, g, g, &format!("t{i}"))).collect();
         let t0 = Instant::now();
         for i in 0..n {
@@ -736,7 +736,7 @@ fn sync_pass_cost() {
         net.run();
         let first = t1.elapsed();
         let l = net.label(a);
-        let held = net.host_ids(sv, &l).len();
+        let held = net.host_ids(host, &l).len();
         assert!(held >= n, "{held} entries at the host");
         // settled: a quiet round, then one new write
         net.advance(61_000);
@@ -798,11 +798,11 @@ fn sync_local_pass_cost() {
 fn sync_membership_pass_cost() {
     let n: usize = size("OSIS_SCALE_LABEL", 1_000, 1_000);
     let mut net = net::Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let c = net.node(3, &[sv]);
-    let addr = net.address(sv);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let addr = net.address(host);
     let groups: Vec<Tid> = (0..10).map(|i| net.group_seeded(a, &[(b, Role::Read)], vec![addr.clone()], 1 + i)).collect();
     let t0 = Instant::now();
     for g in &groups {
@@ -1032,10 +1032,10 @@ fn sync_aspect_pass_cost() {
     let n: usize = size("OSIS_SCALE_N", 1_000, 1_000);
     let d = |x: osis_node::sync::PassStats, y: osis_node::sync::PassStats| (y.passes - x.passes, y.full - x.full, y.bodies - x.bodies, y.entries - x.entries);
     let mut net = net::Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let g = net.group(a, &[(b, Role::Read)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Read)], &[host]);
     let t = net.item(a, g, g, "t");
     let u = net.item(a, g, g, "u");
     // expires 30 min before the N below
@@ -1211,11 +1211,11 @@ fn rss_kib() -> u64 {
 fn eph_net() -> (crate::net::Net, usize, usize, Tid) {
     use crate::net::*;
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let x = net.node(3, &[sv]);
-    let g = net.group(a, &[(b, Role::Write), (x, Role::Write)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let x = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (x, Role::Write)], &[host]);
     let t = net.item(a, g, g, "durable");
     net.run();
     (net, b, x, t)

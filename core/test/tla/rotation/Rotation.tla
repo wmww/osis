@@ -35,7 +35,7 @@ VARIABLES ep,       \* ep[e] = [n, sup, ob, hist, rem]; ob = members the
           mem,      \* mem[x]: members x knows were granted
           removed,  \* departures that happened
           granted,  \* Late members granted so far
-          srvRot,   \* rotation commits at the host
+          hostRot,  \* rotation commits at the host
           before,   \* before[k]: rotations logged before rotation k's upload
           bx,       \* grant and re-seal commits under the label:
                     \* [m: member boxed, eps: epochs boxed, w: wrap epoch, g: grant]
@@ -48,7 +48,7 @@ VARIABLES ep,       \* ep[e] = [n, sup, ob, hist, rem]; ob = members the
           enc,      \* content written: <<epoch, departures the writer knew>>
           leakP,    \* TRUE once something was encrypted under a planted secret
           online, budget
-vars == <<ep, made, kn, sec, fsec, dep, mem, removed, granted, srvRot, before, bx, rd,
+vars == <<ep, made, kn, sec, fsec, dep, mem, removed, granted, hostRot, before, bx, rd,
           steps, inbox, inRot, via, stranded, enc, leakP, online, budget>>
 
 ep_n(e) == ep[e].n
@@ -109,19 +109,19 @@ CanOpen(x) ==
 \* host (after an open; InOrder: in log order) or, if ~InOrder, from an
 \* online member peer y that holds it.
 Readable(x, k) == k \notin kn[x] /\ WrapOf(k) \in sec[x]
-FromSrv(x, k) == /\ CanOpen(x) /\ k \in srvRot /\ Readable(x, k)
-                 /\ InOrder => \A j \in before[k] : WrapOf(j) \in sec[x] => j \in kn[x]
+FromHost(x, k) == /\ CanOpen(x) /\ k \in hostRot /\ Readable(x, k)
+                  /\ InOrder => \A j \in before[k] : WrapOf(j) \in sec[x] => j \in kn[x]
 FromPeer(x, y, k) == ~InOrder /\ y # x /\ online[y] /\ k \in kn[y] /\ Readable(x, k)
 
 \* permissions §3: re-seal is decided "at the end of a complete sync pass of
 \* the actor's labels (one that read the log of every host and peer it
 \* syncs them with to its end)": the host, and every member peer the node
 \* has synced with (received from) that is online (R8).
-SrvDone(a) == /\ CanOpen(a)
-              /\ \A k \in srvRot : ~Readable(a, k)
-              /\ \A b \in bx : b.w \in sec[a] => b \in rd[a]
+HostDone(a) == /\ CanOpen(a)
+               /\ \A k \in hostRot : ~Readable(a, k)
+               /\ \A b \in bx : b.w \in sec[a] => b \in rd[a]
 PeerDone(a, y) == \A k \in kn[y] : ~Readable(a, k)
-FullPass(a) == SrvDone(a) /\ \A y \in via[a] : online[y] => PeerDone(a, y)
+FullPass(a) == HostDone(a) /\ \A y \in via[a] : online[y] => PeerDone(a, y)
 
 \* permissions §3 re-seal trigger: a current member seen without a box at a
 \* current epoch, or whose heartbeat reports it stranded; only at epochs
@@ -144,7 +144,7 @@ Init ==
   /\ dep = [x \in Nodes |-> {}]
   /\ mem = [x \in Nodes |-> Nodes \ Late]
   /\ removed = {} /\ granted = {}
-  /\ srvRot = {} /\ before = [k \in Ids |-> {}] /\ bx = {} /\ rd = [x \in Nodes |-> {}]
+  /\ hostRot = {} /\ before = [k \in Ids |-> {}] /\ bx = {} /\ rd = [x \in Nodes |-> {}]
   /\ steps = <<[ep |-> 0, cl |-> Nodes \ Late, dr |-> FALSE]>>
   /\ inbox = {} /\ inRot = {} /\ via = [x \in Nodes |-> {}] /\ stranded = {}
   /\ enc = {} /\ leakP = FALSE
@@ -173,7 +173,7 @@ RotateR(a, R) ==
         /\ inRot' = inRot \cup {<<m, k>> : m \in {y \in ob \ {a} :
                                    \A e \in sup : y \notin Holders(a, e)}}
         /\ leakP' = (leakP \/ ~(Hist(a) \subseteq sec[a]))
-  /\ UNCHANGED <<fsec, mem, granted, srvRot, before, bx, rd, steps, inbox, via, stranded, enc,
+  /\ UNCHANGED <<fsec, mem, granted, hostRot, before, bx, rd, steps, inbox, via, stranded, enc,
                  online, budget>>
 Rotate(a) == RotateR(a, {})
 Remove(m) == m \in Departing \ removed /\ RotateR(Remover, {m})
@@ -188,20 +188,20 @@ RotateForced(a) ==
 \* sync §5: first upload the actor's membership commits it holds that the
 \* host lacks (UploadRot), then register.
 Register(a) ==
-  /\ online[a] /\ NeedsReg(a) /\ kn[a] \ {0} \subseteq srvRot
+  /\ online[a] /\ NeedsReg(a) /\ kn[a] \ {0} \subseteq hostRot
   /\ steps' = Append(steps, [ep |-> EncEp(a), cl |-> Holders(a, EncEp(a)), dr |-> FALSE])
   /\ leakP' = (leakP \/ ~({Top.ep, EncEp(a)} \subseteq sec[a]))
-  /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, mem, removed, granted, srvRot, before, bx, rd,
+  /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, mem, removed, granted, hostRot, before, bx, rd,
                  inbox, inRot, via, stranded, enc, online, budget>>
 
 \* sync §5: rotation commits go up under the head's keys (write key never
 \* rotated here), before the step.
 UploadRot(a, k) ==
-  /\ online[a] /\ k \in kn[a] \ srvRot /\ k # 0
+  /\ online[a] /\ k \in kn[a] \ hostRot /\ k # 0
   \* permissions §3: a remover places the removal before any other upload.
-  /\ \A j \in kn[a] \ srvRot : ep[j].rem # {} => j = k
-  /\ srvRot' = srvRot \cup {k}
-  /\ before' = [before EXCEPT ![k] = srvRot]
+  /\ \A j \in kn[a] \ hostRot : ep[j].rem # {} => j = k
+  /\ hostRot' = hostRot \cup {k}
+  /\ before' = [before EXCEPT ![k] = hostRot]
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, mem, removed, granted, bx, rd, steps, inbox,
                  inRot, via, stranded, enc, leakP, online, budget>>
 
@@ -222,7 +222,7 @@ Grant(a, m) ==
   /\ granted' = granted \cup {m}
   /\ mem' = [mem EXCEPT ![a] = @ \cup {m}]
   /\ PlaceBox(a, [m |-> m, eps |-> HeldCur(a), w |-> EncEp(a), g |-> TRUE])
-  /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, removed, srvRot, before, steps, inRot, via,
+  /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, removed, hostRot, before, steps, inRot, via,
                  stranded, enc, online, budget>>
 
 \* Reading a grant or re-seal commit from the label: a grant teaches the
@@ -233,7 +233,7 @@ RecvBox(x, b) ==
   /\ mem' = IF b.g THEN [mem EXCEPT ![x] = @ \cup {b.m}] ELSE mem
   /\ sec' = IF b.m = x THEN [sec EXCEPT ![x] = @ \cup b.eps \cup UNION {ep[e].hist : e \in b.eps}]
             ELSE sec
-  /\ UNCHANGED <<ep, made, kn, fsec, dep, removed, granted, srvRot, before, bx, steps,
+  /\ UNCHANGED <<ep, made, kn, fsec, dep, removed, granted, hostRot, before, bx, steps,
                  inbox, inRot, via, stranded, enc, leakP, online, budget>>
 
 \* crypto §4: never encrypt under an epoch that does not cover a known
@@ -244,7 +244,7 @@ WriteContent(a) ==
   /\ enc' = enc \cup {<<EncEp(a), dep[a]>>}
   /\ leakP' = (leakP \/ EncEp(a) \notin sec[a])
   /\ budget' = [budget EXCEPT !.w = @ + 1]
-  /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, mem, removed, granted, srvRot, before, bx, rd,
+  /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, mem, removed, granted, hostRot, before, bx, rd,
                  steps, inbox, inRot, via, stranded, online>>
 
 \* A box for x gives the new secret and, by the history box, every secret the
@@ -253,22 +253,22 @@ Apply(x, k) ==
   /\ kn' = [kn EXCEPT ![x] = @ \cup {k}]
   /\ sec' = [sec EXCEPT ![x] = @ \cup (IF x \in ep[k].ob THEN {k} \cup ep[k].hist ELSE {})]
   /\ dep' = [dep EXCEPT ![x] = @ \cup ep[k].rem]
-RecvSrv(x, k) ==
-  /\ online[x] /\ FromSrv(x, k) /\ Apply(x, k)
-  /\ UNCHANGED <<ep, made, fsec, mem, removed, granted, srvRot, before, bx, rd, steps, inbox,
+RecvHost(x, k) ==
+  /\ online[x] /\ FromHost(x, k) /\ Apply(x, k)
+  /\ UNCHANGED <<ep, made, fsec, mem, removed, granted, hostRot, before, bx, rd, steps, inbox,
                  inRot, via, stranded, enc, leakP, online, budget>>
 RecvPeer(x, y, k) ==
   /\ online[x] /\ FromPeer(x, y, k) /\ Apply(x, k)
   /\ via' = [via EXCEPT ![x] = @ \cup {y}]
-  /\ UNCHANGED <<ep, made, fsec, mem, removed, granted, srvRot, before, bx, rd, steps, inbox,
+  /\ UNCHANGED <<ep, made, fsec, mem, removed, granted, hostRot, before, bx, rd, steps, inbox,
                  inRot, stranded, enc, leakP, online, budget>>
 \* permissions §3: a rotation delivered by inbox (no label access needed).
 InboxRot(x, k) ==
   /\ online[x] /\ <<x, k>> \in inRot /\ Apply(x, k)
   /\ inRot' = inRot \ {<<x, k>>}
-  /\ UNCHANGED <<ep, made, fsec, mem, removed, granted, srvRot, before, bx, rd, steps, inbox,
+  /\ UNCHANGED <<ep, made, fsec, mem, removed, granted, hostRot, before, bx, rd, steps, inbox,
                  via, stranded, enc, leakP, online, budget>>
-Recv(x, k) == RecvSrv(x, k) \/ \E y \in Nodes : RecvPeer(x, y, k)
+Recv(x, k) == RecvHost(x, k) \/ \E y \in Nodes : RecvPeer(x, y, k)
 
 \* permissions §3: SHOULD re-seal (treated as done: fair), with the epochs'
 \* history boxes, delivered by inbox and placed under the actor's labels like
@@ -280,7 +280,7 @@ Reseal(a, m) ==
   /\ \A e \in ResealE(a, m) \cup {EncEp(a)} : Covers(a, e)
   /\ PlaceBox(a, [m |-> m, eps |-> ResealE(a, m), w |-> EncEp(a), g |-> FALSE])
   /\ stranded' = stranded \ {m}
-  /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, mem, removed, granted, srvRot, before, steps,
+  /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, mem, removed, granted, hostRot, before, steps,
                  inRot, via, enc, online, budget>>
 
 \* crypto §4: the grant or re-seal re-writes each boxed epoch's history box.
@@ -288,7 +288,7 @@ InboxRecv(m, e) ==
   /\ online[m] /\ <<m, e>> \in inbox
   /\ sec' = [sec EXCEPT ![m] = @ \cup {e} \cup ep[e].hist]
   /\ inbox' = inbox \ {<<m, e>>}
-  /\ UNCHANGED <<ep, made, kn, fsec, dep, mem, removed, granted, srvRot, before, bx, rd, steps,
+  /\ UNCHANGED <<ep, made, kn, fsec, dep, mem, removed, granted, hostRot, before, bx, rd, steps,
                  inRot, via, stranded, enc, leakP, online, budget>>
 
 \* Adversary (crypto §4): anyone can seal a box to a member's /keys in a
@@ -298,7 +298,7 @@ Plant(x, e) ==
   /\ budget.p < Plants /\ e \in made /\ e \notin sec[x] \cup fsec[x]
   /\ fsec' = [fsec EXCEPT ![x] = @ \cup {e}]
   /\ budget' = [budget EXCEPT !.p = @ + 1]
-  /\ UNCHANGED <<ep, made, kn, sec, dep, mem, removed, granted, srvRot, before, bx, rd, steps,
+  /\ UNCHANGED <<ep, made, kn, sec, dep, mem, removed, granted, hostRot, before, bx, rd, steps,
                  inbox, inRot, via, stranded, enc, leakP, online>>
 
 \* permissions §4: MUST place a stranded heartbeat when it cannot read the
@@ -309,28 +309,28 @@ Plant(x, e) ==
 \* node has not read (crypto §3).
 Heartbeat(x) ==
   /\ online[x] /\ x \in Mem /\ x \notin stranded /\ x \notin dep[x]
-  /\ \/ CanOpen(x) /\ Top.ep \notin sec[x] /\ ~\E k \in srvRot : FromSrv(x, k)
+  /\ \/ CanOpen(x) /\ Top.ep \notin sec[x] /\ ~\E k \in hostRot : FromHost(x, k)
      \/ ~CanOpen(x)
   /\ Refresh => Top.ep \in kn[x]
   /\ Enc(x) \cap Est(x) # {}
   /\ stranded' = stranded \cup {x}
   /\ leakP' = (leakP \/ NewestOf(Enc(x) \cap Est(x)) \notin sec[x])
-  /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, mem, removed, granted, srvRot, before, bx, rd,
+  /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, mem, removed, granted, hostRot, before, bx, rd,
                  steps, inbox, inRot, via, enc, online, budget>>
 
 \* sync §4: a superseded step's claim set is kept MEMBERSHIP_KEEP, then may go.
 Drop(i) ==
   /\ DropClaims /\ i < Len(steps) /\ ~steps[i].dr
   /\ steps' = [steps EXCEPT ![i].dr = TRUE]
-  /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, mem, removed, granted, srvRot, before, bx, rd,
+  /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, mem, removed, granted, hostRot, before, bx, rd,
                  inbox, inRot, via, stranded, enc, leakP, online, budget>>
 
 GoOff(x) == /\ online[x] /\ budget.off < Offs
             /\ online' = [online EXCEPT ![x] = FALSE] /\ budget' = [budget EXCEPT !.off = @ + 1]
-            /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, mem, removed, granted, srvRot, before,
+            /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, mem, removed, granted, hostRot, before,
                            bx, rd, steps, inbox, inRot, via, stranded, enc, leakP>>
 GoOn(x) == /\ ~online[x] /\ online' = [online EXCEPT ![x] = TRUE]
-           /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, mem, removed, granted, srvRot, before,
+           /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, mem, removed, granted, hostRot, before,
                           bx, rd, steps, inbox, inRot, via, stranded, enc, leakP, budget>>
 
 Next ==

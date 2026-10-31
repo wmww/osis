@@ -58,7 +58,7 @@ async fn echo(c: &MemConn, data: &[u8]) -> Vec<u8> {
 fn round_trip_and_keys() {
     let net = Net::new(1);
     let mut s = Sched::new(1, Some(net.clone()));
-    let l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
+    let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     assert_eq!(addr.key, InProcess::public_key(&secret(7)));
     echo_listener(&s.spawner(), l);
@@ -81,7 +81,7 @@ fn round_trip_and_keys() {
 fn ephemeral_client_keys_differ() {
     let net = Net::new(2);
     let mut s = Sched::new(2, Some(net.clone()));
-    let mut l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
+    let mut l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     let cli = net.endpoint("cli");
     let keys = s
@@ -103,7 +103,7 @@ fn ephemeral_client_keys_differ() {
 fn pinned_key_mismatch_refused() {
     let net = Net::new(3);
     let mut s = Sched::new(3, Some(net.clone()));
-    let l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
+    let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let mut addr = l.address();
     addr.key[0] ^= 1;
     let cli = net.endpoint("cli");
@@ -136,13 +136,13 @@ fn unknown_scheme_and_unreachable() {
 fn partition_heals() {
     let net = Net::new(5);
     let mut s = Sched::new(5, Some(net.clone()));
-    let l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
+    let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     echo_listener(&s.spawner(), l);
     let cli = net.endpoint("cli");
     let (c1, a1) = (cli.clone(), addr.clone());
     let c = s.block_on(async move { c1.dial(&a1).await.unwrap() }).unwrap();
-    net.partition("cli", "srv");
+    net.partition("cli", "listener");
     let a2 = addr.clone();
     let refused = s.block_on(async move { cli.dial(&a2).await.map(|_| ()) }).unwrap();
     assert!(matches!(refused, Err(Error::Unreachable(_))));
@@ -153,7 +153,7 @@ fn partition_heals() {
     });
     assert!(s.run() > 0);
     assert!(got.borrow().is_none());
-    net.heal("cli", "srv");
+    net.heal("cli", "listener");
     s.run();
     assert_eq!(got.borrow().as_deref(), Some(&b"through the cut"[..]));
 }
@@ -163,7 +163,7 @@ fn partition_heals() {
 fn disconnect_resets() {
     let net = Net::new(6);
     let mut s = Sched::new(6, Some(net.clone()));
-    let mut l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
+    let mut l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     let cli = net.endpoint("cli");
     let res = Rc::new(RefCell::new(Vec::new()));
@@ -189,7 +189,7 @@ fn disconnect_resets() {
             (c, tx)
         })
         .unwrap();
-    net.disconnect("srv", "cli");
+    net.disconnect("listener", "cli");
     s.run();
     assert_eq!(*res.borrow(), vec![Ok(1), Err(Error::Closed), Err(Error::Closed)]);
     let (c, mut tx) = c;
@@ -204,7 +204,7 @@ fn disconnect_resets() {
 fn drop_closes() {
     let net = Net::new(7);
     let mut s = Sched::new(7, Some(net.clone()));
-    let mut l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
+    let mut l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     let cli = net.endpoint("cli");
     let c = s.block_on(async move { cli.dial(&addr).await.unwrap() }).unwrap();
@@ -220,7 +220,7 @@ fn scenario(seed: u64) -> Vec<(u64, usize, usize)> {
     let net = Net::new(seed);
     net.set_faults(Faults { latency: 2, jitter: 5, bandwidth: Some(1000) });
     let mut s = Sched::new(seed, Some(net.clone()));
-    let l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
+    let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     echo_listener(&s.spawner(), l);
     let log = Rc::new(RefCell::new(Vec::new()));
@@ -267,7 +267,7 @@ fn large_transfer_capped() {
     let net = Net::new(8);
     net.set_faults(Faults { latency: 1, jitter: 0, bandwidth: Some(64 * 1024) });
     let mut s = Sched::new(8, Some(net.clone()));
-    let l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
+    let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     echo_listener(&s.spawner(), l);
     let cli = net.endpoint("cli");
@@ -296,7 +296,7 @@ fn virtual_sleep() {
 fn listener_close_resets_queued() {
     let net = Net::new(13);
     let mut s = Sched::new(13, Some(net.clone()));
-    let l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
+    let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     let cli = net.endpoint("cli");
     let c = s.block_on(async move { cli.dial(&addr).await.unwrap() }).unwrap();
@@ -311,7 +311,7 @@ fn listener_close_resets_queued() {
 fn listener_close_ends_pending_read() {
     let net = Net::new(15);
     let mut s = Sched::new(15, Some(net.clone()));
-    let l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
+    let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     let cli = net.endpoint("cli");
     let got = Rc::new(RefCell::new(None));
@@ -335,7 +335,7 @@ fn listener_close_ends_pending_read() {
 fn dial_as_presents_static_key() {
     let net = Net::new(14);
     let mut s = Sched::new(14, Some(net.clone()));
-    let mut l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
+    let mut l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     let me = net.endpoint("peer");
     let k = s
@@ -355,7 +355,7 @@ fn faulty(seed: u64) -> (Log, Vec<(usize, bool)>) {
     net.set_faults(Faults { latency: 1, jitter: 4, bandwidth: Some(0) }); // 0 is taken as 1
     let mut s = Sched::new(seed, Some(net.clone()));
     s.set_max_steps(200_000);
-    let l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
+    let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
     echo_listener(&s.spawner(), l);
     let log = Rc::new(RefCell::new(Vec::new()));
@@ -387,9 +387,9 @@ fn faulty(seed: u64) -> (Log, Vec<(usize, bool)>) {
     let n2 = net.clone();
     s.spawn(async move {
         n2.sleep(5).await;
-        n2.partition("c0", "srv");
+        n2.partition("c0", "listener");
         n2.sleep(40).await;
-        n2.heal("c0", "srv");
+        n2.heal("c0", "listener");
         n2.kill("c2");
     });
     s.run();

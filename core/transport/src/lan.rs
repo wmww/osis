@@ -47,7 +47,7 @@ pub fn multicast_on(port: u16, scope: u32) -> SocketAddr {
 }
 
 /// Where an announcement to `to` goes: the all-nodes group with no interface named goes to it
-/// on each interface of `scopes` (spec/sync.md §10: every link the host is on), or out the
+/// on each interface of `scopes` (spec/sync.md §10: every link the machine is on), or out the
 /// default multicast interface when there is none; any other address as it is.
 pub fn targets(to: SocketAddr, scopes: &[u32]) -> Vec<SocketAddr> {
     match to {
@@ -70,7 +70,7 @@ pub fn link_scopes(ifaces: impl IntoIterator<Item = (bool, Vec<(Ipv6Addr, u32)>)
     out
 }
 
-/// The host's interfaces for IPv6 announcements now (`link_scopes` over netwatch's list).
+/// The machine's interfaces for IPv6 announcements now (`link_scopes` over netwatch's list).
 #[cfg(feature = "lan")]
 pub async fn v6_scopes() -> Vec<u32> {
     let st = netwatch::interfaces::State::new().await;
@@ -141,7 +141,7 @@ impl Announce {
 }
 
 /// UDP sockets sending and receiving announcements (feature `lan`): IPv4 (broadcast) and, where
-/// the host has IPv6, IPv6 (all-nodes multicast).
+/// the machine has IPv6, IPv6 (all-nodes multicast).
 #[cfg(feature = "lan")]
 pub struct Lan {
     v4: tokio::net::UdpSocket,
@@ -165,14 +165,14 @@ fn bind_v6(port: u16) -> std::io::Result<tokio::net::UdpSocket> {
     s.set_only_v6(true)?;
     s.set_nonblocking(true)?;
     s.bind(&SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port).into())?;
-    // hosts are in the group anyway; joining makes delivery explicit where that matters
+    // IPv6 machines are in the group anyway; joining makes delivery explicit where that matters
     let _ = s.join_multicast_v6(&ALL_NODES, 0);
     tokio::net::UdpSocket::from_std(s.into())
 }
 
 #[cfg(feature = "lan")]
 impl Lan {
-    /// Binds the announcement port on all IPv4 interfaces and, when the host has IPv6, on all
+    /// Binds the announcement port on all IPv4 interfaces and, when the machine has IPv6, on all
     /// IPv6 interfaces (`port` 0: any, for tests; IPv6 then takes the port IPv4 got).
     pub async fn bind(port: u16) -> Result<Lan, Error> {
         let v4 = tokio::net::UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)).await.map_err(io)?;
@@ -191,7 +191,7 @@ impl Lan {
     }
 
     /// Sends an announcement to `to` (the broadcast address or the all-nodes group at the
-    /// announcement port, or one host) on the socket of its family. The all-nodes group with no
+    /// announcement port, or one address) on the socket of its family. The all-nodes group with no
     /// interface named goes out every up interface with IPv6, each with its scope (`targets`,
     /// `v6_scopes`, looked up at each call: interfaces come and go); if every one of those
     /// sends fails, it goes out the default multicast interface. The socket joins the group on
@@ -434,7 +434,7 @@ mod tests {
         assert_eq!(&a.signed()[48..], &4433u16.to_be_bytes());
     }
 
-    // spec/sync.md §10: IPv6 announcements go to the all-nodes group on every link the host is
+    // spec/sync.md §10: IPv6 announcements go to the all-nodes group on every link the machine is
     // on, each send naming its interface; with no interface known, out the default one.
     #[test]
     fn v6_targets_per_interface_spec_sync_10() {
@@ -453,7 +453,7 @@ mod tests {
         assert!(t.iter().all(|a| matches!(a, SocketAddr::V6(v) if *v.ip() == ALL_NODES && v.port() == PORT)));
         assert_eq!(t[1].to_string(), "[ff02::1%3]:47380");
         assert_eq!(targets(multicast(PORT), &[]), vec![multicast(PORT)]);
-        // a scoped group, the IPv4 broadcast and one host go as they are
+        // a scoped group, the IPv4 broadcast and one address go as they are
         for to in [multicast_on(PORT, 7), broadcast(PORT), "[fe80::9%2]:5".parse().unwrap()] {
             assert_eq!(targets(to, &scopes), vec![to]);
         }
@@ -493,7 +493,7 @@ mod tests {
 
     // spec/sync.md §10: an announcement to the all-nodes group goes out every IPv6 link, each
     // send naming its interface (a scope no interface has fails); copies looped back are heard
-    // from that link's address (tier 2: real sockets and interfaces; a host whose firewall drops
+    // from that link's address (tier 2: real sockets and interfaces; a machine whose firewall drops
     // multicast, as the dev VM's, hears none, so hearing is checked only when something comes).
     #[cfg(feature = "lan")]
     #[tokio::test]

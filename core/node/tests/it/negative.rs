@@ -24,9 +24,9 @@ const SHORT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/k/short", &
 #[test]
 fn compaction_keeps_bodies_until_keep_at_least_spec_commits_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let g = net.group(a, &[], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
     let t = net.item(a, g, g, "x");
     let mut bodies = Vec::new();
     for v in ["v1", "v2", "v3"] {
@@ -50,7 +50,7 @@ fn compaction_keeps_bodies_until_keep_at_least_spec_commits_5() {
     for c in &bodies[..2] {
         assert!(net.engine(a).body_not_dropped(c, &t, &ak), "dead body dropped before its keep-at-least bound");
     }
-    let at = net.host_ids(sv, &l);
+    let at = net.host_ids(host, &l);
     assert!(dead.iter().all(|id| at.contains(id)), "deleted at the host before the bound");
     // compaction waits MAX_DRIFT past the bound (spec/sync.md §7)
     net.advance(86_400_000 + osis_base::format::MAX_DRIFT_MS);
@@ -60,15 +60,15 @@ fn compaction_keeps_bodies_until_keep_at_least_spec_commits_5() {
     for c in &bodies[..2] {
         assert!(!net.engine(a).body_not_dropped(c, &t, &ak), "covered body past its bound kept");
     }
-    let at = net.host_ids(sv, &l);
+    let at = net.host_ids(host, &l);
     assert!(dead.iter().all(|id| !at.contains(id)), "covered bodies past the bound left at the host");
     assert_eq!(net.engine(a).get(&t, &ak).unwrap(), Some(s("v3")));
 }
 
-/// Deletions in host `sv`'s log of label `l`.
-fn deletions(net: &Net, sv: usize, l: &osis_base::LabelId) -> usize {
+/// Deletions in host `host`'s log of label `l`.
+fn deletions(net: &Net, host: usize, l: &osis_base::LabelId) -> usize {
     use osis_proto::{LabelStore, LogRecord};
-    let recs = net.hosts[sv].hub.store().log_after(l, 0, 1 << 20).unwrap().unwrap_or_default();
+    let recs = net.hosts[host].hub.store().log_after(l, 0, 1 << 20).unwrap().unwrap_or_default();
     recs.iter().filter(|(_, r)| matches!(r, LogRecord::Deleted(_))).count()
 }
 
@@ -78,13 +78,13 @@ fn deletions(net: &Net, sv: usize, l: &osis_base::LabelId) -> usize {
 /// either node knew.
 fn compact_across_skew(a_ahead: bool) -> (usize, usize) {
     let mut net = Net::new();
-    let sv = net.add_host();
+    let host = net.add_host();
     let sk = net.add_host();
     net.hosts[sk].skew = osis_base::format::MAX_DRIFT_MS as i64;
-    let (fast, slow): (&[usize], &[usize]) = (&[sv, sk], &[sv]);
+    let (fast, slow): (&[usize], &[usize]) = (&[host, sk], &[host]);
     let a = net.node(1, if a_ahead { fast } else { slow });
     let b = net.node(2, if a_ahead { slow } else { fast });
-    let g = net.group(a, &[(b, osis_base::Role::Write)], &[sv]);
+    let g = net.group(a, &[(b, osis_base::Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
     let mut bodies = Vec::new();
     for v in ["v1", "v2", "v3"] {
@@ -99,7 +99,7 @@ fn compact_across_skew(a_ahead: bool) -> (usize, usize) {
     net.actions(a, acts);
     net.run();
     let l = net.label(a);
-    let before = deletions(&net, sv, &l);
+    let before = deletions(&net, host, &l);
     let mut seen = std::collections::BTreeSet::new();
     net.advance(86_400_000 - 3 * 3_600_000);
     // 5 min steps from 3 h before the bound to 3 h after it
@@ -119,7 +119,7 @@ fn compact_across_skew(a_ahead: bool) -> (usize, usize) {
         }
         assert_eq!(net.engine(n).get(&t, &ak).unwrap(), Some(s("v3")));
     }
-    (deletions(&net, sv, &l) - before, seen.len())
+    (deletions(&net, host, &l) - before, seen.len())
 }
 
 // spec/sync.md §7 (compaction waits MAX_DRIFT past keep-at-least): two right holders whose
@@ -150,11 +150,11 @@ fn deletion_across_local_dating_no_churn_spec_sync_6() {
 /// blobs and how many blobs of X either node knew.
 fn local_dating_churn(at_most: bool) -> (usize, usize) {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let c = net.node(3, &[sv]);
-    let g = net.group(a, &[(b, osis_base::Role::Write), (c, osis_base::Role::Write)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, osis_base::Role::Write), (c, osis_base::Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
     let k = if at_most { &SHORT } else { &KEPT };
     let set = |net: &mut Net, n: usize, v: &str| {
@@ -212,7 +212,7 @@ fn local_dating_churn(at_most: bool) -> (usize, usize) {
     assert!(!net.engine(a).body_not_dropped(&x, &t, &ak), "A past its bound");
     assert!(!net.engine(b).body_not_dropped(&x, &t, &ak), "B past its bound");
     use osis_proto::{LabelStore, LogRecord};
-    let recs = net.hosts[sv].hub.store().log_after(&l, 0, 1 << 20).unwrap().unwrap_or_default();
+    let recs = net.hosts[host].hub.store().log_after(&l, 0, 1 << 20).unwrap().unwrap_or_default();
     let of_x = recs.iter().filter(|(_, r)| matches!(r, LogRecord::Deleted(id) if seen.contains(id))).count();
     (of_x, seen.len())
 }

@@ -19,7 +19,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 
 ## Offline and network
 - Every operation completes with nobody else online. Only propagation waits.
-- No helper is required: relays, discovery and hosted servers are replaceable and self-hostable. Works over LAN, through any untrusted node, or to a known address.
+- No helper is required: relays, discovery and hosts are replaceable and self-hostable. Works over LAN, through any untrusted node, or to a known address.
 - No dependence on one transport. Sync works over any ordered byte stream, including files carried by hand.
 - To untrusted nodes and relays the network layer reveals no more about a device than the network itself does: addresses, never identities.
 - Nothing syncs by being owned: apps place things into synced groups explicitly, and a thing placed nowhere stays local.

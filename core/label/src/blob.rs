@@ -187,7 +187,7 @@ impl Prefix {
     }
 }
 
-/// Serving side view of a blob: its prefix, or none for an unknown framing version (spec/wire.md
+/// A host's view of a blob: its prefix, or none for an unknown framing version (spec/wire.md
 /// §5: stored and relayed as a blob with no expiry and no commitments). Checks `MAX_BLOB`.
 pub fn host_prefix(blob: &[u8]) -> Result<Option<Prefix>, Error> {
     check_size(blob)?;

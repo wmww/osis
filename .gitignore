@@ -5,3 +5,4 @@ core/test/fuzz/target/
 core/test/fuzz/artifacts/
 core/test/fuzz/coverage/
 notes/testing-map.md
+.playwright-cli/

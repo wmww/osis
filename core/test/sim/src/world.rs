@@ -233,7 +233,7 @@ impl World {
             let mine: Vec<(ConnId, (usize, u64))> = self.links.iter().filter(|((d, _), _)| *d == i).map(|((_, c), v)| (*c, *v)).collect();
             for (c, (s, hc)) in mine {
                 self.links.remove(&(i, c));
-                let out = self.hosts.get_mut(s).map(|sv| sv.hub.closed(hc)).unwrap_or_default();
+                let out = self.hosts.get_mut(s).map(|host| host.hub.closed(hc)).unwrap_or_default();
                 self.hub_out(s, out);
                 db.feed(Event::Down { conn: c });
             }
@@ -252,7 +252,7 @@ impl World {
         let mine: Vec<(ConnId, u64)> = self.links.iter().filter(|((d, _), (s, _))| *d == i && *s == host).map(|((_, c), (_, h))| (*c, *h)).collect();
         for (c, hc) in mine {
             self.links.remove(&(i, c));
-            let out = self.hosts.get_mut(host).map(|sv| sv.hub.closed(hc)).unwrap_or_default();
+            let out = self.hosts.get_mut(host).map(|host| host.hub.closed(hc)).unwrap_or_default();
             self.hub_out(host, out);
             db.feed(Event::Down { conn: c });
         }
@@ -274,7 +274,7 @@ impl World {
                     self.queue.push_back(Msg::Up(d, conn));
                     let now = self.now();
                     let out = match self.hosts.get_mut(s) {
-                        Some(sv) => sv.hub.accept(now, hc, [0xe0; 32]),
+                        Some(host) => host.hub.accept(now, hc, [0xe0; 32]),
                         None => Vec::new(),
                     };
                     self.hub_out(s, out);
@@ -290,7 +290,7 @@ impl World {
                 }
                 Action::Close { conn } => {
                     if let Some((s, hc)) = self.links.remove(&(d, conn)) {
-                        let out = self.hosts.get_mut(s).map(|sv| sv.hub.closed(hc)).unwrap_or_default();
+                        let out = self.hosts.get_mut(s).map(|host| host.hub.closed(hc)).unwrap_or_default();
                         self.hub_out(s, out);
                     }
                 }
@@ -389,7 +389,7 @@ impl World {
             Msg::Up(d, c) => self.with(d, |db| db.feed(Event::Up { conn: c })),
             Msg::ToHub(s, hc, b) => {
                 let out = match self.hosts.get_mut(s) {
-                    Some(sv) => sv.hub.input(now, hc, b),
+                    Some(host) => host.hub.input(now, hc, b),
                     None => Vec::new(),
                 };
                 self.hub_out(s, out);
@@ -411,7 +411,7 @@ impl World {
         let now = self.now();
         for s in 0..self.hosts.len() {
             let out = match self.hosts.get_mut(s) {
-                Some(sv) => sv.hub.tick(now),
+                Some(host) => host.hub.tick(now),
                 None => Vec::new(),
             };
             self.hub_out(s, out);

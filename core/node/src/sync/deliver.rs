@@ -306,7 +306,7 @@ impl SyncEngine {
             let k = h.k;
             let labels: Vec<(LabelId, &Vec<HostKey>)> = self.synced.actors.iter().filter(|(_, (a, _))| *a == k).map(|(id, (_, s))| (*id, s)).collect();
             let hostless = !labels.is_empty() && labels.iter().all(|(_, s)| s.is_empty());
-            let after = labels.iter().all(|(id, s)| s.iter().all(|sv| self.passes.get(&(*sv, *id)).is_some_and(|p| until.is_none_or(|u| p.1 >= u.0))));
+            let after = labels.iter().all(|(id, s)| s.iter().all(|host| self.passes.get(&(*host, *id)).is_some_and(|p| until.is_none_or(|u| p.1 >= u.0))));
             let ready = if hostless { h.here } else { after && self.complete_pass(&k) };
             if self.links_failed.contains(&k) || !ready {
                 continue;

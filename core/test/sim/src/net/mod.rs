@@ -407,14 +407,14 @@ impl NetSim {
     fn start_host(&mut self, s: usize) -> Res<()> {
         let seed = self.dice.u64();
         let clock: Arc<dyn Clock> = self.host_clock.clone();
-        let sv = self.host(s)?;
-        let policy = sv.policy.clone();
-        sv.faults.revive();
-        let store = HostStore::open(sv.backend.clone(), clock, policy, &mut SeededRng::from_u64(seed));
+        let host = self.host(s)?;
+        let policy = host.policy.clone();
+        host.faults.revive();
+        let store = HostStore::open(host.backend.clone(), clock, policy, &mut SeededRng::from_u64(seed));
         let store = store.map_err(|e| self.fail(format!("host {s} open: {e}")))?;
-        let sv = self.host(s)?;
-        sv.hub = Some(Hub::new(store, sv.key, Box::new(SeededRng::from_u64(seed ^ 0x5eed))));
-        sv.up = true;
+        let host = self.host(s)?;
+        host.hub = Some(Hub::new(store, host.key, Box::new(SeededRng::from_u64(seed ^ 0x5eed))));
+        host.up = true;
         Ok(())
     }
 
@@ -777,8 +777,8 @@ impl NetSim {
                 out.push(o);
             }
         }
-        if let Some(sv) = self.hosts.get_mut(s) {
-            let v = sv.sent.entry(hc).or_default();
+        if let Some(host) = self.hosts.get_mut(s) {
+            let v = host.sent.entry(hc).or_default();
             if v.len() < 64 {
                 v.push(bytes);
             }
@@ -854,9 +854,9 @@ impl NetSim {
                 }
             }
         }
-        let sv = self.host(s)?;
-        sv.up = false;
-        sv.hub = None;
+        let host = self.host(s)?;
+        host.up = false;
+        host.hub = None;
         Ok(())
     }
 
@@ -870,9 +870,9 @@ impl NetSim {
     /// Host `s` loses everything it stored and starts empty.
     pub fn wipe_host(&mut self, s: usize) -> Res<()> {
         self.host_down(s)?;
-        let sv = self.host(s)?;
-        sv.faults = Faults::new();
-        sv.backend = MemoryBackend::with_faults(sv.faults.clone());
+        let host = self.host(s)?;
+        host.faults = Faults::new();
+        host.backend = MemoryBackend::with_faults(host.faults.clone());
         self.tombs.remove(&s);
         self.note(format!("host {s} lost its data"));
         *self.eph.boots.entry(Party::S(s)).or_default() += 1;
@@ -1062,9 +1062,9 @@ impl NetSim {
                 let ns = self.hosts.len();
                 if ns > 0 {
                     let s = self.dice.index(ns);
-                    let sv = self.host(s)?;
-                    sv.slow = !sv.slow;
-                    let slow = sv.slow;
+                    let host = self.host(s)?;
+                    host.slow = !host.slow;
+                    let slow = host.slow;
                     self.note(format!("host {s} slow {slow}"));
                 }
             }
@@ -1412,8 +1412,8 @@ impl NetSim {
         self.calm = true;
         self.blocked.clear();
         self.flush_held();
-        for sv in &mut self.hosts {
-            sv.slow = false;
+        for host in &mut self.hosts {
+            host.slow = false;
         }
         for s in 0..self.hosts.len() {
             if !self.hosts.get(s).is_some_and(|x| x.up) {

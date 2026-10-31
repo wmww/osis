@@ -504,8 +504,8 @@ pub fn check(sim: &mut NetSim) -> Res<()> {
     // bounded host memory, first (its trace lines help read a divergence)
     let mut lines = Vec::new();
     for s in 0..sim.hosts.len() {
-        let Some(sv) = sim.hosts.get(s) else { continue };
-        let (cap, total) = (sv.policy.ephemeral_bytes, sv.policy.ephemeral_total);
+        let Some(host) = sim.hosts.get(s) else { continue };
+        let (cap, total) = (host.policy.ephemeral_bytes, host.policy.ephemeral_total);
         let Some(hub) = sim.hub(s) else { continue };
         let st = hub.store();
         if st.ephemeral_total() > total {

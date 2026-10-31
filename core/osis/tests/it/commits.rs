@@ -236,9 +236,9 @@ fn undo_redo_across_devices_spec_commits_7() {
 #[test]
 fn find_another_actors_revert_api_commits() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let alice = crate::scenario::person(&mut w, 1, sv);
-    let bob = crate::scenario::person(&mut w, 2, sv);
+    let host = w.add_host();
+    let alice = crate::scenario::person(&mut w, 1, host);
+    let bob = crate::scenario::person(&mut w, 2, host);
     let b = crate::scenario::introduce(&mut w, &alice, &bob);
     let k = ak("/t/x");
     let t = alice
@@ -525,9 +525,9 @@ fn next_reports_what_undo_and_redo_revert_api_commits() {
 #[test]
 fn undo_of_creation_shared_spec_crdt_4_6() {
     let mut w = World::new();
-    let sv = w.add_host();
-    let alice = crate::scenario::person(&mut w, 1, sv);
-    let bob = crate::scenario::person(&mut w, 2, sv);
+    let host = w.add_host();
+    let alice = crate::scenario::person(&mut w, 1, host);
+    let bob = crate::scenario::person(&mut w, 2, host);
     let b = crate::scenario::introduce(&mut w, &alice, &bob);
     let x = ak("/t/x");
     let g = alice.write_with(|wr| { let g = wr.create(alice.me())?; wr.make_group(g)?; Ok(g) }).unwrap();

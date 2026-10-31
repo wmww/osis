@@ -295,7 +295,7 @@ mod tests {
             let mut l = t.listen(ListenConfig { url: "peer://127.0.0.1:0".into(), secret: secret.clone() }).await.unwrap();
             let addr = l.address();
             assert_eq!(addr.key, Iroh::public_key(&secret));
-            let srv = tokio::spawn(async move {
+            let serving = tokio::spawn(async move {
                 let c = l.accept().await.unwrap();
                 let (mut s, mut r) = c.accept_stream().await.unwrap();
                 let mut buf = [0u8; 5];
@@ -330,7 +330,7 @@ mod tests {
             let (_s2, _r2) = c2.open_stream().await.unwrap();
             let mut s2 = _s2;
             s2.write_all(b"x").await.unwrap();
-            let (first, second, _l) = srv.await.unwrap();
+            let (first, second, _l) = serving.await.unwrap();
             assert_ne!(first, Iroh::public_key(&me));
             assert_eq!(second, Iroh::public_key(&me));
             // a wrong key is refused
@@ -354,7 +354,7 @@ mod tests {
             let mut l = t.listen(ListenConfig { url: format!("peer://127.0.0.1:0 {}", relay.url), secret }).await.unwrap();
             assert_eq!(l.address().url.split(' ').count(), 2, "the bound socket and the URL's relay");
             let key = l.address().key;
-            let srv = tokio::spawn(async move {
+            let serving = tokio::spawn(async move {
                 let c = l.accept().await.unwrap();
                 let (mut s, mut r) = c.accept_stream().await.unwrap();
                 let mut buf = [0u8; 2];
@@ -381,7 +381,7 @@ mod tests {
                 out.extend_from_slice(&buf[..n]);
             }
             assert_eq!(out, b"hi");
-            let _l = srv.await.unwrap();
+            let _l = serving.await.unwrap();
             c.close();
         });
     }

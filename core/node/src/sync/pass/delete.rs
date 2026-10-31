@@ -601,7 +601,7 @@ impl SyncEngine {
             _ => carrier.into_iter().chain(snaps.get(&(*t, a.clone())).cloned().unwrap_or_default()).collect(),
         };
         for s in candidates {
-            if s == *body || !self.state.entries_of(l, &s).any(|(b, _)| host.is_none_or(|sv| self.state.is_present(sv, l, &b))) {
+            if s == *body || !self.state.entries_of(l, &s).any(|(b, _)| host.is_none_or(|host| self.state.is_present(host, l, &b))) {
                 continue;
             }
             let covers = self.engine.covered(&s, body, t, a)? == Some(true);

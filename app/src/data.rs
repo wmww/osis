@@ -12,7 +12,7 @@
 
 use crate::schema::{APP, COLOR, DEMO, FAVORITES, MODE, Mode, OPEN, THEME, VIEW, View};
 use osis::core::{BODY, GROUP, NAME, TAG};
-use osis::{AspectKey, ChangeId, CommitKind, CommitQuery, Config, Edge, Error, Osis, Result, Runtime, Scope, HostAddr, Tid, Transport, p};
+use osis::{AspectKey, ChangeId, CommitKind, CommitQuery, Config, Edge, Error, HostAddr, Osis, Result, Runtime, Scope, Tid, Transport, p};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 

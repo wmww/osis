@@ -28,14 +28,14 @@ fn connect_retries_until_listening() {
     let net = Net::new(11);
     let mut s = Sched::new(11, Some(net.clone()));
     let secret = StaticSecret::from_bytes([3; 32]);
-    let addr = Address { url: "mem://srv".into(), key: InProcess::public_key(&secret) };
+    let addr = Address { url: "mem://listener".into(), key: InProcess::public_key(&secret) };
     // the host comes up after 50 virtual steps
-    let (n2, srv) = (net.clone(), net.endpoint("srv"));
+    let (n2, serving) = (net.clone(), net.endpoint("listener"));
     let keep = Rc::new(RefCell::new(None));
     let k2 = keep.clone();
     s.spawn(async move {
         n2.sleep(50).await;
-        *k2.borrow_mut() = Some(srv.listen(ListenConfig { url: "mem://srv".into(), secret }).await.unwrap());
+        *k2.borrow_mut() = Some(serving.listen(ListenConfig { url: "mem://listener".into(), secret }).await.unwrap());
     });
     let (n3, cli) = (net.clone(), net.endpoint("cli"));
     let sleeps = Rc::new(RefCell::new(0u32));
@@ -61,9 +61,9 @@ fn connect_retries_until_listening() {
 fn connect_does_not_retry_key_mismatch() {
     let net = Net::new(12);
     let mut s = Sched::new(12, Some(net.clone()));
-    let srv = net.endpoint("srv");
+    let serving = net.endpoint("listener");
     let l = s
-        .block_on(async move { srv.listen(ListenConfig { url: "mem://srv".into(), secret: StaticSecret::from_bytes([3; 32]) }).await.unwrap() })
+        .block_on(async move { serving.listen(ListenConfig { url: "mem://listener".into(), secret: StaticSecret::from_bytes([3; 32]) }).await.unwrap() })
         .unwrap();
     let mut addr = l.address();
     addr.key[0] ^= 1;
@@ -86,9 +86,9 @@ fn framed_session_loopback() {
         let net = Net::new(seed);
         net.set_faults(Faults { latency: 1, jitter: 3, bandwidth: Some(2000) });
         let mut s = Sched::new(seed, Some(net.clone()));
-        let srv = net.endpoint("srv");
+        let serving = net.endpoint("listener");
         let mut l = s
-            .block_on(async move { srv.listen(ListenConfig { url: "mem://srv".into(), secret: StaticSecret::from_bytes([3; 32]) }).await.unwrap() })
+            .block_on(async move { serving.listen(ListenConfig { url: "mem://listener".into(), secret: StaticSecret::from_bytes([3; 32]) }).await.unwrap() })
             .unwrap();
         let addr = l.address();
         s.spawn(async move { common::serve(l.accept().await.unwrap()).await });

@@ -50,12 +50,12 @@ fn foreign_step(b: u8) -> osis_label::Step {
 #[test]
 fn unsolicited_push_stores_nothing_spec_wire_11_2() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let g = net.group(a, &[], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
     net.item(a, g, g, "x");
     net.run();
-    let conn = net.conn_to(a, sv).expect("connected");
+    let conn = net.conn_to(a, host).expect("connected");
     let junk = LabelId([0x77; 16]);
     let blobs: Vec<Vec<u8>> = (0..50u8).map(|i| vec![i; 64]).collect();
     let events = blobs.iter().map(|b| osis_proto::Event::Added { blob_id: osis_label::blob_id(b), blob: Some(b.clone()), wrap: [1; 49], stamp: None }).collect();
@@ -73,9 +73,9 @@ fn unsolicited_push_stores_nothing_spec_wire_11_2() {
 #[test]
 fn bad_path_refused_at_first_page_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let _g = net.group(a, &[], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let _g = net.group(a, &[], &[host]);
     let mut se: SyncEngine = net.take(a);
     let acts = se.handle(Event::Local);
     let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
@@ -97,10 +97,10 @@ fn bad_path_refused_at_first_page_spec_sync_5() {
 #[test]
 fn replayed_signal_dropped_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let g = net.group(a, &[(b, Role::Read)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Read)], &[host]);
     let t = net.item(a, g, g, "x");
     net.run();
     let rx = net.listen(b);
@@ -108,7 +108,7 @@ fn replayed_signal_dropped_spec_sync_9() {
     m.set(t, &ukey("/t/typing", osis_schema::Lifetime::Signal), &Value::Bool(true)).unwrap();
     net.engine(a).write(m).unwrap();
     let acts = net.sync(a).handle(Event::Local);
-    let conn_a = net.conn_to(a, sv).unwrap();
+    let conn_a = net.conn_to(a, host).unwrap();
     let (label, entry) = sent(&acts, conn_a)
         .into_iter()
         .find_map(|m| match m {
@@ -120,11 +120,11 @@ fn replayed_signal_dropped_spec_sync_9() {
     net.settle(10_000);
     assert_eq!(fired(&rx).len(), 1, "delivered once");
     let push = |e: &osis_proto::Entry| Message::Push { label, events: vec![osis_proto::Event::Added { blob_id: osis_label::blob_id(&e.blob), blob: Some(e.blob.clone()), wrap: e.wrap, stamp: Some(e.stamp) }], cursor: osis_proto::Cursor { log_id: [0; 16], seq: 0 } };
-    let conn_b = net.conn_to(b, sv).unwrap();
+    let conn_b = net.conn_to(b, host).unwrap();
     net.feed(b, Event::Bytes { conn: conn_b, bytes: frame(push(&entry)) });
     assert!(fired(&rx).is_empty(), "a duplicate fires nothing");
     net.clock.advance(MAX_DRIFT_MS + 60_000);
-    let conn_b = net.conn_to(b, sv).unwrap();
+    let conn_b = net.conn_to(b, host).unwrap();
     net.feed(b, Event::Bytes { conn: conn_b, bytes: frame(push(&entry)) });
     assert!(fired(&rx).is_empty(), "a stale replay fires nothing");
 }
@@ -135,10 +135,10 @@ fn replayed_signal_dropped_spec_sync_9() {
 #[test]
 fn junk_relays_raise_no_floor_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let g = net.group(a, &[(b, Role::Read)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Read)], &[host]);
     let t = net.item(a, g, g, "x");
     net.run();
     let rx = net.listen(b);
@@ -147,7 +147,7 @@ fn junk_relays_raise_no_floor_spec_sync_9() {
         m.set(t, &ukey("/t/typing", osis_schema::Lifetime::Signal), &Value::Bool(v)).unwrap();
         net.engine(a).write(m).unwrap();
         let acts = net.sync(a).handle(Event::Local);
-        let conn_a = net.conn_to(a, sv).unwrap();
+        let conn_a = net.conn_to(a, host).unwrap();
         let label = sent(&acts, conn_a).into_iter().find_map(|m| if let Message::Upload { label, .. } = m { Some(label) } else { None }).expect("relay-only entry sent");
         net.actions(a, acts);
         net.settle(10_000);
@@ -166,7 +166,7 @@ fn junk_relays_raise_no_floor_spec_sync_9() {
         })
         .collect();
     for chunk in junk.chunks(4096) {
-        let conn_b = net.conn_to(b, sv).unwrap();
+        let conn_b = net.conn_to(b, host).unwrap();
         net.feed(b, Event::Bytes { conn: conn_b, bytes: frame(Message::Push { label, events: chunk.to_vec(), cursor: Cursor { log_id: [0; 16], seq: 0 } }) });
     }
     net.clock.advance(1_000);
@@ -181,9 +181,9 @@ fn junk_relays_raise_no_floor_spec_sync_9() {
 #[test]
 fn key_actor_not_presented_elsewhere_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let _g = net.group(a, &[], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let _g = net.group(a, &[], &[host]);
     let ka = net.engine(a).hold_key_actor(Secret32::from_bytes([0x3c; 32])).unwrap();
     assert!(net.engine(a).held_key_actors() > 0, "{ka}");
     let signing = osis_crypto::KeyActorKeys::from_seed(&Secret32::from_bytes([0x3c; 32])).signing.verifying_key();
@@ -217,14 +217,14 @@ fn key_actor_not_presented_elsewhere_spec_sync_5() {
 #[test]
 fn junk_under_opened_label_kept_nowhere_spec_sync_3() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let g = net.group(a, &[], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
     net.item(a, g, g, "x");
     net.run();
     let l = net.label(a);
     let before = net.sync(a).entries(&l).len();
-    let conn = net.conn_to(a, sv).expect("connected");
+    let conn = net.conn_to(a, host).expect("connected");
     let blobs: Vec<Vec<u8>> = (0..50u8).map(|i| vec![i; 4096]).collect();
     let events = blobs.iter().map(|b| osis_proto::Event::Added { blob_id: osis_label::blob_id(b), blob: Some(b.clone()), wrap: [1; 49], stamp: None }).collect();
     net.feed(a, Event::Bytes { conn, bytes: frame(Message::Push { label: l, events, cursor: Cursor { log_id: [0; 16], seq: 1 << 40 } }) });
@@ -244,8 +244,8 @@ fn junk_under_opened_label_kept_nowhere_spec_sync_3() {
 #[test]
 fn forged_entry_box_teaches_nothing_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
     let seed = Secret32::from_bytes([0x3c; 32]);
     let ka = net.engine(a).hold_key_actor(seed.clone()).unwrap();
     let held = |se: &SyncEngine| se.engine().epochs(&ka).map(|e| e.read.held_newest_first().len()).unwrap_or(0);
@@ -259,7 +259,7 @@ fn forged_entry_box_teaches_nothing_spec_sync_5() {
     let (fake, set) = register(Parent::Genesis(&delete), skeys, &[reader], (&ka, Epoch::derive(&ka, Role::Read, 0, &read).unwrap(), &read), &mut SeededRng::from_u64(9)).unwrap();
     let entry_box = set.entry_box(&fake.label, &keys.signing.verifying_key()).cloned().expect("entry box");
     let target = LabelId([0x42; 16]);
-    let addr = net.address(sv);
+    let addr = net.address(host);
     let mut se: SyncEngine = net.take(a);
     let before = held(&se);
     let acts = se.follow(ka, ka, target, vec![addr]);
@@ -300,8 +300,8 @@ fn forged_entry_box_teaches_nothing_spec_sync_5() {
 #[test]
 fn substituted_entry_box_teaches_nothing_spec_sync_2() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
     let seed = Secret32::from_bytes([0x3d; 32]);
     let ka = net.engine(a).hold_key_actor(seed.clone()).unwrap();
     let held = |se: &SyncEngine| se.engine().epochs(&ka).is_some_and(|e| e.read.held_newest_first().iter().any(|(_, s)| s.expose() == &[0x99; 32]));
@@ -321,7 +321,7 @@ fn substituted_entry_box_teaches_nothing_spec_sync_2() {
     use osis_schema::core_types as ct;
     let forged = ct::SecretBox::Sealed(ct::SealedBox { keyset: None, suite: u64::from(osis_crypto::SUITE_1), sealed: ct::Sealed::X25519MlKem768(sealed) });
     let target = head.label;
-    let addr = net.address(sv);
+    let addr = net.address(host);
     let mut se: SyncEngine = net.take(a);
     let before = held(&se);
     let acts = se.follow(ka, ka, target, vec![addr]);
@@ -362,10 +362,10 @@ fn substituted_entry_box_teaches_nothing_spec_sync_2() {
 fn purged_chunks_leave_the_host_spec_sync_5() {
     use osis_schema::AspectKey;
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
     let big: String = (0..300_000u32).map(|i| char::from(b'a' + (i.wrapping_mul(2654435761) >> 27) as u8 % 26)).collect();
     let mut m = osis_node::Mutation::new();
@@ -375,14 +375,14 @@ fn purged_chunks_leave_the_host_spec_sync_5() {
     let l = net.label(a);
     let chunks: Vec<osis_base::BlobId> = net.engine(a).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
     assert!(!chunks.is_empty(), "a chunked value");
-    assert!(chunks.iter().all(|id| net.host_ids(sv, &l).contains(id)), "chunks uploaded");
+    assert!(chunks.iter().all(|id| net.host_ids(host, &l).contains(id)), "chunks uploaded");
     let mut m = osis_node::Mutation::new();
     m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(GONE.ak()).unwrap() });
     m.remove_aspect(t, &GONE).unwrap();
     net.engine(a).commit(m).unwrap();
     net.run();
     net.run();
-    let left: Vec<_> = chunks.iter().filter(|id| net.host_ids(sv, &l).contains(id)).collect();
+    let left: Vec<_> = chunks.iter().filter(|id| net.host_ids(host, &l).contains(id)).collect();
     assert!(left.is_empty(), "{} of {} chunks of the purged value stay at the host", left.len(), chunks.len());
 }
 
@@ -393,10 +393,10 @@ fn purged_chunks_leave_the_host_spec_sync_5() {
 fn writer_purge_deletes_chunks_by_delete_key_spec_crypto_7() {
     use osis_schema::AspectKey;
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
     let big: String = (0..300_000u32).map(|i| char::from(b'a' + (i.wrapping_mul(2654435761) >> 27) as u8 % 26)).collect();
     let mut m = osis_node::Mutation::new();
@@ -406,7 +406,7 @@ fn writer_purge_deletes_chunks_by_delete_key_spec_crypto_7() {
     let l = net.label(a);
     let chunks: Vec<osis_base::BlobId> = net.engine(a).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
     assert!(!chunks.is_empty(), "a chunked value");
-    assert!(chunks.iter().all(|id| net.host_ids(sv, &l).contains(id)), "chunks uploaded");
+    assert!(chunks.iter().all(|id| net.host_ids(host, &l).contains(id)), "chunks uploaded");
     // the admin (holder of the delete key) is gone: only the writer's delete key can delete
     net.set_online(a, false);
     let mut m = osis_node::Mutation::new();
@@ -416,7 +416,7 @@ fn writer_purge_deletes_chunks_by_delete_key_spec_crypto_7() {
     net.feed(b, Event::Local);
     net.run();
     net.run();
-    let left: Vec<_> = chunks.iter().filter(|id| net.host_ids(sv, &l).contains(id)).collect();
+    let left: Vec<_> = chunks.iter().filter(|id| net.host_ids(host, &l).contains(id)).collect();
     assert!(left.is_empty(), "{} of {} chunks of the purged value stay at the host", left.len(), chunks.len());
 }
 
@@ -426,9 +426,9 @@ fn writer_purge_deletes_chunks_by_delete_key_spec_crypto_7() {
 #[test]
 fn header_list_chunks_level_2_only_spec_wire_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let g = net.group(a, &[], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
     let t = net.item(a, g, g, "x");
     let mut m = osis_node::Mutation::new();
     for i in 0..800 {
@@ -444,13 +444,13 @@ fn header_list_chunks_level_2_only_spec_wire_5() {
     assert!(h.keys.iter().any(|x| x.level == 1), "the commit has a thing-admin key");
     let lists: Vec<osis_base::BlobId> = net.engine(a).package(&c).unwrap().unwrap().blobs.iter().map(|(id, _)| *id).collect();
     assert!(lists.len() > 1, "chunks and a tree node");
-    assert!(lists.iter().all(|id| net.host_ids(sv, &l).contains(id)), "header-list blobs uploaded");
+    assert!(lists.iter().all(|id| net.host_ids(host, &l).contains(id)), "header-list blobs uploaded");
     // the commit's own delete secrets per level, found by the header's delete keys
     let mut ds = net.engine(a).delete_secrets_of(&c, &[(0, 0)]);
     assert_eq!(ds.iter().map(|x| x.0).collect::<Vec<_>>(), vec![1, 2]);
     let (chain, admin) = (ds.pop().unwrap().1, ds.pop().unwrap().1);
     let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
-    let head = net.host_path(sv, &l).last().unwrap().clone();
+    let head = net.host_path(host, &l).last().unwrap().clone();
     let sync = net.engine(a).head_keys(&g, gl.index, &head).unwrap().sync.unwrap();
     let by = |dk: &osis_crypto::DeleteSecret, level: u8, id: u32, net: &mut Net| {
         let mut items = Vec::new();
@@ -461,10 +461,10 @@ fn header_list_chunks_level_2_only_spec_wire_5() {
             assert!(p.commitments().iter().all(|x| x[0] == 2));
             items.push(osis_label::DeleteItem::sign_by(&sync, dk, level, p.salt(), &h.blind, &l, *b, None).unwrap());
         }
-        let conn = net.conn_to(a, sv).expect("connected");
+        let conn = net.conn_to(a, host).expect("connected");
         net.actions(a, vec![Action::Send { conn, bytes: frame(Message::Delete { id, label: l, items }) }]);
         net.settle(10_000);
-        lists.iter().filter(|id| net.host_ids(sv, &l).contains(id)).count()
+        lists.iter().filter(|id| net.host_ids(host, &l).contains(id)).count()
     };
     assert_eq!(by(&admin, 1, 900_001, &mut net), lists.len(), "the thing-admin key deletes nothing");
     assert_eq!(by(&admin, 2, 900_002, &mut net), lists.len(), "the thing-admin key at level 2 deletes nothing");
@@ -477,10 +477,10 @@ fn header_list_chunks_level_2_only_spec_wire_5() {
 #[test]
 fn linked_header_prefix_checked_spec_commits_4() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
-    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
     net.run();
     let l = net.label(a);
@@ -503,7 +503,7 @@ fn linked_header_prefix_checked_spec_commits_4() {
     let pk = net.engine(a).package(&c).unwrap().unwrap();
     let mut events: Vec<osis_proto::Event> = pk.blobs.iter().map(|(bid, bytes)| osis_proto::Event::Added { blob_id: *bid, blob: Some(bytes.clone()), wrap: [1; 49], stamp: None }).collect();
     events.push(osis_proto::Event::Added { blob_id: id, blob: Some(blob), wrap, stamp: None });
-    let conn = net.conn_to(b, sv).expect("connected");
+    let conn = net.conn_to(b, host).expect("connected");
     net.feed(b, Event::Bytes { conn, bytes: frame(Message::Push { label: l, events, cursor: Cursor { log_id: [0; 16], seq: 1 << 40 } }) });
     net.settle(10_000);
     // another node's commit: left to its author for a while (spec/sync.md §6)
@@ -559,11 +559,11 @@ fn unvouched_cap_per_host_spec_sync_3() {
 #[test]
 fn old_step_stamp_vouches_nothing_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let cfg = osis_node::sync::SyncConfig { hosts: vec![net.address(sv)], unvouched_cap: 8, ..Default::default() };
+    let host = net.add_host();
+    let cfg = osis_node::sync::SyncConfig { hosts: vec![net.address(host)], unvouched_cap: 8, ..Default::default() };
     let a = net.add_node(1, cfg);
-    let b = net.node(2, &[sv]);
-    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
     net.item(a, g, g, "x");
     net.run();
     let l = net.label(a);
@@ -574,9 +574,9 @@ fn old_step_stamp_vouches_nothing_spec_sync_5() {
     let rs = recipients_of(e, &[(at, Role::Admin)]);
     remove_member(e, g, bt, &rs, 43);
     net.run();
-    assert_eq!(net.host_path(sv, &l).len(), 2, "a newer step");
+    assert_eq!(net.host_path(host, &l).len(), 2, "a newer step");
     let before = net.sync(a).entries(&l).len();
-    let conn = net.conn_to(a, sv).expect("connected");
+    let conn = net.conn_to(a, host).expect("connected");
     let (ids, push) = junk(&l, 3, 40, Some(&old_write));
     net.feed(a, Event::Bytes { conn, bytes: frame(push) });
     net.settle(10_000);
@@ -610,11 +610,11 @@ fn entries_of(net: &mut Net, n: usize, l: &LabelId, t: osis_base::Tid) -> Vec<os
 #[test]
 fn wrap_not_opening_to_known_key_ignored_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let r = net.node(2, &[sv]);
-    let x = net.node(3, &[sv]);
-    let g = net.group(a, &[(r, Role::Read), (x, Role::Read)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let r = net.node(2, &[host]);
+    let x = net.node(3, &[host]);
+    let g = net.group(a, &[(r, Role::Read), (x, Role::Read)], &[host]);
     let t = net.item(a, g, g, "x");
     net.run();
     let l = net.label(r);
@@ -631,7 +631,7 @@ fn wrap_not_opening_to_known_key_ignored_spec_sync_5() {
     let (wrap0, _) = net.sync(r).entry_meta(&l, &id).unwrap();
     let (i, key) = osis_label::unwrap_any(secrets.iter(), &id, &wrap0).unwrap();
     assert!(i > 0, "the item's entry is wrapped under the older epoch");
-    let conn = net.conn_to(r, sv).expect("connected");
+    let conn = net.conn_to(r, host).expect("connected");
     let added = |wrap| vec![osis_proto::Event::Added { blob_id: id, blob: None, wrap, stamp: None }];
     let other_key = osis_crypto::wrap(&secrets[0], &id, &Secret32::from_bytes([0x42; 32])).unwrap();
     for w in [[0x13; 49], other_key] {
@@ -652,17 +652,17 @@ fn wrap_not_opening_to_known_key_ignored_spec_sync_5() {
 #[test]
 fn relayed_stamp_checked_against_head_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let r = net.node(2, &[sv]);
-    let g = net.group(a, &[(r, Role::Read)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let r = net.node(2, &[host]);
+    let g = net.group(a, &[(r, Role::Read)], &[host]);
     net.item(a, g, g, "x");
     net.run();
     let l = net.label(r);
     let w = net.engine(a).epochs(&g).unwrap().write.newest_held().unwrap().1.clone();
     let head_write = label_role_key(LabelRole::Write, &w, 0);
     let forger = label_role_key(LabelRole::Write, &Secret32::from_bytes([0x66; 32]), 0);
-    let conn = net.conn_to(r, sv).expect("connected");
+    let conn = net.conn_to(r, host).expect("connected");
     let (forged, p) = junk(&l, 5, 1, Some(&forger));
     net.feed(r, Event::Bytes { conn, bytes: frame(p) });
     let (honest, p) = junk(&l, 6, 1, Some(&head_write));
@@ -680,34 +680,34 @@ fn relayed_stamp_checked_against_head_spec_sync_5() {
 #[test]
 fn outside_delete_waits_for_settled_view_spec_sync_6() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let g = net.group(a, &[], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
     let t = net.item(a, g, g, "x");
     net.run();
     let old = net.label(a);
     let ids = entries_of(&mut net, a, &old, t);
-    assert!(!ids.is_empty() && ids.iter().all(|i| net.host_ids(sv, &old).contains(i)));
+    assert!(!ids.is_empty() && ids.iter().all(|i| net.host_ids(host, &old).contains(i)));
     // a host announces an entry that opens under the group's read secret, without its bytes
     let read = net.engine(a).epochs(&g).unwrap().read.newest_held().unwrap().1.clone();
     let blocker = osis_base::BlobId([0x99; 32]);
     let wrap = osis_crypto::wrap(&read, &blocker, &Secret32::from_bytes([1; 32])).unwrap();
-    let conn = net.conn_to(a, sv).expect("connected");
+    let conn = net.conn_to(a, host).expect("connected");
     net.feed(a, Event::Bytes { conn, bytes: push(old, vec![osis_proto::Event::Added { blob_id: blocker, blob: None, wrap, stamp: None }]) });
     net.settle(10_000);
     let (new, acts) = net.sync(a).replace_label(&g, &old).unwrap();
     net.actions(a, acts);
     net.run();
-    assert!(!net.host_ids(sv, &new).is_empty());
-    let key = net.address(sv).key;
+    assert!(!net.host_ids(host, &new).is_empty());
+    let key = net.address(host).key;
     let v = net.sync(a).verdicts(&key, &old).unwrap().unwrap();
     assert!(v.unsettled.contains(&None), "{:?}", v.unsettled);
-    assert!(ids.iter().all(|i| net.host_ids(sv, &old).contains(i)), "deleted as outside on an unsettled view");
+    assert!(ids.iter().all(|i| net.host_ids(host, &old).contains(i)), "deleted as outside on an unsettled view");
     // the host drops the unexplained entry: the view settles and the content goes
     net.feed(a, Event::Bytes { conn, bytes: push(old, vec![osis_proto::Event::Deleted(blocker)]) });
     net.settle(10_000);
     net.advance(61_000);
-    assert!(ids.iter().all(|i| !net.host_ids(sv, &old).contains(i)), "content kept under the replaced label on a settled view");
+    assert!(ids.iter().all(|i| !net.host_ids(host, &old).contains(i)), "content kept under the replaced label on a settled view");
 }
 
 // spec/requirements.md (hosts: a host cannot link labels), spec/sync.md §2, §5: a hinted
@@ -716,14 +716,14 @@ fn outside_delete_waits_for_settled_view_spec_sync_6() {
 #[test]
 fn hinted_open_presents_only_its_key_actor_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
     let (s1, s2) = (Secret32::from_bytes([0x3d; 32]), Secret32::from_bytes([0x3e; 32]));
     let k1 = net.engine(a).hold_key_actor(s1.clone()).unwrap();
     net.engine(a).hold_key_actor(s2.clone()).unwrap();
     let (v1, v2) = (osis_crypto::KeyActorKeys::from_seed(&s1).signing.verifying_key(), osis_crypto::KeyActorKeys::from_seed(&s2).signing.verifying_key());
     let target = LabelId([0x43; 16]);
-    let addr = net.address(sv);
+    let addr = net.address(host);
     let mut se: SyncEngine = net.take(a);
     let acts = se.follow(k1, k1, target, vec![addr]);
     let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
@@ -757,19 +757,19 @@ fn hinted_open_presents_only_its_key_actor_spec_sync_5() {
 #[test]
 fn hinted_walk_claims_only_for_its_actors_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
     // a is a member of g (b's group) and admin of its own g2
-    let g = net.group(b, &[(a, Role::Read)], &[sv]);
-    let g2 = net.group_seeded(a, &[], vec![net.address(sv)], 7);
+    let g = net.group(b, &[(a, Role::Read)], &[host]);
+    let g2 = net.group_seeded(a, &[], vec![net.address(host)], 7);
     let k = net.engine(a).hold_key_actor(Secret32::from_bytes([0x3f; 32])).unwrap();
     let held = |net: &mut Net, t| net.engine(a).epochs(&t).unwrap().read.held_newest_first().into_iter().map(|(_, s)| osis_crypto::role_kem(s).x25519().clone()).collect::<Vec<_>>();
     let others: Vec<osis_crypto::X25519Secret> = held(&mut net, g2).into_iter().chain(held(&mut net, g)).collect();
     assert!(!others.is_empty());
     let own = net.engine(a).identity().keys().kem.x25519().clone();
     let target = LabelId([0x44; 16]);
-    let addr = net.address(sv);
+    let addr = net.address(host);
     let mut se: SyncEngine = net.take(a);
     let acts = se.follow(k, g, target, vec![addr]);
     let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
@@ -814,14 +814,14 @@ fn hinted_walk_claims_only_for_its_actors_spec_sync_5() {
 #[test]
 fn hinted_walk_claims_for_boxed_actor_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let b = net.node(2, &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
     // P and g2: a's groups; g: b's, its rotation boxing P with no edge of P on g
-    let p = net.group_seeded(a, &[], vec![net.address(sv)], 5);
-    let g2 = net.group_seeded(a, &[], vec![net.address(sv)], 7);
+    let p = net.group_seeded(a, &[], vec![net.address(host)], 5);
+    let g2 = net.group_seeded(a, &[], vec![net.address(host)], 7);
     net.pair(a, b);
-    let g = net.group_seeded(b, &[], vec![net.address(sv)], 3);
+    let g = net.group_seeded(b, &[], vec![net.address(host)], 3);
     let bt = net.tid(b);
     let e = net.engine(b);
     let rcpt = recipients_of(e, &[(bt, Role::Admin), (p, Role::Read)]);
@@ -835,7 +835,7 @@ fn hinted_walk_claims_for_boxed_actor_spec_sync_5() {
     let others: Vec<osis_crypto::X25519Secret> = kem(&mut net, g2).into_iter().chain(kem(&mut net, g)).collect();
     let own = net.engine(a).identity().keys().kem.x25519().clone();
     let target = LabelId([0x45; 16]);
-    let addr = net.address(sv);
+    let addr = net.address(host);
     let mut se: SyncEngine = net.take(a);
     let acts = se.follow(k, g, target, vec![addr]);
     let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
@@ -885,11 +885,11 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     use osis_node::sync::EntryKind;
     use osis_schema::AspectKey;
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let c = net.node(2, &[sv]);
-    let w = net.node(3, &[sv]);
-    let g = net.group(a, &[(c, Role::Write), (w, Role::Write)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let c = net.node(2, &[host]);
+    let w = net.node(3, &[host]);
+    let g = net.group(a, &[(c, Role::Write), (w, Role::Write)], &[host]);
     let (ct_, wt) = (net.tid(c), net.tid(w));
     // c owns thing t in g and makes w its writer and g its reader (so t's content goes under
     // g's label): t gets secrets of its own and a `/keys`
@@ -913,7 +913,7 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     net.run();
     let l = net.label(a);
     let blobs: Vec<_> = net.sync(w).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == cw)).map(|(id, _)| id).collect();
-    assert!(!blobs.is_empty() && blobs.iter().all(|id| net.host_ids(sv, &l).contains(id)), "w's body uploaded");
+    assert!(!blobs.is_empty() && blobs.iter().all(|id| net.host_ids(host, &l).contains(id)), "w's body uploaded");
 
     // levels stay apart: w signs for c's rotation commit (admin retention: level 1 only) with
     // its write key at level 3 and at level 1; the host refuses both
@@ -922,7 +922,7 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     assert!(!rblobs.is_empty());
     let wk = osis_crypto::DeleteSecret::derive(net.engine(w).epochs(&t).unwrap().write.newest_held().unwrap().1);
     let gl = net.sync(w).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
-    let head = net.host_path(sv, &l).last().unwrap().clone();
+    let head = net.host_path(host, &l).last().unwrap().clone();
     let keys = net.engine(w).head_keys(&g, gl.index, &head).unwrap();
     let (sync, write) = (keys.sync.unwrap(), keys.write.unwrap());
     let rhb = net.engine(c).header(&rot).unwrap().blind;
@@ -933,10 +933,10 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
         items.push(osis_label::DeleteItem::sign_by(&write, &wk, 3, p.salt(), &rhb, &l, *b, None).unwrap());
         items.push(osis_label::DeleteItem::sign_by(&sync, &wk, 1, p.salt(), &rhb, &l, *b, None).unwrap());
     }
-    let conn = net.conn_to(w, sv).expect("connected");
+    let conn = net.conn_to(w, host).expect("connected");
     net.actions(w, vec![Action::Send { conn, bytes: frame(Message::Delete { id: 900_010, label: l, items }) }]);
     net.settle(10_000);
-    assert!(rblobs.iter().all(|id| net.host_ids(sv, &l).contains(id)), "the writer deleted an admin body");
+    assert!(rblobs.iter().all(|id| net.host_ids(host, &l).contains(id)), "the writer deleted an admin body");
 
     // c rotates t again, then purges w's write with the group admin and w away: c has no label
     // delete key, so its level-1 key of the old epoch deletes the body at the host
@@ -957,7 +957,7 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     net.feed(c, Event::Local);
     net.run();
     net.run();
-    let left: Vec<_> = blobs.iter().filter(|id| net.host_ids(sv, &l).contains(id)).collect();
+    let left: Vec<_> = blobs.iter().filter(|id| net.host_ids(host, &l).contains(id)).collect();
     assert!(left.is_empty(), "{} of {} blobs of the purged write stay at the host", left.len(), blobs.len());
 }
 
@@ -968,10 +968,10 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
 fn removed_writer_stale_label_key_refused_spec_sync_5() {
     use osis_node::sync::EntryKind;
     let mut net = Net::new();
-    let sv = net.add_host();
-    let a = net.node(1, &[sv]);
-    let w = net.node(2, &[sv]);
-    let g = net.group(a, &[(w, Role::Write)], &[sv]);
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let w = net.node(2, &[host]);
+    let g = net.group(a, &[(w, Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
     net.run();
     let cw = net.write(w, t, "by w");
@@ -984,7 +984,7 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
     let mut ds = net.engine(w).delete_secrets_of(&cw, &[(0, 0)]);
     let (level, dk) = ds.iter().position(|x| x.0 == 2).map(|i| ds.remove(i)).expect("w holds its level-2 key");
     let gl = net.sync(w).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
-    let old_head = net.host_path(sv, &l).last().unwrap().clone();
+    let old_head = net.host_path(host, &l).last().unwrap().clone();
     let sync = net.engine(w).head_keys(&g, gl.index, &old_head).unwrap().sync.unwrap();
     let hb = net.engine(w).header(&cw).unwrap().blind;
     // positive control: the same delete verifies against the head before the removal
@@ -1002,14 +1002,14 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
     net.feed(a, Event::Local);
     net.run();
     net.run();
-    assert_ne!(net.host_path(sv, &l).last().unwrap().id(), old_head.id(), "the label stepped");
+    assert_ne!(net.host_path(host, &l).last().unwrap().id(), old_head.id(), "the label stepped");
     let mut items = Vec::new();
     for (b, k) in &blobs {
         let EntryKind::Commit { salt, .. } = k else { unreachable!() };
         items.push(osis_label::DeleteItem::sign_by(&sync, &dk, level, salt, &hb, &l, *b, None).unwrap());
     }
-    let conn = net.conn_to(w, sv).expect("connected");
+    let conn = net.conn_to(w, host).expect("connected");
     net.actions(w, vec![Action::Send { conn, bytes: frame(Message::Delete { id: 900_020, label: l, items }) }]);
     net.settle(10_000);
-    assert!(blobs.iter().all(|(id, _)| net.host_ids(sv, &l).contains(id)), "a removed member's delete went through");
+    assert!(blobs.iter().all(|(id, _)| net.host_ids(host, &l).contains(id)), "a removed member's delete went through");
 }

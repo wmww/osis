@@ -7,9 +7,9 @@ use osis::core::{NAME, TAG, Tag};
 use osis::{Osis, Result, Tid};
 use osis_sim::world::World;
 
-/// A person on host `sv`, settled.
-pub fn person(w: &mut World, seed: u64, sv: usize) -> Osis {
-    let db = w.person(seed, &[sv]).0;
+/// A person on host `host`, settled.
+pub fn person(w: &mut World, seed: u64, host: usize) -> Osis {
+    let db = w.person(seed, &[host]).0;
     w.run();
     db
 }
