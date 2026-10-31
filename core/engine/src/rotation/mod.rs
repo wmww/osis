@@ -1914,6 +1914,15 @@ mod tests {
     fn openable(lp: &mut LocalPeer, i: usize, actors: &[Tid], party: Tid, mut known: BTreeSet<(Tid, Role, osis_crypto::Epoch)>) -> BTreeSet<(Tid, Role, osis_crypto::Epoch)> {
         use osis_keys::aspects::from_schema;
         let all: Vec<(Tid, ct::Secrets)> = actors.iter().filter_map(|a| lp.peers[i].engine.get_typed(a, &ct::SECRETS).unwrap().map(|s| (*a, s))).collect();
+        // a box to the party itself (a key actor) carries every role at or below its key's
+        if let Some(p) = lp.peers.iter().find(|p| p.engine.tid() == party) {
+            let seed = p.engine.core.id.seed().clone();
+            for (a, s) in &all {
+                for o in osis_keys::open_boxes(a, s, &osis_keys::Opener::KeyActor { member: party, seed: &seed }).0 {
+                    known.insert((*a, o.role, o.epoch));
+                }
+            }
+        }
         loop {
             let n = known.len();
             for (a, s) in &all {
@@ -2050,6 +2059,120 @@ mod tests {
         lp.sync(3, 2).unwrap();
         assert!(lp.peers[0].engine.ensure_rotated(&x).unwrap().1.is_empty(), "peer 0 no longer stranded");
         assert!(lp.peers[2].engine.ensure_rotated(&y).unwrap().1.is_empty(), "peer 2 no longer stranded");
+    }
+
+    /// Pairs (actor, role) whose newest epoch at the owner peer `owner(t)` is judged covered there
+    /// but that `d` opens from its old secrets `start` beyond what boxes to `d` itself give it.
+    fn leaks_judged_covered(lp: &mut LocalPeer, gs: &[(Tid, usize)], d: Tid, start: &BTreeSet<(Tid, Role, osis_crypto::Epoch)>) -> Vec<(Tid, Role)> {
+        let actors: Vec<Tid> = gs.iter().map(|g| g.0).collect();
+        let mut out = Vec::new();
+        for &(t, i) in gs {
+            let legit = openable(lp, i, &actors, d, BTreeSet::new());
+            let all = openable(lp, i, &actors, d, start.clone());
+            let un = uncovered_at(lp, i, t);
+            let Some(e) = lp.peers[i].engine.epochs(&t) else { continue };
+            for r in osis_keys::ROLES {
+                if let Some((n, _)) = e.role(r).newest_held()
+                    && !un.contains(&r)
+                    && all.contains(&(t, r, n))
+                    && !legit.contains(&(t, r, n))
+                {
+                    out.push((t, r));
+                }
+            }
+        }
+        out
+    }
+
+    // spec/crypto.md §4, spec/permissions.md §3 (Membership cycles): random role graphs of 2-4
+    // actors through a forced cycle, owned by one or two peers (sometimes with a common admin),
+    // a party D on one or two of them; D is removed or demoted on one. After the removal and
+    // after the cascade at every admin, D's old secrets open no newest epoch its owner judges
+    // covered beyond what D's remaining boxes give it. With one owner nothing stays uncovered.
+    #[test]
+    fn cycle_removals_leak_nothing_random() {
+        cycle_removals(0..6);
+    }
+
+    #[test]
+    #[ignore = "tier 2"]
+    fn cycle_removals_leak_nothing_random_large() {
+        cycle_removals(1_000..1_200);
+    }
+
+    /// `cycle_removals_leak_nothing_random` over `seeds`; peers: 0 and 2 admins, 1 the party D.
+    fn cycle_removals(seeds: std::ops::Range<u64>) {
+        let roles = [Role::Read, Role::Write, Role::Admin];
+        let (mut stuck, mut runs, mut lonely) = (0, 0, 0);
+        for seed in seeds {
+            let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+            let mut lp = LocalPeer::new(3, 1_300 + seed, WallMs(1_700_000_000_000)).unwrap();
+            lp.sync_all().unwrap();
+            let [d, c] = [1, 2].map(|i| lp.peers[i].engine.tid());
+            let two = rng.next(2) == 0;
+            let common = two && rng.next(2) == 0;
+            let k = 2 + rng.next(3) as usize;
+            let gs: Vec<(Tid, usize)> = (0..k)
+                .map(|_| {
+                    let o = if two && rng.next(2) == 0 { 2 } else { 0 };
+                    (group(&mut lp, o), o)
+                })
+                .collect();
+            lp.sync_all().unwrap();
+            if common {
+                // peer 2 an admin of every actor of peer 0's
+                for &(t, o) in &gs {
+                    if o == 0 {
+                        lp.peers[0].engine.grant(&t, &c, &edge(Role::Admin)).unwrap();
+                    }
+                }
+            }
+            for i in 0..k {
+                for j in 0..k {
+                    if i != j && (j == (i + 1) % k || rng.next(3) == 0) {
+                        let (t, o) = gs[i];
+                        let _ = lp.peers[o].engine.grant(&t, &gs[j].0, &edge(roles[rng.next(3) as usize]));
+                    }
+                }
+            }
+            let mut held_by_d = Vec::new();
+            for _ in 0..1 + rng.next(2) {
+                let (t, o) = gs[rng.next(k as u64) as usize];
+                let r = roles[rng.next(3) as usize];
+                if lp.peers[o].engine.grant(&t, &d, &edge(r)).is_ok() {
+                    held_by_d.push((t, o, r));
+                }
+            }
+            lp.sync_all().unwrap();
+            let all: Vec<Tid> = gs.iter().map(|g| g.0).collect();
+            let start = held_by(&lp, 1, &all);
+            let (t, o, r) = held_by_d[rng.next(held_by_d.len() as u64) as usize];
+            let new = match (r, rng.next(2)) {
+                (Role::Admin, 0) => Some(edge(Role::Write)),
+                (Role::Admin | Role::Write, 1) => Some(edge(Role::Read)),
+                _ => None,
+            };
+            lp.peers[o].engine.demote(&t, &Demotion { member: d, new, presync: PreSync::Synced }).unwrap();
+            lp.sync_all().unwrap();
+            assert_eq!(leaks_judged_covered(&mut lp, &gs, d, &start), vec![], "seed {seed}: after the removal");
+            for _ in 0..2 {
+                for p in [0, 2] {
+                    for &(x, _) in &gs {
+                        lp.peers[p].engine.ensure_rotated(&x).unwrap();
+                    }
+                    lp.sync_all().unwrap();
+                }
+            }
+            assert_eq!(leaks_judged_covered(&mut lp, &gs, d, &start), vec![], "seed {seed}: after the cascade");
+            let left: usize = gs.iter().map(|&(x, i)| uncovered_at(&mut lp, i, x).len()).sum();
+            if gs.iter().all(|g| g.1 == 0) || common {
+                assert_eq!(left, 0, "seed {seed}: an admin of every actor rotates every cycle");
+            }
+            runs += 1;
+            stuck += usize::from(left > 0);
+            lonely += usize::from(two && !common && gs.iter().any(|g| g.1 == 0) && gs.iter().any(|g| g.1 == 2));
+        }
+        eprintln!("cycle removals: {runs} runs, {stuck} left uncovered, {lonely} with disjoint admins");
     }
 
     // A lattice 4 wide and 10 deep, each actor a member of all 4 above it (4^9 chains from the
