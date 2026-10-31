@@ -63,7 +63,7 @@ struct Chains {
 impl Chains {
     fn new(tl: &Timeline) -> Chains {
         let mut cur: BTreeMap<(Tid, Tid), Edge> = tl.walked.initial.iter().map(|(m, t, e)| ((*m, *t), *e)).collect();
-        let changes = tl.replayed();
+        let changes = tl.cert_index().replayed.clone();
         let prev = changes.iter().map(|c| put(&mut cur, (c.1, c.2), c.3)).collect();
         Chains { dense: tl.input.dense(&tl.walked.initial), changes, h: 0, prev, at: None, roles: BTreeMap::new(), backs: BTreeMap::new() }
     }
@@ -130,6 +130,8 @@ pub(crate) struct CertIndex {
     entered: BTreeSet<Tid>,
     /// Every possible demotion by point.
     demotions: Vec<(Point, Demotion)>,
+    /// `Timeline::replayed`: with drops, it walks from scratch once.
+    replayed: Vec<Set>,
 }
 
 /// Everything `start` reaches by `next`, itself included.
@@ -224,6 +226,7 @@ impl Timeline {
                 x.demotions.extend(ends.chain([s.point()]).map(|q| (q, Demotion::Thing(s.thing))));
             }
             x.demotions.sort_by_key(|d| d.0);
+            x.replayed = self.replayed();
             x
         })
     }
