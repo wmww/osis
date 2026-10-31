@@ -496,10 +496,10 @@ fn removal_from_partial_device_keeps_unheld_edits_spec_permissions_5_3() {
     assert_eq!(x(carol, in_h), Some(s("bob in h")), "his edit under H stays: the phone's frontier covers it");
 }
 
-// notes/api.md Sync configuration and status: a group held for receipts only shows as such in
+// spec/permissions.md §5.3, notes/api.md Sync configuration and status: a group held for receipts only shows as such in
 // the status, and `wait_synced` leaves it out.
 #[test]
-fn receipts_only_status() {
+fn receipts_only_status_spec_permissions_5_3() {
     let mut w = World::new();
     let (alice, _, _) = people(&mut w, 1);
     let g = group(&alice);
