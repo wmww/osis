@@ -10,8 +10,9 @@
 //! or not) brings the node's chain for the same thing at its point, since whether its class fell
 //! depends on its other paths there. That includes one on a path the node gained after the
 //! point: an edge write or snapshot on the node's chain at its own point. The edge state at
-//! a point replays the dropped writes too: an earlier round of the walk applied them, and a
-//! drop it found then is sticky (a later-dropped grant can keep a demoted node's class).
+//! a point has every grant of the walks with fewer drops too (`walk::spilled`): a drop such a
+//! walk found, or did not find, stands, and a grant it applied (dropped later, or left without
+//! authority by a later drop) can have kept a demoted node's class there.
 
 use crate::graph::{Dense, EdgesAt, View};
 use crate::held::{HeldSet, MemoryHeldSet};
