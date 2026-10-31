@@ -47,7 +47,7 @@ fn stale_sync_key_gets_exactly_one_step() {
 }
 
 // spec/sync.md §5 Stamp, Deposit: a reader (sync key only) cannot upload or deposit, nor sign deletes without a delete key
-// spec/sync.md §5 (upload refusals), §5 (delete keys), §5 (register)
+// spec/sync.md §5 (upload refusals), §5 (delete keys), §5 (register), §5 (deposit budget)
 #[test]
 fn reader_cannot_write() {
     let (mut w, c) = world();
