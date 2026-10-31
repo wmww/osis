@@ -468,7 +468,7 @@ fn node_cap_bounds_decoded_size_spec_sync_9() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
-    let cap = 200_000;
+    let cap = 236_000;
     let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     let t = net.item(a, g, g, "doc");
@@ -922,7 +922,7 @@ fn waiting_share_overflow_keeps_honest_copy_spec_sync_9() {
     let a = net.node(1, &[sv]);
     // the share (a quarter of the cap) fits one blob of the commit, not two; the cap fits the
     // blob decoded (`osis_crdt::decoded_bound`: a string, so mostly its bytes)
-    let cap = 200_000;
+    let cap = 236_000;
     let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
@@ -1976,7 +1976,7 @@ fn capped_label_reconciles_once_room_spec_sync_9() {
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
     let x = net.node(2, &[sv]);
-    let b = net.add_node(3, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 230_000, ..SyncConfig::default() });
+    let b = net.add_node(3, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 330_000, ..SyncConfig::default() });
     let g = net.group(a, &[(x, Role::Write), (b, Role::Write)], &[sv]);
     let t = net.item(a, g, g, "doc");
     net.run();
