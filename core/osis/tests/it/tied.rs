@@ -82,9 +82,9 @@ fn share_into_unplace_and_stale_placement() {
     assert_eq!(bob.share_into(t, g, Role::Read, ShareOpts::default()).unwrap(), Share::Tied(Role::Read));
     w.run();
     w.until(bob.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).expect("pre-sync").unwrap();
-    w.run();
+    assert!(w.run(), "settles");
     w.advance(60_000);
-    w.run();
+    assert!(w.run(), "settles");
     assert!(listed(&bob, g, t), "the placement stays");
     assert!(!bob.roster(t).contains_key(&g), "and grants nothing");
     assert_eq!(reach_of(&bob, t, g).map(|r| r.share), Some(Share::Excluded));
@@ -387,6 +387,8 @@ fn group_members_learn_edge_removal() {
     for db in [&alice, &carol] {
         assert!(db.roster(t).contains_key(&g), "granted");
     }
+    let seed = |db: &Osis| db.get(t, osis::core::KEYS).unwrap().and_then(|k| k.deposit_seed);
+    let old = seed(&bob);
     w.until(bob.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).expect("pre-sync").unwrap();
     assert!(w.run(), "settles");
     for db in [&alice, &bob, &carol] {
@@ -394,6 +396,10 @@ fn group_members_learn_edge_removal() {
         assert_eq!(reach_of(db, t, g).map(|r| r.share), Some(Share::Excluded));
     }
     assert_eq!(text(&carol, t), None, "Carol lost the card");
+    // the placement carries no `/keys` or `/secrets` of the card: its refreshed deposit seed
+    // is for its remaining members
+    assert_ne!(seed(&bob), old, "the removal refreshed the card's deposit seed");
+    assert_ne!(seed(&carol), seed(&bob), "Carol does not learn the new one");
 }
 
 // spec/sync.md §2 (an actor naming no inbox uses its owner's), §3: Bob grants the tag (which names
@@ -401,13 +407,51 @@ fn group_members_learn_edge_removal() {
 // so Alice, the tag's admin, learns the grant and its removal.
 #[test]
 fn inherited_inbox_opens() {
-    let Setup { mut w, alice, bob, g, .. } = setup();
+    let Setup { mut w, alice, bob, carol, g } = setup();
     let t = new_tag(&bob, "Bob's").unwrap();
     bob.grant(t, g, Role::Read, EdgeOpts::default()).unwrap();
-    w.run();
-    assert!(alice.roster(t).contains_key(&g), "the grant reached the tag's admin");
-    assert_eq!(alice.get(t, osis::core::NAME).unwrap(), Some("Bob's".to_string()));
+    assert!(w.run());
+    for db in [&alice, &carol] {
+        assert!(db.roster(t).contains_key(&g), "the grant reached {}", db.me());
+        assert_eq!(db.get(t, osis::core::NAME).unwrap(), Some("Bob's".to_string()));
+    }
     w.until(bob.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).expect("pre-sync").unwrap();
-    w.run();
-    assert!(!alice.roster(t).contains_key(&g), "and its removal");
+    assert!(w.run());
+    for db in [&alice, &carol] {
+        assert!(!db.roster(t).contains_key(&g), "and its removal {}", db.me());
+    }
+}
+
+// issues/group-inbox-members.md (open): Dave, admin of Bob's card through his tag H only (he
+// syncs no label holding the tag G and holds no `/keys` of G, so no inbox blob goes), removes
+// G's edge on the card placed in G and H; Alice, G's admin, learns it through H and deletes the
+// card's bodies under G's label, while Carol, who never learns it, uploads fresh encryptions of
+// them again on every pass.
+#[test]
+#[ignore = "repro: issues/group-inbox-members.md"]
+fn repro_group_admin_learns_removal_elsewhere() {
+    let Setup { mut w, alice, bob, carol, g } = setup();
+    let dave = person(&mut w, 4, 0);
+    let b = introduce(&mut w, &dave, &bob);
+    let a = introduce(&mut w, &dave, &alice);
+    let h = new_tag(&dave, "H").unwrap();
+    dave.grant(h, b, Role::Write, EdgeOpts::default()).unwrap();
+    dave.grant(h, a, Role::Read, EdgeOpts::default()).unwrap();
+    assert!(w.run());
+    let t = card(&bob, "plan");
+    bob.write_with(|w| {
+        w.place(t, g)?;
+        w.place(t, h)
+    })
+    .unwrap();
+    bob.grant(t, g, Role::Read, EdgeOpts::default()).unwrap();
+    bob.grant(t, h, Role::Admin, EdgeOpts::default()).unwrap();
+    assert!(w.run());
+    assert_eq!(text(&carol, t).as_deref(), Some("plan"));
+    w.until(dave.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).expect("pre-sync").unwrap();
+    assert!(w.run(), "settles");
+    w.advance(60_000);
+    assert!(w.run(), "settles");
+    let stale: Vec<&str> = [("alice", &alice), ("bob", &bob), ("carol", &carol), ("dave", &dave)].into_iter().filter(|(_, db)| db.roster(t).contains_key(&g)).map(|(n, _)| n).collect();
+    assert!(stale.is_empty(), "the removal reached everyone; not {stale:?}");
 }

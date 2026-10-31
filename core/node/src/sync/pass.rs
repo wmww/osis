@@ -1587,8 +1587,10 @@ impl SyncEngine {
         Ok(here)
     }
 
-    /// A grantee device places a certificate copy of what its inbox (label `l` of `g`) brought,
-    /// once applied, under that label (spec/sync.md §3): of a membership commit, the carried
+    /// A grantee device places a certificate copy of what `g`'s inbox brought, once applied,
+    /// under `g`'s home label `l` (spec/sync.md §3; the inbox may be another label, its owner's:
+    /// a group's members learn its edges there, its inbox reaching only its admins): of a
+    /// membership commit, the carried
     /// parts on the things it writes an edge of `g` or an actor it owns on, or boxes one on
     /// (boxes are sealed to the actor anyway), with the `/label` and `/created` commits of
     /// those things, so the actor's other devices find the grant and its labels
@@ -1601,17 +1603,18 @@ impl SyncEngine {
     fn inbox_copies(&mut self, g: &Tid, l: LabelId) -> Result<()> {
         // only under the actor's home label (spec/sync.md §3): an inbox at another group's label
         // would show that group's readers the actor's edges, labels and box keys
-        if self.engine.core.secret_actor(g) != Some(*g) || !self.inbox_actors(&l).contains(g) {
+        if self.engine.core.secret_actor(g) != Some(*g) {
             return Ok(());
         }
+        let Some(li) = self.inbox_label(g) else { return Ok(()) };
         let now = self.now();
-        let opened: Vec<(BlobId, CommitId)> = self.state.label_entries(&l).filter_map(|(b, e)| if let Kind::Inbox(Some(c)) = e.kind { Some((b, c)) } else { None }).collect();
+        let opened: Vec<(BlobId, CommitId)> = self.state.label_entries(&li).filter_map(|(b, e)| if let Kind::Inbox(Some(c)) = e.kind { Some((b, c)) } else { None }).collect();
         for (b, c) in opened {
             if self.state.certs.contains(&(l, c)) || self.engine.core.ix.pending.contains_key(&c) {
                 continue;
             }
             let Some(m) = self.engine.core.ix.commits.get(&c).cloned() else { continue };
-            let Some(o) = self.inbox_opened(&l, &b)? else { continue };
+            let Some(o) = self.inbox_opened(&li, &b)? else { continue };
             if o.until < now.saturating_add(INBOX_COPY_MIN_LEFT) {
                 continue;
             }

@@ -1,9 +1,17 @@
-# A group's non-admin members learn of its edges only through its labels
-> Summary: an inbox blob for group G (its inbox is its owner's home label) reaches only G's admins, and the copy they place goes under that home label, not G's own; so G's other members never learn a grant of G on a thing outside G's closure, and learn a removal of G's edge only when its author syncs a label holding G. Members that disagree on G's edge can storm.
+# A removal of a group's edge can miss its members while its admins act on it
+> Summary: a removal of group G's edge reaches G's members through the author's placement under G's labels or G's admins' copy of G's inbox blob. An author who syncs no label holding G and holds no `/keys` of G sends neither, so G's members never learn. If a delete-key holder of G learns it another way, it deletes the target's bodies under G and the members who don't know upload them again on every pass, forever.
 > Tags: permissions, sync
 
-Found fixing the explicit-removal case (tied.rs `group_members_learn_edge_removal`, `inherited_inbox_opens`).
+Repro: tied.rs `repro_group_admin_learns_removal_elsewhere` (ignored). Dave is admin of Bob's card T only through his own tag H. T is placed in G and H. Dave removes G's edge on T. Dave doesn't sync G's label and doesn't hold G at all, so `deliver_parts` finds no keyset (no inbox blob), and `Delivery::Removal` finds no label holding G. Alice, G's admin and a reader of H, applies the removal from H and deletes T's bodies under G as `Outside`. Carol still holds G's edge and uploads a fresh encryption of T's bodies under G on each pass (one per hour of sim time in the repro, unbounded).
 
-- Grant: Bob grants tag G (Alice's, Carol a writer) read on Bob's own tag T. Alice opens the inbox blob and syncs T; Carol never hears of it. `inbox_copies` places the copy under the inbox label (Alice's home), which Carol does not read. spec/sync.md §3 says the copy goes under "that actor's home label"; for G that is G's own label.
-- Removal: a removal of G's edge is placed under the labels holding G that its author syncs (spec/permissions.md §2). An author syncing none (an admin of the target through another group; probe: Dave, admin of Bob's card through tag H, removes G's edge on a card placed in G and H) also usually lacks G's `/keys` (`deliver_parts` finds no keyset), so nobody in G learns; G's members keep the edge. Stale but consistent.
-- Storm: when G's admins learn a removal and the other members do not, the admins delete the target's bodies under G's label as `Outside` and stale members upload fresh encryptions of them again, forever (seen with the inbox fix and without the removal placement: `share_into_unplace_and_stale_placement` never settled). Placing the inbox copy under G's own label (first bullet) would close both.
+Without Alice in H (Dave only), nobody in G learns. That is stale but consistent: no storm, and T's rotation keeps new data from G.
+
+What is already covered:
+- An author who syncs a label holding G places the removal there (spec/permissions.md §2).
+- An author who holds G's `/keys` sends the inbox blob. G's admins open it at G's inbox (its owner's home label, spec/sync.md §2) and copy G's parts under G's own label (spec/sync.md §3).
+
+Root-cause directions:
+- Any node that applies a removal of X's edge and syncs a label holding X places it there (as a certificate copy without `/secrets` and `/keys`, with the author's chain, after `SETTLE_MS`), not only the author. `revoke_certificates` almost does this, but it skips targets in the label's closure (a placed T stays in G's closure), and `certificates()` never copies closure aspects. The copy must bypass both.
+- Or the deleter places the reason: before deleting a body under G's label as `Outside` because a removal took G's reading away, it places that removal there.
+
+Smaller remaining case: an admin of G that opens G's inbox blob less than `INBOX_LIFETIME` / 2 before expiry (offline 45+ days) applies it but makes no copy under G's label (`INBOX_COPY_MIN_LEFT`). This gives the same storm, but only for an author with G's `/keys` who syncs no label holding G.

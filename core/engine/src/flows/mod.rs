@@ -57,8 +57,13 @@ pub enum Delivery {
     /// device accepting a grant; deposit unless writer).
     Certificate { commits: Vec<CommitId>, under: Tid },
     /// A commit to place under the label of `under`, by deposit (a non-writer of that label: an
-    /// invite grant or self-removal, spec/sync.md §5).
+    /// invite grant, spec/sync.md §5).
     Deposit { commit: CommitId, under: Tid },
+    /// A removal or lowering of actor `under`'s edge, placed under every label holding `under`
+    /// as a certificate copy without its `/secrets` and `/keys` deltas (spec/permissions.md §2:
+    /// those are for the target's remaining members; a refreshed deposit seed is not the
+    /// departed's to read).
+    Removal { commit: CommitId, under: Tid },
 }
 
 /// What seals an inbox delivery again (spec/sync.md §3: re-sent after `INBOX_LIFETIME` while
