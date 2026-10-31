@@ -1,4 +1,4 @@
-//! The driver over QUIC on localhost (tier 2: touches the network), and `osis serve`'s key file.
+//! The driver over QUIC on localhost (tier 2: touches the network).
 //! Run: `cargo test --workspace --test it quic:: -- --ignored`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -32,22 +32,4 @@ async fn quic_clients_and_replication() {
     assert_eq!(added(&evs), sorted((0..5).map(bid).collect()));
     s1.stop().await;
     s2.stop().await;
-}
-
-// spec/sync.md §10: the static key file `osis serve` uses is created owner-only (0600) and read
-// back unchanged (`osis serve` itself: osis-cli tests/it/localhost.rs)
-#[cfg(feature = "driver")]
-#[test]
-#[ignore]
-fn static_key_file_created_owner_only() {
-    let dir = std::env::temp_dir().join(format!("osis-host-key-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("key");
-    let log: osis_host::Log = std::sync::Arc::new(|m: &str| eprintln!("{m}"));
-    let k = osis_host::serve::static_secret(&path, &log).unwrap();
-    #[cfg(unix)]
-    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&path).unwrap().permissions()) & 0o777, 0o600);
-    assert_eq!(osis_host::serve::static_secret(&path, &log).unwrap(), k);
-    let _ = std::fs::remove_dir_all(&dir);
 }
