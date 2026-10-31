@@ -471,6 +471,9 @@ pub struct SyncEngine {
     /// When the last remote membership commit of each actor applied (raw ms; the peer part of
     /// `complete_pass` waits at most `peer_pass_wait_ms` from it).
     pub(crate) membership_at: BTreeMap<Tid, u64>,
+    /// When this engine was built (raw ms): a membership change applied before it came no later,
+    /// so the peer wait of an actor with none in `membership_at` counts from here.
+    pub(crate) started: u64,
     /// When the last remote membership commit writing an actor's `/secrets` (a rotation, the
     /// only change its author registers a step for) applied (raw ms; `step_settled`).
     pub(crate) rotation_at: BTreeMap<Tid, u64>,
@@ -508,6 +511,7 @@ impl SyncEngine {
         let outbox = state.outbox.keys().map(|k| (*k, local::Outgoing::default())).collect();
         let mut rng = rng;
         rng.fill_bytes(&mut state.feed.log_id);
+        let started = clock.now_wall_ms().0;
         Ok(SyncEngine {
             engine,
             events,
@@ -566,6 +570,7 @@ impl SyncEngine {
             peer_cache: peers::PeerCache::default(),
             peer_received: BTreeMap::new(),
             membership_at: BTreeMap::new(),
+            started,
             rotation_at: BTreeMap::new(),
             placed_cache: (u64::MAX, BTreeMap::new()),
             pass_peers: BTreeMap::new(),

@@ -516,9 +516,16 @@ fn expired_link_at_no_server_finalized_spec_permissions_9() {
 // peer it was received from passes vacuously, once the peer wait after the membership change is
 // over), spec/sync.md §5 (member peer): admin `a` serves g's label alone; admin `b`'s rotation
 // leaves reader `c` out and `b` goes away. `a` re-seals `c` after `peer_pass_wait_ms`, not
-// before, and only once.
+// before, and only once (`c`'s stranded heartbeat included), and the box reaches `c`. When `a`
+// restarts after b's rotation reached it, the wait counts from the restart: it hears its peers
+// out before deciding.
 #[test]
 fn serverless_label_reseals_spec_permissions_3() {
+    serverless_reseal(false);
+    serverless_reseal(true);
+}
+
+fn serverless_reseal(restart: bool) {
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let b = net.node(2, &[]);
@@ -526,6 +533,9 @@ fn serverless_label_reseals_spec_permissions_3() {
     let g = net.group(a, &[(b, Role::Admin), (c, Role::Read)], &[]);
     let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
     net.actions(a, acts);
+    net.run();
+    // c learns a's `/reach` and dials it
+    net.pair(a, c);
     net.run();
     assert!(net.sync(a).labels()[0].1.servers.is_empty());
     let (ta, tb) = (net.tid(a), net.tid(b));
@@ -535,6 +545,10 @@ fn serverless_label_reseals_spec_permissions_3() {
     rotation(e, g, &rec, 91, false);
     net.pair(b, a);
     net.run();
+    if restart {
+        net.restart(a, 92);
+        net.run();
+    }
     let newest = |net: &mut Net, n: usize| net.engine(n).epochs(&g).and_then(|e| e.read.newest_held().map(|x| x.0));
     let e1 = newest(&mut net, a).unwrap();
     assert_ne!(newest(&mut net, c), Some(e1), "c has no box at b's epoch");
@@ -554,4 +568,13 @@ fn serverless_label_reseals_spec_permissions_3() {
     net.advance(wait);
     net.advance(wait);
     assert_eq!(reseals(&mut net), before + 1, "once");
+    // delivered to node c over a direct connection (the app carries it)
+    let tc = net.tid(c);
+    let pks = net.sync(a).take_direct_for(&tc);
+    assert_eq!(pks.len(), 1, "one re-seal for c");
+    for p in pks {
+        net.engine(c).ingest(&p.bytes, p.blobs).unwrap();
+    }
+    net.advance(wait);
+    assert_eq!(newest(&mut net, c), Some(e1), "c reads b's epoch");
 }
