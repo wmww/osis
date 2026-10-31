@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! The tokio driver over osis-transport's `InProcess` against the osis-server driver (spec/sync.md
+//! The tokio driver over osis-transport's `InProcess` against the osis-host driver (spec/sync.md
 //! §10): event-driven, nothing sleeps; a timeout guards against a hang.
 
 use crate::net;
@@ -10,7 +10,7 @@ use osis_label::Address;
 use osis_node::Event as EngineEvent;
 use osis_node::sync::driver::{self, Control};
 use osis_node::sync::{Event, SyncEngine};
-use osis_server::{BackendStore, Endpoint, Hub, Policy};
+use osis_host::{HostStore, Endpoint, Hub, HostPolicy};
 use osis_store::MemoryBackend;
 use osis_transport::{ListenConfig, Listener, StaticSecret, Transport};
 use std::sync::Arc;
@@ -60,10 +60,10 @@ async fn converge<T: Transport>(ep: T, url: &str, a_ep: T, b_ep: T) {
     let addr = listener.address();
     let mut net = Net::new();
     let clock: Arc<dyn Clock> = net.clock.clone();
-    let store = BackendStore::open(MemoryBackend::new(), clock.clone(), Policy::default(), &mut SeededRng::from_u64(5)).unwrap();
+    let store = HostStore::open(MemoryBackend::new(), clock.clone(), HostPolicy::default(), &mut SeededRng::from_u64(5)).unwrap();
     let hub = Hub::new(store, addr.key, Box::new(SeededRng::from_u64(6)));
     let (sctl, srx) = mpsc::channel(8);
-    let server = tokio::spawn(osis_server::run(hub, Endpoint { transport: ep, listener, secret }, vec![], clock.clone(), srx, log()));
+    let server = tokio::spawn(osis_host::run(hub, Endpoint { transport: ep, listener, secret }, vec![], clock.clone(), srx, log()));
 
     let addr = Address { url: addr.url, key: addr.key };
     let cfg = osis_node::sync::SyncConfig { servers: vec![addr.clone()], ..Default::default() };
@@ -92,7 +92,7 @@ async fn converge<T: Transport>(ep: T, url: &str, a_ep: T, b_ep: T) {
     }
     da.await.unwrap();
     db.await.unwrap();
-    assert!(sctl.send(osis_server::Control::Shutdown).await.is_ok());
+    assert!(sctl.send(osis_host::Control::Shutdown).await.is_ok());
     server.await.unwrap();
 }
 

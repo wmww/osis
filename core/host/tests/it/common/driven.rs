@@ -77,8 +77,8 @@ impl Client {
 
 pub struct Server {
     pub addr: osis_label::Address,
-    pub control: tokio::sync::mpsc::Sender<osis_server::Control>,
-    pub task: tokio::task::JoinHandle<osis_server::Hub<osis_store::MemoryBackend>>,
+    pub control: tokio::sync::mpsc::Sender<osis_host::Control>,
+    pub task: tokio::task::JoinHandle<osis_host::Hub<osis_store::MemoryBackend>>,
 }
 
 impl Server {
@@ -87,14 +87,14 @@ impl Server {
     pub async fn start<T: osis_transport::Transport>(transport: T, url: &str, seed: u8, backend: osis_store::MemoryBackend, peers: Vec<osis_label::Address>) -> Server {
         use osis_transport::Listener;
         let clock = std::sync::Arc::new(osis_base::ManualClock::new(osis_base::WallMs(T0)));
-        let store = osis_server::BackendStore::open(backend, clock.clone(), osis_server::Policy::default(), &mut osis_crypto::SeededRng::from_seed([seed; 32])).unwrap();
+        let store = osis_host::HostStore::open(backend, clock.clone(), osis_host::HostPolicy::default(), &mut osis_crypto::SeededRng::from_seed([seed; 32])).unwrap();
         let secret = osis_transport::StaticSecret::from_bytes([seed; 32]);
         let listener = transport.listen(osis_transport::ListenConfig { url: url.into(), secret: secret.clone() }).await.unwrap();
         let a = listener.address();
-        let ep = osis_server::Endpoint { transport, listener, secret };
-        let hub = osis_server::Hub::new(store, ep.key(), Box::new(osis_crypto::SeededRng::from_seed([1; 32])));
+        let ep = osis_host::Endpoint { transport, listener, secret };
+        let hub = osis_host::Hub::new(store, ep.key(), Box::new(osis_crypto::SeededRng::from_seed([1; 32])));
         let (control, rx) = tokio::sync::mpsc::channel(4);
-        let task = tokio::spawn(osis_server::run(hub, ep, peers, clock, rx, std::sync::Arc::new(|m: &str| eprintln!("{m}"))));
+        let task = tokio::spawn(osis_host::run(hub, ep, peers, clock, rx, std::sync::Arc::new(|m: &str| eprintln!("{m}"))));
         Server { addr: osis_label::Address { url: a.url, key: a.key }, control, task }
     }
 
@@ -106,8 +106,8 @@ impl Server {
     }
 
     /// Shuts the driver down; returns its hub.
-    pub async fn stop(self) -> osis_server::Hub<osis_store::MemoryBackend> {
-        self.control.send(osis_server::Control::Shutdown).await.unwrap();
+    pub async fn stop(self) -> osis_host::Hub<osis_store::MemoryBackend> {
+        self.control.send(osis_host::Control::Shutdown).await.unwrap();
         self.task.await.unwrap()
     }
 }

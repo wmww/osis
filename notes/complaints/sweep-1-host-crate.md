@@ -1,0 +1,2 @@
+- A rename script's `git ls-files -- <path> ':!issues/x.md'` listed nothing (with `':!docs'` alone it worked), so every path-limited rule silently did nothing on the first run. Filter exclusions with `grep -v` on the list instead, and check each rule hit.
+- A new dependency between core crates (osis-node on osis-host) changes kit/Cargo.lock too: kit's `cargo test --workspace --locked` refused until `cargo update -w --offline` in kit/. Nothing in the core loop shows it; the gate's GUI check would have.

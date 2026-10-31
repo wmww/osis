@@ -9,7 +9,7 @@ use common::*;
 use osis_base::{BlobId, ManualClock, WallMs};
 use osis_crypto::SeededRng;
 use osis_proto::*;
-use osis_server::{BackendStore, Hub, HubOutput, Policy};
+use osis_host::{HostStore, Hub, HubOutput, HostPolicy};
 use osis_store::{Backend, Fault, Faults, MemoryBackend, WriteBatch};
 use std::sync::Arc;
 
@@ -21,7 +21,7 @@ fn live(w: &World, h: usize, l: &Label) -> Vec<BlobId> {
 #[test]
 fn connection_cap_and_hello_deadline() {
     let mut w = World::new();
-    let h = w.add_hub(Policy { max_connections: 2, hello_ms: 5_000, ..Policy::default() });
+    let h = w.add_hub(HostPolicy { max_connections: 2, hello_ms: 5_000, ..HostPolicy::default() });
     w.connect(h);
     let (silent, _) = w.connect_silent(h);
     let (refused, _) = w.connect_silent(h);
@@ -41,7 +41,7 @@ fn connection_cap_and_hello_deadline() {
 #[test]
 fn full_slots_shared_by_source() {
     let mut w = World::new();
-    let h = w.add_hub(Policy { max_connections: 6, ..Policy::default() });
+    let h = w.add_hub(HostPolicy { max_connections: 6, ..HostPolicy::default() });
     let now = w.now();
     let hub = &mut w.hubs[h];
     let (a, b, c) = (Some([1u8; 16]), Some([2u8; 16]), Some([3u8; 16]));
@@ -69,7 +69,7 @@ fn full_slots_shared_by_source() {
 fn partial_frames_bounded() {
     let mut w = World::new();
     let budget = 20 << 20;
-    let h = w.add_hub(Policy { max_buffered_bytes: budget, ..Policy::default() });
+    let h = w.add_hub(HostPolicy { max_buffered_bytes: budget, ..HostPolicy::default() });
     let now = w.now();
     let hub = &mut w.hubs[h];
     // before Hello: a frame header of MAX_MESSAGE closes at once
@@ -96,7 +96,7 @@ fn partial_frames_bounded() {
 #[test]
 fn one_fsync_per_message() {
     let mut w = World::new();
-    let h = w.add_hub(Policy::default());
+    let h = w.add_hub(HostPolicy::default());
     let c = w.connect(h);
     let l = Label::new(3);
     w.setup(c, &l);
@@ -113,7 +113,7 @@ fn one_fsync_per_message() {
 #[test]
 fn failed_sync_sends_nothing() {
     let mut w = World::new();
-    let h = w.add_hub(Policy::default());
+    let h = w.add_hub(HostPolicy::default());
     // client index = link index
     let (a, c) = (w.connect(h), w.connect(h));
     let l = Label::new(3);
@@ -139,7 +139,7 @@ fn failed_sync_sends_nothing() {
 #[test]
 fn node_wide_caps() {
     let mut w = World::new();
-    let h = w.add_hub(Policy { max_labels: 2, max_entries: 3, ..Policy::default() });
+    let h = w.add_hub(HostPolicy { max_labels: 2, max_entries: 3, ..HostPolicy::default() });
     let c = w.connect(h);
     let (l1, l2, l3) = (Label::new(3), Label::new(4), Label::new(5));
     w.setup(c, &l1);
@@ -157,7 +157,7 @@ fn node_wide_caps() {
 #[test]
 fn sweeps_are_bounded() {
     let mut w = World::new();
-    let h = w.add_hub(Policy::default());
+    let h = w.add_hub(HostPolicy::default());
     let c = w.connect(h);
     let l = Label::new(3);
     w.setup(c, &l);
@@ -182,7 +182,7 @@ fn sweep_junk_and_failures() {
     let mut b = WriteBatch::new();
     b.put([&b"X"[..], &0u64.to_be_bytes(), &[1, 2, 3]].concat(), vec![]);
     backend.commit(b).unwrap();
-    let store = BackendStore::open(backend.clone(), clock, Policy::default(), &mut SeededRng::from_seed([1; 32])).unwrap();
+    let store = HostStore::open(backend.clone(), clock, HostPolicy::default(), &mut SeededRng::from_seed([1; 32])).unwrap();
     let mut hub = Hub::new(store, [1; 32], Box::new(SeededRng::from_seed([2; 32])));
     assert_eq!(hub.next_due(T0), Some(0));
     faults.at(0, Fault::Fail);
@@ -199,7 +199,7 @@ fn sweep_junk_and_failures() {
 #[test]
 fn replication_retries_after_refusal() {
     let mut w = World::new();
-    let (s1, s2) = (w.add_hub(Policy::default()), w.add_hub(Policy { cap_entries: 3, ..Policy::default() }));
+    let (s1, s2) = (w.add_hub(HostPolicy::default()), w.add_hub(HostPolicy { cap_entries: 3, ..HostPolicy::default() }));
     let a = w.connect(s1);
     let l = Label::new(3);
     w.setup(a, &l);
@@ -213,7 +213,7 @@ fn replication_retries_after_refusal() {
     // a retry while the peer is still full changes nothing
     w.advance(1_000);
     assert_eq!(live(&w, s2, &l).len(), 3);
-    w.restart(s2, Policy::default());
+    w.restart(s2, HostPolicy::default());
     w.peer(s1, s2);
     assert_eq!(live(&w, s2, &l), sorted((0..5).map(bid).collect()));
     assert_eq!(w.hubs[s1].store().replica_pos(&hub_key(s2), &l.id).unwrap(), Some(head));
@@ -223,7 +223,7 @@ fn replication_retries_after_refusal() {
 #[test]
 fn mutual_replication_settles() {
     let mut w = World::new();
-    let (s1, s2) = (w.add_hub(Policy::default()), w.add_hub(Policy::default()));
+    let (s1, s2) = (w.add_hub(HostPolicy::default()), w.add_hub(HostPolicy::default()));
     let (a, b) = (w.connect(s1), w.connect(s2));
     let l = Label::new(3);
     w.setup(a, &l);

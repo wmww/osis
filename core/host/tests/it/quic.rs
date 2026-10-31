@@ -1,10 +1,10 @@
-//! The driver over QUIC on localhost (tier 2: touches the network), and the binary itself.
+//! The driver over QUIC on localhost (tier 2: touches the network), and `osis serve`'s key file.
 //! Run: `cargo test --workspace --test it quic:: -- --ignored`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common;
 
-use common::driven::{Client, GUARD, Server};
+use common::driven::Server;
 use common::*;
 use osis_proto::*;
 use osis_store::MemoryBackend;
@@ -34,38 +34,20 @@ async fn quic_clients_and_replication() {
     s2.stop().await;
 }
 
-// spec/sync.md §10: the binary listens on QUIC, prints its address (URL and static key), serves a client, creates its key file 0600
+// spec/sync.md §10: the static key file `osis serve` uses is created owner-only (0600) and read
+// back unchanged (`osis serve` itself: osis-cli tests/it/localhost.rs)
 #[cfg(feature = "driver")]
 #[test]
 #[ignore]
-fn binary_serves_quic() {
-    use std::io::BufRead;
-    let dir = std::env::temp_dir().join(format!("osis-server-quic-{}", std::process::id()));
+fn static_key_file_created_owner_only() {
+    let dir = std::env::temp_dir().join(format!("osis-host-key-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let cfg = dir.join("server.conf");
-    std::fs::write(&cfg, format!("listen = quic://127.0.0.1:0\nkey = {}\ndata = {}\n", dir.join("key").display(), dir.join("data").display())).unwrap();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_osis-server")).arg(&cfg).stderr(std::process::Stdio::piped()).spawn().unwrap();
-    let mut lines = std::io::BufReader::new(child.stderr.take().unwrap()).lines();
-    let addr = loop {
-        let line = lines.next().expect("binary exited").unwrap();
-        if let Some(a) = line.strip_prefix("osis-server: address ") {
-            break osis_label::address_from_text(a).unwrap();
-        }
-    };
+    let path = dir.join("key");
+    let log: osis_host::Log = std::sync::Arc::new(|m: &str| eprintln!("{m}"));
+    let k = osis_host::serve::static_secret(&path, &log).unwrap();
     #[cfg(unix)]
-    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(dir.join("key")).unwrap().permissions()) & 0o777, 0o600);
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    rt.block_on(async {
-        let target = osis_transport::Address { url: addr.url.clone(), key: addr.key };
-        let link = osis_transport::link::dial(&Quic::new(), &target, None, GUARD).await.unwrap();
-        let mut a = Client::start(link, addr.key).await;
-        let l = Label::new(3);
-        assert_eq!(a.run(l.register_cmd(0)).await, vec![ClientEvent::Registered { label: l.id }]);
-        let ev = a.run(Command::Upload { label: l.id, entries: vec![l.entry(blob(0))] }).await;
-        assert_eq!(statuses(&ev), vec![Code::OK]);
-    });
-    child.kill().unwrap();
-    child.wait().unwrap();
+    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&path).unwrap().permissions()) & 0o777, 0o600);
+    assert_eq!(osis_host::serve::static_secret(&path, &log).unwrap(), k);
     let _ = std::fs::remove_dir_all(&dir);
 }

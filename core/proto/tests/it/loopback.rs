@@ -21,7 +21,7 @@ struct Net {
     now: u64,
     server_skew: u64,
     store: MemoryLabelStore,
-    servers: Vec<ServerConnection>,
+    servers: Vec<ServingSession>,
     clients: Vec<ClientSession>,
     events: Vec<Vec<ClientEvent>>,
     to_server: Vec<VecDeque<Vec<u8>>>,
@@ -36,12 +36,12 @@ impl Net {
     fn new(n: usize, server_skew: u64) -> Net {
         let mut net = Net { now: T0, server_skew, store: MemoryLabelStore::new([9; 32]), servers: vec![], clients: vec![], events: vec![], to_server: vec![], to_client: vec![], handshake: vec![], flights: 0 };
         for i in 0..n {
-            net.servers.push(ServerConnection::new(ServerConfig { static_key: [0x5e; 32], challenge: [0x40 + i as u8; 32] }));
+            net.servers.push(ServingSession::new(ServingConfig { static_key: [0x5e; 32], challenge: [0x40 + i as u8; 32] }));
             net.clients.push(ClientSession::new(ClientConfig { peer_static_key: [0x5e; 32], challenge: [0x80 + i as u8; 32] }));
             net.events.push(vec![]);
             net.to_server.push(VecDeque::new());
             net.to_client.push(VecDeque::new());
-            let so = net.servers[i].handle(T0 + server_skew, &mut net.store, ServerInput::Start);
+            let so = net.servers[i].handle(T0 + server_skew, &mut net.store, ServingInput::Start);
             net.server_out(i, so);
             let co = net.clients[i].handle(T0, ClientInput::Start);
             net.client_out(i, co);
@@ -61,24 +61,24 @@ impl Net {
         }
     }
 
-    fn server_out(&mut self, i: usize, out: Vec<ServerOutput>) {
+    fn server_out(&mut self, i: usize, out: Vec<ServingOutput>) {
         for o in out {
             match o {
-                ServerOutput::Send(b) => self.to_client[i].push_back(b),
-                ServerOutput::Changed(l) => {
+                ServingOutput::Send(b) => self.to_client[i].push_back(b),
+                ServingOutput::Changed(l) => {
                     for j in 0..self.servers.len() {
-                        let so = self.servers[j].handle(self.now + self.server_skew, &mut self.store, ServerInput::Changed(l));
+                        let so = self.servers[j].handle(self.now + self.server_skew, &mut self.store, ServingInput::Changed(l));
                         self.server_out(j, so);
                     }
                 }
-                ServerOutput::Relay(r) => {
+                ServingOutput::Relay(r) => {
                     for j in (0..self.servers.len()).filter(|j| *j != i) {
-                        let so = self.servers[j].handle(self.now + self.server_skew, &mut self.store, ServerInput::Relay(r.clone()));
+                        let so = self.servers[j].handle(self.now + self.server_skew, &mut self.store, ServingInput::Relay(r.clone()));
                         self.server_out(j, so);
                     }
                 }
-                ServerOutput::Close | ServerOutput::PeerError(_) => {}
-                ServerOutput::StoreError(e) => panic!("{e}"),
+                ServingOutput::Close | ServingOutput::PeerError(_) => {}
+                ServingOutput::StoreError(e) => panic!("{e}"),
             }
         }
     }
@@ -90,7 +90,7 @@ impl Net {
                 let bytes: Vec<u8> = self.to_server[i].drain(..).flatten().collect();
                 if !bytes.is_empty() {
                     moved = true;
-                    let so = self.servers[i].handle(self.now + self.server_skew, &mut self.store, ServerInput::Bytes(bytes));
+                    let so = self.servers[i].handle(self.now + self.server_skew, &mut self.store, ServingInput::Bytes(bytes));
                     self.server_out(i, so);
                 }
             }
@@ -348,8 +348,8 @@ fn member_proof_bound_to_session_spec_sync_5() {
     // a proof for another session's challenge, sent raw on this one
     let proof = osis_label::Proof::member(&d, &l.id, &[0x77; 32], &[0x5e; 32]);
     let open = Message::Open { id: 99, label: l.id, proof };
-    let so = net.servers[0].handle(T0, &mut net.store, ServerInput::Bytes(encode_frame(&open.encode())));
-    let sent: Vec<Message> = so.into_iter().filter_map(|o| if let ServerOutput::Send(f) = o { Some(Message::decode(&f[4..]).unwrap()) } else { None }).collect();
+    let so = net.servers[0].handle(T0, &mut net.store, ServingInput::Bytes(encode_frame(&open.encode())));
+    let sent: Vec<Message> = so.into_iter().filter_map(|o| if let ServingOutput::Send(f) = o { Some(Message::decode(&f[4..]).unwrap()) } else { None }).collect();
     assert_eq!(sent, vec![Message::Error { id: 99, code: Code::REFUSED }]);
     assert!(net.servers[0].none_opened());
 }
@@ -428,7 +428,7 @@ fn oversized_upload_refused_spec_sync_5() {
     let big = l.entry(blob_sized(1, 0, vec![], osis_base::format::MAX_BLOB));
     let body = Message::Upload { id: 77, label: l.id, entries: vec![big] }.encode();
     assert!(body.len() < osis_base::format::MAX_MESSAGE);
-    let so = net.servers[0].handle(T0, &mut net.store, ServerInput::Bytes(encode_frame(&body)));
+    let so = net.servers[0].handle(T0, &mut net.store, ServingInput::Bytes(encode_frame(&body)));
     net.server_out(0, so);
     let reply: Vec<u8> = net.to_client[0].drain(..).flatten().collect();
     let mut d = FrameDecoder::new();
@@ -644,18 +644,18 @@ fn bad_frames() {
     let mut bytes = raw(Value::List(vec![Value::Int(99), Value::Int(5)]));
     bytes.extend(raw(Value::List(vec![Value::Int(19), Value::Int(6), Value::Bytes(vec![0; 16]), Value::List(vec![])])));
     let decode_sent = |out: Vec<Vec<u8>>| out.iter().map(|f| Message::decode(&f[4..]).unwrap()).collect::<Vec<_>>();
-    let so = net.servers[0].handle(T0, &mut net.store, ServerInput::Bytes(bytes.clone()));
+    let so = net.servers[0].handle(T0, &mut net.store, ServingInput::Bytes(bytes.clone()));
     let want = vec![Message::Error { id: 5, code: Code::UNSUPPORTED }, Message::Error { id: 6, code: Code::MALFORMED }];
-    assert_eq!(decode_sent(so.into_iter().filter_map(|o| if let ServerOutput::Send(f) = o { Some(f) } else { None }).collect()), want);
+    assert_eq!(decode_sent(so.into_iter().filter_map(|o| if let ServingOutput::Send(f) = o { Some(f) } else { None }).collect()), want);
     let co = net.clients[0].handle(T0, ClientInput::Bytes(bytes));
     assert_eq!(decode_sent(co.into_iter().filter_map(|o| if let ClientOutput::Send(f) = o { Some(f) } else { None }).collect()), want);
-    let so = net.servers[0].handle(T0, &mut net.store, ServerInput::Bytes(vec![0, 0, 0, 0]));
-    assert!(so.contains(&ServerOutput::Close));
+    let so = net.servers[0].handle(T0, &mut net.store, ServingInput::Bytes(vec![0, 0, 0, 0]));
+    assert!(so.contains(&ServingOutput::Close));
     assert!(net.servers[0].is_closed());
-    let mut s = ServerConnection::new(ServerConfig { static_key: [0; 32], challenge: [0; 32] });
+    let mut s = ServingSession::new(ServingConfig { static_key: [0; 32], challenge: [0; 32] });
     let h = Hello { versions: vec![7], wall_ms: 0, challenge: [0; 32] };
-    let so = s.handle(T0, &mut net.store, ServerInput::Bytes(encode_frame(&h.encode())));
-    assert!(so.contains(&ServerOutput::Close));
+    let so = s.handle(T0, &mut net.store, ServingInput::Bytes(encode_frame(&h.encode())));
+    assert!(so.contains(&ServingOutput::Close));
 }
 
 // spec/wire.md §11.2: a peer whose Sync pages make no progress is dropped, not followed forever

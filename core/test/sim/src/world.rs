@@ -1,4 +1,4 @@
-//! An API-level world: `osis::Osis` handles on `Runtime::Manual` exchange bytes with osis-server
+//! An API-level world: `osis::Osis` handles on `Runtime::Manual` exchange bytes with osis-host
 //! `Hub`s over in-memory queues under one `ManualClock`. No tokio, no threads of its own, no
 //! sleeps: time moves only by `advance`, so a run is a function of its seeds. The osis crate's
 //! tests drive it. It panics rather than return failure: a storm, a future that never resolves.
@@ -8,7 +8,7 @@ use osis::internals::{Internals, ManualNet};
 use osis::{Config, ManualClock, MemStore, Osis, RecoveryCard, Runtime, ServerAddr, StoreAt, WallMs};
 use osis_crypto::SeededRng;
 use osis_proto::{FrameDecoder, Message};
-use osis_server::{BackendStore, Hub, HubOutput, Policy};
+use osis_host::{HostStore, Hub, HubOutput, HostPolicy};
 use osis_store::MemoryBackend;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
@@ -104,7 +104,7 @@ impl World {
         let i = self.servers.len();
         let b = 0x50u8.wrapping_add(i as u8);
         let key = [b; 32];
-        let store = match BackendStore::open(MemoryBackend::new(), self.clock.clone(), Policy::default(), &mut SeededRng::from_u64(900 + i as u64)) {
+        let store = match HostStore::open(MemoryBackend::new(), self.clock.clone(), HostPolicy::default(), &mut SeededRng::from_u64(900 + i as u64)) {
             Ok(s) => s,
             Err(e) => panic!("server store: {e:?}"),
         };

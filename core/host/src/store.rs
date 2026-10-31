@@ -1,4 +1,4 @@
-//! `BackendStore`: osis-proto's `LabelStore` over an osis-store `Backend` (spec/sync.md §4, §5):
+//! `HostStore`: osis-proto's `LabelStore` over an osis-store `Backend` (spec/sync.md §4, §5):
 //! registration paths, entries, tombstones, per-label logs, blob bytes stored once with reference
 //! counts, timed deletes, expiry, claim-set retention, and the server policy (storage caps,
 //! deposit budget, rate limits). Every mutation is one atomic `WriteBatch`.
@@ -34,7 +34,7 @@ pub const DEPOSIT_ENTRY_BYTES: u64 = 32 * 1024;
 
 /// Server policy (spec/sync.md §5: caps, budget, rate limits; notes/sync.md Policy defaults).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Policy {
+pub struct HostPolicy {
     /// Live entries per label beyond which new entries get code 12.
     pub cap_entries: u64,
     /// Bytes per label (live entries, steps, held claim sets) beyond which new entries and
@@ -79,16 +79,16 @@ pub struct Policy {
     /// A connection without the peer's Hello this long after accept is closed.
     pub hello_ms: u64,
     /// Bytes queued for one connection beyond which it is dropped (a peer that does not read);
-    /// at least `osis_proto::server::SEND_QUEUE` (windowed replies and held pushes, spec/sync.md §6).
+    /// at least `osis_proto::serving::SEND_QUEUE` (windowed replies and held pushes, spec/sync.md §6).
     pub max_queued_bytes: usize,
     /// Partially received frame bytes over all connections beyond which the connection holding
     /// the largest partial frame is closed.
     pub max_buffered_bytes: usize,
 }
 
-impl Default for Policy {
-    fn default() -> Policy {
-        Policy {
+impl Default for HostPolicy {
+    fn default() -> HostPolicy {
+        HostPolicy {
             cap_entries: 1 << 20,
             cap_bytes: 16 << 30,
             deposit_factor: 1,
@@ -117,10 +117,10 @@ impl Default for Policy {
     }
 }
 
-impl Policy {
+impl HostPolicy {
     /// No limits beyond the spec's minimum budget (tests comparing with `MemoryLabelStore`).
-    pub fn unlimited() -> Policy {
-        Policy {
+    pub fn unlimited() -> HostPolicy {
+        HostPolicy {
             cap_entries: u64::MAX,
             cap_bytes: u64::MAX,
             log_keep: u64::MAX,
@@ -137,7 +137,7 @@ impl Policy {
             max_labels: u64::MAX,
             max_entries: u64::MAX,
             max_bytes: u64::MAX,
-            ..Policy::default()
+            ..HostPolicy::default()
         }
     }
 }
@@ -222,7 +222,7 @@ struct Meta {
     /// Durable log records held (`G` rows): ephemeral records and reserved numbers take
     /// sequence numbers too, so the span `next_seq - horizon` does not count them.
     records: u64,
-    /// Wall ms before which a child step past a byte cap is refused (`Policy::over_cap_step_ms`).
+    /// Wall ms before which a child step past a byte cap is refused (`HostPolicy::over_cap_step_ms`).
     over_cap_until: u64,
 }
 
@@ -484,7 +484,7 @@ impl Ephemeral {
     }
 }
 
-/// How an ephemeral entry goes (`BackendStore::eph_remove`).
+/// How an ephemeral entry goes (`HostStore::eph_remove`).
 #[derive(Clone, Copy, Debug)]
 enum EphRemove {
     Expire,
@@ -581,11 +581,11 @@ const MAX_ORIGINS: usize = 1 << 20;
 
 /// `LabelStore` over a `Backend`. Holds the backend, the clock for rate windows and supersession
 /// times, and the policy.
-pub struct BackendStore<B: Backend> {
+pub struct HostStore<B: Backend> {
     backend: B,
     seed: [u8; 32],
     clock: Arc<dyn Clock>,
-    policy: Policy,
+    policy: HostPolicy,
     rates: Rates,
     /// Peer key of the connection whose request is being handled (set by the hub).
     origin: Option<[u8; 32]>,
@@ -598,10 +598,10 @@ pub struct BackendStore<B: Backend> {
     unsynced: bool,
 }
 
-impl<B: Backend> BackendStore<B> {
+impl<B: Backend> HostStore<B> {
     /// Opens the store on `backend`, creating the instance seed (log IDs derive from it) with
     /// `rng` on first use.
-    pub fn open(mut backend: B, clock: Arc<dyn Clock>, policy: Policy, rng: &mut dyn CryptoRngCore) -> Result<BackendStore<B>, StoreError> {
+    pub fn open(mut backend: B, clock: Arc<dyn Clock>, policy: HostPolicy, rng: &mut dyn CryptoRngCore) -> Result<HostStore<B>, StoreError> {
         let seed = match backend.get(b"I").map_err(err)? {
             Some(s) => s.as_slice().try_into().map_err(|_| corrupt("seed"))?,
             None => {
@@ -616,7 +616,7 @@ impl<B: Backend> BackendStore<B> {
         let mut policy = policy;
         policy.tombstone_ms = policy.tombstone_ms.max(TOMBSTONE_LIFETIME_MS);
         let relays = osis_proto::RelayGate::new(osis_proto::RelayLimits { count: policy.relays, bytes: policy.relay_bytes, window_ms: policy.window_ms });
-        Ok(BackendStore { backend, seed, clock, policy, rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default(), relays, lazy: false, unsynced: false })
+        Ok(HostStore { backend, seed, clock, policy, rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default(), relays, lazy: false, unsynced: false })
     }
 
     pub fn backend(&self) -> &B {
@@ -650,7 +650,7 @@ impl<B: Backend> BackendStore<B> {
         }
     }
 
-    pub fn policy(&self) -> &Policy {
+    pub fn policy(&self) -> &HostPolicy {
         &self.policy
     }
 
@@ -1263,7 +1263,7 @@ impl<B: Backend> BackendStore<B> {
     }
 }
 
-impl<B: Backend> LabelStore for BackendStore<B> {
+impl<B: Backend> LabelStore for HostStore<B> {
     fn head(&self, label: &LabelId) -> Result<Option<StepId>, StoreError> {
         Ok(self.meta(label)?.and_then(|m| m.head))
     }

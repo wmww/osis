@@ -9,7 +9,7 @@ use osis_node::Mutation;
 use osis_node::sync::{EntryKind, SyncConfig};
 use osis_schema::AspectKey;
 use osis_schema::core_types as ct;
-use osis_server::Policy;
+use osis_host::HostPolicy;
 use std::collections::BTreeSet;
 
 /// Commits under label `l` that `n` knows, with the aspects their headers touch.
@@ -145,7 +145,7 @@ fn pages_and_lazy_chunks_spec_sync_6() {
 #[test]
 fn reconciliation_fallback_spec_sync_6() {
     let mut net = Net::new();
-    let sv = net.add_server_with(Policy { log_keep: 16, ..Policy::default() });
+    let sv = net.add_server_with(HostPolicy { log_keep: 16, ..HostPolicy::default() });
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Read)], &[sv]);

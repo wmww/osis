@@ -4,7 +4,7 @@
 //! (`SEND_QUEUE` with pushes).
 
 use osis_proto::client::{STALL_TIMEOUT_MS, WINDOW, WINDOW_QUEUE};
-use osis_proto::server::SEND_QUEUE;
+use osis_proto::serving::SEND_QUEUE;
 use osis_proto::examples::{Label, blob_sized};
 use osis_proto::*;
 use std::collections::VecDeque;
@@ -54,7 +54,7 @@ impl Pipe {
 struct Run {
     now: u64,
     client: ClientSession,
-    server: ServerConnection,
+    server: ServingSession,
     store: MemoryLabelStore,
     up: Pipe,
     down: Pipe,
@@ -67,7 +67,7 @@ impl Run {
         let mut r = Run {
             now: T0,
             client: ClientSession::new(ClientConfig { peer_static_key: [0x5e; 32], challenge: [0x80; 32] }),
-            server: ServerConnection::new(ServerConfig { static_key: [0x5e; 32], challenge: [0x40; 32] }),
+            server: ServingSession::new(ServingConfig { static_key: [0x5e; 32], challenge: [0x40; 32] }),
             store: MemoryLabelStore::new([9; 32]),
             // the node's `MAX_QUEUED` and the server's default `max_queued_bytes`
             up: Pipe::new(64 << 20),
@@ -75,7 +75,7 @@ impl Run {
             timer: None,
             events: Vec::new(),
         };
-        let so = r.server.handle(T0, &mut r.store, ServerInput::Start);
+        let so = r.server.handle(T0, &mut r.store, ServingInput::Start);
         r.server_out(so);
         r.input(ClientInput::Start);
         r
@@ -92,13 +92,13 @@ impl Run {
         }
     }
 
-    fn server_out(&mut self, out: Vec<ServerOutput>) {
+    fn server_out(&mut self, out: Vec<ServingOutput>) {
         for o in out {
             match o {
-                ServerOutput::Send(b) => self.down.push(b, "server"),
-                ServerOutput::Close => panic!("server closed"),
-                ServerOutput::StoreError(e) => panic!("{e}"),
-                ServerOutput::Changed(_) | ServerOutput::Relay(_) | ServerOutput::PeerError(_) => {}
+                ServingOutput::Send(b) => self.down.push(b, "server"),
+                ServingOutput::Close => panic!("server closed"),
+                ServingOutput::StoreError(e) => panic!("{e}"),
+                ServingOutput::Changed(_) | ServingOutput::Relay(_) | ServingOutput::PeerError(_) => {}
             }
         }
     }
@@ -116,13 +116,13 @@ impl Run {
         let b = self.up.take(rate);
         if !b.is_empty() {
             self.input(ClientInput::Sent);
-            let so = self.server.handle(self.now, &mut self.store, ServerInput::Bytes(b));
+            let so = self.server.handle(self.now, &mut self.store, ServingInput::Bytes(b));
             self.server_out(so);
         }
         let b = self.down.take(rate);
         if !b.is_empty() {
             // the driver reports what the transport took (before input and at ticks)
-            let so = self.server.handle(self.now, &mut self.store, ServerInput::Taken(self.down.taken));
+            let so = self.server.handle(self.now, &mut self.store, ServingInput::Taken(self.down.taken));
             self.server_out(so);
             self.input(ClientInput::Bytes(b));
         }
@@ -213,23 +213,23 @@ fn pushes_to_slow_subscriber_spec_sync_6() {
     r.command(Command::Sync { label: l.id, cursor: None, inline_limit: 8 << 20, entries: vec![], gained: vec![] }, rate, step_ms);
     r.command(Command::Subscribe { labels: vec![l.id] }, rate, step_ms);
     // another connection uploads 72 MiB at once
-    let mut w = ServerConnection::new(ServerConfig { static_key: [0x5e; 32], challenge: [0x41; 32] });
-    w.handle(r.now, &mut r.store, ServerInput::Start);
-    w.handle(r.now, &mut r.store, ServerInput::Bytes(encode_frame(&Hello::new(r.now, [7; 32]).encode())));
+    let mut w = ServingSession::new(ServingConfig { static_key: [0x5e; 32], challenge: [0x41; 32] });
+    w.handle(r.now, &mut r.store, ServingInput::Start);
+    w.handle(r.now, &mut r.store, ServingInput::Bytes(encode_frame(&Hello::new(r.now, [7; 32]).encode())));
     let mut ids = Vec::new();
     for b in 0..9u32 {
         let entries: Vec<Entry> = (0..2).map(|i| l.entry(blob_sized(u64::from(b * 2 + i), 0, vec![], 4 << 20))).collect();
         ids.extend(entries.iter().map(|e| osis_label::blob_id(&e.blob)));
-        let out = w.handle(r.now, &mut r.store, ServerInput::Bytes(encode_frame(&Message::Upload { id: b + 1, label: l.id, entries }.encode())));
-        assert!(out.contains(&ServerOutput::Changed(l.id)));
-        let so = r.server.handle(r.now, &mut r.store, ServerInput::Changed(l.id));
+        let out = w.handle(r.now, &mut r.store, ServingInput::Bytes(encode_frame(&Message::Upload { id: b + 1, label: l.id, entries }.encode())));
+        assert!(out.contains(&ServingOutput::Changed(l.id)));
+        let so = r.server.handle(r.now, &mut r.store, ServingInput::Changed(l.id));
         r.server_out(so);
     }
     assert!(r.server.held());
     // 8 MiB of pushes are unwritten: room for a small relay, not for one of 1 MiB
     let relay = |n: usize| {
         let e = l.entry(vec![1; n]);
-        ServerInput::Relay(Relayed { label: l.id, blob_id: osis_label::blob_id(&e.blob), blob: e.blob.into(), wrap: e.wrap, stamp: e.stamp })
+        ServingInput::Relay(Relayed { label: l.id, blob_id: osis_label::blob_id(&e.blob), blob: e.blob.into(), wrap: e.wrap, stamp: e.stamp })
     };
     assert!(r.server.handle(r.now, &mut r.store, relay(1 << 20)).is_empty(), "no room: the relay is dropped");
     let so = r.server.handle(r.now, &mut r.store, relay(100));
@@ -284,10 +284,10 @@ fn held_back_requests_count_unanswered_spec_sync_6() {
 }
 
 /// Another connection on `r`'s store, past its Hellos.
-fn writer(r: &mut Run) -> ServerConnection {
-    let mut w = ServerConnection::new(ServerConfig { static_key: [0x5e; 32], challenge: [0x41; 32] });
-    w.handle(r.now, &mut r.store, ServerInput::Start);
-    w.handle(r.now, &mut r.store, ServerInput::Bytes(encode_frame(&Hello::new(r.now, [7; 32]).encode())));
+fn writer(r: &mut Run) -> ServingSession {
+    let mut w = ServingSession::new(ServingConfig { static_key: [0x5e; 32], challenge: [0x41; 32] });
+    w.handle(r.now, &mut r.store, ServingInput::Start);
+    w.handle(r.now, &mut r.store, ServingInput::Bytes(encode_frame(&Hello::new(r.now, [7; 32]).encode())));
     w
 }
 
@@ -304,10 +304,10 @@ fn subscribe(r: &mut Run, labels: &[&Label], rate: usize, step_ms: u64) {
 }
 
 /// Uploads `e` under `l` on `w` and tells `r`'s connection (as the hub does).
-fn upload(r: &mut Run, w: &mut ServerConnection, id: u32, l: &Label, e: Entry) {
-    let out = w.handle(r.now, &mut r.store, ServerInput::Bytes(encode_frame(&Message::Upload { id, label: l.id, entries: vec![e] }.encode())));
-    assert!(out.contains(&ServerOutput::Changed(l.id)));
-    let so = r.server.handle(r.now, &mut r.store, ServerInput::Changed(l.id));
+fn upload(r: &mut Run, w: &mut ServingSession, id: u32, l: &Label, e: Entry) {
+    let out = w.handle(r.now, &mut r.store, ServingInput::Bytes(encode_frame(&Message::Upload { id, label: l.id, entries: vec![e] }.encode())));
+    assert!(out.contains(&ServingOutput::Changed(l.id)));
+    let so = r.server.handle(r.now, &mut r.store, ServingInput::Changed(l.id));
     r.server_out(so);
 }
 

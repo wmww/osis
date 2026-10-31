@@ -871,7 +871,7 @@ impl SyncEngine {
             let conns: Vec<ConnId> = self.served.keys().copied().collect();
             let r = osis_proto::Relayed { label: l, blob_id, blob: blob.into(), wrap, stamp };
             for c in conns {
-                self.serve_with(c, osis_proto::ServerInput::Relay(r.clone()), &labels, out)?;
+                self.serve_with(c, osis_proto::ServingInput::Relay(r.clone()), &labels, out)?;
             }
         }
         Ok(())
@@ -1314,7 +1314,7 @@ impl SyncEngine {
             let labels = self.served_labels();
             let conns: Vec<ConnId> = self.served.keys().copied().filter(|c| from != RelayFrom::Served(*c)).collect();
             for c in conns {
-                self.serve_with(c, osis_proto::ServerInput::Relay(r.clone()), &labels, out)?;
+                self.serve_with(c, osis_proto::ServingInput::Relay(r.clone()), &labels, out)?;
             }
         }
         if let RelayFrom::Served(_) = from {

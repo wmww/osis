@@ -16,7 +16,7 @@ workspace = true
 [dependencies]
 osis.workspace = true
 osis-node.workspace = true
-osis-server.workspace = true
+osis-host.workspace = true
 osis-store.workspace = true
 osis-base.workspace = true
 osis-crypto.workspace = true

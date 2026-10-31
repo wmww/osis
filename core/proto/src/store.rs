@@ -1,5 +1,5 @@
 //! What the server engine asks of a blind node's storage (spec/sync.md §4): the `LabelStore`
-//! trait, which osis-server implements over osis-store, and `MemoryLabelStore` for tests.
+//! trait, which osis-host implements over osis-store, and `MemoryLabelStore` for tests.
 
 use crate::msg::{ClaimSet, Code, SecretBox, Signature, Step, StepId, Wrap};
 use osis_crypto::VerifyingKey;

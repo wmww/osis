@@ -421,7 +421,7 @@ fn server_cap_compaction_frees_it_spec_sync_5() {
     // a few entries with their per-entry overhead (about 900 bytes each); tuned so one upload is
     // refused and the writer's own compaction later makes room (a refused write left alone with
     // no compaction due stays refused: issues/eph-unify.md step 5, Replace at cap)
-    let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: 6_300, ..osis_server::Policy::default() });
+    let sv = net.add_server_with(osis_host::HostPolicy { ephemeral_bytes: 6_300, ..osis_host::HostPolicy::default() });
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -449,7 +449,7 @@ fn server_cap_compaction_frees_it_spec_sync_5() {
 #[test]
 fn server_cap_below_state_reports_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: 2_500, ..osis_server::Policy::default() });
+    let sv = net.add_server_with(osis_host::HostPolicy { ephemeral_bytes: 2_500, ..osis_host::HostPolicy::default() });
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -471,7 +471,7 @@ fn server_cap_below_state_reports_spec_sync_5() {
 #[test]
 fn server_cap_one_huge_write_reports_spec_sync_5() {
     let mut net = Net::new();
-    let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: 4_000, ..osis_server::Policy::default() });
+    let sv = net.add_server_with(osis_host::HostPolicy { ephemeral_bytes: 4_000, ..osis_host::HostPolicy::default() });
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -1582,7 +1582,7 @@ fn author_crash_before_cover_lands_keeps_state_spec_sync_9() {
 #[test]
 fn cover_refused_for_rate_retried_spec_sync_9() {
     let mut net = Net::new();
-    let sv = net.add_server_with(osis_server::Policy { deletes: 3, ..osis_server::Policy::default() });
+    let sv = net.add_server_with(osis_host::HostPolicy { deletes: 3, ..osis_host::HostPolicy::default() });
     let a = net.node(1, &[sv]);
     let g = net.group(a, &[], &[sv]);
     net.run();
@@ -1673,7 +1673,7 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     // odd seeds (and `single`): a random ephemeral cap at the first server, from nothing fitting
     // to the whole state fitting
     let cap = [0, 1_500, 4_000, 8_000, 16_000, 64_000][(seed / 2 % 6) as usize];
-    let s1 = if single || seed % 2 == 1 { net.add_server_with(osis_server::Policy { ephemeral_bytes: cap, ..osis_server::Policy::default() }) } else { net.add_server() };
+    let s1 = if single || seed % 2 == 1 { net.add_server_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() }) } else { net.add_server() };
     let s2 = net.add_server();
     let servers: Vec<usize> = if single { vec![s1] } else { vec![s1, s2] };
     let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &servers)).collect();
@@ -2530,7 +2530,7 @@ fn announced_ephemeral_leaves_no_sync_record_spec_sync_4() {
 /// bytes in one write (`a` holds an own entry the server refuses for good when it exceeds the cap).
 fn bytes_under_stuck_entry(stuck: usize) -> usize {
     let mut net = Net::new();
-    let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: 12_000, ..osis_server::Policy::default() });
+    let sv = net.add_server_with(osis_host::HostPolicy { ephemeral_bytes: 12_000, ..osis_host::HostPolicy::default() });
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -2579,7 +2579,7 @@ fn expiring(net: &mut Net, n: usize, w: Tid, ak: &str, len: usize, ms: u64) {
 fn server_cap_refused_entry_retried_spec_sync_9() {
     let cap = 8_000;
     let mut net = Net::new();
-    let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: cap, ..osis_server::Policy::default() });
+    let sv = net.add_server_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() });
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
@@ -2657,10 +2657,10 @@ fn many_authors_run(authors: usize, secs: u64) -> (usize, usize, u64, u64) {
     const E: u64 = 30_000;
     let mut net = Net::new();
     let window_ms = secs * 1000;
-    let d = osis_server::Policy::default();
+    let d = osis_host::HostPolicy::default();
     let (deletes, replacements) = ((d.deletes as u64 * window_ms / 60_000) as u32, (d.replacements as u64 * window_ms / 60_000) as u32);
     let cap = d.ephemeral_bytes * window_ms.min(E) / E;
-    let sv = net.add_server_with(osis_server::Policy { window_ms, deletes, replacements, ephemeral_bytes: cap, ..d });
+    let sv = net.add_server_with(osis_host::HostPolicy { window_ms, deletes, replacements, ephemeral_bytes: cap, ..d });
     let ns: Vec<usize> = (0..authors).map(|i| net.node(1 + i as u64, &[sv])).collect();
     let members: Vec<(usize, Role)> = ns[1..].iter().map(|n| (*n, Role::Write)).collect();
     let g = net.group(ns[0], &members, &[sv]);
@@ -3072,7 +3072,7 @@ fn cover_past_page_target_bounded_spec_sync_9() {
 fn commit_past_a_blob_splits_spec_sync_9() {
     let mut net = Net::new();
     let cap: u64 = 64 << 20;
-    let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: cap, ..osis_server::Policy::default() });
+    let sv = net.add_server_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() });
     let a = net.node(1, &[sv]);
     // the holder's share for waiting blobs does not fit a blob's bound (about 6 times a
     // string's bytes): after the restart the second blob may come first, is refused for the
@@ -3246,7 +3246,7 @@ fn own_cover_split_by_aspect_spec_sync_9() {
 fn aspect_past_a_blob_refuses_writes_spec_sync_9() {
     let mut net = Net::new();
     let cap: u64 = 64 << 20;
-    let sv = net.add_server_with(osis_server::Policy { ephemeral_bytes: cap, ..osis_server::Policy::default() });
+    let sv = net.add_server_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() });
     let a = net.node(1, &[sv]);
     let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[sv]);

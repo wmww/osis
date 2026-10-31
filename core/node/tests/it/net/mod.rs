@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, dead_code)]
 //! Sync engines and blind nodes in process, no tokio: `SyncEngine`s exchanging bytes with
-//! osis-server `Hub`s over in-memory queues, one manual clock. Group setup stands in for pairing
+//! osis-host `Hub`s over in-memory queues, one manual clock. Group setup stands in for pairing
 //! (direct delivery of the setup commits).
 
 use osis_base::{Clock, CommitId, ManualClock, Role, Tid, Value, WallMs};
@@ -13,7 +13,7 @@ use osis_node::{Config, Engine, Mutation};
 use osis_schema::core_types as ct;
 use osis_schema::{AspectKey, Codec};
 use osis_proto::LabelStore;
-use osis_server::{BackendStore, Hub, HubOutput, Policy};
+use osis_host::{HostStore, Hub, HubOutput, HostPolicy};
 use osis_store::{MemoryBackend, MemoryRoot};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -166,13 +166,13 @@ impl Net {
     }
 
     pub fn add_server(&mut self) -> usize {
-        self.add_server_with(Policy::default())
+        self.add_server_with(HostPolicy::default())
     }
 
-    pub fn add_server_with(&mut self, policy: Policy) -> usize {
+    pub fn add_server_with(&mut self, policy: HostPolicy) -> usize {
         let i = self.servers.len();
         let backend = MemoryBackend::new();
-        let store = BackendStore::open(backend.clone(), self.clock.clone(), policy, &mut SeededRng::from_u64(900 + i as u64)).unwrap();
+        let store = HostStore::open(backend.clone(), self.clock.clone(), policy, &mut SeededRng::from_u64(900 + i as u64)).unwrap();
         let hub = Hub::new(store, server_key(i), Box::new(SeededRng::from_u64(950 + i as u64)));
         self.servers.push(Server { hub, backend, address: Address { url: format!("quic://server{i}:1"), key: server_key(i) }, skew: 0 });
         i
@@ -181,7 +181,7 @@ impl Net {
     /// Server `s` loses everything it stored (same key and address).
     pub fn wipe_server(&mut self, s: usize) {
         let backend = MemoryBackend::new();
-        let store = BackendStore::open(backend.clone(), self.clock.clone(), Policy::default(), &mut SeededRng::from_u64(990 + s as u64)).unwrap();
+        let store = HostStore::open(backend.clone(), self.clock.clone(), HostPolicy::default(), &mut SeededRng::from_u64(990 + s as u64)).unwrap();
         let hub = Hub::new(store, server_key(s), Box::new(SeededRng::from_u64(995 + s as u64)));
         let (address, skew) = (self.servers[s].address.clone(), self.servers[s].skew);
         self.servers[s] = Server { hub, backend, address, skew };
@@ -190,18 +190,18 @@ impl Net {
     /// Restarts server `s` over its durable state: its connections are gone, its in-memory
     /// (ephemeral) entries too.
     pub fn restart_server(&mut self, s: usize) {
-        self.restart_server_with(s, Policy::default());
+        self.restart_server_with(s, HostPolicy::default());
     }
 
     /// `restart_server` with another policy.
-    pub fn restart_server_with(&mut self, s: usize, policy: Policy) {
+    pub fn restart_server_with(&mut self, s: usize, policy: HostPolicy) {
         let mine: Vec<((usize, ConnId), u64)> = self.links.iter().filter(|(_, (x, _))| *x == s).map(|(k, (_, hc))| (*k, *hc)).collect();
         for ((n, c), _) in mine {
             self.links.remove(&(n, c));
             self.queue.push_back(Msg::Close(n, self.nodes[n].life, c));
         }
         let backend = self.servers[s].backend.clone();
-        let store = BackendStore::open(backend.clone(), self.clock.clone(), policy, &mut SeededRng::from_u64(980 + s as u64)).unwrap();
+        let store = HostStore::open(backend.clone(), self.clock.clone(), policy, &mut SeededRng::from_u64(980 + s as u64)).unwrap();
         let hub = Hub::new(store, server_key(s), Box::new(SeededRng::from_u64(985 + s as u64)));
         let (address, skew) = (self.servers[s].address.clone(), self.servers[s].skew);
         self.servers[s] = Server { hub, backend, address, skew };

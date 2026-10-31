@@ -7,7 +7,7 @@
 //! transport key and listener, announced on join and every `LAN_ANNOUNCE`; announcements heard go
 //! to `SyncEngine::lan_seen`. No sync logic lives here: every input is an `Event`, every output an
 //! `Action`. Engine calls run under `block_in_place` on a multi-thread runtime. The engine lives
-//! in a `Host`: owned by the driver (`run`), or shared with the app (`run_host`: the `osis` handle
+//! in a `Shared`: owned by the driver (`run`), or shared with the app (`run_shared`: the `osis` handle
 //! keeps it behind its own lock and hands the driver the actions of its calls).
 
 use super::{Action, ConnId, Event, SyncEngine};
@@ -33,7 +33,7 @@ pub const FINISH_WAIT: Duration = Duration::from_secs(10);
 /// served one's within `SEND_QUEUE`, spec/sync.md §6). 0 drops every session with a request
 /// queued behind another, infinity buffers a non-reading peer without end.
 pub const MAX_QUEUED: usize = 64 * 1024 * 1024;
-const _: () = assert!(MAX_QUEUED >= osis_proto::server::SEND_QUEUE);
+const _: () = assert!(MAX_QUEUED >= osis_proto::serving::SEND_QUEUE);
 /// LAN loop: how often it looks whether an announcement is due, and how often they repeat
 /// (provisional). Network changes come from `lan::NetWatch`.
 pub const LAN_CHECK: Duration = Duration::from_secs(5);
@@ -79,7 +79,7 @@ pub enum Control {
     /// Run timers now.
     Tick,
     Call(Call),
-    /// Actions the host's own calls produced: carry them out.
+    /// Actions the holder's own calls produced: carry them out.
     Apply(Vec<Action>),
     /// Listen at `url` with the engine's dialable secret and publish `/reach` with that
     /// listener's key and `relays` (spec/data-model.md §9). For iroh, `url` lists the relays the
@@ -117,15 +117,15 @@ struct Conn {
 }
 
 /// Where the sync engine lives while a driver runs.
-pub trait Host: Send + Sync + 'static {
+pub trait Shared: Send + Sync + 'static {
     /// Runs `f` on the engine; returns its actions. `None`: the engine is gone (the driver stops).
     fn with(&self, f: &mut dyn FnMut(&mut SyncEngine) -> Vec<Action>) -> Option<Vec<Action>>;
 }
 
-/// A host owning the engine (`run`).
+/// A holder owning the engine (`run`).
 pub struct Owned(std::sync::Mutex<SyncEngine>);
 
-impl Host for Owned {
+impl Shared for Owned {
     fn with(&self, f: &mut dyn FnMut(&mut SyncEngine) -> Vec<Action>) -> Option<Vec<Action>> {
         let mut g = self.0.lock().unwrap_or_else(|p| p.into_inner());
         Some(f(&mut g))
@@ -180,8 +180,8 @@ fn v4_only(url: &str) -> Option<String> {
     (kept.len() < items.len()).then(|| osis_transport::peer_url(&kept))
 }
 
-struct Driver<T: Transport, H: Host> {
-    host: H,
+struct Driver<T: Transport, H: Shared> {
+    shared: H,
     gone: bool,
     transport: Arc<T>,
     clock: Arc<dyn Clock>,
@@ -212,10 +212,10 @@ struct Driver<T: Transport, H: Host> {
     served_by: HashMap<[u8; 32], Vec<ConnId>>,
 }
 
-impl<T: Transport, H: Host> Driver<T, H> {
+impl<T: Transport, H: Shared> Driver<T, H> {
     fn call(&mut self, f: &mut dyn FnMut(&mut SyncEngine) -> Vec<Action>) {
-        let host = &self.host;
-        match blocking(|| host.with(f)) {
+        let shared = &self.shared;
+        match blocking(|| shared.with(f)) {
             Some(acts) => self.apply(acts),
             None => self.gone = true,
         }
@@ -225,9 +225,9 @@ impl<T: Transport, H: Host> Driver<T, H> {
     fn read<R>(&mut self, f: impl FnOnce(&mut SyncEngine) -> R) -> Option<R> {
         let mut f = Some(f);
         let mut out = None;
-        let host = &self.host;
+        let shared = &self.shared;
         let r = blocking(|| {
-            host.with(&mut |s| {
+            shared.with(&mut |s| {
                 if let Some(f) = f.take() {
                     out = Some(f(s));
                 }
@@ -388,9 +388,9 @@ impl<T: Transport, H: Host> Driver<T, H> {
         let Link { peer_key, tx, rx, .. } = l;
         // the connection exists before its first actions are carried out
         let mut conn = None;
-        let host = &self.host;
+        let shared = &self.shared;
         let acts = blocking(|| {
-            host.with(&mut |s| {
+            shared.with(&mut |s| {
                 let (c, acts) = s.accept(key, peer_key);
                 conn = Some(c);
                 acts
@@ -619,25 +619,25 @@ pub async fn run<T: Transport>(sync: SyncEngine, transport: T, clock: Arc<dyn Cl
 /// `address().url` into `/reach`: it lists bound IP addresses, which are never published
 /// (spec/sync.md §10); only its key and the relays go there.
 pub async fn run_serving<T: Transport>(sync: SyncEngine, transport: T, listeners: Vec<T::Listener>, clock: Arc<dyn Clock>, control: mpsc::UnboundedReceiver<Control>, log: Log) -> SyncEngine {
-    let Owned(m) = run_host(Owned(std::sync::Mutex::new(sync)), transport, listeners, clock, control, log).await;
+    let Owned(m) = run_shared(Owned(std::sync::Mutex::new(sync)), transport, listeners, clock, control, log).await;
     m.into_inner().unwrap_or_else(|p| p.into_inner())
 }
 
-/// `run_serving` over a host; returns it at `Control::Shutdown`, when the control sender is
-/// dropped or when the host's engine is gone.
-pub async fn run_host<T: Transport, H: Host>(host: H, transport: T, listeners: Vec<T::Listener>, clock: Arc<dyn Clock>, mut control: mpsc::UnboundedReceiver<Control>, log: Log) -> H {
+/// `run_serving` over a holder; returns it at `Control::Shutdown`, when the control sender is
+/// dropped or when the holder's engine is gone.
+pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listeners: Vec<T::Listener>, clock: Arc<dyn Clock>, mut control: mpsc::UnboundedReceiver<Control>, log: Log) -> H {
     let (ev_tx, mut ev_rx) = mpsc::channel(1024);
     let (link_tx, mut link_rx) = mpsc::channel::<([u8; 32], Link)>(64);
     let (lan_tx, mut lan_rx) = mpsc::channel(64);
     #[cfg_attr(not(feature = "lan"), allow(unused_mut))]
     let (net_tx, mut net_rx) = mpsc::channel::<()>(1);
     let mut max = 0;
-    let _ = host.with(&mut |s| {
+    let _ = shared.with(&mut |s| {
         max = s.config().max_served;
         Vec::new()
     });
     let mut d = Driver {
-        host,
+        shared,
         gone: false,
         transport: Arc::new(transport),
         clock,
@@ -666,7 +666,7 @@ pub async fn run_host<T: Transport, H: Host>(host: H, transport: T, listeners: V
     while !d.gone {
         let idle = d.idle();
         let lan_on = d.lan_on();
-        // timers wait while control has a message: a `Shutdown` queued just before the host's
+        // timers wait while control has a message: a `Shutdown` queued just before the holder's
         // runtime shuts down (the task resuming after an engine call's `block_in_place`) is
         // seen before a timer of the shut-down runtime is polled (tokio panics)
         let quiet = control.is_empty();
@@ -707,7 +707,7 @@ pub async fn run_host<T: Transport, H: Host>(host: H, transport: T, listeners: V
     for id in ids {
         d.close(id);
     }
-    d.host
+    d.shared
 }
 
 /// Until `at`, else never.

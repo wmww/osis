@@ -1,6 +1,6 @@
 [package]
-name = "osis-server"
-description = "Blind node used as a server"
+name = "osis-host"
+description = "Hosting: stores and serves labels for their role key holders, blind"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -29,8 +29,3 @@ proptest.workspace = true
 default = ["driver"]
 # The async driver and network adapter (tokio); off, the crate is the sans-I/O store and hub.
 driver = ["dep:tokio"]
-
-[[bin]]
-name = "osis-server"
-test = false
-required-features = ["driver"]

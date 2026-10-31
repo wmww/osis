@@ -25,7 +25,7 @@ use super::scenarios::{clock, persons, shared_group, sim};
 use super::{NetSim, NetWeights, Party};
 use crate::dice::Dice;
 use crate::harness::{Report, Res};
-use osis_server::Policy;
+use osis_host::HostPolicy;
 use osis_base::{Ak, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::Mutation;
@@ -622,7 +622,7 @@ pub fn ephemeral(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xe9);
     let w = NetWeights { write: 1, ephemeral: 5, crash: 1, restart: 2, server_crash: 1, server_restart: 2, partition: 1, heal: 2, slow: 1, ..NetWeights::default() };
     let mut sim = sim("ephemeral", seed, w);
-    let cap = if seed % 2 == 1 { Policy { ephemeral_bytes: random_cap(&mut d), ..sim.cfg.policy.clone() } } else { sim.cfg.policy.clone() };
+    let cap = if seed % 2 == 1 { HostPolicy { ephemeral_bytes: random_cap(&mut d), ..sim.cfg.policy.clone() } } else { sim.cfg.policy.clone() };
     let s0 = sim.add_server_with(cap)?;
     let s1 = sim.add_server()?;
     sim.replicate(s0, s1)?;
@@ -658,7 +658,7 @@ pub fn ephemeral_capped(seed: u64) -> Res<Report> {
     let w = NetWeights { write: 1, ephemeral: 6, crash: 1, restart: 2, server_crash: 1, server_restart: 2, partition: 1, heal: 2, slow: 1, ..NetWeights::default() };
     let mut sim = sim("ephemeral_capped", seed, w);
     let cap = random_cap(&mut d);
-    let s = sim.add_server_with(Policy { ephemeral_bytes: cap, ..sim.cfg.policy.clone() })?;
+    let s = sim.add_server_with(HostPolicy { ephemeral_bytes: cap, ..sim.cfg.policy.clone() })?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let c = sim.add_node(&[s], clock(&mut d))?;

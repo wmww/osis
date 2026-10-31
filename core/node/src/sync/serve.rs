@@ -20,7 +20,7 @@ use crate::error::Result;
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::{BlobId, LabelId};
 use osis_label::{ClaimSet, Step, StepId};
-use osis_proto::{Budget, Code, EntryMeta, LabelStore, LogRecord, Put, ServerConfig, ServerConnection, ServerInput, ServerOutput, StoreError};
+use osis_proto::{Budget, Code, EntryMeta, LabelStore, LogRecord, Put, ServingConfig, ServingSession, ServingInput, ServingOutput, StoreError};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -157,7 +157,7 @@ impl ServedLabel {
 
 /// An incoming peer session.
 pub(crate) struct Served {
-    conn: ServerConnection,
+    conn: ServingSession,
     /// The dialer's authenticated key (budgets are charged to it).
     peer: [u8; 32],
     /// Raw ms of the last bytes received (idle sessions are closed).
@@ -509,8 +509,8 @@ impl SyncEngine {
         let mut challenge = [0u8; 32];
         self.rng.fill_bytes(&mut challenge);
         let last = self.raw_now();
-        self.served.insert(conn, Served { conn: ServerConnection::new(ServerConfig { static_key: local, challenge }), peer, last, since: last });
-        if let Err(e) = self.serve(conn, ServerInput::Start, &mut out) {
+        self.served.insert(conn, Served { conn: ServingSession::new(ServingConfig { static_key: local, challenge }), peer, last, since: last });
+        if let Err(e) = self.serve(conn, ServingInput::Start, &mut out) {
             self.diag(format!("serve: {e}"));
         }
         let _ = self.state.flush(&mut self.engine);
@@ -565,12 +565,12 @@ impl SyncEngine {
     }
 
     /// Feeds one input to a served session.
-    pub(crate) fn serve(&mut self, conn: ConnId, input: ServerInput, out: &mut Vec<Action>) -> Result<()> {
+    pub(crate) fn serve(&mut self, conn: ConnId, input: ServingInput, out: &mut Vec<Action>) -> Result<()> {
         let labels = self.served_labels();
         self.serve_with(conn, input, &labels, out)
     }
 
-    pub(crate) fn serve_with(&mut self, conn: ConnId, input: ServerInput, labels: &BTreeMap<LabelId, ServedLabel>, out: &mut Vec<Action>) -> Result<()> {
+    pub(crate) fn serve_with(&mut self, conn: ConnId, input: ServingInput, labels: &BTreeMap<LabelId, ServedLabel>, out: &mut Vec<Action>) -> Result<()> {
         if !self.served.contains_key(&conn) {
             return Ok(());
         }
@@ -583,7 +583,7 @@ impl SyncEngine {
         let total = self.charges.total;
         let reach = self.reach_nodes();
         self.state.feed.heads(labels);
-        if matches!(input, ServerInput::Bytes(_)) {
+        if matches!(input, ServingInput::Bytes(_)) {
             s.last = now;
         }
         let wall = self.state.now;
@@ -653,14 +653,14 @@ impl SyncEngine {
         let mut relays = Vec::new();
         for o in outputs {
             match o {
-                ServerOutput::Send(bytes) => out.push(Action::Send { conn, bytes }),
-                ServerOutput::Close => out.push(Action::Close { conn }),
-                ServerOutput::Changed(l) => {
+                ServingOutput::Send(bytes) => out.push(Action::Send { conn, bytes }),
+                ServingOutput::Close => out.push(Action::Close { conn }),
+                ServingOutput::Changed(l) => {
                     self.state.feed.grown.insert(l);
                 }
-                ServerOutput::Relay(r) => relays.push(r),
-                ServerOutput::PeerError(e) => self.diag(format!("peer: {e}")),
-                ServerOutput::StoreError(e) => self.diag(format!("serve: {e}")),
+                ServingOutput::Relay(r) => relays.push(r),
+                ServingOutput::PeerError(e) => self.diag(format!("peer: {e}")),
+                ServingOutput::StoreError(e) => self.diag(format!("serve: {e}")),
             }
         }
         // a relay-only entry: delivered here and passed on (the other served sessions, the
@@ -713,7 +713,7 @@ impl SyncEngine {
             let conns: Vec<ConnId> = self.served.keys().copied().collect();
             for c in conns {
                 for l in &grown {
-                    self.serve_with(c, ServerInput::Changed(*l), &labels, out)?;
+                    self.serve_with(c, ServingInput::Changed(*l), &labels, out)?;
                 }
             }
         }
@@ -744,7 +744,7 @@ impl SyncEngine {
     /// When the next served session goes idle.
     pub(crate) fn serve_wake(&self) -> Option<u64> {
         // a session holding pushes back: `Event::Sent` at the next tick may give them room
-        let poll = self.served.values().any(|s| s.conn.held()).then(|| self.raw_now().saturating_add(osis_proto::server::PUSH_POLL_MS));
+        let poll = self.served.values().any(|s| s.conn.held()).then(|| self.raw_now().saturating_add(osis_proto::serving::PUSH_POLL_MS));
         self.served.values().map(|s| if s.conn.none_opened() { s.since.saturating_add(self.cfg.serve_open_ms).min(s.last.saturating_add(self.cfg.serve_idle_ms)) } else { s.last.saturating_add(self.cfg.serve_idle_ms) }).chain(poll).min()
     }
 }

@@ -1,15 +1,15 @@
 //! `Hub`: the blind node's connections over one store, sans-I/O (spec/sync.md §5-§9). One
-//! osis-proto `ServerConnection` per accepted connection, one `Replicator` per connection this
+//! osis-proto `ServingSession` per accepted connection, one `Replicator` per connection this
 //! node dialed to a peer server; cross-connection notices (`Changed` to every connection and
 //! replicator, `Relay` to every other connection), bounded sweeps, Hello deadlines, the
 //! connection cap and timers. The async driver and the simulator only move bytes and call `tick`
 //! when `next_due` says.
 
 use crate::replicate::Replicator;
-use crate::store::BackendStore;
+use crate::store::HostStore;
 use osis_base::LabelId;
 use osis_crypto::CryptoRngCore;
-use osis_proto::{ClientInput, ClientOutput, ServerConfig, ServerConnection, ServerInput, ServerOutput};
+use osis_proto::{ClientInput, ClientOutput, ServingConfig, ServingSession, ServingInput, ServingOutput};
 use osis_store::Backend;
 use osis_transport::Source;
 use std::collections::BTreeMap;
@@ -35,12 +35,12 @@ pub enum HubOutput {
 enum Conn {
     /// `buffered`: partial frame bytes after the last input; `source`: where it comes from
     /// (slots are shared by it).
-    Served { c: Box<ServerConnection>, peer: [u8; 32], hello_by: Option<u64>, buffered: usize, source: Option<Source> },
+    Served { c: Box<ServingSession>, peer: [u8; 32], hello_by: Option<u64>, buffered: usize, source: Option<Source> },
     Peer { r: Box<Replicator>, timer: Option<u64> },
 }
 
 pub struct Hub<B: Backend> {
-    store: BackendStore<B>,
+    store: HostStore<B>,
     static_key: [u8; 32],
     rng: Box<dyn CryptoRngCore + Send>,
     conns: BTreeMap<ConnId, Conn>,
@@ -56,15 +56,15 @@ pub struct Hub<B: Backend> {
 
 impl<B: Backend> Hub<B> {
     /// `static_key`: this node's transport key (bound by open signatures).
-    pub fn new(store: BackendStore<B>, static_key: [u8; 32], rng: Box<dyn CryptoRngCore + Send>) -> Hub<B> {
+    pub fn new(store: HostStore<B>, static_key: [u8; 32], rng: Box<dyn CryptoRngCore + Send>) -> Hub<B> {
         Hub { store, static_key, rng, conns: BTreeMap::new(), sweep_hold: 0, sweep_more: false, buffered: 0, relays_delivered: 0 }
     }
 
-    pub fn store(&self) -> &BackendStore<B> {
+    pub fn store(&self) -> &HostStore<B> {
         &self.store
     }
 
-    pub fn store_mut(&mut self) -> &mut BackendStore<B> {
+    pub fn store_mut(&mut self) -> &mut HostStore<B> {
         &mut self.store
     }
 
@@ -113,10 +113,10 @@ impl<B: Backend> Hub<B> {
             out.push(HubOutput::Close(v));
             out.push(HubOutput::Diagnostic(format!("connection {v}: closed for a connection from a source holding fewer slots")));
         }
-        let cfg = ServerConfig { static_key: self.static_key, challenge: self.challenge() };
+        let cfg = ServingConfig { static_key: self.static_key, challenge: self.challenge() };
         let hello_by = Some(now.saturating_add(self.store.policy().hello_ms));
-        self.conns.insert(id, Conn::Served { c: Box::new(ServerConnection::new(cfg)), peer, hello_by, buffered: 0, source });
-        out.extend(self.batch(|h, out| h.serve(now, id, ServerInput::Start, out)));
+        self.conns.insert(id, Conn::Served { c: Box::new(ServingSession::new(cfg)), peer, hello_by, buffered: 0, source });
+        out.extend(self.batch(|h, out| h.serve(now, id, ServingInput::Start, out)));
         out
     }
 
@@ -160,7 +160,7 @@ impl<B: Backend> Hub<B> {
     pub fn input(&mut self, now: u64, id: ConnId, bytes: Vec<u8>) -> Vec<HubOutput> {
         self.batch(|h, out| match h.conns.get(&id) {
             Some(Conn::Served { .. }) => {
-                h.serve(now, id, ServerInput::Bytes(bytes), out);
+                h.serve(now, id, ServingInput::Bytes(bytes), out);
                 h.limit_buffered(out);
             }
             Some(Conn::Peer { .. }) => h.replicate(now, id, Some(ClientInput::Bytes(bytes)), out),
@@ -170,14 +170,14 @@ impl<B: Backend> Hub<B> {
 
     /// The transport took bytes sent on these connections since the last report, with how many
     /// it took in all: progress for a replication session's stall timeout, room for a served
-    /// connection's pushes (`ServerInput::Taken`). The driver reports it before `tick`, before
+    /// connection's pushes (`ServingInput::Taken`). The driver reports it before `tick`, before
     /// a connection's input bytes, and at `PUSH_POLL_MS` while one holds pushes (`next_due`).
     pub fn sent(&mut self, now: u64, ids: &[(ConnId, u64)]) -> Vec<HubOutput> {
         self.batch(|h, out| {
             for (id, n) in ids {
                 match h.conns.get(id) {
                     Some(Conn::Peer { .. }) => h.replicate(now, *id, Some(ClientInput::Sent), out),
-                    Some(Conn::Served { .. }) => h.serve(now, *id, ServerInput::Taken(*n), out),
+                    Some(Conn::Served { .. }) => h.serve(now, *id, ServingInput::Taken(*n), out),
                     None => {}
                 }
             }
@@ -262,14 +262,14 @@ impl<B: Backend> Hub<B> {
     pub fn next_due(&self, now: u64) -> Option<u64> {
         let sweep = if self.sweep_more { Some(now) } else { self.store.next_due().ok().flatten() }.map(|t| t.max(self.sweep_hold));
         let conns = self.conns.values().filter_map(|c| match c {
-            Conn::Served { c, .. } if c.held() => Some(now.saturating_add(osis_proto::server::PUSH_POLL_MS)),
+            Conn::Served { c, .. } if c.held() => Some(now.saturating_add(osis_proto::serving::PUSH_POLL_MS)),
             Conn::Served { hello_by, .. } => *hello_by,
             Conn::Peer { r, timer } => [*timer, r.next_due(now)].into_iter().flatten().min(),
         });
         sweep.into_iter().chain(conns).min()
     }
 
-    fn serve(&mut self, now: u64, id: ConnId, input: ServerInput, out: &mut Vec<HubOutput>) {
+    fn serve(&mut self, now: u64, id: ConnId, input: ServingInput, out: &mut Vec<HubOutput>) {
         let Some(Conn::Served { c, peer, hello_by, buffered, .. }) = self.conns.get_mut(&id) else { return };
         self.store.set_origin(Some(*peer));
         let outputs = c.handle(now, &mut self.store, input);
@@ -282,22 +282,22 @@ impl<B: Backend> Hub<B> {
         *buffered = now_buffered;
         for o in outputs {
             match o {
-                ServerOutput::Send(b) => out.push(HubOutput::Send(id, b)),
-                ServerOutput::Close => {
+                ServingOutput::Send(b) => out.push(HubOutput::Send(id, b)),
+                ServingOutput::Close => {
                     self.remove(id);
                     out.push(HubOutput::Close(id));
                 }
-                ServerOutput::Changed(l) => self.changed(now, l, out),
+                ServingOutput::Changed(l) => self.changed(now, l, out),
                 // only to the label's subscribers on other connections, the bytes shared
-                ServerOutput::Relay(r) => {
+                ServingOutput::Relay(r) => {
                     let others: Vec<ConnId> = self.conns.iter().filter(|(k, c)| **k != id && matches!(c, Conn::Served { c, .. } if c.subscribed(&r.label))).map(|(k, _)| *k).collect();
                     for j in others {
                         self.relays_delivered += 1;
-                        self.serve(now, j, ServerInput::Relay(r.clone()), out);
+                        self.serve(now, j, ServingInput::Relay(r.clone()), out);
                     }
                 }
-                ServerOutput::PeerError(e) => out.push(HubOutput::Diagnostic(format!("connection {id}: {e}"))),
-                ServerOutput::StoreError(e) => out.push(HubOutput::Diagnostic(e.to_string())),
+                ServingOutput::PeerError(e) => out.push(HubOutput::Diagnostic(format!("connection {id}: {e}"))),
+                ServingOutput::StoreError(e) => out.push(HubOutput::Diagnostic(e.to_string())),
             }
         }
     }
@@ -307,7 +307,7 @@ impl<B: Backend> Hub<B> {
         let ids: Vec<ConnId> = self.conns.keys().copied().collect();
         for j in ids {
             match self.conns.get_mut(&j) {
-                Some(Conn::Served { .. }) => self.serve(now, j, ServerInput::Changed(label), out),
+                Some(Conn::Served { .. }) => self.serve(now, j, ServingInput::Changed(label), out),
                 Some(Conn::Peer { r, .. }) => {
                     r.mark([label]);
                     self.replicate(now, j, None, out);

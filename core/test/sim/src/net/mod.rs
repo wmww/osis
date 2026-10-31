@@ -1,5 +1,5 @@
-//! Phase B harness: real node sync engines (`SyncEngine`) and blind servers (osis-server `Hub`
-//! over `BackendStore<MemoryBackend>`) exchanging proto bytes engine to engine, no tokio
+//! Phase B harness: real node sync engines (`SyncEngine`) and blind servers (osis-host `Hub`
+//! over `HostStore<MemoryBackend>`) exchanging proto bytes engine to engine, no tokio
 //! (notes/architecture.md §2). Connections are ordered byte streams: a fault cuts one (a lost
 //! message on a stream is a broken stream), delays a message (per-stream order kept), duplicates
 //! one, or reorders deliveries across streams. Partitions block (node, server) and (server,
@@ -26,7 +26,7 @@ use osis_node::flows::Done;
 use osis_node::sync::{Action, ConnId, Event, SyncConfig, SyncEngine};
 use osis_node::{Engine, Mutation};
 use osis_schema::core_types as ct;
-use osis_server::{BackendStore, Hub, HubOutput, Policy};
+use osis_host::{HostStore, Hub, HubOutput, HostPolicy};
 use osis_store::{Fault, Faults, MemoryBackend, MemoryRoot};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -80,12 +80,12 @@ pub struct NetConfig {
     pub weights: NetWeights,
     /// A tick advances virtual time by 1..=this.
     pub max_tick_ms: u64,
-    pub policy: Policy,
+    pub policy: HostPolicy,
 }
 
 impl Default for NetConfig {
     fn default() -> NetConfig {
-        NetConfig { faults: LinkFaults::default(), weights: NetWeights::default(), max_tick_ms: 20_000, policy: Policy::default() }
+        NetConfig { faults: LinkFaults::default(), weights: NetWeights::default(), max_tick_ms: 20_000, policy: HostPolicy::default() }
     }
 }
 
@@ -142,7 +142,7 @@ pub struct NetServer {
     pub evil: Option<Evil>,
     /// Messages it sent per connection (an evil server replays them).
     sent: BTreeMap<u64, Vec<Vec<u8>>>,
-    pub policy: Policy,
+    pub policy: HostPolicy,
     /// Its messages are delayed by up to `SLOW_MS` (while not calm).
     pub slow: bool,
 }
@@ -394,7 +394,7 @@ impl NetSim {
     }
 
     /// A server with its own policy (caps).
-    pub fn add_server_with(&mut self, policy: Policy) -> Res<usize> {
+    pub fn add_server_with(&mut self, policy: HostPolicy) -> Res<usize> {
         let i = self.servers.len();
         let key = server_key(i);
         let faults = Faults::new();
@@ -410,7 +410,7 @@ impl NetSim {
         let sv = self.server(s)?;
         let policy = sv.policy.clone();
         sv.faults.revive();
-        let store = BackendStore::open(sv.backend.clone(), clock, policy, &mut SeededRng::from_u64(seed));
+        let store = HostStore::open(sv.backend.clone(), clock, policy, &mut SeededRng::from_u64(seed));
         let store = store.map_err(|e| self.fail(format!("server {s} open: {e}")))?;
         let sv = self.server(s)?;
         sv.hub = Some(Hub::new(store, sv.key, Box::new(SeededRng::from_u64(seed ^ 0x5eed))));

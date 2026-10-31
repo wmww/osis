@@ -1,5 +1,5 @@
 //! Background sync (notes/api.md Design rules): the sync engine's network actions leave through
-//! `Net`, a tokio driver (osis-node `sync::driver::run_host`) over the handle's lock, or a queue
+//! `Net`, a tokio driver (osis-node `sync::driver::run_shared`) over the handle's lock, or a queue
 //! a test harness carries (`Runtime::Manual`). Futures of the calls that wait for another node
 //! are runtime-agnostic: a `Waiter` checked after every change under the lock resolves a
 //! `Pending` through a slot.
@@ -9,7 +9,7 @@ use crate::handle::WeakOsis;
 use crate::share::Status;
 use crate::watch::lock;
 use osis_base::Clock;
-use osis_node::sync::driver::{self, Control, Host};
+use osis_node::sync::driver::{self, Control, Shared};
 use osis_node::sync::{Action, SyncEngine};
 use std::future::Future;
 use std::pin::Pin;
@@ -201,7 +201,7 @@ impl Net {
     /// the LAN loop. Without a co-reader transport no co-reader is dialed.
     pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, transport: Option<Transport>, p2p: bool, relays: Vec<String>, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
         let Net::Driver { handle, ctl, stop } = self else { return Ok(()) };
-        let host = OsisHost(db);
+        let shared = OsisShared(db);
         let log: driver::Log = Arc::new(|m: &str| log_line(m));
         let mut multi = osis_transport::Multi::default();
         // where the dialable-key listener goes, and whether the LAN loop runs
@@ -225,7 +225,7 @@ impl Net {
         let alive = lock(stop).as_mut().and_then(|s| s.task.take());
         handle.spawn(async move {
             let _alive = alive;
-            driver::run_host(host, multi, Vec::new(), clock, rx, log).await;
+            driver::run_shared(shared, multi, Vec::new(), clock, rx, log).await;
         });
         match reach {
             Some(url) if p2p => {
@@ -276,9 +276,9 @@ fn log_line(m: &str) {
 }
 
 /// The driver's view of the handle: the sync engine behind the database lock.
-struct OsisHost(WeakOsis);
+struct OsisShared(WeakOsis);
 
-impl Host for OsisHost {
+impl Shared for OsisShared {
     fn with(&self, f: &mut dyn FnMut(&mut SyncEngine) -> Vec<Action>) -> Option<Vec<Action>> {
         let db = self.0.hold()?;
         db.handled(|l| f(&mut l.sync));

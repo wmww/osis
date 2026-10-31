@@ -1,7 +1,6 @@
-//! The binary's main as a call: the `osis-server` binary and the CLI's `osis
-//! serve` run a blind node on the redb file backend over QUIC until Ctrl-C (SIGINT).
+//! `osis serve`'s body: hosts on the redb file backend over QUIC until Ctrl-C (SIGINT).
 
-use crate::{BackendStore, Config, Control, Endpoint, Hub, Log, driver};
+use crate::{HostStore, Config, Control, Endpoint, Hub, Log, driver};
 use osis_base::SystemClock;
 use osis_crypto::{OsRng, RngCore};
 use osis_store::RedbBackend;
@@ -44,7 +43,7 @@ pub fn run(cfg: Config, log: Log, address: impl FnOnce(&str)) -> Result<(), Stri
     std::fs::create_dir_all(&cfg.data).map_err(|e| format!("{}: {e}", cfg.data.display()))?;
     let backend = RedbBackend::open(&cfg.data.join("server.redb")).map_err(|e| e.to_string())?;
     let clock = Arc::new(SystemClock);
-    let store = BackendStore::open(backend, clock.clone(), cfg.policy.clone(), &mut OsRng).map_err(|e| e.to_string())?;
+    let store = HostStore::open(backend, clock.clone(), cfg.policy.clone(), &mut OsRng).map_err(|e| e.to_string())?;
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
     rt.block_on(async move {
         let secret = StaticSecret::from_bytes(secret);

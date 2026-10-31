@@ -11,7 +11,7 @@ use osis_crypto::SeededRng;
 use osis_label::Prefix;
 use osis_proto::msg::DeleteItem;
 use osis_proto::*;
-use osis_server::Policy;
+use osis_host::HostPolicy;
 use osis_store::Backend;
 
 fn contains(hay: &[u8], needle: &[u8]) -> bool {
@@ -22,7 +22,7 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 #[test]
 fn stored_bytes_hold_no_plaintext_identifiers() {
     let mut w = World::new();
-    let h = w.add_hub(Policy::default());
+    let h = w.add_hub(HostPolicy::default());
     w.backends[h].record_history();
     let a = w.connect(h);
     let l = Label::new(3);

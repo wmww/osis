@@ -26,7 +26,7 @@ What runs where (details and latest numbers: notes/testing.md):
 
 How to run:
 - CLI: `cargo run --bin osis -- --help`; `osis -s DIR init`, writes, `osis serve` for a local server (notes/cli.md).
-- Server: `cargo run --bin osis-server -- --help` (or `osis serve`); prints `quic://host:port#key`.
+- Server: `osis serve`; prints `quic://host:port#key`.
 - Standard data scenarios: core/osis's `contact`, `event`, `notes`, `tags` tests in `cargo test --workspace`.
 - Sim: `cargo run --bin sim-sweep -- --seeds N --budget-secs T`; replay a failing seed with `osis_sim::replay("<scenario>", <seed>)`.
 - Models: `core/test/tla/run.sh small` (Java); their tests run in `cargo test --workspace`; `cargo run --bin membership-model`.
