@@ -44,8 +44,6 @@ impl AspectDef {
     pub fn lifetime(&self) -> Lifetime {
         if self.flags.contains(&Flag::Signal) {
             Lifetime::Signal
-        } else if self.flags.contains(&Flag::Presence) {
-            Lifetime::Presence
         } else if self.flags.contains(&Flag::Ephemeral) {
             Lifetime::Ephemeral
         } else {
@@ -55,7 +53,7 @@ impl AspectDef {
 }
 
 
-/// Aspect flags (spec/data-model.md §2). `ephemeral`, `presence` and `signal` decide where a
+/// Aspect flags (spec/data-model.md §2). `ephemeral` and `signal` decide where a
 /// write goes (its lifetime); nothing on the wire enforces the others.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Flag {
@@ -64,12 +62,11 @@ pub enum Flag {
     Guaranteed = 2,
     Indexed = 3,
     Ephemeral = 4,
-    Presence = 5,
-    Signal = 6,
+    Signal = 5,
 }
 
 impl Flag {
-    pub const ALL: [Flag; 7] = [Flag::Ro, Flag::Synthetic, Flag::Guaranteed, Flag::Indexed, Flag::Ephemeral, Flag::Presence, Flag::Signal];
+    pub const ALL: [Flag; 6] = [Flag::Ro, Flag::Synthetic, Flag::Guaranteed, Flag::Indexed, Flag::Ephemeral, Flag::Signal];
     pub fn name(self) -> &'static str {
         match self {
             Flag::Ro => "ro",
@@ -77,7 +74,6 @@ impl Flag {
             Flag::Guaranteed => "guaranteed",
             Flag::Indexed => "indexed",
             Flag::Ephemeral => "ephemeral",
-            Flag::Presence => "presence",
             Flag::Signal => "signal",
         }
     }
@@ -143,8 +139,6 @@ pub enum Lifetime {
     Durable,
     /// A value held in memory.
     Ephemeral,
-    /// An ephemeral value tied to its author's presence (acts as `Ephemeral` for now).
-    Presence,
     /// A write with no lasting value: delivered to callbacks, never in state.
     Signal,
 }
@@ -303,9 +297,9 @@ impl Schema {
             if def.expires == Some(0) {
                 bad(&item, "expires must be positive".into());
             }
-            let lifetimes = def.flags.iter().filter(|f| matches!(f, Flag::Ephemeral | Flag::Presence | Flag::Signal)).count();
+            let lifetimes = def.flags.iter().filter(|f| matches!(f, Flag::Ephemeral | Flag::Signal)).count();
             if lifetimes > 1 {
-                bad(&item, "at most one of ephemeral, presence, signal".into());
+                bad(&item, "at most one of ephemeral, signal".into());
             }
             // `/placed`, the ephemeral placements (spec/data-model.md §8), is the one core aspect
             // that is not durable
@@ -317,9 +311,6 @@ impl Schema {
             }
             if def.lifetime() == Lifetime::Signal && def.expires.is_some() {
                 bad(&item, "a signal has no value to expire".into());
-            }
-            if def.lifetime() == Lifetime::Presence && def.expires.is_some() {
-                bad(&item, "a presence value lives while its author is connected: no expiry".into());
             }
             for s in &def.succeeds {
                 if s == ak || Ak::new(s.as_str()).is_err() {

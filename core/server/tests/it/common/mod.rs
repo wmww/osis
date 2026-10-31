@@ -121,8 +121,7 @@ impl World {
         l.open = false;
         for e in [l.a, l.b] {
             if let End::Hub(h, c) = e {
-                let now = self.now();
-                let out = self.hubs[h].closed(now, c);
+                let out = self.hubs[h].closed(c);
                 self.hub_out(h, out);
             }
         }

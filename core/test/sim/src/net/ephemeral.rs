@@ -1,5 +1,5 @@
 //! Synced ephemeral data in the simulator (notes/ephemeral.md, spec/sync.md §9): random
-//! ephemeral, presence and signal writes on ephemeral windows placed in labeled groups and on
+//! ephemeral (expiring ones included) and signal writes on ephemeral windows placed in labeled groups and on
 //! durable items of them, and their invariants at quiescence (`check`):
 //! - convergence among holders (spec/requirements.md Ephemeral data), within what a server cap
 //!   lets through (spec/sync.md §5: a server whose cap keeps out an entry an up node holds,
@@ -7,22 +7,19 @@
 //!   the other servers read the same ephemeral state of a durable item; a window is held by
 //!   all of them or by none (none anywhere only if every node seen holding it restarted since:
 //!   a server's copy is not tracked, so a node failing to fetch it back after all holders
-//!   restarted passes), and its holders read the same state; expired writes read absent
-//!   everywhere.
+//!   restarted passes), and its holders read the same state; expired writes (typing flags,
+//!   cursors) read absent everywhere.
 //! - own compaction (spec/sync.md §9): each up node's own held plain commits without expiry
 //!   cost at most twice their cover plus one commit in flight.
-//! - presence (spec/sync.md §9 Presence commits): a holder reads exactly the live cursors of the
-//!   authors it shares a server with (its own included; with a server keeping an entry out, at
-//!   most those: the placement may not have reached the author); a server keeps at most one
-//!   presence entry per live author it serves.
 //! - signals (spec/sync.md §9 Relay-only commits): delivered at most once per node over the run
 //!   (checked as events arrive).
 //! - bounded server memory (spec/sync.md §5): every label's ephemeral charge within its cap,
 //!   the total within the server's.
 //!
-//! Scenario helpers check two more after quiescence: `author_leaves` (an author's cursors go
-//! everywhere once its connections close) and `signal_reaches` (a signal reaches each connected
-//! member once).
+//! Scenario helpers check two more after quiescence: `author_leaves` (a cursor its author keeps
+//! refreshing stays up at every connected member; once the author goes away it goes everywhere
+//! by its last write's expiry) and `signal_reaches` (a signal reaches each connected member
+//! once).
 
 use super::scenarios::{clock, persons, shared_group, sim};
 use super::{NetSim, NetWeights, Party};
@@ -44,8 +41,12 @@ pub const NOTES: &str = "/e/notes";
 pub const STATE: &str = "/e/state";
 /// A bool written with an expiry 5-30 s out (a typing indicator).
 pub const TYPING: &str = "/e/typing";
-/// Presence: a map from the author's node index to its cursor.
+/// A map from the author's node index to its cursor, each write a fresh entry at the author's
+/// key expiring `CURSOR_MS` out, refreshed by its author while there (as `osis::KeepAlive`
+/// does).
 pub const CURSOR: &str = "/e/cursor";
+/// A cursor write's expiry, from the write.
+pub const CURSOR_MS: u64 = 30_000;
 /// Signal: a unique string per write.
 pub const RING: &str = "/e/ring";
 
@@ -68,8 +69,6 @@ pub struct Track {
     pub windows: Vec<Window>,
     /// Durable things (with their group) whose ephemeral aspects random writes touch.
     pub things: Vec<(Tid, Tid)>,
-    /// Live presence per (target, author node): its last cursor since the author's boot.
-    pub cursors: BTreeMap<(Tid, usize), String>,
     /// Signal deliveries per (node, value).
     pub delivered: BTreeMap<(usize, String), u32>,
     /// Restarts per node and server.
@@ -170,7 +169,7 @@ impl NetSim {
     }
 
     /// A random up node writes one ephemeral op on a target it may write: a note set or
-    /// removed, the state, an expiring typing flag, its cursor (presence) or a signal.
+    /// removed, the state, an expiring typing flag, its expiring cursor or a signal.
     pub(super) fn random_ephemeral(&mut self) -> Res<()> {
         let ups: Vec<usize> = (0..self.nodes.len()).filter(|i| self.is_up(*i)).collect();
         let Some(&n) = self.dice.pick(&ups) else { return Ok(()) };
@@ -205,9 +204,7 @@ impl NetSim {
             }
             7..=9 => {
                 let v = format!("c{k}");
-                let op = PathOp { path: vec![PathSeg::Key(Value::Str(n.to_string()))], op: Op::Set(Value::Str(v.clone())) };
-                m.op(t, &self.ukey(CURSOR, Lifetime::Presence)?, op).map_err(|e| self.fail(e.to_string()))?;
-                self.eph.cursors.insert((t, n), v.clone());
+                self.cursor_op(n, t, &v, &mut m)?;
                 format!("cursor {t} {v}")
             }
             _ => {
@@ -271,95 +268,64 @@ impl NetSim {
         r.map_err(|e| self.fail(format!("node {n} reads {ak} of {t}: {e}")))
     }
 
-    /// The cursors node `n` reads on `t`.
-    fn cursors_at(&mut self, n: usize, t: &Tid) -> Res<BTreeMap<String, String>> {
-        Ok(str_map(self.eph_read(n, t, CURSOR)?))
-    }
-
-    /// The cursors node `o` must read on target `t` of group `g`: those of live authors it
-    /// shares a server with, its own included.
-    fn cursors_expected(&mut self, o: usize, t: &Tid, g: &Tid) -> BTreeMap<String, String> {
-        let live: Vec<(usize, String)> = self.eph.cursors.iter().filter(|(k, _)| k.0 == *t).map(|(k, v)| (k.1, v.clone())).collect();
-        let mut out = BTreeMap::new();
-        for (a, v) in live {
-            if a == o || self.share_server(a, o, g) {
-                out.insert(a.to_string(), v);
-            }
-        }
-        out
-    }
-
-    /// Presence-class live entries per (server, label).
-    fn presence_entries(&self) -> BTreeMap<(usize, osis_base::LabelId), usize> {
-        let mut out = BTreeMap::new();
-        for s in 0..self.servers.len() {
-            let Some(hub) = self.hub(s) else { continue };
-            let st = hub.store();
-            for l in st.labels_after(None, 4096).unwrap_or_default() {
-                let ids = st.live_ids(&l).unwrap_or_default();
-                let p = ids.iter().filter(|b| st.blob(b).ok().flatten().and_then(|x| osis_label::Prefix::parse(&x).ok()).is_some_and(|p| p.class() == osis_label::Class::Presence)).count();
-                if p > 0 {
-                    out.insert((s, l), p);
-                }
-            }
-        }
-        out
-    }
-
-    /// Authors with a live cursor whose presence server `s` serves (for any tracked group).
-    fn live_authors_at(&mut self, s: usize) -> usize {
-        let groups: BTreeMap<Tid, Tid> = self.eph.windows.iter().map(|x| (x.w, x.g)).chain(self.eph.things.iter().copied()).collect();
-        let keys: Vec<(Tid, usize)> = self.eph.cursors.keys().copied().collect();
-        let mut authors = BTreeSet::new();
-        for (t, a) in keys {
-            if let Some(g) = groups.get(&t)
-                && self.label_reaches(a, s, g)
-            {
-                authors.insert(a);
-            }
-        }
-        authors.len()
-    }
-
-    /// The presence invariants: every holder of each target reads exactly the expected cursors
-    /// (`lossy`: at most those); servers keep at most one presence entry per live author they
-    /// serve.
-    fn presence_ok(&mut self, holders: &BTreeMap<Tid, (Tid, Vec<usize>)>, lossy: bool) -> Res<()> {
-        for (t, (g, hs)) in holders {
-            for o in hs {
-                let got = self.cursors_at(*o, t)?;
-                let want = self.cursors_expected(*o, t, g);
-                if got != want && !(lossy && got.iter().all(|(k, v)| want.get(k) == Some(v))) {
-                    return Err(self.fail(format!("node {o} reads cursors {got:?} on {t}, expected {want:?} (live: {:?})", self.eph.cursors)));
-                }
-            }
-        }
-        for ((s, l), p) in self.presence_entries() {
-            let live = self.live_authors_at(s);
-            if p > live {
-                return Err(self.fail(format!("server {s} holds {p} presence entries under {l:?} for {live} live authors (live: {:?})", self.eph.cursors)));
-            }
-        }
+    /// Node `n`'s cursor write on `t` into `m`: a fresh entry at its key, expiring `CURSOR_MS`
+    /// out.
+    fn cursor_op(&mut self, n: usize, t: Tid, v: &str, m: &mut Mutation) -> Res<()> {
+        let key = self.ukey(CURSOR, Lifetime::Ephemeral)?;
+        let at = self.engine(n)?.now().0.saturating_add(CURSOR_MS);
+        let op = PathOp { path: vec![PathSeg::Key(Value::Str(n.to_string()))], op: Op::Put(Value::Str(v.into())) };
+        m.op(t, &key, op).map_err(|e| self.fail(e.to_string()))?;
+        m.expires(t, &key, WallMs(at)).map_err(|e| self.fail(e.to_string()))?;
         Ok(())
     }
 
-    /// After quiescence: a random author with a live cursor goes down; once its connections'
-    /// close is delivered (no clock advance beyond the messages), nobody reads its cursors and
-    /// no server keeps more presence entries than live authors. Then it comes back.
+    /// Node `o`'s read of node `a`'s cursor on `t`.
+    fn cursor_of(&mut self, o: usize, t: &Tid, a: usize) -> Res<Option<String>> {
+        Ok(str_map(self.eph_read(o, t, CURSOR)?).remove(&a.to_string()))
+    }
+
+    /// After quiescence: a random writer of a tracked durable thing sets its cursor there and
+    /// refreshes it every half expiry; each member a path through servers that keep nothing
+    /// out joins to it reads it just before every refresh. Then the writer goes down (nobody sees it leave) and once its last
+    /// write expired nobody reads its cursor. Then it comes back.
     pub fn author_leaves(&mut self) -> Res<()> {
-        let authors: Vec<usize> = self.eph.cursors.keys().map(|k| k.1).collect::<BTreeSet<_>>().into_iter().collect();
-        let Some(&a) = self.dice.pick(&authors) else { return Ok(()) };
+        let Some(&(t, g)) = self.eph.things.first() else { return Ok(()) };
+        let ms = self.members(&g)?;
+        let mut writers = Vec::new();
+        for n in &ms {
+            if self.engine(*n)?.role_on(&t).is_some_and(|r| r >= Role::Write) {
+                writers.push(*n);
+            }
+        }
+        let Some(&a) = self.dice.pick(&writers) else { return Ok(()) };
+        self.eph.next += 1;
+        let v = format!("c{}", self.eph.next);
+        for round in 0..4 {
+            let mut m = Mutation::new();
+            self.cursor_op(a, t, &v, &mut m)?;
+            self.eph_write(a, m, format!("cursor {t} {v} (refresh {round})"))?;
+            self.settle()?;
+            // just before the next refresh: a second's slack for the nodes' corrected clocks
+            self.advance(CURSOR_MS / 2 - 1_000)?;
+            self.settle()?;
+            // the members a path through servers that keep nothing out joins to the writer
+            let lossy = self.lossy_servers();
+            let readers = self.eph_components(&g, &ms, &lossy).into_iter().find(|c| c.contains(&a)).unwrap_or_default();
+            for o in &readers {
+                if self.cursor_of(*o, &t, a)?.as_deref() != Some(v.as_str()) {
+                    return Err(self.fail(format!("node {o} does not read node {a}'s refreshed cursor {v} on {t} (refresh {round})")));
+                }
+            }
+            self.advance(1_000)?;
+        }
         self.note(format!("author {a} leaves"));
         self.node_down(a)?;
         self.drain_queue()?;
-        let holders = self.holders()?;
-        let lossy = !self.lossy_servers().is_empty();
-        self.presence_ok(&holders, lossy)?;
-        for (t, (_, hs)) in &holders {
-            for o in hs {
-                if self.cursors_at(*o, t)?.contains_key(&a.to_string()) {
-                    return Err(self.fail(format!("node {o} still reads departed author {a}'s cursor on {t}")));
-                }
+        self.advance(CURSOR_MS)?;
+        self.settle()?;
+        for o in ms.into_iter().filter(|o| *o != a) {
+            if let Some(c) = self.cursor_of(o, &t, a)? {
+                return Err(self.fail(format!("node {o} still reads departed author {a}'s cursor {c} on {t} past its expiry")));
             }
         }
         self.restart_node(a)?;
@@ -432,7 +398,7 @@ impl NetSim {
                 let mut keeps_out = false;
                 for n in (0..self.nodes.len()).filter(|n| self.is_up(*n)) {
                     let Some(sync) = self.nodes.get(n).and_then(|x| x.sync.as_ref()) else { continue };
-                    for (b, size) in sync.ephemeral_plain_entries(&l) {
+                    for (b, size) in sync.ephemeral_held_entries(&l) {
                         keeps_out |= !live.contains(&b) && !st.ephemeral_fits(&l, size as u64);
                         held.insert(b);
                     }
@@ -601,28 +567,30 @@ pub fn check(sim: &mut NetSim) -> Res<()> {
         let mut by: BTreeMap<BTreeSet<osis_base::CommitId>, Vec<usize>> = BTreeMap::new();
         for n in hs {
             let e = sim.engine(*n)?;
-            let held: BTreeSet<osis_base::CommitId> = e.held_ephemeral().into_iter().map(|x| x.0).filter(|c| !e.ephemeral_is_presence(c)).collect();
+            let held: BTreeSet<osis_base::CommitId> = e.held_ephemeral().into_iter().map(|x| x.0).collect();
             by.entry(held).or_default().push(*n);
         }
         for same in by.into_values().filter(|x| x.len() > 1) {
             eph_alike(sim, t, &same)?;
         }
     }
-    sim.presence_ok(&holders, !lossy.is_empty())?;
     Ok(())
 }
 
-/// Nodes `hs` read the same ephemeral state of `t`, and no expired typing flag.
+/// Nodes `hs` read the same ephemeral state of `t`, and no expired typing flag or cursor.
 fn eph_alike(sim: &mut NetSim, t: &Tid, hs: &[usize]) -> Res<()> {
     {
         let mut first: Option<(usize, Vec<String>)> = None;
         for n in hs {
             let mut reads = Vec::new();
-            for ak in [NOTES, STATE, TYPING] {
+            for ak in [NOTES, STATE, TYPING, CURSOR] {
                 reads.push(format!("{ak} {:?}", sim.eph_read(*n, t, ak)?));
             }
-            if sim.eph_read(*n, t, TYPING)?.is_some() {
-                return Err(sim.fail(format!("node {n} still reads an expired typing flag on {t}")));
+            // quiescence moves time past every expiry (an emptied map stays present)
+            for ak in [TYPING, CURSOR] {
+                if let Some(v) = sim.eph_read(*n, t, ak)?.filter(|v| *v != Value::Map(Default::default())) {
+                    return Err(sim.fail(format!("node {n} still reads an expired {ak} {v:?} on {t}")));
+                }
             }
             match &first {
                 None => first = Some((*n, reads)),
@@ -647,9 +615,9 @@ fn random_cap(d: &mut Dice) -> u64 {
 /// Shared ephemeral data under faults (notes/ephemeral.md): A (admin) and B (writer) reach both
 /// replicating servers, C (writer) only s0, D (reader) only s1; odd seeds give s0 a random
 /// ephemeral cap (0 and below one cover included). A window placed in the group and a durable item get random
-/// ephemeral, presence and signal writes amid durable writes, lossy links, node and server
-/// crashes (mid-write too), partitions and slow servers; then the quiescent invariants, an
-/// author leaving, and a signal to everyone connected.
+/// ephemeral (expiring ones included) and signal writes amid durable writes, lossy links, node
+/// and server crashes (mid-write too), partitions and slow servers; then the quiescent
+/// invariants, an author refreshing its cursor and leaving, and a signal to everyone connected.
 pub fn ephemeral(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xe9);
     let w = NetWeights { write: 1, ephemeral: 5, crash: 1, restart: 2, server_crash: 1, server_restart: 2, partition: 1, heal: 2, slow: 1, ..NetWeights::default() };

@@ -171,6 +171,40 @@ async fn text_idle_commit_api_text_sessions() {
     assert_eq!(s.commit().unwrap(), None, "already committed");
 }
 
+// notes/ephemeral.md Values that live while their author is there: a kept-alive cursor (a map
+// entry under the author's key, expiring 60 ms after each write) is rewritten every half
+// expiry while the `KeepAlive` lives, takes a new value at once, and is gone by its expiry once
+// dropped; a key without a default expiry is refused
+#[tokio::test]
+async fn keep_alive_rewrites_until_dropped() {
+    let net = osis_transport::Net::new(4);
+    let db = Osis::create(cfg(1, vec![], Transport::InProcess(net.endpoint("a")))).unwrap().0;
+    db.register_schema_source("c.osis", "schema 0x0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c;\nrevision 1;\naspect /c/cursor: map<tid, int> [ephemeral, expires: 60ms];\naspect /c/flag: map<tid, int> [ephemeral];\n").unwrap();
+    let k = db.key("/c/cursor").unwrap();
+    let t = db.write_with(|w| w.create(db.me())).unwrap();
+    let me = osis::Path(vec![osis::Step::Key(Value::Tid(db.me()))]);
+    let mine = |db: &Osis| db.get(t, k.clone()).unwrap().and_then(|v| if let Value::Map(m) = v { m.get(&Value::Tid(db.me())).cloned() } else { None });
+    assert!(db.keep_alive(t, db.key("/c/flag").unwrap(), me.clone(), &Value::Int(1)).is_err(), "no default expiry");
+    let ka = db.keep_alive(t, k.clone(), me, &Value::Int(1)).unwrap();
+    assert_eq!(mine(&db), Some(Value::Int(1)));
+    // rewritten every 30 ms: at least four writes besides the first in 250 ms (expiry itself
+    // runs on the sync engine's ticks, a second apart, so the gap is not watched here)
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(ka.writes() >= 5, "{} writes", ka.writes());
+    assert_eq!(mine(&db), Some(Value::Int(1)));
+    ka.set(&Value::Int(2)).unwrap();
+    assert_eq!(mine(&db), Some(Value::Int(2)));
+    let watch = db.at(t, k.clone()).watch().unwrap();
+    drop(ka);
+    tokio::time::timeout(GUARD, async {
+        while mine(&db).is_some() {
+            watch.changed().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
 /// Waits until `db` published its `/reach` (the driver listens with its dialable key).
 async fn reach_of(db: &Osis) -> osis::internals::node::sync::peers::Peer {
     tokio::time::timeout(GUARD, async {

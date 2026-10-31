@@ -233,8 +233,7 @@ impl World {
             let mine: Vec<(ConnId, (usize, u64))> = self.links.iter().filter(|((d, _), _)| *d == i).map(|((_, c), v)| (*c, *v)).collect();
             for (c, (s, hc)) in mine {
                 self.links.remove(&(i, c));
-                let now = self.now();
-                let out = self.servers.get_mut(s).map(|sv| sv.hub.closed(now, hc)).unwrap_or_default();
+                let out = self.servers.get_mut(s).map(|sv| sv.hub.closed(hc)).unwrap_or_default();
                 self.hub_out(s, out);
                 db.feed(Event::Down { conn: c });
             }
@@ -253,8 +252,7 @@ impl World {
         let mine: Vec<(ConnId, u64)> = self.links.iter().filter(|((d, _), (s, _))| *d == i && *s == server).map(|((_, c), (_, h))| (*c, *h)).collect();
         for (c, hc) in mine {
             self.links.remove(&(i, c));
-            let now = self.now();
-            let out = self.servers.get_mut(server).map(|sv| sv.hub.closed(now, hc)).unwrap_or_default();
+            let out = self.servers.get_mut(server).map(|sv| sv.hub.closed(hc)).unwrap_or_default();
             self.hub_out(server, out);
             db.feed(Event::Down { conn: c });
         }
@@ -292,8 +290,7 @@ impl World {
                 }
                 Action::Close { conn } => {
                     if let Some((s, hc)) = self.links.remove(&(d, conn)) {
-                        let now = self.now();
-                        let out = self.servers.get_mut(s).map(|sv| sv.hub.closed(now, hc)).unwrap_or_default();
+                        let out = self.servers.get_mut(s).map(|sv| sv.hub.closed(hc)).unwrap_or_default();
                         self.hub_out(s, out);
                     }
                 }

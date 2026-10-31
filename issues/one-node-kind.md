@@ -30,7 +30,7 @@ Terms: a node **hosts** a label (stores and serves it for anyone holding its rol
 - Cost: hub inputs become store transactions, with one root write per shredding transaction. The step measures this against a host budget; owner call if it misses.
 - **Why not one store with the node's data:** that would hand the host the store that holds actor secrets, and engine and hosting would contend on one lock.
 - **Accepted cost:** no blob dedupe between the node's store and the host store. A label that is both read and hosted is stored twice.
-- **Caps and accounting:** unchanged from today's `Policy`, renamed `HostPolicy`. Per label: `cap_entries`, `cap_bytes`, the ephemeral, presence and deposit budgets. Host-wide: `max_labels`, `max_entries`, `max_bytes`. Counted over the host store only (the node's own data is never charged). `host.0` may override caps per label ID.
+- **Caps and accounting:** unchanged from today's `Policy`, renamed `HostPolicy`. Per label: `cap_entries`, `cap_bytes`, the ephemeral and deposit budgets. Host-wide: `max_labels`, `max_entries`, `max_bytes`. Counted over the host store only (the node's own data is never charged). `host.0` may override caps per label ID.
 
 ### 3. Which groups a node hosts, configuration, finding hosts
 - **Config is osis data:** core aspect `host.0` on the node's own thing: `{ listen: list<url>, admit: enum { own, open }, labels: set<label id>, replicate: list<address>, policy: optional knobs, per-label caps }`.
@@ -146,7 +146,6 @@ Terms: a node **hosts** a label (stores and serves it for anyone holding its rol
 7. **Markers carry meaning (c; M).**
    - `~` (ephemeral) and `*` (signal) come from the key; the `ephemeral` and `signal` schema flags leave the DSL and the `flag` enum.
    - `^` admin-only is judged by validity: a write of a `^` aspect needs admin on the thing. This replaces notes/permissions.md "Admin-only aspects (accepted)" and adds a spec/permissions.md rule.
-   - Presence stays a schema flag until issues/eph-unify.md decides.
    - Hunt: `G 'Flag::(Ephemeral|Signal)|\b(ephemeral|signal)\b' -- core/schema schema` (DSL docs, flag lists); read spec/data-model.md §2 and §10 and notes/versioning.md.
 8. **Hosting in the node (a; L, about 2k lines added, 700 removed).**
    - `host.0` core aspect; `Action::Host`; the node driver runs the host task, host secret and loopback; `own`/`open` admission; the osis API `hosting`/`set_hosting`/`host_address`.

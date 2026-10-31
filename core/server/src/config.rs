@@ -57,7 +57,6 @@ pub fn parse(text: &str) -> Result<Config, String> {
             "over_cap_step_ms" => p.over_cap_step_ms = n()?,
             "ephemeral_bytes" => p.ephemeral_bytes = n()?,
             "ephemeral_total" => p.ephemeral_total = n()?,
-            "presence_bytes" => p.presence_bytes = n()?,
             "relays" => p.relays = n32()?,
             "relay_bytes" => p.relay_bytes = n()?,
             "entry_replacements" => p.entry_replacements = n32()?,

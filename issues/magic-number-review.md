@@ -8,7 +8,6 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | value | trades | where |
 |---|---|---|
 | `MAX_DRIFT` 1 h | clock skew tolerated vs how far a commit's `ts` may lie ahead (and every bound measured from it) | wire §2 |
-| `MAX_LEASE` 20 min, `KEEPALIVE` 15 min | presence staleness after a crash vs presence traffic (spec says owner-agreed already) | wire §2 |
 | `MEMBERSHIP_KEEP` 90 days | how long an offline device can return and sync cleanly vs membership history kept | wire §2 |
 | `AT_MOST_GRACE` 1 h | skew slack on keep-at-most vs bodies kept past their bound | wire §2 |
 | `INBOX_LIFETIME` 90 days | how long an offline recipient's grant waits at the server vs server storage of undelivered blobs | wire §2 |

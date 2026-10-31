@@ -293,7 +293,7 @@ fn durable_class(tx: &Tx<'_>, tid: &Tid, ak: &osis_base::Ak) -> bool {
 fn ingest_blob(tx: &mut Tx<'_>, blob: CommitBlob, origin: Origin) -> Result<Ingested> {
     match (blob.header.ephemeral, blob.header.form) {
         (None, _) => ingest_class(tx, blob, origin),
-        (Some(osis_commit::EphClass::Plain | osis_commit::EphClass::Presence), osis_commit::Form::Session(_)) => tx.in_class(true, |tx| ingest_class(tx, blob, origin)),
+        (Some(osis_commit::EphClass::Plain), osis_commit::Form::Session(_)) => tx.in_class(true, |tx| ingest_class(tx, blob, origin)),
         // own covers and relay-only commits stay with `Engine::ingest_ephemeral` until memory
         // commits replace them (issues/eph-unify.md step 3)
         _ => Err(Error::BadInput("an ephemeral snapshot or relay-only commit on the commit path")),

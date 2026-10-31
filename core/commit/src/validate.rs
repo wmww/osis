@@ -158,7 +158,7 @@ impl Header {
                 return Err(Error::Invalid("ephemeral commit with chunks, a purge, an undo or linked lists"));
             }
             if c != crate::header::EphClass::Plain && self.aspects.iter().any(|a| a.expires.is_some()) {
-                return Err(Error::Invalid("relay-only or presence commit with an expiry"));
+                return Err(Error::Invalid("relay-only commit with an expiry"));
             }
         } else if matches!(self.form, Form::Session(_)) {
             return Err(Error::Invalid("session form outside an ephemeral commit"));

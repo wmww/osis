@@ -183,8 +183,9 @@ fn coverer_revoked() {
     ok("coverer_revoked", 1);
 }
 
-// notes/ephemeral.md, spec/sync.md §9: ephemeral, presence and signal writes on a window and a
-// durable item under faults; holders converge, presence follows its author, signals once.
+// notes/ephemeral.md, spec/sync.md §9: ephemeral (expiring ones included) and signal writes on a
+// window and a durable item under faults; holders converge, a refreshed cursor stays up while its
+// author is there and goes by its expiry after, signals once.
 #[test]
 fn ephemeral() {
     let r = ok("ephemeral", 1);

@@ -240,9 +240,8 @@ pub fn messages() -> Vec<(&'static str, Message)> {
                 label: l,
                 entries: vec![Entry {
                     replaces: vec![
-                        Replace::Untie(id(0xe1)),
-                        Replace::Delete(DeleteItem::sign(&f.delete, &l, id(0xe2), None).expect("fixed delete")),
-                        Replace::Delete(DeleteItem::sign_by(&f.write, &dk, 3, &[0x7d; 16], &[0x7e; 16], &l, id(0xe3), None).expect("fixed delete")),
+                        DeleteItem::sign(&f.delete, &l, id(0xe2), None).expect("fixed delete"),
+                        DeleteItem::sign_by(&f.write, &dk, 3, &[0x7d; 16], &[0x7e; 16], &l, id(0xe3), None).expect("fixed delete"),
                     ],
                     ..f.entry(Fixture::blob(4))
                 }],

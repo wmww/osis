@@ -24,7 +24,7 @@ use osis_base::format::{MAX_DRIFT_MS, MEMBERSHIP_KEEP_MS, TOMBSTONE_LIFETIME_MS}
 use osis_base::{BlobId, Clock, LabelId};
 use osis_crypto::{CryptoRngCore, Signature};
 use osis_proto::msg::{ClaimSet, Code, SecretBox, Step, StepId, WRAP_LEN};
-use osis_proto::{Budget, EntryMeta, HeadKeys, LabelStore, LogRecord, Put, Replaced, StoreError};
+use osis_proto::{Budget, EntryMeta, HeadKeys, LabelStore, LogRecord, Put, StoreError};
 use osis_store::{Backend, BackendError, KeyValue, WriteBatch};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -65,9 +65,6 @@ pub struct Policy {
     /// label's gets code 12; past the total, the label charged most gives way (notes/ephemeral.md).
     pub ephemeral_bytes: u64,
     pub ephemeral_total: u64,
-    /// Presence entry memory per label (blobs and per-entry overhead), apart from
-    /// `ephemeral_bytes`: a presence upload beyond it gets code 12 (notes/ephemeral.md Bounds).
-    pub presence_bytes: u64,
     /// Wrap replacements per entry and window.
     pub entry_replacements: u32,
     /// Relay-only uploads pushed per label and window, and their bytes (`osis_proto::RelayLimits`).
@@ -106,7 +103,6 @@ impl Default for Policy {
             over_cap_step_ms: 3_600_000,
             ephemeral_bytes: 16 << 20,
             ephemeral_total: 1 << 30,
-            presence_bytes: 4 << 20,
             entry_replacements: 4,
             relays: osis_proto::RelayLimits::default().count,
             relay_bytes: osis_proto::RelayLimits::default().bytes,
@@ -135,7 +131,6 @@ impl Policy {
             over_cap_step_ms: 0,
             ephemeral_bytes: u64::MAX,
             ephemeral_total: u64::MAX,
-            presence_bytes: u64::MAX,
             entry_replacements: u32::MAX,
             relays: u32::MAX,
             relay_bytes: u64::MAX,
@@ -348,25 +343,6 @@ enum Rate {
 struct EphEntry {
     meta: EntryMeta,
     expiry: Option<u64>,
-    /// A presence entry: removed when no connection's tie holds it (`ties`, the connections
-    /// tied to it: one but rarely), with no tombstone; deleted or replaced, tombstoned until
-    /// its expiry.
-    presence: bool,
-    ties: Vec<u64>,
-}
-
-/// Ties `t` to a presence entry's `ties`.
-fn tie(ties: &mut Vec<u64>, t: u64) {
-    if !ties.contains(&t) {
-        ties.push(t);
-    }
-}
-
-/// Unties `t`; whether it was tied.
-fn untie(ties: &mut Vec<u64>, t: u64) -> bool {
-    let n = ties.len();
-    ties.retain(|x| *x != t);
-    ties.len() < n
 }
 
 /// What an upload's replacements remove (spec/sync.md §5, Replace), planned before it is
@@ -375,15 +351,12 @@ fn untie(ties: &mut Vec<u64>, t: u64) -> bool {
 struct Plan {
     /// Entries removed (durable rows or ephemeral entries), in request order.
     gone: Vec<BlobId>,
-    /// Presence entries this connection's tie leaves that other ties still hold.
-    untie: Vec<BlobId>,
     /// Durable entries and bytes freed.
     entries: u64,
     bytes: u64,
-    /// Ephemeral memory freed in the label's plain and presence charges.
+    /// Ephemeral memory freed in the label's charge.
     eph_label: u64,
-    eph_presence: u64,
-    /// Removals counted against the delete rate (presence ones are not).
+    /// Removals counted against the delete rate.
     counted: u32,
 }
 
@@ -413,26 +386,19 @@ struct EphLabel {
     order: BTreeMap<u64, BlobId>,
     /// Deleted ephemeral entries: when their tombstone goes.
     tombstones: BTreeMap<BlobId, u64>,
-    /// With what each record is charged to: a presence entry's records to the presence memory
-    /// (never trimmed for the label's cap: a presence deletion trimmed before its push left a
-    /// departed author's cursor up at holders while the label's cap was full).
-    log: std::collections::VecDeque<(u64, EphRec, Charge)>,
+    log: std::collections::VecDeque<(u64, EphRec)>,
     /// Ephemeral records at or below this sequence number were dropped.
     horizon: u64,
     /// Memory charged to the label's cap: blobs, per-entry and per-record overhead.
     bytes: u64,
     /// Memory of its tombstones (charged to the node-wide total only).
     tombs: u64,
-    /// Memory of its presence entries (charged to `Policy::presence_bytes` and the total, never
-    /// to the label's ephemeral cap: entries no writer can compact must not crowd out the
-    /// ephemeral state holders compact to fit it).
-    presence: u64,
 }
 
 impl EphLabel {
     /// Everything charged to the label (the node-wide cap's eviction order).
     fn all(&self) -> u64 {
-        self.bytes.saturating_add(self.tombs).saturating_add(self.presence)
+        self.bytes.saturating_add(self.tombs)
     }
 }
 
@@ -441,12 +407,11 @@ impl EphLabel {
 enum Charge {
     Label,
     Tomb,
-    Presence,
 }
 
 /// Memory charged per ephemeral entry besides its blob bytes: the entry map's key and value
 /// (about 170 bytes), the blob map's entry, the eviction order and due-time index entries and an
-/// origin entry, a presence entry's tie, each with its map's node overhead (checked against the
+/// origin entry, each with its map's node overhead (checked against the
 /// type sizes by `overheads_cover_the_structures`). Not a tunable: what an entry really costs.
 const ENTRY_OVERHEAD: u64 = 896;
 /// Memory charged per ephemeral tombstone (map entry and due-time index entry).
@@ -483,14 +448,13 @@ struct Ephemeral {
 impl Ephemeral {
     /// Charges `n` bytes to label `l`: to its cap, or for tombstones to the node-wide total only
     /// (a writer's deletes must not fill the label it compacts: the total bounds them, the label
-    /// charged most giving way), or to its presence cap.
+    /// charged most giving way).
     fn charge(&mut self, l: &LabelId, n: u64, kind: Charge) {
         let e = self.labels.entry(*l).or_default();
         self.by_bytes.remove(&(e.all(), *l));
         match kind {
             Charge::Label => e.bytes = e.bytes.saturating_add(n),
             Charge::Tomb => e.tombs = e.tombs.saturating_add(n),
-            Charge::Presence => e.presence = e.presence.saturating_add(n),
         }
         self.by_bytes.insert((e.all(), *l));
         self.total = self.total.saturating_add(n);
@@ -502,7 +466,6 @@ impl Ephemeral {
         match kind {
             Charge::Label => e.bytes = e.bytes.saturating_sub(n),
             Charge::Tomb => e.tombs = e.tombs.saturating_sub(n),
-            Charge::Presence => e.presence = e.presence.saturating_sub(n),
         }
         let all = e.all();
         if all > 0 {
@@ -514,9 +477,9 @@ impl Ephemeral {
     /// Drops the label's oldest log record (cursors below it replay). Whether one was there.
     fn trim_log(&mut self, l: &LabelId) -> bool {
         let Some(e) = self.labels.get_mut(l) else { return false };
-        let Some((s, _, kind)) = e.log.pop_front() else { return false };
+        let Some((s, _)) = e.log.pop_front() else { return false };
         e.horizon = s;
-        self.release(l, REC_OVERHEAD, kind);
+        self.release(l, REC_OVERHEAD, Charge::Label);
         true
     }
 }
@@ -734,7 +697,7 @@ impl<B: Backend> BackendStore<B> {
     /// Whether a new plain ephemeral entry of `size` blob bytes would fit under `label`'s cap,
     /// every log record trimmed as an upload would (tests: a refusal is genuine).
     pub fn ephemeral_fits(&self, label: &LabelId, size: u64) -> bool {
-        let used = self.eph.labels.get(label).map_or(0, |e| e.bytes.saturating_sub(REC_OVERHEAD.saturating_mul(e.log.iter().filter(|x| x.2 == Charge::Label).count() as u64)));
+        let used = self.eph.labels.get(label).map_or(0, |e| e.bytes.saturating_sub(REC_OVERHEAD.saturating_mul(e.log.len() as u64)));
         used.saturating_add(size).saturating_add(ENTRY_OVERHEAD).saturating_add(REC_OVERHEAD) <= self.policy.ephemeral_bytes
     }
 
@@ -744,7 +707,7 @@ impl<B: Backend> BackendStore<B> {
     }
 
     /// Appends an ephemeral log record (in memory), reserving sequence numbers on disk as needed.
-    fn eph_append(&mut self, label: &LabelId, r: EphRec, kind: Charge) -> Result<u64, StoreError> {
+    fn eph_append(&mut self, label: &LabelId, r: EphRec) -> Result<u64, StoreError> {
         let m = self.meta(label)?.ok_or_else(unknown)?;
         let seq = m.next_seq.saturating_add(1);
         if seq > m.reserved {
@@ -755,13 +718,13 @@ impl<B: Backend> BackendStore<B> {
             self.write(b)?;
         }
         self.eph.seq.insert(*label, seq);
-        self.eph.labels.entry(*label).or_default().log.push_back((seq, r, kind));
-        self.eph.charge(label, REC_OVERHEAD, kind);
+        self.eph.labels.entry(*label).or_default().log.push_back((seq, r));
+        self.eph.charge(label, REC_OVERHEAD, Charge::Label);
         if self.eph.labels.get(label).is_some_and(|e| e.log.len() > EPH_LOG_KEEP) {
             self.eph.trim_log(label);
         }
         // a record no upload made room for (a deletion's) stays within the cap: older records go
-        while self.eph.labels.get(label).is_some_and(|e| e.bytes > self.policy.ephemeral_bytes || e.presence > self.policy.presence_bytes) && self.eph.trim_log(label) {}
+        while self.eph.labels.get(label).is_some_and(|e| e.bytes > self.policy.ephemeral_bytes) && self.eph.trim_log(label) {}
         Ok(seq)
     }
 
@@ -775,7 +738,7 @@ impl<B: Backend> BackendStore<B> {
         for t in [x.expiry, x.meta.pending_delete].into_iter().flatten() {
             self.eph.due.remove(&(t, *label, *blob));
         }
-        self.eph.release(label, x.meta.size.saturating_add(ENTRY_OVERHEAD), if x.presence { Charge::Presence } else { Charge::Label });
+        self.eph.release(label, x.meta.size.saturating_add(ENTRY_OVERHEAD), Charge::Label);
         if let Some((_, n)) = self.eph.blobs.get_mut(blob) {
             *n = n.saturating_sub(1);
             if *n == 0 {
@@ -785,22 +748,17 @@ impl<B: Backend> BackendStore<B> {
         match how {
             EphRemove::Expire => {}
             EphRemove::Delete(now) => {
-                // a presence entry's until its expiry, past which an upload of it is refused
-                // anyway: a reader that kept it cannot put it back (spec/sync.md §5)
-                let mut drop = now.saturating_add(EPH_TOMBSTONE_MS);
-                if x.presence {
-                    drop = drop.min(x.expiry.unwrap_or(drop));
-                }
+                let drop = now.saturating_add(EPH_TOMBSTONE_MS);
                 if let Some(old) = self.eph.labels.entry(*label).or_default().tombstones.insert(*blob, drop) {
                     self.eph.due.remove(&(old, *label, *blob));
                 } else {
                     self.eph.charge(label, TOMB_OVERHEAD, Charge::Tomb);
                 }
                 self.eph.due.insert((drop, *label, *blob));
-                self.eph_append(label, EphRec::Deleted(*blob), if x.presence { Charge::Presence } else { Charge::Label })?;
+                self.eph_append(label, EphRec::Deleted(*blob))?;
             }
             EphRemove::Evict => {
-                self.eph_append(label, EphRec::Deleted(*blob), if x.presence { Charge::Presence } else { Charge::Label })?;
+                self.eph_append(label, EphRec::Deleted(*blob))?;
             }
         }
         Ok(true)
@@ -837,11 +795,6 @@ impl<B: Backend> BackendStore<B> {
             && h.meta.wrap == put.wrap
             && h.meta.stamp == Some(stamp)
         {
-            if h.presence
-                && let Some(e) = self.eph.labels.get_mut(label).and_then(|e| e.entries.get_mut(&put.blob_id))
-            {
-                tie(&mut e.ties, put.tie);
-            }
             return Ok(Code::OK);
         }
         // the planned removals' memory still held (an eviction below may take one first)
@@ -858,19 +811,6 @@ impl<B: Backend> BackendStore<B> {
                 }
                 self.rates.entries.insert((*label, put.blob_id), n + 1);
             }
-            None if put.presence => {
-                let need = size.saturating_add(ENTRY_OVERHEAD).saturating_add(REC_OVERHEAD);
-                let used = |s: &Self| s.eph.labels.get(label).map_or(0, |e| e.presence).saturating_sub(plan.eph_presence);
-                while used(self).saturating_add(need) > self.policy.presence_bytes && self.eph.trim_log(label) {}
-                if used(self).saturating_add(need) > self.policy.presence_bytes {
-                    return Ok(Code::STORAGE_CAP);
-                }
-                while self.eph.total.saturating_sub(freed(self)).saturating_add(need) > self.policy.ephemeral_total {
-                    if !self.eph_evict()? {
-                        return Ok(Code::STORAGE_CAP);
-                    }
-                }
-            }
             None => {
                 let need = size.saturating_add(ENTRY_OVERHEAD).saturating_add(REC_OVERHEAD);
                 let used = |s: &Self| s.eph.labels.get(label).map_or(0, |e| e.bytes).saturating_sub(plan.eph_label);
@@ -885,27 +825,22 @@ impl<B: Backend> BackendStore<B> {
                 }
             }
         }
-        let seq = self.eph_append(label, EphRec::Added(put.blob_id), if held.as_ref().map_or(put.presence, |h| h.presence) { Charge::Presence } else { Charge::Label })?;
+        let seq = self.eph_append(label, EphRec::Added(put.blob_id))?;
         match held {
             Some(h) => {
                 let e = self.eph.labels.entry(*label).or_default();
                 e.order.remove(&h.meta.add_seq);
                 e.order.insert(seq, put.blob_id);
-                let mut ties = h.ties;
-                if h.presence {
-                    tie(&mut ties, put.tie);
-                }
-                e.entries.insert(put.blob_id, EphEntry { meta: EntryMeta { wrap: put.wrap, stamp: Some(stamp), add_seq: seq, ..h.meta }, expiry: h.expiry, presence: h.presence, ties });
+                e.entries.insert(put.blob_id, EphEntry { meta: EntryMeta { wrap: put.wrap, stamp: Some(stamp), add_seq: seq, ..h.meta }, expiry: h.expiry });
             }
             None => {
                 let e = self.eph.labels.entry(*label).or_default();
                 e.order.insert(seq, put.blob_id);
-                let ties = if put.presence { vec![put.tie] } else { Vec::new() };
-                e.entries.insert(put.blob_id, EphEntry { meta: EntryMeta { wrap: put.wrap, stamp: Some(stamp), size, add_seq: seq, pending_delete: None }, expiry: put.expiry, presence: put.presence, ties });
+                e.entries.insert(put.blob_id, EphEntry { meta: EntryMeta { wrap: put.wrap, stamp: Some(stamp), size, add_seq: seq, pending_delete: None }, expiry: put.expiry });
                 if let Some(t) = put.expiry {
                     self.eph.due.insert((t, *label, put.blob_id));
                 }
-                self.eph.charge(label, size.saturating_add(ENTRY_OVERHEAD), if put.presence { Charge::Presence } else { Charge::Label });
+                self.eph.charge(label, size.saturating_add(ENTRY_OVERHEAD), Charge::Label);
                 self.eph.blobs.entry(put.blob_id).or_insert_with(|| (put.blob.to_vec(), 0)).1 += 1;
             }
         }
@@ -1012,43 +947,20 @@ impl<B: Backend> BackendStore<B> {
         Ok(Code::OK)
     }
 
-    /// Plans `put`'s replacements (spec/sync.md §5, Replace): what goes, what is only untied,
-    /// the room freed. An untie of an entry this connection's tie does not hold is skipped.
+    /// Plans `put`'s replacements (spec/sync.md §5, Replace): what goes, the room freed.
     fn plan(&self, label: &LabelId, put: &Put<'_>) -> Result<Plan, StoreError> {
         let mut plan = Plan::default();
         let mut seen = BTreeSet::new();
-        for r in put.replaces {
-            let (b, untie) = match *r {
-                Replaced::Delete(b) => (b, false),
-                Replaced::Untie(b) => (b, true),
-            };
+        for &b in put.replaces {
             if b == put.blob_id || seen.contains(&b) {
                 continue;
             }
             if let Some(e) = self.eph_entry(label, &b) {
-                if untie {
-                    if !e.presence || !e.ties.contains(&put.tie) {
-                        continue;
-                    }
-                    if e.ties.len() > 1 {
-                        seen.insert(b);
-                        plan.untie.push(b);
-                        continue;
-                    }
-                }
                 seen.insert(b);
-                let n = e.meta.size.saturating_add(ENTRY_OVERHEAD);
-                if e.presence {
-                    plan.eph_presence = plan.eph_presence.saturating_add(n);
-                } else {
-                    plan.eph_label = plan.eph_label.saturating_add(n);
-                    plan.counted += 1;
-                }
+                plan.eph_label = plan.eph_label.saturating_add(e.meta.size.saturating_add(ENTRY_OVERHEAD));
+                plan.counted += 1;
                 plan.gone.push(b);
             } else if let Some(row) = self.row(label, &b)? {
-                if untie {
-                    continue;
-                }
                 seen.insert(b);
                 plan.entries += 1;
                 plan.bytes = plan.bytes.saturating_add(row.meta.size);
@@ -1060,15 +972,10 @@ impl<B: Backend> BackendStore<B> {
     }
 
     /// Carries out a planned replacement once its upload was admitted (logged after the add):
-    /// each entry removed as a Delete removes it, the untied ones lose this connection's tie.
-    fn replace(&mut self, label: &LabelId, plan: &Plan, tie: u64, now: u64) -> Result<(), StoreError> {
-        if plan.gone.is_empty() && plan.untie.is_empty() {
+    /// each entry removed as a Delete removes it.
+    fn replace(&mut self, label: &LabelId, plan: &Plan, now: u64) -> Result<(), StoreError> {
+        if plan.gone.is_empty() {
             return Ok(());
-        }
-        for b in &plan.untie {
-            if let Some(e) = self.eph.labels.get_mut(label).and_then(|e| e.entries.get_mut(b)) {
-                untie(&mut e.ties, tie);
-            }
         }
         let mut tx = self.tx(label)?;
         let mut durable = false;
@@ -1521,7 +1428,7 @@ impl<B: Backend> LabelStore for BackendStore<B> {
             self.durable_put(label, put, held, &plan)?
         };
         if code == Code::OK {
-            self.replace(label, &plan, put.tie, put.now)?;
+            self.replace(label, &plan, put.now)?;
         }
         Ok(code)
     }
@@ -1533,12 +1440,9 @@ impl<B: Backend> LabelStore for BackendStore<B> {
     }
 
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError> {
-        if let Some(e) = self.eph_entry(label, blob_id) {
-            // a presence entry's delete is not counted: it and its tombstone (until the entry's
-            // expiry) cost what its upload did, which no rate bounds
-            let presence = e.presence;
+        if self.eph_entry(label, blob_id).is_some() {
             self.rates.roll(self.now(), self.policy.window_ms);
-            if !presence && !self.rates.take(label, Rate::Delete, self.policy.deletes) {
+            if !self.rates.take(label, Rate::Delete, self.policy.deletes) {
                 return Ok(Code::RATE_LIMITED);
             }
             self.eph_remove(label, blob_id, EphRemove::Delete(now))?;
@@ -1572,8 +1476,7 @@ impl<B: Backend> LabelStore for BackendStore<B> {
                 e.meta.pending_delete = Some(at);
             }
             self.eph.due.insert((at, *label, *blob_id));
-            let kind = if self.eph_entry(label, blob_id).is_some_and(|e| e.presence) { Charge::Presence } else { Charge::Label };
-            self.eph_append(label, EphRec::Pending(*blob_id, at), kind)?;
+            self.eph_append(label, EphRec::Pending(*blob_id, at))?;
             return Ok(Code::OK);
         }
         let mut tx = self.tx(label)?;
@@ -1624,8 +1527,8 @@ impl<B: Backend> LabelStore for BackendStore<B> {
             if after < e.horizon {
                 out.extend(e.order.range(after + 1..=e.horizon).take(max).map(|(s, b)| (*s, LogRecord::Added(*b))));
             }
-            let at = e.log.partition_point(|(s, _, _)| *s <= after);
-            out.extend(e.log.iter().skip(at).take(max).map(|(s, r, _)| (*s, r.record())));
+            let at = e.log.partition_point(|(s, _)| *s <= after);
+            out.extend(e.log.iter().skip(at).take(max).map(|(s, r)| (*s, r.record())));
             out.sort_by_key(|(s, _)| *s);
             out.truncate(max);
         }
@@ -1678,14 +1581,6 @@ impl<B: Backend> LabelStore for BackendStore<B> {
 
     fn relay(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, now: u64) -> Result<osis_proto::RelayVerdict, StoreError> {
         Ok(self.relays.admit(label, blob_id, size, expiry, now))
-    }
-
-    fn untie(&mut self, label: &LabelId, blob_id: &BlobId, tie: u64) -> Result<bool, StoreError> {
-        let Some(e) = self.eph.labels.get_mut(label).and_then(|e| e.entries.get_mut(blob_id)) else { return Ok(false) };
-        if !e.presence || !untie(&mut e.ties, tie) || !e.ties.is_empty() {
-            return Ok(false);
-        }
-        self.eph_remove(label, blob_id, EphRemove::Evict)
     }
 }
 

@@ -62,8 +62,8 @@ impl AspectKey for Ak {
     }
 }
 
-/// An untyped key with a lifetime other than the default (`Ak::ephemeral()`, `presence()`,
-/// `signal()` through [`Lifetimes`]): generic tools and the CLI.
+/// An untyped key with a lifetime other than the default (`Ak::ephemeral()`, `signal()`
+/// through [`Lifetimes`]): generic tools and the CLI.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Untyped {
     ak: Ak,
@@ -98,16 +98,12 @@ impl AspectKey for Untyped {
 /// Untyped keys of the other lifetimes: `Ak::new("/app/x")?.ephemeral()`.
 pub trait Lifetimes {
     fn ephemeral(self) -> Untyped;
-    fn presence(self) -> Untyped;
     fn signal(self) -> Untyped;
 }
 
 impl Lifetimes for Ak {
     fn ephemeral(self) -> Untyped {
         Untyped::new(self, Lifetime::Ephemeral)
-    }
-    fn presence(self) -> Untyped {
-        Untyped::new(self, Lifetime::Presence)
     }
     fn signal(self) -> Untyped {
         Untyped::new(self, Lifetime::Signal)

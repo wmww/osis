@@ -242,7 +242,7 @@ fn groups(sim: &mut NetSim) -> Res<()> {
             }
             let (mut reads, mut keys) = (Vec::new(), Vec::new());
             for t in &g.items {
-                // ephemeral aspects: `ephemeral::check` (presence differs by who shares a server)
+                // ephemeral aspects: `ephemeral::check`
                 let aks = e.aspects(t).unwrap_or_default().into_iter().filter(|a| !super::ephemeral::is_ephemeral(a));
                 for ak in aks {
                     let v = e.get(t, &ak).map_err(|x| x.to_string());

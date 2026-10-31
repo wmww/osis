@@ -25,8 +25,7 @@ pub struct Committed {
 }
 
 /// A batch of writes: its durable ops become one commit, its ephemeral ops (keys declared
-/// `ephemeral`, `presence` or `signal`) apply in memory, all or nothing. Reads see written state
-/// only.
+/// `ephemeral` or `signal`) apply in memory, all or nothing. Reads see written state only.
 #[must_use = "a Write does nothing until commit()"]
 pub struct Write<'d> {
     db: &'d Osis,

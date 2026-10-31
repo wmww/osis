@@ -35,7 +35,7 @@ fn blob(n: u8) -> Vec<u8> {
 }
 
 fn put(b: &[u8], stamped: bool, expiry: Option<u64>) -> Put<'_> {
-    Put { blob_id: osis_label::blob_id(b), blob: b, wrap: [b.len() as u8; WRAP_LEN], stamp: stamped.then_some(Signature([b.len() as u8; 64])), expiry, ephemeral: false, presence: false, tie: 0, replaces: &[], now: 0 }
+    Put { blob_id: osis_label::blob_id(b), blob: b, wrap: [b.len() as u8; WRAP_LEN], stamp: stamped.then_some(Signature([b.len() as u8; 64])), expiry, ephemeral: false, replaces: &[], now: 0 }
 }
 
 fn id(n: u8) -> BlobId {
@@ -518,58 +518,8 @@ proptest! {
     }
 }
 
-// spec/sync.md §5 (servers may rate-limit deletes; a presence entry's leaves no tombstone):
-// deletes of presence entries are not counted against the label's delete rate (an author
-// replaces its presence entry per update), other ephemeral deletes still are
-#[test]
-fn presence_deletes_not_rate_limited() {
-    let mut e = env(Policy { deletes: 2, ..Policy::default() });
-    let l = e.f.label;
-    let blobs: Vec<Vec<u8>> = (0..10).map(|n| eph_blob(n, 64)).collect();
-    for b in &blobs[..6] {
-        assert_eq!(e.store.put(&l, Put { presence: true, ..eph_put(b, None) }).unwrap(), Code::OK);
-    }
-    for b in &blobs[6..] {
-        assert_eq!(e.store.put(&l, eph_put(b, None)).unwrap(), Code::OK);
-    }
-    for b in &blobs[..6] {
-        assert_eq!(e.store.delete(&l, &osis_label::blob_id(b), T0).unwrap(), Code::OK);
-    }
-    assert_eq!(e.store.delete(&l, &osis_label::blob_id(&blobs[6]), T0).unwrap(), Code::OK);
-    assert_eq!(e.store.delete(&l, &osis_label::blob_id(&blobs[7]), T0).unwrap(), Code::OK);
-    assert_eq!(e.store.delete(&l, &osis_label::blob_id(&blobs[8]), T0).unwrap(), Code::RATE_LIMITED);
-}
-
-// spec/sync.md §5 (a presence entry deleted or replaced is tombstoned until its expiry; one whose
-// last tie closed is not), notes/ephemeral.md Presence: a reader that kept an author's
-// replaced presence entries cannot upload them again
-#[test]
-fn replaced_presence_tombstoned_until_expiry() {
-    let mut e = env(Policy::default());
-    let l = e.f.label;
-    let exp = T0 + 20 * 60_000;
-    let b: Vec<Vec<u8>> = (0..4).map(|n| eph_blob(n, 64)).collect();
-    let pid = |n: usize| osis_label::blob_id(&b[n]);
-    let pres = |n: usize, tie: u64| Put { presence: true, tie, now: T0, ..eph_put(&b[n], Some(exp)) };
-    assert_eq!(e.store.put(&l, pres(0, 1)).unwrap(), Code::OK);
-    let replaces = [Replaced::Untie(pid(0))];
-    assert_eq!(e.store.put(&l, Put { replaces: &replaces, ..pres(1, 1) }).unwrap(), Code::OK);
-    assert!(e.store.entry(&l, &pid(0)).unwrap().is_none());
-    assert!(e.store.tombstoned(&l, &pid(0)).unwrap(), "replaced: tombstoned");
-    assert_eq!(e.store.delete(&l, &pid(1), T0).unwrap(), Code::OK);
-    assert!(e.store.tombstoned(&l, &pid(1)).unwrap(), "deleted: tombstoned");
-    assert_eq!(e.store.put(&l, pres(2, 1)).unwrap(), Code::OK);
-    assert!(e.store.untie(&l, &pid(2), 1).unwrap());
-    assert!(!e.store.tombstoned(&l, &pid(2)).unwrap(), "its last tie closed: no tombstone (its author uploads it again)");
-    e.store.sweep(exp - 1, 1024).unwrap();
-    assert!(e.store.tombstoned(&l, &pid(0)).unwrap());
-    e.store.sweep(exp, 1024).unwrap();
-    assert!(!e.store.tombstoned(&l, &pid(0)).unwrap() && !e.store.tombstoned(&l, &pid(1)).unwrap(), "gone at the entries' expiry");
-}
-
 // spec/sync.md §5 (ephemeral memory capped per label, log records counted): the log records of
-// deletions (a presence entry replaced per update, a covered entry deleted) stay within the
-// label's cap: older records are trimmed (sim `ephemeral` seed 13: a label 58 B over its cap)
+// deletions (a covered entry deleted) stay within the label's cap: older records are trimmed (sim `ephemeral` seed 13: a label 58 B over its cap)
 #[test]
 fn deletion_records_within_cap() {
     let cap = 8 << 10;
@@ -580,14 +530,7 @@ fn deletion_records_within_cap() {
     while e.store.put(&l, eph_put(&eph_blob(n, 64), None)).unwrap() == Code::OK {
         n += 1;
     }
-    let plain = n;
-    for k in 0..200u32 {
-        let b = eph_blob(1_000_000 + k, 64);
-        assert_eq!(e.store.put(&l, Put { presence: true, ..eph_put(&b, None) }).unwrap(), Code::OK);
-        assert_eq!(e.store.delete(&l, &osis_label::blob_id(&b), T0).unwrap(), Code::OK);
-        assert!(e.store.ephemeral_bytes(&l) <= cap, "presence deletes: {} B over {cap}", e.store.ephemeral_bytes(&l));
-    }
-    for k in 0..plain {
+    for k in 0..n {
         e.store.delete(&l, &osis_label::blob_id(&eph_blob(k, 64)), T0).unwrap();
         assert!(e.store.ephemeral_bytes(&l) <= cap, "deletes: {} B over {cap}", e.store.ephemeral_bytes(&l));
     }

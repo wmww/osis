@@ -290,7 +290,7 @@ impl Engine {
             if let Some(delta) = delta {
                 let r = w.range();
                 let pre = state.footprint(&delta);
-                out.push(Resolved { tid: la.tid, ak: la.ak, delta, range: (r.lo, r.hi), expires: None, presence: false, log: Some((pre, la.schema)) });
+                out.push(Resolved { tid: la.tid, ak: la.ak, delta, range: (r.lo, r.hi), expires: None, log: Some((pre, la.schema)) });
             }
         }
         Ok(out)
@@ -322,7 +322,6 @@ impl Engine {
         let core = Arc::new(osis_schema::core_schema().clone());
         for ((tid, ak), ops) in ops {
             let Some(a) = self.eph.aspects.get(&tid).and_then(|m| m.get(&ak)) else { continue };
-            let presence = a.presence;
             let at = out.iter().position(|r| r.tid == tid && r.ak == ak);
             let mut state = a.state.clone();
             if let Some(r) = at.and_then(|i| out.get(i)) {
@@ -347,7 +346,7 @@ impl Engine {
                         p.join(pre);
                     }
                 }
-                None => out.push(Resolved { tid, ak, delta, range: (r.lo, r.hi), expires: None, presence, log: Some((pre, schema)) }),
+                None => out.push(Resolved { tid, ak, delta, range: (r.lo, r.hi), expires: None, log: Some((pre, schema)) }),
             }
         }
         Ok(())

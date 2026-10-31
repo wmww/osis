@@ -357,98 +357,6 @@ fn ephemeral_entries_in_memory() {
     assert_eq!(sorted(want), sorted(ids));
 }
 
-// spec/sync.md §5 (presence entries): a presence entry goes when every connection that uploaded it
-// has closed, pushed to subscribers as a deletion; it leaves no tombstone (its author uploads it
-// again on reconnect); it is never replicated to a peer server (a plain ephemeral entry is)
-#[test]
-fn presence_entries_tied_to_connection_spec_sync_5() {
-    let mut w = World::new();
-    let (h, h2) = (w.add_hub(Policy::default()), w.add_hub(Policy::default()));
-    // clients before any peer link: client index = link index
-    let (a, b, c) = (w.connect(h), w.connect(h), w.connect(h));
-    let l = Label::new(3);
-    w.setup(a, &l);
-    for x in [a, b, c] {
-        w.open(x, &l);
-    }
-    w.run(c, Command::Subscribe { labels: vec![l.id] });
-    let p = classed(1, osis_label::Class::Presence);
-    let e = classed(2, osis_label::Class::Ephemeral);
-    let (pid, eid) = (osis_label::blob_id(&p), osis_label::blob_id(&e));
-    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(p.clone()), l.entry(e.clone())] })), vec![Code::OK, Code::OK]);
-    assert_eq!(statuses(&w.run(b, Command::Upload { label: l.id, entries: vec![l.entry(p.clone())] })), vec![Code::OK]);
-    let (pushed, _) = events_of(&w.take(c));
-    assert_eq!(sorted(added(&pushed)), sorted(vec![pid, eid]));
-    // not replicated
-    let link = w.peer(h, h2);
-    let d = w.connect(h2);
-    w.open(d, &l);
-    let (evs, _) = events_of(&w.run(d, sync(l.id, None, vec![], vec![])));
-    assert_eq!(added(&evs), vec![eid], "the plain ephemeral entry is replicated, the presence one not");
-    w.cut(link);
-    // a closes: b uploaded it too, it stays
-    w.cut(a);
-    let (evs, _) = events_of(&w.run(c, sync(l.id, None, vec![], vec![])));
-    assert_eq!(sorted(added(&evs)), sorted(vec![pid, eid]));
-    w.take(c);
-    w.cut(b);
-    let (pushed, _) = events_of(&w.take(c));
-    assert_eq!(pushed, vec![Event::Deleted(pid)], "pushed as a deletion when the last uploader left");
-    let (evs, _) = events_of(&w.run(c, sync(l.id, None, vec![], vec![])));
-    assert_eq!(added(&evs), vec![eid], "the plain one stays");
-    // no tombstone: its author uploads it again
-    let a2 = w.connect(h);
-    w.open(a2, &l);
-    assert_eq!(statuses(&w.run(a2, Command::Upload { label: l.id, entries: vec![l.entry(p.clone())] })), vec![Code::OK]);
-}
-
-// spec/sync.md §5 (Replace): an upload's own presence entries go by the connection's tie, logged
-// after the new entry; an untie of an entry not tied to this connection (another's, a durable
-// one) is skipped: the upload is taken and that entry stays; an entry tied elsewhere too only
-// loses this tie
-#[test]
-fn upload_replaces_by_tie_spec_sync_5() {
-    let mut w = World::new();
-    let h = w.add_hub(Policy::default());
-    let (a, b, c) = (w.connect(h), w.connect(h), w.connect(h));
-    let l = Label::new(3);
-    w.setup(a, &l);
-    for x in [a, b, c] {
-        w.open(x, &l);
-    }
-    w.run(c, Command::Subscribe { labels: vec![l.id] });
-    let p: Vec<Vec<u8>> = (1..=5).map(|n| classed(n, osis_label::Class::Presence)).collect();
-    let id: Vec<BlobId> = p.iter().map(|x| osis_label::blob_id(x)).collect();
-    let with = |e: &[u8], r: Vec<Replace>| Entry { replaces: r, ..l.entry(e.to_vec()) };
-    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(p[0].clone())] })), vec![Code::OK]);
-    w.take(c);
-    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![with(&p[1], vec![Replace::Untie(id[0])])] })), vec![Code::OK]);
-    let (pushed, _) = events_of(&w.take(c));
-    assert_eq!(added(&pushed), vec![id[1]]);
-    assert_eq!(pushed.last(), Some(&Event::Deleted(id[0])), "the replaced entry goes after the new one is added");
-    // a replay on another connection naming a's entry: taken, a's entry stays (an upload that
-    // could be refused here would let a replayer of a's old entry block a's updates)
-    let ev = w.run(b, Command::Upload { label: l.id, entries: vec![with(&p[2], vec![Replace::Untie(id[1])])] });
-    assert_eq!(statuses(&ev), vec![Code::OK]);
-    let live = osis_proto::LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap();
-    assert!(live.contains(&id[1]) && live.contains(&id[2]), "{live:?}");
-    // naming an entry no longer held replaces nothing and is taken
-    assert_eq!(statuses(&w.run(b, Command::Upload { label: l.id, entries: vec![with(&p[2], vec![Replace::Untie(id[0])])] })), vec![Code::OK]);
-    // tied to a and b: a's replacement only unties a
-    assert_eq!(statuses(&w.run(b, Command::Upload { label: l.id, entries: vec![l.entry(p[1].clone())] })), vec![Code::OK]);
-    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![with(&p[3], vec![Replace::Untie(id[1])])] })), vec![Code::OK]);
-    let live = osis_proto::LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap();
-    assert!(live.contains(&id[1]) && live.contains(&id[3]), "b still holds it");
-    w.cut(b);
-    let live = osis_proto::LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap();
-    assert!(!live.contains(&id[1]) && !live.contains(&id[2]), "gone with b's tie: {live:?}");
-    // a durable entry is never untied
-    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(7))] })), vec![Code::OK]);
-    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![with(&p[4], vec![Replace::Untie(bid(7))])] })), vec![Code::OK]);
-    let live = osis_proto::LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap();
-    assert!(live.contains(&bid(7)) && live.contains(&id[4]), "{live:?}");
-}
-
 // spec/sync.md §5 (Replace), §7: on a label at its entry cap, an upload naming a held entry with
 // its delete proof is admitted in the room it frees and removes it in the same step (a tombstone
 // as a Delete leaves); a bad proof refuses the upload and removes nothing
@@ -463,11 +371,11 @@ fn upload_replaces_by_delete_proof_at_cap_spec_sync_5() {
     assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: (0..3).map(|n| l.entry(blob(n))).collect() })), vec![Code::OK; 3]);
     assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(3))] })), vec![Code::STORAGE_CAP]);
     let item = |n: u64, k: &SigningSecret| DeleteItem::sign(k, &l.id, bid(n), None).unwrap();
-    let with = |n: u64, r: Vec<Replace>| Entry { replaces: r, ..l.entry(blob(n)) };
+    let with = |n: u64, r: Vec<DeleteItem>| Entry { replaces: r, ..l.entry(blob(n)) };
     let bad = item(0, &l.head_keys().write.clone());
-    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![with(3, vec![Replace::Delete(bad)])] })), vec![Code::REFUSED]);
+    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![with(3, vec![bad])] })), vec![Code::REFUSED]);
     let good = item(0, &l.head_keys().delete.clone());
-    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![with(3, vec![Replace::Delete(good)])] })), vec![Code::OK]);
+    assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![with(3, vec![good])] })), vec![Code::OK]);
     let live = osis_proto::LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap();
     assert_eq!(live, sorted(vec![bid(1), bid(2), bid(3)]));
     assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(0))] })), vec![Code::TOMBSTONED]);

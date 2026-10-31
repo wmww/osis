@@ -109,14 +109,14 @@ impl<B: Backend> Hub<B> {
         if held.values().sum::<usize>() >= self.store.policy().max_connections {
             let victim = osis_transport::evict_for(&held, &source).and_then(|v| self.conns.iter().rev().find(|(_, c)| matches!(c, Conn::Served { source, .. } if *source == v)).map(|(k, _)| *k));
             let Some(v) = victim else { return vec![HubOutput::Close(id)] };
-            out.extend(self.batch(now, |h, o| h.remove(now, v, o)));
+            self.remove(v);
             out.push(HubOutput::Close(v));
             out.push(HubOutput::Diagnostic(format!("connection {v}: closed for a connection from a source holding fewer slots")));
         }
-        let cfg = ServerConfig { static_key: self.static_key, challenge: self.challenge(), tie: id };
+        let cfg = ServerConfig { static_key: self.static_key, challenge: self.challenge() };
         let hello_by = Some(now.saturating_add(self.store.policy().hello_ms));
         self.conns.insert(id, Conn::Served { c: Box::new(ServerConnection::new(cfg)), peer, hello_by, buffered: 0, source });
-        out.extend(self.batch(now, |h, out| h.serve(now, id, ServerInput::Start, out)));
+        out.extend(self.batch(|h, out| h.serve(now, id, ServerInput::Start, out)));
         out
     }
 
@@ -124,14 +124,14 @@ impl<B: Backend> Hub<B> {
     pub fn peer_up(&mut self, now: u64, id: ConnId, peer_key: [u8; 32]) -> Vec<HubOutput> {
         let challenge = self.challenge();
         self.conns.insert(id, Conn::Peer { r: Box::new(Replicator::new(peer_key, challenge)), timer: None });
-        self.batch(now, |h, out| h.replicate(now, id, Some(ClientInput::Start), out))
+        self.batch(|h, out| h.replicate(now, id, Some(ClientInput::Start), out))
     }
 
     /// Runs `f` with the store's commits made durable once at its end (one fsync for a whole
     /// message of entries, spec/requirements.md: peer input never causes unbounded work), before
     /// any output leaves. If that fails, nothing the batch would send goes: the connections it
     /// would have written to are closed (their peers retry what went unanswered).
-    fn batch(&mut self, now: u64, f: impl FnOnce(&mut Hub<B>, &mut Vec<HubOutput>)) -> Vec<HubOutput> {
+    fn batch(&mut self, f: impl FnOnce(&mut Hub<B>, &mut Vec<HubOutput>)) -> Vec<HubOutput> {
         self.store.defer_durability();
         let mut out = Vec::new();
         f(self, &mut out);
@@ -147,7 +147,7 @@ impl<B: Backend> Hub<B> {
             out.push(HubOutput::Diagnostic(format!("storage sync: {e}")));
             for id in dead {
                 if self.conns.contains_key(&id) {
-                    self.remove(now, id, &mut out);
+                    self.remove(id);
                     self.conns.remove(&id);
                     out.push(HubOutput::Close(id));
                 }
@@ -158,10 +158,10 @@ impl<B: Backend> Hub<B> {
 
     /// Bytes arrived on a connection.
     pub fn input(&mut self, now: u64, id: ConnId, bytes: Vec<u8>) -> Vec<HubOutput> {
-        self.batch(now, |h, out| match h.conns.get(&id) {
+        self.batch(|h, out| match h.conns.get(&id) {
             Some(Conn::Served { .. }) => {
                 h.serve(now, id, ServerInput::Bytes(bytes), out);
-                h.limit_buffered(now, out);
+                h.limit_buffered(out);
             }
             Some(Conn::Peer { .. }) => h.replicate(now, id, Some(ClientInput::Bytes(bytes)), out),
             None => {}
@@ -173,7 +173,7 @@ impl<B: Backend> Hub<B> {
     /// connection's pushes (`ServerInput::Taken`). The driver reports it before `tick`, before
     /// a connection's input bytes, and at `PUSH_POLL_MS` while one holds pushes (`next_due`).
     pub fn sent(&mut self, now: u64, ids: &[(ConnId, u64)]) -> Vec<HubOutput> {
-        self.batch(now, |h, out| {
+        self.batch(|h, out| {
             for (id, n) in ids {
                 match h.conns.get(id) {
                     Some(Conn::Peer { .. }) => h.replicate(now, *id, Some(ClientInput::Sent), out),
@@ -184,30 +184,16 @@ impl<B: Backend> Hub<B> {
         })
     }
 
-    /// The connection is gone (either side closed it): the presence entries it uploaded go
-    /// (spec/sync.md §5), pushed to the subscriptions as deletions.
-    pub fn closed(&mut self, now: u64, id: ConnId) -> Vec<HubOutput> {
-        self.batch(now, |h, out| h.remove(now, id, out))
+    /// The connection is gone (either side closed it). Runs as a batch: what an earlier failed
+    /// sync left visible is synced now.
+    pub fn closed(&mut self, id: ConnId) -> Vec<HubOutput> {
+        self.batch(|h, _| h.remove(id))
     }
 
-    /// Forgets a connection and its partial frame bytes; unties it from the presence entries it
-    /// uploaded, removing those no other open connection's tie holds (spec/sync.md §5).
-    fn remove(&mut self, now: u64, id: ConnId, out: &mut Vec<HubOutput>) {
-        let Some(Conn::Served { c, buffered, .. }) = self.conns.remove(&id) else { return };
+    /// Forgets a connection and its partial frame bytes.
+    fn remove(&mut self, id: ConnId) {
+        let Some(Conn::Served { buffered, .. }) = self.conns.remove(&id) else { return };
         self.buffered = self.buffered.saturating_sub(buffered);
-        let mut grew = std::collections::BTreeSet::new();
-        for (l, b) in c.presence() {
-            match osis_proto::LabelStore::untie(&mut self.store, l, b, id) {
-                Ok(true) => {
-                    grew.insert(*l);
-                }
-                Ok(false) => {}
-                Err(e) => out.push(HubOutput::Diagnostic(format!("presence of connection {id}: {e}"))),
-            }
-        }
-        for l in grew {
-            self.changed(now, l, out);
-        }
     }
 
     /// Partial frame bytes held for all served connections.
@@ -217,10 +203,10 @@ impl<B: Backend> Hub<B> {
 
     /// Over `max_buffered_bytes` of partial frames: closes the connections holding the largest
     /// until under it (anyone who can connect could otherwise hold `MAX_MESSAGE` per connection).
-    fn limit_buffered(&mut self, now: u64, out: &mut Vec<HubOutput>) {
+    fn limit_buffered(&mut self, out: &mut Vec<HubOutput>) {
         while self.buffered > self.store.policy().max_buffered_bytes {
             let Some(id) = self.conns.iter().filter_map(|(id, c)| if let Conn::Served { buffered, .. } = c { Some((*buffered, *id)) } else { None }).max().map(|(_, id)| id) else { break };
-            self.remove(now, id, out);
+            self.remove(id);
             out.push(HubOutput::Close(id));
             out.push(HubOutput::Diagnostic(format!("connection {id}: closed, partial frames over the budget")));
         }
@@ -229,7 +215,7 @@ impl<B: Backend> Hub<B> {
     /// Runs what is due: a bounded sweep (expiry, timed deletes, tombstones, claim sets), Hello
     /// deadlines, replication work and timers.
     pub fn tick(&mut self, now: u64) -> Vec<HubOutput> {
-        self.batch(now, |h, out| h.tick_in(now, out))
+        self.batch(|h, out| h.tick_in(now, out))
     }
 
     fn tick_in(&mut self, now: u64, out: &mut Vec<HubOutput>) {
@@ -250,7 +236,7 @@ impl<B: Backend> Hub<B> {
         }
         let late: Vec<ConnId> = self.conns.iter().filter(|(_, c)| matches!(c, Conn::Served { hello_by: Some(t), .. } if *t <= now)).map(|(id, _)| *id).collect();
         for id in late {
-            self.remove(now, id, out);
+            self.remove(id);
             out.push(HubOutput::Close(id));
         }
         let due: Vec<(ConnId, bool)> = self
@@ -298,7 +284,7 @@ impl<B: Backend> Hub<B> {
             match o {
                 ServerOutput::Send(b) => out.push(HubOutput::Send(id, b)),
                 ServerOutput::Close => {
-                    self.remove(now, id, out);
+                    self.remove(id);
                     out.push(HubOutput::Close(id));
                 }
                 ServerOutput::Changed(l) => self.changed(now, l, out),

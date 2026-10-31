@@ -29,7 +29,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `MAX_DELTA_BARE` 2^18 | R | no bare runs / a small delta creates unbounded records |
 | `MAX_PAGE_ITEMS` 2^21 | R (validity rule, every durable reader alike; honest worst case about 1.4 x 2^20, notes/crdt.md Page items) | every delta invalid / one blob decodes to GBs |
 | `MAX_RELAY_BLOB` 64 KiB | R | no relay-only blobs / relays as big as blobs |
-| `MAX_DRIFT`, `MAX_LEASE`, `KEEPALIVE`, `MEMBERSHIP_KEEP`, `AT_MOST_GRACE`, `INBOX_LIFETIME`, `HEARTBEAT_*`, `TOMBSTONE_LIFETIME`, `MAX_CLAIMS`, LAN window | O | sign-off list |
+| `MAX_DRIFT`, `MEMBERSHIP_KEEP`, `AT_MOST_GRACE`, `INBOX_LIFETIME`, `HEARTBEAT_*`, `TOMBSTONE_LIFETIME`, `MAX_CLAIMS`, LAN window | O | sign-off list |
 | `RESOLUTION_HOPS` 8 | M | no resolution / cycles (guarded); past it a tid reads as an intermediate copy |
 | `MAX_OWNER_DEPTH` 64 | R | only key actors / unbounded chain walks; deeper is invalid everywhere alike |
 | `MAX_LINKED_FRONTIERS` 64 MiB | R | no linked frontiers / unbounded snapshot work |
@@ -59,14 +59,14 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `OLDER_KEYS` 8 | M | every stale key REFUSED / unbounded signature checks per refused item; past it a writer 8+ rotations behind gets REFUSED instead of 9 (neither carries the head); the entry stays unsent and goes again at the next pass, under the head the connection learned by open (a stale sync key opens to its child and walks) or by registration pushes (checked) |
 | `MAX_CACHED` 64 | P | head keys only: reload per message (two store reads, up to 33 key parses) / memory (about 7 KB each per connection, any label a peer names; 4096 was up to 30 MB per connection) |
 | `MAX_CROSSED` 2^14, `MAX_ORIGINS` 2^20 | P (optimizations, cleared past the cap) | blobs inlined back, entries replicated back to their origin (refused there as held) / memory |
-| `PRESENCE_PRUNE` 1024, `SEQ_BLOCK` 1024 | P (commented in code) | |
+| `SEQ_BLOCK` 1024 | P (commented in code) | |
 | `ENTRY_OVERHEAD` 896, `TOMB_OVERHEAD` 160, `REC_OVERHEAD` 96 | measured, tested (`overheads_cover_the_structures`) | |
 | `EPH_LOG_KEEP` 2^16 | R (commented) | every cursor replays / log bounded by the cap only |
 | `EPH_TOMBSTONE_MS` = `MAX_DRIFT` | M (commented) | |
 | `MAX_RELAY_SEEN` 2^16 | M (commented) | |
 | connection source = IPv6 /64 (`osis_transport::Source`; slots shared by source, `evict_for`, no per-source number) | M (commented): a holder of a larger prefix counts as many sources; /128 would let one host take every slot, /0 makes every client one source | |
 | `RelayLimits` 6000 / 32 MiB per 60 s | R (rate, code 4) | no relays / relay floods |
-| `Policy` defaults: caps per label (2^20 entries, 16 GiB), totals (2^20 labels, 2^26 entries, 256 GiB), rates per 60 s (deletes, replacements 20 000, deposits 600, registers 600, `entry_replacements` 4), ephemeral 16 MiB/label, 1 GiB total, presence 4 MiB, `log_keep` 2^20, `max_connections` 10 000, `hello_ms` 10 s, `max_buffered_bytes` 512 MiB | R (operator config; refuse with a code or close) | |
+| `Policy` defaults: caps per label (2^20 entries, 16 GiB), totals (2^20 labels, 2^26 entries, 256 GiB), rates per 60 s (deletes, replacements 20 000, deposits 600, registers 600, `entry_replacements` 4), ephemeral 16 MiB/label, 1 GiB total, `log_keep` 2^20, `max_connections` 10 000, `hello_ms` 10 s, `max_buffered_bytes` 512 MiB | R (operator config; refuse with a code or close) | |
 | `Policy::over_cap_step_ms` 1 h | R | a child step past the byte caps even without its claim set: one per label per interval, else Error 12 (the admin's node keeps its open and retries each resync). 0: bare steps bounded only by `registers` (600/min per label, kept for good: disk growth past the cap at bandwidth); infinity: one such step per label until room appears, so a later removal's rotation waits at that full server (the removed member keeps opening there; uploads are refused for the cap anyway). Only a valid child of the head spends it (signed by the label's admin; a replay of one is a no-op or 9), so outsiders cannot spend it for an honest label; filling the server (anyone, `max_bytes`) puts every label on it at one rotation per interval, while its uploads are refused for the cap anyway. An admin of the label (or one being removed, until the removal lands) can take each interval's slot first: the same power it has by spending `registers`. A clock set back waits at most one interval |
 | `max_queued_bytes` 48 MiB (at least `SEND_QUEUE` = `WINDOW_QUEUE` + `PUSH_QUEUE`, config refuses less) | R (a peer that does not read) | sessions keeping the window closed / unbounded buffer |
 | `PUSH_POLL_MS` 1 s | M (held pushes resume up to this late after the queue drains) | the driver spins while a slow subscriber drains / pushes wait for an unrelated tick |
@@ -103,7 +103,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `SETTLE_MS` 30 s, `RELAY_MIN_MS` 5 s | M (co-writers both upload: duplicate work, idempotent) | |
 | `RELINK_BACKOFF_MS` 1 h - 7 days | R (a server deleting fresh chunks) | |
 | `SyncConfig` defaults: `resync_ms` 60 s, `retry_ms` 5 s, `peer_retry_ms` 60 s, `tight_budget` 16, `peer_pass_wait_ms` 5 min, `heartbeat_lifetime_ms` 2 days | M | |
-| `SyncConfig` defaults: `max_peers_per_label` 8, `max_peers` 64, `peer_bytes` 64 MiB, `peer_total_bytes` 1 GiB, `unvouched_cap` 2^16, `ephemeral_bytes` 16 MiB (memory held, decoded: `Engine::ephemeral_charge`; kept at 16 MiB when it switched from encoded bytes: about 4,000 tiny map entries or 7,000 small parts per label, far above presence, cursors and selections, while 0 holds nothing of others and infinity lets a writer fill memory; a commit is decoded part by part only within the room left, each part's pre-decode bound `part_bound` fitting, else refused with a diagnostic) | R | |
+| `SyncConfig` defaults: `max_peers_per_label` 8, `max_peers` 64, `peer_bytes` 64 MiB, `peer_total_bytes` 1 GiB, `unvouched_cap` 2^16, `ephemeral_bytes` 16 MiB (memory held, decoded: `Engine::ephemeral_charge`; kept at 16 MiB when it switched from encoded bytes: about 4,000 tiny map entries or 7,000 small parts per label, far above cursors and selections, while 0 holds nothing of others and infinity lets a writer fill memory; a commit is decoded part by part only within the room left, each part's pre-decode bound `part_bound` fitting, else refused with a diagnostic) | R | |
 | diagnostics kept 256 | M | |
 
 ### Engine, keys, perm, crdt, store, schema, API
@@ -133,6 +133,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | osis `DEFAULT_LIMIT` 64 MiB | R (error past it) | |
 | osis `DEFAULT_WAIT` 60 s, `PRESYNC_WAIT` 30 s, cli `DEFAULT_WAIT` 30 s | M (the caller gets an error) | |
 | osis `DEFAULT_IDLE_COMMIT` 2 s | M (a crash loses at most that much typing) | |
+| osis `REFRESH_DIVISOR` 2: `KeepAlive` rewrites every half of its key's default expiry | M (past the other half's slack a holder sees the value blink off until the rewrite arrives) | 1: it blinks at every refresh / a write per moment; at 2 a holder holds about three writes per kept value |
 | osis `STOP_WAIT` 5 s | M (the database is already durable) | |
 | osis `OFFER_LIFETIME_MS` 10 min | M | |
 
