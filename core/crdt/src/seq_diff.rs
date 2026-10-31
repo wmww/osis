@@ -47,6 +47,20 @@ pub(crate) fn lcs<A, B>(a: &[A], b: &[B], eq: impl Fn(&A, &B) -> bool) -> Vec<(u
     out
 }
 
+/// The changed stretches of `a → b` (the gaps of a longest common subsequence), ascending:
+/// each a range of `a` replaced by a range of `b`.
+pub fn changes<T: PartialEq>(a: &[T], b: &[T]) -> Vec<(Range<usize>, Range<usize>)> {
+    let mut out = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    for (ki, kj) in lcs(a, b, |x: &T, y: &T| x == y).into_iter().chain([(a.len(), b.len())]) {
+        if ki > i || kj > j {
+            out.push((i..ki, j..kj));
+        }
+        (i, j) = (ki + 1, kj + 1);
+    }
+    out
+}
+
 /// The script `a → b` without its `Keep`s outside the changed middle (what `script` over `lcs`
 /// gives there: the common prefix and suffix are kept), and the middle's bounds in `a`.
 fn mid_script<A, B>(a: &[A], b: &[B], eq: impl Fn(&A, &B) -> bool, pair: bool) -> (Vec<Step>, Range<usize>) {

@@ -519,7 +519,7 @@ fn text_sessions_merge_spec_crdt_5_7() {
     let sb = db.edit_text(t, db.key("/n/body").unwrap(), osis::Path::root()).unwrap();
     assert_eq!(sb.text(), "hello");
     let (tx, rx) = std::sync::mpsc::channel();
-    sa.on_remote(move |s| {
+    sa.on_remote(move |s, _| {
         let _ = tx.send(s.to_string());
     });
     sb.insert(5, " world").unwrap();
@@ -532,6 +532,107 @@ fn text_sessions_merge_spec_crdt_5_7() {
     w.run();
     db.settle();
     assert_eq!(sb.text(), merged);
+}
+
+/// Two paired devices with a text thing `t` reading "hello world", and a session on it from
+/// the first.
+fn text_pair() -> (World, Osis, Osis, Tid, osis::TextSession) {
+    let mut w = World::new();
+    let sv = w.add_server();
+    let (da, _) = w.person(1, &[sv]);
+    w.run();
+    let join = Osis::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
+    let (_, reply) = da.pair_accept(join.request()).unwrap();
+    let db = join.finish(&reply).unwrap();
+    for d in [&da, &db] {
+        d.register_schema_source("t.osis", TEXT_SCHEMA).unwrap();
+    }
+    let t = da.write_with(|w| w.create_in(da.me(), &[da.home()])).unwrap();
+    let sa = da.edit_text(t, da.key("/n/body").unwrap(), osis::Path::root()).unwrap();
+    sa.insert(0, "hello world").unwrap();
+    sa.commit().unwrap();
+    w.run();
+    db.settle();
+    (w, da, db, t, sa)
+}
+
+/// The `Uncommitted` diagnostics of `db`, as they arrive.
+fn uncommitted(db: &Osis) -> (osis::Subscription, std::sync::mpsc::Receiver<Vec<Tid>>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let sub = db.on_diagnostic(move |_, d| {
+        if d.kind == osis::DiagnosticKind::Uncommitted {
+            let _ = tx.send(d.tids);
+        }
+    });
+    (sub, rx)
+}
+
+// notes/api.md Text sessions (`on_remote` edits): a remote edit in the middle of the text
+// reaches the session as splices, each at the text before it; applied in order they give the
+// merged text, and a caret mapped through them stays on its char.
+#[test]
+fn text_session_remote_splices_map_caret() {
+    let (mut w, _da, db, t, sa) = text_pair();
+    let (tx, rx) = std::sync::mpsc::channel();
+    sa.on_remote(move |s, e| {
+        let _ = tx.send((s.to_string(), e.to_vec()));
+    });
+    let sb = db.edit_text(t, db.key("/n/body").unwrap(), osis::Path::root()).unwrap();
+    assert_eq!(sb.text(), "hello world");
+    sb.replace(0..1, "H").unwrap();
+    sb.insert(6, "big ").unwrap();
+    sb.commit().unwrap();
+    w.run();
+    let (merged, edits) = recv(&rx);
+    assert_eq!(merged, "Hello big world");
+    assert!(edits.len() >= 2, "two separate edits: {edits:?}");
+    let mut text: Vec<char> = "hello world".chars().collect();
+    for e in &edits {
+        text.splice(e.at..e.at + e.del, e.text.chars());
+    }
+    assert_eq!(text.iter().collect::<String>(), merged);
+    let old: Vec<char> = "hello world".chars().collect();
+    let map = |c: usize| edits.iter().fold(c, |c, e| e.map(c));
+    for caret in [2, 3, 8, 9] {
+        assert_eq!(text.get(map(caret)), old.get(caret), "caret {caret} -> {}", map(caret));
+    }
+    assert_eq!(map(11), text.len(), "the end stays the end");
+}
+
+// notes/api.md Text sessions: a session whose thing another device deleted drops its pending
+// text when it is dropped and reports it (`Uncommitted`): it never recreates the thing.
+#[test]
+fn text_session_after_remote_delete_drops() {
+    let (mut w, da, db, t, sa) = text_pair();
+    let (_d, rx) = uncommitted(&da);
+    db.write_with(|w| w.delete(t)).unwrap();
+    sa.insert(11, "!").unwrap();
+    w.run();
+    assert!(!da.knows(t), "deleted here");
+    sa.insert(0, "> ").unwrap();
+    drop(sa);
+    assert_eq!(recv(&rx), vec![t]);
+    w.run();
+    for d in [&da, &db] {
+        assert!(!d.knows(t), "not recreated");
+        assert_eq!(d.get(t, d.key("/n/body").unwrap()).unwrap(), None);
+    }
+}
+
+// notes/api.md Text sessions: the same for a delete on the session's own device.
+#[test]
+fn text_session_after_local_delete_drops() {
+    let (mut w, da, db, t, sa) = text_pair();
+    let (_d, rx) = uncommitted(&da);
+    sa.insert(11, "!").unwrap();
+    da.write_with(|w| w.delete(t)).unwrap();
+    drop(sa);
+    assert_eq!(recv(&rx), vec![t]);
+    w.run();
+    for d in [&da, &db] {
+        assert!(!d.knows(t), "not recreated");
+        assert_eq!(d.get(t, d.key("/n/body").unwrap()).unwrap(), None);
+    }
 }
 
 // notes/api.md Sync configuration (`add_server`), spec/sync.md §2 (`/label` servers, inbox): a

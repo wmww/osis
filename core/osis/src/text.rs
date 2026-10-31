@@ -2,9 +2,11 @@
 //! one commit per editing pause, never per keystroke): a buffer the UI edits; `commit` writes
 //! what changed since the last commit as one edit (a sequence edit rebased onto the current text
 //! for a `text` position, a register write otherwise); remote changes are merged into the buffer
-//! (local edits are committed first) and reported through `on_remote`. A session commits on
-//! `commit`, after `Config::idle_commit` without edits (a timer on the database's runtime;
-//! without one, at the next edit), and on drop.
+//! (local edits are committed first) and reported through `on_remote` with the edits as
+//! `Splice`s. A session commits on `commit`, after `Config::idle_commit` without edits (a timer
+//! on the database's runtime; without one, at the next edit), and on drop. A session whose thing
+//! was deleted since it was known drops its pending text instead (`UnknownThing`, reported as
+//! `Uncommitted` where no caller sees the error): it never recreates the thing.
 //! Not built: cut/paste with remembered ranges (issues/api-deferred.md).
 
 use crate::error::{Error, Result};
@@ -19,7 +21,38 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
-type OnRemote = Box<dyn FnMut(&str) + Send>;
+type OnRemote = Box<dyn FnMut(&str, &[Splice]) + Send>;
+
+/// One edit of a session's text by a remote change, in chars: `del` chars at `at` replaced by
+/// `text`, at the text as it was before this edit (a list applies in order).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Splice {
+    pub at: usize,
+    pub del: usize,
+    pub text: String,
+}
+
+impl Splice {
+    /// Where char position `pos` of the text before this edit is after it: one up to `at`
+    /// stays (an insert there goes after it), one past the replaced chars shifts, one inside
+    /// them moves to the end of the inserted text.
+    pub fn map(&self, pos: usize) -> usize {
+        let ins = self.text.chars().count();
+        if pos <= self.at {
+            pos
+        } else if pos >= self.at + self.del {
+            pos - self.del + ins
+        } else {
+            self.at + ins
+        }
+    }
+}
+
+/// `old → new` as splices (a char diff).
+fn splices(old: &str, new: &str) -> Vec<Splice> {
+    let (a, b): (Vec<char>, Vec<char>) = (old.chars().collect(), new.chars().collect());
+    osis_crdt::changes(&a, &b).into_iter().map(|(o, n)| Splice { at: n.start, del: o.len(), text: b.get(n).unwrap_or_default().iter().collect() }).collect()
+}
 
 struct State {
     /// The text as last committed or merged.
@@ -29,6 +62,8 @@ struct State {
     /// An idle-commit timer is pending.
     armed: bool,
     on_remote: Option<OnRemote>,
+    /// The thing was known at open or at a commit here: its absence now means it was deleted.
+    known: bool,
 }
 
 /// What a session is bound to.
@@ -97,11 +132,17 @@ fn flush(db: &Osis, b: &Bind, st: &mut State) -> Result<Option<Committed>> {
     if st.buf == st.base {
         return Ok(None);
     }
+    if st.known && !db.knows(b.tid) {
+        // deleted since: committing would recreate it
+        st.buf = st.base.clone();
+        return Err(Error::UnknownThing { tid: b.tid });
+    }
     let op = if b.seq { Op::Edit { base: Value::Str(st.base.clone()), new: Value::Str(st.buf.clone()) } } else { Op::Set(Value::Str(st.buf.clone())) };
     let mut w = db.write();
     w.raw_op(b.tid, &b.key, PathOp { path: crate::write::segs(&b.path)?, op })?;
     let c = w.commit()?;
     st.base = st.buf.clone();
+    st.known = true;
     Ok(c)
 }
 
@@ -117,7 +158,7 @@ impl Osis {
             None => String::new(),
             Some(_) => return Err(Error::Invalid("not a string".into())),
         };
-        let st = Arc::new(Mutex::new(State { base: now.clone(), buf: now, last_edit: None, armed: false, on_remote: None }));
+        let st = Arc::new(Mutex::new(State { base: now.clone(), buf: now, last_edit: None, armed: false, on_remote: None, known: self.knows(tid) }));
         let b = Bind { tid, key, path, seq };
         let (st2, b2) = (st.clone(), b.clone());
         let sub = self.at(tid, b.key.clone()).on_change(move |db, c| {
@@ -135,10 +176,11 @@ impl Osis {
                 _ => return,
             };
             if merged != s.buf {
+                let edits = splices(&s.buf, &merged);
                 s.base = merged.clone();
                 s.buf = merged.clone();
                 if let Some(f) = s.on_remote.as_mut() {
-                    f(&merged);
+                    f(&merged, &edits);
                 }
             }
         })?;
@@ -152,8 +194,9 @@ impl TextSession {
         lock(&self.st).buf.clone()
     }
 
-    /// Calls `f` with the merged text after a remote change (on the dispatcher thread).
-    pub fn on_remote(&self, f: impl FnMut(&str) + Send + 'static) {
+    /// Calls `f` with the merged text and the edits from the buffer before (on the dispatcher
+    /// thread), after a remote change.
+    pub fn on_remote(&self, f: impl FnMut(&str, &[Splice]) + Send + 'static) {
         lock(&self.st).on_remote = Some(Box::new(f));
     }
 
@@ -194,7 +237,8 @@ impl TextSession {
         })
     }
 
-    /// Commits what changed since the last commit as one commit.
+    /// Commits what changed since the last commit as one commit; `UnknownThing` (the edits
+    /// dropped) when the thing was deleted since it was known here.
     pub fn commit(&self) -> Result<Option<Committed>> {
         let mut s = lock(&self.st);
         let c = flush(&self.db, &self.b, &mut s)?;
@@ -206,6 +250,8 @@ impl TextSession {
 impl Drop for TextSession {
     fn drop(&mut self) {
         self._sub = None;
-        let _ = self.commit();
+        if let Err(e) = self.commit() {
+            uncommitted(&self.db, self.b.tid, &e);
+        }
     }
 }

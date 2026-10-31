@@ -1,7 +1,8 @@
 //! Typing into text sessions: a widget reports its whole new text; `splice` turns that into one
-//! edit of the session, keeping a remote merge the widget does not show yet.
+//! edit of the session, keeping a remote merge the widget does not show yet. `shown_edits` gives
+//! the edits a remote merge makes to what the widget shows, to keep its caret.
 
-use osis::TextSession;
+use osis::{Splice, TextSession};
 
 /// `old -> new` as one splice: (start, chars removed, chars inserted), common prefix and suffix
 /// kept. A splice inside a run of equal chars (`aa -> aaa`) can sit anywhere in it: `left` takes
@@ -23,7 +24,6 @@ fn diff(o: &[char], n: &[char], left: bool) -> (usize, usize, Vec<char>) {
 /// indices). A remote change merged into the session but not shown yet is kept: the splice goes
 /// before or after it (each placed so they are disjoint if any placement is), or, overlapping it,
 /// becomes an insert at its end (the pending `Remote` then shows both).
-/// Works around issues/text-session-app-gaps.md.
 pub fn splice(s: &TextSession, shown: &str, new: &str) -> osis::Result<()> {
     let sh: Vec<char> = shown.chars().collect();
     let nw: Vec<char> = new.chars().collect();
@@ -44,4 +44,30 @@ pub fn splice(s: &TextSession, shown: &str, new: &str) -> osis::Result<()> {
         }
     };
     s.replace(at..at + del, &ins.iter().collect::<String>())
+}
+
+/// The edits from `shown` (the widget's text) to `text` (the session's), to map the caret
+/// through: the edits the session reported since `shown` when they lead there, else one splice
+/// (typing raced the merge, or a merge landed after the report was taken).
+pub fn shown_edits(shown: &str, reported: Vec<Splice>, text: &str) -> Vec<Splice> {
+    let mut t: Vec<char> = shown.chars().collect();
+    for e in &reported {
+        if e.at + e.del > t.len() {
+            break;
+        }
+        t.splice(e.at..e.at + e.del, e.text.chars());
+    }
+    if t.iter().copied().eq(text.chars()) {
+        return reported;
+    }
+    let (at, del, ins) = diff(&shown.chars().collect::<Vec<_>>(), &text.chars().collect::<Vec<_>>(), false);
+    vec![Splice { at, del, text: ins.into_iter().collect() }]
+}
+
+/// Byte index `b` of `shown` mapped through `edits` to a byte index of `text` (what they lead
+/// to): a caret or selection end kept across a remote merge.
+pub fn map_byte(shown: &str, edits: &[Splice], text: &str, b: usize) -> usize {
+    let c = shown.get(..b).map_or(0, |p| p.chars().count());
+    let c = edits.iter().fold(c, |c, e| e.map(c));
+    text.char_indices().nth(c).map_or(text.len(), |(i, _)| i)
 }

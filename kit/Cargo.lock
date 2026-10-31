@@ -2030,8 +2030,6 @@ dependencies = [
 [[package]]
 name = "masonry"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2785b63305e5df51292592d861700ad52a424a5cfd38b110db68f9db2bd0798"
 dependencies = [
  "accesskit",
  "dpi",
