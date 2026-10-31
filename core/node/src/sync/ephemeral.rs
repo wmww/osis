@@ -226,6 +226,8 @@ pub(crate) struct Lane {
     /// (one arriving meanwhile from elsewhere is not known there).
     pub reconciled: BTreeSet<(ServerKey, LabelId)>,
     pub reconciling: BTreeMap<(ConnId, LabelId), BTreeSet<BlobId>>,
+    /// Labels caught up once since start (`eph_caught_up`): never cleared.
+    pub caught_up: BTreeSet<LabelId>,
     /// Entries not fully checked (a part waits for a record, or none is valid yet): neither
     /// served nor spread, with where they came from; their charge per label (`PENDING_SHARE`:
     /// encoded bytes, or what parts of it the engine holds already, `Engine::ephemeral_charge`).
@@ -340,6 +342,8 @@ impl SyncEngine {
         self.eph_promote(out)?;
         let (busy, busy_presence) = self.eph_busy();
         let mut commits = self.engine.take_ephemeral_if(&busy, &busy_presence)?;
+        let caught_up = self.eph_caught_up();
+        self.engine.set_ephemeral_caught_up(caught_up);
         commits.extend(self.engine.compact_own_ephemeral(false)?);
         commits.retain(|c| c.class == EphClass::Relay || self.engine.holds_ephemeral(&c.id));
         self.eph_presence(out)?;
@@ -355,6 +359,31 @@ impl SyncEngine {
         self.eph_restamp(out)?;
         self.eph_redelete(out)?;
         self.eph_flush(out)
+    }
+
+    /// Whether every synced label has caught up once since start: on some connection it was
+    /// reconciled (or replayed) and then read to its end, with nothing fetching there and no
+    /// entry of it waiting to be checked. Until then the placements of an earlier session's
+    /// things may be partly back, and an own cover may not absorb that session's commits
+    /// (`Engine::set_ephemeral_caught_up`). A label that never catches up (its servers down)
+    /// keeps those commits uncovered: they are what servers held of the earlier session, bounded
+    /// by the label caps, and nothing of this session waits on it.
+    fn eph_caught_up(&mut self) -> bool {
+        let mut all = true;
+        for (_, gl) in self.labels() {
+            let l = gl.id;
+            if gl.replaced || self.eph.caught_up.contains(&l) {
+                continue;
+            }
+            let waiting = self.eph.pending.range((l, BlobId([0; 32]))..).next().is_some_and(|((x, _), _)| *x == l);
+            let read = !waiting && self.conns.values().any(|c| c.up && c.req.fetching.is_empty() && self.eph.reconciled.contains(&(c.server, l)) && c.labels.get(&l).is_some_and(|x| x.phase == Phase::Open && x.ready()));
+            if read {
+                self.eph.caught_up.insert(l);
+            } else {
+                all = false;
+            }
+        }
+        all
     }
 
     /// Deletes waiting for another head key (`Redo::Head`): sent again once the connection's
@@ -1388,6 +1417,8 @@ impl SyncEngine {
     #[doc(hidden)]
     pub fn compact_ephemeral_now(&mut self) -> Result<Vec<Action>> {
         let mut out = Vec::new();
+        let caught_up = self.eph_caught_up();
+        self.engine.set_ephemeral_caught_up(caught_up);
         let covers = self.engine.compact_own_ephemeral(true)?;
         let dropped = self.engine.take_dropped_ephemeral();
         self.eph_forget(&dropped, &mut out)?;
