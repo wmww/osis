@@ -654,7 +654,7 @@ impl SyncEngine {
     /// An ephemeral commit of `l` refused for this node's cap: reported once until bytes drop.
     fn eph_capped(&mut self, l: LabelId) {
         if self.eph.refused.insert(l) {
-            self.eph_report(&l, "this node's ephemeral cap for the label was reached: its further ephemeral data is not applied here");
+            self.eph_report(&l, "this node's ephemeral cap for the label refused a commit: commits that would pass it are not applied here");
         }
     }
 

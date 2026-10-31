@@ -68,7 +68,7 @@ fn meta_bytes(m: &crate::fragment::Meta) -> usize {
 
 /// Heap of a `BTreeMap`'s nodes: a node holds up to 11 entries inline and trees fill them about
 /// two thirds, so a small map costs a whole node (most fragments are small maps).
-fn nodes(len: usize, slot: usize) -> usize {
+pub(crate) const fn nodes(len: usize, slot: usize) -> usize {
     if len == 0 { 0 } else { (1 + len / 8) * (11 * slot + 16) }
 }
 
