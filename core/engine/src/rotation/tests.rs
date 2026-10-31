@@ -1049,3 +1049,65 @@ fn rotator_lacking_carried_secret_stranded_spec_permissions_3() {
     let (_, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
     assert!(still.is_empty(), "{still:?}");
 }
+
+/// The write-lacking shape of `rotator_lacking_carried_secret_stranded_spec_permissions_3`:
+/// P is A's admin only through member actor M (owned by peer 2); D, a writer of M, demotes
+/// itself to reader (no rotation), and A's owner demotes writer E to reader, so A's write
+/// rotation leaves M out of write only. P holds A's read and admin but no current write; F is
+/// an admin of A. Returns the peers and A, M.
+fn lacking_write(seed: u64) -> (LocalPeer, Tid, Tid) {
+    let mut lp = LocalPeer::new(6, seed, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let [p, d, e, f] = [1, 3, 4, 5].map(|i| lp.peers[i].engine.tid());
+    let a = group(&mut lp, 0);
+    let m = group(&mut lp, 2);
+    lp.sync_all().unwrap();
+    lp.peers[2].engine.grant(&m, &p, &edge(Role::Admin)).unwrap();
+    lp.peers[2].engine.grant(&m, &d, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&a, &m, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&a, &e, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&a, &f, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[3].engine.demote(&m, &Demotion { member: d, new: Some(edge(Role::Read)), presync: PreSync::Synced }).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.demote(&a, &Demotion { member: e, new: Some(edge(Role::Read)), presync: PreSync::Synced }).unwrap();
+    lp.sync_all().unwrap();
+    let ep = lp.peers[1].engine.epochs(&a).unwrap();
+    assert!(ep.write.newest_held().is_none(), "M left out of A's write");
+    assert!(ep.read.newest_held().is_some() && ep.admin.newest_held().is_some(), "P holds A's read and admin");
+    (lp, a, m)
+}
+
+// spec/permissions.md §3 (left out, re-seal trigger), spec/crypto.md §4 (carried secrets): P,
+// lacking A's current write, may not rotate A's admin (it would carry write to A's owner, a
+// key actor). Its read is current, so no heartbeat reports it stranded: the re-seal trigger of
+// A's owner (M lacks a box at A's current write) re-seals M once M rotates.
+#[test]
+fn rotator_lacking_carried_write_resealed_spec_permissions_3() {
+    let (mut lp, a, m) = lacking_write(962);
+    let f = lp.peers[5].engine.tid();
+    lp.peers[5].engine.demote(&a, &Demotion { member: f, new: None, presync: PreSync::Synced }).unwrap();
+    lp.sync_all().unwrap();
+    let (_, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
+    assert!(still.contains(&Role::Admin), "stranded on A's admin: {still:?}");
+    let e = lp.peers[1].engine.epochs(&a).unwrap();
+    assert!(matches!(osis_keys::wrap_epoch(&e.read), osis_keys::WrapEpoch::Current(_)), "P's read is current: no heartbeat");
+    settle(&mut lp, &[2, 0], &[m, a]);
+    let e = lp.peers[1].engine.epochs(&a).unwrap();
+    assert!(e.write.newest_held().is_some() && e.admin.newest_held().is_some(), "P re-sealed on A's write through M");
+    let (_, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
+    assert!(still.is_empty(), "{still:?}");
+}
+
+// A removal P makes itself in that shape: its rotation would carry write to A's owner, so it
+// is refused with an error saying it waits for a re-seal, and changes nothing.
+#[test]
+fn removal_lacking_carried_secret_refused_spec_permissions_3() {
+    let (mut lp, a, _) = lacking_write(963);
+    let f = lp.peers[5].engine.tid();
+    let before = lp.peers[1].engine.core.current_members(&a).len();
+    let err = lp.peers[1].engine.demote(&a, &Demotion { member: f, new: None, presync: PreSync::Synced }).unwrap_err();
+    assert!(format!("{err}").contains("re-seal"), "{err}");
+    assert_eq!(lp.peers[1].engine.core.current_members(&a).len(), before);
+}

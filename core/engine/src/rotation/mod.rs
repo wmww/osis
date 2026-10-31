@@ -63,7 +63,7 @@ fn rotation_due(tx: &mut Tx<'_>, a: &Tid, may: &BTreeSet<Role>) -> Result<BTreeS
 /// member holding it carries a lower role (`osis_keys::rotate`) with no current secret held
 /// here. Roles without a current secret held are never rotated (`uncovered_by_role`), so a
 /// rotation never carries one it rotates.
-fn carried_unheld(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Role>> {
+pub(crate) fn carried_unheld(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Role>> {
     let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
     let Some(lowest) = ROLES.into_iter().find(|r| epochs.role(*r).newest_held().is_none()) else { return Ok(BTreeSet::new()) };
     let top = recipients(tx, a, &[])?.into_iter().filter(|rc| matches!(rc.keys, osis_keys::MemberKeys::KeyActor { seed: None, .. })).map(|rc| rc.role).max();
