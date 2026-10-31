@@ -481,6 +481,15 @@ impl SyncEngine {
         match (kind, phase) {
             (Request::Open, Some(Phase::Opening)) if code == Code::UNKNOWN_LABEL => self.register_path(conn, l, out),
             (Request::Open, Some(Phase::Opening)) => self.drop_try(conn, l, out),
+            // a pass's step refused for now (a full server, the rate): the open stays and a later
+            // pass registers again
+            (Request::Register, Some(Phase::Open)) if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED) => {
+                if let Some(lc) = self.lc_mut(conn, &l) {
+                    lc.registering = None;
+                }
+                self.diag(format!("label {l:?}: step refused for now (code {})", code.0));
+                Ok(())
+            }
             (Request::Register, _) => {
                 if let Some(lc) = self.lc_mut(conn, &l) {
                     lc.registering = None;

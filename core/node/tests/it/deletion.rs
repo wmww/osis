@@ -80,6 +80,49 @@ fn compaction_then_deletion_spec_sync_7() {
     assert_eq!(net.read(c, t), Some(s("v3")), "the live value is served from the snapshot");
 }
 
+// spec/sync.md §5 Register: at a server past its byte caps a child step is still taken, once per
+// `over_cap_step_ms` per label; a second removal within it is refused for now (code 12): the
+// admin's open stays (not stranded) and the step lands once the time has passed.
+#[test]
+fn rotation_at_full_server_waits_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[sv]);
+    let d = net.node(4, &[sv]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Read), (d, Role::Read)], &[sv]);
+    net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(a);
+    assert_eq!(net.server_path(sv, &l).len(), 1);
+    let policy = osis_server::Policy { max_bytes: 1, ..osis_server::Policy::default() };
+    let wait = policy.over_cap_step_ms;
+    net.restart_server_with(sv, policy);
+    net.run();
+    let (at, bt, ct_, dt) = (net.tid(a), net.tid(b), net.tid(c), net.tid(d));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write), (dt, Role::Read)]);
+    remove_member(e, g, ct_, &rs, 41);
+    net.run();
+    net.advance(60_000);
+    assert_eq!(net.server_path(sv, &l).len(), 2, "the first step past the cap is taken");
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write)]);
+    remove_member(e, g, dt, &rs, 42);
+    net.run();
+    net.advance(60_000);
+    assert_eq!(net.server_path(sv, &l).len(), 2, "the second waits");
+    let d = net.sync(a).take_diagnostics();
+    assert!(d.iter().any(|x| x.contains("step refused for now (code 12)")), "{d:?}");
+    let st = net.sync(a).label_status().into_iter().find(|s| s.label == l).unwrap();
+    assert!(!st.stranded && st.open == 1, "{st:?}");
+    net.advance(wait);
+    net.advance(60_000);
+    diags(&mut net, &[a]);
+    assert_eq!(net.server_path(sv, &l).len(), 3, "it lands after over_cap_step_ms");
+}
+
 // spec/sync.md §5 (re-registration, upload order), spec/permissions.md §3-§4 (stranded
 // heartbeat): an admin rotating out a member issues a child step at the server after uploading
 // the rotation commit; the remaining writer follows; the removed member's open walks to the new
