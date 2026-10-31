@@ -66,10 +66,10 @@ fn lost_device_owner_rotation() {
     r.secrets.apply(&mut ts2);
     r.record(&mut tv2);
     assert!(rotate_first(&ts2, &tv2, &all, &all, &deps, &newest).is_empty());
-    // A plain thing U owned by P: its derived epoch is at P's newest's n.
+    // A plain thing U owned by P: its derived epoch is the one from P's newest, at n 0.
     let u = ActorEpochs::derived(&pe2, &tid(3));
     let s = osis_crypto::thing_role_secret(pe2.read.secret(&ep(2, 0x21)).unwrap(), Role::Read, &tid(3));
-    assert_eq!(u.read.newest(), Some(osis_crypto::Epoch::derive(&tid(3), Role::Read, 2, &s).unwrap()));
+    assert_eq!(u.read.newest(), Some(osis_crypto::Epoch::derive(&tid(3), Role::Read, 0, &s).unwrap()));
 }
 
 // spec/permissions.md §3: a grant raced by a rotation leaves the grantee without a box at the
