@@ -12,4 +12,4 @@ Exact windows, for X departing actor M (rotation by an admin writing M's fresh s
 
 Why no fix: a seed-only commit wrapped under the new epoch would become M's certificate `/keys` (certificates carry only `latest_on(actor, "/keys")`) and drop the keysets from later chain certificates; deriving the seed from the newest read secret plus a public nonce breaks inbox deposits (the inbox is by default the home label, and granters hold only `/keys`); making certificates carry the newest writer of each `/keys` field still leaves the certificate window. The refresh therefore only stops a departed party that sees none of the above.
 
-Where: core/engine/src/rotation/mod.rs `refreshes_deposit` / `fresh_deposit_seed`; core/engine/src/labeling/certs.rs `inside_member_revokes`; core/node/src/sync/pass.rs `reregister`.
+Where: core/engine/src/rotation/mod.rs `refreshes_deposit` / `fresh_deposit_seed`; core/engine/src/labeling/certs.rs `inside_member_revokes`; core/node/src/sync/pass/mod.rs `reregister`.
