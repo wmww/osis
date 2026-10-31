@@ -1984,6 +1984,25 @@ impl Engine {
         blob.parts.iter().map(|p| part_bound(p).unwrap_or(u64::MAX)).fold((0, 0), |(s, m), b| (s.saturating_add(b), m.max(b)))
     }
 
+    /// The records ephemeral `blob` lacks here to be held without waiting apart: its author's,
+    /// else those of its parts' things neither held here nor carried by its `/created` parts
+    /// (empty: it waits for none).
+    pub fn ephemeral_needs(&self, blob: &CommitBlob) -> BTreeSet<Tid> {
+        let h = &blob.header;
+        if self.core.created(&h.author).is_none() {
+            return BTreeSet::from([h.author]);
+        }
+        let aspects = || blob.parts.iter().filter_map(|p| h.aspects.get(p.ai));
+        let carried: BTreeSet<Tid> = aspects().filter(|a| a.ak.as_str() == CREATED.ak()).map(|a| a.tid).collect();
+        let empty = BTreeMap::new();
+        aspects().map(|a| a.tid).filter(|t| !carried.contains(t) && self.record_of(t, &empty).is_none()).collect()
+    }
+
+    /// Whether the record of `t` is here, durable or ephemeral.
+    pub fn has_record(&self, t: &Tid) -> bool {
+        self.record_of(t, &BTreeMap::new()).is_some()
+    }
+
     /// Held ephemeral commits and their encoded delta bytes (tests, diagnostics).
     pub fn held_ephemeral(&self) -> Vec<(CommitId, usize, bool)> {
         self.eph.remote.held.iter().map(|(id, h)| (*id, h.bytes, h.own)).collect()
