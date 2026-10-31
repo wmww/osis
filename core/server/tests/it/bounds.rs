@@ -107,6 +107,34 @@ fn one_fsync_per_message() {
     assert_eq!(live(&w, h, &l).len(), 1024);
 }
 
+// spec/requirements.md (durability): nothing is acknowledged or pushed before its input's sync:
+// when the sync fails, the uploader gets no status and the subscriber no push, both are closed,
+// and the uploader's retry is taken once syncs work again
+#[test]
+fn failed_sync_sends_nothing() {
+    let mut w = World::new();
+    let h = w.add_hub(Policy::default());
+    // client index = link index
+    let (a, c) = (w.connect(h), w.connect(h));
+    let l = Label::new(3);
+    w.setup(a, &l);
+    w.open(c, &l);
+    w.run(c, Command::Subscribe { labels: vec![l.id] });
+    w.take(c);
+    let synced = w.backends[h].syncs();
+    w.backends[h].faults().fail_syncs(1);
+    let ev = w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(1))] });
+    assert!(statuses(&ev).is_empty(), "{ev:?}");
+    assert!(events_of(&w.take(c)).0.is_empty());
+    assert!(!w.link_open(a) && !w.link_open(c));
+    // the next input (here the closes) syncs what the failed one left visible
+    assert!(w.backends[h].syncs() > synced);
+    let a2 = w.connect(h);
+    w.open(a2, &l);
+    assert_eq!(statuses(&w.run(a2, Command::Upload { label: l.id, entries: vec![l.entry(blob(1))] })), vec![Code::OK]);
+    assert_eq!(live(&w, h, &l), vec![osis_label::blob_id(&blob(1))]);
+}
+
 // spec/wire.md §11.2 Register, spec/sync.md §5: node-wide caps refuse new labels (Error 12) and new entries (code 12)
 #[test]
 fn node_wide_caps() {

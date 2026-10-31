@@ -810,3 +810,31 @@ fn claim_lookup_reads_no_set() {
 }
 
 const SWEEP_TEST_BUDGET: usize = 1024;
+
+// spec/wire.md §8 (a set may list a key more than once): a repeated key is one index row and
+// counts once, so the totals return to the steps alone when the set is dropped (counted per
+// listing, a hostile set left up to 6 MiB of phantom bytes in the node total per step)
+#[test]
+fn repeated_claims_count_once() {
+    let mut e = env(Policy::default());
+    let l = e.f.label;
+    let child = e.f.child.clone();
+    let mut set = e.f.child_claims.clone();
+    let k = set.claims[0];
+    while set.claims.len() < 1024 {
+        set.claims.push(k);
+    }
+    let before = e.store.totals().unwrap().bytes;
+    assert_eq!(e.store.push_step(&l, child.clone(), Some(set.clone())).unwrap(), Code::OK);
+    assert_eq!(e.store.totals().unwrap().bytes, before + child.to_bytes().len() as u64 + claim_set_bytes(&l, &child.id(), &set));
+    let mut grand = child.clone();
+    grand.prev = Some(child.id());
+    assert_eq!(e.store.push_step(&l, grand.clone(), None).unwrap(), Code::OK);
+    while e.store.sweep(T0 + 2 * MEMBERSHIP_KEEP_MS, SWEEP_TEST_BUDGET).unwrap().more {}
+    assert!(e.store.claim_set(&l, &child.id()).unwrap().is_none());
+    assert_eq!(e.store.claim(&l, &child.id(), &k).unwrap(), None);
+    let steps = (child.to_bytes().len() + grand.to_bytes().len()) as u64;
+    // the genesis set is dropped too (superseded by `child`)
+    let g = e.f.genesis.to_bytes().len() as u64;
+    assert_eq!(e.store.totals().unwrap().bytes, g + steps);
+}
